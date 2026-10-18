@@ -11,7 +11,7 @@
     <p class="byline">
       <a href="/?source={{ source.id }}">{{ source.name }}</a>
       <span aria-hidden="true">·</span>
-      <span>{{ source.author }}</span>
+      <a href="/authors/{{ source.author | urlencode }}">{{ source.author }}</a>
       <span aria-hidden="true">·</span>
       <time datetime="{{ iso }}">{{ date }}{% if time %} {{ time }}{% endif %}</time>
       {% if relative %}<span aria-hidden="true">·</span><span>{{ relative }}</span>{% endif %}
@@ -23,7 +23,7 @@
     <section class="card panel">
       <h2>来源</h2>
       <p><a href="/?source={{ source.id }}">{{ source.name }}</a></p>
-      <p class="quiet">{{ source.author }}</p>
+      <p class="quiet"><a href="/authors/{{ source.author | urlencode }}">{{ source.author }}</a></p>
       {% if source.description %}<p class="quiet">{{ source.description }}</p>{% endif %}
     </section>
     {% if siblings %}

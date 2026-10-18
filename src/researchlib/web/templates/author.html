@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "_feed.html" import day_feed, pager %}
+{% block body %}
+<header class="page-head">
+  <p class="byline"><a href="/authors">作者</a><span aria-hidden="true">·</span><span>{{ author_name }}</span></p>
+  <h1>{{ author_name }}</h1>
+  <p class="lede">按日期从新到旧。同一天里，新的在前。</p>
+</header>
+{% if author_sources|length > 1 %}
+<div class="page-tools">
+  <nav class="pills" aria-label="来源">
+    <a href="/authors/{{ author_name | urlencode }}" {% if not active_source %}aria-current="page"{% endif %}><span>全部</span></a>
+    {% for source in author_sources %}
+    <a href="/authors/{{ author_name | urlencode }}?source={{ source.id }}" {% if active_source == source.id %}aria-current="page"{% endif %}><span>{{ source.name }}</span></a>
+    {% endfor %}
+  </nav>
+</div>
+{% endif %}
+{% if days %}
+{{ day_feed(days) }}
+{% else %}
+<p class="empty">这位作者还没有文章。</p>
+{% endif %}
+{% set prefix = "/authors/" ~ (author_name | urlencode) ~ "?" ~ ("source=" ~ active_source ~ "&" if active_source else "") %}
+{{ pager(page, pages, prefix ~ "page=" ~ (page - 1), prefix ~ "page=" ~ (page + 1)) }}
+<p class="count num">{{ total }} 篇{% if dated_days %} · {{ dated_days }} 天{% endif %}{% if undated %} · 日期不详 {{ undated }} 篇{% endif %}</p>
+{% endblock %}

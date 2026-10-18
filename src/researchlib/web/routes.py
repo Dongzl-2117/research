@@ -19,6 +19,7 @@ from researchlib.sources import enabled_sources, load_sources, sync_sources
 from researchlib.textutil import excerpt, split_frontmatter, strip_duplicate_title
 from researchlib.web import queries
 from researchlib.web.present import (
+    FEED_ZONE,
     day_key,
     depth_chips,
     format_clock,
@@ -28,6 +29,7 @@ from researchlib.web.present import (
     market_label,
     month_chart,
     page_window,
+    plan_feed_page,
     relative_label,
 )
 
@@ -99,9 +101,9 @@ def _snippet_text(body: str, title: str) -> str:
     return text
 
 
-def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None) -> dict:
+def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, zone=None) -> dict:
     when = row["published_at"]
-    zone = settings.display_timezone
+    zone = zone or settings.display_timezone
     if excerpt_text is None and "body_text" in row:
         excerpt_text = excerpt(row["body_text"], title=row["title"], limit=180)
     card = {
@@ -129,6 +131,33 @@ def _page_arg(request: Request) -> int:
         return 1
 
 
+def _load_feed(conn, source_ids: list[str], settings, page: int):
+    counts = queries.feed_counts(conn, source_ids)
+    plan = plan_feed_page(
+        counts["days"],
+        counts["undated"],
+        page,
+        settings.days_per_page,
+        settings.page_size,
+    )
+    if plan["mode"] == "undated":
+        rows = queries.list_undated_articles(conn, source_ids, plan["limit"], plan["offset"])
+    else:
+        rows = queries.list_day_page(conn, source_ids, plan["limit"], plan["offset"])
+    return counts, plan, rows
+
+
+def _author_groups(sources):
+    grouped: dict[str, list] = {}
+    order: list[str] = []
+    for source in sources:
+        if source.author not in grouped:
+            grouped[source.author] = []
+            order.append(source.author)
+        grouped[source.author].append(source)
+    return order, grouped
+
+
 @router.get("/")
 def home(request: Request):
     settings = request.app.state.settings
@@ -140,24 +169,103 @@ def home(request: Request):
         chosen = source_arg if source_arg in by_id else None
         if source_arg and source_arg not in by_id and source_arg != "all":
             raise HTTPException(status_code=404)
-        total = queries.count_articles(conn, ids, chosen)
-        page, pages, offset = page_window(total, _page_arg(request), settings.page_size)
-        rows = queries.list_articles(conn, ids, chosen, settings.page_size, offset)
+        scoped = [chosen] if chosen else ids
+        counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request))
         banner = queries.sample_state(conn, ids)
-    articles = [_card(row, by_id[row["source_id"]], settings) for row in rows]
-    heading = by_id[chosen].name if chosen else "归档"
+    articles = [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows]
+    if chosen:
+        heading = by_id[chosen].name
+        lede = "只看这个来源，仍按天从新到旧。"
+        empty = "这个来源还没有文章。"
+    else:
+        heading = "按天"
+        lede = "按日期从新到旧。同一天里，新的在前。翻页按整天翻。"
+        empty = "还没有文章。"
     return render_page(
         request,
         "home.html",
         {
             "nav": "archive",
             "title": heading,
+            "lede": lede,
+            "empty": empty,
             "sources": sources,
             "active_source": chosen or "",
             "days": group_days(articles),
-            "page": page,
-            "pages": pages,
-            "total": total,
+            "page": plan["page"],
+            "pages": plan["pages"],
+            "total": counts["articles"],
+            "dated_days": counts["days"],
+            "undated": counts["undated"],
+            "sample_banner": banner,
+        },
+    )
+
+
+@router.get("/authors")
+def authors_page(request: Request):
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        ids = [source.id for source in sources]
+        counts = queries.source_article_counts(conn, ids)
+        banner = queries.sample_state(conn, ids)
+    _order, grouped = _author_groups(sources)
+    authors = [
+        {
+            "name": name,
+            "articles": sum(counts.get(item.id, 0) for item in items),
+            "sources": [item.name for item in items],
+        }
+        for name, items in grouped.items()
+    ]
+    authors.sort(key=lambda item: (-item["articles"], item["name"]))
+    return render_page(
+        request,
+        "authors.html",
+        {
+            "nav": "authors",
+            "title": "作者",
+            "authors": authors,
+            "sources": sources,
+            "sample_banner": banner,
+        },
+    )
+
+
+@router.get("/authors/{author}")
+def author_page(request: Request, author: str):
+    settings = request.app.state.settings
+    source_arg = request.query_params.get("source") or ""
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        _order, grouped = _author_groups(sources)
+        author_sources = grouped.get(author)
+        if not author_sources:
+            raise HTTPException(status_code=404)
+        by_id = _source_map(author_sources)
+        if source_arg and source_arg not in by_id:
+            raise HTTPException(status_code=404)
+        chosen = source_arg or None
+        scoped = [chosen] if chosen else [item.id for item in author_sources]
+        counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request))
+        banner = queries.sample_state(conn, [source.id for source in sources])
+    articles = [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows]
+    return render_page(
+        request,
+        "author.html",
+        {
+            "nav": "authors",
+            "title": author,
+            "author_name": author,
+            "author_sources": author_sources,
+            "sources": sources,
+            "active_source": chosen or "",
+            "days": group_days(articles),
+            "page": plan["page"],
+            "pages": plan["pages"],
+            "total": counts["articles"],
+            "dated_days": counts["days"],
+            "undated": counts["undated"],
             "sample_banner": banner,
         },
     )
@@ -226,6 +334,7 @@ def search_page(request: Request):
         number = count_map.get(source.id, 0)
         source_counts.append({"id": source.id, "name": source.name, "count": number})
         author_counts[source.author] = author_counts.get(source.author, 0) + number
+    total_all = sum(count_map.values())
     results = [
         _card(
             row,
@@ -249,7 +358,8 @@ def search_page(request: Request):
             "author_counts": [{"name": name, "count": count} for name, count in author_counts.items()],
             "active_source": chosen or "",
             "results": results,
-            "total": sum(count_map.values()) if not chosen else count_map.get(chosen, 0),
+            "total_all": total_all,
+            "total": count_map.get(chosen, 0) if chosen else total_all,
             "sample_banner": banner,
         },
     )

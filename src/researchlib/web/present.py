@@ -11,6 +11,8 @@ from researchlib.mentions import DEPTH_LABELS, DEPTHS
 
 # 与 AIHOT 列表头一致：桌面用「星期三」，不写成「周三」。
 _WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+# 首页按天、公司页按月，都用上海日历。香港同一时刻落在同一天。
+FEED_ZONE = "Asia/Shanghai"
 
 
 def localize(value: datetime | None, zone_name: str) -> datetime | None:
@@ -100,6 +102,7 @@ def group_days(articles: list[dict]) -> list[dict]:
                     "key": key or "undated",
                     "label": day_label(key),
                     "weekday": weekday_label(key),
+                    "year": key[0:4] if len(key) == 10 else "",
                     "items": [],
                 }
             )
@@ -107,6 +110,38 @@ def group_days(articles: list[dict]) -> list[dict]:
     for group in groups:
         group["count"] = len(group["items"])
     return groups
+
+
+def plan_feed_page(
+    dated_days: int,
+    undated: int,
+    page: int,
+    days_per_page: int,
+    undated_page_size: int,
+) -> dict:
+    """按天翻页。有日期的一页只含完整的几天；没有日期的接在后面，按篇翻。"""
+    days_per_page = max(1, days_per_page)
+    undated_page_size = max(1, undated_page_size)
+    day_pages = (dated_days + days_per_page - 1) // days_per_page if dated_days else 0
+    undated_pages = (undated + undated_page_size - 1) // undated_page_size if undated else 0
+    pages = max(1, day_pages + undated_pages)
+    current = min(max(page, 1), pages)
+    if day_pages and current <= day_pages:
+        return {
+            "page": current,
+            "pages": pages,
+            "mode": "days",
+            "offset": (current - 1) * days_per_page,
+            "limit": days_per_page,
+        }
+    undated_index = max(0, current - day_pages - 1)
+    return {
+        "page": current,
+        "pages": pages,
+        "mode": "undated" if undated else "days",
+        "offset": undated_index * undated_page_size,
+        "limit": undated_page_size,
+    }
 
 
 def page_window(total: int, page: int, size: int) -> tuple[int, int, int]:

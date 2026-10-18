@@ -3,42 +3,107 @@
 from __future__ import annotations
 
 
-def count_articles(conn, source_ids: list[str], source_id: str | None) -> int:
-    if source_id:
-        row = conn.execute(
-            "SELECT count(*) AS n FROM articles WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT count(*) AS n FROM articles WHERE source_id = ANY(%s)",
-            (source_ids,),
-        ).fetchone()
-    return int(row["n"])
+def _shanghai_day(column: str = "published_at") -> str:
+    # 与 company_months 一样，按 Asia/Shanghai 的日历日切桶。
+    return f"date_trunc('day', {column} AT TIME ZONE 'Asia/Shanghai')"
+
+# 标题权重大于正文；作者名单独匹配，不要求出现在正文里。
+_SEARCH_MATCH = """
+(
+  a.search_tsv @@ q
+  OR to_tsvector('chinese', coalesce(s.author, '')) @@ q
+  OR (char_length(%(raw)s) >= 2 AND position(%(raw)s in s.author) > 0)
+)
+"""
+_SEARCH_RANK = """
+(
+  5 * ts_rank_cd(setweight(to_tsvector('chinese', coalesce(a.title, '')), 'A'), q)
+  + ts_rank_cd(a.search_tsv, q)
+  + CASE
+      WHEN s.author = %(raw)s THEN 3
+      WHEN char_length(%(raw)s) >= 2 AND position(%(raw)s in s.author) > 0 THEN 2
+      WHEN to_tsvector('chinese', coalesce(s.author, '')) @@ q THEN 1.5
+      ELSE 0
+    END
+)
+"""
 
 
-def list_articles(conn, source_ids: list[str], source_id: str | None, limit: int, offset: int):
-    if source_id:
-        return conn.execute(
-            """
-            SELECT id, source_id, title, published_at, body_text
-            FROM articles
-            WHERE source_id = %s
-            ORDER BY published_at DESC NULLS LAST, id DESC
-            LIMIT %s OFFSET %s
-            """,
-            (source_id, limit, offset),
-        ).fetchall()
+def feed_counts(conn, source_ids: list[str]) -> dict:
+    if not source_ids:
+        return {"articles": 0, "days": 0, "undated": 0}
+    row = conn.execute(
+        f"""
+        SELECT count(*) AS articles,
+               count(*) FILTER (WHERE published_at IS NULL) AS undated,
+               count(DISTINCT {_shanghai_day()}) FILTER (WHERE published_at IS NOT NULL) AS days
+        FROM articles
+        WHERE source_id = ANY(%s)
+        """,
+        (source_ids,),
+    ).fetchone()
+    return {
+        "articles": int(row["articles"]),
+        "undated": int(row["undated"]),
+        "days": int(row["days"]),
+    }
+
+
+def list_day_page(conn, source_ids: list[str], limit: int, offset: int):
+    """一页里的几天，以及这些天的全部文章。同一天不会被页边界切开。"""
+    if not source_ids:
+        return []
+    return conn.execute(
+        f"""
+        WITH days AS (
+          SELECT {_shanghai_day()} AS day
+          FROM articles
+          WHERE source_id = ANY(%s)
+            AND published_at IS NOT NULL
+          GROUP BY 1
+          ORDER BY 1 DESC
+          LIMIT %s OFFSET %s
+        )
+        SELECT a.id, a.source_id, a.title, a.published_at, a.body_text
+        FROM articles a
+        JOIN days d
+          ON {_shanghai_day("a.published_at")} = d.day
+        WHERE a.source_id = ANY(%s)
+        ORDER BY a.published_at DESC, a.id DESC
+        """,
+        (source_ids, limit, offset, source_ids),
+    ).fetchall()
+
+
+def list_undated_articles(conn, source_ids: list[str], limit: int, offset: int):
+    if not source_ids:
+        return []
     return conn.execute(
         """
         SELECT id, source_id, title, published_at, body_text
         FROM articles
         WHERE source_id = ANY(%s)
-        ORDER BY published_at DESC NULLS LAST, id DESC
+          AND published_at IS NULL
+        ORDER BY id DESC
         LIMIT %s OFFSET %s
         """,
         (source_ids, limit, offset),
     ).fetchall()
+
+
+def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
+    if not source_ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT source_id, count(*) AS n
+        FROM articles
+        WHERE source_id = ANY(%s)
+        GROUP BY source_id
+        """,
+        (source_ids,),
+    ).fetchall()
+    return {row["source_id"]: int(row["n"]) for row in rows}
 
 
 def get_article(conn, article_id: int, source_ids: list[str]):
@@ -92,47 +157,46 @@ def sample_state(conn, source_ids: list[str]) -> bool:
     return int(row["n"]) > 0 and int(row["n"]) == int(row["samples"])
 
 
-def _query_text(conn, query: str) -> str:
-    row = conn.execute(
-        "SELECT plainto_tsquery('chinese', %s)::text AS q",
-        (query,),
-    ).fetchone()
-    return row["q"] if row else ""
-
-
 def search_counts(conn, query: str, source_ids: list[str]):
-    if not _query_text(conn, query):
+    raw = (query or "").strip()
+    if not raw or not source_ids:
         return []
     return conn.execute(
-        """
-        SELECT source_id, count(*) AS n
-        FROM articles, plainto_tsquery('chinese', %s) q
-        WHERE search_tsv @@ q AND source_id = ANY(%s)
-        GROUP BY source_id
+        f"""
+        SELECT a.source_id, count(*) AS n
+        FROM articles a
+        JOIN sources s ON s.id = a.source_id,
+             plainto_tsquery('chinese', %(query)s) q
+        WHERE a.source_id = ANY(%(ids)s)
+          AND {_SEARCH_MATCH}
+        GROUP BY a.source_id
         """,
-        (query, source_ids),
+        {"query": raw, "ids": source_ids, "raw": raw},
     ).fetchall()
 
 
 def search_articles(conn, query: str, source_ids: list[str], source_id: str | None, limit: int = 50):
-    if not _query_text(conn, query):
+    raw = (query or "").strip()
+    if not raw or not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT a.id, a.source_id, a.title, a.published_at,
                CASE
                  WHEN length(a.body_text) > 20000 THEN left(a.body_text, 20000)
                  ELSE a.body_text
                END AS body_text,
-               ts_rank_cd(a.search_tsv, q) AS rank
-        FROM articles a, plainto_tsquery('chinese', %(query)s) q
-        WHERE a.search_tsv @@ q
-          AND a.source_id = ANY(%(ids)s)
+               {_SEARCH_RANK} AS rank
+        FROM articles a
+        JOIN sources s ON s.id = a.source_id,
+             plainto_tsquery('chinese', %(query)s) q
+        WHERE a.source_id = ANY(%(ids)s)
           AND (%(source)s::text IS NULL OR a.source_id = %(source)s)
+          AND {_SEARCH_MATCH}
         ORDER BY rank DESC, a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %(limit)s
         """,
-        {"query": query, "ids": source_ids, "source": source_id, "limit": limit},
+        {"query": raw, "ids": source_ids, "source": source_id, "raw": raw, "limit": limit},
     ).fetchall()
 
 

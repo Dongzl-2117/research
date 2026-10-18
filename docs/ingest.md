@@ -2,7 +2,7 @@
 
 导入只接受 `config/sources.yaml` 里 `enabled: true` 的来源。停用的来源、不认识的 id、用错类型的命令都会直接拒绝，退出码是 2，数据库不会写。
 
-以后要启用「孤独进化体」或「林文丰飞书」，把对应项的 `enabled` 改成 `true` 即可。类型已经配好：
+以后要启用占位来源，把对应项的 `enabled` 改成 `true` 即可。类型已经配好：
 
 | id | 类型 | 命令 |
 | --- | --- | --- |
@@ -10,9 +10,22 @@
 | fangwei-zsxq | zsxq | `research-ingest-zsxq` |
 | chengfengpolang | zsxq | `research-ingest-zsxq` |
 | gudujinhuati | markdown | `research-ingest-markdown` |
+| linwenfeng-mp | wechat_mp | `research-ingest-wechat` |
 | linwenfeng-feishu | feishu | `research-ingest-feishu` |
 
-幂等键是 `(来源, 外部 id)`。外部 id 优先用 frontmatter 或知识星球 `topic_id`，否则用归档内的相对路径。同一篇再跑一遍不会复制；正文、标题或时间变了才更新。公司别名改完后跑：
+`linwenfeng-mp` 和 `linwenfeng-feishu` 都是停用。林文丰改走公众号，飞书先不要启用，也不要做飞书登录。
+
+幂等键是 `(来源, 外部 id)`。外部 id 优先用 frontmatter 或知识星球 `topic_id`，否则用归档内的相对路径。同一篇再跑一遍不会复制；正文、标题或时间变了才更新。
+
+发布日期按这个顺序取：Markdown frontmatter（`date`、`publish_time`、`create_time` 等）、知识星球 raw JSON 的 `create_time`（包括嵌套的 `resp_data.topic`）、正文里的公众号发布时间标记、文件名里的日期。已入库但 `published_at` 仍为空、而正文或 `raw_meta` 里认得出日期的，可以补一次：
+
+```bash
+research-backfill-dates
+```
+
+这条命令只填空日期，不改已经有日期的行。找不到日期的仍留空，首页放在「日期不详」。
+
+公司别名改完后跑：
 
 ```bash
 research-rebuild-mentions

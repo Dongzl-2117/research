@@ -22,6 +22,7 @@
     <div class="daybar">
       <div class="daybar-mobile">
         <h2>{{ day.label }}</h2>
+        {% if day.year %}<span>{{ day.year }}年</span>{% endif %}
         {% if day.weekday %}<span>{{ day.weekday }}</span>{% endif %}
         <span class="num">{{ day.count }} 条</span>
       </div>
@@ -30,7 +31,7 @@
         <button type="button" class="day-toggle" aria-expanded="true" aria-label="收起{{ day.label }}">
           <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5 12 15l6-5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <p>{% if day.weekday %}{{ day.weekday }} · {% endif %}<span class="num">{{ day.count }}</span> 条</p>
+        <p>{% if day.year %}{{ day.year }}年 · {% endif %}{% if day.weekday %}{{ day.weekday }} · {% endif %}<span class="num">{{ day.count }}</span> 条</p>
       </div>
     </div>
     <ol class="slots">

@@ -24,8 +24,11 @@ def test_search_template_keeps_author_count_markup():
         source_counts=[{"id": "fangwei-mp", "name": "方伟公众号", "count": 3}],
         results=[],
         total=0,
+        total_all=3,
     )
     assert "方伟</span><strong>3</strong>" in html
     assert "乘风破浪</span><strong>0</strong>" in html
     assert "investment.zldong.com" in html
     assert "research.zldong.com" not in html
+    assert 'class="pills search-pills"' in html
+    assert "没有找到" in html

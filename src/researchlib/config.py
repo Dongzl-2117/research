@@ -58,6 +58,7 @@ class Settings:
     aihot_database_url: str | None
     display_timezone: str
     page_size: int = 20
+    days_per_page: int = 14
 
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> Settings:
@@ -85,6 +86,7 @@ class Settings:
             aihot_database_url=aihot,
             display_timezone=environ.get("DISPLAY_TIMEZONE", "Asia/Shanghai"),
             page_size=int(environ.get("PAGE_SIZE", "20")),
+            days_per_page=max(1, int(environ.get("DAYS_PER_PAGE", "14"))),
         )
 
     @property
