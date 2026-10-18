@@ -1,14 +1,18 @@
 {% extends "base.html" %}
 {% block body %}
-  <header class="page-head">
-    <h1>公司</h1>
-    <p>代码、中文名和简称。点进去看哪些文章提到它，以及提及深浅。</p>
-  </header>
+<header class="page-head">
+  <h1>公司</h1>
+  <p class="lede">代码、中文名和简称。点进去看哪些文章提到它，以及提及深浅。</p>
+</header>
+<div class="search-track filter-track">
   <label class="sr" for="company-filter">筛选公司</label>
-  <input id="company-filter" class="filter" type="search" placeholder="筛选公司或代码" autocomplete="off">
-  {% for group in groups %}
-  <section class="market" data-market>
-    <h2>{{ group.label }}</h2>
+  <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+  <input id="company-filter" type="search" placeholder="筛选公司或代码" autocomplete="off">
+</div>
+{% for group in groups %}
+<section class="market" data-market>
+  <h2>{{ group.label }}</h2>
+  <div class="card table-card">
     <table>
       <thead>
         <tr><th>公司</th><th>代码</th><th>提及</th></tr>
@@ -23,21 +27,22 @@
         {% endfor %}
       </tbody>
     </table>
-  </section>
-  {% endfor %}
-  <script>
-    const filter = document.getElementById("company-filter");
-    filter.addEventListener("input", () => {
-      const q = filter.value.trim().toLowerCase();
-      document.querySelectorAll("[data-market]").forEach((section) => {
-        let visible = 0;
-        section.querySelectorAll("[data-name]").forEach((row) => {
-          const show = !q || row.dataset.name.toLowerCase().includes(q);
-          row.hidden = !show;
-          if (show) visible += 1;
-        });
-        section.hidden = visible === 0;
+  </div>
+</section>
+{% endfor %}
+<script>
+  const filter = document.getElementById("company-filter");
+  filter.addEventListener("input", () => {
+    const q = filter.value.trim().toLowerCase();
+    document.querySelectorAll("[data-market]").forEach((section) => {
+      let visible = 0;
+      section.querySelectorAll("[data-name]").forEach((row) => {
+        const show = !q || row.dataset.name.toLowerCase().includes(q);
+        row.hidden = !show;
+        if (show) visible += 1;
       });
+      section.hidden = visible === 0;
     });
-  </script>
+  });
+</script>
 {% endblock %}

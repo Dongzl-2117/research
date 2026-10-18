@@ -1,63 +1,48 @@
 {% extends "base.html" %}
+{% from "_feed.html" import day_feed, pager %}
 {% block body %}
-  <header class="page-head">
-    <p class="meta"><a href="/companies">公司</a><span>{{ market }}</span></p>
-    <h1>{{ company.name_zh }}</h1>
-    <p class="identity">
-      {% if company.ticker %}<span class="ticker">{{ company.ticker }}</span>{% else %}<span>未上市</span>{% endif %}
-      {% if company.name_en %}<span>{{ company.name_en }}</span>{% endif %}
-    </p>
-    {% if company.aliases %}
-    <p class="aliases">简称：{{ company.aliases | join("、") }}</p>
-    {% endif %}
-  </header>
-  <ul class="chips">
-    {% for chip in chips %}
-    <li>
-      <a class="depth depth-{{ chip.key }}" href="/companies/{{ company.id }}?depth={{ chip.key }}" {% if active_depth == chip.key %}aria-current="page"{% endif %}>
-        {{ chip.label }} <strong>{{ chip.count }}</strong>
-      </a>
-    </li>
-    {% endfor %}
-  </ul>
-  {% if active_depth %}
-  <p class="filter-note"><a href="/companies/{{ company.id }}">看全部深度</a></p>
+<div class="reader-top">
+  <a class="back" href="/companies">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5 8.5 12l6 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    返回
+  </a>
+</div>
+<header class="page-head">
+  <p class="byline"><a href="/companies">公司</a><span aria-hidden="true">·</span><span>{{ market }}</span></p>
+  <h1>{{ company.name_zh }}</h1>
+  <p class="identity">
+    {% if company.ticker %}<span class="ticker">{{ company.ticker }}</span>{% else %}<span>未上市</span>{% endif %}
+    {% if company.name_en %}<span>{{ company.name_en }}</span>{% endif %}
+  </p>
+  {% if company.aliases %}
+  <p class="aliases">简称：{{ company.aliases | join("、") }}</p>
   {% endif %}
-  {% if chart %}
-  <figure class="chart-wrap">
-    <figcaption>按月有提及的文章数</figcaption>
-    {{ chart }}
-  </figure>
-  {% else %}
-  <p class="empty">还没有带日期的提及。</p>
-  {% endif %}
-  {% if articles %}
-  <ol class="list">
-    {% for article in articles %}
-    <li>
-      <p class="meta">
-        <time>{{ article.date }}</time>
-        <span>{{ article.source }}</span>
-        <span class="depth depth-{{ article.depth }}">{{ article.depth_label }}</span>
-        <span>{{ article.hits }} 次</span>
-      </p>
-      <h2><a href="/articles/{{ article.id }}">{{ article.title }}</a></h2>
-    </li>
-    {% endfor %}
-  </ol>
-  {% else %}
-  <p class="empty">没有文章提到这家公司。</p>
-  {% endif %}
-  {% if pages > 1 %}
-  <nav class="pager" aria-label="分页">
-    {% if page > 1 %}
-    <a href="/companies/{{ company.id }}?depth={{ active_depth }}&amp;page={{ page - 1 }}">上一页</a>
-    {% endif %}
-    <span>{{ page }} / {{ pages }}</span>
-    {% if page < pages %}
-    <a href="/companies/{{ company.id }}?depth={{ active_depth }}&amp;page={{ page + 1 }}">下一页</a>
-    {% endif %}
-  </nav>
-  {% endif %}
-  <p class="count">{{ total }} 篇</p>
+</header>
+<ul class="chips">
+  {% for chip in chips %}
+  <li>
+    <a class="depth depth-{{ chip.key }}" href="/companies/{{ company.id }}?depth={{ chip.key }}" {% if active_depth == chip.key %}aria-current="page"{% endif %}>
+      {{ chip.label }} <strong>{{ chip.count }}</strong>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% if active_depth %}
+<p class="filter-note"><a href="/companies/{{ company.id }}">看全部深度</a></p>
+{% endif %}
+{% if chart %}
+<figure class="chart-wrap">
+  <figcaption>按月有提及的文章数</figcaption>
+  {{ chart }}
+</figure>
+{% else %}
+<p class="empty">还没有带日期的提及。</p>
+{% endif %}
+{% if days %}
+{{ day_feed(days) }}
+{% else %}
+<p class="empty">没有文章提到这家公司。</p>
+{% endif %}
+{{ pager(page, pages, "/companies/" ~ company.id ~ "?" ~ ("depth=" ~ active_depth ~ "&" if active_depth else "") ~ "page=" ~ (page - 1), "/companies/" ~ company.id ~ "?" ~ ("depth=" ~ active_depth ~ "&" if active_depth else "") ~ "page=" ~ (page + 1)) }}
+<p class="count num">{{ total }} 篇</p>
 {% endblock %}

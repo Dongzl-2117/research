@@ -68,6 +68,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "public_host": request.app.state.settings.public_host,
                 "canonical": request.app.state.settings.public_base_url + request.url.path,
                 "sample_banner": False,
+                "sources": [],
+                "active_source": "",
                 "message": "页面出错，请看服务日志。",
             },
             status_code=500,

@@ -1,38 +1,30 @@
 {% extends "base.html" %}
+{% from "_feed.html" import day_feed, pager %}
 {% block body %}
-  <header class="page-head">
-    <h1>归档</h1>
-    <p>按来源阅读全文。公司提及和关键词检索在另外两页。</p>
-  </header>
-  <nav class="tabs" aria-label="来源">
-    <a href="/" {% if not active_source %}aria-current="page"{% endif %}>全部</a>
+<header class="page-head">
+  <h1>{{ title }}</h1>
+  <p class="lede">按来源阅读全文。公司提及和关键词检索在另外两页。</p>
+</header>
+<div class="page-tools">
+  <nav class="pills" aria-label="来源">
+    <a href="/" {% if not active_source %}aria-current="page"{% endif %}><span>全部</span></a>
     {% for source in sources %}
-    <a href="/?source={{ source.id }}" {% if active_source == source.id %}aria-current="page"{% endif %}>{{ source.name }}</a>
+    <a href="/?source={{ source.id }}" {% if active_source == source.id %}aria-current="page"{% endif %}><span>{{ source.name }}</span></a>
     {% endfor %}
   </nav>
-  {% if articles %}
-  <ol class="list">
-    {% for article in articles %}
-    <li>
-      <p class="meta"><time>{{ article.date }}</time><span>{{ article.source }}</span></p>
-      <h2><a href="/articles/{{ article.id }}">{{ article.title }}</a></h2>
-      {% if article.excerpt %}<p class="excerpt">{{ article.excerpt }}</p>{% endif %}
-    </li>
-    {% endfor %}
-  </ol>
-  {% else %}
-  <p class="empty">这个来源还没有文章。</p>
-  {% endif %}
-  {% if pages > 1 %}
-  <nav class="pager" aria-label="分页">
-    {% if page > 1 %}
-    <a href="/?source={{ active_source }}&amp;page={{ page - 1 }}">上一页</a>
-    {% endif %}
-    <span>{{ page }} / {{ pages }}</span>
-    {% if page < pages %}
-    <a href="/?source={{ active_source }}&amp;page={{ page + 1 }}">下一页</a>
-    {% endif %}
-  </nav>
-  {% endif %}
-  <p class="count">{{ total }} 篇</p>
+  <form class="search-track" action="/search" method="get" role="search">
+    {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
+    <label class="sr" for="q">搜索标题、摘要与正文</label>
+    <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、摘要…" maxlength="80" autocomplete="off" enterkeyhint="search">
+    <kbd>/</kbd>
+  </form>
+</div>
+{% if days %}
+{{ day_feed(days) }}
+{% else %}
+<p class="empty">这个来源还没有文章。</p>
+{% endif %}
+{{ pager(page, pages, "/?" ~ ("source=" ~ active_source ~ "&" if active_source else "") ~ "page=" ~ (page - 1), "/?" ~ ("source=" ~ active_source ~ "&" if active_source else "") ~ "page=" ~ (page + 1)) }}
+<p class="count num">{{ total }} 篇</p>
 {% endblock %}

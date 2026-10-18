@@ -1,21 +1,41 @@
 {% extends "base.html" %}
 {% block body %}
+<div class="reader-grid">
   <article class="reader">
-    <p class="meta">
+    <div class="reader-top">
+      <a class="back" href="/?source={{ source.id }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5 8.5 12l6 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        返回
+      </a>
+    </div>
+    <p class="byline">
       <a href="/?source={{ source.id }}">{{ source.name }}</a>
-      <time>{{ date }}</time>
+      <span aria-hidden="true">·</span>
+      <span>{{ source.author }}</span>
+      <span aria-hidden="true">·</span>
+      <time datetime="{{ iso }}">{{ date }}{% if time %} {{ time }}{% endif %}</time>
+      {% if relative %}<span aria-hidden="true">·</span><span>{{ relative }}</span>{% endif %}
     </p>
     <h1>{{ article.title }}</h1>
     <div class="prose">{{ body_html }}</div>
   </article>
-  {% if siblings %}
-  <aside class="siblings">
-    <h2>同目录</h2>
-    <ul>
-      {% for item in siblings %}
-      <li><a href="/articles/{{ item.id }}">{{ item.title }}</a></li>
-      {% endfor %}
-    </ul>
+  <aside class="reader-aside">
+    <section class="card panel">
+      <h2>来源</h2>
+      <p><a href="/?source={{ source.id }}">{{ source.name }}</a></p>
+      <p class="quiet">{{ source.author }}</p>
+      {% if source.description %}<p class="quiet">{{ source.description }}</p>{% endif %}
+    </section>
+    {% if siblings %}
+    <section class="card panel">
+      <h2>同目录</h2>
+      <ul class="sibling-list">
+        {% for item in siblings %}
+        <li><a href="/articles/{{ item.id }}">{{ item.title }}</a></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
   </aside>
-  {% endif %}
+</div>
 {% endblock %}

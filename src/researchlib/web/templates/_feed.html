@@ -1,0 +1,59 @@
+{% macro card(item) %}
+<li class="slot">
+  <time class="slot-time" datetime="{{ item.iso }}">{{ item.time or "—" }}</time>
+  <span class="slot-rail" aria-hidden="true"><span class="slot-line"></span><span class="slot-dot"></span></span>
+  <article class="item-card">
+    <header class="item-meta">
+      <a href="/?source={{ item.source_id }}">{{ item.source }}</a>
+      {% if item.author %}<span aria-hidden="true">·</span><span>{{ item.author }}</span>{% endif %}
+      {% if item.depth_label %}<span class="depth depth-{{ item.depth }}">{{ item.depth_label }}</span>{% endif %}
+      {% if item.hits %}<span class="num">{{ item.hits }} 次</span>{% endif %}
+    </header>
+    <h3 class="item-title"><a href="/articles/{{ item.id }}">{{ item.title }}</a></h3>
+    {% if item.snippet %}<p class="item-excerpt">{{ item.snippet }}</p>{% elif item.excerpt %}<p class="item-excerpt">{{ item.excerpt }}</p>{% endif %}
+  </article>
+</li>
+{% endmacro %}
+
+{% macro day_feed(days) %}
+<div class="feed">
+  {% for day in days %}
+  <section class="day" aria-label="{{ day.label }}" data-label="{{ day.label }}">
+    <div class="daybar">
+      <div class="daybar-mobile">
+        <h2>{{ day.label }}</h2>
+        {% if day.weekday %}<span>{{ day.weekday }}</span>{% endif %}
+        <span class="num">{{ day.count }} 条</span>
+      </div>
+      <div class="daybar-desktop">
+        <h2>{{ day.label }}</h2>
+        <button type="button" class="day-toggle" aria-expanded="true" aria-label="收起{{ day.label }}">
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5 12 15l6-5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <p>{% if day.weekday %}{{ day.weekday }} · {% endif %}<span class="num">{{ day.count }}</span> 条</p>
+      </div>
+    </div>
+    <ol class="slots">
+      {% for item in day["items"] %}{{ card(item) }}{% endfor %}
+    </ol>
+  </section>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{% macro card_list(items) %}
+<ol class="slots flat">
+  {% for item in items %}{{ card(item) }}{% endfor %}
+</ol>
+{% endmacro %}
+
+{% macro pager(page, pages, prev, next) %}
+{% if pages > 1 %}
+<nav class="pager" aria-label="分页">
+  {% if page > 1 %}<a href="{{ prev }}">上一页</a>{% endif %}
+  <span class="here num">{{ page }}</span>
+  <span class="quiet">/ {{ pages }}</span>
+  {% if page < pages %}<a href="{{ next }}">下一页</a>{% endif %}
+</nav>
+{% endif %}
+{% endmacro %}
