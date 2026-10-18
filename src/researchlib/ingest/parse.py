@@ -11,10 +11,9 @@ from researchlib.ingest.model import ParsedDoc
 from researchlib.render import image_destination
 from researchlib.textutil import (
     basename,
-    date_from_filename,
     derive_title,
     normalize_newlines,
-    parse_datetime,
+    resolve_published_at,
     split_frontmatter,
 )
 
@@ -69,42 +68,91 @@ def _frontmatter_id(frontmatter: dict) -> str | None:
     return None
 
 
-def _frontmatter_date(frontmatter: dict):
-    for key in ("date", "published_at", "published", "pub_date", "created", "create_time"):
-        if key in frontmatter:
-            parsed = parse_datetime(frontmatter.get(key))
-            if parsed:
-                return parsed
+def _first_value(node: dict, keys: tuple[str, ...]):
+    for key in keys:
+        value = node.get(key)
+        if value not in (None, ""):
+            return value
     return None
 
 
-def extract_zsxq_meta(data: object) -> dict:
-    if not isinstance(data, dict):
-        return {}
-    nodes = [data]
-    for key in ("resp_data", "data", "topic", "result"):
-        child = data.get(key)
+def _iter_dicts(data, depth: int = 0):
+    if depth > 8:
+        return
+    if isinstance(data, dict):
+        yield data
+        for value in data.values():
+            yield from _iter_dicts(value, depth + 1)
+    elif isinstance(data, list):
+        for item in data[:50]:
+            yield from _iter_dicts(item, depth + 1)
+
+
+def _topic_title(node: dict) -> str | None:
+    title = node.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    for key in ("talk", "question", "task", "solution"):
+        child = node.get(key)
+        if not isinstance(child, dict):
+            continue
+        child_title = child.get("title")
+        if isinstance(child_title, str) and child_title.strip():
+            return child_title.strip()
+    return None
+
+
+def _topic_time(node: dict):
+    found = _first_value(node, ("create_time", "createTime", "created_at", "publish_time", "published_at"))
+    if found not in (None, ""):
+        return found
+    for key in ("topic", "talk", "question"):
+        child = node.get(key)
         if isinstance(child, dict):
-            nodes.append(child)
-    found: dict = {}
-    for node in nodes:
-        if "topic_id" not in found:
-            for key in ("topic_id", "topicId", "id"):
-                if node.get(key) not in (None, ""):
-                    found["topic_id"] = str(node[key])
-                    break
-        if "create_time" not in found:
-            for key in ("create_time", "createTime", "created_at", "publish_time"):
-                if node.get(key) not in (None, ""):
-                    found["create_time"] = node[key]
-                    break
-        if "title" not in found and isinstance(node.get("title"), str) and node["title"].strip():
-            found["title"] = node["title"].strip()
-        talk = node.get("talk")
-        if isinstance(talk, dict) and "title" not in found:
-            if isinstance(talk.get("title"), str) and talk["title"].strip():
-                found["title"] = talk["title"].strip()
-    return found
+            found = _first_value(child, ("create_time", "createTime", "created_at", "publish_time"))
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def extract_zsxq_topics(data: object) -> list[dict]:
+    """一个 JSON 里可能是单条话题，也可能是嵌套的 topics 列表。"""
+    topics: list[dict] = []
+    seen: set[str] = set()
+    for node in _iter_dicts(data):
+        topic_id = _first_value(node, ("topic_id", "topicId"))
+        if topic_id in (None, ""):
+            continue
+        topic_id = str(topic_id)
+        if topic_id in seen:
+            continue
+        seen.add(topic_id)
+        topics.append(
+            {
+                "topic_id": topic_id,
+                "create_time": _topic_time(node),
+                "title": _topic_title(node),
+            }
+        )
+    if topics:
+        return topics
+    if not isinstance(data, dict):
+        return []
+    merged_time = None
+    merged_title = None
+    for node in _iter_dicts(data):
+        if merged_time is None:
+            merged_time = _topic_time(node)
+        if merged_title is None:
+            merged_title = _topic_title(node)
+    if merged_time is None and merged_title is None:
+        return []
+    return [{"topic_id": None, "create_time": merged_time, "title": merged_title}]
+
+
+def extract_zsxq_meta(data: object) -> dict:
+    topics = extract_zsxq_topics(data)
+    return topics[0] if topics else {}
 
 
 def load_raw_index(raw_files: list[Path]) -> dict[str, dict]:
@@ -114,11 +162,14 @@ def load_raw_index(raw_files: list[Path]) -> dict[str, dict]:
             data = json.loads(read_text_file_safe(path))
         except json.JSONDecodeError:
             continue
-        meta = extract_zsxq_meta(data)
-        index.setdefault(path.stem, meta)
-        topic_id = meta.get("topic_id")
-        if topic_id:
-            index.setdefault(str(topic_id), meta)
+        metas = extract_zsxq_topics(data)
+        if not metas:
+            continue
+        index.setdefault(path.stem, metas[0])
+        for meta in metas:
+            topic_id = meta.get("topic_id")
+            if topic_id:
+                index.setdefault(str(topic_id), meta)
     return index
 
 
@@ -168,9 +219,12 @@ def parse_markdown_files(
         body = normalize_newlines(body)
         raw_meta = _match_raw(path, raw_index or {})
         title = derive_title(frontmatter, body, path.name, raw_meta.get("title"))
-        published = _frontmatter_date(frontmatter) or parse_datetime(raw_meta.get("create_time"))
-        if published is None:
-            published = date_from_filename(path.name)
+        published, date_source = resolve_published_at(
+            frontmatter=frontmatter,
+            hints=raw_meta,
+            filename=path.name,
+            text=original,
+        )
         if id_mode == "path":
             root = _owning_root(path, roots) or text_root
             external_id = _frontmatter_id(frontmatter) or relative_id(path, root)
@@ -196,18 +250,28 @@ def parse_markdown_files(
             seen_refs.add(dest)
             refs.append((dest, images.resolve(ref, path)))
         full_md = normalize_newlines(original)
+        stored_meta: dict = {
+            "format": "markdown",
+            "parent": parent,
+            "filename": path.name,
+        }
+        if raw_meta.get("topic_id"):
+            stored_meta["topic_id"] = raw_meta.get("topic_id")
+        create_time = raw_meta.get("create_time")
+        if create_time not in (None, ""):
+            if isinstance(create_time, (str, int, float, bool)):
+                stored_meta["create_time"] = create_time
+            else:
+                stored_meta["create_time"] = str(create_time)
+        if date_source:
+            stored_meta["date_source"] = date_source
         docs.append(
             ParsedDoc(
                 external_id=external_id[:500],
                 title=title,
                 published_at=published,
                 body_md=full_md,
-                raw_meta={
-                    "format": "markdown",
-                    "parent": parent,
-                    "filename": path.name,
-                    "topic_id": raw_meta.get("topic_id"),
-                },
+                raw_meta=stored_meta,
                 image_refs=refs,
             )
         )

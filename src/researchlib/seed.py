@@ -110,7 +110,7 @@ def sample_documents(image: Path) -> dict[str, list[ParsedDoc]]:
             _doc(
                 "sample:battery-note",
                 "年初备忘：电池（示例）",
-                datetime(2026, 1, 15, tzinfo=SHANGHAI),
+                datetime(2026, 1, 15, 8, 30, tzinfo=SHANGHAI),
                 """
 # 年初备忘：电池（示例）
 
@@ -131,6 +131,26 @@ def sample_documents(image: Path) -> dict[str, list[ParsedDoc]]:
 ![](battery.png)
 """,
                 ("battery.png", image),
+            ),
+            _doc(
+                "sample:evening-note",
+                "晚间短记：仓位（示例）",
+                datetime(2026, 1, 15, 21, 40, tzinfo=SHANGHAI),
+                """
+# 晚间短记：仓位（示例）
+
+这则只记仓位和节奏，不点名。示例，不是原文。
+""",
+            ),
+            _doc(
+                "sample:morning-note",
+                "晨间短记：节奏（示例）",
+                datetime(2026, 1, 15, 9, 5, tzinfo=SHANGHAI),
+                """
+# 晨间短记：节奏（示例）
+
+早上先写节奏，同样不点名。示例，不是原文。
+""",
             ),
         ],
         "fangwei-zsxq": [

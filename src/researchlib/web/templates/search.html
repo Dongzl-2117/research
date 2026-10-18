@@ -3,49 +3,40 @@
 {% block body %}
 <header class="page-head">
   <h1>检索</h1>
-  <p class="lede">在已启用的来源里做中文全文检索，并按作者、来源给出命中篇数。</p>
+  <p class="lede">搜标题、作者和正文。标题里命中的排在前面。</p>
 </header>
 <form class="search-bar" action="/search" method="get" role="search">
   {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
   <div class="field">
-    <label class="sr" for="q">搜索标题、摘要与正文</label>
+    <label class="sr" for="q">搜索标题、作者或正文</label>
     <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、摘要…" maxlength="80" autocomplete="off" enterkeyhint="search">
+    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、作者或正文" maxlength="80" autocomplete="off" enterkeyhint="search">
   </div>
   <button type="submit">搜索</button>
 </form>
 {% if not query %}
-<p class="empty">输入关键词开始检索。</p>
+<p class="empty">输入关键词，搜标题、作者或正文。</p>
 {% else %}
-<section class="count-grid">
-  <div class="card panel">
-    <h2>作者</h2>
-    <ul class="stat-list">
-      {% for item in author_counts %}
-      <li><span>{{ item.name }}</span><strong>{{ item.count }}</strong></li>
-      {% endfor %}
-    </ul>
-  </div>
-  <div class="card panel">
-    <h2>来源</h2>
-    <ul class="stat-list">
-      {% for item in source_counts %}
-      <li>
-        <a href="/search?q={{ query | urlencode }}&amp;source={{ item.id }}" {% if active_source == item.id %}aria-current="page"{% endif %}>{{ item.name }}</a>
-        <strong>{{ item.count }}</strong>
-      </li>
-      {% endfor %}
-    </ul>
-  </div>
+<nav class="pills search-pills" aria-label="来源">
+  <a href="/search?q={{ query | urlencode }}" {% if not active_source %}aria-current="page"{% endif %}><span>全部</span><span class="num">{{ total_all }}</span></a>
+  {% for item in source_counts %}
+  <a href="/search?q={{ query | urlencode }}&amp;source={{ item.id }}" {% if active_source == item.id %}aria-current="page"{% endif %}><span>{{ item.name }}</span><span class="num">{{ item.count }}</span></a>
+  {% endfor %}
+</nav>
+<section class="card panel">
+  <h2>作者</h2>
+  <ul class="stat-list">
+    {% for item in author_counts %}
+    <li><span>{{ item.name }}</span><strong>{{ item.count }}</strong></li>
+    {% endfor %}
+  </ul>
 </section>
-{% if active_source %}
-<p class="filter-note"><a href="/search?q={{ query | urlencode }}">清除来源筛选</a></p>
-{% endif %}
 {% if results %}
 {{ card_list(results) }}
 <p class="count">命中 {{ total }} 篇{% if results|length < total %}，这里显示相关度最高的 {{ results|length }} 篇{% endif %}</p>
 {% else %}
-<p class="empty">没有命中。</p>
+<p class="empty">没有找到「{{ query }}」。</p>
+<p class="filter-note">换个词，或从 <a href="/authors">作者</a>、<a href="/companies">公司</a> 进去看。</p>
 {% endif %}
 {% endif %}
 {% endblock %}

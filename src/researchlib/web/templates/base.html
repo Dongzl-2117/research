@@ -35,7 +35,11 @@
         <div class="nav-group">
           <a class="nav-link" href="/" {% if nav == "archive" and not active_source %}aria-current="page"{% endif %}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h9.5L19 9v10.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 4.8V9h4.2M8 13h8M8 16.5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-            <span>归档</span>
+            <span>按天</span>
+          </a>
+          <a class="nav-link" href="/authors" {% if nav == "authors" %}aria-current="page"{% endif %}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6.2 19.2c.8-2.6 2.8-4 5.8-4s5 1.4 5.8 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>作者</span>
           </a>
           <a class="nav-link" href="/companies" {% if nav == "companies" %}aria-current="page"{% endif %}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 20.5h15M6.5 20.5V6.2L12 4l5.5 2.2v14.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 20.5v-3.2h4v3.2M9.2 9h.1M14.7 9h.1M9.2 12.5h.1M14.7 12.5h.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
@@ -79,7 +83,11 @@
   <nav class="tabbar" aria-label="底部导航">
     <a href="/" {% if nav == "archive" %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h9.5L19 9v10.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 4.8V9h4.2M8 13h8M8 16.5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-      <span>归档</span>
+      <span>按天</span>
+    </a>
+    <a href="/authors" {% if nav == "authors" %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6.2 19.2c.8-2.6 2.8-4 5.8-4s5 1.4 5.8 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <span>作者</span>
     </a>
     <a href="/companies" {% if nav == "companies" %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 20.5h15M6.5 20.5V6.2L12 4l5.5 2.2v14.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 20.5v-3.2h4v3.2M9.2 9h.1M14.7 9h.1M9.2 12.5h.1M14.7 12.5h.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>

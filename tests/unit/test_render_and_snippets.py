@@ -2,6 +2,13 @@ from researchlib.render import render_body, sanitize_html
 from researchlib.snippets import highlight_snippet
 
 
+def test_snippet_keeps_a_late_hit():
+    body = ("前言。" * 40) + "这里才提到腾讯。" + ("后记。" * 10)
+    rendered = str(highlight_snippet(body, "腾讯"))
+    assert rendered.startswith("…")
+    assert "<mark>腾讯</mark>" in rendered
+
+
 def test_snippet_escapes_and_marks():
     snippet = highlight_snippet("<script>alert(1)</script> 腾讯广告", "腾讯", radius=80)
     rendered = str(snippet)

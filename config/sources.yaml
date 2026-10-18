@@ -31,9 +31,16 @@ sources:
     enabled: false
     description: 占位。启用后用通用 Markdown 目录导入。
 
+  - id: linwenfeng-mp
+    name: 林文丰公众号
+    author: 林文丰
+    kind: wechat_mp
+    enabled: false
+    description: 不做。公众号不入库。
+
   - id: linwenfeng-feishu
     name: 林文丰飞书
     author: 林文丰
     kind: feishu
-    enabled: false
-    description: 占位。feishu2md 风格 Markdown，目录里可以嵌套子文档。
+    enabled: true
+    description: 飞书文档归档入库，保持启用。

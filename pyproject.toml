@@ -29,6 +29,7 @@ research-ingest-markdown = "researchlib.ingest.markdown_dir:main"
 research-ingest-aihot = "researchlib.ingest.aihot:main"
 research-seed-sample = "researchlib.seed:main"
 research-rebuild-mentions = "researchlib.mentions:main"
+research-backfill-dates = "researchlib.backfill:main"
 
 [build-system]
 requires = ["setuptools>=68"]

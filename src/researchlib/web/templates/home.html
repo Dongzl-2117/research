@@ -3,7 +3,7 @@
 {% block body %}
 <header class="page-head">
   <h1>{{ title }}</h1>
-  <p class="lede">按来源阅读全文。公司提及和关键词检索在另外两页。</p>
+  <p class="lede">{{ lede }}</p>
 </header>
 <div class="page-tools">
   <nav class="pills" aria-label="来源">
@@ -14,17 +14,17 @@
   </nav>
   <form class="search-track" action="/search" method="get" role="search">
     {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
-    <label class="sr" for="q">搜索标题、摘要与正文</label>
+    <label class="sr" for="q">搜索标题、作者或正文</label>
     <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、摘要…" maxlength="80" autocomplete="off" enterkeyhint="search">
+    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、作者或正文" maxlength="80" autocomplete="off" enterkeyhint="search">
     <kbd>/</kbd>
   </form>
 </div>
 {% if days %}
 {{ day_feed(days) }}
 {% else %}
-<p class="empty">这个来源还没有文章。</p>
+<p class="empty">{{ empty }}</p>
 {% endif %}
 {{ pager(page, pages, "/?" ~ ("source=" ~ active_source ~ "&" if active_source else "") ~ "page=" ~ (page - 1), "/?" ~ ("source=" ~ active_source ~ "&" if active_source else "") ~ "page=" ~ (page + 1)) }}
-<p class="count num">{{ total }} 篇</p>
+<p class="count num">{{ total }} 篇{% if dated_days %} · {{ dated_days }} 天{% endif %}{% if undated %} · 日期不详 {{ undated }} 篇{% endif %}</p>
 {% endblock %}

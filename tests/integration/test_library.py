@@ -53,14 +53,42 @@ def test_sample_library_pages(conn, settings):
         assert "https://investment.zldong.com/" in home.text
         assert "示例数据" in home.text
         assert "research.zldong.com" not in home.text
+        assert "按日期从新到旧" in home.text
+        assert "按来源阅读全文" not in home.text
+        assert home.text.find("1月15日") < home.text.find("9月9日")
+        assert home.text.find("晚间短记") < home.text.find("晨间短记") < home.text.find("年初备忘")
+        assert home.text.find("21:40") < home.text.find("09:05") < home.text.find("08:30")
+        filtered = client.get("/", params={"source": "chengfengpolang"})
+        assert "亚马逊云和广告" in filtered.text
+        assert "晚间短记" not in filtered.text
+
+        authors = client.get("/authors")
+        assert authors.status_code == 200
+        assert "按作者查看" in authors.text
+        assert "方伟" in authors.text
+        assert "乘风破浪" in authors.text
+        assert "林文丰飞书" in authors.text
+        author = client.get("/authors/方伟")
+        assert author.status_code == 200
+        assert "晚间短记" in author.text
+        assert "亚马逊云和广告" not in author.text
+        linwenfeng = client.get("/authors/林文丰")
+        assert linwenfeng.status_code == 200
+        assert "这位作者还没有文章" in linwenfeng.text
 
         search = client.get("/search", params={"q": "腾讯"})
         assert search.status_code == 200
         assert "<mark>腾讯</mark>" in search.text
         assert "方伟</span><strong>3</strong>" in search.text
         assert "乘风破浪</span><strong>0</strong>" in search.text
+        assert 'class="pills search-pills"' in search.text
+        by_author = client.get("/search", params={"q": "方伟"})
+        assert "晚间短记" in by_author.text
+        assert "亚马逊云和广告" not in by_author.text
+        assert "没有找到" in client.get("/search", params={"q": "绝无此词xyz"}).text
 
         companies = client.get("/companies")
+        assert "按公司查看" in companies.text
         assert "腾讯" in companies.text
         assert "贵州茅台" in companies.text
         company_id = conn.execute("SELECT id FROM companies WHERE name_zh = '腾讯'").fetchone()["id"]

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="page-head">
+  <h1>作者</h1>
+  <p class="lede">按作者查看。点一位，看他的文章，按日期从新到旧。</p>
+</header>
+{% if authors %}
+<section class="market">
+  <div class="card table-card">
+    <table>
+      <thead>
+        <tr><th>作者</th><th>来源</th><th>文章</th></tr>
+      </thead>
+      <tbody>
+        {% for author in authors %}
+        <tr>
+          <td><a href="/authors/{{ author.name | urlencode }}">{{ author.name }}</a></td>
+          <td>{{ author.sources | join("、") }}</td>
+          <td class="num">{{ author.articles }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<p class="empty">还没有启用的作者。</p>
+{% endif %}
+{% endblock %}

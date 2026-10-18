@@ -26,7 +26,7 @@ def _find(text: str, term: str) -> int:
     return text.find(term)
 
 
-def highlight_snippet(text: str, query: str, *, radius: int = 72) -> Markup:
+def highlight_snippet(text: str, query: str, *, radius: int = 88) -> Markup:
     flat = re.sub(r"\s+", " ", text or "").strip()
     if not flat:
         return Markup("")
@@ -37,8 +37,11 @@ def highlight_snippet(text: str, query: str, *, radius: int = 72) -> Markup:
         suffix = "…" if len(flat) > len(fragment) else ""
         return Markup(str(escape(fragment)) + suffix)
     start_hit = min(positions)
-    start = max(0, start_hit - 18)
-    end = min(len(flat), start_hit + radius)
+    window = max(radius, 48)
+    start = max(0, start_hit - window // 2)
+    end = min(len(flat), start + window)
+    if end - start < window:
+        start = max(0, end - window)
     fragment = flat[start:end]
     prefix = "…" if start else ""
     suffix = "…" if end < len(flat) else ""

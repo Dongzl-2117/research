@@ -268,7 +268,7 @@ main {
   left: 0;
   z-index: 40;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   height: calc(54px + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   border-top: 1px solid var(--line);
@@ -340,6 +340,7 @@ main {
   position: relative;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   height: 36px;
   padding: 0 16px;
   border-radius: 999px;
@@ -360,6 +361,11 @@ main {
 }
 [data-theme="dark"] .pills a[aria-current="page"]::before { background: var(--raised); }
 .pills a:hover { color: var(--ink); }
+.pills.search-pills {
+  display: flex;
+  width: 100%;
+  margin-top: 16px;
+}
 
 .search-track { position: relative; width: 240px; flex: none; }
 .search-ico {
@@ -438,6 +444,7 @@ main {
 .search-bar button:active { transform: scale(.98); }
 
 .day { margin-top: 4px; }
+.day + .day { margin-top: 20px; }
 .daybar { position: sticky; top: 0; z-index: 20; background: var(--bg); }
 .daybar-mobile {
   display: flex;

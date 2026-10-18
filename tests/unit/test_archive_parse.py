@@ -1,5 +1,7 @@
+import json
 import zipfile
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from researchlib.ingest.parse import parse_archive
 from researchlib.ingest.wechat import main as wechat_main
@@ -19,9 +21,16 @@ def test_whitelist_shape():
         "fangwei-mp",
         "fangwei-zsxq",
         "chengfengpolang",
+        "linwenfeng-feishu",
     ]
+    feishu = next(source for source in sources if source.id == "linwenfeng-feishu")
+    assert feishu.kind == "feishu"
+    assert feishu.description == "飞书文档归档入库，保持启用。"
     disabled = {source.id: source.kind for source in sources if not source.enabled}
-    assert disabled == {"gudujinhuati": "markdown", "linwenfeng-feishu": "feishu"}
+    assert disabled == {
+        "gudujinhuati": "markdown",
+        "linwenfeng-mp": "wechat_mp",
+    }
 
 
 def test_rejected_source_does_not_prepare(monkeypatch):
@@ -30,6 +39,7 @@ def test_rejected_source_does_not_prepare(monkeypatch):
 
     monkeypatch.setattr("researchlib.ingest.cli.prepare", boom)
     assert wechat_main(["--source", "gudujinhuati", "--input", "/nowhere"]) == 2
+    assert wechat_main(["--source", "linwenfeng-mp", "--input", "/nowhere"]) == 2
     assert wechat_main(["--source", "not-a-source", "--input", "/nowhere"]) == 2
     assert zsxq_main(["--source", "fangwei-mp", "--input", "/nowhere"]) == 2
 
@@ -62,6 +72,9 @@ date: 2024-05-01
     assert docs[0].title == "你好腾讯"
     assert docs[0].image_refs[0][1] is not None
     assert docs[0].image_refs[0][1].name == "pic.png"
+    assert docs[0].published_at is not None
+    assert docs[0].published_at.month == 5
+    assert docs[0].raw_meta["date_source"] == "frontmatter"
     assert not any(path.name == "evil.md" for path in tmp_path.rglob("evil.md"))
 
 
@@ -95,3 +108,74 @@ def test_feishu_nested_ids(tmp_path: Path):
     by_id = {doc.external_id: doc for doc in docs}
     assert "笔记/index.md" in by_id
     assert by_id["笔记/子文档/a.md"].raw_meta["parent"] == "笔记/子文档"
+
+
+def _shanghai(value):
+    return value.astimezone(ZoneInfo("Asia/Shanghai"))
+
+
+def test_wechat_chinese_publish_time_and_filename(tmp_path: Path):
+    (tmp_path / "dated.md").write_text(
+        "---\ntitle: 中文日期\npublish_time: 2024年5月1日 21:30\n---\n正文\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "笔记_20240707_补充.md").write_text("没有前言。\n", encoding="utf-8")
+    (tmp_path / "markup.md").write_text(
+        '<em id="publish_time">2022年3月4日 08:09</em>\n\n正文\n',
+        encoding="utf-8",
+    )
+    docs, errors, files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="path")
+    assert errors == []
+    assert files == 3
+    by_name = {doc.raw_meta["filename"]: doc for doc in docs}
+    chinese = _shanghai(by_name["dated.md"].published_at)
+    assert (chinese.year, chinese.month, chinese.day, chinese.hour, chinese.minute) == (2024, 5, 1, 21, 30)
+    assert by_name["dated.md"].raw_meta["date_source"] == "frontmatter"
+    named = _shanghai(by_name["笔记_20240707_补充.md"].published_at)
+    assert (named.year, named.month, named.day) == (2024, 7, 7)
+    assert by_name["笔记_20240707_补充.md"].raw_meta["date_source"] == "filename"
+    marked = _shanghai(by_name["markup.md"].published_at)
+    assert (marked.year, marked.month, marked.day, marked.hour, marked.minute) == (2022, 3, 4, 8, 9)
+    assert by_name["markup.md"].raw_meta["date_source"] == "markup"
+
+
+def test_zsxq_nested_topic_uses_shanghai_day(tmp_path: Path):
+    (tmp_path / "md").mkdir()
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "md" / "999.md").write_text("嵌套正文。\n", encoding="utf-8")
+    (tmp_path / "raw" / "999.json").write_text(
+        json.dumps(
+            {
+                "succeeded": True,
+                "resp_data": {
+                    "topic": {
+                        "topic_id": 999,
+                        "create_time": "2023-12-31T16:05:00.000+0000",
+                        "talk": {"text": "嵌套"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    page = {
+        "resp_data": {
+            "topics": [
+                {"topic_id": 111, "create_time": "2020-01-02T03:04:05+08:00", "talk": {"title": "甲篇"}},
+                {"topic_id": 222, "create_time": "2020-01-03T00:00:00+08:00", "title": "乙篇"},
+            ]
+        }
+    }
+    (tmp_path / "raw" / "page.json").write_text(json.dumps(page), encoding="utf-8")
+    (tmp_path / "md" / "111.md").write_text("甲正文\n", encoding="utf-8")
+    (tmp_path / "md" / "222.md").write_text("乙正文\n", encoding="utf-8")
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    by_id = {doc.external_id: doc for doc in docs}
+    nested = _shanghai(by_id["999"].published_at)
+    assert (nested.year, nested.month, nested.day, nested.hour, nested.minute) == (2024, 1, 1, 0, 5)
+    assert by_id["999"].raw_meta["date_source"] == "meta"
+    assert by_id["111"].title == "甲篇"
+    assert _shanghai(by_id["111"].published_at).day == 2
+    assert by_id["222"].title == "乙篇"
+    assert _shanghai(by_id["222"].published_at).day == 3
