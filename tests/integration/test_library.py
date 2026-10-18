@@ -111,7 +111,7 @@ def test_sample_library_pages(conn, settings):
         assert media.status_code == 200
         assert media.headers["content-type"].startswith("image/png")
         assert client.get("/media/fangwei-mp/../../etc/passwd").status_code == 404
-        assert client.get("/?source=gudujinhuati").status_code == 404
+        assert client.get("/?source=linwenfeng-mp").status_code == 404
         assert client.get("/health").json() == {"status": "ok"}
         assert "Disallow" in client.get("/robots.txt").text
 
@@ -165,7 +165,7 @@ def test_aihot_import_filters_whitelist(conn, settings, tmp_path):
         """
         INSERT INTO aihot_articles (id, title, content, source, published_at) VALUES
           (1, '腾讯备忘', '这是从别处读来的腾讯笔记', 'fangwei-mp', '2024-01-02'),
-          (2, '停用源', '孤独进化体的正文', 'gudujinhuati', '2024-01-03'),
+          (2, '停用源', '林文丰公众号正文', 'linwenfeng-mp', '2024-01-03'),
           (3, '未知', '不属于白名单', 'random-blog', '2024-01-04')
         """
     )
