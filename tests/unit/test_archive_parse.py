@@ -21,14 +21,16 @@ def test_whitelist_shape():
         "fangwei-mp",
         "fangwei-zsxq",
         "chengfengpolang",
+        "gudujinhuati",
         "linwenfeng-feishu",
     ]
+    gudu = next(source for source in sources if source.id == "gudujinhuati")
+    assert gudu.kind == "markdown"
     feishu = next(source for source in sources if source.id == "linwenfeng-feishu")
     assert feishu.kind == "feishu"
     assert feishu.description == "飞书文档归档入库，保持启用。"
     disabled = {source.id: source.kind for source in sources if not source.enabled}
     assert disabled == {
-        "gudujinhuati": "markdown",
         "linwenfeng-mp": "wechat_mp",
     }
 

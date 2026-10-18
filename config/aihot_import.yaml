@@ -7,7 +7,7 @@ table: articles
 columns:
   external_id: [id, article_id, uuid]
   title: [title, name]
-  body: [content_md, content, body, markdown, text, html]
+  body: [content_md, content, body, body_html, body_text, markdown, text, html]
   source: [source, source_id, feed, author_key]
   published_at: [published_at, publish_time, created_at, ctime, date]
   url: [url, link]
@@ -22,5 +22,6 @@ source_map:
   乘风破浪: chengfengpolang
   gudujinhuati: gudujinhuati
   孤独进化体: gudujinhuati
+  mp-gudujinhua: gudujinhuati
   linwenfeng-feishu: linwenfeng-feishu
   林文丰飞书: linwenfeng-feishu

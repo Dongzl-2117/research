@@ -23,7 +23,7 @@ docker compose up -d --build
 
 ## 来源
 
-白名单在 `config/sources.yaml`。现在启用方伟公众号、方伟知识星球、乘风破浪、林文丰飞书。孤独进化体和林文丰公众号停用，公众号不入库。
+白名单在 `config/sources.yaml`。现在启用方伟公众号、方伟知识星球、乘风破浪、林文丰飞书、孤独进化体。林文丰公众号停用，不入库。
 
 导入命令、幂等规则和计数报告见 [docs/ingest.md](docs/ingest.md)。公司提及的判定见 [docs/mentions.md](docs/mentions.md)。
 
