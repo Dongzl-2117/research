@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block body %}
+  <article class="reader">
+    <p class="meta">
+      <a href="/?source={{ source.id }}">{{ source.name }}</a>
+      <time>{{ date }}</time>
+    </p>
+    <h1>{{ article.title }}</h1>
+    <div class="prose">{{ body_html }}</div>
+  </article>
+  {% if siblings %}
+  <aside class="siblings">
+    <h2>同目录</h2>
+    <ul>
+      {% for item in siblings %}
+      <li><a href="/articles/{{ item.id }}">{{ item.title }}</a></li>
+      {% endfor %}
+    </ul>
+  </aside>
+  {% endif %}
+{% endblock %}

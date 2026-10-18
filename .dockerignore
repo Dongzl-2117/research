@@ -1,0 +1,13 @@
+.git
+.venv
+venv
+data
+tests
+docs
+**/__pycache__
+.pytest_cache
+.ruff_cache
+*.zip
+docker/postgres/vendor
+*.md
+!README.md

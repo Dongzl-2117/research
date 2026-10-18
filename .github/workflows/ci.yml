@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Unit tests
+        run: pytest tests/unit
+
+      - name: Start Postgres
+        run: docker compose up -d --build db
+
+      - name: Wait for Postgres and create test database
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose exec -T db pg_isready -U research -d research; then
+              docker compose exec -T db psql -U research -d research -c "SELECT 1 FROM pg_database WHERE datname = 'research_test'" | grep -q 1 \
+                || docker compose exec -T db psql -U research -d research -c "CREATE DATABASE research_test OWNER research;"
+              exit 0
+            fi
+            sleep 3
+          done
+          docker compose logs db
+          exit 1
+
+      - name: Integration tests
+        env:
+          DATABASE_URL: postgresql://research:research@127.0.0.1:5432/research_test
+        run: pytest tests/integration

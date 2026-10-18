@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{ title }} · 投资研究库</title>
+  <link rel="canonical" href="{{ canonical }}">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/site.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">
+      <span class="seal" aria-hidden="true">研</span>
+      <span class="brand-text">
+        <strong>投资研究库</strong>
+        <small>{{ public_host }}</small>
+      </span>
+    </a>
+    <form class="search" action="/search" method="get" role="search">
+      <label class="sr" for="q">搜索全文</label>
+      <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索全文，例如 腾讯 财报" maxlength="80">
+      <button type="submit">搜索</button>
+    </form>
+  </header>
+  <nav class="nav" aria-label="主导航">
+    <a href="/" {% if nav == "archive" %}aria-current="page"{% endif %}>归档</a>
+    <a href="/companies" {% if nav == "companies" %}aria-current="page"{% endif %}>公司</a>
+    <a href="/search" {% if nav == "search" %}aria-current="page"{% endif %}>检索</a>
+  </nav>
+  {% if sample_banner %}
+  <p class="banner">当前库里全是示例数据，不是付费原文。把真实归档放进 data/inbox 后按文档导入。</p>
+  {% endif %}
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+  <footer>
+    <p>私人归档，仅供本人阅读。站点放在 Cloudflare Access 后面，进程只通过本机回环地址对外提供。</p>
+  </footer>
+</body>
+</html>

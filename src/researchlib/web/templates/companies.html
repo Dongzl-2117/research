@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block body %}
+  <header class="page-head">
+    <h1>公司</h1>
+    <p>代码、中文名和简称。点进去看哪些文章提到它，以及提及深浅。</p>
+  </header>
+  <label class="sr" for="company-filter">筛选公司</label>
+  <input id="company-filter" class="filter" type="search" placeholder="筛选公司或代码" autocomplete="off">
+  {% for group in groups %}
+  <section class="market" data-market>
+    <h2>{{ group.label }}</h2>
+    <table>
+      <thead>
+        <tr><th>公司</th><th>代码</th><th>提及</th></tr>
+      </thead>
+      <tbody>
+        {% for row in group.rows %}
+        <tr data-name="{{ row.filter }}">
+          <td><a href="/companies/{{ row.id }}">{{ row.name }}</a></td>
+          <td class="ticker">{{ row.ticker }}</td>
+          <td class="num">{{ row.mentions }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endfor %}
+  <script>
+    const filter = document.getElementById("company-filter");
+    filter.addEventListener("input", () => {
+      const q = filter.value.trim().toLowerCase();
+      document.querySelectorAll("[data-market]").forEach((section) => {
+        let visible = 0;
+        section.querySelectorAll("[data-name]").forEach((row) => {
+          const show = !q || row.dataset.name.toLowerCase().includes(q);
+          row.hidden = !show;
+          if (show) visible += 1;
+        });
+        section.hidden = visible === 0;
+      });
+    });
+  </script>
+{% endblock %}
