@@ -18,13 +18,24 @@ from researchlib.snippets import highlight_snippet, highlight_title
 from researchlib.sources import enabled_sources, load_sources, sync_sources
 from researchlib.textutil import excerpt, split_frontmatter, strip_duplicate_title
 from researchlib.web import queries
-from researchlib.web.present import depth_chips, format_date, market_label, month_chart, page_window
+from researchlib.web.present import (
+    day_key,
+    depth_chips,
+    format_clock,
+    format_date,
+    format_iso,
+    group_days,
+    market_label,
+    month_chart,
+    page_window,
+    relative_label,
+)
 
 router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-<rect width="32" height="32" rx="4" fill="#8f2d2d"/>
-<text x="16" y="22" text-anchor="middle" font-size="16" fill="#fff" font-family="serif">研</text>
+<rect width="32" height="32" rx="8" fill="#176b75"/>
+<circle cx="16" cy="16" r="5" fill="#faf9f6"/>
 </svg>"""
 
 
@@ -71,6 +82,7 @@ def render_page(request: Request, name: str, context: dict, status_code: int = 2
         "canonical": settings.public_base_url + path,
         "sample_banner": False,
         "sources": [],
+        "active_source": "",
     }
     payload.update(context)
     return templates().TemplateResponse(request, name, payload, status_code=status_code)
@@ -85,6 +97,28 @@ def _snippet_text(body: str, title: str) -> str:
     if title and text.startswith(title):
         return text[len(title) :].lstrip()
     return text
+
+
+def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None) -> dict:
+    when = row["published_at"]
+    zone = settings.display_timezone
+    if excerpt_text is None and "body_text" in row:
+        excerpt_text = excerpt(row["body_text"], title=row["title"], limit=180)
+    card = {
+        "id": row["id"],
+        "title": row["title"] if title is None else title,
+        "date": format_date(when, zone),
+        "time": format_clock(when, zone),
+        "iso": format_iso(when, zone),
+        "day": day_key(when, zone),
+        "source": source.name,
+        "source_id": source.id,
+        "author": source.author,
+        "excerpt": excerpt_text or "",
+    }
+    if extra:
+        card.update(extra)
+    return card
 
 
 def _page_arg(request: Request) -> int:
@@ -110,25 +144,17 @@ def home(request: Request):
         page, pages, offset = page_window(total, _page_arg(request), settings.page_size)
         rows = queries.list_articles(conn, ids, chosen, settings.page_size, offset)
         banner = queries.sample_state(conn, ids)
-    articles = [
-        {
-            "id": row["id"],
-            "title": row["title"],
-            "date": format_date(row["published_at"], settings.display_timezone),
-            "source": by_id[row["source_id"]].name,
-            "excerpt": excerpt(row["body_text"], title=row["title"]),
-        }
-        for row in rows
-    ]
+    articles = [_card(row, by_id[row["source_id"]], settings) for row in rows]
+    heading = by_id[chosen].name if chosen else "归档"
     return render_page(
         request,
         "home.html",
         {
             "nav": "archive",
-            "title": "归档",
+            "title": heading,
             "sources": sources,
             "active_source": chosen or "",
-            "articles": articles,
+            "days": group_days(articles),
             "page": page,
             "pages": pages,
             "total": total,
@@ -169,6 +195,9 @@ def article_page(request: Request, article_id: int):
             "article": article,
             "source": source,
             "date": format_date(article["published_at"], settings.display_timezone),
+            "time": format_clock(article["published_at"], settings.display_timezone),
+            "iso": format_iso(article["published_at"], settings.display_timezone),
+            "relative": relative_label(article["published_at"], settings.display_timezone),
             "body_html": body,
             "siblings": siblings,
             "sources": sources,
@@ -198,14 +227,14 @@ def search_page(request: Request):
         source_counts.append({"id": source.id, "name": source.name, "count": number})
         author_counts[source.author] = author_counts.get(source.author, 0) + number
     results = [
-        {
-            "id": row["id"],
-            "title": highlight_title(row["title"], query),
-            "plain_title": row["title"],
-            "date": format_date(row["published_at"], settings.display_timezone),
-            "source": by_id[row["source_id"]].name,
-            "snippet": highlight_snippet(_snippet_text(row["body_text"], row["title"]), query),
-        }
+        _card(
+            row,
+            by_id[row["source_id"]],
+            settings,
+            title=highlight_title(row["title"], query),
+            excerpt_text="",
+            extra={"snippet": highlight_snippet(_snippet_text(row["body_text"], row["title"]), query)},
+        )
         for row in hits
     ]
     return render_page(
@@ -287,15 +316,16 @@ def company_page(request: Request, company_id: int):
         articles = queries.company_articles(conn, company_id, ids, chosen, settings.page_size, offset)
         banner = queries.sample_state(conn, ids)
     rows = [
-        {
-            "id": row["id"],
-            "title": row["title"],
-            "date": format_date(row["published_at"], settings.display_timezone),
-            "source": by_id[row["source_id"]].name,
-            "depth": row["depth"],
-            "depth_label": DEPTH_LABELS[row["depth"]],
-            "hits": row["hit_count"],
-        }
+        _card(
+            row,
+            by_id[row["source_id"]],
+            settings,
+            extra={
+                "depth": row["depth"],
+                "depth_label": DEPTH_LABELS[row["depth"]],
+                "hits": row["hit_count"],
+            },
+        )
         for row in articles
     ]
     return render_page(
@@ -309,7 +339,7 @@ def company_page(request: Request, company_id: int):
             "chips": depth_chips(depths),
             "chart": Markup(month_chart(months)),
             "active_depth": chosen or "",
-            "articles": rows,
+            "days": group_days(rows),
             "page": page,
             "pages": pages,
             "total": total,
