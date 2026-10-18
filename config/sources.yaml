@@ -28,8 +28,8 @@ sources:
     name: 孤独进化体
     author: 孤独进化体
     kind: markdown
-    enabled: false
-    description: 占位。启用后用通用 Markdown 目录导入。
+    enabled: true
+    description: 微信公众号「孤独进化体」全文归档（通用 Markdown 目录导入；现从 AIHOT mp-gudujinhua 导出）。
 
   - id: linwenfeng-mp
     name: 林文丰公众号
