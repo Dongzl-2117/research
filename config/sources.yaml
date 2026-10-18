@@ -1,0 +1,39 @@
+# 来源白名单。导入器只接受这里 enabled: true 的 id。
+# 以后启用占位来源时，只改 enabled，不用改代码。
+# kind 决定用哪个解析器：wechat_mp / zsxq / feishu / markdown。
+
+sources:
+  - id: fangwei-mp
+    name: 方伟公众号
+    author: 方伟
+    kind: wechat_mp
+    enabled: true
+    description: 方伟微信公众号历史归档（Markdown + 图片）
+
+  - id: fangwei-zsxq
+    name: 方伟知识星球
+    author: 方伟
+    kind: zsxq
+    enabled: true
+    description: 方伟知识星球归档（md/、images/、raw/）
+
+  - id: chengfengpolang
+    name: 乘风破浪
+    author: 乘风破浪
+    kind: zsxq
+    enabled: true
+    description: 乘风破浪知识星球归档（md/、images/、raw/）
+
+  - id: gudujinhuati
+    name: 孤独进化体
+    author: 孤独进化体
+    kind: markdown
+    enabled: false
+    description: 占位。启用后用通用 Markdown 目录导入。
+
+  - id: linwenfeng-feishu
+    name: 林文丰飞书
+    author: 林文丰
+    kind: feishu
+    enabled: false
+    description: 占位。feishu2md 风格 Markdown，目录里可以嵌套子文档。

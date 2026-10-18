@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block body %}
+  <header class="page-head">
+    <h1>检索</h1>
+    <p>在已启用的来源里做中文全文检索，并按作者、来源给出命中篇数。</p>
+  </header>
+  {% if not query %}
+  <p class="empty">输入关键词开始检索。</p>
+  {% else %}
+  <section class="counts">
+    <div>
+      <h2>作者</h2>
+      <ul>
+        {% for item in author_counts %}
+        <li><span>{{ item.name }}</span><strong>{{ item.count }}</strong></li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div>
+      <h2>来源</h2>
+      <ul>
+        {% for item in source_counts %}
+        <li>
+          <a href="/search?q={{ query | urlencode }}&amp;source={{ item.id }}" {% if active_source == item.id %}aria-current="page"{% endif %}>{{ item.name }}</a>
+          <strong>{{ item.count }}</strong>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+  {% if active_source %}
+  <p class="filter-note"><a href="/search?q={{ query | urlencode }}">清除来源筛选</a></p>
+  {% endif %}
+  {% if results %}
+  <ol class="list">
+    {% for result in results %}
+    <li>
+      <p class="meta"><time>{{ result.date }}</time><span>{{ result.source }}</span></p>
+      <h2><a href="/articles/{{ result.id }}">{{ result.title }}</a></h2>
+      <p class="excerpt">{{ result.snippet }}</p>
+    </li>
+    {% endfor %}
+  </ol>
+  <p class="count">命中 {{ total }} 篇{% if results|length < total %}，这里显示相关度最高的 {{ results|length }} 篇{% endif %}</p>
+  {% else %}
+  <p class="empty">没有命中。</p>
+  {% endif %}
+  {% endif %}
+{% endblock %}

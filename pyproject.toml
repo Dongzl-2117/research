@@ -1,0 +1,56 @@
+[project]
+name = "researchlib"
+version = "0.1.0"
+description = "Private investment research library for investment.zldong.com"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "jinja2>=3.1",
+  "markdown>=3.7",
+  "psycopg[binary]>=3.2",
+  "pyyaml>=6.0",
+  "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27",
+  "pytest>=8.3",
+  "ruff>=0.7",
+]
+
+[project.scripts]
+research-web = "researchlib.web.app:main"
+research-ingest-wechat = "researchlib.ingest.wechat:main"
+research-ingest-zsxq = "researchlib.ingest.zsxq:main"
+research-ingest-feishu = "researchlib.ingest.feishu:main"
+research-ingest-markdown = "researchlib.ingest.markdown_dir:main"
+research-ingest-aihot = "researchlib.ingest.aihot:main"
+research-seed-sample = "researchlib.seed:main"
+research-rebuild-mentions = "researchlib.mentions:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+researchlib = ["migrations/*.sql", "web/templates/*.html", "web/static/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+  "integration: needs PostgreSQL with zhparser",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
