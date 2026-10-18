@@ -13,7 +13,7 @@
 | linwenfeng-mp | wechat_mp | `research-ingest-wechat` |
 | linwenfeng-feishu | feishu | `research-ingest-feishu` |
 
-`linwenfeng-mp` 和 `linwenfeng-feishu` 都是停用。林文丰改走公众号，飞书先不要启用，也不要做飞书登录。
+`linwenfeng-feishu` 保持启用，用 `research-ingest-feishu` 导入。`linwenfeng-mp` 停用，公众号不入库。
 
 幂等键是 `(来源, 外部 id)`。外部 id 优先用 frontmatter 或知识星球 `topic_id`，否则用归档内的相对路径。同一篇再跑一遍不会复制；正文、标题或时间变了才更新。
 

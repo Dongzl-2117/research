@@ -78,7 +78,7 @@ def test_home_pages_by_shanghai_day(conn, settings):
         assert "边界十点" in filtered.text
         assert "别的来源" not in filtered.text
         assert "只看这个来源" in filtered.text
-        assert client.get("/authors/林文丰").status_code == 404
+        assert client.get("/authors/林文丰").status_code == 200
         assert client.get("/authors/没有这个人").status_code == 404
 
 

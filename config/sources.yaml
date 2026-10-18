@@ -36,11 +36,11 @@ sources:
     author: 林文丰
     kind: wechat_mp
     enabled: false
-    description: 占位。公众号归档备好后再启用，用微信导入器。
+    description: 不做。公众号不入库。
 
   - id: linwenfeng-feishu
     name: 林文丰飞书
     author: 林文丰
     kind: feishu
-    enabled: false
-    description: 占位。改由公众号归档替代，保持停用，不从飞书导入。
+    enabled: true
+    description: 飞书文档归档入库，保持启用。

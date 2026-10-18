@@ -67,12 +67,14 @@ def test_sample_library_pages(conn, settings):
         assert "按作者查看" in authors.text
         assert "方伟" in authors.text
         assert "乘风破浪" in authors.text
-        assert "林文丰" not in authors.text
+        assert "林文丰飞书" in authors.text
         author = client.get("/authors/方伟")
         assert author.status_code == 200
         assert "晚间短记" in author.text
         assert "亚马逊云和广告" not in author.text
-        assert client.get("/authors/林文丰").status_code == 404
+        linwenfeng = client.get("/authors/林文丰")
+        assert linwenfeng.status_code == 200
+        assert "这位作者还没有文章" in linwenfeng.text
 
         search = client.get("/search", params={"q": "腾讯"})
         assert search.status_code == 200
