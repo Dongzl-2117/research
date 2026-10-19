@@ -45,6 +45,18 @@
   --radius-control: 8px;
   --radius-tile: 10px;
   --radius-card: 12px;
+  /* 阅读字号，对照 aihot.zldong.com（2026-10 线上 CSS）：
+     正文 prose 17px、≥80rem 18px；文章导读 18px、xl 20px；
+     卡片摘要 14.5px、lg 15px；prose-compact 15px、≥80rem 16px；
+     证据 / 引用 15px；署名 13px，次级行 14px。
+     研究库的卡片摘录和正文是主要阅读面，原档偏小，这里用 token 抬一档。 */
+  --text-base: 15px;
+  --text-excerpt: 15px;
+  --text-excerpt-lg: 16px;
+  --text-byline: 14px;
+  --text-points: 15px;
+  --text-prose: 18px;
+  --text-prose-lg: 19px;
 }
 
 [data-theme="dark"] {
@@ -96,7 +108,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.5;
 }
 ::selection { background: var(--selection); }
@@ -507,7 +519,7 @@ main {
   margin: 6px 0 0;
   overflow: hidden;
   color: var(--ink-3);
-  font-size: 14.5px;
+  font-size: var(--text-excerpt);
   line-height: 1.75;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -588,9 +600,10 @@ mark {
   gap: 6px;
   margin: 0 0 14px;
   color: var(--ink-4);
-  font-size: 13px;
+  font-size: var(--text-byline);
 }
 .byline a:hover { color: var(--accent); }
+.title-zh { margin: 8px 0 0; color: var(--ink-4); font-size: var(--text-byline); }
 .reader h1 {
   margin: 0;
   color: var(--ink);
@@ -705,7 +718,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   padding-top: 16px;
   border-top: 1px solid var(--line);
   color: var(--prose-ink);
-  font-size: 17px;
+  font-size: var(--text-prose);
   letter-spacing: .012em;
   line-height: 1.8;
   overflow-wrap: anywhere;
@@ -862,7 +875,7 @@ tbody tr:hover td { background: var(--accent-softer); }
     transform: translateY(-1px);
   }
   .item-title { font-weight: 650; }
-  .item-excerpt { margin-top: 8px; font-size: 15px; -webkit-line-clamp: 3; }
+  .item-excerpt { margin-top: 8px; font-size: var(--text-excerpt-lg); -webkit-line-clamp: 3; }
   .flat .item-card { margin-top: 0; }
   .reader-grid { grid-template-columns: minmax(0, 1fr); gap: 40px; align-items: start; }
   .reader-top { min-height: 32px; margin-bottom: 8px; }
@@ -872,7 +885,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 @media (min-width: 1280px) {
   .reader h1 { font-size: 36px; line-height: 1.3; }
-  .prose { font-size: 18px; }
+  .prose { font-size: var(--text-prose-lg); }
 }
 @media (max-width: 1023px) {
   .reader-top {
@@ -982,8 +995,8 @@ tbody tr:hover td { background: var(--accent-softer); }
   margin: 6px 0 0;
   padding: 0 0 0 1.15em;
   color: var(--ink-3);
-  font-size: 13.5px;
-  line-height: 1.65;
+  font-size: var(--text-points);
+  line-height: 1.75;
 }
 .item-points li + li { margin-top: 2px; }
 .item-hit {
@@ -1045,7 +1058,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 .day-section a { color: var(--ink); font-weight: 650; }
 .day-section a:hover { color: var(--accent); }
-.day-section p { margin: 4px 0 0; color: var(--ink-3); font-size: 14px; line-height: 1.7; }
+.day-section p { margin: 4px 0 0; color: var(--ink-3); font-size: var(--text-excerpt); line-height: 1.7; }
 .head-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
 .date-jump { display: flex; align-items: center; gap: 6px; color: var(--ink-4); font-size: 13px; }
 .date-jump input { height: 30px; font-size: 13px; }
@@ -1110,7 +1123,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-tile);
   background: var(--accent-softer);
-  font-size: 15px;
+  font-size: var(--text-points);
   line-height: 1.8;
 }
 .digest { border-left-color: var(--amber); background: var(--amber-soft); }
@@ -1139,7 +1152,6 @@ tbody tr:hover td { background: var(--accent-softer); }
 .ask-note { margin: 0; font-size: 12.5px; }
 .answer h2 { margin: 0 0 8px; font-size: 18px; }
 .answer h3 { margin: 24px 0 8px; font-size: 15px; }
-.answer-body { font-size: 15.5px; }
 .cite { color: var(--accent); font-size: .8em; vertical-align: super; }
 .citations { margin: 0; padding: 0; list-style: none; }
 .citations li { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }

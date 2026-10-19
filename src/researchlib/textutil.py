@@ -379,7 +379,7 @@ def excerpt(text: str, limit: int = 120, title: str = "") -> str:
     return flat[: limit - 1] + "…"
 
 
-# 知识星球一类归档常把 sn、点赞、钟点贴在正文开头。卡片不要拿这些当导读。
+# 知识星球、公众号归档常把 sn、点赞、作者、时间、原链接贴在正文开头。卡片不要拿这些当导读。
 _META_KEY = (
     r"sn|likes?|like_count|comments?|comment_count|rewards?|readers?|views?|view_count|"
     r"create_time|created_at|topic_id|digested|reading_count|favorites?|favs?"
@@ -388,33 +388,138 @@ _CLOCK = r"\d{1,2}[:：]\d{2}(?::\d{2})?"
 _DATE = r"\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+" + _CLOCK + r")?"
 _COUNT = r"(?:点赞|赞|评论|回复|阅读|在看|打赏|收藏|浏览)\s*[:：]?\s*\d+"
 _KEY_VALUE = r"(?:" + _META_KEY + r")\s*[:：]?\s*\d+"
+_URL = r"(?:https?://|www\.)[^\s。！？!?，,|｜]+"
 _LEADING_META = re.compile(
-    r"^(?:" + "|".join((_DATE, _CLOCK, _KEY_VALUE, _COUNT)) + r")(?:\s+|$)",
+    r"^(?:" + "|".join((_DATE, _CLOCK, _KEY_VALUE, _COUNT, _URL)) + r")(?:\s+|$)",
     re.I,
 )
 _META_LINE = re.compile(
-    r"^(?:" + "|".join((r"(?:" + _META_KEY + r")\s*[:：]?\s*\S+", _COUNT, _DATE, _CLOCK)) + r")\s*$",
+    r"^(?:"
+    + "|".join((r"(?:" + _META_KEY + r")\s*[:：]?\s*\S+", _COUNT, _DATE, _CLOCK, _URL))
+    + r")\s*$",
     re.I,
 )
+# 长的放前面，避免「时间」吃掉「发布时间」。
+_LABEL_KEY = (
+    r"发布时间|创建时间|原文链接|原链接|阅读量|公众号|作者|时间|日期|链接|来源|出处|"
+    r"点赞|评论|阅读|在看|转发|author|source|url|link"
+)
+_LABEL_VALUE = r"(?:https?://[^\s。！？!?，,|｜]+|(?:[^\s。！？!?，,|｜]){1,40}(?:\s+" + _CLOCK + r")?)"
+_LABEL_PREFIX = re.compile(
+    r"^(?P<key>" + _LABEL_KEY + r")\s*[:：]\s*(?P<value>" + _LABEL_VALUE + r")",
+    re.I,
+)
+_GENERIC_PREFIX = re.compile(r"^([\w\u4e00-\u9fff]{1,12})\s*[:：]\s*(\S+)")
+_FIELD_SEPARATORS = " |｜·•,，;；、/／"
+_NAME_KEYS = frozenset({"作者", "来源", "出处", "公众号", "author", "source"})
+_TIME_KEYS = frozenset({"时间", "发布时间", "创建时间", "日期"})
+_LINK_KEYS = frozenset({"原链接", "原文链接", "链接", "url", "link"})
+_COUNT_KEYS = frozenset({"点赞", "评论", "阅读", "阅读量", "在看", "转发"})
+_SENTENCE_END = "。！？!?，,"
+
+
+def _norm_title(text: str) -> str:
+    return re.sub(r"[\s《》「」\"'“”‘’]", "", text or "")
+
+
+def _label_match(text: str) -> re.Match[str] | None:
+    match = _LABEL_PREFIX.match(text)
+    if not match:
+        return None
+    key = match.group("key")
+    value = match.group("value").strip()
+    folded = key.lower()
+    end = match.end()
+    if end < len(text) and text[end] in _SENTENCE_END:
+        return None
+    if folded in _LINK_KEYS or key in _LINK_KEYS:
+        if re.search(r"[。！？!?]", value):
+            return None
+        if not re.match(r"https?://|www\.", value, re.I) and len(value) > 16:
+            return None
+        return match
+    if key in _TIME_KEYS:
+        if not re.fullmatch(r"[\d\s:：./\-年月日时分秒]+", value):
+            return None
+        return match
+    if key in _COUNT_KEYS:
+        if not re.fullmatch(r"[\d\s,，]+", value):
+            return None
+        return match
+    if folded in _NAME_KEYS or key in _NAME_KEYS:
+        if re.search(r"[。！？!?，,]", value) or len(value) > 24:
+            return None
+        return match
+    return None
+
+
+def _generic_meta_match(text: str) -> re.Match[str] | None:
+    """开头的 key: value，值要像链接、数字、日期或英文 id，不能是一句中文判断。"""
+    match = _GENERIC_PREFIX.match(text)
+    if not match:
+        return None
+    value = match.group(2)
+    if re.search(r"[。！？!?，,]", value):
+        return None
+    end = match.end()
+    if end < len(text) and text[end] in _SENTENCE_END:
+        return None
+    if re.fullmatch(r"https?://\S+|www\.\S+", value, re.I):
+        return match
+    if re.fullmatch(r"[\d\s:：./\-年月日时分秒]+", value):
+        return match
+    if re.fullmatch(r"[A-Za-z0-9_@./+-]{1,64}", value):
+        return match
+    return None
 
 
 def _strip_leading_meta(text: str) -> str:
     current = text.strip()
     while current:
-        match = _LEADING_META.match(current)
-        if not match:
+        stripped = current.lstrip(_FIELD_SEPARATORS).strip()
+        if stripped != current:
+            current = stripped
+            continue
+        match = _LEADING_META.match(current) or _label_match(current) or _generic_meta_match(current)
+        if not match or match.end() == 0:
             break
         current = current[match.end() :].strip()
     return current
 
 
+def _strip_title_label(line: str, title: str) -> str:
+    """归档头里的「标题：…」在重复文章标题时丢掉；带句号的判断句留下。"""
+    match = re.match(r"^标题\s*[:：]\s*(.*)$", line)
+    if not match:
+        return line
+    value = match.group(1).strip()
+    title = (title or "").strip()
+    if title:
+        bare = re.sub(r"^[《「\"'“]+", "", value)
+        for candidate in (value, bare):
+            if candidate.startswith(title):
+                return candidate[len(title) :].strip(" ：:|-》」\"'”")
+        if _norm_title(value) == _norm_title(title):
+            return ""
+    if re.search(r"[。！？!?]", value):
+        return line
+    if not title and len(value) <= 80:
+        return ""
+    return line
+
+
 def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
-    """从正文前部取一句实质内容，跳过点赞、sn、时间戳。没有就返回空串。"""
+    """从正文前部取一句实质内容。
+
+    跳过 sn、点赞、钟点，以及公众号 / 知识星球开头的作者、时间、原链接、
+    来源、重复标题和只有 URL 的行。没有实质内容就返回空串。
+    """
     kept: list[str] = []
     for raw_line in (text or "").splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
         if title and line.startswith(title):
             line = line[len(title) :].strip(" ：:|-")
+        line = _strip_title_label(line, title)
         line = _strip_leading_meta(line)
         if not line or _META_LINE.match(line):
             continue
@@ -424,12 +529,14 @@ def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
     blob = _strip_leading_meta(" ".join(kept))
     if title and blob.startswith(title):
         blob = _strip_leading_meta(blob[len(title) :].strip())
+    blob = _strip_title_label(blob, title)
+    blob = _strip_leading_meta(blob)
     if not blob:
         return ""
     parts = re.split(r"(?<=[。！？!?])\s*", blob)
     chosen = ""
     for part in parts:
-        part = part.strip()
+        part = _strip_leading_meta(part.strip())
         if not part or _META_LINE.match(part) or len(part) < 8:
             continue
         chosen = part

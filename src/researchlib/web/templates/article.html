@@ -18,7 +18,7 @@
     </p>
     <h1>{{ article.title }}</h1>
     {% if title_zh and body_language != 'original' %}
-    <p class="quiet" style="margin-top:8px;color:var(--ink-4);font-size:14px">{{ title_zh }}</p>
+    <p class="title-zh">{{ title_zh }}</p>
     {% endif %}
     {% if quoted %}
     <aside class="quoted" aria-label="引用的段落">
