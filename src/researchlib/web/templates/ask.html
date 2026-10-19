@@ -1,11 +1,17 @@
 {% extends "base.html" %}
+{% macro passage(item, terms) %}
+<li id="c-{{ item.n }}" class="{% if item.cited %}cited{% endif %}">
+  <p class="item-meta"><span class="num">[{{ item.n }}]</span> <a href="{{ item.url }}">{{ item.title }}</a> · {{ item.author }} · {{ item.date }}{% if item.heading %} · § {{ item.heading }}{% endif %}</p>
+  <p class="item-excerpt">{{ item.text | highlight_full(terms) }}</p>
+</li>
+{% endmacro %}
 {% block body %}
 <header class="page-head">
   <h1>问库</h1>
-  <p class="lede">先在库里召回相关段落，再交给 {{ model }} 只依据这些段落作答。每句后面的 [n] 链到原文段落。</p>
+  <p class="lede">先在库里找出和问题最相关的原文段落，马上列出来；再交给 {{ model }} 只依据这些原文整合。回答里每句后面的 [n] 链到原文段落。</p>
 </header>
 {% if not llm_ready %}
-<p class="banner">还没有配置 Grok。现在只返回召回的原文段落。配置方法见 docs/llm.md。</p>
+<p class="banner">还没有配置 Grok。现在只列出相关原文。配置方法见 docs/llm.md。</p>
 {% endif %}
 <form class="ask-form" action="/ask" method="post">
   <label class="sr" for="ask-q">问题</label>
@@ -30,25 +36,43 @@
   <p class="filter-note">只用这篇：<a href="/articles/{{ article.id }}">{{ article.title }}</a></p>
   {% endif %}
   <button type="submit">提问</button>
-  <p class="quiet ask-note">提交后要等模型推理完，可能要一两分钟。</p>
+  <p class="quiet ask-note">提交后先列出相关原文；整合在后台进行，通常一到三分钟，页面会自己更新。</p>
 </form>
 {% if result %}
-<section class="answer" aria-label="回答">
+<section class="answer" aria-label="回答"{% if result.status == "running" %} data-poll="/api/v1/answers/{{ result.id }}"{% endif %}>
   <h2>{{ result.question }}</h2>
-  {% if result.error %}<p class="banner">{{ result.error }}</p>{% endif %}
+  {% if result.status == "running" %}
+  <p class="answer-status" role="status"><span class="spinner" aria-hidden="true"></span>正在整合：先补同义说法、再在全库检索一遍，资料多时分批读完再汇总。下面先看找到的原文。</p>
+  {% endif %}
+  {% if result.error %}
+  <p class="banner">{{ result.error }}</p>
+  {% if result.status == "error" and result.id %}
+  <form class="retry-form" action="/ask/{{ result.id }}/retry" method="post"><button type="submit">重新整合</button></form>
+  {% endif %}
+  {% endif %}
   {% if result.answer %}
   <div class="prose answer-body">{{ result.answer | answer_html }}</div>
   <p class="quiet">{% if result.model %}{{ result.model }}{% endif %}{% if result.created %} · {{ result.created }}{% endif %}{% if result.id %} · <a href="/api/v1/answers/{{ result.id }}">JSON</a>{% endif %}</p>
   {% endif %}
-  {% if result.citations %}
-  <h3>出处</h3>
+  {% set cited = result.citations | selectattr("cited") | list %}
+  {% if result.answer and cited %}
+  <h3>出处 <span class="num quiet">{{ cited | length }}</span></h3>
   <ol class="citations">
-    {% for item in result.citations %}
-    <li id="c-{{ item.n }}" class="{% if item.cited %}cited{% endif %}">
-      <p class="item-meta"><span class="num">[{{ item.n }}]</span> <a href="{{ item.url }}">{{ item.title }}</a> · {{ item.author }} · {{ item.date }}{% if item.heading %} · § {{ item.heading }}{% endif %}</p>
-      <p class="item-excerpt">{{ item.text }}</p>
-    </li>
-    {% endfor %}
+    {% for item in cited %}{{ passage(item, result.terms) }}{% endfor %}
+  </ol>
+  {% set rest = result.citations | rejectattr("cited") | list %}
+  {% if rest %}
+  <details class="more-passages">
+    <summary>其余检索到的原文 <span class="num">{{ rest | length }}</span></summary>
+    <ol class="citations">
+      {% for item in rest %}{{ passage(item, result.terms) }}{% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+  {% elif result.citations %}
+  <h3>相关原文 <span class="num quiet">{{ result.citations | length }}</span></h3>
+  <ol class="citations">
+    {% for item in result.citations %}{{ passage(item, result.terms) }}{% endfor %}
   </ol>
   {% endif %}
 </section>
@@ -57,8 +81,30 @@
 <section class="card panel">
   <h2>最近问过</h2>
   <ul class="sibling-list">
-    {% for row in history %}<li><a href="/ask/{{ row.id }}">{{ row.question }}</a></li>{% endfor %}
+    {% for row in history %}<li><a href="/ask/{{ row.id }}">{{ row.question }}</a>{% if row.status == "running" %} <span class="quiet">整合中</span>{% elif row.status == "error" %} <span class="quiet">没整合完</span>{% endif %}</li>{% endfor %}
   </ul>
 </section>
 {% endif %}
+<script>
+  (function () {
+    var box = document.querySelector("[data-poll]");
+    if (!box) return;
+    var url = box.getAttribute("data-poll");
+    var tries = 0;
+    function tick() {
+      tries += 1;
+      fetch(url, { headers: { Accept: "application/json" }, credentials: "same-origin" })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (data) {
+          if (data && data.status && data.status !== "running") {
+            window.location.reload();
+            return;
+          }
+          window.setTimeout(tick, tries < 30 ? 4000 : 15000);
+        })
+        .catch(function () { window.setTimeout(tick, 15000); });
+    }
+    window.setTimeout(tick, 4000);
+  })();
+</script>
 {% endblock %}

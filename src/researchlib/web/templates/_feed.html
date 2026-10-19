@@ -15,7 +15,8 @@
     <p class="item-excerpt item-summary"><span class="ai-badge" title="导读">摘要</span>{{ item.summary }}</p>
     {% if item.points %}<ul class="item-points">{% for point in item.points %}<li>{{ point }}</li>{% endfor %}</ul>{% endif %}
     {% elif item.excerpt %}<p class="item-excerpt">{{ item.excerpt }}</p>{% endif %}
-    {% if item.snippet %}<p class="item-hit">{{ item.snippet }}</p>{% endif %}
+    {% if item.snippets %}{% for snippet in item.snippets %}<p class="item-hit">{{ snippet }}</p>{% endfor %}
+    {% elif item.snippet %}<p class="item-hit">{{ item.snippet }}</p>{% endif %}
     {% if item.tags %}
     <ul class="tags" aria-label="提到的公司">
       {% for tag in item.tags %}<li><a class="tag depth-{{ tag.depth }}" href="/companies/{{ tag.id }}">{{ tag.name }}</a></li>{% endfor %}

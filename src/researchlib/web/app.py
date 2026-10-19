@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from researchlib.ask import mark_interrupted
 from researchlib.config import Settings, assert_bind_allowed
 from researchlib.db import prepare
 from researchlib.web.api import api
@@ -25,7 +26,13 @@ logger = logging.getLogger("researchlib")
 async def lifespan(app: FastAPI):
     # 迁移、白名单、公司种子，并给缺块的文章补切。不在启动时跑 research-digest。
     conn = prepare(app.state.settings)
-    conn.close()
+    try:
+        # 上次没跑完的问库整合标成出错，回答页可以重新整合。
+        interrupted = mark_interrupted(conn)
+        if interrupted:
+            logger.warning("有 %s 条问库整合因重启中断", interrupted)
+    finally:
+        conn.close()
     yield
 
 

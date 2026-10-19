@@ -13,13 +13,14 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
-from researchlib.ask import PRESETS, ask
+from researchlib.ask import PRESETS, retry, start
 from researchlib.db import connect, ensure_search_session
 from researchlib.digest import schedule_digests
 from researchlib.llm import llm_configured
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card
 from researchlib.render import render_body
-from researchlib.snippets import answer_html, highlight_snippet, highlight_title, mention_snippet
+from researchlib.retrieval import full_match_counts, search_articles
+from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, split_frontmatter, strip_duplicate_title
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
@@ -49,6 +50,10 @@ router = APIRouter()
 SEARCH_PAGE_SIZE = 20
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 TEMPLATES.env.filters["answer_html"] = answer_html
+TEMPLATES.env.filters["highlight_full"] = highlight_full
+TEMPLATES.env.filters["highlight_snippet"] = lambda text, terms, radius=110: highlight_snippet(
+    text, "", radius=radius, terms=list(terms or [])
+)
 FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
 <rect width="32" height="32" rx="8" fill="#176b75"/>
 <circle cx="16" cy="16" r="5" fill="#faf9f6"/>
@@ -535,32 +540,42 @@ def search_page(request: Request):
         if scope.company_id is not None and company is None:
             raise HTTPException(status_code=404)
         has_filter = bool(info["author"] or info["company"] or info["from"] or info["to"])
-        counts = queries.search_counts(conn, query, facet_scope) if query else []
-        count_map = {row["source_id"]: int(row["n"]) for row in counts}
-        total_all = sum(count_map.values())
-        total = count_map.get(info["source"], 0) if info["source"] else total_all
-        page, pages, offset = page_window(total, _page_arg(request), SEARCH_PAGE_SIZE)
-        hits = queries.search_articles(conn, query, scope, SEARCH_PAGE_SIZE, offset) if query else []
-        best = queries.best_chunks(conn, query, [row["id"] for row in hits])
+        page = _page_arg(request)
+        found = None
+        count_map: dict[str, int] = {}
+        if query:
+            found = search_articles(
+                conn, query, scope, sources, limit=SEARCH_PAGE_SIZE, offset=(page - 1) * SEARCH_PAGE_SIZE
+            )
+            if found.query and found.query.terms:
+                count_map = full_match_counts(conn, found.query, facet_scope)
+            else:
+                count_map = dict(found.counts)
         entity_companies = queries.matching_companies(conn, query) if query and page == 1 else []
         results = []
-        for row in hits:
-            chunk = best.get(row["id"])
-            text = chunk["body"] if chunk else _snippet_text(row["body_text"], row["title"])
+        terms = found.terms if found else []
+        for hit in found.hits if found else []:
+            best = hit.passages[0] if hit.passages else None
+            row = {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at}
             results.append(
                 _card(
                     row,
-                    by_id[row["source_id"]],
+                    by_id[hit.source_id],
                     settings,
-                    title=highlight_title(row["title"], query),
+                    title=highlight_title(hit.title, query, terms=terms),
                     extra={
-                        "snippet": highlight_snippet(text, query),
-                        "heading": chunk["heading"] if chunk else "",
-                        "chunk": chunk["ord"] if chunk else None,
+                        "snippets": [highlight_snippet(p.body, query, terms=terms) for p in hit.passages[:2]],
+                        "heading": best.heading if best else "",
+                        "chunk": best.ord if best else None,
+                        "partial": not hit.full,
                     },
                 )
             )
         results = _decorate(conn, results, settings)
+    total_all = sum(count_map.values())
+    total = found.total if found else 0
+    available = found.available if found else 0
+    page, pages, _offset = page_window(available, page, SEARCH_PAGE_SIZE)
     author_counts: dict[str, int] = {}
     source_counts = []
     facet_ids = set(facet_scope.source_ids)
@@ -579,6 +594,7 @@ def search_page(request: Request):
         "from": info["from"],
         "to": info["to"],
     }
+    first_partial = next((index for index, item in enumerate(results) if item.get("partial")), None)
     return render_page(
         request,
         "search.html",
@@ -597,6 +613,9 @@ def search_page(request: Request):
             "entity_companies": entity_companies,
             "entity_authors": entity_authors,
             "results": results,
+            "first_partial": first_partial,
+            "partial_total": found.partial if found else 0,
+            "search_terms": terms,
             "total_all": total_all,
             "total": total,
             "page": page,
@@ -884,6 +903,7 @@ def ask_page(request: Request):
 
 @router.post("/ask")
 async def ask_submit(request: Request):
+    """先检索原文、登记整合，马上跳到回答页；模型在后台写，回答页自己刷新。"""
     if not _same_origin(request):
         raise HTTPException(status_code=403, detail="跨站请求被拒绝")
     form = await request.form()
@@ -894,9 +914,8 @@ async def ask_submit(request: Request):
         scope, info = resolve_scope(params, sources)
         if not question:
             return RedirectResponse("/ask?" + _query_string(**params), status_code=303)
-        result = ask(conn, request.app.state.settings, question, scope, sources)
+        result = start(conn, request.app.state.settings, question, scope, sources)
         if result["id"] is not None:
-            conn.commit()
             return RedirectResponse(f"/ask/{result['id']}", status_code=303)
         context = _ask_context(request, sources, info, conn)
         context["question"] = question
@@ -931,9 +950,11 @@ def ask_answer(request: Request, answer_id: int):
         "id": row["id"],
         "question": row["question"],
         "answer": row["answer"],
-        "error": "",
+        "error": row["error"],
+        "status": row["status"],
         "model": row["model"],
-        "citations": row["citations"],
+        "citations": row["citations"] or [],
+        "terms": row["terms"] or [],
         "created": format_date(row["created_at"], request.app.state.settings.display_timezone),
     }
     return render_page(
@@ -948,6 +969,17 @@ def ask_answer(request: Request, answer_id: int):
             **context,
         },
     )
+
+
+@router.post("/ask/{answer_id}/retry")
+async def ask_retry(request: Request, answer_id: int):
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    with database(request) as conn:
+        if queries.get_answer(conn, answer_id) is None:
+            raise HTTPException(status_code=404)
+        retry(conn, request.app.state.settings, answer_id)
+    return RedirectResponse(f"/ask/{answer_id}", status_code=303)
 
 
 @router.get("/media/{storage_path:path}")

@@ -12,9 +12,9 @@ from datetime import date
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
-from researchlib.ask import ask
+from researchlib.ask import ask, start
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
-from researchlib.retrieval import retrieve
+from researchlib.retrieval import retrieve, search_articles
 from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
 from researchlib.web.routes import _author_groups, _same_origin, active_sources, database
@@ -95,7 +95,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
     scope, info = resolve_scope(params, sources)
     settings = request.app.state.settings
     if level == "chunk":
-        found = retrieve(conn, query, scope, sources)
+        found = retrieve(conn, query, scope, sources, purpose="api", limit=limit)
         passages = [
             {
                 "article_id": p.article_id,
@@ -103,6 +103,8 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "title": p.title,
                 "heading": p.heading,
                 "text": p.body,
+                "score": round(p.score, 3),
+                "matched": p.matched,
                 "author": by_id[p.source_id].author,
                 "source": {"id": p.source_id, "name": by_id[p.source_id].name},
                 "published_at": format_iso(p.published_at, settings.display_timezone) or None,
@@ -118,17 +120,28 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "companies": [{"id": c["id"], "name": c["name_zh"]} for c in found.companies],
                 "authors": found.authors,
             },
+            "terms": found.terms,
             "passages": passages,
             "_trust": TRUST,
         }
     if query:
-        total = sum(int(row["n"]) for row in queries.search_counts(conn, query, scope))
-        rows = queries.search_articles(conn, query, scope, limit, offset)
-        snippets = queries.best_chunks(conn, query, [row["id"] for row in rows])
+        result = search_articles(conn, query, scope, sources, limit=limit, offset=offset)
+        total = result.total
+        rows = [
+            {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at, "source_id": hit.source_id}
+            for hit in result.hits
+        ]
+        snippets = {
+            hit.article_id: {"body": hit.passages[0].body, "ord": hit.passages[0].ord}
+            for hit in result.hits
+            if hit.passages
+        }
+        next_offset = offset + limit if offset + limit < result.available else None
     else:
         total = queries.count_scoped_articles(conn, scope)
         rows = queries.scoped_articles(conn, scope, limit, offset)
         snippets = {}
+        next_offset = offset + limit if offset + limit < total else None
     return {
         "query": query,
         "level": "article",
@@ -136,7 +149,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
         "total": total,
         "limit": limit,
         "offset": offset,
-        "next_offset": offset + limit if offset + limit < total else None,
+        "next_offset": next_offset,
         "items": _items(conn, rows, by_id, request, snippets=snippets),
         "_trust": TRUST,
     }
@@ -396,10 +409,15 @@ async def api_ask(request: Request):
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
     params = {key: str(body.get(key) or "") for key in ("author", "source", "company", "from", "to", "article")}
+    wait = body.get("wait", True) is not False
     with database(request) as conn:
         sources = active_sources(request, conn)
         scope, _info = resolve_scope(params, sources)
-        result = ask(conn, request.app.state.settings, question, scope, sources)
+        if wait:
+            result = ask(conn, request.app.state.settings, question, scope, sources)
+        else:
+            # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
+            result = start(conn, request.app.state.settings, question, scope, sources)
     return _json({**result, "_trust": TRUST})
 
 
@@ -414,10 +432,14 @@ def api_answer(request: Request, answer_id: int):
             "id": row["id"],
             "question": row["question"],
             "scope": row["scope"],
+            "status": row["status"],
+            "error": row["error"] or None,
             "answer": row["answer"],
             "citations": row["citations"],
+            "terms": row["terms"],
             "model": row["model"],
             "created_at": row["created_at"].isoformat(),
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
             "_trust": TRUST,
         }
     )

@@ -26,11 +26,12 @@ def _find(text: str, term: str) -> int:
     return text.find(term)
 
 
-def highlight_snippet(text: str, query: str, *, radius: int = 88) -> Markup:
+def highlight_snippet(text: str, query: str, *, radius: int = 88, terms: list[str] | None = None) -> Markup:
+    """取第一处命中附近的一段并高亮。terms 给了就用它（检索实际用到的词，含公司别名和同义词）。"""
     flat = re.sub(r"\s+", " ", text or "").strip()
     if not flat:
         return Markup("")
-    terms = extract_terms(query)
+    terms = [t for t in (terms if terms is not None else extract_terms(query)) if t]
     positions = [index for term in terms if (index := _find(flat, term)) >= 0]
     if not positions:
         fragment = flat[: radius * 2]
@@ -48,8 +49,13 @@ def highlight_snippet(text: str, query: str, *, radius: int = 88) -> Markup:
     return Markup(prefix + _mark(fragment, terms) + suffix)
 
 
-def highlight_title(title: str, query: str) -> Markup:
-    return Markup(_mark(title or "", extract_terms(query)))
+def highlight_title(title: str, query: str, *, terms: list[str] | None = None) -> Markup:
+    return Markup(_mark(title or "", [t for t in (terms if terms is not None else extract_terms(query)) if t]))
+
+
+def highlight_full(text: str, terms: list[str]) -> Markup:
+    """整段原文，命中处加 <mark>。问库页展开原文时用。"""
+    return Markup(_mark(text or "", [t for t in terms if t]))
 
 
 def _mark(text: str, terms: list[str]) -> str:
@@ -79,7 +85,7 @@ def mention_snippet(text: str, spans: list[tuple[int, int, int]], *, radius: int
     return Markup(f"{prefix}{escape(before)}<mark>{escape(hit)}</mark>{escape(after)}{suffix}")
 
 
-_CITE = re.compile(r"\[(\d{1,2})\]")
+_CITE = re.compile(r"\[(\d{1,3})\]")
 
 
 def answer_html(text: str) -> Markup:

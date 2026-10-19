@@ -3,7 +3,7 @@
 {% block body %}
 <header class="page-head">
   <h1>检索</h1>
-  <p class="lede">搜标题、作者和正文。标题里命中的排在前面。多个词默认同时命中；用 <code>or</code> 表示任一，<code>-词</code> 排除，引号表示连在一起。</p>
+  <p class="lede">输入关键词或直接问一句话。所有词都命中的文章排在前面、按相关度排序，每篇给出最相关的原文段落；其后是只命中一部分的。公司按简称、英文名和代码都能认。<code>or</code> 表示任一，<code>-词</code> 排除，引号里的必须原样出现。</p>
 </header>
 <form class="search-bar" action="/search" method="get" role="search">
   {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
@@ -54,10 +54,16 @@
   </ul>
 </div>
 {% if results %}
-<p class="filter-note"><a class="btn ask-btn" href="/ask?{{ ask_query }}">把这个问题交给 AI，基于命中的原文作答</a></p>
+<p class="filter-note"><a class="btn ask-btn" href="/ask?{{ ask_query }}">把这个问题交给 AI，基于命中的原文整合</a></p>
+{% if first_partial is none %}
 {{ card_list(results) }}
+{% else %}
+{% if first_partial > 0 %}{{ card_list(results[:first_partial]) }}{% endif %}
+<p class="partial-note">下面的文章只命中了一部分词，按相关度往下排。</p>
+{{ card_list(results[first_partial:]) }}
+{% endif %}
 {{ pager(page, pages, "/search?" ~ page_query ~ "&page=" ~ (page - 1), "/search?" ~ page_query ~ "&page=" ~ (page + 1)) }}
-<p class="count">命中 {{ total }} 篇{% if pages > 1 %}，第 {{ page }} / {{ pages }} 页{% endif %}</p>
+<p class="count">全部词都命中 {{ total }} 篇{% if partial_total %}，另有 {{ partial_total }} 篇部分相关{% endif %}{% if pages > 1 %}，第 {{ page }} / {{ pages }} 页{% endif %}</p>
 {% else %}
 <p class="empty">没有找到「{{ query }}」。</p>
 <p class="filter-note">换个词，或从 <a href="/authors">作者</a>、<a href="/companies">公司</a> 进去看。</p>

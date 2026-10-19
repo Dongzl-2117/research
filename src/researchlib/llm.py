@@ -83,8 +83,9 @@ def chat(
     *,
     max_tokens: int | None = None,
     temperature: float = 0.2,
+    reasoning_effort: str | None = None,
 ) -> tuple[str, str]:
-    """返回 (回答文本, 实际模型名)。"""
+    """返回 (回答文本, 实际模型名)。reasoning_effort 不传时用配置里的；同义词扩展、分批摘录这类小活传 low。"""
     kind = credential_kind(settings)
     payload = {
         "model": settings.llm_model,
@@ -93,8 +94,9 @@ def chat(
         "max_tokens": max(max_tokens or 0, settings.llm_max_tokens),
         "temperature": temperature,
     }
-    if settings.llm_reasoning_effort:
-        payload["reasoning_effort"] = settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    if effort:
+        payload["reasoning_effort"] = effort
     token = _token(settings, kind)
     body = None
     for attempt in range(2):

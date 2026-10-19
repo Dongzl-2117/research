@@ -508,7 +508,7 @@ def day_answer(conn, day: date, source_ids: list[str], company_id: int | None):
         """
         SELECT id, question, answer, citations, model, scope, created_at
         FROM llm_answers
-        WHERE scope->>'date_from' = %s AND scope->>'date_to' = %s
+        WHERE scope->>'date_from' = %s AND scope->>'date_to' = %s AND status = 'done'
         ORDER BY created_at DESC, id DESC
         LIMIT 30
         """,
@@ -560,14 +560,18 @@ def company_author_counts(conn, company_id: int, source_ids: list[str]):
 
 def recent_answers(conn, limit: int = 20):
     return conn.execute(
-        "SELECT id, question, scope, created_at FROM llm_answers ORDER BY created_at DESC, id DESC LIMIT %s",
+        "SELECT id, question, scope, status, created_at FROM llm_answers ORDER BY created_at DESC, id DESC LIMIT %s",
         (limit,),
     ).fetchall()
 
 
 def get_answer(conn, answer_id: int):
     return conn.execute(
-        "SELECT id, question, scope, answer, citations, model, created_at FROM llm_answers WHERE id = %s",
+        """
+        SELECT id, question, scope, answer, citations, model, status, error, terms, created_at, updated_at
+        FROM llm_answers
+        WHERE id = %s
+        """,
         (answer_id,),
     ).fetchone()
 
