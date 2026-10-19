@@ -2,7 +2,8 @@
 {% macro passage(item, terms) %}
 <li id="c-{{ item.n }}" class="{% if item.cited %}cited{% endif %}">
   <p class="item-meta"><span class="num">[{{ item.n }}]</span> <a href="{{ item.url }}">{{ item.title }}</a> · {{ item.author }} · {{ item.date }}{% if item.heading %} · § {{ item.heading }}{% endif %}</p>
-  <p class="item-excerpt">{{ item.text | highlight_full(terms) }}</p>
+  <p class="item-excerpt">{{ item.text | highlight_snippet(terms, 150) }}</p>
+  <details class="passage-full"><summary>展开这段</summary><p>{{ item.text | highlight_full(terms) }}</p></details>
 </li>
 {% endmacro %}
 {% block body %}
@@ -71,7 +72,7 @@
   {% endif %}
   {% elif result.citations %}
   <h3>相关原文 <span class="num quiet">{{ result.citations | length }}</span></h3>
-  <ol class="citations">
+  <ol class="citations plain">
     {% for item in result.citations %}{{ passage(item, result.terms) }}{% endfor %}
   </ol>
   {% endif %}

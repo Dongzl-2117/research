@@ -1,51 +1,92 @@
 {% extends "base.html" %}
 {% block body %}
-<header class="page-head">
-  <h1>公司</h1>
-  <p class="lede">按公司查看。点一家，看哪些文章提到它、原文怎么说。「深入」不含一带而过的提及。</p>
-</header>
-<p class="filter-note">{% if show_all %}正在显示全部种子公司。<a href="/companies">只看有提及的</a>{% elif hidden %}已隐藏 {{ hidden }} 家还没被提到的公司。<a href="/companies?all=1">全部显示</a>{% endif %}</p>
-<div class="search-track filter-track">
-  <label class="sr" for="company-filter">筛选公司</label>
-  <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-  <input id="company-filter" type="search" placeholder="筛选公司或代码" autocomplete="off">
-</div>
-{% for group in groups %}
-<section class="market" data-market>
-  <h2>{{ group.label }}</h2>
-  <div class="card table-card">
-    <table>
-      <thead>
-        <tr><th>公司</th><th>代码</th><th>提及</th><th>深入</th><th>最近提及</th></tr>
-      </thead>
-      <tbody>
-        {% for row in group.rows %}
-        <tr data-name="{{ row.filter }}">
-          <td><a href="/companies/{{ row.id }}">{{ row.name }}</a></td>
-          <td class="ticker">{{ row.ticker }}</td>
-          <td class="num">{{ row.mentions }}</td>
-          <td class="num">{{ row.deep }}</td>
-          <td class="num">{% if row.last %}<time datetime="{{ row.last_iso }}">{{ row.last }}</time>{% endif %}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+<header class="page-head head-row">
+  <div>
+    <h1>公司</h1>
+    <p class="lede">按公司查看：谁在什么时候深入谈过它，原文怎么说。持仓和观察的放在最前，其余按深入篇数排。「深入」指标题、全文或单节里谈到，不含一带而过。</p>
   </div>
+  <div class="search-track filter-track company-filter">
+    <label class="sr" for="company-filter">筛选公司</label>
+    <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+    <input id="company-filter" type="search" placeholder="筛选公司、简称或代码" autocomplete="off">
+  </div>
+</header>
+{% for error in portfolio_errors %}<p class="banner">{{ error }}</p>{% endfor %}
+{% if missing %}
+<p class="banner">持仓名单里的 {{ missing | join("、") }} 不在公司表里，先把它加进 company_seed.py。</p>
+{% endif %}
+{% if pinned %}
+<section class="holdings" aria-label="持仓和观察">
+  <ul class="holding-grid">
+    {% for item in pinned %}
+    <li class="holding-card role-{{ item.role }}" data-name="{{ item.name }} {{ item.ticker }}">
+      <div class="holding-head">
+        <h2><a href="/companies/{{ item.id }}">{{ item.name }}</a></h2>
+        <span class="role-badge role-{{ item.role }}">{{ item.role_label }}</span>
+        <span class="holding-ticker ticker">{{ item.ticker }}</span>
+      </div>
+      <p class="holding-stats"><strong class="num">{{ item.deep }}</strong> 篇深入<span class="quiet num"> / 提及 {{ item.total }}</span></p>
+      <figure class="holding-spark">
+        {{ item.spark }}
+        <figcaption><span>两年前</span><span>每月深入篇数</span><span>本月</span></figcaption>
+      </figure>
+      {% if item.authors %}
+      <p class="holding-authors">{% for name, count in item.authors %}<a href="/companies/{{ item.id }}?author={{ name | urlencode }}">{{ name }} <span class="num">{{ count }}</span></a>{% endfor %}</p>
+      {% endif %}
+      {% if item.latest %}
+      <p class="holding-latest"><span class="quiet">最近</span> <a href="/articles/{{ item.latest.id }}">{{ item.latest.title }}</a> <span class="quiet">{{ item.latest.author }} · {{ item.latest.relative or item.latest.date }}</span></p>
+      {% else %}
+      <p class="holding-latest quiet">库里还没有深入谈它的文章。</p>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
 </section>
-{% endfor %}
+{% endif %}
+<section class="company-list" aria-label="其余公司">
+  <div class="list-tools">
+    <nav class="pills" aria-label="市场">
+      <a href="/companies{% if list_query %}?{{ list_query }}{% endif %}" {% if not market %}aria-current="page"{% endif %}><span>全部</span><span class="num">{{ others_total }}</span></a>
+      {% for tab in market_tabs %}
+      <a href="/companies?{{ list_query ~ '&' if list_query }}market={{ tab.key }}" {% if market == tab.key %}aria-current="page"{% endif %}><span>{{ tab.label }}</span><span class="num">{{ tab.count }}</span></a>
+      {% endfor %}
+    </nav>
+    <p class="sort-links">排序
+      {% for key, label in sorts.items() %}
+      {% if key == sort %}<strong>{{ label }}</strong>{% else %}<a href="/companies?{% if show_all %}all=1&amp;{% endif %}{% if market %}market={{ market }}&amp;{% endif %}sort={{ key }}">{{ label }}</a>{% endif %}
+      {% endfor %}
+    </p>
+  </div>
+  {% if others %}
+  <ol class="company-rows">
+    {% for row in others %}
+    <li data-name="{{ row.filter }}">
+      <a class="company-row" href="/companies/{{ row.id }}">
+        <span class="company-name">{{ row.name }}</span>
+        <span class="company-ticker ticker">{{ row.ticker }}</span>
+        <span class="company-bar" aria-hidden="true"><span style="width: {{ row.bar }}%"></span></span>
+        <span class="company-deep"><strong class="num">{{ row.deep }}</strong> 深入</span>
+        <span class="company-total num">{{ row.mentions }} 提及</span>
+        <span class="company-last">{% if row.last %}<time class="num" datetime="{{ row.last_iso }}">{{ row.last }}</time>{% endif %}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="empty">这一类还没有被提到的公司。</p>
+  {% endif %}
+  <p class="filter-note">{% if show_all %}正在显示全部种子公司。<a href="/companies">只看有提及的</a>{% elif hidden %}已隐藏 {{ hidden }} 家还没被提到的公司。<a href="/companies?all=1">全部显示</a>{% endif %}</p>
+</section>
 <script>
-  const filter = document.getElementById("company-filter");
-  filter.addEventListener("input", () => {
-    const q = filter.value.trim().toLowerCase();
-    document.querySelectorAll("[data-market]").forEach((section) => {
-      let visible = 0;
-      section.querySelectorAll("[data-name]").forEach((row) => {
-        const show = !q || row.dataset.name.toLowerCase().includes(q);
-        row.hidden = !show;
-        if (show) visible += 1;
+  (function () {
+    var filter = document.getElementById("company-filter");
+    if (!filter) return;
+    filter.addEventListener("input", function () {
+      var q = filter.value.trim().toLowerCase();
+      document.querySelectorAll("[data-name]").forEach(function (row) {
+        row.hidden = Boolean(q) && row.dataset.name.toLowerCase().indexOf(q) === -1;
       });
-      section.hidden = visible === 0;
     });
-  });
+  })();
 </script>
 {% endblock %}

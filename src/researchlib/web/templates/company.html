@@ -1,61 +1,100 @@
 {% extends "base.html" %}
-{% from "_feed.html" import day_feed, pager %}
+{% from "_feed.html" import card_list, pager %}
 {% block body %}
 <div class="reader-top">
   <a class="back" href="/companies">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5 8.5 12l6 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    返回
+    公司
   </a>
 </div>
-<header class="page-head">
-  <p class="byline"><a href="/companies">公司</a><span aria-hidden="true">·</span><span>{{ market }}</span></p>
-  <h1>{{ company.name_zh }}</h1>
+<header class="company-hero">
+  <div class="company-title">
+    <h1>{{ company.name_zh }}</h1>
+    {% if role %}<span class="role-badge role-{{ role }}">{{ role_label }}</span>{% endif %}
+  </div>
   <p class="identity">
     {% if company.ticker %}<span class="ticker">{{ company.ticker }}</span>{% else %}<span>未上市</span>{% endif %}
+    <span>{{ market }}</span>
     {% if company.name_en %}<span>{{ company.name_en }}</span>{% endif %}
   </p>
-  {% if company.aliases %}
-  <p class="aliases">简称：{{ company.aliases | join("、") }}</p>
-  {% endif %}
+  {% if company.aliases %}<p class="aliases">也认：{{ company.aliases | join("、") }}</p>{% endif %}
   <p class="head-actions">
     <a class="btn ask-btn" href="/ask?preset=company&amp;company={{ company.id }}{% if active_author %}&amp;author={{ active_author | urlencode }}{% endif %}">问 AI：库里怎么看{{ company.name_zh }}</a>
     <a class="quiet" href="/search?company={{ company.id }}&amp;q={{ company.name_zh | urlencode }}">在提到它的文章里检索</a>
   </p>
 </header>
-{% if author_counts %}
-<nav class="pills" aria-label="作者">
-  <a href="/companies/{{ company.id }}{% if active_depth %}?depth={{ active_depth }}{% endif %}" {% if not active_author %}aria-current="page"{% endif %}><span>全部作者</span><span class="num">{{ author_total }}</span></a>
-  {% for item in author_counts %}
-  <a href="/companies/{{ company.id }}?author={{ item.name | urlencode }}{% if active_depth %}&amp;depth={{ active_depth }}{% endif %}" {% if active_author == item.name %}aria-current="page"{% endif %}><span>{{ item.name }}</span><span class="num">{{ item.count }}</span></a>
-  {% endfor %}
-</nav>
-{% endif %}
-<ul class="chips">
-  {% for chip in chips %}
-  <li>
-    <a class="depth depth-{{ chip.key }}" href="/companies/{{ company.id }}?depth={{ chip.key }}{% if active_author %}&amp;author={{ active_author | urlencode }}{% endif %}" {% if active_depth == chip.key %}aria-current="page"{% endif %}>
-      {{ chip.label }} <strong>{{ chip.count }}</strong>
-    </a>
-  </li>
-  {% endfor %}
-</ul>
-{% if active_depth %}
-<p class="filter-note"><a href="/companies/{{ company.id }}{% if active_author %}?author={{ active_author | urlencode }}{% endif %}">看全部深度</a></p>
-{% endif %}
+<dl class="stat-strip">
+  <div><dt>深入谈到</dt><dd><strong class="num">{{ deep_total }}</strong> 篇</dd></div>
+  <div><dt>全部提及</dt><dd><strong class="num">{{ all_total }}</strong> 篇</dd></div>
+  <div><dt>作者</dt><dd><strong class="num">{{ author_total }}</strong> 位</dd></div>
+  <div><dt>最近深入</dt><dd>{% if last_deep %}<strong class="num">{{ last_deep }}</strong>{% if last_deep_relative %} <span class="quiet">{{ last_deep_relative }}</span>{% endif %}{% else %}<span class="quiet">还没有</span>{% endif %}</dd></div>
+</dl>
 {% if chart %}
 <figure class="chart-wrap">
-  <figcaption>按月有提及的文章数</figcaption>
-  {{ chart }}
+  <figcaption>
+    <span>按月提及的文章{% if active_author %}（{{ active_author }}）{% endif %}</span>
+    <span class="legend"><i class="key-deep"></i>深入<i class="key-passing"></i>一带而过</span>
+  </figcaption>
+  <div class="chart-box">
+    {{ chart }}
+    <div class="chart-years" aria-hidden="true">{% for tick in chart_ticks %}<span style="left: {{ tick.left }}%">{{ tick.label }}</span>{% endfor %}</div>
+  </div>
 </figure>
 {% else %}
 <p class="empty">还没有带日期的提及。</p>
 {% endif %}
-{% if days %}
-{{ day_feed(days, day_scope) }}
-{% else %}
-<p class="empty">没有文章提到这家公司。</p>
+{% if author_rows %}
+<section class="who" aria-label="谁在谈">
+  <h2>谁在谈</h2>
+  <ul class="who-rows">
+    <li>
+      <a class="who-row{% if not active_author %} is-current{% endif %}" href="/companies/{{ company.id }}{% if active_depth != 'deep' %}?depth={{ active_depth }}{% endif %}" {% if not active_author %}aria-current="page"{% endif %}>
+        <span class="who-name">全部作者</span>
+        <span class="who-bar" aria-hidden="true"></span>
+        <span class="who-count"><strong class="num">{{ deep_total }}</strong> 深入 <span class="quiet num">/ {{ all_total }}</span></span>
+        <span class="who-last"></span>
+      </a>
+    </li>
+    {% for item in author_rows %}
+    <li>
+      <a class="who-row{% if active_author == item.name %} is-current{% endif %}" href="/companies/{{ company.id }}?author={{ item.name | urlencode }}{% if active_depth != 'deep' %}&amp;depth={{ active_depth }}{% endif %}" {% if active_author == item.name %}aria-current="page"{% endif %}>
+        <span class="who-name">{{ item.name }}</span>
+        <span class="who-bar" aria-hidden="true"><span style="width: {{ item.bar }}%"></span></span>
+        <span class="who-count"><strong class="num">{{ item.deep }}</strong> 深入 <span class="quiet num">/ {{ item.total }}</span></span>
+        <span class="who-last quiet num">{{ item.last_label }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
 {% endif %}
-{% set prefix = "/companies/" ~ company.id ~ "?" ~ (filter_query ~ "&" if filter_query else "") %}
-{{ pager(page, pages, prefix ~ "page=" ~ (page - 1), prefix ~ "page=" ~ (page + 1)) }}
-<p class="count num">{{ total }} 篇</p>
+<section class="company-articles" aria-label="文章">
+  <div class="list-tools">
+    <nav class="pills" aria-label="提及深度">
+      {% set author_q = "author=" ~ (active_author | urlencode) if active_author else "" %}
+      <a href="/companies/{{ company.id }}{% if author_q %}?{{ author_q }}{% endif %}" {% if active_depth == "deep" %}aria-current="page"{% endif %}><span>深入</span><span class="num">{{ deep_count }}</span></a>
+      <a href="/companies/{{ company.id }}?{{ author_q ~ '&' if author_q }}depth=all" {% if active_depth == "all" %}aria-current="page"{% endif %}><span>全部</span><span class="num">{{ all_count }}</span></a>
+    </nav>
+    <ul class="chips" aria-label="按深度细分">
+      {% for chip in chips %}
+      <li>
+        <a class="depth depth-{{ chip.key }}" href="/companies/{{ company.id }}?{{ author_q ~ '&' if author_q }}depth={{ chip.key }}" {% if active_depth == chip.key %}aria-current="page"{% endif %}>{{ chip.label }} <strong class="num">{{ chip.count }}</strong></a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% if by_year %}
+  {% for group in by_year %}
+  <h3 class="year-head">{{ group.year }}</h3>
+  {{ card_list(group["items"], true) }}
+  {% endfor %}
+  {% elif active_depth == "deep" and all_count %}
+  <p class="empty">没有深入谈它的文章，只有一带而过的提及。<a href="/companies/{{ company.id }}?depth=all">看全部提及</a></p>
+  {% else %}
+  <p class="empty">没有文章提到这家公司。</p>
+  {% endif %}
+  {% set prefix = "/companies/" ~ company.id ~ "?" ~ (filter_query ~ "&" if filter_query else "") %}
+  {{ pager(page, pages, prefix ~ "page=" ~ (page - 1), prefix ~ "page=" ~ (page + 1)) }}
+  <p class="count num">{{ total }} 篇</p>
+</section>
 {% endblock %}

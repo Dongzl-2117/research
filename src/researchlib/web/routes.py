@@ -18,6 +18,7 @@ from researchlib.db import connect, ensure_search_session
 from researchlib.digest import schedule_digests
 from researchlib.llm import llm_configured
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card
+from researchlib.portfolio import ROLE_LABELS, Portfolio, load_portfolio
 from researchlib.render import render_body
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
@@ -28,6 +29,9 @@ from researchlib.web import queries
 from researchlib.web.daybrief import compose_day_brief
 from researchlib.web.present import (
     FEED_ZONE,
+    chart_ticks,
+    company_chart,
+    current_month,
     day_key,
     day_label,
     depth_chips,
@@ -36,12 +40,14 @@ from researchlib.web.present import (
     format_iso,
     group_days,
     market_label,
-    month_chart,
+    month_series,
+    months_back,
     order_cards,
     page_window,
     plan_feed_page,
     relative_label,
     resolve_feed_instant,
+    sparkline,
     weekday_label,
 )
 from researchlib.web.scoping import parse_day, resolve_scope
@@ -89,6 +95,31 @@ def active_sources(request: Request, conn):
         request.app.state.sources = sources
         request.app.state.sources_mtime = mtime
     return enabled_sources(request.app.state.sources)
+
+
+def active_portfolio(request: Request) -> Portfolio:
+    """持仓名单按文件修改时间缓存，改了 config/portfolio.yaml 刷新页面就生效。"""
+    path = request.app.state.settings.portfolio_path
+    if path is None or not path.exists():
+        return Portfolio()
+    mtime = path.stat().st_mtime
+    if getattr(request.app.state, "portfolio_mtime", None) != mtime:
+        request.app.state.portfolio = load_portfolio(path)
+        request.app.state.portfolio_mtime = mtime
+    return request.app.state.portfolio
+
+
+def _latest_item(row, by_id, settings) -> dict | None:
+    if not row:
+        return None
+    source = by_id.get(row["source_id"])
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "date": format_date(row["published_at"], settings.display_timezone),
+        "relative": relative_label(row["published_at"], settings.display_timezone),
+        "author": source.author if source else "",
+    }
 
 
 def render_page(request: Request, name: str, context: dict, status_code: int = 200):
@@ -271,6 +302,26 @@ def home(request: Request):
         counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request))
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
+        holdings = []
+        portfolio = active_portfolio(request)
+        if not chosen and plan["page"] == 1 and portfolio.names:
+            named = queries.companies_by_name(conn, list(portfolio.names))
+            present = [name for name in portfolio.names if name in named]
+            recent = queries.holdings_recent(conn, [named[name]["id"] for name in present], ids)
+            for name in present:
+                company = named[name]
+                info = recent.get(company["id"], {})
+                role = portfolio.role(name)
+                holdings.append(
+                    {
+                        "id": company["id"],
+                        "name": name,
+                        "role": role,
+                        "role_label": ROLE_LABELS.get(role, ""),
+                        "recent": info.get("recent", 0),
+                        "latest": _latest_item(info.get("latest"), by_id, settings),
+                    }
+                )
     if chosen:
         heading = by_id[chosen].name
         lede = "只看这个来源，仍按天从新到旧。"
@@ -297,6 +348,7 @@ def home(request: Request):
             "dated_days": counts["days"],
             "undated": counts["undated"],
             "sample_banner": banner,
+            "holdings": holdings,
         },
     )
 
@@ -631,43 +683,99 @@ def search_page(request: Request):
     )
 
 
+COMPANY_SORTS = {"deep": "深入篇数", "recent": "最近提及", "mentions": "全部提及"}
+
+
 @router.get("/companies")
 def companies_page(request: Request):
     settings = request.app.state.settings
     show_all = request.query_params.get("all") == "1"
+    sort = request.query_params.get("sort") or "deep"
+    if sort not in COMPANY_SORTS:
+        sort = "deep"
+    market = request.query_params.get("market") or ""
     with database(request) as conn:
         sources = active_sources(request, conn)
         ids = [source.id for source in sources]
+        by_id = _source_map(sources)
+        portfolio = active_portfolio(request)
         rows = queries.list_companies(conn, ids)
+        named = {row["name_zh"]: row for row in rows}
+        pinned_names = [name for name in portfolio.names if name in named]
+        missing = [name for name in portfolio.names if name not in named]
+        cards = queries.company_cards(conn, [named[name]["id"] for name in pinned_names], ids)
         banner = queries.sample_state(conn, ids)
-    grouped: dict[str, list] = {}
+    now_month = current_month(settings.display_timezone)
+    first_month = months_back(now_month, 23)
+    pinned = []
+    for name in pinned_names:
+        row = named[name]
+        card = cards.get(row["id"], {})
+        by_author: dict[str, int] = {}
+        for source_id, count in (card.get("by_source") or {}).items():
+            source = by_id.get(source_id)
+            if source:
+                by_author[source.author] = by_author.get(source.author, 0) + count
+        role = portfolio.role(name)
+        pinned.append(
+            {
+                "id": row["id"],
+                "name": name,
+                "ticker": row["ticker"] or "未上市",
+                "market": market_label(row["market"]),
+                "role": role,
+                "role_label": ROLE_LABELS.get(role, ""),
+                "deep": card.get("deep", 0),
+                "total": card.get("total", 0),
+                "latest": _latest_item(card.get("latest"), by_id, settings),
+                "spark": Markup(sparkline(month_series(card.get("months", []), first=first_month, last=now_month))),
+                "authors": sorted(by_author.items(), key=lambda item: -item[1])[:3],
+            }
+        )
+    pinned_ids = {item["id"] for item in pinned}
+    others = []
     hidden = 0
+    markets: dict[str, int] = {}
     for row in rows:
+        if row["id"] in pinned_ids:
+            continue
         if not show_all and not row["mentions"]:
             hidden += 1
+            continue
+        markets[row["market"]] = markets.get(row["market"], 0) + 1
+        if market and row["market"] != market:
             continue
         aliases = list(row["aliases"] or [])
         if row["name_en"]:
             aliases.append(row["name_en"])
         if row["ticker"]:
             aliases.append(row["ticker"])
-        grouped.setdefault(row["market"], []).append(
+        others.append(
             {
                 "id": row["id"],
                 "name": row["name_zh"],
                 "ticker": row["ticker"] or "未上市",
+                "market": market_label(row["market"]),
                 "mentions": row["mentions"],
                 "deep": row["deep"],
                 "last": format_date(row["last_at"], settings.display_timezone) if row["last_at"] else "",
                 "last_iso": format_iso(row["last_at"], settings.display_timezone) if row["last_at"] else "",
+                "last_at": row["last_at"],
                 "filter": " ".join([row["name_zh"], row["name_en"] or "", row["ticker"] or "", *aliases]),
             }
         )
-    order = ["A", "HK", "US", "PRIVATE"]
-    groups = [
-        {"market": market, "label": market_label(market), "rows": grouped[market]}
-        for market in order
-        if market in grouped
+    if sort == "recent":
+        others.sort(key=lambda item: (item["last_at"] is not None, item["last_at"]), reverse=True)
+    elif sort == "mentions":
+        others.sort(key=lambda item: (-item["mentions"], -item["deep"], item["name"]))
+    else:
+        others.sort(key=lambda item: (-item["deep"], -item["mentions"], item["name"]))
+    peak = max([item["deep"] for item in others] + [1])
+    for item in others:
+        item["bar"] = round(item["deep"] / peak * 100)
+    market_order = ["HK", "US", "A", "PRIVATE"]
+    market_tabs = [
+        {"key": key, "label": market_label(key), "count": markets[key]} for key in market_order if key in markets
     ]
     return render_page(
         request,
@@ -675,9 +783,18 @@ def companies_page(request: Request):
         {
             "nav": "companies",
             "title": "公司",
-            "groups": groups,
+            "pinned": pinned,
+            "missing": missing,
+            "portfolio_errors": list(portfolio.errors),
+            "others": others,
             "show_all": show_all,
             "hidden": hidden,
+            "sort": sort,
+            "sorts": COMPANY_SORTS,
+            "market": market,
+            "market_tabs": market_tabs,
+            "others_total": sum(markets.values()),
+            "list_query": _query_string(all="1" if show_all else "", sort=sort if sort != "deep" else ""),
             "sources": sources,
             "sample_banner": banner,
         },
@@ -686,9 +803,16 @@ def companies_page(request: Request):
 
 @router.get("/companies/{company_id}")
 def company_page(request: Request, company_id: int):
+    """一家公司：谁在什么时候深入谈它、原文怎么说。默认只看深入提及，一带而过的点一下再看。"""
     settings = request.app.state.settings
-    depth = request.query_params.get("depth") or ""
-    chosen = depth if depth in DEPTHS else None
+    depth_arg = request.query_params.get("depth") or ""
+    if depth_arg in DEPTHS:
+        depth_filter = depth_arg
+    elif depth_arg == "all":
+        depth_filter = None
+    else:
+        depth_arg = "deep"
+        depth_filter = "deep"
     author = (request.query_params.get("author") or "").strip()
     with database(request) as conn:
         sources = active_sources(request, conn)
@@ -701,12 +825,12 @@ def company_page(request: Request, company_id: int):
         if author and author not in grouped:
             raise HTTPException(status_code=404)
         ids = [item.id for item in grouped[author]] if author else all_ids
-        per_source = {row["source_id"]: row["n"] for row in queries.company_author_counts(conn, company_id, all_ids)}
+        source_stats = list(queries.company_source_stats(conn, company_id, all_ids))
         depths = {row["depth"]: int(row["n"]) for row in queries.company_depth_counts(conn, company_id, ids)}
-        months = list(queries.company_months(conn, company_id, ids))
-        total = queries.count_company_articles(conn, company_id, ids, chosen)
+        months = list(queries.company_month_depths(conn, company_id, ids))
+        total = queries.count_company_articles(conn, company_id, ids, depth_filter)
         page, pages, offset = page_window(total, _page_arg(request), settings.page_size)
-        articles = queries.company_articles(conn, company_id, ids, chosen, settings.page_size, offset)
+        articles = queries.company_articles(conn, company_id, ids, depth_filter, settings.page_size, offset)
         banner = queries.sample_state(conn, all_ids)
         matcher = CompanyMatcher([company])
         rows = _decorate(
@@ -727,16 +851,36 @@ def company_page(request: Request, company_id: int):
             ],
             settings,
         )
+    portfolio = active_portfolio(request)
     for card in rows:
         card["tags"] = [tag for tag in card["tags"] if tag["id"] != company_id]
-    rows = order_cards(rows)
-    author_counts = []
-    for name, items in grouped.items():
-        number = sum(per_source.get(item.id, 0) for item in items)
-        if number:
-            author_counts.append({"name": name, "count": number})
-    author_counts.sort(key=lambda item: -item["count"])
-    filter_query = _query_string(author=author, depth=chosen or "")
+    by_year: list[dict] = []
+    for card in rows:
+        year = card["day"][:4] if card.get("day") and card["day"][:1].isdigit() else "日期不详"
+        if not by_year or by_year[-1]["year"] != year:
+            by_year.append({"year": year, "items": []})
+        by_year[-1]["items"].append(card)
+    authors: dict[str, dict] = {}
+    for row in source_stats:
+        source = by_id.get(row["source_id"])
+        if source is None:
+            continue
+        item = authors.setdefault(source.author, {"name": source.author, "deep": 0, "total": 0, "last": None})
+        item["deep"] += row["deep"]
+        item["total"] += row["total"]
+        if row["last_deep"] and (item["last"] is None or row["last_deep"] > item["last"]):
+            item["last"] = row["last_deep"]
+    author_rows = sorted(authors.values(), key=lambda item: (-item["deep"], -item["total"], item["name"]))
+    peak = max([item["deep"] for item in author_rows] + [1])
+    for item in author_rows:
+        item["bar"] = round(item["deep"] / peak * 100)
+        item["last_label"] = format_date(item["last"], settings.display_timezone) if item["last"] else ""
+    deep_total = sum(item["deep"] for item in author_rows)
+    all_total = sum(item["total"] for item in author_rows)
+    last_deep = max((item["last"] for item in author_rows if item["last"]), default=None)
+    series = month_series(months, last=current_month(settings.display_timezone)) if months else []
+    role = portfolio.role(company["name_zh"])
+    filter_query = _query_string(author=author, depth=depth_arg if depth_arg != "deep" else "")
     return render_page(
         request,
         "company.html",
@@ -745,15 +889,24 @@ def company_page(request: Request, company_id: int):
             "title": company["name_zh"],
             "company": company,
             "market": market_label(company["market"]),
+            "role": role,
+            "role_label": ROLE_LABELS.get(role, ""),
             "chips": depth_chips(depths),
-            "chart": Markup(month_chart(months)),
-            "active_depth": chosen or "",
+            "deep_count": sum(count for key, count in depths.items() if key != "passing"),
+            "all_count": sum(depths.values()),
+            "chart": Markup(company_chart(series)),
+            "chart_ticks": chart_ticks(series),
+            "first_month": series[0]["ym"] if series else "",
+            "active_depth": depth_arg,
             "active_author": author,
-            "author_counts": author_counts,
-            "author_total": sum(per_source.values()),
+            "author_rows": author_rows,
+            "deep_total": deep_total,
+            "all_total": all_total,
+            "author_total": len([item for item in author_rows if item["total"]]),
+            "last_deep": format_date(last_deep, settings.display_timezone) if last_deep else "",
+            "last_deep_relative": relative_label(last_deep, settings.display_timezone) if last_deep else "",
             "filter_query": filter_query,
-            "days": group_days(rows),
-            "day_scope": _query_string(company=company_id, author=author),
+            "by_year": by_year,
             "page": page,
             "pages": pages,
             "total": total,

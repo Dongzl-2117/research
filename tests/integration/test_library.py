@@ -96,7 +96,8 @@ def test_sample_library_pages(conn, settings):
         assert "标题" in company.text
         assert "单节" in company.text
         assert "一带而过" in company.text
-        assert "按月有提及的文章数" in company.text
+        assert "按月提及的文章" in company.text
+        assert 'class="key-deep"' in company.text and "一带而过" in company.text
 
         article_id = conn.execute(
             "SELECT id FROM articles WHERE external_id = 'sample:battery-note'"

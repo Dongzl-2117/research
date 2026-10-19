@@ -210,7 +210,9 @@ def test_day_page_shows_real_clock_and_summary(conn, settings):
         assert "00:00" in home.text
         assert "AI 整合" not in home.text
         assert 'href="/days/2024-10-19"' in home.text
-        assert f'href="/companies/{tencent}"' not in home.text
+        # 卡片上不挂一带而过的公司标签（首页顶部的持仓近况会链到腾讯，那不算卡片标签）。
+        assert f'class="tag depth-passing" href="/companies/{tencent}"' not in home.text
+        assert f'href="/companies/{tencent}">腾讯</a></li>' not in home.text
         day = client.get("/days/2024-10-19")
         assert day.status_code == 200
         assert "日汇总" in day.text

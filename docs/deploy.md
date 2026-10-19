@@ -13,13 +13,13 @@ docker compose up -d --build
 
 应用监听容器内的 `8088`，compose 只把宿主机的 **127.0.0.1:8088** 转进去。不要改成 `0.0.0.0`。数据库端口同样只绑定 `127.0.0.1:5432`。
 
-应用启动时会自己做迁移（先 `002_translations.sql`，再 `003_retrieval.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章补切。
+应用启动时会自己做迁移（按文件名顺序，`002_translations.sql` 到 `005_app_state.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章补切。公司别名和上次重算提及时不一样（比如新加了一家公司），启动后在后台重算全部文章的公司提及，不挡启动。上次没写完的问库整合标成中断，回答页可以重新整合。
 
 不会在启动或部署时跑 `research-digest`。打开页面时只给当前卡片里缺的摘要排队，全库仍是手动命令，见 [llm.md](llm.md)。
 
 Grok OAuth 与 AIHOT 共用外部卷 `aihot_data`（挂到 `/aihot-data/secrets/xai-oauth.json`）。登录在 AIHOT 侧做，见 [translate.md](translate.md)。
 
-改完来源配置后刷新页面即可。导入命令每次都会重新读配置。
+改完来源配置（`config/sources.yaml`）或持仓名单（`config/portfolio.yaml`）后刷新页面即可。导入命令每次都会重新读配置。
 
 ## Cloudflare Tunnel
 

@@ -63,9 +63,11 @@ def _mark(text: str, terms: list[str]) -> str:
         return str(escape(text))
     escaped = str(escape(text))
     safe_terms = sorted({term for term in terms if term}, key=len, reverse=True)
-    pattern = "|".join(re.escape(term) for term in safe_terms)
-    if not pattern:
+    alternatives = "|".join(re.escape(term) for term in safe_terms)
+    if not alternatives:
         return escaped
+    # 连在一起的几个词（「广告」「加载」）合成一处高亮，不拆成两块。
+    pattern = f"(?:{alternatives})+"
     flags = re.IGNORECASE if any(term.isascii() for term in safe_terms) else 0
     return re.sub(pattern, lambda match: f"<mark>{match.group(0)}</mark>", escaped, flags=flags)
 

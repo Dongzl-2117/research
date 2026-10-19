@@ -165,3 +165,47 @@ def test_synthesize_extracts_in_batches_then_merges(monkeypatch):
     assert "要点 [" in merged and "第 1 批摘录：\n无" not in merged
     assert "[120] 《第120篇》" in merged
     assert answer == "汇总 [41]"
+
+
+def test_month_series_fills_gaps_and_marks_years():
+    from researchlib.web.present import company_chart, month_series, months_back, sparkline
+
+    series = month_series([{"ym": "2024-11", "deep": 2, "passing": 1}, {"ym": "2025-02", "deep": 0, "passing": 3}])
+    assert [item["ym"] for item in series] == ["2024-11", "2024-12", "2025-01", "2025-02"]
+    assert series[1] == {"ym": "2024-12", "deep": 0, "passing": 0}
+    assert months_back("2026-01", 1) == "2025-12"
+    chart = company_chart(series)
+    assert 'class="bar-passing"' in chart and "深入 2 篇，一带而过 1 篇" in chart
+    from researchlib.web.present import chart_ticks
+
+    ticks = chart_ticks(month_series([], first="2023-11", last="2025-06"))
+    assert [tick["label"] for tick in ticks] == ["2023", "2024", "2025"]
+    assert ticks[0]["left"] < ticks[1]["left"] < ticks[2]["left"] < 100
+    assert sparkline(month_series([], first="2025-01", last="2025-03")).count('class="bar-empty"') == 3
+
+
+def test_portfolio_loader_tolerates_bad_files(tmp_path):
+    from researchlib.portfolio import load_portfolio
+
+    path = tmp_path / "portfolio.yaml"
+    assert load_portfolio(path).names == ()
+    path.write_text("holdings:\n  - 腾讯\n  - 腾讯\nwatch:\n  - 苹果\n  - 腾讯\n", encoding="utf-8")
+    loaded = load_portfolio(path)
+    assert loaded.holdings == ("腾讯",) and loaded.watch == ("苹果",)
+    assert loaded.role("腾讯") == "holding" and loaded.role("苹果") == "watch" and loaded.role("美团") == ""
+    path.write_text("holdings: 腾讯\n", encoding="utf-8")
+    assert load_portfolio(path).errors
+    path.write_text("[", encoding="utf-8")
+    assert load_portfolio(path).errors
+
+
+def test_seed_has_holdings_and_business_aliases():
+    from researchlib.company_seed import SEEDS
+
+    names = {seed.name_zh: seed for seed in SEEDS}
+    assert names["泡泡玛特"].ticker == "09992.HK"
+    assert "Labubu" in names["泡泡玛特"].aliases
+    assert "Temu" in names["拼多多"].aliases
+    assert "视频号" in names["腾讯"].aliases
+    # 「微信」会撞上公众号模板里的「微信扫一扫」，故意不收。
+    assert "微信" not in names["腾讯"].aliases

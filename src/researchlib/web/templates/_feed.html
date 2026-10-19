@@ -1,6 +1,6 @@
-{% macro card(item, show_date=false) %}
+{% macro card(item, show_date=false, short_date=false) %}
 <li class="slot">
-  <time class="slot-time" datetime="{{ item.iso }}">{% if show_date %}{{ item.date[2:] if item.iso else "—" }}{% else %}{{ item.time or "—" }}{% endif %}</time>
+  <time class="slot-time" datetime="{{ item.iso }}">{% if show_date %}{% if item.iso %}{{ item.date[5:] if short_date else item.date[2:] }}{% else %}—{% endif %}{% else %}{{ item.time or "—" }}{% endif %}</time>
   <span class="slot-rail" aria-hidden="true"><span class="slot-line"></span><span class="slot-dot"></span></span>
   <article class="item-card">
     <header class="item-meta">
@@ -53,9 +53,9 @@
 </div>
 {% endmacro %}
 
-{% macro card_list(items) %}
-<ol class="slots flat">
-  {% for item in items %}{{ card(item, true) }}{% endfor %}
+{% macro card_list(items, short_date=false) %}
+<ol class="slots flat{% if short_date %} short{% endif %}">
+  {% for item in items %}{{ card(item, true, short_date) }}{% endfor %}
 </ol>
 {% endmacro %}
 

@@ -366,14 +366,81 @@ def load_company_rows(conn) -> list[dict]:
     )
 
 
+FINGERPRINT_KEY = "mentions_fingerprint"
+
+
+def companies_fingerprint(rows: list[dict]) -> str:
+    """公司表里影响匹配的字段（名字、代码、简称）的指纹。变了就要重算提及。"""
+    import hashlib
+    import json
+
+    payload = [
+        [int(row["id"]), row["name_zh"], row["name_en"] or "", row["ticker"] or "", sorted(row["aliases"] or [])]
+        for row in sorted(rows, key=lambda item: int(item["id"]))
+    ]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def rebuild_all(conn) -> int:
-    matcher = CompanyMatcher(load_company_rows(conn))
-    articles = conn.execute("SELECT id, title, body_md FROM articles ORDER BY id").fetchall()
-    for article in articles:
+    rows_for_matcher = load_company_rows(conn)
+    matcher = CompanyMatcher(rows_for_matcher)
+    articles = conn.execute("SELECT id FROM articles ORDER BY id").fetchall()
+    for item in articles:
+        # 一篇一篇取正文，几万篇也不必一次读进内存。
+        article = conn.execute("SELECT id, title, body_md FROM articles WHERE id = %s", (item["id"],)).fetchone()
+        if article is None:
+            continue
         rows = mentions_for_document(matcher, article["title"], article["body_md"])
         replace_mentions(conn, article["id"], rows)
+        conn.commit()
+    conn.execute(
+        """
+        INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        """,
+        (FINGERPRINT_KEY, companies_fingerprint(rows_for_matcher)),
+    )
     conn.commit()
     return len(articles)
+
+
+def mentions_stale(conn) -> bool:
+    """公司表和上次重算时不一样（或者从没记过），就算过期。没有文章时不算。"""
+    row = conn.execute("SELECT value FROM app_state WHERE key = %s", (FINGERPRINT_KEY,)).fetchone()
+    current = companies_fingerprint(load_company_rows(conn))
+    if row is not None and row["value"] == current:
+        return False
+    has_articles = conn.execute("SELECT EXISTS (SELECT 1 FROM articles) AS e").fetchone()["e"]
+    if not has_articles:
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+            """,
+            (FINGERPRINT_KEY, current),
+        )
+        conn.commit()
+        return False
+    return True
+
+
+def rebuild_if_stale(settings) -> int:
+    """应用启动后在后台跑：公司别名变了才重算全部提及。返回重算的篇数，没变返回 0。"""
+    import logging
+
+    from researchlib.db import connect
+
+    logger = logging.getLogger("researchlib.mentions")
+    conn = connect(settings)
+    try:
+        if not mentions_stale(conn):
+            return 0
+        logger.warning("公司别名变了，后台重算全部文章的公司提及")
+        count = rebuild_all(conn)
+        logger.warning("公司提及重算完成：%s 篇", count)
+        return count
+    finally:
+        conn.close()
 
 
 def main(argv: list[str] | None = None) -> int:

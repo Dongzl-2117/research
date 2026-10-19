@@ -68,6 +68,8 @@ class Settings:
     llm_reasoning_effort: str = "high"
     llm_max_tokens: int = 64000
     llm_timeout: float = 900.0
+    # 持仓和观察名单。没有这个文件就当没有持仓。
+    portfolio_path: Path | None = None
 
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> Settings:
@@ -102,6 +104,11 @@ class Settings:
             llm_reasoning_effort=environ.get("RESEARCH_LLM_REASONING", "high").strip(),
             llm_max_tokens=int(environ.get("XAI_MAX_TOKENS", "64000")),
             llm_timeout=float(environ.get("RESEARCH_LLM_TIMEOUT", "900")),
+            portfolio_path=(
+                Path(environ["PORTFOLIO_FILE"])
+                if environ.get("PORTFOLIO_FILE")
+                else _existing_or_repo("config/portfolio.yaml")
+            ),
         )
 
     @property

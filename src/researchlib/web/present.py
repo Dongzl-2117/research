@@ -1,4 +1,4 @@
-"""日期、分页和公司页的月度柱状图。"""
+"""日期、分页，以及公司页和持仓卡片的月度图。"""
 
 from __future__ import annotations
 
@@ -219,38 +219,6 @@ def page_window(total: int, page: int, size: int) -> tuple[int, int, int]:
     return current, pages, (current - 1) * size
 
 
-def month_chart(rows: list[dict]) -> str:
-    if not rows:
-        return ""
-    shown = rows[-24:]
-    width = 680
-    height = 168
-    pad_left = 8
-    pad_bottom = 32
-    max_count = max(int(row["n"]) for row in shown) or 1
-    slot = (width - pad_left - 8) / len(shown)
-    parts = [
-        f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="按月提及文章数">',
-    ]
-    for index, row in enumerate(shown):
-        count = int(row["n"])
-        bar_height = max(2, round((count / max_count) * (height - pad_bottom - 18)))
-        bar_width = min(36, max(8, slot * 0.45))
-        x = pad_left + index * slot + (slot - bar_width) / 2
-        y = height - pad_bottom - bar_height
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_width:.1f}" height="{bar_height}" rx="2">'
-            f"<title>{escape(row['ym'])}：{count}</title></rect>"
-        )
-        if len(shown) <= 16 or index % 2 == 0:
-            label = escape(str(row["ym"])[2:])
-            parts.append(
-                f'<text x="{x + bar_width / 2:.1f}" y="{height - 10}" text-anchor="middle">{label}</text>'
-            )
-    parts.append("</svg>")
-    return "".join(parts)
-
-
 def depth_chips(counts: dict[str, int]) -> list[dict]:
     return [
         {"key": depth, "label": DEPTH_LABELS[depth], "count": counts.get(depth, 0)}
@@ -260,3 +228,130 @@ def depth_chips(counts: dict[str, int]) -> list[dict]:
 
 def market_label(market: str) -> str:
     return MARKET_LABELS.get(market, market or "其他")
+
+
+# —— 公司页和持仓卡片的月度图 ——
+
+
+def _next_month(ym: str) -> str:
+    year, month = int(ym[:4]), int(ym[5:7])
+    month += 1
+    if month > 12:
+        year, month = year + 1, 1
+    return f"{year:04d}-{month:02d}"
+
+
+def month_series(rows: list[dict], *, first: str | None = None, last: str | None = None, limit: int = 120):
+    """补齐中间没有提及的月份，返回连续的 [{ym, deep, passing}]。最长 limit 个月，多了只留最近的。"""
+    by_month = {str(row["ym"]): row for row in rows}
+    if not by_month and not (first and last):
+        return []
+    start = first or min(by_month)
+    end = last or max(by_month)
+    if start > end:
+        start, end = end, start
+    series = []
+    current = start
+    while current <= end and len(series) < 1200:
+        row = by_month.get(current) or {}
+        series.append({"ym": current, "deep": int(row.get("deep") or 0), "passing": int(row.get("passing") or 0)})
+        current = _next_month(current)
+    return series[-limit:]
+
+
+def current_month(zone_name: str = FEED_ZONE) -> str:
+    return datetime.now(ZoneInfo(zone_name)).strftime("%Y-%m")
+
+
+def months_back(ym: str, count: int) -> str:
+    year, month = int(ym[:4]), int(ym[5:7])
+    total = year * 12 + (month - 1) - count
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
+def company_chart(series: list[dict]) -> str:
+    """连续月份的堆叠柱：下面是深入（标题、全文、单节），上面是一带而过。
+
+    SVG 横向拉伸填满宽度，年份另用 HTML 标在图下（见 chart_ticks），手机上字不会跟着缩小。
+    """
+    if not series:
+        return ""
+    width = 720
+    height = 150
+    top = 6
+    left = 2
+    peak = max(item["deep"] + item["passing"] for item in series) or 1
+    slot = (width - left * 2) / len(series)
+    bar = max(2.0, min(18.0, slot * 0.7))
+    plot = height - top - 1
+    parts = [
+        f'<svg class="chart company-chart" viewBox="0 0 {width} {height}" preserveAspectRatio="none" role="img" '
+        f'aria-label="按月提及篇数：深入和一带而过">',
+        f'<line class="axis" x1="0" y1="{height - 0.5}" x2="{width}" y2="{height - 0.5}"/>',
+    ]
+    base = height - 1
+    for index, item in enumerate(series):
+        x = left + index * slot + (slot - bar) / 2
+        deep_h = round(item["deep"] / peak * plot, 1)
+        passing_h = round(item["passing"] / peak * plot, 1)
+        tip = f"{item['ym']}：深入 {item['deep']} 篇，一带而过 {item['passing']} 篇"
+        parts.append(f"<g><title>{escape(tip)}</title>")
+        if deep_h:
+            parts.append(
+                f'<rect class="bar-deep" x="{x:.1f}" y="{base - deep_h:.1f}" width="{bar:.1f}" height="{deep_h}"/>'
+            )
+        if passing_h:
+            parts.append(
+                f'<rect class="bar-passing" x="{x:.1f}" y="{base - deep_h - passing_h:.1f}" width="{bar:.1f}" '
+                f'height="{passing_h}"/>'
+            )
+        if not deep_h and not passing_h:
+            parts.append(f'<rect class="bar-empty" x="{x:.1f}" y="{base - 1}" width="{bar:.1f}" height="1"/>')
+        parts.append("</g>")
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def chart_ticks(series: list[dict]) -> list[dict]:
+    """图下的年份：每年一月的位置（百分比）。第一个月不是一月时也标上，挨得太近的跳过。"""
+    if not series:
+        return []
+    ticks: list[dict] = []
+    count = len(series)
+    for index, item in enumerate(series):
+        if index != 0 and not item["ym"].endswith("-01"):
+            continue
+        left = round((index + 0.5) / count * 100, 2)
+        if ticks and left - ticks[-1]["left"] < 7:
+            if index == 0:
+                continue
+            ticks.pop()
+        ticks.append({"label": item["ym"][:4], "left": left})
+    return ticks
+
+
+def sparkline(series: list[dict]) -> str:
+    """持仓卡片上的小图：近两年每月深入谈到它的篇数。没有的月份画一条细底线。"""
+    if not series:
+        return ""
+    width = 240
+    height = 40
+    peak = max(item["deep"] for item in series) or 1
+    slot = width / len(series)
+    bar = max(2.0, slot * 0.62)
+    parts = [
+        f'<svg class="spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none" role="img" '
+        f'aria-label="近两年每月深入谈到的篇数">'
+    ]
+    for index, item in enumerate(series):
+        x = index * slot + (slot - bar) / 2
+        if item["deep"]:
+            h = max(3.0, round(item["deep"] / peak * (height - 2), 1))
+            parts.append(
+                f'<rect class="bar-deep" x="{x:.1f}" y="{height - h:.1f}" width="{bar:.1f}" height="{h}" rx="1">'
+                f"<title>{escape(item['ym'])}：{item['deep']} 篇</title></rect>"
+            )
+        else:
+            parts.append(f'<rect class="bar-empty" x="{x:.1f}" y="{height - 1}" width="{bar:.1f}" height="1"/>')
+    parts.append("</svg>")
+    return "".join(parts)

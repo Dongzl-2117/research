@@ -49,6 +49,7 @@ services:
       BIND_PORT: "8088"
       ALLOW_NONLOCAL_BIND: "1"
       SOURCES_FILE: /app/config/sources.yaml
+      PORTFOLIO_FILE: /app/config/portfolio.yaml
       AIHOT_MAP_FILE: /app/config/aihot_import.yaml
       DISPLAY_TIMEZONE: Asia/Shanghai
       AIHOT_DATABASE_URL: ${AIHOT_DATABASE_URL:-}

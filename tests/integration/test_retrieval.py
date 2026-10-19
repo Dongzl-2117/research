@@ -332,3 +332,54 @@ def test_interrupted_answer_can_be_retried(conn, settings, monkeypatch):
         retried = client.post(f"/ask/{row['id']}/retry", follow_redirects=False)
         assert retried.status_code == 303
         assert "重新整合好了" in client.get(f"/ask/{row['id']}").text
+
+
+def test_companies_page_pins_holdings_and_company_page_defaults_to_deep(conn, settings):
+    _sample(conn, settings)
+    tencent = _company_id(conn, "腾讯")
+    with TestClient(create_app(settings)) as client:
+        listing = client.get("/companies").text
+        # 持仓按 config/portfolio.yaml 的顺序排在最前，带「持仓 / 观察」标记。
+        assert listing.find("泡泡玛特") < listing.find("拼多多") < listing.find("贵州茅台") < listing.find("苹果")
+        assert 'class="role-badge role-holding">持仓' in listing
+        assert 'class="role-badge role-watch">观察' in listing
+        assert "每月深入篇数" in listing
+        assert "宁德时代" in listing
+        recent = client.get("/companies", params={"sort": "recent"}).text
+        assert "<strong>最近提及</strong>" in recent
+        hk = client.get("/companies", params={"market": "US"}).text
+        assert "宁德时代" not in hk.split('class="company-list"', 1)[1]
+        page = client.get(f"/companies/{tencent}").text
+        assert "深入谈到" in page and "谁在谈" in page
+        assert 'class="role-badge role-holding">持仓' in page
+        # 默认只列深入提及；「全部」里才有一带而过的那篇。
+        everything = client.get(f"/companies/{tencent}", params={"depth": "all"}).text
+        assert everything.count('class="depth depth-passing"') >= page.count('class="depth depth-passing"')
+        assert client.get(f"/companies/{tencent}", params={"depth": "passing"}).status_code == 200
+        home = client.get("/").text
+        assert "持仓近况" in home
+        assert home.find("持仓近况") < home.find('class="feed"')
+
+
+def test_portfolio_names_missing_from_company_table_are_flagged(conn, settings, tmp_path):
+    from dataclasses import replace as dc_replace
+
+    portfolio = tmp_path / "portfolio.yaml"
+    portfolio.write_text("holdings:\n  - 腾讯\n  - 不存在的公司\nwatch: []\n", encoding="utf-8")
+    custom = dc_replace(settings, portfolio_path=portfolio)
+    with TestClient(create_app(custom)) as client:
+        listing = client.get("/companies").text
+        assert "不存在的公司 不在公司表里" in listing
+
+
+def test_mentions_rebuild_when_company_aliases_change(conn, settings):
+    from researchlib.mentions import mentions_stale, rebuild_if_stale
+
+    _sample(conn, settings)
+    rebuild_if_stale(settings)
+    assert not mentions_stale(conn)
+    conn.execute("UPDATE companies SET aliases = aliases || ARRAY['测试新别名'] WHERE name_zh = '腾讯'")
+    conn.commit()
+    assert mentions_stale(conn)
+    assert rebuild_if_stale(settings) > 0
+    assert not mentions_stale(conn)

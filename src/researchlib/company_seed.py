@@ -28,7 +28,9 @@ def _company(
 
 
 SEEDS: tuple[CompanySeed, ...] = (
-    _company("00700.HK", "腾讯", "Tencent", "HK", "腾讯控股", "TCEHY", "0700.HK"),
+    # 持仓和观察的公司补了业务名，讲 Temu、Labubu、视频号的文章也算提到这家公司。
+    # 不收「微信」：公众号原文常带「微信扫一扫」这类模板字样，会让几乎每篇都记成提到腾讯。
+    _company("00700.HK", "腾讯", "Tencent", "HK", "腾讯控股", "TCEHY", "0700.HK", "视频号", "WeChat"),
     _company("09988.HK", "阿里巴巴", "Alibaba", "HK", "阿里", "BABA"),
     _company("03690.HK", "美团", "Meituan", "HK", "美团点评"),
     _company("09618.HK", "京东", "JD.com", "HK", "京东集团", "JD"),
@@ -40,7 +42,8 @@ SEEDS: tuple[CompanySeed, ...] = (
     _company("09868.HK", "小鹏汽车", "XPeng", "HK", "小鹏", "XPEV"),
     _company("09866.HK", "蔚来", "NIO", "HK"),
     _company("02015.HK", "理想汽车", "Li Auto", "HK", "LI"),
-    _company("09633.HK", "农夫山泉", "Nongfu Spring", "HK"),
+    _company("09633.HK", "农夫山泉", "Nongfu Spring", "HK", "东方树叶"),
+    _company("09992.HK", "泡泡玛特", "Pop Mart", "HK", "POPMART", "Labubu", "拉布布"),
     _company("02020.HK", "安踏体育", "Anta", "HK", "安踏"),
     _company("02331.HK", "李宁", "Li Ning", "HK"),
     _company("06690.HK", "海尔智家", "Haier", "HK", "海尔"),
@@ -50,9 +53,9 @@ SEEDS: tuple[CompanySeed, ...] = (
     _company("01801.HK", "信达生物", "Innovent", "HK"),
     _company("09961.HK", "携程", "Trip.com", "HK", "携程集团", "TCOM"),
     _company("02423.HK", "贝壳", "Beike", "HK", "贝壳找房", "BEKE"),
-    _company("PDD", "拼多多", "Pinduoduo", "US"),
+    _company("PDD", "拼多多", "Pinduoduo", "US", "PDD Holdings", "Temu"),
     _company(None, "字节跳动", "ByteDance", "PRIVATE", "字节"),
-    _company("AAPL", "苹果", "Apple", "US", "苹果公司"),
+    _company("AAPL", "苹果", "Apple", "US", "苹果公司", "iPhone"),
     _company("AMZN", "亚马逊", "Amazon", "US"),
     _company("MSFT", "微软", "Microsoft", "US"),
     _company("GOOGL", "谷歌", "Alphabet", "US", "Google"),

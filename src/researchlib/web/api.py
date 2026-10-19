@@ -17,7 +17,7 @@ from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.retrieval import retrieve, search_articles
 from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
-from researchlib.web.routes import _author_groups, _same_origin, active_sources, database
+from researchlib.web.routes import _author_groups, _same_origin, active_portfolio, active_sources, database
 from researchlib.web.scoping import parse_int, resolve_scope
 
 api = APIRouter()
@@ -290,11 +290,13 @@ def api_authors(request: Request):
 
 def companies_payload(conn, request: Request, sources, show_all: bool) -> list[dict]:
     settings = request.app.state.settings
+    portfolio = active_portfolio(request)
     rows = queries.list_companies(conn, [source.id for source in sources])
     return [
         {
             "id": row["id"],
             "name": row["name_zh"],
+            "portfolio": portfolio.role(row["name_zh"]) or None,
             "name_en": row["name_en"] or None,
             "ticker": row["ticker"],
             "market": row["market"],
@@ -345,6 +347,7 @@ def company_payload(conn, request: Request, sources, company_id: int, limit: int
     return {
         "id": company["id"],
         "name": company["name_zh"],
+        "portfolio": active_portfolio(request).role(company["name_zh"]) or None,
         "name_en": company["name_en"] or None,
         "ticker": company["ticker"],
         "market": company["market"],
@@ -464,12 +467,15 @@ def llms_txt(request: Request):
         "",
         f"- [MCP Server]({base}/api/mcp): Streamable HTTP（JSON 响应，无状态），工具 search_library、get_article、"
         "list_companies、get_company、list_authors、get_day、ask_library",
-        f"- [检索文章]({base}/api/v1/search?q=腾讯): JSON。q 支持 websearch 语法（空格为且、or、-排除、引号）。"
+        f"- [检索文章]({base}/api/v1/search?q=腾讯): JSON。q 可以是关键词也可以是一句话，全部词都命中的排前面；"
+        "or 表示任一、-词 排除、引号里的必须原样出现。"
         "范围参数 author、source、company（公司 id）、from、to（YYYY-MM-DD，上海日历）；limit≤50、offset 翻页",
         f"- [检索段落]({base}/api/v1/search?q=腾讯游戏怎么看&level=chunk): 自然语言问题也能用。"
-        "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk）",
-        f"- [问答]({base}/api/v1/ask): POST JSON {{question, author?, source?, company?, from?, to?, article?}}，"
-        "返回 answer（带 [n]）和 citations（第 n 条出处）",
+        "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms",
+        f"- [问答]({base}/api/v1/ask): POST JSON "
+        "{question, author?, source?, company?, from?, to?, article?, wait?}，"
+        "默认等整合写完，返回 answer（带 [n]）和 citations（第 n 条出处）；wait=false 时先返回 id，"
+        "再轮询 /api/v1/answers/{id} 直到 status 不是 running",
         "",
         "## 浏览",
         "",

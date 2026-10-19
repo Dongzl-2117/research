@@ -49,28 +49,6 @@ def _shanghai_day(column: str = "published_at") -> str:
     # 与 company_months 一样，按 Asia/Shanghai 的日历日切桶。
     return f"date_trunc('day', {column} AT TIME ZONE 'Asia/Shanghai')"
 
-# 标题权重大于正文；作者名单独匹配，不要求出现在正文里。
-_SEARCH_MATCH = """
-(
-  a.search_tsv @@ q
-  OR to_tsvector('chinese', coalesce(s.author, '')) @@ q
-  OR (char_length(%(raw)s) >= 2 AND position(%(raw)s in s.author) > 0)
-)
-"""
-_SEARCH_RANK = """
-(
-  5 * ts_rank_cd(setweight(to_tsvector('chinese', coalesce(a.title, '')), 'A'), q)
-  + ts_rank_cd(a.search_tsv, q)
-  + CASE
-      WHEN s.author = %(raw)s THEN 3
-      WHEN char_length(%(raw)s) >= 2 AND position(%(raw)s in s.author) > 0 THEN 2
-      WHEN to_tsvector('chinese', coalesce(s.author, '')) @@ q THEN 1.5
-      ELSE 0
-    END
-)
-"""
-
-
 def feed_counts(conn, source_ids: list[str]) -> dict:
     if not source_ids:
         return {"articles": 0, "days": 0, "undated": 0}
@@ -198,63 +176,6 @@ def sample_state(conn, source_ids: list[str]) -> bool:
         (source_ids,),
     ).fetchone()
     return int(row["n"]) > 0 and int(row["n"]) == int(row["samples"])
-
-
-def search_counts(conn, query: str, scope: Scope):
-    raw = (query or "").strip()
-    if not raw or not scope.source_ids:
-        return []
-    where, params = scope_clause(scope)
-    return conn.execute(
-        f"""
-        SELECT a.source_id, count(*) AS n
-        FROM articles a
-        JOIN sources s ON s.id = a.source_id,
-             websearch_to_tsquery('chinese', %(query)s) q
-        WHERE {where}
-          AND {_SEARCH_MATCH}
-        GROUP BY a.source_id
-        """,
-        {"query": raw, "raw": raw, **params},
-    ).fetchall()
-
-
-def search_articles(conn, query: str, scope: Scope, limit: int = 20, offset: int = 0):
-    raw = (query or "").strip()
-    if not raw or not scope.source_ids:
-        return []
-    where, params = scope_clause(scope)
-    return conn.execute(
-        f"""
-        SELECT a.id, a.source_id, a.title, a.published_at,
-               left(a.body_text, 20000) AS body_text,
-               {_SEARCH_RANK} AS rank
-        FROM articles a
-        JOIN sources s ON s.id = a.source_id,
-             websearch_to_tsquery('chinese', %(query)s) q
-        WHERE {where}
-          AND {_SEARCH_MATCH}
-        ORDER BY rank DESC, a.published_at DESC NULLS LAST, a.id DESC
-        LIMIT %(limit)s OFFSET %(offset)s
-        """,
-        {"query": raw, "raw": raw, "limit": limit, "offset": offset, **params},
-    ).fetchall()
-
-
-def best_chunks(conn, query: str, article_ids: list[int]) -> dict[int, dict]:
-    """每篇文章里和检索词最相关的一块，用来做检索结果的片段。"""
-    if not article_ids or not (query or "").strip():
-        return {}
-    rows = conn.execute(
-        """
-        SELECT DISTINCT ON (c.article_id) c.article_id, c.ord, c.heading, c.body
-        FROM article_chunks c, websearch_to_tsquery('chinese', %(query)s) q
-        WHERE c.article_id = ANY(%(ids)s) AND c.search_tsv @@ q
-        ORDER BY c.article_id, ts_rank_cd(c.search_tsv, q) DESC, c.ord
-        """,
-        {"query": query, "ids": article_ids},
-    ).fetchall()
-    return {row["article_id"]: row for row in rows}
 
 
 def scoped_articles(conn, scope: Scope, limit: int, offset: int = 0):
@@ -637,22 +558,32 @@ def company_months(conn, company_id: int, source_ids: list[str]):
     ).fetchall()
 
 
+def _depth_filter(depth: str | None) -> tuple[str, tuple]:
+    """depth：None 全部；'deep' 标题、全文、单节；其余是某一种深度。"""
+    if depth is None:
+        return "", ()
+    if depth == "deep":
+        return " AND m.depth <> 'passing'", ()
+    return " AND m.depth = %s", (depth,)
+
+
 def count_company_articles(conn, company_id: int, source_ids: list[str], depth: str | None) -> int:
+    clause, extra = _depth_filter(depth)
     row = conn.execute(
-        """
+        f"""
         SELECT count(*) AS n
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         WHERE m.company_id = %s
-          AND a.source_id = ANY(%s)
-          AND (%s::text IS NULL OR m.depth = %s)
+          AND a.source_id = ANY(%s){clause}
         """,
-        (company_id, source_ids, depth, depth),
+        (company_id, source_ids, *extra),
     ).fetchone()
     return int(row["n"])
 
 
 def company_articles(conn, company_id: int, source_ids: list[str], depth: str | None, limit: int, offset: int):
+    clause, extra = _depth_filter(depth)
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.published_at, a.source_id, m.depth, m.hit_count,
@@ -661,13 +592,143 @@ def company_articles(conn, company_id: int, source_ids: list[str], depth: str | 
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         WHERE m.company_id = %s
-          AND a.source_id = ANY(%s)
-          AND (%s::text IS NULL OR m.depth = %s)
+          AND a.source_id = ANY(%s){clause}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s OFFSET %s
         """,
-        (company_id, source_ids, depth, depth, limit, offset),
+        (company_id, source_ids, *extra, limit, offset),
     ).fetchall()
+
+
+def company_month_depths(conn, company_id: int, source_ids: list[str]):
+    """按月：深入（标题、全文、单节）和一带而过各几篇。图表用。"""
+    return conn.execute(
+        """
+        SELECT to_char(date_trunc('month', a.published_at AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM') AS ym,
+               count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep,
+               count(*) FILTER (WHERE m.depth = 'passing')::int AS passing
+        FROM article_mentions m
+        JOIN articles a ON a.id = m.article_id
+        WHERE m.company_id = %s AND a.source_id = ANY(%s) AND a.published_at IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1
+        """,
+        (company_id, source_ids),
+    ).fetchall()
+
+
+def company_source_stats(conn, company_id: int, source_ids: list[str]):
+    """每个来源谈这家公司：深入几篇、一共几篇、最近一次深入。"""
+    return conn.execute(
+        """
+        SELECT a.source_id,
+               count(*)::int AS total,
+               count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep,
+               max(a.published_at) FILTER (WHERE m.depth <> 'passing') AS last_deep,
+               max(a.published_at) AS last_at
+        FROM article_mentions m
+        JOIN articles a ON a.id = m.article_id
+        WHERE m.company_id = %s AND a.source_id = ANY(%s)
+        GROUP BY a.source_id
+        """,
+        (company_id, source_ids),
+    ).fetchall()
+
+
+def company_cards(conn, company_ids: list[int], source_ids: list[str], months: int = 24) -> dict[int, dict]:
+    """持仓和观察卡片：深入篇数、全部篇数、最近一次深入的文章、近几个月按月深入篇数、各来源深入篇数。"""
+    if not company_ids or not source_ids:
+        return {}
+    cards: dict[int, dict] = {
+        company_id: {"deep": 0, "total": 0, "latest": None, "months": [], "by_source": {}}
+        for company_id in company_ids
+    }
+    for row in conn.execute(
+        """
+        SELECT m.company_id, a.source_id,
+               count(*)::int AS total,
+               count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep
+        FROM article_mentions m
+        JOIN articles a ON a.id = m.article_id
+        WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
+        GROUP BY m.company_id, a.source_id
+        """,
+        (company_ids, source_ids),
+    ).fetchall():
+        card = cards[row["company_id"]]
+        card["total"] += row["total"]
+        card["deep"] += row["deep"]
+        if row["deep"]:
+            card["by_source"][row["source_id"]] = row["deep"]
+    for row in conn.execute(
+        """
+        SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
+        FROM article_mentions m
+        JOIN articles a ON a.id = m.article_id
+        WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
+          AND m.depth <> 'passing' AND a.published_at IS NOT NULL
+        ORDER BY m.company_id, a.published_at DESC, a.id DESC
+        """,
+        (company_ids, source_ids),
+    ).fetchall():
+        cards[row["company_id"]]["latest"] = row
+    for row in conn.execute(
+        """
+        SELECT m.company_id,
+               to_char(date_trunc('month', a.published_at AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM') AS ym,
+               count(*)::int AS deep
+        FROM article_mentions m
+        JOIN articles a ON a.id = m.article_id
+        WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s) AND m.depth <> 'passing'
+          AND a.published_at >= date_trunc('month', now()) - make_interval(months => %s)
+        GROUP BY 1, 2
+        """,
+        (company_ids, source_ids, months - 1),
+    ).fetchall():
+        cards[row["company_id"]]["months"].append({"ym": row["ym"], "deep": row["deep"], "passing": 0})
+    return cards
+
+
+def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: int = 30) -> dict[int, dict]:
+    """首页持仓近况：每家最近一篇深入谈到它的文章，和近 days 天里深入谈到它的篇数。"""
+    if not company_ids or not source_ids:
+        return {}
+    found: dict[int, dict] = {company_id: {"latest": None, "recent": 0} for company_id in company_ids}
+    for row in conn.execute(
+        """
+        SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
+        FROM article_mentions m
+        JOIN articles a ON a.id = m.article_id
+        WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
+          AND m.depth <> 'passing' AND a.published_at IS NOT NULL
+        ORDER BY m.company_id, a.published_at DESC, a.id DESC
+        """,
+        (company_ids, source_ids),
+    ).fetchall():
+        found[row["company_id"]]["latest"] = row
+    for row in conn.execute(
+        """
+        SELECT m.company_id, count(*)::int AS n
+        FROM article_mentions m
+        JOIN articles a ON a.id = m.article_id
+        WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
+          AND m.depth <> 'passing' AND a.published_at >= now() - make_interval(days => %s)
+        GROUP BY m.company_id
+        """,
+        (company_ids, source_ids, days),
+    ).fetchall():
+        found[row["company_id"]]["recent"] = row["n"]
+    return found
+
+
+def companies_by_name(conn, names: list[str]) -> dict[str, dict]:
+    if not names:
+        return {}
+    rows = conn.execute(
+        "SELECT id, ticker, name_zh, name_en, market, aliases FROM companies WHERE name_zh = ANY(%s)",
+        (names,),
+    ).fetchall()
+    return {row["name_zh"]: row for row in rows}
 
 
 def get_translation(conn, article_id: int) -> dict | None:
