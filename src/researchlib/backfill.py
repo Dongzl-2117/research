@@ -27,7 +27,7 @@ def backfill_published_at(conn) -> dict:
         meta = dict(row["raw_meta"] or {})
         frontmatter, _body = split_frontmatter(row["body_md"] or "")
         filename = str(meta.get("filename") or "")
-        when, source = resolve_published_at(
+        when, source, known = resolve_published_at(
             frontmatter=frontmatter,
             hints=meta,
             filename=filename,
@@ -37,6 +37,7 @@ def backfill_published_at(conn) -> dict:
         if when is None:
             continue
         meta["date_source"] = source
+        meta["time_known"] = known
         digest = content_hash(row["title"], row["body_md"], when)
         conn.execute(
             """

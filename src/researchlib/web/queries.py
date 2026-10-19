@@ -38,6 +38,13 @@ def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
     return " AND ".join(parts), params
 
 
+_CLOCK_FIELDS = """
+a.raw_meta->>'create_time' AS clock_hint,
+a.raw_meta->>'date_source' AS date_source,
+a.raw_meta->>'time_known' AS time_known
+"""
+
+
 def _shanghai_day(column: str = "published_at") -> str:
     # 与 company_months 一样，按 Asia/Shanghai 的日历日切桶。
     return f"date_trunc('day', {column} AT TIME ZONE 'Asia/Shanghai')"
@@ -99,7 +106,8 @@ def list_day_page(conn, source_ids: list[str], limit: int, offset: int):
           ORDER BY 1 DESC
           LIMIT %s OFFSET %s
         )
-        SELECT a.id, a.source_id, a.title, a.published_at, a.body_text
+        SELECT a.id, a.source_id, a.title, a.published_at, a.body_text,
+               {_CLOCK_FIELDS}
         FROM articles a
         JOIN days d
           ON {_shanghai_day("a.published_at")} = d.day
@@ -275,12 +283,12 @@ def count_scoped_articles(conn, scope: Scope) -> int:
 
 
 def article_tags(conn, article_ids: list[int], per_article: int = 4) -> dict[int, list[dict]]:
-    """卡片上的公司标签。一带而过的不上卡片，避免标签被顺带提到的公司占满。"""
+    """公司标签。一带而过的不上卡片。aliases 留给卡片再筛掉开头没谈的公司。"""
     if not article_ids:
         return {}
     rows = conn.execute(
         """
-        SELECT m.article_id, c.id, c.name_zh, m.depth, m.hit_count
+        SELECT m.article_id, c.id, c.name_zh, c.name_en, c.aliases, m.depth, m.hit_count
         FROM article_mentions m
         JOIN companies c ON c.id = m.company_id
         WHERE m.article_id = ANY(%s) AND m.depth <> 'passing'
@@ -294,7 +302,15 @@ def article_tags(conn, article_ids: list[int], per_article: int = 4) -> dict[int
     for row in rows:
         items = found.setdefault(row["article_id"], [])
         if len(items) < per_article:
-            items.append({"id": row["id"], "name": row["name_zh"], "depth": row["depth"]})
+            items.append(
+                {
+                    "id": row["id"],
+                    "name": row["name_zh"],
+                    "name_en": row["name_en"] or "",
+                    "aliases": list(row["aliases"] or []),
+                    "depth": row["depth"],
+                }
+            )
     return found
 
 
@@ -439,6 +455,79 @@ def nearest_day(conn, source_ids: list[str], day):
     return row["d"]
 
 
+def articles_on_day(conn, scope: Scope):
+    """某一天、当前范围内的文章。带上钟点线索，卡片才能把 00:00 还原成真实时分。"""
+    if not scope.source_ids:
+        return []
+    where, params = scope_clause(scope)
+    return conn.execute(
+        f"""
+        SELECT a.id, a.source_id, a.title, a.published_at, a.body_text,
+               {_CLOCK_FIELDS}
+        FROM articles a
+        WHERE {where}
+          AND a.published_at IS NOT NULL
+        ORDER BY a.published_at DESC, a.id DESC
+        """,
+        params,
+    ).fetchall()
+
+
+def neighbor_days(conn, scope: Scope, day: date) -> tuple[date | None, date | None]:
+    """同一范围内，这一天的前一个和后一个有文章的日子。"""
+    bare = Scope(source_ids=list(scope.source_ids), company_id=scope.company_id)
+    if not bare.source_ids:
+        return None, None
+    where, params = scope_clause(bare)
+    previous = conn.execute(
+        f"""
+        SELECT max((a.published_at AT TIME ZONE 'Asia/Shanghai')::date) AS d
+        FROM articles a
+        WHERE {where}
+          AND a.published_at IS NOT NULL
+          AND (a.published_at AT TIME ZONE 'Asia/Shanghai')::date < %(day)s
+        """,
+        {**params, "day": day},
+    ).fetchone()
+    following = conn.execute(
+        f"""
+        SELECT min((a.published_at AT TIME ZONE 'Asia/Shanghai')::date) AS d
+        FROM articles a
+        WHERE {where}
+          AND a.published_at IS NOT NULL
+          AND (a.published_at AT TIME ZONE 'Asia/Shanghai')::date > %(day)s
+        """,
+        {**params, "day": day},
+    ).fetchone()
+    return previous["d"], following["d"]
+
+
+def day_answer(conn, day: date, source_ids: list[str], company_id: int | None):
+    """已经问过的、正好覆盖这一天和同一范围的回答。没有就不现算。"""
+    rows = conn.execute(
+        """
+        SELECT id, question, answer, citations, model, scope, created_at
+        FROM llm_answers
+        WHERE scope->>'date_from' = %s AND scope->>'date_to' = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 30
+        """,
+        (day.isoformat(), day.isoformat()),
+    ).fetchall()
+    wanted = set(source_ids)
+    for row in rows:
+        scope = row["scope"] or {}
+        saved_company = scope.get("company_id")
+        if company_id is None and saved_company:
+            continue
+        if company_id is not None and saved_company != company_id:
+            continue
+        if set(scope.get("source_ids") or []) != wanted:
+            continue
+        return row
+    return None
+
+
 def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 500):
     if not source_ids:
         return []
@@ -561,9 +650,10 @@ def count_company_articles(conn, company_id: int, source_ids: list[str], depth: 
 
 def company_articles(conn, company_id: int, source_ids: list[str], depth: str | None, limit: int, offset: int):
     return conn.execute(
-        """
+        f"""
         SELECT a.id, a.title, a.published_at, a.source_id, m.depth, m.hit_count,
-               left(a.body_text, 20000) AS body_text
+               left(a.body_text, 20000) AS body_text,
+               {_CLOCK_FIELDS}
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         WHERE m.company_id = %s

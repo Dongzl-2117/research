@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from researchlib.company_seed import MARKET_LABELS
 from researchlib.mentions import DEPTH_LABELS, DEPTHS
+from researchlib.textutil import clock_known_in, parse_datetime
 
 # 与 AIHOT 列表头一致：桌面用「星期三」，不写成「周三」。
 _WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
@@ -36,6 +37,74 @@ def format_clock(value: datetime | None, zone_name: str) -> str:
     if local is None:
         return ""
     return local.strftime("%H:%M")
+
+
+def _is_midnight(value: datetime | None) -> bool:
+    return value is not None and value.hour == 0 and value.minute == 0 and value.second == 0
+
+
+def _known_flag(value) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    return None
+
+
+def resolve_feed_instant(
+    published_at: datetime | None,
+    *,
+    clock_hint=None,
+    date_source: str = "",
+    time_known=None,
+    zone: str,
+) -> tuple[datetime | None, bool]:
+    """卡片上用的时刻，以及这个时刻是不是原文里真有的时分。
+
+    published_at 被收成当地 00:00、但 raw_meta.create_time 同一天带了钟点时，用后者。
+    只有日历日、没有更细的钟点时，第二项为 False，页面不显示 00:00。
+    """
+    hint = parse_datetime(clock_hint) if clock_hint not in (None, "") else None
+    hint_known = clock_known_in(clock_hint) if clock_hint not in (None, "") else False
+    local = localize(published_at, zone)
+    hint_local = localize(hint, zone)
+    if (
+        hint_known
+        and local is not None
+        and hint_local is not None
+        and _is_midnight(local)
+        and not _is_midnight(hint_local)
+        and local.date() == hint_local.date()
+    ):
+        return hint, True
+    flag = _known_flag(time_known)
+    if flag is True:
+        return published_at, published_at is not None
+    if flag is False:
+        return published_at, False
+    if published_at is None:
+        if hint_known:
+            return hint, True
+        return None, False
+    if not _is_midnight(local):
+        return published_at, True
+    if date_source == "meta":
+        return published_at, True
+    return published_at, False
+
+
+def order_cards(cards: list[dict]) -> list[dict]:
+    def key(card: dict) -> tuple:
+        moment = card.get("sort_at")
+        stamp = moment.timestamp() if isinstance(moment, datetime) else float("-inf")
+        return (-stamp, -int(card.get("id") or 0))
+
+    return sorted(cards, key=key)
 
 
 def format_iso(value: datetime | None, zone_name: str) -> str:

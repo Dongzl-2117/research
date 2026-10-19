@@ -87,3 +87,51 @@ def test_article_template_keeps_bilingual_layout_and_ask_tools():
     assert "问 AI：这篇讲了什么" in html
     assert "被引用的段落" in html
     assert "腾讯" in html
+
+
+def test_day_template_opens_on_a_summary():
+    html = _env().get_template("day.html").render(
+        title="10月19日",
+        canonical="https://investment.zldong.com/days/2024-10-19",
+        public_host="investment.zldong.com",
+        query="",
+        nav="archive",
+        sample_banner=False,
+        sources=[],
+        active_source="",
+        back_href="/",
+        year=2024,
+        weekday="星期六",
+        label="10月19日",
+        count=1,
+        company=None,
+        author_name="",
+        prev_href="",
+        next_href="/days/2024-10-20",
+        answer=None,
+        brief={
+            "lead": "方伟：这篇短帖在讲宁德时代。",
+            "authors": 1,
+            "companies": [{"id": 9, "name": "宁德时代"}],
+            "sections": [
+                {
+                    "author": "方伟",
+                    "count": 1,
+                    "items": [
+                        {
+                            "id": 4,
+                            "plain_title": "方伟知识星球短帖",
+                            "iso": "2024-10-19T13:29:00+08:00",
+                            "time": "13:29",
+                            "blurb": "这篇短帖在讲宁德时代。",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    assert "日汇总" in html
+    assert "方伟：这篇短帖在讲宁德时代。" in html
+    assert "13:29" in html
+    assert "AI 整合" not in html
+    assert 'href="/days/2024-10-20"' in html

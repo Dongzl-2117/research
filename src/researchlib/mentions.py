@@ -52,6 +52,12 @@ DEPTH_LABELS = {
     DEPTH_PASSING: "一带而过",
 }
 
+# 类比、举例、顺带一提。这些句子里的公司名不拿来升级成「全文」或「单节」。
+_INCIDENTAL = re.compile(
+    r"(例如|比如|譬如|好比|就像|犹如|类似|举例|打个比方|作为例子|举个例子|顺带|顺便|提一句|说句题外话)"
+)
+_SENTENCE = re.compile(r"[^。！？!?\n；;]+[。！？!?\n；;]?")
+
 
 class _Node:
     __slots__ = ("next", "fail", "out")
@@ -223,6 +229,55 @@ class CompanyMatcher:
         return counts
 
 
+def sentence_pieces(text: str) -> list[str]:
+    return [part.strip() for part in _SENTENCE.findall(text or "") if part.strip()]
+
+
+def incidental_sentence(text: str) -> bool:
+    return bool(_INCIDENTAL.search(text or ""))
+
+
+def substantive_text(text: str) -> str:
+    return "\n".join(part for part in sentence_pieces(text) if not incidental_sentence(part))
+
+
+def early_main_text(body: str) -> str:
+    """正文开头几段，去掉类比和顺带一提的句子。卡片用它判断是不是主线。"""
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", body or "") if block.strip()]
+    if not blocks and (body or "").strip():
+        blocks = [(body or "").strip()]
+    chosen = blocks[:3]
+    # 开头若只是「广告」这种标题残留，再多看两段，避免主线被标题行挤出窗口。
+    if len(blocks) > 3 and chosen and all(len(block) <= 12 for block in chosen):
+        chosen = blocks[:5]
+    return substantive_text("\n".join(chosen))
+
+
+def company_on_card(title: str, body: str, *, name: str, aliases: Iterable[str] = (), depth: str = "") -> bool:
+    """卡片只留标题里的公司，或正文开头真正在讨论的公司。一带而过、后文顺带提到的不上卡片。"""
+    if depth == DEPTH_TITLE:
+        return True
+    if depth == DEPTH_PASSING:
+        return False
+    names = [name, *aliases]
+    names = [item.strip() for item in names if isinstance(item, str) and len(item.strip()) >= 2]
+    if not names:
+        return False
+    if any(item in (title or "") for item in names):
+        return True
+    early = early_main_text(body)
+    if not any(item in early for item in names):
+        return False
+    sentences = sentence_pieces(early)
+    hits = [sentence for sentence in sentences if any(item in sentence for item in names)]
+    if not hits:
+        return False
+    # 开头已经写了好几句，公司只在其中一句短话里出现，当作顺带一提。
+    if len(sentences) >= 3 and len(hits) == 1 and len(hits[0]) <= 48:
+        return False
+    return True
+
+
 def classify_depth(title_hits: int, section_hits: Iterable[int], *, structured: bool) -> str | None:
     sections = [count for count in section_hits]
     body_hits = sum(sections)
@@ -247,18 +302,41 @@ def mentions_for_document(matcher: CompanyMatcher, title: str, body_md: str) -> 
     body = strip_duplicate_title(body, title)
     sections, structured = section_plain_texts(body)
     title_counts = matcher.count(title)
-    section_counts = [matcher.count(section) for section in sections]
+    raw_counts = [matcher.count(section) for section in sections]
+    substantive_counts = [matcher.count(substantive_text(section)) for section in sections]
+    sentences = sentence_pieces("\n".join(sections))
+    sentence_hits: dict[int, int] = {}
+    for sentence in sentences:
+        if incidental_sentence(sentence):
+            continue
+        for company_id in matcher.count(sentence):
+            sentence_hits[company_id] = sentence_hits.get(company_id, 0) + 1
     company_ids = set(title_counts)
-    for counts in section_counts:
+    for counts in raw_counts:
         company_ids.update(counts)
     found: list[tuple[int, str, int]] = []
     for company_id in company_ids:
         title_hits = title_counts.get(company_id, 0)
-        per_section = [counts.get(company_id, 0) for counts in section_counts]
-        depth = classify_depth(title_hits, per_section, structured=structured)
+        raw_per = [counts.get(company_id, 0) for counts in raw_counts]
+        substantive_per = [counts.get(company_id, 0) for counts in substantive_counts]
+        raw_hits = sum(raw_per)
+        if title_hits + raw_hits <= 0:
+            continue
+        incidental_only = title_hits == 0 and sum(substantive_per) == 0 and raw_hits > 0
+        # 长文里只在一句里出现，即使这句话把名字重复了几遍，也不是全文都在谈。
+        one_liner = (
+            title_hits == 0
+            and not incidental_only
+            and len(sentences) >= 3
+            and sentence_hits.get(company_id, 0) <= 1
+        )
+        if incidental_only or one_liner:
+            depth = DEPTH_PASSING
+        else:
+            depth = classify_depth(title_hits, substantive_per, structured=structured)
         if depth is None:
             continue
-        found.append((company_id, depth, title_hits + sum(per_section)))
+        found.append((company_id, depth, title_hits + raw_hits))
     return found
 
 

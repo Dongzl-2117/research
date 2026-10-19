@@ -8,6 +8,7 @@ from researchlib.web.present import (
     group_days,
     plan_feed_page,
     relative_label,
+    resolve_feed_instant,
     weekday_label,
 )
 
@@ -47,6 +48,32 @@ def test_feed_pages_keep_a_day_intact():
     empty = plan_feed_page(0, 0, 1, 14, 20)
     assert empty["pages"] == 1
     assert empty["mode"] == "days"
+
+
+def test_midnight_card_uses_same_day_clock_hint():
+    zone = "Asia/Shanghai"
+    stored = datetime(2024, 10, 19, tzinfo=ZoneInfo(zone))
+    shown, known = resolve_feed_instant(
+        stored,
+        clock_hint="2024-10-19T05:29:00+00:00",
+        date_source="frontmatter",
+        time_known=False,
+        zone=zone,
+    )
+    assert known is True
+    assert format_clock(shown, zone) == "13:29"
+    bare, bare_known = resolve_feed_instant(stored, date_source="filename", zone=zone)
+    assert bare_known is False
+    assert format_clock(bare, zone) == "00:00"
+    genuine = datetime(2020, 1, 3, tzinfo=ZoneInfo(zone))
+    midnight, midnight_known = resolve_feed_instant(
+        genuine,
+        clock_hint="2020-01-03T00:00:00+08:00",
+        date_source="meta",
+        zone=zone,
+    )
+    assert midnight_known is True
+    assert format_clock(midnight, zone) == "00:00"
 
 
 def test_relative_label_matches_feed_copy():
