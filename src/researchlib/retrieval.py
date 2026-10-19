@@ -36,7 +36,7 @@ STOPWORDS = frozenset(
         "我们", "你们", "一下", "一些", "以及", "还是", "可以", "应该", "关于", "对于", "有关", "相关", "文章",
         "作者", "库里", "资料", "内容", "出处", "梳理", "汇总", "总结", "整合", "介绍", "分析", "问题", "情况",
         "怎样", "多少", "意味着", "还有", "各位", "分别", "主要", "核心", "每条", "条带", "一般", "大家", "公司",
-        "这家公司",
+        "这家公司", "今天", "昨天", "一天", "当天", "这周", "本周", "这几天", "这段时间", "这一天",
     }
 )
 EN_STOPWORDS = frozenset(
@@ -1037,6 +1037,12 @@ def retrieve(
     query = analyze(conn, question, sources, company_rows=company_rows, expansions=expansions)
     if preset:
         query = preset_query(query)
+    else:
+        # 问库是自然语言：库里一次都没出现过的词（「在聊」之类）对召回没用，还会让覆盖率永远凑不满。
+        kept = [t for t in query.terms if t.kind != "word" or t.df > 0]
+        if len(kept) != len(query.terms):
+            content = [t for t in kept if t.kind in ("word", "phrase")]
+            query = replace(query, terms=kept, overview=not content)
     effective = scope
     if query.authors and scope.source_ids:
         narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
@@ -1058,6 +1064,14 @@ def retrieve(
     rows = _candidates(conn, query, effective, limit=per_channel, enough=budget.passages * 6)
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows)
     picked = select(scored, query, budget, sources_by_id)
+    narrowed = effective.date_from or effective.date_to or effective.company_id is not None or query.authors
+    if not picked and narrowed and not query.overview:
+        # 范围已经很窄（某天、某位作者、某家公司）但词没召回到：退回按范围取，像「汇总这一天」。
+        fallback = preset_query(query)
+        rows = _candidates(conn, fallback, effective, limit=per_channel, enough=budget.passages * 6)
+        scored = score_rows(conn, fallback, rows, scope=effective, company_rows=company_rows)
+        picked = select(scored, fallback, budget, sources_by_id)
+        query = fallback
     return Retrieval(picked, query.companies, query.authors, effective, query.highlight_terms(), query, len(rows))
 
 

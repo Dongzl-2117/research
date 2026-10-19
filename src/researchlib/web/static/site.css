@@ -1383,8 +1383,8 @@ tbody tr:hover td { background: var(--accent-softer); }
   .spark { height: 30px; }
   .stat-strip dd strong { font-size: 18px; }
   .stat-strip dd .quiet { display: block; margin-top: 2px; }
-  .slots.flat .slot { grid-template-columns: 64px minmax(0, 1fr); }
-  .slots.flat.short .slot { grid-template-columns: 46px minmax(0, 1fr); }
+  .slots.flat .slot { grid-template-columns: 74px minmax(0, 1fr); }
+  .slots.flat.short .slot { grid-template-columns: 52px minmax(0, 1fr); }
 }
 @media (min-width: 720px) {
   .holding-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }

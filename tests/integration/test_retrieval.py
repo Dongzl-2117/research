@@ -383,3 +383,21 @@ def test_mentions_rebuild_when_company_aliases_change(conn, settings):
     assert mentions_stale(conn)
     assert rebuild_if_stale(settings) > 0
     assert not mentions_stale(conn)
+
+
+def test_day_summary_question_falls_back_to_the_days_articles(conn, settings):
+    from researchlib.retrieval import retrieve
+    from researchlib.sources import enabled_sources, load_sources
+    from researchlib.web.queries import Scope
+
+    _sample(conn, settings)
+    sources = enabled_sources(load_sources(settings.sources_path))
+    day = conn.execute(
+        "SELECT (published_at AT TIME ZONE 'Asia/Shanghai')::date AS d FROM articles"
+        " WHERE published_at IS NOT NULL ORDER BY published_at DESC LIMIT 1"
+    ).fetchone()["d"]
+    scope = Scope(source_ids=[s.id for s in sources], date_from=day, date_to=day)
+    for question in ("汇总这一天", "这一天大家都在聊什么"):
+        found = retrieve(conn, question, scope, sources, purpose="llm")
+        assert found.passages, question
+        assert all(p.published_at is not None for p in found.passages)
