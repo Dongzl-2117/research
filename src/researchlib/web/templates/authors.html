@@ -2,27 +2,26 @@
 {% block body %}
 <header class="page-head">
   <h1>作者</h1>
-  <p class="lede">按作者查看。点一位，看他的文章，按日期从新到旧。</p>
+  <p class="lede">按作者查看。点一位，看他的文章，按日期从新到旧；也可以只在他的文章里检索。</p>
 </header>
 {% if authors %}
-<section class="market">
-  <div class="card table-card">
-    <table>
-      <thead>
-        <tr><th>作者</th><th>来源</th><th>文章</th></tr>
-      </thead>
-      <tbody>
-        {% for author in authors %}
-        <tr>
-          <td><a href="/authors/{{ author.name | urlencode }}">{{ author.name }}</a></td>
-          <td>{{ author.sources | join("、") }}</td>
-          <td class="num">{{ author.articles }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
+<ul class="author-grid">
+  {% for author in authors %}
+  <li class="card author-card">
+    <h2><a href="/authors/{{ author.name | urlencode }}">{{ author.name }}</a></h2>
+    <p class="quiet">{{ author.sources | join("、") }}</p>
+    <p class="author-stats"><strong class="num">{{ author.articles }}</strong> 篇{% if author.first %}<span aria-hidden="true">·</span><span class="num">{{ author.first }} 至 {{ author.last }}</span>{% endif %}</p>
+    {% if author.latest %}
+    <p class="author-latest">最近：<a href="/articles/{{ author.latest.id }}">{{ author.latest.title }}</a></p>
+    {% endif %}
+    {% if author.companies %}
+    <ul class="tags" aria-label="常谈的公司">
+      {% for company in author.companies %}<li><a class="tag" href="/companies/{{ company.id }}?author={{ author.name | urlencode }}">{{ company.name_zh }} <span class="num">{{ company.n }}</span></a></li>{% endfor %}
+    </ul>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
 {% else %}
 <p class="empty">还没有启用的作者。</p>
 {% endif %}

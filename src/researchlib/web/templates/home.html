@@ -1,9 +1,12 @@
 {% extends "base.html" %}
-{% from "_feed.html" import day_feed, pager %}
+{% from "_feed.html" import day_feed, pager, date_jump %}
 {% block body %}
-<header class="page-head">
-  <h1>{{ title }}</h1>
-  <p class="lede">{{ lede }}</p>
+<header class="page-head head-row">
+  <div>
+    <h1>{{ title }}</h1>
+    <p class="lede">{{ lede }}</p>
+  </div>
+  {{ date_jump("/", active_source) }}
 </header>
 <div class="page-tools">
   <nav class="pills" aria-label="来源">
@@ -16,12 +19,12 @@
     {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
     <label class="sr" for="q">搜索标题、作者或正文</label>
     <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、作者或正文" maxlength="80" autocomplete="off" enterkeyhint="search">
+    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、作者或正文" maxlength="120" autocomplete="off" enterkeyhint="search">
     <kbd>/</kbd>
   </form>
 </div>
 {% if days %}
-{{ day_feed(days) }}
+{{ day_feed(days, day_scope) }}
 {% else %}
 <p class="empty">{{ empty }}</p>
 {% endif %}

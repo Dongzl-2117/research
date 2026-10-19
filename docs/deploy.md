@@ -13,7 +13,11 @@ docker compose up -d --build
 
 应用监听容器内的 `8088`，compose 只把宿主机的 **127.0.0.1:8088** 转进去。不要改成 `0.0.0.0`。数据库端口同样只绑定 `127.0.0.1:5432`。
 
-应用启动时会自己做迁移、同步 `config/sources.yaml`，并写入公司种子。
+应用启动时会自己做迁移（先 `002_translations.sql`，再 `003_retrieval.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章补切。
+
+不会在启动或部署时跑 `research-digest`。全库摘要是单独的手动命令，见 [llm.md](llm.md)。
+
+Grok OAuth 与 AIHOT 共用外部卷 `aihot_data`（挂到 `/aihot-data/secrets/xai-oauth.json`）。登录在 AIHOT 侧做，见 [translate.md](translate.md)。
 
 改完来源配置后刷新页面即可。导入命令每次都会重新读配置。
 

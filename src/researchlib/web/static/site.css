@@ -268,7 +268,7 @@ main {
   left: 0;
   z-index: 40;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   height: calc(54px + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   border-top: 1px solid var(--line);
@@ -318,6 +318,7 @@ main {
 
 .page-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -420,7 +421,7 @@ main {
 .filter-track { width: min(360px, 100%); margin: 16px 0 8px; }
 .filter-track input { padding-right: 16px; }
 
-.search-bar { display: flex; gap: 8px; margin-top: 16px; }
+.search-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .search-bar .field { position: relative; min-width: 0; flex: 1; }
 .search-bar .search-ico { width: 17px; height: 17px; }
 .search-bar input {
@@ -895,7 +896,6 @@ tbody tr:hover td { background: var(--accent-softer); }
   .theme-thumb, .chevron, .item-card, .slot-dot { transition: none; }
 }
 
-
 /* 中英对照：与 AIHOT 一致——每块英文在上（小一号、次要色），中文在下。媒体只在英文侧出现一次。 */
 .lang-tabs {
   display: inline-flex;
@@ -961,3 +961,139 @@ tbody tr:hover td { background: var(--accent-softer); }
   padding-top: 0;
   border-top: 0;
 }
+
+/* 卡片上的公司标签、摘要、按天整合、日期跳转 */
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.tag {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 20px;
+}
+.tag:hover { border-color: var(--accent); color: var(--accent); }
+.tag.depth-title { border-color: transparent; background: var(--accent-soft); color: var(--accent-ink); }
+.tag .num { color: var(--ink-4); }
+.item-heading { margin: 4px 0 0; color: var(--ink-4); font-size: 12.5px; }
+.item-summary { -webkit-line-clamp: 3; }
+.ai-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: var(--radius-mark);
+  background: var(--amber-soft);
+  color: var(--amber-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 18px;
+  vertical-align: 1px;
+}
+.day-ask { color: var(--ink-4); }
+.day-ask:hover, .daybar h2 a:hover { color: var(--accent); }
+.daybar-mobile .day-ask { margin-left: auto; }
+.head-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
+.date-jump { display: flex; align-items: center; gap: 6px; color: var(--ink-4); font-size: 13px; }
+.date-jump input { height: 30px; font-size: 13px; }
+.date-jump button { height: 30px; padding: 0 10px; font-size: 13px; }
+.date-jump input, .filter-grid input, .filter-grid select {
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+}
+.date-jump button, .ask-form button {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.btn.ask-btn {
+  height: 32px;
+  margin-top: 0;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent-softer);
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+.btn.ask-btn:hover { background: var(--accent-soft); color: var(--accent-ink); }
+.head-actions .quiet:hover { color: var(--accent); }
+.page-head + .pills { margin-top: 4px; }
+.head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 14px 0 16px; font-size: 13px; }
+.search-filters { width: 100%; color: var(--ink-3); font-size: 13px; }
+.search-filters summary { cursor: pointer; }
+.filter-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.filter-grid label { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 13px; }
+.entity-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 14px 0 0; color: var(--ink-4); font-size: 13px; }
+.facets { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 16px 0 8px; }
+.facets .pills.search-pills { width: auto; max-width: 100%; margin: 0; }
+.stat-list.author-facets { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-4); font-size: 12.5px; }
+.stat-list.author-facets li { display: flex; gap: 4px; padding: 0; border: 0; }
+.stat-list.author-facets strong { color: var(--ink-2); font-weight: 600; }
+
+/* 作者页 */
+.author-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin: 16px 0; padding: 0; list-style: none; }
+.author-card { padding: 20px; }
+.author-card h2 { margin: 0; font-size: 18px; }
+.author-card h2 a:hover { color: var(--accent); }
+.author-card p { margin: 6px 0 0; font-size: 13.5px; }
+.author-stats { display: flex; gap: 8px; color: var(--ink-3); }
+.author-latest { color: var(--ink-3); overflow-wrap: anywhere; }
+.author-latest a { color: var(--ink-2); }
+.author-latest a:hover { color: var(--accent); }
+
+/* 文章页 */
+.quoted, .digest {
+  margin: 16px 0 24px;
+  padding: 14px 16px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-tile);
+  background: var(--accent-softer);
+  font-size: 15px;
+  line-height: 1.8;
+}
+.digest { border-left-color: var(--amber); background: var(--amber-soft); }
+.quoted p, .digest p { margin: 0; white-space: pre-line; }
+.digest ul { margin: 8px 0 0; padding-left: 20px; }
+.quoted-label { margin-bottom: 6px !important; color: var(--ink-4); font-size: 12.5px; }
+.mention-list { margin: 0; padding: 0; list-style: none; }
+.mention-list li { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 14px; }
+.mention-list .depth { padding: 0 6px; font-size: 11.5px; }
+
+/* 问库 */
+.ask-form { display: grid; gap: 10px; margin: 16px 0 24px; }
+.ask-form textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.ask-form button { justify-self: start; height: 36px; padding: 0 18px; }
+.ask-note { margin: 0; font-size: 12.5px; }
+.answer h2 { margin: 0 0 8px; font-size: 18px; }
+.answer h3 { margin: 24px 0 8px; font-size: 15px; }
+.answer-body { font-size: 15.5px; }
+.cite { color: var(--accent); font-size: .8em; vertical-align: super; }
+.citations { margin: 0; padding: 0; list-style: none; }
+.citations li { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+.citations li:target { background: var(--accent-softer); }
+.citations li:not(.cited) { opacity: .72; }
+.citations .item-excerpt { -webkit-line-clamp: 4; }

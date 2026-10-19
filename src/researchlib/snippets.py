@@ -62,3 +62,29 @@ def _mark(text: str, terms: list[str]) -> str:
         return escaped
     flags = re.IGNORECASE if any(term.isascii() for term in safe_terms) else 0
     return re.sub(pattern, lambda match: f"<mark>{match.group(0)}</mark>", escaped, flags=flags)
+
+
+def mention_snippet(text: str, spans: list[tuple[int, int, int]], *, radius: int = 70) -> Markup:
+    """公司页用：取第一处命中前后各 radius 字，命中处加 <mark>。spans 来自 CompanyMatcher.spans。"""
+    if not text or not spans:
+        return Markup("")
+    start_hit, end_hit, _company = spans[0]
+    start = max(0, start_hit - radius)
+    end = min(len(text), end_hit + radius)
+    before = re.sub(r"\s+", " ", text[start:start_hit])
+    hit = text[start_hit:end_hit]
+    after = re.sub(r"\s+", " ", text[end_hit:end])
+    prefix = "…" if start else ""
+    suffix = "…" if end < len(text) else ""
+    return Markup(f"{prefix}{escape(before)}<mark>{escape(hit)}</mark>{escape(after)}{suffix}")
+
+
+_CITE = re.compile(r"\[(\d{1,2})\]")
+
+
+def answer_html(text: str) -> Markup:
+    """LLM 回答转成 HTML。先转义再走 Markdown，回答里的 HTML 不会生效；[n] 换成跳到出处的链接。"""
+    import markdown
+
+    html = markdown.markdown(str(escape(text or "")), extensions=["sane_lists"])
+    return Markup(_CITE.sub(lambda m: f'<a class="cite" href="#c-{m.group(1)}">[{m.group(1)}]</a>', html))

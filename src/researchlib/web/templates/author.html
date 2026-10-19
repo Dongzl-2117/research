@@ -1,23 +1,43 @@
 {% extends "base.html" %}
-{% from "_feed.html" import day_feed, pager %}
+{% from "_feed.html" import day_feed, pager, date_jump %}
 {% block body %}
-<header class="page-head">
-  <p class="byline"><a href="/authors">作者</a><span aria-hidden="true">·</span><span>{{ author_name }}</span></p>
-  <h1>{{ author_name }}</h1>
-  <p class="lede">按日期从新到旧。同一天里，新的在前。</p>
+<header class="page-head head-row">
+  <div>
+    <p class="byline"><a href="/authors">作者</a><span aria-hidden="true">·</span><span>{{ author_name }}</span></p>
+    <h1>{{ author_name }}</h1>
+    <p class="lede">按日期从新到旧。同一天里，新的在前。{% if first %}收录 <span class="num">{{ first }}</span> 至 <span class="num">{{ last }}</span>。{% endif %}</p>
+  </div>
+  {{ date_jump("/authors/" ~ (author_name | urlencode), active_source) }}
 </header>
-{% if author_sources|length > 1 %}
 <div class="page-tools">
+  {% if author_sources|length > 1 %}
   <nav class="pills" aria-label="来源">
     <a href="/authors/{{ author_name | urlencode }}" {% if not active_source %}aria-current="page"{% endif %}><span>全部</span></a>
     {% for source in author_sources %}
     <a href="/authors/{{ author_name | urlencode }}?source={{ source.id }}" {% if active_source == source.id %}aria-current="page"{% endif %}><span>{{ source.name }}</span></a>
     {% endfor %}
   </nav>
+  {% endif %}
+  <form class="search-track" action="/search" method="get" role="search">
+    <input type="hidden" name="author" value="{{ author_name }}">
+    {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
+    <label class="sr" for="q">只在{{ author_name }}的文章里检索</label>
+    <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+    <input id="q" type="search" name="q" placeholder="只搜{{ author_name }}的文章" maxlength="120" autocomplete="off" enterkeyhint="search">
+    <kbd>/</kbd>
+  </form>
+  <a class="btn ask-btn" href="/ask?preset=author&amp;author={{ author_name | urlencode }}">问 AI：他近期的核心判断</a>
 </div>
+{% if companies %}
+<section class="card panel">
+  <h2>常深入谈的公司</h2>
+  <ul class="tags">
+    {% for company in companies %}<li><a class="tag" href="/companies/{{ company.id }}?author={{ author_name | urlencode }}">{{ company.name_zh }} <span class="num">{{ company.n }}</span></a></li>{% endfor %}
+  </ul>
+</section>
 {% endif %}
 {% if days %}
-{{ day_feed(days) }}
+{{ day_feed(days, day_scope) }}
 {% else %}
 <p class="empty">这位作者还没有文章。</p>
 {% endif %}

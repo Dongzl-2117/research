@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -59,6 +59,15 @@ class Settings:
     display_timezone: str
     page_size: int = 20
     days_per_page: int = 14
+    # 问库 / 摘要走 OpenAI 兼容的 chat/completions，默认是 xAI 的 Grok。
+    # 凭证优先用与 AIHOT 共用的 OAuth（XAI_OAUTH_TOKEN_PATH），其次才是 XAI_API_KEY。
+    # 密钥不进仓库，也不出现在 repr 里。译制另走 translate.llm，固定 xhigh。
+    llm_base_url: str = "https://api.x.ai/v1"
+    llm_model: str = "grok-4.7"
+    llm_api_key: str = field(default="", repr=False)
+    llm_reasoning_effort: str = "high"
+    llm_max_tokens: int = 64000
+    llm_timeout: float = 900.0
 
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> Settings:
@@ -87,6 +96,12 @@ class Settings:
             display_timezone=environ.get("DISPLAY_TIMEZONE", "Asia/Shanghai"),
             page_size=int(environ.get("PAGE_SIZE", "20")),
             days_per_page=max(1, int(environ.get("DAYS_PER_PAGE", "14"))),
+            llm_base_url=(environ.get("XAI_BASE_URL", "").strip() or "https://api.x.ai/v1").rstrip("/"),
+            llm_model=environ.get("RESEARCH_LLM_MODEL", "").strip() or "grok-4.7",
+            llm_api_key=environ.get("XAI_API_KEY", "").strip(),
+            llm_reasoning_effort=environ.get("RESEARCH_LLM_REASONING", "high").strip(),
+            llm_max_tokens=int(environ.get("XAI_MAX_TOKENS", "64000")),
+            llm_timeout=float(environ.get("RESEARCH_LLM_TIMEOUT", "900")),
         )
 
     @property
