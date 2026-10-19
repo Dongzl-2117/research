@@ -1,5 +1,8 @@
 # 本机私人库。端口只发布到 127.0.0.1。不要改成 0.0.0.0。
 # 应用端口 8088，避开本机常见的 3000。
+#
+# Grok OAuth：外部卷 aihot_data 与 AIHOT 共用同一份 xai-oauth.json。
+# 需本机已有 AIHOT 的 docker volume（docker volume ls | grep aihot_data）。
 
 services:
   db:
@@ -49,7 +52,9 @@ services:
       AIHOT_MAP_FILE: /app/config/aihot_import.yaml
       DISPLAY_TIMEZONE: Asia/Shanghai
       AIHOT_DATABASE_URL: ${AIHOT_DATABASE_URL:-}
-      XAI_OAUTH_TOKEN_PATH: ${XAI_OAUTH_TOKEN_PATH:-/data/secrets/xai-oauth.json}
+      XAI_OAUTH_TOKEN_PATH: ${XAI_OAUTH_TOKEN_PATH:-/aihot-data/secrets/xai-oauth.json}
+      XAI_OAUTH_FILE_UID: ${XAI_OAUTH_FILE_UID:-1000}
+      XAI_OAUTH_FILE_GID: ${XAI_OAUTH_FILE_GID:-1000}
       XAI_BASE_URL: ${XAI_BASE_URL:-https://api.x.ai/v1}
       LLM_LONG_TIMEOUT_MS: ${LLM_LONG_TIMEOUT_MS:-1500000}
     ports:
@@ -57,6 +62,7 @@ services:
     volumes:
       - ./data:/data
       - ./config:/app/config:ro
+      - aihot_data:/aihot-data
     depends_on:
       db:
         condition: service_healthy
@@ -74,3 +80,6 @@ services:
 
 volumes:
   pgdata:
+  aihot_data:
+    external: true
+    name: aihot_data

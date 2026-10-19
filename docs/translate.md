@@ -13,25 +13,36 @@
 
 | | AIHOT | research |
 |---|---|---|
-| OAuth | 自有 `data/secrets/xai-oauth.json` | **自有** `$DATA_DIR/secrets/xai-oauth.json` |
-| 登录 | `node scripts/xai-login.ts login` | `research-xai-login login` |
+| OAuth | `aihot_data` 卷 `/data/secrets/xai-oauth.json` | **同一文件**（挂载为 `/aihot-data/secrets/xai-oauth.json`） |
+| 登录 | `node scripts/xai-login.ts login`（主入口） | `research-xai-login status` 检查即可；一般**不必**再 login |
 | 调用 | worker `translatePending` / 读者点译 | `research-translate`（可 `--loop`） |
 | 展示 | `.bilingual-en` / `.bilingual-zh` | 同名 class，同 token |
 
-**禁止**把 AIHOT 的 token 文件指给 research（或反过来）。xAI 每次 refresh 都会换发 refresh token，共用会两边一起登出。
+Mac mini 上 research 的 `docker-compose.yml` 把外部卷 `aihot_data` 挂到 `/aihot-data`，并用环境变量：
+
+- `XAI_OAUTH_TOKEN_PATH=/aihot-data/secrets/xai-oauth.json`
+- `XAI_OAUTH_FILE_UID=1000` / `XAI_OAUTH_FILE_GID=1000`（写入后 chown，保证 AIHOT 的 `node` 用户仍能刷新）
+
+双方共用**同一路径**和同一 `.lock`，轮流刷新；不要再复制一份 token。Hermes 的 `auth.json` 格式会被拒绝。
+
+`research-xai-login logout` 会删掉共用文件，AIHOT 也会退出，慎用。
 
 ## 登录（Mac mini）
 
+AIHOT 已登录时，research **无需再授权**：
+
 ```bash
 cd ~/research
-docker compose exec app research-xai-login login
-# 或本机：research-xai-login login
+docker compose exec app research-xai-login status
+# 应显示已登录，token 路径在 /aihot-data/secrets/xai-oauth.json
 ```
 
-终端打印验证地址和 `user_code`，在本机浏览器用有 Grok 订阅的账号授权。
-`research-xai-login status` / `logout`。
+若两边都未登录，在 AIHOT 仓库完成一次即可：
 
-文件权限：目录 `700`，token `600`。已在 `data/` 下，不进 Git。可用 `XAI_OAUTH_TOKEN_PATH` 改路径。
+```bash
+cd ~/aihot
+docker compose exec api node scripts/xai-login.ts login
+```
 
 ## 译制
 
@@ -58,10 +69,10 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 
 | 状态 | 动作 |
 |---|---|
-| 译制管道已合入、Grok 已 login | 可对库内已有合格英文稿 `research-translate` |
-| Stratechery 仍在抓 | **先不 ingest**；管道可先登录、用英文样例验对照页 |
+| 译制管道已合入、AIHOT Grok 已 login | 可对库内已有合格英文稿 `research-translate` |
+| Stratechery 仍在抓 | **先不 ingest**；可用英文样例验对照页 |
 | 抓完并 ingest 后 | 对该来源 `--loop` 批量译 |
 
 ## 环境变量
 
-见 `.env.example`：`XAI_OAUTH_TOKEN_PATH`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`、`LLM_LONG_TIMEOUT_MS`。
+见 `.env.example`：`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`、`LLM_LONG_TIMEOUT_MS`。
