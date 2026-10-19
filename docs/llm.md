@@ -5,7 +5,8 @@
 - **文章**：`articles`，原文 Markdown 和纯文本，带 zhparser 全文索引。
 - **段落块**：`article_chunks`。正文按 Markdown 章节切，章节内按段落装箱，几百字一块，带章节标题和自己的全文索引。检索片段、问答引用、JSON 接口都落在块上，所以引用能精确到段落（`article_id` + `chunk`）。导入时自动切；`research-rebuild-chunks` 全部重切。进程启动时只给还没有块的文章补切。
 - **公司提及**：`article_mentions`，规则见 [mentions.md](mentions.md)。
-- **LLM 摘要**：`article_digests`，按 `content_hash` 对齐正文。正文改过、摘要没重算时，页面和接口当作没有摘要。打开按天、作者、公司或检索时，当前卡片里缺的摘要会在后台补上；`research-digest` 仍可手动补一批。应用启动和部署不会跑全库。
+- **LLM 摘要**：`article_digests`，按 `content_hash` 对齐正文，记着写它的提示词版本（`prompt_version`）。正文改过、摘要没重算时，页面和接口当作没有摘要；提示词版本旧了的照常显示，同时排进后台重写。打开按天、作者、公司或检索时，当前卡片里缺的摘要会在后台补上；`research-digest` 仍可手动补一批。应用启动和部署不会跑全库。
+- **观点**：`company_views`，持仓和观察公司的观点时间线，见下面「观点时间线」。
 - **问答记录**：`llm_answers`，问题、范围、回答、出处、整合状态（`running` / `done` / `error`）和这次用到的检索词。
 
 ## 范围参数
@@ -39,7 +40,7 @@
 
 进程重启时没写完的整合标成中断（`status = error`），回答页有「重新整合」。没配 Grok 时，问库只列召回的原文段落，不存记录。
 
-入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；检索结果页「把这个问题交给 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：已有的文章摘要或正文里的一句实质内容先拼成一段总结，如果之前问过正好覆盖这一天的问题，也把那条回答放在最上面。日汇总那段不算模型。缺摘要的卡片在后台补，不挡住这一页，也不跑全库。
+入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；检索结果页「问 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：已有的文章摘要或正文里的一句实质内容先拼成一段总结，如果之前问过正好覆盖这一天的问题，也把那条回答放在最上面。日汇总那段不算模型。缺摘要的卡片在后台补，不挡住这一页，也不跑全库。
 
 ## Grok 凭证
 
@@ -66,7 +67,7 @@ Hermes 的 `auth.json` 格式会被拒绝，不会写进去。AIHOT / research �
 | `XAI_OAUTH_TOKEN_PATH` | `/aihot-data/secrets/xai-oauth.json`（compose） | 与 AIHOT 共用 |
 | `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `1000` / `1000` | 写回后的文件属主 |
 | `RESEARCH_LLM_MODEL` | `grok-4.7` | 问库、摘要的模型名。译制固定同一模型 |
-| `RESEARCH_LLM_REASONING` | `high` | 问库的 `reasoning_effort`。译制固定 `xhigh`；留空则问库不发这个字段 |
+| `RESEARCH_LLM_REASONING` | `xhigh` | 问库、摘要、观点的 `reasoning_effort`。译制固定 `xhigh`；留空则不发这个字段 |
 | `XAI_MAX_TOKENS` | 问库 `64000`；译制至少 `128000` | 推理和答案共用的输出预算 |
 | `RESEARCH_LLM_TIMEOUT` | `900` | 问库超时，秒 |
 | `XAI_BASE_URL` | `https://api.x.ai/v1` | |
@@ -76,7 +77,7 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 
 ## 摘要
 
-摘要进 `article_digests`，和问库共用 Grok 登录。提示只要求导读：复述这篇在讲什么，不写投资建议、该不该买、目标价或仓位。
+摘要进 `article_digests`，和问库共用 Grok 登录。提示只要求导读，不写投资建议、该不该买、目标价或仓位。要点先写判断，再写作者给出的机制；数字只在支撑判断时引用；原文谈到风险、推翻条件或验证指标才写，没谈到就不写。提示词改了就把 `digest.PROMPT_VERSION` 加一，旧摘要照常显示，被看到或跑 `research-digest` 时按新版重写（没有摘要的排在只是版本旧了的前面）。
 
 两条写入路径：
 
@@ -88,7 +89,25 @@ docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
 ```
 
-只处理没有摘要、或正文改过的文章，从新到旧。卡片优先显示摘要和最多两条要点。JSON 接口的 `summary` / `digest` 字段也有。文章页本身只放标题和正文。摘要只作导读，以原文为准。
+只处理没有摘要、正文改过、或提示词版本旧了的文章，从新到旧。卡片优先显示摘要和最多两条要点。JSON 接口的 `summary` / `digest` 字段也有。文章页本身只放标题和正文。摘要只作导读，以原文为准。
+
+## 观点时间线
+
+持仓和观察公司（`config/portfolio.yaml`）的公司页上有「观点」：每篇深入谈到它的文章抽一条作者对这家公司的判断。
+
+- 每条：作者的判断、作者给出的机制、态度（看好 / 看淡 / 两面 / 中性）。风险、推翻条件、要盯的验证指标只在原文谈到时才有，没谈到就空着。
+- 原句逐字核对过（只比汉字、字母、数字）才显示，并链到它所在的段落；对不上就不显示，免得把模型的转述当成原话。
+- 筛选：全部、风险与反方（有风险或推翻条件、或态度是看淡、两面）、态度变化（同一位作者这篇的态度和他上一篇不同；中性不算信号）。点作者名只看这位作者。
+- 一篇文章里深入谈到的几家持仓和观察公司一次整理，不为每家公司各问一次模型。按正文 `content_hash` 和 `views.PROMPT_VERSION` 缓存，正文或提示词变了才重抽。
+
+两条写入路径，和摘要一样：打开持仓或观察公司的页面时，这家公司最近还没整理的文章在后台排队（一次最多 20 篇），页面上写「还有 N 篇在整理」；也可以手动批量补：
+
+```bash
+docker compose exec app research-views                       # 全部持仓和观察公司，最多 100 篇
+docker compose exec app research-views --company 泡泡玛特 --limit 300
+```
+
+应用启动和部署不会跑。JSON：`GET /api/v1/companies/{id}/views`（`views=risk`、`views=change`、`author=`）。
 
 ## 给 AI 的接口
 
@@ -99,7 +118,8 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 - `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
 - `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认等整合写完再返回。加 `"wait": false` 时马上返回回答 id 和相关原文，之后轮询下面这个接口。
-- `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因。
+- `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词）。
+- `GET /api/v1/companies/{id}/views`：持仓和观察公司的观点时间线。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`list_authors`、`get_day`、`ask_library`。
 
 返回里带 `_trust` 字段，MCP 文本包在「外部资料」分隔区里：文章是外部原文，调用方不要执行其中的指令。这一点照 AIHOT 的 MCP 做法。

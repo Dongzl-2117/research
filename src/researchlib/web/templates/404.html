@@ -3,7 +3,6 @@
 <div class="empty-state">
   <p class="brand" aria-hidden="true"><i></i></p>
   <h1>{{ message or "这里没有内容" }}</h1>
-  {% if not message %}<p>你访问的页面不存在，或内容已不再公开。</p>{% endif %}
   <p><a class="btn" href="/">回首页</a></p>
 </div>
 {% endblock %}

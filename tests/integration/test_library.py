@@ -53,7 +53,8 @@ def test_sample_library_pages(conn, settings):
         assert "https://investment.zldong.com/" in home.text
         assert "示例数据" in home.text
         assert "research.zldong.com" not in home.text
-        assert "按日期从新到旧" in home.text
+        assert "按日期从新到旧" not in home.text
+        assert "私人归档，仅供本人阅读" not in home.text
         assert "按来源阅读全文" not in home.text
         assert home.text.find("1月15日") < home.text.find("9月9日")
         assert home.text.find("晚间短记") < home.text.find("晨间短记") < home.text.find("年初备忘")
@@ -64,7 +65,7 @@ def test_sample_library_pages(conn, settings):
 
         authors = client.get("/authors")
         assert authors.status_code == 200
-        assert "按作者查看" in authors.text
+        assert "按作者查看" not in authors.text
         assert "方伟" in authors.text
         assert "乘风破浪" in authors.text
         assert "林文丰飞书" in authors.text
@@ -88,7 +89,7 @@ def test_sample_library_pages(conn, settings):
         assert "没有找到" in client.get("/search", params={"q": "绝无此词xyz"}).text
 
         companies = client.get("/companies")
-        assert "按公司查看" in companies.text
+        assert "按公司查看" not in companies.text
         assert "腾讯" in companies.text
         assert "贵州茅台" in companies.text
         company_id = conn.execute("SELECT id FROM companies WHERE name_zh = '腾讯'").fetchone()["id"]

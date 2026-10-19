@@ -198,6 +198,45 @@ def _compile_latin(items: list[tuple[str, int]], *, casefold: bool) -> tuple[re.
     return pattern, lookup
 
 
+def company_rules(company: Mapping) -> dict:
+    """公司表里的 alias_rules：{"needs": {别名: [佐证词]}, "exclude": [正则]}。没有就是空字典。"""
+    raw = company.get("alias_rules") or {}
+    if isinstance(raw, str):
+        import json
+
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _word_pattern(word: str) -> str:
+    """佐证词：中文按字面；英文按词边界、区分大小写（「Mac」不会撞进「machine」）。"""
+    escaped = re.escape(word)
+    if is_cjk_alias(word):
+        return escaped
+    return r"(?<![A-Za-z0-9])" + escaped + r"(?![A-Za-z0-9])"
+
+
+def compile_exclude(patterns: Iterable[str]) -> re.Pattern[str] | None:
+    items = [str(item) for item in patterns if str(item).strip()]
+    if not items:
+        return None
+    return re.compile("|".join(f"(?:{item})" for item in items))
+
+
+def excluded_ranges(pattern: re.Pattern[str] | None, text: str) -> list[tuple[int, int]]:
+    if pattern is None or not text:
+        return []
+    return [(match.start(), match.end()) for match in pattern.finditer(text) if match.end() > match.start()]
+
+
+def inside(ranges: list[tuple[int, int]], start: int, end: int) -> bool:
+    """命中整段落在排除写法里才不算：「烟台苹果」里的「苹果」不算，「很多字节跳动」里的「字节跳动」照算。"""
+    return any(low <= start and end <= high for low, high in ranges)
+
+
 @dataclass
 class CompanyMatcher:
     companies: list[Mapping]
@@ -206,15 +245,37 @@ class CompanyMatcher:
         chinese: list[tuple[str, int]] = []
         folded: list[tuple[str, int]] = []
         sensitive: list[tuple[str, int]] = []
+        self._exclude: dict[int, re.Pattern[str]] = {}
+        # 公司 id → (要佐证的别名, 佐证词正则, {别名: 冲突词正则})
+        self._needs: dict[int, tuple[frozenset[str], re.Pattern[str] | None, dict[str, re.Pattern[str]]]] = {}
         for company in self.companies:
             company_id = int(company["id"])
-            for text, casefold in iter_alias_specs(company):
+            specs = iter_alias_specs(company)
+            for text, casefold in specs:
                 if is_cjk_alias(text):
                     chinese.append((text, company_id))
                 elif casefold:
                     folded.append((text, company_id))
                 else:
                     sensitive.append((text, company_id))
+            rules = company_rules(company)
+            pattern = compile_exclude(rules.get("exclude") or [])
+            if pattern is not None:
+                self._exclude[company_id] = pattern
+            needs = rules.get("needs") or {}
+            if isinstance(needs, dict) and needs:
+                guarded = frozenset(str(alias) for alias in needs)
+                words = {str(word) for items in needs.values() for word in (items or []) if str(word).strip()}
+                # 这家公司其他不受约束的写法（「Apple」「iPhone」「苹果公司」）本身也是佐证。
+                words.update(text for text, _fold in specs if text not in guarded)
+                ordered = sorted(words, key=len, reverse=True)
+                corroborate = re.compile("|".join(_word_pattern(word) for word in ordered)) if ordered else None
+                conflicts = {}
+                for alias, items in (rules.get("conflicts") or {}).items():
+                    terms = sorted({str(item) for item in items or [] if str(item).strip()}, key=len, reverse=True)
+                    if terms:
+                        conflicts[str(alias)] = re.compile("|".join(_word_pattern(term) for term in terms))
+                self._needs[company_id] = (guarded, corroborate, conflicts)
         self._root = _build_aho(chinese)
         fold_re, fold_lookup = _compile_latin(folded, casefold=True)
         sens_re, sens_lookup = _compile_latin(sensitive, casefold=False)
@@ -223,7 +284,8 @@ class CompanyMatcher:
             (sens_re, sens_lookup, False),
         )
 
-    def spans(self, text: str) -> list[tuple[int, int, int]]:
+    def spans(self, text: str, *, blocked: frozenset = frozenset()) -> list[tuple[int, int, int]]:
+        """blocked：这篇里没有佐证、不算数的 (公司 id, 别名)。由 document() 算出来。"""
         if not text:
             return []
         text = scrub_publisher_noise(text)
@@ -240,7 +302,57 @@ class CompanyMatcher:
                     continue
                 latin.append((match.start(), match.end(), company_id))
         found.extend(_take_longest(latin))
-        return found
+        if not (self._exclude or blocked):
+            return found
+        ranges: dict[int, list[tuple[int, int]]] = {}
+        kept: list[tuple[int, int, int]] = []
+        for start, end, company_id in found:
+            if blocked and (company_id, text[start:end]) in blocked:
+                continue
+            pattern = self._exclude.get(company_id)
+            if pattern is not None:
+                if company_id not in ranges:
+                    ranges[company_id] = excluded_ranges(pattern, text)
+                if inside(ranges[company_id], start, end):
+                    continue
+            kept.append((start, end, company_id))
+        return kept
+
+    def count(self, text: str) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for _start, _end, company_id in self.spans(text):
+            counts[company_id] = counts.get(company_id, 0) + 1
+        return counts
+
+    def document(self, *texts: str) -> DocumentMatcher:
+        """一篇文章用的匹配器：「苹果」这类有歧义的别名，按全文判断一次算不算。
+
+        有佐证词就算；没有佐证词时，给了冲突词的别名只在出现冲突词（说明可能在讲水果、粮食）时才不算，
+        没给冲突词的别名一律不算。
+        """
+        if not self._needs:
+            return DocumentMatcher(self, frozenset())
+        full = scrub_publisher_noise("\n".join(text or "" for text in texts))
+        blocked: set[tuple[int, str]] = set()
+        for company_id, (guarded, corroborate, conflicts) in self._needs.items():
+            if corroborate is not None and corroborate.search(full):
+                continue
+            for alias in guarded:
+                conflict = conflicts.get(alias)
+                if conflict is None or conflict.search(full):
+                    blocked.add((company_id, alias))
+        return DocumentMatcher(self, frozenset(blocked))
+
+
+@dataclass(frozen=True)
+class DocumentMatcher:
+    """绑定了一篇文章的匹配器。没有佐证的歧义别名在这篇里一律不算。"""
+
+    base: CompanyMatcher
+    blocked: frozenset
+
+    def spans(self, text: str) -> list[tuple[int, int, int]]:
+        return self.base.spans(text, blocked=self.blocked)
 
     def count(self, text: str) -> dict[int, int]:
         counts: dict[int, int] = {}
@@ -322,6 +434,7 @@ def mentions_for_document(matcher: CompanyMatcher, title: str, body_md: str) -> 
     _frontmatter, body = split_frontmatter(body_md)
     body = strip_duplicate_title(body, title)
     sections, structured = section_plain_texts(body)
+    matcher = matcher.document(title, "\n".join(sections))
     title_counts = matcher.count(title)
     raw_counts = [matcher.count(section) for section in sections]
     substantive_counts = [matcher.count(substantive_text(section)) for section in sections]
@@ -379,7 +492,7 @@ def load_company_rows(conn) -> list[dict]:
     return list(
         conn.execute(
             """
-            SELECT id, ticker, name_zh, name_en, market, aliases
+            SELECT id, ticker, name_zh, name_en, market, aliases, alias_rules
             FROM companies
             ORDER BY id
             """
@@ -391,12 +504,19 @@ FINGERPRINT_KEY = "mentions_fingerprint"
 
 
 def companies_fingerprint(rows: list[dict]) -> str:
-    """公司表里影响匹配的字段（名字、代码、简称）的指纹。变了就要重算提及。"""
+    """公司表里影响匹配的字段（名字、代码、简称、歧义规则）的指纹。变了就要重算提及。"""
     import hashlib
     import json
 
     payload = [
-        [int(row["id"]), row["name_zh"], row["name_en"] or "", row["ticker"] or "", sorted(row["aliases"] or [])]
+        [
+            int(row["id"]),
+            row["name_zh"],
+            row["name_en"] or "",
+            row["ticker"] or "",
+            sorted(row["aliases"] or []),
+            json.dumps(company_rules(row), ensure_ascii=False, sort_keys=True),
+        ]
         for row in sorted(rows, key=lambda item: int(item["id"]))
     ]
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -408,10 +528,13 @@ def rebuild_all(conn) -> int:
     articles = conn.execute("SELECT id FROM articles ORDER BY id").fetchall()
     for item in articles:
         # 一篇一篇取正文，几万篇也不必一次读进内存。
-        article = conn.execute("SELECT id, title, body_md FROM articles WHERE id = %s", (item["id"],)).fetchone()
+        article = conn.execute(
+            "SELECT id, title, body_md, duplicate_of FROM articles WHERE id = %s", (item["id"],)
+        ).fetchone()
         if article is None:
             continue
-        rows = mentions_for_document(matcher, article["title"], article["body_md"])
+        # 重复的那一份不记提及，公司页只算主版本。
+        rows = [] if article["duplicate_of"] else mentions_for_document(matcher, article["title"], article["body_md"])
         replace_mentions(conn, article["id"], rows)
         conn.commit()
     conn.execute(

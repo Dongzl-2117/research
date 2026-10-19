@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
 from researchlib.chunks import replace_chunks
+from researchlib.duplicates import resolve_article
 from researchlib.images import sync_article_images
 from researchlib.ingest.model import IngestReport, ParsedDoc
 from researchlib.mentions import (
@@ -46,12 +48,14 @@ def store_documents(
     matcher = CompanyMatcher(load_company_rows(conn))
     for doc in docs:
         try:
-            status, stored, linked, missing = _store_one(conn, source, doc, data_dir, matcher)
+            status, stored, linked, missing, duplicate = _store_one(conn, source, doc, data_dir, matcher)
             conn.commit()
         except Exception as exc:
             report.errors.append(f"{doc.external_id}: {exc}")
             conn.rollback()
             continue
+        if duplicate is not None:
+            report.duplicates += 1
         if status == "inserted":
             report.inserted += 1
         elif status == "updated":
@@ -66,7 +70,30 @@ def store_documents(
         (source.id,),
     ).fetchone()
     report.db_rows = int(row["n"])
+    record_import(conn, source.id, report)
     return report
+
+
+IMPORT_KEY = "import:"
+
+
+def record_import(conn, source_id: str, report: IngestReport) -> None:
+    """记下这个来源最近一次导入的时间和计数。首页判断「是不是断更了」时一并显示。"""
+    payload = {
+        "inserted": report.inserted,
+        "updated": report.updated,
+        "unchanged": report.unchanged,
+        "duplicates": report.duplicates,
+        "errors": len(report.errors),
+    }
+    conn.execute(
+        """
+        INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        """,
+        (IMPORT_KEY + source_id, json.dumps(payload, ensure_ascii=False)),
+    )
+    conn.commit()
 
 
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
@@ -133,4 +160,8 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         data_dir=data_dir,
         refs=doc.image_refs,
     )
-    return status, stored, linked, missing
+    duplicate = None
+    if status != "unchanged":
+        # 图片挂上之后再认重复：挑主版本时图片多的优先。
+        duplicate = resolve_article(conn, article_id, matcher)
+    return status, stored, linked, missing, duplicate

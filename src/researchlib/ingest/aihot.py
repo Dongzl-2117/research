@@ -108,7 +108,19 @@ def _open_source(url: str) -> psycopg.Connection:
     return conn
 
 
-def import_aihot(dest, settings: Settings, *, dry_run: bool = False) -> tuple:
+_TIME_TYPES = ("timestamp with time zone", "timestamp without time zone", "date")
+
+
+def source_values(sources: list[Source], explicit: dict[str, str]) -> list[str]:
+    """AIHOT 那边哪些来源值会映射到本库已启用的来源。只读这些行，别的来源的正文不碰。"""
+    enabled = {source.id for source in sources if source.enabled}
+    values = {key for key, target in explicit.items() if target in enabled}
+    values |= {value for value in enabled if value not in explicit}
+    return sorted(values)
+
+
+def import_aihot(dest, settings: Settings, *, dry_run: bool = False, days: int | None = None) -> tuple:
+    """days：只读发布时间在最近这么多天里的行（定时增量用）。不传就全读。"""
     spec = load_import_map(settings.aihot_map_path)
     if not settings.aihot_database_url:
         raise ImportMapError("没有 AIHOT_DATABASE_URL，不能导入")
@@ -116,29 +128,50 @@ def import_aihot(dest, settings: Settings, *, dry_run: bool = False) -> tuple:
     src = _open_source(settings.aihot_database_url)
     try:
         columns_query = """
-            SELECT column_name
+            SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = %s
             """
         assert_select_only(columns_query)
-        present = {
-            row["column_name"]
+        types = {
+            row["column_name"]: row["data_type"]
             for row in src.execute(columns_query, (spec["table"],)).fetchall()
         }
+        present = set(types)
         if not present:
             raise ImportMapError(f"找不到 public.{spec['table']}")
         columns = resolve_columns(present, spec["columns"])
         field_names = list(dict.fromkeys(columns.values()))
-        query = sql.SQL("SELECT {fields} FROM {table}").format(
+        conditions = [
+            sql.SQL("{source}::text = ANY(%(values)s)").format(source=sql.Identifier(columns["source"]))
+        ]
+        params: dict = {"values": source_values(sources, spec["source_map"])}
+        published = columns.get("published_at")
+        if days and published and types.get(published) in _TIME_TYPES:
+            conditions.append(
+                sql.SQL("{published} >= now() - make_interval(days => %(days)s)").format(
+                    published=sql.Identifier(published)
+                )
+            )
+            params["days"] = int(days)
+        query = sql.SQL("SELECT {fields} FROM {table} WHERE {where}").format(
             fields=sql.SQL(", ").join(sql.Identifier(name) for name in field_names),
             table=sql.Identifier(spec["table"]),
+            where=sql.SQL(" AND ").join(conditions),
         )
+        assert_select_only(query.as_string(src))
+        # 白名单以外的行只数一下，计入「拒绝」，不读正文。
+        others = sql.SQL("SELECT count(*) AS n FROM {table} WHERE {where}").format(
+            table=sql.Identifier(spec["table"]),
+            where=sql.SQL(" AND ").join([sql.SQL("NOT ({first})").format(first=conditions[0]), *conditions[1:]]),
+        )
+        assert_select_only(others.as_string(src))
         docs_by_source: dict[str, list[ParsedDoc]] = {}
-        rejected = 0
+        rejected = int(src.execute(others, params).fetchone()["n"])
         errors: list[str] = []
         with src.cursor(name="aihot_read") as cur:
             cur.itersize = 200
-            cur.execute(query)
+            cur.execute(query, params)
             for row in cur:
                 source = map_source(row.get(columns["source"]), sources, spec["source_map"])
                 if source is None:
@@ -202,6 +235,7 @@ def import_aihot(dest, settings: Settings, *, dry_run: bool = False) -> tuple:
         merged.inserted += extra.inserted
         merged.updated += extra.updated
         merged.unchanged += extra.unchanged
+        merged.duplicates += extra.duplicates
         merged.db_rows += extra.db_rows
         merged.errors.extend(extra.errors)
     merged.source_id = "aihot"
@@ -212,11 +246,12 @@ def import_aihot(dest, settings: Settings, *, dry_run: bool = False) -> tuple:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="从 AIHOT 的 Postgres 只读导入白名单内的文章")
     parser.add_argument("--dry-run", action="store_true", help="只统计，不写入本库")
+    parser.add_argument("--days", type=int, default=None, help="只读最近这么多天发布的（定时增量用）")
     args = parser.parse_args(argv)
     settings = Settings.from_env()
     conn = prepare(settings)
     try:
-        report = import_aihot(conn, settings, dry_run=args.dry_run)
+        report = import_aihot(conn, settings, dry_run=args.dry_run, days=args.days)
     except ImportMapError as exc:
         print(f"导入失败：{exc}", file=sys.stderr)
         return 1

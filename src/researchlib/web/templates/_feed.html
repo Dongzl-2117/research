@@ -9,7 +9,7 @@
       {% if item.depth_label %}<span class="depth depth-{{ item.depth }}">{{ item.depth_label }}</span>{% endif %}
       {% if item.hits %}<span class="num">{{ item.hits }} 次</span>{% endif %}
     </header>
-    <h3 class="item-title"><a href="/articles/{{ item.id }}{% if item.chunk is not none and item.chunk is defined %}?chunk={{ item.chunk }}{% endif %}">{{ item.title }}</a></h3>
+    <h3 class="item-title"><a href="/articles/{{ item.id }}{% if item.chunk is not none and item.chunk is defined %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.title }}</a></h3>
     {% if item.heading %}<p class="item-heading">§ {{ item.heading }}</p>{% endif %}
     {% if item.summary %}
     <p class="item-excerpt item-summary"><span class="ai-badge" title="导读">摘要</span>{{ item.summary }}</p>

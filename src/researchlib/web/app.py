@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from researchlib.ask import mark_interrupted
 from researchlib.config import Settings, assert_bind_allowed
 from researchlib.db import prepare
+from researchlib.duplicates import dedupe_if_needed
 from researchlib.mentions import rebuild_if_stale
 from researchlib.web.api import api
 from researchlib.web.mcp import mcp
@@ -36,15 +37,20 @@ async def lifespan(app: FastAPI):
             logger.warning("有 %s 条问库整合因重启中断", interrupted)
     finally:
         conn.close()
-    # 公司别名变了（比如新加了一家公司），在后台重算提及，不挡启动。测试进程里不跑。
+    # 后台顺序做两件事，不挡启动：先认重复文章（第一次部署时全库认一遍），再在公司别名或规则变了时重算提及。
+    # 放在同一个线程里依次跑，免得重算提及时把刚认出的重复又记上提及。测试进程里不跑。
     if "PYTEST_CURRENT_TEST" not in os.environ:
         threading.Thread(
-            target=_rebuild_mentions_quietly, args=(app.state.settings,), name="rebuild-mentions", daemon=True
+            target=_background_upkeep, args=(app.state.settings,), name="library-upkeep", daemon=True
         ).start()
     yield
 
 
-def _rebuild_mentions_quietly(settings: Settings) -> None:
+def _background_upkeep(settings: Settings) -> None:
+    try:
+        dedupe_if_needed(settings)
+    except Exception:
+        logger.exception("后台认重复文章失败，可以手动跑 research-dedupe")
     try:
         rebuild_if_stale(settings)
     except Exception:

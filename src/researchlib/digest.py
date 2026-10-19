@@ -1,6 +1,7 @@
 """用 LLM 给每篇文章写摘要、要点和标签，存进 article_digests。
 
-只处理还没有摘要、或正文改过（content_hash 对不上）的文章。卡片和 JSON 接口优先展示摘要。
+只处理还没有摘要、正文改过（content_hash 对不上）、或提示词版本旧了的文章。卡片和 JSON 接口优先展示摘要；
+提示词版本旧了的摘要照常显示，同时排进后台按新版重写。
 
 两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
 
@@ -32,10 +33,16 @@ from researchlib.web.present import format_date
 logger = logging.getLogger("researchlib.digest")
 
 BODY_LIMIT = 12000
+# 提示词改了就把版本加一。旧摘要照常显示，被看到或跑 research-digest 时按新版重写。
+PROMPT_VERSION = 2
 PROMPT = """读下面这篇投资研究文章，只输出一个 JSON 对象，不要输出别的文字：
-{"summary": "不超过 120 字的导读，写这篇在讲什么、作者的核心判断是什么，不写空话",
- "points": ["3 到 5 条要点，每条一句，带上原文里的关键数字"],
+{"summary": "不超过 120 字的导读：作者在这篇里的核心判断是什么、凭什么这么判断，不写空话",
+ "points": ["3 到 5 条要点，每条一句"],
  "tags": ["3 到 6 个主题标签，例如行业、公司、宏观变量"]}
+要点的写法：
+- 先写判断，再写作者给出的机制，也就是为什么会这样。机制只写原文给出的理由，不要替作者补。
+- 数字只在支撑判断时引用，照抄原文，不要罗列数据。
+- 原文谈到了风险、推翻判断的条件或要盯的验证指标，就各写成一条；没谈到就不写，不要硬凑。
 只依据原文，原文没有的不要写。开头的 sn、点赞、评论、时间戳不要写进摘要。
 不要给出投资建议，不要写该不该买、目标价或仓位。这是导读，不是建议。"""
 _JSON = re.compile(r"\{.*\}", re.S)
@@ -72,12 +79,13 @@ def pending_articles(conn, source_ids: list[str], limit: int):
         SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
-        WHERE a.source_id = ANY(%s)
-          AND (d.article_id IS NULL OR d.content_hash <> a.content_hash)
-        ORDER BY a.published_at DESC NULLS LAST, a.id DESC
+        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
+          AND (d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s)
+        ORDER BY (d.article_id IS NULL OR d.content_hash <> a.content_hash) DESC,
+                 a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
         """,
-        (source_ids, limit),
+        (source_ids, PROMPT_VERSION, limit),
     ).fetchall()
 
 
@@ -96,17 +104,26 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     data = parse_digest(text)
     conn.execute(
         """
-        INSERT INTO article_digests (article_id, content_hash, model, summary, points, tags)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO article_digests (article_id, content_hash, model, summary, points, tags, prompt_version)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (article_id) DO UPDATE SET
           content_hash = EXCLUDED.content_hash,
           model = EXCLUDED.model,
           summary = EXCLUDED.summary,
           points = EXCLUDED.points,
           tags = EXCLUDED.tags,
+          prompt_version = EXCLUDED.prompt_version,
           created_at = now()
         """,
-        (row["id"], row["content_hash"], model, data["summary"], Jsonb(data["points"]), Jsonb(data["tags"])),
+        (
+            row["id"],
+            row["content_hash"],
+            model,
+            data["summary"],
+            Jsonb(data["points"]),
+            Jsonb(data["tags"]),
+            PROMPT_VERSION,
+        ),
     )
     conn.commit()
     return data
@@ -121,10 +138,10 @@ def rows_needing_digest(conn, article_ids: list[int]):
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.id = ANY(%s)
-          AND (d.article_id IS NULL OR d.content_hash <> a.content_hash)
+          AND (d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s)
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
-        (article_ids,),
+        (article_ids, PROMPT_VERSION),
     ).fetchall()
 
 

@@ -35,6 +35,10 @@ research-xai-login = "researchlib.translate.cli_login:main"
 research-translate = "researchlib.translate.cli:main"
 research-rebuild-chunks = "researchlib.chunks:main"
 research-digest = "researchlib.digest:main"
+research-dedupe = "researchlib.duplicates:main"
+research-views = "researchlib.views:main"
+research-eval-feedback = "researchlib.feedback:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

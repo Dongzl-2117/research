@@ -20,6 +20,9 @@ class Scope:
 def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
     parts = [f"{alias}.source_id = ANY(%(scope_ids)s)"]
     params: dict = {"scope_ids": list(scope.source_ids)}
+    if scope.article_id is None:
+        # 同一篇的重复只留主版本。指定了某一篇（「只问这篇」）时照常。
+        parts.append(f"{alias}.duplicate_of IS NULL")
     if scope.company_id is not None:
         parts.append(
             f"EXISTS (SELECT 1 FROM article_mentions sm WHERE sm.article_id = {alias}.id"
@@ -58,7 +61,7 @@ def feed_counts(conn, source_ids: list[str]) -> dict:
                count(*) FILTER (WHERE published_at IS NULL) AS undated,
                count(DISTINCT {_shanghai_day()}) FILTER (WHERE published_at IS NOT NULL) AS days
         FROM articles
-        WHERE source_id = ANY(%s)
+        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
         """,
         (source_ids,),
     ).fetchone()
@@ -78,7 +81,7 @@ def list_day_page(conn, source_ids: list[str], limit: int, offset: int):
         WITH days AS (
           SELECT {_shanghai_day()} AS day
           FROM articles
-          WHERE source_id = ANY(%s)
+          WHERE source_id = ANY(%s) AND duplicate_of IS NULL
             AND published_at IS NOT NULL
           GROUP BY 1
           ORDER BY 1 DESC
@@ -89,7 +92,7 @@ def list_day_page(conn, source_ids: list[str], limit: int, offset: int):
         FROM articles a
         JOIN days d
           ON {_shanghai_day("a.published_at")} = d.day
-        WHERE a.source_id = ANY(%s)
+        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
         ORDER BY a.published_at DESC, a.id DESC
         """,
         (source_ids, limit, offset, source_ids),
@@ -103,7 +106,7 @@ def list_undated_articles(conn, source_ids: list[str], limit: int, offset: int):
         """
         SELECT id, source_id, title, published_at, body_text
         FROM articles
-        WHERE source_id = ANY(%s)
+        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NULL
         ORDER BY id DESC
         LIMIT %s OFFSET %s
@@ -119,7 +122,7 @@ def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
         """
         SELECT source_id, count(*) AS n
         FROM articles
-        WHERE source_id = ANY(%s)
+        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
         GROUP BY source_id
         """,
         (source_ids,),
@@ -130,12 +133,29 @@ def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
 def get_article(conn, article_id: int, source_ids: list[str]):
     return conn.execute(
         """
-        SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash
+        SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash, duplicate_of
         FROM articles
         WHERE id = %s AND source_id = ANY(%s)
         """,
         (article_id, source_ids),
     ).fetchone()
+
+
+def same_article_elsewhere(conn, article_id: int, duplicate_of: int | None, source_ids: list[str]):
+    """同一篇的其他份：这篇是重复时给主版本，是主版本时给指向它的重复。"""
+    if duplicate_of is not None:
+        return conn.execute(
+            "SELECT id, source_id, true AS canonical FROM articles WHERE id = %s AND source_id = ANY(%s)",
+            (duplicate_of, source_ids),
+        ).fetchall()
+    return conn.execute(
+        """
+        SELECT id, source_id, false AS canonical FROM articles
+        WHERE duplicate_of = %s AND source_id = ANY(%s)
+        ORDER BY id
+        """,
+        (article_id, source_ids),
+    ).fetchall()
 
 
 def article_images(conn, article_id: int):
@@ -250,12 +270,12 @@ def article_mentions(conn, article_id: int):
 
 
 def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
-    """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。"""
+    """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。提示词版本旧的照常返回，调用方再排队重写。"""
     if not article_ids:
         return {}
     rows = conn.execute(
         """
-        SELECT d.article_id, d.summary, d.points, d.tags, d.model
+        SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
         WHERE d.article_id = ANY(%s)
@@ -267,7 +287,7 @@ def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
 
 def article_chunks(conn, article_id: int):
     return conn.execute(
-        "SELECT ord, heading, body FROM article_chunks WHERE article_id = %s ORDER BY ord",
+        "SELECT ord, heading, body, lang, anchor FROM article_chunks WHERE article_id = %s ORDER BY ord",
         (article_id,),
     ).fetchall()
 
@@ -279,12 +299,47 @@ def source_stats(conn, source_ids: list[str]) -> dict[str, dict]:
         """
         SELECT source_id, count(*)::int AS n, min(published_at) AS first_at, max(published_at) AS last_at
         FROM articles
-        WHERE source_id = ANY(%s)
+        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
         GROUP BY source_id
         """,
         (source_ids,),
     ).fetchall()
     return {row["source_id"]: row for row in rows}
+
+
+def recent_publish_times(conn, source_ids: list[str], per_source: int = 31) -> dict[str, list]:
+    """每个来源最近几十篇的发布时间，新的在前。用来看平时多久发一篇、现在是不是断更了。"""
+    if not source_ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT source_id, published_at FROM (
+          SELECT source_id, published_at,
+                 row_number() OVER (PARTITION BY source_id ORDER BY published_at DESC) AS rn
+          FROM articles
+          WHERE source_id = ANY(%s) AND duplicate_of IS NULL AND published_at IS NOT NULL
+            AND published_at <= now() + interval '1 day'
+        ) recent
+        WHERE rn <= %s
+        ORDER BY source_id, published_at DESC
+        """,
+        (source_ids, per_source),
+    ).fetchall()
+    found: dict[str, list] = {}
+    for row in rows:
+        found.setdefault(row["source_id"], []).append(row["published_at"])
+    return found
+
+
+def last_imports(conn, source_ids: list[str]) -> dict[str, object]:
+    """每个来源最近一次导入的时间（导入命令写进 app_state 的 import:<来源>）。"""
+    if not source_ids:
+        return {}
+    rows = conn.execute(
+        "SELECT key, updated_at FROM app_state WHERE key = ANY(%s)",
+        (["import:" + source_id for source_id in source_ids],),
+    ).fetchall()
+    return {row["key"].split(":", 1)[1]: row["updated_at"] for row in rows}
 
 
 def latest_articles(conn, source_ids: list[str], limit: int = 3):
@@ -294,7 +349,7 @@ def latest_articles(conn, source_ids: list[str], limit: int = 3):
         """
         SELECT id, source_id, title, published_at
         FROM articles
-        WHERE source_id = ANY(%s)
+        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
         ORDER BY published_at DESC NULLS LAST, id DESC
         LIMIT %s
         """,
@@ -350,7 +405,7 @@ def day_offset(conn, source_ids: list[str], day) -> int:
         f"""
         SELECT count(DISTINCT {_shanghai_day()}) AS n
         FROM articles
-        WHERE source_id = ANY(%s)
+        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date > %s
         """,
@@ -367,7 +422,7 @@ def nearest_day(conn, source_ids: list[str], day):
         """
         SELECT max((published_at AT TIME ZONE 'Asia/Shanghai')::date) AS d
         FROM articles
-        WHERE source_id = ANY(%s)
+        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date <= %s
         """,
@@ -456,7 +511,7 @@ def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 5
         """
         SELECT id, source_id, title, published_at, left(body_text, 2000) AS body_text
         FROM articles
-        WHERE source_id = ANY(%s)
+        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN %s AND %s
         ORDER BY published_at DESC, id DESC
@@ -489,7 +544,7 @@ def recent_answers(conn, limit: int = 20):
 def get_answer(conn, answer_id: int):
     return conn.execute(
         """
-        SELECT id, question, scope, answer, citations, model, status, error, terms, created_at, updated_at
+        SELECT id, question, scope, answer, citations, model, status, error, terms, stats, created_at, updated_at
         FROM llm_answers
         WHERE id = %s
         """,
@@ -517,7 +572,7 @@ def list_companies(conn, source_ids: list[str]):
 def get_company(conn, company_id: int):
     return conn.execute(
         """
-        SELECT id, ticker, name_zh, name_en, market, aliases
+        SELECT id, ticker, name_zh, name_en, market, aliases, alias_rules
         FROM companies
         WHERE id = %s
         """,

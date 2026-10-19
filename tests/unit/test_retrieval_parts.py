@@ -39,12 +39,12 @@ def _query(**overrides) -> Query:
     return Query(**base)
 
 
-def _passage(article_id: int, ord_: int, score: float, year: int, *, coverage: float = 1.0, body: str = "正文" * 50):
+def _passage(article_id: int, ord_: int, score: float, year: int, *, coverage: float = 1.0, body: str | None = None):
     return Passage(
         article_id=article_id,
         ord=ord_,
         heading="",
-        body=body,
+        body=body or f"第{article_id}篇第{ord_}段的正文。" * 10,
         title=f"第{article_id}篇",
         source_id="fangwei-mp",
         published_at=datetime(year, 6, 1, tzinfo=SHANGHAI),
@@ -74,6 +74,17 @@ def test_select_caps_each_article_and_drops_weak_tail():
     passages = [_passage(1, i, 10 - i, 2024) for i in range(5)] + [_passage(2, 0, 0.5, 2024)]
     picked = select(passages, _query(), BUDGETS["display"])
     assert [(p.article_id, p.ord) for p in picked] == [(1, 0), (1, 1)]
+
+
+def test_select_gives_the_same_paragraph_once():
+    quoted = "腾讯的广告加载率还在提升，视频号是新的广告库存，商家的投放在往这里挪。"
+    passages = [
+        _passage(1, 0, 9.0, 2024, body=quoted),
+        _passage(2, 0, 8.0, 2024, body=quoted + " "),
+        _passage(3, 0, 7.0, 2024),
+    ]
+    picked = select(passages, _query(), BUDGETS["display"])
+    assert [p.article_id for p in picked] == [1, 3]
 
 
 def test_select_drops_partial_matches_when_full_matches_are_plenty():

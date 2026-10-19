@@ -68,6 +68,57 @@
   </ul>
 </section>
 {% endif %}
+{% if views and (views.filters[0].count or views.pending) %}
+<section class="views" id="views" aria-label="观点">
+  <div class="list-tools">
+    <h2>观点</h2>
+    <nav class="pills" aria-label="观点筛选">
+      {% for item in views.filters %}
+      {% set q = (views.base ~ "&" if views.base else "") ~ ("views=" ~ item.key if item.key else "") %}
+      <a href="/companies/{{ company.id }}{% if q %}?{{ q | trim('&') }}{% endif %}#views" {% if views.kind == item.key %}aria-current="page"{% endif %}><span>{{ item.label }}</span><span class="num">{{ item.count }}</span></a>
+      {% endfor %}
+    </nav>
+  </div>
+  {% if views.pending %}<p class="quiet views-pending">还有 <span class="num">{{ views.pending }}</span> 篇在整理</p>{% endif %}
+  {% if views["items"] %}
+  <ol class="view-list">
+    {% for item in views["items"] %}
+    <li class="view stance-{{ item.stance or 'none' }}">
+      <p class="item-meta">
+        <time class="num">{{ item.date }}</time>
+        <span aria-hidden="true">·</span>
+        <a href="/companies/{{ company.id }}?author={{ item.author | urlencode }}#views">{{ item.author }}</a>
+        {% if item.stance_label %}<span class="stance stance-{{ item.stance }}">{{ item.stance_label }}</span>{% endif %}
+        {% if item.changed %}<span class="stance-change">{{ item.previous_label }} → {{ item.stance_label }}</span>{% endif %}
+      </p>
+      <p class="view-judgment">{{ item.judgment }}</p>
+      {% if item.mechanism %}<p class="view-mechanism"><span class="view-label">机制</span>{{ item.mechanism }}</p>{% endif %}
+      {% if item.risks or item.falsifiers or item.metrics %}
+      <dl class="view-extra">
+        {% if item.risks %}<dt>风险</dt><dd><ul>{% for line in item.risks %}<li>{{ line }}</li>{% endfor %}</ul></dd>{% endif %}
+        {% if item.falsifiers %}<dt>推翻条件</dt><dd><ul>{% for line in item.falsifiers %}<li>{{ line }}</li>{% endfor %}</ul></dd>{% endif %}
+        {% if item.metrics %}<dt>验证指标</dt><dd><ul>{% for line in item.metrics %}<li>{{ line }}</li>{% endfor %}</ul></dd>{% endif %}
+      </dl>
+      {% endif %}
+      {% if item.quote %}<blockquote class="view-quote"><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.quote }}</a></blockquote>{% endif %}
+      <p class="view-source"><a href="/articles/{{ item.article_id }}">{{ item.title }}</a></p>
+    </li>
+    {% endfor %}
+  </ol>
+  {% set vprefix = "/companies/" ~ company.id ~ "?" ~ ((views.base ~ "&") if views.base else "") ~ (("views=" ~ views.kind ~ "&") if views.kind else "") %}
+  {% if views.pages > 1 %}
+  <nav class="pager" aria-label="观点分页">
+    {% if views.page > 1 %}<a href="{{ vprefix }}vpage={{ views.page - 1 }}#views">上一页</a>{% endif %}
+    <span class="here num">{{ views.page }}</span>
+    <span class="quiet">/ {{ views.pages }}</span>
+    {% if views.page < views.pages %}<a href="{{ vprefix }}vpage={{ views.page + 1 }}#views">下一页</a>{% endif %}
+  </nav>
+  {% endif %}
+  {% elif views.kind %}
+  <p class="empty">没有。</p>
+  {% endif %}
+</section>
+{% endif %}
 <section class="company-articles" aria-label="文章">
   <div class="list-tools">
     <nav class="pills" aria-label="提及深度">
