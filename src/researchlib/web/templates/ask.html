@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="page-head">
+  <h1>问库</h1>
+  <p class="lede">先在库里召回相关段落，再交给 {{ model }} 只依据这些段落作答。每句后面的 [n] 链到原文段落。</p>
+</header>
+{% if not llm_ready %}
+<p class="banner">还没有配置 Grok。现在只返回召回的原文段落。配置方法见 docs/llm.md。</p>
+{% endif %}
+<form class="ask-form" action="/ask" method="post">
+  <label class="sr" for="ask-q">问题</label>
+  <textarea id="ask-q" name="q" rows="3" maxlength="500" placeholder="例如：方伟最近怎么看腾讯的游戏业务？" required>{{ question }}</textarea>
+  <div class="filter-grid">
+    <label>作者
+      <select name="author">
+        <option value="">全部作者</option>
+        {% for name in authors %}<option value="{{ name }}" {% if filters.author == name %}selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>
+    <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
+  </div>
+  {% if filters.source %}<input type="hidden" name="source" value="{{ filters.source }}">{% endif %}
+  {% if company %}
+  <input type="hidden" name="company" value="{{ company.id }}">
+  <p class="filter-note">只用提到 <a href="/companies/{{ company.id }}">{{ company.name_zh }}</a> 的文章。</p>
+  {% endif %}
+  {% if article %}
+  <input type="hidden" name="article" value="{{ article.id }}">
+  <p class="filter-note">只用这篇：<a href="/articles/{{ article.id }}">{{ article.title }}</a></p>
+  {% endif %}
+  <button type="submit">提问</button>
+  <p class="quiet ask-note">提交后要等模型推理完，可能要一两分钟。</p>
+</form>
+{% if result %}
+<section class="answer" aria-label="回答">
+  <h2>{{ result.question }}</h2>
+  {% if result.error %}<p class="banner">{{ result.error }}</p>{% endif %}
+  {% if result.answer %}
+  <div class="prose answer-body">{{ result.answer | answer_html }}</div>
+  <p class="quiet">{% if result.model %}{{ result.model }}{% endif %}{% if result.created %} · {{ result.created }}{% endif %}{% if result.id %} · <a href="/api/v1/answers/{{ result.id }}">JSON</a>{% endif %}</p>
+  {% endif %}
+  {% if result.citations %}
+  <h3>出处</h3>
+  <ol class="citations">
+    {% for item in result.citations %}
+    <li id="c-{{ item.n }}" class="{% if item.cited %}cited{% endif %}">
+      <p class="item-meta"><span class="num">[{{ item.n }}]</span> <a href="{{ item.url }}">{{ item.title }}</a> · {{ item.author }} · {{ item.date }}{% if item.heading %} · § {{ item.heading }}{% endif %}</p>
+      <p class="item-excerpt">{{ item.text }}</p>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+</section>
+{% endif %}
+{% if history %}
+<section class="card panel">
+  <h2>最近问过</h2>
+  <ul class="sibling-list">
+    {% for row in history %}<li><a href="/ask/{{ row.id }}">{{ row.question }}</a></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

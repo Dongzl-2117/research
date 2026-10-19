@@ -17,18 +17,30 @@
   {% if company.aliases %}
   <p class="aliases">简称：{{ company.aliases | join("、") }}</p>
   {% endif %}
+  <p class="head-actions">
+    <a class="btn ask-btn" href="/ask?preset=company&amp;company={{ company.id }}{% if active_author %}&amp;author={{ active_author | urlencode }}{% endif %}">问 AI：库里怎么看{{ company.name_zh }}</a>
+    <a class="quiet" href="/search?company={{ company.id }}&amp;q={{ company.name_zh | urlencode }}">在提到它的文章里检索</a>
+  </p>
 </header>
+{% if author_counts %}
+<nav class="pills" aria-label="作者">
+  <a href="/companies/{{ company.id }}{% if active_depth %}?depth={{ active_depth }}{% endif %}" {% if not active_author %}aria-current="page"{% endif %}><span>全部作者</span><span class="num">{{ author_total }}</span></a>
+  {% for item in author_counts %}
+  <a href="/companies/{{ company.id }}?author={{ item.name | urlencode }}{% if active_depth %}&amp;depth={{ active_depth }}{% endif %}" {% if active_author == item.name %}aria-current="page"{% endif %}><span>{{ item.name }}</span><span class="num">{{ item.count }}</span></a>
+  {% endfor %}
+</nav>
+{% endif %}
 <ul class="chips">
   {% for chip in chips %}
   <li>
-    <a class="depth depth-{{ chip.key }}" href="/companies/{{ company.id }}?depth={{ chip.key }}" {% if active_depth == chip.key %}aria-current="page"{% endif %}>
+    <a class="depth depth-{{ chip.key }}" href="/companies/{{ company.id }}?depth={{ chip.key }}{% if active_author %}&amp;author={{ active_author | urlencode }}{% endif %}" {% if active_depth == chip.key %}aria-current="page"{% endif %}>
       {{ chip.label }} <strong>{{ chip.count }}</strong>
     </a>
   </li>
   {% endfor %}
 </ul>
 {% if active_depth %}
-<p class="filter-note"><a href="/companies/{{ company.id }}">看全部深度</a></p>
+<p class="filter-note"><a href="/companies/{{ company.id }}{% if active_author %}?author={{ active_author | urlencode }}{% endif %}">看全部深度</a></p>
 {% endif %}
 {% if chart %}
 <figure class="chart-wrap">
@@ -39,10 +51,11 @@
 <p class="empty">还没有带日期的提及。</p>
 {% endif %}
 {% if days %}
-{{ day_feed(days) }}
+{{ day_feed(days, day_scope) }}
 {% else %}
 <p class="empty">没有文章提到这家公司。</p>
 {% endif %}
-{{ pager(page, pages, "/companies/" ~ company.id ~ "?" ~ ("depth=" ~ active_depth ~ "&" if active_depth else "") ~ "page=" ~ (page - 1), "/companies/" ~ company.id ~ "?" ~ ("depth=" ~ active_depth ~ "&" if active_depth else "") ~ "page=" ~ (page + 1)) }}
+{% set prefix = "/companies/" ~ company.id ~ "?" ~ (filter_query ~ "&" if filter_query else "") %}
+{{ pager(page, pages, prefix ~ "page=" ~ (page - 1), prefix ~ "page=" ~ (page + 1)) }}
 <p class="count num">{{ total }} 篇</p>
 {% endblock %}

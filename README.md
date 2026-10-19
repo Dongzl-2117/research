@@ -15,11 +15,14 @@ docker compose up -d --build
 
 ## 页面
 
-- 按天：首页。文章按上海日历从新到旧，同一天里也是新的在前。翻页按整天翻
-- 作者：按作者查看他的文章，同样按天排列
-- 公司：按公司查看提到它的文章
-- 检索：在标题、作者、正文里做中文全文检索
-- 文章：原文 Markdown，图片从本机磁盘读；英文稿可站内 Grok 译成中英对照（见 [docs/translate.md](docs/translate.md)）
+- 按天：首页。文章按上海日历从新到旧，同一天里也是新的在前。翻页按整天翻，可以跳到某一天（`/?date=YYYY-MM-DD`）。卡片带提到的公司和 LLM 摘要，每天可以让 AI 整合
+- 作者：每位作者的篇数、时间跨度、最近一篇、常深入谈的公司；作者页可以只在他的文章里检索
+- 公司：默认只列有提及的公司，带深入篇数和最近提及日期。公司页每篇显示提及原句，可按作者、深度筛
+- 检索：中文全文检索，可按作者、公司、日期过滤，翻页，检索词是公司或作者名时直达
+- 问库：先在库里召回段落，再让 Grok 只依据这些段落作答，每句带出处
+- 文章：原文 Markdown，图片从本机磁盘读；英文稿可站内 Grok 译成中英对照（见 [docs/translate.md](docs/translate.md)）；列出提到的公司，带 Markdown / JSON 导出
+
+给 AI 用的 JSON 接口、MCP 和 `/llms.txt`，以及与 AIHOT 共用的 Grok 登录，见 [docs/llm.md](docs/llm.md)。
 
 ## 来源
 
@@ -31,7 +34,7 @@ docker compose up -d --build
 
 Postgres 使用 zhparser 做中文全文检索。正文在库里，图片在 `data/images`。不要把 `.env`、归档压缩包或 `data/` 提交进仓库。
 
-语义检索留了接口，但没有安装 pgvector，也没有向量列。以后可以加一张 `article_embeddings` 表，不必改 `articles`。
+正文另外切成段落块存在 `article_chunks`，检索片段和问答引用落在块上。语义检索留了接口，但没有安装 pgvector，也没有向量列。以后可以给 `article_chunks` 配一张向量表，不必改 `articles`。
 
 ## 开发
 

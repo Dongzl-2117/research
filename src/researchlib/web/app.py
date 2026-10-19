@@ -7,12 +7,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from researchlib.config import Settings, assert_bind_allowed
 from researchlib.db import prepare
+from researchlib.web.api import api
+from researchlib.web.mcp import mcp
 from researchlib.web.routes import TEMPLATES, render_page, router
 
 STATIC_DIR = str(Path(__file__).resolve().parent / "static")
@@ -21,6 +23,7 @@ logger = logging.getLogger("researchlib")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 迁移、白名单、公司种子，并给缺块的文章补切。不在启动时跑 research-digest。
     conn = prepare(app.state.settings)
     conn.close()
     yield
@@ -37,6 +40,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings or Settings.from_env()
     app.state.sources_mtime = None
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.include_router(api)
+    app.include_router(mcp)
     app.include_router(router)
 
     @app.middleware("http")
@@ -49,8 +54,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers["Cache-Control"] = "private, no-store"
         return response
 
+    # 同时接管 HTTPException，否则 FastAPI 默认把 404 回成 {"detail": "Not Found"}，404 页面从来不出现。
+    @app.exception_handler(StarletteHTTPException)
     @app.exception_handler(Exception)
     async def server_error(request: Request, exc: Exception):
+        if request.url.path.startswith("/api/"):
+            status = exc.status_code if isinstance(exc, StarletteHTTPException) else 500
+            if status == 500:
+                logger.exception("接口处理失败")
+            detail = exc.detail if isinstance(exc, StarletteHTTPException) and isinstance(exc.detail, str) else ""
+            return JSONResponse({"error": {"status": status, "message": detail or "出错了"}}, status_code=status)
         if isinstance(exc, StarletteHTTPException):
             if exc.status_code == 404:
                 return render_page(request, "404.html", {"title": "没有这一页"}, status_code=404)

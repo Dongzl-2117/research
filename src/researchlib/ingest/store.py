@@ -6,6 +6,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from researchlib.chunks import replace_chunks
 from researchlib.images import sync_article_images
 from researchlib.ingest.model import IngestReport, ParsedDoc
 from researchlib.mentions import (
@@ -124,6 +125,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         status = "unchanged"
     if status != "unchanged":
         replace_mentions(conn, article_id, mentions_for_document(matcher, doc.title, doc.body_md))
+        replace_chunks(conn, article_id, doc.title, doc.body_md)
     stored, linked, missing = sync_article_images(
         conn,
         article_id=article_id,

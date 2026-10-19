@@ -1,39 +1,63 @@
 {% extends "base.html" %}
-{% from "_feed.html" import card_list %}
+{% from "_feed.html" import card_list, pager %}
 {% block body %}
 <header class="page-head">
   <h1>检索</h1>
-  <p class="lede">搜标题、作者和正文。标题里命中的排在前面。</p>
+  <p class="lede">搜标题、作者和正文。标题里命中的排在前面。多个词默认同时命中；用 <code>or</code> 表示任一，<code>-词</code> 排除，引号表示连在一起。</p>
 </header>
 <form class="search-bar" action="/search" method="get" role="search">
   {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
+  {% if filters.company %}<input type="hidden" name="company" value="{{ filters.company }}">{% endif %}
   <div class="field">
     <label class="sr" for="q">搜索标题、作者或正文</label>
     <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、作者或正文" maxlength="80" autocomplete="off" enterkeyhint="search">
+    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、作者或正文" maxlength="120" autocomplete="off" enterkeyhint="search">
   </div>
   <button type="submit">搜索</button>
+  <details class="search-filters" {% if has_filter %}open{% endif %}>
+    <summary>范围</summary>
+    <div class="filter-grid">
+      <label>作者
+        <select name="author">
+          <option value="">全部作者</option>
+          {% for name in authors %}<option value="{{ name }}" {% if filters.author == name %}selected{% endif %}>{{ name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>
+      <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
+    </div>
+  </details>
 </form>
+{% if company %}
+<p class="filter-note">只看提到 <a href="/companies/{{ company.id }}">{{ company.name_zh }}</a> 的文章。<a href="/search?q={{ query | urlencode }}">去掉这个条件</a></p>
+{% endif %}
 {% if not query %}
 <p class="empty">输入关键词，搜标题、作者或正文。</p>
 {% else %}
-<nav class="pills search-pills" aria-label="来源">
-  <a href="/search?q={{ query | urlencode }}" {% if not active_source %}aria-current="page"{% endif %}><span>全部</span><span class="num">{{ total_all }}</span></a>
-  {% for item in source_counts %}
-  <a href="/search?q={{ query | urlencode }}&amp;source={{ item.id }}" {% if active_source == item.id %}aria-current="page"{% endif %}><span>{{ item.name }}</span><span class="num">{{ item.count }}</span></a>
-  {% endfor %}
-</nav>
-<section class="card panel">
-  <h2>作者</h2>
-  <ul class="stat-list">
+{% if entity_companies or entity_authors %}
+<p class="entity-row">直达
+  {% for item in entity_companies %}<a class="tag" href="/companies/{{ item.id }}">{{ item.name_zh }}{% if item.ticker %} <span class="ticker">{{ item.ticker }}</span>{% endif %}</a>{% endfor %}
+  {% for name in entity_authors %}<a class="tag" href="/authors/{{ name | urlencode }}">作者 · {{ name }}</a>{% endfor %}
+</p>
+{% endif %}
+<div class="facets">
+  <nav class="pills search-pills" aria-label="来源">
+    <a href="/search?{{ base_query }}" {% if not active_source %}aria-current="page"{% endif %}><span>全部来源</span><span class="num">{{ total_all }}</span></a>
+    {% for item in source_counts %}{% if item.count or active_source == item.id %}
+    <a href="/search?{{ base_query }}&amp;source={{ item.id }}" {% if active_source == item.id %}aria-current="page"{% endif %}><span>{{ item.name }}</span><span class="num">{{ item.count }}</span></a>
+    {% endif %}{% endfor %}
+  </nav>
+  <ul class="stat-list author-facets" aria-label="各作者命中">
     {% for item in author_counts %}
     <li><span>{{ item.name }}</span><strong>{{ item.count }}</strong></li>
     {% endfor %}
   </ul>
-</section>
+</div>
 {% if results %}
+<p class="filter-note"><a class="btn ask-btn" href="/ask?{{ ask_query }}">把这个问题交给 AI，基于命中的原文作答</a></p>
 {{ card_list(results) }}
-<p class="count">命中 {{ total }} 篇{% if results|length < total %}，这里显示相关度最高的 {{ results|length }} 篇{% endif %}</p>
+{{ pager(page, pages, "/search?" ~ page_query ~ "&page=" ~ (page - 1), "/search?" ~ page_query ~ "&page=" ~ (page + 1)) }}
+<p class="count">命中 {{ total }} 篇{% if pages > 1 %}，第 {{ page }} / {{ pages }} 页{% endif %}</p>
 {% else %}
 <p class="empty">没有找到「{{ query }}」。</p>
 <p class="filter-note">换个词，或从 <a href="/authors">作者</a>、<a href="/companies">公司</a> 进去看。</p>
