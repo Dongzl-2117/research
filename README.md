@@ -19,7 +19,7 @@ docker compose up -d --build
 - 作者：按作者查看他的文章，同样按天排列
 - 公司：按公司查看提到它的文章
 - 检索：在标题、作者、正文里做中文全文检索
-- 文章：原文 Markdown，图片从本机磁盘读
+- 文章：原文 Markdown，图片从本机磁盘读；英文稿可站内 Grok 译成中英对照（见 [docs/translate.md](docs/translate.md)）
 
 ## 来源
 

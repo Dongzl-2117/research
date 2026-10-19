@@ -44,3 +44,10 @@ sources:
     kind: feishu
     enabled: true
     description: 飞书文档归档入库，保持启用。
+
+  - id: stratechery
+    name: Stratechery
+    author: Ben Thompson
+    kind: markdown
+    enabled: false
+    description: Ben Thompson / Stratechery 全文归档。Passport 全文、Daily≥5500 字门槛；抓完再启用并入库，游客半截不入库。入库后由站内 Grok OAuth 自动译制。

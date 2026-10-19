@@ -17,6 +17,7 @@ from researchlib.render import render_body
 from researchlib.snippets import highlight_snippet, highlight_title
 from researchlib.sources import enabled_sources, load_sources, sync_sources
 from researchlib.textutil import excerpt, split_frontmatter, strip_duplicate_title
+from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.web import queries
 from researchlib.web.present import (
     FEED_ZONE,
@@ -271,8 +272,9 @@ def author_page(request: Request, author: str):
     )
 
 
-@router.get("/articles/{article_id}")
-def article_page(request: Request, article_id: int):
+
+def _article_view(request: Request, article_id: int, mode: str):
+    """mode: auto | zh | pairs | original。auto 有对照则对照，否则单语。"""
     settings = request.app.state.settings
     with database(request) as conn:
         sources = active_sources(request, conn)
@@ -288,12 +290,51 @@ def article_page(request: Request, article_id: int):
         if source.kind in {"feishu", "markdown"} and parent:
             siblings = queries.sibling_articles(conn, source.id, article_id, parent)
         banner = queries.sample_state(conn, ids)
+        translation = queries.get_translation(conn, article_id)
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     _frontmatter, body_md = split_frontmatter(article["body_md"])
     if fmt != "html":
         body_md = strip_duplicate_title(body_md, article["title"])
-    body = render_body(body_md, mapping, fmt)
+    original_html = stamp_paragraph_ids(str(render_body(body_md, mapping, fmt)))
+
+    has_translation = bool(translation and translation.get("body_html"))
+    # 原文已改、译文 hash 对不上时仍可展示旧译文，但标 incomplete
+    translation_complete = bool(
+        translation
+        and translation.get("complete")
+        and translation.get("content_hash") == article.get("content_hash")
+    )
+    zh_html = stamp_paragraph_ids(translation["body_html"]) if has_translation else None
+    raw_pairs = bilingual_pairs(original_html, zh_html) if has_translation and zh_html else None
+    pairs = None
+    if raw_pairs:
+        pairs = [
+            {
+                "en": Markup(p.en),
+                "zh": Markup(p.zh) if p.zh else None,
+                "anchor": p.anchor,
+            }
+            for p in raw_pairs
+        ]
+
+    if mode == "original":
+        body_language = "original"
+    elif mode == "zh":
+        body_language = "zh" if zh_html else "original"
+    elif mode == "pairs":
+        body_language = "pairs" if pairs else ("zh" if zh_html else "original")
+    else:
+        body_language = "pairs" if pairs else ("zh" if zh_html else "original")
+
+    if body_language == "pairs":
+        body_html = None
+    elif body_language == "zh":
+        body_html = Markup(zh_html) if zh_html else None
+    else:
+        body_html = Markup(original_html)
+
+    original_url = (article["raw_meta"] or {}).get("url") or ""
     return render_page(
         request,
         "article.html",
@@ -306,12 +347,34 @@ def article_page(request: Request, article_id: int):
             "time": format_clock(article["published_at"], settings.display_timezone),
             "iso": format_iso(article["published_at"], settings.display_timezone),
             "relative": relative_label(article["published_at"], settings.display_timezone),
-            "body_html": body,
+            "body_html": body_html,
+            "body_language": body_language,
+            "has_translation": has_translation,
+            "translation_complete": translation_complete,
+            "pairs": pairs or [],
+            "title_zh": (translation or {}).get("title_zh") or "",
+            "original_url": original_url,
             "siblings": siblings,
             "sources": sources,
             "sample_banner": banner,
         },
     )
+
+
+@router.get("/articles/{article_id}")
+def article_page(request: Request, article_id: int):
+    return _article_view(request, article_id, "auto")
+
+
+@router.get("/articles/{article_id}/zh")
+def article_page_zh(request: Request, article_id: int):
+    return _article_view(request, article_id, "zh")
+
+
+@router.get("/articles/{article_id}/original")
+def article_page_original(request: Request, article_id: int):
+    return _article_view(request, article_id, "original")
+
 
 
 @router.get("/search")

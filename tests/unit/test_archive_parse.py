@@ -32,7 +32,11 @@ def test_whitelist_shape():
     disabled = {source.id: source.kind for source in sources if not source.enabled}
     assert disabled == {
         "linwenfeng-mp": "wechat_mp",
+        "stratechery": "markdown",
     }
+    strat = next(source for source in sources if source.id == "stratechery")
+    assert strat.kind == "markdown"
+    assert strat.enabled is False
 
 
 def test_rejected_source_does_not_prepare(monkeypatch):

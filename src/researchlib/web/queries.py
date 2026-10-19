@@ -109,7 +109,7 @@ def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
 def get_article(conn, article_id: int, source_ids: list[str]):
     return conn.execute(
         """
-        SELECT id, source_id, title, published_at, body_md, body_text, raw_meta
+        SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash
         FROM articles
         WHERE id = %s AND source_id = ANY(%s)
         """,
@@ -288,3 +288,14 @@ def company_articles(conn, company_id: int, source_ids: list[str], depth: str | 
         """,
         (company_id, source_ids, depth, depth, limit, offset),
     ).fetchall()
+
+
+def get_translation(conn, article_id: int) -> dict | None:
+    return conn.execute(
+        """
+        SELECT article_id, content_hash, title_zh, body_html, body_text, complete, origin, segments
+        FROM article_translations
+        WHERE article_id = %s AND lang = 'zh'
+        """,
+        (article_id,),
+    ).fetchone()

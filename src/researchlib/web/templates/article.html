@@ -17,7 +17,43 @@
       {% if relative %}<span aria-hidden="true">·</span><span>{{ relative }}</span>{% endif %}
     </p>
     <h1>{{ article.title }}</h1>
-    <div class="prose">{{ body_html }}</div>
+    {% if title_zh and body_language != 'original' %}
+    <p class="quiet" style="margin-top:8px;color:var(--ink-4);font-size:14px">{{ title_zh }}</p>
+    {% endif %}
+
+    {% if has_translation or body_html %}
+    <div class="body-toolbar">
+      <span class="body-label">
+        {% if body_language == 'pairs' %}正文 · 中英对照
+        {% elif body_language == 'zh' %}正文 · AI 翻译
+        {% elif has_translation %}正文 · 原文
+        {% else %}正文{% endif %}
+      </span>
+      {% if has_translation %}
+      <nav class="lang-tabs" aria-label="正文语言">
+        <a href="/articles/{{ article.id }}" {% if body_language == 'pairs' %}aria-current="page"{% endif %}>对照</a>
+        <a href="/articles/{{ article.id }}/zh" {% if body_language == 'zh' %}aria-current="page"{% endif %}>中文</a>
+        <a href="/articles/{{ article.id }}/original" {% if body_language == 'original' %}aria-current="page"{% endif %}>原文</a>
+      </nav>
+      {% endif %}
+    </div>
+    {% if has_translation and not translation_complete and body_language != 'original' %}
+    <p class="body-note">{% if body_language == 'pairs' %}部分段落暂无译文，保留原文。{% else %}译文尚不完整，完整内容请切换到原文。{% endif %}</p>
+    {% endif %}
+    {% endif %}
+
+    {% if body_language == 'pairs' and pairs %}
+    <div class="bilingual">
+      {% for p in pairs %}
+      <div class="bilingual-pair"{% if p.anchor %} id="{{ p.anchor }}"{% endif %}>
+        <div class="prose bilingual-en with-toolbar" lang="en">{{ p.en }}</div>
+        {% if p.zh %}<div class="prose bilingual-zh with-toolbar">{{ p.zh }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% elif body_html %}
+    <div class="prose with-toolbar">{{ body_html }}</div>
+    {% endif %}
   </article>
   <aside class="reader-aside">
     <section class="card panel">
@@ -25,6 +61,7 @@
       <p><a href="/?source={{ source.id }}">{{ source.name }}</a></p>
       <p class="quiet"><a href="/authors/{{ source.author | urlencode }}">{{ source.author }}</a></p>
       {% if source.description %}<p class="quiet">{{ source.description }}</p>{% endif %}
+      {% if original_url %}<p class="quiet"><a href="{{ original_url }}" rel="noopener noreferrer" target="_blank">打开原文</a></p>{% endif %}
     </section>
     {% if siblings %}
     <section class="card panel">
