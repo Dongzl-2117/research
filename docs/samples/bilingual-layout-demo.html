@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf9f6">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#13191c">
+  <title>Aggregation Theory (demo) · 投资研究库</title>
+  <link rel="canonical" href="https://investment.zldong.com/articles/8879">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("research-theme");
+        if (t === '"light"' || t === '"dark"') t = JSON.parse(t);
+        if (t !== "light" && t !== "dark") {
+          t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "light");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/site.css">
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="投资研究库 首页"><i aria-hidden="true"></i>投资研究库</a>
+      <nav aria-label="主导航">
+        <div class="nav-label">内容</div>
+        <div class="nav-group">
+          <a class="nav-link" href="/" aria-current="page">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h9.5L19 9v10.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 4.8V9h4.2M8 13h8M8 16.5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>按天</span>
+          </a>
+          <a class="nav-link" href="/authors" >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6.2 19.2c.8-2.6 2.8-4 5.8-4s5 1.4 5.8 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>作者</span>
+          </a>
+          <a class="nav-link" href="/companies" >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 20.5h15M6.5 20.5V6.2L12 4l5.5 2.2v14.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 20.5v-3.2h4v3.2M9.2 9h.1M14.7 9h.1M9.2 12.5h.1M14.7 12.5h.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>公司</span>
+          </a>
+          <a class="nav-link" href="/search" >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>检索</span>
+          </a>
+        </div>
+        
+        <div class="nav-label">来源</div>
+        <div class="nav-group">
+          
+          <a class="nav-link" href="/?source=fangwei-mp" >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            <span>方伟公众号</span>
+          </a>
+          
+          <a class="nav-link" href="/?source=fangwei-zsxq" >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            <span>方伟知识星球</span>
+          </a>
+          
+          <a class="nav-link" href="/?source=chengfengpolang" >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            <span>乘风破浪</span>
+          </a>
+          
+          <a class="nav-link" href="/?source=gudujinhuati" >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            <span>孤独进化体</span>
+          </a>
+          
+          <a class="nav-link" href="/?source=linwenfeng-feishu" >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            <span>林文丰飞书</span>
+          </a>
+          
+        </div>
+        
+      </nav>
+      <div class="theme" role="radiogroup" aria-label="外观">
+  <span class="theme-thumb" data-theme-thumb aria-hidden="true"></span>
+  <button type="button" role="radio" data-theme-option="dark" aria-checked="false" title="深色">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 13.5A6.2 6.2 0 0 1 9 4.2 6.5 6.5 0 1 0 15.5 13.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+    <span class="sr">深色</span>
+  </button>
+  <button type="button" role="radio" data-theme-option="system" aria-checked="true" title="跟随系统">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 19.5h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <span class="sr">跟随系统</span>
+  </button>
+  <button type="button" role="radio" data-theme-option="light" aria-checked="false" title="浅色">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <span class="sr">浅色</span>
+  </button>
+</div>
+    </aside>
+    <main id="main" tabindex="-1">
+      <div class="mobile-bar">
+        <a class="brand" href="/" aria-label="投资研究库 首页"><i aria-hidden="true"></i>投资研究库</a>
+        <div class="theme" role="radiogroup" aria-label="外观">
+  <span class="theme-thumb" data-theme-thumb aria-hidden="true"></span>
+  <button type="button" role="radio" data-theme-option="dark" aria-checked="false" title="深色">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 13.5A6.2 6.2 0 0 1 9 4.2 6.5 6.5 0 1 0 15.5 13.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+    <span class="sr">深色</span>
+  </button>
+  <button type="button" role="radio" data-theme-option="system" aria-checked="true" title="跟随系统">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 19.5h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <span class="sr">跟随系统</span>
+  </button>
+  <button type="button" role="radio" data-theme-option="light" aria-checked="false" title="浅色">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <span class="sr">浅色</span>
+  </button>
+</div>
+      </div>
+      <div class="frame">
+        
+        
+<div class="reader-grid">
+  <article class="reader">
+    <div class="reader-top">
+      <a class="back" href="/?source=chengfengpolang">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5 8.5 12l6 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        返回
+      </a>
+    </div>
+    <p class="byline">
+      <a href="/?source=chengfengpolang">乘风破浪</a>
+      <span aria-hidden="true">·</span>
+      <a href="/authors/%E4%B9%98%E9%A3%8E%E7%A0%B4%E6%B5%AA">乘风破浪</a>
+      <span aria-hidden="true">·</span>
+      <time datetime="2026-10-19T12:38:42.853040+08:00">2026-10-19 12:38</time>
+      <span aria-hidden="true">·</span><span>刚刚</span>
+    </p>
+    <h1>Aggregation Theory (demo)</h1>
+    
+    <p class="quiet" style="margin-top:8px;color:var(--ink-4);font-size:14px">聚合理论（演示）</p>
+    
+
+    
+    <div class="body-toolbar">
+      <span class="body-label">
+        正文 · 中英对照
+        
+      </span>
+      
+      <nav class="lang-tabs" aria-label="正文语言">
+        <a href="/articles/8879" aria-current="page">对照</a>
+        <a href="/articles/8879/zh" >中文</a>
+        <a href="/articles/8879/original" >原文</a>
+      </nav>
+      
+    </div>
+    
+    
+
+    
+    <div class="bilingual">
+      
+      <div class="bilingual-pair" id="p-1">
+        <div class="prose bilingual-en with-toolbar" lang="en"><p>Aggregation Theory explains why platforms win.</p></div>
+        <div class="prose bilingual-zh with-toolbar"><p>聚合理论解释了平台为何会赢。</p></div>
+      </div>
+      
+      <div class="bilingual-pair" id="p-2">
+        <div class="prose bilingual-en with-toolbar" lang="en"><p>The complementary businesses become weak. That is the point.</p></div>
+        <div class="prose bilingual-zh with-toolbar"><p>配套业务会变弱。这正是关键所在。</p></div>
+      </div>
+      
+    </div>
+    
+  </article>
+  <aside class="reader-aside">
+    <section class="card panel">
+      <h2>来源</h2>
+      <p><a href="/?source=chengfengpolang">乘风破浪</a></p>
+      <p class="quiet"><a href="/authors/%E4%B9%98%E9%A3%8E%E7%A0%B4%E6%B5%AA">乘风破浪</a></p>
+      <p class="quiet">乘风破浪知识星球归档（md/、images/、raw/）</p>
+      <p class="quiet"><a href="https://stratechery.com/" rel="noopener noreferrer" target="_blank">打开原文</a></p>
+    </section>
+    
+  </aside>
+</div>
+
+        <footer class="colophon">
+          <p>私人归档，仅供本人阅读。站点放在 Cloudflare Access 后面，进程只通过本机回环地址对外提供。</p>
+        </footer>
+      </div>
+    </main>
+  </div>
+  <nav class="tabbar" aria-label="底部导航">
+    <a href="/" aria-current="page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h9.5L19 9v10.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 4.8V9h4.2M8 13h8M8 16.5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <span>按天</span>
+    </a>
+    <a href="/authors" >
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6.2 19.2c.8-2.6 2.8-4 5.8-4s5 1.4 5.8 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <span>作者</span>
+    </a>
+    <a href="/companies" >
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 20.5h15M6.5 20.5V6.2L12 4l5.5 2.2v14.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 20.5v-3.2h4v3.2M9.2 9h.1M14.7 9h.1M9.2 12.5h.1M14.7 12.5h.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <span>公司</span>
+    </a>
+    <a href="/search" >
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <span>检索</span>
+    </a>
+  </nav>
+  <script>
+    (function () {
+      var key = "research-theme";
+      function stored() {
+        try {
+          var t = localStorage.getItem(key);
+          if (t === '"light"' || t === '"dark"') return JSON.parse(t);
+          if (t === "light" || t === "dark") return t;
+        } catch (e) {}
+        return "system";
+      }
+      function resolved(mode) {
+        if (mode === "dark" || mode === "light") return mode;
+        return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      function paint(mode) {
+        document.documentElement.setAttribute("data-theme", resolved(mode));
+        document.querySelectorAll("[data-theme-option]").forEach(function (button) {
+          button.setAttribute("aria-checked", button.getAttribute("data-theme-option") === mode ? "true" : "false");
+        });
+        var index = mode === "dark" ? 0 : mode === "system" ? 1 : 2;
+        document.querySelectorAll("[data-theme-thumb]").forEach(function (thumb) {
+          thumb.style.transform = "translateX(" + (index * 100) + "%)";
+        });
+      }
+      function save(mode) {
+        try {
+          if (mode === "system") localStorage.removeItem(key);
+          else localStorage.setItem(key, JSON.stringify(mode));
+        } catch (e) {}
+        var next = function () { paint(mode); };
+        if (document.startViewTransition && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          document.startViewTransition(next);
+        } else {
+          next();
+        }
+      }
+      paint(stored());
+      document.querySelectorAll("[data-theme-option]").forEach(function (button) {
+        button.addEventListener("click", function () { save(button.getAttribute("data-theme-option")); });
+      });
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+        if (stored() === "system") paint("system");
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.key !== "/") return;
+        var target = event.target;
+        if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable) return;
+        var field = document.querySelector('input[name="q"], #company-filter');
+        if (!field || !field.getClientRects().length) return;
+        event.preventDefault();
+        field.focus();
+      });
+      document.querySelectorAll(".day-toggle").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var section = button.closest(".day");
+          var list = section.querySelector(".slots");
+          var open = button.getAttribute("aria-expanded") !== "false";
+          button.setAttribute("aria-expanded", open ? "false" : "true");
+          list.hidden = open;
+          var label = section.getAttribute("data-label") || "";
+          button.setAttribute("aria-label", (open ? "展开" : "收起") + label);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

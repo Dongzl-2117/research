@@ -894,3 +894,70 @@ tbody tr:hover td { background: var(--accent-softer); }
 @media (prefers-reduced-motion: reduce) {
   .theme-thumb, .chevron, .item-card, .slot-dot { transition: none; }
 }
+
+
+/* 中英对照：与 AIHOT 一致——每块英文在上（小一号、次要色），中文在下。媒体只在英文侧出现一次。 */
+.lang-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg-sunk);
+}
+.lang-tabs a {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 550;
+}
+.lang-tabs a[aria-current="page"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-thumb);
+}
+.body-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 28px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.body-toolbar .body-label { color: var(--ink-4); font-size: 12px; }
+.body-note {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-sunk);
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.prose.with-toolbar { margin-top: 16px; border-top: 0; padding-top: 0; }
+.bilingual { margin-top: 16px; }
+.bilingual-pair + .bilingual-pair { margin-top: 1.6em; }
+.bilingual-en.prose {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+  font-size: 14px;
+  line-height: 1.68;
+  color: var(--ink-4);
+}
+@media (min-width: 80rem) {
+  .bilingual-en.prose { font-size: 15px; }
+}
+.bilingual-en.prose :is(h2, h3, h4, h5) { font-size: 1em; margin-top: 1.4em; }
+.bilingual-en.prose p + p { margin-top: 0.8em; }
+.bilingual-zh.prose {
+  margin-top: 0.5em;
+  padding-top: 0;
+  border-top: 0;
+}

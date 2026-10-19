@@ -30,6 +30,8 @@ research-ingest-aihot = "researchlib.ingest.aihot:main"
 research-seed-sample = "researchlib.seed:main"
 research-rebuild-mentions = "researchlib.mentions:main"
 research-backfill-dates = "researchlib.backfill:main"
+research-xai-login = "researchlib.translate.cli_login:main"
+research-translate = "researchlib.translate.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -55,3 +57,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/researchlib/translate/prompts.py" = ["E501"]
+"src/researchlib/translate/xai_oauth.py" = ["E501"]

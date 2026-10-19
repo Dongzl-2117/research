@@ -49,6 +49,9 @@ services:
       AIHOT_MAP_FILE: /app/config/aihot_import.yaml
       DISPLAY_TIMEZONE: Asia/Shanghai
       AIHOT_DATABASE_URL: ${AIHOT_DATABASE_URL:-}
+      XAI_OAUTH_TOKEN_PATH: ${XAI_OAUTH_TOKEN_PATH:-/data/secrets/xai-oauth.json}
+      XAI_BASE_URL: ${XAI_BASE_URL:-https://api.x.ai/v1}
+      LLM_LONG_TIMEOUT_MS: ${LLM_LONG_TIMEOUT_MS:-1500000}
     ports:
       - "127.0.0.1:8088:8088"
     volumes:
