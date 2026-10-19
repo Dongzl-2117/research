@@ -58,6 +58,25 @@ _INCIDENTAL = re.compile(
 )
 _SENTENCE = re.compile(r"[^。！？!?\n；;]+[。！？!?\n；;]?")
 
+# 公众号页脚和分享提示。收「微信」之前先把这些整段抹掉，免得几乎每篇都记成提到腾讯。
+_PUBLISHER_NOISE = re.compile(
+    r"微信扫一扫|在微信中打开|微信搜索公众号|微信搜索|打开微信|"
+    r"分享到微信|分享到朋友圈|分享朋友圈|微信公众号|"
+    r"长按识别二维码|识别图中二维码|请关注公众号|关注公众号|欢迎关注"
+)
+
+
+def scrub_publisher_noise(text: str) -> str:
+    """把公众号模板字样换成等长空格，保留位置，匹配时就不会撞上里面的「微信」。"""
+    if not text:
+        return text
+
+    def blank(match: re.Match[str]) -> str:
+        return " " * (match.end() - match.start())
+
+    return _PUBLISHER_NOISE.sub(blank, text)
+
+
 
 class _Node:
     __slots__ = ("next", "fail", "out")
@@ -207,6 +226,7 @@ class CompanyMatcher:
     def spans(self, text: str) -> list[tuple[int, int, int]]:
         if not text:
             return []
+        text = scrub_publisher_noise(text)
         found = _search_aho(text, self._root)
         latin: list[tuple[int, int, int]] = []
         for pattern, lookup, casefold in self._latin:
@@ -263,9 +283,10 @@ def company_on_card(title: str, body: str, *, name: str, aliases: Iterable[str] 
     names = [item.strip() for item in names if isinstance(item, str) and len(item.strip()) >= 2]
     if not names:
         return False
-    if any(item in (title or "") for item in names):
+    title = scrub_publisher_noise(title or "")
+    if any(item in title for item in names):
         return True
-    early = early_main_text(body)
+    early = scrub_publisher_noise(early_main_text(body))
     if not any(item in early for item in names):
         return False
     sentences = sentence_pieces(early)

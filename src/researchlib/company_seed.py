@@ -28,9 +28,9 @@ def _company(
 
 
 SEEDS: tuple[CompanySeed, ...] = (
-    # 持仓和观察的公司补了业务名，讲 Temu、Labubu、视频号的文章也算提到这家公司。
-    # 不收「微信」：公众号原文常带「微信扫一扫」这类模板字样，会让几乎每篇都记成提到腾讯。
-    _company("00700.HK", "腾讯", "Tencent", "HK", "腾讯控股", "TCEHY", "0700.HK", "视频号", "WeChat"),
+    # 持仓和观察的公司补了业务名，讲 Temu、Labubu、视频号、微信的文章也算提到这家公司。
+    # 「微信」会收；公众号模板里的「微信扫一扫」等由 mentions.scrub_publisher_noise 滤掉。
+    _company("00700.HK", "腾讯", "Tencent", "HK", "腾讯控股", "TCEHY", "0700.HK", "视频号", "微信", "WeChat"),
     _company("09988.HK", "阿里巴巴", "Alibaba", "HK", "阿里", "BABA"),
     _company("03690.HK", "美团", "Meituan", "HK", "美团点评"),
     _company("09618.HK", "京东", "JD.com", "HK", "京东集团", "JD"),

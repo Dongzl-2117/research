@@ -207,5 +207,4 @@ def test_seed_has_holdings_and_business_aliases():
     assert "Labubu" in names["泡泡玛特"].aliases
     assert "Temu" in names["拼多多"].aliases
     assert "视频号" in names["腾讯"].aliases
-    # 「微信」会撞上公众号模板里的「微信扫一扫」，故意不收。
-    assert "微信" not in names["腾讯"].aliases
+    assert "微信" in names["腾讯"].aliases
