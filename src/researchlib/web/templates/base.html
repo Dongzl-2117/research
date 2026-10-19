@@ -55,10 +55,10 @@
             <span>问库</span>
           </a>
         </div>
-        {% if sources %}
+        {% if sources | selectattr("timeline") | list %}
         <div class="nav-label">来源</div>
         <div class="nav-group">
-          {% for source in sources %}
+          {% for source in sources if source.timeline %}
           <a class="nav-link" href="/?source={{ source.id }}" {% if nav == "archive" and active_source == source.id %}aria-current="page"{% endif %}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
             <span>{{ source.name }}</span>

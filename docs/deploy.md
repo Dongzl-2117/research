@@ -15,7 +15,7 @@ docker compose up -d --build
 
 应用启动时会自己做迁移（先 `002_translations.sql`，再 `003_retrieval.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章补切。
 
-不会在启动或部署时跑 `research-digest`。全库摘要是单独的手动命令，见 [llm.md](llm.md)。
+不会在启动或部署时跑 `research-digest`。打开页面时只给当前卡片里缺的摘要排队，全库仍是手动命令，见 [llm.md](llm.md)。
 
 Grok OAuth 与 AIHOT 共用外部卷 `aihot_data`（挂到 `/aihot-data/secrets/xai-oauth.json`）。登录在 AIHOT 侧做，见 [translate.md](translate.md)。
 

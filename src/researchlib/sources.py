@@ -24,6 +24,8 @@ class Source:
     kind: str
     enabled: bool
     description: str = ""
+    # True：首页按天和 /days。False：只进作者、公司、检索、问库（飞书文库）。
+    timeline: bool = True
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -57,9 +59,20 @@ def load_sources(path: Path) -> list[Source]:
                 kind=kind,
                 enabled=bool(item.get("enabled", False)),
                 description=str(item.get("description") or ""),
+                timeline=_timeline_flag(item, kind, source_id),
             )
         )
     return sources
+
+
+def _timeline_flag(item: dict, kind: str, source_id: str) -> bool:
+    """没写 timeline 时，飞书默认不进按天，其余来源默认进。"""
+    if "timeline" not in item:
+        return kind != "feishu"
+    value = item.get("timeline")
+    if not isinstance(value, bool):
+        raise ValueError(f"{source_id} 的 timeline 必须是 true 或 false")
+    return value
 
 
 def require_source(sources: list[Source], source_id: str, *, kind: str | None = None) -> Source:
@@ -80,6 +93,11 @@ def require_source(sources: list[Source], source_id: str, *, kind: str | None = 
 
 def enabled_sources(sources: list[Source]) -> list[Source]:
     return [source for source in sources if source.enabled]
+
+
+def timeline_sources(sources: list[Source]) -> list[Source]:
+    """有发布时间、能进首页按天和日汇总的来源。"""
+    return [source for source in sources if source.timeline]
 
 
 def sync_sources(conn, sources: list[Source]) -> None:

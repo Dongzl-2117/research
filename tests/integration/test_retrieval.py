@@ -35,9 +35,9 @@ def test_ingest_writes_chunks_and_article_shows_quote(conn, settings):
         page = client.get(f"/articles/{article_id}", params={"chunk": chunk["ord"]})
         assert page.status_code == 200
         assert "问答引用的段落" in page.text
-        assert "提到的公司" in page.text
-        assert "/companies/" in page.text
-        assert f"/api/v1/articles/{article_id}.md" in page.text
+        assert "打开原文" not in page.text
+        assert "<h2>来源</h2>" not in page.text
+        assert f"/api/v1/articles/{article_id}.md" not in page.text
 
 
 def test_feed_cards_link_authors_and_companies(conn, settings):

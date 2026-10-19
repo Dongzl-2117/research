@@ -3,13 +3,13 @@
 <div class="reader-grid">
   <article class="reader">
     <div class="reader-top">
-      <a class="back" href="/?source={{ source.id }}">
+      <a class="back" href="{% if source.timeline %}/?source={{ source.id }}{% else %}/authors/{{ source.author | urlencode }}?source={{ source.id }}{% endif %}">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5 8.5 12l6 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         返回
       </a>
     </div>
     <p class="byline">
-      <a href="/?source={{ source.id }}">{{ source.name }}</a>
+      <a href="{% if source.timeline %}/?source={{ source.id }}{% else %}/authors/{{ source.author | urlencode }}?source={{ source.id }}{% endif %}">{{ source.name }}</a>
       <span aria-hidden="true">·</span>
       <a href="/authors/{{ source.author | urlencode }}">{{ source.author }}</a>
       <span aria-hidden="true">·</span>
@@ -25,13 +25,6 @@
       <p class="quoted-label">问答引用的段落{% if quoted.heading %} · {{ quoted.heading }}{% endif %}</p>
       <p>{{ quoted.body }}</p>
     </aside>
-    {% endif %}
-    {% if digest %}
-    <section class="digest" aria-label="摘要">
-      <p class="quoted-label"><span class="ai-badge">摘要</span>由 {{ digest.model }} 生成，以原文为准</p>
-      <p>{{ digest.summary }}</p>
-      {% if digest.points %}<ul>{% for point in digest.points %}<li>{{ point }}</li>{% endfor %}</ul>{% endif %}
-    </section>
     {% endif %}
 
     {% if has_translation or body_html %}
@@ -68,39 +61,5 @@
     <div class="prose with-toolbar">{{ body_html }}</div>
     {% endif %}
   </article>
-  <aside class="reader-aside">
-    <section class="card panel">
-      <h2>来源</h2>
-      <p><a href="/?source={{ source.id }}">{{ source.name }}</a></p>
-      <p class="quiet"><a href="/authors/{{ source.author | urlencode }}">{{ source.author }}</a></p>
-      {% if source.description %}<p class="quiet">{{ source.description }}</p>{% endif %}
-      {% if original_url %}<p class="quiet"><a href="{{ original_url }}" rel="noopener noreferrer" target="_blank">打开原文</a></p>{% endif %}
-    </section>
-    {% if mentions %}
-    <section class="card panel">
-      <h2>提到的公司</h2>
-      <ul class="mention-list">
-        {% for item in mentions %}
-        <li><a href="/companies/{{ item.id }}">{{ item.name_zh }}</a><span class="depth depth-{{ item.depth }}">{{ item.depth_label }}</span><span class="num quiet">{{ item.hit_count }} 次</span></li>
-        {% endfor %}
-      </ul>
-    </section>
-    {% endif %}
-    <section class="card panel">
-      <h2>工具</h2>
-      <p><a href="/ask?preset=article&amp;article={{ article.id }}">问 AI：这篇讲了什么</a></p>
-      <p><a href="/api/v1/articles/{{ article.id }}.md">原文 Markdown</a> · <a href="/api/v1/articles/{{ article.id }}">JSON</a></p>
-    </section>
-    {% if siblings %}
-    <section class="card panel">
-      <h2>同目录</h2>
-      <ul class="sibling-list">
-        {% for item in siblings %}
-        <li><a href="/articles/{{ item.id }}">{{ item.title }}</a></li>
-        {% endfor %}
-      </ul>
-    </section>
-    {% endif %}
-  </aside>
 </div>
 {% endblock %}

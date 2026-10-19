@@ -15,12 +15,13 @@ from markupsafe import Markup
 
 from researchlib.ask import PRESETS, ask
 from researchlib.db import connect, ensure_search_session
+from researchlib.digest import schedule_digests
 from researchlib.llm import llm_configured
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card
 from researchlib.render import render_body
 from researchlib.snippets import answer_html, highlight_snippet, highlight_title, mention_snippet
-from researchlib.sources import enabled_sources, load_sources, sync_sources
-from researchlib.textutil import excerpt, split_frontmatter, strip_duplicate_title
+from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
+from researchlib.textutil import argumentative_excerpt, split_frontmatter, strip_duplicate_title
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.web import queries
 from researchlib.web.daybrief import compose_day_brief
@@ -114,6 +115,12 @@ def _snippet_text(body: str, title: str) -> str:
     return text
 
 
+def _source_href(source) -> str:
+    if source.timeline:
+        return "/?source=" + quote(source.id)
+    return f"/authors/{quote(source.author)}?source={quote(source.id)}"
+
+
 def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, zone=None) -> dict:
     stored = row["published_at"]
     zone = zone or settings.display_timezone
@@ -125,7 +132,7 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         zone=zone,
     )
     if excerpt_text is None and "body_text" in row:
-        excerpt_text = excerpt(row["body_text"], title=row["title"], limit=180)
+        excerpt_text = argumentative_excerpt(row["body_text"], title=row["title"], limit=180)
     card = {
         "id": row["id"],
         "title": row["title"] if title is None else title,
@@ -137,11 +144,14 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         "sort_at": shown if known else stored,
         "source": source.name,
         "source_id": source.id,
+        "source_href": _source_href(source),
         "author": source.author,
+        "timeline": source.timeline,
         # 来源名和作者同名时（例如「乘风破浪」）只显示一次。
         "show_author": source.author != source.name,
         "excerpt": excerpt_text or "",
         "summary": "",
+        "points": [],
         "tags": [],
         "body_text": row.get("body_text") or "",
     }
@@ -166,23 +176,36 @@ def _visible_tags(card: dict, tags: list[dict]) -> list[dict]:
     return visible
 
 
-def _decorate(conn, cards: list[dict]) -> list[dict]:
-    """给卡片挂上公司标签和 LLM 摘要。两条批量查询，不按篇查。"""
+def _digest_points(digest) -> list[str]:
+    raw = digest["points"] or []
+    if isinstance(raw, str):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()][:2]
+
+
+def _decorate(conn, cards: list[dict], settings) -> list[dict]:
+    """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
     ids = [card["id"] for card in cards]
     tags = queries.article_tags(conn, ids, per_article=12)
     digests = queries.digests_for(conn, ids)
+    pending: list[tuple[int, str]] = []
     for card in cards:
         card["tags"] = _visible_tags(card, tags.get(card["id"], []))
         digest = digests.get(card["id"])
         if digest and not card.get("summary"):
             card["summary"] = digest["summary"]
+            card["points"] = _digest_points(digest)
+        elif not card.get("summary"):
+            pending.append((card["id"], card.get("author") or ""))
         card.pop("body_text", None)
+    if pending:
+        schedule_digests(settings, pending)
     return cards
 
 
 def _feed_days(conn, rows, by_id, settings):
     cards = [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows]
-    return group_days(order_cards(_decorate(conn, cards)))
+    return group_days(order_cards(_decorate(conn, cards, settings)))
 
 
 def _query_string(**params) -> str:
@@ -230,8 +253,9 @@ def home(request: Request):
     source_arg = request.query_params.get("source") or ""
     with database(request) as conn:
         sources = active_sources(request, conn)
-        ids = [source.id for source in sources]
-        by_id = _source_map(sources)
+        feed = timeline_sources(sources)
+        ids = [source.id for source in feed]
+        by_id = _source_map(feed)
         chosen = source_arg if source_arg in by_id else None
         if source_arg and source_arg not in by_id and source_arg != "all":
             raise HTTPException(status_code=404)
@@ -248,7 +272,7 @@ def home(request: Request):
         empty = "这个来源还没有文章。"
     else:
         heading = "按天"
-        lede = "按日期从新到旧。同一天里，新的在前。翻页按整天翻。"
+        lede = "按日期从新到旧，只含有发布时间的来源。同一天里，新的在前。翻页按整天翻。"
         empty = "还没有文章。"
     return render_page(
         request,
@@ -349,6 +373,7 @@ def author_page(request: Request, author: str):
         days = _feed_days(conn, rows, by_id, settings)
     firsts = [row["first_at"] for row in stats.values() if row["first_at"]]
     lasts = [row["last_at"] for row in stats.values() if row["last_at"]]
+    shown_sources = [by_id[item_id] for item_id in scoped]
     return render_page(
         request,
         "author.html",
@@ -370,6 +395,7 @@ def author_page(request: Request, author: str):
             "dated_days": counts["days"],
             "undated": counts["undated"],
             "sample_banner": banner,
+            "link_days": any(item.timeline for item in shown_sources),
         },
     )
 
@@ -388,12 +414,9 @@ def _article_view(request: Request, article_id: int, mode: str):
             raise HTTPException(status_code=404)
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
-        parent = (article["raw_meta"] or {}).get("parent")
-        siblings = []
-        if source.kind in {"feishu", "markdown"} and parent:
-            siblings = queries.sibling_articles(conn, source.id, article_id, parent)
-        mentions = queries.article_mentions(conn, article_id)
         digest = queries.digests_for(conn, [article_id]).get(article_id)
+        if digest is None:
+            schedule_digests(settings, [(article_id, source.author)])
         quoted = None
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
@@ -451,7 +474,6 @@ def _article_view(request: Request, article_id: int, mode: str):
         time_known=meta.get("time_known"),
         zone=settings.display_timezone,
     )
-    original_url = meta.get("url") or ""
     return render_page(
         request,
         "article.html",
@@ -474,12 +496,6 @@ def _article_view(request: Request, article_id: int, mode: str):
             "translation_complete": translation_complete,
             "pairs": pairs or [],
             "title_zh": (translation or {}).get("title_zh") or "",
-            "original_url": original_url,
-            "siblings": siblings,
-            "mentions": [
-                {**row, "depth_label": DEPTH_LABELS[row["depth"]]} for row in mentions
-            ],
-            "digest": digest,
             "quoted": quoted,
             "sources": sources,
             "sample_banner": banner,
@@ -537,7 +553,6 @@ def search_page(request: Request):
                     by_id[row["source_id"]],
                     settings,
                     title=highlight_title(row["title"], query),
-                    excerpt_text="",
                     extra={
                         "snippet": highlight_snippet(text, query),
                         "heading": chunk["heading"] if chunk else "",
@@ -545,10 +560,7 @@ def search_page(request: Request):
                     },
                 )
             )
-        results = _decorate(conn, results)
-        # 只靠片段就够判断相关性，摘要放在这里反而挤掉命中句。
-        for card in results:
-            card["summary"] = ""
+        results = _decorate(conn, results, settings)
     author_counts: dict[str, int] = {}
     source_counts = []
     facet_ids = set(facet_scope.source_ids)
@@ -685,7 +697,6 @@ def company_page(request: Request, company_id: int):
                     row,
                     by_id[row["source_id"]],
                     settings,
-                    excerpt_text="",
                     extra={
                         "depth": row["depth"],
                         "depth_label": DEPTH_LABELS[row["depth"]],
@@ -695,12 +706,10 @@ def company_page(request: Request, company_id: int):
                 )
                 for row in articles
             ],
+            settings,
         )
     for card in rows:
-        # 公司页看的是「怎么提到它」，提及原句比通篇摘要有用；没有原句时才退回摘要。
         card["tags"] = [tag for tag in card["tags"] if tag["id"] != company_id]
-        if card["snippet"]:
-            card["summary"] = ""
     rows = order_cards(rows)
     author_counts = []
     for name, items in grouped.items():
@@ -750,7 +759,10 @@ def _day_back(info: dict, company) -> str:
 
 @router.get("/days/{day}")
 def day_page(request: Request, day: str):
-    """从时间轴点进某一天：先给汇总，再按作者列出这一天的文章。不在这里调用模型。"""
+    """从时间轴点进某一天：先给汇总，再按作者列出这一天的文章。只含有发布时间的来源。
+
+    日汇总本身不算模型。缺摘要的卡片在后台补，不挡住这一页。
+    """
     try:
         found = date.fromisoformat(day)
     except ValueError as exc:
@@ -765,13 +777,15 @@ def day_page(request: Request, day: str):
     }
     with database(request) as conn:
         sources = active_sources(request, conn)
-        scope, info = resolve_scope(params, sources)
-        by_id = _source_map(sources)
+        feed = timeline_sources(sources)
+        scope, info = resolve_scope(params, feed)
+        by_id = _source_map(feed)
         rows = queries.articles_on_day(conn, scope)
         cards = order_cards(
             _decorate(
                 conn,
                 [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows],
+                settings,
             )
         )
         previous, following = queries.neighbor_days(conn, scope, found)
