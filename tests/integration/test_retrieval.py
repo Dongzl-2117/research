@@ -47,7 +47,8 @@ def test_feed_cards_link_authors_and_companies(conn, settings):
         assert 'href="/authors/%E6%96%B9%E4%BC%9F"' in home.text
         assert 'class="tag depth-title"' in home.text
         assert 'id="d-' in home.text
-        assert "AI 整合这一天" in home.text
+        assert "AI 整合" not in home.text
+        assert "/days/" in home.text
 
 
 def test_date_jump_redirects_to_page_with_anchor(conn, settings):

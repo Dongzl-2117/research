@@ -100,7 +100,28 @@ def test_zsxq_uses_topic_json(tmp_path: Path):
     assert docs[0].title == "茅台短帖"
     assert docs[0].published_at is not None
     assert docs[0].published_at.month == 2
+    local = docs[0].published_at.astimezone(ZoneInfo("Asia/Shanghai"))
+    assert (local.hour, local.minute) == (4, 5)
+    assert docs[0].raw_meta["time_known"] is True
     assert docs[0].image_refs[0][1] is not None
+
+
+def test_zsxq_date_only_frontmatter_does_not_zero_the_clock(tmp_path: Path):
+    (tmp_path / "md").mkdir()
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "md" / "888888.md").write_text(
+        "---\ndate: 2024-10-19\n---\n星球正文。\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "raw" / "888888.json").write_text(
+        '{"topic_id": 888888, "create_time": "2024-10-19T05:29:00+00:00", "talk": {"title": "下午的帖"}}',
+        encoding="utf-8",
+    )
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    local = docs[0].published_at.astimezone(ZoneInfo("Asia/Shanghai"))
+    assert (local.year, local.month, local.day, local.hour, local.minute) == (2024, 10, 19, 13, 29)
+    assert docs[0].raw_meta["time_known"] is True
 
 
 def test_feishu_nested_ids(tmp_path: Path):

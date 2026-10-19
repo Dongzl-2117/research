@@ -962,7 +962,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   border-top: 0;
 }
 
-/* 卡片上的公司标签、摘要、按天整合、日期跳转 */
+/* 卡片上的公司标签、摘要、日汇总、日期跳转 */
 .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
 .tag {
   position: relative;
@@ -994,9 +994,44 @@ tbody tr:hover td { background: var(--accent-softer); }
   line-height: 18px;
   vertical-align: 1px;
 }
-.day-ask { color: var(--ink-4); }
-.day-ask:hover, .daybar h2 a:hover { color: var(--accent); }
-.daybar-mobile .day-ask { margin-left: auto; }
+.daybar h2 a:hover { color: var(--accent); }
+.day-hero { margin-top: 8px; }
+.day-hero h1 { margin: 4px 0 0; font-size: 32px; line-height: 1.2; }
+.day-kicker, .day-stats { margin: 8px 0 0; color: var(--ink-4); font-size: 13px; }
+.day-switch { display: flex; gap: 16px; margin-top: 14px; font-size: 13px; }
+.day-switch a:hover { color: var(--accent); }
+.day-lead {
+  margin: 20px 0 8px;
+  padding: 16px 18px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-tile);
+  background: var(--accent-softer);
+  font-size: 16px;
+  line-height: 1.8;
+}
+.day-lead h2 { margin: 0 0 8px; font-size: 16px; }
+.day-lead p { margin: 0; }
+.day-lead .quiet { margin-top: 10px; color: var(--ink-4); font-size: 12.5px; }
+.day-section { margin-top: 22px; }
+.day-section h2 { margin: 0 0 8px; font-size: 15px; }
+.day-section ol { margin: 0; padding: 0; list-style: none; }
+.day-section li {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.day-section time {
+  padding-top: 2px;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.day-section a { color: var(--ink); font-weight: 650; }
+.day-section a:hover { color: var(--accent); }
+.day-section p { margin: 4px 0 0; color: var(--ink-3); font-size: 14px; line-height: 1.7; }
 .head-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
 .date-jump { display: flex; align-items: center; gap: 6px; color: var(--ink-4); font-size: 13px; }
 .date-jump input { height: 30px; font-size: 13px; }

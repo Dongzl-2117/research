@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="reader-top">
+  <a class="back" href="{{ back_href }}">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5 8.5 12l6 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    返回时间轴
+  </a>
+</div>
+<header class="day-hero">
+  <p class="day-kicker">日汇总{% if year %} · {{ year }}年{% endif %}{% if weekday %} · {{ weekday }}{% endif %}</p>
+  <h1>{{ label }}</h1>
+  <p class="day-stats">
+    <span class="num">{{ count }}</span> 篇
+    · <span class="num">{{ brief.authors }}</span> 位作者
+    {% if company %} · 只看 {{ company.name_zh }}{% endif %}
+    {% if author_name %} · {{ author_name }}{% endif %}
+  </p>
+  {% if brief.companies %}
+  <ul class="tags" aria-label="这一天主线里的公司">
+    {% for item in brief.companies %}<li><a class="tag" href="/companies/{{ item.id }}">{{ item.name }}</a></li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if prev_href or next_href %}
+  <nav class="day-switch" aria-label="相邻的日子">
+    {% if prev_href %}<a href="{{ prev_href }}">前一天</a>{% endif %}
+    {% if next_href %}<a href="{{ next_href }}">后一天</a>{% endif %}
+  </nav>
+  {% endif %}
+</header>
+{% if count == 0 %}
+<p class="empty">这一天没有文章。</p>
+{% else %}
+<section class="day-lead" aria-label="这一天的总结">
+  {% if answer %}
+  <h2>{{ answer.question }}</h2>
+  <div class="prose answer-body">{{ answer.answer | answer_html }}</div>
+  <p class="quiet">{% if answer.model %}{{ answer.model }} · {% endif %}<a href="/ask/{{ answer.id }}">查看这条汇总的出处</a></p>
+  {% if answer.citations %}
+  <ol class="citations">
+    {% for item in answer.citations %}
+    <li id="c-{{ item.n }}">
+      <p class="item-meta"><span class="num">[{{ item.n }}]</span> <a href="{{ item.url }}">{{ item.title }}</a>{% if item.author %} · {{ item.author }}{% endif %}{% if item.date %} · {{ item.date }}{% endif %}</p>
+      {% if item.text %}<p class="item-excerpt">{{ item.text }}</p>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+  {% else %}
+  <p>{{ brief.lead }}</p>
+  {% endif %}
+</section>
+{% for section in brief.sections %}
+<section class="day-section" aria-label="{{ section.author }}">
+  <h2>{{ section.author }} <span class="num quiet">{{ section.count }}</span></h2>
+  <ol>
+    {% for item in section["items"] %}
+    <li>
+      <time datetime="{{ item.iso }}">{{ item.time or "—" }}</time>
+      <div>
+        <a href="/articles/{{ item.id }}">{{ item.plain_title }}</a>
+        {% if item.blurb %}<p>{{ item.blurb }}</p>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}

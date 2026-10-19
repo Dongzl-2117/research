@@ -29,18 +29,17 @@
   <section class="day" id="d-{{ day.key }}" aria-label="{{ day.label }}" data-label="{{ day.label }}">
     <div class="daybar">
       <div class="daybar-mobile">
-        <h2>{{ day.label }}</h2>
+        <h2>{% if day.year %}<a href="/days/{{ day.key }}{% if scope %}?{{ scope }}{% endif %}">{{ day.label }}</a>{% else %}{{ day.label }}{% endif %}</h2>
         {% if day.year %}<span>{{ day.year }}年</span>{% endif %}
         {% if day.weekday %}<span>{{ day.weekday }}</span>{% endif %}
         <span class="num">{{ day.count }} 条</span>
-        {% if day.year %}<a class="day-ask" href="/ask?preset=day&amp;from={{ day.key }}&amp;to={{ day.key }}{% if scope %}&amp;{{ scope }}{% endif %}">AI 整合</a>{% endif %}
       </div>
       <div class="daybar-desktop">
-        <h2><a href="#d-{{ day.key }}" title="这一天的链接">{{ day.label }}</a></h2>
+        <h2>{% if day.year %}<a href="/days/{{ day.key }}{% if scope %}?{{ scope }}{% endif %}" title="看这一天的汇总">{{ day.label }}</a>{% else %}{{ day.label }}{% endif %}</h2>
         <button type="button" class="day-toggle" aria-expanded="true" aria-label="收起{{ day.label }}">
           <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5 12 15l6-5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <p>{% if day.year %}{{ day.year }}年 · {% endif %}{% if day.weekday %}{{ day.weekday }} · {% endif %}<span class="num">{{ day.count }}</span> 条{% if day.year %}<span aria-hidden="true"> · </span><a class="day-ask" href="/ask?preset=day&amp;from={{ day.key }}&amp;to={{ day.key }}{% if scope %}&amp;{{ scope }}{% endif %}" title="让 AI 汇总这一天的文章">AI 整合这一天</a>{% endif %}</p>
+        <p>{% if day.year %}{{ day.year }}年 · {% endif %}{% if day.weekday %}{{ day.weekday }} · {% endif %}<span class="num">{{ day.count }}</span> 条</p>
       </div>
     </div>
     <ol class="slots">

@@ -219,7 +219,7 @@ def parse_markdown_files(
         body = normalize_newlines(body)
         raw_meta = _match_raw(path, raw_index or {})
         title = derive_title(frontmatter, body, path.name, raw_meta.get("title"))
-        published, date_source = resolve_published_at(
+        published, date_source, time_known = resolve_published_at(
             frontmatter=frontmatter,
             hints=raw_meta,
             filename=path.name,
@@ -265,6 +265,7 @@ def parse_markdown_files(
                 stored_meta["create_time"] = str(create_time)
         if date_source:
             stored_meta["date_source"] = date_source
+        stored_meta["time_known"] = time_known
         docs.append(
             ParsedDoc(
                 external_id=external_id[:500],

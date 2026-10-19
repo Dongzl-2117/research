@@ -65,6 +65,8 @@ _MARKUP_DATES = (
     ),
     re.compile(r'"datePublished"\s*:\s*"([^"]+)"', re.I),
 )
+# 日期字符串里出现时分，才算「知道钟点」。纯日历日解析出来的 00:00 不是发布时间。
+_CLOCK_IN_TEXT = re.compile(r"(?:T|\s|日)(?:[01]?\d|2[0-3])[:：][0-5]\d")
 
 
 def split_frontmatter(text: str) -> tuple[dict, str]:
@@ -235,7 +237,26 @@ def date_from_filename(name: str) -> datetime | None:
     return None
 
 
-def date_from_markup(text: str) -> datetime | None:
+def clock_known_in(value) -> bool:
+    """原始值里有没有时分。datetime 算有；纯 date、以及只有年月日的字符串不算。"""
+    if value is None or value == "":
+        return False
+    if isinstance(value, datetime):
+        return True
+    if isinstance(value, date):
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        number = int(value)
+        return abs(number) > 1_000_000_000
+    text = str(value).strip()
+    if text.lstrip("-").isdigit():
+        return abs(int(text)) > 1_000_000_000
+    return _CLOCK_IN_TEXT.search(text) is not None
+
+
+def _markup_raw(text: str) -> str | None:
     head = (text or "")[:12000]
     if not head:
         return None
@@ -243,21 +264,36 @@ def date_from_markup(text: str) -> datetime | None:
         match = pattern.search(head)
         if not match:
             continue
-        parsed = parse_datetime(match.group(1).strip())
-        if parsed:
-            return parsed
+        raw = match.group(1).strip()
+        if parse_datetime(raw):
+            return raw
     return None
 
 
+def date_from_markup(text: str) -> datetime | None:
+    raw = _markup_raw(text)
+    if raw is None:
+        return None
+    return parse_datetime(raw)
+
+
 def dates_from_mapping(mapping: dict | None) -> datetime | None:
+    found = _mapping_clock(mapping)
+    if found is None:
+        return None
+    return found[0]
+
+
+def _mapping_clock(mapping: dict | None) -> tuple[datetime, bool] | None:
     if not isinstance(mapping, dict):
         return None
     for key in _DATE_KEYS:
         if key not in mapping:
             continue
-        parsed = parse_datetime(mapping.get(key))
+        raw = mapping.get(key)
+        parsed = parse_datetime(raw)
         if parsed:
-            return parsed
+            return parsed, clock_known_in(raw)
     return None
 
 
@@ -268,22 +304,42 @@ def resolve_published_at(
     filename: str = "",
     text: str = "",
     extra_filenames: tuple[str, ...] = (),
-) -> tuple[datetime | None, str]:
-    """按 frontmatter、元数据、正文标记、文件名的顺序取发布时间。"""
-    found = dates_from_mapping(frontmatter)
-    if found:
-        return found, "frontmatter"
-    found = dates_from_mapping(hints)
-    if found:
-        return found, "meta"
-    found = date_from_markup(text)
-    if found:
-        return found, "markup"
+) -> tuple[datetime | None, str, bool]:
+    """按 frontmatter、元数据、正文标记、文件名的顺序取发布时间。
+
+    第三项表示原始值里有没有时分。只有日历日时，如果后面的来源在同一天带了钟点
+    （例如前言只写了日期，知识星球 JSON 里有 create_time），用那个钟点，避免把
+    13:29 收成 00:00。
+    """
+    candidates: list[tuple[datetime, str, bool]] = []
+    for mapping, label in ((frontmatter, "frontmatter"), (hints, "meta")):
+        found = _mapping_clock(mapping)
+        if found:
+            candidates.append((found[0], label, found[1]))
+    raw_markup = _markup_raw(text)
+    if raw_markup:
+        parsed = parse_datetime(raw_markup)
+        if parsed:
+            candidates.append((parsed, "markup", clock_known_in(raw_markup)))
     for name in (filename, *extra_filenames):
         found = date_from_filename(name)
         if found:
-            return found, "filename"
-    return None, ""
+            candidates.append((found, "filename", False))
+            break
+    if not candidates:
+        return None, "", False
+    when, source, known = candidates[0]
+    if known:
+        return when, source, True
+    top_day = when.astimezone(SHANGHAI).date()
+    for later, later_source, later_known in candidates[1:]:
+        if later_known and later.astimezone(SHANGHAI).date() == top_day:
+            return later, later_source, True
+    if source == "filename":
+        for later, later_source, later_known in candidates[1:]:
+            if later_known:
+                return later, later_source, True
+    return when, source, False
 
 
 def title_from_filename(name: str) -> str:

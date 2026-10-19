@@ -83,6 +83,54 @@ def test_document_depth_uses_sections():
     assert rows[names["贵州茅台"]] == DEPTH_PASSING
 
 
+def test_analogy_and_one_liners_stay_passing():
+    found, names = matcher()
+    body = """
+这篇先写宁德时代的产能。宁德时代的客户。宁德时代的价格。
+
+比如腾讯当年、腾讯的做法、腾讯也这么干过，腾讯的例子到此为止。
+"""
+    rows = {company_id: depth for company_id, depth, _hits in mentions_for_document(found, "电池备忘", body)}
+    assert rows[names["宁德时代"]] == DEPTH_WHOLE
+    assert rows[names["腾讯"]] == DEPTH_PASSING
+
+    long_aside = "\n\n".join(
+        [
+            "第一段在讲行业需求，没有点名。",
+            "第二段继续讲价格。",
+            "第三段只在一句里重复腾讯腾讯腾讯。",
+            "第四段回到需求本身。",
+        ]
+    )
+    aside = {company_id: depth for company_id, depth, _hits in mentions_for_document(found, "需求备忘", long_aside)}
+    assert aside[names["腾讯"]] == DEPTH_PASSING
+
+    short = "腾讯的广告、腾讯的视频号、腾讯的金融科技，都在这篇短帖里。"
+    post = {company_id: depth for company_id, depth, _hits in mentions_for_document(found, "短帖", short)}
+    assert post[names["腾讯"]] == DEPTH_WHOLE
+
+
+def test_card_keeps_title_and_early_discussion_only():
+    from researchlib.mentions import company_on_card
+
+    body = "\n\n".join(
+        [
+            "开头两段都在讲宁德时代的产能和客户。宁德时代的价格也在这里。",
+            "第二段还是宁德时代。",
+            "后文才用比如腾讯来打比方。",
+            "再往后用很长的篇幅把美团、美团、美团重复成全文。",
+        ]
+    )
+    assert company_on_card("宁德时代的备忘", body, name="宁德时代", depth="title") is True
+    assert company_on_card("行业备忘", body, name="宁德时代", depth="whole") is True
+    assert company_on_card("行业备忘", body, name="腾讯", depth="whole") is False
+    assert company_on_card("行业备忘", body, name="美团", depth="whole") is False
+    assert (
+        company_on_card("贵州茅台的渠道", "后文才写到别的事。", name="贵州茅台", aliases=("茅台",), depth="title")
+        is True
+    )
+
+
 def test_matcher_is_fast_on_a_long_note():
     import time
 

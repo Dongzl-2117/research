@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import mimetypes
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
@@ -15,16 +16,18 @@ from markupsafe import Markup
 from researchlib.ask import PRESETS, ask
 from researchlib.db import connect, ensure_search_session
 from researchlib.llm import llm_configured
-from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher
+from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card
 from researchlib.render import render_body
 from researchlib.snippets import answer_html, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, sync_sources
 from researchlib.textutil import excerpt, split_frontmatter, strip_duplicate_title
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.web import queries
+from researchlib.web.daybrief import compose_day_brief
 from researchlib.web.present import (
     FEED_ZONE,
     day_key,
+    day_label,
     depth_chips,
     format_clock,
     format_date,
@@ -32,9 +35,12 @@ from researchlib.web.present import (
     group_days,
     market_label,
     month_chart,
+    order_cards,
     page_window,
     plan_feed_page,
     relative_label,
+    resolve_feed_instant,
+    weekday_label,
 )
 from researchlib.web.scoping import parse_day, resolve_scope
 
@@ -109,17 +115,26 @@ def _snippet_text(body: str, title: str) -> str:
 
 
 def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, zone=None) -> dict:
-    when = row["published_at"]
+    stored = row["published_at"]
     zone = zone or settings.display_timezone
+    shown, known = resolve_feed_instant(
+        stored,
+        clock_hint=row.get("clock_hint"),
+        date_source=row.get("date_source") or "",
+        time_known=row.get("time_known"),
+        zone=zone,
+    )
     if excerpt_text is None and "body_text" in row:
         excerpt_text = excerpt(row["body_text"], title=row["title"], limit=180)
     card = {
         "id": row["id"],
         "title": row["title"] if title is None else title,
-        "date": format_date(when, zone),
-        "time": format_clock(when, zone),
-        "iso": format_iso(when, zone),
-        "day": day_key(when, zone),
+        "plain_title": row["title"],
+        "date": format_date(stored, zone),
+        "time": format_clock(shown, zone) if known else "",
+        "iso": format_iso(shown, zone) if known else day_key(stored, zone),
+        "day": day_key(stored, zone),
+        "sort_at": shown if known else stored,
         "source": source.name,
         "source_id": source.id,
         "author": source.author,
@@ -128,23 +143,46 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         "excerpt": excerpt_text or "",
         "summary": "",
         "tags": [],
+        "body_text": row.get("body_text") or "",
     }
     if extra:
         card.update(extra)
     return card
 
 
+def _visible_tags(card: dict, tags: list[dict]) -> list[dict]:
+    title = card.get("plain_title") or ""
+    if not isinstance(title, str):
+        title = str(title)
+    body = card.get("body_text") or ""
+    visible = []
+    for tag in tags:
+        aliases = [tag.get("name_en") or "", *(tag.get("aliases") or [])]
+        if not company_on_card(title, body, name=tag["name"], aliases=aliases, depth=tag["depth"]):
+            continue
+        visible.append({"id": tag["id"], "name": tag["name"], "depth": tag["depth"]})
+        if len(visible) >= 4:
+            break
+    return visible
+
+
 def _decorate(conn, cards: list[dict]) -> list[dict]:
     """给卡片挂上公司标签和 LLM 摘要。两条批量查询，不按篇查。"""
     ids = [card["id"] for card in cards]
-    tags = queries.article_tags(conn, ids)
+    tags = queries.article_tags(conn, ids, per_article=12)
     digests = queries.digests_for(conn, ids)
     for card in cards:
-        card["tags"] = tags.get(card["id"], [])
+        card["tags"] = _visible_tags(card, tags.get(card["id"], []))
         digest = digests.get(card["id"])
-        if digest:
+        if digest and not card.get("summary"):
             card["summary"] = digest["summary"]
+        card.pop("body_text", None)
     return cards
+
+
+def _feed_days(conn, rows, by_id, settings):
+    cards = [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows]
+    return group_days(order_cards(_decorate(conn, cards)))
 
 
 def _query_string(**params) -> str:
@@ -203,7 +241,7 @@ def home(request: Request):
             return _jump_to_day(conn, scoped, jump, settings, "/", source=chosen or "")
         counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request))
         banner = queries.sample_state(conn, ids)
-        articles = _decorate(conn, [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows])
+        days = _feed_days(conn, rows, by_id, settings)
     if chosen:
         heading = by_id[chosen].name
         lede = "只看这个来源，仍按天从新到旧。"
@@ -222,7 +260,7 @@ def home(request: Request):
             "empty": empty,
             "sources": sources,
             "active_source": chosen or "",
-            "days": group_days(articles),
+            "days": days,
             "day_scope": _query_string(source=chosen or ""),
             "page": plan["page"],
             "pages": plan["pages"],
@@ -308,7 +346,7 @@ def author_page(request: Request, author: str):
         stats = queries.source_stats(conn, scoped)
         companies = queries.top_companies(conn, scoped, 12)
         banner = queries.sample_state(conn, [source.id for source in sources])
-        articles = _decorate(conn, [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows])
+        days = _feed_days(conn, rows, by_id, settings)
     firsts = [row["first_at"] for row in stats.values() if row["first_at"]]
     lasts = [row["last_at"] for row in stats.values() if row["last_at"]]
     return render_page(
@@ -321,7 +359,7 @@ def author_page(request: Request, author: str):
             "author_sources": author_sources,
             "sources": sources,
             "active_source": chosen or "",
-            "days": group_days(articles),
+            "days": days,
             "day_scope": _query_string(author=author, source=chosen or ""),
             "first": format_date(min(firsts), settings.display_timezone) if firsts else "",
             "last": format_date(max(lasts), settings.display_timezone) if lasts else "",
@@ -405,7 +443,15 @@ def _article_view(request: Request, article_id: int, mode: str):
     else:
         body_html = Markup(original_html)
 
-    original_url = (article["raw_meta"] or {}).get("url") or ""
+    meta = article["raw_meta"] or {}
+    shown, known = resolve_feed_instant(
+        article["published_at"],
+        clock_hint=meta.get("create_time"),
+        date_source=meta.get("date_source") or "",
+        time_known=meta.get("time_known"),
+        zone=settings.display_timezone,
+    )
+    original_url = meta.get("url") or ""
     return render_page(
         request,
         "article.html",
@@ -415,9 +461,13 @@ def _article_view(request: Request, article_id: int, mode: str):
             "article": article,
             "source": source,
             "date": format_date(article["published_at"], settings.display_timezone),
-            "time": format_clock(article["published_at"], settings.display_timezone),
-            "iso": format_iso(article["published_at"], settings.display_timezone),
-            "relative": relative_label(article["published_at"], settings.display_timezone),
+            "time": format_clock(shown, settings.display_timezone) if known else "",
+            "iso": (
+                format_iso(shown, settings.display_timezone)
+                if known
+                else day_key(article["published_at"], settings.display_timezone)
+            ),
+            "relative": relative_label(shown or article["published_at"], settings.display_timezone),
             "body_html": body_html,
             "body_language": body_language,
             "has_translation": has_translation,
@@ -651,6 +701,7 @@ def company_page(request: Request, company_id: int):
         card["tags"] = [tag for tag in card["tags"] if tag["id"] != company_id]
         if card["snippet"]:
             card["summary"] = ""
+    rows = order_cards(rows)
     author_counts = []
     for name, items in grouped.items():
         number = sum(per_source.get(item.id, 0) for item in items)
@@ -679,6 +730,97 @@ def company_page(request: Request, company_id: int):
             "pages": pages,
             "total": total,
             "sources": sources,
+            "sample_banner": banner,
+        },
+    )
+
+
+def _day_back(info: dict, company) -> str:
+    if company:
+        query = _query_string(author=info["author"])
+        return f"/companies/{company['id']}" + (f"?{query}" if query else "")
+    if info["author"]:
+        query = _query_string(source=info["source"])
+        base = "/authors/" + quote(info["author"])
+        return base + (f"?{query}" if query else "")
+    if info["source"]:
+        return "/?source=" + quote(info["source"])
+    return "/"
+
+
+@router.get("/days/{day}")
+def day_page(request: Request, day: str):
+    """从时间轴点进某一天：先给汇总，再按作者列出这一天的文章。不在这里调用模型。"""
+    try:
+        found = date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(status_code=404) from exc
+    settings = request.app.state.settings
+    params = {
+        "author": request.query_params.get("author") or "",
+        "source": request.query_params.get("source") or "",
+        "company": request.query_params.get("company") or "",
+        "from": day,
+        "to": day,
+    }
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        scope, info = resolve_scope(params, sources)
+        by_id = _source_map(sources)
+        rows = queries.articles_on_day(conn, scope)
+        cards = order_cards(
+            _decorate(
+                conn,
+                [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows],
+            )
+        )
+        previous, following = queries.neighbor_days(conn, scope, found)
+        saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id)
+        company = queries.get_company(conn, info["company"]) if info["company"] else None
+        banner = queries.sample_state(conn, [source.id for source in sources])
+    brief = compose_day_brief(cards)
+    key = found.isoformat()
+    scope_query = _query_string(author=info["author"], source=info["source"], company=info["company"] or "")
+
+    def href(target) -> str:
+        if target is None:
+            return ""
+        return f"/days/{target.isoformat()}" + (f"?{scope_query}" if scope_query else "")
+
+    answer = None
+    if saved:
+        answer = {
+            "id": saved["id"],
+            "question": saved["question"],
+            "answer": saved["answer"],
+            "citations": saved["citations"] or [],
+            "model": saved["model"],
+        }
+    if company:
+        nav = "companies"
+    elif info["author"]:
+        nav = "authors"
+    else:
+        nav = "archive"
+    return render_page(
+        request,
+        "day.html",
+        {
+            "nav": nav,
+            "title": day_label(key),
+            "label": day_label(key),
+            "weekday": weekday_label(key),
+            "year": found.year,
+            "count": len(cards),
+            "brief": brief,
+            "answer": answer,
+            "prev_href": href(previous),
+            "next_href": href(following),
+            "back_href": _day_back(info, company),
+            "sources": sources,
+            "active_source": info["source"],
+            "company": company,
+            "author_name": info["author"],
             "sample_banner": banner,
         },
     )

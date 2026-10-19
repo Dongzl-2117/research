@@ -162,3 +162,60 @@ def test_backfill_fills_null_dates_from_stored_text(conn, settings):
     named = rows["bf-name"]["published_at"].astimezone(SHANGHAI)
     assert (named.year, named.month, named.day) == (2023, 12, 1)
     assert rows["bf-none"]["published_at"] is None
+
+
+def test_day_page_shows_real_clock_and_summary(conn, settings):
+    source = _source(settings, "fangwei-zsxq")
+    talk = _doc(
+        "talk-1329",
+        "方伟知识星球短帖",
+        datetime(2024, 10, 19, tzinfo=SHANGHAI),
+        "这篇短帖在讲宁德时代的产能。宁德时代的客户。宁德时代的价格。\n\n比如腾讯当年、腾讯的做法、腾讯也这么干过。\n",
+    )
+    talk.raw_meta = {
+        "format": "markdown",
+        "filename": "talk.md",
+        "date_source": "frontmatter",
+        "time_known": False,
+        "create_time": "2024-10-19T05:29:00+00:00",
+    }
+    midnight = _doc(
+        "real-midnight",
+        "正好午夜",
+        datetime(2024, 10, 19, tzinfo=SHANGHAI),
+        "这一篇的时间就是零点。\n",
+    )
+    midnight.raw_meta = {
+        "format": "markdown",
+        "filename": "midnight.md",
+        "date_source": "meta",
+        "time_known": True,
+        "create_time": "2024-10-19T00:00:00+08:00",
+    }
+    store_documents(
+        conn,
+        source=source,
+        docs=[talk, midnight],
+        data_dir=settings.data_dir,
+        archive_files=2,
+        images_in_archive=0,
+        errors=[],
+    )
+    tencent = conn.execute("SELECT id FROM companies WHERE name_zh = '腾讯'").fetchone()["id"]
+    app = create_app(settings)
+    with TestClient(app) as client:
+        home = client.get("/")
+        assert home.status_code == 200
+        assert "13:29" in home.text
+        assert "00:00" in home.text
+        assert "AI 整合" not in home.text
+        assert 'href="/days/2024-10-19"' in home.text
+        assert f'href="/companies/{tencent}"' not in home.text
+        day = client.get("/days/2024-10-19")
+        assert day.status_code == 200
+        assert "日汇总" in day.text
+        assert "方伟：" in day.text
+        assert "方伟知识星球短帖" in day.text
+        assert "13:29" in day.text
+        assert "AI 整合" not in day.text
+        assert client.get("/days/not-a-day").status_code == 404
