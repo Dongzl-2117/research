@@ -14,10 +14,10 @@ from markupsafe import Markup
 from researchlib.db import connect, ensure_search_session
 from researchlib.mentions import DEPTH_LABELS, DEPTHS
 from researchlib.render import render_body
-from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.snippets import highlight_snippet, highlight_title
 from researchlib.sources import enabled_sources, load_sources, sync_sources
 from researchlib.textutil import excerpt, split_frontmatter, strip_duplicate_title
+from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.web import queries
 from researchlib.web.present import (
     FEED_ZONE,
