@@ -49,10 +49,11 @@ class _Source:
     id = "fangwei-mp"
     name = "方伟公众号"
     author = "方伟"
-    description = ""
+    description = "方伟微信公众号历史归档"
+    timeline = True
 
 
-def test_article_template_keeps_bilingual_layout_and_ask_tools():
+def test_article_template_is_title_body_and_bilingual_tabs():
     html = _env().get_template("article.html").render(
         title="Note",
         canonical="https://investment.zldong.com/articles/1",
@@ -76,17 +77,20 @@ def test_article_template_keeps_bilingual_layout_and_ask_tools():
         body_html=None,
         original_url="",
         siblings=[],
-        mentions=[{"id": 3, "name_zh": "腾讯", "depth": "title", "depth_label": "标题", "hit_count": 2}],
-        digest={"model": "grok-4.7", "summary": "摘要一句", "points": ["要点"]},
         quoted={"heading": "第一节", "body": "被引用的段落"},
     )
     assert "正文 · 中英对照" in html
     assert 'href="/articles/1/zh"' in html
     assert 'href="/articles/1/original"' in html
     assert "你好" in html
-    assert "问 AI：这篇讲了什么" in html
     assert "被引用的段落" in html
-    assert "腾讯" in html
+    assert "Note" in html
+    assert "方伟" in html
+    assert "打开原文" not in html
+    assert "问 AI：这篇讲了什么" not in html
+    assert "<h2>来源</h2>" not in html
+    assert "方伟微信公众号历史归档" not in html
+    assert "AI 整合" not in html
 
 
 def test_day_template_opens_on_a_summary():

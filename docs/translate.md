@@ -27,7 +27,7 @@ Mac mini 上 research 的 `docker-compose.yml` 把外部卷 `aihot_data` 挂到 
 
 `research-xai-login logout` 会删掉共用文件，AIHOT 也会退出，慎用。
 
-问库和 `research-digest` 读的是同一份 token。摘要只在手动执行 `research-digest` 时生成，应用启动和部署不会自动跑全库。
+问库、`research-digest` 和页面上缺摘要的卡片读的是同一份 token。应用启动和部署不会自动跑全库。
 
 ## 登录（Mac mini）
 

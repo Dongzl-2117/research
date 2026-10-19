@@ -377,3 +377,65 @@ def excerpt(text: str, limit: int = 120, title: str = "") -> str:
     if len(flat) <= limit:
         return flat
     return flat[: limit - 1] + "…"
+
+
+# 知识星球一类归档常把 sn、点赞、钟点贴在正文开头。卡片不要拿这些当导读。
+_META_KEY = (
+    r"sn|likes?|like_count|comments?|comment_count|rewards?|readers?|views?|view_count|"
+    r"create_time|created_at|topic_id|digested|reading_count|favorites?|favs?"
+)
+_CLOCK = r"\d{1,2}[:：]\d{2}(?::\d{2})?"
+_DATE = r"\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+" + _CLOCK + r")?"
+_COUNT = r"(?:点赞|赞|评论|回复|阅读|在看|打赏|收藏|浏览)\s*[:：]?\s*\d+"
+_KEY_VALUE = r"(?:" + _META_KEY + r")\s*[:：]?\s*\d+"
+_LEADING_META = re.compile(
+    r"^(?:" + "|".join((_DATE, _CLOCK, _KEY_VALUE, _COUNT)) + r")(?:\s+|$)",
+    re.I,
+)
+_META_LINE = re.compile(
+    r"^(?:" + "|".join((r"(?:" + _META_KEY + r")\s*[:：]?\s*\S+", _COUNT, _DATE, _CLOCK)) + r")\s*$",
+    re.I,
+)
+
+
+def _strip_leading_meta(text: str) -> str:
+    current = text.strip()
+    while current:
+        match = _LEADING_META.match(current)
+        if not match:
+            break
+        current = current[match.end() :].strip()
+    return current
+
+
+def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
+    """从正文前部取一句实质内容，跳过点赞、sn、时间戳。没有就返回空串。"""
+    kept: list[str] = []
+    for raw_line in (text or "").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if title and line.startswith(title):
+            line = line[len(title) :].strip(" ：:|-")
+        line = _strip_leading_meta(line)
+        if not line or _META_LINE.match(line):
+            continue
+        if title and line == title.strip():
+            continue
+        kept.append(line)
+    blob = _strip_leading_meta(" ".join(kept))
+    if title and blob.startswith(title):
+        blob = _strip_leading_meta(blob[len(title) :].strip())
+    if not blob:
+        return ""
+    parts = re.split(r"(?<=[。！？!?])\s*", blob)
+    chosen = ""
+    for part in parts:
+        part = part.strip()
+        if not part or _META_LINE.match(part) or len(part) < 8:
+            continue
+        chosen = part
+        break
+    if not chosen:
+        chosen = blob
+    if len(chosen) <= limit:
+        return chosen
+    return chosen[: limit - 1] + "…"

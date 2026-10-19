@@ -2,7 +2,10 @@
 
 只处理还没有摘要、或正文改过（content_hash 对不上）的文章。卡片和 JSON 接口优先展示摘要。
 
-这是手动 CLI，应用启动和部署都不会调用它，也没有「全库自动跑」的开关。
+两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
+
+- 打开按天、作者、公司或检索时，当前卡片里缺摘要的文章在后台排队，不挡住页面，也不扫全库。
+- 手动 CLI 仍可补一批。应用启动和部署不会跑全库。
 
     research-digest --limit 50
     research-digest --source fangwei-mp --limit 200
@@ -12,23 +15,39 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import re
 import sys
+import threading
+import time
 
 from psycopg.types.json import Jsonb
 
 from researchlib.config import Settings
-from researchlib.llm import LLMError, LLMUnavailable, chat
+from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.present import format_date
 
+logger = logging.getLogger("researchlib.digest")
+
 BODY_LIMIT = 12000
 PROMPT = """读下面这篇投资研究文章，只输出一个 JSON 对象，不要输出别的文字：
-{"summary": "不超过 120 字的摘要，写作者的核心判断，不写空话",
- "points": ["3 到 5 条要点，每条一句，带关键数字"],
- "tags": ["3 到 6 个主题标签，例如 行业、公司、宏观变量"]}
-只依据原文，原文没有的不要写。"""
+{"summary": "不超过 120 字的导读，写这篇在讲什么、作者的核心判断是什么，不写空话",
+ "points": ["3 到 5 条要点，每条一句，带上原文里的关键数字"],
+ "tags": ["3 到 6 个主题标签，例如行业、公司、宏观变量"]}
+只依据原文，原文没有的不要写。开头的 sn、点赞、评论、时间戳不要写进摘要。
+不要给出投资建议，不要写该不该买、目标价或仓位。这是导读，不是建议。"""
 _JSON = re.compile(r"\{.*\}", re.S)
+_MAX_QUEUED = 40
+_COOLDOWN_S = 120.0
+_lock = threading.Lock()
+_order: list[int] = []
+_authors: dict[int, str] = {}
+_inflight: set[int] = set()
+_settings_holder: list[Settings] = []
+_running = False
+_cooldown_until = 0.0
 
 
 def parse_digest(text: str) -> dict:
@@ -91,6 +110,113 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     )
     conn.commit()
     return data
+
+
+def rows_needing_digest(conn, article_ids: list[int]):
+    if not article_ids:
+        return []
+    return conn.execute(
+        """
+        SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
+        FROM articles a
+        LEFT JOIN article_digests d ON d.article_id = a.id
+        WHERE a.id = ANY(%s)
+          AND (d.article_id IS NULL OR d.content_hash <> a.content_hash)
+        ORDER BY a.published_at DESC NULLS LAST, a.id DESC
+        """,
+        (article_ids,),
+    ).fetchall()
+
+
+def ensure_digests(conn, settings: Settings, article_ids: list[int], authors: dict[int, str]) -> int:
+    """给这几篇里缺摘要的文章现写。失败时把异常抛回调用方。"""
+    done = 0
+    for row in rows_needing_digest(conn, article_ids):
+        digest_article(conn, settings, row, authors.get(row["id"], ""))
+        done += 1
+    return done
+
+
+def schedule_digests(settings: Settings, jobs: list[tuple[int, str]], *, spawn: bool | None = None) -> int:
+    """把当前卡片里缺摘要的文章排进后台。不扫全库，也不挡住这次页面。
+
+    返回新入队的篇数。测试进程里默认直接返回，避免连上 Grok 或另开数据库连接。
+    """
+    global _running
+    if not jobs or not llm_configured(settings):
+        return 0
+    if spawn is None:
+        spawn = "PYTEST_CURRENT_TEST" not in os.environ
+    if not spawn:
+        return 0
+    start = False
+    added = 0
+    with _lock:
+        if time.monotonic() < _cooldown_until:
+            return 0
+        _settings_holder[:] = [settings]
+        for article_id, author in jobs:
+            if article_id in _authors or article_id in _inflight or len(_order) >= _MAX_QUEUED:
+                continue
+            _authors[article_id] = author or ""
+            _order.append(article_id)
+            added += 1
+        if added and not _running:
+            _running = True
+            start = True
+    if start:
+        threading.Thread(target=_digest_worker, name="article-digests", daemon=True).start()
+    return added
+
+
+def _digest_worker() -> None:
+    global _running, _cooldown_until
+    from researchlib.db import connect, ensure_search_session
+
+    conn = None
+    try:
+        while True:
+            with _lock:
+                if not _order or not _settings_holder or time.monotonic() < _cooldown_until:
+                    _running = False
+                    return
+                settings = _settings_holder[0]
+                article_id = _order.pop(0)
+                author = _authors.pop(article_id, "")
+                _inflight.add(article_id)
+            try:
+                if conn is None:
+                    conn = connect(settings)
+                    ensure_search_session(conn)
+                ensure_digests(conn, settings, [article_id], {article_id: author})
+            except LLMUnavailable as exc:
+                logger.warning("摘要暂停：%s", exc)
+                with _lock:
+                    _cooldown_until = time.monotonic() + _COOLDOWN_S
+                    _order.clear()
+                    _authors.clear()
+                    _inflight.discard(article_id)
+                    _running = False
+                return
+            except LLMError as exc:
+                logger.warning("摘要失败 %s：%s", article_id, exc)
+                if conn is not None:
+                    conn.rollback()
+            except Exception:
+                logger.exception("摘要失败 %s", article_id)
+                if conn is not None:
+                    conn.rollback()
+                else:
+                    with _lock:
+                        _inflight.discard(article_id)
+                        _running = False
+                    return
+            finally:
+                with _lock:
+                    _inflight.discard(article_id)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def main(argv: list[str] | None = None) -> int:

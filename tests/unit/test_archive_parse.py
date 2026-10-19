@@ -28,7 +28,15 @@ def test_whitelist_shape():
     assert gudu.kind == "markdown"
     feishu = next(source for source in sources if source.id == "linwenfeng-feishu")
     assert feishu.kind == "feishu"
+    assert feishu.timeline is False
     assert feishu.description == "飞书文档归档入库，保持启用。"
+    timeline = {source.id: source.timeline for source in sources}
+    assert timeline["fangwei-mp"] is True
+    assert timeline["fangwei-zsxq"] is True
+    assert timeline["chengfengpolang"] is True
+    assert timeline["gudujinhuati"] is True
+    assert timeline["linwenfeng-mp"] is True
+    assert timeline["stratechery"] is True
     disabled = {source.id: source.kind for source in sources if not source.enabled}
     assert disabled == {
         "linwenfeng-mp": "wechat_mp",
@@ -37,6 +45,29 @@ def test_whitelist_shape():
     strat = next(source for source in sources if source.id == "stratechery")
     assert strat.kind == "markdown"
     assert strat.enabled is False
+
+
+def test_missing_timeline_defaults_feishu_to_library(tmp_path: Path):
+    path = tmp_path / "sources.yaml"
+    path.write_text(
+        """
+sources:
+  - id: vault
+    name: 文库
+    author: 甲
+    kind: feishu
+    enabled: true
+  - id: feed
+    name: 时间线
+    author: 乙
+    kind: markdown
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    sources = {source.id: source for source in load_sources(path)}
+    assert sources["vault"].timeline is False
+    assert sources["feed"].timeline is True
 
 
 def test_rejected_source_does_not_prepare(monkeypatch):

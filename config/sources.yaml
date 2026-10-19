@@ -1,6 +1,9 @@
 # 来源白名单。导入器只接受这里 enabled: true 的 id。
 # 以后启用占位来源时，只改 enabled，不用改代码。
 # kind 决定用哪个解析器：wechat_mp / zsxq / feishu / markdown。
+# timeline: true 进入首页按天和 /days 日汇总（公众号、知识星球，以及以后的雪球式时间线）。
+# timeline: false 只出现在作者、公司、检索和问库。飞书文库用 false。
+# 雪球现在不加来源、不导入。以后要接时新增一条 timeline: true 即可。
 
 sources:
   - id: fangwei-mp
@@ -8,6 +11,7 @@ sources:
     author: 方伟
     kind: wechat_mp
     enabled: true
+    timeline: true
     description: 方伟微信公众号历史归档（Markdown + 图片）
 
   - id: fangwei-zsxq
@@ -15,6 +19,7 @@ sources:
     author: 方伟
     kind: zsxq
     enabled: true
+    timeline: true
     description: 方伟知识星球归档（md/、images/、raw/）
 
   - id: chengfengpolang
@@ -22,6 +27,7 @@ sources:
     author: 乘风破浪
     kind: zsxq
     enabled: true
+    timeline: true
     description: 乘风破浪知识星球归档（md/、images/、raw/）
 
   - id: gudujinhuati
@@ -29,6 +35,7 @@ sources:
     author: 孤独进化体
     kind: markdown
     enabled: true
+    timeline: true
     description: 微信公众号「孤独进化体」全文归档（通用 Markdown 目录导入；现从 AIHOT mp-gudujinhua 导出）。
 
   - id: linwenfeng-mp
@@ -36,6 +43,7 @@ sources:
     author: 林文丰
     kind: wechat_mp
     enabled: false
+    timeline: true
     description: 不做。公众号不入库。
 
   - id: linwenfeng-feishu
@@ -43,6 +51,7 @@ sources:
     author: 林文丰
     kind: feishu
     enabled: true
+    timeline: false
     description: 飞书文档归档入库，保持启用。
 
   - id: stratechery
@@ -50,4 +59,5 @@ sources:
     author: Ben Thompson
     kind: markdown
     enabled: false
+    timeline: true
     description: Ben Thompson / Stratechery 全文归档。Passport 全文、Daily≥5500 字门槛；抓完再启用并入库，游客半截不入库。入库后由站内 Grok OAuth 自动译制。
