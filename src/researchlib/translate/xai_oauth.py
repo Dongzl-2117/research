@@ -1,7 +1,10 @@
 """xAI OAuth（device-code）。对齐 AIHOT packages/backend/src/providers/xai-oauth.ts。
 
-research 自有一份 refresh token，写在 DATA_DIR/secrets/xai-oauth.json。
-不要和 AIHOT / Hermes 共用同一文件：xAI 每次刷新都会换发 refresh，共用会两边一起登出。
+默认与 AIHOT 共用同一份 refresh token（Docker 卷 aihot_data 上的
+/aihot-data/secrets/xai-oauth.json）。双方用同一路径 + 同一 .lock 文件轮流刷新；
+禁止再复制一份到别处，也禁止接 Hermes 的 auth.json（格式会被拒绝）。
+写入后会把文件 owner 设回 AIHOT 的 uid（默认 1000），避免 research 容器以 root
+写完后 AIHOT 无法再刷新。
 """
 
 from __future__ import annotations
@@ -112,28 +115,77 @@ def _parse_stored(obj: Any) -> dict[str, Any] | str | None:
     }
 
 
+def _desired_owner(path: Path) -> tuple[int, int] | None:
+    """Owner for shared AIHOT token/lock files.
+
+    Prefer XAI_OAUTH_FILE_UID/GID; else keep the existing file or secrets dir owner
+    (AIHOT runs as uid 1000). Skip when that would be root-only and no env is set.
+    """
+    uid_s = os.environ.get("XAI_OAUTH_FILE_UID", "").strip()
+    gid_s = os.environ.get("XAI_OAUTH_FILE_GID", "").strip()
+    if uid_s.isdigit() and gid_s.isdigit():
+        return int(uid_s), int(gid_s)
+    for candidate in (path, path.parent):
+        try:
+            st = candidate.stat()
+        except OSError:
+            continue
+        if st.st_uid == 0 and st.st_gid == 0:
+            continue
+        return st.st_uid, st.st_gid
+    return None
+
+
+def _chown_secret(path: Path) -> None:
+    owner = _desired_owner(path)
+    if owner is None:
+        return
+    try:
+        os.chown(path, owner[0], owner[1])
+    except OSError:
+        pass
+
+
 def _write_secret(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    # Remember owner before replace (tmp is often created as root in the app container).
+    prior = _desired_owner(path)
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
     tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
+    if prior is not None:
+        try:
+            os.chown(tmp, prior[0], prior[1])
+        except OSError:
+            pass
     tmp.replace(path)
     os.chmod(path, 0o600)
+    if prior is not None:
+        try:
+            os.chown(path, prior[0], prior[1])
+        except OSError:
+            pass
+    else:
+        _chown_secret(path)
 
 
 def _assert_own(token_path: Path) -> None:
     obj = _read_json(token_path)
     if obj not in ("missing", "unreadable") and _is_foreign(obj):
         raise XaiLoginRequiredError(
-            "拒绝写入：这个路径不是 research 自己的 xAI token 文件。"
-            "不要和 AIHOT / Hermes 共用 refresh token，请换 XAI_OAUTH_TOKEN_PATH。"
+            "拒绝写入：这个路径不是 AIHOT/research 共用的 xAI token 文件（疑似 Hermes 或其它格式）。"
+            "请把 XAI_OAUTH_TOKEN_PATH 指到 aihot_data 卷上的 secrets/xai-oauth.json。"
         )
 
 
 class _FileLock:
     def __init__(self, token_path: Path) -> None:
         self.lock_path = Path(str(token_path) + ".lock")
+        self._token_path = token_path
 
     def __enter__(self) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +197,13 @@ class _FileLock:
                     os.write(fd, str(os.getpid()).encode())
                 finally:
                     os.close(fd)
+                # Match AIHOT uid so node can stale-unlink if we crash holding the lock.
+                owner = _desired_owner(self._token_path)
+                if owner is not None:
+                    try:
+                        os.chown(self.lock_path, owner[0], owner[1])
+                    except OSError:
+                        pass
                 return
             except FileExistsError:
                 try:
@@ -482,12 +541,12 @@ def get_xai_access_token(
         state = _parse_stored(_read_json(token_path))
         if not state or state == "corrupt" or state.get("needs_login") or not state.get("refresh_token"):
             if state == "corrupt":
-                raise XaiLoginRequiredError("xAI OAuth 的 token 文件无法使用，请重新登录：research-xai-login login")
+                raise XaiLoginRequiredError("xAI OAuth 的 token 文件无法使用。请在 AIHOT 侧重新登录：docker compose exec api node scripts/xai-login.ts login")
             if isinstance(state, dict) and state.get("needs_login"):
                 raise XaiLoginRequiredError(
-                    f"xAI OAuth 需要重新登录{('：' + state['last_error']) if state.get('last_error') else ''}。运行 research-xai-login login"
+                    f"xAI OAuth 需要重新登录{('：' + state['last_error']) if state.get('last_error') else ''}。请在 AIHOT 侧登录：docker compose exec api node scripts/xai-login.ts login"
                 )
-            raise XaiLoginRequiredError("xAI OAuth 尚未登录。运行 research-xai-login login")
+            raise XaiLoginRequiredError("xAI OAuth 尚未登录。与 AIHOT 共用凭据：在 AIHOT 仓库执行 docker compose exec api node scripts/xai-login.ts login")
         now = time.time() * 1000
         skew = _skew_for(state)
         fresh = bool(state["access_token"]) and state["expires_at"] - now > skew
@@ -522,7 +581,7 @@ def logout_xai(data_dir: Path | None = None) -> XaiOAuthStatus:
     with _FileLock(token_path):
         obj = _read_json(token_path)
         if obj not in ("missing", "unreadable") and _is_foreign(obj):
-            raise XaiLoginRequiredError("拒绝删除：这个路径不是 research 自己的 xAI token 文件。")
+            raise XaiLoginRequiredError("拒绝删除：这个路径不是 AIHOT/research 共用的 xAI token 文件（疑似 Hermes 格式）。")
         directory = token_path.parent
         base = token_path.name
         if directory.is_dir():
