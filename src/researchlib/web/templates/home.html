@@ -23,6 +23,25 @@
     <kbd>/</kbd>
   </form>
 </div>
+{% if holdings %}
+<section class="card holdings-now" aria-label="持仓近况">
+  <h2><a href="/companies">持仓近况</a><span class="quiet">最近一篇深入谈到它的文章，和近 30 天的篇数</span></h2>
+  <ul>
+    {% for item in holdings %}
+    <li>
+      <a class="holdings-name" href="/companies/{{ item.id }}">{{ item.name }}</a>
+      <span class="role-badge role-{{ item.role }}">{{ item.role_label }}</span>
+      <span class="holdings-recent num{% if not item.recent %} quiet{% endif %}">{% if item.recent %}近 30 天 {{ item.recent }} 篇{% else %}近 30 天没有{% endif %}</span>
+      {% if item.latest %}
+      <span class="holdings-latest"><a href="/articles/{{ item.latest.id }}">{{ item.latest.title }}</a> <span class="quiet">{{ item.latest.author }} · {{ item.latest.relative or item.latest.date }}</span></span>
+      {% else %}
+      <span class="holdings-latest quiet">还没有深入谈它的文章</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% if days %}
 {{ day_feed(days, day_scope) }}
 {% else %}

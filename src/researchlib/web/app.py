@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,8 +13,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from researchlib.ask import mark_interrupted
 from researchlib.config import Settings, assert_bind_allowed
 from researchlib.db import prepare
+from researchlib.mentions import rebuild_if_stale
 from researchlib.web.api import api
 from researchlib.web.mcp import mcp
 from researchlib.web.routes import TEMPLATES, render_page, router
@@ -25,8 +29,26 @@ logger = logging.getLogger("researchlib")
 async def lifespan(app: FastAPI):
     # 迁移、白名单、公司种子，并给缺块的文章补切。不在启动时跑 research-digest。
     conn = prepare(app.state.settings)
-    conn.close()
+    try:
+        # 上次没跑完的问库整合标成出错，回答页可以重新整合。
+        interrupted = mark_interrupted(conn)
+        if interrupted:
+            logger.warning("有 %s 条问库整合因重启中断", interrupted)
+    finally:
+        conn.close()
+    # 公司别名变了（比如新加了一家公司），在后台重算提及，不挡启动。测试进程里不跑。
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        threading.Thread(
+            target=_rebuild_mentions_quietly, args=(app.state.settings,), name="rebuild-mentions", daemon=True
+        ).start()
     yield
+
+
+def _rebuild_mentions_quietly(settings: Settings) -> None:
+    try:
+        rebuild_if_stale(settings)
+    except Exception:
+        logger.exception("后台重算公司提及失败，可以手动跑 research-rebuild-mentions")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

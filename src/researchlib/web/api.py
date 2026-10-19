@@ -12,12 +12,12 @@ from datetime import date
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
-from researchlib.ask import ask
+from researchlib.ask import ask, start
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
-from researchlib.retrieval import retrieve
+from researchlib.retrieval import retrieve, search_articles
 from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
-from researchlib.web.routes import _author_groups, _same_origin, active_sources, database
+from researchlib.web.routes import _author_groups, _same_origin, active_portfolio, active_sources, database
 from researchlib.web.scoping import parse_int, resolve_scope
 
 api = APIRouter()
@@ -95,7 +95,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
     scope, info = resolve_scope(params, sources)
     settings = request.app.state.settings
     if level == "chunk":
-        found = retrieve(conn, query, scope, sources)
+        found = retrieve(conn, query, scope, sources, purpose="api", limit=limit)
         passages = [
             {
                 "article_id": p.article_id,
@@ -103,6 +103,8 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "title": p.title,
                 "heading": p.heading,
                 "text": p.body,
+                "score": round(p.score, 3),
+                "matched": p.matched,
                 "author": by_id[p.source_id].author,
                 "source": {"id": p.source_id, "name": by_id[p.source_id].name},
                 "published_at": format_iso(p.published_at, settings.display_timezone) or None,
@@ -118,17 +120,28 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "companies": [{"id": c["id"], "name": c["name_zh"]} for c in found.companies],
                 "authors": found.authors,
             },
+            "terms": found.terms,
             "passages": passages,
             "_trust": TRUST,
         }
     if query:
-        total = sum(int(row["n"]) for row in queries.search_counts(conn, query, scope))
-        rows = queries.search_articles(conn, query, scope, limit, offset)
-        snippets = queries.best_chunks(conn, query, [row["id"] for row in rows])
+        result = search_articles(conn, query, scope, sources, limit=limit, offset=offset)
+        total = result.total
+        rows = [
+            {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at, "source_id": hit.source_id}
+            for hit in result.hits
+        ]
+        snippets = {
+            hit.article_id: {"body": hit.passages[0].body, "ord": hit.passages[0].ord}
+            for hit in result.hits
+            if hit.passages
+        }
+        next_offset = offset + limit if offset + limit < result.available else None
     else:
         total = queries.count_scoped_articles(conn, scope)
         rows = queries.scoped_articles(conn, scope, limit, offset)
         snippets = {}
+        next_offset = offset + limit if offset + limit < total else None
     return {
         "query": query,
         "level": "article",
@@ -136,7 +149,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
         "total": total,
         "limit": limit,
         "offset": offset,
-        "next_offset": offset + limit if offset + limit < total else None,
+        "next_offset": next_offset,
         "items": _items(conn, rows, by_id, request, snippets=snippets),
         "_trust": TRUST,
     }
@@ -277,11 +290,13 @@ def api_authors(request: Request):
 
 def companies_payload(conn, request: Request, sources, show_all: bool) -> list[dict]:
     settings = request.app.state.settings
+    portfolio = active_portfolio(request)
     rows = queries.list_companies(conn, [source.id for source in sources])
     return [
         {
             "id": row["id"],
             "name": row["name_zh"],
+            "portfolio": portfolio.role(row["name_zh"]) or None,
             "name_en": row["name_en"] or None,
             "ticker": row["ticker"],
             "market": row["market"],
@@ -332,6 +347,7 @@ def company_payload(conn, request: Request, sources, company_id: int, limit: int
     return {
         "id": company["id"],
         "name": company["name_zh"],
+        "portfolio": active_portfolio(request).role(company["name_zh"]) or None,
         "name_en": company["name_en"] or None,
         "ticker": company["ticker"],
         "market": company["market"],
@@ -396,10 +412,15 @@ async def api_ask(request: Request):
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
     params = {key: str(body.get(key) or "") for key in ("author", "source", "company", "from", "to", "article")}
+    wait = body.get("wait", True) is not False
     with database(request) as conn:
         sources = active_sources(request, conn)
         scope, _info = resolve_scope(params, sources)
-        result = ask(conn, request.app.state.settings, question, scope, sources)
+        if wait:
+            result = ask(conn, request.app.state.settings, question, scope, sources)
+        else:
+            # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
+            result = start(conn, request.app.state.settings, question, scope, sources)
     return _json({**result, "_trust": TRUST})
 
 
@@ -414,10 +435,14 @@ def api_answer(request: Request, answer_id: int):
             "id": row["id"],
             "question": row["question"],
             "scope": row["scope"],
+            "status": row["status"],
+            "error": row["error"] or None,
             "answer": row["answer"],
             "citations": row["citations"],
+            "terms": row["terms"],
             "model": row["model"],
             "created_at": row["created_at"].isoformat(),
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
             "_trust": TRUST,
         }
     )
@@ -442,12 +467,15 @@ def llms_txt(request: Request):
         "",
         f"- [MCP Server]({base}/api/mcp): Streamable HTTP（JSON 响应，无状态），工具 search_library、get_article、"
         "list_companies、get_company、list_authors、get_day、ask_library",
-        f"- [检索文章]({base}/api/v1/search?q=腾讯): JSON。q 支持 websearch 语法（空格为且、or、-排除、引号）。"
+        f"- [检索文章]({base}/api/v1/search?q=腾讯): JSON。q 可以是关键词也可以是一句话，全部词都命中的排前面；"
+        "or 表示任一、-词 排除、引号里的必须原样出现。"
         "范围参数 author、source、company（公司 id）、from、to（YYYY-MM-DD，上海日历）；limit≤50、offset 翻页",
         f"- [检索段落]({base}/api/v1/search?q=腾讯游戏怎么看&level=chunk): 自然语言问题也能用。"
-        "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk）",
-        f"- [问答]({base}/api/v1/ask): POST JSON {{question, author?, source?, company?, from?, to?, article?}}，"
-        "返回 answer（带 [n]）和 citations（第 n 条出处）",
+        "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms",
+        f"- [问答]({base}/api/v1/ask): POST JSON "
+        "{question, author?, source?, company?, from?, to?, article?, wait?}，"
+        "默认等整合写完，返回 answer（带 [n]）和 citations（第 n 条出处）；wait=false 时先返回 id，"
+        "再轮询 /api/v1/answers/{id} 直到 status 不是 running",
         "",
         "## 浏览",
         "",

@@ -1150,6 +1150,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 .ask-form button { justify-self: start; height: 36px; padding: 0 18px; }
 .ask-note { margin: 0; font-size: 12.5px; }
+.answer { margin-bottom: 28px; }
 .answer h2 { margin: 0 0 8px; font-size: 18px; }
 .answer h3 { margin: 24px 0 8px; font-size: 15px; }
 .cite { color: var(--accent); font-size: .8em; vertical-align: super; }
@@ -1158,3 +1159,258 @@ tbody tr:hover td { background: var(--accent-softer); }
 .citations li:target { background: var(--accent-softer); }
 .citations li:not(.cited) { opacity: .72; }
 .citations .item-excerpt { -webkit-line-clamp: 4; }
+
+/* 持仓和观察：公司列表置顶、公司页标记、首页近况 */
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--radius-mark);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.role-badge.role-holding { background: var(--accent); color: var(--accent-contrast); }
+.role-badge.role-watch { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent-ink); }
+
+.holding-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.holding-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+.holding-card.role-holding { border-top: 3px solid var(--accent); }
+.holding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.holding-head h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.holding-head h2 a:hover { color: var(--accent); }
+.holding-ticker { margin-left: auto; color: var(--ink-4); font-size: 12.5px; }
+.holding-stats { margin: 0; color: var(--ink-3); font-size: 13.5px; }
+.holding-stats strong { color: var(--ink); font-size: 22px; font-weight: 700; margin-right: 2px; }
+.holding-spark { margin: 0; }
+.spark { display: block; width: 100%; height: 40px; }
+.spark .bar-deep { fill: var(--accent); }
+.spark .bar-empty { fill: var(--line-strong); }
+.holding-spark figcaption {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: var(--ink-4);
+  font-size: 11px;
+}
+.holding-authors { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.holding-authors a {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-sunk);
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 20px;
+}
+.holding-authors a:hover { color: var(--accent); }
+.holding-authors .num { color: var(--ink-4); }
+.holding-latest { margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; overflow-wrap: anywhere; }
+.holding-latest a { font-weight: 600; }
+.holding-latest a:hover { color: var(--accent); }
+.holding-latest .quiet { font-size: 12.5px; }
+
+/* 其余公司：紧凑的行，手机上两行排，不用横向滚动 */
+.company-list { margin-top: 28px; }
+.list-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin: 0 0 10px; }
+.sort-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; color: var(--ink-4); font-size: 13px; }
+.sort-links a:hover { color: var(--accent); }
+.sort-links strong { color: var(--ink); font-weight: 600; }
+.company-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.company-rows li + li { border-top: 1px solid var(--line-soft); }
+.company-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name deep"
+    "bar total"
+    "ticker last";
+  align-items: center;
+  gap: 2px 12px;
+  padding: 10px 14px;
+}
+.company-row:hover { background: var(--accent-softer); }
+.company-row:hover .company-name { color: var(--accent); }
+.company-name { grid-area: name; min-width: 0; color: var(--ink); font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.company-ticker { grid-area: ticker; color: var(--ink-4); font-size: 12px; }
+.company-bar { grid-area: bar; height: 4px; border-radius: 999px; background: var(--bg-sunk); overflow: hidden; }
+.company-bar span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: var(--accent); }
+.company-deep { grid-area: deep; justify-self: end; color: var(--ink-4); font-size: 12.5px; }
+.company-deep strong { color: var(--ink); font-size: 14px; font-weight: 650; }
+.company-total { grid-area: total; justify-self: end; color: var(--ink-4); font-size: 12px; }
+.company-last { grid-area: last; justify-self: end; color: var(--ink-4); font-size: 12px; }
+
+/* 公司页 */
+.company-hero { margin-top: 4px; }
+.company-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.company-title h1 { margin: 0; color: var(--ink); font-size: 28px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; }
+.company-title .role-badge { height: 22px; font-size: 12px; }
+.company-hero .head-actions { margin-bottom: 4px; }
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.stat-strip div { padding: 12px 14px; }
+.stat-strip div:nth-child(odd) { border-right: 1px solid var(--line-soft); }
+.stat-strip div:nth-child(-n + 2) { border-bottom: 1px solid var(--line-soft); }
+.stat-strip dt { color: var(--ink-4); font-size: 12px; }
+.stat-strip dd { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
+.stat-strip dd strong { color: var(--ink); font-size: 20px; font-weight: 700; }
+.stat-strip dd .quiet { font-size: 12px; }
+.chart-wrap figcaption { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; }
+.legend { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-4); font-size: 12px; font-weight: 400; }
+.legend i { display: inline-block; width: 10px; height: 10px; margin-left: 6px; border-radius: 2px; }
+.legend .key-deep { background: var(--accent); }
+.legend .key-passing { background: color-mix(in srgb, var(--ink-4) 38%, transparent); }
+.company-chart .bar-deep { fill: var(--accent); }
+.company-chart .bar-passing { fill: color-mix(in srgb, var(--ink-4) 38%, transparent); }
+.company-chart .bar-empty { fill: var(--line-strong); }
+.company-chart .axis { stroke: var(--line); }
+.chart-box { position: relative; }
+.chart .company-chart, .company-chart { display: block; width: 100%; height: 140px; }
+.chart-years { position: relative; height: 18px; margin-top: 4px; color: var(--ink-4); font-size: 11.5px; }
+.chart-years span { position: absolute; top: 0; transform: translateX(-50%); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.company-chart g:hover rect { opacity: .8; }
+
+.who { margin: 20px 0 8px; }
+.who h2, .company-articles .year-head { margin: 0 0 8px; color: var(--ink-3); font-size: 13px; font-weight: 600; }
+.who-rows { margin: 0; padding: 0; list-style: none; }
+.who-row {
+  display: grid;
+  grid-template-columns: 5.5em minmax(40px, 1fr) auto;
+  grid-template-areas: "name bar count";
+  align-items: center;
+  gap: 4px 12px;
+  padding: 7px 10px;
+  border-radius: var(--radius-control);
+  font-size: 13.5px;
+}
+.who-row:hover { background: var(--bg-sunk); }
+.who-row.is-current { background: var(--accent-softer); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
+.who-name { grid-area: name; overflow: hidden; color: var(--ink); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.who-bar { grid-area: bar; height: 6px; border-radius: 999px; background: var(--bg-sunk); overflow: hidden; }
+.who-bar span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: var(--accent); }
+.who-count { grid-area: count; color: var(--ink-4); font-size: 12.5px; white-space: nowrap; }
+.who-count strong { color: var(--ink); font-size: 13.5px; font-weight: 650; }
+.who-last { display: none; }
+
+.company-articles { margin-top: 24px; }
+.company-articles .chips { margin: 0; }
+.company-articles .year-head { margin: 18px 0 2px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); color: var(--ink); font-size: 15px; font-weight: 700; }
+
+/* 首页：持仓近况 */
+.holdings-now { margin: 0 0 20px; padding: 14px 16px; }
+.holdings-now h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+.holdings-now h2 a:hover { color: var(--accent); }
+.holdings-now h2 .quiet { font-size: 12px; font-weight: 400; }
+.holdings-now ul { margin: 0; padding: 0; list-style: none; }
+.holdings-now li {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-areas:
+    "name role recent"
+    "latest latest latest";
+  align-items: center;
+  gap: 2px 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.holdings-name { grid-area: name; color: var(--ink); font-size: 14.5px; font-weight: 650; }
+.holdings-name:hover { color: var(--accent); }
+.holdings-now .role-badge { grid-area: role; justify-self: start; }
+.holdings-recent { grid-area: recent; justify-self: end; color: var(--ink-2); font-size: 12.5px; }
+.holdings-latest { grid-area: latest; min-width: 0; overflow: hidden; color: var(--ink-3); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.holdings-latest a { color: var(--ink-2); }
+.holdings-latest a:hover { color: var(--accent); }
+
+/* 问库：相关原文、后台整合的状态 */
+.answer-status { display: flex; align-items: center; gap: 10px; margin: 8px 0 4px; padding: 10px 14px; border-radius: var(--radius-control); background: var(--accent-softer); color: var(--ink-2); font-size: 13.5px; line-height: 1.6; }
+.spinner { flex: none; width: 14px; height: 14px; border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent); border-radius: 999px; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.retry-form { margin: 8px 0 0; }
+.retry-form button { height: 32px; padding: 0 14px; border: 0; border-radius: var(--radius-control); background: var(--accent); color: var(--accent-contrast); }
+.citations.plain li { opacity: 1; }
+.passage-full { margin-top: 4px; color: var(--ink-4); font-size: 12.5px; }
+.passage-full summary { cursor: pointer; }
+.passage-full summary:hover { color: var(--accent); }
+.passage-full p { margin: 6px 0 0; color: var(--ink-2); font-size: 14px; line-height: 1.75; white-space: pre-line; }
+.more-passages { margin-top: 16px; }
+.more-passages summary { cursor: pointer; color: var(--ink-3); font-size: 14px; font-weight: 600; }
+.more-passages summary:hover { color: var(--accent); }
+.partial-note { margin: 18px 0 6px; padding-top: 12px; border-top: 1px dashed var(--line-strong); color: var(--ink-4); font-size: 12.5px; }
+
+@media (max-width: 719px) {
+  /* 手机上持仓卡两列，只留名字、标记、篇数和月度条；作者和最近一篇在桌面宽度和首页「持仓近况」里看。 */
+  .holding-card { gap: 6px; padding: 12px; }
+  .holding-head h2 { font-size: 17px; }
+  .holding-ticker, .holding-authors, .holding-latest, .holding-spark figcaption { display: none; }
+  .holding-stats { font-size: 12.5px; }
+  .holding-stats strong { font-size: 18px; }
+  .holding-stats .quiet { display: none; }
+  .spark { height: 30px; }
+  .stat-strip dd strong { font-size: 18px; }
+  .stat-strip dd .quiet { display: block; margin-top: 2px; }
+  .slots.flat .slot { grid-template-columns: 74px minmax(0, 1fr); }
+  .slots.flat.short .slot { grid-template-columns: 52px minmax(0, 1fr); }
+}
+@media (min-width: 720px) {
+  .holding-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .stat-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .stat-strip div:nth-child(odd) { border-right: 0; }
+  .stat-strip div:nth-child(-n + 2) { border-bottom: 0; }
+  .stat-strip div + div { border-left: 1px solid var(--line-soft); }
+  .company-row {
+    grid-template-columns: minmax(0, 11em) 7.5em minmax(60px, 1fr) 5.5em 5em 6.5em;
+    grid-template-areas: "name ticker bar deep total last";
+    gap: 12px;
+  }
+  .company-ticker, .company-total, .company-last { font-size: 12.5px; }
+  .who-row { grid-template-columns: 7em minmax(80px, 1fr) 9em 6.5em; grid-template-areas: "name bar count last"; }
+  .who-last { display: block; grid-area: last; justify-self: end; font-size: 12px; }
+  .holdings-now li {
+    grid-template-columns: 6.5em 3.2em minmax(0, 1fr) auto;
+    grid-template-areas: "name role latest recent";
+    gap: 12px;
+  }
+}
+@media (min-width: 1024px) {
+  .holding-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .holding-card.role-watch { grid-column: span 2; }
+  .company-filter { width: 280px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}

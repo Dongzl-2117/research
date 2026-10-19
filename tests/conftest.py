@@ -53,7 +53,7 @@ def conn(settings):
     from researchlib.db import prepare
 
     connection = prepare(settings)
-    connection.execute("TRUNCATE articles RESTART IDENTITY CASCADE")
+    connection.execute("TRUNCATE articles, llm_answers RESTART IDENTITY CASCADE")
     connection.commit()
     yield connection
     connection.close()

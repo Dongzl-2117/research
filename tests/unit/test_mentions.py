@@ -141,3 +141,22 @@ def test_matcher_is_fast_on_a_long_note():
     elapsed = time.perf_counter() - started
     assert counts
     assert elapsed < 1.5
+
+
+def test_wechat_boilerplate_does_not_count():
+    from researchlib.mentions import DEPTH_PASSING, DEPTH_WHOLE, mentions_for_document, scrub_publisher_noise
+
+    found, names = matcher()
+    scrubbed = scrub_publisher_noise("请关注公众号并微信扫一扫，来源：微信公众号。")
+    assert "微信" not in scrubbed.replace(" ", "")
+    assert "微信支付" in scrub_publisher_noise("微信支付和小程序都在增长。")
+
+    noise = "这篇文章讲别的事。\n\n" + "请关注公众号并微信扫一扫，来源：微信公众号。" * 5
+    rows = {cid: depth for cid, depth, _ in mentions_for_document(found, "无关标题", noise)}
+    assert names["腾讯"] not in rows
+
+    real = "微信小程序和微信支付是腾讯的两条产品线。微信电商也在讲。微信支付还在扩。"
+    rows = {cid: depth for cid, depth, _ in mentions_for_document(found, "产品线", real)}
+    assert rows[names["腾讯"]] in {DEPTH_WHOLE, DEPTH_PASSING}
+    assert rows[names["腾讯"]] == DEPTH_WHOLE
+

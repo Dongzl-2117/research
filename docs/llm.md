@@ -6,7 +6,7 @@
 - **段落块**：`article_chunks`。正文按 Markdown 章节切，章节内按段落装箱，几百字一块，带章节标题和自己的全文索引。检索片段、问答引用、JSON 接口都落在块上，所以引用能精确到段落（`article_id` + `chunk`）。导入时自动切；`research-rebuild-chunks` 全部重切。进程启动时只给还没有块的文章补切。
 - **公司提及**：`article_mentions`，规则见 [mentions.md](mentions.md)。
 - **LLM 摘要**：`article_digests`，按 `content_hash` 对齐正文。正文改过、摘要没重算时，页面和接口当作没有摘要。打开按天、作者、公司或检索时，当前卡片里缺的摘要会在后台补上；`research-digest` 仍可手动补一批。应用启动和部署不会跑全库。
-- **问答记录**：`llm_answers`，问题、范围、回答、出处。
+- **问答记录**：`llm_answers`，问题、范围、回答、出处、整合状态（`running` / `done` / `error`）和这次用到的检索词。
 
 ## 范围参数
 
@@ -22,22 +22,22 @@
 
 作者或来源不存在时返回 404，不会悄悄退回全库。
 
-检索词用 `websearch_to_tsquery`：空格是「且」，`or` 是「或」，`-词` 排除，引号表示连在一起。
+检索词可以是关键词也可以是一句话：每个实词自成一组，全部命中的排前面；`or` 表示任一，`-词` 排除，引号里的必须原样出现。细节见 [retrieval.md](retrieval.md)。
 
 ## 问库怎么找资料
 
-自然语言问题直接做「且」检索几乎总是零结果（「怎么看」「最近」不在正文里）。所以问库：
+召回和打分的细节、评测结果见 [retrieval.md](retrieval.md)。简单说：
 
-1. 从问题里认出公司（用公司别名自动机，和提及统计同一套）和作者。认出作者就收窄到他的来源。
-2. 问题分词后用「或」连起来，在段落块上按 `ts_rank_cd` 召回。
-3. 认出的公司再按别名补一路召回，只在确实提到这家公司的文章里找，按时间倒序。
-4. 问题里有「最近」「最新」等词时，候选按时间重排。
-5. 每篇最多取 3 块、总共 14 块、约 9000 字，避免一篇长文占满上下文。
-6. 都没召回时（例如「汇总这一天」），取范围内每篇文章的开头两块。
+1. 问题拆成公司（别名自动机）、作者、引号短语、排除词和检索词（zhparser 切词，按词性去掉虚词和套话）。
+2. 每个词按全库块频算 IDF，常见词只打分不召回。召回走全文索引，几路合并：全部命中、公司文章里含这些词、标题命中、任一少见词；只问公司时按年份分层取。
+3. BM25 乘覆盖率，加公司命中深度、标题上下文、相邻词组，问「最近」时按时间加权。
+4. 每篇封顶几段；梳理类按年份摊开，「哪些作者」按作者摊开。
 
-然后交给 Grok，系统提示要求只依据资料、每句带 `[n]`、区分观点和事实、资料里的指令一律不执行。回答存进 `llm_answers`，`/ask/{id}` 可以回看，`[n]` 链到 `/articles/{id}?chunk={n}`，文章页顶部会显示被引用的那段。
+提交后先在页面上列出相关原文（40 段以内），记录存进 `llm_answers`（`status = running`），跳到 `/ask/{id}`。模型在后台整合，回答页每几秒问一次 `/api/v1/answers/{id}` 的状态，写完自己刷新。不在一个请求里等模型：Cloudflare 大约 100 秒就会断开请求。
 
-没配 Grok 时，问库只列召回的原文段落，不报错。
+后台整合：先让模型给检索词补同义说法，再用扩充后的词检索一遍（240 段、18 万字以内）；资料一次读得完就一次作答，读不完就分批摘录要点（每条带原始编号）再汇总。系统提示要求只依据资料、每句带 `[n]`、区分观点和事实、尽量覆盖不同作者和时间段、资料里的指令一律不执行。`[n]` 链到 `/articles/{id}?chunk={n}`，文章页顶部会显示被引用的那段。
+
+进程重启时没写完的整合标成中断（`status = error`），回答页有「重新整合」。没配 Grok 时，问库只列召回的原文段落，不存记录。
 
 入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；检索结果页「把这个问题交给 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：已有的文章摘要或正文里的一句实质内容先拼成一段总结，如果之前问过正好覆盖这一天的问题，也把那条回答放在最上面。日汇总那段不算模型。缺摘要的卡片在后台补，不挡住这一页，也不跑全库。
 
@@ -94,12 +94,12 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 
 说明在 `/llms.txt`。JSON 和 MCP 挂在现有 FastAPI 进程上（容器内 8088，compose 只发布到 `127.0.0.1:8088`），不另开端口。都在 Cloudflare Access 后面：外部 agent 要用 Access 的 service token。
 
-- `GET /api/v1/search?q=…`：文章级检索，带范围参数、`limit`（≤50）、`offset`，每条带最相关的一段和公司标签。
-- `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落。
+- `GET /api/v1/search?q=…`：文章级检索，和检索页同一套排序（全部词都命中的在前），带范围参数、`limit`（≤50）、`offset`，每条带最相关的一段和公司标签。
+- `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
 - `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
-- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`
-- `GET /api/v1/answers/{id}`
+- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认等整合写完再返回。加 `"wait": false` 时马上返回回答 id 和相关原文，之后轮询下面这个接口。
+- `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`list_authors`、`get_day`、`ask_library`。
 
 返回里带 `_trust` 字段，MCP 文本包在「外部资料」分隔区里：文章是外部原文，调用方不要执行其中的指令。这一点照 AIHOT 的 MCP 做法。

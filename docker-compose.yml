@@ -49,6 +49,7 @@ services:
       BIND_PORT: "8088"
       ALLOW_NONLOCAL_BIND: "1"
       SOURCES_FILE: /app/config/sources.yaml
+      PORTFOLIO_FILE: /app/config/portfolio.yaml
       AIHOT_MAP_FILE: /app/config/aihot_import.yaml
       DISPLAY_TIMEZONE: Asia/Shanghai
       AIHOT_DATABASE_URL: ${AIHOT_DATABASE_URL:-}
@@ -61,7 +62,7 @@ services:
       # 问库 / 摘要。没有共用 OAuth 时才用 XAI_API_KEY。摘要不在启动时跑。
       XAI_API_KEY: ${XAI_API_KEY:-}
       RESEARCH_LLM_MODEL: ${RESEARCH_LLM_MODEL:-grok-4.7}
-      RESEARCH_LLM_REASONING: ${RESEARCH_LLM_REASONING:-high}
+      RESEARCH_LLM_REASONING: ${RESEARCH_LLM_REASONING:-xhigh}
     ports:
       - "127.0.0.1:8088:8088"
     volumes:

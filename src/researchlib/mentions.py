@@ -58,6 +58,25 @@ _INCIDENTAL = re.compile(
 )
 _SENTENCE = re.compile(r"[^。！？!?\n；;]+[。！？!?\n；;]?")
 
+# 公众号页脚和分享提示。收「微信」之前先把这些整段抹掉，免得几乎每篇都记成提到腾讯。
+_PUBLISHER_NOISE = re.compile(
+    r"微信扫一扫|在微信中打开|微信搜索公众号|微信搜索|打开微信|"
+    r"分享到微信|分享到朋友圈|分享朋友圈|微信公众号|"
+    r"长按识别二维码|识别图中二维码|请关注公众号|关注公众号|欢迎关注"
+)
+
+
+def scrub_publisher_noise(text: str) -> str:
+    """把公众号模板字样换成等长空格，保留位置，匹配时就不会撞上里面的「微信」。"""
+    if not text:
+        return text
+
+    def blank(match: re.Match[str]) -> str:
+        return " " * (match.end() - match.start())
+
+    return _PUBLISHER_NOISE.sub(blank, text)
+
+
 
 class _Node:
     __slots__ = ("next", "fail", "out")
@@ -207,6 +226,7 @@ class CompanyMatcher:
     def spans(self, text: str) -> list[tuple[int, int, int]]:
         if not text:
             return []
+        text = scrub_publisher_noise(text)
         found = _search_aho(text, self._root)
         latin: list[tuple[int, int, int]] = []
         for pattern, lookup, casefold in self._latin:
@@ -263,9 +283,10 @@ def company_on_card(title: str, body: str, *, name: str, aliases: Iterable[str] 
     names = [item.strip() for item in names if isinstance(item, str) and len(item.strip()) >= 2]
     if not names:
         return False
-    if any(item in (title or "") for item in names):
+    title = scrub_publisher_noise(title or "")
+    if any(item in title for item in names):
         return True
-    early = early_main_text(body)
+    early = scrub_publisher_noise(early_main_text(body))
     if not any(item in early for item in names):
         return False
     sentences = sentence_pieces(early)
@@ -366,14 +387,81 @@ def load_company_rows(conn) -> list[dict]:
     )
 
 
+FINGERPRINT_KEY = "mentions_fingerprint"
+
+
+def companies_fingerprint(rows: list[dict]) -> str:
+    """公司表里影响匹配的字段（名字、代码、简称）的指纹。变了就要重算提及。"""
+    import hashlib
+    import json
+
+    payload = [
+        [int(row["id"]), row["name_zh"], row["name_en"] or "", row["ticker"] or "", sorted(row["aliases"] or [])]
+        for row in sorted(rows, key=lambda item: int(item["id"]))
+    ]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def rebuild_all(conn) -> int:
-    matcher = CompanyMatcher(load_company_rows(conn))
-    articles = conn.execute("SELECT id, title, body_md FROM articles ORDER BY id").fetchall()
-    for article in articles:
+    rows_for_matcher = load_company_rows(conn)
+    matcher = CompanyMatcher(rows_for_matcher)
+    articles = conn.execute("SELECT id FROM articles ORDER BY id").fetchall()
+    for item in articles:
+        # 一篇一篇取正文，几万篇也不必一次读进内存。
+        article = conn.execute("SELECT id, title, body_md FROM articles WHERE id = %s", (item["id"],)).fetchone()
+        if article is None:
+            continue
         rows = mentions_for_document(matcher, article["title"], article["body_md"])
         replace_mentions(conn, article["id"], rows)
+        conn.commit()
+    conn.execute(
+        """
+        INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        """,
+        (FINGERPRINT_KEY, companies_fingerprint(rows_for_matcher)),
+    )
     conn.commit()
     return len(articles)
+
+
+def mentions_stale(conn) -> bool:
+    """公司表和上次重算时不一样（或者从没记过），就算过期。没有文章时不算。"""
+    row = conn.execute("SELECT value FROM app_state WHERE key = %s", (FINGERPRINT_KEY,)).fetchone()
+    current = companies_fingerprint(load_company_rows(conn))
+    if row is not None and row["value"] == current:
+        return False
+    has_articles = conn.execute("SELECT EXISTS (SELECT 1 FROM articles) AS e").fetchone()["e"]
+    if not has_articles:
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+            """,
+            (FINGERPRINT_KEY, current),
+        )
+        conn.commit()
+        return False
+    return True
+
+
+def rebuild_if_stale(settings) -> int:
+    """应用启动后在后台跑：公司别名变了才重算全部提及。返回重算的篇数，没变返回 0。"""
+    import logging
+
+    from researchlib.db import connect
+
+    logger = logging.getLogger("researchlib.mentions")
+    conn = connect(settings)
+    try:
+        if not mentions_stale(conn):
+            return 0
+        logger.warning("公司别名变了，后台重算全部文章的公司提及")
+        count = rebuild_all(conn)
+        logger.warning("公司提及重算完成：%s 篇", count)
+        return count
+    finally:
+        conn.close()
 
 
 def main(argv: list[str] | None = None) -> int:
