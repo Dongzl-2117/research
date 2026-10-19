@@ -65,7 +65,7 @@ class Settings:
     llm_base_url: str = "https://api.x.ai/v1"
     llm_model: str = "grok-4.7"
     llm_api_key: str = field(default="", repr=False)
-    llm_reasoning_effort: str = "high"
+    llm_reasoning_effort: str = "xhigh"
     llm_max_tokens: int = 64000
     llm_timeout: float = 900.0
     # 持仓和观察名单。没有这个文件就当没有持仓。
@@ -101,7 +101,7 @@ class Settings:
             llm_base_url=(environ.get("XAI_BASE_URL", "").strip() or "https://api.x.ai/v1").rstrip("/"),
             llm_model=environ.get("RESEARCH_LLM_MODEL", "").strip() or "grok-4.7",
             llm_api_key=environ.get("XAI_API_KEY", "").strip(),
-            llm_reasoning_effort=environ.get("RESEARCH_LLM_REASONING", "high").strip(),
+            llm_reasoning_effort=environ.get("RESEARCH_LLM_REASONING", "xhigh").strip(),
             llm_max_tokens=int(environ.get("XAI_MAX_TOKENS", "64000")),
             llm_timeout=float(environ.get("RESEARCH_LLM_TIMEOUT", "900")),
             portfolio_path=(

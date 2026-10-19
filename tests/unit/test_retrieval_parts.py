@@ -159,7 +159,7 @@ def test_synthesize_extracts_in_batches_then_merges(monkeypatch):
     maps = [c for c in calls if c[0][0]["content"] == ask_module.MAP_PROMPT]
     reduce = [c for c in calls if c[0][0]["content"] == ask_module.SYSTEM_PROMPT]
     assert len(maps) >= 2 and len(reduce) == 1
-    assert all(c[1].get("reasoning_effort") == "low" for c in maps)
+    assert all(c[1].get("reasoning_effort") is None for c in maps)
     merged = reduce[0][0][1]["content"]
     # 「无」的那批不进汇总；目录保留全部编号，回答沿用原编号。
     assert "要点 [" in merged and "第 1 批摘录：\n无" not in merged

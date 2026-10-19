@@ -85,7 +85,7 @@ def chat(
     temperature: float = 0.2,
     reasoning_effort: str | None = None,
 ) -> tuple[str, str]:
-    """返回 (回答文本, 实际模型名)。reasoning_effort 不传时用配置里的；同义词扩展、分批摘录这类小活传 low。"""
+    """返回 (回答文本, 实际模型名)。reasoning_effort 不传时用配置里的（默认 xhigh）。"""
     kind = credential_kind(settings)
     payload = {
         "model": settings.llm_model,

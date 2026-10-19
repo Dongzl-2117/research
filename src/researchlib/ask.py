@@ -155,7 +155,6 @@ def synthesize(settings: Settings, question: str, passages: list[dict]) -> tuple
                 {"role": "system", "content": MAP_PROMPT},
                 {"role": "user", "content": f"问题：{question}\n\n资料：\n{_material(batch)}"},
             ],
-            reasoning_effort="low",
         )
         return text.strip()
 
@@ -220,7 +219,6 @@ def expand_terms(settings: Settings, question: str, terms: list[str]) -> dict[st
                 {"role": "user", "content": f"问题：{question}\n检索词：{'、'.join(terms)}"},
             ],
             temperature=0.0,
-            reasoning_effort="low",
         )
     except (LLMError, LLMUnavailable) as exc:
         logger.warning("同义词扩展失败，按原词检索：%s", exc)
