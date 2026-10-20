@@ -119,13 +119,38 @@ archive/
   raw/*.json
 ```
 
-`raw` 里的 JSON 提供 `topic_id`、时间和标题。正文以 Markdown 为准。文件名里的长数字会拿去对 JSON。
+`raw` 里的 JSON 提供 `topic_id`、时间和标题。正文以 Markdown 为准。文件名里的长数字会拿去对 JSON。`raw/topics/*.json` 也要读：不能因为 `raw/group.json`、`raw/state.json` 已经让「父目录叫 raw」的列表非空，就把 `topics` 跳过，否则 `create_time` 会丢成文件名里的零点。`md/INDEX.md` 是目录，不是话题，不入库；已经在库里的，再导入或跑 `research-retime` 时会删掉。
+
+正文开头的「- 时间：2024-11-28 10:40:22」只在没有 JSON 钟点时使用。没有真实钟点就保持原样，不编造时间。
+
+方伟星球把零点改成真实 `create_time` 之后，必须再跑一次重排。观点时间线和文章页「同期别人怎么看」按 `published_at` 现算；以前全是当天 00:00，同一天里的态度变化会标在错误的那篇上。`research-retime` 改钟点、写上 `raw_meta.create_time`，正文没变时把观点、摘要、译文的 `content_hash` 对齐（避免夜间任务把「只改了钟点」当成正文变了再抽一遍），然后按新时间把态度变化和 ±30 天的同期窗口重走一遍。不访问知识星球接口。
+
+```bash
+docker compose exec app research-retime \
+  --source fangwei-zsxq \
+  --input /data/inbox/fangwei-zsxq
+
+docker compose exec app research-retime \
+  --source fangwei-zsxq \
+  --input /data/inbox/fangwei-zsxq \
+  --dry-run
+```
+
+乘风破浪如果也是零点，把 `--source` 和 `--input` 换成 `chengfengpolang` 再跑一次。
 
 作者常在评论里回答读者，补充的判断不比正文少。JSON 里的评论只取作者本人的（问答话题里就是回答的人），连同他回复的那条读者评论，接在正文后面的「评论里的回复」一节：「读者问：……」「作者答：……」，没有回复对象的写「作者补充：……」。读者的名字、别的读者之间的评论都不要；作者的回复正文里已经有了的不重复。楼中楼也展开。这一节和正文一样进检索、问库和观点。
 
 ## 飞书和通用 Markdown
 
-相对路径就是外部 id，所以子文档放在子目录里再次导入仍然对得上。飞书和通用 Markdown 的文章页会列出同目录的其他篇。
+相对路径就是外部 id，所以子文档放在子目录里再次导入仍然对得上。
+
+林文丰飞书的原文是平铺的 `docs/*.md`，知识库层级没有存下来，也不要去接飞书 wiki API。导入结束后会按正文里的相对 `.md` 链接做一遍广度优先：从「主页-Jason 林文丰」出发，第一次被谁链到，谁就是父节点；后面的交叉链接只保持为链接。结果在 `doc_tree`。已经入库、这次没有重新导入时，部署后单独跑：
+
+```bash
+docker compose exec app research-doc-tree --source linwenfeng-feishu
+```
+
+页面是 `/sources/linwenfeng-feishu/tree`。飞书不进首页按天（`timeline: false`）。文章里的相对 `.md` 链接渲染时改成 `/articles/<id>`；库里没有的去掉链接，标「未收录」。`__token` 对得上时，文件名改了也能连上。
 
 ## AIHOT（可选，只读）
 

@@ -357,8 +357,7 @@ def test_companies_page_pins_holdings_and_company_page_defaults_to_deep(conn, se
         assert everything.count('class="depth depth-passing"') >= page.count('class="depth depth-passing"')
         assert client.get(f"/companies/{tencent}", params={"depth": "passing"}).status_code == 200
         home = client.get("/").text
-        assert "持仓近况" in home
-        assert home.find("持仓近况") < home.find('class="feed"')
+        assert "持仓近况" not in home
 
 
 def test_portfolio_names_missing_from_company_table_are_flagged(conn, settings, tmp_path):

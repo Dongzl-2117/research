@@ -57,3 +57,19 @@ def test_date_only_frontmatter_keeps_same_day_clock():
     assert known is True
     local = when.astimezone(SHANGHAI)
     assert (local.year, local.month, local.day, local.hour, local.minute) == (2024, 10, 19, 13, 29)
+
+
+def test_body_time_line_beats_filename_midnight_not_json():
+    named, source, known = resolve_published_at(
+        filename="2024-11-28-888888.md",
+        text="- 时间：2024-11-28 10:40:22\n正文\n",
+    )
+    assert source == "body" and known is True
+    assert (named.hour, named.minute) == (10, 40)
+    meta, meta_source, meta_known = resolve_published_at(
+        hints={"create_time": "2024-11-28T02:40:22+00:00"},
+        filename="2024-11-28-888888.md",
+        text="- 时间：1999-01-01 08:00:00\n",
+    )
+    assert meta_source == "meta" and meta_known is True
+    assert meta.astimezone(SHANGHAI).hour == 10

@@ -270,6 +270,21 @@ def _markup_raw(text: str) -> str | None:
     return None
 
 
+# 知识星球 Markdown 常在开头写「- 时间：2024-11-28 10:40:22」。只认前几行的列表项，避免正文里的「时间」被当成发布时间。
+_BODY_TIME = re.compile(r"(?m)^[ \t]*[-*][ \t]+时间[ \t]*[:：][ \t]*([^\n]{4,60})")
+
+
+def _body_time_raw(text: str) -> str | None:
+    head = "\n".join((text or "").splitlines()[:15])
+    match = _BODY_TIME.search(head)
+    if not match:
+        return None
+    raw = match.group(1).strip().split("（", 1)[0].strip()
+    if parse_datetime(raw):
+        return raw
+    return None
+
+
 def date_from_markup(text: str) -> datetime | None:
     raw = _markup_raw(text)
     if raw is None:
@@ -305,7 +320,7 @@ def resolve_published_at(
     text: str = "",
     extra_filenames: tuple[str, ...] = (),
 ) -> tuple[datetime | None, str, bool]:
-    """按 frontmatter、元数据、正文标记、文件名的顺序取发布时间。
+    """按 frontmatter、元数据、正文标记、「- 时间：」、文件名的顺序取发布时间。
 
     第三项表示原始值里有没有时分。只有日历日时，如果后面的来源在同一天带了钟点
     （例如前言只写了日期，知识星球 JSON 里有 create_time），用那个钟点，避免把
@@ -321,6 +336,11 @@ def resolve_published_at(
         parsed = parse_datetime(raw_markup)
         if parsed:
             candidates.append((parsed, "markup", clock_known_in(raw_markup)))
+    raw_body = _body_time_raw(text)
+    if raw_body:
+        parsed = parse_datetime(raw_body)
+        if parsed:
+            candidates.append((parsed, "body", clock_known_in(raw_body)))
     for name in (filename, *extra_filenames):
         found = date_from_filename(name)
         if found:

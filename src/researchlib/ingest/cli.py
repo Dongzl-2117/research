@@ -21,7 +21,9 @@ def build_parser(description: str) -> argparse.ArgumentParser:
     return parser
 
 
-def run_markdown_ingest(kind: str, description: str, argv: list[str] | None, *, id_mode: str) -> int:
+def run_markdown_ingest(
+    kind: str, description: str, argv: list[str] | None, *, id_mode: str, after_store=None
+) -> int:
     parser = build_parser(description)
     args = parser.parse_args(argv)
     settings = Settings.from_env()
@@ -48,10 +50,12 @@ def run_markdown_ingest(kind: str, description: str, argv: list[str] | None, *, 
                 images_in_archive=image_count,
                 errors=errors,
             )
+            print(report.render())
+            if after_store is not None and not report.errors:
+                after_store(conn, source)
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-    print(report.render())
     return 1 if report.errors else 0

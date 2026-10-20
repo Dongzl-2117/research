@@ -91,9 +91,11 @@ def test_theses_views_home_and_same_period(conn, settings, monkeypatch):
         only = client.get(f"/companies/{company['id']}", params={"views": "t1"}).text
         section = only.split('id="views"', 1)[1].split('class="company-articles"', 1)[0]
         assert "mp/t1 的判断" in section and "cf/t2 的判断" in section and "zx/t4 的判断" not in section
-        # 首页持仓近况：最近一条判断和态度。
+        # 首页最近观点：按观点时间排，不写「持仓近况」。
         home = client.get("/").text
+        assert "最近观点" in home and "持仓近况" not in home
         assert "zx/t4 的判断" in home and "holdings-view" in home
+        assert home.find("最近观点") < home.find('class="feed"')
         # 文章页：同期别的作者怎么看，不列自己。
         article = client.get(f"/articles/{ids['mp/t1']}").text
         assert "同期别人怎么看" in article and "cf/t2 的判断" in article and "mp/t1 的判断" not in article

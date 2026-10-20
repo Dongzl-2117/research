@@ -99,7 +99,7 @@ def test_timeline_on_company_page(conn, settings, monkeypatch):
         risk = client.get(f"/companies/{company['id']}", params={"views": "risk"}).text
         section = risk.split('id="views"', 1)[1].split('class="company-articles"', 1)[0]
         assert "视频号时长停止增长" in section and "腾讯视频号和腾讯金融科技各写一层" not in section
-        # 不在持仓和观察名单里的公司不整理观点。
+        # 没有深入谈到、也还没有观点的公司，不空出一节观点。
         meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
         assert 'id="views"' not in client.get(f"/companies/{meituan}").text
 

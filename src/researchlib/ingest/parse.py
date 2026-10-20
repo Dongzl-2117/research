@@ -261,6 +261,12 @@ def extract_zsxq_meta(data: object) -> dict:
     return topics[0] if topics else {}
 
 
+def _keep_topic(index: dict[str, dict], key: str, meta: dict) -> None:
+    current = index.get(key)
+    if current is None or (current.get("create_time") in (None, "") and meta.get("create_time") not in (None, "")):
+        index[key] = meta
+
+
 def load_raw_index(raw_files: list[Path]) -> dict[str, dict]:
     index: dict[str, dict] = {}
     for path in raw_files:
@@ -271,12 +277,32 @@ def load_raw_index(raw_files: list[Path]) -> dict[str, dict]:
         metas = extract_zsxq_topics(data)
         if not metas:
             continue
-        index.setdefault(path.stem, metas[0])
+        _keep_topic(index, path.stem, metas[0])
         for meta in metas:
             topic_id = meta.get("topic_id")
             if topic_id:
-                index.setdefault(str(topic_id), meta)
+                _keep_topic(index, str(topic_id), meta)
     return index
+
+
+def is_index_markdown(path: Path) -> bool:
+    """知识星球导出的 INDEX.md 是目录，不是一条话题。"""
+    return path.stem.lower() == "index" and path.suffix.lower() in {".md", ".markdown"}
+
+
+def select_raw_json(paths: list[Path]) -> list[Path]:
+    """话题 JSON。raw/topics/*.json 也要，不能只因为 raw/ 根上有 group.json、state.json 就停住。
+
+    以前 `parent.name == "raw"` 的列表非空时就不再看子目录，create_time 全部丢成文件名零点。
+    topics 里的单篇放前面，同一个 topic_id 先被收进索引。
+    """
+    under = [path for path in paths if "raw" in path.parts[:-1]]
+    chosen = under or list(paths)
+
+    def rank(path: Path) -> tuple[int, str]:
+        return (0 if "topics" in path.parts else 1, path.as_posix())
+
+    return sorted(chosen, key=rank)
 
 
 def _match_raw(path: Path, index: dict[str, dict]) -> dict:
@@ -422,8 +448,8 @@ def parse_archive(input_path: Path, work: Path, *, id_mode: str) -> tuple[list[P
                 )
             if chosen:
                 markdown = chosen
-        raw_dirs = [path for path in raw_json if path.parent.name == "raw"]
-        raw_index = load_raw_index(raw_dirs or raw_json)
+        markdown = [path for path in markdown if not is_index_markdown(path)]
+        raw_index = load_raw_index(select_raw_json(raw_json))
     else:
         raw_index = {}
     index = ImageIndex(images, roots)

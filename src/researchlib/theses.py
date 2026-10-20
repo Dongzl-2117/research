@@ -1,4 +1,4 @@
-"""持仓和观察公司的论点地图。
+"""库里观点够数的公司的论点地图。不限持仓或观察名单。
 
 观点时间线攒到几百条以后，按时间排看不出结构。这里把一家公司的观点交给模型归成几条论点
 （围绕同一个机制或问题的观点归在一起），每条论点引用具体的观点（用文章 id 编号），支持的和反对的分开。
@@ -6,9 +6,10 @@
 - 只认引用了存在的观点的论点；谁支持、谁反对、最近一次是谁什么时候说的，都按引用的观点从库里算，
   不用模型说的。
 - 一家公司一次调用。观点集合有变化才重算，一天最多一次；按 views_hash 和提示词版本缓存。
-- 打开公司页时缺的或过期的在后台排队；夜间任务和 research-theses 也会补。启动和部署不跑。
+- 打开公司页时，只有 RESEARCH_THESES_AUTO=1 才把缺的或过期的排进后台（默认关）。
+  夜间 THESES_ENABLED 同样默认关。打开后不限持仓。启动和部署不跑。
 
-    research-theses                    # 全部持仓和观察公司，过期的才算
+    research-theses                    # 观点够数的公司，过期的才算
     research-theses --company 拼多多 --force
 """
 
@@ -344,30 +345,53 @@ def needs_build(conn, company_id: int, sources_by_id: dict, settings: Settings) 
     return is_stale(stored(conn, company_id), views_hash(used))
 
 
+def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) -> list[dict]:
+    """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。"""
+    if not source_ids:
+        return []
+    return conn.execute(
+        """
+        SELECT c.id, c.name_zh
+        FROM company_views v
+        JOIN articles a ON a.id = v.article_id
+        JOIN companies c ON c.id = v.company_id
+        WHERE v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
+        GROUP BY c.id, c.name_zh
+        HAVING count(*) >= %s
+        ORDER BY c.name_zh, c.id
+        """,
+        (source_ids, minimum),
+    ).fetchall()
+
+
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了（个别公司失败也算），2 没有可用的 Grok 凭证。"""
-    parser = argparse.ArgumentParser(description="把持仓和观察公司的观点归成论点（论点地图）")
+    parser = argparse.ArgumentParser(description="把观点够数的公司归成论点（不限持仓和观察名单）")
     parser.add_argument("--company", action="append", default=[], help="只整理这家公司（中文名），可重复")
     parser.add_argument("--force", action="store_true", help="没过期也重算")
     args = parser.parse_args(argv)
     from researchlib.db import prepare
-    from researchlib.portfolio import load_portfolio
     from researchlib.sources import enabled_sources, load_sources
-    from researchlib.views import tracked_companies
 
     settings = Settings.from_env()
-    portfolio = load_portfolio(settings.portfolio_path) if settings.portfolio_path else None
-    names = list(portfolio.names) if portfolio else []
-    if args.company:
-        unknown = [name for name in args.company if name not in names]
-        if unknown:
-            raise SystemExit(f"{'、'.join(unknown)} 不在持仓和观察名单里（config/portfolio.yaml）")
-        names = list(args.company)
     sources_by_id = {source.id: source for source in enabled_sources(load_sources(settings.sources_path))}
     conn = prepare(settings)
     built = skipped = failed = 0
     try:
-        for company in tracked_companies(conn, names):
+        if args.company:
+            known = {
+                row["name_zh"]: row
+                for row in conn.execute(
+                    "SELECT id, name_zh FROM companies WHERE name_zh = ANY(%s)", (args.company,)
+                ).fetchall()
+            }
+            unknown = [name for name in args.company if name not in known]
+            if unknown:
+                raise SystemExit(f"{'、'.join(unknown)} 不在公司表里")
+            chosen = [known[name] for name in args.company]
+        else:
+            chosen = companies_with_views(conn, list(sources_by_id))
+        for company in chosen:
             if not args.force and not needs_build(conn, int(company["id"]), sources_by_id, settings):
                 skipped += 1
                 continue

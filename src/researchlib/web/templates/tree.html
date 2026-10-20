@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% macro branch(node, source_id) %}
+<li>
+  {% if node.children %}
+  <details {% if node.open %}open{% endif %}>
+    <summary>
+      <a href="/sources/{{ source_id }}/tree/{{ node.id }}" title="{{ node.title }}" {% if node.current %}aria-current="page"{% endif %}>{{ node.title }}</a>
+    </summary>
+    <ol>
+      {% for child in node.children %}{{ branch(child, source_id) }}{% endfor %}
+    </ol>
+  </details>
+  {% else %}
+  <a class="doc-leaf" href="/sources/{{ source_id }}/tree/{{ node.id }}" title="{{ node.title }}" {% if node.current %}aria-current="page"{% endif %}>{{ node.title }}</a>
+  {% endif %}
+</li>
+{% endmacro %}
+{% block body %}
+<div class="doc-shell">
+  <nav class="doc-nav" aria-label="文档目录">
+    <p class="nav-label">{{ source.name }}</p>
+    {% if root %}
+    <ol class="doc-tree">{{ branch(root, source.id) }}</ol>
+    {% endif %}
+    {% if orphans %}
+    <p class="nav-label">未挂上目录</p>
+    <ol class="doc-tree">
+      {% for node in orphans %}{{ branch(node, source.id) }}{% endfor %}
+    </ol>
+    {% endif %}
+    {% if not root and not orphans %}
+    <p class="empty">目录还没生成。</p>
+    {% endif %}
+  </nav>
+  <article class="reader doc-read">
+    {% if article %}
+    <p class="byline">
+      <a href="/authors/{{ source.author | urlencode }}?source={{ source.id }}">{{ source.author }}</a>
+      <span aria-hidden="true">·</span>
+      <a href="/articles/{{ article.id }}">文章页</a>
+    </p>
+    <h1>{{ article.title }}</h1>
+    {% if body_html %}<div class="prose">{{ body_html }}</div>{% endif %}
+    {% else %}
+    <h1>{{ source.name }}</h1>
+    <p class="empty">目录还没生成。部署后跑 research-doc-tree --source {{ source.id }}。</p>
+    {% endif %}
+  </article>
+</div>
+<script>
+  var here = document.querySelector('.doc-nav a[aria-current="page"]');
+  if (here && here.scrollIntoView) here.scrollIntoView({block: "nearest"});
+</script>
+{% endblock %}

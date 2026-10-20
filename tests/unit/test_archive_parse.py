@@ -3,7 +3,7 @@ import zipfile
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from researchlib.ingest.parse import parse_archive
+from researchlib.ingest.parse import is_index_markdown, parse_archive, select_raw_json
 from researchlib.ingest.wechat import main as wechat_main
 from researchlib.ingest.zsxq import main as zsxq_main
 from researchlib.sources import load_sources
@@ -237,3 +237,60 @@ def test_zsxq_nested_topic_uses_shanghai_day(tmp_path: Path):
     assert _shanghai(by_id["111"].published_at).day == 2
     assert by_id["222"].title == "乙篇"
     assert _shanghai(by_id["222"].published_at).day == 3
+
+
+def test_select_raw_json_keeps_topics_when_raw_root_files_exist(tmp_path: Path):
+    raw = tmp_path / "raw"
+    (raw / "topics").mkdir(parents=True)
+    group = raw / "group.json"
+    state = raw / "state.json"
+    topic = raw / "topics" / "888888.json"
+    for path in (group, state, topic):
+        path.write_text("{}", encoding="utf-8")
+    chosen = select_raw_json([group, state, topic])
+    assert topic in chosen and group in chosen and state in chosen
+    assert chosen[0] == topic
+
+
+def test_zsxq_topics_json_wins_over_raw_root_files(tmp_path: Path):
+    """raw/group.json、state.json 让「父目录叫 raw」的列表非空，不能因此跳过 raw/topics。"""
+    (tmp_path / "md").mkdir()
+    (tmp_path / "raw" / "topics").mkdir(parents=True)
+    (tmp_path / "md" / "2024-11-28-888888.md").write_text("正文。\n", encoding="utf-8")
+    (tmp_path / "md" / "INDEX.md").write_text("- 时间：2020-01-01 01:02:03\n目录\n", encoding="utf-8")
+    (tmp_path / "raw" / "group.json").write_text(
+        json.dumps({"topics": [{"topic_id": 888888, "create_time": "2020-01-01T00:00:00.000+0800"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "raw" / "state.json").write_text('{"cursor": "x"}', encoding="utf-8")
+    (tmp_path / "raw" / "topics" / "888888.json").write_text(
+        '{"topic_id": 888888, "create_time": "2024-11-28T10:40:22.487+0800", "title": "真实钟点"}',
+        encoding="utf-8",
+    )
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    assert [doc.external_id for doc in docs] == ["888888"]
+    assert is_index_markdown(tmp_path / "md" / "INDEX.md")
+    local = _shanghai(docs[0].published_at)
+    assert (local.year, local.month, local.day, local.hour, local.minute, local.second) == (2024, 11, 28, 10, 40, 22)
+    assert docs[0].raw_meta["date_source"] == "meta"
+    assert docs[0].raw_meta["time_known"] is True
+    assert docs[0].raw_meta["create_time"] == "2024-11-28T10:40:22.487+0800"
+    assert docs[0].title == "真实钟点"
+
+
+def test_zsxq_body_time_when_json_has_no_clock(tmp_path: Path):
+    (tmp_path / "md").mkdir()
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "md" / "2024-11-28-888888.md").write_text(
+        "- 时间：2024-11-28 10:40:22\n\n正文。\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "raw" / "group.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "raw" / "state.json").write_text("{}", encoding="utf-8")
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    local = _shanghai(docs[0].published_at)
+    assert (local.hour, local.minute, local.second) == (10, 40, 22)
+    assert docs[0].raw_meta["date_source"] == "body"
+    assert docs[0].raw_meta["time_known"] is True

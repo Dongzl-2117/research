@@ -20,23 +20,24 @@ from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
 from researchlib.digest import needs_rewrite as digest_needs_rewrite
 from researchlib.digest import schedule_digests
+from researchlib.doctree import arrange_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.health import notices as health_notices
 from researchlib.llm import llm_configured
+from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.portfolio import ROLE_LABELS, Portfolio, load_portfolio
-from researchlib.render import render_body
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
-from researchlib.textutil import argumentative_excerpt, split_frontmatter, strip_duplicate_title
-from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
+from researchlib.textutil import argumentative_excerpt
+from researchlib.translate.pair import bilingual_pairs
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
-from researchlib.views import filter_timeline, same_period, tracked_companies
+from researchlib.views import filter_timeline, same_period
 from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
@@ -335,26 +336,26 @@ def home(request: Request):
                 settings.display_timezone,
             )
         holdings = []
-        portfolio = active_portfolio(request)
-        if not chosen and plan["page"] == 1 and portfolio.names:
-            named = queries.companies_by_name(conn, list(portfolio.names))
-            present = [name for name in portfolio.names if name in named]
-            recent = queries.holdings_recent(conn, [named[name]["id"] for name in present], ids)
+        # 首页顶部按最近一条观点排，不按持仓过滤。持仓标记仍可标在具体公司上。
+        if not chosen and plan["page"] == 1:
+            portfolio = active_portfolio(request)
+            all_ids = [source.id for source in sources]
+            ranked = queries.recent_viewed_companies(conn, all_ids, limit=8)
+            recent = queries.holdings_recent(conn, [row["id"] for row in ranked], all_ids)
             all_by_id = _source_map(sources)
-            for name in present:
-                company = named[name]
-                info = recent.get(company["id"], {})
-                role = portfolio.role(name)
-                latest = _latest_item(info.get("latest"), by_id, settings)
+            for row in ranked:
+                info = recent.get(row["id"], {})
+                role = portfolio.role(row["name_zh"])
+                latest = _latest_item(info.get("latest"), all_by_id, settings)
                 holdings.append(
                     {
-                        "id": company["id"],
-                        "name": name,
+                        "id": row["id"],
+                        "name": row["name_zh"],
                         "role": role,
                         "role_label": ROLE_LABELS.get(role, ""),
                         "recent": info.get("recent", 0),
                         "latest": latest,
-                        "view": _latest_view(conn, company["id"], all_by_id, settings, latest),
+                        "view": _latest_view(conn, row["id"], all_by_id, settings, latest),
                     }
                 )
     if chosen:
@@ -388,7 +389,7 @@ def home(request: Request):
 
 
 def _latest_view(conn, company_id: int, sources_by_id: dict, settings, latest: dict | None) -> dict | None:
-    """首页持仓近况：最近一条观点（作者判断和态度）。比最近一篇深入文章旧的不用，那篇的观点还在整理。"""
+    """首页最近观点：最近一条判断和态度。比最近一篇深入文章旧的不用，那篇的观点还在整理。"""
     items = view_timeline(conn, company_id, sources_by_id, settings)
     if not items:
         return None
@@ -534,15 +535,16 @@ def _article_view(request: Request, article_id: int, mode: str):
             if row["source_id"] in by_id
         ]
         revised = revision_log.label(revision_log.summary(conn, [article_id]).get(article_id))
-        portfolio = active_portfolio(request)
-        tracked_ids = [int(row["id"]) for row in tracked_companies(conn, list(portfolio.names))]
-        others = same_period(conn, article_id, tracked_ids, by_id, settings) if article["duplicate_of"] is None else []
+        others = same_period(conn, article_id, None, by_id, settings) if article["duplicate_of"] is None else []
+        parent = str((article["raw_meta"] or {}).get("parent") or "")
+        zh_blob = (translation or {}).get("body_html") or ""
+        link_index = None
+        if ".md" in (article["body_md"] or "").lower() or ".md" in zh_blob.lower():
+            link_index = load_md_index(conn, article["source_id"])
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
-    _frontmatter, body_md = split_frontmatter(article["body_md"])
-    if fmt != "html":
-        body_md = strip_duplicate_title(body_md, article["title"])
-    original_html = stamp_paragraph_ids(str(render_body(body_md, mapping, fmt)))
+    # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
+    original_html = prepare_body_html(article["body_md"], article["title"], mapping, fmt, link_index, parent)
 
     has_translation = bool(translation and translation.get("body_html"))
     # 原文已改、译文 hash 对不上时仍可展示旧译文，但标 incomplete
@@ -551,7 +553,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         and translation.get("complete")
         and translation.get("content_hash") == article.get("content_hash")
     )
-    zh_html = stamp_paragraph_ids(translation["body_html"]) if has_translation else None
+    zh_html = finish_html(translation["body_html"], link_index, parent) if has_translation else None
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""
     quoted_marked = False
@@ -625,6 +627,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "elsewhere": elsewhere,
             "revised": revised,
             "same_period": others,
+            "tree_back": f"/sources/{source.id}/tree/{article['id']}" if source.kind == "feishu" else "",
             "sources": sources,
             "sample_banner": banner,
         },
@@ -644,6 +647,65 @@ def article_page_zh(request: Request, article_id: int):
 @router.get("/articles/{article_id}/original")
 def article_page_original(request: Request, article_id: int):
     return _article_view(request, article_id, "original")
+
+
+def _tree_body(conn, article, source_id: str):
+    images = queries.article_images(conn, article["id"])
+    mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
+    fmt = (article["raw_meta"] or {}).get("format")
+    parent = str((article["raw_meta"] or {}).get("parent") or "")
+    link_index = load_md_index(conn, source_id) if ".md" in (article["body_md"] or "").lower() else None
+    return Markup(prepare_body_html(article["body_md"], article["title"], mapping, fmt, link_index, parent))
+
+
+def _source_tree(request: Request, source_id: str, article_id: int | None):
+    """飞书目录：左边可折叠的树，右边正文。树要先跑 research-doc-tree。"""
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        source = _source_map(sources).get(source_id)
+        if source is None:
+            raise HTTPException(status_code=404)
+        rows = load_tree_rows(conn, source_id)
+        root, orphans = arrange_tree(rows)
+        current = article_id
+        if current is None and root is not None:
+            current = root["id"]
+        article = None
+        body_html = None
+        if current is not None:
+            article = queries.get_article(conn, current, [source_id])
+            if article is None:
+                raise HTTPException(status_code=404)
+            body_html = _tree_body(conn, article, source_id)
+        if root is not None:
+            mark_open(root, current)
+        for node in orphans:
+            mark_open(node, current)
+    return render_page(
+        request,
+        "tree.html",
+        {
+            "nav": "tree",
+            "title": article["title"] if article else source.name,
+            "source": source,
+            "sources": sources,
+            "active_source": source.id,
+            "root": root,
+            "orphans": orphans,
+            "article": article,
+            "body_html": body_html,
+        },
+    )
+
+
+@router.get("/sources/{source_id}/tree")
+def source_tree(request: Request, source_id: str):
+    return _source_tree(request, source_id, None)
+
+
+@router.get("/sources/{source_id}/tree/{article_id}")
+def source_tree_article(request: Request, source_id: str, article_id: int):
+    return _source_tree(request, source_id, article_id)
 
 
 @router.get("/articles/{article_id}/revisions")
@@ -1031,7 +1093,7 @@ def company_page(request: Request, company_id: int):
         articles = queries.company_articles(conn, company_id, ids, depth_filter, settings.page_size, offset)
         banner = queries.sample_state(conn, all_ids)
         portfolio = active_portfolio(request)
-        views_block = _company_views(request, conn, company, portfolio, by_id, author)
+        views_block = _company_views(request, conn, company, by_id, author)
         matcher = CompanyMatcher([company])
         rows = _decorate(
             conn,
@@ -1122,18 +1184,15 @@ def company_page(request: Request, company_id: int):
 VIEWS_PAGE_SIZE = 20
 
 
-def _company_views(request: Request, conn, company, portfolio: Portfolio, by_id: dict, author: str) -> dict | None:
-    """持仓和观察公司的观点时间线。别的公司不整理，返回 None。缺的在后台排队，不挡住页面。"""
+def _company_views(request: Request, conn, company, by_id: dict, author: str) -> dict | None:
+    """任何公司的观点时间线。缺的在后台排队，不挡住页面。不按持仓过滤。"""
     settings = request.app.state.settings
-    if not portfolio.role(company["name_zh"]):
-        return None
     kind = request.query_params.get("views") or ""
     company_id = int(company["id"])
-    tracked_ids = [int(row["id"]) for row in tracked_companies(conn, list(portfolio.names))]
     items = view_timeline(conn, company_id, by_id, settings)
     pending = count_view_pending(conn, company_id, list(by_id))
     if pending:
-        queue_views(conn, settings, company_id, tracked_ids, by_id)
+        queue_views(conn, settings, company_id, by_id)
     # 论点地图：观点归成的几条论点。缺了或过期了在后台重算，不挡页面。
     theses = thesis_map.present(thesis_map.stored(conn, company_id), items)
     if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):

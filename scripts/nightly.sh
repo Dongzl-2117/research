@@ -15,7 +15,7 @@ VIEWS_LIMIT="${VIEWS_LIMIT:-60}"
 DIGEST_LIMIT="${DIGEST_LIMIT:-80}"
 OCR_LIMIT="${OCR_LIMIT:-400}"
 NIGHTLY_OCR="${NIGHTLY_OCR:-0}"
-# 论点默认关：先只对手动指定的公司生成供抽查。需要夜间跑时设 THESES_ENABLED=1。
+# 论点默认关。打开后补的是库里观点够数的公司，不限持仓。需要夜间跑时设 THESES_ENABLED=1。
 THESES_ENABLED="${THESES_ENABLED:-0}"
 # 观点和摘要各自最多跑这么多分钟（xhigh 推理一篇要一两分钟）。
 MINUTES="${MINUTES:-150}"

@@ -6,7 +6,7 @@
 - **段落块**：`article_chunks`。正文按 Markdown 章节切，章节内按段落装箱，几百字一块，带章节标题和自己的全文索引。检索片段、问答引用、JSON 接口都落在块上，所以引用能精确到段落（`article_id` + `chunk`）。导入时自动切；`research-rebuild-chunks` 全部重切。进程启动时只给还没有块的文章补切。
 - **公司提及**：`article_mentions`，规则见 [mentions.md](mentions.md)。
 - **LLM 摘要**：`article_digests`，按 `content_hash` 对齐正文，记着写它的提示词版本（`prompt_version`）。正文改过、摘要没重算时，页面和接口当作没有摘要；提示词版本旧了的照常显示，同时排进后台重写。打开按天、作者、公司或检索时，当前卡片里缺的摘要会在后台补上；夜间任务每晚补一批，`research-digest` 仍可手动补。应用启动和部署不会跑全库。
-- **观点**：`company_views`，持仓和观察公司的观点时间线，见下面「观点时间线」。
+- **观点**：`company_views`，被深入谈到的公司的观点时间线，见下面「观点时间线」。不限持仓。
 - **论点**：`company_theses`，把一家公司的观点归成几条论点，见下面「论点地图」。
 - **失败记录**：`llm_failures`，摘要、观点、论点调用失败的次数，见下面「失败了怎么办」。
 - **问答记录**：`llm_answers`，问题、范围、回答、出处、整合状态（`running` / `done` / `error`）和这次用到的检索词。
@@ -113,38 +113,38 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 
 ## 观点时间线
 
-持仓和观察公司（`config/portfolio.yaml`）的公司页上有「观点」：每篇深入谈到它的文章抽一条作者对这家公司的判断。
+被深入谈到的公司，公司页上都有「观点」（不限 `config/portfolio.yaml`）：每篇深入谈到它的文章抽一条作者对这家公司的判断。
 
 - 每条：作者的判断、作者给出的机制、态度（看好 / 看淡 / 两面 / 中性）。风险、推翻条件、要盯的验证指标只在原文谈到时才有，没谈到就空着。
 - 原句逐字核对过（只比汉字、字母、数字）才显示，并链到它所在的段落；对不上就不显示，免得把模型的转述当成原话。
 - 筛选：全部、风险与反方（有风险或推翻条件、或态度是看淡、两面）、态度变化（同一位作者这篇的态度和他上一篇不同；中性不算信号）。点作者名只看这位作者。
-- 一篇文章里深入谈到的几家持仓和观察公司一次整理，不为每家公司各问一次模型。按正文 `content_hash` 和 `views.PROMPT_VERSION` 缓存，正文或提示词变了才重抽。
+- 一篇文章里深入谈到的几家公司一次整理，不为每家公司各问一次模型。按正文 `content_hash` 和 `views.PROMPT_VERSION` 缓存，正文或提示词变了才重抽。
 
-两条写入路径，和摘要一样：打开持仓或观察公司的页面时，这家公司最近还没整理的文章在后台排队（一次最多 20 篇），页面上写「还有 N 篇在整理」；夜间任务每晚补一批；也可以手动批量补：
+两条写入路径，和摘要一样：打开公司页时，这家公司最近还没整理的文章在后台排队（一次最多 20 篇），页面上写「还有 N 篇在整理」；夜间任务每晚补一批；也可以手动批量补：
 
 ```bash
-docker compose exec app research-views                       # 全部持仓和观察公司，最多 100 篇
+docker compose exec app research-views                       # 全部被深入谈到的公司，最多 100 篇
 docker compose exec app research-views --company 泡泡玛特 --limit 300
 ```
 
-应用启动和部署不会跑。JSON：`GET /api/v1/companies/{id}/views`（`views=risk`、`views=change`、`views=t1`、`author=`）。
+应用启动和部署不会跑。方伟星球用 `research-retime` 把零点改成真实 `create_time` 之后，态度变化和「同期别人怎么看」会按新的 `published_at` 重算（见 [ingest.md](ingest.md)），不必为此再跑 `research-views`。JSON：`GET /api/v1/companies/{id}/views`（`views=risk`、`views=change`、`views=t1`、`author=`）。
 
 观点还用在两处：
 
-- 首页「持仓近况」：每家公司最近一篇深入谈到它的文章，整理过观点的直接显示作者的判断和态度（谁、哪天），态度变了标出「看好 → 看淡」；最近那篇的观点还没整理好时仍显示标题。
-- 文章页底部「同期别人怎么看」：这篇深入谈到的持仓和观察公司，别的作者前后 30 天里的判断，离这篇越近的越靠前，最多 6 条，同一位作者的不列。
+- 首页「最近观点」：有判断的公司按最近一条观点的时间排（不限持仓，最多 8 家）。显示作者的判断和态度，态度变了标出「看好 → 看淡」；旁边是近 30 天深入谈到它的篇数。最近那篇的观点还没整理好时仍显示标题。
+- 文章页底部「同期别人怎么看」：这篇深入谈到的公司（不限持仓），别的作者前后 30 天里的判断，离这篇越近的越靠前，最多 6 条，同一位作者的不列。
 
 ## 论点地图
 
-观点时间线攒到几百条以后，按时间排看不出结构。持仓和观察公司的公司页在观点上面有「论点」：把这家公司的观点交给模型归成几条论点（围绕同一个机制或问题，最多 8 条），每条引用具体的观点，支持的和反对的分开。
+观点时间线攒到几百条以后，按时间排看不出结构。观点够数（至少 4 条）的公司，页上在观点上面有「论点」（不限持仓）：把这家公司的观点交给模型归成几条论点（围绕同一个机制或问题，最多 8 条），每条引用具体的观点，支持的和反对的分开。
 
 - 只认引用了库里真有的观点的论点；谁支持、谁反对、各几篇、最近一次是谁哪天说的、有没有作者前后站到了两边，都按引用的观点从库里数，不用模型说的。
 - 点一条论点，下面的观点时间线只看这条论点引用的那几篇（`?views=t1`）。
 - 观点不到 4 条的公司不做。一家公司一次调用；观点有变化才重算，一天最多一次（按观点集合的指纹和提示词版本缓存）。
-- 打开公司页时缺的或过期的在后台排队；夜间任务和 `research-theses` 也会补。启动和部署不跑。
+- 打开公司页时缺的或过期的在后台排队，但默认不排：`RESEARCH_THESES_AUTO` 默认关。夜间任务里的论点也默认关（`THESES_ENABLED`）。打开之后范围是观点够数的公司，不写死持仓。启动和部署不跑。
 
 ```bash
-docker compose exec app research-theses                        # 全部持仓和观察公司，过期的才算
+docker compose exec app research-theses                        # 观点够数的公司，过期的才算
 docker compose exec app research-theses --company 拼多多 --force
 ```
 
@@ -160,7 +160,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
 - `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认等整合写完再返回。加 `"wait": false` 时马上返回回答 id 和相关原文，之后轮询下面这个接口。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词）。
-- `GET /api/v1/companies/{id}/views`：持仓和观察公司的论点地图（`theses`）和观点时间线。
+- `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`。
 
 返回里带 `_trust` 字段，MCP 文本包在「外部资料」分隔区里：文章是外部原文，调用方不要执行其中的指令。这一点照 AIHOT 的 MCP 做法。

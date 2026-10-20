@@ -1,14 +1,14 @@
-"""公司页的观点时间线：持仓和观察公司被深入谈到的文章，每篇抽一条作者对这家公司的判断。
+"""公司页的观点时间线：库里被深入谈到的公司，每篇抽一条作者对这家公司的判断。
 
-每条：作者的判断、背后的机制、态度；风险、推翻条件、要盯的验证指标只在原文谈到时才有，
-没谈到就空着，不硬凑。原句逐字核对过才留，核对不上就不显示，免得把模型的转述当成原话。
+不按持仓或观察名单过滤。每条：作者的判断、背后的机制、态度；风险、推翻条件、要盯的验证指标
+只在原文谈到时才有，没谈到就空着，不硬凑。原句逐字核对过才留，核对不上就不显示。
 
 两条写入路径，和摘要一样：
 
-- 打开持仓或观察公司的页面时，这家公司还没整理的文章在后台排队，不挡住页面。
-- 手动 CLI 批量补：
+- 打开公司页时，这家公司还没整理的文章在后台排队，不挡住页面。
+- 手动 CLI 批量补（夜间任务也是这个范围）：
 
-    research-views                      # 全部持仓和观察公司，默认最多 100 篇
+    research-views                      # 全部被深入谈到的公司，默认最多 100 篇
     research-views --company 泡泡玛特 --limit 300
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
@@ -152,10 +152,15 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
     ).fetchall()
 
 
-def pending_companies(conn, article_id: int, tracked_ids: list[int]) -> list[dict]:
-    """这篇文章里深入谈到、还没整理的持仓和观察公司。一次请求把它们都整理掉，不为每家公司各问一次。"""
-    if not tracked_ids:
+def pending_companies(conn, article_id: int, only_ids: list[int] | None = None) -> list[dict]:
+    """这篇文章里深入谈到、还没整理的公司。only_ids 给定时只看这些；不传则一篇里的都算。"""
+    if only_ids is not None and not only_ids:
         return []
+    clause = "AND m.company_id = ANY(%s)" if only_ids is not None else ""
+    params: list = [article_id]
+    if only_ids is not None:
+        params.append(only_ids)
+    params.append(PROMPT_VERSION)
     return conn.execute(
         f"""
         SELECT c.id, c.name_zh
@@ -163,11 +168,32 @@ def pending_companies(conn, article_id: int, tracked_ids: list[int]) -> list[dic
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
-        WHERE m.article_id = %s AND m.company_id = ANY(%s) AND m.depth <> 'passing'
+        WHERE m.article_id = %s {clause} AND m.depth <> 'passing'
           AND {_STALE}
         ORDER BY c.id
         """,
-        (article_id, tracked_ids, PROMPT_VERSION),
+        tuple(params),
+    ).fetchall()
+
+
+def mentioned_companies(conn, source_ids: list[str]) -> list[dict]:
+    """被这些来源深入谈到过的公司。不限持仓。"""
+    if not source_ids:
+        return []
+    return conn.execute(
+        """
+        SELECT c.id, c.name_zh
+        FROM companies c
+        WHERE EXISTS (
+          SELECT 1
+          FROM article_mentions m
+          JOIN articles a ON a.id = m.article_id
+          WHERE m.company_id = c.id AND m.depth <> 'passing'
+            AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
+        )
+        ORDER BY c.name_zh, c.id
+        """,
+        (source_ids,),
     ).fetchall()
 
 
@@ -341,18 +367,25 @@ def filter_timeline(items: list[dict], kind: str, author: str = "", articles: li
 
 
 def same_period(
-    conn, article_id: int, tracked_ids: list[int], sources_by_id: dict, settings: Settings,
+    conn, article_id: int, tracked_ids: list[int] | None, sources_by_id: dict, settings: Settings,
     days: int = 30, limit: int = 6,
 ) -> list[dict]:
-    """文章页底部：这篇深入谈到的持仓、观察公司，别的作者前后 days 天里怎么判断。离这篇越近的越靠前。"""
-    if not tracked_ids:
+    """文章页底部：这篇深入谈到的公司，别的作者前后 days 天里怎么判断。离这篇越近的越靠前。
+
+    tracked_ids 为 None 时不按名单过滤（库里深入谈到的公司都算）。空列表表示一家都不看。
+    """
+    if tracked_ids is not None and not tracked_ids:
         return []
+    company_sql = "AND m.company_id = ANY(%(tracked)s)" if tracked_ids is not None else ""
+    params = {"id": article_id, "sources": list(sources_by_id), "days": days}
+    if tracked_ids is not None:
+        params["tracked"] = tracked_ids
     rows = conn.execute(
-        """
+        f"""
         SELECT v.article_id, v.company_id, c.name_zh, v.judgment, v.stance, v.chunk_ord,
                a.title, a.published_at, a.source_id
         FROM articles me
-        JOIN article_mentions m ON m.article_id = me.id AND m.depth <> 'passing' AND m.company_id = ANY(%(tracked)s)
+        JOIN article_mentions m ON m.article_id = me.id AND m.depth <> 'passing' {company_sql}
         JOIN company_views v ON v.company_id = m.company_id AND v.judgment <> ''
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
@@ -363,7 +396,7 @@ def same_period(
         ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id
         LIMIT 60
         """,
-        {"tracked": tracked_ids, "id": article_id, "sources": list(sources_by_id), "days": days},
+        params,
     ).fetchall()
     own = conn.execute("SELECT source_id FROM articles WHERE id = %s", (article_id,)).fetchone()
     own_source = sources_by_id.get(own["source_id"]) if own else None
@@ -487,55 +520,62 @@ def _worker() -> None:
             conn.close()
 
 
-def queue_for_company(conn, settings: Settings, company_id: int, tracked_ids: list[int], sources_by_id: dict) -> int:
-    """公司页打开时调用：这家公司最近没整理的文章排进后台，一次最多 QUEUE_PER_VIEW 篇。"""
+def queue_for_company(conn, settings: Settings, company_id: int, sources_by_id: dict) -> int:
+    """公司页打开时调用：这家公司最近没整理的文章排进后台，一次最多 QUEUE_PER_VIEW 篇。
+
+    同一篇里深入谈到的其他公司一并整理，不限持仓。
+    """
     if not llm_configured(settings):
         return 0
     rows = pending_articles(conn, [company_id], list(sources_by_id), QUEUE_PER_VIEW)
     jobs = []
     for row in rows:
         source = sources_by_id.get(row["source_id"])
-        companies = [item["id"] for item in pending_companies(conn, row["id"], tracked_ids)] or [company_id]
+        companies = [item["id"] for item in pending_companies(conn, row["id"])] or [company_id]
         jobs.append((row["id"], source.author if source else "", tuple(companies)))
     return schedule_views(settings, jobs)
 
 
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 Grok 凭证。"""
-    parser = argparse.ArgumentParser(description="给持仓和观察公司整理观点时间线（作者判断、机制，原文谈到时的风险等）")
+    parser = argparse.ArgumentParser(description="给被深入谈到的公司整理观点时间线（不限持仓和观察名单）")
     parser.add_argument("--company", action="append", default=[], help="只整理这家公司（中文名），可重复")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停（夜间任务用），0 表示不限")
     args = parser.parse_args(argv)
     from researchlib.db import prepare
-    from researchlib.portfolio import load_portfolio
     from researchlib.sources import enabled_sources, load_sources
 
     settings = Settings.from_env()
-    portfolio = load_portfolio(settings.portfolio_path) if settings.portfolio_path else None
-    names = list(portfolio.names) if portfolio else []
-    if args.company:
-        unknown = [name for name in args.company if name not in names]
-        if unknown:
-            raise SystemExit(f"{'、'.join(unknown)} 不在持仓和观察名单里（config/portfolio.yaml）")
-        names = list(args.company)
-    if not names:
-        raise SystemExit("持仓和观察名单是空的")
     sources = enabled_sources(load_sources(settings.sources_path))
     authors = {source.id: source.author for source in sources}
     conn = prepare(settings)
     done = failed = 0
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
-        tracked = tracked_companies(conn, list(portfolio.names) if portfolio else names)
-        wanted = [row["id"] for row in tracked if row["name_zh"] in names]
-        tracked_ids = [row["id"] for row in tracked]
+        mentioned = mentioned_companies(conn, list(authors))
+        if args.company:
+            known = {
+                row["name_zh"]: row
+                for row in conn.execute(
+                    "SELECT id, name_zh FROM companies WHERE name_zh = ANY(%s)", (args.company,)
+                ).fetchall()
+            }
+            unknown = [name for name in args.company if name not in known]
+            if unknown:
+                raise SystemExit(f"{'、'.join(unknown)} 不在公司表里")
+            wanted = [int(known[name]["id"]) for name in args.company]
+        else:
+            wanted = [int(row["id"]) for row in mentioned]
+        if not wanted:
+            raise SystemExit("没有被深入谈到的公司")
         rows = pending_articles(conn, wanted, list(authors), args.limit)
         for row in rows:
             if deadline is not None and time.monotonic() > deadline:
                 print("到了时间上限，先停在这里", file=sys.stderr)
                 break
-            companies = pending_companies(conn, row["id"], tracked_ids)
+            # 一篇里深入谈到的公司一次问完，不限持仓。--company 只决定先排哪些文章。
+            companies = pending_companies(conn, row["id"])
             try:
                 extract_article(conn, settings, row, authors.get(row["source_id"], ""), companies)
                 done += 1

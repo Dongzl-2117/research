@@ -5,6 +5,9 @@
   <div>
     <p class="byline"><a href="/authors">作者</a><span aria-hidden="true">·</span><span>{{ author_name }}</span></p>
     <h1>{{ author_name }}</h1>
+    {% for source in author_sources if source.kind == "feishu" %}
+    <p class="lede"><a href="/sources/{{ source.id }}/tree">按目录看{{ source.name }}</a></p>
+    {% endfor %}
     {% if first %}<p class="lede num">{{ first }} 至 {{ last }}</p>{% endif %}
   </div>
   {{ date_jump("/authors/" ~ (author_name | urlencode), active_source) }}

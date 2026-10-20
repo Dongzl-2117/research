@@ -797,8 +797,30 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
     return cards
 
 
+def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list[dict]:
+    """有作者判断的公司，按最近一条观点的发布时间从新到旧。不按持仓过滤。"""
+    if not source_ids or limit <= 0:
+        return []
+    return conn.execute(
+        """
+        SELECT id, name_zh, published_at
+        FROM (
+          SELECT DISTINCT ON (c.id) c.id, c.name_zh, a.published_at
+          FROM company_views v
+          JOIN articles a ON a.id = v.article_id
+          JOIN companies c ON c.id = v.company_id
+          WHERE v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
+          ORDER BY c.id, a.published_at DESC NULLS LAST, a.id DESC
+        ) recent
+        ORDER BY published_at DESC NULLS LAST, id DESC
+        LIMIT %s
+        """,
+        (source_ids, limit),
+    ).fetchall()
+
+
 def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: int = 30) -> dict[int, dict]:
-    """首页持仓近况：每家最近一篇深入谈到它的文章，和近 days 天里深入谈到它的篇数。"""
+    """每家最近一篇深入谈到它的文章，和近 days 天里深入谈到它的篇数。"""
     if not company_ids or not source_ids:
         return {}
     found: dict[int, dict] = {company_id: {"latest": None, "recent": 0} for company_id in company_ids}
