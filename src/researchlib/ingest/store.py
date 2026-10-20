@@ -7,7 +7,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from researchlib.chunks import replace_chunks
+from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
 from researchlib.images import sync_article_images
 from researchlib.ingest.model import IngestReport, ParsedDoc
@@ -17,6 +17,7 @@ from researchlib.mentions import (
     mentions_for_document,
     replace_mentions,
 )
+from researchlib.revisions import held_before, judge_replacement, save_revision
 from researchlib.sources import Source
 from researchlib.textutil import content_hash, markdown_to_text, split_frontmatter, strip_duplicate_title
 
@@ -36,7 +37,9 @@ def store_documents(
     images_in_archive: int,
     errors: list[str],
     rejected: int = 0,
+    origin: str = "archive",
 ) -> IngestReport:
+    """origin：archive（手动导入的归档）或 aihot（从 AIHOT 导入，定时任务走这条）。首页断更提示只看后者。"""
     report = IngestReport(
         source_id=source.id,
         source_name=source.name,
@@ -60,6 +63,8 @@ def store_documents(
             report.inserted += 1
         elif status == "updated":
             report.updated += 1
+        elif status == "held":
+            report.held += 1
         else:
             report.unchanged += 1
         report.images_stored += stored
@@ -70,19 +75,21 @@ def store_documents(
         (source.id,),
     ).fetchone()
     report.db_rows = int(row["n"])
-    record_import(conn, source.id, report)
+    record_import(conn, source.id, report, origin)
     return report
 
 
 IMPORT_KEY = "import:"
 
 
-def record_import(conn, source_id: str, report: IngestReport) -> None:
-    """记下这个来源最近一次导入的时间和计数。首页判断「是不是断更了」时一并显示。"""
+def record_import(conn, source_id: str, report: IngestReport, origin: str = "archive") -> None:
+    """记下这个来源最近一次导入的时间、计数和走的哪条路。首页判断「是不是断更了」时一并显示。"""
     payload = {
+        "origin": origin,
         "inserted": report.inserted,
         "updated": report.updated,
         "unchanged": report.unchanged,
+        "held": report.held,
         "duplicates": report.duplicates,
         "errors": len(report.errors),
     }
@@ -102,12 +109,17 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     meta = dict(doc.raw_meta)
     existing = conn.execute(
         """
-        SELECT id, content_hash
+        SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
         FROM articles
         WHERE source_id = %s AND external_id = %s
         """,
         (source.id, doc.external_id),
     ).fetchone()
+    if existing is not None and existing["content_hash"] != digest:
+        held = _hold_if_suspicious(conn, existing, doc, digest, body_text, meta)
+        if held:
+            # 库里的完整原文和它的图片都不动。
+            return "held", 0, 0, 0, None
     if existing is None:
         inserted = conn.execute(
             """
@@ -131,6 +143,19 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         article_id = inserted["id"]
         status = "inserted"
     elif existing["content_hash"] != digest:
+        if existing["body_md"] != doc.body_md or existing["title"] != doc.title:
+            # 替换前把旧版存下来。只改了发布时间的不算改稿。
+            save_revision(
+                conn,
+                existing["id"],
+                kind="previous",
+                content_hash=existing["content_hash"],
+                title=existing["title"],
+                published_at=existing["published_at"],
+                body_md=existing["body_md"],
+                body_text=existing["body_text"],
+                raw_meta=existing["raw_meta"],
+            )
         conn.execute(
             """
             UPDATE articles SET
@@ -162,6 +187,8 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     )
     duplicate = None
     if status != "unchanged":
+        # 图片可能换了：图片文字（OCR）的块跟着重切，识别结果按图片哈希缓存，不用重新识别。
+        replace_ocr_chunks(conn, article_id)
         # 图片挂上之后再认重复：正文更长的优先，图片作次要依据。
         duplicate = resolve_article(conn, article_id, matcher)
         if duplicate is None:
@@ -172,3 +199,25 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             if pointed:
                 duplicate = article_id
     return status, stored, linked, missing, duplicate
+
+
+def _hold_if_suspicious(conn, existing, doc: ParsedDoc, digest: str, body_text: str, meta: dict) -> bool:
+    """新正文像删除提示、或比库里短一半以上：不替换，把这一版记成 held。返回是否拦下了。"""
+    if held_before(conn, existing["id"], digest):
+        return True
+    reason = judge_replacement(existing["body_text"], body_text)
+    if not reason:
+        return False
+    save_revision(
+        conn,
+        existing["id"],
+        kind="held",
+        reason=reason,
+        content_hash=digest,
+        title=doc.title,
+        published_at=doc.published_at,
+        body_md=doc.body_md,
+        body_text=body_text,
+        raw_meta=meta,
+    )
+    return True

@@ -68,6 +68,30 @@
   </ul>
 </section>
 {% endif %}
+{% if views and views.theses %}
+<section class="theses" id="theses" aria-label="论点">
+  <h2>论点</h2>
+  <ol class="thesis-list">
+    {% for thesis in views.theses %}
+    <li class="thesis{% if views.kind == thesis.key %} is-current{% endif %}">
+      <a class="thesis-title" href="/companies/{{ company.id }}?{{ (views.base ~ '&') if views.base }}views={{ thesis.key }}#views">{{ thesis.title }}</a>
+      {% if thesis.mechanism %}<p class="thesis-mechanism">{{ thesis.mechanism }}</p>{% endif %}
+      <p class="thesis-sides">
+        {% for side, word in [("for", "支持"), ("against", "反对")] %}
+        {% set group = thesis[side] %}
+        {% if group.count %}
+        <span class="side side-{{ side }}">{{ word }}</span>
+        {% for name, count in group.authors %}<span class="side-author">{{ name }}{% if count > 1 %} <span class="num">{{ count }}</span>{% endif %}</span>{% endfor %}
+        {% if group.latest %}<span class="quiet num">最近 {{ group.latest.date }}</span>{% endif %}
+        {% endif %}
+        {% endfor %}
+        {% if thesis.shifted %}<span class="stance-change">{{ thesis.shifted | join("、") }}前后看法变了</span>{% endif %}
+      </p>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
 {% if views and (views.filters[0].count or views.pending) %}
 <section class="views" id="views" aria-label="观点">
   <div class="list-tools">

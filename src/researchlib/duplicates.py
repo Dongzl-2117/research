@@ -96,6 +96,16 @@ def same_article(a: Fingerprint, b: Fingerprint, common: set[int] = frozenset())
     return shortest / longest >= floor
 
 
+def similarity(left_text: str, right_text: str) -> dict:
+    """给核对页看的重合程度：较短那篇的句子有多少在另一篇里、两篇长度之比。不扣掉页脚套话，只作参考。"""
+    left = fingerprint(left_text)
+    right = fingerprint(right_text)
+    shared = len(left.sentences & right.sentences)
+    smaller = min(len(left.sentences), len(right.sentences)) or 1
+    longest = max(left.length, right.length) or 1
+    return {"containment": shared / smaller, "length_ratio": min(left.length, right.length) / longest}
+
+
 def store_fingerprint(conn, article_id: int, content_hash: str, found: Fingerprint) -> None:
     conn.execute("DELETE FROM article_fingerprints WHERE article_id = %s", (article_id,))
     if found.sketch:
@@ -220,7 +230,7 @@ def _strip(conn, article_id: int) -> None:
 
 
 def _restore(conn, article_id: int, matcher) -> None:
-    from researchlib.chunks import replace_chunks, replace_translation_chunks
+    from researchlib.chunks import replace_chunks, replace_ocr_chunks, replace_translation_chunks
     from researchlib.mentions import mentions_for_document, replace_mentions
 
     row = conn.execute("SELECT title, body_md FROM articles WHERE id = %s", (article_id,)).fetchone()
@@ -228,6 +238,7 @@ def _restore(conn, article_id: int, matcher) -> None:
         return
     replace_chunks(conn, article_id, row["title"], row["body_md"])
     replace_translation_chunks(conn, article_id)
+    replace_ocr_chunks(conn, article_id)
     replace_mentions(conn, article_id, mentions_for_document(matcher, row["title"], row["body_md"]))
 
 
@@ -269,7 +280,12 @@ def apply_cluster(conn, members: set[int], matcher) -> tuple[int, list[int]]:
             want = None
         if row["duplicate_of"] == want:
             continue
-        conn.execute("UPDATE articles SET duplicate_of = %s WHERE id = %s", (want, row["id"]))
+        # 什么时候认出来的：去重核对页按这个排，放开时清掉。
+        conn.execute(
+            "UPDATE articles SET duplicate_of = %s,"
+            " duplicate_marked_at = CASE WHEN %s::bigint IS NULL THEN NULL ELSE now() END WHERE id = %s",
+            (want, want, row["id"]),
+        )
         if want is None:
             if row["duplicate_of"] is not None:
                 _restore(conn, row["id"], matcher)
@@ -288,7 +304,7 @@ def apply_cluster(conn, members: set[int], matcher) -> tuple[int, list[int]]:
 
 def _release(conn, article_id: int, matcher) -> None:
     """改过正文、不再和原来那篇是同一篇的重复：恢复成独立的一篇。"""
-    conn.execute("UPDATE articles SET duplicate_of = NULL WHERE id = %s", (article_id,))
+    conn.execute("UPDATE articles SET duplicate_of = NULL, duplicate_marked_at = NULL WHERE id = %s", (article_id,))
     _restore(conn, article_id, matcher)
 
 

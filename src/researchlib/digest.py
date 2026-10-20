@@ -1,7 +1,7 @@
 """用 LLM 给每篇文章写摘要、要点和标签，存进 article_digests。
 
-只处理还没有摘要、正文改过（content_hash 对不上）、或提示词版本旧了的文章。卡片和 JSON 接口优先展示摘要；
-提示词版本旧了的摘要照常显示，同时排进后台按新版重写。
+只处理还没有摘要、正文改过（content_hash 对不上）、提示词版本旧了、或当时只读了长文开头的文章。
+卡片和 JSON 接口优先展示摘要；旧摘要照常显示，同时排进后台重写。失败的记下来，隔几天再试。
 
 两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
 
@@ -26,13 +26,16 @@ import time
 from psycopg.types.json import Jsonb
 
 from researchlib.config import Settings
+from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
+from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.present import format_date
 
 logger = logging.getLogger("researchlib.digest")
 
-BODY_LIMIT = 12000
+# 一次交给模型的正文上限（字），和问库一次读的量一样。更长的取开头、结尾和各节开头，见 excerpt.py。
+BODY_LIMIT = DIGEST_LIMIT
 # 提示词改了就把版本加一。旧摘要照常显示，被看到或跑 research-digest 时按新版重写。
 PROMPT_VERSION = 2
 PROMPT = """读下面这篇投资研究文章，只输出一个 JSON 对象，不要输出别的文字：
@@ -73,14 +76,24 @@ def parse_digest(text: str) -> dict:
     return {"summary": summary[:400], "points": points, "tags": tags}
 
 
+def needs_rewrite(digest: dict | None) -> bool:
+    """页面上已有的摘要要不要在后台重写：提示词版本旧了，或者当时只读了长文的开头。"""
+    if digest is None:
+        return True
+    return (digest.get("prompt_version") or 1) < PROMPT_VERSION or bool(digest.get("head_only"))
+
+
+_STALE = "(d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s OR d.head_only)"
+
+
 def pending_articles(conn, source_ids: list[str], limit: int):
     return conn.execute(
-        """
+        f"""
         SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND (d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s)
+          AND {_STALE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY (d.article_id IS NULL OR d.content_hash <> a.content_hash) DESC,
                  a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
@@ -92,11 +105,17 @@ def pending_articles(conn, source_ids: list[str], limit: int):
 def digest_article(conn, settings: Settings, row, author: str) -> dict:
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"标题：{row['title']}\n作者：{author}\n日期：{when}"
+    body = row["body_text"] or ""
+    reduced = False
+    if len(body) > BODY_LIMIT:
+        body, reduced = digest_input(body, original_chunks(conn, row["id"]), BODY_LIMIT)
+    if reduced:
+        header += "\n（长文：下面是开头、结尾和各节开头，中间略去的部分用省略号标出）"
     text, model = chat(
         settings,
         [
             {"role": "system", "content": PROMPT},
-            {"role": "user", "content": header + "\n\n正文：\n" + (row["body_text"] or "")[:BODY_LIMIT]},
+            {"role": "user", "content": header + "\n\n正文：\n" + body},
         ],
         max_tokens=800,
         temperature=0.1,
@@ -104,8 +123,10 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     data = parse_digest(text)
     conn.execute(
         """
-        INSERT INTO article_digests (article_id, content_hash, model, summary, points, tags, prompt_version)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO article_digests (
+          article_id, content_hash, model, summary, points, tags, prompt_version, head_only
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, false)
         ON CONFLICT (article_id) DO UPDATE SET
           content_hash = EXCLUDED.content_hash,
           model = EXCLUDED.model,
@@ -113,6 +134,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
           points = EXCLUDED.points,
           tags = EXCLUDED.tags,
           prompt_version = EXCLUDED.prompt_version,
+          head_only = false,
           created_at = now()
         """,
         (
@@ -125,6 +147,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
             PROMPT_VERSION,
         ),
     )
+    clear_failure(conn, "digest", row["id"])
     conn.commit()
     return data
 
@@ -133,12 +156,11 @@ def rows_needing_digest(conn, article_ids: list[int]):
     if not article_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
-        WHERE a.id = ANY(%s)
-          AND (d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s)
+        WHERE a.id = ANY(%s) AND {_STALE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (article_ids, PROMPT_VERSION),
@@ -219,6 +241,7 @@ def _digest_worker() -> None:
                 logger.warning("摘要失败 %s：%s", article_id, exc)
                 if conn is not None:
                     conn.rollback()
+                    note_failure(conn, "digest", article_id, exc)
             except Exception:
                 logger.exception("摘要失败 %s", article_id)
                 if conn is not None:
@@ -237,9 +260,11 @@ def _digest_worker() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 Grok 凭证。"""
     parser = argparse.ArgumentParser(description="给还没有摘要的文章生成 LLM 摘要")
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--source", default="")
+    parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停（夜间任务用），0 表示不限")
     args = parser.parse_args(argv)
     from researchlib.db import prepare
 
@@ -252,9 +277,13 @@ def main(argv: list[str] | None = None) -> int:
     authors = {source.id: source.author for source in sources}
     conn = prepare(settings)
     done = failed = 0
+    deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
         rows = pending_articles(conn, list(authors), args.limit)
         for row in rows:
+            if deadline is not None and time.monotonic() > deadline:
+                print("到了时间上限，先停在这里", file=sys.stderr)
+                break
             try:
                 digest_article(conn, settings, row, authors[row["source_id"]])
                 done += 1
@@ -263,12 +292,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             except LLMError as exc:
                 conn.rollback()
+                note_failure(conn, "digest", row["id"], exc)
                 failed += 1
                 print(f"{row['id']} {row['title']}: {exc}", file=sys.stderr)
     finally:
         conn.close()
     print(f"待处理 {len(rows)} 篇，写入 {done} 篇，失败 {failed} 篇")
-    return 0 if failed == 0 else 1
+    return 0
 
 
 if __name__ == "__main__":

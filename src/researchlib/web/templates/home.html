@@ -7,8 +7,15 @@
   </div>
   {{ date_jump("/", active_source) }}
 </header>
+{% for text in notices %}
+<p class="notice is-alert" role="status">{{ text }}</p>
+{% endfor %}
 {% for item in stale %}
+{% if item.all %}
+<p class="notice">定时导入的 {{ item.count }} 个来源都 {{ item.idle_days }} 天以上没有新文章，多半是 AIHOT 那边的抓取停了。</p>
+{% else %}
 <p class="notice">{{ item.name }} {{ item.idle_days }} 天没有新文章，{{ item.typical }}{% if item.imported %}；最近一次导入 {{ item.imported }}{% endif %}。</p>
+{% endif %}
 {% endfor %}
 <div class="page-tools">
   <nav class="pills" aria-label="来源">
@@ -34,7 +41,9 @@
       <a class="holdings-name" href="/companies/{{ item.id }}">{{ item.name }}</a>
       <span class="role-badge role-{{ item.role }}">{{ item.role_label }}</span>
       <span class="holdings-recent num{% if not item.recent %} quiet{% endif %}">{% if item.recent %}近 30 天 {{ item.recent }} 篇{% else %}近 30 天没有{% endif %}</span>
-      {% if item.latest %}
+      {% if item.view %}
+      <span class="holdings-latest holdings-view">{% if item.view.changed %}<span class="stance-change">{{ item.view.previous_label }} → {{ item.view.stance_label }}</span> {% elif item.view.stance_label %}<span class="stance stance-{{ item.view.stance }}">{{ item.view.stance_label }}</span> {% endif %}<span class="quiet">{{ item.view.author }} · {{ item.view.relative or item.view.date }}</span> <a href="/articles/{{ item.view.article_id }}{% if item.view.chunk is not none %}?chunk={{ item.view.chunk }}{% endif %}">{{ item.view.judgment }}</a></span>
+      {% elif item.latest %}
       <span class="holdings-latest"><a href="/articles/{{ item.latest.id }}">{{ item.latest.title }}</a> <span class="quiet">{{ item.latest.author }} · {{ item.latest.relative or item.latest.date }}</span></span>
       {% else %}
       <span class="holdings-latest quiet">还没有深入谈它的文章</span>

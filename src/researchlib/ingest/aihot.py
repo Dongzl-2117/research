@@ -214,6 +214,7 @@ def import_aihot(dest, settings: Settings, *, dry_run: bool = False, days: int |
             images_in_archive=0,
             errors=errors if first else [],
             rejected=rejected if first else 0,
+            origin="aihot",
         )
         first = False
         reports.append(report)

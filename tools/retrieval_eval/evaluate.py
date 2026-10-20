@@ -4,12 +4,24 @@
     python3 tools/retrieval_eval/evaluate.py
 
 库地址用 EVAL_URL 覆盖。改了检索之后跑一遍，看准确率和耗时有没有退步。
+
+CI 用 1500 篇的语料跑，和 baseline.json 比：哪个用例的准确率或召回率比基线低出容差，就失败。
+检索改好了、数字变高了，用 --json 重写基线：
+
+    python3 tools/retrieval_eval/gen_corpus.py --articles 1500
+    python3 tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json
+    python3 tools/retrieval_eval/evaluate.py --json tools/retrieval_eval/baseline.json
+
+耗时只打印，不比：CI 机器的快慢每次不一样。
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import statistics
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,14 +30,18 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
 
+from researchlib.ask import PRESETS
 from researchlib.db import ensure_search_session
 from researchlib.sources import enabled_sources, load_sources
 
 URL = os.environ.get("EVAL_URL", "postgresql://research:research@127.0.0.1:5432/research_eval")
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = enabled_sources(load_sources(ROOT / "config" / "sources.yaml"))
-PRESET_COMPANY = "这家公司在库里被怎么讨论？按时间梳理各位作者的核心观点、关键数据和分歧，每条带出处。"
-PRESET_AUTHOR = "这位作者近期最核心的判断有哪些？涉及哪些公司和行业？每条带出处。"
+# 和公司页、作者页上的「问 AI」用同一句预设问题。
+PRESET_COMPANY = PRESETS["company"]
+PRESET_AUTHOR = PRESETS["author"]
+# 准确率、召回率比基线低出这么多算退步。
+TOLERANCE = 0.02
 
 
 @dataclass
@@ -61,6 +77,11 @@ CASES = [
 ]
 
 
+def case_key(case: Case) -> str:
+    """基线里用的名字。预设问题是长句，用用例名代替。"""
+    return case.name if case.question in (PRESET_COMPANY, PRESET_AUTHOR) else case.question
+
+
 def connect():
     conn = psycopg.connect(URL, row_factory=dict_row)
     ensure_search_session(conn)
@@ -90,10 +111,8 @@ def scope_for(conn, case: Case, scope_cls):
     return scope_cls(source_ids=ids, company_id=cid)
 
 
-def report_ask(name: str, run, conn, truth_map):
-    print(f"\n== 问库召回：{name} ==")
-    print(f"{'用例':<14}{'选中':>5}{'准确率':>8}{'召回率':>8}{'作者覆盖':>9}{'年份覆盖':>9}{'耗时ms':>8}")
-    precisions = []
+def measure_ask(run, conn, truth_map) -> list[dict]:
+    results = []
     for case in CASES:
         company_articles = set()
         if case.company:
@@ -108,37 +127,103 @@ def report_ask(name: str, run, conn, truth_map):
         picked = run(conn, case)
         elapsed = (time.perf_counter() - started) * 1000
         hits = [key for key in picked if key in relevant]
-        precision = len(hits) / len(picked) if picked else 0.0
-        recall = len(set(hits)) / len(relevant) if relevant else 0.0
-        authors_all = {truth_map[k]["author"] for k in relevant}
-        years_all = {truth_map[k]["year"] for k in relevant}
-        authors_hit = {truth_map[k]["author"] for k in hits}
-        years_hit = {truth_map[k]["year"] for k in hits}
-        precisions.append(precision)
-        print(
-            f"{case.name:<14}{len(picked):>5}{precision:>8.0%}{recall:>8.1%}"
-            f"{len(authors_hit):>4}/{len(authors_all):<4}{len(years_hit):>4}/{len(years_all):<4}{elapsed:>8.0f}"
-            f"   {case.question[:18]}"
+
+        def spread(field: str, keys) -> int:
+            return len({truth_map[key][field] for key in keys})
+
+        results.append(
+            {
+                "case": case,
+                "picked": len(picked),
+                "precision": len(hits) / len(picked) if picked else 0.0,
+                "recall": len(set(hits)) / len(relevant) if relevant else 0.0,
+                "authors": (spread("author", hits), spread("author", relevant)),
+                "years": (spread("year", hits), spread("year", relevant)),
+                "ms": elapsed,
+            }
         )
-    print(f"平均准确率 {statistics.mean(precisions):.0%}")
+    return results
 
 
-def report_search(name: str, run, conn, truth_map):
-    print(f"\n== 检索页：{name}（文章级，前 20 篇） ==")
-    print(f"{'查询':<16}{'命中篇数':>8}{'前20准确率':>10}{'耗时ms':>8}")
-    relevant_articles_by_case = {}
+def measure_search(run, truth_map) -> list[dict]:
+    results = []
     for case in [c for c in CASES if c.keyword]:
         relevant_articles = {k[0] for k, t in truth_map.items() if case.relevant(t)}
-        relevant_articles_by_case[case.question] = relevant_articles
         started = time.perf_counter()
-        total, ids = run(conn, case.question)
+        total, ids = run(case.question)
         elapsed = (time.perf_counter() - started) * 1000
         good = [i for i in ids if i in relevant_articles]
-        precision = len(good) / len(ids) if ids else 0.0
-        print(
-            f"{case.question:<16}{total:>8}{precision:>10.0%}{elapsed:>8.0f}"
-            f"   相关文章共 {len(relevant_articles)} 篇"
+        results.append(
+            {
+                "case": case,
+                "total": total,
+                "precision": len(good) / len(ids) if ids else 0.0,
+                "relevant": len(relevant_articles),
+                "ms": elapsed,
+            }
         )
+    return results
+
+
+def print_ask(results: list[dict]) -> None:
+    print("\n== 问库召回（交给模型的段落） ==")
+    print(f"{'用例':<14}{'选中':>5}{'准确率':>8}{'召回率':>8}{'作者覆盖':>9}{'年份覆盖':>9}{'耗时ms':>8}")
+    for item in results:
+        case = item["case"]
+        print(
+            f"{case.name:<14}{item['picked']:>5}{item['precision']:>8.0%}{item['recall']:>8.1%}"
+            f"{item['authors'][0]:>4}/{item['authors'][1]:<4}{item['years'][0]:>4}/{item['years'][1]:<4}"
+            f"{item['ms']:>8.0f}   {case.question[:18]}"
+        )
+    print(f"平均准确率 {statistics.mean(item['precision'] for item in results):.0%}")
+
+
+def print_search(results: list[dict]) -> None:
+    print("\n== 检索页（文章级，前 20 篇） ==")
+    print(f"{'查询':<16}{'命中篇数':>8}{'前20准确率':>10}{'耗时ms':>8}")
+    for item in results:
+        print(
+            f"{item['case'].question:<16}{item['total']:>8}{item['precision']:>10.0%}{item['ms']:>8.0f}"
+            f"   相关文章共 {item['relevant']} 篇"
+        )
+
+
+def summarize(articles: int, ask: list[dict], search: list[dict]) -> dict:
+    return {
+        "articles": articles,
+        "tolerance": TOLERANCE,
+        "ask": {
+            case_key(item["case"]): {"precision": round(item["precision"], 4), "recall": round(item["recall"], 4)}
+            for item in ask
+        },
+        "search": {item["case"].question: {"precision": round(item["precision"], 4)} for item in search},
+    }
+
+
+def compare(current: dict, baseline: dict) -> tuple[list[str], list[str]]:
+    """返回 (退步, 变好)。用例在基线里没有的只提示，不算退步。"""
+    tolerance = float(baseline.get("tolerance", TOLERANCE))
+    worse: list[str] = []
+    better: list[str] = []
+    for part, label in (("ask", "问库"), ("search", "检索页")):
+        for key, metrics in current.get(part, {}).items():
+            base = baseline.get(part, {}).get(key)
+            if base is None:
+                better.append(f"{label}「{key}」基线里没有，用 --json 补上")
+                continue
+            for metric, value in metrics.items():
+                expected = base.get(metric)
+                if expected is None:
+                    continue
+                name = {"precision": "准确率", "recall": "召回率"}.get(metric, metric)
+                if value < expected - tolerance:
+                    worse.append(f"{label}「{key}」{name} {value:.1%}，基线 {expected:.1%}")
+                elif value > expected + tolerance:
+                    better.append(f"{label}「{key}」{name} {value:.1%}，基线 {expected:.1%}")
+        for key in baseline.get(part, {}):
+            if key not in current.get(part, {}):
+                worse.append(f"{label}「{key}」这次没有跑")
+    return worse, better
 
 
 def new_ask(conn, case: Case):
@@ -160,11 +245,36 @@ def new_search(conn, query: str):
     return result.total, [hit.article_id for hit in result.hits]
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="检索评测")
+    parser.add_argument("--check", type=Path, help="和这份基线比，有用例退步就返回 1")
+    parser.add_argument("--json", type=Path, help="把这次的准确率、召回率写成基线")
+    args = parser.parse_args(argv)
     conn = connect()
     truth_map = truth(conn)
-    report_ask("问库召回（交给模型的段落）", new_ask, conn, truth_map)
-    report_search("检索页", new_search, conn, truth_map)
+    articles = conn.execute("SELECT count(*) AS n FROM articles").fetchone()["n"]
+    ask = measure_ask(new_ask, conn, truth_map)
+    search = measure_search(lambda query: new_search(conn, query), truth_map)
+    print_ask(ask)
+    print_search(search)
+    current = summarize(articles, ask, search)
+    if args.json:
+        args.json.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"\n基线写到 {args.json}")
+    if args.check:
+        baseline = json.loads(args.check.read_text(encoding="utf-8"))
+        if baseline.get("articles") != articles:
+            print(f"\n语料 {articles} 篇，基线是按 {baseline.get('articles')} 篇算的，不能比。", file=sys.stderr)
+            return 1
+        worse, better = compare(current, baseline)
+        for line in better:
+            print(f"变好：{line}")
+        if worse:
+            print("\n检索退步了：", file=sys.stderr)
+            for line in worse:
+                print(f"  {line}", file=sys.stderr)
+            return 1
+        print("\n和基线比没有退步。")
     return 0
 
 

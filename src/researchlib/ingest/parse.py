@@ -115,6 +115,109 @@ def _topic_time(node: dict):
     return None
 
 
+_ZSXQ_TAG = re.compile(r"<e\b([^>]*)/?>", re.I)
+_ZSXQ_ATTR = re.compile(r"""(\w+)\s*=\s*["']([^"']*)["']""")
+_ANY_TAG = re.compile(r"<[^>]+>")
+_KEEP_CHARS = re.compile(r"[0-9A-Za-z一-鿿]+")
+
+
+def zsxq_text(raw: object) -> str:
+    """知识星球正文和评论里的标记：话题、链接换成它们的文字，@某人去掉（不留其他读者的名字）。"""
+    import html as html_lib
+    from urllib.parse import unquote
+
+    def replace(match: re.Match[str]) -> str:
+        attrs = {key.lower(): value for key, value in _ZSXQ_ATTR.findall(match.group(1))}
+        if attrs.get("type") == "mention":
+            return ""
+        return unquote(attrs.get("title") or "")
+
+    text = _ZSXQ_TAG.sub(replace, str(raw or ""))
+    text = _ANY_TAG.sub("", text)
+    return html_lib.unescape(text).strip()
+
+
+def _owner_id(node: dict) -> str | None:
+    """这条话题是谁发的：普通话题看 talk 的作者，问答看回答的人（星主）。"""
+    for key in ("talk", "answer", "task", "solution"):
+        child = node.get(key)
+        if isinstance(child, dict) and isinstance(child.get("owner"), dict):
+            user = child["owner"].get("user_id")
+            if user not in (None, ""):
+                return str(user)
+    owner = node.get("owner")
+    if isinstance(owner, dict) and owner.get("user_id") not in (None, ""):
+        return str(owner["user_id"])
+    return None
+
+
+def _comments(node: dict) -> list[dict]:
+    """话题下的评论，楼中楼摊平，按原来的顺序。"""
+    found: list[dict] = []
+    for key in ("show_comments", "comments"):
+        items = node.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            found.append(item)
+            for reply in item.get("replied_comments") or []:
+                if isinstance(reply, dict):
+                    found.append(reply)
+        if found:
+            break
+    return found
+
+
+def _user(comment: dict, key: str) -> str | None:
+    value = comment.get(key)
+    if isinstance(value, dict) and value.get("user_id") not in (None, ""):
+        return str(value["user_id"])
+    return None
+
+
+def author_replies(node: dict) -> list[tuple[str, str]]:
+    """作者本人在评论里的回复：[(被回复的那条读者评论, 作者的回复)]，没有被回复的那条就是空串。"""
+    owner = _owner_id(node)
+    if owner is None:
+        return []
+    comments = _comments(node)
+    pairs: list[tuple[str, str]] = []
+    for index, comment in enumerate(comments):
+        if _user(comment, "owner") != owner:
+            continue
+        reply = zsxq_text(comment.get("text"))
+        if not reply:
+            continue
+        question = ""
+        target = _user(comment, "repliee")
+        if target and target != owner:
+            for earlier in reversed(comments[:index]):
+                if _user(earlier, "owner") == target:
+                    question = zsxq_text(earlier.get("text"))
+                    break
+        pairs.append((question, reply))
+    return pairs
+
+
+def comments_section(pairs: list[tuple[str, str]], body: str) -> str:
+    """接在正文后面的「评论里的回复」。正文里已经有的回复（导出时带上了评论）不重复。"""
+    seen = "".join(_KEEP_CHARS.findall(body or ""))
+    lines: list[str] = []
+    for question, reply in pairs:
+        key = "".join(_KEEP_CHARS.findall(reply))[:30]
+        if not key or key in seen:
+            continue
+        seen += key
+        if question:
+            lines.append(f"读者问：{question}")
+        lines.append(f"作者答：{reply}" if question else f"作者补充：{reply}")
+    if not lines:
+        return ""
+    return "\n\n## 评论里的回复\n\n" + "\n\n".join(lines) + "\n"
+
+
 def extract_zsxq_topics(data: object) -> list[dict]:
     """一个 JSON 里可能是单条话题，也可能是嵌套的 topics 列表。"""
     topics: list[dict] = []
@@ -132,6 +235,7 @@ def extract_zsxq_topics(data: object) -> list[dict]:
                 "topic_id": topic_id,
                 "create_time": _topic_time(node),
                 "title": _topic_title(node),
+                "replies": author_replies(node),
             }
         )
     if topics:
@@ -255,6 +359,12 @@ def parse_markdown_files(
             "parent": parent,
             "filename": path.name,
         }
+        if id_mode == "zsxq" and raw_meta.get("replies"):
+            # 星主在评论里回答读者的话往往比正文更直接：接在正文后面，进检索和问库。
+            section = comments_section(raw_meta["replies"], full_md)
+            if section:
+                full_md = full_md.rstrip("\n") + "\n" + section
+                stored_meta["comment_replies"] = section.count("作者答：") + section.count("作者补充：")
         if raw_meta.get("topic_id"):
             stored_meta["topic_id"] = raw_meta.get("topic_id")
         create_time = raw_meta.get("create_time")

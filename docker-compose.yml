@@ -40,7 +40,9 @@ services:
     restart: unless-stopped
 
   app:
-    build: .
+    build:
+      context: .
+      target: app
     environment:
       DATABASE_URL: postgresql://research:${POSTGRES_PASSWORD:-research}@db:5432/research
       DATA_DIR: /data
@@ -63,6 +65,10 @@ services:
       XAI_API_KEY: ${XAI_API_KEY:-}
       RESEARCH_LLM_MODEL: ${RESEARCH_LLM_MODEL:-grok-4.7}
       RESEARCH_LLM_REASONING: ${RESEARCH_LLM_REASONING:-xhigh}
+      # 同时在跑的 Grok 请求上限（问库分批、摘要、观点、论点加起来）。
+      RESEARCH_LLM_CONCURRENCY: ${RESEARCH_LLM_CONCURRENCY:-3}
+      # 首页断更提示：只看最近几天确实在定时导入的来源。不想要设 0。
+      RESEARCH_STALE_BANNER: ${RESEARCH_STALE_BANNER:-1}
     ports:
       - "127.0.0.1:8088:8088"
     volumes:
@@ -83,6 +89,29 @@ services:
       retries: 10
       start_period: 15s
     restart: unless-stopped
+
+  # 图片文字（OCR）。平时不起，用的时候：
+  #   docker compose --profile ocr build ocr
+  #   docker compose --profile ocr run --rm ocr research-ocr --limit 500
+  ocr:
+    profiles: ["ocr"]
+    build:
+      context: .
+      target: ocr
+    environment:
+      DATABASE_URL: postgresql://research:${POSTGRES_PASSWORD:-research}@db:5432/research
+      DATA_DIR: /data
+      SOURCES_FILE: /app/config/sources.yaml
+      PORTFOLIO_FILE: /app/config/portfolio.yaml
+      AIHOT_MAP_FILE: /app/config/aihot_import.yaml
+      DISPLAY_TIMEZONE: Asia/Shanghai
+    volumes:
+      - ./data:/data
+      - ./config:/app/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["research-ocr", "--limit", "500"]
 
 volumes:
   pgdata:

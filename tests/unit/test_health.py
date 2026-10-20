@@ -1,0 +1,84 @@
+"""出问题才提示：状态文件 → 首页提示；Grok 连续失败计数；断更提示只看定时导入的来源。"""
+
+import json
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+from researchlib import health
+from researchlib.web.present import stale_sources
+
+NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+
+
+def _write(data_dir, task, **fields):
+    path = data_dir / "status" / f"{task}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"task": task, **fields}, ensure_ascii=False), encoding="utf-8")
+
+
+def test_nothing_to_say_when_everything_is_fine(tmp_path):
+    assert health.notices(tmp_path, "Asia/Shanghai", now=NOW) == []
+    _write(tmp_path, "backup", ok=True, at="2026-10-20T03:17:00Z", message="7.5M，6000 篇")
+    _write(tmp_path, "restore-check", ok=True, at="2026-10-01T04:23:00Z")
+    _write(tmp_path, "upkeep", ok=True, at="2026-09-01T00:00:00Z")
+    assert health.notices(tmp_path, "Asia/Shanghai", now=NOW) == []
+
+
+def test_failures_and_overdue_tasks_are_reported(tmp_path):
+    _write(tmp_path, "backup", ok=False, at="2026-10-20T03:17:00Z", message="导出数据库失败（退出码 1）：连不上")
+    _write(tmp_path, "restore-check", ok=True, at="2026-08-01T04:23:00Z")
+    _write(tmp_path, "nightly", ok=True, at="2026-10-17T16:37:00Z")
+    found = health.notices(tmp_path, "Asia/Shanghai", now=NOW)
+    assert found[0] == "备份失败（10-20 11:17）：导出数据库失败（退出码 1）：连不上"
+    assert any(text.startswith("试恢复已经 80 天没成功了") for text in found)
+    assert any(text.startswith("夜间补齐已经 2 天没成功了") for text in found)
+
+
+def test_status_file_with_broken_bytes_still_counts(tmp_path):
+    path = tmp_path / "status" / "backup.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{"task": "backup", "ok": false, "at": "2026-10-20T03:17:00Z", "message": "\xe5\xa4"}')
+    assert health.notices(tmp_path, "Asia/Shanghai", now=NOW)[0].startswith("备份失败")
+
+
+def test_llm_failures_are_counted_until_a_success(tmp_path):
+    health.reset_llm_cache()
+    health.record_llm(tmp_path, ok=True)
+    assert not (tmp_path / "status" / "llm.json").exists()
+    for _ in range(3):
+        health.record_llm(tmp_path, ok=False, error="Grok 接口返回 503：busy")
+    state = health.read_status(tmp_path, "llm")
+    assert state["ok"] is False and state["failures"] == 3
+    assert any("Grok 调用连续失败 3 次" in text for text in health.notices(tmp_path, "Asia/Shanghai"))
+    health.record_llm(tmp_path, ok=True)
+    assert health.read_status(tmp_path, "llm")["ok"] is True
+    assert health.notices(tmp_path, "Asia/Shanghai") == []
+    health.record_llm(tmp_path, ok=False, error="没有 xAI 凭证", unavailable=True)
+    assert any("Grok 登录失效" in text for text in health.notices(tmp_path, "Asia/Shanghai"))
+    health.reset_llm_cache()
+
+
+def test_stale_banner_only_watches_scheduled_imports():
+    every_three_days = [NOW - timedelta(days=20 + 3 * index) for index in range(15)]
+    daily = [NOW - timedelta(days=1 + index) for index in range(15)]
+    sources = [SimpleNamespace(id="a", name="甲公众号"), SimpleNamespace(id="b", name="乙星球")]
+    fresh = NOW - timedelta(hours=5)
+    times = {"a": every_three_days, "b": daily}
+    # 定时导入在跑、只有甲停了：提示甲。
+    found = stale_sources(
+        sources, times, {"a": {"at": fresh, "origin": "aihot"}, "b": {"at": fresh, "origin": "aihot"}},
+        "Asia/Shanghai", now=NOW,
+    )
+    assert [item["name"] for item in found] == ["甲公众号"]
+    assert found[0]["idle_days"] == 20 and "3 天左右一篇" in found[0]["typical"] and found[0]["imported"]
+    # 只手动导过归档、或者定时导入几天没跑了：不提示。
+    assert stale_sources(sources, times, {"a": {"at": fresh, "origin": "archive"}}, "Asia/Shanghai", now=NOW) == []
+    old = NOW - timedelta(days=5)
+    assert stale_sources(sources, times, {"a": {"at": old, "origin": "aihot"}}, "Asia/Shanghai", now=NOW) == []
+    # 定时导入的来源全都断更：多半是 AIHOT 抓取停了，只说一次。
+    both = {"a": every_three_days, "b": every_three_days}
+    imports = {"a": {"at": fresh, "origin": "aihot"}, "b": {"at": fresh, "origin": "aihot"}}
+    assert stale_sources(sources, both, imports, "Asia/Shanghai", now=NOW) == [
+        {"all": True, "count": 2, "idle_days": 20}
+    ]
+    assert stale_sources(sources, {"a": every_three_days[:5]}, imports, "Asia/Shanghai", now=NOW) == []

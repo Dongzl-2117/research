@@ -197,6 +197,12 @@ def _is_cjk(text: str) -> bool:
 
 _stats_cache: dict[str, tuple[float, float]] = {}
 _df_cache: dict[str, tuple[int, float]] = {}
+_common_cache: dict[str, tuple[dict[str, int], float]] = {}
+# 写法 → 交给全文索引的 tsquery 文本（去掉了切词补出来的子词）。分词参数固定，进程里缓存着就行。
+_tsq_cache: dict[str, str] = {}
+# 块数在这以下时精确统计（几十毫秒）；更大的库用表的估计行数加抽样的平均长度，不再全表扫一遍。
+EXACT_STATS_BELOW = 50000
+STATS_SAMPLE_ROWS = 20000
 
 
 def _corpus_stats(conn) -> tuple[int, float]:
@@ -205,9 +211,23 @@ def _corpus_stats(conn) -> tuple[int, float]:
     if cached and now - cached[1] < DF_TTL_S:
         total, avgdl = _stats_cache["corpus_values"]
         return int(total), avgdl
-    row = conn.execute("SELECT count(*) AS n, coalesce(avg(length(body)), 500) AS avgdl FROM article_chunks").fetchone()
-    total = int(row["n"])
-    avgdl = float(row["avgdl"] or 500)
+    row = conn.execute("SELECT reltuples::bigint AS n FROM pg_class WHERE oid = 'article_chunks'::regclass").fetchone()
+    estimate = int(row["n"] or 0) if row else 0
+    if estimate < EXACT_STATS_BELOW:
+        row = conn.execute(
+            "SELECT count(*) AS n, coalesce(avg(length(body)), 500) AS avgdl FROM article_chunks"
+        ).fetchone()
+        total = int(row["n"])
+        avgdl = float(row["avgdl"] or 500)
+    else:
+        # BM25 只用平均长度做归一化，抽两万行左右估就够了；REPEATABLE 让同一时刻的结果稳定。
+        percent = max(0.5, min(100.0, STATS_SAMPLE_ROWS * 100 / estimate))
+        row = conn.execute(
+            f"SELECT coalesce(avg(length(body)), 500) AS avgdl FROM article_chunks"
+            f" TABLESAMPLE SYSTEM ({percent:.3f}) REPEATABLE (7)"
+        ).fetchone()
+        total = estimate
+        avgdl = float(row["avgdl"] or 500)
     _stats_cache["corpus"] = (float(total), now)
     _stats_cache["corpus_values"] = (float(total), avgdl)
     return total, avgdl
@@ -216,15 +236,105 @@ def _corpus_stats(conn) -> tuple[int, float]:
 def reset_stats_cache() -> None:
     _stats_cache.clear()
     _df_cache.clear()
+    _common_cache.clear()
+
+
+_TSQ_CHAIN = re.compile(r"\s*(<->|<\d+>)\s*")
+_TSQ_LEXEME = re.compile(r"^'((?:[^']|'')*)'$")
+
+
+def _quote_lexeme(word: str) -> str:
+    return "'" + word.replace("'", "''") + "'"
+
+
+def reduce_phrase(tsquery_text: str) -> str:
+    """phraseto_tsquery 的结果里，去掉 zhparser 给长词补出来的子词。
+
+    multi_short / seg_with_duality 打开后，「护城河」切成 '护城河' <-> '护城'。索引里两者总是挨着出现，
+    所以只查 '护城河' 结果一样，但短语要回表核对位置（逐行解压 tsvector），单个词条全文索引就能直接答。
+    只处理「词 <-> 词 <-> …」这种简单的链；词条被相邻的另一个词条包含、又不相同，就去掉，距离照原样累加。
+    """
+    text = (tsquery_text or "").strip()
+    if not text:
+        return ""
+    parts = _TSQ_CHAIN.split(text)
+    lexemes, operators = parts[0::2], parts[1::2]
+    words = []
+    for lexeme in lexemes:
+        match = _TSQ_LEXEME.match(lexeme.strip())
+        if match is None:
+            return text  # 有 & | ! 或括号，不是简单的链，原样用
+        words.append(match.group(1).replace("''", "'"))
+    if len(words) == 1:
+        return text
+    positions = [0]
+    for operator in operators:
+        positions.append(positions[-1] + (1 if operator == "<->" else int(operator[1:-1])))
+    kept: list[tuple[int, str]] = []
+    for index, word in enumerate(words):
+        neighbours = [words[other] for other in (index - 1, index + 1) if 0 <= other < len(words)]
+        if any(word != other and word in other for other in neighbours):
+            continue
+        kept.append((positions[index], word))
+    if not kept:
+        return text
+    out = _quote_lexeme(kept[0][1])
+    previous = kept[0][0]
+    for position, word in kept[1:]:
+        gap = position - previous
+        out += (" <-> " if gap == 1 else f" <{gap}> ") + _quote_lexeme(word)
+        previous = position
+    return out
+
+
+def single_lexeme(tsquery_text: str) -> str | None:
+    """tsquery 只有一个词条时返回这个词条。"""
+    match = _TSQ_LEXEME.match((tsquery_text or "").strip())
+    return match.group(1).replace("''", "'") if match else None
 
 
 def _form_tsquery_sql(forms: list[str], params: dict, prefix: str) -> str:
     parts = []
     for index, form in enumerate(forms):
         key = f"{prefix}_{index}"
-        params[key] = form
-        parts.append(f"phraseto_tsquery('chinese', %({key})s)")
+        reduced = _tsq_cache.get(form)
+        if reduced:
+            params[key] = reduced
+            parts.append(f"%({key})s::tsquery")
+        else:
+            params[key] = form
+            parts.append(f"phraseto_tsquery('chinese', %({key})s)")
     return "(" + " || ".join(parts) + ")" if parts else ""
+
+
+def _common_lexemes(conn) -> dict[str, int]:
+    """全库最常见的那几百个词条各出现在多少块里，从 ANALYZE 的统计信息里读，不用数。
+
+    常见词正是数起来最慢的（几万块逐个过）；没有统计信息（新库还没 ANALYZE）时返回空，退回去数。
+    """
+    now = time.monotonic()
+    cached = _common_cache.get("chunks")
+    if cached and now - cached[1] < DF_TTL_S:
+        return cached[0]
+    rows = conn.execute(
+        """
+        SELECT e.elem, e.freq, c.reltuples
+        FROM pg_stats s
+        JOIN pg_class c ON c.oid = 'article_chunks'::regclass
+        CROSS JOIN LATERAL unnest(
+          s.most_common_elems::text::text[],
+          s.most_common_elem_freqs[1:cardinality(s.most_common_elems::text::text[])]
+        ) AS e(elem, freq)
+        WHERE s.schemaname = current_schema() AND s.tablename = 'article_chunks' AND s.attname = 'search_tsv'
+        """
+    ).fetchall()
+    found = {
+        row["elem"]: int(round(float(row["freq"]) * float(row["reltuples"])))
+        for row in rows
+        if row["reltuples"] and float(row["reltuples"]) > 0
+    }
+    _common_cache["chunks"] = (found, now)
+    return found
 
 
 def _document_frequency(conn, term: Term, total: int) -> int:
@@ -233,6 +343,14 @@ def _document_frequency(conn, term: Term, total: int) -> int:
     cached = _df_cache.get(key)
     if cached and now - cached[1] < DF_TTL_S:
         return cached[0]
+    if len(term.forms) == 1:
+        lexeme = single_lexeme(_tsq_cache.get(term.forms[0], ""))
+        if lexeme is not None:
+            common = _common_lexemes(conn)
+            if lexeme in common:
+                found = min(max(total, 1), common[lexeme])
+                _df_cache[key] = (found, now)
+                return found
     params: dict = {}
     tsq = _form_tsquery_sql(term.forms, params, "df")
     # 封顶计数：超过库的四分之一就不再数下去，IDF 已经很低，精确值不影响排序。
@@ -248,12 +366,22 @@ def _document_frequency(conn, term: Term, total: int) -> int:
 
 
 def _usable_forms(conn, forms: list[str]) -> list[str]:
-    """去掉切词后为空的写法（纯标点之类），否则 phraseto_tsquery 会得到空查询。"""
+    """去掉切词后为空的写法（纯标点之类），否则 phraseto_tsquery 会得到空查询。顺手记下精简后的 tsquery。"""
     usable = []
     for form in forms:
-        row = conn.execute("SELECT numnode(phraseto_tsquery('chinese', %s)) AS n", (form,)).fetchone()
+        cached = _tsq_cache.get(form)
+        if cached is not None:
+            if cached:
+                usable.append(form)
+            continue
+        row = conn.execute(
+            "SELECT numnode(q) AS n, q::text AS t FROM phraseto_tsquery('chinese', %s) AS q", (form,)
+        ).fetchone()
         if int(row["n"] or 0) > 0:
+            _tsq_cache[form] = reduce_phrase(row["t"])
             usable.append(form)
+        else:
+            _tsq_cache[form] = ""
     return usable
 
 
@@ -531,7 +659,12 @@ def _fts_keys(conn, scope: Scope, tsq: str, params: dict, limit: int, *, company
 
 
 def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int, int]]:
-    """标题命中的文章。段落块不含标题，只按块召回会漏掉「标题写了、正文没写」的文章，这里取它们的第一块。"""
+    """标题命中的文章。段落块不含标题，只按块召回会漏掉「标题写了、正文没写」的文章，这里取它们的第一块。
+
+    文章级全部命中的都算（顺带接住词散在不同段落里的文章），标题里就有全部词组的排前面，其余按时间新的在前。
+    标题单独有索引（title_tsv），判断标题命中很便宜；以前按整篇的 ts_rank 排，常见词能命中几万篇，
+    逐篇解压整篇的 tsvector，库大了很慢。
+    """
     params: dict = {}
     words = Query(**{**query.__dict__, "terms": [t for t in query.terms if t.kind != "company"]})
     tsq = _group_tsquery(words, params, only_selective=False, operator="&&", prefix="title") if words.terms else ""
@@ -548,11 +681,11 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
         )
     if tsq:
         conditions.append(_article_match(tsq))
-        rank = (
-            f"greatest(ts_rank(a.search_tsv, {tsq}), coalesce((SELECT ts_rank(tq.search_tsv, {tsq})"
-            " FROM article_translations tq WHERE tq.article_id = a.id), 0))"
+        title_hit = (
+            f"(a.title_tsv @@ {tsq} OR a.id IN"
+            f" (SELECT tt.article_id FROM article_translations tt WHERE tt.title_tsv @@ {tsq}))"
         )
-        order = f"{rank} DESC, a.published_at DESC NULLS LAST"
+        order = f"{title_hit} DESC, a.published_at DESC NULLS LAST, a.id DESC"
     elif company_ids:
         order = "a.published_at DESC NULLS LAST"
     else:

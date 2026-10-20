@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="page-head">
+  <h1>{{ article.title }}</h1>
+  <p class="quiet"><a href="/articles/{{ article.id }}">回到文章</a></p>
+</header>
+{% if entries %}
+{% for entry in entries %}
+<section class="revision" aria-label="{{ entry.label }}">
+  <h2>{{ entry.label }}</h2>
+  {% if entry.title_change %}<p class="revision-title"><del>{{ entry.title_change[0] }}</del> → <ins>{{ entry.title_change[1] }}</ins></p>{% endif %}
+  <div class="revision-diff">
+    {% for block in entry.blocks %}
+    {% if block.kind == "del" %}<p class="diff-del"><del>{{ block.text }}</del></p>
+    {% elif block.kind == "add" %}<p class="diff-add"><ins>{{ block.text }}</ins></p>
+    {% elif block.kind == "skip" %}<p class="diff-skip quiet">{{ block.text }}</p>
+    {% else %}<p class="diff-same">{{ block.text }}</p>{% endif %}
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% else %}
+<p class="empty">这篇没有改动。</p>
+{% endif %}
+{% endblock %}

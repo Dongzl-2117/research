@@ -62,6 +62,7 @@
   {% endif %}
   {% endif %}
   {% if result.answer %}
+  {% if result.failed_batches %}<p class="banner">资料分 {{ result.batches }} 批读，第 {{ result.failed_batches | join("、") }} 批 Grok 出错没读到，回答可能不全。可以重新问一次。</p>{% endif %}
   <div class="prose answer-body">{{ result.answer | answer_html }}</div>
   {% if result.model or result.created %}<p class="quiet">{{ result.model }}{% if result.model and result.created %} · {% endif %}{{ result.created }}</p>{% endif %}
   {% endif %}

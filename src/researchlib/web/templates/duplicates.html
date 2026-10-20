@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_feed.html" import pager %}
+{% block body %}
+<header class="page-head">
+  <h1>重复文章</h1>
+  {% if only %}<p class="quiet"><a href="/duplicates">看全部</a></p>{% endif %}
+</header>
+{% if groups %}
+<ul class="dup-groups">
+  {% for group in groups %}
+  <li class="card dup-group" id="a-{{ group.id }}">
+    <p class="dup-canonical">
+      <span class="dup-role">留下</span>
+      <a href="/articles/{{ group.id }}">{{ group.title }}</a>
+      <span class="quiet">{{ group.source }} · <span class="num">{{ group.date }}</span></span>
+    </p>
+    <ul class="dup-members">
+      {% for item in group["items"] %}
+      <li>
+        <span class="dup-role quiet">藏起</span>
+        <a href="/articles/{{ item.id }}">{{ item.title }}</a>
+        <span class="quiet">{{ item.source }} · <span class="num">{{ item.date }}</span> · 句子重合 <span class="num">{{ item.overlap }}%</span> · 长度 <span class="num">{{ item.length }}%</span>{% if item.marked %} · {{ item.marked }} 认出{% endif %}</span>
+        <form class="dup-separate" action="/duplicates/{{ item.id }}/separate{% if only %}?back={{ only }}{% endif %}" method="post">
+          <button class="mark" type="submit">不是同一篇</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  </li>
+  {% endfor %}
+</ul>
+{{ pager(page, pages, "/duplicates?page=" ~ (page - 1), "/duplicates?page=" ~ (page + 1)) }}
+<p class="count num">{{ total }} 组</p>
+{% else %}
+<p class="empty">没有认出重复的文章。</p>
+{% endif %}
+{% endblock %}

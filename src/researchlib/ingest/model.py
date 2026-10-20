@@ -33,6 +33,8 @@ class IngestReport:
     images_missing: int = 0
     # 写入后认出是库里已有的同一篇（另一条路径导入过，或同一作者在别的来源发过）。
     duplicates: int = 0
+    # 新正文像删除提示、或比库里短一半以上：没有替换，只把这一版记进 article_revisions。
+    held: int = 0
     errors: list[str] = field(default_factory=list)
 
     def render(self) -> str:
@@ -41,6 +43,7 @@ class IngestReport:
             f"归档文章: {self.archive_files}",
             f"数据库文章: {self.db_rows}",
             f"写入: 新增 {self.inserted}，更新 {self.updated}，未变 {self.unchanged}",
+            f"拦下: {self.held}（疑似删稿或截断，库里保留原文）",
             f"拒绝: {self.rejected}",
             f"重复: {self.duplicates}（库里已有同一篇，不进列表和检索）",
             f"归档图片: {self.images_in_archive}",
