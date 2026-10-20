@@ -15,15 +15,17 @@
       <span aria-hidden="true">·</span>
       <time datetime="{{ iso }}">{{ date }}{% if time %} {{ time }}{% endif %}</time>
       {% if relative %}<span aria-hidden="true">·</span><span>{{ relative }}</span>{% endif %}
-      {% if elsewhere %}<span aria-hidden="true">·</span><span class="elsewhere">同一篇也在{% for item in elsewhere %} <a href="/articles/{{ item.id }}">{{ item.source }}</a>{% endfor %}</span>{% endif %}
+      {% if elsewhere %}<span aria-hidden="true">·</span><span class="elsewhere">同一篇也在{% for item in elsewhere %} <a href="/articles/{{ item.id }}">{{ item.source }}</a>{% endfor %} <a class="quiet" href="/duplicates?article={{ article.duplicate_of or article.id }}">核对</a></span>{% endif %}
+      {% if revised %}<span aria-hidden="true">·</span><a class="revised" href="/articles/{{ article.id }}/revisions">{{ revised }}</a>{% endif %}
     </p>
     <h1>{{ article.title }}</h1>
     {% if title_zh and body_language != 'original' %}
     <p class="title-zh">{{ title_zh }}</p>
     {% endif %}
-    {% if quoted %}
+    {% if quoted and not quoted_marked %}
     <aside class="quoted" aria-label="引用的段落">
-      {% if quoted.heading %}<p class="quoted-label">{{ quoted.heading }}</p>{% endif %}
+      {% if quoted.lang == "ocr" %}<p class="quoted-label">图片里的字 · <a href="#{{ quoted.anchor }}">看这张图</a></p>
+      {% elif quoted.heading %}<p class="quoted-label">{{ quoted.heading }}</p>{% endif %}
       <p>{{ quoted.body }}</p>
     </aside>
     {% endif %}
@@ -53,6 +55,34 @@
     {% elif body_html %}
     <div class="prose{% if has_translation %} with-toolbar{% endif %}">{{ body_html }}</div>
     {% endif %}
+    {% if same_period %}
+    <section class="same-period" aria-label="同期别人怎么看">
+      <h2>同期别人怎么看</h2>
+      <ul>
+        {% for item in same_period %}
+        <li>
+          <p class="item-meta">
+            <a href="/companies/{{ item.company_id }}#views">{{ item.company }}</a>
+            <span aria-hidden="true">·</span>
+            <span>{{ item.author }}</span>
+            <time class="num">{{ item.date }}</time>
+            {% if item.stance_label %}<span class="stance stance-{{ item.stance }}">{{ item.stance_label }}</span>{% endif %}
+          </p>
+          <p class="same-period-judgment"><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.judgment }}</a></p>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
   </article>
 </div>
+{% if quoted_marked %}
+<script>
+  // 带 ?chunk= 打开时滚到引用的那段。地址里已有锚点就听锚点的。
+  if (!location.hash) {
+    var quoted = document.querySelector(".is-quoted");
+    if (quoted) quoted.scrollIntoView({ block: "center" });
+  }
+</script>
+{% endif %}
 {% endblock %}

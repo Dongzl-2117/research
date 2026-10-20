@@ -211,6 +211,34 @@ def test_prefers_longer_commentary_over_more_images(conn, settings):
     assert zsxq["duplicate_of"] is None and mp_row["duplicate_of"] == zsxq["id"]
 
 
+def test_duplicates_page_lists_groups_and_separates(conn, settings):
+    _store(conn, settings, "fangwei-mp", [_doc("mp/p.md", "腾讯的广告库存", BODY)])
+    _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:p", "星球", BODY + "\n\n星球里补一句：这篇先发在公众号。")])
+    copy, kept = _row(conn, "mp/p.md"), _row(conn, "zsxq:p")
+    assert copy["duplicate_of"] == kept["id"]
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/duplicates").text
+        assert f'id="a-{kept["id"]}"' in page and f'href="/articles/{copy["id"]}"' in page
+        assert "句子重合" in page and "认出" in page
+        # 文章页的「核对」直达这一组。
+        article = client.get(f"/articles/{copy['id']}").text
+        assert f'href="/duplicates?article={kept["id"]}"' in article
+        only = client.get("/duplicates", params={"article": kept["id"]}).text
+        assert f'action="/duplicates/{copy["id"]}/separate?back={kept["id"]}"' in only
+        # 别的站点发来的 POST 不接。
+        forged = client.post(
+            f"/duplicates/{copy['id']}/separate", headers={"origin": "https://evil.example"}, follow_redirects=False
+        )
+        assert forged.status_code == 403 and _row(conn, "mp/p.md")["duplicate_of"] == kept["id"]
+        done = client.post(
+            f"/duplicates/{copy['id']}/separate", params={"back": kept["id"]}, follow_redirects=False
+        )
+        assert done.status_code == 303 and done.headers["location"] == f"/duplicates?article={kept['id']}"
+        assert _row(conn, "mp/p.md")["duplicate_of"] is None
+        assert "没有认出重复的文章" in client.get("/duplicates").text
+        assert client.post("/duplicates/999999/separate", follow_redirects=False).status_code == 404
+
+
 def test_shared_cta_footer_does_not_merge_different_posts(conn, settings):
     """两篇不同主题的正文，末尾都挂同一段很长的社群广告，不能并成一篇。"""
     cta = "\n\n".join(

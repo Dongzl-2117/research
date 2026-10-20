@@ -196,6 +196,65 @@ def replace_translation_chunks(conn, article_id: int) -> int:
     return len(chunks)
 
 
+# 图片里的字（OCR）的块：lang = 'ocr'，块号从这里起，anchor 是文章页上那张图的 id。
+OCR_ORD_BASE = 20000
+OCR_HEADING = "图片里的字"
+# 识别出的有效字（汉字、字母、数字）少于这个数的图不进检索：多半是装饰图、表情包或水印。
+OCR_MIN_CHARS = 20
+_MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
+
+
+def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """[(图片内容哈希, 识别出的字)] → [(图片锚点, 块正文)]，同一张图只算一次。"""
+    from researchlib.render import image_anchor
+
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for digest, text in texts:
+        if digest in seen:
+            continue
+        seen.add(digest)
+        if len(_MEANINGFUL.findall(text or "")) < OCR_MIN_CHARS:
+            continue
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        for piece in _pack(lines):
+            found.append((image_anchor(digest), piece))
+            if len(found) >= MAX_CHUNKS:
+                return found
+    return found
+
+
+def replace_ocr_chunks(conn, article_id: int) -> int:
+    """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
+    conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (article_id,))
+    article = conn.execute("SELECT duplicate_of FROM articles WHERE id = %s", (article_id,)).fetchone()
+    if article is None or article["duplicate_of"] is not None:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT i.content_hash, t.text
+        FROM article_images i
+        JOIN image_texts t ON t.content_hash = i.content_hash
+        WHERE i.article_id = %s
+        ORDER BY i.id
+        """,
+        (article_id,),
+    ).fetchall()
+    chunks = ocr_chunks([(row["content_hash"], row["text"]) for row in rows])
+    if not chunks:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO article_chunks (article_id, ord, heading, body, lang, anchor)"
+            " VALUES (%s, %s, %s, %s, 'ocr', %s)",
+            [
+                (article_id, OCR_ORD_BASE + index, OCR_HEADING, text, anchor)
+                for index, (anchor, text) in enumerate(chunks)
+            ],
+        )
+    return len(chunks)
+
+
 def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
     """给还没有块的文章切块，给有译文但还没有译文块的文章补切译文块。rebuild=True 时全部重切。
 

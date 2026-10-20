@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -158,6 +159,47 @@ def same_article_elsewhere(conn, article_id: int, duplicate_of: int | None, sour
     ).fetchall()
 
 
+def count_duplicate_groups(conn, source_ids: list[str], only: int | None = None) -> int:
+    row = conn.execute(
+        """
+        SELECT count(DISTINCT d.duplicate_of) AS n
+        FROM articles d JOIN articles c ON c.id = d.duplicate_of
+        WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s) AND (%s::bigint IS NULL OR c.id = %s::bigint)
+        """,
+        (source_ids, source_ids, only, only),
+    ).fetchone()
+    return int(row["n"])
+
+
+def duplicate_groups(conn, source_ids: list[str], limit: int, offset: int, only: int | None = None) -> list[dict]:
+    """去重核对页：每组一个主版本和指向它的重复，最近认出的在前。"""
+    heads = conn.execute(
+        """
+        SELECT c.id, c.title, c.source_id, c.published_at, c.body_text, max(d.duplicate_marked_at) AS marked
+        FROM articles d JOIN articles c ON c.id = d.duplicate_of
+        WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s) AND (%s::bigint IS NULL OR c.id = %s::bigint)
+        GROUP BY c.id
+        ORDER BY max(d.duplicate_marked_at) DESC NULLS LAST, c.published_at DESC NULLS LAST, c.id DESC
+        LIMIT %s OFFSET %s
+        """,
+        (source_ids, source_ids, only, only, limit, offset),
+    ).fetchall()
+    if not heads:
+        return []
+    members: dict[int, list] = {}
+    for row in conn.execute(
+        """
+        SELECT id, title, source_id, published_at, body_text, duplicate_of, duplicate_marked_at
+        FROM articles
+        WHERE duplicate_of = ANY(%s) AND source_id = ANY(%s)
+        ORDER BY id
+        """,
+        ([head["id"] for head in heads], source_ids),
+    ).fetchall():
+        members.setdefault(row["duplicate_of"], []).append(row)
+    return [{"canonical": head, "duplicates": members.get(head["id"], [])} for head in heads]
+
+
 def article_images(conn, article_id: int):
     return conn.execute(
         """
@@ -275,7 +317,7 @@ def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
         return {}
     rows = conn.execute(
         """
-        SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version
+        SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version, d.head_only
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
         WHERE d.article_id = ANY(%s)
@@ -331,15 +373,26 @@ def recent_publish_times(conn, source_ids: list[str], per_source: int = 31) -> d
     return found
 
 
-def last_imports(conn, source_ids: list[str]) -> dict[str, object]:
-    """每个来源最近一次导入的时间（导入命令写进 app_state 的 import:<来源>）。"""
+def last_imports(conn, source_ids: list[str]) -> dict[str, dict]:
+    """每个来源最近一次导入：{来源: {"at": 时间, "origin": "aihot" | "archive"}}。
+
+    导入命令写进 app_state 的 import:<来源>。早先的记录没有 origin，当作手动导入的归档。
+    """
     if not source_ids:
         return {}
     rows = conn.execute(
-        "SELECT key, updated_at FROM app_state WHERE key = ANY(%s)",
+        "SELECT key, value, updated_at FROM app_state WHERE key = ANY(%s)",
         (["import:" + source_id for source_id in source_ids],),
     ).fetchall()
-    return {row["key"].split(":", 1)[1]: row["updated_at"] for row in rows}
+    found: dict[str, dict] = {}
+    for row in rows:
+        try:
+            value = json.loads(row["value"] or "{}")
+        except ValueError:
+            value = {}
+        origin = value.get("origin") if isinstance(value, dict) else None
+        found[row["key"].split(":", 1)[1]] = {"at": row["updated_at"], "origin": origin or "archive"}
+    return found
 
 
 def latest_articles(conn, source_ids: list[str], limit: int = 3):

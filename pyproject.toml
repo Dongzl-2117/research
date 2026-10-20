@@ -20,6 +20,10 @@ dev = [
   "pytest>=8.3",
   "ruff>=0.7",
 ]
+# 图片文字（OCR）。只装进 ocr 镜像，见 docs/ocr.md。
+ocr = [
+  "rapidocr-onnxruntime>=1.3",
+]
 
 [project.scripts]
 research-web = "researchlib.web.app:main"
@@ -38,6 +42,9 @@ research-digest = "researchlib.digest:main"
 research-dedupe = "researchlib.duplicates:main"
 research-views = "researchlib.views:main"
 research-eval-feedback = "researchlib.feedback:main"
+research-theses = "researchlib.theses:main"
+research-fetch-images = "researchlib.remote_images:main"
+research-ocr = "researchlib.ocr:main"
 
 [build-system]
 requires = ["setuptools>=68"]

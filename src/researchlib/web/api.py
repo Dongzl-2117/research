@@ -12,6 +12,7 @@ from datetime import date
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
+from researchlib import theses as thesis_map
 from researchlib.ask import ask, start
 from researchlib.citecheck import check_answer
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
@@ -385,33 +386,64 @@ def api_company(request: Request, company_id: int):
     return _json(payload)
 
 
+def views_payload(
+    conn, request: Request, sources, company_id: int, kind: str, author: str, limit: int, offset: int
+) -> dict | None:
+    """观点时间线和论点地图。kind：risk、change，或论点的 key（t1、t2…，只看这条论点引用的观点）。"""
+    settings = request.app.state.settings
+    company = queries.get_company(conn, company_id)
+    if company is None:
+        return None
+    by_id = {source.id: source for source in sources}
+    items = view_timeline(conn, company_id, by_id, settings)
+    theses = thesis_map.present(thesis_map.stored(conn, company_id), items)
+    thesis = next((item for item in theses if item["key"] == kind), None)
+    chosen = filter_timeline(items, kind if thesis is None else "", author, thesis["articles"] if thesis else None)
+    base = _base(request)
+    return {
+        "id": company["id"],
+        "name": company["name_zh"],
+        "theses": [
+            {
+                "key": item["key"],
+                "title": item["title"],
+                "mechanism": item["mechanism"],
+                "for": {"count": item["for"]["count"], "authors": dict(item["for"]["authors"])},
+                "against": {"count": item["against"]["count"], "authors": dict(item["against"]["authors"])},
+                "authors_shifted": item["shifted"],
+                "articles": item["articles"],
+            }
+            for item in theses
+        ],
+        "total": len(chosen),
+        "views": [
+            {
+                **{key: value for key, value in item.items() if key != "published_at"},
+                "links": _article_links(base, item["article_id"], item["chunk"]),
+            }
+            for item in chosen[offset : offset + limit]
+        ],
+        "_trust": TRUST,
+    }
+
+
 @api.get("/api/v1/companies/{company_id}/views")
 def api_company_views(request: Request, company_id: int):
-    """持仓和观察公司的观点时间线，新的在前。views=risk 只看风险与反方，views=change 只看态度变化。"""
+    """持仓和观察公司的观点时间线和论点地图，新的在前。
+
+    views=risk 只看风险与反方，views=change 只看态度变化，views=t1 只看第一条论点引用的观点。
+    """
     kind = request.query_params.get("views") or ""
-    if kind and kind not in VIEW_FILTERS:
-        raise HTTPException(status_code=400, detail="views 只能是 risk 或 change")
+    if kind and kind not in VIEW_FILTERS and not (kind[:1] == "t" and kind[1:].isdigit()):
+        raise HTTPException(status_code=400, detail="views 只能是 risk、change 或论点的 key（t1、t2…）")
     author = (request.query_params.get("author") or "").strip()
     limit, offset = _limit(request)
-    settings = request.app.state.settings
     with database(request) as conn:
         sources = active_sources(request, conn)
-        company = queries.get_company(conn, company_id)
-        if company is None:
-            raise HTTPException(status_code=404)
-        items = filter_timeline(view_timeline(conn, company_id, {s.id: s for s in sources}, settings), kind, author)
-    return _json(
-        {
-            "id": company["id"],
-            "name": company["name_zh"],
-            "total": len(items),
-            "views": [
-                {**item, "links": _article_links(_base(request), item["article_id"], item["chunk"])}
-                for item in items[offset : offset + limit]
-            ],
-            "_trust": TRUST,
-        }
-    )
+        payload = views_payload(conn, request, sources, company_id, kind, author, limit, offset)
+    if payload is None:
+        raise HTTPException(status_code=404)
+    return _json(payload)
 
 
 def day_payload(conn, request: Request, sources, start: date, end: date) -> dict:
@@ -510,7 +542,7 @@ def llms_txt(request: Request):
         "## 检索与问答",
         "",
         f"- [MCP Server]({base}/api/mcp): Streamable HTTP（JSON 响应，无状态），工具 search_library、get_article、"
-        "list_companies、get_company、list_authors、get_day、ask_library",
+        "list_companies、get_company、get_company_views、list_authors、get_day、ask_library",
         f"- [检索文章]({base}/api/v1/search?q=腾讯): JSON。q 可以是关键词也可以是一句话，全部词都命中的排前面；"
         "or 表示任一、-词 排除、引号里的必须原样出现。"
         "范围参数 author、source、company（公司 id）、from、to（YYYY-MM-DD，上海日历）；limit≤50、offset 翻页",
@@ -531,8 +563,10 @@ def llms_txt(request: Request):
         f"- [作者]({base}/api/v1/authors): 作者、来源、篇数、时间跨度、常谈公司。当前作者：{'、'.join(authors)}",
         f"- [公司]({base}/api/v1/companies): 有提及的公司（all=1 含未提及），篇数、深入篇数、最近提及",
         f"- [单家公司]({base}/api/v1/companies/{{id}}): 按时间倒序的提及文章，每篇带提及原句；depth 过滤",
-        f"- [观点时间线]({base}/api/v1/companies/{{id}}/views): 持仓和观察公司，每篇一条作者判断、机制、态度；"
-        "风险、推翻条件、验证指标只在原文谈到时才有；views=risk 只看风险与反方，views=change 只看态度变化",
+        f"- [观点和论点]({base}/api/v1/companies/{{id}}/views): 持仓和观察公司，每篇一条作者判断、机制、态度；"
+        "风险、推翻条件、验证指标只在原文谈到时才有。theses 是把这些观点按机制归成的几条论点，"
+        "支持和反对各有几篇、哪些作者，由库里的观点数出来；"
+        "views=risk 只看风险与反方，views=change 只看态度变化，views=t1 只看第一条论点引用的观点",
         "",
         "## 字段约定",
         "",

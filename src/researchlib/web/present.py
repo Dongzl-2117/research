@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import statistics
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from html import escape
 from zoneinfo import ZoneInfo
 
@@ -358,23 +358,39 @@ def sparkline(series: list[dict]) -> str:
     return "".join(parts)
 
 
+# 断更提示只看最近这几天确实做过定时导入（从 AIHOT 导入）的来源。只手动导归档的来源，
+# 或 AIHOT 抓取停着、定时导入没装的时候，「很久没有新文章」是常态，提示了也是假警报。
+SCHEDULED_ORIGINS = frozenset({"aihot"})
+FRESH_IMPORT = timedelta(days=3)
+
+
 def stale_sources(
     sources,
     times: dict[str, list[datetime]],
-    imports: dict[str, datetime],
+    imports: dict[str, dict],
     zone_name: str,
     now: datetime | None = None,
 ) -> list[dict]:
-    """断更或导入停了的来源：最近一篇离现在比平时的间隔长很多（三倍以上、至少一周）。
+    """断更的来源：定时导入在跑，但最近一篇离现在比平时的间隔长很多（三倍以上、至少一周）。
 
-    最近不到 10 篇带日期的来源不判断，样本太少。返回 [{"name", "idle_days", "typical", "imported"}]。
+    imports：{来源: {"at": 最近一次导入时间, "origin": "aihot" | "archive"}}。最近不到 10 篇带日期的来源不判断。
+    返回 [{"name", "idle_days", "typical", "imported"}]；定时导入的来源全都断更时只返回一条
+    {"all": True, "count", "idle_days"}：多半是 AIHOT 那边的抓取停了，不是各位作者同时停更。
     """
     moment = now or datetime.now(UTC)
     found = []
+    watched = 0
     for source in sources:
+        record = imports.get(source.id) or {}
+        imported = record.get("at")
+        if imported is not None and imported.tzinfo is None:
+            imported = imported.replace(tzinfo=UTC)
+        if record.get("origin") not in SCHEDULED_ORIGINS or imported is None or moment - imported > FRESH_IMPORT:
+            continue
         dates = [value if value.tzinfo else value.replace(tzinfo=UTC) for value in times.get(source.id) or []]
         if len(dates) < 10:
             continue
+        watched += 1
         gaps = [(newer - older).total_seconds() / 86400 for newer, older in zip(dates, dates[1:], strict=False)]
         typical = statistics.median(gaps) if gaps else 0.0
         idle = (moment - dates[0]).total_seconds() / 86400
@@ -384,15 +400,14 @@ def stale_sources(
             usual = "平时差不多天天有"
         else:
             usual = f"平时 {round(typical)} 天左右一篇"
-        imported = imports.get(source.id)
         found.append(
             {
                 "name": source.name,
                 "idle_days": int(idle),
                 "typical": usual,
-                "imported": (
-                    f"{format_date(imported, zone_name)} {format_clock(imported, zone_name)}" if imported else ""
-                ),
+                "imported": f"{format_date(imported, zone_name)} {format_clock(imported, zone_name)}",
             }
         )
+    if watched >= 2 and len(found) == watched:
+        return [{"all": True, "count": watched, "idle_days": min(item["idle_days"] for item in found)}]
     return found

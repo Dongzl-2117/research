@@ -19,6 +19,7 @@ from researchlib.web.api import (
     company_payload,
     day_payload,
     search_payload,
+    views_payload,
 )
 from researchlib.web.routes import _same_origin, active_sources, database
 from researchlib.web.scoping import resolve_scope
@@ -76,6 +77,25 @@ TOOLS = [
             "properties": {
                 "id": {"type": "integer"},
                 "depth": {"type": "string", "enum": ["title", "whole", "section", "passing"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "get_company_views",
+        "description": (
+            "持仓和观察公司的论点地图和观点时间线：每篇一条作者判断、机制、态度，原文谈到时带风险等；"
+            "论点把观点按机制归在一起，分支持和反对。"
+            "views=risk 只看风险与反方，change 只看态度变化，t1 只看第一条论点。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "公司 id（见 list_companies）"},
+                "views": {"type": "string", "description": "risk、change 或论点的 key（t1、t2…）"},
+                "author": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
@@ -149,6 +169,14 @@ def run_tool(request: Request, name: str, args: dict):
             limit, offset = _limits(args)
             depth = args.get("depth") or None
             payload = company_payload(conn, request, sources, int(args.get("id") or 0), limit, offset, depth)
+            if payload is None:
+                raise ToolError("没有这家公司")
+            return payload
+        if name == "get_company_views":
+            limit, offset = _limits(args)
+            kind = str(args.get("views") or "")
+            author = str(args.get("author") or "").strip()
+            payload = views_payload(conn, request, sources, int(args.get("id") or 0), kind, author, limit, offset)
             if payload is None:
                 raise ToolError("没有这家公司")
             return payload

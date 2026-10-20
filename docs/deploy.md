@@ -13,7 +13,9 @@ docker compose up -d --build
 
 应用监听容器内的 `8088`，compose 只把宿主机的 **127.0.0.1:8088** 转进去。不要改成 `0.0.0.0`。数据库端口同样只绑定 `127.0.0.1:5432`。
 
-应用启动时会自己做迁移（按文件名顺序，到 `011_digest_version.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。上次没写完的问库整合标成中断，回答页可以重新整合。
+应用启动时会自己做迁移（按文件名顺序，到 `018_duplicate_review.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。上次没写完的问库整合标成中断，回答页可以重新整合。
+
+`015_title_search.sql` 给文章表和译文表各加一列标题的全文索引，要重写一遍表：几千篇几秒钟，期间应用还没起来。`014_llm_inputs.sql` 把以前只读了长文开头写出来的摘要和观点标出来，之后按新的读法慢慢重写（见 [llm.md](llm.md)），不在部署时跑。
 
 之后在后台依次做两件事，不挡启动：
 
@@ -22,9 +24,32 @@ docker compose up -d --build
 
 几千篇时两步加起来几分钟，期间页面照常能用，只是重复文章和提及还没更新完。
 
-备份、试恢复和定时增量导入用 launchd 跑，见 [backup.md](backup.md)。
+备份、试恢复、夜间补齐和定时增量导入用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题，首页顶上提示一行。
 
-不会在启动或部署时跑 `research-digest`。打开页面时只给当前卡片里缺的摘要排队，全库仍是手动命令，见 [llm.md](llm.md)。
+不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面时只给当前卡片里缺的排队，其余由夜间任务每晚补一批，见 [llm.md](llm.md)。
+
+## 更新
+
+```bash
+git pull
+docker compose up -d --build
+scripts/install-launchd.sh   # 定时任务有变化时（比如新加的夜间补齐），带上原来的 BACKUP_DIR 再跑一次
+```
+
+图片文字（OCR）用单独的镜像，要用时另外构建，见 [ocr.md](ocr.md)。
+
+## 依赖锁死
+
+镜像按 `requirements.lock` 装依赖（`pip install --require-hashes`，版本和 hash 都锁死），改代码重新部署不会顺手拉到新版本的 FastAPI、Starlette。`requirements-dev.lock` 给 CI 和本地测试用，`requirements-ocr.lock` 给 OCR 镜像用，版本和应用一致。
+
+升级依赖：
+
+```bash
+scripts/lock.sh --upgrade-package fastapi   # 只升一个
+scripts/lock.sh --upgrade                   # 全部升到最新
+```
+
+改了 `pyproject.toml` 的依赖以后跑 `scripts/lock.sh`（已锁的版本不动，只补新加的）。本机没有 uv 时脚本在 Python 容器里跑。只用发布满两周的版本：刚发布的版本偶尔有问题、被撤回，甚至被人投毒，等两周再用；急着要某个新版本时加 `COOLDOWN_DAYS=0`。改完的锁文件和代码一起提交；CI 会检查锁文件和 `pyproject.toml` 对得上、按 arm64（Mac mini）下得到全部的包，再用锁文件跑测试、构建镜像。
 
 Grok OAuth 与 AIHOT 共用外部卷 `aihot_data`（挂到 `/aihot-data/secrets/xai-oauth.json`）。登录在 AIHOT 侧做，见 [translate.md](translate.md)。
 
@@ -48,7 +73,8 @@ ingress:
 ## 磁盘
 
 - 文章正文在 Postgres 卷 `pgdata`。
-- 图片在 `./data/images`，由应用从 `/media/...` 读出。
+- 图片在 `./data/images`，由应用从 `/media/...` 读出。从外链下载来的在 `./data/images/remote/`。
+- 定时任务的结果在 `./data/status/`。
 - 待导入的压缩包放在 `./data/inbox`，不要提交进 git。
 
 一篇归档的图片可能到几 GB 甚至更多。228GB 够当前几千篇文章，后面到几万篇时先看 `data/images` 和 Docker 卷的占用。

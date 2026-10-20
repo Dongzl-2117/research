@@ -68,10 +68,16 @@ class Settings:
     llm_reasoning_effort: str = "xhigh"
     llm_max_tokens: int = 64000
     llm_timeout: float = 900.0
+    # 同一个进程里同时在跑的 Grok 请求上限（问库分批、摘要、观点、论点加起来）。
+    llm_concurrency: int = 3
     # 持仓和观察名单。没有这个文件就当没有持仓。
     portfolio_path: Path | None = None
-    # 首页断更提示默认关：AIHOT 抓取停着时会对归档源假警报。需要时设 RESEARCH_STALE_BANNER=1。
-    stale_banner_enabled: bool = False
+    # 首页断更提示。只看最近几天确实在做定时导入的来源，AIHOT 抓取停着、只手动导归档时不会假警报。
+    # 不想要时设 RESEARCH_STALE_BANNER=0。
+    stale_banner_enabled: bool = True
+    # 打开公司页时是否在后台自动补论点。默认关，先对手动指定的公司跑 research-theses。
+    # 需要时设 RESEARCH_THESES_AUTO=1。
+    theses_auto_enabled: bool = False
 
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> Settings:
@@ -106,12 +112,14 @@ class Settings:
             llm_reasoning_effort=environ.get("RESEARCH_LLM_REASONING", "xhigh").strip(),
             llm_max_tokens=int(environ.get("XAI_MAX_TOKENS", "64000")),
             llm_timeout=float(environ.get("RESEARCH_LLM_TIMEOUT", "900")),
+            llm_concurrency=max(1, int(environ.get("RESEARCH_LLM_CONCURRENCY", "3") or "3")),
             portfolio_path=(
                 Path(environ["PORTFOLIO_FILE"])
                 if environ.get("PORTFOLIO_FILE")
                 else _existing_or_repo("config/portfolio.yaml")
             ),
-            stale_banner_enabled=environ.get("RESEARCH_STALE_BANNER", "0").strip() == "1",
+            stale_banner_enabled=environ.get("RESEARCH_STALE_BANNER", "1").strip() != "0",
+            theses_auto_enabled=environ.get("RESEARCH_THESES_AUTO", "0").strip() == "1",
         )
 
     @property

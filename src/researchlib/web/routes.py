@@ -13,15 +13,20 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
+from researchlib import revisions as revision_log
+from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
-from researchlib.digest import PROMPT_VERSION as DIGEST_PROMPT_VERSION
+from researchlib.digest import needs_rewrite as digest_needs_rewrite
 from researchlib.digest import schedule_digests
+from researchlib.duplicates import separate as separate_duplicate
+from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
+from researchlib.health import notices as health_notices
 from researchlib.llm import llm_configured
-from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card
+from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.portfolio import ROLE_LABELS, Portfolio, load_portfolio
 from researchlib.render import render_body
 from researchlib.retrieval import full_match_counts, search_articles
@@ -31,7 +36,7 @@ from researchlib.textutil import argumentative_excerpt, split_frontmatter, strip
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
-from researchlib.views import filter_timeline, tracked_companies
+from researchlib.views import filter_timeline, same_period, tracked_companies
 from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
@@ -60,6 +65,7 @@ from researchlib.web.present import (
     stale_sources,
     weekday_label,
 )
+from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
 
 router = APIRouter()
@@ -241,8 +247,8 @@ def _decorate(conn, cards: list[dict], settings) -> list[dict]:
         if digest and not card.get("summary"):
             card["summary"] = digest["summary"]
             card["points"] = _digest_points(digest)
-            if (digest.get("prompt_version") or 1) < DIGEST_PROMPT_VERSION:
-                # 旧版提示词写的摘要先照常显示，后台按新版重写。
+            if digest_needs_rewrite(digest):
+                # 旧版提示词写的、或当时只读了长文开头的摘要先照常显示，后台重写。
                 pending.append((card["id"], card.get("author") or ""))
         elif not card.get("summary"):
             pending.append((card["id"], card.get("author") or ""))
@@ -316,6 +322,10 @@ def home(request: Request):
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
         stale = []
+        notices: list[str] = []
+        if plan["page"] == 1:
+            # 备份、导入、Grok 这些出了问题才有；正常时是空的。
+            notices = health_notices(settings.data_dir, settings.display_timezone)
         if plan["page"] == 1 and settings.stale_banner_enabled:
             watched = [by_id[chosen]] if chosen else feed
             stale = stale_sources(
@@ -330,10 +340,12 @@ def home(request: Request):
             named = queries.companies_by_name(conn, list(portfolio.names))
             present = [name for name in portfolio.names if name in named]
             recent = queries.holdings_recent(conn, [named[name]["id"] for name in present], ids)
+            all_by_id = _source_map(sources)
             for name in present:
                 company = named[name]
                 info = recent.get(company["id"], {})
                 role = portfolio.role(name)
+                latest = _latest_item(info.get("latest"), by_id, settings)
                 holdings.append(
                     {
                         "id": company["id"],
@@ -341,7 +353,8 @@ def home(request: Request):
                         "role": role,
                         "role_label": ROLE_LABELS.get(role, ""),
                         "recent": info.get("recent", 0),
-                        "latest": _latest_item(info.get("latest"), by_id, settings),
+                        "latest": latest,
+                        "view": _latest_view(conn, company["id"], all_by_id, settings, latest),
                     }
                 )
     if chosen:
@@ -369,8 +382,23 @@ def home(request: Request):
             "sample_banner": banner,
             "holdings": holdings,
             "stale": stale,
+            "notices": notices,
         },
     )
+
+
+def _latest_view(conn, company_id: int, sources_by_id: dict, settings, latest: dict | None) -> dict | None:
+    """首页持仓近况：最近一条观点（作者判断和态度）。比最近一篇深入文章旧的不用，那篇的观点还在整理。"""
+    items = view_timeline(conn, company_id, sources_by_id, settings)
+    if not items:
+        return None
+    view = items[0]
+    if latest is not None and latest.get("date") and view["date"] < latest["date"]:
+        return None
+    return {
+        **view,
+        "relative": relative_label(view["published_at"], settings.display_timezone) if view["published_at"] else "",
+    }
 
 
 def _jump_to_day(conn, source_ids: list[str], day, settings, path: str, **params):
@@ -492,7 +520,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
         digest = queries.digests_for(conn, [article_id]).get(article_id)
-        if digest is None or (digest.get("prompt_version") or 1) < DIGEST_PROMPT_VERSION:
+        if digest_needs_rewrite(digest):
             schedule_digests(settings, [(article_id, source.author)])
         quoted = None
         if chunk_arg is not None and chunk_arg.isdigit():
@@ -505,6 +533,10 @@ def _article_view(request: Request, article_id: int, mode: str):
             for row in queries.same_article_elsewhere(conn, article_id, article["duplicate_of"], ids)
             if row["source_id"] in by_id
         ]
+        revised = revision_log.label(revision_log.summary(conn, [article_id]).get(article_id))
+        portfolio = active_portfolio(request)
+        tracked_ids = [int(row["id"]) for row in tracked_companies(conn, list(portfolio.names))]
+        others = same_period(conn, article_id, tracked_ids, by_id, settings) if article["duplicate_of"] is None else []
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     _frontmatter, body_md = split_frontmatter(article["body_md"])
@@ -520,6 +552,13 @@ def _article_view(request: Request, article_id: int, mode: str):
         and translation.get("content_hash") == article.get("content_hash")
     )
     zh_html = stamp_paragraph_ids(translation["body_html"]) if has_translation else None
+    # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
+    quoted_lang = (quoted or {}).get("lang") or ""
+    quoted_marked = False
+    if quoted is not None and quoted_lang == "":
+        original_html, quoted_marked = mark_quoted(original_html, quoted["body"])
+    elif quoted is not None and quoted_lang == "zh" and zh_html:
+        zh_html, quoted_marked = mark_quoted(zh_html, quoted["body"])
     raw_pairs = bilingual_pairs(original_html, zh_html) if has_translation and zh_html else None
     pairs = None
     if raw_pairs:
@@ -547,6 +586,9 @@ def _article_view(request: Request, article_id: int, mode: str):
         body_html = Markup(zh_html) if zh_html else None
     else:
         body_html = Markup(original_html)
+    # 高亮的段落这一页上看得见才算：只看中文时，原文里标的那段不显示。
+    if quoted_marked and body_language != "pairs":
+        quoted_marked = (body_language == "zh") == (quoted_lang == "zh")
 
     meta = article["raw_meta"] or {}
     shown, known = resolve_feed_instant(
@@ -579,7 +621,10 @@ def _article_view(request: Request, article_id: int, mode: str):
             "pairs": pairs or [],
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
+            "quoted_marked": quoted_marked,
             "elsewhere": elsewhere,
+            "revised": revised,
+            "same_period": others,
             "sources": sources,
             "sample_banner": banner,
         },
@@ -599,6 +644,132 @@ def article_page_zh(request: Request, article_id: int):
 @router.get("/articles/{article_id}/original")
 def article_page_original(request: Request, article_id: int):
     return _article_view(request, article_id, "original")
+
+
+@router.get("/articles/{article_id}/revisions")
+def article_revisions(request: Request, article_id: int):
+    """这篇的各个版本：改稿前的旧版，和后来导入时拦下的删稿、截短版，每版和它后面那版比。"""
+    settings = request.app.state.settings
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        ids = [source.id for source in sources]
+        article = queries.get_article(conn, article_id, ids)
+        if article is None:
+            raise HTTPException(status_code=404)
+        rows = revision_log.versions(conn, article)
+        banner = queries.sample_state(conn, ids)
+    current = rows[0]
+    previous = [row for row in rows[1:] if row["kind"] == "previous"]
+    held = [row for row in rows[1:] if row["kind"] == "held"]
+    zone = settings.display_timezone
+    entries = []
+    for row in held:
+        reason = revision_log.REASONS.get(row["reason"], "后来的版本")
+        entries.append(
+            {
+                "label": f"{reason}（{format_date(row['created_at'], zone)} 导入时拦下，没有替换）",
+                "blocks": revision_log.diff_blocks(current["body_text"], row["body_text"]),
+                "title_change": (current["title"], row["title"]) if row["title"] != current["title"] else None,
+            }
+        )
+    newer = current
+    for row in previous:
+        entries.append(
+            {
+                "label": f"{format_date(row['created_at'], zone)} 被替换前的旧版 → 替换后",
+                "blocks": revision_log.diff_blocks(row["body_text"], newer["body_text"]),
+                "title_change": (row["title"], newer["title"]) if row["title"] != newer["title"] else None,
+            }
+        )
+        newer = row
+    return render_page(
+        request,
+        "revisions.html",
+        {
+            "nav": "archive",
+            "title": f"改动：{article['title']}",
+            "article": article,
+            "entries": entries,
+            "sources": sources,
+            "sample_banner": banner,
+        },
+    )
+
+
+DUPLICATES_PAGE_SIZE = 30
+
+
+@router.get("/duplicates")
+def duplicates_page(request: Request):
+    """认出来的重复：主版本和指向它的几份，重合比例，认错了点「不是同一篇」。"""
+    settings = request.app.state.settings
+    raw_article = request.query_params.get("article") or ""
+    only = int(raw_article) if raw_article.isdigit() else None
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        ids = [source.id for source in sources]
+        by_id = _source_map(sources)
+        total = queries.count_duplicate_groups(conn, ids, only)
+        page, pages, offset = page_window(total, _page_arg(request), DUPLICATES_PAGE_SIZE)
+        groups = queries.duplicate_groups(conn, ids, DUPLICATES_PAGE_SIZE, offset, only)
+        banner = queries.sample_state(conn, ids)
+    zone = settings.display_timezone
+    shown = []
+    for group in groups:
+        canonical = group["canonical"]
+        items = []
+        for row in group["duplicates"]:
+            overlap = duplicate_similarity(canonical["body_text"], row["body_text"])
+            items.append(
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "source": by_id[row["source_id"]].name if row["source_id"] in by_id else row["source_id"],
+                    "date": format_date(row["published_at"], zone),
+                    "marked": format_date(row["duplicate_marked_at"], zone) if row["duplicate_marked_at"] else "",
+                    "overlap": round(overlap["containment"] * 100),
+                    "length": round(overlap["length_ratio"] * 100),
+                }
+            )
+        shown.append(
+            {
+                "id": canonical["id"],
+                "title": canonical["title"],
+                "source": by_id[canonical["source_id"]].name if canonical["source_id"] in by_id else "",
+                "date": format_date(canonical["published_at"], zone),
+                "items": items,
+            }
+        )
+    return render_page(
+        request,
+        "duplicates.html",
+        {
+            "nav": "archive",
+            "title": "重复文章",
+            "groups": shown,
+            "only": only,
+            "page": page,
+            "pages": pages,
+            "total": total,
+            "sources": sources,
+            "sample_banner": banner,
+        },
+    )
+
+
+@router.post("/duplicates/{article_id}/separate")
+def duplicates_separate(request: Request, article_id: int):
+    """认错了：这篇不是同一篇。以后不再参与认重复，段落块和提及恢复。"""
+    if not _same_origin(request):
+        raise HTTPException(status_code=403)
+    back = request.query_params.get("back") or ""
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        if queries.get_article(conn, article_id, [source.id for source in sources]) is None:
+            raise HTTPException(status_code=404)
+        separate_duplicate(conn, article_id, CompanyMatcher(load_company_rows(conn)))
+    target = f"/duplicates?article={back}" if back.isdigit() else "/duplicates"
+    return RedirectResponse(target, status_code=303)
 
 
 
@@ -957,29 +1128,38 @@ def _company_views(request: Request, conn, company, portfolio: Portfolio, by_id:
     if not portfolio.role(company["name_zh"]):
         return None
     kind = request.query_params.get("views") or ""
-    if kind not in VIEW_FILTERS:
-        kind = ""
     company_id = int(company["id"])
     tracked_ids = [int(row["id"]) for row in tracked_companies(conn, list(portfolio.names))]
     items = view_timeline(conn, company_id, by_id, settings)
     pending = count_view_pending(conn, company_id, list(by_id))
     if pending:
         queue_views(conn, settings, company_id, tracked_ids, by_id)
+    # 论点地图：观点归成的几条论点。缺了或过期了在后台重算，不挡页面。
+    theses = thesis_map.present(thesis_map.stored(conn, company_id), items)
+    if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
+        thesis_map.schedule(settings, company, by_id)
+    thesis = next((item for item in theses if item["key"] == kind), None)
+    if kind not in VIEW_FILTERS and thesis is None:
+        kind = ""
     scoped = filter_timeline(items, "", author)
-    chosen = filter_timeline(items, kind, author)
+    chosen = filter_timeline(items, kind, author, thesis["articles"] if thesis else None)
     raw_page = request.query_params.get("vpage", "1")
     page, pages, offset = page_window(len(chosen), int(raw_page) if raw_page.isdigit() else 1, VIEWS_PAGE_SIZE)
     base = _query_string(author=author, depth=request.query_params.get("depth") or "")
+    filters = [
+        {"key": "", "label": "全部", "count": len(scoped)},
+        *[
+            {"key": key, "label": label, "count": len(filter_timeline(items, key, author))}
+            for key, label in VIEW_FILTERS.items()
+        ],
+    ]
+    if thesis is not None:
+        filters.append({"key": thesis["key"], "label": thesis["title"], "count": len(chosen)})
     return {
         "items": chosen[offset : offset + VIEWS_PAGE_SIZE],
         "kind": kind,
-        "filters": [
-            {"key": "", "label": "全部", "count": len(scoped)},
-            *[
-                {"key": key, "label": label, "count": len(filter_timeline(items, key, author))}
-                for key, label in VIEW_FILTERS.items()
-            ],
-        ],
+        "filters": filters,
+        "theses": theses,
         "pending": pending,
         "page": page,
         "pages": pages,
@@ -1190,6 +1370,8 @@ def ask_answer(request: Request, answer_id: int):
         "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
         "missing": labels["missing"],
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
+        "failed_batches": list(((row.get("stats") or {}).get("failed_batches")) or []),
+        "batches": int(((row.get("stats") or {}).get("batches")) or 0),
     }
     return render_page(
         request,

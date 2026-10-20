@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 from urllib.parse import unquote
 
@@ -28,6 +29,32 @@ def image_destination(raw: str) -> str:
     return unquote(text.strip())
 
 
+_TAG_URL_ATTRS = re.compile(r"""\b(data-src|data-original|src)\s*=\s*(["'])(.*?)\2""", re.I)
+
+
+def normalize_image_url(raw: str) -> str:
+    """外链图片地址的统一写法：去掉标题和尖括号，反转义 HTML，补上 //开头的协议。不是 http(s) 的返回空串。"""
+    text = html_lib.unescape((raw or "").strip().strip("<>").strip())
+    if not text:
+        return ""
+    text = text.split()[0]
+    if text.startswith("//"):
+        text = "https:" + text
+    if not text.lower().startswith(("http://", "https://")):
+        return ""
+    return text
+
+
+def img_tag_url(tag: str) -> str:
+    """<img> 的图片地址。公众号懒加载把真地址放在 data-src，src 只是占位图，所以先看 data-src。"""
+    attrs = {name.lower(): value for name, _quote, value in _TAG_URL_ATTRS.findall(tag)}
+    for name in ("data-src", "data-original", "src"):
+        value = (attrs.get(name) or "").strip()
+        if value and not value.lower().startswith("data:"):
+            return value
+    return ""
+
+
 def sanitize_html(html: str) -> str:
     cleaned = _DROP_BLOCKS.sub("", html)
     cleaned = _DROP_OPEN.sub("", cleaned)
@@ -49,7 +76,8 @@ def _mapped(dest: str, mapping: dict[str, str]) -> str | None:
 def _replace_destination(dest: str, mapping: dict[str, str]) -> str:
     cleaned = image_destination(dest)
     if cleaned.startswith(("http://", "https://", "//")):
-        return ""
+        # 外链图片只在已经下载到本地时显示（research-fetch-images），不直接外链。
+        return mapping.get(normalize_image_url(dest), "")
     mapped = _mapped(cleaned, mapping)
     if mapped:
         return mapped
@@ -73,10 +101,10 @@ def rewrite_markdown_images(body: str, mapping: dict[str, str]) -> str:
 
 def rewrite_html_images(html: str, mapping: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
-        src = _SRC_ATTR.search(match.group(0))
-        if src is None:
+        url = img_tag_url(match.group(0))
+        if not url:
             return ""
-        target = _replace_destination(src.group(2), mapping)
+        target = _replace_destination(url, mapping)
         if not target:
             return ""
         return f'<img src="{target}" alt="">'
@@ -84,14 +112,26 @@ def rewrite_html_images(html: str, mapping: dict[str, str]) -> str:
     return _IMG_TAG.sub(replace, html)
 
 
+# 存在本地的图片文件名就是内容哈希。给它们挂上 id="img-<哈希前 12 位>"，图片文字（OCR）的引用能跳到这张图。
+_LOCAL_IMG = re.compile(r'<img\b(?![^>]*\bid=)([^>]*?)\bsrc="(/media/[^"]*?([0-9a-f]{64})\.[A-Za-z0-9]+)"', re.I)
+
+
+def image_anchor(content_hash: str) -> str:
+    return f"img-{content_hash[:12]}"
+
+
+def _anchor_images(html: str) -> str:
+    return _LOCAL_IMG.sub(lambda m: f'<img id="{image_anchor(m.group(3))}"{m.group(1)}src="{m.group(2)}"', html)
+
+
 def render_body(body: str, mapping: dict[str, str], fmt: str | None = None) -> Markup:
     if fmt == "html":
         html = rewrite_html_images(body or "", mapping)
-        return Markup(sanitize_html(html))
+        return Markup(_anchor_images(sanitize_html(html)))
     rewritten = rewrite_html_images(rewrite_markdown_images(body or "", mapping), mapping)
     html = markdown.markdown(
         rewritten,
         extensions=["extra", "nl2br", "sane_lists"],
         output_format="html",
     )
-    return Markup(sanitize_html(html))
+    return Markup(_anchor_images(sanitize_html(html)))

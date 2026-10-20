@@ -1,8 +1,7 @@
-"""定时增量导入：AIHOT 只读最近几天、只读白名单来源；首页在来源停更明显超过平时间隔时提示。"""
+"""定时增量导入：AIHOT 只读最近几天、只读白名单来源；定时导入的来源停更明显超过平时间隔时，首页提示。"""
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -11,7 +10,6 @@ from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.sources import load_sources
 from researchlib.web.app import create_app
-from researchlib.web.present import stale_sources
 
 
 def _aihot(conn, settings, tmp_path, rows):
@@ -77,19 +75,6 @@ def test_source_values_only_cover_enabled_sources(settings):
     assert "lin-mp" not in values and "linwenfeng-mp" not in values and "stratechery" not in values
 
 
-def test_stale_sources_compare_with_the_usual_gap():
-    now = datetime(2026, 10, 20, tzinfo=UTC)
-    every_three_days = [now - timedelta(days=20 + 3 * index) for index in range(15)]
-    daily = [now - timedelta(days=1 + index) for index in range(15)]
-    sources = [SimpleNamespace(id="a", name="甲公众号"), SimpleNamespace(id="b", name="乙星球")]
-    found = stale_sources(
-        sources, {"a": every_three_days, "b": daily}, {"a": now - timedelta(hours=5)}, "Asia/Shanghai", now=now
-    )
-    assert [item["name"] for item in found] == ["甲公众号"]
-    assert found[0]["idle_days"] == 20 and "3 天左右一篇" in found[0]["typical"] and found[0]["imported"]
-    assert stale_sources(sources, {"a": every_three_days[:5]}, {}, "Asia/Shanghai", now=now) == []
-
-
 def test_home_shows_a_notice_for_a_stalled_source(conn, settings):
     sources = {source.id: source for source in load_sources(settings.sources_path)}
     start = datetime.now(UTC) - timedelta(days=60)
@@ -104,13 +89,20 @@ def test_home_shows_a_notice_for_a_stalled_source(conn, settings):
         )
         for index in range(12)
     ]
-    store_documents(conn, source=sources["fangwei-mp"], docs=docs, data_dir=settings.data_dir,
-                    archive_files=len(docs), images_in_archive=0, errors=[])
-    # 默认关断更提示，避免 AIHOT 停更时首页假警报。
+
+    def store(origin):
+        store_documents(conn, source=sources["fangwei-mp"], docs=docs, data_dir=settings.data_dir,
+                        archive_files=len(docs), images_in_archive=0, errors=[], origin=origin)
+
+    # 手动导入的归档本来就是旧的：不提示。
+    store("archive")
     with TestClient(create_app(settings)) as client:
         assert "没有新文章" not in client.get("/").text
-    enabled = replace(settings, stale_banner_enabled=True)
-    with TestClient(create_app(enabled)) as client:
+    # 定时任务从 AIHOT 导入，但最近一篇已经很久了：提示。
+    store("aihot")
+    with TestClient(create_app(settings)) as client:
         home = client.get("/").text
         assert "方伟公众号 37 天没有新文章" in home or "方伟公众号 38 天没有新文章" in home
         assert "最近一次导入" in home
+    with TestClient(create_app(replace(settings, stale_banner_enabled=False))) as client:
+        assert "没有新文章" not in client.get("/").text

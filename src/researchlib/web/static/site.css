@@ -1430,6 +1430,72 @@ tbody tr:hover td { background: var(--accent-softer); }
 .view-source a { color: var(--ink-3); }
 .view-source a:hover { color: var(--accent); }
 
+/* 首页：备份、导入、Grok 出了问题 */
+.notice.is-alert { background: var(--amber-soft); color: var(--amber-ink); }
+
+/* 首页持仓近况：最近一条判断 */
+.holdings-view .stance, .holdings-view .stance-change { vertical-align: 1px; }
+
+/* 文章页：引用的那一段、图片文字跳到的那张图 */
+.is-quoted { border-radius: 4px; background: var(--amber-soft); box-shadow: -10px 0 0 var(--amber-soft), 10px 0 0 var(--amber-soft); scroll-margin-top: 96px; }
+.prose img[id^="img-"] { scroll-margin-top: 96px; }
+.prose img[id^="img-"]:target { outline: 3px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
+.revised { color: var(--hot); }
+.revised:hover { text-decoration: underline; }
+
+/* 文章页：同期别人怎么看 */
+.same-period { margin: 36px 0 0; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.same-period h2 { margin: 0 0 6px; color: var(--ink-3); font-size: 13px; font-weight: 600; }
+.same-period ul { margin: 0; padding: 0; list-style: none; }
+.same-period li { padding: 10px 0; border-top: 1px solid var(--line-soft); }
+.same-period li:first-child { border-top: 0; }
+.same-period .item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; color: var(--ink-3); font-size: 13px; }
+.same-period .item-meta a { color: var(--ink-2); font-weight: 600; }
+.same-period-judgment { margin: 4px 0 0; font-size: 15px; line-height: 1.65; }
+.same-period-judgment a { color: var(--ink); }
+.same-period-judgment a:hover { color: var(--accent); }
+
+/* 公司页：论点地图 */
+.theses { margin: 28px 0 8px; }
+.theses h2 { margin: 0; color: var(--ink-3); font-size: 13px; font-weight: 600; }
+.thesis-list { margin: 10px 0 0; padding: 0; list-style: none; counter-reset: thesis; }
+.thesis { padding: 10px 12px; border-radius: var(--radius-tile); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-soft); }
+.thesis + .thesis { margin-top: 8px; }
+.thesis.is-current { box-shadow: inset 0 0 0 1px var(--accent); }
+.thesis-title { color: var(--ink); font-size: 15.5px; font-weight: 650; line-height: 1.5; }
+.thesis-title:hover { color: var(--accent); }
+.thesis-mechanism { margin: 4px 0 0; color: var(--ink-2); font-size: 14px; line-height: 1.7; }
+.thesis-sides { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 6px 0 0; color: var(--ink-2); font-size: 13px; }
+.side { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--radius-mark); font-size: 11.5px; font-weight: 600; }
+.side-for { background: var(--ok-soft); color: var(--ok-ink); }
+.side-against { background: color-mix(in srgb, var(--hot) 12%, transparent); color: var(--hot); }
+.side-author .num { color: var(--ink-4); font-size: 12px; }
+
+/* 改动页 */
+.revision { margin: 20px 0 0; }
+.revision h2 { margin: 0 0 8px; color: var(--ink-3); font-size: 14px; font-weight: 600; }
+.revision-title { margin: 0 0 8px; font-size: 15px; }
+.revision-diff p { margin: 0; padding: 6px 10px; border-left: 3px solid transparent; font-size: 15px; line-height: 1.75; }
+.diff-same { color: var(--ink-3); }
+.diff-del { border-left-color: var(--hot) !important; background: color-mix(in srgb, var(--hot) 8%, transparent); }
+.diff-del del { color: var(--hot); }
+.diff-add { border-left-color: var(--ok) !important; background: var(--ok-soft); }
+.diff-add ins { color: var(--ok-ink); text-decoration: none; }
+.diff-skip { font-size: 12.5px !important; }
+
+/* 去重核对页 */
+.dup-groups { margin: 0; padding: 0; list-style: none; }
+.dup-group { padding: 12px 14px; }
+.dup-group + .dup-group { margin-top: 10px; }
+.dup-canonical, .dup-members li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; font-size: 14px; line-height: 1.6; }
+.dup-canonical a, .dup-members a { color: var(--ink); font-weight: 600; }
+.dup-canonical a:hover, .dup-members a:hover { color: var(--accent); }
+.dup-members { margin: 6px 0 0; padding: 0; list-style: none; }
+.dup-members li { padding: 6px 0; border-top: 1px solid var(--line-soft); }
+.dup-members .quiet { font-size: 12.5px; }
+.dup-role { color: var(--ink-4); font-size: 12px; font-weight: 600; }
+.dup-separate { margin: 0 0 0 auto; }
+
 @media (max-width: 719px) {
   /* 手机上持仓卡两列，只留名字、标记、篇数和月度条；作者和最近一篇在桌面宽度和首页「持仓近况」里看。 */
   .holding-card { gap: 6px; padding: 12px; }

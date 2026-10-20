@@ -55,13 +55,14 @@ def sync_article_images(
         if created:
             stored += 1
         linked_rows.append((original, relative, digest))
+    # 只管归档里带的本地图片（remote = false）。从正文外链下载来的图另由 remote_images 管，这里不动。
     existing = {
         (row["original_ref"], row["content_hash"])
         for row in conn.execute(
             """
             SELECT original_ref, content_hash
             FROM article_images
-            WHERE article_id = %s
+            WHERE article_id = %s AND NOT remote
             """,
             (article_id,),
         ).fetchall()
@@ -69,7 +70,7 @@ def sync_article_images(
     new_set = {(original, digest) for original, _relative, digest in linked_rows}
     if existing == new_set and len(existing) == len(linked_rows):
         return stored, len(linked_rows), missing
-    conn.execute("DELETE FROM article_images WHERE article_id = %s", (article_id,))
+    conn.execute("DELETE FROM article_images WHERE article_id = %s AND NOT remote", (article_id,))
     if linked_rows:
         with conn.cursor() as cur:
             cur.executemany(

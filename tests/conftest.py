@@ -53,7 +53,12 @@ def conn(settings):
     from researchlib.db import prepare
 
     connection = prepare(settings)
-    connection.execute("TRUNCATE articles, llm_answers RESTART IDENTITY CASCADE")
+    # 不挂在 articles 上的几张表也清掉：文章 id 会从 1 重新编号，上一轮留下的失败记录、论点、
+    # 下载和识别结果会串到这一轮。
+    connection.execute(
+        "TRUNCATE articles, llm_answers, llm_failures, company_theses, image_fetches, image_texts"
+        " RESTART IDENTITY CASCADE"
+    )
     connection.commit()
     yield connection
     connection.close()

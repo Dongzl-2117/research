@@ -219,3 +219,19 @@ def test_seed_has_holdings_and_business_aliases():
     assert "Temu" in names["拼多多"].aliases
     assert "视频号" in names["腾讯"].aliases
     assert "微信" in names["腾讯"].aliases
+
+
+def test_phrase_drops_the_sub_words_zhparser_adds():
+    from researchlib.retrieval import reduce_phrase, single_lexeme
+
+    # multi_short 给「护城河」补出的「护城」总跟在后面：只查整词，全文索引能直接答，不用回表核对位置。
+    assert reduce_phrase("'护城河' <-> '护城'") == "'护城河'"
+    assert single_lexeme(reduce_phrase("'护城河' <-> '护城'")) == "护城河"
+    # 去掉中间的子词时，后面词条的距离照原样累加。
+    assert reduce_phrase("'管理层' <-> '管理' <-> '激励'") == "'管理层' <2> '激励'"
+    # 真正的短语、重复的词、不是简单链的查询都原样用。
+    assert reduce_phrase("'渠道' <-> '库存'") == "'渠道' <-> '库存'"
+    assert reduce_phrase("'市场' <-> '市场'") == "'市场' <-> '市场'"
+    assert reduce_phrase("'a' & 'b'") == "'a' & 'b'"
+    assert single_lexeme("'渠道' <-> '库存'") is None
+    assert reduce_phrase("") == ""

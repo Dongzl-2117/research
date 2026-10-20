@@ -17,6 +17,7 @@ from researchlib.ask import mark_interrupted
 from researchlib.config import Settings, assert_bind_allowed
 from researchlib.db import prepare
 from researchlib.duplicates import dedupe_if_needed
+from researchlib.health import read_status, write_status
 from researchlib.mentions import rebuild_if_stale
 from researchlib.web.api import api
 from researchlib.web.mcp import mcp
@@ -47,14 +48,23 @@ async def lifespan(app: FastAPI):
 
 
 def _background_upkeep(settings: Settings) -> None:
+    """失败时写进状态文件，首页提示；成功就清掉之前的失败。"""
+    failed: list[str] = []
     try:
         dedupe_if_needed(settings)
-    except Exception:
+    except Exception as exc:
         logger.exception("后台认重复文章失败，可以手动跑 research-dedupe")
+        failed.append(f"认重复文章（{exc}），可以手动跑 research-dedupe")
     try:
         rebuild_if_stale(settings)
-    except Exception:
+    except Exception as exc:
         logger.exception("后台重算公司提及失败，可以手动跑 research-rebuild-mentions")
+        failed.append(f"重算公司提及（{exc}），可以手动跑 research-rebuild-mentions")
+    previous = read_status(settings.data_dir, "upkeep")
+    if failed:
+        write_status(settings.data_dir, "upkeep", False, "；".join(failed))
+    elif previous is not None and not previous.get("ok"):
+        write_status(settings.data_dir, "upkeep", True)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

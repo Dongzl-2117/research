@@ -35,7 +35,8 @@ def test_ingest_writes_chunks_and_article_shows_quote(conn, settings):
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{article_id}", params={"chunk": chunk["ord"]})
         assert page.status_code == 200
-        assert 'class="quoted"' in page.text
+        # 引用的那段在正文里标出来，不再在上面单独摘一份。
+        assert "is-quoted" in page.text and 'class="quoted"' not in page.text
         assert "打开原文" not in page.text
         assert "<h2>来源</h2>" not in page.text
         assert f"/api/v1/articles/{article_id}.md" not in page.text
