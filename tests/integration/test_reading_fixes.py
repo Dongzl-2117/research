@@ -303,6 +303,91 @@ def test_retime_reorders_stance_and_same_period(conn, settings, tmp_path: Path):
         assert "星球目录不该进按天" not in home
 
 
+def test_retime_matches_dated_external_id_to_topics_json(conn, settings, tmp_path: Path):
+    """库里是 YYYY-MM-DD_<topic_id>，时间在 raw/topics/<id>.json。不能只认纯数字外部 id。"""
+    midnight = datetime(2024, 11, 28, 0, 0, tzinfo=SHANGHAI)
+    _store(
+        conn,
+        settings,
+        "fangwei-zsxq",
+        [
+            ParsedDoc(
+                external_id="2024-11-28_888888",
+                title="带日期前缀",
+                published_at=midnight,
+                body_md="文件名只有日期。\n",
+                raw_meta={"filename": "2024-11-28_888888.md", "date_source": "filename", "time_known": False},
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="999999",
+                title="纯数字",
+                published_at=midnight,
+                body_md="纯数字外部 id。\n",
+                raw_meta={"filename": "999999.md", "date_source": "filename", "time_known": False},
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="2024-11-29_777777",
+                title="没有 JSON 钟点",
+                published_at=midnight,
+                body_md="不该被编出时间。\n",
+                raw_meta={"filename": "2024-11-29_777777.md", "date_source": "filename", "time_known": False},
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="INDEX",
+                title="星球目录不该进按天",
+                published_at=midnight,
+                body_md="目录\n",
+                raw_meta={"filename": "INDEX.md"},
+                image_refs=[],
+            ),
+        ],
+    )
+    archive = tmp_path / "zsxq"
+    (archive / "md").mkdir(parents=True)
+    (archive / "raw" / "topics").mkdir(parents=True)
+    (archive / "md" / "2024-11-28_888888.md").write_text("文件名只有日期。\n", encoding="utf-8")
+    (archive / "md" / "999999.md").write_text("纯数字外部 id。\n", encoding="utf-8")
+    (archive / "md" / "777777.md").write_text("没有钟点。\n", encoding="utf-8")
+    (archive / "md" / "INDEX.md").write_text("目录\n", encoding="utf-8")
+    (archive / "raw" / "group.json").write_text("{}", encoding="utf-8")
+    (archive / "raw" / "state.json").write_text("{}", encoding="utf-8")
+    (archive / "raw" / "topics" / "888888.json").write_text(
+        '{"topic_id": 888888, "create_time": "2024-11-28T10:40:22.487+0800"}',
+        encoding="utf-8",
+    )
+    (archive / "raw" / "topics" / "999999.json").write_text(
+        '{"topic_id": 999999, "create_time": "2024-11-28T09:05:00.000+0800"}',
+        encoding="utf-8",
+    )
+    from researchlib.ingest.parse import parse_archive
+
+    docs, errors, _files, _images = parse_archive(archive, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    stats = refresh_clocks(conn, _source(settings, "fangwei-zsxq"), docs, settings)
+    assert stats["updated"] == 2
+    assert stats["removed_index"] == 1
+    dated = conn.execute(
+        "SELECT external_id, published_at, raw_meta FROM articles WHERE external_id = %s",
+        ("2024-11-28_888888",),
+    ).fetchone()
+    assert dated["external_id"] == "2024-11-28_888888"
+    local = dated["published_at"].astimezone(SHANGHAI)
+    assert (local.hour, local.minute, local.second) == (10, 40, 22)
+    assert dated["raw_meta"]["create_time"] == "2024-11-28T10:40:22.487+0800"
+    assert dated["raw_meta"]["time_known"] is True
+    bare = conn.execute("SELECT published_at FROM articles WHERE external_id = '999999'").fetchone()
+    assert bare["published_at"].astimezone(SHANGHAI).hour == 9
+    untouched = conn.execute(
+        "SELECT published_at, raw_meta FROM articles WHERE external_id = '2024-11-29_777777'"
+    ).fetchone()
+    assert untouched["published_at"].astimezone(SHANGHAI).hour == 0
+    assert "create_time" not in (untouched["raw_meta"] or {})
+    assert conn.execute("SELECT id FROM articles WHERE external_id = 'INDEX'").fetchone() is None
+
+
 def test_home_recent_views_include_non_holdings(conn, settings):
     when_old = datetime(2024, 5, 1, 9, 0, tzinfo=SHANGHAI)
     when_new = datetime(2024, 6, 1, 9, 0, tzinfo=SHANGHAI)

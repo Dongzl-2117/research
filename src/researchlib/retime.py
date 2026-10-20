@@ -3,6 +3,9 @@
 不访问知识星球接口，也不编造时间：只有 raw JSON 的 create_time，或正文开头「- 时间：」
 带钟点时才改。INDEX.md 不是话题，从库里去掉。
 
+库里的 external_id 多半是 ``YYYY-MM-DD_<topic_id>``，也有纯数字。按最后一个 ``_`` 后面的
+话题 id（或整段就是数字）去对 ``raw/topics/<id>.json``，不改外部 id 本身。
+
 观点时间线和「同期别人怎么看」按 articles.published_at 现算。以前全是当天零点，同一天里的
 先后只能靠入库顺序，态度变化会标在错误的那篇上。这里改完钟点后把每家公司的态度变化重走一遍，
 并用同一条 ±30 天窗口重数同期。正文没变时，把观点、摘要、译文的 content_hash 对齐到新时间，
@@ -27,6 +30,36 @@ from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import forget_index_articles
 from researchlib.sources import Source
 from researchlib.textutil import SHANGHAI, content_hash, date_from_filename
+
+_INDEX_IDS = frozenset({"index", "index.md", "index.markdown"})
+
+
+def topic_id_from_external_id(external_id: str) -> str | None:
+    """纯数字，或最后一个 ``_`` 后面的数字。``YYYY-MM-DD_<topic_id>`` 取话题 id。INDEX 不算。"""
+    text = (external_id or "").strip().replace("\\", "/")
+    text = text.rsplit("/", 1)[-1]
+    lower = text.lower()
+    if lower in _INDEX_IDS:
+        return None
+    if lower.endswith(".markdown"):
+        text = text[: -len(".markdown")]
+    elif lower.endswith(".md"):
+        text = text[: -len(".md")]
+    if text.isdigit():
+        return text
+    suffix = text.rsplit("_", 1)[-1]
+    if suffix.isdigit() and suffix != text:
+        return suffix
+    return None
+
+
+def _doc_topic_id(doc: ParsedDoc) -> str | None:
+    raw = doc.raw_meta.get("topic_id")
+    if raw not in (None, ""):
+        text = str(raw).strip()
+        if text.isdigit():
+            return text
+    return topic_id_from_external_id(doc.external_id)
 
 
 def _same_instant(left, right) -> bool:
@@ -92,6 +125,9 @@ def _merge_meta(existing: dict, doc: ParsedDoc) -> dict:
         meta["create_time"] = create_time if isinstance(create_time, (str, int, float, bool)) else str(create_time)
     if doc.raw_meta.get("date_source"):
         meta["date_source"] = doc.raw_meta["date_source"]
+    topic_id = doc.raw_meta.get("topic_id")
+    if topic_id not in (None, ""):
+        meta["topic_id"] = topic_id if isinstance(topic_id, (str, int)) else str(topic_id)
     meta["time_known"] = True
     return meta
 
@@ -194,53 +230,32 @@ def refresh_clocks(conn, source: Source, docs: list[ParsedDoc], settings: Settin
     }
     try:
         stats["removed_index"] = forget_index_articles(conn, source.id)
+        stored = conn.execute(
+            """
+            SELECT id, title, body_md, published_at, content_hash, raw_meta, external_id
+            FROM articles
+            WHERE source_id = %s
+            """,
+            (source.id,),
+        ).fetchall()
+        by_topic: dict[str, list] = {}
+        for row in stored:
+            key = topic_id_from_external_id(row["external_id"])
+            if key:
+                by_topic.setdefault(key, []).append(row)
+        seen: set[int] = set()
         for doc in docs:
             if not doc.raw_meta.get("time_known") or doc.published_at is None:
                 stats["skipped_no_clock"] += 1
                 continue
-            existing = conn.execute(
-                """
-                SELECT id, title, body_md, published_at, content_hash, raw_meta, external_id
-                FROM articles
-                WHERE source_id = %s AND external_id = %s
-                """,
-                (source.id, doc.external_id),
-            ).fetchone()
-            if existing is None:
+            topic_id = _doc_topic_id(doc)
+            matches = [row for row in by_topic.get(topic_id or "", []) if row["id"] not in seen]
+            if not matches:
                 stats["missing"] += 1
                 continue
-            meta = _merge_meta(existing["raw_meta"] or {}, doc)
-            title = existing["title"]
-            body = existing["body_md"]
-            target = existing["content_hash"]
-            changed_clock = not _same_instant(existing["published_at"], doc.published_at)
-            changed_meta = meta != dict(existing["raw_meta"] or {})
-            if changed_clock:
-                target = content_hash(title, body, doc.published_at)
-                conn.execute(
-                    """
-                    UPDATE articles
-                    SET published_at = %s, content_hash = %s, raw_meta = %s, updated_at = now()
-                    WHERE id = %s
-                    """,
-                    (doc.published_at, target, Jsonb(meta), existing["id"]),
-                )
-                stats["updated"] += 1
-            elif changed_meta:
-                conn.execute(
-                    "UPDATE articles SET raw_meta = %s, updated_at = now() WHERE id = %s",
-                    (Jsonb(meta), existing["id"]),
-                )
-                stats["updated"] += 1
-            else:
-                stats["unchanged"] += 1
-            old_hashes = _clock_hashes(
-                title, body, doc.published_at, existing["raw_meta"] or {}, existing["external_id"]
-            )
-            old_hashes.add(existing["content_hash"])
-            aligned = _realign(conn, existing["id"], old_hashes, target)
-            for key in ("views", "digests", "translations", "fingerprints"):
-                stats[key] += aligned[key]
+            for existing in matches:
+                seen.add(existing["id"])
+                _apply_clock(conn, existing, doc, stats)
         touched = companies_touched(conn, source.id)
         after_changes = stance_changes(conn, settings, touched, sources_by_id)
         stats["after_changes"] = len(after_changes)
@@ -254,6 +269,41 @@ def refresh_clocks(conn, source: Source, docs: list[ParsedDoc], settings: Settin
         conn.rollback()
         raise
     return stats
+
+
+def _apply_clock(conn, existing, doc: ParsedDoc, stats: dict) -> None:
+    meta = _merge_meta(existing["raw_meta"] or {}, doc)
+    title = existing["title"]
+    body = existing["body_md"]
+    target = existing["content_hash"]
+    changed_clock = not _same_instant(existing["published_at"], doc.published_at)
+    changed_meta = meta != dict(existing["raw_meta"] or {})
+    if changed_clock:
+        target = content_hash(title, body, doc.published_at)
+        conn.execute(
+            """
+            UPDATE articles
+            SET published_at = %s, content_hash = %s, raw_meta = %s, updated_at = now()
+            WHERE id = %s
+            """,
+            (doc.published_at, target, Jsonb(meta), existing["id"]),
+        )
+        stats["updated"] += 1
+    elif changed_meta:
+        conn.execute(
+            "UPDATE articles SET raw_meta = %s, updated_at = now() WHERE id = %s",
+            (Jsonb(meta), existing["id"]),
+        )
+        stats["updated"] += 1
+    else:
+        stats["unchanged"] += 1
+    old_hashes = _clock_hashes(
+        title, body, doc.published_at, existing["raw_meta"] or {}, existing["external_id"]
+    )
+    old_hashes.add(existing["content_hash"])
+    aligned = _realign(conn, existing["id"], old_hashes, target)
+    for key in ("views", "digests", "translations", "fingerprints"):
+        stats[key] += aligned[key]
 
 
 def render_stats(stats: dict) -> str:
