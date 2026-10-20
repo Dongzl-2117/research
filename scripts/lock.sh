@@ -90,21 +90,25 @@ if [ "$mode" = write ]; then
 fi
 
 status=0
+report="$work/report.txt"
+: > "$report"
 for name in $LOCKS; do
   if [ ! -f "$REPO/$name" ]; then
-    echo "缺少 ${name}" >&2
+    echo "缺少 ${name}" >> "$report"
     status=1
   elif ! diff -u "--label=${name}（仓库里的）" "--label=${name}（按 pyproject.toml 该有的）" \
-    <(pins "$REPO/$name") <(pins "$target/$name"); then
+    <(pins "$REPO/$name") <(pins "$target/$name") >> "$report"; then
     status=1
   fi
 done
 if [ "$status" -ne 0 ]; then
-  echo "锁文件和 pyproject.toml 对不上：本机跑 scripts/lock.sh 重新生成，或者照下面的内容替换。" >&2
+  # 该有的内容先打出来（日志里折叠着），出了什么问题放在最后，一眼能看到。
   for name in $LOCKS; do
-    echo "::group::${name}"
+    echo "::group::${name}（按 pyproject.toml 该有的）"
     cat "$target/$name"
     echo "::endgroup::"
   done
+  cat "$report"
+  echo "锁文件和 pyproject.toml 对不上：本机跑 scripts/lock.sh 重新生成，或者照上面的内容替换。"
 fi
 exit "$status"

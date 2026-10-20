@@ -5,10 +5,12 @@ set -u 下直接报错（备份脚本就这样出过错，Linux 上的 bash 5 �
 要求一律写成 ${变量}。
 """
 
+import importlib.util
 import plistlib
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -59,3 +61,16 @@ def test_launchd_templates_are_valid_plists(path: Path):
     assert data["ProgramArguments"][0] == "/bin/bash"
     script = data["ProgramArguments"][1].replace("/Users/me/research/", "")
     assert (ROOT / script).is_file()
+
+
+def test_ci_failure_becomes_one_annotation_with_the_tail(capsys):
+    spec = importlib.util.spec_from_file_location("ci_annotate", ROOT / "tools" / "ci" / "annotate.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    failing = "import sys; print('第一行'); print('50%：失败, 见上'); sys.exit(3)"
+    assert module.main(["单元测试", "--", sys.executable, "-c", failing]) == 3
+    out = capsys.readouterr().out
+    assert "第一行\n" in out
+    assert "::error title=单元测试（退出码 3）::第一行%0A50%25：失败, 见上" in out
+    assert module.main(["好的", "--", sys.executable, "-c", "print('ok')"]) == 0
+    assert "::error" not in capsys.readouterr().out

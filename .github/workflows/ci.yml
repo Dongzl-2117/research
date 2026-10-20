@@ -8,26 +8,30 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 每一步都经 tools/ci/annotate.py 跑：失败时最后几十行输出做成一条错误注释，PR 页面上直接能看到原因。
 jobs:
   lock:
     name: Lock files
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       # 锁文件和 pyproject.toml 对不上就失败，日志里打印该有的内容。本机没有 uv，脚本在容器里跑。
       - name: Lock files match pyproject.toml
-        run: scripts/lock.sh --check
+        run: python tools/ci/annotate.py "锁文件" -- scripts/lock.sh --check
 
       # Mac mini 上的镜像是 arm64：按 arm64 把锁文件里的包下一遍，hash 对不上或者缺 arm64 的包就失败。
       - name: Lock files install on arm64
         run: |
           for lock in requirements.lock requirements-ocr.lock; do
-            pip download --quiet --only-binary=:all: --require-hashes -r "$lock" -d /tmp/arm64 \
+            python tools/ci/annotate.py "arm64 下载 $lock" -- \
+              pip download --quiet --only-binary=:all: --require-hashes -r "$lock" -d /tmp/arm64 \
               --python-version 3.12 --implementation cp --abi cp312 \
               --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 \
               --platform manylinux_2_24_aarch64 --platform manylinux_2_27_aarch64 \
@@ -36,13 +40,24 @@ jobs:
               --platform manylinux_2_36_aarch64
           done
 
+      # 第一次还没有锁文件：生成好推到一个临时分支，拿下来提交以后删掉这一步。
+      - name: Push generated lock files (bootstrap)
+        if: failure() && hashFiles('requirements.lock') == ''
+        run: |
+          scripts/lock.sh
+          git switch -c "ci/lockfiles-${GITHUB_RUN_ID}"
+          git add requirements.lock requirements-dev.lock requirements-ocr.lock
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "生成的锁文件"
+          git push -q origin HEAD
+
   test:
     name: Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -50,18 +65,18 @@ jobs:
 
       - name: Install from the lock file
         run: |
-          pip install --require-hashes -r requirements-dev.lock
-          pip install --no-deps -e .
-          pip check
+          python tools/ci/annotate.py "按锁文件安装" -- pip install --require-hashes -r requirements-dev.lock
+          python tools/ci/annotate.py "安装本项目" -- pip install --no-deps -e .
+          python tools/ci/annotate.py "依赖一致" -- pip check
 
       - name: Lint
-        run: ruff check .
+        run: python tools/ci/annotate.py "ruff" -- ruff check .
 
       - name: Unit tests
-        run: pytest tests/unit
+        run: python tools/ci/annotate.py "单元测试" -- pytest tests/unit
 
       - name: Start Postgres
-        run: docker compose up -d --build db
+        run: python tools/ci/annotate.py "数据库镜像" -- docker compose up -d --build db
 
       - name: Wait for Postgres and create the test databases
         run: |
@@ -76,24 +91,26 @@ jobs:
             sleep 3
           done
           docker compose logs db
+          echo "::error title=数据库::Postgres 三分钟内没有起来"
           exit 1
 
       - name: Integration tests
         env:
           DATABASE_URL: postgresql://research:research@127.0.0.1:5432/research_test
-        run: pytest tests/integration
+        run: python tools/ci/annotate.py "集成测试" -- pytest tests/integration
 
       # 1500 篇的评测语料（固定随机种子），和 tools/retrieval_eval/baseline.json 比：准确率、召回率不许退步。
       - name: Retrieval eval
         run: |
-          python tools/retrieval_eval/gen_corpus.py --articles 1500
-          python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json
+          python tools/ci/annotate.py "评测语料" -- python tools/retrieval_eval/gen_corpus.py --articles 1500
+          python tools/ci/annotate.py "检索评测" -- \
+            python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json
 
   images:
     name: Images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Compose file is valid
         run: |
@@ -102,14 +119,14 @@ jobs:
 
       # ocr 镜像建在 app 镜像之上，两个都按锁文件（--require-hashes）装依赖。
       - name: Build the app and OCR images
-        run: docker build --target ocr -t research-ocr .
+        run: python3 tools/ci/annotate.py "构建镜像" -- docker build --progress=plain --target ocr -t research-ocr .
 
       - name: Installed packages are consistent
-        run: docker run --rm research-ocr pip check
+        run: python3 tools/ci/annotate.py "镜像里的依赖" -- docker run --rm research-ocr pip check
 
       - name: OCR reads the sample image
         run: |
-          docker run --rm -i -v "$PWD/tests/fixtures:/fixtures:ro" research-ocr python - <<'EOF'
+          cat > /tmp/ocr_smoke.py <<'EOF'
           from pathlib import Path
 
           from researchlib.ocr import rapid_engine
@@ -120,3 +137,6 @@ jobs:
               assert words in text, f"没认出「{words}」"
           assert text.index("拼多多") < text.index("货币化率"), "行的顺序不对"
           EOF
+          python3 tools/ci/annotate.py "OCR 样图" -- docker run --rm \
+            -v "$PWD/tests/fixtures:/fixtures:ro" -v /tmp/ocr_smoke.py:/tmp/ocr_smoke.py:ro \
+            research-ocr python /tmp/ocr_smoke.py
