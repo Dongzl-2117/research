@@ -75,6 +75,9 @@ class Settings:
     # 首页断更提示。只看最近几天确实在做定时导入的来源，AIHOT 抓取停着、只手动导归档时不会假警报。
     # 不想要时设 RESEARCH_STALE_BANNER=0。
     stale_banner_enabled: bool = True
+    # 打开公司页时是否在后台自动补论点。默认关，先对手动指定的公司跑 research-theses。
+    # 需要时设 RESEARCH_THESES_AUTO=1。
+    theses_auto_enabled: bool = False
 
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> Settings:
@@ -116,6 +119,7 @@ class Settings:
                 else _existing_or_repo("config/portfolio.yaml")
             ),
             stale_banner_enabled=environ.get("RESEARCH_STALE_BANNER", "1").strip() != "0",
+            theses_auto_enabled=environ.get("RESEARCH_THESES_AUTO", "0").strip() == "1",
         )
 
     @property

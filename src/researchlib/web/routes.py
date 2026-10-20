@@ -1136,7 +1136,7 @@ def _company_views(request: Request, conn, company, portfolio: Portfolio, by_id:
         queue_views(conn, settings, company_id, tracked_ids, by_id)
     # 论点地图：观点归成的几条论点。缺了或过期了在后台重算，不挡页面。
     theses = thesis_map.present(thesis_map.stored(conn, company_id), items)
-    if thesis_map.needs_build(conn, company_id, by_id, settings):
+    if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
         thesis_map.schedule(settings, company, by_id)
     thesis = next((item for item in theses if item["key"] == kind), None)
     if kind not in VIEW_FILTERS and thesis is None:

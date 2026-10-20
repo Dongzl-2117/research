@@ -174,3 +174,27 @@ def test_quoted_chunk_lands_on_its_paragraph(conn, settings):
         assert "is-quoted" in page and 'class="quoted"' not in page and "scrollIntoView" in page
         plain = client.get(f"/articles/{article_id}").text
         assert "is-quoted" not in plain and "scrollIntoView" not in plain
+
+
+def test_company_page_does_not_auto_schedule_theses_by_default(conn, settings, monkeypatch):
+    """默认 RESEARCH_THESES_AUTO=0：公司页不后台排队补论点。打开开关才 schedule。"""
+    assert settings.theses_auto_enabled is False
+    _store_all(conn, settings)
+    company = _tencent(conn)
+    calls = []
+    monkeypatch.setattr(theses_mod, "needs_build", lambda *a, **k: True)
+    monkeypatch.setattr(theses_mod, "schedule", lambda *a, **k: calls.append(True) or True)
+    monkeypatch.setattr(theses_mod, "stored", lambda *a, **k: None)
+    monkeypatch.setattr(theses_mod, "present", lambda *a, **k: [])
+
+    with TestClient(create_app(settings)) as client:
+        assert client.get(f"/companies/{company['id']}").status_code == 200
+    assert calls == []
+
+    from dataclasses import replace
+
+    enabled = replace(settings, theses_auto_enabled=True)
+    with TestClient(create_app(enabled)) as client:
+        assert client.get(f"/companies/{company['id']}").status_code == 200
+    assert calls == [True]
+

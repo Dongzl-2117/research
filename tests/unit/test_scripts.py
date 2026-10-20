@@ -74,3 +74,14 @@ def test_ci_failure_becomes_one_annotation_with_the_tail(capsys):
     assert "::error title=单元测试（退出码 3）::第一行%0A50%25：失败, 见上" in out
     assert module.main(["好的", "--", sys.executable, "-c", "print('ok')"]) == 0
     assert "::error" not in capsys.readouterr().out
+
+
+def test_nightly_theses_disabled_by_default():
+    """论点夜间步骤默认关：没设 THESES_ENABLED=1 时不跑 research-theses。"""
+    source = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
+    assert 'THESES_ENABLED="${THESES_ENABLED:-0}"' in source
+    assert 'if [ "$THESES_ENABLED" = "1" ]; then' in source
+    assert "research-theses" in source
+    # 默认关时 status_ok 不硬编码带「论点」。
+    assert 'status_ok "外链图片、观点、摘要、论点' not in source
+

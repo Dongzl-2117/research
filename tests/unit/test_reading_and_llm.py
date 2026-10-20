@@ -226,3 +226,31 @@ def test_theses_refresh_at_most_daily_when_views_change():
     first = [_view(1, "a", "", 1), _view(2, "b", "", 2)]
     assert theses.views_hash(first) == theses.views_hash(list(reversed(first)))
     assert theses.views_hash(first) != theses.views_hash([_view(1, "a", "", 1, judgment="改了")])
+
+
+def test_theses_auto_disabled_by_default():
+    from researchlib.config import Settings
+
+    settings = Settings.from_env(
+        {
+            "DATABASE_URL": "postgresql://research:research@127.0.0.1:5432/research_test",
+            "DATA_DIR": "/tmp/research-test-data",
+            "PUBLIC_BASE_URL": "https://investment.zldong.com",
+            "SOURCES_FILE": "config/sources.yaml",
+            "AIHOT_MAP_FILE": "config/aihot_import.yaml",
+            "BIND_HOST": "127.0.0.1",
+            "BIND_PORT": "8088",
+        }
+    )
+    assert settings.theses_auto_enabled is False
+    assert Settings.from_env({**{
+            "DATABASE_URL": "postgresql://research:research@127.0.0.1:5432/research_test",
+            "DATA_DIR": "/tmp/research-test-data",
+            "PUBLIC_BASE_URL": "https://investment.zldong.com",
+            "SOURCES_FILE": "config/sources.yaml",
+            "AIHOT_MAP_FILE": "config/aihot_import.yaml",
+            "BIND_HOST": "127.0.0.1",
+            "BIND_PORT": "8088",
+            "RESEARCH_THESES_AUTO": "1",
+        }}).theses_auto_enabled is True
+

@@ -6,6 +6,7 @@
 #   scripts/nightly.sh
 #   VIEWS_LIMIT=200 DIGEST_LIMIT=200 MINUTES=300 scripts/nightly.sh
 #   NIGHTLY_OCR=1 scripts/nightly.sh        # 先 docker compose --profile ocr build ocr
+#   THESES_ENABLED=1 scripts/nightly.sh     # 夜间也补论点（默认关）
 set -Euo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -14,6 +15,8 @@ VIEWS_LIMIT="${VIEWS_LIMIT:-60}"
 DIGEST_LIMIT="${DIGEST_LIMIT:-80}"
 OCR_LIMIT="${OCR_LIMIT:-400}"
 NIGHTLY_OCR="${NIGHTLY_OCR:-0}"
+# 论点默认关：先只对手动指定的公司生成供抽查。需要夜间跑时设 THESES_ENABLED=1。
+THESES_ENABLED="${THESES_ENABLED:-0}"
 # 观点和摘要各自最多跑这么多分钟（xhigh 推理一篇要一两分钟）。
 MINUTES="${MINUTES:-150}"
 TASK=nightly
@@ -50,7 +53,9 @@ step() {
 step "外链图片" compose exec -T app research-fetch-images --limit "$IMAGES_LIMIT"
 step "观点" compose exec -T app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES"
 step "摘要" compose exec -T app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
-step "论点" compose exec -T app research-theses
+if [ "$THESES_ENABLED" = "1" ]; then
+  step "论点" compose exec -T app research-theses
+fi
 if [ "$NIGHTLY_OCR" = "1" ]; then
   step "图片文字" compose --profile ocr run --rm -T ocr research-ocr --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
 fi
@@ -59,4 +64,7 @@ if [ -n "$failed" ]; then
   status_fail "失败的步骤：${failed}"
   exit 1
 fi
-status_ok "外链图片、观点、摘要、论点$([ "$NIGHTLY_OCR" = "1" ] && echo '、图片文字')"
+parts="外链图片、观点、摘要"
+[ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
+[ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
+status_ok "$parts"
