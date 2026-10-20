@@ -83,7 +83,9 @@ def test_timeline_feed_hides_feishu_and_cards_use_digest(conn, settings, monkeyp
         assert "likes:" not in home.text
         assert "sn:" not in home.text
         assert "飞书库备忘录" not in home.text
-        assert "linwenfeng-feishu" not in home.text
+        # 文库有入口，但不进按天的来源筛选，也不能用 ?source= 打开时间线。
+        assert 'href="/sources/linwenfeng-feishu/tree"' in home.text
+        assert 'href="/?source=linwenfeng-feishu"' not in home.text
         assert "导读写的是加载率，不是元数据。" not in home.text
         assert "AI 整合" not in home.text
         assert client.get("/", params={"source": "linwenfeng-feishu"}).status_code == 404
