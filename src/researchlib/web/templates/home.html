@@ -33,13 +33,13 @@
   </form>
 </div>
 {% if holdings %}
-<section class="card holdings-now" aria-label="持仓近况">
-  <h2><a href="/companies">持仓近况</a></h2>
+<section class="card holdings-now" aria-label="最近观点">
+  <h2><a href="/companies">最近观点</a></h2>
   <ul>
     {% for item in holdings %}
     <li>
       <a class="holdings-name" href="/companies/{{ item.id }}">{{ item.name }}</a>
-      <span class="role-badge role-{{ item.role }}">{{ item.role_label }}</span>
+      {% if item.role %}<span class="role-badge role-{{ item.role }}">{{ item.role_label }}</span>{% endif %}
       <span class="holdings-recent num{% if not item.recent %} quiet{% endif %}">{% if item.recent %}近 30 天 {{ item.recent }} 篇{% else %}近 30 天没有{% endif %}</span>
       {% if item.view %}
       <span class="holdings-latest holdings-view">{% if item.view.changed %}<span class="stance-change">{{ item.view.previous_label }} → {{ item.view.stance_label }}</span> {% elif item.view.stance_label %}<span class="stance stance-{{ item.view.stance }}">{{ item.view.stance_label }}</span> {% endif %}<span class="quiet">{{ item.view.author }} · {{ item.view.relative or item.view.date }}</span> <a href="/articles/{{ item.view.article_id }}{% if item.view.chunk is not none %}?chunk={{ item.view.chunk }}{% endif %}">{{ item.view.judgment }}</a></span>

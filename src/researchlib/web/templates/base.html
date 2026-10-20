@@ -66,6 +66,17 @@
           {% endfor %}
         </div>
         {% endif %}
+        {% if sources | selectattr("kind", "equalto", "feishu") | rejectattr("timeline") | list %}
+        <div class="nav-label">文库</div>
+        <div class="nav-group">
+          {% for source in sources if source.kind == "feishu" and not source.timeline %}
+          <a class="nav-link" href="/sources/{{ source.id }}/tree" {% if nav == "tree" and active_source == source.id %}aria-current="page"{% endif %}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5.5h4.5v4.5H6zM13.5 5.5H18v4.5h-4.5zM6 14h4.5v4.5H6zM13.5 14H18v4.5h-4.5z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            <span>{{ source.name }}</span>
+          </a>
+          {% endfor %}
+        </div>
+        {% endif %}
       </nav>
       {% include "_theme.html" %}
     </aside>

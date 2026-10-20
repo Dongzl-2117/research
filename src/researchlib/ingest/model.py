@@ -35,6 +35,8 @@ class IngestReport:
     duplicates: int = 0
     # 新正文像删除提示、或比库里短一半以上：没有替换，只把这一版记进 article_revisions。
     held: int = 0
+    # 知识星球 INDEX.md 不是话题，导入时从库里去掉。
+    removed_index: int = 0
     errors: list[str] = field(default_factory=list)
 
     def render(self) -> str:
@@ -51,6 +53,8 @@ class IngestReport:
             f"挂上文章的图片: {self.images_linked}",
             f"缺失图片引用: {self.images_missing}",
         ]
+        if self.removed_index:
+            lines.append(f"去掉目录: {self.removed_index}（INDEX.md 不是话题，不进按天）")
         if self.errors:
             lines.append(f"错误: {len(self.errors)}")
             lines.extend(f"  - {item}" for item in self.errors[:20])

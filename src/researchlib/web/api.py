@@ -429,7 +429,7 @@ def views_payload(
 
 @api.get("/api/v1/companies/{company_id}/views")
 def api_company_views(request: Request, company_id: int):
-    """持仓和观察公司的观点时间线和论点地图，新的在前。
+    """公司的观点时间线和论点地图，新的在前。不限持仓。
 
     views=risk 只看风险与反方，views=change 只看态度变化，views=t1 只看第一条论点引用的观点。
     """
@@ -563,7 +563,7 @@ def llms_txt(request: Request):
         f"- [作者]({base}/api/v1/authors): 作者、来源、篇数、时间跨度、常谈公司。当前作者：{'、'.join(authors)}",
         f"- [公司]({base}/api/v1/companies): 有提及的公司（all=1 含未提及），篇数、深入篇数、最近提及",
         f"- [单家公司]({base}/api/v1/companies/{{id}}): 按时间倒序的提及文章，每篇带提及原句；depth 过滤",
-        f"- [观点和论点]({base}/api/v1/companies/{{id}}/views): 持仓和观察公司，每篇一条作者判断、机制、态度；"
+        f"- [观点和论点]({base}/api/v1/companies/{{id}}/views): 被深入谈到的公司，每篇一条作者判断、机制、态度；"
         "风险、推翻条件、验证指标只在原文谈到时才有。theses 是把这些观点按机制归成的几条论点，"
         "支持和反对各有几篇、哪些作者，由库里的观点数出来；"
         "views=risk 只看风险与反方，views=change 只看态度变化，views=t1 只看第一条论点引用的观点",

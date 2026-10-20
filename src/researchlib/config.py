@@ -75,8 +75,8 @@ class Settings:
     # 首页断更提示。只看最近几天确实在做定时导入的来源，AIHOT 抓取停着、只手动导归档时不会假警报。
     # 不想要时设 RESEARCH_STALE_BANNER=0。
     stale_banner_enabled: bool = True
-    # 打开公司页时是否在后台自动补论点。默认关，先对手动指定的公司跑 research-theses。
-    # 需要时设 RESEARCH_THESES_AUTO=1。
+    # 打开公司页时是否在后台自动补论点。默认关。打开后也不限持仓：观点够数的公司都会排。
+    # 需要时设 RESEARCH_THESES_AUTO=1。夜间补齐另有 THESES_ENABLED，同样默认关。
     theses_auto_enabled: bool = False
 
     @staticmethod

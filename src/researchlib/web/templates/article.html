@@ -3,9 +3,9 @@
 <div class="reader-grid">
   <article class="reader">
     <div class="reader-top">
-      <a class="back" href="{% if source.timeline %}/?source={{ source.id }}{% else %}/authors/{{ source.author | urlencode }}?source={{ source.id }}{% endif %}">
+      <a class="back" href="{% if tree_back %}{{ tree_back }}{% elif source.timeline %}/?source={{ source.id }}{% else %}/authors/{{ source.author | urlencode }}?source={{ source.id }}{% endif %}">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5 8.5 12l6 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        返回
+        {% if tree_back %}返回目录{% else %}返回{% endif %}
       </a>
     </div>
     <p class="byline">

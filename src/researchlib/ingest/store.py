@@ -48,6 +48,10 @@ def store_documents(
         errors=list(errors),
         rejected=rejected,
     )
+    if source.kind == "zsxq":
+        report.removed_index = forget_index_articles(conn, source.id)
+        if report.removed_index:
+            conn.commit()
     matcher = CompanyMatcher(load_company_rows(conn))
     for doc in docs:
         try:
@@ -80,6 +84,25 @@ def store_documents(
 
 
 IMPORT_KEY = "import:"
+_INDEX_NAMES = frozenset({"index.md", "index.markdown"})
+_INDEX_IDS = frozenset({"index", "index.md", "index.markdown", "md/index.md"})
+
+
+def forget_index_articles(conn, source_id: str) -> int:
+    """INDEX.md 是归档目录，不是一条话题。从库里去掉，避免假日期进按天。"""
+    rows = conn.execute(
+        """
+        DELETE FROM articles
+        WHERE source_id = %s
+          AND (
+            lower(coalesce(raw_meta->>'filename', '')) = ANY(%s)
+            OR lower(external_id) = ANY(%s)
+          )
+        RETURNING id
+        """,
+        (source_id, list(_INDEX_NAMES), list(_INDEX_IDS)),
+    ).fetchall()
+    return len(rows)
 
 
 def record_import(conn, source_id: str, report: IngestReport, origin: str = "archive") -> None:

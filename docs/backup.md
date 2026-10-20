@@ -42,7 +42,7 @@ BACKUP_DIR/
 | 外链图片 | `research-fetch-images` | `IMAGES_LIMIT`，默认 300 个地址 |
 | 观点 | `research-views` | `VIEWS_LIMIT`，默认 60 篇 |
 | 摘要 | `research-digest` | `DIGEST_LIMIT`，默认 80 篇 |
-| 论点 | `research-theses` | 持仓和观察公司里观点有变化的 |
+| 论点 | `research-theses`（`THESES_ENABLED=1` 才跑，默认关） | 观点够数的公司，不限持仓 |
 | 图片文字 | `research-ocr`（`NIGHTLY_OCR=1` 时，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
 
 观点、摘要、图片文字各自最多跑 `MINUTES` 分钟（默认 150）。某一步失败不影响后面的步骤。白天、部署和应用启动时都不跑这些。
