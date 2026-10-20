@@ -77,7 +77,7 @@
       <a class="thesis-title" href="/companies/{{ company.id }}?{{ (views.base ~ '&') if views.base }}views={{ thesis.key }}#views">{{ thesis.title }}</a>
       {% if thesis.mechanism %}<p class="thesis-mechanism">{{ thesis.mechanism }}</p>{% endif %}
       <p class="thesis-sides">
-        {% for side, word in [("for", "支持"), ("against", "反对")] %}
+        {% for side, word in [("for", "支持"), ("against", "反对"), ("mixed", "两面")] %}
         {% set group = thesis[side] %}
         {% if group.count %}
         <span class="side side-{{ side }}">{{ word }}</span>

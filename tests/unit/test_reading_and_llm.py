@@ -176,44 +176,119 @@ def test_synthesize_keeps_going_when_one_batch_fails(monkeypatch):
         ask_module.synthesize(None, "问题", items, {})
 
 
-def _view(article_id, author, stance, days_ago, judgment="判断"):
+def _view(article_id, author, stance, days_ago, judgment="判断", quote=""):
     published = datetime(2026, 10, 1, tzinfo=UTC) - timedelta(days=days_ago)
     return {
         "article_id": article_id,
         "author": author,
         "stance": stance,
         "judgment": judgment,
-        "mechanism": "机制",
+        "mechanism": "",
         "risks": [],
         "falsifiers": [],
+        "quote": quote,
         "content_hash": f"h{article_id}",
         "date": published.strftime("%Y-%m-%d"),
         "published_at": published,
     }
 
 
-def test_theses_parse_only_cited_views_and_present_from_the_library():
-    # views_for 给的是新的在前。
-    views = [_view(14, "孤独进化体", "positive", 5), _view(13, "方伟", "negative", 10),
-             _view(12, "乘风破浪", "negative", 100), _view(11, "方伟", "positive", 300)]
-    text, used = theses.build_input(views)
-    assert text.index("[v11]") < text.index("[v14]") and len(used) == 4
-    reply = (
-        '{"theses": [{"title": "Temu 的关税风险", "mechanism": "半托管毛利被关税吃掉", "for": ["v12", "v13", "v99"],'
-        ' "against": ["v11", "v12"]}, {"title": "没有引用的论点", "for": ["v98"], "against": []}]}'
-    )
-    parsed = theses.parse_theses(reply, {11, 12, 13, 14})
-    assert parsed == [
-        {"title": "Temu 的关税风险", "mechanism": "半托管毛利被关税吃掉", "for": [12, 13], "against": [11]}
+def test_theses_bucket_by_stance_and_drop_unrelated_or_neutral():
+    # views_for 给的是新的在前。空白判断不进输入。
+    views = [
+        _view(14, "孤独进化体", "positive", 5, judgment="视频号广告库存还在涨", quote="视频号广告库存还在涨"),
+        _view(13, "方伟", "negative", 10, judgment="关税把半托管的毛利吃掉了", quote="关税把半托管的毛利吃掉了"),
+        _view(12, "乘风破浪", "negative", 100, judgment="Temu 的关税成本抬高，毛利承压", quote="Temu 的关税成本抬高"),
+        _view(11, "方伟", "positive", 300, judgment="关税影响有限，Temu 毛利还能守住", quote="Temu 毛利还能守住"),
+        _view(10, "方伟", "neutral", 1, judgment="关税和毛利先观察，Temu 先不说", quote="关税和毛利先观察"),
+        _view(9, "方伟", "", 2, judgment="   "),
     ]
-    row = {"theses": parsed}
-    shown = theses.present(row, views)
-    assert shown[0]["key"] == "t1" and shown[0]["for"]["count"] == 2
-    assert dict(shown[0]["for"]["authors"]) == {"乘风破浪": 1, "方伟": 1}
-    assert shown[0]["for"]["latest"]["article_id"] == 13 and shown[0]["shifted"] == ["方伟"]
-    assert sorted(shown[0]["articles"]) == [11, 12, 13]
+    real = [view for view in views if theses.is_real_view(view)]
+    text, used = theses.build_input(real)
+    assert text.index("[v11]") < text.index("[v14]") and len(used) == 5
+    assert all(view["article_id"] != 9 for view in used)
+    reply = (
+        '{"theses": [{"title": "Temu 的关税风险", "mechanism": "半托管毛利被关税吃掉",'
+        ' "for": ["v12", "v13", "v14", "v10", "v9", "v99"], "against": ["v11"]},'
+        ' {"title": "只有一篇的论点", "views": ["v11"]}]}'
+    )
+    parsed = theses.parse_theses(reply, views, company="拼多多")
+    # 模型把看淡的放进 for、把看好的放进 against。校验按态度反过来，中性和无关的丢掉。
+    assert parsed == [
+        {
+            "title": "Temu 的关税风险",
+            "mechanism": "半托管毛利被关税吃掉",
+            "for": [11],
+            "against": [12, 13],
+            "mixed": [],
+        }
+    ]
+    shown = theses.present({"theses": parsed}, views, "拼多多")
+    assert shown[0]["key"] == "t1" and shown[0]["for"]["count"] == 1 and shown[0]["against"]["count"] == 2
+    assert dict(shown[0]["against"]["authors"]) == {"乘风破浪": 1, "方伟": 1}
+    assert shown[0]["against"]["latest"]["article_id"] == 13 and shown[0]["shifted"] == ["方伟"]
+    assert sorted(shown[0]["articles"]) == [11, 12, 13] and shown[0]["quiet_quotes"] == []
     with pytest.raises(LLMError):
-        theses.parse_theses("没有 JSON", {11})
+        theses.parse_theses("没有 JSON", views)
+
+
+def test_thesis_validator_rejects_mismatched_judgment_and_single_view():
+    """茅台：定价权的判断不能挂在「普通飞天好卖」上；只有一篇的论点丢掉。"""
+    views = [
+        _view(654, "甲", "positive", 1, judgment="茅台具备逆周期的定价权，淡季也能守住批价",
+              quote="逆周期的定价权让淡季批价也稳"),
+        _view(1, "乙", "positive", 2, judgment="普通飞天动销很好，终端一直好卖", quote="普通飞天动销很好"),
+        _view(2, "丙", "negative", 3, judgment="普通飞天并不好卖，动销在放缓", quote="普通飞天并不好卖"),
+        _view(
+            487, "丁", "positive", 4,
+            judgment="AI 资本开支不影响茅台，飞天需求仍然稳",
+            quote="AI 资本开支不影响茅台",
+        ),
+    ]
+    reply = (
+        '{"theses": [{"title": "普通飞天好卖", "mechanism": "终端动销强", "views": ["v654", "v1", "v2", "v487"]},'
+        ' {"title": "逆周期定价权", "mechanism": "淡季也能守住批价", "views": ["v654"]}]}'
+    )
+    parsed = theses.parse_theses(reply, views, company="贵州茅台")
+    assert parsed == [
+        {"title": "普通飞天好卖", "mechanism": "终端动销强", "for": [1], "against": [2], "mixed": []}
+    ]
+    assert 654 not in parsed[0]["for"] and 487 not in parsed[0]["for"]
+
+
+def test_thesis_hides_quote_that_does_not_support_the_title():
+    views = [
+        _view(1, "乙", "positive", 2, judgment="普通飞天动销很好，终端一直好卖",
+              quote="逆周期的定价权让淡季批价也稳"),
+        _view(2, "丙", "negative", 3, judgment="普通飞天并不好卖，动销在放缓", quote="普通飞天并不好卖"),
+    ]
+    reply = '{"theses": [{"title": "普通飞天好卖", "mechanism": "终端动销强", "views": ["v1", "v2"]}]}'
+    parsed = theses.parse_theses(reply, views, company="贵州茅台")
+    shown = theses.present({"theses": parsed}, views, "贵州茅台")
+    assert shown[0]["quiet_quotes"] == [1]
+    masked = theses.mask_unrelated_quotes(views, shown[0])
+    assert next(view for view in masked if view["article_id"] == 1)["quote"] == ""
+    assert next(view for view in masked if view["article_id"] == 2)["quote"] == "普通飞天并不好卖"
+
+
+def test_one_view_is_not_attached_to_every_thesis():
+    shared = "逆周期定价权让飞天在旺季也能提价，普通飞天动销也好"
+    views = [
+        _view(654, "甲", "positive", 1, judgment=shared, quote=shared),
+        _view(2, "乙", "negative", 2, judgment="逆周期定价权并不稳", quote="逆周期定价权并不稳"),
+        _view(3, "丙", "negative", 3, judgment="旺季提价失败了", quote="旺季提价失败了"),
+        _view(4, "丁", "negative", 4, judgment="普通飞天动销放缓", quote="普通飞天动销放缓"),
+    ]
+    reply = (
+        '{"theses": ['
+        '{"title": "逆周期定价权", "mechanism": "淡季也能守住批价", "views": ["v654", "v2"]},'
+        '{"title": "旺季提价", "mechanism": "旺季也能提价", "views": ["v654", "v3"]},'
+        '{"title": "普通飞天动销", "mechanism": "终端动销", "views": ["v654", "v4"]}]}'
+    )
+    parsed = theses.parse_theses(reply, views, company="贵州茅台")
+    cited = [ref for thesis in parsed for ref in (*thesis["for"], *thesis["against"], *thesis["mixed"])]
+    assert cited.count(654) <= theses.MAX_PER_VIEW
+    assert len(parsed) <= 2
 
 
 def test_theses_refresh_at_most_daily_when_views_change():
