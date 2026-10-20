@@ -13,8 +13,6 @@ jobs:
   lock:
     name: Lock files
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v6
 
@@ -39,17 +37,6 @@ jobs:
               --platform manylinux_2_34_aarch64 --platform manylinux_2_35_aarch64 \
               --platform manylinux_2_36_aarch64
           done
-
-      # 第一次还没有锁文件：生成好推到一个临时分支，拿下来提交以后删掉这一步。
-      - name: Push generated lock files (bootstrap)
-        if: failure() && hashFiles('requirements.lock') == ''
-        run: |
-          scripts/lock.sh
-          git switch -c "ci/lockfiles-${GITHUB_RUN_ID}"
-          git add requirements.lock requirements-dev.lock requirements-ocr.lock
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -q -m "生成的锁文件"
-          git push -q origin HEAD
 
   test:
     name: Tests
