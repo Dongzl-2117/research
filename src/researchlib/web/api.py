@@ -396,9 +396,12 @@ def views_payload(
         return None
     by_id = {source.id: source for source in sources}
     items = view_timeline(conn, company_id, by_id, settings)
-    theses = thesis_map.present(thesis_map.stored(conn, company_id), items)
+    theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
     thesis = next((item for item in theses if item["key"] == kind), None)
-    chosen = filter_timeline(items, kind if thesis is None else "", author, thesis["articles"] if thesis else None)
+    chosen = thesis_map.mask_unrelated_quotes(
+        filter_timeline(items, kind if thesis is None else "", author, thesis["articles"] if thesis else None),
+        thesis,
+    )
     base = _base(request)
     return {
         "id": company["id"],
@@ -410,6 +413,7 @@ def views_payload(
                 "mechanism": item["mechanism"],
                 "for": {"count": item["for"]["count"], "authors": dict(item["for"]["authors"])},
                 "against": {"count": item["against"]["count"], "authors": dict(item["against"]["authors"])},
+                "mixed": {"count": item["mixed"]["count"], "authors": dict(item["mixed"]["authors"])},
                 "authors_shifted": item["shifted"],
                 "articles": item["articles"],
             }
@@ -565,7 +569,7 @@ def llms_txt(request: Request):
         f"- [单家公司]({base}/api/v1/companies/{{id}}): 按时间倒序的提及文章，每篇带提及原句；depth 过滤",
         f"- [观点和论点]({base}/api/v1/companies/{{id}}/views): 被深入谈到的公司，每篇一条作者判断、机制、态度；"
         "风险、推翻条件、验证指标只在原文谈到时才有。theses 是把这些观点按机制归成的几条论点，"
-        "支持和反对各有几篇、哪些作者，由库里的观点数出来；"
+        "支持、反对、两面按观点自己的态度从库里数，判断对不上这条论点的引用不收；"
         "views=risk 只看风险与反方，views=change 只看态度变化，views=t1 只看第一条论点引用的观点",
         "",
         "## 字段约定",

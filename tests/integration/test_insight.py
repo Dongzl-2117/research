@@ -52,13 +52,21 @@ def _row(conn, external_id):
     ).fetchone()
 
 
+JUDGMENTS = {
+    "mp/t1": "mp/t1 的判断：视频号广告库存还没到顶，加载率还能抬",
+    "cf/t2": "cf/t2 的判断：视频号广告库存见顶了，加载率抬不上去",
+    "gd/t3": "gd/t3 的判断：视频号就是新的广告库存，交易进来以后出价会更高",
+    "zx/t4": "zx/t4 的判断：游戏版号恢复了，新游戏的排期很满",
+}
+
+
 def _views(conn, settings, monkeypatch):
     stances = {"mp/t1": "正面", "cf/t2": "负面", "gd/t3": "正面", "zx/t4": "两面"}
     authors = {source.id: source.author for source in load_sources(settings.sources_path)}
     company = _tencent(conn)
     for _source, external_id, _day, body in DOCS:
         reply = json.dumps(
-            {"腾讯": {"judgment": f"{external_id} 的判断：{body[:12]}", "mechanism": "广告库存和定价",
+            {"腾讯": {"judgment": JUDGMENTS[external_id], "mechanism": "广告库存和定价",
                       "stance": stances[external_id], "quote": body[:20]}},
             ensure_ascii=False,
         )
@@ -74,23 +82,28 @@ def test_theses_views_home_and_same_period(conn, settings, monkeypatch):
     ids = {external_id: _row(conn, external_id)["id"] for _s, external_id, _d, _b in DOCS}
     reply = json.dumps(
         {"theses": [
-            {"title": "视频号是新的广告库存", "mechanism": "交易接进来，广告主出价更高",
-             "for": [f"v{ids['mp/t1']}", f"v{ids['gd/t3']}"], "against": [f"v{ids['cf/t2']}"]},
-            {"title": "游戏稳住了", "mechanism": "版号恢复", "for": [f"v{ids['zx/t4']}"], "against": []},
+            {"title": "视频号广告库存", "mechanism": "加载率还能抬，出价会更高",
+             "views": [f"v{ids['mp/t1']}", f"v{ids['gd/t3']}", f"v{ids['cf/t2']}", f"v{ids['zx/t4']}"]},
+            {"title": "游戏版号恢复", "mechanism": "新游戏排期很满", "views": [f"v{ids['zx/t4']}"]},
         ]},
         ensure_ascii=False,
     )
     monkeypatch.setattr(theses_mod, "chat", lambda _s, _m, **_k: (reply, "grok-test"))
     sources_by_id = {source.id: source for source in enabled_sources(load_sources(settings.sources_path))}
-    assert theses_mod.build(conn, settings, company, sources_by_id) == 2
+    # 只有一篇的「游戏版号」论点丢掉；游戏那篇也不该被塞进广告库存。
+    assert theses_mod.build(conn, settings, company, sources_by_id) == 1
     assert not theses_mod.needs_build(conn, company["id"], sources_by_id, settings)
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/companies/{company['id']}").text
-        assert 'id="theses"' in page and "视频号是新的广告库存" in page and "交易接进来" in page
+        assert 'id="theses"' in page and "视频号广告库存" in page and "加载率还能抬" in page
+        assert "游戏版号恢复" not in page.split('id="views"', 1)[0]
         assert page.index('id="theses"') < page.index('id="views"')
         only = client.get(f"/companies/{company['id']}", params={"views": "t1"}).text
         section = only.split('id="views"', 1)[1].split('class="company-articles"', 1)[0]
         assert "mp/t1 的判断" in section and "cf/t2 的判断" in section and "zx/t4 的判断" not in section
+        # 全部时间线仍能看到没进论点的那篇。
+        everything = page.split('id="views"', 1)[1].split('class="company-articles"', 1)[0]
+        assert "zx/t4 的判断" in everything
         # 首页最近观点：按观点时间排，不写「持仓近况」。
         home = client.get("/").text
         assert "最近观点" in home and "持仓近况" not in home
@@ -101,14 +114,42 @@ def test_theses_views_home_and_same_period(conn, settings, monkeypatch):
         assert "同期别人怎么看" in article and "cf/t2 的判断" in article and "mp/t1 的判断" not in article
         # JSON 和 MCP。
         data = client.get(f"/api/v1/companies/{company['id']}/views", params={"views": "t1"}).json()
-        assert data["theses"][0]["title"] == "视频号是新的广告库存" and data["total"] == 3
+        assert data["theses"][0]["title"] == "视频号广告库存" and data["total"] == 3
+        assert data["theses"][0]["against"]["count"] == 1 and data["theses"][0]["for"]["count"] == 2
         assert client.get(f"/api/v1/companies/{company['id']}/views", params={"views": "x"}).status_code == 400
         call = client.post(
             "/api/mcp",
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                   "params": {"name": "get_company_views", "arguments": {"id": company["id"]}}},
         ).json()
-        assert call["result"]["structuredContent"]["theses"][1]["title"] == "游戏稳住了"
+        assert call["result"]["structuredContent"]["theses"][0]["title"] == "视频号广告库存"
+
+
+def test_blank_views_skip_theses_and_refresh_blank_requeues(conn, settings):
+    """判断或态度为空白的观点不进论点；删掉之后才会重新排队。"""
+    _store_all(conn, settings)
+    tencent = _tencent(conn)
+    articles = [_row(conn, external_id) for _source, external_id, _day, _body in DOCS]
+    blanks = articles[:2]
+    conn.execute(
+        """
+        INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance)
+        VALUES (%s, %s, %s, 1, '   ', ''), (%s, %s, %s, 1, '', '')
+        """,
+        (
+            blanks[0]["id"], tencent["id"], blanks[0]["content_hash"],
+            blanks[1]["id"], tencent["id"], blanks[1]["content_hash"],
+        ),
+    )
+    conn.commit()
+    sources = {source.id: source for source in enabled_sources(load_sources(settings.sources_path))}
+    assert theses_mod.views_for(conn, tencent["id"], sources, settings) == []
+    source_ids = list(sources)
+    pending = [row["id"] for row in views_mod.pending_articles(conn, [tencent["id"]], source_ids, 20)]
+    assert blanks[0]["id"] not in pending and blanks[1]["id"] not in pending
+    assert views_mod.delete_blank_views(conn, [tencent["id"]]) == 2
+    pending = [row["id"] for row in views_mod.pending_articles(conn, [tencent["id"]], source_ids, 20)]
+    assert blanks[0]["id"] in pending and blanks[1]["id"] in pending
 
 
 def test_long_articles_feed_the_ending_and_the_company_paragraphs(conn, settings, monkeypatch):

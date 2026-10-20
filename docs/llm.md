@@ -117,6 +117,7 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 
 - 每条：作者的判断、作者给出的机制、态度（看好 / 看淡 / 两面 / 中性）。风险、推翻条件、要盯的验证指标只在原文谈到时才有，没谈到就空着。
 - 原句逐字核对过（只比汉字、字母、数字）才显示，并链到它所在的段落；对不上就不显示，免得把模型的转述当成原话。
+- 判断或态度为空白的行不进时间线，也不进论点。那是「没下判断」的缓存，避免反复问模型。确认是抽漏了，用 `--refresh-blank` 删掉再抽；夜间任务不要加这个参数。
 - 筛选：全部、风险与反方（有风险或推翻条件、或态度是看淡、两面）、态度变化（同一位作者这篇的态度和他上一篇不同；中性不算信号）。点作者名只看这位作者。
 - 一篇文章里深入谈到的几家公司一次整理，不为每家公司各问一次模型。按正文 `content_hash` 和 `views.PROMPT_VERSION` 缓存，正文或提示词变了才重抽。
 
@@ -125,6 +126,7 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 ```bash
 docker compose exec app research-views                       # 全部被深入谈到的公司，最多 100 篇
 docker compose exec app research-views --company 泡泡玛特 --limit 300
+docker compose exec app research-views --company 贵州茅台 --refresh-blank
 ```
 
 应用启动和部署不会跑。方伟星球用 `research-retime` 把零点改成真实 `create_time` 之后，态度变化和「同期别人怎么看」会按新的 `published_at` 重算（见 [ingest.md](ingest.md)），不必为此再跑 `research-views`。JSON：`GET /api/v1/companies/{id}/views`（`views=risk`、`views=change`、`views=t1`、`author=`）。
@@ -136,16 +138,23 @@ docker compose exec app research-views --company 泡泡玛特 --limit 300
 
 ## 论点地图
 
-观点时间线攒到几百条以后，按时间排看不出结构。观点够数（至少 4 条）的公司，页上在观点上面有「论点」（不限持仓）：把这家公司的观点交给模型归成几条论点（围绕同一个机制或问题，最多 8 条），每条引用具体的观点，支持的和反对的分开。
+观点时间线攒到几百条以后，按时间排看不出结构。观点够数（至少 4 条）的公司，页上在观点上面有「论点」（不限持仓）：把这家公司的观点交给模型按机制归成几条（通常 2 到 5 条，最多 6 条），每条引用具体的观点。
 
-- 只认引用了库里真有的观点的论点；谁支持、谁反对、各几篇、最近一次是谁哪天说的、有没有作者前后站到了两边，都按引用的观点从库里数，不用模型说的。
-- 点一条论点，下面的观点时间线只看这条论点引用的那几篇（`?views=t1`）。
-- 观点不到 4 条的公司不做。一家公司一次调用；观点有变化才重算，一天最多一次（按观点集合的指纹和提示词版本缓存）。
-- 打开公司页时缺的或过期的在后台排队，但默认不排：`RESEARCH_THESES_AUTO` 默认关。夜间任务里的论点也默认关（`THESES_ENABLED`）。打开之后范围是观点够数的公司，不写死持仓。启动和部署不跑。
+模型只负责归类。写进页面之前还有一层校验，不单靠模型：
+
+- 支持和反对按每条观点自己的态度重分：看好是支持，看淡是反对，两面单独标，中性不进两边。模型写的 for / against 不采用。
+- 判断对不上这条论点的标题和机制，这条引用丢掉。原句也对不上时，这条论点下面不显示那句原句。
+- 一篇文章可以进多条论点，但同一条判断最多挂两条，而且只有判断里确实在讲那个机制才留。
+- 只有一篇、又没有对立面的论点丢掉。没被收进任何论点的观点仍在「全部」时间线里。
+- 判断或态度为空白的观点不进这次输入。
+- 谁支持、谁反对、各几篇、最近一次是谁哪天说的，都按引用的观点从库里数。点一条论点，下面的时间线只看这几篇（`?views=t1`）。
+- 观点不到 4 条的公司不做。一家公司一次调用；观点有变化才重算，一天最多一次（按观点集合的指纹和提示词版本缓存）。提示词版本变了，已存的地图也会过期。
+- 打开公司页默认不在后台补（`RESEARCH_THESES_AUTO` 默认 0）。夜间默认也不跑（`THESES_ENABLED` 默认 0）。打开之后范围是观点够数的公司，不写死持仓。启动和部署不跑。
 
 ```bash
 docker compose exec app research-theses                        # 观点够数的公司，过期的才算
-docker compose exec app research-theses --company 拼多多 --force
+docker compose exec app research-views --company 贵州茅台 --company 泡泡玛特 --refresh-blank --limit 300
+docker compose exec app research-theses --company 贵州茅台 --company 泡泡玛特 --force
 ```
 
 JSON 和 MCP 的观点接口里都带 `theses`。

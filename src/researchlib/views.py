@@ -13,7 +13,7 @@
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
 长文只给提到这几家公司的段落加开头结尾（见 excerpt.py）；以前只读了开头 30000 字的，标成 head_only 重抽。
-失败的记下来，隔几天再试。
+失败的记下来，隔几天再试。判断或态度为空白的行不进时间线；确认抽漏了再用 `--refresh-blank` 删掉重抽。
 """
 
 from __future__ import annotations
@@ -55,6 +55,14 @@ PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文�
 
 STANCES = {"正面": "positive", "负面": "negative", "中性": "neutral", "两面": "mixed"}
 STANCE_LABELS = {"positive": "看好", "negative": "看淡", "mixed": "两面", "neutral": "中性", "": ""}
+# 判断里至少有一个汉字、字母或数字，态度也是四档之一，才算真实观点。别名用 v。
+# 判断或态度为空白的行是「没下判断」的缓存，不进时间线，也不进论点。
+REAL_VIEW_SQL = (
+    "btrim(v.judgment) <> ''"
+    " AND v.stance IN ('positive', 'negative', 'neutral', 'mixed')"
+    " AND v.judgment ~ '[[:alnum:]一-鿿]'"
+)
+_BLANK_VIEW_SQL = "btrim(judgment) = '' OR stance = '' OR judgment !~ '[[:alnum:]一-鿿]'"
 _JSON = re.compile(r"\{.*\}", re.S)
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 QUEUE_PER_VIEW = 20
@@ -125,6 +133,26 @@ def tracked_companies(conn, names) -> list[dict]:
     ).fetchall()
     order = {name: index for index, name in enumerate(names)}
     return sorted(rows, key=lambda row: order.get(row["name_zh"], 99))
+
+
+def delete_blank_views(conn, company_ids: list[int] | None = None) -> int:
+    """删掉判断或态度为空白的观点，好让下一轮重新抽。
+
+    空白行本来用来记住「这篇没下判断」，避免反复问模型。确认是抽漏了才删。
+    company_ids 为 None 时删全部公司的空白行。
+    """
+    if company_ids is not None and not company_ids:
+        return 0
+    if company_ids is None:
+        cur = conn.execute(f"DELETE FROM company_views WHERE {_BLANK_VIEW_SQL}")
+    else:
+        cur = conn.execute(
+            f"DELETE FROM company_views WHERE company_id = ANY(%s) AND ({_BLANK_VIEW_SQL})",
+            (list(company_ids),),
+        )
+    deleted = cur.rowcount
+    conn.commit()
+    return deleted
 
 
 _STALE = "(v.article_id IS NULL OR v.content_hash <> a.content_hash OR v.prompt_version < %s OR v.head_only)"
@@ -299,13 +327,13 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
 def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司全部下了判断的观点，按时间从旧到新标出态度变化，再按新到旧返回。"""
     rows = conn.execute(
-        """
+        f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.metrics,
                v.quote, v.chunk_ord, c.anchor AS chunk_anchor, a.title, a.published_at, a.source_id
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang = ''
-        WHERE v.company_id = %s AND v.judgment <> '' AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
+        WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
@@ -386,7 +414,7 @@ def same_period(
                a.title, a.published_at, a.source_id
         FROM articles me
         JOIN article_mentions m ON m.article_id = me.id AND m.depth <> 'passing' {company_sql}
-        JOIN company_views v ON v.company_id = m.company_id AND v.judgment <> ''
+        JOIN company_views v ON v.company_id = m.company_id AND {REAL_VIEW_SQL}
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id
@@ -542,6 +570,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--company", action="append", default=[], help="只整理这家公司（中文名），可重复")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停（夜间任务用），0 表示不限")
+    parser.add_argument(
+        "--refresh-blank",
+        action="store_true",
+        help="先删掉判断或态度为空白的观点再重抽（确认抽漏了才用；夜间任务不要加）",
+    )
     args = parser.parse_args(argv)
     from researchlib.db import prepare
     from researchlib.sources import enabled_sources, load_sources
@@ -569,6 +602,8 @@ def main(argv: list[str] | None = None) -> int:
             wanted = [int(row["id"]) for row in mentioned]
         if not wanted:
             raise SystemExit("没有被深入谈到的公司")
+        if args.refresh_blank:
+            print(f"删掉空白观点 {delete_blank_views(conn, wanted)} 条")
         rows = pending_articles(conn, wanted, list(authors), args.limit)
         for row in rows:
             if deadline is not None and time.monotonic() > deadline:

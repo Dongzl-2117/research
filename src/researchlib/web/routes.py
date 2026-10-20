@@ -1194,14 +1194,17 @@ def _company_views(request: Request, conn, company, by_id: dict, author: str) ->
     if pending:
         queue_views(conn, settings, company_id, by_id)
     # 论点地图：观点归成的几条论点。缺了或过期了在后台重算，不挡页面。
-    theses = thesis_map.present(thesis_map.stored(conn, company_id), items)
+    theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
     if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
         thesis_map.schedule(settings, company, by_id)
     thesis = next((item for item in theses if item["key"] == kind), None)
     if kind not in VIEW_FILTERS and thesis is None:
         kind = ""
     scoped = filter_timeline(items, "", author)
-    chosen = filter_timeline(items, kind, author, thesis["articles"] if thesis else None)
+    chosen = thesis_map.mask_unrelated_quotes(
+        filter_timeline(items, kind, author, thesis["articles"] if thesis else None),
+        thesis,
+    )
     raw_page = request.query_params.get("vpage", "1")
     page, pages, offset = page_window(len(chosen), int(raw_page) if raw_page.isdigit() else 1, VIEWS_PAGE_SIZE)
     base = _query_string(author=author, depth=request.query_params.get("depth") or "")
