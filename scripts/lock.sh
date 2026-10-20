@@ -10,6 +10,8 @@
 #   scripts/lock.sh --check                    # CI 用：锁文件和 pyproject.toml 对不上就失败，并打印该有的内容
 #
 # 按 Linux、Python 3.12 解析（和镜像一致）；hash 包含各平台的安装包，Mac mini（arm64）上构建一样能装。
+# 只用发布满两周（COOLDOWN_DAYS）的版本：刚发布的版本偶尔有问题、被撤回，甚至被人投毒，等两周再用。
+# 急着要某个新版本时 COOLDOWN_DAYS=0 scripts/lock.sh --upgrade-package 包名。
 # 用 uv 解析。本机没有 uv 时在 python:3.12 容器里装一个再跑（要 Docker）。
 #
 # 只用 macOS 自带 bash 3.2 也有的写法。变量后面紧跟中文时一律写成 ${变量}。
@@ -17,13 +19,23 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 UV_VERSION="${UV_VERSION:-0.12.20}"
+COOLDOWN_DAYS="${COOLDOWN_DAYS:-14}"
 PYTHON_IMAGE="python:3.12-slim-bookworm"
 LOCKS="requirements.lock requirements-dev.lock requirements-ocr.lock"
 
 if ! command -v uv > /dev/null 2>&1; then
-  exec docker run --rm -v "${REPO}:/repo" -w /repo -e UV_VERSION="${UV_VERSION}" "${PYTHON_IMAGE}" \
+  exec docker run --rm -v "${REPO}:/repo" -w /repo -e UV_VERSION="${UV_VERSION}" -e COOLDOWN_DAYS="${COOLDOWN_DAYS}" \
+    "${PYTHON_IMAGE}" \
     bash -c 'pip install --quiet --root-user-action=ignore "uv==${UV_VERSION}" && scripts/lock.sh "$@"' \
     lock ${1+"$@"}
+fi
+
+exclude=""
+if [ "$COOLDOWN_DAYS" -gt 0 ]; then
+  # macOS 的 date 用 -v，Linux 的用 -d。
+  cutoff="$(date -u -v-"${COOLDOWN_DAYS}"d +%Y-%m-%dT00:00:00Z 2> /dev/null \
+    || date -u -d "${COOLDOWN_DAYS} days ago" +%Y-%m-%dT00:00:00Z)"
+  exclude="--exclude-newer ${cutoff}"
 fi
 
 mode=write
@@ -69,9 +81,9 @@ compile() {
   # compile 输出文件 额外参数…
   local out="$1"
   shift
-  # shellcheck disable=SC2086  # upgrade 里是几个参数，要按空格拆开
+  # shellcheck disable=SC2086  # exclude、upgrade 里是几个参数，要按空格拆开
   uv pip compile pyproject.toml --quiet --python-version 3.12 --python-platform linux \
-    --generate-hashes --no-header --output-file "$out" $upgrade "$@"
+    --generate-hashes --no-header $exclude --output-file "$out" $upgrade "$@"
 }
 
 pins() {

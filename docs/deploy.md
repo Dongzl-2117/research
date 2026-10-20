@@ -49,7 +49,7 @@ scripts/lock.sh --upgrade-package fastapi   # 只升一个
 scripts/lock.sh --upgrade                   # 全部升到最新
 ```
 
-改了 `pyproject.toml` 的依赖以后跑 `scripts/lock.sh`（已锁的版本不动，只补新加的）。本机没有 uv 时脚本在 Python 容器里跑。改完的锁文件和代码一起提交；CI 会检查锁文件和 `pyproject.toml` 对得上、按 arm64（Mac mini）下得到全部的包，再用锁文件跑测试、构建镜像。
+改了 `pyproject.toml` 的依赖以后跑 `scripts/lock.sh`（已锁的版本不动，只补新加的）。本机没有 uv 时脚本在 Python 容器里跑。只用发布满两周的版本：刚发布的版本偶尔有问题、被撤回，甚至被人投毒，等两周再用；急着要某个新版本时加 `COOLDOWN_DAYS=0`。改完的锁文件和代码一起提交；CI 会检查锁文件和 `pyproject.toml` 对得上、按 arm64（Mac mini）下得到全部的包，再用锁文件跑测试、构建镜像。
 
 Grok OAuth 与 AIHOT 共用外部卷 `aihot_data`（挂到 `/aihot-data/secrets/xai-oauth.json`）。登录在 AIHOT 侧做，见 [translate.md](translate.md)。
 
