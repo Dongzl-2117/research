@@ -1,18 +1,29 @@
 {% extends "base.html" %}
-{% macro passage(item, terms) %}
-<li id="c-{{ item.n }}" class="{% if item.cited %}cited{% endif %}">
+{% macro passage(item, result) %}
+{% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
+<li id="c-{{ item.n }}" class="{% if item.cited %}cited{% endif %}{% if flagged %} flagged{% endif %}">
   <p class="item-meta"><span class="num">[{{ item.n }}]</span> <a href="{{ item.url }}">{{ item.title }}</a> · {{ item.author }} · {{ item.date }}{% if item.heading %} · § {{ item.heading }}{% endif %}</p>
-  <p class="item-excerpt">{{ item.text | highlight_snippet(terms, 150) }}</p>
-  <details class="passage-full"><summary>展开这段</summary><p>{{ item.text | highlight_full(terms) }}</p></details>
+  <p class="item-excerpt">{{ item.text | highlight_snippet(result.terms, 150) }}</p>
+  <div class="passage-foot">
+    <details class="passage-full"><summary>展开这段</summary><p>{{ item.text | highlight_full(result.terms) }}</p></details>
+    {% if result.id %}
+    <form class="mark-form" action="/ask/{{ result.id }}/feedback" method="post">
+      <input type="hidden" name="label" value="irrelevant">
+      <input type="hidden" name="article" value="{{ item.article_id }}">
+      <input type="hidden" name="chunk" value="{{ item.ord }}">
+      <input type="hidden" name="n" value="{{ item.n }}">
+      <button type="submit" class="mark{% if flagged %} is-on{% endif %}" aria-pressed="{{ 'true' if flagged else 'false' }}">{% if flagged %}已标不相关{% else %}不相关{% endif %}</button>
+    </form>
+    {% endif %}
+  </div>
 </li>
 {% endmacro %}
 {% block body %}
 <header class="page-head">
   <h1>问库</h1>
-  <p class="lede">先在库里找出和问题最相关的原文段落，马上列出来；再交给 {{ model }} 只依据这些原文整合。回答里每句后面的 [n] 链到原文段落。</p>
 </header>
 {% if not llm_ready %}
-<p class="banner">还没有配置 Grok。现在只列出相关原文。配置方法见 docs/llm.md。</p>
+<p class="banner">没有配置 Grok，只列出相关原文。</p>
 {% endif %}
 <form class="ask-form" action="/ask" method="post">
   <label class="sr" for="ask-q">问题</label>
@@ -37,13 +48,12 @@
   <p class="filter-note">只用这篇：<a href="/articles/{{ article.id }}">{{ article.title }}</a></p>
   {% endif %}
   <button type="submit">提问</button>
-  <p class="quiet ask-note">提交后先列出相关原文；整合在后台进行，通常一到三分钟，页面会自己更新。</p>
 </form>
 {% if result %}
 <section class="answer" aria-label="回答"{% if result.status == "running" %} data-poll="/api/v1/answers/{{ result.id }}"{% endif %}>
   <h2>{{ result.question }}</h2>
   {% if result.status == "running" %}
-  <p class="answer-status" role="status"><span class="spinner" aria-hidden="true"></span>正在整合：先补同义说法、再在全库检索一遍，资料多时分批读完再汇总。下面先看找到的原文。</p>
+  <p class="answer-status" role="status"><span class="spinner" aria-hidden="true"></span>正在整合</p>
   {% endif %}
   {% if result.error %}
   <p class="banner">{{ result.error }}</p>
@@ -53,28 +63,55 @@
   {% endif %}
   {% if result.answer %}
   <div class="prose answer-body">{{ result.answer | answer_html }}</div>
-  <p class="quiet">{% if result.model %}{{ result.model }}{% endif %}{% if result.created %} · {{ result.created }}{% endif %}{% if result.id %} · <a href="/api/v1/answers/{{ result.id }}">JSON</a>{% endif %}</p>
+  {% if result.model or result.created %}<p class="quiet">{{ result.model }}{% if result.model and result.created %} · {% endif %}{{ result.created }}</p>{% endif %}
+  {% endif %}
+  {% if result.checks %}
+  <section class="checks" aria-label="没核对上的句子">
+    <h3>没核对上 <span class="num quiet">{{ result.checks | length }}</span></h3>
+    <ul>
+      {% for flag in result.checks %}
+      <li>
+        <p class="check-sentence">{{ flag.sentence }}{% for n in flag.refs %} <a class="cite" href="#c-{{ n }}">[{{ n }}]</a>{% endfor %}</p>
+        <p class="check-problems">{{ flag.problems | join("；") }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
   {% endif %}
   {% set cited = result.citations | selectattr("cited") | list %}
   {% if result.answer and cited %}
   <h3>出处 <span class="num quiet">{{ cited | length }}</span></h3>
   <ol class="citations">
-    {% for item in cited %}{{ passage(item, result.terms) }}{% endfor %}
+    {% for item in cited %}{{ passage(item, result) }}{% endfor %}
   </ol>
   {% set rest = result.citations | rejectattr("cited") | list %}
   {% if rest %}
   <details class="more-passages">
     <summary>其余检索到的原文 <span class="num">{{ rest | length }}</span></summary>
     <ol class="citations">
-      {% for item in rest %}{{ passage(item, result.terms) }}{% endfor %}
+      {% for item in rest %}{{ passage(item, result) }}{% endfor %}
     </ol>
   </details>
   {% endif %}
   {% elif result.citations %}
   <h3>相关原文 <span class="num quiet">{{ result.citations | length }}</span></h3>
   <ol class="citations plain">
-    {% for item in result.citations %}{{ passage(item, result.terms) }}{% endfor %}
+    {% for item in result.citations %}{{ passage(item, result) }}{% endfor %}
   </ol>
+  {% endif %}
+  {% if result.id %}
+  <form id="missing" class="missing-form" action="/ask/{{ result.id }}/feedback" method="post">
+    <input type="hidden" name="label" value="missing">
+    <label for="missing-ref">漏了哪篇</label>
+    <input id="missing-ref" name="ref" type="text" inputmode="url" placeholder="文章链接或编号" autocomplete="off" required>
+    <button type="submit">补上</button>
+  </form>
+  {% if result.feedback_error %}<p class="banner">{{ result.feedback_error }}</p>{% endif %}
+  {% if result.missing %}
+  <ul class="missing-list" aria-label="补上的文章">
+    {% for item in result.missing %}<li><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.title }}</a></li>{% endfor %}
+  </ul>
+  {% endif %}
   {% endif %}
 </section>
 {% endif %}

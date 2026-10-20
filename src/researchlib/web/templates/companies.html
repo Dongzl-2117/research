@@ -3,7 +3,6 @@
 <header class="page-head head-row">
   <div>
     <h1>公司</h1>
-    <p class="lede">按公司查看：谁在什么时候深入谈过它，原文怎么说。持仓和观察的放在最前，其余按深入篇数排。「深入」指标题、全文或单节里谈到，不含一带而过。</p>
   </div>
   <div class="search-track filter-track company-filter">
     <label class="sr" for="company-filter">筛选公司</label>
@@ -13,7 +12,7 @@
 </header>
 {% for error in portfolio_errors %}<p class="banner">{{ error }}</p>{% endfor %}
 {% if missing %}
-<p class="banner">持仓名单里的 {{ missing | join("、") }} 不在公司表里，先把它加进 company_seed.py。</p>
+<p class="banner">持仓名单里的 {{ missing | join("、") }} 不在公司表里。</p>
 {% endif %}
 {% if pinned %}
 <section class="holdings" aria-label="持仓和观察">
@@ -75,7 +74,7 @@
   {% else %}
   <p class="empty">这一类还没有被提到的公司。</p>
   {% endif %}
-  <p class="filter-note">{% if show_all %}正在显示全部种子公司。<a href="/companies">只看有提及的</a>{% elif hidden %}已隐藏 {{ hidden }} 家还没被提到的公司。<a href="/companies?all=1">全部显示</a>{% endif %}</p>
+  <p class="filter-note">{% if show_all %}<a href="/companies">只看有提及的</a>{% elif hidden %}<a href="/companies?all=1">显示没被提到的 {{ hidden }} 家</a>{% endif %}</p>
 </section>
 <script>
   (function () {

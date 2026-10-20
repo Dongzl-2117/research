@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import time
@@ -24,7 +25,16 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
-from researchlib.mentions import CompanyMatcher, iter_alias_specs, load_company_rows
+from researchlib.chunks import TRANSLATION_ORD_BASE
+from researchlib.mentions import (
+    CompanyMatcher,
+    company_rules,
+    compile_exclude,
+    excluded_ranges,
+    inside,
+    iter_alias_specs,
+    load_company_rows,
+)
 from researchlib.web.queries import Scope, scope_clause
 
 # 问句里常见、对召回没有帮助的词。词性过滤之后剩下的套话在这里去掉。
@@ -128,6 +138,14 @@ class Passage:
     score: float = 0.0
     matched: list[str] = field(default_factory=list)
     coverage: float = 0.0
+    # 'zh' 是英文文章的中文译文块；anchor 是对照页上那一段的锚点。
+    lang: str = ""
+    anchor: str = ""
+
+    @property
+    def url(self) -> str:
+        link = f"/articles/{self.article_id}?chunk={self.ord}"
+        return link + (f"#{self.anchor}" if self.anchor else "")
 
 
 @dataclass
@@ -429,9 +447,33 @@ def preset_query(query: Query) -> Query:
 # —— 召回 ——
 
 
+# 译文块的标题用中文标题（有的话），打分时的标题上下文和页面上显示的都是中文。
 _SELECT_COLUMNS = """
-c.article_id, c.ord, c.heading, c.body, a.title, a.source_id, a.published_at
+c.article_id, c.ord, c.heading, c.body, c.lang, c.anchor,
+CASE WHEN c.lang = 'zh' THEN coalesce(
+  nullif((SELECT tr.title_zh FROM article_translations tr WHERE tr.article_id = c.article_id), ''), a.title
+) ELSE a.title END AS title,
+a.source_id, a.published_at
 """
+
+
+def _article_match(tsq: str) -> str:
+    """文章级的全文命中：原文的标题和正文，加上中文译文的标题和正文。
+
+    写成两个子查询的并集，两边都能走各自的 GIN 索引；写成 OR EXISTS 会退化成逐行过滤，库大了很慢。
+    """
+    return (
+        f"a.id IN (SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}"
+        f" UNION ALL SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq})"
+    )
+
+
+def _prefer_translation(rows: list[dict]) -> list[dict]:
+    """同一篇英文文章的原文块和中文译文块都召回时，只留译文块，免得同一段内容占两份名额。"""
+    translated = {row["article_id"] for row in rows if row.get("lang") == "zh"}
+    if not translated:
+        return rows
+    return [row for row in rows if row.get("lang") == "zh" or row["article_id"] not in translated]
 
 
 def _group_tsquery(query: Query, params: dict, *, only_selective: bool, operator: str, prefix: str) -> str:
@@ -505,22 +547,32 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
             f" AND tm.company_id = %(title_company_{index})s AND tm.depth = 'title')"
         )
     if tsq:
-        conditions.append(f"a.search_tsv @@ {tsq}")
-        order = f"ts_rank(a.search_tsv, {tsq}) DESC, a.published_at DESC NULLS LAST"
+        conditions.append(_article_match(tsq))
+        rank = (
+            f"greatest(ts_rank(a.search_tsv, {tsq}), coalesce((SELECT ts_rank(tq.search_tsv, {tsq})"
+            " FROM article_translations tq WHERE tq.article_id = a.id), 0))"
+        )
+        order = f"{rank} DESC, a.published_at DESC NULLS LAST"
     elif company_ids:
         order = "a.published_at DESC NULLS LAST"
     else:
         return []
+    params["zh_first"] = TRANSLATION_ORD_BASE
     rows = conn.execute(
         f"""
-        SELECT a.id FROM articles a
+        SELECT a.id,
+               CASE WHEN EXISTS (
+                 SELECT 1 FROM article_chunks zc WHERE zc.article_id = a.id AND zc.ord = %(zh_first)s
+               ) THEN %(zh_first)s ELSE 0 END AS first_ord
+        FROM articles a
         WHERE {' AND '.join(conditions)}
         ORDER BY {order}
         LIMIT %(title_limit)s
         """,
         params,
     ).fetchall()
-    return [(row["id"], 0) for row in rows]
+    # 有中文译文的英文文章取译文的第一块。
+    return [(row["id"], row["first_ord"]) for row in rows]
 
 
 def _rows_for_keys(conn, keys: list[tuple[int, int]]) -> list[dict]:
@@ -579,12 +631,13 @@ def _leading_rows(conn, scope: Scope, limit: int):
     """什么检索词都没有时（作者页预设、「汇总这一天」），取范围内各篇开头两块，新的在前。"""
     where, params = scope_clause(scope)
     params["lead_limit"] = limit
+    params["zh_first"] = TRANSLATION_ORD_BASE
     return conn.execute(
         f"""
         SELECT {_SELECT_COLUMNS}
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
-        WHERE {where} AND c.ord < 2
+        WHERE {where} AND (c.ord < 2 OR (c.ord >= %(zh_first)s AND c.ord < %(zh_first)s + 2))
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC, c.ord
         LIMIT %(lead_limit)s
         """,
@@ -593,18 +646,20 @@ def _leading_rows(conn, scope: Scope, limit: int):
 
 
 def _article_rows(conn, scope: Scope):
+    """只问这一篇：按原文顺序整篇给。英文文章有译文时给译文。"""
     where, params = scope_clause(scope)
-    return conn.execute(
+    rows = conn.execute(
         f"""
         SELECT {_SELECT_COLUMNS}
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
         WHERE {where}
         ORDER BY c.ord
-        LIMIT 400
+        LIMIT 800
         """,
         params,
     ).fetchall()
+    return _prefer_translation(list(rows))[:400]
 
 
 def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, enough: int | None = None) -> list[dict]:
@@ -667,7 +722,8 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
         targets = [{"id": t.company_id, **_company_lookup(query, t.company_id)} for t in companies]
         if scope.company_id is not None and all(t["id"] != scope.company_id for t in targets):
             row = conn.execute(
-                "SELECT id, ticker, name_zh, name_en, market, aliases FROM companies WHERE id = %s", (scope.company_id,)
+                "SELECT id, ticker, name_zh, name_en, market, aliases, alias_rules FROM companies WHERE id = %s",
+                (scope.company_id,),
             ).fetchone()
             if row:
                 targets.append(dict(row))
@@ -679,7 +735,7 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
             add_rows(_rows_for_keys(conn, title_keys))
         if not targets:
             add_rows(_leading_rows(conn, scope, 600))
-    return list(found.values())
+    return _prefer_translation(list(found.values()))
 
 
 def _company_lookup(query: Query, company_id: int | None) -> dict:
@@ -703,6 +759,12 @@ class FocusMatcher:
         chinese: list[str] = []
         folded: list[str] = []
         sensitive: list[str] = []
+        # 和 CompanyMatcher 同一套排除写法：「烟台苹果」「中美的」里的命中不算。
+        self._exclude = {
+            int(company["id"]): pattern
+            for company in companies
+            if (pattern := compile_exclude(company_rules(company).get("exclude") or [])) is not None
+        }
         for company in companies:
             for text, casefold in iter_alias_specs(company):
                 if _is_cjk(text):
@@ -728,12 +790,20 @@ class FocusMatcher:
 
     def count(self, text: str) -> dict[int, int]:
         counts: dict[int, int] = {}
+        ranges: dict[int, list[tuple[int, int]]] = {}
         for pattern, casefold in self._patterns:
             for match in pattern.finditer(text):
                 token = match.group(0)
                 company_id = self._lookup.get(token.casefold() if casefold else token)
-                if company_id is not None:
-                    counts[company_id] = counts.get(company_id, 0) + 1
+                if company_id is None:
+                    continue
+                exclude = self._exclude.get(company_id)
+                if exclude is not None:
+                    if company_id not in ranges:
+                        ranges[company_id] = excluded_ranges(exclude, text)
+                    if inside(ranges[company_id], match.start(), match.end()):
+                        continue
+                counts[company_id] = counts.get(company_id, 0) + 1
         return counts
 
 
@@ -742,7 +812,14 @@ _matcher_cache: dict[tuple, object] = {}
 
 def _rows_key(rows: list[dict]) -> tuple:
     return tuple(
-        (int(r["id"]), r.get("name_zh"), r.get("name_en"), r.get("ticker"), tuple(r.get("aliases") or ()))
+        (
+            int(r["id"]),
+            r.get("name_zh"),
+            r.get("name_en"),
+            r.get("ticker"),
+            tuple(r.get("aliases") or ()),
+            json.dumps(company_rules(r), ensure_ascii=False, sort_keys=True),
+        )
         for r in rows
     )
 
@@ -798,9 +875,13 @@ def score_rows(conn, query: Query, rows: list[dict], *, scope: Scope, company_ro
     if scope.company_id is not None and scope.company_id not in focus_ids:
         focus_ids.append(scope.company_id)
     matcher = None
+    # 「苹果」这类要佐证的公司：文章没被记为提到它（比如通篇在讲烟台苹果），段落里的字面命中也不算。
+    guarded: set[int] = set()
     if focus_ids:
         rows_for_matcher = company_rows if company_rows is not None else load_company_rows(conn)
-        matcher = cached_matcher("focus", [row for row in rows_for_matcher if int(row["id"]) in focus_ids])
+        focus_rows = [row for row in rows_for_matcher if int(row["id"]) in focus_ids]
+        matcher = cached_matcher("focus", focus_rows)
+        guarded = {int(row["id"]) for row in focus_rows if company_rules(row).get("needs")}
     # 只有作者或日期范围时：这些文章深入谈了哪些公司，段落里出现这些名字的更有信息量。
     deep_names: dict[int, list[str]] = {}
     if query.overview and not focus_ids and rows:
@@ -854,6 +935,10 @@ def score_rows(conn, query: Query, rows: list[dict], *, scope: Scope, company_ro
         title = row.get("title") or ""
         title_lowered = title.lower()
         title_companies = matcher.count(title) if matcher is not None and title else {}
+        for company_id in guarded:
+            if (row["article_id"], company_id) not in depths:
+                company_hits.pop(company_id, None)
+                title_companies.pop(company_id, None)
         score = 0.0
         matched_groups: set[int] = set()
         title_groups: set[int] = set()  # 只在标题里出现、这段正文没写的词组，覆盖率只算一半
@@ -948,6 +1033,8 @@ def score_rows(conn, query: Query, rows: list[dict], *, scope: Scope, company_ro
                 score=score,
                 matched=list(dict.fromkeys(matched)),
                 coverage=coverage,
+                lang=row.get("lang") or "",
+                anchor=row.get("anchor") or "",
             )
         )
     return passages
@@ -965,6 +1052,8 @@ def _passage_from_row(row: dict) -> Passage:
         title=row["title"],
         source_id=row["source_id"],
         published_at=row["published_at"],
+        lang=row.get("lang") or "",
+        anchor=row.get("anchor") or "",
     )
 
 
@@ -1004,18 +1093,33 @@ def select(passages: list[Passage], query: Query, budget: Budget, sources_by_id:
         ranked = interleaved
     picked: list[Passage] = []
     per: dict[int, int] = {}
+    seen_text: set[str] = set()
     used = 0
     for passage in ranked:
         if per.get(passage.article_id, 0) >= budget.per_article:
             continue
         if picked and used + len(passage.body) > budget.chars:
             continue
+        # 同一段话出现在两篇里（整段引用、没认出来的转发）只给一次，不占两个名额。
+        key = _text_key(passage.body)
+        if key and key in seen_text:
+            continue
+        if key:
+            seen_text.add(key)
         per[passage.article_id] = per.get(passage.article_id, 0) + 1
         used += len(passage.body)
         picked.append(passage)
         if len(picked) >= budget.passages:
             break
     return picked
+
+
+_TEXT_KEY = re.compile(r"[0-9A-Za-z一-鿿]+")
+
+
+def _text_key(body: str) -> str:
+    text = "".join(_TEXT_KEY.findall(body or "")).lower()
+    return text if len(text) >= 30 else ""
 
 
 def retrieve(
@@ -1150,7 +1254,7 @@ def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:
     params.update(scope_params)
     conditions = [where]
     if tsq:
-        conditions.append(f"a.search_tsv @@ {tsq}")
+        conditions.append(_article_match(tsq))
     for index, company_id in enumerate(company_ids):
         params[f"cnt_company_{index}"] = company_id
         conditions.append(

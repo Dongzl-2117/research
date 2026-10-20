@@ -35,7 +35,7 @@ def test_ingest_writes_chunks_and_article_shows_quote(conn, settings):
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{article_id}", params={"chunk": chunk["ord"]})
         assert page.status_code == 200
-        assert "问答引用的段落" in page.text
+        assert 'class="quoted"' in page.text
         assert "打开原文" not in page.text
         assert "<h2>来源</h2>" not in page.text
         assert f"/api/v1/articles/{article_id}.md" not in page.text
@@ -80,15 +80,14 @@ def test_company_page_shows_mention_context_and_author_filter(conn, settings):
         assert client.get(f"/companies/{company_id}", params={"author": "没有这人"}).status_code == 404
         listing = client.get("/companies")
         assert "最近提及" in listing.text
-        assert "已隐藏" in listing.text
-        assert "全部显示" in listing.text
+        assert "显示没被提到的" in listing.text
 
 
 def test_authors_page_shows_span_and_companies(conn, settings):
     _sample(conn, settings)
     with TestClient(create_app(settings)) as client:
         page = client.get("/authors")
-        assert "按作者查看" in page.text
+        assert "按作者查看" not in page.text
         assert "最近：" in page.text
         author = client.get("/authors/方伟")
         assert "只搜方伟的文章" in author.text
@@ -247,8 +246,8 @@ def test_search_matches_words_not_one_long_phrase(conn, settings):
         assert 'href="/articles/1' in ad
         assert "<mark>广告</mark>笔记" in ad
         # 只命中「广告」的那篇排在「部分命中」之后。
-        assert ad.find('href="/articles/1') < ad.find("只命中了一部分词") < ad.find('href="/articles/3')
-        assert "全部词都命中 1 篇" in ad
+        assert ad.find('href="/articles/1') < ad.find("部分命中</p>") < ad.find('href="/articles/3')
+        assert "1 篇全部命中" in ad
         price = client.get("/search", params={"q": "苹果定价权"}).text
         assert 'href="/articles/2' in price
         excluded = client.get("/search", params={"q": "广告 -腾讯"}).text

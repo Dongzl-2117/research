@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import statistics
+from datetime import UTC, datetime
 from html import escape
 from zoneinfo import ZoneInfo
 
@@ -355,3 +356,43 @@ def sparkline(series: list[dict]) -> str:
             parts.append(f'<rect class="bar-empty" x="{x:.1f}" y="{height - 1}" width="{bar:.1f}" height="1"/>')
     parts.append("</svg>")
     return "".join(parts)
+
+
+def stale_sources(
+    sources,
+    times: dict[str, list[datetime]],
+    imports: dict[str, datetime],
+    zone_name: str,
+    now: datetime | None = None,
+) -> list[dict]:
+    """断更或导入停了的来源：最近一篇离现在比平时的间隔长很多（三倍以上、至少一周）。
+
+    最近不到 10 篇带日期的来源不判断，样本太少。返回 [{"name", "idle_days", "typical", "imported"}]。
+    """
+    moment = now or datetime.now(UTC)
+    found = []
+    for source in sources:
+        dates = [value if value.tzinfo else value.replace(tzinfo=UTC) for value in times.get(source.id) or []]
+        if len(dates) < 10:
+            continue
+        gaps = [(newer - older).total_seconds() / 86400 for newer, older in zip(dates, dates[1:], strict=False)]
+        typical = statistics.median(gaps) if gaps else 0.0
+        idle = (moment - dates[0]).total_seconds() / 86400
+        if idle <= max(7.0, 3 * typical):
+            continue
+        if typical < 1.5:
+            usual = "平时差不多天天有"
+        else:
+            usual = f"平时 {round(typical)} 天左右一篇"
+        imported = imports.get(source.id)
+        found.append(
+            {
+                "name": source.name,
+                "idle_days": int(idle),
+                "typical": usual,
+                "imported": (
+                    f"{format_date(imported, zone_name)} {format_clock(imported, zone_name)}" if imported else ""
+                ),
+            }
+        )
+    return found

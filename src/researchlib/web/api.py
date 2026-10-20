@@ -13,8 +13,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from researchlib.ask import ask, start
+from researchlib.citecheck import check_answer
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.retrieval import retrieve, search_articles
+from researchlib.views import FILTERS as VIEW_FILTERS
+from researchlib.views import filter_timeline
+from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
 from researchlib.web.routes import _author_groups, _same_origin, active_portfolio, active_sources, database
@@ -42,10 +46,12 @@ def _base(request: Request) -> str:
     return request.app.state.settings.public_base_url
 
 
-def _article_links(base: str, article_id: int, chunk: int | None = None) -> dict:
+def _article_links(base: str, article_id: int, chunk: int | None = None, anchor: str = "") -> dict:
     html = f"{base}/articles/{article_id}"
+    if chunk is not None:
+        html += f"?chunk={chunk}" + (f"#{anchor}" if anchor else "")
     return {
-        "html": html + (f"?chunk={chunk}" if chunk is not None else ""),
+        "html": html,
         "json": f"{base}/api/v1/articles/{article_id}",
         "markdown": f"{base}/api/v1/articles/{article_id}.md",
     }
@@ -103,12 +109,14 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "title": p.title,
                 "heading": p.heading,
                 "text": p.body,
+                # zh：英文文章的中文译文段落。
+                "lang": p.lang or None,
                 "score": round(p.score, 3),
                 "matched": p.matched,
                 "author": by_id[p.source_id].author,
                 "source": {"id": p.source_id, "name": by_id[p.source_id].name},
                 "published_at": format_iso(p.published_at, settings.display_timezone) or None,
-                "links": _article_links(_base(request), p.article_id, p.ord),
+                "links": _article_links(_base(request), p.article_id, p.ord, p.anchor),
             }
             for p in found.passages
         ]
@@ -209,7 +217,7 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
             else None
         ),
         "chunks": [
-            {"chunk": c["ord"], "heading": c["heading"], "text": c["body"]}
+            {"chunk": c["ord"], "heading": c["heading"], "text": c["body"], "lang": c["lang"] or None}
             for c in queries.article_chunks(conn, article_id)
         ],
         "body_markdown": row["body_md"],
@@ -335,7 +343,7 @@ def company_payload(conn, request: Request, sources, company_id: int, limit: int
     items = []
     for row in rows:
         text = row["body_text"] or ""
-        spans = matcher.spans(text)
+        spans = matcher.document(row["title"], text).spans(text)
         context = ""
         if spans:
             start, end, _ = spans[0]
@@ -375,6 +383,35 @@ def api_company(request: Request, company_id: int):
     if payload is None:
         raise HTTPException(status_code=404)
     return _json(payload)
+
+
+@api.get("/api/v1/companies/{company_id}/views")
+def api_company_views(request: Request, company_id: int):
+    """持仓和观察公司的观点时间线，新的在前。views=risk 只看风险与反方，views=change 只看态度变化。"""
+    kind = request.query_params.get("views") or ""
+    if kind and kind not in VIEW_FILTERS:
+        raise HTTPException(status_code=400, detail="views 只能是 risk 或 change")
+    author = (request.query_params.get("author") or "").strip()
+    limit, offset = _limit(request)
+    settings = request.app.state.settings
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        company = queries.get_company(conn, company_id)
+        if company is None:
+            raise HTTPException(status_code=404)
+        items = filter_timeline(view_timeline(conn, company_id, {s.id: s for s in sources}, settings), kind, author)
+    return _json(
+        {
+            "id": company["id"],
+            "name": company["name_zh"],
+            "total": len(items),
+            "views": [
+                {**item, "links": _article_links(_base(request), item["article_id"], item["chunk"])}
+                for item in items[offset : offset + limit]
+            ],
+            "_trust": TRUST,
+        }
+    )
 
 
 def day_payload(conn, request: Request, sources, start: date, end: date) -> dict:
@@ -427,9 +464,13 @@ async def api_ask(request: Request):
 @api.get("/api/v1/answers/{answer_id}")
 def api_answer(request: Request, answer_id: int):
     with database(request) as conn:
+        sources = active_sources(request, conn)
         row = queries.get_answer(conn, answer_id)
     if row is None:
         raise HTTPException(status_code=404)
+    checks = []
+    if row["status"] == "done" and row["answer"]:
+        checks = check_answer(row["answer"], row["citations"] or [], {source.author for source in sources})
     return _json(
         {
             "id": row["id"],
@@ -439,7 +480,10 @@ def api_answer(request: Request, answer_id: int):
             "error": row["error"] or None,
             "answer": row["answer"],
             "citations": row["citations"],
+            # 没核对上的句子：数字、引号、作者、日期和所引段落对不上，或几乎没有一样的说法。
+            "checks": checks,
             "terms": row["terms"],
+            "stats": row["stats"] or {},
             "model": row["model"],
             "created_at": row["created_at"].isoformat(),
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
@@ -474,7 +518,8 @@ def llms_txt(request: Request):
         "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms",
         f"- [问答]({base}/api/v1/ask): POST JSON "
         "{question, author?, source?, company?, from?, to?, article?, wait?}，"
-        "默认等整合写完，返回 answer（带 [n]）和 citations（第 n 条出处）；wait=false 时先返回 id，"
+        "默认等整合写完，返回 answer（带 [n]）、citations（第 n 条出处）和 checks（数字、引号、作者、日期"
+        "和所引段落对不上的句子）；wait=false 时先返回 id，"
         "再轮询 /api/v1/answers/{id} 直到 status 不是 running",
         "",
         "## 浏览",
@@ -486,6 +531,8 @@ def llms_txt(request: Request):
         f"- [作者]({base}/api/v1/authors): 作者、来源、篇数、时间跨度、常谈公司。当前作者：{'、'.join(authors)}",
         f"- [公司]({base}/api/v1/companies): 有提及的公司（all=1 含未提及），篇数、深入篇数、最近提及",
         f"- [单家公司]({base}/api/v1/companies/{{id}}): 按时间倒序的提及文章，每篇带提及原句；depth 过滤",
+        f"- [观点时间线]({base}/api/v1/companies/{{id}}/views): 持仓和观察公司，每篇一条作者判断、机制、态度；"
+        "风险、推翻条件、验证指标只在原文谈到时才有；views=risk 只看风险与反方，views=change 只看态度变化",
         "",
         "## 字段约定",
         "",

@@ -711,7 +711,6 @@ tbody tr:hover td { background: var(--accent-softer); }
   font-weight: 600;
 }
 .btn:hover { background: var(--accent-ink); }
-.colophon { margin-top: 48px; color: var(--ink-4); font-size: 12px; line-height: 1.6; }
 
 .prose {
   margin-top: 28px;
@@ -934,13 +933,12 @@ tbody tr:hover td { background: var(--accent-softer); }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px;
   margin: 28px 0 0;
   padding-top: 16px;
   border-top: 1px solid var(--line);
 }
-.body-toolbar .body-label { color: var(--ink-4); font-size: 12px; }
 .body-note {
   margin: 12px 0 0;
   padding: 8px 12px;
@@ -1371,6 +1369,66 @@ tbody tr:hover td { background: var(--accent-softer); }
 .more-passages summary { cursor: pointer; color: var(--ink-3); font-size: 14px; font-weight: 600; }
 .more-passages summary:hover { color: var(--accent); }
 .partial-note { margin: 18px 0 6px; padding-top: 12px; border-top: 1px dashed var(--line-strong); color: var(--ink-4); font-size: 12.5px; }
+
+/* 首页：来源断更提示 */
+.notice { margin: 12px 0 0; padding: 8px 12px; border-radius: var(--radius-control); background: var(--bg-sunk); color: var(--ink-3); font-size: 13px; line-height: 1.6; }
+
+/* 文章页：同一篇的另一份 */
+.elsewhere a { color: var(--accent); }
+
+/* 问库：没核对上的句子 */
+.checks { margin: 16px 0 8px; padding: 12px 14px; border-radius: var(--radius-tile); background: var(--amber-soft); }
+.checks h3 { margin: 0 0 6px; color: var(--amber-ink); font-size: 14px; }
+.checks ul { margin: 0; padding: 0; list-style: none; }
+.checks li + li { margin-top: 8px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--amber) 22%, transparent); }
+.check-sentence { margin: 0; color: var(--ink-2); font-size: 14px; line-height: 1.7; }
+.check-sentence .cite { color: var(--accent); font-size: 12.5px; }
+.check-problems { margin: 2px 0 0; color: var(--amber-ink); font-size: 12.5px; line-height: 1.6; }
+
+/* 问库：标「不相关」、补「漏了」 */
+.passage-foot { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 4px 12px; }
+.passage-foot .passage-full { flex: 1 1 12em; min-width: 0; }
+.mark-form { margin: 4px 0 0; }
+.mark { height: 24px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--ink-4); font: inherit; font-size: 12px; cursor: pointer; }
+.mark:hover { border-color: color-mix(in srgb, var(--hot) 45%, transparent); color: var(--hot); }
+.mark.is-on { border-color: transparent; background: color-mix(in srgb, var(--hot) 12%, transparent); color: var(--hot); }
+.citations li.flagged { opacity: .45; }
+.citations li.flagged:hover { opacity: .8; }
+.missing-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--line-soft); color: var(--ink-3); font-size: 13.5px; }
+.missing-form input { flex: 1 1 14em; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--field); color: var(--ink); font: inherit; }
+.missing-form button { height: 34px; padding: 0 14px; border: 0; border-radius: var(--radius-control); background: var(--accent); color: var(--accent-contrast); font: inherit; cursor: pointer; }
+.missing-list { margin: 8px 0 0; padding-left: 1.2em; color: var(--ink-3); font-size: 13.5px; line-height: 1.7; }
+.missing-list a { color: var(--accent); }
+
+/* 公司页：观点时间线 */
+.views { margin: 28px 0 8px; }
+.views .list-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.views h2 { margin: 0; color: var(--ink-3); font-size: 13px; font-weight: 600; }
+.views-pending { margin: 8px 0 0; }
+.view-list { margin: 10px 0 0; padding: 0; list-style: none; }
+.view { padding: 12px 0 12px 14px; border-left: 3px solid var(--line); }
+.view + .view { margin-top: 8px; }
+.view.stance-positive { border-left-color: color-mix(in srgb, var(--ok) 60%, transparent); }
+.view.stance-negative { border-left-color: color-mix(in srgb, var(--hot) 60%, transparent); }
+.view.stance-mixed { border-left-color: color-mix(in srgb, var(--amber) 70%, transparent); }
+.stance, .stance-change { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--radius-mark); font-size: 11.5px; font-weight: 600; }
+.stance.stance-positive { background: var(--ok-soft); color: var(--ok-ink); }
+.stance.stance-negative { background: color-mix(in srgb, var(--hot) 12%, transparent); color: var(--hot); }
+.stance.stance-mixed { background: var(--amber-soft); color: var(--amber-ink); }
+.stance-change { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hot) 45%, transparent); color: var(--hot); }
+.view-judgment { margin: 6px 0 0; color: var(--ink); font-size: 16px; font-weight: 600; line-height: 1.6; }
+.view-mechanism { margin: 4px 0 0; color: var(--ink-2); font-size: 14.5px; line-height: 1.7; }
+.view-label { margin-right: 8px; color: var(--ink-4); font-size: 12px; font-weight: 600; }
+.view-extra { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 8px 0 0; font-size: 14px; line-height: 1.65; }
+.view-extra dt { padding-top: 2px; color: var(--ink-4); font-size: 12px; font-weight: 600; }
+.view-extra dd { margin: 0; color: var(--ink-2); }
+.view-extra ul { margin: 0; padding-left: 1.1em; }
+.view-quote { margin: 8px 0 0; padding: 6px 10px; border-left: 2px solid var(--line-strong); border-radius: 0 var(--radius-control) var(--radius-control) 0; background: var(--bg-sunk); font-size: 14px; line-height: 1.7; }
+.view-quote a { color: var(--ink-2); }
+.view-quote a:hover { color: var(--accent); }
+.view-source { margin: 6px 0 0; font-size: 13px; line-height: 1.6; }
+.view-source a { color: var(--ink-3); }
+.view-source a:hover { color: var(--accent); }
 
 @media (max-width: 719px) {
   /* 手机上持仓卡两列，只留名字、标记、篇数和月度条；作者和最近一篇在桌面宽度和首页「持仓近况」里看。 */

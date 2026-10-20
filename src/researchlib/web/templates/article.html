@@ -15,6 +15,7 @@
       <span aria-hidden="true">·</span>
       <time datetime="{{ iso }}">{{ date }}{% if time %} {{ time }}{% endif %}</time>
       {% if relative %}<span aria-hidden="true">·</span><span>{{ relative }}</span>{% endif %}
+      {% if elsewhere %}<span aria-hidden="true">·</span><span class="elsewhere">同一篇也在{% for item in elsewhere %} <a href="/articles/{{ item.id }}">{{ item.source }}</a>{% endfor %}</span>{% endif %}
     </p>
     <h1>{{ article.title }}</h1>
     {% if title_zh and body_language != 'original' %}
@@ -22,29 +23,21 @@
     {% endif %}
     {% if quoted %}
     <aside class="quoted" aria-label="引用的段落">
-      <p class="quoted-label">问答引用的段落{% if quoted.heading %} · {{ quoted.heading }}{% endif %}</p>
+      {% if quoted.heading %}<p class="quoted-label">{{ quoted.heading }}</p>{% endif %}
       <p>{{ quoted.body }}</p>
     </aside>
     {% endif %}
 
-    {% if has_translation or body_html %}
+    {% if has_translation %}
     <div class="body-toolbar">
-      <span class="body-label">
-        {% if body_language == 'pairs' %}正文 · 中英对照
-        {% elif body_language == 'zh' %}正文 · AI 翻译
-        {% elif has_translation %}正文 · 原文
-        {% else %}正文{% endif %}
-      </span>
-      {% if has_translation %}
       <nav class="lang-tabs" aria-label="正文语言">
         <a href="/articles/{{ article.id }}" {% if body_language == 'pairs' %}aria-current="page"{% endif %}>对照</a>
         <a href="/articles/{{ article.id }}/zh" {% if body_language == 'zh' %}aria-current="page"{% endif %}>中文</a>
         <a href="/articles/{{ article.id }}/original" {% if body_language == 'original' %}aria-current="page"{% endif %}>原文</a>
       </nav>
-      {% endif %}
     </div>
-    {% if has_translation and not translation_complete and body_language != 'original' %}
-    <p class="body-note">{% if body_language == 'pairs' %}部分段落暂无译文，保留原文。{% else %}译文尚不完整，完整内容请切换到原文。{% endif %}</p>
+    {% if not translation_complete and body_language != 'original' %}
+    <p class="body-note">{% if body_language == 'pairs' %}部分段落没有译文。{% else %}译文不完整。{% endif %}</p>
     {% endif %}
     {% endif %}
 
@@ -58,7 +51,7 @@
       {% endfor %}
     </div>
     {% elif body_html %}
-    <div class="prose with-toolbar">{{ body_html }}</div>
+    <div class="prose{% if has_translation %} with-toolbar{% endif %}">{{ body_html }}</div>
     {% endif %}
   </article>
 </div>

@@ -14,8 +14,12 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
 from researchlib.ask import PRESETS, retry, start
+from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
+from researchlib.digest import PROMPT_VERSION as DIGEST_PROMPT_VERSION
 from researchlib.digest import schedule_digests
+from researchlib.feedback import add_missing, toggle_irrelevant
+from researchlib.feedback import marks as feedback_marks
 from researchlib.llm import llm_configured
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card
 from researchlib.portfolio import ROLE_LABELS, Portfolio, load_portfolio
@@ -25,6 +29,11 @@ from researchlib.snippets import answer_html, highlight_full, highlight_snippet,
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, split_frontmatter, strip_duplicate_title
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
+from researchlib.views import FILTERS as VIEW_FILTERS
+from researchlib.views import count_pending as count_view_pending
+from researchlib.views import filter_timeline, tracked_companies
+from researchlib.views import queue_for_company as queue_views
+from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
 from researchlib.web.daybrief import compose_day_brief
 from researchlib.web.present import (
@@ -48,6 +57,7 @@ from researchlib.web.present import (
     relative_label,
     resolve_feed_instant,
     sparkline,
+    stale_sources,
     weekday_label,
 )
 from researchlib.web.scoping import parse_day, resolve_scope
@@ -231,6 +241,9 @@ def _decorate(conn, cards: list[dict], settings) -> list[dict]:
         if digest and not card.get("summary"):
             card["summary"] = digest["summary"]
             card["points"] = _digest_points(digest)
+            if (digest.get("prompt_version") or 1) < DIGEST_PROMPT_VERSION:
+                # 旧版提示词写的摘要先照常显示，后台按新版重写。
+                pending.append((card["id"], card.get("author") or ""))
         elif not card.get("summary"):
             pending.append((card["id"], card.get("author") or ""))
         card.pop("body_text", None)
@@ -302,6 +315,15 @@ def home(request: Request):
         counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request))
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
+        stale = []
+        if plan["page"] == 1 and settings.stale_banner_enabled:
+            watched = [by_id[chosen]] if chosen else feed
+            stale = stale_sources(
+                watched,
+                queries.recent_publish_times(conn, [source.id for source in watched]),
+                queries.last_imports(conn, [source.id for source in watched]),
+                settings.display_timezone,
+            )
         holdings = []
         portfolio = active_portfolio(request)
         if not chosen and plan["page"] == 1 and portfolio.names:
@@ -324,11 +346,9 @@ def home(request: Request):
                 )
     if chosen:
         heading = by_id[chosen].name
-        lede = "只看这个来源，仍按天从新到旧。"
         empty = "这个来源还没有文章。"
     else:
         heading = "按天"
-        lede = "按日期从新到旧，只含有发布时间的来源。同一天里，新的在前。翻页按整天翻。"
         empty = "还没有文章。"
     return render_page(
         request,
@@ -336,7 +356,6 @@ def home(request: Request):
         {
             "nav": "archive",
             "title": heading,
-            "lede": lede,
             "empty": empty,
             "sources": sources,
             "active_source": chosen or "",
@@ -349,6 +368,7 @@ def home(request: Request):
             "undated": counts["undated"],
             "sample_banner": banner,
             "holdings": holdings,
+            "stale": stale,
         },
     )
 
@@ -472,7 +492,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
         digest = queries.digests_for(conn, [article_id]).get(article_id)
-        if digest is None:
+        if digest is None or (digest.get("prompt_version") or 1) < DIGEST_PROMPT_VERSION:
             schedule_digests(settings, [(article_id, source.author)])
         quoted = None
         if chunk_arg is not None and chunk_arg.isdigit():
@@ -480,6 +500,11 @@ def _article_view(request: Request, article_id: int, mode: str):
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
         banner = queries.sample_state(conn, ids)
         translation = queries.get_translation(conn, article_id)
+        elsewhere = [
+            {"id": row["id"], "source": by_id[row["source_id"]].name}
+            for row in queries.same_article_elsewhere(conn, article_id, article["duplicate_of"], ids)
+            if row["source_id"] in by_id
+        ]
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     _frontmatter, body_md = split_frontmatter(article["body_md"])
@@ -554,6 +579,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "pairs": pairs or [],
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
+            "elsewhere": elsewhere,
             "sources": sources,
             "sample_banner": banner,
         },
@@ -619,6 +645,7 @@ def search_page(request: Request):
                         "snippets": [highlight_snippet(p.body, query, terms=terms) for p in hit.passages[:2]],
                         "heading": best.heading if best else "",
                         "chunk": best.ord if best else None,
+                        "anchor": best.anchor if best else "",
                         "partial": not hit.full,
                     },
                 )
@@ -832,6 +859,8 @@ def company_page(request: Request, company_id: int):
         page, pages, offset = page_window(total, _page_arg(request), settings.page_size)
         articles = queries.company_articles(conn, company_id, ids, depth_filter, settings.page_size, offset)
         banner = queries.sample_state(conn, all_ids)
+        portfolio = active_portfolio(request)
+        views_block = _company_views(request, conn, company, portfolio, by_id, author)
         matcher = CompanyMatcher([company])
         rows = _decorate(
             conn,
@@ -844,14 +873,16 @@ def company_page(request: Request, company_id: int):
                         "depth": row["depth"],
                         "depth_label": DEPTH_LABELS[row["depth"]],
                         "hits": row["hit_count"],
-                        "snippet": mention_snippet(row["body_text"] or "", matcher.spans(row["body_text"] or "")),
+                        "snippet": mention_snippet(
+                            row["body_text"] or "",
+                            matcher.document(row["title"], row["body_text"] or "").spans(row["body_text"] or ""),
+                        ),
                     },
                 )
                 for row in articles
             ],
             settings,
         )
-    portfolio = active_portfolio(request)
     for card in rows:
         card["tags"] = [tag for tag in card["tags"] if tag["id"] != company_id]
     by_year: list[dict] = []
@@ -910,10 +941,50 @@ def company_page(request: Request, company_id: int):
             "page": page,
             "pages": pages,
             "total": total,
+            "views": views_block,
             "sources": sources,
             "sample_banner": banner,
         },
     )
+
+
+VIEWS_PAGE_SIZE = 20
+
+
+def _company_views(request: Request, conn, company, portfolio: Portfolio, by_id: dict, author: str) -> dict | None:
+    """持仓和观察公司的观点时间线。别的公司不整理，返回 None。缺的在后台排队，不挡住页面。"""
+    settings = request.app.state.settings
+    if not portfolio.role(company["name_zh"]):
+        return None
+    kind = request.query_params.get("views") or ""
+    if kind not in VIEW_FILTERS:
+        kind = ""
+    company_id = int(company["id"])
+    tracked_ids = [int(row["id"]) for row in tracked_companies(conn, list(portfolio.names))]
+    items = view_timeline(conn, company_id, by_id, settings)
+    pending = count_view_pending(conn, company_id, list(by_id))
+    if pending:
+        queue_views(conn, settings, company_id, tracked_ids, by_id)
+    scoped = filter_timeline(items, "", author)
+    chosen = filter_timeline(items, kind, author)
+    raw_page = request.query_params.get("vpage", "1")
+    page, pages, offset = page_window(len(chosen), int(raw_page) if raw_page.isdigit() else 1, VIEWS_PAGE_SIZE)
+    base = _query_string(author=author, depth=request.query_params.get("depth") or "")
+    return {
+        "items": chosen[offset : offset + VIEWS_PAGE_SIZE],
+        "kind": kind,
+        "filters": [
+            {"key": "", "label": "全部", "count": len(scoped)},
+            *[
+                {"key": key, "label": label, "count": len(filter_timeline(items, key, author))}
+                for key, label in VIEW_FILTERS.items()
+            ],
+        ],
+        "pending": pending,
+        "page": page,
+        "pages": pages,
+        "base": base,
+    }
 
 
 def _day_back(info: dict, company) -> str:
@@ -1099,6 +1170,8 @@ def ask_answer(request: Request, answer_id: int):
         context = _ask_context(request, sources, info, conn)
         context["question"] = row["question"]
         banner = queries.sample_state(conn, [source.id for source in sources])
+        labels = feedback_marks(conn, answer_id)
+    citations = row["citations"] or []
     result = {
         "id": row["id"],
         "question": row["question"],
@@ -1106,9 +1179,17 @@ def ask_answer(request: Request, answer_id: int):
         "error": row["error"],
         "status": row["status"],
         "model": row["model"],
-        "citations": row["citations"] or [],
+        "citations": citations,
         "terms": row["terms"] or [],
         "created": format_date(row["created_at"], request.app.state.settings.display_timezone),
+        "checks": (
+            check_answer(row["answer"], citations, {source.author for source in sources})
+            if row["status"] == "done" and row["answer"]
+            else []
+        ),
+        "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
+        "missing": labels["missing"],
+        "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
     }
     return render_page(
         request,
@@ -1122,6 +1203,39 @@ def ask_answer(request: Request, answer_id: int):
             **context,
         },
     )
+
+
+FEEDBACK_ERRORS = {"ref": "贴文章链接或编号，例如 /articles/123", "absent": "库里没有这篇文章"}
+
+
+@router.post("/ask/{answer_id}/feedback")
+async def ask_feedback(request: Request, answer_id: int):
+    """回答页上的标注：某段原文不相关（再点一次取消），或补一篇漏了的文章。"""
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    form = await request.form()
+    label = str(form.get("label") or "")
+    with database(request) as conn:
+        if queries.get_answer(conn, answer_id) is None:
+            raise HTTPException(status_code=404)
+        if label == "irrelevant":
+            try:
+                article_id = int(str(form.get("article") or ""))
+                chunk_raw = str(form.get("chunk") or "")
+                chunk = int(chunk_raw) if chunk_raw.isdigit() else None
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="缺少文章") from exc
+            toggle_irrelevant(conn, answer_id, article_id, chunk)
+            anchor = str(form.get("n") or "")
+            return RedirectResponse(f"/ask/{answer_id}" + (f"#c-{anchor}" if anchor.isdigit() else ""), status_code=303)
+        if label == "missing":
+            try:
+                add_missing(conn, answer_id, str(form.get("ref") or ""), str(form.get("note") or ""))
+            except ValueError as exc:
+                code = "absent" if str(exc).startswith("库里没有") else "ref"
+                return RedirectResponse(f"/ask/{answer_id}?feedback_error={code}#missing", status_code=303)
+            return RedirectResponse(f"/ask/{answer_id}#missing", status_code=303)
+    raise HTTPException(status_code=400, detail="label 只能是 irrelevant 或 missing")
 
 
 @router.post("/ask/{answer_id}/retry")

@@ -18,12 +18,14 @@ import logging
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, fields
 from datetime import date
 
 from psycopg.types.json import Jsonb
 
+from researchlib.citecheck import check_answer
 from researchlib.config import Settings
 from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured
 from researchlib.retrieval import Retrieval, analyze, cited_numbers, retrieve
@@ -92,7 +94,8 @@ def _passage_dict(index: int, passage, sources_by_id: dict, zone: str) -> dict:
         "source": source.name if source else passage.source_id,
         "author": source.author if source else "",
         "date": format_date(passage.published_at, zone),
-        "url": f"/articles/{passage.article_id}?chunk={passage.ord}",
+        "url": passage.url,
+        "lang": passage.lang,
         "matched": list(passage.matched or []),
     }
 
@@ -318,25 +321,43 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         scope = scope_from_json(stored)
         sources = enabled_sources(load_sources(settings.sources_path))
         expansions: dict[str, list[str]] = {}
+        started = time.monotonic()
         if not preset:
             originals = [t.text for t in analyze(conn, question, sources).terms if t.kind == "word"]
             expansions = expand_terms(settings, question, originals)
+        expanded = time.monotonic()
         found = retrieve(conn, question, scope, sources, purpose="deep", preset=preset, expansions=expansions)
         chronological = bool(found.query and (found.query.overview or found.query.timeline))
         passages = _passages(found, sources, settings, chronological=chronological)
+        retrieved = time.monotonic()
         if not passages:
             raise LLMError("范围内没有召回到任何段落。")
         answer, model = synthesize(settings, question, passages)
+        finished = time.monotonic()
         cited = set(cited_numbers(answer, len(passages)))
         for item in passages:
             item["cited"] = item["n"] in cited
+        chars = sum(len(item["text"]) + 80 for item in passages)
+        # 各步耗时、读了多少资料、模型给的同义词：research-eval-feedback 用来看真实效果。
+        stats = {
+            "expand_s": round(expanded - started, 2),
+            "retrieve_s": round(retrieved - expanded, 2),
+            "synthesize_s": round(finished - retrieved, 2),
+            "total_s": round(finished - started, 2),
+            "passages": len(passages),
+            "cited": len(cited),
+            "chars": chars,
+            "batches": 1 if chars <= SINGLE_CALL_CHARS else len(_batches(passages, BATCH_CHARS)),
+            "expansions": expansions,
+        }
         conn.execute(
             """
             UPDATE llm_answers
-            SET answer = %s, citations = %s, model = %s, status = 'done', error = '', terms = %s, updated_at = now()
+            SET answer = %s, citations = %s, model = %s, status = 'done', error = '', terms = %s, stats = %s,
+                updated_at = now()
             WHERE id = %s
             """,
-            (answer, Jsonb(passages), model, Jsonb(found.terms), answer_id),
+            (answer, Jsonb(passages), model, Jsonb(found.terms), Jsonb(stats), answer_id),
         )
         conn.commit()
     except Exception as exc:
@@ -398,6 +419,7 @@ def ask(conn, settings: Settings, question: str, scope: Scope, sources, *, save:
             "status": row["status"],
             "error": row["error"],
             "terms": row["terms"],
+            "checks": check_answer(row["answer"], row["citations"] or [], {source.author for source in sources}),
         }
     )
     return result

@@ -76,12 +76,9 @@
       </div>
       <div class="frame">
         {% if sample_banner %}
-        <p class="banner">当前库里全是示例数据，不是付费原文。把真实归档放进 data/inbox 后按文档导入。</p>
+        <p class="banner">当前库里全是示例数据。</p>
         {% endif %}
         {% block body %}{% endblock %}
-        <footer class="colophon">
-          <p>私人归档，仅供本人阅读。站点放在 Cloudflare Access 后面，进程只通过本机回环地址对外提供。</p>
-        </footer>
       </div>
     </main>
   </div>

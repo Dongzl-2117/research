@@ -4,10 +4,12 @@
 <header class="page-head head-row">
   <div>
     <h1>{{ title }}</h1>
-    <p class="lede">{{ lede }}</p>
   </div>
   {{ date_jump("/", active_source) }}
 </header>
+{% for item in stale %}
+<p class="notice">{{ item.name }} {{ item.idle_days }} 天没有新文章，{{ item.typical }}{% if item.imported %}；最近一次导入 {{ item.imported }}{% endif %}。</p>
+{% endfor %}
 <div class="page-tools">
   <nav class="pills" aria-label="来源">
     <a href="/" {% if not active_source %}aria-current="page"{% endif %}><span>全部</span></a>
@@ -25,7 +27,7 @@
 </div>
 {% if holdings %}
 <section class="card holdings-now" aria-label="持仓近况">
-  <h2><a href="/companies">持仓近况</a><span class="quiet">最近一篇深入谈到它的文章，和近 30 天的篇数</span></h2>
+  <h2><a href="/companies">持仓近况</a></h2>
   <ul>
     {% for item in holdings %}
     <li>

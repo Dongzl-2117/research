@@ -5,7 +5,7 @@
   <div>
     <p class="byline"><a href="/authors">作者</a><span aria-hidden="true">·</span><span>{{ author_name }}</span></p>
     <h1>{{ author_name }}</h1>
-    <p class="lede">按日期从新到旧。同一天里，新的在前。{% if first %}收录 <span class="num">{{ first }}</span> 至 <span class="num">{{ last }}</span>。{% endif %}</p>
+    {% if first %}<p class="lede num">{{ first }} 至 {{ last }}</p>{% endif %}
   </div>
   {{ date_jump("/authors/" ~ (author_name | urlencode), active_source) }}
 </header>

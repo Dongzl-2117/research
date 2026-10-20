@@ -79,7 +79,7 @@ def test_article_template_is_title_body_and_bilingual_tabs():
         siblings=[],
         quoted={"heading": "第一节", "body": "被引用的段落"},
     )
-    assert "正文 · 中英对照" in html
+    assert 'class="lang-tabs"' in html and "正文 · 中英对照" not in html
     assert 'href="/articles/1/zh"' in html
     assert 'href="/articles/1/original"' in html
     assert "你好" in html

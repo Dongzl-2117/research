@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 
+from researchlib.chunks import replace_translation_chunks
 from researchlib.render import render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
 from researchlib.translate.language import is_chinese
@@ -81,6 +84,19 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
     if problem:
         raise RuntimeError(f"translation alignment: {problem}")
     return texts
+
+
+def _translate_title(title: str, data_dir: Path) -> str:
+    """标题单独译一次，给检索和列表用。失败不影响正文译文。"""
+    title = (title or "").strip()
+    if not title or is_chinese(title):
+        return ""
+    try:
+        texts = _translate_batch([escape(title)], {}, data_dir)
+    except Exception:
+        return ""
+    plain = re.sub(r"<[^>]+>", "", texts[0] if texts else "")
+    return html_lib.unescape(re.sub(r"\s+", " ", plain)).strip()[:300]
 
 
 def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResult:
@@ -155,7 +171,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     zh_text = re.sub(r"<[^>]+>", " ", zh_html)
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
     complete = done == len(targets)
-    title_zh = ""
+    title_zh = _translate_title(article["title"] or "", data_dir)
     conn.execute(
         """
         INSERT INTO article_translations (
@@ -174,6 +190,8 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         """,
         (article_id, digest, title_zh, zh_html, zh_text, complete, done),
     )
+    # 译文切块进检索：中文问题也能找到英文文章，引用落到对照页那一段。
+    replace_translation_chunks(conn, article_id)
     conn.commit()
     return TranslateResult(
         article_id,
@@ -183,12 +201,13 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
 
 
 def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:
-    """尚无译文、或原文 hash 已变的英文文章。"""
+    """尚无译文、或原文 hash 已变的英文文章。同一篇的重复只译主版本。"""
     params: list[object] = []
     where = [
-        "NOT EXISTS (",
-        "  SELECT 1 FROM article_translations t",
-        "  WHERE t.article_id = a.id AND t.content_hash = a.content_hash AND t.complete",
+        "a.duplicate_of IS NULL",
+        "NOT EXISTS ("
+        " SELECT 1 FROM article_translations t"
+        " WHERE t.article_id = a.id AND t.content_hash = a.content_hash AND t.complete"
         ")",
     ]
     if source_id:

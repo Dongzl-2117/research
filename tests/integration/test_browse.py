@@ -60,7 +60,8 @@ def test_home_pages_by_shanghai_day(conn, settings):
         first = client.get("/")
         assert first.status_code == 200
         text = first.text
-        assert "按日期从新到旧" in text
+        # 页面上不再写怎么排序这类说明。
+        assert "按日期从新到旧" not in text
         assert text.find("3月13日") < text.find("边界十点") < text.find("边界凌晨")
         assert text.find("10:00") < text.find("00:05")
         assert "前一天" not in text
@@ -77,7 +78,7 @@ def test_home_pages_by_shanghai_day(conn, settings):
         filtered = client.get("/", params={"source": "fangwei-mp"})
         assert "边界十点" in filtered.text
         assert "别的来源" not in filtered.text
-        assert "只看这个来源" in filtered.text
+        assert "只看这个来源" not in filtered.text
         assert client.get("/authors/林文丰").status_code == 200
         assert client.get("/authors/没有这个人").status_code == 404
 
@@ -111,7 +112,7 @@ def test_search_ranks_title_above_body_and_matches_author(conn, settings):
         assert "方伟</span><strong>" in author.text
         missing = client.get("/search", params={"q": "绝无此词xyz"})
         assert "没有找到" in missing.text
-        assert "换个词" in missing.text
+        assert "换个词" not in missing.text
 
 
 def test_backfill_fills_null_dates_from_stored_text(conn, settings):
