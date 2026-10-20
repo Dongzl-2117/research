@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from researchlib.ingest.model import ParsedDoc
+from researchlib.ingest.parse import comments_section
 from researchlib.ingest.store import store_documents
 from researchlib.ocr import run_ocr
 from researchlib.remote_images import FetchError, fetch_pending
@@ -94,6 +95,30 @@ def test_reimport_keeps_the_full_text(conn, settings):
         diff = client.get(f"/articles/{original['id']}/revisions").text
         assert "改过以后" in diff and "该内容已被发布者删除" in diff and 'class="diff-del"' in diff
         assert client.get("/articles/999999/revisions").status_code == 404
+
+
+def test_new_comment_replies_are_not_an_edit(conn, settings):
+    replies = [("问一", "答一：主站的货币化率还有空间。")]
+    first = LONG + comments_section(replies, LONG)
+    _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", first)])
+    article = _article(conn, "zsxq:9")
+    # 评论里多了作者的回复：照常更新，不算改稿，不记旧版。
+    more = LONG + comments_section([*replies, ("", "补充：关税的影响要分两段看。")], LONG)
+    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", more)]).updated == 1
+    assert _article(conn, "zsxq:9")["body_md"] == more
+    revisions = "SELECT kind FROM article_revisions WHERE article_id = %s ORDER BY id"
+    assert conn.execute(revisions, (article["id"],)).fetchall() == []
+    # 这次导出没带评论：库里那份更全，不动，也不算截短。
+    report = _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", LONG)])
+    assert report.unchanged == 1 and report.held == 0
+    assert _article(conn, "zsxq:9")["body_md"] == more
+    # 作者真的改了正文：照常替换并存旧版。
+    edited = LONG.replace("第 3 段：腾讯", "第 3 段：改过以后，腾讯")
+    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", edited + comments_section(replies, edited))]).updated
+    assert [row["kind"] for row in conn.execute(revisions, (article["id"],)).fetchall()] == ["previous"]
+    # 正文被删成删稿提示、评论还在：照样拦下。
+    gone = "该内容已被发布者删除" + comments_section(replies, "")
+    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", gone)]).held == 1
 
 
 def test_held_version_does_not_drop_the_images(conn, settings):

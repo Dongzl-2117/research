@@ -119,6 +119,8 @@ _ZSXQ_TAG = re.compile(r"<e\b([^>]*)/?>", re.I)
 _ZSXQ_ATTR = re.compile(r"""(\w+)\s*=\s*["']([^"']*)["']""")
 _ANY_TAG = re.compile(r"<[^>]+>")
 _KEEP_CHARS = re.compile(r"[0-9A-Za-z一-鿿]+")
+# 知识星球导入时接在正文后面的一节。重新导入时只有这一节变了（多了回复）不算改稿，见 revisions.split_comments。
+COMMENTS_MARKER = "\n\n## 评论里的回复\n\n"
 
 
 def zsxq_text(raw: object) -> str:
@@ -215,7 +217,7 @@ def comments_section(pairs: list[tuple[str, str]], body: str) -> str:
         lines.append(f"作者答：{reply}" if question else f"作者补充：{reply}")
     if not lines:
         return ""
-    return "\n\n## 评论里的回复\n\n" + "\n\n".join(lines) + "\n"
+    return COMMENTS_MARKER + "\n\n".join(lines) + "\n"
 
 
 def extract_zsxq_topics(data: object) -> list[dict]:

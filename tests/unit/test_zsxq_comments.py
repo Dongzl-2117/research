@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from researchlib.ingest.parse import author_replies, comments_section, parse_archive, zsxq_text
+from researchlib.revisions import split_comments
 
 OWNER = {"user_id": 1001, "name": "方伟"}
 READER = {"user_id": 2002, "name": "某读者"}
@@ -59,6 +60,14 @@ def test_comments_section_skips_replies_already_in_the_body():
     assert "读者问：问一" in section and "作者答：答一" in section and "作者补充：补充" in section
     assert "答一" not in comments_section(pairs, "正文里已经有：答一，主站的货币化率还有空间。")
     assert comments_section([], "正文") == ""
+
+
+def test_split_comments_separates_the_appended_section():
+    body = "正文。" + comments_section([("问一", "答一，主站的货币化率还有空间。")], "正文。")
+    article, comments = split_comments(body)
+    assert article == "正文。" and comments.startswith("\n\n## 评论里的回复\n\n") and "作者答：答一" in comments
+    assert split_comments("没有评论的正文。") == ("没有评论的正文。", "")
+    assert split_comments("") == ("", "")
 
 
 def test_zsxq_import_appends_author_replies(tmp_path: Path):

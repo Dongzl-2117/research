@@ -52,6 +52,20 @@ def _plain(text: str) -> str:
     return _SPACE.sub("", text or "")
 
 
+def split_comments(body_md: str) -> tuple[str, str]:
+    """(作者写的正文, 导入时接在后面的「评论里的回复」)。没有那一节时第二项是空串。
+
+    评论会越积越多，重新导入时只有这一节变了，不是作者改了文章：不记旧版，也不拿它判断删稿、截短。
+    """
+    from researchlib.ingest.parse import COMMENTS_MARKER
+
+    text = body_md or ""
+    index = text.rfind(COMMENTS_MARKER)
+    if index < 0:
+        return text, ""
+    return text[:index], text[index:]
+
+
 def judge_replacement(old_text: str, new_text: str) -> str:
     """新正文能不能替换旧的。返回 "" 表示可以，"deleted" / "shrunk" 表示拦下。"""
     old_plain = _plain(old_text)

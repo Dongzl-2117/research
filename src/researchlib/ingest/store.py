@@ -17,7 +17,7 @@ from researchlib.mentions import (
     mentions_for_document,
     replace_mentions,
 )
-from researchlib.revisions import held_before, judge_replacement, save_revision
+from researchlib.revisions import held_before, judge_replacement, save_revision, split_comments
 from researchlib.sources import Source
 from researchlib.textutil import content_hash, markdown_to_text, split_frontmatter, strip_duplicate_title
 
@@ -115,11 +115,30 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         """,
         (source.id, doc.external_id),
     ).fetchone()
+    keep = False
+    article_changed = True
     if existing is not None and existing["content_hash"] != digest:
-        held = _hold_if_suspicious(conn, existing, doc, digest, body_text, meta)
-        if held:
-            # 库里的完整原文和它的图片都不动。
-            return "held", 0, 0, 0, None
+        old_article, old_comments = split_comments(existing["body_md"])
+        new_article, new_comments = split_comments(doc.body_md)
+        if old_article == new_article and existing["title"] == doc.title:
+            # 作者写的正文没变，只是接在后面的「评论里的回复」变了：不算改稿。回复少了（这次导出没带评论，
+            # 或者回复被删了）时库里那份更全，不动。
+            article_changed = False
+            keep = len(new_comments) < len(old_comments)
+        else:
+            held = _hold_if_suspicious(
+                conn,
+                existing,
+                doc,
+                digest,
+                old_text=_body_text(existing["title"], old_article),
+                new_text=_body_text(doc.title, new_article),
+                body_text=body_text,
+                meta=meta,
+            )
+            if held:
+                # 库里的完整原文和它的图片都不动。
+                return "held", 0, 0, 0, None
     if existing is None:
         inserted = conn.execute(
             """
@@ -142,9 +161,9 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         ).fetchone()
         article_id = inserted["id"]
         status = "inserted"
-    elif existing["content_hash"] != digest:
-        if existing["body_md"] != doc.body_md or existing["title"] != doc.title:
-            # 替换前把旧版存下来。只改了发布时间的不算改稿。
+    elif existing["content_hash"] != digest and not keep:
+        if article_changed and (existing["body_md"] != doc.body_md or existing["title"] != doc.title):
+            # 替换前把旧版存下来。只改了发布时间、只多了评论里的回复的不算改稿。
             save_revision(
                 conn,
                 existing["id"],
@@ -201,11 +220,16 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     return status, stored, linked, missing, duplicate
 
 
-def _hold_if_suspicious(conn, existing, doc: ParsedDoc, digest: str, body_text: str, meta: dict) -> bool:
-    """新正文像删除提示、或比库里短一半以上：不替换，把这一版记成 held。返回是否拦下了。"""
+def _hold_if_suspicious(
+    conn, existing, doc: ParsedDoc, digest: str, *, old_text: str, new_text: str, body_text: str, meta: dict
+) -> bool:
+    """新正文像删除提示、或比库里短一半以上：不替换，把这一版记成 held。返回是否拦下了。
+
+    old_text / new_text 只是作者写的正文（不含「评论里的回复」），评论多少不影响判断。
+    """
     if held_before(conn, existing["id"], digest):
         return True
-    reason = judge_replacement(existing["body_text"], body_text)
+    reason = judge_replacement(old_text, new_text)
     if not reason:
         return False
     save_revision(
