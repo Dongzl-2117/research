@@ -31,7 +31,7 @@ compose exec -T db pg_dump -U research -d research --format=custom --compress=6 
 # 导出能被 pg_restore 读出目录，才算这份是完整的。
 compose exec -T db pg_restore --list < "$partial" > /dev/null
 mv "$partial" "$final"
-echo "$articles" > "$final.articles"
+echo "$articles" > "${final}.articles"
 
 if [ -d "$REPO/data/images" ]; then
   # 图片按内容哈希存，同名就是同一张。只增不删，误删了也还在备份里。
@@ -40,4 +40,4 @@ fi
 
 find "$BACKUP_DIR/db" -name 'research-*.dump*' -type f -mtime +"$KEEP_DAYS" -delete
 size="$(du -h "$final" | cut -f1)"
-echo "$(date '+%F %T') 备份完成：$final，$size，$articles 篇" | tee -a "$BACKUP_DIR/backup.log"
+echo "$(date '+%F %T') 备份完成：${final}，${size}，${articles} 篇" | tee -a "$BACKUP_DIR/backup.log"

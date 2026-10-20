@@ -22,7 +22,7 @@ log() {
 
 latest="$(ls -1 "$BACKUP_DIR"/db/research-*.dump 2>/dev/null | sort | tail -n 1 || true)"
 if [ -z "$latest" ]; then
-  log "试恢复失败：$BACKUP_DIR/db 里没有导出"
+  log "试恢复失败：${BACKUP_DIR}/db 里没有导出"
   exit 1
 fi
 
@@ -42,7 +42,7 @@ compose exec -T db pg_restore -U research -d "$CHECK_DB" --no-owner --exit-on-er
 restored="$(compose exec -T db psql -U research -d "$CHECK_DB" -Atc 'SELECT count(*) FROM articles')"
 expected="$(cat "$latest.articles" 2>/dev/null || echo 0)"
 if [ "$restored" -lt "$expected" ]; then
-  log "试恢复失败：$latest 恢复出 $restored 篇，导出时有 $expected 篇"
+  log "试恢复失败：${latest} 恢复出 ${restored} 篇，导出时有 ${expected} 篇"
   exit 1
 fi
-log "试恢复通过：$latest 恢复出 $restored 篇（导出时 $expected 篇）"
+log "试恢复通过：${latest} 恢复出 ${restored} 篇（导出时 ${expected} 篇）"
