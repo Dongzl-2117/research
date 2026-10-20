@@ -100,7 +100,7 @@
         {% if item.metrics %}<dt>验证指标</dt><dd><ul>{% for line in item.metrics %}<li>{{ line }}</li>{% endfor %}</ul></dd>{% endif %}
       </dl>
       {% endif %}
-      {% if item.quote %}<blockquote class="view-quote"><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.quote }}</a></blockquote>{% endif %}
+      {% if item.quote %}<blockquote class="view-quote"><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.quote }}</a></blockquote>{% endif %}
       <p class="view-source"><a href="/articles/{{ item.article_id }}">{{ item.title }}</a></p>
     </li>
     {% endfor %}

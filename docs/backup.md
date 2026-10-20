@@ -36,7 +36,8 @@ BACKUP_DIR/
 
 ```bash
 cd ~/research
-BACKUP_DIR=/Volumes/备份盘/research scripts/install-launchd.sh
+BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；云盘目录另定
+# 默认不装每小时 AIHOT 增量（抓取停着）。要装：INSTALL_INGEST_AIHOT=1 BACKUP_DIR=… scripts/install-launchd.sh
 ```
 
 装三个当前用户的定时任务（模板在 `deploy/launchd/`）：

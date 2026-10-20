@@ -1,5 +1,6 @@
 """定时增量导入：AIHOT 只读最近几天、只读白名单来源；首页在来源停更明显超过平时间隔时提示。"""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -105,7 +106,11 @@ def test_home_shows_a_notice_for_a_stalled_source(conn, settings):
     ]
     store_documents(conn, source=sources["fangwei-mp"], docs=docs, data_dir=settings.data_dir,
                     archive_files=len(docs), images_in_archive=0, errors=[])
+    # 默认关断更提示，避免 AIHOT 停更时首页假警报。
     with TestClient(create_app(settings)) as client:
+        assert "没有新文章" not in client.get("/").text
+    enabled = replace(settings, stale_banner_enabled=True)
+    with TestClient(create_app(enabled)) as client:
         home = client.get("/").text
         assert "方伟公众号 37 天没有新文章" in home or "方伟公众号 38 天没有新文章" in home
         assert "最近一次导入" in home

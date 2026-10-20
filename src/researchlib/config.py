@@ -70,6 +70,8 @@ class Settings:
     llm_timeout: float = 900.0
     # 持仓和观察名单。没有这个文件就当没有持仓。
     portfolio_path: Path | None = None
+    # 首页断更提示默认关：AIHOT 抓取停着时会对归档源假警报。需要时设 RESEARCH_STALE_BANNER=1。
+    stale_banner_enabled: bool = False
 
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> Settings:
@@ -109,6 +111,7 @@ class Settings:
                 if environ.get("PORTFOLIO_FILE")
                 else _existing_or_repo("config/portfolio.yaml")
             ),
+            stale_banner_enabled=environ.get("RESEARCH_STALE_BANNER", "0").strip() == "1",
         )
 
     @property

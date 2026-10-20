@@ -70,36 +70,38 @@ def _row(conn, external_id):
 
 def test_same_article_from_two_paths_keeps_one(conn, settings):
     _store(conn, settings, "fangwei-mp", [_doc("mp/2025-03-12.md", "腾讯的广告库存", BODY)])
-    # 同一篇又从 AIHOT 导进来：外部 id 不同、开头多了一行归档头。
+    # 同一篇又从 AIHOT 导进来：外部 id 不同、开头多了一行归档头。带归档头的略长，当主版本。
     report = _store(
         conn,
         settings,
         "fangwei-mp",
         [_doc("aihot:991", "腾讯的广告库存", "原创 方伟 方伟看十年 2025年3月12日 09:00 上海\n" + BODY)],
     )
-    assert report.duplicates == 1
     first, second = _row(conn, "mp/2025-03-12.md"), _row(conn, "aihot:991")
-    assert first["duplicate_of"] is None and second["duplicate_of"] == first["id"]
-    assert _count(conn, "article_chunks", second["id"]) == 0
-    assert _count(conn, "article_mentions", second["id"]) == 0
+    assert report.duplicates == 1 or first["duplicate_of"] == second["id"] or second["duplicate_of"] == first["id"]
+    assert first["duplicate_of"] == second["id"] and second["duplicate_of"] is None
+    assert _count(conn, "article_chunks", first["id"]) == 0
+    assert _count(conn, "article_mentions", first["id"]) == 0
     with TestClient(create_app(settings)) as client:
         home = client.get("/").text
-        assert f'href="/articles/{first["id"]}"' in home and f'href="/articles/{second["id"]}"' not in home
+        assert f'href="/articles/{second["id"]}"' in home and f'href="/articles/{first["id"]}"' not in home
         found = client.get("/search", params={"q": "广告库存"}).text
-        assert f'href="/articles/{first["id"]}' in found and f'href="/articles/{second["id"]}' not in found
-        page = client.get(f"/articles/{second['id']}")
+        assert f'href="/articles/{second["id"]}' in found and f'href="/articles/{first["id"]}' not in found
+        page = client.get(f"/articles/{first['id']}")
         assert page.status_code == 200 and "同一篇也在" in page.text
-        assert "同一篇也在" in client.get(f"/articles/{first['id']}").text
+        assert "同一篇也在" in client.get(f"/articles/{second['id']}").text
         tencent = conn.execute("SELECT id FROM companies WHERE name_zh = '腾讯'").fetchone()["id"]
         company = client.get(f"/companies/{tencent}").text
-        assert company.count(f'href="/articles/{first["id"]}') >= 1
-        assert f'href="/articles/{second["id"]}' not in company
+        assert company.count(f'href="/articles/{second["id"]}') >= 1
+        assert f'href="/articles/{first["id"]}' not in company
 
 
 def test_repost_on_another_source_of_the_same_author(conn, settings):
     _store(conn, settings, "fangwei-mp", [_doc("mp/a.md", "腾讯的广告库存", BODY)])
     _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:1", "星球转发", BODY + "\n\n星球里补一句：这篇先发在公众号。")])
-    assert _row(conn, "zsxq:1")["duplicate_of"] == _row(conn, "mp/a.md")["id"]
+    # 星球那版加了点评，正文更长，当主版本。
+    assert _row(conn, "mp/a.md")["duplicate_of"] == _row(conn, "zsxq:1")["id"]
+    assert _row(conn, "zsxq:1")["duplicate_of"] is None
     # 不同作者写了相同的话不算同一篇。
     _store(conn, settings, "chengfengpolang", [_doc("cf:1", "转述", BODY)])
     assert _row(conn, "cf:1")["duplicate_of"] is None
@@ -185,5 +187,62 @@ def test_short_repost_with_an_extra_line_is_found_at_ingest(conn, settings):
     ]
     _store(conn, settings, "fangwei-mp", [_doc("mp/short.md", "短文", "\n\n".join(lines))])
     repost = "\n\n".join(lines) + "\n\n星球里补一句：这篇先发在公众号。"
-    report = _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:short", "转发", repost)])
-    assert report.duplicates == 1
+    _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:short", "转发", repost)])
+    assert _row(conn, "mp/short.md")["duplicate_of"] == _row(conn, "zsxq:short")["id"]
+    assert _row(conn, "zsxq:short")["duplicate_of"] is None
+
+
+def test_prefers_longer_commentary_over_more_images(conn, settings):
+    """星球转发加了点评的那版即使图少，也要当主版本，不能被图多的公众号稿藏掉。"""
+    mp = _store(conn, settings, "fangwei-mp", [_doc("mp/img.md", "腾讯的广告库存", BODY)])
+    assert mp.inserted == 1
+    mp_id = _row(conn, "mp/img.md")["id"]
+    # 给公众号那份挂上多张图（模拟图多）。
+    for index in range(5):
+        conn.execute(
+            "INSERT INTO article_images (article_id, source_id, original_ref, storage_path, content_hash)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (mp_id, "fangwei-mp", f"img/{index}.jpg", f"images/fake-{index}.jpg", f"hash-{index}"),
+        )
+    conn.commit()
+    commentary = BODY + "\n\n星球补评：这一段广告库存的判断，后面要对照视频号时长再看一眼。"
+    _store(conn, settings, "fangwei-zsxq", [_doc("zsxq/img.md", "转发加评", commentary)])
+    zsxq, mp_row = _row(conn, "zsxq/img.md"), _row(conn, "mp/img.md")
+    assert zsxq["duplicate_of"] is None and mp_row["duplicate_of"] == zsxq["id"]
+
+
+def test_shared_cta_footer_does_not_merge_different_posts(conn, settings):
+    """两篇不同主题的正文，末尾都挂同一段很长的社群广告，不能并成一篇。"""
+    cta = "\n\n".join(
+        [
+            "为什么值得加入",
+            "1月份的腾讯都没买的话，这么多年的互联网白干了。",
+            "中国的股市真的魔幻，微信一个送礼物的功能，微盟一度涨了50%。",
+            "即便无人看好，依然加仓拼多多，静待花开。",
+            "1.2 万亿的美团真的被高估了吗？泡沫到底有多大？",
+            "1.4万亿的小米是不是下一个特斯拉？这个问题要分开看硬件和互联网。",
+            "京东外卖别说突破100万单，突破500万单也没用。",
+            "快手电商已死，只是余温尚存，别再按旧口径估。",
+            "微信会员群只适合有价值投资经验的朋友加入，888/年，送365/年星球会员。",
+        ]
+    )
+    xiaomi = "\n\n".join(
+        [
+            "群友问小米到底是制造业还是互联网。",
+            "小米接近一半利润来自互联网增值服务，毛利率七十多。",
+            "谁需要一个全是广告的廉价手机呢，品牌要靠体验。",
+            "小米的模式跟 Costco 的会员费模式学习了很多。",
+        ]
+    ) + cta
+    pdd = "\n\n".join(
+        [
+            "资本永远寻求更高的投资回报率，增长是企业永恒的命题。",
+            "美团与京东之战，抽象来看是一次没能全球化的内卷。",
+            "中国互联网最专注的公司是拼多多，国内外只有一个业务。",
+            "阿里京东业务线太多，协同性很差，美其名曰多元化布局。",
+        ]
+    ) + cta
+    _store(conn, settings, "fangwei-mp", [_doc("mp/xiaomi.md", "小米是制造业还是互联网", xiaomi)])
+    _store(conn, settings, "fangwei-mp", [_doc("mp/pdd.md", "拼多多的专注", pdd)])
+    assert _row(conn, "mp/xiaomi.md")["duplicate_of"] is None
+    assert _row(conn, "mp/pdd.md")["duplicate_of"] is None

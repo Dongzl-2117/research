@@ -250,9 +250,10 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
     rows = conn.execute(
         """
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.metrics,
-               v.quote, v.chunk_ord, a.title, a.published_at, a.source_id
+               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, a.title, a.published_at, a.source_id
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
+        LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang = ''
         WHERE v.company_id = %s AND v.judgment <> '' AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
@@ -288,6 +289,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
                 "metrics": list(row["metrics"] or []),
                 "quote": row["quote"],
                 "chunk": row["chunk_ord"],
+                "anchor": row["chunk_anchor"] or "",
                 "risky": bool(risks or falsifiers or stance in ("negative", "mixed")),
             }
         )

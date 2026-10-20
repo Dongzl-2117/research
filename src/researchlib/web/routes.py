@@ -316,7 +316,7 @@ def home(request: Request):
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
         stale = []
-        if plan["page"] == 1:
+        if plan["page"] == 1 and settings.stale_banner_enabled:
             watched = [by_id[chosen]] if chosen else feed
             stale = stale_sources(
                 watched,

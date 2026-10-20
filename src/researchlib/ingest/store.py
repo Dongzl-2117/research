@@ -162,6 +162,13 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     )
     duplicate = None
     if status != "unchanged":
-        # 图片挂上之后再认重复：挑主版本时图片多的优先。
+        # 图片挂上之后再认重复：正文更长的优先，图片作次要依据。
         duplicate = resolve_article(conn, article_id, matcher)
+        if duplicate is None:
+            # 这篇成了主版本，其它篇被标成重复时也算认出一次。
+            pointed = conn.execute(
+                "SELECT count(*) AS n FROM articles WHERE duplicate_of = %s", (article_id,)
+            ).fetchone()["n"]
+            if pointed:
+                duplicate = article_id
     return status, stored, linked, missing, duplicate

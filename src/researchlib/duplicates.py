@@ -9,7 +9,7 @@ AIHOT 导入的外部 id 是 aihot:<原 id>，文件归档用相对路径或 top
 （且至少 3 句）出现在另一篇里，两篇长度也差不多（短帖要求更接近），才算同一篇。
 同一位作者很多篇都有的句子（页脚、免责声明、口头禅）不算。
 
-主版本：挂上的图片多的、正文长的、发得早的、id 小的。其余的 duplicate_of 指向它，
+主版本：正文更全更长的（转发时加了点评的那版优先）、再看图片、发得早的、id 小的。其余的 duplicate_of 指向它，
 段落块、公司提及和观点都删掉，不进首页、作者页、公司页、检索和问库；文章页还能打开。
 """
 
@@ -30,13 +30,15 @@ MIN_WHOLE = 20
 CANDIDATE_SHARED = 4
 CONTAINMENT = 0.8
 LENGTH_RATIO = 0.5
+# 两边句子并集里重合够多才算同一篇，避免短文被长文里的社群广告段「吞掉」。
+JACCARD = 0.55
 SHORT_POST = 5
 SHORT_LENGTH_RATIO = 0.8
 # 同一位作者超过这么多篇都有的句子当作页脚、套话，不拿来认重复。
 COMMON_DF = 6
 # 两篇都有发布时间时，只在前后这么多天里找同一篇。
 WINDOW_DAYS = 7
-VERSION = "1"
+VERSION = "2"
 STATE_KEY = "dedupe_version"
 
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
@@ -85,6 +87,9 @@ def same_article(a: Fingerprint, b: Fingerprint, common: set[int] = frozenset())
     shared = len(left & right)
     if shared / smaller < CONTAINMENT or shared < min(3, smaller):
         return False
+    union = len(left | right)
+    if union and shared / union < JACCARD:
+        return False
     shortest = min(a.length, b.length)
     longest = max(a.length, b.length) or 1
     floor = SHORT_LENGTH_RATIO if smaller < SHORT_POST else LENGTH_RATIO
@@ -105,7 +110,8 @@ def store_fingerprint(conn, article_id: int, content_hash: str, found: Fingerpri
 def _article(conn, article_id: int):
     return conn.execute(
         """
-        SELECT a.id, a.body_text, a.content_hash, a.duplicate_of, a.published_at, a.keep_separate, s.author,
+        SELECT a.id, a.source_id, a.body_text, a.content_hash, a.duplicate_of, a.published_at, a.keep_separate,
+               s.author,
                (SELECT count(*) FROM article_images i WHERE i.article_id = a.id) AS images
         FROM articles a JOIN sources s ON s.id = a.source_id
         WHERE a.id = %s
@@ -133,14 +139,16 @@ def _common_hashes(conn, author: str, hashes: list[int]) -> set[int]:
 
 
 def _candidates(
-    conn, article_id: int, author: str, sketch: list[int], common: set[int], published
+    conn, article_id: int, author: str, sketch: list[int], common: set[int], published,
+    source_id: str | None = None,
 ) -> list[int]:
     usable = [value for value in sketch if value not in common]
     if not usable:
         return []
     # 短帖的指纹本来就少，另一份多出一两句就会凑不满；至少共享一半就拿出来核对（核对才是真正的判断）。
     need = min(CANDIDATE_SHARED, max(1, (len(usable) + 1) // 2))
-    # 同一篇从两条路进来、或者转发到另一个来源，发布时间前后不会差太多。两边都有日期时只看前后一周。
+    # 两边都有发布时间：只看前后一周。缺日期的文库（比如飞书）不放开时间窗去扫全作者，
+    # 只和同一来源、同样没日期的文章比，避免大批误并。
     rows = conn.execute(
         """
         SELECT f.article_id
@@ -149,42 +157,55 @@ def _candidates(
         JOIN sources s ON s.id = a.source_id
         WHERE f.h = ANY(%(hashes)s) AND f.article_id <> %(id)s AND s.author = %(author)s
           AND NOT a.keep_separate
-          AND (%(published)s::timestamptz IS NULL OR a.published_at IS NULL
-               OR a.published_at BETWEEN %(published)s::timestamptz - make_interval(days => %(window)s)
-                                     AND %(published)s::timestamptz + make_interval(days => %(window)s))
+          AND (
+            (%(published)s::timestamptz IS NOT NULL AND a.published_at IS NOT NULL
+             AND a.published_at BETWEEN %(published)s::timestamptz - make_interval(days => %(window)s)
+                                    AND %(published)s::timestamptz + make_interval(days => %(window)s))
+            OR (%(published)s::timestamptz IS NULL AND a.published_at IS NULL
+                AND a.source_id = %(source_id)s)
+          )
         GROUP BY f.article_id
         HAVING count(*) >= %(need)s
         ORDER BY count(*) DESC
         LIMIT 50
         """,
         {"hashes": usable, "id": article_id, "author": author, "need": need, "published": published,
-         "window": WINDOW_DAYS},
+         "window": WINDOW_DAYS, "source_id": source_id},
     ).fetchall()
     return [row["article_id"] for row in rows]
 
 
-def duplicates_of(conn, article_id: int, found: Fingerprint, author: str, published=None) -> list[int]:
+def duplicates_of(
+    conn, article_id: int, found: Fingerprint, author: str, published=None, source_id: str | None = None
+) -> list[int]:
     """同一作者里和这篇是同一篇的文章（核对过的）。"""
-    common = _common_hashes(conn, author, sorted(found.sentences)[:400])
+    # 候选阶段只用本篇句子滤套话；逐篇核对时和对方句子并起来再滤，避免长短文不对称。
+    common_seed = _common_hashes(conn, author, sorted(found.sentences)[:400])
     matches = []
-    for other_id in _candidates(conn, article_id, author, found.sketch, common, published):
+    for other_id in _candidates(conn, article_id, author, found.sketch, common_seed, published, source_id):
         other = conn.execute("SELECT body_text FROM articles WHERE id = %s", (other_id,)).fetchone()
-        if other is not None and same_article(found, fingerprint(other["body_text"]), common):
+        if other is None:
+            continue
+        other_fp = fingerprint(other["body_text"])
+        common = _common_hashes(conn, author, sorted(found.sentences | other_fp.sentences)[:800])
+        if same_article(found, other_fp, common):
             matches.append(other_id)
     return matches
 
 
 def _ranker(rows):
-    """越小越该当主版本：图片多的；明显更全的（长度不到最长那份的四分之三算不全，比如半截稿）；
-    发得早的；先入库的。只差一行归档头的两份，先入库的那份留着。"""
+    """越小越该当主版本：明显更全的正文优先（长度不到最长那份的四分之三算不全，比如半截稿）；
+    再比正文更长的（星球转发时加了点评的那版要留下，不能因为图少被藏掉）；
+    再比图片多的；发得早的；先入库的。"""
     lengths = {row["id"]: len(normalize(row["body_text"])) for row in rows}
     longest = max(lengths.values(), default=0) or 1
 
     def rank(row) -> tuple:
         published = row["published_at"]
         return (
-            -int(row["images"] or 0),
             lengths[row["id"]] < 0.75 * longest,
+            -lengths[row["id"]],
+            -int(row["images"] or 0),
             published is None,
             published.timestamp() if published is not None else 0.0,
             int(row["id"]),
@@ -224,24 +245,40 @@ def _cluster(conn, seeds: set[int]) -> set[int]:
 
 
 def apply_cluster(conn, members: set[int], matcher) -> tuple[int, list[int]]:
-    """在一组同一篇的文章里挑主版本，其余指向它。返回 (主版本, 变成重复的文章)。"""
+    """在一组候选里挑主版本；只有和主版本直接核对为同一篇的才标重复，避免 A≈B、B≈C 却把 A 和 C 并掉。"""
     rows = [row for row in (_article(conn, member) for member in sorted(members)) if row is not None]
+    by_id = {row["id"]: row for row in rows}
+    # 先在组里找一个更全的当主版本，再只收与它真正相同的。
     canonical = min(rows, key=_ranker(rows))["id"]
+    can_fp = fingerprint(by_id[canonical]["body_text"])
+    author = by_id[canonical]["author"]
+    direct = {canonical}
+    for row in rows:
+        if row["id"] == canonical:
+            continue
+        other_fp = fingerprint(row["body_text"])
+        common = _common_hashes(conn, author, sorted(can_fp.sentences | other_fp.sentences)[:800])
+        if same_article(can_fp, other_fp, common):
+            direct.add(row["id"])
     became: list[int] = []
     for row in rows:
-        want = None if row["id"] == canonical else canonical
+        if row["id"] in direct:
+            want = None if row["id"] == canonical else canonical
+        else:
+            # 只是传递连上的，放开，不当重复。
+            want = None
         if row["duplicate_of"] == want:
             continue
         conn.execute("UPDATE articles SET duplicate_of = %s WHERE id = %s", (want, row["id"]))
         if want is None:
-            _restore(conn, row["id"], matcher)
+            if row["duplicate_of"] is not None:
+                _restore(conn, row["id"], matcher)
         else:
             if row["duplicate_of"] is None:
                 _strip(conn, row["id"])
             became.append(row["id"])
-    others = [row["id"] for row in rows if row["id"] != canonical]
+    others = [item for item in direct if item != canonical]
     if others:
-        # 以前指向组里其他文章的重复，一起改指向新的主版本，不留链。
         conn.execute(
             "UPDATE articles SET duplicate_of = %s WHERE duplicate_of = ANY(%s) AND id <> %s",
             (canonical, others, canonical),
@@ -266,7 +303,7 @@ def resolve_article(conn, article_id: int, matcher) -> int | None:
         if row["duplicate_of"] is not None:
             _release(conn, article_id, matcher)
         return None
-    matches = duplicates_of(conn, article_id, found, row["author"], row["published_at"])
+    matches = duplicates_of(conn, article_id, found, row["author"], row["published_at"], row["source_id"])
     if not matches:
         if row["duplicate_of"] is not None:
             _release(conn, article_id, matcher)
@@ -318,7 +355,7 @@ def rebuild_duplicates(conn, matcher=None) -> dict:
         if row["keep_separate"]:
             continue
         found = fingerprint(row["body_text"])
-        for other_id in duplicates_of(conn, article_id, found, row["author"], row["published_at"]):
+        for other_id in duplicates_of(conn, article_id, found, row["author"], row["published_at"], row["source_id"]):
             groups.union(article_id, other_id)
     clusters: dict[int, set[int]] = {}
     for article_id in ids:
