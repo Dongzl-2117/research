@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from researchlib.empty_answer import backfill_empty_answers
 from researchlib.ingest.duanyongping.reclassify import reclassify_source
@@ -41,15 +42,17 @@ REAL = """## 读者问
 """
 
 
-def _insert(conn, article_id: int, external_id: str, title: str, body: str, when: datetime) -> None:
+def _insert(
+    conn, article_id: int, external_id: str, title: str, body: str, when: datetime, meta: dict | None = None
+) -> None:
     conn.execute(
         """
         INSERT INTO articles (
           id, source_id, external_id, content_hash, title, published_at, body_md, body_text, raw_meta
         ) OVERRIDING SYSTEM VALUE
-        VALUES (%s, 'duanyongping-blog', %s, %s, %s, %s, %s, %s, '{}'::jsonb)
+        VALUES (%s, 'duanyongping-blog', %s, %s, %s, %s, %s, %s, %s)
         """,
-        (article_id, external_id, f"hash-{external_id}", title, when, body, body),
+        (article_id, external_id, f"hash-{external_id}", title, when, body, body, Jsonb(meta or {})),
     )
 
 
@@ -127,3 +130,65 @@ def test_chrome_articles_18902_and_15532_leave_the_feed(conn, settings):
         assert "无有效回答" not in real.text
         company = client.get(f"/companies/{apple['id']}")
         assert "库克万亿内部信" not in company.text
+
+
+# ⽂ 是 U+2F42。这类拆出来的帖没有「## 段永平」，off_timeline 也挡不住作者页和检索。
+KANGXI_SHELL = "尼古拉 ·特斯拉 2010-11-08 18:15 回本 ⽂开头 ↑"
+PLAIN_SHELL = "千里牛 2010-11-08 18:15 回本文开头 ↑"
+
+
+def test_backfill_hides_nav_shells_without_duan_heading(conn, settings):
+    essay = "回到苹果的生意模式，我还拿着。开头那几年看不懂，后来利润起来了，就一直没卖。\n"
+    _insert(
+        conn,
+        15079,
+        "dyp-15079",
+        KANGXI_SHELL,
+        KANGXI_SHELL,
+        datetime(2010, 11, 8, 18, 15, tzinfo=SHANGHAI),
+        {"off_timeline": True},
+    )
+    _insert(
+        conn,
+        16416,
+        "dyp-16416",
+        PLAIN_SHELL,
+        PLAIN_SHELL,
+        datetime(2010, 11, 9, 18, 15, tzinfo=SHANGHAI),
+        {"off_timeline": True},
+    )
+    _insert(
+        conn,
+        16417,
+        "dyp-essay",
+        "苹果的生意我还拿着",
+        essay,
+        datetime(2010, 11, 10, 9, 0, tzinfo=SHANGHAI),
+        {"off_timeline": True},
+    )
+    conn.commit()
+
+    hidden = backfill_empty_answers(conn)
+    assert hidden == 2
+    flags = {
+        row["id"]: row["raw_meta"]
+        for row in conn.execute("SELECT id, raw_meta FROM articles WHERE id IN (15079, 16416, 16417)").fetchall()
+    }
+    assert flags[15079]["suppressed"] == "empty_answer"
+    assert flags[15079]["off_timeline"] is True
+    assert flags[16416]["suppressed"] == "empty_answer"
+    assert "suppressed" not in flags[16417]
+
+    # 作者页收 off_timeline，但不收空回答。
+    listed = feed_counts(conn, ["duanyongping-blog"], include_off_timeline=True)
+    assert listed["articles"] == 1
+    app = create_app(settings)
+    with TestClient(app) as client:
+        author = client.get("/authors/段永平")
+        assert author.status_code == 200
+        assert "尼古拉" not in author.text
+        assert "回本文开头" not in author.text
+        assert "苹果的生意我还拿着" in author.text
+        found = client.get("/search", params={"q": "尼古拉"})
+        assert "/articles/15079" not in found.text
+        assert "/articles/16416" not in found.text

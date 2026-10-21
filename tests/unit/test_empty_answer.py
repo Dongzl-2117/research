@@ -1,7 +1,14 @@
 """空回答不入库，问答页按问题 / 回答分开。"""
 
 from researchlib.author_voice import duan_paragraphs
-from researchlib.empty_answer import hide_empty_answer, stored_answer_empty, substantive_voice, voice_is_empty
+from researchlib.empty_answer import (
+    hide_empty_answer,
+    is_chrome_line,
+    normalize_voice,
+    stored_answer_empty,
+    substantive_voice,
+    voice_is_empty,
+)
 from researchlib.ingest.duanyongping.emit import render_markdown
 from researchlib.ingest.duanyongping.extract import Block
 from researchlib.ingest.duanyongping.reclassify import decide_stored
@@ -40,6 +47,49 @@ REAL = """## 读者问
 
 千里牛 2018-08-03 11:55 回本文开头 ↑
 """
+
+
+# 库里拆出来的整篇导航。⽂ 是 U+2F42 康熙部首，不是普通的文。
+KANGXI_SHELL = "尼古拉 ·特斯拉 2010-11-08 18:15 回本 ⽂开头 ↑"
+PLAIN_SHELL = "千里牛 2010-11-08 18:15 回本文开头 ↑"
+
+
+def test_kangxi_and_plain_nav_shells_are_chrome_and_empty():
+    assert any(ord(char) == 0x2F42 for char in KANGXI_SHELL)
+    assert "\u6587" not in KANGXI_SHELL
+    assert "\u2f42" not in normalize_voice(KANGXI_SHELL)
+    assert "文" in normalize_voice(KANGXI_SHELL)
+    assert is_chrome_line(KANGXI_SHELL)
+    assert voice_is_empty(KANGXI_SHELL)
+    assert substantive_voice(KANGXI_SHELL) == ""
+    assert stored_answer_empty(KANGXI_SHELL)
+    assert stored_answer_empty(KANGXI_SHELL, source_id="duanyongping-blog")
+    assert stored_answer_empty(PLAIN_SHELL)
+    assert stored_answer_empty("尼古拉 ·特斯拉 2010-11-08 18:15\n回本 \u2f42开头 ↑")
+    assert is_chrome_line("回本\u200b文开头 ↑")
+    assert stored_answer_empty("回本文开头")
+    assert stored_answer_empty("回 本 文 开 头 ↑")
+    assert is_chrome_line(PLAIN_SHELL)
+    wrapped = (
+        "---\n"
+        f'title: "{KANGXI_SHELL}"\n'
+        "author_voice: all\n"
+        "off_timeline: true\n"
+        "---\n\n"
+        f"{KANGXI_SHELL}\n"
+    )
+    assert stored_answer_empty(wrapped)
+    assert stored_answer_empty("---\ntitle: x\noff_timeline: true\n---\n", title=KANGXI_SHELL)
+    # 有正文的博文不是空回答。句子里带「回到」「开头」也不算导航壳。
+    assert not stored_answer_empty("能力圈就是不做不懂的事。苹果只是举例。")
+    assert not stored_answer_empty("不贵。生意模式还在，我还拿着。\n\n" + PLAIN_SHELL)
+    assert not stored_answer_empty("回到苹果的生意模式，我还拿着。开头那几年看不懂，后来利润起来了。")
+    assert not stored_answer_empty("---\ntitle: x\n---\n", title="苹果的生意模式还在，我一直拿着不卖。")
+    # 整篇导航壳只搁段永平博客。别的来源同样的一行不标。
+    assert stored_answer_empty(KANGXI_SHELL, source_id="fangwei-zsxq") is False
+    assert hide_empty_answer(None, 15079, KANGXI_SHELL, {"off_timeline": True}, source_id="fangwei-mp") is False
+    assert stored_answer_empty("## 段永平\n\n" + KANGXI_SHELL)
+    assert "看懂了" in substantive_voice("苹果2018年的生意模式我看懂了，所以一直拿着。")
 
 
 def test_chrome_only_voice_is_empty_and_real_answer_stays():
