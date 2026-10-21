@@ -10,6 +10,47 @@ def _env():
     return Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(["html"]))
 
 
+def test_home_recent_views_toggle_is_a_button():
+    html = _env().get_template("home.html").render(
+        title="按天",
+        canonical="https://investment.zldong.com/",
+        public_host="investment.zldong.com",
+        query="",
+        nav="archive",
+        sample_banner=False,
+        sources=[],
+        active_source="",
+        notices=[],
+        stale=[],
+        holdings=[
+            {
+                "id": 1,
+                "name": "腾讯",
+                "recent": 5,
+                "latest": None,
+                "view": {"stance": "positive", "stance_label": "看好", "relative": "8 小时前", "date": "2024-10-19"},
+            }
+        ],
+        days=[],
+        day_scope="",
+        empty="还没有文章。",
+        page=1,
+        pages=1,
+        total=0,
+        dated_days=0,
+        undated=0,
+    )
+    assert 'aria-label="最近观点"' in html
+    assert 'class="recent-views-toggle"' in html
+    assert 'aria-expanded="true"' in html
+    assert 'aria-controls="recent-views-list"' in html
+    assert 'id="recent-views-list"' in html
+    assert 'href="/companies">最近观点</a>' in html
+    assert "research-recent-views" in html
+    assert "腾讯" in html
+    assert "看好" in html
+
+
 def test_search_template_keeps_author_count_markup():
     html = _env().get_template("search.html").render(
         title="搜索 腾讯",

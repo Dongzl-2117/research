@@ -34,8 +34,13 @@
 </div>
 {% if holdings %}
 <section class="card holdings-now" aria-label="最近观点">
-  <h2><a href="/companies">最近观点</a></h2>
-  <ul>
+  <h2>
+    <button type="button" class="recent-views-toggle" aria-expanded="true" aria-controls="recent-views-list" aria-label="收起最近观点">
+      <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5 12 15l6-5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <a href="/companies">最近观点</a>
+  </h2>
+  <ul id="recent-views-list">
     {% for item in holdings %}
     {# 折叠态：只放公司、持仓标记、最新态度、近 30 天篇数和更新时间；观点文字到公司页看。 #}
     <li class="holdings-row">

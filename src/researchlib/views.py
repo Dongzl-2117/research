@@ -45,6 +45,7 @@ from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.ocr import append_ocr, article_ocr
 from researchlib.web.present import format_date
+from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 logger = logging.getLogger("researchlib.views")
 
@@ -527,7 +528,8 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.metrics,
-               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, a.title, a.published_at, a.source_id
+               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, a.title, a.published_at, a.source_id,
+               left(a.body_text, 2000) AS body_text
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
@@ -549,12 +551,16 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
             last[author] = stance
         risks = list(row["risks"] or [])
         falsifiers = list(row["falsifiers"] or [])
+        shown_date = format_date(row["published_at"], settings.display_timezone)
+        title = row["title"]
+        if repairs_source(row["source_id"]) and title_needs_repair(title or ""):
+            title = zsxq_display_title(title or "", body=row.get("body_text") or "", when=shown_date)
         items.append(
             {
                 "article_id": row["article_id"],
-                "title": row["title"],
+                "title": title,
                 "author": author,
-                "date": format_date(row["published_at"], settings.display_timezone),
+                "date": shown_date,
                 "published_at": row["published_at"],
                 "judgment": row["judgment"],
                 "mechanism": row["mechanism"],
