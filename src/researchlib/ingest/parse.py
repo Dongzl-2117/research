@@ -404,6 +404,12 @@ def parse_markdown_files(
         if date_source:
             stored_meta["date_source"] = date_source
         stored_meta["time_known"] = time_known
+        # 段永平博客：没日期的不进按天；问答只把作者那一节交给观点和摘要。
+        voice = frontmatter.get("author_voice")
+        if isinstance(voice, str) and voice.strip():
+            stored_meta["author_voice"] = voice.strip()
+        if frontmatter.get("off_timeline") is True:
+            stored_meta["off_timeline"] = True
         docs.append(
             ParsedDoc(
                 external_id=external_id[:500],

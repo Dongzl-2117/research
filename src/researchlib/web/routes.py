@@ -277,8 +277,8 @@ def _page_arg(request: Request) -> int:
         return 1
 
 
-def _load_feed(conn, source_ids: list[str], settings, page: int):
-    counts = queries.feed_counts(conn, source_ids)
+def _load_feed(conn, source_ids: list[str], settings, page: int, *, include_off_timeline: bool = True):
+    counts = queries.feed_counts(conn, source_ids, include_off_timeline=include_off_timeline)
     plan = plan_feed_page(
         counts["days"],
         counts["undated"],
@@ -287,9 +287,13 @@ def _load_feed(conn, source_ids: list[str], settings, page: int):
         settings.page_size,
     )
     if plan["mode"] == "undated":
-        rows = queries.list_undated_articles(conn, source_ids, plan["limit"], plan["offset"])
+        rows = queries.list_undated_articles(
+            conn, source_ids, plan["limit"], plan["offset"], include_off_timeline=include_off_timeline
+        )
     else:
-        rows = queries.list_day_page(conn, source_ids, plan["limit"], plan["offset"])
+        rows = queries.list_day_page(
+            conn, source_ids, plan["limit"], plan["offset"], include_off_timeline=include_off_timeline
+        )
     return counts, plan, rows
 
 
@@ -320,7 +324,10 @@ def home(request: Request):
         jump = parse_day(request.query_params.get("date"))
         if jump is not None:
             return _jump_to_day(conn, scoped, jump, settings, "/", source=chosen or "")
-        counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request))
+        # 没日期、标了 off_timeline 的条目不进首页按天。作者页仍要。
+        counts, plan, rows = _load_feed(
+            conn, scoped, settings, _page_arg(request), include_off_timeline=False
+        )
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
         stale = []

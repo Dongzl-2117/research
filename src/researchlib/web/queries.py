@@ -53,9 +53,18 @@ def _shanghai_day(column: str = "published_at") -> str:
     # 与 company_months 一样，按 Asia/Shanghai 的日历日切桶。
     return f"date_trunc('day', {column} AT TIME ZONE 'Asia/Shanghai')"
 
-def feed_counts(conn, source_ids: list[str]) -> dict:
+def _off_timeline_clause(include_off_timeline: bool, alias: str = "") -> str:
+    """没日期的段永平条目标了 off_timeline。首页按天不收；作者页要收。"""
+    if include_off_timeline:
+        return ""
+    column = f"{alias}.raw_meta" if alias else "raw_meta"
+    return f" AND coalesce({column}->>'off_timeline', '') <> 'true'"
+
+
+def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = True) -> dict:
     if not source_ids:
         return {"articles": 0, "days": 0, "undated": 0}
+    extra = _off_timeline_clause(include_off_timeline)
     row = conn.execute(
         f"""
         SELECT count(*) AS articles,
@@ -63,6 +72,7 @@ def feed_counts(conn, source_ids: list[str]) -> dict:
                count(DISTINCT {_shanghai_day()}) FILTER (WHERE published_at IS NOT NULL) AS days
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
+        {extra}
         """,
         (source_ids,),
     ).fetchone()
@@ -73,10 +83,12 @@ def feed_counts(conn, source_ids: list[str]) -> dict:
     }
 
 
-def list_day_page(conn, source_ids: list[str], limit: int, offset: int):
+def list_day_page(conn, source_ids: list[str], limit: int, offset: int, *, include_off_timeline: bool = True):
     """一页里的几天，以及这些天的全部文章。同一天不会被页边界切开。"""
     if not source_ids:
         return []
+    extra = _off_timeline_clause(include_off_timeline)
+    extra_a = _off_timeline_clause(include_off_timeline, "a")
     return conn.execute(
         f"""
         WITH days AS (
@@ -84,6 +96,7 @@ def list_day_page(conn, source_ids: list[str], limit: int, offset: int):
           FROM articles
           WHERE source_id = ANY(%s) AND duplicate_of IS NULL
             AND published_at IS NOT NULL
+            {extra}
           GROUP BY 1
           ORDER BY 1 DESC
           LIMIT %s OFFSET %s
@@ -94,21 +107,26 @@ def list_day_page(conn, source_ids: list[str], limit: int, offset: int):
         JOIN days d
           ON {_shanghai_day("a.published_at")} = d.day
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
+          {extra_a}
         ORDER BY a.published_at DESC, a.id DESC
         """,
         (source_ids, limit, offset, source_ids),
     ).fetchall()
 
 
-def list_undated_articles(conn, source_ids: list[str], limit: int, offset: int):
+def list_undated_articles(
+    conn, source_ids: list[str], limit: int, offset: int, *, include_off_timeline: bool = True
+):
     if not source_ids:
         return []
+    extra = _off_timeline_clause(include_off_timeline)
     return conn.execute(
-        """
+        f"""
         SELECT id, source_id, title, published_at, body_text
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NULL
+          {extra}
         ORDER BY id DESC
         LIMIT %s OFFSET %s
         """,

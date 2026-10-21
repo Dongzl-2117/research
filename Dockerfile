@@ -6,6 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# 段永平博客 PDF 用 poppler 抽文字（pdftohtml 保留加粗，pdftotext 兜底，pdfinfo 看页数）。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # 先按锁文件装依赖（版本和 hash 都锁死）：只有 requirements.lock 变了才重装，
 # 改代码重新部署不会顺手拉到新版本的 FastAPI / Starlette。升级依赖见 docs/deploy.md。
 COPY requirements.lock ./
