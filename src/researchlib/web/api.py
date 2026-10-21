@@ -410,7 +410,19 @@ def views_payload(
             {
                 "key": item["key"],
                 "title": item["title"],
+                "judgment": item.get("judgment") or "",
                 "mechanism": item["mechanism"],
+                "evidence": item.get("evidence") or [],
+                "changes": item.get("changes") or "",
+                "disagreement": item.get("disagreement") or "",
+                "sources": [
+                    {
+                        "article_id": src["article_id"],
+                        "title": src.get("title") or "",
+                        "author": src.get("author") or "",
+                    }
+                    for src in item.get("sources") or []
+                ],
                 "for": {"count": item["for"]["count"], "authors": dict(item["for"]["authors"])},
                 "against": {"count": item["against"]["count"], "authors": dict(item["against"]["authors"])},
                 "mixed": {"count": item["mixed"]["count"], "authors": dict(item["mixed"]["authors"])},

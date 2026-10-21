@@ -134,7 +134,17 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 docker compose exec app research-views                       # 全部被深入谈到的公司，最多 100 篇
 docker compose exec app research-views --company 泡泡玛特 --limit 300
 docker compose exec app research-views --company 贵州茅台 --refresh-blank
+# 有提及但没有可用观点的都补（标题级命中、空白缓存、去重后留下的主版本）。夜间任务不要加 --gap
+docker compose exec app research-views --gap --company 贵州茅台 --company 泡泡玛特 --limit 800
+docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
+docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
 ```
+
+`--gap` 的范围：`article_mentions` 里深度不是「一带而过」、又没有一条 about 为真且判断非空的观点。去重后的主版本（有别的稿 `duplicate_of` 指向它）即使提及只是一带而过也补抽，例如 3851 并入 11299 之后要抽 11299。网友帖不抽。已经记成 about=false（论证不在这家公司）的不反复问。
+
+超长文档先按段落切块，每块单独问，再合成：同一家公司的不同判断留在 `angles`，态度相反记成两面。论证没有落在这家公司时 `about=false`，不进时间线，也不进论点。一篇可以同时写几家公司，每家用自己的角度。
+
+问库、观点、摘要、论点都只用上面这一份 OAuth，强度与译制相同，不退回 API key。
 
 应用启动和部署不会跑。方伟星球用 `research-retime` 把零点改成真实 `create_time` 之后，态度变化和「同期别人怎么看」会按新的 `published_at` 重算（见 [ingest.md](ingest.md)），不必为此再跑 `research-views`。JSON：`GET /api/v1/companies/{id}/views`（`views=risk`、`views=change`、`views=t1`、`author=`）。
 
@@ -149,11 +159,15 @@ docker compose exec app research-views --company 贵州茅台 --refresh-blank
 
 模型只负责归类。写进页面之前还有一层校验，不单靠模型：
 
-- 支持和反对按每条观点自己的态度重分：看好是支持，看淡是反对，两面单独标，中性不进两边。模型写的 for / against 不采用。
+- 每条论点除了标题和机制，还存判断、证据链、时间变化、分歧，以及可点回文章的来源（文章 id）。
+- 支持和反对看这条判断同不同意**这条论点**，不看作者对整家公司是看好还是看淡。看好公司的人说「现阶段不宜提价」，进反对。说不清、又没有模型给出的边，就丢掉，不退回总态度。
+- 原句为空、只有换行、或规范化之后对不上原文的引用拒收，不进这条论点。比对前去掉空白、换行和全角差异。
+- 列举、顺带、举例（about=false，或判断本身是名单）不进支持。
+- 公众号和星球转贴：判断或原句规范化后互相包含的只留一份（有原句的优先）。
+- 引用集合高度重叠的论点合并。同一条观点挂到多条论点上时，匹配分明显更高的那条留下；分不出高下才最多挂两条。
 - 判断对不上这条论点的标题和机制，这条引用丢掉。原句也对不上时，这条论点下面不显示那句原句。
-- 一篇文章可以进多条论点，但同一条判断最多挂两条，而且只有判断里确实在讲那个机制才留。
-- 只有一篇、又没有对立面的论点丢掉。没被收进任何论点的观点仍在「全部」时间线里。
-- 判断或态度为空白的观点不进这次输入。
+- 只有一篇、或只有一位作者又没有分歧的论点丢掉。没被收进任何论点的观点仍在「全部」时间线里。
+- 判断或态度为空白、以及网友帖的观点不进这次输入。
 - 谁支持、谁反对、各几篇、最近一次是谁哪天说的，都按引用的观点从库里数。点一条论点，下面的时间线只看这几篇（`?views=t1`）。
 - 观点不到 4 条的公司不做。一家公司一次调用；观点有变化才重算，一天最多一次（按观点集合的指纹和提示词版本缓存）。提示词版本变了，已存的地图也会过期。
 - 打开公司页默认不在后台补（`RESEARCH_THESES_AUTO` 默认 0）。夜间默认也不跑（`THESES_ENABLED` 默认 0）。打开之后范围是观点够数的公司，不写死持仓。启动和部署不跑。

@@ -25,11 +25,12 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import VOICE_NOTE, raw_meta_of, restrict
+from researchlib.author_voice import VOICE_NOTE, display_author, raw_meta_of, restrict
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.ocr import append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.present import format_date
 
@@ -84,7 +85,11 @@ def needs_rewrite(digest: dict | None) -> bool:
     return (digest.get("prompt_version") or 1) < PROMPT_VERSION or bool(digest.get("head_only"))
 
 
-_STALE = "(d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s OR d.head_only)"
+_STALE = (
+    "(d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s OR d.head_only"
+    " OR (a.ocr_hash <> '' AND d.ocr_hash IS DISTINCT FROM a.ocr_hash"
+    " AND length(coalesce(a.body_text, '')) < 400))"
+)
 
 
 def pending_articles(conn, source_ids: list[str], limit: int):
@@ -104,16 +109,24 @@ def pending_articles(conn, source_ids: list[str], limit: int):
 
 
 def digest_article(conn, settings: Settings, row, author: str) -> dict:
+    meta = raw_meta_of(conn, row)
+    shown_author, _owns = display_author(author, meta)
     when = format_date(row["published_at"], settings.display_timezone)
-    header = f"标题：{row['title']}\n作者：{author}\n日期：{when}"
+    header = f"标题：{row['title']}\n作者：{shown_author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
-    body, voice_chunks, restricted = restrict(row["body_text"] or "", chunks, raw_meta_of(conn, row))
+    body, voice_chunks, restricted = restrict(row["body_text"] or "", chunks, meta)
     if restricted:
         header += VOICE_NOTE
         chunks = voice_chunks
+    ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    voice_body = body
+    if not (restricted and not voice_body.strip()):
+        body = append_ocr(voice_body, ocr_text)
+        if ocr_text.strip():
+            chunks = [*chunks, ("图片里的字", ocr_text)]
     reduced = False
-    if restricted and not body.strip():
-        # 没有他本人的话，不要让模型把读者的提问写成他的导读。
+    if restricted and not voice_body.strip():
+        # 没有他本人的话，也不要把图片里的字写成他的导读。
         data = {"summary": "（没有段永平本人的话）", "points": [], "tags": []}
         model = ""
     else:
@@ -133,9 +146,9 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     conn.execute(
         """
         INSERT INTO article_digests (
-          article_id, content_hash, model, summary, points, tags, prompt_version, head_only
+          article_id, content_hash, model, summary, points, tags, prompt_version, head_only, ocr_hash
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, false)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, false, %s)
         ON CONFLICT (article_id) DO UPDATE SET
           content_hash = EXCLUDED.content_hash,
           model = EXCLUDED.model,
@@ -144,6 +157,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
           tags = EXCLUDED.tags,
           prompt_version = EXCLUDED.prompt_version,
           head_only = false,
+          ocr_hash = EXCLUDED.ocr_hash,
           created_at = now()
         """,
         (
@@ -154,6 +168,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
             Jsonb(data["points"]),
             Jsonb(data["tags"]),
             PROMPT_VERSION,
+            ocr_digest,
         ),
     )
     clear_failure(conn, "digest", row["id"])

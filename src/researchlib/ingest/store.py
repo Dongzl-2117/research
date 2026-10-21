@@ -7,6 +7,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
@@ -132,7 +133,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     profile = profile_for(conn, source.id)
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    meta = dict(doc.raw_meta)
+    meta = assign_poster_role(dict(doc.raw_meta), source.author)
     existing = conn.execute(
         """
         SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
@@ -220,6 +221,19 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     else:
         article_id = existing["id"]
         status = "unchanged"
+        # 正文没变也要补上发帖人：历史归档重导一遍就能把网友帖从星主名下摘掉。
+        if doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id"):
+            merged = assign_poster_role(dict(existing["raw_meta"] or {}), source.author)
+            merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
+            merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
+            assign_poster_role(merged, source.author)
+            if merged != dict(existing["raw_meta"] or {}):
+                conn.execute(
+                    "UPDATE articles SET raw_meta = %s WHERE id = %s",
+                    (Jsonb(merged), article_id),
+                )
+                if is_guest(merged):
+                    conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
     if status != "unchanged":
         replace_mentions(conn, article_id, mentions_for_document(matcher, doc.title, doc.body_md))
         replace_chunks(conn, article_id, doc.title, doc.body_md)
@@ -250,6 +264,8 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             ).fetchone()["n"]
             if pointed:
                 duplicate = article_id
+    if is_guest(meta):
+        conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
     return status, stored, linked, missing, duplicate
 
 

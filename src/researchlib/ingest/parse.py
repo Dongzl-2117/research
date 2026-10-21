@@ -139,6 +139,31 @@ def zsxq_text(raw: object) -> str:
     return html_lib.unescape(text).strip()
 
 
+def _poster(node: dict) -> dict:
+    """这条话题是谁发的。问答看回答的人（星主），普通帖看 talk 的作者（可能是网友）。"""
+    for key in ("talk", "answer", "task", "solution"):
+        child = node.get(key)
+        if isinstance(child, dict) and isinstance(child.get("owner"), dict):
+            owner = child["owner"]
+            name = str(owner.get("name") or "").strip()
+            user_id = owner.get("user_id")
+            if name or user_id not in (None, ""):
+                return {
+                    "poster_name": name,
+                    "poster_id": "" if user_id in (None, "") else str(user_id),
+                }
+    owner = node.get("owner")
+    if isinstance(owner, dict):
+        name = str(owner.get("name") or "").strip()
+        user_id = owner.get("user_id")
+        if name or user_id not in (None, ""):
+            return {
+                "poster_name": name,
+                "poster_id": "" if user_id in (None, "") else str(user_id),
+            }
+    return {}
+
+
 def _owner_id(node: dict) -> str | None:
     """这条话题是谁发的：普通话题看 talk 的作者，问答看回答的人（星主）。"""
     for key in ("talk", "answer", "task", "solution"):
@@ -238,6 +263,7 @@ def extract_zsxq_topics(data: object) -> list[dict]:
                 "create_time": _topic_time(node),
                 "title": _topic_title(node),
                 "replies": author_replies(node),
+                **_poster(node),
             }
         )
     if topics:
@@ -395,6 +421,12 @@ def parse_markdown_files(
                 stored_meta["comment_replies"] = section.count("作者答：") + section.count("作者补充：")
         if raw_meta.get("topic_id"):
             stored_meta["topic_id"] = raw_meta.get("topic_id")
+        poster_name = str(raw_meta.get("poster_name") or "").strip()
+        if poster_name:
+            stored_meta["poster_name"] = poster_name
+        poster_id = str(raw_meta.get("poster_id") or "").strip()
+        if poster_id:
+            stored_meta["poster_id"] = poster_id
         create_time = raw_meta.get("create_time")
         if create_time not in (None, ""):
             if isinstance(create_time, (str, int, float, bool)):
