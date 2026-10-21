@@ -102,7 +102,7 @@ def test_timeline_on_company_page(conn, settings, monkeypatch):
         # 不在持仓里、但示例库深入谈到的公司也会整理观点。
         meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
         meituan_page = client.get(f"/companies/{meituan}").text
-        assert 'id="views"' in meituan_page and "在整理" in meituan_page
+        assert 'id="views"' in meituan_page and "没提炼成观点" in meituan_page
 
 
 def test_pending_articles_cover_all_tracked_companies_once(conn, settings):
