@@ -205,6 +205,16 @@ EXACT_STATS_BELOW = 50000
 STATS_SAMPLE_ROWS = 20000
 
 
+def use_sampled_lexeme_df(estimate: int) -> bool:
+    """大库才用 ANALYZE 的词频。小库块数是实数，词频也必须实数。
+
+    导入过程中 autovacuum 可能先 ANALYZE 到一半：词频是当时的比例，pg_class.reltuples
+    也还是当时的行数，再乘起来就比现在的实数小一截。块数用实数、词频用这个过期比例，
+    IDF 会漂，同一份语料的检索排序能差出十几篇。
+    """
+    return estimate >= EXACT_STATS_BELOW
+
+
 def _corpus_stats(conn) -> tuple[int, float]:
     now = time.monotonic()
     cached = _stats_cache.get("corpus")
@@ -213,7 +223,8 @@ def _corpus_stats(conn) -> tuple[int, float]:
         return int(total), avgdl
     row = conn.execute("SELECT reltuples::bigint AS n FROM pg_class WHERE oid = 'article_chunks'::regclass").fetchone()
     estimate = int(row["n"] or 0) if row else 0
-    if estimate < EXACT_STATS_BELOW:
+    exact = not use_sampled_lexeme_df(estimate)
+    if exact:
         row = conn.execute(
             "SELECT count(*) AS n, coalesce(avg(length(body)), 500) AS avgdl FROM article_chunks"
         ).fetchone()
@@ -230,6 +241,7 @@ def _corpus_stats(conn) -> tuple[int, float]:
         avgdl = float(row["avgdl"] or 500)
     _stats_cache["corpus"] = (float(total), now)
     _stats_cache["corpus_values"] = (float(total), avgdl)
+    _stats_cache["corpus_exact"] = exact
     return total, avgdl
 
 
@@ -311,6 +323,7 @@ def _common_lexemes(conn) -> dict[str, int]:
     """全库最常见的那几百个词条各出现在多少块里，从 ANALYZE 的统计信息里读，不用数。
 
     常见词正是数起来最慢的（几万块逐个过）；没有统计信息（新库还没 ANALYZE）时返回空，退回去数。
+    只在大库使用。小库见 use_sampled_lexeme_df。
     """
     now = time.monotonic()
     cached = _common_cache.get("chunks")
@@ -343,7 +356,9 @@ def _document_frequency(conn, term: Term, total: int) -> int:
     cached = _df_cache.get(key)
     if cached and now - cached[1] < DF_TTL_S:
         return cached[0]
-    if len(term.forms) == 1:
+    # 小库的块数是实数。词频也实数，避免乘上导入中途 ANALYZE 留下的过期比例。
+    _corpus_stats(conn)
+    if len(term.forms) == 1 and not _stats_cache.get("corpus_exact"):
         lexeme = single_lexeme(_tsq_cache.get(term.forms[0], ""))
         if lexeme is not None:
             common = _common_lexemes(conn)
