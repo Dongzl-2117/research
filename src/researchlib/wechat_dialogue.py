@@ -1,11 +1,12 @@
 """把微信截图的 OCR 行整理成博客式对话。
 
-识别结果存在 `image_texts.text`：RapidOCR 只留下从上到下的文字行，文字框的左右位置已经丢掉
-（见 ocr.order_text）。所以这里不重新认图，也不调用模型。说话人规则是确定的，阅读页要当场算完：
+微信里绿色气泡是作者自己（方伟），通常靠右、上面不写名字；灰色气泡是别人，通常靠左、上面有昵称。
+RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上不显示的侧标记；没有标记的旧识别结果，
+群聊里不带昵称的气泡按绿色本人处理，带别人昵称的才是网友。不调用模型。
 
-- 这一行能对上星主（方伟 / 方伟Rey / Rey，或「方伟-最近在杭州」这类显示名）→「方伟：」
-- 其他人（姜禄彦、徐哲航，以及只写了名字的）→「网友：」，正文里不再留这个名字
-- 看不出是谁 →「网友：」，不因为语境猜成方伟
+- 靠右（或没有坐标时、不带别人昵称）的气泡 →「方伟：」
+- 别人的昵称（姜禄彦、徐哲航、Dylan，以及只写了名字的）→「网友：」，正文里不再留这个名字
+- 显示名「方伟 / 方伟Rey / 方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
@@ -22,6 +23,8 @@ from dataclasses import dataclass, field
 
 HOST = "方伟"
 GUEST = "网友"
+# 靠右的绿色气泡。零宽连字，str.strip 去不掉，整理进对话时拿掉，不显示。
+SIDE_SELF = "\u2060"
 
 _CJK = re.compile(r"[一-鿿]")
 _MEANING = re.compile(r"[0-9A-Za-z一-鿿]")
@@ -237,6 +240,10 @@ def speaker_note(text: str) -> str:
     return ""
 
 
+def _plain(line: str) -> str:
+    return line[len(SIDE_SELF) :] if line.startswith(SIDE_SELF) else line
+
+
 def parse_shot(text: str) -> Shot:
     original = (text or "").strip()
     if not original:
@@ -249,11 +256,13 @@ def parse_shot(text: str) -> Shot:
     lines = _prepare_lines(raw_lines)
     names = _speaker_names(lines, signal)
     # 已经是「方伟：」「网友：」的块再跑也要能合并，不能因为界面字已经被拿掉就退回原文。
-    labeled = bool(lines) and _STRUCTURED.match(lines[0]) is not None
-    hosted = any(_is_host_line(line) for line in lines)
+    visible = [_plain(line) for line in lines if line != _BREAK]
+    labeled = bool(visible) and _STRUCTURED.match(visible[0]) is not None
+    hosted = any(_is_host_line(line) for line in visible) or any(line.startswith(SIDE_SELF) for line in lines)
     if not lines or not (signal or names or labeled or hosted):
         return Shot("prose", [], original)
-    turns = _walk(lines, names)
+    # 群聊里没有坐标时，不写别人昵称的气泡是作者自己的绿色气泡。有侧标记时以标记为准。
+    turns = _walk(lines, names, self_unnamed=bool(signal or names or hosted))
     if turns:
         return Shot("dialogue", turns, "")
     # 整张都是界面字时不要把原文退回去，否则价格和小程序会漏进正文。
@@ -499,7 +508,8 @@ def _peel_handle(line: str) -> str:
 
 
 def _prepare_lines(raw_lines: list[str]) -> list[str]:
-    peeled = [_peel_handle(_maybe_peel(line)) for line in raw_lines]
+    own = [line.startswith(SIDE_SELF) for line in raw_lines]
+    peeled = [_peel_handle(_maybe_peel(_plain(line))) for line in raw_lines]
     drop = {index for index, line in enumerate(peeled) if _is_card_anchor(line)}
     changed = True
     while changed:
@@ -519,7 +529,7 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
             continue
         if len(kept) <= 1 and _GROUP_BARE.fullmatch(line):
             continue
-        kept.append(line)
+        kept.append((SIDE_SELF if own[index] else "") + line)
     return _split_after_host_mention(kept)
 
 
@@ -550,7 +560,7 @@ def _speaker_names(lines: list[str], signal: bool) -> set[str]:
     names: set[str] = set()
     pairs: list[str] = []
     seen_times: dict[str, int] = {}
-    usable = [line for line in lines if line != _BREAK]
+    usable = [_plain(line) for line in lines if line != _BREAK and not line.startswith(SIDE_SELF)]
     for index, line in enumerate(usable):
         nxt = usable[index + 1] if index + 1 < len(usable) else ""
         if _cjk_name(line, 3) or _latin_name(line):
@@ -604,7 +614,7 @@ def _classify(line: str, names: set[str]) -> tuple[str, str]:
     return "", ""
 
 
-def _walk(lines: list[str], names: set[str]) -> list[Turn]:
+def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn]:
     turns: list[Turn] = []
     speaker = ""
     buf: list[str] = []
@@ -613,7 +623,7 @@ def _walk(lines: list[str], names: set[str]) -> list[Turn]:
         nonlocal buf
         if not buf:
             return
-        turns.append(Turn(speaker or GUEST, buf))
+        turns.append(Turn(speaker or (HOST if self_unnamed else GUEST), buf))
         buf = []
 
     for line in lines:
@@ -621,7 +631,17 @@ def _walk(lines: list[str], names: set[str]) -> list[Turn]:
             flush()
             speaker = ""
             continue
-        who, rest = _classify(line, names)
+        own = line.startswith(SIDE_SELF)
+        text = _plain(line)
+        if own:
+            # 靠右的绿气泡是作者自己，不看这一行像不像别人的名字。
+            if speaker != HOST:
+                flush()
+                speaker = HOST
+            if text:
+                buf.append(text)
+            continue
+        who, rest = _classify(text, names)
         if who:
             flush()
             speaker = who
@@ -629,7 +649,8 @@ def _walk(lines: list[str], names: set[str]) -> list[Turn]:
                 buf.append(rest)
             continue
         if not speaker:
-            speaker = GUEST
-        buf.append(line)
+            # 没有坐标、也没有别人的昵称：群聊里这是绿色气泡。表格不会进到这里。
+            speaker = HOST if self_unnamed else GUEST
+        buf.append(text)
     flush()
     return turns

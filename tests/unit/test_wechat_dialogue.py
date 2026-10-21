@@ -76,12 +76,21 @@ def test_speaker_rules_and_noise_are_gone():
     assert text.index("先看到这里") < text.index("同店压力还在")
 
 
-def test_unclear_speaker_is_a_reader_not_fangwei():
-    raw = "微信\n9:41\n方伟说得对，同店还有压力，先观望一下\n"
+def test_guest_words_about_fangwei_stay_with_the_guest():
+    """句子里出现方伟，只要上面是别人的昵称，仍是灰气泡。"""
+    raw = "微信\n9:41\nDylan\n方伟说得对，同店还有压力，先观望一下\n"
     text = present_ocr_pieces([raw])
     assert text.startswith("网友：")
     assert "方伟：" not in text
     assert "方伟说得对，同店还有压力，先观望一下" in text
+
+
+def test_unnamed_bubble_in_a_group_chat_is_the_host():
+    """作者自己的绿色气泡不写名字。没有坐标时，不带别人昵称的气泡是方伟。"""
+    raw = "微信\n9:41\n同店还有压力，先观望一下\n"
+    text = present_ocr_pieces([raw])
+    assert text.startswith("方伟：")
+    assert "网友：" not in text
 
 
 def test_host_aliases_and_inline_names():
@@ -179,9 +188,10 @@ def test_live_14886_shots_drop_chrome_and_guest_names():
         "黑糖珍珠牛乳",
         "劝学荟",
         "玉鸟集",
-        "方伟：",
     ):
         assert leaked not in text, leaked
+    # 开头没有别人的昵称，是作者自己的绿色气泡。姜禄彦、徐哲航仍是网友。
+    assert text.startswith("方伟：同样是捕抓")
     assert "网友：怎么定义古茗做咖啡成功了呢" in text
     assert "网友：数据确实是好的" in text
     assert "网友：并且高密度的门店区域" in text
@@ -215,7 +225,7 @@ def test_live_14879_strips_dylan_and_splits_turns():
     assert "网友：Dylan" not in text
     assert "Dylan" not in text
     assert text.count("网友：") >= 3
-    assert text.count("方伟：") == 1
+    assert text.count("方伟：") >= 3
     assert "方伟：会有一批大模型达到" in text
     assert "方伟-最近在杭州" not in text
     for leaked in ("10:57", "10:43", "10:49", "看十年", "撤回了一条消息"):
@@ -224,8 +234,9 @@ def test_live_14879_strips_dylan_and_splits_turns():
     blocks = text.split("\n\n")
     question = next(block for block in blocks if "@方伟-最近在" in block)
     assert "Opus5.5" not in question
-    assert any(block.startswith("网友：Opus5.5确实断档领先") for block in blocks)
-    host = next(block for block in blocks if block.startswith("方伟："))
+    assert any(block.startswith("方伟：Opus5.5确实断档领先") for block in blocks)
+    assert any("但大模型的用户体验评价维度" in block and block.startswith("方伟：") for block in blocks)
+    host = next(block for block in blocks if "会有一批大模型达到" in block and block.startswith("方伟："))
     assert host.startswith("方伟：会有一批大模型达到")
 
 
@@ -248,7 +259,7 @@ def test_host_status_suffix_on_shot_23820_is_a_fangwei_turn():
         "希望有但不可知\n"
         "差异化一般而言应该是应用层的事情。"
     ) in text
-    assert present_ocr_pieces(["方伟说得对，同店还有压力，先观望一下\n微信\n"]).startswith("网友：")
+    assert present_ocr_pieces(["Dylan\n方伟说得对，同店还有压力，先观望一下\n微信\n"]).startswith("网友：")
 
 
 def test_screenshot_wraps_flow_into_one_paragraph():
@@ -277,12 +288,12 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
     assert "国产agents" in page
     assert "国\n产" not in page
     assert "根本不是一个代际的产品" in page
-    assert "其他所有大模型。" in page
+    assert "其他所有大模型" in page
     assert "智能手机或者游戏潮玩" in page
     assert "游戏潮玩 他是一个效率驱动" in page
     assert "agents执行复杂任务" in page
     assert '<span class="who">方伟：</span>会有一批大模型达到' in page
-    assert page.count('<span class="who">方伟：</span>') == 1
+    assert page.count('<span class="who">方伟：</span>') >= 3
     assert page.count('<span class="who">网友：</span>') >= 3
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     assert "Dylan" not in page
