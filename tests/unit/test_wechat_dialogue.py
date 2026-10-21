@@ -7,7 +7,7 @@
 from pathlib import Path
 
 from researchlib.ocr import append_ocr, compose_ocr_text
-from researchlib.render import image_anchor, inline_image_ocr, render_body
+from researchlib.render import _flow_ocr_lines, image_anchor, inline_image_ocr, render_body
 from researchlib.wechat_dialogue import present_ocr_pieces, present_stored_ocr
 from researchlib.zsxq_title import zsxq_display_title
 
@@ -249,6 +249,52 @@ def test_host_status_suffix_on_shot_23820_is_a_fangwei_turn():
         "差异化一般而言应该是应用层的事情。"
     ) in text
     assert present_ocr_pieces(["方伟说得对，同店还有压力，先观望一下\n微信\n"]).startswith("网友：")
+
+
+def test_screenshot_wraps_flow_into_one_paragraph():
+    """满行的折行接上，短行不把两句粘死。旁路文本仍保留换行，这里只测阅读页用的整理。"""
+    assert _flow_ocr_lines("最近Claude被封号了，用了一些国\n产agents，觉得差距太大了") == (
+        "最近Claude被封号了，用了一些国产agents，觉得差距太大了"
+    )
+    assert _flow_ocr_lines("Opus5.5确实断档领先其他所有大模\n型。") == "Opus5.5确实断档领先其他所有大模型。"
+    assert _flow_ocr_lines("机或者游戏潮玩\n他是一个效率驱动的东西") == "机或者游戏潮玩 他是一个效率驱动的东西"
+    assert "\n" not in _flow_ocr_lines("同店压力还在，折扣不能再深\n会员那边先不动。")
+
+
+def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
+    """14879 的硬换行是截图宽度，不是分段。阅读页收成一段，说话人和原图链接还在。"""
+    shots = _shots_14879()
+    parts = ["（见图）"]
+    mapping: dict[str, str] = {}
+    texts: dict[str, str] = {}
+    for index, shot in enumerate(shots, start=1):
+        digest = f"{index:02d}" * 32
+        name = f"s{index}.png"
+        mapping[name] = f"/media/fangwei-zsxq/ab/{digest}.png"
+        texts[digest] = shot
+        parts.append(f"![]({name})")
+    page = inline_image_ocr(str(render_body("\n\n".join(parts) + "\n", mapping)), texts)
+    assert "国产agents" in page
+    assert "国\n产" not in page
+    assert "根本不是一个代际的产品" in page
+    assert "其他所有大模型。" in page
+    assert "智能手机或者游戏潮玩" in page
+    assert "游戏潮玩 他是一个效率驱动" in page
+    assert "agents执行复杂任务" in page
+    assert '<span class="who">方伟：</span>会有一批大模型达到' in page
+    assert page.count('<span class="who">方伟：</span>') == 1
+    assert page.count('<span class="who">网友：</span>') >= 3
+    assert page.count('class="ocr-reading ocr-dialogue"') == 1
+    assert "Dylan" not in page
+    # 显示名只用于认出方伟，不写成说话人。句子里的 @ 折行后仍是一整句。
+    assert "方伟-最近在杭州：" not in page
+    assert "@方伟-最近在杭州" in page
+    for number in range(1, len(shots) + 1):
+        assert f"原图 {number}" in page
+    assert page.index("方伟：") < page.index("原图 1")
+    # 旁路和检索仍用带换行的整理结果，不因阅读页折行而改掉。
+    stored = present_ocr_pieces(shots)
+    assert "用了一些国\n产agents" in stored
 
 
 def test_image_post_title_uses_the_sentence_not_the_speaker_label():
