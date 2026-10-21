@@ -32,8 +32,10 @@ ENGINE = "rapidocr"
 # 置信度低于这个的文字框不要：多半是把花纹、二维码认成了字。
 MIN_SCORE = 0.5
 OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
-# 检索块要 20 个字；交给观点和摘要的旁路放宽，短截图也能进正文。
+# 检索块要 20 个字；交给观点和摘要的旁路、以及阅读页放宽，短截图也能进正文。
 READING_MIN_CHARS = 8
+# 正文短于这个字数时，图片文字和上次抽摘要、观点时不一致就要重抽。长文不因为后补一张图整篇重来。
+SHORT_BODY_CHARS = 400
 _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 
 
@@ -112,12 +114,21 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
     ).fetchall()
 
 
+def useful_image_text(text: str) -> bool:
+    """汉字、字母、数字够 READING_MIN_CHARS 个，才算图里有可读的字。
+
+    空白、水印、几个字的装饰不算。刚过线的拿不准，算有用，不能漏。
+    不按「是不是微信、是不是表格」分：有可读的字就留。
+    """
+    return len(_MEANINGFUL.findall(text or "")) >= READING_MIN_CHARS
+
+
 def compose_ocr_text(pieces: list[str]) -> str:
     """按图片顺序拼成观点和摘要能读的旁路正文。太短的（水印、表情）丢掉。"""
     blocks: list[str] = []
     for piece in pieces:
         text = (piece or "").strip()
-        if len(_MEANINGFUL.findall(text)) < READING_MIN_CHARS:
+        if not useful_image_text(text):
             continue
         blocks.append(text)
     return "\n\n".join(blocks)

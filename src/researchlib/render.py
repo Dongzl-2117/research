@@ -9,6 +9,8 @@ from urllib.parse import unquote
 import markdown
 from markupsafe import Markup
 
+from researchlib.ocr import useful_image_text
+
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
 _SRC_ATTR = re.compile(r"""\bsrc\s*=\s*(["'])(.*?)\1""", re.I)
@@ -122,6 +124,119 @@ def image_anchor(content_hash: str) -> str:
 
 def _anchor_images(html: str) -> str:
     return _LOCAL_IMG.sub(lambda m: f'<img id="{image_anchor(m.group(3))}"{m.group(1)}src="{m.group(2)}"', html)
+
+
+# 单独成行的界面字：状态栏时间、电量、「微信」。整行对上才拿掉，消息正文里出现这些词留着。
+_CHROME_LINE = re.compile(
+    r"^(?:"
+    r"\d{1,2}:\d{2}(?::\d{2})?"
+    r"|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?"
+    r"|星期[一二三四五六日天]"
+    r"|昨天|今天|前天"
+    r"|微信|WeChat"
+    r"|返回|发送"
+    r"|按住\s*说话"
+    r"|以下是新消息"
+    r"|\d{1,3}\s?%"
+    r"|[45]G|LTE|Wi-?Fi|VPN"
+    r")$",
+    re.I,
+)
+_P_ONLY_IMG = re.compile(r"<p\b[^>]*>\s*(<img\b[^>]*>)\s*</p>", re.I)
+_IMG_ID = re.compile(r'\bid="(img-[0-9a-f]{12})"', re.I)
+_IMG_SRC_HASH = re.compile(r'\bsrc="(/media/[^"]*?([0-9a-f]{64})\.[A-Za-z0-9]+)"', re.I)
+_IMG_ALT = re.compile(r'\balt="([^"]*)"', re.I)
+
+
+def tidy_ocr_text(text: str) -> str:
+    """阅读页上的轻量整理：拿掉单独成行的界面字，保留换行。
+
+    整理完不够读就退回原文，不编对话、不补字。
+    """
+    raw = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return ""
+    kept: list[str] = []
+    blank = False
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            if kept and not blank:
+                kept.append("")
+                blank = True
+            continue
+        blank = False
+        if _CHROME_LINE.match(stripped):
+            continue
+        kept.append(stripped)
+    cleaned = "\n".join(kept).strip()
+    if useful_image_text(cleaned):
+        return cleaned
+    return raw
+
+
+def looks_like_chat(text: str) -> bool:
+    """一行一句、多数很短：按对话排。长文、表格仍按原文换行，不硬套聊天气泡。"""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(lines) < 4:
+        return False
+    short = sum(1 for line in lines if len(line) <= 28)
+    return short * 2 >= len(lines)
+
+
+def _reading_inner(text: str) -> tuple[str, str]:
+    shown = tidy_ocr_text(text)
+    if looks_like_chat(shown):
+        parts = [f"<p>{html_lib.escape(line.strip())}</p>" for line in shown.splitlines() if line.strip()]
+        return "ocr-chat", "".join(parts)
+    return "", html_lib.escape(shown)
+
+
+def _ocr_figure(anchor: str, src: str, alt: str, text: str) -> str:
+    kind, inner = _reading_inner(text)
+    classes = "ocr-reading ocr-chat" if kind else "ocr-reading"
+    safe_src = html_lib.escape(src, quote=True)
+    safe_alt = html_lib.escape(alt, quote=True)
+    safe_id = html_lib.escape(anchor, quote=True)
+    return (
+        f'<figure class="ocr-shot" id="{safe_id}">'
+        f'<div class="{classes}">{inner}</div>'
+        f'<details class="ocr-original"><summary>点击看原图</summary>'
+        f'<img src="{safe_src}" alt="{safe_alt}">'
+        f"</details></figure>"
+    )
+
+
+def _convert_img(tag: str, texts: dict[str, str]) -> str:
+    id_match = _IMG_ID.search(tag)
+    src_match = _IMG_SRC_HASH.search(tag)
+    if not id_match or not src_match:
+        return tag
+    raw = texts.get(src_match.group(2)) or ""
+    if not useful_image_text(raw):
+        return tag
+    alt_match = _IMG_ALT.search(tag)
+    alt = alt_match.group(1) if alt_match else ""
+    return _ocr_figure(id_match.group(1), src_match.group(1), alt, raw)
+
+
+def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
+    """有可读识别结果的本地图：先显示文字，原图收在「点击看原图」里。
+
+    texts 是 content_hash → image_texts.text。空的、太短的图保持原样。
+    锚点 id 挪到文字块上，检索里的「看这张图」仍跳到这里。
+    """
+    if not html or not texts:
+        return html or ""
+
+    def convert_p(match: re.Match[str]) -> str:
+        converted = _convert_img(match.group(1), texts)
+        if converted == match.group(1):
+            return match.group(0)
+        return converted
+
+    rewritten = _P_ONLY_IMG.sub(convert_p, html)
+    return _IMG_TAG.sub(lambda match: _convert_img(match.group(0), texts), rewritten)
 
 
 def render_body(body: str, mapping: dict[str, str], fmt: str | None = None) -> Markup:

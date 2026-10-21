@@ -1477,10 +1477,44 @@ html[data-recent-views="collapsed"] #recent-views-list { display: none; }
 /* 首页持仓近况：最近一条判断 */
 .holdings-view .stance, .holdings-view .stance-change { vertical-align: 1px; }
 
-/* 文章页：引用的那一段、图片文字跳到的那张图 */
+/* 文章页：引用的那一段、图片文字跳到的那一块 */
 .is-quoted { border-radius: 4px; background: var(--amber-soft); box-shadow: -10px 0 0 var(--amber-soft), 10px 0 0 var(--amber-soft); scroll-margin-top: 96px; }
-.prose img[id^="img-"] { scroll-margin-top: 96px; }
-.prose img[id^="img-"]:target { outline: 3px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
+.prose img[id^="img-"], .prose .ocr-shot { scroll-margin-top: 96px; }
+.prose img[id^="img-"]:target, .prose .ocr-shot:target { outline: 3px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
+.prose .ocr-reading {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-tile);
+  background: var(--bg-sunk);
+  color: var(--prose-ink);
+  font-size: 15px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.prose .ocr-reading.ocr-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  white-space: normal;
+}
+.prose .ocr-reading.ocr-chat p {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  line-height: 1.65;
+}
+.prose .ocr-original { margin-top: 8px; }
+.prose .ocr-original summary {
+  cursor: pointer;
+  color: var(--ink-3);
+  font-size: 13px;
+  user-select: none;
+}
+.prose .ocr-original summary:hover { color: var(--accent); }
+.prose .ocr-original img { margin-top: 8px; }
 .revised { color: var(--hot); }
 .revised:hover { text-decoration: underline; }
 

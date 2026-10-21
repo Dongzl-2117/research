@@ -13,6 +13,8 @@
     research-views --source duanyongping-blog --limit 100
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
+图片里有可读的字时，交给模型的正文会接上「图片里的字」，和正文一视同仁。正文很短、判断写在截图里的，
+一带而过的提及也抽；公司提及表本身仍不看图片里的字。长文不因为后补一张图就整篇重抽。
 长文只给提到这几家公司的段落加开头结尾（见 excerpt.py）；以前只读了开头 30000 字的，标成 head_only 重抽。
 失败的记下来，隔几天再试。判断或态度为空白的行不进时间线；确认抽漏了再用 `--refresh-blank` 删掉重抽。
 """
@@ -43,7 +45,7 @@ from researchlib.config import Settings
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
-from researchlib.ocr import append_ocr, article_ocr
+from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.web.present import format_date
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
@@ -248,8 +250,11 @@ def delete_blank_views(conn, company_ids: list[int] | None = None) -> int:
 
 _OCR_STALE = (
     "(a.ocr_hash <> '' AND v.ocr_hash IS DISTINCT FROM a.ocr_hash"
-    " AND (btrim(v.judgment) = '' OR length(coalesce(a.body_text, '')) < 400))"
+    f" AND (btrim(v.judgment) = '' OR length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)}))"
 )
+# 正文很短、图片里有可用的字：判断多半在截图里。观点要抽，即使提及只是一带而过。
+_OCR_CARRIES = f"(a.ocr_hash <> '' AND length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)})"
+_VIEW_DEPTH = f"(m.depth <> 'passing' OR {_OCR_CARRIES})"
 _STALE = (
     "(v.article_id IS NULL OR v.content_hash <> a.content_hash OR v.prompt_version < %s"
     f" OR v.head_only OR {_OCR_STALE})"
@@ -257,7 +262,10 @@ _STALE = (
 
 
 def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit: int):
-    """深入谈到这些公司、还没整理过（或正文、提示词变了，或当时只读了开头）的文章，新的在前。"""
+    """还没整理过（或正文、提示词、图片文字变了，或当时只读了开头）的文章。
+
+    深入提及在前。正文很短且图片里有字的，一带而过也算：判断可能在截图里。
+    """
     if not company_ids or not source_ids:
         return []
     return conn.execute(
@@ -267,11 +275,11 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
-        WHERE m.company_id = ANY(%s) AND m.depth <> 'passing'
+        WHERE m.company_id = ANY(%s) AND {_VIEW_DEPTH}
           AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         GROUP BY a.id
-        ORDER BY a.published_at DESC NULLS LAST, a.id DESC
+        ORDER BY bool_or(m.depth <> 'passing') DESC, a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
         """,
         (company_ids, source_ids, PROMPT_VERSION, limit),
@@ -294,7 +302,7 @@ def pending_companies(conn, article_id: int, only_ids: list[int] | None = None) 
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
-        WHERE m.article_id = %s {clause} AND m.depth <> 'passing'
+        WHERE m.article_id = %s {clause} AND {_VIEW_DEPTH}
           AND {_STALE}
         ORDER BY c.id
         """,
@@ -323,6 +331,33 @@ def mentioned_companies(conn, source_ids: list[str]) -> list[dict]:
     ).fetchall()
 
 
+def view_companies(conn, source_ids: list[str]) -> list[dict]:
+    """夜间任务要扫的公司：深入谈到的，再加上正文很短、图片里有字的。
+
+    第二种的提及深度经常只是一带而过。公司表和提及规则不变，只是观点队列把它们算进去。
+    """
+    if not source_ids:
+        return []
+    found: dict[int, dict] = {}
+    for row in mentioned_companies(conn, source_ids):
+        found[int(row["id"])] = row
+    extra = conn.execute(
+        f"""
+        SELECT DISTINCT c.id, c.name_zh
+        FROM article_mentions m
+        JOIN articles a ON a.id = m.article_id
+        JOIN companies c ON c.id = m.company_id
+        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND {_OCR_CARRIES}
+        ORDER BY c.name_zh, c.id
+        """,
+        (source_ids,),
+    ).fetchall()
+    for row in extra:
+        found.setdefault(int(row["id"]), row)
+    return sorted(found.values(), key=lambda row: (row["name_zh"], int(row["id"])))
+
+
 def count_pending(conn, company_id: int, source_ids: list[str]) -> int:
     """还要整理的篇数。失败后在冷却期里的不算，它们要隔几天才会再试。"""
     row = conn.execute(
@@ -331,7 +366,7 @@ def count_pending(conn, company_id: int, source_ids: list[str]) -> int:
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
-        WHERE m.company_id = %s AND m.depth <> 'passing'
+        WHERE m.company_id = %s AND {_VIEW_DEPTH}
           AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         """,
@@ -435,6 +470,10 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     body = append_ocr(body, ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
+        header += (
+            "\n（「图片里的字」是截图里识别出来的，和正文一样算原文。"
+            "判断写在图里时也要抽，不要因为来自截图就当成没下判断。）"
+        )
     model = ""
     if restricted and not voice_body.strip() and not ocr_text.strip():
         # 这篇没有他本人的话，图片里也没有字。记成没下判断，避免反复去问模型。
@@ -803,6 +842,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
     """有提及、但没有可用观点的主版本。
 
     标题、全文、单节都算。去重后留下的主版本，一带而过的提及也补抽。
+    正文很短且图片里有字的，一带而过同样补抽。
     已经判定为「论证不在这家公司」的不再抽。网友帖不算。
     """
     if not company_ids or not source_ids:
@@ -826,6 +866,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
           AND {_GUEST}
           AND (
             m.depth <> 'passing'
+            OR {_OCR_CARRIES}
             OR EXISTS (SELECT 1 FROM articles dup WHERE dup.duplicate_of = a.id)
           )
           {id_clause}
@@ -837,7 +878,8 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
             AND v.prompt_version >= %s
             AND v.content_hash = a.content_hash
             AND NOT v.head_only
-            AND (a.ocr_hash = '' OR v.ocr_hash = a.ocr_hash OR length(coalesce(a.body_text, '')) >= 400)
+            AND (a.ocr_hash = '' OR v.ocr_hash = a.ocr_hash
+                 OR length(coalesce(a.body_text, '')) >= {int(SHORT_BODY_CHARS)})
           )
           AND NOT (
             v.article_id IS NOT NULL AND v.about IS FALSE
@@ -927,7 +969,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.gap or args.articles:
             wanted = [int(row["id"]) for row in conn.execute("SELECT id FROM companies").fetchall()]
         else:
-            wanted = [int(row["id"]) for row in mentioned_companies(conn, list(authors))]
+            wanted = [int(row["id"]) for row in view_companies(conn, list(authors))]
         if not wanted:
             raise SystemExit("没有被深入谈到的公司")
         if args.refresh_blank:
