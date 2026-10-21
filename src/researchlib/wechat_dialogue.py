@@ -26,7 +26,7 @@ GUEST = "网友"
 _CJK = re.compile(r"[一-鿿]")
 _MEANING = re.compile(r"[0-9A-Za-z一-鿿]")
 _STOP_CHAR = frozenset(
-    "的了着过和与或而且是不在把被让给到就也还很最这那你我他她它中但吧吗啊呢呀哦嗯又从对为以会能要说看想做"
+    "的了着过和与或而且是不在把被让给到就也还很最这那你我他她它中但吧吗啊呢呀哦嗯又从对为以会能要说看想做化性"
 )
 # 单独成行、或冒号前面的这些字是话，不是昵称。
 _NOT_NAMES = frozenset(
@@ -124,7 +124,15 @@ _HOST_LINE = re.compile(
 _HOST_PREFIX = re.compile(r"^(方\s*伟(?:\s*Rey)?|Rey)\s+(.+)$", re.I)
 _STRUCTURED = re.compile(r"^(方伟|网友)\s*[:：]\s*(.*)$")
 _INLINE = re.compile(r"^(.{1,16}?)[:：]\s*(.+)$")
-_GROUP_TITLE = re.compile(r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$")
+# 群名不一定带「群」字，例如「1633 看十年·线下深度交流(80)」。
+_GROUP_TITLE = re.compile(
+    r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
+    r"|^(?:\d{2,6}\s+).{2,40}[（(]\d{1,4}[）)]$"
+)
+_LATIN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,19}$")
+_LATIN_STOP = frozenset(
+    {"gpt", "opus", "claude", "codex", "grok", "the", "and", "for", "you", "are", "not", "but"}
+)
 _GROUP_BARE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,16}群$")
 _TIME = re.compile(
     r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}:\d{2}(?::\d{2})?[≥>≤<]*$"
@@ -415,8 +423,17 @@ def _is_card_anchor(line: str) -> bool:
     )
 
 
+def _latin_name(line: str) -> bool:
+    text = (line or "").strip()
+    if not _LATIN_NAME.fullmatch(text):
+        return False
+    if text.lower() in _LATIN_STOP or _is_host_line(_compact_host(text)):
+        return False
+    return True
+
+
 def _name_shape(line: str) -> bool:
-    return _cjk_name(line, 2) or _cjk_name(line, 3)
+    return _cjk_name(line, 2) or _cjk_name(line, 3) or _latin_name(line)
 
 
 def _is_sku(line: str) -> bool:
@@ -434,11 +451,17 @@ def _is_noise(line: str) -> bool:
     folded = _fold(line)
     if not folded or _SYMBOL.fullmatch(folded):
         return True
+    # 截图边缘的单个假名。折行剩下的「的」是汉字，留着。
+    if len(folded) == 1 and not _CJK.search(folded) and not folded.isalnum():
+        return True
     if _is_time(line) or _STATUS.fullmatch(folded) or _CHROME_WORD.fullmatch(folded):
         return True
     if _GROUP_TITLE.fullmatch(folded) or _is_price(line) or _SYSTEM.search(folded):
         return True
     if _is_store(line) or _is_commerce(line) or _is_app_fragment(line):
+        return True
+    # 截图角落的假名。汉字单字（折出来的「的」）不是这种。
+    if re.fullmatch(r"[\u3040-\u30ff]+", folded):
         return True
     return False
 
@@ -495,7 +518,7 @@ def _speaker_names(lines: list[str], signal: bool) -> set[str]:
     usable = [line for line in lines if line != _BREAK]
     for index, line in enumerate(usable):
         nxt = usable[index + 1] if index + 1 < len(usable) else ""
-        if _cjk_name(line, 3):
+        if _cjk_name(line, 3) or _latin_name(line):
             seen_times[line] = seen_times.get(line, 0) + 1
             if _content(nxt):
                 names.add(line)
@@ -516,7 +539,7 @@ def _guest_label(name: str) -> bool:
         return False
     if _is_host_line(_compact_host(name)):
         return False
-    if _cjk_name(name, 2) or _cjk_name(name, 3):
+    if _cjk_name(name, 2) or _cjk_name(name, 3) or _latin_name(name):
         return True
     chars = _CJK.findall(name)
     return 4 <= len(chars) <= 12 and len(chars) == len(name) and not any(char in _STOP_CHAR for char in chars)

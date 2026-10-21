@@ -119,10 +119,13 @@ def test_reading_page_shows_the_dialogue_once():
     assert '<span class="who">网友：</span>古茗店效还行，瑞幸的折扣不能再深了' in page
     assert "姜禄彦" not in page and "设为群待办" not in page and "小程序" not in page
     assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert page.count("点击看原图") == 2
-    assert f'<figure class="ocr-shot" id="{image_anchor(first)}">' in page
-    assert f'<figure class="ocr-shot" id="{image_anchor(second)}">' in page
-    assert page.index("方伟：") < page.index("点击看原图")
+    assert page.count('class="ocr-shot"') == 1
+    assert page.count('class="ocr-reading ocr-dialogue"') == 1
+    assert f'<a class="ocr-link" id="{image_anchor(first)}"' in page
+    assert f'<a class="ocr-link" id="{image_anchor(second)}"' in page
+    assert "原图 1" in page and "原图 2" in page
+    assert "<details" not in page
+    assert page.index("方伟：") < page.index("原图 1")
 
 
 def test_digest_input_is_the_cleaned_dialogue():
@@ -185,6 +188,37 @@ def test_live_14886_shots_drop_chrome_and_guest_names():
     assert text.count("成功的也不多，就一个古茗") == 1
     assert text.count("要么需求侧少喝咖啡") == 1
     assert "的" in text.splitlines()
+
+
+def _shots_14879() -> list[str]:
+    text = (Path(__file__).resolve().parents[1] / "fixtures" / "14879_live_shots.txt").read_text()
+    shots: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.strip() == "====":
+            if current:
+                shots.append("\n".join(current[2:]).strip())
+            current = []
+            continue
+        current.append(line)
+    if current:
+        shots.append("\n".join(current[2:]).strip())
+    return [shot for shot in shots if shot]
+
+
+def test_live_14879_strips_dylan_and_splits_turns():
+    """Dylan 是网友昵称。@方伟写在句子里，不能因此编出「方伟：」。"""
+    shots = _shots_14879()
+    assert len(shots) == 7
+    text = present_ocr_pieces(shots)
+    assert text.startswith("网友：")
+    assert "网友：Dylan" not in text
+    assert "Dylan" not in text
+    assert "方伟：" not in text
+    assert text.count("网友：") >= 3
+    for leaked in ("10:57", "10:43", "10:49", "看十年", "撤回了一条消息"):
+        assert leaked not in text, leaked
+    assert "@方伟-最近在" in text
 
 
 def test_image_post_title_uses_the_sentence_not_the_speaker_label():
