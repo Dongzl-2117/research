@@ -2,11 +2,10 @@
 
 星球导出经常没有标题，或者把第一句截成「……」。卡片、文章页和重新导入时用这里的规则：
 
-- 完整的第一句（问句也算）优先，去掉句号，一般不超过 40 字。
-- 正文只是半截标题时，用摘要里的判断句压成标题。
+- 正文里有完整的第一句（问句也算）就用它，去掉句号，一般不超过 40 字。
+- 库内标题去掉省略号后还是一句可用的话，优先于摘要，也优先于图片里的字。
 - 复述摘要不能当标题。句子里出现「正文几乎」「文中未给」「作者开篇判断」，或「没有段永平本人的话」，就丢掉。
-- 去掉省略号后还剩一句原标题，用这句，不用上面的复述。
-- 图片里的字只在占位标题（「图片」「见图」）或和帖子沾边时才用，避免把另一张新闻截图当成标题。
+- 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句的占位时才用，不用无关的配售截图。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
 
@@ -86,19 +85,23 @@ def zsxq_display_title(
     stored = (title or "").strip()
     if stored and not title_needs_repair(stored):
         return stored
-    anchors = _topic_anchors(stored)
     for sentence in _candidates(body):
         return sentence
-    for sentence in _candidates(summary):
-        return sentence
-    for sentence in _candidates(ocr):
-        # 有帖子主题时，图片里的另一则新闻对不上就不拿来当标题。
-        if not anchors or _overlaps(sentence, anchors):
-            return sentence
+    # 去掉省略号后还是一句可用的原标题，优先于摘要和图片里的字。
     stem = _salvage_stored(stored)
     if stem:
         return stem
-    snippet = _short_snippet(body) or _short_snippet(summary) or _short_snippet(ocr)
+    for sentence in _candidates(summary):
+        return sentence
+    if _ocr_allowed(stored):
+        anchors = _topic_anchors(stored)
+        for sentence in _candidates(ocr):
+            # 有帖子主题时，图片里的另一则新闻对不上就不拿来当标题。
+            if not anchors or _overlaps(sentence, anchors):
+                return sentence
+    snippet = _short_snippet(body) or _short_snippet(summary)
+    if _ocr_allowed(stored):
+        snippet = snippet or _short_snippet(ocr)
     date = _date_prefix(when)
     if date and snippet:
         fitted = _fit(f"{date} {snippet}")
@@ -184,6 +187,16 @@ def _prepare(sentence: str) -> str:
         current = rest
     current = _strip_ellipsis(current).strip().rstrip("。.")
     return re.sub(r"\s+", " ", current).strip()
+
+
+def _ocr_allowed(title: str) -> bool:
+    """图片里的字只补给「图片」、空标题，以及没有可用原句的占位。"""
+    text = (title or "").strip()
+    if not text or _placeholder(text) or _narration(text):
+        return True
+    if re.fullmatch(r"\d{5,}", text) or _DATE_ONLY.fullmatch(text):
+        return True
+    return _CJK.search(text) is None
 
 
 def _topic_anchors(title: str) -> set[str]:
