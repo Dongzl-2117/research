@@ -26,7 +26,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import VOICE_NOTE, display_author, for_model, raw_meta_of
+from researchlib.author_voice import DUAN_SOURCE, VOICE_NOTE, display_author, for_model, is_guest, raw_meta_of
 from researchlib.config import Settings
 from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
@@ -133,22 +133,28 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     header = f"标题：{row['title']}\n作者：{shown_author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
     source_id = row["source_id"] if "source_id" in row.keys() else ""
-    body, voice_chunks, restricted = for_model(
-        row["body_text"] or "", chunks, meta, source_id=source_id
-    )
-    if restricted:
-        header += VOICE_NOTE
-        chunks = voice_chunks
+    # 星球读者帖是发帖人自己的正文。for_model 会把它收成空的「作者本人」，摘要不能跟着写成段永平没说话。
+    if is_guest(meta):
+        body = row["body_text"] or ""
+        restricted = False
+    else:
+        body, voice_chunks, restricted = for_model(
+            row["body_text"] or "", chunks, meta, source_id=source_id
+        )
+        if restricted:
+            header += VOICE_NOTE
+            chunks = voice_chunks
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
     voice_body = body
-    if not (restricted and not voice_body.strip()):
+    duan_silent = source_id == DUAN_SOURCE and restricted and not voice_body.strip()
+    if not duan_silent:
         body = append_ocr(voice_body, ocr_text)
         if ocr_text.strip():
             chunks = [*chunks, ("图片里的字", ocr_text)]
             header += "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。）"
     reduced = False
-    if restricted and not voice_body.strip():
-        # 没有他本人的话，也不要把图片里的字写成他的导读。
+    if duan_silent:
+        # 只有段永平这篇里他本人没有字。图片里的字也不写成他的导读。
         data = {"summary": "（没有段永平本人的话）", "points": [], "tags": []}
         model = ""
     else:
