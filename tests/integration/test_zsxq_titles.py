@@ -12,6 +12,8 @@ from researchlib.web.app import create_app
 
 FULL = "大模型生意的护城河在哪里，明确还不是一个能够回答的话题"
 TRUNCATED = "大模型生意的护城河在哪里，明确…"
+# 去掉省略号并剪掉没说完的「，明确」之后，原标题还是一句可用的话，不再用摘要补全。
+GUEST_TITLE = "大模型生意的护城河在哪里"
 BODY = FULL + "。\n\n作者没有写出为什么现在答不了。\n"
 DIGEST = "方伟认为，" + FULL + "。正文只给出这一判断，没有说明依据。"
 
@@ -73,8 +75,9 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
         assert "research-recent-views" in home.text
         guest_page = client.get(f"/articles/{guest_row['id']}")
         assert guest_page.status_code == 200
-        assert f"<h1>{FULL}</h1>" in guest_page.text
-        assert "<title>" + FULL in guest_page.text
+        assert f"<h1>{GUEST_TITLE}</h1>" in guest_page.text
+        assert "<title>" + GUEST_TITLE in guest_page.text
+        assert f"<h1>{FULL}</h1>" not in guest_page.text
         owner_page = client.get(f"/articles/{owner_row['id']}")
         assert owner_page.status_code == 200
         assert f"<h1>{FULL}</h1>" in owner_page.text

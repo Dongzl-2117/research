@@ -32,11 +32,14 @@ def test_ascii_ellipsis_and_blank_title_use_the_first_sentence():
     assert zsxq_display_title("未命名", body=BODY) == FULL
 
 
-def test_fragmented_body_uses_digest_sentence_without_author_lead():
+def test_fragmented_body_keeps_the_title_stem_over_a_digest():
+    """去掉省略号后还是一句可用的原标题，不用摘要把后半句补回来。"""
     title = zsxq_display_title(TRUNCATED, body=TRUNCATED, summary=DIGEST, when="2024-10-19")
-    assert title == FULL
+    assert title == "大模型生意的护城河在哪里"
     assert not title.startswith("方伟")
     assert not title.endswith(("…", "...", "。"))
+    # 原标题本身没有可用句时，摘要的判断句仍然可以当标题。
+    assert zsxq_display_title("…", body="…", summary=DIGEST) == FULL
 
 
 def test_image_post_uses_ocr_before_a_date_fallback():
@@ -140,8 +143,6 @@ XIAOMI_BODY = """# 帖子
 似曾相识 巴菲特
 """
 XIAOMI_DIGEST = "方伟认为，今年小米的走势和去年的剧本很像。"
-XIAOMI_TITLE = "今年小米的走势和去年的剧本很像"
-XIAOMI_OCR = "智谱宣布完成配售，募资用于大模型训练和算力采购。"
 
 
 def _no_ellipsis(title: str) -> None:
@@ -219,22 +220,31 @@ def test_narration_summary_is_not_a_title():
     assert "段永平" not in card["plain_title"]
 
 
-def test_ellipsis_stem_beats_a_narration_summary():
-    """14865：去掉省略号后用原标题主干，不用复述摘要，也不用另一张配售截图。"""
+# 14865 线上 h1 曾被这句无关配售截图盖住。
+LIVE_OCR = "智谱完成约314.1亿港元配售，资金主要用于基座模型研发、算力基建"
+
+
+def test_14865_stem_beats_dirty_summary_and_unrelated_ocr():
+    """原标题有省略号，摘要是复述或配售截图那句，OCR 也是配售：仍用原标题主干。"""
+    assert title_needs_repair(XIAOMI)
     title = zsxq_display_title(
         XIAOMI,
         body=XIAOMI_BODY,
         summary=DIRTY_XIAOMI,
-        ocr=XIAOMI_OCR,
+        ocr=LIVE_OCR,
         when="2025-11-13",
     )
     assert title == XIAOMI_STEM
     _no_ellipsis(title)
-    assert "作者开篇" not in title
-    assert "文中未给" not in title
-    assert "正文几乎" not in title
     assert "智谱" not in title
+    assert "配售" not in title
+    assert "作者开篇" not in title
     assert "巴菲特" not in title
+    # 摘要被重写成截图那句时，也不能盖过原标题。
+    assert zsxq_display_title(XIAOMI, body=XIAOMI_BODY, summary=LIVE_OCR, ocr=LIVE_OCR) == XIAOMI_STEM
+    assert zsxq_display_title(XIAOMI, body=XIAOMI_BODY, summary=XIAOMI_DIGEST, ocr=LIVE_OCR) == XIAOMI_STEM
+    glued = zsxq_display_title(XIAOMI, body="...\n似曾相识 巴菲特\n", summary=LIVE_OCR, ocr=LIVE_OCR)
+    assert glued == XIAOMI_STEM
     card = {
         "id": 14865,
         "source_id": "fangwei-zsxq",
@@ -244,34 +254,15 @@ def test_ellipsis_stem_beats_a_narration_summary():
         "date": "2025-11-13",
     }
     _repair_zsxq_titles(
-        _Conn([{"id": 14865, "body_text": XIAOMI_BODY, "ocr_text": XIAOMI_OCR}]),
+        _Conn([{"id": 14865, "body_text": XIAOMI_BODY, "ocr_text": LIVE_OCR}]),
         [card],
     )
     assert card["title"] == XIAOMI_STEM
     assert card["plain_title"] == XIAOMI_STEM
-
-
-def test_truncated_title_prefers_digest_over_unrelated_ocr():
-    assert title_needs_repair(XIAOMI)
-    title = zsxq_display_title(
-        XIAOMI,
-        body=XIAOMI_BODY,
-        summary=XIAOMI_DIGEST,
-        ocr=XIAOMI_OCR,
-        when="2025-11-13",
-    )
-    assert title == XIAOMI_TITLE
-    _no_ellipsis(title)
-    assert "智谱" not in title
-    assert "巴菲特" not in title
-    assert not title.startswith("…")
-    # 正文几乎只有半截标题时，不要拼成「... 似曾相识 巴菲特」。
-    glued = zsxq_display_title(XIAOMI, body="...\n似曾相识 巴菲特\n", summary=XIAOMI_DIGEST, ocr=XIAOMI_OCR)
-    assert glued == XIAOMI_TITLE
-    # 没有摘要时，也不要用无关配售新闻；去掉省略号后的半截标题可以兜底。
-    stem = zsxq_display_title(XIAOMI, body=XIAOMI_BODY, ocr=XIAOMI_OCR)
-    assert stem == "跟去年小米的剧本总是似曾相识"
-    _no_ellipsis(stem)
+    # 「图片」这种占位仍然读图片里的字，不退回配售以外的空标题。
+    picture = zsxq_display_title("「图片」", body="", summary=DIRTY_XIAOMI, ocr=LIVE_OCR)
+    assert picture == LIVE_OCR
+    assert picture != XIAOMI_STEM
 
 
 def test_zsxq_import_stores_a_complete_sentence(tmp_path: Path):
