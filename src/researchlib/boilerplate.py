@@ -126,6 +126,17 @@ def _classify(line: str, profile: Profile, hashes: dict[str, str]) -> tuple[str,
     return "good", len(norm)
 
 
+def _tail_has_hook(lines: list[str], profile: Profile, hashes: dict[str, str], start: int) -> bool:
+    """尾巴里必须有引流词或广告图，光是多篇重复的正文套话不够（评测语料会共享细节句）。"""
+    for line in lines[start:]:
+        if PROMO.search(line):
+            return True
+        refs = image_refs(line)
+        if refs and any(hashes.get(ref) in profile.images for ref in refs):
+            return True
+    return False
+
+
 def _tail_cut(lines: list[str], profile: Profile, hashes: dict[str, str]) -> int:
     kinds = [_classify(line, profile, hashes) for line in lines]
     total = sum(size for kind, size in kinds if kind != "neutral") or 1
@@ -153,6 +164,7 @@ def _tail_cut(lines: list[str], profile: Profile, hashes: dict[str, str]) -> int
             and good <= max(bad * TAIL_RATIO, 0)
             and good <= TAIL_GOOD_MAX
             and prefix[index] >= total * TAIL_START
+            and _tail_has_hook(lines, profile, hashes, index)
         ):
             cut = index
     return cut
