@@ -342,19 +342,18 @@ def test_companies_page_pins_holdings_and_company_page_defaults_to_deep(conn, se
     tencent = _company_id(conn, "腾讯")
     with TestClient(create_app(settings)) as client:
         listing = client.get("/companies").text
-        # 持仓按 config/portfolio.yaml 的顺序排在最前，带「持仓 / 观察」标记。
-        assert listing.find("泡泡玛特") < listing.find("拼多多") < listing.find("贵州茅台") < listing.find("苹果")
-        assert 'class="role-badge role-holding">持仓' in listing
-        assert 'class="role-badge role-watch">观察' in listing
-        assert "每月深入篇数" in listing
+        assert "持仓和观察" not in listing
+        assert "role-badge" not in listing
         assert "宁德时代" in listing
+        assert "腾讯" in listing
         recent = client.get("/companies", params={"sort": "recent"}).text
         assert "<strong>最近提及</strong>" in recent
         hk = client.get("/companies", params={"market": "US"}).text
         assert "宁德时代" not in hk.split('class="company-list"', 1)[1]
         page = client.get(f"/companies/{tencent}").text
         assert "深入谈到" in page and "谁在谈" in page
-        assert 'class="role-badge role-holding">持仓' in page
+        assert "role-badge" not in page
+        assert "role-holding" not in page
         # 默认只列深入提及；「全部」里才有一带而过的那篇。
         everything = client.get(f"/companies/{tencent}", params={"depth": "all"}).text
         assert everything.count('class="depth depth-passing"') >= page.count('class="depth depth-passing"')
@@ -363,7 +362,7 @@ def test_companies_page_pins_holdings_and_company_page_defaults_to_deep(conn, se
         assert "持仓近况" not in home
 
 
-def test_portfolio_names_missing_from_company_table_are_flagged(conn, settings, tmp_path):
+def test_companies_page_does_not_surface_portfolio_names(conn, settings, tmp_path):
     from dataclasses import replace as dc_replace
 
     portfolio = tmp_path / "portfolio.yaml"
@@ -371,7 +370,8 @@ def test_portfolio_names_missing_from_company_table_are_flagged(conn, settings, 
     custom = dc_replace(settings, portfolio_path=portfolio)
     with TestClient(create_app(custom)) as client:
         listing = client.get("/companies").text
-        assert "不存在的公司 不在公司表里" in listing
+        assert "不存在的公司" not in listing
+        assert "持仓和观察" not in listing
 
 
 def test_mentions_rebuild_when_company_aliases_change(conn, settings):

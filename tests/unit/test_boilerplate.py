@@ -1,4 +1,4 @@
-from researchlib.boilerplate import Profile, clean_body, normalize, strip_meta
+from researchlib.boilerplate import Profile, clean_body, clean_html_document, normalize, strip_meta
 
 HEADER = """# 标题
 
@@ -45,6 +45,23 @@ def test_meta_header_is_removed():
     assert "正文第一句" in out and out.startswith("# 标题")
 
 
+BARE_HEADER = """# 渠道怎么看
+
+作者：方伟
+时间：2026-10-14 07:00:00
+原文链接：https://mp.weixin.qq.com/s/abc
+阅读：1234
+
+腾讯的渠道优势是零下载成本，能快速转化存量用户。
+"""
+
+
+def test_bare_archive_header_without_dashes_is_removed():
+    out = strip_meta(BARE_HEADER)
+    assert "作者：" not in out and "mp.weixin.qq.com" not in out and "阅读：" not in out
+    assert "渠道优势" in out and out.startswith("# 渠道怎么看")
+
+
 def test_zsxq_header_removed_and_comments_kept():
     out = clean_body(ZSXQ)
     assert "点赞" not in out and "topic_id" not in out
@@ -79,6 +96,49 @@ def test_promo_keyword_alone_does_not_cut_real_content():
         ["中国的移动支付靠扫码普及，二维码成本极低。" * 3, "印度：UPI QR 直接连银行账户。", "东南亚：扫码跨境互联。"]
     )
     assert clean_body(body, _profile()).count("扫码") >= 2
+
+
+def test_cta_tail_and_qr_images_drop_without_a_repeat_profile():
+    body = "\n\n".join(
+        [
+            "# 渠道怎么看",
+            "腾讯的渠道优势是零下载成本，能快速转化存量用户。这段要留在正文里，讲的是商业模式而不是文末号召。",
+            "![](chart.png)",
+            "再补一句：广告库存还在抬升，不是文末号召。",
+            "适合认可巴菲特、",
+            "价值投资理念的朋友加入，",
+            "我们只在能力圈范围内讨论企业的商业模式",
+            "## 招募",
+            "长按识别二维码关注公众号",
+            "加微信：example_id",
+            "所以白嫖勿扰。",
+            "![](images/qrcode.jpg)",
+            '![](images/wechat-qr.png "二维码")',
+        ]
+    )
+    out = clean_body(body)
+    assert "渠道优势" in out and "chart.png" in out and "广告库存还在抬升" in out
+    for word in ("招募", "长按识别", "qrcode", "wechat-qr", "白嫖", "加微信", "能力圈", "巴菲特"):
+        assert word not in out
+
+
+def test_html_article_drops_header_qr_and_recruiting():
+    html = """
+<p>作者：方伟</p>
+<p>时间：2026-10-14 07:00:00</p>
+<p>原文链接：https://mp.weixin.qq.com/s/abc</p>
+<p>腾讯的渠道优势是零下载成本，能快速转化存量用户。这段要留在正文里，讲的是商业模式而不是文末号召。</p>
+<p><img src="https://mmbiz.qpic.cn/chart.png" alt="渠道图"></p>
+<p>再补一句：广告库存还在抬升，不是文末号召。</p>
+<h2>招募</h2>
+<p>长按识别二维码关注公众号</p>
+<p>加微信：example_id</p>
+<img src="https://mmbiz.qpic.cn/qrcode.jpg" alt="二维码">
+"""
+    out = clean_html_document(html)
+    assert "渠道优势" in out and "chart.png" in out and "广告库存还在抬升" in out
+    for word in ("作者：", "mp.weixin.qq.com", "招募", "长按识别", "qrcode", "加微信"):
+        assert word not in out
 
 
 def test_repeated_headings_without_promo_are_kept():

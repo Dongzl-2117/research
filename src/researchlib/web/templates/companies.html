@@ -10,39 +10,7 @@
     <input id="company-filter" type="search" placeholder="筛选公司、简称或代码" autocomplete="off">
   </div>
 </header>
-{% for error in portfolio_errors %}<p class="banner">{{ error }}</p>{% endfor %}
-{% if missing %}
-<p class="banner">持仓名单里的 {{ missing | join("、") }} 不在公司表里。</p>
-{% endif %}
-{% if pinned %}
-<section class="holdings" aria-label="持仓和观察">
-  <ul class="holding-grid">
-    {% for item in pinned %}
-    <li class="holding-card role-{{ item.role }}" data-name="{{ item.name }} {{ item.ticker }}">
-      <div class="holding-head">
-        <h2><a href="/companies/{{ item.id }}">{{ item.name }}</a></h2>
-        <span class="role-badge role-{{ item.role }}">{{ item.role_label }}</span>
-        <span class="holding-ticker ticker">{{ item.ticker }}</span>
-      </div>
-      <p class="holding-stats"><strong class="num">{{ item.deep }}</strong> 篇深入<span class="quiet num"> / 提及 {{ item.total }}</span></p>
-      <figure class="holding-spark">
-        {{ item.spark }}
-        <figcaption><span>两年前</span><span>每月深入篇数</span><span>本月</span></figcaption>
-      </figure>
-      {% if item.authors %}
-      <p class="holding-authors">{% for name, count in item.authors %}<a href="/companies/{{ item.id }}?author={{ name | urlencode }}">{{ name }} <span class="num">{{ count }}</span></a>{% endfor %}</p>
-      {% endif %}
-      {% if item.latest %}
-      <p class="holding-latest"><span class="quiet">最近</span> <a href="/articles/{{ item.latest.id }}">{{ item.latest.title }}</a> <span class="quiet">{{ item.latest.author }} · {{ item.latest.relative or item.latest.date }}</span></p>
-      {% else %}
-      <p class="holding-latest quiet">库里还没有深入谈它的文章。</p>
-      {% endif %}
-    </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-<section class="company-list" aria-label="其余公司">
+<section class="company-list" aria-label="公司">
   <div class="list-tools">
     <nav class="pills" aria-label="市场">
       <a href="/companies{% if list_query %}?{{ list_query }}{% endif %}" {% if not market %}aria-current="page"{% endif %}><span>全部</span><span class="num">{{ others_total }}</span></a>

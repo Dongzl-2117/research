@@ -26,16 +26,23 @@ from researchlib.textutil import split_frontmatter
 ROOT_TITLE = "主页-Jason 林文丰"
 
 # 文库树只展示公司、行业研究。方法论、笔记、如何思考一类从树上藏掉（库里还在，检索和问库照常）。
-# 「价值投资研究」是方法论，不算公司。
+# 「价值投资研究」「投资的常识」是方法论，不算公司或行业。带编号、括号的写法也藏。
 
-LIBRARY_KEEP = re.compile(r"(投资研究|行业研究)$|.+研究$|公用事业与周期业$")
-LIBRARY_EXCLUDE = re.compile(r"^价值投资研究$")
+LIBRARY_KEEP = re.compile(r"(投资研究|行业研究)$|.+研究$|^公用事业与周期业$")
+LIBRARY_EXCLUDE = re.compile(r"价值投资研究|投资的常识|如何思考|思维模型|方法论|读书笔记|投资笔记|投资框架")
+INDUSTRY_BUCKETS = frozenset({"公用事业与周期业"})
+
+
+def is_methodology(title: str) -> bool:
+    return bool(LIBRARY_EXCLUDE.search((title or "").strip()))
 
 
 def library_visible(title: str) -> bool:
     title = (title or "").strip()
-    if not title or LIBRARY_EXCLUDE.match(title):
+    if not title or is_methodology(title):
         return False
+    if title in INDUSTRY_BUCKETS:
+        return True
     return bool(LIBRARY_KEEP.search(title))
 
 
@@ -204,14 +211,29 @@ def arrange_tree(rows: list[dict]) -> tuple[dict | None, list[dict]]:
     return root, [node(row, set()) for row in orphans]
 
 
+def _without_methodology(node: dict) -> dict:
+    """公司或行业分支下面如果再链到方法论，那一篇也不挂在树上。"""
+    children = [
+        _without_methodology(child)
+        for child in node.get("children") or []
+        if not is_methodology(child.get("title") or "")
+    ]
+    return {**node, "children": children}
+
+
 def filter_library_tree(root: dict | None, orphans: list[dict]) -> tuple[dict | None, list[dict]]:
     """只留「XX投资研究」「XX行业研究/XX研究」及其子文档。根（主页）保留当容器。
 
-    孤儿和不匹配的顶层节点从树上藏掉，库里的文章、检索、问库不动。
+    顶层不是公司或行业研究的（包括「价值投资研究」「投资的常识」）从树上藏掉。
+    孤儿同样不挂。库里的文章、检索、问库不动。
     """
     if root is None:
         return None, []
-    kept = [child for child in root.get("children") or [] if library_visible(child["title"])]
+    kept = [
+        _without_methodology(child)
+        for child in root.get("children") or []
+        if library_visible(child.get("title") or "")
+    ]
     return {**root, "children": kept}, []
 
 

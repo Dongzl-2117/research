@@ -1400,7 +1400,8 @@ tbody tr:hover td { background: var(--accent-softer); }
 
 /* 首页：持仓近况 */
 .holdings-now { margin: 0 0 20px; padding: 14px 16px; }
-.holdings-now h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+.holdings-now h2 { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-width: 0; margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+.holdings-now h2 > a { flex: 0 0 auto; }
 .holdings-now h2 a:hover { color: var(--accent); }
 .recent-views-toggle {
   display: inline-grid;
@@ -1421,6 +1422,64 @@ tbody tr:hover td { background: var(--accent-softer); }
 html[data-recent-views="collapsed"] .recent-views-toggle .chevron { transform: rotate(-90deg); }
 html[data-recent-views="collapsed"] .holdings-now h2 { margin-bottom: 0; }
 html[data-recent-views="collapsed"] #recent-views-list { display: none; }
+.recent-views-line {
+  display: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 13px;
+  font-weight: 450;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-views-line a:hover { color: var(--accent); }
+html[data-recent-views="collapsed"] .recent-views-line { display: block; }
+.recent-item-line {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.recent-item-line .holdings-name { flex: 0 1 auto; min-width: 0; }
+.recent-item-line .holdings-when { margin-left: auto; white-space: nowrap; }
+.recent-item-summary { margin: 2px 0 8px; color: var(--ink-2); font-size: 14.5px; line-height: 1.7; }
+.recent-item-summary a { color: var(--ink-2); }
+.recent-item-summary a:hover { color: var(--accent); }
+@media (max-width: 719px) {
+  .recent-item-line { flex-wrap: wrap; }
+  .recent-item-line .holdings-when { margin-left: 0; }
+}
+.recent-lead { margin: 8px 0 12px; }
+.recent-lead > summary { display: block; list-style: none; cursor: pointer; }
+.recent-lead > summary::-webkit-details-marker { display: none; }
+.recent-lead > summary::marker { content: ""; }
+.recent-lead-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.recent-lead-line::before {
+  content: "▶";
+  flex: 0 0 auto;
+  color: var(--ink-4);
+  font-size: 10px;
+}
+.recent-lead[open] > summary .recent-lead-line::before { transform: rotate(90deg); }
+.recent-lead-kicker { flex: 0 0 auto; color: var(--ink-4); font-size: 12px; font-weight: 600; }
+.recent-lead-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-lead-summary { margin: 6px 0 0; color: var(--ink-2); font-size: 15px; line-height: 1.7; }
+.recent-lead-summary a { color: var(--ink); }
+.recent-lead-summary a:hover { color: var(--accent); }
 .holdings-now h2 .quiet { font-size: 12px; font-weight: 400; }
 .holdings-now ul { margin: 0; padding: 0; list-style: none; }
 .holdings-now li {
@@ -1705,10 +1764,10 @@ html[data-recent-views="collapsed"] #recent-views-list { display: none; }
   vertical-align: 1px;
 }
 
-/* 飞书目录：窄树栏 + 正文占满剩余宽度，左边不留空白 */
+/* 飞书目录：固定窄树栏。长标题省略，不能把格子撑到半页。 */
 .doc-shell {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
   gap: 20px;
   align-items: start;
   width: 100%;
@@ -1718,11 +1777,15 @@ html[data-recent-views="collapsed"] #recent-views-list { display: none; }
 .doc-nav {
   position: sticky;
   top: 12px;
+  width: 220px;
+  max-width: 100%;
+  min-width: 0;
   max-height: calc(100dvh - 24px);
   overflow: auto;
   padding: 4px 4px 16px 0;
   border-right: 1px solid var(--line-soft);
 }
+.doc-tree, .doc-tree ol, .doc-tree li, .doc-nav details { min-width: 0; max-width: 100%; }
 .doc-tree { margin: 0; padding: 0; list-style: none; }
 .doc-tree ol { margin: 2px 0 0; padding: 0 0 0 10px; list-style: none; border-left: 1px solid var(--line-soft); }
 .doc-nav a {
@@ -1738,35 +1801,44 @@ html[data-recent-views="collapsed"] #recent-views-list { display: none; }
 }
 .doc-nav a:hover { background: var(--bg-sunk); color: var(--ink); }
 .doc-nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); font-weight: 650; }
-/* ▶ 和分组标题同一行；不要让块级链接把箭头挤到上一行 */
+/* 系统自带的 ▶ 在 summary 上会单独占一行。箭头放进和标题同一条 flex 里。 */
 .doc-nav summary {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  display: block;
+  min-width: 0;
   cursor: pointer;
   list-style: none;
 }
 .doc-nav summary::-webkit-details-marker { display: none; }
-.doc-nav summary::before {
-  content: "▶";
+.doc-nav summary::marker { content: none; }
+.doc-branch {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.doc-twist {
   flex: 0 0 auto;
+  width: 1em;
   color: var(--ink-4);
+  font-style: normal;
   font-size: 10px;
   line-height: 1;
-  transition: transform .12s ease;
+  text-align: center;
 }
-.doc-nav details[open] > summary::before { transform: rotate(90deg); }
-.doc-nav summary > a { flex: 1 1 auto; min-width: 0; }
+.doc-twist::before { content: "▶"; }
+.doc-nav details[open] > summary .doc-twist { display: inline-block; transform: rotate(90deg); }
+.doc-branch > a { flex: 1 1 auto; min-width: 0; width: auto; }
 .doc-read { min-width: 0; max-width: 72ch; font-size: var(--text-prose); }
 .doc-read .prose { max-width: none; }
 @media (max-width: 800px) {
-  .doc-shell { grid-template-columns: 1fr; }
-  .doc-nav { position: static; max-height: 42vh; border-right: 0; border-bottom: 1px solid var(--line-soft); }
+  .doc-shell { grid-template-columns: minmax(0, 1fr); }
+  .doc-nav { position: static; width: auto; max-height: 42vh; border-right: 0; border-bottom: 1px solid var(--line-soft); }
 }
 
-/* 首页「最近观点」折叠行：一行一家，紧凑 */
-.holdings-now li.holdings-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 5px 0; }
-.holdings-row .holdings-when { margin-left: auto; font-size: 12.5px; }
+/* 首页「最近观点」：展开后每家一行标题，下面是导读 */
+.holdings-now li.recent-item { display: block; padding: 6px 0; }
+.holdings-row .holdings-when { font-size: 12.5px; }
 
 /* 文章页顶部总结 */
 .article-digest { margin: 1rem 0 1.5rem; padding: .8rem 1rem; border-left: 3px solid var(--accent, #3b6); background: var(--surface-2, rgba(127,127,127,.06)); border-radius: 6px; }

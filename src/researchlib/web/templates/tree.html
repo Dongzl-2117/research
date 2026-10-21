@@ -4,7 +4,10 @@
   {% if node.children %}
   <details {% if node.open %}open{% endif %}>
     <summary>
-      <a href="/sources/{{ source_id }}/tree/{{ node.id }}" title="{{ node.title }}" {% if node.current %}aria-current="page"{% endif %}>{{ node.title }}</a>
+      <span class="doc-branch">
+        <i class="doc-twist" aria-hidden="true"></i>
+        <a href="/sources/{{ source_id }}/tree/{{ node.id }}" title="{{ node.title }}" {% if node.current %}aria-current="page"{% endif %}>{{ node.title }}</a>
+      </span>
     </summary>
     <ol>
       {% for child in node.children %}{{ branch(child, source_id) }}{% endfor %}
