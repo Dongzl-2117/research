@@ -59,7 +59,7 @@ _NEXT_H2 = re.compile(r"(?m)^##[ \t]+\S")
 
 
 def visible_sql(alias: str = "") -> str:
-    """空回答整篇不进列表。没标的旧数据仍可见。"""
+    """空回答整篇不进列表。标记只写在段永平博客上，别的来源没有这一栏，不受影响。"""
     column = f"{alias}.raw_meta" if alias else "raw_meta"
     return f"coalesce({column}->>'{SUPPRESSED}', '') = ''"
 
@@ -130,9 +130,12 @@ def stored_answer_empty(body_md: str) -> bool:
     return voice_is_empty(section)
 
 
-def hide_empty_answer(conn, article_id: int, body_md: str, raw_meta) -> bool:
-    """空回答标上标记，摘掉公司挂靠和观点。正文不删。已经标过的不再改。"""
-    if not stored_answer_empty(body_md):
+def hide_empty_answer(conn, article_id: int, body_md: str, raw_meta, *, source_id: str) -> bool:
+    """空回答标上标记，摘掉公司挂靠和观点。正文不删。已经标过的不再改。
+
+    只处理段永平博客。方伟这类来源的读者帖即使正文里出现同样的标题，也不搁下。
+    """
+    if source_id != SOURCE_ID or not stored_answer_empty(body_md):
         return False
     meta = dict(raw_meta or {})
     if meta.get(SUPPRESSED) != EMPTY_ANSWER or meta.get(_OFF_VIEWS) is not True:
@@ -162,7 +165,7 @@ def backfill_empty_answers(conn) -> int:
     ).fetchall()
     hidden = 0
     for row in rows:
-        if hide_empty_answer(conn, row["id"], row["body_md"] or "", row["raw_meta"]):
+        if hide_empty_answer(conn, row["id"], row["body_md"] or "", row["raw_meta"], source_id=SOURCE_ID):
             hidden += 1
     if hidden:
         logger.info("段永平空回答已搁下 %s 篇", hidden)

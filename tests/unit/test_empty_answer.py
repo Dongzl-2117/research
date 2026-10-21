@@ -1,7 +1,7 @@
 """空回答不入库，问答页按问题 / 回答分开。"""
 
 from researchlib.author_voice import duan_paragraphs
-from researchlib.empty_answer import stored_answer_empty, substantive_voice, voice_is_empty
+from researchlib.empty_answer import hide_empty_answer, stored_answer_empty, substantive_voice, voice_is_empty
 from researchlib.ingest.duanyongping.emit import render_markdown
 from researchlib.ingest.duanyongping.extract import Block
 from researchlib.ingest.duanyongping.reclassify import decide_stored
@@ -56,6 +56,14 @@ def test_chrome_only_voice_is_empty_and_real_answer_stays():
     assert stored_answer_empty(PDD)
     assert not stored_answer_empty(REAL)
     assert not stored_answer_empty("能力圈就是不做不懂的事。苹果只是举例。")
+
+
+def test_suppress_stays_on_duanyongping_and_does_not_touch_other_sources():
+    guest = "方伟读者：茅台现在太贵了吗？我觉得生意模式还在，准备继续拿着。\n"
+    assert stored_answer_empty(guest) is False
+    # 别的来源即使贴了同样的问答标题，也不搁下，也不碰数据库。
+    assert hide_empty_answer(None, 1, COOK, {}, source_id="fangwei-zsxq") is False
+    assert hide_empty_answer(None, 1, COOK, {}, source_id="fangwei-mp") is False
 
 
 def test_classify_drops_chrome_even_when_the_question_names_a_company():

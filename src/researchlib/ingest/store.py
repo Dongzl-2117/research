@@ -279,7 +279,9 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             (article_id,),
         ).fetchone()
         if stored_row is not None:
-            hide_empty_answer(conn, article_id, stored_row["body_md"] or "", stored_row["raw_meta"])
+            hide_empty_answer(
+                conn, article_id, stored_row["body_md"] or "", stored_row["raw_meta"], source_id=source.id
+            )
     return status, stored, linked, missing, duplicate
 
 
