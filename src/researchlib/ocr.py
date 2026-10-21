@@ -25,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from researchlib.chunks import replace_ocr_chunks
+from researchlib.wechat_dialogue import present_ocr_pieces, present_stored_ocr
 
 logger = logging.getLogger("researchlib.ocr")
 
@@ -124,14 +125,19 @@ def useful_image_text(text: str) -> bool:
 
 
 def compose_ocr_text(pieces: list[str]) -> str:
-    """按图片顺序拼成观点和摘要能读的旁路正文。太短的（水印、表情）丢掉。"""
-    blocks: list[str] = []
+    """按图片顺序拼成观点和摘要能读的旁路正文。
+
+    太短的（水印、表情）丢掉。微信群聊截图整理成「方伟：」「网友：」，
+    表格和长文保持原文。阅读页用同一套规则，见 wechat_dialogue。
+    """
+    useful: list[str] = []
     for piece in pieces:
         text = (piece or "").strip()
-        if not useful_image_text(text):
-            continue
-        blocks.append(text)
-    return "\n\n".join(blocks)
+        if useful_image_text(text):
+            useful.append(text)
+    if not useful:
+        return ""
+    return present_ocr_pieces(useful)
 
 
 def hash_ocr(text: str) -> str:
@@ -164,6 +170,12 @@ def refresh_article_ocr(conn, article_id: int) -> str:
     ).fetchall()
     text = compose_ocr_text([row["text"] for row in rows])
     digest = hash_ocr(text)
+    current = conn.execute(
+        "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
+        (article_id,),
+    ).fetchone()
+    if current is not None and (current["ocr_text"] or "") == text and (current["ocr_hash"] or "") == digest:
+        return digest
     conn.execute(
         "UPDATE articles SET ocr_text = %s, ocr_hash = %s WHERE id = %s",
         (text, digest, article_id),
@@ -172,13 +184,21 @@ def refresh_article_ocr(conn, article_id: int) -> str:
 
 
 def article_ocr(conn, article_id: int) -> tuple[str, str]:
+    """摘要和观点读的图片文字。库里若还是原始识别行，先整理成对话再返回，并写回。"""
     row = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
         (article_id,),
     ).fetchone()
     if row is None:
         return "", ""
-    return row["ocr_text"] or "", row["ocr_hash"] or ""
+    cleaned = present_stored_ocr(row["ocr_text"] or "")
+    digest = hash_ocr(cleaned)
+    if cleaned != (row["ocr_text"] or "") or digest != (row["ocr_hash"] or ""):
+        conn.execute(
+            "UPDATE articles SET ocr_text = %s, ocr_hash = %s WHERE id = %s",
+            (cleaned, digest, article_id),
+        )
+    return cleaned, digest
 
 
 def run_ocr(

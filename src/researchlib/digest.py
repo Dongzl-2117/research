@@ -35,6 +35,7 @@ from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_co
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.present import format_date
+from researchlib.wechat_dialogue import speaker_note
 
 logger = logging.getLogger("researchlib.digest")
 
@@ -151,7 +152,12 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
         body = append_ocr(voice_body, ocr_text)
         if ocr_text.strip():
             chunks = [*chunks, ("图片里的字", ocr_text)]
-            header += "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。）"
+            note = speaker_note(ocr_text)
+            header += (
+                "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。"
+                + (note if note else "")
+                + "）"
+            )
     reduced = False
     if duan_silent:
         # 只有段永平这篇里他本人没有字。图片里的字也不写成他的导读。

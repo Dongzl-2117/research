@@ -10,6 +10,7 @@ import markdown
 from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
+from researchlib.wechat_dialogue import parse_shot, render_turns
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
@@ -207,36 +208,122 @@ def _ocr_figure(anchor: str, src: str, alt: str, text: str) -> str:
     )
 
 
-def _convert_img(tag: str, texts: dict[str, str]) -> str:
+def _img_spec(tag: str) -> tuple[str, str, str, str] | None:
     id_match = _IMG_ID.search(tag)
     src_match = _IMG_SRC_HASH.search(tag)
     if not id_match or not src_match:
-        return tag
-    raw = texts.get(src_match.group(2)) or ""
-    if not useful_image_text(raw):
-        return tag
+        return None
     alt_match = _IMG_ALT.search(tag)
     alt = alt_match.group(1) if alt_match else ""
-    return _ocr_figure(id_match.group(1), src_match.group(1), alt, raw)
+    return id_match.group(1), src_match.group(1), alt, src_match.group(2)
+
+
+def _image_spans(html: str) -> list[tuple[int, int, str]]:
+    """按出现顺序找出图片。单独成段的 <p><img></p> 整段换掉，避免留下空段落。"""
+    covered: list[tuple[int, int]] = []
+    spans: list[tuple[int, int, str]] = []
+    for match in _P_ONLY_IMG.finditer(html):
+        spans.append((match.start(), match.end(), match.group(1)))
+        covered.append((match.start(), match.end()))
+    for match in _IMG_TAG.finditer(html):
+        if any(start <= match.start() and match.end() <= end for start, end in covered):
+            continue
+        spans.append((match.start(), match.end(), match.group(0)))
+    spans.sort()
+    return spans
+
+
+def _dialogue_html(text: str) -> str:
+    parts: list[str] = []
+    for block in text.split("\n\n"):
+        block = block.strip("\n")
+        if not block.strip():
+            continue
+        label, sep, rest = block.partition("：")
+        if sep and label in {"方伟", "网友"}:
+            body = html_lib.escape(rest.lstrip("\n"))
+            parts.append(f'<p><span class="who">{label}：</span>{body}</p>')
+        else:
+            parts.append(f"<p>{html_lib.escape(block)}</p>")
+    return "".join(parts)
+
+
+def _shot_figure(anchor: str, src: str, alt: str, inner: str) -> str:
+    safe_src = html_lib.escape(src, quote=True)
+    safe_alt = html_lib.escape(alt, quote=True)
+    safe_id = html_lib.escape(anchor, quote=True)
+    reading = f'<div class="ocr-reading ocr-dialogue">{inner}</div>' if inner else ""
+    return (
+        f'<figure class="ocr-shot" id="{safe_id}">'
+        f"{reading}"
+        f'<details class="ocr-original"><summary>点击看原图</summary>'
+        f'<img src="{safe_src}" alt="{safe_alt}">'
+        f"</details></figure>"
+    )
 
 
 def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
     """有可读识别结果的本地图：先显示文字，原图收在「点击看原图」里。
 
-    texts 是 content_hash → image_texts.text。空的、太短的图保持原样。
-    锚点 id 挪到文字块上，检索里的「看这张图」仍跳到这里。
+    微信群聊整理成「方伟：」「网友：」，连续几张截图合成一段，重复的句子只出现一次。
+    表格和长文仍按原文换行。texts 是 content_hash → image_texts.text。
+    空的、太短的图保持原样。锚点 id 在文字块上，检索里的「看这张图」仍跳到这里。
     """
     if not html or not texts:
         return html or ""
-
-    def convert_p(match: re.Match[str]) -> str:
-        converted = _convert_img(match.group(1), texts)
-        if converted == match.group(1):
-            return match.group(0)
-        return converted
-
-    rewritten = _P_ONLY_IMG.sub(convert_p, html)
-    return _IMG_TAG.sub(lambda match: _convert_img(match.group(0), texts), rewritten)
+    spans = _image_spans(html)
+    if not spans:
+        return html
+    parsed: list[dict | None] = []
+    for _start, _end, tag in spans:
+        spec = _img_spec(tag)
+        if spec is None:
+            parsed.append(None)
+            continue
+        anchor, src, alt, digest = spec
+        raw = texts.get(digest) or ""
+        if not useful_image_text(raw):
+            parsed.append(None)
+            continue
+        parsed.append(
+            {"anchor": anchor, "src": src, "alt": alt, "raw": raw, "shot": parse_shot(raw)}
+        )
+    outputs: list[str | None] = [None] * len(spans)
+    seen: list[str] = []
+    index = 0
+    while index < len(spans):
+        item = parsed[index]
+        if item is None:
+            index += 1
+            continue
+        if item["shot"].kind != "dialogue":
+            outputs[index] = _ocr_figure(item["anchor"], item["src"], item["alt"], item["raw"])
+            index += 1
+            continue
+        group = [index]
+        nxt = index + 1
+        while nxt < len(spans) and parsed[nxt] is not None and parsed[nxt]["shot"].kind == "dialogue":
+            group.append(nxt)
+            nxt += 1
+        turns = [turn for cursor in group for turn in parsed[cursor]["shot"].turns]
+        dialogue = render_turns(turns, seen).strip()
+        if not dialogue:
+            for cursor in group:
+                info = parsed[cursor]
+                outputs[cursor] = _ocr_figure(info["anchor"], info["src"], info["alt"], info["raw"])
+        else:
+            inner = _dialogue_html(dialogue)
+            for offset, cursor in enumerate(group):
+                info = parsed[cursor]
+                outputs[cursor] = _shot_figure(
+                    info["anchor"], info["src"], info["alt"], inner if offset == 0 else ""
+                )
+        index = nxt
+    result = html
+    for (start, end, _tag), output in zip(reversed(spans), reversed(outputs), strict=True):
+        if output is not None:
+            result = result[:start] + output + result[end:]
+    return result
 
 
 def render_body(body: str, mapping: dict[str, str], fmt: str | None = None) -> Markup:
