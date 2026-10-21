@@ -16,6 +16,7 @@ from researchlib.textutil import (
     resolve_published_at,
     split_frontmatter,
 )
+from researchlib.zsxq_title import stored_zsxq_title
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _HTML_IMAGE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.I)
@@ -377,6 +378,11 @@ def parse_markdown_files(
         body = normalize_newlines(body)
         raw_meta = _match_raw(path, raw_index or {})
         title = derive_title(frontmatter, body, path.name, raw_meta.get("title"))
+        if id_mode == "zsxq":
+            # 导出标题是空的或被省略号截断时，能从正文收成一句就写入。兜底标题留到页面上现算。
+            replacement = stored_zsxq_title(title, body)
+            if replacement:
+                title = replacement
         published, date_source, time_known = resolve_published_at(
             frontmatter=frontmatter,
             hints=raw_meta,

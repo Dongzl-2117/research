@@ -70,6 +70,7 @@ from researchlib.web.present import (
 )
 from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
+from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 router = APIRouter()
 SEARCH_PAGE_SIZE = 20
@@ -243,6 +244,29 @@ def _digest_points(digest, limit: int = 2) -> list[str]:
     return [str(item).strip() for item in raw if str(item).strip()][:limit]
 
 
+def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
+    """方伟星球卡片：空标题和以省略号结尾的标题换成一句完整的话。不改库里的原文。"""
+    needy = [
+        card
+        for card in cards
+        if repairs_source(card.get("source_id") or "") and title_needs_repair(str(card.get("plain_title") or ""))
+    ]
+    if not needy:
+        return
+    materials = queries.title_materials(conn, [card["id"] for card in needy])
+    for card in needy:
+        extra = materials.get(card["id"]) or {}
+        repaired = zsxq_display_title(
+            str(card.get("plain_title") or ""),
+            body=card.get("body_text") or extra.get("body_text") or "",
+            summary=card.get("summary") or "",
+            ocr=extra.get("ocr_text") or "",
+            when=card.get("date") or "",
+        )
+        card["plain_title"] = repaired
+        card["title"] = repaired
+
+
 def _decorate(conn, cards: list[dict], settings) -> list[dict]:
     """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
     ids = [card["id"] for card in cards]
@@ -260,6 +284,8 @@ def _decorate(conn, cards: list[dict], settings) -> list[dict]:
                 pending.append((card["id"], card.get("author") or ""))
         elif not card.get("summary"):
             pending.append((card["id"], card.get("author") or ""))
+    _repair_zsxq_titles(conn, cards)
+    for card in cards:
         card.pop("body_text", None)
     if pending:
         schedule_digests(settings, pending)
@@ -603,6 +629,16 @@ def _article_view(request: Request, article_id: int, mode: str):
         shown_md = article["body_md"] if fmt_of(article) == "html" else clean_article(
             conn, article_id, article["source_id"], article["body_md"]
         )
+        display_title = article["title"]
+        if repairs_source(source.id) and title_needs_repair(display_title or ""):
+            material = queries.title_materials(conn, [article_id]).get(article_id) or {}
+            display_title = zsxq_display_title(
+                display_title or "",
+                body=article.get("body_text") or material.get("body_text") or "",
+                summary=(digest or {}).get("summary") or "",
+                ocr=material.get("ocr_text") or "",
+                when=format_date(article["published_at"], settings.display_timezone),
+            )
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
@@ -667,7 +703,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         "article.html",
         {
             "nav": "archive",
-            "title": article["title"],
+            "title": display_title,
+            "display_title": display_title,
             "article": article,
             "source": source,
             "guest": (article["raw_meta"] or {}).get("poster_role") == "guest",

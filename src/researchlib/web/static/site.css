@@ -1353,8 +1353,27 @@ tbody tr:hover td { background: var(--accent-softer); }
 
 /* 首页：持仓近况 */
 .holdings-now { margin: 0 0 20px; padding: 14px 16px; }
-.holdings-now h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+.holdings-now h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 8px; font-size: 14px; font-weight: 650; }
 .holdings-now h2 a:hover { color: var(--accent); }
+.recent-views-toggle {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-4);
+}
+.recent-views-toggle:hover { background: var(--bg-sunk); color: var(--ink); }
+.recent-views-toggle .chevron { width: 14px; height: 14px; transition: transform .2s var(--ease); }
+.recent-views-toggle[aria-expanded="false"] .chevron,
+html[data-recent-views="collapsed"] .recent-views-toggle .chevron { transform: rotate(-90deg); }
+html[data-recent-views="collapsed"] .holdings-now h2 { margin-bottom: 0; }
+html[data-recent-views="collapsed"] #recent-views-list { display: none; }
 .holdings-now h2 .quiet { font-size: 12px; font-weight: 400; }
 .holdings-now ul { margin: 0; padding: 0; list-style: none; }
 .holdings-now li {

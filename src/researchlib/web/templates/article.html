@@ -18,7 +18,7 @@
       {% if elsewhere %}<span aria-hidden="true">·</span><span class="elsewhere">同一篇也在{% for item in elsewhere %} <a href="/articles/{{ item.id }}">{{ item.source }}</a>{% endfor %} <a class="quiet" href="/duplicates?article={{ article.duplicate_of or article.id }}">核对</a></span>{% endif %}
       {% if revised %}<span aria-hidden="true">·</span><a class="revised" href="/articles/{{ article.id }}/revisions">{{ revised }}</a>{% endif %}
     </p>
-    <h1>{{ article.title }}</h1>
+    <h1>{{ display_title or article.title }}</h1>
     {% if title_zh and body_language != 'original' %}
     <p class="title-zh">{{ title_zh }}</p>
     {% endif %}

@@ -22,6 +22,11 @@
       } catch (e) {
         document.documentElement.setAttribute("data-theme", "light");
       }
+      try {
+        if (localStorage.getItem("research-recent-views") === "collapsed") {
+          document.documentElement.setAttribute("data-recent-views", "collapsed");
+        }
+      } catch (e) {}
     })();
   </script>
   <link rel="stylesheet" href="/static/site.css">
@@ -165,6 +170,26 @@
         event.preventDefault();
         field.focus();
       });
+      var recentKey = "research-recent-views";
+      var recentButton = document.querySelector(".recent-views-toggle");
+      if (recentButton) {
+        var recentList = document.getElementById("recent-views-list");
+        function recentCollapsed() {
+          try { return localStorage.getItem(recentKey) === "collapsed"; } catch (e) { return false; }
+        }
+        function paintRecent(isCollapsed) {
+          recentButton.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+          recentButton.setAttribute("aria-label", isCollapsed ? "展开最近观点" : "收起最近观点");
+          if (recentList) recentList.hidden = isCollapsed;
+          document.documentElement.setAttribute("data-recent-views", isCollapsed ? "collapsed" : "open");
+        }
+        paintRecent(recentCollapsed());
+        recentButton.addEventListener("click", function () {
+          var collapse = recentButton.getAttribute("aria-expanded") !== "false";
+          try { localStorage.setItem(recentKey, collapse ? "collapsed" : "open"); } catch (e) {}
+          paintRecent(collapse);
+        });
+      }
       document.querySelectorAll(".day-toggle").forEach(function (button) {
         button.addEventListener("click", function () {
           var section = button.closest(".day");

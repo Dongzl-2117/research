@@ -349,6 +349,21 @@ def article_mentions(conn, article_id: int):
     ).fetchall()
 
 
+def title_materials(conn, article_ids: list[int]) -> dict[int, dict]:
+    """补方伟星球标题时用：正文开头和图片里的字。只在标题是空的或被省略号截断时查。"""
+    if not article_ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT id, left(body_text, 2000) AS body_text, left(coalesce(ocr_text, ''), 2000) AS ocr_text
+        FROM articles
+        WHERE id = ANY(%s)
+        """,
+        (article_ids,),
+    ).fetchall()
+    return {row["id"]: row for row in rows}
+
+
 def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
     """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。提示词版本旧的照常返回，调用方再排队重写。"""
     if not article_ids:
