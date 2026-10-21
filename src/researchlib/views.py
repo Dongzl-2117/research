@@ -42,6 +42,7 @@ from researchlib.author_voice import (
 )
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
+from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
@@ -572,7 +573,8 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
-        WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+        WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
+          AND {_GUEST} AND {visible_sql("a")}
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
