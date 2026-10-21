@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="pilot">
+<h1>样卡复核</h1>
+<p class="quiet">新抽取规则（论证落在这家公司才挂；判断、理由、证据、关联业务；一文多公司分角度）。只是样稿，没有写进线上观点。更新于 {{ updated }}（UTC）。</p>
+<nav class="pills">{% for g in groups %}<a href="#c{{ g.id }}"><span>{{ g.name }}</span><span class="num">{{ g.cards|length }}</span></a>{% endfor %}</nav>
+{% for g in groups %}
+<section id="c{{ g.id }}" class="pilot-company">
+  <h2>{{ g.name }}</h2>
+  {% if g.summary %}
+  <div class="pilot-summary">
+    <h3>首页展开总结（样稿）</h3>
+    <p><b>判断</b> {{ g.summary.judgment }}</p>
+    {% if g.summary.reasons %}<p><b>理由</b></p><ul>{% for r in g.summary.reasons %}<li>{{ r.text }} {% for ref in r.refs %}<a class="num" href="/articles/{{ ref[1:] }}">[{{ ref }}]</a>{% endfor %}</li>{% endfor %}</ul>{% endif %}
+    {% if g.summary.evidence %}<p><b>证据</b></p><ul>{% for r in g.summary.evidence %}<li>{{ r.text }} {% for ref in r.refs %}<a class="num" href="/articles/{{ ref[1:] }}">[{{ ref }}]</a>{% endfor %}</li>{% endfor %}</ul>{% endif %}
+    {% if g.summary.businesses %}<p><b>业务</b></p><ul>{% for r in g.summary.businesses %}<li><b>{{ r.name }}</b>：{{ r.view }} {% for ref in r.refs %}<a class="num" href="/articles/{{ ref[1:] }}">[{{ ref }}]</a>{% endfor %}</li>{% endfor %}</ul>{% endif %}
+    <p><b>态度变化</b></p>{% if g.summary.changes %}<ul>{% for c in g.summary.changes %}<li>{{ c.author }}（{{ c.when }}）：从「{{ c.from }}」变成「{{ c.to }}」。原因：{{ c.why }} {% for ref in c.refs %}<a class="num" href="/articles/{{ ref[1:] }}">[{{ ref }}]</a>{% endfor %}</li>{% endfor %}</ul>{% else %}<p class="quiet">这批观点里没有谁改了看法。</p>{% endif %}
+    {% if g.summary.sources %}<p><b>出处</b> {% for ref in g.summary.sources %}<a class="num" href="/articles/{{ ref[1:] }}">[{{ ref }}]</a> {% endfor %}</p>{% endif %}
+  </div>
+  {% endif %}
+  <ol class="view-list">
+  {% for item in g.cards %}
+    {% set href = "/articles/" ~ item.article_id ~ (("?chunk=" ~ item.chunk ~ (("#" ~ item.anchor) if item.anchor else "")) if item.chunk is not none else "") %}
+    <li class="view stance-{{ item.stance }}">
+      <p class="view-source view-source-top"><a href="{{ href }}">{{ item.title }}</a></p>
+      <p class="item-meta"><time class="num">{{ item.date }}</time> · {{ item.author }} <span class="stance stance-{{ item.stance }}">{{ item.stance_label }}</span> <span class="view-business">{{ item.business }}</span>{% if item.chunk is none %} <span class="quiet">（没定位到段落）</span>{% endif %}</p>
+      <p class="view-judgment">{{ item.judgment }}</p>
+      {% if item.reason %}<p class="view-mechanism"><span class="view-label">理由</span>{{ item.reason }}</p>{% endif %}
+      {% if item.evidence %}<dl class="view-extra"><dt>证据</dt><dd><ul>{% for e in item.evidence %}<li>{{ e }}</li>{% endfor %}</ul></dd></dl>{% endif %}
+      {% if item.siblings %}<p class="quiet">同一篇还出了：{{ item.siblings|join("、") }}（角度重合度 {{ item.max_overlap }}）</p>{% endif %}
+    </li>
+  {% endfor %}
+  </ol>
+  {% if g.dropped %}
+  <details><summary>没挂上的 {{ g.dropped|length }} 篇（论证不落在{{ g.name }}）</summary>
+  <ul>{% for d in g.dropped %}<li><a href="/articles/{{ d.article_id }}">{{ d.title }}</a> · {{ d.date }} · {{ d.role }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+</section>
+{% endfor %}
+</div>
+{% endblock %}

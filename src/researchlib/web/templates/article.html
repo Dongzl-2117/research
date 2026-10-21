@@ -22,6 +22,12 @@
     {% if title_zh and body_language != 'original' %}
     <p class="title-zh">{{ title_zh }}</p>
     {% endif %}
+    {% if digest_summary %}
+    <section class="article-digest" aria-label="总结">
+      <p class="article-digest-summary"><span class="ai-badge">总结</span>{{ digest_summary }}</p>
+      {% if digest_points %}<ul class="article-digest-points">{% for point in digest_points %}<li>{{ point }}</li>{% endfor %}</ul>{% endif %}
+    </section>
+    {% endif %}
     {% if quoted and not quoted_marked %}
     <aside class="quoted" aria-label="引用的段落">
       {% if quoted.lang == "ocr" %}<p class="quoted-label">图片里的字 · <a href="#{{ quoted.anchor }}">看这张图</a></p>

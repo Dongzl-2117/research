@@ -108,6 +108,19 @@ def parse_views(text: str, names: dict[str, int]) -> dict[int, dict | None]:
     return found
 
 
+def _bigram_set(text: str) -> set[str]:
+    keep = _plain(text)
+    return {keep[i : i + 2] for i in range(len(keep) - 1)}
+
+
+def quote_repeats(quote: str, judgment: str, threshold: float = 0.5) -> bool:
+    """摘句和判断的二字词重合过半，就算在重复判断。"""
+    a, b = _bigram_set(quote), _bigram_set(judgment)
+    if not a or not b:
+        return False
+    return len(a & b) / min(len(a), len(b)) >= threshold
+
+
 def _plain(text: str) -> str:
     return "".join(_KEEP.findall(text or "")).lower()
 

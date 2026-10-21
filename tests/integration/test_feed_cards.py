@@ -130,7 +130,9 @@ def test_timeline_feed_hides_feishu_and_cards_use_digest(conn, settings, monkeyp
         assert reader.status_code == 200
         assert "加载率这篇" in reader.text
         assert "广告加载率下降写成了核心判断" in reader.text
-        assert "导读写的是加载率，不是元数据。" not in reader.text
+        # 点进文章先看总结：摘要在正文前面。
+        assert "导读写的是加载率，不是元数据。" in reader.text
+        assert reader.text.index("导读写的是加载率") < reader.text.index("广告加载率下降写成了核心判断")
         assert "打开原文" not in reader.text
         assert "<h2>来源</h2>" not in reader.text
         assert "方伟微信公众号历史归档" not in reader.text

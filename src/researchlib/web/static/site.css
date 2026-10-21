@@ -1637,3 +1637,12 @@ tbody tr:hover td { background: var(--accent-softer); }
 /* 首页「最近观点」折叠行：一行一家，紧凑 */
 .holdings-now li.holdings-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 5px 0; }
 .holdings-row .holdings-when { margin-left: auto; font-size: 12.5px; }
+
+/* 文章页顶部总结 */
+.article-digest { margin: 1rem 0 1.5rem; padding: .8rem 1rem; border-left: 3px solid var(--accent, #3b6); background: var(--surface-2, rgba(127,127,127,.06)); border-radius: 6px; }
+.article-digest-summary { margin: 0; line-height: 1.7; }
+.article-digest-points { margin: .5rem 0 0; padding-left: 1.2rem; line-height: 1.65; }
+.article-digest .ai-badge { margin-right: .4rem; }
+/* 观点卡：出处放顶上，关联业务 */
+.view-source-top { margin: 0 0 .2rem; font-weight: 600; }
+.view-business { font-size: .85em; padding: 0 .4em; border: 1px solid currentColor; border-radius: 4px; opacity: .75; }
