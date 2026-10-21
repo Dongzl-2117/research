@@ -27,6 +27,7 @@
 - 新正文像删除提示（「该内容已被发布者删除」「此内容因违规无法查看」这类，而且很短），或者比库里短一半以上：**不替换**，库里留完整原文和它的图片，只把这一版记进 `article_revisions`（`held`）。同一版以后再导入也不再记。导入报告里算「拦下」。
 - 其余的改动照常替换，替换前把旧版记下来（`previous`）。只改了发布时间的不记。
 - 知识星球正文后面的「评论里的回复」（见下面）只是多了回复，照常更新，不算改稿；回复变少了（这次导出没带评论，或者回复被删了），库里那份更全，不动。判断删稿、截短只看作者写的正文。
+- 知识星球话题会记下发帖人（`raw_meta.poster_name` / `poster_id` / `poster_role`）。名字和来源作者一致的是星主原创（`owner`）；对不上的是网友帖（`guest`）。网友帖正文仍在，检索找得到，但观点、作者页篇数和公司页「谁在谈」不把它们算成星主。没有发帖人名字的旧数据先仍按星主，避免误删。
 
 文章页署名行标出「改过」「后来被删」「后来被截短」，点进去（`/articles/{id}/revisions`）看各版之间改了什么：只列改动的段落和前后各一段，中间没改的收成一行「略去 N 段没变的」。
 
@@ -122,7 +123,17 @@ archive/
   raw/*.json
 ```
 
-`raw` 里的 JSON 提供 `topic_id`、时间和标题。正文以 Markdown 为准。文件名里的长数字会拿去对 JSON。`raw/topics/*.json` 也要读：不能因为 `raw/group.json`、`raw/state.json` 已经让「父目录叫 raw」的列表非空，就把 `topics` 跳过，否则 `create_time` 会丢成文件名里的零点。`md/INDEX.md` 是目录，不是话题，不入库；已经在库里的，再导入或跑 `research-retime` 时会删掉。
+`raw` 里的 JSON 提供 `topic_id`、时间、标题和发帖人（`talk.owner` 或问答的 `answer.owner`）。正文以 Markdown 为准。
+
+历史数据回填发帖人（部署后在 Mac mini 上跑，云端不对生产库跑）。网友帖的已有观点会被删掉：
+
+```bash
+docker compose exec app research-backfill-posters \
+  --source fangwei-zsxq \
+  --input /data/inbox/fangwei-zsxq
+```
+
+再导入一遍同一归档也会写上发帖人，即使正文没变。例：8241 这类读者帖不应再出现在方伟的茅台论点里；7723、7507 同样按发帖人名字核对。文件名里的长数字会拿去对 JSON。`raw/topics/*.json` 也要读：不能因为 `raw/group.json`、`raw/state.json` 已经让「父目录叫 raw」的列表非空，就把 `topics` 跳过，否则 `create_time` 会丢成文件名里的零点。`md/INDEX.md` 是目录，不是话题，不入库；已经在库里的，再导入或跑 `research-retime` 时会删掉。
 
 正文开头的「- 时间：2024-11-28 10:40:22」只在没有 JSON 钟点时使用。没有真实钟点就保持原样，不编造时间。
 

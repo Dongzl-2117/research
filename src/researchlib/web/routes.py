@@ -204,6 +204,7 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         "timeline": source.timeline,
         # 来源名和作者同名时（例如「乘风破浪」）只显示一次。
         "show_author": source.author != source.name,
+        "guest": False,
         "excerpt": excerpt_text or "",
         "summary": "",
         "points": [],
@@ -212,6 +213,10 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
     }
     if extra:
         card.update(extra)
+    if row.get("poster_role") == "guest":
+        card["author"] = (row.get("poster_name") or "").strip() or "星球读者"
+        card["guest"] = True
+        card["show_author"] = True
     return card
 
 
@@ -278,8 +283,10 @@ def _page_arg(request: Request) -> int:
         return 1
 
 
-def _load_feed(conn, source_ids: list[str], settings, page: int, *, include_off_timeline: bool = True):
-    counts = queries.feed_counts(conn, source_ids, include_off_timeline=include_off_timeline)
+def _load_feed(
+    conn, source_ids: list[str], settings, page: int, *, include_off_timeline: bool = True, owner_only: bool = False
+):
+    counts = queries.feed_counts(conn, source_ids, include_off_timeline=include_off_timeline, owner_only=owner_only)
     plan = plan_feed_page(
         counts["days"],
         counts["undated"],
@@ -289,11 +296,21 @@ def _load_feed(conn, source_ids: list[str], settings, page: int, *, include_off_
     )
     if plan["mode"] == "undated":
         rows = queries.list_undated_articles(
-            conn, source_ids, plan["limit"], plan["offset"], include_off_timeline=include_off_timeline
+            conn,
+            source_ids,
+            plan["limit"],
+            plan["offset"],
+            include_off_timeline=include_off_timeline,
+            owner_only=owner_only,
         )
     else:
         rows = queries.list_day_page(
-            conn, source_ids, plan["limit"], plan["offset"], include_off_timeline=include_off_timeline
+            conn,
+            source_ids,
+            plan["limit"],
+            plan["offset"],
+            include_off_timeline=include_off_timeline,
+            owner_only=owner_only,
         )
     return counts, plan, rows
 
@@ -411,13 +428,13 @@ def _latest_view(conn, company_id: int, sources_by_id: dict, settings, latest: d
     }
 
 
-def _jump_to_day(conn, source_ids: list[str], day, settings, path: str, **params):
+def _jump_to_day(conn, source_ids: list[str], day, settings, path: str, *, owner_only: bool = False, **params):
     """把「跳到某天」换成那一天所在的页，带上锚点。没有那天就落到更早的最近一天。"""
-    found = queries.nearest_day(conn, source_ids, day)
+    found = queries.nearest_day(conn, source_ids, day, owner_only=owner_only)
     if found is None:
         query = _query_string(**params)
         return RedirectResponse(path + (f"?{query}" if query else ""), status_code=303)
-    page = queries.day_offset(conn, source_ids, found) // settings.days_per_page + 1
+    page = queries.day_offset(conn, source_ids, found, owner_only=owner_only) // settings.days_per_page + 1
     query = _query_string(**params, page=page if page > 1 else "")
     return RedirectResponse(f"{path}{'?' + query if query else ''}#d-{found.isoformat()}", status_code=303)
 
@@ -488,8 +505,10 @@ def author_page(request: Request, author: str):
         scoped = dated or scoped
         jump = parse_day(request.query_params.get("date"))
         if jump is not None:
-            return _jump_to_day(conn, scoped, jump, settings, f"/authors/{author}", source=chosen or "")
-        counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request))
+            return _jump_to_day(
+                conn, scoped, jump, settings, f"/authors/{author}", owner_only=True, source=chosen or ""
+            )
+        counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request), owner_only=True)
         stats = queries.source_stats(conn, scoped)
         companies = queries.top_companies(conn, scoped, 12)
         banner = queries.sample_state(conn, [source.id for source in sources])
@@ -651,6 +670,8 @@ def _article_view(request: Request, article_id: int, mode: str):
             "title": article["title"],
             "article": article,
             "source": source,
+            "guest": (article["raw_meta"] or {}).get("poster_role") == "guest",
+            "poster_name": (article["raw_meta"] or {}).get("poster_name") or "",
             "date": format_date(article["published_at"], settings.display_timezone),
             "time": format_clock(shown, settings.display_timezone) if known else "",
             "iso": (

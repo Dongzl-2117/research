@@ -16,7 +16,9 @@ RapidOCR（onnxruntime + OpenCV）比较大，不装进主镜像，另有一个 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -30,6 +32,9 @@ ENGINE = "rapidocr"
 # 置信度低于这个的文字框不要：多半是把花纹、二维码认成了字。
 MIN_SCORE = 0.5
 OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+# 检索块要 20 个字；交给观点和摘要的旁路放宽，短截图也能进正文。
+READING_MIN_CHARS = 8
+_MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 
 
 class OcrUnavailable(Exception):
@@ -80,21 +85,89 @@ def rapid_engine() -> Callable[[Path], str]:
     return recognize
 
 
-def pending_images(conn, limit: int):
-    """还没识别过的本地图片，按引用它的文章从新到旧。重复文章里的图不算。"""
+def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[int] | None = None):
+    """还没识别过的本地图片，按引用它的文章从新到旧。重复文章里的图不算。
+
+    redo 时连 image_texts 里已有的哈希也再认一遍。article_ids 只认这几篇挂着的图。
+    """
+    where = ["a.duplicate_of IS NULL"]
+    params: list = []
+    if article_ids:
+        where.append("i.article_id = ANY(%s)")
+        params.append(list(article_ids))
+    if not redo:
+        where.append("NOT EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash)")
+    params.append(limit)
     return conn.execute(
-        """
+        f"""
         SELECT i.content_hash, min(i.storage_path) AS storage_path
         FROM article_images i
         JOIN articles a ON a.id = i.article_id
-        WHERE a.duplicate_of IS NULL
-          AND NOT EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash)
+        WHERE {" AND ".join(where)}
         GROUP BY i.content_hash
         ORDER BY max(a.published_at) DESC NULLS LAST
         LIMIT %s
         """,
-        (limit,),
+        tuple(params),
     ).fetchall()
+
+
+def compose_ocr_text(pieces: list[str]) -> str:
+    """按图片顺序拼成观点和摘要能读的旁路正文。太短的（水印、表情）丢掉。"""
+    blocks: list[str] = []
+    for piece in pieces:
+        text = (piece or "").strip()
+        if len(_MEANINGFUL.findall(text)) < READING_MIN_CHARS:
+            continue
+        blocks.append(text)
+    return "\n\n".join(blocks)
+
+
+def hash_ocr(text: str) -> str:
+    if not (text or "").strip():
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def append_ocr(body: str, ocr_text: str) -> str:
+    """正文后面接上图片里的字。没有识别结果时原样返回。"""
+    extra = (ocr_text or "").strip()
+    if not extra:
+        return body or ""
+    base = (body or "").rstrip()
+    block = "【图片里的字】\n" + extra
+    return f"{base}\n\n{block}" if base else block
+
+
+def refresh_article_ocr(conn, article_id: int) -> str:
+    """按这篇已识别的图重写 articles.ocr_text / ocr_hash。返回哈希。"""
+    rows = conn.execute(
+        """
+        SELECT t.text
+        FROM article_images i
+        JOIN image_texts t ON t.content_hash = i.content_hash
+        WHERE i.article_id = %s
+        ORDER BY i.id
+        """,
+        (article_id,),
+    ).fetchall()
+    text = compose_ocr_text([row["text"] for row in rows])
+    digest = hash_ocr(text)
+    conn.execute(
+        "UPDATE articles SET ocr_text = %s, ocr_hash = %s WHERE id = %s",
+        (text, digest, article_id),
+    )
+    return digest
+
+
+def article_ocr(conn, article_id: int) -> tuple[str, str]:
+    row = conn.execute(
+        "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
+        (article_id,),
+    ).fetchone()
+    if row is None:
+        return "", ""
+    return row["ocr_text"] or "", row["ocr_hash"] or ""
 
 
 def run_ocr(
@@ -104,10 +177,14 @@ def run_ocr(
     recognize: Callable[[Path], str],
     engine: str = ENGINE,
     deadline: float | None = None,
+    *,
+    redo: bool = False,
+    article_ids: list[int] | None = None,
 ) -> dict:
     """识别一批图片，重切引用它们的文章的图片文字块。返回计数。"""
     report = {"images": 0, "with_text": 0, "failed": 0, "missing": 0, "articles": 0}
-    for row in pending_images(conn, limit):
+    touched: set[int] = set()
+    for row in pending_images(conn, limit, redo=redo, article_ids=article_ids):
         if deadline is not None and time.monotonic() > deadline:
             break
         path = Path(data_dir) / "images" / row["storage_path"]
@@ -136,11 +213,16 @@ def run_ocr(
         report["images"] += 1
         if text.strip():
             report["with_text"] += 1
-            for article in conn.execute(
-                "SELECT DISTINCT article_id FROM article_images WHERE content_hash = %s", (row["content_hash"],)
-            ).fetchall():
-                if replace_ocr_chunks(conn, article["article_id"]):
-                    report["articles"] += 1
+        for article in conn.execute(
+            "SELECT DISTINCT article_id FROM article_images WHERE content_hash = %s", (row["content_hash"],)
+        ).fetchall():
+            touched.add(article["article_id"])
+            if text.strip() and replace_ocr_chunks(conn, article["article_id"]):
+                report["articles"] += 1
+        conn.commit()
+    for article_id in sorted(touched):
+        refresh_article_ocr(conn, article_id)
+    if touched:
         conn.commit()
     return report
 
@@ -150,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
     parser.add_argument("--limit", type=int, default=500, help="这次最多识别多少张图")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
+    parser.add_argument("--redo", action="store_true", help="连已经识别过的图也再认一遍（重跑存量）")
+    parser.add_argument("--article", action="append", type=int, default=[], help="只认这篇文章里的图，可重复")
     args = parser.parse_args(argv)
     try:
         recognize = rapid_engine()
@@ -163,7 +247,15 @@ def main(argv: list[str] | None = None) -> int:
     conn = prepare(settings)
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
-        report = run_ocr(conn, settings.data_dir, args.limit, recognize, deadline=deadline)
+        report = run_ocr(
+            conn,
+            settings.data_dir,
+            args.limit,
+            recognize,
+            deadline=deadline,
+            redo=args.redo,
+            article_ids=args.article or None,
+        )
     finally:
         conn.close()
     print(

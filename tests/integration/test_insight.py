@@ -134,11 +134,11 @@ def test_blank_views_skip_theses_and_refresh_blank_requeues(conn, settings):
     conn.execute(
         """
         INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance)
-        VALUES (%s, %s, %s, 1, '   ', ''), (%s, %s, %s, 1, '', '')
+        VALUES (%s, %s, %s, %s, '   ', ''), (%s, %s, %s, %s, '', '')
         """,
         (
-            blanks[0]["id"], tencent["id"], blanks[0]["content_hash"],
-            blanks[1]["id"], tencent["id"], blanks[1]["content_hash"],
+            blanks[0]["id"], tencent["id"], blanks[0]["content_hash"], views_mod.PROMPT_VERSION,
+            blanks[1]["id"], tencent["id"], blanks[1]["content_hash"], views_mod.PROMPT_VERSION,
         ),
     )
     conn.commit()

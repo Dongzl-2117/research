@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 # 有日期的进首页按天。没日期的文章带上这个标记，首页按天不收，作者、公司、检索仍收。
 OFF_TIMELINE = "off_timeline"
@@ -15,6 +16,10 @@ AUTHOR_VOICE = "author_voice"
 VOICE_ALL = "all"
 # 抽观点、写摘要时附在提示里，只在收窄到作者本人时加上。
 VOICE_NOTE = "\n（下面只保留段永平本人写的段落。读者提问和别人的回复没有放进来，不要当成他的判断。）"
+# 知识星球：poster_role=guest 是网友帖，正文留着，但不算星主的观点和作者统计。
+POSTER_ROLE = "poster_role"
+ROLE_GUEST = "guest"
+ROLE_OWNER = "owner"
 
 
 def raw_meta_of(conn, row) -> dict:
@@ -48,3 +53,39 @@ def restrict(
     picked = [(heading, text) for heading, text in chunks if (heading or "").strip() == voice and (text or "").strip()]
     text = "\n\n".join(piece for _heading, piece in picked)
     return text, picked, True
+
+
+def not_guest_sql(alias: str = "a") -> str:
+    """网友帖不进星主的观点和作者统计。没标发帖人的旧数据仍算星主，避免把整库丢掉。"""
+    return f"coalesce({alias}.raw_meta->>'poster_role', '') <> 'guest'"
+
+
+def is_guest(raw_meta: dict | None) -> bool:
+    return str((raw_meta or {}).get(POSTER_ROLE) or "") == ROLE_GUEST
+
+
+def _norm_name(name: str) -> str:
+    text = re.sub(r"[（(].*?[）)]", "", name or "")
+    return re.sub(r"\s+", "", text).strip()
+
+
+def same_person(poster: str, star: str) -> bool:
+    left, right = _norm_name(poster), _norm_name(star)
+    return bool(left) and left == right
+
+
+def assign_poster_role(meta: dict, star_name: str) -> dict:
+    """就地写上 poster_role。没有发帖人名字时不猜，旧帖仍按星主处理。"""
+    name = str(meta.get("poster_name") or "").strip()
+    if not name:
+        meta.pop(POSTER_ROLE, None)
+        return meta
+    meta[POSTER_ROLE] = ROLE_OWNER if same_person(name, star_name) else ROLE_GUEST
+    return meta
+
+
+def display_author(star_name: str, raw_meta: dict | None) -> tuple[str, bool]:
+    """返回 (显示名, 是否算星主本人)。网友帖显示发帖人，不链到星主作者页。"""
+    if is_guest(raw_meta):
+        return str((raw_meta or {}).get("poster_name") or "").strip() or "星球读者", False
+    return star_name, True

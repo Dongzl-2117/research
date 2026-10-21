@@ -138,3 +138,80 @@ def views_input(
         picked.add(index)
         used += size
     return _render(chunks, picked), True
+
+
+VIEW_WINDOW = 12000
+MAX_WINDOWS = 6
+
+
+def _hard_split(text: str, window: int, limit: int = MAX_WINDOWS) -> list[str]:
+    parts: list[str] = []
+    rest = text or ""
+    while rest and len(parts) < limit:
+        if len(rest) <= window:
+            parts.append(rest)
+            break
+        cut = rest.rfind("\n", window // 2, window)
+        if cut < window // 2:
+            cut = window
+        piece = rest[:cut].strip()
+        if piece:
+            parts.append(piece)
+        rest = rest[cut:].strip()
+    return parts
+
+
+def view_windows(
+    body_text: str,
+    chunks: list[tuple[str, str]],
+    aliases: list[str],
+    window: int = VIEW_WINDOW,
+) -> list[str]:
+    """超长文档先切块。每一块不超过 window，优先留下提到这些公司的段落、开头和结尾。"""
+    text = body_text or ""
+    if not text.strip():
+        return []
+    if len(text) <= window or not chunks:
+        if len(text) <= window:
+            return [text]
+        return _hard_split(text, window)
+    pattern = _alias_pattern(aliases)
+    count = len(chunks)
+    hits = [
+        index
+        for index in range(count)
+        if pattern is not None and pattern.search(chunks[index][0] + "\n" + chunks[index][1])
+    ]
+    order: list[int] = []
+    seen: set[int] = set()
+
+    def add(index: int) -> None:
+        if 0 <= index < count and index not in seen:
+            seen.add(index)
+            order.append(index)
+
+    for index in (0, 1, count - 1):
+        add(index)
+    for index in hits:
+        add(index)
+        add(index + 1)
+    order.sort()
+    if not order:
+        return _hard_split(text, window)
+    groups: list[list[int]] = []
+    bucket: list[int] = []
+    size = 0
+    for index in order:
+        piece = _size(chunks, index)
+        if bucket and size + piece > window:
+            groups.append(bucket)
+            bucket = []
+            size = 0
+            if len(groups) >= MAX_WINDOWS:
+                break
+        bucket.append(index)
+        size += piece
+    if bucket and len(groups) < MAX_WINDOWS:
+        groups.append(bucket)
+    rendered = [_render(chunks, set(group)) for group in groups if group]
+    return [part for part in rendered if part.strip()] or _hard_split(text, window)

@@ -7,6 +7,8 @@
 - 识别出的汉字、字母、数字够 20 个的图才算有字，切成段落块：`article_chunks.lang = 'ocr'`，块号从 20000 起，标题「图片里的字」，锚点指向文章页上那张图（`img-<哈希前 12 位>`）。
 - 检索、问库命中这种块时，结果里显示识别出的字；点进文章页，上面写「图片里的字 · 看这张图」，点一下跳到那张图。
 - 公司提及不看图片里的字，免得水印、表情包里的字乱记。
+- 识别结果另外写在文章旁路 `articles.ocr_text`（按图片顺序拼接）。观点和摘要读正文时会接上「图片里的字」，图片帖不再因为正文是空的就抽成空白观点。有效字少于 8 个的图不进这条旁路。
+- 空白观点、或正文不足 400 字的摘要，在 `ocr_hash` 和抽的时候不一致时会重新排队。已经写出判断的长文不会因为后补了一张图就整篇重抽。
 - 重复文章（见 [ingest.md](ingest.md)）里的图不认。
 
 ## 单独的镜像
@@ -17,9 +19,21 @@ RapidOCR 要 onnxruntime 和 OpenCV，装上以后镜像大很多，所以不进
 docker compose --profile ocr build ocr
 docker compose --profile ocr run --rm ocr research-ocr --limit 500
 docker compose --profile ocr run --rm ocr research-ocr --limit 5000 --max-minutes 120
+# 存量已经在 image_texts 里的图，要重认时加 --redo（全库约 2 万张，部署后在 Mac mini 上跑，不要在云端对生产库跑）
+docker compose --profile ocr run --rm ocr research-ocr --redo --limit 5000 --max-minutes 120
+# 只认某几篇里的图
+docker compose --profile ocr run --rm ocr research-ocr --article 7711 --article 7865 --article 7638 --article 7832 --article 651
 ```
 
 主镜像里跑 `research-ocr` 会直接退出（退出码 2），提示改用 `ocr` 镜像。
+
+OCR 写完后，图片帖的空白观点会因为 `ocr_hash` 对不上而进入补抽。确认「图片里的字进了观点输入」可以看这几篇（约 33 张图）：
+
+```bash
+docker compose exec app research-views --gap --articles 7711,7865,7638,7832,651
+```
+
+抽完后这几篇若原文在图里写了判断，`company_views.judgment` 不应再是空的，原句应能对上 `articles.ocr_text`。
 
 ## 每晚补一批
 

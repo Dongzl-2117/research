@@ -74,7 +74,12 @@
     {% for thesis in views.theses %}
     <li class="thesis{% if views.kind == thesis.key %} is-current{% endif %}">
       <a class="thesis-title" href="/companies/{{ company.id }}?{{ (views.base ~ '&') if views.base }}views={{ thesis.key }}#views">{{ thesis.title }}</a>
+      {% if thesis.judgment and thesis.judgment != thesis.title %}<p class="thesis-judgment">{{ thesis.judgment }}</p>{% endif %}
       {% if thesis.mechanism %}<p class="thesis-mechanism">{{ thesis.mechanism }}</p>{% endif %}
+      {% if thesis.evidence %}<ul class="thesis-evidence">{% for line in thesis.evidence %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+      {% if thesis.changes %}<p class="thesis-changes"><span>时间</span>{{ thesis.changes }}</p>{% endif %}
+      {% if thesis.disagreement %}<p class="thesis-disagreement"><span>分歧</span>{{ thesis.disagreement }}</p>{% endif %}
+      {% if thesis.sources %}<p class="thesis-sources">来源{% for src in thesis.sources %} <a href="/articles/{{ src.article_id }}">{{ src.article_id }}</a>{% endfor %}</p>{% endif %}
       <p class="thesis-sides">
         {% for side, word in [("for", "支持"), ("against", "反对"), ("mixed", "两面")] %}
         {% set group = thesis[side] %}

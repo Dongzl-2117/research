@@ -45,8 +45,18 @@ def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
 _CLOCK_FIELDS = """
 a.raw_meta->>'create_time' AS clock_hint,
 a.raw_meta->>'date_source' AS date_source,
-a.raw_meta->>'time_known' AS time_known
+a.raw_meta->>'time_known' AS time_known,
+a.raw_meta->>'poster_name' AS poster_name,
+a.raw_meta->>'poster_role' AS poster_role
 """
+
+
+def _owner_clause(owner_only: bool, alias: str = "") -> str:
+    """作者统计和作者页只算星主原创。网友帖留在来源时间线里，但不记到星主名下。"""
+    if not owner_only:
+        return ""
+    column = f"{alias}.raw_meta" if alias else "raw_meta"
+    return f" AND coalesce({column}->>'poster_role', '') <> 'guest'"
 
 
 def _shanghai_day(column: str = "published_at") -> str:
@@ -61,10 +71,10 @@ def _off_timeline_clause(include_off_timeline: bool, alias: str = "") -> str:
     return f" AND coalesce({column}->>'off_timeline', '') <> 'true'"
 
 
-def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = True) -> dict:
+def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = True, owner_only: bool = False) -> dict:
     if not source_ids:
         return {"articles": 0, "days": 0, "undated": 0}
-    extra = _off_timeline_clause(include_off_timeline)
+    extra = _off_timeline_clause(include_off_timeline) + _owner_clause(owner_only)
     row = conn.execute(
         f"""
         SELECT count(*) AS articles,
@@ -83,12 +93,14 @@ def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = Tru
     }
 
 
-def list_day_page(conn, source_ids: list[str], limit: int, offset: int, *, include_off_timeline: bool = True):
+def list_day_page(
+    conn, source_ids: list[str], limit: int, offset: int, *, include_off_timeline: bool = True, owner_only: bool = False
+):
     """一页里的几天，以及这些天的全部文章。同一天不会被页边界切开。"""
     if not source_ids:
         return []
-    extra = _off_timeline_clause(include_off_timeline)
-    extra_a = _off_timeline_clause(include_off_timeline, "a")
+    extra = _off_timeline_clause(include_off_timeline) + _owner_clause(owner_only)
+    extra_a = _off_timeline_clause(include_off_timeline, "a") + _owner_clause(owner_only, "a")
     return conn.execute(
         f"""
         WITH days AS (
@@ -115,14 +127,22 @@ def list_day_page(conn, source_ids: list[str], limit: int, offset: int, *, inclu
 
 
 def list_undated_articles(
-    conn, source_ids: list[str], limit: int, offset: int, *, include_off_timeline: bool = True
+    conn,
+    source_ids: list[str],
+    limit: int,
+    offset: int,
+    *,
+    include_off_timeline: bool = True,
+    owner_only: bool = False,
 ):
     if not source_ids:
         return []
-    extra = _off_timeline_clause(include_off_timeline)
+    extra = _off_timeline_clause(include_off_timeline) + _owner_clause(owner_only)
     return conn.execute(
         f"""
-        SELECT id, source_id, title, published_at, body_text
+        SELECT id, source_id, title, published_at, body_text,
+               raw_meta->>'poster_name' AS poster_name,
+               raw_meta->>'poster_role' AS poster_role
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NULL
@@ -360,6 +380,7 @@ def source_stats(conn, source_ids: list[str]) -> dict[str, dict]:
         SELECT source_id, count(*)::int AS n, min(published_at) AS first_at, max(published_at) AS last_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
+          AND coalesce(raw_meta->>'poster_role', '') <> 'guest'
         GROUP BY source_id
         """,
         (source_ids,),
@@ -421,6 +442,7 @@ def latest_articles(conn, source_ids: list[str], limit: int = 3):
         SELECT id, source_id, title, published_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
+          AND coalesce(raw_meta->>'poster_role', '') <> 'guest'
         ORDER BY published_at DESC NULLS LAST, id DESC
         LIMIT %s
         """,
@@ -439,6 +461,7 @@ def top_companies(conn, source_ids: list[str], limit: int = 12):
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
         WHERE a.source_id = ANY(%s) AND m.depth <> 'passing'
+          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
         GROUP BY c.id, c.name_zh
         ORDER BY n DESC, last_at DESC NULLS LAST, c.name_zh
         LIMIT %s
@@ -468,7 +491,7 @@ def matching_companies(conn, query: str, limit: int = 6):
     ).fetchall()
 
 
-def day_offset(conn, source_ids: list[str], day) -> int:
+def day_offset(conn, source_ids: list[str], day, *, owner_only: bool = False) -> int:
     """比 day 新的有日期的天数。用来把「跳到某天」换成页码。"""
     if not source_ids:
         return 0
@@ -479,23 +502,25 @@ def day_offset(conn, source_ids: list[str], day) -> int:
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date > %s
+          {_owner_clause(owner_only)}
         """,
         (source_ids, day),
     ).fetchone()
     return int(row["n"])
 
 
-def nearest_day(conn, source_ids: list[str], day):
+def nearest_day(conn, source_ids: list[str], day, *, owner_only: bool = False):
     """不晚于 day 的最近一个有文章的日子。"""
     if not source_ids:
         return None
     row = conn.execute(
-        """
+        f"""
         SELECT max((published_at AT TIME ZONE 'Asia/Shanghai')::date) AS d
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date <= %s
+          {_owner_clause(owner_only)}
         """,
         (source_ids, day),
     ).fetchone()
@@ -755,6 +780,7 @@ def company_source_stats(conn, company_id: int, source_ids: list[str]):
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
+          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
         GROUP BY a.source_id
         """,
         (company_id, source_ids),
@@ -827,7 +853,8 @@ def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list
           FROM company_views v
           JOIN articles a ON a.id = v.article_id
           JOIN companies c ON c.id = v.company_id
-          WHERE v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
+          WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
+            AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
           ORDER BY c.id, a.published_at DESC NULLS LAST, a.id DESC
         ) recent
         ORDER BY published_at DESC NULLS LAST, id DESC

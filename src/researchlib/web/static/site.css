@@ -1486,7 +1486,11 @@ tbody tr:hover td { background: var(--accent-softer); }
 .thesis.is-current { box-shadow: inset 0 0 0 1px var(--accent); }
 .thesis-title { color: var(--ink); font-size: 15.5px; font-weight: 650; line-height: 1.5; }
 .thesis-title:hover { color: var(--accent); }
-.thesis-mechanism { margin: 4px 0 0; color: var(--ink-2); font-size: 14px; line-height: 1.7; }
+.thesis-judgment, .thesis-mechanism, .thesis-changes, .thesis-disagreement { margin: 4px 0 0; color: var(--ink-2); font-size: 14px; line-height: 1.7; }
+.thesis-changes span, .thesis-disagreement span { margin-right: 6px; color: var(--ink-4); font-size: 12px; font-weight: 600; }
+.thesis-evidence { margin: 4px 0 0; padding-left: 1.1em; color: var(--ink-2); font-size: 13.5px; line-height: 1.65; }
+.thesis-sources { margin: 6px 0 0; color: var(--ink-3); font-size: 12.5px; }
+.thesis-sources a { color: var(--accent-ink); }
 .thesis-sides { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 6px 0 0; color: var(--ink-2); font-size: 13px; }
 .side { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--radius-mark); font-size: 11.5px; font-weight: 600; }
 .side-for { background: var(--ok-soft); color: var(--ok-ink); }

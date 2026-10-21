@@ -241,21 +241,17 @@ def test_theses_bucket_by_stance_and_drop_unrelated_or_neutral():
         ' {"title": "只有一篇的论点", "views": ["v11"]}]}'
     )
     parsed = theses.parse_theses(reply, views, company="拼多多")
-    # 模型把看淡的放进 for、把看好的放进 against。校验按态度反过来，中性和无关的丢掉。
-    assert parsed == [
-        {
-            "title": "Temu 的关税风险",
-            "mechanism": "半托管毛利被关税吃掉",
-            "for": [11],
-            "against": [12, 13],
-            "mixed": [],
-        }
-    ]
+    # 边按判断和论点是否同向，不按对公司的总态度。毛利被吃掉的进支持，说还能守住的进反对。
+    assert len(parsed) == 1
+    assert parsed[0]["title"] == "Temu 的关税风险"
+    assert set(parsed[0]["for"]) == {12, 13}
+    assert parsed[0]["against"] == [11]
+    assert parsed[0]["judgment"] and parsed[0]["sources"]
     shown = theses.present({"theses": parsed}, views, "拼多多")
-    assert shown[0]["key"] == "t1" and shown[0]["for"]["count"] == 1 and shown[0]["against"]["count"] == 2
-    assert dict(shown[0]["against"]["authors"]) == {"乘风破浪": 1, "方伟": 1}
-    assert shown[0]["against"]["latest"]["article_id"] == 13 and shown[0]["shifted"] == ["方伟"]
+    assert shown[0]["key"] == "t1" and shown[0]["for"]["count"] == 2 and shown[0]["against"]["count"] == 1
+    assert shown[0]["against"]["latest"]["article_id"] == 11 and shown[0]["shifted"] == ["方伟"]
     assert sorted(shown[0]["articles"]) == [11, 12, 13] and shown[0]["quiet_quotes"] == []
+    assert shown[0]["sources"] and shown[0]["sources"][0]["article_id"] in {11, 12, 13}
     with pytest.raises(LLMError):
         theses.parse_theses("没有 JSON", views)
 
@@ -278,9 +274,9 @@ def test_thesis_validator_rejects_mismatched_judgment_and_single_view():
         ' {"title": "逆周期定价权", "mechanism": "淡季也能守住批价", "views": ["v654"]}]}'
     )
     parsed = theses.parse_theses(reply, views, company="贵州茅台")
-    assert parsed == [
-        {"title": "普通飞天好卖", "mechanism": "终端动销强", "for": [1], "against": [2], "mixed": []}
-    ]
+    assert len(parsed) == 1
+    assert parsed[0]["for"] == [1] and parsed[0]["against"] == [2]
+    assert parsed[0]["judgment"] and 654 not in parsed[0]["sources"]
     assert 654 not in parsed[0]["for"] and 487 not in parsed[0]["for"]
 
 
