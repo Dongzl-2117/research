@@ -1,3 +1,4 @@
+# ruff: noqa: E501  提示词里的长句不折行
 """观点新抽取规则的样卡和首页展开总结的样稿。只写 DATA_DIR/pilot/ 下的 JSON，不碰线上的 company_views。
 
     research-pilot views   --company 腾讯 --company 贵州茅台 --company 泡泡玛特 --per 20
@@ -213,7 +214,7 @@ def run_views(settings: Settings, conn_factory, names: list[str], per: int, pool
 
     for batch in range(4):
         todo = {}
-        for name, company_id in targets.items():
+        for company_id in targets.values():
             need = per - accepted(company_id)
             if need <= 0:
                 continue

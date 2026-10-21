@@ -38,8 +38,7 @@ from researchlib.textutil import argumentative_excerpt
 from researchlib.translate.pair import bilingual_pairs
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
-from researchlib.views import quote_repeats
-from researchlib.views import filter_timeline, same_period
+from researchlib.views import filter_timeline, quote_repeats, same_period
 from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
@@ -1581,7 +1580,10 @@ def pilot_page(request: Request):
             siblings = [c for c in views["articles"].get(str(card["article_id"]), []) if c is not card and c["about"]]
             card["siblings"] = [c["company"] for c in siblings]
         dropped = [
-            c for cards_ in views["articles"].values() for c in cards_ if c["company_id"] == company_id and not c["about"]
+            c
+            for cards_ in views["articles"].values()
+            for c in cards_
+            if c["company_id"] == company_id and not c["about"]
         ]
         groups.append({"name": name, "id": company_id, "cards": cards, "dropped": dropped,
                        "summary": summaries.get(name)})
