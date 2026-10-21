@@ -534,8 +534,17 @@ def rebuild_all(conn) -> int:
         ).fetchone()
         if article is None:
             continue
-        # 重复的那一份不记提及，公司页只算主版本。
-        rows = [] if article["duplicate_of"] else mentions_for_document(matcher, article["title"], article["body_md"])
+        # 重复的那一份不记提及，公司页只算主版本。段永平已经搁下的也不记。
+        suppressed = False
+        if article["source_id"] == "duanyongping-blog":
+            from researchlib.empty_answer import is_suppressed
+
+            suppressed = is_suppressed(article["raw_meta"])
+        rows = (
+            []
+            if article["duplicate_of"] or suppressed
+            else mentions_for_document(matcher, article["title"], article["body_md"])
+        )
         if article["source_id"] == "duanyongping-blog" and rows:
             from researchlib.ingest.duanyongping.attach import refine_mentions
 

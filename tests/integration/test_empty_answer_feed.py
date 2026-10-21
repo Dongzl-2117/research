@@ -192,3 +192,60 @@ def test_backfill_hides_nav_shells_without_duan_heading(conn, settings):
         found = client.get("/search", params={"q": "尼古拉"})
         assert "/articles/15079" not in found.text
         assert "/articles/16416" not in found.text
+
+
+def test_backfill_suppresses_author_voice_all_and_keeps_a_real_judgment(conn, settings):
+    essay = "苹果的生意模式很好，我还拿着，不准备卖。\n"
+    judgment = "## 读者问\n\n苹果现在贵不贵？\n\n## 段永平\n\n不贵。生意模式还在，我还拿着。\n"
+    _insert(
+        conn,
+        41001,
+        "dyp-all",
+        "苹果还拿着",
+        essay,
+        datetime(2012, 6, 1, 9, 0, tzinfo=SHANGHAI),
+        {"author_voice": "all"},
+    )
+    _insert(
+        conn,
+        41002,
+        "dyp-judgment",
+        "苹果贵不贵",
+        judgment,
+        datetime(2012, 6, 2, 9, 0, tzinfo=SHANGHAI),
+        {"author_voice": "段永平"},
+    )
+    apple = conn.execute("SELECT id FROM companies WHERE name_zh = '苹果'").fetchone()
+    conn.execute(
+        "INSERT INTO article_mentions (article_id, company_id, depth, hit_count) VALUES (%s, %s, 'whole', 2)",
+        (41001, apple["id"]),
+    )
+    conn.commit()
+
+    hidden = backfill_empty_answers(conn)
+    assert hidden == 1
+    flags = {
+        row["id"]: row["raw_meta"]
+        for row in conn.execute("SELECT id, raw_meta FROM articles WHERE id IN (41001, 41002)").fetchall()
+    }
+    assert flags[41001]["suppressed"] == "no_judgment"
+    assert flags[41001]["off_views"] is True
+    assert flags[41001]["off_timeline"] is True
+    assert "suppressed" not in flags[41002]
+    mentions = conn.execute("SELECT count(*) AS n FROM article_mentions WHERE article_id = 41001").fetchone()
+    assert mentions["n"] == 0
+    assert backfill_empty_answers(conn) == 0
+
+    listed = feed_counts(conn, ["duanyongping-blog"], include_off_timeline=True)
+    assert listed["articles"] == 1
+    app = create_app(settings)
+    with TestClient(app) as client:
+        author = client.get("/authors/段永平")
+        assert "苹果还拿着" not in author.text
+        assert "苹果贵不贵" in author.text
+        found = client.get("/search", params={"q": "不准备卖"})
+        assert "/articles/41001" not in found.text
+        page = client.get("/articles/41001")
+        assert page.status_code == 200
+        assert "没有段永平的判断" in page.text
+        assert "我还拿着" in page.text

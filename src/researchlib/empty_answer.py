@@ -1,8 +1,12 @@
-"""段永平问答里，他本人那一节只剩论坛导航时，整篇不进列表。
+"""段永平博客里，没有他本人判断的文章不进列表。
 
-「回本文开头」、署名加时间、上下箭头，都不是他的话。读者提问里点了公司名也不算。
-整篇没有「段永平」标题、正文只有这一行导航的，同样搁下。只处理段永平博客。
-文章行留着，直接打开还能看；首页按天、作者时间线、检索和公司页不收。
+两种情况：
+
+- ``author_voice`` 是 all：没有「## 段永平」这一节，整篇搁下，标记 no_judgment。
+- ``author_voice`` 是段永平，但这一节只剩论坛导航：标记 empty_answer。
+
+「回本文开头」、署名加时间、上下箭头，都不是他的话。康熙部首会先折成普通字。
+正文留着，直接打开还能看；首页按天、作者时间线、检索和公司页不收。只处理这个来源。
 """
 
 from __future__ import annotations
@@ -21,7 +25,11 @@ logger = logging.getLogger("researchlib.empty_answer")
 MIN_VOICE = 6
 SUPPRESSED = "suppressed"
 EMPTY_ANSWER = "empty_answer"
+NO_JUDGMENT = "no_judgment"
+_AUTHOR_VOICE = "author_voice"
+_VOICE_ALL = "all"
 _OFF_VIEWS = "off_views"
+_OFF_TIMELINE = "off_timeline"
 
 _FOLD = str.maketrans(
     {
@@ -75,7 +83,7 @@ _SCAN_LIKE = ("%## 段永平%", "%回%开%头%", "%回%顶部%", "%页首%", "%\
 
 
 def visible_sql(alias: str = "") -> str:
-    """空回答整篇不进列表。标记只写在段永平博客上，别的来源没有这一栏，不受影响。"""
+    """搁下的整篇不进列表。标记只写在段永平博客上，别的来源没有这一栏，不受影响。"""
     column = f"{alias}.raw_meta" if alias else "raw_meta"
     return f"coalesce({column}->>'{SUPPRESSED}', '') = ''"
 
@@ -183,19 +191,48 @@ def stored_answer_empty(body_md: str, *, source_id: str = "", title: str = "") -
     return False
 
 
+def _flag_on(meta: dict, key: str) -> bool:
+    value = meta.get(key)
+    return value is True or str(value or "").strip().lower() == "true"
+
+
+def suppression_for(body_md: str, raw_meta, *, source_id: str, title: str = "") -> str:
+    """这段永平博客该搁下时，返回要写入的 suppressed。不用搁下就返回空串。"""
+    if source_id != SOURCE_ID:
+        return ""
+    # 没有「## 段永平」本人判断段。整篇都算没给出判断，包括拆出来的导航壳。
+    if str((raw_meta or {}).get(_AUTHOR_VOICE) or "").strip() == _VOICE_ALL:
+        return NO_JUDGMENT
+    if stored_answer_empty(body_md, source_id=source_id, title=title):
+        return EMPTY_ANSWER
+    return ""
+
+
+def _flags_ready(meta: dict, reason: str) -> bool:
+    if meta.get(SUPPRESSED) != reason or not _flag_on(meta, _OFF_VIEWS):
+        return False
+    if reason == NO_JUDGMENT and not _flag_on(meta, _OFF_TIMELINE):
+        return False
+    return True
+
+
 def hide_empty_answer(
     conn, article_id: int, body_md: str, raw_meta, *, source_id: str, title: str = ""
 ) -> bool:
-    """空回答标上标记，摘掉公司挂靠和观点。正文不删。已经标过的不再改。
+    """没判断或空回答标上标记，摘掉公司挂靠和观点。正文不删。
 
-    只处理段永平博客。方伟这类来源的读者帖即使正文里出现同样的标题，也不搁下。
+    只处理段永平博客。方伟这类来源即使带了同样的标记，也不搁下。
+    已经按同一规则标好的，不再改标记，挂靠仍会清掉。
     """
-    if source_id != SOURCE_ID or not stored_answer_empty(body_md, source_id=source_id, title=title):
+    reason = suppression_for(body_md, raw_meta, source_id=source_id, title=title)
+    if not reason:
         return False
     meta = dict(raw_meta or {})
-    if meta.get(SUPPRESSED) != EMPTY_ANSWER or meta.get(_OFF_VIEWS) is not True:
-        meta[SUPPRESSED] = EMPTY_ANSWER
+    if not _flags_ready(meta, reason):
+        meta[SUPPRESSED] = reason
         meta[_OFF_VIEWS] = True
+        if reason == NO_JUDGMENT:
+            meta[_OFF_TIMELINE] = True
         conn.execute(
             "UPDATE articles SET raw_meta = %s WHERE id = %s",
             (Jsonb(meta), article_id),
@@ -206,20 +243,39 @@ def hide_empty_answer(
 
 
 def backfill_empty_answers(conn) -> int:
-    """启动时扫一遍段永平博客。还没搁下的，段永平那节是空的，或整篇只剩论坛导航，都标上。"""
-    clauses: list[str] = []
-    params: list[str] = [SOURCE_ID]
+    """启动时扫一遍段永平博客。
+
+    author_voice 为 all 的，标 no_judgment。段永平那节是空的，或整篇只剩论坛导航的，标 empty_answer。
+    已经按这个规则标好、也没有公司挂靠的，跳过。再跑一遍结果一样。
+    """
+    like_sql: list[str] = []
+    params: list[str] = [SOURCE_ID, _VOICE_ALL, NO_JUDGMENT]
     for column in ("body_md", "title"):
         for pattern in _SCAN_LIKE:
-            clauses.append(f"{column} LIKE %s")
+            like_sql.append(f"{column} LIKE %s")
             params.append(pattern)
     rows = conn.execute(
         f"""
         SELECT id, title, body_md, raw_meta
         FROM articles
         WHERE source_id = %s
-          AND coalesce(raw_meta->>'suppressed', '') = ''
-          AND ({" OR ".join(clauses)})
+          AND (
+            (
+              coalesce(raw_meta->>'author_voice', '') = %s
+              AND (
+                coalesce(raw_meta->>'suppressed', '') <> %s
+                OR coalesce(raw_meta->>'off_views', '') <> 'true'
+                OR coalesce(raw_meta->>'off_timeline', '') <> 'true'
+                OR EXISTS (SELECT 1 FROM article_mentions m WHERE m.article_id = articles.id)
+                OR EXISTS (SELECT 1 FROM company_views v WHERE v.article_id = articles.id)
+              )
+            )
+            OR (
+              coalesce(raw_meta->>'suppressed', '') = ''
+              AND coalesce(raw_meta->>'author_voice', '') <> 'all'
+              AND ({" OR ".join(like_sql)})
+            )
+          )
         ORDER BY id
         """,
         params,
@@ -236,6 +292,6 @@ def backfill_empty_answers(conn) -> int:
         ):
             hidden += 1
     if hidden:
-        logger.info("段永平空回答已搁下 %s 篇", hidden)
+        logger.info("段永平没有判断或空回答已搁下 %s 篇", hidden)
     conn.commit()
     return hidden

@@ -108,6 +108,64 @@ def test_chrome_only_voice_is_empty_and_real_answer_stays():
     assert not stored_answer_empty("能力圈就是不做不懂的事。苹果只是举例。")
 
 
+class _Conn:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+
+
+JUDGMENT = """## 读者问
+
+苹果现在贵不贵？
+
+## 段永平
+
+不贵。生意模式还在，我还拿着。
+"""
+
+
+def test_author_voice_all_is_suppressed_and_real_judgment_stays():
+    essay = "苹果的生意模式很好，我还拿着，不准备卖。"
+    conn = _Conn()
+    assert hide_empty_answer(
+        conn, 1, essay, {"author_voice": "all"}, source_id="duanyongping-blog", title="苹果还拿着"
+    )
+    meta = conn.calls[0][1][0].obj
+    assert meta["suppressed"] == "no_judgment"
+    assert meta["off_views"] is True
+    assert meta["off_timeline"] is True
+    assert any("article_mentions" in sql for sql, _params in conn.calls)
+    assert any("company_views" in sql for sql, _params in conn.calls)
+    # 已经按同一规则标好的，不再改标记。
+    again = _Conn()
+    assert hide_empty_answer(again, 1, essay, meta, source_id="duanyongping-blog")
+    assert all("UPDATE articles" not in sql for sql, _params in again.calls)
+    # 有段永平本人判断的留下。别的来源即使是 all 也不搁下。
+    assert hide_empty_answer(None, 2, JUDGMENT, {"author_voice": "段永平"}, source_id="duanyongping-blog") is False
+    assert hide_empty_answer(None, 3, essay, {"author_voice": "all"}, source_id="fangwei-mp") is False
+    # 段永平那节只剩康熙部首导航，仍是空回答，不改成 no_judgment。
+    shell = _Conn()
+    assert hide_empty_answer(
+        shell,
+        4,
+        "## 段永平\n\n" + KANGXI_SHELL,
+        {"author_voice": "段永平"},
+        source_id="duanyongping-blog",
+    )
+    assert shell.calls[0][1][0].obj["suppressed"] == "empty_answer"
+    assert "off_timeline" not in shell.calls[0][1][0].obj
+    kept = decide_stored("苹果贵不贵", JUDGMENT, {"author_voice": "段永平"})
+    assert kept.get("suppressed") is not True
+    dropped = decide_stored("苹果还拿着", essay, {"author_voice": "all"})
+    assert dropped["suppressed"] is True
+    assert dropped["suppressed_as"] == "no_judgment"
+    assert dropped["off_timeline"] is True
+    assert dropped["off_views"] is True
+    assert dropped["reason"] == "没有段永平的判断"
+
+
 def test_suppress_stays_on_duanyongping_and_does_not_touch_other_sources():
     guest = "方伟读者：茅台现在太贵了吗？我觉得生意模式还在，准备继续拿着。\n"
     assert stored_answer_empty(guest) is False

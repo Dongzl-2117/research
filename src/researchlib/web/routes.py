@@ -615,6 +615,7 @@ def _article_view(request: Request, article_id: int, mode: str):
                 article = {**article, "ocr_hash": new_hash}
         digest = queries.digests_for(conn, [article_id]).get(article_id)
         empty_answer = is_suppressed(article["raw_meta"])
+        suppressed_reason = str((article["raw_meta"] or {}).get("suppressed") or "")
         # 短文的图片文字变了也重写摘要。空回答不排进后台。
         if digest_due(article, digest) and not empty_answer:
             schedule_digests(settings, [(article_id, source.author)])
@@ -746,6 +747,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "digest_summary": (digest or {}).get("summary") or "",
             "digest_points": _digest_points(digest, limit=6) if digest else [],
             "empty_answer": empty_answer,
+            "suppressed_reason": suppressed_reason,
             "elsewhere": elsewhere,
             "revised": revised,
             "same_period": others,
