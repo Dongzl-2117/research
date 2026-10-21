@@ -11,6 +11,7 @@ from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
+from researchlib.empty_answer import hide_empty_answer
 from researchlib.images import sync_article_images
 from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
 from researchlib.ingest.duanyongping.attach import refine_mentions
@@ -271,6 +272,14 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 duplicate = article_id
     if is_guest(meta):
         conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
+    if source.id == DUAN_SOURCE:
+        # 旧 Markdown 再导入时，段永平那节只剩论坛导航的整篇搁下。
+        stored_row = conn.execute(
+            "SELECT body_md, raw_meta FROM articles WHERE id = %s",
+            (article_id,),
+        ).fetchone()
+        if stored_row is not None:
+            hide_empty_answer(conn, article_id, stored_row["body_md"] or "", stored_row["raw_meta"])
     return status, stored, linked, missing, duplicate
 
 

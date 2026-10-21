@@ -19,6 +19,9 @@
       {% if revised %}<span aria-hidden="true">·</span><a class="revised" href="/articles/{{ article.id }}/revisions">{{ revised }}</a>{% endif %}
     </p>
     <h1>{{ display_title or article.title }}</h1>
+    {% if empty_answer %}
+    <p class="article-note">无有效回答。这篇不出现在按天、作者列表和检索里。</p>
+    {% endif %}
     {% if title_zh and body_language != 'original' %}
     <p class="title-zh">{{ title_zh }}</p>
     {% endif %}

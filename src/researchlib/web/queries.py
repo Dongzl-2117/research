@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 
+from researchlib.empty_answer import visible_sql
+
 
 @dataclass(frozen=True)
 class Scope:
@@ -39,6 +41,7 @@ def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
     if scope.article_id is not None:
         parts.append(f"{alias}.id = %(scope_article)s")
         params["scope_article"] = scope.article_id
+    parts.append(visible_sql(alias))
     return " AND ".join(parts), params
 
 
@@ -71,10 +74,20 @@ def _off_timeline_clause(include_off_timeline: bool, alias: str = "") -> str:
     return f" AND coalesce({column}->>'off_timeline', '') <> 'true'"
 
 
+def _listed(include_off_timeline: bool, alias: str = "", *, owner_only: bool = False) -> str:
+    """首页和作者页的文章：没日期的按参数，空回答一律不收。"""
+    return (
+        _off_timeline_clause(include_off_timeline, alias)
+        + _owner_clause(owner_only, alias)
+        + " AND "
+        + visible_sql(alias)
+    )
+
+
 def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = True, owner_only: bool = False) -> dict:
     if not source_ids:
         return {"articles": 0, "days": 0, "undated": 0}
-    extra = _off_timeline_clause(include_off_timeline) + _owner_clause(owner_only)
+    extra = _listed(include_off_timeline, owner_only=owner_only)
     row = conn.execute(
         f"""
         SELECT count(*) AS articles,
@@ -99,8 +112,8 @@ def list_day_page(
     """一页里的几天，以及这些天的全部文章。同一天不会被页边界切开。"""
     if not source_ids:
         return []
-    extra = _off_timeline_clause(include_off_timeline) + _owner_clause(owner_only)
-    extra_a = _off_timeline_clause(include_off_timeline, "a") + _owner_clause(owner_only, "a")
+    extra = _listed(include_off_timeline, owner_only=owner_only)
+    extra_a = _listed(include_off_timeline, "a", owner_only=owner_only)
     return conn.execute(
         f"""
         WITH days AS (
@@ -137,7 +150,7 @@ def list_undated_articles(
 ):
     if not source_ids:
         return []
-    extra = _off_timeline_clause(include_off_timeline) + _owner_clause(owner_only)
+    extra = _listed(include_off_timeline, owner_only=owner_only)
     return conn.execute(
         f"""
         SELECT id, source_id, title, published_at, body_text,
@@ -158,10 +171,11 @@ def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
     if not source_ids:
         return {}
     rows = conn.execute(
-        """
+        f"""
         SELECT source_id, count(*) AS n
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
+          AND {visible_sql()}
         GROUP BY source_id
         """,
         (source_ids,),
@@ -406,11 +420,12 @@ def source_stats(conn, source_ids: list[str]) -> dict[str, dict]:
     if not source_ids:
         return {}
     rows = conn.execute(
-        """
+        f"""
         SELECT source_id, count(*)::int AS n, min(published_at) AS first_at, max(published_at) AS last_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND coalesce(raw_meta->>'poster_role', '') <> 'guest'
+          AND {visible_sql()}
         GROUP BY source_id
         """,
         (source_ids,),
@@ -423,13 +438,14 @@ def recent_publish_times(conn, source_ids: list[str], per_source: int = 31) -> d
     if not source_ids:
         return {}
     rows = conn.execute(
-        """
+        f"""
         SELECT source_id, published_at FROM (
           SELECT source_id, published_at,
                  row_number() OVER (PARTITION BY source_id ORDER BY published_at DESC) AS rn
           FROM articles
           WHERE source_id = ANY(%s) AND duplicate_of IS NULL AND published_at IS NOT NULL
             AND published_at <= now() + interval '1 day'
+            AND {visible_sql()}
         ) recent
         WHERE rn <= %s
         ORDER BY source_id, published_at DESC
@@ -468,11 +484,12 @@ def latest_articles(conn, source_ids: list[str], limit: int = 3):
     if not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT id, source_id, title, published_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND coalesce(raw_meta->>'poster_role', '') <> 'guest'
+          AND {visible_sql()}
         ORDER BY published_at DESC NULLS LAST, id DESC
         LIMIT %s
         """,
@@ -485,10 +502,10 @@ def top_companies(conn, source_ids: list[str], limit: int = 12):
     if not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT c.id, c.name_zh, count(*)::int AS n, max(a.published_at) AS last_at
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         JOIN companies c ON c.id = m.company_id
         WHERE a.source_id = ANY(%s) AND m.depth <> 'passing'
           AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
@@ -533,6 +550,7 @@ def day_offset(conn, source_ids: list[str], day, *, owner_only: bool = False) ->
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date > %s
           {_owner_clause(owner_only)}
+          AND {visible_sql()}
         """,
         (source_ids, day),
     ).fetchone()
@@ -551,6 +569,7 @@ def nearest_day(conn, source_ids: list[str], day, *, owner_only: bool = False):
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date <= %s
           {_owner_clause(owner_only)}
+          AND {visible_sql()}
         """,
         (source_ids, day),
     ).fetchone()
@@ -634,12 +653,13 @@ def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 5
     if not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT id, source_id, title, published_at, left(body_text, 2000) AS body_text
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN %s AND %s
+          AND {visible_sql()}
         ORDER BY published_at DESC, id DESC
         LIMIT %s
         """,
@@ -649,10 +669,10 @@ def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 5
 
 def company_author_counts(conn, company_id: int, source_ids: list[str]):
     return conn.execute(
-        """
+        f"""
         SELECT a.source_id, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
         GROUP BY a.source_id
         """,
@@ -680,14 +700,14 @@ def get_answer(conn, answer_id: int):
 
 def list_companies(conn, source_ids: list[str]):
     return conn.execute(
-        """
+        f"""
         SELECT c.id, c.ticker, c.name_zh, c.name_en, c.market, c.aliases,
                count(a.id)::int AS mentions,
                count(a.id) FILTER (WHERE m.depth <> 'passing')::int AS deep,
                max(a.published_at) AS last_at
         FROM companies c
         LEFT JOIN article_mentions m ON m.company_id = c.id
-        LEFT JOIN articles a ON a.id = m.article_id AND a.source_id = ANY(%s)
+        LEFT JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND a.source_id = ANY(%s)
         GROUP BY c.id
         ORDER BY mentions DESC, c.name_zh
         """,
@@ -708,10 +728,10 @@ def get_company(conn, company_id: int):
 
 def company_depth_counts(conn, company_id: int, source_ids: list[str]):
     return conn.execute(
-        """
+        f"""
         SELECT m.depth, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
         GROUP BY m.depth
         """,
@@ -721,14 +741,14 @@ def company_depth_counts(conn, company_id: int, source_ids: list[str]):
 
 def company_months(conn, company_id: int, source_ids: list[str]):
     return conn.execute(
-        """
+        f"""
         SELECT to_char(
                  date_trunc('month', a.published_at AT TIME ZONE 'Asia/Shanghai'),
                  'YYYY-MM'
                ) AS ym,
                count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s)
           AND a.published_at IS NOT NULL
@@ -754,7 +774,7 @@ def count_company_articles(conn, company_id: int, source_ids: list[str], depth: 
         f"""
         SELECT count(*) AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s){clause}
         """,
@@ -771,7 +791,7 @@ def company_articles(conn, company_id: int, source_ids: list[str], depth: str | 
                left(a.body_text, 20000) AS body_text,
                {_CLOCK_FIELDS}
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s){clause}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
@@ -784,12 +804,12 @@ def company_articles(conn, company_id: int, source_ids: list[str], depth: str | 
 def company_month_depths(conn, company_id: int, source_ids: list[str]):
     """按月：深入（标题、全文、单节）和一带而过各几篇。图表用。"""
     return conn.execute(
-        """
+        f"""
         SELECT to_char(date_trunc('month', a.published_at AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM') AS ym,
                count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep,
                count(*) FILTER (WHERE m.depth = 'passing')::int AS passing
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s) AND a.published_at IS NOT NULL
         GROUP BY 1
         ORDER BY 1
@@ -801,14 +821,14 @@ def company_month_depths(conn, company_id: int, source_ids: list[str]):
 def company_source_stats(conn, company_id: int, source_ids: list[str]):
     """每个来源谈这家公司：深入几篇、一共几篇、最近一次深入。"""
     return conn.execute(
-        """
+        f"""
         SELECT a.source_id,
                count(*)::int AS total,
                count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep,
                max(a.published_at) FILTER (WHERE m.depth <> 'passing') AS last_deep,
                max(a.published_at) AS last_at
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
           AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
         GROUP BY a.source_id
@@ -826,12 +846,12 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
         for company_id in company_ids
     }
     for row in conn.execute(
-        """
+        f"""
         SELECT m.company_id, a.source_id,
                count(*)::int AS total,
                count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
         GROUP BY m.company_id, a.source_id
         """,
@@ -843,10 +863,10 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
         if row["deep"]:
             card["by_source"][row["source_id"]] = row["deep"]
     for row in conn.execute(
-        """
+        f"""
         SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at IS NOT NULL
         ORDER BY m.company_id, a.published_at DESC, a.id DESC
@@ -855,12 +875,12 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
     ).fetchall():
         cards[row["company_id"]]["latest"] = row
     for row in conn.execute(
-        """
+        f"""
         SELECT m.company_id,
                to_char(date_trunc('month', a.published_at AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM') AS ym,
                count(*)::int AS deep
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s) AND m.depth <> 'passing'
           AND a.published_at >= date_trunc('month', now()) - make_interval(months => %s)
         GROUP BY 1, 2
@@ -876,7 +896,7 @@ def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list
     if not source_ids or limit <= 0:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT id, name_zh, published_at
         FROM (
           SELECT DISTINCT ON (c.id) c.id, c.name_zh, a.published_at
@@ -885,6 +905,7 @@ def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list
           JOIN companies c ON c.id = v.company_id
           WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
             AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
+            AND {visible_sql("a")}
           ORDER BY c.id, a.published_at DESC NULLS LAST, a.id DESC
         ) recent
         ORDER BY published_at DESC NULLS LAST, id DESC
@@ -900,10 +921,10 @@ def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: i
         return {}
     found: dict[int, dict] = {company_id: {"latest": None, "recent": 0} for company_id in company_ids}
     for row in conn.execute(
-        """
+        f"""
         SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at IS NOT NULL
         ORDER BY m.company_id, a.published_at DESC, a.id DESC
@@ -912,10 +933,10 @@ def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: i
     ).fetchall():
         found[row["company_id"]]["latest"] = row
     for row in conn.execute(
-        """
+        f"""
         SELECT m.company_id, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at >= now() - make_interval(days => %s)
         GROUP BY m.company_id

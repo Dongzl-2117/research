@@ -28,6 +28,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import VOICE_NOTE, display_author, for_model, raw_meta_of
 from researchlib.config import Settings
+from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
@@ -115,6 +116,7 @@ def pending_articles(conn, source_ids: list[str], limit: int):
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
+          AND {visible_sql("a")}
           AND {_STALE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY (d.article_id IS NULL OR d.content_hash <> a.content_hash) DESC,
                  a.published_at DESC NULLS LAST, a.id DESC
