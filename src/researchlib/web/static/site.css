@@ -841,6 +841,60 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose .qa-body p + p { margin-top: .85em; }
 .prose .qa-missing { margin: 0; color: var(--ink-4); }
 .prose > .qa-block + .qa-block { margin-top: 14px; }
+/* 知识星球评论跟正文同一栏，不要再套一层更窄的列表。 */
+.prose .zsxq-comments {
+  width: 100%;
+  max-width: none;
+  margin-top: 2.4em;
+  padding-top: 1.15em;
+  border-top: 1px solid var(--line-soft);
+}
+.prose .zsxq-comments h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.05em;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+.prose .zsxq-comment-list {
+  list-style: none;
+  width: 100%;
+  max-width: none;
+  margin: 14px 0 0;
+  padding: 0;
+}
+.prose .zsxq-comment-list > li {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.prose .zsxq-comment-list > li + li {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+.prose .zsxq-comment-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  margin: 0;
+  color: var(--ink-4);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.prose .zsxq-comment-author {
+  color: var(--ink);
+  font-weight: 650;
+}
+.prose .zsxq-comment-meta time { font-variant-numeric: tabular-nums; }
+.prose .zsxq-comment-body {
+  max-width: none;
+  margin-top: 6px;
+}
+.prose .zsxq-comment-body p { margin: 0; line-height: 1.85; }
+.prose .zsxq-comment-body p + p { margin-top: 0.75em; }
 .article-note {
   margin: 14px 0 0;
   padding: 10px 14px;

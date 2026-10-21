@@ -12,6 +12,7 @@ from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
 from researchlib.wechat_dialogue import parse_shot, render_turns
+from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
@@ -312,11 +313,16 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
     没认出字的图保持原来的图片。
     texts 是 content_hash → image_texts.text。锚点 id 在原图链接上，检索里的「看这张图」仍跳到这里。
     """
+
+    def finish(value: str) -> str:
+        # 截图收成一段对话之后，原来夹在图片之间的 <br> 会落到评论标题前面。
+        return strip_breaks_before_comments(value)
+
     if not html or not texts:
-        return html or ""
+        return finish(html or "")
     spans = _image_spans(html)
     if not spans:
-        return html
+        return finish(html)
     parsed: list[dict | None] = []
     for _start, _end, tag in spans:
         spec = _img_spec(tag)
@@ -363,17 +369,21 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
     for (start, end, _tag), output in zip(reversed(spans), reversed(outputs), strict=True):
         if output is not None:
             result = result[:start] + output + result[end:]
-    return result
+    return finish(result)
 
 
-def render_body(body: str, mapping: dict[str, str], fmt: str | None = None) -> Markup:
-    if fmt == "html":
-        html = rewrite_html_images(body or "", mapping)
-        return Markup(_anchor_images(sanitize_html(html)))
+def _render_markdown(body: str, mapping: dict[str, str]) -> str:
     rewritten = rewrite_html_images(rewrite_markdown_images(body or "", mapping), mapping)
     html = markdown.markdown(
         rewritten,
         extensions=["extra", "nl2br", "sane_lists"],
         output_format="html",
     )
-    return Markup(_anchor_images(sanitize_html(html)))
+    return _anchor_images(sanitize_html(html))
+
+
+def render_body(body: str, mapping: dict[str, str], fmt: str | None = None) -> Markup:
+    if fmt == "html":
+        html = rewrite_html_images(body or "", mapping)
+        return Markup(_anchor_images(sanitize_html(html)))
+    return Markup(assemble_reader_comments(body or "", mapping, _render_markdown))
