@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+import unicodedata
 from urllib.parse import unquote
 
 import markdown
@@ -233,6 +234,39 @@ def _image_spans(html: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+# 微信气泡一行大约 15 个汉字。顶到边的是折行，短行多半是这句说完了。
+_OCR_WRAP_WIDTH = 14.5
+_OCR_SENTENCE_END = re.compile(r"(?:[。！？!?…]|\.\.\.)$")
+
+
+def _visual_width(text: str) -> float:
+    """汉字算 1，英文和数字算半个，用来看这一行有没有顶到气泡边缘。"""
+    return sum(1.0 if unicodedata.east_asian_width(char) in {"W", "F"} else 0.5 for char in text)
+
+
+def _flow_ocr_lines(text: str) -> str:
+    """把截图硬换行收成一段。``国\\n产agents`` 接成「国产agents」，说话人仍按块分开。
+
+    满行直接接上，避免半个词换行。短行后面留一个空格，两句没有句号时不粘成一个词。
+    旁路正文仍保留原来的换行，这里只影响阅读页。
+    """
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    previous = lines[0]
+    merged = previous
+    for line in lines[1:]:
+        if _OCR_SENTENCE_END.search(previous):
+            gap = " " if previous.endswith("...") else ""
+        elif _visual_width(previous) >= _OCR_WRAP_WIDTH:
+            gap = ""
+        else:
+            gap = " "
+        merged += gap + line
+        previous = line
+    return merged
+
+
 def _dialogue_html(text: str) -> str:
     parts: list[str] = []
     for block in text.split("\n\n"):
@@ -241,10 +275,10 @@ def _dialogue_html(text: str) -> str:
             continue
         label, sep, rest = block.partition("：")
         if sep and label in {"方伟", "网友"}:
-            body = html_lib.escape(rest.lstrip("\n"))
+            body = html_lib.escape(_flow_ocr_lines(rest.lstrip("\n")))
             parts.append(f'<p><span class="who">{label}：</span>{body}</p>')
         else:
-            parts.append(f"<p>{html_lib.escape(block)}</p>")
+            parts.append(f"<p>{html_lib.escape(_flow_ocr_lines(block))}</p>")
     return "".join(parts)
 
 
@@ -274,7 +308,8 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
     """有可读识别结果的本地图：群聊先显示整理后的对话，原图是一行「原图 1」链接。
 
     连续几张微信截图合成一段，重复的句子只出现一次，不再每张图留一个空架子。
-    表格和长文仍按原文换行，原图收在「点击看原图」里。没认出字的图保持原来的图片。
+    对话里的截图折行收成一段话，不再在半句中间硬换行。表格和长文仍按原文换行，原图收在「点击看原图」里。
+    没认出字的图保持原来的图片。
     texts 是 content_hash → image_texts.text。锚点 id 在原图链接上，检索里的「看这张图」仍跳到这里。
     """
     if not html or not texts:

@@ -574,7 +574,9 @@ mark {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 28px;
-  max-width: 72ch;
+  /* 72ch 大约三十多个汉字，宽屏上正文会缩在中间，两边空出一大截。
+     栏宽跟正文字号走，最多约 90 个汉字；更窄的窗口就占满主区域。 */
+  max-width: 90em;
   margin: 0 auto;
   padding-bottom: 24px;
   font-size: var(--text-prose);
@@ -722,6 +724,8 @@ tbody tr:hover td { background: var(--accent-softer); }
   overflow-wrap: anywhere;
   max-width: 72ch;
 }
+/* 文章页正文跟阅读栏一样宽。问库、日汇总仍用上面的 72ch。 */
+.reader-grid .prose { max-width: none; }
 .prose p { margin: 0; }
 .prose p:empty { display: none; }
 .prose br + br { display: none; }
@@ -1557,9 +1561,11 @@ html[data-recent-views="collapsed"] #recent-views-list { display: none; }
   display: flex;
   flex-direction: column;
   gap: 0.9em;
-  white-space: pre-wrap;
+  width: 100%;
+  /* 折行已收成段落。pre-wrap 会把截图里的硬换行再画成一条窄字。 */
+  white-space: normal;
 }
-.prose .ocr-reading.ocr-dialogue p { margin: 0; line-height: 1.75; }
+.prose .ocr-reading.ocr-dialogue p { margin: 0; line-height: 1.75; white-space: normal; }
 .prose .ocr-reading.ocr-dialogue .who { font-weight: 600; }
 .prose .ocr-links {
   display: flex;
