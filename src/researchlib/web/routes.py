@@ -26,6 +26,7 @@ from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
+from researchlib.grok import GROK_MODEL_ID
 from researchlib.health import notices as health_notices
 from researchlib.llm import llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
@@ -1405,7 +1406,7 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
         "article": article,
         "authors": list(_author_groups(sources)[1]),
         "llm_ready": llm_configured(request.app.state.settings),
-        "model": request.app.state.settings.llm_model,
+        "model": GROK_MODEL_ID,
         "history": queries.recent_answers(conn, 15),
     }
 

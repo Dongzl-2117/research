@@ -24,7 +24,7 @@ from pathlib import Path
 
 from researchlib.config import Settings
 from researchlib.excerpt import original_chunks, views_input
-from researchlib.llm import LLMError, chat
+from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.views import _company_aliases, locate_quote
 from researchlib.web.present import format_date
 
@@ -285,6 +285,11 @@ def main(argv: list[str] | None = None) -> int:
     from researchlib.db import connect
 
     settings = Settings.from_env()
+    try:
+        ensure_oauth(settings)
+    except LLMUnavailable as exc:
+        print(exc, file=sys.stderr)
+        return 2
     names = args.company or ["腾讯", "贵州茅台", "泡泡玛特"]
     if args.what == "views":
         run_views(settings, lambda: connect(settings), names, args.per, args.pool)

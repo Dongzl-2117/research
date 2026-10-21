@@ -165,11 +165,14 @@ def test_mcp_round_trip(conn, settings):
 
 def test_ask_without_llm_returns_passages(conn, settings, monkeypatch):
     _sample(conn, settings)
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    # 只有控制台 key、没有共用 OAuth：问库不整合，也不把 key 写进页面。
+    monkeypatch.setenv("XAI_API_KEY", "should-not-enable-ask")
+    monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(settings.data_dir / "missing-oauth.json"))
     with TestClient(create_app(settings)) as client:
         page = client.post("/ask", data={"q": "宁德时代的毛利率怎么样"})
         assert page.status_code == 200
-        assert "没有配置 LLM" in page.text
+        assert "没有可用的 Grok OAuth" in page.text
+        assert "should-not-enable-ask" not in page.text
         assert 'id="c-1"' in page.text
     assert conn.execute("SELECT count(*) AS n FROM llm_answers").fetchone()["n"] == 0
 

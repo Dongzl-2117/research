@@ -33,7 +33,7 @@ from researchlib.author_voice import VOICE_NOTE, raw_meta_of, restrict
 from researchlib.config import Settings
 from researchlib.excerpt import VIEWS_LIMIT, original_chunks, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
-from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.web.present import format_date
 
 logger = logging.getLogger("researchlib.views")
@@ -606,6 +606,11 @@ def main(argv: list[str] | None = None) -> int:
     from researchlib.sources import enabled_sources, load_sources
 
     settings = Settings.from_env()
+    try:
+        ensure_oauth(settings)
+    except LLMUnavailable as exc:
+        print(exc, file=sys.stderr)
+        return 2
     sources = enabled_sources(load_sources(settings.sources_path))
     authors = {source.id: source.author for source in sources}
     conn = prepare(settings)

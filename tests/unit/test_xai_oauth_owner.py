@@ -98,8 +98,10 @@ def test_shared_v1_token_is_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert get_xai_access_token(tmp_path) == "old-access"
     assert xai_oauth_status(tmp_path).logged_in is True
     assert xai_oauth_status(tmp_path).token_path == str(path)
-    settings = Settings.from_env({"DATA_DIR": str(tmp_path), "XAI_API_KEY": ""})
+    monkeypatch.setenv("XAI_API_KEY", "console-key-ignored")
+    settings = Settings.from_env({"DATA_DIR": str(tmp_path), "XAI_API_KEY": "console-key-ignored"})
     assert credential_kind(settings) == "oauth"
+    assert not hasattr(settings, "llm_api_key")
 
 
 def test_hermes_file_is_not_overwritten(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

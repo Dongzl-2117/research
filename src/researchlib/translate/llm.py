@@ -2,6 +2,7 @@
 
 对齐 AIHOT providers/llm.ts 与 llm-limits.ts 的 Grok 路径。
 鉴权走 xAI OAuth access token（Bearer），过期自动刷新。
+模型、推理强度、输出地板、上下文和超时与问库、摘要共用 researchlib.grok。
 """
 
 from __future__ import annotations
@@ -16,19 +17,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from researchlib.grok import (
+    GROK_CONTEXT_TOKENS,
+    GROK_INPUT_CHARS,
+    GROK_MODEL_ID,
+    GROK_OUTPUT_FLOOR,
+    GROK_REASONING_EFFORT,
+    completion_params,
+    grok_output_tokens,
+    long_timeout_s,
+)
 from researchlib.translate.xai_oauth import (
     XAI_INFERENCE_BASE_URL,
     XaiLoginRequiredError,
     get_xai_access_token,
     is_stale_xai_access,
 )
-
-GROK_MODEL_ID = "grok-4.7"
-GROK_REASONING_EFFORT = "xhigh"
-GROK_CONTEXT_TOKENS = 500_000
-GROK_OUTPUT_FLOOR = 128_000
-GROK_INPUT_CHARS = 360_000
-LONG_LLM_TIMEOUT_S = 1_500  # 25 分钟，盖住 xhigh 推理
 
 
 @dataclass
@@ -37,22 +41,6 @@ class ChatJsonResult:
     model: str
     usage: dict[str, Any] | None
     latency_ms: int
-
-
-def grok_output_tokens(requested: int | None = None) -> int:
-    dedicated = os.environ.get("XAI_MAX_TOKENS", "").strip()
-    if dedicated.isdigit():
-        return int(dedicated)
-    raised = os.environ.get("LLM_MAX_TOKENS", "").strip()
-    raised_n = int(raised) if raised.isdigit() else 0
-    return max(raised_n, requested or 0, GROK_OUTPUT_FLOOR)
-
-
-def long_timeout_s() -> float:
-    raw = os.environ.get("LLM_LONG_TIMEOUT_MS", "").strip()
-    if raw.isdigit():
-        return max(60.0, int(raw) / 1000)
-    return float(LONG_LLM_TIMEOUT_S)
 
 
 def _base_url() -> str:
@@ -93,15 +81,12 @@ def chat_json(
     endpoint = f"{_base_url()}/chat/completions"
     user_text = user if isinstance(user, str) else json.dumps(user, ensure_ascii=False)
     body = {
-        "model": GROK_MODEL_ID,
+        **completion_params(temperature=temperature, max_tokens=max_tokens),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user_text},
         ],
-        "temperature": temperature,
         "response_format": {"type": "json_object"},
-        "reasoning_effort": GROK_REASONING_EFFORT,
-        "max_tokens": grok_output_tokens(max_tokens),
     }
     payload = json.dumps(body).encode("utf-8")
     timeout = timeout_s if timeout_s is not None else long_timeout_s()
