@@ -266,7 +266,9 @@ def segment_post(post: Post) -> list[Entry]:
                 close_qa([])
                 question.extend(trailing)
                 trailing = []
-            if essay and not author and not in_thread:
+            # 连续正文是同一篇。原先每来一段就收一次，英文长文被拆成很多条 all，
+            # 没有公司名的段被丢掉，只剩碎段。只有下一段改口「段永平：」时才分开。
+            if essay and not author and not in_thread and is_author_text(block.text):
                 close_essay()
             if question or in_thread or is_author_text(block.text) or (author and block.bold):
                 in_thread = True

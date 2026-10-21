@@ -20,7 +20,16 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import ROLE_GUEST, assign_poster_role
 from researchlib.boilerplate import clean_markdown, profile_for
 from researchlib.chunks import replace_chunks
-from researchlib.empty_answer import EMPTY_ANSWER, SUPPRESSED, stored_answer_empty
+from researchlib.empty_answer import (
+    EMPTY_ANSWER,
+    MISATTRIBUTED,
+    NO_JUDGMENT,
+    SUPPRESSED,
+    WEAK_JUDGMENT,
+    duan_section,
+    suppression_for,
+    voice_is_empty,
+)
 from researchlib.ingest.duanyongping import SOURCE_ID
 from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.duanyongping.companies import companies_in, library_names
@@ -85,13 +94,15 @@ def _has_duan_voice(body_md: str, author: str) -> bool:
     return bool(_DUAN_MARK.search(author or ""))
 
 
-def decide_stored(title: str, body_md: str) -> dict:
+def decide_stored(title: str, body_md: str, raw_meta: dict | None = None) -> dict:
     """纯函数：这篇存量文章该不该进观点，是不是博友回复。"""
-    if stored_answer_empty(body_md):
+    section = duan_section(body_md)
+    if section is not None and voice_is_empty(section):
         return {
             "guest": False,
             "off_views": True,
             "suppressed": True,
+            "suppressed_as": EMPTY_ANSWER,
             "poster_name": "",
             "reason": "只有论坛导航，没有段永平的话",
         }
@@ -103,6 +114,44 @@ def decide_stored(title: str, body_md: str) -> dict:
             "off_views": True,
             "poster_name": _guest_name(title, other, author),
             "reason": "博友回复，不是段永平本人",
+        }
+    reason = suppression_for(body_md, raw_meta, source_id=SOURCE_ID, title=title)
+    if reason == NO_JUDGMENT:
+        return {
+            "guest": False,
+            "off_views": True,
+            "off_timeline": True,
+            "suppressed": True,
+            "suppressed_as": NO_JUDGMENT,
+            "poster_name": "",
+            "reason": "没有段永平的判断",
+        }
+    if reason == WEAK_JUDGMENT:
+        return {
+            "guest": False,
+            "off_views": True,
+            "suppressed": True,
+            "suppressed_as": WEAK_JUDGMENT,
+            "poster_name": "",
+            "reason": "没有买、贵、持有或生意原则",
+        }
+    if reason == MISATTRIBUTED:
+        return {
+            "guest": False,
+            "off_views": True,
+            "suppressed": True,
+            "suppressed_as": MISATTRIBUTED,
+            "poster_name": "",
+            "reason": "英文粘贴，不是段永平的判断",
+        }
+    if reason == EMPTY_ANSWER:
+        return {
+            "guest": False,
+            "off_views": True,
+            "suppressed": True,
+            "suppressed_as": EMPTY_ANSWER,
+            "poster_name": "",
+            "reason": "只有论坛导航，没有段永平的话",
         }
     scope = f"{other}\n{author}" if other else author
     real, side, weak = companies_in(scope)
@@ -130,8 +179,12 @@ def decide_stored(title: str, body_md: str) -> dict:
 def _meta_for(raw_meta, decision: dict) -> dict:
     meta = dict(raw_meta or {})
     if decision.get("suppressed"):
-        meta[SUPPRESSED] = EMPTY_ANSWER
+        meta[SUPPRESSED] = decision.get("suppressed_as") or EMPTY_ANSWER
         meta["off_views"] = True
+        if decision.get("off_timeline"):
+            meta["off_timeline"] = True
+        if decision.get("suppressed_as") == MISATTRIBUTED:
+            meta["author_voice"] = "foreign"
         if meta.get("poster_role") == ROLE_GUEST and str(meta.get("poster_name") or "") in {"", "博友"}:
             meta.pop("poster_role", None)
             meta.pop("poster_name", None)
@@ -174,7 +227,7 @@ def reclassify_source(conn, *, dry_run: bool = False) -> dict:
     for row in rows:
         counts["seen"] += 1
         new_md = scrub_stored_markdown(row["body_md"] or "")
-        decision = decide_stored(row["title"] or "", new_md)
+        decision = decide_stored(row["title"] or "", new_md, row["raw_meta"])
         meta = _meta_for(row["raw_meta"], decision)
         if row["duplicate_of"] or decision["guest"] or decision["off_views"]:
             mention_rows: list[tuple[int, str, int]] = []
@@ -256,7 +309,7 @@ def format_report(report: dict, *, dry_run: bool) -> str:
         f"扫描 {counts.get('seen', 0)} 篇，改 {counts.get('updated', 0)} 篇，未改 {counts.get('unchanged', 0)} 篇",
         f"洗掉页码垃圾 {counts.get('scrubbed', 0)} 篇",
         f"不进观点 {counts.get('off_views', 0)} 篇，其中博友回复 {counts.get('guest', 0)} 篇",
-        f"空回答搁下 {counts.get('suppressed', 0)} 篇（不进按天、作者列表和检索）",
+        f"搁下 {counts.get('suppressed', 0)} 篇（不进按天、作者列表和检索）",
         f"重算公司挂靠 {counts.get('mentions', 0)} 篇",
         "",
         "不进观点的原因:",

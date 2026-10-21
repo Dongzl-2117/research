@@ -273,14 +273,20 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     if is_guest(meta):
         conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
     if source.id == DUAN_SOURCE:
-        # 旧 Markdown 再导入时，段永平那节只剩论坛导航的整篇搁下。
+        # 没有段永平本人判断，或那节只剩论坛导航的，整篇搁下。
         stored_row = conn.execute(
-            "SELECT body_md, raw_meta FROM articles WHERE id = %s",
+            "SELECT title, body_md, raw_meta, published_at FROM articles WHERE id = %s",
             (article_id,),
         ).fetchone()
         if stored_row is not None:
             hide_empty_answer(
-                conn, article_id, stored_row["body_md"] or "", stored_row["raw_meta"], source_id=source.id
+                conn,
+                article_id,
+                stored_row["body_md"] or "",
+                stored_row["raw_meta"],
+                source_id=source.id,
+                title=stored_row["title"] or "",
+                published_at=stored_row["published_at"],
             )
     return status, stored, linked, missing, duplicate
 

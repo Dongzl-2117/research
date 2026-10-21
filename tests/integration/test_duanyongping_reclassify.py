@@ -15,13 +15,13 @@ def _source(settings):
     return next(source for source in load_sources(settings.sources_path) if source.id == "duanyongping-blog")
 
 
-def _doc(external_id: str, title: str, body: str) -> ParsedDoc:
+def _doc(external_id: str, title: str, body: str, voice: str = "all") -> ParsedDoc:
     return ParsedDoc(
         external_id=external_id,
         title=title,
         published_at=datetime(2010, 1, 1, 8, 0, tzinfo=SHANGHAI),
         body_md=body,
-        raw_meta={"format": "markdown", "author_voice": "all"},
+        raw_meta={"format": "markdown", "author_voice": voice},
         image_refs=[],
     )
 
@@ -31,9 +31,18 @@ def test_reclassify_scrubs_junk_and_drops_non_arguments(conn, settings):
         conn,
         source=_source(settings),
         docs=[
-            _doc("dyp-junk", "茅台的生意", "茅台的生意模式很好。file:///H.HTM 我还拿着。\n"),
+            _doc(
+                "dyp-junk",
+                "茅台的生意",
+                (
+                    "## 读者问\n\n茅台怎么样？\n\n## 段永平\n\n"
+                    "茅台的生意模式很好。file:///H.HTM 我还拿着。"
+                    "价格不是卖出的理由，生意还在我就继续拿着，不因为贵了就卖掉。\n"
+                ),
+                voice="段永平",
+            ),
             _doc("dyp-method", "能力圈", "不要太保守，做对的事情，把事情做对。\n"),
-            _doc("dyp-guest", "回复段永平", "茅台我看好，生意模式没问题，我已经买了不少。\n"),
+            _doc("dyp-guest", "回复段永平", "茅台我看好，生意模式没问题，我已经买了不少。\n", voice="段永平"),
             _doc("dyp-thanks", "周末", "感谢茅台的朋友，周末一起吃饭，聊得很开心。\n"),
         ],
         data_dir=settings.data_dir,
@@ -65,6 +74,8 @@ def test_reclassify_scrubs_junk_and_drops_non_arguments(conn, settings):
 
     method = conn.execute("SELECT raw_meta FROM articles WHERE external_id = 'dyp-method'").fetchone()
     assert method["raw_meta"]["off_views"] is True
+    assert method["raw_meta"]["suppressed"] == "no_judgment"
+    assert method["raw_meta"]["off_timeline"] is True
     guest = conn.execute("SELECT raw_meta FROM articles WHERE external_id = 'dyp-guest'").fetchone()
     assert guest["raw_meta"]["poster_role"] == "guest"
     assert guest["raw_meta"]["off_views"] is True
@@ -86,6 +97,7 @@ def test_reclassify_scrubs_junk_and_drops_non_arguments(conn, settings):
         """
     ).fetchone()
     assert thanks["n"] == 0
-    assert conn.execute("SELECT raw_meta FROM articles WHERE external_id = 'dyp-thanks'").fetchone()["raw_meta"][
-        "off_views"
-    ] is True
+    thanks = conn.execute("SELECT raw_meta FROM articles WHERE external_id = 'dyp-thanks'").fetchone()
+    assert thanks["raw_meta"]["off_views"] is True
+    assert thanks["raw_meta"]["suppressed"] == "no_judgment"
+    assert thanks["raw_meta"]["off_timeline"] is True

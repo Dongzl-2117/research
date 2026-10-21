@@ -141,8 +141,38 @@ def test_markdown_marks_undated_and_author_section(tmp_path: Path):
     assert all(heading == "段永平" for heading, _text in picked)
     essay = next(entry for entry in entries if entry.keep and entry.published.startswith("2012-06-01"))
     essay_md = render_markdown(essay)
-    assert "author_voice: \"all\"" in essay_md
-    assert "## 段永平" not in essay_md
+    assert "author_voice: \"段永平\"" in essay_md
+    assert "## 段永平" in essay_md
+
+
+def test_english_essay_stays_one_entry_instead_of_one_paragraph_each():
+    post = Post(
+        title="读巴菲特",
+        date="2011-03-03 09:00:00",
+        repost=False,
+        blocks=[
+            Block("Buffett", False, 11, 1),
+            Block("Q: What is the moat of Coca-Cola and why hold it for decades?", False, 11, 1),
+            Block("The brand is a consumer habit. I bought a lot and I still hold the shares.", False, 11, 1),
+            Block("Munger", False, 11, 1),
+            Block("Q: Do you agree with Warren about not selling a wonderful business?", False, 11, 1),
+            Block("Yes. A wonderful business at a fair price is enough. You do not sell it.", False, 11, 2),
+        ],
+        page=1,
+    )
+    entries = list(segment_post(post))
+    assert len(entries) == 1
+    assert "Coca-Cola" in entries[0].author
+    assert "wonderful business" in entries[0].author
+    assert "do not sell" in entries[0].author
+    assert entries[0].question == ""
+    kept = [item for item in (classify(item) for item in entries) if item.keep]
+    assert len(kept) == 1
+    rendered = render_markdown(kept[0])
+    assert 'author_voice: "段永平"' in rendered
+    assert "## 段永平" in rendered
+    assert "Coca-Cola" in rendered
+    assert "do not sell" in rendered
 
 
 def test_arrow_reply_stays_one_entry_and_drops_the_label():

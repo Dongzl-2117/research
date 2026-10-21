@@ -96,7 +96,12 @@ def is_other_text(text: str) -> bool:
     head = (text or "").strip()
     if is_author_text(head):
         return False
-    if is_reply_to_duan(head) or _OTHER.match(head):
+    if is_reply_to_duan(head):
+        return True
+    # 英文谈话里的「Q:」不是论坛读者。当成读者就会把整段采访拆开丢掉。
+    if re.match(r"^(?:Q|q)\s*[:：]", head) and not re.search(r"[\u4e00-\u9fff]", head):
+        return False
+    if _OTHER.match(head):
         return True
     return bool(_SPEAKER_STAMP.match(head))
 
@@ -320,7 +325,8 @@ def join_wrapped(parts: list[str]) -> str:
 
 
 def _ends_sentence(text: str) -> bool:
-    return bool(text) and text[-1] in "。！？!?；;"
+    # 英文句号也算说完。否则跨页时下一段会粘进上一句。
+    return bool(text) and text[-1] in "。！？!?；;."
 
 
 def lines_to_blocks(lines: list[Line]) -> list[Block]:
