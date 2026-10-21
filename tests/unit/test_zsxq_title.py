@@ -181,6 +181,76 @@ def test_quoted_placeholders_need_repair_and_use_ocr():
     assert card["plain_title"] == PICTURE_TITLE
 
 
+# 线上脏摘要：空语音套话，或在复述「这篇没写什么」。不能压过图片里的判断，也不能压过原标题主干。
+DIRTY_DUAN = "（没有段永平本人的话）"
+DIRTY_XIAOMI = "作者开篇判断与去年小米剧本似曾相识，文中未给对照机制。"
+XIAOMI_STEM = "跟去年小米的剧本总是似曾相识"
+
+
+def test_narration_summary_is_not_a_title():
+    assert title_needs_repair(DIRTY_DUAN)
+    assert title_needs_repair("没有段永平本人的话")
+    assert title_needs_repair("没有他本人的话。")
+    picture = zsxq_display_title(PICTURE, body="", summary=DIRTY_DUAN, ocr=PICTURE_OCR, when="2024-10-19")
+    assert picture == PICTURE_TITLE
+    assert "段永平" not in picture
+    assert picture != "图片"
+    # 套话写进标题栏时也要让开，用图片里的第一句。
+    assert zsxq_display_title(DIRTY_DUAN, body="", summary=DIRTY_DUAN, ocr=PICTURE_OCR) == PICTURE_TITLE
+    for summary in (
+        "正文几乎只有半截标题，看不出判断。",
+        "文中未给对照机制。",
+        "作者开篇判断与去年的剧本相似。",
+        "没有作者本人的话",
+        "（没有他本人的话）",
+    ):
+        got = zsxq_display_title("「图片」", body="（见图）\n", summary=summary, ocr=PICTURE_OCR)
+        assert got == PICTURE_TITLE, summary
+    card = {
+        "id": 14885,
+        "source_id": "fangwei-zsxq",
+        "plain_title": PICTURE,
+        "title": PICTURE,
+        "summary": DIRTY_DUAN,
+        "date": "2024-10-19",
+    }
+    _repair_zsxq_titles(_Conn([{"id": 14885, "body_text": "", "ocr_text": PICTURE_OCR}]), [card])
+    assert card["title"] == PICTURE_TITLE
+    assert "段永平" not in card["plain_title"]
+
+
+def test_ellipsis_stem_beats_a_narration_summary():
+    """14865：去掉省略号后用原标题主干，不用复述摘要，也不用另一张配售截图。"""
+    title = zsxq_display_title(
+        XIAOMI,
+        body=XIAOMI_BODY,
+        summary=DIRTY_XIAOMI,
+        ocr=XIAOMI_OCR,
+        when="2025-11-13",
+    )
+    assert title == XIAOMI_STEM
+    _no_ellipsis(title)
+    assert "作者开篇" not in title
+    assert "文中未给" not in title
+    assert "正文几乎" not in title
+    assert "智谱" not in title
+    assert "巴菲特" not in title
+    card = {
+        "id": 14865,
+        "source_id": "fangwei-zsxq",
+        "plain_title": XIAOMI,
+        "title": XIAOMI,
+        "summary": DIRTY_XIAOMI,
+        "date": "2025-11-13",
+    }
+    _repair_zsxq_titles(
+        _Conn([{"id": 14865, "body_text": XIAOMI_BODY, "ocr_text": XIAOMI_OCR}]),
+        [card],
+    )
+    assert card["title"] == XIAOMI_STEM
+    assert card["plain_title"] == XIAOMI_STEM
+
+
 def test_truncated_title_prefers_digest_over_unrelated_ocr():
     assert title_needs_repair(XIAOMI)
     title = zsxq_display_title(
