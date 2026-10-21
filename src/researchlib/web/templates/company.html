@@ -17,7 +17,6 @@
     <span>{{ market }}</span>
     {% if company.name_en %}<span>{{ company.name_en }}</span>{% endif %}
   </p>
-  {% if company.aliases %}<p class="aliases">也认：{{ company.aliases | join("、") }}</p>{% endif %}
   <p class="head-actions">
     <a class="btn ask-btn" href="/ask?preset=company&amp;company={{ company.id }}{% if active_author %}&amp;author={{ active_author | urlencode }}{% endif %}">问 AI：库里怎么看{{ company.name_zh }}</a>
     <a class="quiet" href="/search?company={{ company.id }}&amp;q={{ company.name_zh | urlencode }}">在提到它的文章里检索</a>

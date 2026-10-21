@@ -47,6 +47,7 @@ research-retime = "researchlib.retime:main"
 research-theses = "researchlib.theses:main"
 research-fetch-images = "researchlib.remote_images:main"
 research-ocr = "researchlib.ocr:main"
+research-clean = "researchlib.boilerplate:main"
 
 [build-system]
 requires = ["setuptools>=68"]

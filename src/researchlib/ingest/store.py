@@ -7,6 +7,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
 from researchlib.images import sync_article_images
@@ -19,11 +20,12 @@ from researchlib.mentions import (
 )
 from researchlib.revisions import held_before, judge_replacement, save_revision, split_comments
 from researchlib.sources import Source
-from researchlib.textutil import content_hash, markdown_to_text, split_frontmatter, strip_duplicate_title
+from researchlib.textutil import content_hash, markdown_to_text, strip_duplicate_title
 
 
-def _body_text(title: str, body_md: str) -> str:
-    _frontmatter, body = split_frontmatter(body_md)
+def _body_text(title: str, body_md: str, profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> str:
+    """检索、摘要、观点读的文字：去掉归档头、引流尾巴和广告图之后的正文。"""
+    body = clean_markdown(body_md, profile, hashes)
     return markdown_to_text(strip_duplicate_title(body, title))
 
 
@@ -127,7 +129,8 @@ def record_import(conn, source_id: str, report: IngestReport, origin: str = "arc
 
 
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
-    body_text = _body_text(doc.title, doc.body_md)
+    profile = profile_for(conn, source.id)
+    body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
     meta = dict(doc.raw_meta)
     existing = conn.execute(
@@ -227,6 +230,13 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         data_dir=data_dir,
         refs=doc.image_refs,
     )
+    if status != "unchanged":
+        # 图片挂上以后才知道哪张是广告图：按图片哈希再洗一遍文字和块。
+        hashes = image_hashes(conn, article_id)
+        cleaned = _body_text(doc.title, doc.body_md, profile, hashes)
+        if cleaned != body_text:
+            conn.execute("UPDATE articles SET body_text = %s WHERE id = %s", (cleaned, article_id))
+            replace_chunks(conn, article_id, doc.title, doc.body_md)
     duplicate = None
     if status != "unchanged":
         # 图片可能换了：图片文字（OCR）的块跟着重切，识别结果按图片哈希缓存，不用重新识别。

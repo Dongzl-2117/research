@@ -16,11 +16,12 @@ from markupsafe import Markup
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
+from researchlib.boilerplate import clean_article
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
 from researchlib.digest import needs_rewrite as digest_needs_rewrite
 from researchlib.digest import schedule_digests
-from researchlib.doctree import arrange_tree, load_tree_rows, mark_open
+from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
@@ -469,6 +470,14 @@ def author_page(request: Request, author: str):
             raise HTTPException(status_code=404)
         chosen = source_arg or None
         scoped = [chosen] if chosen else [item.id for item in author_sources]
+        # 文档库（飞书这类没有发布时间的）不排时间线：直接进按原目录嵌套的文档树。
+        # 作者同时有公众号、星球时，时间线只排这些有日期的来源，文档库从顶上的目录入口进。
+        libraries = [by_id[item] for item in scoped if not by_id[item].timeline and by_id[item].kind == "feishu"]
+        dated = [item for item in scoped if by_id[item].timeline]
+        built = [item for item in libraries if _has_tree(conn, item.id)]
+        if built and not _has_articles(conn, dated):
+            return RedirectResponse(f"/sources/{built[0].id}/tree", status_code=302)
+        scoped = dated or scoped
         jump = parse_day(request.query_params.get("date"))
         if jump is not None:
             return _jump_to_day(conn, scoped, jump, settings, f"/authors/{author}", source=chosen or "")
@@ -507,6 +516,28 @@ def author_page(request: Request, author: str):
 
 
 
+def _has_articles(conn, source_ids: list[str]) -> bool:
+    if not source_ids:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM articles WHERE source_id = ANY(%s) AND duplicate_of IS NULL LIMIT 1", (source_ids,)
+    ).fetchone()
+    return row is not None
+
+
+def _has_tree(conn, source_id: str) -> bool:
+    """目录树建过（research-doc-tree）才跳过去；没建过还是列文章。"""
+    row = conn.execute(
+        "SELECT 1 FROM doc_tree t JOIN articles a ON a.id = t.article_id WHERE a.source_id = %s LIMIT 1",
+        (source_id,),
+    ).fetchone()
+    return row is not None
+
+
+def fmt_of(article) -> str | None:
+    return (article["raw_meta"] or {}).get("format")
+
+
 def _article_view(request: Request, article_id: int, mode: str):
     """mode: auto | zh | pairs | original。auto 有对照则对照，否则单语。"""
     settings = request.app.state.settings
@@ -541,10 +572,14 @@ def _article_view(request: Request, article_id: int, mode: str):
         link_index = None
         if ".md" in (article["body_md"] or "").lower() or ".md" in zh_blob.lower():
             link_index = load_md_index(conn, article["source_id"])
+        # 正文显示前去掉归档头、引流尾巴和广告图。库里的 body_md 不改。
+        shown_md = article["body_md"] if fmt_of(article) == "html" else clean_article(
+            conn, article_id, article["source_id"], article["body_md"]
+        )
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
-    original_html = prepare_body_html(article["body_md"], article["title"], mapping, fmt, link_index, parent)
+    original_html = prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent)
 
     has_translation = bool(translation and translation.get("body_html"))
     # 原文已改、译文 hash 对不上时仍可展示旧译文，但标 incomplete
@@ -655,7 +690,10 @@ def _tree_body(conn, article, source_id: str):
     fmt = (article["raw_meta"] or {}).get("format")
     parent = str((article["raw_meta"] or {}).get("parent") or "")
     link_index = load_md_index(conn, source_id) if ".md" in (article["body_md"] or "").lower() else None
-    return Markup(prepare_body_html(article["body_md"], article["title"], mapping, fmt, link_index, parent))
+    shown_md = article["body_md"]
+    if fmt != "html":
+        shown_md = clean_article(conn, article["id"], source_id, shown_md)
+    return Markup(prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent))
 
 
 def _source_tree(request: Request, source_id: str, article_id: int | None):
@@ -667,6 +705,8 @@ def _source_tree(request: Request, source_id: str, article_id: int | None):
             raise HTTPException(status_code=404)
         rows = load_tree_rows(conn, source_id)
         root, orphans = arrange_tree(rows)
+        if source.kind == "feishu":
+            root, orphans = filter_library_tree(root, orphans)
         current = article_id
         if current is None and root is not None:
             current = root["id"]

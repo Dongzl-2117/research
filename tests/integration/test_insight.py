@@ -107,7 +107,7 @@ def test_theses_views_home_and_same_period(conn, settings, monkeypatch):
         # 首页最近观点：按观点时间排，不写「持仓近况」。
         home = client.get("/").text
         assert "最近观点" in home and "持仓近况" not in home
-        assert "zx/t4 的判断" in home and "holdings-view" in home
+        assert "holdings-row" in home and "近 30 天" in home and "zx/t4 的判断" not in home
         assert home.find("最近观点") < home.find('class="feed"')
         # 文章页：同期别的作者怎么看，不列自己。
         article = client.get(f"/articles/{ids['mp/t1']}").text

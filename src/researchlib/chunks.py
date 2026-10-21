@@ -105,7 +105,12 @@ def make_chunks(title: str, body_md: str) -> list[tuple[str, str]]:
 
 
 def replace_chunks(conn, article_id: int, title: str, body_md: str) -> int:
-    """原文的块。译文的块（lang = 'zh'）不动，译文重写时另行重切。"""
+    """原文的块。译文的块（lang = 'zh'）不动，译文重写时另行重切。切之前先去掉归档头和引流尾巴。"""
+    from researchlib.boilerplate import clean_article
+
+    row = conn.execute("SELECT source_id FROM articles WHERE id = %s", (article_id,)).fetchone()
+    if row is not None:
+        body_md = clean_article(conn, article_id, row["source_id"], body_md)
     chunks = make_chunks(title, body_md)
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = ''", (article_id,))
     if not chunks:

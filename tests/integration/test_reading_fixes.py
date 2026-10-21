@@ -160,8 +160,10 @@ def test_feishu_tree_page_nests_first_referrer(conn, settings):
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/sources/{feishu}/tree")
         assert page.status_code == 200
-        assert "未挂上目录" in page.text and "孤立笔记" in page.text
-        # 宏观和零售都是主页的子节点：零售的块里才有渠道。
+        # 文库树只留公司/行业研究：「零售研究」留下，「宏观」「孤立笔记」藏掉。
+        assert "零售研究" in page.text and "渠道" in page.text
+        assert "孤立笔记" not in page.text and "未挂上目录" not in page.text
+        assert "宏观" not in page.text.split("doc-nav", 1)[1].split("</nav>", 1)[0]
         retail = page.text.split("零售研究", 1)[1]
         assert "渠道" in retail
         child = conn.execute("SELECT id FROM articles WHERE title = '渠道'").fetchone()["id"]

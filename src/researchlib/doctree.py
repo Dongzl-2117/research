@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import defaultdict, deque
 
@@ -23,6 +24,19 @@ from researchlib.sources import SourceRejected, load_sources, require_source
 from researchlib.textutil import split_frontmatter
 
 ROOT_TITLE = "主页-Jason 林文丰"
+
+# 文库树只展示公司、行业研究。方法论、笔记、如何思考一类从树上藏掉（库里还在，检索和问库照常）。
+# 「价值投资研究」是方法论，不算公司。
+
+LIBRARY_KEEP = re.compile(r"(投资研究|行业研究)$|.+研究$|公用事业与周期业$")
+LIBRARY_EXCLUDE = re.compile(r"^价值投资研究$")
+
+
+def library_visible(title: str) -> bool:
+    title = (title or "").strip()
+    if not title or LIBRARY_EXCLUDE.match(title):
+        return False
+    return bool(LIBRARY_KEEP.search(title))
 
 
 class DocTreeError(Exception):
@@ -188,6 +202,17 @@ def arrange_tree(rows: list[dict]) -> tuple[dict | None, list[dict]]:
 
     root = node(roots[0], set()) if roots else None
     return root, [node(row, set()) for row in orphans]
+
+
+def filter_library_tree(root: dict | None, orphans: list[dict]) -> tuple[dict | None, list[dict]]:
+    """只留「XX投资研究」「XX行业研究/XX研究」及其子文档。根（主页）保留当容器。
+
+    孤儿和不匹配的顶层节点从树上藏掉，库里的文章、检索、问库不动。
+    """
+    if root is None:
+        return None, []
+    kept = [child for child in root.get("children") or [] if library_visible(child["title"])]
+    return {**root, "children": kept}, []
 
 
 def mark_open(node: dict, current: int | None) -> bool:
