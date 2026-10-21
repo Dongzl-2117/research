@@ -23,6 +23,7 @@ def test_whitelist_shape():
         "chengfengpolang",
         "gudujinhuati",
         "linwenfeng-feishu",
+        "duanyongping-blog",
     ]
     gudu = next(source for source in sources if source.id == "gudujinhuati")
     assert gudu.kind == "markdown"
@@ -37,6 +38,12 @@ def test_whitelist_shape():
     assert timeline["gudujinhuati"] is True
     assert timeline["linwenfeng-mp"] is True
     assert timeline["stratechery"] is True
+    assert timeline["duanyongping-blog"] is True
+    duan = next(source for source in sources if source.id == "duanyongping-blog")
+    assert duan.name == "段永平"
+    assert duan.author == "段永平"
+    assert duan.kind == "markdown"
+    assert duan.enabled is True
     disabled = {source.id: source.kind for source in sources if not source.enabled}
     assert disabled == {
         "linwenfeng-mp": "wechat_mp",

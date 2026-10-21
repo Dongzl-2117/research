@@ -29,6 +29,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
+from researchlib.author_voice import VOICE_NOTE, raw_meta_of, restrict
 from researchlib.config import Settings
 from researchlib.excerpt import VIEWS_LIMIT, original_chunks, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -258,25 +259,37 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
-    body = row["body_text"] or ""
-    if len(body) > BODY_LIMIT:
-        aliases = _company_aliases(conn, list(names.values()))
-        body, reduced = views_input(body, original_chunks(conn, row["id"]), aliases, BODY_LIMIT)
-        if reduced:
-            header += "\n（长文：下面是提到这几家公司的段落，加上开头和结尾，中间略去的部分用省略号标出）"
-    text, model = chat(
-        settings,
-        [
-            {"role": "system", "content": PROMPT},
-            {"role": "user", "content": header + "\n\n正文：\n" + body},
-        ],
-        temperature=0.1,
-    )
-    found = parse_views(text, names)
+    chunks = original_chunks(conn, row["id"])
+    body, voice_chunks, restricted = restrict(row["body_text"] or "", chunks, raw_meta_of(conn, row))
+    if restricted:
+        header += VOICE_NOTE
+        chunks = voice_chunks
+    model = ""
+    voice_body = body
+    if restricted and not body.strip():
+        # 这篇没有他本人的话。记成没下判断，避免反复去问模型。
+        found = {company_id: None for company_id in names.values()}
+    else:
+        if len(body) > BODY_LIMIT:
+            aliases = _company_aliases(conn, list(names.values()))
+            body, reduced = views_input(body, chunks, aliases, BODY_LIMIT)
+            if reduced:
+                header += "\n（长文：下面是提到这几家公司的段落，加上开头和结尾，中间略去的部分用省略号标出）"
+        text, model = chat(
+            settings,
+            [
+                {"role": "system", "content": PROMPT},
+                {"role": "user", "content": header + "\n\n正文：\n" + body},
+            ],
+            temperature=0.1,
+        )
+        found = parse_views(text, names)
     written = 0
     for company_id, view in found.items():
         view = view or {}
-        quote, chunk = locate_quote(conn, row["id"], row["body_text"] or "", view.get("quote") or "")
+        # 收窄到作者本人时，原句必须落在他写的字里。提问里的句子对不上，就丢掉。
+        haystack = voice_body if restricted else (row["body_text"] or "")
+        quote, chunk = locate_quote(conn, row["id"], haystack, view.get("quote") or "")
         conn.execute(
             """
             INSERT INTO company_views (

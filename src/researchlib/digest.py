@@ -25,6 +25,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
+from researchlib.author_voice import VOICE_NOTE, raw_meta_of, restrict
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -105,22 +106,31 @@ def pending_articles(conn, source_ids: list[str], limit: int):
 def digest_article(conn, settings: Settings, row, author: str) -> dict:
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"标题：{row['title']}\n作者：{author}\n日期：{when}"
-    body = row["body_text"] or ""
+    chunks = original_chunks(conn, row["id"])
+    body, voice_chunks, restricted = restrict(row["body_text"] or "", chunks, raw_meta_of(conn, row))
+    if restricted:
+        header += VOICE_NOTE
+        chunks = voice_chunks
     reduced = False
-    if len(body) > BODY_LIMIT:
-        body, reduced = digest_input(body, original_chunks(conn, row["id"]), BODY_LIMIT)
-    if reduced:
-        header += "\n（长文：下面是开头、结尾和各节开头，中间略去的部分用省略号标出）"
-    text, model = chat(
-        settings,
-        [
-            {"role": "system", "content": PROMPT},
-            {"role": "user", "content": header + "\n\n正文：\n" + body},
-        ],
-        max_tokens=800,
-        temperature=0.1,
-    )
-    data = parse_digest(text)
+    if restricted and not body.strip():
+        # 没有他本人的话，不要让模型把读者的提问写成他的导读。
+        data = {"summary": "（没有段永平本人的话）", "points": [], "tags": []}
+        model = ""
+    else:
+        if len(body) > BODY_LIMIT:
+            body, reduced = digest_input(body, chunks, BODY_LIMIT)
+        if reduced:
+            header += "\n（长文：下面是开头、结尾和各节开头，中间略去的部分用省略号标出）"
+        text, model = chat(
+            settings,
+            [
+                {"role": "system", "content": PROMPT},
+                {"role": "user", "content": header + "\n\n正文：\n" + body},
+            ],
+            max_tokens=800,
+            temperature=0.1,
+        )
+        data = parse_digest(text)
     conn.execute(
         """
         INSERT INTO article_digests (

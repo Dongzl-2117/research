@@ -61,3 +61,11 @@ sources:
     enabled: false
     timeline: true
     description: Ben Thompson / Stratechery 全文归档。Passport 全文、Daily≥5500 字门槛；抓完再启用并入库，游客半截不入库。入库后由站内 Grok OAuth 自动译制。
+
+  - id: duanyongping-blog
+    name: 段永平
+    author: 段永平
+    kind: markdown
+    enabled: true
+    timeline: true
+    description: 段永平博客文章合集（2006–2018）离线 PDF。只收谈到具体公司的篇目；有日期的进按天，没日期的只进作者、公司和检索。观点只算他本人写的话。
