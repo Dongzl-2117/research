@@ -13,8 +13,9 @@
 | linwenfeng-mp | wechat_mp | `research-ingest-wechat` |
 | linwenfeng-feishu | feishu | `research-ingest-feishu` |
 | duanyongping-blog | markdown | `research-ingest-duanyongping` |
+| heiheiwuchang | markdown | `research-ingest-markdown` |
 
-`linwenfeng-feishu` 保持启用，用 `research-ingest-feishu` 导入，但 `timeline: false`，不进首页按天和日汇总。作者、公司、检索、问库仍能找到它。`linwenfeng-mp` 停用，公众号不入库。雪球先不加来源、不导入。
+`linwenfeng-feishu` 保持启用，用 `research-ingest-feishu` 导入，但 `timeline: false`，不进首页按天和日汇总。作者、公司、检索、问库仍能找到它。`linwenfeng-mp` 停用，公众号不入库。雪球「黑黑无常」（`heiheiwuchang`）启用，`timeline: true`，进首页按天。只导入已经抓下来的原创帖和长文，不新抓；转发和评论回复不收。见下面的雪球专节。
 
 `duanyongping-blog`（显示名「段永平」）是离线 PDF，不走定时抓取。有日期的进首页按天；单篇没有日期时 frontmatter 写 `off_timeline: true`，首页按天不收，作者页、公司页和检索仍收。问答整条入库。没有具体公司、只讲方法、列举/致谢/闲聊里点到公司名的，不入库。博友「回复段永平」不当他本人的帖。段永平那一节只剩「回本文开头」这类论坛导航、或洗掉之后没有正文的，整篇不入库；库里已经有的，启动时标 `suppressed=empty_answer`，不进按天、作者列表、公司页和检索，文章地址还开得开，页上写「无有效回答」。观点和摘要只读「段永平」那一节或「段：」段落，读者提问和博友回复不进模型。`file:///H.HTM` 一类页码垃圾在导入时洗掉。
 
@@ -98,7 +99,13 @@ docker compose exec app research-ingest-zsxq \
 docker compose exec app research-ingest-zsxq \
   --source chengfengpolang \
   --input /data/inbox/chengfengpolang
+
+docker compose exec app research-ingest-markdown \
+  --source heiheiwuchang \
+  --input /data/inbox/heiheiwuchang
 ```
+
+黑黑无常要先把抓取目录转成带 frontmatter 的 Markdown，再跑上面最后一条。步骤在下面的雪球专节。
 
 也可以在宿主机上装好依赖，把 `DATABASE_URL` 指到 `127.0.0.1:5432` 后直接跑同样的命令。
 
@@ -170,6 +177,33 @@ docker compose exec app research-retime \
 乘风破浪如果也是零点，把 `--source` 和 `--input` 换成 `chengfengpolang` 再跑一次。
 
 作者常在评论里回答读者，补充的判断不比正文少。JSON 里的评论只取作者本人的（问答话题里就是回答的人），连同他回复的那条读者评论，接在正文后面的「评论里的回复」一节：「读者问：……」「作者答：……」，没有回复对象的写「作者补充：……」。读者的名字、别的读者之间的评论都不要；作者的回复正文里已经有了的不重复。楼中楼也展开。这一节和正文一样进检索、问库和观点。
+
+## 雪球「黑黑无常」
+
+来源 id 是 `heiheiwuchang`，显示名和作者都是「黑黑无常」，`kind: markdown`，`enabled: true`，`timeline: true`。走现成的 `research-ingest-markdown`，不另写解析器。
+
+这次抓取在 WAF 之后停了。磁盘上已经有的原创帖和长文（78 对 `{雪球帖子 id}.json` + 同名 `.md`）可以导入。不要再抓。转发和评论回复不在这批文件里，转换器也不访问雪球、不根据正文再筛一遍。
+
+抓取目录是平的。转换只看这一层，不进子目录。`_summary.json`、`_STOP.json`、`_STOP.png`、`_run_meta.json`，以及任何以 `_` 开头的文件，都不是帖子，转换时跳过。正文用 JSON 的 `body_text` 全文，不截断；没有 `body_text` 时才用同名 `.md` 里标题下面的段落。这一次全部转成功后，输出目录里多余的 `.md` 会删掉，目录里只留这次的帖子。
+
+在 Mac mini 上，把抓取目录放到 `./data/inbox/xueqiu-heiheiwuchang/`（容器里是 `/data/inbox/xueqiu-heiheiwuchang`）。`./data` 被挂到容器的 `/data`。先构建带新命令的镜像，再转换、再导入：
+
+```bash
+git pull
+docker compose up -d --build
+
+docker compose exec app research-xueqiu-markdown \
+  --input /data/inbox/xueqiu-heiheiwuchang \
+  --output /data/inbox/heiheiwuchang
+
+docker compose exec app research-ingest-markdown \
+  --source heiheiwuchang \
+  --input /data/inbox/heiheiwuchang
+```
+
+`research-xueqiu-markdown` 把每篇写成 `/data/inbox/heiheiwuchang/{雪球帖子 id}.md`。frontmatter 里有 `id`（雪球帖子 id）、`title`、`url`、`date` 和 `published`（同一个 `published_at`，例如 `2026-04-02 19:15`）、`author: 黑黑无常`。导入器用 frontmatter 的 `id` 当外部 id，所以幂等键是 `(heiheiwuchang, 雪球帖子 id)`。再跑这两条命令不会复制；正文、标题或时间变了才更新。输出目录要和抓取目录分开，避免盖掉原始 md。不要把 `research-ingest-markdown` 直接指到抓取目录：那里的 md 没有 frontmatter，外部 id 会变成文件名（`355280496.md` 而不是 `355280496`），对不上以后的再导入。
+
+这条导入不另外跑摘要、观点或 OCR。和别的 Markdown 来源一样，写入时会记公司提及和段落块，不会调用 `research-digest`、`research-views` 或 `research-ocr`。帖子进了按天之后，原有行为仍在：打开首页时，当前这一屏缺摘要的卡片会排队；夜间任务的摘要和观点本来就覆盖所有已启用来源，这批帖会进既有的篇数上限，不另开、不提高。这些帖没有图片，OCR 没有可识别的图（`NIGHTLY_OCR` 默认关）。
 
 ## 飞书和通用 Markdown
 
