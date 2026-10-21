@@ -3,7 +3,9 @@
 星球导出经常没有标题，或者把第一句截成「……」。卡片、文章页和重新导入时用这里的规则：
 
 - 完整的第一句（问句也算）优先，去掉句号，一般不超过 40 字。
-- 正文只是半截标题时，用摘要的第一句压成标题。
+- 正文只是半截标题时，用摘要里的判断句压成标题。
+- 复述摘要不能当标题。句子里出现「正文几乎」「文中未给」「作者开篇判断」，或「没有段永平本人的话」，就丢掉。
+- 去掉省略号后还剩一句原标题，用这句，不用上面的复述。
 - 图片里的字只在占位标题（「图片」「见图」）或和帖子沾边时才用，避免把另一张新闻截图当成标题。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
@@ -48,6 +50,10 @@ _EDGE_CUT = re.compile(
     r"^(?:\s*(?:…+|⋯+|\.{3,}|．{3,}|。{2,}))+|(?:(?:…+|⋯+|\.{3,}|．{3,}|。{2,})\s*)+$"
 )
 _MISSING_NOTE = re.compile(r"正文(?:为空|没有内容|没有实质|缺失)|标题仅为|只是一张图|没有可摘的正文")
+# 摘要在复述「这篇写了什么、没写什么」，不是帖子自己的那句话。
+_NARRATION = re.compile(
+    r"正文几乎|文中未给|作者开篇判断|没有(?:段永平|作者|他|星主)?本人的话|没有段永平的话"
+)
 _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”‘’\"'`＂＇。！？!?…·]+")
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
 
@@ -57,9 +63,9 @@ def repairs_source(source_id: str) -> bool:
 
 
 def title_needs_repair(title: str) -> bool:
-    """空标题、占位（含「图片」这种带引号的）、纯话题号，或带省略号。"""
+    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号，或带省略号。"""
     text = (title or "").strip()
-    if not text or _placeholder(text) or _EDGE_CUT.search(text):
+    if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
         return True
     if re.fullmatch(r"\d{5,}", text):
         return True
@@ -119,18 +125,27 @@ def stored_zsxq_title(title: str, body: str) -> str | None:
 
 
 def _candidates(text: str) -> list[str]:
-    """从一段文字里按顺序抽出能当标题的完整句。带省略号的半截和「正文为空」这类说明丢掉。"""
+    """从一段文字里按顺序抽出能当标题的完整句。
+
+    带省略号的半截、「正文为空」和复述摘要（正文几乎、文中未给、作者开篇判断、没有本人的话）丢掉。
+    """
     found: list[str] = []
     for raw in _iter_raw(text):
-        if _spammy(raw) or _contains_cut(raw) or _missing_note(raw):
+        if _spammy(raw) or _contains_cut(raw) or _missing_note(raw) or _narration(raw):
             continue
         prepared = _prepare(raw)
         if _dangling(prepared):
             prepared = _clip_dangling(prepared)
-        if not prepared or _contains_cut(prepared) or _missing_note(prepared) or not _ok(prepared):
+        if (
+            not prepared
+            or _contains_cut(prepared)
+            or _missing_note(prepared)
+            or _narration(prepared)
+            or not _ok(prepared)
+        ):
             continue
         fitted = _fit(prepared)
-        if not fitted or _contains_cut(fitted) or _placeholder(fitted):
+        if not fitted or _contains_cut(fitted) or _placeholder(fitted) or _narration(fitted):
             continue
         found.append(fitted)
     return found
@@ -174,7 +189,8 @@ def _prepare(sentence: str) -> str:
 def _topic_anchors(title: str) -> set[str]:
     """半截标题里的三字片段。占位标题没有主题，图片里的字可以单独当标题。"""
     stem = re.sub(r"[\s+＋]+", "", _strip_ellipsis(title or ""))
-    if not stem or _placeholder(stem):
+    # 占位和复述套话没有帖子主题，图片里的字可以单独当标题。
+    if not stem or _placeholder(stem) or _narration(stem):
         return set()
     chars = "".join(_CJK.findall(stem))
     if len(chars) < 4:
@@ -209,7 +225,11 @@ def _salvage_stored(title: str) -> str:
 
 
 def _short_snippet(text: str) -> str:
+    if _narration(text):
+        return ""
     raw = argumentative_excerpt(_plain(text), limit=80)
+    if _narration(raw):
+        return ""
     piece = _prepare(raw)
     piece = _clip_dangling(piece) if _dangling(piece) else piece
     if (
@@ -219,6 +239,7 @@ def _short_snippet(text: str) -> str:
         or _FILLER.match(piece)
         or _contains_cut(raw)
         or _contains_cut(piece)
+        or _narration(piece)
     ):
         return ""
     if len(_CJK.findall(piece)) < 2 and len(_MEANINGFUL.findall(piece)) < 4:
@@ -250,7 +271,7 @@ def _fit(text: str) -> str:
 
 
 def _ok(text: str) -> bool:
-    if not text or _placeholder(text) or _spammy(text) or _FILLER.match(text):
+    if not text or _placeholder(text) or _narration(text) or _spammy(text) or _FILLER.match(text):
         return False
     if _contains_cut(text):
         return False
@@ -280,6 +301,11 @@ def _placeholder(text: str) -> bool:
 
 def _missing_note(text: str) -> bool:
     return _MISSING_NOTE.search(text or "") is not None
+
+
+def _narration(text: str) -> bool:
+    """复述摘要：在说这篇没有什么，不是帖子里的那句判断。"""
+    return _NARRATION.search(text or "") is not None
 
 
 def _contains_cut(text: str) -> bool:
