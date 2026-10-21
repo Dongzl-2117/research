@@ -207,18 +207,48 @@ def _shots_14879() -> list[str]:
 
 
 def test_live_14879_strips_dylan_and_splits_turns():
-    """Dylan 是网友昵称。@方伟写在句子里，不能因此编出「方伟：」。"""
+    """Dylan 是网友昵称。句子里的 @方伟 不另起「方伟：」，显示名「方伟-最近在杭州：」才是。"""
     shots = _shots_14879()
     assert len(shots) == 7
     text = present_ocr_pieces(shots)
     assert text.startswith("网友：")
     assert "网友：Dylan" not in text
     assert "Dylan" not in text
-    assert "方伟：" not in text
     assert text.count("网友：") >= 3
+    assert text.count("方伟：") == 1
+    assert "方伟：会有一批大模型达到" in text
+    assert "方伟-最近在杭州" not in text
     for leaked in ("10:57", "10:43", "10:49", "看十年", "撤回了一条消息"):
         assert leaked not in text, leaked
     assert "@方伟-最近在" in text
+    blocks = text.split("\n\n")
+    question = next(block for block in blocks if "@方伟-最近在" in block)
+    assert "Opus5.5" not in question
+    assert any(block.startswith("网友：Opus5.5确实断档领先") for block in blocks)
+    host = next(block for block in blocks if block.startswith("方伟："))
+    assert host.startswith("方伟：会有一批大模型达到")
+
+
+def test_host_status_suffix_on_shot_23820_is_a_fangwei_turn():
+    """23820 的显示名带着「-最近在杭州」，标签只写「方伟：」，后缀不留在正文。"""
+    raw = (
+        "10:50\n"
+        "Dylan\n"
+        "这个我认可。\n"
+        "方伟-最近在杭州：会有一批大模型达到\n"
+        "Opus5.5当前的智能，且只有十分之一的...\n"
+        "希望有但不可知\n"
+        "差异化一般而言应该是应用层的事情\n"
+    )
+    text = present_ocr_pieces([raw])
+    assert "方伟-最近在杭州" not in text
+    assert (
+        "方伟：会有一批大模型达到\n"
+        "Opus5.5当前的智能，且只有十分之一的...\n"
+        "希望有但不可知\n"
+        "差异化一般而言应该是应用层的事情。"
+    ) in text
+    assert present_ocr_pieces(["方伟说得对，同店还有压力，先观望一下\n微信\n"]).startswith("网友：")
 
 
 def test_image_post_title_uses_the_sentence_not_the_speaker_label():
