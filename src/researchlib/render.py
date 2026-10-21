@@ -248,26 +248,34 @@ def _dialogue_html(text: str) -> str:
     return "".join(parts)
 
 
-def _shot_figure(anchor: str, src: str, alt: str, inner: str) -> str:
-    safe_src = html_lib.escape(src, quote=True)
-    safe_alt = html_lib.escape(alt, quote=True)
-    safe_id = html_lib.escape(anchor, quote=True)
-    reading = f'<div class="ocr-reading ocr-dialogue">{inner}</div>' if inner else ""
+def _original_links(items: list[dict]) -> str:
+    """连续截图的原图收成一行文字链接，点开就是图片地址。"""
+    links: list[str] = []
+    for number, info in enumerate(items, start=1):
+        safe_src = html_lib.escape(info["src"], quote=True)
+        safe_id = html_lib.escape(info["anchor"], quote=True)
+        links.append(
+            f'<a class="ocr-link" id="{safe_id}" href="{safe_src}" target="_blank" rel="noopener">原图 {number}</a>'
+        )
+    return f'<p class="ocr-links">{"".join(links)}</p>'
+
+
+def _chat_bundle(items: list[dict], dialogue: str) -> str:
+    inner = _dialogue_html(dialogue)
     return (
-        f'<figure class="ocr-shot" id="{safe_id}">'
-        f"{reading}"
-        f'<details class="ocr-original"><summary>点击看原图</summary>'
-        f'<img src="{safe_src}" alt="{safe_alt}">'
-        f"</details></figure>"
+        '<figure class="ocr-shot">'
+        f'<div class="ocr-reading ocr-dialogue">{inner}</div>'
+        f"{_original_links(items)}"
+        "</figure>"
     )
 
 
 def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
-    """有可读识别结果的本地图：先显示文字，原图收在「点击看原图」里。
+    """有可读识别结果的本地图：群聊先显示整理后的对话，原图是一行「原图 1」链接。
 
-    微信群聊整理成「方伟：」「网友：」，连续几张截图合成一段，重复的句子只出现一次。
-    表格和长文仍按原文换行。texts 是 content_hash → image_texts.text。
-    空的、太短的图保持原样。锚点 id 在文字块上，检索里的「看这张图」仍跳到这里。
+    连续几张微信截图合成一段，重复的句子只出现一次，不再每张图留一个空架子。
+    表格和长文仍按原文换行，原图收在「点击看原图」里。没认出字的图保持原来的图片。
+    texts 是 content_hash → image_texts.text。锚点 id 在原图链接上，检索里的「看这张图」仍跳到这里。
     """
     if not html or not texts:
         return html or ""
@@ -312,12 +320,9 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
                 info = parsed[cursor]
                 outputs[cursor] = _ocr_figure(info["anchor"], info["src"], info["alt"], info["raw"])
         else:
-            inner = _dialogue_html(dialogue)
-            for offset, cursor in enumerate(group):
-                info = parsed[cursor]
-                outputs[cursor] = _shot_figure(
-                    info["anchor"], info["src"], info["alt"], inner if offset == 0 else ""
-                )
+            outputs[group[0]] = _chat_bundle([parsed[cursor] for cursor in group], dialogue)
+            for cursor in group[1:]:
+                outputs[cursor] = ""
         index = nxt
     result = html
     for (start, end, _tag), output in zip(reversed(spans), reversed(outputs), strict=True):

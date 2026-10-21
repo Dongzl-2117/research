@@ -1522,8 +1522,12 @@ html[data-recent-views="collapsed"] #recent-views-list { display: none; }
 
 /* 文章页：引用的那一段、图片文字跳到的那一块 */
 .is-quoted { border-radius: 4px; background: var(--amber-soft); box-shadow: -10px 0 0 var(--amber-soft), 10px 0 0 var(--amber-soft); scroll-margin-top: 96px; }
-.prose img[id^="img-"], .prose .ocr-shot { scroll-margin-top: 96px; }
-.prose img[id^="img-"]:target, .prose .ocr-shot:target { outline: 3px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
+.prose img[id^="img-"], .prose .ocr-shot, .prose a.ocr-link { scroll-margin-top: 96px; }
+.prose img[id^="img-"]:target, .prose .ocr-shot:target, .prose a.ocr-link:target {
+  outline: 3px solid var(--amber);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
 .prose .ocr-reading {
   margin: 0;
   padding: 12px 14px;
@@ -1557,6 +1561,18 @@ html[data-recent-views="collapsed"] #recent-views-list { display: none; }
 }
 .prose .ocr-reading.ocr-dialogue p { margin: 0; line-height: 1.75; }
 .prose .ocr-reading.ocr-dialogue .who { font-weight: 600; }
+.prose .ocr-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 0;
+}
+.prose .ocr-links a {
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.prose .ocr-links a:hover { color: var(--accent); }
 .prose .ocr-original { margin-top: 8px; }
 .prose .ocr-original summary {
   cursor: pointer;

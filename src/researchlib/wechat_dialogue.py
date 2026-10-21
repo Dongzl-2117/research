@@ -6,8 +6,8 @@
 - 这一行能对上星主（方伟 / 方伟Rey / Rey，含「方伟（星主）」）→「方伟：」
 - 其他人（姜禄彦、徐哲航，以及只写了名字的）→「网友：」，正文里不再留这个名字
 - 看不出是谁 →「网友：」，不因为语境猜成方伟
-- 连续同一个说话人合成一块
-- 跨图重复的句子只留一次
+- 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
+- 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
@@ -26,7 +26,7 @@ GUEST = "网友"
 _CJK = re.compile(r"[一-鿿]")
 _MEANING = re.compile(r"[0-9A-Za-z一-鿿]")
 _STOP_CHAR = frozenset(
-    "的了着过和与或而且是不在把被让给到就也还很最这那你我他她它中但吧吗啊呢呀哦嗯又从对为以会能要说看想做"
+    "的了着过和与或而且是不在把被让给到就也还很最这那你我他她它中但吧吗啊呢呀哦嗯又从对为以会能要说看想做化性"
 )
 # 单独成行、或冒号前面的这些字是话，不是昵称。
 _NOT_NAMES = frozenset(
@@ -124,12 +124,20 @@ _HOST_LINE = re.compile(
 _HOST_PREFIX = re.compile(r"^(方\s*伟(?:\s*Rey)?|Rey)\s+(.+)$", re.I)
 _STRUCTURED = re.compile(r"^(方伟|网友)\s*[:：]\s*(.*)$")
 _INLINE = re.compile(r"^(.{1,16}?)[:：]\s*(.+)$")
-_GROUP_TITLE = re.compile(r"^.{1,30}[（(]\d{2,4}[）)]$")
+# 群名不一定带「群」字，例如「1633 看十年·线下深度交流(80)」。
+_GROUP_TITLE = re.compile(
+    r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
+    r"|^(?:\d{2,6}\s+).{2,40}[（(]\d{1,4}[）)]$"
+)
+_LATIN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,19}$")
+_LATIN_STOP = frozenset(
+    {"gpt", "opus", "claude", "codex", "grok", "the", "and", "for", "you", "are", "not", "but"}
+)
 _GROUP_BARE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,16}群$")
 _TIME = re.compile(
-    r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}:\d{2}(?::\d{2})?$"
+    r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}:\d{2}(?::\d{2})?[≥>≤<]*$"
     r"|^(?:昨天|今天|前天|星期[一二三四五六日天])$"
-    r"|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?$"
+    r"|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?[≥>≤<]*$"
 )
 _STATUS = re.compile(
     r"^(?:微信|WeChat|返回|发送|按住\s*说话|以下是新消息|消息免打扰)$"
@@ -138,11 +146,21 @@ _STATUS = re.compile(
     r"|^(?:LTE|Wi-?Fi|VPN|HD|NFC)$",
     re.I,
 )
-_CHROME_WORD = re.compile(r"^(?:设为群待办|设为待办|群待办|小程序|进入小程序|查看详情|来自小程序)$")
-_PRICE = re.compile(r"^(?:券后价?\s*)?[¥￥$]\s*\d+(?:\.\d{1,2})?(?:\s*起)?$|^\d+\.\d{1,2}\s*元(?:起)?$")
+_CHROME_WORD = re.compile(r"^(?:设为群待办|设为待办|群待办|小+程序|进入小程序|查看详情|来自小程序)$")
+# ￥17.? 、￥19.?￥22泰式风味红茶：价格可以粘在商品名上，问号是小数点认丢了。
+_PRICE = re.compile(
+    r"^(?:券后价?\s*)?(?:[¥￥$]\s*\d+(?:\.\d*)?[\?？]*\s*)+(?:[\u4e00-\u9fffA-Za-z]{0,16})?$"
+    r"|^\d+\.\d{1,2}\s*元(?:起)?$"
+)
+_STORE = re.compile(r"^.{1,24}?\s*[（(][^（）()]{1,16}店[）)]$")
+_COMMERCE = re.compile(r"美团外卖|外卖美食|交易保障")
+_APP_FRAGMENT = re.compile(r"^QuestMobile", re.I)
+_AT_SUFFIX = re.compile(r"@[A-Za-z0-9_\-.]+$")
 _SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加")
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
-_WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小程序|按住\s*说话|以下是新消息")
+_WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
+# 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
+_BREAK = "\x1e"
 _TRAIL_TIME = re.compile(
     r"\s*(?:上午|下午|晚上|凌晨|昨天|今天|前天)?\s*\d{1,2}:\d{2}(?::\d{2})?\s*$"
 )
@@ -230,9 +248,12 @@ def parse_shot(text: str) -> Shot:
     if not lines or not (signal or names or labeled or hosted):
         return Shot("prose", [], original)
     turns = _walk(lines, names)
-    if not turns:
-        return Shot("prose", [], original)
-    return Shot("dialogue", turns, "")
+    if turns:
+        return Shot("dialogue", turns, "")
+    # 整张都是界面字时不要把原文退回去，否则价格和小程序会漏进正文。
+    if signal or names or hosted or labeled:
+        return Shot("dialogue", [], "")
+    return Shot("prose", [], original)
 
 
 def _same_sentence(left: str, right: str) -> bool:
@@ -247,16 +268,22 @@ def _same_sentence(left: str, right: str) -> bool:
 
 
 def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
-    """去重、合并连续同一说话人，写成「方伟：」「网友：」块。seen 跨图累计，就地更新。"""
+    """去重后写成「方伟：」「网友：」。
+
+    方伟连续说的并成一块。网友每次开口各自一块，避免把好几个人粘成一段后，
+    后一句不再以「网友：」开头。后一张图若只是重叠了上一句，剩下的新行接回上一块。
+    seen 跨图累计，就地更新。
+    """
     kept_norms = seen if seen is not None else []
-    items: list[tuple[str, str]] = []
-    for turn in turns:
-        for line in turn.lines:
+    rows: list[tuple[str, str, str, int, int]] = []
+    for turn_id, turn in enumerate(turns):
+        for pos, line in enumerate(turn.lines):
             cleaned = line.strip()
             if cleaned:
-                items.append((turn.speaker, cleaned))
-    norms = [_norm(line) for _speaker, line in items]
-    keep = [len(norm) >= 2 for norm in norms]
+                rows.append((turn.speaker, cleaned, _norm(cleaned), turn_id, pos))
+    norms = [row[2] for row in rows]
+    # 折行会留下单独一个「的」。空行和纯标点仍然丢掉。
+    keep = [len(norm) >= 1 for norm in norms]
     for index, norm in enumerate(norms):
         if not keep[index]:
             continue
@@ -269,22 +296,36 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
                 break
             if len(old) >= 8 and old in norm and len(norm) > len(old):
                 keep[earlier] = False
-    chosen: list[tuple[str, str]] = []
-    for index, (speaker, line) in enumerate(items):
+    chosen: list[tuple[str, str, str, int, int]] = []
+    first_pos: dict[int, int] = {}
+    kept_pos: dict[int, int] = {}
+    for _speaker, _line, _norm_line, turn_id, pos in rows:
+        first_pos.setdefault(turn_id, pos)
+    for index, row in enumerate(rows):
         if not keep[index]:
             continue
-        norm = norms[index]
+        speaker, line, norm, turn_id, pos = row
         if any(_same_sentence(norm, old) for old in kept_norms):
             continue
         kept_norms.append(norm)
-        chosen.append((speaker, line))
-    blocks: list[tuple[str, list[str]]] = []
-    for speaker, line in chosen:
-        if blocks and blocks[-1][0] == speaker:
+        kept_pos.setdefault(turn_id, pos)
+        chosen.append(row)
+    blocks: list[list] = []
+    for speaker, line, _norm_line, turn_id, _pos in chosen:
+        continued = kept_pos.get(turn_id, 0) > first_pos.get(turn_id, 0)
+        if blocks and blocks[-1][2] == turn_id:
             blocks[-1][1].append(line)
-        else:
-            blocks.append((speaker, [line]))
-    return "\n\n".join(f"{speaker}：{_close_block(lines)}" for speaker, lines in blocks)
+            continue
+        if blocks and speaker == HOST and blocks[-1][0] == HOST:
+            blocks[-1][1].append(line)
+            blocks[-1][2] = turn_id
+            continue
+        if blocks and continued and speaker == blocks[-1][0]:
+            blocks[-1][1].append(line)
+            blocks[-1][2] = turn_id
+            continue
+        blocks.append([speaker, [line], turn_id])
+    return "\n\n".join(f"{speaker}：{_close_block(lines)}" for speaker, lines, _turn in blocks)
 
 
 def _close_block(lines: list[str]) -> str:
@@ -356,13 +397,71 @@ def _is_price(line: str) -> bool:
     return _PRICE.fullmatch(_fold(line or "")) is not None
 
 
+def _is_time(line: str) -> bool:
+    return _TIME.fullmatch(_fold(line or "")) is not None
+
+
+def _is_store(line: str) -> bool:
+    return _STORE.fullmatch(line or "") is not None
+
+
+def _is_commerce(line: str) -> bool:
+    return _COMMERCE.search(line or "") is not None
+
+
+def _is_app_fragment(line: str) -> bool:
+    return _APP_FRAGMENT.match(line or "") is not None
+
+
+def _is_card_anchor(line: str) -> bool:
+    folded = _fold(line or "")
+    return bool(
+        _is_price(line)
+        or _CHROME_WORD.fullmatch(folded)
+        or _is_store(line)
+        or _is_commerce(line)
+    )
+
+
+def _latin_name(line: str) -> bool:
+    text = (line or "").strip()
+    if not _LATIN_NAME.fullmatch(text):
+        return False
+    if text.lower() in _LATIN_STOP or _is_host_line(_compact_host(text)):
+        return False
+    return True
+
+
+def _name_shape(line: str) -> bool:
+    return _cjk_name(line, 2) or _cjk_name(line, 3) or _latin_name(line)
+
+
+def _is_sku(line: str) -> bool:
+    """夹在小程序、价格、店铺之间的商品名，例如「黑糖珍珠牛乳」「热」。"""
+    if not line or _is_noise(line) or _is_time(line) or _is_card_anchor(line):
+        return False
+    if _is_host_line(_compact_host(line)) or _name_shape(line) or _utterance(line):
+        return False
+    if re.search(r"[。！？!?，,、；;：:呢吗]", line):
+        return False
+    return len(line) <= 12
+
+
 def _is_noise(line: str) -> bool:
-    line = _fold(line)
-    if not line or _SYMBOL.fullmatch(line):
+    folded = _fold(line)
+    if not folded or _SYMBOL.fullmatch(folded):
         return True
-    if _TIME.fullmatch(line) or _STATUS.fullmatch(line) or _CHROME_WORD.fullmatch(line):
+    # 截图边缘的单个假名。折行剩下的「的」是汉字，留着。
+    if len(folded) == 1 and not _CJK.search(folded) and not folded.isalnum():
         return True
-    if _GROUP_TITLE.fullmatch(line) or _is_price(line) or _SYSTEM.search(line):
+    if _is_time(line) or _STATUS.fullmatch(folded) or _CHROME_WORD.fullmatch(folded):
+        return True
+    if _GROUP_TITLE.fullmatch(folded) or _is_price(line) or _SYSTEM.search(folded):
+        return True
+    if _is_store(line) or _is_commerce(line) or _is_app_fragment(line):
+        return True
+    # 截图角落的假名。汉字单字（折出来的「的」）不是这种。
+    if re.fullmatch(r"[\u3040-\u30ff]+", folded):
         return True
     return False
 
@@ -377,32 +476,34 @@ def _maybe_peel(line: str) -> str:
     return line
 
 
-def _card_title(line: str) -> bool:
-    if _is_host_line(_compact_host(line)) or _cjk_name(line, 2) or _cjk_name(line, 3):
-        return False
-    if re.search(r"[。！？!?，,、；;：:]", line):
-        return False
-    return 1 <= len(line) <= 12
+def _peel_handle(line: str) -> str:
+    """徐哲航@think 这种昵称，@ 后面是备注，说话人只认前面的名字。"""
+    peeled = _AT_SUFFIX.sub("", line or "").strip()
+    if not peeled or peeled == line:
+        return line
+    if _is_host_line(_compact_host(peeled)) or _name_shape(peeled):
+        return peeled
+    return line
 
 
 def _prepare_lines(raw_lines: list[str]) -> list[str]:
-    peeled = [_maybe_peel(line) for line in raw_lines]
-    drop: set[int] = set()
-    for index, line in enumerate(peeled):
-        if _is_noise(line):
-            drop.add(index)
-    for index, line in enumerate(peeled):
-        if "小程序" not in line and not _is_price(line):
-            continue
-        drop.add(index)
-        for neighbor in (index - 1, index + 1):
-            if neighbor < 0 or neighbor >= len(peeled) or neighbor in drop:
+    peeled = [_peel_handle(_maybe_peel(line)) for line in raw_lines]
+    drop = {index for index, line in enumerate(peeled) if _is_card_anchor(line)}
+    changed = True
+    while changed:
+        changed = False
+        for index, line in enumerate(peeled):
+            if index in drop or not _is_sku(line):
                 continue
-            if _card_title(peeled[neighbor]):
-                drop.add(neighbor)
+            if any(neighbor in drop for neighbor in (index - 1, index + 1)):
+                drop.add(index)
+                changed = True
     kept: list[str] = []
     for index, line in enumerate(peeled):
-        if index in drop:
+        if _is_time(line):
+            kept.append(_BREAK)
+            continue
+        if index in drop or _is_noise(line):
             continue
         if len(kept) <= 1 and _GROUP_BARE.fullmatch(line):
             continue
@@ -413,12 +514,20 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
 def _speaker_names(lines: list[str], signal: bool) -> set[str]:
     names: set[str] = set()
     pairs: list[str] = []
-    for index, line in enumerate(lines):
-        nxt = lines[index + 1] if index + 1 < len(lines) else ""
-        if _cjk_name(line, 3) and _content(nxt):
-            names.add(line)
+    seen_times: dict[str, int] = {}
+    usable = [line for line in lines if line != _BREAK]
+    for index, line in enumerate(usable):
+        nxt = usable[index + 1] if index + 1 < len(usable) else ""
+        if _cjk_name(line, 3) or _latin_name(line):
+            seen_times[line] = seen_times.get(line, 0) + 1
+            if _content(nxt):
+                names.add(line)
         if signal and _cjk_name(line, 2) and not _utterance(line) and _content(nxt):
             pairs.append(line)
+    for line, count in seen_times.items():
+        # 同一个人开口不止一次时，短回复前的那一行也是名字，不能留在正文里。
+        if count >= 2:
+            names.add(line)
     if signal and len(pairs) >= 2:
         names.update(pairs)
     return names
@@ -430,13 +539,13 @@ def _guest_label(name: str) -> bool:
         return False
     if _is_host_line(_compact_host(name)):
         return False
-    if _cjk_name(name, 2) or _cjk_name(name, 3):
+    if _cjk_name(name, 2) or _cjk_name(name, 3) or _latin_name(name):
         return True
     chars = _CJK.findall(name)
     return 4 <= len(chars) <= 12 and len(chars) == len(name) and not any(char in _STOP_CHAR for char in chars)
 
 
-def _classify(line: str, nxt: str, names: set[str]) -> tuple[str, str]:
+def _classify(line: str, names: set[str]) -> tuple[str, str]:
     structured = _STRUCTURED.match(line)
     if structured:
         who = HOST if structured.group(1) == HOST else GUEST
@@ -454,7 +563,8 @@ def _classify(line: str, nxt: str, names: set[str]) -> tuple[str, str]:
             return HOST, rest
         if rest and _guest_label(name):
             return GUEST, rest
-    if line in names and nxt and _content(nxt):
+    # 名字集合里的行永远是说话人，哪怕下一句很短（「姜禄彦 / 数据确实是好的」）。
+    if line in names:
         return GUEST, ""
     return "", ""
 
@@ -471,9 +581,12 @@ def _walk(lines: list[str], names: set[str]) -> list[Turn]:
         turns.append(Turn(speaker or GUEST, buf))
         buf = []
 
-    for index, line in enumerate(lines):
-        nxt = lines[index + 1] if index + 1 < len(lines) else ""
-        who, rest = _classify(line, nxt, names)
+    for line in lines:
+        if line == _BREAK:
+            flush()
+            speaker = ""
+            continue
+        who, rest = _classify(line, names)
         if who:
             flush()
             speaker = who

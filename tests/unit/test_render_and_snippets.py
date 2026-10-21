@@ -59,16 +59,17 @@ def test_chat_screenshot_is_readable_text_and_the_image_is_collapsed():
     assert "瑞幸古茗是比较头部的" in page
     assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in page
     assert "古茗店效还行" in page
-    assert "点击看原图" in page
-    assert f'<figure class="ocr-shot" id="{image_anchor(digest)}">' in page
+    assert "原图 1" in page
+    assert f'<a class="ocr-link" id="{image_anchor(digest)}" href="/media/fangwei-zsxq/ab/{digest}.png"' in page
     assert f'<img id="{image_anchor(digest)}"' not in page
-    assert page.index("瑞幸和古茗都算头部") < page.index("<details")
+    assert "<details" not in page
+    assert page.index("瑞幸和古茗都算头部") < page.index("原图 1")
     assert 'class="ocr-reading ocr-dialogue"' in page
     assert "网友：" in page
     assert "张三" not in page and "李四" not in page
     assert "方伟：" not in page
     assert "<p>微信</p>" not in page and "20:41" not in page
-    assert f'<img src="/media/fangwei-zsxq/ab/{digest}.png"' in page
+    assert page.count('class="ocr-shot"') == 1
 
 
 def test_short_or_empty_ocr_keeps_the_image():

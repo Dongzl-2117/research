@@ -98,12 +98,13 @@ def test_reader_shows_chat_text_and_collapses_the_screenshot(conn, settings, tmp
     assert "瑞幸古茗是比较头部的" in page
     assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in page
     assert "古茗店效还行，瑞幸的折扣不能再深了" in page
-    assert "点击看原图" in page
-    assert f'<figure class="ocr-shot" id="{image_anchor(chat_hash)}">' in page
+    assert "原图 1" in page
+    assert f'<a class="ocr-link" id="{image_anchor(chat_hash)}"' in page
     assert f'<img id="{image_anchor(chat_hash)}"' not in page
-    assert page.index("瑞幸和古茗都算头部") < page.index("<details")
+    assert "<details" not in page
+    assert page.index("瑞幸和古茗都算头部") < page.index("原图 1")
     assert f'<img id="{image_anchor(logo_hash)}"' in page
-    assert page.count("点击看原图") == 1
+    assert page.count('class="ocr-shot"') == 1
 
 
 def test_short_screenshot_post_is_read_by_views_and_digest(conn, settings, tmp_path, monkeypatch):
@@ -289,7 +290,9 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     assert "方伟：" in page and "网友：" in page
     assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
     assert "姜禄彦" not in page and "设为群待办" not in page
-    assert page.count("点击看原图") == 2
+    assert "原图 1" in page and "原图 2" in page
+    assert page.count('class="ocr-shot"') == 1
+    assert "<details" not in page
 
     seen = []
 
