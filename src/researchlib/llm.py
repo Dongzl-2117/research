@@ -1,13 +1,14 @@
-"""调用 Grok（xAI 的 OpenAI 兼容 chat/completions）。
+"""调用 Grok（xAI 的 chat/completions）。
 
-凭证按顺序取：
-1. 与 AIHOT 共用的 xAI OAuth。Docker 默认
-   ``XAI_OAUTH_TOKEN_PATH=/aihot-data/secrets/xai-oauth.json``。
-   登录在 AIHOT 侧做；``research-xai-login status`` 只检查同一份文件。
-2. 可选的 ``XAI_API_KEY``。没有共用登录时，问库和摘要才退回控制台 key。
+鉴权只认与 AIHOT 共用的 xAI OAuth。Docker 默认
+``XAI_OAUTH_TOKEN_PATH=/aihot-data/secrets/xai-oauth.json``。
+登录在 AIHOT 侧做；``research-xai-login status`` 只检查同一份文件。
+没有这份登录时直接报错，不退回 ``XAI_API_KEY`` 或其他 API key。
 
-两者都是 ``Authorization: Bearer``。只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
+强度与译制共用 ``researchlib.grok``：grok-4.7、reasoning_effort=xhigh、
+输出预算不低于 128000、上下文按 grok-4.7 的 50 万 token，不发送 fast。
 
+只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
 429、5xx 和连不上这类临时错误退避重试两次；超时不重试（一次已经等了很久）。同一个进程里同时在跑的
 请求有上限（RESEARCH_LLM_CONCURRENCY，默认 3），问库分批、摘要、观点、论点共用。
 每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或登录失效时首页提示。
@@ -17,12 +18,14 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import threading
 import time
 import urllib.error
 import urllib.request
 
 from researchlib.config import Settings
+from researchlib.grok import completion_params
 from researchlib.health import record_llm
 from researchlib.translate.xai_oauth import (
     XaiLoginRequiredError,
@@ -41,7 +44,7 @@ _slots: dict[int, threading.BoundedSemaphore] = {}
 
 
 class LLMUnavailable(Exception):
-    """没有可用凭证。页面退化为只给检索结果。"""
+    """没有可用的 xAI OAuth。页面退化为只给检索结果。"""
 
 
 class LLMError(Exception):
@@ -49,33 +52,31 @@ class LLMError(Exception):
 
 
 def credential_kind(settings: Settings) -> str:
-    """"oauth"、"key" 或 ""。"""
+    """"oauth" 或 ""。不认 API key。"""
     if xai_oauth_status(settings.data_dir).logged_in:
         return "oauth"
-    if settings.llm_api_key:
-        return "key"
     return ""
 
 
 def llm_configured(settings: Settings) -> bool:
-    return credential_kind(settings) != ""
+    return credential_kind(settings) == "oauth"
 
 
-def _token(settings: Settings, kind: str, *, force: bool = False, discard: str | None = None) -> str:
-    if kind == "oauth":
-        try:
-            return get_xai_access_token(
-                settings.data_dir,
-                force=force,
-                discard_access_token=discard,
-            )
-        except XaiLoginRequiredError as exc:
-            if settings.llm_api_key:
-                return settings.llm_api_key
-            raise LLMUnavailable(str(exc)) from exc
-    if kind == "key":
-        return settings.llm_api_key
-    raise LLMUnavailable("没有 xAI 凭证。请在 AIHOT 侧登录共用 OAuth，或设置 XAI_API_KEY。")
+def _oauth_token(settings: Settings, *, force: bool = False, discard: str | None = None) -> str:
+    try:
+        return get_xai_access_token(
+            settings.data_dir,
+            force=force,
+            discard_access_token=discard,
+        )
+    except XaiLoginRequiredError as exc:
+        extra = " 环境变量 XAI_API_KEY 不会被使用。" if os.environ.get("XAI_API_KEY", "").strip() else ""
+        raise LLMUnavailable(f"{exc}{extra}") from exc
+
+
+def ensure_oauth(settings: Settings) -> None:
+    """命令行入口在开工前调用。没有共用 OAuth 就抛 LLMUnavailable，不退回 API key。"""
+    _oauth_token(settings)
 
 
 def _slot(settings: Settings) -> threading.BoundedSemaphore:
@@ -126,22 +127,14 @@ def chat(
     *,
     max_tokens: int | None = None,
     temperature: float = 0.2,
-    reasoning_effort: str | None = None,
 ) -> tuple[str, str]:
-    """返回 (回答文本, 实际模型名)。reasoning_effort 不传时用配置里的（默认 xhigh）。"""
-    kind = credential_kind(settings)
+    """返回 (回答文本, 实际模型名)。强度固定为 grok-4.7 / xhigh / 至少 128000，不发 fast。"""
     payload = {
-        "model": settings.llm_model,
+        **completion_params(temperature=temperature, max_tokens=max_tokens),
         "messages": messages,
-        # 推理和答案共用这笔预算，给小了推理会把答案挤掉。
-        "max_tokens": max(max_tokens or 0, settings.llm_max_tokens),
-        "temperature": temperature,
     }
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
-    if effort:
-        payload["reasoning_effort"] = effort
     try:
-        token = _token(settings, kind)
+        token = _oauth_token(settings)
     except LLMUnavailable as exc:
         raise _failed(settings, exc) from None
     body = None
@@ -154,11 +147,11 @@ def chat(
             break
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
-            if not refreshed and kind == "oauth" and is_stale_xai_access(exc.code, detail):
+            if not refreshed and is_stale_xai_access(exc.code, detail):
                 # 过期的 access token 被报成 401/403：强制刷新一次再试，不算在重试次数里。
                 refreshed = True
                 try:
-                    token = _token(settings, kind, force=True, discard=token)
+                    token = _oauth_token(settings, force=True, discard=token)
                 except LLMUnavailable as unavailable:
                     raise _failed(settings, unavailable) from None
                 continue
@@ -180,4 +173,4 @@ def chat(
     except (KeyError, IndexError, TypeError) as exc:
         raise _failed(settings, LLMError("Grok 接口返回里没有 choices[0].message.content")) from exc
     record_llm(settings.data_dir, ok=True)
-    return text.strip(), str(body.get("model") or settings.llm_model)
+    return text.strip(), str(body.get("model") or payload["model"])

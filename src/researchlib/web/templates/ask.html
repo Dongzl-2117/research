@@ -23,7 +23,7 @@
   <h1>问库</h1>
 </header>
 {% if not llm_ready %}
-<p class="banner">没有配置 Grok，只列出相关原文。</p>
+<p class="banner">没有可用的 Grok OAuth，只列出相关原文。</p>
 {% endif %}
 <form class="ask-form" action="/ask" method="post">
   <label class="sr" for="ask-q">问题</label>

@@ -42,7 +42,7 @@
 
 `[n]` 链到 `/articles/{id}?chunk={n}`：文章页直接滚到正文里的那几段，并把它们标出来。正文里对不上的（比如引用的是图片里的字），才在顶上单独摘出那一段。
 
-进程重启时没写完的整合标成中断（`status = error`），回答页有「重新整合」。没配 Grok 时，问库只列召回的原文段落，不存记录。
+进程重启时没写完的整合标成中断（`status = error`），回答页有「重新整合」。没有可用的 Grok OAuth 时，问库只列召回的原文段落，不存记录。
 
 入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；检索结果页「问 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：已有的文章摘要或正文里的一句实质内容先拼成一段总结，如果之前问过正好覆盖这一天的问题，也把那条回答放在最上面。日汇总那段不算模型。缺摘要的卡片在后台补，不挡住这一页，也不跑全库。
 
@@ -64,18 +64,25 @@ docker compose exec app research-xai-login status
 
 Hermes 的 `auth.json` 格式会被拒绝，不会写进去。AIHOT / research 的 version 1 凭据可以读写。
 
-没登录时，问库和摘要可以退回控制台 key：`.env` 里设 `XAI_API_KEY`。两者都有时优先共用 OAuth。译制不使用这个 key，见 [translate.md](translate.md)。
+问库、摘要、观点、论点、样卡和译制只认这一份 OAuth。文件不在、未登录或刷新失败时直接报错，不退回 `XAI_API_KEY`，也不改走别的模型。环境里如果还留着 `XAI_API_KEY`，调用会说明这个变量不会被使用。
+
+强度写在 `researchlib/grok.py`，译制（`translate/llm.py` 的 `chat_json`）和问库、摘要、观点、论点、样卡（`researchlib.llm.chat`）共用同一组常量：
+
+| 项 | 值 |
+| --- | --- |
+| 模型 | `grok-4.7`（`GROK_MODEL_ID`）。不读 `RESEARCH_LLM_MODEL`，请求里不发 `fast` |
+| `reasoning_effort` | `xhigh`（`GROK_REASONING_EFFORT`）。不读 `RESEARCH_LLM_REASONING` |
+| 输出预算 | 至少 `128000`（`GROK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
+| 上下文 | `500000` token（`GROK_CONTEXT_TOKENS`），用 grok-4.7 自带的窗口，不另传更小上限 |
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `XAI_OAUTH_TOKEN_PATH` | `/aihot-data/secrets/xai-oauth.json`（compose） | 与 AIHOT 共用 |
+| `XAI_OAUTH_TOKEN_PATH` | `/aihot-data/secrets/xai-oauth.json`（compose） | 唯一凭证，与 AIHOT 共用 |
 | `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `1000` / `1000` | 写回后的文件属主 |
-| `RESEARCH_LLM_MODEL` | `grok-4.7` | 问库、摘要的模型名。译制固定同一模型 |
-| `RESEARCH_LLM_REASONING` | `xhigh` | 问库、摘要、观点的 `reasoning_effort`。译制固定 `xhigh`；留空则不发这个字段 |
-| `XAI_MAX_TOKENS` | 问库 `64000`；译制至少 `128000` | 推理和答案共用的输出预算 |
-| `RESEARCH_LLM_TIMEOUT` | `900` | 问库超时，秒 |
+| `XAI_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `128000` | 只能把输出预算抬得更高，设得更低也会回到 `128000` |
+| `LLM_LONG_TIMEOUT_MS` | `1500000` | 译制和问库共用的长超时，默认 25 分钟 |
+| `RESEARCH_LLM_TIMEOUT` | 不设 | 秒。比上面的长超时更短时会被抬到同一条，不能单独把问库调弱 |
 | `XAI_BASE_URL` | `https://api.x.ai/v1` | |
-| `LLM_LONG_TIMEOUT_MS` | `1500000` | 译制长调用 |
 | `RESEARCH_LLM_CONCURRENCY` | `3` | 同一个进程里同时在跑的 Grok 请求上限，问库分批、摘要、观点、论点共用 |
 
 xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷新一次再重试。没有订阅的 403 不触发刷新。
@@ -88,7 +95,7 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 
 两条写入路径：
 
-- 打开按天、作者、公司或检索时，当前卡片里还没有摘要（或正文已改）的文章会在后台排队，一次最多排 40 篇，不挡住页面，也不扫全库。没配 Grok 时不排队，卡片改用正文里第一段实质内容，并跳过 sn、点赞、时间戳。
+- 打开按天、作者、公司或检索时，当前卡片里还没有摘要（或正文已改）的文章会在后台排队，一次最多排 40 篇，不挡住页面，也不扫全库。没有可用的 Grok OAuth 时不排队，卡片改用正文里第一段实质内容，并跳过 sn、点赞、时间戳。
 - `research-digest` 仍可手动补一批。`research-web` 启动、容器拉起和部署都不会跑全库。
 
 ```bash
@@ -109,7 +116,7 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 
 ### 失败了怎么办
 
-摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 Grok 凭证时退出码 2。
+摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 Grok OAuth 时退出码 2（`research-pilot` 同样）。不会改用 API key。
 
 ## 观点时间线
 

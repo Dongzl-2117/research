@@ -30,7 +30,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.config import Settings
 from researchlib.failures import clear_failure, note_failure
-from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.web.present import format_date
 
 logger = logging.getLogger("researchlib.theses")
@@ -528,6 +528,11 @@ def main(argv: list[str] | None = None) -> int:
     from researchlib.sources import enabled_sources, load_sources
 
     settings = Settings.from_env()
+    try:
+        ensure_oauth(settings)
+    except LLMUnavailable as exc:
+        print(exc, file=sys.stderr)
+        return 2
     sources_by_id = {source.id: source for source in enabled_sources(load_sources(settings.sources_path))}
     conn = prepare(settings)
     built = skipped = failed = 0

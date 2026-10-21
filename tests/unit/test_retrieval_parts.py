@@ -6,6 +6,7 @@ from researchlib import ask as ask_module
 from researchlib.ask import parse_expansions, synthesize
 from researchlib.retrieval import (
     BUDGETS,
+    EXACT_STATS_BELOW,
     Budget,
     FocusMatcher,
     Passage,
@@ -13,6 +14,7 @@ from researchlib.retrieval import (
     _whitespace_pieces,
     cited_numbers,
     select,
+    use_sampled_lexeme_df,
 )
 from researchlib.textutil import SHANGHAI
 
@@ -108,6 +110,15 @@ def test_select_keeps_recent_order_when_question_says_recent():
     passages += [_passage(100 + y, 0, 1.0, y) for y in range(2019, 2025)]
     picked = select(passages, _query(overview=True, recent=True), Budget(8, 100000, 2))
     assert {p.published_at.year for p in picked} == {2025}
+
+
+def test_small_corpus_does_not_trust_sampled_lexeme_frequency():
+    # 5 万块以下块数按实数计，词频也必须实数。导入中途的 ANALYZE 不能参与 IDF。
+    assert EXACT_STATS_BELOW == 50_000
+    assert use_sampled_lexeme_df(0) is False
+    assert use_sampled_lexeme_df(10_463) is False
+    assert use_sampled_lexeme_df(EXACT_STATS_BELOW - 1) is False
+    assert use_sampled_lexeme_df(EXACT_STATS_BELOW) is True
 
 
 def test_cited_numbers_accept_three_digits():

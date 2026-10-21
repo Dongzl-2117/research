@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+
+from researchlib.grok import LONG_LLM_TIMEOUT_S, long_timeout_s
 
 LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 DEFAULT_PUBLIC_BASE_URL = "https://investment.zldong.com"
@@ -59,15 +61,10 @@ class Settings:
     display_timezone: str
     page_size: int = 20
     days_per_page: int = 14
-    # 问库 / 摘要走 OpenAI 兼容的 chat/completions，默认是 xAI 的 Grok。
-    # 凭证优先用与 AIHOT 共用的 OAuth（XAI_OAUTH_TOKEN_PATH），其次才是 XAI_API_KEY。
-    # 密钥不进仓库，也不出现在 repr 里。译制另走 translate.llm，固定 xhigh。
+    # 问库、摘要、观点、论点、译制都走 xAI chat/completions。
+    # 鉴权只认与 AIHOT 共用的 OAuth（XAI_OAUTH_TOKEN_PATH）。强度在 researchlib.grok，不读 API key。
     llm_base_url: str = "https://api.x.ai/v1"
-    llm_model: str = "grok-4.7"
-    llm_api_key: str = field(default="", repr=False)
-    llm_reasoning_effort: str = "xhigh"
-    llm_max_tokens: int = 64000
-    llm_timeout: float = 900.0
+    llm_timeout: float = float(LONG_LLM_TIMEOUT_S)
     # 同一个进程里同时在跑的 Grok 请求上限（问库分批、摘要、观点、论点加起来）。
     llm_concurrency: int = 3
     # 持仓和观察名单。没有这个文件就当没有持仓。
@@ -107,11 +104,7 @@ class Settings:
             page_size=int(environ.get("PAGE_SIZE", "20")),
             days_per_page=max(1, int(environ.get("DAYS_PER_PAGE", "14"))),
             llm_base_url=(environ.get("XAI_BASE_URL", "").strip() or "https://api.x.ai/v1").rstrip("/"),
-            llm_model=environ.get("RESEARCH_LLM_MODEL", "").strip() or "grok-4.7",
-            llm_api_key=environ.get("XAI_API_KEY", "").strip(),
-            llm_reasoning_effort=environ.get("RESEARCH_LLM_REASONING", "xhigh").strip(),
-            llm_max_tokens=int(environ.get("XAI_MAX_TOKENS", "64000")),
-            llm_timeout=float(environ.get("RESEARCH_LLM_TIMEOUT", "900")),
+            llm_timeout=long_timeout_s(environ),
             llm_concurrency=max(1, int(environ.get("RESEARCH_LLM_CONCURRENCY", "3") or "3")),
             portfolio_path=(
                 Path(environ["PORTFOLIO_FILE"])

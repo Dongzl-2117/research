@@ -8,7 +8,7 @@
 3. 资料一次读得完就一次作答；读不完就分批摘录要点（每条带原始编号），最后汇总成回答。
 4. 写回 answer、citations、status=done。出错时 status=error，页面可以重新整合。
 
-没配 Grok 时只给原文段落，不存记录。
+没有可用的 Grok OAuth 时只给原文段落，不存记录。不退回 API key。
 """
 
 from __future__ import annotations
@@ -301,7 +301,7 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
         result["error"] = "范围内没有召回到任何段落。换个问法，或放宽作者、公司、日期范围。"
         return result
     if not llm_configured(settings):
-        result["error"] = "没有配置 LLM，只给出召回的原文段落。"
+        result["error"] = "没有可用的 Grok OAuth，只给出召回的原文段落。"
         return result
     row = conn.execute(
         """

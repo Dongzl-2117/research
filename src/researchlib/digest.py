@@ -29,7 +29,7 @@ from researchlib.author_voice import VOICE_NOTE, raw_meta_of, restrict
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
-from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.present import format_date
 
@@ -127,7 +127,6 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
                 {"role": "system", "content": PROMPT},
                 {"role": "user", "content": header + "\n\n正文：\n" + body},
             ],
-            max_tokens=800,
             temperature=0.1,
         )
         data = parse_digest(text)
@@ -279,6 +278,11 @@ def main(argv: list[str] | None = None) -> int:
     from researchlib.db import prepare
 
     settings = Settings.from_env()
+    try:
+        ensure_oauth(settings)
+    except LLMUnavailable as exc:
+        print(exc, file=sys.stderr)
+        return 2
     sources = enabled_sources(load_sources(settings.sources_path))
     if args.source:
         sources = [source for source in sources if source.id == args.source]

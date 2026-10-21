@@ -1,6 +1,8 @@
 """读原文：引用落到正文那一段。长文取段落。Grok 调用的重试、分批容错。论点地图的解析和对照。"""
 
 import io
+import json
+import time
 import urllib.error
 from datetime import UTC, datetime, timedelta
 
@@ -84,19 +86,43 @@ def test_views_input_follows_the_companies():
     assert "第 0 块" in text and "第 119 块" in text and "第 50 块" not in text
 
 
+def _write_oauth(path, access="oauth-access") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "access_token": access,
+                "refresh_token": "refresh-token",
+                "token_type": "Bearer",
+                "expires_at": time.time() * 1000 + 3_600_000,
+                "obtained_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60)),
+                "needs_login": False,
+                "last_error": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _no_shared_oauth(tmp_path, monkeypatch):
-    # 只用 XAI_API_KEY，别读到机器上真实的共用 OAuth 文件。
+    # 别读到机器上真实的共用 OAuth 文件。留下 API key，确认调用不会拿它当凭证。
     monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(tmp_path / "missing-oauth.json"))
+    monkeypatch.setenv("XAI_API_KEY", "test-key-should-not-be-used")
+    monkeypatch.delenv("XAI_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
 
 
-def _settings(tmp_path) -> Settings:
+def _settings(tmp_path, monkeypatch) -> Settings:
+    token = tmp_path / "secrets" / "xai-oauth.json"
+    _write_oauth(token)
+    monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(token))
     return Settings.from_env(
         {
             "DATABASE_URL": "postgresql://unused/research_test",
             "DATA_DIR": str(tmp_path),
-            "XAI_API_KEY": "test-key",
-            "XAI_OAUTH_TOKEN_PATH": str(tmp_path / "missing-oauth.json"),
+            "XAI_OAUTH_TOKEN_PATH": str(token),
         }
     )
 
@@ -111,8 +137,8 @@ def test_chat_retries_transient_errors_then_succeeds(tmp_path, monkeypatch):
     outcomes = [_http_error(429), urllib.error.URLError(ConnectionResetError("reset")),
                 {"choices": [{"message": {"content": "好"}}], "model": "grok-test"}]
 
-    def fake_post(_settings, _token, _payload):
-        calls.append(1)
+    def fake_post(_settings, token, payload):
+        calls.append((token, payload))
         outcome = outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -121,14 +147,16 @@ def test_chat_retries_transient_errors_then_succeeds(tmp_path, monkeypatch):
     sleeps = []
     monkeypatch.setattr(llm_module, "_post", fake_post)
     monkeypatch.setattr(llm_module.time, "sleep", sleeps.append)
-    assert chat(_settings(tmp_path), [{"role": "user", "content": "hi"}]) == ("好", "grok-test")
+    assert chat(_settings(tmp_path, monkeypatch), [{"role": "user", "content": "hi"}]) == ("好", "grok-test")
+    assert calls[-1][0] == "oauth-access"
+    assert "test-key" not in calls[-1][0]
     assert len(calls) == 3 and sleeps == list(llm_module.RETRY_DELAYS)
     health.reset_llm_cache()
 
 
 def test_chat_does_not_retry_bad_requests_or_timeouts(tmp_path, monkeypatch):
     health.reset_llm_cache()
-    settings = _settings(tmp_path)
+    settings = _settings(tmp_path, monkeypatch)
     for error in (_http_error(400), TimeoutError("read timed out"),
                   urllib.error.URLError(TimeoutError("connect timed out"))):
         calls = []
