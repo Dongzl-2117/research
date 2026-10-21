@@ -3,7 +3,7 @@
 识别结果存在 `image_texts.text`：RapidOCR 只留下从上到下的文字行，文字框的左右位置已经丢掉
 （见 ocr.order_text）。所以这里不重新认图，也不调用模型。说话人规则是确定的，阅读页要当场算完：
 
-- 这一行能对上星主（方伟 / 方伟Rey / Rey，含「方伟（星主）」）→「方伟：」
+- 这一行能对上星主（方伟 / 方伟Rey / Rey，或「方伟-最近在杭州」这类显示名）→「方伟：」
 - 其他人（姜禄彦、徐哲航，以及只写了名字的）→「网友：」，正文里不再留这个名字
 - 看不出是谁 →「网友：」，不因为语境猜成方伟
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
@@ -117,8 +117,14 @@ _NOT_NAMES = frozenset(
         "古茗",
     }
 )
+# 显示名可以带状态后缀：方伟-最近在杭州、方伟Rey、方伟（星主）。句子里的「方伟说得对」不是名字。
 _HOST_LINE = re.compile(
-    r"^(?:方\s*伟(?:\s*Rey)?|方\s*伟\s*[（(]\s*星主\s*[）)]|Rey)$",
+    r"^(?:"
+    r"方\s*伟(?:\s*Rey)?"
+    r"(?:\s*[-－—]\s*[^\s：:，。！？!?]{1,16})?"
+    r"(?:\s*[（(][^）)]{0,8}[）)])?"
+    r"|Rey"
+    r")$",
     re.I,
 )
 _HOST_PREFIX = re.compile(r"^(方\s*伟(?:\s*Rey)?|Rey)\s+(.+)$", re.I)
@@ -257,14 +263,20 @@ def parse_shot(text: str) -> Shot:
 
 
 def _same_sentence(left: str, right: str) -> bool:
-    """两句去掉标点后相同，或其中一句包住另一句（滚动截图常把同一句再认一遍）。"""
+    """两句去掉标点后相同，或几乎整句被另一张图又认了一遍。
+
+    短很多的前半句不算重复：方伟另起的「会有一批大模型达到」不能被上一张里更长的那行吃掉。
+    """
     if not left or not right:
         return False
     if left == right:
         return True
     if len(left) < 8 or len(right) < 8:
         return False
-    return left in right or right in left
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    if shorter not in longer:
+        return False
+    return len(shorter) * 5 >= len(longer) * 4
 
 
 def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
@@ -291,7 +303,7 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
             if not keep[earlier]:
                 continue
             old = norms[earlier]
-            if norm == old or (len(norm) >= 8 and norm in old):
+            if _same_sentence(norm, old):
                 keep[index] = False
                 break
             if len(old) >= 8 and old in norm and len(norm) > len(old):
@@ -508,7 +520,30 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
         if len(kept) <= 1 and _GROUP_BARE.fullmatch(line):
             continue
         kept.append(line)
-    return kept
+    return _split_after_host_mention(kept)
+
+
+def _split_after_host_mention(lines: list[str]) -> list[str]:
+    """@方伟 写在问句里时，后面另起的一句（如 Opus5.5…）另开一轮，不粘在问句上。
+
+    只在 @方伟 之后、隔着不超过四个字的折行（「杭州」）时切开。没有这种形状就不动。
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        out.append(line)
+        if "@方伟" not in line or line == _BREAK:
+            index += 1
+            continue
+        nxt = index + 1
+        while nxt < len(lines) and lines[nxt] != _BREAK and re.fullmatch(r"[\u4e00-\u9fff]{1,4}", lines[nxt]):
+            out.append(lines[nxt])
+            nxt += 1
+        if nxt < len(lines) and lines[nxt] != _BREAK and re.match(r"[A-Za-z0-9]", lines[nxt]):
+            out.append(_BREAK)
+        index = nxt
+    return out
 
 
 def _speaker_names(lines: list[str], signal: bool) -> set[str]:
