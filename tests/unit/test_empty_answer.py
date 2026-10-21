@@ -4,6 +4,7 @@ from researchlib.author_voice import duan_paragraphs
 from researchlib.empty_answer import (
     hide_empty_answer,
     is_chrome_line,
+    judgment_len,
     normalize_voice,
     stored_answer_empty,
     substantive_voice,
@@ -140,10 +141,16 @@ def test_author_voice_all_is_suppressed_and_real_judgment_stays():
     assert any("company_views" in sql for sql, _params in conn.calls)
     # 已经按同一规则标好的，不再改标记。
     again = _Conn()
-    assert hide_empty_answer(again, 1, essay, meta, source_id="duanyongping-blog")
+    assert hide_empty_answer(again, 1, essay, meta, source_id="duanyongping-blog") is False
     assert all("UPDATE articles" not in sql for sql, _params in again.calls)
-    # 有段永平本人判断的留下。别的来源即使是 all 也不搁下。
-    assert hide_empty_answer(None, 2, JUDGMENT, {"author_voice": "段永平"}, source_id="duanyongping-blog") is False
+    # 有段永平本人的长判断留下。别的来源即使是 all 也不搁下。
+    long_judgment = (
+        "## 读者问\n\n苹果现在贵不贵？\n\n## 段永平\n\n"
+        "不贵。生意模式还在，品牌已经在那里了，我打算继续拿着。"
+        "价格不是我卖出的理由，生意还在就继续拿着。\n"
+    )
+    assert judgment_len(long_judgment) >= 40
+    assert hide_empty_answer(None, 2, long_judgment, {"author_voice": "段永平"}, source_id="duanyongping-blog") is False
     assert hide_empty_answer(None, 3, essay, {"author_voice": "all"}, source_id="fangwei-mp") is False
     # 段永平那节只剩康熙部首导航，仍是空回答，不改成 no_judgment。
     shell = _Conn()
@@ -156,14 +163,53 @@ def test_author_voice_all_is_suppressed_and_real_judgment_stays():
     )
     assert shell.calls[0][1][0].obj["suppressed"] == "empty_answer"
     assert "off_timeline" not in shell.calls[0][1][0].obj
-    kept = decide_stored("苹果贵不贵", JUDGMENT, {"author_voice": "段永平"})
+    kept = decide_stored("苹果贵不贵", long_judgment, {"author_voice": "段永平"})
     assert kept.get("suppressed") is not True
+    assert "苹果" in kept["reason"]
     dropped = decide_stored("苹果还拿着", essay, {"author_voice": "all"})
     assert dropped["suppressed"] is True
     assert dropped["suppressed_as"] == "no_judgment"
     assert dropped["off_timeline"] is True
     assert dropped["off_views"] is True
     assert dropped["reason"] == "没有段永平的判断"
+    # 一两句不算明确判断。长文是他的博文，all 不代表没有判断。
+    short = "## 读者问\n\n苹果贵不贵？\n\n## 段永平\n\n不贵。生意模式还在，我还拿着。\n"
+    assert judgment_len(short) < 40
+    brief = _Conn()
+    assert hide_empty_answer(brief, 5, short, {"author_voice": "段永平"}, source_id="duanyongping-blog")
+    assert brief.calls[0][1][0].obj["suppressed"] == "weak_judgment"
+    assert brief.calls[0][1][0].obj["off_views"] is True
+    long = (
+        "## 读者问\n\n巴菲特这段谈话你怎么看？\n\n## 段永平\n\n"
+        "The brand is a moat. People drink it every day and the habit does not change. "
+        "I bought a lot and held it for decades because the business is simple.\n"
+    )
+    assert judgment_len(long) >= 40
+    assert hide_empty_answer(None, 6, long, {"author_voice": "段永平"}, source_id="duanyongping-blog") is False
+    essay_long = (
+        "Buffett says the brand of Coca-Cola is a moat because people drink it every day. "
+        "I read this again and I agree. A wonderful business can be held for decades."
+    )
+    assert judgment_len(essay_long) >= 40
+    restored = _Conn()
+    marked = {
+        "author_voice": "all",
+        "suppressed": "no_judgment",
+        "off_views": True,
+        "off_timeline": True,
+    }
+    assert hide_empty_answer(
+        restored,
+        7,
+        essay_long,
+        marked,
+        source_id="duanyongping-blog",
+        published_at="2011-03-03",
+    )
+    back = restored.calls[0][1][0].obj
+    assert "suppressed" not in back
+    assert "off_timeline" not in back
+    assert back["author_voice"] == "段永平"
 
 
 def test_suppress_stays_on_duanyongping_and_does_not_touch_other_sources():
@@ -217,9 +263,17 @@ def test_reclassify_decision_hides_chrome_and_keeps_a_real_reply():
     pdd = decide_stored("拼多多到底能不能投", PDD)
     assert pdd["suppressed"] is True
     real = decide_stored("苹果贵不贵", REAL)
-    assert real.get("suppressed") is not True
-    assert real["off_views"] is False
-    assert "苹果" in real["reason"]
+    assert real["suppressed"] is True
+    assert real["suppressed_as"] == "weak_judgment"
+    assert real["reason"] == "判断太短，不够明确"
+    long_real = REAL.replace(
+        "不贵。生意模式还在，我还拿着。",
+        "不贵。生意模式还在，品牌已经在那里了，我打算继续拿着。价格不是我卖出的理由，生意还在就继续拿着。",
+    )
+    kept_real = decide_stored("苹果贵不贵", long_real)
+    assert kept_real.get("suppressed") is not True
+    assert kept_real["off_views"] is False
+    assert "苹果" in kept_real["reason"]
 
 
 def test_model_input_skips_the_forum_line():

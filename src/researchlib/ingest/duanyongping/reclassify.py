@@ -20,7 +20,15 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import ROLE_GUEST, assign_poster_role
 from researchlib.boilerplate import clean_markdown, profile_for
 from researchlib.chunks import replace_chunks
-from researchlib.empty_answer import EMPTY_ANSWER, NO_JUDGMENT, SUPPRESSED, suppression_for
+from researchlib.empty_answer import (
+    EMPTY_ANSWER,
+    NO_JUDGMENT,
+    SUPPRESSED,
+    WEAK_JUDGMENT,
+    duan_section,
+    suppression_for,
+    voice_is_empty,
+)
 from researchlib.ingest.duanyongping import SOURCE_ID
 from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.duanyongping.companies import companies_in, library_names
@@ -87,18 +95,8 @@ def _has_duan_voice(body_md: str, author: str) -> bool:
 
 def decide_stored(title: str, body_md: str, raw_meta: dict | None = None) -> dict:
     """纯函数：这篇存量文章该不该进观点，是不是博友回复。"""
-    reason = suppression_for(body_md, raw_meta, source_id=SOURCE_ID, title=title)
-    if reason == NO_JUDGMENT:
-        return {
-            "guest": False,
-            "off_views": True,
-            "off_timeline": True,
-            "suppressed": True,
-            "suppressed_as": NO_JUDGMENT,
-            "poster_name": "",
-            "reason": "没有段永平的判断",
-        }
-    if reason == EMPTY_ANSWER:
+    section = duan_section(body_md)
+    if section is not None and voice_is_empty(section):
         return {
             "guest": False,
             "off_views": True,
@@ -115,6 +113,35 @@ def decide_stored(title: str, body_md: str, raw_meta: dict | None = None) -> dic
             "off_views": True,
             "poster_name": _guest_name(title, other, author),
             "reason": "博友回复，不是段永平本人",
+        }
+    reason = suppression_for(body_md, raw_meta, source_id=SOURCE_ID, title=title)
+    if reason == NO_JUDGMENT:
+        return {
+            "guest": False,
+            "off_views": True,
+            "off_timeline": True,
+            "suppressed": True,
+            "suppressed_as": NO_JUDGMENT,
+            "poster_name": "",
+            "reason": "没有段永平的判断",
+        }
+    if reason == WEAK_JUDGMENT:
+        return {
+            "guest": False,
+            "off_views": True,
+            "suppressed": True,
+            "suppressed_as": WEAK_JUDGMENT,
+            "poster_name": "",
+            "reason": "判断太短，不够明确",
+        }
+    if reason == EMPTY_ANSWER:
+        return {
+            "guest": False,
+            "off_views": True,
+            "suppressed": True,
+            "suppressed_as": EMPTY_ANSWER,
+            "poster_name": "",
+            "reason": "只有论坛导航，没有段永平的话",
         }
     scope = f"{other}\n{author}" if other else author
     real, side, weak = companies_in(scope)

@@ -275,7 +275,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     if source.id == DUAN_SOURCE:
         # 没有段永平本人判断，或那节只剩论坛导航的，整篇搁下。
         stored_row = conn.execute(
-            "SELECT title, body_md, raw_meta FROM articles WHERE id = %s",
+            "SELECT title, body_md, raw_meta, published_at FROM articles WHERE id = %s",
             (article_id,),
         ).fetchone()
         if stored_row is not None:
@@ -286,6 +286,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 stored_row["raw_meta"],
                 source_id=source.id,
                 title=stored_row["title"] or "",
+                published_at=stored_row["published_at"],
             )
     return status, stored, linked, missing, duplicate
 

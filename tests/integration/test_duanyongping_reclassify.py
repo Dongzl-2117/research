@@ -34,7 +34,11 @@ def test_reclassify_scrubs_junk_and_drops_non_arguments(conn, settings):
             _doc(
                 "dyp-junk",
                 "茅台的生意",
-                "## 读者问\n\n茅台怎么样？\n\n## 段永平\n\n茅台的生意模式很好。file:///H.HTM 我还拿着。\n",
+                (
+                    "## 读者问\n\n茅台怎么样？\n\n## 段永平\n\n"
+                    "茅台的生意模式很好。file:///H.HTM 我还拿着。"
+                    "价格不是卖出的理由，生意还在我就继续拿着，不因为贵了就卖掉。\n"
+                ),
                 voice="段永平",
             ),
             _doc("dyp-method", "能力圈", "不要太保守，做对的事情，把事情做对。\n"),

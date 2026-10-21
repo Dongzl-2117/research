@@ -1,9 +1,7 @@
-"""段永平博客里，没有他本人判断的文章不进列表。
+"""段永平博客里，没有明确判断的文章不进列表。
 
-两种情况：
-
-- ``author_voice`` 是 all：没有「## 段永平」这一节，整篇搁下，标记 no_judgment。
-- ``author_voice`` 是段永平，但这一节只剩论坛导航：标记 empty_answer。
+- ``author_voice`` 是 all：整篇都是他的话。太短或只剩导航，标 no_judgment。长文留下。
+- ``author_voice`` 是段永平：那一节只剩导航，标 empty_answer。汉字和字母不足 40，标 weak_judgment。
 
 「回本文开头」、署名加时间、上下箭头，都不是他的话。康熙部首会先折成普通字。
 正文留着，直接打开还能看；首页按天、作者时间线、检索和公司页不收。只处理这个来源。
@@ -23,9 +21,12 @@ logger = logging.getLogger("researchlib.empty_answer")
 
 # 和「没有段永平本人的话」同一道门槛：洗掉导航后剩下不到 6 个字，就不算他说了什么。
 MIN_VOICE = 6
+# 段永平那一节去掉导航后，汉字和字母不足这么多，算没有明确判断。
+MIN_JUDGMENT = 40
 SUPPRESSED = "suppressed"
 EMPTY_ANSWER = "empty_answer"
 NO_JUDGMENT = "no_judgment"
+WEAK_JUDGMENT = "weak_judgment"
 _AUTHOR_VOICE = "author_voice"
 _VOICE_ALL = "all"
 _OFF_VIEWS = "off_views"
@@ -139,6 +140,15 @@ def voice_is_empty(text: str) -> bool:
     return len(re.sub(r"\s+", "", substantive_voice(text))) < MIN_VOICE
 
 
+def judgment_len(text: str) -> int:
+    """去掉论坛导航之后，还剩多少汉字和字母。"""
+    return len(re.findall(r"[\u4e00-\u9fffA-Za-z]", substantive_voice(text or "")))
+
+
+def _article_plain(body_md: str) -> str:
+    return "\n".join(_content_lines(body_md))
+
+
 def duan_section(body_md: str) -> str | None:
     """``## 段永平`` 下面的正文。没有这个标题就返回 None。"""
     match = _DUAN_HEADING.search(body_md or "")
@@ -196,16 +206,57 @@ def _flag_on(meta: dict, key: str) -> bool:
     return value is True or str(value or "").strip().lower() == "true"
 
 
+def _voice_label(raw_meta) -> str:
+    return str((raw_meta or {}).get(_AUTHOR_VOICE) or "").strip()
+
+
 def suppression_for(body_md: str, raw_meta, *, source_id: str, title: str = "") -> str:
-    """这段永平博客该搁下时，返回要写入的 suppressed。不用搁下就返回空串。"""
+    """这段永平博客该搁下时，返回要写入的 suppressed。不用搁下就返回空串。
+
+    author_voice 为 all 表示整篇都是他的话，不是「没有判断」。长文留下。
+    过短的碎段、导航壳才标 no_judgment。段永平那一节不足 40 个汉字或字母，标 weak_judgment。
+    """
     if source_id != SOURCE_ID:
         return ""
-    # 没有「## 段永平」本人判断段。整篇都算没给出判断，包括拆出来的导航壳。
-    if str((raw_meta or {}).get(_AUTHOR_VOICE) or "").strip() == _VOICE_ALL:
-        return NO_JUDGMENT
-    if stored_answer_empty(body_md, source_id=source_id, title=title):
+    voice = _voice_label(raw_meta)
+    section = duan_section(body_md)
+    if voice == _VOICE_ALL and section is None:
+        plain = _article_plain(body_md)
+        if _nav_shell(body_md) or voice_is_empty(plain):
+            return NO_JUDGMENT
+        if judgment_len(plain) < MIN_JUDGMENT:
+            return NO_JUDGMENT
+        return ""
+    if section is None:
+        if stored_answer_empty(body_md, source_id=source_id, title=title):
+            return EMPTY_ANSWER
+        return ""
+    if voice_is_empty(section):
         return EMPTY_ANSWER
+    if judgment_len(section) < MIN_JUDGMENT:
+        return WEAK_JUDGMENT
     return ""
+
+
+def _restore_long_essay(meta: dict, body_md: str, published_at) -> bool:
+    """先前把整篇博文一律标成 no_judgment 的，长文收回来。
+
+    all 本来就是整篇都算他的话。有发布日期的，去掉当时补上的 off_timeline，回到按天。
+    """
+    if _voice_label(meta) != _VOICE_ALL:
+        return False
+    if _nav_shell(body_md) or judgment_len(_article_plain(body_md)) < MIN_JUDGMENT:
+        return False
+    changed = False
+    if meta.get(_AUTHOR_VOICE) != "段永平":
+        meta[_AUTHOR_VOICE] = "段永平"
+        changed = True
+    if meta.get(SUPPRESSED) == NO_JUDGMENT:
+        meta.pop(SUPPRESSED, None)
+        changed = True
+        if published_at is not None:
+            meta.pop(_OFF_TIMELINE, None)
+    return changed
 
 
 def _flags_ready(meta: dict, reason: str) -> bool:
@@ -217,17 +268,25 @@ def _flags_ready(meta: dict, reason: str) -> bool:
 
 
 def hide_empty_answer(
-    conn, article_id: int, body_md: str, raw_meta, *, source_id: str, title: str = ""
+    conn, article_id: int, body_md: str, raw_meta, *, source_id: str, title: str = "", published_at=None
 ) -> bool:
-    """没判断或空回答标上标记，摘掉公司挂靠和观点。正文不删。
+    """没判断、判断太短或空回答标上标记，摘掉公司挂靠和观点。正文不删。
 
     只处理段永平博客。方伟这类来源即使带了同样的标记，也不搁下。
-    已经按同一规则标好的，不再改标记，挂靠仍会清掉。
+    长文若之前被标成 no_judgment，这里收回。已经标好的不再改标记。
+    返回这次是否改了标记。
     """
     reason = suppression_for(body_md, raw_meta, source_id=source_id, title=title)
-    if not reason:
-        return False
     meta = dict(raw_meta or {})
+    if not reason:
+        if not _restore_long_essay(meta, body_md, published_at):
+            return False
+        conn.execute(
+            "UPDATE articles SET raw_meta = %s WHERE id = %s",
+            (Jsonb(meta), article_id),
+        )
+        return True
+    changed = False
     if not _flags_ready(meta, reason):
         meta[SUPPRESSED] = reason
         meta[_OFF_VIEWS] = True
@@ -237,42 +296,45 @@ def hide_empty_answer(
             "UPDATE articles SET raw_meta = %s WHERE id = %s",
             (Jsonb(meta), article_id),
         )
+        changed = True
     conn.execute("DELETE FROM article_mentions WHERE article_id = %s", (article_id,))
     conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
-    return True
+    return changed
 
 
 def backfill_empty_answers(conn) -> int:
     """启动时扫一遍段永平博客。
 
-    author_voice 为 all 的，标 no_judgment。段永平那节是空的，或整篇只剩论坛导航的，标 empty_answer。
-    已经按这个规则标好、也没有公司挂靠的，跳过。再跑一遍结果一样。
+    短碎的 all 标 no_judgment，长文若曾被这道规则搁下则收回。
+    段永平那节不足 40 个字标 weak_judgment，只剩导航的标 empty_answer。
+    已经按这个规则标好的跳过。再跑一遍结果一样。
     """
     like_sql: list[str] = []
-    params: list[str] = [SOURCE_ID, _VOICE_ALL, NO_JUDGMENT]
+    params: list[str] = [SOURCE_ID, _VOICE_ALL, "段永平", WEAK_JUDGMENT]
     for column in ("body_md", "title"):
         for pattern in _SCAN_LIKE:
             like_sql.append(f"{column} LIKE %s")
             params.append(pattern)
     rows = conn.execute(
         f"""
-        SELECT id, title, body_md, raw_meta
+        SELECT id, title, body_md, raw_meta, published_at
         FROM articles
         WHERE source_id = %s
           AND (
-            (
+            coalesce(raw_meta->>'author_voice', '') = %s
+            OR (
               coalesce(raw_meta->>'author_voice', '') = %s
+              AND coalesce(raw_meta->>'suppressed', '') IN ('', %s)
               AND (
-                coalesce(raw_meta->>'suppressed', '') <> %s
+                coalesce(raw_meta->>'suppressed', '') = ''
                 OR coalesce(raw_meta->>'off_views', '') <> 'true'
-                OR coalesce(raw_meta->>'off_timeline', '') <> 'true'
                 OR EXISTS (SELECT 1 FROM article_mentions m WHERE m.article_id = articles.id)
                 OR EXISTS (SELECT 1 FROM company_views v WHERE v.article_id = articles.id)
               )
             )
             OR (
               coalesce(raw_meta->>'suppressed', '') = ''
-              AND coalesce(raw_meta->>'author_voice', '') <> 'all'
+              AND coalesce(raw_meta->>'author_voice', '') NOT IN ('all', '段永平')
               AND ({" OR ".join(like_sql)})
             )
           )
@@ -289,9 +351,10 @@ def backfill_empty_answers(conn) -> int:
             row["raw_meta"],
             source_id=SOURCE_ID,
             title=row["title"] or "",
+            published_at=row["published_at"],
         ):
             hidden += 1
     if hidden:
-        logger.info("段永平没有判断或空回答已搁下 %s 篇", hidden)
+        logger.info("段永平判断门槛已更新 %s 篇", hidden)
     conn.commit()
     return hidden

@@ -18,12 +18,19 @@ def uses_sections(entry: Entry) -> bool:
     return bool(entry.question.strip() or entry.others.strip())
 
 
+def _his_own_essay(entry: Entry) -> bool:
+    """没有读者提问的博文，正文就是他本人的话。转载不算。"""
+    return bool(entry.author.strip()) and not uses_sections(entry) and not entry.repost
+
+
 def render_markdown(entry: Entry) -> str:
+    # 问答只读「段永平」那一节。他自己的博文整篇也标成他，避免长文被当成没有判断。
+    voice = "段永平" if uses_sections(entry) or _his_own_essay(entry) else "all"
     lines = [
         "---",
         f"id: {_quote(entry.external_id)}",
         f"title: {_quote(entry.title)}",
-        f"author_voice: {_quote('段永平' if uses_sections(entry) else 'all')}",
+        f"author_voice: {_quote(voice)}",
     ]
     if entry.published:
         lines.append(f"date: {_quote(entry.published)}")
@@ -42,6 +49,8 @@ def render_markdown(entry: Entry) -> str:
         others = substantive_voice(entry.others).strip()
         if others:
             lines.extend(["## 其他人", "", others, ""])
+    elif _his_own_essay(entry):
+        lines.extend(["## 段永平", "", substantive_voice(entry.author).strip(), ""])
     else:
         lines.extend([entry.author.strip(), ""])
     return "\n".join(lines).rstrip() + "\n"
