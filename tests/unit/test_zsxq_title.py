@@ -120,6 +120,90 @@ def test_card_without_body_uses_digest_sentence():
     assert not card["title"].endswith("…")
 
 
+# 14885：库内标题是带中文引号的「图片」，正文空，摘要只说明没正文，料在 OCR。
+PICTURE = "「图片」"
+PICTURE_NOTE = "正文为空，标题仅为「图片」。"
+PICTURE_OCR = "烟蒂股这轮又被翻出来了，中概互联网的现金流比故事好看。\n后面接着聊自由现金流。\n"
+PICTURE_TITLE = "烟蒂股这轮又被翻出来了，中概互联网的现金流比故事好看"
+
+# 14865：标题以省略号结尾；正文是归档头加半截标题；摘要是完整句；OCR 是另一则配售新闻。
+XIAOMI = "跟去年小米的剧本总是似曾相识+\n..."
+XIAOMI_BODY = """# 帖子
+
+- 作者：方伟
+- 时间：2025-11-13 23:07 (UTC+8)
+- 类型：talk
+- 点赞 2 · 评论 1 · 阅读人数 608
+
+跟去年小米的剧本总是似曾相识+
+...
+似曾相识 巴菲特
+"""
+XIAOMI_DIGEST = "方伟认为，今年小米的走势和去年的剧本很像。"
+XIAOMI_TITLE = "今年小米的走势和去年的剧本很像"
+XIAOMI_OCR = "智谱宣布完成配售，募资用于大模型训练和算力采购。"
+
+
+def _no_ellipsis(title: str) -> None:
+    assert title
+    assert not title.startswith(("…", "...", "⋯", "．．．"))
+    assert not title.endswith(("…", "...", "⋯", "．．．"))
+    assert "…" not in title and "..." not in title
+
+
+def test_quoted_placeholders_need_repair_and_use_ocr():
+    assert title_needs_repair("「图片」")
+    assert title_needs_repair("「见图」")
+    assert title_needs_repair("「 图片 」")
+    assert title_needs_repair("“无标题”")
+    assert title_needs_repair("『未命名』")
+    assert title_needs_repair("《图片》")
+    assert title_needs_repair("「茅台批价」") is False
+    # 原标题中间的停顿不是截断，不用改写。
+    assert title_needs_repair("他说……然后停了") is False
+    assert zsxq_display_title("他说……然后停了", body="另一句完整的话在正文里。") == "他说……然后停了"
+    title = zsxq_display_title(PICTURE, body="", summary=PICTURE_NOTE, ocr=PICTURE_OCR, when="2024-10-19")
+    assert title == PICTURE_TITLE
+    _no_ellipsis(title)
+    assert "正文为空" not in title
+    assert zsxq_display_title("「见图」", body="（见图）\n", ocr=PICTURE_OCR) == PICTURE_TITLE
+    card = {
+        "id": 14885,
+        "source_id": "fangwei-zsxq",
+        "plain_title": PICTURE,
+        "title": PICTURE,
+        "summary": PICTURE_NOTE,
+        "body_text": "",
+        "date": "2024-10-19",
+    }
+    _repair_zsxq_titles(_Conn([{"id": 14885, "body_text": "", "ocr_text": PICTURE_OCR}]), [card])
+    assert card["title"] == PICTURE_TITLE
+    assert card["plain_title"] == PICTURE_TITLE
+
+
+def test_truncated_title_prefers_digest_over_unrelated_ocr():
+    assert title_needs_repair(XIAOMI)
+    title = zsxq_display_title(
+        XIAOMI,
+        body=XIAOMI_BODY,
+        summary=XIAOMI_DIGEST,
+        ocr=XIAOMI_OCR,
+        when="2025-11-13",
+    )
+    assert title == XIAOMI_TITLE
+    _no_ellipsis(title)
+    assert "智谱" not in title
+    assert "巴菲特" not in title
+    assert not title.startswith("…")
+    # 正文几乎只有半截标题时，不要拼成「... 似曾相识 巴菲特」。
+    glued = zsxq_display_title(XIAOMI, body="...\n似曾相识 巴菲特\n", summary=XIAOMI_DIGEST, ocr=XIAOMI_OCR)
+    assert glued == XIAOMI_TITLE
+    # 没有摘要时，也不要用无关配售新闻；去掉省略号后的半截标题可以兜底。
+    stem = zsxq_display_title(XIAOMI, body=XIAOMI_BODY, ocr=XIAOMI_OCR)
+    assert stem == "跟去年小米的剧本总是似曾相识"
+    _no_ellipsis(stem)
+
+
 def test_zsxq_import_stores_a_complete_sentence(tmp_path: Path):
     (tmp_path / "md").mkdir()
     (tmp_path / "raw").mkdir()

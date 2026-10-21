@@ -3,9 +3,10 @@
 星球导出经常没有标题，或者把第一句截成「……」。卡片、文章页和重新导入时用这里的规则：
 
 - 完整的第一句（问句也算）优先，去掉句号，一般不超过 40 字。
-- 第一句太碎（半截、寒暄、只有「见图」）时，用摘要的第一句压成标题。
-- 还不够，就用图片里的字，再不行用日期加几个字。
-- 标题不能空着，也不能以「…」或「...」结尾，不用「无标题」这类占位。
+- 正文只是半截标题时，用摘要的第一句压成标题。
+- 图片里的字只在占位标题（「图片」「见图」）或和帖子沾边时才用，避免把另一张新闻截图当成标题。
+- 还不够，就用日期加几个字。
+- 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
 
 读者帖的「读者帖」标在作者行，不写进标题。
 """
@@ -41,6 +42,14 @@ _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 _PLACEHOLDER = frozenset({"无标题", "未命名", "无题", "暂无标题", "图片", "见图", "短帖"})
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+短帖)?")
 _BREAKS = "，,；;、：:"
+# 省略号在开头、结尾或句子中间，都是截断，不是一句完整的话。
+_CUT = re.compile(r"…+|⋯+|\.{3,}|．{3,}|。{2,}")
+_EDGE_CUT = re.compile(
+    r"^(?:\s*(?:…+|⋯+|\.{3,}|．{3,}|。{2,}))+|(?:(?:…+|⋯+|\.{3,}|．{3,}|。{2,})\s*)+$"
+)
+_MISSING_NOTE = re.compile(r"正文(?:为空|没有内容|没有实质|缺失)|标题仅为|只是一张图|没有可摘的正文")
+_WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”‘’\"'`＂＇。！？!?…·]+")
+_STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
 
 
 def repairs_source(source_id: str) -> bool:
@@ -48,9 +57,9 @@ def repairs_source(source_id: str) -> bool:
 
 
 def title_needs_repair(title: str) -> bool:
-    """空标题、占位、纯话题号，或以省略号结尾。"""
+    """空标题、占位（含「图片」这种带引号的）、纯话题号，或带省略号。"""
     text = (title or "").strip()
-    if not text or _placeholder(text) or _ends_with_ellipsis(text):
+    if not text or _placeholder(text) or _EDGE_CUT.search(text):
         return True
     if re.fullmatch(r"\d{5,}", text):
         return True
@@ -71,19 +80,19 @@ def zsxq_display_title(
     stored = (title or "").strip()
     if stored and not title_needs_repair(stored):
         return stored
-    body_solid, body_salvage = _from_text(body)
-    if body_solid:
-        return body_solid
-    ocr_solid, ocr_salvage = _from_text(ocr)
-    if ocr_solid:
-        return ocr_solid
-    summary_solid, summary_salvage = _from_text(summary)
-    if summary_solid:
-        return summary_solid
-    for salvage in (body_salvage, ocr_salvage, summary_salvage, _salvage_stored(stored)):
-        if salvage:
-            return salvage
-    snippet = _short_snippet(body) or _short_snippet(ocr) or _short_snippet(summary)
+    anchors = _topic_anchors(stored)
+    for sentence in _candidates(body):
+        return sentence
+    for sentence in _candidates(summary):
+        return sentence
+    for sentence in _candidates(ocr):
+        # 有帖子主题时，图片里的另一则新闻对不上就不拿来当标题。
+        if not anchors or _overlaps(sentence, anchors):
+            return sentence
+    stem = _salvage_stored(stored)
+    if stem:
+        return stem
+    snippet = _short_snippet(body) or _short_snippet(summary) or _short_snippet(ocr)
     date = _date_prefix(when)
     if date and snippet:
         fitted = _fit(f"{date} {snippet}")
@@ -104,52 +113,41 @@ def stored_zsxq_title(title: str, body: str) -> str | None:
     """
     if not title_needs_repair(title):
         return None
-    solid, _salvage = _from_text(body)
-    if not solid or title_needs_repair(solid) or _ends_with_ellipsis(solid):
-        return None
-    return solid
+    for sentence in _candidates(body):
+        return sentence
+    return None
 
 
-def _from_text(text: str) -> tuple[str, str]:
-    solid = ""
-    salvage = ""
-    for sentence, truncated in _pull_sentences(text):
-        prepared = _prepare(sentence)
-        if _ends_with_ellipsis(prepared):
-            prepared = _strip_ellipsis(prepared)
-        if not prepared:
+def _candidates(text: str) -> list[str]:
+    """从一段文字里按顺序抽出能当标题的完整句。带省略号的半截和「正文为空」这类说明丢掉。"""
+    found: list[str] = []
+    for raw in _iter_raw(text):
+        if _spammy(raw) or _contains_cut(raw) or _missing_note(raw):
             continue
-        if not truncated and not _dangling(prepared) and _ok(prepared):
-            fitted = _fit(prepared)
-            if fitted and not _ends_with_ellipsis(fitted):
-                return fitted, salvage
-        clipped = _fit(_clip_dangling(prepared))
-        if clipped and _ok(clipped) and not _ends_with_ellipsis(clipped) and not salvage:
-            salvage = clipped
-    return solid, salvage
-
-
-def _pull_sentences(text: str) -> list[tuple[str, bool]]:
-    remaining = _plain(text)
-    if not remaining.strip():
-        return []
-    found: list[tuple[str, bool]] = []
-    for _ in range(3):
-        raw = argumentative_excerpt(remaining, limit=800)
-        if not raw:
-            break
-        truncated = _ends_with_ellipsis(raw.strip())
-        sentence = _strip_ellipsis(raw).strip()
-        if not sentence:
-            break
-        if _spammy(sentence):
-            if raw in remaining:
-                remaining = remaining.replace(raw, " ", 1)
-                continue
-            break
-        found.append((sentence, truncated))
-        break
+        prepared = _prepare(raw)
+        if _dangling(prepared):
+            prepared = _clip_dangling(prepared)
+        if not prepared or _contains_cut(prepared) or _missing_note(prepared) or not _ok(prepared):
+            continue
+        fitted = _fit(prepared)
+        if not fitted or _contains_cut(fitted) or _placeholder(fitted):
+            continue
+        found.append(fitted)
     return found
+
+
+def _iter_raw(text: str):
+    remaining = _plain(text)
+    seen: set[str] = set()
+    for _ in range(4):
+        raw = argumentative_excerpt(remaining, limit=800)
+        if not raw or raw in seen:
+            return
+        seen.add(raw)
+        yield raw
+        if raw not in remaining:
+            return
+        remaining = remaining.replace(raw, "\n", 1)
 
 
 def _plain(text: str) -> str:
@@ -173,12 +171,39 @@ def _prepare(sentence: str) -> str:
     return re.sub(r"\s+", " ", current).strip()
 
 
+def _topic_anchors(title: str) -> set[str]:
+    """半截标题里的三字片段。占位标题没有主题，图片里的字可以单独当标题。"""
+    stem = re.sub(r"[\s+＋]+", "", _strip_ellipsis(title or ""))
+    if not stem or _placeholder(stem):
+        return set()
+    chars = "".join(_CJK.findall(stem))
+    if len(chars) < 4:
+        return set()
+    anchors = set()
+    for index in range(len(chars) - 2):
+        gram = chars[index : index + 3]
+        if sum(char in _STOP for char in gram) >= 2:
+            continue
+        anchors.add(gram)
+    return anchors
+
+
+def _overlaps(sentence: str, anchors: set[str]) -> bool:
+    if not anchors:
+        return True
+    hay = "".join(_CJK.findall(sentence))
+    return any(anchor in hay for anchor in anchors)
+
+
 def _salvage_stored(title: str) -> str:
-    stem = _prepare(_strip_ellipsis(title))
-    if not stem:
+    """原标题去掉末尾省略号后，还剩一句不带截断符的话，才拿来兜底。"""
+    if _placeholder(title):
+        return ""
+    stem = _prepare(_strip_ellipsis(title)).rstrip("+＋").strip()
+    if _contains_cut(stem):
         return ""
     clipped = _fit(_clip_dangling(stem) if _dangling(stem) else stem)
-    if clipped and _ok(clipped) and not _ends_with_ellipsis(clipped) and not title_needs_repair(clipped):
+    if clipped and _ok(clipped) and not _contains_cut(clipped) and not title_needs_repair(clipped):
         return clipped
     return ""
 
@@ -187,12 +212,19 @@ def _short_snippet(text: str) -> str:
     raw = argumentative_excerpt(_plain(text), limit=80)
     piece = _prepare(raw)
     piece = _clip_dangling(piece) if _dangling(piece) else piece
-    if not piece or _placeholder(piece) or _spammy(piece) or _FILLER.match(piece):
+    if (
+        not piece
+        or _placeholder(piece)
+        or _spammy(piece)
+        or _FILLER.match(piece)
+        or _contains_cut(raw)
+        or _contains_cut(piece)
+    ):
         return ""
     if len(_CJK.findall(piece)) < 2 and len(_MEANINGFUL.findall(piece)) < 4:
         return ""
     fitted = _fit(piece)
-    if not fitted or _ends_with_ellipsis(fitted):
+    if not fitted or _contains_cut(fitted):
         return ""
     return fitted[:18]
 
@@ -220,7 +252,7 @@ def _fit(text: str) -> str:
 def _ok(text: str) -> bool:
     if not text or _placeholder(text) or _spammy(text) or _FILLER.match(text):
         return False
-    if _ends_with_ellipsis(text):
+    if _contains_cut(text):
         return False
     if re.fullmatch(r"[\d\s:：./\-年月日时分秒]+", text):
         return False
@@ -241,16 +273,21 @@ def _clip_dangling(text: str) -> str:
 
 
 def _placeholder(text: str) -> bool:
-    bare = re.sub(r"[\s（）()【】\[\]《》<>]", "", text or "")
+    """「图片」、『见图』、（无标题）和裸的「图片」都是占位。"""
+    bare = _WRAP.sub("", text or "")
     return bare in _PLACEHOLDER
+
+
+def _missing_note(text: str) -> bool:
+    return _MISSING_NOTE.search(text or "") is not None
+
+
+def _contains_cut(text: str) -> bool:
+    return _CUT.search(text or "") is not None
 
 
 def _spammy(text: str) -> bool:
     return _SPAM.search(text or "") is not None
-
-
-def _ends_with_ellipsis(text: str) -> bool:
-    return _ELLIPSIS_END.search(text or "") is not None
 
 
 def _strip_ellipsis(text: str) -> str:
