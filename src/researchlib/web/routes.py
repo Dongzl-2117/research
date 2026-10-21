@@ -31,6 +31,7 @@ from researchlib.health import notices as health_notices
 from researchlib.llm import llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
+from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import ROLE_LABELS, Portfolio, load_portfolio
 from researchlib.render import inline_image_ocr
 from researchlib.retrieval import full_match_counts, search_articles
@@ -71,6 +72,7 @@ from researchlib.web.present import (
 )
 from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
+from researchlib.wechat_dialogue import present_stored_ocr
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 router = APIRouter()
@@ -261,7 +263,7 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
             str(card.get("plain_title") or ""),
             body=card.get("body_text") or extra.get("body_text") or "",
             summary=card.get("summary") or "",
-            ocr=extra.get("ocr_text") or "",
+            ocr=present_stored_ocr(extra.get("ocr_text") or ""),
             when=card.get("date") or "",
         )
         card["plain_title"] = repaired
@@ -605,6 +607,11 @@ def _article_view(request: Request, article_id: int, mode: str):
             raise HTTPException(status_code=404)
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
+        if article["duplicate_of"] is None:
+            # 这一篇的图片文字若还是原始识别行，先整理再决定要不要重写摘要。不扫别的文章。
+            new_hash = refresh_article_ocr(conn, article_id)
+            if new_hash != (article.get("ocr_hash") or ""):
+                article = {**article, "ocr_hash": new_hash}
         digest = queries.digests_for(conn, [article_id]).get(article_id)
         if digest_due(article, digest):
             schedule_digests(settings, [(article_id, source.author)])
@@ -638,7 +645,7 @@ def _article_view(request: Request, article_id: int, mode: str):
                 display_title or "",
                 body=article.get("body_text") or material.get("body_text") or "",
                 summary=(digest or {}).get("summary") or "",
-                ocr=material.get("ocr_text") or "",
+                ocr=present_stored_ocr(material.get("ocr_text") or ""),
                 when=format_date(article["published_at"], settings.display_timezone),
             )
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}

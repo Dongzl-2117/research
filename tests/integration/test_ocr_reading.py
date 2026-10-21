@@ -224,3 +224,106 @@ def test_long_article_passing_mention_is_not_queued_for_a_screenshot(conn, setti
     assert depth == "passing"
     assert row["id"] not in {item["id"] for item in views_mod.pending_articles(conn, [company], ["fangwei-zsxq"], 20)}
     assert row["id"] not in {item["id"] for item in views_mod.gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
+
+
+# 14886：两张重叠的群截图。界面字和别人的名字去掉，方伟 / 网友分块，重复句只留一次。
+_SHOT_A = """9:41
+100%
+5G
+微信
+瑞幸古茗交流群(86)
+方伟Rey
+瑞幸和古茗都算头部，但瑞幸同店还有压力
+姜禄彦
+古茗店效还行，瑞幸的折扣不能再深了
+设为群待办
+¥9.9
+小程序
+瑞幸咖啡
+徐哲航
+先看到这里，不展开了
+"""
+_SHOT_B = """20:41
+微信
+87%
+瑞幸古茗交流群(86)
+姜禄彦
+古茗店效还行，瑞幸的折扣不能再深了
+设为群待办
+徐哲航
+先看到这里，不展开了
+方伟
+同店压力还在，折扣不能再深
+Rey
+会员那边先不动
+"""
+
+
+def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, tmp_path, monkeypatch):
+    first = tmp_path / "a.png"
+    second = tmp_path / "b.png"
+    _png(first, b"\x11" * 24)
+    _png(second, b"\x12" * 24)
+    row = _store(
+        conn,
+        settings,
+        "fangwei-zsxq",
+        "ocr-14886",
+        "图片",
+        "瑞幸古茗是比较头部的。\n\n![](a.png)\n\n![](b.png)\n",
+        [first, second],
+    )
+    _remember(conn, row["id"], "a.png", _SHOT_A)
+    _remember(conn, row["id"], "b.png", _SHOT_B)
+    refresh_article_ocr(conn, row["id"])
+    conn.commit()
+    saved = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()["ocr_text"]
+    assert saved.startswith("方伟：瑞幸和古茗都算头部")
+    assert "网友：古茗店效还行" in saved
+    assert saved.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
+    assert "姜禄彦" not in saved and "徐哲航" not in saved and "设为群待办" not in saved
+    assert "小程序" not in saved and "交流群" not in saved and "¥" not in saved
+
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{row['id']}").text
+    assert "方伟：" in page and "网友：" in page
+    assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
+    assert "姜禄彦" not in page and "设为群待办" not in page
+    assert page.count("点击看原图") == 2
+
+    seen = []
+
+    def capture_digest(_settings, messages, **_kwargs):
+        seen.append(messages[1]["content"])
+        return '{"summary": "导读", "points": ["同店还有压力"], "tags": []}', "grok-test"
+
+    monkeypatch.setattr(digest_mod, "chat", capture_digest)
+    digest_row = conn.execute(
+        "SELECT id, title, body_text, content_hash, published_at, source_id, ocr_hash FROM articles WHERE id = %s",
+        (row["id"],),
+    ).fetchone()
+    digest_mod.digest_article(conn, settings, digest_row, "方伟")
+    assert "【图片里的字】" in seen[0]
+    assert "方伟：瑞幸和古茗都算头部" in seen[0]
+    assert "网友：古茗店效还行" in seen[0]
+    assert "不要把网友的话写成方伟的判断" in seen[0]
+    assert "姜禄彦" not in seen[0] and "设为群待办" not in seen[0] and "小程序" not in seen[0]
+
+    prompts = []
+
+    def capture_view(_settings, messages, **_kwargs):
+        prompts.append(messages[1]["content"])
+        return '{"贵州茅台": null}', "grok-test"
+
+    monkeypatch.setattr(views_mod, "chat", capture_view)
+    company = conn.execute("SELECT id, name_zh FROM companies WHERE name_zh = '贵州茅台'").fetchone()
+    article = conn.execute(
+        "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s",
+        (row["id"],),
+    ).fetchone()
+    views_mod.extract_article(conn, settings, article, "方伟", [company])
+    assert "方伟：瑞幸和古茗都算头部" in prompts[0]
+    assert "网友：" in prompts[0]
+    assert "不要把网友的话写成方伟的判断" in prompts[0]
+    assert "不要因为来自截图就当成没下判断" in prompts[0]
+    assert "姜禄彦" not in prompts[0] and "设为群待办" not in prompts[0]
