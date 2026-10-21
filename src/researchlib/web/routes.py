@@ -416,7 +416,8 @@ def home(request: Request):
             for item in holdings:
                 view = item.get("view")
                 digest = digests.get(view["article_id"]) if view else None
-                item["summary"] = recent_blurb(view, digest)
+                # 首页只放已有导读。没有导读就留一行态度和篇数，不把判断原文铺开。
+                item["summary"] = str((digest or {}).get("summary") or "").strip()
     if chosen:
         heading = by_id[chosen].name
         empty = "这个来源还没有文章。"
