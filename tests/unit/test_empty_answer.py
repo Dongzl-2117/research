@@ -2,6 +2,7 @@
 
 from researchlib.author_voice import duan_paragraphs
 from researchlib.empty_answer import (
+    has_stance,
     hide_empty_answer,
     is_chrome_line,
     judgment_len,
@@ -153,6 +154,13 @@ def test_author_voice_all_is_suppressed_and_real_judgment_stays():
     assert judgment_len(long_judgment) >= 40
     assert hide_empty_answer(None, 2, long_judgment, {"author_voice": "段永平"}, source_id="duanyongping-blog") is False
     assert hide_empty_answer(None, 3, essay, {"author_voice": "all"}, source_id="fangwei-mp") is False
+    # 「做对的事情」只是方法，不是买、贵、持有或生意原则。
+    method = "不要太保守，做对的事情，把事情做对。"
+    assert judgment_len(method) < 40
+    assert has_stance(method) is False
+    method_conn = _Conn()
+    assert hide_empty_answer(method_conn, 11, method, {"author_voice": "all"}, source_id="duanyongping-blog")
+    assert method_conn.calls[0][1][0].obj["suppressed"] == "no_judgment"
     # 段永平那节只剩康熙部首导航，仍是空回答，不改成 no_judgment。
     shell = _Conn()
     assert hide_empty_answer(
