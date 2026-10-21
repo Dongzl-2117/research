@@ -6,15 +6,17 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
-from researchlib.ingest.duanyongping.companies import companies_in
+from researchlib.ingest.duanyongping.companies import companies_in, library_names
 from researchlib.ingest.duanyongping.extract import (
     Block,
     is_author_text,
     is_comment_break,
     is_date_only,
     is_other_text,
+    is_reply_to_duan,
     normalize_date,
 )
+from researchlib.ingest.duanyongping.policy import anchored_names
 
 _PUNCT = re.compile(r"[。！？!?，,；;]")
 _AUTHOR_LABEL = re.compile(
@@ -30,6 +32,7 @@ class Post:
     repost: bool
     blocks: list[Block] = field(default_factory=list)
     page: int = 0
+    guest: bool = False
 
 
 @dataclass
@@ -46,6 +49,7 @@ class Entry:
     post_title: str
     page: int
     repost: bool = False
+    off_views: bool = False
 
     @property
     def external_id(self) -> str:
@@ -76,7 +80,10 @@ def _is_title(block: Block, nxt: Block | None, prev: Block | None, body_size: fl
         return False
     if _PUNCT.search(text):
         return False
-    if is_date_only(text) or is_author_text(text) or is_other_text(text) or is_comment_break(text):
+    if is_date_only(text) or is_author_text(text) or is_comment_break(text):
+        return False
+    # 「回复段永平」本身是博友帖的标题，要能把这篇切开。别的署名行仍不是标题。
+    if is_other_text(text) and not is_reply_to_duan(text):
         return False
     if body_size and block.size >= body_size * 1.18:
         return True
@@ -113,7 +120,14 @@ def split_posts(blocks: list[Block]) -> list[Post]:
             if nxt is not None and is_date_only(nxt.text):
                 date = normalize_date(nxt.text)
                 step = 2
-            current = Post(title=block.text.strip(), date=date, repost=is_repost(block.text), page=block.page)
+            title = block.text.strip()
+            current = Post(
+                title=title,
+                date=date,
+                repost=is_repost(title),
+                page=block.page,
+                guest=is_reply_to_duan(title),
+            )
             index += step
             continue
         if current is None:
@@ -129,7 +143,14 @@ def split_posts(blocks: list[Block]) -> list[Post]:
 
 
 def _author_block(block: Block, post: Post, in_thread: bool) -> bool:
-    if is_author_text(block.text) or block.bold:
+    if is_reply_to_duan(block.text):
+        return False
+    if is_author_text(block.text):
+        return True
+    # 「回复段永平」整篇是博友写的。没署名「段永平：」的段落，加粗也不算他。
+    if post.guest:
+        return False
+    if block.bold:
         return True
     # 博文正文（评论区之前、没有别人署名）算他写的。转载的正文不是。
     if post.repost or in_thread:
@@ -208,7 +229,8 @@ def segment_post(post: Post) -> list[Entry]:
     question: list[str] = []
     author: list[str] = []
     trailing: list[str] = []
-    in_thread = False
+    # 标题已经是「回复段永平」时，没署名的正文是博友的话，先放进提问。
+    in_thread = post.guest
 
     def close_essay() -> None:
         if essay:
@@ -267,12 +289,29 @@ def segment_post(post: Post) -> list[Entry]:
         close_qa(trailing)
     elif essay:
         close_essay()
-    if not entries and post.title:
-        entries.append(_make(post, "", "", "", post.date, "essay"))
+    elif question or post.title:
+        # 只有博友回复、没有他本人的话时，仍留一条候选，分类时丢掉，并写明原因。
+        entries.append(
+            _make(post, "\n\n".join(question), "", "", post.date, "qa" if question else "essay")
+        )
     return entries
 
 
+def _is_guest_entry(entry: Entry) -> bool:
+    """整条都是博友在回复他，里面没有段永平本人的回答。"""
+    author = re.sub(r"\s+", "", entry.author)
+    if len(author) >= 6 and not is_reply_to_duan(entry.author):
+        return False
+    return any(is_reply_to_duan(text) for text in (entry.post_title, entry.title, entry.question, entry.author))
+
+
 def classify(entry: Entry) -> Entry:
+    if _is_guest_entry(entry):
+        entry.keep = False
+        entry.off_views = True
+        entry.reason = "博友回复，不是段永平本人"
+        entry.companies = []
+        return entry
     author = re.sub(r"\s+", "", entry.author)
     if len(author) < 6:
         entry.keep = False
@@ -280,16 +319,33 @@ def classify(entry: Entry) -> Entry:
         entry.companies = []
         return entry
     # 转载里的公司名是别人的文章。只有他本人的话点了名才留。
+    # 读者提问里点了名、他的回答是在说这家公司的，问答整条仍留。
     scope = entry.author if entry.repost else f"{entry.question}\n{entry.author}"
-    real, side = companies_in(scope)
+    real, side, weak = companies_in(scope)
+    if not real:
+        anchored = [
+            name
+            for name in anchored_names(entry.post_title or entry.title, entry.author)
+            if name not in set(side)
+        ]
+        real = anchored
     if real:
         entry.keep = True
         entry.companies = real
+        entry.off_views = not any(name in library_names() for name in real)
         entry.reason = "谈到" + "、".join(real)
+        if entry.off_views:
+            entry.reason += "（不在公司表，不进观点）"
         return entry
     entry.keep = False
     entry.companies = []
-    entry.reason = "公司只出现在举例里" if side else "没有具体公司"
+    entry.off_views = True
+    if weak:
+        entry.reason = "不是在论证这家公司"
+    elif side:
+        entry.reason = "公司只出现在举例里"
+    else:
+        entry.reason = "没有具体公司"
     return entry
 
 

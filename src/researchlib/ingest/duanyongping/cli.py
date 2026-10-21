@@ -29,7 +29,16 @@ _HELP = f"""
 
 问答整条保留（读者的问题 + 段永平的回答 + 回答后面别人的回复）。
 有日期的进首页按天；没有日期的不进按天，只出现在作者页、公司页和检索。
-观点和摘要只统计段永平本人写的段落。
+观点和摘要只统计段永平本人写的段落。读者提问和博友回复不进模型。
+
+已经入库的旧数据不读 PDF、不调用模型，回扫一遍：
+
+  research-ingest-duanyongping --reclassify --dry-run
+  research-ingest-duanyongping --reclassify
+
+然后只对这个来源抽观点：
+
+  research-views --source duanyongping-blog --limit 100
 
 PDF 预期路径（不会随仓库分发，约 40MB）：
   {DEFAULT_PDF}
@@ -69,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument("--pdf", type=Path, help=f"本地 PDF。预期 {DEFAULT_PDF}")
     source.add_argument("--xml", type=Path, help="pdftohtml -xml 的输出，测试夹具用")
     source.add_argument("--text", type=Path, help="pdftotext -layout 的输出，测试夹具用")
@@ -78,6 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", type=Path, help="分类报告 JSON，默认同输出目录的 report.json")
     parser.add_argument("--pages", help="只抽这些页，例如 1-20。默认全文")
     parser.add_argument("--emit-only", action="store_true", help="只写 Markdown 和报告，不入库")
+    parser.add_argument(
+        "--reclassify",
+        action="store_true",
+        help="回扫库里的 duanyongping-blog：洗页码垃圾，博友回复标非本人，无具体公司不进观点。不读 PDF，不调用模型",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="配合 --reclassify：只计数，不写库")
     return parser
 
 
@@ -169,8 +184,30 @@ def require_enabled(source_id: str) -> None:
         raise SystemExit(2) from exc
 
 
+def _reclassify(dry_run: bool) -> int:
+    from researchlib.config import Settings
+    from researchlib.db import prepare
+    from researchlib.ingest.duanyongping.reclassify import format_report, reclassify_source
+
+    conn = prepare(Settings.from_env())
+    try:
+        report = reclassify_source(conn, dry_run=dry_run)
+    finally:
+        conn.close()
+    print(format_report(report, dry_run=dry_run))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.dry_run and not args.reclassify:
+        raise SystemExit("--dry-run 只配合 --reclassify")
+    if args.reclassify and (args.pdf or args.xml or args.text):
+        raise SystemExit("--reclassify 不和 --pdf、--xml、--text 一起用")
+    if args.reclassify:
+        return _reclassify(args.dry_run)
+    if args.pdf is None and args.xml is None and args.text is None:
+        raise SystemExit("需要 --pdf、--xml、--text 之一，或 --reclassify")
     if not args.emit_only:
         require_enabled(args.source)
     blocks, origin = load_blocks(args)

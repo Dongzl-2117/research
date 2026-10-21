@@ -442,6 +442,8 @@ def parse_markdown_files(
             stored_meta["author_voice"] = voice.strip()
         if frontmatter.get("off_timeline") is True:
             stored_meta["off_timeline"] = True
+        if frontmatter.get("off_views") is True:
+            stored_meta["off_views"] = True
         docs.append(
             ParsedDoc(
                 external_id=external_id[:500],

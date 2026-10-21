@@ -60,6 +60,79 @@ def not_guest_sql(alias: str = "a") -> str:
     return f"coalesce({alias}.raw_meta->>'poster_role', '') <> 'guest'"
 
 
+# 段永平博客里没有具体公司、或只是列举/致谢/闲聊的条目。人话留着，不进观点。
+OFF_VIEWS = "off_views"
+DUAN_SOURCE = "duanyongping-blog"
+_DUAN_LINE = re.compile(r"^(?:段永平|段总|段)\s*[:：]\s*(.*)$")
+_OTHER_LINE = re.compile(
+    r"^(?:问|Q|q)\s*[:：]|"
+    r"^(?:网友|博友|读者)|"
+    r"^(?:[\u4e00-\u9fffA-Za-z0-9_]{0,24}?\s*)?回复\s*[:：]?\s*段(?:永平|总)(?!的)"
+)
+
+
+def off_views(raw_meta: dict | None) -> bool:
+    return str((raw_meta or {}).get(OFF_VIEWS) or "").lower() == "true"
+
+
+def views_eligible_sql(alias: str = "a") -> str:
+    """观点候选：不是网友帖，也没有标明不进观点。"""
+    return f"{not_guest_sql(alias)} AND coalesce({alias}.raw_meta->>'{OFF_VIEWS}', '') <> 'true'"
+
+
+def duan_paragraphs(text: str) -> str:
+    """只留段永平的话。有「段：」就从这句接到下一位说话人之前；读者和博友回复丢掉。
+
+    整段都没有说话人标记时，当作他的博文留下。
+    """
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if not any(_DUAN_LINE.match(line) or _OTHER_LINE.match(line) for line in lines):
+        return "\n".join(lines)
+    kept: list[str] = []
+    taking = False
+    for line in lines:
+        match = _DUAN_LINE.match(line)
+        if match:
+            taking = True
+            piece = (match.group(1) or "").strip()
+            if piece:
+                kept.append(piece)
+            continue
+        if _OTHER_LINE.match(line):
+            taking = False
+            continue
+        if taking:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def for_model(
+    body_text: str,
+    chunks: list[tuple[str, str]],
+    raw_meta: dict | None,
+    *,
+    source_id: str = "",
+) -> tuple[str, list[tuple[str, str]], bool]:
+    """交给观点或摘要的正文。段永平只留他本人的章节，或「段：」起到下一位说话人之前的段落。"""
+    if is_guest(raw_meta):
+        return "", [], True
+    body, picked, restricted = restrict(body_text, chunks, raw_meta)
+    voice = str((raw_meta or {}).get(AUTHOR_VOICE) or "").strip()
+    if source_id != DUAN_SOURCE and voice != "段永平":
+        return body, picked, restricted
+    if not picked and (body or "").strip():
+        picked = [("", body)]
+    filtered: list[tuple[str, str]] = []
+    for heading, text in picked:
+        piece = duan_paragraphs(text)
+        if piece.strip():
+            filtered.append((heading, piece))
+    text = "\n\n".join(piece for _heading, piece in filtered)
+    return text, filtered, True
+
+
 def is_guest(raw_meta: dict | None) -> bool:
     return str((raw_meta or {}).get(POSTER_ROLE) or "") == ROLE_GUEST
 

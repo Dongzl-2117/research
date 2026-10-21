@@ -2,13 +2,19 @@
 
 from pathlib import Path
 
-from researchlib.author_voice import restrict
+from researchlib.author_voice import duan_paragraphs, for_model, restrict
 from researchlib.chunks import make_chunks
 from researchlib.company_seed import SEEDS
 from researchlib.ingest.duanyongping.cli import main
 from researchlib.ingest.duanyongping.companies import extra_alias_keys, seed_alias_keys
 from researchlib.ingest.duanyongping.emit import render_markdown, render_report, report_payload
-from researchlib.ingest.duanyongping.extract import Block, lines_to_blocks, parse_text, parse_xml
+from researchlib.ingest.duanyongping.extract import (
+    Block,
+    is_reply_to_duan,
+    lines_to_blocks,
+    parse_text,
+    parse_xml,
+)
 from researchlib.ingest.duanyongping.segment import Post, classify, entries_from_blocks, segment_post
 from researchlib.ingest.parse import parse_archive
 from researchlib.mentions import alias_key
@@ -178,3 +184,89 @@ def test_cli_emit_only_prints_classification(tmp_path: Path, capsys):
     assert "保留 5" in printed
     assert "跳过 4" in printed
     assert "不进按天" in printed
+
+
+def test_reply_to_duan_is_not_his_own_voice():
+    assert is_reply_to_duan("回复段永平")
+    assert is_reply_to_duan("回复：段永平")
+    assert is_reply_to_duan("张三回复段永平：茅台太贵")
+    assert not is_reply_to_duan("段永平回复网友：不贵")
+    assert not is_reply_to_duan("回复段永平的问题")
+
+
+def test_dirty_fixture_skips_method_guest_and_scrubs_page_junk():
+    entries, mode, _posts = _load("dirty.xml")
+    assert mode == "posts"
+    kept = [entry for entry in entries if entry.keep]
+    skipped = [entry for entry in entries if not entry.keep]
+    assert any(entry.reason == "博友回复，不是段永平本人" for entry in skipped)
+    assert any("不要太保守" in entry.author and entry.reason == "没有具体公司" for entry in skipped)
+    assert any("感谢茅台" in entry.author and entry.reason == "不是在论证这家公司" for entry in skipped)
+    assert any("这些名字谁都知道" in entry.author and entry.reason == "不是在论证这家公司" for entry in skipped)
+    assert any("打球" in entry.author and entry.reason == "不是在论证这家公司" for entry in skipped)
+    assert all("file://" not in (entry.author + entry.question) for entry in entries)
+
+    moutai = next(entry for entry in kept if entry.companies == ["贵州茅台"] and "生意模式很好" in entry.author)
+    assert "file://" not in moutai.author
+    assert "H.HTM" not in moutai.author
+    assert "我还拿着" in moutai.author
+    assert moutai.off_views is False
+
+    answered = next(entry for entry in kept if "不贵" in entry.author and "太贵" in entry.question)
+    assert answered.companies == ["贵州茅台"]
+    assert "博友" not in answered.author
+    assert answered.off_views is False
+
+    vanke = next(entry for entry in kept if entry.companies == ["万科"])
+    assert vanke.off_views is True
+    assert "不进观点" in vanke.reason
+    rendered = render_markdown(vanke)
+    assert "off_views: true" in rendered
+    assert "万科的生意模式" in rendered
+
+
+def test_views_input_keeps_only_duan_paragraphs():
+    mixed = "\n".join(
+        [
+            "网友：茅台现在是不是太贵？",
+            "段：不贵。生意模式还在。",
+            "我还拿着。",
+            "博友回复段永平：我觉得该卖。",
+            "读者：我也觉得贵。",
+        ]
+    )
+    assert duan_paragraphs(mixed) == "不贵。生意模式还在。\n我还拿着。"
+    chunks = [("", mixed), ("读者问", "网友：这个问题不要算成他的判断。")]
+    body, picked, restricted = for_model(
+        mixed, chunks, {"author_voice": "all"}, source_id="duanyongping-blog"
+    )
+    assert restricted is True
+    assert "该卖" not in body
+    assert "太贵" not in body
+    assert "不贵" in body and "我还拿着" in body
+    assert all("读者问" != heading for heading, _text in picked)
+    essay = "苹果的生意模式很好，我打算长期拿着。"
+    whole, _picked, restricted = for_model(essay, [("", essay)], {"author_voice": "all"}, source_id="duanyongping-blog")
+    assert whole == essay and restricted is True
+    other, _picked, restricted = for_model(essay, [("", essay)], {}, source_id="fangwei-mp")
+    assert other == essay and restricted is False
+
+
+def test_stored_reclassify_decides_without_a_database():
+    from researchlib.ingest.duanyongping.reclassify import decide_stored, scrub_stored_markdown
+
+    scrubbed = scrub_stored_markdown("---\ntitle: \"茅台\"\n---\n茅台的生意模式很好。file:///H.HTM 我还拿着。\n")
+    assert "file://" not in scrubbed and "title:" in scrubbed and "我还拿着" in scrubbed
+    assert decide_stored("回复段永平", "茅台我看好，生意模式没问题，我已经买了不少。")["guest"] is True
+    assert decide_stored("能力圈", "不要太保守，做对的事情，把事情做对。")["reason"] == "没有具体公司"
+    assert decide_stored("周末", "感谢茅台的朋友，周末一起吃饭，聊得很开心。")["reason"] == "不是在论证这家公司"
+    assert decide_stored("点名", "茅台、苹果、网易这些名字谁都知道。")["reason"] == "不是在论证这家公司"
+    assert decide_stored("茅台", "茅台的生意模式很好。我还拿着。")["off_views"] is False
+    from researchlib.ingest.duanyongping.attach import argumentative_ids
+    from researchlib.ingest.duanyongping.companies import matcher
+
+    found, names = matcher()
+    by_name = {name: company_id for company_id, name in names.items()}
+    assert by_name["贵州茅台"] not in argumentative_ids(found, "周末", "感谢茅台的朋友，周末一起吃饭，聊得很开心。")
+    assert by_name["贵州茅台"] in argumentative_ids(found, "茅台", "生意模式很好，我还拿着。")
+    assert by_name["贵州茅台"] not in argumentative_ids(found, "点名", "茅台、苹果、网易这些名字谁都知道。")

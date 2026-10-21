@@ -233,13 +233,20 @@ def _restore(conn, article_id: int, matcher) -> None:
     from researchlib.chunks import replace_chunks, replace_ocr_chunks, replace_translation_chunks
     from researchlib.mentions import mentions_for_document, replace_mentions
 
-    row = conn.execute("SELECT title, body_md FROM articles WHERE id = %s", (article_id,)).fetchone()
+    row = conn.execute(
+        "SELECT title, body_md, source_id, raw_meta FROM articles WHERE id = %s", (article_id,)
+    ).fetchone()
     if row is None:
         return
     replace_chunks(conn, article_id, row["title"], row["body_md"])
     replace_translation_chunks(conn, article_id)
     replace_ocr_chunks(conn, article_id)
-    replace_mentions(conn, article_id, mentions_for_document(matcher, row["title"], row["body_md"]))
+    mention_rows = mentions_for_document(matcher, row["title"], row["body_md"])
+    if row["source_id"] == "duanyongping-blog":
+        from researchlib.ingest.duanyongping.attach import refine_mentions
+
+        mention_rows = refine_mentions(matcher, row["title"], row["body_md"], mention_rows, row["raw_meta"])
+    replace_mentions(conn, article_id, mention_rows)
 
 
 def _cluster(conn, seeds: set[int]) -> set[int]:

@@ -529,12 +529,17 @@ def rebuild_all(conn) -> int:
     for item in articles:
         # 一篇一篇取正文，几万篇也不必一次读进内存。
         article = conn.execute(
-            "SELECT id, title, body_md, duplicate_of FROM articles WHERE id = %s", (item["id"],)
+            "SELECT id, title, body_md, duplicate_of, source_id, raw_meta FROM articles WHERE id = %s",
+            (item["id"],),
         ).fetchone()
         if article is None:
             continue
         # 重复的那一份不记提及，公司页只算主版本。
         rows = [] if article["duplicate_of"] else mentions_for_document(matcher, article["title"], article["body_md"])
+        if article["source_id"] == "duanyongping-blog" and rows:
+            from researchlib.ingest.duanyongping.attach import refine_mentions
+
+            rows = refine_mentions(matcher, article["title"], article["body_md"], rows, article["raw_meta"])
         replace_mentions(conn, article["id"], rows)
         conn.commit()
     conn.execute(

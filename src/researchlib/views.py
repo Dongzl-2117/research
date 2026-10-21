@@ -10,6 +10,7 @@
 
     research-views                      # 全部被深入谈到的公司，默认最多 100 篇
     research-views --company 泡泡玛特 --limit 300
+    research-views --source duanyongping-blog --limit 100
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
 长文只给提到这几家公司的段落加开头结尾（见 excerpt.py）；以前只读了开头 30000 字的，标成 head_only 重抽。
@@ -29,7 +30,14 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import VOICE_NOTE, is_guest, not_guest_sql, raw_meta_of, restrict
+from researchlib.author_voice import (
+    VOICE_NOTE,
+    for_model,
+    is_guest,
+    off_views,
+    raw_meta_of,
+    views_eligible_sql,
+)
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
@@ -42,7 +50,7 @@ logger = logging.getLogger("researchlib.views")
 
 PROMPT_VERSION = 2
 BODY_LIMIT = VIEWS_LIMIT
-_GUEST = not_guest_sql("a")
+_GUEST = views_eligible_sql("a")
 PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文章（含「图片里的字」），摘出作者对指定公司的判断。
 只输出一个 JSON 对象，不要输出别的文字。每家指定的公司都要有一个键，没有下判断就写 null：
 {"公司名": {"about": true, "judgment": "…", "mechanism": "…", "stance": "正面",
@@ -298,7 +306,7 @@ def mentioned_companies(conn, source_ids: list[str]) -> list[dict]:
     if not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT c.id, c.name_zh
         FROM companies c
         WHERE EXISTS (
@@ -404,14 +412,20 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
     if not companies:
         return 0
-    if is_guest(raw_meta_of(conn, row)):
+    meta = raw_meta_of(conn, row)
+    if is_guest(meta) or off_views(meta):
         return 0
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
-    meta = raw_meta_of(conn, row)
-    body, voice_chunks, restricted = restrict(row["body_text"] or "", chunks, meta)
+    source_id = row["source_id"] if "source_id" in row.keys() else ""
+    if not source_id and row.get("id"):
+        found = conn.execute("SELECT source_id FROM articles WHERE id = %s", (row["id"],)).fetchone()
+        source_id = found["source_id"] if found else ""
+    body, voice_chunks, restricted = for_model(
+        row["body_text"] or "", chunks, meta, source_id=source_id
+    )
     if restricted:
         header += VOICE_NOTE
         chunks = voice_chunks
@@ -699,7 +713,11 @@ def _worker() -> None:
                 if conn is None:
                     conn = connect(settings)
                 row = conn.execute(
-                    "SELECT id, title, body_text, content_hash, published_at FROM articles WHERE id = %s", (article_id,)
+                    """
+                    SELECT id, title, body_text, content_hash, published_at, source_id
+                    FROM articles WHERE id = %s
+                    """,
+                    (article_id,),
                 ).fetchone()
                 if row is not None:
                     companies = conn.execute(
@@ -767,7 +785,7 @@ def _canonical_ids(conn, article_ids: list[int], source_ids: list[str]) -> list[
     found: list[int] = []
     allowed = set(source_ids)
     for row in rows:
-        if row["source_id"] not in allowed or is_guest(row["raw_meta"]):
+        if row["source_id"] not in allowed or is_guest(row["raw_meta"]) or off_views(row["raw_meta"]):
             continue
         canonical = int(row["duplicate_of"] or row["id"])
         if canonical not in found:

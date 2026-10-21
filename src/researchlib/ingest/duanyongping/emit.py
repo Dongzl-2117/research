@@ -28,6 +28,9 @@ def render_markdown(entry: Entry) -> str:
         lines.append(f"date: {_quote(entry.published)}")
     else:
         lines.append("off_timeline: true")
+    if entry.off_views:
+        # 补名单里的公司库里还没有，留着检索，但不进观点。
+        lines.append("off_views: true")
     lines.append("---")
     lines.append("")
     if uses_sections(entry):
