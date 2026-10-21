@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from researchlib.empty_answer import substantive_voice
 from researchlib.ingest.duanyongping.segment import Entry
 
 
@@ -36,9 +37,11 @@ def render_markdown(entry: Entry) -> str:
     if uses_sections(entry):
         if entry.question.strip():
             lines.extend(["## 读者问", "", entry.question.strip(), ""])
-        lines.extend(["## 段永平", "", entry.author.strip(), ""])
-        if entry.others.strip():
-            lines.extend(["## 其他人", "", entry.others.strip(), ""])
+        # 回答末尾的「回本文开头」不写进正文。
+        lines.extend(["## 段永平", "", substantive_voice(entry.author).strip(), ""])
+        others = substantive_voice(entry.others).strip()
+        if others:
+            lines.extend(["## 其他人", "", others, ""])
     else:
         lines.extend([entry.author.strip(), ""])
     return "\n".join(lines).rstrip() + "\n"

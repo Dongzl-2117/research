@@ -24,6 +24,7 @@ from researchlib.digest import needs_rewrite as digest_needs_rewrite
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
+from researchlib.empty_answer import is_suppressed
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.grok import GROK_MODEL_ID
@@ -606,7 +607,9 @@ def _article_view(request: Request, article_id: int, mode: str):
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
         digest = queries.digests_for(conn, [article_id]).get(article_id)
-        if digest_due(article, digest):
+        empty_answer = is_suppressed(article["raw_meta"])
+        # 短文的图片文字变了也重写摘要。空回答不排进后台。
+        if digest_due(article, digest) and not empty_answer:
             schedule_digests(settings, [(article_id, source.author)])
         ocr_texts = queries.image_ocr_texts(conn, article_id)
         quoted = None
@@ -735,6 +738,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             # 点进文章先看总结：有摘要就放在正文前面。
             "digest_summary": (digest or {}).get("summary") or "",
             "digest_points": _digest_points(digest, limit=6) if digest else [],
+            "empty_answer": empty_answer,
             "elsewhere": elsewhere,
             "revised": revised,
             "same_period": others,

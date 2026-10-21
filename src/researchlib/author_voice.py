@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 
+from researchlib.empty_answer import is_chrome_line
+
 # 有日期的进首页按天。没日期的文章带上这个标记，首页按天不收，作者、公司、检索仍收。
 OFF_TIMELINE = "off_timeline"
 # "all"：整篇都是作者的话。其它值：只取这个 Markdown 章节标题下的段落。
@@ -97,13 +99,15 @@ def duan_paragraphs(text: str) -> str:
         if match:
             taking = True
             piece = (match.group(1) or "").strip()
-            if piece:
+            if piece and not is_chrome_line(piece):
                 kept.append(piece)
             continue
         if _OTHER_LINE.match(line):
             taking = False
             continue
         if taking:
+            if is_chrome_line(line):
+                continue
             kept.append(line)
     return "\n".join(kept)
 

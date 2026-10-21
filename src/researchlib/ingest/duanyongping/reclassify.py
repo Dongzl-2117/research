@@ -7,6 +7,7 @@
 - 没有具体公司，或公司只出现在列举、致谢、闲聊里的，标 ``off_views``，摘掉公司挂靠。
 
 不删文章，也不写改稿记录。新导入已经按同一套规则跳过这些条目；这条命令只处理库里的旧数据。
+段永平那节只剩论坛导航的问答整篇搁下：不进按天、作者列表和检索。
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import ROLE_GUEST, assign_poster_role
 from researchlib.boilerplate import clean_markdown, profile_for
 from researchlib.chunks import replace_chunks
+from researchlib.empty_answer import EMPTY_ANSWER, SUPPRESSED, stored_answer_empty
 from researchlib.ingest.duanyongping import SOURCE_ID
 from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.duanyongping.companies import companies_in, library_names
@@ -85,6 +87,14 @@ def _has_duan_voice(body_md: str, author: str) -> bool:
 
 def decide_stored(title: str, body_md: str) -> dict:
     """纯函数：这篇存量文章该不该进观点，是不是博友回复。"""
+    if stored_answer_empty(body_md):
+        return {
+            "guest": False,
+            "off_views": True,
+            "suppressed": True,
+            "poster_name": "",
+            "reason": "只有论坛导航，没有段永平的话",
+        }
     author, other = _voice(body_md)
     reply = any(is_reply_to_duan(text) for text in (title, author, other) if text)
     if reply and not _has_duan_voice(body_md, author):
@@ -119,6 +129,14 @@ def decide_stored(title: str, body_md: str) -> dict:
 
 def _meta_for(raw_meta, decision: dict) -> dict:
     meta = dict(raw_meta or {})
+    if decision.get("suppressed"):
+        meta[SUPPRESSED] = EMPTY_ANSWER
+        meta["off_views"] = True
+        if meta.get("poster_role") == ROLE_GUEST and str(meta.get("poster_name") or "") in {"", "博友"}:
+            meta.pop("poster_role", None)
+            meta.pop("poster_name", None)
+        return meta
+    meta.pop(SUPPRESSED, None)
     if decision["guest"]:
         meta["poster_name"] = decision["poster_name"] or "博友"
         meta["off_views"] = True
@@ -169,6 +187,8 @@ def reclassify_source(conn, *, dry_run: bool = False) -> dict:
         if decision["off_views"] or decision["guest"]:
             counts["off_views"] += 1
             reasons[decision["reason"]] += 1
+        if decision.get("suppressed"):
+            counts["suppressed"] += 1
         if decision["guest"]:
             counts["guest"] += 1
         scrubbed = new_md != (row["body_md"] or "")
@@ -236,6 +256,7 @@ def format_report(report: dict, *, dry_run: bool) -> str:
         f"扫描 {counts.get('seen', 0)} 篇，改 {counts.get('updated', 0)} 篇，未改 {counts.get('unchanged', 0)} 篇",
         f"洗掉页码垃圾 {counts.get('scrubbed', 0)} 篇",
         f"不进观点 {counts.get('off_views', 0)} 篇，其中博友回复 {counts.get('guest', 0)} 篇",
+        f"空回答搁下 {counts.get('suppressed', 0)} 篇（不进按天、作者列表和检索）",
         f"重算公司挂靠 {counts.get('mentions', 0)} 篇",
         "",
         "不进观点的原因:",

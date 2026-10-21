@@ -6,6 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
+from researchlib.empty_answer import MIN_VOICE, substantive_voice
 from researchlib.ingest.duanyongping.companies import companies_in, library_names
 from researchlib.ingest.duanyongping.extract import (
     Block,
@@ -312,15 +313,18 @@ def classify(entry: Entry) -> Entry:
         entry.reason = "博友回复，不是段永平本人"
         entry.companies = []
         return entry
-    author = re.sub(r"\s+", "", entry.author)
-    if len(author) < 6:
+    voice = substantive_voice(entry.author)
+    raw = re.sub(r"\s+", "", entry.author or "")
+    if len(re.sub(r"\s+", "", voice)) < MIN_VOICE:
         entry.keep = False
-        entry.reason = "没有段永平本人的话"
+        entry.off_views = True
         entry.companies = []
+        # 署名、时间和「回本文开头」凑够字数，但不是他的话。整篇不入库。
+        entry.reason = "只有论坛导航，没有段永平的话" if len(raw) >= MIN_VOICE else "没有段永平本人的话"
         return entry
     # 转载里的公司名是别人的文章。只有他本人的话点了名才留。
     # 读者提问里点了名、他的回答是在说这家公司的，问答整条仍留。
-    scope = entry.author if entry.repost else f"{entry.question}\n{entry.author}"
+    scope = voice if entry.repost else f"{entry.question}\n{voice}"
     real, side, weak = companies_in(scope)
     if not real:
         anchored = [
