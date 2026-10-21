@@ -1,6 +1,7 @@
 """用 LLM 给每篇文章写摘要、要点和标签，存进 article_digests。
 
-只处理还没有摘要、正文改过（content_hash 对不上）、提示词版本旧了、或当时只读了长文开头的文章。
+只处理还没有摘要、正文改过（content_hash 对不上）、提示词版本旧了、当时只读了长文开头，
+或正文很短而图片文字和上次抽的时候不一致的文章。
 卡片和 JSON 接口优先展示摘要；旧摘要照常显示，同时排进后台重写。失败的记下来，隔几天再试。
 
 两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
@@ -30,7 +31,7 @@ from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
-from researchlib.ocr import append_ocr, article_ocr
+from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.present import format_date
 
@@ -85,10 +86,25 @@ def needs_rewrite(digest: dict | None) -> bool:
     return (digest.get("prompt_version") or 1) < PROMPT_VERSION or bool(digest.get("head_only"))
 
 
+def digest_due(article, digest: dict | None) -> bool:
+    """打开这一篇时要不要重写摘要。不扫全库。
+
+    正文很短、图片文字和上次抽的时候不一致，也重写这一篇：截图里的字要进导读。
+    """
+    if needs_rewrite(digest):
+        return True
+    if article is None:
+        return False
+    ocr_hash = article["ocr_hash"] or ""
+    if not ocr_hash or len(article["body_text"] or "") >= SHORT_BODY_CHARS:
+        return False
+    return ((digest or {}).get("ocr_hash") or "") != ocr_hash
+
+
 _STALE = (
     "(d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s OR d.head_only"
     " OR (a.ocr_hash <> '' AND d.ocr_hash IS DISTINCT FROM a.ocr_hash"
-    " AND length(coalesce(a.body_text, '')) < 400))"
+    f" AND length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)}))"
 )
 
 
@@ -124,6 +140,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
         body = append_ocr(voice_body, ocr_text)
         if ocr_text.strip():
             chunks = [*chunks, ("图片里的字", ocr_text)]
+            header += "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。）"
     reduced = False
     if restricted and not voice_body.strip():
         # 没有他本人的话，也不要把图片里的字写成他的导读。

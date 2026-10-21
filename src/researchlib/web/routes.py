@@ -19,8 +19,8 @@ from researchlib.ask import PRESETS, retry, start
 from researchlib.boilerplate import clean_article
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
+from researchlib.digest import digest_due, schedule_digests
 from researchlib.digest import needs_rewrite as digest_needs_rewrite
-from researchlib.digest import schedule_digests
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
@@ -32,6 +32,7 @@ from researchlib.llm import llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.portfolio import ROLE_LABELS, Portfolio, load_portfolio
+from researchlib.render import inline_image_ocr
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
@@ -579,8 +580,9 @@ def _article_view(request: Request, article_id: int, mode: str):
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
         digest = queries.digests_for(conn, [article_id]).get(article_id)
-        if digest_needs_rewrite(digest):
+        if digest_due(article, digest):
             schedule_digests(settings, [(article_id, source.author)])
+        ocr_texts = queries.image_ocr_texts(conn, article_id)
         quoted = None
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
@@ -606,7 +608,10 @@ def _article_view(request: Request, article_id: int, mode: str):
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
-    original_html = prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent)
+    original_html = inline_image_ocr(
+        prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent),
+        ocr_texts,
+    )
 
     has_translation = bool(translation and translation.get("body_html"))
     # 原文已改、译文 hash 对不上时仍可展示旧译文，但标 incomplete
@@ -616,6 +621,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         and translation.get("content_hash") == article.get("content_hash")
     )
     zh_html = finish_html(translation["body_html"], link_index, parent) if has_translation else None
+    if zh_html:
+        zh_html = inline_image_ocr(zh_html, ocr_texts)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""
     quoted_marked = False
@@ -725,7 +732,8 @@ def _tree_body(conn, article, source_id: str):
     shown_md = article["body_md"]
     if fmt != "html":
         shown_md = clean_article(conn, article["id"], source_id, shown_md)
-    return Markup(prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent))
+    html = prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent)
+    return Markup(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
 
 def _source_tree(request: Request, source_id: str, article_id: int | None):

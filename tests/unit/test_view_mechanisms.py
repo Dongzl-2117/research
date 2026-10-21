@@ -2,6 +2,7 @@
 
 from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.claims import claim_side, looks_like_list, plain_cite, quote_ok, same_repost
+from researchlib.digest import PROMPT_VERSION, digest_due
 from researchlib.excerpt import view_windows
 from researchlib.ocr import append_ocr, compose_ocr_text
 from researchlib.theses import parse_theses
@@ -14,6 +15,16 @@ class _Conn:
 
     def fetchall(self):
         return [{"ord": 3, "body": "现阶段不宜提价，批价已经很高。"}]
+
+
+def test_short_article_digest_is_due_when_ocr_arrives():
+    current = {"prompt_version": PROMPT_VERSION, "head_only": False, "ocr_hash": ""}
+    short = {"ocr_hash": "abc", "body_text": "瑞幸古茗是比较头部的。"}
+    assert digest_due(short, current)
+    assert digest_due(short, None)
+    assert not digest_due(short, {**current, "ocr_hash": "abc"})
+    assert not digest_due({"ocr_hash": "abc", "body_text": "字" * 400}, current)
+    assert not digest_due({"ocr_hash": "", "body_text": "只有一句。"}, current)
 
 
 def test_ocr_text_is_appended_for_views_and_digest():

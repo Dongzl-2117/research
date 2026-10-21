@@ -172,7 +172,8 @@ def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
 def get_article(conn, article_id: int, source_ids: list[str]):
     return conn.execute(
         """
-        SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash, duplicate_of
+        SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash,
+               duplicate_of, ocr_hash
         FROM articles
         WHERE id = %s AND source_id = ANY(%s)
         """,
@@ -248,6 +249,20 @@ def article_images(conn, article_id: int):
         """,
         (article_id,),
     ).fetchall()
+
+
+def image_ocr_texts(conn, article_id: int) -> dict[str, str]:
+    """这篇本地图已经识别出的字。按内容哈希，阅读页现查，新识别的刷新就能看见。"""
+    rows = conn.execute(
+        """
+        SELECT i.content_hash, t.text
+        FROM article_images i
+        JOIN image_texts t ON t.content_hash = i.content_hash
+        WHERE i.article_id = %s AND btrim(t.text) <> ''
+        """,
+        (article_id,),
+    ).fetchall()
+    return {row["content_hash"]: row["text"] or "" for row in rows}
 
 
 def sibling_articles(conn, source_id: str, article_id: int, parent: str):
@@ -355,7 +370,7 @@ def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
         return {}
     rows = conn.execute(
         """
-        SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version, d.head_only
+        SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version, d.head_only, d.ocr_hash
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
         WHERE d.article_id = ANY(%s)
