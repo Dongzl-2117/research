@@ -1336,7 +1336,8 @@ def _company_views(request: Request, conn, company, by_id: dict, author: str) ->
         "page": page,
         "pages": pages,
         "base": base,
-        "lead": _recent_lead(conn, scoped, settings),
+        # 跟当前筛选走。筛到某一条论点时，不要把没进这组的判断露在展开行里。
+        "lead": _recent_lead(conn, chosen, settings),
     }
 
 
