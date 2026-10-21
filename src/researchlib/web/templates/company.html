@@ -102,17 +102,20 @@
       {% endfor %}
     </nav>
   </div>
-  {% if views.pending %}<p class="quiet views-pending">还有 <span class="num">{{ views.pending }}</span> 篇在整理</p>{% endif %}
+  {% if views.pending %}<p class="quiet views-pending">{% if views.pending_author %}{{ views.pending_author }}{% endif %}还有 <span class="num">{{ views.pending }}</span> 篇谈到{{ company.name_zh }}的文章没提炼成观点，后台在陆续补，补好会出现在下面。</p>{% endif %}
   {% if views["items"] %}
   <ol class="view-list">
     {% for item in views["items"] %}
     <li class="view stance-{{ item.stance or 'none' }}">
+      {% set href = "/articles/" ~ item.article_id ~ (("?chunk=" ~ item.chunk ~ (("#" ~ item.anchor) if item.anchor else "")) if item.chunk is not none else "") %}
+      <p class="view-source view-source-top"><a href="{{ href }}">{{ item.title }}</a></p>
       <p class="item-meta">
         <time class="num">{{ item.date }}</time>
         <span aria-hidden="true">·</span>
         <a href="/companies/{{ company.id }}?author={{ item.author | urlencode }}#views">{{ item.author }}</a>
         {% if item.stance_label %}<span class="stance stance-{{ item.stance }}">{{ item.stance_label }}</span>{% endif %}
         {% if item.changed %}<span class="stance-change">{{ item.previous_label }} → {{ item.stance_label }}</span>{% endif %}
+        {% if item.business %}<span class="view-business">{{ item.business }}</span>{% endif %}
       </p>
       <p class="view-judgment">{{ item.judgment }}</p>
       {% if item.mechanism %}<p class="view-mechanism"><span class="view-label">机制</span>{{ item.mechanism }}</p>{% endif %}
@@ -123,8 +126,7 @@
         {% if item.metrics %}<dt>验证指标</dt><dd><ul>{% for line in item.metrics %}<li>{{ line }}</li>{% endfor %}</ul></dd>{% endif %}
       </dl>
       {% endif %}
-      {% if item.quote %}<blockquote class="view-quote"><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.quote }}</a></blockquote>{% endif %}
-      <p class="view-source"><a href="/articles/{{ item.article_id }}">{{ item.title }}</a></p>
+      {% if item.quote and not item.quote_repeats %}<blockquote class="view-quote"><a href="{{ href }}">{{ item.quote }}</a></blockquote>{% endif %}
     </li>
     {% endfor %}
   </ol>

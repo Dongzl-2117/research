@@ -38,6 +38,7 @@ from researchlib.textutil import argumentative_excerpt
 from researchlib.translate.pair import bilingual_pairs
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
+from researchlib.views import quote_repeats
 from researchlib.views import filter_timeline, same_period
 from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
@@ -230,11 +231,11 @@ def _visible_tags(card: dict, tags: list[dict]) -> list[dict]:
     return visible
 
 
-def _digest_points(digest) -> list[str]:
+def _digest_points(digest, limit: int = 2) -> list[str]:
     raw = digest["points"] or []
     if isinstance(raw, str):
         return []
-    return [str(item).strip() for item in raw if str(item).strip()][:2]
+    return [str(item).strip() for item in raw if str(item).strip()][:limit]
 
 
 def _decorate(conn, cards: list[dict], settings) -> list[dict]:
@@ -659,6 +660,9 @@ def _article_view(request: Request, article_id: int, mode: str):
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
             "quoted_marked": quoted_marked,
+            # 点进文章先看总结：有摘要就放在正文前面。
+            "digest_summary": (digest or {}).get("summary") or "",
+            "digest_points": _digest_points(digest, limit=6) if digest else [],
             "elsewhere": elsewhere,
             "revised": revised,
             "same_period": others,
@@ -1230,8 +1234,10 @@ def _company_views(request: Request, conn, company, by_id: dict, author: str) ->
     kind = request.query_params.get("views") or ""
     company_id = int(company["id"])
     items = view_timeline(conn, company_id, by_id, settings)
-    pending = count_view_pending(conn, company_id, list(by_id))
-    if pending:
+    # 「还有几篇没整理」按当前筛的作者算；排队仍然按全部来源。
+    scope_ids = [sid for sid, source in by_id.items() if not author or source.author == author]
+    pending = count_view_pending(conn, company_id, scope_ids)
+    if count_view_pending(conn, company_id, list(by_id)) if author else pending:
         queue_views(conn, settings, company_id, by_id)
     # 论点地图：观点归成的几条论点。缺了或过期了在后台重算，不挡页面。
     theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
@@ -1257,12 +1263,17 @@ def _company_views(request: Request, conn, company, by_id: dict, author: str) ->
     ]
     if thesis is not None:
         filters.append({"key": thesis["key"], "label": thesis["title"], "count": len(chosen)})
+    shown = chosen[offset : offset + VIEWS_PAGE_SIZE]
+    for item in shown:
+        # 摘句和判断说的是同一件事就不再重复显示。
+        item["quote_repeats"] = quote_repeats(item.get("quote") or "", item.get("judgment") or "")
     return {
-        "items": chosen[offset : offset + VIEWS_PAGE_SIZE],
+        "items": shown,
         "kind": kind,
         "filters": filters,
         "theses": theses,
         "pending": pending,
+        "pending_author": author,
         "page": page,
         "pages": pages,
         "base": base,
@@ -1546,6 +1557,41 @@ def media(request: Request, storage_path: str):
         raise HTTPException(status_code=404)
     media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return FileResponse(target, media_type=media_type)
+
+
+@router.get("/pilot")
+def pilot_page(request: Request):
+    """新抽取规则的样卡和首页展开总结样稿，给复核用。只读 DATA_DIR/pilot 下的 JSON，不碰线上观点。"""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from researchlib.pilot import SUMMARY_FILE, VIEWS_FILE, pilot_cards
+
+    settings = request.app.state.settings
+    base = _Path(settings.data_dir) / "pilot"
+    views = _json.loads((base / VIEWS_FILE).read_text()) if (base / VIEWS_FILE).exists() else {"articles": {}}
+    summaries = _json.loads((base / SUMMARY_FILE).read_text()) if (base / SUMMARY_FILE).exists() else {}
+    labels = {"positive": "看好", "negative": "看淡", "mixed": "两面", "neutral": "中性"}
+    names = [("腾讯", 1), ("贵州茅台", 49), ("泡泡玛特", 2990)]
+    groups = []
+    for name, company_id in names:
+        cards = pilot_cards(views, company_id, 20)
+        for card in cards:
+            card["stance_label"] = labels.get(card["stance"], "")
+            siblings = [c for c in views["articles"].get(str(card["article_id"]), []) if c is not card and c["about"]]
+            card["siblings"] = [c["company"] for c in siblings]
+        dropped = [
+            c for cards_ in views["articles"].values() for c in cards_ if c["company_id"] == company_id and not c["about"]
+        ]
+        groups.append({"name": name, "id": company_id, "cards": cards, "dropped": dropped,
+                       "summary": summaries.get(name)})
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+    return render_page(
+        request, "pilot.html",
+        {"nav": "", "title": "样卡复核", "groups": groups, "updated": views.get("updated_at", ""),
+         "sources": sources, "sample_banner": None},
+    )
 
 
 @router.get("/health")
