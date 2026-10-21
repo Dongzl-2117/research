@@ -25,13 +25,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from researchlib.chunks import replace_ocr_chunks
-from researchlib.wechat_dialogue import present_ocr_pieces, present_stored_ocr
+from researchlib.wechat_dialogue import SIDE_SELF, present_ocr_pieces, present_stored_ocr
 
 logger = logging.getLogger("researchlib.ocr")
 
 ENGINE = "rapidocr"
 # 置信度低于这个的文字框不要：多半是把花纹、二维码认成了字。
 MIN_SCORE = 0.5
+# 行的左边缘超过画面宽度的这个比例，当作靠右的绿色气泡（作者自己）。左侧昵称和灰气泡在这之下。
+_SELF_SIDE = 0.40
 OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
 # 检索块要 20 个字；交给观点和摘要的旁路、以及阅读页放宽，短截图也能进正文。
 READING_MIN_CHARS = 8
@@ -45,8 +47,13 @@ class OcrUnavailable(Exception):
 
 
 def order_text(items) -> str:
-    """RapidOCR 的结果 [[框, 文字, 置信度], …] 按阅读顺序拼起来：从上到下分行，同一行从左到右。"""
-    boxes: list[tuple[float, float, float, str]] = []
+    """RapidOCR 的结果 [[框, 文字, 置信度], …] 按阅读顺序拼起来：从上到下分行，同一行从左到右。
+
+    靠右的行（绿色气泡，作者自己）前面加一个不显示的侧标记，对话整理时认成方伟。
+    左侧的灰气泡不加。旧的、只有文字没有坐标的识别结果没有这个标记。
+    """
+    boxes: list[tuple[float, float, float, float, str]] = []
+    width = 0.0
     for item in items or []:
         if not isinstance(item, list | tuple) or len(item) < 2:
             continue
@@ -59,17 +66,26 @@ def order_text(items) -> str:
             xs = [float(point[0]) for point in box]
         except (TypeError, IndexError, ValueError):
             continue
-        boxes.append((min(ys), max(ys), min(xs), text))
+        right = max(xs)
+        width = max(width, right)
+        boxes.append((min(ys), max(ys), min(xs), right, text))
     boxes.sort(key=lambda box: (box[0], box[2]))
     lines: list[dict] = []
-    for top, bottom, left, text in boxes:
+    for top, bottom, left, _right, text in boxes:
         height = max(1.0, bottom - top)
         center = (top + bottom) / 2
         if lines and abs(center - lines[-1]["center"]) <= 0.5 * max(height, lines[-1]["height"]):
             lines[-1]["items"].append((left, text))
         else:
             lines.append({"center": center, "height": height, "items": [(left, text)]})
-    return "\n".join("  ".join(text for _left, text in sorted(line["items"])) for line in lines)
+    rendered: list[str] = []
+    for line in lines:
+        items_on_line = sorted(line["items"])
+        text = "  ".join(piece for _left, piece in items_on_line)
+        if width and items_on_line[0][0] >= _SELF_SIDE * width:
+            text = SIDE_SELF + text
+        rendered.append(text)
+    return "\n".join(rendered)
 
 
 def rapid_engine() -> Callable[[Path], str]:
