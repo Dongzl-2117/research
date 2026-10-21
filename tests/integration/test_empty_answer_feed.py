@@ -195,7 +195,7 @@ def test_backfill_hides_nav_shells_without_duan_heading(conn, settings):
 
 
 def test_backfill_suppresses_author_voice_all_and_keeps_a_real_judgment(conn, settings):
-    essay = "苹果的生意模式很好，我还拿着，不准备卖。\n"
+    essay = "今天天气不错，随便聊聊。\n"
     judgment = "## 读者问\n\n苹果现在贵不贵？\n\n## 段永平\n\n不贵。生意模式还在，我还拿着。\n"
     _insert(
         conn,
@@ -243,9 +243,9 @@ def test_backfill_suppresses_author_voice_all_and_keeps_a_real_judgment(conn, se
         author = client.get("/authors/段永平")
         assert "苹果还拿着" not in author.text
         assert "苹果贵不贵" in author.text
-        found = client.get("/search", params={"q": "不准备卖"})
+        found = client.get("/search", params={"q": "随便聊聊"})
         assert "/articles/41001" not in found.text
         page = client.get("/articles/41001")
         assert page.status_code == 200
         assert "没有段永平的判断" in page.text
-        assert "我还拿着" in page.text
+        assert "随便聊聊" in page.text

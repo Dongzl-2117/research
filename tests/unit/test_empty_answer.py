@@ -10,6 +10,7 @@ from researchlib.empty_answer import (
     substantive_voice,
     voice_is_empty,
 )
+from researchlib.ingest.duanyongping.coverage import missing_visible, source_is_substantive
 from researchlib.ingest.duanyongping.emit import render_markdown
 from researchlib.ingest.duanyongping.extract import Block
 from researchlib.ingest.duanyongping.reclassify import decide_stored
@@ -128,7 +129,7 @@ JUDGMENT = """## 读者问
 
 
 def test_author_voice_all_is_suppressed_and_real_judgment_stays():
-    essay = "苹果的生意模式很好，我还拿着，不准备卖。"
+    essay = "今天天气不错，随便聊聊。"
     conn = _Conn()
     assert hide_empty_answer(
         conn, 1, essay, {"author_voice": "all"}, source_id="duanyongping-blog", title="苹果还拿着"
@@ -172,23 +173,34 @@ def test_author_voice_all_is_suppressed_and_real_judgment_stays():
     assert dropped["off_timeline"] is True
     assert dropped["off_views"] is True
     assert dropped["reason"] == "没有段永平的判断"
-    # 一两句不算明确判断。长文是他的博文，all 不代表没有判断。
-    short = "## 读者问\n\n苹果贵不贵？\n\n## 段永平\n\n不贵。生意模式还在，我还拿着。\n"
-    assert judgment_len(short) < 40
+    # 短，但有贵、拿着，是实质判断，不搁下。
+    short_stance = "## 读者问\n\n苹果贵不贵？\n\n## 段永平\n\n不贵。生意模式还在，我还拿着。\n"
+    assert judgment_len(short_stance) < 40
+    assert hide_empty_answer(
+        None, 5, short_stance, {"author_voice": "段永平"}, source_id="duanyongping-blog"
+    ) is False
+    principle = "## 段永平\n\n只买生意，不预测股价。\n"
+    assert judgment_len(principle) < 40
+    assert hide_empty_answer(
+        None, 8, principle, {"author_voice": "段永平"}, source_id="duanyongping-blog"
+    ) is False
+    # 昵称里的买不算立场。
+    nick = "## 段永平\n\n木买蚂蚁今天来玩。\n"
+    assert judgment_len(nick) < 40
     brief = _Conn()
-    assert hide_empty_answer(brief, 5, short, {"author_voice": "段永平"}, source_id="duanyongping-blog")
+    assert hide_empty_answer(brief, 9, nick, {"author_voice": "段永平"}, source_id="duanyongping-blog")
     assert brief.calls[0][1][0].obj["suppressed"] == "weak_judgment"
     assert brief.calls[0][1][0].obj["off_views"] is True
     long = (
-        "## 读者问\n\n巴菲特这段谈话你怎么看？\n\n## 段永平\n\n"
-        "The brand is a moat. People drink it every day and the habit does not change. "
-        "I bought a lot and held it for decades because the business is simple.\n"
+        "## 读者问\n\n茅台现在贵不贵？\n\n## 段永平\n\n"
+        "不贵。茅台的生意模式很简单，品牌已经在那里了，我打算继续拿着。"
+        "价格不是我卖出的理由，生意还在就继续拿着。\n"
     )
     assert judgment_len(long) >= 40
     assert hide_empty_answer(None, 6, long, {"author_voice": "段永平"}, source_id="duanyongping-blog") is False
     essay_long = (
-        "Buffett says the brand of Coca-Cola is a moat because people drink it every day. "
-        "I read this again and I agree. A wonderful business can be held for decades."
+        "苹果的生意模式很好，品牌已经在那里了，我打算长期拿着。"
+        "价格不是卖出的理由，生意还在我就继续拿着，不因为贵了就卖。"
     )
     assert judgment_len(essay_long) >= 40
     restored = _Conn()
@@ -210,6 +222,38 @@ def test_author_voice_all_is_suppressed_and_real_judgment_stays():
     assert "suppressed" not in back
     assert "off_timeline" not in back
     assert back["author_voice"] == "段永平"
+    pasted = (
+        "## 读者问\n\n巴菲特这段英文怎么看？\n\n## 段永平\n\n"
+        "Q: What is the moat of Coca-Cola?\n\n"
+        "Buffett: The brand is a habit. People drink it every day and I held it for decades.\n"
+    )
+    foreign = _Conn()
+    assert hide_empty_answer(foreign, 10, pasted, {"author_voice": "段永平"}, source_id="duanyongping-blog")
+    foreign_meta = foreign.calls[0][1][0].obj
+    assert foreign_meta["suppressed"] == "misattributed"
+    assert foreign_meta["author_voice"] == "foreign"
+
+
+def test_coverage_flags_substantive_source_missing_from_visible_ids():
+    shell = "---\nid: dyp-shell\ntitle: 导航\n---\n\n尼古拉 ·特斯拉 2010-11-08 18:15 回本 \u2f42开头 ↑\n"
+    short = "---\nid: dyp-nick\ntitle: 木买蚂蚁\nauthor_voice: 段永平\n---\n\n## 段永平\n\n木买蚂蚁今天来玩。\n"
+    kept = (
+        "---\nid: dyp-keep\ntitle: 只买生意\nauthor_voice: 段永平\n---\n\n"
+        "## 段永平\n\n只买生意，不预测股价。\n"
+    )
+    assert source_is_substantive(shell) is False
+    assert source_is_substantive(short) is False
+    assert source_is_substantive(kept) is True
+    missing = missing_visible(
+        [
+            ("dyp-shell", "导航", shell),
+            ("dyp-nick", "木买蚂蚁", short),
+            ("dyp-keep", "只买生意", kept),
+            ("dyp-seen", "已在库", kept.replace("dyp-keep", "dyp-seen")),
+        ],
+        {"dyp-seen"},
+    )
+    assert [item["id"] for item in missing] == ["dyp-keep"]
 
 
 def test_suppress_stays_on_duanyongping_and_does_not_touch_other_sources():
@@ -263,9 +307,9 @@ def test_reclassify_decision_hides_chrome_and_keeps_a_real_reply():
     pdd = decide_stored("拼多多到底能不能投", PDD)
     assert pdd["suppressed"] is True
     real = decide_stored("苹果贵不贵", REAL)
-    assert real["suppressed"] is True
-    assert real["suppressed_as"] == "weak_judgment"
-    assert real["reason"] == "判断太短，不够明确"
+    assert real.get("suppressed") is not True
+    assert real["off_views"] is False
+    assert "苹果" in real["reason"]
     long_real = REAL.replace(
         "不贵。生意模式还在，我还拿着。",
         "不贵。生意模式还在，品牌已经在那里了，我打算继续拿着。价格不是我卖出的理由，生意还在就继续拿着。",

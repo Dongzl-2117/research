@@ -122,6 +122,8 @@ def for_model(
     """交给观点或摘要的正文。段永平只留他本人的章节，或「段：」起到下一位说话人之前的段落。"""
     if is_guest(raw_meta):
         return "", [], True
+    if str((raw_meta or {}).get(AUTHOR_VOICE) or "").strip() == "foreign":
+        return "", [], True
     body, picked, restricted = restrict(body_text, chunks, raw_meta)
     voice = str((raw_meta or {}).get(AUTHOR_VOICE) or "").strip()
     if source_id != DUAN_SOURCE and voice != "段永平":

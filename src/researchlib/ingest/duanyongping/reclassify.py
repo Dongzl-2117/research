@@ -22,6 +22,7 @@ from researchlib.boilerplate import clean_markdown, profile_for
 from researchlib.chunks import replace_chunks
 from researchlib.empty_answer import (
     EMPTY_ANSWER,
+    MISATTRIBUTED,
     NO_JUDGMENT,
     SUPPRESSED,
     WEAK_JUDGMENT,
@@ -132,7 +133,16 @@ def decide_stored(title: str, body_md: str, raw_meta: dict | None = None) -> dic
             "suppressed": True,
             "suppressed_as": WEAK_JUDGMENT,
             "poster_name": "",
-            "reason": "判断太短，不够明确",
+            "reason": "没有买、贵、持有或生意原则",
+        }
+    if reason == MISATTRIBUTED:
+        return {
+            "guest": False,
+            "off_views": True,
+            "suppressed": True,
+            "suppressed_as": MISATTRIBUTED,
+            "poster_name": "",
+            "reason": "英文粘贴，不是段永平的判断",
         }
     if reason == EMPTY_ANSWER:
         return {
@@ -173,6 +183,8 @@ def _meta_for(raw_meta, decision: dict) -> dict:
         meta["off_views"] = True
         if decision.get("off_timeline"):
             meta["off_timeline"] = True
+        if decision.get("suppressed_as") == MISATTRIBUTED:
+            meta["author_voice"] = "foreign"
         if meta.get("poster_role") == ROLE_GUEST and str(meta.get("poster_name") or "") in {"", "博友"}:
             meta.pop("poster_role", None)
             meta.pop("poster_name", None)

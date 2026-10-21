@@ -1,7 +1,10 @@
 """段永平博客里，没有明确判断的文章不进列表。
 
-- ``author_voice`` 是 all：整篇都是他的话。太短或只剩导航，标 no_judgment。长文留下。
-- ``author_voice`` 是段永平：那一节只剩导航，标 empty_answer。汉字和字母不足 40，标 weak_judgment。
+- ``author_voice`` 是 all：整篇都是他的话。只剩导航，或不足 40 字又没有买、贵、持有、生意原则，
+  标 no_judgment。长文留下。
+- ``author_voice`` 是段永平：那一节只剩导航，标 empty_answer。不足 40 字又没有立场，标 weak_judgment。
+  有立场的短帖留下。
+- 英文粘贴问答标 ``author_voice=foreign``、``suppressed=misattributed``。
 
 「回本文开头」、署名加时间、上下箭头，都不是他的话。康熙部首会先折成普通字。
 正文留着，直接打开还能看；首页按天、作者时间线、检索和公司页不收。只处理这个来源。
@@ -27,6 +30,8 @@ SUPPRESSED = "suppressed"
 EMPTY_ANSWER = "empty_answer"
 NO_JUDGMENT = "no_judgment"
 WEAK_JUDGMENT = "weak_judgment"
+MISATTRIBUTED = "misattributed"
+VOICE_FOREIGN = "foreign"
 _AUTHOR_VOICE = "author_voice"
 _VOICE_ALL = "all"
 _OFF_VIEWS = "off_views"
@@ -145,6 +150,29 @@ def judgment_len(text: str) -> int:
     return len(re.findall(r"[\u4e00-\u9fffA-Za-z]", substantive_voice(text or "")))
 
 
+# 昵称里的「买」不是买入。先挖掉再看立场。
+_NICKNAMES = ("木买蚂蚁",)
+_STANCE = re.compile(
+    r"买|卖|贵(?!州)|持有|拿着|拿住|不预测|生意模式|能力圈|安全边际|护城河|做对的事情|只买生意"
+)
+
+
+def has_stance(text: str) -> bool:
+    """短帖里有没有买、卖、贵、持有或生意原则。木买蚂蚁这个昵称里的买不算。"""
+    folded = normalize_voice(substantive_voice(text or "") or (text or ""))
+    for name in _NICKNAMES:
+        folded = folded.replace(name, "")
+    return bool(_STANCE.search(folded))
+
+
+def is_foreign_paste(text: str) -> bool:
+    """几乎没有汉字、字母很多的英文粘贴。夹一个 iPhone 的中文判断不算。"""
+    voice = substantive_voice(text or "")
+    han = len(re.findall(r"[\u4e00-\u9fff]", voice))
+    lat = len(re.findall(r"[A-Za-z]", voice))
+    return lat >= MIN_JUDGMENT and han <= 8
+
+
 def _article_plain(body_md: str) -> str:
     return "\n".join(_content_lines(body_md))
 
@@ -213,27 +241,37 @@ def _voice_label(raw_meta) -> str:
 def suppression_for(body_md: str, raw_meta, *, source_id: str, title: str = "") -> str:
     """这段永平博客该搁下时，返回要写入的 suppressed。不用搁下就返回空串。
 
-    author_voice 为 all 表示整篇都是他的话，不是「没有判断」。长文留下。
-    过短的碎段、导航壳才标 no_judgment。段永平那一节不足 40 个汉字或字母，标 weak_judgment。
+    author_voice 为 all 表示整篇都是他的话。长文留下。
+    短帖没有买、贵、持有或生意原则才标 weak_judgment 或 no_judgment。
+    英文粘贴问答标 misattributed。
     """
     if source_id != SOURCE_ID:
         return ""
     voice = _voice_label(raw_meta)
+    if voice == VOICE_FOREIGN:
+        return MISATTRIBUTED
     section = duan_section(body_md)
     if voice == _VOICE_ALL and section is None:
         plain = _article_plain(body_md)
+        if is_foreign_paste(plain):
+            return MISATTRIBUTED
         if _nav_shell(body_md) or voice_is_empty(plain):
             return NO_JUDGMENT
-        if judgment_len(plain) < MIN_JUDGMENT:
+        if judgment_len(plain) < MIN_JUDGMENT and not has_stance(plain):
             return NO_JUDGMENT
         return ""
     if section is None:
+        plain = _article_plain(body_md)
+        if is_foreign_paste(plain):
+            return MISATTRIBUTED
         if stored_answer_empty(body_md, source_id=source_id, title=title):
             return EMPTY_ANSWER
         return ""
     if voice_is_empty(section):
         return EMPTY_ANSWER
-    if judgment_len(section) < MIN_JUDGMENT:
+    if is_foreign_paste(section):
+        return MISATTRIBUTED
+    if judgment_len(section) < MIN_JUDGMENT and not has_stance(section):
         return WEAK_JUDGMENT
     return ""
 
@@ -245,7 +283,10 @@ def _restore_long_essay(meta: dict, body_md: str, published_at) -> bool:
     """
     if _voice_label(meta) != _VOICE_ALL:
         return False
-    if _nav_shell(body_md) or judgment_len(_article_plain(body_md)) < MIN_JUDGMENT:
+    plain = _article_plain(body_md)
+    if _nav_shell(body_md) or is_foreign_paste(plain):
+        return False
+    if judgment_len(plain) < MIN_JUDGMENT and not has_stance(plain):
         return False
     changed = False
     if meta.get(_AUTHOR_VOICE) != "段永平":
@@ -263,6 +304,8 @@ def _flags_ready(meta: dict, reason: str) -> bool:
     if meta.get(SUPPRESSED) != reason or not _flag_on(meta, _OFF_VIEWS):
         return False
     if reason == NO_JUDGMENT and not _flag_on(meta, _OFF_TIMELINE):
+        return False
+    if reason == MISATTRIBUTED and _voice_label(meta) != VOICE_FOREIGN:
         return False
     return True
 
@@ -292,6 +335,8 @@ def hide_empty_answer(
         meta[_OFF_VIEWS] = True
         if reason == NO_JUDGMENT:
             meta[_OFF_TIMELINE] = True
+        if reason == MISATTRIBUTED:
+            meta[_AUTHOR_VOICE] = VOICE_FOREIGN
         conn.execute(
             "UPDATE articles SET raw_meta = %s WHERE id = %s",
             (Jsonb(meta), article_id),
@@ -310,7 +355,7 @@ def backfill_empty_answers(conn) -> int:
     已经按这个规则标好的跳过。再跑一遍结果一样。
     """
     like_sql: list[str] = []
-    params: list[str] = [SOURCE_ID, _VOICE_ALL, "段永平", WEAK_JUDGMENT]
+    params: list[str] = [SOURCE_ID, _VOICE_ALL, "段永平", WEAK_JUDGMENT, VOICE_FOREIGN, MISATTRIBUTED]
     for column in ("body_md", "title"):
         for pattern in _SCAN_LIKE:
             like_sql.append(f"{column} LIKE %s")
@@ -333,8 +378,17 @@ def backfill_empty_answers(conn) -> int:
               )
             )
             OR (
+              coalesce(raw_meta->>'author_voice', '') = %s
+              AND (
+                coalesce(raw_meta->>'suppressed', '') <> %s
+                OR coalesce(raw_meta->>'off_views', '') <> 'true'
+                OR EXISTS (SELECT 1 FROM article_mentions m WHERE m.article_id = articles.id)
+                OR EXISTS (SELECT 1 FROM company_views v WHERE v.article_id = articles.id)
+              )
+            )
+            OR (
               coalesce(raw_meta->>'suppressed', '') = ''
-              AND coalesce(raw_meta->>'author_voice', '') NOT IN ('all', '段永平')
+              AND coalesce(raw_meta->>'author_voice', '') NOT IN ('all', '段永平', 'foreign')
               AND ({" OR ".join(like_sql)})
             )
           )
