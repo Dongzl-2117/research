@@ -48,7 +48,7 @@
 
 ## Grok 凭证
 
-译制、问库、摘要共用 AIHOT 的 xAI OAuth，不另存一份 token。Docker 把外部卷 `aihot_data` 挂到 `/aihot-data`，默认路径是 `/aihot-data/secrets/xai-oauth.json`。写入后把 owner 设回 uid/gid 1000，AIHOT 的 `node` 用户仍能刷新。双方用同一路径和同一把锁轮流刷新。
+译制、问库、摘要使用 research 自有 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`）。AIHOT 已下线，不再共用外部卷。
 
 登录在 AIHOT 侧做一次即可：
 
@@ -77,8 +77,8 @@ Hermes 的 `auth.json` 格式会被拒绝，不会写进去。AIHOT / research �
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `XAI_OAUTH_TOKEN_PATH` | `/aihot-data/secrets/xai-oauth.json`（compose） | 唯一凭证，与 AIHOT 共用 |
-| `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `1000` / `1000` | 写回后的文件属主 |
+| `XAI_OAUTH_TOKEN_PATH` | `/data/secrets/xai-oauth.json`（compose） | 唯一凭证，与 AIHOT 共用 |
+| `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `0` / `0` | 写回后的文件属主 |
 | `XAI_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `128000` | 只能把输出预算抬得更高，设得更低也会回到 `128000` |
 | `LLM_LONG_TIMEOUT_MS` | `1500000` | 译制和问库共用的长超时，默认 25 分钟 |
 | `RESEARCH_LLM_TIMEOUT` | 不设 | 秒。比上面的长超时更短时会被抬到同一条，不能单独把问库调弱 |
