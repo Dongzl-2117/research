@@ -25,7 +25,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import VOICE_NOTE, display_author, raw_meta_of, restrict
+from researchlib.author_voice import VOICE_NOTE, display_author, for_model, raw_meta_of
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -114,7 +114,10 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"标题：{row['title']}\n作者：{shown_author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
-    body, voice_chunks, restricted = restrict(row["body_text"] or "", chunks, meta)
+    source_id = row["source_id"] if "source_id" in row.keys() else ""
+    body, voice_chunks, restricted = for_model(
+        row["body_text"] or "", chunks, meta, source_id=source_id
+    )
     if restricted:
         header += VOICE_NOTE
         chunks = voice_chunks

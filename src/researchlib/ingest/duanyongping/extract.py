@@ -9,6 +9,8 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
+from researchlib.textutil import scrub_file_page_junk
+
 _DATE_BODY = (
     r"(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?"
     r"(?:\s*(\d{1,2})\s*[:：]\s*(\d{2})(?:\s*[:：]\s*(\d{2}))?)?"
@@ -19,7 +21,14 @@ _DATE_ONLY = re.compile(
 )
 _PAGE_NO = re.compile(r"^(?:[-—–]\s*)?\d{1,4}(?:\s*/\s*\d{1,4})?(?:\s*[-—–])?$")
 _COLLECTION = re.compile(r"段永平博客文章合集")
-_AUTHOR = re.compile(r"^(?:段永平|段总)(?:\s|$|[:：]|回复|说|→|->)")
+_AUTHOR = re.compile(
+    r"^(?:段永平|段总)(?:\s|$|[:：]|回复|说|→|->)|"
+    r"^段\s*[:：]"
+)
+# 「回复段永平」是博友在回他，不是他本人。「段永平回复」仍是他。
+_REPLY_TO_DUAN = re.compile(
+    r"^(?:[\u4e00-\u9fffA-Za-z0-9_]{0,24}?\s*)?回复\s*[:：]?\s*段(?:永平|总)(?!的)"
+)
 _OTHER = re.compile(
     r"^(?:问|Q|q)\s*[:：]|"
     r"^(?:网友|博友|读者)(?:\s*[:：]|\S{0,16}\s*[:：]|\s)|"
@@ -67,6 +76,14 @@ def is_date_only(text: str) -> bool:
     return bool(_DATE_ONLY.match((text or "").strip()))
 
 
+def is_reply_to_duan(text: str) -> bool:
+    """博友帖或评论在回复段永平，不是段永平本人在说话。"""
+    head = (text or "").strip()
+    if not head or re.match(r"^(?:段永平|段总)", head):
+        return False
+    return bool(_REPLY_TO_DUAN.match(head))
+
+
 def is_author_text(text: str) -> bool:
     head = (text or "").strip()
     if _AUTHOR.match(head):
@@ -79,7 +96,7 @@ def is_other_text(text: str) -> bool:
     head = (text or "").strip()
     if is_author_text(head):
         return False
-    if _OTHER.match(head):
+    if is_reply_to_duan(head) or _OTHER.match(head):
         return True
     return bool(_SPEAKER_STAMP.match(head))
 
@@ -155,7 +172,7 @@ def parse_xml(xml: str) -> list[Line]:
             if _local(node.tag) != "text":
                 continue
             text, bold_chars = _piece_text(node)
-            text = _WS.sub(" ", text).strip()
+            text = scrub_file_page_junk(_WS.sub(" ", text).strip())
             if not text:
                 continue
             size, font_bold = fonts.get(node.attrib.get("font", ""), (12.0, False))
@@ -188,12 +205,15 @@ def parse_text(text: str) -> list[Line]:
         for row, item in enumerate(raw):
             if not item.strip():
                 continue
+            text = scrub_file_page_junk(_WS.sub(" ", item).strip())
+            if not text:
+                continue
             lines.append(
                 Line(
                     page=index,
                     top=float(row),
                     left=float(len(item) - len(item.lstrip())),
-                    text=_WS.sub(" ", item).strip(),
+                    text=text,
                     bold=False,
                     size=0,
                     height=1,
@@ -310,7 +330,7 @@ def lines_to_blocks(lines: list[Line]) -> list[Block]:
     def flush() -> None:
         if not buf:
             return
-        text = join_wrapped([item.text for item in buf])
+        text = scrub_file_page_junk(join_wrapped([item.text for item in buf]))
         if text:
             plain = len(re.sub(r"\s+", "", text))
             bold_chars = sum(len(re.sub(r"\s+", "", item.text)) for item in buf if item.bold)

@@ -9,7 +9,8 @@ from __future__ import annotations
 from functools import lru_cache
 
 from researchlib.company_seed import ALIAS_RULES, SEEDS
-from researchlib.mentions import CompanyMatcher, alias_key, incidental_sentence, sentence_pieces
+from researchlib.ingest.duanyongping.policy import sentence_role
+from researchlib.mentions import CompanyMatcher, alias_key, sentence_pieces
 
 # (中文名, 其它写法)。不要和种子里的别名重复，否则会抢匹配。
 EXTRAS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -54,6 +55,18 @@ EXTRAS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("IBM", ()),
 )
 
+# 短别名嵌在别的词里时不算公司。「不要太保守」不是中国太保。
+EXTRA_RULES: dict[str, dict] = {
+    "中国太保": {"exclude": [r"太保(?:守|险|重|健|姆)"]},
+    "步步高": {"exclude": [r"步步高升"]},
+    "三星电子": {"exclude": [r"三星级", r"(?:给|打|评)三星"]},
+}
+
+
+def library_names() -> set[str]:
+    """研究库公司表里的中文名。只命中补名单、库里没有的公司，不进观点。"""
+    return {seed.name_zh for seed in SEEDS}
+
 
 def extra_alias_keys() -> set[str]:
     found: set[str] = set()
@@ -94,7 +107,7 @@ def _rows() -> list[dict]:
                 "name_en": "",
                 "ticker": None,
                 "aliases": list(aliases),
-                "alias_rules": {},
+                "alias_rules": EXTRA_RULES.get(name) or {},
             }
         )
     return rows
@@ -107,16 +120,18 @@ def matcher() -> tuple[CompanyMatcher, dict[int, str]]:
     return CompanyMatcher(rows), names
 
 
-def companies_in(text: str) -> tuple[list[str], list[str]]:
-    """返回 (认真谈到的公司, 只出现在举例里的公司)，按出现顺序。"""
+def companies_in(text: str) -> tuple[list[str], list[str], list[str]]:
+    """返回 (论证落在其上的公司, 只出现在举例里的, 列举/致谢/闲聊里的)，按出现顺序。"""
     found, names = matcher()
     if not (text or "").strip():
-        return [], []
+        return [], [], []
     document = found.document(text)
     substantive: list[str] = []
     incidental: list[str] = []
+    weak: list[str] = []
     seen_real: set[str] = set()
     seen_side: set[str] = set()
+    seen_weak: set[str] = set()
 
     def add(bucket: list[str], seen: set[str], sentence: str) -> None:
         for _start, _end, company_id in document.spans(sentence):
@@ -127,9 +142,17 @@ def companies_in(text: str) -> tuple[list[str], list[str]]:
             bucket.append(name)
 
     for sentence in sentence_pieces(text):
-        if incidental_sentence(sentence):
-            add(incidental, seen_side, sentence)
-        else:
+        spans = document.spans(sentence)
+        if not spans:
+            continue
+        surfaces = [sentence[start:end] for start, end, _company_id in spans]
+        role = sentence_role(sentence, surfaces)
+        if role == "real":
             add(substantive, seen_real, sentence)
+        elif role == "incidental":
+            add(incidental, seen_side, sentence)
+        elif role == "weak":
+            add(weak, seen_weak, sentence)
     incidental = [name for name in incidental if name not in seen_real]
-    return substantive, incidental
+    weak = [name for name in weak if name not in seen_real]
+    return substantive, incidental, weak

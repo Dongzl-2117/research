@@ -2,7 +2,7 @@
 
 来源 id：`duanyongping-blog`，页面上的名字是「段永平」。和别的已启用来源一样走白名单；抽出来的 Markdown 用现有的 Markdown 导入器入库。
 
-只收谈到具体公司的条目。生活感悟、只讲方法不点名公司的，跳过。问答整条保留：读者的问题、段永平的回答，以及回答后面别人的回复。有日期的进首页按天；没有日期的不进按天，作者页、公司页和检索仍能找到。观点和摘要只把段永平本人写的段落交给模型。
+只收论证落在具体公司上的条目。生活感悟、只讲方法、公司名只出现在列举/致谢/闲聊里的，跳过。「回复段永平」的博友帖不当他本人的帖。问答整条保留：读者的问题、段永平的回答，以及回答后面别人的回复。有日期的进首页按天；没有日期的不进按天，作者页、公司页和检索仍能找到。观点和摘要只把段永平本人的章节或「段：」段落交给模型。`file:///H.HTM` 一类页码垃圾在抽文字时去掉。
 
 PDF 不在仓库里（约 40MB，约 4440 页）。预期路径：
 
@@ -48,6 +48,25 @@ research-ingest-duanyongping \
 ```
 
 同一篇再跑一遍不会复制。外部 id 由问题正文和段永平的回答算出来，不靠页码。
+
+## 存量回扫
+
+已经进库的旧数据不用重读 PDF，也不要在云端对生产库跑全量观点或 OCR。先回扫这一来源（不删文章，不调用模型）：
+
+```bash
+docker compose exec app research-ingest-duanyongping --reclassify --dry-run
+docker compose exec app research-ingest-duanyongping --reclassify
+```
+
+会洗掉 `file:///H.HTM` 页码垃圾并重算检索文字和段落块；博友回复标成非本人（`poster_role=guest`），不进作者页和观点；没有具体公司，或公司只是被列举、致谢、闲聊点到的，标 `off_views` 并摘掉公司挂靠。
+
+然后再只抽这个来源的观点：
+
+```bash
+docker compose exec app research-views --source duanyongping-blog --limit 100
+```
+
+本机 `DATABASE_URL` 指向本库时，把 `docker compose exec app` 去掉即可。全量 OCR 是另一条线，不在这里。
 
 ## 夹具
 

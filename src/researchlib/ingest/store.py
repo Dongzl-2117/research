@@ -12,6 +12,8 @@ from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
 from researchlib.images import sync_article_images
+from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
+from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.model import IngestReport, ParsedDoc
 from researchlib.mentions import (
     CompanyMatcher,
@@ -235,7 +237,10 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 if is_guest(merged):
                     conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
     if status != "unchanged":
-        replace_mentions(conn, article_id, mentions_for_document(matcher, doc.title, doc.body_md))
+        mention_rows = mentions_for_document(matcher, doc.title, doc.body_md)
+        if source.id == DUAN_SOURCE:
+            mention_rows = refine_mentions(matcher, doc.title, doc.body_md, mention_rows, meta)
+        replace_mentions(conn, article_id, mention_rows)
         replace_chunks(conn, article_id, doc.title, doc.body_md)
     stored, linked, missing = sync_article_images(
         conn,

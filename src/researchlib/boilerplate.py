@@ -5,6 +5,9 @@
 - 文章页显示正文之前；
 - 算 body_text 和段落块之前（检索、摘要、观点读的都是清洗后的文字）。
 
+`file:///H.HTM` 这类 PDF 页内链接从显示和检索文字里去掉，不改这里的三条统计规则。
+段永平博客要连 body_md 一起洗掉时，用 `research-ingest-duanyongping --reclassify`。
+
 三条规则，都按同一来源多篇文章的统计来判，不写死某个作者的话术：
 
 1. 归档头：正文开头那几行「- 作者：」「- 时间：」「- sn：」「- 原链接：」「- 原始数据：」
@@ -23,6 +26,8 @@ import re
 import threading
 from collections import Counter
 from dataclasses import dataclass, field
+
+from researchlib.textutil import scrub_file_page_junk
 
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _IMAGE = re.compile(
@@ -173,7 +178,7 @@ def _tail_cut(lines: list[str], profile: Profile, hashes: dict[str, str]) -> int
 def clean_body(body: str, profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> str:
     """body 是去掉 frontmatter 之后的 Markdown。hashes：图片原始引用 → 内容哈希。"""
     hashes = hashes or {}
-    body = strip_meta(body or "")
+    body = scrub_file_page_junk(strip_meta(body or ""))
     lines = body.split("\n")
     split = _split_comments(lines)
     main, rest = lines[:split], lines[split:]

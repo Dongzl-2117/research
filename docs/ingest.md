@@ -16,7 +16,22 @@
 
 `linwenfeng-feishu` 保持启用，用 `research-ingest-feishu` 导入，但 `timeline: false`，不进首页按天和日汇总。作者、公司、检索、问库仍能找到它。`linwenfeng-mp` 停用，公众号不入库。雪球先不加来源、不导入。
 
-`duanyongping-blog`（显示名「段永平」）是离线 PDF，不走定时抓取。有日期的进首页按天；单篇没有日期时 frontmatter 写 `off_timeline: true`，首页按天不收，作者页、公司页和检索仍收。问答整条入库，观点和摘要只读「段永平」那一节。命令和预期 PDF 路径见 `scripts/duanyongping/README.md`。
+`duanyongping-blog`（显示名「段永平」）是离线 PDF，不走定时抓取。有日期的进首页按天；单篇没有日期时 frontmatter 写 `off_timeline: true`，首页按天不收，作者页、公司页和检索仍收。问答整条入库。没有具体公司、只讲方法、列举/致谢/闲聊里点到公司名的，不入库。博友「回复段永平」不当他本人的帖。观点和摘要只读「段永平」那一节或「段：」段落，读者提问和博友回复不进模型。`file:///H.HTM` 一类页码垃圾在导入时洗掉。
+
+库里已经导入的旧数据，不读 PDF、不调用模型，回扫一遍（不删文章）：
+
+```bash
+docker compose exec app research-ingest-duanyongping --reclassify --dry-run
+docker compose exec app research-ingest-duanyongping --reclassify
+```
+
+洗掉页码垃圾，博友回复标 `poster_role=guest`（不进作者页和观点），没有具体公司或挂靠不成立的标 `off_views` 并摘掉公司提及。然后只对这个来源抽观点：
+
+```bash
+docker compose exec app research-views --source duanyongping-blog --limit 100
+```
+
+全量 OCR 不在这条命令里。预期 PDF 路径和其余说明见 `scripts/duanyongping/README.md`。
 
 幂等键是 `(来源, 外部 id)`。外部 id 优先用 frontmatter 或知识星球 `topic_id`，否则用归档内的相对路径。同一篇再跑一遍不会复制；正文、标题或时间变了才更新。
 
