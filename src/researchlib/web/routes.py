@@ -33,7 +33,7 @@ from researchlib.llm import llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.ocr import refresh_article_ocr
-from researchlib.portfolio import ROLE_LABELS, Portfolio, load_portfolio
+from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.render import inline_image_ocr
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
@@ -61,13 +61,12 @@ from researchlib.web.present import (
     group_days,
     market_label,
     month_series,
-    months_back,
     order_cards,
     page_window,
     plan_feed_page,
+    recent_blurb,
     relative_label,
     resolve_feed_instant,
-    sparkline,
     stale_sources,
     weekday_label,
 )
@@ -122,7 +121,7 @@ def active_sources(request: Request, conn):
 
 
 def active_portfolio(request: Request) -> Portfolio:
-    """持仓名单按文件修改时间缓存，改了 config/portfolio.yaml 刷新页面就生效。"""
+    """持仓名单按文件修改时间缓存。JSON 的 portfolio 字段读它，改完再请求就生效。"""
     path = request.app.state.settings.portfolio_path
     if path is None or not path.exists():
         return Portfolio()
@@ -392,28 +391,33 @@ def home(request: Request):
                 settings.display_timezone,
             )
         holdings = []
-        # 首页顶部按最近一条观点排，不按持仓过滤。持仓标记仍可标在具体公司上。
+        # 首页顶部按最近一条观点排。展开用库里已有的导读，不在这次请求里调模型。
         if not chosen and plan["page"] == 1:
-            portfolio = active_portfolio(request)
             all_ids = [source.id for source in sources]
             ranked = queries.recent_viewed_companies(conn, all_ids, limit=8)
             recent = queries.holdings_recent(conn, [row["id"] for row in ranked], all_ids)
             all_by_id = _source_map(sources)
             for row in ranked:
                 info = recent.get(row["id"], {})
-                role = portfolio.role(row["name_zh"])
                 latest = _latest_item(info.get("latest"), all_by_id, settings)
+                view = _latest_view(conn, row["id"], all_by_id, settings, latest)
                 holdings.append(
                     {
                         "id": row["id"],
                         "name": row["name_zh"],
-                        "role": role,
-                        "role_label": ROLE_LABELS.get(role, ""),
                         "recent": info.get("recent", 0),
                         "latest": latest,
-                        "view": _latest_view(conn, row["id"], all_by_id, settings, latest),
+                        "view": view,
+                        "summary": "",
                     }
                 )
+            article_ids = [item["view"]["article_id"] for item in holdings if item.get("view")]
+            digests = queries.digests_for(conn, article_ids)
+            for item in holdings:
+                view = item.get("view")
+                digest = digests.get(view["article_id"]) if view else None
+                # 首页只放已有导读。没有导读就留一行态度和篇数，不把判断原文铺开。
+                item["summary"] = str((digest or {}).get("summary") or "").strip()
     if chosen:
         heading = by_id[chosen].name
         empty = "这个来源还没有文章。"
@@ -591,10 +595,6 @@ def _has_tree(conn, source_id: str) -> bool:
     return row is not None
 
 
-def fmt_of(article) -> str | None:
-    return (article["raw_meta"] or {}).get("format")
-
-
 def _article_view(request: Request, article_id: int, mode: str):
     """mode: auto | zh | pairs | original。auto 有对照则对照，否则单语。"""
     settings = request.app.state.settings
@@ -637,10 +637,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         link_index = None
         if ".md" in (article["body_md"] or "").lower() or ".md" in zh_blob.lower():
             link_index = load_md_index(conn, article["source_id"])
-        # 正文显示前去掉归档头、引流尾巴和广告图。库里的 body_md 不改。
-        shown_md = article["body_md"] if fmt_of(article) == "html" else clean_article(
-            conn, article_id, article["source_id"], article["body_md"]
-        )
+        # 正文显示前去掉归档头、引流尾巴、二维码和文末招募。库里的 body_md 不改。HTML 同样洗。
+        shown_md = clean_article(conn, article_id, article["source_id"], article["body_md"])
         display_title = article["title"]
         if repairs_source(source.id) and title_needs_repair(display_title or ""):
             material = queries.title_materials(conn, [article_id]).get(article_id) or {}
@@ -777,9 +775,7 @@ def _tree_body(conn, article, source_id: str):
     fmt = (article["raw_meta"] or {}).get("format")
     parent = str((article["raw_meta"] or {}).get("parent") or "")
     link_index = load_md_index(conn, source_id) if ".md" in (article["body_md"] or "").lower() else None
-    shown_md = article["body_md"]
-    if fmt != "html":
-        shown_md = clean_article(conn, article["id"], source_id, shown_md)
+    shown_md = clean_article(conn, article["id"], source_id, article["body_md"])
     html = prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent)
     return Markup(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
@@ -1085,48 +1081,12 @@ def companies_page(request: Request):
     with database(request) as conn:
         sources = active_sources(request, conn)
         ids = [source.id for source in sources]
-        by_id = _source_map(sources)
-        portfolio = active_portfolio(request)
         rows = queries.list_companies(conn, ids)
-        named = {row["name_zh"]: row for row in rows}
-        pinned_names = [name for name in portfolio.names if name in named]
-        missing = [name for name in portfolio.names if name not in named]
-        cards = queries.company_cards(conn, [named[name]["id"] for name in pinned_names], ids)
         banner = queries.sample_state(conn, ids)
-    now_month = current_month(settings.display_timezone)
-    first_month = months_back(now_month, 23)
-    pinned = []
-    for name in pinned_names:
-        row = named[name]
-        card = cards.get(row["id"], {})
-        by_author: dict[str, int] = {}
-        for source_id, count in (card.get("by_source") or {}).items():
-            source = by_id.get(source_id)
-            if source:
-                by_author[source.author] = by_author.get(source.author, 0) + count
-        role = portfolio.role(name)
-        pinned.append(
-            {
-                "id": row["id"],
-                "name": name,
-                "ticker": row["ticker"] or "未上市",
-                "market": market_label(row["market"]),
-                "role": role,
-                "role_label": ROLE_LABELS.get(role, ""),
-                "deep": card.get("deep", 0),
-                "total": card.get("total", 0),
-                "latest": _latest_item(card.get("latest"), by_id, settings),
-                "spark": Markup(sparkline(month_series(card.get("months", []), first=first_month, last=now_month))),
-                "authors": sorted(by_author.items(), key=lambda item: -item[1])[:3],
-            }
-        )
-    pinned_ids = {item["id"] for item in pinned}
     others = []
     hidden = 0
     markets: dict[str, int] = {}
     for row in rows:
-        if row["id"] in pinned_ids:
-            continue
         if not show_all and not row["mentions"]:
             hidden += 1
             continue
@@ -1171,9 +1131,6 @@ def companies_page(request: Request):
         {
             "nav": "companies",
             "title": "公司",
-            "pinned": pinned,
-            "missing": missing,
-            "portfolio_errors": list(portfolio.errors),
             "others": others,
             "show_all": show_all,
             "hidden": hidden,
@@ -1220,7 +1177,6 @@ def company_page(request: Request, company_id: int):
         page, pages, offset = page_window(total, _page_arg(request), settings.page_size)
         articles = queries.company_articles(conn, company_id, ids, depth_filter, settings.page_size, offset)
         banner = queries.sample_state(conn, all_ids)
-        portfolio = active_portfolio(request)
         views_block = _company_views(request, conn, company, by_id, author)
         matcher = CompanyMatcher([company])
         rows = _decorate(
@@ -1271,7 +1227,6 @@ def company_page(request: Request, company_id: int):
     all_total = sum(item["total"] for item in author_rows)
     last_deep = max((item["last"] for item in author_rows if item["last"]), default=None)
     series = month_series(months, last=current_month(settings.display_timezone)) if months else []
-    role = portfolio.role(company["name_zh"])
     filter_query = _query_string(author=author, depth=depth_arg if depth_arg != "deep" else "")
     return render_page(
         request,
@@ -1281,8 +1236,6 @@ def company_page(request: Request, company_id: int):
             "title": company["name_zh"],
             "company": company,
             "market": market_label(company["market"]),
-            "role": role,
-            "role_label": ROLE_LABELS.get(role, ""),
             "chips": depth_chips(depths),
             "deep_count": sum(count for key, count in depths.items() if key != "passing"),
             "all_count": sum(depths.values()),
@@ -1310,6 +1263,29 @@ def company_page(request: Request, company_id: int):
 
 
 VIEWS_PAGE_SIZE = 20
+
+
+def _recent_lead(conn, items: list[dict], settings) -> dict | None:
+    """公司页「最近」一行。展开是导读；没有导读就用这条判断，避免空展开。"""
+    if not items:
+        return None
+    latest = items[0]
+    digest = queries.digests_for(conn, [latest["article_id"]]).get(latest["article_id"])
+    text = recent_blurb(latest, digest)
+    if not text:
+        return None
+    published = latest.get("published_at")
+    return {
+        "article_id": latest["article_id"],
+        "title": latest["title"],
+        "author": latest["author"],
+        "date": latest["date"],
+        "relative": relative_label(published, settings.display_timezone) if published else "",
+        "stance": latest.get("stance") or "",
+        "stance_label": latest.get("stance_label") or "",
+        "chunk": latest.get("chunk"),
+        "summary": text,
+    }
 
 
 def _company_views(request: Request, conn, company, by_id: dict, author: str) -> dict | None:
@@ -1361,6 +1337,8 @@ def _company_views(request: Request, conn, company, by_id: dict, author: str) ->
         "page": page,
         "pages": pages,
         "base": base,
+        # 跟当前筛选走。筛到某一条论点时，不要把没进这组的判断露在展开行里。
+        "lead": _recent_lead(conn, chosen, settings),
     }
 
 

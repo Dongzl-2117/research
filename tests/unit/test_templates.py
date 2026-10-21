@@ -2,6 +2,8 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from researchlib.web.present import recent_blurb
+
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "src" / "researchlib" / "web" / "templates"
 
@@ -28,7 +30,15 @@ def test_home_recent_views_toggle_is_a_button():
                 "name": "腾讯",
                 "recent": 5,
                 "latest": None,
-                "view": {"stance": "positive", "stance_label": "看好", "relative": "8 小时前", "date": "2024-10-19"},
+                "view": {
+                    "stance": "positive",
+                    "stance_label": "看好",
+                    "relative": "8 小时前",
+                    "date": "2024-10-19",
+                    "article_id": 9,
+                    "chunk": None,
+                },
+                "summary": "导读：视频号广告库存还能抬。",
             }
         ],
         days=[],
@@ -49,6 +59,48 @@ def test_home_recent_views_toggle_is_a_button():
     assert "research-recent-views" in html
     assert "腾讯" in html
     assert "看好" in html
+    assert 'class="recent-views-line"' in html
+    assert "导读：视频号广告库存还能抬。" in html
+    assert 'class="recent-item-summary"' in html
+
+
+def test_recent_blurb_prefers_stored_digest():
+    assert recent_blurb({"judgment": "判断句"}, {"summary": "导读句"}) == "导读句"
+    assert recent_blurb({"judgment": "判断句"}, None) == "判断句"
+    assert recent_blurb(None, None) == ""
+
+
+class _NavSource:
+    def __init__(self, source_id, name, timeline, kind="markdown"):
+        self.id = source_id
+        self.name = name
+        self.timeline = timeline
+        self.kind = kind
+
+
+def test_sidebar_sources_are_one_list():
+    html = _env().get_template("base.html").render(
+        title="按天",
+        canonical="https://investment.zldong.com/",
+        public_host="investment.zldong.com",
+        query="",
+        nav="archive",
+        sample_banner=False,
+        active_source="fangwei-mp",
+        sources=[
+            _NavSource("fangwei-mp", "方伟公众号", True),
+            _NavSource("linwenfeng-feishu", "林文丰飞书", False, "feishu"),
+        ],
+    )
+    body = html.split("<main", 1)[0]
+    group = body.split('<div class="nav-label">来源</div>', 1)[1].split("</nav>", 1)[0]
+    assert body.count(">来源<") == 1
+    assert ">文库<" not in body
+    assert 'href="/?source=fangwei-mp"' in group
+    assert 'href="/sources/linwenfeng-feishu/tree"' in group
+    assert group.count("nav-link") == 2
+    assert group.count('r="3.2"') == 2
+    assert "M6 5.5h4.5" not in group
 
 
 def test_search_template_keeps_author_count_markup():

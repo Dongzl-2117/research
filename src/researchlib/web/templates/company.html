@@ -10,7 +10,6 @@
 <header class="company-hero">
   <div class="company-title">
     <h1>{{ company.name_zh }}</h1>
-    {% if role %}<span class="role-badge role-{{ role }}">{{ role_label }}</span>{% endif %}
   </div>
   <p class="identity">
     {% if company.ticker %}<span class="ticker">{{ company.ticker }}</span>{% else %}<span>未上市</span>{% endif %}
@@ -98,6 +97,20 @@
 {% endif %}
 {% if views and (views.filters[0].count or views.pending) %}
 <section class="views" id="views" aria-label="观点">
+  {% if views.lead %}
+  <details class="recent-lead">
+    <summary>
+      <span class="recent-lead-line">
+        <span class="recent-lead-kicker">最近</span>
+        <span>{{ views.lead.author }}</span>
+        {% if views.lead.stance_label %}<span class="stance stance-{{ views.lead.stance }}">{{ views.lead.stance_label }}</span>{% endif %}
+        <span class="recent-lead-title">{{ views.lead.title }}</span>
+        <span class="quiet num">{{ views.lead.relative or views.lead.date }}</span>
+      </span>
+    </summary>
+    <p class="recent-lead-summary"><a href="/articles/{{ views.lead.article_id }}{% if views.lead.chunk is not none %}?chunk={{ views.lead.chunk }}{% endif %}">{{ views.lead.summary }}</a></p>
+  </details>
+  {% endif %}
   <div class="list-tools">
     <h2>观点</h2>
     <nav class="pills" aria-label="观点筛选">

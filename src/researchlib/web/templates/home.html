@@ -39,16 +39,25 @@
       <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5 12 15l6-5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <a href="/companies">最近观点</a>
+    <span class="recent-views-line">
+      {% for item in holdings %}
+      <a href="/companies/{{ item.id }}#views">{{ item.name }}{% if item.view and item.view.stance_label %} {{ item.view.stance_label }}{% endif %}</a>{% if not loop.last %} · {% endif %}
+      {% endfor %}
+    </span>
   </h2>
   <ul id="recent-views-list">
     {% for item in holdings %}
-    {# 折叠态：只放公司、持仓标记、最新态度、近 30 天篇数和更新时间；观点文字到公司页看。 #}
-    <li class="holdings-row">
-      <a class="holdings-name" href="/companies/{{ item.id }}#views">{{ item.name }}</a>
-      {% if item.view and item.view.stance_label %}<span class="stance stance-{{ item.view.stance }}">{{ item.view.stance_label }}</span>{% elif item.view %}<span class="stance stance-neutral">中性</span>{% endif %}
-      <span class="holdings-recent num{% if not item.recent %} quiet{% endif %}">{% if item.recent %}近 30 天 {{ item.recent }} 篇{% else %}近 30 天没有{% endif %}</span>
-      {% set when = (item.view.relative or item.view.date) if item.view else ((item.latest.relative or item.latest.date) if item.latest else "") %}
-      {% if when %}<span class="holdings-when quiet num">更新 {{ when }}</span>{% endif %}
+    <li class="holdings-row recent-item">
+      <div class="recent-item-line">
+        <a class="holdings-name" href="/companies/{{ item.id }}#views">{{ item.name }}</a>
+        {% if item.view and item.view.stance_label %}<span class="stance stance-{{ item.view.stance }}">{{ item.view.stance_label }}</span>{% elif item.view %}<span class="stance stance-neutral">中性</span>{% endif %}
+        <span class="holdings-recent num{% if not item.recent %} quiet{% endif %}">{% if item.recent %}近 30 天 {{ item.recent }} 篇{% else %}近 30 天没有{% endif %}</span>
+        {% set when = (item.view.relative or item.view.date) if item.view else ((item.latest.relative or item.latest.date) if item.latest else "") %}
+        {% if when %}<span class="holdings-when quiet num">更新 {{ when }}</span>{% endif %}
+      </div>
+      {% if item.summary %}
+      <p class="recent-item-summary">{% if item.view %}<a href="/articles/{{ item.view.article_id }}{% if item.view.chunk is not none %}?chunk={{ item.view.chunk }}{% endif %}">{{ item.summary }}</a>{% else %}{{ item.summary }}{% endif %}</p>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>

@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
@@ -429,13 +430,27 @@ def test_home_recent_views_include_non_holdings(conn, settings):
             """,
             (row["id"], company_id),
         )
+    conn.execute(
+        """
+        INSERT INTO article_digests (article_id, content_hash, model, summary, points, tags, prompt_version)
+        VALUES (%s, %s, 'grok-test', %s, %s, '[]', 2)
+        """,
+        (rows["other"]["id"], rows["other"]["content_hash"], "导读：美团的商家广告还在变贵。", Jsonb([])),
+    )
     conn.commit()
     with TestClient(create_app(settings)) as client:
         home = client.get("/").text
     assert "持仓近况" not in home
+    assert "role-badge" not in home
     section = home.split('aria-label="最近观点"', 1)[1].split('class="feed"', 1)[0]
     assert section.find("美团") < section.find("腾讯")
+    assert 'class="recent-views-line"' in section
+    assert "导读：美团的商家广告还在变贵。" in section
+    assert 'class="recent-item-summary"' in section
     meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/companies/{meituan}").text
     assert 'id="views"' in page and "美团的判断" in page
+    assert "role-badge" not in page
+    assert 'class="recent-lead"' in page
+    assert "导读：美团的商家广告还在变贵。" in page

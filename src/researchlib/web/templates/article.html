@@ -94,18 +94,4 @@
   }
 </script>
 {% endif %}
-<div class="img-zoom" id="img-zoom" hidden><img alt=""></div>
-<script>
-  // 点正文插图看大图，再点或按 Esc 关掉。
-  (function () {
-    var box = document.getElementById("img-zoom");
-    var big = box.querySelector("img");
-    document.addEventListener("click", function (event) {
-      var img = event.target.closest(".prose img");
-      if (img && !img.closest("a")) { big.src = img.currentSrc || img.src; box.hidden = false; return; }
-      if (event.target.closest("#img-zoom")) box.hidden = true;
-    });
-    document.addEventListener("keydown", function (event) { if (event.key === "Escape") box.hidden = true; });
-  })();
-</script>
 {% endblock %}

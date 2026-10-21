@@ -6,6 +6,9 @@ def test_company_and_industry_kept_methodology_hidden():
     assert library_visible("零售研究")
     assert library_visible("公用事业与周期业")
     assert not library_visible("价值投资研究")
+    assert not library_visible("1. 价值投资研究")
+    assert not library_visible("价值投资研究（上）")
+    assert not library_visible("投资的常识")
     assert not library_visible("巴菲特如何思考")
     assert not library_visible("思维模型")
 
@@ -19,10 +22,13 @@ def test_filter_keeps_only_visible_children_of_home():
             {"id": 4, "title": "价值投资研究", "children": []},
             {"id": 5, "title": "巴菲特如何思考", "children": []},
             {"id": 6, "title": "白酒研究", "children": []},
+            {"id": 7, "title": "投资的常识", "children": [{"id": 8, "title": "仍可检索的笔记", "children": []}]},
         ],
     }
+    root["children"][0]["children"].append({"id": 10, "title": "价值投资研究（附录）", "children": []})
     filtered, orphans = filter_library_tree(root, [{"id": 9, "title": "孤儿", "children": []}])
     titles = [c["title"] for c in filtered["children"]]
     assert titles == ["腾讯投资研究", "白酒研究"]
-    assert filtered["children"][0]["children"][0]["title"] == "子文档"
+    nested = [c["title"] for c in filtered["children"][0]["children"]]
+    assert nested == ["子文档"]
     assert orphans == []

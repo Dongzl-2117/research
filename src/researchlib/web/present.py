@@ -1,4 +1,4 @@
-"""日期、分页，以及公司页和持仓卡片的月度图。"""
+"""日期、分页，以及公司页的月度图。"""
 
 from __future__ import annotations
 
@@ -356,6 +356,19 @@ def sparkline(series: list[dict]) -> str:
             parts.append(f'<rect class="bar-empty" x="{x:.1f}" y="{height - 1}" width="{bar:.1f}" height="1"/>')
     parts.append("</svg>")
     return "".join(parts)
+
+
+def recent_blurb(view: dict | None, digest: dict | None) -> str:
+    """最近观点展开后的一段话。用库里已有的导读，没有导读再用这条观点的判断。
+
+    不在请求里调模型。没有可用文字就返回空串，调用方不要画一个空展开。
+    """
+    summary = str((digest or {}).get("summary") or "").strip()
+    if summary:
+        return summary
+    if not view:
+        return ""
+    return str(view.get("judgment") or "").strip()
 
 
 # 断更提示只看最近这几天确实做过定时导入（从 AIHOT 导入）的来源。只手动导归档的来源，

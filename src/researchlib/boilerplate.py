@@ -17,6 +17,9 @@
    正文中间的模板句只在带引流关键词时去掉；飞书那类重复的小标题不带关键词，留着。
 3. 广告图：同一来源里至少 5 篇都出现的同一张图（按内容哈希），而且不是成批一起出现
    （飞书父文档会带上子文档的整批插图，那是正文）。二维码、优惠券海报、「长按关注」都是这种。
+4. 文末号召：就算这句话没有在很多篇里重复，只要落在正文后面，并且是招募、二维码、
+   长按关注、加微信这类号召，显示时整段拿掉。文件名或替代文字像二维码的图也拿掉。
+   飞书笔记不走这一条，只去归档头。
 """
 
 from __future__ import annotations
@@ -39,12 +42,35 @@ _META_KEYS = (
     r"ghid|appmsgid|position|author|url|source"
 )
 _META_LINE = re.compile(r"^\s*[-*]\s*(?:" + _META_KEYS + r")\s*(?:[:：]|\s+\d|\s*·)", re.I)
-# 带这些词的行在文末算引流。
+# 带这些词的行在文末算引流。统计尾巴用它；单独出现在研究正文里（比如讨论扫码支付）不够切段。
 PROMO = re.compile(
     r"加入(?:会员群|知识星球|星球|微信群|交流群|社群|我们)|知识星球|会员群|交流群|扫码|二维码|长按(?:识别|扫码|关注)|"
     r"白嫖|非诚勿扰|加我|加微信|微信号|私信我|优惠券|立减|免费赠送|直接购买|备注[:：]|点个?在看|点赞.{0,3}在看|"
     r"星标|关注(?:公众号|我们|本号)|转发.{0,4}朋友圈|欢迎(?:关注|转发)|赞赏|打赏|推荐阅读|往期(?:回顾|推荐|文章)"
 )
+# 不靠跨篇统计、也可以从文末拿掉的号召。不收单独的「扫码」「二维码」，避免误切支付、行业正文。
+_CTA = re.compile(
+    r"招募|加入(?:会员群|知识星球|星球|微信群|交流群|社群)|知识星球|会员群|"
+    r"长按(?:识别|扫码|关注)|扫码关注|识别(?:图中)?二维码|"
+    r"关注(?:公众号|本号)|加微信|加我(?:微信|[:：])|微信号|私信我(?!们)|"
+    r"白嫖|非诚勿扰|点个?在看|点赞.{0,4}在看|设为星标|"
+    r"赞赏码|请赞赏|打赏|推荐阅读|往期(?:回顾|推荐)|"
+    r"欢迎关注(?:公众号|本号)|欢迎转发|欢迎加入"
+)
+_QR_NAME = re.compile(r"二维码|qrcode|qr[-_ ]?code|(?:^|[\\/_.-])qr(?:[\\/_.-]|$)", re.I)
+_MD_IMAGE_FULL = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_HTML_IMAGE_TAG = re.compile(r"<img\b[^>]*>", re.I)
+_QR_WIDGET = re.compile(r"<mp-common-qrcode\b[^>]*>(?:.*?</mp-common-qrcode>)?", re.I | re.S)
+_HTML_ATTR = re.compile(r"""\b([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(["'])(.*?)\2""", re.I)
+_HTML_BLOCK = re.compile(
+    r"<p\b[^>]*>.*?</p>|<h[1-6]\b[^>]*>.*?</h[1-6]>|<figure\b[^>]*>.*?</figure>|<img\b[^>]*>",
+    re.I | re.S,
+)
+_BARE_META = re.compile(r"^\s*(?:" + _META_KEYS + r")\s*[:：]\s*\S.{0,160}\s*$", re.I)
+_ONLY_URL = re.compile(r"^\s*https?://\S+\s*$", re.I)
+_READ_COUNT = re.compile(r"^\s*(?:阅读|在看|点赞|评论)\s*[:：]?\s*[\d,]+\s*$")
+_RULE = re.compile(r"^[\s—\-–*·•_=~─]+$")
+_SENTENCE_END = re.compile(r"[。！？!?]")
 COMMENTS = re.compile(r"^##\s*(?:评论|评论里的回复)")
 MIN_LINE = 4  # 归一化后短于这个的行算碎行，不参与统计
 MIN_DF = 5
@@ -84,8 +110,225 @@ def _only_images(line: str) -> bool:
     return bool(_IMAGE.search(line)) and not _IMAGE.sub("", line).strip()
 
 
+def _html_attr(tag: str, name: str) -> str:
+    wanted = name.lower()
+    for key, _quote, value in _HTML_ATTR.findall(tag):
+        if key.lower() == wanted:
+            return value
+    return ""
+
+
+def looks_like_qr(ref: str, alt: str = "") -> bool:
+    """文件名或替代文字像公众号二维码。正文里讨论「二维码支付」不算。"""
+    if _QR_NAME.search(alt or ""):
+        return True
+    name = (ref or "").split("?")[0].split("#")[0].rsplit("/", 1)[-1]
+    return bool(name and _QR_NAME.search(name))
+
+
+def _plain(line: str) -> str:
+    return re.sub(r"^\s*#{1,6}\s*", "", line or "").strip()
+
+
+def _is_archive_header_line(line: str) -> bool:
+    """归档头：作者、时间、原链接、阅读数。带句号的判断句不是头。链接里的问号不算句号。"""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if not (_META_LINE.match(line) or _BARE_META.match(line) or _ONLY_URL.match(line) or _READ_COUNT.match(line)):
+        return False
+    if re.search(r"https?://", stripped):
+        return True
+    return not re.search(r"[。！？]", stripped)
+
+
+def is_cta_line(line: str) -> bool:
+    """招募、关注、加微信这类号召。一句带句号的研究判断里偶尔出现这些词，留下。"""
+    text = _plain(line)
+    if not text or not _CTA.search(text):
+        return False
+    compact = normalize(text)
+    if _SENTENCE_END.search(text) and len(compact) > 18:
+        return False
+    if len(compact) <= 80:
+        return True
+    match = _CTA.search(text)
+    return bool(match and match.start() <= 6 and len(compact) <= 120)
+
+
+def _qr_only(line: str) -> bool:
+    stripped = line.strip()
+    if not _only_images(stripped):
+        return False
+    refs = image_refs(stripped)
+    alts = _MD_IMAGE_FULL.findall(stripped)
+    if alts and any(looks_like_qr(ref, alt) for alt, ref in alts):
+        return True
+    return bool(refs) and all(looks_like_qr(ref) for ref in refs)
+
+
+def is_fragment(line: str) -> bool:
+    """文末被拆开的半句。有句号、写完整了的短判断留下。"""
+    text = _plain(line)
+    if not text or _RULE.match(text):
+        return True
+    compact = normalize(text)
+    if _SENTENCE_END.search(text):
+        return len(compact) <= 8
+    return len(compact) <= 40
+
+
+def is_soft_tail(line: str) -> bool:
+    text = line.strip()
+    if not text or _RULE.match(text):
+        return True
+    if _only_images(text):
+        return _qr_only(text)
+    return is_cta_line(line) or is_fragment(line)
+
+
+def strip_qr_images(text: str) -> str:
+    """拿掉二维码图。插图的文件名不像二维码就留下。"""
+
+    def markdown_image(match: re.Match[str]) -> str:
+        if looks_like_qr(match.group(2), match.group(1)):
+            return ""
+        return match.group(0)
+
+    def html_image(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        src = _html_attr(tag, "data-src") or _html_attr(tag, "src")
+        alt = _html_attr(tag, "alt")
+        if looks_like_qr(src, alt):
+            return ""
+        return tag
+
+    cleaned = _MD_IMAGE_FULL.sub(markdown_image, text or "")
+    cleaned = _HTML_IMAGE_TAG.sub(html_image, cleaned)
+    cleaned = _QR_WIDGET.sub("", cleaned)
+    return cleaned
+
+
+def cut_cta_tail(lines: list[str]) -> list[str]:
+    """从最后一段实质正文之后，切掉号召、二维码和夹在中间的碎句。"""
+    if not lines:
+        return lines
+    last_substantial = -1
+    for index, line in enumerate(lines):
+        text = _plain(line)
+        if not text or is_cta_line(line) or _qr_only(line) or _only_images(line.strip()):
+            continue
+        if len(normalize(text)) >= 36:
+            last_substantial = index
+    if last_substantial < 0:
+        region_start = max(0, len(lines) - max(12, len(lines) // 3))
+    else:
+        region_start = last_substantial + 1
+    region = lines[region_start:]
+    signal_at = None
+    for index, line in enumerate(region):
+        if is_cta_line(line) or _qr_only(line):
+            signal_at = index
+            break
+    if signal_at is None:
+        return lines
+    cursor = signal_at
+    while cursor > 0 and is_soft_tail(region[cursor - 1]):
+        cursor -= 1
+    cut = region_start + cursor
+    if last_substantial >= 0 and cut <= last_substantial:
+        cut = last_substantial + 1
+    kept = lines[:cut]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return kept
+
+
+def _looks_like_html_body(text: str) -> bool:
+    sample = (text or "").lstrip()[:500].lower()
+    if sample.startswith(("#", "---", ">")):
+        return False
+    return sample.startswith(("<!doctype", "<html", "<body", "<div", "<p", "<section"))
+
+
+def _block_text(block: str) -> str:
+    return re.sub(r"<[^>]+>", "", block or "").strip()
+
+
+def clean_html_document(html: str) -> str:
+    """公众号 HTML：去掉开头的归档头、文末招募和二维码图。正文插图留下。"""
+    html = strip_qr_images(html or "")
+    blocks = list(_HTML_BLOCK.finditer(html))
+    if len(blocks) < 2:
+        return html
+    kinds: list[str] = []
+    for match in blocks:
+        raw = match.group(0)
+        text = _block_text(raw)
+        has_img = bool(re.search(r"<img\b", raw, re.I))
+        if has_img and not text:
+            src = _html_attr(raw, "data-src") or _html_attr(raw, "src")
+            alt = _html_attr(raw, "alt")
+            kinds.append("qr" if looks_like_qr(src, alt) else "img")
+        elif _is_archive_header_line(text):
+            kinds.append("meta")
+        elif is_cta_line(text):
+            kinds.append("cta")
+        elif not text:
+            kinds.append("empty")
+        else:
+            kinds.append("text")
+    drop: set[int] = set()
+    started = False
+    for index, kind in enumerate(kinds):
+        if kind in {"meta", "empty"} and not started:
+            if kind == "meta" or (kind == "empty" and not started):
+                drop.add(index)
+            continue
+        if kind in {"text", "img", "cta", "qr"}:
+            started = True
+    last_text = -1
+    for index, kind in enumerate(kinds):
+        if kind != "text":
+            continue
+        text = _block_text(blocks[index].group(0))
+        if len(normalize(text)) >= 36 and not is_cta_line(text):
+            last_text = index
+    if last_text < 0:
+        tail_from = max(0, len(kinds) - max(8, len(kinds) // 3))
+    else:
+        tail_from = last_text + 1
+    signal = None
+    for index in range(tail_from, len(kinds)):
+        if kinds[index] in {"cta", "qr"}:
+            signal = index
+            break
+    if signal is not None:
+        cursor = signal
+        while cursor > tail_from and kinds[cursor - 1] in {"cta", "qr", "empty", "meta"}:
+            cursor -= 1
+        while cursor > tail_from and kinds[cursor - 1] == "text":
+            if not is_fragment(_block_text(blocks[cursor - 1].group(0))):
+                break
+            cursor -= 1
+        for index in range(cursor, len(kinds)):
+            drop.add(index)
+    if not drop:
+        return re.sub(r"\n{3,}", "\n\n", html).strip("\n") + ("\n" if html.strip() else "")
+    pieces: list[str] = []
+    pos = 0
+    for index, match in enumerate(blocks):
+        if index in drop:
+            pieces.append(html[pos : match.start()])
+            pos = match.end()
+    pieces.append(html[pos:])
+    text = "".join(pieces)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip("\n")
+    return text + ("\n" if text else "")
+
+
 def strip_meta(body: str) -> str:
-    """去掉开头的归档头列表。只看标题之后、正文第一句之前那一段。"""
+    """去掉开头的归档头。只看标题之后、正文第一句之前那一段。有没有列表横线都认。"""
     lines = body.split("\n")
     out: list[str] = []
     started = False
@@ -97,7 +340,7 @@ def strip_meta(body: str) -> str:
         if not stripped or _HEADING.match(line):
             out.append(line)
             continue
-        if _META_LINE.match(line):
+        if _is_archive_header_line(line):
             continue
         started = True
         out.append(line)
@@ -175,8 +418,17 @@ def _tail_cut(lines: list[str], profile: Profile, hashes: dict[str, str]) -> int
     return cut
 
 
-def clean_body(body: str, profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> str:
-    """body 是去掉 frontmatter 之后的 Markdown。hashes：图片原始引用 → 内容哈希。"""
+def clean_body(
+    body: str,
+    profile: Profile = EMPTY,
+    hashes: dict[str, str] | None = None,
+    *,
+    drop_cta: bool = True,
+) -> str:
+    """body 是去掉 frontmatter 之后的 Markdown。hashes：图片原始引用 → 内容哈希。
+
+    drop_cta 为假时只去归档头和统计出来的模板（飞书笔记用这条）。
+    """
     hashes = hashes or {}
     body = scrub_file_page_junk(strip_meta(body or ""))
     lines = body.split("\n")
@@ -208,6 +460,9 @@ def clean_body(body: str, profile: Profile = EMPTY, hashes: dict[str, str] | Non
         while kept and not kept[-1].strip():
             kept.pop()
     text = "\n".join(kept)
+    if drop_cta:
+        text = strip_qr_images(text)
+        text = "\n".join(cut_cta_tail(text.split("\n")))
     if rest:
         text = text.rstrip() + "\n\n" + "\n".join(rest)
     return re.sub(r"\n{3,}", "\n\n", text).strip("\n") + ("\n" if text else "")
@@ -283,16 +538,28 @@ def image_hashes(conn, article_id: int) -> dict[str, str]:
     return {row["original_ref"]: row["content_hash"] for row in rows}
 
 
-def clean_markdown(body_md: str, profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> str:
+def clean_markdown(
+    body_md: str,
+    profile: Profile = EMPTY,
+    hashes: dict[str, str] | None = None,
+    *,
+    drop_cta: bool = True,
+) -> str:
     """整篇 body_md（可能带 frontmatter）→ 清洗后的正文，不带 frontmatter。"""
     from researchlib.textutil import split_frontmatter
 
     _front, body = split_frontmatter(body_md or "")
-    return clean_body(body, profile, hashes)
+    if drop_cta and _looks_like_html_body(body):
+        return clean_html_document(body)
+    return clean_body(body, profile, hashes, drop_cta=drop_cta)
 
 
 def clean_article(conn, article_id: int, source_id: str, body_md: str) -> str:
-    return clean_markdown(body_md, profile_for(conn, source_id), image_hashes(conn, article_id))
+    kind = conn.execute("SELECT kind FROM sources WHERE id = %s", (source_id,)).fetchone()
+    drop_cta = kind is None or kind["kind"] not in LIBRARY_KINDS
+    if not drop_cta:
+        return clean_markdown(body_md, EMPTY, image_hashes(conn, article_id), drop_cta=False)
+    return clean_markdown(body_md, profile_for(conn, source_id), image_hashes(conn, article_id), drop_cta=True)
 
 
 # —— 全库重洗 ——
