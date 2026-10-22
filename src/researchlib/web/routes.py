@@ -1693,7 +1693,7 @@ def health(request: Request):
 
 @router.get("/robots.txt")
 def robots():
-    return PlainTextResponse("User-agent: *\nDisallow: /\n")
+    return PlainTextResponse("User-agent: Claude-User\nAllow: /\n\nUser-agent: *\nDisallow: /\n")
 
 
 @router.get("/favicon.svg")
