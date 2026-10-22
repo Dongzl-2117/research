@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
-
 import mimetypes
+import os
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
