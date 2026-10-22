@@ -181,7 +181,7 @@ def require_enabled(source_id: str) -> None:
     try:
         source = require_source(load_sources(settings.sources_path), source_id, kind="markdown")
         if source.paused:
-            raise SourceRejected(f"{source.id}（{source.name}）已暂停（paused: true），库里标 hidden=source_paused，拒绝导入")
+            raise SourceRejected(f"{source.id} 已暂停（paused），拒绝导入")
     except SourceRejected as exc:
         print(f"拒绝导入：{exc}", file=sys.stderr)
         raise SystemExit(2) from exc
