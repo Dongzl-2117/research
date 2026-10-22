@@ -7,8 +7,16 @@
 from pathlib import Path
 
 from researchlib.ocr import append_ocr, compose_ocr_text
-from researchlib.render import _flow_ocr_lines, image_anchor, inline_image_ocr, render_body
-from researchlib.wechat_dialogue import present_ocr_pieces, present_stored_ocr
+from researchlib.render import (
+    _dialogue_html,
+    _flow_ocr_lines,
+    _hoist_figures_out_of_paragraphs,
+    flow_ocr_quote_body,
+    image_anchor,
+    inline_image_ocr,
+    render_body,
+)
+from researchlib.wechat_dialogue import parse_shot, present_ocr_pieces, present_stored_ocr, render_turns
 from researchlib.zsxq_title import zsxq_display_title
 
 # 文章 14886 的形状：正文一句，判断在两张重叠的微信群截图里。
@@ -268,7 +276,7 @@ def test_screenshot_wraps_flow_into_one_paragraph():
         "最近Claude被封号了，用了一些国产agents，觉得差距太大了"
     )
     assert _flow_ocr_lines("Opus5.5确实断档领先其他所有大模\n型。") == "Opus5.5确实断档领先其他所有大模型。"
-    assert _flow_ocr_lines("机或者游戏潮玩\n他是一个效率驱动的东西") == "机或者游戏潮玩 他是一个效率驱动的东西"
+    assert _flow_ocr_lines("机或者游戏潮玩\n他是一个效率驱动的东西") == "机或者游戏潮玩他是一个效率驱动的东西"
     assert "\n" not in _flow_ocr_lines("同店压力还在，折扣不能再深\n会员那边先不动。")
 
 
@@ -290,7 +298,7 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
     assert "根本不是一个代际的产品" in page
     assert "其他所有大模型" in page
     assert "智能手机或者游戏潮玩" in page
-    assert "游戏潮玩 他是一个效率驱动" in page
+    assert "游戏潮玩他是一个效率驱动" in page
     assert "agents执行复杂任务" in page
     assert '<span class="who">方伟：</span>会有一批大模型达到' in page
     assert page.count('<span class="who">方伟：</span>') >= 3
@@ -313,3 +321,198 @@ def test_image_post_title_uses_the_sentence_not_the_speaker_label():
     assert title.startswith("瑞幸和古茗都算头部")
     assert not title.startswith("方伟")
     assert "网友" not in title
+
+
+PDD_MOMENTS = """拼多多，我是始终不太看好。属于
+假本分。个人一家之言仅供参.
+方伟看十年作者
+零售的本分是帮消费者省钱，
+管理层的本分是integrity，世
+界范围内在零售行业，做得比
+它好的，其实只有Costco，奥
+乐齐，利德。
+50年下来，沃尔玛的毛利率从
+20%提升到了24%，费用率从
+16%提升到了20%，只有
+Costco50年不变，费用率纹丝
+不动，那就是9%，这是零售
+领域最强大的公司。
+方伟看十年
+什么才叫做“拥有一家公司”的感觉？"""
+
+AMAZON_PRODUCT = """14:10  e  4G
+Q  运动水杯1L  回  O
+★★★★&Up  AllDiscounts  Up to $10
+Sponsored O|9K+boughtfrom thisbrand inpast month
+Limitedtimedeal  $1499 $16.99  $1699
+$1069  Typical: $12.99
+FREEdeliveryOct26-Nov4
+购物车"""
+
+META_CHART = """Fiscal.ai  @Fiscalai·12小时  X
+Meta Ads v.Google Search
+META-AdvertisingRevenue(LTM)
+$250B
+GoogleSearch$243B
+8  MetaAds$223B
+BuiltwithFiscalaiMcP"""
+
+
+def test_moments_card_becomes_fangwei_dialogue_without_chrome():
+    """8881 拼多多微信图：收成方伟气泡，去掉账号栏和下一帖标题，折行接上。"""
+    shot = parse_shot(PDD_MOMENTS)
+    assert shot.kind == "dialogue"
+    text = render_turns(shot.turns)
+    assert text.startswith("方伟：")
+    assert "拼多多，我是始终不太看好" in text
+    assert "属于" in text and "假本分" in text
+    assert "方伟看十年" not in text
+    assert "什么才叫做" not in text
+    assert "网友：" not in text
+
+    digest = "29" * 32
+    page = inline_image_ocr(
+        str(render_body("（见图）\n\n![](p.png)\n", {"p.png": f"/media/x/ab/{digest}.png"})),
+        {digest: PDD_MOMENTS},
+    )
+    assert 'class="ocr-reading ocr-dialogue"' in page
+    assert '<span class="who">方伟：</span>' in page
+    assert "原图 1" in page
+    assert "点击看原图" not in page
+    assert "<details" not in page
+    assert f'id="{image_anchor(digest)}"' in page
+
+
+def test_product_and_chart_shots_are_links_only():
+    """亚马逊 / Temu 商品图和图表不套对话，只留原图链接。"""
+    assert parse_shot(AMAZON_PRODUCT).kind == "media"
+    assert parse_shot(META_CHART).kind == "media"
+    a, c = "e5" * 32, "ad" * 32
+    page = inline_image_ocr(
+        str(
+            render_body(
+                "![](a.png)\n\n![](c.png)\n",
+                {
+                    "a.png": f"/media/x/ab/{a}.png",
+                    "c.png": f"/media/x/ab/{c}.png",
+                },
+            )
+        ),
+        {a: AMAZON_PRODUCT, c: META_CHART},
+    )
+    assert "方伟：" not in page and "网友：" not in page
+    assert "运动水杯" not in page and "Sponsored" not in page
+    assert "Builtwith" not in page
+    assert "原图 1" in page and "原图 2" in page
+    assert "点击看原图" not in page
+    assert page.count('class="ocr-shot"') == 1
+
+
+
+def test_cjk_wrap_does_not_insert_space():
+    assert _flow_ocr_lines("管理层的本分是integrity，世\n界范围内在零售行业") == (
+        "管理层的本分是integrity，世界范围内在零售行业"
+    )
+    assert _flow_ocr_lines("其实只有Costco，奥\n乐齐，利德。") == "其实只有Costco，奥乐齐，利德。"
+    assert "奥 乐齐" not in flow_ocr_quote_body("方伟：其实只有Costco，奥\n乐齐，利德。")
+
+
+def test_sentence_end_starts_new_dialogue_paragraph():
+    """已经收了句的下一句另起一段，避免星球长聊糊成一大块。"""
+    assert _flow_ocr_lines("第一句完了。\n第二句开始。") == "第一句完了。\n\n第二句开始。"
+    html = _dialogue_html("方伟：第一句完了。\n第二句开始。")
+    assert html.count("<p>") == 2
+    assert '<span class="who">方伟：</span>第一句完了。' in html
+    assert "<p>第二句开始。</p>" in html
+
+REDDIT_COMMENT = """Templar-kun.3moago
+I agree that for the same price, products from Temu will be a higher quality.
+Share
+Reply
+Award
+"""
+
+REDDIT_COMMENT_2 = """Dazzling_Lion7140.3moago
+I love Temu, you can find anything....l mean they will refund you if you're
+unhappy so its more than worth any risk and the shipping times are amazing
+now for most items
+"""
+
+SCF_TABLE = """美联储《消费者金融调查》（SCF）2022年的数据：
+指标  数值
+家庭净资产中位数  约19.3万美元
+净资产≥100万美元的家庭  约18%
+前10%的门槛  约192万美元
+前5%的门槛  约378万美元
+净资产≥1.000万美元的家庭  约2%（第98百分位左右，第三方根据微观数据插值估算）
+前1%的门槛  约1.367万美元
+"""
+
+GROUP_RETAIL = """21:25
+1628  看十年·线下深度交流（80）
+09:20
+美国的零售历史是从梅西百货，
+A&P，西尔斯，再到1960年代的折
+扣零售商，当时的竞争主要是凯马特
+与沃尔玛
+"""
+
+
+def test_reddit_and_table_shots_are_links_only():
+    """Reddit 评论楼和 SCF 数据表只留原图，不套方伟/网友。"""
+    assert parse_shot(REDDIT_COMMENT).kind == "media"
+    assert parse_shot(REDDIT_COMMENT_2).kind == "media"
+    assert parse_shot(SCF_TABLE).kind == "media"
+    digest = "01" * 32
+    page = inline_image_ocr(
+        str(render_body("![](r.png)\n", {"r.png": f"/media/x/ab/{digest}.png"})),
+        {digest: REDDIT_COMMENT},
+    )
+    assert "方伟：" not in page and "网友：" not in page
+    assert "Templar" not in page and "I agree" not in page
+    assert "原图 1" in page
+
+
+def test_moments_then_group_not_one_blob():
+    """朋友圈与群聊不同 family，不糊成「公司美国的零售」。"""
+    truncated = PDD_MOMENTS.replace(
+        "什么才叫做“拥有一家公司”的感觉？",
+        "什么才叫做",
+    )
+    assert parse_shot(truncated).family == "moments"
+    assert parse_shot(GROUP_RETAIL).family == "group"
+    assert "什么才叫做" not in render_turns(parse_shot(truncated).turns)
+    text = present_ocr_pieces([truncated, GROUP_RETAIL])
+    assert text.count("方伟：") == 2
+    assert "公司美国的零售" not in text.replace("\n", "")
+    assert "最强大的公司" in text
+    assert "美国的零售历史是从梅西百货" in text
+    a, b = "29" * 32, "2b" * 32
+    page = inline_image_ocr(
+        str(
+            render_body(
+                "![](a.png)\n\n![](b.png)\n",
+                {
+                    "a.png": f"/media/x/ab/{a}.png",
+                    "b.png": f"/media/x/ab/{b}.png",
+                },
+            )
+        ),
+        {a: truncated, b: GROUP_RETAIL},
+    )
+    assert page.count('class="ocr-reading ocr-dialogue"') == 2
+    assert "公司美国的零售" not in page
+
+def test_mid_paragraph_figure_is_hoisted():
+    """段永平引语中间的图提到段外，半句不再被打断。"""
+    sample = (
+        '<p id="p-2"><figure class="ocr-shot"><p class="ocr-links">原图 1</p></figure>'
+        "他认为可口可乐是人们必喝的。”</p>"
+    )
+    out = _hoist_figures_out_of_paragraphs(sample)
+    assert out.index("<figure") < out.index("他认为")
+    assert "<p id=\"p-2\">他认为可口可乐是人们必喝的。”</p>" in out
+    sample2 = '<p><figure class="ocr-shot"><div>SCF</div></figure>——段永平</p>'
+    out2 = _hoist_figures_out_of_paragraphs(sample2)
+    assert out2.startswith("<figure")
+    assert "<p>——段永平</p>" in out2

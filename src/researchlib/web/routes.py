@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -34,7 +35,7 @@ from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
-from researchlib.render import inline_image_ocr
+from researchlib.render import flow_ocr_quote_body, inline_image_ocr
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
@@ -117,7 +118,9 @@ def active_sources(request: Request, conn):
         conn.commit()
         request.app.state.sources = sources
         request.app.state.sources_mtime = mtime
-    return enabled_sources(request.app.state.sources)
+    # paused 的来源（如段永平）整源先不展示：导航、作者、筛选都不出现。
+    show_paused = os.environ.get("RESEARCH_SHOW_PAUSED", "").strip() == "1"
+    return [s for s in enabled_sources(request.app.state.sources) if show_paused or not s.paused]
 
 
 def active_portfolio(request: Request) -> Portfolio:
@@ -615,7 +618,8 @@ def _article_view(request: Request, article_id: int, mode: str):
                 article = {**article, "ocr_hash": new_hash}
         digest = queries.digests_for(conn, [article_id]).get(article_id)
         empty_answer = is_suppressed(article["raw_meta"])
-        suppressed_reason = str((article["raw_meta"] or {}).get("suppressed") or "")
+        meta = article["raw_meta"] or {}
+        suppressed_reason = str(meta.get("hidden") or meta.get("suppressed") or "")
         # 短文的图片文字变了也重写摘要。空回答不排进后台。
         if digest_due(article, digest) and not empty_answer:
             schedule_digests(settings, [(article_id, source.author)])
@@ -624,6 +628,10 @@ def _article_view(request: Request, article_id: int, mode: str):
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
+            if quoted is not None and (quoted.get("lang") or "") == "ocr":
+                cleaned = flow_ocr_quote_body(present_stored_ocr(quoted["body"]))
+                if cleaned.strip():
+                    quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)
         translation = queries.get_translation(conn, article_id)
         elsewhere = [

@@ -1,7 +1,7 @@
 """知识星球评论。
 
 作者本人的回复接在正文后面。导出的「评论（N）」是另一节：阅读页要排成作者、时间、正文，
-空白名字写成「匿名」，标题前不要堆空换行。
+阅读页和入库都只留方伟自己的评论；空白名字不是方伟。标题前不要堆空换行。
 """
 
 import json
@@ -103,10 +103,13 @@ ARTICLE_14879_COMMENTS = f"""大模型生意的护城河在哪里，明确还不
 <br>
 <br>
 
-## 评论（2）
+## 评论（3）
 
 - **曾广文**（2026-10-21 11:42）
   个人觉得大模型很难形成护城河，因为只要开放出来用，哪怕是再贵的商用，都会被其他公司用来蒸馏，从而逼近这个模型。
+
+- **方伟Rey**（2026-10-21 11:50）
+  护城河还是要看切换成本和应用层。
 
 - **{_BLANK_NAME}**（2026-10-21 11:43）
   claude的fable不包含在20的订阅中，必须按量付费，10美元/M，opus价格的2.5倍
@@ -123,7 +126,7 @@ def _section(html: str) -> str:
 def test_plain_markdown_leaves_the_14879_comment_bugs():
     """同一套扩展下，导出原文会变成带圆点的列表、字面量星号，标题前还有一串 <br>。"""
     raw = markdown.markdown(ARTICLE_14879_COMMENTS, extensions=["extra", "nl2br", "sane_lists"])
-    head, _rest = raw.split("<h2>评论（2）</h2>", 1)
+    head, _rest = raw.split("<h2>评论（3）</h2>", 1)
     assert "<ul>" in raw
     assert f"**{_BLANK_NAME}**" in raw
     assert "<br" in head
@@ -138,15 +141,15 @@ def test_14879_comments_become_author_time_and_body():
     assert "<ul" not in html
     assert "**" not in html
     assert "\u3000" not in html
-    assert html.count('class="zsxq-comment"') == 2
-    assert 'class="zsxq-comment-author">曾广文<' in section
-    assert 'class="zsxq-comment-author">匿名<' in section
-    assert section.index("曾广文") < section.index(">匿名<")
-    assert 'datetime="2026-10-21T11:42"' in section
-    assert 'datetime="2026-10-21T11:43"' in section
-    assert "哪怕是再贵的商用，都会被其他公司用来蒸馏" in section
-    assert "claude的fable不包含在20的订阅中，必须按量付费，10美元/M，opus价格的2.5倍" in section
-    assert "<h2>评论（2）</h2>" in section
+    assert html.count('class="zsxq-comment"') == 1
+    assert 'class="zsxq-comment-author">方伟Rey<' in section
+    assert "曾广文" not in section
+    assert "匿名" not in section
+    assert "claude的fable" not in section
+    assert "哪怕是再贵的商用" not in section
+    assert 'datetime="2026-10-21T11:50"' in section
+    assert "护城河还是要看切换成本和应用层" in section
+    assert "<h2>评论（1）</h2>" in section
     assert 'class="zsxq-comment-list"' in section
     assert "max-width" not in section
 
@@ -165,14 +168,13 @@ def test_14879_comments_become_author_time_and_body():
         "***",
     ],
 )
-def test_blank_comment_author_is_anonymous(token: str):
+def test_blank_comment_author_is_hidden(token: str):
+    """空白名字不是方伟，整节评论不显示。"""
     line = f"- {token}（2026-10-21 11:43）" if token else "- （2026-10-21 11:43）"
     body = f"正文。\n\n## 评论（1）\n\n{line}\n  一句评论。\n"
     html = str(render_body(body, {}))
-    assert 'class="zsxq-comment-author">匿名<' in html
-    assert "一句评论。" in html
-    assert "\u3000" not in html
-    assert "**" not in html
+    assert "zsxq-comments" not in html
+    assert "一句评论。" not in html
 
 
 def test_real_names_stay_and_author_replies_stay_a_separate_section():
@@ -182,9 +184,12 @@ def test_real_names_stay_and_author_replies_stay_a_separate_section():
     assert display_author("**　　**") == "匿名"
     body = """正文。
 
-## 评论（1）
+## 评论（2）
 
 - **曾广文**（2026-10-21 11:42）
+  网友看法不显示。
+
+- **方伟Rey**（2026-10-21 11:50）
   第一段仍然在。
 
   第二段也在。
@@ -199,6 +204,7 @@ def test_real_names_stay_and_author_replies_stay_a_separate_section():
     assert html.index("zsxq-comments") < html.index("评论里的回复")
     section = _section(html)
     assert "第一段仍然在。" in section and "第二段也在。" in section
+    assert "曾广文" not in section and "网友看法" not in section
     assert "作者答" not in section and "评论里的回复" not in section
     assert "作者答：答一" in html
     assert "zsxq-comments" not in str(render_body("正文。\n\n## 评论里的回复\n\n作者补充：一句。\n", {}))
@@ -216,7 +222,7 @@ def test_comment_script_is_stripped():
 
 ## 评论（1）
 
-- **曾广文**（2026-10-21 11:42）
+- **方伟Rey**（2026-10-21 11:42）
   <script>alert(1)</script>正常文字。
 """
     html = str(render_body(body, {}))
@@ -281,14 +287,14 @@ def _page_14879(image_joiner: str) -> str:
         mapping[name] = f"/media/fangwei-zsxq/ab/{digest}.png"
         texts[digest] = shot
         images.append(f"![]({name})")
-    comments = "## 评论（2）" + ARTICLE_14879_COMMENTS.split("## 评论（2）", 1)[1]
+    comments = "## 评论（3）" + ARTICLE_14879_COMMENTS.split("## 评论（3）", 1)[1]
     body = "（见图）\n\n" + image_joiner.join(images) + "\n\n<br>\n<br>\n<br>\n\n" + comments
     rendered = stamp_paragraph_ids(str(render_body(body, mapping)))
     return inline_image_ocr(rendered, texts)
 
 
 def test_14879_shots_keep_dialogue_and_comments_share_the_column():
-    """原图链接和说话人不动。评论接在后面，匿名能读，标题前没有空 <br>。"""
+    """原图链接和说话人不动。评论接在后面只留方伟，标题前没有空 <br>。"""
     page = _page_14879("\n\n")
     assert "国产agents" in page
     assert '<span class="who">方伟：</span>会有一批大模型达到' in page
@@ -297,8 +303,8 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
         assert f"原图 {number}" in page
     assert page.index("方伟：") < page.index("原图 1") < page.index("zsxq-comments")
     section = _section(page)
-    assert 'class="zsxq-comment-author">曾广文<' in section
-    assert 'class="zsxq-comment-author">匿名<' in section
+    assert 'class="zsxq-comment-author">方伟Rey<' in section
+    assert "曾广文" not in section and "匿名" not in section
     assert "**" not in section and "\u3000" not in section
     gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
     assert "<br" not in gap
@@ -315,4 +321,4 @@ def test_breaks_between_screenshots_do_not_survive_in_front_of_comments():
     assert "原图 7" in page
     gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
     assert "<br" not in gap
-    assert 'class="zsxq-comment-author">匿名<' in page
+    assert 'class="zsxq-comment-author">方伟Rey<' in page

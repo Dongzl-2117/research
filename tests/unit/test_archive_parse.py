@@ -46,12 +46,14 @@ def test_whitelist_shape():
     assert xueqiu.author == "黑黑无常"
     assert xueqiu.kind == "markdown"
     assert xueqiu.enabled is True
+    assert xueqiu.min_chars == 100
     assert "转发" in xueqiu.description and "评论" in xueqiu.description
     duan = next(source for source in sources if source.id == "duanyongping-blog")
     assert duan.name == "段永平"
     assert duan.author == "段永平"
     assert duan.kind == "markdown"
     assert duan.enabled is True
+    assert duan.paused is True
     disabled = {source.id: source.kind for source in sources if not source.enabled}
     assert disabled == {
         "linwenfeng-mp": "wechat_mp",
