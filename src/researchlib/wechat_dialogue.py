@@ -10,11 +10,13 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
+- 知识星球帖子截图底部的留言区、划线人数、赞赏、分享栏整段丢掉，不挂到「方伟：」下面；单独一行的「（作者）」也丢掉
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
 知识星球引用回复不是微信气泡：第一条「方伟看十年 / 作者」账号栏是分界，栏上的灰字是「网友：」，
 栏下的回复是「方伟：」。账号栏本身和卡片末尾的下一帖标题去掉。栏上没有正文、一上来就是账号栏的，
-仍整段是方伟。电商商品图、带坐标轴的图表、数据表、Reddit 等外网评论截图不套对话，阅读页只留原图链接。
+仍整段是方伟。留言区是另一类版式，不靠这条分界。
+电商商品图、带坐标轴的图表、数据表、Reddit 等外网评论截图不套对话，阅读页只留原图链接。
 已经整理过的「方伟：」「网友：」再跑一遍还是同一份，方便写回 articles.ocr_text。
 """
 
@@ -173,8 +175,32 @@ _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
 _WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
 # 朋友圈 / 公众号卡片上的账号栏。不是气泡里的话。
 # 知识星球引用回复里，第一条这样的行把栏上的灰字和栏下的回复切开。
-_ACCOUNT_BADGE = re.compile(r"^方伟看十年作者$|^看十年作者$")
+_ACCOUNT_BADGE = re.compile(
+    r"^方伟看十年作者$|^看十年作者$"
+    r"|^方伟看十年[（(]作者[）)]$"
+    r"|^看十年[（(]作者[）)]$"
+)
 _ACCOUNT_NAME = re.compile(r"^方伟看十年$|^看十年$")
+# 公众号名片上单独一行的「（作者）」。不是正文，也不是引用回复的分界。
+_AUTHOR_BADGE = re.compile(r"^[（(]作者[）)]$")
+_AUTHOR_INLINE = re.compile(r"[（(]作者[）)]")
+# 帖子截图底部。从这一行起到图末都是留言区和按钮，不是谁说的话。
+_STRONG_FOOTER = re.compile(
+    r"^(?:"
+    r"(?:\d+)?条留言"
+    r"|写留言"
+    r"|留言"
+    r"|划线人数\d*(?:人)?"
+    r"|\d+人划线"
+    r"|划线\d+"
+    r")$"
+)
+_SOFT_FOOTER = re.compile(r"^(?:赞赏(?:一下)?|去赞赏|分享(?:到(?:朋友圈|微信))?|转发给朋友|收藏)$")
+_GLUED_FOOTER = re.compile(r"^(?:(?:\d+)?条留言|写留言|划线人数\d*|赞赏|分享|收藏){2,}$")
+_COMMENT_HEAD = re.compile(
+    r"^([\u4e00-\u9fffA-Za-z0-9_·.]{1,12})留言(?:[:：].*)?(?:…+|⋯+|‥+|\.{2,})?$"
+)
+_COMMENT_HEAD_SKIP = frozenset({"写", "欢迎", "请", "大家", "请大家", "条", "我要", "的", "这", "那"})
 # 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
 _FEED_TITLE = re.compile(
     r"^(?:[^。！\n]{4,40}[？?]|什么才叫做[^。！？\n]{0,30})$"
@@ -275,6 +301,96 @@ def _plain(line: str) -> str:
     return line[len(SIDE_SELF) :] if line.startswith(SIDE_SELF) else line
 
 
+def _footer_compact(line: str) -> str:
+    return re.sub(r"\s+", "", _fold(_plain(line)))
+
+
+def _is_author_badge(line: str) -> bool:
+    """单独的「（作者）」，或「张三（作者）」这种短署名。账号栏留给引用回复去分界。"""
+    plain = _plain(line)
+    if _account_line(plain):
+        return False
+    text = _footer_compact(line)
+    if _AUTHOR_BADGE.fullmatch(text):
+        return True
+    if not text or len(text) > 16 or re.search(r"[。！？!?]", text):
+        return False
+    return _AUTHOR_INLINE.search(text) is not None
+
+
+def _is_strong_footer(line: str) -> bool:
+    text = _footer_compact(line)
+    if not text or len(text) > 24:
+        return False
+    return _STRONG_FOOTER.fullmatch(text) is not None or _GLUED_FOOTER.fullmatch(text) is not None
+
+
+def _is_soft_footer(line: str) -> bool:
+    text = _footer_compact(line)
+    return bool(text) and len(text) <= 16 and _SOFT_FOOTER.fullmatch(text) is not None
+
+
+def _is_comment_head(line: str) -> bool:
+    """「张冠留言」「张冠留言：渠道还高」。句子里的「请在下面留言」不是。"""
+    match = _COMMENT_HEAD.fullmatch(_footer_compact(line))
+    if not match:
+        return False
+    name = match.group(1)
+    if name in _COMMENT_HEAD_SKIP or name.isdigit() or len(name) > 8:
+        return False
+    if _is_host_line(_compact_host(name)):
+        return False
+    chars = _CJK.findall(name)
+    if chars and any(char in _STOP_CHAR for char in chars):
+        return False
+    if chars and len(chars) != len(name):
+        return False
+    return True
+
+
+def _post_chrome_context(lines: list[str]) -> bool:
+    """这张图是星球 / 公众号帖子，而不是群里有人随口说了「赞赏」。"""
+    for line in lines:
+        if _is_strong_footer(line) or _is_comment_head(line) or _is_author_badge(line):
+            return True
+        if _account_line(_plain(line)):
+            return True
+    return False
+
+
+def _footer_cut(lines: list[str]) -> int | None:
+    context = _post_chrome_context(lines)
+    for index, line in enumerate(lines):
+        strong = _is_strong_footer(line)
+        if not (strong or _is_comment_head(line) or (context and _is_soft_footer(line))):
+            continue
+        start = index
+        # 「张冠 / 留言 / 评论内容」：名字紧挨在「留言」上面，一起从正文拿掉。
+        if strong and _footer_compact(line) in {"留言", "写留言"} and index:
+            prev = _footer_compact(lines[index - 1])
+            if prev and (
+                _cjk_name(prev, 2) or _cjk_name(prev, 3) or _latin_name(prev)
+            ) and not _is_host_line(_compact_host(prev)):
+                start = index - 1
+        return start
+    return None
+
+
+def _drop_post_footer(lines: list[str]) -> list[str]:
+    """留言区、划线人数、赞赏、分享从出现的那一行起丢掉。「（作者）」单独拿掉，后面的正文留下。"""
+    cut = _footer_cut(lines)
+    kept = lines if cut is None else lines[:cut]
+    return [line for line in kept if not _is_author_badge(line)]
+
+
+def _prose_after_footer(original: str, raw_lines: list[str], stripped: list[str]) -> Shot:
+    if stripped == raw_lines:
+        return Shot("prose", [], original)
+    if not stripped:
+        return Shot("media", [], "")
+    return Shot("prose", [], "\n".join(_plain(line) for line in stripped).strip())
+
+
 def parse_shot(text: str) -> Shot:
     original = (text or "").strip()
     if not original:
@@ -291,8 +407,9 @@ def parse_shot(text: str) -> Shot:
         or _is_foreign_comment_shot(raw_lines)
     ):
         return Shot("media", [], "")
-    signal = _wechat_signal(raw_lines)
-    lines = _prepare_lines(raw_lines)
+    stripped = _drop_post_footer(raw_lines)
+    signal = _wechat_signal(stripped)
+    lines = _prepare_lines(stripped)
     names = _speaker_names(lines, signal)
     # 已经是「方伟：」「网友：」的块再跑也要能合并，不能因为界面字已经被拿掉就退回原文。
     visible = [_plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT)]
@@ -308,17 +425,17 @@ def parse_shot(text: str) -> Shot:
                 hosted = True
                 break
     if not lines or not (signal or names or labeled or hosted):
-        return Shot("prose", [], original)
+        return _prose_after_footer(original, raw_lines, stripped)
     # 群聊里没有坐标时，不写别人昵称的气泡是作者自己的绿色气泡。有侧标记时以标记为准。
     turns = _walk(lines, names, self_unnamed=bool(signal or names or hosted))
-    had_account = any(_account_line(_plain(line)) for line in raw_lines)
+    had_account = any(_account_line(_plain(line)) for line in stripped)
     family = "moments" if had_account else ("group" if signal else "chat")
     if turns:
         return Shot("dialogue", turns, "", family)
     # 整张都是界面字时不要把原文退回去，否则价格和小程序会漏进正文。
     if signal or names or hosted or labeled:
         return Shot("dialogue", [], "", family)
-    return Shot("prose", [], original)
+    return _prose_after_footer(original, raw_lines, stripped)
 
 
 def _is_product_shot(lines: list[str]) -> bool:

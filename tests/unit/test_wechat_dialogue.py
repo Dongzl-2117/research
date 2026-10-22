@@ -563,6 +563,95 @@ def test_moments_then_group_not_one_blob():
     assert page.count('class="ocr-reading ocr-dialogue"') == 2
     assert "公司美国的零售" not in page
 
+# 文章 12681 这一类：星球帖子截图的留言区和赞赏栏，不是引用回复的账号栏。
+ZSXQ_POST_12681 = """方伟
+茅台批价这一周没动，渠道仍在观望，短期不宜提价。
+张冠留言
+渠道库存还是偏高，先别急着看多。
+3条留言
+划线人数 18
+赞赏
+分享
+"""
+
+ZSXQ_AUTHOR_BADGE = """方伟看十年
+（作者）
+零售的本分是帮消费者省钱，管理层要对得起消费者。
+3条留言
+划线人数 4
+赞赏
+"""
+
+
+def test_12681_comment_footer_is_not_spoken_by_fangwei():
+    """留言区、划线人数、赞赏、分享不挂在「方伟：」下面。"""
+    text = present_ocr_pieces([ZSXQ_POST_12681])
+    assert text == "方伟：茅台批价这一周没动，渠道仍在观望，短期不宜提价。"
+    assert present_stored_ocr(text) == text
+    assert present_stored_ocr(ZSXQ_POST_12681) == text
+    for noise in ("张冠", "留言", "渠道库存", "条留言", "划线", "赞赏", "分享", "网友"):
+        assert noise not in text
+    digest = "12" * 32
+    page = inline_image_ocr(
+        str(render_body("（见图）\n\n![](p.png)\n", {"p.png": f"/media/x/ab/{digest}.png"})),
+        {digest: ZSXQ_POST_12681},
+    )
+    assert '<span class="who">方伟：</span>茅台批价这一周没动' in page
+    assert "张冠" not in page and "划线" not in page and "赞赏" not in page
+    assert "网友：" not in page
+
+
+def test_author_badge_is_chrome_and_footer_does_not_eat_the_reply():
+    """「（作者）」是名片，不是分界；底部按钮删掉，栏下的回复仍是方伟。"""
+    text = present_ocr_pieces([ZSXQ_AUTHOR_BADGE])
+    assert text == "方伟：零售的本分是帮消费者省钱，管理层要对得起消费者。"
+    assert "（作者）" not in text and "作者" not in text
+    assert "条留言" not in text and "赞赏" not in text and "网友：" not in text
+    paren = "拼多多，我是始终不太看好。\n方伟看十年（作者）\n零售的本分是帮消费者省钱。\n"
+    split = present_ocr_pieces([paren])
+    assert split.startswith("网友：拼多多，我是始终不太看好。")
+    assert "方伟：零售的本分是帮消费者省钱。" in split
+    assert "作者" not in split
+    # 引用回复的账号栏分界还在，不因为新的页脚规则把栏上收成方伟。
+    assert present_ocr_pieces([PDD_MOMENTS]) == PDD_MOMENTS_DIALOGUE
+
+
+def test_split_name_and_leave_a_message_line_are_both_dropped():
+    raw = "方伟\n批价这一周没动，渠道仍在观望。\n张冠\n留言\n库存还是偏高。\n写留言\n"
+    text = present_ocr_pieces([raw])
+    assert text == "方伟：批价这一周没动，渠道仍在观望。"
+    assert "张冠" not in text and "库存" not in text
+
+
+def test_rewash_selector_ignores_zanshang_inside_a_sentence():
+    from researchlib.zsxq_repair import _chrome_lines
+
+    assert _chrome_lines("这个赞赏的设计并不值钱，用户不会付钱。") is False
+    assert _chrome_lines("赞赏\n分享\n") is True
+    assert _chrome_lines("3条留言\n划线人数 18\n") is True
+    assert _chrome_lines("张冠留言\n渠道还高。\n") is True
+    assert _chrome_lines("（作者）\n正文还在。\n") is True
+
+
+def test_group_chat_can_still_say_zanshang_in_a_sentence():
+    raw = "微信\n9:41\n这个赞赏的设计并不值钱，用户不会为它付钱。\n"
+    text = present_ocr_pieces([raw])
+    assert text.startswith("方伟：")
+    assert "赞赏的设计并不值钱" in text
+
+
+def test_long_note_drops_a_trailing_footer_without_becoming_dialogue():
+    raw = (
+        "渠道库存和批价要分开看，这一段不是群聊，也没有人在气泡里说话。\n"
+        "后面再补一句，说明这是贴在图里的长笔记，不该套上说话人。\n"
+        "3条留言\n赞赏\n分享\n"
+    )
+    text = present_ocr_pieces([raw])
+    assert "方伟：" not in text and "网友：" not in text
+    assert "渠道库存和批价要分开看" in text
+    assert "条留言" not in text and "赞赏" not in text and "分享" not in text
+
+
 def test_mid_paragraph_figure_is_hoisted():
     """段永平引语中间的图提到段外，半句不再被打断。"""
     sample = (

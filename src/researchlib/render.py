@@ -460,7 +460,8 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
             index = nxt
             continue
         if item["shot"].kind != "dialogue":
-            outputs[index] = _ocr_figure(item["anchor"], item["src"], item["alt"], item["raw"])
+            shown = item["shot"].prose if item["shot"].kind == "prose" else item["raw"]
+            outputs[index] = _ocr_figure(item["anchor"], item["src"], item["alt"], shown)
             index += 1
             continue
         group = [index]

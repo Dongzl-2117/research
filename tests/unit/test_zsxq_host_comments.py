@@ -3,7 +3,9 @@
 from researchlib.render import render_body
 from researchlib.zsxq_comments import (
     assemble_reader_comments,
+    comment_list_authors,
     filter_host_comments_markdown,
+    guest_comment_authors,
     is_host_comment_author,
 )
 
@@ -56,6 +58,13 @@ def test_filter_markdown_drops_section_without_host():
     assert "## 评论" not in filtered
     assert "曾广文" not in filtered
     assert "正文。" in filtered
+
+
+def test_guest_roster_lists_only_non_host_and_ignores_reply_section():
+    assert guest_comment_authors(SAMPLE) == ["曾广文", "匿名"]
+    assert comment_list_authors(SAMPLE) == ["曾广文", "方伟Rey", "匿名"]
+    assert guest_comment_authors("正文。\n\n## 评论里的回复\n\n读者问：问。\n") == []
+    assert comment_list_authors("正文。\n\n## 评论（1）\n\n这里不是列表。\n") is None
 
 
 def test_reading_page_hides_guest_comments():

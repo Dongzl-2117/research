@@ -117,6 +117,30 @@ def _parse_comment_items(section: str) -> list[tuple[str, str, list[str]]] | Non
     return items
 
 
+def comment_list_authors(md: str) -> list[str] | None:
+    """「## 评论（N）」里的显示名。没有这一节返回 []。标题在、但不是这种列表时返回 None。"""
+    match = _HEADING.search(md or "")
+    while match and _in_fence(md, match.start()):
+        match = _HEADING.search(md, match.end())
+    if not match or (match.start() > 0 and md[match.start() - 1] != "\n"):
+        return []
+    rest = md[match.end() :]
+    nxt = _NEXT_HEADING.search(rest)
+    section = rest[: nxt.start()] if nxt else rest
+    items = _parse_comment_items(section)
+    if items is None:
+        return None
+    return [display_author(name) for name, _when, _body in items]
+
+
+def guest_comment_authors(md: str) -> list[str] | None:
+    """非方伟的评论作者。没有评论节返回 []。解析不了返回 None。"""
+    names = comment_list_authors(md)
+    if names is None:
+        return None
+    return [name for name in names if not is_host_comment_author(name)]
+
+
 def filter_host_comments_markdown(md: str) -> str:
     """入库用：正文里的「评论（N）」只留方伟。没有方伟评论就整节去掉。inbox 原文不改。"""
     match = _HEADING.search(md or "")

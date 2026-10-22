@@ -71,6 +71,8 @@ def test_usable_title_is_left_alone():
     assert stored_zsxq_title("茅台短帖", BODY) is None
     assert stored_zsxq_title(TRUNCATED, BODY) == FULL
     assert stored_zsxq_title("（见图）", "（见图）\n") is None
+    # 正文也是半截时，入库写成去掉省略号的主干，不再把「…」写进库。
+    assert stored_zsxq_title(TRUNCATED, TRUNCATED) == "大模型生意的护城河在哪里"
 
 
 class _Conn:
@@ -265,6 +267,17 @@ def test_14865_stem_beats_dirty_summary_and_unrelated_ocr():
     assert picture != XIAOMI_STEM
 
 
+def test_ellipsis_tucked_before_a_closing_quote_still_needs_repair():
+    assert title_needs_repair("护城河在哪里…」")
+    assert title_needs_repair("护城河在哪里...")
+    title = zsxq_display_title("护城河在哪里…」", body="护城河在哪里…」")
+    assert title == "护城河在哪里"
+    assert not title.endswith(("…", "」", "..."))
+    assert stored_zsxq_title("茅…", "茅…", summary="正文几乎只有半截。", ocr="茅台批价这一周没动，渠道仍在观望。") == (
+        "茅台批价这一周没动，渠道仍在观望"
+    )
+
+
 def test_zsxq_import_stores_a_complete_sentence(tmp_path: Path):
     (tmp_path / "md").mkdir()
     (tmp_path / "raw").mkdir()
@@ -277,3 +290,19 @@ def test_zsxq_import_stores_a_complete_sentence(tmp_path: Path):
     assert errors == []
     assert docs[0].title == FULL
     assert not docs[0].title.endswith("…")
+
+
+def test_zsxq_import_stores_a_stem_when_the_body_is_also_cut(tmp_path: Path):
+    """新抓的帖若正文也是半截，标题不再以省略号入库。"""
+    (tmp_path / "md").mkdir()
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "md" / "888889.md").write_text(TRUNCATED + "\n", encoding="utf-8")
+    (tmp_path / "raw" / "888889.json").write_text(
+        '{"topic_id": 888889, "create_time": "2024-10-19T05:29:00+00:00", "title": "大模型生意的护城河在哪里，明确…"}',
+        encoding="utf-8",
+    )
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    assert docs[0].title == "大模型生意的护城河在哪里"
+    assert not docs[0].title.endswith("…")
+    assert not title_needs_repair(docs[0].title)

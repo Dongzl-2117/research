@@ -1,0 +1,334 @@
+"""方伟星球存量回写。规则和入库、阅读页是同一套，不另写一套。
+
+- 标题：空的、「无标题」、以省略号结尾的，改成正文或摘要里的完整首句；写不出来的日期兜底不入库。
+- 评论：`## 评论（N）` 只留方伟。解析不了的不动，在报告里单列。
+- 图片文字：`image_texts` 里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。不重跑 RapidOCR。
+
+改标题或评论会改 `content_hash`，同时把观点、摘要、译文的哈希对齐，避免夜间任务把这几千篇再抽一遍。
+说话人改过的那几篇要另抽观点，命令会在最后印出来。不要加 `--gap`，也不要全库。
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+
+from researchlib.boilerplate import clean_markdown, image_hashes, profile_for
+from researchlib.chunks import make_chunks
+from researchlib.duplicates import fingerprint, store_fingerprint
+from researchlib.empty_answer import is_suppressed
+from researchlib.ingest.store import _body_text
+from researchlib.mentions import CompanyMatcher, load_company_rows, mentions_for_document, replace_mentions
+from researchlib.ocr import compose_ocr_text, hash_ocr
+from researchlib.retime import _realign
+from researchlib.textutil import SHANGHAI, content_hash
+from researchlib.wechat_dialogue import (
+    _is_author_badge,
+    _is_comment_head,
+    _is_soft_footer,
+    _is_strong_footer,
+    present_ocr_pieces,
+    present_stored_ocr,
+)
+from researchlib.zsxq_comments import (
+    comment_list_authors,
+    filter_host_comments_markdown,
+    guest_comment_authors,
+    is_host_comment_author,
+)
+from researchlib.zsxq_title import FANGWEI_ZSXQ, stored_zsxq_title, title_needs_repair
+
+# 部署后抽验。12681 是留言区挂到方伟的样例；473、606 同时看评论。
+SPOT_ARTICLES = (12681, 473, 606)
+# 噪音进过观点、要定点重抽的篇。8881 的拼多多已经抽过，不要再放进来。
+VIEW_ARTICLES = (203, 227, 473, 537, 606)
+_HOST_CHROME = re.compile(r"条留言|划线人数|赞赏|（作者）|\(作者\)")
+
+
+def _chrome_lines(text: str) -> bool:
+    """整行是留言区、划线、赞赏、分享或「（作者）」。句子里带「赞赏」两个字不算。"""
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        if _is_strong_footer(line) or _is_comment_head(line) or _is_author_badge(line) or _is_soft_footer(line):
+            return True
+        if "（作者）" in line or "(作者)" in line:
+            return True
+    return False
+
+
+def _day(value) -> str:
+    if value is None:
+        return ""
+    return value.astimezone(SHANGHAI).date().isoformat()
+
+
+def _chrome_under_host(text: str) -> bool:
+    presented = present_stored_ocr(text or "")
+    for block in presented.split("\n\n"):
+        if block.startswith("方伟：") and _HOST_CHROME.search(block):
+            return True
+    return False
+
+
+def _rewrite_chunks(conn, article_id: int, title: str, body_md: str, profile, hashes) -> None:
+    cleaned = clean_markdown(body_md, profile, hashes)
+    chunks = make_chunks(title, cleaned)
+    conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = ''", (article_id,))
+    if not chunks:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO article_chunks (article_id, ord, heading, body) VALUES (%s, %s, %s, %s)",
+            [(article_id, index, heading, text) for index, (heading, text) in enumerate(chunks)],
+        )
+
+
+def _image_pieces(conn, source_id: str) -> dict[int, list[str]]:
+    rows = conn.execute(
+        """
+        SELECT i.article_id, t.text
+        FROM article_images i
+        JOIN image_texts t ON t.content_hash = i.content_hash
+        JOIN articles a ON a.id = i.article_id
+        WHERE a.source_id = %s AND a.duplicate_of IS NULL
+        ORDER BY i.article_id, i.id
+        """,
+        (source_id,),
+    ).fetchall()
+    grouped: dict[int, list[str]] = {}
+    for row in rows:
+        grouped.setdefault(int(row["article_id"]), []).append(row["text"] or "")
+    return grouped
+
+
+def _digests(conn, source_id: str) -> dict[int, str]:
+    rows = conn.execute(
+        """
+        SELECT d.article_id, d.summary
+        FROM article_digests d
+        JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
+        WHERE a.source_id = %s AND a.duplicate_of IS NULL
+        """,
+        (source_id,),
+    ).fetchall()
+    return {int(row["article_id"]): row["summary"] or "" for row in rows}
+
+
+def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | None = None) -> dict:
+    """回写这一来源的标题、评论和 OCR 旁路。不提交事务。"""
+    if source_id != FANGWEI_ZSXQ:
+        raise SystemExit("这条命令只回写方伟星球（fangwei-zsxq）。别的星球星主不是方伟，不能套同一套评论规则。")
+    profile = profile_for(conn, source_id)
+    matcher = CompanyMatcher(load_company_rows(conn))
+    pieces = _image_pieces(conn, source_id)
+    summaries = _digests(conn, source_id)
+    rows = conn.execute(
+        """
+        SELECT id, title, body_md, body_text, published_at, content_hash, raw_meta, ocr_text
+        FROM articles
+        WHERE source_id = %s AND duplicate_of IS NULL
+        ORDER BY id
+        """,
+        (source_id,),
+    ).fetchall()
+    stats = {
+        "source_id": source_id,
+        "scanned": len(rows),
+        "titles": 0,
+        "titles_visible": 0,
+        "titles_unresolved": 0,
+        "comments_with_section": 0,
+        "comments_dirty": 0,
+        "comments_cleaned": 0,
+        "comments_unparsed": 0,
+        "ocr_rewash": 0,
+        "samples": [],
+        "spots": [],
+        "view_ids": list(VIEW_ARTICLES),
+    }
+    for row in rows:
+        article_id = int(row["id"])
+        title = row["title"] or ""
+        body_md = row["body_md"] or ""
+        ocr_text = row["ocr_text"] or ""
+        visible = not is_suppressed(row["raw_meta"])
+        shot_parts = pieces.get(article_id) or []
+        new_ocr = ocr_text
+        raw_blob = "\n".join(shot_parts)
+        if shot_parts and (_chrome_lines(raw_blob) or _chrome_lines(ocr_text)):
+            new_ocr = compose_ocr_text(shot_parts)
+        elif _chrome_lines(ocr_text):
+            new_ocr = present_stored_ocr(ocr_text)
+        ocr_changed = new_ocr != ocr_text
+        if ocr_changed:
+            stats["ocr_rewash"] += 1
+
+        new_title = title
+        if title_needs_repair(title):
+            replacement = stored_zsxq_title(
+                title,
+                row["body_text"] or body_md,
+                summary=summaries.get(article_id, ""),
+                ocr=present_stored_ocr(new_ocr),
+                when=_day(row["published_at"]),
+            )
+            if replacement:
+                new_title = replacement
+                stats["titles"] += 1
+                if visible:
+                    stats["titles_visible"] += 1
+                if len(stats["samples"]) < 8:
+                    stats["samples"].append({"id": article_id, "old": title, "new": replacement})
+            else:
+                stats["titles_unresolved"] += 1
+
+        new_md = body_md
+        listed = comment_list_authors(body_md)
+        if listed is None:
+            # 有「## 评论（N）」但对不上「- **名字**（时间）」这种列表：不猜，留在报告里。
+            stats["comments_with_section"] += 1
+            stats["comments_unparsed"] += 1
+        elif listed:
+            stats["comments_with_section"] += 1
+            guests = guest_comment_authors(body_md) or []
+            if guests:
+                stats["comments_dirty"] += 1
+                filtered = filter_host_comments_markdown(body_md)
+                if filtered != body_md:
+                    new_md = filtered
+                    stats["comments_cleaned"] += 1
+
+        if new_title == title and new_md == body_md and not ocr_changed:
+            continue
+        hashes = image_hashes(conn, article_id)
+        body_text = _body_text(new_title, new_md, profile, hashes)
+        digest = content_hash(new_title, new_md, row["published_at"])
+        conn.execute(
+            """
+            UPDATE articles
+            SET title = %s, body_md = %s, body_text = %s, content_hash = %s,
+                ocr_text = %s, ocr_hash = %s, updated_at = now()
+            WHERE id = %s
+            """,
+            (new_title, new_md, body_text, digest, new_ocr, hash_ocr(new_ocr), article_id),
+        )
+        if digest != (row["content_hash"] or ""):
+            _realign(conn, article_id, {row["content_hash"] or ""}, digest)
+            if body_text != (row["body_text"] or ""):
+                store_fingerprint(conn, article_id, digest, fingerprint(body_text))
+        if new_title != title or new_md != body_md:
+            _rewrite_chunks(conn, article_id, new_title, new_md, profile, hashes)
+            replace_mentions(conn, article_id, mentions_for_document(matcher, new_title, new_md))
+    stats["spots"] = spot_check(conn, source_id, spot_ids or list(SPOT_ARTICLES))
+    return stats
+
+
+def spot_check(conn, source_id: str, article_ids: list[int]) -> list[dict]:
+    """抽验锚点：标题、评论里还有没有别人、呈现后的图片文字还有没有页脚。"""
+    if not article_ids:
+        return []
+    rows = conn.execute(
+        """
+        SELECT id, title, body_md, ocr_text
+        FROM articles
+        WHERE source_id = %s AND id = ANY(%s)
+        """,
+        (source_id, list(article_ids)),
+    ).fetchall()
+    found = {int(row["id"]): row for row in rows}
+    pieces = _image_pieces(conn, source_id)
+    report = []
+    for article_id in article_ids:
+        row = found.get(article_id)
+        if row is None:
+            report.append({"id": article_id, "missing": True})
+            continue
+        listed = comment_list_authors(row["body_md"] or "")
+        if listed is None:
+            comment = "评论节对不上列表，未改"
+        elif not listed:
+            comment = "无评论列表"
+        else:
+            guests = [name for name in listed if not is_host_comment_author(name)]
+            comment = "仍有非方伟：" + "、".join(guests) if guests else "评论只剩方伟"
+        raw_parts = pieces.get(article_id) or []
+        presented = present_ocr_pieces(raw_parts) if raw_parts else present_stored_ocr(row["ocr_text"] or "")
+        report.append(
+            {
+                "id": article_id,
+                "missing": False,
+                "title": row["title"] or "",
+                "title_truncated": title_needs_repair(row["title"] or ""),
+                "comment": comment,
+                "chrome_under_host": _chrome_under_host(presented),
+            }
+        )
+    return report
+
+
+def format_report(stats: dict) -> str:
+    lines = [
+        f"方伟星球回写（{stats['source_id']}），扫描 {stats['scanned']} 篇",
+        f"标题回写: {stats['titles']}（其中可见 {stats['titles_visible']}）",
+        f"标题仍无法收成一句: {stats['titles_unresolved']}",
+        f"评论节: {stats['comments_with_section']}",
+        f"评论含非方伟: {stats['comments_dirty']}",
+        f"评论已清理: {stats['comments_cleaned']}",
+        f"评论节未能按列表解析: {stats['comments_unparsed']}",
+        f"对话重洗: {stats['ocr_rewash']}",
+    ]
+    if stats["samples"]:
+        lines.append("标题样例:")
+        for item in stats["samples"]:
+            lines.append(f"  {item['id']}  {item['old']}  →  {item['new']}")
+    lines.append("抽检:")
+    for item in stats["spots"]:
+        if item.get("missing"):
+            lines.append(f"  {item['id']}  库里没有这篇")
+            continue
+        chrome = "留言区仍挂在方伟下" if item["chrome_under_host"] else "图片文字没有把页脚挂到方伟"
+        title = item["title"] or "（空）"
+        flag = " 仍截断" if item["title_truncated"] else ""
+        lines.append(f"  {item['id']}  标题「{title}」{flag}  {item['comment']}  {chrome}")
+    ids = ",".join(str(item) for item in stats["view_ids"])
+    lines.append("噪音文定点重抽观点（不要 --gap，不要全库；8881 拼多多已经抽过）:")
+    lines.append(f"  docker compose exec app research-views --articles {ids}")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="回写方伟星球的截断标题、非方伟评论，并按现规则重洗 OCR 旁路")
+    parser.add_argument("--source", default=FANGWEI_ZSXQ)
+    parser.add_argument("--dry-run", action="store_true", help="只打印会改什么，不提交")
+    parser.add_argument(
+        "--spot",
+        default=",".join(str(item) for item in SPOT_ARTICLES),
+        help="抽检的文章 id，逗号分隔",
+    )
+    args = parser.parse_args(argv)
+    spot_ids = [int(part) for part in re.split(r"[\s,]+", args.spot) if part.strip().isdigit()]
+    from researchlib.config import Settings
+    from researchlib.db import prepare
+
+    settings = Settings.from_env()
+    conn = prepare(settings)
+    try:
+        stats = repair_zsxq(conn, args.source, spot_ids=spot_ids)
+        print(format_report(stats))
+        if args.dry_run:
+            conn.rollback()
+            print("干跑，未提交")
+        else:
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
