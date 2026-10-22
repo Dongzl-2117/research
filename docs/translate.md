@@ -80,3 +80,16 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 ## 环境变量
 
 见 `.env.example`。默认 DeepSeek：`RESEARCH_LLM_PROVIDER=deepseek`、`DEEPSEEK_API_KEY`，可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`、`DEEPSEEK_REASONING_EFFORT`、`DEEPSEEK_MAX_TOKENS`。Grok 路径：`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`。两边共用 `LLM_LONG_TIMEOUT_MS`。
+
+## content_hash 与待译队列
+
+`article_translations.content_hash` 必须等于 `articles.content_hash` 且 `complete`，这篇才算译完。`content_hash()` 把 `published_at` 固定按 Asia/Shanghai 打戳；若按 UTC `isoformat()` 重算会对不上，待译队列会把已译篇反复拿出来（`--limit 2` 时整队像卡住）。
+
+时区漂移或改过日期后，跑：
+
+```bash
+PYTHONPATH=src python scripts/repair_content_hash_tz.py          # dry-run
+PYTHONPATH=src python scripts/repair_content_hash_tz.py --apply
+```
+
+worker 同一次 `--loop` 里失败过的 id 会先跳过，避免对齐失败把队列钉死。

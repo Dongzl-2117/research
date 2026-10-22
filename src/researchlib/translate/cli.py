@@ -37,12 +37,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     conn = prepare(settings)
+    # 同一轮 worker 里失败过的 id 先跳过，避免 --limit 很小时反复磕同一篇把队列钉死。
+    # 队列里其他篇都译完后会清空 skip，再给失败篇一次机会。
+    skipped_failures: set[int] = set()
     try:
         while True:
             ids = list(args.article_id) if args.article_id else list_pending_english(
-                conn, limit=args.limit, source_id=args.source or None
+                conn, limit=max(args.limit, 1) + len(skipped_failures), source_id=args.source or None
             )
+            if not args.article_id:
+                ids = [article_id for article_id in ids if article_id not in skipped_failures][: args.limit]
             if not ids:
+                if skipped_failures and args.loop and not args.article_id:
+                    print(
+                        f"其余待译已空，清掉 {len(skipped_failures)} 个失败跳过后再扫…",
+                        file=sys.stderr,
+                    )
+                    skipped_failures.clear()
+                    continue
                 if args.loop:
                     print(f"队列空，{args.sleep}s 后重试…")
                     time.sleep(max(5, args.sleep))
@@ -57,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
                 except Exception as exc:
                     conn.rollback()
+                    skipped_failures.add(article_id)
                     print(f"#{article_id} failed: {exc}", file=sys.stderr)
                     continue
                 print(
