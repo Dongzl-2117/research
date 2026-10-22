@@ -1,5 +1,10 @@
 # 官方 Postgres 16 上编译 SCWS + zhparser。同一份 Dockerfile 在 arm64（Mac mini）和 amd64 上本地编译。
+# pgvector（语义检索的向量）直接装官方镜像自带的 PGDG 源里的包，不编译。
 FROM postgres:16-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-16-pgvector \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

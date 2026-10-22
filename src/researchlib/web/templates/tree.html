@@ -41,6 +41,12 @@
       <a href="/authors/{{ source.author | urlencode }}?source={{ source.id }}">{{ source.author }}</a>
       <span aria-hidden="true">·</span>
       <a href="/articles/{{ article.id }}">文章页</a>
+      <span aria-hidden="true">·</span>
+      <a href="/ask?article={{ article.id }}">问这篇</a>
+      {% if has_children %}
+      <span aria-hidden="true">·</span>
+      <a href="/ask?tree={{ article.id }}">问这个目录</a>
+      {% endif %}
     </p>
     <h1>{{ article.title }}</h1>
     {% if body_html %}<div class="prose">{{ body_html }}</div>{% endif %}

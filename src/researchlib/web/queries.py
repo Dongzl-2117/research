@@ -18,6 +18,19 @@ class Scope:
     date_from: date | None = None
     date_to: date | None = None
     article_id: int | None = None
+    # 飞书目录：这篇和它在目录树下的全部子篇。
+    tree_id: int | None = None
+
+
+# 目录树里某一篇和它下面的全部子篇。UNION 去重，树里万一有环也会停。
+TREE_SUBQUERY = """(
+  WITH RECURSIVE sub(tree_id) AS (
+    SELECT %(scope_tree)s::bigint
+    UNION
+    SELECT t.article_id FROM doc_tree t JOIN sub ON t.parent_id = sub.tree_id
+  )
+  SELECT tree_id FROM sub
+) AS tree_scope"""
 
 
 def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
@@ -41,6 +54,9 @@ def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
     if scope.article_id is not None:
         parts.append(f"{alias}.id = %(scope_article)s")
         params["scope_article"] = scope.article_id
+    if scope.tree_id is not None:
+        parts.append(f"{alias}.id IN (SELECT tree_id FROM {TREE_SUBQUERY})")
+        params["scope_tree"] = scope.tree_id
     parts.append(visible_sql(alias))
     return " AND ".join(parts), params
 

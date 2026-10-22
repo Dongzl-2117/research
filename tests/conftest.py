@@ -60,5 +60,9 @@ def conn(settings):
         " RESTART IDENTITY CASCADE"
     )
     connection.commit()
+    # 检索的词频和块数缓存十分钟，是进程级的；每个测试换了一批文章，上一个测试的统计不能沿用。
+    from researchlib.retrieval import reset_stats_cache
+
+    reset_stats_cache()
     yield connection
     connection.close()

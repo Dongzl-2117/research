@@ -8,6 +8,7 @@
       {% if item.show_author %}<span aria-hidden="true">·</span><a class="quiet" href="{{ item.source_href }}">{{ item.source }}</a>{% endif %}
       {% if item.depth_label %}<span class="depth depth-{{ item.depth }}">{{ item.depth_label }}</span>{% endif %}
       {% if item.hits %}<span class="num">{{ item.hits }} 次</span>{% endif %}
+      {% if item.semantic %}<span class="depth depth-semantic" title="正文没写全搜索词，按意思找到的">语义相关</span>{% endif %}
     </header>
     <h3 class="item-title"><a href="/articles/{{ item.id }}{% if item.chunk is not none and item.chunk is defined %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.title }}</a></h3>
     {% if item.heading %}<p class="item-heading">§ {{ item.heading }}</p>{% endif %}

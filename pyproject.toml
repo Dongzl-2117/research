@@ -52,6 +52,7 @@ research-theses = "researchlib.theses:main"
 research-fetch-images = "researchlib.remote_images:main"
 research-ocr = "researchlib.ocr:main"
 research-clean = "researchlib.boilerplate:main"
+research-embed = "researchlib.embeddings:main"
 
 [build-system]
 requires = ["setuptools>=68"]

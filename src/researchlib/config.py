@@ -75,6 +75,12 @@ class Settings:
     # 打开公司页时是否在后台自动补论点。默认关。打开后也不限持仓：观点够数的公司都会排。
     # 需要时设 RESEARCH_THESES_AUTO=1。夜间补齐另有 THESES_ENABLED，同样默认关。
     theses_auto_enabled: bool = False
+    # 语义检索用的向量服务：OpenAI 兼容的 /embeddings（Mac mini 上默认是本机 Ollama 的 bge-m3）。
+    # 不配 EMBEDDING_BASE_URL 就不做语义检索，检索照旧只走关键词。
+    embedding_base_url: str = ""
+    embedding_model: str = "bge-m3"
+    embedding_api_key: str = ""
+    embedding_timeout: float = 20.0
 
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> Settings:
@@ -113,6 +119,10 @@ class Settings:
             ),
             stale_banner_enabled=environ.get("RESEARCH_STALE_BANNER", "1").strip() != "0",
             theses_auto_enabled=environ.get("RESEARCH_THESES_AUTO", "0").strip() == "1",
+            embedding_base_url=environ.get("EMBEDDING_BASE_URL", "").strip().rstrip("/"),
+            embedding_model=environ.get("EMBEDDING_MODEL", "").strip() or "bge-m3",
+            embedding_api_key=environ.get("EMBEDDING_API_KEY", "").strip(),
+            embedding_timeout=float(environ.get("EMBEDDING_TIMEOUT_S", "20") or "20"),
         )
 
     @property
