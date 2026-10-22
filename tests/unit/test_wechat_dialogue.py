@@ -623,6 +623,40 @@ def test_split_name_and_leave_a_message_line_are_both_dropped():
     assert "张冠" not in text and "库存" not in text
 
 
+# 12681 上线后的粘连页脚。473、606 是公众号，同一类按钮粘在一行里。
+STICKY_12681 = """方伟
+茅台批价这一周没动，渠道仍在观望，短期不宜提价。
+分享21 推荐0 划线人数0
+赞赏￥0
+3条留言V 写留言
+写留言
+张冠留言
+渠道库存还是偏高，先别急着看多。
+"""
+STICKY_EXPECTED = "方伟：茅台批价这一周没动，渠道仍在观望，短期不宜提价。"
+
+
+def test_12681_sticky_footer_is_not_spoken_by_fangwei():
+    """按钮粘在一行时也要整段丢掉。单独成行的旧夹具盖不住这种。"""
+    text = present_ocr_pieces([STICKY_12681])
+    assert text == STICKY_EXPECTED
+    assert present_stored_ocr(STICKY_12681) == text
+    assert present_stored_ocr(text) == text
+    for noise in ("分享", "推荐", "划线", "赞赏", "留言", "张冠", "写留言", "条留言"):
+        assert noise not in text
+    # 已经收成「方伟：」再粘着这些行，重读也要拿掉。
+    stored = STICKY_EXPECTED + "\n分享21 推荐0 划线人数0\n赞赏￥0\n3条留言V 写留言\n写留言\n"
+    assert present_stored_ocr(stored) == STICKY_EXPECTED
+    # 句号后面不换行，直接粘上按钮栏。
+    glued = "方伟\n茅台批价这一周没动，渠道仍在观望，短期不宜提价。分享21 推荐0 划线人数0\n赞赏￥0\n"
+    assert present_ocr_pieces([glued]) == STICKY_EXPECTED
+    # 公众号 473 / 606 用同一串页脚。
+    mp = STICKY_12681.replace("茅台批价这一周没动，渠道仍在观望，短期不宜提价。", "渗透率已经过了最陡的那段。")
+    mp_text = present_ocr_pieces([mp])
+    assert mp_text == "方伟：渗透率已经过了最陡的那段。"
+    assert "分享21" not in mp_text and "赞赏" not in mp_text and "写留言" not in mp_text
+
+
 def test_rewash_selector_ignores_zanshang_inside_a_sentence():
     from researchlib.zsxq_repair import _chrome_lines
 
@@ -631,6 +665,7 @@ def test_rewash_selector_ignores_zanshang_inside_a_sentence():
     assert _chrome_lines("3条留言\n划线人数 18\n") is True
     assert _chrome_lines("张冠留言\n渠道还高。\n") is True
     assert _chrome_lines("（作者）\n正文还在。\n") is True
+    assert _chrome_lines("分享21 推荐0 划线人数0\n赞赏￥0\n3条留言V 写留言\n") is True
 
 
 def test_group_chat_can_still_say_zanshang_in_a_sentence():
@@ -638,6 +673,8 @@ def test_group_chat_can_still_say_zanshang_in_a_sentence():
     text = present_ocr_pieces([raw])
     assert text.startswith("方伟：")
     assert "赞赏的设计并不值钱" in text
+    recommend = "微信\n9:41\n推荐这只股票，先别追高。\n"
+    assert "推荐这只股票，先别追高" in present_ocr_pieces([recommend])
 
 
 def test_long_note_drops_a_trailing_footer_without_becoming_dialogue():

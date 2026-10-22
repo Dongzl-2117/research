@@ -10,7 +10,9 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
-- 知识星球帖子截图底部的留言区、划线人数、赞赏、分享栏整段丢掉，不挂到「方伟：」下面；单独一行的「（作者）」也丢掉
+- 知识星球和公众号截图底部的留言区整段丢掉，不挂到「方伟：」下面。
+  单独成行的按钮，以及粘在一行里的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」都算。
+  单独一行的「（作者）」也丢掉
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
 知识星球引用回复不是微信气泡：第一条「方伟看十年 / 作者」账号栏是分界，栏上的灰字是「网友：」，
@@ -185,18 +187,30 @@ _ACCOUNT_NAME = re.compile(r"^方伟看十年$|^看十年$")
 _AUTHOR_BADGE = re.compile(r"^[（(]作者[）)]$")
 _AUTHOR_INLINE = re.compile(r"[（(]作者[）)]")
 # 帖子截图底部。从这一行起到图末都是留言区和按钮，不是谁说的话。
+# 长的放前面，避免「留言」吃掉「写留言」「条留言」。
+_STICKY_TOKEN = re.compile(r"划线人数|写留言|条留言|条评论|写评论|赞赏|分享|推荐|收藏|在看|点赞|留言|划线")
 _STRONG_FOOTER = re.compile(
     r"^(?:"
     r"(?:\d+)?条留言"
+    r"|(?:\d+)?条评论"
     r"|写留言"
+    r"|写评论"
     r"|留言"
     r"|划线人数\d*(?:人)?"
     r"|\d+人划线"
     r"|划线\d+"
+    r"|查看全部留言|查看更多留言|更多留言|全部留言|留言列表"
+    r"|作者赞过"
     r")$"
 )
 _SOFT_FOOTER = re.compile(r"^(?:赞赏(?:一下)?|去赞赏|分享(?:到(?:朋友圈|微信))?|转发给朋友|收藏)$")
 _GLUED_FOOTER = re.compile(r"^(?:(?:\d+)?条留言|写留言|划线人数\d*|赞赏|分享|收藏){2,}$")
+_LIST_CHROME = re.compile(
+    r"^(?:查看全部|查看更多|更多|全部|展开)?留言(?:列表)?$"
+    r"|^(?:\d+)?条评论$"
+    r"|^写评论$"
+    r"|^作者赞过$"
+)
 _COMMENT_HEAD = re.compile(
     r"^([\u4e00-\u9fffA-Za-z0-9_·.]{1,12})留言(?:[:：].*)?(?:…+|⋯+|‥+|\.{2,})?$"
 )
@@ -318,9 +332,41 @@ def _is_author_badge(line: str) -> bool:
     return _AUTHOR_INLINE.search(text) is not None
 
 
+def _sticky_residue(compact: str) -> str:
+    """去掉按钮词、计数、币符和 OCR 粘上的单个拉丁字母，看还剩多少正文。"""
+    text = _STICKY_TOKEN.sub("", compact)
+    text = re.sub(r"[\d０-９￥¥$€A-Za-z]+", "", text)
+    return re.sub(r"[\s._·•,，。！？!?：:；;、~～\-—+|｜/\\（）()【】\[\]]+", "", text)
+
+
+def _is_sticky_bar(line: str) -> bool:
+    """一行里粘着好几个按钮，或按钮粘着计数。
+
+    「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」整行都是界面。
+    「这个赞赏的设计并不值钱」去掉「赞赏」还剩一句，留下。
+    """
+    compact = _footer_compact(line)
+    if not compact or len(compact) > 48 or re.search(r"[。！？!?，,]", compact):
+        return False
+    if _LIST_CHROME.fullmatch(re.sub(r"\d+$", "", compact)):
+        return True
+    hits = _STICKY_TOKEN.findall(compact)
+    if not hits:
+        return False
+    has_meter = re.search(r"\d|[￥¥$]", compact) is not None
+    exact = _STRONG_FOOTER.fullmatch(compact) is not None or _GLUED_FOOTER.fullmatch(compact) is not None
+    if len(hits) < 2 and not has_meter and not exact:
+        return False
+    return _CJK.findall(_sticky_residue(compact)) == []
+
+
 def _is_strong_footer(line: str) -> bool:
     text = _footer_compact(line)
-    if not text or len(text) > 24:
+    if not text:
+        return False
+    if _is_sticky_bar(text):
+        return True
+    if len(text) > 24:
         return False
     return _STRONG_FOOTER.fullmatch(text) is not None or _GLUED_FOOTER.fullmatch(text) is not None
 
@@ -376,10 +422,29 @@ def _footer_cut(lines: list[str]) -> int | None:
     return None
 
 
+def _peel_sticky_tail(line: str) -> str:
+    """正文句号后面直接粘上「分享21 推荐0 划线人数0」时，只留下正文。整行都是按钮的不动，交给截断。"""
+    if _is_sticky_bar(line) or _is_strong_footer(line):
+        return line
+    own = line.startswith(SIDE_SELF)
+    plain = _plain(line).strip()
+    if not plain:
+        return line
+    for match in _STICKY_TOKEN.finditer(plain):
+        head = plain[: match.start()].rstrip()
+        tail = plain[match.start() :]
+        if not head or not _is_sticky_bar(tail):
+            continue
+        if re.search(r"[。！？!?]$", head) or len(_CJK.findall(head)) >= 4:
+            return (SIDE_SELF if own else "") + head
+    return line
+
+
 def _drop_post_footer(lines: list[str]) -> list[str]:
     """留言区、划线人数、赞赏、分享从出现的那一行起丢掉。「（作者）」单独拿掉，后面的正文留下。"""
-    cut = _footer_cut(lines)
-    kept = lines if cut is None else lines[:cut]
+    peeled = [_peel_sticky_tail(line) for line in lines]
+    cut = _footer_cut(peeled)
+    kept = peeled if cut is None else peeled[:cut]
     return [line for line in kept if not _is_author_badge(line)]
 
 

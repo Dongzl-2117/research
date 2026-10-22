@@ -2,7 +2,8 @@
 
 - 标题：空的、「无标题」、以省略号结尾的，改成正文或摘要里的完整首句；写不出来的日期兜底不入库。
 - 评论：`## 评论（N）` 只留方伟。解析不了的不动，在报告里单列。
-- 图片文字：`image_texts` 里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。不重跑 RapidOCR。
+- 图片文字：星球和公众号里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。
+  粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重跑 RapidOCR。
 
 改标题或评论会改 `content_hash`，同时把观点、摘要、译文的哈希对齐，避免夜间任务把这几千篇再抽一遍。
 说话人改过的那几篇要另抽观点，命令会在最后印出来。不要加 `--gap`，也不要全库。
@@ -39,11 +40,14 @@ from researchlib.zsxq_comments import (
 )
 from researchlib.zsxq_title import FANGWEI_ZSXQ, stored_zsxq_title, title_needs_repair
 
-# 部署后抽验。12681 是留言区挂到方伟的样例；473、606 同时看评论。
+FANGWEI_MP = "fangwei-mp"
+# 部署后抽验。12681 是星球留言区；473、606 是公众号，同一类页脚。
 SPOT_ARTICLES = (12681, 473, 606)
 # 噪音进过观点、要定点重抽的篇。8881 的拼多多已经抽过，不要再放进来。
 VIEW_ARTICLES = (203, 227, 473, 537, 606)
-_HOST_CHROME = re.compile(r"条留言|划线人数|赞赏|（作者）|\(作者\)")
+_HOST_CHROME = re.compile(
+    r"条留言|写留言|划线人数|划线\d|赞赏\s*[￥¥$]|分享\s*\d|推荐\s*\d|（作者）|\(作者\)"
+)
 
 
 def _chrome_lines(text: str) -> bool:
@@ -85,6 +89,20 @@ def _rewrite_chunks(conn, article_id: int, title: str, body_md: str, profile, ha
         )
 
 
+def _cleaned_ocr(shot_parts: list[str], ocr_text: str) -> str | None:
+    """按现规则重写旁路。没有页脚、或重写后和库里一样，返回 None。"""
+    raw_blob = "\n".join(shot_parts)
+    if shot_parts and (_chrome_lines(raw_blob) or _chrome_lines(ocr_text)):
+        new_ocr = compose_ocr_text(shot_parts)
+    elif _chrome_lines(ocr_text):
+        new_ocr = present_stored_ocr(ocr_text)
+    else:
+        return None
+    if new_ocr == (ocr_text or ""):
+        return None
+    return new_ocr
+
+
 def _image_pieces(conn, source_id: str) -> dict[int, list[str]]:
     rows = conn.execute(
         """
@@ -116,10 +134,55 @@ def _digests(conn, source_id: str) -> dict[int, str]:
     return {int(row["article_id"]): row["summary"] or "" for row in rows}
 
 
+def rewash_source_ocr(conn, source_id: str) -> int:
+    """只重写这一来源的 OCR 旁路。标题和评论不动。"""
+    pieces = _image_pieces(conn, source_id)
+    rows = conn.execute(
+        """
+        SELECT id, ocr_text
+        FROM articles
+        WHERE source_id = %s AND duplicate_of IS NULL
+        ORDER BY id
+        """,
+        (source_id,),
+    ).fetchall()
+    changed = 0
+    for row in rows:
+        new_ocr = _cleaned_ocr(pieces.get(int(row["id"])) or [], row["ocr_text"] or "")
+        if new_ocr is None:
+            continue
+        conn.execute(
+            "UPDATE articles SET ocr_text = %s, ocr_hash = %s, updated_at = now() WHERE id = %s",
+            (new_ocr, hash_ocr(new_ocr), row["id"]),
+        )
+        changed += 1
+    return changed
+
+
 def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | None = None) -> dict:
-    """回写这一来源的标题、评论和 OCR 旁路。不提交事务。"""
+    """回写方伟星球的标题、评论，并重洗星球和公众号的 OCR 旁路。不提交事务。"""
+    if source_id == FANGWEI_MP:
+        changed = rewash_source_ocr(conn, FANGWEI_MP)
+        stats = {
+            "source_id": source_id,
+            "scanned": 0,
+            "titles": 0,
+            "titles_visible": 0,
+            "titles_unresolved": 0,
+            "comments_with_section": 0,
+            "comments_dirty": 0,
+            "comments_cleaned": 0,
+            "comments_unparsed": 0,
+            "ocr_rewash": 0,
+            "ocr_rewash_mp": changed,
+            "samples": [],
+            "spots": [],
+            "view_ids": list(VIEW_ARTICLES),
+        }
+        stats["spots"] = spot_check(conn, spot_ids or list(SPOT_ARTICLES))
+        return stats
     if source_id != FANGWEI_ZSXQ:
-        raise SystemExit("这条命令只回写方伟星球（fangwei-zsxq）。别的星球星主不是方伟，不能套同一套评论规则。")
+        raise SystemExit("标题和评论只回写方伟星球（fangwei-zsxq）。公众号只重洗图片文字，用 --source fangwei-mp。")
     profile = profile_for(conn, source_id)
     matcher = CompanyMatcher(load_company_rows(conn))
     pieces = _image_pieces(conn, source_id)
@@ -144,6 +207,7 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
         "comments_cleaned": 0,
         "comments_unparsed": 0,
         "ocr_rewash": 0,
+        "ocr_rewash_mp": 0,
         "samples": [],
         "spots": [],
         "view_ids": list(VIEW_ARTICLES),
@@ -155,14 +219,9 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
         ocr_text = row["ocr_text"] or ""
         visible = not is_suppressed(row["raw_meta"])
         shot_parts = pieces.get(article_id) or []
-        new_ocr = ocr_text
-        raw_blob = "\n".join(shot_parts)
-        if shot_parts and (_chrome_lines(raw_blob) or _chrome_lines(ocr_text)):
-            new_ocr = compose_ocr_text(shot_parts)
-        elif _chrome_lines(ocr_text):
-            new_ocr = present_stored_ocr(ocr_text)
-        ocr_changed = new_ocr != ocr_text
-        if ocr_changed:
+        cleaned = _cleaned_ocr(shot_parts, ocr_text)
+        new_ocr = ocr_text if cleaned is None else cleaned
+        if cleaned is not None:
             stats["ocr_rewash"] += 1
 
         new_title = title
@@ -200,7 +259,7 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
                     new_md = filtered
                     stats["comments_cleaned"] += 1
 
-        if new_title == title and new_md == body_md and not ocr_changed:
+        if new_title == title and new_md == body_md and cleaned is None:
             continue
         hashes = image_hashes(conn, article_id)
         body_text = _body_text(new_title, new_md, profile, hashes)
@@ -221,24 +280,37 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
         if new_title != title or new_md != body_md:
             _rewrite_chunks(conn, article_id, new_title, new_md, profile, hashes)
             replace_mentions(conn, article_id, mentions_for_document(matcher, new_title, new_md))
-    stats["spots"] = spot_check(conn, source_id, spot_ids or list(SPOT_ARTICLES))
+    stats["ocr_rewash_mp"] = rewash_source_ocr(conn, FANGWEI_MP)
+    stats["spots"] = spot_check(conn, spot_ids or list(SPOT_ARTICLES))
     return stats
 
 
-def spot_check(conn, source_id: str, article_ids: list[int]) -> list[dict]:
-    """抽验锚点：标题、评论里还有没有别人、呈现后的图片文字还有没有页脚。"""
+def spot_check(conn, article_ids: list[int]) -> list[dict]:
+    """抽验锚点。星球和公众号都认，473、606 不在 fangwei-zsxq 里也能看到。"""
     if not article_ids:
         return []
     rows = conn.execute(
         """
-        SELECT id, title, body_md, ocr_text
+        SELECT id, source_id, title, body_md, ocr_text
         FROM articles
-        WHERE source_id = %s AND id = ANY(%s)
+        WHERE id = ANY(%s)
         """,
-        (source_id, list(article_ids)),
+        (list(article_ids),),
     ).fetchall()
     found = {int(row["id"]): row for row in rows}
-    pieces = _image_pieces(conn, source_id)
+    image_rows = conn.execute(
+        """
+        SELECT i.article_id, t.text
+        FROM article_images i
+        JOIN image_texts t ON t.content_hash = i.content_hash
+        WHERE i.article_id = ANY(%s)
+        ORDER BY i.article_id, i.id
+        """,
+        (list(article_ids),),
+    ).fetchall()
+    pieces: dict[int, list[str]] = {}
+    for row in image_rows:
+        pieces.setdefault(int(row["article_id"]), []).append(row["text"] or "")
     report = []
     for article_id in article_ids:
         row = found.get(article_id)
@@ -259,6 +331,7 @@ def spot_check(conn, source_id: str, article_ids: list[int]) -> list[dict]:
             {
                 "id": article_id,
                 "missing": False,
+                "source_id": row["source_id"] or "",
                 "title": row["title"] or "",
                 "title_truncated": title_needs_repair(row["title"] or ""),
                 "comment": comment,
@@ -277,7 +350,7 @@ def format_report(stats: dict) -> str:
         f"评论含非方伟: {stats['comments_dirty']}",
         f"评论已清理: {stats['comments_cleaned']}",
         f"评论节未能按列表解析: {stats['comments_unparsed']}",
-        f"对话重洗: {stats['ocr_rewash']}",
+        f"对话重洗: 星球 {stats['ocr_rewash']}，公众号 {stats.get('ocr_rewash_mp', 0)}",
     ]
     if stats["samples"]:
         lines.append("标题样例:")
@@ -291,7 +364,8 @@ def format_report(stats: dict) -> str:
         chrome = "留言区仍挂在方伟下" if item["chrome_under_host"] else "图片文字没有把页脚挂到方伟"
         title = item["title"] or "（空）"
         flag = " 仍截断" if item["title_truncated"] else ""
-        lines.append(f"  {item['id']}  标题「{title}」{flag}  {item['comment']}  {chrome}")
+        source = item.get("source_id") or ""
+        lines.append(f"  {item['id']}  {source}  标题「{title}」{flag}  {item['comment']}  {chrome}")
     ids = ",".join(str(item) for item in stats["view_ids"])
     lines.append("噪音文定点重抽观点（不要 --gap，不要全库；8881 拼多多已经抽过）:")
     lines.append(f"  docker compose exec app research-views --articles {ids}")
@@ -299,7 +373,9 @@ def format_report(stats: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="回写方伟星球的截断标题、非方伟评论，并按现规则重洗 OCR 旁路")
+    parser = argparse.ArgumentParser(
+        description="回写方伟星球的截断标题和非方伟评论，并重洗星球与公众号里带页脚的图片文字"
+    )
     parser.add_argument("--source", default=FANGWEI_ZSXQ)
     parser.add_argument("--dry-run", action="store_true", help="只打印会改什么，不提交")
     parser.add_argument(
