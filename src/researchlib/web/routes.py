@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -117,7 +118,9 @@ def active_sources(request: Request, conn):
         conn.commit()
         request.app.state.sources = sources
         request.app.state.sources_mtime = mtime
-    return enabled_sources(request.app.state.sources)
+    # paused 的来源（如段永平）整源先不展示：导航、作者、筛选都不出现。
+    show_paused = os.environ.get("RESEARCH_SHOW_PAUSED", "").strip() == "1"
+    return [s for s in enabled_sources(request.app.state.sources) if show_paused or not s.paused]
 
 
 def active_portfolio(request: Request) -> Portfolio:

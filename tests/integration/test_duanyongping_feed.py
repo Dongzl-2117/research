@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from researchlib.ingest.duanyongping.emit import render_markdown
@@ -13,6 +14,13 @@ from researchlib.ingest.store import store_documents
 from researchlib.sources import load_sources
 from researchlib.web.app import create_app
 from researchlib.web.queries import feed_counts
+
+
+@pytest.fixture(autouse=True)
+def _show_paused_sources(monkeypatch):
+    """段永平在配置里 paused；这里测的是它自己的展示规则，照常展示。"""
+    monkeypatch.setenv("RESEARCH_SHOW_PAUSED", "1")
+
 
 FIXTURE = Path(__file__).resolve().parents[2] / "scripts" / "duanyongping" / "fixtures" / "sample.xml"
 
