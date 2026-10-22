@@ -133,8 +133,11 @@ def record_import(conn, source_id: str, report: IngestReport, origin: str = "arc
 
 
 def body_chars(body_md: str) -> int:
-    """作者正文的字数：去掉评论一节和所有空白。"""
+    """作者正文的字数：去掉 YAML 头、评论一节和所有空白。"""
+    import re
+
     article, _ = split_comments(body_md or "")
+    article = re.sub(r"\A---\n.*?\n---\n", "", article, flags=re.S)
     return len("".join(article.split()))
 
 

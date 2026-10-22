@@ -77,5 +77,5 @@ sources:
     kind: markdown
     enabled: true
     timeline: true
-    min_chars: 800
-    description: 雪球「黑黑无常」原创帖与长文；不要转发/评论回复。只要长文：正文不足 800 字（Obsidian 收藏最短 856 字）标 hidden=short_post。
+    min_chars: 100
+    description: 雪球「黑黑无常」原创帖与长文；不要转发/评论回复。只要一两百字以上的帖子：正文（不含 YAML 头和评论）不足 100 字标 hidden=short_post。
