@@ -2,16 +2,43 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # 每一步都经 tools/ci/annotate.py 跑：失败时最后几十行输出做成一条错误注释，PR 页面上直接能看到原因。
 jobs:
+  changes:
+    name: Image paths
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      images: ${{ steps.filter.outputs.images }}
+    steps:
+      # PR 用 API 比较整个 PR；main push 用 git 比较本次 push 的所有提交。
+      - uses: actions/checkout@v6
+        if: github.event_name == 'push'
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            images:
+              - 'Dockerfile'
+              - 'pyproject.toml'
+              - 'requirements*.lock'
+
   lock:
     name: Lock files
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -40,6 +67,7 @@ jobs:
 
   test:
     name: Tests
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -95,6 +123,10 @@ jobs:
 
   images:
     name: Images
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      needs.changes.outputs.images == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
