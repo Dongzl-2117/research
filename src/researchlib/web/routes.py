@@ -35,7 +35,7 @@ from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
-from researchlib.render import inline_image_ocr
+from researchlib.render import flow_ocr_quote_body, inline_image_ocr
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
@@ -629,7 +629,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             wanted = int(chunk_arg)
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
             if quoted is not None and (quoted.get("lang") or "") == "ocr":
-                cleaned = present_stored_ocr(quoted["body"])
+                cleaned = flow_ocr_quote_body(present_stored_ocr(quoted["body"]))
                 if cleaned.strip():
                     quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)

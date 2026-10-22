@@ -7,7 +7,14 @@
 from pathlib import Path
 
 from researchlib.ocr import append_ocr, compose_ocr_text
-from researchlib.render import _dialogue_html, _flow_ocr_lines, image_anchor, inline_image_ocr, render_body
+from researchlib.render import (
+    _dialogue_html,
+    _flow_ocr_lines,
+    flow_ocr_quote_body,
+    image_anchor,
+    inline_image_ocr,
+    render_body,
+)
 from researchlib.wechat_dialogue import parse_shot, present_ocr_pieces, present_stored_ocr, render_turns
 from researchlib.zsxq_title import zsxq_display_title
 
@@ -268,7 +275,7 @@ def test_screenshot_wraps_flow_into_one_paragraph():
         "最近Claude被封号了，用了一些国产agents，觉得差距太大了"
     )
     assert _flow_ocr_lines("Opus5.5确实断档领先其他所有大模\n型。") == "Opus5.5确实断档领先其他所有大模型。"
-    assert _flow_ocr_lines("机或者游戏潮玩\n他是一个效率驱动的东西") == "机或者游戏潮玩 他是一个效率驱动的东西"
+    assert _flow_ocr_lines("机或者游戏潮玩\n他是一个效率驱动的东西") == "机或者游戏潮玩他是一个效率驱动的东西"
     assert "\n" not in _flow_ocr_lines("同店压力还在，折扣不能再深\n会员那边先不动。")
 
 
@@ -290,7 +297,7 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
     assert "根本不是一个代际的产品" in page
     assert "其他所有大模型" in page
     assert "智能手机或者游戏潮玩" in page
-    assert "游戏潮玩 他是一个效率驱动" in page
+    assert "游戏潮玩他是一个效率驱动" in page
     assert "agents执行复杂任务" in page
     assert '<span class="who">方伟：</span>会有一批大模型达到' in page
     assert page.count('<span class="who">方伟：</span>') >= 3
@@ -405,6 +412,8 @@ def test_cjk_wrap_does_not_insert_space():
     assert _flow_ocr_lines("管理层的本分是integrity，世\n界范围内在零售行业") == (
         "管理层的本分是integrity，世界范围内在零售行业"
     )
+    assert _flow_ocr_lines("其实只有Costco，奥\n乐齐，利德。") == "其实只有Costco，奥乐齐，利德。"
+    assert "奥 乐齐" not in flow_ocr_quote_body("方伟：其实只有Costco，奥\n乐齐，利德。")
 
 
 def test_sentence_end_starts_new_dialogue_paragraph():
