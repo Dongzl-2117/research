@@ -48,7 +48,7 @@ docker compose exec app research-views --articles 8881
 
 阅读页本身现解析 `image_texts`，部署后打开即是「网友：」在账号栏上、「方伟：」在栏下，不必重跑 RapidOCR。上面这条命令会先按原始识别重写 `articles.ocr_text`，再重抽该篇的 `company_views`（拼多多，以及同一篇里从这张图写出的其他公司）。
 
-知识星球和公众号截图底部是同一类页脚，不是引用回复那条账号栏。单独成行的「张冠留言」「条留言」「划线人数」「赞赏」「写留言」，以及粘在一行里的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」，从这一行起整段丢掉，不挂到「方伟：」下面。阅读页现解析，不必重跑 RapidOCR。星球的标题、评论和两边的图片文字一起回写（见 [ingest.md](ingest.md)）。`research-repair-zsxq` 会同时重洗 `fangwei-zsxq` 和 `fangwei-mp` 的旁路：
+知识星球和公众号截图上的页脚按行丢掉，不从第一行按钮截到图末。单独成行的按钮、粘在一行里的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」，以及公众号的「微信小店」「关注同城」「相关的服务号」，都不进「方伟：」。这些行后面的方伟、网友继续留着。「张冠留言」改成网友的一轮。阅读页现解析，不必重跑 RapidOCR。部署后再跑一次回写，12681、473、606 的旁路会按新规则重洗（见 [ingest.md](ingest.md)）。`research-repair-zsxq` 同时重洗 `fangwei-zsxq` 和 `fangwei-mp`：
 
 ```bash
 docker compose exec app research-repair-zsxq --dry-run

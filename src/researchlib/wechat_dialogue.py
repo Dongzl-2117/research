@@ -10,9 +10,9 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
-- 知识星球和公众号截图底部的留言区整段丢掉，不挂到「方伟：」下面。
-  单独成行的按钮，以及粘在一行里的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」都算。
-  单独一行的「（作者）」也丢掉
+- 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
+  「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」「微信小店」「关注同城」「相关的服务号」都是页脚。
+  「张冠留言」换成网友的一轮，名字不留。单独一行的「（作者）」也丢掉。
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
 知识星球引用回复不是微信气泡：第一条「方伟看十年 / 作者」账号栏是分界，栏上的灰字是「网友：」，
@@ -186,7 +186,7 @@ _ACCOUNT_NAME = re.compile(r"^方伟看十年$|^看十年$")
 # 公众号名片上单独一行的「（作者）」。不是正文，也不是引用回复的分界。
 _AUTHOR_BADGE = re.compile(r"^[（(]作者[）)]$")
 _AUTHOR_INLINE = re.compile(r"[（(]作者[）)]")
-# 帖子截图底部。从这一行起到图末都是留言区和按钮，不是谁说的话。
+# 帖子截图上的按钮行。只删这一行，后面的对话还在。
 # 长的放前面，避免「留言」吃掉「写留言」「条留言」。
 _STICKY_TOKEN = re.compile(r"划线人数|写留言|条留言|条评论|写评论|赞赏|分享|推荐|收藏|在看|点赞|留言|划线")
 _STRONG_FOOTER = re.compile(
@@ -231,6 +231,11 @@ _PRODUCT_UI = re.compile(
 _CHART_MARK = re.compile(r"Builtwith|Fiscalai|Fiscal\.ai|McP$|Ads\s*v\.?Google|LTM\)", re.I)
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
+# 「张冠留言」：这一轮改记成网友，名字本身不显示。
+_GUEST_TURN = "\x1d"
+_MP_TOKEN = re.compile(
+    r"微信小店|关注同城|相关的服务号|相关服务号|关注服务号|进店逛逛|关注公众号|视频号"
+)
 # 第一条账号栏。栏上已经收成网友，栏下改按方伟。本身不显示。
 _ACCOUNT_SPLIT = "\x1f"
 _TRAIL_TIME = re.compile(
@@ -360,11 +365,23 @@ def _is_sticky_bar(line: str) -> bool:
     return _CJK.findall(_sticky_residue(compact)) == []
 
 
+def _is_mp_footer(line: str) -> bool:
+    """公众号底部的小店、同城、服务号。句子里提到这些词的留下。"""
+    compact = _footer_compact(line)
+    if not compact or len(compact) > 24 or re.search(r"[。！？!?，,]", compact):
+        return False
+    if _MP_TOKEN.search(compact) is None:
+        return False
+    residue = _MP_TOKEN.sub("", compact)
+    residue = re.sub(r"[\dA-Za-z]+", "", residue)
+    return _CJK.findall(residue) == []
+
+
 def _is_strong_footer(line: str) -> bool:
     text = _footer_compact(line)
     if not text:
         return False
-    if _is_sticky_bar(text):
+    if _is_sticky_bar(text) or _is_mp_footer(line):
         return True
     if len(text) > 24:
         return False
@@ -404,22 +421,27 @@ def _post_chrome_context(lines: list[str]) -> bool:
     return False
 
 
-def _footer_cut(lines: list[str]) -> int | None:
-    context = _post_chrome_context(lines)
-    for index, line in enumerate(lines):
-        strong = _is_strong_footer(line)
-        if not (strong or _is_comment_head(line) or (context and _is_soft_footer(line))):
-            continue
-        start = index
-        # 「张冠 / 留言 / 评论内容」：名字紧挨在「留言」上面，一起从正文拿掉。
-        if strong and _footer_compact(line) in {"留言", "写留言"} and index:
-            prev = _footer_compact(lines[index - 1])
-            if prev and (
-                _cjk_name(prev, 2) or _cjk_name(prev, 3) or _latin_name(prev)
-            ) and not _is_host_line(_compact_host(prev)):
-                start = index - 1
-        return start
-    return None
+def _is_message_label(line: str) -> bool:
+    return _footer_compact(line) in {"留言", "写留言"}
+
+
+def _bare_guest_name(line: str) -> bool:
+    text = _footer_compact(line)
+    if not text or _is_host_line(_compact_host(text)):
+        return False
+    return _cjk_name(text, 2) or _cjk_name(text, 3) or _latin_name(text)
+
+
+def _split_comment_head(line: str) -> tuple[str, str] | None:
+    """「张冠留言」或「张冠留言：渠道还高」。不是这种行就返回 None。"""
+    plain = _plain(line).strip()
+    if not _is_comment_head(plain):
+        return None
+    parts = re.split(r"[:：]", plain, maxsplit=1)
+    rest = parts[1].strip() if len(parts) == 2 else ""
+    if rest and (_is_sticky_bar(rest) or _is_strong_footer(rest)):
+        rest = ""
+    return ("", rest)
 
 
 def _peel_sticky_tail(line: str) -> str:
@@ -441,11 +463,35 @@ def _peel_sticky_tail(line: str) -> str:
 
 
 def _drop_post_footer(lines: list[str]) -> list[str]:
-    """留言区、划线人数、赞赏、分享从出现的那一行起丢掉。「（作者）」单独拿掉，后面的正文留下。"""
+    """页脚按行丢掉。按钮后面的方伟、网友继续留着，不从第一行按钮截到图末。
+
+    「张冠留言」和「张冠 / 留言」改成网友的一轮，名字不进正文。
+    """
     peeled = [_peel_sticky_tail(line) for line in lines]
-    cut = _footer_cut(peeled)
-    kept = peeled if cut is None else peeled[:cut]
-    return [line for line in kept if not _is_author_badge(line)]
+    context = _post_chrome_context(peeled)
+    kept: list[str] = []
+    index = 0
+    while index < len(peeled):
+        line = peeled[index]
+        nxt = peeled[index + 1] if index + 1 < len(peeled) else ""
+        if _bare_guest_name(line) and _is_message_label(nxt):
+            kept.append(_GUEST_TURN)
+            index += 2
+            continue
+        comment = _split_comment_head(line)
+        if comment is not None:
+            _name, rest = comment
+            kept.append(_GUEST_TURN)
+            if rest:
+                kept.append(rest)
+            index += 1
+            continue
+        if _is_author_badge(line) or _is_strong_footer(line) or (context and _is_soft_footer(line)):
+            index += 1
+            continue
+        kept.append(line)
+        index += 1
+    return kept
 
 
 def _prose_after_footer(original: str, raw_lines: list[str], stripped: list[str]) -> Shot:
@@ -477,7 +523,7 @@ def parse_shot(text: str) -> Shot:
     lines = _prepare_lines(stripped)
     names = _speaker_names(lines, signal)
     # 已经是「方伟：」「网友：」的块再跑也要能合并，不能因为界面字已经被拿掉就退回原文。
-    visible = [_plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT)]
+    visible = [_plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN)]
     labeled = bool(visible) and _STRUCTURED.match(visible[0]) is not None
     hosted = any(_is_host_line(line) for line in visible) or any(line.startswith(SIDE_SELF) for line in lines)
     if not hosted:
@@ -829,6 +875,9 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
     kept: list[str] = []
     placed_split = False
     for index, line in enumerate(peeled):
+        if line == _GUEST_TURN:
+            kept.append(_GUEST_TURN)
+            continue
         if _is_time(line):
             kept.append(_BREAK)
             continue
@@ -903,7 +952,7 @@ def _speaker_names(lines: list[str], signal: bool) -> set[str]:
     usable = [
         _plain(line)
         for line in lines
-        if line not in (_BREAK, _ACCOUNT_SPLIT) and not line.startswith(SIDE_SELF)
+        if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN) and not line.startswith(SIDE_SELF)
     ]
     for index, line in enumerate(usable):
         nxt = usable[index + 1] if index + 1 < len(usable) else ""
@@ -984,6 +1033,10 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
             flush()
             speaker = ""
             past_account = True
+            continue
+        if line == _GUEST_TURN:
+            flush()
+            speaker = GUEST
             continue
         if line == _BREAK:
             flush()

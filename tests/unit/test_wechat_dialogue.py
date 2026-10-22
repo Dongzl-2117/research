@@ -584,21 +584,26 @@ ZSXQ_AUTHOR_BADGE = """方伟看十年
 
 
 def test_12681_comment_footer_is_not_spoken_by_fangwei():
-    """留言区、划线人数、赞赏、分享不挂在「方伟：」下面。"""
+    """按钮行删掉。张冠的话改成网友，不挂在方伟下面，也不整段截掉。"""
     text = present_ocr_pieces([ZSXQ_POST_12681])
-    assert text == "方伟：茅台批价这一周没动，渠道仍在观望，短期不宜提价。"
+    assert text == (
+        "方伟：茅台批价这一周没动，渠道仍在观望，短期不宜提价。\n"
+        "\n"
+        "网友：渠道库存还是偏高，先别急着看多。"
+    )
     assert present_stored_ocr(text) == text
     assert present_stored_ocr(ZSXQ_POST_12681) == text
-    for noise in ("张冠", "留言", "渠道库存", "条留言", "划线", "赞赏", "分享", "网友"):
+    for noise in ("张冠", "留言", "条留言", "划线", "赞赏", "分享"):
         assert noise not in text
+    assert "渠道库存还是偏高" not in text.split("网友：", 1)[0]
     digest = "12" * 32
     page = inline_image_ocr(
         str(render_body("（见图）\n\n![](p.png)\n", {"p.png": f"/media/x/ab/{digest}.png"})),
         {digest: ZSXQ_POST_12681},
     )
     assert '<span class="who">方伟：</span>茅台批价这一周没动' in page
+    assert '<span class="who">网友：</span>渠道库存还是偏高' in page
     assert "张冠" not in page and "划线" not in page and "赞赏" not in page
-    assert "网友：" not in page
 
 
 def test_author_badge_is_chrome_and_footer_does_not_eat_the_reply():
@@ -619,8 +624,13 @@ def test_author_badge_is_chrome_and_footer_does_not_eat_the_reply():
 def test_split_name_and_leave_a_message_line_are_both_dropped():
     raw = "方伟\n批价这一周没动，渠道仍在观望。\n张冠\n留言\n库存还是偏高。\n写留言\n"
     text = present_ocr_pieces([raw])
-    assert text == "方伟：批价这一周没动，渠道仍在观望。"
-    assert "张冠" not in text and "库存" not in text
+    assert text == (
+        "方伟：批价这一周没动，渠道仍在观望。\n"
+        "\n"
+        "网友：库存还是偏高。"
+    )
+    assert "张冠" not in text and "写留言" not in text
+    assert "库存还是偏高" not in text.split("网友：", 1)[0]
 
 
 # 12681 上线后的粘连页脚。473、606 是公众号，同一类按钮粘在一行里。
@@ -633,28 +643,90 @@ STICKY_12681 = """方伟
 张冠留言
 渠道库存还是偏高，先别急着看多。
 """
-STICKY_EXPECTED = "方伟：茅台批价这一周没动，渠道仍在观望，短期不宜提价。"
+STICKY_EXPECTED = (
+    "方伟：茅台批价这一周没动，渠道仍在观望，短期不宜提价。\n"
+    "\n"
+    "网友：渠道库存还是偏高，先别急着看多。"
+)
 
 
 def test_12681_sticky_footer_is_not_spoken_by_fangwei():
-    """按钮粘在一行时也要整段丢掉。单独成行的旧夹具盖不住这种。"""
+    """粘连按钮只删那一行。按钮后面的张冠仍在，页面不能只剩第一句。"""
     text = present_ocr_pieces([STICKY_12681])
     assert text == STICKY_EXPECTED
     assert present_stored_ocr(STICKY_12681) == text
     assert present_stored_ocr(text) == text
     for noise in ("分享", "推荐", "划线", "赞赏", "留言", "张冠", "写留言", "条留言"):
         assert noise not in text
-    # 已经收成「方伟：」再粘着这些行，重读也要拿掉。
-    stored = STICKY_EXPECTED + "\n分享21 推荐0 划线人数0\n赞赏￥0\n3条留言V 写留言\n写留言\n"
+    stored = (
+        "方伟：茅台批价这一周没动，渠道仍在观望，短期不宜提价。\n"
+        "分享21 推荐0 划线人数0\n赞赏￥0\n3条留言V 写留言\n写留言\n"
+        "张冠留言\n渠道库存还是偏高，先别急着看多。\n"
+    )
     assert present_stored_ocr(stored) == STICKY_EXPECTED
-    # 句号后面不换行，直接粘上按钮栏。
-    glued = "方伟\n茅台批价这一周没动，渠道仍在观望，短期不宜提价。分享21 推荐0 划线人数0\n赞赏￥0\n"
-    assert present_ocr_pieces([glued]) == STICKY_EXPECTED
-    # 公众号 473 / 606 用同一串页脚。
-    mp = STICKY_12681.replace("茅台批价这一周没动，渠道仍在观望，短期不宜提价。", "渗透率已经过了最陡的那段。")
-    mp_text = present_ocr_pieces([mp])
-    assert mp_text == "方伟：渗透率已经过了最陡的那段。"
-    assert "分享21" not in mp_text and "赞赏" not in mp_text and "写留言" not in mp_text
+    glued = (
+        "方伟\n茅台批价这一周没动，渠道仍在观望，短期不宜提价。分享21 推荐0 划线人数0\n"
+        "赞赏￥0\n后面这句还在，不能被按钮截掉。\n"
+    )
+    glued_text = present_ocr_pieces([glued])
+    assert "茅台批价这一周没动" in glued_text
+    assert "后面这句还在，不能被按钮截掉" in glued_text
+    assert "分享21" not in glued_text and "赞赏" not in glued_text
+    assert glued_text.index("茅台批价") < glued_text.index("后面这句还在")
+
+
+def test_12681_dialogue_after_sticky_chrome_is_kept():
+    """页脚夹在中间时，后面的方伟和张冠都要留下。"""
+    raw = """方伟
+1月份的腾讯都没买的话，
+后面这句也不能丢。
+分享21 推荐0 划线人数0
+赞赏￥0
+3条留言V 写留言
+写留言
+张冠留言
+腾讯的位置还在，可以分批。
+方伟
+分批就行，别一次打满。
+"""
+    text = present_ocr_pieces([raw])
+    assert text == (
+        "方伟：1月份的腾讯都没买的话，\n后面这句也不能丢。\n"
+        "\n"
+        "网友：腾讯的位置还在，可以分批。\n"
+        "\n"
+        "方伟：分批就行，别一次打满。"
+    )
+    assert present_stored_ocr(text) == text
+    for noise in ("分享21", "推荐0", "划线人数", "赞赏", "写留言", "条留言", "张冠"):
+        assert noise not in text
+    assert text.count("方伟：") == 2
+    assert "1月份的腾讯都没买的话" in text
+    assert "分批就行" in text
+
+
+def test_473_mp_shop_and_city_footers_drop_without_eating_body():
+    """公众号页脚：微信小店、关注同城、相关的服务号。夹在两句之间只删页脚。"""
+    raw = """方伟
+渗透率已经过了最陡的那段。
+微信小店
+关注同城
+相关的服务号
+分批买比一次买完更重要。
+"""
+    text = present_ocr_pieces([raw])
+    assert text == (
+        "方伟：渗透率已经过了最陡的那段。\n"
+        "分批买比一次买完更重要。"
+    )
+    for noise in ("微信小店", "关注同城", "服务号", "小店"):
+        assert noise not in text
+    glued = "方伟\n微信小店关注同城\n相关的服务号\n服务号的毛利先不看，看订阅。\n"
+    kept = present_ocr_pieces([glued])
+    assert "服务号的毛利先不看，看订阅" in kept
+    assert "微信小店" not in kept and "关注同城" not in kept
+    sentence = "微信\n9:41\n微信小店的毛利还行，先观察一个季度。\n"
+    assert "微信小店的毛利还行" in present_ocr_pieces([sentence])
 
 
 def test_rewash_selector_ignores_zanshang_inside_a_sentence():
