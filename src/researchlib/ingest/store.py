@@ -140,13 +140,8 @@ def body_chars(body_md: str) -> int:
 
 def apply_length_floor(source: Source, body_md: str, meta: dict) -> dict:
     """短于来源 min_chars 的帖子标 hidden=short_post；够长则去掉这个标记。"""
-    from researchlib.empty_answer import HIDDEN, SHORT_POST, SOURCE_PAUSED
+    from researchlib.empty_answer import HIDDEN, SHORT_POST
 
-    if source.paused:
-        meta[HIDDEN] = SOURCE_PAUSED
-        return meta
-    if meta.get(HIDDEN) == SOURCE_PAUSED:
-        meta.pop(HIDDEN)
     if source.min_chars <= 0:
         return meta
     if body_chars(body_md) < source.min_chars:

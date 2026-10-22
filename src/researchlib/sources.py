@@ -28,7 +28,7 @@ class Source:
     timeline: bool = True
     # >0：正文（不含评论、空白）不足这么多字的帖子入库时标 hidden=short_post。
     min_chars: int = 0
-    # True：整源先不要，入库时标 hidden=source_paused（库里数据保留）。
+    # True：整源先不要。库里已标 hidden=source_paused，导入命令拒绝导入。
     paused: bool = False
 
 
