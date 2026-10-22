@@ -265,20 +265,31 @@ def _flow_ocr_lines(text: str) -> str:
             merged += "\n\n" + line
         elif _visual_width(previous) >= _OCR_WRAP_WIDTH:
             merged += line
-        elif (
-            previous
-            and line
-            and _visual_width(previous) >= _OCR_WRAP_WIDTH - 1
-            and _CJK_CHAR.search(previous[-1])
-            and _CJK_CHAR.search(line[0])
-        ):
-            # 接近气泡宽度的汉字折行：略短也不塞空格（「世/界」宽 13.5 < 14.5）。
+        elif previous and line and _CJK_CHAR.search(previous[-1]) and _CJK_CHAR.search(line[0]):
+            # 汉字之间本来就没有空格；折行接上时也不要塞（「世/界」「奥/乐齐」）。
             merged += line
         else:
             merged += " " + line
         previous = line
     return merged
 
+
+
+
+def flow_ocr_quote_body(text: str) -> str:
+    """引用旁路里的 OCR：按说话人块收折行，与阅读气泡同一套规则。"""
+    parts: list[str] = []
+    for block in (text or "").split("\n\n"):
+        block = block.strip("\n")
+        if not block.strip():
+            continue
+        label, sep, rest = block.partition("：")
+        if sep and label in {"方伟", "网友"}:
+            flowed = _flow_ocr_lines(rest.lstrip("\n"))
+            parts.append(f"{label}：{flowed}")
+        else:
+            parts.append(_flow_ocr_lines(block))
+    return "\n\n".join(parts)
 
 
 def _dialogue_html(text: str) -> str:
