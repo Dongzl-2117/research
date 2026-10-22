@@ -12,6 +12,8 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
+朋友圈 / 公众号卡片带「方伟看十年作者」的，收成「方伟：」，并去掉账号栏和下一帖标题。
+电商商品图、带坐标轴的图表不套对话，阅读页只留原图链接。
 已经整理过的「方伟：」「网友：」再跑一遍还是同一份，方便写回 articles.ocr_text。
 """
 
@@ -168,6 +170,21 @@ _AT_SUFFIX = re.compile(r"@[A-Za-z0-9_\-.]+$")
 _SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加")
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
 _WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
+# 朋友圈 / 公众号卡片上的账号栏。不是气泡里的话。
+_ACCOUNT_BADGE = re.compile(r"^方伟看十年作者$|^看十年作者$")
+_ACCOUNT_NAME = re.compile(r"^方伟看十年$|^看十年$")
+# 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
+_FEED_TITLE = re.compile(r"^[^。！\n]{4,40}[？?]$")
+# 亚马逊 / Temu 商品页界面字。有这些就不走对话。
+_PRODUCT_UI = re.compile(
+    r"Sponsored|Add\s*to\s*cart|Addtocart|FREEdelivery|bought\s*in\s*past\s*month|"
+    r"boughtfrom\s*thisbrand|Limited\s*time\s*deal|Typical:|AllDiscounts|"
+    r"MostPurchased|Shop[A-Z]|购物车|秒杀特价|平台包邮|无进口费用|"
+    r"筛选|已售\d|已额外优惠",
+    re.I,
+)
+# 图表角标、轴标签。OCR 出来是乱码，阅读页不展示。
+_CHART_MARK = re.compile(r"Builtwith|Fiscalai|Fiscal\.ai|McP$|Ads\s*v\.?Google|LTM\)", re.I)
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
 _TRAIL_TIME = re.compile(
@@ -185,7 +202,7 @@ class Turn:
 
 @dataclass
 class Shot:
-    """一张图：对话轮次，或保持原样的正文（表格、长文）。"""
+    """一张图：对话轮次、只留原图的商品/图表，或保持原样的正文（表格、长文）。"""
 
     kind: str
     turns: list[Turn]
@@ -252,6 +269,9 @@ def parse_shot(text: str) -> Shot:
     raw_lines = [line for line in raw_lines if line]
     if not raw_lines:
         return Shot("prose", [], original)
+    # 商品图、图表先拦下：品牌碎片（opard）会被误认成拉丁昵称，不能进对话。
+    if _is_product_shot(raw_lines) or _is_chart_shot(raw_lines):
+        return Shot("media", [], "")
     signal = _wechat_signal(raw_lines)
     lines = _prepare_lines(raw_lines)
     names = _speaker_names(lines, signal)
@@ -259,6 +279,15 @@ def parse_shot(text: str) -> Shot:
     visible = [_plain(line) for line in lines if line != _BREAK]
     labeled = bool(visible) and _STRUCTURED.match(visible[0]) is not None
     hosted = any(_is_host_line(line) for line in visible) or any(line.startswith(SIDE_SELF) for line in lines)
+    if not hosted:
+        for line in visible:
+            if _HOST_PREFIX.match(line) or (_STRUCTURED.match(line) and line.startswith(HOST)):
+                hosted = True
+                break
+            inline = _INLINE.match(line)
+            if inline and _is_host_line(_compact_host(inline.group(1))):
+                hosted = True
+                break
     if not lines or not (signal or names or labeled or hosted):
         return Shot("prose", [], original)
     # 群聊里没有坐标时，不写别人昵称的气泡是作者自己的绿色气泡。有侧标记时以标记为准。
@@ -269,6 +298,34 @@ def parse_shot(text: str) -> Shot:
     if signal or names or hosted or labeled:
         return Shot("dialogue", [], "")
     return Shot("prose", [], original)
+
+
+def _is_product_shot(lines: list[str]) -> bool:
+    """亚马逊 / Temu 商品页：价格、Sponsored、购物车。不是群聊。"""
+    joined = "\n".join(lines)
+    hits = _PRODUCT_UI.findall(joined)
+    if len(hits) >= 2:
+        return True
+    dollars = len(re.findall(r"(?<![A-Za-z])\$\s*\d", joined))
+    stars = len(re.findall(r"★", joined))
+    return dollars >= 3 and stars >= 2
+
+
+def _is_chart_shot(lines: list[str]) -> bool:
+    """折线图 / 柱状图的 OCR：角标、轴刻度，读出来也没有句子。"""
+    if any(_CHART_MARK.search(line) for line in lines):
+        return True
+    digitish = 0
+    meaningful = 0
+    for line in lines:
+        compact = re.sub(r"\s+", "", line)
+        if not compact:
+            continue
+        if re.fullmatch(r"[\d$￥¥B.,~\-—]+", compact) or re.fullmatch(r"\d{6,}", compact):
+            digitish += 1
+        if len(_MEANING.findall(line)) >= 6:
+            meaningful += 1
+    return digitish >= 4 and digitish > meaningful
 
 
 def _same_sentence(left: str, right: str) -> bool:
@@ -380,6 +437,8 @@ def _norm(line: str) -> str:
 def _wechat_signal(lines: list[str]) -> bool:
     if any(_GROUP_TITLE.match(line) for line in lines):
         return True
+    if any(_ACCOUNT_BADGE.match(line) or _ACCOUNT_NAME.match(line) for line in lines):
+        return True
     return _WECHAT.search("\n".join(lines)) is not None
 
 
@@ -479,6 +538,8 @@ def _is_noise(line: str) -> bool:
         return True
     if _GROUP_TITLE.fullmatch(folded) or _is_price(line) or _SYSTEM.search(folded):
         return True
+    if _ACCOUNT_BADGE.match(line) or _ACCOUNT_NAME.match(line):
+        return True
     if _is_store(line) or _is_commerce(line) or _is_app_fragment(line):
         return True
     # 截图角落的假名。汉字单字（折出来的「的」）不是这种。
@@ -510,6 +571,7 @@ def _peel_handle(line: str) -> str:
 def _prepare_lines(raw_lines: list[str]) -> list[str]:
     own = [line.startswith(SIDE_SELF) for line in raw_lines]
     peeled = [_peel_handle(_maybe_peel(_plain(line))) for line in raw_lines]
+    had_account = any(_ACCOUNT_BADGE.match(line) or _ACCOUNT_NAME.match(line) for line in peeled)
     drop = {index for index, line in enumerate(peeled) if _is_card_anchor(line)}
     changed = True
     while changed:
@@ -530,7 +592,19 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
         if len(kept) <= 1 and _GROUP_BARE.fullmatch(line):
             continue
         kept.append((SIDE_SELF if own[index] else "") + line)
+    if had_account:
+        kept = _drop_trailing_feed_title(kept)
     return _split_after_host_mention(kept)
+
+
+def _drop_trailing_feed_title(lines: list[str]) -> list[str]:
+    """公众号卡片末尾常粘上下一帖标题，例如「什么才叫做…的感觉？」。"""
+    if not lines:
+        return lines
+    last = _plain(lines[-1])
+    if last == _BREAK or not _FEED_TITLE.match(last):
+        return lines
+    return lines[:-1]
 
 
 def _split_after_host_mention(lines: list[str]) -> list[str]:

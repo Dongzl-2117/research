@@ -414,6 +414,11 @@ def parse_markdown_files(
             seen_refs.add(dest)
             refs.append((dest, images.resolve(ref, path)))
         full_md = normalize_newlines(original)
+        if id_mode == "zsxq":
+            # 评论区只留方伟；其他人的仍在 inbox / raw，可逆。
+            from researchlib.zsxq_comments import filter_host_comments_markdown
+
+            full_md = filter_host_comments_markdown(full_md)
         stored_meta: dict = {
             "format": "markdown",
             "parent": parent,

@@ -3,7 +3,8 @@
 归档正文里这一节是 Markdown：`- **名字**（时间）` 再加缩进的正文。
 名字被打成空白（常见是全角空格）时，`**　　**` 做不成强调，星号会原样留在页面上。
 阅读页改成作者、时间、正文；空白名字写成「匿名」。标题前面那些空 `<br>` 去掉。
-「评论里的回复」是另一节，仍按原文渲染。库里的 body_md 不改。
+阅读页和入库都只留方伟自己的评论，其他人的可逆隐藏；inbox / raw 里的原文不动。
+「评论里的回复」是另一节，仍按原文渲染。
 """
 
 from __future__ import annotations
@@ -68,6 +69,89 @@ def display_author(raw: str) -> str:
     return text
 
 
+def is_host_comment_author(name: str) -> bool:
+    """是不是方伟自己的评论。空白「匿名」不算。"""
+    from researchlib.wechat_dialogue import _compact_host, _is_host_line
+
+    shown = display_author(name)
+    if not shown or shown == ANONYMOUS:
+        return False
+    return _is_host_line(_compact_host(shown))
+
+
+def keep_host_comments(comments: list[ReaderComment]) -> list[ReaderComment]:
+    return [comment for comment in comments if is_host_comment_author(comment.author)]
+
+
+def _parse_comment_items(section: str) -> list[tuple[str, str, list[str]]] | None:
+    """拆出 (名字, 时间, 正文行)。格式不对返回 None。"""
+    lines = (section or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    items: list[tuple[str, str, list[str]]] = []
+    current: tuple[str, str, list[str]] | None = None
+
+    def start(match: re.Match[str]) -> tuple[str, str, list[str]]:
+        rest = _BR.sub("\n", match.group("rest") or "")
+        body = [line.strip() for line in rest.split("\n") if line.strip()]
+        return (match.group("name"), match.group("time"), body)
+
+    for line in lines:
+        if _BLANK.match(line):
+            if current is not None and current[2] and current[2][-1] != "":
+                current[2].append("")
+            continue
+        match = _ITEM.match(line)
+        if match is None and line[:1] in " \t":
+            match = _ITEM.match(line.strip())
+        if match:
+            if current is not None:
+                items.append(current)
+            current = start(match)
+            continue
+        if _LOOSE_ITEM.match(line) or current is None:
+            return None
+        current[2].append(line.strip())
+    if current is not None:
+        items.append(current)
+    if not items:
+        return None
+    return items
+
+
+def filter_host_comments_markdown(md: str) -> str:
+    """入库用：正文里的「评论（N）」只留方伟。没有方伟评论就整节去掉。inbox 原文不改。"""
+    match = _HEADING.search(md or "")
+    while match and _in_fence(md, match.start()):
+        match = _HEADING.search(md, match.end())
+    if not match or (match.start() > 0 and md[match.start() - 1] != "\n"):
+        return md or ""
+    rest = md[match.end() :]
+    nxt = _NEXT_HEADING.search(rest)
+    if nxt:
+        section, after = rest[: nxt.start()], rest[nxt.start() :]
+    else:
+        section, after = rest, ""
+    items = _parse_comment_items(section)
+    if items is None:
+        return md or ""
+    kept = [(name, when, body) for name, when, body in items if is_host_comment_author(name)]
+    before = md[: match.start()]
+    if not kept:
+        glued = before.rstrip() + ("\n\n" + after.lstrip("\n") if after.strip() else "\n")
+        return glued if glued.endswith("\n") else glued + "\n"
+    out = [f"## 评论（{len(kept)}）", ""]
+    for name, when, body in kept:
+        label = display_author(name)
+        out.append(f"- **{label}**（{when}）")
+        if any(line.strip() for line in body):
+            for line in body:
+                out.append(f"  {line}" if line.strip() else "")
+        out.append("")
+    rebuilt = "\n".join(out).rstrip() + "\n"
+    if after.strip():
+        return before.rstrip() + "\n\n" + rebuilt + "\n" + after.lstrip("\n")
+    return before.rstrip() + "\n\n" + rebuilt
+
+
 def _format_when(raw: str) -> tuple[str, str]:
     match = _CLOCK.search(raw or "")
     if not match:
@@ -125,37 +209,10 @@ def _to_comment(name: str, when: str, body: list[str], mapping: dict[str, str]) 
 def parse_reader_comments(section: str, mapping: dict[str, str] | None = None) -> list[ReaderComment] | None:
     """是「- **名字**（时间）」这种列表就返回评论，否则返回 None，调用方照旧渲染。"""
     mapping = mapping or {}
-    lines = (section or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    items: list[tuple[str, str, list[str]]] = []
-    current: tuple[str, str, list[str]] | None = None
-
-    def start(match: re.Match[str]) -> tuple[str, str, list[str]]:
-        rest = _BR.sub("\n", match.group("rest") or "")
-        body = [line.strip() for line in rest.split("\n") if line.strip()]
-        return (match.group("name"), match.group("time"), body)
-
-    for line in lines:
-        if _BLANK.match(line):
-            if current is not None and current[2] and current[2][-1] != "":
-                current[2].append("")
-            continue
-        match = _ITEM.match(line)
-        if match is None and line[:1] in " \t":
-            match = _ITEM.match(line.strip())
-        if match:
-            if current is not None:
-                items.append(current)
-            current = start(match)
-            continue
-        if _LOOSE_ITEM.match(line) or current is None:
-            return None
-        current[2].append(line.strip())
-    if current is not None:
-        items.append(current)
-    if not items:
+    items = _parse_comment_items(section)
+    if items is None:
         return None
     return [_to_comment(name, when, body, mapping) for name, when, body in items]
-
 
 def _in_fence(md: str, index: int) -> bool:
     fenced = False
@@ -246,6 +303,9 @@ def assemble_reader_comments(body: str, mapping: dict[str, str], render_markdown
     before, comments, after = split_reader_comments(body, mapping)
     if not comments:
         return render_markdown(body, mapping)
+    comments = keep_host_comments(comments)
     head = strip_trailing_breaks(render_markdown(before, mapping))
     tail = assemble_reader_comments(after, mapping, render_markdown) if after.strip() else ""
+    if not comments:
+        return head + tail
     return head + render_comment_section(comments) + tail
