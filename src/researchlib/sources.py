@@ -26,6 +26,8 @@ class Source:
     description: str = ""
     # True：首页按天和 /days。False：只进作者、公司、检索、问库（飞书文库）。
     timeline: bool = True
+    # >0：正文（不含评论、空白）不足这么多字的帖子入库时标 hidden=short_post。
+    min_chars: int = 0
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -60,6 +62,7 @@ def load_sources(path: Path) -> list[Source]:
                 enabled=bool(item.get("enabled", False)),
                 description=str(item.get("description") or ""),
                 timeline=_timeline_flag(item, kind, source_id),
+                min_chars=int(item.get("min_chars") or 0),
             )
         )
     return sources

@@ -132,11 +132,30 @@ def record_import(conn, source_id: str, report: IngestReport, origin: str = "arc
     conn.commit()
 
 
+def body_chars(body_md: str) -> int:
+    """作者正文的字数：去掉评论一节和所有空白。"""
+    article, _ = split_comments(body_md or "")
+    return len("".join(article.split()))
+
+
+def apply_length_floor(source: Source, body_md: str, meta: dict) -> dict:
+    """短于来源 min_chars 的帖子标 hidden=short_post；够长则去掉这个标记。"""
+    from researchlib.empty_answer import HIDDEN, SHORT_POST
+
+    if source.min_chars <= 0:
+        return meta
+    if body_chars(body_md) < source.min_chars:
+        meta[HIDDEN] = SHORT_POST
+    elif meta.get(HIDDEN) == SHORT_POST:
+        meta.pop(HIDDEN)
+    return meta
+
+
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
     profile = profile_for(conn, source.id)
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    meta = assign_poster_role(dict(doc.raw_meta), source.author)
+    meta = apply_length_floor(source, doc.body_md, assign_poster_role(dict(doc.raw_meta), source.author))
     existing = conn.execute(
         """
         SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
