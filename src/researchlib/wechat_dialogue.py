@@ -11,8 +11,8 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
 - 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
-  「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」「微信小店」「关注同城」「相关的服务号」都是页脚。
-  「张冠留言」换成网友的一轮，名字不留。单独一行的「（作者）」也丢掉。
+  「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」「微信小店」「关注同城 朋友 推荐」都是页脚。
+  「张冠留言1次·关注8个月」换成网友的一轮。以下为历史留言、共N条回复、留言N次、关注N个月删掉。
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
 知识星球引用回复不是微信气泡：第一条「方伟看十年 / 作者」账号栏是分界，栏上的灰字是「网友：」，
@@ -211,8 +211,21 @@ _LIST_CHROME = re.compile(
     r"|^写评论$"
     r"|^作者赞过$"
 )
+# 「张冠留言」「张冠留言1次·关注8个月」。次和关注月数是界面，不是正文。
 _COMMENT_HEAD = re.compile(
-    r"^([\u4e00-\u9fffA-Za-z0-9_·.]{1,12})留言(?:[:：].*)?(?:…+|⋯+|‥+|\.{2,})?$"
+    r"^(?P<name>[\u4e00-\u9fffA-Za-z0-9_]{1,8})留言"
+    r"(?:"
+    r"[:：](?P<said>.*)"
+    r"|(?P<ui>(?:\d+次)?(?:[·•・‧∙･．.]*关注\d+个?月)?)"
+    r")$"
+)
+_COMMENT_UI = re.compile(
+    r"^(?:"
+    r"以下为历史留言|查看历史留言|历史留言"
+    r"|共\d+条(?:回复|留言|评论)"
+    r"|留言\d+次"
+    r"|[·•・‧∙･．.]*关注\d+个?月"
+    r")$"
 )
 _COMMENT_HEAD_SKIP = frozenset({"写", "欢迎", "请", "大家", "请大家", "条", "我要", "的", "这", "那"})
 # 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
@@ -234,8 +247,9 @@ _BREAK = "\x1e"
 # 「张冠留言」：这一轮改记成网友，名字本身不显示。
 _GUEST_TURN = "\x1d"
 _MP_TOKEN = re.compile(
-    r"微信小店|关注同城|相关的服务号|相关服务号|关注服务号|进店逛逛|关注公众号|视频号"
+    r"微信小店|关注同城|相关的服务号|相关服务号|关注服务号|进店逛逛|关注公众号|视频号|同城"
 )
+_MP_FILLER = re.compile(r"朋友|推荐|分享|在看|收藏|进店|关注|去看看")
 # 第一条账号栏。栏上已经收成网友，栏下改按方伟。本身不显示。
 _ACCOUNT_SPLIT = "\x1f"
 _TRAIL_TIME = re.compile(
@@ -365,14 +379,28 @@ def _is_sticky_bar(line: str) -> bool:
     return _CJK.findall(_sticky_residue(compact)) == []
 
 
+def _is_comment_ui(line: str) -> bool:
+    """「以下为历史留言」「共2条回复」「留言1次」「关注8个月」。整行都是界面。"""
+    compact = _footer_compact(line)
+    if not compact or re.search(r"[。！？!?，,]", compact):
+        return False
+    return _COMMENT_UI.fullmatch(compact) is not None
+
+
 def _is_mp_footer(line: str) -> bool:
-    """公众号底部的小店、同城、服务号。句子里提到这些词的留下。"""
+    """公众号底部的小店、同城、服务号，以及「关注同城 朋友 推荐」。
+
+    句子里提到这些词的留下。
+    """
     compact = _footer_compact(line)
     if not compact or len(compact) > 24 or re.search(r"[。！？!?，,]", compact):
         return False
-    if _MP_TOKEN.search(compact) is None:
+    anchored = re.search(r"微信小店|关注同城|服务号|进店逛逛|视频号|关注公众号", compact)
+    city_row = "同城" in compact and re.search(r"朋友|推荐", compact)
+    if not anchored and not city_row:
         return False
     residue = _MP_TOKEN.sub("", compact)
+    residue = _MP_FILLER.sub("", residue)
     residue = re.sub(r"[\dA-Za-z]+", "", residue)
     return _CJK.findall(residue) == []
 
@@ -381,7 +409,7 @@ def _is_strong_footer(line: str) -> bool:
     text = _footer_compact(line)
     if not text:
         return False
-    if _is_sticky_bar(text) or _is_mp_footer(line):
+    if _is_sticky_bar(text) or _is_mp_footer(line) or _is_comment_ui(line):
         return True
     if len(text) > 24:
         return False
@@ -393,22 +421,27 @@ def _is_soft_footer(line: str) -> bool:
     return bool(text) and len(text) <= 16 and _SOFT_FOOTER.fullmatch(text) is not None
 
 
-def _is_comment_head(line: str) -> bool:
-    """「张冠留言」「张冠留言：渠道还高」。句子里的「请在下面留言」不是。"""
-    match = _COMMENT_HEAD.fullmatch(_footer_compact(line))
-    if not match:
-        return False
-    name = match.group(1)
-    if name in _COMMENT_HEAD_SKIP or name.isdigit() or len(name) > 8:
+def _comment_head_match(line: str) -> re.Match[str] | None:
+    return _COMMENT_HEAD.fullmatch(_footer_compact(line))
+
+
+def _comment_name_ok(name: str) -> bool:
+    if not name or name in _COMMENT_HEAD_SKIP or name.isdigit() or len(name) > 8:
         return False
     if _is_host_line(_compact_host(name)):
         return False
     chars = _CJK.findall(name)
-    if chars and any(char in _STOP_CHAR for char in chars):
+    if not chars or any(char in _STOP_CHAR for char in chars):
         return False
-    if chars and len(chars) != len(name):
+    return len(chars) == len(name)
+
+
+def _is_comment_head(line: str) -> bool:
+    """「张冠留言」「张冠留言1次·关注8个月」。句子里的「请在下面留言」不是。"""
+    match = _comment_head_match(line)
+    if not match:
         return False
-    return True
+    return _comment_name_ok(match.group("name"))
 
 
 def _post_chrome_context(lines: list[str]) -> bool:
@@ -433,15 +466,38 @@ def _bare_guest_name(line: str) -> bool:
 
 
 def _split_comment_head(line: str) -> tuple[str, str] | None:
-    """「张冠留言」或「张冠留言：渠道还高」。不是这种行就返回 None。"""
+    """留言头改成网友的一轮。次、关注月数丢掉；冒号后面的话留下。"""
     plain = _plain(line).strip()
-    if not _is_comment_head(plain):
+    match = _comment_head_match(plain)
+    if not match or not _comment_name_ok(match.group("name")):
         return None
-    parts = re.split(r"[:：]", plain, maxsplit=1)
-    rest = parts[1].strip() if len(parts) == 2 else ""
-    if rest and (_is_sticky_bar(rest) or _is_strong_footer(rest)):
+    said = match.group("said")
+    if said is None:
+        return ("", "")
+    rest = said.strip()
+    if rest and (_is_sticky_bar(rest) or _is_strong_footer(rest) or _is_comment_ui(rest)):
         rest = ""
     return ("", rest)
+
+
+def _comment_name_line(line: str) -> bool:
+    """评论区里单独一行的人名，例如「郑立涛」。"""
+    text = _footer_compact(line)
+    if not text or text in _NOT_NAMES or _is_host_line(_compact_host(text)):
+        return False
+    if _cjk_name(text, 2) or _cjk_name(text, 3):
+        return True
+    chars = _CJK.findall(text)
+    return len(chars) == 4 and len(chars) == len(text) and not any(char in _STOP_CHAR for char in chars)
+
+
+def _following_speech(line: str) -> bool:
+    text = _plain(line).strip()
+    if not text or text == _GUEST_TURN or _is_host_line(_compact_host(text)):
+        return False
+    if _is_comment_ui(text) or _is_strong_footer(text) or _is_comment_head(text) or _is_mp_footer(text):
+        return False
+    return len(_CJK.findall(text)) >= 6 or re.search(r"[。！？!?，,]", text) is not None
 
 
 def _peel_sticky_tail(line: str) -> str:
@@ -465,18 +521,24 @@ def _peel_sticky_tail(line: str) -> str:
 def _drop_post_footer(lines: list[str]) -> list[str]:
     """页脚按行丢掉。按钮后面的方伟、网友继续留着，不从第一行按钮截到图末。
 
-    「张冠留言」和「张冠 / 留言」改成网友的一轮，名字不进正文。
+    「张冠留言」和「张冠留言1次·关注8个月」改成网友的一轮，名字和关注月数不进正文。
     """
     peeled = [_peel_sticky_tail(line) for line in lines]
     context = _post_chrome_context(peeled)
     kept: list[str] = []
+    in_comments = False
     index = 0
     while index < len(peeled):
         line = peeled[index]
         nxt = peeled[index + 1] if index + 1 < len(peeled) else ""
         if _bare_guest_name(line) and _is_message_label(nxt):
             kept.append(_GUEST_TURN)
+            in_comments = True
             index += 2
+            continue
+        host_head = _comment_head_match(line)
+        if host_head and _is_host_line(_compact_host(host_head.group("name"))):
+            index += 1
             continue
         comment = _split_comment_head(line)
         if comment is not None:
@@ -484,6 +546,15 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
             kept.append(_GUEST_TURN)
             if rest:
                 kept.append(rest)
+            in_comments = True
+            index += 1
+            continue
+        if _is_comment_ui(line):
+            in_comments = True
+            index += 1
+            continue
+        if in_comments and _comment_name_line(line) and _following_speech(nxt):
+            kept.append(_GUEST_TURN)
             index += 1
             continue
         if _is_author_badge(line) or _is_strong_footer(line) or (context and _is_soft_footer(line)):
