@@ -705,6 +705,48 @@ def test_12681_dialogue_after_sticky_chrome_is_kept():
     assert "分批就行" in text
 
 
+def test_12681_production_guest_header_is_a_netizen_turn():
+    """线上留言头是「张冠留言1次·关注8个月」，不是光秃的「张冠留言」。"""
+    raw = """方伟
+1月份的腾讯都没买的话，
+后面这句也不能丢。
+张冠留言1次·关注8个月
+腾讯的位置还在，可以分批。
+以下为历史留言
+郑立涛
+历史里这句也要留下。
+共2条回复
+关注8个月
+留言1次
+方伟
+分批就行，别一次打满。
+"""
+    text = present_ocr_pieces([raw])
+    assert text == (
+        "方伟：1月份的腾讯都没买的话，\n后面这句也不能丢。\n"
+        "\n"
+        "网友：腾讯的位置还在，可以分批。\n"
+        "\n"
+        "网友：历史里这句也要留下。\n"
+        "\n"
+        "方伟：分批就行，别一次打满。"
+    )
+    assert present_stored_ocr(text) == text
+    for noise in (
+        "张冠",
+        "留言1次",
+        "关注8个月",
+        "以下为历史留言",
+        "郑立涛",
+        "共2条回复",
+        "历史留言",
+    ):
+        assert noise not in text
+    host = text.split("网友：", 1)[0]
+    assert "腾讯的位置还在" not in host
+    assert "历史里这句" not in host
+
+
 def test_473_mp_shop_and_city_footers_drop_without_eating_body():
     """公众号页脚：微信小店、关注同城、相关的服务号。夹在两句之间只删页脚。"""
     raw = """方伟
@@ -727,6 +769,18 @@ def test_473_mp_shop_and_city_footers_drop_without_eating_body():
     assert "微信小店" not in kept and "关注同城" not in kept
     sentence = "微信\n9:41\n微信小店的毛利还行，先观察一个季度。\n"
     assert "微信小店的毛利还行" in present_ocr_pieces([sentence])
+    composite = """方伟
+渗透率已经过了最陡的那段。
+关注同城 朋友 推荐
+同城朋友推荐
+分批买比一次买完更重要。
+"""
+    city = present_ocr_pieces([composite])
+    assert city == (
+        "方伟：渗透率已经过了最陡的那段。\n"
+        "分批买比一次买完更重要。"
+    )
+    assert "关注同城" not in city and "朋友推荐" not in city and "同城" not in city
 
 
 def test_rewash_selector_ignores_zanshang_inside_a_sentence():
