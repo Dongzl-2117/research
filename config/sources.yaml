@@ -58,9 +58,9 @@ sources:
     name: Stratechery
     author: Ben Thompson
     kind: markdown
-    enabled: false
+    enabled: true
     timeline: true
-    description: Ben Thompson / Stratechery 全文归档。Passport 全文、Daily≥5500 字门槛；抓完再启用并入库，游客半截不入库。入库后由站内 Grok OAuth 自动译制。
+    description: Ben Thompson / Stratechery 全文归档。Passport 全文、Daily≥5500 字门槛；游客半截不入库。入库后由站内 DeepSeek（默认）自动译制。
 
   - id: duanyongping-blog
     name: 段永平
