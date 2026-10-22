@@ -28,6 +28,8 @@ class Source:
     timeline: bool = True
     # >0：正文（不含评论、空白）不足这么多字的帖子入库时标 hidden=short_post。
     min_chars: int = 0
+    # True：整源先不要，入库时标 hidden=source_paused（库里数据保留）。
+    paused: bool = False
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -63,6 +65,7 @@ def load_sources(path: Path) -> list[Source]:
                 description=str(item.get("description") or ""),
                 timeline=_timeline_flag(item, kind, source_id),
                 min_chars=int(item.get("min_chars") or 0),
+                paused=bool(item.get("paused", False)),
             )
         )
     return sources

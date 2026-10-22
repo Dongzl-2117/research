@@ -66,7 +66,8 @@ sources:
     name: 段永平
     author: 段永平
     kind: markdown
-    enabled: false
+    enabled: true
+    paused: true
     timeline: true
     description: 【2026-10-22 先不要：库里已标 hidden=source_paused，站上不出现】段永平博客文章合集（2006–2018）离线 PDF。只收论证落在具体公司上、且他本人有话说的篇目。论坛导航冒充回答的问答整篇不收。有日期的进按天，没日期的只进作者、公司和检索。
 
