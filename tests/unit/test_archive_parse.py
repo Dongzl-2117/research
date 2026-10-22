@@ -46,7 +46,7 @@ def test_whitelist_shape():
     assert xueqiu.author == "黑黑无常"
     assert xueqiu.kind == "markdown"
     assert xueqiu.enabled is True
-    assert xueqiu.min_chars == 800
+    assert xueqiu.min_chars == 100
     assert "转发" in xueqiu.description and "评论" in xueqiu.description
     duan = next(source for source in sources if source.id == "duanyongping-blog")
     assert duan.name == "段永平"
