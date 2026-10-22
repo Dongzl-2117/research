@@ -211,12 +211,12 @@ _LIST_CHROME = re.compile(
     r"|^写评论$"
     r"|^作者赞过$"
 )
-# 「张冠留言」「张冠留言1次·关注8个月」。次和关注月数是界面，不是正文。
+# 「张冠留言」「张冠留言1次·关注8个月」「郑立涛ILetterZheng留言1次·关注3个月」「UI留言17次·新的关注」。
 _COMMENT_HEAD = re.compile(
-    r"^(?P<name>[\u4e00-\u9fffA-Za-z0-9_]{1,8})留言"
+    r"^(?P<name>(?:[\u4e00-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_]{0,40}|UI|[\u4e00-\u9fff]{1,8}))留言"
     r"(?:"
     r"[:：](?P<said>.*)"
-    r"|(?P<ui>(?:\d+次)?(?:[·•・‧∙･．.]*关注\d+个?月)?)"
+    r"|(?P<ui>(?:\d+次)?(?:[·•・‧∙･．.]*(?:新的关注|关注\d+个?月|关注))?)"
     r")$"
 )
 _COMMENT_UI = re.compile(
@@ -225,8 +225,14 @@ _COMMENT_UI = re.compile(
     r"|共\d+条(?:回复|留言|评论)"
     r"|留言\d+次"
     r"|[·•・‧∙･．.]*关注\d+个?月"
+    r"|[·•・‧∙･．.]*新的关注"
     r")$"
 )
+_TIME_PLACE = re.compile(
+    r"^(?:昨天|今天|前天|上午|下午|晚上|凌晨)?\d{1,2}:\d{2}(?::\d{2})?[\u4e00-\u9fff]{2,4}$"
+)
+_FOLLOW_CHROME = re.compile(r"^[+＋]关注[。．.]?$|^\d+个朋友关注\d*[。．.]?$")
+_LABELED_REST = re.compile(r"^(?:方\s*伟|网友)\s*[:：]\s*(?P<rest>.+)$")
 _COMMENT_HEAD_SKIP = frozenset({"写", "欢迎", "请", "大家", "请大家", "条", "我要", "的", "这", "那"})
 # 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
 _FEED_TITLE = re.compile(
@@ -379,6 +385,28 @@ def _is_sticky_bar(line: str) -> bool:
     return _CJK.findall(_sticky_residue(compact)) == []
 
 
+def _is_time_place(line: str) -> bool:
+    """评论时间戳加地名，例如「22:07上海」。句子里夹着钟点的不走这里。"""
+    return _TIME_PLACE.fullmatch(_footer_compact(line)) is not None
+
+
+def _is_follow_chrome(line: str) -> bool:
+    """「+关注」「14个朋友关注 3 19。」。正文里提到朋友关注的不删。"""
+    return _FOLLOW_CHROME.fullmatch(_footer_compact(line)) is not None
+
+
+def _labeled_guest_header(line: str) -> str | None:
+    """「方伟：郑立涛ILetterZheng留言1次·关注3个月」里，冒号后面才是留言头。"""
+    plain = _plain(line).strip()
+    match = _LABELED_REST.match(plain)
+    if not match:
+        return None
+    rest = match.group("rest").strip()
+    if _is_comment_head(rest):
+        return rest
+    return None
+
+
 def _is_comment_ui(line: str) -> bool:
     """「以下为历史留言」「共2条回复」「留言1次」「关注8个月」。整行都是界面。"""
     compact = _footer_compact(line)
@@ -409,7 +437,13 @@ def _is_strong_footer(line: str) -> bool:
     text = _footer_compact(line)
     if not text:
         return False
-    if _is_sticky_bar(text) or _is_mp_footer(line) or _is_comment_ui(line):
+    if (
+        _is_sticky_bar(text)
+        or _is_mp_footer(line)
+        or _is_comment_ui(line)
+        or _is_time_place(line)
+        or _is_follow_chrome(line)
+    ):
         return True
     if len(text) > 24:
         return False
@@ -425,15 +459,22 @@ def _comment_head_match(line: str) -> re.Match[str] | None:
     return _COMMENT_HEAD.fullmatch(_footer_compact(line))
 
 
+def _name_cjk(name: str) -> str:
+    return "".join(_CJK.findall(name))
+
+
 def _comment_name_ok(name: str) -> bool:
-    if not name or name in _COMMENT_HEAD_SKIP or name.isdigit() or len(name) > 8:
+    """汉字名，或汉字名后粘着拉丁备注（郑立涛ILetterZheng），或头像认成的 UI。"""
+    if name == "UI":
+        return True
+    if not name or name in _COMMENT_HEAD_SKIP or name.isdigit():
         return False
-    if _is_host_line(_compact_host(name)):
+    cjk = _name_cjk(name)
+    if not cjk or len(cjk) > 8 or any(char in _STOP_CHAR for char in cjk):
         return False
-    chars = _CJK.findall(name)
-    if not chars or any(char in _STOP_CHAR for char in chars):
+    if _is_host_line(_compact_host(cjk)):
         return False
-    return len(chars) == len(name)
+    return re.fullmatch(r"[\u4e00-\u9fff]{1,8}(?:[A-Za-z][A-Za-z0-9_]{0,40})?", name) is not None
 
 
 def _is_comment_head(line: str) -> bool:
@@ -536,8 +577,17 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
             in_comments = True
             index += 2
             continue
+        embedded = _labeled_guest_header(line)
+        if embedded:
+            comment = _split_comment_head(embedded)
+            kept.append(_GUEST_TURN)
+            if comment and comment[1]:
+                kept.append(comment[1])
+            in_comments = True
+            index += 1
+            continue
         host_head = _comment_head_match(line)
-        if host_head and _is_host_line(_compact_host(host_head.group("name"))):
+        if host_head and _is_host_line(_compact_host(_name_cjk(host_head.group("name")))):
             index += 1
             continue
         comment = _split_comment_head(line)

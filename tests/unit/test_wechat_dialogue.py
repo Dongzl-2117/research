@@ -705,6 +705,61 @@ def test_12681_dialogue_after_sticky_chrome_is_kept():
     assert "分批就行" in text
 
 
+# 12681 回写之后的呈现原文。留言头粘在「方伟：」后面，名字里夹着拉丁字母。
+PROD_12681 = """方伟：1月份的腾讯都没买的话，。
+网友：感谢，看了你那篇文章，360抄底了腾讯…
+方伟：郑立涛ILetterZheng留言1次·关注3个月
+非常认可
+22:07上海
+UI留言17次·新的关注
+为什么看好微信的视频号业务…
+"""
+
+
+def test_12681_production_fragment_keeps_guest_turns():
+    """按线上这一段原文：郑立涛/UI 的话归网友，时间地点和留言头不进方伟。"""
+    text = present_stored_ocr(PROD_12681)
+    assert present_stored_ocr(text) == text
+    for block in text.split("\n\n"):
+        if block.startswith("方伟："):
+            for noise in (
+                "郑立涛ILetterZheng",
+                "郑立涛",
+                "ILetterZheng",
+                "UI留言",
+                "22:07上海",
+                "非常认可",
+                "视频号",
+            ):
+                assert noise not in block
+    assert "1月份的腾讯都没买的话" in text
+    assert "感谢，看了你那篇文章，360抄底了腾讯" in text
+    guests = [block for block in text.split("\n\n") if block.startswith("网友：")]
+    assert any("非常认可" in block for block in guests)
+    assert any("为什么看好微信的视频号业务" in block for block in guests)
+    timed = "方伟\n会议定在22:07上海办公室见，先别改期。\n"
+    assert "22:07上海办公室见" in present_ocr_pieces([timed])
+
+
+def test_606_friend_follow_chrome_is_dropped():
+    """公众号「+关注」「14个朋友关注 3 19。」只删这一行。"""
+    raw = """方伟
+正文这一句要留下。
++关注
+14个朋友关注 3 19。
+下一句也要留下。
+网友：这句网友的话要留下。
+14个朋友关注
+"""
+    text = present_ocr_pieces([raw])
+    assert "正文这一句要留下" in text
+    assert "下一句也要留下" in text
+    assert "这句网友的话要留下" in text
+    assert "+关注" not in text and "个朋友关注" not in text
+    kept = present_ocr_pieces(["方伟\n我有14个朋友关注这件事，先放着。\n"])
+    assert "我有14个朋友关注这件事，先放着" in kept
+
+
 def test_12681_production_guest_header_is_a_netizen_turn():
     """线上留言头是「张冠留言1次·关注8个月」，不是光秃的「张冠留言」。"""
     raw = """方伟
