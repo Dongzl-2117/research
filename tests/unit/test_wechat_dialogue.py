@@ -7,8 +7,8 @@
 from pathlib import Path
 
 from researchlib.ocr import append_ocr, compose_ocr_text
-from researchlib.render import _flow_ocr_lines, image_anchor, inline_image_ocr, render_body
-from researchlib.wechat_dialogue import present_ocr_pieces, present_stored_ocr
+from researchlib.render import _dialogue_html, _flow_ocr_lines, image_anchor, inline_image_ocr, render_body
+from researchlib.wechat_dialogue import parse_shot, present_ocr_pieces, present_stored_ocr, render_turns
 from researchlib.zsxq_title import zsxq_display_title
 
 # 文章 14886 的形状：正文一句，判断在两张重叠的微信群截图里。
@@ -313,3 +313,97 @@ def test_image_post_title_uses_the_sentence_not_the_speaker_label():
     assert title.startswith("瑞幸和古茗都算头部")
     assert not title.startswith("方伟")
     assert "网友" not in title
+
+
+PDD_MOMENTS = """拼多多，我是始终不太看好。属于
+假本分。个人一家之言仅供参.
+方伟看十年作者
+零售的本分是帮消费者省钱，
+管理层的本分是integrity，世
+界范围内在零售行业，做得比
+它好的，其实只有Costco，奥
+乐齐，利德。
+50年下来，沃尔玛的毛利率从
+20%提升到了24%，费用率从
+16%提升到了20%，只有
+Costco50年不变，费用率纹丝
+不动，那就是9%，这是零售
+领域最强大的公司
+方伟看十年
+什么才叫做“拥有一家公司”的感觉？"""
+
+AMAZON_PRODUCT = """14:10  e  4G
+Q  运动水杯1L  回  O
+★★★★&Up  AllDiscounts  Up to $10
+Sponsored O|9K+boughtfrom thisbrand inpast month
+Limitedtimedeal  $1499 $16.99  $1699
+$1069  Typical: $12.99
+FREEdeliveryOct26-Nov4
+购物车"""
+
+META_CHART = """Fiscal.ai  @Fiscalai·12小时  X
+Meta Ads v.Google Search
+META-AdvertisingRevenue(LTM)
+$250B
+GoogleSearch$243B
+8  MetaAds$223B
+BuiltwithFiscalaiMcP"""
+
+
+def test_moments_card_becomes_fangwei_dialogue_without_chrome():
+    """8881 拼多多微信图：收成方伟气泡，去掉账号栏和下一帖标题，折行接上。"""
+    shot = parse_shot(PDD_MOMENTS)
+    assert shot.kind == "dialogue"
+    text = render_turns(shot.turns)
+    assert text.startswith("方伟：")
+    assert "拼多多，我是始终不太看好" in text
+    assert "属于" in text and "假本分" in text
+    assert "方伟看十年" not in text
+    assert "什么才叫做" not in text
+    assert "网友：" not in text
+
+    digest = "29" * 32
+    page = inline_image_ocr(
+        str(render_body("（见图）\n\n![](p.png)\n", {"p.png": f"/media/x/ab/{digest}.png"})),
+        {digest: PDD_MOMENTS},
+    )
+    assert 'class="ocr-reading ocr-dialogue"' in page
+    assert '<span class="who">方伟：</span>' in page
+    assert "原图 1" in page
+    assert "点击看原图" not in page
+    assert "<details" not in page
+    assert f'id="{image_anchor(digest)}"' in page
+
+
+def test_product_and_chart_shots_are_links_only():
+    """亚马逊 / Temu 商品图和图表不套对话，只留原图链接。"""
+    assert parse_shot(AMAZON_PRODUCT).kind == "media"
+    assert parse_shot(META_CHART).kind == "media"
+    a, c = "e5" * 32, "ad" * 32
+    page = inline_image_ocr(
+        str(
+            render_body(
+                "![](a.png)\n\n![](c.png)\n",
+                {
+                    "a.png": f"/media/x/ab/{a}.png",
+                    "c.png": f"/media/x/ab/{c}.png",
+                },
+            )
+        ),
+        {a: AMAZON_PRODUCT, c: META_CHART},
+    )
+    assert "方伟：" not in page and "网友：" not in page
+    assert "运动水杯" not in page and "Sponsored" not in page
+    assert "Builtwith" not in page
+    assert "原图 1" in page and "原图 2" in page
+    assert "点击看原图" not in page
+    assert page.count('class="ocr-shot"') == 1
+
+
+def test_sentence_end_starts_new_dialogue_paragraph():
+    """已经收了句的下一句另起一段，避免星球长聊糊成一大块。"""
+    assert _flow_ocr_lines("第一句完了。\n第二句开始。") == "第一句完了。\n\n第二句开始。"
+    html = _dialogue_html("方伟：第一句完了。\n第二句开始。")
+    assert html.count("<p>") == 2
+    assert '<span class="who">方伟：</span>第一句完了。' in html
+    assert "<p>第二句开始。</p>" in html

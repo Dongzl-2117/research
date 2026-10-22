@@ -198,16 +198,18 @@ def _reading_inner(text: str) -> tuple[str, str]:
 def _ocr_figure(anchor: str, src: str, alt: str, text: str) -> str:
     kind, inner = _reading_inner(text)
     classes = "ocr-reading ocr-chat" if kind else "ocr-reading"
-    safe_src = html_lib.escape(src, quote=True)
-    safe_alt = html_lib.escape(alt, quote=True)
-    safe_id = html_lib.escape(anchor, quote=True)
     return (
-        f'<figure class="ocr-shot" id="{safe_id}">'
+        f'<figure class="ocr-shot">'
         f'<div class="{classes}">{inner}</div>'
-        f'<details class="ocr-original"><summary>点击看原图</summary>'
-        f'<img src="{safe_src}" alt="{safe_alt}">'
-        f"</details></figure>"
+        f"{_original_links([{'anchor': anchor, 'src': src}])}"
+        "</figure>"
     )
+
+
+def _media_bundle(items: list[dict]) -> str:
+    """商品图、图表：不展示 OCR 乱码，只留「原图 N」。"""
+    return f'<figure class="ocr-shot">{_original_links(items)}</figure>'
+
 
 
 def _img_spec(tag: str) -> tuple[str, str, str, str] | None:
@@ -246,9 +248,10 @@ def _visual_width(text: str) -> float:
 
 
 def _flow_ocr_lines(text: str) -> str:
-    """把截图硬换行收成一段。``国\\n产agents`` 接成「国产agents」，说话人仍按块分开。
+    """把截图硬换行收成段。``国\n产agents`` 接成「国产agents」，说话人仍按块分开。
 
     满行直接接上，避免半个词换行。短行后面留一个空格，两句没有句号时不粘成一个词。
+    上一行已经收了句，下一行另起一段，避免星球长聊糊成一大段。
     旁路正文仍保留原来的换行，这里只影响阅读页。
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
@@ -258,14 +261,14 @@ def _flow_ocr_lines(text: str) -> str:
     merged = previous
     for line in lines[1:]:
         if _OCR_SENTENCE_END.search(previous):
-            gap = " " if previous.endswith("...") else ""
+            merged += "\n\n" + line
         elif _visual_width(previous) >= _OCR_WRAP_WIDTH:
-            gap = ""
+            merged += line
         else:
-            gap = " "
-        merged += gap + line
+            merged += " " + line
         previous = line
     return merged
+
 
 
 def _dialogue_html(text: str) -> str:
@@ -276,11 +279,18 @@ def _dialogue_html(text: str) -> str:
             continue
         label, sep, rest = block.partition("：")
         if sep and label in {"方伟", "网友"}:
-            body = html_lib.escape(_flow_ocr_lines(rest.lstrip("\n")))
-            parts.append(f'<p><span class="who">{label}：</span>{body}</p>')
+            flowed = _flow_ocr_lines(rest.lstrip("\n"))
+            paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
+            for index, para in enumerate(paragraphs or [""]):
+                body = html_lib.escape(para)
+                if index == 0:
+                    parts.append(f'<p><span class="who">{label}：</span>{body}</p>')
+                else:
+                    parts.append(f"<p>{body}</p>")
         else:
             parts.append(f"<p>{html_lib.escape(_flow_ocr_lines(block))}</p>")
     return "".join(parts)
+
 
 
 def _original_links(items: list[dict]) -> str:
@@ -306,17 +316,20 @@ def _chat_bundle(items: list[dict], dialogue: str) -> str:
 
 
 def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
-    """有可读识别结果的本地图：群聊先显示整理后的对话，原图是一行「原图 1」链接。
+    """有可读识别结果的本地图：群聊先显示整理后的对话，原图是一行「原图 N」链接。
 
     连续几张微信截图合成一段，重复的句子只出现一次，不再每张图留一个空架子。
-    对话里的截图折行收成一段话，不再在半句中间硬换行。表格和长文仍按原文换行，原图收在「点击看原图」里。
-    没认出字的图保持原来的图片。
+    对话里的截图折行收成一段话，不再在半句中间硬换行。商品图和图表只留原图链接。
+    表格和长文仍按原文换行，原图同样用「原图 N」。没认出字的图保持原来的图片。
     texts 是 content_hash → image_texts.text。锚点 id 在原图链接上，检索里的「看这张图」仍跳到这里。
     """
 
     def finish(value: str) -> str:
-        # 截图收成一段对话之后，原来夹在图片之间的 <br> 会落到评论标题前面。
-        return strip_breaks_before_comments(value)
+        # 截图收成一段对话之后，原来夹在图片之间的 <br> 会落到评论标题前面，也会卡在 figure 前后。
+        cleaned = strip_breaks_before_comments(value)
+        cleaned = re.sub(r"(?:<br\s*/?>\s*)+(?=<figure\b)", "", cleaned, flags=re.I)
+        cleaned = re.sub(r"(?<=</figure>)\s*(?:<br\s*/?>\s*)+", "", cleaned, flags=re.I)
+        return cleaned
 
     if not html or not texts:
         return finish(html or "")
@@ -345,6 +358,17 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
         if item is None:
             index += 1
             continue
+        if item["shot"].kind == "media":
+            group = [index]
+            nxt = index + 1
+            while nxt < len(spans) and parsed[nxt] is not None and parsed[nxt]["shot"].kind == "media":
+                group.append(nxt)
+                nxt += 1
+            outputs[group[0]] = _media_bundle([parsed[cursor] for cursor in group])
+            for cursor in group[1:]:
+                outputs[cursor] = ""
+            index = nxt
+            continue
         if item["shot"].kind != "dialogue":
             outputs[index] = _ocr_figure(item["anchor"], item["src"], item["alt"], item["raw"])
             index += 1
@@ -370,6 +394,7 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
         if output is not None:
             result = result[:start] + output + result[end:]
     return finish(result)
+
 
 
 def _render_markdown(body: str, mapping: dict[str, str]) -> str:
