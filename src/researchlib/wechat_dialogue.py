@@ -12,8 +12,9 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
-朋友圈 / 公众号卡片带「方伟看十年作者」的，收成「方伟：」，并去掉账号栏和下一帖标题。
-电商商品图、带坐标轴的图表、数据表、Reddit 等外网评论截图不套对话，阅读页只留原图链接。
+知识星球引用回复不是微信气泡：第一条「方伟看十年 / 作者」账号栏是分界，栏上的灰字是「网友：」，
+栏下的回复是「方伟：」。账号栏本身和卡片末尾的下一帖标题去掉。栏上没有正文、一上来就是账号栏的，
+仍整段是方伟。电商商品图、带坐标轴的图表、数据表、Reddit 等外网评论截图不套对话，阅读页只留原图链接。
 已经整理过的「方伟：」「网友：」再跑一遍还是同一份，方便写回 articles.ocr_text。
 """
 
@@ -171,6 +172,7 @@ _SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
 _WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
 # 朋友圈 / 公众号卡片上的账号栏。不是气泡里的话。
+# 知识星球引用回复里，第一条这样的行把栏上的灰字和栏下的回复切开。
 _ACCOUNT_BADGE = re.compile(r"^方伟看十年作者$|^看十年作者$")
 _ACCOUNT_NAME = re.compile(r"^方伟看十年$|^看十年$")
 # 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
@@ -189,6 +191,8 @@ _PRODUCT_UI = re.compile(
 _CHART_MARK = re.compile(r"Builtwith|Fiscalai|Fiscal\.ai|McP$|Ads\s*v\.?Google|LTM\)", re.I)
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
+# 第一条账号栏。栏上已经收成网友，栏下改按方伟。本身不显示。
+_ACCOUNT_SPLIT = "\x1f"
 _TRAIL_TIME = re.compile(
     r"\s*(?:上午|下午|晚上|凌晨|昨天|今天|前天)?\s*\d{1,2}:\d{2}(?::\d{2})?\s*$"
 )
@@ -291,7 +295,7 @@ def parse_shot(text: str) -> Shot:
     lines = _prepare_lines(raw_lines)
     names = _speaker_names(lines, signal)
     # 已经是「方伟：」「网友：」的块再跑也要能合并，不能因为界面字已经被拿掉就退回原文。
-    visible = [_plain(line) for line in lines if line != _BREAK]
+    visible = [_plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT)]
     labeled = bool(visible) and _STRUCTURED.match(visible[0]) is not None
     hosted = any(_is_host_line(line) for line in visible) or any(line.startswith(SIDE_SELF) for line in lines)
     if not hosted:
@@ -307,9 +311,7 @@ def parse_shot(text: str) -> Shot:
         return Shot("prose", [], original)
     # 群聊里没有坐标时，不写别人昵称的气泡是作者自己的绿色气泡。有侧标记时以标记为准。
     turns = _walk(lines, names, self_unnamed=bool(signal or names or hosted))
-    had_account = any(
-        _ACCOUNT_BADGE.match(_plain(line)) or _ACCOUNT_NAME.match(_plain(line)) for line in raw_lines
-    )
+    had_account = any(_account_line(_plain(line)) for line in raw_lines)
     family = "moments" if had_account else ("group" if signal else "chat")
     if turns:
         return Shot("dialogue", turns, "", family)
@@ -463,7 +465,8 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
 def _close_block(lines: list[str]) -> str:
     """一块话的末尾补上句号，标题和去重才能在说话人交界处停住。已经有句号的不再加。"""
     body = "\n".join(lines)
-    if body and body[-1] not in "。！？!?…":
+    # OCR 常把句号认成半角点，例如「仅供参.」。这种不再补一个全角句号。
+    if body and body[-1] not in "。！？!?….":
         body += "。"
     return body
 
@@ -488,10 +491,15 @@ def _norm(line: str) -> str:
     return _PUNCT.sub("", _fold(line).lower().replace(" ", ""))
 
 
+def _account_line(line: str) -> bool:
+    """「方伟看十年」或带「作者」的账号栏。引用回复里用它把网友和方伟切开。"""
+    return _ACCOUNT_BADGE.match(line) is not None or _ACCOUNT_NAME.match(line) is not None
+
+
 def _wechat_signal(lines: list[str]) -> bool:
     if any(_GROUP_TITLE.match(line) for line in lines):
         return True
-    if any(_ACCOUNT_BADGE.match(line) or _ACCOUNT_NAME.match(line) for line in lines):
+    if any(_account_line(line) for line in lines):
         return True
     return _WECHAT.search("\n".join(lines)) is not None
 
@@ -592,7 +600,7 @@ def _is_noise(line: str) -> bool:
         return True
     if _GROUP_TITLE.fullmatch(folded) or _is_price(line) or _SYSTEM.search(folded):
         return True
-    if _ACCOUNT_BADGE.match(line) or _ACCOUNT_NAME.match(line):
+    if _account_line(line):
         return True
     if _is_store(line) or _is_commerce(line) or _is_app_fragment(line):
         return True
@@ -625,7 +633,7 @@ def _peel_handle(line: str) -> str:
 def _prepare_lines(raw_lines: list[str]) -> list[str]:
     own = [line.startswith(SIDE_SELF) for line in raw_lines]
     peeled = [_peel_handle(_maybe_peel(_plain(line))) for line in raw_lines]
-    had_account = any(_ACCOUNT_BADGE.match(line) or _ACCOUNT_NAME.match(line) for line in peeled)
+    had_account = any(_account_line(line) for line in peeled)
     drop = {index for index, line in enumerate(peeled) if _is_card_anchor(line)}
     changed = True
     while changed:
@@ -637,9 +645,17 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
                 drop.add(index)
                 changed = True
     kept: list[str] = []
+    placed_split = False
     for index, line in enumerate(peeled):
         if _is_time(line):
             kept.append(_BREAK)
+            continue
+        # 第一条账号栏留下分界；后面的「方伟看十年」是页脚，整行丢掉。
+        # 必须写在 _is_noise 前面，否则账号栏会被直接跳过，栏上的引用就没有分界。
+        if _account_line(line):
+            if not placed_split:
+                kept.append(_ACCOUNT_SPLIT)
+                placed_split = True
             continue
         if index in drop or _is_noise(line):
             continue
@@ -702,7 +718,11 @@ def _speaker_names(lines: list[str], signal: bool) -> set[str]:
     names: set[str] = set()
     pairs: list[str] = []
     seen_times: dict[str, int] = {}
-    usable = [_plain(line) for line in lines if line != _BREAK and not line.startswith(SIDE_SELF)]
+    usable = [
+        _plain(line)
+        for line in lines
+        if line not in (_BREAK, _ACCOUNT_SPLIT) and not line.startswith(SIDE_SELF)
+    ]
     for index, line in enumerate(usable):
         nxt = usable[index + 1] if index + 1 < len(usable) else ""
         if _cjk_name(line, 3) or _latin_name(line):
@@ -760,21 +780,42 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
     turns: list[Turn] = []
     speaker = ""
     buf: list[str] = []
+    # 有账号栏时，栏上整段是引用，不看绿/灰、也不把靠右的侧标记当成方伟。
+    quote_reply = _ACCOUNT_SPLIT in lines
+    past_account = False
 
     def flush() -> None:
         nonlocal buf
         if not buf:
             return
-        turns.append(Turn(speaker or (HOST if self_unnamed else GUEST), buf))
+        if speaker:
+            who = speaker
+        elif quote_reply and not past_account:
+            who = GUEST
+        else:
+            who = HOST if self_unnamed else GUEST
+        turns.append(Turn(who, buf))
         buf = []
 
     for line in lines:
+        if line == _ACCOUNT_SPLIT:
+            flush()
+            speaker = ""
+            past_account = True
+            continue
         if line == _BREAK:
             flush()
             speaker = ""
             continue
         own = line.startswith(SIDE_SELF)
         text = _plain(line)
+        if quote_reply and not past_account:
+            if speaker != GUEST:
+                flush()
+                speaker = GUEST
+            if text:
+                buf.append(text)
+            continue
         if own:
             # 靠右的绿气泡是作者自己，不看这一行像不像别人的名字。
             if speaker != HOST:
