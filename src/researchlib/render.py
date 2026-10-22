@@ -240,6 +240,7 @@ def _image_spans(html: str) -> list[tuple[int, int, str]]:
 # 微信气泡一行大约 15 个汉字。顶到边的是折行，短行多半是这句说完了。
 _OCR_WRAP_WIDTH = 14.5
 _OCR_SENTENCE_END = re.compile(r"(?:[。！？!?…]|\.\.\.)$")
+_CJK_CHAR = re.compile(r"[一-鿿]")
 
 
 def _visual_width(text: str) -> float:
@@ -263,6 +264,15 @@ def _flow_ocr_lines(text: str) -> str:
         if _OCR_SENTENCE_END.search(previous):
             merged += "\n\n" + line
         elif _visual_width(previous) >= _OCR_WRAP_WIDTH:
+            merged += line
+        elif (
+            previous
+            and line
+            and _visual_width(previous) >= _OCR_WRAP_WIDTH - 1
+            and _CJK_CHAR.search(previous[-1])
+            and _CJK_CHAR.search(line[0])
+        ):
+            # 接近气泡宽度的汉字折行：略短也不塞空格（「世/界」宽 13.5 < 14.5）。
             merged += line
         else:
             merged += " " + line

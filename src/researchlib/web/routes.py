@@ -628,6 +628,10 @@ def _article_view(request: Request, article_id: int, mode: str):
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
+            if quoted is not None and (quoted.get("lang") or "") == "ocr":
+                cleaned = present_stored_ocr(quoted["body"])
+                if cleaned.strip():
+                    quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)
         translation = queries.get_translation(conn, article_id)
         elsewhere = [

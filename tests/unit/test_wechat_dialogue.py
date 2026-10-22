@@ -400,6 +400,13 @@ def test_product_and_chart_shots_are_links_only():
     assert page.count('class="ocr-shot"') == 1
 
 
+
+def test_cjk_wrap_does_not_insert_space():
+    assert _flow_ocr_lines("管理层的本分是integrity，世\n界范围内在零售行业") == (
+        "管理层的本分是integrity，世界范围内在零售行业"
+    )
+
+
 def test_sentence_end_starts_new_dialogue_paragraph():
     """已经收了句的下一句另起一段，避免星球长聊糊成一大块。"""
     assert _flow_ocr_lines("第一句完了。\n第二句开始。") == "第一句完了。\n\n第二句开始。"
