@@ -5,7 +5,7 @@
 - 正文里有完整的第一句（问句也算）就用它，去掉句号，一般不超过 40 字。
 - 库内标题去掉省略号后还是一句可用的话，优先于摘要，也优先于图片里的字。
 - 复述摘要不能当标题。句子里出现「正文几乎」「文中未给」「作者开篇判断」，或「没有段永平本人的话」，就丢掉。
-- 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句的占位时才用，不用无关的配售截图。
+- 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句时才用，不用无关的配售截图。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
 
@@ -21,7 +21,9 @@ from researchlib.textutil import argumentative_excerpt
 FANGWEI_ZSXQ = "fangwei-zsxq"
 TITLE_LIMIT = 40
 
-_ELLIPSIS_END = re.compile(r"(?:\s*(?:…+|⋯+|\.{3,}|。{2,}|．{3,}))+\s*$")
+_ELLIPSIS_END = re.compile(
+    r"(?:(?:…+|⋯+|‥+|\.{3,}|。{2,}|．{3,})[\s）)】\]」』\"'“”‘’》>]*)+$"
+)
 _HEADING = re.compile(r"^#{1,6}\s+", re.M)
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MARKUP = re.compile(r"[*_`]+")
@@ -44,10 +46,12 @@ _PLACEHOLDER = frozenset({"无标题", "未命名", "无题", "暂无标题", "�
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+短帖)?")
 _BREAKS = "，,；;、：:"
 # 省略号在开头、结尾或句子中间，都是截断，不是一句完整的话。
-_CUT = re.compile(r"…+|⋯+|\.{3,}|．{3,}|。{2,}")
+_CUT = re.compile(r"…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}")
 _EDGE_CUT = re.compile(
-    r"^(?:\s*(?:…+|⋯+|\.{3,}|．{3,}|。{2,}))+|(?:(?:…+|⋯+|\.{3,}|．{3,}|。{2,})\s*)+$"
+    r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+"
+    r"|(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
 )
+_DATE_FALLBACK = re.compile(r"^(?:\d{4}-\d{2}-\d{2}\s+)?短帖$")
 _MISSING_NOTE = re.compile(r"正文(?:为空|没有内容|没有实质|缺失)|标题仅为|只是一张图|没有可摘的正文")
 # 摘要在复述「这篇写了什么、没写什么」，不是帖子自己的那句话。
 _NARRATION = re.compile(
@@ -114,17 +118,33 @@ def zsxq_display_title(
     return "短帖"
 
 
-def stored_zsxq_title(title: str, body: str) -> str | None:
-    """导入时能从正文写成一句完整标题才覆盖库里的标题。
+def stored_zsxq_title(
+    title: str,
+    body: str,
+    *,
+    summary: str = "",
+    ocr: str = "",
+    when: str = "",
+) -> str | None:
+    """导入和回写时要写进库的标题。规则和页面上的 `zsxq_display_title` 是同一套。
 
     日期加「短帖」这种兜底不写入：下次打开页面还可以用摘要或图片里的字补。
-    原标题本来就能用时返回 None。
+    原标题本来就能用时返回 None。去掉省略号后还剩一句主干，也会写回去，避免库里继续以「…」结尾。
     """
     if not title_needs_repair(title):
         return None
-    for sentence in _candidates(body):
-        return sentence
-    return None
+    repaired = zsxq_display_title(
+        title or "",
+        body=body or "",
+        summary=summary or "",
+        ocr=ocr or "",
+        when=when or "",
+    )
+    if not repaired or repaired == (title or "").strip():
+        return None
+    if title_needs_repair(repaired) or _DATE_FALLBACK.fullmatch(repaired):
+        return None
+    return repaired
 
 
 def _candidates(text: str) -> list[str]:
@@ -190,11 +210,12 @@ def _prepare(sentence: str) -> str:
 
 
 def _ocr_allowed(title: str) -> bool:
-    """图片里的字只补给「图片」、空标题，以及没有可用原句的占位。"""
+    """图片里的字补给空标题、占位、被省略号截断、以及没有汉字的标题。
+
+    正文和摘要都抽不出一句时才用到。原标题去掉省略号后还剩主干的，不会走到这里。
+    """
     text = (title or "").strip()
-    if not text or _placeholder(text) or _narration(text):
-        return True
-    if re.fullmatch(r"\d{5,}", text) or _DATE_ONLY.fullmatch(text):
+    if title_needs_repair(text):
         return True
     return _CJK.search(text) is None
 

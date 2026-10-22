@@ -48,6 +48,16 @@ docker compose exec app research-views --articles 8881
 
 阅读页本身现解析 `image_texts`，部署后打开即是「网友：」在账号栏上、「方伟：」在栏下，不必重跑 RapidOCR。上面这条命令会先按原始识别重写 `articles.ocr_text`，再重抽该篇的 `company_views`（拼多多，以及同一篇里从这张图写出的其他公司）。
 
+知识星球帖子截图的底部是另一类版式，不是引用回复那条账号栏：留言区（「张冠留言」）、`条留言`、`划线人数`、`赞赏`、分享栏，以及单独一行的「（作者）」。呈现时从这些界面字起整段丢掉，不挂到「方伟：」下面。阅读页现解析，不必重跑 RapidOCR。已经写进 `articles.ocr_text` 的，和截断标题、非方伟评论一起用同一套规则回写（见 [ingest.md](ingest.md)）：
+
+```bash
+docker compose exec app research-repair-zsxq --dry-run
+docker compose exec app research-repair-zsxq
+docker compose exec app research-views --articles 203,227,473,537,606
+```
+
+不要加 `--gap`，也不要全库。8881 的拼多多已经抽过。抽验锚点是 12681、473、606。
+
 ## 每晚补一批
 
 夜间任务（[backup.md](backup.md)）默认不跑 OCR。镜像建好以后：
