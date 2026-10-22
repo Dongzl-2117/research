@@ -89,7 +89,17 @@ def normalize_newlines(text: str) -> str:
 
 
 def content_hash(title: str, body_md: str, published_at: datetime | None) -> str:
-    stamp = published_at.isoformat() if published_at else ""
+    """Stable hash across DB round-trips.
+
+    Ingest keeps ``published_at`` in Asia/Shanghai. Postgres stores timestamptz
+    and drivers return the same instant in UTC, so a naive ``isoformat()`` of
+    the value read back differs from the stamp used at insert. Always stamp in
+    Shanghai so translate / digest pending checks keep matching ``articles``.
+    """
+    if published_at is None:
+        stamp = ""
+    else:
+        stamp = published_at.astimezone(SHANGHAI).isoformat()
     payload = f"{title}\n{stamp}\n{normalize_newlines(body_md)}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
