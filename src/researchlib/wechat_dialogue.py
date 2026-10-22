@@ -13,6 +13,10 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 - 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
   「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」「微信小店」「关注同城 朋友 推荐」都是页脚。
   「张冠留言1次·关注8个月」换成网友的一轮。以下为历史留言、共N条回复、留言N次、关注N个月删掉。
+  「饮料快暴 +关注」「品饮汇 品饮汇观察 +关注」「观察 56个朋友关注 82 455 38 33。」这类账号名、
+  按钮和阅读量粘在一行的页脚也整行丢掉；正文里提到「朋友关注」的句子不动。
+- 知识星球回复头的「方伟在学习（作者）2」是说话人分界：下面是方伟，上面仍是上一轮。
+  微信小店 / 拼多多 / 淘宝的商品卡截图不套对话，阅读页只留原图链接；正文句子里的「微信小店」照常保留。
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
 知识星球引用回复不是微信气泡：第一条「方伟看十年 / 作者」账号栏是分界，栏上的灰字是「网友：」，
@@ -175,6 +179,15 @@ _AT_SUFFIX = re.compile(r"@[A-Za-z0-9_\-.]+$")
 _SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加")
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
 _WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
+# 公众号文章预览页的「账号名 +关注」：账号名和按钮 OCR 粘在一行，旧规则只认整行「+关注」。
+# 「观察 56个朋友关注 82 455 38 33。」是「N个朋友关注」粘着阅读量、点赞数。
+# 「交易规则 71个朋友关注 53 47 23 写留言」再把留言按钮粘在末尾。
+_FOLLOW_BUTTON = re.compile(r"^.{0,20}[+＋]关注[。．.]?$")
+_FRIEND_FOLLOW = re.compile(
+    r"^[^\d\s。！？!?，,；;：:]{0,10}\d+个朋友关注[\d\s。．.、，,]*(?:写留言|留言|查看全部留言)?$"
+)
+# 知识星球回复头「方伟在学习（作者）2」：这一行下面是方伟的话，不是网友。
+_HOST_BADGE = re.compile(r"^(?P<name>(?:方\s*伟|Rey)[^（()]{0,10})[（(]作者[）)]\d*$")
 # 朋友圈 / 公众号卡片上的账号栏。不是气泡里的话。
 # 知识星球引用回复里，第一条这样的行把栏上的灰字和栏下的回复切开。
 _ACCOUNT_BADGE = re.compile(
@@ -231,7 +244,10 @@ _COMMENT_UI = re.compile(
 _TIME_PLACE = re.compile(
     r"^(?:昨天|今天|前天|上午|下午|晚上|凌晨)?\d{1,2}:\d{2}(?::\d{2})?[\u4e00-\u9fff]{2,4}$"
 )
-_FOLLOW_CHROME = re.compile(r"^[+＋]关注[。．.]?$|^\d+个朋友关注\d*[。．.]?$")
+# 「张冠留言」：这一轮改记成网友，名字本身不显示。
+_GUEST_TURN = "\x1d"
+# 「方伟在学习（作者）」：这一行下面是方伟的话，上面仍是上一轮。
+_HOST_TURN = "\x1c"
 _LABELED_REST = re.compile(r"^(?:方\s*伟|网友)\s*[:：]\s*(?P<rest>.+)$")
 _COMMENT_HEAD_SKIP = frozenset({"写", "欢迎", "请", "大家", "请大家", "条", "我要", "的", "这", "那"})
 # 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
@@ -248,14 +264,19 @@ _PRODUCT_UI = re.compile(
 )
 # 图表角标、轴标签。OCR 出来是乱码，阅读页不展示。
 _CHART_MARK = re.compile(r"Builtwith|Fiscalai|Fiscal\.ai|McP$|Ads\s*v\.?Google|LTM\)", re.I)
+# 微信小店 / 电商 App 的商品列表和商品卡：店铺 tabs、商品卡按钮、促销坑位。
+# 「大家都在搜」「百亿补贴」在微博、小红书、京东外卖群里也常见，不能单独当商店页。
+_SHOP_STRONG = re.compile(
+    r"小店介绍|精选\s*商品\s*分类|全店总售|立即参与万人团|品牌\s*收藏\s*客服|"
+    r"微信小店助手|微信小店交易规则中心"
+)
+_SHOP_WEAK = re.compile(r"点赞补贴价|上滑继续看视频|去参与")
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
-# 「张冠留言」：这一轮改记成网友，名字本身不显示。
-_GUEST_TURN = "\x1d"
 _MP_TOKEN = re.compile(
     r"微信小店|关注同城|相关的服务号|相关服务号|关注服务号|进店逛逛|关注公众号|视频号|同城"
 )
-_MP_FILLER = re.compile(r"朋友|推荐|分享|在看|收藏|进店|关注|去看看")
+_MP_FILLER = re.compile(r"朋友|推荐|分享|在看|收藏|进店|关注|去看看|助手")
 # 第一条账号栏。栏上已经收成网友，栏下改按方伟。本身不显示。
 _ACCOUNT_SPLIT = "\x1f"
 _TRAIL_TIME = re.compile(
@@ -391,8 +412,31 @@ def _is_time_place(line: str) -> bool:
 
 
 def _is_follow_chrome(line: str) -> bool:
-    """「+关注」「14个朋友关注 3 19。」。正文里提到朋友关注的不删。"""
-    return _FOLLOW_CHROME.fullmatch(_footer_compact(line)) is not None
+    """「+关注」「14个朋友关注 3 19。」以及账号名/按钮粘在一行的情况。
+
+    「饮料快暴 +关注」「品饮汇 品饮汇观察 +关注」「观察 56个朋友关注 82 455 38 33。」
+    都是公众号预览页的页脚，整行丢掉。正文里提到朋友关注的（「我有14个朋友关注这件事」）不删。
+    """
+    text = _footer_compact(line)
+    if not text or len(text) > 40:
+        return False
+    button = _FOLLOW_BUTTON.fullmatch(text)
+    if button:
+        # 按钮前面只能是账号名；带句读的是一句话，不是页脚。
+        return re.search(r"[。！？!?，,；;：:]", text[:-3]) is None
+    return _FRIEND_FOLLOW.fullmatch(text) is not None
+
+
+def _is_host_badge(line: str) -> bool:
+    """知识星球回复头的「方伟在学习（作者）2」：下面是方伟的回复。
+
+    「方伟看十年（作者）」是引用回复的账号栏，留给 _ACCOUNT_SPLIT 分界，不能当普通回复头。
+    """
+    compact = _footer_compact(line)
+    match = _HOST_BADGE.fullmatch(compact)
+    if not match:
+        return False
+    return not _account_line(match.group("name"))
 
 
 def _labeled_guest_header(line: str) -> str | None:
@@ -607,6 +651,11 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
             kept.append(_GUEST_TURN)
             index += 1
             continue
+        if _is_host_badge(line):
+            # 知识星球回复头：上面那轮收住，下面是方伟。
+            kept.append(_HOST_TURN)
+            index += 1
+            continue
         if _is_author_badge(line) or _is_strong_footer(line) or (context and _is_soft_footer(line)):
             index += 1
             continue
@@ -634,6 +683,7 @@ def parse_shot(text: str) -> Shot:
     # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
     if (
         _is_product_shot(raw_lines)
+        or _is_shop_shot(raw_lines)
         or _is_chart_shot(raw_lines)
         or _is_table_shot(raw_lines)
         or _is_foreign_comment_shot(raw_lines)
@@ -644,9 +694,15 @@ def parse_shot(text: str) -> Shot:
     lines = _prepare_lines(stripped)
     names = _speaker_names(lines, signal)
     # 已经是「方伟：」「网友：」的块再跑也要能合并，不能因为界面字已经被拿掉就退回原文。
-    visible = [_plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN)]
+    visible = [
+        _plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN, _HOST_TURN)
+    ]
     labeled = bool(visible) and _STRUCTURED.match(visible[0]) is not None
-    hosted = any(_is_host_line(line) for line in visible) or any(line.startswith(SIDE_SELF) for line in lines)
+    hosted = (
+        any(_is_host_line(line) for line in visible)
+        or any(line.startswith(SIDE_SELF) for line in lines)
+        or _HOST_TURN in lines
+    )
     if not hosted:
         for line in visible:
             if _HOST_PREFIX.match(line) or (_STRUCTURED.match(line) and line.startswith(HOST)):
@@ -679,6 +735,21 @@ def _is_product_shot(lines: list[str]) -> bool:
     dollars = len(re.findall(r"(?<![A-Za-z])\$\s*\d", joined))
     stars = len(re.findall(r"★", joined))
     return dollars >= 3 and stars >= 2
+
+
+def _is_shop_shot(lines: list[str]) -> bool:
+    """微信小店 / 拼多多 / 淘宝的商品卡截图。
+
+    店铺 tabs（小店介绍、精选 商品 分类）、商品卡按钮（全店总售、立即参与万人团）或
+    店铺页脚是强信号。弱信号（点赞补贴价、上滑继续看视频、去参与）要同时出现「微信小店」。
+    正文里提到「微信小店」四个字不会命中这些界面词，照常保留。
+    """
+    joined = "\n".join(lines)
+    if _SHOP_STRONG.search(joined):
+        return True
+    if "微信小店" not in joined:
+        return False
+    return _SHOP_WEAK.search(joined) is not None and re.search(r"[￥¥]\s*\d", joined) is not None
 
 
 def _is_chart_shot(lines: list[str]) -> bool:
@@ -999,6 +1070,9 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
         if line == _GUEST_TURN:
             kept.append(_GUEST_TURN)
             continue
+        if line == _HOST_TURN:
+            kept.append(_HOST_TURN)
+            continue
         if _is_time(line):
             kept.append(_BREAK)
             continue
@@ -1073,7 +1147,7 @@ def _speaker_names(lines: list[str], signal: bool) -> set[str]:
     usable = [
         _plain(line)
         for line in lines
-        if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN) and not line.startswith(SIDE_SELF)
+        if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN, _HOST_TURN) and not line.startswith(SIDE_SELF)
     ]
     for index, line in enumerate(usable):
         nxt = usable[index + 1] if index + 1 < len(usable) else ""
@@ -1158,6 +1232,10 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
         if line == _GUEST_TURN:
             flush()
             speaker = GUEST
+            continue
+        if line == _HOST_TURN:
+            flush()
+            speaker = HOST
             continue
         if line == _BREAK:
             flush()

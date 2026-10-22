@@ -760,6 +760,111 @@ def test_606_friend_follow_chrome_is_dropped():
     assert "我有14个朋友关注这件事，先放着" in kept
 
 
+def test_606_account_name_and_reader_counts_are_follow_chrome():
+    """公众号预览页：「账号名 +关注」「观察 56个朋友关注 82 455 38 33。」整行丢掉，正文不截断。"""
+    raw = """方伟
+第一句正文要留下。
+饮料快暴 +关注
+第二句正文也要留下。
+品饮汇 品饮汇观察 +关注
+观察 56个朋友关注 82 455 38 33。
+第三句正文仍然要留下。
+"""
+    text = present_ocr_pieces([raw])
+    assert text == (
+        "方伟：第一句正文要留下。\n第二句正文也要留下。\n第三句正文仍然要留下。"
+    )
+    for noise in ("+关注", "个朋友关注", "饮料快暴", "品饮汇", "观察"):
+        assert noise not in text
+    assert present_stored_ocr(text) == text
+    assert compose_ocr_text([raw]) == text
+    kept = present_ocr_pieces(["方伟\n我有14个朋友关注这件事，先放着。\n"])
+    assert "我有14个朋友关注这件事，先放着" in kept
+
+
+def test_12681_author_reply_badge_makes_green_bubbles_fangwei():
+    """「方伟在学习（作者）」是回复头：哈哈哈和关系链两段是方伟，UI 的问句仍是网友。"""
+    raw = """22:40
+1月份的腾讯都没买的话，
+分享21  推荐0  划线人数0
+赞赏￥0
+留言  赞赏
+3条留言V  写留言
+张冠留言1次·关注8个月
+感谢，看了你那篇文章，360抄底了腾讯，但是也是
+一样的问题。没有卖掉美团更重仓腾讯。
+方伟在学习（作者）
+哈哈哈因为我想出美团的价格是200-250，其实当
+时距离内在价值大概是30%
+22:40
+以下为历史留言
+郑立涛ILetterZheng留言1次·关注3个月
+非常认可
+22:07上海
+UI留言17次·新的关注
+为什么看好微信的视频号业务
+方伟在学习（作者）  2
+关系链是一个超级大杀器，能够带来极大的体验提
+升
+共2条回复
+22:07
+"""
+    text = present_ocr_pieces([raw])
+    blocks = text.split("\n\n")
+    haha = next(block for block in blocks if "哈哈哈因为我想出美团" in block)
+    chain = next(block for block in blocks if "关系链是一个超级大杀器" in block)
+    assert haha.startswith("方伟：")
+    assert chain.startswith("方伟：")
+    assert any(block.startswith("网友：") and "为什么看好微信的视频号业务" in block for block in blocks)
+    assert "方伟在学习" not in text and "（作者）" not in text and "作者" not in text
+    assert "网友：为什么看好微信的视频号业务\n关系链" not in text
+    assert present_stored_ocr(text) == text
+
+
+SHOP_CARD = """10:39
+Q零食礼包
+精选  商品  分类  评价  小店介绍
+大家都在搜
+微信小店是微信生态内的官方购物产品。
+￥5.99  点赞补贴价  去参与
+上滑继续看视频
+"""
+
+
+def test_473_wechat_shop_card_is_link_only_and_body_keeps_the_word():
+    """微信小店商品卡不套对话；正文句子里的「微信小店」四个字照常留下。"""
+    assert parse_shot(SHOP_CARD).kind == "media"
+    body = "方伟\n并在小游戏、短剧和微信小店广告主中获得了广泛应用。\n"
+    text = present_ocr_pieces([body, SHOP_CARD])
+    assert text == "方伟：并在小游戏、短剧和微信小店广告主中获得了广泛应用。"
+    assert "精选" not in text and "商品" not in text and "去参与" not in text
+    assert text.count("微信小店") == 1
+    footer = "方伟\n这一段正文要留下。\n交易规则  71个朋友关注  53  47  23  写留言\n"
+    dropped = present_ocr_pieces([footer])
+    assert dropped == "方伟：这一段正文要留下。"
+    assert "71个朋友关注" not in dropped and "交易规则" not in dropped
+
+
+def test_weibo_and_group_shots_with_search_or_subsidy_words_are_not_shop_pages():
+    """「大家都在搜」「百亿补贴」在微博、小红书、京东外卖群里也有，不能整张当商品卡丢掉。"""
+    weibo = """Key_Cheung@Key_Cheung·15h  C
+谜底的人自己也承认也参考别人的设计嘛。
+大家都在搜：谜底黑胶app9  X
+其实和stripepress官网的样子也很像，不过没关系啊。
+"""
+    assert parse_shot(weibo).kind != "media"
+    weibo_text = present_ocr_pieces([weibo])
+    assert "谜底黑胶" in weibo_text and "stripepress官网" in weibo_text
+    group = """18:01
+省团&京东外卖商家运营群（73）
+京东外卖——“百亿补贴”最热商家活动来袭！
+满8-7
+以上活动商家对半承担！
+"""
+    assert parse_shot(group).kind == "dialogue"
+    assert "百亿补贴" in present_ocr_pieces([group])
+
+
 def test_12681_production_guest_header_is_a_netizen_turn():
     """线上留言头是「张冠留言1次·关注8个月」，不是光秃的「张冠留言」。"""
     raw = """方伟
@@ -847,6 +952,11 @@ def test_rewash_selector_ignores_zanshang_inside_a_sentence():
     assert _chrome_lines("张冠留言\n渠道还高。\n") is True
     assert _chrome_lines("（作者）\n正文还在。\n") is True
     assert _chrome_lines("分享21 推荐0 划线人数0\n赞赏￥0\n3条留言V 写留言\n") is True
+    assert _chrome_lines("饮料快暴 +关注\n") is True
+    assert _chrome_lines("品饮汇 品饮汇观察 +关注\n") is True
+    assert _chrome_lines("观察 56个朋友关注 82 455 38 33。\n") is True
+    assert _chrome_lines("交易规则 71个朋友关注 53 47 23 写留言\n") is True
+    assert _chrome_lines("我有14个朋友关注这件事，先放着。\n") is False
 
 
 def test_group_chat_can_still_say_zanshang_in_a_sentence():
