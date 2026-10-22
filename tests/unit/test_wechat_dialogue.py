@@ -10,6 +10,7 @@ from researchlib.ocr import append_ocr, compose_ocr_text
 from researchlib.render import (
     _dialogue_html,
     _flow_ocr_lines,
+    _hoist_figures_out_of_paragraphs,
     flow_ocr_quote_body,
     image_anchor,
     inline_image_ocr,
@@ -335,7 +336,7 @@ PDD_MOMENTS = """拼多多，我是始终不太看好。属于
 16%提升到了20%，只有
 Costco50年不变，费用率纹丝
 不动，那就是9%，这是零售
-领域最强大的公司
+领域最强大的公司。
 方伟看十年
 什么才叫做“拥有一家公司”的感觉？"""
 
@@ -423,3 +424,95 @@ def test_sentence_end_starts_new_dialogue_paragraph():
     assert html.count("<p>") == 2
     assert '<span class="who">方伟：</span>第一句完了。' in html
     assert "<p>第二句开始。</p>" in html
+
+REDDIT_COMMENT = """Templar-kun.3moago
+I agree that for the same price, products from Temu will be a higher quality.
+Share
+Reply
+Award
+"""
+
+REDDIT_COMMENT_2 = """Dazzling_Lion7140.3moago
+I love Temu, you can find anything....l mean they will refund you if you're
+unhappy so its more than worth any risk and the shipping times are amazing
+now for most items
+"""
+
+SCF_TABLE = """美联储《消费者金融调查》（SCF）2022年的数据：
+指标  数值
+家庭净资产中位数  约19.3万美元
+净资产≥100万美元的家庭  约18%
+前10%的门槛  约192万美元
+前5%的门槛  约378万美元
+净资产≥1.000万美元的家庭  约2%（第98百分位左右，第三方根据微观数据插值估算）
+前1%的门槛  约1.367万美元
+"""
+
+GROUP_RETAIL = """21:25
+1628  看十年·线下深度交流（80）
+09:20
+美国的零售历史是从梅西百货，
+A&P，西尔斯，再到1960年代的折
+扣零售商，当时的竞争主要是凯马特
+与沃尔玛
+"""
+
+
+def test_reddit_and_table_shots_are_links_only():
+    """Reddit 评论楼和 SCF 数据表只留原图，不套方伟/网友。"""
+    assert parse_shot(REDDIT_COMMENT).kind == "media"
+    assert parse_shot(REDDIT_COMMENT_2).kind == "media"
+    assert parse_shot(SCF_TABLE).kind == "media"
+    digest = "01" * 32
+    page = inline_image_ocr(
+        str(render_body("![](r.png)\n", {"r.png": f"/media/x/ab/{digest}.png"})),
+        {digest: REDDIT_COMMENT},
+    )
+    assert "方伟：" not in page and "网友：" not in page
+    assert "Templar" not in page and "I agree" not in page
+    assert "原图 1" in page
+
+
+def test_moments_then_group_not_one_blob():
+    """朋友圈与群聊不同 family，不糊成「公司美国的零售」。"""
+    truncated = PDD_MOMENTS.replace(
+        "什么才叫做“拥有一家公司”的感觉？",
+        "什么才叫做",
+    )
+    assert parse_shot(truncated).family == "moments"
+    assert parse_shot(GROUP_RETAIL).family == "group"
+    assert "什么才叫做" not in render_turns(parse_shot(truncated).turns)
+    text = present_ocr_pieces([truncated, GROUP_RETAIL])
+    assert text.count("方伟：") == 2
+    assert "公司美国的零售" not in text.replace("\n", "")
+    assert "最强大的公司" in text
+    assert "美国的零售历史是从梅西百货" in text
+    a, b = "29" * 32, "2b" * 32
+    page = inline_image_ocr(
+        str(
+            render_body(
+                "![](a.png)\n\n![](b.png)\n",
+                {
+                    "a.png": f"/media/x/ab/{a}.png",
+                    "b.png": f"/media/x/ab/{b}.png",
+                },
+            )
+        ),
+        {a: truncated, b: GROUP_RETAIL},
+    )
+    assert page.count('class="ocr-reading ocr-dialogue"') == 2
+    assert "公司美国的零售" not in page
+
+def test_mid_paragraph_figure_is_hoisted():
+    """段永平引语中间的图提到段外，半句不再被打断。"""
+    sample = (
+        '<p id="p-2"><figure class="ocr-shot"><p class="ocr-links">原图 1</p></figure>'
+        "他认为可口可乐是人们必喝的。”</p>"
+    )
+    out = _hoist_figures_out_of_paragraphs(sample)
+    assert out.index("<figure") < out.index("他认为")
+    assert "<p id=\"p-2\">他认为可口可乐是人们必喝的。”</p>" in out
+    sample2 = '<p><figure class="ocr-shot"><div>SCF</div></figure>——段永平</p>'
+    out2 = _hoist_figures_out_of_paragraphs(sample2)
+    assert out2.startswith("<figure")
+    assert "<p>——段永平</p>" in out2
