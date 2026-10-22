@@ -17,6 +17,9 @@ from researchlib.render import (
     render_body,
 )
 from researchlib.wechat_dialogue import (
+    BUBBLE_GUEST,
+    BUBBLE_SELF,
+    BUBBLE_UNKNOWN,
     SIDE_SELF,
     parse_shot,
     present_ocr_pieces,
@@ -993,3 +996,13 @@ def test_mid_paragraph_figure_is_hoisted():
     out2 = _hoist_figures_out_of_paragraphs(sample2)
     assert out2.startswith("<figure")
     assert "<p>——段永平</p>" in out2
+
+
+def test_8881_committed_ocr_keeps_quote_divider_with_new_color_metadata():
+    """8881 已提交的真实 OCR 原文；这里的颜色标记是合成的，不是原图采样。"""
+    for prefix in (BUBBLE_UNKNOWN, BUBBLE_SELF, BUBBLE_GUEST):
+        marked = "\n".join(prefix + line for line in PDD_MOMENTS.splitlines())
+        assert present_ocr_pieces([marked]) == PDD_MOMENTS_DIALOGUE
+        assert present_stored_ocr(present_ocr_pieces([marked])) == PDD_MOMENTS_DIALOGUE
+
+

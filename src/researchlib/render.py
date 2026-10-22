@@ -284,7 +284,7 @@ def flow_ocr_quote_body(text: str) -> str:
         if not block.strip():
             continue
         label, sep, rest = block.partition("：")
-        if sep and label in {"方伟", "网友"}:
+        if sep and label in {"方伟", "网友", "未确认"}:
             flowed = _flow_ocr_lines(rest.lstrip("\n"))
             parts.append(f"{label}：{flowed}")
         else:
@@ -299,7 +299,7 @@ def _dialogue_html(text: str) -> str:
         if not block.strip():
             continue
         label, sep, rest = block.partition("：")
-        if sep and label in {"方伟", "网友"}:
+        if sep and label in {"方伟", "网友", "未确认"}:
             flowed = _flow_ocr_lines(rest.lstrip("\n"))
             paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
             for index, para in enumerate(paragraphs or [""]):

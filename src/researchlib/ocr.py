@@ -25,15 +25,20 @@ from collections.abc import Callable
 from pathlib import Path
 
 from researchlib.chunks import replace_ocr_chunks
-from researchlib.wechat_dialogue import SIDE_SELF, present_ocr_pieces, present_stored_ocr
+from researchlib.ocr_bubbles import bubble_color
+from researchlib.wechat_dialogue import (
+    BUBBLE_GUEST,
+    BUBBLE_SELF,
+    BUBBLE_UNKNOWN,
+    present_ocr_pieces,
+    present_stored_ocr,
+)
 
 logger = logging.getLogger("researchlib.ocr")
 
 ENGINE = "rapidocr"
 # 置信度低于这个的文字框不要：多半是把花纹、二维码认成了字。
 MIN_SCORE = 0.5
-# 行的左边缘超过画面宽度的这个比例，当作靠右的绿色气泡（作者自己）。左侧昵称和灰气泡在这之下。
-_SELF_SIDE = 0.40
 OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
 # 检索块要 20 个字；交给观点和摘要的旁路、以及阅读页放宽，短截图也能进正文。
 READING_MIN_CHARS = 8
@@ -46,14 +51,13 @@ class OcrUnavailable(Exception):
     pass
 
 
-def order_text(items) -> str:
+def order_text(items, *, rgb_image=None) -> str:
     """RapidOCR 的结果 [[框, 文字, 置信度], …] 按阅读顺序拼起来：从上到下分行，同一行从左到右。
 
-    靠右的行（绿色气泡，作者自己）前面加一个不显示的侧标记，对话整理时认成方伟。
-    左侧的灰气泡不加。旧的、只有文字没有坐标的识别结果没有这个标记。
+    有原图时按气泡底色写入明确的绿/灰标记，不用左右位置猜颜色。无法确认的行标记为未知。
+    没有原图的调用只排序，不生成说话人证据。旧侧标记仍由呈现层兼容读取。
     """
     boxes: list[tuple[float, float, float, float, str]] = []
-    width = 0.0
     for item in items or []:
         if not isinstance(item, list | tuple) or len(item) < 2:
             continue
@@ -67,24 +71,35 @@ def order_text(items) -> str:
         except (TypeError, IndexError, ValueError):
             continue
         right = max(xs)
-        width = max(width, right)
         boxes.append((min(ys), max(ys), min(xs), right, text))
     boxes.sort(key=lambda box: (box[0], box[2]))
     lines: list[dict] = []
-    for top, bottom, left, _right, text in boxes:
+    for top, bottom, left, right, text in boxes:
+        color = bubble_color(rgb_image, (left, top, right, bottom))
+        marker = {"green": BUBBLE_SELF, "gray": BUBBLE_GUEST}.get(color, BUBBLE_UNKNOWN)
+        if rgb_image is None:
+            marker = ""
         height = max(1.0, bottom - top)
         center = (top + bottom) / 2
         if lines and abs(center - lines[-1]["center"]) <= 0.5 * max(height, lines[-1]["height"]):
-            lines[-1]["items"].append((left, text))
+            lines[-1]["items"].append((left, text, marker))
         else:
-            lines.append({"center": center, "height": height, "items": [(left, text)]})
+            lines.append({"center": center, "height": height, "items": [(left, text, marker)]})
     rendered: list[str] = []
     for line in lines:
         items_on_line = sorted(line["items"])
-        text = "  ".join(piece for _left, piece in items_on_line)
-        if width and items_on_line[0][0] >= _SELF_SIDE * width:
-            text = SIDE_SELF + text
-        rendered.append(text)
+        # Two differently colored bubbles at the same y are separate turns, not
+        # one joined line whose first box assigns the whole line's speaker.
+        current_marker = None
+        pieces: list[str] = []
+        for _left, piece, marker in items_on_line:
+            if pieces and marker != current_marker:
+                rendered.append((current_marker or "") + "  ".join(pieces))
+                pieces = []
+            current_marker = marker
+            pieces.append(piece)
+        if pieces:
+            rendered.append((current_marker or "") + "  ".join(pieces))
     return "\n".join(rendered)
 
 
@@ -98,8 +113,13 @@ def rapid_engine() -> Callable[[Path], str]:
     engine = RapidOCR()
 
     def recognize(path: Path) -> str:
+        import cv2
+
         result, _elapsed = engine(str(path))
-        return order_text(result)
+        image = cv2.imread(str(path))
+        if image is None:
+            raise OcrUnavailable(f"无法读取 OCR 原图颜色：{path.name}")
+        return order_text(result, rgb_image=cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
     return recognize
 
