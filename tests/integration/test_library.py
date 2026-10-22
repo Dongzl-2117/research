@@ -115,7 +115,7 @@ def test_sample_library_pages(conn, settings):
         assert client.get("/media/fangwei-mp/../../etc/passwd").status_code == 404
         assert client.get("/?source=linwenfeng-mp").status_code == 404
         assert client.get("/health").json() == {"status": "ok"}
-        assert "Disallow" in client.get("/robots.txt").text
+        assert "Allow: /" in client.get("/robots.txt").text
 
 
 def test_wechat_ingest_is_idempotent(monkeypatch, tmp_path, database_url, conn):
