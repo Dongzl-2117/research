@@ -1,6 +1,6 @@
 """出问题才提示：备份、试恢复、定时导入、夜间补齐、后台重算和 LLM 调用的最近结果。
 
-每个任务把结果写进 DATA_DIR/status/<任务>.json：宿主机上的脚本（备份、试恢复、定时导入、夜间补齐）
+每个任务把结果写进 DATA_DIR/status/<任务>.json：宿主机上的脚本（备份、试恢复、定时抓取、夜间补齐）
 在成功和失败时都写，进程里的后台重算和 LLM 调用由这里的函数写。首页只在出问题时提示一行，
 正常时什么都不显示。LLM 的提示按当时的提供方说（DeepSeek 或 Grok）。
 
@@ -26,7 +26,9 @@ STATUS_DIR = "status"
 TASKS: dict[str, tuple[str, timedelta | None]] = {
     "backup": ("备份", timedelta(hours=36)),
     "restore-check": ("试恢复", timedelta(days=40)),
-    "ingest-aihot": ("定时导入", timedelta(hours=6)),
+    "crawl-fangwei-mp": ("方伟公众号抓取", timedelta(hours=30)),
+    "crawl-fangwei-zsxq": ("方伟星球抓取", timedelta(hours=30)),
+    "ingest-aihot": ("AIHOT 定时导入", timedelta(hours=6)),
     "nightly": ("夜间补齐", timedelta(hours=50)),
     "upkeep": ("后台重算", None),
 }

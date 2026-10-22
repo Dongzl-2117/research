@@ -12,7 +12,7 @@
 {% endfor %}
 {% for item in stale %}
 {% if item.all %}
-<p class="notice">定时导入的 {{ item.count }} 个来源都 {{ item.idle_days }} 天以上没有新文章，多半是 AIHOT 那边的抓取停了。</p>
+<p class="notice">定时导入的 {{ item.count }} 个来源都 {{ item.idle_days }} 天以上没有新文章，多半是抓取本身出了问题（令牌过期或接口变了），看一下抓取日志。</p>
 {% else %}
 <p class="notice">{{ item.name }} {{ item.idle_days }} 天没有新文章，{{ item.typical }}{% if item.imported %}；最近一次导入 {{ item.imported }}{% endif %}。</p>
 {% endif %}

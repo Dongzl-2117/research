@@ -32,13 +32,15 @@ docker compose up -d --build
 
 持仓和观察名单在 `config/portfolio.yaml`，按公司表里的中文名写。页面上不展示这份名单，JSON 里的 `portfolio` 字段仍读它。观点、论点和首页「最近观点」不按它过滤。
 
+新文章靠 Mac mini 上的定时抓取进来：方伟公众号和方伟星球每天各抓两次（`scripts/crawl-fangwei-*.sh`，launchd 安装见 [docs/backup.md](docs/backup.md)）。乘风破浪、孤独进化体、黑黑无常还没有定时抓取，要手动导入。AIHOT 已下线。
+
 导入命令、幂等规则、改稿删稿怎么处理、去重、外链图片和计数报告见 [docs/ingest.md](docs/ingest.md)。方伟星球补真实钟点、林文丰目录树也在那里。公司提及的判定和歧义别名的规则见 [docs/mentions.md](docs/mentions.md)。备份、试恢复、夜间补齐、定时增量导入和出问题时的提示见 [docs/backup.md](docs/backup.md)。图片里的字见 [docs/ocr.md](docs/ocr.md)。
 
 ## 数据
 
 Postgres 使用 zhparser 做中文全文检索。正文在库里，图片在 `data/images`。不要把 `.env`、归档压缩包或 `data/` 提交进仓库。
 
-正文另外切成段落块存在 `article_chunks`，检索片段和问答引用落在块上；英文文章的中文译文也切块进检索。同一篇从两条路导入的，只留一个主版本。语义检索留了接口，但没有安装 pgvector，也没有向量列，原因见 [docs/retrieval.md](docs/retrieval.md)。
+正文另外切成段落块存在 `article_chunks`，检索片段和问答引用落在块上；英文文章的中文译文也切块进检索。同一篇从两条路导入的，只留一个主版本。语义检索用 pgvector（数据库镜像已装），向量存在 `chunk_embeddings`，配了 `EMBEDDING_BASE_URL` 才启用，见 [docs/retrieval.md](docs/retrieval.md)「语义检索」。
 
 ## 开发
 

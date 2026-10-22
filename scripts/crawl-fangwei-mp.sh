@@ -46,7 +46,7 @@ echo "$(date '+%F %T') 开始方伟公众号增量抓取（最多 ${MAX_PAGES} �
 run_step "增量抓取" env DAJIALA_KEY="$DAJIALA_KEY" python3 "$INBOX/dl.py" --incremental --max-pages "$MAX_PAGES"
 
 echo "$(date '+%F %T') 导入 research 库"
-run_step "导入" compose exec -T app research-ingest-wechat --source fangwei-mp --input /data/inbox/fangwei-mp
+run_step "导入" compose exec -T app research-ingest-wechat --source fangwei-mp --input /data/inbox/fangwei-mp --origin crawl
 
 # 给最近没有摘要的方伟公众号补摘要（上限 20，避免拖太久）
 echo "$(date '+%F %T') 补摘要"

@@ -94,3 +94,45 @@ def test_stale_banner_only_watches_scheduled_imports():
         {"all": True, "count": 2, "idle_days": 20}
     ]
     assert stale_sources(sources, {"a": every_three_days[:5]}, imports, "Asia/Shanghai", now=NOW) == []
+
+
+def test_crawl_tasks_are_watched(tmp_path):
+    _write(tmp_path, "crawl-fangwei-mp", ok=False, at="2026-10-20T00:10:00Z", message="缺少 DAJIALA_KEY")
+    _write(tmp_path, "crawl-fangwei-zsxq", ok=True, at="2026-10-18T12:40:00Z")
+    found = health.notices(tmp_path, "Asia/Shanghai", now=NOW)
+    assert "方伟公众号抓取失败（10-20 08:10）：缺少 DAJIALA_KEY" in found
+    assert any(text.startswith("方伟星球抓取已经 47 小时没成功了") for text in found)
+
+
+def test_stale_banner_watches_crawl_imports():
+    """AIHOT 下线以后，定时抓取脚本导入的来源（origin=crawl）也要看。"""
+    every_three_days = [NOW - timedelta(days=20 + 3 * index) for index in range(15)]
+    sources = [SimpleNamespace(id="a", name="甲公众号")]
+    fresh = NOW - timedelta(hours=5)
+    found = stale_sources(
+        sources, {"a": every_three_days}, {"a": {"at": fresh, "origin": "crawl"}}, "Asia/Shanghai", now=NOW
+    )
+    assert [item["name"] for item in found] == ["甲公众号"]
+
+
+def test_ingest_cli_records_crawl_origin(monkeypatch, tmp_path):
+    from researchlib.ingest import cli
+
+    seen = {}
+    monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda klass: SimpleNamespace(
+        sources_path=tmp_path / "sources.yaml", data_dir=tmp_path)))
+    monkeypatch.setattr(cli, "load_sources", lambda path: [])
+    monkeypatch.setattr(cli, "require_source", lambda sources, source_id, kind: SimpleNamespace(id=source_id))
+    monkeypatch.setattr(cli, "prepare", lambda settings: SimpleNamespace(close=lambda: None, rollback=lambda: None))
+    monkeypatch.setattr(cli, "parse_archive", lambda *args, **kwargs: ([], [], 0, 0))
+
+    def fake_store(conn, **kwargs):
+        seen["origin"] = kwargs["origin"]
+        return SimpleNamespace(errors=[], render=lambda: "")
+
+    monkeypatch.setattr(cli, "store_documents", fake_store)
+    argv = ["--source", "fangwei-mp", "--input", str(tmp_path)]
+    assert cli.run_markdown_ingest("wechat_mp", "测试", argv + ["--origin", "crawl"], id_mode="path") == 0
+    assert seen["origin"] == "crawl"
+    assert cli.run_markdown_ingest("wechat_mp", "测试", argv, id_mode="path") == 0
+    assert seen["origin"] == "archive"
