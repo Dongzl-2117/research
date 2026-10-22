@@ -3,6 +3,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
@@ -10,6 +11,13 @@ from researchlib.empty_answer import backfill_empty_answers
 from researchlib.ingest.duanyongping.reclassify import reclassify_source
 from researchlib.web.app import create_app
 from researchlib.web.queries import feed_counts
+
+
+@pytest.fixture(autouse=True)
+def _show_paused_sources(monkeypatch):
+    """段永平在配置里 paused；这里测的是它自己的展示规则，照常展示。"""
+    monkeypatch.setenv("RESEARCH_SHOW_PAUSED", "1")
+
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 

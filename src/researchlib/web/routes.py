@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import mimetypes
 from contextlib import contextmanager
 from datetime import date
@@ -118,7 +120,8 @@ def active_sources(request: Request, conn):
         request.app.state.sources = sources
         request.app.state.sources_mtime = mtime
     # paused 的来源（如段永平）整源先不展示：导航、作者、筛选都不出现。
-    return [source for source in enabled_sources(request.app.state.sources) if not source.paused]
+    show_paused = os.environ.get("RESEARCH_SHOW_PAUSED", "").strip() == "1"
+    return [s for s in enabled_sources(request.app.state.sources) if show_paused or not s.paused]
 
 
 def active_portfolio(request: Request) -> Portfolio:
