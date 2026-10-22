@@ -29,6 +29,7 @@ from researchlib.wechat_dialogue import (
     _is_comment_head,
     _is_soft_footer,
     _is_strong_footer,
+    _labeled_guest_header,
     present_ocr_pieces,
     present_stored_ocr,
 )
@@ -55,7 +56,13 @@ def _chrome_lines(text: str) -> bool:
     for line in (text or "").splitlines():
         if not line.strip():
             continue
-        if _is_strong_footer(line) or _is_comment_head(line) or _is_author_badge(line) or _is_soft_footer(line):
+        if (
+            _is_strong_footer(line)
+            or _is_comment_head(line)
+            or _is_author_badge(line)
+            or _is_soft_footer(line)
+            or _labeled_guest_header(line)
+        ):
             return True
         if "（作者）" in line or "(作者)" in line:
             return True
