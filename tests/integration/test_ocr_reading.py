@@ -330,3 +330,81 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     assert "不要把网友的话写成方伟的判断" in prompts[0]
     assert "不要因为来自截图就当成没下判断" in prompts[0]
     assert "姜禄彦" not in prompts[0] and "设为群待办" not in prompts[0]
+
+
+# 文章 8881 的真实识别。旧旁路曾把栏上的「不太看好」整段收成方伟。
+_PDD_QUOTE = """拼多多，我是始终不太看好。属于
+假本分。个人一家之言仅供参.
+方伟看十年作者
+零售的本分是帮消费者省钱，
+管理层的本分是integrity，世
+界范围内在零售行业，做得比
+它好的，其实只有Costco，奥
+乐齐，利德。
+50年下来，沃尔玛的毛利率从
+20%提升到了24%，费用率从
+16%提升到了20%，只有
+Costco50年不变，费用率纹丝
+不动，那就是9%，这是零售
+领域最强大的公司。
+方伟看十年
+什么才叫做“拥有一家公司”的感觉？"""
+
+
+def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, monkeypatch):
+    """观点重抽从 image_texts 重写旁路。库里已经写成「方伟：不太看好」也不会再喂给模型。"""
+    image = tmp_path / "pdd.png"
+    _png(image, b"\x29" * 24)
+    row = _store(
+        conn,
+        settings,
+        "fangwei-zsxq",
+        "ocr-8881",
+        "图片",
+        "（见图）\n\n![](pdd.png)\n",
+        [image],
+    )
+    _remember(conn, row["id"], "pdd.png", _PDD_QUOTE)
+    conn.execute(
+        "UPDATE articles SET ocr_text = %s, ocr_hash = %s WHERE id = %s",
+        (
+            "方伟：拼多多，我是始终不太看好。属于\n假本分。个人一家之言仅供参.\n零售的本分是帮消费者省钱。",
+            "stale",
+            row["id"],
+        ),
+    )
+    conn.commit()
+
+    prompts = []
+
+    def capture_view(_settings, messages, **_kwargs):
+        prompts.append(messages[1]["content"])
+        return (
+            '{"拼多多": {"about": true, "judgment": "网友不看好，作者在讲零售的本分", '
+            '"stance": "中性", "quote": "零售的本分是帮消费者省钱"}}',
+            "grok-test",
+        )
+
+    monkeypatch.setattr(views_mod, "chat", capture_view)
+    company = conn.execute("SELECT id, name_zh FROM companies WHERE name_zh = '拼多多'").fetchone()
+    article = conn.execute(
+        "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s",
+        (row["id"],),
+    ).fetchone()
+    assert views_mod.extract_article(conn, settings, article, "方伟", [company]) == 1
+    prompt = prompts[0]
+    assert "【图片里的字】" in prompt
+    ocr = prompt.split("【图片里的字】", 1)[1]
+    guest, host = ocr.split("方伟：", 1)
+    assert "网友：" in guest and "不太看好" in guest
+    assert "零售的本分" in host and "不太看好" not in host
+    assert "方伟看十年" not in prompt and "什么才叫做" not in prompt
+    assert "不要把网友的话写成方伟的判断" in prompt
+    saved = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()["ocr_text"]
+    assert saved.startswith("网友：拼多多，我是始终不太看好")
+    assert "方伟：零售的本分是帮消费者省钱" in saved
+    view = conn.execute(
+        "SELECT judgment, quote FROM company_views WHERE article_id = %s AND company_id = %s",
+        (row["id"], company["id"]),
+    ).fetchone()
+    assert "不太看好" not in view["judgment"] and view["quote"] == "零售的本分是帮消费者省钱"

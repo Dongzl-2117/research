@@ -200,7 +200,24 @@ def refresh_article_ocr(conn, article_id: int) -> str:
 
 
 def article_ocr(conn, article_id: int) -> tuple[str, str]:
-    """摘要和观点读的图片文字。库里若还是原始识别行，先整理成对话再返回，并写回。"""
+    """摘要和观点读的图片文字。
+
+    这篇还挂着 image_texts 时，先按当前规则从原始识别重写 articles.ocr_text。
+    阅读页本来就现解析 image_texts；观点如果只重跑库里已经写成「方伟：」的旁路，
+    账号栏已经被拿掉，引用回复分不回来。没有图时，仍把库里的旁路再整理一次。
+    """
+    has_images = conn.execute(
+        """
+        SELECT 1
+        FROM article_images i
+        JOIN image_texts t ON t.content_hash = i.content_hash
+        WHERE i.article_id = %s
+        LIMIT 1
+        """,
+        (article_id,),
+    ).fetchone()
+    if has_images:
+        refresh_article_ocr(conn, article_id)
     row = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
         (article_id,),

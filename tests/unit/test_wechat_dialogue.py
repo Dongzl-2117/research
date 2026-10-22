@@ -16,7 +16,13 @@ from researchlib.render import (
     inline_image_ocr,
     render_body,
 )
-from researchlib.wechat_dialogue import parse_shot, present_ocr_pieces, present_stored_ocr, render_turns
+from researchlib.wechat_dialogue import (
+    SIDE_SELF,
+    parse_shot,
+    present_ocr_pieces,
+    present_stored_ocr,
+    render_turns,
+)
 from researchlib.zsxq_title import zsxq_display_title
 
 # 文章 14886 的形状：正文一句，判断在两张重叠的微信群截图里。
@@ -358,17 +364,35 @@ GoogleSearch$243B
 BuiltwithFiscalaiMcP"""
 
 
-def test_moments_card_becomes_fangwei_dialogue_without_chrome():
-    """8881 拼多多微信图：收成方伟气泡，去掉账号栏和下一帖标题，折行接上。"""
+PDD_MOMENTS_DIALOGUE = """网友：拼多多，我是始终不太看好。属于
+假本分。个人一家之言仅供参.
+
+方伟：零售的本分是帮消费者省钱，
+管理层的本分是integrity，世
+界范围内在零售行业，做得比
+它好的，其实只有Costco，奥
+乐齐，利德。
+50年下来，沃尔玛的毛利率从
+20%提升到了24%，费用率从
+16%提升到了20%，只有
+Costco50年不变，费用率纹丝
+不动，那就是9%，这是零售
+领域最强大的公司。"""
+
+
+def test_quote_reply_card_puts_the_guest_above_the_account_bar():
+    """8881 拼多多引用回复：账号栏以上是网友，栏下才是方伟。账号栏和下一帖标题去掉。"""
     shot = parse_shot(PDD_MOMENTS)
     assert shot.kind == "dialogue"
-    text = render_turns(shot.turns)
-    assert text.startswith("方伟：")
-    assert "拼多多，我是始终不太看好" in text
-    assert "属于" in text and "假本分" in text
-    assert "方伟看十年" not in text
-    assert "什么才叫做" not in text
-    assert "网友：" not in text
+    assert shot.family == "moments"
+    text = present_ocr_pieces([PDD_MOMENTS])
+    assert text == render_turns(shot.turns) == PDD_MOMENTS_DIALOGUE
+    assert present_stored_ocr(text) == text
+    guest, host = text.split("\n\n", 1)
+    assert guest.startswith("网友：") and "不太看好" in guest and "假本分" in guest
+    assert host.startswith("方伟：") and "零售的本分" in host
+    assert "不太看好" not in host and "拼多多" not in host
+    assert "方伟看十年" not in text and "什么才叫做" not in text
 
     digest = "29" * 32
     page = inline_image_ocr(
@@ -376,11 +400,44 @@ def test_moments_card_becomes_fangwei_dialogue_without_chrome():
         {digest: PDD_MOMENTS},
     )
     assert 'class="ocr-reading ocr-dialogue"' in page
-    assert '<span class="who">方伟：</span>' in page
+    assert '<span class="who">网友：</span>' in page and '<span class="who">方伟：</span>' in page
+    guest_html, host_html = page.split('<span class="who">方伟：</span>', 1)
+    assert "不太看好" in guest_html and "假本分" in guest_html
+    assert "零售的本分" in host_html and "不太看好" not in host_html
+    assert "方伟看十年" not in page and "什么才叫做" not in page
     assert "原图 1" in page
     assert "点击看原图" not in page
     assert "<details" not in page
     assert f'id="{image_anchor(digest)}"' in page
+    assert page.index("网友：") < page.index("不太看好") < page.index("方伟：") < page.index("零售的本分")
+
+
+def test_account_bar_is_the_quote_reply_divider_not_a_bubble():
+    """栏上没有引用时仍整段是方伟。只有「方伟看十年」、或靠右的侧标记，也不把引用收成方伟。"""
+    badge_first = (
+        "方伟看十年作者\n"
+        "零售的本分是帮消费者省钱。\n"
+        "方伟看十年\n"
+        "什么才叫做“拥有一家公司”的感觉？"
+    )
+    own_post = present_ocr_pieces([badge_first])
+    assert own_post == "方伟：零售的本分是帮消费者省钱。"
+    assert "网友：" not in own_post and "方伟看十年" not in own_post and "什么才叫做" not in own_post
+
+    name_only = "拼多多，我是始终不太看好。\n方伟看十年\n零售的本分是帮消费者省钱。"
+    split = present_ocr_pieces([name_only])
+    assert split.startswith("网友：拼多多，我是始终不太看好。")
+    assert "方伟：零售的本分是帮消费者省钱。" in split
+    assert "方伟看十年" not in split
+
+    sided = (
+        f"{SIDE_SELF}拼多多，我是始终不太看好。属于假本分。\n"
+        "方伟看十年作者\n"
+        "零售的本分是帮消费者省钱。"
+    )
+    marked = present_ocr_pieces([sided])
+    assert marked.startswith("网友：拼多多，我是始终不太看好。属于假本分。")
+    assert "方伟：零售的本分是帮消费者省钱。" in marked
 
 
 def test_product_and_chart_shots_are_links_only():
@@ -484,6 +541,9 @@ def test_moments_then_group_not_one_blob():
     assert "什么才叫做" not in render_turns(parse_shot(truncated).turns)
     text = present_ocr_pieces([truncated, GROUP_RETAIL])
     assert text.count("方伟：") == 2
+    assert text.count("网友：") == 1
+    guest = next(block for block in text.split("\n\n") if "不太看好" in block)
+    assert guest.startswith("网友：")
     assert "公司美国的零售" not in text.replace("\n", "")
     assert "最强大的公司" in text
     assert "美国的零售历史是从梅西百货" in text
