@@ -108,8 +108,10 @@ def _write_oauth(path, access="oauth-access") -> None:
 @pytest.fixture(autouse=True)
 def _no_shared_oauth(tmp_path, monkeypatch):
     # 别读到机器上真实的共用 OAuth 文件。留下 API key，确认调用不会拿它当凭证。
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "grok")
     monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(tmp_path / "missing-oauth.json"))
     monkeypatch.setenv("XAI_API_KEY", "test-key-should-not-be-used")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("XAI_MAX_TOKENS", raising=False)
     monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
 
@@ -122,6 +124,7 @@ def _settings(tmp_path, monkeypatch) -> Settings:
         {
             "DATABASE_URL": "postgresql://unused/research_test",
             "DATA_DIR": str(tmp_path),
+            "RESEARCH_LLM_PROVIDER": "grok",
             "XAI_OAUTH_TOKEN_PATH": str(token),
         }
     )

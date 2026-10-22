@@ -1,4 +1,4 @@
-"""批量 / 单篇站内翻译。需先 research-xai-login login。"""
+"""批量 / 单篇站内翻译。默认 DeepSeek；Grok 需要先 research-xai-login login。"""
 
 from __future__ import annotations
 
@@ -8,12 +8,13 @@ import time
 
 from researchlib.config import Settings
 from researchlib.db import prepare
+from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider
 from researchlib.translate.service import list_pending_english, translate_article
 from researchlib.translate.xai_oauth import XaiLoginRequiredError, xai_oauth_status
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="用站内 Grok OAuth 翻译英文文章")
+    parser = argparse.ArgumentParser(description="用站内 LLM（默认 DeepSeek，可切 Grok OAuth）翻译英文文章")
     parser.add_argument("--article-id", type=int, action="append", default=[], help="指定文章 id，可重复")
     parser.add_argument("--source", default="", help="只处理该来源 id")
     parser.add_argument("--limit", type=int, default=5, help="待译队列最多取几篇")
@@ -22,10 +23,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
-    status = xai_oauth_status(settings.data_dir)
-    if not status.logged_in:
-        print("尚未登录 Grok OAuth。先运行：research-xai-login login", file=sys.stderr)
-        print(f"token 路径：{status.token_path}", file=sys.stderr)
+    if llm_provider() == PROVIDER_GROK:
+        status = xai_oauth_status(settings.data_dir)
+        if not status.logged_in:
+            print("尚未登录 Grok OAuth。先运行：research-xai-login login", file=sys.stderr)
+            print(f"token 路径：{status.token_path}", file=sys.stderr)
+            return 2
+    elif not deepseek_api_key():
+        print(
+            "没有配置 DEEPSEEK_API_KEY。把它写进 .env（或 compose），或设 RESEARCH_LLM_PROVIDER=grok。",
+            file=sys.stderr,
+        )
         return 2
 
     conn = prepare(settings)

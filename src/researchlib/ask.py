@@ -1,4 +1,4 @@
-"""问库：先在库里召回原文段落（马上能看），再交给 Grok 在后台整合，按 [n] 回链到原文。
+"""问库：先在库里召回原文段落（马上能看），再交给模型在后台整合，按 [n] 回链到原文。
 
 流程：
 1. 页面提交问题后，立刻做一次检索，把相关原文段落存进 llm_answers（status=running），跳到回答页。
@@ -8,7 +8,7 @@
 3. 资料一次读得完就一次作答；读不完就分批摘录要点（每条带原始编号），最后汇总成回答。
 4. 写回 answer、citations、status=done。出错时 status=error，页面可以重新整合。
 
-没有可用的 Grok OAuth 时只给原文段落，不存记录。不退回 API key。
+没有可用的 LLM 凭证（默认 DeepSeek 的 key，或 Grok OAuth）时只给原文段落，不存记录，也不在两个提供方之间自动切换。
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.citecheck import check_answer
 from researchlib.config import Settings
-from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, active_label, chat, llm_configured
 from researchlib.retrieval import Retrieval, analyze, cited_numbers, retrieve
 from researchlib.web.present import format_date
 from researchlib.web.queries import Scope
@@ -334,7 +334,7 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
         result["error"] = "范围内没有召回到任何段落。换个问法，或放宽作者、公司、日期范围。"
         return result
     if not llm_configured(settings):
-        result["error"] = "没有可用的 Grok OAuth，只给出召回的原文段落。"
+        result["error"] = f"没有可用的 {active_label(settings)} 凭证，只给出召回的原文段落。"
         return result
     row = conn.execute(
         """

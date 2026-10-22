@@ -719,7 +719,7 @@ def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) 
 
 
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了（个别公司失败也算），2 没有可用的 Grok 凭证。"""
+    """退出码：0 跑完了（个别公司失败也算），2 没有可用的 LLM 凭证。"""
     parser = argparse.ArgumentParser(description="把观点够数的公司归成论点（不限持仓和观察名单）")
     parser.add_argument("--company", action="append", default=[], help="只整理这家公司（中文名），可重复")
     parser.add_argument("--force", action="store_true", help="没过期也重算")

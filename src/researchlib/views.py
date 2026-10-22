@@ -922,7 +922,7 @@ def articles_for_ids(conn, company_ids: list[int], source_ids: list[str], articl
 
 
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 Grok 凭证。"""
+    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 LLM 凭证。"""
     parser = argparse.ArgumentParser(description="给被深入谈到的公司整理观点时间线（不限持仓和观察名单）")
     parser.add_argument("--company", action="append", default=[], help="只整理这家公司（中文名），可重复")
     parser.add_argument("--source", action="append", default=[], help="只整理这个来源 id，可重复")
