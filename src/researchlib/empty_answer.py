@@ -88,14 +88,22 @@ _INVISIBLE = re.compile(r"[\u00ad\u200b\u200c\u200d\u2060\ufeff\ufe00-\ufe0f]")
 _SCAN_LIKE = ("%## 段永平%", "%回%开%头%", "%回%顶部%", "%页首%", "%\u2f42%")
 
 
+# 与 suppressed 分开的隐藏标记：source_paused（整源先不要）、short_post（短帖）。
+# 段永平启动回扫只改 suppressed，不会把这一栏收回。清掉这个键即恢复。
+HIDDEN = "hidden"
+SOURCE_PAUSED = "source_paused"
+SHORT_POST = "short_post"
+
+
 def visible_sql(alias: str = "") -> str:
-    """搁下的整篇不进列表。标记只写在段永平博客上，别的来源没有这一栏，不受影响。"""
+    """搁下或隐藏的整篇不进列表。"""
     column = f"{alias}.raw_meta" if alias else "raw_meta"
-    return f"coalesce({column}->>'{SUPPRESSED}', '') = ''"
+    return f"(coalesce({column}->>'{SUPPRESSED}', '') = '' AND coalesce({column}->>'{HIDDEN}', '') = '')"
 
 
 def is_suppressed(raw_meta: dict | None) -> bool:
-    return bool(str((raw_meta or {}).get(SUPPRESSED) or "").strip())
+    meta = raw_meta or {}
+    return bool(str(meta.get(SUPPRESSED) or "").strip() or str(meta.get(HIDDEN) or "").strip())
 
 
 def normalize_voice(text: str) -> str:

@@ -615,7 +615,8 @@ def _article_view(request: Request, article_id: int, mode: str):
                 article = {**article, "ocr_hash": new_hash}
         digest = queries.digests_for(conn, [article_id]).get(article_id)
         empty_answer = is_suppressed(article["raw_meta"])
-        suppressed_reason = str((article["raw_meta"] or {}).get("suppressed") or "")
+        meta = article["raw_meta"] or {}
+        suppressed_reason = str(meta.get("hidden") or meta.get("suppressed") or "")
         # 短文的图片文字变了也重写摘要。空回答不排进后台。
         if digest_due(article, digest) and not empty_answer:
             schedule_digests(settings, [(article_id, source.author)])
