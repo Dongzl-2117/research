@@ -53,8 +53,14 @@ def resolve_scope(params, sources, *, ignore_source: bool = False) -> tuple[Scop
     if date_from and date_to and date_from > date_to:
         date_from, date_to = date_to, date_from
     article_id = parse_int(params.get("article"))
+    tree_id = parse_int(params.get("tree"))
     scope = Scope(
-        source_ids=ids, company_id=company_id, date_from=date_from, date_to=date_to, article_id=article_id
+        source_ids=ids,
+        company_id=company_id,
+        date_from=date_from,
+        date_to=date_to,
+        article_id=article_id,
+        tree_id=tree_id,
     )
     info = {
         "author": author,
@@ -63,5 +69,6 @@ def resolve_scope(params, sources, *, ignore_source: bool = False) -> tuple[Scop
         "from": date_from.isoformat() if date_from else "",
         "to": date_to.isoformat() if date_to else "",
         "article": article_id,
+        "tree": tree_id,
     }
     return scope, info

@@ -67,6 +67,14 @@ services:
       RESEARCH_LLM_CONCURRENCY: ${RESEARCH_LLM_CONCURRENCY:-3}
       # 首页断更提示：只看最近几天确实在定时导入的来源。不想要设 0。
       RESEARCH_STALE_BANNER: ${RESEARCH_STALE_BANNER:-1}
+      # 语义检索的向量服务（OpenAI 兼容 /embeddings）。推荐 macOS 本机的 Ollama + bge-m3，走 GPU。
+      # 留空就只用关键词检索。见 docs/retrieval.md「语义检索」。
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+    extra_hosts:
+      # 容器里用 host.docker.internal 访问 macOS 本机的 Ollama。Docker Desktop 本来就有，这行让 Linux 上也一样。
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8088:8088"
     volumes:

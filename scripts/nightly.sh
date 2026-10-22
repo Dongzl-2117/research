@@ -15,6 +15,8 @@ VIEWS_LIMIT="${VIEWS_LIMIT:-60}"
 DIGEST_LIMIT="${DIGEST_LIMIT:-80}"
 OCR_LIMIT="${OCR_LIMIT:-400}"
 NIGHTLY_OCR="${NIGHTLY_OCR:-0}"
+# 语义检索的向量：每晚最多补这么多块（没配 EMBEDDING_BASE_URL 时这一步什么都不做）。
+EMBED_LIMIT="${EMBED_LIMIT:-50000}"
 # 论点默认关。打开后补的是库里观点够数的公司，不限持仓。需要夜间跑时设 THESES_ENABLED=1。
 THESES_ENABLED="${THESES_ENABLED:-0}"
 # 观点和摘要各自最多跑这么多分钟（xhigh 推理一篇要一两分钟）。
@@ -51,6 +53,7 @@ step() {
 }
 
 step "外链图片" compose exec -T app research-fetch-images --limit "$IMAGES_LIMIT"
+step "语义向量" compose exec -T app research-embed --limit "$EMBED_LIMIT"
 step "观点" compose exec -T app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES"
 step "摘要" compose exec -T app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
 if [ "$THESES_ENABLED" = "1" ]; then
@@ -64,7 +67,7 @@ if [ -n "$failed" ]; then
   status_fail "失败的步骤：${failed}"
   exit 1
 fi
-parts="外链图片、观点、摘要"
+parts="外链图片、语义向量、观点、摘要"
 [ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
 [ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
 status_ok "$parts"

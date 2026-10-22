@@ -13,7 +13,9 @@ from researchlib.textutil import markdown_to_text, split_frontmatter, split_mark
 
 TARGET_CHARS = 500
 MAX_CHARS = 800
-MAX_CHUNKS = 400
+# 一篇最多切这么多块。译文块号从 10000 起，原文块号不能碰到它。
+MAX_CHUNKS = 9000
+OLD_MAX_CHUNKS = 400
 _HEADING_LINE = re.compile(r"\A\s*#{1,6}\s+(\S.*?)\s*(?:\n|$)")
 _SENTENCE_END = re.compile(r"(?<=[。！？；!?;])|\n")
 
@@ -267,7 +269,11 @@ def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
     """
     where = "WHERE a.duplicate_of IS NULL"
     if not rebuild:
-        where += " AND NOT EXISTS (SELECT 1 FROM article_chunks c WHERE c.article_id = a.id AND c.lang = '')"
+        # 以前每篇最多切 400 块，切满的长文后面没进检索：正好 400 块的重切一遍。
+        where += (
+            " AND (NOT EXISTS (SELECT 1 FROM article_chunks c WHERE c.article_id = a.id AND c.lang = '')"
+            f" OR (SELECT count(*) FROM article_chunks c WHERE c.article_id = a.id AND c.lang = '') = {OLD_MAX_CHUNKS})"
+        )
     ids = [row["id"] for row in conn.execute(f"SELECT a.id FROM articles a {where} ORDER BY a.id").fetchall()]
     for article_id in ids:
         row = conn.execute("SELECT title, body_md FROM articles WHERE id = %s", (article_id,)).fetchone()

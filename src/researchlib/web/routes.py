@@ -790,6 +790,7 @@ def _source_tree(request: Request, source_id: str, article_id: int | None):
         if source is None:
             raise HTTPException(status_code=404)
         rows = load_tree_rows(conn, source_id)
+        parents = {row["parent_id"] for row in rows if row["parent_id"] is not None}
         root, orphans = arrange_tree(rows)
         if source.kind == "feishu":
             root, orphans = filter_library_tree(root, orphans)
@@ -820,6 +821,7 @@ def _source_tree(request: Request, source_id: str, article_id: int | None):
             "orphans": orphans,
             "article": article,
             "body_html": body_html,
+            "has_children": current in parents,
         },
     )
 
@@ -1006,6 +1008,7 @@ def search_page(request: Request):
                         "chunk": best.ord if best else None,
                         "anchor": best.anchor if best else "",
                         "partial": not hit.full,
+                        "semantic": hit.semantic or bool(best and best.semantic_hit),
                     },
                 )
             )
@@ -1454,6 +1457,9 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
     article = None
     if info.get("article"):
         article = queries.get_article(conn, info["article"], [source.id for source in sources])
+    tree = None
+    if info.get("tree"):
+        tree = queries.get_article(conn, info["tree"], [source.id for source in sources])
     preset = request.query_params.get("preset") or ""
     question = request.query_params.get("q") or PRESETS.get(preset, "")
     return {
@@ -1461,6 +1467,7 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
         "filters": info,
         "company": company,
         "article": article,
+        "tree": tree,
         "authors": list(_author_groups(sources)[1]),
         "llm_ready": llm_configured(request.app.state.settings),
         "model": GROK_MODEL_ID,
@@ -1489,7 +1496,8 @@ async def ask_submit(request: Request):
         raise HTTPException(status_code=403, detail="跨站请求被拒绝")
     form = await request.form()
     question = str(form.get("q") or "").strip()[:500]
-    params = {key: str(form.get(key) or "") for key in ("author", "source", "company", "from", "to", "article")}
+    keys = ("author", "source", "company", "from", "to", "article", "tree")
+    params = {key: str(form.get(key) or "") for key in keys}
     with database(request) as conn:
         sources = active_sources(request, conn)
         scope, info = resolve_scope(params, sources)
@@ -1523,6 +1531,7 @@ def ask_answer(request: Request, answer_id: int):
             "from": scope.get("date_from") or "",
             "to": scope.get("date_to") or "",
             "article": scope.get("article_id"),
+            "tree": scope.get("tree_id"),
         }
         context = _ask_context(request, sources, info, conn)
         context["question"] = row["question"]

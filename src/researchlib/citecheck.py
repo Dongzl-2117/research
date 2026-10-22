@@ -106,7 +106,9 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     if not cited:
         return problems
     raw = "\n".join(
-        f"{item.get('title') or ''}\n{item.get('heading') or ''}\n{item.get('text') or ''}" for item in cited
+        f"{item.get('title') or ''}\n{item.get('heading') or ''}\n{item.get('before') or ''}"
+        f"\n{item.get('text') or ''}\n{item.get('after') or ''}"
+        for item in cited
     )
     digits = _digits(raw)
     plain = _plain(raw)

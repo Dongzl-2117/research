@@ -13,7 +13,7 @@ docker compose up -d --build
 
 应用监听容器内的 `8088`，compose 只把宿主机的 **127.0.0.1:8088** 转进去。不要改成 `0.0.0.0`。数据库端口同样只绑定 `127.0.0.1:5432`。
 
-应用启动时会自己做迁移（按文件名顺序，到 `019_doc_tree.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。上次没写完的问库整合标成中断，回答页可以重新整合。
+应用启动时会自己做迁移（按文件名顺序，到 `019_doc_tree.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。以前每篇最多切 400 块，正好切满 400 块的长文启动时重切一遍，后面的内容才进检索。上次没写完的问库整合标成中断，回答页可以重新整合。
 
 `019` 只建飞书目录表。部署后若林文丰已经在库里，跑一次 `research-doc-tree --source linwenfeng-feishu`（不访问飞书）。方伟星球若要改成真实 `create_time`，跑 `research-retime`（见 [ingest.md](ingest.md)），它会按新的 `published_at` 重排观点时间线和「同期别人怎么看」。这两条都不要在部署时自动跑。
 
@@ -29,6 +29,25 @@ docker compose up -d --build
 备份、试恢复、夜间补齐和定时增量导入用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题，首页顶上提示一行。
 
 不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面时只给当前卡片里缺的排队，其余由夜间任务每晚补一批，见 [llm.md](llm.md)。
+
+## 语义检索（可选）
+
+Docker 里用不了 Mac mini 的 GPU，向量模型跑在 macOS 本机：
+
+```bash
+brew install ollama
+brew services start ollama
+ollama pull bge-m3
+```
+
+`.env` 里加 `EMBEDDING_BASE_URL=http://host.docker.internal:11434/v1`（模型默认 `bge-m3`），重建并启动：
+
+```bash
+docker compose up -d --build        # db 镜像这次会装上 pgvector，启动时建向量表
+docker compose exec app research-embed   # 第一次全库回填，之后夜间补齐每晚补新的
+```
+
+不配 `EMBEDDING_BASE_URL` 时一切照旧，只用关键词检索。原理和参数见 [retrieval.md](retrieval.md)「语义检索」。
 
 ## 更新
 

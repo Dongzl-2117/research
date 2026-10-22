@@ -73,9 +73,17 @@ def test_whitespace_pieces_mark_or_groups():
 
 
 def test_select_caps_each_article_and_drops_weak_tail():
-    passages = [_passage(1, i, 10 - i, 2024) for i in range(5)] + [_passage(2, 0, 0.5, 2024)]
+    scores = [10, 9, 8, 3, 2]
+    passages = [_passage(1, i, score, 2024) for i, score in enumerate(scores)] + [_passage(2, 0, 0.5, 2024)]
     picked = select(passages, _query(), BUDGETS["display"])
     assert [(p.article_id, p.ord) for p in picked] == [(1, 0), (1, 1)]
+
+
+def test_select_gives_a_long_article_with_many_strong_passages_more_room():
+    passages = [_passage(1, i, 10 - i * 0.5, 2024) for i in range(10)] + [_passage(2, 0, 9.5, 2024)]
+    picked = select(passages, _query(), BUDGETS["display"])
+    assert sum(1 for p in picked if p.article_id == 1) == 6
+    assert any(p.article_id == 2 for p in picked)
 
 
 def test_select_gives_the_same_paragraph_once():

@@ -1,9 +1,9 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from researchlib.config import DEFAULT_PUBLIC_BASE_URL, Settings, assert_bind_allowed
-from researchlib.embeddings import UnavailableEmbeddingIndex
 from researchlib.migrate import split_sql
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,9 +60,9 @@ def test_schema_has_chinese_search_and_no_pgvector():
     assert any("CREATE EXTENSION IF NOT EXISTS zhparser" in statement for statement in statements)
 
 
-def test_embedding_seam_is_not_wired():
-    index = UnavailableEmbeddingIndex()
-    with pytest.raises(NotImplementedError):
-        index.search("腾讯", 5)
-    with pytest.raises(NotImplementedError):
-        index.index_article(1, "腾讯")
+def test_semantic_search_is_off_without_an_embedding_service():
+    from researchlib import embeddings
+
+    embeddings.configure(SimpleNamespace(embedding_base_url=""))
+    assert not embeddings.enabled()
+    assert embeddings.query_vector("腾讯") is None

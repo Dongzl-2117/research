@@ -47,6 +47,10 @@
   <input type="hidden" name="article" value="{{ article.id }}">
   <p class="filter-note">只用这篇：<a href="/articles/{{ article.id }}">{{ article.title }}</a></p>
   {% endif %}
+  {% if tree %}
+  <input type="hidden" name="tree" value="{{ tree.id }}">
+  <p class="filter-note">只用这个目录：<a href="/sources/{{ tree.source_id }}/tree/{{ tree.id }}">{{ tree.title }}</a> 和它下面的全部子篇</p>
+  {% endif %}
   <button type="submit">提问</button>
 </form>
 {% if result %}

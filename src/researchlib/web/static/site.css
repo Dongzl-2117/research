@@ -640,6 +640,7 @@ mark {
 .depth-title { border-color: transparent; background: var(--accent-soft); color: var(--accent-ink); }
 .depth-whole { border-color: var(--line-strong); background: var(--surface); color: var(--ink); }
 .depth-section { border-color: transparent; background: var(--ok-soft); color: var(--ok-ink); }
+.depth-semantic { height: 22px; padding: 0 8px; border-style: dashed; color: var(--ink-3); font-size: 12px; }
 a.depth:hover { border-color: var(--line-strong); color: var(--ink); }
 a.depth[aria-current="page"] { box-shadow: inset 0 0 0 1px var(--accent); color: var(--ink); }
 
