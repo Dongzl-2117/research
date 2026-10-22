@@ -1,17 +1,17 @@
-# 站内 Grok 译制（中英对照）
+# 站内译制（中英对照）
 
-英文原文入库后，由 **investment / research 站内** 用 Grok OAuth 翻译，排版对齐 AIHOT 文章页：
+英文原文入库后，由 **investment / research 站内** 调 LLM 翻译（默认 DeepSeek，可切 Grok OAuth），排版对齐 AIHOT 文章页：
 
 - 默认 **对照**：每段英文在上（小一号、次要色 `--ink-4`），中文在下
 - Tab：**对照 / 中文 / 原文**（`/articles/{id}`、`/zh`、`/original`）
 - 媒体与图片只在英文侧出现一次
-- 模型固定 `grok-4.7`，`reasoning_effort=xhigh`，上下文 50 万 token，输出至少 128000，**不用 fast**。这组常量在 `researchlib/grok.py`，问库、摘要、观点、论点、样卡走同一套
+- 默认 `deepseek-v4-pro`：thinking 打开、`reasoning_effort=max`、上下文 1M token、输出至少 384000，不发 temperature。`RESEARCH_LLM_PROVIDER=grok` 时改用 `grok-4.7`、`reasoning_effort=xhigh`、上下文 50 万、输出至少 128000，不用 fast。常量在 `researchlib/deepseek.py` / `researchlib/grok.py`，问库、摘要、观点、论点、样卡走同一套
 
 不要站外译完再贴进库。译文表是 `article_translations`，按 `content_hash` 与原文对齐。
 
 标题另译一次（存 `title_zh`），失败不影响正文。译文写入后切成中文段落块进检索（`article_chunks` 里 `lang = 'zh'`，带对照页锚点），用中文能搜到、问到英文文章，见 [retrieval.md](retrieval.md)。启动时会给有译文但还没有译文块的文章补切。同一篇的重复不译。
 
-## 和 AIHOT 的关系
+## 和 AIHOT 的关系（仅 `RESEARCH_LLM_PROVIDER=grok`）
 
 | | AIHOT | research |
 |---|---|---|
@@ -29,7 +29,7 @@ Mac mini 上 research 的 `docker-compose.yml` 把 `./data` 挂到 `/data`，OAu
 
 `research-xai-login logout` 会删掉共用文件，AIHOT 也会退出，慎用。
 
-问库、`research-digest` 和页面上缺摘要的卡片读的是同一份 token。应用启动和部署不会自动跑全库。
+问库、`research-digest` 和页面上缺摘要的卡片读的是同一份凭证：默认 DeepSeek 的 `DEEPSEEK_API_KEY`，Grok 路径是同一份 token。应用启动和部署不会自动跑全库。
 
 ## 登录（Mac mini）
 
@@ -73,10 +73,10 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 
 | 状态 | 动作 |
 |---|---|
-| 译制管道已合入、AIHOT Grok 已 login | 可对库内已有合格英文稿 `research-translate` |
+| 译制管道已合入、LLM 凭证已配（DeepSeek key，或 AIHOT Grok 已 login 且 `RESEARCH_LLM_PROVIDER=grok`） | 可对库内已有合格英文稿 `research-translate` |
 | Stratechery 仍在抓 | **先不 ingest**；可用英文样例验对照页 |
 | 抓完并 ingest 后 | 对该来源 `--loop` 批量译 |
 
 ## 环境变量
 
-见 `.env.example`：`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`、`LLM_LONG_TIMEOUT_MS`。
+见 `.env.example`。默认 DeepSeek：`RESEARCH_LLM_PROVIDER=deepseek`、`DEEPSEEK_API_KEY`，可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`、`DEEPSEEK_REASONING_EFFORT`、`DEEPSEEK_MAX_TOKENS`。Grok 路径：`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`。两边共用 `LLM_LONG_TIMEOUT_MS`。

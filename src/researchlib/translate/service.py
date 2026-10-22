@@ -16,7 +16,7 @@ from researchlib.chunks import replace_translation_chunks
 from researchlib.render import render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
 from researchlib.translate.language import is_chinese
-from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, grok_output_tokens
+from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.segments import (
     chunk_segments,
@@ -73,7 +73,7 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
         purpose="translate_body",
         subject="batch",
         temperature=0.3,
-        max_tokens=min(grok_output_tokens(), max(8000, len("".join(parts)) * 2 + 800)),
+        max_tokens=min(output_tokens(), max(8000, len("".join(parts)) * 2 + 800)),
         data_dir=data_dir,
     )
     raw = result.data.get("t")

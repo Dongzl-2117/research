@@ -318,7 +318,7 @@ def _digest_worker() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 Grok 凭证。"""
+    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 LLM 凭证。"""
     parser = argparse.ArgumentParser(description="给还没有摘要的文章生成 LLM 摘要")
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--source", default="")

@@ -118,7 +118,7 @@ TOOLS = [
     },
     {
         "name": "ask_library",
-        "description": "让库内的 Grok 只依据库里资料作答，返回带 [n] 的回答和出处。比较慢。",
+        "description": "让库内的 LLM 只依据库里资料作答，返回带 [n] 的回答和出处。比较慢。",
         "inputSchema": {
             "type": "object",
             "properties": {"question": {"type": "string"}, **_SCOPE_PROPS},

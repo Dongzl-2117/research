@@ -99,7 +99,9 @@ def test_shared_v1_token_is_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert xai_oauth_status(tmp_path).logged_in is True
     assert xai_oauth_status(tmp_path).token_path == str(path)
     monkeypatch.setenv("XAI_API_KEY", "console-key-ignored")
-    settings = Settings.from_env({"DATA_DIR": str(tmp_path), "XAI_API_KEY": "console-key-ignored"})
+    settings = Settings.from_env(
+        {"DATA_DIR": str(tmp_path), "RESEARCH_LLM_PROVIDER": "grok", "XAI_API_KEY": "console-key-ignored"}
+    )
     assert credential_kind(settings) == "oauth"
     assert not hasattr(settings, "llm_api_key")
 

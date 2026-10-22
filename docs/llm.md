@@ -42,13 +42,34 @@
 
 `[n]` 链到 `/articles/{id}?chunk={n}`：文章页直接滚到正文里的那几段，并把它们标出来。正文里对不上的（比如引用的是图片里的字），才在顶上单独摘出那一段。
 
-进程重启时没写完的整合标成中断（`status = error`），回答页有「重新整合」。没有可用的 Grok OAuth 时，问库只列召回的原文段落，不存记录。
+进程重启时没写完的整合标成中断（`status = error`），回答页有「重新整合」。没有可用的 LLM 凭证时，问库只列召回的原文段落，不存记录。
 
 入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；检索结果页「问 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：已有的文章摘要或正文里的一句实质内容先拼成一段总结，如果之前问过正好覆盖这一天的问题，也把那条回答放在最上面。日汇总那段不算模型。缺摘要的卡片在后台补，不挡住这一页，也不跑全库。
 
-## Grok 凭证
+## LLM 凭证（默认 DeepSeek，可选 Grok）
 
-译制、问库、摘要使用 research 自有 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`）。AIHOT 已下线，不再共用外部卷。
+`RESEARCH_LLM_PROVIDER` 决定用哪一家，不设就是 `deepseek`，填了不认识的值也按 `deepseek` 算。Grok 要显式设 `RESEARCH_LLM_PROVIDER=grok`。
+
+### DeepSeek（默认）
+
+译制、问库、摘要、观点、论点默认走 DeepSeek 官方 OpenAI 兼容接口，`DEEPSEEK_API_KEY` 放在 `.env`，compose 透传给容器。缺 key 时直接报错，不会悄悄退回 Grok。
+
+强度写在 `researchlib/deepseek.py`，译制（`translate/llm.py` 的 `chat_json`）和问库、摘要、观点、论点、样卡（`researchlib.llm.chat`）共用同一组常量：
+
+| 项 | 值 |
+| --- | --- |
+| 模型 | `deepseek-v4-pro`（`DEEPSEEK_MODEL`）。flash 档一律拒绝 |
+| thinking | `{"type": "enabled"}`，默认打开 |
+| `reasoning_effort` | `max`（`DEEPSEEK_REASONING_EFFORT`，只认 `low` / `high` / `max`；`xhigh` 按 `high`） |
+| 输出预算 | 至少 `384000`（`DEEPSEEK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
+| 上下文 | `1000000` token（`DEEPSEEK_CONTEXT_TOKENS`） |
+| 不发的字段 | `temperature`、`presence_penalty`、`frequency_penalty`：思考模式下无效，请求里不带 |
+
+最终答案在 `choices[0].message.content`；`reasoning_content` 里的思考过程不往页面上放。
+
+### Grok OAuth（可选）
+
+设 `RESEARCH_LLM_PROVIDER=grok` 才走这里。译制、问库、摘要使用 research 自有 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`）。AIHOT 已下线，不再共用外部卷。
 
 登录在 AIHOT 侧做一次即可：
 
@@ -64,9 +85,9 @@ docker compose exec app research-xai-login status
 
 Hermes 的 `auth.json` 格式会被拒绝，不会写进去。AIHOT / research 的 version 1 凭据可以读写。
 
-问库、摘要、观点、论点、样卡和译制只认这一份 OAuth。文件不在、未登录或刷新失败时直接报错，不退回 `XAI_API_KEY`，也不改走别的模型。环境里如果还留着 `XAI_API_KEY`，调用会说明这个变量不会被使用。
+Grok 路径只认这一份 OAuth。文件不在、未登录或刷新失败时直接报错，不退回 `XAI_API_KEY`。环境里如果还留着 `XAI_API_KEY`，调用会说明这个变量不会被使用。
 
-强度写在 `researchlib/grok.py`，译制（`translate/llm.py` 的 `chat_json`）和问库、摘要、观点、论点、样卡（`researchlib.llm.chat`）共用同一组常量：
+强度写在 `researchlib/grok.py`，和 DeepSeek 一样由译制与问库、摘要、观点、论点、样卡共用：
 
 | 项 | 值 |
 | --- | --- |
@@ -75,27 +96,35 @@ Hermes 的 `auth.json` 格式会被拒绝，不会写进去。AIHOT / research �
 | 输出预算 | 至少 `128000`（`GROK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
 | 上下文 | `500000` token（`GROK_CONTEXT_TOKENS`），用 grok-4.7 自带的窗口，不另传更小上限 |
 
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `XAI_OAUTH_TOKEN_PATH` | `/data/secrets/xai-oauth.json`（compose） | 唯一凭证，与 AIHOT 共用 |
-| `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `0` / `0` | 写回后的文件属主 |
-| `XAI_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `128000` | 只能把输出预算抬得更高，设得更低也会回到 `128000` |
-| `LLM_LONG_TIMEOUT_MS` | `1500000` | 译制和问库共用的长超时，默认 25 分钟 |
-| `RESEARCH_LLM_TIMEOUT` | 不设 | 秒。比上面的长超时更短时会被抬到同一条，不能单独把问库调弱 |
-| `XAI_BASE_URL` | `https://api.x.ai/v1` | |
-| `RESEARCH_LLM_CONCURRENCY` | `3` | 同一个进程里同时在跑的 Grok 请求上限，问库分批、摘要、观点、论点共用 |
-
 xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷新一次再重试。没有订阅的 403 不触发刷新。
 
-429、5xx、连接被重置这类临时错误退避重试两次（等 5 秒、20 秒；接口给了 `Retry-After` 就按它，最多等一分钟）。超时不重试：一次已经等了很久。登录失效或连续失败 3 次，首页顶上提示一行（见 [backup.md](backup.md)「出问题才提示」）。
+### 变量
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `RESEARCH_LLM_PROVIDER` | `deepseek` | `deepseek` / `grok` |
+| `DEEPSEEK_API_KEY` | 空 | DeepSeek 必填，缺了直接报错 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 不另加 `/v1` |
+| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 名字里带 `flash` 会被拒绝 |
+| `DEEPSEEK_REASONING_EFFORT` | `max` | `low` / `high` / `max` |
+| `DEEPSEEK_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `384000` | 只能把输出预算抬得更高，设得更低也会回到 `384000` |
+| `XAI_OAUTH_TOKEN_PATH` | `/data/secrets/xai-oauth.json`（compose） | 仅 Grok，与 AIHOT 共用 |
+| `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `0` / `0` | 仅 Grok，写回后的文件属主 |
+| `XAI_MAX_TOKENS` | 不设则用 `128000` | 仅 Grok，只能抬高 |
+| `XAI_BASE_URL` | `https://api.x.ai/v1` | 仅 Grok |
+| `LLM_LONG_TIMEOUT_MS` | `1500000` | 译制和问库共用的长超时，默认 25 分钟 |
+| `RESEARCH_LLM_TIMEOUT` | 不设 | 秒。比上面的长超时更短时会被抬到同一条，不能单独把问库调弱 |
+| `RESEARCH_LLM_CONCURRENCY` | `3` | 同一个进程里同时在跑的 LLM 请求上限，问库分批、摘要、观点、论点共用 |
+
+429、5xx、连接被重置这类临时错误退避重试两次（等 5 秒、20 秒；接口给了 `Retry-After` 就按它，最多等一分钟）。超时不重试：一次已经等了很久。凭证不可用或连续失败 3 次，首页顶上提示一行，写明是 DeepSeek 还是 Grok（见 [backup.md](backup.md)「出问题才提示」）。
 
 ## 摘要
 
-摘要进 `article_digests`，和问库共用 Grok 登录。提示只要求导读，不写投资建议、该不该买、目标价或仓位。要点先写判断，再写作者给出的机制；数字只在支撑判断时引用；原文谈到风险、推翻条件或验证指标才写，没谈到就不写。提示词改了就把 `digest.PROMPT_VERSION` 加一，旧摘要照常显示，被看到或跑 `research-digest` 时按新版重写（没有摘要的排在只是版本旧了的前面）。
+摘要进 `article_digests`，和问库共用同一份 LLM 凭证。提示只要求导读，不写投资建议、该不该买、目标价或仓位。要点先写判断，再写作者给出的机制；数字只在支撑判断时引用；原文谈到风险、推翻条件或验证指标才写，没谈到就不写。提示词改了就把 `digest.PROMPT_VERSION` 加一，旧摘要照常显示，被看到或跑 `research-digest` 时按新版重写（没有摘要的排在只是版本旧了的前面）。
 
 两条写入路径：
 
-- 打开按天、作者、公司或检索时，当前卡片里还没有摘要（或正文已改）的文章会在后台排队，一次最多排 40 篇，不挡住页面，也不扫全库。没有可用的 Grok OAuth 时不排队，卡片改用正文里第一段实质内容，并跳过 sn、点赞、时间戳。
+- 打开按天、作者、公司或检索时，当前卡片里还没有摘要（或正文已改）的文章会在后台排队，一次最多排 40 篇，不挡住页面，也不扫全库。没有可用的 LLM 凭证时不排队，卡片改用正文里第一段实质内容，并跳过 sn、点赞、时间戳。
 - `research-digest` 仍可手动补一批。`research-web` 启动、容器拉起和部署都不会跑全库。
 
 ```bash
@@ -116,7 +145,7 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 
 ### 失败了怎么办
 
-摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 Grok OAuth 时退出码 2（`research-pilot` 同样）。不会改用 API key。
+摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-pilot` 同样）。不会在两个提供方之间自动切换。
 
 ## 观点时间线
 

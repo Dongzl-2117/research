@@ -1,14 +1,14 @@
-"""站内调 Grok：grok-4.7 + reasoning_effort=xhigh + 大上下文，不开 fast。
+"""站内调 LLM 做译制：默认 DeepSeek，Grok 作为显式选项。
 
-对齐 AIHOT providers/llm.ts 与 llm-limits.ts 的 Grok 路径。
-鉴权走 xAI OAuth access token（Bearer），过期自动刷新。
-模型、推理强度、输出地板、上下文和超时与问库、摘要共用 researchlib.grok。
+默认 DeepSeek：deepseek-v4-pro + thinking + reasoning_effort=max + 输出至少 384000，
+上下文 1M，不发 temperature，鉴权用 DEEPSEEK_API_KEY 的 Bearer。
+``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth（grok-4.7 + xhigh + 至少 128000，不开 fast）。
+模型、推理强度、输出地板和超时与问库、摘要共用 researchlib.deepseek / researchlib.grok。
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 import urllib.error
@@ -17,18 +17,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from researchlib.deepseek import (
+    DEEPSEEK_CONTEXT_TOKENS,
+    DEEPSEEK_MODEL_ID,
+    DEEPSEEK_OUTPUT_FLOOR,
+    DEEPSEEK_REASONING_EFFORT,
+    deepseek_output_tokens,
+)
+from researchlib.deepseek import completion_params as deepseek_params
 from researchlib.grok import (
     GROK_CONTEXT_TOKENS,
     GROK_INPUT_CHARS,
     GROK_MODEL_ID,
     GROK_OUTPUT_FLOOR,
     GROK_REASONING_EFFORT,
-    completion_params,
     grok_output_tokens,
     long_timeout_s,
 )
+from researchlib.grok import completion_params as grok_params
+from researchlib.llm_provider import (
+    PROVIDER_GROK,
+    deepseek_api_key,
+    llm_base_url,
+    llm_provider,
+    provider_label,
+)
 from researchlib.translate.xai_oauth import (
-    XAI_INFERENCE_BASE_URL,
     XaiLoginRequiredError,
     get_xai_access_token,
     is_stale_xai_access,
@@ -43,8 +57,37 @@ class ChatJsonResult:
     latency_ms: int
 
 
-def _base_url() -> str:
-    return (os.environ.get("XAI_BASE_URL", "").strip() or XAI_INFERENCE_BASE_URL).rstrip("/")
+def output_tokens(requested: int | None = None) -> int:
+    """当前提供方的输出预算。DeepSeek 地板 384000，Grok 128000。"""
+    if llm_provider() == PROVIDER_GROK:
+        return grok_output_tokens(requested)
+    return deepseek_output_tokens(requested)
+
+
+def model_id() -> str:
+    """当前提供方的模型名。"""
+    if llm_provider() == PROVIDER_GROK:
+        return GROK_MODEL_ID
+    return DEEPSEEK_MODEL_ID
+
+
+def _params(temperature: float, max_tokens: int | None) -> dict:
+    if llm_provider() == PROVIDER_GROK:
+        return grok_params(temperature=temperature, max_tokens=max_tokens)
+    # 思考模式下 temperature 不起作用，DeepSeek 的请求里不带。
+    return deepseek_params(max_tokens=max_tokens)
+
+
+def _bearer(data_dir: Path | None) -> str:
+    if llm_provider() == PROVIDER_GROK:
+        return get_xai_access_token(data_dir)
+    key = deepseek_api_key()
+    if not key:
+        raise RuntimeError(
+            "没有配置 DEEPSEEK_API_KEY，DeepSeek 译不了。"
+            "把 key 写进 .env（compose 的 DEEPSEEK_API_KEY），或者设 RESEARCH_LLM_PROVIDER=grok 用回 Grok OAuth。"
+        )
+    return key
 
 
 def _extract_json(text: str) -> Any:
@@ -76,12 +119,15 @@ def chat_json(
     data_dir: Path | None = None,
     timeout_s: float | None = None,
 ) -> ChatJsonResult:
-    """POST /v1/chat/completions，固定 grok-4.7 / xhigh / 至少 128k max_tokens。"""
+    """POST {base}/chat/completions。强度按当前提供方，DeepSeek 默认 max / 384k / thinking。"""
     del purpose, subject  # 保留形参便于日后打回执；当前不落库
-    endpoint = f"{_base_url()}/chat/completions"
+    provider = llm_provider()
+    label = provider_label(provider)
+    endpoint = f"{llm_base_url()}/chat/completions"
     user_text = user if isinstance(user, str) else json.dumps(user, ensure_ascii=False)
+    params = _params(temperature, max_tokens)
     body = {
-        **completion_params(temperature=temperature, max_tokens=max_tokens),
+        **params,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user_text},
@@ -90,7 +136,7 @@ def chat_json(
     }
     payload = json.dumps(body).encode("utf-8")
     timeout = timeout_s if timeout_s is not None else long_timeout_s()
-    bearer = get_xai_access_token(data_dir)
+    bearer = _bearer(data_dir)
 
     def post(token: str) -> tuple[int, str]:
         req = urllib.request.Request(
@@ -110,17 +156,18 @@ def chat_json(
 
     started = time.time()
     status, text = post(bearer)
-    if status >= 400 and is_stale_xai_access(status, text):
+    if provider == PROVIDER_GROK and status >= 400 and is_stale_xai_access(status, text):
         bearer = get_xai_access_token(data_dir, force=True, discard_access_token=bearer)
         status, text = post(bearer)
     if status >= 400:
-        raise RuntimeError(f"Grok HTTP {status}: {text[:500]}")
+        raise RuntimeError(f"{label} HTTP {status}: {text[:500]}")
     try:
         response = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Grok 返回非 JSON：{text[:300]}") from exc
+        raise RuntimeError(f"{label} 返回非 JSON：{text[:300]}") from exc
     choice = (response.get("choices") or [{}])[0]
     message = choice.get("message") or {}
+    # 思考过程在 reasoning_content，只取最终答案。
     content = message.get("content") or ""
     if isinstance(content, list):
         content = "".join(
@@ -128,16 +175,20 @@ def chat_json(
         )
     data = _extract_json(content)
     if not isinstance(data, dict):
-        raise RuntimeError("Grok JSON 根节点不是对象")
+        raise RuntimeError(f"{label} JSON 根节点不是对象")
     return ChatJsonResult(
         data=data,
-        model=GROK_MODEL_ID,
+        model=str(response.get("model") or params["model"]),
         usage=response.get("usage") if isinstance(response.get("usage"), dict) else None,
         latency_ms=int((time.time() - started) * 1000),
     )
 
 
 __all__ = [
+    "DEEPSEEK_CONTEXT_TOKENS",
+    "DEEPSEEK_MODEL_ID",
+    "DEEPSEEK_OUTPUT_FLOOR",
+    "DEEPSEEK_REASONING_EFFORT",
     "GROK_CONTEXT_TOKENS",
     "GROK_INPUT_CHARS",
     "GROK_MODEL_ID",
@@ -148,4 +199,6 @@ __all__ = [
     "chat_json",
     "grok_output_tokens",
     "long_timeout_s",
+    "model_id",
+    "output_tokens",
 ]
