@@ -13,7 +13,7 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 
 财报表格、贴成长文的图没有这些说话人或微信界面，就原样留下，不套对话。
 朋友圈 / 公众号卡片带「方伟看十年作者」的，收成「方伟：」，并去掉账号栏和下一帖标题。
-电商商品图、带坐标轴的图表不套对话，阅读页只留原图链接。
+电商商品图、带坐标轴的图表、数据表、Reddit 等外网评论截图不套对话，阅读页只留原图链接。
 已经整理过的「方伟：」「网友：」再跑一遍还是同一份，方便写回 articles.ocr_text。
 """
 
@@ -174,7 +174,9 @@ _WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+
 _ACCOUNT_BADGE = re.compile(r"^方伟看十年作者$|^看十年作者$")
 _ACCOUNT_NAME = re.compile(r"^方伟看十年$|^看十年$")
 # 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
-_FEED_TITLE = re.compile(r"^[^。！\n]{4,40}[？?]$")
+_FEED_TITLE = re.compile(
+    r"^(?:[^。！\n]{4,40}[？?]|什么才叫做[^。！？\n]{0,30})$"
+)
 # 亚马逊 / Temu 商品页界面字。有这些就不走对话。
 _PRODUCT_UI = re.compile(
     r"Sponsored|Add\s*to\s*cart|Addtocart|FREEdelivery|bought\s*in\s*past\s*month|"
@@ -207,6 +209,8 @@ class Shot:
     kind: str
     turns: list[Turn]
     prose: str
+    # dialogue 子类：moments / group / chat。朋友圈与群聊不要合成一块。
+    family: str = ""
 
 
 def present_ocr_pieces(pieces: list[str]) -> str:
@@ -224,12 +228,18 @@ def present_ocr_pieces(pieces: list[str]) -> str:
         if text.strip():
             blocks.append(text.strip())
 
+    pending_family = ""
     for piece in pieces:
         shot = parse_shot(piece)
         if shot.kind == "dialogue":
+            family = shot.family or "chat"
+            if pending and pending_family and family != pending_family:
+                flush()
             pending.extend(shot.turns)
+            pending_family = family
             continue
         flush()
+        pending_family = ""
         prose = (shot.prose or "").strip()
         if prose:
             blocks.append(prose)
@@ -269,8 +279,13 @@ def parse_shot(text: str) -> Shot:
     raw_lines = [line for line in raw_lines if line]
     if not raw_lines:
         return Shot("prose", [], original)
-    # 商品图、图表先拦下：品牌碎片（opard）会被误认成拉丁昵称，不能进对话。
-    if _is_product_shot(raw_lines) or _is_chart_shot(raw_lines):
+    # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
+    if (
+        _is_product_shot(raw_lines)
+        or _is_chart_shot(raw_lines)
+        or _is_table_shot(raw_lines)
+        or _is_foreign_comment_shot(raw_lines)
+    ):
         return Shot("media", [], "")
     signal = _wechat_signal(raw_lines)
     lines = _prepare_lines(raw_lines)
@@ -292,11 +307,15 @@ def parse_shot(text: str) -> Shot:
         return Shot("prose", [], original)
     # 群聊里没有坐标时，不写别人昵称的气泡是作者自己的绿色气泡。有侧标记时以标记为准。
     turns = _walk(lines, names, self_unnamed=bool(signal or names or hosted))
+    had_account = any(
+        _ACCOUNT_BADGE.match(_plain(line)) or _ACCOUNT_NAME.match(_plain(line)) for line in raw_lines
+    )
+    family = "moments" if had_account else ("group" if signal else "chat")
     if turns:
-        return Shot("dialogue", turns, "")
+        return Shot("dialogue", turns, "", family)
     # 整张都是界面字时不要把原文退回去，否则价格和小程序会漏进正文。
     if signal or names or hosted or labeled:
-        return Shot("dialogue", [], "")
+        return Shot("dialogue", [], "", family)
     return Shot("prose", [], original)
 
 
@@ -326,6 +345,41 @@ def _is_chart_shot(lines: list[str]) -> bool:
         if len(_MEANING.findall(line)) >= 6:
             meaningful += 1
     return digitish >= 4 and digitish > meaningful
+
+
+_REDDIT_HANDLE = re.compile(
+    r"(?m)^[A-Za-z][\w-]{1,30}[·.]\d+(?:mo|d|h|y|yr|hr|hour|day|month|year)?\s*ago\b",
+    re.I,
+)
+_REDDIT_HANDLE_COMPACT = re.compile(
+    r"(?m)^[A-Za-z][\w-]{1,30}[·.]\d+(?:mo|d|h|y)ago\b",
+    re.I,
+)
+_REDDIT_UI = re.compile(r"(?m)^(?:Share|Reply|Award|Comment|Upvote|Downvote)\b", re.I)
+
+
+def _is_foreign_comment_shot(lines: list[str]) -> bool:
+    """Reddit / 外网评论楼：用户名+3moago、Share/Reply，不是微信群。"""
+    joined = "\n".join(lines)
+    handles = _REDDIT_HANDLE.findall(joined) + _REDDIT_HANDLE_COMPACT.findall(joined)
+    if handles:
+        return True
+    if len(_REDDIT_UI.findall(joined)) >= 2 and sum(1 for c in joined if c.isascii()) > len(joined) * 0.7:
+        return True
+    return False
+
+
+def _is_table_shot(lines: list[str]) -> bool:
+    """SCF / 电商份额等数据表：多列数字，阅读页只留原图。"""
+    if any(re.search(r"指标\s*数值|公司\s*财年|净利率|经营利润率", line) for line in lines):
+        return True
+    rowish = 0
+    for line in lines:
+        if re.search(r"\d", line) and (
+            re.search(r"\S+\s{2,}\S+", line) or re.search(r"(?:约)?[\d,.]+\s*(?:万|亿|%|美元)", line)
+        ):
+            rowish += 1
+    return rowish >= 4 and rowish * 5 >= len(lines) * 3
 
 
 def _same_sentence(left: str, right: str) -> bool:
@@ -598,13 +652,27 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
 
 
 def _drop_trailing_feed_title(lines: list[str]) -> list[str]:
-    """公众号卡片末尾常粘上下一帖标题，例如「什么才叫做…的感觉？」。"""
+    """公众号卡片末尾常粘上下一帖标题，例如「什么才叫做…的感觉？」。
+
+    OCR 常截断成「什么才叫做」：没有问号也要丢掉。短、无句号、不像正文续写的尾行同理。
+    """
     if not lines:
         return lines
     last = _plain(lines[-1])
-    if last == _BREAK or not _FEED_TITLE.match(last):
+    if last == _BREAK:
         return lines
-    return lines[:-1]
+    if _FEED_TITLE.match(last):
+        return lines[:-1]
+    # 截断标题：很短、没有句末标点、上一行已经收了句。
+    if (
+        4 <= len(last) <= 16
+        and not re.search(r"[。！？!?…]$", last)
+        and "，" not in last
+        and lines[:-1]
+        and re.search(r"[。！？!?…]$", _plain(lines[-2]))
+    ):
+        return lines[:-1]
+    return lines
 
 
 def _split_after_host_mention(lines: list[str]) -> list[str]:

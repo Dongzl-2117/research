@@ -336,6 +336,75 @@ def _chat_bundle(items: list[dict], dialogue: str) -> str:
     )
 
 
+
+def _hoist_figures_out_of_paragraphs(html: str) -> str:
+    """正文半句里嵌的 <figure> 拎到段外，避免「原图 / 表」插进引语中间。
+
+    ``<p>前<figure/>后</p>`` → ``<p>前</p><figure/><p>后</p>``；空段丢掉。
+    figure 内可能还有 ``<p class="ocr-links">``，按嵌套深度找闭合标签。
+    """
+    if not html or "<figure" not in html.lower():
+        return html
+
+    def next_figure(source: str, pos: int) -> tuple[int, int] | None:
+        open_match = re.search(r"<figure\b[^>]*>", source[pos:], flags=re.I)
+        if open_match is None:
+            return None
+        start = pos + open_match.start()
+        cursor = pos + open_match.end()
+        depth = 1
+        while depth and cursor < len(source):
+            token = re.search(r"</?figure\b[^>]*>", source[cursor:], flags=re.I)
+            if token is None:
+                return None
+            raw = token.group(0)
+            cursor = cursor + token.end()
+            depth += -1 if raw.lower().startswith("</") else 1
+        return None if depth else (start, cursor)
+
+    out: list[str] = []
+    pos = 0
+    while True:
+        span = next_figure(html, pos)
+        if span is None:
+            out.append(html[pos:])
+            break
+        start, end = span
+        before = html[pos:start]
+        figure = html[start:end]
+        # Is this figure inside an open <p>? Look at unclosed <p> in `before`.
+        opens = list(re.finditer(r"<p\b[^>]*>", before, flags=re.I))
+        closes = list(re.finditer(r"</p>", before, flags=re.I))
+        inside = bool(opens) and (not closes or opens[-1].start() > closes[-1].start())
+        if not inside:
+            out.append(before)
+            out.append(figure)
+            pos = end
+            continue
+        open_match = opens[-1]
+        head = before[: open_match.start()]
+        open_tag = open_match.group(0)
+        pre = before[open_match.end() :]
+        # after figure: consume through the closing </p> of this paragraph
+        close = re.search(r"</p>", html[end:], flags=re.I)
+        if close is None:
+            out.append(before)
+            out.append(figure)
+            pos = end
+            continue
+        tail = html[end : end + close.start()]
+        pos = end + close.end()
+        out.append(head)
+        if pre.strip():
+            out.append(f"{open_tag}{pre}</p>")
+        out.append(figure)
+        if tail.strip():
+            out.append(f"{open_tag}{tail}</p>")
+    cleaned = "".join(out)
+    cleaned = re.sub(r"<p\b[^>]*>\s*</p>", "", cleaned, flags=re.I)
+    return cleaned
+
+
 def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
     """有可读识别结果的本地图：群聊先显示整理后的对话，原图是一行「原图 N」链接。
 
@@ -350,7 +419,7 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
         cleaned = strip_breaks_before_comments(value)
         cleaned = re.sub(r"(?:<br\s*/?>\s*)+(?=<figure\b)", "", cleaned, flags=re.I)
         cleaned = re.sub(r"(?<=</figure>)\s*(?:<br\s*/?>\s*)+", "", cleaned, flags=re.I)
-        return cleaned
+        return _hoist_figures_out_of_paragraphs(cleaned)
 
     if not html or not texts:
         return finish(html or "")
@@ -396,7 +465,13 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
             continue
         group = [index]
         nxt = index + 1
-        while nxt < len(spans) and parsed[nxt] is not None and parsed[nxt]["shot"].kind == "dialogue":
+        family = item["shot"].family or "chat"
+        while (
+            nxt < len(spans)
+            and parsed[nxt] is not None
+            and parsed[nxt]["shot"].kind == "dialogue"
+            and (parsed[nxt]["shot"].family or "chat") == family
+        ):
             group.append(nxt)
             nxt += 1
         turns = [turn for cursor in group for turn in parsed[cursor]["shot"].turns]
