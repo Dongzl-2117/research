@@ -112,6 +112,65 @@ def test_leftover_guest_attachment_is_not_an_eligible_owner_image(monkeypatch, t
     assert conn.commits == 0
 
 
+def test_recomposition_uses_only_images_referenced_by_the_owner_projection():
+    owner = article()
+
+    class RefreshConnection(Connection):
+        def execute(self, sql, params):
+            query = " ".join(sql.split())
+            self.calls.append((query, params))
+            if query.startswith("SELECT a.id,") or query.startswith("SELECT ocr_text,"):
+                return Rows([owner])
+            if query.startswith("SELECT 1 FROM article_images"):
+                return Rows([{"found": 1}])
+            if query.startswith("SELECT t.text, i.original_ref"):
+                return Rows([
+                    {"text": "这是所有者正文里的图片文字。", "original_ref": "owner.png"},
+                    {"text": "这是旧网友评论附件，绝对不能泄露。", "original_ref": "old-comment.png"},
+                ])
+            if query.startswith("UPDATE articles SET ocr_text"):
+                owner["ocr_text"], owner["ocr_hash"], version, _article_id = params
+                owner["raw_meta"]["ocr_role_version"] = version
+                return Rows([])
+            raise AssertionError(query)
+
+    conn = RefreshConnection([owner])
+    shown, digest = ocr.article_ocr(conn, 1)
+    assert shown == "这是所有者正文里的图片文字。"
+    assert digest == ocr.hash_ocr(shown)
+    assert "网友" not in shown
+    assert owner["raw_meta"]["ocr_role_version"] == 3
+    del owner["raw_meta"]["ocr_role_version"]
+    # An unchanged text hash does not prove it used the conservative pipeline.
+    assert ocr.refresh_article_ocr(conn, 1) == digest
+    assert owner["raw_meta"]["ocr_role_version"] == 3
+    assert sum(query.startswith("UPDATE articles SET ocr_text") for query, _ in conn.calls) == 2
+    assert ocr.refresh_article_ocr(conn, 1) == digest
+    assert sum(query.startswith("UPDATE articles SET ocr_text") for query, _ in conn.calls) == 2
+
+
+def test_cache_only_legacy_author_labels_never_become_fresh_model_proof():
+    row = {
+        "id": 1, "source_id": "fangwei-mp", "source_kind": "wechat_mp", "raw_meta": {},
+        "body_md": "正文。", "ocr_text": "方伟：过去可能只是按左右位置猜的旧缓存。", "ocr_hash": "old",
+    }
+
+    class CacheOnly(Connection):
+        def execute(self, sql, params):
+            query = " ".join(sql.split())
+            self.calls.append((query, params))
+            if query.startswith("SELECT a.id,"):
+                return Rows([row])
+            if query.startswith("SELECT 1 FROM article_images"):
+                return Rows([])
+            raise AssertionError("cached-only path must not read/write derived OCR: " + query)
+
+    conn = CacheOnly([row])
+    assert ocr.article_ocr(conn, 1) == ("", "")
+    assert row["ocr_text"] == "方伟：过去可能只是按左右位置猜的旧缓存。"
+    assert conn.commits == 0
+
+
 def test_shared_image_updates_only_eligible_selected_references(monkeypatch, tmp_path):
     owner = article()
     guest = article("owner_reply_context")
@@ -128,7 +187,8 @@ def test_shared_image_updates_only_eligible_selected_references(monkeypatch, tmp
     monkeypatch.setattr(ocr, "refresh_article_ocr", lambda conn, article_id: refreshed.append(article_id))
     report = ocr.run_ocr(conn, tmp_path, 5, lambda path: "只识别通过身份核验的图片文字。", article_ids=[1])
     assert report["images"] == 1
-    assert chunks == refreshed == [1]
+    assert chunks == [1]
+    assert refreshed == [1]
     assert conn.calls[0][1] == ("shared", [1])
 
 

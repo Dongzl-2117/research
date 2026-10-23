@@ -29,8 +29,8 @@ from researchlib import embeddings
 from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE
 from researchlib.eligibility import (
     TRUSTED_OWNERS,
-    chunk_cache_safe_article,
-    chunk_cache_safe_sql,
+    chunk_provenance_article,
+    chunk_provenance_sql,
     model_cache_safe_sql,
     project_article,
 )
@@ -164,6 +164,9 @@ class Passage:
     semantic_hit: bool = False
     poster_name: str = ""
     poster_role: str = ""
+    article_content_hash: str = ""
+    article_ocr_hash: str = ""
+    article_meta_hash: str = ""
     # 交给模型时补上的前后文（同一篇相邻的块）。引用和链接仍落在这一块上。
     before: str = ""
     after: str = ""
@@ -186,6 +189,7 @@ class Retrieval:
     # 只问一篇或一个目录时：这篇的章节标题、或目录下各篇的标题。模型据此知道自己看到的是哪一部分。
     outline: list[str] = field(default_factory=list)
     outline_label: str = ""
+    outline_records: list[dict] = field(default_factory=list)
     # 只问一篇时：这篇一共多少字、交给模型的是不是全文。
     whole: bool = True
 
@@ -582,6 +586,8 @@ def analyze(
         next_group = max([t.group for t in terms] + [-1]) + 1
         for original, alternatives in expansions.items():
             base = next((t for t in terms if t.text == original), None)
+            if base is not None and base.kind in ("company", "phrase"):
+                continue
             for alternative in alternatives[:4]:
                 alternative = (alternative or "").strip()
                 if not alternative or len(alternative) > 20 or any(alternative in (t.forms or [t.text]) for t in terms):
@@ -595,10 +601,10 @@ def analyze(
 
     terms = _fill_stats(conn, terms)
     # 问题很长时只留信息量最大的十几个词，避免把整句话都拿去召回。
-    originals = [t for t in terms if t.kind != "expansion"]
-    if len(originals) > 12:
-        keep = {id(t) for t in sorted(originals, key=lambda t: t.idf, reverse=True)[:12]}
-        terms = [t for t in terms if t.kind == "expansion" or id(t) in keep]
+    words = [t for t in terms if t.kind == "word"]
+    if len(words) > 12:
+        keep = {id(t) for t in sorted(words, key=lambda t: t.idf, reverse=True)[:12]}
+        terms = [t for t in terms if t.kind != "word" or id(t) in keep]
     content = [t for t in terms if t.kind in ("word", "phrase")]
     recent = any(word in raw for word in RECENT_WORDS)
     timeline = any(word in raw for word in TIMELINE_WORDS)
@@ -627,13 +633,24 @@ def preset_query(query: Query) -> Query:
 
 
 # 译文块的标题用中文标题（有的话），打分时的标题上下文和页面上显示的都是中文。
-_SELECT_COLUMNS = """
+def _poster_role_sql(alias: str = "a") -> str:
+    known = ", ".join("'" + source_id + "'" for source_id in TRUSTED_OWNERS)
+    return (
+        f"CASE WHEN {alias}.source_id IN ({known}) THEN CASE"
+        f" WHEN {alias}.raw_meta->'zsxq_identity'->>'kind' = 'owner_reply_context'"
+        " THEN 'owner_reply_context' ELSE 'owner' END"
+        f" ELSE {alias}.raw_meta->>'poster_role' END"
+    )
+
+
+_SELECT_COLUMNS = f"""
 c.article_id, c.ord, c.heading, c.body, c.lang, c.anchor,
 CASE WHEN c.lang = 'zh' THEN coalesce(
   nullif((SELECT tr.title_zh FROM article_translations tr WHERE tr.article_id = c.article_id), ''), a.title
 ) ELSE a.title END AS title,
 a.source_id, a.published_at,
-a.raw_meta->>'poster_name' AS poster_name, a.raw_meta->>'poster_role' AS poster_role
+a.raw_meta->>'poster_name' AS poster_name, {_poster_role_sql()} AS poster_role,
+a.content_hash AS article_content_hash, a.ocr_hash AS article_ocr_hash, md5(a.raw_meta::text) AS article_meta_hash
 """
 
 
@@ -656,12 +673,7 @@ def _article_match(tsq: str) -> str:
 
 
 def _chunk_safe_sql(alias: str = "a", chunk_alias: str = "c") -> str:
-    return (
-        f"({chunk_cache_safe_sql(alias, chunk_alias)} AND (coalesce({chunk_alias}.lang, '') <> 'zh'"
-        f" OR EXISTS (SELECT 1 FROM article_translations _current_translation"
-        f" WHERE _current_translation.article_id = {alias}.id AND _current_translation.complete"
-        f" AND _current_translation.content_hash = {alias}.content_hash)))"
-    )
+    return chunk_provenance_sql(alias, chunk_alias)
 
 
 def _safe_chunk_rows(conn, rows: list[dict]) -> list[dict]:
@@ -670,16 +682,34 @@ def _safe_chunk_rows(conn, rows: list[dict]) -> list[dict]:
     if not owner_ids:
         return list(rows)
     articles = {row["id"]: row for row in conn.execute(
-        "SELECT id, source_id, title, body_md, body_text, raw_meta FROM articles WHERE id = ANY(%s)",
+        "SELECT id, source_id, title, body_md, body_text, raw_meta, content_hash, ocr_text"
+        " FROM articles WHERE id = ANY(%s)",
         (owner_ids,),
     ).fetchall()}
+    translation_ids = sorted({row["article_id"] for row in rows if row["article_id"] in articles
+                              and row.get("lang") == "zh"})
+    translations = {row["article_id"]: row for row in conn.execute(
+        "SELECT article_id, content_hash, complete, title_zh, body_text FROM article_translations"
+        " WHERE article_id = ANY(%s) AND lang = 'zh'", (translation_ids,),
+    ).fetchall()} if translation_ids else {}
+    image_ids = sorted({row["article_id"] for row in rows if row["article_id"] in articles
+                        and row.get("lang") == "ocr"})
+    images: dict[int, list[dict]] = defaultdict(list)
+    if image_ids:
+        for item in conn.execute(
+            "SELECT i.article_id, i.content_hash, i.original_ref, t.text FROM article_images i"
+            " JOIN image_texts t ON t.content_hash = i.content_hash WHERE i.article_id = ANY(%s)", (image_ids,),
+        ).fetchall():
+            images[item["article_id"]].append(item)
     safe = []
     for row in rows:
         if row.get("source_id") not in TRUSTED_OWNERS or row.get("_projection_verified"):
             safe.append(row)
             continue
         article = articles.get(row["article_id"])
-        if article is not None and chunk_cache_safe_article(article, row):
+        if article is not None and chunk_provenance_article(
+            article, row, translation=translations.get(row["article_id"]), images=images.get(row["article_id"], ())
+        ):
             projected = project_article(article)
             safe.append({**row, "_projection_verified": True, "poster_role": projected["raw_meta"]["poster_role"],
                          "title": projected.get("title") or row["title"]})
@@ -792,7 +822,7 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
     params: dict = {}
     words = Query(**{**query.__dict__, "terms": [t for t in query.terms if t.kind != "company"]})
     tsq = _group_tsquery(words, params, only_selective=False, operator="&&", prefix="title") if words.terms else ""
-    company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
+    company_ids = _query_company_ids(query)
     where, scope_params = scope_clause(scope)
     params.update(scope_params)
     params["title_limit"] = limit
@@ -938,7 +968,7 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
 
     groups = {t.group for t in query.terms if t.group >= 0}
     word_terms = [t for t in query.terms if t.kind in ("word", "phrase", "expansion")]
-    company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
+    company_ids = _query_company_ids(query)
     if scope.company_id is not None and scope.company_id not in company_ids:
         company_ids.append(scope.company_id)
     enough = enough if enough is not None else limit
@@ -1041,7 +1071,7 @@ def semantic_candidates(
     if vector is None:
         return rows, {}
     literal = embeddings.literal(vector)
-    company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
+    company_ids = _query_company_ids(query)
     try:
         with conn.transaction():
             sims = _vector_lookup(conn, kind, literal, scope, rows, pool, company_ids)
@@ -1091,6 +1121,13 @@ def semantic_scores(sims: dict[tuple[int, int], float]) -> dict[tuple[int, int],
             break
         scores[key] = 1.0 - rank / SEMANTIC_RANKS
     return scores
+
+
+def _query_company_ids(query: Query) -> list[int]:
+    """Hard entity identity survives word ranking, expansions, and budget cuts."""
+    return sorted({int(company["id"]) for company in query.companies}
+                  | {int(term.company_id) for term in query.terms
+                     if term.kind == "company" and term.company_id is not None})
 
 
 def _company_lookup(query: Query, company_id: int | None) -> dict:
@@ -1234,7 +1271,7 @@ def score_rows(
 ):
     """semantic：{(文章, 块号): 语义分 0～1}。有它时关键词分和语义分按 LEXICAL_WEIGHT 融合，见 fuse_semantic。"""
     _total, avgdl = _corpus_stats(conn)
-    company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
+    company_ids = _query_company_ids(query)
     focus_ids = list(company_ids)
     if scope.company_id is not None and scope.company_id not in focus_ids:
         focus_ids.append(scope.company_id)
@@ -1310,9 +1347,9 @@ def score_rows(
         for term in query.terms:
             if term.kind == "company" and term.company_id is not None:
                 entity_groups[term.group].append(term.company_id)
-        if entity_groups and not any(
+        if company_ids and not any(
             (row["article_id"], company_id) in depths or company_hits.get(company_id)
-            for ids in entity_groups.values() for company_id in ids
+            for company_id in company_ids
         ):
             continue
         score = 0.0
@@ -1432,6 +1469,9 @@ def score_rows(
                 semantic=sem,
                 poster_name=row.get("poster_name") or "",
                 poster_role=row.get("poster_role") or "",
+                article_content_hash=row.get("article_content_hash") or "",
+                article_ocr_hash=row.get("article_ocr_hash") or "",
+                article_meta_hash=row.get("article_meta_hash") or "",
             )
         )
     return fuse_semantic(passages, multipliers)
@@ -1477,6 +1517,9 @@ def _passage_from_row(row: dict) -> Passage:
         anchor=row.get("anchor") or "",
         poster_name=row.get("poster_name") or "",
         poster_role=row.get("poster_role") or "",
+        article_content_hash=row.get("article_content_hash") or "",
+        article_ocr_hash=row.get("article_ocr_hash") or "",
+        article_meta_hash=row.get("article_meta_hash") or "",
     )
 
 
@@ -1620,7 +1663,8 @@ def retrieve(
         attach_context(conn, picked, int(extra), span=2 if scope.tree_id is not None else 1)
     found = Retrieval(picked, query.companies, query.authors, effective, query.highlight_terms(), query, len(rows))
     if scope.tree_id is not None:
-        found.outline = tree_titles(conn, effective)
+        found.outline_records = tree_outline(conn, effective)
+        found.outline = [row["title"] for row in found.outline_records]
         found.outline_label = "这个目录下的文章"
     return found
 
@@ -1749,13 +1793,13 @@ def _ord_range(ord_: int) -> tuple[int, int]:
     return 0, TRANSLATION_ORD_BASE
 
 
-def tree_titles(conn, scope: Scope, limit: int = 200) -> list[str]:
+def tree_outline(conn, scope: Scope, limit: int = 200) -> list[dict]:
     """目录下各篇的标题，按目录次序。"""
     where, params = scope_clause(scope)
     params["tree_limit"] = limit
     rows = conn.execute(
         f"""
-        SELECT a.title
+        SELECT a.id AS article_id, a.title
         FROM articles a
         LEFT JOIN doc_tree t ON t.article_id = a.id
         WHERE {where}
@@ -1764,7 +1808,11 @@ def tree_titles(conn, scope: Scope, limit: int = 200) -> list[str]:
         """,
         params,
     ).fetchall()
-    return [row["title"] for row in rows if row["title"]]
+    return [dict(row) for row in rows if row["title"]]
+
+
+def tree_titles(conn, scope: Scope, limit: int = 200) -> list[str]:
+    return [row["title"] for row in tree_outline(conn, scope, limit)]
 
 
 
@@ -1792,8 +1840,6 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     exact_rows = _full_match_articles(conn, query, effective)
     exact_ids = {row["id"] for row in exact_rows}
     rows = _candidates(conn, query, effective, limit=2000, enough=2000)
-    have = {row["article_id"] for row in rows}
-    rows = list(rows) + _missing_match_rows(conn, query, [row["id"] for row in exact_rows if row["id"] not in have])
     semantic: dict[tuple[int, int], float] = {}
     if query.content_terms:
         rows, semantic = semantic_candidates(conn, query, effective, rows)
@@ -1801,26 +1847,16 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     by_article: dict[int, list[Passage]] = defaultdict(list)
     for passage in scored:
         by_article[passage.article_id].append(passage)
-    company_groups = {t.group for t in query.terms if t.group >= 0 and t.kind == "company"}
     titles = {p.article_id: p.title for p in scored}
     hits: list[ArticleHit] = []
     for article_id, items in by_article.items():
         items.sort(key=lambda p: p.score, reverse=True)
         title = titles.get(article_id, "")
-        matched_groups = set()
-        for term in query.terms:
-            if term.group < 0:
-                continue
-            if any(form in p.matched for p in items for form in term.forms):
-                matched_groups.add(term.group)
-            elif any(form and (form in title or form.lower() in title.lower()) for form in term.forms):
-                matched_groups.add(term.group)
         full = article_id in exact_ids
         # 词没写全、但语义上就是在谈这件事的（「costco 商业模式」→ 讲会员费和低毛利的段落），
         # 问到的公司又确实提到了，也排进前面那一档，页面上标「语义相关」。
         by_meaning = (
             not full
-            and company_groups <= matched_groups
             and max(p.semantic for p in items) >= SEMANTIC_STRONG
         )
         score = items[0].score + 0.3 * sum(p.score for p in items[1:3])
@@ -1836,37 +1872,50 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     if partial_hits:
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
-    # Exact rows without a scored snippet (e.g. title-only hits) still have a
-    # readable result. They must remain reachable on later pages.
-    hit_ids = {hit.article_id for hit in hits}
-    for row in rows:
-        if row["article_id"] in exact_ids and row["article_id"] not in hit_ids:
+    # Rank the bounded candidate pool once, identically on every page. Exact
+    # matches outside that pool follow in stable date/ID order. Hydrate only
+    # the fallback IDs actually needed for this page, not the entire corpus.
+    strong = sorted(full_hits + [hit for hit in partial_hits if hit.semantic], key=lambda hit: -hit.score)
+    weak = [hit for hit in partial_hits if not hit.semantic]
+    strong_ids = {hit.article_id for hit in strong}
+    fallback_ids = [row["id"] for row in exact_rows if row["id"] not in strong_ids]
+    fallback_start = max(0, offset - len(strong))
+    fallback_end = min(len(fallback_ids), max(0, offset + limit - len(strong)))
+    page_fallback_ids = fallback_ids[fallback_start:fallback_end]
+    fallback_rows = {row["article_id"]: row for row in _missing_match_rows(conn, query, page_fallback_ids)}
+    fallback_hits = []
+    for article_id in page_fallback_ids:
+        if row := fallback_rows.get(article_id):
             passage = _passage_from_row(row)
-            full_hits.append(ArticleHit(
+            fallback_hits.append(ArticleHit(
                 passage.article_id, passage.title, passage.source_id, passage.published_at,
                 0.0, True, [passage], poster_name=passage.poster_name, poster_role=passage.poster_role,
             ))
-            hit_ids.add(passage.article_id)
     counts: dict[str, int] = {}
     for row in exact_rows:
         counts[row["source_id"]] = counts.get(row["source_id"], 0) + 1
-    total = len(exact_ids)
-    ordered = sorted(full_hits + partial_hits, key=lambda hit: (hit.full or hit.semantic, hit.score), reverse=True)
+    selected = list(strong[offset:offset + limit])
+    selected.extend(fallback_hits)
+    weak_offset = max(0, offset - len(strong) - len(fallback_ids))
+    weak_end = max(0, offset + limit - len(strong) - len(fallback_ids))
+    selected.extend(weak[weak_offset:weak_end])
     return SearchResult(
-        total=total,
-        partial=sum(not hit.semantic for hit in partial_hits),
-        semantic_total=sum(hit.semantic for hit in partial_hits),
-        hits=ordered[offset : offset + limit],
+        total=len(exact_ids),
+        partial=len(weak),
+        semantic_total=sum(hit.semantic for hit in strong),
+        hits=selected,
         terms=query.highlight_terms(),
         query=query,
         counts=counts,
-        available=len(ordered),
+        available=len(strong) + len(fallback_ids) + len(weak),
     )
 
 
 def _full_match_where(query: Query, scope: Scope) -> tuple[str, dict]:
     where, params = scope_clause(scope)
     conditions = [where]
+    if entity_ids := _query_company_ids(query):
+        conditions.append(_entity_sql(entity_ids, params, "query_entities"))
     groups: dict[int, list[Term]] = defaultdict(list)
     for term in query.terms:
         if term.group >= 0:
@@ -1925,7 +1974,8 @@ def _missing_match_rows(conn, query: Query, article_ids: list[int]) -> list[dict
                coalesce(c.heading, '') AS heading, coalesce(c.body, a.title) AS body,
                coalesce(c.lang, '') AS lang, coalesce(c.anchor, '') AS anchor,
                a.title, a.source_id, a.published_at,
-               a.raw_meta->>'poster_name' AS poster_name, a.raw_meta->>'poster_role' AS poster_role
+               a.raw_meta->>'poster_name' AS poster_name, {_poster_role_sql()} AS poster_role,
+a.content_hash AS article_content_hash, a.ocr_hash AS article_ocr_hash, md5(a.raw_meta::text) AS article_meta_hash
         FROM articles a
         LEFT JOIN LATERAL (
           SELECT c.* FROM article_chunks c WHERE c.article_id = a.id AND {_chunk_safe_sql()}
@@ -1944,7 +1994,8 @@ def _author_listing(conn, query: Query, scope: Scope, limit: int, offset: int) -
     rows = conn.execute(
         f"""
         SELECT a.id, a.title, a.source_id, a.published_at,
-               a.raw_meta->>'poster_name' AS poster_name, a.raw_meta->>'poster_role' AS poster_role
+               a.raw_meta->>'poster_name' AS poster_name, {_poster_role_sql()} AS poster_role,
+a.content_hash AS article_content_hash, a.ocr_hash AS article_ocr_hash, md5(a.raw_meta::text) AS article_meta_hash
         FROM articles a WHERE {where}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %(limit)s OFFSET %(offset)s

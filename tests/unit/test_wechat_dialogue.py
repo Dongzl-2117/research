@@ -102,11 +102,12 @@ def test_guest_words_about_fangwei_stay_with_the_guest():
     assert "方伟说得对，同店还有压力，先观望一下" in text
 
 
-def test_unnamed_bubble_in_a_group_chat_is_the_host():
-    """作者自己的绿色气泡不写名字。没有坐标时，不带别人昵称的气泡是方伟。"""
+def test_unnamed_legacy_bubble_in_a_group_chat_has_no_author_proof():
+    """群聊界面和没写昵称都不是绿色证据；历史无颜色的文字保持未确认。"""
     raw = "微信\n9:41\n同店还有压力，先观望一下\n"
     text = present_ocr_pieces([raw])
-    assert text.startswith("方伟：")
+    assert text == "未确认：同店还有压力，先观望一下。"
+    assert "方伟：" not in text
     assert "网友：" not in text
 
 
@@ -207,8 +208,8 @@ def test_live_14886_shots_drop_chrome_and_guest_names():
         "玉鸟集",
     ):
         assert leaked not in text, leaked
-    # 开头没有别人的昵称，是作者自己的绿色气泡。姜禄彦、徐哲航仍是网友。
-    assert text.startswith("方伟：同样是捕抓")
+    # 原始文本没有 RGB：不把开头无昵称的段落猜成方伟；已标名的网友仍保留。
+    assert text.startswith("未确认：同样是捕抓")
     assert "网友：怎么定义古茗做咖啡成功了呢" in text
     assert "网友：数据确实是好的" in text
     assert "网友：并且高密度的门店区域" in text
@@ -242,7 +243,8 @@ def test_live_14879_strips_dylan_and_splits_turns():
     assert "网友：Dylan" not in text
     assert "Dylan" not in text
     assert text.count("网友：") >= 3
-    assert text.count("方伟：") >= 3
+    assert text.count("方伟：") == 1  # 只有明确的「方伟-最近在杭州」署名可归作者。
+    assert text.count("未确认：") >= 2
     assert "方伟：会有一批大模型达到" in text
     assert "方伟-最近在杭州" not in text
     for leaked in ("10:57", "10:43", "10:49", "看十年", "撤回了一条消息"):
@@ -251,8 +253,8 @@ def test_live_14879_strips_dylan_and_splits_turns():
     blocks = text.split("\n\n")
     question = next(block for block in blocks if "@方伟-最近在" in block)
     assert "Opus5.5" not in question
-    assert any(block.startswith("方伟：Opus5.5确实断档领先") for block in blocks)
-    assert any("但大模型的用户体验评价维度" in block and block.startswith("方伟：") for block in blocks)
+    assert any(block.startswith("未确认：Opus5.5确实断档领先") for block in blocks)
+    assert any("但大模型的用户体验评价维度" in block and block.startswith("未确认：") for block in blocks)
     host = next(block for block in blocks if "会有一批大模型达到" in block and block.startswith("方伟："))
     assert host.startswith("方伟：会有一批大模型达到")
 
@@ -310,7 +312,8 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
     assert "游戏潮玩他是一个效率驱动" in page
     assert "agents执行复杂任务" in page
     assert '<span class="who">方伟：</span>会有一批大模型达到' in page
-    assert page.count('<span class="who">方伟：</span>') >= 3
+    assert page.count('<span class="who">方伟：</span>') == 1
+    assert page.count('<span class="who">未确认：</span>') >= 2
     assert page.count('<span class="who">网友：</span>') >= 3
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     assert "Dylan" not in page
@@ -443,8 +446,8 @@ def test_account_bar_is_the_quote_reply_divider_not_a_bubble():
     assert "方伟：零售的本分是帮消费者省钱。" in marked
 
 
-def test_product_and_chart_shots_are_links_only():
-    """亚马逊 / Temu 商品图和图表不套对话，只留原图链接。"""
+def test_product_links_and_neutral_chart_fallback_do_not_become_dialogue():
+    """商品界面只留原图；图表保留中性摘录与原图，不套对话。"""
     assert parse_shot(AMAZON_PRODUCT).kind == "media"
     assert parse_shot(META_CHART).kind == "media"
     a, c = "e5" * 32, "ad" * 32
@@ -462,7 +465,8 @@ def test_product_and_chart_shots_are_links_only():
     )
     assert "方伟：" not in page and "网友：" not in page
     assert "运动水杯" not in page and "Sponsored" not in page
-    assert "Builtwith" not in page
+    assert "图表/资料摘录（非对话，作者未确认）" in page
+    assert "MetaAds$223B" in page
     assert "原图 1" in page and "原图 2" in page
     assert "点击看原图" not in page
     assert page.count('class="ocr-shot"') == 1
@@ -543,7 +547,8 @@ def test_moments_then_group_not_one_blob():
     assert parse_shot(GROUP_RETAIL).family == "group"
     assert "什么才叫做" not in render_turns(parse_shot(truncated).turns)
     text = present_ocr_pieces([truncated, GROUP_RETAIL])
-    assert text.count("方伟：") == 2
+    assert text.count("方伟：") == 1
+    assert "未确认：美国的零售历史" in text
     assert text.count("网友：") == 1
     guest = next(block for block in text.split("\n\n") if "不太看好" in block)
     assert guest.startswith("网友：")
@@ -965,7 +970,7 @@ def test_rewash_selector_ignores_zanshang_inside_a_sentence():
 def test_group_chat_can_still_say_zanshang_in_a_sentence():
     raw = "微信\n9:41\n这个赞赏的设计并不值钱，用户不会为它付钱。\n"
     text = present_ocr_pieces([raw])
-    assert text.startswith("方伟：")
+    assert text.startswith("未确认：")
     assert "赞赏的设计并不值钱" in text
     recommend = "微信\n9:41\n推荐这只股票，先别追高。\n"
     assert "推荐这只股票，先别追高" in present_ocr_pieces([recommend])

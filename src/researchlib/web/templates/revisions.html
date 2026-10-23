@@ -4,6 +4,7 @@
   <h1>{{ article.title }}</h1>
   <p class="quiet"><a href="/articles/{{ article.id }}">回到文章</a></p>
 </header>
+{% if identity_notice %}<p class="banner" role="status">{{ identity_notice }}</p>{% endif %}
 {% if unverified_history %}<p class="banner" role="status">{{ unverified_history }} 条历史版本缺少可核实的作者来源，暂不展示；原始记录仍保留。</p>{% endif %}
 {% if entries %}
 {% for entry in entries %}

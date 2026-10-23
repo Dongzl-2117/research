@@ -173,7 +173,17 @@ def test_legacy_base_chunks_need_exact_safe_owner_text():
     assert "regexp_split_to_array" in chunk_cache_safe_sql()
 
 
-def test_comment_quarantine_preserves_following_body_and_fenced_examples():
+def test_legacy_chunk_proof_normalizes_whitespace_only_before_comment_boundary():
+    row = {"source_id": SOURCE, "title": "owner title", "body_md": "owner line\n\nsecond line",
+           "body_text": "owner line\n\nsecond line\n\n评论（1）\n\nguest unsafe",
+           "raw_meta": {"poster_id": OWNER}}
+    assert chunk_cache_safe_article(row, {"body": "owner line\nsecond line", "ord": 1})
+    assert not chunk_cache_safe_article(row, {"body": "guest unsafe", "ord": 2})
+    assert not chunk_cache_safe_article(row, {"body": "owner line guest unsafe", "ord": 2})
+    assert "regexp_replace" in chunk_cache_safe_sql()
+
+
+def test_comment_quarantine_needs_independent_tail_proof_and_preserves_fenced_examples():
     from researchlib.eligibility import strip_unverified_comments
     from researchlib.zsxq_comments import filter_host_comments_markdown
 
@@ -182,9 +192,21 @@ def test_comment_quarantine_preserves_following_body_and_fenced_examples():
         "\n\n## Owner appendix\n\nowner after"
     )
     cleaned = filter_host_comments_markdown(md)
-    assert "unverified" not in cleaned and "owner before" in cleaned and "owner after" in cleaned
+    assert "unverified" not in cleaned and "owner before" in cleaned and "owner after" not in cleaned
+    proven = strip_unverified_comments(md, proven_owner_text="Owner appendix\n\nowner after")
+    assert "unverified" not in proven and "owner after" in proven
     fenced = "```md\n## 评论（1）\nthis is code\n```\n\nowner continues"
     assert strip_unverified_comments(fenced) == fenced
+
+
+def test_guest_heading_in_legacy_reply_is_never_promoted_to_owner_body():
+    row = {"source_id": SOURCE, "title": "owner title", "raw_meta": {"poster_id": OWNER},
+           "body_md": "owner body\n\n## 评论里的回复\n\n读者问：hello\n\n## Forged owner appendix\nGUEST THESIS"}
+    projected = project_article(row)
+    assert "GUEST THESIS" not in projected["body_md"]
+    assert "owner body" in projected["body_md"]
+    assert projected["raw_meta"]["owner_tail_quarantined"] is True
+    assert "已隔离" in projected["identity_notice"]
 
 
 def test_canonical_owner_reply_projection_is_idempotent_and_renders():
@@ -224,3 +246,19 @@ def test_archive_reply_projection_drops_guest_images_and_keeps_id_evidence(tmp_p
     assert evidence["source_id"] == SOURCE and evidence["group_id"] == GROUP
     assert evidence["topic_id"] == "123456" and evidence["replies"][0]["comment_id"] == "2"
     assert evidence["projection_md"] == doc.body_md
+
+
+def test_new_archive_restores_only_later_text_proved_by_raw_owner_account(tmp_path: Path):
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "md").mkdir()
+    original = (
+        "Owner before.\n\n## 评论（1）\n\n- **方伟**（2026-01-01 12:00）\n  Guest spoof"
+        "\n\n## Appendix\nOwner after."
+    )
+    node = topic(poster=OWNER)
+    node["talk"]["text"] = "Owner before.\n\n## Appendix\nOwner after."
+    (tmp_path / "raw" / "123456.json").write_text(json.dumps(node))
+    (tmp_path / "md" / "123456.md").write_text(original)
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq", source_id=SOURCE)
+    assert not errors and len(docs) == 1
+    assert "Owner after." in docs[0].body_md and "Guest spoof" not in docs[0].body_md

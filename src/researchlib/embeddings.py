@@ -27,7 +27,13 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 
-from researchlib.eligibility import model_cache_safe_sql
+from researchlib.eligibility import (
+    chunk_provenance_article,
+    chunk_provenance_sql,
+    model_cache_safe_article,
+    model_cache_safe_sql,
+)
+from researchlib.empty_answer import is_suppressed, visible_sql
 
 logger = logging.getLogger("researchlib.embeddings")
 
@@ -255,13 +261,68 @@ def _pending(conn, limit: int, model: str) -> list[dict]:
         JOIN articles a ON a.id = c.article_id
         LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
         WHERE a.duplicate_of IS NULL
+          AND {visible_sql("a")}
           AND {model_cache_safe_sql("a")}
+          AND {chunk_provenance_sql("a", "c")}
           AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %s)
         ORDER BY a.published_at DESC NULLS LAST, c.article_id, c.ord
         LIMIT %s
         """,
         (model, limit),
     ).fetchall()
+
+
+def _current_rows(conn, candidates: list[dict]) -> list[dict]:
+    """Re-read proof immediately before an external embedding request."""
+    if not candidates:
+        return []
+    rows = conn.execute(
+        f"""
+        SELECT c.article_id, c.ord, c.heading, c.body, c.lang, c.anchor, a.title,
+               a.source_id, a.raw_meta, a.body_md AS article_body_md,
+               a.body_text AS article_body_text, a.ocr_text AS article_ocr_text, a.content_hash,
+               md5({_SOURCE_TEXT}) AS hash
+        FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
+        JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
+        JOIN articles a ON a.id = c.article_id
+        WHERE a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}
+          AND {visible_sql("a")}
+          AND {chunk_provenance_sql("a", "c")}
+        """,
+        ([row["article_id"] for row in candidates], [row["ord"] for row in candidates]),
+    ).fetchall()
+    return [row for row in rows if _current_row_proven(conn, row)]
+
+
+def _current_row_proven(conn, row: dict) -> bool:
+    if not row.get("source_id") or "article_body_md" not in row:
+        return False
+    article = {
+        "id": row["article_id"], "source_id": row["source_id"], "raw_meta": row.get("raw_meta"),
+        "title": row.get("title"), "body_md": row["article_body_md"],
+        "body_text": row.get("article_body_text") or "", "content_hash": row.get("content_hash"),
+        "ocr_text": row.get("article_ocr_text") or "",
+    }
+    if is_suppressed(article["raw_meta"]) or not model_cache_safe_article(article):
+        return False
+    lang, ordinal = row.get("lang") or "", int(row.get("ord") or 0)
+    if lang == "" and ordinal < 10000:
+        return chunk_provenance_article(article, row)
+    if lang == "zh" and 10000 <= ordinal < 20000:
+        current = conn.execute(
+            "SELECT content_hash, complete, title_zh, body_text FROM article_translations WHERE article_id = %s",
+            (row["article_id"],),
+        ).fetchone()
+        return chunk_provenance_article(article, row, translation=current)
+    if lang == "ocr" and ordinal >= 20000:
+        current = conn.execute(
+            "SELECT i.original_ref, i.content_hash, t.text FROM article_images i JOIN image_texts t "
+            "ON t.content_hash = i.content_hash WHERE i.article_id = %s "
+            "AND %s = 'img-' || left(i.content_hash, 12)",
+            (row["article_id"], row.get("anchor") or ""),
+        ).fetchall()
+        return chunk_provenance_article(article, row, images=current)
+    return False
 
 
 def backfill(
@@ -282,7 +343,7 @@ def backfill(
     done = 0
     while limit is None or done < limit:
         size = batch if limit is None else min(batch, limit - done)
-        rows = _pending(conn, size, model)
+        rows = _current_rows(conn, _pending(conn, size, model))
         if not rows:
             break
         texts = ["\n".join(part for part in (r["title"], r["heading"], r["body"]) if part) for r in rows]
@@ -315,9 +376,11 @@ def coverage(conn) -> tuple[int, int]:
                 JOIN article_chunks c ON c.article_id = e.article_id AND c.ord = e.ord
                 JOIN articles a ON a.id = c.article_id
                 WHERE a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}
+                  AND {visible_sql("a")} AND {chunk_provenance_sql("a", "c")}
                   AND e.text_hash = md5({_SOURCE_TEXT})) AS done,
                (SELECT count(*) FROM article_chunks c JOIN articles a ON a.id = c.article_id
-                WHERE a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}) AS total
+                WHERE a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}
+                  AND {visible_sql("a")} AND {chunk_provenance_sql("a", "c")}) AS total
         """
     ).fetchone()
     return int(row["done"]), int(row["total"])

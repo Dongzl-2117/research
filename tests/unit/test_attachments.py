@@ -5,6 +5,7 @@ import pytest
 from researchlib.attachments import (
     attachment_mapping,
     collect_attachment_refs,
+    filter_attachment_manifest,
     relative_attachment_path,
     resolve_article_attachment,
     rewrite_markdown_attachment_links,
@@ -81,6 +82,34 @@ def test_import_manifest_mapping_and_readonly_resolution(tmp_path):
     before = result[0].stat().st_mtime_ns
     assert resolve_article_attachment(data, "feishu", meta, filename) == result
     assert result[0].stat().st_mtime_ns == before
+
+
+def test_removed_comment_attachment_is_not_authorized_by_old_manifest(tmp_path):
+    data, meta, entry = _stored(tmp_path)
+    filename = Path(entry["storage_path"]).name
+    assert resolve_article_attachment(data, "feishu", meta, filename, body_md="Current owner body") is None
+    assert resolve_article_attachment(
+        data, "feishu", meta, filename, body_md="Owner's [report](files/report.pdf)"
+    ) is not None
+    assert (data / "attachments" / entry["storage_path"]).is_file()
+
+
+@pytest.mark.parametrize("body", [
+    "`[guest](files/report.pdf)`",
+    "```md\n[guest](files/report.pdf)\n```",
+    "[unused]: files/report.pdf",
+    '<pre><a href="files/report.pdf">code</a></pre>',
+    '<script>const x = \'<a href="files/report.pdf">not a link</a>\';</script>',
+])
+def test_code_or_unused_link_definition_does_not_authorize_attachment(tmp_path, body):
+    _data, meta, _entry = _stored(tmp_path)
+    assert "local_attachments" not in filter_attachment_manifest(meta, body)
+
+
+def test_visible_reference_style_owner_link_stays_authorized(tmp_path):
+    _data, meta, _entry = _stored(tmp_path)
+    body = "[Owner report][pdf]\n\n[pdf]: files/report.pdf"
+    assert filter_attachment_manifest(meta, body)["local_attachments"] == meta["local_attachments"]
 
 
 @pytest.mark.parametrize("filename", ["../report.pdf", "%2e%2e/report.pdf", "/etc/passwd", "a" * 64 + ".html"])

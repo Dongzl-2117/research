@@ -32,6 +32,7 @@ from researchlib.eligibility import (
     model_cache_safe_sql,
     project_article,
 )
+from researchlib.model_inputs import OCR_ROLE_VERSION, ocr_cache_safe_article
 from researchlib.ocr_bubbles import bubble_color
 from researchlib.wechat_dialogue import (
     BUBBLE_GUEST,
@@ -291,14 +292,21 @@ def refresh_article_ocr(conn, article_id: int) -> str:
     ])
     digest = hash_ocr(text)
     current = conn.execute(
-        "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
+        "SELECT ocr_text, ocr_hash, raw_meta FROM articles WHERE id = %s",
         (article_id,),
     ).fetchone()
-    if current is not None and (current["ocr_text"] or "") == text and (current["ocr_hash"] or "") == digest:
+    if (
+        current is not None and (current["ocr_text"] or "") == text
+        and (current["ocr_hash"] or "") == digest and ocr_cache_safe_article(current)
+    ):
         return digest
     conn.execute(
-        "UPDATE articles SET ocr_text = %s, ocr_hash = %s WHERE id = %s",
-        (text, digest, article_id),
+        """
+        UPDATE articles SET ocr_text = %s, ocr_hash = %s,
+            raw_meta = jsonb_set(coalesce(raw_meta, '{}'::jsonb), '{ocr_role_version}', to_jsonb(%s::int), true)
+        WHERE id = %s
+        """,
+        (text, digest, OCR_ROLE_VERSION, article_id),
     )
     return digest
 
@@ -308,7 +316,8 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
 
     这篇还挂着 image_texts 时，先按当前规则从原始识别重写 articles.ocr_text。
     阅读页本来就现解析 image_texts；观点如果只重跑库里已经写成「方伟：」的旁路，
-    账号栏已经被拿掉，引用回复分不回来。没有图时，仍把库里的旁路再整理一次。
+    账号栏已经被拿掉，引用回复分不回来。没有原始 image_texts 时不使用旧旁路：
+    旧「方伟：」可能是按位置猜出来的，不能当作新模型输入的作者证据。
     """
     article = _ocr_article(conn, article_id)
     if not _ocr_allowed_article(article):
@@ -323,8 +332,9 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
         """,
         (article_id,),
     ).fetchone()
-    if has_images or is_zsxq(article):
-        refresh_article_ocr(conn, article_id)
+    if not has_images:
+        return "", ""
+    refresh_article_ocr(conn, article_id)
     row = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
         (article_id,),
@@ -390,11 +400,10 @@ def run_ocr(
             report["with_text"] += 1
         for article in articles:
             touched.add(article["article_id"])
+            refresh_article_ocr(conn, article["article_id"])
             if text.strip() and replace_ocr_chunks(conn, article["article_id"]):
                 report["articles"] += 1
         conn.commit()
-    for article_id in sorted(touched):
-        refresh_article_ocr(conn, article_id)
     if touched:
         conn.commit()
     return report

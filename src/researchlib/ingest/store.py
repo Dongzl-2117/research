@@ -12,7 +12,7 @@ from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
-from researchlib.eligibility import is_eligible_article, project_article
+from researchlib.eligibility import is_eligible_article, model_cache_safe_article, project_article
 from researchlib.empty_answer import hide_empty_answer
 from researchlib.images import sync_article_images
 from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
@@ -192,10 +192,23 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     ).fetchone()
     keep = False
     article_changed = True
+    policy_transition = False
+    comparison = existing
+    if existing is not None and source.kind == "zsxq":
+        existing_context = {**dict(existing), "source_id": source.id, "source_kind": source.kind}
+        comparison = project_article(existing_context)
+        policy_transition = (
+            comparison is None or not model_cache_safe_article(existing_context)
+            or comparison["body_md"] != existing["body_md"]
+        )
     if existing is not None and existing["content_hash"] != digest:
-        old_article, old_comments = split_comments(existing["body_md"])
+        old_article, old_comments = split_comments(comparison["body_md"] if comparison is not None else "")
         new_article, new_comments = split_comments(doc.body_md)
-        if old_article == new_article and existing["title"] == doc.title:
+        if comparison is None:
+            # An excluded guest/unknown body contains no verified owner text to
+            # lose. Activate the newly proved projection; preserve raw below.
+            article_changed = True
+        elif old_article == new_article and comparison["title"] == doc.title:
             # 作者写的正文没变，只是接在后面的「评论里的回复」变了：不算改稿。回复少了（这次导出没带评论，
             # 或者回复被删了）时库里那份更全，不动。
             article_changed = False
@@ -206,7 +219,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 existing,
                 doc,
                 digest,
-                old_text=_body_text(existing["title"], old_article),
+                old_text=_body_text(comparison["title"], old_article),
                 new_text=_body_text(doc.title, new_article),
                 body_text=body_text,
                 meta=meta,
@@ -214,6 +227,15 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             if held:
                 # 库里的完整原文和它的图片都不动。
                 return "held", 0, 0, 0, None
+    preserved_policy_raw = False
+    if existing is not None and policy_transition:
+        save_revision(
+            conn, existing["id"], kind="previous", reason="owner_policy_projection",
+            content_hash=existing["content_hash"], title=existing["title"],
+            published_at=existing["published_at"], body_md=existing["body_md"],
+            body_text=existing["body_text"], raw_meta=existing["raw_meta"],
+        )
+        preserved_policy_raw = True
     if existing is None:
         inserted = conn.execute(
             """
@@ -237,7 +259,8 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         article_id = inserted["id"]
         status = "inserted"
     elif existing["content_hash"] != digest and not keep:
-        if article_changed and (existing["body_md"] != doc.body_md or existing["title"] != doc.title):
+        if (not preserved_policy_raw and article_changed
+                and (existing["body_md"] != doc.body_md or existing["title"] != doc.title)):
             # 替换前把旧版存下来。只改了发布时间、只多了评论里的回复的不算改稿。
             save_revision(
                 conn,
@@ -270,11 +293,10 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         article_id = existing["id"]
         status = "unchanged"
         # 正文没变也要补上发帖人：历史归档重导一遍就能把网友帖从星主名下摘掉。
-        if doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id"):
+        if not keep:
             merged = dict(existing["raw_meta"] or {})
-            merged.update(doc.raw_meta)
-            merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
-            merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
+            merged.pop("local_attachments", None)
+            merged.update(meta)
             assign_poster_role(merged, source.author, source_id=source.id, source_kind=source.kind)
             if merged != dict(existing["raw_meta"] or {}):
                 conn.execute(

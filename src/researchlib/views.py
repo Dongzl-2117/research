@@ -46,10 +46,11 @@ from researchlib.eligibility import (
     model_cache_safe_sql,
     project_article,
 )
-from researchlib.empty_answer import visible_sql
+from researchlib.empty_answer import is_suppressed, visible_sql
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.model_inputs import OCR_MODEL_INPUT_VERSION, cached_ocr_safe_sql
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import speaker_note
@@ -57,9 +58,9 @@ from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_disp
 
 logger = logging.getLogger("researchlib.views")
 
-PROMPT_VERSION = 2
+PROMPT_VERSION = OCR_MODEL_INPUT_VERSION
 BODY_LIMIT = VIEWS_LIMIT
-_GUEST = f"{views_eligible_sql('a')} AND {model_cache_safe_sql('a')}"
+_GUEST = f"{views_eligible_sql('a')} AND {model_cache_safe_sql('a')} AND {visible_sql('a')}"
 PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文章（含「图片里的字」），摘出作者对指定公司的判断。
 只输出一个 JSON 对象，不要输出别的文字。每家指定的公司都要有一个键，没有下判断就写 null：
 {"公司名": {"about": true, "judgment": "…", "mechanism": "…", "stance": "正面",
@@ -455,6 +456,8 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     if not companies or not row.get("source_id"):
         return 0
     meta = raw_meta_of(conn, row)
+    if is_suppressed(meta):
+        return 0
     if not model_cache_safe_article({**dict(row), "raw_meta": meta}):
         return 0
     row = project_article({**dict(row), "raw_meta": meta})
@@ -600,6 +603,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
           AND {_GUEST} AND {visible_sql("a")} AND {model_cache_safe_sql("a")}
           AND v.content_hash = a.content_hash
+          AND {cached_ocr_safe_sql("a", "v")}
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
@@ -692,6 +696,7 @@ def same_period(
           AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%(sources)s)
           AND {model_cache_safe_sql("a")}
           AND v.content_hash = a.content_hash
+          AND {cached_ocr_safe_sql("a", "v")}
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
                                  AND me.published_at + make_interval(days => %(days)s)
         ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id

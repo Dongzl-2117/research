@@ -418,11 +418,9 @@ def parse_markdown_files(
             seen_refs.add(dest)
             refs.append((dest, images.resolve(ref, path)))
         full_md = normalize_newlines(original)
-        if id_mode == "zsxq":
-            # Markdown 昵称不是账户证据；评论从已核实的 raw comment ID 重建。
-            from researchlib.eligibility import strip_unverified_comments
-
-            full_md = strip_unverified_comments(full_md)
+        # ZSXQ projection happens after scalar identity evidence is assembled,
+        # so account-proved original sections can be distinguished from a
+        # forged heading inside an old exported guest comment.
         stored_meta: dict = {
             "format": "markdown",
             "parent": parent,

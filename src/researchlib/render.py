@@ -204,14 +204,19 @@ def _ocr_figure(anchor: str, src: str, alt: str, text: str) -> str:
     return (
         f'<figure class="ocr-shot">'
         f'<div class="{classes}">{inner}</div>'
-        f"{_original_links([{'anchor': anchor, 'src': src}])}"
+        f"{_original_links([{'anchor': anchor, 'src': src, 'alt': alt}])}"
         "</figure>"
     )
 
 
 def _media_bundle(items: list[dict]) -> str:
-    """商品图、图表：不展示 OCR 乱码，只留「原图 N」。"""
-    return f'<figure class="ocr-shot">{_original_links(items)}</figure>'
+    """保留图表的中性摘录与原图，商品界面文字不进入阅读正文。"""
+    readings = []
+    for item in items:
+        shot = item["shot"]
+        if shot.family == "reference" and shot.prose:
+            readings.append(f'<div class="ocr-reading">{html_lib.escape(shot.prose)}</div>')
+    return f'<figure class="ocr-shot">{"".join(readings)}{_original_links(items)}</figure>'
 
 
 
@@ -323,8 +328,11 @@ def _original_links(items: list[dict]) -> str:
     for number, info in enumerate(items, start=1):
         safe_src = html_lib.escape(info["src"], quote=True)
         safe_id = html_lib.escape(info["anchor"], quote=True)
+        alt = html_lib.escape(html_lib.unescape(info.get("alt") or ""), quote=True)
+        label = f' aria-label="原图 {number}：{alt}"' if alt else ""
         links.append(
-            f'<a class="ocr-link" id="{safe_id}" href="{safe_src}" target="_blank" rel="noopener">原图 {number}</a>'
+            f'<a class="ocr-link" id="{safe_id}" href="{safe_src}" '
+            f'target="_blank" rel="noopener"{label}>原图 {number}</a>'
         )
     return f'<p class="ocr-links">{"".join(links)}</p>'
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from researchlib.render import normalize_admonitions, render_body
+from researchlib.render import image_anchor, inline_image_ocr, normalize_admonitions, render_body
 from researchlib.textutil import strip_duplicate_title
 
 
@@ -35,6 +35,29 @@ def test_local_image_alt_is_preserved_and_missing_image_is_readable():
     absent = str(render_body('<img src="missing.png" alt="原始图表">', {}, "html"))
     assert "原始图表（图片未收录）" in absent
     assert "<img" not in absent
+
+
+def test_reference_chart_has_neutral_readable_fallback_and_accessible_original():
+    digest = "a" * 64
+    image = f"/media/source/{digest}.png"
+    body = str(render_body('![营收与利润](chart.png)', {"chart.png": image}))
+    raw = "平台  B段运费规则  平台现金补贴  流量激励  商家自由度\n拼多多  全额补贴B段  <untrusted>"
+    page = inline_image_ocr(body, {digest: raw})
+    assert "图表/资料摘录（非对话，作者未确认）" in page
+    assert "全额补贴B段" in page and "&lt;untrusted&gt;" in page
+    assert "<untrusted>" not in page and "方伟：" not in page and "网友：" not in page
+    assert page.count(f'id="{image_anchor(digest)}"') == 1
+    assert f'href="{image}"' in page
+    assert 'aria-label="原图 1：营收与利润"' in page
+
+
+def test_commerce_ui_stays_out_of_readable_fallback():
+    digest = "b" * 64
+    body = str(render_body('![商品原图](shop.png)', {"shop.png": f"/media/source/{digest}.png"}))
+    raw = "精选  商品  分类  评价  小店介绍\n微信小店\n￥5.99  点赞补贴价  去参与\n上滑继续看视频"
+    page = inline_image_ocr(body, {digest: raw})
+    assert "原图 1" in page
+    assert "点赞补贴价" not in page and "小店介绍" not in page
 
 
 def _env():
@@ -89,3 +112,14 @@ def test_mixed_sample_banner_does_not_call_all_real_rows_demo():
     assert "当前库里全是示例数据" not in html
     all_sample = _env().get_template("base.html").render(title="Read", sources=[], sample_banner="all")
     assert "当前库里全是示例数据" in all_sample
+
+
+def test_quarantined_owner_tail_has_visible_escaped_notice():
+    html = _env().get_template("article.html").render(
+        article={"id": 1, "title": "标题"}, source={"id": "s", "name": "来源", "author": "作者", "timeline": True},
+        identity_notice="旧评论后的归档片段暂未确认归属 <untrusted>", sources=[], body_html="OWNER-BODY-MARKER",
+        body_language="original",
+    )
+    assert 'role="status"' in html
+    assert "旧评论后的归档片段暂未确认归属 &lt;untrusted&gt;" in html
+    assert html.index("旧评论后的归档片段") < html.index("OWNER-BODY-MARKER")

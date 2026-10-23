@@ -118,3 +118,47 @@ def test_legacy_owner_model_jobs_wait_for_persisted_projection(monkeypatch):
 def test_theses_without_complete_input_provenance_stay_hidden():
     assert theses.present({"theses": [{"title": "unproven synthesis"}]}, []) == []
     assert theses.present({"theses": [], "views_hash": "old-input-set"}, []) == []
+
+
+def test_hidden_or_suppressed_direct_execution_never_calls_model_or_writes(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("hidden content reached processing")
+
+    monkeypatch.setattr(digest, "chat", forbidden)
+    monkeypatch.setattr(digest, "article_ocr", forbidden)
+    monkeypatch.setattr(views, "chat", forbidden)
+    monkeypatch.setattr(views, "article_ocr", forbidden)
+    settings = SimpleNamespace(display_timezone="Asia/Shanghai")
+    for key in ("hidden", "suppressed"):
+        for source_id in ("notes", "fangwei-zsxq"):
+            row = article({key: "held"})
+            row["source_id"] = source_id
+            if source_id == "fangwei-zsxq":
+                group, owner = TRUSTED_OWNERS[source_id]
+                row["raw_meta"]["zsxq_identity"] = {
+                    "version": 1, "source_id": source_id, "group_id": group,
+                    "owner_account_id": owner, "poster_account_id": owner,
+                    "kind": "owner_post", "replies": [], "projection_md": row["body_md"],
+                }
+            conn = Connection()
+            assert digest.digest_article(conn, settings, row, "方伟") == {}
+            assert views.extract_article(conn, settings, row, "方伟", [{"id": 1, "name_zh": "腾讯"}]) == 0
+            assert conn.statements == []
+
+
+def test_candidate_and_thesis_inputs_share_public_visibility_and_interpolate_sql():
+    from researchlib.empty_answer import visible_sql
+
+    class CandidateConnection(Connection):
+        def fetchall(self):
+            return []
+
+    conn = CandidateConnection()
+    settings = SimpleNamespace(display_timezone="Asia/Shanghai")
+    assert digest.rows_needing_digest(conn, [7]) == []
+    assert views.pending_articles(conn, [1], ["notes"], 10) == []
+    assert theses.views_for(conn, 1, {"notes": SimpleNamespace(author="作者")}, settings) == []
+    assert theses.companies_with_views(conn, ["notes"]) == []
+    for sql, _params in conn.statements:
+        assert visible_sql("a") in sql
+        assert "{model_cache_safe_sql" not in sql and "{visible_sql" not in sql and "{not_guest_sql" not in sql

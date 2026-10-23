@@ -20,6 +20,7 @@
       <span aria-hidden="true">·</span><a href="/ask?article={{ article.id }}">问这篇</a>
     </p>
     <h1>{{ display_title or article.title }}</h1>
+    {% if identity_notice %}<p class="article-note" role="status">{{ identity_notice }}</p>{% endif %}
     {% if empty_answer %}
     <p class="article-note">{% if suppressed_reason == "source_paused" %}这个来源暂不展示。这篇不出现在按天、作者列表和检索里。{% elif suppressed_reason == "short_post" %}短帖，暂只收长文。这篇不出现在按天、作者列表和检索里。{% elif suppressed_reason == "no_judgment" %}没有段永平的判断。这篇不出现在按天、作者列表和检索里。{% elif suppressed_reason == "weak_judgment" %}没有买、贵、持有或生意原则。这篇不出现在按天、作者列表和检索里。{% elif suppressed_reason == "misattributed" %}这是英文粘贴，不是段永平的判断。这篇不出现在按天、作者列表和检索里。{% else %}无有效回答。这篇不出现在按天、作者列表和检索里。{% endif %}</p>
     {% endif %}

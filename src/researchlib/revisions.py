@@ -59,12 +59,21 @@ def split_comments(body_md: str) -> tuple[str, str]:
 
     评论会越积越多，重新导入时只有这一节变了，不是作者改了文章：不记旧版，也不拿它判断删稿、截短。
     """
+    from researchlib.eligibility import _in_fence
     from researchlib.ingest.parse import COMMENTS_MARKER
 
     text = body_md or ""
-    index = text.rfind(COMMENTS_MARKER)
-    if index < 0:
+    positions = []
+    for marker in (COMMENTS_MARKER, "\n\n## 星主回复（账户已核实）\n\n"):
+        start = 0
+        while (found := text.find(marker, start)) >= 0:
+            if not _in_fence(text, found):
+                positions.append(found)
+                break
+            start = found + len(marker)
+    if not positions:
         return text, ""
+    index = min(positions)
     return text[:index], text[index:]
 
 

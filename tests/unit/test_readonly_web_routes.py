@@ -301,7 +301,7 @@ def test_attachment_response_uses_manifest_and_download_headers(monkeypatch, web
     entry = meta["local_attachments"]["报告.pdf"]
     filename = entry["storage_path"].rsplit("/", 1)[1]
     source = Source("notes", "笔记", "作者", "markdown", True)
-    article = {"id": 1, "source_id": "notes", "raw_meta": meta, "body_md": "正文"}
+    article = {"id": 1, "source_id": "notes", "raw_meta": meta, "body_md": "正文\n\n[报告](报告.pdf)"}
 
     @contextmanager
     def fake_database(_request):
@@ -370,6 +370,7 @@ def test_saved_answer_http_get_restores_scope_and_warns_before_answer_without_pr
     from fastapi.testclient import TestClient
 
     import researchlib.digest as digest
+    from researchlib.answer_provenance import snapshot_input_provenance
     from researchlib.web import api as api_module
     from researchlib.web.app import create_app
 
@@ -381,6 +382,10 @@ def test_saved_answer_http_get_restores_scope_and_warns_before_answer_without_pr
     row = {"id": 1, "question": "已保存的问题", "scope": {"preset": True, "source_ids": [source.id]},
            "answer": "收入是100万元[1]。", "citations": [citation], "status": "done", "error": "",
            "model": "stored-model", "terms": [], "stats": {}, "created_at": stamp, "updated_at": stamp}
+    current_article = {"id": 7, "source_id": source.id, "title": "原文", "body_md": "实际收入只有十元。",
+                       "body_text": "实际收入只有十元。", "content_hash": "current", "ocr_hash": "", "raw_meta": {}}
+    row["scope"].update(snapshot_input_provenance([current_article], [citation]))
+    monkeypatch.setattr(routes, "_answer_input_articles", lambda *a: [current_article])
     conn = ConnectionSpy()
     processing = []
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -487,3 +492,30 @@ def test_direct_image_url_rejects_leftover_guest_comment_attachment(monkeypatch,
         routes.media(request_for(web_settings), "fangwei-zsxq/orphan.png")
     assert error.value.status_code == 404
     assert image.exists()  # Archive file is preserved.
+
+
+def test_old_attachment_url_is_hidden_when_current_owner_body_no_longer_links_pdf(monkeypatch, web_settings, tmp_path):
+    from researchlib.attachments import with_stored_attachments
+    from researchlib.eligibility import TRUSTED_OWNERS
+
+    pdf = tmp_path / "旧附件.pdf"
+    pdf.write_bytes(b"%PDF-test")
+    source = Source("fangwei-zsxq", "方伟星球", "方伟", "zsxq", True)
+    _group, owner = TRUSTED_OWNERS[source.id]
+    meta = with_stored_attachments({"poster_id": owner}, [("旧附件.pdf", pdf)], web_settings.data_dir, source.id)
+    entry = meta["local_attachments"]["旧附件.pdf"]
+    filename = entry["storage_path"].rsplit("/", 1)[1]
+    article = {"id": 1, "source_id": source.id, "raw_meta": meta, "title": "星主正文",
+               "body_md": "现有星主正文没有这个附件的链接。"}
+
+    @contextmanager
+    def fake_database(_request):
+        yield None
+
+    monkeypatch.setattr(routes, "database", fake_database)
+    monkeypatch.setattr(routes, "active_sources", lambda *a: [source])
+    monkeypatch.setattr(routes.queries, "get_article", lambda *a: article)
+    with pytest.raises(HTTPException) as error:
+        routes.article_attachment(request_for(web_settings), 1, filename)
+    assert error.value.status_code == 404
+    assert (web_settings.data_dir / "attachments" / entry["storage_path"]).exists()

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from researchlib import ask, retrieval
 from researchlib.duplicates import _ranker
 from researchlib.retrieval import Query, Term
@@ -243,3 +245,138 @@ def test_mixed_demo_records_are_not_silently_labeled_real():
     assert queries.sample_state(Connection([{"n": 10, "samples": 0}]), ["s"]) is None
     assert queries.sample_state(Connection([{"n": 10, "samples": 1}]), ["s"]) == "mixed"
     assert queries.sample_state(Connection([{"n": 10, "samples": 10}]), ["s"]) == "all"
+
+
+def test_company_code_alias_and_topic_are_general_analyzer_inputs(monkeypatch):
+    company = dict(id=17, name_zh="拼多多", name_en="Pinduoduo", ticker="PDD", aliases=["PDD Holdings", "Temu"])
+    monkeypatch.setattr(retrieval, "_content_tokens", lambda c, text: ["商业模式"] if "商业模式" in text else [])
+    monkeypatch.setattr(retrieval, "_fill_stats", lambda c, terms: terms)
+    actual = retrieval.analyze(None, "pdd 商业模式", [], company_rows=[company])
+    assert actual.companies[0]["id"] == 17
+    assert [(term.kind, term.text) for term in actual.terms] == [("company", "拼多多"), ("word", "商业模式")]
+
+
+def test_generation_checks_all_retrieved_inputs_even_uncited_and_metadata_only_changes():
+    import pytest
+
+    passages = [
+        dict(article_id=1, cited=True, _input_content_hash="body1", _input_ocr_hash="", _input_meta_hash="meta1"),
+        dict(article_id=2, cited=False, _input_content_hash="body2", _input_ocr_hash="", _input_meta_hash="meta2"),
+    ]
+    rows = [dict(id=1, content_hash="body1", ocr_hash="", raw_meta_db_hash="meta1"),
+            dict(id=2, content_hash="body2", ocr_hash="", raw_meta_db_hash="meta2")]
+    ask._check_retrieved_inputs(passages, rows)
+    rows[1]["raw_meta_db_hash"] = "identity-or-suppression-changed"
+    with pytest.raises(ask.LLMError, match="身份信息已变化"):
+        ask._check_retrieved_inputs(passages, rows)
+
+
+def test_long_question_cannot_evict_explicit_entity_or_quoted_constraint(monkeypatch):
+    company = dict(id=9, name_zh="目标企业", name_en="TargetCo", ticker="TGTX", aliases=[])
+    monkeypatch.setattr(retrieval, "_content_tokens", lambda c, text: [text] if text.startswith("稀词") else [])
+
+    def fill_stats(_conn, terms):
+        for term in terms:
+            term.idf = .01 if term.kind in ("company", "phrase") else 10
+        return terms
+
+    monkeypatch.setattr(retrieval, "_fill_stats", fill_stats)
+    actual = retrieval.analyze(None, 'tgtx "必须原样" ' + ' '.join(f'稀词{i}' for i in range(13)), [],
+                               company_rows=[company], expansions={"必须原样": ["别的说法"]})
+    assert retrieval._query_company_ids(actual) == [9]
+    assert any(term.kind == "company" for term in actual.terms)
+    assert any(term.kind == "phrase" and term.text == "必须原样" for term in actual.terms)
+    assert sum(term.kind == "word" for term in actual.terms) == 12
+    assert not any(term.text == "别的说法" for term in actual.terms)
+
+
+def test_hard_entity_survives_a_reduced_query_term_list(monkeypatch):
+    company = dict(id=9, name_zh="目标企业", name_en="TargetCo", ticker="TGTX", aliases=[])
+    q = query([Term("主题", "word", 0, ["主题"], idf=1)], companies=[company])
+    rows = [dict(article_id=1, ord=0, title="原文", heading="", body="目标企业的主题机制。",
+                 source_id="s", published_at=None),
+            dict(article_id=2, ord=0, title="另一家公司", heading="", body="另一家公司的主题机制。",
+                 source_id="s", published_at=None)]
+    monkeypatch.setattr(retrieval, "_corpus_stats", lambda c: (10, 100))
+    result = retrieval.score_rows(Connection(), q, rows, scope=Scope(), company_rows=[company],
+                                  semantic={(1, 0): .9, (2, 0): 1.0})
+    assert [item.article_id for item in result] == [1]
+
+
+def test_broad_exact_match_hydration_is_bounded_to_requested_page(monkeypatch):
+    q = query([Term("词", "word", 0, ["词"])])
+    monkeypatch.setattr(retrieval, "load_company_rows", lambda c: [])
+    monkeypatch.setattr(retrieval, "analyze", lambda *a, **kw: q)
+    monkeypatch.setattr(retrieval, "_full_match_articles",
+                        lambda *a: [dict(id=i, source_id="s") for i in range(1, 5001)])
+    monkeypatch.setattr(retrieval, "_candidates", lambda *a, **kw: [])
+    monkeypatch.setattr(retrieval, "semantic_candidates", lambda c, q, sc, rows: (rows, {}))
+    monkeypatch.setattr(retrieval, "score_rows", lambda *a, **kw: [])
+    hydrated = []
+
+    def missing(_conn, _query, ids):
+        hydrated.append(ids)
+        return [dict(article_id=i, ord=0, heading="", body="原文", title="标题", source_id="s", published_at=None)
+                for i in ids]
+
+    monkeypatch.setattr(retrieval, "_missing_match_rows", missing)
+    first = retrieval.search_articles(Connection(), "词", Scope(source_ids=["s"]), [], limit=20)
+    later = retrieval.search_articles(Connection(), "词", Scope(source_ids=["s"]), [], limit=20, offset=4980)
+    assert len(hydrated[0]) == len(hydrated[1]) == 20
+    assert [hit.article_id for hit in first.hits] == list(range(1, 21))
+    assert [hit.article_id for hit in later.hits] == list(range(4981, 5001))
+    assert first.total == later.total == first.counts["s"] == later.available == 5000
+
+
+@pytest.mark.parametrize("mutate", [False, True])
+def test_generation_records_complete_inputs_before_model_and_rechecks_after(monkeypatch, mutate):
+    from types import SimpleNamespace
+
+    from researchlib import sources as sources_module
+
+    articles = [dict(id=i, source_id="src", title=f"原帖{i}", body_md=f"判断{i}", body_text=f"判断{i}",
+                     raw_meta={}, content_hash=f"body{i}", ocr_hash="", raw_meta_db_hash=f"meta{i}")
+                for i in (1, 2)]
+    passages = [retrieval.Passage(i, 0, "", f"判断{i}", f"原帖{i}", "src", None,
+                                  article_content_hash=f"body{i}", article_meta_hash=f"meta{i}") for i in (1, 2)]
+    found = retrieval.Retrieval(passages, [], [], Scope(source_ids=["src"]))
+    source = SimpleNamespace(id="src", name="来源", author="作者", enabled=True)
+    monkeypatch.setattr(sources_module, "load_sources", lambda path: [source])
+    monkeypatch.setattr(sources_module, "enabled_sources", lambda values: values)
+    monkeypatch.setattr(ask, "retrieve", lambda *a, **kw: found)
+
+    class JobConnection(Connection):
+        def execute(self, sql, params=None):
+            self.statements.append((sql, params))
+            if "SELECT question, scope" in sql:
+                return Rows([dict(question="问题", scope={"source_ids": ["src"], "preset": True})])
+            if "SELECT id, source_id" in sql:
+                return Rows([dict(row) for row in articles])
+            return Rows()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    conn = JobConnection()
+
+    def model_stub(_settings, _question, items, report, note):
+        saved = [(sql, params) for sql, params in conn.statements if "SET scope =" in sql]
+        assert len(saved) == 1
+        assert set(saved[0][1][0].obj["_input_provenance"]) == {"1", "2"}
+        assert "answer = ''" in saved[0][0]
+        if mutate:
+            articles[1]["raw_meta_db_hash"] = "uncited-input-identity-changed"
+        return "判断[1]", "offline-stub"
+
+    monkeypatch.setattr(ask, "synthesize", model_stub)
+    ask.run_job(SimpleNamespace(sources_path="unused", display_timezone="Asia/Shanghai"), 1, conn=conn)
+    completed = [params for sql, params in conn.statements if "SET answer =" in sql]
+    errors = [params for sql, params in conn.statements if "SET status = 'error'" in sql]
+    if mutate:
+        assert not completed and len(errors) == 1 and "身份信息已变化" in errors[0][0]
+    else:
+        assert not errors and len(completed) == 1
+        assert set(completed[0][5].obj["_input_provenance"]) == {"1", "2"}

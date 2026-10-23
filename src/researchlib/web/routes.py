@@ -17,6 +17,7 @@ from markupsafe import Markup
 
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
+from researchlib.answer_provenance import provenance_article_ids, verify_input_provenance
 from researchlib.ask import PRESETS, retry, start
 from researchlib.attachments import attachment_mapping, resolve_article_attachment
 from researchlib.boilerplate import clean_article
@@ -752,6 +753,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "digest_points": _digest_points(digest, limit=6) if digest else [],
             "empty_answer": empty_answer,
             "suppressed_reason": suppressed_reason,
+            "identity_notice": meta.get("identity_notice") or "",
             "elsewhere": elsewhere,
             "revised": revised,
             "same_period": others,
@@ -888,6 +890,7 @@ def article_revisions(request: Request, article_id: int):
             "article": article,
             "entries": entries,
             "unverified_history": current.get("unverified_history", 0),
+            "identity_notice": (article.get("raw_meta") or {}).get("identity_notice") or "",
             "sources": sources,
             "sample_banner": banner,
         },
@@ -1070,6 +1073,7 @@ def search_page(request: Request):
             "results": results,
             "first_partial": first_partial,
             "partial_total": found.partial if found else 0,
+            "semantic_total": found.semantic_total if found else 0,
             "search_terms": terms,
             "total_all": total_all,
             "total": total,
@@ -1462,42 +1466,35 @@ def _same_origin(request: Request) -> bool:
     return origin.split("://", 1)[-1] == host or origin == request.app.state.settings.public_base_url
 
 
-def _safe_saved_answer(conn, row, sources):
-    """Suppress stale cached prose if its cited content is no longer trusted.
+def _answer_input_articles(conn, article_ids: list[int], source_ids: list[str]):
+    return conn.execute(
+        "SELECT a.id, a.source_id, a.title, a.body_md, a.body_text, a.raw_meta, a.content_hash, a.ocr_hash "
+        "FROM articles a WHERE a.id = ANY(%s) AND a.source_id = ANY(%s) "
+        f"AND {queries.visible_sql('a')}",
+        (article_ids, source_ids),
+    ).fetchall()
 
-    Keep the stored record intact. Reading an old answer neither reruns retrieval
-    nor regenerates it; an explicit later POST is required for a new answer.
-    """
-    if row is None:
-        return None
-    source_ids = [source.id for source in sources]
-    checked: dict[int, bool] = {}
-    if row.get("answer") and not row.get("citations"):
-        return {
-            **row, "answer": "", "citations": [], "terms": [], "stats": {}, "status": "error",
-            "error": "历史回答未保存可核对的引用，暂不展示。原始记录保留，未自动重新整合。",
-            "cache_blocked": True,
-        }
-    for citation in row.get("citations") or []:
-        try:
-            article_id = int(citation.get("article_id"))
-        except (TypeError, ValueError, AttributeError):
-            article_id = -1
-        if article_id not in checked:
-            article = queries.get_article(conn, article_id, source_ids) if article_id > 0 else None
-            checked[article_id] = bool(article is not None and model_cache_safe_article(article))
-        if not checked[article_id]:
-            return {
-                **row,
-                "answer": "",
-                "citations": [],
-                "terms": [],
-                "stats": {},
-                "status": "error",
-                "error": "历史回答包含当前无法验证归属的引用，暂不展示。原始记录保留，未自动重新整合。",
-                "cache_blocked": True,
-            }
-    return row
+
+def _safe_saved_answer(conn, row, sources):
+    """Display only answers with unchanged, complete original input receipts."""
+    if row is None or not (row.get("answer") or row.get("citations")):
+        return row
+    scope = row.get("scope") or {}
+    article_ids = provenance_article_ids(scope)
+    current = (
+        _answer_input_articles(conn, article_ids, [source.id for source in sources])
+        if article_ids is not None else []
+    )
+    reason = verify_input_provenance(scope, current, row.get("citations") or [])
+    if not reason:
+        return row
+    running = row.get("status") == "running"
+    return {
+        **row, "answer": "", "citations": [], "terms": [], "stats": {},
+        "status": "running" if running else "error",
+        "error": "正在核实本次整合的输入依据，暂不展示引用。" if running else reason,
+        "cache_blocked": True,
+    }
 
 
 def _saved_scope_context(scope: dict, sources) -> dict:
@@ -1731,6 +1728,7 @@ def article_attachment(request: Request, article_id: int, filename: str):
             raise HTTPException(status_code=404)
         resolved = resolve_article_attachment(
             request.app.state.settings.data_dir, article["source_id"], article.get("raw_meta") or {}, filename,
+            body_md=article.get("body_md") or "",
         )
     if resolved is None:
         raise HTTPException(status_code=404)

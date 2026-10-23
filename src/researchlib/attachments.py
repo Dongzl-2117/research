@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as html_lib
 import re
 import shutil
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -32,6 +33,41 @@ _DOWNLOAD = re.compile(r"/articles/[0-9]+/attachments/[0-9a-f]{64}\.[a-z0-9]+\Z"
 _MD_LINK = re.compile(
     r'''(?<!!)\[([^\]\n]*)\]\(\s*(?:<([^>\n]+)>|([^\s)\n]+))(?:[ \t]+(?:"[^"]*"|'[^']*'))?[ \t]*\)'''
 )
+
+
+def filter_attachment_manifest(meta: dict, body_md: str) -> dict:
+    """Only links in current rendered content authorize attachment access."""
+    import markdown
+
+    class Links(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.blocked = []
+            self.refs = set()
+
+        def handle_starttag(self, tag, attrs):
+            if tag in {"code", "pre", "script", "style", "textarea"}:
+                self.blocked.append(tag)
+            elif tag == "a" and not self.blocked:
+                ref = relative_attachment_path(dict(attrs).get("href") or "")
+                if ref is not None:
+                    self.refs.add(ref)
+
+        def handle_endtag(self, tag):
+            if tag in self.blocked:
+                index = len(self.blocked) - 1 - self.blocked[::-1].index(tag)
+                del self.blocked[index:]
+
+    parsed = Links()
+    parsed.feed(markdown.markdown(body_md or "", extensions=["extra"]))
+    parsed.close()
+    result = dict(meta or {})
+    manifest = result.pop("local_attachments", None)
+    if isinstance(manifest, dict):
+        kept = {ref: item for ref, item in manifest.items() if ref in parsed.refs}
+        if kept:
+            result["local_attachments"] = kept
+    return result
 
 
 def relative_attachment_path(href: str) -> str | None:
@@ -157,10 +193,12 @@ def attachment_mapping(meta: dict, article_id: int, source_id: str) -> dict[str,
 
 
 def resolve_article_attachment(
-    data_dir: Path, source_id: str, meta: dict, filename: str
+    data_dir: Path, source_id: str, meta: dict, filename: str, *, body_md: str | None = None
 ) -> tuple[Path, str, str] | None:
     if _FILE.fullmatch(filename) is None:
         return None
+    if body_md is not None:
+        meta = filter_attachment_manifest(meta, body_md)
     for _ref, item, storage, candidate, mime in _manifest_entries(meta, source_id):
         if candidate != filename:
             continue

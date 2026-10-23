@@ -25,10 +25,11 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import DUAN_SOURCE, VOICE_NOTE, display_author, for_model, is_guest, raw_meta_of
 from researchlib.config import Settings
 from researchlib.eligibility import is_zsxq, model_cache_safe_article, model_cache_safe_sql, project_article
-from researchlib.empty_answer import visible_sql
+from researchlib.empty_answer import is_suppressed, visible_sql
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.model_inputs import OCR_MODEL_INPUT_VERSION
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.present import format_date
@@ -39,7 +40,7 @@ logger = logging.getLogger("researchlib.digest")
 # 一次交给模型的正文上限（字），和问库一次读的量一样。更长的取开头、结尾和各节开头，见 excerpt.py。
 BODY_LIMIT = DIGEST_LIMIT
 # 提示词改了就把版本加一。旧摘要照常显示，被看到或跑 research-digest 时按新版重写。
-PROMPT_VERSION = 2
+PROMPT_VERSION = OCR_MODEL_INPUT_VERSION
 PROMPT = """读下面这篇投资研究文章，只输出一个 JSON 对象，不要输出别的文字：
 {"summary": "不超过 120 字的导读：作者在这篇里的核心判断是什么、凭什么这么判断，不写空话",
  "points": ["3 到 5 条要点，每条一句"],
@@ -129,6 +130,8 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     if not row.get("source_id"):
         return {}
     meta = raw_meta_of(conn, row)
+    if is_suppressed(meta):
+        return {}
     if not model_cache_safe_article({**dict(row), "raw_meta": meta}):
         return {}
     row = project_article({**dict(row), "raw_meta": meta})
@@ -234,7 +237,7 @@ def rows_needing_digest(conn, article_ids: list[int]):
         SELECT a.id, a.source_id, a.title, a.published_at, a.body_md, a.body_text, a.content_hash, a.raw_meta
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
-        WHERE a.id = ANY(%s) AND {model_cache_safe_sql("a")}
+        WHERE a.id = ANY(%s) AND {model_cache_safe_sql("a")} AND {visible_sql("a")}
           AND {_STALE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,

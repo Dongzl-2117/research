@@ -31,8 +31,10 @@ from researchlib.author_voice import not_guest_sql
 from researchlib.claims import claim_side, is_hedge, looks_like_list, quote_ok, same_repost
 from researchlib.config import Settings
 from researchlib.eligibility import model_cache_safe_sql
+from researchlib.empty_answer import visible_sql
 from researchlib.failures import clear_failure, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.model_inputs import cached_ocr_safe_sql
 from researchlib.web.present import format_date
 
 logger = logging.getLogger("researchlib.theses")
@@ -111,7 +113,9 @@ def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) ->
         JOIN articles a ON a.id = v.article_id
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s)
           AND a.duplicate_of IS NULL AND {not_guest_sql("a")} AND {model_cache_safe_sql("a")}
+          AND {visible_sql("a")}
           AND v.content_hash = a.content_hash
+          AND {cached_ocr_safe_sql("a", "v")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (company_id, list(sources_by_id)),
@@ -713,14 +717,16 @@ def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) 
     if not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT c.id, c.name_zh
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
           AND {model_cache_safe_sql("a")}
+          AND {not_guest_sql("a")} AND {visible_sql("a")}
           AND v.content_hash = a.content_hash
+          AND {cached_ocr_safe_sql("a", "v")}
         GROUP BY c.id, c.name_zh
         HAVING count(*) >= %s
         ORDER BY c.name_zh, c.id

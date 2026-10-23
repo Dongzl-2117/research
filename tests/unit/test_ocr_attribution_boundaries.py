@@ -2,10 +2,13 @@
 
 import pytest
 
+from researchlib.chunks import ocr_chunks
 from researchlib.ocr import compose_ocr_text
 from researchlib.wechat_dialogue import (
     BUBBLE_GUEST,
     BUBBLE_SELF,
+    REFERENCE_NOTE,
+    SIDE_SELF,
     parse_shot,
     present_ocr_pieces,
     present_stored_ocr,
@@ -88,12 +91,15 @@ def test_473_report_mentioning_wechat_is_not_a_fangwei_chat():
     "Shenzhen Tencent  $705.6M  346.5%\nTechnology (S...\n抖音",
     "平台  B段运费规则  平台现金补贴  流量激励  商家自由度\n"
     "拼多多  商家基本不用承担B段  全额补贴B段  强流量权重，很多  低，大盘规则约束强",
-    "方伟看十年\n扫码领取优惠券\n仅限前1000名\n66元立减金\n心知识星球",
 ])
-def test_473_infographics_wrapped_tables_and_coupon_card_do_not_become_dialogue(raw):
+def test_473_infographics_and_wrapped_tables_retain_neutral_reference_text(raw):
     # Literal abbreviations from local historical image_texts, not invented full images.
-    assert parse_shot(raw).kind == "media"
-    assert present_ocr_pieces([raw]) == ""
+    shot = parse_shot(raw)
+    assert shot.kind == "media" and shot.family == "reference"
+    shown = present_ocr_pieces([raw])
+    assert shown == REFERENCE_NOTE + "\n" + raw
+    assert "方伟：" not in shown and "网友：" not in shown
+    assert present_stored_ocr(shown) == shown
 
 
 def test_a_conversation_about_margins_is_not_mistaken_for_a_table():
@@ -105,4 +111,50 @@ def test_book_excerpt_reader_profile_does_not_claim_authorship_of_the_quote():
     # Shape observed on 606's two real reading cards; the quote is synthetic.
     raw = "Rey\n摘录于2026/10/4\n这是书籍作者的文字，不是读者自己的判断。\n书名\n其他作者\n微信读书"
     assert parse_shot(raw).kind == "media"
+    shown = present_ocr_pieces([raw])
+    assert shown == REFERENCE_NOTE + "\n" + raw
+    assert "方伟：" not in shown and "网友：" not in shown
+
+
+@pytest.mark.parametrize("raw", [
+    "方伟看十年\n扫码领取优惠券\n仅限前1000名\n66元立减金\n心知识星球",
+    "Following Shop For You\n170 million want TikTok\nHome Friends Inbox Profile",
+    "TikTok\n86 Following Followers Likes\nFollow Message\n1234 Video views",
+])
+def test_coupon_and_short_video_chrome_do_not_enter_dialogue_or_search(raw):
+    shot = parse_shot(raw)
+    assert shot.kind == "media" and shot.family == "interface"
     assert present_ocr_pieces([raw]) == ""
+    assert ocr_chunks([("a" * 64, raw)]) == []
+
+
+def test_reference_chunks_keep_values_and_repeat_the_attribution_boundary():
+    raw = (
+        "平台  B段运费规则  平台现金补贴  流量激励  商家自由度\n"
+        + "\n".join(f"拼多多  数据行{index}  补贴20%  此项为表格资料，不是作者发言。" for index in range(60))
+    )
+    chunks = ocr_chunks([("a" * 64, raw)])
+    assert len(chunks) > 1
+    assert all(text.startswith(REFERENCE_NOTE + "\n") for _, text in chunks)
+    assert all("方伟：" not in text and "网友：" not in text for _, text in chunks)
+    assert all(f"数据行{index}" in "\n".join(text for _, text in chunks) for index in range(60))
+    assert "补贴20%" in chunks[-1][1]
+
+
+def test_neutral_reference_header_does_not_make_a_watermark_searchable():
+    assert ocr_chunks([("a" * 64, REFERENCE_NOTE + "\n仅有水印")]) == []
+
+
+def test_606_social_metric_row_is_ui_only_in_a_post_context():
+    raw = "这段真正的正文必须保留。\n197.4万 13.6万 16.5万\n手艺门 +关注\n那之后的正文也必须保留。"
+    shown = present_ocr_pieces([raw])
+    assert "197.4万" not in shown
+    assert "这段真正的正文必须保留。" in shown and "那之后的正文也必须保留。" in shown
+    spoken = BUBBLE_SELF + "197.4万 13.6万 16.5万\n" + "手艺门 +关注"
+    assert "方伟：197.4万 13.6万 16.5万。" == present_ocr_pieces([spoken])
+    assert present_ocr_pieces(["197.4万 13.6万 16.5万"]) == "197.4万 13.6万 16.5万"
+
+
+def test_historical_position_marker_does_not_prove_a_green_author_bubble():
+    raw = "微信\n" + SIDE_SELF + "这句历史上只因靠右被标成作者。"
+    assert present_ocr_pieces([raw]) == "未确认：这句历史上只因靠右被标成作者。"

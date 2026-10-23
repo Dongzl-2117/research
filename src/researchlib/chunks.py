@@ -228,6 +228,7 @@ _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """[(图片内容哈希, 识别出的字)] → [(图片锚点, 块正文)]，同一张图只算一次。"""
     from researchlib.render import image_anchor
+    from researchlib.wechat_dialogue import REFERENCE_NOTE, present_stored_ocr
 
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -235,10 +236,16 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
         if digest in seen:
             continue
         seen.add(digest)
+        text = present_stored_ocr(text)
+        reference = text.startswith(REFERENCE_NOTE + "\n")
+        if reference:
+            text = text[len(REFERENCE_NOTE):].lstrip()
         if len(_MEANINGFUL.findall(text or "")) < OCR_MIN_CHARS:
             continue
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
         for piece in _pack(lines):
+            if reference:
+                piece = REFERENCE_NOTE + "\n" + piece
             found.append((image_anchor(digest), piece))
             if len(found) >= MAX_CHUNKS:
                 return found
@@ -248,12 +255,13 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
 def replace_ocr_chunks(conn, article_id: int) -> int:
     """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
     from researchlib.eligibility import model_cache_safe_article, project_article
+    from researchlib.model_inputs import ocr_cache_safe_article
 
     article = conn.execute(
-        "SELECT duplicate_of, source_id, body_md, raw_meta FROM articles WHERE id = %s", (article_id,)
+        "SELECT duplicate_of, source_id, body_md, ocr_text, raw_meta FROM articles WHERE id = %s", (article_id,)
     ).fetchone()
     projected = project_article(article) if article else None
-    if (projected is None or not model_cache_safe_article(article)
+    if (projected is None or not model_cache_safe_article(article) or not ocr_cache_safe_article(article)
             or projected.get("owner_reply_context") or article["duplicate_of"] is not None):
         return 0
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (article_id,))

@@ -13,6 +13,7 @@ from researchlib.eligibility import (
     project_article,
 )
 from researchlib.empty_answer import visible_sql as _visible_sql
+from researchlib.model_inputs import cached_ocr_safe_sql, ocr_cache_safe_article, ocr_cache_safe_sql
 
 
 def visible_sql(alias: str = "") -> str:
@@ -322,6 +323,7 @@ def image_ocr_texts(conn, article_id: int) -> dict[str, str]:
         JOIN image_texts t ON t.content_hash = i.content_hash
         JOIN articles a ON a.id = i.article_id
         WHERE i.article_id = %s AND btrim(t.text) <> '' AND {model_cache_safe_sql("a")}
+          AND {ocr_cache_safe_sql("a")}
           AND coalesce(a.raw_meta->'zsxq_identity'->>'kind', '') <> 'owner_reply_context'
         """,
         (article_id,),
@@ -452,13 +454,16 @@ def title_materials(conn, article_ids: list[int]) -> dict[int, dict]:
         if projected is not None:
             result[row["id"]] = {
                 "id": row["id"], "body_text": projected.get("body_text", "")[:2000],
-                "ocr_text": (row.get("ocr_text") or "")[:2000] if model_cache_safe_article(row) else "",
+                "ocr_text": (
+                    (row.get("ocr_text") or "")[:2000]
+                    if model_cache_safe_article(row) and ocr_cache_safe_article(row) else ""
+                ),
             }
     return result
 
 
 def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
-    """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。提示词版本旧的照常返回，调用方再排队重写。"""
+    """Read compatible summaries; outdated identity/OCR evidence awaits explicit processing."""
     if not article_ids:
         return {}
     rows = conn.execute(
@@ -466,7 +471,7 @@ def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
         SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version, d.head_only, d.ocr_hash
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
-        WHERE d.article_id = ANY(%s) AND {model_cache_safe_sql("a")}
+        WHERE d.article_id = ANY(%s) AND {model_cache_safe_sql("a")} AND {cached_ocr_safe_sql("a", "d")}
         """,
         (article_ids,),
     ).fetchall()
@@ -474,14 +479,12 @@ def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
 
 
 def article_chunks(conn, article_id: int):
-    from researchlib.eligibility import chunk_cache_safe_sql
+    from researchlib.eligibility import chunk_provenance_sql
 
     return conn.execute(
         f"SELECT c.ord, c.heading, c.body, c.lang, c.anchor FROM article_chunks c"
         " JOIN articles a ON a.id = c.article_id"
-        f" WHERE c.article_id = %s AND {visible_sql('a')} AND {chunk_cache_safe_sql()}"
-        " AND (coalesce(c.lang, '') <> 'zh' OR EXISTS (SELECT 1 FROM article_translations t"
-        " WHERE t.article_id = a.id AND t.complete AND t.content_hash = a.content_hash)) ORDER BY c.ord",
+        f" WHERE c.article_id = %s AND {visible_sql('a')} AND {chunk_provenance_sql()} ORDER BY c.ord",
         (article_id,),
     ).fetchall()
 

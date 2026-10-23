@@ -2,7 +2,8 @@
 
 微信里绿色气泡是作者自己（方伟），通常靠右、上面不写名字；灰色气泡是别人，通常靠左、上面有昵称。
 `order_text` 从原图 RGB 采样确认气泡底色，不再按左右位置猜颜色。新识别颜色不明且无明确昵称时
-标成「未确认：」。没有颜色证据的历史识别兼容旧规则；要补颜色证据须定向重新 OCR。不调用模型。
+标成「未确认：」。历史未标名的文字也不能仅凭位置、群聊界面或上一段话推定作者；
+要补颜色证据须定向重新 OCR。不调用模型。
 
 - 确认绿色 →「方伟：」，确认灰色 →「网友：」，无法确认 →「未确认：」
 - 别人的昵称（姜禄彦、徐哲航、Dylan，以及只写了名字的）→「网友：」，正文里不再留这个名字
@@ -35,7 +36,8 @@ from dataclasses import dataclass, field
 HOST = "方伟"
 GUEST = "网友"
 UNKNOWN = "未确认"
-# 仅兼容历史按位置推断的侧标记；新 OCR 不再生成。
+REFERENCE_NOTE = "图表/资料摘录（非对话，作者未确认）"
+# 仅兼容读取历史侧标记；位置标记本身不能证明作者，新 OCR 不再生成。
 SIDE_SELF = "\u2060"
 # 原图像素颜色证据；未知不继承上一气泡的作者。
 BUBBLE_SELF = "\u2062"
@@ -259,6 +261,9 @@ _GUEST_TURN = "\x1d"
 # 「方伟在学习（作者）」：这一行下面是方伟的话，上面仍是上一轮。
 _HOST_TURN = "\x1c"
 _FOLLOW_COUNTS = re.compile(r"^\d+(?:\s+\d+)+[。.]?$")
+_SOCIAL_COUNTS = re.compile(
+    r"^\d+(?:\.\d+)?(?:万|亿)(?:\s+\d+(?:\.\d+)?(?:万|亿)){2,}[。.]?$"
+)
 _LABELED_REST = re.compile(r"^(?:方\s*伟|网友|未确认)\s*[:：]\s*(?P<rest>.+)$")
 _COMMENT_HEAD_SKIP = frozenset({"写", "欢迎", "请", "大家", "请大家", "条", "我要", "的", "这", "那"})
 # 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
@@ -278,8 +283,7 @@ _CHART_MARK = re.compile(r"Builtwith|Fiscalai|Fiscal\.ai|McP$|Ads\s*v\.?Google|L
 # 微信小店 / 电商 App 的商品列表和商品卡：店铺 tabs、商品卡按钮、促销坑位。
 # 「大家都在搜」「百亿补贴」在微博、小红书、京东外卖群里也常见，不能单独当商店页。
 _SHOP_STRONG = re.compile(
-    r"小店介绍|精选\s*商品\s*分类|全店总售|立即参与万人团|品牌\s*收藏\s*客服|"
-    r"微信小店助手|微信小店交易规则中心"
+    r"小店介绍|精选\s*商品\s*分类|全店总售|立即参与万人团|品牌\s*收藏\s*客服"
 )
 _SHOP_WEAK = re.compile(r"点赞补贴价|上滑继续看视频|去参与")
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
@@ -362,10 +366,10 @@ def present_stored_ocr(stored: str) -> str:
 
 
 def speaker_note(text: str) -> str:
-    """摘要和观点的提示里补一句说话人，没有对话标记时不加。"""
-    note = ""
+    """图片文字默认不是星主观点；有说话人标记时补充其证据边界。"""
+    note = "图片文字可能含第三方引用或资料；没有明确星主归属的内容，不得写成星主观点。" if (text or "").strip() else ""
     if "方伟：" in (text or "") or "网友：" in (text or ""):
-        note = "群聊已整理成「方伟：」和「网友：」。方伟是星主，其余人都写成网友，不要把网友的话写成方伟的判断。"
+        note += "群聊已整理成「方伟：」和「网友：」。方伟是星主，其余人都写成网友，不要把网友的话写成方伟的判断。"
     if "未确认：" in (text or ""):
         note += "「未确认：」没有足够的说话人证据，也不要当作方伟的判断。"
     return note
@@ -652,6 +656,9 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
             kept.append(line)
             index += 1
             continue
+        if context and _SOCIAL_COUNTS.fullmatch(_footer_payload(line)):
+            index += 1
+            continue
         if _is_follow_chrome(line):
             index += 1
             if (
@@ -721,6 +728,8 @@ def parse_shot(text: str) -> Shot:
     original = (text or "").strip()
     if not original:
         return Shot("prose", [], "")
+    if original.startswith(REFERENCE_NOTE + "\n"):
+        return Shot("prose", [], original, "reference")
     raw_lines = [_scrub(line) for line in _normalize(original).splitlines()]
     raw_lines = [line for line in raw_lines if line]
     if not raw_lines:
@@ -728,16 +737,14 @@ def parse_shot(text: str) -> Shot:
     # Multi-column spacing is evidence for a table, not expendable whitespace.
     # Keep it until media classification, before _scrub folds it for speech.
     visible_raw_lines = [_plain(line.strip()) for line in _normalize(original).splitlines() if line.strip()]
-    # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
-    if (
-        _is_product_shot(visible_raw_lines)
-        or _is_shop_shot(visible_raw_lines)
-        or _is_chart_shot(visible_raw_lines)
-        or _is_table_shot(visible_raw_lines)
-        or _is_foreign_comment_shot(visible_raw_lines)
-        or _is_reading_card(visible_raw_lines)
-    ):
-        return Shot("media", [], "")
+    # 界面噪音排除；图表和资料保留可读摘录，但不能变成微信对话。
+    if (_is_product_shot(visible_raw_lines) or _is_shop_shot(visible_raw_lines)
+            or _is_foreign_comment_shot(visible_raw_lines) or _is_video_ui(visible_raw_lines)):
+        return Shot("media", [], "", "interface")
+    if (_is_chart_shot(visible_raw_lines) or _is_table_shot(visible_raw_lines)
+            or _is_reading_card(visible_raw_lines)):
+        neutral = REFERENCE_NOTE + "\n" + "\n".join(visible_raw_lines)
+        return Shot("media", [], neutral, "reference")
     stripped = _drop_post_footer(raw_lines)
     signal = _wechat_signal([_plain(line) for line in stripped])
     lines = _prepare_lines(stripped)
@@ -768,8 +775,7 @@ def parse_shot(text: str) -> Shot:
                 break
     if not lines or not (signal or names or labeled or hosted):
         return _prose_after_footer(original, raw_lines, stripped)
-    # 群聊里没有坐标时，不写别人昵称的气泡是作者自己的绿色气泡。有侧标记时以标记为准。
-    turns = _walk(lines, names, self_unnamed=bool(signal or names or hosted))
+    turns = _walk(lines, names)
     had_account = any(_account_line(_plain(line)) for line in stripped)
     family = "moments" if had_account else ("group" if signal else "chat")
     if turns:
@@ -797,6 +803,16 @@ def _is_reading_card(lines: list[str]) -> bool:
         re.fullmatch(r"摘录于\s*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?", _footer_payload(line))
         for line in lines[:4]
     )
+
+
+def _is_video_ui(lines: list[str]) -> bool:
+    """Short-video navigation/profile chrome is not a conversation transcript."""
+    joined = "\n".join(lines)
+    feed_tabs = re.search(r"following\s+shop\s+for\s*you", joined, re.I)
+    bottom_tabs = len(re.findall(r"\b(?:home|friends|inbox|profile)\b", joined, re.I))
+    profile_metrics = re.search(r"following\s+followers\s+likes", joined, re.I)
+    profile_buttons = re.search(r"follow\s+message", joined, re.I)
+    return bool((feed_tabs and bottom_tabs >= 3) or (profile_metrics and profile_buttons))
 
 
 def _is_shop_shot(lines: list[str]) -> bool:
@@ -1303,7 +1319,7 @@ def _classify(line: str, names: set[str]) -> tuple[str, str]:
     return "", ""
 
 
-def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn]:
+def _walk(lines: list[str], names: set[str]) -> list[Turn]:
     turns: list[Turn] = []
     speaker = ""
     explicit_speaker = False
@@ -1322,7 +1338,7 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
         elif quote_reply and not past_account:
             who = GUEST
         else:
-            who = HOST if self_unnamed else GUEST
+            who = HOST if account_body else UNKNOWN
         turns.append(Turn(who, buf))
         buf = []
 
@@ -1360,7 +1376,7 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
             if text:
                 buf.append(text)
             continue
-        if marker in (SIDE_SELF, BUBBLE_SELF, BUBBLE_GUEST):
+        if marker in (BUBBLE_SELF, BUBBLE_GUEST):
             # 原图颜色比继承的昵称或左右位置更可靠。
             # 账号引用卡不是气泡：栏下即使白/灰底仍是作者，直到明确的留言头。
             colored_speaker = GUEST if marker == BUBBLE_GUEST and not account_body else HOST
@@ -1380,13 +1396,12 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
             if rest:
                 buf.append(rest)
             continue
-        if marker == BUBBLE_UNKNOWN and not explicit_speaker and not quote_reply:
+        if marker in (SIDE_SELF, BUBBLE_UNKNOWN) and not explicit_speaker and not quote_reply:
             if speaker != UNKNOWN:
                 flush()
                 speaker = UNKNOWN
         elif not speaker:
-            # 没有坐标、也没有别人的昵称：群聊里这是绿色气泡。表格不会进到这里。
-            speaker = HOST if self_unnamed else GUEST
+            speaker = HOST if account_body else UNKNOWN
         buf.append(text)
     flush()
     return turns
