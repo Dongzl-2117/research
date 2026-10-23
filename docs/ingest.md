@@ -155,7 +155,7 @@ docker compose exec app research-backfill-posters \
   --input /data/inbox/fangwei-zsxq
 ```
 
-再导入一遍同一归档也会写上发帖人，即使正文没变。例：8241 这类读者帖不应再出现在方伟的茅台论点里；7723、7507 同样按发帖人名字核对。文件名里的长数字会拿去对 JSON。`raw/topics/*.json` 也要读：不能因为 `raw/group.json`、`raw/state.json` 已经让「父目录叫 raw」的列表非空，就把 `topics` 跳过，否则 `create_time` 会丢成文件名里的零点。`md/INDEX.md` 是目录，不是话题，不入库；已经在库里的，再导入或跑 `research-retime` 时会删掉。
+再导入会核对来源、群和真实账户，即使正文没变也不能仅凭昵称恢复星主资格。历史 `poster_role` 曾将真实星主误标为 guest；回复收件人也不能当作者。上线前先按 [定向修复计划](availability-gate-2026-10-23.md) 预演指定话题，不运行整源回填来代替资格对账。文件名里的长数字会拿去对 JSON。`raw/topics/*.json` 也要读：不能因为 `raw/group.json`、`raw/state.json` 已经让「父目录叫 raw」的列表非空，就把 `topics` 跳过，否则 `create_time` 会丢成文件名里的零点。`md/INDEX.md` 是目录，不是话题，不入库；已经在库里的，再导入或跑 `research-retime` 时会删掉。
 
 正文开头的「- 时间：2024-11-28 10:40:22」只在没有 JSON 钟点时使用。没有真实钟点就保持原样，不编造时间。
 

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from researchlib import embeddings
+from researchlib.boilerplate import is_publisher_promo_chunk
 from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE
 from researchlib.eligibility import (
     TRUSTED_OWNERS,
@@ -1327,6 +1328,8 @@ def score_rows(
     for row in rows:
         heading = row.get("heading") or ""
         body = row.get("body") or ""
+        if is_publisher_promo_chunk(body, heading=heading):
+            continue
         text = heading + "\n" + body
         lowered = text.lower()
         if any(_count(text, lowered, word) for word in query.excludes):

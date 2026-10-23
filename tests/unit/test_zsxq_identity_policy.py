@@ -132,6 +132,9 @@ def test_legacy_projection_clears_flattened_cache_even_when_body_is_unchanged():
     projected = project_article(row)
     assert projected["digest_summary"] is None and projected["digest_points"] == []
     assert projected["body_md"] == "owner body"
+    assert "历史摘要、译文和图片文字仍待核对" in projected["identity_notice"]
+    assert "identity_notice" not in row
+    assert project_article(projected)["identity_notice"] == projected["identity_notice"]
 
 
 def test_new_projection_cache_requires_exact_stored_body():

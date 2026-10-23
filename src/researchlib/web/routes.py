@@ -753,7 +753,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "digest_points": _digest_points(digest, limit=6) if digest else [],
             "empty_answer": empty_answer,
             "suppressed_reason": suppressed_reason,
-            "identity_notice": meta.get("identity_notice") or "",
+            "identity_notice": article.get("identity_notice") or meta.get("identity_notice") or "",
             "elsewhere": elsewhere,
             "revised": revised,
             "same_period": others,
@@ -890,7 +890,9 @@ def article_revisions(request: Request, article_id: int):
             "article": article,
             "entries": entries,
             "unverified_history": current.get("unverified_history", 0),
-            "identity_notice": (article.get("raw_meta") or {}).get("identity_notice") or "",
+            "identity_notice": (
+                article.get("identity_notice") or (article.get("raw_meta") or {}).get("identity_notice") or ""
+            ),
             "sources": sources,
             "sample_banner": banner,
         },

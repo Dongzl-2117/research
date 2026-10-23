@@ -55,6 +55,28 @@ def test_full_match_groups_share_body_ocr_translation_corpus_and_scope():
     assert params["scope_from"] == date(2026, 1, 1)
 
 
+def test_pure_recruitment_cannot_become_evidence_even_with_semantic_support(monkeypatch):
+    monkeypatch.setattr(retrieval, "_corpus_stats", lambda conn: (2, 100))
+    promo = (
+        "— 扫码下方微信加入会员群—\n"
+        "适合研究行业的朋友加入，我们讨论公司的经营方式，也可以私信我问题。（备注：群会员）"
+    )
+    rows = [
+        {"article_id": 1, "ord": 0, "heading": "主营业务", "body": promo, "title": "经营方式", "source_id": "s"},
+        {"article_id": 2, "ord": 0, "heading": "", "body": "集中采购降低经营成本。",
+         "title": "经营方式", "source_id": "s"},
+    ]
+    q = query([Term("经营", "word", 0, ["经营"], df=2, idf=1)])
+    found = retrieval.score_rows(Connection(), q, rows, scope=Scope(), semantic={(1, 0): 1.0, (2, 0): 0.1})
+    assert [passage.article_id for passage in found] == [2]
+    assert rows[0]["body"] == promo
+
+    # A labelled quotation/case study is evidence, even if its text is an ad.
+    rows[0]["heading"] = "引用的推广文案"
+    quoted = retrieval.score_rows(Connection(), q, rows[:1], scope=Scope(), semantic={(1, 0): 1.0})
+    assert [passage.article_id for passage in quoted] == [1]
+
+
 def test_group_or_and_company_constraints_are_not_flattened_to_all_words():
     q = query([Term("腾讯", "company", 0, ["腾讯"], company_id=1),
                Term("阿里", "company", 0, ["阿里"], company_id=2),

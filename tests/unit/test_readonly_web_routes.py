@@ -133,7 +133,8 @@ def test_company_views_do_not_queue_processing(monkeypatch, web_settings):
     assert forbidden == []
 
 
-def test_article_html_get_neither_rewrites_ocr_nor_queues_digest(monkeypatch, web_settings):
+@pytest.mark.parametrize("legacy_owner", [False, True])
+def test_article_html_get_neither_rewrites_ocr_nor_queues_digest(monkeypatch, web_settings, legacy_owner):
     import researchlib.digest as digest
     import researchlib.ocr as ocr
 
@@ -141,10 +142,14 @@ def test_article_html_get_neither_rewrites_ocr_nor_queues_digest(monkeypatch, we
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setattr(ocr, "refresh_article_ocr", lambda *a: forbidden.append("ocr"))
     monkeypatch.setattr(digest, "schedule_digests", lambda *a, **k: forbidden.append("digest"))
-    source = Source("notes", "笔记", "作者", "markdown", True)
+    source = Source("fangwei-zsxq", "星球", "方伟", "zsxq", True) if legacy_owner else Source(
+        "notes", "笔记", "作者", "markdown", True
+    )
     article = {"id": 1, "source_id": source.id, "title": "题目", "body_md": "存储正文", "body_text": "存储正文",
                "raw_meta": {}, "duplicate_of": None, "content_hash": "hash", "ocr_hash": "old",
                "published_at": datetime(2026, 10, 23, tzinfo=UTC)}
+    if legacy_owner:
+        article["raw_meta"] = {"poster_id": "1825524112", "poster_role": "guest"}
 
     @contextmanager
     def fake_database(_request):
@@ -166,6 +171,8 @@ def test_article_html_get_neither_rewrites_ocr_nor_queues_digest(monkeypatch, we
     result = routes.article_page(request_for(web_settings, path="/articles/1"), 1)
     assert "存储正文" in result["body_html"]
     assert result["digest_summary"] == "" and forbidden == []
+    if legacy_owner:
+        assert "历史摘要、译文和图片文字仍待核对" in result["identity_notice"]
 
 
 def test_web_lifespan_has_no_database_or_upkeep_side_effect(monkeypatch, web_settings):

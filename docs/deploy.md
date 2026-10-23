@@ -57,6 +57,9 @@ docker compose exec app research-embed   # 第一次全库回填，之后夜间�
 
 ## 更新
 
+PR 56 的身份与缓存规则存在历史内容可用性前置条件，见 [有界核查与定向修复计划](availability-gate-2026-10-23.md)。
+先核对历史星主回复和 OCR 的恢复范围，再决定上线；构建镜像或运行维护命令不会自动补足这些证明。
+
 ```bash
 git pull
 docker compose build app

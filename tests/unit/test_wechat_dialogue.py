@@ -1009,5 +1009,3 @@ def test_8881_committed_ocr_keeps_quote_divider_with_new_color_metadata():
         marked = "\n".join(prefix + line for line in PDD_MOMENTS.splitlines())
         assert present_ocr_pieces([marked]) == PDD_MOMENTS_DIALOGUE
         assert present_stored_ocr(present_ocr_pieces([marked])) == PDD_MOMENTS_DIALOGUE
-
-

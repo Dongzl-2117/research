@@ -366,7 +366,14 @@ def project_article(article: Mapping) -> dict | None:
     # Historical summaries/embeddings may include comments removed above.
     if body != _id(article.get("body_md")):
         result["content_projection_changed"] = True
-    if body != _id(article.get("body_md")) or not model_cache_safe_article(article):
+    cache_safe = model_cache_safe_article(article)
+    if not cache_safe:
+        notice = "历史摘要、译文和图片文字仍待核对，暂不展示；已核实的正文或回复仍可阅读，原始归档保留。"
+        previous_notice = result.get("identity_notice") or ""
+        result["identity_notice"] = previous_notice if notice in previous_notice else " ".join(
+            filter(None, (previous_notice, notice))
+        )
+    if body != _id(article.get("body_md")) or not cache_safe:
         for key in _MODEL_FIELDS:
             if key in result:
                 result[key] = [] if isinstance(result[key], list) else None
