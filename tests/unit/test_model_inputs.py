@@ -12,7 +12,8 @@ from researchlib.model_inputs import cached_ocr_safe_sql, ocr_cache_safe_article
     ("old-ocr", "old-ocr", 2, False),
     ("", "previous-ocr", 2, False),
     ("current-ocr", "", 2, False),
-    ("current-ocr", "current-ocr", 3, True),
+    ("current-ocr", "current-ocr", 3, False),
+    ("current-ocr", "current-ocr", 4, True),
     ("current-ocr", "current-ocr", None, False),
 ])
 def test_ocr_derived_cache_requires_current_role_pipeline(article_hash, cache_hash, version, visible):
@@ -30,13 +31,13 @@ def test_untrusted_sql_alias_is_rejected():
 
 
 @pytest.mark.parametrize("version,safe", [
-    (3, True), ("3", False), (3.0, False), (True, False), (2, False), (None, False),
+    (4, True), ("4", False), (4.0, False), (True, False), (3, False), (None, False),
 ])
 def test_ocr_role_marker_requires_the_exact_numeric_version(version, safe):
     assert ocr_cache_safe_article({"raw_meta": {"ocr_role_version": version}}) is safe
     sql = ocr_cache_safe_sql("a")
     assert "jsonb_typeof(a.raw_meta->'ocr_role_version') = 'number'" in sql
-    assert "a.raw_meta->>'ocr_role_version' = '3'" in sql
+    assert "a.raw_meta->>'ocr_role_version' = '4'" in sql
 
 
 def test_ocr_role_sql_alias_validation():

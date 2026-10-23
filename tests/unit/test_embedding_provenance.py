@@ -6,6 +6,7 @@ import pytest
 
 from researchlib import embeddings
 from researchlib.eligibility import IDENTITY_KEY, chunk_provenance_article, identity_for_topic, project_article
+from researchlib.model_inputs import OCR_ROLE_VERSION
 
 
 def current_row(*, lang="", ordinal=0, body="current owner body"):
@@ -120,7 +121,7 @@ def test_backfill_embeds_a_freshly_proven_current_owner_chunk(monkeypatch):
 
 def test_ocr_heading_itself_needs_current_generated_provenance():
     article = {"source_id": "fangwei-mp", "body_md": "![](owner.png)", "body_text": "",
-               "content_hash": "current", "raw_meta": {"ocr_role_version": 3},
+               "content_hash": "current", "raw_meta": {"ocr_role_version": OCR_ROLE_VERSION},
                "ocr_text": "未确认：safe owner words"}
     image = {"content_hash": "a" * 64, "original_ref": "owner.png", "text": "未确认：safe owner words"}
     chunk = {"ord": 20000, "lang": "ocr", "anchor": "img-" + "a" * 12,

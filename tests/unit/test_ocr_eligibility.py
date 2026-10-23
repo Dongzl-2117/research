@@ -6,6 +6,7 @@ import pytest
 
 from researchlib import ocr
 from researchlib.eligibility import TRUSTED_OWNERS
+from researchlib.model_inputs import OCR_ROLE_VERSION
 
 
 class Rows:
@@ -139,11 +140,11 @@ def test_recomposition_uses_only_images_referenced_by_the_owner_projection():
     assert shown == "这是所有者正文里的图片文字。"
     assert digest == ocr.hash_ocr(shown)
     assert "网友" not in shown
-    assert owner["raw_meta"]["ocr_role_version"] == 3
+    assert owner["raw_meta"]["ocr_role_version"] == OCR_ROLE_VERSION
     del owner["raw_meta"]["ocr_role_version"]
     # An unchanged text hash does not prove it used the conservative pipeline.
     assert ocr.refresh_article_ocr(conn, 1) == digest
-    assert owner["raw_meta"]["ocr_role_version"] == 3
+    assert owner["raw_meta"]["ocr_role_version"] == OCR_ROLE_VERSION
     assert sum(query.startswith("UPDATE articles SET ocr_text") for query, _ in conn.calls) == 2
     assert ocr.refresh_article_ocr(conn, 1) == digest
     assert sum(query.startswith("UPDATE articles SET ocr_text") for query, _ in conn.calls) == 2

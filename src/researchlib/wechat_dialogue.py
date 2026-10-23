@@ -1,11 +1,11 @@
 """把微信截图的 OCR 行整理成博客式对话。
 
-微信里绿色气泡是作者自己（方伟），通常靠右、上面不写名字；灰色气泡是别人，通常靠左、上面有昵称。
+微信绿色气泡只证明截图发送方，通常靠右；灰色气泡是其他参与者。只有逐图核实的作者上下文才标成方伟。
 `order_text` 从原图 RGB 采样确认气泡底色，不再按左右位置猜颜色。新识别颜色不明且无明确昵称时
 标成「未确认：」。历史未标名的文字也不能仅凭位置、群聊界面或上一段话推定作者；
 要补颜色证据须定向重新 OCR。不调用模型。
 
-- 确认绿色 →「方伟：」，确认灰色 →「网友：」，无法确认 →「未确认：」
+- 逐图确认发送方为作者 →「方伟：」，其他参与者 →「网友：」，仅有绿色或身份未知 →「未确认：」
 - 别人的昵称（姜禄彦、徐哲航、Dylan，以及只写了名字的）→「网友：」，正文里不再留这个名字
 - 显示名「方伟 / 方伟Rey / 方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
@@ -41,9 +41,11 @@ REFERENCE_NOTE = "图表/资料摘录（非对话，作者未确认）"
 SIDE_SELF = "\u2060"
 # 原图像素颜色证据；未知不继承上一气泡的作者。
 BUBBLE_SELF = "\u2062"
+# Only an explicit per-image confirmation may mint this marker.
+BUBBLE_HOST = "\u2061"
 BUBBLE_GUEST = "\u2063"
 BUBBLE_UNKNOWN = "\u2064"
-_OCR_MARKERS = (SIDE_SELF, BUBBLE_SELF, BUBBLE_GUEST, BUBBLE_UNKNOWN)
+_OCR_MARKERS = (SIDE_SELF, BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST, BUBBLE_UNKNOWN)
 
 _CJK = re.compile(r"[一-鿿]")
 _MEANING = re.compile(r"[0-9A-Za-z一-鿿]")
@@ -318,8 +320,13 @@ class Shot:
     family: str = ""
 
 
-def present_ocr_pieces(pieces: list[str]) -> str:
-    """多张图按顺序合成一篇旁路正文。连续的群聊合并、去重；表格仍是原文。"""
+def present_ocr_pieces(pieces: list[str], *, host_self_indices: frozenset[int] = frozenset()) -> str:
+    """多图合并、去重；host_self_indices 仅接受调用方逐图核实的样本证据。
+
+    不能用来源白名单或颜色检测自动填充这些索引；未指定的发送方仍未确认。
+    """
+    if any(type(index) is not int or not 0 <= index < len(pieces) for index in host_self_indices):
+        raise ValueError("host confirmation must identify an existing image piece")
     blocks: list[str] = []
     pending: list[Turn] = []
     seen: list[str] = []
@@ -334,7 +341,9 @@ def present_ocr_pieces(pieces: list[str]) -> str:
             blocks.append(text.strip())
 
     pending_family = ""
-    for piece in pieces:
+    for index, piece in enumerate(pieces):
+        if index in host_self_indices:
+            piece = piece.replace(BUBBLE_SELF, BUBBLE_HOST)
         shot = parse_shot(piece)
         if shot.kind == "dialogue":
             family = shot.family or "chat"
@@ -652,7 +661,7 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
     while index < len(peeled):
         line = peeled[index]
         nxt = peeled[index + 1] if index + 1 < len(peeled) else ""
-        if line.startswith((BUBBLE_SELF, BUBBLE_GUEST)):
+        if line.startswith((BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST)):
             kept.append(line)
             index += 1
             continue
@@ -1160,13 +1169,13 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
     had_account = any(_account_line(line) for line in peeled)
     drop = {
         index for index, line in enumerate(peeled)
-        if markers[index] not in (BUBBLE_SELF, BUBBLE_GUEST) and _is_card_anchor(line)
+        if markers[index] not in (BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST) and _is_card_anchor(line)
     }
     changed = True
     while changed:
         changed = False
         for index, line in enumerate(peeled):
-            if markers[index] in (BUBBLE_SELF, BUBBLE_GUEST) or index in drop or not _is_sku(line):
+            if markers[index] in (BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST) or index in drop or not _is_sku(line):
                 continue
             if any(neighbor in drop for neighbor in (index - 1, index + 1)):
                 drop.add(index)
@@ -1187,7 +1196,7 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
                 kept.append(_ACCOUNT_SPLIT)
                 placed_split = True
             continue
-        if markers[index] in (BUBBLE_SELF, BUBBLE_GUEST):
+        if markers[index] in (BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST):
             kept.append(markers[index] + line)
             continue
         if _is_time(line):
@@ -1323,6 +1332,8 @@ def _walk(lines: list[str], names: set[str]) -> list[Turn]:
     turns: list[Turn] = []
     speaker = ""
     explicit_speaker = False
+    author_header = False
+    nickname_marker: str | None = None
     buf: list[str] = []
     # 有账号栏时，栏上整段是引用，不看绿/灰、也不把靠右的侧标记当成方伟。
     quote_reply = _ACCOUNT_SPLIT in lines
@@ -1347,6 +1358,8 @@ def _walk(lines: list[str], names: set[str]) -> list[Turn]:
             flush()
             speaker = ""
             explicit_speaker = False
+            author_header = False
+            nickname_marker = None
             past_account = True
             account_body = True
             continue
@@ -1355,17 +1368,23 @@ def _walk(lines: list[str], names: set[str]) -> list[Turn]:
             flush()
             speaker = GUEST
             explicit_speaker = True
+            author_header = False
+            nickname_marker = None
             continue
         if line == _HOST_TURN:
             account_body = False
             flush()
             speaker = HOST
             explicit_speaker = True
+            author_header = True
+            nickname_marker = None
             continue
         if line == _BREAK:
             flush()
             speaker = ""
             explicit_speaker = False
+            author_header = False
+            nickname_marker = None
             continue
         marker = _marker(line)
         text = _plain(line)
@@ -1376,26 +1395,43 @@ def _walk(lines: list[str], names: set[str]) -> list[Turn]:
             if text:
                 buf.append(text)
             continue
-        if marker in (BUBBLE_SELF, BUBBLE_GUEST):
+        if marker in (BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST):
             # 原图颜色比继承的昵称或左右位置更可靠。
             # 账号引用卡不是气泡：栏下即使白/灰底仍是作者，直到明确的留言头。
-            colored_speaker = GUEST if marker == BUBBLE_GUEST and not account_body else HOST
+            named_bubble = (explicit_speaker and speaker == HOST
+                            and nickname_marker in (None, marker))
+            confirmed_header = account_body or author_header or named_bubble
+            colored_speaker = (
+                HOST if confirmed_header or marker == BUBBLE_HOST else
+                GUEST if marker == BUBBLE_GUEST else UNKNOWN
+            )
             if speaker != colored_speaker:
                 flush()
                 speaker = colored_speaker
-            explicit_speaker = False
+            explicit_speaker = bool(confirmed_header)
+            nickname_marker = marker if named_bubble else None
             if text:
                 buf.append(text)
             continue
         who, rest = _classify(text, names)
         if who:
             account_body = False
+            author_header = False
+            nickname_marker = None
             flush()
             speaker = who
             explicit_speaker = not rest
             if rest:
                 buf.append(rest)
             continue
+        if explicit_speaker and speaker == HOST and not (account_body or author_header):
+            if nickname_marker is None:
+                nickname_marker = marker
+            elif nickname_marker != marker:
+                flush()
+                speaker = UNKNOWN
+                explicit_speaker = False
+                nickname_marker = None
         if marker in (SIDE_SELF, BUBBLE_UNKNOWN) and not explicit_speaker and not quote_reply:
             if speaker != UNKNOWN:
                 flush()

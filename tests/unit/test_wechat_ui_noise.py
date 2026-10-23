@@ -9,6 +9,7 @@ import pytest
 from researchlib.ocr import compose_ocr_text, hash_ocr
 from researchlib.wechat_dialogue import (
     BUBBLE_GUEST,
+    BUBBLE_HOST,
     BUBBLE_SELF,
     BUBBLE_UNKNOWN,
     parse_shot,
@@ -120,7 +121,7 @@ def test_repair_rewashes_new_ui_noise_for_both_sources(source_id, with_images, n
     assert len(conn.updates) == 1
 
 
-@pytest.mark.parametrize("marker,speaker", [(BUBBLE_SELF, "方伟"), (BUBBLE_GUEST, "网友")])
+@pytest.mark.parametrize("marker,speaker", [(BUBBLE_SELF, "未确认"), (BUBBLE_HOST, "方伟"), (BUBBLE_GUEST, "网友")])
 def test_follow_counter_cleanup_does_not_eat_confirmed_numeric_speech(marker, speaker):
     raw = f"方伟：正文必须保留。\n71个朋友关注\n{marker}82 455 38 33。\n网友：后面的正文。"
     text = present_ocr_pieces([raw])

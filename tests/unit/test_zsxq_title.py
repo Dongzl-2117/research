@@ -6,6 +6,7 @@ from markupsafe import Markup
 
 from researchlib.eligibility import IDENTITY_KEY, identity_for_topic
 from researchlib.ingest.parse import parse_archive
+from researchlib.model_inputs import OCR_ROLE_VERSION
 from researchlib.web.routes import _repair_zsxq_titles
 from researchlib.zsxq_title import stored_zsxq_title, title_needs_repair, zsxq_display_title
 
@@ -133,7 +134,7 @@ PICTURE_OCR = "烟蒂股这轮又被翻出来了，中概互联网的现金流�
 PICTURE_TITLE = "烟蒂股这轮又被翻出来了，中概互联网的现金流比故事好看"
 
 
-def _verified_ocr_material(role_version=3):
+def _verified_ocr_material(role_version=OCR_ROLE_VERSION):
     identity = identity_for_topic({
         "topic_id": "14885", "group": {"group_id": "48888181884848"},
         "talk": {"owner": {"user_id": "1825524112"}},

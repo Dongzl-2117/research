@@ -10,6 +10,7 @@ from researchlib.answer_provenance import (
     verify_input_provenance,
 )
 from researchlib.eligibility import TRUSTED_OWNERS
+from researchlib.model_inputs import OCR_ROLE_VERSION
 from researchlib.sources import Source
 from researchlib.web import routes
 
@@ -99,10 +100,11 @@ def test_outline_only_input_articles_also_have_immutable_receipts():
 def test_old_ocr_roles_cannot_receive_new_answer_provenance():
     row = article()
     row["ocr_hash"] = "ocr-hash"
-    row["raw_meta"]["ocr_role_version"] = 2
     passages = [passage(lang="ocr")]
-    assert snapshot_input_provenance([row], passages) is None
-    row["raw_meta"]["ocr_role_version"] = 3
+    for legacy_version in (2, 3):
+        row["raw_meta"]["ocr_role_version"] = legacy_version
+        assert snapshot_input_provenance([row], passages) is None
+    row["raw_meta"]["ocr_role_version"] = OCR_ROLE_VERSION
     receipt = snapshot_input_provenance([row], passages)
     assert receipt and verify_input_provenance(receipt, [row], passages) == ""
     changed = deepcopy(row)

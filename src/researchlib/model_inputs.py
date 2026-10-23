@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-OCR_MODEL_INPUT_VERSION = 3
-OCR_ROLE_VERSION = 3
+OCR_MODEL_INPUT_VERSION = 4
+OCR_ROLE_VERSION = 4
 
 
 def ocr_cache_safe_sql(article_alias: str = "a") -> str:

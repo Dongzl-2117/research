@@ -79,30 +79,64 @@ def _text(value: object) -> str:
 
 def topic_comments(topic: Mapping) -> list[dict]:
     """Complete comments win over the UI preview; preserve explicit parents."""
+    return comment_evidence(topic)[0]
+
+
+def comment_evidence(topic: Mapping) -> tuple[list[dict], list[str]]:
+    """Flatten repeated pages without losing children or trusting conflicts."""
     items = topic.get("comments")
     if not isinstance(items, list):
         items = topic.get("show_comments") or []
-    found: list[dict] = []
-    seen: set[str] = set()
+    found: dict[str, dict] = {}
+    conflicts: set[str] = set()
+    anonymous: list[dict] = []
 
-    def add(comment: object, parent: str = "") -> None:
-        if not isinstance(comment, dict):
+    def add(comment: object, parent: str = "", depth: int = 0) -> None:
+        if not isinstance(comment, dict) or depth > 30:
             return
         item = dict(comment)
         cid = _id(item.get("comment_id"))
-        if cid and cid in seen:
-            return
-        if cid:
-            seen.add(cid)
+        explicit_parent = _id(item.get("parent_comment_id"))
+        if cid and (explicit_parent == cid or (parent and explicit_parent and explicit_parent != parent)):
+            conflicts.add(cid)
         if parent and not item.get("parent_comment_id"):
             item["parent_comment_id"] = parent
-        found.append(item)
+        if cid in found:
+            previous = found[cid]
+            for key in ("text", "parent_comment_id"):
+                old, new = _id(previous.get(key)), _id(item.get(key))
+                if old and new and old != new:
+                    conflicts.add(cid)
+                elif not old and new:
+                    previous[key] = item[key]
+            old_owner, new_owner = previous.get("owner"), item.get("owner")
+            old_owner = old_owner if isinstance(old_owner, Mapping) else {}
+            new_owner = new_owner if isinstance(new_owner, Mapping) else {}
+            old_id, new_id = _id(old_owner.get("user_id")), _id(new_owner.get("user_id"))
+            if old_id and new_id and old_id != new_id:
+                conflicts.add(cid)
+            elif not old_id and new_id:
+                previous["owner"] = new_owner
+        elif cid:
+            found[cid] = item
+        else:
+            anonymous.append(item)
+        # Repeated parent records can contain additional children on later pages.
         for child in item.get("replied_comments") or []:
-            add(child, cid)
+            add(child, cid, depth + 1)
 
     for item in items if isinstance(items, list) else []:
         add(item)
-    return found
+    for cid in found:
+        chain: set[str] = set()
+        current = cid
+        while current in found:
+            if current in chain:
+                conflicts.update(chain)
+                break
+            chain.add(current)
+            current = _id(found[current].get("parent_comment_id"))
+    return [item for cid, item in found.items() if cid not in conflicts] + anonymous, sorted(conflicts)
 
 
 def verified_replies(topic: Mapping, owner_account_id: str) -> list[dict]:
@@ -161,7 +195,10 @@ def identity_for_topic(topic: Mapping, source_id: str) -> dict:
             topic.get("comments_count") if isinstance(topic.get("comments_count"), int) else None
         ),
         "observed_comment_count": len(topic_comments(topic)),
+        "comment_conflict_ids": comment_evidence(topic)[1],
     }
+    if isinstance(topic.get("comments_archive"), dict):
+        result["comments_archive"] = copy.deepcopy(topic["comments_archive"])
     if not binding or group_id != binding[0] or not poster_id:
         return result
     result["replies"] = verified_replies(topic, binding[1])

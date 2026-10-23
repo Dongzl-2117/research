@@ -36,6 +36,7 @@ from researchlib.model_inputs import OCR_ROLE_VERSION, ocr_cache_safe_article
 from researchlib.ocr_bubbles import bubble_color
 from researchlib.wechat_dialogue import (
     BUBBLE_GUEST,
+    BUBBLE_HOST,
     BUBBLE_SELF,
     BUBBLE_UNKNOWN,
     present_ocr_pieces,
@@ -128,7 +129,7 @@ def _image_articles(conn, digest: str, article_ids: list[int] | None = None) -> 
     return list(allowed.values())
 
 
-def order_text(items, *, rgb_image=None) -> str:
+def order_text(items, *, rgb_image=None, host_self_verified: bool = False) -> str:
     """RapidOCR 的结果 [[框, 文字, 置信度], …] 按阅读顺序拼起来：从上到下分行，同一行从左到右。
 
     有原图时按气泡底色写入明确的绿/灰标记，不用左右位置猜颜色。无法确认的行标记为未知。
@@ -153,7 +154,9 @@ def order_text(items, *, rgb_image=None) -> str:
     lines: list[dict] = []
     for top, bottom, left, right, text in boxes:
         color = bubble_color(rgb_image, (left, top, right, bottom))
-        marker = {"green": BUBBLE_SELF, "gray": BUBBLE_GUEST}.get(color, BUBBLE_UNKNOWN)
+        marker = {"green": BUBBLE_HOST if host_self_verified else BUBBLE_SELF, "gray": BUBBLE_GUEST}.get(
+            color, BUBBLE_UNKNOWN
+        )
         if rgb_image is None:
             marker = ""
         height = max(1.0, bottom - top)
@@ -180,7 +183,9 @@ def order_text(items, *, rgb_image=None) -> str:
     return "\n".join(rendered)
 
 
-def rapid_engine() -> Callable[[Path], str]:
+def rapid_engine(*, host_self_hashes: frozenset[str] = frozenset()) -> Callable[[Path], str]:
+    if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in host_self_hashes):
+        raise ValueError("host evidence must be bound to exact image SHA256 hashes")
     try:
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as exc:
@@ -196,7 +201,8 @@ def rapid_engine() -> Callable[[Path], str]:
         image = cv2.imread(str(path))
         if image is None:
             raise OcrUnavailable(f"无法读取 OCR 原图颜色：{path.name}")
-        return order_text(result, rgb_image=cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        verified = bool(host_self_hashes) and hashlib.sha256(path.read_bytes()).hexdigest() in host_self_hashes
+        return order_text(result, rgb_image=cv2.cvtColor(image, cv2.COLOR_BGR2RGB), host_self_verified=verified)
 
     return recognize
 

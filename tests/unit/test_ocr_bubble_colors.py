@@ -15,6 +15,7 @@ from researchlib.ocr_bubbles import bubble_color
 from researchlib.render import _dialogue_html, flow_ocr_quote_body
 from researchlib.wechat_dialogue import (
     BUBBLE_GUEST,
+    BUBBLE_HOST,
     BUBBLE_SELF,
     BUBBLE_UNKNOWN,
     SIDE_SELF,
@@ -72,7 +73,7 @@ def test_dark_theme_greens_and_grays_reach_the_same_speaker_path():
         item(30, 30, 160, 50, "这是灰色网友的观点"),
         item(240, 100, 370, 120, "这是绿色作者的回复"),
     ], rgb_image=image)
-    assert present_ocr_pieces([raw]) == "网友：这是灰色网友的观点。\n\n方伟：这是绿色作者的回复。"
+    assert present_ocr_pieces([raw]) == "网友：这是灰色网友的观点。\n\n未确认：这是绿色作者的回复。"
 
 
 @pytest.mark.parametrize("color", [(237, 237, 237), (149, 236, 105), (200, 100, 240), (80, 80, 80)])
@@ -96,14 +97,17 @@ def test_supplied_12681_fragment_in_green_overrides_preceding_guest(reply):
     # Deliberately put the green bubble on the left, gray on the right.
     image.rectangle(230, 20, 380, 60, (255, 255, 255))
     image.rectangle(20, 90, 170, 140, (149, 236, 105))
-    raw = order_text([
+    boxes = [
         item(240, 30, 370, 45, "这是网友提出的问题"),
         item(30, 100, 160, 120, reply),
-    ], rgb_image=image)
+    ]
+    raw = order_text(boxes, rgb_image=image)
     assert raw == BUBBLE_GUEST + "这是网友提出的问题\n" + BUBBLE_SELF + reply
-    text = present_ocr_pieces([raw])
+    assert "方伟：" not in present_ocr_pieces([raw])
+    text = present_ocr_pieces([raw], host_self_indices=frozenset({0}))
     assert text == "网友：这是网友提出的问题。\n\n方伟：" + reply + ("" if reply.endswith("…") else "。")
-    assert compose_ocr_text([raw]) == text
+    confirmed_raw = order_text(boxes, rgb_image=image, host_self_verified=True)
+    assert compose_ocr_text([confirmed_raw]) == text
     assert present_stored_ocr(text) == text
     assert not any(marker in text for marker in (SIDE_SELF, BUBBLE_SELF, BUBBLE_GUEST, BUBBLE_UNKNOWN))
 
@@ -116,12 +120,15 @@ def test_two_colors_on_same_ocr_row_remain_two_turns():
         item(240, 30, 370, 50, "这是网友的回答"),
         item(30, 30, 160, 50, "这是方伟的回答"),
     ], rgb_image=image)
-    assert present_ocr_pieces([text]) == "方伟：这是方伟的回答。\n\n网友：这是网友的回答。"
+    assert present_ocr_pieces([text]) == "未确认：这是方伟的回答。\n\n网友：这是网友的回答。"
+    assert present_ocr_pieces([text], host_self_indices=frozenset({0})) == (
+        "方伟：这是方伟的回答。\n\n网友：这是网友的回答。"
+    )
 
 
 def test_ambiguous_color_does_not_inherit_host_or_guess_from_position():
     text = "\n".join(["微信", BUBBLE_SELF + "这是确认颜色的作者内容", BUBBLE_UNKNOWN + "这段颜色不明不能猜作者"])
-    presented = present_ocr_pieces([text])
+    presented = present_ocr_pieces([text], host_self_indices=frozenset({0}))
     assert presented == "方伟：这是确认颜色的作者内容。\n\n未确认：这段颜色不明不能猜作者。"
     assert present_stored_ocr(presented) == presented
     all_unknown = order_text([item(230, 30, 370, 50, "这是一段没有色彩证据的正文")], rgb_image=Raster())
@@ -183,8 +190,11 @@ def test_inline_label_does_not_assign_the_next_unknown_bubble_to_host():
 
 def test_positive_bubble_evidence_protects_genuine_commerce_speech():
     raw = BUBBLE_SELF + "现在美团外卖补贴很多，用户很喜欢。\n" + BUBBLE_SELF + "这句最后的正文要留下。"
-    assert present_ocr_pieces([raw]) == "方伟：现在美团外卖补贴很多，用户很喜欢。\n这句最后的正文要留下。"
-    assert present_ocr_pieces([BUBBLE_SELF + "微信小店"]) == "方伟：微信小店。"
+    assert present_ocr_pieces([raw], host_self_indices=frozenset({0})) == (
+        "方伟：现在美团外卖补贴很多，用户很喜欢。\n这句最后的正文要留下。"
+    )
+    assert present_ocr_pieces([raw]).startswith("未确认：现在美团外卖补贴很多")
+    assert present_ocr_pieces([BUBBLE_SELF + "微信小店"], host_self_indices=frozenset({0})) == "方伟：微信小店。"
 
 
 def test_14884_quote_excerpt_from_merged_pr_55_keeps_roles():
@@ -224,3 +234,38 @@ def test_uncolored_nickname_before_gray_bubble_is_not_retained(nickname):
 def test_unknown_short_utterance_is_not_mistaken_for_a_nickname():
     raw = BUBBLE_UNKNOWN + "微信\n" + BUBBLE_UNKNOWN + "哈哈哈\n" + BUBBLE_GUEST + "这条是网友明确灰色的发言。"
     assert present_ocr_pieces([raw]) == "未确认：哈哈哈。\n\n网友：这条是网友明确灰色的发言。"
+
+
+def test_host_confirmation_is_scoped_to_one_piece_and_never_inherited():
+    first = BUBBLE_SELF + "Verified sample reply."
+    second = BUBBLE_SELF + "Unverified screenshot sender."
+    text = present_ocr_pieces([first, second], host_self_indices=frozenset({0}))
+    assert "方伟：Verified sample reply." in text
+    assert "未确认：Unverified screenshot sender." in text
+    assert BUBBLE_HOST not in text
+    with pytest.raises(ValueError):
+        present_ocr_pieces([first], host_self_indices=frozenset({1}))
+
+
+def test_recognizer_host_evidence_is_bound_to_exact_image_hash(monkeypatch, tmp_path):
+    import hashlib
+    import sys
+
+    image = Raster()
+    image.rectangle(20, 20, 170, 70, (149, 236, 105))
+    result = [item(30, 30, 160, 50, "Synthetic research reply.")]
+    monkeypatch.setitem(
+        sys.modules, "rapidocr_onnxruntime", SimpleNamespace(RapidOCR=lambda: lambda path: (result, None))
+    )
+    monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace(
+        imread=lambda path: image, cvtColor=lambda pixels, mode: pixels, COLOR_BGR2RGB=4,
+    ))
+    confirmed, other = tmp_path / "confirmed.png", tmp_path / "other.png"
+    confirmed.write_bytes(b"confirmed synthetic file")
+    other.write_bytes(b"different synthetic file")
+    digest = hashlib.sha256(confirmed.read_bytes()).hexdigest()
+    recognize = rapid_engine(host_self_hashes=frozenset({digest}))
+    assert recognize(confirmed).startswith(BUBBLE_HOST)
+    assert recognize(other).startswith(BUBBLE_SELF)
+    with pytest.raises(ValueError, match="SHA256"):
+        rapid_engine(host_self_hashes=frozenset({"source-name-is-not-image-proof"}))

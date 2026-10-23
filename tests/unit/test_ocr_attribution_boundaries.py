@@ -6,13 +6,24 @@ from researchlib.chunks import ocr_chunks
 from researchlib.ocr import compose_ocr_text
 from researchlib.wechat_dialogue import (
     BUBBLE_GUEST,
+    BUBBLE_HOST,
     BUBBLE_SELF,
+    BUBBLE_UNKNOWN,
     REFERENCE_NOTE,
     SIDE_SELF,
     parse_shot,
     present_ocr_pieces,
     present_stored_ocr,
 )
+
+
+def test_ordinary_host_nickname_cannot_authenticate_a_different_colored_bubble():
+    raw = (BUBBLE_UNKNOWN + "方伟\n" + BUBBLE_GUEST + "这一轮我认为利润率会上升。\n"
+           + BUBBLE_SELF + "截图持有人的不同看法。")
+    text = present_ocr_pieces([raw])
+    assert "方伟：这一轮我认为利润率会上升。" in text
+    assert "未确认：截图持有人的不同看法。" in text
+    assert "方伟：截图持有人的不同看法。" not in text
 
 
 @pytest.mark.parametrize("label", ["", "方伟：", "网友：", "未确认："])
@@ -44,7 +55,7 @@ def test_stale_speaker_labels_do_not_protect_follow_counters_or_buttons(label):
     assert present_stored_ocr(raw) == "方伟：真实正文还在。\n\n网友：后面正文仍然保留。"
 
 
-@pytest.mark.parametrize("marker,speaker", [(BUBBLE_SELF, "方伟"), (BUBBLE_GUEST, "网友")])
+@pytest.mark.parametrize("marker,speaker", [(BUBBLE_SELF, "未确认"), (BUBBLE_HOST, "方伟"), (BUBBLE_GUEST, "网友")])
 def test_confirmed_bubble_can_contain_a_time_or_follow_count(marker, speaker):
     raw = marker + "15:30\n" + marker + "71个朋友关注"
     assert present_ocr_pieces([raw]) == f"{speaker}：15:30\n71个朋友关注。"
@@ -104,7 +115,7 @@ def test_473_infographics_and_wrapped_tables_retain_neutral_reference_text(raw):
 
 def test_a_conversation_about_margins_is_not_mistaken_for_a_table():
     raw = BUBBLE_SELF + "经营利润率只是一个指标，应该和增长一起看。"
-    assert present_ocr_pieces([raw]) == "方伟：经营利润率只是一个指标，应该和增长一起看。"
+    assert present_ocr_pieces([raw]) == "未确认：经营利润率只是一个指标，应该和增长一起看。"
 
 
 def test_book_excerpt_reader_profile_does_not_claim_authorship_of_the_quote():
@@ -151,10 +162,22 @@ def test_606_social_metric_row_is_ui_only_in_a_post_context():
     assert "197.4万" not in shown
     assert "这段真正的正文必须保留。" in shown and "那之后的正文也必须保留。" in shown
     spoken = BUBBLE_SELF + "197.4万 13.6万 16.5万\n" + "手艺门 +关注"
-    assert "方伟：197.4万 13.6万 16.5万。" == present_ocr_pieces([spoken])
+    assert "未确认：197.4万 13.6万 16.5万。" == present_ocr_pieces([spoken])
     assert present_ocr_pieces(["197.4万 13.6万 16.5万"]) == "197.4万 13.6万 16.5万"
 
 
 def test_historical_position_marker_does_not_prove_a_green_author_bubble():
     raw = "微信\n" + SIDE_SELF + "这句历史上只因靠右被标成作者。"
     assert present_ocr_pieces([raw]) == "未确认：这句历史上只因靠右被标成作者。"
+
+
+def test_explicit_author_reply_header_survives_body_color_changes_and_stops_at_guest_header():
+    raw = ("3条留言V 写留言\n方伟在学习（作者）\n"
+           + BUBBLE_SELF + "作者的第一段判断。\n"
+           + BUBBLE_GUEST + "作者的续段判断。\n"
+           + "张冠留言1次·关注8个月\n" + BUBBLE_SELF + "新的未确认截图发送方。")
+    text = present_ocr_pieces([raw])
+    assert "方伟：作者的第一段判断" in text
+    assert "作者的续段判断" in text
+    assert "未确认：新的未确认截图发送方。" in text
+    assert "方伟：新的未确认截图发送方" not in text

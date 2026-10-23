@@ -278,12 +278,20 @@ def _keep_topic(index: dict[str, dict], key: str, meta: dict) -> None:
 
 
 def load_raw_index(raw_files: list[Path], *, source_id: str = "") -> dict[str, dict]:
+    from researchlib.zsxq_archive_comments import bind_comment_archive, load_comment_archives
+
     index: dict[str, dict] = {}
+    archives = load_comment_archives(raw_files)
     for path in raw_files:
+        if path.parent.name == "comments" and path.parent.parent.name == "raw":
+            continue
         try:
             data = json.loads(read_text_file_safe(path))
         except json.JSONDecodeError:
             continue
+        for node in _iter_dicts(data):
+            if "topic_id" in node or "topicId" in node:
+                bind_comment_archive(node, path, source_id, archives)
         metas = extract_zsxq_topics(data, source_id=source_id)
         if not metas:
             continue
