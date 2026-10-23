@@ -3,10 +3,7 @@
 不按持仓或观察名单过滤。每条：作者的判断、背后的机制、态度；风险、推翻条件、要盯的验证指标
 只在原文谈到时才有，没谈到就空着，不硬凑。原句逐字核对过才留，核对不上就不显示。
 
-两条写入路径，和摘要一样：
-
-- 打开公司页时，这家公司还没整理的文章在后台排队，不挡住页面。
-- 手动 CLI 批量补（夜间任务也是这个范围）：
+公司页只读已存观点。写入由显式 CLI 或处理任务执行：
 
     research-views                      # 全部被深入谈到的公司，默认最多 100 篇
     research-views --company 泡泡玛特 --limit 300
@@ -42,6 +39,13 @@ from researchlib.author_voice import (
 )
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
+from researchlib.eligibility import (
+    is_eligible_article,
+    is_zsxq,
+    model_cache_safe_article,
+    model_cache_safe_sql,
+    project_article,
+)
 from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -55,7 +59,7 @@ logger = logging.getLogger("researchlib.views")
 
 PROMPT_VERSION = 2
 BODY_LIMIT = VIEWS_LIMIT
-_GUEST = views_eligible_sql("a")
+_GUEST = f"{views_eligible_sql('a')} AND {model_cache_safe_sql('a')}"
 PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文章（含「图片里的字」），摘出作者对指定公司的判断。
 只输出一个 JSON 对象，不要输出别的文字。每家指定的公司都要有一个键，没有下判断就写 null：
 {"公司名": {"about": true, "judgment": "…", "mechanism": "…", "stance": "正面",
@@ -272,7 +276,7 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         return []
     return conn.execute(
         f"""
-        SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,
+        SELECT a.id, a.title, a.body_md, a.body_text, a.raw_meta, a.content_hash, a.published_at, a.source_id,
                array_agg(m.company_id ORDER BY m.company_id) AS companies
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
@@ -305,7 +309,7 @@ def pending_companies(conn, article_id: int, only_ids: list[int] | None = None) 
         JOIN companies c ON c.id = m.company_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.article_id = %s {clause} AND {_VIEW_DEPTH}
-          AND {_STALE}
+          AND {_GUEST} AND {_STALE}
         ORDER BY c.id
         """,
         tuple(params),
@@ -448,26 +452,42 @@ def _reading_windows(body: str, chunks: list[tuple[str, str]], aliases: list[str
 
 def extract_article(conn, settings: Settings, row, author: str, companies: list[dict]) -> int:
     """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
-    if not companies:
+    if not companies or not row.get("source_id"):
         return 0
     meta = raw_meta_of(conn, row)
+    if not model_cache_safe_article({**dict(row), "raw_meta": meta}):
+        return 0
+    row = project_article({**dict(row), "raw_meta": meta})
+    if row is None:
+        return 0
+    meta = row["raw_meta"]
     if is_guest(meta) or off_views(meta):
         return 0
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
-    chunks = original_chunks(conn, row["id"])
+    if is_zsxq(row):
+        from researchlib.chunks import make_chunks
+
+        chunks = make_chunks(row["title"], row["body_md"])
+    else:
+        chunks = original_chunks(conn, row["id"])
     source_id = row["source_id"] if "source_id" in row.keys() else ""
     if not source_id and row.get("id"):
         found = conn.execute("SELECT source_id FROM articles WHERE id = %s", (row["id"],)).fetchone()
         source_id = found["source_id"] if found else ""
-    body, voice_chunks, restricted = for_model(
-        row["body_text"] or "", chunks, meta, source_id=source_id
-    )
+    if is_zsxq(row):
+        body, voice_chunks, restricted = row["body_text"] or "", chunks, False
+        if row.get("owner_reply_context"):
+            header += "\n（观点只归属于已验证星主回复；标注的网友问题仅作上下文，不归入星主观点。）"
+    else:
+        body, voice_chunks, restricted = for_model(
+            row["body_text"] or "", chunks, meta, source_id=source_id
+        )
     if restricted:
         header += VOICE_NOTE
         chunks = voice_chunks
-    ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    ocr_text, ocr_digest = ("", "") if row.get("owner_reply_context") else article_ocr(conn, row["id"])
     voice_body = body
     body = append_ocr(body, ocr_text)
     if ocr_text.strip():
@@ -572,13 +592,14 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.metrics,
-               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, a.title, a.published_at, a.source_id,
+               v.quote, v.chunk_ord, v.content_hash, c.anchor AS chunk_anchor, a.title, a.published_at, a.source_id,
                left(a.body_text, 2000) AS body_text
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND {_GUEST} AND {visible_sql("a")}
+          AND {_GUEST} AND {visible_sql("a")} AND {model_cache_safe_sql("a")}
+          AND v.content_hash = a.content_hash
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
@@ -603,6 +624,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         items.append(
             {
                 "article_id": row["article_id"],
+                "content_hash": row["content_hash"],
                 "title": title,
                 "author": author,
                 "date": shown_date,
@@ -668,6 +690,8 @@ def same_period(
         JOIN companies c ON c.id = v.company_id
         WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id
           AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%(sources)s)
+          AND {model_cache_safe_sql("a")}
+          AND v.content_hash = a.content_hash
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
                                  AND me.published_at + make_interval(days => %(days)s)
         ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id
@@ -765,7 +789,7 @@ def _worker() -> None:
                     conn = connect(settings)
                 row = conn.execute(
                     """
-                    SELECT id, title, body_text, content_hash, published_at, source_id
+                    SELECT id, title, body_md, body_text, raw_meta, content_hash, published_at, source_id
                     FROM articles WHERE id = %s
                     """,
                     (article_id,),
@@ -836,12 +860,19 @@ def _canonical_ids(conn, article_ids: list[int], source_ids: list[str]) -> list[
     found: list[int] = []
     allowed = set(source_ids)
     for row in rows:
-        if row["source_id"] not in allowed or is_guest(row["raw_meta"]) or off_views(row["raw_meta"]):
+        if row["source_id"] not in allowed or not is_eligible_article(row) or off_views(row["raw_meta"]):
             continue
         canonical = int(row["duplicate_of"] or row["id"])
         if canonical not in found:
             found.append(canonical)
-    return found
+    if not found:
+        return []
+    canonical_rows = conn.execute(
+        "SELECT id, source_id, raw_meta FROM articles WHERE id = ANY(%s)", (found,)
+    ).fetchall()
+    safe = {int(row["id"]) for row in canonical_rows
+            if row["source_id"] in allowed and is_eligible_article(row) and not off_views(row["raw_meta"])}
+    return [article_id for article_id in found if article_id in safe]
 
 
 def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int, article_ids: list[int] | None = None):
@@ -861,7 +892,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
     params.append(limit)
     return conn.execute(
         f"""
-        SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,
+        SELECT a.id, a.title, a.body_md, a.body_text, a.raw_meta, a.content_hash, a.published_at, a.source_id,
                array_agg(DISTINCT m.company_id) AS companies
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
@@ -907,7 +938,7 @@ def articles_for_ids(conn, company_ids: list[int], source_ids: list[str], articl
         return []
     return conn.execute(
         f"""
-        SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,
+        SELECT a.id, a.title, a.body_md, a.body_text, a.raw_meta, a.content_hash, a.published_at, a.source_id,
                array_agg(DISTINCT m.company_id) AS companies
         FROM articles a
         JOIN article_mentions m ON m.article_id = a.id AND m.company_id = ANY(%s)

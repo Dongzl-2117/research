@@ -154,6 +154,7 @@ _INLINE = re.compile(r"^(.{1,16}?)[:：]\s*(.+)$")
 _GROUP_TITLE = re.compile(
     r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
     r"|^(?:\d{2,6}\s+).{2,40}[（(]\d{1,4}[）)]$"
+    r"|^[^\n（(。！？!?]{2,36}(?:交流|讨论)\s*[（(]\d{1,4}[）)]$"
 )
 _LATIN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,19}$")
 _LATIN_STOP = frozenset(
@@ -162,6 +163,7 @@ _LATIN_STOP = frozenset(
 _GROUP_BARE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,16}群$")
 _TIME = re.compile(
     r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}:\d{2}(?::\d{2})?[≥>≤<]*$"
+    r"|^\d{1,2}:\d{2}\s*[mM]$"
     r"|^(?:昨天|今天|前天|星期[一二三四五六日天])$"
     r"|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?[≥>≤<]*$"
 )
@@ -184,7 +186,9 @@ _APP_FRAGMENT = re.compile(r"^QuestMobile", re.I)
 _AT_SUFFIX = re.compile(r"@[A-Za-z0-9_\-.]+$")
 _SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加")
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
-_WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
+_WECHAT = re.compile(
+    r"^(?:微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息)$", re.M
+)
 # 公众号文章预览页的「账号名 +关注」：账号名和按钮 OCR 粘在一行，旧规则只认整行「+关注」。
 # 「观察 56个朋友关注 82 455 38 33。」是「N个朋友关注」粘着阅读量、点赞数。
 # 「交易规则 71个朋友关注 53 47 23 写留言」再把留言按钮粘在末尾。
@@ -381,7 +385,7 @@ def _bubble_marker(line: str) -> str:
 
 
 def _footer_compact(line: str) -> str:
-    return re.sub(r"\s+", "", _fold(_plain(line)))
+    return re.sub(r"\s+", "", _footer_payload(line))
 
 
 def _is_author_badge(line: str) -> bool:
@@ -644,18 +648,18 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
     while index < len(peeled):
         line = peeled[index]
         nxt = peeled[index + 1] if index + 1 < len(peeled) else ""
+        if line.startswith((BUBBLE_SELF, BUBBLE_GUEST)):
+            kept.append(line)
+            index += 1
+            continue
         if _is_follow_chrome(line):
             index += 1
             if (
                 index < len(peeled)
                 and not _bubble_marker(peeled[index])
-                and _FOLLOW_COUNTS.fullmatch(_fold(_plain(peeled[index])))
+                and _FOLLOW_COUNTS.fullmatch(_footer_payload(peeled[index]))
             ):
                 index += 1
-            continue
-        if line.startswith((BUBBLE_SELF, BUBBLE_GUEST)):
-            kept.append(line)
-            index += 1
             continue
         if _bare_guest_name(line) and _is_message_label(nxt):
             kept.append(_GUEST_TURN)
@@ -721,7 +725,9 @@ def parse_shot(text: str) -> Shot:
     raw_lines = [line for line in raw_lines if line]
     if not raw_lines:
         return Shot("prose", [], original)
-    visible_raw_lines = [_plain(line) for line in raw_lines]
+    # Multi-column spacing is evidence for a table, not expendable whitespace.
+    # Keep it until media classification, before _scrub folds it for speech.
+    visible_raw_lines = [_plain(line.strip()) for line in _normalize(original).splitlines() if line.strip()]
     # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
     if (
         _is_product_shot(visible_raw_lines)
@@ -729,12 +735,18 @@ def parse_shot(text: str) -> Shot:
         or _is_chart_shot(visible_raw_lines)
         or _is_table_shot(visible_raw_lines)
         or _is_foreign_comment_shot(visible_raw_lines)
+        or _is_reading_card(visible_raw_lines)
     ):
         return Shot("media", [], "")
     stripped = _drop_post_footer(raw_lines)
     signal = _wechat_signal([_plain(line) for line in stripped])
     lines = _prepare_lines(stripped)
-    names = _speaker_names(lines, signal)
+    speaker_context = signal or any(
+        _classify(_plain(line), set())[0] == HOST
+        or _STRUCTURED.match(_plain(line)) or _bubble_marker(line)
+        for line in lines
+    )
+    names = _speaker_names(lines, bool(speaker_context))
     # 已经是「方伟：」「网友：」的块再跑也要能合并，不能因为界面字已经被拿掉就退回原文。
     visible = [
         _plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN, _HOST_TURN)
@@ -779,6 +791,14 @@ def _is_product_shot(lines: list[str]) -> bool:
     return dollars >= 3 and stars >= 2
 
 
+def _is_reading_card(lines: list[str]) -> bool:
+    """The reader profile on a dated book-excerpt card is not its text's author."""
+    return any(
+        re.fullmatch(r"摘录于\s*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?", _footer_payload(line))
+        for line in lines[:4]
+    )
+
+
 def _is_shop_shot(lines: list[str]) -> bool:
     """微信小店 / 拼多多 / 淘宝的商品卡截图。
 
@@ -787,6 +807,12 @@ def _is_shop_shot(lines: list[str]) -> bool:
     正文里提到「微信小店」四个字不会命中这些界面词，照常保留。
     """
     joined = "\n".join(lines)
+    promo_rows = sum(
+        re.fullmatch(r"扫码领取优惠券|仅限前\d+名|\d+元立减金", line.strip()) is not None
+        for line in lines
+    )
+    if promo_rows >= 2:
+        return True
     if _SHOP_STRONG.search(joined):
         return True
     if "微信小店" not in joined:
@@ -797,6 +823,12 @@ def _is_shop_shot(lines: list[str]) -> bool:
 def _is_chart_shot(lines: list[str]) -> bool:
     """折线图 / 柱状图的 OCR：角标、轴刻度，读出来也没有句子。"""
     if any(_CHART_MARK.search(line) for line in lines):
+        return True
+    timeline_labels = sum(
+        re.fullmatch(r"(?:AI|Mobile|Web|PC)(?:\s+(?:19|20)\d{2})?", line.strip()) is not None
+        for line in lines
+    )
+    if timeline_labels >= 3 and len(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", "\n".join(lines))) >= 3:
         return True
     digitish = 0
     meaningful = 0
@@ -835,7 +867,15 @@ def _is_foreign_comment_shot(lines: list[str]) -> bool:
 
 def _is_table_shot(lines: list[str]) -> bool:
     """SCF / 电商份额等数据表：多列数字，阅读页只留原图。"""
-    if any(re.search(r"指标\s*数值|公司\s*财年|净利率|经营利润率", line) for line in lines):
+    if any(re.search(r"指标\s*数值|公司\s*财年", line) for line in lines):
+        return True
+    # Wrapped cells can make most individual OCR rows nonnumeric. A short
+    # four-column header still proves that this is a table/infographic.
+    if any(
+        len(line) <= 100 and not _is_strong_footer(line) and not re.search(r"[。！？!?]", line)
+        and len(re.split(r"\s{2,}", line.strip())) >= 4
+        for line in lines[:5]
+    ):
         return True
     rowish = 0
     for line in lines:
@@ -887,6 +927,8 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
             if not keep[earlier]:
                 continue
             old = norms[earlier]
+            if rows[earlier][0] != rows[index][0]:
+                continue
             if _same_sentence(norm, old):
                 keep[index] = False
                 break
@@ -901,9 +943,13 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
         if not keep[index]:
             continue
         speaker, line, norm, turn_id, pos = row
-        if any(_same_sentence(norm, old) for old in kept_norms):
+        # Repeating someone else's words is a new speaker's turn, not an
+        # overlapping crop. Keep attribution when a host echoes a guest.
+        seen_prefix = speaker + "\x1f"
+        if any(_same_sentence(norm, old[len(seen_prefix):])
+               for old in kept_norms if old.startswith(seen_prefix)):
             continue
-        kept_norms.append(norm)
+        kept_norms.append(seen_prefix + norm)
         kept_pos.setdefault(turn_id, pos)
         chosen.append(row)
     blocks: list[list] = []
@@ -1002,7 +1048,7 @@ def _is_price(line: str) -> bool:
 
 
 def _is_time(line: str) -> bool:
-    return _TIME.fullmatch(_fold(line or "")) is not None
+    return _TIME.fullmatch(_footer_payload(line)) is not None
 
 
 def _is_store(line: str) -> bool:
@@ -1052,7 +1098,7 @@ def _is_sku(line: str) -> bool:
 
 
 def _is_noise(line: str) -> bool:
-    folded = _fold(line)
+    folded = _footer_payload(line)
     if not folded or _SYMBOL.fullmatch(folded):
         return True
     # 截图边缘的单个假名。折行剩下的「的」是汉字，留着。
@@ -1118,9 +1164,6 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
         if line == _HOST_TURN:
             kept.append(_HOST_TURN)
             continue
-        if _is_time(line):
-            kept.append(_BREAK)
-            continue
         # 第一条账号栏留下分界；后面的「方伟看十年」是页脚，整行丢掉。
         # 必须写在 _is_noise 前面，否则账号栏会被直接跳过，栏上的引用就没有分界。
         if _account_line(line):
@@ -1130,6 +1173,9 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
             continue
         if markers[index] in (BUBBLE_SELF, BUBBLE_GUEST):
             kept.append(markers[index] + line)
+            continue
+        if _is_time(line):
+            kept.append(_BREAK)
             continue
         if index in drop or _is_noise(line):
             continue
@@ -1189,6 +1235,10 @@ def _split_after_host_mention(lines: list[str]) -> list[str]:
 
 
 def _speaker_names(lines: list[str], signal: bool) -> set[str]:
+    # A chart label such as Mobile / Tencent is not a speaker. Nickname shape
+    # only helps after the image has independent chat or speaker evidence.
+    if not signal:
+        return set()
     names: set[str] = set()
     pairs: list[str] = []
     seen_times: dict[str, int] = {}

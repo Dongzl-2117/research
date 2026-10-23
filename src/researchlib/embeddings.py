@@ -27,6 +27,8 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 
+from researchlib.eligibility import model_cache_safe_sql
+
 logger = logging.getLogger("researchlib.embeddings")
 
 # bge-m3 的维度。换模型时维度要一样，不一样就报错，不悄悄截断。
@@ -253,6 +255,7 @@ def _pending(conn, limit: int, model: str) -> list[dict]:
         JOIN articles a ON a.id = c.article_id
         LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
         WHERE a.duplicate_of IS NULL
+          AND {model_cache_safe_sql("a")}
           AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %s)
         ORDER BY a.published_at DESC NULLS LAST, c.article_id, c.ord
         LIMIT %s
@@ -307,10 +310,14 @@ def coverage(conn) -> tuple[int, int]:
     if column_type(conn) is None:
         return 0, 0
     row = conn.execute(
-        """
-        SELECT (SELECT count(*) FROM chunk_embeddings) AS done,
+        f"""
+        SELECT (SELECT count(*) FROM chunk_embeddings e
+                JOIN article_chunks c ON c.article_id = e.article_id AND c.ord = e.ord
+                JOIN articles a ON a.id = c.article_id
+                WHERE a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}
+                  AND e.text_hash = md5({_SOURCE_TEXT})) AS done,
                (SELECT count(*) FROM article_chunks c JOIN articles a ON a.id = c.article_id
-                WHERE a.duplicate_of IS NULL) AS total
+                WHERE a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}) AS total
         """
     ).fetchone()
     return int(row["done"]), int(row["total"])

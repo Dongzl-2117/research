@@ -13,12 +13,20 @@ from collections import Counter
 
 def _green(rgb) -> bool:
     r, g, b = (int(value) for value in rgb[:3])
-    return 70 <= r <= 205 and g >= 155 and g - r >= 25 and g - b >= 45 and b <= 170
+    # The standard dark theme is roughly (41, 180, 97), much darker than
+    # the light-theme (149, 236, 105). Both retain a strong green channel.
+    return 15 <= r <= 205 and g >= 140 and g - r >= 25 and g - b >= 45 and b <= 170
 
 
 def _neutral(rgb) -> bool:
     values = [int(value) for value in rgb[:3]]
-    return min(values) >= 150 and max(values) - min(values) <= 18
+    return max(values) - min(values) <= 18
+
+
+def _gray_fill(rgb) -> bool:
+    # Dark guest bubbles are about (44, 44, 44), with a (17, 17, 17)
+    # exterior. Do not mistake black text glyphs for the bubble fill.
+    return min(int(value) for value in rgb[:3]) >= 28 and _neutral(rgb)
 
 
 def bubble_color(image, box: tuple[float, float, float, float]) -> str:
@@ -41,7 +49,7 @@ def bubble_color(image, box: tuple[float, float, float, float]) -> str:
         for x in range(left, right + 1, max(1, (right - left) // 12))
     ]
     green = [rgb for rgb in samples if _green(rgb)]
-    neutral = [rgb for rgb in samples if _neutral(rgb)]
+    neutral = [rgb for rgb in samples if _gray_fill(rgb)]
     if len(green) >= 0.6 * len(samples):
         kind, fill = "green", green
     elif len(neutral) >= 0.6 * len(samples):

@@ -7,10 +7,12 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from researchlib.attachments import with_stored_attachments
 from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
+from researchlib.eligibility import is_eligible_article, project_article
 from researchlib.empty_answer import hide_empty_answer
 from researchlib.images import sync_article_images
 from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
@@ -75,6 +77,8 @@ def store_documents(
             report.updated += 1
         elif status == "held":
             report.held += 1
+        elif status == "rejected":
+            report.rejected += 1
         else:
             report.unchanged += 1
         report.images_stored += stored
@@ -155,10 +159,29 @@ def apply_length_floor(source: Source, body_md: str, meta: dict) -> dict:
 
 
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
+    candidate = {
+        "source_id": source.id, "source_kind": source.kind, "title": doc.title,
+        "body_md": doc.body_md, "raw_meta": doc.raw_meta,
+    }
+    if not is_eligible_article(candidate):
+        return "rejected", 0, 0, 0, None
+    if source.kind == "zsxq":
+        projected = project_article(candidate)
+        if projected is None:
+            return "rejected", 0, 0, 0, None
+        doc.title, doc.body_md, doc.raw_meta = projected["title"], projected["body_md"], projected["raw_meta"]
+        doc.raw_meta["zsxq_identity"]["projection_md"] = doc.body_md
+        if projected.get("owner_reply_context"):
+            doc.image_refs = []
+            doc.attachment_refs = []
+            doc.raw_meta.pop("local_attachments", None)
     profile = profile_for(conn, source.id)
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    meta = apply_length_floor(source, doc.body_md, assign_poster_role(dict(doc.raw_meta), source.author))
+    meta = apply_length_floor(source, doc.body_md, assign_poster_role(
+        dict(doc.raw_meta), source.author, source_id=source.id, source_kind=source.kind
+    ))
+    meta = with_stored_attachments(meta, doc.attachment_refs, data_dir, source.id)
     existing = conn.execute(
         """
         SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
@@ -248,10 +271,11 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         status = "unchanged"
         # 正文没变也要补上发帖人：历史归档重导一遍就能把网友帖从星主名下摘掉。
         if doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id"):
-            merged = assign_poster_role(dict(existing["raw_meta"] or {}), source.author)
+            merged = dict(existing["raw_meta"] or {})
+            merged.update(doc.raw_meta)
             merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
             merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
-            assign_poster_role(merged, source.author)
+            assign_poster_role(merged, source.author, source_id=source.id, source_kind=source.kind)
             if merged != dict(existing["raw_meta"] or {}):
                 conn.execute(
                     "UPDATE articles SET raw_meta = %s WHERE id = %s",

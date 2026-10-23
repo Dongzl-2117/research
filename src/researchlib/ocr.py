@@ -25,6 +25,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from researchlib.chunks import replace_ocr_chunks
+from researchlib.eligibility import (
+    IDENTITY_KEY,
+    is_zsxq,
+    model_cache_safe_article,
+    model_cache_safe_sql,
+    project_article,
+)
 from researchlib.ocr_bubbles import bubble_color
 from researchlib.wechat_dialogue import (
     BUBBLE_GUEST,
@@ -49,6 +56,75 @@ _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 
 class OcrUnavailable(Exception):
     pass
+
+
+def ocr_allowed_sql(alias: str = "a") -> str:
+    """Images on a guest topic have no verified ownership, even with an owner reply."""
+    prefix = f"{alias}." if alias else ""
+    return (
+        f"({model_cache_safe_sql(alias)} AND "
+        f"({prefix}raw_meta->'{IDENTITY_KEY}'->>'kind') IS DISTINCT FROM 'owner_reply_context')"
+    )
+
+
+def _ocr_allowed_article(article) -> bool:
+    if article is None or not model_cache_safe_article(article):
+        return False
+    projected = project_article(article)
+    return projected is not None and not projected.get("owner_reply_context")
+
+
+def _ocr_article(conn, article_id: int):
+    return conn.execute(
+        """
+        SELECT a.id, a.source_id, a.raw_meta, a.body_md, a.ocr_text, a.ocr_hash,
+               s.kind AS source_kind
+        FROM articles a JOIN sources s ON s.id = a.source_id
+        WHERE a.id = %s
+        """,
+        (article_id,),
+    ).fetchone()
+
+
+def _image_ref_allowed(article, original_ref: str) -> bool:
+    if not is_zsxq(article):
+        return True
+    # A reimport can leave old comment attachments in article_images. Their
+    # presence on the same owner row does not prove ownership of each image.
+    from researchlib.ingest.parse import image_refs_in
+    from researchlib.render import image_destination
+
+    projected = project_article(article)
+    if projected is None or projected.get("owner_reply_context"):
+        return False
+    allowed = {image_destination(ref) for ref in image_refs_in(projected.get("body_md") or "")}
+    return bool(original_ref) and image_destination(original_ref) in allowed
+
+
+def _image_articles(conn, digest: str, article_ids: list[int] | None = None) -> list[dict]:
+    where = ["i.content_hash = %s", "a.duplicate_of IS NULL", ocr_allowed_sql("a")]
+    params: list = [digest]
+    if article_ids:
+        where.append("a.id = ANY(%s)")
+        params.append(list(article_ids))
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT a.id AS article_id, a.source_id, a.raw_meta, a.body_md, i.original_ref,
+               s.kind AS source_kind
+        FROM article_images i
+        JOIN articles a ON a.id = i.article_id
+        JOIN sources s ON s.id = a.source_id
+        WHERE {" AND ".join(where)}
+        """,
+        tuple(params),
+    ).fetchall()
+    # Recheck in Python as well: a stale selected candidate or a shared image
+    # hash must not make the executor process an excluded guest article.
+    allowed: dict[int, dict] = {}
+    for row in rows:
+        if _ocr_allowed_article(row) and _image_ref_allowed(row, row.get("original_ref") or ""):
+            allowed[row["article_id"]] = row
+    return list(allowed.values())
 
 
 def order_text(items, *, rgb_image=None) -> str:
@@ -129,7 +205,7 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
 
     redo 时连 image_texts 里已有的哈希也再认一遍。article_ids 只认这几篇挂着的图。
     """
-    where = ["a.duplicate_of IS NULL"]
+    where = ["a.duplicate_of IS NULL", ocr_allowed_sql("a")]
     params: list = []
     if article_ids:
         where.append("i.article_id = ANY(%s)")
@@ -137,7 +213,7 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
     if not redo:
         where.append("NOT EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash)")
     params.append(limit)
-    return conn.execute(
+    rows = conn.execute(
         f"""
         SELECT i.content_hash, min(i.storage_path) AS storage_path
         FROM article_images i
@@ -149,6 +225,9 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
         """,
         tuple(params),
     ).fetchall()
+    # Apply the exact projected-image relation before returning candidates;
+    # SQL row eligibility alone cannot validate leftover attachment ownership.
+    return [row for row in rows if _image_articles(conn, row["content_hash"], article_ids)]
 
 
 def useful_image_text(text: str) -> bool:
@@ -194,9 +273,12 @@ def append_ocr(body: str, ocr_text: str) -> str:
 
 def refresh_article_ocr(conn, article_id: int) -> str:
     """按这篇已识别的图重写 articles.ocr_text / ocr_hash。返回哈希。"""
+    article = _ocr_article(conn, article_id)
+    if not _ocr_allowed_article(article):
+        return ""
     rows = conn.execute(
         """
-        SELECT t.text
+        SELECT t.text, i.original_ref
         FROM article_images i
         JOIN image_texts t ON t.content_hash = i.content_hash
         WHERE i.article_id = %s
@@ -204,7 +286,9 @@ def refresh_article_ocr(conn, article_id: int) -> str:
         """,
         (article_id,),
     ).fetchall()
-    text = compose_ocr_text([row["text"] for row in rows])
+    text = compose_ocr_text([
+        row["text"] for row in rows if _image_ref_allowed(article, row.get("original_ref") or "")
+    ])
     digest = hash_ocr(text)
     current = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
@@ -226,6 +310,9 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
     阅读页本来就现解析 image_texts；观点如果只重跑库里已经写成「方伟：」的旁路，
     账号栏已经被拿掉，引用回复分不回来。没有图时，仍把库里的旁路再整理一次。
     """
+    article = _ocr_article(conn, article_id)
+    if not _ocr_allowed_article(article):
+        return "", ""
     has_images = conn.execute(
         """
         SELECT 1
@@ -236,7 +323,7 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
         """,
         (article_id,),
     ).fetchone()
-    if has_images:
+    if has_images or is_zsxq(article):
         refresh_article_ocr(conn, article_id)
     row = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
@@ -271,8 +358,12 @@ def run_ocr(
     for row in pending_images(conn, limit, redo=redo, article_ids=article_ids):
         if deadline is not None and time.monotonic() > deadline:
             break
-        path = Path(data_dir) / "images" / row["storage_path"]
-        if not path.is_file():
+        articles = _image_articles(conn, row["content_hash"], article_ids)
+        if not articles:
+            continue
+        image_root = (Path(data_dir) / "images").resolve()
+        path = (image_root / row["storage_path"]).resolve()
+        if not path.is_relative_to(image_root) or not path.is_file():
             report["missing"] += 1
             continue
         used = engine
@@ -297,9 +388,7 @@ def run_ocr(
         report["images"] += 1
         if text.strip():
             report["with_text"] += 1
-        for article in conn.execute(
-            "SELECT DISTINCT article_id FROM article_images WHERE content_hash = %s", (row["content_hash"],)
-        ).fetchall():
+        for article in articles:
             touched.add(article["article_id"])
             if text.strip() and replace_ocr_chunks(conn, article["article_id"]):
                 report["articles"] += 1

@@ -17,6 +17,8 @@ import re
 
 from psycopg.types.json import Jsonb
 
+from researchlib.eligibility import project_article
+
 # 平台的删除、屏蔽提示。新正文很短又含这些字样，就当作原文被删了。
 DELETED_MARKERS = (
     "该内容已被发布者删除",
@@ -149,7 +151,7 @@ def versions(conn, article: dict) -> list[dict]:
     """当前版和记下来的各版，新的在前。当前版排第一。"""
     rows = conn.execute(
         """
-        SELECT id, kind, reason, content_hash, title, published_at, body_text, created_at
+        SELECT id, kind, reason, content_hash, title, published_at, body_md, body_text, raw_meta, created_at
         FROM article_revisions
         WHERE article_id = %s
         ORDER BY created_at DESC, id DESC
@@ -166,7 +168,13 @@ def versions(conn, article: dict) -> list[dict]:
         "body_text": article["body_text"],
         "created_at": article.get("updated_at"),
     }
-    return [current, *rows]
+    safe_rows = []
+    for row in rows:
+        projected = project_article({**row, "source_id": article["source_id"]})
+        if projected is not None:
+            safe_rows.append(projected)
+    current["unverified_history"] = len(rows) - len(safe_rows)
+    return [current, *safe_rows]
 
 
 def _paragraphs(text: str) -> list[str]:

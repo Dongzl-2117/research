@@ -22,6 +22,8 @@ import re
 import sys
 from dataclasses import dataclass
 
+from researchlib.eligibility import is_eligible_article, project_article
+
 logger = logging.getLogger("researchlib.duplicates")
 
 SKETCH = 32
@@ -120,7 +122,8 @@ def store_fingerprint(conn, article_id: int, content_hash: str, found: Fingerpri
 def _article(conn, article_id: int):
     return conn.execute(
         """
-        SELECT a.id, a.source_id, a.body_text, a.content_hash, a.duplicate_of, a.published_at, a.keep_separate,
+        SELECT a.id, a.source_id, a.body_md, a.body_text, a.raw_meta,
+               a.content_hash, a.duplicate_of, a.published_at, a.keep_separate,
                s.author,
                (SELECT count(*) FROM article_images i WHERE i.article_id = a.id) AS images
         FROM articles a JOIN sources s ON s.id = a.source_id
@@ -207,12 +210,18 @@ def _ranker(rows):
     """越小越该当主版本：明显更全的正文优先（长度不到最长那份的四分之三算不全，比如半截稿）；
     再比正文更长的（星球转发时加了点评的那版要留下，不能因为图少被藏掉）；
     再比图片多的；发得早的；先入库的。"""
-    lengths = {row["id"]: len(normalize(row["body_text"])) for row in rows}
+    eligible = {row["id"]: is_eligible_article(row) for row in rows}
+    projected = {row["id"]: project_article(row) for row in rows}
+    lengths = {
+        row["id"]: len(normalize((projected[row["id"]] or {}).get("body_text", "")))
+        for row in rows
+    }
     longest = max(lengths.values(), default=0) or 1
 
     def rank(row) -> tuple:
         published = row["published_at"]
         return (
+            not eligible[row["id"]],
             lengths[row["id"]] < 0.75 * longest,
             -lengths[row["id"]],
             -int(row["images"] or 0),

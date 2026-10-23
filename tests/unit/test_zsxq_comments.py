@@ -17,19 +17,20 @@ from researchlib.revisions import split_comments
 from researchlib.translate.pair import stamp_paragraph_ids
 from researchlib.zsxq_comments import display_author
 
-OWNER = {"user_id": 1001, "name": "方伟"}
+OWNER = {"user_id": 1825524112, "name": "方伟"}
 READER = {"user_id": 2002, "name": "某读者"}
 
 
 def _topic(**extra) -> dict:
     topic = {
         "topic_id": 777777,
+        "group": {"group_id": 48888181884848},
         "create_time": "2025-03-01T09:00:00.000+0800",
         "type": "talk",
         "talk": {"owner": OWNER, "text": "拼多多的二季度。"},
         "show_comments": [
             {"comment_id": 1, "owner": READER, "text": "Temu 的关税影响有多大？"},
-            {"comment_id": 2, "owner": OWNER, "repliee": READER,
+            {"comment_id": 2, "owner": OWNER, "repliee": READER, "parent_comment_id": 1,
              "text": '<e type="mention" uid="2002" title="%40%E6%9F%90%E8%AF%BB%E8%80%85" />'
                      " 半托管的毛利会被吃掉一半。"},
             {"comment_id": 3, "owner": READER, "text": "谢谢"},
@@ -89,8 +90,9 @@ def test_zsxq_import_appends_author_replies(tmp_path: Path):
     docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
     assert errors == []
     body = docs[0].body_md
-    assert body.startswith("拼多多的二季度。") and "## 评论里的回复" in body
-    assert "读者问：Temu 的关税影响有多大？" in body and "作者答：半托管的毛利会被吃掉一半。" in body
+    assert body.startswith("拼多多的二季度。") and "## 星主回复（账户已核实）" in body
+    assert "网友问题（仅作星主回复上下文）：" in body and "Temu 的关税影响有多大？" in body
+    assert "星主回复：" in body and "半托管的毛利会被吃掉一半。" in body
     assert "某读者" not in body and "谢谢" not in body
     assert docs[0].raw_meta["comment_replies"] == 2
 
@@ -133,25 +135,17 @@ def test_plain_markdown_leaves_the_14879_comment_bugs():
     assert head.count("<br") >= 3
 
 
-def test_14879_comments_become_author_time_and_body():
+def test_14879_legacy_comments_need_account_evidence():
     html = str(render_body(ARTICLE_14879_COMMENTS, {}))
     head = html.split("<section", 1)[0]
-    section = _section(html)
     assert "<br" not in head
     assert "<ul" not in html
     assert "**" not in html
     assert "\u3000" not in html
-    assert html.count('class="zsxq-comment"') == 1
-    assert 'class="zsxq-comment-author">方伟Rey<' in section
-    assert "曾广文" not in section
-    assert "匿名" not in section
-    assert "claude的fable" not in section
-    assert "哪怕是再贵的商用" not in section
-    assert 'datetime="2026-10-21T11:50"' in section
-    assert "护城河还是要看切换成本和应用层" in section
-    assert "<h2>评论（1）</h2>" in section
-    assert 'class="zsxq-comment-list"' in section
-    assert "max-width" not in section
+    assert 'class="zsxq-comment"' not in html
+    assert "方伟Rey" not in html and "曾广文" not in html
+    assert "护城河还是要看切换成本和应用层" not in html
+    assert "大模型生意的护城河在哪里" in html
 
 
 @pytest.mark.parametrize(
@@ -201,20 +195,19 @@ def test_real_names_stay_and_author_replies_stay_a_separate_section():
 作者答：答一，主站的货币化率还有空间。
 """
     html = str(render_body(body, {}))
-    assert html.index("zsxq-comments") < html.index("评论里的回复")
-    section = _section(html)
-    assert "第一段仍然在。" in section and "第二段也在。" in section
-    assert "曾广文" not in section and "网友看法" not in section
-    assert "作者答" not in section and "评论里的回复" not in section
-    assert "作者答：答一" in html
+    assert "正文。" in html
+    assert "第一段仍然在。" not in html and "第二段也在。" not in html
+    assert "曾广文" not in html and "网友看法" not in html
+    assert "作者答" not in html and "评论里的回复" not in html
     assert "zsxq-comments" not in str(render_body("正文。\n\n## 评论里的回复\n\n作者补充：一句。\n", {}))
 
 
-def test_heading_that_is_not_a_comment_list_is_left_alone():
+def test_unknown_comment_export_is_quarantined():
     body = "正文。\n\n## 评论（2）\n\n这里只是在讨论评论的数量，不是评论列表。\n"
     html = str(render_body(body, {}))
     assert "zsxq-comments" not in html
-    assert "这里只是在讨论评论的数量" in html
+    assert "这里只是在讨论评论的数量" not in html
+    assert "正文。" in html
 
 
 def test_comment_script_is_stripped():
@@ -228,7 +221,7 @@ def test_comment_script_is_stripped():
     html = str(render_body(body, {}))
     assert "<script>" not in html
     assert "alert" not in html
-    assert "正常文字。" in html
+    assert "正常文字。" not in html
 
 
 def test_archive_header_is_cleaned_and_comments_still_render():
@@ -256,8 +249,8 @@ def test_archive_header_is_cleaned_and_comments_still_render():
     head = html.split("<section", 1)[0]
     assert "<br" not in head
     assert "topic_id" not in html and "点赞" not in html
-    assert 'class="zsxq-comment-author">方伟Rey<' in html
-    assert "其实是个风投逻辑" in html
+    assert "方伟Rey" not in html and "其实是个风投逻辑" not in html
+    assert "能不能聊一聊新氧" in html
 
 
 def _shots_14879() -> list[str]:
@@ -301,12 +294,10 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     for number in range(1, 8):
         assert f"原图 {number}" in page
-    assert page.index("方伟：") < page.index("原图 1") < page.index("zsxq-comments")
-    section = _section(page)
-    assert 'class="zsxq-comment-author">方伟Rey<' in section
-    assert "曾广文" not in section and "匿名" not in section
-    assert "**" not in section and "\u3000" not in section
-    gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
+    assert page.index("方伟：") < page.index("原图 1")
+    assert "zsxq-comments" not in page
+    assert "曾广文" not in page and "匿名" not in page
+    gap = page[page.rindex("</figure>") :]
     assert "<br" not in gap
     css = (Path(__file__).resolve().parents[2] / "src/researchlib/web/static/site.css").read_text()
     assert ".reader-grid .prose { max-width: none; }" in css
@@ -319,6 +310,6 @@ def test_breaks_between_screenshots_do_not_survive_in_front_of_comments():
     page = _page_14879("<br>\n")
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     assert "原图 7" in page
-    gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
+    gap = page[page.rindex("</figure>") :]
     assert "<br" not in gap
-    assert 'class="zsxq-comment-author">方伟Rey<' in page
+    assert "zsxq-comments" not in page

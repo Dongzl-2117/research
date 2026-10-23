@@ -250,7 +250,8 @@ def test_theses_bucket_by_stance_and_drop_unrelated_or_neutral():
     assert set(parsed[0]["for"]) == {12, 13}
     assert parsed[0]["against"] == [11]
     assert parsed[0]["judgment"] and parsed[0]["sources"]
-    shown = theses.present({"theses": parsed}, views, "拼多多")
+    input_hash = theses.views_hash(theses.build_input(real)[1])
+    shown = theses.present({"theses": parsed, "views_hash": input_hash}, views, "拼多多")
     assert shown[0]["key"] == "t1" and shown[0]["for"]["count"] == 2 and shown[0]["against"]["count"] == 1
     assert shown[0]["against"]["latest"]["article_id"] == 11 and shown[0]["shifted"] == ["方伟"]
     assert sorted(shown[0]["articles"]) == [11, 12, 13] and shown[0]["quiet_quotes"] == []
@@ -291,7 +292,8 @@ def test_thesis_hides_quote_that_does_not_support_the_title():
     ]
     reply = '{"theses": [{"title": "普通飞天好卖", "mechanism": "终端动销强", "views": ["v1", "v2"]}]}'
     parsed = theses.parse_theses(reply, views, company="贵州茅台")
-    shown = theses.present({"theses": parsed}, views, "贵州茅台")
+    input_hash = theses.views_hash(theses.build_input(views)[1])
+    shown = theses.present({"theses": parsed, "views_hash": input_hash}, views, "贵州茅台")
     assert shown[0]["quiet_quotes"] == [1]
     masked = theses.mask_unrelated_quotes(views, shown[0])
     assert next(view for view in masked if view["article_id"] == 1)["quote"] == ""

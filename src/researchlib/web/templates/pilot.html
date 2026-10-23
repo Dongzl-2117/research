@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block body %}
+{% if pilot_notice %}<p class="banner" role="status">{{ pilot_notice }}</p>{% endif %}
 <div class="pilot">
 <h1>样卡复核</h1>
 <p class="quiet">新抽取规则（论证落在这家公司才挂；判断、理由、证据、关联业务；一文多公司分角度）。只是样稿，没有写进线上观点。更新于 {{ updated }}（UTC）。</p>

@@ -113,8 +113,22 @@ def first_heading(md: str) -> str | None:
 
 def strip_duplicate_title(md: str, title: str) -> str:
     match = re.match(r"\s*#\s+(.+?)\s*(?:\n|$)", md)
-    if match and match.group(1).strip() == title.strip():
-        return md[match.end() :]
+    if match:
+        heading = match.group(1).strip()
+        def normalized(value: str) -> str:
+            return re.sub(r"\s+", " ", value).strip()
+
+        exact = normalized(heading) == normalized(title)
+        long_paragraph = len(heading) > 300 or (len(heading) >= 120 and len(re.findall(r"[。！？.!?]", heading)) >= 2)
+        if exact and not long_paragraph:
+            return md[match.end() :]
+        prefix = title.strip().rstrip(".…")
+        truncated = (
+            (title.rstrip().endswith(("…", "...")) and len(prefix) >= 4) or len(title.strip()) == 300
+        ) and heading.startswith(prefix) and len(heading) > len(title.strip())
+        if long_paragraph or truncated:
+            # 导出器偶尔把一整段变成 H1；长标题也可能已被存储上限截断。保留全部字，按正文呈现。
+            return heading + "\n\n" + md[match.end() :]
     return md
 
 

@@ -92,13 +92,13 @@ def _replace_destination(dest: str, mapping: dict[str, str]) -> str:
 
 def rewrite_markdown_images(body: str, mapping: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
-        alt = match.group(1)
+        alt = match.group(1) or "原文图片"
         target = _replace_destination(match.group(2), mapping)
         if not target:
             label = image_destination(match.group(2)).rsplit("/", 1)[-1] or "图片"
             if image_destination(match.group(2)).startswith(("http://", "https://", "//")):
                 return "*[外部图片已省略]*"
-            return f"*[{label} 缺图]*"
+            return f"*[{alt if alt != '原文图片' else label} 缺图]*"
         return f"![{alt}]({target})"
 
     return _MD_IMAGE.sub(replace, body)
@@ -110,9 +110,12 @@ def rewrite_html_images(html: str, mapping: dict[str, str]) -> str:
         if not url:
             return ""
         target = _replace_destination(url, mapping)
+        alt_match = re.search(r'''\balt\s*=\s*(["'])(.*?)\1''', match.group(0), re.I | re.S)
+        alt = html_lib.unescape(alt_match.group(2)) if alt_match else "原文图片"
+        label = html_lib.escape(alt or "原文图片", quote=True)
         if not target:
-            return ""
-        return f'<img src="{target}" alt="">'
+            return f'<span class="image-missing">{label}（图片未收录）</span>'
+        return f'<img src="{html_lib.escape(target, quote=True)}" alt="{label}" loading="lazy">'
 
     return _IMG_TAG.sub(replace, html)
 
@@ -494,8 +497,31 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
 
 
 
+def normalize_admonitions(body: str) -> str:
+    """只转换引用块的 GFM 提示标记，代码和普通正文里的同名字样保持原样。"""
+    labels = {"NOTE": "说明", "TIP": "提示", "IMPORTANT": "重要", "WARNING": "注意", "CAUTION": "谨慎"}
+    out = []
+    fence = ""
+    for line in (body or "").splitlines(keepends=True):
+        stripped = line.lstrip()
+        marker = re.match(r"(`{3,}|~{3,})", stripped)
+        if marker:
+            token = marker.group(1)
+            if not fence:
+                fence = token[0]
+            elif token[0] == fence:
+                fence = ""
+            out.append(line)
+            continue
+        match = re.match(r"^(\s{0,3}>\s*)\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(\r?\n)?$", line)
+        if match and not fence:
+            line = f"{match.group(1)}**{labels[match.group(2)]}**{match.group(3) or ''}"
+        out.append(line)
+    return "".join(out)
+
+
 def _render_markdown(body: str, mapping: dict[str, str]) -> str:
-    rewritten = rewrite_html_images(rewrite_markdown_images(body or "", mapping), mapping)
+    rewritten = rewrite_html_images(rewrite_markdown_images(normalize_admonitions(body), mapping), mapping)
     html = markdown.markdown(
         rewritten,
         extensions=["extra", "nl2br", "sane_lists"],

@@ -54,6 +54,27 @@ def test_bubble_color_depends_on_rgb_not_horizontal_side(left, color, expected):
     assert bubble_color(image, (left + 10, 40, left + 120, 60)) == expected
 
 
+@pytest.mark.parametrize("left", [20, 230])
+@pytest.mark.parametrize("color,expected", [((41, 180, 97), "green"), ((44, 44, 44), "gray")])
+def test_standard_dark_theme_retains_bounded_color_evidence(left, color, expected):
+    # Synthetic raster using fill/background RGB modes measured from 606's
+    # local ca/cab333... original. This is not an OCR model result.
+    image = Raster(color=(17, 17, 17))
+    image.rectangle(left, 30, left + 130, 80, color)
+    assert bubble_color(image, (left + 10, 40, left + 120, 60)) == expected
+
+
+def test_dark_theme_greens_and_grays_reach_the_same_speaker_path():
+    image = Raster(color=(17, 17, 17))
+    image.rectangle(20, 20, 170, 70, (44, 44, 44))
+    image.rectangle(230, 90, 380, 140, (41, 180, 97))
+    raw = order_text([
+        item(30, 30, 160, 50, "这是灰色网友的观点"),
+        item(240, 100, 370, 120, "这是绿色作者的回复"),
+    ], rgb_image=image)
+    assert present_ocr_pieces([raw]) == "网友：这是灰色网友的观点。\n\n方伟：这是绿色作者的回复。"
+
+
 @pytest.mark.parametrize("color", [(237, 237, 237), (149, 236, 105), (200, 100, 240), (80, 80, 80)])
 def test_uniform_pages_and_unsupported_themes_are_not_bubble_evidence(color):
     image = Raster(color=color)

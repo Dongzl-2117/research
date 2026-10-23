@@ -8,27 +8,33 @@
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
+docker compose build app
+docker compose up -d db
+docker compose run --rm app research-maintain
+docker compose up -d app
 ```
 
 应用监听容器内的 `8088`，compose 只把宿主机的 **127.0.0.1:8088** 转进去。不要改成 `0.0.0.0`。数据库端口同样只绑定 `127.0.0.1:5432`。
 
-应用启动时会自己做迁移（按文件名顺序，到 `019_doc_tree.sql`）、同步 `config/sources.yaml`、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。以前每篇最多切 400 块，正好切满 400 块的长文启动时重切一遍，后面的内容才进检索。上次没写完的问库整合标成中断，回答页可以重新整合。
+Web 启动和所有 GET/HEAD 页面只读取已保存的结果，不执行迁移、同步来源、补切段落、整理 OCR 或安排模型任务。读取数据库的事务在第一条查询前设为只读，结束时回滚。
+
+数据库初始化和升级由维护者显式运行 `research-maintain`：按顺序执行待应用的迁移、同步 `config/sources.yaml`、写入公司种子、补齐缺少的段落块，并把上次中断的问库任务标记为错误。该命令会写库；运行前应按 [backup.md](backup.md) 保留备份，不把它放进 Web 启动流程。
 
 `019` 只建飞书目录表。部署后若林文丰已经在库里，跑一次 `research-doc-tree --source linwenfeng-feishu`（不访问飞书）。方伟星球若要改成真实 `create_time`，跑 `research-retime`（见 [ingest.md](ingest.md)），它会按新的 `published_at` 重排观点时间线和「同期别人怎么看」。这两条都不要在部署时自动跑。
 
 `015_title_search.sql` 给文章表和译文表各加一列标题的全文索引，要重写一遍表：几千篇几秒钟，期间应用还没起来。`014_llm_inputs.sql` 把以前只读了长文开头写出来的摘要和观点标出来，之后按新的读法慢慢重写（见 [llm.md](llm.md)），不在部署时跑。
 
-之后在后台依次做两件事，不挡启动：
+重复文章指纹和公司提及由显式维护命令检查，不再由 Web 启动线程或页面访问触发：
 
-1. 认重复文章。第一次部署时全库认一遍（日志「全库认一遍重复文章」「重复文章认完」），以后只补没算过指纹的。
-2. 公司别名或歧义规则和上次重算提及时不一样，就重算全部文章的公司提及（日志「公司别名变了」「公司提及重算完成」）。
+```bash
+docker compose run --rm app research-maintain --upkeep
+```
 
-几千篇时两步加起来几分钟，期间页面照常能用，只是重复文章和提及还没更新完。
+`--upkeep` 在初始化后依次检查重复文章、在公司别名或歧义规则变化时重算公司提及。首次执行可能涉及全库，安排在维护窗口；普通阅读无需运行它。也可按需单独使用 `research-dedupe` 和 `research-rebuild-mentions`。
 
 备份、试恢复、夜间补齐和定时增量导入用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题，首页顶上提示一行。
 
-不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面时只给当前卡片里缺的排队，其余由夜间任务每晚补一批，见 [llm.md](llm.md)。
+不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面不会排队。需要生成或刷新时，使用明确的处理命令或已有夜间任务，见 [llm.md](llm.md)。
 
 ## 语义检索（可选）
 
@@ -53,7 +59,10 @@ docker compose exec app research-embed   # 第一次全库回填，之后夜间�
 
 ```bash
 git pull
-docker compose up -d --build
+docker compose build app
+# 先确认备份，再显式应用所需数据库初始化/升级。
+docker compose run --rm app research-maintain
+docker compose up -d app
 scripts/install-launchd.sh   # 定时任务有变化时（比如新加的夜间补齐），带上原来的 BACKUP_DIR 再跑一次
 ```
 
@@ -74,7 +83,7 @@ scripts/lock.sh --upgrade                   # 全部升到最新
 
 站内 LLM 默认 DeepSeek（`DEEPSEEK_API_KEY`，见 [llm.md](llm.md)）。Grok OAuth 是可选项：`RESEARCH_LLM_PROVIDER=grok` 时用本机 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`）。AIHOT 已下线，不再挂外部卷 `aihot_data`。见 [translate.md](translate.md)。
 
-改完来源配置（`config/sources.yaml`）或持仓名单（`config/portfolio.yaml`）后刷新页面即可。导入命令每次都会重新读配置。
+改完来源配置（`config/sources.yaml`）或持仓名单（`config/portfolio.yaml`）后，刷新页面会更新内存中的筛选和导航；不会写数据库。来源表需要持久同步时显式运行 `research-maintain`，导入命令每次也会重新读配置。
 
 ## Cloudflare Tunnel
 

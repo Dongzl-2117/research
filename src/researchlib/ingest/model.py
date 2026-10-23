@@ -15,6 +15,7 @@ class ParsedDoc:
     body_md: str
     raw_meta: dict
     image_refs: list[tuple[str, Path | None]]
+    attachment_refs: list[tuple[str, Path | None]] = field(default_factory=list)
 
 
 @dataclass

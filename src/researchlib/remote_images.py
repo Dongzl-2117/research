@@ -29,6 +29,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from researchlib.chunks import replace_ocr_chunks
+from researchlib.eligibility import eligibility_sql, project_article
 from researchlib.render import img_tag_url, normalize_image_url
 
 MAX_BYTES = 15 * 1024 * 1024
@@ -258,11 +259,12 @@ def _record(conn, url: str, *, ok: bool, digest: str = "", relative: str = "", e
 def candidate_articles(conn, after_id: int | None, batch: int = 200):
     """有外链图片的文章（重复的不算），按 id 从新到旧分批取。"""
     return conn.execute(
-        """
-        SELECT a.id, a.source_id, a.body_md,
+        f"""
+        SELECT a.id, a.source_id, a.title, a.body_md, a.raw_meta,
                ARRAY(SELECT i.original_ref FROM article_images i WHERE i.article_id = a.id AND i.remote) AS linked
         FROM articles a
         WHERE a.duplicate_of IS NULL AND a.body_md ~* %s AND (%s::bigint IS NULL OR a.id < %s::bigint)
+          AND {eligibility_sql("a")}
         ORDER BY a.id DESC
         LIMIT %s
         """,
@@ -286,6 +288,9 @@ def fetch_pending(
             break
         for row in rows:
             after = row["id"]
+            row = project_article(row)
+            if row is None or row.get("owner_reply_context"):
+                continue
             linked = set(row["linked"] or [])
             todo = [url for url in external_urls(row["body_md"]) if url not in linked]
             if not todo:
