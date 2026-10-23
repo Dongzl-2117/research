@@ -28,9 +28,8 @@ from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.empty_answer import is_suppressed
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
-from researchlib.grok import GROK_MODEL_ID
 from researchlib.health import notices as health_notices
-from researchlib.llm import llm_configured
+from researchlib.llm import active_label, active_model_id, llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.ocr import refresh_article_ocr
@@ -1478,7 +1477,8 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
         "tree": tree,
         "authors": list(_author_groups(sources)[1]),
         "llm_ready": llm_configured(request.app.state.settings),
-        "model": GROK_MODEL_ID,
+        "llm_label": active_label(request.app.state.settings),
+        "model": active_model_id(request.app.state.settings),
         "history": queries.recent_answers(conn, 15),
     }
 
@@ -1693,7 +1693,7 @@ def health(request: Request):
 
 @router.get("/robots.txt")
 def robots():
-    return PlainTextResponse("User-agent: *\nDisallow: /\n")
+    return PlainTextResponse("User-agent: *\nAllow: /\n")
 
 
 @router.get("/favicon.svg")

@@ -189,6 +189,16 @@ docker compose exec app research-repair-zsxq --dry-run
 docker compose exec app research-repair-zsxq
 ```
 
+Stratechery 全量抓取若把抓取日写进 frontmatter（例如 `published: 2026-10-21`），入库后 `published_at` 会变成上海时区当天 0 点对应的 UTC（`2026-10-20 16:00:00+00`），作者页堆在同一天。可复跑：
+
+```bash
+# 本机（需 DATABASE_URL / .env，inbox 在 data/inbox/stratechery）
+PYTHONPATH=src .venv/bin/python scripts/repair_stratechery_dates.py --dry-run
+PYTHONPATH=src .venv/bin/python scripts/repair_stratechery_dates.py
+```
+
+脚本按 slug 查 `stratechery.com/wp-json`，改 inbox frontmatter 与库内 `published_at`。ingest 对 `YYYY/slug` 路径若 frontmatter 年份与路径年不一致会丢掉该日期（`path_year_mismatch`），避免再次踩坑。
+
 干跑会打印差表：标题回写数、评论清理数、对话重洗篇数（星球和公众号分开计），以及抽验锚点 12681、473、606 的标题、评论和图片文字。473、606 在公众号，不在星球里，抽检仍按文章 id 去认。确认后再去掉 `--dry-run`。命令会把观点、摘要、译文的 `content_hash` 对齐到新标题，避免夜间任务把这几千篇再抽一遍。公众号只重写带页脚的 `ocr_text`，不改标题和评论。页脚按行删：粘连的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」，以及「微信小店」「关注同城」「相关的服务号」。按钮后面的对话留下。这次部署后再跑上面的回写，12681 不会停在被截剩的第一句，473 的小店和同城页脚也会从旁路里拿掉。
 
 图片文字里的说话人变了以后，只重抽这几篇的观点，不要加 `--gap`，也不要全库。8881 的拼多多已经抽过，不要再放进来。

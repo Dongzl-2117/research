@@ -23,6 +23,7 @@ def test_whitelist_shape():
         "chengfengpolang",
         "gudujinhuati",
         "linwenfeng-feishu",
+        "stratechery",
         "duanyongping-blog",
         "heiheiwuchang",
     ]
@@ -57,11 +58,11 @@ def test_whitelist_shape():
     disabled = {source.id: source.kind for source in sources if not source.enabled}
     assert disabled == {
         "linwenfeng-mp": "wechat_mp",
-        "stratechery": "markdown",
     }
     strat = next(source for source in sources if source.id == "stratechery")
     assert strat.kind == "markdown"
-    assert strat.enabled is False
+    assert strat.enabled is True
+    assert strat.timeline is True
 
 
 def test_missing_timeline_defaults_feishu_to_library(tmp_path: Path):
@@ -311,3 +312,45 @@ def test_zsxq_body_time_when_json_has_no_clock(tmp_path: Path):
     assert (local.hour, local.minute, local.second) == (10, 40, 22)
     assert docs[0].raw_meta["date_source"] == "body"
     assert docs[0].raw_meta["time_known"] is True
+
+
+def test_path_year_rejects_crawl_stamped_frontmatter(tmp_path: Path):
+    """Stratechery-style YYYY/slug: distrust frontmatter dated in another year."""
+    year_dir = tmp_path / "2025"
+    year_dir.mkdir()
+    (year_dir / "autonomous-cars-and-deep-research.md").write_text(
+        """---
+id: "2025/autonomous-cars-and-deep-research"
+title: Autonomous Cars and Deep Research
+published: "2026-10-21"
+date: "2026-10-21"
+---
+Body about autonomous cars.
+""",
+        encoding="utf-8",
+    )
+    # Matching year still wins.
+    (year_dir / "ok-same-year.md").write_text(
+        """---
+id: "2025/ok-same-year"
+title: Same Year
+published: "2025-06-01"
+date: "2025-06-01"
+---
+Fine.
+""",
+        encoding="utf-8",
+    )
+    docs, errors, files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="path")
+    assert errors == []
+    assert files == 2
+    by_id = {doc.external_id: doc for doc in docs}
+    bad = by_id["2025/autonomous-cars-and-deep-research"]
+    assert bad.published_at is None
+    assert bad.raw_meta.get("path_year_mismatch") is True
+    assert bad.raw_meta.get("path_year") == 2025
+    assert bad.raw_meta.get("date_source") in (None, "")
+    good = by_id["2025/ok-same-year"]
+    assert good.published_at is not None
+    assert good.published_at.astimezone(ZoneInfo("Asia/Shanghai")).year == 2025
+    assert good.raw_meta.get("path_year_mismatch") is not True

@@ -43,18 +43,30 @@ def test_status_file_with_broken_bytes_still_counts(tmp_path):
 
 def test_llm_failures_are_counted_until_a_success(tmp_path):
     health.reset_llm_cache()
-    health.record_llm(tmp_path, ok=True)
+    health.record_llm(tmp_path, ok=True, provider="Grok")
     assert not (tmp_path / "status" / "llm.json").exists()
     for _ in range(3):
-        health.record_llm(tmp_path, ok=False, error="Grok 接口返回 503：busy")
+        health.record_llm(tmp_path, ok=False, error="Grok 接口返回 503：busy", provider="Grok")
     state = health.read_status(tmp_path, "llm")
-    assert state["ok"] is False and state["failures"] == 3
+    assert state["ok"] is False and state["failures"] == 3 and state["provider"] == "Grok"
     assert any("Grok 调用连续失败 3 次" in text for text in health.notices(tmp_path, "Asia/Shanghai"))
-    health.record_llm(tmp_path, ok=True)
+    health.record_llm(tmp_path, ok=True, provider="Grok")
     assert health.read_status(tmp_path, "llm")["ok"] is True
     assert health.notices(tmp_path, "Asia/Shanghai") == []
-    health.record_llm(tmp_path, ok=False, error="没有 xAI 凭证", unavailable=True)
+    health.record_llm(tmp_path, ok=False, error="没有 xAI 凭证", unavailable=True, provider="Grok")
     assert any("Grok 登录失效" in text for text in health.notices(tmp_path, "Asia/Shanghai"))
+    health.reset_llm_cache()
+
+
+def test_llm_notice_names_deepseek(tmp_path):
+    health.reset_llm_cache()
+    for _ in range(3):
+        health.record_llm(tmp_path, ok=False, error="DeepSeek 接口返回 503：busy", provider="DeepSeek")
+    assert any("DeepSeek 调用连续失败 3 次" in text for text in health.notices(tmp_path, "Asia/Shanghai"))
+    health.reset_llm_cache()
+    health.record_llm(tmp_path, ok=False, error="没有 DEEPSEEK_API_KEY", unavailable=True, provider="DeepSeek")
+    found = health.notices(tmp_path, "Asia/Shanghai")
+    assert any("DeepSeek 凭证不可用" in text and "DEEPSEEK_API_KEY" in text for text in found)
     health.reset_llm_cache()
 
 

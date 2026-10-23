@@ -10,6 +10,7 @@ from researchlib.ingest.archive import ImageIndex, iter_files, materialize
 from researchlib.ingest.model import ParsedDoc
 from researchlib.render import image_destination
 from researchlib.textutil import (
+    SHANGHAI,
     basename,
     derive_title,
     normalize_newlines,
@@ -21,6 +22,36 @@ from researchlib.zsxq_title import stored_zsxq_title
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _HTML_IMAGE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 _TOPIC_ID = re.compile(r"\d{5,}")
+
+
+_PATH_YEAR = re.compile(r"^(20\d{2})/")
+# Frontmatter keys that resolve_published_at treats as publish dates.
+_FRONTMATTER_DATE_KEYS = (
+    "date",
+    "published_at",
+    "published",
+    "publish_time",
+    "published_time",
+    "pub_date",
+    "pubDate",
+    "datetime",
+    "created",
+    "created_at",
+    "create_time",
+    "createTime",
+    "ctime",
+)
+
+
+def archive_path_year(relative_id: str) -> int | None:
+    """YYYY from archive paths like ``2025/slug`` (Stratechery-style)."""
+    match = _PATH_YEAR.match(relative_id.replace("\\", "/"))
+    return int(match.group(1)) if match else None
+
+
+def _scrub_frontmatter_dates(frontmatter: dict) -> dict:
+    return {key: value for key, value in frontmatter.items() if key not in _FRONTMATTER_DATE_KEYS}
+
 
 
 def read_text_file_safe(path: Path) -> str:
@@ -383,12 +414,6 @@ def parse_markdown_files(
             replacement = stored_zsxq_title(title, body)
             if replacement:
                 title = replacement
-        published, date_source, time_known = resolve_published_at(
-            frontmatter=frontmatter,
-            hints=raw_meta,
-            filename=path.name,
-            text=original,
-        )
         if id_mode == "path":
             root = _owning_root(path, roots) or text_root
             external_id = _frontmatter_id(frontmatter) or relative_id(path, root)
@@ -403,6 +428,33 @@ def parse_markdown_files(
             parent = str(Path(external_id).parent.as_posix())
             if parent == ".":
                 parent = ""
+        published, date_source, time_known = resolve_published_at(
+            frontmatter=frontmatter,
+            hints=raw_meta,
+            filename=path.name,
+            text=original,
+        )
+        path_year_mismatch = False
+        path_year = archive_path_year(external_id) if id_mode == "path" else None
+        if (
+            path_year is not None
+            and published is not None
+            and date_source == "frontmatter"
+            and published.astimezone(SHANGHAI).year != path_year
+        ):
+            # Crawl often stamps the fetch day into frontmatter while the file
+            # still lives under the real archive year (e.g. 2025/slug.md with
+            # date: 2026-10-21). Drop those dates so we do not pile wrong days
+            # on the author page; repair_stratechery_dates can fill from WP.
+            path_year_mismatch = True
+            published, date_source, time_known = resolve_published_at(
+                frontmatter=_scrub_frontmatter_dates(frontmatter),
+                hints=raw_meta,
+                filename=path.name,
+                text=original,
+            )
+            if date_source == "frontmatter":
+                published, date_source, time_known = None, "", False
         refs: list[tuple[str, Path | None]] = []
         seen_refs: set[str] = set()
         for ref in image_refs_in(original):
@@ -447,6 +499,9 @@ def parse_markdown_files(
         if date_source:
             stored_meta["date_source"] = date_source
         stored_meta["time_known"] = time_known
+        if path_year_mismatch:
+            stored_meta["path_year_mismatch"] = True
+            stored_meta["path_year"] = path_year
         # 段永平博客：没日期的不进按天；问答只把作者那一节交给观点和摘要。
         voice = frontmatter.get("author_voice")
         if isinstance(voice, str) and voice.strip():

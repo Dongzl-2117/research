@@ -1,8 +1,8 @@
-"""出问题才提示：备份、试恢复、定时导入、夜间补齐、后台重算和 Grok 调用的最近结果。
+"""出问题才提示：备份、试恢复、定时导入、夜间补齐、后台重算和 LLM 调用的最近结果。
 
 每个任务把结果写进 DATA_DIR/status/<任务>.json：宿主机上的脚本（备份、试恢复、定时导入、夜间补齐）
-在成功和失败时都写，进程里的后台重算和 Grok 调用由这里的函数写。首页只在出问题时提示一行，
-正常时什么都不显示。
+在成功和失败时都写，进程里的后台重算和 LLM 调用由这里的函数写。首页只在出问题时提示一行，
+正常时什么都不显示。LLM 的提示按当时的提供方说（DeepSeek 或 Grok）。
 
 文件格式：{"task": "backup", "ok": true, "at": "2026-10-20T03:17:42Z", "message": "…"}，
 失败时另记上一次成功的时间 last_ok_at。
@@ -30,7 +30,7 @@ TASKS: dict[str, tuple[str, timedelta | None]] = {
     "nightly": ("夜间补齐", timedelta(hours=50)),
     "upkeep": ("后台重算", None),
 }
-# Grok 连续失败这么多次才提示；登录失效（拿不到凭证）马上提示。
+# LLM 连续失败这么多次才提示；凭证不可用（拿不到 key 或登录失效）马上提示。
 LLM_FAILURES_TO_WARN = 3
 
 
@@ -112,26 +112,45 @@ def notices(data_dir: Path, zone_name: str, now: datetime | None = None) -> list
     if llm and not llm.get("ok"):
         since = parse_time(llm.get("since")) or parse_time(llm.get("at"))
         message = str(llm.get("message") or "").strip()
+        # 旧状态文件没有 provider，按当时的 Grok 说；新写的都带。
+        label = str(llm.get("provider") or "").strip() or "Grok"
         if llm.get("unavailable"):
-            found.append(
-                f"Grok 登录失效（{_when(since, zone_name)} 起），摘要、观点和问库都停了：到 AIHOT 那边重新登录。"
-            )
+            if label == "DeepSeek":
+                found.append(
+                    f"DeepSeek 凭证不可用（{_when(since, zone_name)} 起），摘要、观点和问库都停了："
+                    "在 .env 或 compose 里填 DEEPSEEK_API_KEY。"
+                )
+            elif label == "Grok":
+                found.append(
+                    f"Grok 登录失效（{_when(since, zone_name)} 起），摘要、观点和问库都停了：到 AIHOT 那边重新登录。"
+                )
+            else:
+                found.append(
+                    f"{label} 凭证不可用（{_when(since, zone_name)} 起），摘要、观点和问库都停了。"
+                )
         elif int(llm.get("failures") or 0) >= LLM_FAILURES_TO_WARN:
             found.append(
-                f"Grok 调用连续失败 {int(llm['failures'])} 次（{_when(since, zone_name)} 起）"
+                f"{label} 调用连续失败 {int(llm['failures'])} 次（{_when(since, zone_name)} 起）"
                 + (f"：{message}" if message else "")
             )
     return found
 
 
-# —— Grok 调用的健康状况：连续失败计数 ——
+# —— LLM 调用的健康状况：连续失败计数 ——
 
 _llm_lock = threading.Lock()
 _llm_cache: dict[str, dict] = {}
 
 
-def record_llm(data_dir: Path | None, *, ok: bool, error: str = "", unavailable: bool = False) -> None:
-    """每次 Grok 调用的最终结果。成功且之前也正常时什么都不写；失败才累计次数。"""
+def record_llm(
+    data_dir: Path | None,
+    *,
+    ok: bool,
+    error: str = "",
+    unavailable: bool = False,
+    provider: str = "",
+) -> None:
+    """每次 LLM 调用的最终结果。成功且之前也正常时什么都不写；失败才累计次数。"""
     if data_dir is None:
         return
     key = str(data_dir)
@@ -144,13 +163,16 @@ def record_llm(data_dir: Path | None, *, ok: bool, error: str = "", unavailable:
                 _llm_cache[key] = previous
                 return
             state = {"ok": True, "failures": 0}
-            write_status(data_dir, "llm", True, failures=0)
+            write_status(data_dir, "llm", True, failures=0, provider=provider)
         else:
             was_ok = previous.get("ok", True)
             failures = (0 if was_ok else int(previous.get("failures") or 0)) + 1
             since = _now_iso() if was_ok else (previous.get("since") or _now_iso())
             state = {"ok": False, "failures": failures, "since": since, "unavailable": unavailable}
-            write_status(data_dir, "llm", False, error, failures=failures, since=since, unavailable=unavailable)
+            write_status(
+                data_dir, "llm", False, error,
+                failures=failures, since=since, unavailable=unavailable, provider=provider,
+            )
         _llm_cache[key] = state
 
 

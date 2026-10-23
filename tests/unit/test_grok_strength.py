@@ -45,6 +45,7 @@ def _settings(tmp_path) -> Settings:
         {
             "DATABASE_URL": "postgresql://unused/research_test",
             "DATA_DIR": str(tmp_path),
+            "RESEARCH_LLM_PROVIDER": "grok",
             "XAI_API_KEY": "should-not-be-used",
             "RESEARCH_LLM_MODEL": "grok-4-fast",
             "RESEARCH_LLM_REASONING": "low",
@@ -55,6 +56,8 @@ def _settings(tmp_path) -> Settings:
 
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "grok")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(tmp_path / "missing-oauth.json"))
     monkeypatch.setenv("XAI_API_KEY", "should-not-be-used")
     monkeypatch.setenv("RESEARCH_LLM_MODEL", "grok-4-fast")
@@ -84,13 +87,20 @@ def test_api_key_without_oauth_fails(tmp_path, monkeypatch):
 
 
 def test_shared_constants_are_the_translation_ones():
+    from researchlib import deepseek
+
     assert translate_llm.GROK_MODEL_ID is GROK_MODEL_ID == "grok-4.7"
     assert translate_llm.GROK_REASONING_EFFORT is GROK_REASONING_EFFORT == "xhigh"
     assert translate_llm.GROK_CONTEXT_TOKENS is GROK_CONTEXT_TOKENS == 500_000
     assert translate_llm.GROK_OUTPUT_FLOOR is GROK_OUTPUT_FLOOR == 128_000
     assert translate_llm.grok_output_tokens is grok_output_tokens
-    assert translate_llm.completion_params is completion_params
+    assert translate_llm.grok_params is completion_params
     assert "fast" not in GROK_MODEL_ID
+    # DeepSeek 那一组也共用，不另抄一份。
+    assert translate_llm.DEEPSEEK_MODEL_ID is deepseek.DEEPSEEK_MODEL_ID == "deepseek-v4-pro"
+    assert translate_llm.DEEPSEEK_REASONING_EFFORT is deepseek.DEEPSEEK_REASONING_EFFORT == "max"
+    assert translate_llm.DEEPSEEK_CONTEXT_TOKENS is deepseek.DEEPSEEK_CONTEXT_TOKENS == 1_000_000
+    assert translate_llm.DEEPSEEK_OUTPUT_FLOOR is deepseek.DEEPSEEK_OUTPUT_FLOOR == 384_000
 
 
 def test_output_floor_cannot_be_lowered_by_env(monkeypatch):

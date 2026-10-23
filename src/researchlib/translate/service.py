@@ -16,7 +16,7 @@ from researchlib.chunks import replace_translation_chunks
 from researchlib.render import render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
 from researchlib.translate.language import is_chinese
-from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, grok_output_tokens
+from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.segments import (
     chunk_segments,
@@ -67,20 +67,36 @@ def _render_original(conn, article: dict, data_dir: Path) -> tuple[str, str]:
 
 
 def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[str]:
-    result = chat_json(
-        system=SYSTEM_BODY,
-        user={**context, "segments": parts},
-        purpose="translate_body",
-        subject="batch",
-        temperature=0.3,
-        max_tokens=min(grok_output_tokens(), max(8000, len("".join(parts)) * 2 + 800)),
-        data_dir=data_dir,
-    )
-    raw = result.data.get("t")
-    if not isinstance(raw, list):
-        raise RuntimeError("translation JSON missing t[]")
-    texts = [str(item) for item in raw]
+    def once(user: dict) -> list[str]:
+        result = chat_json(
+            system=SYSTEM_BODY,
+            user=user,
+            purpose="translate_body",
+            subject="batch",
+            temperature=0.3,
+            max_tokens=min(output_tokens(), max(8000, len("".join(parts)) * 2 + 800)),
+            data_dir=data_dir,
+        )
+        raw = result.data.get("t")
+        if not isinstance(raw, list):
+            raise RuntimeError("translation JSON missing t[]")
+        return [str(item) for item in raw]
+
+    user = {**context, "segments": parts}
+    texts = once(user)
     problem = translation_problem(parts, texts)
+    if problem == "count":
+        # DeepSeek 偶发少段/多段；再要一次严格对齐，仍不对就交给上层跳过。
+        texts = once(
+            {
+                **user,
+                "repair": (
+                    f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。"
+                    "按 segments 下标一一对应重译，只输出 JSON。"
+                ),
+            }
+        )
+        problem = translation_problem(parts, texts)
     if problem:
         raise RuntimeError(f"translation alignment: {problem}")
     return texts

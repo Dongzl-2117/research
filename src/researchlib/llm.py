@@ -1,17 +1,18 @@
-"""调用 Grok（xAI 的 chat/completions）。
+"""调用站内 LLM（OpenAI 兼容的 chat/completions）。
 
-鉴权只认与 AIHOT 共用的 xAI OAuth。Docker 默认
-``XAI_OAUTH_TOKEN_PATH=/aihot-data/secrets/xai-oauth.json``。
-登录在 AIHOT 侧做；``research-xai-login status`` 只检查同一份文件。
-没有这份登录时直接报错，不退回 ``XAI_API_KEY`` 或其他 API key。
+提供方由 ``RESEARCH_LLM_PROVIDER`` 决定：默认 DeepSeek，用 ``DEEPSEEK_API_KEY`` 加 Bearer；
+``RESEARCH_LLM_PROVIDER=grok`` 时走与 AIHOT 共用的 xAI OAuth
+（``XAI_OAUTH_TOKEN_PATH``，Docker 默认 ``/aihot-data/secrets/xai-oauth.json``）。
+DeepSeek 缺 key 时直接报错，不会悄悄退回 Grok；Grok 路径照旧不读 ``XAI_API_KEY``。
 
-强度与译制共用 ``researchlib.grok``：grok-4.7、reasoning_effort=xhigh、
-输出预算不低于 128000、上下文按 grok-4.7 的 50 万 token，不发送 fast。
+强度与译制共用：DeepSeek 见 ``researchlib.deepseek``（deepseek-v4-pro、thinking 打开、
+reasoning_effort=max、输出不低于 384000、上下文 1M、不发 temperature），
+Grok 见 ``researchlib.grok``（grok-4.7、reasoning_effort=xhigh、输出不低于 128000、50 万上下文、不发 fast）。
 
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
 429、5xx 和连不上这类临时错误退避重试两次；超时不重试（一次已经等了很久）。同一个进程里同时在跑的
 请求有上限（RESEARCH_LLM_CONCURRENCY，默认 3），问库分批、摘要、观点、论点共用。
-每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或登录失效时首页提示。
+每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时首页提示。
 """
 
 from __future__ import annotations
@@ -25,8 +26,17 @@ import urllib.error
 import urllib.request
 
 from researchlib.config import Settings
-from researchlib.grok import completion_params
+from researchlib.deepseek import DEEPSEEK_MODEL_ID, deepseek_model
+from researchlib.deepseek import completion_params as deepseek_params
+from researchlib.grok import GROK_MODEL_ID
+from researchlib.grok import completion_params as grok_params
 from researchlib.health import record_llm
+from researchlib.llm_provider import (
+    PROVIDER_GROK,
+    deepseek_api_key,
+    llm_provider,
+    provider_label,
+)
 from researchlib.translate.xai_oauth import (
     XaiLoginRequiredError,
     get_xai_access_token,
@@ -44,22 +54,41 @@ _slots: dict[int, threading.BoundedSemaphore] = {}
 
 
 class LLMUnavailable(Exception):
-    """没有可用的 xAI OAuth。页面退化为只给检索结果。"""
+    """没有可用的 LLM 凭证。页面退化为只给检索结果。"""
 
 
 class LLMError(Exception):
     """接口返回错误或格式不对。"""
 
 
+def _provider(settings: Settings) -> str:
+    return getattr(settings, "llm_provider", "") or llm_provider()
+
+
+def active_label(settings: Settings) -> str:
+    """"DeepSeek" 或 "Grok"。首页和报错用。"""
+    return provider_label(_provider(settings))
+
+
+def active_model_id(settings: Settings) -> str:
+    """当前提供方的模型名。页面展示用，配错时不让整页报错。"""
+    if _provider(settings) == PROVIDER_GROK:
+        return GROK_MODEL_ID
+    try:
+        return deepseek_model()
+    except RuntimeError:
+        return DEEPSEEK_MODEL_ID
+
+
 def credential_kind(settings: Settings) -> str:
-    """"oauth" 或 ""。不认 API key。"""
-    if xai_oauth_status(settings.data_dir).logged_in:
-        return "oauth"
-    return ""
+    """"deepseek"、"oauth"，或 ""（当前提供方没有凭证）。"""
+    if _provider(settings) == PROVIDER_GROK:
+        return "oauth" if xai_oauth_status(settings.data_dir).logged_in else ""
+    return "deepseek" if deepseek_api_key() else ""
 
 
 def llm_configured(settings: Settings) -> bool:
-    return credential_kind(settings) == "oauth"
+    return credential_kind(settings) in {"deepseek", "oauth"}
 
 
 def _oauth_token(settings: Settings, *, force: bool = False, discard: str | None = None) -> str:
@@ -74,9 +103,28 @@ def _oauth_token(settings: Settings, *, force: bool = False, discard: str | None
         raise LLMUnavailable(f"{exc}{extra}") from exc
 
 
+def _deepseek_token() -> str:
+    key = deepseek_api_key()
+    if not key:
+        raise LLMUnavailable(
+            "没有配置 DEEPSEEK_API_KEY，DeepSeek 调不了。"
+            "把 key 写进 .env（docker compose 的 DEEPSEEK_API_KEY），"
+            "或者设 RESEARCH_LLM_PROVIDER=grok 用回 Grok OAuth。"
+        )
+    return key
+
+
+def ensure_llm(settings: Settings) -> None:
+    """命令行入口在开工前调用。凭证不对就抛 LLMUnavailable，不换提供方硬撑。"""
+    if _provider(settings) == PROVIDER_GROK:
+        _oauth_token(settings)
+    else:
+        _deepseek_token()
+
+
 def ensure_oauth(settings: Settings) -> None:
-    """命令行入口在开工前调用。没有共用 OAuth 就抛 LLMUnavailable，不退回 API key。"""
-    _oauth_token(settings)
+    """旧调用名。现在两家都管，实际走 ensure_llm。"""
+    ensure_llm(settings)
 
 
 def _slot(settings: Settings) -> threading.BoundedSemaphore:
@@ -100,9 +148,14 @@ def _is_timeout(exc: BaseException) -> bool:
     return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
 
 
-def _failed(settings: Settings, exc: Exception) -> Exception:
-    record_llm(getattr(settings, "data_dir", None), ok=False, error=str(exc),
-               unavailable=isinstance(exc, LLMUnavailable))
+def _failed(settings: Settings, exc: Exception, *, provider: str | None = None) -> Exception:
+    record_llm(
+        getattr(settings, "data_dir", None),
+        ok=False,
+        error=str(exc),
+        unavailable=isinstance(exc, LLMUnavailable),
+        provider=provider or active_label(settings),
+    )
     return exc
 
 
@@ -128,15 +181,22 @@ def chat(
     max_tokens: int | None = None,
     temperature: float = 0.2,
 ) -> tuple[str, str]:
-    """返回 (回答文本, 实际模型名)。强度固定为 grok-4.7 / xhigh / 至少 128000，不发 fast。"""
-    payload = {
-        **completion_params(temperature=temperature, max_tokens=max_tokens),
-        "messages": messages,
-    }
+    """返回 (回答文本, 实际模型名)。
+
+    DeepSeek：deepseek-v4-pro / thinking / reasoning_effort=max / 至少 384000，不发 temperature。
+    Grok：grok-4.7 / xhigh / 至少 128000，不发 fast。
+    """
+    provider = _provider(settings)
+    label = provider_label(provider)
+    if provider == PROVIDER_GROK:
+        payload = {**grok_params(temperature=temperature, max_tokens=max_tokens), "messages": messages}
+    else:
+        # 思考模式下 temperature 不起作用，DeepSeek 的请求里不带。
+        payload = {**deepseek_params(max_tokens=max_tokens), "messages": messages}
     try:
-        token = _oauth_token(settings)
+        token = _oauth_token(settings) if provider == PROVIDER_GROK else _deepseek_token()
     except LLMUnavailable as exc:
-        raise _failed(settings, exc) from None
+        raise _failed(settings, exc, provider=label) from None
     body = None
     refreshed = False
     retries = 0
@@ -147,30 +207,30 @@ def chat(
             break
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
-            if not refreshed and is_stale_xai_access(exc.code, detail):
+            if provider == PROVIDER_GROK and not refreshed and is_stale_xai_access(exc.code, detail):
                 # 过期的 access token 被报成 401/403：强制刷新一次再试，不算在重试次数里。
                 refreshed = True
                 try:
                     token = _oauth_token(settings, force=True, discard=token)
                 except LLMUnavailable as unavailable:
-                    raise _failed(settings, unavailable) from None
+                    raise _failed(settings, unavailable, provider=label) from None
                 continue
             if exc.code in RETRY_STATUS and retries < len(RETRY_DELAYS):
                 time.sleep(_retry_after(exc) or RETRY_DELAYS[retries])
                 retries += 1
                 continue
-            raise _failed(settings, LLMError(f"Grok 接口返回 {exc.code}：{detail}")) from exc
+            raise _failed(settings, LLMError(f"{label} 接口返回 {exc.code}：{detail}"), provider=label) from exc
         except (urllib.error.URLError, ConnectionError, http.client.HTTPException, TimeoutError) as exc:
             if not _is_timeout(exc) and retries < len(RETRY_DELAYS):
                 time.sleep(RETRY_DELAYS[retries])
                 retries += 1
                 continue
-            raise _failed(settings, LLMError(f"连不上 Grok 接口：{exc}")) from exc
+            raise _failed(settings, LLMError(f"连不上 {label} 接口：{exc}"), provider=label) from exc
         except json.JSONDecodeError as exc:
-            raise _failed(settings, LLMError("Grok 接口返回的不是 JSON")) from exc
+            raise _failed(settings, LLMError(f"{label} 接口返回的不是 JSON"), provider=label) from exc
     try:
         text = body["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
-        raise _failed(settings, LLMError("Grok 接口返回里没有 choices[0].message.content")) from exc
-    record_llm(settings.data_dir, ok=True)
+        raise _failed(settings, LLMError(f"{label} 接口返回里没有 choices[0].message.content"), provider=label) from exc
+    record_llm(settings.data_dir, ok=True, provider=label)
     return text.strip(), str(body.get("model") or payload["model"])
