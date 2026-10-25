@@ -72,7 +72,8 @@ def test_source_values_only_cover_enabled_sources(settings):
     sources = load_sources(settings.sources_path)
     values = source_values(sources, {"mp-gudujinhua": "gudujinhuati", "lin-mp": "linwenfeng-mp"})
     assert "mp-gudujinhua" in values and "fangwei-mp" in values
-    assert "lin-mp" not in values and "linwenfeng-mp" not in values and "stratechery" not in values
+    # 林文丰公众号停用，不进；Stratechery 已经启用（#61），照常进。
+    assert "lin-mp" not in values and "linwenfeng-mp" not in values and "stratechery" in values
 
 
 def test_home_shows_a_notice_for_a_stalled_source(conn, settings):

@@ -911,23 +911,60 @@ SEMANTIC_RANKS = 60
 SEMANTIC_BAND = 0.15
 
 
-def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, company_ids: list[int] | None = None):
+# 先用 HNSW 索引取这么多倍的近邻，再按范围过滤；留下的不够数才逐块算距离。
+ANN_OVERFETCH = 4
+
+
+def _vector_filter(scope: Scope, company_ids: list[int] | None) -> tuple[str, dict]:
     where, params = scope_clause(scope)
-    extra = ""
     if company_ids:
         params["vec_companies"] = company_ids
-        extra = (
+        where += (
             " AND EXISTS (SELECT 1 FROM article_mentions vm WHERE vm.article_id = a.id"
             " AND vm.company_id = ANY(%(vec_companies)s))"
         )
+    return where, params
+
+
+def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, company_ids: list[int] | None = None):
+    """范围内和问题最相近的块。
+
+    范围条件不能和按距离排序写进同一条查询：文章表的「可见」条件是 jsonb 表达式，没有统计信息，规划器按默认
+    选择率估成只剩 1 篇，于是逐篇连接、把范围内全部向量的距离算一遍再排序，不走 HNSW 索引，全库 10 万块要
+    0.5 秒，库越大越慢；把近邻写成子查询再连接也不行，规划器会对每篇文章重跑一遍子查询。所以分两步：先只在
+    向量表上按索引取一批近邻，再查这些文章在不在范围里。过滤后不够数（范围很窄：某位作者、某段日期、提到某家
+    公司的文章）再逐块算，窄范围逐块算本来就快。只问一篇或一个目录时直接逐块算。
+    """
+    where, params = _vector_filter(scope, company_ids)
+    if scope.article_id is None and scope.tree_id is None:
+        pool = limit * ANN_OVERFETCH
+        embeddings.tune_search(conn, pool)
+        near = conn.execute(
+            f"""
+            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
+            FROM chunk_embeddings e
+            ORDER BY e.embedding <=> %(qv)s::{kind}
+            LIMIT %(ann_pool)s
+            """,
+            {"qv": vector, "ann_pool": pool},
+        ).fetchall()
+        allowed = {
+            row["id"]
+            for row in conn.execute(
+                f"SELECT a.id FROM articles a WHERE a.id = ANY(%(ann_ids)s) AND {where}",
+                {**params, "ann_ids": sorted({row["article_id"] for row in near})},
+            ).fetchall()
+        }
+        kept = sorted((row for row in near if row["article_id"] in allowed), key=lambda row: -float(row["sim"]))
+        if len(kept) >= limit:
+            return {(row["article_id"], row["ord"]): float(row["sim"]) for row in kept[:limit]}
     params.update({"qv": vector, "vec_limit": limit})
-    embeddings.tune_search(conn)
     rows = conn.execute(
         f"""
         SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
         FROM chunk_embeddings e
         JOIN articles a ON a.id = e.article_id
-        WHERE {where}{extra}
+        WHERE {where}
         ORDER BY e.embedding <=> %(qv)s::{kind}
         LIMIT %(vec_limit)s
         """,
@@ -1513,6 +1550,8 @@ TREE_CONTEXT_SHARE = 0.6
 TREE_PER_ARTICLE = 12
 # 只问一篇：全文在这个字数以内就整篇给，超过就按问题定位。
 CHAR_BUDGET_ARTICLE = 60000
+# 只问一篇时页面上「相关原文」最多列这么多块。交给模型的不按块数截，只按字数。
+DISPLAY_ARTICLE_CHUNKS = 40
 # 只问一篇又没有具体问题（「概括这篇」）、后台分批读时，最多读这么多字，按原文顺序。
 DEEP_ARTICLE_CHARS = 240000
 # 只问一篇时按问题定位：命中的块先占这个比例的预算，剩下的给前后文。
@@ -1545,14 +1584,18 @@ def _retrieve_article(
             found.outline_label = "这篇的章节"
         return found
 
+    # 页面列表才按块数截。交给模型的以前也截在 40 块（两万多字），两万到六万字的文章后半篇模型读不到，
+    # 还被当成全文、不附章节目录，问到后半篇的内容就答「没有」。
+    count = None if purpose in CONTEXT_PURPOSES else DISPLAY_ARTICLE_CHUNKS
     if total <= CHAR_BUDGET_ARTICLE:
-        return result(in_order(CHAR_BUDGET_ARTICLE, 40), True)
+        picked = in_order(CHAR_BUDGET_ARTICLE, count)
+        return result(picked, len(picked) == len(rows))
     if query.overview:
         # 没有具体问题：后台分批读时按原文顺序读到上限，页面上先列开头。
         if purpose == "deep":
             picked = in_order(DEEP_ARTICLE_CHARS, None)
         else:
-            picked = in_order(CHAR_BUDGET_ARTICLE, 40)
+            picked = in_order(CHAR_BUDGET_ARTICLE, count)
         return result(picked, len(picked) == len(rows))
     candidates = _candidates(conn, query, scope, limit=2000, enough=2000)
     semantic: dict[tuple[int, int], float] = {}
@@ -1563,7 +1606,7 @@ def _retrieve_article(
     local = Budget(budget.passages, int(chars * ARTICLE_PICK_SHARE), budget.passages)
     picked = select(scored, query, local, {})
     if not picked:
-        return result(in_order(CHAR_BUDGET_ARTICLE, 40), False)
+        return result(in_order(CHAR_BUDGET_ARTICLE, count), False)
     if purpose in CONTEXT_PURPOSES:
         attach_context(conn, picked, chars - sum(len(p.body) for p in picked), span=2)
     picked.sort(key=lambda p: p.ord)
@@ -1680,6 +1723,8 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     groups = {t.group for t in query.terms if t.group >= 0}
     company_groups = {t.group for t in query.terms if t.group >= 0 and t.kind == "company"}
     titles = {p.article_id: p.title for p in scored}
+    asked = {t.company_id for t in query.terms if t.kind == "company"}
+    title_matcher = cached_matcher("focus", [row for row in company_rows if int(row["id"]) in asked]) if asked else None
     hits: list[ArticleHit] = []
     for article_id, items in by_article.items():
         items.sort(key=lambda p: p.score, reverse=True)
@@ -1690,7 +1735,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
                 continue
             if any(form in p.matched for p in items for form in term.forms):
                 matched_groups.add(term.group)
-            elif any(form and (form in title or form.lower() in title.lower()) for form in term.forms):
+            elif _title_mentions(term, title, title_matcher):
                 matched_groups.add(term.group)
         full = groups <= matched_groups
         # 词没写全、但语义上就是在谈这件事的（「costco 商业模式」→ 讲会员费和低毛利的段落），
@@ -1725,6 +1770,20 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         counts=counts,
         available=len(ordered),
     )
+
+
+def _title_mentions(term: Term, title: str, matcher: FocusMatcher | None) -> bool:
+    """标题里写没写到这个词组。和数段落时同一套规则：公司按别名数，英文按词边界。
+
+    以前按子串找：「COST」（开市客的代码）算进了标题「The Cost of AI」，「DIS」算进了「Disruption」，
+    没提这家公司的文章被当成问到的公司已经命中，排进前面那一档、标「语义相关」。
+    """
+    if not title:
+        return False
+    if term.kind == "company":
+        return matcher is not None and matcher.count(title).get(term.company_id, 0) > 0
+    lowered = title.lower()
+    return any(_count(title, lowered, form) for form in term.forms if form)
 
 
 def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:

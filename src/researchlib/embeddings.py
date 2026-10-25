@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import logging
 import sys
@@ -34,8 +35,15 @@ DIM = 1024
 # 查询向量要快：连不上就当没有语义检索，这么多秒后再试。
 QUERY_TIMEOUT_S = 4.0
 RETRY_AFTER_S = 60.0
+# 这么久没算过查询向量，本机 Ollama 多半已经把模型卸下了（默认闲置 5 分钟就卸），重新加载要几秒，
+# 4 秒常常不够：以前隔一阵子后的第一次搜索总是超时，接下来一分钟的搜索也都只按字面找。
+# 所以冷的时候放宽到 COLD_QUERY_TIMEOUT_S；刚失败过就不放宽，服务真卡住时每次搜索最多多等 4 秒。
+WARM_FOR_S = 240.0
+COLD_QUERY_TIMEOUT_S = 15.0
 BATCH = 32
 QUERY_CACHE = 256
+# 检索页提示「向量还没算完」用的块数，几分钟数一次就够。
+COVERAGE_TTL_S = 600.0
 
 Embedder = Callable[[list[str]], list[list[float]]]
 
@@ -48,10 +56,15 @@ class _State:
     def __init__(self) -> None:
         self.embedder: Embedder | None = None
         self.query_embedder: Embedder | None = None
+        self.cold_embedder: Embedder | None = None
         self.model = ""
         self.down_until = 0.0
+        # 上一次查询向量成功的时刻，和上一次是不是失败了。
+        self.last_ok = float("-inf")
+        self.failed = False
         self.cache: OrderedDict[str, list[float]] = OrderedDict()
         self.schema: dict[str, str | None] = {}
+        self.coverage: dict[str, tuple[tuple[int, int], float]] = {}
         # use_embedder 换上的函数不被 configure 覆盖（测试里每开一条连接都会 configure 一次）。
         self.pinned = False
         self.lock = threading.Lock()
@@ -70,8 +83,10 @@ def _http_embedder(base_url: str, model: str, api_key: str, timeout: float) -> E
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = json.loads(response.read().decode())
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, http.client.HTTPException) as exc:
             raise EmbeddingError(f"向量服务 {base_url} 不可用：{exc}") from exc
+        if not isinstance(data, dict):
+            raise EmbeddingError("向量服务返回的条数或格式不对")
         items = sorted(data.get("data") or [], key=lambda item: item.get("index", 0))
         vectors = [item.get("embedding") for item in items]
         if len(vectors) != len(texts) or any(not isinstance(v, list) for v in vectors):
@@ -91,7 +106,7 @@ def configure(settings) -> None:
         if _state.pinned:
             return
         if not base:
-            _state.embedder = _state.query_embedder = None
+            _state.embedder = _state.query_embedder = _state.cold_embedder = None
             _state.model = ""
             return
         key = getattr(settings, "embedding_api_key", "") or ""
@@ -100,19 +115,26 @@ def configure(settings) -> None:
             return
         _state.embedder = _http_embedder(base, model, key, timeout)
         _state.query_embedder = _http_embedder(base, model, key, min(timeout, QUERY_TIMEOUT_S))
+        _state.cold_embedder = _http_embedder(base, model, key, min(timeout, COLD_QUERY_TIMEOUT_S))
         _state.model = f"{base}|{model}"
-        _state.cache.clear()
-        _state.down_until = 0.0
+        _reset()
+
+
+def _reset() -> None:
+    _state.cache.clear()
+    _state.down_until = 0.0
+    _state.last_ok = float("-inf")
+    _state.failed = False
+    _state.coverage.clear()
 
 
 def use_embedder(embedder: Embedder | None, model: str = "test") -> None:
     """测试和脚本用：直接换一个算向量的函数。None 关掉语义检索。"""
     with _state.lock:
-        _state.embedder = _state.query_embedder = embedder
+        _state.embedder = _state.query_embedder = _state.cold_embedder = embedder
         _state.pinned = embedder is not None
         _state.model = model if embedder else ""
-        _state.cache.clear()
-        _state.down_until = 0.0
+        _reset()
         _state.schema.clear()
 
 
@@ -140,21 +162,31 @@ def query_vector(text: str) -> list[float] | None:
         if cached is not None:
             _state.cache.move_to_end(text)
             return cached
-        if time.monotonic() < _state.down_until:
+        now = time.monotonic()
+        if now < _state.down_until:
             return None
-        embedder = _state.query_embedder
+        cold = not _state.failed and now - _state.last_ok > WARM_FOR_S
+        embedder = _state.cold_embedder if cold else _state.query_embedder
     try:
         vector = embedder([text])[0]
     except EmbeddingError as exc:
         logger.warning("语义检索暂停 %s 秒：%s", int(RETRY_AFTER_S), exc)
         with _state.lock:
             _state.down_until = time.monotonic() + RETRY_AFTER_S
+            _state.failed = True
         return None
     with _state.lock:
+        _state.last_ok = time.monotonic()
+        _state.failed = False
         _state.cache[text] = vector
         while len(_state.cache) > QUERY_CACHE:
             _state.cache.popitem(last=False)
     return vector
+
+
+def paused() -> bool:
+    """查询向量刚失败过，这一阵子检索只按字面找。"""
+    return time.monotonic() < _state.down_until
 
 
 def literal(vector: list[float]) -> str:
@@ -227,10 +259,13 @@ def ready(conn) -> str | None:
     return column_type(conn)
 
 
-def tune_search(conn) -> None:
-    """HNSW 默认只看 40 个邻居，带范围过滤时不够。0.8 起有迭代扫描，过滤掉的会接着往下找。"""
+def tune_search(conn, pool: int = 200) -> None:
+    """HNSW 默认只看 40 个邻居，要取 pool 块至少得看这么多（pgvector 上限 1000）。
+
+    0.8 起有迭代扫描，不够时接着往下找。
+    """
     version = _vector_version(conn) or (0,)
-    conn.execute("SET LOCAL hnsw.ef_search = 200")
+    conn.execute(f"SET LOCAL hnsw.ef_search = {max(200, min(1000, int(pool)))}")
     if version >= (0, 8):
         conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
 
@@ -245,7 +280,16 @@ def text_hash(title: str, heading: str, body: str) -> str:
     return hashlib.md5("\n".join([title or "", heading or "", body or ""]).encode()).hexdigest()
 
 
-def _pending(conn, limit: int, model: str) -> list[dict]:
+def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = None) -> list[dict]:
+    """缺向量或字改过的块，新的在前。skip 是这一轮算不出向量、跳过的块。"""
+    skipped = ""
+    params: list = [model]
+    if skip:
+        skipped = (
+            "AND NOT EXISTS (SELECT 1 FROM unnest(%s::bigint[], %s::int[]) AS s(article_id, ord)"
+            " WHERE s.article_id = c.article_id AND s.ord = c.ord)"
+        )
+        params += [[key[0] for key in skip], [key[1] for key in skip]]
     return conn.execute(
         f"""
         SELECT c.article_id, c.ord, a.title, c.heading, c.body, md5({_SOURCE_TEXT}) AS hash
@@ -254,17 +298,55 @@ def _pending(conn, limit: int, model: str) -> list[dict]:
         LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
         WHERE a.duplicate_of IS NULL
           AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %s)
+          {skipped}
         ORDER BY a.published_at DESC NULLS LAST, c.article_id, c.ord
         LIMIT %s
         """,
-        (model, limit),
+        (*params, limit),
     ).fetchall()
 
 
+def _source_text(row: dict) -> str:
+    return "\n".join(part for part in (row["title"], row["heading"], row["body"]) if part)
+
+
+def _embed_rows(rows: list[dict], bad: list[tuple[int, int]]) -> list[tuple[dict, list[float]]]:
+    """一批块的向量。整批报错时先试一下服务本身：服务正常，就是某几块的字让它报错，逐块算、坏的记进 bad
+    跳过；服务也不正常（停了、连不上）才往外报错。
+
+    以前整批报错就退出，下一轮还是从同一批开始（按时间排在最前），一块坏数据能让后面的块永远算不到。
+    """
+    texts = [_source_text(row) for row in rows]
+    try:
+        return list(zip(rows, embed_texts(texts), strict=True))
+    except EmbeddingError as exc:
+        error = exc
+    try:
+        embed_texts(["向量服务检查"])
+    except EmbeddingError:
+        raise error from None
+    pairs: list[tuple[dict, list[float]]] = []
+    for row, text in zip(rows, texts, strict=True):
+        try:
+            pairs.append((row, embed_texts([text])[0]))
+        except EmbeddingError as exc:
+            logger.warning("第 %s 篇第 %s 块算不出向量，跳过：%s", row["article_id"], row["ord"], exc)
+            bad.append((row["article_id"], row["ord"]))
+    return pairs
+
+
 def backfill(
-    conn, *, limit: int | None = None, batch: int = BATCH, progress: Callable[[int], None] | None = None
+    conn,
+    *,
+    limit: int | None = None,
+    batch: int = BATCH,
+    progress: Callable[[int], None] | None = None,
+    skipped: list[tuple[int, int]] | None = None,
 ) -> int:
-    """给缺向量、或字改过的块算向量。删掉已经没有对应块的向量。返回这次算了多少块。"""
+    """给缺向量、或字改过的块算向量。删掉已经没有对应块的向量。返回这次算了多少块。
+
+    算不出向量的块跳过，(文章, 块号) 记进 skipped，接着算后面的；服务停了才报错。
+    """
     kind = column_type(conn)
     if kind is None:
         raise EmbeddingError("数据库里没有 chunk_embeddings：先给 Postgres 装 pgvector（重建 db 镜像）")
@@ -277,28 +359,32 @@ def backfill(
     )
     conn.commit()
     done = 0
+    bad: list[tuple[int, int]] = []
     while limit is None or done < limit:
         size = batch if limit is None else min(batch, limit - done)
-        rows = _pending(conn, size, model)
+        rows = _pending(conn, size, model, bad)
         if not rows:
             break
-        texts = ["\n".join(part for part in (r["title"], r["heading"], r["body"]) if part) for r in rows]
-        vectors = embed_texts(texts)
-        with conn.cursor() as cur:
-            cur.executemany(
-                f"""
-                INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
-                VALUES (%s, %s, %s, %s, %s::{kind})
-                ON CONFLICT (article_id, ord) DO UPDATE
-                SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash,
-                    embedding = EXCLUDED.embedding, updated_at = now()
-                """,
-                [(r["article_id"], r["ord"], model, r["hash"], literal(v)) for r, v in zip(rows, vectors, strict=True)],
-            )
-        conn.commit()
-        done += len(rows)
+        pairs = _embed_rows(rows, bad)
+        if pairs:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    f"""
+                    INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
+                    VALUES (%s, %s, %s, %s, %s::{kind})
+                    ON CONFLICT (article_id, ord) DO UPDATE
+                    SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash,
+                        embedding = EXCLUDED.embedding, updated_at = now()
+                    """,
+                    [(r["article_id"], r["ord"], model, r["hash"], literal(v)) for r, v in pairs],
+                )
+            conn.commit()
+        done += len(pairs)
         if progress:
             progress(done)
+    if skipped is not None:
+        skipped.extend(bad)
+    _state.coverage.clear()
     return done
 
 
@@ -314,6 +400,37 @@ def coverage(conn) -> tuple[int, int]:
         """
     ).fetchone()
     return int(row["done"]), int(row["total"])
+
+
+def _cached_coverage(conn) -> tuple[int, int]:
+    key = conn.info.dbname
+    now = time.monotonic()
+    hit = _state.coverage.get(key)
+    if hit and now - hit[1] < COVERAGE_TTL_S:
+        return hit[0]
+    value = coverage(conn)
+    _state.coverage[key] = (value, now)
+    return value
+
+
+def status_note(conn) -> str:
+    """检索页上的一句话：语义检索为什么没用上，或者向量还没算完。一切正常时是空字符串。
+
+    语义检索出了问题以前只在日志里，页面上看不出来，搜「costco 商业模式」找不到按意思相关的文章时，
+    分不清是没配、没算向量、服务连不上，还是真的没有。
+    """
+    if not enabled():
+        return "没开语义检索（没配 EMBEDDING_BASE_URL），这次只按字面找。"
+    if column_type(conn) is None:
+        return "数据库没装 pgvector，语义检索没开，这次只按字面找。"
+    if paused():
+        return "向量服务连不上，这次只按字面找，过一分钟再试。"
+    have, total = _cached_coverage(conn)
+    if total and have == 0:
+        return "向量还一块都没算（research-embed），这次只按字面找。"
+    if total and have < total * 0.98:
+        return f"向量还没算完（{have}/{total} 块），没算到的段落只能按字面找到。"
+    return ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -335,11 +452,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         started = time.monotonic()
 
-        def report(done: int) -> None:
-            if done % (args.batch * 20) == 0:
-                print(f"已算 {done} 块，{time.monotonic() - started:.0f} 秒", flush=True)
+        step = max(1, args.batch) * 20
+        reported = [0]
 
-        count = backfill(conn, limit=args.limit, batch=max(1, args.batch), progress=report)
+        def report(done: int) -> None:
+            if done // step > reported[0] // step:
+                print(f"已算 {done} 块，{time.monotonic() - started:.0f} 秒", flush=True)
+            reported[0] = done
+
+        skipped: list[tuple[int, int]] = []
+        count = backfill(conn, limit=args.limit, batch=max(1, args.batch), progress=report, skipped=skipped)
         have, total = coverage(conn)
     except EmbeddingError as exc:
         print(f"向量回填失败：{exc}", file=sys.stderr)
@@ -347,6 +469,10 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
     print(f"这次算了 {count} 块，库里 {have}/{total} 块有向量，用时 {time.monotonic() - started:.0f} 秒")
+    if skipped:
+        shown = "、".join(f"{article_id}#{ord_}" for article_id, ord_ in skipped[:10])
+        more = f" 等 {len(skipped)} 块" if len(skipped) > 10 else ""
+        print(f"{len(skipped)} 块算不出向量，跳过了：{shown}{more}（文章 id#块号）", file=sys.stderr)
     return 0
 
 
