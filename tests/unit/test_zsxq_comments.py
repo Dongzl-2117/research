@@ -105,7 +105,7 @@ ARTICLE_14879_COMMENTS = f"""大模型生意的护城河在哪里，明确还不
 
 ## 评论（3）
 
-- **曾广文**（2026-10-21 11:42）
+- **陈小东**（2026-10-21 11:42）
   个人觉得大模型很难形成护城河，因为只要开放出来用，哪怕是再贵的商用，都会被其他公司用来蒸馏，从而逼近这个模型。
 
 - **方伟Rey**（2026-10-21 11:50）
@@ -143,7 +143,7 @@ def test_14879_comments_become_author_time_and_body():
     assert "\u3000" not in html
     assert html.count('class="zsxq-comment"') == 1
     assert 'class="zsxq-comment-author">方伟Rey<' in section
-    assert "曾广文" not in section
+    assert "陈小东" not in section
     assert "匿名" not in section
     assert "claude的fable" not in section
     assert "哪怕是再贵的商用" not in section
@@ -178,7 +178,7 @@ def test_blank_comment_author_is_hidden(token: str):
 
 
 def test_real_names_stay_and_author_replies_stay_a_separate_section():
-    assert display_author("**曾广文**") == "曾广文"
+    assert display_author("**陈小东**") == "陈小东"
     assert display_author("**方伟Rey**") == "方伟Rey"
     assert display_author("John Smith") == "John Smith"
     assert display_author("**　　**") == "匿名"
@@ -186,7 +186,7 @@ def test_real_names_stay_and_author_replies_stay_a_separate_section():
 
 ## 评论（2）
 
-- **曾广文**（2026-10-21 11:42）
+- **陈小东**（2026-10-21 11:42）
   网友看法不显示。
 
 - **方伟Rey**（2026-10-21 11:50）
@@ -204,7 +204,7 @@ def test_real_names_stay_and_author_replies_stay_a_separate_section():
     assert html.index("zsxq-comments") < html.index("评论里的回复")
     section = _section(html)
     assert "第一段仍然在。" in section and "第二段也在。" in section
-    assert "曾广文" not in section and "网友看法" not in section
+    assert "陈小东" not in section and "网友看法" not in section
     assert "作者答" not in section and "评论里的回复" not in section
     assert "作者答：答一" in html
     assert "zsxq-comments" not in str(render_body("正文。\n\n## 评论里的回复\n\n作者补充：一句。\n", {}))
@@ -304,7 +304,7 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
     assert page.index("方伟：") < page.index("原图 1") < page.index("zsxq-comments")
     section = _section(page)
     assert 'class="zsxq-comment-author">方伟Rey<' in section
-    assert "曾广文" not in section and "匿名" not in section
+    assert "陈小东" not in section and "匿名" not in section
     assert "**" not in section and "\u3000" not in section
     gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
     assert "<br" not in gap

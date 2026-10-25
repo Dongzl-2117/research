@@ -13,7 +13,7 @@ SAMPLE = """正文一句。
 
 ## 评论（3）
 
-- **曾广文**（2026-10-21 11:42）
+- **陈小东**（2026-10-21 11:42）
   个人觉得大模型很难形成护城河。
 - **方伟Rey**（2026-10-21 11:50）
   护城河还是要看切换成本。
@@ -30,7 +30,7 @@ def test_host_author_detection():
     assert is_host_comment_author("方伟")
     assert is_host_comment_author("**方伟Rey**")
     assert is_host_comment_author("方伟-最近在杭州")
-    assert not is_host_comment_author("曾广文")
+    assert not is_host_comment_author("陈小东")
     assert not is_host_comment_author("　　　　　　　")
     assert not is_host_comment_author("")
 
@@ -40,7 +40,7 @@ def test_filter_markdown_keeps_only_fangwei():
     assert "## 评论（1）" in filtered
     assert "方伟Rey" in filtered
     assert "护城河还是要看切换成本" in filtered
-    assert "曾广文" not in filtered
+    assert "陈小东" not in filtered
     assert "空白名字" not in filtered
     assert "## 评论里的回复" in filtered
     assert "作者答：后面另说" in filtered
@@ -51,18 +51,18 @@ def test_filter_markdown_drops_section_without_host():
 
 ## 评论（1）
 
-- **曾广文**（2026-10-21 11:42）
+- **陈小东**（2026-10-21 11:42）
   只有网友。
 """
     filtered = filter_host_comments_markdown(md)
     assert "## 评论" not in filtered
-    assert "曾广文" not in filtered
+    assert "陈小东" not in filtered
     assert "正文。" in filtered
 
 
 def test_guest_roster_lists_only_non_host_and_ignores_reply_section():
-    assert guest_comment_authors(SAMPLE) == ["曾广文", "匿名"]
-    assert comment_list_authors(SAMPLE) == ["曾广文", "方伟Rey", "匿名"]
+    assert guest_comment_authors(SAMPLE) == ["陈小东", "匿名"]
+    assert comment_list_authors(SAMPLE) == ["陈小东", "方伟Rey", "匿名"]
     assert guest_comment_authors("正文。\n\n## 评论里的回复\n\n读者问：问。\n") == []
     assert comment_list_authors("正文。\n\n## 评论（1）\n\n这里不是列表。\n") is None
 
@@ -72,7 +72,7 @@ def test_reading_page_hides_guest_comments():
     assert "zsxq-comments" in html
     assert "方伟Rey" in html
     assert "护城河还是要看切换成本" in html
-    assert "曾广文" not in html
+    assert "陈小东" not in html
     assert "空白名字" not in html
     assert "评论（1）" in html
 
@@ -80,5 +80,5 @@ def test_reading_page_hides_guest_comments():
 def test_render_body_on_article_with_comments():
     page = str(render_body(SAMPLE, {}))
     assert "方伟Rey" in page
-    assert "曾广文" not in page
+    assert "陈小东" not in page
     assert 'class="zsxq-comments"' in page

@@ -235,23 +235,23 @@ _SHOT_A = """9:41
 瑞幸古茗交流群(86)
 方伟Rey
 瑞幸和古茗都算头部，但瑞幸同店还有压力
-姜禄彦
+王小明
 古茗店效还行，瑞幸的折扣不能再深了
 设为群待办
 ¥9.9
 小程序
 瑞幸咖啡
-徐哲航
+李小红
 先看到这里，不展开了
 """
 _SHOT_B = """20:41
 微信
 87%
 瑞幸古茗交流群(86)
-姜禄彦
+王小明
 古茗店效还行，瑞幸的折扣不能再深了
 设为群待办
-徐哲航
+李小红
 先看到这里，不展开了
 方伟
 同店压力还在，折扣不能再深
@@ -282,14 +282,14 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     assert saved.startswith("方伟：瑞幸和古茗都算头部")
     assert "网友：古茗店效还行" in saved
     assert saved.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert "姜禄彦" not in saved and "徐哲航" not in saved and "设为群待办" not in saved
+    assert "王小明" not in saved and "李小红" not in saved and "设为群待办" not in saved
     assert "小程序" not in saved and "交流群" not in saved and "¥" not in saved
 
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{row['id']}").text
     assert "方伟：" in page and "网友：" in page
     assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert "姜禄彦" not in page and "设为群待办" not in page
+    assert "王小明" not in page and "设为群待办" not in page
     assert "原图 1" in page and "原图 2" in page
     assert page.count('class="ocr-shot"') == 1
     assert "<details" not in page
@@ -310,7 +310,7 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     assert "方伟：瑞幸和古茗都算头部" in seen[0]
     assert "网友：古茗店效还行" in seen[0]
     assert "不要把网友的话写成方伟的判断" in seen[0]
-    assert "姜禄彦" not in seen[0] and "设为群待办" not in seen[0] and "小程序" not in seen[0]
+    assert "王小明" not in seen[0] and "设为群待办" not in seen[0] and "小程序" not in seen[0]
 
     prompts = []
 
@@ -329,7 +329,7 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     assert "网友：" in prompts[0]
     assert "不要把网友的话写成方伟的判断" in prompts[0]
     assert "不要因为来自截图就当成没下判断" in prompts[0]
-    assert "姜禄彦" not in prompts[0] and "设为群待办" not in prompts[0]
+    assert "王小明" not in prompts[0] and "设为群待办" not in prompts[0]
 
 
 # 文章 8881 的真实识别。旧旁路曾把栏上的「不太看好」整段收成方伟。

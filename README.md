@@ -52,3 +52,5 @@ pytest
 依赖的版本和 hash 锁在 `requirements*.lock` 里，改依赖、升级依赖用 `scripts/lock.sh`，见 [docs/deploy.md](docs/deploy.md)。
 
 集成测试需要带 zhparser 的 Postgres，并使用名为 `research_test` 的库。`docker compose up -d db` 之后创建这个库即可。CI 会自己构建数据库镜像并跑这些测试。改了检索相关的文件时（清单见 `.github/workflows/ci.yml` 里的 `retrieval`），再用 1500 篇的评测语料跑一遍检索评测，准确率、召回率比基线退步就失败；每周一和手动触发时这一步照跑。改了 Dockerfile、pyproject.toml 或锁文件时，另外构建应用和 OCR 镜像，认一张样图。
+
+测试样本里不放真人的名字。从群聊、公众号留言区、星球评论截下来的样本，群友和评论者的昵称、群名、店名都换成虚构的（王小明、李四这类）；只有来源作者本人用真名，比如方伟，规则要靠它认出作者。

@@ -5,14 +5,14 @@ RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上�
 群聊里不带昵称的气泡按绿色本人处理，带别人昵称的才是网友。不调用模型。
 
 - 靠右（或没有坐标时、不带别人昵称）的气泡 →「方伟：」
-- 别人的昵称（姜禄彦、徐哲航、Dylan，以及只写了名字的）→「网友：」，正文里不再留这个名字
+- 别人的昵称（王小明、李小红、Kevin，以及只写了名字的）→「网友：」，正文里不再留这个名字
 - 显示名「方伟 / 方伟Rey / 方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
 - 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
   「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」「微信小店」「关注同城 朋友 推荐」都是页脚。
-  「张冠留言1次·关注8个月」换成网友的一轮。以下为历史留言、共N条回复、留言N次、关注N个月删掉。
+  「李四留言1次·关注8个月」换成网友的一轮。以下为历史留言、共N条回复、留言N次、关注N个月删掉。
   「饮料快暴 +关注」「品饮汇 品饮汇观察 +关注」「观察 56个朋友关注 82 455 38 33。」这类账号名、
   按钮和阅读量粘在一行的页脚也整行丢掉；正文里提到「朋友关注」的句子不动。
 - 知识星球回复头的「方伟在学习（作者）2」是说话人分界：下面是方伟，上面仍是上一轮。
@@ -144,7 +144,7 @@ _HOST_LINE = re.compile(
 _HOST_PREFIX = re.compile(r"^(方\s*伟(?:\s*Rey)?|Rey)\s+(.+)$", re.I)
 _STRUCTURED = re.compile(r"^(方伟|网友)\s*[:：]\s*(.*)$")
 _INLINE = re.compile(r"^(.{1,16}?)[:：]\s*(.+)$")
-# 群名不一定带「群」字，例如「1633 看十年·线下深度交流(80)」。
+# 群名不一定带「群」字，例如「1633 示例·线下深度交流(80)」。
 _GROUP_TITLE = re.compile(
     r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
     r"|^(?:\d{2,6}\s+).{2,40}[（(]\d{1,4}[）)]$"
@@ -224,7 +224,7 @@ _LIST_CHROME = re.compile(
     r"|^写评论$"
     r"|^作者赞过$"
 )
-# 「张冠留言」「张冠留言1次·关注8个月」「郑立涛ILetterZheng留言1次·关注3个月」「UI留言17次·新的关注」。
+# 「李四留言」「李四留言1次·关注8个月」「孙小平SunPing留言1次·关注3个月」「UI留言17次·新的关注」。
 _COMMENT_HEAD = re.compile(
     r"^(?P<name>(?:[\u4e00-\u9fff]{1,8}[A-Za-z][A-Za-z0-9_]{0,40}|UI|[\u4e00-\u9fff]{1,8}))留言"
     r"(?:"
@@ -244,7 +244,7 @@ _COMMENT_UI = re.compile(
 _TIME_PLACE = re.compile(
     r"^(?:昨天|今天|前天|上午|下午|晚上|凌晨)?\d{1,2}:\d{2}(?::\d{2})?[\u4e00-\u9fff]{2,4}$"
 )
-# 「张冠留言」：这一轮改记成网友，名字本身不显示。
+# 「李四留言」：这一轮改记成网友，名字本身不显示。
 _GUEST_TURN = "\x1d"
 # 「方伟在学习（作者）」：这一行下面是方伟的话，上面仍是上一轮。
 _HOST_TURN = "\x1c"
@@ -440,7 +440,7 @@ def _is_host_badge(line: str) -> bool:
 
 
 def _labeled_guest_header(line: str) -> str | None:
-    """「方伟：郑立涛ILetterZheng留言1次·关注3个月」里，冒号后面才是留言头。"""
+    """「方伟：孙小平SunPing留言1次·关注3个月」里，冒号后面才是留言头。"""
     plain = _plain(line).strip()
     match = _LABELED_REST.match(plain)
     if not match:
@@ -508,7 +508,7 @@ def _name_cjk(name: str) -> str:
 
 
 def _comment_name_ok(name: str) -> bool:
-    """汉字名，或汉字名后粘着拉丁备注（郑立涛ILetterZheng），或头像认成的 UI。"""
+    """汉字名，或汉字名后粘着拉丁备注（孙小平SunPing），或头像认成的 UI。"""
     if name == "UI":
         return True
     if not name or name in _COMMENT_HEAD_SKIP or name.isdigit():
@@ -522,7 +522,7 @@ def _comment_name_ok(name: str) -> bool:
 
 
 def _is_comment_head(line: str) -> bool:
-    """「张冠留言」「张冠留言1次·关注8个月」。句子里的「请在下面留言」不是。"""
+    """「李四留言」「李四留言1次·关注8个月」。句子里的「请在下面留言」不是。"""
     match = _comment_head_match(line)
     if not match:
         return False
@@ -566,7 +566,7 @@ def _split_comment_head(line: str) -> tuple[str, str] | None:
 
 
 def _comment_name_line(line: str) -> bool:
-    """评论区里单独一行的人名，例如「郑立涛」。"""
+    """评论区里单独一行的人名，例如「孙小平」。"""
     text = _footer_compact(line)
     if not text or text in _NOT_NAMES or _is_host_line(_compact_host(text)):
         return False
@@ -606,7 +606,7 @@ def _peel_sticky_tail(line: str) -> str:
 def _drop_post_footer(lines: list[str]) -> list[str]:
     """页脚按行丢掉。按钮后面的方伟、网友继续留着，不从第一行按钮截到图末。
 
-    「张冠留言」和「张冠留言1次·关注8个月」改成网友的一轮，名字和关注月数不进正文。
+    「李四留言」和「李四留言1次·关注8个月」改成网友的一轮，名字和关注月数不进正文。
     """
     peeled = [_peel_sticky_tail(line) for line in lines]
     context = _post_chrome_context(peeled)
@@ -1041,7 +1041,7 @@ def _maybe_peel(line: str) -> str:
 
 
 def _peel_handle(line: str) -> str:
-    """徐哲航@think 这种昵称，@ 后面是备注，说话人只认前面的名字。"""
+    """李小红@think 这种昵称，@ 后面是备注，说话人只认前面的名字。"""
     peeled = _AT_SUFFIX.sub("", line or "").strip()
     if not peeled or peeled == line:
         return line
@@ -1196,7 +1196,7 @@ def _classify(line: str, names: set[str]) -> tuple[str, str]:
             return HOST, rest
         if rest and _guest_label(name):
             return GUEST, rest
-    # 名字集合里的行永远是说话人，哪怕下一句很短（「姜禄彦 / 数据确实是好的」）。
+    # 名字集合里的行永远是说话人，哪怕下一句很短（「王小明 / 数据确实是好的」）。
     if line in names:
         return GUEST, ""
     return "", ""

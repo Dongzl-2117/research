@@ -16,14 +16,14 @@ COMMENTS = """正文一句，讲的是渠道库存。
 
 ## 评论（2）
 
-- **曾广文**（2026-10-21 11:42）
+- **陈小东**（2026-10-21 11:42）
   个人觉得不该现在看多。
 - **方伟Rey**（2026-10-21 11:50）
   切换成本还在。
 """
 SHOT = """方伟
 茅台批价这一周没动，渠道仍在观望。
-张冠留言
+李四留言
 渠道库存还是偏高。
 3条留言
 划线人数 18
@@ -57,7 +57,7 @@ def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, s
     ).fetchone()
     ocr_row = conn.execute("SELECT id, content_hash FROM articles WHERE external_id = 'ocr-footer'").fetchone()
     assert cut["title"] == TRUNCATED
-    assert "曾广文" in comments["body_md"]
+    assert "陈小东" in comments["body_md"]
     image_hash = "ab" * 32
     conn.execute(
         "INSERT INTO image_texts (content_hash, engine, text) VALUES (%s, 'test', %s)",
@@ -106,11 +106,11 @@ def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, s
     assert view["judgment"] == "护城河还说不清"
     assert view["content_hash"] == content_hash(FULL, retitled["body_md"], retitled["published_at"])
     cleaned = conn.execute("SELECT body_md FROM articles WHERE id = %s", (comments["id"],)).fetchone()
-    assert "曾广文" not in cleaned["body_md"]
+    assert "陈小东" not in cleaned["body_md"]
     assert "方伟Rey" in cleaned["body_md"] and "切换成本还在" in cleaned["body_md"]
     ocr = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (ocr_row["id"],)).fetchone()
     assert ocr["ocr_text"].startswith("方伟：")
-    assert "张冠" not in ocr["ocr_text"] and "条留言" not in ocr["ocr_text"] and "赞赏" not in ocr["ocr_text"]
+    assert "李四" not in ocr["ocr_text"] and "条留言" not in ocr["ocr_text"] and "赞赏" not in ocr["ocr_text"]
     spots = {item["id"]: item for item in stats["spots"]}
     assert spots[cut["id"]]["title_truncated"] is False
     assert spots[comments["id"]]["comment"] == "评论只剩方伟"
