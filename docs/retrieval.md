@@ -156,7 +156,7 @@ python3 tools/retrieval_eval/evaluate.py
 
 生成器只写名字以 `research_eval` 开头的库。改了检索之后跑一遍，看准确率和耗时有没有退步。
 
-CI 每次用 1500 篇的语料（固定随机种子）跑一遍，和 `tools/retrieval_eval/baseline.json` 比：任何一个用例的准确率或召回率比基线低出 2 个百分点就失败。检索改好了、数字变高了，本地跑 `evaluate.py --json tools/retrieval_eval/baseline.json` 重写基线，和改动一起提交。耗时只打印不比，CI 机器的快慢每次不一样。
+CI 用 1500 篇的语料（固定随机种子）跑一遍，和 `tools/retrieval_eval/baseline.json` 比。PR 和 main 上的 push 只在改了检索相关的文件时跑（清单见 `.github/workflows/ci.yml` 里的 `retrieval`），每周一和手动触发时照跑。任何一个用例的准确率或召回率比基线低出 2 个百分点就失败。检索改好了、数字变高了，本地跑 `evaluate.py --json tools/retrieval_eval/baseline.json` 重写基线，和改动一起提交。耗时只打印不比，CI 机器的快慢每次不一样。
 
 ## 库变大以后的耗时
 
