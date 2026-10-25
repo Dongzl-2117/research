@@ -5,9 +5,12 @@ from __future__ import annotations
 import html as html_lib
 import re
 import unicodedata
+import xml.etree.ElementTree as etree
 from urllib.parse import unquote
 
 import markdown
+from markdown.extensions import Extension
+from markdown.inlinepatterns import InlineProcessor
 from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
@@ -528,11 +531,48 @@ def normalize_admonitions(body: str) -> str:
     return "".join(out)
 
 
+class _CJKQuotedStrong(InlineProcessor):
+    """Permit quoted strong text beside CJK words, after code/escape/HTML parsing.
+
+    CommonMark punctuation flanking treats ``的**“人”**`` as literal stars.
+    Keep this exception at the inline-token layer so escaped stars, code and
+    HTML attributes retain their usual meaning.
+    """
+
+    def handleMatch(self, match, data):
+        text = match.group(1)
+        before = data[match.start() - 1 : match.start()] if match.start() else ""
+        after = data[match.end() : match.end() + 1]
+
+        def cjk_word(char):
+            return bool(char) and unicodedata.category(char).startswith("L") and (
+                unicodedata.east_asian_width(char) in {"W", "F"}
+            )
+
+        if not text.strip() or text != text.strip() or not (
+            (text[0] in "“‘「『《（" and cjk_word(before))
+            or (text[-1] in "”’」』》）" and cjk_word(after))
+        ):
+            return None, None, None
+        element = etree.Element("strong")
+        element.text = text
+        return element, match.start(), match.end()
+
+
+class _CJKEmphasisExtension(Extension):
+    def extendMarkdown(self, md):
+        md.inlinePatterns.register(
+            _CJKQuotedStrong(r"(?<!\*)\*\*((?:[^*\n]|\*(?!\*))+?)\*\*(?!\*)", md),
+            "cjk_quoted_strong",
+            65,
+        )
+
+
 def _render_markdown(body: str, mapping: dict[str, str]) -> str:
     rewritten = rewrite_html_images(rewrite_markdown_images(normalize_admonitions(body), mapping), mapping)
     html = markdown.markdown(
         rewritten,
-        extensions=["extra", "nl2br", "sane_lists"],
+        extensions=["extra", "nl2br", "sane_lists", _CJKEmphasisExtension()],
         output_format="html",
     )
     return _anchor_images(sanitize_html(html))

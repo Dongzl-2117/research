@@ -88,6 +88,7 @@
   </section>
   {% endif %}
   {% if result.answer %}
+  <p class="body-note" role="note">回答包含原文摘录和整合推断；推断应明确标注。出处定位和未提示引用问题，都不等于结论已核实。</p>
   {% if result.failed_batches %}<p class="banner">资料分 {{ result.batches }} 批读，第 {{ result.failed_batches | join("、") }} 批 {{ llm_label | default("LLM") }} 出错没读到，回答可能不全。可以重新问一次。</p>{% endif %}
   <div class="prose answer-body">{{ result.answer | answer_html }}</div>
   {% if result.model or result.created %}<p class="quiet">{{ result.model }}{% if result.model and result.created %} · {% endif %}{{ result.created }}</p>{% endif %}

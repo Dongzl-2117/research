@@ -13,10 +13,42 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
 _HEADING = re.compile(r"^(#{1,6})\s+(\S.*?)\s*$", re.M)
 _FENCE = re.compile(r"```.*?```", re.S)
+_INLINE_CODE = re.compile(r"(?<!`)(?P<ticks>`+)(?!`)(?P<code>.*?)(?<!`)(?P=ticks)(?!`)", re.S)
 _IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
-_TAG = re.compile(r"<[^>]+>")
-_EMPH = re.compile(r"(\*\*|__|\*|_|~~)")
+# Only actual HTML elements are markup. Unknown names can be literal book
+# titles in either Chinese or English, including titles split over paragraphs.
+_HTML_TAG_NAMES = frozenset(
+    "a abbr address area article aside audio b base bdi bdo blockquote body br button "
+    "canvas caption cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed "
+    "fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input "
+    "ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option "
+    "output p picture pre progress q rp rt ruby s samp script search section select slot small source "
+    "span strong style sub summary sup table tbody td template textarea tfoot th thead time title tr "
+    "track u ul var video wbr".split()
+) | frozenset("acronym big center dir font frame frameset marquee nobr noembed noframes param strike tt".split())
+_TAG = re.compile(
+    r'''(?<!\\)(?:<!--.*?-->|</?(?P<name>[A-Za-z][A-Za-z0-9:-]*)(?=[\s/>])'''
+    r'''(?:[^<>"']|"[^"]*"|'[^']*')*>|<![A-Za-z][^>]*>)''',
+    re.S,
+)
+_STAR_STRONG = re.compile(
+    r"(?<![^\W一-鿿])(?<![\\*])(?P<marker>\*{2,3})(?!\*|\s)"
+    r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?![^\W一-鿿]|\*)"
+)
+_STAR_EMPH = re.compile(
+    r"(?<![\w\\*])(?P<marker>\*)(?!\*|\s)"
+    r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?![\w*])"
+)
+_STRIKE = re.compile(
+    r"(?<![\\~])(?P<marker>~~)(?!~|\s)"
+    r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?!~)"
+)
+_UNDERSCORE_EMPH = re.compile(
+    r"(?<![\w\\])(?P<marker>_{1,3})(?!_|\s)"
+    r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?![\w_])"
+)
+_THEMATIC_RULE = re.compile(r"^[ \t]{0,3}(?:(?:_[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:-[ \t]*){3,})$", re.M)
 _FILENAME_DATE = re.compile(
     r"^(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])"
 )
@@ -43,10 +75,63 @@ _DATE_KEYS = (
     "datetime",
     "created",
     "created_at",
+    "created_time",
     "create_time",
     "createTime",
     "ctime",
 )
+_CREATION_DATE_KEYS = ("created", "created_at", "created_time", "create_time", "createTime", "ctime")
+_EDIT_DATE_KEYS = ("source_updated_at", "edited_at", "modified_at", "updated_at")
+
+
+def publication_time_basis(mapping: dict | None) -> str:
+    """Meaning of an archive's observed timestamp, not its ingestion time."""
+    raw = str((mapping or {}).get("published_at_basis") or "").strip().casefold()
+    if not raw:
+        return ""
+    if raw in {"修改于", "编辑于", "更新于", "edited", "updated", "modified"}:
+        return "edited"
+    if raw in {"发布于", "发布时间", "published", "created", "创建于"}:
+        return "published"
+    return "unknown"
+
+
+def source_time_metadata(mapping: dict | None) -> dict:
+    """Keep only scalar source time evidence; never copy a whole raw response."""
+    mapping = mapping or {}
+    result = {}
+    basis = publication_time_basis(mapping)
+    if basis:
+        result["published_at_basis"] = str(mapping["published_at_basis"]) if basis != "unknown" else "unknown"
+    for key in _CREATION_DATE_KEYS:
+        value = mapping.get(key)
+        if value not in (None, "") and not isinstance(value, (bool, dict, list)) and (
+            parse_datetime(value)
+        ):
+            result[key] = value if isinstance(value, (str, int, float)) else str(value)
+    for key in _EDIT_DATE_KEYS:
+        if parse_datetime(mapping.get(key)):
+            result["source_updated_at"] = str(mapping[key])
+            break
+    if publication_time_basis(mapping) == "edited":
+        for key in ("published_at", "published", "date", "publish_time"):
+            if parse_datetime(mapping.get(key)):
+                result.setdefault("source_updated_at", str(mapping[key]))
+                break
+    return result
+
+
+def _uncertain_publication(mapping: dict | None) -> bool:
+    if not isinstance(mapping, dict):
+        return False
+    if publication_time_basis(mapping) in {"edited", "unknown"}:
+        return True
+    # An edit timestamp alone does not authenticate a date in the filename.
+    return any(parse_datetime(mapping.get(key)) for key in _EDIT_DATE_KEYS) and not any(
+        parse_datetime(mapping.get(key)) for key in _DATE_KEYS if key not in _CREATION_DATE_KEYS
+    )
+
+
 _MARKUP_DATES = (
     re.compile(
         r"""<meta\b[^>]*\b(?:property|name|itemprop)\s*=\s*["']"""
@@ -168,14 +253,57 @@ def scrub_file_page_junk(text: str) -> str:
 
 def markdown_to_text(md: str) -> str:
     text = _FENCE.sub(" ", md)
-    text = re.sub(r"`([^`]*)`", r"\1", text)
+    code_prefix = "\x02CODE"
+    while code_prefix in text:
+        code_prefix += "X"
+    code_texts: list[str] = []
+
+    def stash_code(match: re.Match[str]) -> str:
+        code_texts.append(match.group("code"))
+        return f"{code_prefix}{len(code_texts) - 1}\x03"
+
+    text = _INLINE_CODE.sub(stash_code, text)
     text = _IMAGE.sub(r"\1", text)
     text = _LINK.sub(r"\1", text)
-    text = _TAG.sub(" ", text)
+    tags = list(_TAG.finditer(text))
+    opened = {m.group("name").lower() for m in tags if m.group("name") and not m.group(0).startswith("</")}
+    closed = {m.group("name").lower() for m in tags if m.group("name") and m.group(0).startswith("</")}
+    paired = opened & closed
+
+    def strip_tag(match: re.Match[str]) -> str:
+        name = match.group("name")
+        token = match.group(0)
+        if not name or name.lower() in _HTML_TAG_NAMES | paired:
+            return " "
+        if token.endswith("/>") or re.search(r'''\s[\w:-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s<>]+)''', token):
+            return " "
+        return token
+
+    text = _TAG.sub(
+        strip_tag, text,
+    )
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
-    text = _EMPH.sub("", text)
+    # Underscores can be literal blanks or intraword characters. Remove only
+    # paired emphasis delimiters; nested strong/emphasis may need another pass.
+    while True:
+        unwrapped = _UNDERSCORE_EMPH.sub(r"\g<text>", text)
+        if unwrapped == text:
+            break
+        text = unwrapped
+    # Asterisks can be multiplication operators. Only unwrap paired emphasis;
+    # intraword single stars remain literal, e.g. 100*1.06 or 本金*年数*收益率.
+    while True:
+        unwrapped = text
+        for pattern in (_STAR_STRONG, _STAR_EMPH, _STRIKE):
+            unwrapped = pattern.sub(r"\g<text>", unwrapped)
+        if unwrapped == text:
+            break
+        text = unwrapped
     text = re.sub(r"^\s{0,3}>\s?", "", text, flags=re.M)
+    text = _THEMATIC_RULE.sub("", text)
     text = re.sub(r"^\s*[-+*]\s+", "", text, flags=re.M)
+    for index, code in enumerate(code_texts):
+        text = text.replace(f"{code_prefix}{index}\x03", code)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -357,10 +485,11 @@ def dates_from_mapping(mapping: dict | None) -> datetime | None:
     return found[0]
 
 
-def _mapping_clock(mapping: dict | None) -> tuple[datetime, bool] | None:
+def _mapping_clock(mapping: dict | None, *, creation_only: bool = False) -> tuple[datetime, bool] | None:
     if not isinstance(mapping, dict):
         return None
-    for key in _DATE_KEYS:
+    keys = _CREATION_DATE_KEYS if creation_only or _uncertain_publication(mapping) else _DATE_KEYS
+    for key in keys:
         if key not in mapping:
             continue
         raw = mapping.get(key)
@@ -385,8 +514,11 @@ def resolve_published_at(
     13:29 收成 00:00。
     """
     candidates: list[tuple[datetime, str, bool]] = []
+    uncertain = any(_uncertain_publication(mapping) for mapping in (frontmatter, hints))
     for mapping, label in ((frontmatter, "frontmatter"), (hints, "meta")):
-        found = _mapping_clock(mapping)
+        found = _mapping_clock(
+            mapping, creation_only=uncertain and publication_time_basis(mapping) != "published"
+        )
         if found:
             candidates.append((found[0], label, found[1]))
     raw_markup = _markup_raw(text)
@@ -394,12 +526,13 @@ def resolve_published_at(
         parsed = parse_datetime(raw_markup)
         if parsed:
             candidates.append((parsed, "markup", clock_known_in(raw_markup)))
-    raw_body = _body_time_raw(text)
+    # Generic "时间" and filename dates can be the same observed edit time.
+    raw_body = None if uncertain else _body_time_raw(text)
     if raw_body:
         parsed = parse_datetime(raw_body)
         if parsed:
             candidates.append((parsed, "body", clock_known_in(raw_body)))
-    for name in (filename, *extra_filenames):
+    for name in (() if uncertain else (filename, *extra_filenames)):
         found = date_from_filename(name)
         if found:
             candidates.append((found, "filename", False))

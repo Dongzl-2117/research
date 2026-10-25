@@ -15,10 +15,11 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 
-_CLAIM = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]+)?(?:\s*\[\d{1,3}\])*")
 _REF = re.compile(r"\[(\d{1,3})\]")
+_TRAILING_REFS = re.compile(r"(?:\s*\[\d{1,3}\])+")
 _FULL_DATE = re.compile(r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?")
 _DATE_LIKE = re.compile(
     r"(?<!\d)\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?"
@@ -41,6 +42,65 @@ _COMMON_BIGRAMS = frozenset(
     }
 )
 MAX_FLAGS = 20
+_OMISSION = re.compile(r"\.{3,}|…+|\[省略\]|（略）")
+_QUOTE_TOKEN = re.compile(
+    r"[一-鿿]|[^\W\d_一-鿿]+(?:['’][^\W\d_一-鿿]+)*(?:\+\+|#)?"
+    r"|[+＋−－-]?[ \t]*(?:\d{1,3}(?:[\u00a0\u202f]\d{3})+(?:[.．]\d+)?"
+    r"|\d+(?:[.,，．]\d+)*)(?:[ \t]*[%％‰])?"
+    r"|(?P<symbol>[^\w\s])"
+)
+_QUOTE_SYMBOLS = str.maketrans("＋－−￥", "+--¥")
+
+
+def quote_has_omission(quote: str) -> bool:
+    return bool(_OMISSION.search(quote or ""))
+
+
+def _quote_tokens(text: str) -> list[tuple[str, int, int]]:
+    tokens = []
+    for match in _QUOTE_TOKEN.finditer(text or ""):
+        value = match.group()
+        if match.lastgroup == "symbol" and not (
+            unicodedata.category(value).startswith("S") or value in "%％‰*/&|-－"
+        ):
+            continue
+        value = value.translate(_FULLWIDTH).translate(_QUOTE_SYMBOLS).replace("’", "'").casefold()
+        value = re.sub(r"[ \t]+", "", value)
+        if re.fullmatch(r"[+-]?\d{1,3}(?:[\u00a0\u202f]\d{3})+(?:\.\d+)?[%‰]?", value):
+            value = value.replace("\u00a0", "").replace("\u202f", "")
+        if re.fullmatch(r"[+-]?\d{1,3}(?:[,，]\d{3})+(?:\.\d+)?[%‰]?", value):
+            value = value.replace(",", "").replace("，", "")
+        tokens.append((value, match.start(), match.end()))
+    return tokens
+
+
+def quote_spans(source: str, quote: str) -> list[tuple[int, int]] | None:
+    """Locate every quoted word/number, allowing only explicit omission gaps.
+
+    Punctuation, whitespace and case may differ. English word boundaries,
+    numeric signs, decimals and percentage units remain meaningful. This is
+    textual location within one source, not verification of a conclusion.
+    """
+    original = _quote_tokens(source)
+    values = [value for value, _, _ in original]
+    parts = [[value for value, _, _ in _quote_tokens(part)] for part in _OMISSION.split(quote or "")]
+    parts = [part for part in parts if part]
+    if not parts:
+        return None
+    spans = []
+    cursor = 0
+    for part in parts:
+        start = next(
+            (index for index in range(cursor, len(values) - len(part) + 1)
+             if values[index : index + len(part)] == part),
+            None,
+        )
+        if start is None:
+            return None
+        end = start + len(part)
+        spans.append((original[start][1], original[end - 1][2]))
+        cursor = end
+    return spans
 
 
 def _plain(text: str) -> str:
@@ -64,11 +124,36 @@ def _bigrams(text: str) -> set[str]:
 def split_claims(answer: str) -> list[tuple[str, list[int]]]:
     """回答切成带出处的句子：[(句子, [n...])]。[n] 写在句号后面的也算这一句的。"""
     claims: list[tuple[str, list[int]]] = []
-    for match in _CLAIM.finditer(answer or ""):
-        text = match.group(0).strip()
+    answer = answer or ""
+    closers = []
+    pairs = {"「": "」", "“": "”", '"': '"'}
+    quote_marks = set(pairs) | set(pairs.values())
+    start = index = 0
+    while index < len(answer):
+        char = answer[index]
+        escaped = 0
+        if char in quote_marks:
+            previous = index - 1
+            while previous >= 0 and answer[previous] == "\\":
+                escaped += 1
+                previous -= 1
+        if char in quote_marks and escaped % 2 == 0:
+            if closers and char == closers[-1]:
+                closers.pop()
+            elif char in pairs:
+                closers.append(pairs[char])
+        index += 1
+        if index < len(answer) and (closers or char not in "。！？!?；;\n"):
+            continue
+        # A reference after a final stop belongs to the preceding sentence.
+        trailing = _TRAILING_REFS.match(answer, index)
+        if trailing:
+            index = trailing.end()
+        text = answer[start:index].strip()
         refs = [int(item) for item in _REF.findall(text)]
         if refs:
             claims.append((text, list(dict.fromkeys(refs))))
+        start = index
     return claims
 
 
@@ -112,12 +197,16 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     )
     digits = _digits(raw)
     plain = _plain(raw)
+    quote_sources = [
+        "\n".join(str(item.get(key) or "") for key in ("before", "text", "after"))
+        for item in cited
+    ]
     for number in _numbers(text):
         if not _number_in(number, digits):
             problems.append(f"数字 {number} 不在所引段落里")
     for match in _QUOTED.finditer(text):
         quoted = next(group for group in match.groups() if group)
-        if _plain(quoted) and _plain(quoted) not in plain:
+        if _plain(quoted) and not any(quote_spans(source, quoted) for source in quote_sources):
             problems.append(f"引号里的「{quoted[:20]}」在所引段落里找不到")
     cited_authors = {item.get("author") or "" for item in cited}
     named = [name for name in authors if name and name in text]
@@ -143,7 +232,7 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
 
 
 def check_answer(answer: str, citations: list[dict], authors: Iterable[str]) -> list[dict]:
-    """返回没核对上的句子：[{"sentence", "refs", "problems"}]。都对得上时是空列表。"""
+    """Return rule warnings. An empty list does not establish semantic support."""
     names = sorted({name for name in authors if name}, key=len, reverse=True)
     flags: list[dict] = []
     for text, refs in split_claims(answer):

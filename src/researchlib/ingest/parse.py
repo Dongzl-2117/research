@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+import markdown
 
 from researchlib.attachments import collect_attachment_refs
 from researchlib.eligibility import (
@@ -25,7 +29,9 @@ from researchlib.textutil import (
     basename,
     derive_title,
     normalize_newlines,
+    parse_datetime,
     resolve_published_at,
+    source_time_metadata,
     split_frontmatter,
 )
 from researchlib.zsxq_title import stored_zsxq_title
@@ -48,6 +54,7 @@ _FRONTMATTER_DATE_KEYS = (
     "datetime",
     "created",
     "created_at",
+    "created_time",
     "create_time",
     "createTime",
     "ctime",
@@ -62,6 +69,89 @@ def archive_path_year(relative_id: str) -> int | None:
 
 def _scrub_frontmatter_dates(frontmatter: dict) -> dict:
     return {key: value for key, value in frontmatter.items() if key not in _FRONTMATTER_DATE_KEYS}
+
+
+def _linked_raw_time_hints(original: str, path: Path, roots: list[Path], frontmatter: dict) -> dict:
+    """Read time evidence only from an explicit, contained, identity-matched raw link.
+
+    No basename lookup, directory scan or remote fallback authenticates a raw
+    record. An unverifiable raw link supplies no evidence; it does not negate
+    an independent frontmatter publication date.
+    """
+    identity = {
+        key: str(frontmatter[key]).strip() for key in ("id", "sn")
+        if isinstance(frontmatter.get(key), (str, int)) and str(frontmatter[key]).strip()
+        and not isinstance(frontmatter[key], bool)
+    }
+    if not identity or ".json" not in original.lower() or "raw" not in original:
+        return {}
+
+    class Links(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.blocked = []
+            self.hrefs = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag in {"code", "pre", "script", "style", "textarea"}:
+                self.blocked.append(tag)
+            elif tag == "a" and not self.blocked:
+                self.hrefs.append(dict(attrs).get("href") or "")
+
+        def handle_endtag(self, tag):
+            if tag in self.blocked:
+                index = len(self.blocked) - 1 - self.blocked[::-1].index(tag)
+                del self.blocked[index:]
+
+    links = Links()
+    _, body = split_frontmatter(original)
+    links.feed(markdown.markdown(body, extensions=["extra"]))
+    links.close()
+    owner = _owning_root(path, roots)
+    found = []
+    for href in links.hrefs:
+        try:
+            parts = urlsplit(href)
+        except ValueError:
+            continue
+        if parts.scheme or parts.netloc or parts.query or parts.fragment:
+            continue
+        dest = unquote(parts.path).replace("\\", "/")
+        relative = Path(dest)
+        if relative.is_absolute() or ":" in dest or "\x00" in dest:
+            continue
+        if "raw" not in relative.parts or relative.suffix.lower() != ".json":
+            continue
+        candidate = path.parent / relative
+        try:
+            if owner is None or not candidate.resolve().is_relative_to(owner.resolve()):
+                continue
+            if any(part.is_symlink() for part in (candidate, *candidate.parents)):
+                continue
+            if not candidate.is_file() or candidate.stat().st_size > 4 * 1024 * 1024:
+                continue
+            raw = json.loads(candidate.read_text(encoding="utf-8-sig"))
+        except (OSError, RuntimeError, UnicodeError, ValueError):
+            continue
+        if not isinstance(raw, dict) or not all(
+            isinstance(raw.get(key), (str, int)) and not isinstance(raw[key], bool)
+            and str(raw[key]).strip() == value
+            for key, value in identity.items()
+        ):
+            continue
+        hints = source_time_metadata(raw)
+        # These fields are needed for resolution, but are never copied wholesale
+        # into stored raw_meta. The basis determines whether they mean publication.
+        for key in _FRONTMATTER_DATE_KEYS:
+            value = raw.get(key)
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                if parse_datetime(value):
+                    hints[key] = value
+        if hints and hints not in found:
+            found.append(hints)
+    if len(found) == 1:
+        return found[0]
+    return {"published_at_basis": "unknown"} if found else {}
 
 
 
@@ -355,6 +445,7 @@ def parse_markdown_files(
     images: ImageIndex,
     id_mode: str,
     raw_index: dict[str, dict] | None = None,
+    source_kind: str = "",
 ) -> tuple[list[ParsedDoc], list[str]]:
     docs: list[ParsedDoc] = []
     errors: list[str] = []
@@ -365,9 +456,18 @@ def parse_markdown_files(
         except OSError as exc:
             errors.append(f"{path}: {exc}")
             continue
+        image_order = None
+        if source_kind == "wechat_mp":
+            from researchlib.ingest.wechat_image_order import restore_image_order
+
+            original, image_order = restore_image_order(normalize_newlines(original), path, roots)
         frontmatter, body = split_frontmatter(original)
         body = normalize_newlines(body)
         raw_meta = _match_raw(path, raw_index or {})
+        if id_mode == "path":
+            raw_meta = {
+                **raw_meta, **_linked_raw_time_hints(original, path, roots, frontmatter)
+            }
         title = derive_title(frontmatter, body, path.name, raw_meta.get("title"))
         if id_mode == "zsxq":
             # 导出标题是空的或被省略号截断时，能从正文收成一句就写入。兜底标题留到页面上现算。
@@ -434,6 +534,12 @@ def parse_markdown_files(
             "parent": parent,
             "filename": path.name,
         }
+        if image_order is not None:
+            stored_meta["wechat_image_order"] = image_order
+        stored_meta.update(source_time_metadata(frontmatter))
+        stored_meta.update(source_time_metadata(raw_meta))
+        if stored_meta.get("published_at_basis") or stored_meta.get("source_updated_at"):
+            stored_meta["publication_time_status"] = "known" if published is not None else "unknown"
         if id_mode == "zsxq":
             stored_meta["source_kind"] = "zsxq"
             stored_meta["group_id"] = str(raw_meta.get("group_id") or "")
@@ -513,7 +619,7 @@ def _owning_root(path: Path, roots: list[Path]) -> Path | None:
 
 
 def parse_archive(
-    input_path: Path, work: Path, *, id_mode: str, source_id: str = ""
+    input_path: Path, work: Path, *, id_mode: str, source_id: str = "", source_kind: str = ""
 ) -> tuple[list[ParsedDoc], list[str], int, int]:
     roots = materialize(input_path, work)
     markdown, images, raw_json = iter_files(roots)
@@ -540,5 +646,6 @@ def parse_archive(
         images=index,
         id_mode=id_mode,
         raw_index=raw_index,
+        source_kind=source_kind,
     )
     return docs, errors, len(markdown), len(images)

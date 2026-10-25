@@ -21,7 +21,7 @@ from researchlib.answer_provenance import provenance_article_ids, verify_input_p
 from researchlib.ask import PRESETS, retry, start
 from researchlib.attachments import attachment_mapping, resolve_article_attachment
 from researchlib.boilerplate import clean_article
-from researchlib.citecheck import check_answer
+from researchlib.citecheck import check_answer, quote_has_omission
 from researchlib.db import connect, ensure_search_session
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
@@ -748,6 +748,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
             "quoted_marked": quoted_marked,
+            "quoted_omitted": bool(quoted and quote_has_omission(quoted.get("body") or "")),
             # 点进文章先看总结：有摘要就放在正文前面。
             "digest_summary": (digest or {}).get("summary") or "",
             "digest_points": _digest_points(digest, limit=6) if digest else [],

@@ -33,10 +33,14 @@
       {% if digest_points %}<ul class="article-digest-points">{% for point in digest_points %}<li>{{ point }}</li>{% endfor %}</ul>{% endif %}
     </section>
     {% endif %}
+    {% if quoted_marked %}
+    <p class="body-note" role="note">{% if quoted_omitted %}已定位含省略标记的摘录；省略部分未核对。{% else %}已在正文中定位所引片段。{% endif %}高亮只表示文字位置，不代表回答的整合或推断已获证。</p>
+    {% endif %}
     {% if quoted and not quoted_marked %}
-    <aside class="quoted" aria-label="引用的段落">
+    <aside class="quoted" aria-label="{% if quoted.lang == 'ocr' %}图片里的字{% else %}待核对的引用片段{% endif %}">
       {% if quoted.lang == "ocr" %}<p class="quoted-label">图片里的字 · <a href="#{{ quoted.anchor }}">看这张图</a></p>
       {% elif quoted.heading %}<p class="quoted-label">{{ quoted.heading }}</p>{% endif %}
+      {% if quoted.lang != 'ocr' %}<p class="quoted-label">未能在当前正文中完整定位；以下片段尚待核对。</p>{% endif %}
       <p>{{ quoted.body }}</p>
     </aside>
     {% endif %}
