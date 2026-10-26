@@ -4,6 +4,66 @@
 
 目标机器是 Mac mini（M4，16GB 内存，大约 228GB 磁盘）。服务用 docker compose 跑，Postgres 把 `shared_buffers` 限制在 256MB，避免和本机其他进程抢内存。
 
+开发接手先看 [README](../README.md#开发)。本页后面的服务初始化和更新是部署流程，不应在运行中的 checkout 直接照做；暂停工作进程、切换服务、写生产数据和恢复均需独立安排。
+
+## 一次性集成测试环境
+
+仅在无 `.env`、无生产 `data/` 的独立 clone 中、安装好 README 所述开发依赖后使用。Docker daemon 可以来自本机 Docker Desktop、Colima 或其他正常安装；不要求云环境。以下 Bash 示例只构建仓库已有 `docker/postgres/Dockerfile`，创建唯一项目、空测试卷及随机本机回环端口，不加载生产 compose、配置、卷或模型。
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+test ! -e .env || { echo '请使用不含 .env 的独立 clone' >&2; exit 1; }
+test -x .venv/bin/python
+test_root=$(mktemp -d "${TMPDIR:-/tmp}/research-pg.XXXXXX")
+test_project="research-test-$(date +%s)-$$"
+test_image="research-test-db:$test_project"
+printf '测试目录：%s\n项目：%s\n' "$test_root" "$test_project"
+docker build -t "$test_image" docker/postgres
+cat > "$test_root/compose.yaml" <<YAML
+services:
+  db:
+    image: "$test_image"
+    environment:
+      POSTGRES_USER: research
+      POSTGRES_PASSWORD: test-only
+      POSTGRES_DB: research_test
+      LANG: C.UTF-8
+    ports: ["127.0.0.1::5432"]
+    volumes: ["test_pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U research -d research_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+volumes:
+  test_pgdata:
+YAML
+test_compose=(docker compose --env-file /dev/null --project-directory "$test_root" -p "$test_project" -f "$test_root/compose.yaml")
+"${test_compose[@]}" up -d --wait --wait-timeout 90
+test_addr=$("${test_compose[@]}" port db 5432)
+case "$test_addr" in 127.0.0.1:*) ;; *) echo '非预期测试端口' >&2; exit 1;; esac
+test_port=${test_addr##*:}
+case "$test_port" in ''|*[!0-9]*) echo '无效测试端口' >&2; exit 1;; esac
+"${test_compose[@]}" exec -T db psql -U research -d research_test -c \
+  "SELECT name,default_version,installed_version FROM pg_available_extensions WHERE name IN ('zhparser','vector');"
+mkdir -p "$test_root/tmp" "$test_root/data"
+env -i PATH="$PWD/.venv/bin:$PATH" TMPDIR="$test_root/tmp" \
+  DATA_DIR="$test_root/data" XAI_OAUTH_TOKEN_PATH="$test_root/no-oauth.json" \
+  DATABASE_URL="postgresql://research:test-only@127.0.0.1:$test_port/research_test" \
+  PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=1000' \
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  python -m pytest tests/integration/test_long_and_semantic.py tests/integration/test_pr65_vector_guards.py -q
+# 检查结果后只删除本脚本创建的项目/测试卷；失败时也用这一完整项目与文件参数清理。
+"${test_compose[@]}" down -v
+printf '测试记录目录：%s\n清理项目：%s\n' "$test_root" "$test_project"
+BASH
+```
+
+失败时脚本会停止，保留临时路径和项目以便检查；不要改用无 `-p/-f` 的生产 compose 清理。`docker build` 需访问 Dockerfile 指定的官方基础镜像、PGDG 包及固定 zhparser 源码，未在这里升级依赖或替换中文解析器。Apple Silicon 使用 arm64、常规 Linux 使用 amd64；记录实际镜像 ID、Python、PG 与扩展版本。Dockerfile 固定 PG 主版本和 zhparser 源码，但基础镜像标签/PGDG 包可更新，不承诺每次扩展补丁版本相同。
+
+这两个文件使用合成资料和假向量/生成函数，不需 API key，也不重算真实文章向量。确认 pytest 的 passed/failed/skipped 数量；扩展缺失或连库失败时可能全部 skip，退出码 0 不等于已验证。完整 `tests/integration` 和合成检索评测仍是另一次测试范围，不能把固定 12 项当全套；测试 fixture 的迁移与清空操作只允许发生在此空卷。
+
 ## 第一次启动
 
 ```bash
@@ -57,7 +117,8 @@ docker compose exec app research-embed   # 第一次全库回填，之后夜间�
 
 ## 更新
 
-PR 65 的选择性整合仍是独立候选，未推送或部署。它保留 PR 56 的严格身份与缓存门槛，不能当作旧版兼容只读镜像的等价替换。
+PR65 已 squash 合并到 main；PR56 的选择性整合代码已推送为 `2264b071`，但 PR56 尚未合并、生产未按该候选切换。此处只读启动等行为描述针对 PR56；main 的启动/页面副作用应以实际代码核对，不能对着现库试启动。
+PR56 保留严格身份与缓存门槛，不能当作保持旧展示资格的兼容只读保护方案的等价替换。
 已有无维护翻译恢复入口绑定的是兼容候选的文件哈希；不能直接用于本整合候选，需另行绑定并验证，旧入口和旧镜像保留不变。
 本次没有运行模型、生产回填或六篇定向写入；旧缓存和 OCR 证明缺口没有自动补齐。不得把单测通过当作这些部署条件已满足。
 

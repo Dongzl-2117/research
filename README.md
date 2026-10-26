@@ -1,15 +1,12 @@
 # 投资研究库
 
-给 **investment.zldong.com** 用的私人研究库。仓库名仍然是 `research`。
+给 **investment.zldong.com** 用的研究归档应用。代码公开，站点中的原文、图片、数据库和访问凭据不随代码公开。仓库名仍然是 `research`。
 
 这里保存几位作者的全文归档。首页按天推送，也可以按作者、按公司分模块查看，并做中文全文检索。它不是新闻流水线。
 
 ## 运行
 
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
+开发或接手项目先看下方[开发](#开发)，使用独立 clone 和临时测试库。不要在 mini 正在运行的 checkout 中切分支或直接套用启动命令。新空环境的服务初始化另见 [docs/deploy.md](docs/deploy.md)，不是测试的默认步骤。
 
 浏览器只通过本机 `http://127.0.0.1:8088` 访问。公网入口是 Cloudflare Tunnel 转到这个地址，前面再加 Cloudflare Access。应用自己不提供登录。部署步骤见 [docs/deploy.md](docs/deploy.md)。
 
@@ -38,17 +35,69 @@ docker compose up -d --build
 
 Postgres 使用 zhparser 做中文全文检索。正文在库里，图片在 `data/images`。不要把 `.env`、归档压缩包或 `data/` 提交进仓库。
 
-正文另外切成段落块存在 `article_chunks`，检索片段和问答引用落在块上；英文文章的中文译文也切块进检索。同一篇从两条路导入的，只留一个主版本。语义检索留了接口，但没有安装 pgvector，也没有向量列，原因见 [docs/retrieval.md](docs/retrieval.md)。
+正文另外切成段落块存在 `article_chunks`，检索片段和问答引用落在块上；英文文章的中文译文也切块进检索。同一篇从两条路导入的，只留一个主版本。可选语义检索使用 pgvector；未配置服务或扩展时按关键词检索，见 [docs/retrieval.md](docs/retrieval.md)。
 
 ## 开发
 
+### 先选对代码
+
+2026-10-26 05:41 UTC 核验：`main` 为 `2d978ac`，包含 PR65 的 squash 合并及其后的 PR60 采集/健康检查修改；[PR56](https://github.com/Dongzl-2117/research/pull/56) 仍未合并，其已验证代码基线为 `2264b07173b920feed74c2fd3713355e7bd0d3d9`（tree `719a0520ad80150bc4f81724bd2b174337820e9a`）。后续文档提交不改变该代码验收口径。PR56 包含严格来源/缓存门槛及只读启动等修改，不能把两个分支的行为和测试成绩混用；每次工作前重新核对远端。
+
+此时 PR56 与 main 有合并冲突，尚未做冲突整合验收。后续整合必须保留双方有效修改，重跑受影响检查；不能将某个分支整文件覆盖另一方，也不要把本文当作直接合并或部署指令。
+
+在自己的开发目录克隆；以下不操作运行中的服务：
+
 ```bash
-pip install --require-hashes -r requirements-dev.lock
-pip install --no-deps -e .
-ruff check .
-pytest
+git clone https://github.com/Dongzl-2117/research.git research-dev
+cd research-dev
+git fetch origin pull/56/head:refs/remotes/origin/pr56
+git switch -c work-pr56 origin/pr56
+git rev-parse HEAD
+git status --short
 ```
 
-依赖的版本和 hash 锁在 `requirements*.lock` 里，改依赖、升级依赖用 `scripts/lock.sh`，见 [docs/deploy.md](docs/deploy.md)。
+代码、锁文件、合成夹具及下述命令都在 GitHub；mini、本地 Linux 或自备 CI 都能使用，云环境只是可选执行场所，不需要某个 AI 的云任务、会话附件或临时报告。数据和运行配置另由本机维护者管理，不从生产目录复制到开发环境。
 
-集成测试需要带 zhparser 的 Postgres，并使用名为 `research_test` 的库。`docker compose up -d db` 之后创建这个库即可。CI 会自己构建数据库镜像并跑这些测试，再用 1500 篇的评测语料跑一遍检索评测，准确率、召回率比基线退步就失败；另外构建应用和 OCR 镜像，认一张样图。
+### 锁定依赖与普通单测
+
+`pyproject.toml` 要求 Python >=3.12；建议与锁文件生成和 CI 一致使用 Python 3.12、普通非 root 用户。补丁版本和 CPU 架构以本机实际为准，不能把某一次 Linux 环境版本当唯一要求。
+
+```bash
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --require-hashes -r requirements-dev.lock
+python -m pip install --no-deps -e .
+python -m pip check
+python -m ruff check .
+```
+
+不要在此 clone 放生产 `.env`、OAuth 文件、原始归档或 `data/`。下面用清洁子进程环境运行单测，临时目录只存测试数据，不继承线上 API key 或模型端点：
+
+```bash
+bash <<'BASH'
+set -euo pipefail
+test ! -e .env || { echo '请使用不含 .env 的独立 clone' >&2; exit 1; }
+test_tmp=$(mktemp -d "${TMPDIR:-/tmp}/research-unit.XXXXXX")
+mkdir -p "$test_tmp/tmp" "$test_tmp/data"
+env -i PATH="$PWD/.venv/bin:$PATH" TMPDIR="$test_tmp/tmp" \
+  DATA_DIR="$test_tmp/data" XAI_OAUTH_TOKEN_PATH="$test_tmp/no-oauth.json" \
+  DATABASE_URL=postgresql://research:test-only@127.0.0.1:1/research_test \
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  python -m pytest tests/unit -q
+BASH
+```
+
+普通单测使用 mock、合成文件和内存 SQLite，不需要生产数据或真实模型。个别安全负例会绑定回环端口；执行环境不允许时，只针对 `test_connection_to_a_private_peer_is_dropped` 明确选择 `-k 'not test_connection_to_a_private_peer_is_dropped'`，报告未运行数量，不能将跳过称为通过。不要改权限来追绿。
+
+`pytest` 不带路径会同时发现集成测试。`tests/conftest.py` 的 `conn` fixture 会运行迁移/种子准备并 **TRUNCATE 多张表、重置 ID、提交事务**；库名守卫不是完整隔离。不得指向正式库或共享测试库，不设置 `ALLOW_TEST_DB=1` 绕过。一次性 PG/pgvector/zhparser 环境与固定回归命令见 [部署文档的测试环境](docs/deploy.md#一次性集成测试环境)。
+
+依赖升级仍走现有 `scripts/lock.sh` 与 [依赖说明](docs/deploy.md#依赖锁死)，不为测试失败擅改锁。合成样本不放真实网友昵称、群名或私人原文；来源作者身份确为规则所需时，单独保留必要作者证据。
+
+### 已有验证与未完成范围
+
+| 代码/环境 | 实测范围 | 不能据此宣称 |
+| --- | --- | --- |
+| PR56 `2264b071`，mini + 隔离 Linux arm64 | 1051 单测通过、1 个回环测试未运行；固定原生 SQL 12 项通过，含 45 条别名对照；全仓 lint 通过；[CI #275](https://github.com/Dongzl-2117/research/actions/runs/40267531048) skipped | 完整 integration、真实模型召回/生成、生产性能或部署已验收 |
+| 旧 `465441a`，Debian 13.6 x86_64 / Python 3.12.14 的补充冒烟 | dev lock 35 项匹配；83 项代表单测、10 个合成页面通过；PG16.15 / pgvector0.6.0 / zhparser2.4 只读运算通过；旧基线 6 个 lint 失败 | 当前 main 或 PR56 最终验收；以上组件版本不是新的唯一版本约束 |
+
+生产部署仍需另行核验历史内容可用性、备份与恢复、运行入口和真实检索质量。严格 PR56 候选与保持旧展示资格的兼容保护方案分开，见 [部署门槛](docs/deploy.md#更新) 和 [历史内容计划](docs/availability-gate-2026-10-23.md)。不要把启动采集、翻译、模型、维护、回填或恢复作为接手后的默认步骤。
