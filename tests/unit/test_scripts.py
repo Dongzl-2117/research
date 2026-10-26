@@ -45,6 +45,12 @@ def test_scripts_parse(path: Path):
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("path", [path for path in SCRIPTS if path.name != "status.sh"], ids=lambda path: path.name)
+def test_scripts_are_executable(path: Path):
+    # 文档里都写成直接跑 scripts/xxx.sh；status.sh 只用 . 引入，不单独跑。
+    assert path.stat().st_mode & 0o100, f"{path.name} 没有执行权限：git update-index --chmod=+x scripts/{path.name}"
+
+
 @pytest.mark.parametrize("path", PLISTS, ids=lambda path: path.name)
 def test_launchd_templates_are_valid_plists(path: Path):
     filled = (
