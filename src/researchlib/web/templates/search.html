@@ -50,6 +50,7 @@
     {% endfor %}
   </ul>
 </div>
+{% if semantic_note %}<p class="filter-note semantic-note">{{ semantic_note }}</p>{% endif %}
 {% if results %}
 <p class="filter-note"><a class="btn ask-btn" href="/ask?{{ ask_query }}">问 AI</a></p>
 {% if first_partial is none %}

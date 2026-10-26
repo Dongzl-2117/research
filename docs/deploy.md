@@ -49,6 +49,16 @@ docker compose exec app research-embed   # 第一次全库回填，之后夜间�
 
 不配 `EMBEDDING_BASE_URL` 时一切照旧，只用关键词检索。原理和参数见 [retrieval.md](retrieval.md)「语义检索」。
 
+看有没有用上：检索页搜一个带具体词的问题（比如「costco 商业模式」），语义这一路没用上或向量没算完时，结果上方有一句说明。`research-embed` 跑完会打印「库里 x/y 块有向量」，算不了而跳过的块列在最后。查询向量连不上时 app 日志里有「语义检索暂停」。
+
+Ollama 闲置 5 分钟就卸下模型，之后的第一次搜索要等它重新加载（几秒，查询向量这时最多等 15 秒）。想让模型常驻（bge-m3 占一两 GB 内存）：
+
+```bash
+launchctl setenv OLLAMA_KEEP_ALIVE -1
+brew services restart ollama
+ollama ps        # 搜一次之后，UNTIL 一列是 Forever 就是常驻了
+```
+
 ## 更新
 
 ```bash

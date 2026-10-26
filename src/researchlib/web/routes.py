@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
+from researchlib import embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
@@ -989,6 +990,7 @@ def search_page(request: Request):
         page = _page_arg(request)
         found = None
         count_map: dict[str, int] = {}
+        semantic_note = ""
         if query:
             found = search_articles(
                 conn, query, scope, sources, limit=SEARCH_PAGE_SIZE, offset=(page - 1) * SEARCH_PAGE_SIZE
@@ -997,6 +999,9 @@ def search_page(request: Request):
                 count_map = full_match_counts(conn, found.query, facet_scope)
             else:
                 count_map = dict(found.counts)
+            # 有具体的词才走语义检索；没用上（没配、没算向量、服务连不上）或向量没算完时说一句。
+            if found.query and found.query.content_terms:
+                semantic_note = embeddings.status_note(conn)
         entity_companies = queries.matching_companies(conn, query) if query and page == 1 else []
         results = []
         terms = found.terms if found else []
@@ -1063,6 +1068,7 @@ def search_page(request: Request):
             "results": results,
             "first_partial": first_partial,
             "partial_total": found.partial if found else 0,
+            "semantic_note": semantic_note,
             "search_terms": terms,
             "total_all": total_all,
             "total": total,

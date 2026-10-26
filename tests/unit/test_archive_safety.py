@@ -125,17 +125,17 @@ def test_ocr_text_order_and_chunks():
     assert order_text(items) == "广告收入  1234 亿元\n主站货币化率见顶"
     # 靠右的气泡是作者自己。左侧昵称仍是网友。画面右缘取所有框的最大 x。
     sided = [
-        [[[20, 80], [120, 80], [120, 110], [20, 110]], "姜禄彦", 0.99],
+        [[[20, 80], [120, 80], [120, 110], [20, 110]], "王小明", 0.99],
         [[[20, 120], [280, 120], [280, 160], [20, 160]], "古茗店效还行，折扣不能再深了", 0.99],
         [[[250, 200], [390, 200], [390, 240], [250, 240]], "同店还有压力", 0.99],
     ]
     ordered = order_text(sided)
     assert ordered.splitlines()[-1].startswith(SIDE_SELF)
-    assert "姜禄彦" in ordered and not ordered.splitlines()[0].startswith(SIDE_SELF)
+    assert "王小明" in ordered and not ordered.splitlines()[0].startswith(SIDE_SELF)
     dialogue = present_ocr_pieces([ordered])
     assert "网友：古茗店效还行，折扣不能再深了" in dialogue
     assert "方伟：同店还有压力" in dialogue
-    assert "姜禄彦" not in dialogue
+    assert "王小明" not in dialogue
     digest = "cd" * 32
     chunks = ocr_chunks([(digest, "拼多多二季度营收同比增长\n广告收入 1234 亿元"), (digest, "重复的图不算第二次"),
                          ("ef" * 32, "装饰")])

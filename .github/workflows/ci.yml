@@ -5,29 +5,34 @@ on:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  # 每周一全量跑一次检索评测：PR 只在改了检索相关文件时才跑评测，间接影响检索的改动靠这一次兜底。
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
 
+# 带上触发方式：每周的定时评测和 main 上的 push 互不取消。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # 每一步都经 tools/ci/annotate.py 跑：失败时最后几十行输出做成一条错误注释，PR 页面上直接能看到原因。
+# 全部放在一个作业里。Actions 按作业计时，每个作业不足一分钟按一分钟算：以前分成四个作业，一次至少 8 分钟，
+# 免费的 2000 分钟五天就用完了。和测试互不依赖的检查用 !cancelled() 照跑，前面失败了也能看到它们的结果。
 jobs:
-  changes:
-    name: Image paths
+  test:
+    name: Tests
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
-    outputs:
-      images: ${{ steps.filter.outputs.images }}
     steps:
-      # PR 用 API 比较整个 PR；main push 用 git 比较本次 push 的所有提交。
       - uses: actions/checkout@v6
-        if: github.event_name == 'push'
 
+      # PR 用 API 比较整个 PR；main push 用 git 比较本次 push 的所有提交。定时和手动触发不比，评测照跑。
       - uses: dorny/paths-filter@v4
         id: filter
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
           base: ${{ github.ref }}
           filters: |
@@ -35,42 +40,27 @@ jobs:
               - 'Dockerfile'
               - 'pyproject.toml'
               - 'requirements*.lock'
-
-  lock:
-    name: Lock files
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      # 锁文件和 pyproject.toml 对不上就失败，日志里打印该有的内容。本机没有 uv，脚本在容器里跑。
-      - name: Lock files match pyproject.toml
-        run: python tools/ci/annotate.py "锁文件" -- scripts/lock.sh --check
-
-      # Mac mini 上的镜像是 arm64：按 arm64 把锁文件里的包下一遍，hash 对不上或者缺 arm64 的包就失败。
-      - name: Lock files install on arm64
-        run: |
-          for lock in requirements.lock requirements-ocr.lock; do
-            python tools/ci/annotate.py "arm64 下载 $lock" -- \
-              pip download --quiet --only-binary=:all: --require-hashes -r "$lock" -d /tmp/arm64 \
-              --python-version 3.12 --implementation cp --abi cp312 \
-              --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 \
-              --platform manylinux_2_24_aarch64 --platform manylinux_2_27_aarch64 \
-              --platform manylinux_2_28_aarch64 --platform manylinux_2_31_aarch64 \
-              --platform manylinux_2_34_aarch64 --platform manylinux_2_35_aarch64 \
-              --platform manylinux_2_36_aarch64
-          done
-
-  test:
-    name: Tests
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
+            retrieval:
+              - 'src/researchlib/retrieval.py'
+              - 'src/researchlib/chunks.py'
+              - 'src/researchlib/textutil.py'
+              - 'src/researchlib/mentions.py'
+              - 'src/researchlib/companies.py'
+              - 'src/researchlib/company_seed.py'
+              - 'src/researchlib/embeddings.py'
+              - 'src/researchlib/empty_answer.py'
+              - 'src/researchlib/sources.py'
+              - 'src/researchlib/db.py'
+              - 'src/researchlib/migrate.py'
+              - 'src/researchlib/ask.py'
+              - 'src/researchlib/web/queries.py'
+              - 'src/researchlib/ingest/duanyongping/attach.py'
+              - 'src/researchlib/migrations/**'
+              - 'docker/postgres/**'
+              - 'config/sources.yaml'
+              - 'tools/retrieval_eval/**'
+              - 'requirements-dev.lock'
+              - '.github/workflows/ci.yml'
 
       - uses: actions/setup-python@v6
         with:
@@ -115,35 +105,55 @@ jobs:
         run: python tools/ci/annotate.py "集成测试" -- pytest tests/integration
 
       # 1500 篇的评测语料（固定随机种子），和 tools/retrieval_eval/baseline.json 比：准确率、召回率不许退步。
+      # 要两分半钟，以前占了一次 CI 的一半，所以只在改了检索相关的文件时跑（见上面的 retrieval），每周一和手动触发时全跑。
       - name: Retrieval eval
+        if: >-
+          steps.filter.outputs.retrieval == 'true' ||
+          github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           python tools/ci/annotate.py "评测语料" -- python tools/retrieval_eval/gen_corpus.py --articles 1500
           python tools/ci/annotate.py "检索评测" -- \
             python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json
 
-  images:
-    name: Images
-    needs: changes
-    if: >-
-      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
-      needs.changes.outputs.images == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
+      # 锁文件和 pyproject.toml 对不上就失败，日志里打印该有的内容。本机没有 uv，脚本在容器里跑。
+      - name: Lock files match pyproject.toml
+        if: ${{ !cancelled() }}
+        run: python tools/ci/annotate.py "锁文件" -- scripts/lock.sh --check
 
+      # Mac mini 上的镜像是 arm64：按 arm64 把锁文件里的包下一遍，hash 对不上或者缺 arm64 的包就失败。
+      - name: Lock files install on arm64
+        if: ${{ !cancelled() }}
+        run: |
+          for lock in requirements.lock requirements-ocr.lock; do
+            python tools/ci/annotate.py "arm64 下载 $lock" -- \
+              pip download --quiet --only-binary=:all: --require-hashes -r "$lock" -d /tmp/arm64 \
+              --python-version 3.12 --implementation cp --abi cp312 \
+              --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 \
+              --platform manylinux_2_24_aarch64 --platform manylinux_2_27_aarch64 \
+              --platform manylinux_2_28_aarch64 --platform manylinux_2_31_aarch64 \
+              --platform manylinux_2_34_aarch64 --platform manylinux_2_35_aarch64 \
+              --platform manylinux_2_36_aarch64
+          done
+
+      # 下面几步只在改了镜像相关的文件时跑。
       - name: Compose file is valid
+        if: ${{ !cancelled() && steps.filter.outputs.images == 'true' }}
         run: |
           docker compose config --quiet
           docker compose --profile ocr config --quiet
 
       # ocr 镜像建在 app 镜像之上，两个都按锁文件（--require-hashes）装依赖。
       - name: Build the app and OCR images
+        id: images
+        if: ${{ !cancelled() && steps.filter.outputs.images == 'true' }}
         run: python3 tools/ci/annotate.py "构建镜像" -- docker build --progress=plain --target ocr -t research-ocr .
 
       - name: Installed packages are consistent
+        if: ${{ !cancelled() && steps.images.outcome == 'success' }}
         run: python3 tools/ci/annotate.py "镜像里的依赖" -- docker run --rm research-ocr pip check
 
       - name: OCR reads the sample image
+        if: ${{ !cancelled() && steps.images.outcome == 'success' }}
         run: |
           cat > /tmp/ocr_smoke.py <<'EOF'
           from pathlib import Path
