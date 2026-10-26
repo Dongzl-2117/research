@@ -358,12 +358,29 @@ def sparkline(series: list[dict]) -> str:
     return "".join(parts)
 
 
-def recent_blurb(view: dict | None, digest: dict | None) -> str:
-    """最近观点展开后的一段话。用库里已有的导读，没有导读再用这条观点的判断。
+def company_names(company: dict) -> list[str]:
+    """认这家公司用的名字：中文名、英文名和别名，两个字以上才算。"""
+    names = [company.get("name_zh"), company.get("name_en"), *(company.get("aliases") or [])]
+    return [name.strip() for name in names if isinstance(name, str) and len(name.strip()) >= 2]
+
+
+def mentions_company(text: str, names: list[str]) -> bool:
+    lowered = (text or "").lower()
+    return any(name.lower() in lowered for name in names)
+
+
+def company_summary(digest: dict | None, names: list[str]) -> str:
+    """这篇的导读，要谈到这家公司才用。公司只是文中的例子时，导读讲的是别的事，放在这家公司下面会误导。"""
+    summary = str((digest or {}).get("summary") or "").strip()
+    return summary if summary and mentions_company(summary, names) else ""
+
+
+def recent_blurb(view: dict | None, digest: dict | None, names: list[str]) -> str:
+    """最近观点展开后的一段话。用库里已有、谈到这家公司的导读，没有再用这条观点的判断。
 
     不在请求里调模型。没有可用文字就返回空串，调用方不要画一个空展开。
     """
-    summary = str((digest or {}).get("summary") or "").strip()
+    summary = company_summary(digest, names)
     if summary:
         return summary
     if not view:

@@ -21,7 +21,7 @@ def backfill_posters(conn, source, docs: list) -> dict:
     """用归档里的话题 JSON 回填已入库文章的发帖人。返回计数。"""
     updated = guests = cleared = missing = 0
     for doc in docs:
-        incoming = assign_poster_role(dict(doc.raw_meta or {}), source.author)
+        incoming = assign_poster_role(dict(doc.raw_meta or {}), source.author, source.poster_names)
         name = str(incoming.get("poster_name") or "").strip()
         poster_id = str(incoming.get("poster_id") or "").strip()
         if not name and not poster_id:
@@ -43,7 +43,7 @@ def backfill_posters(conn, source, docs: list) -> dict:
             meta = dict(row["raw_meta"] or {})
             meta["poster_name"] = name
             meta["poster_id"] = poster_id
-            assign_poster_role(meta, source.author)
+            assign_poster_role(meta, source.author, source.poster_names)
             conn.execute(
                 "UPDATE articles SET raw_meta = %s WHERE id = %s",
                 (Jsonb(meta), row["id"]),

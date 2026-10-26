@@ -232,7 +232,7 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
             stats["ocr_rewash"] += 1
 
         new_title = title
-        if title_needs_repair(title):
+        if title_needs_repair(title, row["body_text"] or ""):
             replacement = stored_zsxq_title(
                 title,
                 row["body_text"] or body_md,

@@ -8,6 +8,8 @@
 - 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句时才用，不用无关的配售截图。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
+- 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
+- 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
 
 读者帖的「读者帖」标在作者行，不写进标题。
 """
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import re
 
+from researchlib.boilerplate import strip_meta
 from researchlib.textutil import argumentative_excerpt
 
 FANGWEI_ZSXQ = "fangwei-zsxq"
@@ -52,6 +55,10 @@ _EDGE_CUT = re.compile(
     r"|(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
 )
 _DATE_FALLBACK = re.compile(r"^(?:\d{4}-\d{2}-\d{2}\s+)?短帖$")
+# 以前入库补标题时读到了归档头那几行，标题成了「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。
+_ARCHIVE_META = re.compile(r"(?:^|\s)-\s*(?:作者|时间|类型|topic_id)\s*[：:]")
+_SENTENCE_STOP = "。！？!?；;"
+_SPACES = re.compile(r"\s+")
 _MISSING_NOTE = re.compile(r"正文(?:为空|没有内容|没有实质|缺失)|标题仅为|只是一张图|没有可摘的正文")
 # 摘要在复述「这篇写了什么、没写什么」，不是帖子自己的那句话。
 _NARRATION = re.compile(
@@ -65,8 +72,11 @@ def repairs_source(source_id: str) -> bool:
     return source_id == FANGWEI_ZSXQ
 
 
-def title_needs_repair(title: str) -> bool:
-    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号，或带省略号。"""
+def title_needs_repair(title: str, body: str = "") -> bool:
+    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号、带省略号，或混进了归档头。
+
+    给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
+    """
     text = (title or "").strip()
     if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
         return True
@@ -74,7 +84,55 @@ def title_needs_repair(title: str) -> bool:
         return True
     if _DATE_ONLY.fullmatch(text):
         return True
-    return False
+    if _ARCHIVE_META.search(text):
+        return True
+    return bool(body) and cut_from_body(text, body)
+
+
+def _without_archive_meta(title: str) -> str:
+    """混进标题的归档头（「 - 作者：… - 时间：…」）切掉，留下前面的原标题。"""
+    match = _ARCHIVE_META.search(title)
+    return title[: match.start()].strip() if match else title
+
+
+def _cut_line(title: str, body: str) -> str:
+    """正文里标题截自的那一行。正文开头不是这几个字，或者这几个字后面就断句了，返回空串。"""
+    head = _SPACES.sub("", _MARKUP.sub("", title or ""))
+    if len(head) < 4:
+        return ""
+    for line in _plain(strip_meta(body or "")).splitlines():
+        flat = _SPACES.sub("", line)
+        if not flat:
+            continue
+        if not flat.startswith(head):
+            return ""
+        rest = flat[len(head) :]
+        if not rest:
+            # 标题自己那一行（标题行和标题一样）：看下一行。
+            continue
+        if _EDGE_CUT.match(rest):
+            # 导出的标题行「前十几个字...」：截断的记号，正文在下面。
+            continue
+        return "" if rest[0] in _SENTENCE_STOP else line
+    return ""
+
+
+def cut_from_body(title: str, body: str) -> bool:
+    """标题是正文第一句开头截下的半句：星球接口的标题只截前十几个字，不带省略号。"""
+    return bool(_cut_line(title, body))
+
+
+def _completed_from_body(title: str, body: str) -> str:
+    """把截断的标题补成它截自的那一句；太长时和别处一样收在逗号处。"""
+    line = _cut_line(title, body)
+    if not line:
+        return ""
+    # 问号、叹号和别处一样留着；句号、分号不留。
+    sentence = re.match(f"[^{_SENTENCE_STOP}]*[{_SENTENCE_STOP}]?", line).group(0).rstrip("；;")
+    fitted = _fit(_prepare(sentence))
+    if not fitted or not _ok(fitted) or _contains_cut(fitted) or title_needs_repair(fitted):
+        return ""
+    return fitted
 
 
 def zsxq_display_title(
@@ -86,9 +144,14 @@ def zsxq_display_title(
     when: str = "",
 ) -> str:
     """给卡片和文章页用的标题。原标题能用就原样返回。"""
-    stored = (title or "").strip()
-    if stored and not title_needs_repair(stored):
+    stored = _without_archive_meta((title or "").strip())
+    # 正文开头的归档头（作者、时间、点赞数）不是帖子的话，不拿来当标题。
+    body = strip_meta(body or "")
+    if stored and not title_needs_repair(stored, body):
         return stored
+    completed = _completed_from_body(stored, body)
+    if completed:
+        return completed
     for sentence in _candidates(body):
         return sentence
     # 去掉省略号后还是一句可用的原标题，优先于摘要和图片里的字。
@@ -131,7 +194,7 @@ def stored_zsxq_title(
     日期加「短帖」这种兜底不写入：下次打开页面还可以用摘要或图片里的字补。
     原标题本来就能用时返回 None。去掉省略号后还剩一句主干，也会写回去，避免库里继续以「…」结尾。
     """
-    if not title_needs_repair(title):
+    if not title_needs_repair(title, body):
         return None
     repaired = zsxq_display_title(
         title or "",

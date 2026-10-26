@@ -153,13 +153,17 @@ def same_person(poster: str, star: str) -> bool:
     return bool(left) and left == right
 
 
-def assign_poster_role(meta: dict, star_name: str) -> dict:
-    """就地写上 poster_role。没有发帖人名字时不猜，旧帖仍按星主处理。"""
+def assign_poster_role(meta: dict, star_name: str, aliases: tuple[str, ...] = ()) -> dict:
+    """就地写上 poster_role。没有发帖人名字时不猜，旧帖仍按星主处理。
+
+    aliases 是星主在平台上的其他显示名（来源配置里的 poster_names），比如星球昵称「方伟Rey」。
+    """
     name = str(meta.get("poster_name") or "").strip()
     if not name:
         meta.pop(POSTER_ROLE, None)
         return meta
-    meta[POSTER_ROLE] = ROLE_OWNER if same_person(name, star_name) else ROLE_GUEST
+    owner = any(same_person(name, star) for star in (star_name, *aliases))
+    meta[POSTER_ROLE] = ROLE_OWNER if owner else ROLE_GUEST
     return meta
 
 

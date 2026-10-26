@@ -11,6 +11,7 @@ from researchlib.ingest.store import store_documents
 from researchlib.ocr import run_ocr
 from researchlib.remote_images import FetchError, fetch_pending
 from researchlib.retrieval import reset_stats_cache, search_articles
+from researchlib.revisions import save_revision
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.app import create_app
 from researchlib.web.queries import Scope
@@ -119,6 +120,84 @@ def test_new_comment_replies_are_not_an_edit(conn, settings):
     # 正文被删成删稿提示、评论还在：照样拦下。
     gone = "该内容已被发布者删除" + comments_section(replies, "")
     assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", gone)]).held == 1
+
+
+ZSXQ_HEADER = """- 作者：方伟Rey
+- 时间：2025-03-12 09:00 (UTC+8)
+- 类型：talk
+- 点赞 {likes} · 评论 0 · 阅读人数 {reads}
+
+"""
+
+
+def test_like_counts_in_the_archive_header_are_not_an_edit(conn, settings):
+    first = ZSXQ_HEADER.format(likes=3, reads=210) + LONG
+    _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:10", first)])
+    article = _article(conn, "zsxq:10")
+    conn.execute(
+        """
+        INSERT INTO article_digests (article_id, content_hash, model, summary, points, tags, prompt_version)
+        VALUES (%s, %s, 'test', '导读：腾讯的广告库存还能抬。', '[]', '[]', 2)
+        """,
+        (article["id"], article["content_hash"]),
+    )
+    conn.commit()
+    # 再抓一次只是点赞、阅读数变了：照常更新这份，不记旧版；摘要跟着新的哈希，不从卡片上消失。
+    again = ZSXQ_HEADER.format(likes=9, reads=616) + LONG
+    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:10", again)]).updated == 1
+    assert _article(conn, "zsxq:10")["body_md"] == again
+    revisions = "SELECT kind FROM article_revisions WHERE article_id = %s ORDER BY id"
+    assert conn.execute(revisions, (article["id"],)).fetchall() == []
+    aligned = """
+        SELECT d.content_hash = a.content_hash AS ok
+        FROM article_digests d JOIN articles a ON a.id = d.article_id WHERE a.id = %s
+    """
+    assert conn.execute(aligned, (article["id"],)).fetchone()["ok"]
+    # 标题换了补法也一样。评论里多了作者的回复，摘要要重写，哈希不跟。
+    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:10", again, title="腾讯的广告库存还在涨")]).updated
+    assert conn.execute(aligned, (article["id"],)).fetchone()["ok"]
+    replied = again + comments_section([("", "补充：视频号的单价还在往上走。")], again)
+    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:10", replied, title="腾讯的广告库存还在涨")]).updated
+    assert not conn.execute(aligned, (article["id"],)).fetchone()["ok"]
+    assert conn.execute(revisions, (article["id"],)).fetchall() == []
+    # 以前因为点赞数变了记下的旧版：文章页不算「改过」，改动页也不列。
+    save_revision(
+        conn,
+        article["id"],
+        kind="previous",
+        content_hash="old-likes",
+        title="腾讯的广告库存",
+        published_at=None,
+        body_md=ZSXQ_HEADER.format(likes=1, reads=90) + LONG,
+        body_text=LONG,
+        raw_meta={},
+    )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article['id']}").text
+        assert 'class="revised"' not in page
+        assert "这篇没有改动" in client.get(f"/articles/{article['id']}/revisions").text
+        # 更早一次作者真改过正文：那一版照常算，只列它这一条。
+        edited = LONG.replace("第 3 段：腾讯", "第 3 段：改过以前，腾讯")
+        save_revision(
+            conn,
+            article["id"],
+            kind="previous",
+            content_hash="real-edit",
+            title="腾讯的广告库存",
+            published_at=None,
+            body_md=ZSXQ_HEADER.format(likes=0, reads=40) + edited,
+            body_text=edited,
+            raw_meta={},
+        )
+        conn.execute(
+            "UPDATE article_revisions SET created_at = now() - interval '2 days' WHERE content_hash = 'real-edit'"
+        )
+        conn.commit()
+        page = client.get(f"/articles/{article['id']}").text
+        assert 'class="revised"' in page and ">改过<" in page
+        diff = client.get(f"/articles/{article['id']}/revisions").text
+        assert "改过以前" in diff and diff.count('<section class="revision"') == 1
 
 
 def test_held_version_does_not_drop_the_images(conn, settings):
