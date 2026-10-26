@@ -246,7 +246,7 @@ docker compose exec app research-doc-tree --source linwenfeng-feishu
 
 页面是 `/sources/linwenfeng-feishu/tree`。飞书不进首页按天（`timeline: false`）。文章里的相对 `.md` 链接渲染时改成 `/articles/<id>`；库里没有的去掉链接，标「未收录」。`__token` 对得上时，文件名改了也能连上。
 
-## AIHOT（可选，只读）
+## AIHOT（已下线，可选，只读）
 
 这不是把 AIHOT 的新闻或日报流水线搬过来。只从它的 Postgres `articles` 表 `SELECT` 正文，按白名单写入本库。
 
@@ -271,9 +271,9 @@ research-ingest-aihot --days 14    # 只读最近 14 天发布的（定时增量
 docker compose exec app research-ingest-aihot --dry-run --days 14
 ```
 
-每次导入（文件归档和 AIHOT 都算）都会在 `app_state` 里记下这个来源最近一次导入的时间、计数和走的哪条路（`import:<来源>`，`origin` 是 `archive` 或 `aihot`）。
+每次导入（文件归档、定时抓取和 AIHOT 都算）都会在 `app_state` 里记下这个来源最近一次导入的时间、计数和走的哪条路（`import:<来源>`，`origin` 是 `archive`、`crawl` 或 `aihot`）。文件导入命令默认记 `archive`，定时抓取脚本加 `--origin crawl`。
 
-首页按天的顶上，只看最近三天确实在从 AIHOT 定时导入的来源：最近一篇离现在比它平时的间隔长很多（三倍以上，至少一周）时，提示一行，并带上最近一次导入的时间。手动导入的归档本来就是旧的，不提示；最近不到 10 篇带日期的来源也不判断。定时导入的来源全都停了时只提示一行「多半是 AIHOT 那边的抓取停了」，不逐个列。不想要这行提示设 `RESEARCH_STALE_BANNER=0`。
+首页按天的顶上，只看最近三天确实在定时导入（`crawl` 或 `aihot`）的来源：最近一篇离现在比它平时的间隔长很多（三倍以上，至少一周）时，提示一行，并带上最近一次导入的时间。手动导入的归档本来就是旧的，不提示；最近不到 10 篇带日期的来源也不判断。定时导入的来源全都停了时只提示一行「多半是抓取本身出了问题」，不逐个列。不想要这行提示设 `RESEARCH_STALE_BANNER=0`。
 
 ## 计数报告
 

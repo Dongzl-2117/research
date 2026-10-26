@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 每天 08:10 和 20:10 方伟公众号增量抓取并入库（极致了接口，DAJIALA_KEY）。由 scripts/install-launchd.sh 安装。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zldong.research.crawl-fangwei-mp</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/crawl-fangwei-mp.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+    <key>REPO</key>
+    <string>__REPO__</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>8</integer>
+      <key>Minute</key>
+      <integer>10</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>20</integer>
+      <key>Minute</key>
+      <integer>10</integer>
+    </dict>
+  </array>
+  <key>StandardOutPath</key>
+  <string>__LOGS__/crawl-fangwei-mp.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGS__/crawl-fangwei-mp.err.log</string>
+</dict>
+</plist>

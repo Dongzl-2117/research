@@ -475,7 +475,7 @@ def recent_publish_times(conn, source_ids: list[str], per_source: int = 31) -> d
 
 
 def last_imports(conn, source_ids: list[str]) -> dict[str, dict]:
-    """每个来源最近一次导入：{来源: {"at": 时间, "origin": "aihot" | "archive"}}。
+    """每个来源最近一次导入：{来源: {"at": 时间, "origin": "crawl" | "aihot" | "archive"}}。
 
     导入命令写进 app_state 的 import:<来源>。早先的记录没有 origin，当作手动导入的归档。
     """
