@@ -27,7 +27,6 @@
   <div><dt>作者</dt><dd><strong class="num">{{ author_total }}</strong> 位</dd></div>
   <div><dt>最近深入</dt><dd>{% if last_deep %}<strong class="num">{{ last_deep }}</strong>{% if last_deep_relative %} <span class="quiet">{{ last_deep_relative }}</span>{% endif %}{% else %}<span class="quiet">还没有</span>{% endif %}</dd></div>
 </dl>
-<p class="notice">公司统计仅计入归属和处理依据可核实的内容；部分历史关联暂不计入。</p>
 {% if chart %}
 <figure class="chart-wrap">
   <figcaption>
@@ -121,7 +120,7 @@
       {% endfor %}
     </nav>
   </div>
-  {% if views.pending %}<p class="quiet views-pending">{% if views.pending_author %}{{ views.pending_author }}{% endif %}还有 <span class="num">{{ views.pending }}</span> 篇谈到{{ company.name_zh }}的文章尚未整理为可核实的观点。</p>{% endif %}
+  {% if views.pending %}<p class="quiet views-pending">{% if views.pending_author %}{{ views.pending_author }}{% endif %}还有 <span class="num">{{ views.pending }}</span> 篇谈到{{ company.name_zh }}的文章没提炼成观点，后台在陆续补，补好会出现在下面。</p>{% endif %}
   {% if views["items"] %}
   <ol class="view-list">
     {% for item in views["items"] %}

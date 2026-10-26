@@ -13,11 +13,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from researchlib import theses as thesis_map
-from researchlib.answer_provenance import public_scope
 from researchlib.ask import ask, start
-from researchlib.attachments import attachment_mapping, rewrite_markdown_attachment_links
 from researchlib.citecheck import check_answer
-from researchlib.eligibility import model_cache_safe_article, project_article
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.retrieval import retrieve, search_articles
 from researchlib.views import FILTERS as VIEW_FILTERS
@@ -25,14 +22,7 @@ from researchlib.views import filter_timeline
 from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
-from researchlib.web.routes import (
-    _author_groups,
-    _safe_saved_answer,
-    _same_origin,
-    active_portfolio,
-    active_sources,
-    database,
-)
+from researchlib.web.routes import _author_groups, _same_origin, active_portfolio, active_sources, database
 from researchlib.web.scoping import parse_int, resolve_scope
 
 api = APIRouter()
@@ -69,17 +59,10 @@ def _article_links(base: str, article_id: int, chunk: int | None = None, anchor:
 
 
 def _summary_item(row, source, base: str, zone: str, *, tags=None, digest=None, snippet: str = "", chunk=None) -> dict:
-    role = row.get("poster_role") or (row.get("raw_meta") or {}).get("poster_role")
-    author = source.author
-    if role == "guest":
-        author = row.get("poster_name") or (row.get("raw_meta") or {}).get("poster_name") or "星球读者"
-    elif role == "unknown":
-        author = "身份未确认"
     return {
         "id": row["id"],
         "title": row["title"],
-        "author": author,
-        "poster_role": role or None,
+        "author": source.author,
         "source": {"id": source.id, "name": source.name},
         "published_at": format_iso(row["published_at"], zone) or None,
         "companies": tags or [],
@@ -154,14 +137,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
         result = search_articles(conn, query, scope, sources, limit=limit, offset=offset)
         total = result.total
         rows = [
-            {
-                "id": hit.article_id,
-                "title": hit.title,
-                "published_at": hit.published_at,
-                "source_id": hit.source_id,
-                "poster_role": hit.poster_role,
-                "poster_name": hit.poster_name,
-            }
+            {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at, "source_id": hit.source_id}
             for hit in result.hits
         ]
         snippets = {
@@ -170,23 +146,16 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
             if hit.passages
         }
         next_offset = offset + limit if offset + limit < result.available else None
-        available = result.available
-        semantic_total = result.semantic_total
     else:
         total = queries.count_scoped_articles(conn, scope)
         rows = queries.scoped_articles(conn, scope, limit, offset)
         snippets = {}
         next_offset = offset + limit if offset + limit < total else None
-        available = total
-        semantic_total = 0
     return {
         "query": query,
         "level": "article",
         "scope": info,
         "total": total,
-        "lexical_total": total,
-        "semantic_total": semantic_total,
-        "available": available,
         "limit": limit,
         "offset": offset,
         "next_offset": next_offset,
@@ -220,13 +189,11 @@ def api_articles(request: Request):
 def article_payload(conn, request: Request, sources, article_id: int) -> dict | None:
     by_id = {source.id: source for source in sources}
     row = queries.get_article(conn, article_id, list(by_id))
-    row = project_article(row) if row is not None else None
     if row is None:
         return None
     settings = request.app.state.settings
     source = by_id[row["source_id"]]
-    cache_safe = model_cache_safe_article(row)
-    digest = queries.digests_for(conn, [article_id]).get(article_id) if cache_safe else None
+    digest = queries.digests_for(conn, [article_id]).get(article_id)
     return {
         "id": row["id"],
         "title": row["title"],
@@ -252,12 +219,9 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
         ),
         "chunks": [
             {"chunk": c["ord"], "heading": c["heading"], "text": c["body"], "lang": c["lang"] or None}
-            for c in (queries.article_chunks(conn, article_id) if cache_safe else [])
+            for c in queries.article_chunks(conn, article_id)
         ],
-        "identity_notice": (row.get("raw_meta") or {}).get("identity_notice") or None,
-        "body_markdown": rewrite_markdown_attachment_links(
-            row["body_md"], attachment_mapping(row.get("raw_meta") or {}, article_id, row["source_id"]),
-        ),
+        "body_markdown": row["body_md"],
         "links": _article_links(_base(request), article_id),
         "_trust": TRUST,
     }
@@ -542,14 +506,14 @@ async def api_ask(request: Request):
         else:
             # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
             result = start(conn, request.app.state.settings, question, scope, sources)
-    return _json({**result, "scope": public_scope(result.get("scope")), "_trust": TRUST})
+    return _json({**result, "_trust": TRUST})
 
 
 @api.get("/api/v1/answers/{answer_id}")
 def api_answer(request: Request, answer_id: int):
     with database(request) as conn:
         sources = active_sources(request, conn)
-        row = _safe_saved_answer(conn, queries.get_answer(conn, answer_id), sources)
+        row = queries.get_answer(conn, answer_id)
     if row is None:
         raise HTTPException(status_code=404)
     checks = []
@@ -559,7 +523,7 @@ def api_answer(request: Request, answer_id: int):
         {
             "id": row["id"],
             "question": row["question"],
-            "scope": public_scope(row["scope"]),
+            "scope": row["scope"],
             "status": row["status"],
             "error": row["error"] or None,
             "answer": row["answer"],

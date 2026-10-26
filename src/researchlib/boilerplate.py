@@ -57,19 +57,6 @@ _CTA = re.compile(
     r"赞赏码|请赞赏|打赏|推荐阅读|往期(?:回顾|推荐)|"
     r"欢迎关注(?:公众号|本号)|欢迎转发|欢迎加入"
 )
-_PROMO_CHUNK_HEADER = re.compile(
-    r"^[\s#*—–\-·•_=~]*(?:扫码|长按|点击)[^。！？!?\n]{0,30}加入"
-    r"(?:会员群|微信群|交流群|社群|知识星球)[\s—–\-·•_=~]*$"
-)
-_PROMO_INVITATION = re.compile(
-    r"(?:适合|欢迎)[^，,。！？!?]{0,80}(?:朋友|读者|同学|会员)加入"
-    r"(?:[，,](?:"
-    r"(?:我们|群里|本群|群内)(?:只)?(?:在[^，,。！？!?]{0,20})?(?:讨论|交流)[^，,。！？!?]{1,140}"
-    r"|拒绝[^，,。！？!?]{1,25}"
-    r"|(?:同时你也|你也|也)?可以(?:选择)?(?:直接)?私信我[^，,。！？!?]{0,20}"
-    r"))*"
-)
-_PROMO_CONTACT = re.compile(r"^[（(]?备注[:：][^（）()。！？!?\n]{1,40}[）)]?$")
 _QR_NAME = re.compile(r"二维码|qrcode|qr[-_ ]?code|(?:^|[\\/_.-])qr(?:[\\/_.-]|$)", re.I)
 _MD_IMAGE_FULL = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _HTML_IMAGE_TAG = re.compile(r"<img\b[^>]*>", re.I)
@@ -167,29 +154,6 @@ def is_cta_line(line: str) -> bool:
         return True
     match = _CTA.search(text)
     return bool(match and match.start() <= 6 and len(compact) <= 120)
-
-
-def is_publisher_promo_chunk(text: str, *, heading: str = "") -> bool:
-    """Recognize standalone recruitment blocks, without rewriting source text.
-
-    Require a direct QR/click instruction and an entirely recruitment-only body.
-    Ambiguous text, quotations and discussions of memberships remain readable.
-    """
-    if re.search(r"引用|摘录|案例|引文|原话", heading):
-        return False
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if not lines or len(text) > 600 or not _PROMO_CHUNK_HEADER.fullmatch(lines[0]):
-        return False
-    if len(lines) == 1:
-        return True
-    rest = " ".join(lines[1:])
-    if not re.search(r"私信我|加微信[:：]|微信号[:：]|备注[:：]", rest):
-        return False
-    sentences = [sentence.strip() for sentence in re.split(r"[。！？!?]+", rest) if sentence.strip()]
-    return bool(sentences) and all(
-        (_PROMO_INVITATION.fullmatch(sentence) and not re.search(r"\d|[%％]", sentence))
-        or _PROMO_CONTACT.fullmatch(sentence) for sentence in sentences
-    )
 
 
 def _qr_only(line: str) -> bool:

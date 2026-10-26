@@ -20,7 +20,6 @@
       <span aria-hidden="true">·</span><a href="/ask?article={{ article.id }}">问这篇</a>
     </p>
     <h1>{{ display_title or article.title }}</h1>
-    {% if identity_notice %}<p class="article-note" role="status">{{ identity_notice }}</p>{% endif %}
     {% if empty_answer %}
     <p class="article-note">{% if suppressed_reason == "source_paused" %}这个来源暂不展示。这篇不出现在按天、作者列表和检索里。{% elif suppressed_reason == "short_post" %}短帖，暂只收长文。这篇不出现在按天、作者列表和检索里。{% elif suppressed_reason == "no_judgment" %}没有段永平的判断。这篇不出现在按天、作者列表和检索里。{% elif suppressed_reason == "weak_judgment" %}没有买、贵、持有或生意原则。这篇不出现在按天、作者列表和检索里。{% elif suppressed_reason == "misattributed" %}这是英文粘贴，不是段永平的判断。这篇不出现在按天、作者列表和检索里。{% else %}无有效回答。这篇不出现在按天、作者列表和检索里。{% endif %}</p>
     {% endif %}
@@ -33,14 +32,10 @@
       {% if digest_points %}<ul class="article-digest-points">{% for point in digest_points %}<li>{{ point }}</li>{% endfor %}</ul>{% endif %}
     </section>
     {% endif %}
-    {% if quoted_marked %}
-    <p class="body-note" role="note">{% if quoted_omitted %}已定位含省略标记的摘录；省略部分未核对。{% else %}已在正文中定位所引片段。{% endif %}高亮只表示文字位置，不代表回答的整合或推断已获证。</p>
-    {% endif %}
     {% if quoted and not quoted_marked %}
-    <aside class="quoted" aria-label="{% if quoted.lang == 'ocr' %}图片里的字{% else %}待核对的引用片段{% endif %}">
+    <aside class="quoted" aria-label="引用的段落">
       {% if quoted.lang == "ocr" %}<p class="quoted-label">图片里的字 · <a href="#{{ quoted.anchor }}">看这张图</a></p>
       {% elif quoted.heading %}<p class="quoted-label">{{ quoted.heading }}</p>{% endif %}
-      {% if quoted.lang != 'ocr' %}<p class="quoted-label">未能在当前正文中完整定位；以下片段尚待核对。</p>{% endif %}
       <p>{{ quoted.body }}</p>
     </aside>
     {% endif %}

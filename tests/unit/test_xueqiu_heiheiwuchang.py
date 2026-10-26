@@ -13,7 +13,7 @@ SAMPLES = ("355280496", "382428373", "412690019")
 EXPECTED = {
     "355280496": {
         "title": "拼多多为什么是一个超越Costco的零售业创新？",
-        "when": None,  # Fixture explicitly says 修改于, not original publication.
+        "when": (2025, 10, 2, 0, 53),
         "url": "https://xueqiu.com/7342779920/355280496",
         "chars": 8938,
     },
@@ -25,7 +25,7 @@ EXPECTED = {
     },
     "412690019": {
         "title": "增长是无关紧要的特质",
-        "when": None,  # Fixture explicitly says 修改于, not original publication.
+        "when": (2026, 10, 17, 14, 26),
         "url": "https://xueqiu.com/7342779920/412690019",
         "chars": 584,
     },
@@ -84,25 +84,17 @@ def test_sample_posts_parse_with_stable_ids(tmp_path: Path):
         assert str(front["id"]) == post_id
         assert front["author"] == "黑黑无常"
         assert front["url"] == expect["url"]
-        assert front["published_at_basis"] == raw_post["published_at_basis"]
+        assert front["date"] == raw_post["published_at"]
+        assert front["published"] == raw_post["published_at"]
         assert body.rstrip("\n") == raw_post["body_text"]
         assert len(raw_post["body_text"]) == expect["chars"]
         assert "只有一句" not in doc.body_md
         assert "h-char" not in doc.body_md
         assert "来源：雪球App" not in body
-        if expect["when"] is None:
-            assert "date" not in front and "published" not in front
-            assert front["source_updated_at"] == raw_post["published_at"]
-            assert doc.published_at is None
-            assert doc.raw_meta["time_known"] is False
-            assert doc.raw_meta["publication_time_status"] == "unknown"
-        else:
-            assert front["date"] == raw_post["published_at"]
-            assert front["published"] == raw_post["published_at"]
-            when = doc.published_at.astimezone(SHANGHAI)
-            assert (when.year, when.month, when.day, when.hour, when.minute) == expect["when"]
-            assert doc.raw_meta["time_known"] is True
-            assert doc.raw_meta["date_source"] == "frontmatter"
+        when = doc.published_at.astimezone(SHANGHAI)
+        assert (when.year, when.month, when.day, when.hour, when.minute) == expect["when"]
+        assert doc.raw_meta["time_known"] is True
+        assert doc.raw_meta["date_source"] == "frontmatter"
 
     (out / "382428373.md").rename(out / "renamed-temu.md")
     renamed, rename_errors, rename_files, _images = parse_archive(out, tmp_path / "work-renamed", id_mode="path")

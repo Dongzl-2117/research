@@ -7,12 +7,12 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from owner_fixtures import load_browsing_sample as load_sample
 
 from researchlib.ingest.aihot import import_aihot
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.ingest.wechat import main as wechat_main
+from researchlib.seed import load_sample
 from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI
 from researchlib.web.app import create_app
@@ -59,7 +59,7 @@ def test_sample_library_pages(conn, settings):
         assert home.text.find("1月15日") < home.text.find("9月9日")
         assert home.text.find("晚间短记") < home.text.find("晨间短记") < home.text.find("年初备忘")
         assert home.text.find("21:40") < home.text.find("09:05") < home.text.find("08:30")
-        filtered = client.get("/", params={"source": "gudujinhuati"})
+        filtered = client.get("/", params={"source": "chengfengpolang"})
         assert "亚马逊云和广告" in filtered.text
         assert "晚间短记" not in filtered.text
 
@@ -67,7 +67,7 @@ def test_sample_library_pages(conn, settings):
         assert authors.status_code == 200
         assert "按作者查看" not in authors.text
         assert "方伟" in authors.text
-        assert "孤独进化体" in authors.text
+        assert "乘风破浪" in authors.text
         assert "林文丰飞书" in authors.text
         author = client.get("/authors/方伟")
         assert author.status_code == 200
@@ -81,7 +81,7 @@ def test_sample_library_pages(conn, settings):
         assert search.status_code == 200
         assert "<mark>腾讯</mark>" in search.text
         assert "方伟</span><strong>3</strong>" in search.text
-        assert "孤独进化体</span><strong>0</strong>" in search.text
+        assert "乘风破浪</span><strong>0</strong>" in search.text
         assert 'class="pills search-pills"' in search.text
         by_author = client.get("/search", params={"q": "方伟"})
         assert "晚间短记" in by_author.text

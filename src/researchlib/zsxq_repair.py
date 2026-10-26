@@ -5,8 +5,8 @@
 - 图片文字：星球和公众号里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。
   粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重跑 RapidOCR。
 
-改标题或评论会改 `content_hash`；旧观点、摘要、译文保持原哈希，不能冒充当前输入的缓存。
-需要更新的派生结果应另行显式处理。不要加 `--gap`，也不要全库。
+改标题或评论会改 `content_hash`，同时把观点、摘要、译文的哈希对齐，避免夜间任务把这几千篇再抽一遍。
+说话人改过的那几篇要另抽观点，命令会在最后印出来。不要加 `--gap`，也不要全库。
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from researchlib.empty_answer import is_suppressed
 from researchlib.ingest.store import _body_text
 from researchlib.mentions import CompanyMatcher, load_company_rows, mentions_for_document, replace_mentions
 from researchlib.ocr import compose_ocr_text, hash_ocr
+from researchlib.retime import _realign
 from researchlib.textutil import SHANGHAI, content_hash
 from researchlib.wechat_dialogue import (
     _is_author_badge,
@@ -280,8 +281,7 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
             (new_title, new_md, body_text, digest, new_ocr, hash_ocr(new_ocr), article_id),
         )
         if digest != (row["content_hash"] or ""):
-            # Retitling or removing unproven comments changes model inputs.
-            # Leave derived caches stale instead of laundering their hashes.
+            _realign(conn, article_id, {row["content_hash"] or ""}, digest)
             if body_text != (row["body_text"] or ""):
                 store_fingerprint(conn, article_id, digest, fingerprint(body_text))
         if new_title != title or new_md != body_md:

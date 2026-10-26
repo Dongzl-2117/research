@@ -45,7 +45,7 @@ def run_markdown_ingest(
     try:
         with tempfile.TemporaryDirectory(prefix="research-ingest-") as tmp:
             docs, errors, archive_files, image_count = parse_archive(
-                args.input, Path(tmp), id_mode=id_mode, source_id=source.id, source_kind=source.kind
+                args.input, Path(tmp), id_mode=id_mode
             )
             report = store_documents(
                 conn,

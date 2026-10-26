@@ -4,23 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
 
-import markdown
-
-from researchlib.attachments import collect_attachment_refs
-from researchlib.eligibility import (
-    IDENTITY_KEY,
-    TRUSTED_OWNERS,
-    identity_for_topic,
-    project_article,
-    topic_comments,
-    topic_group_id,
-    topic_poster,
-    verified_replies,
-)
 from researchlib.ingest.archive import ImageIndex, iter_files, materialize
 from researchlib.ingest.model import ParsedDoc
 from researchlib.render import image_destination
@@ -29,9 +14,7 @@ from researchlib.textutil import (
     basename,
     derive_title,
     normalize_newlines,
-    parse_datetime,
     resolve_published_at,
-    source_time_metadata,
     split_frontmatter,
 )
 from researchlib.zsxq_title import stored_zsxq_title
@@ -56,7 +39,6 @@ _FRONTMATTER_DATE_KEYS = (
     "datetime",
     "created",
     "created_at",
-    "created_time",
     "create_time",
     "createTime",
     "ctime",
@@ -71,89 +53,6 @@ def archive_path_year(relative_id: str) -> int | None:
 
 def _scrub_frontmatter_dates(frontmatter: dict) -> dict:
     return {key: value for key, value in frontmatter.items() if key not in _FRONTMATTER_DATE_KEYS}
-
-
-def _linked_raw_time_hints(original: str, path: Path, roots: list[Path], frontmatter: dict) -> dict:
-    """Read time evidence only from an explicit, contained, identity-matched raw link.
-
-    No basename lookup, directory scan or remote fallback authenticates a raw
-    record. An unverifiable raw link supplies no evidence; it does not negate
-    an independent frontmatter publication date.
-    """
-    identity = {
-        key: str(frontmatter[key]).strip() for key in ("id", "sn")
-        if isinstance(frontmatter.get(key), (str, int)) and str(frontmatter[key]).strip()
-        and not isinstance(frontmatter[key], bool)
-    }
-    if not identity or ".json" not in original.lower() or "raw" not in original:
-        return {}
-
-    class Links(HTMLParser):
-        def __init__(self):
-            super().__init__(convert_charrefs=True)
-            self.blocked = []
-            self.hrefs = []
-
-        def handle_starttag(self, tag, attrs):
-            if tag in {"code", "pre", "script", "style", "textarea"}:
-                self.blocked.append(tag)
-            elif tag == "a" and not self.blocked:
-                self.hrefs.append(dict(attrs).get("href") or "")
-
-        def handle_endtag(self, tag):
-            if tag in self.blocked:
-                index = len(self.blocked) - 1 - self.blocked[::-1].index(tag)
-                del self.blocked[index:]
-
-    links = Links()
-    _, body = split_frontmatter(original)
-    links.feed(markdown.markdown(body, extensions=["extra"]))
-    links.close()
-    owner = _owning_root(path, roots)
-    found = []
-    for href in links.hrefs:
-        try:
-            parts = urlsplit(href)
-        except ValueError:
-            continue
-        if parts.scheme or parts.netloc or parts.query or parts.fragment:
-            continue
-        dest = unquote(parts.path).replace("\\", "/")
-        relative = Path(dest)
-        if relative.is_absolute() or ":" in dest or "\x00" in dest:
-            continue
-        if "raw" not in relative.parts or relative.suffix.lower() != ".json":
-            continue
-        candidate = path.parent / relative
-        try:
-            if owner is None or not candidate.resolve().is_relative_to(owner.resolve()):
-                continue
-            if any(part.is_symlink() for part in (candidate, *candidate.parents)):
-                continue
-            if not candidate.is_file() or candidate.stat().st_size > 4 * 1024 * 1024:
-                continue
-            raw = json.loads(candidate.read_text(encoding="utf-8-sig"))
-        except (OSError, RuntimeError, UnicodeError, ValueError):
-            continue
-        if not isinstance(raw, dict) or not all(
-            isinstance(raw.get(key), (str, int)) and not isinstance(raw[key], bool)
-            and str(raw[key]).strip() == value
-            for key, value in identity.items()
-        ):
-            continue
-        hints = source_time_metadata(raw)
-        # These fields are needed for resolution, but are never copied wholesale
-        # into stored raw_meta. The basis determines whether they mean publication.
-        for key in _FRONTMATTER_DATE_KEYS:
-            value = raw.get(key)
-            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-                if parse_datetime(value):
-                    hints[key] = value
-        if hints and hints not in found:
-            found.append(hints)
-    if len(found) == 1:
-        return found[0]
-    return {"published_at_basis": "unknown"} if found else {}
 
 
 
@@ -275,28 +174,92 @@ def zsxq_text(raw: object) -> str:
 
 
 def _poster(node: dict) -> dict:
-    """记录实际发帖/回答账户；这一步不认定其为星主。"""
-    owner = topic_poster(node)
-    name = str(owner.get("name") or "").strip()
-    user_id = owner.get("user_id")
-    if name or user_id not in (None, ""):
-        return {"poster_name": name, "poster_id": "" if user_id in (None, "") else str(user_id)}
+    """这条话题是谁发的。问答看回答的人（星主），普通帖看 talk 的作者（可能是网友）。"""
+    for key in ("talk", "answer", "task", "solution"):
+        child = node.get(key)
+        if isinstance(child, dict) and isinstance(child.get("owner"), dict):
+            owner = child["owner"]
+            name = str(owner.get("name") or "").strip()
+            user_id = owner.get("user_id")
+            if name or user_id not in (None, ""):
+                return {
+                    "poster_name": name,
+                    "poster_id": "" if user_id in (None, "") else str(user_id),
+                }
+    owner = node.get("owner")
+    if isinstance(owner, dict):
+        name = str(owner.get("name") or "").strip()
+        user_id = owner.get("user_id")
+        if name or user_id not in (None, ""):
+            return {
+                "poster_name": name,
+                "poster_id": "" if user_id in (None, "") else str(user_id),
+            }
     return {}
 
 
+def _owner_id(node: dict) -> str | None:
+    """这条话题是谁发的：普通话题看 talk 的作者，问答看回答的人（星主）。"""
+    for key in ("talk", "answer", "task", "solution"):
+        child = node.get(key)
+        if isinstance(child, dict) and isinstance(child.get("owner"), dict):
+            user = child["owner"].get("user_id")
+            if user not in (None, ""):
+                return str(user)
+    owner = node.get("owner")
+    if isinstance(owner, dict) and owner.get("user_id") not in (None, ""):
+        return str(owner["user_id"])
+    return None
+
+
 def _comments(node: dict) -> list[dict]:
-    """完整 comments 优先于 show_comments 预览，保留明确父评论。"""
-    return topic_comments(node)
+    """话题下的评论，楼中楼摊平，按原来的顺序。"""
+    found: list[dict] = []
+    for key in ("show_comments", "comments"):
+        items = node.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            found.append(item)
+            for reply in item.get("replied_comments") or []:
+                if isinstance(reply, dict):
+                    found.append(reply)
+        if found:
+            break
+    return found
 
 
-def author_replies(node: dict, *, owner_account_id: str | None = None) -> list[tuple[str, str]]:
-    """只读经 group/source 绑定核实的星主回复；话题作者不是星主证据。"""
-    if owner_account_id is None:
-        group = topic_group_id(node)
-        owner_account_id = next((owner for gid, owner in TRUSTED_OWNERS.values() if gid == group), None)
-    if not owner_account_id:
+def _user(comment: dict, key: str) -> str | None:
+    value = comment.get(key)
+    if isinstance(value, dict) and value.get("user_id") not in (None, ""):
+        return str(value["user_id"])
+    return None
+
+
+def author_replies(node: dict) -> list[tuple[str, str]]:
+    """作者本人在评论里的回复：[(被回复的那条读者评论, 作者的回复)]，没有被回复的那条就是空串。"""
+    owner = _owner_id(node)
+    if owner is None:
         return []
-    return [(reply["question"], reply["text"]) for reply in verified_replies(node, str(owner_account_id))]
+    comments = _comments(node)
+    pairs: list[tuple[str, str]] = []
+    for index, comment in enumerate(comments):
+        if _user(comment, "owner") != owner:
+            continue
+        reply = zsxq_text(comment.get("text"))
+        if not reply:
+            continue
+        question = ""
+        target = _user(comment, "repliee")
+        if target and target != owner:
+            for earlier in reversed(comments[:index]):
+                if _user(earlier, "owner") == target:
+                    question = zsxq_text(earlier.get("text"))
+                    break
+        pairs.append((question, reply))
+    return pairs
 
 
 def comments_section(pairs: list[tuple[str, str]], body: str) -> str:
@@ -316,7 +279,7 @@ def comments_section(pairs: list[tuple[str, str]], body: str) -> str:
     return COMMENTS_MARKER + "\n\n".join(lines) + "\n"
 
 
-def extract_zsxq_topics(data: object, *, source_id: str = "") -> list[dict]:
+def extract_zsxq_topics(data: object) -> list[dict]:
     """一个 JSON 里可能是单条话题，也可能是嵌套的 topics 列表。"""
     topics: list[dict] = []
     seen: set[str] = set()
@@ -328,17 +291,12 @@ def extract_zsxq_topics(data: object, *, source_id: str = "") -> list[dict]:
         if topic_id in seen:
             continue
         seen.add(topic_id)
-        inferred_source = source_id or next(
-            (sid for sid, (gid, _owner) in TRUSTED_OWNERS.items() if gid == topic_group_id(node)), ""
-        )
         topics.append(
             {
                 "topic_id": topic_id,
                 "create_time": _topic_time(node),
                 "title": _topic_title(node),
                 "replies": author_replies(node),
-                IDENTITY_KEY: identity_for_topic(node, inferred_source),
-                "group_id": topic_group_id(node),
                 **_poster(node),
             }
         )
@@ -369,22 +327,14 @@ def _keep_topic(index: dict[str, dict], key: str, meta: dict) -> None:
         index[key] = meta
 
 
-def load_raw_index(raw_files: list[Path], *, source_id: str = "") -> dict[str, dict]:
-    from researchlib.zsxq_archive_comments import bind_comment_archive, load_comment_archives
-
+def load_raw_index(raw_files: list[Path]) -> dict[str, dict]:
     index: dict[str, dict] = {}
-    archives = load_comment_archives(raw_files)
     for path in raw_files:
-        if path.parent.name == "comments" and path.parent.parent.name == "raw":
-            continue
         try:
             data = json.loads(read_text_file_safe(path))
         except json.JSONDecodeError:
             continue
-        for node in _iter_dicts(data):
-            if "topic_id" in node or "topicId" in node:
-                bind_comment_archive(node, path, source_id, archives)
-        metas = extract_zsxq_topics(data, source_id=source_id)
+        metas = extract_zsxq_topics(data)
         if not metas:
             continue
         _keep_topic(index, path.stem, metas[0])
@@ -453,7 +403,6 @@ def parse_markdown_files(
     images: ImageIndex,
     id_mode: str,
     raw_index: dict[str, dict] | None = None,
-    source_kind: str = "",
 ) -> tuple[list[ParsedDoc], list[str]]:
     docs: list[ParsedDoc] = []
     errors: list[str] = []
@@ -464,18 +413,9 @@ def parse_markdown_files(
         except OSError as exc:
             errors.append(f"{path}: {exc}")
             continue
-        image_order = None
-        if source_kind == "wechat_mp":
-            from researchlib.ingest.wechat_image_order import restore_image_order
-
-            original, image_order = restore_image_order(normalize_newlines(original), path, roots)
         frontmatter, body = split_frontmatter(original)
         body = normalize_newlines(body)
         raw_meta = _match_raw(path, raw_index or {})
-        if id_mode == "path":
-            raw_meta = {
-                **raw_meta, **_linked_raw_time_hints(original, path, roots, frontmatter)
-            }
         title = derive_title(frontmatter, body, path.name, raw_meta.get("title"))
         if id_mode == "zsxq":
             # 导出标题是空的、被省略号截断，或只是正文开头的十几个字时，能从正文收成一句就写入。
@@ -535,27 +475,25 @@ def parse_markdown_files(
             seen_refs.add(dest)
             refs.append((dest, images.resolve(ref, path)))
         full_md = normalize_newlines(original)
-        # ZSXQ projection happens after scalar identity evidence is assembled,
-        # so account-proved original sections can be distinguished from a
-        # forged heading inside an old exported guest comment.
+        if id_mode == "zsxq":
+            # 评论区只留方伟；其他人的仍在 inbox / raw，可逆。
+            from researchlib.zsxq_comments import filter_host_comments_markdown
+
+            full_md = filter_host_comments_markdown(full_md)
         stored_meta: dict = {
             "format": "markdown",
             "parent": parent,
             "filename": path.name,
         }
-        if image_order is not None:
-            stored_meta["wechat_image_order"] = image_order
-        stored_meta.update(source_time_metadata(frontmatter))
-        stored_meta.update(source_time_metadata(raw_meta))
-        if stored_meta.get("published_at_basis") or stored_meta.get("source_updated_at"):
-            stored_meta["publication_time_status"] = "known" if published is not None else "unknown"
-        if id_mode == "zsxq":
-            stored_meta["source_kind"] = "zsxq"
-            stored_meta["group_id"] = str(raw_meta.get("group_id") or "")
-            if isinstance(raw_meta.get(IDENTITY_KEY), dict):
-                stored_meta[IDENTITY_KEY] = raw_meta[IDENTITY_KEY]
+        if id_mode == "zsxq" and raw_meta.get("replies"):
+            # 星主在评论里回答读者的话往往比正文更直接：接在正文后面，进检索和问库。
+            section = comments_section(raw_meta["replies"], full_md)
+            if section:
+                full_md = full_md.rstrip("\n") + "\n" + section
+                stored_meta["comment_replies"] = section.count("作者答：") + section.count("作者补充：")
         topic_id = raw_meta.get("topic_id") or (header_topic_id(body) if id_mode == "zsxq" else None)
         if topic_id:
+            # 去重按「同一来源、同一话题号」认同一篇。没读到 raw/ 时从归档头里取。
             stored_meta["topic_id"] = topic_id
         poster_name = str(raw_meta.get("poster_name") or "").strip()
         if poster_name:
@@ -583,18 +521,6 @@ def parse_markdown_files(
             stored_meta["off_timeline"] = True
         if frontmatter.get("off_views") is True:
             stored_meta["off_views"] = True
-        if id_mode == "zsxq":
-            identity = stored_meta.get(IDENTITY_KEY) or {}
-            projected = project_article({
-                "source_id": identity.get("source_id", ""), "source_kind": "zsxq",
-                "title": title, "body_md": full_md, "raw_meta": stored_meta,
-            })
-            if projected is not None:
-                full_md, title, stored_meta = projected["body_md"], projected["title"], projected["raw_meta"]
-                stored_meta[IDENTITY_KEY]["projection_md"] = full_md
-                stored_meta["comment_replies"] = len(identity.get("replies") or [])
-                present_refs = {image_destination(ref) for ref in image_refs_in(full_md)}
-                refs = [(ref, candidate) for ref, candidate in refs if ref in present_refs]
         docs.append(
             ParsedDoc(
                 external_id=external_id[:500],
@@ -603,10 +529,6 @@ def parse_markdown_files(
                 body_md=full_md,
                 raw_meta=stored_meta,
                 image_refs=refs,
-                attachment_refs=(
-                    [] if (stored_meta.get(IDENTITY_KEY) or {}).get("kind") == "owner_reply_context"
-                    else collect_attachment_refs(full_md, path, roots)
-                ),
             )
         )
     _dedupe_ids(docs, errors)
@@ -628,9 +550,7 @@ def _owning_root(path: Path, roots: list[Path]) -> Path | None:
     return owners[0]
 
 
-def parse_archive(
-    input_path: Path, work: Path, *, id_mode: str, source_id: str = "", source_kind: str = ""
-) -> tuple[list[ParsedDoc], list[str], int, int]:
+def parse_archive(input_path: Path, work: Path, *, id_mode: str) -> tuple[list[ParsedDoc], list[str], int, int]:
     roots = materialize(input_path, work)
     markdown, images, raw_json = iter_files(roots)
     if id_mode == "zsxq":
@@ -646,7 +566,7 @@ def parse_archive(
             if chosen:
                 markdown = chosen
         markdown = [path for path in markdown if not is_index_markdown(path)]
-        raw_index = load_raw_index(select_raw_json(raw_json), source_id=source_id)
+        raw_index = load_raw_index(select_raw_json(raw_json))
     else:
         raw_index = {}
     index = ImageIndex(images, roots)
@@ -656,6 +576,5 @@ def parse_archive(
         images=index,
         id_mode=id_mode,
         raw_index=raw_index,
-        source_kind=source_kind,
     )
     return docs, errors, len(markdown), len(images)

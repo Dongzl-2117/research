@@ -6,31 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 
-from researchlib.eligibility import (
-    eligibility_sql,
-    model_cache_safe_article,
-    model_cache_safe_sql,
-    project_article,
-)
-from researchlib.empty_answer import visible_sql as _visible_sql
-from researchlib.model_inputs import cached_ocr_safe_sql, ocr_cache_safe_article, ocr_cache_safe_sql
-
-
-def visible_sql(alias: str = "") -> str:
-    """Every public list uses the same visibility and verified identity boundary."""
-    return f"({_visible_sql(alias)} AND {eligibility_sql(alias)})"
-
-
-def _project_rows(rows) -> list[dict]:
-    found = []
-    for row in rows:
-        projected = project_article(row)
-        if projected is None:
-            continue
-        if projected.get("identity_kind"):
-            projected["poster_role"] = projected["raw_meta"]["poster_role"]
-        found.append(projected)
-    return found
+from researchlib.empty_answer import visible_sql
 
 
 @dataclass(frozen=True)
@@ -66,7 +42,7 @@ def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
     if scope.company_id is not None:
         parts.append(
             f"EXISTS (SELECT 1 FROM article_mentions sm WHERE sm.article_id = {alias}.id"
-            f" AND sm.company_id = %(scope_company)s AND {model_cache_safe_sql(alias)})"
+            " AND sm.company_id = %(scope_company)s)"
         )
         params["scope_company"] = scope.company_id
     if scope.date_from is not None:
@@ -90,16 +66,16 @@ a.raw_meta->>'create_time' AS clock_hint,
 a.raw_meta->>'date_source' AS date_source,
 a.raw_meta->>'time_known' AS time_known,
 a.raw_meta->>'poster_name' AS poster_name,
-a.raw_meta->>'poster_role' AS poster_role,
-a.raw_meta, a.body_md
+a.raw_meta->>'poster_role' AS poster_role
 """
 
 
 def _owner_clause(owner_only: bool, alias: str = "") -> str:
-    """Verified owner replies belong to their owner, under the same public policy."""
+    """作者统计和作者页只算星主原创。网友帖留在来源时间线里，但不记到星主名下。"""
     if not owner_only:
         return ""
-    return " AND " + eligibility_sql(alias)
+    column = f"{alias}.raw_meta" if alias else "raw_meta"
+    return f" AND coalesce({column}->>'poster_role', '') <> 'guest'"
 
 
 def _shanghai_day(column: str = "published_at") -> str:
@@ -154,7 +130,7 @@ def list_day_page(
         return []
     extra = _listed(include_off_timeline, owner_only=owner_only)
     extra_a = _listed(include_off_timeline, "a", owner_only=owner_only)
-    return _project_rows(conn.execute(
+    return conn.execute(
         f"""
         WITH days AS (
           SELECT {_shanghai_day()} AS day
@@ -176,7 +152,7 @@ def list_day_page(
         ORDER BY a.published_at DESC, a.id DESC
         """,
         (source_ids, limit, offset, source_ids),
-    ).fetchall())
+    ).fetchall()
 
 
 def list_undated_articles(
@@ -191,11 +167,11 @@ def list_undated_articles(
     if not source_ids:
         return []
     extra = _listed(include_off_timeline, owner_only=owner_only)
-    return _project_rows(conn.execute(
+    return conn.execute(
         f"""
         SELECT id, source_id, title, published_at, body_text,
                raw_meta->>'poster_name' AS poster_name,
-               raw_meta->>'poster_role' AS poster_role, raw_meta, body_md
+               raw_meta->>'poster_role' AS poster_role
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NULL
@@ -204,7 +180,7 @@ def list_undated_articles(
         LIMIT %s OFFSET %s
         """,
         (source_ids, limit, offset),
-    ).fetchall())
+    ).fetchall()
 
 
 def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
@@ -224,30 +200,28 @@ def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
 
 
 def get_article(conn, article_id: int, source_ids: list[str]):
-    row = conn.execute(
-        f"""
+    return conn.execute(
+        """
         SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash,
                duplicate_of, ocr_hash
         FROM articles
-        WHERE id = %s AND source_id = ANY(%s) AND {visible_sql()}
+        WHERE id = %s AND source_id = ANY(%s)
         """,
         (article_id, source_ids),
     ).fetchone()
-    return project_article(row) if row else None
 
 
 def same_article_elsewhere(conn, article_id: int, duplicate_of: int | None, source_ids: list[str]):
     """同一篇的其他份：这篇是重复时给主版本，是主版本时给指向它的重复。"""
     if duplicate_of is not None:
         return conn.execute(
-            f"SELECT id, source_id, true AS canonical FROM articles"
-            f" WHERE id = %s AND source_id = ANY(%s) AND {visible_sql()}",
+            "SELECT id, source_id, true AS canonical FROM articles WHERE id = %s AND source_id = ANY(%s)",
             (duplicate_of, source_ids),
         ).fetchall()
     return conn.execute(
-        f"""
+        """
         SELECT id, source_id, false AS canonical FROM articles
-        WHERE duplicate_of = %s AND source_id = ANY(%s) AND {visible_sql()}
+        WHERE duplicate_of = %s AND source_id = ANY(%s)
         ORDER BY id
         """,
         (article_id, source_ids),
@@ -256,11 +230,10 @@ def same_article_elsewhere(conn, article_id: int, duplicate_of: int | None, sour
 
 def count_duplicate_groups(conn, source_ids: list[str], only: int | None = None) -> int:
     row = conn.execute(
-        f"""
+        """
         SELECT count(DISTINCT d.duplicate_of) AS n
         FROM articles d JOIN articles c ON c.id = d.duplicate_of
-        WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s)
-          AND {visible_sql("d")} AND {visible_sql("c")} AND (%s::bigint IS NULL OR c.id = %s::bigint)
+        WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s) AND (%s::bigint IS NULL OR c.id = %s::bigint)
         """,
         (source_ids, source_ids, only, only),
     ).fetchone()
@@ -270,45 +243,39 @@ def count_duplicate_groups(conn, source_ids: list[str], only: int | None = None)
 def duplicate_groups(conn, source_ids: list[str], limit: int, offset: int, only: int | None = None) -> list[dict]:
     """去重核对页：每组一个主版本和指向它的重复，最近认出的在前。"""
     heads = conn.execute(
-        f"""
-        SELECT c.id, c.title, c.source_id, c.published_at, c.body_text, c.body_md, c.raw_meta,
-               max(d.duplicate_marked_at) AS marked
+        """
+        SELECT c.id, c.title, c.source_id, c.published_at, c.body_text, max(d.duplicate_marked_at) AS marked
         FROM articles d JOIN articles c ON c.id = d.duplicate_of
-        WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s)
-          AND {visible_sql("d")} AND {visible_sql("c")} AND (%s::bigint IS NULL OR c.id = %s::bigint)
+        WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s) AND (%s::bigint IS NULL OR c.id = %s::bigint)
         GROUP BY c.id
         ORDER BY max(d.duplicate_marked_at) DESC NULLS LAST, c.published_at DESC NULLS LAST, c.id DESC
         LIMIT %s OFFSET %s
         """,
         (source_ids, source_ids, only, only, limit, offset),
     ).fetchall()
-    heads = _project_rows(heads)
     if not heads:
         return []
     members: dict[int, list] = {}
     for row in conn.execute(
-        f"""
-        SELECT id, title, source_id, published_at, body_text, body_md, raw_meta, duplicate_of, duplicate_marked_at
+        """
+        SELECT id, title, source_id, published_at, body_text, duplicate_of, duplicate_marked_at
         FROM articles
-        WHERE duplicate_of = ANY(%s) AND source_id = ANY(%s) AND {visible_sql()}
+        WHERE duplicate_of = ANY(%s) AND source_id = ANY(%s)
         ORDER BY id
         """,
         ([head["id"] for head in heads], source_ids),
     ).fetchall():
-        projected = project_article(row)
-        if projected is not None:
-            members.setdefault(row["duplicate_of"], []).append(projected)
+        members.setdefault(row["duplicate_of"], []).append(row)
     return [{"canonical": head, "duplicates": members.get(head["id"], [])} for head in heads]
 
 
 def article_images(conn, article_id: int):
     return conn.execute(
-        f"""
-        SELECT i.original_ref, i.storage_path
-        FROM article_images i JOIN articles a ON a.id = i.article_id
-        WHERE i.article_id = %s AND {visible_sql("a")}
-          AND coalesce(a.raw_meta->'zsxq_identity'->>'kind', '') <> 'owner_reply_context'
-        ORDER BY i.id
+        """
+        SELECT original_ref, storage_path
+        FROM article_images
+        WHERE article_id = %s
+        ORDER BY id
         """,
         (article_id,),
     ).fetchall()
@@ -317,14 +284,11 @@ def article_images(conn, article_id: int):
 def image_ocr_texts(conn, article_id: int) -> dict[str, str]:
     """这篇本地图已经识别出的字。按内容哈希，阅读页现查，新识别的刷新就能看见。"""
     rows = conn.execute(
-        f"""
+        """
         SELECT i.content_hash, t.text
         FROM article_images i
         JOIN image_texts t ON t.content_hash = i.content_hash
-        JOIN articles a ON a.id = i.article_id
-        WHERE i.article_id = %s AND btrim(t.text) <> '' AND {model_cache_safe_sql("a")}
-          AND {ocr_cache_safe_sql("a")}
-          AND coalesce(a.raw_meta->'zsxq_identity'->>'kind', '') <> 'owner_reply_context'
+        WHERE i.article_id = %s AND btrim(t.text) <> ''
         """,
         (article_id,),
     ).fetchall()
@@ -346,7 +310,7 @@ def sibling_articles(conn, source_id: str, article_id: int, parent: str):
     ).fetchall()
 
 
-def sample_state(conn, source_ids: list[str]) -> str | None:
+def sample_state(conn, source_ids: list[str]) -> bool:
     row = conn.execute(
         """
         SELECT count(*) AS n,
@@ -356,10 +320,7 @@ def sample_state(conn, source_ids: list[str]) -> str | None:
         """,
         (source_ids,),
     ).fetchone()
-    samples = int(row["samples"])
-    if not samples:
-        return None
-    return "all" if int(row["n"]) == samples else "mixed"
+    return int(row["n"]) > 0 and int(row["n"]) == int(row["samples"])
 
 
 def scoped_articles(conn, scope: Scope, limit: int, offset: int = 0):
@@ -367,18 +328,16 @@ def scoped_articles(conn, scope: Scope, limit: int, offset: int = 0):
     if not scope.source_ids:
         return []
     where, params = scope_clause(scope)
-    return _project_rows(conn.execute(
+    return conn.execute(
         f"""
-        SELECT a.id, a.source_id, a.title, a.published_at, left(a.body_text, 2000) AS body_text,
-               a.body_md, a.raw_meta, a.raw_meta->>'poster_name' AS poster_name,
-               a.raw_meta->>'poster_role' AS poster_role
+        SELECT a.id, a.source_id, a.title, a.published_at, left(a.body_text, 2000) AS body_text
         FROM articles a
         WHERE {where}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %(limit)s OFFSET %(offset)s
         """,
         {"limit": limit, "offset": offset, **params},
-    ).fetchall())
+    ).fetchall()
 
 
 def count_scoped_articles(conn, scope: Scope) -> int:
@@ -394,12 +353,11 @@ def article_tags(conn, article_ids: list[int], per_article: int = 4) -> dict[int
     if not article_ids:
         return {}
     rows = conn.execute(
-        f"""
+        """
         SELECT m.article_id, c.id, c.name_zh, c.name_en, c.aliases, m.depth, m.hit_count
         FROM article_mentions m
         JOIN companies c ON c.id = m.company_id
-        JOIN articles a ON a.id = m.article_id
-        WHERE m.article_id = ANY(%s) AND {model_cache_safe_sql("a")} AND m.depth <> 'passing'
+        WHERE m.article_id = ANY(%s) AND m.depth <> 'passing'
         ORDER BY m.article_id,
                  CASE m.depth WHEN 'title' THEN 0 WHEN 'whole' THEN 1 ELSE 2 END,
                  m.hit_count DESC, c.name_zh
@@ -424,12 +382,11 @@ def article_tags(conn, article_ids: list[int], per_article: int = 4) -> dict[int
 
 def article_mentions(conn, article_id: int):
     return conn.execute(
-        f"""
+        """
         SELECT c.id, c.name_zh, c.ticker, c.market, m.depth, m.hit_count
         FROM article_mentions m
         JOIN companies c ON c.id = m.company_id
-        JOIN articles a ON a.id = m.article_id
-        WHERE m.article_id = %s AND {model_cache_safe_sql("a")}
+        WHERE m.article_id = %s
         ORDER BY CASE m.depth WHEN 'title' THEN 0 WHEN 'whole' THEN 1 WHEN 'section' THEN 2 ELSE 3 END,
                  m.hit_count DESC, c.name_zh
         """,
@@ -438,40 +395,30 @@ def article_mentions(conn, article_id: int):
 
 
 def title_materials(conn, article_ids: list[int]) -> dict[int, dict]:
-    """Only verified projected body/compatible OCR can expand a display title."""
+    """补方伟星球标题时用：正文开头和图片里的字。只在标题是空的或被省略号截断时查。"""
     if not article_ids:
         return {}
     rows = conn.execute(
-        f"""
-        SELECT id, source_id, title, body_md, body_text, raw_meta, coalesce(ocr_text, '') AS ocr_text
-        FROM articles WHERE id = ANY(%s) AND {visible_sql()}
+        """
+        SELECT id, left(body_text, 2000) AS body_text, left(coalesce(ocr_text, ''), 2000) AS ocr_text
+        FROM articles
+        WHERE id = ANY(%s)
         """,
         (article_ids,),
     ).fetchall()
-    result = {}
-    for row in rows:
-        projected = project_article(row)
-        if projected is not None:
-            result[row["id"]] = {
-                "id": row["id"], "body_text": projected.get("body_text", "")[:2000],
-                "ocr_text": (
-                    (row.get("ocr_text") or "")[:2000]
-                    if model_cache_safe_article(row) and ocr_cache_safe_article(row) else ""
-                ),
-            }
-    return result
+    return {row["id"]: row for row in rows}
 
 
 def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
-    """Read compatible summaries; outdated identity/OCR evidence awaits explicit processing."""
+    """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。提示词版本旧的照常返回，调用方再排队重写。"""
     if not article_ids:
         return {}
     rows = conn.execute(
-        f"""
+        """
         SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version, d.head_only, d.ocr_hash
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
-        WHERE d.article_id = ANY(%s) AND {model_cache_safe_sql("a")} AND {cached_ocr_safe_sql("a", "d")}
+        WHERE d.article_id = ANY(%s)
         """,
         (article_ids,),
     ).fetchall()
@@ -479,12 +426,8 @@ def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
 
 
 def article_chunks(conn, article_id: int):
-    from researchlib.eligibility import chunk_provenance_sql
-
     return conn.execute(
-        f"SELECT c.ord, c.heading, c.body, c.lang, c.anchor FROM article_chunks c"
-        " JOIN articles a ON a.id = c.article_id"
-        f" WHERE c.article_id = %s AND {visible_sql('a')} AND {chunk_provenance_sql()} ORDER BY c.ord",
+        "SELECT ord, heading, body, lang, anchor FROM article_chunks WHERE article_id = %s ORDER BY ord",
         (article_id,),
     ).fetchall()
 
@@ -497,6 +440,7 @@ def source_stats(conn, source_ids: list[str]) -> dict[str, dict]:
         SELECT source_id, count(*)::int AS n, min(published_at) AS first_at, max(published_at) AS last_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
+          AND coalesce(raw_meta->>'poster_role', '') <> 'guest'
           AND {visible_sql()}
         GROUP BY source_id
         """,
@@ -560,6 +504,7 @@ def latest_articles(conn, source_ids: list[str], limit: int = 3):
         SELECT id, source_id, title, published_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
+          AND coalesce(raw_meta->>'poster_role', '') <> 'guest'
           AND {visible_sql()}
         ORDER BY published_at DESC NULLS LAST, id DESC
         LIMIT %s
@@ -576,10 +521,10 @@ def top_companies(conn, source_ids: list[str], limit: int = 12):
         f"""
         SELECT c.id, c.name_zh, count(*)::int AS n, max(a.published_at) AS last_at
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         JOIN companies c ON c.id = m.company_id
         WHERE a.source_id = ANY(%s) AND m.depth <> 'passing'
+          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
         GROUP BY c.id, c.name_zh
         ORDER BY n DESC, last_at DESC NULLS LAST, c.name_zh
         LIMIT %s
@@ -652,7 +597,7 @@ def articles_on_day(conn, scope: Scope):
     if not scope.source_ids:
         return []
     where, params = scope_clause(scope)
-    return _project_rows(conn.execute(
+    return conn.execute(
         f"""
         SELECT a.id, a.source_id, a.title, a.published_at, a.body_text,
                {_CLOCK_FIELDS}
@@ -662,7 +607,7 @@ def articles_on_day(conn, scope: Scope):
         ORDER BY a.published_at DESC, a.id DESC
         """,
         params,
-    ).fetchall())
+    ).fetchall()
 
 
 def neighbor_days(conn, scope: Scope, day: date) -> tuple[date | None, date | None]:
@@ -723,9 +668,9 @@ def day_answer(conn, day: date, source_ids: list[str], company_id: int | None):
 def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 500):
     if not source_ids:
         return []
-    return _project_rows(conn.execute(
+    return conn.execute(
         f"""
-        SELECT id, source_id, title, published_at, left(body_text, 2000) AS body_text, raw_meta, body_md
+        SELECT id, source_id, title, published_at, left(body_text, 2000) AS body_text
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
@@ -735,7 +680,7 @@ def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 5
         LIMIT %s
         """,
         (source_ids, date_from, date_to, limit),
-    ).fetchall())
+    ).fetchall()
 
 
 def company_author_counts(conn, company_id: int, source_ids: list[str]):
@@ -743,8 +688,7 @@ def company_author_counts(conn, company_id: int, source_ids: list[str]):
         f"""
         SELECT a.source_id, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
         GROUP BY a.source_id
         """,
@@ -779,8 +723,7 @@ def list_companies(conn, source_ids: list[str]):
                max(a.published_at) AS last_at
         FROM companies c
         LEFT JOIN article_mentions m ON m.company_id = c.id
-        LEFT JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL
-          AND {visible_sql("a")} AND {model_cache_safe_sql("a")} AND a.source_id = ANY(%s)
+        LEFT JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND a.source_id = ANY(%s)
         GROUP BY c.id
         ORDER BY mentions DESC, c.name_zh
         """,
@@ -804,8 +747,7 @@ def company_depth_counts(conn, company_id: int, source_ids: list[str]):
         f"""
         SELECT m.depth, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
         GROUP BY m.depth
         """,
@@ -822,8 +764,7 @@ def company_months(conn, company_id: int, source_ids: list[str]):
                ) AS ym,
                count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s)
           AND a.published_at IS NOT NULL
@@ -849,8 +790,7 @@ def count_company_articles(conn, company_id: int, source_ids: list[str], depth: 
         f"""
         SELECT count(*) AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s){clause}
         """,
@@ -861,21 +801,20 @@ def count_company_articles(conn, company_id: int, source_ids: list[str], depth: 
 
 def company_articles(conn, company_id: int, source_ids: list[str], depth: str | None, limit: int, offset: int):
     clause, extra = _depth_filter(depth)
-    return _project_rows(conn.execute(
+    return conn.execute(
         f"""
         SELECT a.id, a.title, a.published_at, a.source_id, m.depth, m.hit_count,
                left(a.body_text, 20000) AS body_text,
                {_CLOCK_FIELDS}
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s){clause}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s OFFSET %s
         """,
         (company_id, source_ids, *extra, limit, offset),
-    ).fetchall())
+    ).fetchall()
 
 
 def company_month_depths(conn, company_id: int, source_ids: list[str]):
@@ -886,8 +825,7 @@ def company_month_depths(conn, company_id: int, source_ids: list[str]):
                count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep,
                count(*) FILTER (WHERE m.depth = 'passing')::int AS passing
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s) AND a.published_at IS NOT NULL
         GROUP BY 1
         ORDER BY 1
@@ -906,9 +844,9 @@ def company_source_stats(conn, company_id: int, source_ids: list[str]):
                max(a.published_at) FILTER (WHERE m.depth <> 'passing') AS last_deep,
                max(a.published_at) AS last_at
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
+          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
         GROUP BY a.source_id
         """,
         (company_id, source_ids),
@@ -929,8 +867,7 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
                count(*)::int AS total,
                count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
         GROUP BY m.company_id, a.source_id
         """,
@@ -945,8 +882,7 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
         f"""
         SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at IS NOT NULL
         ORDER BY m.company_id, a.published_at DESC, a.id DESC
@@ -960,8 +896,7 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
                to_char(date_trunc('month', a.published_at AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM') AS ym,
                count(*)::int AS deep
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s) AND m.depth <> 'passing'
           AND a.published_at >= date_trunc('month', now()) - make_interval(months => %s)
         GROUP BY 1, 2
@@ -985,7 +920,8 @@ def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list
           JOIN articles a ON a.id = v.article_id
           JOIN companies c ON c.id = v.company_id
           WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
-              AND {visible_sql("a")}
+            AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
+            AND {visible_sql("a")}
           ORDER BY c.id, a.published_at DESC NULLS LAST, a.id DESC
         ) recent
         ORDER BY published_at DESC NULLS LAST, id DESC
@@ -1004,8 +940,7 @@ def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: i
         f"""
         SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at IS NOT NULL
         ORDER BY m.company_id, a.published_at DESC, a.id DESC
@@ -1017,8 +952,7 @@ def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: i
         f"""
         SELECT m.company_id, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND a.duplicate_of IS NULL AND {visible_sql("a")}
-          AND {model_cache_safe_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at >= now() - make_interval(days => %s)
         GROUP BY m.company_id
@@ -1041,11 +975,10 @@ def companies_by_name(conn, names: list[str]) -> dict[str, dict]:
 
 def get_translation(conn, article_id: int) -> dict | None:
     return conn.execute(
-        f"""
-        SELECT t.article_id, t.content_hash, t.title_zh, t.body_html, t.body_text, t.complete, t.origin, t.segments
-        FROM article_translations t JOIN articles a ON a.id = t.article_id
-        WHERE t.article_id = %s AND t.lang = 'zh' AND t.content_hash = a.content_hash
-          AND {model_cache_safe_sql("a")}
+        """
+        SELECT article_id, content_hash, title_zh, body_html, body_text, complete, origin, segments
+        FROM article_translations
+        WHERE article_id = %s AND lang = 'zh'
         """,
         (article_id,),
     ).fetchone()
