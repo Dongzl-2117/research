@@ -53,7 +53,16 @@ env -i PATH="$PWD/.venv/bin:$PATH" TMPDIR="$test_root/tmp" \
   DATABASE_URL="postgresql://research:test-only@127.0.0.1:$test_port/research_test" \
   PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=1000' \
   PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  python -m pytest tests/integration/test_long_and_semantic.py tests/integration/test_pr65_vector_guards.py -q
+  python -m pytest \
+    tests/integration/test_long_and_semantic.py \
+    tests/integration/test_pr65_vector_guards.py \
+    tests/integration/test_translation_search.py \
+    tests/integration/test_ingest_schedule.py \
+    tests/integration/test_merge_cache_boundaries.py \
+    tests/integration/test_duplicates.py::test_same_zsxq_topic_is_one_post_even_when_the_text_drifted \
+    tests/integration/test_duplicates.py::test_topic_migration_backfills_old_rows_from_the_archive_header \
+    tests/integration/test_duplicates.py::test_live_zsxq_copy_does_not_beat_a_longer_article_elsewhere \
+    tests/integration/test_reading_fixes.py::test_recent_views_skip_a_digest_about_another_company -q
 # 检查结果后只删除本脚本创建的项目/测试卷；失败时也用这一完整项目与文件参数清理。
 "${test_compose[@]}" down -v
 printf '测试记录目录：%s\n清理项目：%s\n' "$test_root" "$test_project"
@@ -117,17 +126,11 @@ docker compose exec app research-embed   # 第一次全库回填，之后夜间�
 
 看有没有用上：检索页搜一个带具体词的问题（比如「costco 商业模式」），语义这一路没用上或向量没算完时，结果上方有一句说明。`research-embed` 跑完会打印「库里 x/y 块有向量」，算不了而跳过的块列在最后。查询向量连不上时 app 日志里有「语义检索暂停」。
 
-Ollama 闲置 5 分钟就卸下模型，之后的第一次搜索要等它重新加载（几秒，查询向量这时最多等 15 秒）。想让模型常驻（bge-m3 占一两 GB 内存）：
-
-```bash
-launchctl setenv OLLAMA_KEEP_ALIVE -1
-brew services restart ollama
-ollama ps        # 搜一次之后，UNTIL 一列是 Forever 就是常驻了
-```
+服务卸载闲置模型后，首次查询可能需要重新加载。本组合保留主线的有界冷启动等待：冷态最多 15 秒，普通或刚失败后的查询最多 4 秒，详见检索文档。是否常驻模型涉及额外内存和服务配置，由维护者另行评估；本轮没有调整 keep-alive、重启模型服务或做真实模型性能验收，这不是部署的默认步骤。
 
 ## 更新
 
-PR65 已 squash 合并到 main；PR56 的选择性整合代码已推送为 `2264b071`，但 PR56 尚未合并、生产未按该候选切换。此处只读启动等行为描述针对 PR56；main 的启动/页面副作用应以实际代码核对，不能对着现库试启动。
+本轮 PR56 整合 `main c57705e`（含 PR65/60/66/67），保留严格账户/来源/缓存边界和 HTML 清理、采集调度等有效修复。PR56 尚未合并，生产未按该候选切换；此处只读启动等行为针对 PR56，不能对着现库试启动。
 PR56 保留严格身份与缓存门槛，不能当作保持旧展示资格的兼容只读保护方案的等价替换。
 已有无维护翻译恢复入口绑定的是兼容候选的文件哈希；不能直接用于本整合候选，需另行绑定并验证，旧入口和旧镜像保留不变。
 本次没有运行模型、生产回填或六篇定向写入；旧缓存和 OCR 证明缺口没有自动补齐。不得把单测通过当作这些部署条件已满足。
@@ -135,14 +138,7 @@ PR56 保留严格身份与缓存门槛，不能当作保持旧展示资格的兼
 PR 56 的身份与缓存规则存在历史内容可用性前置条件，见 [有界核查与定向修复计划](availability-gate-2026-10-23.md)。
 先核对历史星主回复和 OCR 的恢复范围，再决定上线；构建镜像或运行维护命令不会自动补足这些证明。
 
-```bash
-git pull
-docker compose build app
-# 先确认备份，再显式应用所需数据库初始化/升级。
-docker compose run --rm app research-maintain
-docker compose up -d app
-scripts/install-launchd.sh   # 定时任务有变化时（比如新加的夜间补齐），带上原来的 BACKUP_DIR 再跑一次
-```
+既有生产库不能把「拉取代码 → research-maintain → 重启 → 安装定时任务」作为默认升级流程。先确定目标提交与实际运行入口、可恢复备份、兼容回滚制品和历史可用性，再分别确认代码切换与所需数据操作。`021_zsxq_topic_ids.sql` 含全表元数据回填；本轮只在一次性空测试库执行迁移，不代表获准在现库运行。六篇定向修复不包含该全表操作。不要在接手或测试时安装任务、暂停/恢复翻译、回填、重建或执行维护。
 
 图片文字（OCR）用单独的镜像，要用时另外构建，见 [ocr.md](ocr.md)。
 

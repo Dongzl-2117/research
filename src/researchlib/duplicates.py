@@ -9,8 +9,13 @@ AIHOT 导入的外部 id 是 aihot:<原 id>，文件归档用相对路径或 top
 （且至少 3 句）出现在另一篇里，两篇长度也差不多（短帖要求更接近），才算同一篇。
 同一位作者很多篇都有的句子（页脚、免责声明、口头禅）不算。
 
-主版本：正文更全更长的（转发时加了点评的那版优先）、再看图片、发得早的、id 小的。其余的 duplicate_of 指向它，
-段落块、公司提及和观点都删掉，不进首页、作者页、公司页、检索和问库；文章页还能打开。
+知识星球同一来源、同一话题号（raw_meta.topic_id）的直接算同一篇，不比指纹：10 月 20 日以前导入的帖子没读到 raw/，
+外部 id 是文件名，后来按话题号又导入一遍；新的一份带着评论回复、归档头里的点赞数也变了，指纹常常对不上。
+
+主版本：正文更全更长的（转发时加了点评的那版优先）、再看图片、发得早的、id 小的。星球同一话题的几份里，
+外部 id 就是话题号的那份优先：以后导入更新的是它。其余的 duplicate_of 指向它，
+段落块、公司提及从索引移除，不进首页、作者页、公司页、检索和问库；文章页还能打开。
+同话题的旧观点只在输入与证明完全一致时转移，否则保留在原重复记录，不刷新其哈希。
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ import re
 import sys
 from dataclasses import dataclass
 
-from researchlib.eligibility import is_eligible_article, project_article
+from researchlib.eligibility import is_eligible_article, model_cache_safe_sql, project_article
 
 logger = logging.getLogger("researchlib.duplicates")
 
@@ -40,7 +45,7 @@ SHORT_LENGTH_RATIO = 0.8
 COMMON_DF = 6
 # 两篇都有发布时间时，只在前后这么多天里找同一篇。
 WINDOW_DAYS = 7
-VERSION = "2"
+VERSION = "3"
 STATE_KEY = "dedupe_version"
 
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
@@ -122,8 +127,9 @@ def store_fingerprint(conn, article_id: int, content_hash: str, found: Fingerpri
 def _article(conn, article_id: int):
     return conn.execute(
         """
-        SELECT a.id, a.source_id, a.body_md, a.body_text, a.raw_meta,
-               a.content_hash, a.duplicate_of, a.published_at, a.keep_separate,
+        SELECT a.id, a.source_id, a.external_id, a.raw_meta->>'topic_id' AS topic_id,
+               a.body_md, a.body_text, a.raw_meta, a.content_hash, a.duplicate_of,
+               a.published_at, a.keep_separate,
                s.author,
                (SELECT count(*) FROM article_images i WHERE i.article_id = a.id) AS images
         FROM articles a JOIN sources s ON s.id = a.source_id
@@ -188,14 +194,38 @@ def _candidates(
     return [row["article_id"] for row in rows]
 
 
+def _same_topic(conn, article_id: int) -> list[int]:
+    """同一来源、同一星球话题号的其他份。"""
+    rows = conn.execute(
+        """
+        SELECT other.id
+        FROM articles a
+        JOIN articles other
+          ON other.source_id = a.source_id AND other.id <> a.id
+         AND other.raw_meta->>'topic_id' = a.raw_meta->>'topic_id'
+        WHERE a.id = %s AND a.raw_meta ? 'topic_id' AND NOT other.keep_separate
+        ORDER BY other.id
+        """,
+        (article_id,),
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
+def _post_key(row) -> tuple[str, str] | None:
+    """星球帖的身份：来源加话题号。没有话题号的返回 None。"""
+    return (row["source_id"], row.get("topic_id")) if row.get("topic_id") else None
+
+
 def duplicates_of(
     conn, article_id: int, found: Fingerprint, author: str, published=None, source_id: str | None = None
 ) -> list[int]:
-    """同一作者里和这篇是同一篇的文章（核对过的）。"""
+    """同一作者里和这篇是同一篇的文章（核对过的，或同一星球话题）。"""
     # 候选阶段只用本篇句子滤套话；逐篇核对时和对方句子并起来再滤，避免长短文不对称。
     common_seed = _common_hashes(conn, author, sorted(found.sentences)[:400])
-    matches = []
+    matches = _same_topic(conn, article_id)
     for other_id in _candidates(conn, article_id, author, found.sketch, common_seed, published, source_id):
+        if other_id in matches:
+            continue
         other = conn.execute("SELECT body_text FROM articles WHERE id = %s", (other_id,)).fetchone()
         if other is None:
             continue
@@ -207,7 +237,7 @@ def duplicates_of(
 
 
 def _ranker(rows):
-    """越小越该当主版本：明显更全的正文优先（长度不到最长那份的四分之三算不全，比如半截稿）；
+    """越小越该当主版本：星球同一话题的旧份排最后；明显更全的正文优先（长度不到最长那份的四分之三算不全，比如半截稿）；
     再比正文更长的（星球转发时加了点评的那版要留下，不能因为图少被藏掉）；
     再比图片多的；发得早的；先入库的。"""
     eligible = {row["id"]: is_eligible_article(row) for row in rows}
@@ -217,11 +247,15 @@ def _ranker(rows):
         for row in rows
     }
     longest = max(lengths.values(), default=0) or 1
+    # 星球同一话题：外部 id 就是话题号的那份以后还会被导入更新，按文件名入库的旧份停在旧样子。
+    # 只和自己那份比；和别的来源（比如公众号全文）照常比长短。
+    live = {_post_key(row) for row in rows if row.get("topic_id") and row.get("external_id") == row.get("topic_id")}
 
     def rank(row) -> tuple:
         published = row["published_at"]
         return (
             not eligible[row["id"]],
+            _post_key(row) in live and row.get("external_id") != row.get("topic_id"),
             lengths[row["id"]] < 0.75 * longest,
             -lengths[row["id"]],
             -int(row["images"] or 0),
@@ -233,9 +267,37 @@ def _ranker(rows):
     return rank
 
 
-def _strip(conn, article_id: int) -> None:
-    for table in ("article_chunks", "article_mentions", "company_views"):
+def _strip(conn, article_id: int, *, keep_views: bool = False) -> None:
+    tables = ("article_chunks", "article_mentions") if keep_views else (
+        "article_chunks", "article_mentions", "company_views"
+    )
+    for table in tables:
         conn.execute(f"DELETE FROM {table} WHERE article_id = %s", (article_id,))
+
+
+def _hand_over_views(conn, old_id: int, canonical_id: int) -> int:
+    """Only transfer proven identical inputs; a topic ID cannot refresh a cache.
+
+    Unmatched views remain attached to the old duplicate for review. Their
+    hashes and provenance must not be rewritten to endorse the newer copy.
+    """
+    return conn.execute(
+        f"""
+        UPDATE company_views v
+        SET article_id = a.id
+        FROM articles a, articles old
+        WHERE a.id = %s AND old.id = %s AND v.article_id = old.id
+          AND old.source_id = a.source_id AND old.content_hash = a.content_hash
+          AND v.content_hash = old.content_hash
+          AND old.title = a.title AND old.published_at IS NOT DISTINCT FROM a.published_at
+          AND old.body_md = a.body_md AND old.body_text = a.body_text
+          AND old.ocr_hash IS NOT DISTINCT FROM a.ocr_hash
+          AND old.raw_meta IS NOT DISTINCT FROM a.raw_meta
+          AND {model_cache_safe_sql('old')} AND {model_cache_safe_sql('a')}
+          AND NOT EXISTS (SELECT 1 FROM company_views t WHERE t.article_id = a.id AND t.company_id = v.company_id)
+        """,
+        (canonical_id, old_id),
+    ).rowcount
 
 
 def _restore(conn, article_id: int, matcher) -> None:
@@ -287,6 +349,11 @@ def apply_cluster(conn, members: set[int], matcher) -> tuple[int, list[int]]:
         common = _common_hashes(conn, author, sorted(can_fp.sentences | other_fp.sentences)[:800])
         if same_article(can_fp, other_fp, common):
             direct.add(row["id"])
+    # 星球同一话题的几份是同一帖：其中一份是主版本或它的重复，其余几份也是，不用再比指纹。
+    posts = {_post_key(by_id[item]) for item in direct} - {None}
+    for row in rows:
+        if not row["keep_separate"] and _post_key(row) in posts:
+            direct.add(row["id"])
     became: list[int] = []
     for row in rows:
         if row["id"] in direct:
@@ -307,7 +374,10 @@ def apply_cluster(conn, members: set[int], matcher) -> tuple[int, list[int]]:
                 _restore(conn, row["id"], matcher)
         else:
             if row["duplicate_of"] is None:
-                _strip(conn, row["id"])
+                same_topic = _post_key(row) is not None and _post_key(row) == _post_key(by_id[canonical])
+                if same_topic:
+                    _hand_over_views(conn, row["id"], canonical)
+                _strip(conn, row["id"], keep_views=same_topic)
             became.append(row["id"])
     others = [item for item in direct if item != canonical]
     if others:

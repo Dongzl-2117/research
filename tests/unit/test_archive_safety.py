@@ -17,7 +17,7 @@ from researchlib.remote_images import (
     image_extension,
 )
 from researchlib.render import image_anchor, img_tag_url, normalize_image_url, render_body
-from researchlib.revisions import diff_blocks, judge_replacement, label
+from researchlib.revisions import _real_edits, article_text, diff_blocks, judge_replacement, label
 from researchlib.wechat_dialogue import BUBBLE_UNKNOWN, SIDE_SELF, present_ocr_pieces
 
 LONG = "腾讯的广告加载率还在提升，视频号是新的广告库存。" * 30
@@ -50,6 +50,31 @@ def test_revision_label_prefers_held_versions():
     assert label({"previous": 2, "held": ""}) == "改过"
     assert label({"previous": 1, "held": "deleted"}) == "后来被删"
     assert label({"previous": 0, "held": "shrunk"}) == "后来被截短"
+
+
+ZSXQ_POST = """# 腾讯的广告库存
+
+- 作者：方伟Rey
+- 时间：2026-10-23 10:20 (UTC+8)
+- 类型：talk
+- 点赞 {likes} · 评论 1 · 阅读人数 {reads}
+
+腾讯的广告加载率还在提升，视频号是新的广告库存。
+{comments}"""
+
+
+def test_like_and_read_counts_are_not_an_edit():
+    """星球归档头里的点赞、阅读数每次抓都会变，评论回复也会多，这些都不是作者改稿。"""
+    before = ZSXQ_POST.format(likes=3, reads=210, comments="")
+    after = ZSXQ_POST.format(likes=7, reads=616, comments="\n## 评论里的回复\n\n作者补充：视频号还在涨。\n")
+    assert article_text(before) == article_text(after)
+    assert article_text(before) == "#腾讯的广告库存腾讯的广告加载率还在提升，视频号是新的广告库存。"
+    edited = before.replace("还在提升", "开始见顶")
+    assert article_text(edited) != article_text(before)
+    # 旧版从旧到新：只有和下一版正文不一样的才算改过。
+    rows = [{"id": 1, "body_md": before}, {"id": 2, "body_md": after}, {"id": 3, "body_md": before}]
+    assert [row["id"] for row in _real_edits(rows, edited)] == [3]
+    assert _real_edits(rows[:2], after) == []
 
 
 def test_external_urls_cover_markdown_html_and_lazy_images():

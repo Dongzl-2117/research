@@ -23,7 +23,7 @@ def backfill_posters(conn, source, docs: list) -> dict:
     updated = guests = cleared = missing = 0
     for doc in docs:
         incoming = assign_poster_role(
-            dict(doc.raw_meta or {}), source.author, source_id=source.id, source_kind=source.kind
+            dict(doc.raw_meta or {}), source.author, source.poster_names, source_id=source.id, source_kind=source.kind
         )
         name = str(incoming.get("poster_name") or "").strip()
         poster_id = str(incoming.get("poster_id") or "").strip()
@@ -49,7 +49,7 @@ def backfill_posters(conn, source, docs: list) -> dict:
             for key in ("zsxq_identity", "group_id", "source_kind"):
                 if key in incoming:
                     meta[key] = incoming[key]
-            assign_poster_role(meta, source.author, source_id=source.id, source_kind=source.kind)
+            assign_poster_role(meta, source.author, source.poster_names, source_id=source.id, source_kind=source.kind)
             conn.execute(
                 "UPDATE articles SET raw_meta = %s WHERE id = %s",
                 (Jsonb(meta), row["id"]),

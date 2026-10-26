@@ -623,7 +623,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         falsifiers = list(row["falsifiers"] or [])
         shown_date = format_date(row["published_at"], settings.display_timezone)
         title = row["title"]
-        if repairs_source(row["source_id"]) and title_needs_repair(title or ""):
+        if repairs_source(row["source_id"]) and title_needs_repair(title or "", row.get("body_text") or ""):
             title = zsxq_display_title(title or "", body=row.get("body_text") or "", when=shown_date)
         items.append(
             {

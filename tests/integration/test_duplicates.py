@@ -6,9 +6,13 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from researchlib.duplicates import fingerprint, rebuild_duplicates, same_article
+from researchlib.eligibility import IDENTITY_KEY, identity_for_topic
 from researchlib.ingest.model import ParsedDoc
+from researchlib.ingest.parse import comments_section
 from researchlib.ingest.store import store_documents
+from researchlib.migrate import MIGRATIONS, split_sql
 from researchlib.sources import load_sources
+from researchlib.views import PROMPT_VERSION
 from researchlib.web.app import create_app
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -274,3 +278,104 @@ def test_shared_cta_footer_does_not_merge_different_posts(conn, settings):
     _store(conn, settings, "fangwei-mp", [_doc("mp/pdd.md", "拼多多的专注", pdd)])
     assert _row(conn, "mp/xiaomi.md")["duplicate_of"] is None
     assert _row(conn, "mp/pdd.md")["duplicate_of"] is None
+
+
+TOPIC = "12345678901234567"
+OLD_ID = "2025-03-12_腾讯的广告库存"
+ZSXQ_HEADER = """# 腾讯的广告库存
+
+- 作者：方伟Rey
+- 时间：2025-03-12 09:00 (UTC+8)
+- 类型：talk
+- 点赞 {likes} · 评论 {comments} · 阅读人数 {reads}
+- topic_id：`12345678901234567` · 原链接：https://wx.zsxq.com/topic/12345678901234567
+
+"""
+ZSXQ_SHORT = "腾讯的广告加载率还在提升，视频号是新的广告库存。\n\n商家的投放在往视频号挪，交易闭环更短。\n"
+ZSXQ_EXTRA = "\n后来补一句：视频号的商家数还在涨，电商闭环也在补齐。\n"
+
+
+def _topic_doc(external_id, body, topic=TOPIC):
+    doc = _doc(external_id, "腾讯的广告库存", body)
+    evidence = {"topic_id": topic, "group": {"group_id": "48888181884848"},
+                "talk": {"owner": {"user_id": "1825524112"}}}
+    meta = {"topic_id": topic, IDENTITY_KEY: identity_for_topic(evidence, "fangwei-zsxq")}
+    return ParsedDoc(doc.external_id, doc.title, doc.published_at, doc.body_md, meta, [])
+
+
+def _topic_copies():
+    """10 月 20 日以前按文件名导入的那份，和后来按话题号导入的那份：点赞数变了，多了一句和评论回复。"""
+    old = ZSXQ_HEADER.format(likes=3, comments=0, reads=210) + ZSXQ_SHORT
+    live = ZSXQ_HEADER.format(likes=9, comments=2, reads=616) + ZSXQ_SHORT + ZSXQ_EXTRA
+    live += comments_section([("视频号的广告单价呢", "单价还在往上走，商家愿意出价。")], live)
+    return old, live
+
+
+def test_same_zsxq_topic_is_one_post_even_when_the_text_drifted(conn, settings):
+    old, live = _topic_copies()
+    assert not same_article(fingerprint(old), fingerprint(live))
+    _store(conn, settings, "fangwei-zsxq", [_topic_doc(OLD_ID, old)])
+    # 旧的那份上已经抽好的观点。
+    tencent = conn.execute("SELECT id FROM companies WHERE name_zh = '腾讯'").fetchone()["id"]
+    conn.execute(
+        """
+        INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance)
+        SELECT id, %s, content_hash, %s, '视频号的广告库存还能抬', 'positive' FROM articles WHERE external_id = %s
+        """,
+        (tencent, PROMPT_VERSION, OLD_ID),
+    )
+    conn.commit()
+    report = _store(conn, settings, "fangwei-zsxq", [_topic_doc(TOPIC, live)])
+    stale, current = _row(conn, OLD_ID), _row(conn, TOPIC)
+    # 同话题仍归并，但新增回复改变了模型输入，不能替旧观点伪造新哈希。
+    assert report.duplicates == 1
+    assert current["duplicate_of"] is None and stale["duplicate_of"] == current["id"]
+    assert _count(conn, "article_chunks", stale["id"]) == 0
+    view = conn.execute(
+        """
+        SELECT v.article_id, v.content_hash = a.content_hash AS current, v.judgment
+        FROM company_views v JOIN articles a ON a.id = v.article_id WHERE v.company_id = %s
+        """,
+        (tencent,),
+    ).fetchall()
+    assert [(row["article_id"], row["current"], row["judgment"]) for row in view] == [
+        (stale["id"], True, "视频号的广告库存还能抬")
+    ]
+    # 全库重认一遍还是这样。
+    rebuild_duplicates(conn)
+    assert _row(conn, TOPIC)["duplicate_of"] is None
+    assert _row(conn, OLD_ID)["duplicate_of"] == current["id"]
+    with TestClient(create_app(settings)) as client:
+        home = client.get("/").text
+        assert f'href="/articles/{current["id"]}"' in home and f'href="/articles/{stale["id"]}"' not in home
+
+
+def test_topic_migration_backfills_old_rows_from_the_archive_header(conn, settings):
+    old, live = _topic_copies()
+    # 部署前的样子：旧的那份 raw_meta 里没有话题号，指纹也对不上，两份都在首页。
+    # Simulate an existing unproven legacy row directly in the disposable DB;
+    # the current importer must not admit it as a newly verified owner post.
+    _store(conn, settings, "fangwei-mp", [_doc(OLD_ID, "腾讯的广告库存", old)])
+    conn.execute("UPDATE articles SET source_id = 'fangwei-zsxq' WHERE external_id = %s", (OLD_ID,))
+    conn.commit()
+    _store(conn, settings, "fangwei-zsxq", [_topic_doc(TOPIC, live)])
+    assert _row(conn, OLD_ID)["duplicate_of"] is None
+    for statement in split_sql((MIGRATIONS / "021_zsxq_topic_ids.sql").read_text(encoding="utf-8")):
+        conn.execute(statement)
+    conn.commit()
+    backfilled = conn.execute(
+        "SELECT raw_meta->>'topic_id' AS topic FROM articles WHERE external_id = %s", (OLD_ID,)
+    ).fetchone()
+    assert backfilled["topic"] == TOPIC
+    rebuild_duplicates(conn)
+    assert _row(conn, OLD_ID)["duplicate_of"] == _row(conn, TOPIC)["id"]
+    assert _row(conn, TOPIC)["duplicate_of"] is None
+
+
+def test_live_zsxq_copy_does_not_beat_a_longer_article_elsewhere(conn, settings):
+    """星球按话题号入库的那份只压过它自己的旧份；和公众号全文比，还是长的那份当主版本。"""
+    paragraphs = [part for part in BODY.split("\n\n") if part.strip()]
+    _store(conn, settings, "fangwei-mp", [_doc("mp/full.md", "腾讯的广告库存", BODY)])
+    _store(conn, settings, "fangwei-zsxq", [_topic_doc(TOPIC, "\n\n".join(paragraphs[:-1]))])
+    assert _row(conn, TOPIC)["duplicate_of"] == _row(conn, "mp/full.md")["id"]
+    assert _row(conn, "mp/full.md")["duplicate_of"] is None

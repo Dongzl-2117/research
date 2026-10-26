@@ -17,6 +17,8 @@ sources:
   - id: fangwei-zsxq
     name: 方伟知识星球
     author: 方伟
+    # 展示用昵称；星球入选仍须来源、群与账户证明，昵称不授予作者资格。
+    poster_names: [方伟Rey]
     kind: zsxq
     enabled: true
     timeline: true

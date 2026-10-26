@@ -39,6 +39,8 @@ from researchlib.zsxq_title import stored_zsxq_title
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _HTML_IMAGE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 _TOPIC_ID = re.compile(r"\d{5,}")
+# 星球归档头里的「- topic_id：`45548552554812148` · 原链接：…」。
+_HEADER_TOPIC_ID = re.compile(r"topic_id\s*[：:]\s*`?(\d{5,})`?")
 
 
 _PATH_YEAR = re.compile(r"^(20\d{2})/")
@@ -413,6 +415,12 @@ def select_raw_json(paths: list[Path]) -> list[Path]:
     return sorted(chosen, key=rank)
 
 
+def header_topic_id(body: str) -> str | None:
+    """归档头里写的话题号。只看开头那一段，正文里引用别的话题不算。"""
+    match = _HEADER_TOPIC_ID.search((body or "")[:2000])
+    return match.group(1) if match else None
+
+
 def _match_raw(path: Path, index: dict[str, dict]) -> dict:
     if path.stem in index:
         return index[path.stem]
@@ -470,7 +478,8 @@ def parse_markdown_files(
             }
         title = derive_title(frontmatter, body, path.name, raw_meta.get("title"))
         if id_mode == "zsxq":
-            # 导出标题是空的或被省略号截断时，能从正文收成一句就写入。兜底标题留到页面上现算。
+            # 导出标题是空的、被省略号截断，或只是正文开头的十几个字时，能从正文收成一句就写入。
+            # 兜底标题留到页面上现算。
             replacement = stored_zsxq_title(title, body)
             if replacement:
                 title = replacement
@@ -545,8 +554,9 @@ def parse_markdown_files(
             stored_meta["group_id"] = str(raw_meta.get("group_id") or "")
             if isinstance(raw_meta.get(IDENTITY_KEY), dict):
                 stored_meta[IDENTITY_KEY] = raw_meta[IDENTITY_KEY]
-        if raw_meta.get("topic_id"):
-            stored_meta["topic_id"] = raw_meta.get("topic_id")
+        topic_id = raw_meta.get("topic_id") or (header_topic_id(body) if id_mode == "zsxq" else None)
+        if topic_id:
+            stored_meta["topic_id"] = topic_id
         poster_name = str(raw_meta.get("poster_name") or "").strip()
         if poster_name:
             stored_meta["poster_name"] = poster_name

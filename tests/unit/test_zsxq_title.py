@@ -5,7 +5,7 @@ from pathlib import Path
 from markupsafe import Markup
 
 from researchlib.eligibility import IDENTITY_KEY, identity_for_topic
-from researchlib.ingest.parse import parse_archive
+from researchlib.ingest.parse import header_topic_id, parse_archive
 from researchlib.model_inputs import OCR_ROLE_VERSION
 from researchlib.web.routes import _repair_zsxq_titles
 from researchlib.zsxq_title import stored_zsxq_title, title_needs_repair, zsxq_display_title
@@ -326,3 +326,99 @@ def test_zsxq_import_stores_a_stem_when_the_body_is_also_cut(tmp_path: Path):
     assert docs[0].title == "大模型生意的护城河在哪里"
     assert not docs[0].title.endswith("…")
     assert not title_needs_repair(docs[0].title)
+
+
+# 星球接口给的标题只截正文开头十几个字，不带省略号（线上「……持有60.6」「……把钱交给」这类）。
+CUT_TITLE = "公司通过 B 类股持有60.6"
+CUT_SENTENCE = "公司通过 B 类股持有60.6% 投票权，还要再发一类没有投票权的股票"
+CUT_BODY = CUT_SENTENCE + "。\n\n后面一段讲资本开支。\n"
+ARCHIVE_HEADER = """- 作者：方伟Rey
+- 时间：2026-10-19 18:28 (UTC+8)
+- 类型：talk
+- 点赞 5 · 评论 0 · 阅读人数 616
+- topic_id：`12345678901234567` · 原链接：https://wx.zsxq.com/topic/12345678901234567
+"""
+
+
+def test_api_title_cut_mid_sentence_is_completed_from_the_body():
+    # 只看标题看不出截断，要对着正文。
+    assert title_needs_repair(CUT_TITLE) is False
+    assert title_needs_repair(CUT_TITLE, CUT_BODY)
+    assert zsxq_display_title(CUT_TITLE, body=CUT_BODY) == CUT_SENTENCE
+    assert stored_zsxq_title(CUT_TITLE, CUT_BODY) == CUT_SENTENCE
+    # 正文开头先重复一遍标题（导出的标题行），或者标题行带着「...」，都看下一行。
+    assert zsxq_display_title(CUT_TITLE, body=f"# {CUT_TITLE}\n\n{CUT_BODY}") == CUT_SENTENCE
+    assert zsxq_display_title(CUT_TITLE, body=f"{CUT_TITLE}...\n\n{CUT_BODY}") == CUT_SENTENCE
+    # 中间隔着归档头也认得出。
+    assert stored_zsxq_title(CUT_TITLE, f"# {CUT_TITLE}\n\n{ARCHIVE_HEADER}\n{CUT_BODY}") == CUT_SENTENCE
+    # 问句补全后留着问号；太长的句子和别处一样收在逗号处。
+    question = "请教一下，跳出行业来看，什么是好的商业模式？\n"
+    assert zsxq_display_title("请教一下，跳出行业来看", body=question) == "请教一下，跳出行业来看，什么是好的商业模式？"
+    long = "看估值时一定要把回购算进去，" + "因为同样的钱在低估值时能买回更多股份，留下来的股东更受益。"
+    title = zsxq_display_title("看估值时一定要把回购算", body=long)
+    assert title == "看估值时一定要把回购算进去，因为同样的钱在低估值时能买回更多股份"
+    assert len(title) <= 40
+
+
+def test_title_that_ends_where_the_body_breaks_is_left_alone():
+    # 正文在标题这里就断句了，或者标题自己占一行：标题是完整的。
+    assert title_needs_repair("瑞幸的门店是比较多的", "瑞幸的门店是比较多的。\n\n![](chat.png)\n") is False
+    assert title_needs_repair("企业文化", "# 企业文化\n\n很多人问企业文化怎么看。\n") is False
+    assert title_needs_repair("问：怎么看短剧侵占游戏时长？", "问：怎么看短剧侵占游戏时长？\n分享个数据\n") is False
+    # 正文不从标题开始，或者标题太短，都不当截断。
+    assert title_needs_repair("门店扩张", "今天说说门店扩张，还在继续。\n") is False
+    assert title_needs_repair("茅台", "茅台批价这一周没动。\n") is False
+    assert zsxq_display_title("瑞幸的门店是比较多的", body="瑞幸的门店是比较多的。\n") == "瑞幸的门店是比较多的"
+    assert stored_zsxq_title("企业文化", "# 企业文化\n\n很多人问企业文化怎么看。\n") is None
+
+
+def test_archive_header_never_becomes_a_title():
+    """线上 14885：图片帖入库时把归档头读成了标题「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。"""
+    body = f"# 「图片」\n\n{ARCHIVE_HEADER}\n![](../../images/a.jpg)\n"
+    assert stored_zsxq_title("「图片」", body) is None
+    assert zsxq_display_title("「图片」", body=body, ocr=PICTURE_OCR) == PICTURE_TITLE
+    # 库里已经是这种标题的：切掉混进来的归档头，按前面的原标题重新取。
+    junk = "「图片」 - 作者：方伟Rey - 时间：2026-10-19 18"
+    assert title_needs_repair(junk)
+    assert zsxq_display_title(junk, body=body, ocr=PICTURE_OCR) == PICTURE_TITLE
+    asked = "问：10PE的蜜雪，是否足够有吸引力了 - 作者：王小明 - 时间"
+    assert title_needs_repair(asked)
+    assert stored_zsxq_title(asked, "问：10PE的蜜雪，是否足够有吸引力了？\n") == "问：10PE的蜜雪，是否足够有吸引力了"
+    # 标题里正常的「 - 」不算。
+    assert title_needs_repair("估值 - 时间是朋友") is False
+
+
+def test_zsxq_import_completes_a_cut_api_title(tmp_path: Path):
+    (tmp_path / "md").mkdir()
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "md" / "12345678901234567.md").write_text(
+        f"# {CUT_TITLE}\n\n{ARCHIVE_HEADER}\n{CUT_BODY}", encoding="utf-8"
+    )
+    (tmp_path / "raw" / "12345678901234567.json").write_text(
+        '{"topic_id": 12345678901234567, "create_time": "2026-10-19T10:28:00+00:00", "title": "' + CUT_TITLE + '"}',
+        encoding="utf-8",
+    )
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    assert docs[0].title == CUT_SENTENCE
+
+
+def test_zsxq_import_keeps_the_archive_header_out_of_the_title(tmp_path: Path):
+    """10 月 20 日以前的导入没读到 raw/：标题只能从 md 取，话题号从归档头取。"""
+    (tmp_path / "md").mkdir()
+    (tmp_path / "md" / "2026-10-19_图片.md").write_text(
+        f"# 「图片」\n\n{ARCHIVE_HEADER}\n![](../../images/a.jpg)\n", encoding="utf-8"
+    )
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    assert docs[0].title == "「图片」"
+    assert docs[0].external_id == "2026-10-19_图片"
+    assert docs[0].raw_meta["topic_id"] == "12345678901234567"
+
+
+def test_header_topic_id_reads_only_the_archive_header():
+    assert header_topic_id(ARCHIVE_HEADER) == "12345678901234567"
+    assert header_topic_id("topic_id: 765432198") == "765432198"
+    assert header_topic_id("正文里没有话题号。") is None
+    # 正文很靠后才提到的话题号不算。
+    assert header_topic_id("正文。" * 1000 + "topic_id：`12345678901234567`") is None

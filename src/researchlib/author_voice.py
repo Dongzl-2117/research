@@ -178,7 +178,9 @@ def same_person(poster: str, star: str) -> bool:
     return bool(left) and left == right
 
 
-def assign_poster_role(meta: dict, star_name: str, *, source_id: str = "", source_kind: str = "") -> dict:
+def assign_poster_role(
+    meta: dict, star_name: str, aliases: tuple[str, ...] = (), *, source_id: str = "", source_kind: str = ""
+) -> dict:
     """星球仅凭经来源绑定的账户 ID；昵称只用于显示。"""
     from researchlib.eligibility import IDENTITY_KEY, is_zsxq, project_article
 
@@ -193,7 +195,8 @@ def assign_poster_role(meta: dict, star_name: str, *, source_id: str = "", sourc
     if not name:
         meta.pop(POSTER_ROLE, None)
         return meta
-    meta[POSTER_ROLE] = ROLE_OWNER if same_person(name, star_name) else ROLE_GUEST
+    owner = any(same_person(name, star) for star in (star_name, *aliases))
+    meta[POSTER_ROLE] = ROLE_OWNER if owner else ROLE_GUEST
     return meta
 
 

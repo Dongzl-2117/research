@@ -52,6 +52,8 @@ from researchlib.web.present import (
     FEED_ZONE,
     chart_ticks,
     company_chart,
+    company_names,
+    company_summary,
     current_month,
     day_key,
     day_label,
@@ -261,11 +263,12 @@ def _digest_points(digest, limit: int = 2) -> list[str]:
 
 
 def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
-    """方伟星球卡片：空标题和以省略号结尾的标题换成一句完整的话。不改库里的原文。"""
+    """方伟星球卡片：空标题、以省略号结尾、只截了正文开头半句的标题换成一句完整的话。不改库里的原文。"""
     needy = [
         card
         for card in cards
-        if repairs_source(card.get("source_id") or "") and title_needs_repair(str(card.get("plain_title") or ""))
+        if repairs_source(card.get("source_id") or "")
+        and title_needs_repair(str(card.get("plain_title") or ""), card.get("body_text") or "")
     ]
     if not needy:
         return
@@ -418,11 +421,12 @@ def home(request: Request):
                 )
             article_ids = [item["view"]["article_id"] for item in holdings if item.get("view")]
             digests = queries.digests_for(conn, article_ids)
+            names = {row["id"]: company_names(row) for row in ranked}
             for item in holdings:
                 view = item.get("view")
                 digest = digests.get(view["article_id"]) if view else None
-                # 首页只放已有导读。没有导读就留一行态度和篇数，不把判断原文铺开。
-                item["summary"] = str((digest or {}).get("summary") or "").strip()
+                # 首页只放已有、谈到这家公司的导读。没有就留一行态度和篇数，不把判断原文铺开。
+                item["summary"] = company_summary(digest, names[item["id"]])
     if chosen:
         heading = by_id[chosen].name
         empty = "这个来源还没有文章。"
@@ -646,7 +650,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         # 正文显示前去掉归档头、引流尾巴、二维码和文末招募。库里的 body_md 不改。HTML 同样洗。
         shown_md = clean_article(conn, article_id, article["source_id"], article["body_md"])
         display_title = article["title"]
-        if repairs_source(source.id) and title_needs_repair(display_title or ""):
+        if repairs_source(source.id) and title_needs_repair(display_title or "", article.get("body_text") or ""):
             material = queries.title_materials(conn, [article_id]).get(article_id) or {}
             display_title = zsxq_display_title(
                 display_title or "",
@@ -1299,13 +1303,13 @@ def company_page(request: Request, company_id: int):
 VIEWS_PAGE_SIZE = 20
 
 
-def _recent_lead(conn, items: list[dict], settings) -> dict | None:
-    """公司页「最近」一行。展开是导读；没有导读就用这条判断，避免空展开。"""
+def _recent_lead(conn, items: list[dict], settings, names: list[str]) -> dict | None:
+    """公司页「最近」一行。展开是谈到这家公司的导读；没有就用这条判断，避免空展开。"""
     if not items:
         return None
     latest = items[0]
     digest = queries.digests_for(conn, [latest["article_id"]]).get(latest["article_id"])
-    text = recent_blurb(latest, digest)
+    text = recent_blurb(latest, digest, names)
     if not text:
         return None
     published = latest.get("published_at")
@@ -1367,7 +1371,7 @@ def _company_views(request: Request, conn, company, by_id: dict, author: str) ->
         "pages": pages,
         "base": base,
         # 跟当前筛选走。筛到某一条论点时，不要把没进这组的判断露在展开行里。
-        "lead": _recent_lead(conn, chosen, settings),
+        "lead": _recent_lead(conn, chosen, settings, company_names(company)),
     }
 
 

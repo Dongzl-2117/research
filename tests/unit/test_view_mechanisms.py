@@ -1,5 +1,7 @@
 """OCR 旁路、引用规范化、补抽缺口的纯逻辑、星球发帖人、论点的边和重叠。"""
 
+from pathlib import Path
+
 from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.claims import claim_side, looks_like_list, plain_cite, quote_ok, same_repost
 from researchlib.digest import PROMPT_VERSION, digest_due
@@ -61,6 +63,20 @@ def test_guest_post_is_not_the_star_owner():
     assert is_guest(guest) and guest["poster_role"] == "guest"
     assert owner["poster_role"] == "owner" and not is_guest(owner)
     assert "poster_role" not in unknown
+
+
+def test_star_nickname_from_the_source_config_is_the_owner():
+    """方伟在星球里的显示名是「方伟Rey」：来源配置的 poster_names 里有它，就不是读者帖。"""
+    from researchlib.sources import load_sources
+
+    config = Path(__file__).resolve().parents[2] / "config" / "sources.yaml"
+    zsxq = next(source for source in load_sources(config) if source.id == "fangwei-zsxq")
+    assert "方伟Rey" in zsxq.poster_names
+    assert assign_poster_role({"poster_name": "方伟Rey"}, zsxq.author, zsxq.poster_names)["poster_role"] == "owner"
+    assert assign_poster_role({"poster_name": "方伟 Rey"}, zsxq.author, zsxq.poster_names)["poster_role"] == "owner"
+    # 没配昵称时还是按名字认，读者照样是读者。
+    assert is_guest(assign_poster_role({"poster_name": "方伟Rey"}, "方伟"))
+    assert is_guest(assign_poster_role({"poster_name": "王小明"}, zsxq.author, zsxq.poster_names))
 
 
 def test_list_mention_is_not_about_the_company():

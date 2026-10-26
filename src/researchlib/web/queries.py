@@ -978,9 +978,9 @@ def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list
         return []
     return conn.execute(
         f"""
-        SELECT id, name_zh, published_at
+        SELECT id, name_zh, name_en, aliases, published_at
         FROM (
-          SELECT DISTINCT ON (c.id) c.id, c.name_zh, a.published_at
+          SELECT DISTINCT ON (c.id) c.id, c.name_zh, c.name_en, c.aliases, a.published_at
           FROM company_views v
           JOIN articles a ON a.id = v.article_id
           JOIN companies c ON c.id = v.company_id

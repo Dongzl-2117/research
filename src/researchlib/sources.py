@@ -30,6 +30,8 @@ class Source:
     min_chars: int = 0
     # True：整源先不要。库里已标 hidden=source_paused，导入命令拒绝导入。
     paused: bool = False
+    # 平台显示昵称；星球资格另由来源/真实账户证明决定，昵称本身不能授予资格。
+    poster_names: tuple[str, ...] = ()
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -66,9 +68,21 @@ def load_sources(path: Path) -> list[Source]:
                 timeline=_timeline_flag(item, kind, source_id),
                 min_chars=int(item.get("min_chars") or 0),
                 paused=bool(item.get("paused", False)),
+                poster_names=_poster_names(item, source_id),
             )
         )
     return sources
+
+
+def _poster_names(item: dict, source_id: str) -> tuple[str, ...]:
+    value = item.get("poster_names")
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError(f"{source_id} 的 poster_names 必须是名字列表")
+    return tuple(str(name).strip() for name in value if str(name).strip())
 
 
 def _timeline_flag(item: dict, kind: str, source_id: str) -> bool:

@@ -31,7 +31,7 @@ from researchlib.mentions import (
     mentions_for_document,
     replace_mentions,
 )
-from researchlib.revisions import held_before, judge_replacement, save_revision, split_comments
+from researchlib.revisions import article_text, held_before, judge_replacement, save_revision, split_comments
 from researchlib.sources import Source
 from researchlib.textutil import content_hash, markdown_to_text, strip_duplicate_title
 
@@ -236,11 +236,12 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
     meta = apply_length_floor(source, doc.body_md, assign_poster_role(
-        dict(doc.raw_meta), source.author, source_id=source.id, source_kind=source.kind
+        dict(doc.raw_meta), source.author, source.poster_names, source_id=source.id, source_kind=source.kind
     ))
     meta = with_stored_attachments(meta, doc.attachment_refs, data_dir, source.id)
     keep = False
     article_changed = True
+    same_words = False
     policy_transition = False
     comparison = existing
     if existing is not None and source.kind == "zsxq":
@@ -257,11 +258,13 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             # An excluded guest/unknown body contains no verified owner text to
             # lose. Activate the newly proved projection; preserve raw below.
             article_changed = True
-        elif old_article == new_article and comparison["title"] == doc.title:
+        elif ((old_article == new_article and comparison["title"] == doc.title)
+              or article_text(comparison["body_md"]) == article_text(doc.body_md)):
             # 作者写的正文没变，只是接在后面的「评论里的回复」变了：不算改稿。回复少了（这次导出没带评论，
             # 或者回复被删了）时库里那份更全，不动。
             article_changed = False
             keep = len(new_comments) < len(old_comments)
+            same_words = new_comments == old_comments
         else:
             held = _hold_if_suspicious(
                 conn,
@@ -342,6 +345,17 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         )
         if changed.rowcount != 1:
             raise ConcurrentProjectionChange(existing["id"], digest, body_text)
+        # Header-only normalization may keep caches only when their actual
+        # title/date/text and all provenance metadata remain unchanged.
+        if (same_words and not policy_transition
+                and existing["title"] == doc.title and existing["published_at"] == doc.published_at
+                and existing["body_text"] == body_text and dict(existing["raw_meta"] or {}) == meta
+                and model_cache_safe_article({**existing, "source_id": source.id, "source_kind": source.kind})
+                and model_cache_safe_article({**candidate, "title": doc.title, "body_md": doc.body_md,
+                                              "raw_meta": meta})):
+            from researchlib.retime import _realign
+
+            _realign(conn, existing["id"], {existing["content_hash"]}, digest)
         article_id = existing["id"]
         status = "updated"
     else:
@@ -352,7 +366,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             merged = dict(existing["raw_meta"] or {})
             merged.pop("local_attachments", None)
             merged.update(meta)
-            assign_poster_role(merged, source.author, source_id=source.id, source_kind=source.kind)
+            assign_poster_role(merged, source.author, source.poster_names, source_id=source.id, source_kind=source.kind)
             if merged != dict(existing["raw_meta"] or {}):
                 changed = conn.execute(
                     "UPDATE articles SET raw_meta = %s WHERE id = %s AND ("
