@@ -22,7 +22,7 @@ from researchlib.mentions import (
     mentions_for_document,
     replace_mentions,
 )
-from researchlib.revisions import held_before, judge_replacement, save_revision, split_comments
+from researchlib.revisions import article_text, held_before, judge_replacement, save_revision, split_comments
 from researchlib.sources import Source
 from researchlib.textutil import content_hash, markdown_to_text, strip_duplicate_title
 
@@ -161,7 +161,8 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     profile = profile_for(conn, source.id)
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    meta = apply_length_floor(source, doc.body_md, assign_poster_role(dict(doc.raw_meta), source.author))
+    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
+    meta = apply_length_floor(source, doc.body_md, poster)
     existing = conn.execute(
         """
         SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
@@ -172,14 +173,18 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     ).fetchone()
     keep = False
     article_changed = True
+    same_words = False
     if existing is not None and existing["content_hash"] != digest:
         old_article, old_comments = split_comments(existing["body_md"])
         new_article, new_comments = split_comments(doc.body_md)
-        if old_article == new_article and existing["title"] == doc.title:
-            # 作者写的正文没变，只是接在后面的「评论里的回复」变了：不算改稿。回复少了（这次导出没带评论，
-            # 或者回复被删了）时库里那份更全，不动。
+        if (old_article == new_article and existing["title"] == doc.title) or (
+            article_text(existing["body_md"]) == article_text(doc.body_md)
+        ):
+            # 作者写的正文没变：只是接在后面的「评论里的回复」变了，或者归档头里的点赞、阅读数变了、
+            # 标题换了补法。不算改稿。回复少了（这次导出没带评论，或者回复被删了）时库里那份更全，不动。
             article_changed = False
             keep = len(new_comments) < len(old_comments)
+            same_words = new_comments == old_comments
         else:
             held = _hold_if_suspicious(
                 conn,
@@ -244,6 +249,12 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             """,
             (digest, doc.title, doc.published_at, doc.body_md, body_text, Jsonb(meta), existing["id"]),
         )
+        if same_words:
+            # 只是归档头里的点赞、阅读数，补出来的标题，或发布时间变了：观点、摘要和译文说的还是这篇，
+            # 哈希跟过来，摘要不会从卡片上消失，夜里也不用重抽。评论回复变了的照旧重抽。
+            from researchlib.retime import _realign
+
+            _realign(conn, existing["id"], {existing["content_hash"]}, digest)
         article_id = existing["id"]
         status = "updated"
     else:
@@ -251,10 +262,10 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         status = "unchanged"
         # 正文没变也要补上发帖人：历史归档重导一遍就能把网友帖从星主名下摘掉。
         if doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id"):
-            merged = assign_poster_role(dict(existing["raw_meta"] or {}), source.author)
+            merged = assign_poster_role(dict(existing["raw_meta"] or {}), source.author, source.poster_names)
             merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
             merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
-            assign_poster_role(merged, source.author)
+            assign_poster_role(merged, source.author, source.poster_names)
             if merged != dict(existing["raw_meta"] or {}):
                 conn.execute(
                     "UPDATE articles SET raw_meta = %s WHERE id = %s",

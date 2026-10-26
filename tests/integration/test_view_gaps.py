@@ -85,6 +85,25 @@ def test_gap_includes_title_mention_and_kept_original_but_not_guest(conn, settin
     assert duplicate["id"] not in found
 
 
+def test_star_nickname_posts_count_as_the_owners(conn, settings):
+    """方伟在星球的显示名是「方伟Rey」。10 月 20 日以后按话题 JSON 导入的帖都被标成了读者帖，再导入一遍就改回来。"""
+    body = "美亚光电的设备不错，贵州茅台的批价这一周没动，渠道仍在观望。\n"
+    meta = {"poster_name": "方伟Rey", "poster_id": "1001"}
+    row = _store(conn, settings, "fangwei-zsxq", "rey-post", "茅台批价", body, meta)
+    role = "SELECT raw_meta->>'poster_role' AS role FROM articles WHERE id = %s"
+    assert conn.execute(role, (row["id"],)).fetchone()["role"] == "owner"
+    # 修好以前入库的：库里标着读者帖。正文没变，再导入一遍就改回原创，回到观点的补抽队列。
+    conn.execute(
+        "UPDATE articles SET raw_meta = raw_meta || '{\"poster_role\": \"guest\"}'::jsonb WHERE id = %s", (row["id"],)
+    )
+    conn.commit()
+    company = conn.execute("SELECT id FROM companies WHERE name_zh = '贵州茅台'").fetchone()["id"]
+    assert row["id"] not in {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
+    _store(conn, settings, "fangwei-zsxq", "rey-post", "茅台批价", body, meta)
+    assert conn.execute(role, (row["id"],)).fetchone()["role"] == "owner"
+    assert row["id"] in {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
+
+
 def test_ocr_side_field_is_what_views_read(conn, settings):
     row = _store(conn, settings, "fangwei-zsxq", "ocr-post", "图片", "（见图）\n")
     conn.execute(

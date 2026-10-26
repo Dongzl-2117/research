@@ -29,7 +29,7 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
         TRUNCATED,
         when,
         TRUNCATED + "\n",
-        {"format": "markdown", "filename": "reader.md", "poster_name": "方伟Rey"},
+        {"format": "markdown", "filename": "reader.md", "poster_name": "王小明"},
         [],
     )
     owner = ParsedDoc(
@@ -71,7 +71,7 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
         assert home.text.count(FULL) >= 2
         assert "明确…" not in home.text
         assert "读者帖" in home.text
-        assert "方伟Rey" in home.text
+        assert "王小明" in home.text
         assert "research-recent-views" in home.text
         guest_page = client.get(f"/articles/{guest_row['id']}")
         assert guest_page.status_code == 200

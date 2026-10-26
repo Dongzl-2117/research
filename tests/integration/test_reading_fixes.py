@@ -454,3 +454,42 @@ def test_home_recent_views_include_non_holdings(conn, settings):
     assert "role-badge" not in page
     assert 'class="recent-lead"' in page
     assert "导读：美团的商家广告还在变贵。" in page
+
+
+def test_recent_views_skip_a_digest_about_another_company(conn, settings):
+    """美团只是文中的例子：这篇的导读讲拼多多，不放在美团下面，首页留空，公司页用这条判断。"""
+    when = datetime(2024, 6, 1, 9, 0, tzinfo=SHANGHAI)
+    _store(conn, settings, "fangwei-mp", [ParsedDoc("example", "拼多多的佣金", when, "拼多多和美团。\n", {}, [])])
+    row = conn.execute("SELECT id, content_hash FROM articles WHERE external_id = 'example'").fetchone()
+    meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
+    conn.execute(
+        """
+        INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance)
+        VALUES (%s, %s, %s, %s, '外卖的补贴还要打很久', 'neutral')
+        """,
+        (row["id"], meituan, row["content_hash"], PROMPT_VERSION),
+    )
+    conn.execute(
+        """
+        INSERT INTO article_mentions (article_id, company_id, depth, hit_count)
+        VALUES (%s, %s, 'section', 2)
+        ON CONFLICT (article_id, company_id) DO UPDATE SET depth = 'section', hit_count = EXCLUDED.hit_count
+        """,
+        (row["id"], meituan),
+    )
+    conn.execute(
+        """
+        INSERT INTO article_digests (article_id, content_hash, model, summary, points, tags, prompt_version)
+        VALUES (%s, %s, 'grok-test', '导读：拼多多的佣金率还在往下压。', '[]', '[]', 2)
+        """,
+        (row["id"], row["content_hash"]),
+    )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        home = client.get("/").text
+        page = client.get(f"/companies/{meituan}").text
+    section = home.split('aria-label="最近观点"', 1)[1].split('class="feed"', 1)[0]
+    assert "美团" in section
+    assert "拼多多的佣金率" not in section and 'class="recent-item-summary"' not in section
+    lead = page.split('class="recent-lead"', 1)[1][:600]
+    assert "外卖的补贴还要打很久" in lead and "拼多多的佣金率" not in lead

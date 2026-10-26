@@ -2,7 +2,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from researchlib.web.present import recent_blurb
+from researchlib.web.present import company_names, company_summary, recent_blurb
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "src" / "researchlib" / "web" / "templates"
@@ -65,9 +65,24 @@ def test_home_recent_views_toggle_is_a_button():
 
 
 def test_recent_blurb_prefers_stored_digest():
-    assert recent_blurb({"judgment": "判断句"}, {"summary": "导读句"}) == "导读句"
-    assert recent_blurb({"judgment": "判断句"}, None) == "判断句"
-    assert recent_blurb(None, None) == ""
+    tencent = ["腾讯", "Tencent"]
+    assert recent_blurb({"judgment": "判断句"}, {"summary": "导读：腾讯的广告库存还能抬。"}, tencent) == (
+        "导读：腾讯的广告库存还能抬。"
+    )
+    assert recent_blurb({"judgment": "判断句"}, None, tencent) == "判断句"
+    assert recent_blurb(None, None, tencent) == ""
+
+
+def test_recent_blurb_skips_a_digest_about_another_company():
+    """公司只是文中的例子时，这篇的导读讲的是别的公司，不放在这家公司下面。"""
+    meituan = company_names({"name_zh": "美团", "name_en": "Meituan", "aliases": ["美团点评", "M"]})
+    assert meituan == ["美团", "Meituan", "美团点评"]
+    other = {"summary": "导读：拼多多的佣金率还在往下压。"}
+    assert company_summary(other, meituan) == ""
+    assert recent_blurb({"judgment": "外卖的补贴还要打很久"}, other, meituan) == "外卖的补贴还要打很久"
+    # 英文名、大小写不同也认。
+    assert company_summary({"summary": "MEITUAN 的配送成本又降了。"}, meituan) == "MEITUAN 的配送成本又降了。"
+    assert company_summary(None, meituan) == ""
 
 
 class _NavSource:

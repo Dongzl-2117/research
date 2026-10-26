@@ -17,6 +17,9 @@ import re
 
 from psycopg.types.json import Jsonb
 
+from researchlib.boilerplate import strip_meta
+from researchlib.textutil import split_frontmatter
+
 # 平台的删除、屏蔽提示。新正文很短又含这些字样，就当作原文被删了。
 DELETED_MARKERS = (
     "该内容已被发布者删除",
@@ -111,26 +114,50 @@ def save_revision(
     )
 
 
+def article_text(body_md: str) -> str:
+    """比两版是不是改了稿时只看作者写的正文：去掉 frontmatter、开头的归档头和评论回复，空白不算。
+
+    星球归档头里的点赞、阅读数每次抓都可能变，标题也会因为补标题的规则变了而重算，这些都不是作者改稿。
+    """
+    article, _comments = split_comments(body_md or "")
+    _front, body = split_frontmatter(article)
+    return _plain(strip_meta(body))
+
+
+def _real_edits(previous: list[dict], current_md: str) -> list[dict]:
+    """previous 从旧到新。和替换它的那一版正文一样的旧版不算：以前点赞、阅读数变了也记了一版。"""
+    texts = [article_text(row["body_md"]) for row in previous] + [article_text(current_md)]
+    return [row for index, row in enumerate(previous) if texts[index] != texts[index + 1]]
+
+
 def summary(conn, article_ids: list[int]) -> dict[int, dict]:
     """每篇的改动概况：{article_id: {"previous": 次数, "held": 原因}}，没有改动的不在里面。"""
     if not article_ids:
         return {}
-    found: dict[int, dict] = {}
+    grouped: dict[int, list[dict]] = {}
     for row in conn.execute(
         """
-        SELECT article_id, kind, reason, count(*) AS n, max(created_at) AS last_at
+        SELECT article_id, kind, reason, body_md
         FROM article_revisions
         WHERE article_id = ANY(%s)
-        GROUP BY article_id, kind, reason
-        ORDER BY article_id, max(created_at)
+        ORDER BY article_id, created_at, id
         """,
         (article_ids,),
     ).fetchall():
-        item = found.setdefault(row["article_id"], {"previous": 0, "held": ""})
-        if row["kind"] == "previous":
-            item["previous"] += int(row["n"])
-        else:
-            item["held"] = row["reason"]
+        grouped.setdefault(row["article_id"], []).append(row)
+    if not grouped:
+        return {}
+    current = {
+        row["id"]: row["body_md"] or ""
+        for row in conn.execute("SELECT id, body_md FROM articles WHERE id = ANY(%s)", (sorted(grouped),)).fetchall()
+    }
+    found: dict[int, dict] = {}
+    for article_id, rows in grouped.items():
+        previous = [row for row in rows if row["kind"] == "previous"]
+        held = [row["reason"] for row in rows if row["kind"] != "previous"]
+        edits = len(_real_edits(previous, current.get(article_id, "")))
+        if edits or held:
+            found[article_id] = {"previous": edits, "held": held[-1] if held else ""}
     return found
 
 
@@ -149,13 +176,17 @@ def versions(conn, article: dict) -> list[dict]:
     """当前版和记下来的各版，新的在前。当前版排第一。"""
     rows = conn.execute(
         """
-        SELECT id, kind, reason, content_hash, title, published_at, body_text, created_at
+        SELECT id, kind, reason, content_hash, title, published_at, body_md, body_text, created_at
         FROM article_revisions
         WHERE article_id = %s
         ORDER BY created_at DESC, id DESC
         """,
         (article["id"],),
     ).fetchall()
+    # 正文没变的旧版不列：每版要和它后面那版比，留着只会多出几条「略去 N 段没变的」。
+    previous = [row for row in reversed(rows) if row["kind"] == "previous"]
+    edits = {row["id"] for row in _real_edits(previous, article.get("body_md") or "")}
+    rows = [row for row in rows if row["kind"] != "previous" or row["id"] in edits]
     current = {
         "id": None,
         "kind": "current",
