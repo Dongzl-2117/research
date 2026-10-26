@@ -122,7 +122,8 @@ def test_ingest_cli_records_crawl_origin(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.Settings, "from_env", classmethod(lambda klass: SimpleNamespace(
         sources_path=tmp_path / "sources.yaml", data_dir=tmp_path)))
     monkeypatch.setattr(cli, "load_sources", lambda path: [])
-    monkeypatch.setattr(cli, "require_source", lambda sources, source_id, kind: SimpleNamespace(id=source_id))
+    monkeypatch.setattr(cli, "require_source", lambda sources, source_id, kind: SimpleNamespace(
+        id=source_id, kind=kind))
     monkeypatch.setattr(cli, "prepare", lambda settings: SimpleNamespace(close=lambda: None, rollback=lambda: None))
     monkeypatch.setattr(cli, "parse_archive", lambda *args, **kwargs: ([], [], 0, 0))
 

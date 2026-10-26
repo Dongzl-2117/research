@@ -3,6 +3,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
+from owner_fixtures import owner_doc
 
 from researchlib.backfill import backfill_published_at
 from researchlib.ingest.model import ParsedDoc
@@ -196,7 +197,7 @@ def test_day_page_shows_real_clock_and_summary(conn, settings):
     store_documents(
         conn,
         source=source,
-        docs=[talk, midnight],
+        docs=[owner_doc(talk), owner_doc(midnight)],
         data_dir=settings.data_dir,
         archive_files=2,
         images_in_archive=0,

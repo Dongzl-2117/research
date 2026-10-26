@@ -109,10 +109,16 @@ def make_chunks(title: str, body_md: str) -> list[tuple[str, str]]:
 def replace_chunks(conn, article_id: int, title: str, body_md: str) -> int:
     """原文的块。译文的块（lang = 'zh'）不动，译文重写时另行重切。切之前先去掉归档头和引流尾巴。"""
     from researchlib.boilerplate import clean_article
+    from researchlib.eligibility import project_article
 
-    row = conn.execute("SELECT source_id FROM articles WHERE id = %s", (article_id,)).fetchone()
-    if row is not None:
-        body_md = clean_article(conn, article_id, row["source_id"], body_md)
+    row = conn.execute("SELECT source_id, raw_meta FROM articles WHERE id = %s", (article_id,)).fetchone()
+    if row is None:
+        return 0
+    projected = project_article({**dict(row), "title": title, "body_md": body_md})
+    if projected is None:
+        return 0
+    title, body_md = projected["title"], projected["body_md"]
+    body_md = clean_article(conn, article_id, row["source_id"], body_md)
     chunks = make_chunks(title, body_md)
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = ''", (article_id,))
     if not chunks:
@@ -182,9 +188,17 @@ def make_chunks_from_html(body_html: str) -> list[tuple[str, str, str]]:
 
 def replace_translation_chunks(conn, article_id: int) -> int:
     """按这篇的中文译文重切译文块。没有译文就只删旧的。"""
+    from researchlib.eligibility import model_cache_safe_sql
+
+    allowed = conn.execute(
+        f"SELECT a.id FROM articles a WHERE a.id = %s AND {model_cache_safe_sql('a')}", (article_id,)
+    ).fetchone()
+    if allowed is None:
+        return 0
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'zh'", (article_id,))
     row = conn.execute(
-        "SELECT body_html FROM article_translations WHERE article_id = %s AND lang = 'zh'", (article_id,)
+        "SELECT t.body_html FROM article_translations t JOIN articles a ON a.id = t.article_id"
+        " WHERE t.article_id = %s AND t.lang = 'zh' AND t.content_hash = a.content_hash", (article_id,)
     ).fetchone()
     if row is None or not (row["body_html"] or "").strip():
         return 0
@@ -214,6 +228,7 @@ _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """[(图片内容哈希, 识别出的字)] → [(图片锚点, 块正文)]，同一张图只算一次。"""
     from researchlib.render import image_anchor
+    from researchlib.wechat_dialogue import REFERENCE_NOTE, present_stored_ocr
 
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -221,10 +236,16 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
         if digest in seen:
             continue
         seen.add(digest)
+        text = present_stored_ocr(text)
+        reference = text.startswith(REFERENCE_NOTE + "\n")
+        if reference:
+            text = text[len(REFERENCE_NOTE):].lstrip()
         if len(_MEANINGFUL.findall(text or "")) < OCR_MIN_CHARS:
             continue
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
         for piece in _pack(lines):
+            if reference:
+                piece = REFERENCE_NOTE + "\n" + piece
             found.append((image_anchor(digest), piece))
             if len(found) >= MAX_CHUNKS:
                 return found
@@ -233,13 +254,20 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
 def replace_ocr_chunks(conn, article_id: int) -> int:
     """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
-    conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (article_id,))
-    article = conn.execute("SELECT duplicate_of FROM articles WHERE id = %s", (article_id,)).fetchone()
-    if article is None or article["duplicate_of"] is not None:
+    from researchlib.eligibility import model_cache_safe_article, project_article
+    from researchlib.model_inputs import ocr_cache_safe_article
+
+    article = conn.execute(
+        "SELECT duplicate_of, source_id, body_md, ocr_text, raw_meta FROM articles WHERE id = %s", (article_id,)
+    ).fetchone()
+    projected = project_article(article) if article else None
+    if (projected is None or not model_cache_safe_article(article) or not ocr_cache_safe_article(article)
+            or projected.get("owner_reply_context") or article["duplicate_of"] is not None):
         return 0
+    conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (article_id,))
     rows = conn.execute(
         """
-        SELECT i.content_hash, t.text
+        SELECT i.original_ref, i.content_hash, t.text
         FROM article_images i
         JOIN image_texts t ON t.content_hash = i.content_hash
         WHERE i.article_id = %s
@@ -247,7 +275,12 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
         """,
         (article_id,),
     ).fetchall()
-    chunks = ocr_chunks([(row["content_hash"], row["text"]) for row in rows])
+    from researchlib.ocr import _image_ref_allowed
+
+    chunks = ocr_chunks([
+        (row["content_hash"], row["text"]) for row in rows
+        if _image_ref_allowed(projected, row["original_ref"])
+    ])
     if not chunks:
         return 0
     with conn.cursor() as cur:
@@ -267,7 +300,9 @@ def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
 
     重复的那一份（duplicate_of 不为空）不切块，检索只用主版本。
     """
-    where = "WHERE a.duplicate_of IS NULL"
+    from researchlib.eligibility import eligibility_sql, model_cache_safe_sql
+
+    where = f"WHERE a.duplicate_of IS NULL AND {eligibility_sql('a')}"
     if not rebuild:
         # 以前每篇最多切 400 块，切满的长文后面没进检索：正好 400 块的重切一遍。
         where += (
@@ -278,7 +313,10 @@ def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
     for article_id in ids:
         row = conn.execute("SELECT title, body_md FROM articles WHERE id = %s", (article_id,)).fetchone()
         replace_chunks(conn, article_id, row["title"], row["body_md"])
-    translated_where = "WHERE a.duplicate_of IS NULL AND t.body_html <> ''"
+    translated_where = (
+        f"WHERE a.duplicate_of IS NULL AND t.body_html <> '' AND {model_cache_safe_sql('a')}"
+        " AND t.content_hash = a.content_hash"
+    )
     if not rebuild:
         translated_where += (
             " AND NOT EXISTS (SELECT 1 FROM article_chunks c WHERE c.article_id = a.id AND c.lang = 'zh')"

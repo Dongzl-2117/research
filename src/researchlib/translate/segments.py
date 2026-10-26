@@ -13,6 +13,9 @@ _LEAF = frozenset({
     "figcaption", "td", "th", "dt", "dd", "caption",
 })
 _SKIP = frozenset({"script", "style", "pre", "code"})
+_VOID = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
+})
 _MEDIA = re.compile(
     r"<(?:img|source|track)\b[^>]*?/?>"
     r"|<(?:picture|video)\b[^>]*>.*?</(?:picture|video)>",
@@ -45,6 +48,13 @@ class _TopLevelCollector(HTMLParser):
         self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _VOID:
+            piece = self._start(tag, attrs)
+            if self._depth:
+                self._buf.append(piece)
+            else:
+                self.blocks.append(piece)
+            return
         if self._skip_depth:
             self._skip_depth += 1
             self._buf.append(self._start(tag, attrs))
@@ -70,6 +80,8 @@ class _TopLevelCollector(HTMLParser):
             self._buf.append(piece)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in _VOID:
+            return
         if self._skip_depth:
             self._buf.append(f"</{tag}>")
             self._skip_depth -= 1

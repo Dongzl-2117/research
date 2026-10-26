@@ -129,6 +129,12 @@ TOOLS = [
 _ANNOTATIONS = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
 
 
+def _tool_annotations(name: str) -> dict:
+    if name == "ask_library":
+        return {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
+    return dict(_ANNOTATIONS)
+
+
 class ToolError(Exception):
     pass
 
@@ -233,7 +239,7 @@ def handle_message(request: Request, message: dict) -> dict | None:
     if method == "ping":
         return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
     if method == "tools/list":
-        tools = [{**tool, "annotations": {**_ANNOTATIONS}} for tool in TOOLS]
+        tools = [{**tool, "annotations": _tool_annotations(tool["name"])} for tool in TOOLS]
         return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": tools}}
     if method == "tools/call":
         name = params.get("name")

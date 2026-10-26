@@ -7,8 +7,7 @@
 - 只有一篇、又没有对立面的论点丢掉。一篇多主题的文章可以进多条论点，同一条判断不会塞进每一条。
 - 判断或态度为空白的观点不进输入。覆盖不到的观点仍留在公司页「全部」时间线。
 - 一家公司一次调用。观点集合有变化才重算，一天最多一次；按 views_hash 和提示词版本缓存。
-- 打开公司页时，只有 RESEARCH_THESES_AUTO=1 才把缺的或过期的排进后台（默认关）。
-  夜间 THESES_ENABLED 同样默认关。打开后不限持仓。启动和部署不跑。
+- 公司页只读已存论点。生成由显式 CLI 或处理任务执行；启动与 GET 不排队。
 
     research-theses                    # 观点够数的公司，过期的才算
     research-theses --company 贵州茅台 --company 泡泡玛特 --force
@@ -31,8 +30,11 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import not_guest_sql
 from researchlib.claims import claim_side, is_hedge, looks_like_list, quote_ok, same_repost
 from researchlib.config import Settings
+from researchlib.eligibility import model_cache_safe_sql
+from researchlib.empty_answer import visible_sql
 from researchlib.failures import clear_failure, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.model_inputs import cached_ocr_safe_sql
 from researchlib.web.present import format_date
 
 logger = logging.getLogger("researchlib.theses")
@@ -110,7 +112,10 @@ def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) ->
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s)
-          AND a.duplicate_of IS NULL AND {not_guest_sql("a")}
+          AND a.duplicate_of IS NULL AND {not_guest_sql("a")} AND {model_cache_safe_sql("a")}
+          AND {visible_sql("a")}
+          AND v.content_hash = a.content_hash
+          AND {cached_ocr_safe_sql("a", "v")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (company_id, list(sources_by_id)),
@@ -530,9 +535,18 @@ def present(row: dict | None, items: list[dict], company: str = "") -> list[dict
     打开页面也不会继续把无关判断挂在「支持」上。items 是 views.timeline 的结果（新的在前）。
     quiet_quotes 是原句对不上这条论点、展示时要藏起来的文章 id。
     """
-    if row is None:
+    if row is None or not row.get("views_hash"):
+        return []
+    # A cached synthesis may contain uncited claims from records which are now
+    # excluded.  Verify its complete input set, not just the remaining citations.
+    if any(not item.get("content_hash") for item in items):
+        return []
+    _text, current = build_input([item for item in items if is_real_view(item)])
+    if views_hash(current) != row["views_hash"]:
         return []
     by_article = {item["article_id"]: item for item in items}
+    if any(ref not in by_article for thesis in row["theses"] or [] for ref in _cited_ids(thesis)):
+        return []
     found: list[dict] = []
     for index, thesis in enumerate(validate_theses(list(row["theses"] or []), items, company), start=1):
         sides = {}
@@ -703,13 +717,16 @@ def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) 
     if not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT c.id, c.name_zh
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
-          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
+          AND {model_cache_safe_sql("a")}
+          AND {not_guest_sql("a")} AND {visible_sql("a")}
+          AND v.content_hash = a.content_hash
+          AND {cached_ocr_safe_sql("a", "v")}
         GROUP BY c.id, c.name_zh
         HAVING count(*) >= %s
         ORDER BY c.name_zh, c.id

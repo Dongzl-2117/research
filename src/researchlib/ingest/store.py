@@ -5,17 +5,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from psycopg.errors import DeadlockDetected, LockNotAvailable, SerializationFailure
 from psycopg.types.json import Jsonb
 
+from researchlib.attachments import with_stored_attachments
 from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
+from researchlib.eligibility import is_eligible_article, model_cache_safe_article, project_article
 from researchlib.empty_answer import hide_empty_answer
 from researchlib.images import sync_article_images
 from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
 from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.model import IngestReport, ParsedDoc
+from researchlib.ingest.projection_guard import (
+    ConcurrentProjectionChange,
+    guard_state,
+    hold_input,
+    identical_input,
+)
 from researchlib.mentions import (
     CompanyMatcher,
     load_company_rows,
@@ -66,6 +75,30 @@ def store_documents(
         try:
             status, stored, linked, missing, duplicate = _store_one(conn, source, doc, data_dir, matcher)
             conn.commit()
+        except (ConcurrentProjectionChange, DeadlockDetected, LockNotAvailable, SerializationFailure) as exc:
+            conn.rollback()
+            try:
+                if isinstance(exc, ConcurrentProjectionChange):
+                    article_id, digest, body_text = exc.article_id, exc.digest, exc.body_text
+                else:
+                    row = conn.execute(
+                        "SELECT id FROM articles WHERE source_id = %s AND external_id = %s",
+                        (source.id, doc.external_id),
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError("冲突文章已不存在")
+                    article_id = row["id"]
+                    digest = content_hash(doc.title, doc.body_md, doc.published_at)
+                    body_text = _body_text(doc.title, doc.body_md)
+                hold_input(conn, source.id, article_id, doc, digest, body_text, reason="projection_concurrent")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                report.errors.append("并发来稿暂存失败；原始归档未改，请保留归档并重试")
+            else:
+                report.held += 1
+                report.errors.append(f"文章 {article_id} 并发变化，来稿已保存为待核版本")
+            continue
         except Exception as exc:
             report.errors.append(f"{doc.external_id}: {exc}")
             conn.rollback()
@@ -78,6 +111,8 @@ def store_documents(
             report.updated += 1
         elif status == "held":
             report.held += 1
+        elif status == "rejected":
+            report.rejected += 1
         else:
             report.unchanged += 1
         report.images_stored += stored
@@ -158,30 +193,75 @@ def apply_length_floor(source: Source, body_md: str, meta: dict) -> dict:
 
 
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
-    profile = profile_for(conn, source.id)
-    body_text = _body_text(doc.title, doc.body_md, profile)
-    digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
-    meta = apply_length_floor(source, doc.body_md, poster)
+    candidate = {
+        "source_id": source.id, "source_kind": source.kind, "title": doc.title,
+        "body_md": doc.body_md, "raw_meta": doc.raw_meta,
+    }
+    if (source.kind == "zsxq" and not is_eligible_article(candidate)
+            and str(doc.raw_meta.get("topic_id") or "") != doc.external_id):
+        # Malformed/unbound content still stops before DB access. A bound legacy
+        # topic may only quarantine a conflict on an explicitly protected row.
+        return "rejected", 0, 0, 0, None
     existing = conn.execute(
         """
         SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
         FROM articles
         WHERE source_id = %s AND external_id = %s
+        FOR UPDATE
         """,
         (source.id, doc.external_id),
     ).fetchone()
+    if existing is not None:
+        state = guard_state(existing, source.id, doc.external_id)
+        if state != "unmarked":
+            raw_digest = content_hash(doc.title, doc.body_md, doc.published_at)
+            if state == "verified" and identical_input(existing, doc, raw_digest):
+                return "unchanged", 0, 0, 0, None
+            hold_input(conn, source.id, existing["id"], doc, raw_digest,
+                       _body_text(doc.title, doc.body_md), reason="projection_guard")
+            return "held", 0, 0, 0, None
+    if not is_eligible_article(candidate):
+        return "rejected", 0, 0, 0, None
+    if source.kind == "zsxq":
+        projected = project_article(candidate)
+        if projected is None:
+            return "rejected", 0, 0, 0, None
+        doc.title, doc.body_md, doc.raw_meta = projected["title"], projected["body_md"], projected["raw_meta"]
+        doc.raw_meta["zsxq_identity"]["projection_md"] = doc.body_md
+        if projected.get("owner_reply_context"):
+            doc.image_refs = []
+            doc.attachment_refs = []
+            doc.raw_meta.pop("local_attachments", None)
+    profile = profile_for(conn, source.id)
+    body_text = _body_text(doc.title, doc.body_md, profile)
+    digest = content_hash(doc.title, doc.body_md, doc.published_at)
+    meta = apply_length_floor(source, doc.body_md, assign_poster_role(
+        dict(doc.raw_meta), source.author, source.poster_names, source_id=source.id, source_kind=source.kind
+    ))
+    meta = with_stored_attachments(meta, doc.attachment_refs, data_dir, source.id)
     keep = False
     article_changed = True
     same_words = False
+    policy_transition = False
+    comparison = existing
+    if existing is not None and source.kind == "zsxq":
+        existing_context = {**dict(existing), "source_id": source.id, "source_kind": source.kind}
+        comparison = project_article(existing_context)
+        policy_transition = (
+            comparison is None or not model_cache_safe_article(existing_context)
+            or comparison["body_md"] != existing["body_md"]
+        )
     if existing is not None and existing["content_hash"] != digest:
-        old_article, old_comments = split_comments(existing["body_md"])
+        old_article, old_comments = split_comments(comparison["body_md"] if comparison is not None else "")
         new_article, new_comments = split_comments(doc.body_md)
-        if (old_article == new_article and existing["title"] == doc.title) or (
-            article_text(existing["body_md"]) == article_text(doc.body_md)
-        ):
-            # 作者写的正文没变：只是接在后面的「评论里的回复」变了，或者归档头里的点赞、阅读数变了、
-            # 标题换了补法。不算改稿。回复少了（这次导出没带评论，或者回复被删了）时库里那份更全，不动。
+        if comparison is None:
+            # An excluded guest/unknown body contains no verified owner text to
+            # lose. Activate the newly proved projection; preserve raw below.
+            article_changed = True
+        elif ((old_article == new_article and comparison["title"] == doc.title)
+              or article_text(comparison["body_md"]) == article_text(doc.body_md)):
+            # 作者写的正文没变，只是接在后面的「评论里的回复」变了：不算改稿。回复少了（这次导出没带评论，
+            # 或者回复被删了）时库里那份更全，不动。
             article_changed = False
             keep = len(new_comments) < len(old_comments)
             same_words = new_comments == old_comments
@@ -191,7 +271,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 existing,
                 doc,
                 digest,
-                old_text=_body_text(existing["title"], old_article),
+                old_text=_body_text(comparison["title"], old_article),
                 new_text=_body_text(doc.title, new_article),
                 body_text=body_text,
                 meta=meta,
@@ -199,6 +279,15 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             if held:
                 # 库里的完整原文和它的图片都不动。
                 return "held", 0, 0, 0, None
+    preserved_policy_raw = False
+    if existing is not None and policy_transition:
+        save_revision(
+            conn, existing["id"], kind="previous", reason="owner_policy_projection",
+            content_hash=existing["content_hash"], title=existing["title"],
+            published_at=existing["published_at"], body_md=existing["body_md"],
+            body_text=existing["body_text"], raw_meta=existing["raw_meta"],
+        )
+        preserved_policy_raw = True
     if existing is None:
         inserted = conn.execute(
             """
@@ -222,7 +311,8 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         article_id = inserted["id"]
         status = "inserted"
     elif existing["content_hash"] != digest and not keep:
-        if article_changed and (existing["body_md"] != doc.body_md or existing["title"] != doc.title):
+        if (not preserved_policy_raw and article_changed
+                and (existing["body_md"] != doc.body_md or existing["title"] != doc.title)):
             # 替换前把旧版存下来。只改了发布时间、只多了评论里的回复的不算改稿。
             save_revision(
                 conn,
@@ -235,7 +325,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 body_text=existing["body_text"],
                 raw_meta=existing["raw_meta"],
             )
-        conn.execute(
+        changed = conn.execute(
             """
             UPDATE articles SET
               content_hash = %s,
@@ -245,13 +335,24 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
               body_text = %s,
               raw_meta = %s,
               updated_at = now()
-            WHERE id = %s
+            WHERE id = %s AND (
+              NOT (raw_meta ? '_verified_reply_projection')
+              OR (content_hash = %s AND raw_meta = %s)
+            )
             """,
-            (digest, doc.title, doc.published_at, doc.body_md, body_text, Jsonb(meta), existing["id"]),
+            (digest, doc.title, doc.published_at, doc.body_md, body_text, Jsonb(meta), existing["id"],
+             existing["content_hash"], Jsonb(existing["raw_meta"] or {})),
         )
-        if same_words:
-            # 只是归档头里的点赞、阅读数，补出来的标题，或发布时间变了：观点、摘要和译文说的还是这篇，
-            # 哈希跟过来，摘要不会从卡片上消失，夜里也不用重抽。评论回复变了的照旧重抽。
+        if changed.rowcount != 1:
+            raise ConcurrentProjectionChange(existing["id"], digest, body_text)
+        # Header-only normalization may keep caches only when their actual
+        # title/date/text and all provenance metadata remain unchanged.
+        if (same_words and not policy_transition
+                and existing["title"] == doc.title and existing["published_at"] == doc.published_at
+                and existing["body_text"] == body_text and dict(existing["raw_meta"] or {}) == meta
+                and model_cache_safe_article({**existing, "source_id": source.id, "source_kind": source.kind})
+                and model_cache_safe_article({**candidate, "title": doc.title, "body_md": doc.body_md,
+                                              "raw_meta": meta})):
             from researchlib.retime import _realign
 
             _realign(conn, existing["id"], {existing["content_hash"]}, digest)
@@ -261,16 +362,19 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         article_id = existing["id"]
         status = "unchanged"
         # 正文没变也要补上发帖人：历史归档重导一遍就能把网友帖从星主名下摘掉。
-        if doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id"):
-            merged = assign_poster_role(dict(existing["raw_meta"] or {}), source.author, source.poster_names)
-            merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
-            merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
-            assign_poster_role(merged, source.author, source.poster_names)
+        if not keep:
+            merged = dict(existing["raw_meta"] or {})
+            merged.pop("local_attachments", None)
+            merged.update(meta)
+            assign_poster_role(merged, source.author, source.poster_names, source_id=source.id, source_kind=source.kind)
             if merged != dict(existing["raw_meta"] or {}):
-                conn.execute(
-                    "UPDATE articles SET raw_meta = %s WHERE id = %s",
-                    (Jsonb(merged), article_id),
+                changed = conn.execute(
+                    "UPDATE articles SET raw_meta = %s WHERE id = %s AND ("
+                    "NOT (raw_meta ? '_verified_reply_projection') OR (content_hash = %s AND raw_meta = %s))",
+                    (Jsonb(merged), article_id, existing["content_hash"], Jsonb(existing["raw_meta"] or {})),
                 )
+                if changed.rowcount != 1:
+                    raise ConcurrentProjectionChange(article_id, digest, body_text)
                 if is_guest(merged):
                     conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
     if status != "unchanged":

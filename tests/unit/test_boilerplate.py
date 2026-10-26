@@ -1,4 +1,11 @@
-from researchlib.boilerplate import Profile, clean_body, clean_html_document, normalize, strip_meta
+from researchlib.boilerplate import (
+    Profile,
+    clean_body,
+    clean_html_document,
+    is_publisher_promo_chunk,
+    normalize,
+    strip_meta,
+)
 
 HEADER = """# 标题
 
@@ -145,3 +152,32 @@ def test_repeated_headings_without_promo_are_kept():
     heading = "一、核心观点 Core Viewpoints"
     body = f"# t\n\n## {heading}\n\n这家公司靠定价权赚钱。\n"
     assert heading in clean_body(body, _profile([heading]))
+
+
+def test_standalone_recruitment_chunk_is_not_research_evidence():
+    text = (
+        "— 扫码下方微信加入会员群—\n"
+        "适合研究行业的朋友加入，我们讨论公司的经营方式，也可以私信我问题。（备注：群会员）"
+    )
+    assert is_publisher_promo_chunk(text)
+    assert is_publisher_promo_chunk("## 扫码加入交流群")
+    assert not is_publisher_promo_chunk("## 欢迎加入交流群")
+
+
+def test_recruitment_header_does_not_discard_mixed_research_or_quotations():
+    header = "— 扫码下方微信加入会员群—\n"
+    assert not is_publisher_promo_chunk(header + "腾讯的广告库存增加，让相同流量产生更多收入。")
+    assert not is_publisher_promo_chunk(
+        header + "适合研究行业的朋友加入，可私信我。（备注：群会员）\n会员店靠采购规模降低单位成本。"
+    )
+    assert not is_publisher_promo_chunk('> 扫码下方微信加入会员群\n> 这是原文的邀请语。')
+    assert not is_publisher_promo_chunk(header + "适合研究行业的朋友加入，可私信我，会员店靠采购规模降低成本。")
+    assert not is_publisher_promo_chunk(header + "适合研究行业的朋友加入，我们讨论会员费增长20%，可以私信我。")
+    assert not is_publisher_promo_chunk('“扫码下方微信加入会员群”\n适合研究行业的朋友加入，可以私信我。')
+    assert not is_publisher_promo_chunk('作者引用广告：\n' + header + "适合研究行业的朋友加入，可以私信我。")
+
+
+def test_membership_and_qr_business_discussions_are_not_publisher_promotions():
+    assert not is_publisher_promo_chunk("加入会员群之后的复购率，是这篇研究要回答的问题。")
+    assert not is_publisher_promo_chunk("会员费让仓储零售商与顾客利益一致，采购规模降低成本。")
+    assert not is_publisher_promo_chunk("扫码支付降低收单成本，也让交易更便利。")

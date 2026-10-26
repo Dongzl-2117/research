@@ -5,7 +5,7 @@
 - **文章**：`articles`，原文 Markdown 和纯文本，带 zhparser 全文索引。
 - **段落块**：`article_chunks`。正文按 Markdown 章节切，章节内按段落装箱，几百字一块，带章节标题和自己的全文索引。检索片段、问答引用、JSON 接口都落在块上，所以引用能精确到段落（`article_id` + `chunk`）。导入时自动切；`research-rebuild-chunks` 全部重切。进程启动时只给还没有块的文章补切。
 - **公司提及**：`article_mentions`，规则见 [mentions.md](mentions.md)。
-- **LLM 摘要**：`article_digests`，按 `content_hash` 对齐正文，记着写它的提示词版本（`prompt_version`）。正文改过、摘要没重算时，页面和接口当作没有摘要；提示词版本旧了的照常显示，同时排进后台重写。打开按天、作者、公司或检索时，当前卡片里缺的摘要会在后台补上；夜间任务每晚补一批，`research-digest` 仍可手动补。应用启动和部署不会跑全库。
+- **LLM 摘要**：`article_digests`，按 `content_hash` 对齐正文，记着写它的提示词版本（`prompt_version`）。正文改过、摘要没重算时，页面和接口当作没有摘要；提示词版本旧了的照常显示，由显式处理命令重写。打开按天、作者、公司或检索只读取已保存结果；夜间任务每晚补一批，`research-digest` 仍可手动补。应用启动和部署不会跑全库。
 - **观点**：`company_views`，被深入谈到的公司的观点时间线，见下面「观点时间线」。不限持仓。
 - **论点**：`company_theses`，把一家公司的观点归成几条论点，见下面「论点地图」。
 - **失败记录**：`llm_failures`，摘要、观点、论点调用失败的次数，见下面「失败了怎么办」。
@@ -120,12 +120,9 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 
 ## 摘要
 
-摘要进 `article_digests`，和问库共用同一份 LLM 凭证。提示只要求导读，不写投资建议、该不该买、目标价或仓位。要点先写判断，再写作者给出的机制；数字只在支撑判断时引用；原文谈到风险、推翻条件或验证指标才写，没谈到就不写。提示词改了就把 `digest.PROMPT_VERSION` 加一，旧摘要照常显示，被看到或跑 `research-digest` 时按新版重写（没有摘要的排在只是版本旧了的前面）。
+摘要进 `article_digests`，和问库共用同一份 LLM 凭证。提示只要求导读，不写投资建议、该不该买、目标价或仓位。要点先写判断，再写作者给出的机制；数字只在支撑判断时引用；原文谈到风险、推翻条件或验证指标才写，没谈到就不写。提示词改了就把 `digest.PROMPT_VERSION` 加一，旧摘要照常显示，显式跑 `research-digest` 时按新版重写（没有摘要的排在只是版本旧了的前面）。
 
-两条写入路径：
-
-- 打开按天、作者、公司或检索时，当前卡片里还没有摘要（或正文已改）的文章会在后台排队，一次最多排 40 篇，不挡住页面，也不扫全库。没有可用的 LLM 凭证时不排队，卡片改用正文里第一段实质内容，并跳过 sn、点赞、时间戳。
-- `research-digest` 仍可手动补一批。`research-web` 启动、容器拉起和部署都不会跑全库。
+写入仅来自显式处理命令或已有夜间任务。打开按天、作者、公司、检索或文章页面都不安排摘要，也不改库。缺少可用摘要时，卡片显示正文中的实质内容。`research-digest` 可手动补一批；`research-web` 启动不生成摘要。
 
 ```bash
 docker compose exec app research-digest --limit 50
@@ -145,7 +142,7 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 
 ### 失败了怎么办
 
-摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-pilot` 同样）。不会在两个提供方之间自动切换。
+摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间显式处理任务按退避规则跳过；页面访问始终不排队。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-pilot` 同样）。不会在两个提供方之间自动切换。
 
 ## 观点时间线
 
@@ -157,7 +154,7 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 - 筛选：全部、风险与反方（有风险或推翻条件、或态度是看淡、两面）、态度变化（同一位作者这篇的态度和他上一篇不同；中性不算信号）。点作者名只看这位作者。
 - 一篇文章里深入谈到的几家公司一次整理，不为每家公司各问一次模型。按正文 `content_hash` 和 `views.PROMPT_VERSION` 缓存，正文或提示词变了才重抽。
 
-两条写入路径，和摘要一样：打开公司页时，这家公司最近还没整理的文章在后台排队（一次最多 20 篇），页面上写「还有 N 篇在整理」；夜间任务每晚补一批；也可以手动批量补：
+写入路径和摘要一样，仅来自显式处理命令或已有夜间任务。打开公司页只显示已保存观点和待处理数量，不安排后台任务；可以手动批量补：
 
 ```bash
 docker compose exec app research-views                       # 全部被深入谈到的公司，最多 100 篇
@@ -201,7 +198,7 @@ docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516
 - 判断或态度为空白、以及网友帖的观点不进这次输入。
 - 谁支持、谁反对、各几篇、最近一次是谁哪天说的，都按引用的观点从库里数。点一条论点，下面的时间线只看这几篇（`?views=t1`）。
 - 观点不到 4 条的公司不做。一家公司一次调用；观点有变化才重算，一天最多一次（按观点集合的指纹和提示词版本缓存）。提示词版本变了，已存的地图也会过期。
-- 打开公司页默认不在后台补（`RESEARCH_THESES_AUTO` 默认 0）。夜间默认也不跑（`THESES_ENABLED` 默认 0）。打开之后范围是观点够数的公司，不写死持仓。启动和部署不跑。
+- 打开公司页不安排论点任务，不受旧的 `RESEARCH_THESES_AUTO` 开关影响。夜间默认也不跑（`THESES_ENABLED` 默认 0）；显式 `research-theses` 的范围是观点够数的公司，不写死持仓。启动和部署不生成论点。
 
 ```bash
 docker compose exec app research-theses                        # 观点够数的公司，过期的才算

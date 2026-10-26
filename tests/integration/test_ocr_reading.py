@@ -8,6 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
+from owner_fixtures import owner_doc
 
 from researchlib import digest as digest_mod
 from researchlib import views as views_mod
@@ -41,6 +42,8 @@ def _store(conn, settings, source_id: str, external_id: str, title: str, body: s
         raw_meta={},
         image_refs=[(path.name, path) for path in images],
     )
+    if source_id == "fangwei-zsxq":
+        owner_doc(doc)
     store_documents(
         conn,
         source=sources[source_id],
@@ -51,7 +54,8 @@ def _store(conn, settings, source_id: str, external_id: str, title: str, body: s
         errors=[],
     )
     return conn.execute(
-        "SELECT id, content_hash, source_id FROM articles WHERE external_id = %s AND source_id = %s",
+        "SELECT id, content_hash, source_id "
+        "FROM articles WHERE external_id = %s AND source_id = %s",
         (external_id, source_id),
     ).fetchone()
 
@@ -156,7 +160,8 @@ def test_short_screenshot_post_is_read_by_views_and_digest(conn, settings, tmp_p
 
     monkeypatch.setattr(views_mod, "chat", capture_view)
     article = conn.execute(
-        "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s",
+        "SELECT id, title, body_md, body_text, raw_meta, content_hash, published_at, source_id "
+        "FROM articles WHERE id = %s",
         (row["id"],),
     ).fetchone()
     assert views_mod.extract_article(conn, settings, article, "方伟", [company]) == 1
@@ -180,7 +185,8 @@ def test_short_screenshot_post_is_read_by_views_and_digest(conn, settings, tmp_p
     conn.commit()
     assert row["id"] in {item["id"] for item in digest_mod.pending_articles(conn, sources, 20)}
     digest_row = conn.execute(
-        "SELECT id, title, body_text, content_hash, published_at, source_id, ocr_hash FROM articles WHERE id = %s",
+        "SELECT id, title, body_md, body_text, raw_meta, content_hash, published_at, source_id, ocr_hash "
+        "FROM articles WHERE id = %s",
         (row["id"],),
     ).fetchone()
     stored = {"prompt_version": digest_mod.PROMPT_VERSION, "head_only": False, "ocr_hash": ""}
@@ -302,7 +308,8 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
 
     monkeypatch.setattr(digest_mod, "chat", capture_digest)
     digest_row = conn.execute(
-        "SELECT id, title, body_text, content_hash, published_at, source_id, ocr_hash FROM articles WHERE id = %s",
+        "SELECT id, title, body_md, body_text, raw_meta, content_hash, published_at, source_id, ocr_hash "
+        "FROM articles WHERE id = %s",
         (row["id"],),
     ).fetchone()
     digest_mod.digest_article(conn, settings, digest_row, "方伟")
@@ -321,7 +328,8 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     monkeypatch.setattr(views_mod, "chat", capture_view)
     company = conn.execute("SELECT id, name_zh FROM companies WHERE name_zh = '贵州茅台'").fetchone()
     article = conn.execute(
-        "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s",
+        "SELECT id, title, body_md, body_text, raw_meta, content_hash, published_at, source_id "
+        "FROM articles WHERE id = %s",
         (row["id"],),
     ).fetchone()
     views_mod.extract_article(conn, settings, article, "方伟", [company])
@@ -388,7 +396,8 @@ def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, mon
     monkeypatch.setattr(views_mod, "chat", capture_view)
     company = conn.execute("SELECT id, name_zh FROM companies WHERE name_zh = '拼多多'").fetchone()
     article = conn.execute(
-        "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s",
+        "SELECT id, title, body_md, body_text, raw_meta, content_hash, published_at, source_id "
+        "FROM articles WHERE id = %s",
         (row["id"],),
     ).fetchone()
     assert views_mod.extract_article(conn, settings, article, "方伟", [company]) == 1

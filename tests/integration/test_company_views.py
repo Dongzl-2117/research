@@ -7,12 +7,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from owner_fixtures import load_browsing_sample as load_sample
 
 from researchlib import views as views_mod
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.llm import LLMError
-from researchlib.seed import load_sample
 from researchlib.sources import load_sources
 from researchlib.web.app import create_app
 
@@ -102,7 +102,9 @@ def test_timeline_on_company_page(conn, settings, monkeypatch):
         # 不在持仓里、但示例库深入谈到的公司也会整理观点。
         meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
         meituan_page = client.get(f"/companies/{meituan}").text
-        assert 'id="views"' in meituan_page and "没提炼成观点" in meituan_page
+        assert 'id="views"' in meituan_page
+        assert conn.execute("SELECT count(*) AS n FROM company_views WHERE company_id = %s",
+                            (meituan,)).fetchone()["n"] == 0
 
 
 def test_pending_articles_cover_all_tracked_companies_once(conn, settings):

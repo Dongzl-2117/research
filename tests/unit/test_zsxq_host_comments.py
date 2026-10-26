@@ -35,15 +35,15 @@ def test_host_author_detection():
     assert not is_host_comment_author("")
 
 
-def test_filter_markdown_keeps_only_fangwei():
+def test_filter_markdown_does_not_trust_even_fangwei_nickname():
     filtered = filter_host_comments_markdown(SAMPLE)
-    assert "## 评论（1）" in filtered
-    assert "方伟Rey" in filtered
-    assert "护城河还是要看切换成本" in filtered
+    assert "正文一句。" in filtered
+    assert "方伟Rey" not in filtered
+    assert "护城河还是要看切换成本" not in filtered
     assert "陈小东" not in filtered
     assert "空白名字" not in filtered
-    assert "## 评论里的回复" in filtered
-    assert "作者答：后面另说" in filtered
+    assert "## 评论里的回复" not in filtered
+    assert "作者答：后面另说" not in filtered
 
 
 def test_filter_markdown_drops_section_without_host():
@@ -69,16 +69,18 @@ def test_guest_roster_lists_only_non_host_and_ignores_reply_section():
 
 def test_reading_page_hides_guest_comments():
     html = assemble_reader_comments(SAMPLE, {}, lambda body, mapping: f"<p>{body.strip()}</p>")
-    assert "zsxq-comments" in html
-    assert "方伟Rey" in html
-    assert "护城河还是要看切换成本" in html
+    assert "正文一句。" in html
+    assert "zsxq-comments" not in html
+    assert "方伟Rey" not in html
+    assert "护城河还是要看切换成本" not in html
     assert "陈小东" not in html
     assert "空白名字" not in html
-    assert "评论（1）" in html
+    assert "评论（1）" not in html
 
 
 def test_render_body_on_article_with_comments():
     page = str(render_body(SAMPLE, {}))
-    assert "方伟Rey" in page
+    assert "正文一句。" in page
+    assert "方伟Rey" not in page
     assert "陈小东" not in page
-    assert 'class="zsxq-comments"' in page
+    assert 'class="zsxq-comments"' not in page

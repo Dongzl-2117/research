@@ -2,12 +2,8 @@
 
 只处理还没有摘要、正文改过（content_hash 对不上）、提示词版本旧了、当时只读了长文开头，
 或正文很短而图片文字和上次抽的时候不一致的文章。
-卡片和 JSON 接口优先展示摘要；旧摘要照常显示，同时排进后台重写。失败的记下来，隔几天再试。
-
-两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
-
-- 打开按天、作者、公司或检索时，当前卡片里缺摘要的文章在后台排队，不挡住页面，也不扫全库。
-- 手动 CLI 仍可补一批。应用启动和部署不会跑全库。
+卡片和 JSON 接口只读兼容的已存摘要。缺少摘要时不会在读取页面时写库或排队。
+摘要写入由显式 CLI 或处理任务执行，失败后按冷却期重试。
 
     research-digest --limit 50
     research-digest --source fangwei-mp --limit 200
@@ -28,10 +24,12 @@ from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import DUAN_SOURCE, VOICE_NOTE, display_author, for_model, is_guest, raw_meta_of
 from researchlib.config import Settings
-from researchlib.empty_answer import visible_sql
+from researchlib.eligibility import is_zsxq, model_cache_safe_article, model_cache_safe_sql, project_article
+from researchlib.empty_answer import is_suppressed, visible_sql
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.model_inputs import OCR_MODEL_INPUT_VERSION
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.present import format_date
@@ -42,7 +40,7 @@ logger = logging.getLogger("researchlib.digest")
 # 一次交给模型的正文上限（字），和问库一次读的量一样。更长的取开头、结尾和各节开头，见 excerpt.py。
 BODY_LIMIT = DIGEST_LIMIT
 # 提示词改了就把版本加一。旧摘要照常显示，被看到或跑 research-digest 时按新版重写。
-PROMPT_VERSION = 2
+PROMPT_VERSION = OCR_MODEL_INPUT_VERSION
 PROMPT = """读下面这篇投资研究文章，只输出一个 JSON 对象，不要输出别的文字：
 {"summary": "不超过 120 字的导读：作者在这篇里的核心判断是什么、凭什么这么判断，不写空话",
  "points": ["3 到 5 条要点，每条一句"],
@@ -113,11 +111,12 @@ _STALE = (
 def pending_articles(conn, source_ids: list[str], limit: int):
     return conn.execute(
         f"""
-        SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
+        SELECT a.id, a.source_id, a.title, a.published_at, a.body_md, a.body_text, a.content_hash, a.raw_meta
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
           AND {visible_sql("a")}
+          AND {model_cache_safe_sql("a")}
           AND {_STALE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY (d.article_id IS NULL OR d.content_hash <> a.content_hash) DESC,
                  a.published_at DESC NULLS LAST, a.id DESC
@@ -128,14 +127,34 @@ def pending_articles(conn, source_ids: list[str], limit: int):
 
 
 def digest_article(conn, settings: Settings, row, author: str) -> dict:
+    if not row.get("source_id"):
+        return {}
     meta = raw_meta_of(conn, row)
+    if is_suppressed(meta):
+        return {}
+    if not model_cache_safe_article({**dict(row), "raw_meta": meta}):
+        return {}
+    row = project_article({**dict(row), "raw_meta": meta})
+    if row is None:
+        return {}
+    meta = row["raw_meta"]
     shown_author, _owns = display_author(author, meta)
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"标题：{row['title']}\n作者：{shown_author}\n日期：{when}"
-    chunks = original_chunks(conn, row["id"])
+    if is_zsxq(row):
+        from researchlib.chunks import make_chunks
+
+        chunks = make_chunks(row["title"], row["body_md"])
+    else:
+        chunks = original_chunks(conn, row["id"])
     source_id = row["source_id"] if "source_id" in row.keys() else ""
     # 星球读者帖是发帖人自己的正文。for_model 会把它收成空的「作者本人」，摘要不能跟着写成段永平没说话。
-    if is_guest(meta):
+    if is_zsxq(row):
+        body = row["body_text"] or ""
+        restricted = False
+        if row.get("owner_reply_context"):
+            header += "\n（观点只归属于已验证星主回复；标注的网友问题仅作上下文，不归入星主观点。）"
+    elif is_guest(meta):
         body = row["body_text"] or ""
         restricted = False
     else:
@@ -145,7 +164,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
         if restricted:
             header += VOICE_NOTE
             chunks = voice_chunks
-    ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    ocr_text, ocr_digest = ("", "") if row.get("owner_reply_context") else article_ocr(conn, row["id"])
     voice_body = body
     duan_silent = source_id == DUAN_SOURCE and restricted and not voice_body.strip()
     if not duan_silent:
@@ -215,10 +234,11 @@ def rows_needing_digest(conn, article_ids: list[int]):
         return []
     return conn.execute(
         f"""
-        SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
+        SELECT a.id, a.source_id, a.title, a.published_at, a.body_md, a.body_text, a.content_hash, a.raw_meta
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
-        WHERE a.id = ANY(%s) AND {_STALE} AND {cooling_sql('digest', 'a.id')}
+        WHERE a.id = ANY(%s) AND {model_cache_safe_sql("a")} AND {visible_sql("a")}
+          AND {_STALE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (article_ids, PROMPT_VERSION),

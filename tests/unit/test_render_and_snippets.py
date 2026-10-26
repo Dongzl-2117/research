@@ -220,3 +220,16 @@ def test_chrome_cleanup_does_not_eat_the_message():
     assert "微信" not in cleaned.splitlines()
     assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in cleaned
     assert tidy_ocr_text("微信\n20:41\n昨天") == "微信\n20:41\n昨天"
+
+
+def test_alert_marker_cleanup_keeps_fenced_and_inline_literal_examples():
+    from researchlib.textutil import strip_alert_markers
+
+    body = "> [!WARNING] Keep caution text.\n\n```md\n> [!NOTE]\n```\n\n`> [!TIP]`\n"
+    cleaned = strip_alert_markers(body)
+    assert "Keep caution text." in cleaned
+    assert "> [!WARNING]" not in cleaned
+    assert "```md\n> [!NOTE]\n```" in cleaned and "`> [!TIP]`" in cleaned
+    html = str(render_body(body, {}))
+    assert "<strong>注意</strong>" in html and "Keep caution text." in html
+    assert "[!NOTE]" in html and "[!TIP]" in html

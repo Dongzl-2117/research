@@ -4,8 +4,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
+from owner_fixtures import owner_doc
 
 from researchlib.duplicates import fingerprint, rebuild_duplicates, same_article
+from researchlib.eligibility import IDENTITY_KEY, identity_for_topic
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.parse import comments_section
 from researchlib.ingest.store import store_documents
@@ -49,6 +51,8 @@ def _doc(external_id, title, body, day=12):
 
 
 def _store(conn, settings, source_id, docs):
+    if source_id == "fangwei-zsxq":
+        docs = [owner_doc(doc) for doc in docs]
     sources = {source.id: source for source in load_sources(settings.sources_path)}
     return store_documents(
         conn,
@@ -106,7 +110,7 @@ def test_repost_on_another_source_of_the_same_author(conn, settings):
     assert _row(conn, "mp/a.md")["duplicate_of"] == _row(conn, "zsxq:1")["id"]
     assert _row(conn, "zsxq:1")["duplicate_of"] is None
     # 不同作者写了相同的话不算同一篇。
-    _store(conn, settings, "chengfengpolang", [_doc("cf:1", "转述", BODY)])
+    _store(conn, settings, "gudujinhuati", [_doc("cf:1", "转述", BODY)])
     assert _row(conn, "cf:1")["duplicate_of"] is None
 
 
@@ -296,7 +300,10 @@ ZSXQ_EXTRA = "\n后来补一句：视频号的商家数还在涨，电商闭环�
 
 def _topic_doc(external_id, body, topic=TOPIC):
     doc = _doc(external_id, "腾讯的广告库存", body)
-    return ParsedDoc(doc.external_id, doc.title, doc.published_at, doc.body_md, {"topic_id": topic}, [])
+    evidence = {"topic_id": topic, "group": {"group_id": "48888181884848"},
+                "talk": {"owner": {"user_id": "1825524112"}}}
+    meta = {"topic_id": topic, IDENTITY_KEY: identity_for_topic(evidence, "fangwei-zsxq")}
+    return ParsedDoc(doc.external_id, doc.title, doc.published_at, doc.body_md, meta, [])
 
 
 def _topic_copies():
@@ -323,7 +330,7 @@ def test_same_zsxq_topic_is_one_post_even_when_the_text_drifted(conn, settings):
     conn.commit()
     report = _store(conn, settings, "fangwei-zsxq", [_topic_doc(TOPIC, live)])
     stale, current = _row(conn, OLD_ID), _row(conn, TOPIC)
-    # 以后导入更新的是按话题号那份，它当主版本；旧的那份指向它，段落块删掉，观点交给主版本，不用再抽。
+    # 同话题仍归并，但新增回复改变了模型输入，不能替旧观点伪造新哈希。
     assert report.duplicates == 1
     assert current["duplicate_of"] is None and stale["duplicate_of"] == current["id"]
     assert _count(conn, "article_chunks", stale["id"]) == 0
@@ -335,7 +342,7 @@ def test_same_zsxq_topic_is_one_post_even_when_the_text_drifted(conn, settings):
         (tencent,),
     ).fetchall()
     assert [(row["article_id"], row["current"], row["judgment"]) for row in view] == [
-        (current["id"], True, "视频号的广告库存还能抬")
+        (stale["id"], True, "视频号的广告库存还能抬")
     ]
     # 全库重认一遍还是这样。
     rebuild_duplicates(conn)
@@ -349,7 +356,11 @@ def test_same_zsxq_topic_is_one_post_even_when_the_text_drifted(conn, settings):
 def test_topic_migration_backfills_old_rows_from_the_archive_header(conn, settings):
     old, live = _topic_copies()
     # 部署前的样子：旧的那份 raw_meta 里没有话题号，指纹也对不上，两份都在首页。
-    _store(conn, settings, "fangwei-zsxq", [_doc(OLD_ID, "腾讯的广告库存", old)])
+    # Simulate an existing unproven legacy row directly in the disposable DB;
+    # the current importer must not admit it as a newly verified owner post.
+    _store(conn, settings, "fangwei-mp", [_doc(OLD_ID, "腾讯的广告库存", old)])
+    conn.execute("UPDATE articles SET source_id = 'fangwei-zsxq' WHERE external_id = %s", (OLD_ID,))
+    conn.commit()
     _store(conn, settings, "fangwei-zsxq", [_topic_doc(TOPIC, live)])
     assert _row(conn, OLD_ID)["duplicate_of"] is None
     for statement in split_sql((MIGRATIONS / "021_zsxq_topic_ids.sql").read_text(encoding="utf-8")):

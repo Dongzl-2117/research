@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from fastapi.testclient import TestClient
+from owner_fixtures import insert_legacy, owner_doc
 
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
@@ -43,7 +44,7 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
     store_documents(
         conn,
         source=_source(settings),
-        docs=[guest, owner],
+        docs=[guest, owner_doc(owner)],
         data_dir=settings.data_dir,
         archive_files=2,
         images_in_archive=0,
@@ -51,6 +52,11 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
     )
     guest_row = conn.execute(
         "SELECT id, title, content_hash FROM articles WHERE external_id = 'reader-cut'"
+    ).fetchone()
+    assert guest_row is None  # unknown guests are not newly admitted
+    insert_legacy(conn, "fangwei-zsxq", guest)
+    guest_row = conn.execute(
+        "SELECT id,title,content_hash FROM articles WHERE external_id = 'reader-cut'"
     ).fetchone()
     assert guest_row["title"] == TRUNCATED
     conn.execute(
@@ -68,16 +74,14 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
     with TestClient(create_app(settings)) as client:
         home = client.get("/")
         assert home.status_code == 200
-        assert home.text.count(FULL) >= 2
+        assert FULL in home.text
         assert "明确…" not in home.text
-        assert "读者帖" in home.text
-        assert "王小明" in home.text
+        assert "读者帖" not in home.text
+        assert "王小明" not in home.text
         assert "research-recent-views" in home.text
         guest_page = client.get(f"/articles/{guest_row['id']}")
-        assert guest_page.status_code == 200
-        assert f"<h1>{GUEST_TITLE}</h1>" in guest_page.text
-        assert "<title>" + GUEST_TITLE in guest_page.text
-        assert f"<h1>{FULL}</h1>" not in guest_page.text
+        assert guest_page.status_code == 404
+        assert DIGEST not in home.text  # a legacy guest digest cannot lend its title
         owner_page = client.get(f"/articles/{owner_row['id']}")
         assert owner_page.status_code == 200
         assert f"<h1>{FULL}</h1>" in owner_page.text

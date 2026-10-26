@@ -1,10 +1,11 @@
 """把微信截图的 OCR 行整理成博客式对话。
 
-微信里绿色气泡是作者自己（方伟），通常靠右、上面不写名字；灰色气泡是别人，通常靠左、上面有昵称。
-RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上不显示的侧标记；没有标记的旧识别结果，
-群聊里不带昵称的气泡按绿色本人处理，带别人昵称的才是网友。不调用模型。
+微信绿色气泡只证明截图发送方，通常靠右；灰色气泡是其他参与者。只有逐图核实的作者上下文才标成方伟。
+`order_text` 从原图 RGB 采样确认气泡底色，不再按左右位置猜颜色。新识别颜色不明且无明确昵称时
+标成「未确认：」。历史未标名的文字也不能仅凭位置、群聊界面或上一段话推定作者；
+要补颜色证据须定向重新 OCR。不调用模型。
 
-- 靠右（或没有坐标时、不带别人昵称）的气泡 →「方伟：」
+- 逐图确认发送方为作者 →「方伟：」，其他参与者 →「网友：」，仅有绿色或身份未知 →「未确认：」
 - 别人的昵称（王小明、李小红、Kevin，以及只写了名字的）→「网友：」，正文里不再留这个名字
 - 显示名「方伟 / 方伟Rey / 方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
@@ -34,8 +35,17 @@ from dataclasses import dataclass, field
 
 HOST = "方伟"
 GUEST = "网友"
-# 靠右的绿色气泡。零宽连字，str.strip 去不掉，整理进对话时拿掉，不显示。
+UNKNOWN = "未确认"
+REFERENCE_NOTE = "图表/资料摘录（非对话，作者未确认）"
+# 仅兼容读取历史侧标记；位置标记本身不能证明作者，新 OCR 不再生成。
 SIDE_SELF = "\u2060"
+# 原图像素颜色证据；未知不继承上一气泡的作者。
+BUBBLE_SELF = "\u2062"
+# Only an explicit per-image confirmation may mint this marker.
+BUBBLE_HOST = "\u2061"
+BUBBLE_GUEST = "\u2063"
+BUBBLE_UNKNOWN = "\u2064"
+_OCR_MARKERS = (SIDE_SELF, BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST, BUBBLE_UNKNOWN)
 
 _CJK = re.compile(r"[一-鿿]")
 _MEANING = re.compile(r"[0-9A-Za-z一-鿿]")
@@ -142,12 +152,13 @@ _HOST_LINE = re.compile(
     re.I,
 )
 _HOST_PREFIX = re.compile(r"^(方\s*伟(?:\s*Rey)?|Rey)\s+(.+)$", re.I)
-_STRUCTURED = re.compile(r"^(方伟|网友)\s*[:：]\s*(.*)$")
+_STRUCTURED = re.compile(r"^(方伟|网友|未确认)\s*[:：]\s*(.*)$")
 _INLINE = re.compile(r"^(.{1,16}?)[:：]\s*(.+)$")
 # 群名不一定带「群」字，例如「1633 示例·线下深度交流(80)」。
 _GROUP_TITLE = re.compile(
     r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
     r"|^(?:\d{2,6}\s+).{2,40}[（(]\d{1,4}[）)]$"
+    r"|^[^\n（(。！？!?]{2,36}(?:交流|讨论)\s*[（(]\d{1,4}[）)]$"
 )
 _LATIN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,19}$")
 _LATIN_STOP = frozenset(
@@ -156,6 +167,7 @@ _LATIN_STOP = frozenset(
 _GROUP_BARE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,16}群$")
 _TIME = re.compile(
     r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}:\d{2}(?::\d{2})?[≥>≤<]*$"
+    r"|^\d{1,2}:\d{2}\s*[mM]$"
     r"|^(?:昨天|今天|前天|星期[一二三四五六日天])$"
     r"|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?[≥>≤<]*$"
 )
@@ -178,7 +190,9 @@ _APP_FRAGMENT = re.compile(r"^QuestMobile", re.I)
 _AT_SUFFIX = re.compile(r"@[A-Za-z0-9_\-.]+$")
 _SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加")
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
-_WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
+_WECHAT = re.compile(
+    r"^(?:微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息)$", re.M
+)
 # 公众号文章预览页的「账号名 +关注」：账号名和按钮 OCR 粘在一行，旧规则只认整行「+关注」。
 # 「观察 56个朋友关注 82 455 38 33。」是「N个朋友关注」粘着阅读量、点赞数。
 # 「交易规则 71个朋友关注 53 47 23 写留言」再把留言按钮粘在末尾。
@@ -248,7 +262,11 @@ _TIME_PLACE = re.compile(
 _GUEST_TURN = "\x1d"
 # 「方伟在学习（作者）」：这一行下面是方伟的话，上面仍是上一轮。
 _HOST_TURN = "\x1c"
-_LABELED_REST = re.compile(r"^(?:方\s*伟|网友)\s*[:：]\s*(?P<rest>.+)$")
+_FOLLOW_COUNTS = re.compile(r"^\d+(?:\s+\d+)+[。.]?$")
+_SOCIAL_COUNTS = re.compile(
+    r"^\d+(?:\.\d+)?(?:万|亿)(?:\s+\d+(?:\.\d+)?(?:万|亿)){2,}[。.]?$"
+)
+_LABELED_REST = re.compile(r"^(?:方\s*伟|网友|未确认)\s*[:：]\s*(?P<rest>.+)$")
 _COMMENT_HEAD_SKIP = frozenset({"写", "欢迎", "请", "大家", "请大家", "条", "我要", "的", "这", "那"})
 # 下一帖标题常粘在卡片末尾：短问句、正文里没有句号。
 _FEED_TITLE = re.compile(
@@ -267,8 +285,7 @@ _CHART_MARK = re.compile(r"Builtwith|Fiscalai|Fiscal\.ai|McP$|Ads\s*v\.?Google|L
 # 微信小店 / 电商 App 的商品列表和商品卡：店铺 tabs、商品卡按钮、促销坑位。
 # 「大家都在搜」「百亿补贴」在微博、小红书、京东外卖群里也常见，不能单独当商店页。
 _SHOP_STRONG = re.compile(
-    r"小店介绍|精选\s*商品\s*分类|全店总售|立即参与万人团|品牌\s*收藏\s*客服|"
-    r"微信小店助手|微信小店交易规则中心"
+    r"小店介绍|精选\s*商品\s*分类|全店总售|立即参与万人团|品牌\s*收藏\s*客服"
 )
 _SHOP_WEAK = re.compile(r"点赞补贴价|上滑继续看视频|去参与")
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
@@ -303,8 +320,13 @@ class Shot:
     family: str = ""
 
 
-def present_ocr_pieces(pieces: list[str]) -> str:
-    """多张图按顺序合成一篇旁路正文。连续的群聊合并、去重；表格仍是原文。"""
+def present_ocr_pieces(pieces: list[str], *, host_self_indices: frozenset[int] = frozenset()) -> str:
+    """多图合并、去重；host_self_indices 仅接受调用方逐图核实的样本证据。
+
+    不能用来源白名单或颜色检测自动填充这些索引；未指定的发送方仍未确认。
+    """
+    if any(type(index) is not int or not 0 <= index < len(pieces) for index in host_self_indices):
+        raise ValueError("host confirmation must identify an existing image piece")
     blocks: list[str] = []
     pending: list[Turn] = []
     seen: list[str] = []
@@ -319,7 +341,9 @@ def present_ocr_pieces(pieces: list[str]) -> str:
             blocks.append(text.strip())
 
     pending_family = ""
-    for piece in pieces:
+    for index, piece in enumerate(pieces):
+        if index in host_self_indices:
+            piece = piece.replace(BUBBLE_SELF, BUBBLE_HOST)
         shot = parse_shot(piece)
         if shot.kind == "dialogue":
             family = shot.family or "chat"
@@ -351,18 +375,30 @@ def present_stored_ocr(stored: str) -> str:
 
 
 def speaker_note(text: str) -> str:
-    """摘要和观点的提示里补一句说话人，没有对话标记时不加。"""
+    """图片文字默认不是星主观点；有说话人标记时补充其证据边界。"""
+    note = "图片文字可能含第三方引用或资料；没有明确星主归属的内容，不得写成星主观点。" if (text or "").strip() else ""
     if "方伟：" in (text or "") or "网友：" in (text or ""):
-        return "群聊已整理成「方伟：」和「网友：」。方伟是星主，其余人都写成网友，不要把网友的话写成方伟的判断。"
-    return ""
+        note += "群聊已整理成「方伟：」和「网友：」。方伟是星主，其余人都写成网友，不要把网友的话写成方伟的判断。"
+    if "未确认：" in (text or ""):
+        note += "「未确认：」没有足够的说话人证据，也不要当作方伟的判断。"
+    return note
 
 
 def _plain(line: str) -> str:
-    return line[len(SIDE_SELF) :] if line.startswith(SIDE_SELF) else line
+    return line[1:] if line.startswith(_OCR_MARKERS) else line
+
+
+def _marker(line: str) -> str:
+    return line[:1] if line.startswith(_OCR_MARKERS) else ""
+
+
+def _bubble_marker(line: str) -> str:
+    marker = _marker(line)
+    return marker if marker != BUBBLE_UNKNOWN else ""
 
 
 def _footer_compact(line: str) -> str:
-    return re.sub(r"\s+", "", _fold(_plain(line)))
+    return re.sub(r"\s+", "", _footer_payload(line))
 
 
 def _is_author_badge(line: str) -> bool:
@@ -411,14 +447,23 @@ def _is_time_place(line: str) -> bool:
     return _TIME_PLACE.fullmatch(_footer_compact(line)) is not None
 
 
+def _footer_payload(line: str) -> str:
+    """旧旁路可能给纯界面字套过说话人，判断时先剥掉这个标签。"""
+    text = _fold(_plain(line)).strip()
+    labeled = _LABELED_REST.match(text)
+    return labeled.group("rest").strip() if labeled else text
+
+
 def _is_follow_chrome(line: str) -> bool:
     """「+关注」「14个朋友关注 3 19。」以及账号名/按钮粘在一行的情况。
 
     「饮料快暴 +关注」「品饮汇 品饮汇观察 +关注」「观察 56个朋友关注 82 455 38 33。」
     都是公众号预览页的页脚，整行丢掉。正文里提到朋友关注的（「我有14个朋友关注这件事」）不删。
     """
-    text = _footer_compact(line)
+    text = _footer_compact(_footer_payload(line))
     if not text or len(text) > 40:
+        return False
+    if re.match(r"^(?:请|别|不要|可以|需要|记得|点击|点一下|我|你|大家|这个|那个)", text):
         return False
     button = _FOLLOW_BUTTON.fullmatch(text)
     if button:
@@ -589,7 +634,7 @@ def _peel_sticky_tail(line: str) -> str:
     """正文句号后面直接粘上「分享21 推荐0 划线人数0」时，只留下正文。整行都是按钮的不动，交给截断。"""
     if _is_sticky_bar(line) or _is_strong_footer(line):
         return line
-    own = line.startswith(SIDE_SELF)
+    marker = _marker(line)
     plain = _plain(line).strip()
     if not plain:
         return line
@@ -599,7 +644,7 @@ def _peel_sticky_tail(line: str) -> str:
         if not head or not _is_sticky_bar(tail):
             continue
         if re.search(r"[。！？!?]$", head) or len(_CJK.findall(head)) >= 4:
-            return (SIDE_SELF if own else "") + head
+            return marker + head
     return line
 
 
@@ -616,6 +661,22 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
     while index < len(peeled):
         line = peeled[index]
         nxt = peeled[index + 1] if index + 1 < len(peeled) else ""
+        if line.startswith((BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST)):
+            kept.append(line)
+            index += 1
+            continue
+        if context and _SOCIAL_COUNTS.fullmatch(_footer_payload(line)):
+            index += 1
+            continue
+        if _is_follow_chrome(line):
+            index += 1
+            if (
+                index < len(peeled)
+                and not _bubble_marker(peeled[index])
+                and _FOLLOW_COUNTS.fullmatch(_footer_payload(peeled[index]))
+            ):
+                index += 1
+            continue
         if _bare_guest_name(line) and _is_message_label(nxt):
             kept.append(_GUEST_TURN)
             in_comments = True
@@ -665,7 +726,7 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
 
 
 def _prose_after_footer(original: str, raw_lines: list[str], stripped: list[str]) -> Shot:
-    if stripped == raw_lines:
+    if stripped == raw_lines and not any(_marker(line) for line in raw_lines):
         return Shot("prose", [], original)
     if not stripped:
         return Shot("media", [], "")
@@ -676,23 +737,32 @@ def parse_shot(text: str) -> Shot:
     original = (text or "").strip()
     if not original:
         return Shot("prose", [], "")
+    if original.startswith(REFERENCE_NOTE + "\n"):
+        return Shot("prose", [], original, "reference")
     raw_lines = [_scrub(line) for line in _normalize(original).splitlines()]
     raw_lines = [line for line in raw_lines if line]
     if not raw_lines:
         return Shot("prose", [], original)
-    # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
-    if (
-        _is_product_shot(raw_lines)
-        or _is_shop_shot(raw_lines)
-        or _is_chart_shot(raw_lines)
-        or _is_table_shot(raw_lines)
-        or _is_foreign_comment_shot(raw_lines)
-    ):
-        return Shot("media", [], "")
+    # Multi-column spacing is evidence for a table, not expendable whitespace.
+    # Keep it until media classification, before _scrub folds it for speech.
+    visible_raw_lines = [_plain(line.strip()) for line in _normalize(original).splitlines() if line.strip()]
+    # 界面噪音排除；图表和资料保留可读摘录，但不能变成微信对话。
+    if (_is_product_shot(visible_raw_lines) or _is_shop_shot(visible_raw_lines)
+            or _is_foreign_comment_shot(visible_raw_lines) or _is_video_ui(visible_raw_lines)):
+        return Shot("media", [], "", "interface")
+    if (_is_chart_shot(visible_raw_lines) or _is_table_shot(visible_raw_lines)
+            or _is_reading_card(visible_raw_lines)):
+        neutral = REFERENCE_NOTE + "\n" + "\n".join(visible_raw_lines)
+        return Shot("media", [], neutral, "reference")
     stripped = _drop_post_footer(raw_lines)
-    signal = _wechat_signal(stripped)
+    signal = _wechat_signal([_plain(line) for line in stripped])
     lines = _prepare_lines(stripped)
-    names = _speaker_names(lines, signal)
+    speaker_context = signal or any(
+        _classify(_plain(line), set())[0] == HOST
+        or _STRUCTURED.match(_plain(line)) or _bubble_marker(line)
+        for line in lines
+    )
+    names = _speaker_names(lines, bool(speaker_context))
     # 已经是「方伟：」「网友：」的块再跑也要能合并，不能因为界面字已经被拿掉就退回原文。
     visible = [
         _plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN, _HOST_TURN)
@@ -700,7 +770,7 @@ def parse_shot(text: str) -> Shot:
     labeled = bool(visible) and _STRUCTURED.match(visible[0]) is not None
     hosted = (
         any(_is_host_line(line) for line in visible)
-        or any(line.startswith(SIDE_SELF) for line in lines)
+        or any(_bubble_marker(line) for line in lines)
         or _HOST_TURN in lines
     )
     if not hosted:
@@ -714,8 +784,7 @@ def parse_shot(text: str) -> Shot:
                 break
     if not lines or not (signal or names or labeled or hosted):
         return _prose_after_footer(original, raw_lines, stripped)
-    # 群聊里没有坐标时，不写别人昵称的气泡是作者自己的绿色气泡。有侧标记时以标记为准。
-    turns = _walk(lines, names, self_unnamed=bool(signal or names or hosted))
+    turns = _walk(lines, names)
     had_account = any(_account_line(_plain(line)) for line in stripped)
     family = "moments" if had_account else ("group" if signal else "chat")
     if turns:
@@ -737,6 +806,24 @@ def _is_product_shot(lines: list[str]) -> bool:
     return dollars >= 3 and stars >= 2
 
 
+def _is_reading_card(lines: list[str]) -> bool:
+    """The reader profile on a dated book-excerpt card is not its text's author."""
+    return any(
+        re.fullmatch(r"摘录于\s*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?", _footer_payload(line))
+        for line in lines[:4]
+    )
+
+
+def _is_video_ui(lines: list[str]) -> bool:
+    """Short-video navigation/profile chrome is not a conversation transcript."""
+    joined = "\n".join(lines)
+    feed_tabs = re.search(r"following\s+shop\s+for\s*you", joined, re.I)
+    bottom_tabs = len(re.findall(r"\b(?:home|friends|inbox|profile)\b", joined, re.I))
+    profile_metrics = re.search(r"following\s+followers\s+likes", joined, re.I)
+    profile_buttons = re.search(r"follow\s+message", joined, re.I)
+    return bool((feed_tabs and bottom_tabs >= 3) or (profile_metrics and profile_buttons))
+
+
 def _is_shop_shot(lines: list[str]) -> bool:
     """微信小店 / 拼多多 / 淘宝的商品卡截图。
 
@@ -745,6 +832,12 @@ def _is_shop_shot(lines: list[str]) -> bool:
     正文里提到「微信小店」四个字不会命中这些界面词，照常保留。
     """
     joined = "\n".join(lines)
+    promo_rows = sum(
+        re.fullmatch(r"扫码领取优惠券|仅限前\d+名|\d+元立减金", line.strip()) is not None
+        for line in lines
+    )
+    if promo_rows >= 2:
+        return True
     if _SHOP_STRONG.search(joined):
         return True
     if "微信小店" not in joined:
@@ -755,6 +848,12 @@ def _is_shop_shot(lines: list[str]) -> bool:
 def _is_chart_shot(lines: list[str]) -> bool:
     """折线图 / 柱状图的 OCR：角标、轴刻度，读出来也没有句子。"""
     if any(_CHART_MARK.search(line) for line in lines):
+        return True
+    timeline_labels = sum(
+        re.fullmatch(r"(?:AI|Mobile|Web|PC)(?:\s+(?:19|20)\d{2})?", line.strip()) is not None
+        for line in lines
+    )
+    if timeline_labels >= 3 and len(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", "\n".join(lines))) >= 3:
         return True
     digitish = 0
     meaningful = 0
@@ -793,7 +892,15 @@ def _is_foreign_comment_shot(lines: list[str]) -> bool:
 
 def _is_table_shot(lines: list[str]) -> bool:
     """SCF / 电商份额等数据表：多列数字，阅读页只留原图。"""
-    if any(re.search(r"指标\s*数值|公司\s*财年|净利率|经营利润率", line) for line in lines):
+    if any(re.search(r"指标\s*数值|公司\s*财年", line) for line in lines):
+        return True
+    # Wrapped cells can make most individual OCR rows nonnumeric. A short
+    # four-column header still proves that this is a table/infographic.
+    if any(
+        len(line) <= 100 and not _is_strong_footer(line) and not re.search(r"[。！？!?]", line)
+        and len(re.split(r"\s{2,}", line.strip())) >= 4
+        for line in lines[:5]
+    ):
         return True
     rowish = 0
     for line in lines:
@@ -845,6 +952,8 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
             if not keep[earlier]:
                 continue
             old = norms[earlier]
+            if rows[earlier][0] != rows[index][0]:
+                continue
             if _same_sentence(norm, old):
                 keep[index] = False
                 break
@@ -859,9 +968,13 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
         if not keep[index]:
             continue
         speaker, line, norm, turn_id, pos = row
-        if any(_same_sentence(norm, old) for old in kept_norms):
+        # Repeating someone else's words is a new speaker's turn, not an
+        # overlapping crop. Keep attribution when a host echoes a guest.
+        seen_prefix = speaker + "\x1f"
+        if any(_same_sentence(norm, old[len(seen_prefix):])
+               for old in kept_norms if old.startswith(seen_prefix)):
             continue
-        kept_norms.append(norm)
+        kept_norms.append(seen_prefix + norm)
         kept_pos.setdefault(turn_id, pos)
         chosen.append(row)
     blocks: list[list] = []
@@ -960,7 +1073,7 @@ def _is_price(line: str) -> bool:
 
 
 def _is_time(line: str) -> bool:
-    return _TIME.fullmatch(_fold(line or "")) is not None
+    return _TIME.fullmatch(_footer_payload(line)) is not None
 
 
 def _is_store(line: str) -> bool:
@@ -1010,7 +1123,7 @@ def _is_sku(line: str) -> bool:
 
 
 def _is_noise(line: str) -> bool:
-    folded = _fold(line)
+    folded = _footer_payload(line)
     if not folded or _SYMBOL.fullmatch(folded):
         return True
     # 截图边缘的单个假名。折行剩下的「的」是汉字，留着。
@@ -1051,15 +1164,18 @@ def _peel_handle(line: str) -> str:
 
 
 def _prepare_lines(raw_lines: list[str]) -> list[str]:
-    own = [line.startswith(SIDE_SELF) for line in raw_lines]
+    markers = [_marker(line) for line in raw_lines]
     peeled = [_peel_handle(_maybe_peel(_plain(line))) for line in raw_lines]
     had_account = any(_account_line(line) for line in peeled)
-    drop = {index for index, line in enumerate(peeled) if _is_card_anchor(line)}
+    drop = {
+        index for index, line in enumerate(peeled)
+        if markers[index] not in (BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST) and _is_card_anchor(line)
+    }
     changed = True
     while changed:
         changed = False
         for index, line in enumerate(peeled):
-            if index in drop or not _is_sku(line):
+            if markers[index] in (BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST) or index in drop or not _is_sku(line):
                 continue
             if any(neighbor in drop for neighbor in (index - 1, index + 1)):
                 drop.add(index)
@@ -1073,9 +1189,6 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
         if line == _HOST_TURN:
             kept.append(_HOST_TURN)
             continue
-        if _is_time(line):
-            kept.append(_BREAK)
-            continue
         # 第一条账号栏留下分界；后面的「方伟看十年」是页脚，整行丢掉。
         # 必须写在 _is_noise 前面，否则账号栏会被直接跳过，栏上的引用就没有分界。
         if _account_line(line):
@@ -1083,11 +1196,17 @@ def _prepare_lines(raw_lines: list[str]) -> list[str]:
                 kept.append(_ACCOUNT_SPLIT)
                 placed_split = True
             continue
+        if markers[index] in (BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST):
+            kept.append(markers[index] + line)
+            continue
+        if _is_time(line):
+            kept.append(_BREAK)
+            continue
         if index in drop or _is_noise(line):
             continue
         if len(kept) <= 1 and _GROUP_BARE.fullmatch(line):
             continue
-        kept.append((SIDE_SELF if own[index] else "") + line)
+        kept.append(markers[index] + line)
     if had_account:
         kept = _drop_trailing_feed_title(kept)
     return _split_after_host_mention(kept)
@@ -1141,16 +1260,23 @@ def _split_after_host_mention(lines: list[str]) -> list[str]:
 
 
 def _speaker_names(lines: list[str], signal: bool) -> set[str]:
+    # A chart label such as Mobile / Tencent is not a speaker. Nickname shape
+    # only helps after the image has independent chat or speaker evidence.
+    if not signal:
+        return set()
     names: set[str] = set()
     pairs: list[str] = []
     seen_times: dict[str, int] = {}
-    usable = [
-        _plain(line)
-        for line in lines
-        if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN, _HOST_TURN) and not line.startswith(SIDE_SELF)
-    ]
-    for index, line in enumerate(usable):
-        nxt = usable[index + 1] if index + 1 < len(usable) else ""
+    usable = [line for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN, _HOST_TURN)]
+    for index, raw in enumerate(usable):
+        # A colored bubble is content, never a nickname, but it is still the
+        # lookahead evidence for the uncolored nickname immediately above it.
+        if _bubble_marker(raw):
+            continue
+        line = _plain(raw)
+        if _utterance(line):
+            continue
+        nxt = _plain(usable[index + 1]) if index + 1 < len(usable) else ""
         if _cjk_name(line, 3) or _latin_name(line):
             seen_times[line] = seen_times.get(line, 0) + 1
             if _content(nxt):
@@ -1168,7 +1294,7 @@ def _speaker_names(lines: list[str], signal: bool) -> set[str]:
 
 def _guest_label(name: str) -> bool:
     name = name.strip()
-    if not name or name in {HOST, GUEST} or _utterance(name) or name in _NOT_NAMES:
+    if not name or name in {HOST, GUEST, UNKNOWN} or _utterance(name) or name in _NOT_NAMES:
         return False
     if _is_host_line(_compact_host(name)):
         return False
@@ -1181,7 +1307,7 @@ def _guest_label(name: str) -> bool:
 def _classify(line: str, names: set[str]) -> tuple[str, str]:
     structured = _STRUCTURED.match(line)
     if structured:
-        who = HOST if structured.group(1) == HOST else GUEST
+        who = structured.group(1)
         return who, (structured.group(2) or "").strip()
     compact = _compact_host(line)
     if _is_host_line(compact):
@@ -1202,13 +1328,17 @@ def _classify(line: str, names: set[str]) -> tuple[str, str]:
     return "", ""
 
 
-def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn]:
+def _walk(lines: list[str], names: set[str]) -> list[Turn]:
     turns: list[Turn] = []
     speaker = ""
+    explicit_speaker = False
+    author_header = False
+    nickname_marker: str | None = None
     buf: list[str] = []
     # 有账号栏时，栏上整段是引用，不看绿/灰、也不把靠右的侧标记当成方伟。
     quote_reply = _ACCOUNT_SPLIT in lines
     past_account = False
+    account_body = False
 
     def flush() -> None:
         nonlocal buf
@@ -1219,7 +1349,7 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
         elif quote_reply and not past_account:
             who = GUEST
         else:
-            who = HOST if self_unnamed else GUEST
+            who = HOST if account_body else UNKNOWN
         turns.append(Turn(who, buf))
         buf = []
 
@@ -1227,21 +1357,36 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
         if line == _ACCOUNT_SPLIT:
             flush()
             speaker = ""
+            explicit_speaker = False
+            author_header = False
+            nickname_marker = None
             past_account = True
+            account_body = True
             continue
         if line == _GUEST_TURN:
+            account_body = False
             flush()
             speaker = GUEST
+            explicit_speaker = True
+            author_header = False
+            nickname_marker = None
             continue
         if line == _HOST_TURN:
+            account_body = False
             flush()
             speaker = HOST
+            explicit_speaker = True
+            author_header = True
+            nickname_marker = None
             continue
         if line == _BREAK:
             flush()
             speaker = ""
+            explicit_speaker = False
+            author_header = False
+            nickname_marker = None
             continue
-        own = line.startswith(SIDE_SELF)
+        marker = _marker(line)
         text = _plain(line)
         if quote_reply and not past_account:
             if speaker != GUEST:
@@ -1250,24 +1395,49 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
             if text:
                 buf.append(text)
             continue
-        if own:
-            # 靠右的绿气泡是作者自己，不看这一行像不像别人的名字。
-            if speaker != HOST:
+        if marker in (BUBBLE_SELF, BUBBLE_HOST, BUBBLE_GUEST):
+            # 原图颜色比继承的昵称或左右位置更可靠。
+            # 账号引用卡不是气泡：栏下即使白/灰底仍是作者，直到明确的留言头。
+            named_bubble = (explicit_speaker and speaker == HOST
+                            and nickname_marker in (None, marker))
+            confirmed_header = account_body or author_header or named_bubble
+            colored_speaker = (
+                HOST if confirmed_header or marker == BUBBLE_HOST else
+                GUEST if marker == BUBBLE_GUEST else UNKNOWN
+            )
+            if speaker != colored_speaker:
                 flush()
-                speaker = HOST
+                speaker = colored_speaker
+            explicit_speaker = bool(confirmed_header)
+            nickname_marker = marker if named_bubble else None
             if text:
                 buf.append(text)
             continue
         who, rest = _classify(text, names)
         if who:
+            account_body = False
+            author_header = False
+            nickname_marker = None
             flush()
             speaker = who
+            explicit_speaker = not rest
             if rest:
                 buf.append(rest)
             continue
-        if not speaker:
-            # 没有坐标、也没有别人的昵称：群聊里这是绿色气泡。表格不会进到这里。
-            speaker = HOST if self_unnamed else GUEST
+        if explicit_speaker and speaker == HOST and not (account_body or author_header):
+            if nickname_marker is None:
+                nickname_marker = marker
+            elif nickname_marker != marker:
+                flush()
+                speaker = UNKNOWN
+                explicit_speaker = False
+                nickname_marker = None
+        if marker in (SIDE_SELF, BUBBLE_UNKNOWN) and not explicit_speaker and not quote_reply:
+            if speaker != UNKNOWN:
+                flush()
+                speaker = UNKNOWN
+        elif not speaker:
+            speaker = HOST if account_body else UNKNOWN
         buf.append(text)
     flush()
     return turns

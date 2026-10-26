@@ -1,7 +1,8 @@
 """知识星球发帖人。
 
-话题 JSON 里 talk / answer 的 owner 是发帖人。名字对得上来源作者（星主）才算原创；
-对不上的是网友帖：正文留在库里，观点删掉，不进星主的作者统计。
+话题 JSON 里 talk / answer 的 owner 是发帖人；只有经来源、group 与真实账户
+绑定的星主正文或回复才入选。显示名不提供身份证据；未知记录与旧缓存保留，
+由统一资格条件隔离，不删除原始数据。
 
     research-backfill-posters --source fangwei-zsxq --input /data/inbox/fangwei-zsxq
 """
@@ -21,7 +22,9 @@ def backfill_posters(conn, source, docs: list) -> dict:
     """用归档里的话题 JSON 回填已入库文章的发帖人。返回计数。"""
     updated = guests = cleared = missing = 0
     for doc in docs:
-        incoming = assign_poster_role(dict(doc.raw_meta or {}), source.author, source.poster_names)
+        incoming = assign_poster_role(
+            dict(doc.raw_meta or {}), source.author, source.poster_names, source_id=source.id, source_kind=source.kind
+        )
         name = str(incoming.get("poster_name") or "").strip()
         poster_id = str(incoming.get("poster_id") or "").strip()
         if not name and not poster_id:
@@ -43,7 +46,10 @@ def backfill_posters(conn, source, docs: list) -> dict:
             meta = dict(row["raw_meta"] or {})
             meta["poster_name"] = name
             meta["poster_id"] = poster_id
-            assign_poster_role(meta, source.author, source.poster_names)
+            for key in ("zsxq_identity", "group_id", "source_kind"):
+                if key in incoming:
+                    meta[key] = incoming[key]
+            assign_poster_role(meta, source.author, source.poster_names, source_id=source.id, source_kind=source.kind)
             conn.execute(
                 "UPDATE articles SET raw_meta = %s WHERE id = %s",
                 (Jsonb(meta), row["id"]),
@@ -51,8 +57,8 @@ def backfill_posters(conn, source, docs: list) -> dict:
             updated += 1
             if is_guest(meta):
                 guests += 1
-                cur = conn.execute("DELETE FROM company_views WHERE article_id = %s", (row["id"],))
-                cleared += cur.rowcount
+                # Existing raw records and cached model output remain reversible;
+                # eligibility guards remove them from every reader/worker.
     conn.commit()
     return {"updated": updated, "guests": guests, "views_cleared": cleared, "missing": missing}
 
@@ -70,7 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
     source = require_source(load_sources(settings.sources_path), args.source, kind="zsxq")
     archive = Path(args.input)
-    docs, errors, _files, _images = parse_archive(archive, archive / ".poster-work", id_mode="zsxq")
+    docs, errors, _files, _images = parse_archive(
+        archive, archive / ".poster-work", id_mode="zsxq", source_id=source.id
+    )
     for error in errors:
         print(error, file=sys.stderr)
     conn = prepare(settings)

@@ -1,4 +1,4 @@
-"""星球读者帖的摘要读全文和图片文字，不写成段永平没说话。"""
+"""Unverified guest posts never reach summaries; Duan's silent answer stays distinct."""
 
 from types import SimpleNamespace
 
@@ -34,7 +34,7 @@ def _row(**extra):
     return row
 
 
-def test_guest_digest_keeps_body_and_ocr(monkeypatch):
+def test_unverified_guest_digest_never_reads_images_or_calls_model(monkeypatch):
     seen: list[str] = []
 
     def chunks(_conn, _article_id):
@@ -52,16 +52,9 @@ def test_guest_digest_keeps_body_and_ocr(monkeypatch):
     monkeypatch.setattr(digest_mod, "chat", chat)
     conn = _Conn()
     data = digest_mod.digest_article(conn, SimpleNamespace(display_timezone="Asia/Shanghai"), _row(), "方伟")
-    assert seen, "读者帖应该交给模型，而不是直接写成空回答"
-    prompt = seen[0]
-    assert _PLACEHOLDER not in data["summary"]
-    assert _PLACEHOLDER not in prompt
-    assert "段永平本人写的段落" not in prompt
-    assert "正文很短" in prompt
-    assert "短期不宜提价" in prompt
-    assert "【图片里的字】" in prompt
-    saved = conn.writes[0][1]
-    assert _PLACEHOLDER not in saved[3]
+    assert data == {}
+    assert seen == []
+    assert conn.writes == []
 
 
 def test_duan_empty_voice_still_skips_the_model(monkeypatch):

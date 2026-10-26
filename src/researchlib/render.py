@@ -5,10 +5,13 @@ from __future__ import annotations
 import html as html_lib
 import re
 import unicodedata
+import xml.etree.ElementTree as etree
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
 import markdown
+from markdown.extensions import Extension
+from markdown.inlinepatterns import InlineProcessor
 from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
@@ -37,7 +40,7 @@ _ALLOWED_TAGS = frozenset({
 _GLOBAL_ATTRS = frozenset({"id", "class", "title", "lang", "dir", "style", "align"})
 _TAG_ATTRS = {
     "a": frozenset({"href", "name"}),
-    "img": frozenset({"src", "alt", "width", "height"}),
+    "img": frozenset({"src", "alt", "width", "height", "loading"}),
     "table": frozenset({"width", "border", "cellpadding", "cellspacing"}),
     "td": frozenset({"colspan", "rowspan", "valign", "width"}),
     "th": frozenset({"colspan", "rowspan", "valign", "width", "scope"}),
@@ -143,6 +146,8 @@ class _Sanitizer(HTMLParser):
                 if name in _BOOLEAN_ATTRS:
                     parts.append(f" {name}")
                 continue
+            if name == "loading" and value.lower() not in {"lazy", "eager"}:
+                continue
             if name == "href" and not _safe_link(value):
                 continue
             if name == "src":
@@ -241,13 +246,13 @@ def _replace_destination(dest: str, mapping: dict[str, str]) -> str:
 
 def rewrite_markdown_images(body: str, mapping: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
-        alt = match.group(1)
+        alt = match.group(1) or "原文图片"
         target = _replace_destination(match.group(2), mapping)
         if not target:
             label = image_destination(match.group(2)).rsplit("/", 1)[-1] or "图片"
             if image_destination(match.group(2)).startswith(("http://", "https://", "//")):
                 return "*[外部图片已省略]*"
-            return f"*[{label} 缺图]*"
+            return f"*[{alt if alt != '原文图片' else label} 缺图]*"
         return f"![{alt}]({target})"
 
     return _MD_IMAGE.sub(replace, body)
@@ -259,9 +264,12 @@ def rewrite_html_images(html: str, mapping: dict[str, str]) -> str:
         if not url:
             return ""
         target = _replace_destination(url, mapping)
+        alt_match = re.search(r'''\balt\s*=\s*(["'])(.*?)\1''', match.group(0), re.I | re.S)
+        alt = html_lib.unescape(alt_match.group(2)) if alt_match else "原文图片"
+        label = html_lib.escape(alt or "原文图片", quote=True)
         if not target:
-            return ""
-        return f'<img src="{target}" alt="">'
+            return f'<span class="image-missing">{label}（图片未收录）</span>'
+        return f'<img src="{html_lib.escape(target, quote=True)}" alt="{label}" loading="lazy">'
 
     return _IMG_TAG.sub(replace, html)
 
@@ -350,14 +358,19 @@ def _ocr_figure(anchor: str, src: str, alt: str, text: str) -> str:
     return (
         f'<figure class="ocr-shot">'
         f'<div class="{classes}">{inner}</div>'
-        f"{_original_links([{'anchor': anchor, 'src': src}])}"
+        f"{_original_links([{'anchor': anchor, 'src': src, 'alt': alt}])}"
         "</figure>"
     )
 
 
 def _media_bundle(items: list[dict]) -> str:
-    """商品图、图表：不展示 OCR 乱码，只留「原图 N」。"""
-    return f'<figure class="ocr-shot">{_original_links(items)}</figure>'
+    """保留图表的中性摘录与原图，商品界面文字不进入阅读正文。"""
+    readings = []
+    for item in items:
+        shot = item["shot"]
+        if shot.family == "reference" and shot.prose:
+            readings.append(f'<div class="ocr-reading">{html_lib.escape(shot.prose)}</div>')
+    return f'<figure class="ocr-shot">{"".join(readings)}{_original_links(items)}</figure>'
 
 
 
@@ -433,7 +446,7 @@ def flow_ocr_quote_body(text: str) -> str:
         if not block.strip():
             continue
         label, sep, rest = block.partition("：")
-        if sep and label in {"方伟", "网友"}:
+        if sep and label in {"方伟", "网友", "未确认"}:
             flowed = _flow_ocr_lines(rest.lstrip("\n"))
             parts.append(f"{label}：{flowed}")
         else:
@@ -448,7 +461,7 @@ def _dialogue_html(text: str) -> str:
         if not block.strip():
             continue
         label, sep, rest = block.partition("：")
-        if sep and label in {"方伟", "网友"}:
+        if sep and label in {"方伟", "网友", "未确认"}:
             flowed = _flow_ocr_lines(rest.lstrip("\n"))
             paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
             for index, para in enumerate(paragraphs or [""]):
@@ -469,8 +482,11 @@ def _original_links(items: list[dict]) -> str:
     for number, info in enumerate(items, start=1):
         safe_src = html_lib.escape(info["src"], quote=True)
         safe_id = html_lib.escape(info["anchor"], quote=True)
+        alt = html_lib.escape(html_lib.unescape(info.get("alt") or ""), quote=True)
+        label = f' aria-label="原图 {number}：{alt}"' if alt else ""
         links.append(
-            f'<a class="ocr-link" id="{safe_id}" href="{safe_src}" target="_blank" rel="noopener">原图 {number}</a>'
+            f'<a class="ocr-link" id="{safe_id}" href="{safe_src}" '
+            f'target="_blank" rel="noopener"{label}>原图 {number}</a>'
         )
     return f'<p class="ocr-links">{"".join(links)}</p>'
 
@@ -643,12 +659,54 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
 
 
 
+def normalize_admonitions(body: str) -> str:
+    """Render quote alert kinds as labels using the same code-safe marker parser."""
+    labels = {"NOTE": "说明", "TIP": "提示", "IMPORTANT": "重要", "WARNING": "注意", "CAUTION": "谨慎"}
+    return strip_alert_markers(body, labels=labels)
+
+
+class _CJKQuotedStrong(InlineProcessor):
+    """Permit quoted strong text beside CJK words, after code/escape/HTML parsing.
+
+    CommonMark punctuation flanking treats ``的**“人”**`` as literal stars.
+    Keep this exception at the inline-token layer so escaped stars, code and
+    HTML attributes retain their usual meaning.
+    """
+
+    def handleMatch(self, match, data):
+        text = match.group(1)
+        before = data[match.start() - 1 : match.start()] if match.start() else ""
+        after = data[match.end() : match.end() + 1]
+
+        def cjk_word(char):
+            return bool(char) and unicodedata.category(char).startswith("L") and (
+                unicodedata.east_asian_width(char) in {"W", "F"}
+            )
+
+        if not text.strip() or text != text.strip() or not (
+            (text[0] in "“‘「『《（" and cjk_word(before))
+            or (text[-1] in "”’」』》）" and cjk_word(after))
+        ):
+            return None, None, None
+        element = etree.Element("strong")
+        element.text = text
+        return element, match.start(), match.end()
+
+
+class _CJKEmphasisExtension(Extension):
+    def extendMarkdown(self, md):
+        md.inlinePatterns.register(
+            _CJKQuotedStrong(r"(?<!\*)\*\*((?:[^*\n]|\*(?!\*))+?)\*\*(?!\*)", md),
+            "cjk_quoted_strong",
+            65,
+        )
+
+
 def _render_markdown(body: str, mapping: dict[str, str]) -> str:
-    body = strip_alert_markers(body or "")
-    rewritten = rewrite_html_images(rewrite_markdown_images(body, mapping), mapping)
+    rewritten = rewrite_html_images(rewrite_markdown_images(normalize_admonitions(body), mapping), mapping)
     html = markdown.markdown(
         rewritten,
-        extensions=["extra", "nl2br", "sane_lists"],
+        extensions=["extra", "nl2br", "sane_lists", _CJKEmphasisExtension()],
         output_format="html",
     )
     return _anchor_images(sanitize_html(html))

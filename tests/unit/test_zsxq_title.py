@@ -4,7 +4,9 @@ from pathlib import Path
 
 from markupsafe import Markup
 
+from researchlib.eligibility import IDENTITY_KEY, identity_for_topic
 from researchlib.ingest.parse import header_topic_id, parse_archive
+from researchlib.model_inputs import OCR_ROLE_VERSION
 from researchlib.web.routes import _repair_zsxq_titles
 from researchlib.zsxq_title import stored_zsxq_title, title_needs_repair, zsxq_display_title
 
@@ -131,6 +133,16 @@ PICTURE_NOTE = "正文为空，标题仅为「图片」。"
 PICTURE_OCR = "烟蒂股这轮又被翻出来了，中概互联网的现金流比故事好看。\n后面接着聊自由现金流。\n"
 PICTURE_TITLE = "烟蒂股这轮又被翻出来了，中概互联网的现金流比故事好看"
 
+
+def _verified_ocr_material(role_version=OCR_ROLE_VERSION):
+    identity = identity_for_topic({
+        "topic_id": "14885", "group": {"group_id": "48888181884848"},
+        "talk": {"owner": {"user_id": "1825524112"}},
+    }, "fangwei-zsxq")
+    identity["projection_md"] = ""
+    return {"id": 14885, "source_id": "fangwei-zsxq", "body_md": "", "body_text": "",
+            "ocr_text": PICTURE_OCR, "raw_meta": {IDENTITY_KEY: identity, "ocr_role_version": role_version}}
+
 # 14865：标题以省略号结尾；正文是归档头加半截标题；摘要是完整句；OCR 是另一则配售新闻。
 XIAOMI = "跟去年小米的剧本总是似曾相识+\n..."
 XIAOMI_BODY = """# 帖子
@@ -179,7 +191,7 @@ def test_quoted_placeholders_need_repair_and_use_ocr():
         "body_text": "",
         "date": "2024-10-19",
     }
-    _repair_zsxq_titles(_Conn([{"id": 14885, "body_text": "", "ocr_text": PICTURE_OCR}]), [card])
+    _repair_zsxq_titles(_Conn([_verified_ocr_material()]), [card])
     assert card["title"] == PICTURE_TITLE
     assert card["plain_title"] == PICTURE_TITLE
 
@@ -217,9 +229,17 @@ def test_narration_summary_is_not_a_title():
         "summary": DIRTY_DUAN,
         "date": "2024-10-19",
     }
-    _repair_zsxq_titles(_Conn([{"id": 14885, "body_text": "", "ocr_text": PICTURE_OCR}]), [card])
+    _repair_zsxq_titles(_Conn([_verified_ocr_material()]), [card])
     assert card["title"] == PICTURE_TITLE
     assert "段永平" not in card["plain_title"]
+
+
+def test_legacy_ocr_cannot_expand_a_card_title():
+    card = {"id": 14885, "source_id": "fangwei-zsxq", "plain_title": PICTURE,
+            "title": PICTURE, "summary": "", "date": "2024-10-19"}
+    _repair_zsxq_titles(_Conn([_verified_ocr_material(role_version=2)]), [card])
+    assert card["title"] == "2024-10-19 短帖"
+    assert "烟蒂股" not in card["title"]
 
 
 # 14865 线上 h1 曾被这句无关配售截图盖住。

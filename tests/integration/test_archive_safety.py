@@ -4,9 +4,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
+from owner_fixtures import owner_doc
 
 from researchlib.ingest.model import ParsedDoc
-from researchlib.ingest.parse import comments_section
 from researchlib.ingest.store import store_documents
 from researchlib.ocr import run_ocr
 from researchlib.remote_images import FetchError, fetch_pending
@@ -99,27 +99,24 @@ def test_reimport_keeps_the_full_text(conn, settings):
 
 
 def test_new_comment_replies_are_not_an_edit(conn, settings):
-    replies = [("问一", "答一：主站的货币化率还有空间。")]
-    first = LONG + comments_section(replies, LONG)
-    _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", first)])
+    first = owner_doc(_doc("zsxq:9", LONG), replies=["主站的货币化率还有空间。"])
+    _store(conn, settings, "fangwei-zsxq", [first])
     article = _article(conn, "zsxq:9")
-    # 评论里多了作者的回复：照常更新，不算改稿，不记旧版。
-    more = LONG + comments_section([*replies, ("", "补充：关税的影响要分两段看。")], LONG)
-    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", more)]).updated == 1
-    assert _article(conn, "zsxq:9")["body_md"] == more
+    more = owner_doc(_doc("zsxq:9", LONG), replies=["主站的货币化率还有空间。", "关税的影响要分两段看。"])
+    assert _store(conn, settings, "fangwei-zsxq", [more]).updated == 1
+    assert _article(conn, "zsxq:9")["body_md"] == more.body_md
+    assert "关税的影响" in more.body_md and "星主回复（账户已核实）" in more.body_md
     revisions = "SELECT kind FROM article_revisions WHERE article_id = %s ORDER BY id"
     assert conn.execute(revisions, (article["id"],)).fetchall() == []
-    # 这次导出没带评论：库里那份更全，不动，也不算截短。
-    report = _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", LONG)])
+    report = _store(conn, settings, "fangwei-zsxq", [owner_doc(_doc("zsxq:9", LONG))])
     assert report.unchanged == 1 and report.held == 0
-    assert _article(conn, "zsxq:9")["body_md"] == more
-    # 作者真的改了正文：照常替换并存旧版。
-    edited = LONG.replace("第 3 段：腾讯", "第 3 段：改过以后，腾讯")
-    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", edited + comments_section(replies, edited))]).updated
+    assert _article(conn, "zsxq:9")["body_md"] == more.body_md
+    edited = owner_doc(_doc("zsxq:9", LONG.replace("第 3 段：腾讯", "第 3 段：改过以后，腾讯")),
+                       replies=["主站的货币化率还有空间。"])
+    assert _store(conn, settings, "fangwei-zsxq", [edited]).updated == 1
     assert [row["kind"] for row in conn.execute(revisions, (article["id"],)).fetchall()] == ["previous"]
-    # 正文被删成删稿提示、评论还在：照样拦下。
-    gone = "该内容已被发布者删除" + comments_section(replies, "")
-    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:9", gone)]).held == 1
+    gone = owner_doc(_doc("zsxq:9", "该内容已被发布者删除"), replies=["主站的货币化率还有空间。"])
+    assert _store(conn, settings, "fangwei-zsxq", [gone]).held == 1
 
 
 ZSXQ_HEADER = """- 作者：方伟Rey
@@ -130,9 +127,9 @@ ZSXQ_HEADER = """- 作者：方伟Rey
 """
 
 
-def test_like_counts_in_the_archive_header_are_not_an_edit(conn, settings):
+def test_header_and_title_updates_do_not_refresh_unproven_old_cache(conn, settings):
     first = ZSXQ_HEADER.format(likes=3, reads=210) + LONG
-    _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:10", first)])
+    _store(conn, settings, "fangwei-zsxq", [owner_doc(_doc("zsxq:10", first))])
     article = _article(conn, "zsxq:10")
     conn.execute(
         """
@@ -142,9 +139,9 @@ def test_like_counts_in_the_archive_header_are_not_an_edit(conn, settings):
         (article["id"], article["content_hash"]),
     )
     conn.commit()
-    # 再抓一次只是点赞、阅读数变了：照常更新这份，不记旧版；摘要跟着新的哈希，不从卡片上消失。
+    # 再抓一次只是点赞、阅读数变了：不记正文改稿，但不能替旧缓存伪造当前证明。
     again = ZSXQ_HEADER.format(likes=9, reads=616) + LONG
-    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:10", again)]).updated == 1
+    assert _store(conn, settings, "fangwei-zsxq", [owner_doc(_doc("zsxq:10", again))]).updated == 1
     assert _article(conn, "zsxq:10")["body_md"] == again
     revisions = "SELECT kind FROM article_revisions WHERE article_id = %s ORDER BY id"
     assert conn.execute(revisions, (article["id"],)).fetchall() == []
@@ -152,12 +149,14 @@ def test_like_counts_in_the_archive_header_are_not_an_edit(conn, settings):
         SELECT d.content_hash = a.content_hash AS ok
         FROM article_digests d JOIN articles a ON a.id = d.article_id WHERE a.id = %s
     """
-    assert conn.execute(aligned, (article["id"],)).fetchone()["ok"]
-    # 标题换了补法也一样。评论里多了作者的回复，摘要要重写，哈希不跟。
-    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:10", again, title="腾讯的广告库存还在涨")]).updated
-    assert conn.execute(aligned, (article["id"],)).fetchone()["ok"]
-    replied = again + comments_section([("", "补充：视频号的单价还在往上走。")], again)
-    assert _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:10", replied, title="腾讯的广告库存还在涨")]).updated
+    assert not conn.execute(aligned, (article["id"],)).fetchone()["ok"]
+    # 标题变化同样使旧模型输入失效；评论变化也须显式重新处理。
+    retitled = owner_doc(_doc("zsxq:10", again, title="腾讯的广告库存还在涨"))
+    assert _store(conn, settings, "fangwei-zsxq", [retitled]).updated
+    assert not conn.execute(aligned, (article["id"],)).fetchone()["ok"]
+    replied = owner_doc(_doc("zsxq:10", again, title="腾讯的广告库存还在涨"),
+                        replies=["补充：视频号的单价还在往上走。"])
+    assert _store(conn, settings, "fangwei-zsxq", [replied]).updated
     assert not conn.execute(aligned, (article["id"],)).fetchone()["ok"]
     assert conn.execute(revisions, (article["id"],)).fetchall() == []
     # 以前因为点赞数变了记下的旧版：文章页不算「改过」，改动页也不列。
@@ -170,7 +169,7 @@ def test_like_counts_in_the_archive_header_are_not_an_edit(conn, settings):
         published_at=None,
         body_md=ZSXQ_HEADER.format(likes=1, reads=90) + LONG,
         body_text=LONG,
-        raw_meta={},
+        raw_meta=owner_doc(_doc("old-likes", ZSXQ_HEADER.format(likes=1, reads=90) + LONG)).raw_meta,
     )
     conn.commit()
     with TestClient(create_app(settings)) as client:
@@ -188,7 +187,7 @@ def test_like_counts_in_the_archive_header_are_not_an_edit(conn, settings):
             published_at=None,
             body_md=ZSXQ_HEADER.format(likes=0, reads=40) + edited,
             body_text=edited,
-            raw_meta={},
+            raw_meta=owner_doc(_doc("real-edit", ZSXQ_HEADER.format(likes=0, reads=40) + edited)).raw_meta,
         )
         conn.execute(
             "UPDATE article_revisions SET created_at = now() - interval '2 days' WHERE content_hash = 'real-edit'"

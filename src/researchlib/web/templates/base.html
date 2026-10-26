@@ -91,7 +91,7 @@
       </div>
       <div class="frame">
         {% if sample_banner %}
-        <p class="banner">当前库里全是示例数据。</p>
+        <p class="banner">{% if sample_banner == "mixed" %}当前库里包含示例数据，相关内容不能当作真实研究证据。{% else %}当前库里全是示例数据。{% endif %}</p>
         {% endif %}
         {% block body %}{% endblock %}
       </div>
@@ -119,7 +119,10 @@
       <span>问库</span>
     </a>
   </nav>
-  <div class="img-zoom" id="img-zoom" hidden><img alt=""></div>
+  <div class="img-zoom" id="img-zoom" role="dialog" aria-modal="true" aria-label="查看原图" hidden>
+    <button type="button" class="img-zoom-close" aria-label="关闭原图">关闭</button>
+    <img alt="">
+  </div>
   <script>
     (function () {
       var key = "research-theme";
@@ -197,17 +200,65 @@
       var zoom = document.getElementById("img-zoom");
       if (zoom) {
         var zoomImg = zoom.querySelector("img");
+        var closeZoom = zoom.querySelector(".img-zoom-close");
+        var zoomReturn = null;
+        var oldOverflow = "";
+        function hideZoom() {
+          if (zoom.hidden) return;
+          zoom.hidden = true;
+          document.body.style.overflow = oldOverflow;
+          zoomImg.removeAttribute("src");
+          if (zoomReturn && zoomReturn.isConnected) zoomReturn.focus();
+        }
+        function showZoom(img) {
+          zoomReturn = img;
+          oldOverflow = document.body.style.overflow;
+          zoomImg.src = img.currentSrc || img.src;
+          zoomImg.alt = img.alt || "原文图片";
+          zoom.hidden = false;
+          document.body.style.overflow = "hidden";
+          closeZoom.focus();
+        }
+        document.querySelectorAll(".prose img").forEach(function (img) {
+          if (!img.closest("a")) {
+            img.tabIndex = 0;
+            img.setAttribute("role", "button");
+            img.setAttribute("aria-label", "放大图片：" + (img.alt || "原文图片"));
+            img.addEventListener("keydown", function (event) {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                showZoom(img);
+              }
+            });
+          }
+          img.addEventListener("error", function () {
+            if (img.closest("a")) return;
+            var fallback = document.createElement("a");
+            fallback.className = "image-missing";
+            fallback.href = img.src;
+            fallback.textContent = (img.alt || "原文图片") + "（暂时无法显示，打开原图）";
+            img.replaceWith(fallback);
+          }, { once: true });
+        });
+        closeZoom.addEventListener("click", hideZoom);
         document.addEventListener("click", function (event) {
           var img = event.target.closest(".prose img");
           if (img && !img.closest("a") && !img.closest(".img-zoom")) {
-            zoomImg.src = img.currentSrc || img.src;
-            zoom.hidden = false;
+            showZoom(img);
             return;
           }
-          if (event.target.closest("#img-zoom")) zoom.hidden = true;
+          if (event.target === zoom) hideZoom();
         });
         document.addEventListener("keydown", function (event) {
-          if (event.key === "Escape") zoom.hidden = true;
+          if (zoom.hidden) return;
+          if (event.key === "Escape") {
+            event.preventDefault();
+            hideZoom();
+          } else if (event.key === "Tab") {
+            // 预览层只有关闭按钮可操作；焦点留在层内，关闭后回到原图。
+            event.preventDefault();
+            closeZoom.focus();
+          }
         });
       }
       document.querySelectorAll(".day-toggle").forEach(function (button) {

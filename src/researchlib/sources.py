@@ -30,7 +30,7 @@ class Source:
     min_chars: int = 0
     # True：整源先不要。库里已标 hidden=source_paused，导入命令拒绝导入。
     paused: bool = False
-    # 星主在平台上的其他显示名（星球昵称）。发帖人是 author 或这些名字的算原创，不当网友帖。
+    # 平台显示昵称；星球资格另由来源/真实账户证明决定，昵称本身不能授予资格。
     poster_names: tuple[str, ...] = ()
 
 

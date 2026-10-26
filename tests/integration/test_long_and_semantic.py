@@ -357,7 +357,7 @@ def test_search_page_says_when_meaning_search_is_not_in_use(conn, settings):
     )
     embeddings.use_embedder(None)
     with TestClient(create_app(settings)) as client:
-        assert "没开语义检索" in client.get("/search", params={"q": "costco 商业模式"}).text
+        assert "语义检索未启用" in client.get("/search", params={"q": "costco 商业模式"}).text
         # 只搜公司名不走语义这一路，不提。
         assert "semantic-note" not in client.get("/search", params={"q": "costco"}).text
     if embeddings.column_type(conn) is None:
@@ -369,9 +369,9 @@ def test_search_page_says_when_meaning_search_is_not_in_use(conn, settings):
             def page() -> str:
                 return client.get("/search", params={"q": "costco 商业模式"}).text
 
-            assert "向量还一块都没算" in page()
+            assert "语义索引尚未就绪" in page()
             embeddings.backfill(conn, limit=1)
-            assert "向量还没算完（1/3 块）" in page()
+            assert "语义索引尚未齐全（1/3）" in page()
             embeddings.backfill(conn)
             assert "semantic-note" not in page()
             embeddings._state.down_until = time.monotonic() + 60

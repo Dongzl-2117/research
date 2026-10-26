@@ -142,38 +142,10 @@ def guest_comment_authors(md: str) -> list[str] | None:
 
 
 def filter_host_comments_markdown(md: str) -> str:
-    """入库用：正文里的「评论（N）」只留方伟。没有方伟评论就整节去掉。inbox 原文不改。"""
-    match = _HEADING.search(md or "")
-    while match and _in_fence(md, match.start()):
-        match = _HEADING.search(md, match.end())
-    if not match or (match.start() > 0 and md[match.start() - 1] != "\n"):
-        return md or ""
-    rest = md[match.end() :]
-    nxt = _NEXT_HEADING.search(rest)
-    if nxt:
-        section, after = rest[: nxt.start()], rest[nxt.start() :]
-    else:
-        section, after = rest, ""
-    items = _parse_comment_items(section)
-    if items is None:
-        return md or ""
-    kept = [(name, when, body) for name, when, body in items if is_host_comment_author(name)]
-    before = md[: match.start()]
-    if not kept:
-        glued = before.rstrip() + ("\n\n" + after.lstrip("\n") if after.strip() else "\n")
-        return glued if glued.endswith("\n") else glued + "\n"
-    out = [f"## 评论（{len(kept)}）", ""]
-    for name, when, body in kept:
-        label = display_author(name)
-        out.append(f"- **{label}**（{when}）")
-        if any(line.strip() for line in body):
-            for line in body:
-                out.append(f"  {line}" if line.strip() else "")
-        out.append("")
-    rebuilt = "\n".join(out).rstrip() + "\n"
-    if after.strip():
-        return before.rstrip() + "\n\n" + rebuilt + "\n" + after.lstrip("\n")
-    return before.rstrip() + "\n\n" + rebuilt
+    """无账户证据的文本修复不能按昵称认星主；只隔离评论，原始归档不动。"""
+    from researchlib.eligibility import strip_unverified_comments
+
+    return strip_unverified_comments(md, include_verified=False)
 
 
 def _format_when(raw: str) -> tuple[str, str]:
@@ -324,12 +296,6 @@ def strip_breaks_before_comments(html: str) -> str:
 
 
 def assemble_reader_comments(body: str, mapping: dict[str, str], render_markdown) -> str:
-    before, comments, after = split_reader_comments(body, mapping)
-    if not comments:
-        return render_markdown(body, mapping)
-    comments = keep_host_comments(comments)
-    head = strip_trailing_breaks(render_markdown(before, mapping))
-    tail = assemble_reader_comments(after, mapping, render_markdown) if after.strip() else ""
-    if not comments:
-        return head + tail
-    return head + render_comment_section(comments) + tail
+    # Canonical account-verified replies use their own heading. Legacy exported
+    # names (including an exact spelling of the owner's name) prove nothing.
+    return strip_trailing_breaks(render_markdown(filter_host_comments_markdown(body), mapping))
