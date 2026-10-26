@@ -41,6 +41,7 @@ from researchlib.mentions import (
     company_rules,
     compile_exclude,
     excluded_ranges,
+    incidental_sentence,
     inside,
     iter_alias_specs,
     load_company_rows,
@@ -1295,6 +1296,49 @@ def _year_of(published) -> int | None:
     return None
 
 
+def _has_company_topic_clause(body: str, company_ids: list[int], matcher, topic_counters) -> bool:
+    """Ranking hint only: company and core topic share a non-example body clause.
+
+    An article's coarse passing label can also describe one substantive research
+    paragraph. Do not join separate clauses or use title-only context to undo it.
+    This co-occurrence is not proof that a conclusion is semantically supported.
+    """
+    if matcher is None or not topic_counters:
+        return False
+    for sentence in re.split(r"[。！？!?\n]|(?<![eE]\.[gG])\.(?=\s|$)", body):
+        if incidental_sentence(sentence) or re.search(r"\b(for example|for instance|e\.g\.)", sentence, re.I):
+            continue
+        for clause in re.split(r"[，,:：;；]", sentence):
+            hits = matcher.count(clause)
+            if any(hits.get(cid) for cid in company_ids):
+                lowered = clause.lower()
+                if any(counter(clause, lowered) for counter in topic_counters):
+                    return True
+    return False
+
+
+def _has_company_topic_paragraph(body: str, company_ids: list[int], matcher, topic_counters) -> bool:
+    """Lexical cohesion only; it does not enable semantic support or cross paragraphs.
+
+    A company can introduce a paragraph whose later clauses use pronouns or
+    discuss its mechanism without repeating its name. A different named company
+    changes that subject; examples and a preceding topic do not establish one.
+    """
+    focus = set(company_ids)
+    for paragraph in re.split(r"\n\s*\n", body):
+        focused = False
+        for sentence in re.split(r"[。！？!?\n]|(?<![eE]\.[gG])\.(?=\s|$)", paragraph):
+            if incidental_sentence(sentence) or re.search(r"\b(for example|for instance|e\.g\.)", sentence, re.I):
+                continue
+            for clause in re.split(r"[，,:：;；]", sentence):
+                subjects = set(matcher.count(clause))
+                if subjects:
+                    focused = bool(subjects & focus)
+                if focused and any(counter(clause, clause.lower()) for counter in topic_counters):
+                    return True
+    return False
+
+
 def score_rows(
     conn,
     query: Query,
@@ -1311,6 +1355,7 @@ def score_rows(
     if scope.company_id is not None and scope.company_id not in focus_ids:
         focus_ids.append(scope.company_id)
     matcher = None
+    paragraph_matcher = None
     # 「苹果」这类要佐证的公司：文章没被记为提到它（比如通篇在讲烟台苹果），段落里的字面命中也不算。
     guarded: set[int] = set()
     if focus_ids:
@@ -1338,6 +1383,8 @@ def score_rows(
         for term in query.terms
         if term.kind != "company"
     }
+    topic_counters = [counter for term in query.terms if term.group >= 0 and term.kind not in {"company", "expansion"}
+                      for _form, counter in counters[id(term)]]
     depths: dict[tuple[int, int], str] = {}
     if focus_ids and rows:
         article_ids = sorted({row["article_id"] for row in rows})
@@ -1470,11 +1517,17 @@ def score_rows(
                 default=3,
             )
             has_association = any((row["article_id"], cid) in depths for cid in company_ids)
-            if best_depth == 3 and has_association:
+            if (best_depth == 3 and has_association
+                    and not _has_company_topic_clause(body, company_ids, matcher, topic_counters)):
                 # Incidental mentions must not outrank a discussion of the
                 # requested company's mechanism just by repeating query words.
-                support_mult = 0.15
                 sem = 0.0
+                if paragraph_matcher is None:
+                    paragraph_matcher = cached_matcher("aho", rows_for_matcher)
+                if not _has_company_topic_paragraph(
+                    body, company_ids, paragraph_matcher.document("", body), topic_counters
+                ):
+                    support_mult = 0.15
             elif not any(company_hits.get(cid) or title_companies.get(cid) for cid in company_ids):
                 score *= 0.5
                 sem *= 0.6

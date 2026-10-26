@@ -174,6 +174,49 @@ def test_semantic_ranking_favors_mechanism_over_incidental_exact_topic(monkeypat
     assert scored[0].semantic_hit and not scored[1].semantic_hit
 
 
+@pytest.mark.parametrize("body, supported", [
+    ("风险在于目标企业的护城河可能走弱，如果没有改善应重新评估。", True),
+    ("TargetCo's moat comes from lower fulfillment costs.", True),
+    ("比如目标企业的护城河也曾变化。", False),
+    ("For example, TargetCo's moat was similar.", False),
+    ("E.G. TargetCo's moat was similar.", False),
+    ("主题机制反复出现，目标企业也曾上市。", False),
+    ("TargetCo was listed. Moat is a generic topic.", False),
+    ("这里讨论主题机制，正文没有这家公司。", False),
+])
+def test_article_passing_label_does_not_erase_a_direct_topic_clause(monkeypatch, body, supported):
+    company = dict(id=1, name_zh="目标企业", name_en="TargetCo", ticker="TGTX", aliases=[])
+    q = query([Term("目标企业", "company", 0, ["目标企业", "TargetCo"], company_id=1, idf=1),
+               Term("主题机制", "word", 1, ["主题机制", "护城河", "moat"], idf=5)])
+    row = dict(article_id=1, ord=0, title="目标企业", heading="", body=body,
+               source_id="s", published_at=None)
+    conn = Connection([dict(article_id=1, company_id=1, depth="passing")])
+    monkeypatch.setattr(retrieval, "_corpus_stats", lambda c: (10, 100))
+    scored = retrieval.score_rows(conn, q, [row], scope=Scope(), company_rows=[company], semantic={(1, 0): .9})
+    assert len(scored) == 1
+    assert scored[0].semantic == (.9 if supported else 0.0)
+
+
+def test_lexical_paragraph_subject_does_not_claim_semantic_or_cross_company_support(monkeypatch):
+    companies = [dict(id=1, name_zh="目标企业", name_en="TargetCo", ticker="TGTX", aliases=[]),
+                 dict(id=2, name_zh="其他企业", name_en="OtherCo", ticker="OTRX", aliases=[])]
+    q = query([Term("目标企业", "company", 0, ["目标企业"], company_id=1, idf=1),
+               Term("护城河", "word", 1, ["护城河", "moat"], idf=5)])
+    bodies = ["风险在于目标企业的门槛下滑。管理层又谈到了护城河。",
+              "比如目标企业的门槛下滑。管理层又谈到了护城河。",
+              "目标企业已经上市。OtherCo's moat is strong.",
+              "目标企业讨论了门槛。\n\n这里泛谈护城河。"]
+    rows = [dict(article_id=i, ord=0, title="原文", heading="", body=body,
+                 source_id="s", published_at=None) for i, body in enumerate(bodies, 1)]
+    conn = Connection([dict(article_id=i, company_id=1, depth="passing") for i in range(1, 5)])
+    monkeypatch.setattr(retrieval, "_corpus_stats", lambda c: (10, 100))
+    scored = retrieval.score_rows(conn, q, rows, scope=Scope(), company_rows=companies,
+                                  semantic={(i, 0): .9 for i in range(1, 5)})
+    by_id = {p.article_id: p for p in scored}
+    assert by_id[1].score > 4 * max(by_id[i].score for i in (2, 3, 4))
+    assert all(p.semantic == 0 for p in scored)
+
+
 def test_out_of_vocabulary_theme_still_reaches_semantic_channel(monkeypatch):
     q = query([Term("全新表达", "word", 0, ["全新表达"], df=0, idf=1)])
     monkeypatch.setattr(retrieval, "load_company_rows", lambda c: [])
