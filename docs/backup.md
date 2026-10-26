@@ -60,10 +60,11 @@ BACKUP_DIR/
 | 方伟公众号抓取、方伟星球抓取 | 最近一次失败，或 30 小时没成功（装了才看） |
 | AIHOT 定时导入 | 最近一次失败，或 6 小时没成功（装了才看；默认不装） |
 | 夜间补齐 | 有步骤失败，或 50 小时没成功（装了才看） |
+| 自动上线 | 拉代码、重建失败，重启后应用没起来，CI 没过，仓库不在 main 或有没提交的改动，或 6 小时取不到 main、查不到 CI（装了才看） |
 | 后台重算 | 应用启动后认重复、重算提及失败 |
 | LLM | 凭证不可用（DeepSeek key 缺失，或 Grok 登录失效），或连续失败 3 次 |
 
-提示里带失败的那一步和错误输出的最后一行，比如「备份失败（10-20 03:17）：导出数据库失败（退出码 1）：…」。从没跑过的任务（没有状态文件）不提示，所以装好定时任务后先手动跑一次备份，确认 `data/status/backup.json` 写出来了。`--uninstall` 会删掉定时抓取、定时导入和夜间补齐的状态文件，免得卸了以后还提示「太久没跑」；备份的留着。
+提示里带失败的那一步和错误输出的最后一行，比如「备份失败（10-20 03:17）：导出数据库失败（退出码 1）：…」。从没跑过的任务（没有状态文件）不提示，所以装好定时任务后先手动跑一次备份，确认 `data/status/backup.json` 写出来了。`--uninstall` 会删掉定时抓取、定时导入、夜间补齐和自动上线的状态文件，免得卸了以后还提示「太久没跑」；备份的留着。
 
 ## 用 launchd 定时跑
 
@@ -73,7 +74,10 @@ BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；�
 # 默认装方伟公众号、方伟星球的定时抓取；不要：INSTALL_CRAWL=0
 # 默认不装每小时 AIHOT 增量（AIHOT 已下线），以前装过的会顺手卸掉。要装：INSTALL_INGEST_AIHOT=1 BACKUP_DIR=… scripts/install-launchd.sh
 # 不要夜间补齐：INSTALL_NIGHTLY=0；夜间也识别图片里的字：NIGHTLY_OCR=1
+# 不要自动上线：INSTALL_DEPLOY=0
 ```
+
+这些设置记在 `data/launchd.env`，以后重跑 `scripts/install-launchd.sh` 不用再写（命令行上设了的优先）。
 
 装这些当前用户的定时任务（模板在 `deploy/launchd/`）：
 
@@ -85,6 +89,7 @@ BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；�
 | `com.zldong.research.crawl-fangwei-mp` | 每天 08:10、20:10 |
 | `com.zldong.research.crawl-fangwei-zsxq` | 每天 08:40、20:40 |
 | `com.zldong.research.ingest-aihot` | 每小时（要装才有） |
+| `com.zldong.research.deploy` | 每 10 分钟，装好时先跑一次（见 [deploy.md](deploy.md)「更新」） |
 
 日志在 `~/Library/Logs/research/`。Mac mini 睡着时错过的那一次，醒来后 launchd 会补跑。卸载：
 

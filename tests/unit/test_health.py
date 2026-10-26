@@ -136,3 +136,13 @@ def test_ingest_cli_records_crawl_origin(monkeypatch, tmp_path):
     assert seen["origin"] == "crawl"
     assert cli.run_markdown_ingest("wechat_mp", "测试", argv, id_mode="path") == 0
     assert seen["origin"] == "archive"
+
+
+def test_deploy_failures_are_reported_but_quiet_weeks_are_not(tmp_path):
+    """自动上线只在有新提交时才跑一次，很久没上线不算问题；失败了要提示。"""
+    _write(tmp_path, "deploy", ok=True, at="2026-09-01T00:00:00Z", message="上线 abc1234：改标题")
+    assert health.notices(tmp_path, "Asia/Shanghai", now=NOW) == []
+    _write(tmp_path, "deploy", ok=False, at="2026-10-20T02:00:00Z", message="main 上的 abc1234 CI 没通过，没有上线")
+    assert health.notices(tmp_path, "Asia/Shanghai", now=NOW) == [
+        "自动上线失败（10-20 10:00）：main 上的 abc1234 CI 没通过，没有上线"
+    ]

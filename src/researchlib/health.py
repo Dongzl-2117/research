@@ -1,6 +1,6 @@
-"""出问题才提示：备份、试恢复、定时导入、夜间补齐、后台重算和 LLM 调用的最近结果。
+"""出问题才提示：备份、试恢复、定时导入、夜间补齐、自动上线、后台重算和 LLM 调用的最近结果。
 
-每个任务把结果写进 DATA_DIR/status/<任务>.json：宿主机上的脚本（备份、试恢复、定时抓取、夜间补齐）
+每个任务把结果写进 DATA_DIR/status/<任务>.json：宿主机上的脚本（备份、试恢复、定时抓取、夜间补齐、自动上线）
 在成功和失败时都写，进程里的后台重算和 LLM 调用由这里的函数写。首页只在出问题时提示一行，
 正常时什么都不显示。LLM 的提示按当时的提供方说（DeepSeek 或 Grok）。
 
@@ -31,6 +31,7 @@ TASKS: dict[str, tuple[str, timedelta | None]] = {
     "ingest-aihot": ("AIHOT 定时导入", timedelta(hours=6)),
     "nightly": ("夜间补齐", timedelta(hours=50)),
     "upkeep": ("后台重算", None),
+    "deploy": ("自动上线", None),
 }
 # LLM 连续失败这么多次才提示；凭证不可用（拿不到 key 或登录失效）马上提示。
 LLM_FAILURES_TO_WARN = 3
