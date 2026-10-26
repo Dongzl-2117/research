@@ -1,3 +1,7 @@
+from html.parser import HTMLParser
+
+import pytest
+
 from researchlib.render import image_anchor, inline_image_ocr, render_body, sanitize_html, tidy_ocr_text
 from researchlib.snippets import highlight_snippet
 
@@ -38,6 +42,94 @@ def test_external_image_is_not_hotlinked():
 def test_sanitize_javascript_url():
     cleaned = sanitize_html('<a href="javascript:alert(1)">链接</a>')
     assert "javascript:" not in cleaned
+
+
+class _Tags(HTMLParser):
+    """记下浏览器会看到的标签和属性名。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tags: list[str] = []
+        self.attrs: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append(tag)
+        self.attrs.extend((name, value or "") for name, value in attrs)
+
+
+def _parsed(html: str) -> _Tags:
+    tags = _Tags()
+    tags.feed(html)
+    tags.close()
+    return tags
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "<svg/onload=alert(1)>",
+        "<a href=javascript:alert(1)>x</a>",
+        '<a/href="javascript:alert(1)">x</a>',
+        '<a href="jav&#x09;ascript:alert(1)">x</a>',
+        '<a href="javascript&colon;alert(1)">x</a>',
+        '<a href=" \x01javascript:alert(1)">x</a>',
+        '<a href="data:text/html,x">x</a>',
+        "<img src=x onerror=alert(1)>",
+        '<img/src="/media/a.png"/onerror=alert(1)>',
+        "<math><mi xlink:href=javascript:alert(1)>x</mi></math>",
+        '<noscript><p title="</noscript><img src=x onerror=alert(1)>">',
+        "<iframe src=https://example.com></iframe>",
+        '<base href="https://example.com/"><meta http-equiv="refresh" content="0">',
+        "<form action=https://example.com><input name=a><button>b</button></form>",
+        "<details open ontoggle=alert(1)>x</details>",
+    ],
+)
+def test_sanitize_leaves_no_script_hooks(raw):
+    tags = _parsed(sanitize_html(raw))
+    assert not {"script", "svg", "math", "iframe", "base", "meta", "form", "input"} & set(tags.tags)
+    for name, value in tags.attrs:
+        assert not name.startswith("on")
+        assert "javascript" not in value.lower()
+        assert not value.lower().startswith("data:")
+
+
+def test_sanitize_keeps_layout_and_footnotes():
+    html = str(render_body("| a | b |\n|:--|--:|\n| 1 | 2 |\n\n正文[^1]\n\n[^1]: 注释\n", {}))
+    assert '<th style="text-align: left">a</th>' in html
+    assert '<a class="footnote-ref" href="#fn:1">1</a>' in html
+    assert '<li id="fn:1">' in html
+
+
+def test_sanitize_keeps_text_and_safe_links():
+    cleaned = sanitize_html(
+        '<p>AT&T &amp; 1 < 2 <a href="https://example.com/?a=1&amp;b=2" target="_blank">外链</a>'
+        '<a href="/articles/3">站内</a><a href="#p-2">锚点</a><a href="mailto:a@example.com">信</a></p>'
+    )
+    assert "AT&amp;T &amp; 1 &lt; 2" in cleaned
+    assert '<a href="https://example.com/?a=1&amp;b=2">外链</a>' in cleaned
+    assert '<a href="/articles/3">站内</a>' in cleaned
+    assert '<a href="#p-2">锚点</a>' in cleaned
+    assert '<a href="mailto:a@example.com">信</a>' in cleaned
+
+
+def test_sanitize_images_only_from_this_site():
+    assert sanitize_html('<img src="/media/x/ab.png" alt="图">') == '<img src="/media/x/ab.png" alt="图">'
+    assert sanitize_html('<img src="https://example.com/a.png">') == ""
+    assert sanitize_html('<img src="//example.com/a.png">') == ""
+
+
+def test_sanitize_style_drops_loading_and_overlays():
+    cleaned = sanitize_html(
+        '<p style="color: red; background: url(https://example.com/t.gif); position: fixed;'
+        ' top: 0; width: expression(alert(1)); font-size: 15px">字</p>'
+    )
+    assert cleaned == '<p style="color: red; top: 0; font-size: 15px">字</p>'
+
+
+def test_sanitize_unknown_tags_keep_text_and_stray_closers_are_dropped():
+    cleaned = sanitize_html("<mp-style-type></mp-style-type><section><h-char>，</h-char>字</section></div></main><p>后")
+    assert cleaned == "<section>，字</section><p>后</p>"
+    assert sanitize_html("<!-- 注释 --><p>x</p><style>p{}</style><script>alert(1)</script>") == "<p>x</p>"
 
 
 CHAT = (

@@ -35,7 +35,7 @@ from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
-from researchlib.render import flow_ocr_quote_body, inline_image_ocr
+from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
@@ -673,7 +673,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         and translation.get("complete")
         and translation.get("content_hash") == article.get("content_hash")
     )
-    zh_html = finish_html(translation["body_html"], link_index, parent) if has_translation else None
+    # 译文是模型写的 HTML，和原文一样过一遍白名单。
+    zh_html = finish_html(sanitize_html(translation["body_html"]), link_index, parent) if has_translation else None
     if zh_html:
         zh_html = inline_image_ocr(zh_html, ocr_texts)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
