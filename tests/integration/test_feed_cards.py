@@ -73,7 +73,7 @@ def test_timeline_feed_hides_feishu_and_cards_use_digest(conn, settings, monkeyp
         seen.append(list(jobs))
         return 0
 
-    monkeypatch.setattr("researchlib.digest.schedule_digests", fake_schedule)
+    monkeypatch.setattr("researchlib.web.routes.schedule_digests", fake_schedule)
     app = create_app(settings)
     with TestClient(app) as client:
         home = client.get("/")
@@ -105,7 +105,7 @@ def test_timeline_feed_hides_feishu_and_cards_use_digest(conn, settings, monkeyp
         assert client.get("/days/2024-10-19", params={"author": "林文丰"}).status_code == 404
 
         article_id = conn.execute("SELECT id FROM articles WHERE external_id = 'card-meta'").fetchone()["id"]
-        assert seen == []  # 读取页面不隐式生成摘要。
+        assert any(job[0] == article_id for batch in seen for job in batch)
 
         def fake_chat(_settings, messages, **_kwargs):
             assert "不要给出投资建议" in messages[0]["content"]

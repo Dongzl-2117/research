@@ -1,16 +1,16 @@
-"""摘要提示词换了版本：旧摘要照常显示，只由显式 research-digest 按新版重写。"""
+"""摘要提示词换了版本：旧摘要照常显示，被看到或跑 research-digest 时按新版重写。"""
 
 import os
 
 from fastapi.testclient import TestClient
-from owner_fixtures import load_browsing_sample as load_sample
 from psycopg.types.json import Jsonb
 
 from researchlib import digest as digest_mod
+from researchlib.seed import load_sample
 from researchlib.web.app import create_app
 
 
-def test_old_digests_show_without_implicit_rewrite_and_explicit_processing_still_works(conn, settings, monkeypatch):
+def test_old_digests_still_show_and_get_rewritten(conn, settings, monkeypatch):
     os.environ["ALLOW_SAMPLE_SEED"] = "1"
     load_sample(conn, settings)
     row = conn.execute(
@@ -25,11 +25,11 @@ def test_old_digests_show_without_implicit_rewrite_and_explicit_processing_still
     )
     conn.commit()
     queued = []
-    monkeypatch.setattr("researchlib.digest.schedule_digests", lambda _settings, jobs: queued.extend(jobs))
+    monkeypatch.setattr("researchlib.web.routes.schedule_digests", lambda _settings, jobs: queued.extend(jobs))
     with TestClient(create_app(settings)) as client:
         home = client.get("/").text
         assert "旧版导读：腾讯广告" in home
-    assert queued == []  # GET 只展示；显式处理命令仍能选择这个旧摘要。
+    assert row["id"] in [article_id for article_id, _author in queued]
     assert [item["id"] for item in digest_mod.rows_needing_digest(conn, [row["id"]])] == [row["id"]]
     pending = digest_mod.pending_articles(conn, [row["source_id"]], 50)
     # 没有摘要的排在只是版本旧了的前面。

@@ -126,9 +126,12 @@ def test_chrome_articles_18902_and_15532_leave_the_feed(conn, settings):
         assert "/articles/18902" not in found.text
         assert "/articles/15532" not in found.text
         page = client.get("/articles/18902")
-        assert page.status_code == 404
-        preserved = conn.execute("SELECT body_md FROM articles WHERE id = 18902").fetchone()
-        assert "一万亿美元" in preserved["body_md"]  # hidden does not delete the archive
+        assert page.status_code == 200
+        assert "无有效回答" in page.text
+        assert "qa-ask" in page.text
+        assert "没有有效回答" in page.text
+        assert "回本文开头" not in page.text
+        assert "一万亿美元" in page.text
         real = client.get("/articles/15533")
         assert "qa-ask" in real.text
         assert "生意模式还在" in real.text
@@ -251,6 +254,6 @@ def test_backfill_suppresses_author_voice_all_and_keeps_a_real_judgment(conn, se
         found = client.get("/search", params={"q": "随便聊聊"})
         assert "/articles/41001" not in found.text
         page = client.get("/articles/41001")
-        assert page.status_code == 404
-        preserved = conn.execute("SELECT body_md FROM articles WHERE id = 41001").fetchone()
-        assert "随便聊聊" in preserved["body_md"]
+        assert page.status_code == 200
+        assert "没有段永平的判断" in page.text
+        assert "随便聊聊" in page.text

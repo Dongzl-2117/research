@@ -18,7 +18,7 @@ AUTHOR_VOICE = "author_voice"
 VOICE_ALL = "all"
 # 抽观点、写摘要时附在提示里，只在收窄到作者本人时加上。
 VOICE_NOTE = "\n（下面只保留段永平本人写的段落。读者提问和别人的回复没有放进来，不要当成他的判断。）"
-# 知识星球资格由 eligibility 的来源/账户绑定决定；poster_role 只作显示兼容。
+# 知识星球：poster_role=guest 是网友帖，正文留着，但不算星主的观点和作者统计。
 POSTER_ROLE = "poster_role"
 ROLE_GUEST = "guest"
 ROLE_OWNER = "owner"
@@ -58,15 +58,8 @@ def restrict(
 
 
 def not_guest_sql(alias: str = "a") -> str:
-    """星球按真实账户绑定过滤；其它来源保留已有的网友标记。"""
-    from researchlib.eligibility import eligibility_sql
-
-    column = f"{alias}.raw_meta" if alias else "raw_meta"
-    source = f"{alias}.source_id" if alias else "source_id"
-    return (
-        f"({eligibility_sql(alias)} AND ({source} IN ('fangwei-zsxq', 'chengfengpolang') "
-        f"OR {column} ? 'zsxq_identity' OR coalesce({column}->>'poster_role', '') <> 'guest'))"
-    )
+    """网友帖不进星主的观点和作者统计。没标发帖人的旧数据仍算星主，避免把整库丢掉。"""
+    return f"coalesce({alias}.raw_meta->>'poster_role', '') <> 'guest'"
 
 
 # 段永平博客里没有具体公司、或只是列举/致谢/闲聊的条目。人话留着，不进观点。
@@ -127,24 +120,6 @@ def for_model(
     source_id: str = "",
 ) -> tuple[str, list[tuple[str, str]], bool]:
     """交给观点或摘要的正文。段永平只留他本人的章节，或「段：」起到下一位说话人之前的段落。"""
-    from researchlib.eligibility import IDENTITY_KEY, is_zsxq, project_article, strip_unverified_comments
-
-    candidate = {"source_id": source_id, "raw_meta": raw_meta, "body_md": body_text}
-    if is_zsxq(candidate):
-        projected = project_article(candidate)
-        if projected is None:
-            return "", [], True
-        identity = (projected.get("raw_meta") or {}).get(IDENTITY_KEY) or {}
-        # Guest questions are display context, never the star's model input.
-        owner = str(identity.get("owner_account_id") or "")
-        replies = [
-            str(reply.get("text") or "").strip()
-            for reply in identity.get("replies") or []
-            if isinstance(reply, dict) and str(reply.get("author_account_id") or "") == owner
-        ]
-        body = "" if projected.get("owner_reply_context") else strip_unverified_comments(body_text)
-        text = "\n\n".join([body, *replies]).strip()
-        return text, [("星主本人", text)] if text else [], True
     if is_guest(raw_meta):
         return "", [], True
     if str((raw_meta or {}).get(AUTHOR_VOICE) or "").strip() == "foreign":
@@ -178,19 +153,11 @@ def same_person(poster: str, star: str) -> bool:
     return bool(left) and left == right
 
 
-def assign_poster_role(
-    meta: dict, star_name: str, aliases: tuple[str, ...] = (), *, source_id: str = "", source_kind: str = ""
-) -> dict:
-    """星球仅凭经来源绑定的账户 ID；昵称只用于显示。"""
-    from researchlib.eligibility import IDENTITY_KEY, is_zsxq, project_article
+def assign_poster_role(meta: dict, star_name: str, aliases: tuple[str, ...] = ()) -> dict:
+    """就地写上 poster_role。没有发帖人名字时不猜，旧帖仍按星主处理。
 
-    identity = meta.get(IDENTITY_KEY) or {}
-    sid = source_id or (identity.get("source_id", "") if isinstance(identity, dict) else "")
-    candidate = {"source_id": sid, "source_kind": source_kind, "raw_meta": meta}
-    if is_zsxq(candidate):
-        projected = project_article(candidate)
-        meta[POSTER_ROLE] = projected["raw_meta"][POSTER_ROLE] if projected else "unknown"
-        return meta
+    aliases 是星主在平台上的其他显示名（来源配置里的 poster_names），比如星球昵称「方伟Rey」。
+    """
     name = str(meta.get("poster_name") or "").strip()
     if not name:
         meta.pop(POSTER_ROLE, None)
@@ -202,6 +169,6 @@ def assign_poster_role(
 
 def display_author(star_name: str, raw_meta: dict | None) -> tuple[str, bool]:
     """返回 (显示名, 是否算星主本人)。网友帖显示发帖人，不链到星主作者页。"""
-    if str((raw_meta or {}).get(POSTER_ROLE) or "") in {ROLE_GUEST, "unknown", "excluded"}:
+    if is_guest(raw_meta):
         return str((raw_meta or {}).get("poster_name") or "").strip() or "星球读者", False
     return star_name, True

@@ -3,10 +3,10 @@
 import os
 
 from fastapi.testclient import TestClient
-from owner_fixtures import load_browsing_sample as load_sample
 
 from researchlib import ask as ask_module
 from researchlib.feedback import labelled_questions, parse_article_ref, replay, timing
+from researchlib.seed import load_sample
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.app import create_app
 
@@ -33,7 +33,7 @@ def test_answer_page_lists_unverified_sentences(conn, settings, monkeypatch):
     client, answer_id = _answer(conn, settings, monkeypatch, reply)
     try:
         page = client.get(f"/ask/{answer_id}").text
-        assert "引用尚未核实" in page
+        assert "没核对上" in page
         assert "数字 87% 不在所引段落里" in page
         assert "所引段落不是乘风破浪写的" in page
         data = client.get(f"/api/v1/answers/{answer_id}").json()

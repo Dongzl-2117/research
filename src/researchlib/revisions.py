@@ -18,7 +18,6 @@ import re
 from psycopg.types.json import Jsonb
 
 from researchlib.boilerplate import strip_meta
-from researchlib.eligibility import project_article
 from researchlib.textutil import split_frontmatter
 
 # 平台的删除、屏蔽提示。新正文很短又含这些字样，就当作原文被删了。
@@ -48,10 +47,7 @@ DELETED_MARKERS = (
 DELETED_MAX_CHARS = 300
 SHRINK_MIN_OLD = 400
 SHRINK_RATIO = 0.5
-REASONS = {
-    "deleted": "后来被删", "shrunk": "后来被截短",
-    "projection_guard": "回复投影冲突待核", "projection_concurrent": "并发来稿待核",
-}
+REASONS = {"deleted": "后来被删", "shrunk": "后来被截短"}
 _SPACE = re.compile(r"\s+")
 
 
@@ -64,21 +60,12 @@ def split_comments(body_md: str) -> tuple[str, str]:
 
     评论会越积越多，重新导入时只有这一节变了，不是作者改了文章：不记旧版，也不拿它判断删稿、截短。
     """
-    from researchlib.eligibility import _in_fence
     from researchlib.ingest.parse import COMMENTS_MARKER
 
     text = body_md or ""
-    positions = []
-    for marker in (COMMENTS_MARKER, "\n\n## 星主回复（账户已核实）\n\n"):
-        start = 0
-        while (found := text.find(marker, start)) >= 0:
-            if not _in_fence(text, found):
-                positions.append(found)
-                break
-            start = found + len(marker)
-    if not positions:
+    index = text.rfind(COMMENTS_MARKER)
+    if index < 0:
         return text, ""
-    index = min(positions)
     return text[:index], text[index:]
 
 
@@ -189,7 +176,7 @@ def versions(conn, article: dict) -> list[dict]:
     """当前版和记下来的各版，新的在前。当前版排第一。"""
     rows = conn.execute(
         """
-        SELECT id, kind, reason, content_hash, title, published_at, body_md, body_text, raw_meta, created_at
+        SELECT id, kind, reason, content_hash, title, published_at, body_md, body_text, created_at
         FROM article_revisions
         WHERE article_id = %s
         ORDER BY created_at DESC, id DESC
@@ -210,13 +197,7 @@ def versions(conn, article: dict) -> list[dict]:
         "body_text": article["body_text"],
         "created_at": article.get("updated_at"),
     }
-    safe_rows = []
-    for row in rows:
-        projected = project_article({**row, "source_id": article["source_id"]})
-        if projected is not None:
-            safe_rows.append(projected)
-    current["unverified_history"] = len(rows) - len(safe_rows)
-    return [current, *safe_rows]
+    return [current, *rows]
 
 
 def _paragraphs(text: str) -> list[str]:

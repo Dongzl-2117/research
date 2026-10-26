@@ -783,10 +783,6 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 .img-zoom[hidden] { display: none; }
 .img-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
-.img-zoom-close { position: absolute; top: max(12px, env(safe-area-inset-top)); right: 16px; min-width: 44px; min-height: 44px; border: 1px solid #fff; border-radius: 6px; background: #13191c; color: #fff; font: inherit; cursor: pointer; }
-.image-missing { display: inline-block; padding: .4em .6em; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--ink-3); overflow-wrap: anywhere; }
-.checks > p { margin: 0 0 8px; color: var(--amber-ink); font-size: 13px; }
-.prose h1, .prose h2, .prose h3, .answer h2, .revision-title { overflow-wrap: anywhere; }
 .prose figure { margin: 1.5em 0; }
 .prose figcaption { margin-top: .6em; color: var(--ink-4); font-size: 13px; text-align: center; }
 .prose code {

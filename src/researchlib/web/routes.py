@@ -5,7 +5,6 @@ from __future__ import annotations
 import mimetypes
 import os
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -18,16 +17,15 @@ from markupsafe import Markup
 from researchlib import embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
-from researchlib.answer_provenance import provenance_article_ids, verify_input_provenance
 from researchlib.ask import PRESETS, retry, start
-from researchlib.attachments import attachment_mapping, resolve_article_attachment
 from researchlib.boilerplate import clean_article
-from researchlib.citecheck import check_answer, quote_has_omission
+from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
+from researchlib.digest import digest_due, schedule_digests
+from researchlib.digest import needs_rewrite as digest_needs_rewrite
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
-from researchlib.eligibility import model_cache_safe_article, project_article
 from researchlib.empty_answer import is_suppressed
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
@@ -35,16 +33,18 @@ from researchlib.health import notices as health_notices
 from researchlib.llm import active_label, active_model_id, llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
+from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
-from researchlib.sources import enabled_sources, load_sources, timeline_sources
+from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt
 from researchlib.translate.pair import bilingual_pairs
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
+from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
 from researchlib.web.daybrief import compose_day_brief
@@ -99,22 +99,14 @@ def templates():
 @contextmanager
 def database(request: Request):
     conn = connect(request.app.state.settings)
-    readonly = request.method in {"GET", "HEAD", "OPTIONS"}
+    ensure_search_session(conn)
     try:
-        # Set the guard before the first query. A forgotten write in any read
-        # endpoint must fail at the database, including calls made by helpers.
-        if readonly:
-            conn.execute("SET TRANSACTION READ ONLY")
-        ensure_search_session(conn)
         yield conn
     except Exception:
         conn.rollback()
         raise
     else:
-        if readonly:
-            conn.rollback()
-        else:
-            conn.commit()
+        conn.commit()
     finally:
         conn.close()
 
@@ -124,6 +116,8 @@ def active_sources(request: Request, conn):
     mtime = settings.sources_path.stat().st_mtime
     if getattr(request.app.state, "sources_mtime", None) != mtime:
         sources = load_sources(settings.sources_path)
+        sync_sources(conn, sources)
+        conn.commit()
         request.app.state.sources = sources
         request.app.state.sources_mtime = mtime
     # paused 的来源（如段永平）整源先不展示：导航、作者、筛选都不出现。
@@ -228,14 +222,10 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
     }
     if extra:
         card.update(extra)
-    role = row.get("poster_role") or (row.get("raw_meta") or {}).get("poster_role")
-    if role in {"guest", "unknown"}:
+    if row.get("poster_role") == "guest":
         card["author"] = (row.get("poster_name") or "").strip() or "星球读者"
-        if role == "unknown":
-            card["author"] = "身份未确认"
         card["guest"] = True
         card["show_author"] = True
-    card["owner_reply_context"] = role == "owner_reply_context"
     return card
 
 
@@ -287,19 +277,27 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
 
 
 def _decorate(conn, cards: list[dict], settings) -> list[dict]:
-    """展示已经处理好的公司标签和摘要；渲染请求不安排处理。"""
+    """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
     ids = [card["id"] for card in cards]
     tags = queries.article_tags(conn, ids, per_article=12)
     digests = queries.digests_for(conn, ids)
+    pending: list[tuple[int, str]] = []
     for card in cards:
         card["tags"] = _visible_tags(card, tags.get(card["id"], []))
         digest = digests.get(card["id"])
         if digest and not card.get("summary"):
             card["summary"] = digest["summary"]
             card["points"] = _digest_points(digest)
+            if digest_needs_rewrite(digest):
+                # 旧版提示词写的、或当时只读了长文开头的摘要先照常显示，后台重写。
+                pending.append((card["id"], card.get("author") or ""))
+        elif not card.get("summary"):
+            pending.append((card["id"], card.get("author") or ""))
     _repair_zsxq_titles(conn, cards)
     for card in cards:
         card.pop("body_text", None)
+    if pending:
+        schedule_digests(settings, pending)
     return cards
 
 
@@ -613,20 +611,25 @@ def _article_view(request: Request, article_id: int, mode: str):
         ids = [source.id for source in sources]
         by_id = _source_map(sources)
         article = queries.get_article(conn, article_id, ids)
-        article = project_article(article) if article is not None else None
         if article is None:
             raise HTTPException(status_code=404)
-        cache_safe = model_cache_safe_article(article)
-        reply_context = bool(article.get("owner_reply_context"))
-        images = [] if reply_context else queries.article_images(conn, article_id)
+        images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
-        digest = queries.digests_for(conn, [article_id]).get(article_id) if cache_safe else None
+        if article["duplicate_of"] is None:
+            # 这一篇的图片文字若还是原始识别行，先整理再决定要不要重写摘要。不扫别的文章。
+            new_hash = refresh_article_ocr(conn, article_id)
+            if new_hash != (article.get("ocr_hash") or ""):
+                article = {**article, "ocr_hash": new_hash}
+        digest = queries.digests_for(conn, [article_id]).get(article_id)
         empty_answer = is_suppressed(article["raw_meta"])
         meta = article["raw_meta"] or {}
         suppressed_reason = str(meta.get("hidden") or meta.get("suppressed") or "")
-        ocr_texts = {} if reply_context or not cache_safe else queries.image_ocr_texts(conn, article_id)
+        # 短文的图片文字变了也重写摘要。空回答不排进后台。
+        if digest_due(article, digest) and not empty_answer:
+            schedule_digests(settings, [(article_id, source.author)])
+        ocr_texts = queries.image_ocr_texts(conn, article_id)
         quoted = None
-        if cache_safe and chunk_arg is not None and chunk_arg.isdigit():
+        if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
             if quoted is not None and (quoted.get("lang") or "") == "ocr":
@@ -634,7 +637,7 @@ def _article_view(request: Request, article_id: int, mode: str):
                 if cleaned.strip():
                     quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)
-        translation = queries.get_translation(conn, article_id) if cache_safe else None
+        translation = queries.get_translation(conn, article_id)
         elsewhere = [
             {"id": row["id"], "source": by_id[row["source_id"]].name}
             for row in queries.same_article_elsewhere(conn, article_id, article["duplicate_of"], ids)
@@ -660,11 +663,10 @@ def _article_view(request: Request, article_id: int, mode: str):
                 when=format_date(article["published_at"], settings.display_timezone),
             )
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
-    attachments = attachment_mapping(article.get("raw_meta") or {}, article_id, article["source_id"])
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
     original_html = inline_image_ocr(
-        prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent, attachments=attachments),
+        prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent),
         ocr_texts,
     )
 
@@ -675,11 +677,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         and translation.get("complete")
         and translation.get("content_hash") == article.get("content_hash")
     )
-    # Model-written HTML is sanitized before attachment/link resolution.
-    zh_html = (
-        finish_html(sanitize_html(translation["body_html"]), link_index, parent, attachments=attachments)
-        if has_translation else None
-    )
+    # 译文是模型写的 HTML，和原文一样过一遍白名单。
+    zh_html = finish_html(sanitize_html(translation["body_html"]), link_index, parent) if has_translation else None
     if zh_html:
         zh_html = inline_image_ocr(zh_html, ocr_texts)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
@@ -755,13 +754,11 @@ def _article_view(request: Request, article_id: int, mode: str):
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
             "quoted_marked": quoted_marked,
-            "quoted_omitted": bool(quoted and quote_has_omission(quoted.get("body") or "")),
             # 点进文章先看总结：有摘要就放在正文前面。
             "digest_summary": (digest or {}).get("summary") or "",
             "digest_points": _digest_points(digest, limit=6) if digest else [],
             "empty_answer": empty_answer,
             "suppressed_reason": suppressed_reason,
-            "identity_notice": article.get("identity_notice") or meta.get("identity_notice") or "",
             "elsewhere": elsewhere,
             "revised": revised,
             "same_period": others,
@@ -794,8 +791,7 @@ def _tree_body(conn, article, source_id: str):
     parent = str((article["raw_meta"] or {}).get("parent") or "")
     link_index = load_md_index(conn, source_id) if ".md" in (article["body_md"] or "").lower() else None
     shown_md = clean_article(conn, article["id"], source_id, article["body_md"])
-    attachments = attachment_mapping(article.get("raw_meta") or {}, article["id"], article["source_id"])
-    html = prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent, attachments=attachments)
+    html = prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent)
     return Markup(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
 
@@ -897,10 +893,6 @@ def article_revisions(request: Request, article_id: int):
             "title": f"改动：{article['title']}",
             "article": article,
             "entries": entries,
-            "unverified_history": current.get("unverified_history", 0),
-            "identity_notice": (
-                article.get("identity_notice") or (article.get("raw_meta") or {}).get("identity_notice") or ""
-            ),
             "sources": sources,
             "sample_banner": banner,
         },
@@ -1020,13 +1012,7 @@ def search_page(request: Request):
         terms = found.terms if found else []
         for hit in found.hits if found else []:
             best = hit.passages[0] if hit.passages else None
-            row = {
-                "id": hit.article_id,
-                "title": hit.title,
-                "published_at": hit.published_at,
-                "poster_role": hit.poster_role,
-                "poster_name": hit.poster_name,
-            }
+            row = {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at}
             results.append(
                 _card(
                     row,
@@ -1038,7 +1024,7 @@ def search_page(request: Request):
                         "heading": best.heading if best else "",
                         "chunk": best.ord if best else None,
                         "anchor": best.anchor if best else "",
-                        "partial": not hit.full and not hit.semantic,
+                        "partial": not hit.full,
                         "semantic": hit.semantic or bool(best and best.semantic_hit),
                     },
                 )
@@ -1072,7 +1058,6 @@ def search_page(request: Request):
         "search.html",
         {
             "nav": "search",
-            "semantic_note": semantic_note,
             "title": f"搜索 {query}" if query else "检索",
             "query": query,
             "sources": sources,
@@ -1088,7 +1073,7 @@ def search_page(request: Request):
             "results": results,
             "first_partial": first_partial,
             "partial_total": found.partial if found else 0,
-            "semantic_total": found.semantic_total if found else 0,
+            "semantic_note": semantic_note,
             "search_terms": terms,
             "total_all": total_all,
             "total": total,
@@ -1327,15 +1312,20 @@ def _recent_lead(conn, items: list[dict], settings, names: list[str]) -> dict | 
 
 
 def _company_views(request: Request, conn, company, by_id: dict, author: str) -> dict | None:
-    """只展示已处理的观点和论点；缺失内容由显式处理命令生成。"""
+    """任何公司的观点时间线。缺的在后台排队，不挡住页面。不按持仓过滤。"""
     settings = request.app.state.settings
     kind = request.query_params.get("views") or ""
     company_id = int(company["id"])
     items = view_timeline(conn, company_id, by_id, settings)
-    # 「还有几篇没整理」按当前筛的作者算。
+    # 「还有几篇没整理」按当前筛的作者算；排队仍然按全部来源。
     scope_ids = [sid for sid, source in by_id.items() if not author or source.author == author]
     pending = count_view_pending(conn, company_id, scope_ids)
+    if count_view_pending(conn, company_id, list(by_id)) if author else pending:
+        queue_views(conn, settings, company_id, by_id)
+    # 论点地图：观点归成的几条论点。缺了或过期了在后台重算，不挡页面。
     theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
+    if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
+        thesis_map.schedule(settings, company, by_id)
     thesis = next((item for item in theses if item["key"] == kind), None)
     if kind not in VIEW_FILTERS and thesis is None:
         kind = ""
@@ -1420,7 +1410,7 @@ def day_page(request: Request, day: str):
             )
         )
         previous, following = queries.neighbor_days(conn, scope, found)
-        saved = _safe_saved_answer(conn, queries.day_answer(conn, found, scope.source_ids, scope.company_id), sources)
+        saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id)
         company = queries.get_company(conn, info["company"]) if info["company"] else None
         banner = queries.sample_state(conn, [source.id for source in sources])
     brief = compose_day_brief(cards)
@@ -1433,7 +1423,7 @@ def day_page(request: Request, day: str):
         return f"/days/{target.isoformat()}" + (f"?{scope_query}" if scope_query else "")
 
     answer = None
-    if saved and not saved.get("cache_blocked"):
+    if saved:
         answer = {
             "id": saved["id"],
             "question": saved["question"],
@@ -1459,7 +1449,6 @@ def day_page(request: Request, day: str):
             "count": len(cards),
             "brief": brief,
             "answer": answer,
-            "answer_notice": saved.get("error", "") if saved and saved.get("cache_blocked") else "",
             "prev_href": href(previous),
             "next_href": href(following),
             "back_href": _day_back(info, company),
@@ -1479,85 +1468,6 @@ def _same_origin(request: Request) -> bool:
         return True
     host = request.headers.get("host", "")
     return origin.split("://", 1)[-1] == host or origin == request.app.state.settings.public_base_url
-
-
-def _answer_input_articles(conn, article_ids: list[int], source_ids: list[str]):
-    return conn.execute(
-        "SELECT a.id, a.source_id, a.title, a.body_md, a.body_text, a.raw_meta, a.content_hash, a.ocr_hash "
-        "FROM articles a WHERE a.id = ANY(%s) AND a.source_id = ANY(%s) "
-        f"AND {queries.visible_sql('a')}",
-        (article_ids, source_ids),
-    ).fetchall()
-
-
-def _safe_saved_answer(conn, row, sources):
-    """Display only answers with unchanged, complete original input receipts."""
-    if row is None or not (row.get("answer") or row.get("citations")):
-        return row
-    scope = row.get("scope") or {}
-    article_ids = provenance_article_ids(scope)
-    current = (
-        _answer_input_articles(conn, article_ids, [source.id for source in sources])
-        if article_ids is not None else []
-    )
-    reason = verify_input_provenance(scope, current, row.get("citations") or [])
-    if not reason:
-        return row
-    running = row.get("status") == "running"
-    return {
-        **row, "answer": "", "citations": [], "terms": [], "stats": {},
-        "status": "running" if running else "error",
-        "error": "正在核实本次整合的输入依据，暂不展示引用。" if running else reason,
-        "cache_blocked": True,
-    }
-
-
-def _saved_scope_context(scope: dict, sources) -> dict:
-    """Restore only scope information supported by the saved source IDs."""
-    by_id = {source.id: source for source in sources}
-    raw_ids = scope.get("source_ids")
-    source_ids = list(dict.fromkeys(str(item) for item in raw_ids)) if isinstance(raw_ids, list) else []
-    known = [by_id[sid] for sid in source_ids if sid in by_id]
-    unknown = not source_ids or len(known) != len(source_ids)
-    author = ""
-    source_id = ""
-    if not unknown:
-        if len(source_ids) == 1:
-            source_id = source_ids[0]
-            author = known[0].author
-        elif len({source.author for source in known}) == 1:
-            candidate = known[0].author
-            if set(source_ids) == {source.id for source in sources if source.author == candidate}:
-                author = candidate
-    return {
-        "filters": {
-            "author": author,
-            "source": source_id,
-            "company": scope.get("company_id"),
-            "from": scope.get("date_from") or "",
-            "to": scope.get("date_to") or "",
-            "article": scope.get("article_id"),
-            "tree": scope.get("tree_id"),
-        },
-        "saved_source_ids": source_ids,
-        "saved_scope_present": True,
-        "saved_scope_unknown": unknown,
-        "saved_scope_label": "、".join(
-            by_id[sid].name if sid in by_id else f"未确认来源（{sid}）" for sid in source_ids
-        ) or "历史记录未保存来源范围",
-    }
-
-
-def _preserve_saved_scope(form, params: dict, sources, scope):
-    if form.get("saved_scope_present") != "1":
-        return scope
-    if any(params[key] != str(form.get(f"saved_scope_{key}") or "") for key in ("author", "source")):
-        return scope
-    source_ids = list(dict.fromkeys(str(sid) for sid in form.getlist("saved_sources")))
-    permitted = {source.id for source in sources}
-    if not source_ids or any(sid not in permitted for sid in source_ids):
-        raise HTTPException(status_code=400, detail="历史来源范围无法完整恢复，请明确选择作者或来源后再整合。")
-    return replace(scope, source_ids=source_ids)
 
 
 def _ask_context(request: Request, sources, info: dict, conn) -> dict:
@@ -1607,18 +1517,9 @@ async def ask_submit(request: Request):
     question = str(form.get("q") or "").strip()[:500]
     keys = ("author", "source", "company", "from", "to", "article", "tree")
     params = {key: str(form.get(key) or "") for key in keys}
-    if (
-        form.get("saved_scope_present") == "1"
-        and params["author"] != str(form.get("saved_scope_author") or "")
-        and params["source"] == str(form.get("saved_scope_source") or "")
-    ):
-        # A hidden historical source must not prevent an explicit new author
-        # selection, or silently keep filtering the newly selected author.
-        params["source"] = ""
     with database(request) as conn:
         sources = active_sources(request, conn)
         scope, info = resolve_scope(params, sources)
-        scope = _preserve_saved_scope(form, params, sources, scope)
         if not question:
             return RedirectResponse("/ask?" + _query_string(**params), status_code=303)
         result = start(conn, request.app.state.settings, question, scope, sources)
@@ -1638,21 +1539,23 @@ async def ask_submit(request: Request):
 def ask_answer(request: Request, answer_id: int):
     with database(request) as conn:
         sources = active_sources(request, conn)
-        row = _safe_saved_answer(conn, queries.get_answer(conn, answer_id), sources)
+        row = queries.get_answer(conn, answer_id)
         if row is None:
             raise HTTPException(status_code=404)
         scope = row["scope"] or {}
-        restored_scope = _saved_scope_context(scope, sources)
-        info = restored_scope["filters"]
+        info = {
+            "author": "",
+            "source": "",
+            "company": scope.get("company_id"),
+            "from": scope.get("date_from") or "",
+            "to": scope.get("date_to") or "",
+            "article": scope.get("article_id"),
+            "tree": scope.get("tree_id"),
+        }
         context = _ask_context(request, sources, info, conn)
-        context.update(restored_scope)
         context["question"] = row["question"]
         banner = queries.sample_state(conn, [source.id for source in sources])
         labels = feedback_marks(conn, answer_id)
-        labels["missing"] = [
-            item for item in labels["missing"]
-            if queries.get_article(conn, item["article_id"], [source.id for source in sources]) is not None
-        ]
     citations = row["citations"] or []
     result = {
         "id": row["id"],
@@ -1733,31 +1636,8 @@ async def ask_retry(request: Request, answer_id: int):
     return RedirectResponse(f"/ask/{answer_id}", status_code=303)
 
 
-@router.get("/articles/{article_id}/attachments/{filename}")
-def article_attachment(request: Request, article_id: int, filename: str):
-    with database(request) as conn:
-        sources = active_sources(request, conn)
-        article = queries.get_article(conn, article_id, [source.id for source in sources])
-        article = project_article(article) if article is not None else None
-        if article is None or article.get("owner_reply_context"):
-            raise HTTPException(status_code=404)
-        resolved = resolve_article_attachment(
-            request.app.state.settings.data_dir, article["source_id"], article.get("raw_meta") or {}, filename,
-            body_md=article.get("body_md") or "",
-        )
-    if resolved is None:
-        raise HTTPException(status_code=404)
-    target, media_type, name = resolved
-    return FileResponse(
-        target, media_type=media_type, filename=name, content_disposition_type="attachment",
-        headers={"X-Content-Type-Options": "nosniff"},
-    )
-
-
 @router.get("/media/{storage_path:path}")
 def media(request: Request, storage_path: str):
-    from researchlib.ocr import _image_ref_allowed
-
     if not storage_path or storage_path.startswith(("/", "\\")):
         raise HTTPException(status_code=404)
     parts = Path(storage_path).parts
@@ -1766,23 +1646,6 @@ def media(request: Request, storage_path: str):
     root = (request.app.state.settings.data_dir / "images").resolve()
     target = (root / storage_path).resolve()
     if not target.is_relative_to(root) or not target.is_file():
-        raise HTTPException(status_code=404)
-    # Old answer/image URLs must not bypass current article eligibility. Keep
-    # the archived file, but serve it only when an eligible owner article uses it.
-    with database(request) as conn:
-        source_ids = [source.id for source in active_sources(request, conn)]
-        rows = conn.execute(
-            "SELECT a.id, a.source_id, a.raw_meta, a.body_md, a.body_text, i.original_ref "
-            "FROM article_images i JOIN articles a ON a.id = i.article_id "
-            f"WHERE i.storage_path = %s AND a.source_id = ANY(%s) AND {queries.visible_sql('a')}",
-            (storage_path, source_ids),
-        ).fetchall()
-        allowed = any(
-            (projected := project_article(row)) is not None and not projected.get("owner_reply_context")
-            and _image_ref_allowed(projected, row.get("original_ref") or "")
-            for row in rows
-        )
-    if not allowed:
         raise HTTPException(status_code=404)
     media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return FileResponse(target, media_type=media_type)
@@ -1800,14 +1663,6 @@ def pilot_page(request: Request):
     base = _Path(settings.data_dir) / "pilot"
     views = _json.loads((base / VIEWS_FILE).read_text()) if (base / VIEWS_FILE).exists() else {"articles": {}}
     summaries = _json.loads((base / SUMMARY_FILE).read_text()) if (base / SUMMARY_FILE).exists() else {}
-    with database(request) as conn:
-        sources = active_sources(request, conn)
-        trusted_cache = _pilot_cache_current(conn, views, sources)
-    notice = ""
-    if not trusted_cache:
-        views = {"articles": {}}
-        summaries = {}
-        notice = "预览缓存的来源或当前版本无法核实，暂不展示。原文件保留，未自动重新生成。"
     labels = {"positive": "看好", "negative": "看淡", "mixed": "两面", "neutral": "中性"}
     names = [("腾讯", 1), ("贵州茅台", 49), ("泡泡玛特", 2990)]
     groups = []
@@ -1824,71 +1679,24 @@ def pilot_page(request: Request):
             if c["company_id"] == company_id and not c["about"]
         ]
         groups.append({"name": name, "id": company_id, "cards": cards, "dropped": dropped,
-                       "summary": _pilot_summary(summaries.get(name), views)})
+                       "summary": summaries.get(name)})
+    with database(request) as conn:
+        sources = active_sources(request, conn)
     return render_page(
         request, "pilot.html",
         {"nav": "", "title": "样卡复核", "groups": groups, "updated": views.get("updated_at", ""),
-         "sources": sources, "sample_banner": None, "pilot_notice": notice},
+         "sources": sources, "sample_banner": None},
     )
-
-
-def _pilot_cache_current(conn, views, sources) -> bool:
-    """A file cache needs exact source/hash provenance for every article."""
-    if not isinstance(views, dict):
-        return False
-    articles = views.get("articles")
-    provenance = views.get("provenance")
-    if not isinstance(articles, dict) or not articles or not isinstance(provenance, dict):
-        return False
-    if set(articles) != set(provenance):
-        return False
-    source_ids = [source.id for source in sources]
-    for key, cards in articles.items():
-        if not str(key).isdigit() or not isinstance(cards, list):
-            return False
-        proof = provenance[key]
-        article_id = int(key)
-        article = queries.get_article(conn, article_id, source_ids)
-        if not isinstance(proof, dict) or article is None or not model_cache_safe_article(article):
-            return False
-        if proof.get("source_id") != article["source_id"] or proof.get("content_hash") != article.get("content_hash"):
-            return False
-        if any(not isinstance(card, dict) or card.get("article_id") != article_id for card in cards):
-            return False
-    return True
-
-
-def _pilot_summary(summary, views):
-    if not isinstance(summary, dict):
-        return None
-    references = summary.get("sources")
-    proof = summary.get("provenance")
-    if (
-        not isinstance(references, list) or not references or not isinstance(proof, dict)
-        or any(not isinstance(ref, str) or not ref.startswith("v") or not ref[1:].isdigit() for ref in references)
-    ):
-        return None
-    ids = {ref[1:] for ref in references}
-    if set(proof) != ids:
-        return None
-    current = views.get("provenance") or {}
-    if any(key not in current or proof[key] != current[key] for key in ids):
-        return None
-    for field in ("reasons", "evidence", "businesses", "changes"):
-        items = summary.get(field) or []
-        if not isinstance(items, list) or any(
-            not isinstance(item, dict) or not isinstance(item.get("refs"), list)
-            or any(ref not in references for ref in item["refs"]) for item in items
-        ):
-            return None
-    return summary
 
 
 @router.get("/health")
 def health(request: Request):
     try:
-        with database(request) as conn:
+        conn = connect(request.app.state.settings)
+        try:
             conn.execute("SELECT 1 AS ok")
+        finally:
+            conn.close()
     except Exception:
         return Response(content='{"status":"down"}', status_code=503, media_type="application/json")
     return {"status": "ok"}

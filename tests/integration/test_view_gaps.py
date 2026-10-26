@@ -3,9 +3,6 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from owner_fixtures import insert_legacy, owner_doc
-
-from researchlib.eligibility import TRUSTED_OWNERS
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.ocr import refresh_article_ocr
@@ -15,17 +12,7 @@ from researchlib.views import PROMPT_VERSION, gap_articles
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
-def test_production_sample_marker_does_not_grant_star_identity(conn, settings):
-    from researchlib.seed import load_sample
-
-    reports = load_sample(conn, settings)
-    assert sum(r.rejected for r in reports) == 5
-    assert conn.execute(
-        "SELECT count(*) AS n FROM articles WHERE source_id IN ('fangwei-zsxq','chengfengpolang')"
-    ).fetchone()["n"] == 0
-
-
-def _store(conn, settings, source_id, external_id, title, body, raw_meta=None, *, verified=False, legacy=False):
+def _store(conn, settings, source_id, external_id, title, body, raw_meta=None):
     sources = {source.id: source for source in load_sources(settings.sources_path)}
     doc = ParsedDoc(
         external_id=external_id,
@@ -35,11 +22,6 @@ def _store(conn, settings, source_id, external_id, title, body, raw_meta=None, *
         raw_meta=raw_meta or {},
         image_refs=[],
     )
-    if verified:
-        owner_doc(doc)
-    if legacy:
-        insert_legacy(conn, source_id, doc)
-        return conn.execute("SELECT id,content_hash FROM articles WHERE external_id = %s", (external_id,)).fetchone()
     store_documents(
         conn,
         source=sources[source_id],
@@ -64,8 +46,7 @@ def test_gap_includes_title_mention_and_kept_original_but_not_guest(conn, settin
         "gap-guest",
         "美亚光电和茅台",
         "读者转发：美亚光电的设备不错，顺带提到贵州茅台。\n",
-        {"poster_name": "某读者", "poster_id": "8241", "poster_role": "guest"},
-        legacy=True,
+        {"poster_name": "某读者", "poster_id": "8241"},
     )
     # 去重后留下的主版本：正文只有一句判断，提及可能是一带而过。
     kept = _store(
@@ -105,28 +86,26 @@ def test_gap_includes_title_mention_and_kept_original_but_not_guest(conn, settin
 
 
 def test_star_nickname_posts_count_as_the_owners(conn, settings):
-    """Display aliases require the same verified account evidence as other owner posts."""
+    """方伟在星球的显示名是「方伟Rey」。10 月 20 日以后按话题 JSON 导入的帖都被标成了读者帖，再导入一遍就改回来。"""
     body = "美亚光电的设备不错，贵州茅台的批价这一周没动，渠道仍在观望。\n"
-    assert _store(conn, settings, "fangwei-zsxq", "nickname-only", "茅台", body,
-                  {"poster_name": "方伟Rey", "poster_id": "1001"}) is None
-    meta = {"poster_name": "方伟Rey", "poster_id": TRUSTED_OWNERS["fangwei-zsxq"][1]}
-    row = _store(conn, settings, "fangwei-zsxq", "rey-post", "茅台批价", body, meta, verified=True)
+    meta = {"poster_name": "方伟Rey", "poster_id": "1001"}
+    row = _store(conn, settings, "fangwei-zsxq", "rey-post", "茅台批价", body, meta)
     role = "SELECT raw_meta->>'poster_role' AS role FROM articles WHERE id = %s"
     assert conn.execute(role, (row["id"],)).fetchone()["role"] == "owner"
-    # A legacy role label cannot revoke a verified account; reimport repairs display metadata.
+    # 修好以前入库的：库里标着读者帖。正文没变，再导入一遍就改回原创，回到观点的补抽队列。
     conn.execute(
         "UPDATE articles SET raw_meta = raw_meta || '{\"poster_role\": \"guest\"}'::jsonb WHERE id = %s", (row["id"],)
     )
     conn.commit()
     company = conn.execute("SELECT id FROM companies WHERE name_zh = '贵州茅台'").fetchone()["id"]
-    assert row["id"] in {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
-    _store(conn, settings, "fangwei-zsxq", "rey-post", "茅台批价", body, meta, verified=True)
+    assert row["id"] not in {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
+    _store(conn, settings, "fangwei-zsxq", "rey-post", "茅台批价", body, meta)
     assert conn.execute(role, (row["id"],)).fetchone()["role"] == "owner"
     assert row["id"] in {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
 
 
 def test_ocr_side_field_is_what_views_read(conn, settings):
-    row = _store(conn, settings, "fangwei-zsxq", "ocr-post", "图片", "（见图）\n\n![](pic.png)\n", verified=True)
+    row = _store(conn, settings, "fangwei-zsxq", "ocr-post", "图片", "（见图）\n")
     conn.execute(
         """
         INSERT INTO image_texts (content_hash, engine, text) VALUES ('abc', 'test', %s)

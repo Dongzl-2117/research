@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from researchlib.textutil import publication_time_basis, source_time_metadata, split_frontmatter
+from researchlib.textutil import split_frontmatter
 
 AUTHOR = "黑黑无常"
 SOURCE_ID = "heiheiwuchang"
@@ -104,12 +104,10 @@ def render_markdown(post: dict, body: str) -> str:
         f"title: {_yaml_str(title)}",
         f"url: {_yaml_str(_url(post, post_id))}",
     ]
-    if published and publication_time_basis(post) not in {"edited", "unknown"}:
+    if published:
         # date 在导入器的日期键里排在 published 前面，两个写同一个值。
         lines.append(f"date: {_yaml_str(published)}")
         lines.append(f"published: {_yaml_str(published)}")
-    for key, value in source_time_metadata(post).items():
-        lines.append(f"{key}: {_yaml_str(str(value))}")
     lines.append(f"author: {_yaml_str(AUTHOR)}")
     lines.append("---")
     text = "\n".join(lines) + "\n"

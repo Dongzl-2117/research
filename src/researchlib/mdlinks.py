@@ -15,7 +15,6 @@ import re
 
 from markupsafe import escape
 
-from researchlib.attachments import rewrite_relative_attachment_links
 from researchlib.qa_layout import render_qa_html
 from researchlib.render import render_body
 from researchlib.textutil import split_frontmatter, strip_duplicate_title
@@ -175,16 +174,11 @@ def rewrite_relative_md_links(html: str, index: MdIndex, parent: str = "") -> st
     return _A_TAG.sub(replace, html)
 
 
-def finish_html(
-    html: str,
-    index: MdIndex | None,
-    parent: str = "",
-    attachments: dict[str, str] | None = None,
-) -> str:
+def finish_html(html: str, index: MdIndex | None, parent: str = "") -> str:
     """渲染之后、段落编号之前：先改相对 .md 链接，再盖 p-id。"""
     if html and ".md" in html.lower():
         html = rewrite_relative_md_links(html, index or MdIndex([]), parent)
-    return stamp_paragraph_ids(rewrite_relative_attachment_links(html, attachments))
+    return stamp_paragraph_ids(html)
 
 
 def prepare_body_html(
@@ -194,13 +188,12 @@ def prepare_body_html(
     fmt: str | None,
     index: MdIndex | None,
     parent: str = "",
-    attachments: dict[str, str] | None = None,
 ) -> str:
     _frontmatter, body = split_frontmatter(body_md or "")
     if fmt != "html":
         body = strip_duplicate_title(body, title)
         qa = render_qa_html(body, mapping)
         if qa is not None:
-            return finish_html(qa, index, parent, attachments)
+            return finish_html(qa, index, parent)
     rendered = str(render_body(body, mapping, fmt))
-    return finish_html(rendered, index, parent, attachments)
+    return finish_html(rendered, index, parent)
