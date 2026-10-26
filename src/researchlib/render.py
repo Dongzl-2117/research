@@ -12,6 +12,7 @@ import markdown
 from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
+from researchlib.textutil import strip_alert_markers
 from researchlib.wechat_dialogue import parse_shot, render_turns
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
 
@@ -643,7 +644,8 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
 
 
 def _render_markdown(body: str, mapping: dict[str, str]) -> str:
-    rewritten = rewrite_html_images(rewrite_markdown_images(body or "", mapping), mapping)
+    body = strip_alert_markers(body or "")
+    rewritten = rewrite_html_images(rewrite_markdown_images(body, mapping), mapping)
     html = markdown.markdown(
         rewritten,
         extensions=["extra", "nl2br", "sane_lists"],

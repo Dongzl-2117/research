@@ -17,6 +17,10 @@ _IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _TAG = re.compile(r"<[^>]+>")
 _EMPH = re.compile(r"(\*\*|__|\*|_|~~)")
+# GitHub 提示框的标记。feishu2md 把飞书的高亮块导成引用块，第一行写「[!NOTE]」。
+_ALERT = r"\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]"
+_ALERT_LINE = re.compile(r"^[ \t]{0,3}>[ \t]*" + _ALERT + r"[ \t]*$\n?", re.M | re.I)
+_ALERT_LEAD = re.compile(r"^([ \t]{0,3}>[ \t]*)" + _ALERT + r"[ \t]*", re.M | re.I)
 _FILENAME_DATE = re.compile(
     r"^(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])"
 )
@@ -152,8 +156,15 @@ def scrub_file_page_junk(text: str) -> str:
     return "\n".join(lines)
 
 
+def strip_alert_markers(md: str) -> str:
+    """去掉引用块开头的「[!NOTE]」这类标记，引用块照留。标记不是正文，留着卡片导读会以「NOTE]」开头。"""
+    if "[!" not in (md or ""):
+        return md or ""
+    return _ALERT_LEAD.sub(r"\1", _ALERT_LINE.sub("", md))
+
+
 def markdown_to_text(md: str) -> str:
-    text = _FENCE.sub(" ", md)
+    text = _FENCE.sub(" ", strip_alert_markers(md))
     text = re.sub(r"`([^`]*)`", r"\1", text)
     text = _IMAGE.sub(r"\1", text)
     text = _LINK.sub(r"\1", text)
