@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from psycopg.errors import DeadlockDetected, LockNotAvailable, SerializationFailure
 from psycopg.types.json import Jsonb
 
 from researchlib.attachments import with_stored_attachments
@@ -18,6 +19,12 @@ from researchlib.images import sync_article_images
 from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
 from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.model import IngestReport, ParsedDoc
+from researchlib.ingest.projection_guard import (
+    ConcurrentProjectionChange,
+    guard_state,
+    hold_input,
+    identical_input,
+)
 from researchlib.mentions import (
     CompanyMatcher,
     load_company_rows,
@@ -65,6 +72,30 @@ def store_documents(
         try:
             status, stored, linked, missing, duplicate = _store_one(conn, source, doc, data_dir, matcher)
             conn.commit()
+        except (ConcurrentProjectionChange, DeadlockDetected, LockNotAvailable, SerializationFailure) as exc:
+            conn.rollback()
+            try:
+                if isinstance(exc, ConcurrentProjectionChange):
+                    article_id, digest, body_text = exc.article_id, exc.digest, exc.body_text
+                else:
+                    row = conn.execute(
+                        "SELECT id FROM articles WHERE source_id = %s AND external_id = %s",
+                        (source.id, doc.external_id),
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError("冲突文章已不存在")
+                    article_id = row["id"]
+                    digest = content_hash(doc.title, doc.body_md, doc.published_at)
+                    body_text = _body_text(doc.title, doc.body_md)
+                hold_input(conn, source.id, article_id, doc, digest, body_text, reason="projection_concurrent")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                report.errors.append("并发来稿暂存失败；原始归档未改，请保留归档并重试")
+            else:
+                report.held += 1
+                report.errors.append(f"文章 {article_id} 并发变化，来稿已保存为待核版本")
+            continue
         except Exception as exc:
             report.errors.append(f"{doc.external_id}: {exc}")
             conn.rollback()
@@ -163,6 +194,29 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         "source_id": source.id, "source_kind": source.kind, "title": doc.title,
         "body_md": doc.body_md, "raw_meta": doc.raw_meta,
     }
+    if (source.kind == "zsxq" and not is_eligible_article(candidate)
+            and str(doc.raw_meta.get("topic_id") or "") != doc.external_id):
+        # Malformed/unbound content still stops before DB access. A bound legacy
+        # topic may only quarantine a conflict on an explicitly protected row.
+        return "rejected", 0, 0, 0, None
+    existing = conn.execute(
+        """
+        SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
+        FROM articles
+        WHERE source_id = %s AND external_id = %s
+        FOR UPDATE
+        """,
+        (source.id, doc.external_id),
+    ).fetchone()
+    if existing is not None:
+        state = guard_state(existing, source.id, doc.external_id)
+        if state != "unmarked":
+            raw_digest = content_hash(doc.title, doc.body_md, doc.published_at)
+            if state == "verified" and identical_input(existing, doc, raw_digest):
+                return "unchanged", 0, 0, 0, None
+            hold_input(conn, source.id, existing["id"], doc, raw_digest,
+                       _body_text(doc.title, doc.body_md), reason="projection_guard")
+            return "held", 0, 0, 0, None
     if not is_eligible_article(candidate):
         return "rejected", 0, 0, 0, None
     if source.kind == "zsxq":
@@ -182,14 +236,6 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         dict(doc.raw_meta), source.author, source_id=source.id, source_kind=source.kind
     ))
     meta = with_stored_attachments(meta, doc.attachment_refs, data_dir, source.id)
-    existing = conn.execute(
-        """
-        SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
-        FROM articles
-        WHERE source_id = %s AND external_id = %s
-        """,
-        (source.id, doc.external_id),
-    ).fetchone()
     keep = False
     article_changed = True
     policy_transition = False
@@ -273,7 +319,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 body_text=existing["body_text"],
                 raw_meta=existing["raw_meta"],
             )
-        conn.execute(
+        changed = conn.execute(
             """
             UPDATE articles SET
               content_hash = %s,
@@ -283,10 +329,16 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
               body_text = %s,
               raw_meta = %s,
               updated_at = now()
-            WHERE id = %s
+            WHERE id = %s AND (
+              NOT (raw_meta ? '_verified_reply_projection')
+              OR (content_hash = %s AND raw_meta = %s)
+            )
             """,
-            (digest, doc.title, doc.published_at, doc.body_md, body_text, Jsonb(meta), existing["id"]),
+            (digest, doc.title, doc.published_at, doc.body_md, body_text, Jsonb(meta), existing["id"],
+             existing["content_hash"], Jsonb(existing["raw_meta"] or {})),
         )
+        if changed.rowcount != 1:
+            raise ConcurrentProjectionChange(existing["id"], digest, body_text)
         article_id = existing["id"]
         status = "updated"
     else:
@@ -299,10 +351,13 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             merged.update(meta)
             assign_poster_role(merged, source.author, source_id=source.id, source_kind=source.kind)
             if merged != dict(existing["raw_meta"] or {}):
-                conn.execute(
-                    "UPDATE articles SET raw_meta = %s WHERE id = %s",
-                    (Jsonb(merged), article_id),
+                changed = conn.execute(
+                    "UPDATE articles SET raw_meta = %s WHERE id = %s AND ("
+                    "NOT (raw_meta ? '_verified_reply_projection') OR (content_hash = %s AND raw_meta = %s))",
+                    (Jsonb(merged), article_id, existing["content_hash"], Jsonb(existing["raw_meta"] or {})),
                 )
+                if changed.rowcount != 1:
+                    raise ConcurrentProjectionChange(article_id, digest, body_text)
                 if is_guest(merged):
                     conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
     if status != "unchanged":

@@ -16,6 +16,7 @@ class Connection:
         self.old = old
         self.statements = []
         self.result = None
+        self.rowcount = 1
 
     def execute(self, sql, params=None):
         self.statements.append((sql, params))

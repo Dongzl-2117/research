@@ -979,6 +979,8 @@ def duplicates_separate(request: Request, article_id: int):
 
 @router.get("/search")
 def search_page(request: Request):
+    from researchlib import embeddings
+
     settings = request.app.state.settings
     query = request.query_params.get("q", "").strip()[:120]
     with database(request) as conn:
@@ -1033,6 +1035,7 @@ def search_page(request: Request):
                 )
             )
         results = _decorate(conn, results, settings)
+        semantic_note = embeddings.status_note(conn) if query else ""
     total_all = sum(count_map.values())
     total = found.total if found else 0
     available = found.available if found else 0
@@ -1061,6 +1064,7 @@ def search_page(request: Request):
         "search.html",
         {
             "nav": "search",
+            "semantic_note": semantic_note,
             "title": f"搜索 {query}" if query else "检索",
             "query": query,
             "sources": sources,

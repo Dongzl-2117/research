@@ -36,6 +36,7 @@ from researchlib.eligibility import (
     project_article,
 )
 from researchlib.mentions import (
+    CASE_SENSITIVE_LATIN,
     CompanyMatcher,
     company_rules,
     compile_exclude,
@@ -722,15 +723,23 @@ def _entity_alias_sql(company_alias: str, text: str) -> str:
         f"array[{company_alias}.name_zh, coalesce({company_alias}.name_en, ''),"
         f" coalesce({company_alias}.ticker, '')] || coalesce({company_alias}.aliases, ARRAY[]::text[])"
     )
-    # CJK aliases are substrings; Latin aliases are complete normalized phrases.
-    # Values remain data from companies, never SQL or LIKE patterns.
+    # Same literal aliases and ASCII word boundaries as FocusMatcher. Escaping
+    # stays in SQL because aliases are row values, never interpolated SQL.
+    literal = "_entity_alias.name"
+    for char in r"\.^$|?*+()[]{}":
+        literal = f"replace({literal}, chr({ord(char)}), chr(92) || chr({ord(char)}))"
+    pattern = f"('(^|[^A-Za-z0-9])' || {literal} || '($|[^A-Za-z0-9])')"
+    sensitive = ",".join("'" + name.replace("'", "''") + "'" for name in sorted(CASE_SENSITIVE_LATIN))
+    case_sensitive = (
+        f"(_entity_alias.name = ANY(ARRAY[{sensitive}]::text[]) OR "
+        "(length(_entity_alias.name) <= 2 AND _entity_alias.name ~ '^[[:alpha:]]+$'))"
+    )
     return (
-        f"EXISTS (SELECT 1 FROM unnest({aliases}) _entity_alias(name)"
-        " WHERE length(btrim(_entity_alias.name)) >= 2 AND ("
+        f"EXISTS (SELECT 1 FROM (SELECT btrim(name) AS name FROM unnest({aliases}) _raw_alias(name)) _entity_alias"
+        " WHERE length(_entity_alias.name) >= 2 AND ("
         f"(_entity_alias.name ~ '[一-鿿]' AND strpos({text}, _entity_alias.name) > 0) OR "
-        "(_entity_alias.name !~ '[一-鿿]' AND "
-        f"strpos(' ' || regexp_replace(lower({text}), '[^a-z0-9]+', ' ', 'g') || ' ',"
-        " ' ' || regexp_replace(lower(_entity_alias.name), '[^a-z0-9]+', ' ', 'g') || ' ') > 0)))"
+        f"(_entity_alias.name !~ '[一-鿿]' AND CASE WHEN {case_sensitive} "
+        f"THEN {text} ~ {pattern} ELSE {text} ~* {pattern} END)))"
     )
 
 
@@ -1035,27 +1044,52 @@ SEMANTIC_RANKS = 60
 SEMANTIC_BAND = 0.15
 
 
+ANN_OVERFETCH = 4
+
+
 def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, company_ids: list[int] | None = None):
     where, params = scope_clause(scope)
     extra = ""
     if company_ids:
         extra = " AND " + _entity_sql(company_ids, params, "vec_companies", chunk_alias="c")
     params.update({"qv": vector, "vec_limit": limit, "vec_model": embeddings.model_name()})
-    embeddings.tune_search(conn)
+    safe = (f"{where}{extra} AND {_chunk_safe_sql()} "
+            f"AND e.model = %(vec_model)s AND e.text_hash = md5({embeddings._SOURCE_TEXT})")
+    if scope.article_id is None and scope.tree_id is None:
+        pool = max(1, limit) * ANN_OVERFETCH
+        embeddings.tune_search(conn, pool)
+        near = conn.execute(
+            f"SELECT e.article_id, e.ord FROM chunk_embeddings e WHERE e.model = %(vec_model)s "
+            f"ORDER BY e.embedding <=> %(qv)s::{kind} LIMIT %(ann_pool)s",
+            {**params, "ann_pool": pool},
+        ).fetchall()
+        if near:
+            # Recheck exact pairs, not merely article IDs. Recompute similarity
+            # from the current vector after the index scan and all source gates.
+            kept = conn.execute(
+                f"SELECT e.article_id,e.ord,1-(e.embedding <=> %(qv)s::{kind}) AS sim "
+                "FROM chunk_embeddings e JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord "
+                "JOIN articles a ON a.id=c.article_id "
+                "JOIN unnest(%(ann_ids)s::bigint[],%(ann_ords)s::int[]) AS k(article_id,ord) "
+                "ON k.article_id=c.article_id AND k.ord=c.ord "
+                f"WHERE {safe} ORDER BY e.embedding <=> %(qv)s::{kind},e.article_id,e.ord LIMIT %(vec_limit)s",
+                {**params, "ann_ids": [r["article_id"] for r in near], "ann_ords": [r["ord"] for r in near]},
+            ).fetchall()
+            if len(kept) >= limit:
+                return {(r["article_id"], r["ord"]): float(r["sim"]) for r in kept}
+    else:
+        embeddings.tune_search(conn)
+    # A narrow scope or too few eligible ANN pairs uses the original exact scan.
     rows = conn.execute(
-        f"""
-        SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
-        FROM chunk_embeddings e
-        JOIN articles a ON a.id = e.article_id
-        JOIN article_chunks c ON c.article_id = e.article_id AND c.ord = e.ord
-        WHERE {where}{extra} AND {_chunk_safe_sql()}
-          AND e.model = %(vec_model)s AND e.text_hash = md5({embeddings._SOURCE_TEXT})
-        ORDER BY e.embedding <=> %(qv)s::{kind}
-        LIMIT %(vec_limit)s
-        """,
+        f"SELECT e.article_id,e.ord,1-(e.embedding <=> %(qv)s::{kind}) AS sim "
+        "FROM chunk_embeddings e JOIN articles a ON a.id=e.article_id "
+        "JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord "
+        # + 0 prevents this fallback's ordering from using an approximate HNSW
+        # scan again. Only the bounded first phase is approximate.
+        f"WHERE {safe} ORDER BY (e.embedding <=> %(qv)s::{kind}) + 0,e.article_id,e.ord LIMIT %(vec_limit)s",
         params,
     ).fetchall()
-    return {(row["article_id"], row["ord"]): float(row["sim"]) for row in rows}
+    return {(r["article_id"], r["ord"]): float(r["sim"]) for r in rows}
 
 
 def semantic_candidates(
@@ -1680,6 +1714,7 @@ TREE_CONTEXT_SHARE = 0.6
 TREE_PER_ARTICLE = 12
 # 只问一篇：全文在这个字数以内就整篇给，超过就按问题定位。
 CHAR_BUDGET_ARTICLE = 60000
+DISPLAY_ARTICLE_CHUNKS = 40
 # 只问一篇又没有具体问题（「概括这篇」）、后台分批读时，最多读这么多字，按原文顺序。
 DEEP_ARTICLE_CHARS = 240000
 # 只问一篇时按问题定位：命中的块先占这个比例的预算，剩下的给前后文。
@@ -1712,14 +1747,18 @@ def _retrieve_article(
             found.outline_label = "这篇的章节"
         return found
 
+    # 页面列表才按块数截。交给模型的以前也截在 40 块（两万多字），两万到六万字的文章后半篇模型读不到，
+    # 还被当成全文、不附章节目录，问到后半篇的内容就答「没有」。
+    count = None if purpose in CONTEXT_PURPOSES else DISPLAY_ARTICLE_CHUNKS
     if total <= CHAR_BUDGET_ARTICLE:
-        return result(in_order(CHAR_BUDGET_ARTICLE, 40), True)
+        picked = in_order(CHAR_BUDGET_ARTICLE, count)
+        return result(picked, len(picked) == len(rows))
     if query.overview:
         # 没有具体问题：后台分批读时按原文顺序读到上限，页面上先列开头。
         if purpose == "deep":
             picked = in_order(DEEP_ARTICLE_CHARS, None)
         else:
-            picked = in_order(CHAR_BUDGET_ARTICLE, 40)
+            picked = in_order(CHAR_BUDGET_ARTICLE, count)
         return result(picked, len(picked) == len(rows))
     candidates = _candidates(conn, query, scope, limit=2000, enough=2000)
     semantic: dict[tuple[int, int], float] = {}
@@ -1730,7 +1769,7 @@ def _retrieve_article(
     local = Budget(budget.passages, int(chars * ARTICLE_PICK_SHARE), budget.passages)
     picked = select(scored, query, local, {})
     if not picked:
-        return result(in_order(CHAR_BUDGET_ARTICLE, 40), False)
+        return result(in_order(CHAR_BUDGET_ARTICLE, count), False)
     if purpose in CONTEXT_PURPOSES:
         attach_context(conn, picked, chars - sum(len(p.body) for p in picked), span=2)
     picked.sort(key=lambda p: p.ord)

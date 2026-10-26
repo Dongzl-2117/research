@@ -46,7 +46,7 @@ class IngestReport:
             f"归档文章: {self.archive_files}",
             f"数据库文章: {self.db_rows}",
             f"写入: 新增 {self.inserted}，更新 {self.updated}，未变 {self.unchanged}",
-            f"拦下: {self.held}（疑似删稿或截断，库里保留原文）",
+            f"拦下: {self.held}（删稿、截断或受保护投影冲突；保留原文并暂存来稿待核）",
             f"拒绝: {self.rejected}",
             f"重复: {self.duplicates}（库里已有同一篇，不进列表和检索）",
             f"归档图片: {self.images_in_archive}",

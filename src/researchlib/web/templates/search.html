@@ -27,6 +27,9 @@
     </div>
   </details>
 </form>
+{% if semantic_note %}
+<p class="quiet">{{ semantic_note }}</p>
+{% endif %}
 {% if company %}
 <p class="filter-note">只看提到 <a href="/companies/{{ company.id }}">{{ company.name_zh }}</a> 的文章。<a href="/search?q={{ query | urlencode }}">去掉这个条件</a></p>
 {% endif %}

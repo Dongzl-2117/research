@@ -46,7 +46,10 @@ DELETED_MARKERS = (
 DELETED_MAX_CHARS = 300
 SHRINK_MIN_OLD = 400
 SHRINK_RATIO = 0.5
-REASONS = {"deleted": "后来被删", "shrunk": "后来被截短"}
+REASONS = {
+    "deleted": "后来被删", "shrunk": "后来被截短",
+    "projection_guard": "回复投影冲突待核", "projection_concurrent": "并发来稿待核",
+}
 _SPACE = re.compile(r"\s+")
 
 

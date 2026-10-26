@@ -28,7 +28,6 @@ _DATE_LIKE = re.compile(
     r"|(?<![\dA-Za-z])(?:FY|Q|H)\d{1,4}"
     r"|(?<!\d)\d{2,4}\s*(?:财年|年度|季度|Q[1-4])"
 )
-_NUMBER = re.compile(r"(?<![\d.])(\d+(?:[,，]\d{3})*(?:\.\d+)?)\s*(%|％|‰|倍|个百分点|bp)?")
 _QUOTED = re.compile(r"「([^」]{4,})」|“([^”]{4,})”|\"([^\"]{4,})\"")
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _CJK_RUN = re.compile(r"[一-鿿]+")
@@ -46,10 +45,18 @@ _OMISSION = re.compile(r"\.{3,}|…+|\[省略\]|（略）")
 _QUOTE_TOKEN = re.compile(
     r"[一-鿿]|[^\W\d_一-鿿]+(?:['’][^\W\d_一-鿿]+)*(?:\+\+|#)?"
     r"|[+＋−－-]?[ \t]*(?:\d{1,3}(?:[\u00a0\u202f]\d{3})+(?:[.．]\d+)?"
-    r"|\d+(?:[.,，．]\d+)*)(?:[ \t]*[%％‰])?"
+    r"|\d+(?:[.,，．]\d+)*|[.．]\d+)(?:[ \t]*[%％‰])?"
     r"|(?P<symbol>[^\w\s])"
 )
 _QUOTE_SYMBOLS = str.maketrans("＋－−￥", "+--¥")
+_NUMERIC_TOKEN = re.compile(
+    r"(?<![\d.．])([+＋−－-]?[ \t]*(?:\d{1,3}(?:[,，\u00a0\u202f]\d{3})+(?:[.．]\d+)?"
+    r"|\d+(?:[.．]\d+)?|[.．]\d+))(?!\d|[.．]\d)"
+)
+_NUMBER_UNIT = re.compile(
+    r"[ \t]*(%|％|‰|个百分点|倍|基点|bps?(?![^\W一-鿿])|basis[ \t]+points?(?![^\W一-鿿])"
+    r"|percentage[ \t]+points?(?![^\W一-鿿])|percent(?![^\W一-鿿]))", re.IGNORECASE,
+)
 
 
 def quote_has_omission(quote: str) -> bool:
@@ -70,6 +77,7 @@ def _quote_tokens(text: str) -> list[tuple[str, int, int]]:
             value = value.replace("\u00a0", "").replace("\u202f", "")
         if re.fullmatch(r"[+-]?\d{1,3}(?:[,，]\d{3})+(?:\.\d+)?[%‰]?", value):
             value = value.replace(",", "").replace("，", "")
+        value = re.sub(r"^([+-]?)\.(?=\d)", r"\g<1>0.", value)
         tokens.append((value, match.start(), match.end()))
     return tokens
 
@@ -157,24 +165,40 @@ def split_claims(answer: str) -> list[tuple[str, list[int]]]:
     return claims
 
 
+def _numeric_anchors(text: str, *, significant_only: bool = False) -> list[tuple[str, str]]:
+    """Keep numeric token boundaries, signs and units from actual passage text.
+
+    Only conventional grouping and equivalent unit spellings are normalized;
+    unrelated numbers separated by whitespace are never concatenated.
+    """
+    found: list[tuple[str, str]] = []
+    for match in _NUMERIC_TOKEN.finditer(text):
+        number = match.group(1).translate(_FULLWIDTH).translate(_QUOTE_SYMBOLS)
+        number = re.sub(r"[,，\u00a0\u202f \t]", "", number)
+        number = re.sub(r"^([+-]?)\.(?=\d)", r"\g<1>0.", number)
+        sign = "-" if number.startswith("-") else ""
+        whole, _, fraction = number.lstrip("+-").partition(".")
+        magnitude = (whole.lstrip("0") or "0") + ("." + fraction.rstrip("0") if fraction.rstrip("0") else "")
+        number = (sign if magnitude != "0" else "") + magnitude
+        unit = ""
+        if suffix := _NUMBER_UNIT.match(text, match.end()):
+            unit = suffix.group(1).translate(_FULLWIDTH).casefold()
+            if unit in {"bp", "bps", "基点"} or unit.startswith("basis"):
+                unit = "bp"
+            elif unit.startswith("percentage"):
+                unit = "个百分点"
+            elif unit == "percent":
+                unit = "%"
+        if significant_only and not unit and "." not in match.group(1).translate(_FULLWIDTH):
+            if len(magnitude) < 2 or (len(magnitude) == 4 and 1990 <= int(magnitude) <= 2039):
+                continue
+        found.append((number, unit))
+    return found
+
+
 def _numbers(text: str) -> list[str]:
-    body = _REF.sub(" ", text)
-    body = _DATE_LIKE.sub(" ", body)
-    found: list[str] = []
-    for match in _NUMBER.finditer(body.translate(_FULLWIDTH)):
-        raw, unit = match.group(1), match.group(2) or ""
-        number = _digits(raw)
-        if not unit and "." not in number and len(number) < 2:
-            continue
-        if not unit and len(number) == 4 and 1990 <= int(number) <= 2039:
-            continue
-        found.append(number + unit)
-    return list(dict.fromkeys(found))
-
-
-def _number_in(number: str, haystack: str) -> bool:
-    core = re.match(r"[\d.]+", number).group(0)
-    return re.search(r"(?<![\d.])" + re.escape(core) + r"(?!\d)", haystack) is not None
+    body = _DATE_LIKE.sub(" ", _REF.sub(" ", text))
+    return list(dict.fromkeys(number + unit for number, unit in _numeric_anchors(body, significant_only=True)))
 
 
 def _iso(year: str, month: str, day: str) -> str:
@@ -201,8 +225,9 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
         "\n".join(str(item.get(key) or "") for key in ("before", "text", "after"))
         for item in cited
     ]
+    numeric_evidence = {number + unit for source in quote_sources for number, unit in _numeric_anchors(source)}
     for number in _numbers(text):
-        if not _number_in(number, digits):
+        if number not in numeric_evidence:
             problems.append(f"数字 {number} 不在所引段落里")
     for match in _QUOTED.finditer(text):
         quoted = next(group for group in match.groups() if group)

@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
-from datetime import timezone
+from datetime import UTC
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +34,7 @@ def _stamp_hash(title: str, body_md: str, stamp: str) -> str:
 def _variant_hashes(title: str, body_md: str, published_at, raw_meta: dict | None) -> set[str]:
     out: set[str] = set()
     if published_at is not None:
-        out.add(_stamp_hash(title, body_md, published_at.astimezone(timezone.utc).isoformat()))
+        out.add(_stamp_hash(title, body_md, published_at.astimezone(UTC).isoformat()))
         out.add(_stamp_hash(title, body_md, published_at.astimezone(SHANGHAI).isoformat()))
         out.add(_stamp_hash(title, body_md, published_at.replace(tzinfo=None).isoformat()))
     meta = raw_meta or {}
@@ -47,7 +47,7 @@ def _variant_hashes(title: str, body_md: str, published_at, raw_meta: dict | Non
 
             parsed = datetime.fromisoformat(repaired.strip().replace("Z", "+00:00"))
             out.add(_stamp_hash(title, body_md, parsed.astimezone(SHANGHAI).isoformat()))
-            out.add(_stamp_hash(title, body_md, parsed.astimezone(timezone.utc).isoformat()))
+            out.add(_stamp_hash(title, body_md, parsed.astimezone(UTC).isoformat()))
         except ValueError:
             pass
     return {item for item in out if item}

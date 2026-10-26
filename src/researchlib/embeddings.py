@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import logging
 import sys
@@ -44,6 +45,7 @@ QUERY_TIMEOUT_S = 4.0
 RETRY_AFTER_S = 60.0
 BATCH = 32
 QUERY_CACHE = 256
+COVERAGE_TTL_S = 600.0
 
 Embedder = Callable[[list[str]], list[list[float]]]
 
@@ -60,6 +62,7 @@ class _State:
         self.down_until = 0.0
         self.cache: OrderedDict[str, list[float]] = OrderedDict()
         self.schema: dict[str, str | None] = {}
+        self.coverage: dict[tuple, tuple[tuple[int, int], float]] = {}
         # use_embedder 换上的函数不被 configure 覆盖（测试里每开一条连接都会 configure 一次）。
         self.pinned = False
         self.lock = threading.Lock()
@@ -78,9 +81,18 @@ def _http_embedder(base_url: str, model: str, api_key: str, timeout: float) -> E
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = json.loads(response.read().decode())
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-            raise EmbeddingError(f"向量服务 {base_url} 不可用：{exc}") from exc
-        items = sorted(data.get("data") or [], key=lambda item: item.get("index", 0))
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, http.client.HTTPException) as exc:
+            raise EmbeddingError(f"向量服务不可用（{type(exc).__name__}）") from exc
+        if not isinstance(data, dict):
+            raise EmbeddingError("向量服务返回的条数或格式不对")
+        items = data.get("data")
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise EmbeddingError("向量服务返回的条数或格式不对")
+        if any(type(item.get("index", 0)) is not int for item in items):
+            raise EmbeddingError("向量服务返回的索引格式不对")
+        items = sorted(items, key=lambda item: item.get("index", 0))
+        if [item.get("index", 0) for item in items] != list(range(len(texts))):
+            raise EmbeddingError("向量服务返回的索引不完整或重复")
         vectors = [item.get("embedding") for item in items]
         if len(vectors) != len(texts) or any(not isinstance(v, list) for v in vectors):
             raise EmbeddingError("向量服务返回的条数或格式不对")
@@ -109,6 +121,7 @@ def configure(settings) -> None:
         _state.embedder = _http_embedder(base, model, key, timeout)
         _state.query_embedder = _http_embedder(base, model, key, min(timeout, QUERY_TIMEOUT_S))
         _state.model = f"{base}|{model}"
+        _state.coverage.clear()
         _state.cache.clear()
         _state.down_until = 0.0
 
@@ -119,6 +132,7 @@ def use_embedder(embedder: Embedder | None, model: str = "test") -> None:
         _state.embedder = _state.query_embedder = embedder
         _state.pinned = embedder is not None
         _state.model = model if embedder else ""
+        _state.coverage.clear()
         _state.cache.clear()
         _state.down_until = 0.0
         _state.schema.clear()
@@ -212,7 +226,7 @@ def ensure_schema(conn) -> bool:
 
 def column_type(conn) -> str | None:
     """向量表的列类型（halfvec / vector）。表不存在返回 None。按连接的数据库缓存。"""
-    key = conn.info.dbname
+    key = (getattr(conn.info, "host", ""), getattr(conn.info, "port", ""), conn.info.dbname, model_name())
     if key in _state.schema:
         return _state.schema[key]
     row = conn.execute(
@@ -235,10 +249,13 @@ def ready(conn) -> str | None:
     return column_type(conn)
 
 
-def tune_search(conn) -> None:
-    """HNSW 默认只看 40 个邻居，带范围过滤时不够。0.8 起有迭代扫描，过滤掉的会接着往下找。"""
+def tune_search(conn, pool: int = 200) -> None:
+    """HNSW 默认只看 40 个邻居，要取 pool 块至少得看这么多（pgvector 上限 1000）。
+
+    0.8 起有迭代扫描，不够时接着往下找。
+    """
     version = _vector_version(conn) or (0,)
-    conn.execute("SET LOCAL hnsw.ef_search = 200")
+    conn.execute(f"SET LOCAL hnsw.ef_search = {max(200, min(1000, int(pool)))}")
     if version >= (0, 8):
         conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
 
@@ -253,7 +270,15 @@ def text_hash(title: str, heading: str, body: str) -> str:
     return hashlib.md5("\n".join([title or "", heading or "", body or ""]).encode()).hexdigest()
 
 
-def _pending(conn, limit: int, model: str) -> list[dict]:
+def _pending(conn, limit: int, model: str, skip=None) -> list[dict]:
+    skipped = ""
+    params = [model]
+    if skip:
+        skipped = (
+            "AND NOT EXISTS (SELECT 1 FROM unnest(%s::bigint[], %s::int[]) AS s(article_id, ord)"
+            " WHERE s.article_id = c.article_id AND s.ord = c.ord)"
+        )
+        params += [[key[0] for key in skip], [key[1] for key in skip]]
     return conn.execute(
         f"""
         SELECT c.article_id, c.ord, a.title, c.heading, c.body, md5({_SOURCE_TEXT}) AS hash
@@ -265,10 +290,11 @@ def _pending(conn, limit: int, model: str) -> list[dict]:
           AND {model_cache_safe_sql("a")}
           AND {chunk_provenance_sql("a", "c")}
           AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %s)
+          {skipped}
         ORDER BY a.published_at DESC NULLS LAST, c.article_id, c.ord
         LIMIT %s
         """,
-        (model, limit),
+        (*params, limit),
     ).fetchall()
 
 
@@ -325,8 +351,51 @@ def _current_row_proven(conn, row: dict) -> bool:
     return False
 
 
+def _fresh_rows(conn, rows: list[dict], bad: list[tuple[int, int]]) -> list[dict]:
+    current = {(r["article_id"], r["ord"]): r for r in _current_rows(conn, rows)}
+    fresh = []
+    for row in rows:
+        key = (row["article_id"], row["ord"])
+        value = current.get(key)
+        if value is not None and value["hash"] == row["hash"]:
+            fresh.append(value)
+        else:
+            bad.append(key)
+    return fresh
+
+
+def _embed_rows(conn, rows: list[dict], bad: list[tuple[int, int]]):
+    rows = _fresh_rows(conn, rows, bad)
+    if not rows:
+        return []
+    texts = ["\n".join(part for part in (r["title"], r["heading"], r["body"]) if part) for r in rows]
+    try:
+        return list(zip(rows, embed_texts(texts), strict=True))
+    except EmbeddingError as exc:
+        failure = exc
+    try:
+        embed_texts(["向量服务检查"])
+    except EmbeddingError:
+        raise failure from None
+    pairs = []
+    for row in rows:
+        fresh = _fresh_rows(conn, [row], bad)
+        if not fresh:
+            continue
+        current = fresh[0]
+        text = "\n".join(part for part in (current["title"], current["heading"], current["body"]) if part)
+        try:
+            pairs.append((current, embed_texts([text])[0]))
+        except EmbeddingError:
+            # Never include the service exception or source text in the log.
+            logger.warning("第 %s 篇第 %s 块未完成向量，留待下一次处理", row["article_id"], row["ord"])
+            bad.append((row["article_id"], row["ord"]))
+    return pairs
+
+
 def backfill(
-    conn, *, limit: int | None = None, batch: int = BATCH, progress: Callable[[int], None] | None = None
+    conn, *, limit: int | None = None, batch: int = BATCH, progress: Callable[[int], None] | None = None,
+    skipped: list[tuple[int, int]] | None = None,
 ) -> int:
     """给缺向量、或字改过的块算向量。删掉已经没有对应块的向量。返回这次算了多少块。"""
     kind = column_type(conn)
@@ -341,28 +410,43 @@ def backfill(
     )
     conn.commit()
     done = 0
+    bad: list[tuple[int, int]] = []
     while limit is None or done < limit:
-        size = batch if limit is None else min(batch, limit - done)
-        rows = _current_rows(conn, _pending(conn, size, model))
+        size = max(1, batch) if limit is None else min(max(1, batch), limit - done)
+        rows = _current_rows(conn, _pending(conn, size, model, bad))
         if not rows:
             break
-        texts = ["\n".join(part for part in (r["title"], r["heading"], r["body"]) if part) for r in rows]
-        vectors = embed_texts(texts)
+        pairs = _embed_rows(conn, rows, bad)
+        # Revoke results if proof/text changed while the external call ran.
+        current = {(r["article_id"], r["ord"]): r for r in _fresh_rows(conn, [r for r, _ in pairs], bad)}
+        pairs = [(r, v) for r, v in pairs if (r["article_id"], r["ord"]) in current]
+        if not pairs:
+            continue
         with conn.cursor() as cur:
             cur.executemany(
                 f"""
                 INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
-                VALUES (%s, %s, %s, %s, %s::{kind})
+                SELECT c.article_id,c.ord,%s,%s,%s::{kind}
+                FROM article_chunks c JOIN articles a ON a.id=c.article_id
+                WHERE c.article_id=%s AND c.ord=%s AND md5({_SOURCE_TEXT})=%s
+                  AND a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}
+                  AND {visible_sql("a")} AND {chunk_provenance_sql("a", "c")}
                 ON CONFLICT (article_id, ord) DO UPDATE
                 SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash,
                     embedding = EXCLUDED.embedding, updated_at = now()
                 """,
-                [(r["article_id"], r["ord"], model, r["hash"], literal(v)) for r, v in zip(rows, vectors, strict=True)],
+                [(model, r["hash"], literal(v), r["article_id"], r["ord"], r["hash"]) for r, v in pairs],
             )
+            stored = max(0, getattr(cur, "rowcount", len(pairs)))
         conn.commit()
-        done += len(rows)
+        done += stored
+        if stored < len(pairs):
+            bad.extend((r["article_id"], r["ord"]) for r, _ in pairs)
         if progress:
             progress(done)
+    if skipped is not None:
+        skipped.extend(dict.fromkeys(bad))
+    _state.coverage.clear()
     return done
 
 
@@ -377,11 +461,12 @@ def coverage(conn) -> tuple[int, int]:
                 JOIN articles a ON a.id = c.article_id
                 WHERE a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}
                   AND {visible_sql("a")} AND {chunk_provenance_sql("a", "c")}
-                  AND e.text_hash = md5({_SOURCE_TEXT})) AS done,
+                  AND e.text_hash = md5({_SOURCE_TEXT}) AND e.model = %s) AS done,
                (SELECT count(*) FROM article_chunks c JOIN articles a ON a.id = c.article_id
                 WHERE a.duplicate_of IS NULL AND {model_cache_safe_sql("a")}
                   AND {visible_sql("a")} AND {chunk_provenance_sql("a", "c")}) AS total
-        """
+        """,
+        (model_name(),),
     ).fetchone()
     return int(row["done"]), int(row["total"])
 
@@ -404,12 +489,17 @@ def main(argv: list[str] | None = None) -> int:
             print("Postgres 没有 pgvector：重建 db 镜像（docker compose up -d --build db）。", file=sys.stderr)
             return 1
         started = time.monotonic()
+        skipped: list[tuple[int, int]] = []
+        report_step = max(1, args.batch) * 20
+        next_report = report_step
 
         def report(done: int) -> None:
-            if done % (args.batch * 20) == 0:
+            nonlocal next_report
+            if done >= next_report:
                 print(f"已算 {done} 块，{time.monotonic() - started:.0f} 秒", flush=True)
+                next_report = (done // report_step + 1) * report_step
 
-        count = backfill(conn, limit=args.limit, batch=max(1, args.batch), progress=report)
+        count = backfill(conn, limit=args.limit, batch=max(1, args.batch), progress=report, skipped=skipped)
         have, total = coverage(conn)
     except EmbeddingError as exc:
         print(f"向量回填失败：{exc}", file=sys.stderr)
@@ -417,7 +507,45 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
     print(f"这次算了 {count} 块，库里 {have}/{total} 块有向量，用时 {time.monotonic() - started:.0f} 秒")
+    if skipped:
+        print(f"本次有 {len(skipped)} 块失败或来源已变化，未写入向量；请核查后单独重试。", file=sys.stderr)
     return 0
+
+
+def paused() -> bool:
+    """查询向量刚失败过，这一阵子检索只按字面找。"""
+    return time.monotonic() < _state.down_until
+
+
+def _cached_coverage(conn) -> tuple[int, int]:
+    key = (getattr(conn.info, "host", ""), getattr(conn.info, "port", ""), conn.info.dbname, model_name())
+    now = time.monotonic()
+    hit = _state.coverage.get(key)
+    if hit and now - hit[1] < COVERAGE_TTL_S:
+        return hit[0]
+    value = coverage(conn)
+    _state.coverage[key] = (value, now)
+    return value
+
+
+def status_note(conn) -> str:
+    """检索页上的一句话：语义检索为什么没用上，或者向量还没算完。一切正常时是空字符串。
+
+    语义检索出了问题以前只在日志里，页面上看不出来，搜「costco 商业模式」找不到按意思相关的文章时，
+    分不清是没配、没算向量、服务连不上，还是真的没有。
+    """
+    if not enabled():
+        return "语义检索未启用，本次按关键词查找。"
+    if column_type(conn) is None:
+        return "语义检索暂不可用，本次按关键词查找。"
+    if paused():
+        return "向量服务连不上，这次只按字面找，过一分钟再试。"
+    have, total = _cached_coverage(conn)
+    if total and have == 0:
+        return "语义索引尚未就绪，本次按关键词查找。"
+    if total and have < total:
+        return f"全库合格段落的语义索引尚未齐全（{have}/{total}），未覆盖的段落仍按关键词查找。"
+    return ""
 
 
 if __name__ == "__main__":

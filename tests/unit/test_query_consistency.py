@@ -135,7 +135,7 @@ def test_duplicate_rank_never_prefers_guest_length_over_verified_owner():
 
 def test_vector_lookup_is_entity_constrained_and_checks_current_model_text(monkeypatch):
     conn = Connection()
-    monkeypatch.setattr(retrieval.embeddings, "tune_search", lambda c: None)
+    monkeypatch.setattr(retrieval.embeddings, "tune_search", lambda c, *args: None)
     monkeypatch.setattr(retrieval.embeddings, "model_name", lambda: "existing-model")
     retrieval._vector_keys(conn, "halfvec", "[1,0]", Scope(source_ids=["s"]), 5, company_ids=[7])
     sql, params = conn.statements[-1]
