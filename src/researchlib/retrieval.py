@@ -976,8 +976,8 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
                 found[key] = dict(row)
                 seen.add(key)
 
-    groups = {t.group for t in query.terms if t.group >= 0}
     word_terms = [t for t in query.terms if t.kind in ("word", "phrase", "expansion")]
+    groups = {t.group for t in query.terms if t.group >= 0}
     company_ids = _query_company_ids(query)
     if scope.company_id is not None and scope.company_id not in company_ids:
         company_ids.append(scope.company_id)
@@ -1714,6 +1714,7 @@ TREE_CONTEXT_SHARE = 0.6
 TREE_PER_ARTICLE = 12
 # 只问一篇：全文在这个字数以内就整篇给，超过就按问题定位。
 CHAR_BUDGET_ARTICLE = 60000
+# 只问一篇时页面上「相关原文」最多列这么多块。交给模型的不按块数截，只按字数。
 DISPLAY_ARTICLE_CHUNKS = 40
 # 只问一篇又没有具体问题（「概括这篇」）、后台分批读时，最多读这么多字，按原文顺序。
 DEEP_ARTICLE_CHARS = 240000
@@ -1951,6 +1952,20 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         counts=counts,
         available=len(strong) + len(fallback_ids) + len(weak),
     )
+
+
+def _title_mentions(term: Term, title: str, matcher: FocusMatcher | None) -> bool:
+    """标题里写没写到这个词组。和数段落时同一套规则：公司按别名数，英文按词边界。
+
+    以前按子串找：「COST」（开市客的代码）算进了标题「The Cost of AI」，「DIS」算进了「Disruption」，
+    没提这家公司的文章被当成问到的公司已经命中，排进前面那一档、标「语义相关」。
+    """
+    if not title:
+        return False
+    if term.kind == "company":
+        return matcher is not None and matcher.count(title).get(term.company_id, 0) > 0
+    lowered = title.lower()
+    return any(_count(title, lowered, form) for form in term.forms if form)
 
 
 def _full_match_where(query: Query, scope: Scope) -> tuple[str, dict]:

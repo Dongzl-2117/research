@@ -6,6 +6,7 @@ import html as html_lib
 import re
 import unicodedata
 import xml.etree.ElementTree as etree
+from html.parser import HTMLParser
 from urllib.parse import unquote
 
 import markdown
@@ -20,14 +21,48 @@ from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_bef
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
 _SRC_ATTR = re.compile(r"""\bsrc\s*=\s*(["'])(.*?)\1""", re.I)
-_DROP_BLOCKS = re.compile(
-    r"<\s*(script|style|iframe|object|embed|link|meta)\b[^>]*>.*?<\s*/\s*\1\s*>",
-    re.I | re.S,
+
+# 正文 HTML 按白名单重写，见 sanitize_html。
+_DROP_WITH_CONTENT = frozenset({
+    "script", "style", "template", "iframe", "frame", "frameset", "object", "embed", "applet",
+    "noscript", "noembed", "noframes", "svg", "math", "textarea", "select", "title", "head", "xmp",
+})
+_VOID = frozenset({"br", "hr", "img", "wbr", "col"})
+_ALLOWED_TAGS = frozenset({
+    "a", "abbr", "article", "aside", "b", "bdi", "bdo", "blockquote", "br", "caption", "center",
+    "cite", "code", "col", "colgroup", "dd", "del", "details", "dfn", "div", "dl", "dt", "em",
+    "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "i",
+    "img", "ins", "kbd", "li", "mark", "ol", "p", "pre", "q", "rp", "rt", "ruby", "s", "samp",
+    "section", "small", "span", "strike", "strong", "sub", "summary", "sup", "table", "tbody",
+    "td", "tfoot", "th", "thead", "time", "tr", "u", "ul", "var", "wbr",
+})
+_GLOBAL_ATTRS = frozenset({"id", "class", "title", "lang", "dir", "style", "align"})
+_TAG_ATTRS = {
+    "a": frozenset({"href", "name"}),
+    "img": frozenset({"src", "alt", "width", "height", "loading"}),
+    "table": frozenset({"width", "border", "cellpadding", "cellspacing"}),
+    "td": frozenset({"colspan", "rowspan", "valign", "width"}),
+    "th": frozenset({"colspan", "rowspan", "valign", "width", "scope"}),
+    "col": frozenset({"span", "width"}),
+    "colgroup": frozenset({"span", "width"}),
+    "ol": frozenset({"start", "type", "reversed"}),
+    "ul": frozenset({"type"}),
+    "li": frozenset({"value"}),
+    "time": frozenset({"datetime"}),
+    "details": frozenset({"open"}),
+}
+_BOOLEAN_ATTRS = frozenset({"open", "reversed"})
+# 浏览器认协议前会删掉空白和控制字符，判断前也删掉。
+_URL_NOISE = re.compile(r"[\x00-\x20\x7f]+")
+_URL_SCHEME = re.compile(r"^([a-z][a-z0-9+.-]*):", re.I)
+_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
+# 内联样式只去掉会加载外部资源、能写转义或盖住页面的声明，排版类的照留。
+_STYLE_PROPERTY = re.compile(r"^-?[a-z][a-z-]*$")
+_STYLE_UNSAFE = re.compile(
+    r"url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\(|src\s*\(|expression\s*\("
+    r"|javascript:|@import|behavior|binding|\\|/\*",
+    re.I,
 )
-_DROP_OPEN = re.compile(r"<\s*(script|style|iframe|object|embed|link|meta)\b[^>]*>", re.I)
-_ON_ATTR = re.compile(r"""\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", re.I)
-_SRCSET = re.compile(r"""\s+srcset\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", re.I)
-_JS_URL = re.compile(r"""((?:href|src)\s*=\s*["'])\s*javascript:[^"']*""", re.I)
 
 
 def image_destination(raw: str) -> str:
@@ -63,13 +98,128 @@ def img_tag_url(tag: str) -> str:
     return ""
 
 
+def _attr_value(value: str) -> str:
+    return html_lib.escape(value, quote=False).replace('"', "&quot;")
+
+
+def _safe_link(value: str) -> bool:
+    scheme = _URL_SCHEME.match(_URL_NOISE.sub("", value))
+    return scheme is None or scheme.group(1).lower() in _LINK_SCHEMES
+
+
+def _local_path(value: str) -> bool:
+    """外部图片不外链：图片只认站内路径（rewrite_*_images 已经换成 /media/...）。"""
+    path = value.strip()
+    return path.startswith("/") and not path.startswith("//") and "\\" not in path
+
+
+def _clean_style(value: str) -> str:
+    kept: list[str] = []
+    for declaration in value.split(";"):
+        name, sep, setting = declaration.partition(":")
+        name, setting = name.strip().lower(), setting.strip()
+        if not sep or not setting or not _STYLE_PROPERTY.match(name) or _STYLE_UNSAFE.search(setting):
+            continue
+        if name == "position" and setting.lower() not in {"static", "relative"}:
+            continue
+        kept.append(f"{name}: {setting}")
+    return "; ".join(kept)
+
+
+class _Sanitizer(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        self.open: list[str] = []
+        self.skip_tag = ""
+        self.skip_depth = 0
+
+    def _attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str | None:
+        allowed = _TAG_ATTRS.get(tag, frozenset())
+        parts: list[str] = []
+        has_src = False
+        for name, value in attrs:
+            if name not in _GLOBAL_ATTRS and name not in allowed:
+                continue
+            if value is None:
+                if name in _BOOLEAN_ATTRS:
+                    parts.append(f" {name}")
+                continue
+            if name == "loading" and value.lower() not in {"lazy", "eager"}:
+                continue
+            if name == "href" and not _safe_link(value):
+                continue
+            if name == "src":
+                if not _local_path(value):
+                    continue
+                has_src = True
+            if name == "style":
+                value = _clean_style(value)
+                if not value:
+                    continue
+            parts.append(f' {name}="{_attr_value(value)}"')
+        if tag == "img" and not has_src:
+            return None
+        return "".join(parts)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.skip_depth:
+            if tag == self.skip_tag:
+                self.skip_depth += 1
+            return
+        if tag in _DROP_WITH_CONTENT:
+            self.skip_tag, self.skip_depth = tag, 1
+            return
+        if tag not in _ALLOWED_TAGS:
+            return
+        rendered = self._attrs(tag, attrs)
+        if rendered is None:
+            return
+        self.out.append(f"<{tag}{rendered}>")
+        if tag not in _VOID:
+            self.open.append(tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.skip_depth or tag in _DROP_WITH_CONTENT:
+            return
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID and self.open and self.open[-1] == tag:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.skip_depth:
+            if tag == self.skip_tag:
+                self.skip_depth -= 1
+            return
+        # 只关自己开过的标签：多出来的 </div> 会关掉页面外层的容器。
+        if tag not in self.open:
+            return
+        while self.open:
+            name = self.open.pop()
+            self.out.append(f"</{name}>")
+            if name == tag:
+                break
+
+    def handle_data(self, data: str) -> None:
+        if not self.skip_depth:
+            self.out.append(html_lib.escape(data, quote=False))
+
+    def result(self) -> str:
+        self.close()
+        self.out.extend(f"</{name}>" for name in reversed(self.open))
+        self.open = []
+        return "".join(self.out)
+
+
 def sanitize_html(html: str) -> str:
-    cleaned = _DROP_BLOCKS.sub("", html)
-    cleaned = _DROP_OPEN.sub("", cleaned)
-    cleaned = _ON_ATTR.sub("", cleaned)
-    cleaned = _SRCSET.sub("", cleaned)
-    cleaned = _JS_URL.sub(r"\1#", cleaned)
-    return cleaned
+    """按白名单重写正文 HTML：解析成标签和文字再写出来，文字一律转义。
+
+    只留排版用的标签和属性，链接只认 http、https、mailto 和站内地址，图片只认站内路径。
+    注释、脚本、内嵌页面、SVG 连内容一起丢；不认识的标签只丢标签、留文字。
+    """
+    parser = _Sanitizer()
+    parser.feed(html or "")
+    return parser.result()
 
 
 def _mapped(dest: str, mapping: dict[str, str]) -> str | None:

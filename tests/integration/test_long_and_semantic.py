@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 import pytest
@@ -339,5 +340,41 @@ def test_backfill_skips_a_chunk_the_service_rejects_and_keeps_going(conn, settin
         embeddings.use_embedder(down)
         with pytest.raises(embeddings.EmbeddingError):
             embeddings.backfill(conn)
+    finally:
+        embeddings.use_embedder(None)
+
+
+def test_search_page_says_when_meaning_search_is_not_in_use(conn, settings):
+    _store(
+        conn,
+        settings,
+        FANGWEI,
+        [
+            _doc("model", "开市客笔记", "Costco 靠会员费赚钱，商品几乎不赚毛利。", month=1),
+            _doc("store", "开市客新店", "Costco 在上海开了新店，门店外面排队很长。", month=2),
+            _doc("rain", "天气", "今天下雨，天气转凉。", month=3),
+        ],
+    )
+    embeddings.use_embedder(None)
+    with TestClient(create_app(settings)) as client:
+        assert "语义检索未启用" in client.get("/search", params={"q": "costco 商业模式"}).text
+        # 只搜公司名不走语义这一路，不提。
+        assert "semantic-note" not in client.get("/search", params={"q": "costco"}).text
+    if embeddings.column_type(conn) is None:
+        return
+    embeddings.use_embedder(_fake_embed)
+    try:
+        with TestClient(create_app(settings)) as client:
+
+            def page() -> str:
+                return client.get("/search", params={"q": "costco 商业模式"}).text
+
+            assert "语义索引尚未就绪" in page()
+            embeddings.backfill(conn, limit=1)
+            assert "语义索引尚未齐全（1/3）" in page()
+            embeddings.backfill(conn)
+            assert "semantic-note" not in page()
+            embeddings._state.down_until = time.monotonic() + 60
+            assert "向量服务连不上" in page()
     finally:
         embeddings.use_embedder(None)

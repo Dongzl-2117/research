@@ -51,3 +51,11 @@ def test_chunk_segments_respects_limit():
 def test_top_level_blocks_basic():
     html = "<p>One</p><h2>Title</h2><p>Two</p>"
     assert top_level_blocks(html) == ["<p>One</p>", "<h2>Title</h2>", "<p>Two</p>"]
+
+
+def test_blocks_keep_attribute_quotes_escaped():
+    """属性里转义过的引号写回去还要是转义的，不然编段落号时会多出一个可执行的属性。"""
+    html = '<p title="&quot; onmouseover=alert(1) x=&quot;">hi</p>'
+    assert top_level_blocks(html) == [html]
+    assert stamp_paragraph_ids(html) == '<p id="p-1" title="&quot; onmouseover=alert(1) x=&quot;">hi</p>'
+    assert top_level_blocks('<p><a href="/s?a=1&amp;b=2">x</a></p>') == ['<p><a href="/s?a=1&amp;b=2">x</a></p>']

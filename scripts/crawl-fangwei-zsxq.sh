@@ -71,7 +71,7 @@ if [ "$ARCHIVE" != "$INBOX" ]; then
 fi
 
 echo "$(date '+%F %T') 导入 research 库"
-run_step "导入" compose exec -T app research-ingest-zsxq --source fangwei-zsxq --input /data/inbox/fangwei-zsxq
+run_step "导入" compose exec -T app research-ingest-zsxq --source fangwei-zsxq --input /data/inbox/fangwei-zsxq --origin crawl
 
 echo "$(date '+%F %T') 补摘要（方伟星球最近缺摘要的）"
 run_step "摘要" compose exec -T app research-digest --source fangwei-zsxq --limit 30 --max-minutes 40

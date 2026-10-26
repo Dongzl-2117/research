@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
+from researchlib import embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.answer_provenance import provenance_article_ids, verify_input_provenance
@@ -35,7 +36,7 @@ from researchlib.llm import active_label, active_model_id, llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.portfolio import Portfolio, load_portfolio
-from researchlib.render import flow_ocr_quote_body, inline_image_ocr
+from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, timeline_sources
@@ -670,8 +671,10 @@ def _article_view(request: Request, article_id: int, mode: str):
         and translation.get("complete")
         and translation.get("content_hash") == article.get("content_hash")
     )
+    # Model-written HTML is sanitized before attachment/link resolution.
     zh_html = (
-        finish_html(translation["body_html"], link_index, parent, attachments=attachments) if has_translation else None
+        finish_html(sanitize_html(translation["body_html"]), link_index, parent, attachments=attachments)
+        if has_translation else None
     )
     if zh_html:
         zh_html = inline_image_ocr(zh_html, ocr_texts)
@@ -979,8 +982,6 @@ def duplicates_separate(request: Request, article_id: int):
 
 @router.get("/search")
 def search_page(request: Request):
-    from researchlib import embeddings
-
     settings = request.app.state.settings
     query = request.query_params.get("q", "").strip()[:120]
     with database(request) as conn:
@@ -998,6 +999,7 @@ def search_page(request: Request):
         page = _page_arg(request)
         found = None
         count_map: dict[str, int] = {}
+        semantic_note = ""
         if query:
             found = search_articles(
                 conn, query, scope, sources, limit=SEARCH_PAGE_SIZE, offset=(page - 1) * SEARCH_PAGE_SIZE
@@ -1006,6 +1008,9 @@ def search_page(request: Request):
                 count_map = full_match_counts(conn, found.query, facet_scope)
             else:
                 count_map = dict(found.counts)
+            # 有具体的词才走语义检索；没用上（没配、没算向量、服务连不上）或向量没算完时说一句。
+            if found.query and found.query.content_terms:
+                semantic_note = embeddings.status_note(conn)
         entity_companies = queries.matching_companies(conn, query) if query and page == 1 else []
         results = []
         terms = found.terms if found else []
@@ -1035,7 +1040,6 @@ def search_page(request: Request):
                 )
             )
         results = _decorate(conn, results, settings)
-        semantic_note = embeddings.status_note(conn) if query else ""
     total_all = sum(count_map.values())
     total = found.total if found else 0
     available = found.available if found else 0

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import pytest
+
+from researchlib import embeddings
 from researchlib.ask import _batches, _material, _size, outline_note
 from researchlib.retrieval import (
     LEXICAL_WEIGHT,
     SEMANTIC_RANKS,
+    FocusMatcher,
     Passage,
+    Term,
     _ord_range,
+    _title_mentions,
     article_caps,
     fuse_semantic,
     semantic_scores,
@@ -90,3 +96,79 @@ def test_outline_note_lists_sections_and_trims_long_headings():
     assert "- 零售是什么生意" in note
     assert "长" * 60 + "…" in note
     assert outline_note([], "这篇的章节") == ""
+
+
+# —— 查询向量：本机 Ollama 闲置后会卸下模型，重新加载要几秒 ——
+
+
+@pytest.fixture
+def query_embedders():
+    """冷、热两种超时各一个假的算向量函数，记下这次用的是哪个。结束时 use_embedder(None) 把状态清干净。"""
+    used: list[str] = []
+    state = {"fail": False}
+
+    def make(name):
+        def embed(texts):
+            used.append(name)
+            if state["fail"]:
+                raise embeddings.EmbeddingError("连不上")
+            return [[1.0] + [0.0] * (embeddings.DIM - 1) for _ in texts]
+
+        return embed
+
+    embeddings.use_embedder(make("full"))
+    embeddings._state.query_embedder = make("warm")
+    embeddings._state.cold_embedder = make("cold")
+    yield used, state
+    embeddings.use_embedder(None)
+
+
+def test_first_query_after_idle_waits_for_the_model_to_load(query_embedders):
+    used, _state = query_embedders
+    assert embeddings.query_vector("costco 商业模式") is not None
+    # 刚算过，模型还在：用 4 秒的超时。
+    assert embeddings.query_vector("会员费") is not None
+    assert used == ["cold", "warm"]
+    # 闲置超过 WARM_FOR_S，模型多半被卸下了：这次放宽超时。
+    embeddings._state.last_ok -= embeddings.WARM_FOR_S + 1
+    assert embeddings.query_vector("低毛利") is not None
+    assert used[-1] == "cold"
+
+
+def test_after_a_failure_queries_pause_and_do_not_wait_long_again(query_embedders):
+    used, state = query_embedders
+    state["fail"] = True
+    assert embeddings.query_vector("costco 商业模式") is None
+    assert embeddings.paused()
+    # 暂停期间不再去连。
+    assert embeddings.query_vector("会员费") is None
+    assert used == ["cold"]
+    # 暂停过后再试：上次失败了，不再放宽超时，服务卡住时每次搜索最多多等 4 秒。
+    embeddings._state.down_until = 0.0
+    assert embeddings.query_vector("会员费") is None
+    assert used == ["cold", "warm"]
+    state["fail"] = False
+    embeddings._state.down_until = 0.0
+    assert embeddings.query_vector("会员费") is not None
+    assert not embeddings.paused()
+
+
+# —— 检索页：标题算不算写到了问的公司和词 ——
+
+COSTCO = {"id": 7, "name_zh": "开市客", "name_en": "Costco", "ticker": "COST", "aliases": ["好市多"]}
+DISNEY = {"id": 8, "name_zh": "迪士尼", "name_en": "Disney", "ticker": "DIS", "aliases": []}
+
+
+def test_title_mentions_uses_alias_rules_not_substrings():
+    matcher = FocusMatcher([COSTCO, DISNEY])
+    costco = Term("开市客", "company", 0, forms=["开市客", "Costco", "COST", "好市多"], company_id=7)
+    disney = Term("迪士尼", "company", 1, forms=["迪士尼", "Disney", "DIS"], company_id=8)
+    assert _title_mentions(costco, "Costco 的会员费", matcher)
+    assert _title_mentions(costco, "好市多开业", matcher)
+    # 以前按子串找，「COST」算进了「Cost」，「DIS」算进了「Disruption」。
+    assert not _title_mentions(costco, "The Cost of AI", matcher)
+    assert not _title_mentions(disney, "Disruption Theory", matcher)
+    word = Term("ai", "word", 2, forms=["ai"])
+    assert _title_mentions(word, "AI and the Cloud", None)
+    assert not _title_mentions(word, "Retail Margins", None)
+    assert _title_mentions(Term("商业", "word", 3, forms=["商业"]), "开市客的商业模式", None)

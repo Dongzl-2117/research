@@ -107,3 +107,23 @@ def test_pending_english_query_runs_and_skips_translated(conn, settings):
     conn.execute("DELETE FROM article_translations WHERE article_id = %s", (article_id,))
     conn.commit()
     assert article_id in list_pending_english(conn, limit=10)
+
+
+def test_translation_html_is_filtered_on_the_article_page(conn, settings):
+    """译文是模型写的 HTML，和原文一样过白名单。"""
+    article_id = _english(conn, settings)
+    conn.execute(
+        "UPDATE article_translations SET body_html = %s WHERE article_id = %s",
+        (
+            '<h2>定价</h2><p>涨价<img src=x onerror="alert(1)"></p>'
+            '<p title="&quot; onmouseover=alert(2) x=&quot;">需求<script>alert(3)</script></p>',
+            article_id,
+        ),
+    )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article_id}/zh").text
+    assert "涨价" in page and "需求" in page
+    assert "onerror" not in page
+    assert "alert(3)" not in page
+    assert 'title="" onmouseover' not in page

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from researchlib.render import image_anchor, inline_image_ocr, normalize_admonitions, render_body
+from researchlib.render import image_anchor, inline_image_ocr, normalize_admonitions, render_body, sanitize_html
 from researchlib.textutil import strip_duplicate_title
 
 
@@ -49,6 +49,20 @@ def test_reference_chart_has_neutral_readable_fallback_and_accessible_original()
     assert page.count(f'id="{image_anchor(digest)}"') == 1
     assert f'href="{image}"' in page
     assert 'aria-label="原图 1：营收与利润"' in page
+
+
+def test_sanitizer_preserves_safe_image_loading_but_not_event_attributes():
+    html = sanitize_html('<img src="/media/chart.png" loading="lazy" onerror="unsafe_run()">')
+    assert 'loading="lazy"' in html and "onerror" not in html and "unsafe_run" not in html
+    invalid = sanitize_html('<img src="/media/chart.png" loading="lazy onerror=unsafe_run()">')
+    assert "loading=" not in invalid and "unsafe_run" not in invalid
+
+
+def test_book_title_and_reference_anchor_survive_the_html_allowlist():
+    html = str(render_body('在<我的投资审美体系>一文中。\n\n[引用](#note)\n\n'
+                           '<span id="note">核对原文。</span><script>unsafe_run()</script>', {}))
+    assert "我的投资审美体系" in html and 'id="note"' in html and 'href="#note"' in html
+    assert "<script" not in html and "unsafe_run" not in html
 
 
 def test_commerce_ui_stays_out_of_readable_fallback():

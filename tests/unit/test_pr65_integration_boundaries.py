@@ -225,5 +225,5 @@ def test_semantic_note_reaches_the_rendered_search_page():
     env = Environment(loader=FileSystemLoader(root), autoescape=select_autoescape())
     env.filters["datetime"] = lambda value: str(value or "")
     html = env.get_template("search.html").render(
-        filters={}, sources=[], results=[], query="", semantic_note="覆盖不全 <script>test</script>")
+        filters={}, sources=[], results=[], query="合成查询", semantic_note="覆盖不全 <script>test</script>")
     assert "覆盖不全 &lt;script&gt;test&lt;/script&gt;" in html

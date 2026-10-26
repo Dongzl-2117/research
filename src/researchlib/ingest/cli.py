@@ -18,6 +18,12 @@ def build_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--source", required=True, help="白名单里的来源 id")
     parser.add_argument("--input", required=True, type=Path, help="归档目录或 zip")
+    parser.add_argument(
+        "--origin",
+        choices=("archive", "crawl"),
+        default="archive",
+        help="archive：手动导入的归档；crawl：定时抓取脚本导入（首页断更提示只看定时导入的来源）",
+    )
     return parser
 
 
@@ -49,6 +55,7 @@ def run_markdown_ingest(
                 archive_files=archive_files,
                 images_in_archive=image_count,
                 errors=errors,
+                origin=args.origin,
             )
             print(report.render())
             if after_store is not None and not report.errors:

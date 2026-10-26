@@ -107,7 +107,7 @@ ARTICLE_14879_COMMENTS = f"""大模型生意的护城河在哪里，明确还不
 
 ## 评论（3）
 
-- **曾广文**（2026-10-21 11:42）
+- **陈小东**（2026-10-21 11:42）
   个人觉得大模型很难形成护城河，因为只要开放出来用，哪怕是再贵的商用，都会被其他公司用来蒸馏，从而逼近这个模型。
 
 - **方伟Rey**（2026-10-21 11:50）
@@ -143,7 +143,7 @@ def test_14879_legacy_comments_need_account_evidence():
     assert "**" not in html
     assert "\u3000" not in html
     assert 'class="zsxq-comment"' not in html
-    assert "方伟Rey" not in html and "曾广文" not in html
+    assert "方伟Rey" not in html and "陈小东" not in html
     assert "护城河还是要看切换成本和应用层" not in html
     assert "大模型生意的护城河在哪里" in html
 
@@ -172,7 +172,7 @@ def test_blank_comment_author_is_hidden(token: str):
 
 
 def test_real_names_stay_and_author_replies_stay_a_separate_section():
-    assert display_author("**曾广文**") == "曾广文"
+    assert display_author("**陈小东**") == "陈小东"
     assert display_author("**方伟Rey**") == "方伟Rey"
     assert display_author("John Smith") == "John Smith"
     assert display_author("**　　**") == "匿名"
@@ -180,7 +180,7 @@ def test_real_names_stay_and_author_replies_stay_a_separate_section():
 
 ## 评论（2）
 
-- **曾广文**（2026-10-21 11:42）
+- **陈小东**（2026-10-21 11:42）
   网友看法不显示。
 
 - **方伟Rey**（2026-10-21 11:50）
@@ -197,7 +197,7 @@ def test_real_names_stay_and_author_replies_stay_a_separate_section():
     html = str(render_body(body, {}))
     assert "正文。" in html
     assert "第一段仍然在。" not in html and "第二段也在。" not in html
-    assert "曾广文" not in html and "网友看法" not in html
+    assert "陈小东" not in html and "网友看法" not in html
     assert "作者答" not in html and "评论里的回复" not in html
     assert "zsxq-comments" not in str(render_body("正文。\n\n## 评论里的回复\n\n作者补充：一句。\n", {}))
 
@@ -296,7 +296,7 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
         assert f"原图 {number}" in page
     assert page.index("方伟：") < page.index("原图 1")
     assert "zsxq-comments" not in page
-    assert "曾广文" not in page and "匿名" not in page
+    assert "陈小东" not in page and "匿名" not in page
     gap = page[page.rindex("</figure>") :]
     assert "<br" not in gap
     css = (Path(__file__).resolve().parents[2] / "src/researchlib/web/static/site.css").read_text()

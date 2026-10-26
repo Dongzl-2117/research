@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from html import escape
 from html.parser import HTMLParser
 
 # 与 AIHOT segmentsOf 的 BLOCK 集合对齐：这些是叶子文本块标签。
@@ -29,6 +30,11 @@ class Shielded:
     html: str
     tokens: list[str]
     link_attrs: list[dict[str, str]]
+
+
+def _attr_value(value: str) -> str:
+    """HTMLParser 给的属性值已经还原了实体，写回去要重新转义，不然 &quot; 变回引号会把属性截断。"""
+    return escape(value, quote=False).replace('"', "&quot;")
 
 
 class _TopLevelCollector(HTMLParser):
@@ -111,7 +117,7 @@ class _TopLevelCollector(HTMLParser):
             if value is None:
                 parts.append(f" {key}")
             else:
-                parts.append(f' {key}="{value}"')
+                parts.append(f' {key}="{_attr_value(value)}"')
         parts.append(" />" if close else ">")
         return "".join(parts)
 
