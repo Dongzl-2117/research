@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.mdlinks import relative_md_hrefs
+from researchlib.migrate import MIGRATIONS, split_sql
 from researchlib.retime import refresh_clocks
 from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI
@@ -493,3 +494,37 @@ def test_recent_views_skip_a_digest_about_another_company(conn, settings):
     assert "拼多多的佣金率" not in section and 'class="recent-item-summary"' not in section
     lead = page.split('class="recent-lead"', 1)[1][:600]
     assert "外卖的补贴还要打很久" in lead and "拼多多的佣金率" not in lead
+
+
+def test_feishu_callout_marker_stays_out_of_cards_and_pages(conn, settings):
+    """飞书高亮块导出成「> [!NOTE]」：新导入的正文不带标记，已入库的由迁移 022 清掉，公司页导读不再以「NOTE]」开头。"""
+    body = "> [!NOTE]\n> 石油企业的运行九成是政治，一成是石油，美团也一样。\n\n后面是正文。\n"
+    older = body.replace("石油企业", "旧的石油企业")
+    docs = [
+        ParsedDoc("docs/石油__Tok00001.md", "石油", None, body, {"format": "markdown"}, []),
+        ParsedDoc("docs/旧文__Tok00002.md", "旧文", None, older, {"format": "markdown"}, []),
+    ]
+    _store(conn, settings, "linwenfeng-feishu", docs)
+    fresh = conn.execute("SELECT body_text FROM articles WHERE external_id = 'docs/石油__Tok00001.md'").fetchone()
+    assert "[!" not in fresh["body_text"]
+    # 迁移前入库的正文还带着标记。
+    conn.execute(
+        "UPDATE articles SET body_text = '[!NOTE]' || chr(10) || body_text WHERE external_id = 'docs/旧文__Tok00002.md'"
+    )
+    for statement in split_sql((MIGRATIONS / "022_alert_markers.sql").read_text(encoding="utf-8")):
+        conn.execute(statement)
+    old = conn.execute("SELECT id, body_text FROM articles WHERE external_id = 'docs/旧文__Tok00002.md'").fetchone()
+    assert old["body_text"].startswith("旧的石油企业的运行九成是政治")
+    meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO article_mentions (article_id, company_id, depth, hit_count) VALUES (%s, %s, 'passing', 1)"
+        " ON CONFLICT (article_id, company_id) DO NOTHING",
+        (old["id"], meituan),
+    )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        company = client.get(f"/companies/{meituan}?depth=all").text
+        article = client.get(f"/articles/{old['id']}").text
+    assert "旧的石油企业的运行九成是政治" in company
+    assert "NOTE]" not in company and "[!NOTE]" not in article
+    assert "<blockquote" in article and "旧的石油企业的运行九成是政治" in article

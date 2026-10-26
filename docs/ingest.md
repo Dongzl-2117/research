@@ -247,6 +247,8 @@ docker compose exec app research-doc-tree --source linwenfeng-feishu
 
 页面是 `/sources/linwenfeng-feishu/tree`。飞书不进首页按天（`timeline: false`）。文章里的相对 `.md` 链接渲染时改成 `/articles/<id>`；库里没有的去掉链接，标「未收录」。`__token` 对得上时，文件名改了也能连上。
 
+feishu2md 把飞书的高亮块导成 GitHub 提示框：引用块第一行是 `> [!NOTE]`（还有 TIP、IMPORTANT、WARNING、CAUTION）。标记不算正文：转纯文本、切段落块时去掉，文章页显示成普通引用块。迁移 `022_alert_markers.sql` 清掉已入库正文纯文本里的标记；已有的段落块不重切，块里留着标记不影响检索。
+
 ## AIHOT（已下线，可选，只读）
 
 这不是把 AIHOT 的新闻或日报流水线搬过来。只从它的 Postgres `articles` 表 `SELECT` 正文，按白名单写入本库。
