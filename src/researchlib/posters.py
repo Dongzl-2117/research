@@ -4,17 +4,69 @@
 对不上的是网友帖：正文留在库里，观点删掉，不进星主的作者统计。
 
     research-backfill-posters --source fangwei-zsxq --input /data/inbox/fangwei-zsxq
+
+来源配置里的作者或 poster_names 改了，应用启动时按新名单重算已入库帖子的标记（refresh_poster_roles），
+不用重新导入。
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import logging
 import sys
 from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import assign_poster_role, is_guest
+from researchlib.author_voice import POSTER_ROLE, assign_poster_role, is_guest
+
+logger = logging.getLogger("researchlib.posters")
+# app_state 里记下每个星球来源上次按什么名单算的标记：poster_names:<来源>。
+STATE_PREFIX = "poster_names:"
+
+
+def refresh_poster_roles(conn, sources) -> dict[str, int]:
+    """星球来源的作者或 poster_names 和上次不一样，就按新名单重算库里帖子的发帖人标记。
+
+    返回 {来源: 改了几篇}，名单没变的来源不在里面。改成网友帖的删掉观点；改回星主原创的，
+    观点由夜间 research-views 补抽。调用方负责提交。
+    """
+    changed: dict[str, int] = {}
+    for source in sources:
+        if source.kind != "zsxq":
+            continue
+        key = STATE_PREFIX + source.id
+        names = json.dumps([source.author, *source.poster_names], ensure_ascii=False)
+        state = conn.execute("SELECT value FROM app_state WHERE key = %s", (key,)).fetchone()
+        if state is not None and state["value"] == names:
+            continue
+        flipped = 0
+        rows = conn.execute(
+            "SELECT id, raw_meta FROM articles WHERE source_id = %s AND coalesce(raw_meta->>'poster_name', '') <> ''",
+            (source.id,),
+        ).fetchall()
+        for row in rows:
+            meta = dict(row["raw_meta"] or {})
+            before = meta.get(POSTER_ROLE)
+            assign_poster_role(meta, source.author, source.poster_names)
+            if meta.get(POSTER_ROLE) == before:
+                continue
+            conn.execute("UPDATE articles SET raw_meta = %s WHERE id = %s", (Jsonb(meta), row["id"]))
+            if is_guest(meta):
+                conn.execute("DELETE FROM company_views WHERE article_id = %s", (row["id"],))
+            flipped += 1
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+            """,
+            (key, names),
+        )
+        if flipped:
+            logger.warning("%s 的发帖人名单变了，重算了 %s 篇的原创标记", source.id, flipped)
+        changed[source.id] = flipped
+    return changed
 
 
 def backfill_posters(conn, source, docs: list) -> dict:

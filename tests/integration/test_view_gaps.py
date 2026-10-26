@@ -143,3 +143,47 @@ def test_ocr_side_field_is_what_views_read(conn, settings):
     conn.commit()
     found = {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 10)}
     assert row["id"] in found
+
+
+def test_new_star_nickname_relabels_stored_posts_at_startup(conn, settings, tmp_path):
+    """sources.yaml 里加了星主的昵称，应用启动时按新名单把库里的帖改回原创，不用重新导入。"""
+    from dataclasses import replace
+
+    from researchlib.posters import refresh_poster_roles
+
+    body = "美亚光电的设备不错，贵州茅台的批价这一周没动，渠道仍在观望。\n"
+    rey = _store(conn, settings, "fangwei-zsxq", "rey-old", "茅台批价", body, {"poster_name": "方伟Rey"})
+    question = "请问方老师，腾讯的视频号广告今年还能涨多少？\n"
+    guest = _store(conn, settings, "fangwei-zsxq", "reader", "读者提问", question, {"poster_name": "王小明"})
+    source = next(item for item in load_sources(settings.sources_path) if item.id == "fangwei-zsxq")
+    company = conn.execute("SELECT id FROM companies WHERE name_zh = '贵州茅台'").fetchone()["id"]
+    # 修好以前的样子：名单里没有昵称，两篇都是读者帖。
+    before = replace(source, poster_names=())
+    refresh_poster_roles(conn, [before])
+    conn.execute(
+        "UPDATE articles SET raw_meta = raw_meta || '{\"poster_role\": \"guest\"}'::jsonb WHERE id = %s", (rey["id"],)
+    )
+    conn.commit()
+    assert refresh_poster_roles(conn, [before]) == {}
+    role = "SELECT raw_meta->>'poster_role' AS role FROM articles WHERE id = %s"
+    assert conn.execute(role, (rey["id"],)).fetchone()["role"] == "guest"
+    # 名单改了：只改对得上的那篇，读者帖不动；改回原创的回到观点补抽队列。
+    assert refresh_poster_roles(conn, [source]) == {"fangwei-zsxq": 1}
+    conn.commit()
+    assert conn.execute(role, (rey["id"],)).fetchone()["role"] == "owner"
+    assert conn.execute(role, (guest["id"],)).fetchone()["role"] == "guest"
+    assert rey["id"] in {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
+    assert refresh_poster_roles(conn, [source]) == {}
+
+
+def test_demo_article_migration_only_removes_the_demo(conn, settings):
+    from researchlib.migrate import MIGRATIONS, split_sql
+
+    demo_body = "Aggregation Theory explains why platforms win.\n"
+    demo = _store(conn, settings, "chengfengpolang", "demo.md", "Aggregation Theory (demo)", demo_body)
+    kept = _store(conn, settings, "chengfengpolang", "real.md", "Aggregation Theory", "聚合理论讲平台为什么赢。\n")
+    for statement in split_sql((MIGRATIONS / "023_drop_demo_article.sql").read_text(encoding="utf-8")):
+        conn.execute(statement)
+    conn.commit()
+    ids = {row["id"] for row in conn.execute("SELECT id FROM articles WHERE source_id = 'chengfengpolang'").fetchall()}
+    assert demo["id"] not in ids and kept["id"] in ids

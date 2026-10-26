@@ -11,7 +11,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-浏览器只通过本机 `http://127.0.0.1:8088` 访问。公网入口是 Cloudflare Tunnel 转到这个地址，前面再加 Cloudflare Access。应用自己不提供登录。部署步骤见 [docs/deploy.md](docs/deploy.md)。
+浏览器只通过本机 `http://127.0.0.1:8088` 访问。公网入口是 Cloudflare Tunnel 转到这个地址，前面再加 Cloudflare Access。应用自己不提供登录。部署步骤见 [docs/deploy.md](docs/deploy.md)。合并进 main、CI 通过的改动由 Mac mini 上的定时任务自己上线，见同一页「更新」。
 
 ## 页面
 

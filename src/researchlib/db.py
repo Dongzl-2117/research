@@ -14,6 +14,7 @@ from researchlib.companies import seed_companies
 from researchlib.config import Settings
 from researchlib.empty_answer import backfill_empty_answers
 from researchlib.migrate import migrate
+from researchlib.posters import refresh_poster_roles
 from researchlib.sources import load_sources, sync_sources
 
 SEARCH_SETTINGS = (
@@ -43,8 +44,11 @@ def prepare(settings: Settings) -> psycopg.Connection:
     try:
         migrate(conn)
         ensure_search_session(conn)
-        sync_sources(conn, load_sources(settings.sources_path))
+        sources = load_sources(settings.sources_path)
+        sync_sources(conn, sources)
         seed_companies(conn)
+        # 星主的星球昵称（poster_names）改了，按新名单重算已入库帖子的原创标记，不用重新导入。
+        refresh_poster_roles(conn, sources)
         conn.commit()
         # 装了 pgvector 才建向量表；没装就只走关键词检索。
         embeddings.ensure_schema(conn)
