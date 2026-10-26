@@ -2,8 +2,10 @@
 
 from datetime import datetime
 
+from owner_fixtures import insert_legacy
+
+from researchlib.eligibility import TRUSTED_OWNERS
 from researchlib.ingest.model import ParsedDoc
-from researchlib.ingest.store import store_documents
 from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI, content_hash
 from researchlib.zsxq_repair import repair_zsxq
@@ -37,19 +39,14 @@ def _source(settings):
 
 def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, settings):
     when = datetime(2024, 10, 19, 10, 0, tzinfo=SHANGHAI)
-    store_documents(
-        conn,
-        source=_source(settings),
-        docs=[
-            ParsedDoc("cut-title", TRUNCATED, when, BODY, {"format": "markdown"}, []),
-            ParsedDoc("guest-comments", "渠道库存还在", when, COMMENTS, {"format": "markdown"}, []),
-            ParsedDoc("ocr-footer", "图片", when, "（见图）\n", {"format": "markdown"}, []),
-        ],
-        data_dir=settings.data_dir,
-        archive_files=3,
-        images_in_archive=0,
-        errors=[],
-    )
+    # This tool repairs historical rows, not newly imported unknown posts.
+    meta = {"format": "markdown", "poster_id": TRUSTED_OWNERS["fangwei-zsxq"][1]}
+    for doc in (
+        ParsedDoc("cut-title", TRUNCATED, when, BODY, dict(meta), []),
+        ParsedDoc("guest-comments", "渠道库存还在", when, COMMENTS, dict(meta), []),
+        ParsedDoc("ocr-footer", "图片", when, "（见图）\n", dict(meta), []),
+    ):
+        insert_legacy(conn, "fangwei-zsxq", doc)
     conn.commit()
     cut = conn.execute("SELECT id, title, content_hash FROM articles WHERE external_id = 'cut-title'").fetchone()
     comments = conn.execute(
@@ -102,18 +99,20 @@ def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, s
         "SELECT content_hash, judgment FROM company_views WHERE article_id = %s",
         (cut["id"],),
     ).fetchone()
-    assert view["content_hash"] == retitled["content_hash"]
+    assert view["content_hash"] == cut["content_hash"]
+    assert view["content_hash"] != retitled["content_hash"]
     assert view["judgment"] == "护城河还说不清"
-    assert view["content_hash"] == content_hash(FULL, retitled["body_md"], retitled["published_at"])
+    assert retitled["content_hash"] == content_hash(FULL, retitled["body_md"], retitled["published_at"])
     cleaned = conn.execute("SELECT body_md FROM articles WHERE id = %s", (comments["id"],)).fetchone()
     assert "陈小东" not in cleaned["body_md"]
-    assert "方伟Rey" in cleaned["body_md"] and "切换成本还在" in cleaned["body_md"]
+    assert "方伟Rey" not in cleaned["body_md"] and "切换成本还在" not in cleaned["body_md"]
     ocr = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (ocr_row["id"],)).fetchone()
-    assert ocr["ocr_text"].startswith("方伟：")
+    assert ocr["ocr_text"].startswith("方伟：茅台批价这一周没动")
+    assert "网友：渠道库存还是偏高" in ocr["ocr_text"]
     assert "李四" not in ocr["ocr_text"] and "条留言" not in ocr["ocr_text"] and "赞赏" not in ocr["ocr_text"]
     spots = {item["id"]: item for item in stats["spots"]}
     assert spots[cut["id"]]["title_truncated"] is False
-    assert spots[comments["id"]]["comment"] == "评论只剩方伟"
+    assert spots[comments["id"]]["comment"] == "无评论列表"
     assert spots[ocr_row["id"]]["chrome_under_host"] is False
 
     again = repair_zsxq(conn, spot_ids=[])

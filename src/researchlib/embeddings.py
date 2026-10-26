@@ -446,9 +446,19 @@ def backfill(
     bad: list[tuple[int, int]] = []
     while limit is None or done < limit:
         size = max(1, batch) if limit is None else min(max(1, batch), limit - done)
-        rows = _current_rows(conn, _pending(conn, size, model, bad))
-        if not rows:
+        pending = _pending(conn, size, model, bad)
+        if not pending:
             break
+        rows = _current_rows(conn, pending)
+        accepted = {(row["article_id"], row["ord"]) for row in rows}
+        # SQL selection is only a candidate set. Python checks the whole
+        # source/translation/OCR piece and can reject every candidate. Record
+        # those keys for this run so a rejected head batch cannot starve later
+        # proven rows. A later explicit run may reconsider changed evidence.
+        bad.extend((row["article_id"], row["ord"]) for row in pending
+                   if (row["article_id"], row["ord"]) not in accepted)
+        if not rows:
+            continue
         pairs = _embed_rows(conn, rows, bad)
         # Revoke results if proof/text changed while the external call ran.
         current = {(r["article_id"], r["ord"]): r for r in _fresh_rows(conn, [r for r, _ in pairs], bad)}

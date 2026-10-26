@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from owner_fixtures import owner_doc
 from psycopg.types.json import Jsonb
 
 from researchlib.ingest.model import ParsedDoc
@@ -21,6 +22,8 @@ def _source(settings, source_id):
 
 
 def _store(conn, settings, source_id, docs):
+    if source_id == "fangwei-zsxq":
+        docs = [owner_doc(doc) for doc in docs]
     store_documents(
         conn,
         source=_source(settings, source_id),
@@ -212,7 +215,7 @@ def test_retime_reorders_stance_and_same_period(conn, settings, tmp_path: Path):
     _store(
         conn,
         settings,
-        "chengfengpolang",
+        "gudujinhuati",
         [
             ParsedDoc(
                 external_id="peer",

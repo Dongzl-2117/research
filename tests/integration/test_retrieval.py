@@ -1,10 +1,10 @@
 import os
 
 from fastapi.testclient import TestClient
+from owner_fixtures import load_browsing_sample as load_sample
 from psycopg.types.json import Jsonb
 
 from researchlib import ask as ask_module
-from researchlib.seed import load_sample
 from researchlib.web.app import create_app
 
 
@@ -252,9 +252,11 @@ def test_search_matches_words_not_one_long_phrase(conn, settings):
         ad = client.get("/search", params={"q": "腾讯广告加载率"}).text
         assert 'href="/articles/1' in ad
         assert "<mark>广告</mark>笔记" in ad
-        # 只命中「广告」的那篇排在「部分命中」之后。
-        assert ad.find('href="/articles/1') < ad.find("部分命中</p>") < ad.find('href="/articles/3')
+        # Explicit company intent must exclude an unrelated article that only says 广告.
+        assert 'href="/articles/3' not in ad
         assert "1 篇全部命中" in ad
+        partial = client.get("/search", params={"q": "广告加载率"}).text
+        assert partial.find('href="/articles/1') < partial.find("部分命中</p>") < partial.find('href="/articles/3')
         price = client.get("/search", params={"q": "苹果定价权"}).text
         assert 'href="/articles/2' in price
         excluded = client.get("/search", params={"q": "广告 -腾讯"}).text

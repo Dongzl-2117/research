@@ -3,10 +3,10 @@
 import os
 
 from fastapi.testclient import TestClient
+from owner_fixtures import load_browsing_sample as load_sample
 from psycopg.types.json import Jsonb
 
 from researchlib import digest as digest_mod
-from researchlib.seed import load_sample
 from researchlib.web.app import create_app
 
 

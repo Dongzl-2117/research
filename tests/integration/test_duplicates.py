@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
+from owner_fixtures import owner_doc
 
 from researchlib.duplicates import fingerprint, rebuild_duplicates, same_article
 from researchlib.eligibility import IDENTITY_KEY, identity_for_topic
@@ -50,6 +51,8 @@ def _doc(external_id, title, body, day=12):
 
 
 def _store(conn, settings, source_id, docs):
+    if source_id == "fangwei-zsxq":
+        docs = [owner_doc(doc) for doc in docs]
     sources = {source.id: source for source in load_sources(settings.sources_path)}
     return store_documents(
         conn,
@@ -107,7 +110,7 @@ def test_repost_on_another_source_of_the_same_author(conn, settings):
     assert _row(conn, "mp/a.md")["duplicate_of"] == _row(conn, "zsxq:1")["id"]
     assert _row(conn, "zsxq:1")["duplicate_of"] is None
     # 不同作者写了相同的话不算同一篇。
-    _store(conn, settings, "chengfengpolang", [_doc("cf:1", "转述", BODY)])
+    _store(conn, settings, "gudujinhuati", [_doc("cf:1", "转述", BODY)])
     assert _row(conn, "cf:1")["duplicate_of"] is None
 
 

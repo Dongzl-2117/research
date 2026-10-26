@@ -97,8 +97,11 @@ BASH
 
 | 代码/环境 | 实测范围 | 不能据此宣称 |
 | --- | --- | --- |
-| 本轮 PR56 与 `main c57705e` 的最终组合，mini + 隔离 Linux arm64 | 1093 单测通过、1 个回环测试未运行；34 项固定原生 SQL 回归通过；全仓 lint 通过。CI 状态以该提交 Actions 记录为准，无记录或草稿 skipped 均不算通过 | 完整 integration、真实模型召回/生成、生产性能或部署已验收 |
+| 本轮回填推进与完整集成收尾，mini + 隔离 Linux arm64 | 1100 单测通过、1 个回环测试未运行；完整 integration 115 项通过（包含35项定向原生 SQL，不另加计数）；全仓 lint 通过。最终提交 CI 另查 Actions 记录 | 真实模型召回/生成、生产性能或部署已验收 |
+| `27c1fb6` 主线整合基线，mini + 隔离 Linux arm64 | 1093 单测通过、1 个回环测试未运行；34 项固定原生 SQL 回归通过；全仓 lint 通过。CI 状态以该提交 Actions 记录为准，无记录或草稿 skipped 均不算通过 | 完整 integration、真实模型召回/生成、生产性能或部署已验收 |
 | 先前 PR56 `2264b071`，mini + 隔离 Linux arm64 | 1051 单测通过、1 个回环测试未运行；固定原生 SQL 12 项通过，含 45 条别名对照；全仓 lint 通过；[CI #275](https://github.com/Dongzl-2117/research/actions/runs/40267531048) skipped | 完整 integration、真实模型召回/生成、生产性能或部署已验收 |
 | 旧 `465441a`，Debian 13.6 x86_64 / Python 3.12.14 的补充冒烟 | dev lock 35 项匹配；83 项代表单测、10 个合成页面通过；PG16.15 / pgvector0.6.0 / zhparser2.4 只读运算通过；旧基线 6 个 lint 失败 | 当前 main 或 PR56 最终验收；以上组件版本不是新的唯一版本约束 |
 
 生产部署仍需另行核验历史内容可用性、备份与恢复、运行入口和真实检索质量。严格 PR56 候选与保持旧展示资格的兼容保护方案分开，见 [部署门槛](docs/deploy.md#更新) 和 [历史内容计划](docs/availability-gate-2026-10-23.md)。不要把启动采集、翻译、模型、维护、回填或恢复作为接手后的默认步骤。
+
+草稿的 pull_request CI 会跳过。获准运行完整 CI 时，可在 Actions 的 **Run workflow** 选择当前 PR 分支，保留草稿；核对 run 的 `head_sha` 与最终提交一致、`workflow_dispatch` 的实际 Tests 作业及结果。不要用 main 旧提交、空作业、无记录或 skipped 当作候选通过。main push 也会运行 CI；仓库 workflow 没有发布镜像或部署步骤，仓库外自动化需由本机维护者另核对。

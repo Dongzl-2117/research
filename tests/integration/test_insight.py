@@ -6,6 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
+from owner_fixtures import owner_doc
 
 from researchlib import digest as digest_mod
 from researchlib import theses as theses_mod
@@ -20,7 +21,7 @@ from researchlib.web.app import create_app
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DOCS = [
     ("fangwei-mp", "mp/t1", 1, "腾讯的广告加载率还有提升空间，腾讯视频号的商业化刚开始，腾讯的游戏也稳住了。"),
-    ("chengfengpolang", "cf/t2", 6, "腾讯的估值已经不便宜，腾讯的广告增长在放缓，腾讯回购的力度很大。"),
+    ("gudujinhuati", "cf/t2", 6, "腾讯的估值已经不便宜，腾讯的广告增长在放缓，腾讯回购的力度很大。"),
     ("gudujinhuati", "gd/t3", 12, "腾讯的视频号就是新的朋友圈，腾讯会把交易接进来，腾讯的广告库存还会涨。"),
     ("fangwei-zsxq", "zx/t4", 20, "腾讯的游戏版号恢复了，腾讯的新游戏排期很满，腾讯明年的收入会更好看。"),
 ]
@@ -37,6 +38,8 @@ def _store_all(conn, settings):
             raw_meta={},
             image_refs=[],
         )
+        if source_id == "fangwei-zsxq":
+            owner_doc(doc)
         store_documents(conn, source=sources[source_id], docs=[doc], data_dir=settings.data_dir,
                         archive_files=1, images_in_archive=0, errors=[])
 
@@ -47,7 +50,8 @@ def _tencent(conn):
 
 def _row(conn, external_id):
     return conn.execute(
-        "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE external_id = %s",
+        "SELECT id, title, body_md, body_text, raw_meta, content_hash, published_at, source_id "
+        "FROM articles WHERE external_id = %s",
         (external_id,),
     ).fetchone()
 
@@ -239,5 +243,5 @@ def test_company_page_does_not_auto_schedule_theses_by_default(conn, settings, m
     enabled = replace(settings, theses_auto_enabled=True)
     with TestClient(create_app(enabled)) as client:
         assert client.get(f"/companies/{company['id']}").status_code == 200
-    assert calls == [True]
+    assert calls == []  # GET remains read-only even with the old opt-in flag.
 

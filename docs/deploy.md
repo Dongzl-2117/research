@@ -53,16 +53,7 @@ env -i PATH="$PWD/.venv/bin:$PATH" TMPDIR="$test_root/tmp" \
   DATABASE_URL="postgresql://research:test-only@127.0.0.1:$test_port/research_test" \
   PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=1000' \
   PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  python -m pytest \
-    tests/integration/test_long_and_semantic.py \
-    tests/integration/test_pr65_vector_guards.py \
-    tests/integration/test_translation_search.py \
-    tests/integration/test_ingest_schedule.py \
-    tests/integration/test_merge_cache_boundaries.py \
-    tests/integration/test_duplicates.py::test_same_zsxq_topic_is_one_post_even_when_the_text_drifted \
-    tests/integration/test_duplicates.py::test_topic_migration_backfills_old_rows_from_the_archive_header \
-    tests/integration/test_duplicates.py::test_live_zsxq_copy_does_not_beat_a_longer_article_elsewhere \
-    tests/integration/test_reading_fixes.py::test_recent_views_skip_a_digest_about_another_company -q
+  python -m pytest tests/integration -q
 # 检查结果后只删除本脚本创建的项目/测试卷；失败时也用这一完整项目与文件参数清理。
 "${test_compose[@]}" down -v
 printf '测试记录目录：%s\n清理项目：%s\n' "$test_root" "$test_project"

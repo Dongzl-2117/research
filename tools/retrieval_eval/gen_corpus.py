@@ -78,10 +78,12 @@ AFFINITY = {
     "开市客": ["护城河", "低价", "用户增长"],
 }
 
+# Ranking positives use active non-star sources: synthetic text is not real
+# star-account evidence. Star provenance/negative cases live in native tests.
 AUTHORS = [
     ("fangwei-mp", "方伟", 0.30),
-    ("fangwei-zsxq", "方伟", 0.20),
-    ("chengfengpolang", "乘风破浪", 0.25),
+    ("fangwei-mp", "方伟", 0.20),
+    ("heiheiwuchang", "黑黑无常", 0.25),
     ("gudujinhuati", "孤独进化体", 0.15),
     ("linwenfeng-feishu", "林文丰", 0.10),
 ]
