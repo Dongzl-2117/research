@@ -15,6 +15,7 @@ from markdown.inlinepatterns import InlineProcessor
 from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
+from researchlib.textutil import strip_alert_markers
 from researchlib.wechat_dialogue import parse_shot, render_turns
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
 
@@ -659,26 +660,9 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
 
 
 def normalize_admonitions(body: str) -> str:
-    """只转换引用块的 GFM 提示标记，代码和普通正文里的同名字样保持原样。"""
+    """Render quote alert kinds as labels using the same code-safe marker parser."""
     labels = {"NOTE": "说明", "TIP": "提示", "IMPORTANT": "重要", "WARNING": "注意", "CAUTION": "谨慎"}
-    out = []
-    fence = ""
-    for line in (body or "").splitlines(keepends=True):
-        stripped = line.lstrip()
-        marker = re.match(r"(`{3,}|~{3,})", stripped)
-        if marker:
-            token = marker.group(1)
-            if not fence:
-                fence = token[0]
-            elif token[0] == fence:
-                fence = ""
-            out.append(line)
-            continue
-        match = re.match(r"^(\s{0,3}>\s*)\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(\r?\n)?$", line)
-        if match and not fence:
-            line = f"{match.group(1)}**{labels[match.group(2)]}**{match.group(3) or ''}"
-        out.append(line)
-    return "".join(out)
+    return strip_alert_markers(body, labels=labels)
 
 
 class _CJKQuotedStrong(InlineProcessor):

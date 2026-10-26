@@ -4,6 +4,7 @@ import pytest
 
 from researchlib.render import image_anchor, inline_image_ocr, render_body, sanitize_html, tidy_ocr_text
 from researchlib.snippets import highlight_snippet
+from researchlib.textutil import argumentative_excerpt, markdown_to_text
 
 
 def test_snippet_keeps_a_late_hit():
@@ -37,6 +38,32 @@ def test_external_image_is_not_hotlinked():
     html = str(render_body("![](https://example.com/secret.png)", {}))
     assert "example.com" not in html
     assert "外部图片已省略" in html
+
+
+# feishu2md 把飞书的高亮块导成这样：引用块第一行是「[!NOTE]」。
+CALLOUT = (
+    "前言一句。\n\n"
+    "> [!NOTE]\n> 石油企业的运行九成是政治，一成是石油。\n\n"
+    "> [!tip] 能力圈有多大不要紧！\n\n"
+    "正文继续。"
+)
+
+
+def test_callout_marker_is_not_part_of_the_text():
+    text = markdown_to_text(CALLOUT)
+    assert "[!" not in text and "NOTE" not in text and "tip" not in text
+    assert "石油企业的运行九成是政治，一成是石油。" in text
+    assert "能力圈有多大不要紧！" in text
+    quote_first = CALLOUT.split("\n\n", 1)[1]
+    assert argumentative_excerpt(markdown_to_text(quote_first)) == "石油企业的运行九成是政治，一成是石油。"
+
+
+def test_callout_renders_as_a_plain_quote():
+    html = str(render_body(CALLOUT, {}))
+    assert "[!" not in html and "NOTE" not in html
+    assert "<blockquote>" in html
+    assert "石油企业的运行九成是政治，一成是石油。" in html
+    assert "能力圈有多大不要紧！" in html
 
 
 def test_sanitize_javascript_url():
@@ -193,3 +220,16 @@ def test_chrome_cleanup_does_not_eat_the_message():
     assert "微信" not in cleaned.splitlines()
     assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in cleaned
     assert tidy_ocr_text("微信\n20:41\n昨天") == "微信\n20:41\n昨天"
+
+
+def test_alert_marker_cleanup_keeps_fenced_and_inline_literal_examples():
+    from researchlib.textutil import strip_alert_markers
+
+    body = "> [!WARNING] Keep caution text.\n\n```md\n> [!NOTE]\n```\n\n`> [!TIP]`\n"
+    cleaned = strip_alert_markers(body)
+    assert "Keep caution text." in cleaned
+    assert "> [!WARNING]" not in cleaned
+    assert "```md\n> [!NOTE]\n```" in cleaned and "`> [!TIP]`" in cleaned
+    html = str(render_body(body, {}))
+    assert "<strong>注意</strong>" in html and "Keep caution text." in html
+    assert "[!NOTE]" in html and "[!TIP]" in html

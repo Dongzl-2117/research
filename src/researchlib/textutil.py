@@ -49,6 +49,11 @@ _UNDERSCORE_EMPH = re.compile(
     r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?![\w_])"
 )
 _THEMATIC_RULE = re.compile(r"^[ \t]{0,3}(?:(?:_[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:-[ \t]*){3,})$", re.M)
+
+# GitHub alert syntax is a presentation marker, not author prose.
+_ALERT_LEAD = re.compile(
+    r"^([ \t]{0,3}>[ \t]*)\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*", re.I
+)
 _FILENAME_DATE = re.compile(
     r"^(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])"
 )
@@ -251,8 +256,33 @@ def scrub_file_page_junk(text: str) -> str:
     return "\n".join(lines)
 
 
+def strip_alert_markers(md: str, *, labels: dict[str, str] | None = None) -> str:
+    """Remove quote alert syntax, optionally render its label; preserve literal code."""
+    out = []
+    fence = ""
+    for line in (md or "").splitlines(keepends=True):
+        marker = re.match(r"(`{3,}|~{3,})", line.lstrip())
+        if marker:
+            token = marker.group(1)
+            if not fence:
+                fence = token[0]
+            elif token[0] == fence:
+                fence = ""
+            out.append(line)
+            continue
+        match = _ALERT_LEAD.match(line)
+        if match and not fence:
+            tail = line[match.end():]
+            label = (labels or {}).get(match.group(2).upper(), "")
+            shown = f"**{label}**" if label else ""
+            gap = " " if shown and tail.strip() else ""
+            line = match.group(1) + shown + gap + tail
+        out.append(line)
+    return "".join(out)
+
+
 def markdown_to_text(md: str) -> str:
-    text = _FENCE.sub(" ", md)
+    text = strip_alert_markers(_FENCE.sub(" ", md))
     code_prefix = "\x02CODE"
     while code_prefix in text:
         code_prefix += "X"
