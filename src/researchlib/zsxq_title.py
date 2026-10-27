@@ -1,4 +1,4 @@
-"""方伟知识星球的展示标题。
+"""知识星球的展示标题（方伟星球、乘风破浪，以及以后接进来的星球来源）。
 
 星球导出经常没有标题，或者把第一句截成「……」。卡片、文章页和重新导入时用这里的规则：
 
@@ -10,6 +10,8 @@
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
+- 引号、书名号、括号配不上对的（截出来的句子只剩前引号「“估值越低，…越有利」），重新取；
+  收出来的句子里落单的那个引号去掉。
 
 读者帖的「读者帖」标在作者行，不写进标题。
 """
@@ -66,10 +68,14 @@ _NARRATION = re.compile(
 )
 _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”‘’\"'`＂＇。！？!?…·]+")
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
+# 要成对的引号、书名号、括号。单引号的后一半也当撇号用（Apple’s），不算。
+_PAIRS = {"“": "”", "「": "」", "『": "』", "《": "》", "（": "）", "(": ")", "【": "】", "〈": "〉", "[": "]"}
+_CLOSERS = {close: open_ for open_, close in _PAIRS.items()}
 
 
-def repairs_source(source_id: str) -> bool:
-    return source_id == FANGWEI_ZSXQ
+def repairs_source(source_id: str, kind: str = "") -> bool:
+    """星球来源的标题按这里的规则补：方伟星球，以及别的 kind 是 zsxq 的来源（乘风破浪）。"""
+    return source_id == FANGWEI_ZSXQ or kind == "zsxq"
 
 
 def title_needs_repair(title: str, body: str = "") -> bool:
@@ -85,6 +91,8 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     if _DATE_ONLY.fullmatch(text):
         return True
     if _ARCHIVE_META.search(text):
+        return True
+    if _lonely_marks(text):
         return True
     return bool(body) and cut_from_body(text, body)
 
@@ -149,6 +157,10 @@ def zsxq_display_title(
     body = strip_meta(body or "")
     if stored and not title_needs_repair(stored, body):
         return stored
+    # 只是落单了一个引号、括号：去掉那个符号，原标题照用。
+    balanced = _balance_marks(stored)
+    if balanced != stored and _ok(balanced) and not title_needs_repair(balanced, body):
+        return balanced
     completed = _completed_from_body(stored, body)
     if completed:
         return completed
@@ -354,7 +366,7 @@ def _fit(text: str) -> str:
     if not cleaned:
         return ""
     if len(cleaned) <= TITLE_LIMIT:
-        return _strip_ellipsis(cleaned).strip()
+        return _balance_marks(_strip_ellipsis(cleaned).strip())
     window = cleaned[:TITLE_LIMIT]
     cut = -1
     for index, char in enumerate(window):
@@ -364,7 +376,32 @@ def _fit(text: str) -> str:
         fitted = window[:cut].strip()
     else:
         fitted = window.rstrip(_BREAKS + " ").strip()
-    return _strip_ellipsis(fitted).strip()
+    # 收在逗号处时，后引号常常落在后半句里。
+    return _balance_marks(_strip_ellipsis(fitted).strip())
+
+
+def _lonely_marks(text: str) -> list[int]:
+    """配不上对的引号、书名号、括号的位置。"""
+    stack: list[tuple[str, int]] = []
+    lonely: list[int] = []
+    for index, char in enumerate(text or ""):
+        if char in _PAIRS:
+            stack.append((char, index))
+        elif char in _CLOSERS:
+            if stack and stack[-1][0] == _CLOSERS[char]:
+                stack.pop()
+            else:
+                lonely.append(index)
+    lonely.extend(index for _char, index in stack)
+    return sorted(lonely)
+
+
+def _balance_marks(text: str) -> str:
+    """去掉落单的引号、书名号、括号：「“估值越低，…越有利」收成「估值越低，…越有利」。"""
+    lonely = set(_lonely_marks(text))
+    if not lonely:
+        return text
+    return "".join(char for index, char in enumerate(text) if index not in lonely).strip()
 
 
 def _ok(text: str) -> bool:
