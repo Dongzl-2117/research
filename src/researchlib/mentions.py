@@ -742,7 +742,7 @@ def rebuild_if_stale(settings) -> int:
     try:
         if not mentions_stale(conn):
             return 0
-        logger.warning("公司别名或提及规则变了，后台重算全部文章的公司提及")
+        logger.warning("公司别名变了或提及规则改了，后台重算全部文章的公司提及")
         count = rebuild_all(conn)
         logger.warning("公司提及重算完成：%s 篇", count)
         return count
