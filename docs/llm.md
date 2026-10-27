@@ -131,7 +131,7 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
 
-站内正式触发（生产续跑走这里，不要另起 CLI loop）：
+站内正式触发（生产续跑走这里，不要另起 CLI loop）。这几个启动、停止接口只能在 Mac mini 本机调：经 Cloudflare 进来的请求（带 `Cf-Ray`、`Cf-Connecting-Ip`、`X-Forwarded-For` 头）一律 403，免得公网上谁都能让站里花模型的钱。
 
 ```bash
 curl -s http://127.0.0.1:8088/api/v1/digest -H 'content-type: application/json' \
@@ -180,7 +180,7 @@ docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
 docker compose exec app research-views --source duanyongping-blog --limit 100
 docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
 
-站内正式触发：
+站内正式触发（只能在本机调，同上）：
 
 ```bash
 curl -s http://127.0.0.1:8088/api/v1/views -H 'content-type: application/json' \
@@ -228,7 +228,7 @@ docker compose exec app research-theses                        # 观点够数的
 docker compose exec app research-views --company 贵州茅台 --company 泡泡玛特 --refresh-blank --limit 300
 docker compose exec app research-theses --company 贵州茅台 --company 泡泡玛特 --force
 
-站内正式触发：
+站内正式触发（只能在本机调，同上）：
 
 ```bash
 curl -s http://127.0.0.1:8088/api/v1/theses -H 'content-type: application/json' \

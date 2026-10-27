@@ -185,3 +185,47 @@ def test_theses_force_and_missing_credentials(tmp_path, isolated_jobs, monkeypat
     assert started.status_code == 200
     assert started.json()["force"] is True
     _wait_stopped(theses_job)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/digest",
+        "/api/v1/digest/stop",
+        "/api/v1/views",
+        "/api/v1/views/stop",
+        "/api/v1/theses",
+        "/api/v1/theses/stop",
+        "/api/v1/translate",
+        "/api/v1/translate/stop",
+    ],
+)
+@pytest.mark.parametrize("header", ["cf-connecting-ip", "cf-ray", "x-forwarded-for"])
+def test_batch_jobs_refuse_requests_through_the_tunnel(tmp_path, isolated_jobs, path, header):
+    """站点公开以后，经 Cloudflare 进来的请求不能启动或停止花钱的批量任务，没带 Origin 也不行。"""
+    client = _client(tmp_path)
+    response = client.post(path, json={"loop": True, "force": True}, headers={header: "203.0.113.9"})
+    assert response.status_code == 403
+    assert "本机" in response.json()["detail"]
+    for mod in isolated_jobs:
+        assert mod.status()["running"] is False
+
+
+def test_theses_force_loop_rebuilds_once_then_waits(tmp_path, isolated_jobs, monkeypatch):
+    """loop 加 force：第一轮全部重算，之后只算过期的，没有就休眠，不会一轮接一轮地重算。"""
+    built: list[int] = []
+    monkeypatch.setattr(
+        theses_job, "companies_with_views", lambda conn, source_ids, minimum=4: [{"id": 1, "name_zh": "甲"}]
+    )
+    monkeypatch.setattr(theses_job, "needs_build", lambda conn, company_id, sources, settings: False)
+    monkeypatch.setattr(theses_job, "build", lambda conn, settings, item, sources: built.append(item["id"]) or 1)
+    client = _client(tmp_path)
+    started = client.post("/api/v1/theses", json={"force": True, "loop": True, "sleep": 60})
+    assert started.status_code == 200
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not theses_job.status().get("waiting"):
+        time.sleep(0.01)
+    assert theses_job.status()["waiting"] is True
+    assert built == [1]
+    client.post("/api/v1/theses/stop")
+    _wait_stopped(theses_job)

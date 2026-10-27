@@ -56,7 +56,7 @@ docker compose exec api node scripts/xai-login.ts login
 
 ```bash
 # 触发 stratechery 续跑：每轮取 10 篇，队列空了 60 秒后再扫
-# 本机 curl 没有 Origin 头，和 /api/v1/ask 一样放行
+# 只能在 Mac mini 本机调：经 Cloudflare 进来的请求（带 Cf-Ray 等头）一律 403
 curl -s http://127.0.0.1:8088/api/v1/translate \
   -H 'content-type: application/json' \
   -d '{"source":"stratechery","limit":10,"loop":true,"sleep":60}'
