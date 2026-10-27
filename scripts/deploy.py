@@ -11,7 +11,6 @@ import sys
 import tarfile
 import tempfile
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 
 from host_lock import host_lock
@@ -52,7 +51,12 @@ class Deployment:
         return command("git", "-C", str(self.repo), *args, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
     def report(self, ok: bool, message: str):
-        payload = {"task": "deploy", "ok": ok, "at": datetime.now(UTC).isoformat(), "message": message}
+        payload = {
+            "task": "deploy",
+            "ok": ok,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "message": message,
+        }
         temp = self.status / f".deploy-{os.getpid()}.json"
         temp.write_text(json.dumps(payload, ensure_ascii=False) + "\n")
         temp.replace(self.status / "deploy.json")
@@ -161,7 +165,15 @@ class Deployment:
             source = release / "source"
             source.mkdir()
             with tarfile.open(archive) as tar:
-                tar.extractall(source, filter="data")
+                members = tar.getmembers()
+                # macOS 的 python3 可能是 3.9，没有 tarfile 的 data filter。
+                # 私有空目录中只解普通文件/目录，先拒绝所有链接和越界路径。
+                for member in members:
+                    path = Path(member.name)
+                    if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
+                        raise DeployError("Git 快照含不支持的链接或越界路径，拒绝构建")
+                    member.mode &= 0o777
+                tar.extractall(source, members=members)
             override = release / "release.json"
             image = f"research-app:{target}"
             override.write_text(

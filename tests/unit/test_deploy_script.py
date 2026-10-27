@@ -1,5 +1,6 @@
 """裸 git origin 与假 docker/curl；验证部署输入、协作互斥和回退，绝不连接真实服务。"""
 
+import ast
 import fcntl
 import json
 import os
@@ -296,3 +297,8 @@ def test_outage_recovery_clears_status_without_rebuild(world):
     away.rename(world.origin)
     assert world.deploy().returncode == 0 and world.status()["ok"]
     assert world.called() == []
+
+
+def test_host_helpers_parse_on_python39():
+    for name in ("deploy.py", "host_lock.py", "with_task_lock.py"):
+        ast.parse((ROOT / "scripts" / name).read_text(), feature_version=(3, 9))
