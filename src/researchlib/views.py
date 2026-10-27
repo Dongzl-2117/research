@@ -854,11 +854,12 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
     if not company_ids or not source_ids:
         return []
     id_clause = ""
-    params: list = [company_ids, source_ids, PROMPT_VERSION, PROMPT_VERSION]
+    # 占位符顺序：company_ids、source_ids、[article_ids]、两个 prompt_version、limit
+    params: list = [company_ids, source_ids]
     if article_ids:
         id_clause = "AND a.id = ANY(%s)"
         params.append(list(article_ids))
-    params.append(limit)
+    params.extend([PROMPT_VERSION, PROMPT_VERSION, limit])
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,
