@@ -11,7 +11,8 @@
 ## 正式环境
 
 - Mac mini 上用 docker compose 跑，应用只听 `127.0.0.1:8088`，公网经 Cloudflare Tunnel。网站不登录就能看，核对线上改动可以直接读页面和 `/api/v1/articles/{id}.md`。
-- AI 连不上 Mac mini。只能在那边跑的命令（装定时任务、一次性的数据修复）写进 PR 描述的「上线后」一节，由 Zhilin 跑；平时合并就上线，不用他动手。
+- 云端的 AI 连不上 Mac mini。只能在那边跑的命令（装定时任务、一次性的数据修复）写进 PR 描述的「上线后」一节，由 Zhilin 跑；平时合并就上线，不用他动手。
+- Mac mini 上的 `~/research` 只给自动上线用。在那台机器上干活的人和 AI 另外 clone 一份或者用 `git worktree`，不在 `~/research` 里切分支、改文件、提交；本机才要忽略的文件写进 `.git/info/exclude`。那份仓库不在 main、有本机改动或者有没推送的提交，自动上线都会停下，首页提示一行，处理办法见 [docs/deploy.md](docs/deploy.md)「更新」。
 - 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、自动上线）的结果写进 `data/status/<任务>.json`，首页顶上只在出问题时提示一行，见 [docs/backup.md](docs/backup.md)。
 - 密钥在 Mac mini 的 `.env`。站内 LLM 默认 DeepSeek，见 [docs/llm.md](docs/llm.md)。
 
@@ -57,10 +58,11 @@ python tools/retrieval_eval/gen_corpus.py --articles 1500
 python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json
 ```
 
-## 挂着的事（2026-10-26）
+## 挂着的事（2026-10-27）
 
 - **#56 合进 main 后撤回了**（撤回提交 58483db）。它是 Codex 做的星球账户资格和引用边界，分支 `codex/wechat-color-ci-savings-20261022`。重新合之前：按它分支上 `docs/availability-gate-2026-10-23.md` 的计划定向回填账户 ID、评论和图片文字；`TRUSTED_OWNERS` 里加上乘风破浪的星主账户，否则这个来源整个不显示；它把迁移从网页启动挪到了 `research-maintain`，`scripts/deploy.sh` 要先跑这一步再重启；和启动时按 `poster_names` 重算星主标记（`posters.refresh_poster_roles`）的做法冲突，要选一种。
-- **自动上线要在 Mac mini 上装一次**：`cd ~/research && git pull && scripts/install-launchd.sh`。2026-10-26 已经交给 Zhilin，装没装可以看线上的文章 8879（乘风破浪的 demo 文章，迁移 023 会删掉）还在不在。
+- **自动上线卡在 Mac mini 的本机改动上**：10-27 已经装好并上线过（线上的 demo 文章 8879 已删，#74 的 `/api/v1/digest` 能打开），10-27 22:00（北京时间）首页提示 `~/research` 的 `.gitignore` 有本机改动，之后合并的 #80 没上线。处理命令已经交给 Zhilin（docs/deploy.md「更新」）。首页的「自动上线失败」提示消失就是好了，这条随后删掉。
+- **#73（Codex 的草稿）重写了自动上线和启动**：从提交快照构建、Web 启动不跑迁移、健康检查失败退回旧镜像。它写明第一次上线要人工交接，不能让现在的 `scripts/deploy.sh` 直接把它拉上线；合它之前先读它的 PR 描述和 `docs/deploy-safety.md`。
 - 停更的来源没有抓取：孤独进化体（来自已下线的 AIHOT）、黑黑无常（一次性导入的雪球存档）、Stratechery（在另一台机器「盒子」上手动抓再导入）、乘风破浪（没有抓取脚本）。接不接、用什么账号由 Zhilin 定。
 - 方伟星球 10 月 20 日以后被误当成读者帖的那批，观点靠夜间每晚补 60 篇；一次补完要花 DeepSeek 的钱，没做。
 - 林文丰飞书里的内嵌电子表格只有占位文字，要重新导出才能补。
