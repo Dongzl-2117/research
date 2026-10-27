@@ -655,8 +655,10 @@ async def api_digest_stop(request: Request):
 async def api_views_start(request: Request):
     """触发批量观点整理。立刻返回，实际在后台线程里跑。
 
-    JSON：{source?, company?, limit?, loop?, sleep?, gap?}。
+    JSON：{source?, company?, articles?, limit?, loop?, sleep?, gap?}。
     gap=true 时补「有提及但没有可用观点」的文章（对应 CLI --gap）。
+    articles 为文章 id 列表（或逗号分隔字符串）时，先按当前算法重挂这些篇的提及
+    （短正文并上 OCR），再只整理这些篇；与 CLI --articles 对应。
     company 为中文名，只整理这家。已经在跑时不会起第二个。
     """
     if not _same_origin(request):
@@ -673,10 +675,12 @@ async def api_views_start(request: Request):
         raise HTTPException(status_code=409, detail=problem)
     source = str(body.get("source") or "").strip()[:100] or None
     company = str(body.get("company") or "").strip()[:100] or None
+    articles = body.get("articles")
     result = views_job.start(
         settings,
         source=source,
         company=company,
+        articles=articles,
         limit=_int(body.get("limit")) or views_job.DEFAULT_LIMIT,
         loop=_flag(body.get("loop")),
         sleep=_int(body.get("sleep")) or views_job.DEFAULT_SLEEP,
@@ -795,8 +799,9 @@ def llms_txt(request: Request):
         "POST /api/v1/translate/stop 停。已在跑时不会开第二个。只在站内或本机调用，不读、不回任何凭证。",
         f"- [触发摘要]({base}/api/v1/digest): POST JSON {{source?, limit?, loop?, sleep?}}，"
         "GET 看进度，POST /api/v1/digest/stop 停。",
-        f"- [触发观点]({base}/api/v1/views): POST JSON {{source?, company?, limit?, loop?, sleep?, gap?}}，"
-        "GET 看进度，POST /api/v1/views/stop 停。gap=true 对应 CLI --gap。",
+        f"- [触发观点]({base}/api/v1/views): POST JSON {{source?, company?, articles?, limit?, loop?, sleep?, gap?}}，"
+        "GET 看进度，POST /api/v1/views/stop 停。gap=true 对应 CLI --gap；"
+        "articles 先重挂提及（短正文含 OCR）再只整理这些篇。",
         f"- [触发论点]({base}/api/v1/theses): POST JSON {{company?, loop?, sleep?, force?}}，"
         "GET 看进度，POST /api/v1/theses/stop 停。",
         "",

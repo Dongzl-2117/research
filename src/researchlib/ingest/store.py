@@ -17,6 +17,7 @@ from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
 from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.model import IngestReport, ParsedDoc
 from researchlib.mentions import (
+    body_for_mentions,
     CompanyMatcher,
     load_company_rows,
     mentions_for_document,
@@ -274,9 +275,18 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 if is_guest(merged):
                     conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
     if status != "unchanged":
-        mention_rows = mentions_for_document(matcher, doc.title, doc.body_md)
+        # 入库时 OCR 多半还空；若短正文已有旁路（重抓保图），一并扫进提及。
+        ocr_text = ""
+        stored = conn.execute(
+            "SELECT ocr_text FROM articles WHERE id = %s",
+            (article_id,),
+        ).fetchone()
+        if stored is not None:
+            ocr_text = stored["ocr_text"] or ""
+        mention_body = body_for_mentions(doc.body_md, body_text=body_text, ocr_text=ocr_text)
+        mention_rows = mentions_for_document(matcher, doc.title, mention_body)
         if source.id == DUAN_SOURCE:
-            mention_rows = refine_mentions(matcher, doc.title, doc.body_md, mention_rows, meta)
+            mention_rows = refine_mentions(matcher, doc.title, mention_body, mention_rows, meta)
         replace_mentions(conn, article_id, mention_rows)
         replace_chunks(conn, article_id, doc.title, doc.body_md)
     stored, linked, missing = sync_article_images(
