@@ -17,6 +17,7 @@ from researchlib.ask import ask, start
 from researchlib.citecheck import check_answer
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.retrieval import retrieve, search_articles
+from researchlib.translate import worker as translate_worker
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import filter_timeline
 from researchlib.views import timeline as view_timeline
@@ -45,6 +46,25 @@ def _limit(request: Request, default: int = 20) -> tuple[int, int]:
 
 def _base(request: Request) -> str:
     return request.app.state.settings.public_base_url
+
+
+def _flag(value, default: bool = False) -> bool:
+    """JSON 里 loop 既可能写 true，也可能写成 "true"/1，命令行调用常这样。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int(value) -> int | None:
+    """JSON 里的数字是 int，命令行传字符串，两种都收。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _article_links(base: str, article_id: int, chunk: int | None = None, anchor: str = "") -> dict:
@@ -540,6 +560,50 @@ def api_answer(request: Request, answer_id: int):
     )
 
 
+@api.post("/api/v1/translate")
+async def api_translate_start(request: Request):
+    """触发批量译制。立刻返回，实际翻译在后台线程里跑。
+
+    JSON：{source?, limit?, loop?, sleep?}。source 为空表示所有来源；limit 每轮取几篇；
+    loop=true 时空队列休眠 sleep 秒再扫；sleep 最少 5 秒。已经在跑时不会起第二个，返回 started=false。
+    """
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="请求体要是 JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体要是 JSON 对象")
+    settings = request.app.state.settings
+    problem = translate_worker.credentials_problem(settings)
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    source = str(body.get("source") or "").strip()[:100] or None
+    result = translate_worker.start(
+        settings,
+        source=source,
+        limit=_int(body.get("limit")) or translate_worker.DEFAULT_LIMIT,
+        loop=_flag(body.get("loop")),
+        sleep=_int(body.get("sleep")) or translate_worker.DEFAULT_SLEEP,
+    )
+    return _json(result)
+
+
+@api.get("/api/v1/translate")
+def api_translate_status(request: Request):
+    """译制 worker 的进度。没跑过也返回完整字段。"""
+    return _json(translate_worker.status())
+
+
+@api.post("/api/v1/translate/stop")
+async def api_translate_stop(request: Request):
+    """请 worker 停。正在译的那篇会译完。"""
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    return _json(translate_worker.request_stop())
+
+
 @api.get("/llms.txt")
 def llms_txt(request: Request):
     base = _base(request)
@@ -583,6 +647,12 @@ def llms_txt(request: Request):
         "风险、推翻条件、验证指标只在原文谈到时才有。theses 是把这些观点按机制归成的几条论点，"
         "支持、反对、两面按观点自己的态度从库里数，判断对不上这条论点的引用不收；"
         "views=risk 只看风险与反方，views=change 只看态度变化，views=t1 只看第一条论点引用的观点",
+        "",
+        "## 维护",
+        "",
+        f"- [触发译制]({base}/api/v1/translate): POST JSON {{source?, limit?, loop?, sleep?}}，"
+        "后台线程按待译队列翻译英文文章，立刻返回 running；GET 同一路径看进度，"
+        "POST /api/v1/translate/stop 停。已在跑时不会开第二个。只在站内或本机调用，不读、不回任何凭证。",
         "",
         "## 字段约定",
         "",
