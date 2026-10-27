@@ -1,269 +1,304 @@
-"""scripts/deploy.sh：main 上有 CI 通过的新提交才拉代码重建，结果写进 data/status/deploy.json。
+"""裸 git origin 与假 docker/curl；验证部署输入、协作互斥和回退，绝不连接真实服务。"""
 
-拿本地的裸仓库当 GitHub 上的 origin，PATH 里放假的 docker 和 curl，记下它们被调用了什么。
-"""
-
+import ast
+import fcntl
 import json
 import os
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None or shutil.which("git") is None or shutil.which("python3") is None,
-    reason="要 bash、git 和 python3",
-)
-
-FAKE_DOCKER = """#!/bin/bash
-echo "docker $*" >> "$CALLS"
-if [ "${DOCKER_FAILS:-0}" = "1" ]; then
-  echo "镜像没建成" >&2
-  exit 1
-fi
+FAKE_DOCKER = r"""#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ['CALLS'], 'a') as f:
+    f.write('docker ' + ' '.join(args) + '\n')
+if args[0] == 'inspect':
+    if args[2] == '{{.Image}}':
+        print('sha256:old-image')
+    else:
+        print(json.dumps([{'Destination':'/app/config', 'Source':os.environ['OLD_CONFIG']}]))
+    sys.exit(0)
+if args[-3:] == ['ps', '-q', 'app']:
+    print('old-container')
+    sys.exit(0)
+if 'build' in args and args[-2:] == ['build', 'app']:
+    if os.environ.get('DOCKER_FAILS') == '1':
+        sys.exit('镜像没建成')
+    override = Path(args[args.index('-f', args.index('-f')+1)+1])
+    data = json.loads(override.read_text())['services']['app']
+    source = Path(data['build']['context'])
+    files = {str(p.relative_to(source)):p.read_text() for p in source.rglob('*') if p.is_file()}
+    Path(os.environ['BUILT']).write_text(json.dumps({'files':files, 'data':data}))
+if 'run' in args:
+    if os.environ.get('GUARD_FAIL') == '1':
+        sys.exit('数据库版本不符')
+    if os.environ.get('GUARD_BUSY') == '1':
+        print('busy', flush=True)
+        sys.exit(75)
+    print('ready', flush=True)
+    sys.stdin.readline()
+if 'up' in args:
+    override = Path(args[args.index('-f', args.index('-f')+1)+1])
+    data = json.loads(override.read_text())['services']['app']
+    sha = data['environment']['RESEARCH_BUILD_SHA']
+    Path(os.environ['LIVE']).write_text(sha)
 """
-# GitHub 接口返回测试写好的 CI 结果；没写就当接口出错。应用的健康检查一律通过。
-FAKE_CURL = """#!/bin/bash
-case "$*" in
-  *api.github.com*)
-    echo "curl ci" >> "$CALLS"
-    [ -f "$CI_JSON" ] || exit 22
-    cat "$CI_JSON"
-    ;;
-  *)
-    echo "curl app" >> "$CALLS"
-    ;;
-esac
-"""
-FAKE_INSTALL = """#!/bin/bash
-echo "install DEPLOY_SELF=${DEPLOY_SELF:-}" >> "$CALLS"
+FAKE_CURL = r"""#!/usr/bin/env python3
+import json, os, sys, subprocess
+from pathlib import Path
+ci = 'api.github.com' in ' '.join(sys.argv)
+with open(os.environ['CALLS'],'a') as f:
+    f.write('curl ci\n' if ci else 'curl app\n')
+if ci:
+    path = Path(os.environ['CI_JSON'])
+    if not path.exists(): sys.exit(22)
+    data = json.loads(path.read_text())
+    sha = sys.argv[-1].split('/commits/')[1].split('/')[0]
+    for run in data['check_runs']:
+        run.setdefault('head_sha', sha)
+    # 检查完成后移动本地远端引用，构建仍须使用先前解析的目标。
+    if os.environ.get('MOVE_REF'):
+        subprocess.run(['git','-C',os.environ['REPO'],'update-ref','refs/remotes/origin/main',os.environ['MOVE_REF']],check=True)
+    print(json.dumps(data))
+else:
+    live = Path(os.environ['LIVE'])
+    sha = live.read_text() if live.exists() else 'old-sha'
+    if os.environ.get('HEALTH_FAIL') == '1' and sha != 'old-sha': sys.exit(22)
+    print(json.dumps({'status':'ok','deployment_protocol':int(os.environ.get('PROTOCOL','1')),'build_sha':sha}))
 """
 
 
-def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
+def _git(cwd, *args):
+    return subprocess.check_output(
         ["git", "-c", "user.name=测试", "-c", "user.email=test@example.com", *args],
         cwd=cwd,
-        capture_output=True,
         text=True,
-        check=True,
-    )
-    return result.stdout.strip()
+        stderr=subprocess.DEVNULL,
+    ).strip()
 
 
-def _write(path: Path, text: str, mode: int = 0o644) -> None:
+def _write(path, text, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text)
     path.chmod(mode)
 
 
 class World:
-    """origin（裸仓库）、开发机上的工作区、Mac mini 上的仓库，和假的 docker、curl。"""
-
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp):
         self.tmp = tmp
-        self.origin = tmp / "origin.git"
-        self.work = tmp / "work"
-        self.mini = tmp / "mini"
-        self.calls = tmp / "calls.log"
-        self.ci = tmp / "ci.json"
-        bin_dir = tmp / "bin"
-        _write(bin_dir / "docker", FAKE_DOCKER, 0o755)
-        _write(bin_dir / "curl", FAKE_CURL, 0o755)
-        self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
-        subprocess.run(["git", "init", "--quiet", "--bare", "-b", "main", str(self.origin)], check=True)
-        _git(tmp, "clone", "--quiet", str(self.origin), str(self.work))
-        _git(self.work, "checkout", "--quiet", "-B", "main")
-        for name in ("deploy.sh", "status.sh"):
-            _write(self.work / "scripts" / name, (ROOT / "scripts" / name).read_text(encoding="utf-8"), 0o755)
-        _write(self.work / "scripts" / "install-launchd.sh", FAKE_INSTALL, 0o755)
+        self.origin, self.work, self.mini = (tmp / name for name in ("origin.git", "work", "mini"))
+        self.calls, self.ci = tmp / "calls", tmp / "ci.json"
+        self.built, self.live = tmp / "built.json", tmp / "live"
+        bins = tmp / "bin"
+        _write(bins / "docker", FAKE_DOCKER, 0o755)
+        _write(bins / "curl", FAKE_CURL, 0o755)
+        self.path = str(bins) + os.pathsep + os.environ["PATH"]
+        _git(tmp, "init", "--bare", "-b", "main", str(self.origin))
+        _git(tmp, "clone", str(self.origin), str(self.work))
+        for name in ("deploy.sh", "deploy.py", "status.sh", "host_lock.py", "with_task_lock.py"):
+            _write(self.work / "scripts" / name, (ROOT / "scripts" / name).read_text(), 0o755)
         _write(self.work / "docker-compose.yml", "services: {}\n")
-        _write(self.work / "deploy" / "launchd" / "com.example.plist", "<plist/>\n")
-        self.commit("第一版")
-        _git(tmp, "clone", "--quiet", "-b", "main", str(self.origin), str(self.mini))
+        _write(self.work / "config/sources.yaml", "sources: []\n")
+        self.commit("初始版本")
+        _git(tmp, "clone", "-b", "main", str(self.origin), str(self.mini))
 
-    def commit(self, subject: str, path: str = "notes.txt") -> str:
-        target = self.work / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(subject + "\n")
+    def commit(self, subject, path="notes.txt"):
+        file = self.work / path
+        _write(file, (file.read_text() if file.exists() else "") + subject + "\n")
         _git(self.work, "add", "-A")
-        _git(self.work, "commit", "--quiet", "-m", subject)
-        _git(self.work, "push", "--quiet", "origin", "main")
+        _git(self.work, "commit", "-m", subject)
+        _git(self.work, "push", "origin", "main")
         return _git(self.work, "rev-parse", "HEAD")
 
-    def ci_says(self, status: str, conclusion: str | None = None) -> None:
-        runs = [{"id": 1, "name": "Tests", "status": status, "conclusion": conclusion}]
-        self.ci.write_text(json.dumps({"total_count": 1, "check_runs": runs}), encoding="utf-8")
+    def ci_says(self, status, conclusion=None):
+        self.ci.write_text(
+            json.dumps(
+                {
+                    "check_runs": [
+                        {
+                            "id": 1,
+                            "name": "Tests",
+                            "app": {"slug": "github-actions"},
+                            "status": status,
+                            "conclusion": conclusion,
+                        }
+                    ]
+                }
+            )
+        )
 
-    def deploy(self, **env: str) -> subprocess.CompletedProcess:
-        self.calls.write_text("", encoding="utf-8")
+    def deploy(self, **env):
+        self.calls.write_text("")
         full = {
             **os.environ,
             "PATH": self.path,
             "REPO": str(self.mini),
-            "CALLS": str(self.calls),
             "CI_JSON": str(self.ci),
+            "CALLS": str(self.calls),
             "DEPLOY_REPO": "example/research",
             "APP_URL": "http://app.test/health",
+            "OLD_CONFIG": str(self.mini / "config"),
+            "BUILT": str(self.built),
+            "LIVE": str(self.live),
+            "DEPLOY_WAIT": "0",
             **env,
         }
-        return subprocess.run(
-            ["bash", str(self.mini / "scripts" / "deploy.sh")], env=full, capture_output=True, text=True
-        )
+        return subprocess.run(["bash", str(self.mini / "scripts/deploy.sh")], env=full, text=True, capture_output=True)
 
-    def called(self) -> list[str]:
-        return self.calls.read_text(encoding="utf-8").splitlines()
+    def called(self):
+        return self.calls.read_text().splitlines()
 
-    def status(self) -> dict | None:
-        path = self.mini / "data" / "status" / "deploy.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-
-    def head(self) -> str:
-        return _git(self.mini, "rev-parse", "HEAD")
+    def status(self):
+        path = self.mini / "data/status/deploy.json"
+        return json.loads(path.read_text()) if path.exists() else None
 
 
 @pytest.fixture
-def world(tmp_path: Path) -> World:
+def world(tmp_path):
     return World(tmp_path)
 
 
-def test_green_commit_goes_live_once(world: World):
+def test_green_sha_uses_only_archive_and_preserves_user_work(world):
     world.ci_says("completed", "success")
-    sha = world.commit("把标题补全")
-    result = world.deploy()
-    assert result.returncode == 0, result.stderr
-    assert world.head() == sha
-    assert any(call.startswith("docker compose") and call.endswith("up -d --build") for call in world.called())
-    status = world.status()
-    assert status["ok"] is True and status["message"] == f"上线 {sha[:7]}：把标题补全"
-    # 没有新提交：不查 CI，不重建。
-    assert world.deploy().returncode == 0
-    assert world.called() == []
+    sha = world.commit("验证目标")
+    _git(world.mini, "fetch", "origin")
+    _git(world.mini, "merge", "--ff-only", sha)
+    _write(world.mini / "local.py", "本地提交")
+    _git(world.mini, "add", "local.py")
+    _git(world.mini, "commit", "-m", "未推送提交")
+    head = _git(world.mini, "rev-parse", "HEAD")
+    _write(world.mini / "untracked.py", "未跟踪")
+    _write(world.mini / "config/sources.yaml", "本地未提交修改")
+    result = world.deploy(MOVE_REF=head)
+    assert result.returncode == 0, result.stdout + result.stderr
+    built = json.loads(world.built.read_text())
+    assert built["data"]["image"] == f"research-app:{sha}"
+    assert built["data"]["build"]["labels"]["org.opencontainers.image.revision"] == sha
+    assert built["files"]["notes.txt"].endswith("验证目标\n")
+    assert built["files"]["config/sources.yaml"] == "sources: []\n"
+    assert "local.py" not in built["files"] and "untracked.py" not in built["files"]
+    assert _git(world.mini, "rev-parse", "HEAD") == head
+    assert (world.mini / "untracked.py").read_text() == "未跟踪"
+    assert (world.mini / "config/sources.yaml").read_text() == "本地未提交修改"
+    assert world.live.read_text() == sha and world.status()["ok"]
+    manifest = world.mini / "data/releases" / sha / "release.json"
+    config = Path(json.loads(manifest.read_text())["services"]["app"]["volumes"][-1].split(":")[0])
+    assert config.is_dir()
+    assert world.deploy().returncode == 0 and not world.called()
 
 
-def test_waits_for_ci_and_does_not_ship_a_red_commit(world: World):
-    world.ci_says("completed", "success")
-    world.deploy()
-    shipped = world.head()
-    world.commit("改坏了")
-    world.ci_says("in_progress")
-    assert world.deploy().returncode == 0
-    assert world.called() == ["curl ci"] and world.head() == shipped
-    # 被后来的推送取消的那次不算没过。
-    world.ci_says("completed", "cancelled")
-    assert world.deploy().returncode == 0
-    assert world.head() == shipped and world.status()["ok"] is True
-    world.ci_says("completed", "failure")
-    assert world.deploy().returncode == 0
-    assert world.head() == shipped
-    status = world.status()
-    assert status["ok"] is False and "CI 没通过，没有上线" in status["message"]
-    # CI 重跑通过了：这一轮上线，提示消失。
-    world.ci_says("completed", "success")
-    assert world.deploy().returncode == 0
-    assert world.head() != shipped and world.status()["ok"] is True
-
-
-def test_failed_build_is_retried_three_times_then_left_alone(world: World):
-    world.ci_says("completed", "success")
-    world.commit("新功能")
-    for _ in range(3):
-        result = world.deploy(DOCKER_FAILS="1")
-        assert result.returncode != 0
-        status = world.status()
-        assert status["ok"] is False and status["message"].startswith("重建并重启失败")
-        assert "镜像没建成" in status["message"]
-    assert world.deploy(DOCKER_FAILS="1").returncode == 0
-    assert world.called() == []
-    # 手动 FORCE=1 照样重试。
+@pytest.mark.parametrize(
+    "status,conclusion",
+    [("in_progress", None), ("completed", "failure"), ("completed", "skipped"), ("completed", "cancelled")],
+)
+def test_force_never_bypasses_ci(world, status, conclusion):
+    world.ci_says(status, conclusion)
     assert world.deploy(FORCE="1").returncode == 0
-    assert world.status()["ok"] is True
+    assert not world.built.exists()
+    assert world.called() == ["curl ci"]
 
 
-def test_launchd_templates_changed_means_reinstall_without_stopping_itself(world: World):
+def test_latest_matching_ci_must_pass(world):
     world.ci_says("completed", "success")
+    data = json.loads(world.ci.read_text())
+    data["check_runs"].append({**data["check_runs"][0], "id": 2, "conclusion": "failure"})
+    world.ci.write_text(json.dumps(data))
     world.deploy()
-    world.commit("加一个定时任务", path="deploy/launchd/com.example.plist")
-    assert world.deploy().returncode == 0
-    assert "install DEPLOY_SELF=1" in world.called()
-    world.commit("只改文档")
-    assert world.deploy().returncode == 0
-    assert not any(call.startswith("install") for call in world.called())
+    assert not world.built.exists()
+    assert not world.status()["ok"]
 
 
-def test_unreachable_github_is_quiet_unless_it_never_worked(world: World):
-    world.commit("第二版")
-    # 装好以后从没查到过 CI：直接提示。
-    assert world.deploy().returncode == 0
-    status = world.status()
-    assert status["ok"] is False and "查不到" in status["message"]
+@pytest.mark.parametrize("field,value", [("head_sha", "another-sha"), ("name", "Other"), ("app", {"slug": "unknown"})])
+def test_unrelated_success_is_not_accepted(world, field, value):
     world.ci_says("completed", "success")
-    assert world.deploy().returncode == 0 and world.status()["ok"] is True
-    # 刚成功过：偶尔一次查不到不提示。
-    world.commit("第三版")
-    world.ci.unlink()
-    assert world.deploy().returncode == 0
-    assert world.status()["ok"] is True
-    assert world.head() != _git(world.work, "rev-parse", "HEAD")
+    data = json.loads(world.ci.read_text())
+    data["check_runs"][0][field] = value
+    world.ci.write_text(json.dumps(data))
+    world.deploy()
+    assert not world.built.exists()
 
 
-def test_waits_for_jobs_running_in_the_containers(world: World):
+def test_build_failure_retries_three_times_without_restarting(world):
     world.ci_says("completed", "success")
-    sha = world.commit("第二版")
-    nightly = world.tmp / "elsewhere" / "scripts" / "nightly.sh"
-    _write(nightly, "while :; do sleep 1; done\n", 0o755)
-    running = subprocess.Popen(["bash", str(nightly)])
-    try:
+    for _ in range(3):
+        assert world.deploy(DOCKER_FAILS="1").returncode != 0
+        assert not world.live.exists() and not world.status()["ok"]
+    assert world.deploy().returncode == 0 and world.called() == []
+    assert world.deploy(FORCE="1").returncode == 0 and world.status()["ok"]
+
+
+def test_legacy_app_requires_manual_handoff(world):
+    world.ci_says("completed", "success")
+    assert world.deploy(PROTOCOL="0").returncode != 0
+    assert "人工交接" in world.status()["message"] or "自动上线失败" in world.status()["message"]
+    assert not world.built.exists()
+
+
+@pytest.mark.parametrize("env", [{"GUARD_BUSY": "1"}, {"GUARD_FAIL": "1"}])
+def test_database_task_or_pending_migration_prevents_switch(world, env):
+    world.ci_says("completed", "success")
+    result = world.deploy(**env)
+    assert result.returncode == (0 if "GUARD_BUSY" in env else 1)
+    assert not world.live.exists()
+    assert not any(" up " in call for call in world.called())
+
+
+def test_failed_health_restores_exact_old_image_and_reports_code_only(world):
+    world.ci_says("completed", "success")
+    assert world.deploy(HEALTH_FAIL="1").returncode == 1
+    assert world.live.read_text() == "old-sha"
+    calls = world.called()
+    assert len([c for c in calls if " up " in c]) == 2
+    assert not any("--build" in c or "down" in c or "pg_restore" in c for c in calls)
+    assert "没有执行数据恢复" in world.status()["message"] or not world.status()["ok"]
+
+
+def test_host_jobs_and_deployment_exclude_each_other(world):
+    lock = world.mini / "data/status/tasks.lock"
+    lock.parent.mkdir(parents=True)
+    with lock.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_SH)
+        world.ci_says("completed", "success")
         assert world.deploy().returncode == 0
-        assert world.called() == [] and world.status() is None
-    finally:
-        running.kill()
-        running.wait()
+        assert world.called() == [] and not world.live.exists()
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        env = {**os.environ, "REPO": str(world.mini)}
+        marker = world.tmp / "task-started"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(world.mini / "scripts/with_task_lock.py"),
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).touch()",
+            ],
+            env=env,
+        )
+        assert result.returncode == 0 and not marker.exists()
+    assert world.deploy().returncode == 0 and world.status()["ok"]
+
+
+def test_outage_recovery_clears_status_without_rebuild(world):
     assert world.deploy().returncode == 0
-    assert world.head() == sha and world.status()["ok"] is True
-
-
-def test_local_edits_on_the_mini_are_not_shipped(world: World):
+    assert not world.status()["ok"]
     world.ci_says("completed", "success")
-    world.commit("第二版")
-    with (world.mini / "docker-compose.yml").open("a", encoding="utf-8") as handle:
-        handle.write("# 本机改的\n")
     assert world.deploy().returncode == 0
-    status = world.status()
-    assert status["ok"] is False and "docker-compose.yml" in status["message"]
-    assert world.called() == []
-    _git(world.mini, "checkout", "--", "docker-compose.yml")
-    assert world.deploy().returncode == 0 and world.status()["ok"] is True
-
-
-def test_long_outage_is_reported_and_cleared_once_main_is_back(world: World):
-    world.ci_says("completed", "success")
-    world.deploy()
     away = world.tmp / "away.git"
     world.origin.rename(away)
-    # 刚成功过：断一轮不提示。
-    assert world.deploy().returncode == 0 and world.status()["ok"] is True
-    seen = world.mini / "data" / "status" / ".deploy-seen"
-    long_ago = seen.stat().st_mtime - 7 * 3600
-    os.utime(seen, (long_ago, long_ago))
-    assert world.deploy().returncode == 0
-    status = world.status()
-    assert status["ok"] is False and "取不到 origin/main" in status["message"]
-    # 连上了，main 上没有新提交：不重建，提示消失。
+    seen = world.mini / "data/status/.deploy-seen"
+    os.utime(seen, (0, 0))
+    assert world.deploy().returncode == 0 and not world.status()["ok"]
     away.rename(world.origin)
-    assert world.deploy().returncode == 0
-    assert world.status()["ok"] is True and world.called() == []
+    assert world.deploy().returncode == 0 and world.status()["ok"]
+    assert world.called() == []
 
 
-def test_checkout_on_another_branch_is_not_touched(world: World):
-    world.ci_says("completed", "success")
-    _git(world.mini, "checkout", "--quiet", "-b", "试验")
-    world.commit("第二版")
-    assert world.deploy().returncode == 0
-    status = world.status()
-    assert status["ok"] is False and "不在 main" in status["message"]
-    assert not any(call.startswith("docker") for call in world.called())
+def test_host_helpers_parse_on_python39():
+    for name in ("deploy.py", "host_lock.py", "with_task_lock.py"):
+        ast.parse((ROOT / "scripts" / name).read_text(), feature_version=(3, 9))

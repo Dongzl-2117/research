@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,7 +11,6 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from researchlib.ask import mark_interrupted
 from researchlib.config import Settings, assert_bind_allowed
 from researchlib.db import prepare
 from researchlib.duplicates import dedupe_if_needed
@@ -29,21 +26,9 @@ logger = logging.getLogger("researchlib")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 迁移、白名单、公司种子，并给缺块的文章补切。不在启动时跑 research-digest。
-    conn = prepare(app.state.settings)
-    try:
-        # 上次没跑完的问库整合标成出错，回答页可以重新整合。
-        interrupted = mark_interrupted(conn)
-        if interrupted:
-            logger.warning("有 %s 条问库整合因重启中断", interrupted)
-    finally:
-        conn.close()
-    # 后台顺序做两件事，不挡启动：先认重复文章（第一次部署时全库认一遍），再在公司别名或规则变了时重算提及。
-    # 放在同一个线程里依次跑，免得重算提及时把刚认出的重复又记上提及。测试进程里不跑。
-    if "PYTEST_CURRENT_TEST" not in os.environ:
-        threading.Thread(
-            target=_background_upkeep, args=(app.state.settings,), name="library-upkeep", daemon=True
-        ).start()
+    # 默认只读启动：不迁移、不重算、不删除观点，不在健康检查前提交数据变更。
+    conn = prepare(app.state.settings, maintenance=False)
+    conn.close()
     yield
 
 

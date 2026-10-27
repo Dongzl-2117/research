@@ -1,12 +1,11 @@
 """知识星球发帖人。
 
-话题 JSON 里 talk / answer 的 owner 是发帖人。名字对得上来源作者（星主）才算原创；
-对不上的是网友帖：正文留在库里，观点删掉，不进星主的作者统计。
+话题 JSON 里 talk / answer 的 owner 是发帖人，以来源中已核实的 owner_ids 判断身份。
+没有账户证据的标为 unknown，原文保留可见；显式重算保留旧观点以便复核。
 
     research-backfill-posters --source fangwei-zsxq --input /data/inbox/fangwei-zsxq
 
-来源配置里的作者或 poster_names 改了，应用启动时按新名单重算已入库帖子的标记（refresh_poster_roles），
-不用重新导入。
+账户登记变化后由显式维护重算（refresh_poster_roles），Web 启动不执行。
 """
 
 from __future__ import annotations
@@ -23,38 +22,37 @@ from researchlib.author_voice import POSTER_ROLE, assign_poster_role, is_guest
 
 logger = logging.getLogger("researchlib.posters")
 # app_state 里记下每个星球来源上次按什么名单算的标记：poster_names:<来源>。
-STATE_PREFIX = "poster_names:"
+STATE_PREFIX = "poster_accounts:v1:"
 
 
 def refresh_poster_roles(conn, sources) -> dict[str, int]:
     """星球来源的作者或 poster_names 和上次不一样，就按新名单重算库里帖子的发帖人标记。
 
-    返回 {来源: 改了几篇}，名单没变的来源不在里面。改成网友帖的删掉观点；改回星主原创的，
-    观点由夜间 research-views 补抽。调用方负责提交。
+    返回 {来源: 改了几篇}，账户登记未变的来源不在里面。角色调整不删除观点，
+    没有观点的由有额度的维护任务补抽。调用方负责提交。
     """
     changed: dict[str, int] = {}
     for source in sources:
         if source.kind != "zsxq":
             continue
         key = STATE_PREFIX + source.id
-        names = json.dumps([source.author, *source.poster_names], ensure_ascii=False)
+        names = json.dumps(list(source.owner_ids), ensure_ascii=False)
         state = conn.execute("SELECT value FROM app_state WHERE key = %s", (key,)).fetchone()
         if state is not None and state["value"] == names:
             continue
         flipped = 0
         rows = conn.execute(
-            "SELECT id, raw_meta FROM articles WHERE source_id = %s AND coalesce(raw_meta->>'poster_name', '') <> ''",
+            "SELECT id, raw_meta FROM articles WHERE source_id = %s",
             (source.id,),
         ).fetchall()
         for row in rows:
             meta = dict(row["raw_meta"] or {})
             before = meta.get(POSTER_ROLE)
-            assign_poster_role(meta, source.author, source.poster_names)
+            assign_poster_role(meta, source.author, source.poster_names, owner_ids=source.owner_ids)
             if meta.get(POSTER_ROLE) == before:
                 continue
             conn.execute("UPDATE articles SET raw_meta = %s WHERE id = %s", (Jsonb(meta), row["id"]))
-            if is_guest(meta):
-                conn.execute("DELETE FROM company_views WHERE article_id = %s", (row["id"],))
+            # 角色调整可逆；保留已有观点，读取/模型边界按角色过滤，重算时不删除。
             flipped += 1
         conn.execute(
             """
@@ -73,7 +71,9 @@ def backfill_posters(conn, source, docs: list) -> dict:
     """用归档里的话题 JSON 回填已入库文章的发帖人。返回计数。"""
     updated = guests = cleared = missing = 0
     for doc in docs:
-        incoming = assign_poster_role(dict(doc.raw_meta or {}), source.author, source.poster_names)
+        incoming = assign_poster_role(
+            dict(doc.raw_meta or {}), source.author, source.poster_names, owner_ids=source.owner_ids
+        )
         name = str(incoming.get("poster_name") or "").strip()
         poster_id = str(incoming.get("poster_id") or "").strip()
         if not name and not poster_id:
@@ -93,9 +93,11 @@ def backfill_posters(conn, source, docs: list) -> dict:
             continue
         for row in rows:
             meta = dict(row["raw_meta"] or {})
-            meta["poster_name"] = name
-            meta["poster_id"] = poster_id
-            assign_poster_role(meta, source.author, source.poster_names)
+            if name:
+                meta["poster_name"] = name
+            if poster_id:
+                meta["poster_id"] = poster_id
+            assign_poster_role(meta, source.author, source.poster_names, owner_ids=source.owner_ids)
             conn.execute(
                 "UPDATE articles SET raw_meta = %s WHERE id = %s",
                 (Jsonb(meta), row["id"]),

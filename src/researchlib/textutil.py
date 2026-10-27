@@ -13,10 +13,28 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
 _HEADING = re.compile(r"^(#{1,6})\s+(\S.*?)\s*$", re.M)
 _FENCE = re.compile(r"```.*?```", re.S)
+_INLINE_CODE = re.compile(r"(?<!`)(?P<ticks>`+)(?!`)(?P<code>.*?)(?<!`)(?P=ticks)(?!`)", re.S)
 _IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _TAG = re.compile(r"<[^>]+>")
-_EMPH = re.compile(r"(\*\*|__|\*|_|~~)")
+_STAR_STRONG = re.compile(
+    r"(?<![^\W一-鿿])(?<![\\*])(?P<marker>\*{2,3})(?!\*|\s)"
+    r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?![^\W一-鿿]|\*)"
+)
+_STAR_EMPH = re.compile(
+    r"(?<![\w\\*])(?P<marker>\*)(?!\*|\s)"
+    r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?![\w*])"
+)
+_STRIKE = re.compile(
+    r"(?<![\\~])(?P<marker>~~)(?!~|\s)"
+    r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?!~)"
+)
+_UNDERSCORE_EMPH = re.compile(
+    r"(?<![\w\\])(?P<marker>_{1,3})(?!_|\s)"
+    r"(?P<text>(?:[^\n]|\n(?![ \t]*\n))*?\S)(?<!\\)(?P=marker)(?![\w_])"
+)
+_THEMATIC_RULE = re.compile(r"^[ \t]{0,3}(?:(?:_[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:-[ \t]*){3,})$", re.M)
+
 # GitHub 提示框的标记。feishu2md 把飞书的高亮块导成引用块，第一行写「[!NOTE]」。
 _ALERT = r"\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]"
 _ALERT_LINE = re.compile(r"^[ \t]{0,3}>[ \t]*" + _ALERT + r"[ \t]*$\n?", re.M | re.I)
@@ -165,14 +183,33 @@ def strip_alert_markers(md: str) -> str:
 
 def markdown_to_text(md: str) -> str:
     text = _FENCE.sub(" ", strip_alert_markers(md))
-    text = re.sub(r"`([^`]*)`", r"\1", text)
+    code_prefix = "\x02CODE"
+    while code_prefix in text:
+        code_prefix += "X"
+    code_texts: list[str] = []
+
+    def stash_code(match: re.Match[str]) -> str:
+        code_texts.append(match.group("code"))
+        return f"{code_prefix}{len(code_texts) - 1}\x03"
+
+    text = _INLINE_CODE.sub(stash_code, text)
     text = _IMAGE.sub(r"\1", text)
     text = _LINK.sub(r"\1", text)
     text = _TAG.sub(" ", text)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
-    text = _EMPH.sub("", text)
+    # 只去成对的强调标记，保留乘号、填空和词内下划线。
+    while True:
+        unwrapped = text
+        for pattern in (_UNDERSCORE_EMPH, _STAR_STRONG, _STAR_EMPH, _STRIKE):
+            unwrapped = pattern.sub(r"\g<text>", unwrapped)
+        if unwrapped == text:
+            break
+        text = unwrapped
     text = re.sub(r"^\s{0,3}>\s?", "", text, flags=re.M)
+    text = _THEMATIC_RULE.sub("", text)
     text = re.sub(r"^\s*[-+*]\s+", "", text, flags=re.M)
+    for index, code in enumerate(code_texts):
+        text = text.replace(f"{code_prefix}{index}\x03", code)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

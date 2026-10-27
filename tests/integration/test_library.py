@@ -114,7 +114,7 @@ def test_sample_library_pages(conn, settings):
         assert media.headers["content-type"].startswith("image/png")
         assert client.get("/media/fangwei-mp/../../etc/passwd").status_code == 404
         assert client.get("/?source=linwenfeng-mp").status_code == 404
-        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/health").json() == {"status":"ok", "deployment_protocol":1, "build_sha":""}
         assert "Allow: /" in client.get("/robots.txt").text
 
 

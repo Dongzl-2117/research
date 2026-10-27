@@ -31,6 +31,7 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import not_guest_sql
 from researchlib.claims import claim_side, is_hedge, looks_like_list, quote_ok, same_repost
 from researchlib.config import Settings
+from researchlib.coordination import task
 from researchlib.failures import clear_failure, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.web.present import format_date
@@ -662,7 +663,8 @@ def _worker() -> None:
         conn = None
         try:
             conn = connect(settings)
-            build(conn, settings, company, sources_by_id)
+            with task(conn):
+                build(conn, settings, company, sources_by_id)
         except LLMUnavailable as exc:
             logger.warning("论点整理暂停：%s", exc)
             with _lock:

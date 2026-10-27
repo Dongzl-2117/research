@@ -11,7 +11,7 @@
     <p class="byline">
       <a href="{% if source.timeline %}/?source={{ source.id }}{% else %}/authors/{{ source.author | urlencode }}?source={{ source.id }}{% endif %}">{{ source.name }}</a>
       <span aria-hidden="true">·</span>
-      {% if guest %}<span>发帖人 {{ poster_name }}</span><span class="quiet">不是{{ source.author }}的原创</span>{% else %}<a href="/authors/{{ source.author | urlencode }}">{{ source.author }}</a>{% endif %}
+      {% if identity_unknown %}<span>星球存档（账户未核实）</span>{% elif guest %}<span>发帖人 {{ poster_name }}</span><span class="quiet">不是{{ source.author }}的原创</span>{% else %}<a href="/authors/{{ source.author | urlencode }}">{{ source.author }}</a>{% endif %}
       <span aria-hidden="true">·</span>
       <time datetime="{{ iso }}">{{ date }}{% if time %} {{ time }}{% endif %}</time>
       {% if relative %}<span aria-hidden="true">·</span><span>{{ relative }}</span>{% endif %}

@@ -13,6 +13,7 @@ from html import escape
 from pathlib import Path
 
 from researchlib.chunks import replace_translation_chunks
+from researchlib.coordination import task
 from researchlib.render import render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
 from researchlib.translate.language import is_chinese
@@ -116,6 +117,11 @@ def _translate_title(title: str, data_dir: Path) -> str:
 
 
 def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResult:
+    with task(conn):
+        return _translate_article(conn, article_id, data_dir=data_dir)
+
+
+def _translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResult:
     article = conn.execute(
         """
         SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash

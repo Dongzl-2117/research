@@ -1,5 +1,6 @@
 """相对 .md 链接、飞书目录树、知识星球真实钟点，以及不限持仓的最近观点。"""
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -22,9 +23,11 @@ def _source(settings, source_id):
 
 
 def _store(conn, settings, source_id, docs):
+    for doc in docs:
+        doc.raw_meta.setdefault("poster_id", "1001")
     store_documents(
         conn,
-        source=_source(settings, source_id),
+        source=replace(_source(settings, source_id), owner_ids=("1001",)),
         docs=docs,
         data_dir=settings.data_dir,
         archive_files=len(docs),

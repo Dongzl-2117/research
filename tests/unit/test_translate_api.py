@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from researchlib.config import Settings
+from researchlib.coordination import DeploymentBusy
 from researchlib.translate import worker
 from researchlib.translate.service import TranslateResult
 from researchlib.web.api import api
@@ -203,6 +204,21 @@ def test_error_message_is_reported_for_lone_failure(tmp_path, isolated_worker, m
     assert snapshot["last_article_id"] == 41
     assert snapshot["last_status"] == "failed"
     assert "translation alignment: count" in (snapshot["last_error"] or "")
+
+
+def test_deployment_defers_api_job_without_counting_a_translation_failure(tmp_path, isolated_worker, monkeypatch):
+    monkeypatch.setattr(worker, "list_pending_english", lambda conn, **kwargs: [41])
+
+    def busy(*args, **kwargs):
+        raise DeploymentBusy("部署中")
+
+    monkeypatch.setattr(worker, "translate_article", busy)
+    client = _client(tmp_path)
+    assert client.post("/api/v1/translate", json={"limit": 1}).status_code == 200
+    snapshot = _wait_stopped()
+    assert snapshot["failed_this_run"] == 0
+    assert snapshot["completed_this_run"] == 0
+    assert snapshot["last_status"] == "deferred"
 
 
 def test_loop_skips_failed_ids_then_sleeps(tmp_path, isolated_worker, monkeypatch):

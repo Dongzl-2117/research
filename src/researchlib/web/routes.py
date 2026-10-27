@@ -38,13 +38,12 @@ from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
-from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
+from researchlib.sources import enabled_sources, load_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt
 from researchlib.translate.pair import bilingual_pairs
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
-from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
 from researchlib.web.daybrief import compose_day_brief
@@ -116,8 +115,7 @@ def active_sources(request: Request, conn):
     mtime = settings.sources_path.stat().st_mtime
     if getattr(request.app.state, "sources_mtime", None) != mtime:
         sources = load_sources(settings.sources_path)
-        sync_sources(conn, sources)
-        conn.commit()
+        # 浏览只读；配置同步由显式维护/导入执行。
         request.app.state.sources = sources
         request.app.state.sources_mtime = mtime
     # paused 的来源（如段永平）整源先不展示：导航、作者、筛选都不出现。
@@ -222,7 +220,12 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
     }
     if extra:
         card.update(extra)
-    if row.get("poster_role") == "guest":
+    if row.get("poster_role") == "unknown":
+        card["author"] = "星球存档（账户未核实）"
+        card["guest"] = True
+        card["identity_unknown"] = True
+        card["show_author"] = True
+    elif row.get("poster_role") == "guest":
         card["author"] = (row.get("poster_name") or "").strip() or "星球读者"
         card["guest"] = True
         card["show_author"] = True
@@ -276,7 +279,7 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
         card["title"] = repaired
 
 
-def _decorate(conn, cards: list[dict], settings) -> list[dict]:
+def _decorate(conn, cards: list[dict], settings, *, generate: bool = True) -> list[dict]:
     """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
     ids = [card["id"] for card in cards]
     tags = queries.article_tags(conn, ids, per_article=12)
@@ -296,7 +299,7 @@ def _decorate(conn, cards: list[dict], settings) -> list[dict]:
     _repair_zsxq_titles(conn, cards)
     for card in cards:
         card.pop("body_text", None)
-    if pending:
+    if pending and generate:
         schedule_digests(settings, pending)
     return cards
 
@@ -737,6 +740,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "article": article,
             "source": source,
             "guest": (article["raw_meta"] or {}).get("poster_role") == "guest",
+            "identity_unknown": (article["raw_meta"] or {}).get("poster_role") == "unknown",
             "poster_name": (article["raw_meta"] or {}).get("poster_name") or "",
             "date": format_date(article["published_at"], settings.display_timezone),
             "time": format_clock(shown, settings.display_timezone) if known else "",
@@ -1222,6 +1226,7 @@ def company_page(request: Request, company_id: int):
                 for row in articles
             ],
             settings,
+            generate=False,
         )
     for card in rows:
         card["tags"] = [tag for tag in card["tags"] if tag["id"] != company_id]
@@ -1312,20 +1317,16 @@ def _recent_lead(conn, items: list[dict], settings, names: list[str]) -> dict | 
 
 
 def _company_views(request: Request, conn, company, by_id: dict, author: str) -> dict | None:
-    """任何公司的观点时间线。缺的在后台排队，不挡住页面。不按持仓过滤。"""
+    """读取已有观点、论点及缺口。生成由有额度的 CLI/夜间任务显式执行。"""
     settings = request.app.state.settings
     kind = request.query_params.get("views") or ""
     company_id = int(company["id"])
     items = view_timeline(conn, company_id, by_id, settings)
-    # 「还有几篇没整理」按当前筛的作者算；排队仍然按全部来源。
+    # 「还有几篇没整理」按当前筛的作者算；这里只显示缺口。
     scope_ids = [sid for sid, source in by_id.items() if not author or source.author == author]
     pending = count_view_pending(conn, company_id, scope_ids)
-    if count_view_pending(conn, company_id, list(by_id)) if author else pending:
-        queue_views(conn, settings, company_id, by_id)
-    # 论点地图：观点归成的几条论点。缺了或过期了在后台重算，不挡页面。
+    # 论点地图：只读取已有结果，缺失或过期由显式维护处理。
     theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
-    if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
-        thesis_map.schedule(settings, company, by_id)
     thesis = next((item for item in theses if item["key"] == kind), None)
     if kind not in VIEW_FILTERS and thesis is None:
         kind = ""
@@ -1699,7 +1700,7 @@ def health(request: Request):
             conn.close()
     except Exception:
         return Response(content='{"status":"down"}', status_code=503, media_type="application/json")
-    return {"status": "ok"}
+    return {"status": "ok", "deployment_protocol": 1, "build_sha": os.environ.get("RESEARCH_BUILD_SHA", "")}
 
 
 @router.get("/robots.txt")

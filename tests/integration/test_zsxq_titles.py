@@ -1,5 +1,6 @@
 """方伟星球卡片和文章页不显示被省略号截断的标题。库里的原标题先不动。"""
 
+from dataclasses import replace
 from datetime import datetime
 
 from fastapi.testclient import TestClient
@@ -19,7 +20,8 @@ DIGEST = "方伟认为，" + FULL + "。正文只给出这一判断，没有说�
 
 
 def _source(settings):
-    return next(source for source in load_sources(settings.sources_path) if source.id == "fangwei-zsxq")
+    return replace(next(source for source in load_sources(settings.sources_path) if source.id == "fangwei-zsxq"),
+                   owner_ids=("1001",))
 
 
 def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
@@ -29,7 +31,7 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
         TRUNCATED,
         when,
         TRUNCATED + "\n",
-        {"format": "markdown", "filename": "reader.md", "poster_name": "王小明"},
+        {"format": "markdown", "filename": "reader.md", "poster_name": "王小明", "poster_id":"2002"},
         [],
     )
     owner = ParsedDoc(
@@ -37,7 +39,7 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
         TRUNCATED,
         datetime(2024, 10, 19, 9, 0, tzinfo=SHANGHAI),
         BODY,
-        {"format": "markdown", "filename": "owner.md"},
+        {"format": "markdown", "filename": "owner.md", "poster_id":"1001"},
         [],
     )
     store_documents(

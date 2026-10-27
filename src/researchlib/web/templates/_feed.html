@@ -4,7 +4,7 @@
   <span class="slot-rail" aria-hidden="true"><span class="slot-line"></span><span class="slot-dot"></span></span>
   <article class="item-card">
     <header class="item-meta">
-      {% if item.guest %}<span>{{ item.author }}</span><span class="quiet">读者帖</span>{% else %}<a href="/authors/{{ item.author | urlencode }}">{{ item.author }}</a>{% endif %}
+      {% if item.guest %}<span>{{ item.author }}</span><span class="quiet">{{ "身份待核实" if item.identity_unknown else "读者帖" }}</span>{% else %}<a href="/authors/{{ item.author | urlencode }}">{{ item.author }}</a>{% endif %}
       {% if item.show_author %}<span aria-hidden="true">·</span><a class="quiet" href="{{ item.source_href }}">{{ item.source }}</a>{% endif %}
       {% if item.depth_label %}<span class="depth depth-{{ item.depth }}">{{ item.depth_label }}</span>{% endif %}
       {% if item.hits %}<span class="num">{{ item.hits }} 次</span>{% endif %}

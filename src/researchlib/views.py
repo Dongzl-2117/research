@@ -42,6 +42,7 @@ from researchlib.author_voice import (
 )
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
+from researchlib.coordination import task
 from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -774,7 +775,8 @@ def _worker() -> None:
                     companies = conn.execute(
                         "SELECT id, name_zh FROM companies WHERE id = ANY(%s)", (list(company_ids),)
                     ).fetchall()
-                    extract_article(conn, settings, row, author, companies)
+                    with task(conn):
+                        extract_article(conn, settings, row, author, companies)
             except LLMUnavailable as exc:
                 logger.warning("观点整理暂停：%s", exc)
                 with _lock:
