@@ -507,53 +507,6 @@ def classify_depth(title_hits: int, section_hits: Iterable[int], *, structured: 
     return DEPTH_PASSING
 
 
-def mentions_for_document(matcher: CompanyMatcher, title: str, body_md: str) -> list[tuple[int, str, int]]:
-    _frontmatter, body = split_frontmatter(body_md)
-    body = strip_duplicate_title(body, title)
-    raw_sections, structured = split_markdown_sections(body)
-    sections = [markdown_to_text(section) for section in raw_sections]
-    matcher = matcher.document(title, "\n".join(sections))
-    title_counts = matcher.count(title)
-    raw_counts = [matcher.count(section) for section in sections]
-    if is_latin_text("\n".join(sections)):
-        return _latin_mentions(matcher, title_counts, raw_counts, raw_sections, sections, structured)
-    substantive_counts = [matcher.count(substantive_text(section)) for section in sections]
-    sentences = sentence_pieces("\n".join(sections))
-    sentence_hits: dict[int, int] = {}
-    for sentence in sentences:
-        if incidental_sentence(sentence):
-            continue
-        for company_id in matcher.count(sentence):
-            sentence_hits[company_id] = sentence_hits.get(company_id, 0) + 1
-    company_ids = set(title_counts)
-    for counts in raw_counts:
-        company_ids.update(counts)
-    found: list[tuple[int, str, int]] = []
-    for company_id in company_ids:
-        title_hits = title_counts.get(company_id, 0)
-        raw_per = [counts.get(company_id, 0) for counts in raw_counts]
-        substantive_per = [counts.get(company_id, 0) for counts in substantive_counts]
-        raw_hits = sum(raw_per)
-        if title_hits + raw_hits <= 0:
-            continue
-        incidental_only = title_hits == 0 and sum(substantive_per) == 0 and raw_hits > 0
-        # 长文里只在一句里出现，即使这句话把名字重复了几遍，也不是全文都在谈。
-        one_liner = (
-            title_hits == 0
-            and not incidental_only
-            and len(sentences) >= 3
-            and sentence_hits.get(company_id, 0) <= 1
-        )
-        if incidental_only or one_liner:
-            depth = DEPTH_PASSING
-        else:
-            depth = classify_depth(title_hits, substantive_per, structured=structured)
-        if depth is None:
-            continue
-        found.append((company_id, depth, title_hits + raw_hits))
-    return found
-
-
 def _latin_mentions(
     matcher: DocumentMatcher,
     title_counts: dict[int, int],
@@ -617,6 +570,53 @@ def _latin_mentions(
             depth = DEPTH_SECTION
         else:
             depth = DEPTH_PASSING
+        found.append((company_id, depth, title_hits + raw_hits))
+    return found
+
+
+def mentions_for_document(matcher: CompanyMatcher, title: str, body_md: str) -> list[tuple[int, str, int]]:
+    _frontmatter, body = split_frontmatter(body_md)
+    body = strip_duplicate_title(body, title)
+    raw_sections, structured = split_markdown_sections(body)
+    sections = [markdown_to_text(section) for section in raw_sections]
+    matcher = matcher.document(title, "\n".join(sections))
+    title_counts = matcher.count(title)
+    raw_counts = [matcher.count(section) for section in sections]
+    if is_latin_text("\n".join(sections)):
+        return _latin_mentions(matcher, title_counts, raw_counts, raw_sections, sections, structured)
+    substantive_counts = [matcher.count(substantive_text(section)) for section in sections]
+    sentences = sentence_pieces("\n".join(sections))
+    sentence_hits: dict[int, int] = {}
+    for sentence in sentences:
+        if incidental_sentence(sentence):
+            continue
+        for company_id in matcher.count(sentence):
+            sentence_hits[company_id] = sentence_hits.get(company_id, 0) + 1
+    company_ids = set(title_counts)
+    for counts in raw_counts:
+        company_ids.update(counts)
+    found: list[tuple[int, str, int]] = []
+    for company_id in company_ids:
+        title_hits = title_counts.get(company_id, 0)
+        raw_per = [counts.get(company_id, 0) for counts in raw_counts]
+        substantive_per = [counts.get(company_id, 0) for counts in substantive_counts]
+        raw_hits = sum(raw_per)
+        if title_hits + raw_hits <= 0:
+            continue
+        incidental_only = title_hits == 0 and sum(substantive_per) == 0 and raw_hits > 0
+        # 长文里只在一句里出现，即使这句话把名字重复了几遍，也不是全文都在谈。
+        one_liner = (
+            title_hits == 0
+            and not incidental_only
+            and len(sentences) >= 3
+            and sentence_hits.get(company_id, 0) <= 1
+        )
+        if incidental_only or one_liner:
+            depth = DEPTH_PASSING
+        else:
+            depth = classify_depth(title_hits, substantive_per, structured=structured)
+        if depth is None:
+            continue
         found.append((company_id, depth, title_hits + raw_hits))
     return found
 
@@ -732,7 +732,7 @@ def mentions_stale(conn) -> bool:
 
 
 def rebuild_if_stale(settings) -> int:
-    """应用启动后在后台跑：公司别名或深度规则变了才重算全部提及。返回重算的篇数，没变返回 0。"""
+    """应用启动后在后台跑：公司别名变了才重算全部提及。返回重算的篇数，没变返回 0。"""
     import logging
 
     from researchlib.db import connect
@@ -742,7 +742,7 @@ def rebuild_if_stale(settings) -> int:
     try:
         if not mentions_stale(conn):
             return 0
-        logger.warning("公司别名变了或提及规则改了，后台重算全部文章的公司提及")
+        logger.warning("公司别名变了，后台重算全部文章的公司提及")
         count = rebuild_all(conn)
         logger.warning("公司提及重算完成：%s 篇", count)
         return count
