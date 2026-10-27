@@ -125,7 +125,7 @@ _EMPTY_QUOTE = re.compile(r"<blockquote>\s*</blockquote>", re.I)
 
 
 def _dedupe_consecutive_paragraphs(html: str) -> str:
-    """按文档序去掉连续相同的 <p>（含 blockquote 内外紧挨的重复，抽验 22195）。"""
+    """按文档序去掉连续相同的 <p>（含同一父节点内、blockquote 紧邻重复）。"""
     if not html or "<p" not in html.lower():
         return html
     matches = list(_P_BLOCK.finditer(html))
@@ -135,7 +135,9 @@ def _dedupe_consecutive_paragraphs(html: str) -> str:
     prev_norm: str | None = None
     for match in matches:
         norm = re.sub(r"\s+", " ", match.group(0)).strip()
-        if prev_norm is not None and norm == prev_norm and len(norm) > 40:
+        # 用去标签后的正文长度：短占位（如「是」「好」）不去；测例「第一段…去重。」约 16 字要去。
+        plain = re.sub(r"<[^>]+>", "", norm).strip()
+        if prev_norm is not None and norm == prev_norm and len(plain) >= 10:
             drop.append(match.span())
             continue
         prev_norm = norm
