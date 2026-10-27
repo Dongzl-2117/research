@@ -27,6 +27,7 @@ from researchlib.views import (
     gap_articles,
     pending_articles,
     pending_companies,
+    portfolio_ids,
     view_companies,
 )
 
@@ -111,11 +112,13 @@ def _run(
         if not wanted:
             _worker._update(last_status="failed", last_error="没有被深入谈到的公司")
             return
+        # 和夜间任务一样：先排持仓和观察名单里的公司，再排中文文章。
+        first = portfolio_ids(conn, settings)
         while not _worker.stop_event.is_set():
             if gap:
                 rows = gap_articles(conn, wanted, list(authors), limit + len(skipped))
             else:
-                rows = pending_articles(conn, wanted, list(authors), limit + len(skipped))
+                rows = pending_articles(conn, wanted, list(authors), limit + len(skipped), first=first)
             batch = [row for row in rows if int(row["id"]) not in skipped][:limit]
             if not batch:
                 if not loop:

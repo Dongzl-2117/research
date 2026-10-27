@@ -8,9 +8,11 @@
 - 判断或态度为空白的观点不进输入。覆盖不到的观点仍留在公司页「全部」时间线。
 - 一家公司一次调用。观点集合有变化才重算，一天最多一次；按 views_hash 和提示词版本缓存。
 - 打开公司页时，只有 RESEARCH_THESES_AUTO=1 才把缺的或过期的排进后台（默认关）。
-  夜间 THESES_ENABLED 同样默认关。打开后不限持仓。启动和部署不跑。
+- 夜间任务默认只补持仓和观察名单里的公司（THESES_SCOPE=portfolio，config/portfolio.yaml），
+  THESES_SCOPE=all 补全部观点够数的公司，off 不跑。启动和部署不跑。
 
     research-theses                    # 观点够数的公司，过期的才算
+    research-theses --portfolio        # 只算持仓和观察名单里的（夜间默认）
     research-theses --company 贵州茅台 --company 泡泡玛特 --force
 """
 
@@ -31,6 +33,7 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import not_guest_sql
 from researchlib.claims import claim_side, is_hedge, looks_like_list, quote_ok, same_repost
 from researchlib.config import Settings
+from researchlib.empty_answer import visible_sql
 from researchlib.failures import clear_failure, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.web.present import format_date
@@ -110,7 +113,7 @@ def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) ->
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s)
-          AND a.duplicate_of IS NULL AND {not_guest_sql("a")}
+          AND a.duplicate_of IS NULL AND {not_guest_sql("a")} AND {visible_sql("a")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (company_id, list(sources_by_id)),
@@ -699,17 +702,17 @@ def needs_build(conn, company_id: int, sources_by_id: dict, settings: Settings) 
 
 
 def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) -> list[dict]:
-    """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。"""
+    """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。隐藏、搁下的文章不算。"""
     if not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT c.id, c.name_zh
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
-          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
+          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest' AND {visible_sql("a")}
         GROUP BY c.id, c.name_zh
         HAVING count(*) >= %s
         ORDER BY c.name_zh, c.id
@@ -718,12 +721,33 @@ def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) 
     ).fetchall()
 
 
+def portfolio_companies(conn, settings: Settings, source_ids: list[str]) -> list[dict]:
+    """持仓和观察名单（config/portfolio.yaml）里观点够数的公司，按名单的顺序。夜间默认只算这几家。"""
+    from researchlib.portfolio import load_portfolio
+
+    path = getattr(settings, "portfolio_path", None)
+    names = list(load_portfolio(path).names) if path else []
+    if not names:
+        return []
+    enough = {int(row["id"]) for row in companies_with_views(conn, source_ids)}
+    rows = conn.execute("SELECT id, name_zh FROM companies WHERE name_zh = ANY(%s)", (names,)).fetchall()
+    order = {name: index for index, name in enumerate(names)}
+    return sorted((row for row in rows if int(row["id"]) in enough), key=lambda row: order.get(row["name_zh"], 99))
+
+
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了（个别公司失败也算），2 没有可用的 LLM 凭证。"""
     parser = argparse.ArgumentParser(description="把观点够数的公司归成论点（不限持仓和观察名单）")
     parser.add_argument("--company", action="append", default=[], help="只整理这家公司（中文名），可重复")
+    parser.add_argument(
+        "--portfolio",
+        action="store_true",
+        help="只算持仓和观察名单（config/portfolio.yaml）里观点够数的公司。夜间任务默认这样跑",
+    )
     parser.add_argument("--force", action="store_true", help="没过期也重算")
     args = parser.parse_args(argv)
+    if args.portfolio and args.company:
+        raise SystemExit("--portfolio 和 --company 只能选一个")
     from researchlib.db import prepare
     from researchlib.sources import enabled_sources, load_sources
 
@@ -748,6 +772,9 @@ def main(argv: list[str] | None = None) -> int:
             if unknown:
                 raise SystemExit(f"{'、'.join(unknown)} 不在公司表里")
             chosen = [known[name] for name in args.company]
+        elif args.portfolio:
+            chosen = portfolio_companies(conn, settings, list(sources_by_id))
+            print(f"持仓和观察名单里观点够数的 {len(chosen)} 家")
         else:
             chosen = companies_with_views(conn, list(sources_by_id))
         for company in chosen:
