@@ -26,7 +26,7 @@ class Source:
     description: str = ""
     # True：首页按天和 /days。False：只进作者、公司、检索、问库（飞书文库）。
     timeline: bool = True
-    # >0：正文（不含评论、空白）不足这么多字的帖子入库时标 hidden=short_post。
+    # >0：正文（不含评论、空白）不足这么多字的帖子入库时标 hidden=short_post。改了以后启动时重标已入库的。
     min_chars: int = 0
     # True：整源先不要。库里已标 hidden=source_paused，导入命令拒绝导入。
     paused: bool = False
