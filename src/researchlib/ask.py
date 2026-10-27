@@ -27,6 +27,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.citecheck import check_answer
 from researchlib.config import Settings
+from researchlib.coordination import enter_task, leave_task
 from researchlib.llm import LLMError, LLMUnavailable, active_label, chat, llm_configured
 from researchlib.retrieval import Retrieval, analyze, cited_numbers, retrieve
 from researchlib.web.present import format_date
@@ -365,7 +366,10 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
     if own:
         conn = connect(settings)
         ensure_search_session(conn)
+    locked = False
     try:
+        enter_task(conn)
+        locked = True
         row = conn.execute("SELECT question, scope FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()
         if row is None:
             return
@@ -428,8 +432,12 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         )
         conn.commit()
     finally:
-        if own:
-            conn.close()
+        try:
+            if locked:
+                leave_task(conn)
+        finally:
+            if own:
+                conn.close()
 
 
 def retry(conn, settings: Settings, answer_id: int, *, run_inline: bool | None = None) -> bool:

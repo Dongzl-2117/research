@@ -22,6 +22,7 @@ VOICE_NOTE = "\n（下面只保留段永平本人写的段落。读者提问和�
 POSTER_ROLE = "poster_role"
 ROLE_GUEST = "guest"
 ROLE_OWNER = "owner"
+ROLE_UNKNOWN = "unknown"
 
 
 def raw_meta_of(conn, row) -> dict:
@@ -79,7 +80,10 @@ def off_views(raw_meta: dict | None) -> bool:
 
 def views_eligible_sql(alias: str = "a") -> str:
     """观点候选：不是网友帖，也没有标明不进观点。"""
-    return f"{not_guest_sql(alias)} AND coalesce({alias}.raw_meta->>'{OFF_VIEWS}', '') <> 'true'"
+    return (
+        f"{not_guest_sql(alias)} AND coalesce({alias}.raw_meta->>'poster_role', '') <> 'unknown'"
+        f" AND coalesce({alias}.raw_meta->>'{OFF_VIEWS}', '') <> 'true'"
+    )
 
 
 def duan_paragraphs(text: str) -> str:
@@ -120,7 +124,7 @@ def for_model(
     source_id: str = "",
 ) -> tuple[str, list[tuple[str, str]], bool]:
     """交给观点或摘要的正文。段永平只留他本人的章节，或「段：」起到下一位说话人之前的段落。"""
-    if is_guest(raw_meta):
+    if is_guest(raw_meta) or (raw_meta or {}).get(POSTER_ROLE) == ROLE_UNKNOWN:
         return "", [], True
     if str((raw_meta or {}).get(AUTHOR_VOICE) or "").strip() == "foreign":
         return "", [], True
@@ -153,11 +157,20 @@ def same_person(poster: str, star: str) -> bool:
     return bool(left) and left == right
 
 
-def assign_poster_role(meta: dict, star_name: str, aliases: tuple[str, ...] = ()) -> dict:
-    """就地写上 poster_role。没有发帖人名字时不猜，旧帖仍按星主处理。
+def assign_poster_role(
+    meta: dict, star_name: str, aliases: tuple[str, ...] = (), *, owner_ids: tuple[str, ...] | None = None
+) -> dict:
+    """就地写上 poster_role。星球传 owner_ids，身份缺失时明确记 unknown。
 
-    aliases 是星主在平台上的其他显示名（来源配置里的 poster_names），比如星球昵称「方伟Rey」。
+    非星球兼容原有文本署名规则；aliases 不构成星球账户证据。
     """
+    # 星球只能以来源配置中核实过的账户 ID 判断身份。None 留给非星球的文本署名规则。
+    if owner_ids is not None:
+        poster_id = str(meta.get("poster_id") or "").strip()
+        meta[POSTER_ROLE] = (
+            ROLE_UNKNOWN if not poster_id or not owner_ids else ROLE_OWNER if poster_id in owner_ids else ROLE_GUEST
+        )
+        return meta
     name = str(meta.get("poster_name") or "").strip()
     if not name:
         meta.pop(POSTER_ROLE, None)
@@ -171,4 +184,6 @@ def display_author(star_name: str, raw_meta: dict | None) -> tuple[str, bool]:
     """返回 (显示名, 是否算星主本人)。网友帖显示发帖人，不链到星主作者页。"""
     if is_guest(raw_meta):
         return str((raw_meta or {}).get("poster_name") or "").strip() or "星球读者", False
+    if (raw_meta or {}).get(POSTER_ROLE) == ROLE_UNKNOWN:
+        return "星球存档（账户未核实）", False
     return star_name, True

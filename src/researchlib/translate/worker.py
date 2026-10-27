@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from researchlib.config import Settings
+from researchlib.coordination import DeploymentBusy
 from researchlib.llm import active_model_id, llm_configured
 from researchlib.llm_provider import PROVIDER_GROK, llm_provider, provider_label
 from researchlib.translate.service import list_pending_english, translate_article
@@ -189,6 +190,13 @@ def _run(settings: Settings, source: str | None, limit: int, loop: bool, sleep: 
                     break
                 try:
                     result = translate_article(conn, article_id, data_dir=settings.data_dir)
+                except DeploymentBusy:
+                    conn.rollback()
+                    _update(last_article_id=article_id, last_status="deferred", last_reason="部署正在切换，稍后重试")
+                    if loop:
+                        _update(waiting=True)
+                        _stop.wait(sleep)
+                    break
                 except XaiLoginRequiredError as exc:
                     conn.rollback()
                     _update(last_article_id=article_id, last_status="failed", last_error=f"需要重新登录：{exc}")

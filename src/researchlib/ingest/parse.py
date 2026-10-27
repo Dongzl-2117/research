@@ -215,7 +215,7 @@ def _owner_id(node: dict) -> str | None:
 def _comments(node: dict) -> list[dict]:
     """话题下的评论，楼中楼摊平，按原来的顺序。"""
     found: list[dict] = []
-    for key in ("show_comments", "comments"):
+    for key in ("comments", "show_comments"):
         items = node.get(key)
         if not isinstance(items, list):
             continue
@@ -226,7 +226,8 @@ def _comments(node: dict) -> list[dict]:
             for reply in item.get("replied_comments") or []:
                 if isinstance(reply, dict):
                     found.append(reply)
-        if found:
+        # 完整列表即使为空也有权威性；只在字段缺失/格式不对时用预览。
+        if isinstance(items, list):
             break
     return found
 

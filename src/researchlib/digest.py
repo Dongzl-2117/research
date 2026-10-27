@@ -28,6 +28,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import DUAN_SOURCE, VOICE_NOTE, display_author, for_model, is_guest, raw_meta_of
 from researchlib.config import Settings
+from researchlib.coordination import task
 from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -285,7 +286,8 @@ def _digest_worker() -> None:
                 if conn is None:
                     conn = connect(settings)
                     ensure_search_session(conn)
-                ensure_digests(conn, settings, [article_id], {article_id: author})
+                with task(conn):
+                    ensure_digests(conn, settings, [article_id], {article_id: author})
             except LLMUnavailable as exc:
                 logger.warning("摘要暂停：%s", exc)
                 with _lock:

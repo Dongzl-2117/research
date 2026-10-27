@@ -9,6 +9,11 @@
 set -Eeuo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
+# 在任何容器命令前登记；持锁直到整次脚本退出，消除检查后的竞争空档。
+if [ "${RESEARCH_TASK_LOCKED:-0}" != "1" ]; then
+  export REPO
+  exec python3 "$REPO/scripts/with_task_lock.py" /bin/bash "$0" "$@"
+fi
 DAYS="${DAYS:-14}"
 IMAGES_LIMIT="${IMAGES_LIMIT:-200}"
 TASK=ingest-aihot

@@ -4,9 +4,9 @@
 
 ## 先知道的三件事
 
-1. **合并进 main 就会上线。** Mac mini 上的定时任务 `com.zldong.research.deploy` 每 10 分钟看一次 main，提交的 Tests 检查通过了就拉代码、`docker compose up -d --build`、等 `/health` 通（`scripts/deploy.sh`，见 [docs/deploy.md](docs/deploy.md)「更新」）。所以 main 上的每个提交都要能直接上线。要先在正式库上回填、核查才能上线的改动，留在分支或草稿 PR 里，PR 描述写清上线前提；合并别人的 PR 前，先看它自己写的上线前提满足没有。
-2. **迁移在应用启动时跑。** `src/researchlib/migrations/` 下的 SQL 由 `db.prepare` 按文件名顺序执行，合并后在正式库上自动跑。迁移要对现有数据安全、能重复跑、几万行内很快跑完；删数据、全表改写要在 PR 里写清影响哪些行。编号接着 main 上最新的写，合并前看一眼有没有和别的分支撞号。
-3. **自动上线认的是 CI 里名叫 Tests 的检查。** 改 `.github/workflows/ci.yml` 里这个 job 的名字，要同时改 `scripts/deploy.sh` 的 `DEPLOY_CHECK` 默认值。草稿 PR 不跑 CI，要看 CI 结果先转成待审。
+1. **本次部署保护需先人工交接。** 旧定时任务是否已安装仍未知，不能据 PR 描述推定线上状态。合并前先读 [docs/deploy-safety.md](docs/deploy-safety.md)，暂停旧调度、等任务完成、核对备份与迁移；本次草稿不能让旧 deploy.sh 自动上线。交接完成后的自动部署仅构建 Tests 已通过的固定 SHA，保留宿主机工作区；宿主机脚本/launchd 变更要显式安装。
+2. **Web 默认只读启动。** 只核对数据库迁移集合，不迁移、不重算角色/块/提及、不清理观点。有未执行迁移或数据库比代码新时拒绝启动。迁移和维护要在校验/试恢复备份、明确数据影响之后显式执行，不能认为换回镜像就恢复数据。本 PR 不新增 SQL 迁移。
+3. **Tests 仍是部署门槛。** 草稿 PR 的 Tests 会跳过；可以按既有流程临时转待审跑完整 CI，完成后转回草稿。分别报告实际执行的测试与最终检查状态，不能把 skipped 当通过。禁止改低基线或绕过检查。
 
 ## 正式环境
 
@@ -64,3 +64,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - 停更的来源没有抓取：孤独进化体（来自已下线的 AIHOT）、黑黑无常（一次性导入的雪球存档）、Stratechery（在另一台机器「盒子」上手动抓再导入）、乘风破浪（没有抓取脚本）。接不接、用什么账号由 Zhilin 定。
 - 方伟星球 10 月 20 日以后被误当成读者帖的那批，观点靠夜间每晚补 60 篇；一次补完要花 DeepSeek 的钱，没做。
 - 林文丰飞书里的内嵌电子表格只有占位文字，要重新导出才能补。
+
+## 本次安全修复的交接
+
+见 [docs/deploy-safety.md](docs/deploy-safety.md)。本次只选择性恢复账户身份、向量一致性和文本边界；不恢复 #56 的整源门禁。乘风破浪未登记、方伟旧帖缺账户都保留原文可见，身份明确标 unknown。账户登记来源于 #56 的公开证据，合并前在 mini 复核；昵称不能认证账户。公司页 GET 不排队付费生成，继续用限额 CLI/夜间任务。角色重算保留旧观点，不自动付费重写。测试只用隔离库及合成样本。

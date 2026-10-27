@@ -30,8 +30,10 @@ class Source:
     min_chars: int = 0
     # True：整源先不要。库里已标 hidden=source_paused，导入命令拒绝导入。
     paused: bool = False
-    # 星主在平台上的其他显示名（星球昵称）。发帖人是 author 或这些名字的算原创，不当网友帖。
+    # 星主在平台上的其他显示名（星球昵称），仅作展示/兼容文本署名，不认证星球账户。
     poster_names: tuple[str, ...] = ()
+    # 仅用于星球账户身份；显示名不构成身份凭据。未登记的来源仍展示原文。
+    owner_ids: tuple[str, ...] = ()
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -69,9 +71,17 @@ def load_sources(path: Path) -> list[Source]:
                 min_chars=int(item.get("min_chars") or 0),
                 paused=bool(item.get("paused", False)),
                 poster_names=_poster_names(item, source_id),
+                owner_ids=_owner_ids(item, source_id),
             )
         )
     return sources
+
+
+def _owner_ids(item: dict, source_id: str) -> tuple[str, ...]:
+    value = item.get("owner_ids", [])
+    if not isinstance(value, list) or any(not isinstance(v, str) or not v.isdecimal() for v in value):
+        raise ValueError(f"{source_id} 的 owner_ids 必须是核实过的数字账户 ID 字符串列表")
+    return tuple(value)
 
 
 def _poster_names(item: dict, source_id: str) -> tuple[str, ...]:

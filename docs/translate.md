@@ -130,3 +130,7 @@ PYTHONPATH=src python scripts/repair_content_hash_tz.py --apply
 ```
 
 worker 同一次运行（CLI 的 `--loop` 或站内 API 的 `loop`）里失败过的 id 会先跳过，避免对齐失败把队列钉死。
+
+## 部署协调
+
+`translate_article` 在整篇（包括多次内部提交）期间持数据库共享会话锁，覆盖 HTTP worker 与开发排障 CLI。自动部署拿不到独占锁就等下一轮，不终止正在译的文章。部署已持锁时新请求的任务记为 `last_status: deferred`，不计模型失败；loop 等待重试，单次任务由调用方稍后重试。空闲 loop 不阻挡部署，重启后的续跑仍须按上面的站内 POST 显式触发；本次没有自动开启翻译。首次部署交接及备份前提见 [deploy-safety.md](deploy-safety.md)。

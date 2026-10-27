@@ -2,6 +2,7 @@
 长文的输入；失败记次数；出问题才提示；引用落到正文那一段。"""
 
 import json
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -29,15 +30,16 @@ DOCS = [
 def _store_all(conn, settings):
     sources = {source.id: source for source in load_sources(settings.sources_path)}
     for source_id, external_id, day, body in DOCS:
+        source = replace(sources[source_id], owner_ids=("1001",))
         doc = ParsedDoc(
             external_id=external_id,
             title=f"腾讯笔记 {external_id}",
             published_at=datetime(2026, 9, day, 9, 0, tzinfo=SHANGHAI),
             body_md=body,
-            raw_meta={},
+            raw_meta={"poster_id":"1001"},
             image_refs=[],
         )
-        store_documents(conn, source=sources[source_id], docs=[doc], data_dir=settings.data_dir,
+        store_documents(conn, source=source, docs=[doc], data_dir=settings.data_dir,
                         archive_files=1, images_in_archive=0, errors=[])
 
 
@@ -220,7 +222,7 @@ def test_quoted_chunk_lands_on_its_paragraph(conn, settings):
 
 
 def test_company_page_does_not_auto_schedule_theses_by_default(conn, settings, monkeypatch):
-    """默认 RESEARCH_THESES_AUTO=0：公司页不后台排队补论点。打开开关才 schedule。"""
+    """公司页不后台排队补论点，旧的自动开关也不能让 GET 花钱。"""
     assert settings.theses_auto_enabled is False
     _store_all(conn, settings)
     company = _tencent(conn)
@@ -239,5 +241,5 @@ def test_company_page_does_not_auto_schedule_theses_by_default(conn, settings, m
     enabled = replace(settings, theses_auto_enabled=True)
     with TestClient(create_app(enabled)) as client:
         assert client.get(f"/companies/{company['id']}").status_code == 200
-    assert calls == [True]
+    assert calls == []
 

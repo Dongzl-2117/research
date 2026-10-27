@@ -13,22 +13,11 @@ docker compose up -d --build
 
 应用监听容器内的 `8088`，compose 只把宿主机的 **127.0.0.1:8088** 转进去。不要改成 `0.0.0.0`。数据库端口同样只绑定 `127.0.0.1:5432`。
 
-应用启动时会自己做迁移（按文件名顺序，到 `023_drop_demo_article.sql`）、同步 `config/sources.yaml`（星主的星球昵称 `poster_names` 改了，按新名单重算已入库帖子的原创标记）、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。以前每篇最多切 400 块，正好切满 400 块的长文启动时重切一遍，后面的内容才进检索。上次没写完的问库整合标成中断，回答页可以重新整合。
+Web 现在默认只读启动：核对迁移集合，不执行迁移、角色重算、补块、问库状态清理或后台全库重算。首次初始化及已有库维护必须显式执行；备份、迁移检查、首次人工交接、运行方式和回退边界见 [deploy-safety.md](deploy-safety.md)。未完成数据库维护时启动会失败，不会偷偷补做迁移。
 
-`019` 只建飞书目录表。部署后若林文丰已经在库里，跑一次 `research-doc-tree --source linwenfeng-feishu`（不访问飞书）。方伟星球若要改成真实 `create_time`，跑 `research-retime`（见 [ingest.md](ingest.md)），它会按新的 `published_at` 重排观点时间线和「同期别人怎么看」。这两条都不要在部署时自动跑。
+原有 CLI 仍可用于有计划的维护；`db.prepare` 是有数据写入的维护接口，必须先核对备份和数据影响。去重、公司提及重算、日期/目录修复按需要显式跑。公司页 GET 只展示已有摘要、观点、论点；付费生成由有额度的 CLI/夜间任务执行。其他页面既有的卡片摘要排队未整体改造。
 
-`015_title_search.sql` 给文章表和译文表各加一列标题的全文索引，要重写一遍表：几千篇几秒钟，期间应用还没起来。`014_llm_inputs.sql` 把以前只读了长文开头写出来的摘要和观点标出来，之后按新的读法慢慢重写（见 [llm.md](llm.md)），不在部署时跑。
-
-之后在后台依次做两件事，不挡启动：
-
-1. 认重复文章。第一次部署时全库认一遍（日志「全库认一遍重复文章」「重复文章认完」），以后只补没算过指纹的。
-2. 公司别名或歧义规则和上次重算提及时不一样，就重算全部文章的公司提及（日志「公司别名变了」「公司提及重算完成」）。
-
-几千篇时两步加起来几分钟，期间页面照常能用，只是重复文章和提及还没更新完。
-
-备份、试恢复、夜间补齐、定时抓取和自动上线用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题，首页顶上提示一行。
-
-不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面时只给当前卡片里缺的排队，其余由夜间任务每晚补一批，见 [llm.md](llm.md)。
+备份、试恢复、夜间补齐和定时抓取仍使用 launchd，见 [backup.md](backup.md)。本次自动部署变更需要先按安全交接文档安装新脚本，不能直接让旧自动部署接手。
 
 ## 语义检索（可选）
 
@@ -61,32 +50,11 @@ ollama ps        # 搜一次之后，UNTIL 一列是 Forever 就是常驻了
 
 ## 更新
 
-合并进 main 的改动自己上线。Mac mini 上的定时任务 `com.zldong.research.deploy` 每 10 分钟看一次 main：有新提交，而且这个提交在 GitHub 上的 CI（Tests）通过了，就拉代码、`docker compose up -d --build`，等 `/health` 通了算上线（`scripts/deploy.sh`）。一般合并后 10 到 20 分钟上线。迁移和后台重算在应用启动时自己做；定时任务的模板改了，按上次安装的设置重装。
+更新必须先完成 [安全交接](deploy-safety.md)。交接后定时任务每 10 分钟检查 main；Tests 的最新匹配检查通过后，从固定 SHA 的独立快照构建并仅切换 app，健康检查同时核对返回 SHA。迁移不在这条自动路径执行；旧运行版本没有协调协议、任务仍忙、迁移集合不符时默认拒绝切换。
 
-只要装一次：
+`FORCE=1 scripts/deploy.sh` 只重试失败提交，不跳过 CI 或任务保护。宿主机使用共享/独占文件锁，独立容器任务使用数据库会话锁；不强制终止长任务。健康失败时只在兼容的只读启动边界内尝试恢复旧镜像和配置，不恢复数据。运行配置保存在 `data/releases/<SHA>/`，维护者的 Git 工作区不自动更新；宿主机脚本与定时任务模板的变化必须显式安装。
 
-```bash
-cd ~/research
-git pull
-scripts/install-launchd.sh   # 以前装过备份的，BACKUP_DIR 从装好的备份任务里读；没装过的带上 BACKUP_DIR=…
-```
-
-装好时先跑一轮，不用再另外 `docker compose up -d --build`。日志在 `~/Library/Logs/research/deploy.log`。首页只在出问题时提示一行：
-
-- CI 没过的提交不上线，CI 重跑通过了再上；两小时还没有 CI 结果也提示。
-- 拉代码、重建失败，或者重启后 10 分钟 `/health` 还不通，提示失败的那一步。同一个提交最多试 3 轮，之后等下一个提交。
-- Mac mini 上的仓库不在 main，或者有没提交的改动（会被一起打进镜像），不上线。
-- 取不到 main、查不到 CI（断网、GitHub 出错）超过 6 小时才提示。一装好就提示「取不到 origin/main」的，多半是 origin 用的 SSH、launchd 里读不到钥匙；仓库是公开的，改成 HTTPS：`git remote set-url origin https://github.com/Dongzl-2117/research.git`。
-
-夜间补齐、定时抓取、备份正在跑时先不重启，等它们跑完：它们在容器里跑命令，重建会把它们打断。
-
-马上上线（不等 CI 和别的任务，失败过 3 轮的也重试）：`FORCE=1 scripts/deploy.sh`。不要自动上线：`INSTALL_DEPLOY=0 scripts/install-launchd.sh`，之后照旧手动：
-
-```bash
-git pull
-docker compose up -d --build
-scripts/install-launchd.sh   # 定时任务有变化时再跑一次；上次的设置记在 data/launchd.env
-```
+mini 的自动任务是否启用和线上 SHA 要现场核实。日志/状态文件仍在原位置。不要直接用本机脏目录 `docker compose up --build` 代替固定 SHA 发布，具体操作、首次部署与回退前提见交接文档。
 
 图片文字（OCR）用单独的镜像，要用时另外构建，见 [ocr.md](ocr.md)。
 

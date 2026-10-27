@@ -941,30 +941,44 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
         embeddings.tune_search(conn, pool)
         near = conn.execute(
             f"""
-            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
+            SELECT e.article_id, e.ord, e.text_hash, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
             FROM chunk_embeddings e
+            WHERE e.model = %(vec_model)s
             ORDER BY e.embedding <=> %(qv)s::{kind}
             LIMIT %(ann_pool)s
             """,
-            {"qv": vector, "ann_pool": pool},
+            {"qv": vector, "ann_pool": pool, "vec_model": embeddings.model_name()},
         ).fetchall()
         allowed = {
-            row["id"]
+            (row["article_id"], row["ord"])
             for row in conn.execute(
-                f"SELECT a.id FROM articles a WHERE a.id = ANY(%(ann_ids)s) AND {where}",
-                {**params, "ann_ids": sorted({row["article_id"] for row in near})},
+                f"""SELECT n.article_id, n.ord
+                FROM unnest(%(ann_ids)s::bigint[], %(ann_ords)s::int[], %(ann_hashes)s::text[])
+                  AS n(article_id, ord, text_hash)
+                JOIN articles a ON a.id = n.article_id
+                JOIN article_chunks c ON c.article_id = n.article_id AND c.ord = n.ord
+                WHERE {where} AND n.text_hash = md5({embeddings._SOURCE_TEXT})""",
+                {
+                    **params,
+                    "ann_ids": [r["article_id"] for r in near],
+                    "ann_ords": [r["ord"] for r in near],
+                    "ann_hashes": [r["text_hash"] for r in near],
+                },
             ).fetchall()
         }
-        kept = sorted((row for row in near if row["article_id"] in allowed), key=lambda row: -float(row["sim"]))
+        kept = sorted(
+            (row for row in near if (row["article_id"], row["ord"]) in allowed), key=lambda row: -float(row["sim"])
+        )
         if len(kept) >= limit:
             return {(row["article_id"], row["ord"]): float(row["sim"]) for row in kept[:limit]}
-    params.update({"qv": vector, "vec_limit": limit})
+    params.update({"qv": vector, "vec_limit": limit, "vec_model": embeddings.model_name()})
     rows = conn.execute(
         f"""
         SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
         FROM chunk_embeddings e
         JOIN articles a ON a.id = e.article_id
-        WHERE {where}
+        JOIN article_chunks c ON c.article_id = e.article_id AND c.ord = e.ord
+        WHERE {where} AND e.model = %(vec_model)s AND e.text_hash = md5({embeddings._SOURCE_TEXT})
         ORDER BY e.embedding <=> %(qv)s::{kind}
         LIMIT %(vec_limit)s
         """,
@@ -1013,8 +1027,11 @@ def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict]
             SELECT e.article_id, e.ord, 1 - (e.embedding <=> %s::{kind}) AS sim
             FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
             JOIN chunk_embeddings e ON e.article_id = k.article_id AND e.ord = k.ord
+            JOIN articles a ON a.id = e.article_id
+            JOIN article_chunks c ON c.article_id = e.article_id AND c.ord = e.ord
+            WHERE e.model = %s AND e.text_hash = md5({embeddings._SOURCE_TEXT})
             """,
-            (literal, [key[0] for key in missing], [key[1] for key in missing]),
+            (literal, [key[0] for key in missing], [key[1] for key in missing], embeddings.model_name()),
         ).fetchall():
             sims[(row["article_id"], row["ord"])] = float(row["sim"])
     return sims

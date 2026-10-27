@@ -7,6 +7,7 @@ import sys
 import time
 
 from researchlib.config import Settings
+from researchlib.coordination import DeploymentBusy
 from researchlib.db import prepare
 from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider
 from researchlib.translate.service import list_pending_english, translate_article
@@ -36,18 +37,27 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    conn = prepare(settings)
+    conn = None
     # 同一轮 worker 里失败过的 id 先跳过，避免 --limit 很小时反复磕同一篇把队列钉死。
     # 队列里其他篇都译完后会清空 skip，再给失败篇一次机会。
     skipped_failures: set[int] = set()
     try:
         while True:
+            try:
+                conn = prepare(settings, maintenance=False)
+            except DeploymentBusy:
+                if not args.loop:
+                    raise
+                time.sleep(max(5, args.sleep))
+                continue
             ids = list(args.article_id) if args.article_id else list_pending_english(
                 conn, limit=max(args.limit, 1) + len(skipped_failures), source_id=args.source or None
             )
             if not args.article_id:
                 ids = [article_id for article_id in ids if article_id not in skipped_failures][: args.limit]
             if not ids:
+                conn.close()
+                conn = None
                 if skipped_failures and args.loop and not args.article_id:
                     print(
                         f"其余待译已空，清掉 {len(skipped_failures)} 个失败跳过后再扫…",
@@ -64,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
             for article_id in ids:
                 try:
                     result = translate_article(conn, article_id, data_dir=settings.data_dir)
+                except DeploymentBusy:
+                    conn.rollback()
+                    if not args.loop:
+                        raise
+                    break
                 except XaiLoginRequiredError as exc:
                     print(f"需要重新登录：{exc}", file=sys.stderr)
                     return 2
@@ -77,10 +92,13 @@ def main(argv: list[str] | None = None) -> int:
                     + (f" segments={result.segments}" if result.segments else "")
                     + (f" ({result.reason})" if result.reason else "")
                 )
+            conn.close()
+            conn = None
             if not args.loop or args.article_id:
                 return 0
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

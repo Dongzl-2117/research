@@ -1,5 +1,6 @@
 """补抽缺口：标题级提及、去重后的主版本要进队列；网友帖不进。OCR 旁路写进文章。"""
 
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -14,6 +15,7 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 def _store(conn, settings, source_id, external_id, title, body, raw_meta=None):
     sources = {source.id: source for source in load_sources(settings.sources_path)}
+    source = replace(sources[source_id], owner_ids=("1001",))
     doc = ParsedDoc(
         external_id=external_id,
         title=title,
@@ -24,7 +26,7 @@ def _store(conn, settings, source_id, external_id, title, body, raw_meta=None):
     )
     store_documents(
         conn,
-        source=sources[source_id],
+        source=source,
         docs=[doc],
         data_dir=settings.data_dir,
         archive_files=1,
@@ -86,7 +88,7 @@ def test_gap_includes_title_mention_and_kept_original_but_not_guest(conn, settin
 
 
 def test_star_nickname_posts_count_as_the_owners(conn, settings):
-    """方伟在星球的显示名是「方伟Rey」。10 月 20 日以后按话题 JSON 导入的帖都被标成了读者帖，再导入一遍就改回来。"""
+    """用合成账户验证再次导入可纠正旧的昵称分类。"""
     body = "美亚光电的设备不错，贵州茅台的批价这一周没动，渠道仍在观望。\n"
     meta = {"poster_name": "方伟Rey", "poster_id": "1001"}
     row = _store(conn, settings, "fangwei-zsxq", "rey-post", "茅台批价", body, meta)
@@ -94,7 +96,7 @@ def test_star_nickname_posts_count_as_the_owners(conn, settings):
     assert conn.execute(role, (row["id"],)).fetchone()["role"] == "owner"
     # 修好以前入库的：库里标着读者帖。正文没变，再导入一遍就改回原创，回到观点的补抽队列。
     conn.execute(
-        "UPDATE articles SET raw_meta = raw_meta || '{\"poster_role\": \"guest\"}'::jsonb WHERE id = %s", (row["id"],)
+        'UPDATE articles SET raw_meta = raw_meta || \'{"poster_role": "guest"}\'::jsonb WHERE id = %s', (row["id"],)
     )
     conn.commit()
     company = conn.execute("SELECT id FROM companies WHERE name_zh = '贵州茅台'").fetchone()["id"]
@@ -105,7 +107,7 @@ def test_star_nickname_posts_count_as_the_owners(conn, settings):
 
 
 def test_ocr_side_field_is_what_views_read(conn, settings):
-    row = _store(conn, settings, "fangwei-zsxq", "ocr-post", "图片", "（见图）\n")
+    row = _store(conn, settings, "fangwei-zsxq", "ocr-post", "图片", "（见图）\n", {"poster_id": "1001"})
     conn.execute(
         """
         INSERT INTO image_texts (content_hash, engine, text) VALUES ('abc', 'test', %s)
@@ -145,35 +147,40 @@ def test_ocr_side_field_is_what_views_read(conn, settings):
     assert row["id"] in found
 
 
-def test_new_star_nickname_relabels_stored_posts_at_startup(conn, settings, tmp_path):
-    """sources.yaml 里加了星主的昵称，应用启动时按新名单把库里的帖改回原创，不用重新导入。"""
-    from dataclasses import replace
-
+def test_account_registry_relabels_without_deleting_views(conn, settings):
+    """账户登记变化才重算，昵称变化不改变身份；重算保留旧观点以便复核。"""
     from researchlib.posters import refresh_poster_roles
 
     body = "美亚光电的设备不错，贵州茅台的批价这一周没动，渠道仍在观望。\n"
-    rey = _store(conn, settings, "fangwei-zsxq", "rey-old", "茅台批价", body, {"poster_name": "方伟Rey"})
-    question = "请问方老师，腾讯的视频号广告今年还能涨多少？\n"
-    guest = _store(conn, settings, "fangwei-zsxq", "reader", "读者提问", question, {"poster_name": "王小明"})
-    source = next(item for item in load_sources(settings.sources_path) if item.id == "fangwei-zsxq")
-    company = conn.execute("SELECT id FROM companies WHERE name_zh = '贵州茅台'").fetchone()["id"]
-    # 修好以前的样子：名单里没有昵称，两篇都是读者帖。
-    before = replace(source, poster_names=())
-    refresh_poster_roles(conn, [before])
-    conn.execute(
-        "UPDATE articles SET raw_meta = raw_meta || '{\"poster_role\": \"guest\"}'::jsonb WHERE id = %s", (rey["id"],)
+    rey = _store(
+        conn, settings, "fangwei-zsxq", "rey-old", "茅台批价", body, {"poster_name": "任意新昵称", "poster_id": "1001"}
     )
+    guest = _store(
+        conn, settings, "fangwei-zsxq", "reader", "读者提问", body, {"poster_name": "方伟Rey", "poster_id": "2002"}
+    )
+    source = replace(
+        next(item for item in load_sources(settings.sources_path) if item.id == "fangwei-zsxq"), owner_ids=("1001",)
+    )
+    company = conn.execute("SELECT id FROM companies WHERE name_zh = '贵州茅台'").fetchone()["id"]
+    conn.execute(
+        """INSERT INTO company_views
+      (article_id, company_id, content_hash, prompt_version, judgment, stance, about)
+      VALUES (%s,%s,%s,%s,'合成的既有判断','positive',true)""",
+        (rey["id"], company, rey["content_hash"], PROMPT_VERSION),
+    )
+    before = replace(source, owner_ids=("9000",))
+    refresh_poster_roles(conn, [before])
     conn.commit()
     assert refresh_poster_roles(conn, [before]) == {}
-    role = "SELECT raw_meta->>'poster_role' AS role FROM articles WHERE id = %s"
+    assert (
+        conn.execute("SELECT count(*) AS n FROM company_views WHERE article_id=%s", (rey["id"],)).fetchone()["n"] == 1
+    )
+    role = "SELECT raw_meta->>'poster_role' AS role FROM articles WHERE id=%s"
     assert conn.execute(role, (rey["id"],)).fetchone()["role"] == "guest"
-    # 名单改了：只改对得上的那篇，读者帖不动；改回原创的回到观点补抽队列。
     assert refresh_poster_roles(conn, [source]) == {"fangwei-zsxq": 1}
-    conn.commit()
     assert conn.execute(role, (rey["id"],)).fetchone()["role"] == "owner"
     assert conn.execute(role, (guest["id"],)).fetchone()["role"] == "guest"
-    assert rey["id"] in {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
-    assert refresh_poster_roles(conn, [source]) == {}
+    assert refresh_poster_roles(conn, [replace(source, poster_names=("另一个昵称",))]) == {}
 
 
 def test_demo_article_migration_only_removes_the_demo(conn, settings):

@@ -9,6 +9,17 @@ import psycopg
 MIGRATIONS = Path(__file__).resolve().parent / "migrations"
 
 
+def require_current(conn) -> None:
+    """Web 启动和部署只读检查。迁移必须由维护者备份后显式执行。"""
+    exists = conn.execute("SELECT to_regclass('schema_migrations') AS name").fetchone()
+    if exists["name"] is None:
+        raise RuntimeError("数据库尚未初始化；先备份并执行维护，Web 不自动迁移")
+    applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+    expected = {path.name for path in MIGRATIONS.glob("*.sql")}
+    if applied != expected:
+        raise RuntimeError("数据库版本与镜像不一致；先核对备份和迁移计划，禁止自动迁移或降级")
+
+
 def split_sql(script: str) -> list[str]:
     statements: list[str] = []
     buf: list[str] = []

@@ -19,7 +19,6 @@ _TAG = re.compile(r"<[^>]+>")
 _OPEN = re.compile(r"^<([a-z0-9]+)\b([^>]*)>", re.I)
 _CLASS = re.compile(r'\bclass="([^"]*)"', re.I)
 _KEY = 24
-_SLACK = 8
 
 
 def _norm(text: str) -> str:
@@ -49,13 +48,13 @@ def _follow(blocks: list[str], norms: list[str], target: str, start: int, consum
         if not text or "<img" in blocks[index] or text.endswith("缺图") or text == "外部图片已省略":
             continue  # 只有图（或缺图占位）的段落：块里没有它的字，跳过，接着往下看
         rest = target[position:]
-        if text.startswith(rest[:_KEY]) and len(text) >= len(rest):
+        if text.startswith(rest):
             covered.append(index)  # 块在这一段中间结束
             position = len(target)
             break
-        # 容几个字的出入：有序列表的序号、标点之类在两边的写法不一样。
-        found = target.find(text, position, position + len(text) + _SLACK)
-        if found < 0 or found - position > _SLACK:
+        # 每一段都必须接上；不能跳过引用中虚构的字。
+        found = target.find(text, position, position + len(text))
+        if found != position:
             break
         covered.append(index)
         position = found + len(text)
@@ -76,15 +75,21 @@ def mark_quoted(html: str, chunk_text: str) -> tuple[str, bool]:
         if len(text) < 4:
             continue
         # 这一段就是块的开头，或者块从这一段中间开始（长段落被切成了几块）。
-        if target.startswith(text[:_KEY]):
+        if target.startswith(text):
             consumed = len(text)
         else:
             found = text.find(head)
             if found < 0:
                 continue
-            consumed = len(text) - found
+            tail = text[found:]
+            if target in tail:
+                consumed = len(target)
+            elif target.startswith(tail):
+                consumed = len(tail)
+            else:
+                continue
         covered, position = _follow(blocks, norms, target, index, consumed)
-        if consumed < _KEY and len(covered) == 1 and position < len(target):
+        if position < len(target):
             # 很短的一段碰巧和块的开头一样（小标题、一句话），后面又接不上：不是这里，接着找。
             continue
         out = list(blocks)

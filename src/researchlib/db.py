@@ -12,8 +12,9 @@ from researchlib import embeddings
 from researchlib.chunks import backfill_missing_chunks
 from researchlib.companies import seed_companies
 from researchlib.config import Settings
+from researchlib.coordination import enter_task
 from researchlib.empty_answer import backfill_empty_answers
-from researchlib.migrate import migrate
+from researchlib.migrate import migrate, require_current
 from researchlib.posters import refresh_poster_roles
 from researchlib.sources import load_sources, sync_sources
 
@@ -37,11 +38,18 @@ def ensure_search_session(conn: psycopg.Connection) -> None:
         conn.execute(statement)
 
 
-def prepare(settings: Settings) -> psycopg.Connection:
+def prepare(settings: Settings, *, maintenance: bool = True) -> psycopg.Connection:
     """迁移、同步白名单和公司种子。调用方负责关闭连接。"""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     conn = connect(settings)
     try:
+        if not maintenance:
+            require_current(conn)
+            ensure_search_session(conn)
+            conn.commit()
+            return conn
+        # CLI 的连接存活期间持共享锁；部署拿不到独占锁就等下一轮。
+        enter_task(conn)
         migrate(conn)
         ensure_search_session(conn)
         sources = load_sources(settings.sources_path)

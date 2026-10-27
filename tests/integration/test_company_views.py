@@ -22,6 +22,11 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 def _sample(conn, settings):
     os.environ["ALLOW_SAMPLE_SEED"] = "1"
     load_sample(conn, settings)
+    # 此处测试观点呈现；合成样本显式给出已核实的角色，不用昵称推断身份。
+    conn.execute("UPDATE articles SET raw_meta=raw_meta || "
+                 "'{\"poster_id\":\"1001\",\"poster_role\":\"owner\"}'::jsonb "
+                 "WHERE raw_meta->>'sample'='true'")
+    conn.commit()
 
 
 def _tencent(conn):

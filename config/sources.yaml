@@ -19,6 +19,8 @@ sources:
     author: 方伟
     # 星球里星主的昵称。发帖人是这个名字的算方伟原创，不当读者帖。
     poster_names: [方伟Rey]
+    # #56 记录的 group.owner.user_id 证据；这里只恢复账户映射，不恢复整源可见性门禁。
+    owner_ids: ["1825524112"]
     kind: zsxq
     enabled: true
     timeline: true

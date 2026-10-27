@@ -3,6 +3,7 @@
 样例按 14886 的形状：正文一句，判断在群聊截图里。公司提及表仍不看图片。
 """
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -38,12 +39,12 @@ def _store(conn, settings, source_id: str, external_id: str, title: str, body: s
         title=title,
         published_at=datetime(2026, 10, 18, 9, 0, tzinfo=SHANGHAI),
         body_md=body,
-        raw_meta={},
+        raw_meta={"poster_id":"1001"},
         image_refs=[(path.name, path) for path in images],
     )
     store_documents(
         conn,
-        source=sources[source_id],
+        source=replace(sources[source_id], owner_ids=("1001",)),
         docs=[doc],
         data_dir=settings.data_dir,
         archive_files=1,
