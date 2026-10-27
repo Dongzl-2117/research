@@ -15,6 +15,9 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from researchlib import theses as thesis_map
 from researchlib.ask import ask, start
 from researchlib.citecheck import check_answer
+from researchlib.jobs import digest as digest_job
+from researchlib.jobs import theses as theses_job
+from researchlib.jobs import views as views_job
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.retrieval import retrieve, search_articles
 from researchlib.translate import worker as translate_worker
@@ -604,6 +607,143 @@ async def api_translate_stop(request: Request):
     return _json(translate_worker.request_stop())
 
 
+@api.post("/api/v1/digest")
+async def api_digest_start(request: Request):
+    """触发批量摘要。立刻返回，实际在后台线程里跑。
+
+    JSON：{source?, limit?, loop?, sleep?}。source 为空表示所有启用来源。
+    已经在跑时不会起第二个，返回 started=false。
+    """
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="请求体要是 JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体要是 JSON 对象")
+    settings = request.app.state.settings
+    problem = digest_job.credentials_problem(settings)
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    source = str(body.get("source") or "").strip()[:100] or None
+    result = digest_job.start(
+        settings,
+        source=source,
+        limit=_int(body.get("limit")) or digest_job.DEFAULT_LIMIT,
+        loop=_flag(body.get("loop")),
+        sleep=_int(body.get("sleep")) or digest_job.DEFAULT_SLEEP,
+    )
+    return _json(result)
+
+
+@api.get("/api/v1/digest")
+def api_digest_status(request: Request):
+    """摘要 worker 的进度。"""
+    return _json(digest_job.status())
+
+
+@api.post("/api/v1/digest/stop")
+async def api_digest_stop(request: Request):
+    """请摘要 worker 停。正在处理的那篇会做完。"""
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    return _json(digest_job.request_stop())
+
+
+@api.post("/api/v1/views")
+async def api_views_start(request: Request):
+    """触发批量观点整理。立刻返回，实际在后台线程里跑。
+
+    JSON：{source?, company?, limit?, loop?, sleep?, gap?}。
+    gap=true 时补「有提及但没有可用观点」的文章（对应 CLI --gap）。
+    company 为中文名，只整理这家。已经在跑时不会起第二个。
+    """
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="请求体要是 JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体要是 JSON 对象")
+    settings = request.app.state.settings
+    problem = views_job.credentials_problem(settings)
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    source = str(body.get("source") or "").strip()[:100] or None
+    company = str(body.get("company") or "").strip()[:100] or None
+    result = views_job.start(
+        settings,
+        source=source,
+        company=company,
+        limit=_int(body.get("limit")) or views_job.DEFAULT_LIMIT,
+        loop=_flag(body.get("loop")),
+        sleep=_int(body.get("sleep")) or views_job.DEFAULT_SLEEP,
+        gap=_flag(body.get("gap")),
+    )
+    return _json(result)
+
+
+@api.get("/api/v1/views")
+def api_views_status(request: Request):
+    """观点 worker 的进度。"""
+    return _json(views_job.status())
+
+
+@api.post("/api/v1/views/stop")
+async def api_views_stop(request: Request):
+    """请观点 worker 停。正在处理的那篇会做完。"""
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    return _json(views_job.request_stop())
+
+
+@api.post("/api/v1/theses")
+async def api_theses_start(request: Request):
+    """触发批量论点归并。立刻返回，实际在后台线程里跑。
+
+    JSON：{company?, loop?, sleep?, force?}。company 为中文名；force=true 时没过期也重算。
+    已经在跑时不会起第二个。
+    """
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="请求体要是 JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体要是 JSON 对象")
+    settings = request.app.state.settings
+    problem = theses_job.credentials_problem(settings)
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    company = str(body.get("company") or "").strip()[:100] or None
+    result = theses_job.start(
+        settings,
+        company=company,
+        loop=_flag(body.get("loop")),
+        sleep=_int(body.get("sleep")) or theses_job.DEFAULT_SLEEP,
+        force=_flag(body.get("force")),
+    )
+    return _json(result)
+
+
+@api.get("/api/v1/theses")
+def api_theses_status(request: Request):
+    """论点 worker 的进度。"""
+    return _json(theses_job.status())
+
+
+@api.post("/api/v1/theses/stop")
+async def api_theses_stop(request: Request):
+    """请论点 worker 停。正在处理的那家会做完。"""
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    return _json(theses_job.request_stop())
+
+
+
 @api.get("/llms.txt")
 def llms_txt(request: Request):
     base = _base(request)
@@ -653,6 +793,12 @@ def llms_txt(request: Request):
         f"- [触发译制]({base}/api/v1/translate): POST JSON {{source?, limit?, loop?, sleep?}}，"
         "后台线程按待译队列翻译英文文章，立刻返回 running；GET 同一路径看进度，"
         "POST /api/v1/translate/stop 停。已在跑时不会开第二个。只在站内或本机调用，不读、不回任何凭证。",
+        f"- [触发摘要]({base}/api/v1/digest): POST JSON {{source?, limit?, loop?, sleep?}}，"
+        "GET 看进度，POST /api/v1/digest/stop 停。",
+        f"- [触发观点]({base}/api/v1/views): POST JSON {{source?, company?, limit?, loop?, sleep?, gap?}}，"
+        "GET 看进度，POST /api/v1/views/stop 停。gap=true 对应 CLI --gap。",
+        f"- [触发论点]({base}/api/v1/theses): POST JSON {{company?, loop?, sleep?, force?}}，"
+        "GET 看进度，POST /api/v1/theses/stop 停。",
         "",
         "## 字段约定",
         "",
