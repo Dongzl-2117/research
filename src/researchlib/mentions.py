@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import sys
 from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from researchlib.textutil import section_plain_texts, split_frontmatter, strip_duplicate_title
+from researchlib.textutil import markdown_to_text, split_frontmatter, split_markdown_sections, strip_duplicate_title
 
 DEPTH_TITLE = "title"
 DEPTH_WHOLE = "whole"
@@ -20,10 +21,29 @@ DEPTH_SECTION = "section"
 DEPTH_PASSING = "passing"
 DEPTHS = (DEPTH_TITLE, DEPTH_WHOLE, DEPTH_SECTION, DEPTH_PASSING)
 
+# 判断深度的规则改了就加一：应用启动时发现和上次重算时不一样，在后台把全部提及重算一遍。
+MENTION_RULES_VERSION = "2"
+
 # 无结构正文里，达到这个次数视为整篇都在谈。
 UNSTRUCTURED_WHOLE_HITS = 3
 # 有章节时，同一章达到这个次数也视为全文，而不是「单节」。
 STRUCTURED_SECTION_WHOLE_HITS = 6
+
+# 英文长文（Stratechery 一篇几千词、上百句）按句子比例判断，不按绝对次数：
+# 拿苹果、谷歌来类比的句子在长文里随便就有三五句，按中文规则会全部升成「全文」。
+# 正文字母少于这个数的短帖仍按中文规则数次数。
+LATIN_MIN_LETTERS = 200
+# 全文：不少于这么多句、而且不少于全部句子的这个比例在谈它。
+LATIN_WHOLE_MIN = 3
+LATIN_WHOLE_SHARE = 0.06
+# 单节：连续这么多句里至少有这么多句在谈它（集中讲了一段），或者章节标题里点了名。
+LATIN_WINDOW = 20
+LATIN_WINDOW_HITS = 5
+# 有三个以上章节、八成命中落在同一章：是那一章在谈，记单节。
+LATIN_ONE_SECTION_SHARE = 0.8
+# 文章的主角：开头这么多句里就点了名、全篇点名最多、不少于 LATIN_WHOLE_MIN 句，也算全文。
+# 主角常用「the company」指代，按比例可能不够。
+LATIN_LEAD = 10
 
 # 这些短英文词区分大小写，避免打进普通单词。
 CASE_SENSITIVE_LATIN = frozenset(
@@ -57,6 +77,25 @@ _INCIDENTAL = re.compile(
     r"(例如|比如|譬如|好比|就像|犹如|类似|举例|打个比方|作为例子|举个例子|顺带|顺便|提一句|说句题外话)"
 )
 _SENTENCE = re.compile(r"[^。！？!?\n；;]+[。！？!?\n；;]?")
+
+# 英文里的举例、类比、顺带一提。只用在英文文章上，不碰中文的判断。
+_LATIN_INCIDENTAL = re.compile(
+    r"(?<![A-Za-z])(?:for example|for instance|e\.g\.|such as|just like|much like|similar to|similarly|"
+    r"compared (?:to|with)|in contrast|by contrast|unlike|akin to|analogous to|reminiscent of|"
+    r"the same way|by the way|as an aside|incidentally|à la)(?![A-Za-z])",
+    re.IGNORECASE,
+)
+_CJK_CHAR = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_LATIN_LETTER = re.compile(r"[A-Za-z]")
+_BLANK_LINE = re.compile(r"\n[ \t]*\n")
+# 句末标点，后面可以跟引号、括号，再跟空白。
+_LATIN_END = re.compile(r"[.!?]+[\"'”’)\]]*\s+")
+# 这些缩写后面的点不是句末：U.S. Steel、Mr. Cook、e.g. Apple。
+_NO_BREAK_AFTER = frozenset(
+    {"e.g", "i.e", "vs", "mr", "mrs", "ms", "dr", "inc", "corp", "co", "ltd", "jr", "sr", "st"}
+    | {"u.s", "u.k", "u.n", "e.u"}
+)
+_HEADING_LINE = re.compile(r"\A#{1,6}[ \t]+(\S[^\n]*)")
 
 # 公众号页脚和分享提示。收「微信」之前先把这些整段抹掉，免得几乎每篇都记成提到腾讯。
 _PUBLISHER_NOISE = re.compile(
@@ -369,6 +408,44 @@ def incidental_sentence(text: str) -> bool:
     return bool(_INCIDENTAL.search(text or ""))
 
 
+def is_latin_text(text: str) -> bool:
+    """正文主要是英文：字母够多，汉字不到字母数的四分之一。中文文章里夹几个英文名字不算。"""
+    letters = len(_LATIN_LETTER.findall(text or ""))
+    if letters < LATIN_MIN_LETTERS:
+        return False
+    return len(_CJK_CHAR.findall(text or "")) * 4 < letters
+
+
+def latin_sentences(text: str) -> list[str]:
+    """英文按句切。段落内的换行先接回去（Markdown 里单个换行就是空格，硬换行的稿子也一样切）。"""
+    found: list[str] = []
+    for block in _BLANK_LINE.split(text or ""):
+        joined = " ".join(line.strip() for line in block.splitlines() if line.strip())
+        start = 0
+        for match in _LATIN_END.finditer(joined):
+            words = joined[start : match.start()].split()
+            last = words[-1].lower().strip("\"'“‘(") if words else ""
+            following = joined[match.end() :].split(maxsplit=1)
+            nxt = following[0] if following else ""
+            # 缩写、单个字母的人名缩写（J. Smith）、后面接小写词的点（Inc. said）都不断句。
+            # iPhone、eBay 这种小写开头、中间有大写的是名字，照样断。
+            continues = nxt[:1].islower() and not any(char.isupper() for char in nxt[1:])
+            if last in _NO_BREAK_AFTER or (len(last) == 1 and last.isalpha()) or continues:
+                continue
+            piece = joined[start : match.end()].strip()
+            if piece:
+                found.append(piece)
+            start = match.end()
+        tail = joined[start:].strip()
+        if tail:
+            found.append(tail)
+    return found
+
+
+def latin_incidental_sentence(text: str) -> bool:
+    return bool(_LATIN_INCIDENTAL.search(text or "")) or incidental_sentence(text)
+
+
 def substantive_text(text: str) -> str:
     return "\n".join(part for part in sentence_pieces(text) if not incidental_sentence(part))
 
@@ -433,10 +510,13 @@ def classify_depth(title_hits: int, section_hits: Iterable[int], *, structured: 
 def mentions_for_document(matcher: CompanyMatcher, title: str, body_md: str) -> list[tuple[int, str, int]]:
     _frontmatter, body = split_frontmatter(body_md)
     body = strip_duplicate_title(body, title)
-    sections, structured = section_plain_texts(body)
+    raw_sections, structured = split_markdown_sections(body)
+    sections = [markdown_to_text(section) for section in raw_sections]
     matcher = matcher.document(title, "\n".join(sections))
     title_counts = matcher.count(title)
     raw_counts = [matcher.count(section) for section in sections]
+    if is_latin_text("\n".join(sections)):
+        return _latin_mentions(matcher, title_counts, raw_counts, raw_sections, sections, structured)
     substantive_counts = [matcher.count(substantive_text(section)) for section in sections]
     sentences = sentence_pieces("\n".join(sections))
     sentence_hits: dict[int, int] = {}
@@ -474,6 +554,73 @@ def mentions_for_document(matcher: CompanyMatcher, title: str, body_md: str) -> 
     return found
 
 
+def _latin_mentions(
+    matcher: DocumentMatcher,
+    title_counts: dict[int, int],
+    raw_counts: list[dict[int, int]],
+    raw_sections: list[str],
+    sections: list[str],
+    structured: bool,
+) -> list[tuple[int, str, int]]:
+    """英文文章的深度。规则见 docs/mentions.md「英文文章」。"""
+    # 每一句：(所在章节, 这句里谈到的公司)。举例、类比的句子不算谈到。
+    sentences: list[tuple[int, frozenset[int]]] = []
+    in_heading: set[int] = set()
+    for index, (raw, text) in enumerate(zip(raw_sections, sections, strict=True)):
+        heading = _HEADING_LINE.match(raw)
+        if structured and heading:
+            in_heading.update(matcher.count(markdown_to_text(heading.group(1))))
+        for sentence in latin_sentences(text):
+            named = frozenset() if latin_incidental_sentence(sentence) else frozenset(matcher.count(sentence))
+            sentences.append((index, named))
+    total = len(sentences)
+    need_whole = max(LATIN_WHOLE_MIN, math.ceil(LATIN_WHOLE_SHARE * total))
+    company_ids = set(title_counts)
+    for counts in raw_counts:
+        company_ids.update(counts)
+    sentence_hits = {
+        company_id: sum(company_id in named for _section, named in sentences) for company_id in company_ids
+    }
+    most = max(sentence_hits.values(), default=0)
+    lead: set[int] = set()
+    for _section, named in sentences[:LATIN_LEAD]:
+        lead.update(named)
+    found: list[tuple[int, str, int]] = []
+    for company_id in company_ids:
+        title_hits = title_counts.get(company_id, 0)
+        raw_hits = sum(counts.get(company_id, 0) for counts in raw_counts)
+        if title_hits + raw_hits <= 0:
+            continue
+        flags = [company_id in named for _section, named in sentences]
+        hits = sentence_hits[company_id]
+        lead_subject = company_id in lead and hits >= LATIN_WHOLE_MIN and hits == most
+        per_section: dict[int, int] = {}
+        for (section, _named), flag in zip(sentences, flags, strict=True):
+            if flag:
+                per_section[section] = per_section.get(section, 0) + 1
+        window = sum(flags[:LATIN_WINDOW])
+        best_window = window
+        for end in range(LATIN_WINDOW, total):
+            window += flags[end] - flags[end - LATIN_WINDOW]
+            best_window = max(best_window, window)
+        one_section = (
+            structured
+            and len(sections) >= 3
+            and hits > 0
+            and max(per_section.values()) >= LATIN_ONE_SECTION_SHARE * hits
+        )
+        if title_hits > 0:
+            depth = DEPTH_TITLE
+        elif (hits >= need_whole or lead_subject) and not one_section:
+            depth = DEPTH_WHOLE
+        elif hits >= need_whole or best_window >= LATIN_WINDOW_HITS or company_id in in_heading:
+            depth = DEPTH_SECTION
+        else:
+            depth = DEPTH_PASSING
+        found.append((company_id, depth, title_hits + raw_hits))
+    return found
+
+
 def replace_mentions(conn, article_id: int, rows: list[tuple[int, str, int]]) -> None:
     conn.execute("DELETE FROM article_mentions WHERE article_id = %s", (article_id,))
     if not rows:
@@ -504,7 +651,7 @@ FINGERPRINT_KEY = "mentions_fingerprint"
 
 
 def companies_fingerprint(rows: list[dict]) -> str:
-    """公司表里影响匹配的字段（名字、代码、简称、歧义规则）的指纹。变了就要重算提及。"""
+    """公司表里影响匹配的字段（名字、代码、简称、歧义规则）加上深度规则版本的指纹。变了就要重算提及。"""
     import hashlib
     import json
 
@@ -519,6 +666,8 @@ def companies_fingerprint(rows: list[dict]) -> str:
         ]
         for row in sorted(rows, key=lambda item: int(item["id"]))
     ]
+    # 深度规则的版本也算进去：规则一改，启动时就重算。
+    payload = [["rules", MENTION_RULES_VERSION], *payload]
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
@@ -563,7 +712,7 @@ def rebuild_all(conn) -> int:
 
 
 def mentions_stale(conn) -> bool:
-    """公司表和上次重算时不一样（或者从没记过），就算过期。没有文章时不算。"""
+    """公司表或深度规则版本和上次重算时不一样（或者从没记过），就算过期。没有文章时不算。"""
     row = conn.execute("SELECT value FROM app_state WHERE key = %s", (FINGERPRINT_KEY,)).fetchone()
     current = companies_fingerprint(load_company_rows(conn))
     if row is not None and row["value"] == current:
@@ -583,7 +732,7 @@ def mentions_stale(conn) -> bool:
 
 
 def rebuild_if_stale(settings) -> int:
-    """应用启动后在后台跑：公司别名变了才重算全部提及。返回重算的篇数，没变返回 0。"""
+    """应用启动后在后台跑：公司别名或深度规则变了才重算全部提及。返回重算的篇数，没变返回 0。"""
     import logging
 
     from researchlib.db import connect
@@ -593,7 +742,7 @@ def rebuild_if_stale(settings) -> int:
     try:
         if not mentions_stale(conn):
             return 0
-        logger.warning("公司别名变了，后台重算全部文章的公司提及")
+        logger.warning("公司别名或提及规则变了，后台重算全部文章的公司提及")
         count = rebuild_all(conn)
         logger.warning("公司提及重算完成：%s 篇", count)
         return count
