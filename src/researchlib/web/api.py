@@ -803,11 +803,11 @@ def llms_txt(request: Request):
         "后台线程按待译队列翻译英文文章，立刻返回 running；GET 同一路径看进度，"
         "POST /api/v1/translate/stop 停。已在跑时不会开第二个。只在本机调用，经公网的请求 403。不读、不回凭证。",
         f"- [触发摘要]({base}/api/v1/digest): POST JSON {{source?, limit?, loop?, sleep?}}，"
-        "GET 看进度，POST /api/v1/digest/stop 停。只在本机调用。",
+        "GET 看进度，POST /api/v1/digest/stop 停。",
         f"- [触发观点]({base}/api/v1/views): POST JSON {{source?, company?, limit?, loop?, sleep?, gap?}}，"
-        "GET 看进度，POST /api/v1/views/stop 停。gap=true 对应 CLI --gap。只在本机调用。",
+        "GET 看进度，POST /api/v1/views/stop 停。gap=true 对应 CLI --gap。",
         f"- [触发论点]({base}/api/v1/theses): POST JSON {{company?, loop?, sleep?, force?}}，"
-        "GET 看进度，POST /api/v1/theses/stop 停。只在本机调用。",
+        "GET 看进度，POST /api/v1/theses/stop 停。译制、摘要、观点、论点的启动和停止都只在本机调用，经公网的请求 403。",
         "",
         "## 字段约定",
         "",
