@@ -104,19 +104,51 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
 
 
 def _dedupe_consecutive_blocks(html: str) -> str:
-    """去掉模型偶发吐出的连续相同顶层块（抽验 22195 整段 <p> 重复）。"""
-    blocks = top_level_blocks(html or "")
-    if len(blocks) < 2:
-        return html or ""
-    out: list[str] = []
+    """去掉模型偶发吐出的连续相同顶层块，以及块内连续相同的 <p>（抽验 22195）。"""
+    html = html or ""
+    blocks = top_level_blocks(html)
+    if len(blocks) >= 2:
+        out: list[str] = []
+        prev_norm: str | None = None
+        for block in blocks:
+            norm = re.sub(r"\s+", " ", block).strip()
+            if prev_norm is not None and norm and norm == prev_norm:
+                continue
+            out.append(block)
+            prev_norm = norm or prev_norm
+        html = "".join(out)
+    return _dedupe_consecutive_paragraphs(html)
+
+
+_P_BLOCK = re.compile(r"<p\b[^>]*>.*?</p>", re.I | re.S)
+_EMPTY_QUOTE = re.compile(r"<blockquote>\s*</blockquote>", re.I)
+
+
+def _dedupe_consecutive_paragraphs(html: str) -> str:
+    """按文档序去掉连续相同的 <p>（含 blockquote 内外紧挨的重复，抽验 22195）。"""
+    if not html or "<p" not in html.lower():
+        return html
+    matches = list(_P_BLOCK.finditer(html))
+    if len(matches) < 2:
+        return html
+    drop: list[tuple[int, int]] = []
     prev_norm: str | None = None
-    for block in blocks:
-        norm = re.sub(r"\s+", " ", block).strip()
-        if prev_norm is not None and norm and norm == prev_norm:
+    for match in matches:
+        norm = re.sub(r"\s+", " ", match.group(0)).strip()
+        if prev_norm is not None and norm == prev_norm and len(norm) > 40:
+            drop.append(match.span())
             continue
-        out.append(block)
-        prev_norm = norm or prev_norm
-    return "".join(out)
+        prev_norm = norm
+    if not drop:
+        return html
+    out: list[str] = []
+    last = 0
+    for start, end in drop:
+        out.append(html[last:start])
+        last = end
+    out.append(html[last:])
+    cleaned = "".join(out)
+    return _EMPTY_QUOTE.sub("", cleaned)
 
 
 def _translate_title(title: str, data_dir: Path) -> str:
