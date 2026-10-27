@@ -14,7 +14,8 @@
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
 图片里有可读的字时，交给模型的正文会接上「图片里的字」，和正文一视同仁。正文很短、判断写在截图里的，
-一带而过的提及也抽；公司提及表本身仍不看图片里的字。长文不因为后补一张图就整篇重抽。
+一带而过的提及也抽；短正文的公司提及会并上图片字（与 OCR_CARRIES 同门槛），长文提及仍只看正文。
+长文不因为后补一张图就整篇重抽。
 长文只给提到这几家公司的段落加开头结尾（见 excerpt.py）；以前只读了开头 30000 字的，标成 head_only 重抽。
 失败的记下来，隔几天再试。判断或态度为空白的行不进时间线；确认抽漏了再用 `--refresh-blank` 删掉重抽。
 """
@@ -854,11 +855,12 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
     if not company_ids or not source_ids:
         return []
     id_clause = ""
-    params: list = [company_ids, source_ids, PROMPT_VERSION, PROMPT_VERSION]
+    # 占位符顺序：company_ids、source_ids、[article_ids]、两个 prompt_version、limit
+    params: list = [company_ids, source_ids]
     if article_ids:
         id_clause = "AND a.id = ANY(%s)"
         params.append(list(article_ids))
-    params.append(limit)
+    params.extend([PROMPT_VERSION, PROMPT_VERSION, limit])
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,

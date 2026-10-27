@@ -160,3 +160,28 @@ def test_wechat_boilerplate_does_not_count():
     assert rows[names["腾讯"]] in {DEPTH_WHOLE, DEPTH_PASSING}
     assert rows[names["腾讯"]] == DEPTH_WHOLE
 
+def test_short_body_merges_ocr_into_mentions():
+    """截图短帖：Costco / 拼多多只在 OCR 里也要挂上，否则 views gap 抽不到分家观点。"""
+    from researchlib.mentions import body_for_mentions, mentions_for_document
+
+    found, names = matcher()
+    title = "美国的零售历史是从梅西百货"
+    body = "美国的零售历史是从梅西百货，A&P，西尔斯，再到1960年代的折扣零售商。"
+    ocr = (
+        "网友：拼多多，我是始终不太看好。\n"
+        "方伟：世界范围内在零售行业，做得比它好的，其实只有Costco，奥乐齐，利德。"
+        "50年下来，沃尔玛的毛利率从20%提升到了24%，只有Costco50年不变。"
+    )
+    merged = body_for_mentions(body, body_text=body, ocr_text=ocr)
+    assert "【图片里的字】" in merged
+    rows = {cid: depth for cid, depth, _ in mentions_for_document(found, title, merged)}
+    assert names["拼多多"] in rows
+    assert names["开市客"] in rows
+    assert names["沃尔玛"] in rows
+
+    long_body = ("行业备忘。" + "零售渠道很长。" * 80)
+    assert len(long_body) >= 400
+    kept = body_for_mentions(long_body, body_text=long_body, ocr_text=ocr)
+    assert "【图片里的字】" not in kept
+    assert "拼多多" not in kept
+

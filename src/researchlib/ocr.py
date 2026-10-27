@@ -3,7 +3,8 @@
 截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。这里把本地图片（归档里带的、
 从外链下载来的）交给 RapidOCR 识别：按图片内容哈希只识别一次，结果存进 image_texts；识别出的字够多的图，
 切成段落块进检索（article_chunks.lang = 'ocr'，标题「图片里的字」，锚点指向文章页上那张图）。
-公司提及不看图片里的字，免得水印、表情包里的字乱记。
+公司提及默认不看图片里的字，免得水印、表情包乱挂；正文短于 SHORT_BODY_CHARS 时例外，
+截图帖要挂上图里的公司才能抽分家观点。
 
 RapidOCR（onnxruntime + OpenCV）比较大，不装进主镜像，另有一个 ocr 镜像：
 
@@ -196,6 +197,15 @@ def refresh_article_ocr(conn, article_id: int) -> str:
         "UPDATE articles SET ocr_text = %s, ocr_hash = %s WHERE id = %s",
         (text, digest, article_id),
     )
+    # 短正文截图帖：OCR 变了就要重挂提及，否则观点 gap 只跟旧挂载走。
+    row = conn.execute(
+        "SELECT length(coalesce(body_text, '')) AS n FROM articles WHERE id = %s",
+        (article_id,),
+    ).fetchone()
+    if row is not None and int(row["n"] or 0) < SHORT_BODY_CHARS:
+        from researchlib.mentions import rebuild_article
+
+        rebuild_article(conn, int(article_id))
     return digest
 
 
