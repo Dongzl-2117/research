@@ -17,8 +17,8 @@ from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
 from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.model import IngestReport, ParsedDoc
 from researchlib.mentions import (
-    body_for_mentions,
     CompanyMatcher,
+    body_for_mentions,
     load_company_rows,
     mentions_for_document,
     replace_mentions,
