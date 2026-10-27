@@ -130,6 +130,16 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 ```bash
 docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
+
+站内正式触发（生产续跑走这里，不要另起 CLI loop）：
+
+```bash
+curl -s http://127.0.0.1:8088/api/v1/digest -H 'content-type: application/json' \
+  -d '{"limit":20,"loop":true,"sleep":60}'
+curl -s http://127.0.0.1:8088/api/v1/digest
+curl -s -X POST http://127.0.0.1:8088/api/v1/digest/stop
+```
+
 ```
 
 只处理没有摘要、正文改过、提示词版本旧了、或当时只读了长文开头的文章，从新到旧。卡片优先显示摘要和最多两条要点。JSON 接口的 `summary` / `digest` 字段也有。文章页本身只放标题和正文。摘要只作导读，以原文为准。
@@ -169,6 +179,16 @@ docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
 # 段永平博客先回扫再抽。只跑这个来源，不碰别的作者，也不要在没回扫时全量抽。
 docker compose exec app research-views --source duanyongping-blog --limit 100
 docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
+
+站内正式触发：
+
+```bash
+curl -s http://127.0.0.1:8088/api/v1/views -H 'content-type: application/json' \
+  -d '{"gap":true,"limit":20,"loop":true,"sleep":60}'
+curl -s http://127.0.0.1:8088/api/v1/views
+curl -s -X POST http://127.0.0.1:8088/api/v1/views/stop
+```
+
 ```
 
 `--gap` 的范围：`article_mentions` 里深度不是「一带而过」、又没有一条 about 为真且判断非空的观点。去重后的主版本（有别的稿 `duplicate_of` 指向它）即使提及只是一带而过也补抽，例如 3851 并入 11299 之后要抽 11299。网友帖不抽。已经记成 about=false（论证不在这家公司）的不反复问。
@@ -207,6 +227,16 @@ docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516
 docker compose exec app research-theses                        # 观点够数的公司，过期的才算
 docker compose exec app research-views --company 贵州茅台 --company 泡泡玛特 --refresh-blank --limit 300
 docker compose exec app research-theses --company 贵州茅台 --company 泡泡玛特 --force
+
+站内正式触发：
+
+```bash
+curl -s http://127.0.0.1:8088/api/v1/theses -H 'content-type: application/json' \
+  -d '{"loop":true,"sleep":120}'
+curl -s http://127.0.0.1:8088/api/v1/theses
+curl -s -X POST http://127.0.0.1:8088/api/v1/theses/stop
+```
+
 ```
 
 JSON 和 MCP 的观点接口里都带 `theses`。
