@@ -160,3 +160,33 @@ def test_reposts_count_once_and_overlapping_theses_merge():
     assert 498 not in parsed[0]["sources"]
     assert 7457 in parsed[0]["sources"]
     assert 3 in parsed[0]["against"]
+
+from researchlib.views import coerce_view_for_store
+
+
+def test_coerce_view_none_is_not_about():
+    got = coerce_view_for_store(None)
+    assert got["about"] is False
+    assert got["judgment"] == ""
+
+
+def test_coerce_view_empty_dict_is_not_about():
+    # 旧路径 view or {} 后 about 缺省 true —— 必须拦住
+    got = coerce_view_for_store({})
+    assert got["about"] is False
+    assert got["judgment"] == ""
+
+
+def test_coerce_view_about_true_without_judgment_is_not_about():
+    got = coerce_view_for_store({"about": True, "judgment": "  ", "stance": "neutral"})
+    assert got["about"] is False
+    assert got["judgment"] == ""
+
+
+def test_coerce_view_keeps_real_judgment():
+    got = coerce_view_for_store(
+        {"about": True, "judgment": "顺丰份额稳定", "stance": "neutral", "mechanism": "时效"}
+    )
+    assert got["about"] is True
+    assert got["judgment"] == "顺丰份额稳定"
+    assert got["mechanism"] == "时效"

@@ -447,6 +447,35 @@ def _reading_windows(body: str, chunks: list[tuple[str, str]], aliases: list[str
     return packed or [body[:BODY_LIMIT]]
 
 
+def coerce_view_for_store(view: dict | None) -> dict:
+    """落库前校正：没有判断就不能 about=true（None→{} 的旧路径会写出脏行）。"""
+    view = view or {}
+    judgment = str(view.get("judgment") or "").strip()
+    if view.get("about") is False or not judgment:
+        return {
+            "about": False,
+            "judgment": "",
+            "mechanism": "",
+            "stance": "",
+            "risks": [],
+            "falsifiers": [],
+            "metrics": [],
+            "quote": "",
+            "angles": [],
+        }
+    return {
+        "about": True,
+        "judgment": judgment,
+        "mechanism": str(view.get("mechanism") or "").strip(),
+        "stance": str(view.get("stance") or "").strip(),
+        "risks": view.get("risks") or [],
+        "falsifiers": view.get("falsifiers") or [],
+        "metrics": view.get("metrics") or [],
+        "quote": view.get("quote") or "",
+        "angles": view.get("angles") or [],
+    }
+
+
 def extract_article(conn, settings: Settings, row, author: str, companies: list[dict]) -> int:
     """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
     if not companies:
@@ -509,12 +538,13 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     written = 0
     haystack = append_ocr(voice_body if restricted else (row["body_text"] or ""), ocr_text)
     for company_id, view in found.items():
-        view = view or {}
+        view = coerce_view_for_store(view)
+        about = bool(view["about"])
+        judgment = view["judgment"]
         # 收窄到作者本人时，原句必须落在他写的字或图片文字里。
         quote, chunk = locate_quote(conn, row["id"], haystack, view.get("quote") or "")
         if not quote_ok(quote):
             quote, chunk = "", None
-        about = view.get("about") is not False
         conn.execute(
             """
             INSERT INTO company_views (
@@ -546,7 +576,7 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
                 row["content_hash"],
                 PROMPT_VERSION,
                 model,
-                view.get("judgment") or "",
+                judgment,
                 view.get("mechanism") or "",
                 view.get("stance") or "",
                 Jsonb(view.get("risks") or []),
@@ -559,7 +589,7 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
                 Jsonb(view.get("angles") or []),
             ),
         )
-        written += 1 if view.get("judgment") and about else 0
+        written += 1 if judgment and about else 0
     clear_failure(conn, "views", row["id"])
     conn.commit()
     return written
