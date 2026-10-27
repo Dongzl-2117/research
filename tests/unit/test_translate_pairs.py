@@ -1,6 +1,7 @@
 from researchlib.translate.language import is_chinese
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.translate.segments import chunk_segments, shield, top_level_blocks, unshield
+from researchlib.translate.service import _dedupe_consecutive_blocks
 
 
 def test_is_chinese_detects_han_majority():
@@ -59,8 +60,6 @@ def test_blocks_keep_attribute_quotes_escaped():
     assert top_level_blocks(html) == [html]
     assert stamp_paragraph_ids(html) == '<p id="p-1" title="&quot; onmouseover=alert(1) x=&quot;">hi</p>'
     assert top_level_blocks('<p><a href="/s?a=1&amp;b=2">x</a></p>') == ['<p><a href="/s?a=1&amp;b=2">x</a></p>']
-
-from researchlib.translate.service import _dedupe_consecutive_blocks
 
 
 def test_dedupe_consecutive_identical_paragraphs():

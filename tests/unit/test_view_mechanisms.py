@@ -8,7 +8,7 @@ from researchlib.digest import PROMPT_VERSION, digest_due
 from researchlib.excerpt import view_windows
 from researchlib.ocr import append_ocr, compose_ocr_text
 from researchlib.theses import parse_theses
-from researchlib.views import locate_quote, parse_views
+from researchlib.views import coerce_view_for_store, locate_quote, parse_views
 
 
 class _Conn:
@@ -160,8 +160,6 @@ def test_reposts_count_once_and_overlapping_theses_merge():
     assert 498 not in parsed[0]["sources"]
     assert 7457 in parsed[0]["sources"]
     assert 3 in parsed[0]["against"]
-
-from researchlib.views import coerce_view_for_store
 
 
 def test_coerce_view_none_is_not_about():
