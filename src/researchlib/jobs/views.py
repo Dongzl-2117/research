@@ -21,8 +21,9 @@ from researchlib.jobs.base import (
     credentials_problem as shared_credentials_problem,
 )
 from researchlib.llm import LLMError, LLMUnavailable
-from researchlib.sources import enabled_sources, load_sources
 from researchlib.mentions import rebuild_articles
+from researchlib.sources import enabled_sources, load_sources
+from researchlib.views import _canonical_ids as canonical_article_ids
 from researchlib.views import (
     articles_for_ids,
     extract_article,
@@ -31,7 +32,6 @@ from researchlib.views import (
     pending_companies,
     view_companies,
 )
-from researchlib.views import _canonical_ids as canonical_article_ids
 
 logger = logging.getLogger("researchlib.jobs.views")
 
