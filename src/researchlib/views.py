@@ -566,6 +566,9 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
 
 # —— 时间线 ——
 
+# 算态度变化时只看这两种态度。
+_CHANGE_SIGNALS = ("positive", "negative")
+
 
 def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司全部下了判断的观点，按时间从旧到新标出态度变化，再按新到旧返回。"""
@@ -590,9 +593,11 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         author = source.author if source else row["source_id"]
         stance = row["stance"] or ""
         previous = last.get(author)
-        # 中性不算信号：看好 → 中性 → 看好 不算变了；看好 → 看淡、两面 → 看好 算。
-        changed = bool(stance and stance != "neutral" and previous and previous != stance)
-        if stance and stance != "neutral":
+        # 只有看好和看淡互换才算态度变化。中性、两面不算信号：看好 → 两面 → 看好、看好 → 中性 → 看好
+        # 都不算变了；看好 → 两面 → 看淡 算一次（从看好变成看淡）。两面常常只是这篇多写了几句风险。
+        signal = stance in _CHANGE_SIGNALS
+        changed = bool(signal and previous and previous != stance)
+        if signal:
             last[author] = stance
         risks = list(row["risks"] or [])
         falsifiers = list(row["falsifiers"] or [])
