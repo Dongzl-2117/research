@@ -33,7 +33,6 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import not_guest_sql
 from researchlib.claims import claim_side, is_hedge, looks_like_list, quote_ok, same_repost
 from researchlib.config import Settings
-from researchlib.empty_answer import visible_sql
 from researchlib.failures import clear_failure, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.web.present import format_date
@@ -103,7 +102,8 @@ def _line(view: dict) -> str:
 
 
 def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
-    """这家公司下了判断的观点，新的在前，带作者。判断或态度为空白的不算。"""
+    """这家公司下了判断的观点，新的在前，带作者。判断或态度为空白的、隐藏和搁下的文章不算。"""
+    from researchlib.empty_answer import visible_sql
     from researchlib.views import REAL_VIEW_SQL
 
     rows = conn.execute(
@@ -703,6 +703,8 @@ def needs_build(conn, company_id: int, sources_by_id: dict, settings: Settings) 
 
 def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) -> list[dict]:
     """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。隐藏、搁下的文章不算。"""
+    from researchlib.empty_answer import visible_sql
+
     if not source_ids:
         return []
     return conn.execute(
