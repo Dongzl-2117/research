@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 
+from researchlib.author_voice import not_comment_shell_sql, site_visible_sql
 from researchlib.empty_answer import visible_sql
 
 
@@ -36,8 +37,8 @@ TREE_SUBQUERY = """(
 def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
     parts = [f"{alias}.source_id = ANY(%(scope_ids)s)"]
     params: dict = {"scope_ids": list(scope.source_ids)}
-    # 网站不展示知识星球读者帖；库里仍保留，检索/按天/问这篇都不带。
-    parts.append(f"coalesce({alias}.raw_meta->>'poster_role', '') <> 'guest'")
+    # 网站不展示知识星球读者帖，也不展示「图片」评论壳标题；库里仍保留。
+    parts.append(site_visible_sql(alias))
     if scope.article_id is None:
         # 同一篇的重复只留主版本。指定了某一篇（「只问这篇」）时照常。
         parts.append(f"{alias}.duplicate_of IS NULL")
@@ -93,10 +94,11 @@ def _off_timeline_clause(include_off_timeline: bool, alias: str = "") -> str:
 
 
 def _listed(include_off_timeline: bool, alias: str = "", *, owner_only: bool = False) -> str:
-    """首页和作者页的文章：没日期的按参数，空回答一律不收。"""
+    """首页和作者页的文章：没日期的按参数，空回答与「图片」评论壳一律不收。"""
     return (
         _off_timeline_clause(include_off_timeline, alias)
         + _owner_clause(owner_only, alias)
+        + f" AND {not_comment_shell_sql(alias)}"
         + " AND "
         + visible_sql(alias)
     )
@@ -442,7 +444,7 @@ def source_stats(conn, source_ids: list[str]) -> dict[str, dict]:
         SELECT source_id, count(*)::int AS n, min(published_at) AS first_at, max(published_at) AS last_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
-          AND coalesce(raw_meta->>'poster_role', '') <> 'guest'
+          AND {site_visible_sql("")}
           AND {visible_sql()}
         GROUP BY source_id
         """,
@@ -506,7 +508,7 @@ def latest_articles(conn, source_ids: list[str], limit: int = 3):
         SELECT id, source_id, title, published_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
-          AND coalesce(raw_meta->>'poster_role', '') <> 'guest'
+          AND {site_visible_sql("")}
           AND {visible_sql()}
         ORDER BY published_at DESC NULLS LAST, id DESC
         LIMIT %s
@@ -523,10 +525,10 @@ def top_companies(conn, source_ids: list[str], limit: int = 12):
         f"""
         SELECT c.id, c.name_zh, count(*)::int AS n, max(a.published_at) AS last_at
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         JOIN companies c ON c.id = m.company_id
         WHERE a.source_id = ANY(%s) AND m.depth <> 'passing'
-          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
+          AND {site_visible_sql("a")}
         GROUP BY c.id, c.name_zh
         ORDER BY n DESC, last_at DESC NULLS LAST, c.name_zh
         LIMIT %s
@@ -690,7 +692,7 @@ def company_author_counts(conn, company_id: int, source_ids: list[str]):
         f"""
         SELECT a.source_id, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
         GROUP BY a.source_id
         """,
@@ -725,7 +727,8 @@ def list_companies(conn, source_ids: list[str]):
                max(a.published_at) AS last_at
         FROM companies c
         LEFT JOIN article_mentions m ON m.company_id = c.id
-        LEFT JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND a.source_id = ANY(%s)
+        LEFT JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+          AND {site_visible_sql("a")} AND a.source_id = ANY(%s)
         GROUP BY c.id
         ORDER BY mentions DESC, c.name_zh
         """,
@@ -749,7 +752,7 @@ def company_depth_counts(conn, company_id: int, source_ids: list[str]):
         f"""
         SELECT m.depth, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
         GROUP BY m.depth
         """,
@@ -766,7 +769,7 @@ def company_months(conn, company_id: int, source_ids: list[str]):
                ) AS ym,
                count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s)
           AND a.published_at IS NOT NULL
@@ -792,7 +795,7 @@ def count_company_articles(conn, company_id: int, source_ids: list[str], depth: 
         f"""
         SELECT count(*) AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s){clause}
         """,
@@ -809,7 +812,7 @@ def company_articles(conn, company_id: int, source_ids: list[str], depth: str | 
                left(a.body_text, 20000) AS body_text,
                {_CLOCK_FIELDS}
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = %s
           AND a.source_id = ANY(%s){clause}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
@@ -827,7 +830,7 @@ def company_month_depths(conn, company_id: int, source_ids: list[str]):
                count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep,
                count(*) FILTER (WHERE m.depth = 'passing')::int AS passing
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s) AND a.published_at IS NOT NULL
         GROUP BY 1
         ORDER BY 1
@@ -846,9 +849,9 @@ def company_source_stats(conn, company_id: int, source_ids: list[str]):
                max(a.published_at) FILTER (WHERE m.depth <> 'passing') AS last_deep,
                max(a.published_at) AS last_at
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = %s AND a.source_id = ANY(%s)
-          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
+          AND {site_visible_sql("a")}
         GROUP BY a.source_id
         """,
         (company_id, source_ids),
@@ -869,7 +872,7 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
                count(*)::int AS total,
                count(*) FILTER (WHERE m.depth <> 'passing')::int AS deep
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
         GROUP BY m.company_id, a.source_id
         """,
@@ -884,7 +887,7 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
         f"""
         SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at IS NOT NULL
         ORDER BY m.company_id, a.published_at DESC, a.id DESC
@@ -898,7 +901,7 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
                to_char(date_trunc('month', a.published_at AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM') AS ym,
                count(*)::int AS deep
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s) AND m.depth <> 'passing'
           AND a.published_at >= date_trunc('month', now()) - make_interval(months => %s)
         GROUP BY 1, 2
@@ -922,7 +925,7 @@ def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list
           JOIN articles a ON a.id = v.article_id
           JOIN companies c ON c.id = v.company_id
           WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
-            AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
+            AND {site_visible_sql("a")}
             AND {visible_sql("a")}
           ORDER BY c.id, a.published_at DESC NULLS LAST, a.id DESC
         ) recent
@@ -942,7 +945,7 @@ def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: i
         f"""
         SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at IS NOT NULL
         ORDER BY m.company_id, a.published_at DESC, a.id DESC
@@ -954,7 +957,7 @@ def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: i
         f"""
         SELECT m.company_id, count(*)::int AS n
         FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")}
+        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
         WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
           AND m.depth <> 'passing' AND a.published_at >= now() - make_interval(days => %s)
         GROUP BY m.company_id

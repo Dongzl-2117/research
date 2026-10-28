@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from researchlib import theses as thesis_map
 from researchlib.ask import ask, start
+from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.jobs import digest as digest_job
 from researchlib.jobs import theses as theses_job
@@ -213,6 +214,9 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     by_id = {source.id: source for source in sources}
     row = queries.get_article(conn, article_id, list(by_id))
     if row is None:
+        return None
+    # 与 HTML 正文页一致：网友帖、「图片」评论壳不对外可读全文。
+    if hide_from_site(row.get("raw_meta"), row.get("title")):
         return None
     settings = request.app.state.settings
     source = by_id[row["source_id"]]

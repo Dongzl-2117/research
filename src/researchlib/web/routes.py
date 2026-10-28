@@ -18,7 +18,7 @@ from researchlib import embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
-from researchlib.author_voice import is_guest
+from researchlib.author_voice import hide_from_site
 from researchlib.boilerplate import clean_article
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
@@ -380,7 +380,7 @@ def home(request: Request):
                 conn, scoped, jump, settings, "/", owner_only=True, source=chosen or ""
             )
         # 没日期、标了 off_timeline 的条目不进首页按天。作者页仍要。
-        # 读者帖（poster_role=guest）也不进首页；库里保留，正文页 404。
+        # 读者帖与「图片」评论壳也不进首页；库里保留，正文页 404。
         counts, plan, rows = _load_feed(
             conn,
             scoped,
@@ -619,7 +619,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         article = queries.get_article(conn, article_id, ids)
         if article is None:
             raise HTTPException(status_code=404)
-        if is_guest(article.get("raw_meta")):
+        if hide_from_site(article.get("raw_meta"), article.get("title")):
             raise HTTPException(status_code=404)
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
@@ -867,7 +867,7 @@ def article_revisions(request: Request, article_id: int):
         article = queries.get_article(conn, article_id, ids)
         if article is None:
             raise HTTPException(status_code=404)
-        if is_guest(article.get("raw_meta")):
+        if hide_from_site(article.get("raw_meta"), article.get("title")):
             raise HTTPException(status_code=404)
         rows = revision_log.versions(conn, article)
         banner = queries.sample_state(conn, ids)
