@@ -17,6 +17,7 @@ from researchlib.ask import ask, start
 from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.jobs import digest as digest_job
+from researchlib.jobs import ocr as ocr_job
 from researchlib.jobs import theses as theses_job
 from researchlib.jobs import views as views_job
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
@@ -69,6 +70,31 @@ def _int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _ocr_articles(value) -> list[int] | None:
+    """文章 id 列表，或逗号分隔字符串。空表示不限篇。"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("articles 要是文章 id 列表")
+    if isinstance(value, int):
+        return [value]
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace("，", ",").split(",") if part.strip()]
+        try:
+            return [int(part) for part in parts] or None
+        except ValueError as exc:
+            raise ValueError("articles 里要是文章 id") from exc
+    if isinstance(value, list):
+        ids: list[int] = []
+        for item in value:
+            number = _int(item)
+            if number is None:
+                raise ValueError("articles 里要是文章 id")
+            ids.append(number)
+        return ids or None
+    raise ValueError("articles 要是文章 id 列表")
 
 
 def _article_links(base: str, article_id: int, chunk: int | None = None, anchor: str = "") -> dict:
@@ -752,6 +778,61 @@ async def api_theses_stop(request: Request):
 
 
 
+@api.post("/api/v1/ocr")
+async def api_ocr_start(request: Request):
+    """触发图片转文字。立刻返回，识图在后台线程里跑。
+
+    JSON：{articles?, redo?, limit?, engine?}。engine 为 vision（默认，deepseek-flash）、
+    rapidocr 或 auto。articles 是文章 id 列表。已经在跑时不会起第二个，返回 started=false。
+    不回凭证。识图失败不回退 RapidOCR。
+    """
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="请求体要是 JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体要是 JSON 对象")
+    try:
+        articles = _ocr_articles(body.get("articles"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    engine = str(body.get("engine") or "vision").strip() or "vision"
+    settings = request.app.state.settings
+    try:
+        problem = ocr_job.credentials_problem(settings, engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    try:
+        result = ocr_job.start(
+            settings,
+            articles=articles,
+            redo=_flag(body.get("redo")),
+            limit=_int(body.get("limit")) or ocr_job.DEFAULT_LIMIT,
+            engine=engine,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _json(result)
+
+
+@api.get("/api/v1/ocr")
+def api_ocr_status(request: Request):
+    """识图 worker 的进度。没跑过也返回完整字段。不回凭证。"""
+    return _json(ocr_job.status())
+
+
+@api.post("/api/v1/ocr/stop")
+async def api_ocr_stop(request: Request):
+    """请识图 worker 停。正在认的那张会认完。"""
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    return _json(ocr_job.request_stop())
+
+
 @api.get("/llms.txt")
 def llms_txt(request: Request):
     base = _base(request)
@@ -808,6 +889,11 @@ def llms_txt(request: Request):
         "articles 先重挂提及（短正文含 OCR）再只整理这些篇。",
         f"- [触发论点]({base}/api/v1/theses): POST JSON {{company?, loop?, sleep?, force?}}，"
         "GET 看进度，POST /api/v1/theses/stop 停。",
+        f"- [触发图片文字]({base}/api/v1/ocr): POST JSON {{articles?, redo?, limit?, engine?}}，"
+        "engine 为 vision（默认，deepseek-flash 识图）、rapidocr 或 auto。"
+        "后台线程识别，立刻返回 running；GET 同一路径看进度，POST /api/v1/ocr/stop 停。"
+        "已在跑时不会开第二个。识图失败记 engine 以 :error 结尾、正文为空，下次会重试，不回退脏字。"
+        "只在站内或本机调用，不读、不回任何凭证。",
         "",
         "## 字段约定",
         "",

@@ -104,9 +104,9 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # 图片文字（OCR）。平时不起，用的时候：
+  # RapidOCR 回退。默认识图在 app 里走 deepseek-flash，不需要这个 profile。
   #   docker compose --profile ocr build ocr
-  #   docker compose --profile ocr run --rm ocr research-ocr --limit 500
+  #   docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 500
   ocr:
     profiles: ["ocr"]
     build:
@@ -125,7 +125,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["research-ocr", "--limit", "500"]
+    command: ["research-ocr", "--engine", "rapidocr", "--limit", "500"]
 
 volumes:
   pgdata:

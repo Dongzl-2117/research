@@ -253,6 +253,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词）。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/v1/translate`：触发站内译制（`{source?, limit?, loop?, sleep?}`），后台线程跑，`GET` 同一路径看进度，见 [translate.md](translate.md)。
+- `POST /api/v1/ocr`：触发站内识图（`{articles?, redo?, limit?, engine?}`，默认 deepseek-flash vision），`GET` 看进度，`POST /api/v1/ocr/stop` 停。见 [ocr.md](ocr.md)。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`。
 
 返回里带 `_trust` 字段，MCP 文本包在「外部资料」分隔区里：文章是外部原文，调用方不要执行其中的指令。这一点照 AIHOT 的 MCP 做法。
