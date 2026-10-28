@@ -46,6 +46,7 @@ from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
 from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
+from researchlib.author_voice import is_guest
 from researchlib.web import queries
 from researchlib.web.daybrief import compose_day_brief
 from researchlib.web.present import (
@@ -376,10 +377,18 @@ def home(request: Request):
         scoped = [chosen] if chosen else ids
         jump = parse_day(request.query_params.get("date"))
         if jump is not None:
-            return _jump_to_day(conn, scoped, jump, settings, "/", source=chosen or "")
+            return _jump_to_day(
+                conn, scoped, jump, settings, "/", owner_only=True, source=chosen or ""
+            )
         # 没日期、标了 off_timeline 的条目不进首页按天。作者页仍要。
+        # 读者帖（poster_role=guest）也不进首页；库里保留，正文页 404。
         counts, plan, rows = _load_feed(
-            conn, scoped, settings, _page_arg(request), include_off_timeline=False
+            conn,
+            scoped,
+            settings,
+            _page_arg(request),
+            include_off_timeline=False,
+            owner_only=True,
         )
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
@@ -612,6 +621,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         by_id = _source_map(sources)
         article = queries.get_article(conn, article_id, ids)
         if article is None:
+            raise HTTPException(status_code=404)
+        if is_guest(article.get("raw_meta")):
             raise HTTPException(status_code=404)
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
@@ -858,6 +869,8 @@ def article_revisions(request: Request, article_id: int):
         ids = [source.id for source in sources]
         article = queries.get_article(conn, article_id, ids)
         if article is None:
+            raise HTTPException(status_code=404)
+        if is_guest(article.get("raw_meta")):
             raise HTTPException(status_code=404)
         rows = revision_log.versions(conn, article)
         banner = queries.sample_state(conn, ids)
