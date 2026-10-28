@@ -115,9 +115,37 @@ def first_heading(md: str) -> str | None:
     return match.group(2).strip()
 
 
+# 开头或结尾的省略号。中间的「他说……然后停了」不是截断标题。
+_EDGE_ELLIPSIS = re.compile(
+    r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+"
+    r"|(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
+)
+
+
+def _heading_stem(text: str) -> str:
+    return _EDGE_ELLIPSIS.sub("", (text or "").strip()).strip()
+
+
+def _same_truncated_heading(heading: str, title: str) -> bool:
+    """标题行是页面标题的省略号截断（或反过来）。打开页面时不要再露「有两...」。"""
+    if not heading or not title:
+        return False
+    if _EDGE_ELLIPSIS.search(heading) is None and _EDGE_ELLIPSIS.search(title) is None:
+        return False
+    left = _heading_stem(heading)
+    right = _heading_stem(title)
+    if len(left) < 8 or len(right) < 8:
+        return False
+    return left.startswith(right) or right.startswith(left)
+
+
 def strip_duplicate_title(md: str, title: str) -> str:
     match = re.match(r"\s*#\s+(.+?)\s*(?:\n|$)", md)
-    if match and match.group(1).strip() == title.strip():
+    if not match:
+        return md
+    heading = match.group(1).strip()
+    wanted = (title or "").strip()
+    if heading == wanted or _same_truncated_heading(heading, wanted):
         return md[match.end() :]
     return md
 

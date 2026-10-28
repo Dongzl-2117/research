@@ -452,3 +452,40 @@ def test_obvious_title_typos_are_polished():
     done = "存在运营杠杆的好处很多，毛利率会上去"
     assert zsxq_display_title(cut, body=body) == done
     assert stored_zsxq_title(cut, body) == done
+
+
+# 23984：库内标题停在「有两...」，正文第一句已经写完，而且不到 40 字。
+STORY_STORED = "“这个故事我琢磨了很多年，有两..."
+STORY_SENTENCE = "“这个故事我琢磨了很多年，有两点感触很深"
+STORY_BODY = (
+    "# “这个故事我琢磨了很多年，有两...\n\n"
+    "“这个故事我琢磨了很多年，有两点感触很深：\n"
+    "第一，巴菲特当时是认真思考过的，无疑在心里权衡赔率与得失。\n"
+)
+
+
+def test_ellipsis_mid_phrase_completes_from_the_body_sentence():
+    """省略号停在「有两」时，用正文里那句完整的话，不收成「有两」或逗号前的半句。"""
+    assert title_needs_repair(STORY_STORED)
+    # 分句以冒号收尾不是「泡泡玛特：」那种壳。
+    assert title_needs_repair(STORY_SENTENCE + "：") is False
+    title = zsxq_display_title(STORY_STORED, body=STORY_BODY)
+    assert title == STORY_SENTENCE
+    assert len(title) <= 40
+    assert not title.endswith(("…", "...", "有两", "："))
+    assert "第一" not in title
+    assert stored_zsxq_title(STORY_STORED, STORY_BODY) == STORY_SENTENCE
+    # 正文也只有半截时，收到上一个逗号，不把没写完的「有两点感触很深但是…」留着。
+    cut = "这个故事我琢磨了很多年，有两点感触很深但是后面还没写完..."
+    assert zsxq_display_title(cut, body=cut) == "这个故事我琢磨了很多年"
+    assert "有两点感" not in zsxq_display_title(cut, body=cut)
+
+
+def test_truncated_heading_is_not_repeated_under_the_repaired_title():
+    from researchlib.textutil import strip_duplicate_title
+
+    shown = strip_duplicate_title(STORY_BODY, STORY_SENTENCE)
+    assert "有两..." not in shown
+    assert shown.lstrip().startswith(STORY_SENTENCE)
+    other = "# 茅台批价这一周没动\n\n正文。\n"
+    assert strip_duplicate_title(other, STORY_SENTENCE) == other

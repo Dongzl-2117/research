@@ -314,6 +314,18 @@ _VIDEO_CTA = re.compile(
     r"|更多.{0,24}欢迎关注"
     r")"
 )
+# 主播名牌：「主播 浩嘉」。名字只收两三个字，长句里的「主播」留下。
+_HOST_NAMEPLATE = re.compile(
+    r"^(?:主播|嘉宾)[\u4e00-\u9fff]{2,3}$|^(?:主持人|出镜记者)[\u4e00-\u9fff]{2,3}$"
+)
+# 视频角上的法定标、直播标。整行才算，句子里提到「未成年人」不删。
+_VIDEO_CORNER = re.compile(
+    r"^(?:未成年人请勿饮酒|请勿酒驾|酒后请勿驾车|过量饮酒有害健康|理性饮酒|直播中|正在直播)$"
+)
+# 节目角标，只在已经认出视频壳之后丢掉最后一行。「会稽山超越古越龙山」这类标题不收。
+_SHOW_BUG = re.compile(r"^[\u4e00-\u9fff]{2,6}(?:观察|视界|频道)$")
+# 广告海报顶部的对仗口号：「双重保障，终身守护。」条款正文更长，对不上。
+_AD_SLOGAN = re.compile(r"^[\u4e00-\u9fff]{2,6}[，,][\u4e00-\u9fff]{2,6}。$")
 _BRAND_MASTHEAD = re.compile(
     r"^(?:领教工坊|INSIDE\s+THE\s+BEST|COLMO)$",
     re.I,
@@ -569,6 +581,60 @@ def _is_feed_action(line: str) -> bool:
     return _FEED_ACTION.fullmatch(_plain(line).strip()) is not None
 
 
+def _compact_speaker(line: str) -> str:
+    return re.sub(r"\s+", "", _speaker_body(line))
+
+
+def _is_broadcast_line(line: str) -> bool:
+    """视频主播名牌、角标、直播标。整行才算。"""
+    compact = _compact_speaker(line)
+    if not compact or len(compact) > 16:
+        return False
+    return _HOST_NAMEPLATE.fullmatch(compact) is not None or _VIDEO_CORNER.fullmatch(compact) is not None
+
+
+def _drop_ad_shell(lines: list[str]) -> list[str]:
+    """品牌广告海报的 Logo 和口号。条款、适用条件留下。
+
+    只在同一张图里已经有「适用条件」和保障/免责说明时动手，避免把正文里的短句删掉。
+    书籍目录没有这种形状，整段留下。
+    """
+    blob = "\n".join(_speaker_body(line) for line in lines)
+    if "适用条件" not in blob or not re.search(r"责任免除|官方渠道|终身保障", blob):
+        return lines
+    out: list[str] = []
+    dropped_logo = False
+    for index, line in enumerate(lines):
+        body = _speaker_body(line)
+        compact = re.sub(r"\s+", "", body)
+        nxt = _speaker_body(lines[index + 1]) if index + 1 < len(lines) else ""
+        if (
+            not dropped_logo
+            and index < 2
+            and re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{2,4}", compact)
+            and len(re.sub(r"\s+", "", nxt)) >= 6
+        ):
+            dropped_logo = True
+            continue
+        if index < 4 and _AD_SLOGAN.fullmatch(body.strip()):
+            continue
+        out.append(line)
+    return out
+
+
+def drop_broadcast_chrome(lines: list[str]) -> list[str]:
+    """视频角标、主播条、节目水印，以及品牌广告的 Logo/口号。新闻标题和条款留下。"""
+    if not lines:
+        return lines
+    lines = _drop_ad_shell(lines)
+    if not any(_is_broadcast_line(line) for line in lines):
+        return lines
+    kept = [line for line in lines if not _is_broadcast_line(line)]
+    if len(kept) >= 2 and _SHOW_BUG.fullmatch(_compact_speaker(kept[-1])):
+        kept = kept[:-1]
+    return kept
+
+
 def _is_video_cta(line: str) -> bool:
     """视频号关注 CTA / 已关注条 / 作者转载提示。"""
     plain = _plain(line).strip()
@@ -583,8 +649,14 @@ def _is_video_cta(line: str) -> bool:
 
 
 def _is_feed_chrome(line: str) -> bool:
-    """雪球/微博/视频号壳：帖头元信息、发讨论、数字栏、关注 CTA；杂志品牌刊头。"""
-    if _is_feed_meta(line) or _is_engagement_counts(line) or _is_feed_action(line) or _is_video_cta(line):
+    """雪球/微博/视频号壳：帖头元信息、发讨论、数字栏、关注 CTA；杂志品牌刊头；视频角标。"""
+    if (
+        _is_feed_meta(line)
+        or _is_engagement_counts(line)
+        or _is_feed_action(line)
+        or _is_video_cta(line)
+        or _is_broadcast_line(line)
+    ):
         return True
     body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", _plain(line).strip())
     if _BRAND_MASTHEAD.fullmatch(body) or _SOURCE_MASTHEAD.match(body):
@@ -758,7 +830,9 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
     """页脚按行丢掉。按钮后面的方伟、网友继续留着，不从第一行按钮截到图末。
 
     「李四留言」和「李四留言1次·关注8个月」改成网友的一轮，名字和关注月数不进正文。
+    视频角标、主播名牌和广告海报的 Logo/口号也在这里剥掉。
     """
+    lines = drop_broadcast_chrome(lines)
     peeled = [_peel_sticky_tail(line) for line in lines]
     context = _post_chrome_context(peeled)
     kept: list[str] = []
