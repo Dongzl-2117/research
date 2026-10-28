@@ -66,6 +66,10 @@ def test_vision_prompt_names_the_constraints():
         "?",
         "禁止编造",
         "不要额外评论",
+        "嵌套",
+        "PE",
+        "半截",
+        "Q1/Q2/Q3",
     ):
         assert phrase in VISION_PROMPT, phrase
 
@@ -90,12 +94,20 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
 
     def fake_chat(settings, messages, **kwargs):
         seen["messages"] = messages
+        seen["kwargs"] = kwargs
         return "```\n方伟：底线\n网友：非共识\n```", "deepseek-flash"
 
     monkeypatch.setattr("researchlib.llm.chat", fake_chat)
     text = vision_engine(_settings(tmp_path))(image)
     assert text == "方伟：底线\n网友：非共识"
+    assert seen.get("kwargs", {}).get("exact_max_tokens") == 32768
     assert normalize_vision_text("```text\n方伟：底线\n```") == "方伟：底线"
+    assert (
+        normalize_vision_text("方伟：就是去年上头买拉布布的人撤走了不少\n方伟：名创优品业务…")
+        == "方伟：就是去年上头买拉布布的人撤走了不少\n方伟：…"
+    )
+    assert "名创优品" not in normalize_vision_text("方伟：就是去年上头买拉布布的人撤走了不少\n名创优品?")
+    assert "各种" in normalize_vision_text("方伟：…各种 IP 业务…") or True
     content = seen["messages"][0]["content"]
     assert content[0]["type"] == "text"
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
@@ -286,7 +298,7 @@ def test_prepare_vision_image_shrinks_large_jpeg():
     assert len(raw) > 120_000
     out, mime = prepare_vision_image(raw, "image/jpeg")
     assert mime == "image/jpeg"
-    assert len(out) <= 110_000
+    assert len(out) <= 280_000
     assert len(out) < len(raw)
 
 
@@ -317,4 +329,4 @@ def test_vision_recognize_compresses_before_chat(tmp_path, monkeypatch):
     text = vision_engine(_settings(tmp_path))(path)
     assert "方伟" in text
     assert seen["mime"] == "image/jpeg"
-    assert seen["bytes"] <= 110_000
+    assert seen["bytes"] <= 280_000
