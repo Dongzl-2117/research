@@ -272,5 +272,9 @@ def test_ocr_api_rejects_cross_origin_and_missing_key(tmp_path, isolated_ocr, mo
     assert SECRET not in denied.text
     assert ocr_job.status()["running"] is False
 
-    page = client.get("/llms.txt")
-    assert "/api/v1/ocr" in page.text
+
+def test_llms_txt_documents_ocr_endpoint():
+    """llms.txt 的文案写在 api.py 里，真正渲染要连库，集成测才打 GET。"""
+    api_src = (ROOT / "src" / "researchlib" / "web" / "api.py").read_text(encoding="utf-8")
+    assert "/api/v1/ocr" in api_src
+    assert "触发图片文字" in api_src
