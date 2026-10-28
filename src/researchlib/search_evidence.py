@@ -91,6 +91,9 @@ def local_evidence(row, matcher, focus, topic_forms, *, previous=None) -> list[E
     heading_ids = set(matcher.count(row.get("heading") or ""))
     body_spans = list(matcher.spans(text))
     block_ids = {cid for _lo, _hi, cid in body_spans}
+    contradicted = bool(block_ids - focus) or any(
+        _reference(text, lo, hi, topic_forms) == "denied" for lo, hi, cid in body_spans if cid in focus
+    )
     prior_ids, prior_text = set(), ""
     if previous:
         prior_ids = set(matcher.count(previous["body"] or ""))
@@ -120,7 +123,9 @@ def local_evidence(row, matcher, focus, topic_forms, *, previous=None) -> list[E
                 active = own - denied
                 if own <= denied:
                     # 仍可作为随后显式代词的上下文，但不给名词题面很高的主题分。
-                    confidence = 0.2 if any(references[cid] == "nominal" for cid in own) else 0.0
+                    confidence = 0.2 if not contradicted and any(
+                        references[cid] == "nominal" for cid in own
+                    ) else 0.0
                     out.append(Evidence(unit, lo, hi, frozenset(own), confidence, "提及"))
                 else:
                     out.append(Evidence(unit, lo, hi, frozenset(own - denied), 1.0, "正文"))

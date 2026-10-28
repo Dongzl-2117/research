@@ -29,6 +29,12 @@ def test_copular_definition_is_retained_as_uncertain_instead_of_hard_deleted():
     assert any(unit.confidence > 0 for unit in units)
 
 
+def test_nominal_reference_cannot_survive_explicit_disclaimed_attribution():
+    text = "轨道软件 用户留存只是讨论题目。这里没有证明轨道软件采用同一安排。"
+    units = local_evidence(_row(text), _matcher(), {1}, ["用户", "留存"])
+    assert not any(unit.confidence for unit in units)
+
+
 def test_foreign_subject_in_same_sentence_never_inherits_focus():
     units = local_evidence(
         _row("轨道软件与星云软件相比较，星云软件通过经销商签长期合同。", title="轨道软件"),
