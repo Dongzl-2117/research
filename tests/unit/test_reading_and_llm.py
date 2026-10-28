@@ -179,6 +179,9 @@ def test_chat_does_not_retry_bad_requests_or_timeouts(tmp_path, monkeypatch):
 
 
 def test_synthesize_keeps_going_when_one_batch_fails(monkeypatch):
+    import researchlib.ask as _ask
+    monkeypatch.setattr(_ask, "SINGLE_CALL_CHARS", 64000)
+    monkeypatch.setattr(_ask, "BATCH_CHARS", 48000)
     def fake_chat(_settings, messages, **_kwargs):
         system = messages[0]["content"]
         if system == ask_module.MAP_PROMPT:

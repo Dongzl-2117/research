@@ -72,9 +72,9 @@ PRESETS = {
 }
 
 # 一次交给模型的资料上限（字）。超过就分批摘录再汇总。
-SINGLE_CALL_CHARS = 64000
-BATCH_CHARS = 48000
-MAP_WORKERS = 3
+SINGLE_CALL_CHARS = 200000
+BATCH_CHARS = 120000
+MAP_WORKERS = 8
 _JSON = re.compile(r"\{.*\}", re.S)
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ask")
