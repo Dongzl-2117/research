@@ -12,7 +12,7 @@ import markdown
 from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
-from researchlib.present_text import polish_display_text, present_article_text
+from researchlib.present_text import merge_wrapped_utterances, polish_display_text, present_article_text
 from researchlib.textutil import strip_alert_markers
 from researchlib.wechat_dialogue import parse_shot, render_turns
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
@@ -331,32 +331,38 @@ def tidy_ocr_text(text: str) -> str:
     return raw
 
 
-def looks_like_chat(text: str) -> bool:
-    """一行一句、多数很短：按对话排。长文、表格仍按原文换行，不硬套聊天气泡。"""
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if len(lines) < 4:
-        return False
-    short = sum(1 for line in lines if len(line) <= 28)
-    return short * 2 >= len(lines)
+def _cite(info: dict, inner: str, *, with_id: bool) -> str:
+    """这段字本身链到原图。同一张图只有第一处带锚点，检索「看这张图」仍跳到这里。"""
+    href = html_lib.escape(info["src"], quote=True)
+    id_attr = f' id="{html_lib.escape(info["anchor"], quote=True)}"' if with_id else ""
+    return f'<a class="ocr-link"{id_attr} href="{href}" target="_blank" rel="noopener">{inner}</a>'
 
 
-def _reading_inner(text: str) -> tuple[str, str]:
-    shown = polish_display_text(tidy_ocr_text(text))
-    if looks_like_chat(shown):
-        parts = [f"<p>{html_lib.escape(line.strip())}</p>" for line in shown.splitlines() if line.strip()]
-        return "ocr-chat", "".join(parts)
-    return "", html_lib.escape(shown)
+def _prose_html(text: str, link: dict | None) -> str:
+    """金句、字幕、长文：折行收成自然段，每一段的字链到这张图。"""
+    shown = polish_display_text(merge_wrapped_utterances(tidy_ocr_text(text)))
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n", shown):
+        paragraphs.extend(line.strip() for line in block.splitlines() if line.strip())
+    if not paragraphs and shown.strip():
+        paragraphs = [shown.strip()]
+    parts: list[str] = []
+    first = True
+    for para in paragraphs:
+        inner = html_lib.escape(para)
+        if link:
+            inner = _cite(link, inner, with_id=first)
+            first = False
+        parts.append(f"<p>{inner}</p>")
+    return "".join(parts)
 
 
 def _ocr_figure(anchor: str, src: str, alt: str, text: str) -> str:
-    kind, inner = _reading_inner(text)
-    classes = "ocr-reading ocr-chat" if kind else "ocr-reading"
-    return (
-        f'<figure class="ocr-shot">'
-        f'<div class="{classes}">{inner}</div>'
-        f"{_original_links([{'anchor': anchor, 'src': src}])}"
-        "</figure>"
-    )
+    link = {"anchor": anchor, "src": src}
+    inner = _prose_html(text, link)
+    if not inner:
+        return _media_bundle([link])
+    return f'<figure class="ocr-shot"><div class="ocr-reading">{inner}</div></figure>'
 
 
 def _media_bundle(items: list[dict]) -> str:
@@ -445,9 +451,10 @@ def flow_ocr_quote_body(text: str) -> str:
     return "\n\n".join(parts)
 
 
-def _dialogue_html(text: str) -> str:
+def _dialogue_html(text: str, link: dict | None = None) -> str:
     text = polish_display_text(text or "")
     parts: list[str] = []
+    first = True
     for block in text.split("\n\n"):
         block = block.strip("\n")
         if not block.strip():
@@ -458,12 +465,17 @@ def _dialogue_html(text: str) -> str:
             paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
             for index, para in enumerate(paragraphs or [""]):
                 body = html_lib.escape(para)
-                if index == 0:
-                    parts.append(f'<p><span class="who">{label}：</span>{body}</p>')
-                else:
-                    parts.append(f"<p>{body}</p>")
+                inner = f'<span class="who">{label}：</span>{body}' if index == 0 else body
+                if link:
+                    inner = _cite(link, inner, with_id=first)
+                    first = False
+                parts.append(f"<p>{inner}</p>")
         else:
-            parts.append(f"<p>{html_lib.escape(_flow_ocr_lines(block))}</p>")
+            inner = html_lib.escape(_flow_ocr_lines(block))
+            if link:
+                inner = _cite(link, inner, with_id=first)
+                first = False
+            parts.append(f"<p>{inner}</p>")
     return "".join(parts)
 
 
@@ -480,12 +492,22 @@ def _original_links(items: list[dict]) -> str:
     return f'<p class="ocr-links">{"".join(links)}</p>'
 
 
-def _chat_bundle(items: list[dict], dialogue: str) -> str:
-    inner = _dialogue_html(dialogue)
+def _chat_bundle(segments: list[tuple[dict, str]]) -> str:
+    """每张图贡献的字链到那张图。整段重复、没有新字的图仍留一个「原图」链接。"""
+    chunks: list[str] = []
+    fallbacks: list[dict] = []
+    for info, dialogue in segments:
+        if dialogue.strip():
+            chunks.append(_dialogue_html(dialogue, link=info))
+        else:
+            fallbacks.append(info)
+    extra = _original_links(fallbacks) if fallbacks else ""
+    if not chunks:
+        return f'<figure class="ocr-shot">{extra}</figure>'
     return (
         '<figure class="ocr-shot">'
-        f'<div class="ocr-reading ocr-dialogue">{inner}</div>'
-        f"{_original_links(items)}"
+        f'<div class="ocr-reading ocr-dialogue">{"".join(chunks)}</div>'
+        f"{extra}"
         "</figure>"
     )
 
@@ -560,12 +582,12 @@ def _hoist_figures_out_of_paragraphs(html: str) -> str:
 
 
 def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
-    """有可读识别结果的本地图：群聊先显示整理后的对话，原图是一行「原图 N」链接。
+    """有可读识别结果的本地图：先显示整理后的字，这些字本身链到原图。
 
-    连续几张微信截图合成一段，重复的句子只出现一次，不再每张图留一个空架子。
-    对话里的截图折行收成一段话，不再在半句中间硬换行。商品图和图表只留原图链接。
-    表格和长文仍按原文换行，原图同样用「原图 N」。没认出字的图保持原来的图片。
-    texts 是 content_hash → image_texts.text。锚点 id 在原图链接上，检索里的「看这张图」仍跳到这里。
+    连续几张微信截图合成一段，重复的句子只出现一次。每张图新写出来的那几句链到它自己的地址；
+    整段都是重复、没有新字时，仍留一个「原图 N」，图片不会丢。商品图和图表没有可读正文，只留原图链接。
+    金句和字幕的折行收成自然段，不再一句一个段落。没认出字的图保持原来的图片。
+    texts 是 content_hash → image_texts.text。锚点 id 在这段字的链接上，检索里的「看这张图」仍跳到这里。
     """
 
     def finish(value: str) -> str:
@@ -629,14 +651,17 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
         ):
             group.append(nxt)
             nxt += 1
-        turns = [turn for cursor in group for turn in parsed[cursor]["shot"].turns]
-        dialogue = render_turns(turns, seen).strip()
-        if not dialogue:
+        segments: list[tuple[dict, str]] = []
+        for cursor in group:
+            info = parsed[cursor]
+            dialogue = render_turns(info["shot"].turns, seen).strip()
+            segments.append((info, dialogue))
+        if not any(text for _info, text in segments):
             for cursor in group:
                 info = parsed[cursor]
                 outputs[cursor] = _ocr_figure(info["anchor"], info["src"], info["alt"], info["raw"])
         else:
-            outputs[group[0]] = _chat_bundle([parsed[cursor] for cursor in group], dialogue)
+            outputs[group[0]] = _chat_bundle(segments)
             for cursor in group[1:]:
                 outputs[cursor] = ""
         index = nxt

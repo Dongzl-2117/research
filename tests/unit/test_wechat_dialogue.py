@@ -146,9 +146,12 @@ def test_reading_page_shows_the_dialogue_once():
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     assert f'<a class="ocr-link" id="{image_anchor(first)}"' in page
     assert f'<a class="ocr-link" id="{image_anchor(second)}"' in page
-    assert "原图 1" in page and "原图 2" in page
+    assert "原图 1" not in page and "原图 2" not in page
     assert "<details" not in page
-    assert page.index("方伟：") < page.index("原图 1")
+    first_at = page.index(f'id="{image_anchor(first)}"')
+    assert first_at < page.index("瑞幸和古茗都算头部", first_at) < page.index("</a>", first_at)
+    second_at = page.index(f'id="{image_anchor(second)}"')
+    assert second_at < page.index("同店压力还在", second_at) < page.index("</a>", second_at)
 
 
 def test_digest_input_is_the_cleaned_dialogue():
@@ -315,8 +318,9 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
     assert "方伟-最近在杭州：" not in page
     assert "@方伟-最近在杭州" in page
     for number in range(1, len(shots) + 1):
-        assert f"原图 {number}" in page
-    assert page.index("方伟：") < page.index("原图 1")
+        digest = f"{number:02d}" * 32
+        assert f'id="{image_anchor(digest)}"' in page
+        assert f"/media/fangwei-zsxq/ab/{digest}.png" in page
     # 旁路和检索仍用带换行的整理结果，不因阅读页折行而改掉。
     stored = present_ocr_pieces(shots)
     assert "用了一些国\n产agents" in stored
@@ -405,7 +409,8 @@ def test_quote_reply_card_puts_the_guest_above_the_account_bar():
     assert "不太看好" in guest_html and "假本分" in guest_html
     assert "零售的本分" in host_html and "不太看好" not in host_html
     assert "方伟看十年" not in page and "什么才叫做" not in page
-    assert "原图 1" in page
+    assert f'<a class="ocr-link" id="{image_anchor(digest)}"' in page
+    assert "原图 1" not in page
     assert "点击看原图" not in page
     assert "<details" not in page
     assert f'id="{image_anchor(digest)}"' in page
@@ -1149,6 +1154,7 @@ INSIDE THE BEST
     chain = """回复@网友:李录投资也很好啊。//@网友:回复@网友:网友会不会是卖完了再吹？//@网友:看了下今天雪球上的帖子"""
     text = present_ocr_pieces([chain])
     assert "李录投资也很好" in text
+    assert text.index("看了下今天雪球上的帖子") < text.index("会不会是卖完了再吹") < text.index("李录投资也很好")
     assert "回复@" not in text
     assert "//@" not in text
 
@@ -1180,6 +1186,7 @@ LIXIANG_OCR = """理想
 def test_24010_video_badges_and_23173_ad_shell_are_stripped():
     text = present_ocr_pieces([HUANGJIU_OCR])
     assert "8.53亿" in text
+    assert "古越龙山2026" not in text
     assert "黄酒一哥" in text
     assert "会稽山超越古越龙山" in text
     assert "未成年人请勿饮酒" not in text
