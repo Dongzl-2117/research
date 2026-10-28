@@ -278,14 +278,16 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
         card["title"] = repaired
 
 
-def _decorate(conn, cards: list[dict], settings) -> list[dict]:
+def _decorate(conn, cards: list[dict], settings, *, include_digest: bool = True) -> list[dict]:
     """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
     ids = [card["id"] for card in cards]
     tags = queries.article_tags(conn, ids, per_article=12)
-    digests = queries.digests_for(conn, ids)
+    digests = queries.digests_for(conn, ids) if include_digest else {}
     pending: list[tuple[int, str]] = []
     for card in cards:
         card["tags"] = _visible_tags(card, tags.get(card["id"], []))
+        if not include_digest:
+            continue
         digest = digests.get(card["id"])
         if digest and not card.get("summary"):
             card["summary"] = digest["summary"]
@@ -1022,6 +1024,7 @@ def search_page(request: Request):
         entity_companies = queries.matching_companies(conn, query) if query and page == 1 else []
         results = []
         terms = found.terms if found else []
+        focus_terms = [form for t in found.query.content_terms for form in t.forms] if found and found.query else []
         for hit in found.hits if found else []:
             best = hit.passages[0] if hit.passages else None
             row = {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at}
@@ -1032,7 +1035,19 @@ def search_page(request: Request):
                     settings,
                     title=highlight_title(hit.title, query, terms=terms),
                     extra={
-                        "snippets": [highlight_snippet(p.body, query, terms=terms) for p in hit.passages[:2]],
+                        "search_passages": [
+                            {
+                                "text": highlight_snippet(
+                                    p.body, query, radius=260, terms=terms, focus_terms=focus_terms
+                                ),
+                                "before": (
+                                    highlight_snippet(p.before, query, radius=160, terms=terms) if p.before else ""
+                                ),
+                                "after": highlight_snippet(p.after, query, radius=160, terms=terms) if p.after else "",
+                                "url": p.url,
+                            }
+                            for p in hit.passages[:2]
+                        ],
                         "heading": best.heading if best else "",
                         "chunk": best.ord if best else None,
                         "anchor": best.anchor if best else "",
@@ -1041,7 +1056,7 @@ def search_page(request: Request):
                     },
                 )
             )
-        results = _decorate(conn, results, settings)
+        results = _decorate(conn, results, settings, include_digest=False)
     total_all = sum(count_map.values())
     total = found.total if found else 0
     available = found.available if found else 0

@@ -26,13 +26,18 @@ def _find(text: str, term: str) -> int:
     return text.find(term)
 
 
-def highlight_snippet(text: str, query: str, *, radius: int = 88, terms: list[str] | None = None) -> Markup:
+def highlight_snippet(
+    text: str, query: str, *, radius: int = 88, terms: list[str] | None = None,
+    focus_terms: list[str] | None = None,
+) -> Markup:
     """取第一处命中附近的一段并高亮。terms 给了就用它（检索实际用到的词，含公司别名和同义词）。"""
     flat = re.sub(r"\s+", " ", text or "").strip()
     if not flat:
         return Markup("")
     terms = [t for t in (terms if terms is not None else extract_terms(query)) if t]
-    positions = [index for term in terms if (index := _find(flat, term)) >= 0]
+    positions = [index for term in (focus_terms or []) if (index := _find(flat, term)) >= 0]
+    if not positions:
+        positions = [index for term in terms if (index := _find(flat, term)) >= 0]
     if not positions:
         fragment = flat[: radius * 2]
         suffix = "…" if len(flat) > len(fragment) else ""

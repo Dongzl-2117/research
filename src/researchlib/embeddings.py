@@ -28,6 +28,8 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 
+from researchlib.chunks import current_chunk_sql
+
 logger = logging.getLogger("researchlib.embeddings")
 
 # bge-m3 的维度。换模型时维度要一样，不一样就报错，不悄悄截断。
@@ -296,7 +298,7 @@ def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = 
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
         LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
-        WHERE a.duplicate_of IS NULL
+        WHERE a.duplicate_of IS NULL AND {current_chunk_sql()}
           AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %s)
           {skipped}
         ORDER BY a.published_at DESC NULLS LAST, c.article_id, c.ord
@@ -307,7 +309,30 @@ def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = 
 
 
 def _source_text(row: dict) -> str:
-    return "\n".join(part for part in (row["title"], row["heading"], row["body"]) if part)
+    return "\n".join(part or "" for part in (row["title"], row["heading"], row["body"]))
+
+
+def _fresh_rows(conn, rows: list[dict], bad: list[tuple[int, int]]) -> list[dict]:
+    """请求前后重读当前块，拒绝项记入本轮 skip，不能让整批拒绝堵住后面的块。"""
+    if not rows:
+        return []
+    current = conn.execute(
+        f"""SELECT c.article_id, c.ord, a.title, c.heading, c.body, md5({_SOURCE_TEXT}) AS hash
+        FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
+        JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
+        JOIN articles a ON a.id = c.article_id
+        WHERE a.duplicate_of IS NULL AND {current_chunk_sql()}""",
+        ([r["article_id"] for r in rows], [r["ord"] for r in rows]),
+    ).fetchall()
+    hashes = {(r["article_id"], r["ord"]): r["hash"] for r in current}
+    fresh = []
+    for row in rows:
+        key = row["article_id"], row["ord"]
+        if hashes.get(key) == row["hash"]:
+            fresh.append(row)
+        else:
+            bad.append(key)
+    return fresh
 
 
 def _embed_rows(rows: list[dict], bad: list[tuple[int, int]]) -> list[tuple[dict, list[float]]]:
@@ -361,11 +386,16 @@ def backfill(
     done = 0
     bad: list[tuple[int, int]] = []
     while limit is None or done < limit:
-        size = batch if limit is None else min(batch, limit - done)
+        size = max(1, batch) if limit is None else min(max(1, batch), limit - done)
         rows = _pending(conn, size, model, bad)
         if not rows:
             break
+        rows = _fresh_rows(conn, rows, bad)
+        if not rows:
+            continue
         pairs = _embed_rows(rows, bad)
+        fresh = {(r["article_id"], r["ord"]) for r in _fresh_rows(conn, [r for r, _v in pairs], bad)}
+        pairs = [(r, v) for r, v in pairs if (r["article_id"], r["ord"]) in fresh]
         if pairs:
             with conn.cursor() as cur:
                 cur.executemany(
@@ -393,11 +423,14 @@ def coverage(conn) -> tuple[int, int]:
     if column_type(conn) is None:
         return 0, 0
     row = conn.execute(
-        """
-        SELECT (SELECT count(*) FROM chunk_embeddings) AS done,
-               (SELECT count(*) FROM article_chunks c JOIN articles a ON a.id = c.article_id
-                WHERE a.duplicate_of IS NULL) AS total
-        """
+        f"""
+        SELECT count(e.article_id) AS done, count(*) AS total
+        FROM article_chunks c JOIN articles a ON a.id = c.article_id
+        LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
+          AND e.model = %s AND e.text_hash = md5({_SOURCE_TEXT})
+        WHERE a.duplicate_of IS NULL AND {current_chunk_sql()}
+        """,
+        (model_name(),),
     ).fetchone()
     return int(row["done"]), int(row["total"])
 

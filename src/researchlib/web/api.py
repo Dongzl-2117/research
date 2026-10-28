@@ -163,6 +163,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "title": p.title,
                 "heading": p.heading,
                 "text": p.body,
+                "context": {"before": p.before or None, "after": p.after or None},
                 # zh：英文文章的中文译文段落。
                 "lang": p.lang or None,
                 "score": round(p.score, 3),

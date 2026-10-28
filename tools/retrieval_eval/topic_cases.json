@@ -1,0 +1,772 @@
+{
+  "description": "人工标注的匿名合成片段。正例解释所问机制，负例含同词、别家公司、公司新闻或明确未作分析。无真实作者言论。",
+  "companies": [
+    {
+      "ticker": "ADBE",
+      "name_zh": "奥多比",
+      "name_en": "Adobe",
+      "aliases": []
+    },
+    {
+      "ticker": null,
+      "name_zh": "维萨",
+      "name_en": "Visa",
+      "aliases": []
+    },
+    {
+      "ticker": "NTDOY",
+      "name_zh": "任天堂",
+      "name_en": "Nintendo",
+      "aliases": []
+    },
+    {
+      "ticker": "SONY",
+      "name_zh": "索尼",
+      "name_en": "Sony",
+      "aliases": []
+    },
+    {
+      "ticker": "00700.HK",
+      "name_zh": "腾讯",
+      "name_en": "Tencent",
+      "aliases": [
+        "腾讯控股",
+        "TCEHY",
+        "0700.HK",
+        "视频号",
+        "微信",
+        "WeChat"
+      ]
+    },
+    {
+      "ticker": "600519.SH",
+      "name_zh": "贵州茅台",
+      "name_en": "Kweichow Moutai",
+      "aliases": [
+        "茅台"
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "id": "costco",
+      "text": "Costco 商业模式",
+      "split": "development",
+      "company": "开市客"
+    },
+    {
+      "id": "costco",
+      "text": "好市多 商业模式",
+      "split": "alias",
+      "company": "开市客"
+    },
+    {
+      "id": "costco",
+      "text": "开市客 商业模式",
+      "split": "alias",
+      "company": "开市客"
+    },
+    {
+      "id": "adobe",
+      "text": "Adobe 订阅模式",
+      "split": "additional_topics",
+      "company": "奥多比"
+    },
+    {
+      "id": "visa",
+      "text": "Visa 网络效应",
+      "split": "additional_topics",
+      "company": "维萨"
+    },
+    {
+      "id": "nintendo",
+      "text": "任天堂 主机周期",
+      "split": "additional_topics",
+      "company": "任天堂"
+    },
+    {
+      "id": "independent_a",
+      "text": "腾讯 广告变现",
+      "split": "independent",
+      "company": "腾讯"
+    },
+    {
+      "id": "independent_b",
+      "text": "贵州茅台 渠道库存",
+      "split": "independent",
+      "company": "贵州茅台"
+    }
+  ],
+  "articles": [
+    {
+      "id": "c01",
+      "title": "Costco 经营观察",
+      "blocks": [
+        [
+          "收入",
+          "Costco 的商业模式让会员费承担主要盈利目标，商品薄利用于换取顾客续费。",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c02",
+      "title": "仓储零售笔记",
+      "blocks": [
+        [
+          "机制",
+          "好市多的商业模式把低价和会员续费连在一起，消费者愿意每年为进入仓库购物付费。",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c03",
+      "title": "开市客的经营研究",
+      "blocks": [
+        [
+          "单位经济",
+          "开市客的商业模式依赖会员费与商品低毛利，快速周转减少库存占用。",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c04",
+      "title": "Costco 多段论述",
+      "blocks": [
+        [
+          "经营结构",
+          "Costco 是这一节观察的对象，接下来分别看收费与商品定价。",
+          ""
+        ],
+        [
+          "经营结构",
+          "它的商业模式不是逐件商品追求高毛利，而是靠稳定续费覆盖固定成本，薄利提高购买频次。",
+          "costco"
+        ],
+        [
+          "经营结构",
+          "较快的商品流转把库存占用压低，门店因而能继续让利给顾客。",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c05",
+      "title": "会员制仓储",
+      "blocks": [
+        [
+          "收入来源",
+          "Costco collects annual membership dues. Merchandise is sold at very low markups, encouraging shoppers to renew. The recurring fee supports profits.",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c06",
+      "title": "好市多观察",
+      "blocks": [
+        [
+          "周转",
+          "好市多少做单件商品的利润，精选少量品种集中采购，较快卖出货品后再结算货款。",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c07",
+      "title": "Costco 定价",
+      "blocks": [
+        [
+          "复购",
+          "Costco 将采购规模换来的让利交给会员，价格吸引力带来续费，续费又支持下一轮集中采购。",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c08",
+      "title": "Costco 图片资料",
+      "ocr": "Costco 的商业模式：商品低毛利，会员年费形成持续收入，较高周转减少资金占用。",
+      "ocr_label": "costco",
+      "blocks": [
+        [
+          "正文",
+          "这篇附有一张虚构经营结构图。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "c09",
+      "title": "Costco source memo",
+      "translation": "<p>开市客的商业模式利用会员费获得持续收入，商品低毛利和高周转为会员提供低价。</p>",
+      "blocks": [
+        [
+          "Economics",
+          "Costco earns recurring membership income and runs a low-margin, fast-turning merchandise operation.",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c10",
+      "title": "Costco 货架",
+      "blocks": [
+        [
+          "规模",
+          "Costco limits the number of products on its shelves. Large orders improve buying terms, while rapid stock turnover lowers the cash tied up in inventory.",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c11",
+      "title": "开市客会员关系",
+      "blocks": [
+        [
+          "续费",
+          "开市客先用商品让利留住会员，再用稳定续费覆盖经营成本，会员与低价相互强化。",
+          "costco"
+        ]
+      ]
+    },
+    {
+      "id": "c12",
+      "title": "Costco 商业模式",
+      "blocks": [
+        [
+          "出行",
+          "Costco 门店公交车今天改道，停车场临时关闭，附近道路进入施工阶段。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "n01",
+      "title": "Costco 商业模式和行业",
+      "blocks": [
+        [
+          "同行",
+          "沃尔玛的商业模式依靠广泛门店与采购规模，Walmart 的利润来自商品经营。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "n02",
+      "title": "零售比较",
+      "blocks": [
+        [
+          "开市客",
+          "Costco 新店开业有很多顾客排队。",
+          ""
+        ],
+        [
+          "沃尔玛",
+          "Walmart 的商业模式结合商品销售和供应链管理，经营事实属于沃尔玛。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "n03",
+      "title": "Costco 新闻",
+      "blocks": [
+        [
+          "活动",
+          "Costco 今天发布了门店周年庆活动安排与停车指南。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "n04",
+      "title": "商业模式讨论",
+      "blocks": [
+        [
+          "方法",
+          "研究商业模式需要区分收入来源、成本与现金回收，这里没有分析任何具体公司。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "n05",
+      "title": "Costco 商业模式问题",
+      "blocks": [
+        [
+          "待研究",
+          "本文没有分析 Costco 商业模式，只记录一个待研究的问题。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "n06",
+      "title": "The Cost of AI",
+      "blocks": [
+        [
+          "Software",
+          "The cost of building a software business model changes as computing prices fall. This is about software economics.",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "n07",
+      "title": "Walmart business model",
+      "blocks": [
+        [
+          "Retail",
+          "Walmart sells groceries through a large store network and manages supplier terms. Its business model is based on merchandise sales.",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "a01",
+      "title": "Adobe 收入",
+      "blocks": [
+        [
+          "收费",
+          "Adobe 的订阅模式把一次性授权改成持续付费，客户每年续约带来更稳定的收入。",
+          "adobe"
+        ]
+      ]
+    },
+    {
+      "id": "a02",
+      "title": "奥多比经营研究",
+      "blocks": [
+        [
+          "留存",
+          "奥多比的订阅模式将持续更新与付费关系绑定，迁移工作流的成本提高客户留存。",
+          "adobe"
+        ]
+      ]
+    },
+    {
+      "id": "a03",
+      "title": "Adobe 软件服务",
+      "blocks": [
+        [
+          "续约",
+          "Adobe customers pay regularly to keep access to creative applications and updates. Renewals make revenue more predictable than perpetual licenses.",
+          "adobe"
+        ]
+      ]
+    },
+    {
+      "id": "a04",
+      "title": "Adobe 分段研究",
+      "blocks": [
+        [
+          "计费",
+          "Adobe 是本节讨论的软件供应商。",
+          ""
+        ],
+        [
+          "计费",
+          "这家公司的订阅模式通过年度合同回收研发投入，服务不断更新使客户继续付费。",
+          "adobe"
+        ]
+      ]
+    },
+    {
+      "id": "a05",
+      "title": "Adobe 经营机制",
+      "blocks": [
+        [
+          "产品",
+          "Adobe 让用户按期支付使用权费用，持续提供升级与协作功能，收入不再依赖每次大版本售卖。",
+          "adobe"
+        ]
+      ]
+    },
+    {
+      "id": "an1",
+      "title": "Adobe 订阅模式",
+      "blocks": [
+        [
+          "公司活动",
+          "Adobe 本周举行员工体育活动，公布了摄影比赛名单。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "an2",
+      "title": "Adobe 与渠道",
+      "blocks": [
+        [
+          "别家收费",
+          "微软的订阅模式将办公软件与云服务一起收费，Microsoft 的合同覆盖企业客户。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "an3",
+      "title": "订阅模式研究方法",
+      "blocks": [
+        [
+          "方法",
+          "订阅模式的研究应比较客户留存和续约价格，本文没有具体公司案例。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "v01",
+      "title": "Visa 支付研究",
+      "blocks": [
+        [
+          "双边",
+          "Visa 的网络效应来自持卡人与商户相互吸引，接受它的商户越多，发卡服务越有吸引力。",
+          "visa"
+        ]
+      ]
+    },
+    {
+      "id": "v02",
+      "title": "维萨的规模机制",
+      "blocks": [
+        [
+          "连接",
+          "维萨的网络效应让更多商户吸引更多持卡人，交易量增长又提高商户接入意愿。",
+          "visa"
+        ]
+      ]
+    },
+    {
+      "id": "v03",
+      "title": "Visa acceptance",
+      "blocks": [
+        [
+          "Payments",
+          "Visa connects issuing banks, cardholders and merchants. More places accepting its cards increase their usefulness to consumers and attract more issuers.",
+          "visa"
+        ]
+      ]
+    },
+    {
+      "id": "v04",
+      "title": "Visa 多段分析",
+      "blocks": [
+        [
+          "网络",
+          "Visa 是本节分析的对象。",
+          ""
+        ],
+        [
+          "网络",
+          "它的网络效应来自更多支付接受点与更多持卡者之间的正反馈，而不是自营放贷。",
+          "visa"
+        ]
+      ]
+    },
+    {
+      "id": "v05",
+      "title": "维萨观察",
+      "blocks": [
+        [
+          "通用性",
+          "维萨在更多国家被接受，消费者便更愿意持有相关银行卡，更多交易再吸引服务商连接。",
+          "visa"
+        ]
+      ]
+    },
+    {
+      "id": "vn1",
+      "title": "Visa 网络效应",
+      "blocks": [
+        [
+          "活动",
+          "Visa 的办公室将在下周搬迁，员工通勤线路会调整。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "vn2",
+      "title": "Visa 与其他网络",
+      "blocks": [
+        [
+          "同行",
+          "腾讯的网络效应来自社交关系链，用户朋友越多越愿意留在平台上。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "vn3",
+      "title": "网络效应方法",
+      "blocks": [
+        [
+          "方法",
+          "讨论网络效应要区分同侧与跨侧反馈，不能只看用户规模。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "g01",
+      "title": "任天堂硬件研究",
+      "blocks": [
+        [
+          "周期",
+          "任天堂的主机周期使硬件销售在新品发布后上升，进入成熟期后逐步放缓，软件收入随后接力。",
+          "nintendo"
+        ]
+      ]
+    },
+    {
+      "id": "g02",
+      "title": "Nintendo platform",
+      "blocks": [
+        [
+          "Console",
+          "Nintendo sells a new console to expand the installed base. Game sales grow after hardware adoption, while aging hardware gradually loses momentum.",
+          "nintendo"
+        ]
+      ]
+    },
+    {
+      "id": "g03",
+      "title": "任天堂分段研究",
+      "blocks": [
+        [
+          "硬件",
+          "任天堂是这里讨论的游戏公司。",
+          ""
+        ],
+        [
+          "硬件",
+          "它的主机周期让新设备首发带动装机，随后由软件阵容维持活跃度，换代前收入容易波动。",
+          "nintendo"
+        ]
+      ]
+    },
+    {
+      "id": "g04",
+      "title": "任天堂经营结构",
+      "blocks": [
+        [
+          "更替",
+          "任天堂围绕每一代游戏设备建立用户基础，硬件更新与游戏发售节奏共同影响收入分布。",
+          "nintendo"
+        ]
+      ]
+    },
+    {
+      "id": "g05",
+      "title": "任天堂主机周期分析",
+      "blocks": [
+        [
+          "现金流",
+          "任天堂的主机周期会改变硬件与软件收入占比，成熟期的软件销售有助于平滑换代波动。",
+          "nintendo"
+        ]
+      ]
+    },
+    {
+      "id": "gn1",
+      "title": "任天堂 主机周期",
+      "blocks": [
+        [
+          "活动",
+          "任天堂今天公布了一份员工参观活动与交通安排。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "gn2",
+      "title": "任天堂与行业",
+      "blocks": [
+        [
+          "同行",
+          "索尼的主机周期由新设备发布和软件阵容驱动，Sony 会在换代期加大营销。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "gn3",
+      "title": "主机周期研究方法",
+      "blocks": [
+        [
+          "方法",
+          "主机周期分析应关注装机量和软件销量，这里没有讨论具体企业。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "ind_a01",
+      "title": "腾讯的流量收入如何形成",
+      "blocks": [
+        [
+          "从观看到付费",
+          "腾讯的广告变现取决于一次展示能给商家带来多少有效购买。对用户兴趣和商品需求判断得更准，同样的曝光就能产生更多成交，商家因而愿意在竞价中出更高的价格；如果只是增加插入次数而损害观看体验，用户停留减少，又会压低未来可出售的曝光。",
+          "independent_a"
+        ]
+      ]
+    },
+    {
+      "id": "ind_a02",
+      "title": "短视频与商家之间的闭环",
+      "blocks": [
+        [
+          "效果回流",
+          "腾讯让商家投放的内容直接连接微信内的小程序交易，用户看完之后少跳转一次，完成购买的机会就更高。成交结果回到系统后，后续分发可以减少无效触达。这里新增收入的来源是每次触达的效果改善，并不要求观看人数按相同比例增长。",
+          "independent_a"
+        ]
+      ]
+    },
+    {
+      "id": "ind_a03",
+      "title": "A note on the economics of a social feed",
+      "blocks": [
+        [
+          "Mechanism",
+          "Tencent lets a merchant pay to place a short clip between videos that users chose to watch. Better estimates of whether a viewer will buy make each placement worth more to that merchant. A cap on inserted clips protects viewing time, so improving the match can raise receipts without filling every screen with paid content.",
+          "independent_a"
+        ]
+      ]
+    },
+    {
+      "id": "ind_a04",
+      "title": "一项内容服务的收益约束",
+      "blocks": [
+        [
+          "研究对象",
+          "腾讯是这一节的研究对象，下文讨论用户观看内容与商家付费之间的关系。",
+          ""
+        ],
+        [
+          "供需两侧",
+          "它的广告变现并非曝光越多越好：商家在成交回报足以覆盖支出时才会继续购买展示机会，用户则会因重复打扰而减少观看。因此更好的匹配能提高商家的出价，但放宽插入密度必须同时考虑用户流失造成的长期损失。",
+          "independent_a"
+        ]
+      ]
+    },
+    {
+      "id": "ind_a05",
+      "title": "腾讯办公楼搬迁简讯",
+      "blocks": [
+        [
+          "消息",
+          "腾讯公布了某办公区更换门牌与调整接驳车时刻的安排，员工可在新前台领取通行证。本条只记录场地事务，没有业务收入、定价或经营效率方面的讨论。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "ind_a06",
+      "title": "一家电商平台的广告变现分析",
+      "blocks": [
+        [
+          "交易与投放",
+          "阿里巴巴的广告变现把商家的获客支出与站内搜索结果中的曝光相连。商家依据订单转化率调整出价，平台若提升匹配精度，就可能在不增加搜索次数的情况下提高每次搜索的收入。这里分析的是阿里巴巴的经营机制。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "ind_a07",
+      "title": "腾讯 广告变现",
+      "blocks": [
+        [
+          "附件说明",
+          "本页正文是虚构仓库的消防演练清单：先检查应急照明，再按楼层集合，最后核对人数和出口标识。没有提供任何企业收入来源、收费方式或商业活动的解释。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "ind_b01",
+      "title": "贵州茅台的发货与终端需求",
+      "blocks": [
+        [
+          "积压形成",
+          "贵州茅台的渠道库存来自发货和终端实际消耗之间的时间差。经销商接货后，只有消费者购买并开瓶，货才真正离开流通环节；如果新配额持续到货而开瓶速度放慢，堆积的货会占用现金，促使经销商降低成交价换取回款。",
+          "independent_b"
+        ]
+      ]
+    },
+    {
+      "id": "ind_b02",
+      "title": "酒类经营中的回款表象",
+      "blocks": [
+        [
+          "两种需求",
+          "贵州茅台收到经销商预付款，不等于终端消费者已把酒喝掉。下游为保留未来配额而提前打款时，上游回款可以保持稳定，流通环节的瓶数却继续累积。需要把经销商收货、门店卖出和实际开瓶分开观察，才能判断后续接货能力是否下降。",
+          "independent_b"
+        ]
+      ]
+    },
+    {
+      "id": "ind_b03",
+      "title": "When a shipment is not final consumption",
+      "blocks": [
+        [
+          "Cash conversion",
+          "Kweichow Moutai can record a shipment before the bottles reach a dinner table. If unopened cases accumulate at intermediaries while new deliveries continue, those sellers may cut cash prices to release money for their next payment. Strong receipts at the producer can therefore coexist with weakening purchases by households.",
+          "independent_b"
+        ]
+      ]
+    },
+    {
+      "id": "ind_b04",
+      "title": "一项高端消费品的流通观察",
+      "blocks": [
+        [
+          "研究对象",
+          "贵州茅台是本节观察的对象，下面区分酒厂发出的货与消费者真正消耗的货。",
+          ""
+        ],
+        [
+          "资金压力",
+          "它的渠道库存上升时，批发商即使愿意保住年度配额，也可能没有足够现金接下一批货。降低批发成交价可以暂时回笼资金，却会削弱其他持货者的惜售意愿；减缓发货则给终端消耗已有货物留出时间，因此要同时比较发货节奏和开瓶速度。",
+          "independent_b"
+        ]
+      ]
+    },
+    {
+      "id": "ind_b05",
+      "title": "贵州茅台展厅开放安排",
+      "blocks": [
+        [
+          "公告",
+          "贵州茅台的合成展厅公告列出了参观预约时段、讲解路线和停车位置，访客需在入口领取号码牌。这是一条参观消息，没有涉及销售、价格、货物流转或现金回收。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "ind_b06",
+      "title": "另一家酒企的渠道库存观察",
+      "blocks": [
+        [
+          "下游资金",
+          "五粮液的渠道库存如果增长快于终端动销，经销商就会把更多资金压在货上。批发折价能加快回款，但持续接货还取决于消费者购买速度；这段讨论的是五粮液的发货安排与经销商承接能力。",
+          ""
+        ]
+      ]
+    },
+    {
+      "id": "ind_b07",
+      "title": "贵州茅台 渠道库存",
+      "blocks": [
+        [
+          "页内内容",
+          "正文只是一份虚构山地步道的维护记录，记录栏杆补漆、落叶清理与路灯更换的位置。这里没有关于任何企业、商品流通、经销商或消费需求的经营分析。",
+          ""
+        ]
+      ]
+    }
+  ]
+}
