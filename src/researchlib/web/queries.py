@@ -36,6 +36,8 @@ TREE_SUBQUERY = """(
 def scope_clause(scope: Scope, alias: str = "a") -> tuple[str, dict]:
     parts = [f"{alias}.source_id = ANY(%(scope_ids)s)"]
     params: dict = {"scope_ids": list(scope.source_ids)}
+    # 网站不展示知识星球读者帖；库里仍保留，检索/按天/问这篇都不带。
+    parts.append(f"coalesce({alias}.raw_meta->>'poster_role', '') <> 'guest'")
     if scope.article_id is None:
         # 同一篇的重复只留主版本。指定了某一篇（「只问这篇」）时照常。
         parts.append(f"{alias}.duplicate_of IS NULL")
@@ -71,7 +73,7 @@ a.raw_meta->>'poster_role' AS poster_role
 
 
 def _owner_clause(owner_only: bool, alias: str = "") -> str:
-    """作者统计和作者页只算星主原创。网友帖留在来源时间线里，但不记到星主名下。"""
+    """作者统计和作者页只算星主原创。网友帖不进网站展示（首页也走 owner_only）。"""
     if not owner_only:
         return ""
     column = f"{alias}.raw_meta" if alias else "raw_meta"
