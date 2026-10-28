@@ -65,6 +65,23 @@ def _flag(value, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# 经 Cloudflare Tunnel 进来的请求都带这些头（边缘节点加的，外面去不掉）；在 Mac mini 上直接 curl 127.0.0.1:8088 不带。
+_TUNNEL_HEADERS = ("cf-connecting-ip", "cf-ray", "cdn-loop", "x-forwarded-for")
+
+
+def _local_only(request: Request) -> None:
+    """启动、停止批量任务（译制、摘要、观点、论点、图片文字）只在本机调。
+
+    这些任务花 LLM 的钱，站点公开以后，公网上能调就是谁都能花。站内页面没有调用它们的地方。
+    """
+    if any(request.headers.get(name) for name in _TUNNEL_HEADERS):
+        raise HTTPException(
+            status_code=403, detail="批量任务只能在本机调用：在 Mac mini 上 curl http://127.0.0.1:8088/..."
+        )
+    if not _same_origin(request):
+        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+
+
 def _int(value) -> int | None:
     """JSON 里的数字是 int，命令行传字符串，两种都收。"""
     if value is None or isinstance(value, bool):
@@ -614,8 +631,7 @@ async def api_translate_start(request: Request):
     JSON：{source?, limit?, loop?, sleep?}。source 为空表示所有来源；limit 每轮取几篇；
     loop=true 时空队列休眠 sleep 秒再扫；sleep 最少 5 秒。已经在跑时不会起第二个，返回 started=false。
     """
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     try:
         body = await request.json()
     except ValueError as exc:
@@ -646,8 +662,7 @@ def api_translate_status(request: Request):
 @api.post("/api/v1/translate/stop")
 async def api_translate_stop(request: Request):
     """请 worker 停。正在译的那篇会译完。"""
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     return _json(translate_worker.request_stop())
 
 
@@ -658,8 +673,7 @@ async def api_digest_start(request: Request):
     JSON：{source?, limit?, loop?, sleep?}。source 为空表示所有启用来源。
     已经在跑时不会起第二个，返回 started=false。
     """
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     try:
         body = await request.json()
     except ValueError as exc:
@@ -690,8 +704,7 @@ def api_digest_status(request: Request):
 @api.post("/api/v1/digest/stop")
 async def api_digest_stop(request: Request):
     """请摘要 worker 停。正在处理的那篇会做完。"""
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     return _json(digest_job.request_stop())
 
 
@@ -705,8 +718,7 @@ async def api_views_start(request: Request):
     （短正文并上 OCR），再只整理这些篇；与 CLI --articles 对应。
     company 为中文名，只整理这家。已经在跑时不会起第二个。
     """
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     try:
         body = await request.json()
     except ValueError as exc:
@@ -742,8 +754,7 @@ def api_views_status(request: Request):
 @api.post("/api/v1/views/stop")
 async def api_views_stop(request: Request):
     """请观点 worker 停。正在处理的那篇会做完。"""
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     return _json(views_job.request_stop())
 
 
@@ -754,8 +765,7 @@ async def api_theses_start(request: Request):
     JSON：{company?, loop?, sleep?, force?}。company 为中文名；force=true 时没过期也重算。
     已经在跑时不会起第二个。
     """
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     try:
         body = await request.json()
     except ValueError as exc:
@@ -786,8 +796,7 @@ def api_theses_status(request: Request):
 @api.post("/api/v1/theses/stop")
 async def api_theses_stop(request: Request):
     """请论点 worker 停。正在处理的那家会做完。"""
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     return _json(theses_job.request_stop())
 
 
@@ -800,8 +809,7 @@ async def api_ocr_start(request: Request):
     rapidocr 或 auto。articles 是文章 id 列表。已经在跑时不会起第二个，返回 started=false。
     不回凭证。识图失败不回退 RapidOCR。
     """
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     try:
         body = await request.json()
     except ValueError as exc:
@@ -842,8 +850,7 @@ def api_ocr_status(request: Request):
 @api.post("/api/v1/ocr/stop")
 async def api_ocr_stop(request: Request):
     """请识图 worker 停。正在认的那张会认完。"""
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="跨站请求被拒绝")
+    _local_only(request)
     return _json(ocr_job.request_stop())
 
 
@@ -896,7 +903,7 @@ def llms_txt(request: Request):
         "",
         f"- [触发译制]({base}/api/v1/translate): POST JSON {{source?, limit?, loop?, sleep?}}，"
         "后台线程按待译队列翻译英文文章，立刻返回 running；GET 同一路径看进度，"
-        "POST /api/v1/translate/stop 停。已在跑时不会开第二个。只在站内或本机调用，不读、不回任何凭证。",
+        "POST /api/v1/translate/stop 停。已在跑时不会开第二个。只在本机调用，经公网的请求 403。不读、不回凭证。",
         f"- [触发摘要]({base}/api/v1/digest): POST JSON {{source?, limit?, loop?, sleep?}}，"
         "GET 看进度，POST /api/v1/digest/stop 停。",
         f"- [触发观点]({base}/api/v1/views): POST JSON {{source?, company?, articles?, limit?, loop?, sleep?, gap?}}，"
@@ -908,7 +915,8 @@ def llms_txt(request: Request):
         "engine 为 vision（默认，deepseek-flash 识图）、rapidocr 或 auto。"
         "后台线程识别，立刻返回 running；GET 同一路径看进度，POST /api/v1/ocr/stop 停。"
         "已在跑时不会开第二个。识图失败记 engine 以 :error 结尾、正文为空，下次会重试，不回退脏字。"
-        "只在站内或本机调用，不读、不回任何凭证。",
+        "不读、不回任何凭证。",
+        "译制、摘要、观点、论点、图片文字的启动和停止都只在本机调用，经公网（Cloudflare）进来的请求 403。",
         "",
         "## 字段约定",
         "",
