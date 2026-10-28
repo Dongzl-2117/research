@@ -51,6 +51,7 @@ MAX_VISION_SEND_BYTES = 110_000
 VISION_MAX_SIDE = 1280
 VISION_JPEG_QUALITY = 70
 VISION_TRANSIENT_TRIES = 3
+VISION_MAX_TOKENS = 8192  # 转写不需要站点默认 393216，否则流式思考撑爆容器
 # 检索块要 20 个字；交给观点和摘要的旁路、以及阅读页放宽，短截图也能进正文。
 READING_MIN_CHARS = 8
 # 正文短于这个字数时，图片文字和上次抽摘要、观点时不一致就要重抽。长文不因为后补一张图整篇重来。
@@ -319,7 +320,7 @@ def vision_engine(settings) -> Callable[[Path], str]:
         last_exc: BaseException | None = None
         for attempt in range(VISION_TRANSIENT_TRIES):
             try:
-                text, _model = llm.chat(settings, messages)
+                text, _model = llm.chat(settings, messages, exact_max_tokens=VISION_MAX_TOKENS)
                 return normalize_vision_text(text)
             except llm.LLMError as exc:
                 last_exc = exc

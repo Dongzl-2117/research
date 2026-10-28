@@ -90,11 +90,13 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
 
     def fake_chat(settings, messages, **kwargs):
         seen["messages"] = messages
+        seen["kwargs"] = kwargs
         return "```\n方伟：底线\n网友：非共识\n```", "deepseek-flash"
 
     monkeypatch.setattr("researchlib.llm.chat", fake_chat)
     text = vision_engine(_settings(tmp_path))(image)
     assert text == "方伟：底线\n网友：非共识"
+    assert seen.get("kwargs", {}).get("exact_max_tokens") == 8192
     assert normalize_vision_text("```text\n方伟：底线\n```") == "方伟：底线"
     content = seen["messages"][0]["content"]
     assert content[0]["type"] == "text"

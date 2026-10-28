@@ -251,11 +251,13 @@ def chat(
     *,
     max_tokens: int | None = None,
     temperature: float = 0.2,
+    exact_max_tokens: int | None = None,
 ) -> tuple[str, str]:
     """返回 (回答文本, 实际模型名)。
 
     DeepSeek：deepseek-flash / thinking / reasoning_effort=max / 至少 393216，不发 temperature。
     Grok：grok-4.7 / xhigh / 至少 128000，不发 fast。
+    ``exact_max_tokens`` 会覆盖上面的下限（识图转写不需要几十万输出，否则容器 OOM）。
     """
     provider = _provider(settings)
     label = provider_label(provider)
@@ -264,6 +266,8 @@ def chat(
     else:
         # 思考模式下 temperature 不起作用，DeepSeek 的请求里不带。
         payload = {**deepseek_params(max_tokens=max_tokens), "messages": messages}
+    if exact_max_tokens is not None:
+        payload["max_tokens"] = int(exact_max_tokens)
     try:
         token = _oauth_token(settings) if provider == PROVIDER_GROK else _deepseek_token()
     except LLMUnavailable as exc:
