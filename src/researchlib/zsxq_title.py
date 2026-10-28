@@ -11,7 +11,8 @@
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
 - 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
-- 明显错字走 textutil.fix_obvious_typos（与 present_text.polish_display_text 同一张表），不在这里另维护，不改观点和口语。
+- 明显错字走 textutil.fix_obvious_typos（与 present_text.polish_display_text 同一张表），
+  不在这里另维护，不改观点和口语。
 
 读者帖的「读者帖」标在作者行，不写进标题。
 """
