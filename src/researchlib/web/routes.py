@@ -30,7 +30,6 @@ from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.empty_answer import is_suppressed
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
-from researchlib.health import notices as health_notices
 from researchlib.llm import active_label, active_model_id, llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
@@ -393,10 +392,8 @@ def home(request: Request):
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
         stale = []
+        # 运维失败（抓取、夜间补齐等）只写 data/status，不进首页红条；由值班助手看 status。
         notices: list[str] = []
-        if plan["page"] == 1:
-            # 备份、导入、Grok 这些出了问题才有；正常时是空的。
-            notices = health_notices(settings.data_dir, settings.display_timezone)
         if plan["page"] == 1 and settings.stale_banner_enabled:
             watched = [by_id[chosen]] if chosen else feed
             stale = stale_sources(
