@@ -338,3 +338,4 @@ def test_normalize_drops_coupon_and_fixes_year():
     ) == ""
     assert "一年后会" in normalize_vision_text("因为今天的钱可以拿去存款、买国债或投资，一?会变得更多。")
     assert "一?" not in normalize_vision_text("一?后的100元更不值钱")
+    assert normalize_vision_text("（此截图为知识星球优惠券推广卡，按规则整段不输出。）") == ""

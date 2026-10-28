@@ -703,6 +703,8 @@ def _prose_after_footer(original: str, raw_lines: list[str], stripped: list[str]
 def _is_zsxq_coupon_shot(lines: list[str]) -> bool:
     """知识星球扫码领券 / 立减金推广卡：整段丢掉，不能标方伟。"""
     joined = "\n".join(lines)
+    if re.search(r"按规则整段不输出|优惠券推广卡", joined):
+        return True
     if not _ZSXQ_COUPON.search(joined):
         return False
     # 短卡，或同时带「仅限前 / N元立减金」

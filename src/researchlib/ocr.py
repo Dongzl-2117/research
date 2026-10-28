@@ -82,7 +82,7 @@ VISION_PROMPT = """\
 - 截到屏幕边缘的半截气泡：能认的照写，认不全写 … 或 ?；禁止把半截尾巴编成公司名或新句，
   也禁止用本图其它气泡里出现过的公司名补全（例如不要把「…各种/各自的 IP 业务」写成「名创优品…」）。
 - 「一年后」「两年后」等常见时间词，中间的「年」看不清也优先写「年」，不要写成「一?后」「一?会」。
-- 知识星球「扫码领取优惠券」「立减金」「仅限前 N 名」推广卡整段不要输出，也不要标成「方伟：」。
+- 知识星球「扫码领取优惠券」「立减金」「仅限前 N 名」推广卡：不要输出任何字（包括说明句），也不要标成「方伟：」。
 - 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）整段标「网友：」，不要留真实昵称。
 - 看不清的字写 ?，禁止编造。
 
@@ -319,10 +319,11 @@ def normalize_vision_text(text: str) -> str:
         raw = re.sub(r"\s*```$", "", raw)
     for pat, repl in _YEAR_TYPO:
         raw = pat.sub(repl, raw)
-    # 整张都是优惠券推广卡：直接丢掉，避免后处理标成「方伟：」。
+    # 整张都是优惠券推广卡，或模型写了「按规则不输出」说明句：直接丢掉。
+    if re.search(r"按规则整段不输出|优惠券推广卡", raw):
+        return ""
     coupon_hits = _COUPON_MARK.findall(raw)
     if coupon_hits and len(re.findall(r"[一-鿿]", raw)) <= 80:
-        # 短卡且带优惠券关键词 → 噪音
         if re.search(r"扫码领取优惠券|立减金", raw):
             return ""
     # 模型偶发把截断气泡收成「某某公司?」或用上文公司名补半截尾巴。
@@ -335,6 +336,8 @@ def normalize_vision_text(text: str) -> str:
         # 单行优惠券话术（含已标方伟的）丢掉
         body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", s)
         if _COUPON_MARK.search(body) and len(body) <= 40:
+            continue
+        if re.search(r"按规则整段不输出|优惠券推广卡", body):
             continue
         lines.append(line.rstrip())
     # 去掉账号栏后只剩优惠券日期/名额的尾巴
