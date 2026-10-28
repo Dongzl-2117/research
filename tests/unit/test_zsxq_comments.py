@@ -95,9 +95,9 @@ def test_zsxq_import_appends_author_replies(tmp_path: Path):
     assert docs[0].raw_meta["comment_replies"] == 2
 
 
-# 14879 页底那两则。第二则作者在导出里是一串全角空格，Markdown 留着字面量 **。
+# 照 14879 页底评论的导出格式编的。第三则作者在导出里是一串全角空格，Markdown 留着字面量 **。
 _BLANK_NAME = "\u3000" * 7
-ARTICLE_14879_COMMENTS = f"""大模型生意的护城河在哪里，明确还不是一个能够回答的话题。
+ARTICLE_14879_COMMENTS = f"""大模型的壁垒到底在哪，眼下还说不清。
 
 <br>
 <br>
@@ -106,13 +106,13 @@ ARTICLE_14879_COMMENTS = f"""大模型生意的护城河在哪里，明确还不
 ## 评论（3）
 
 - **陈小东**（2026-10-21 11:42）
-  个人觉得大模型很难形成护城河，因为只要开放出来用，哪怕是再贵的商用，都会被其他公司用来蒸馏，从而逼近这个模型。
+  我觉得模型本身很难有壁垒，只要开放出来，再贵也会被别家拿去蒸馏，很快就追上来。
 
 - **方伟Rey**（2026-10-21 11:50）
-  护城河还是要看切换成本和应用层。
+  壁垒更多在迁移成本和应用层。
 
 - **{_BLANK_NAME}**（2026-10-21 11:43）
-  claude的fable不包含在20的订阅中，必须按量付费，10美元/M，opus价格的2.5倍
+  新模型不在包月里，要按量付费，比上一代贵两倍多
 """
 
 
@@ -145,10 +145,10 @@ def test_14879_comments_become_author_time_and_body():
     assert 'class="zsxq-comment-author">方伟Rey<' in section
     assert "陈小东" not in section
     assert "匿名" not in section
-    assert "claude的fable" not in section
-    assert "哪怕是再贵的商用" not in section
+    assert "新模型不在包月里" not in section
+    assert "再贵也会被别家拿去蒸馏" not in section
     assert 'datetime="2026-10-21T11:50"' in section
-    assert "护城河还是要看切换成本和应用层" in section
+    assert "壁垒更多在迁移成本和应用层" in section
     assert "<h2>评论（1）</h2>" in section
     assert 'class="zsxq-comment-list"' in section
     assert "max-width" not in section
@@ -297,7 +297,7 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
     """原图链接和说话人不动。评论接在后面只留方伟，标题前没有空 <br>。"""
     page = _page_14879("\n\n")
     assert "国产agents" in page
-    assert '<span class="who">方伟：</span>会有一批大模型达到' in page
+    assert '<span class="who">方伟：</span>会有一批大模型做到' in page
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     for number in range(1, 8):
         assert f"原图 {number}" in page
