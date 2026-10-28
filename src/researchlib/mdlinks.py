@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+from collections.abc import Sequence
 
 from markupsafe import escape
 
@@ -188,12 +189,15 @@ def prepare_body_html(
     fmt: str | None,
     index: MdIndex | None,
     parent: str = "",
+    *,
+    owners: Sequence[str] | None = None,
 ) -> str:
+    """owners：评论区只留这些名字（来源作者），见 zsxq_comments.source_owners。"""
     _frontmatter, body = split_frontmatter(body_md or "")
     if fmt != "html":
         body = strip_duplicate_title(body, title)
         qa = render_qa_html(body, mapping)
         if qa is not None:
             return finish_html(qa, index, parent)
-    rendered = str(render_body(body, mapping, fmt))
+    rendered = str(render_body(body, mapping, fmt, owners=owners))
     return finish_html(rendered, index, parent)

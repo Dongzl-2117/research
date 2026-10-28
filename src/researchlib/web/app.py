@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from researchlib.ask import mark_interrupted
+from researchlib.chunks import relabel_ocr_chunks_if_needed
 from researchlib.config import Settings, assert_bind_allowed
 from researchlib.db import prepare
 from researchlib.duplicates import dedupe_if_needed
@@ -60,6 +61,11 @@ def _background_upkeep(settings: Settings) -> None:
     except Exception as exc:
         logger.exception("后台重算公司提及失败，可以手动跑 research-rebuild-mentions")
         failed.append(f"重算公司提及（{exc}），可以手动跑 research-rebuild-mentions")
+    try:
+        relabel_ocr_chunks_if_needed(settings)
+    except Exception as exc:
+        logger.exception("后台重切图片文字块失败，可以手动跑 research-rebuild-chunks --ocr")
+        failed.append(f"重切图片文字块（{exc}），可以手动跑 research-rebuild-chunks --ocr")
     previous = read_status(settings.data_dir, "upkeep")
     if failed:
         write_status(settings.data_dir, "upkeep", False, "；".join(failed))

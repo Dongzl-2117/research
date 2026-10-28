@@ -211,14 +211,15 @@ OCR_MIN_CHARS = 20
 _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 
 
-def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
+def ocr_chunks(texts: list[tuple[str, str]], *, host: str = "") -> list[tuple[str, str]]:
     """[(图片内容哈希, 识别出的字)] → [(图片锚点, 块正文)]，同一张图只算一次。
 
     先按微信对话规则整理（去可按住转文字等界面字、标方伟/网友），再切块进检索，
     与 articles.ocr_text / 阅读页旁路同一套 present。整理完没剩下可读的字就不进检索。
+    host 是这篇的作者：别的来源的截图里，绿气泡写成作者名，不写成方伟（问库和检索读的就是这里）。
     """
     from researchlib.render import image_anchor
-    from researchlib.wechat_dialogue import present_ocr_pieces
+    from researchlib.wechat_dialogue import present_ocr_pieces, relabel_host
 
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -228,7 +229,7 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
         seen.add(digest)
         if len(_MEANINGFUL.findall(text or "")) < OCR_MIN_CHARS:
             continue
-        cleaned = present_ocr_pieces([text or ""])
+        cleaned = relabel_host(present_ocr_pieces([text or ""]), host)
         if len(_MEANINGFUL.findall(cleaned)) < OCR_MIN_CHARS:
             continue
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
@@ -247,7 +248,10 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
 def replace_ocr_chunks(conn, article_id: int) -> int:
     """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (article_id,))
-    article = conn.execute("SELECT duplicate_of FROM articles WHERE id = %s", (article_id,)).fetchone()
+    article = conn.execute(
+        "SELECT a.duplicate_of, s.author FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = %s",
+        (article_id,),
+    ).fetchone()
     if article is None or article["duplicate_of"] is not None:
         return 0
     rows = conn.execute(
@@ -260,7 +264,7 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
         """,
         (article_id,),
     ).fetchall()
-    chunks = ocr_chunks([(row["content_hash"], row["text"]) for row in rows])
+    chunks = ocr_chunks([(row["content_hash"], row["text"]) for row in rows], host=article["author"] or "")
     if not chunks:
         return 0
     with conn.cursor() as cur:
@@ -319,14 +323,84 @@ def main(argv: list[str] | None = None) -> int:
     from researchlib.db import prepare
 
     parser = argparse.ArgumentParser(description="重切全部文章的段落块")
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--ocr",
+        action="store_true",
+        help="只重切图片文字块（整理规则或说话人的名字改了以后用），不碰正文和译文块",
+    )
+    parser.add_argument("--source", action="append", default=[], help="和 --ocr 一起用：只重切这个来源，可重复")
+    args = parser.parse_args(argv)
+    if args.source and not args.ocr:
+        raise SystemExit("--source 只能和 --ocr 一起用")
     conn = prepare(Settings.from_env())
     try:
+        if args.ocr:
+            count = rebuild_ocr_chunks(conn, args.source or None)
+            print(f"已重切 {count} 篇文章的图片文字块")
+            return 0
         count = backfill_missing_chunks(conn, rebuild=True)
     finally:
         conn.close()
     print(f"已重切 {count} 篇文章的段落块")
     return 0
+
+
+def rebuild_ocr_chunks(conn, source_ids: list[str] | None = None) -> int:
+    """重切挂着已识别图片的文章的图片文字块。source_ids 给了只切这些来源。返回篇数。"""
+    clause = "AND a.source_id = ANY(%s)" if source_ids else ""
+    params = (list(source_ids),) if source_ids else ()
+    ids = [
+        row["id"]
+        for row in conn.execute(
+            f"""
+            SELECT DISTINCT a.id
+            FROM articles a
+            JOIN article_images i ON i.article_id = a.id
+            JOIN image_texts t ON t.content_hash = i.content_hash
+            WHERE a.duplicate_of IS NULL {clause}
+            ORDER BY a.id
+            """,
+            params,
+        ).fetchall()
+    ]
+    for index, article_id in enumerate(ids, start=1):
+        replace_ocr_chunks(conn, article_id)
+        if index % 200 == 0:
+            conn.commit()
+    conn.commit()
+    return len(ids)
+
+
+# 图片文字块里说话人名字的写法。改了就加一：启动后在后台把方伟以外来源的图片文字块重切一遍。
+OCR_LABEL_KEY = "ocr_host_labels"
+OCR_LABEL_VERSION = "1"
+
+
+def relabel_ocr_chunks_if_needed(settings) -> int:
+    """后台跑：方伟以外的来源，图片文字块里的「方伟：」换成那个来源的作者名。只切一次，不调模型。"""
+    from researchlib.db import connect, ensure_search_session
+    from researchlib.wechat_dialogue import HOST
+
+    conn = connect(settings)
+    # 重切块要用和别处一样的分词设置。
+    ensure_search_session(conn)
+    try:
+        row = conn.execute("SELECT value FROM app_state WHERE key = %s", (OCR_LABEL_KEY,)).fetchone()
+        if row is not None and row["value"] == OCR_LABEL_VERSION:
+            return 0
+        others = [item["id"] for item in conn.execute("SELECT id FROM sources WHERE author <> %s", (HOST,)).fetchall()]
+        count = rebuild_ocr_chunks(conn, others) if others else 0
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+            """,
+            (OCR_LABEL_KEY, OCR_LABEL_VERSION),
+        )
+        conn.commit()
+        return count
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

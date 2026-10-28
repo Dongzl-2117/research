@@ -1111,3 +1111,55 @@ def test_weibo_comment_labeled_guest():
     assert "小事7747" not in text
     assert "龙视新闻联播" not in text
     assert "单日房价" in text
+
+
+def test_news_screenshots_are_not_chats():
+    """正文里提到「微信」「美团外卖」、开头一个三字媒体名的新闻截图，不当群聊，不写成方伟说的话。"""
+    news = "腾讯控股公布三季度业绩\n微信及WeChat的合并月活跃账户数达到14.1亿\n视频号总用户使用时长同比增长超过六成\n"
+    outlet = "财联社\n腾讯控股公布三季度业绩，广告收入同比增长两成\n视频号带动的营销服务收入继续走高\n"
+    takeout = "美团外卖的补贴在三季度继续收缩\n骑手成本占收入的比例回落到三成\n"
+    for raw in (news, outlet, takeout):
+        text = present_ocr_pieces([raw])
+        assert "方伟：" not in text and "网友：" not in text
+    assert "合并月活跃账户数" in present_ocr_pieces([news])
+    assert "美团外卖的补贴" in present_ocr_pieces([takeout])
+    # 状态栏的「微信」、两个不同的昵称仍是群聊。
+    assert present_ocr_pieces(["微信\n9:41\n王小明\n腾讯这季度广告怎么样\n"]).startswith("网友：")
+    two = present_ocr_pieces(["王小明\n腾讯这季度广告怎么样\n李小红\n视频号在涨，挺好的\n"])
+    assert two.count("网友：") == 2
+
+
+def test_other_sources_show_their_own_author_for_the_green_bubble():
+    from researchlib.wechat_dialogue import canonical_host, relabel_host, speaker_note
+
+    text = "方伟：广告还有提价空间。\n\n网友：同意。"
+    shown = relabel_host(text, "乘风破浪")
+    assert shown == "乘风破浪：广告还有提价空间。\n\n网友：同意。"
+    assert canonical_host(shown, "乘风破浪") == text
+    assert relabel_host(text, "方伟") == text and relabel_host(text, "") == text
+    note = speaker_note(shown, "乘风破浪")
+    assert "「乘风破浪：」" in note and "方伟" not in note
+    assert speaker_note(text) == (
+        "群聊已整理成「方伟：」和「网友：」。方伟是星主，其余人都写成网友，不要把网友的话写成方伟的判断。"
+    )
+
+
+def test_reading_page_names_the_source_author_for_other_sources():
+    """乘风破浪的帖子里，截图的绿气泡显示成乘风破浪，不显示成方伟。"""
+    first = "ef" * 32
+    html = str(render_body("正文一句。\n\n![](a.png)\n", {"a.png": f"/media/chengfengpolang/ef/{first}.png"}))
+    page = inline_image_ocr(html, {first: SHOT_A}, host="乘风破浪")
+    assert '<span class="who">乘风破浪：</span>瑞幸和古茗都算头部' in page
+    assert '<span class="who">网友：</span>' in page
+    assert "方伟：" not in page
+    # 不给 host 时照旧是方伟。
+    assert '<span class="who">方伟：</span>' in inline_image_ocr(html, {first: SHOT_A})
+
+
+def test_ocr_search_chunks_use_the_source_author():
+    from researchlib.chunks import ocr_chunks
+
+    chunks = ocr_chunks([("ab" * 32, SHOT_A)], host="乘风破浪")
+    text = "\n".join(body for _anchor, body in chunks)
+    assert "乘风破浪：" in text and "方伟：" not in text
+    assert "方伟：" in "\n".join(body for _anchor, body in ocr_chunks([("ab" * 32, SHOT_A)]))
