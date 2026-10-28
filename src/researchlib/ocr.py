@@ -79,7 +79,7 @@ VISION_PROMPT = """\
 - 嵌套图里的季度（Q1/Q2/Q3）、同比正负号、价格区间必须与图内一致，禁止改写或脑补长句。
 - 剥掉界面字，不要输出：可按住转文字、回到引用位置、设为群待办、
   继续提问、AI搜索、状态栏时间、群名、雪球、LIVE、加人会员群、小程序卡片、输入框。
-- 截到屏幕边缘的半截气泡：能认的照写，认不全写 … 或 ?；禁止把半截尾巴编成公司名或新句。
+- 截到屏幕边缘的半截气泡：能认的照写，认不全写 … 或 ?；禁止把半截尾巴编成公司名或新句，也禁止用本图其它气泡里出现过的公司名补全（例如不要把「…各种/各自的 IP 业务」写成「名创优品…」）。
 - 看不清的字写 ?，禁止编造。
 
 若是表格或柱状图：
@@ -306,15 +306,22 @@ def normalize_vision_text(text: str) -> str:
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
-    # 模型偶发把截断气泡收成「某某公司?」单行；保留含实质内容的问号行。
+    # 模型偶发把截断气泡收成「某某公司?」或用上文公司名补半截尾巴。
     lines = []
     for line in raw.splitlines():
         s = line.strip()
         if re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{2,8}\?", s) and ("方伟" not in s and "网友" not in s):
-            # 单短词+? 且不像「网友：…」——改成省略，避免「名创优品?」这类编造进检索
             if "：" not in s and ":" not in s:
                 continue
         lines.append(line.rstrip())
+    if lines:
+        last = lines[-1].strip()
+        # 「方伟：名创优品… / 名创优品业务…」——半截尾巴常见编造
+        if re.search(r"名创优品", last) and re.search(r"[…\.．?？]+$", last):
+            if last.startswith("方伟：") or last.startswith("方伟:"):
+                lines[-1] = "方伟：…"
+            elif "：" not in last and ":" not in last:
+                lines.pop()
     return "\n".join(lines).strip()
 
 
