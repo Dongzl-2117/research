@@ -75,7 +75,9 @@ PRESETS = {
 # 容器经 Colima 转发到 DeepSeek 时，请求体超过约 150KB（约 5 万汉字）会被断开；单次请求留在这以下。
 SINGLE_CALL_CHARS = 40000
 BATCH_CHARS = 36000
-MAP_WORKERS = 4
+# 经 mini 上 en1 TCP 转发时，4 路并发 TLS 易触发 DECRYPTION_FAILED / WRONG_VERSION；
+# 默认 2 路，可用 ASK_MAP_WORKERS 覆盖。
+MAP_WORKERS = max(1, int(os.environ.get("ASK_MAP_WORKERS", "2") or "2"))
 _JSON = re.compile(r"\{.*\}", re.S)
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ask")
