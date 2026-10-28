@@ -6,7 +6,7 @@ from markupsafe import Markup
 
 from researchlib.ingest.parse import header_topic_id, parse_archive
 from researchlib.web.routes import _repair_zsxq_titles
-from researchlib.zsxq_title import stored_zsxq_title, title_needs_repair, zsxq_display_title
+from researchlib.zsxq_title import stored_zsxq_title, title_needs_ai, title_needs_repair, zsxq_display_title
 
 FULL = "大模型生意的护城河在哪里，明确还不是一个能够回答的话题"
 BODY = FULL + "。\n\n作者没有写出为什么现在答不了。\n"
@@ -402,3 +402,53 @@ def test_header_topic_id_reads_only_the_archive_header():
     assert header_topic_id("正文里没有话题号。") is None
     # 正文很靠后才提到的话题号不算。
     assert header_topic_id("正文。" * 1000 + "topic_id：`12345678901234567`") is None
+
+
+def test_ai_only_for_shells_placeholders_not_mid_sentence_cuts():
+    assert title_needs_ai("泡泡玛特：")
+    assert title_needs_ai("无标题")
+    assert title_needs_ai("护城河…")
+    assert title_needs_ai("")
+    # 错字只抛光，不起题。
+    assert title_needs_ai("AI算力是一个很新都东西") is False
+    # 半句截断对着正文补，不打 flash。
+    assert title_needs_ai("YouTube的护城河类型是平") is False
+    assert title_needs_repair(
+        "YouTube的护城河类型是平",
+        "YouTube的护城河类型是平台网络效应，Netflix只是规模效应。\n",
+    )
+
+
+def test_company_shell_colon_titles_need_repair():
+    assert title_needs_repair("泡泡玛特：")
+    assert title_needs_repair("西部矿业：")
+    assert title_needs_repair("看数：")
+    assert title_needs_repair("YouTube的护城河类型是平", "YouTube的护城河类型是平台网络效应，Netflix只是规模效应。\n")
+    # 完整句不以冒号壳论。
+    assert title_needs_repair("茅台短帖") is False
+    # 有摘要时确定性规则也能收成一句（不靠 flash）。
+    digest = "方伟认为泡泡玛特下跌是自身问题，不是名创或行业竞争抢份额。"
+    title = zsxq_display_title("泡泡玛特：", body="泡泡玛特：", summary=digest)
+    assert "泡泡玛特" in title
+    assert not title.endswith(("：", ":"))
+    assert not title_needs_repair(title)
+
+
+def test_obvious_title_typos_are_polished():
+    from researchlib.textutil import fix_obvious_typos
+    from researchlib.zsxq_title import polish_title_typos
+
+    raw = "AI算力是一个很新都东西"
+    assert polish_title_typos(raw) == fix_obvious_typos(raw) == "AI算力是一个很新的东西"
+    # 标题模块不另维护错字表，共享表里的另一条也要生效。
+    assert polish_title_typos("存在运用杠杆的好处") == "存在运营杠杆的好处"
+    assert title_needs_repair(raw)
+    assert title_needs_ai(raw) is False
+    assert zsxq_display_title(raw, body="问：星主好\n") == "AI算力是一个很新的东西"
+    assert stored_zsxq_title(raw, "问：星主好\n") == "AI算力是一个很新的东西"
+    # 错字若同时是正文半句，仍补全那一句，再走同一张表。
+    cut = "存在运用杠杆的好"
+    body = "存在运用杠杆的好处很多，毛利率会上去。\n"
+    done = "存在运营杠杆的好处很多，毛利率会上去"
+    assert zsxq_display_title(cut, body=body) == done
+    assert stored_zsxq_title(cut, body) == done
