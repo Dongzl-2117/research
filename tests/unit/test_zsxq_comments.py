@@ -12,7 +12,7 @@ import pytest
 
 from researchlib.boilerplate import clean_body
 from researchlib.ingest.parse import author_replies, comments_section, parse_archive, zsxq_text
-from researchlib.render import inline_image_ocr, render_body
+from researchlib.render import image_anchor, inline_image_ocr, render_body
 from researchlib.revisions import split_comments
 from researchlib.translate.pair import stamp_paragraph_ids
 from researchlib.zsxq_comments import display_author
@@ -307,8 +307,10 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
     assert '<span class="who">方伟：</span>会有一批大模型达到' in page
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     for number in range(1, 8):
-        assert f"原图 {number}" in page
-    assert page.index("方伟：") < page.index("原图 1") < page.index("zsxq-comments")
+        digest = f"{number:02d}" * 32
+        assert f'id="{image_anchor(digest)}"' in page
+    assert page.index("方伟：") < page.index("zsxq-comments")
+    assert page.index('class="ocr-shot"') < page.index("zsxq-comments")
     section = _section(page)
     assert 'class="zsxq-comment-author">方伟Rey<' in section
     assert "陈小东" not in section and "匿名" not in section
@@ -325,7 +327,7 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
 def test_breaks_between_screenshots_do_not_survive_in_front_of_comments():
     page = _page_14879("<br>\n")
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
-    assert "原图 7" in page
+    assert f'id="{image_anchor("07" * 32)}"' in page
     gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
     assert "<br" not in gap
     assert 'class="zsxq-comment-author">方伟Rey<' in page

@@ -178,11 +178,13 @@ def test_chat_screenshot_is_readable_text_and_the_image_is_collapsed():
     assert "瑞幸古茗是比较头部的" in page
     assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in page
     assert "古茗店效还行" in page
-    assert "原图 1" in page
-    assert f'<a class="ocr-link" id="{image_anchor(digest)}" href="/media/fangwei-zsxq/ab/{digest}.png"' in page
+    anchor = f'<a class="ocr-link" id="{image_anchor(digest)}" href="/media/fangwei-zsxq/ab/{digest}.png"'
+    assert anchor in page
+    assert "原图 1" not in page
     assert f'<img id="{image_anchor(digest)}"' not in page
     assert "<details" not in page
-    assert page.index("瑞幸和古茗都算头部") < page.index("原图 1")
+    linked = page.index(anchor)
+    assert linked < page.index("瑞幸和古茗都算头部", linked) < page.index("</a>", linked)
     assert 'class="ocr-reading ocr-dialogue"' in page
     assert "网友：" in page
     assert "张三" not in page and "李四" not in page
@@ -212,7 +214,9 @@ def test_ocr_text_is_escaped_and_prose_keeps_newlines():
     assert "&lt;script&gt;" in page
     assert "第二段继续写机制" in page
     assert 'class="ocr-reading"' in page and "ocr-chat" not in page
-    assert "渠道反馈和批价。\n第二段" in page
+    assert "渠道反馈和批价。" in page
+    assert page.index("渠道反馈和批价。") < page.index("第二段继续写机制")
+    assert f'<a class="ocr-link" id="{image_anchor(digest)}"' in page
 
 
 def test_chrome_cleanup_does_not_eat_the_message():
@@ -220,3 +224,48 @@ def test_chrome_cleanup_does_not_eat_the_message():
     assert "微信" not in cleaned.splitlines()
     assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in cleaned
     assert tidy_ocr_text("微信\n20:41\n昨天") == "微信\n20:41\n昨天"
+
+
+def test_24008_quote_paragraphs_and_xueqiu_order_are_in_text_links():
+    """24008：方洪波收成自然段，雪球较早的发言在前，字本身链到原图。"""
+    fang = "ab" * 32
+    nest = "cd" * 32
+    fang_text = (
+        "方洪波：\n企业家精神是敢于在最顺的时候\n对自己动刀子\n光做家电\n没有未来\n"
+        "我们光做家电没有未来\nthat just making home appliances offered no future.\n"
+        "转型本质就是转人，在企业最顺的时候对自己动刀子 (1/3)\n"
+    )
+    nest_text = (
+        "网友：李录投资也很好，我们投资的基本理念其实非常接近，能力圈可能有点不同而已。"
+        "目前我不会考虑和任何人做任何节目的。\n"
+        "网友：大道会不会考虑和李录做一期对谈节目？\n"
+        "网友：莫尼什：我是苹果用户。段永平拥有OPPO和vivo，也有一个很大的股票投资组合。"
+        "他最大的持仓是苹果，直接竞争对手。他是我的朋友。你知道他怎么跟我说的吗？他…\n"
+    )
+    page = inline_image_ocr(
+        str(
+            render_body(
+                "![](fang.png)\n\n![](nest.png)\n",
+                {
+                    "fang.png": f"/media/fangwei-mp/96/{fang}.jpg",
+                    "nest.png": f"/media/fangwei-mp/8b/{nest}.jpg",
+                },
+            )
+        ),
+        {fang: fang_text, nest: nest_text},
+    )
+    assert "对自己动刀子</p>" not in page
+    assert "光做家电</p>" not in page
+    assert "企业家精神是敢于在最顺的时候对自己动刀子" in page
+    assert "光做家电没有未来" in page
+    assert page.index("莫尼什：") < page.index("大道会不会考虑") < page.index("李录投资也很好")
+    assert "原图 1" not in page and "原图 2" not in page
+    fang_at = page.index(f'id="{image_anchor(fang)}"')
+    assert fang_at < page.index("企业家精神是敢于在最顺的时候对自己动刀子", fang_at)
+    assert f'href="/media/fangwei-mp/96/{fang}.jpg"' in page[fang_at : page.index("</a>", fang_at)]
+    nest_at = page.index(f'id="{image_anchor(nest)}"')
+    assert nest_at < page.index("莫尼什：", nest_at) < page.index("</a>", nest_at)
+    assert f'href="/media/fangwei-mp/8b/{nest}.jpg"' in page[nest_at : page.index("</a>", nest_at)]
+    reply_at = page.index("李录投资也很好")
+    reply_open = page.rindex("<a ", 0, reply_at)
+    assert f"/media/fangwei-mp/8b/{nest}.jpg" in page[reply_open : page.index("</a>", reply_at)]

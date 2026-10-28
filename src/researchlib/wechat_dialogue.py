@@ -8,6 +8,7 @@ RapidOCR 有原图时按绿气泡底色给本人行加侧标记，没有图时�
 - 别人的昵称（王小明、李小红、Kevin，以及只写了名字的）→「网友：」，正文里不再留这个名字
 - 显示名「方伟 / 方伟Rey / 方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
+- 雪球 / 微博嵌套回复不是从上到下的时间序：``回复@`` / ``//@`` 从早到晚展开，下面的引用卡片放到回复前面
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
 - 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
@@ -829,9 +830,13 @@ def _peel_sticky_tail(line: str) -> str:
 def _drop_post_footer(lines: list[str]) -> list[str]:
     """页脚按行丢掉。按钮后面的方伟、网友继续留着，不从第一行按钮截到图末。
 
+    「回复@ / //@」若还留在一行里，按时间从早到晚拆开，不只留最新一条。
+
     「李四留言」和「李四留言1次·关注8个月」改成网友的一轮，名字和关注月数不进正文。
     视频角标、主播名牌和广告海报的 Logo/口号也在这里剥掉。
     """
+    from researchlib.present_text import expand_reply_chain_line
+
     lines = drop_broadcast_chrome(lines)
     peeled = [_peel_sticky_tail(line) for line in lines]
     context = _post_chrome_context(peeled)
@@ -890,6 +895,11 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
         if _is_author_badge(line) or _is_strong_footer(line) or (context and _is_soft_footer(line)):
             index += 1
             continue
+        expanded = expand_reply_chain_line(line)
+        if expanded is not None:
+            kept.extend(item for item in expanded if item.strip())
+            index += 1
+            continue
         collapsed = _collapse_reply_at(line)
         if collapsed:
             kept.append(collapsed)
@@ -898,11 +908,15 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
 
 
 def _prose_after_footer(original: str, raw_lines: list[str], stripped: list[str]) -> Shot:
-    if stripped == raw_lines:
-        return Shot("prose", [], original)
+    from researchlib.present_text import merge_wrapped_utterances
+
     if not stripped:
         return Shot("media", [], "")
-    return Shot("prose", [], "\n".join(_plain(line) for line in stripped).strip())
+    if stripped == raw_lines:
+        body = original
+    else:
+        body = "\n".join(_plain(line) for line in stripped).strip()
+    return Shot("prose", [], merge_wrapped_utterances(body))
 
 
 def _is_zsxq_coupon_shot(lines: list[str]) -> bool:
@@ -947,7 +961,9 @@ def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
 
 
 def parse_shot(text: str) -> Shot:
-    original = (text or "").strip()
+    from researchlib.present_text import order_nested_replies
+
+    original = order_nested_replies((text or "").strip())
     if not original:
         return Shot("prose", [], "")
     raw_lines = [_scrub(line) for line in _normalize(original).splitlines()]

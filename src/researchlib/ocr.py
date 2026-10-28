@@ -30,6 +30,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from researchlib.chunks import replace_ocr_chunks
+from researchlib.present_text import merge_wrapped_utterances, order_nested_replies
 from researchlib.textutil import collapse_short_spam, fix_obvious_typos
 from researchlib.vision_polish import repair_vision_misreads
 from researchlib.wechat_dialogue import (
@@ -94,7 +95,17 @@ VISION_PROMPT = """\
 - 视频号/公众号关注条不要输出：已关注、点击 #话题 查看更多、欢迎关注 @账号 视频号、作者提示: 内容为转载。
 - 雪球/微博帖头与壳不要输出：发帖昵称、地区、影响力徽章（如十大影响力用户、超级某某）、
   「发讨论」「查看对话」、点赞评论转发数字栏。
-- 「回复@甲:… //@乙:回复@丙:…」转发串只保留评论正文，标「网友：」，不要整串壳。
+- 「回复@甲:… //@乙:回复@丙:…」去掉昵称和「回复@」「//@」壳。
+  按时间从早到晚各写一行「网友：」（越靠后的 //@ 越早），不要只留最上面那条新回复。
+- 雪球、微博这类嵌套回复：视觉上靠上的一块常常是较晚的回复，
+  下面缩进或灰底引用卡片是被回复的更早发言。不要按从上到下当成时间顺序。
+  先写较早的发言，再写回复。界面昵称一律「网友：」；
+  引语里的说话人留在正文里（如「莫尼什：我是苹果用户……」）。
+  例：上面是「李录投资也很好……」，中间是「大道会不会考虑和李录做一期对谈节目？」，
+  下面卡片是「莫尼什：我是苹果用户……」。应写成：
+  网友：莫尼什：我是苹果用户……
+  网友：大道会不会考虑和李录做一期对谈节目？
+  网友：李录投资也很好……
 - 杂志/品牌封面壳不要输出：领教工坊、INSIDE THE BEST、COLMO 等刊头、Logo 字、品牌水印；
   「来源：思想×岭南|…」这类刊源行也不要。封面大字若是正文金句（如「光做家电没有未来」）照写。
 - 同一短句连续刷屏（如「深刻反省」重复十几遍）只保留一次，不要整段复读。
@@ -112,7 +123,11 @@ VISION_PROMPT = """\
 - 公司与数字一一对应，保留行列（公司、指标、数字写在同一行）。
 - 看不清写 ?，禁止编造数字或公司名。
 
-其它截图按阅读顺序逐行转写。看不清写 ?，禁止编造。不要额外评论。
+字幕、金句、杂志或视频封面大字：同一句话被画面折成多行时合成自然段，不要一句一行、不要一词一段。
+句末或另一块标题、字幕、说明才另起一段。例如「企业家精神是敢于在最顺的时候」与下一行「对自己动刀子」写成一句；
+「光做家电」「没有未来」写成「光做家电没有未来」。微信或星球气泡仍是一条气泡一行，不要把不同气泡粘成一句。
+
+其它截图按阅读顺序转写，折行收成自然段。看不清写 ?，禁止编造。不要额外评论。
 """
 
 
@@ -343,30 +358,6 @@ _SOURCE_MASTHEAD = re.compile(
 _SHORT_REPEAT_TOKEN = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,12}$")
 
 
-def _collapse_reply_at_line(line: str) -> str:
-    """「回复@甲:正文 //@乙:…」只留正文；已有「网友：」前缀则保留。"""
-    plain = (line or "").strip()
-    if not plain:
-        return ""
-    prefix = ""
-    labeled = re.match(r"^((?:方伟|网友)\s*[:：]\s*)", plain)
-    if labeled:
-        prefix = labeled.group(1)
-        plain = plain[labeled.end() :]
-    if "回复@" not in plain and "//@" not in plain:
-        return line.rstrip()
-    parts = re.split(r"\s*//@\s*", plain)
-    bodies: list[str] = []
-    for part in parts:
-        part = re.sub(r"^(?:回复)?@[^\s:：]+[:：]\s*", "", part.strip()).strip()
-        if part:
-            bodies.append(part)
-            break  # 只留最外层新评论正文
-    if not bodies:
-        return ""
-    return f"{prefix}{bodies[0]}".strip()
-
-
 def _collapse_repeated_short_phrases(line: str) -> str:
     """「深刻反省，深刻反省，…」压成一次；跨逗号/顿号的短词连刷。"""
     raw = (line or "").rstrip()
@@ -407,6 +398,7 @@ def normalize_vision_text(text: str) -> str:
     """去掉模型偶尔套上的代码围栏；半截尾巴里乱编的公司名留给 prompt 约束，这里只做轻清理。
 
     说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一?、品牌刊头、短句刷屏在这里先收掉。
+    折行收成自然段，雪球嵌套回复改成从早到晚。识图滑字仍交给 vision_polish。
     """
     raw = (text or "").strip()
     if raw.startswith("```"):
@@ -445,10 +437,7 @@ def normalize_vision_text(text: str) -> str:
             continue
         if _is_brand_chrome_line(line):
             continue
-        collapsed = _collapse_reply_at_line(line.rstrip())
-        if not collapsed:
-            continue
-        collapsed = _collapse_repeated_short_phrases(collapsed)
+        collapsed = _collapse_repeated_short_phrases(line.rstrip())
         if not collapsed:
             continue
         lines.append(collapsed)
@@ -486,7 +475,8 @@ def normalize_vision_text(text: str) -> str:
                 lines[-1] = "方伟：…"
             elif "：" not in last and ":" not in last:
                 lines.pop()
-    return repair_vision_misreads(fix_obvious_typos(collapse_short_spam("\n".join(lines).strip())))
+    text = order_nested_replies(merge_wrapped_utterances("\n".join(lines).strip()))
+    return repair_vision_misreads(fix_obvious_typos(collapse_short_spam(text)))
 
 
 def vision_engine(settings) -> Callable[[Path], str]:

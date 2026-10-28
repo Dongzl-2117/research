@@ -1647,8 +1647,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   border-radius: 4px;
 }
 /* 图转文字和正文同一套字：不另设 15px，也不铺灰底。
-   没整理成对话的长文仍保留截图里的硬换行（pre-wrap）。
-   「原图 N」在下面，仍是小一号的链接。 */
+   转写出来的字本身是链接（.prose a）。没有字的商品图、图表仍在下面用小一号的「原图 N」。 */
 .prose .ocr-reading {
   margin: 0;
   padding: 0;
@@ -1709,6 +1708,11 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   font-weight: inherit;
   line-height: inherit;
 }
+.prose .ocr-reading p {
+  margin: 0;
+  white-space: normal;
+}
+.prose .ocr-reading p + p { margin-top: 1.4em; }
 .prose .ocr-links {
   display: flex;
   flex-wrap: wrap;

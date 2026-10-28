@@ -5,7 +5,10 @@ from pathlib import Path
 from researchlib.boilerplate import clean_body
 from researchlib.mdlinks import prepare_body_html
 from researchlib.present_text import (
+    expand_reply_chain_line,
+    merge_wrapped_utterances,
     normalize_dialogue_labels,
+    order_nested_replies,
     polish_display_text,
     present_article_text,
     present_zsxq_qa,
@@ -207,3 +210,74 @@ def test_ocr_blocks_inherit_prose_font_without_grey_box():
     assert "color: inherit" in rules
     links = css.split(".prose .ocr-links a {", 1)[1].split("}", 1)[0]
     assert "font-size: 13px" in links
+
+
+# 文章 24008 方洪波视频截图：模型按画面折行，一句拆成多行。
+_FANG_LINES = """方洪波：
+企业家精神是敢于在最顺的时候
+对自己动刀子
+光做家电
+没有未来
+我们光做家电没有未来
+that just making home appliances offered no future.
+转型本质就是转人，在企业最顺的时候对自己动刀子 (1/3)
+"""
+
+# 文章 24008 雪球截图：上面是较晚的回复，下面卡片是更早的引语。昵称已收成网友。
+_XUEQIU_VISUAL = (
+    "网友：李录投资也很好，我们投资的基本理念其实非常接近，能力圈可能有点不同而已。"
+    "目前我不会考虑和任何人做任何节目的。\n"
+    "网友：大道会不会考虑和李录做一期对谈节目？\n"
+    "网友：莫尼什：我是苹果用户。段永平拥有OPPO和vivo，也有一个很大的股票投资组合。"
+    "他最大的持仓是苹果，直接竞争对手。他是我的朋友。你知道他怎么跟我说的吗？他…\n"
+)
+
+
+def test_merge_wrapped_quote_into_paragraphs():
+    """方洪波金句不是一句一段。折行接上，标题和字幕各自成段。"""
+    out = merge_wrapped_utterances(_FANG_LINES)
+    assert "企业家精神是敢于在最顺的时候对自己动刀子" in out
+    assert "时候\n对自己" not in out
+    assert "光做家电没有未来" in out
+    assert "光做家电\n没有未来" not in out
+    assert "我们光做家电没有未来 that just making home appliances offered no future." in out
+    assert "转型本质就是转人" in out
+    assert out.index("企业家精神") < out.index("光做家电没有未来") < out.index("转型本质")
+    assert merge_wrapped_utterances(out) == out.strip()
+
+
+def test_merge_leaves_dialogue_lines_and_long_notes():
+    dialogue = "方伟：第一句还在观察同店。\n网友：第二句先不提价。"
+    assert merge_wrapped_utterances(dialogue) == dialogue
+    headlines = "浙江绍兴会稽山 首度超越古越龙山\n2026年上半年营业收入达8.53亿元\n江浙沪的销售额高达70%以上"
+    merged = merge_wrapped_utterances(headlines)
+    assert "古越龙山2026" not in merged
+    assert "亿元江浙沪" not in merged
+    assert "8.53亿" in merged
+
+
+def test_xueqiu_visual_order_becomes_chronological():
+    out = order_nested_replies(_XUEQIU_VISUAL)
+    assert out.index("莫尼什：") < out.index("大道会不会考虑") < out.index("李录投资也很好")
+    assert order_nested_replies(out) == out
+    plain = "网友：先看基本面，别急着动手。\n网友：你确定吗？\n网友：我再想想，明天再说。"
+    assert order_nested_replies(plain) == plain
+    mixed = "网友：大道会不会考虑？\n方伟：先不谈。\n网友：莫尼什：我是苹果用户，这段引用要很长才像卡片。"
+    assert order_nested_replies(mixed) == mixed
+
+
+def test_reply_chain_expands_earlier_speech_first():
+    line = (
+        "回复@王小明: 李录投资也很好，目前我不会考虑和任何人做任何节目的。"
+        "//@王小明:回复@李四:大道会不会考虑和李录做一期对谈节目？"
+    )
+    expanded = expand_reply_chain_line(line)
+    assert expanded == [
+        "网友：大道会不会考虑和李录做一期对谈节目？",
+        "网友：李录投资也很好，目前我不会考虑和任何人做任何节目的。",
+    ]
+    with_card = line + "\n网友：莫尼什：我是苹果用户。段永平拥有OPPO和vivo，持仓很大。"
+    ordered = order_nested_replies(with_card)
+    assert ordered.index("莫尼什：") < ordered.index("大道会不会") < ordered.index("李录投资也很好")
+    assert "回复@" not in ordered and "//@" not in ordered and "王小明" not in ordered
+    assert order_nested_replies(ordered) == ordered

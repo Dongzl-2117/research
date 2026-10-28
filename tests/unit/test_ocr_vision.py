@@ -76,6 +76,10 @@ def test_vision_prompt_names_the_constraints():
         "查看对话",
         "十大影响力用户",
         "回复@",
+        "从早到晚",
+        "自然段",
+        "不要一句一行",
+        "引用卡片",
         "领教工坊",
         "INSIDE THE BEST",
         "COLMO",
@@ -369,7 +373,8 @@ def test_normalize_strips_video_xueqiu_chrome_and_reply_at():
     out = normalize_vision_text(
         "网友：回复@甲:李录投资也很好啊。//@乙:回复@丙:网友会不会是卖完了再吹？"
     )
-    assert out == "网友：李录投资也很好啊。"
+    assert out == "网友：网友会不会是卖完了再吹？\n网友：李录投资也很好啊。"
+    assert out.index("会不会是卖完了再吹") < out.index("李录投资也很好")
     assert "//@" not in out
     assert "回复@" not in out
 

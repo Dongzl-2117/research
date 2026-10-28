@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from researchlib.textutil import fix_obvious_typos
 from researchlib.vision_polish import repair_vision_misreads
@@ -191,3 +192,326 @@ def present_article_text(text: str) -> str:
     """正文进阅读页前：问答标题收成对话，旧标签统一，再改错字。"""
     text = present_zsxq_qa(text or "")
     return polish_display_text(normalize_dialogue_labels(text))
+
+
+# 屏幕折行大约 10–24 个汉字宽。更长的是已经写完的一段，不能再往下粘。
+_WRAP_MIN = 10.0
+_WRAP_MAX = 24.0
+_DIALOGUE_LINE = re.compile(r"^(?:方伟|网友)\s*[:：]")
+_LABEL_ONLY = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9·]{1,12}[：:]$")
+_SENTENCE_END = re.compile(r"[。！？!?…]$|(?:[A-Za-z])\.$")
+_CONNECTOR_END = re.compile(r"[，、；：,;:]$")
+_NEW_BLOCK = re.compile(r"^(?:[12]\d{3}\s*年|第[0-9一二三四五六七八九十])")
+# 单独成行就是一句的短应答。标题折行（「光做家电」「没有未来」）不在这里。
+_STANDALONE = frozenset(
+    {
+        "好的",
+        "收到",
+        "哈哈",
+        "哈哈哈",
+        "嗯",
+        "嗯嗯",
+        "是的",
+        "对",
+        "谢谢",
+        "感谢",
+        "明白",
+        "了解",
+        "确实",
+        "深刻反省",
+    }
+)
+_CHAIN_MARK = re.compile(r"回复\s*@[^\s：:]{1,32}\s*[:：]|//@")
+_GUEST_LINE = re.compile(r"^网友\s*[:：]\s*(?P<body>.*)$", re.S)
+# 引用卡片正文以说话人起头。功能词不是人名。
+_QUOTE_CARD = re.compile(r"^(?P<name>[\u4e00-\u9fff]{2,6})[：:](?P<rest>\S.{7,})", re.S)
+_NOT_SPEAKER = frozenset(
+    {
+        "他说",
+        "她说",
+        "我说",
+        "所以",
+        "但是",
+        "如果",
+        "这个",
+        "那个",
+        "就是",
+        "因为",
+        "我们",
+        "他们",
+        "你们",
+        "可以",
+        "不是",
+        "还是",
+        "已经",
+        "一个",
+        "注意",
+        "今天",
+        "现在",
+        "而且",
+        "不过",
+        "然后",
+        "这样",
+        "这种",
+        "什么",
+        "怎么",
+        "那么",
+        "自己",
+        "没有",
+        "不会",
+        "可能",
+        "应该",
+        "觉得",
+        "认为",
+        "表示",
+        "比如",
+        "例如",
+    }
+)
+
+
+def _visual_width(text: str) -> float:
+    return sum(1.0 if unicodedata.east_asian_width(char) in {"W", "F"} else 0.5 for char in text)
+
+
+def _sentence_end(line: str) -> bool:
+    if re.search(r"\d\.$", line):
+        return False
+    return _SENTENCE_END.search(line) is not None
+
+
+def _join_parts(left: str, right: str) -> str:
+    if not left:
+        return right
+    if not right:
+        return left
+    if "一" <= left[-1] <= "鿿" and "一" <= right[0] <= "鿿":
+        return left + right
+    if left[-1] in "，、；：,;:" or right[0] in "，、；：,;:":
+        return left + right
+    return f"{left} {right}"
+
+
+def _is_quote_card(body: str) -> bool:
+    """「莫尼什：我是苹果用户……」这种引语卡片，不是「他说：」。"""
+    match = _QUOTE_CARD.match((body or "").strip())
+    if not match:
+        return False
+    name = match.group("name")
+    if name in _NOT_SPEAKER or any(char in "的了着过和与或" for char in name):
+        return False
+    return True
+
+
+def merge_wrapped_utterances(text: str) -> str:
+    """把截图折行收成自然段。
+
+    「方伟：」「网友：」气泡各留一行，不把两个人的话粘在一起。
+    其余：顶到画面宽度、或短标题被拆开的，接到同一句；句末或另一块才另起一段。
+    已经是自然段时再跑一遍不变。
+    """
+    if not text or "\n" not in text:
+        return text or ""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    raw_lines = normalized.split("\n")
+    nonempty = [line.strip() for line in raw_lines if line.strip()]
+    labeled = sum(1 for line in nonempty if _DIALOGUE_LINE.match(line))
+    if nonempty and labeled * 2 >= len(nonempty):
+        return normalized.strip("\n")
+    paragraphs: list[str] = []
+    buf = ""
+    last = ""
+    joined_any = False
+
+    def flush() -> None:
+        nonlocal buf, last
+        if buf.strip():
+            paragraphs.append(buf.strip())
+        buf = ""
+        last = ""
+
+    for raw in raw_lines:
+        line = raw.strip()
+        if not line:
+            flush()
+            continue
+        if _DIALOGUE_LINE.match(line):
+            flush()
+            paragraphs.append(line)
+            continue
+        if _is_quote_card(line) and buf and not _LABEL_ONLY.fullmatch(buf):
+            flush()
+        if not buf:
+            buf = line
+            last = line
+            continue
+        if _LABEL_ONLY.fullmatch(buf) and not _is_quote_card(line):
+            buf = buf + line
+            last = line
+            joined_any = True
+            continue
+        if _sentence_end(last):
+            flush()
+            buf = line
+            last = line
+            continue
+        if _NEW_BLOCK.match(line):
+            flush()
+            buf = line
+            last = line
+            continue
+        width = _visual_width(last)
+        short_next = _visual_width(line) <= 6 and line not in _STANDALONE
+        in_band = _WRAP_MIN <= width <= _WRAP_MAX
+        latin_next = bool(re.match(r"[A-Za-z]", line))
+        both_short = (
+            _visual_width(last) <= 6
+            and _visual_width(line) <= 6
+            and _visual_width(buf) <= 8
+            and last not in _STANDALONE
+            and line not in _STANDALONE
+        )
+        if _CONNECTOR_END.search(last) or (in_band and (short_next or latin_next)) or both_short:
+            buf = _join_parts(buf, line)
+            last = line
+            joined_any = True
+            continue
+        flush()
+        buf = line
+        last = line
+    flush()
+    if not joined_any:
+        return normalized.strip("\n")
+    return "\n\n".join(paragraphs)
+
+
+def _guest_body(line: str) -> str | None:
+    match = _GUEST_LINE.match((line or "").strip())
+    if not match:
+        return None
+    return match.group("body").strip()
+
+
+def _as_guest(line: str) -> str:
+    body = _guest_body(line)
+    if body is not None:
+        return f"网友：{body}"
+    return f"网友：{(line or '').strip()}"
+
+
+def _peel_segment(part: str) -> str:
+    """去掉一段雪球回复壳，留下发言。引语里的「莫尼什：」还在。"""
+    text = (part or "").strip()
+    stripped_at = False
+    for _ in range(6):
+        marked = re.match(r"^(?:回复\s*)?@\s*[^\s：:]{1,32}\s*[:：]\s*", text)
+        if marked:
+            text = text[marked.end() :].strip()
+            stripped_at = True
+            continue
+        named = re.match(r"^[^\s：:]{1,32}\s*[:：]\s*((?:回复\s*)?@\s*\S.*)$", text, re.S)
+        if named:
+            text = named.group(1).strip()
+            stripped_at = True
+            continue
+        break
+    if not stripped_at:
+        handle = re.match(r"^([^\s：:]{1,16})\s*[:：]\s*(\S.*)$", text, re.S)
+        if handle and not re.search(r"[。！？!?，,、；;]", handle.group(1)):
+            text = handle.group(2).strip()
+    return text.strip()
+
+
+def expand_reply_chain_line(line: str) -> list[str] | None:
+    """一行里的「回复@ / //@」拆成从早到晚的多条。没有这种标记就返回 None。
+
+    雪球把新回复放在最前，``//@`` 越靠后越早。这里翻成时间顺序，昵称改成「网友：」。
+    """
+    raw = (line or "").strip()
+    if not raw or not _CHAIN_MARK.search(raw):
+        return None
+    host = bool(re.match(r"^方伟\s*[:：]", raw))
+    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", raw)
+    bodies: list[str] = []
+    for part in re.split(r"\s*//@\s*", body):
+        peeled = _peel_segment(part)
+        if peeled:
+            bodies.append(peeled)
+    if not bodies:
+        return []
+    bodies.reverse()
+    lines: list[str] = []
+    last = len(bodies) - 1
+    for index, item in enumerate(bodies):
+        speaker = "方伟：" if host and index == last else "网友："
+        lines.append(f"{speaker}{item}")
+    return lines
+
+
+def _maybe_reverse_guest_run(run: list[str]) -> list[str]:
+    """上晚下早、且末行是引用卡片时，翻成较早的发言在前。
+
+    只碰 2–4 条全是「网友：」的短楼：第一条是较长的回复、中间有问句、最后一条以
+    「人名：」开头。普通群聊、带「方伟：」的、已经是引用在前的，都不翻。
+    """
+    if not 2 <= len(run) <= 4:
+        return run
+    bodies = [_guest_body(line) or "" for line in run]
+    if len(bodies[0]) < 12 or bodies[0].rstrip().endswith(("？", "?")):
+        return run
+    if _is_quote_card(bodies[0]) or not _is_quote_card(bodies[-1]):
+        return run
+    if not any(body.rstrip().endswith(("？", "?")) for body in bodies[:-1]):
+        return run
+    return [run[-1], *reversed(run[:-1])]
+
+
+def order_nested_replies(text: str) -> str:
+    """雪球 / 微博嵌套回复按时间从早到晚。
+
+    有「回复@」「//@」就拆开并翻序；紧跟在后面的引用卡片提到这些回复之前。
+    标记已经被模型拆成多条「网友：」、下面仍是引用卡片的，同样翻成时间顺序。
+    没有这些结构就原样返回。再跑一遍不变。
+    """
+    if not text:
+        return text or ""
+    if "回复@" not in text and "//@" not in text and not re.search(r"(?m)^网友\s*[:：]", text):
+        return text
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    built: list[str] = []
+    index = 0
+    while index < len(lines):
+        expanded = expand_reply_chain_line(lines[index])
+        if expanded is None:
+            built.append(lines[index])
+            index += 1
+            continue
+        nxt = index + 1
+        cards: list[str] = []
+        while nxt < len(lines) and lines[nxt].strip() and len(cards) < 2:
+            if expand_reply_chain_line(lines[nxt]) is not None:
+                break
+            body = _guest_body(lines[nxt])
+            probe = body if body is not None else lines[nxt].strip()
+            if not _is_quote_card(probe):
+                break
+            cards.append(_as_guest(lines[nxt]))
+            nxt += 1
+        built.extend(cards)
+        built.extend(expanded)
+        index = nxt
+    ordered: list[str] = []
+    index = 0
+    while index < len(built):
+        if _guest_body(built[index]) is None:
+            ordered.append(built[index])
+            index += 1
+            continue
+        nxt = index
+        run: list[str] = []
+        while nxt < len(built) and built[nxt].strip() and _guest_body(built[nxt]) is not None:
+            run.append(built[nxt].strip())
+            nxt += 1
+        ordered.extend(_maybe_reverse_guest_run(run))
+        index = nxt
+    return "\n".join(ordered)
