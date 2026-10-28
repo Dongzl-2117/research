@@ -200,6 +200,10 @@ PYTHONPATH=src .venv/bin/python scripts/repair_stratechery_dates.py
 
 脚本按 slug 查 `stratechery.com/wp-json`，改 inbox frontmatter 与库内 `published_at`。ingest 对 `YYYY/slug` 路径若 frontmatter 年份与路径年不一致会丢掉该日期（`path_year_mismatch`），避免再次踩坑。
 
+Stratechery 设了 `min_chars: 5500`：正文（不含 YAML 头、去掉空白）不到 5500 字符的标 `hidden=short_post`，不进首页、作者页、公司页和检索，也不译。挡的是两类：游客看到的半截 Daily Update，和每周的「This Week in Stratechery」汇总（几百词，标题借的是当周主打文章，和那篇撞名）。文章页还能打开，库里不删。
+
+各来源的 `min_chars` 只在导入时生效。改了门槛（加、改、去掉）以后，应用启动时按新门槛把这个来源已入库的帖子重标一遍（`refresh_length_floors`，日志「…的短帖门槛改成 N 字，重标了 M 篇」），不用重新导入；别的原因隐藏的（`source_paused`）不动。
+
 干跑会打印差表：标题回写数、评论清理数、对话重洗篇数（星球和公众号分开计），以及抽验锚点 12681、473、606 的标题、评论和图片文字。473、606 在公众号，不在星球里，抽检仍按文章 id 去认。确认后再去掉 `--dry-run`。命令会把观点、摘要、译文的 `content_hash` 对齐到新标题，避免夜间任务把这几千篇再抽一遍。公众号只重写带页脚的 `ocr_text`，不改标题和评论。页脚按行删：粘连的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」，以及「微信小店」「关注同城」「相关的服务号」。按钮后面的对话留下。这次部署后再跑上面的回写，12681 不会停在被截剩的第一句，473 的小店和同城页脚也会从旁路里拿掉。
 
 图片文字里的说话人变了以后，只重抽这几篇的观点，不要加 `--gap`，也不要全库。8881 的拼多多已经抽过，不要再放进来。

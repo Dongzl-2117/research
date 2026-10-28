@@ -63,6 +63,8 @@ def test_whitelist_shape():
     assert strat.kind == "markdown"
     assert strat.enabled is True
     assert strat.timeline is True
+    # 游客半截的 Daily、每周汇总几百词：不到 5500 字符标短帖。
+    assert strat.min_chars == 5500
 
 
 def test_missing_timeline_defaults_feishu_to_library(tmp_path: Path):
