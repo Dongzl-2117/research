@@ -13,7 +13,7 @@
 - Mac mini 上用 docker compose 跑，应用只听 `127.0.0.1:8088`，公网经 Cloudflare Tunnel。网站不登录就能看，核对线上改动可以直接读页面和 `/api/v1/articles/{id}.md`。
 - 云端的 AI 连不上 Mac mini。只能在那边跑的命令（装定时任务、一次性的数据修复）写进 PR 描述的「上线后」一节，由 Zhilin 跑；平时合并就上线，不用他动手。
 - Mac mini 上的 `~/research` 只给自动上线用。在那台机器上干活的人和 AI 另外 clone 一份或者用 `git worktree`，不在 `~/research` 里切分支、改文件、提交；本机才要忽略的文件写进 `.git/info/exclude`。那份仓库不在 main、有本机改动或者有没推送的提交，自动上线都会停下，首页提示一行，处理办法见 [docs/deploy.md](docs/deploy.md)「更新」。
-- 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、自动上线）的结果写进 `data/status/<任务>.json`，首页顶上只在出问题时提示一行，见 [docs/backup.md](docs/backup.md)。
+- 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、自动上线）的结果写进 `data/status/<任务>.json`，供值班助手看；首页不再挂运维红条，见 [docs/backup.md](docs/backup.md)。
 - 密钥在 Mac mini 的 `.env`。站内 LLM 默认 DeepSeek，见 [docs/llm.md](docs/llm.md)。
 
 ## 怎么协作
