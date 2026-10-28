@@ -102,7 +102,10 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
     assert text == "方伟：底线\n网友：非共识"
     assert seen.get("kwargs", {}).get("exact_max_tokens") == 32768
     assert normalize_vision_text("```text\n方伟：底线\n```") == "方伟：底线"
-    assert normalize_vision_text("方伟：就是去年上头买拉布布的人撤走了不少\n方伟：名创优品业务…") == "方伟：就是去年上头买拉布布的人撤走了不少\n方伟：…"
+    assert (
+        normalize_vision_text("方伟：就是去年上头买拉布布的人撤走了不少\n方伟：名创优品业务…")
+        == "方伟：就是去年上头买拉布布的人撤走了不少\n方伟：…"
+    )
     assert "名创优品" not in normalize_vision_text("方伟：就是去年上头买拉布布的人撤走了不少\n名创优品?")
     assert "各种" in normalize_vision_text("方伟：…各种 IP 业务…") or True
     content = seen["messages"][0]["content"]
