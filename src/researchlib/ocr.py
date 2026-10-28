@@ -84,6 +84,10 @@ VISION_PROMPT = """\
 - 「一年后」「两年后」等常见时间词，中间的「年」看不清也优先写「年」，不要写成「一?后」「一?会」。
 - 知识星球「扫码领取优惠券」「立减金」「仅限前 N 名」推广卡：不要输出任何字（包括说明句），也不要标成「方伟：」。
 - 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）整段标「网友：」，不要留真实昵称。
+- 视频号/公众号关注条不要输出：已关注、点击 #话题 查看更多、欢迎关注 @账号 视频号、作者提示: 内容为转载。
+- 雪球/微博帖头与壳不要输出：发帖昵称、地区、影响力徽章（如十大影响力用户、超级某某）、
+  「发讨论」「查看对话」、点赞评论转发数字栏。
+- 「回复@甲:… //@乙:回复@丙:…」转发串只保留评论正文，标「网友：」，不要整串壳。
 - 看不清的字写 ?，禁止编造。
 
 若是表格或柱状图：
@@ -308,6 +312,30 @@ _YEAR_TYPO = (
 )
 
 
+def _collapse_reply_at_line(line: str) -> str:
+    """「回复@甲:正文 //@乙:…」只留正文；已有「网友：」前缀则保留。"""
+    plain = (line or "").strip()
+    if not plain:
+        return ""
+    prefix = ""
+    labeled = re.match(r"^((?:方伟|网友)\s*[:：]\s*)", plain)
+    if labeled:
+        prefix = labeled.group(1)
+        plain = plain[labeled.end() :]
+    if "回复@" not in plain and "//@" not in plain:
+        return line.rstrip()
+    parts = re.split(r"\s*//@\s*", plain)
+    bodies: list[str] = []
+    for part in parts:
+        part = re.sub(r"^(?:回复)?@[^\s:：]+[:：]\s*", "", part.strip()).strip()
+        if part:
+            bodies.append(part)
+            break  # 只留最外层新评论正文
+    if not bodies:
+        return ""
+    return f"{prefix}{bodies[0]}".strip()
+
+
 def normalize_vision_text(text: str) -> str:
     """去掉模型偶尔套上的代码围栏；半截尾巴里乱编的公司名留给 prompt 约束，这里只做轻清理。
 
@@ -339,7 +367,19 @@ def normalize_vision_text(text: str) -> str:
             continue
         if re.search(r"按规则整段不输出|优惠券推广卡", body):
             continue
-        lines.append(line.rstrip())
+        # 视频号/雪球壳轻清理（wechat_dialogue 还会再剥一轮）
+        if re.fullmatch(r"(?:[\u4e00-\u9fffA-Za-z0-9_\-]{2,20}\s+)?已关注", body):
+            continue
+        if re.search(r"欢迎关注\s*@?\S{0,40}\s*视频号|点击\s*#\S{1,40}\s*查看更多|作者提示\s*[:：]\s*内容为转载", body):
+            continue
+        if re.fullmatch(r"(?:发讨论|查看对话)[>〉›]?", body):
+            continue
+        if re.fullmatch(r"\d{1,6}(?:\s+\d{1,6}){1,4}", body):
+            continue
+        collapsed = _collapse_reply_at_line(line.rstrip())
+        if not collapsed:
+            continue
+        lines.append(collapsed)
     # 去掉账号栏后只剩优惠券日期/名额的尾巴
     kept = []
     for line in lines:

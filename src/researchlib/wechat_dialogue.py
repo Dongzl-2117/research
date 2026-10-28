@@ -293,6 +293,28 @@ _WEIBO_HEADER = re.compile(
 _WEIBO_FEED_FOOTER = re.compile(
     r"^(?:[\u4e00-\u9fff]{2,8}(?:新闻)?联播|[\u4e00-\u9fff]{2,8}日报|[\u4e00-\u9fff]{2,8}新闻)$"
 )
+# 雪球/微博帖头：2025-10-31 09:35 · 浙江 · 2022年度十大影响力用户
+_FEED_META = re.compile(
+    r"^\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?:\s*[·•・‧∙･．.]\s*.+)?$"
+)
+_INFLUENCE_BADGE = re.compile(
+    r"(?:年度)?十大影响力用户|超级[\u4e00-\u9fffA-Za-z0-9]{2,16}|雪球\d{4}年度"
+)
+# 点赞/评论/转发数字栏：756 1555 827
+_ENGAGEMENT_COUNTS = re.compile(r"^\d{1,6}(?:\s+\d{1,6}){1,4}$")
+_FEED_ACTION = re.compile(r"^(?:发讨论|查看对话)[>〉›]?$")
+_VIDEO_FOLLOWED = re.compile(
+    r"^(?:[\u4e00-\u9fffA-Za-z0-9_\-]{2,20}\s+)?已关注$"
+)
+_VIDEO_CTA = re.compile(
+    r"(?:"
+    r"欢迎关注\s*@?\S{0,40}\s*视频号"
+    r"|点击\s*#\S{1,40}\s*查看更多"
+    r"|作者提示\s*[:：]\s*内容为转载"
+    r"|更多.{0,24}欢迎关注"
+    r")"
+)
+_REPLY_AT_MARK = re.compile(r"回复@|//@")
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
 _MP_TOKEN = re.compile(
@@ -505,10 +527,94 @@ def _is_mp_footer(line: str) -> bool:
     return _CJK.findall(residue) == []
 
 
+
+def _is_feed_meta(line: str) -> bool:
+    """雪球/微博帖头时间·地区·影响力行。
+
+    「超级鹿鼎公」这类昵称会命中超级…，不能单凭徽章词当帖头；要有日期行，
+    或整行是「十大影响力用户 / 雪球年度」说明。
+    """
+    plain = _plain(line).strip()
+    if not plain:
+        return False
+    if _FEED_META.fullmatch(plain):
+        return True
+    if re.search(r"[。！？!?]", plain) or len(plain) > 48:
+        return False
+    # 单独的影响力说明行（不含「超级某某」昵称）
+    if re.search(r"(?:年度)?十大影响力用户|雪球\d{4}年度", plain):
+        return True
+    return False
+
+
+def _is_engagement_counts(line: str) -> bool:
+    return _ENGAGEMENT_COUNTS.fullmatch(_plain(line).strip()) is not None
+
+
+def _is_feed_action(line: str) -> bool:
+    return _FEED_ACTION.fullmatch(_plain(line).strip()) is not None
+
+
+def _is_video_cta(line: str) -> bool:
+    """视频号关注 CTA / 已关注条 / 作者转载提示。"""
+    plain = _plain(line).strip()
+    if not plain:
+        return False
+    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", plain)
+    if _VIDEO_FOLLOWED.fullmatch(body):
+        return True
+    if _VIDEO_CTA.search(body):
+        return True
+    return False
+
+
+def _is_feed_chrome(line: str) -> bool:
+    """雪球/微博/视频号壳：帖头元信息、发讨论、数字栏、关注 CTA。"""
+    if _is_feed_meta(line) or _is_engagement_counts(line) or _is_feed_action(line) or _is_video_cta(line):
+        return True
+    return False
+
+
+def _is_xueqiu_author_nick(line: str, nxt: str) -> bool:
+    """短昵称行，下一行是时间·地区·影响力帖头。"""
+    plain = _plain(line).strip()
+    if not plain or len(plain) > 16 or re.search(r"[。！？!?，,；;：:]", plain):
+        return False
+    if re.search(r"\d{4}-\d{2}-\d{2}", plain):
+        return False
+    if _STRUCTURED.match(plain) or plain in (_GUEST_TURN, _HOST_TURN):
+        return False
+    nxt_plain = _plain(nxt).strip()
+    # 必须是带日期的帖头行，避免标题下一行是「超级某某」昵称时误删标题
+    return bool(nxt_plain) and _FEED_META.fullmatch(nxt_plain) is not None
+
+
+def _collapse_reply_at(line: str) -> str:
+    """「回复@甲:正文 //@乙:…」压成正文；保留已有「网友：/方伟：」前缀。"""
+    plain = (line or "").strip()
+    if not plain:
+        return ""
+    prefix = ""
+    labeled = re.match(r"^((?:方伟|网友)\s*[:：]\s*)", plain)
+    if labeled:
+        prefix = labeled.group(1)
+        plain = plain[labeled.end() :]
+    if not _REPLY_AT_MARK.search(plain):
+        return line.strip()
+    parts = re.split(r"\s*//@\s*", plain)
+    for part in parts:
+        part = re.sub(r"^(?:回复)?@[^\s:：]+[:：]\s*", "", part.strip()).strip()
+        if part:
+            return f"{prefix}{part}".strip()
+    return ""
+
+
 def _is_strong_footer(line: str) -> bool:
     text = _footer_compact(line)
     if not text:
         return False
+    if _is_feed_chrome(line):
+        return True
     if (
         _is_sticky_bar(text)
         or _is_mp_footer(line)
@@ -644,6 +750,12 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
     while index < len(peeled):
         line = peeled[index]
         nxt = peeled[index + 1] if index + 1 < len(peeled) else ""
+        if _is_xueqiu_author_nick(line, nxt):
+            index += 1
+            continue
+        if _is_feed_chrome(line):
+            index += 1
+            continue
         if _bare_guest_name(line) and _is_message_label(nxt):
             kept.append(_GUEST_TURN)
             in_comments = True
@@ -687,7 +799,9 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
         if _is_author_badge(line) or _is_strong_footer(line) or (context and _is_soft_footer(line)):
             index += 1
             continue
-        kept.append(line)
+        collapsed = _collapse_reply_at(line)
+        if collapsed:
+            kept.append(collapsed)
         index += 1
     return kept
 
@@ -731,6 +845,9 @@ def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
             continue
         if _WEIBO_FEED_FOOTER.fullmatch(plain):
             continue
+        if _is_feed_chrome(plain):
+            continue
+        plain = _collapse_reply_at(plain)
         if plain:
             body.append(plain)
     if not body:
@@ -1117,6 +1234,8 @@ def _is_noise(line: str) -> bool:
     if len(folded) == 1 and not _CJK.search(folded) and not folded.isalnum():
         return True
     if _is_time(line) or _STATUS.fullmatch(folded) or _CHROME_WORD.fullmatch(folded) or _is_ui_chrome(line):
+        return True
+    if _is_feed_chrome(line):
         return True
     if _GROUP_TITLE.fullmatch(folded) or _is_price(line) or _SYSTEM.search(folded):
         return True

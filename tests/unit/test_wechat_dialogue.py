@@ -1111,3 +1111,44 @@ def test_weibo_comment_labeled_guest():
     assert "小事7747" not in text
     assert "龙视新闻联播" not in text
     assert "单日房价" in text
+
+
+def test_24008_xueqiu_and_video_chrome_stripped():
+    """格力公众号插图：视频号关注条、雪球帖头/数字栏、回复@串应剥掉。"""
+    video = """领教工坊
+INSIDE THE BEST
+来源：格力电器董事长方洪波
+转型本质就是转人，不换思想就换人。
+更多组织管理与领导力洞见，欢迎关注 @领教工坊 视频号
+作者提示: 内容为转载
+点击 #领教工坊 查看更多
+领教工坊  已关注
+756  1555  827"""
+    text = present_ocr_pieces([video])
+    assert "转型本质就是转人" in text
+    assert "已关注" not in text
+    assert "视频号" not in text
+    assert "查看更多" not in text
+    assert "作者提示" not in text
+    assert "756" not in text
+
+    xueqiu = """清仓格力
+超级鹿鼎公
+2025-10-31 09:35 · 浙江 · 2022年度十大影响力用户
+格力这波我觉得可以再看看基本面。
+发讨论
+1155  2599  338"""
+    text = present_ocr_pieces([xueqiu])
+    assert "清仓格力" in text
+    assert "基本面" in text
+    assert "超级鹿鼎公" not in text
+    assert "影响力用户" not in text
+    assert "发讨论" not in text
+    assert "1155" not in text
+
+    chain = """回复@网友:李录投资也很好啊。//@网友:回复@网友:网友会不会是卖完了再吹？//@网友:看了下今天雪球上的帖子"""
+    text = present_ocr_pieces([chain])
+    assert "李录投资也很好" in text
+    assert "回复@" not in text
+    assert "//@" not in text
+
