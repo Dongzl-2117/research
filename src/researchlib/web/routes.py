@@ -18,6 +18,7 @@ from researchlib import embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
+from researchlib.author_voice import is_guest
 from researchlib.boilerplate import clean_article
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
@@ -46,7 +47,6 @@ from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
 from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
-from researchlib.author_voice import is_guest
 from researchlib.web import queries
 from researchlib.web.daybrief import compose_day_brief
 from researchlib.web.present import (
