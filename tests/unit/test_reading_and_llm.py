@@ -153,7 +153,7 @@ def test_chat_retries_transient_errors_then_succeeds(tmp_path, monkeypatch):
     assert chat(_settings(tmp_path, monkeypatch), [{"role": "user", "content": "hi"}]) == ("好", "grok-test")
     assert calls[-1][0] == "oauth-access"
     assert "test-key" not in calls[-1][0]
-    assert len(calls) == 3 and sleeps == list(llm_module.RETRY_DELAYS)
+    assert len(calls) == 3 and sleeps == list(llm_module.RETRY_DELAYS[: len(sleeps)])
     health.reset_llm_cache()
 
 
@@ -179,6 +179,9 @@ def test_chat_does_not_retry_bad_requests_or_timeouts(tmp_path, monkeypatch):
 
 
 def test_synthesize_keeps_going_when_one_batch_fails(monkeypatch):
+    import researchlib.ask as _ask
+    monkeypatch.setattr(_ask, "SINGLE_CALL_CHARS", 64000)
+    monkeypatch.setattr(_ask, "BATCH_CHARS", 48000)
     def fake_chat(_settings, messages, **_kwargs):
         system = messages[0]["content"]
         if system == ask_module.MAP_PROMPT:

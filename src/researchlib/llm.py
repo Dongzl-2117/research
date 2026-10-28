@@ -5,8 +5,8 @@
 （``XAI_OAUTH_TOKEN_PATH``，Docker 默认 ``/aihot-data/secrets/xai-oauth.json``）。
 DeepSeek 缺 key 时直接报错，不会悄悄退回 Grok；Grok 路径照旧不读 ``XAI_API_KEY``。
 
-强度与译制共用：DeepSeek 见 ``researchlib.deepseek``（deepseek-v4-pro、thinking 打开、
-reasoning_effort=max、输出不低于 384000、上下文 1M、不发 temperature），
+强度与译制共用：DeepSeek 见 ``researchlib.deepseek``（deepseek-flash、thinking 打开、
+reasoning_effort=max、输出不低于 393216、上下文 1M、不发 temperature），
 Grok 见 ``researchlib.grok``（grok-4.7、reasoning_effort=xhigh、输出不低于 128000、50 万上下文、不发 fast）。
 
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
@@ -46,7 +46,7 @@ from researchlib.translate.xai_oauth import (
 
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 # 第一次重试前等 5 秒，第二次等 20 秒。接口给了 Retry-After 就按它来，最多等一分钟。
-RETRY_DELAYS = (5.0, 20.0)
+RETRY_DELAYS = (2.0, 5.0, 15.0, 30.0)
 RETRY_AFTER_CAP = 60.0
 
 _slot_lock = threading.Lock()
@@ -170,8 +170,79 @@ def _post(settings: Settings, token: str, payload: dict) -> dict:
         },
         method="POST",
     )
+    stream = str(payload.get("model", "")).startswith("deepseek")
+    if stream:
+        # 思考模式长时间不出字，代理会断开空闲连接；流式让连接一直有数据。
+        request.data = json.dumps({**payload, "stream": True}, ensure_ascii=False).encode("utf-8")
+        request.add_header("Accept", "text/event-stream")
     with urllib.request.urlopen(request, timeout=settings.llm_timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+        text = response.read().decode("utf-8", "replace")
+    if not stream or text.lstrip().startswith("{"):
+        return json.loads(text)
+    return _read_stream(text.splitlines())
+
+
+def _read_stream(lines) -> dict:
+    """把 SSE 分片拼回非流式的 choices[0].message 结构。"""
+    content: list[str] = []
+    reasoning: list[str] = []
+    model = ""
+    usage = None
+    for raw in lines:
+        line = raw.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            continue
+        model = chunk.get("model") or model
+        usage = chunk.get("usage") or usage
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                content.append(delta["content"])
+            if delta.get("reasoning_content"):
+                reasoning.append(delta["reasoning_content"])
+    body = {
+        "model": model,
+        "choices": [
+            {"message": {"role": "assistant", "content": "".join(content), "reasoning_content": "".join(reasoning)}}
+        ],
+    }
+    if usage is not None:
+        body["usage"] = usage
+    return body
+
+
+def _message_content(body: dict, label: str) -> str:
+    """取出 choices[0].message 的最终正文。思考过程在 reasoning_content，不算回答。
+
+    content 可能是字符串，也可能是带 text 字段的分段列表；缺字段或洗完是空串都算失败，
+    避免问库把空回答标成 done。
+    """
+    try:
+        message = body["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"{label} 接口返回里没有 choices[0].message") from exc
+    if not isinstance(message, dict):
+        raise LLMError(f"{label} 接口返回里没有 choices[0].message")
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+        )
+    if content is None:
+        content = ""
+    elif not isinstance(content, str):
+        content = str(content)
+    text = content.strip()
+    if not text:
+        raise LLMError(f"{label} 接口返回的正文为空")
+    return text
 
 
 def chat(
@@ -180,11 +251,13 @@ def chat(
     *,
     max_tokens: int | None = None,
     temperature: float = 0.2,
+    exact_max_tokens: int | None = None,
 ) -> tuple[str, str]:
     """返回 (回答文本, 实际模型名)。
 
-    DeepSeek：deepseek-v4-pro / thinking / reasoning_effort=max / 至少 384000，不发 temperature。
+    DeepSeek：deepseek-flash / thinking / reasoning_effort=max / 至少 393216，不发 temperature。
     Grok：grok-4.7 / xhigh / 至少 128000，不发 fast。
+    ``exact_max_tokens`` 会覆盖上面的下限（识图转写不需要几十万输出，否则容器 OOM）。
     """
     provider = _provider(settings)
     label = provider_label(provider)
@@ -193,6 +266,8 @@ def chat(
     else:
         # 思考模式下 temperature 不起作用，DeepSeek 的请求里不带。
         payload = {**deepseek_params(max_tokens=max_tokens), "messages": messages}
+    if exact_max_tokens is not None:
+        payload["max_tokens"] = int(exact_max_tokens)
     try:
         token = _oauth_token(settings) if provider == PROVIDER_GROK else _deepseek_token()
     except LLMUnavailable as exc:
@@ -220,7 +295,7 @@ def chat(
                 retries += 1
                 continue
             raise _failed(settings, LLMError(f"{label} 接口返回 {exc.code}：{detail}"), provider=label) from exc
-        except (urllib.error.URLError, ConnectionError, http.client.HTTPException, TimeoutError) as exc:
+        except (urllib.error.URLError, OSError, http.client.HTTPException, TimeoutError) as exc:
             if not _is_timeout(exc) and retries < len(RETRY_DELAYS):
                 time.sleep(RETRY_DELAYS[retries])
                 retries += 1
@@ -229,8 +304,8 @@ def chat(
         except json.JSONDecodeError as exc:
             raise _failed(settings, LLMError(f"{label} 接口返回的不是 JSON"), provider=label) from exc
     try:
-        text = body["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError) as exc:
-        raise _failed(settings, LLMError(f"{label} 接口返回里没有 choices[0].message.content"), provider=label) from exc
+        text = _message_content(body, label)
+    except LLMError as exc:
+        raise _failed(settings, exc, provider=label) from None
     record_llm(settings.data_dir, ok=True, provider=label)
-    return text.strip(), str(body.get("model") or payload["model"])
+    return text, str(body.get("model") or payload["model"])

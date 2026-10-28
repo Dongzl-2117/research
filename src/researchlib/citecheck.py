@@ -81,7 +81,8 @@ def _numbers(text: str) -> list[str]:
         number = _digits(raw)
         if not unit and "." not in number and len(number) < 2:
             continue
-        if not unit and len(number) == 4 and 1990 <= int(number) <= 2039:
+        # 年份跳过：必须是纯四位整数。95.2 这类小数 len 也是 4，不能 int()。
+        if not unit and number.isdigit() and len(number) == 4 and 1990 <= int(number) <= 2039:
             continue
         found.append(number + unit)
     return list(dict.fromkeys(found))
