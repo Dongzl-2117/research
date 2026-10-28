@@ -339,7 +339,7 @@ def _cite(info: dict, inner: str, *, with_id: bool) -> str:
 
 
 def _prose_html(text: str, link: dict | None) -> str:
-    """金句、字幕、长文：折行收成自然段，每一段的字链到这张图。"""
+    """模型写下的换行就是段。只先接半句折行，每一段的字链到这张图。"""
     shown = polish_display_text(merge_wrapped_utterances(tidy_ocr_text(text)))
     paragraphs: list[str] = []
     for block in re.split(r"\n\s*\n", shown):
@@ -586,7 +586,7 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
 
     连续几张微信截图合成一段，重复的句子只出现一次。每张图新写出来的那几句链到它自己的地址；
     整段都是重复、没有新字时，仍留一个「原图 N」，图片不会丢。商品图和图表没有可读正文，只留原图链接。
-    金句和字幕的折行收成自然段，不再一句一个段落。没认出字的图保持原来的图片。
+    半句折行会接上；模型空开的段保持原样，不收成一整段，也不按句再拆。没认出字的图保持原来的图片。
     texts 是 content_hash → image_texts.text。锚点 id 在这段字的链接上，检索里的「看这张图」仍跳到这里。
     """
 
