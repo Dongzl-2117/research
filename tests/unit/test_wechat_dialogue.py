@@ -1084,3 +1084,30 @@ def test_labeled_chat_keeps_nested_pe_table():
     joined = "\n".join(line for turn in shot.turns for line in turn.lines)
     assert "110-120" in joined or "110" in joined
     assert "Q3" in joined or "同比" in joined
+
+
+def test_zsxq_coupon_card_is_noise():
+    raw = """方伟看十年
+扫码领取优惠券
+仅限前 1000 名
+2026/06/15 12:00 至 2027/06/01 12:00
+66 元立减金"""
+    assert parse_shot(raw).kind == "media"
+    assert present_ocr_pieces([raw]) == ""
+    labeled = "方伟：扫码领取优惠券\n仅限前 1000 名\n66 元立减金。"
+    assert present_ocr_pieces([labeled]) == ""
+
+
+def test_weibo_comment_labeled_guest():
+    raw = """小事7747 山东 2
+说实话单日房价超过300的
+酒店其中七成以上的客人都
+是单位出差，为了多开票只
+能在酒店购物而且还死贵。
+亚朵酒店靠卖枕头被子半年...
+龙视新闻联播"""
+    text = present_ocr_pieces([raw])
+    assert text.startswith("网友：")
+    assert "小事7747" not in text
+    assert "龙视新闻联播" not in text
+    assert "单日房价" in text

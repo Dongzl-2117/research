@@ -232,7 +232,12 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
         if len(_MEANINGFUL.findall(cleaned)) < OCR_MIN_CHARS:
             continue
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-        for piece in _pack(lines):
+        packed = _pack(lines)
+        # 末块过短（半句）并回上一块，避免检索只命中「而这部分…」这种尾巴。
+        if len(packed) >= 2 and len(packed[-1]) < 80:
+            packed[-2] = packed[-2].rstrip() + "\n" + packed[-1]
+            packed = packed[:-1]
+        for piece in packed:
             found.append((image_anchor(digest), piece))
             if len(found) >= MAX_CHUNKS:
                 return found
