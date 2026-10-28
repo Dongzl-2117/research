@@ -210,6 +210,7 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         "sort_at": shown if known else stored,
         "source": source.name,
         "source_id": source.id,
+        "source_kind": source.kind,
         "source_href": _source_href(source),
         "author": source.author,
         "timeline": source.timeline,
@@ -255,11 +256,11 @@ def _digest_points(digest, limit: int = 2) -> list[str]:
 
 
 def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
-    """方伟星球卡片：空标题、以省略号结尾、只截了正文开头半句的标题换成一句完整的话。不改库里的原文。"""
+    """星球卡片：空标题、以省略号结尾、只截了正文开头半句、引号落单的标题换成一句完整的话。不改库里的原文。"""
     needy = [
         card
         for card in cards
-        if repairs_source(card.get("source_id") or "")
+        if repairs_source(card.get("source_id") or "", card.get("source_kind") or "")
         and title_needs_repair(str(card.get("plain_title") or ""), card.get("body_text") or "")
     ]
     if not needy:
@@ -663,7 +664,9 @@ def _article_view(request: Request, article_id: int, mode: str):
         # 正文显示前去掉归档头、引流尾巴、二维码和文末招募。库里的 body_md 不改。HTML 同样洗。
         shown_md = clean_article(conn, article_id, article["source_id"], article["body_md"])
         display_title = article["title"]
-        if repairs_source(source.id) and title_needs_repair(display_title or "", article.get("body_text") or ""):
+        if repairs_source(source.id, source.kind) and title_needs_repair(
+            display_title or "", article.get("body_text") or ""
+        ):
             material = queries.title_materials(conn, [article_id]).get(article_id) or {}
             display_title = zsxq_display_title(
                 display_title or "",

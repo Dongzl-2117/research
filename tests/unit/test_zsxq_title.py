@@ -402,3 +402,41 @@ def test_header_topic_id_reads_only_the_archive_header():
     assert header_topic_id("正文里没有话题号。") is None
     # 正文很靠后才提到的话题号不算。
     assert header_topic_id("正文。" * 1000 + "topic_id：`12345678901234567`") is None
+
+
+def test_lonely_quote_marks_are_dropped():
+    """截出来的句子只剩前引号（23989）：去掉落单的那个，原标题照用。"""
+    title = "“估值越低，同样的钱能买回的股份越多，对留下来的股东越有利"
+    assert title_needs_repair(title)
+    fixed = zsxq_display_title(title, body="一张截图。\n")
+    assert fixed == "估值越低，同样的钱能买回的股份越多，对留下来的股东越有利"
+    assert stored_zsxq_title(title, "一张截图。\n") == fixed
+    # 配得上对的不动。
+    assert not title_needs_repair("《金融时报》说的「护城河」还在")
+    assert zsxq_display_title("《金融时报》说的「护城河」还在") == "《金融时报》说的「护城河」还在"
+    # 长句收在逗号处，后引号落在后半句里：前引号也去掉。
+    body = "“估值越低，同样的钱能买回的股份越多，对留下来的股东越有利，管理层应该在低位多回购”，这是今天的结论。\n"
+    assert "“" not in zsxq_display_title("", body=body)
+
+
+def test_other_zsxq_sources_repair_titles_on_cards():
+    """乘风破浪也是星球：卡片上的截断标题照样收成一句。按来源的 kind 认，不写死来源 id。"""
+    from researchlib.zsxq_title import repairs_source
+
+    assert repairs_source("fangwei-zsxq")
+    assert repairs_source("chengfengpolang", "zsxq")
+    assert not repairs_source("chengfengpolang")
+    assert not repairs_source("fangwei-mp", "wechat_mp")
+    body = "Temu：值得重视的关税利好，小额豁免取消对它的影响比市场想的小。\n"
+    card = {
+        "id": 1250,
+        "source_id": "chengfengpolang",
+        "source_kind": "zsxq",
+        "plain_title": "Temu：值得重视的关税利好 ...",
+        "title": "Temu：值得重视的关税利好 ...",
+        "summary": "",
+        "date": "2025-04-03",
+    }
+    _repair_zsxq_titles(_Conn([{"id": 1250, "body_text": body, "ocr_text": ""}]), [card])
+    assert card["plain_title"] == "Temu：值得重视的关税利好，小额豁免取消对它的影响比市场想的小"
+
