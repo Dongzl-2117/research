@@ -283,6 +283,16 @@ _SHOP_STRONG = re.compile(
     r"微信小店助手|微信小店交易规则中心"
 )
 _SHOP_WEAK = re.compile(r"点赞补贴价|上滑继续看视频|去参与")
+# 知识星球优惠券 / 立减金推广卡。账号栏「方伟看十年」会把下面误标成方伟。
+_ZSXQ_COUPON = re.compile(r"扫码领取优惠券|立减金")
+_ZSXQ_COUPON_EXTRA = re.compile(r"仅限前\s*\d+\s*名|\d+\s*元立减金")
+# 微博评论卡头：小事7747 山东 2
+_WEIBO_HEADER = re.compile(
+    r"^[A-Za-z0-9_\u4e00-\u9fff]{2,20}\s+[\u4e00-\u9fff]{2,3}\s+\d{1,4}$"
+)
+_WEIBO_FEED_FOOTER = re.compile(
+    r"^(?:[\u4e00-\u9fff]{2,8}(?:新闻)?联播|[\u4e00-\u9fff]{2,8}日报|[\u4e00-\u9fff]{2,8}新闻)$"
+)
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
 _MP_TOKEN = re.compile(
@@ -353,7 +363,10 @@ def present_ocr_pieces(pieces: list[str]) -> str:
                 if len(norm) >= 8 and norm not in seen:
                     seen.append(norm)
     flush()
-    return "\n\n".join(blocks)
+    text = "\n\n".join(blocks)
+    text = re.sub(r"一\?会", "一年后会", text)
+    text = re.sub(r"一\?后", "一年后", text)
+    return text
 
 
 def present_stored_ocr(stored: str) -> str:
@@ -687,6 +700,44 @@ def _prose_after_footer(original: str, raw_lines: list[str], stripped: list[str]
     return Shot("prose", [], "\n".join(_plain(line) for line in stripped).strip())
 
 
+def _is_zsxq_coupon_shot(lines: list[str]) -> bool:
+    """知识星球扫码领券 / 立减金推广卡：整段丢掉，不能标方伟。"""
+    joined = "\n".join(lines)
+    if re.search(r"按规则整段不输出|优惠券推广卡", joined):
+        return True
+    if not _ZSXQ_COUPON.search(joined):
+        return False
+    # 短卡，或同时带「仅限前 / N元立减金」
+    if _ZSXQ_COUPON_EXTRA.search(joined):
+        return True
+    return len(re.findall(r"[一-鿿]", joined)) <= 60
+
+
+def _is_weibo_comment_shot(lines: list[str]) -> bool:
+    """微博/资讯评论卡：昵称+地区+数字，正文是评论。"""
+    if not lines:
+        return False
+    head = _plain(lines[0]).strip()
+    if not _WEIBO_HEADER.fullmatch(head):
+        return False
+    return any(len(_plain(line).strip()) >= 8 and _CJK.search(line) for line in lines[1:])
+
+
+def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
+    body: list[str] = []
+    for index, line in enumerate(lines):
+        plain = _plain(line).strip()
+        if index == 0 and _WEIBO_HEADER.fullmatch(plain):
+            continue
+        if _WEIBO_FEED_FOOTER.fullmatch(plain):
+            continue
+        if plain:
+            body.append(plain)
+    if not body:
+        return []
+    return [Turn(speaker=GUEST, lines=body)]
+
+
 def parse_shot(text: str) -> Shot:
     original = (text or "").strip()
     if not original:
@@ -695,6 +746,15 @@ def parse_shot(text: str) -> Shot:
     raw_lines = [line for line in raw_lines if line and not _is_ui_chrome(line)]
     if not raw_lines:
         return Shot("prose", [], "")
+    # 知识星球优惠券推广卡：账号栏会把「扫码领取…」误标方伟，整段当噪音。
+    if _is_zsxq_coupon_shot(raw_lines):
+        return Shot("media", [], "")
+    # 微博/资讯评论卡：昵称行改成网友，不要留「小事7747」这类名字。
+    if _is_weibo_comment_shot(raw_lines):
+        turns = _weibo_guest_turns(raw_lines)
+        if turns:
+            return Shot("dialogue", turns, "", "chat")
+        return Shot("media", [], "")
     # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
     # 识图已标「方伟：/网友：」的群聊截图可能内嵌估值表——不能当纯表整段丢掉。
     labeled_chat = any(_STRUCTURED.match(_plain(line) or "") for line in raw_lines)
