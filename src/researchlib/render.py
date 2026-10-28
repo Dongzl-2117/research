@@ -12,6 +12,7 @@ import markdown
 from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
+from researchlib.present_text import polish_display_text, present_article_text
 from researchlib.textutil import strip_alert_markers
 from researchlib.wechat_dialogue import parse_shot, render_turns
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
@@ -337,7 +338,7 @@ def looks_like_chat(text: str) -> bool:
 
 
 def _reading_inner(text: str) -> tuple[str, str]:
-    shown = tidy_ocr_text(text)
+    shown = polish_display_text(tidy_ocr_text(text))
     if looks_like_chat(shown):
         parts = [f"<p>{html_lib.escape(line.strip())}</p>" for line in shown.splitlines() if line.strip()]
         return "ocr-chat", "".join(parts)
@@ -442,6 +443,7 @@ def flow_ocr_quote_body(text: str) -> str:
 
 
 def _dialogue_html(text: str) -> str:
+    text = polish_display_text(text or "")
     parts: list[str] = []
     for block in text.split("\n\n"):
         block = block.strip("\n")
@@ -643,19 +645,35 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
 
 
 
+
+_BODY_WHO = re.compile(
+    r"(<p\b[^>]*>)(\s*)(方伟|网友)([：:])",
+)
+
+
+def mark_dialogue_speakers(html: str) -> str:
+    """正文和评论里行首的「方伟：」「网友：」加粗，和 OCR 对话同一套 .who。"""
+
+    def replace(match: re.Match[str]) -> str:
+        open_tag, space, who, colon = match.groups()
+        return f'{open_tag}{space}<span class="who">{who}{colon}</span>'
+
+    return _BODY_WHO.sub(replace, html or "")
+
+
 def _render_markdown(body: str, mapping: dict[str, str]) -> str:
-    body = strip_alert_markers(body or "")
+    body = present_article_text(strip_alert_markers(body or ""))
     rewritten = rewrite_html_images(rewrite_markdown_images(body, mapping), mapping)
     html = markdown.markdown(
         rewritten,
         extensions=["extra", "nl2br", "sane_lists"],
         output_format="html",
     )
-    return _anchor_images(sanitize_html(html))
+    return mark_dialogue_speakers(_anchor_images(sanitize_html(html)))
 
 
 def render_body(body: str, mapping: dict[str, str], fmt: str | None = None) -> Markup:
     if fmt == "html":
-        html = rewrite_html_images(body or "", mapping)
+        html = rewrite_html_images(polish_display_text(body or ""), mapping)
         return Markup(_anchor_images(sanitize_html(html)))
     return Markup(assemble_reader_comments(body or "", mapping, _render_markdown))
