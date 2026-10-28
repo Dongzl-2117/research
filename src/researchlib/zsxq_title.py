@@ -10,6 +10,8 @@
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
+- 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
+- 明显错字在展示层改正（「很新都东西」→「很新的东西」），不改观点和口语。
 
 读者帖的「读者帖」标在作者行，不写进标题。
 """
@@ -66,6 +68,13 @@ _NARRATION = re.compile(
 )
 _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”‘’\"'`＂＇。！？!?…·]+")
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
+# 「泡泡玛特：」「西部矿业：」：整标题以中文/ASCII 冒号收尾的壳。
+_SHELL_COLON = re.compile(r"^.+[：:]\s*$")
+# 展示层只改明显错字；条目要窄，避免动到口语。
+_TITLE_TYPOS = (
+    (re.compile(r"很新都东西"), "很新的东西"),
+)
+
 
 
 def repairs_source(source_id: str) -> bool:
@@ -73,12 +82,17 @@ def repairs_source(source_id: str) -> bool:
 
 
 def title_needs_repair(title: str, body: str = "") -> bool:
-    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号、带省略号，或混进了归档头。
+    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号、带省略号，
+    公司名/话题名冒号壳，明显错字，或混进了归档头。
 
     给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
     """
     text = (title or "").strip()
     if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
+        return True
+    if _shell_colon(text):
+        return True
+    if polish_title_typos(text) != text:
         return True
     if re.fullmatch(r"\d{5,}", text):
         return True
@@ -87,6 +101,27 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     if _ARCHIVE_META.search(text):
         return True
     return bool(body) and cut_from_body(text, body)
+
+
+def polish_title_typos(title: str) -> str:
+    """展示层改正标题里的明显错字，不改观点和口语。"""
+    current = title or ""
+    for pattern, repl in _TITLE_TYPOS:
+        current = pattern.sub(repl, current)
+    return current
+
+
+def _shell_colon(title: str) -> bool:
+    """整标题以冒号收尾的壳：「泡泡玛特：」「看数：」。中间带句号的不算。"""
+    text = (title or "").strip()
+    if not text or not _SHELL_COLON.match(text):
+        return False
+    stem = text.rstrip("：:").strip()
+    if not stem:
+        return True
+    if any(char in stem for char in "。！？!?"):
+        return False
+    return len(text) <= TITLE_LIMIT
 
 
 def _without_archive_meta(title: str) -> str:
@@ -148,24 +183,28 @@ def zsxq_display_title(
     # 正文开头的归档头（作者、时间、点赞数）不是帖子的话，不拿来当标题。
     body = strip_meta(body or "")
     if stored and not title_needs_repair(stored, body):
-        return stored
+        return polish_title_typos(stored)
+    # 只是错字：抛光后就能用，不必从正文重抽一句盖掉原标题。
+    polished = polish_title_typos(stored)
+    if polished != stored and polished and not title_needs_repair(polished, body):
+        return polished
     completed = _completed_from_body(stored, body)
     if completed:
-        return completed
+        return polish_title_typos(completed)
     for sentence in _candidates(body):
-        return sentence
+        return polish_title_typos(sentence)
     # 去掉省略号后还是一句可用的原标题，优先于摘要和图片里的字。
     stem = _salvage_stored(stored)
     if stem:
-        return stem
+        return polish_title_typos(stem)
     for sentence in _candidates(summary):
-        return sentence
+        return polish_title_typos(sentence)
     if _ocr_allowed(stored):
         anchors = _topic_anchors(stored)
         for sentence in _candidates(ocr):
             # 有帖子主题时，图片里的另一则新闻对不上就不拿来当标题。
             if not anchors or _overlaps(sentence, anchors):
-                return sentence
+                return polish_title_typos(sentence)
     snippet = _short_snippet(body) or _short_snippet(summary)
     if _ocr_allowed(stored):
         snippet = snippet or _short_snippet(ocr)
@@ -173,9 +212,9 @@ def zsxq_display_title(
     if date and snippet:
         fitted = _fit(f"{date} {snippet}")
         if fitted:
-            return fitted
+            return polish_title_typos(fitted)
     if snippet:
-        return snippet
+        return polish_title_typos(snippet)
     if date:
         return f"{date} 短帖"
     return "短帖"
@@ -194,8 +233,13 @@ def stored_zsxq_title(
     日期加「短帖」这种兜底不写入：下次打开页面还可以用摘要或图片里的字补。
     原标题本来就能用时返回 None。去掉省略号后还剩一句主干，也会写回去，避免库里继续以「…」结尾。
     """
+    raw = (title or "").strip()
     if not title_needs_repair(title, body):
         return None
+    # 只是错字：直接抛光写回，不必重抽一句。
+    polished = polish_title_typos(raw)
+    if polished != raw and not title_needs_repair(polished, body):
+        return polished
     repaired = zsxq_display_title(
         title or "",
         body=body or "",
@@ -203,7 +247,7 @@ def stored_zsxq_title(
         ocr=ocr or "",
         when=when or "",
     )
-    if not repaired or repaired == (title or "").strip():
+    if not repaired or repaired == raw:
         return None
     if title_needs_repair(repaired) or _DATE_FALLBACK.fullmatch(repaired):
         return None
@@ -369,6 +413,8 @@ def _fit(text: str) -> str:
 
 def _ok(text: str) -> bool:
     if not text or _placeholder(text) or _narration(text) or _spammy(text) or _FILLER.match(text):
+        return False
+    if _shell_colon(text):
         return False
     if _contains_cut(text):
         return False

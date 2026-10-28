@@ -1,6 +1,6 @@
 """方伟星球存量回写。规则和入库、阅读页是同一套，不另写一套。
 
-- 标题：空的、「无标题」、以省略号结尾的，改成正文或摘要里的完整首句；写不出来的日期兜底不入库。
+- 标题：空的、「无标题」、以省略号结尾的、公司名/话题名冒号壳，改成完整标题；加 `--ai-titles` 时优先用站内 deepseek-flash 根据正文+图片文字+导读起题（含错字抛光），失败再退回确定性首句。写不出来的日期兜底不入库。
 - 评论：`## 评论（N）` 只留方伟。解析不了的不动，在报告里单列。
 - 图片文字：星球和公众号里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。
   粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重跑 RapidOCR。
@@ -39,11 +39,14 @@ from researchlib.zsxq_comments import (
     guest_comment_authors,
     is_host_comment_author,
 )
-from researchlib.zsxq_title import FANGWEI_ZSXQ, stored_zsxq_title, title_needs_repair
+from researchlib.zsxq_title import FANGWEI_ZSXQ, polish_title_typos, stored_zsxq_title, title_needs_repair
+from researchlib.zsxq_title_ai import generate_ai_title
 
 FANGWEI_MP = "fangwei-mp"
 # 部署后抽验。12681 是星球留言区；473、606 是公众号，同一类页脚。
 SPOT_ARTICLES = (12681, 473, 606)
+# AI 起题抽验：壳标题、截断、错字。
+AI_TITLE_SPOTS = (23999, 24002, 24006, 24007)
 # 噪音进过观点、要定点重抽的篇。8881 的拼多多已经抽过，不要再放进来。
 VIEW_ARTICLES = (203, 227, 473, 537, 606)
 _HOST_CHROME = re.compile(
@@ -166,8 +169,22 @@ def rewash_source_ocr(conn, source_id: str) -> int:
     return changed
 
 
-def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | None = None) -> dict:
-    """回写方伟星球的标题、评论，并重洗星球和公众号的 OCR 旁路。不提交事务。"""
+def repair_zsxq(
+    conn,
+    source_id: str = FANGWEI_ZSXQ,
+    *,
+    spot_ids: list[int] | None = None,
+    ai_titles: bool = False,
+    settings=None,
+    titles_only: bool = False,
+    limit: int = 0,
+) -> dict:
+    """回写方伟星球的标题、评论，并重洗星球和公众号的 OCR 旁路。不提交事务。
+
+    ai_titles：缺/壳/省略号标题优先走站内 flash 起题；settings 必传。
+    titles_only：只改标题（增量抓取后补跑用），评论和 OCR 旁路不动。
+    limit：最多改这么多标题（0 不限）；增量抓取后补跑用，避免一次打光存量。
+    """
     if source_id == FANGWEI_MP:
         changed = rewash_source_ocr(conn, FANGWEI_MP)
         stats = {
@@ -194,12 +211,13 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
     matcher = CompanyMatcher(load_company_rows(conn))
     pieces = _image_pieces(conn, source_id)
     summaries = _digests(conn, source_id)
+    order = "id DESC" if limit else "id"
     rows = conn.execute(
-        """
+        f"""
         SELECT id, title, body_md, body_text, published_at, content_hash, raw_meta, ocr_text
         FROM articles
         WHERE source_id = %s AND duplicate_of IS NULL
-        ORDER BY id
+        ORDER BY {order}
         """,
         (source_id,),
     ).fetchall()
@@ -207,6 +225,7 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
         "source_id": source_id,
         "scanned": len(rows),
         "titles": 0,
+        "titles_ai": 0,
         "titles_visible": 0,
         "titles_unresolved": 0,
         "comments_with_section": 0,
@@ -217,7 +236,9 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
         "ocr_rewash_mp": 0,
         "samples": [],
         "spots": [],
-        "view_ids": list(VIEW_ARTICLES),
+        "view_ids": [] if titles_only else list(VIEW_ARTICLES),
+        "ai_titles": ai_titles,
+        "titles_only": titles_only,
     }
     for row in rows:
         article_id = int(row["id"])
@@ -226,32 +247,53 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
         ocr_text = row["ocr_text"] or ""
         visible = not is_suppressed(row["raw_meta"])
         shot_parts = pieces.get(article_id) or []
-        cleaned = _cleaned_ocr(shot_parts, ocr_text)
+        cleaned = None if titles_only else _cleaned_ocr(shot_parts, ocr_text)
         new_ocr = ocr_text if cleaned is None else cleaned
         if cleaned is not None:
             stats["ocr_rewash"] += 1
 
         new_title = title
         if title_needs_repair(title, row["body_text"] or ""):
-            replacement = stored_zsxq_title(
-                title,
-                row["body_text"] or body_md,
-                summary=summaries.get(article_id, ""),
-                ocr=present_stored_ocr(new_ocr),
-                when=_day(row["published_at"]),
-            )
+            summary = summaries.get(article_id, "")
+            ocr_shown = present_stored_ocr(new_ocr)
+            when = _day(row["published_at"])
+            body_for_title = row["body_text"] or body_md
+            replacement = None
+            used_ai = False
+            if ai_titles and settings is not None:
+                replacement = generate_ai_title(
+                    settings,
+                    body=body_for_title,
+                    ocr=ocr_shown,
+                    digest=summary,
+                    when=when,
+                    old_title=title,
+                )
+                used_ai = bool(replacement)
+            if not replacement:
+                replacement = stored_zsxq_title(
+                    title,
+                    body_for_title,
+                    summary=summary,
+                    ocr=ocr_shown,
+                    when=when,
+                )
             if replacement:
-                new_title = replacement
+                new_title = polish_title_typos(replacement)
                 stats["titles"] += 1
+                if used_ai:
+                    stats["titles_ai"] += 1
                 if visible:
                     stats["titles_visible"] += 1
                 if len(stats["samples"]) < 8:
-                    stats["samples"].append({"id": article_id, "old": title, "new": replacement})
+                    stats["samples"].append(
+                        {"id": article_id, "old": title, "new": new_title, "ai": used_ai}
+                    )
             else:
                 stats["titles_unresolved"] += 1
 
         new_md = body_md
-        listed = comment_list_authors(body_md)
+        listed = [] if titles_only else comment_list_authors(body_md)
         if listed is None:
             # 有「## 评论（N）」但对不上「- **名字**（时间）」这种列表：不猜，留在报告里。
             stats["comments_with_section"] += 1
@@ -287,6 +329,11 @@ def repair_zsxq(conn, source_id: str = FANGWEI_ZSXQ, *, spot_ids: list[int] | No
         if new_title != title or new_md != body_md:
             _rewrite_chunks(conn, article_id, new_title, new_md, profile, hashes)
             replace_mentions(conn, article_id, mentions_for_document(matcher, new_title, new_md))
+        if limit and titles_only and stats["titles"] >= limit:
+            break
+    if titles_only:
+        stats["spots"] = spot_check(conn, spot_ids or [])
+        return stats
     stats["ocr_rewash_mp"] = rewash_source_ocr(conn, FANGWEI_MP)
     stats["spots"] = spot_check(conn, spot_ids or list(SPOT_ARTICLES))
     return stats
@@ -349,21 +396,27 @@ def spot_check(conn, article_ids: list[int]) -> list[dict]:
 
 
 def format_report(stats: dict) -> str:
+    titles_only = bool(stats.get("titles_only"))
     lines = [
-        f"方伟星球回写（{stats['source_id']}），扫描 {stats['scanned']} 篇",
-        f"标题回写: {stats['titles']}（其中可见 {stats['titles_visible']}）",
+        f"{'只回写标题' if titles_only else '方伟星球回写'}（{stats['source_id']}），扫描 {stats['scanned']} 篇",
+        f"标题回写: {stats['titles']}（其中可见 {stats['titles_visible']}；flash 起题 {stats.get('titles_ai', 0)}）",
         f"标题仍无法收成一句: {stats['titles_unresolved']}",
-        f"评论节: {stats['comments_with_section']}",
-        f"评论含非方伟: {stats['comments_dirty']}",
-        f"评论已清理: {stats['comments_cleaned']}",
-        f"评论节未能按列表解析: {stats['comments_unparsed']}",
-        f"对话重洗: 星球 {stats['ocr_rewash']}，公众号 {stats.get('ocr_rewash_mp', 0)}",
     ]
+    if not titles_only:
+        lines += [
+            f"评论节: {stats['comments_with_section']}",
+            f"评论含非方伟: {stats['comments_dirty']}",
+            f"评论已清理: {stats['comments_cleaned']}",
+            f"评论节未能按列表解析: {stats['comments_unparsed']}",
+            f"对话重洗: 星球 {stats['ocr_rewash']}，公众号 {stats.get('ocr_rewash_mp', 0)}",
+        ]
     if stats["samples"]:
         lines.append("标题样例:")
         for item in stats["samples"]:
-            lines.append(f"  {item['id']}  {item['old']}  →  {item['new']}")
-    lines.append("抽检:")
+            mark = " [flash]" if item.get("ai") else ""
+            lines.append(f"  {item['id']}  {item['old']}  →  {item['new']}{mark}")
+    if stats["spots"]:
+        lines.append("抽检:")
     for item in stats["spots"]:
         if item.get("missing"):
             lines.append(f"  {item['id']}  库里没有这篇")
@@ -373,9 +426,10 @@ def format_report(stats: dict) -> str:
         flag = " 仍截断" if item["title_truncated"] else ""
         source = item.get("source_id") or ""
         lines.append(f"  {item['id']}  {source}  标题「{title}」{flag}  {item['comment']}  {chrome}")
-    ids = ",".join(str(item) for item in stats["view_ids"])
-    lines.append("噪音文定点重抽观点（不要 --gap，不要全库；8881 拼多多已经抽过）:")
-    lines.append(f"  docker compose exec app research-views --articles {ids}")
+    if stats["view_ids"]:
+        ids = ",".join(str(item) for item in stats["view_ids"])
+        lines.append("噪音文定点重抽观点（不要 --gap，不要全库；8881 拼多多已经抽过）:")
+        lines.append(f"  docker compose exec app research-views --articles {ids}")
     return "\n".join(lines)
 
 
@@ -386,19 +440,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", default=FANGWEI_ZSXQ)
     parser.add_argument("--dry-run", action="store_true", help="只打印会改什么，不提交")
     parser.add_argument(
+        "--titles-only",
+        action="store_true",
+        help="只回写标题，评论和图片文字不动",
+    )
+    parser.add_argument(
+        "--ai-titles",
+        action="store_true",
+        help="缺/壳/省略号标题优先用站内 deepseek-flash 起题（失败退回确定性规则）",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="最多回写这么多标题（0 不限）；增量抓取后补跑建议 30",
+    )
+    parser.add_argument(
         "--spot",
-        default=",".join(str(item) for item in SPOT_ARTICLES),
-        help="抽检的文章 id，逗号分隔",
+        default=None,
+        help="抽检的文章 id，逗号分隔（默认 12681,473,606；--ai-titles 时加上 23999,24002,24006,24007）",
     )
     args = parser.parse_args(argv)
-    spot_ids = [int(part) for part in re.split(r"[\s,]+", args.spot) if part.strip().isdigit()]
+    if args.spot is None:
+        spot_ids = [] if args.titles_only and not args.ai_titles else list(SPOT_ARTICLES)
+        if args.ai_titles:
+            spot_ids = list(dict.fromkeys([*spot_ids, *AI_TITLE_SPOTS]))
+    else:
+        spot_ids = [int(part) for part in re.split(r"[\s,]+", args.spot) if part.strip().isdigit()]
     from researchlib.config import Settings
     from researchlib.db import prepare
 
     settings = Settings.from_env()
     conn = prepare(settings)
     try:
-        stats = repair_zsxq(conn, args.source, spot_ids=spot_ids)
+        stats = repair_zsxq(
+            conn,
+            args.source,
+            spot_ids=spot_ids,
+            ai_titles=args.ai_titles,
+            settings=settings if args.ai_titles else None,
+            titles_only=args.titles_only,
+            limit=args.limit,
+        )
         print(format_report(stats))
         if args.dry_run:
             conn.rollback()

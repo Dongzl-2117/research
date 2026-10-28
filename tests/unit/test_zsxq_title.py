@@ -402,3 +402,26 @@ def test_header_topic_id_reads_only_the_archive_header():
     assert header_topic_id("正文里没有话题号。") is None
     # 正文很靠后才提到的话题号不算。
     assert header_topic_id("正文。" * 1000 + "topic_id：`12345678901234567`") is None
+
+def test_company_shell_colon_titles_need_repair():
+    assert title_needs_repair("泡泡玛特：")
+    assert title_needs_repair("西部矿业：")
+    assert title_needs_repair("看数：")
+    assert title_needs_repair("YouTube的护城河类型是平", "YouTube的护城河类型是平台网络效应，Netflix只是规模效应。\n")
+    # 完整句不以冒号壳论。
+    assert title_needs_repair("茅台短帖") is False
+    # 有摘要时确定性规则也能收成一句（不靠 flash）。
+    digest = "方伟认为泡泡玛特下跌是自身问题，不是名创或行业竞争抢份额。"
+    title = zsxq_display_title("泡泡玛特：", body="泡泡玛特：", summary=digest)
+    assert "泡泡玛特" in title
+    assert not title.endswith(("：", ":"))
+    assert not title_needs_repair(title)
+
+
+def test_obvious_title_typos_are_polished():
+    from researchlib.zsxq_title import polish_title_typos
+
+    assert polish_title_typos("AI算力是一个很新都东西") == "AI算力是一个很新的东西"
+    assert title_needs_repair("AI算力是一个很新都东西")
+    assert zsxq_display_title("AI算力是一个很新都东西", body="问：星主好\n") == "AI算力是一个很新的东西"
+    assert stored_zsxq_title("AI算力是一个很新都东西", "问：星主好\n") == "AI算力是一个很新的东西"
