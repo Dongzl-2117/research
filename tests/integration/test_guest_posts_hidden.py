@@ -38,7 +38,7 @@ def test_guest_posts_hidden_from_site(conn, settings):
             ),
             ParsedDoc(
                 external_id="owner-bubble",
-                title="泡泡玛特：",
+                title="泡泡玛特观察",
                 published_at=when.replace(hour=18, minute=55),
                 body_md="星主自己写的一句。\n",
                 raw_meta={
@@ -70,12 +70,14 @@ def test_guest_posts_hidden_from_site(conn, settings):
         assert "泡泡玛特三季度腰斩" not in home.text
         assert "Simon" not in home.text
         assert "读者帖" not in home.text
-        assert "泡泡玛特：" in home.text
+        assert "泡泡玛特观察" in home.text
+        assert "星主自己写的一句" in home.text
 
         day = client.get("/days/2026-10-27")
         assert day.status_code == 200
         assert "泡泡玛特三季度腰斩" not in day.text
         assert "读者帖" not in day.text
+        assert "泡泡玛特观察" in day.text
 
         found = client.get("/search", params={"q": "腰斩"})
         assert found.status_code == 200
@@ -84,7 +86,11 @@ def test_guest_posts_hidden_from_site(conn, settings):
         assert client.get(f"/articles/{guest_id}").status_code == 404
         assert client.get(f"/api/v1/articles/{guest_id}").status_code == 404
         assert client.get(f"/api/v1/articles/{guest_id}.md").status_code == 404
-        assert client.get(f"/articles/{owner_id}").status_code == 200
+        owner_page = client.get(f"/articles/{owner_id}")
+        assert owner_page.status_code == 200
+        assert "泡泡玛特观察" in owner_page.text
+        assert "星主自己写的一句" in owner_page.text
+        assert "Simon" not in owner_page.text
         assert client.get(f"/api/v1/articles/{owner_id}").status_code == 200
 
 

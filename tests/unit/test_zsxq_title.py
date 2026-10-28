@@ -435,9 +435,20 @@ def test_company_shell_colon_titles_need_repair():
 
 
 def test_obvious_title_typos_are_polished():
+    from researchlib.textutil import fix_obvious_typos
     from researchlib.zsxq_title import polish_title_typos
 
-    assert polish_title_typos("AI算力是一个很新都东西") == "AI算力是一个很新的东西"
-    assert title_needs_repair("AI算力是一个很新都东西")
-    assert zsxq_display_title("AI算力是一个很新都东西", body="问：星主好\n") == "AI算力是一个很新的东西"
-    assert stored_zsxq_title("AI算力是一个很新都东西", "问：星主好\n") == "AI算力是一个很新的东西"
+    raw = "AI算力是一个很新都东西"
+    assert polish_title_typos(raw) == fix_obvious_typos(raw) == "AI算力是一个很新的东西"
+    # 标题模块不另维护错字表，共享表里的另一条也要生效。
+    assert polish_title_typos("存在运用杠杆的好处") == "存在运营杠杆的好处"
+    assert title_needs_repair(raw)
+    assert title_needs_ai(raw) is False
+    assert zsxq_display_title(raw, body="问：星主好\n") == "AI算力是一个很新的东西"
+    assert stored_zsxq_title(raw, "问：星主好\n") == "AI算力是一个很新的东西"
+    # 错字若同时是正文半句，仍补全那一句，再走同一张表。
+    cut = "存在运用杠杆的好"
+    body = "存在运用杠杆的好处很多，毛利率会上去。\n"
+    done = "存在运营杠杆的好处很多，毛利率会上去"
+    assert zsxq_display_title(cut, body=body) == done
+    assert stored_zsxq_title(cut, body) == done

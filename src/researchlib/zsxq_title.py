@@ -11,7 +11,7 @@
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
 - 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
-- 明显错字在展示层改正（「很新都东西」→「很新的东西」），不改观点和口语。
+- 明显错字走 textutil.fix_obvious_typos（与 present_text.polish_display_text 同一张表），不在这里另维护，不改观点和口语。
 
 读者帖的「读者帖」标在作者行，不写进标题。
 """
@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 
 from researchlib.boilerplate import strip_meta
-from researchlib.textutil import argumentative_excerpt
+from researchlib.textutil import argumentative_excerpt, fix_obvious_typos
 
 FANGWEI_ZSXQ = "fangwei-zsxq"
 TITLE_LIMIT = 40
@@ -70,11 +70,6 @@ _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
 # 「泡泡玛特：」「西部矿业：」：整标题以中文/ASCII 冒号收尾的壳。
 _SHELL_COLON = re.compile(r"^.+[：:]\s*$")
-# 展示层只改明显错字；条目要窄，避免动到口语。
-_TITLE_TYPOS = (
-    (re.compile(r"很新都东西"), "很新的东西"),
-)
-
 
 
 def repairs_source(source_id: str) -> bool:
@@ -124,11 +119,8 @@ def title_needs_ai(title: str) -> bool:
 
 
 def polish_title_typos(title: str) -> str:
-    """展示层改正标题里的明显错字，不改观点和口语。"""
-    current = title or ""
-    for pattern, repl in _TITLE_TYPOS:
-        current = pattern.sub(repl, current)
-    return current
+    """改正标题里的明显错字。替换表在 textutil.fix_obvious_typos，与展示层共用。"""
+    return fix_obvious_typos(title or "")
 
 
 def _shell_colon(title: str) -> bool:
@@ -185,9 +177,14 @@ def _completed_from_body(title: str, body: str) -> str:
     # 问号、叹号和别处一样留着；句号、分号不留。
     sentence = re.match(f"[^{_SENTENCE_STOP}]*[{_SENTENCE_STOP}]?", line).group(0).rstrip("；;")
     fitted = _fit(_prepare(sentence))
-    if not fitted or not _ok(fitted) or _contains_cut(fitted) or title_needs_repair(fitted):
+    if not fitted or not _ok(fitted) or _contains_cut(fitted):
         return ""
-    return fitted
+    # 正文那句可能还带着错字。先按共享表抛光，再判断还要不要重抽，
+    # 否则「存在运用杠杆」这类替换会把补全挡掉。
+    polished = polish_title_typos(fitted)
+    if not polished or title_needs_repair(polished):
+        return ""
+    return polished
 
 
 def zsxq_display_title(
@@ -205,8 +202,14 @@ def zsxq_display_title(
     if stored and not title_needs_repair(stored, body):
         return polish_title_typos(stored)
     # 只是错字：抛光后就能用，不必从正文重抽一句盖掉原标题。
+    # 原标题是正文半句时不在这里返回：共享错字表一改前缀，就对不上正文。
     polished = polish_title_typos(stored)
-    if polished != stored and polished and not title_needs_repair(polished, body):
+    if (
+        polished != stored
+        and polished
+        and not title_needs_repair(polished)
+        and not cut_from_body(stored, body)
+    ):
         return polished
     completed = _completed_from_body(stored, body)
     if completed:
@@ -256,9 +259,14 @@ def stored_zsxq_title(
     raw = (title or "").strip()
     if not title_needs_repair(title, body):
         return None
-    # 只是错字：直接抛光写回，不必重抽一句。
+    # 只是错字：直接抛光写回，不必重抽一句。半句截断仍走下面的补全。
     polished = polish_title_typos(raw)
-    if polished != raw and not title_needs_repair(polished, body):
+    if (
+        polished != raw
+        and polished
+        and not title_needs_repair(polished)
+        and not cut_from_body(raw, body)
+    ):
         return polished
     repaired = zsxq_display_title(
         title or "",
@@ -379,7 +387,7 @@ def _salvage_stored(title: str) -> str:
     stem = _prepare(_strip_ellipsis(title)).rstrip("+＋").strip()
     if _contains_cut(stem):
         return ""
-    clipped = _fit(_clip_dangling(stem) if _dangling(stem) else stem)
+    clipped = polish_title_typos(_fit(_clip_dangling(stem) if _dangling(stem) else stem))
     if clipped and _ok(clipped) and not _contains_cut(clipped) and not title_needs_repair(clipped):
         return clipped
     return ""
