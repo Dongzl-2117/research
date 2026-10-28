@@ -1717,8 +1717,14 @@ def pilot_page(request: Request):
     )
 
 
+def deployed_commit() -> str:
+    """镜像构建时的提交号（Dockerfile 的 GIT_SHA，自动上线传进来）。手动构建或本地跑是 unknown。"""
+    return os.environ.get("GIT_SHA", "").strip() or "unknown"
+
+
 @router.get("/health")
 def health(request: Request):
+    # commit 是线上在跑的提交：scripts/deploy.sh 等它报出新提交才算上线，外面也能拿它核对上线了没有。
     try:
         conn = connect(request.app.state.settings)
         try:
@@ -1726,8 +1732,12 @@ def health(request: Request):
         finally:
             conn.close()
     except Exception:
-        return Response(content='{"status":"down"}', status_code=503, media_type="application/json")
-    return {"status": "ok"}
+        return Response(
+            content=f'{{"status":"down","commit":"{deployed_commit()}"}}',
+            status_code=503,
+            media_type="application/json",
+        )
+    return {"status": "ok", "commit": deployed_commit()}
 
 
 @router.get("/robots.txt")

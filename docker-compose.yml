@@ -44,6 +44,10 @@ services:
     build:
       context: .
       target: app
+      args:
+        # 自动上线传这次的提交号（scripts/deploy.sh），/health 报出来。手动构建想带上：
+        # GIT_SHA=$(git rev-parse HEAD) docker compose up -d --build
+        GIT_SHA: ${GIT_SHA:-unknown}
     environment:
       DATABASE_URL: postgresql://research:${POSTGRES_PASSWORD:-research}@db:5432/research
       DATA_DIR: /data
