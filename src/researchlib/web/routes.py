@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 from contextlib import contextmanager
@@ -79,6 +80,7 @@ from researchlib.wechat_dialogue import present_stored_ocr
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 router = APIRouter()
+logger = logging.getLogger("researchlib.web.routes")
 SEARCH_PAGE_SIZE = 20
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 TEMPLATES.env.filters["answer_html"] = answer_html
@@ -1545,6 +1547,17 @@ async def ask_submit(request: Request):
     )
 
 
+
+def _safe_checks(row, citations, sources) -> list:
+    if row["status"] != "done" or not row["answer"]:
+        return []
+    try:
+        return check_answer(row["answer"], citations, {source.author for source in sources})
+    except Exception:
+        logger.exception("问库引用核对失败 answer_id=%s", row.get("id"))
+        return []
+
+
 @router.get("/ask/{answer_id}")
 def ask_answer(request: Request, answer_id: int):
     with database(request) as conn:
@@ -1577,11 +1590,7 @@ def ask_answer(request: Request, answer_id: int):
         "citations": citations,
         "terms": row["terms"] or [],
         "created": format_date(row["created_at"], request.app.state.settings.display_timezone),
-        "checks": (
-            check_answer(row["answer"], citations, {source.author for source in sources})
-            if row["status"] == "done" and row["answer"]
-            else []
-        ),
+        "checks": _safe_checks(row, citations, sources),
         "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
         "missing": labels["missing"],
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
