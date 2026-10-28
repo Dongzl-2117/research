@@ -60,7 +60,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 
 ## 挂着的事（2026-10-27）
 
-- 搜索片段专题见 [docs/search-passages.md](docs/search-passages.md)：主体与主题分开排序、旧译文/向量版本过滤、独立片段回链。真实双语模型效果尚未验收；词法与固定向量契约测试不能充当语义质量证据。原检索基线不得降低。
+- 搜索片段专题见 [docs/search-passages.md](docs/search-passages.md)：局部主体与主题分开排序、旧译文/向量版本过滤、独立片段回链。冻结实际页面门槛本地通过，仍需最终 head 独立复验；真实双语模型效果尚未验收。同公司弱候选标“主题待核对”，不能把词法先验/固定向量契约当作语义理解。原检索基线不得降低。
 
 - **#56 合进 main 后撤回了**（撤回提交 58483db）。它是 Codex 做的星球账户资格和引用边界，分支 `codex/wechat-color-ci-savings-20261022`。重新合之前：按它分支上 `docs/availability-gate-2026-10-23.md` 的计划定向回填账户 ID、评论和图片文字；`TRUSTED_OWNERS` 里加上乘风破浪的星主账户，否则这个来源整个不显示；它把迁移从网页启动挪到了 `research-maintain`，`scripts/deploy.sh` 要先跑这一步再重启；和启动时按 `poster_names` 重算星主标记（`posters.refresh_poster_roles`）的做法冲突，要选一种。
 - **自动上线卡在 Mac mini 的本机改动上**：10-27 已经装好并上线过（线上的 demo 文章 8879 已删，#74 的 `/api/v1/digest` 能打开），10-27 22:00（北京时间）首页提示 `~/research` 的 `.gitignore` 有本机改动，之后合并的 #80 没上线。处理命令已经交给 Zhilin（docs/deploy.md「更新」）。首页的「自动上线失败」提示消失就是好了，这条随后删掉。

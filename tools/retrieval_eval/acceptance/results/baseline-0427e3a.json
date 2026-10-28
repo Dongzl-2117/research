@@ -1,0 +1,85 @@
+{
+  "product_checkpoint": "0427e3aa0d2833d2589c737239b5f6b763fd826b",
+  "synthetic_only": true,
+  "articles": 1500,
+  "chunks": 10463,
+  "baseline_changed": false,
+  "command": "EVAL_URL=<显式本机 research_eval_* 库> python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json",
+  "result": {
+    "articles": 1500,
+    "tolerance": 0.02,
+    "ask": {
+      "方伟最近怎么看拼多多的护城河": {
+        "precision": 0.2375,
+        "recall": 0.76
+      },
+      "腾讯广告加载率": {
+        "precision": 0.6,
+        "recall": 0.96
+      },
+      "茅台批价和渠道库存": {
+        "precision": 0.8875,
+        "recall": 0.6017
+      },
+      "苹果的定价权": {
+        "precision": 0.8125,
+        "recall": 0.7738
+      },
+      "哪些作者讨论过回购": {
+        "precision": 1.0,
+        "recall": 0.2548
+      },
+      "公司页预设·腾讯": {
+        "precision": 1.0,
+        "recall": 0.153
+      },
+      "作者页预设·乘风破浪": {
+        "precision": 0.9625,
+        "recall": 0.0495
+      },
+      "农夫山泉的成本结构": {
+        "precision": 1.0,
+        "recall": 0.7407
+      },
+      "管理层激励": {
+        "precision": 0.9625,
+        "recall": 0.2484
+      },
+      "低价电商能持续吗": {
+        "precision": 1.0,
+        "recall": 0.1136
+      },
+      "英伟达算力": {
+        "precision": 1.0,
+        "recall": 0.6897
+      },
+      "拼多多出海": {
+        "precision": 0.6625,
+        "recall": 0.7162
+      }
+    },
+    "search": {
+      "腾讯广告加载率": {
+        "precision": 1.0
+      },
+      "茅台批价和渠道库存": {
+        "precision": 1.0
+      },
+      "苹果的定价权": {
+        "precision": 1.0
+      },
+      "农夫山泉的成本结构": {
+        "precision": 1.0
+      },
+      "管理层激励": {
+        "precision": 1.0
+      },
+      "英伟达算力": {
+        "precision": 1.0
+      },
+      "拼多多出海": {
+        "precision": 1.0
+      }
+    }
+  }
+}
