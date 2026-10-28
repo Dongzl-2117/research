@@ -1671,16 +1671,28 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   box-shadow: inset 0 0 0 1px var(--line-soft);
   line-height: 1.65;
 }
+/* 对话体（图转文字）与正文同一套段落：不加灰底盒子，避免「图片里的字」另起一皮。 */
 .prose .ocr-reading.ocr-dialogue {
   display: flex;
   flex-direction: column;
   gap: 0.9em;
   width: 100%;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit;
   /* 折行已收成段落。pre-wrap 会把截图里的硬换行再画成一条窄字。 */
   white-space: normal;
 }
-.prose .ocr-reading.ocr-dialogue p { margin: 0; line-height: 1.75; white-space: normal; }
-.prose .ocr-reading.ocr-dialogue .who { font-weight: 600; }
+.prose .ocr-reading.ocr-dialogue p {
+  margin: 0 0 0.9em;
+  line-height: 1.75;
+  white-space: normal;
+}
+.prose .ocr-reading.ocr-dialogue p:last-child { margin-bottom: 0; }
+.prose p > .who,
+.prose .ocr-reading.ocr-dialogue .who { font-weight: 600; margin: 0; }
 .prose .ocr-links {
   display: flex;
   flex-wrap: wrap;

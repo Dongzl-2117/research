@@ -388,16 +388,20 @@ def present_ocr_pieces(pieces: list[str]) -> str:
     text = "\n\n".join(blocks)
     text = re.sub(r"一\?会", "一年后会", text)
     text = re.sub(r"一\?后", "一年后", text)
-    return text
+    from researchlib.present_text import polish_display_text
+
+    return polish_display_text(text)
 
 
 def present_stored_ocr(stored: str) -> str:
     """库里可能还是按图拼接的原始识别，也可能已经是对话。两种再跑都得到对话。"""
+    from researchlib.present_text import polish_display_text
+
     text = (stored or "").strip()
     if not text:
         return ""
     pieces = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
-    return present_ocr_pieces(pieces or [text])
+    return polish_display_text(present_ocr_pieces(pieces or [text]))
 
 
 def speaker_note(text: str) -> str:

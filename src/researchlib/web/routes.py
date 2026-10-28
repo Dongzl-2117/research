@@ -36,6 +36,7 @@ from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
+from researchlib.present_text import polish_display_text
 from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
@@ -201,8 +202,8 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         excerpt_text = argumentative_excerpt(row["body_text"], title=row["title"], limit=180)
     card = {
         "id": row["id"],
-        "title": row["title"] if title is None else title,
-        "plain_title": row["title"],
+        "title": polish_display_text(row["title"] if title is None else title),
+        "plain_title": polish_display_text(row["title"]),
         "date": format_date(stored, zone),
         "time": format_clock(shown, zone) if known else "",
         "iso": format_iso(shown, zone) if known else day_key(stored, zone),
@@ -274,6 +275,7 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
             ocr=present_stored_ocr(extra.get("ocr_text") or ""),
             when=card.get("date") or "",
         )
+        repaired = polish_display_text(repaired)
         card["plain_title"] = repaired
         card["title"] = repaired
 
@@ -672,6 +674,7 @@ def _article_view(request: Request, article_id: int, mode: str):
                 ocr=present_stored_ocr(material.get("ocr_text") or ""),
                 when=format_date(article["published_at"], settings.display_timezone),
             )
+        display_title = polish_display_text(display_title or "")
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
