@@ -60,6 +60,28 @@ def _long_body(sections: int, target: int, target_text: str) -> str:
     return "\n\n".join(parts)
 
 
+def _body_under_single_call(target_text: str) -> tuple[str, int]:
+    """生成切块后仍低于一次交给模型的字数上限的正文。返回 (正文, 节数)。
+
+    上限看的是各块 _size（正文再加每块 80 字开销），不是原文字数。留出余量，
+    避免贴着 SINGLE_CALL_CHARS、切块一变就走分批摘录。
+    """
+    from researchlib.chunks import make_chunks
+
+    ceiling = ask_module.SINGLE_CALL_CHARS - 4_000
+    chosen: tuple[str, int] | None = None
+    for sections in range(8, 80):
+        body = _long_body(sections, sections - 2, target_text)
+        pieces = make_chunks("测量", body)
+        size = sum(ask_module._size({"text": text}) for _, text in pieces)
+        if size > ceiling:
+            break
+        chosen = (body, sections)
+    if chosen is None:
+        raise AssertionError(f"生成不出低于 {ask_module.SINGLE_CALL_CHARS} 字的正文")
+    return chosen
+
+
 def _sources(settings):
     return enabled_sources(load_sources(settings.sources_path))
 
@@ -230,10 +252,11 @@ def test_articles_cut_at_the_old_400_chunk_cap_are_rechunked(conn, settings):
 def test_medium_article_reaches_the_model_whole(conn, settings, monkeypatch):
     from researchlib.retrieval import DISPLAY_ARTICLE_CHUNKS, retrieve
 
-    # 四万字上下、八十来块：在整篇交给模型的字数以内，但超过页面上列的块数。
+    # 一次交给模型的字数以内，但超过页面上列的块数。字数跟着 SINGLE_CALL_CHARS，
+    # 不要写死：上限调低后四万字出头会走分批摘录，最后一次 chat 不再带「资料：」。
     target = "拼多多的护城河是地球仪式的供应链调度，工厂按需求直接排产，库存周转天数很短。"
-    body = _long_body(40, 38, target)
-    assert 30_000 < len(body) < 60_000
+    body, sections = _body_under_single_call(target)
+    assert len(body) < ask_module.SINGLE_CALL_CHARS
     _store(conn, settings, FEISHU, [_doc("docs/拼多多投资研究__m.md", "拼多多投资研究", body, feishu=True)])
     article_id = conn.execute("SELECT id FROM articles").fetchone()["id"]
     chunks = conn.execute("SELECT count(*) AS n FROM article_chunks WHERE article_id = %s", (article_id,)).fetchone()
@@ -254,9 +277,9 @@ def test_medium_article_reaches_the_model_whole(conn, settings, monkeypatch):
     result = ask_module.ask(conn, settings, "护城河是什么", scope, sources)
     assert result["status"] == "done"
     material = seen["messages"][1]["content"].split("资料：", 1)[1]
-    # 以前交给模型的也截在 40 块（两万字出头），第 38 节读不到，又被当成全文、不附目录，模型只能答「没有」。
+    # 以前交给模型的也截在 40 块（两万字出头），后半篇读不到，又被当成全文、不附目录，模型只能答「没有」。
     assert target in material
-    assert "第 0 节" in material and "第 39 节" in material
+    assert "第 0 节" in material and f"第 {sections - 1} 节" in material
     assert "这篇的章节如下" not in seen["messages"][1]["content"]
     # 页面上的「相关原文」照旧只列前面这些块。
     shown = retrieve(conn, "护城河是什么", scope, sources, purpose="display")

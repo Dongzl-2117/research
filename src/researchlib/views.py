@@ -14,7 +14,8 @@
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
 图片里有可读的字时，交给模型的正文会接上「图片里的字」，和正文一视同仁。正文很短、判断写在截图里的，
-一带而过的提及也抽；公司提及表本身仍不看图片里的字。长文不因为后补一张图就整篇重抽。
+一带而过的提及也抽；短正文的公司提及会并上图片字（与 OCR_CARRIES 同门槛），长文提及仍只看正文。
+长文不因为后补一张图就整篇重抽。
 长文只给提到这几家公司的段落加开头结尾（见 excerpt.py）；以前只读了开头 30000 字的，标成 head_only 重抽。
 失败的记下来，隔几天再试。判断或态度为空白的行不进时间线；确认抽漏了再用 `--refresh-blank` 删掉重抽。
 """
@@ -446,6 +447,35 @@ def _reading_windows(body: str, chunks: list[tuple[str, str]], aliases: list[str
     return packed or [body[:BODY_LIMIT]]
 
 
+def coerce_view_for_store(view: dict | None) -> dict:
+    """落库前校正：没有判断就不能 about=true（None→{} 的旧路径会写出脏行）。"""
+    view = view or {}
+    judgment = str(view.get("judgment") or "").strip()
+    if view.get("about") is False or not judgment:
+        return {
+            "about": False,
+            "judgment": "",
+            "mechanism": "",
+            "stance": "",
+            "risks": [],
+            "falsifiers": [],
+            "metrics": [],
+            "quote": "",
+            "angles": [],
+        }
+    return {
+        "about": True,
+        "judgment": judgment,
+        "mechanism": str(view.get("mechanism") or "").strip(),
+        "stance": str(view.get("stance") or "").strip(),
+        "risks": view.get("risks") or [],
+        "falsifiers": view.get("falsifiers") or [],
+        "metrics": view.get("metrics") or [],
+        "quote": view.get("quote") or "",
+        "angles": view.get("angles") or [],
+    }
+
+
 def extract_article(conn, settings: Settings, row, author: str, companies: list[dict]) -> int:
     """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
     if not companies:
@@ -508,12 +538,13 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     written = 0
     haystack = append_ocr(voice_body if restricted else (row["body_text"] or ""), ocr_text)
     for company_id, view in found.items():
-        view = view or {}
+        view = coerce_view_for_store(view)
+        about = bool(view["about"])
+        judgment = view["judgment"]
         # 收窄到作者本人时，原句必须落在他写的字或图片文字里。
         quote, chunk = locate_quote(conn, row["id"], haystack, view.get("quote") or "")
         if not quote_ok(quote):
             quote, chunk = "", None
-        about = view.get("about") is not False
         conn.execute(
             """
             INSERT INTO company_views (
@@ -545,7 +576,7 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
                 row["content_hash"],
                 PROMPT_VERSION,
                 model,
-                view.get("judgment") or "",
+                judgment,
                 view.get("mechanism") or "",
                 view.get("stance") or "",
                 Jsonb(view.get("risks") or []),
@@ -558,7 +589,7 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
                 Jsonb(view.get("angles") or []),
             ),
         )
-        written += 1 if view.get("judgment") and about else 0
+        written += 1 if judgment and about else 0
     clear_failure(conn, "views", row["id"])
     conn.commit()
     return written
@@ -859,11 +890,12 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
     if not company_ids or not source_ids:
         return []
     id_clause = ""
-    params: list = [company_ids, source_ids, PROMPT_VERSION, PROMPT_VERSION]
+    # 占位符顺序：company_ids、source_ids、[article_ids]、两个 prompt_version、limit
+    params: list = [company_ids, source_ids]
     if article_ids:
         id_clause = "AND a.id = ANY(%s)"
         params.append(list(article_ids))
-    params.append(limit)
+    params.extend([PROMPT_VERSION, PROMPT_VERSION, limit])
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,

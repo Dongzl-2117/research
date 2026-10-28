@@ -5,7 +5,7 @@
 #
 #   scripts/nightly.sh
 #   VIEWS_LIMIT=200 DIGEST_LIMIT=200 MINUTES=300 scripts/nightly.sh
-#   NIGHTLY_OCR=1 scripts/nightly.sh        # 先 docker compose --profile ocr build ocr
+#   NIGHTLY_OCR=1 scripts/nightly.sh        # 在 app 容器里走站内 deepseek-flash 识图
 #   THESES_ENABLED=1 scripts/nightly.sh     # 夜间也补论点（默认关）
 set -Euo pipefail
 
@@ -60,7 +60,7 @@ if [ "$THESES_ENABLED" = "1" ]; then
   step "论点" compose exec -T app research-theses
 fi
 if [ "$NIGHTLY_OCR" = "1" ]; then
-  step "图片文字" compose --profile ocr run --rm -T ocr research-ocr --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
+  step "图片文字" compose exec -T app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
 fi
 
 if [ -n "$failed" ]; then

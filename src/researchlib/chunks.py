@@ -212,8 +212,13 @@ _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 
 
 def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """[(图片内容哈希, 识别出的字)] → [(图片锚点, 块正文)]，同一张图只算一次。"""
+    """[(图片内容哈希, 识别出的字)] → [(图片锚点, 块正文)]，同一张图只算一次。
+
+    先按微信对话规则整理（去可按住转文字等界面字、标方伟/网友），再切块进检索，
+    与 articles.ocr_text / 阅读页旁路同一套 present。整理完没剩下可读的字就不进检索。
+    """
     from researchlib.render import image_anchor
+    from researchlib.wechat_dialogue import present_ocr_pieces
 
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -223,8 +228,16 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
         seen.add(digest)
         if len(_MEANINGFUL.findall(text or "")) < OCR_MIN_CHARS:
             continue
-        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-        for piece in _pack(lines):
+        cleaned = present_ocr_pieces([text or ""])
+        if len(_MEANINGFUL.findall(cleaned)) < OCR_MIN_CHARS:
+            continue
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        packed = _pack(lines)
+        # 末块过短（半句）并回上一块，避免检索只命中「而这部分…」这种尾巴。
+        if len(packed) >= 2 and len(packed[-1]) < 80:
+            packed[-2] = packed[-2].rstrip() + "\n" + packed[-1]
+            packed = packed[:-1]
+        for piece in packed:
             found.append((image_anchor(digest), piece))
             if len(found) >= MAX_CHUNKS:
                 return found
