@@ -72,9 +72,10 @@ PRESETS = {
 }
 
 # 一次交给模型的资料上限（字）。超过就分批摘录再汇总。
-SINGLE_CALL_CHARS = 200000
-BATCH_CHARS = 120000
-MAP_WORKERS = 8
+# 容器经 Colima 转发到 DeepSeek 时，请求体超过约 150KB（约 5 万汉字）会被断开；单次请求留在这以下。
+SINGLE_CALL_CHARS = 40000
+BATCH_CHARS = 36000
+MAP_WORKERS = 4
 _JSON = re.compile(r"\{.*\}", re.S)
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ask")

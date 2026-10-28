@@ -291,7 +291,7 @@ def chat(
                 retries += 1
                 continue
             raise _failed(settings, LLMError(f"{label} 接口返回 {exc.code}：{detail}"), provider=label) from exc
-        except (urllib.error.URLError, ConnectionError, http.client.HTTPException, TimeoutError) as exc:
+        except (urllib.error.URLError, OSError, http.client.HTTPException, TimeoutError) as exc:
             if not _is_timeout(exc) and retries < len(RETRY_DELAYS):
                 time.sleep(RETRY_DELAYS[retries])
                 retries += 1
