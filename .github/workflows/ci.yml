@@ -87,7 +87,7 @@ jobs:
         run: |
           for i in $(seq 1 60); do
             if docker compose exec -T db pg_isready -U research -d research; then
-              for name in research_test research_eval; do
+              for name in research_test research_eval research_eval_topic; do
                 docker compose exec -T db psql -U research -d research -tAc "SELECT 1 FROM pg_database WHERE datname = '$name'" | grep -q 1 \
                   || docker compose exec -T db psql -U research -d research -c "CREATE DATABASE $name OWNER research;"
               done
@@ -114,6 +114,10 @@ jobs:
           python tools/ci/annotate.py "评测语料" -- python tools/retrieval_eval/gen_corpus.py --articles 1500
           python tools/ci/annotate.py "检索评测" -- \
             python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json
+          python tools/ci/annotate.py "主题片段评测（无真实向量）" -- \
+            python tools/retrieval_eval/topic_eval.py \
+            --url postgresql://research:research@127.0.0.1:5432/research_eval_topic \
+            --check tools/retrieval_eval/topic_baseline.json
 
       # 锁文件和 pyproject.toml 对不上就失败，日志里打印该有的内容。本机没有 uv，脚本在容器里跑。
       - name: Lock files match pyproject.toml

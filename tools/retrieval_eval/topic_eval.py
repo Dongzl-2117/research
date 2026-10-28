@@ -114,6 +114,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--check", type=Path, help="核对片段回归门槛；不替代真实模型效果评估")
     args = parser.parse_args()
     if not args.url.rsplit("/", 1)[-1].startswith("research_eval_"):
         raise SystemExit("只允许显式指定 research_eval_* 合成评测库")
@@ -131,6 +132,15 @@ def main():
         truth, names, passages = seed(conn, corpus)
         report = evaluate(conn, load_sources(source_path), corpus, truth, names, passages)
         conn.close()
+    if args.check:
+        minimum = json.loads(args.check.read_text())
+        for row in report["cases"]:
+            expected = minimum[row["query"]]
+            for metric in ("p_at_5", "p_at_10", "coverage_at_10"):
+                if row[metric] + 1e-9 < expected[metric]:
+                    raise SystemExit(f"片段评测退步：{row['query']} {metric}={row[metric]} < {expected[metric]}")
+            if row["scope_violations"] or row["adjacent_duplicates"]:
+                raise SystemExit(f"片段范围或相邻去重失败：{row['query']}")
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.out:
         args.out.write_text(text + "\n")
