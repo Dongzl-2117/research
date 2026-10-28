@@ -81,6 +81,9 @@ VISION_PROMPT = """\
   继续提问、AI搜索、状态栏时间、群名、雪球、LIVE、加人会员群、小程序卡片、输入框。
 - 截到屏幕边缘的半截气泡：能认的照写，认不全写 … 或 ?；禁止把半截尾巴编成公司名或新句，
   也禁止用本图其它气泡里出现过的公司名补全（例如不要把「…各种/各自的 IP 业务」写成「名创优品…」）。
+- 「一年后」「两年后」等常见时间词，中间的「年」看不清也优先写「年」，不要写成「一?后」「一?会」。
+- 知识星球「扫码领取优惠券」「立减金」「仅限前 N 名」推广卡整段不要输出，也不要标成「方伟：」。
+- 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）整段标「网友：」，不要留真实昵称。
 - 看不清的字写 ?，禁止编造。
 
 若是表格或柱状图：
@@ -298,15 +301,30 @@ def vision_messages(image_bytes: bytes, mime: str) -> list[dict]:
     ]
 
 
+_COUPON_MARK = re.compile(r"扫码领取优惠券|立减金|仅限前\s*\d+\s*名")
+_YEAR_TYPO = (
+    (re.compile(r"一\?会"), "一年后会"),
+    (re.compile(r"一\?后"), "一年后"),
+)
+
+
 def normalize_vision_text(text: str) -> str:
     """去掉模型偶尔套上的代码围栏；半截尾巴里乱编的公司名留给 prompt 约束，这里只做轻清理。
 
-    说话人和界面字留给 wechat_dialogue。
+    说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一? 在这里先收掉。
     """
     raw = (text or "").strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
+    for pat, repl in _YEAR_TYPO:
+        raw = pat.sub(repl, raw)
+    # 整张都是优惠券推广卡：直接丢掉，避免后处理标成「方伟：」。
+    coupon_hits = _COUPON_MARK.findall(raw)
+    if coupon_hits and len(re.findall(r"[一-鿿]", raw)) <= 80:
+        # 短卡且带优惠券关键词 → 噪音
+        if re.search(r"扫码领取优惠券|立减金", raw):
+            return ""
     # 模型偶发把截断气泡收成「某某公司?」或用上文公司名补半截尾巴。
     lines = []
     for line in raw.splitlines():
@@ -314,7 +332,26 @@ def normalize_vision_text(text: str) -> str:
         if re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{2,8}\?", s) and ("方伟" not in s and "网友" not in s):
             if "：" not in s and ":" not in s:
                 continue
+        # 单行优惠券话术（含已标方伟的）丢掉
+        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", s)
+        if _COUPON_MARK.search(body) and len(body) <= 40:
+            continue
         lines.append(line.rstrip())
+    # 去掉账号栏后只剩优惠券日期/名额的尾巴
+    kept = []
+    for line in lines:
+        s = line.strip()
+        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", s)
+        if re.fullmatch(r"仅限前\s*\d+\s*名", body):
+            continue
+        if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}\s*\d{1,2}:\d{2}\s*至\s*\d{4}/\d{1,2}/\d{1,2}\s*\d{1,2}:\d{2}", body):
+            continue
+        if re.fullmatch(r"\d+\s*元立减金。?", body):
+            continue
+        if re.fullmatch(r"方伟看十年|看十年", body):
+            continue
+        kept.append(line)
+    lines = kept
     if lines:
         last = lines[-1].strip()
         # 「方伟：名创优品… / 名创优品业务…」——半截尾巴常见编造

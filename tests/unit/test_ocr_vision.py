@@ -330,3 +330,11 @@ def test_vision_recognize_compresses_before_chat(tmp_path, monkeypatch):
     assert "方伟" in text
     assert seen["mime"] == "image/jpeg"
     assert seen["bytes"] <= 280_000
+
+
+def test_normalize_drops_coupon_and_fixes_year():
+    assert normalize_vision_text(
+        "方伟：扫码领取优惠券\n仅限前 1000 名\n2026/06/15 12:00 至 2027/06/01 12:00\n66 元立减金。"
+    ) == ""
+    assert "一年后会" in normalize_vision_text("因为今天的钱可以拿去存款、买国债或投资，一?会变得更多。")
+    assert "一?" not in normalize_vision_text("一?后的100元更不值钱")
