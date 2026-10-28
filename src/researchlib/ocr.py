@@ -30,6 +30,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from researchlib.chunks import replace_ocr_chunks
+from researchlib.textutil import collapse_short_spam, fix_obvious_typos
 from researchlib.wechat_dialogue import SIDE_SELF, present_ocr_pieces, present_stored_ocr
 
 logger = logging.getLogger("researchlib.ocr")
@@ -88,6 +89,9 @@ VISION_PROMPT = """\
 - 雪球/微博帖头与壳不要输出：发帖昵称、地区、影响力徽章（如十大影响力用户、超级某某）、
   「发讨论」「查看对话」、点赞评论转发数字栏。
 - 「回复@甲:… //@乙:回复@丙:…」转发串只保留评论正文，标「网友：」，不要整串壳。
+- 杂志/品牌封面壳不要输出：领教工坊、INSIDE THE BEST、COLMO 等刊头、Logo 字、品牌水印；
+  「来源：思想×岭南|…」这类刊源行也不要。封面大字若是正文金句（如「光做家电没有未来」）照写。
+- 同一短句连续刷屏（如「深刻反省」重复十几遍）只保留一次，不要整段复读。
 - 看不清的字写 ?，禁止编造。
 
 若是表格或柱状图：
@@ -310,6 +314,19 @@ _YEAR_TYPO = (
     (re.compile(r"一\?会"), "一年后会"),
     (re.compile(r"一\?后"), "一年后"),
 )
+# 杂志/品牌封面壳（整行丢掉）
+_BRAND_MASTHEAD = re.compile(
+    r"^(?:"
+    r"领教工坊"
+    r"|INSIDE\s+THE\s+BEST"
+    r"|COLMO"
+    r")$",
+    re.I,
+)
+_SOURCE_MASTHEAD = re.compile(
+    r"^来源\s*[:：]\s*(?:思想[?？×xX]?岭南|领教工坊)\b"
+)
+_SHORT_REPEAT_TOKEN = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,12}$")
 
 
 def _collapse_reply_at_line(line: str) -> str:
@@ -336,10 +353,46 @@ def _collapse_reply_at_line(line: str) -> str:
     return f"{prefix}{bodies[0]}".strip()
 
 
+def _collapse_repeated_short_phrases(line: str) -> str:
+    """「深刻反省，深刻反省，…」压成一次；跨逗号/顿号的短词连刷。"""
+    raw = (line or "").rstrip()
+    if not raw:
+        return ""
+    prefix = ""
+    labeled = re.match(r"^((?:方伟|网友)\s*[:：]\s*)", raw)
+    if labeled:
+        prefix = labeled.group(1)
+        raw = raw[labeled.end() :]
+    parts = re.split(r"[，,、；;]+", raw)
+    tokens = [p.strip() for p in parts if p.strip()]
+    if len(tokens) >= 3 and all(_SHORT_REPEAT_TOKEN.fullmatch(t) for t in tokens):
+        if len(set(tokens)) == 1:
+            return f"{prefix}{tokens[0]}".strip()
+        kept: list[str] = []
+        for token in tokens:
+            if kept and kept[-1] == token:
+                continue
+            kept.append(token)
+        if len(kept) < len(tokens):
+            return f"{prefix}{'，'.join(kept)}".strip()
+    return f"{prefix}{raw}".strip() if prefix else line.rstrip()
+
+
+def _is_brand_chrome_line(line: str) -> bool:
+    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", (line or "").strip())
+    if not body:
+        return False
+    if _BRAND_MASTHEAD.fullmatch(body):
+        return True
+    if _SOURCE_MASTHEAD.match(body):
+        return True
+    return False
+
+
 def normalize_vision_text(text: str) -> str:
     """去掉模型偶尔套上的代码围栏；半截尾巴里乱编的公司名留给 prompt 约束，这里只做轻清理。
 
-    说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一? 在这里先收掉。
+    说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一?、品牌刊头、短句刷屏在这里先收掉。
     """
     raw = (text or "").strip()
     if raw.startswith("```"):
@@ -376,7 +429,12 @@ def normalize_vision_text(text: str) -> str:
             continue
         if re.fullmatch(r"\d{1,6}(?:\s+\d{1,6}){1,4}", body):
             continue
+        if _is_brand_chrome_line(line):
+            continue
         collapsed = _collapse_reply_at_line(line.rstrip())
+        if not collapsed:
+            continue
+        collapsed = _collapse_repeated_short_phrases(collapsed)
         if not collapsed:
             continue
         lines.append(collapsed)
@@ -395,6 +453,17 @@ def normalize_vision_text(text: str) -> str:
             continue
         kept.append(line)
     lines = kept
+    # 连续相同短行（跨行刷「深刻反省」）只留一行
+    deduped: list[str] = []
+    for line in lines:
+        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", line.strip())
+        prev = (
+            re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", deduped[-1].strip()) if deduped else None
+        )
+        if deduped and body and body == prev and _SHORT_REPEAT_TOKEN.fullmatch(body):
+            continue
+        deduped.append(line)
+    lines = deduped
     if lines:
         last = lines[-1].strip()
         # 「方伟：名创优品… / 名创优品业务…」——半截尾巴常见编造
@@ -403,7 +472,7 @@ def normalize_vision_text(text: str) -> str:
                 lines[-1] = "方伟：…"
             elif "：" not in last and ":" not in last:
                 lines.pop()
-    return "\n".join(lines).strip()
+    return fix_obvious_typos(collapse_short_spam("\n".join(lines).strip()))
 
 
 def vision_engine(settings) -> Callable[[Path], str]:

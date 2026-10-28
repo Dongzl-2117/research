@@ -314,6 +314,13 @@ _VIDEO_CTA = re.compile(
     r"|更多.{0,24}欢迎关注"
     r")"
 )
+_BRAND_MASTHEAD = re.compile(
+    r"^(?:领教工坊|INSIDE\s+THE\s+BEST|COLMO)$",
+    re.I,
+)
+_SOURCE_MASTHEAD = re.compile(
+    r"^来源\s*[:：]\s*(?:思想[?？×xX]?岭南|领教工坊)\b"
+)
 _REPLY_AT_MARK = re.compile(r"回复@|//@")
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
@@ -389,19 +396,22 @@ def present_ocr_pieces(pieces: list[str]) -> str:
     text = re.sub(r"一\?会", "一年后会", text)
     text = re.sub(r"一\?后", "一年后", text)
     from researchlib.present_text import polish_display_text
+    from researchlib.textutil import collapse_short_spam
 
+    text = collapse_short_spam(text)
     return polish_display_text(text)
 
 
 def present_stored_ocr(stored: str) -> str:
     """库里可能还是按图拼接的原始识别，也可能已经是对话。两种再跑都得到对话。"""
     from researchlib.present_text import polish_display_text
+    from researchlib.textutil import collapse_short_spam
 
     text = (stored or "").strip()
     if not text:
         return ""
     pieces = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
-    return polish_display_text(present_ocr_pieces(pieces or [text]))
+    return polish_display_text(collapse_short_spam(present_ocr_pieces(pieces or [text])))
 
 
 def speaker_note(text: str) -> str:
@@ -573,8 +583,11 @@ def _is_video_cta(line: str) -> bool:
 
 
 def _is_feed_chrome(line: str) -> bool:
-    """雪球/微博/视频号壳：帖头元信息、发讨论、数字栏、关注 CTA。"""
+    """雪球/微博/视频号壳：帖头元信息、发讨论、数字栏、关注 CTA；杂志品牌刊头。"""
     if _is_feed_meta(line) or _is_engagement_counts(line) or _is_feed_action(line) or _is_video_cta(line):
+        return True
+    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", _plain(line).strip())
+    if _BRAND_MASTHEAD.fullmatch(body) or _SOURCE_MASTHEAD.match(body):
         return True
     return False
 
