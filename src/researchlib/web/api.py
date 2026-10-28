@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from researchlib import theses as thesis_map
 from researchlib.ask import ask, start
@@ -32,6 +34,7 @@ from researchlib.web.routes import _author_groups, _same_origin, active_portfoli
 from researchlib.web.scoping import parse_int, resolve_scope
 
 api = APIRouter()
+logger = logging.getLogger("researchlib.web.api")
 MAX_LIMIT = 50
 TRUST = {
     "content_trust": "untrusted_external_data",
@@ -550,15 +553,21 @@ async def api_ask(request: Request):
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
     params = {key: str(body.get(key) or "") for key in ("author", "source", "company", "from", "to", "article")}
-    wait = body.get("wait", True) is not False
-    with database(request) as conn:
-        sources = active_sources(request, conn)
-        scope, _info = resolve_scope(params, sources)
-        if wait:
-            result = ask(conn, request.app.state.settings, question, scope, sources)
-        else:
+    # 默认不等：检索后立刻返回 id，后台整合。wait=true 会在线程池里跑完再返回，
+    # 绝不能在 async 协程里同步干等，否则整站事件循环被堵死（health/其他页一起挂）。
+    wait = body.get("wait", False) is True
+    settings = request.app.state.settings
+
+    def _run():
+        with database(request) as conn:
+            sources = active_sources(request, conn)
+            scope, _info = resolve_scope(params, sources)
+            if wait:
+                return ask(conn, settings, question, scope, sources)
             # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
-            result = start(conn, request.app.state.settings, question, scope, sources)
+            return start(conn, settings, question, scope, sources)
+
+    result = await run_in_threadpool(_run)
     return _json({**result, "_trust": TRUST})
 
 
@@ -571,7 +580,12 @@ def api_answer(request: Request, answer_id: int):
         raise HTTPException(status_code=404)
     checks = []
     if row["status"] == "done" and row["answer"]:
-        checks = check_answer(row["answer"], row["citations"] or [], {source.author for source in sources})
+        try:
+            checks = check_answer(row["answer"], row["citations"] or [], {source.author for source in sources})
+        except Exception:
+            # 核对规则炸了也不能让整条 GET 500；回答正文照常返回。
+            logger.exception("问库引用核对失败 answer_id=%s", answer_id)
+            checks = []
     return _json(
         {
             "id": row["id"],
@@ -859,8 +873,9 @@ def llms_txt(request: Request):
         "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms",
         f"- [问答]({base}/api/v1/ask): POST JSON "
         "{question, author?, source?, company?, from?, to?, article?, wait?}，"
-        "默认等整合写完，返回 answer（带 [n]）、citations（第 n 条出处）和 checks（数字、引号、作者、日期"
-        "和所引段落对不上的句子）；wait=false 时先返回 id，"
+        "默认 wait=false：立刻返回 id 与召回段落，后台整合，客户端轮询 /api/v1/answers/{id}；"
+        "wait=true 时在线程池里等整合写完再返回（带 answer / citations / checks）。"
+        "checks 标出数字、引号、作者、日期和所引段落对不上的句子；"
         "再轮询 /api/v1/answers/{id} 直到 status 不是 running",
         "",
         "## 浏览",
