@@ -45,6 +45,12 @@ _SELF_SIDE = 0.40
 OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
 # 识图请求体太大时跳过，不反复打接口。手机截图远小于这个。
 MAX_VISION_BYTES = 10 * 1024 * 1024
+# 经 mini 上 DeepSeek en1 转发时，过大的 data-url 会在 TLS 中途被掐断。
+# 压到这个字节数以下再 base64，payload 大约 150KB 内，和问库分批上限同一量级。
+MAX_VISION_SEND_BYTES = 110_000
+VISION_MAX_SIDE = 1280
+VISION_JPEG_QUALITY = 70
+VISION_TRANSIENT_TRIES = 3
 # 检索块要 20 个字；交给观点和摘要的旁路、以及阅读页放宽，短截图也能进正文。
 READING_MIN_CHARS = 8
 # 正文短于这个字数时，图片文字和上次抽摘要、观点时不一致就要重抽。长文不因为后补一张图整篇重来。
@@ -210,6 +216,68 @@ def image_mime(path: Path) -> str:
     return _MIME.get(path.suffix.lower(), "application/octet-stream")
 
 
+def prepare_vision_image(image_bytes: bytes, mime: str) -> tuple[bytes, str]:
+    """压到 MAX_VISION_SEND_BYTES 以内再送识图。返回 (bytes, mime)。
+
+    优先 Pillow 缩长边并转 JPEG；没装 Pillow 且原图已超限则跳过，避免静默脏字。
+    """
+    if len(image_bytes) <= MAX_VISION_SEND_BYTES and (mime or "").lower() in {
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+    }:
+        # 仍可能 base64 后膨胀；JPEG/PNG 原图略大于阈值时也压一下更稳。
+        if len(image_bytes) <= int(MAX_VISION_SEND_BYTES * 0.75):
+            return image_bytes, mime
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except ImportError as exc:
+        if len(image_bytes) > MAX_VISION_SEND_BYTES:
+            raise OcrImageSkipped(
+                f"超过 {MAX_VISION_SEND_BYTES} 字节且未装 Pillow，识图跳过"
+            ) from exc
+        return image_bytes, mime
+
+    try:
+        image = Image.open(BytesIO(image_bytes))
+        image.load()
+    except Exception as exc:  # noqa: BLE001 — 坏图当跳过
+        raise OcrImageSkipped(f"图片打不开：{exc}") from exc
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+    elif image.mode == "L":
+        image = image.convert("RGB")
+    width, height = image.size
+    longest = max(width, height) or 1
+    scale = min(1.0, VISION_MAX_SIDE / longest)
+    if scale < 1.0:
+        image = image.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    quality = VISION_JPEG_QUALITY
+    out = b""
+    for _ in range(8):
+        buf = BytesIO()
+        image.save(buf, format="JPEG", quality=quality, optimize=True)
+        out = buf.getvalue()
+        if len(out) <= MAX_VISION_SEND_BYTES:
+            return out, "image/jpeg"
+        width, height = image.size
+        image = image.resize(
+            (max(1, int(width * 0.85)), max(1, int(height * 0.85))),
+            Image.Resampling.LANCZOS,
+        )
+        quality = max(40, quality - 5)
+    if len(out) > MAX_VISION_SEND_BYTES:
+        raise OcrImageSkipped(f"压缩后仍超过 {MAX_VISION_SEND_BYTES} 字节，识图跳过")
+    return out, "image/jpeg"
+
+
 def vision_messages(image_bytes: bytes, mime: str) -> list[dict]:
     """识图请求的 messages。content 是 text + image_url（data URL），由 llm.chat 原样 POST。"""
     payload = base64.b64encode(image_bytes).decode("ascii")
@@ -234,15 +302,45 @@ def normalize_vision_text(text: str) -> str:
 
 
 def vision_engine(settings) -> Callable[[Path], str]:
-    """站内识图。失败抛给 run_ocr，不在这里改走 RapidOCR。"""
+    """站内识图。失败抛给 run_ocr，不在这里改走 RapidOCR。
+
+    先压图再送 deepseek-flash，避免 en1 转发把大 data-url 掐断；瞬时网络错误最多再试两次。
+    """
+    import time
+
     from researchlib import llm
 
     def recognize(path: Path) -> str:
         raw = path.read_bytes()
         if len(raw) > MAX_VISION_BYTES:
             raise OcrImageSkipped(f"超过 {MAX_VISION_BYTES} 字节，识图跳过")
-        text, _model = llm.chat(settings, vision_messages(raw, image_mime(path)))
-        return normalize_vision_text(text)
+        payload, mime = prepare_vision_image(raw, image_mime(path))
+        messages = vision_messages(payload, mime)
+        last_exc: BaseException | None = None
+        for attempt in range(VISION_TRANSIENT_TRIES):
+            try:
+                text, _model = llm.chat(settings, messages)
+                return normalize_vision_text(text)
+            except llm.LLMError as exc:
+                last_exc = exc
+                detail = str(exc)
+                transient = any(
+                    needle in detail
+                    for needle in (
+                        "连不上",
+                        "Remote end closed",
+                        "DECRYPTION_FAILED",
+                        "Bad MAC",
+                        "timed out",
+                        "Timeout",
+                        "Connection reset",
+                    )
+                )
+                if not transient or attempt + 1 >= VISION_TRANSIENT_TRIES:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
 
     return recognize
 

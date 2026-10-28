@@ -17,6 +17,7 @@ from researchlib.ocr import (
     VISION_PROMPT,
     OcrUnavailable,
     normalize_vision_text,
+    prepare_vision_image,
     resolve_engine,
     run_ocr,
     vision_engine,
@@ -278,3 +279,42 @@ def test_llms_txt_documents_ocr_endpoint():
     api_src = (ROOT / "src" / "researchlib" / "web" / "api.py").read_text(encoding="utf-8")
     assert "/api/v1/ocr" in api_src
     assert "触发图片文字" in api_src
+
+
+def test_prepare_vision_image_shrinks_large_jpeg():
+    raw = (Path(__file__).resolve().parents[1] / "fixtures" / "ocr-vision-large.jpg").read_bytes()
+    assert len(raw) > 120_000
+    out, mime = prepare_vision_image(raw, "image/jpeg")
+    assert mime == "image/jpeg"
+    assert len(out) <= 110_000
+    assert len(out) < len(raw)
+
+
+def test_vision_recognize_compresses_before_chat(tmp_path, monkeypatch):
+    raw = (Path(__file__).resolve().parents[1] / "fixtures" / "ocr-vision-large.jpg").read_bytes()
+    path = tmp_path / "big.jpg"
+    path.write_bytes(raw)
+    seen = {}
+
+    def fake_chat(settings, messages, **kwargs):
+        content = messages[0]["content"]
+        url = content[1]["image_url"]["url"]
+        b64 = url.split(",", 1)[1]
+        import base64
+
+        seen["bytes"] = len(base64.b64decode(b64))
+        seen["mime"] = url.split(";")[0].split(":")[1]
+        return "方伟：压缩后仍可读\n网友：好", "deepseek-flash"
+
+    monkeypatch.setattr("researchlib.llm.chat", fake_chat)
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        monkeypatch.setattr(
+            "researchlib.ocr.prepare_vision_image",
+            lambda image_bytes, mime: (image_bytes[:80_000], "image/jpeg"),
+        )
+    text = vision_engine(_settings(tmp_path))(path)
+    assert "方伟" in text
+    assert seen["mime"] == "image/jpeg"
+    assert seen["bytes"] <= 110_000

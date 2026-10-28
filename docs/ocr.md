@@ -19,7 +19,7 @@
 
 ## 站内识图（默认）
 
-主镜像和 `app` 容器就能跑，不需要 onnx / RapidOCR。`research-ocr` 默认 `--engine vision`，调用站内 `deepseek-flash`（和问库、摘要同一模型）。也可用站内 API，和译制一样只接受本站或本机 POST：
+主镜像和 `app` 容器就能跑，不需要 onnx / RapidOCR。`research-ocr` 默认 `--engine vision`，调用站内 `deepseek-flash`（和问库、摘要同一模型）。送识图前会把图压到约 110KB（Pillow，边长≤1280），避免 DeepSeek 转发链路掐断大 data-url；瞬时断连会重试最多 3 次。也可用站内 API，和译制一样只接受本站或本机 POST：
 
 ```bash
 # 定点重认。立刻返回 running，后台识图。
