@@ -76,6 +76,10 @@ def test_vision_prompt_names_the_constraints():
         "查看对话",
         "十大影响力用户",
         "回复@",
+        "领教工坊",
+        "INSIDE THE BEST",
+        "COLMO",
+        "深刻反省",
     ):
         assert phrase in VISION_PROMPT, phrase
 
@@ -362,3 +366,32 @@ def test_normalize_strips_video_xueqiu_chrome_and_reply_at():
     assert "//@" not in out
     assert "回复@" not in out
 
+def test_normalize_strips_brand_masthead_and_collapses_spam():
+    raw = """方洪波：
+企业家精神是敢于在最顺的时候对自己动刀子
+领教工坊
+INSIDE THE BEST
+来源：思想?岭南 | 对话方洪波：企业发展如何穿越周期、基业长青？
+光做家电没有未来
+COLMO
+我们光做家电没有未来
+"""
+    out = normalize_vision_text(raw)
+    assert "领教工坊" not in out
+    assert "INSIDE THE BEST" not in out.upper().replace("  ", " ")
+    assert "COLMO" not in out
+    assert "来源" not in out
+    assert "光做家电没有未来" in out
+    assert "企业家精神" in out
+    assert "思想×岭南" not in out  # 整行刊源已剥，不必保留
+
+    spam = "清仓格力\n深刻反省，深刻反省，深刻反省，深刻反省，深刻反省，深刻反省，深刻反省"
+    collapsed = normalize_vision_text(spam)
+    assert collapsed.count("深刻反省") == 1
+    soft = "深刻反省，深刻\n反省，深刻反省，深刻反省"
+    assert normalize_vision_text(soft).count("深刻反省") == 1
+
+
+def test_normalize_fixes_obvious_typos():
+    assert "很新的东西" in normalize_vision_text("网友：AI算力是一个很新都东西")
+    assert "很新都东西" not in normalize_vision_text("网友：AI算力是一个很新都东西")
