@@ -170,8 +170,52 @@ def _post(settings: Settings, token: str, payload: dict) -> dict:
         },
         method="POST",
     )
+    stream = str(payload.get("model", "")).startswith("deepseek")
+    if stream:
+        # 思考模式长时间不出字，代理会断开空闲连接；流式让连接一直有数据。
+        request.data = json.dumps({**payload, "stream": True}, ensure_ascii=False).encode("utf-8")
+        request.add_header("Accept", "text/event-stream")
     with urllib.request.urlopen(request, timeout=settings.llm_timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+        text = response.read().decode("utf-8", "replace")
+    if not stream or text.lstrip().startswith("{"):
+        return json.loads(text)
+    return _read_stream(text.splitlines())
+
+
+def _read_stream(lines) -> dict:
+    """把 SSE 分片拼回非流式的 choices[0].message 结构。"""
+    content: list[str] = []
+    reasoning: list[str] = []
+    model = ""
+    usage = None
+    for raw in lines:
+        line = raw.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            continue
+        model = chunk.get("model") or model
+        usage = chunk.get("usage") or usage
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                content.append(delta["content"])
+            if delta.get("reasoning_content"):
+                reasoning.append(delta["reasoning_content"])
+    body = {
+        "model": model,
+        "choices": [
+            {"message": {"role": "assistant", "content": "".join(content), "reasoning_content": "".join(reasoning)}}
+        ],
+    }
+    if usage is not None:
+        body["usage"] = usage
+    return body
 
 
 def _message_content(body: dict, label: str) -> str:

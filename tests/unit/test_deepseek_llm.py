@@ -303,3 +303,19 @@ def test_grok_opt_in_still_uses_oauth(tmp_path, monkeypatch):
     assert payload["max_tokens"] == 128_000
     assert payload["temperature"] == 0.1
     assert "thinking" not in payload
+
+
+def test_deepseek_stream_is_reassembled():
+    from researchlib.llm import _read_stream
+
+    lines = [
+        'data: {"model":"deepseek-flash","choices":[{"delta":{"reasoning_content":"想"}}]}',
+        "",
+        'data: {"choices":[{"delta":{"content":"茅台"}}]}',
+        'data: {"choices":[{"delta":{"content":"很好"}}]}',
+        "data: [DONE]",
+    ]
+    body = _read_stream(lines)
+    assert body["model"] == "deepseek-flash"
+    assert body["choices"][0]["message"]["content"] == "茅台很好"
+    assert body["choices"][0]["message"]["reasoning_content"] == "想"
