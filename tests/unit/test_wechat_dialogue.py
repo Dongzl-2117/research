@@ -993,3 +993,121 @@ def test_mid_paragraph_figure_is_hoisted():
     out2 = _hoist_figures_out_of_paragraphs(sample2)
     assert out2.startswith("<figure")
     assert "<p>——段永平</p>" in out2
+
+
+def test_hold_to_text_and_quote_back_chrome_are_stripped():
+    raw = (
+        "18:52\n"
+        "看十年价投交流群(499)\n"
+        "方伟\n"
+        "我投资想的是底线\n"
+        "一年的底线能不能稳定赚100亿的问题\n"
+        "Cody\n"
+        "应该想一些非共识的。比如下限赚多少钱一年\n"
+        "4月6日12:06\n"
+        "如果你的决策是建立在今年业绩涨了3倍，明年再三倍\n"
+        "回到引用位置\n"
+        "那这种高预期，市场也是这么高预期\n"
+        "可按住转文字\n"
+        "可按住转文字  E\n"
+        "Henri\n"
+        "の  可按住转文字\n"
+        "HYIIV\n"
+    )
+    text = present_ocr_pieces([raw])
+    assert "方伟：" in text
+    assert "网友：" in text
+    for noise in (
+        "可按住转文字",
+        "回到引用位置",
+        "18:52",
+        "4月6日12:06",
+        "看十年价投交流",
+        "Cody",
+        "HYIIV",
+        "の",
+    ):
+        assert noise not in text, noise
+    assert "稳定赚100亿" in text
+
+
+def test_labeled_vision_chrome_is_not_a_speaker():
+    """识图已经写成方伟/网友时，界面行仍要剥掉，不能标成说话人。"""
+    raw = (
+        "方伟：可按住转文字\n"
+        "方伟：一年的底线能不能稳定赚100亿\n"
+        "网友：继续提问\n"
+        "网友：AI搜索\n"
+        "雪球\n"
+        "LIVE\n"
+        "加人会员群\n"
+        "网友：非共识的下限要先想清楚\n"
+        "Aaron阿远：高坝期不是这样说的\n"
+        "Henri：每般利间先放一边\n"
+    )
+    text = compose_ocr_text([raw])
+    assert "方伟：" in text
+    assert "网友：" in text
+    for noise in (
+        "可按住转文字",
+        "继续提问",
+        "AI搜索",
+        "雪球",
+        "LIVE",
+        "加人会员群",
+        "Aaron",
+        "Henri",
+        "阿远",
+    ):
+        assert noise not in text, noise
+    assert "稳定赚100亿" in text
+    assert "非共识的下限" in text
+    assert "高坝期不是这样说的" in text
+    assert not any(line.startswith("方伟：继续") or line.startswith("网友：AI") for line in text.splitlines())
+
+
+def test_labeled_chat_keeps_nested_pe_table():
+    """识图已标说话人的群聊内嵌估值表，不能当纯表 media 丢掉。"""
+    text = """网友：尤其是看到伦敦距离非常近的位子连续开了好几家pop mart
+方伟：因为市场还是按130亿利润去算pe
+网友：如果如我前述：港股Q3同比-45%~-50%公报出来以后，我估的重点区间应在110-120港元
+网友：市值倍数PE 对应股价
+网友：16倍 约133港元
+网友：14倍 约117港元
+网友：12倍 约100港元
+网友：10倍 约84港元
+方伟：而下半年同比去年几乎必然大幅度下滑的
+网友：看看明天市场什么反应
+"""
+    shot = parse_shot(text)
+    assert shot.kind == "dialogue"
+    joined = "\n".join(line for turn in shot.turns for line in turn.lines)
+    assert "110-120" in joined or "110" in joined
+    assert "Q3" in joined or "同比" in joined
+
+
+def test_zsxq_coupon_card_is_noise():
+    raw = """方伟看十年
+扫码领取优惠券
+仅限前 1000 名
+2026/06/15 12:00 至 2027/06/01 12:00
+66 元立减金"""
+    assert parse_shot(raw).kind == "media"
+    assert present_ocr_pieces([raw]) == ""
+    labeled = "方伟：扫码领取优惠券\n仅限前 1000 名\n66 元立减金。"
+    assert present_ocr_pieces([labeled]) == ""
+
+
+def test_weibo_comment_labeled_guest():
+    raw = """小事7747 山东 2
+说实话单日房价超过300的
+酒店其中七成以上的客人都
+是单位出差，为了多开票只
+能在酒店购物而且还死贵。
+亚朵酒店靠卖枕头被子半年...
+龙视新闻联播"""
+    text = present_ocr_pieces([raw])
+    assert text.startswith("网友：")
+    assert "小事7747" not in text
+    assert "龙视新闻联播" not in text
+    assert "单日房价" in text

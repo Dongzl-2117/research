@@ -21,8 +21,11 @@ from researchlib.jobs.base import (
     credentials_problem as shared_credentials_problem,
 )
 from researchlib.llm import LLMError, LLMUnavailable
+from researchlib.mentions import rebuild_articles
 from researchlib.sources import enabled_sources, load_sources
+from researchlib.views import _canonical_ids as canonical_article_ids
 from researchlib.views import (
+    articles_for_ids,
     extract_article,
     gap_articles,
     pending_articles,
@@ -47,11 +50,34 @@ def credentials_problem(settings: Settings) -> str:
     return shared_credentials_problem(settings)
 
 
+def _parse_article_ids(raw) -> list[int]:
+    found: list[int] = []
+    if raw is None:
+        return found
+    if isinstance(raw, (int, float)) and int(raw) > 0:
+        return [int(raw)]
+    if isinstance(raw, str):
+        pieces = raw.replace(",", " ").split()
+    elif isinstance(raw, list | tuple):
+        pieces = list(raw)
+    else:
+        return found
+    for piece in pieces:
+        try:
+            value = int(piece)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in found:
+            found.append(value)
+    return found
+
+
 def start(
     settings: Settings,
     *,
     source: str | None = None,
     company: str | None = None,
+    articles: list[int] | None = None,
     limit: int = DEFAULT_LIMIT,
     loop: bool = False,
     sleep: int = DEFAULT_SLEEP,
@@ -59,14 +85,16 @@ def start(
 ) -> dict[str, Any]:
     source_id = (source or "").strip() or None
     company_name = (company or "").strip() or None
+    article_ids = _parse_article_ids(articles)
     limit = clamp(limit, DEFAULT_LIMIT, 1, MAX_LIMIT)
     sleep = clamp(sleep, DEFAULT_SLEEP, MIN_SLEEP, MAX_SLEEP)
     return _worker.start(
         settings,
-        run=lambda s: _run(s, source_id, company_name, limit, bool(loop), sleep, bool(gap)),
+        run=lambda s: _run(s, source_id, company_name, article_ids, limit, bool(loop), sleep, bool(gap)),
         fields={
             "source": source_id,
             "company": company_name,
+            "articles": article_ids or None,
             "limit": limit,
             "loop": bool(loop),
             "sleep": sleep,
@@ -79,6 +107,7 @@ def _run(
     settings: Settings,
     source: str | None,
     company: str | None,
+    article_ids: list[int],
     limit: int,
     loop: bool,
     sleep: int,
@@ -95,6 +124,15 @@ def _run(
                 _worker._update(last_status="failed", last_error=f"{source} 不是已启用来源")
                 return
             authors = {source: authors[source]}
+        # 指定文章时先按当前算法（含短正文 OCR）重挂提及，再抽观点。
+        chosen: list[int] = []
+        if article_ids:
+            rebuilt = rebuild_articles(conn, article_ids)
+            logger.info("按文章重挂提及 %s 篇（请求 %s）", rebuilt, article_ids)
+            chosen = canonical_article_ids(conn, article_ids, list(authors))
+            if not chosen:
+                _worker._update(last_status="failed", last_error="指定文章都不在可整理范围内")
+                return
         if company:
             row = conn.execute(
                 "SELECT id, name_zh FROM companies WHERE name_zh = %s",
@@ -104,7 +142,7 @@ def _run(
                 _worker._update(last_status="failed", last_error=f"{company} 不在公司表里")
                 return
             wanted = [int(row["id"])]
-        elif gap:
+        elif gap or chosen:
             wanted = [int(item["id"]) for item in conn.execute("SELECT id FROM companies").fetchall()]
         else:
             wanted = [int(item["id"]) for item in view_companies(conn, list(authors))]
@@ -112,7 +150,12 @@ def _run(
             _worker._update(last_status="failed", last_error="没有被深入谈到的公司")
             return
         while not _worker.stop_event.is_set():
-            if gap:
+            if chosen:
+                if gap:
+                    rows = gap_articles(conn, wanted, list(authors), limit + len(skipped), chosen)
+                else:
+                    rows = articles_for_ids(conn, wanted, list(authors), chosen, limit + len(skipped))
+            elif gap:
                 rows = gap_articles(conn, wanted, list(authors), limit + len(skipped))
             else:
                 rows = pending_articles(conn, wanted, list(authors), limit + len(skipped))
@@ -183,6 +226,8 @@ def _run(
                     last_status="ok",
                     last_error=None,
                 )
+                if chosen:
+                    skipped.add(article_id)
                 logger.info("观点 #%s ok", article_id)
             if fatal or not loop:
                 break

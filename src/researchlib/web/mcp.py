@@ -10,6 +10,7 @@ from datetime import date
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from researchlib.ask import ask
 from researchlib.web.api import (
@@ -259,14 +260,20 @@ async def mcp_endpoint(request: Request):
     except ValueError:
         return JSONResponse(_rpc_error(None, -32700, "解析失败"), status_code=400)
     messages = body if isinstance(body, list) else [body]
-    replies = []
-    for message in messages:
-        if not isinstance(message, dict):
-            replies.append(_rpc_error(None, -32600, "无效请求"))
-            continue
-        reply = handle_message(request, message)
-        if reply is not None:
-            replies.append(reply)
+
+    # ask_library 等工具是同步长任务；放到线程池，避免堵死事件循环。
+    def _handle_all():
+        out = []
+        for message in messages:
+            if not isinstance(message, dict):
+                out.append(_rpc_error(None, -32600, "无效请求"))
+                continue
+            reply = handle_message(request, message)
+            if reply is not None:
+                out.append(reply)
+        return out
+
+    replies = await run_in_threadpool(_handle_all)
     if not replies:
         return Response(status_code=202)
     return JSONResponse(replies if isinstance(body, list) else replies[0])

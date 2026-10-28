@@ -26,7 +26,7 @@ docker compose up -d --build
 
 几千篇时两步加起来几分钟，期间页面照常能用，只是重复文章和提及还没更新完。
 
-备份、试恢复、夜间补齐、定时抓取和自动上线用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题，首页顶上提示一行。
+备份、试恢复、夜间补齐、定时抓取和自动上线用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题写进 `data/status/`，首页不挂红条。
 
 不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面时只给当前卡片里缺的排队，其余由夜间任务每晚补一批，见 [llm.md](llm.md)。
 
@@ -71,14 +71,35 @@ git pull
 scripts/install-launchd.sh   # 以前装过备份的，BACKUP_DIR 从装好的备份任务里读；没装过的带上 BACKUP_DIR=…
 ```
 
-装好时先跑一轮，不用再另外 `docker compose up -d --build`。日志在 `~/Library/Logs/research/deploy.log`。首页只在出问题时提示一行：
+装好时先跑一轮，不用再另外 `docker compose up -d --build`。日志在 `~/Library/Logs/research/deploy.log`。失败写 `data/status/`，首页不挂红条：
 
 - CI 没过的提交不上线，CI 重跑通过了再上；两小时还没有 CI 结果也提示。
 - 拉代码、重建失败，或者重启后 10 分钟 `/health` 还不通，提示失败的那一步。同一个提交最多试 3 轮，之后等下一个提交。
-- Mac mini 上的仓库不在 main，或者有没提交的改动（会被一起打进镜像），不上线。
+- Mac mini 上的仓库不在 main、有没提交的改动，或者 main 上有没推送的提交（都会被一起打进镜像），不上线，处理办法见下面。
 - 取不到 main、查不到 CI（断网、GitHub 出错）超过 6 小时才提示。一装好就提示「取不到 origin/main」的，多半是 origin 用的 SSH、launchd 里读不到钥匙；仓库是公开的，改成 HTTPS：`git remote set-url origin https://github.com/Dongzl-2117/research.git`。
 
 夜间补齐、定时抓取、备份正在跑时先不重启，等它们跑完：它们在容器里跑命令，重建会把它们打断。
+
+Mac mini 上的 `~/research` 只给自动上线用。在那台机器上改代码的人和 AI 另外 clone 一份（比如 `~/research-dev`）或者用 `git worktree`，改完推分支走 PR；不在 `~/research` 里切分支、改文件、提交。只在本机要忽略的文件写进 `.git/info/exclude`，不改 `.gitignore`。首页提示卡住了，按提示的那种处理：
+
+- 不在 main：`git -C ~/research checkout main`。
+- 有没提交的改动：先 `git -C ~/research diff` 看是什么，要留的推到分支走 PR，然后还原。只是本机加的忽略规则，比如 `.gitignore`，把新加的行挪进 `.git/info/exclude` 再还原：
+
+  ```bash
+  cd ~/research
+  git diff -U0 .gitignore | grep '^+[^+]' | cut -c2- >> .git/info/exclude
+  git checkout -- .gitignore
+  ```
+
+- main 上有没推送的提交：存到分支推上去开 PR，再让 main 回到 origin/main：
+
+  ```bash
+  cd ~/research
+  git branch mini-local && git push origin mini-local
+  git reset --keep origin/main
+  ```
+
+处理完不用做别的，下一轮（10 分钟内）自己上线。
 
 马上上线（不等 CI 和别的任务，失败过 3 轮的也重试）：`FORCE=1 scripts/deploy.sh`。不要自动上线：`INSTALL_DEPLOY=0 scripts/install-launchd.sh`，之后照旧手动：
 

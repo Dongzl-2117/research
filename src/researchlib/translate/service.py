@@ -102,17 +102,76 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
     return texts
 
 
+
+def _dedupe_consecutive_blocks(html: str) -> str:
+    """去掉模型偶发吐出的连续相同顶层块，以及块内连续相同的 <p>（抽验 22195）。"""
+    html = html or ""
+    blocks = top_level_blocks(html)
+    if len(blocks) >= 2:
+        out: list[str] = []
+        prev_norm: str | None = None
+        for block in blocks:
+            norm = re.sub(r"\s+", " ", block).strip()
+            if prev_norm is not None and norm and norm == prev_norm:
+                continue
+            out.append(block)
+            prev_norm = norm or prev_norm
+        html = "".join(out)
+    return _dedupe_consecutive_paragraphs(html)
+
+
+_P_BLOCK = re.compile(r"<p\b[^>]*>.*?</p>", re.I | re.S)
+_EMPTY_QUOTE = re.compile(r"<blockquote>\s*</blockquote>", re.I)
+
+
+def _dedupe_consecutive_paragraphs(html: str) -> str:
+    """按文档序去掉连续相同的 <p>（含同一父节点内、blockquote 紧邻重复）。"""
+    if not html or "<p" not in html.lower():
+        return html
+    matches = list(_P_BLOCK.finditer(html))
+    if len(matches) < 2:
+        return html
+    drop: list[tuple[int, int]] = []
+    prev_norm: str | None = None
+    for match in matches:
+        norm = re.sub(r"\s+", " ", match.group(0)).strip()
+        # 用去标签后的正文长度：短占位（如「是」「好」）不去；测例「第一段…去重。」约 16 字要去。
+        plain = re.sub(r"<[^>]+>", "", norm).strip()
+        if prev_norm is not None and norm == prev_norm and len(plain) >= 10:
+            drop.append(match.span())
+            continue
+        prev_norm = norm
+    if not drop:
+        return html
+    out: list[str] = []
+    last = 0
+    for start, end in drop:
+        out.append(html[last:start])
+        last = end
+    out.append(html[last:])
+    cleaned = "".join(out)
+    return _EMPTY_QUOTE.sub("", cleaned)
+
+
 def _translate_title(title: str, data_dir: Path) -> str:
-    """标题单独译一次，给检索和列表用。失败不影响正文译文。"""
+    """标题单独译一次，给检索和列表用。失败返回空串，由 complete 规则判为未完成。"""
     title = (title or "").strip()
     if not title or is_chinese(title):
         return ""
-    try:
-        texts = _translate_batch([escape(title)], {}, data_dir)
-    except Exception:
+    last_exc: Exception | None = None
+    for _attempt in range(2):
+        try:
+            texts = _translate_batch([escape(title)], {}, data_dir)
+        except Exception as exc:  # noqa: BLE001 — 标题失败要重试一次再放弃
+            last_exc = exc
+            continue
+        plain = re.sub(r"<[^>]+>", "", texts[0] if texts else "")
+        got = html_lib.unescape(re.sub(r"\s+", " ", plain)).strip()[:300]
+        if got:
+            return got
+    if last_exc is not None:
         return ""
-    plain = re.sub(r"<[^>]+>", "", texts[0] if texts else "")
-    return html_lib.unescape(re.sub(r"\s+", " ", plain)).strip()[:300]
+    return ""
 
 
 def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResult:
@@ -183,11 +242,14 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     if not done:
         return TranslateResult(article_id, "skipped", reason="no batch translated")
 
-    zh_html = "".join(filled)
+    zh_html = _dedupe_consecutive_blocks("".join(filled))
     zh_text = re.sub(r"<[^>]+>", " ", zh_html)
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
-    complete = done == len(targets)
     title_zh = _translate_title(article["title"] or "", data_dir)
+    en_title = (article["title"] or "").strip()
+    needs_title_zh = bool(en_title) and not is_chinese(en_title)
+    # 英文标题译空不算 complete（抽验 22195：segments 齐但 title_zh 空仍标 complete）
+    complete = done == len(targets) and (bool(title_zh) if needs_title_zh else True)
     conn.execute(
         """
         INSERT INTO article_translations (

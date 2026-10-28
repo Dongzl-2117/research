@@ -24,8 +24,9 @@ RUN pip install --no-cache-dir --no-deps .
 EXPOSE 8088
 CMD ["research-web"]
 
-# 图片文字（OCR）用的镜像：在 app 之上加 RapidOCR（onnxruntime + OpenCV）。不进主镜像。
+# RapidOCR 回退镜像：在 app 之上加 onnxruntime + OpenCV。默认识图不进这个阶段。
 #   docker compose --profile ocr build ocr
+#   docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 500
 FROM app AS ocr
 
 RUN apt-get update \
@@ -34,4 +35,4 @@ RUN apt-get update \
 COPY requirements-ocr.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements-ocr.lock
 
-CMD ["research-ocr"]
+CMD ["research-ocr", "--engine", "rapidocr"]

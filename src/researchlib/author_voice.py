@@ -59,7 +59,8 @@ def restrict(
 
 def not_guest_sql(alias: str = "a") -> str:
     """网友帖不进星主的观点和作者统计。没标发帖人的旧数据仍算星主，避免把整库丢掉。"""
-    return f"coalesce({alias}.raw_meta->>'poster_role', '') <> 'guest'"
+    col = f"{alias}.raw_meta" if alias else "raw_meta"
+    return f"coalesce({col}->>'poster_role', '') <> 'guest'"
 
 
 # 段永平博客里没有具体公司、或只是列举/致谢/闲聊的条目。人话留着，不进观点。
@@ -141,6 +142,30 @@ def for_model(
 
 def is_guest(raw_meta: dict | None) -> bool:
     return str((raw_meta or {}).get(POSTER_ROLE) or "") == ROLE_GUEST
+
+
+# 星主发的纯「图片」帖，导出标题常被拼成「「图片」 评论（N） - 读者名」。
+# poster_role 仍是 owner，但标题像读者帖；网站按读者帖同样隐藏（正文库内保留）。
+_COMMENT_SHELL_TITLE = re.compile(r"^「图片」\s*评论（\d+）")
+
+
+def is_comment_shell_title(title: str | None) -> bool:
+    return bool(_COMMENT_SHELL_TITLE.match((title or "").strip()))
+
+
+def hide_from_site(raw_meta: dict | None, title: str | None = "") -> bool:
+    """网站入口不展示：网友帖，或标题是「图片」评论壳。"""
+    return is_guest(raw_meta) or is_comment_shell_title(title)
+
+
+def not_comment_shell_sql(alias: str = "a") -> str:
+    col = f"{alias}.title" if alias else "title"
+    return f"{col} !~ '^「图片」\\s*评论（'"
+
+
+def site_visible_sql(alias: str = "a") -> str:
+    """首页/检索/按天/API 列表共用：非网友帖，且标题不是图片评论壳。"""
+    return f"{not_guest_sql(alias)} AND {not_comment_shell_sql(alias)}"
 
 
 def _norm_name(name: str) -> str:
