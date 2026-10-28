@@ -3,7 +3,8 @@
 只动展示，不改库里的原文。知识星球问答导出的「# 问：…」「## 提问（…）」
 「## 回答（…）」打开页面时收成「网友：」「方伟：」，和图片对话同一套。
 入库新写评论时也直接用这两个标签；旧稿里的「读者问：」「作者答：」
-「作者补充：」同样在这里映射。明显错字（OCR / 笔误）走 textutil.fix_obvious_typos，
+「作者补充：」同样在这里映射。钉死的语病走 textutil.fix_obvious_typos。
+要看上下文的识图误读走 vision_polish.repair_vision_misreads，不进那张表。
 不改观点和口语。
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 import re
 
 from researchlib.textutil import fix_obvious_typos
+from researchlib.vision_polish import repair_vision_misreads
 
 # 行首说话人：旧稿三种 → 全文统一成「网友：」「方伟：」。
 _LEGACY_SPEAKER = re.compile(
@@ -34,8 +36,12 @@ def normalize_dialogue_labels(text: str) -> str:
 
 
 def polish_display_text(text: str) -> str:
-    """展示层改正明显错字。库内原文不动；实现见 textutil.fix_obvious_typos。"""
-    return fix_obvious_typos(text or "")
+    """展示层改正明显错字，并校对识图误读。库内原文不动。
+
+    语病在 textutil.fix_obvious_typos。家电语境里的「墓地」、free cash flow 的单字母滑字
+    在 vision_polish，不进语病表。
+    """
+    return repair_vision_misreads(fix_obvious_typos(text or ""))
 
 
 # 知识星球问答导出：标题是「提问（读者 → 方伟Rey）」「回答（方伟Rey）」。
