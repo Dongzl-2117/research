@@ -252,9 +252,9 @@ def test_search_matches_words_not_one_long_phrase(conn, settings):
         ad = client.get("/search", params={"q": "腾讯广告加载率"}).text
         assert 'href="/articles/1' in ad
         assert "<mark>广告</mark>笔记" in ad
-        # 只命中「广告」的那篇排在「部分命中」之后。
-        assert ad.find('href="/articles/1') < ad.find("部分命中</p>") < ad.find('href="/articles/3')
-        assert "1 篇全部命中" in ad
+        # 公司主题搜索须有局部主体依据；没有提腾讯的天气句不能因一个主题词就冒充腾讯材料。
+        assert 'href="/articles/3' not in ad
+        assert "1 篇含全部检索词" in ad
         price = client.get("/search", params={"q": "苹果定价权"}).text
         assert 'href="/articles/2' in price
         excluded = client.get("/search", params={"q": "广告 -腾讯"}).text

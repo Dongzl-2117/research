@@ -23,6 +23,12 @@ def test_named_query_is_not_an_assertion_but_negative_fact_is():
     assert facts[0].confidence == 1 and "没有提高" in facts[0].text
 
 
+def test_copular_definition_is_retained_as_uncertain_instead_of_hard_deleted():
+    units = local_evidence(_row("轨道软件的用户留存是通过持续更新和兼容旧文档来维持的。"),
+                           _matcher(), {1}, ["用户", "留存"])
+    assert any(unit.confidence > 0 for unit in units)
+
+
 def test_foreign_subject_in_same_sentence_never_inherits_focus():
     units = local_evidence(
         _row("轨道软件与星云软件相比较，星云软件通过经销商签长期合同。", title="轨道软件"),
@@ -32,9 +38,19 @@ def test_foreign_subject_in_same_sentence_never_inherits_focus():
 
 
 def test_foreign_previous_subject_blocks_title_inheritance():
-    row = _row("它的合同到期后会重新谈价格。", title="轨道软件", heading="轨道软件")
+    row = _row("它的合同到期后会重新谈价格。", title="轨道软件", heading="合同")
     units = local_evidence(row, _matcher(), {1}, ["合同"], previous=_row("星云软件刚调整了合同条款。"))
     assert units == []
+
+
+def test_local_foreign_heading_and_implicit_subject_override_distant_title():
+    matcher = _matcher()
+    row = _row("它把服务费分摊到每个账户。", title="轨道软件", heading="星云软件")
+    previous = _row("轨道软件推出新的编辑器。")
+    assert local_evidence(row, matcher, {1}, ["服务费"], previous=previous) == []
+    assert local_evidence(row, matcher, {1}, ["服务费"]) == []
+    switched = _row("星云软件推出新的编辑器。平台把服务费分摊到每个账户。", title="轨道软件")
+    assert local_evidence(switched, matcher, {1}, ["服务费"]) == []
 
 
 def test_explicit_anaphor_can_cross_heading_without_losing_context():

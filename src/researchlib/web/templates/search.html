@@ -55,7 +55,7 @@
 <p class="filter-note"><a class="btn ask-btn" href="/ask?{{ ask_query }}">问 AI</a></p>
 {{ card_list(results) }}
 {{ pager(page, pages, "/search?" ~ page_query ~ "&page=" ~ (page - 1), "/search?" ~ page_query ~ "&page=" ~ (page + 1)) }}
-<p class="count num">{{ total }} 篇全部命中{% if partial_total %} · {{ partial_total }} 篇部分命中{% endif %}</p>
+<p class="count num">{{ total }} 篇含全部检索词{% if partial_total %} · {{ partial_total }} 篇候选未写全检索词{% endif %}</p>
 {% else %}
 <p class="empty">没有找到「{{ query }}」。</p>
 {% endif %}

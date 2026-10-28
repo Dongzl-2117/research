@@ -1027,6 +1027,8 @@ def search_page(request: Request):
         focus_terms = [form for t in found.query.content_terms for form in t.forms] if found and found.query else []
         entity_terms = [form for t in found.query.terms if t.kind == "company" for form in t.forms] \
             if found and found.query else []
+        context_search = bool(found and found.query and found.query.content_terms
+                              and (found.query.companies or scope.company_id is not None))
         for hit in found.hits if found else []:
             best = hit.passages[0] if hit.passages else None
             row = {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at}
@@ -1050,6 +1052,7 @@ def search_page(request: Request):
                                 ),
                                 "after": highlight_snippet(p.after, query, radius=160, terms=terms) if p.after else "",
                                 "url": p.url,
+                                "context_only": context_search and p.topic_lexical <= 0 and p.semantic <= 0,
                             }
                             for p in hit.passages[:2]
                         ],

@@ -128,11 +128,11 @@ jobs:
           python tools/ci/annotate.py "冻结原题实际可见片段（关闭向量）" -- \
             python tools/retrieval_eval/acceptance/evaluate.py --corpus original \
             --url postgresql://research:research@127.0.0.1:5432/research_eval_acceptance_original \
-            --label "$GITHUB_SHA" --check
+            --label "$GITHUB_SHA" --out /tmp/search-acceptance-original.json --check
           python tools/ci/annotate.py "冻结扩展题实际可见片段（关闭向量）" -- \
             python tools/retrieval_eval/acceptance/evaluate.py --corpus heldout \
             --url postgresql://research:research@127.0.0.1:5432/research_eval_acceptance_heldout \
-            --label "$GITHUB_SHA"
+            --label "$GITHUB_SHA" --out /tmp/search-acceptance-heldout.json
 
       # 锁文件和 pyproject.toml 对不上就失败，日志里打印该有的内容。本机没有 uv，脚本在容器里跑。
       - name: Lock files match pyproject.toml

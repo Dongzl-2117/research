@@ -62,9 +62,9 @@ def sentences(text: str) -> list[tuple[int, int, str]]:
     return out
 
 
-def _reference(text: str, start: int, end: int, topic_forms: list[str]) -> bool:
+def _reference(text: str, start: int, end: int, topic_forms: list[str]) -> str:
     if _DENIED_REFERENCE.search(text[:start]):
-        return True
+        return "denied"
     suffix = text[end:]
     # 「公司 + 查询题面」是一个名词短语；仅点名该短语、作标题或被引述，不等于陈述公司的事实。
     consumed = False
@@ -75,7 +75,12 @@ def _reference(text: str, start: int, end: int, topic_forms: list[str]) -> bool:
             break
         consumed = True
         suffix = cleaned[len(found):]
-    return bool(_NOMINAL.match(suffix)) if consumed else bool(re.match(r"^\s*(?:[。！？!?，,；;：:]|$)", suffix))
+    if re.match(r"^\s*(?:[。！？!?，,；;：:]|$)", suffix):
+        return "label"
+    if consumed and _NOMINAL.match(suffix):
+        # 「商业模式是……」可能是定义，也可能只是在命名题目。无模型不能把两者当作已判定。
+        return "nominal"
+    return ""
 
 
 def local_evidence(row, matcher, focus, topic_forms, *, previous=None) -> list[Evidence]:
@@ -84,27 +89,30 @@ def local_evidence(row, matcher, focus, topic_forms, *, previous=None) -> list[E
     pieces = sentences(text)
     title_ids = set(matcher.count(row.get("title") or ""))
     heading_ids = set(matcher.count(row.get("heading") or ""))
-    block_ids = set(matcher.count(text))
+    body_spans = list(matcher.spans(text))
+    block_ids = {cid for _lo, _hi, cid in body_spans}
     prior_ids, prior_text = set(), ""
     if previous:
         prior_ids = set(matcher.count(previous["body"] or ""))
         prior_text = previous["body"] or ""
     # 裸名称、题面名词短语和被否定的归属不能再为同块的任意新句子继承主体。
     has_claim = any(cid in focus and not _reference(text, lo, hi, topic_forms)
-                    for lo, hi, cid in matcher.spans(text))
+                    for lo, hi, cid in body_spans)
     same_block = block_ids & focus if has_claim and not block_ids - focus else set()
     out = []
     active = set()
     for start, end, sentence in pieces:
         # 多主体时按分句绑定；单主体时保留完整句，避免把因果从中间截断。
-        chunks = list(_CLAUSE.finditer(sentence)) if set(matcher.count(sentence)) - focus else []
+        sentence_ids = {cid for lo, hi, cid in body_spans if start <= lo and hi <= end}
+        chunks = list(_CLAUSE.finditer(sentence)) if sentence_ids - focus else []
         units = [(start + c.start(), start + c.end(), c.group()) for c in chunks] or [(start, end, sentence)]
         for lo, hi, unit in units:
-            spans = list(matcher.spans(unit))
+            spans = [(a - lo, b - lo, cid) for a, b, cid in body_spans if lo <= a and b <= hi]
             named = {cid for _, _, cid in spans}
             own = named & focus
             foreign = named - focus
-            denied = {cid for a, b, cid in spans if _reference(unit, a, b, topic_forms)}
+            references = {cid: _reference(unit, a, b, topic_forms) for a, b, cid in spans}
+            denied = {cid for cid, reason in references.items() if reason}
             if foreign:
                 active = foreign
                 continue
@@ -112,17 +120,20 @@ def local_evidence(row, matcher, focus, topic_forms, *, previous=None) -> list[E
                 active = own - denied
                 if own <= denied:
                     # 仍可作为随后显式代词的上下文，但不给名词题面很高的主题分。
-                    out.append(Evidence(unit, lo, hi, frozenset(own), 0.0, "提及"))
+                    confidence = 0.2 if any(references[cid] == "nominal" for cid in own) else 0.0
+                    out.append(Evidence(unit, lo, hi, frozenset(own), confidence, "提及"))
                 else:
                     out.append(Evidence(unit, lo, hi, frozenset(own - denied), 1.0, "正文"))
                 continue
             stripped = unit.lstrip(" \t\n“\"（(")
+            if heading_ids - focus or active - focus:
+                # 局部章节/前句已改谈别家时，较远的标题和上块不能覆盖这个转场。
+                continue
+            if prior_ids - focus and not heading_ids & focus:
+                continue
             if _ANAPHOR.match(stripped) and active:
                 if not active - focus:
                     out.append(Evidence(unit, lo, hi, frozenset(active), 0.9, "本块上文"))
-                continue
-            if _ANAPHOR.match(stripped) and prior_ids - focus:
-                # 上块刚换成同行，不能越过它从文章标题给「它」换回目标公司。
                 continue
             if _ANAPHOR.match(stripped) and prior_ids and not prior_ids - focus:
                 out.append(Evidence(unit, lo, hi, frozenset(prior_ids), 0.85, "上文", prior_text))
@@ -187,10 +198,11 @@ def corpus_prior(evidence, matcher, ignored):
             unique.add(fingerprint)
             docs[key[0]].update(tokens)
     df = Counter(token for tokens in docs.values() for token in tokens)
+    weights = {token: math.log1p(count - 1) for token, count in df.items() if count > 1}
     for units in evidence.values():
         for unit in units:
             tokens = features[unit.text]
-            central = sum(math.log1p(df[t] - 1) for t in tokens if df[t] > 1) / max(math.sqrt(len(tokens)), 1)
+            central = sum(weights.get(t, 0.0) for t in tokens) / max(math.sqrt(len(tokens)), 1)
             information = min(len(tokens) / 28, 1.0)
             unit.prior = 0.15 * information + 0.85 * central / (central + 3)
 

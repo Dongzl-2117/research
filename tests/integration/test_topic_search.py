@@ -110,6 +110,17 @@ def test_title_cannot_reattribute_following_pronoun_after_foreign_subject(conn, 
     assert bad not in {hit.article_id for hit in result.hits}
 
 
+def test_foreign_heading_overrides_prior_target_and_document_title(conn, settings):
+    bad = _store(conn, settings, "heading-foreign", "Costco 经营研究", [
+        ("对象", "Costco 是上一节观察的对象。"),
+        ("Walmart 经营结构", "它的商业模式依赖门店销售与物流收费。"),
+    ])
+    with TestClient(create_app(settings)) as client:
+        html = client.get("/search", params={"q": "Costco 商业模式"}).text
+    assert f'href="/articles/{bad}?chunk=1' not in html
+    assert "依赖门店销售与物流收费" not in html
+
+
 def test_repeated_query_label_does_not_outrank_literal_assertion(conn, settings):
     good = _store(conn, settings, "assertion", "收费结构", [
         ("收入", "Costco 的商业模式依靠会员持续付费，让商品定价留出较小差额。"),
@@ -127,4 +138,30 @@ def test_cross_article_copy_does_not_take_two_visible_slots(conn, settings):
     _store(conn, settings, "copy-b", "收费观察乙", [("收费", text), ("附录", "另记归档日期。")])
     result = _search(conn, settings, "Costco 商业模式")
     assert sum(text in (p.excerpt or p.body) for h in result.hits for p in h.passages) == 1
+    assert not any(p.semantic_hit for hit in result.hits for p in hit.passages)
+
+
+def test_same_pronoun_sentence_keeps_different_numeric_context(conn, settings):
+    text = "它的商业模式就是上文所列比例，续约带来的现金流成为后续合同收入的来源。"
+    for key, ratio in (("ratio-a", "90%"), ("ratio-b", "95%")):
+        _store(conn, settings, key, "收费札记", [
+            ("收费", f"Costco 这一比例本年度为 {ratio}。"), ("收费", text),
+        ])
+    result = _search(conn, settings, "Costco 商业模式")
+    assert len(result.hits) == 2
+    contexts = {hit.passages[0].before for hit in result.hits}
+    assert any("90%" in context for context in contexts)
+    assert any("95%" in context for context in contexts)
+
+
+def test_chunk_semantics_cannot_label_a_different_local_sentence(conn, settings, monkeypatch):
+    aid = _store(conn, settings, "semantic-reference", "日常记录", [
+        ("事项", "Costco 本周搬入新的办公区。Costco 商业模式。"),
+    ])
+    def fixed_candidates(_conn, _query, _scope, rows):
+        # 固定块分数仅验证证据边界，不能当作真实模型质量测试。
+        return rows, {(aid, 0): 0.9}
+    monkeypatch.setattr("researchlib.retrieval.semantic_candidates", fixed_candidates)
+    result = _search(conn, settings, "Costco 商业模式")
+    assert result.hits and not result.hits[0].semantic
     assert not any(p.semantic_hit for hit in result.hits for p in hit.passages)

@@ -1479,9 +1479,12 @@ def _topical_scores(conn, query, rows, scope, company_rows, semantic):
         if any(t.kind == "phrase" and not any(_count(unit.text, unit.text.lower(), f) for f in t.forms)
                for t in query.terms):
             continue
-        lex = by_unit.get(uid)
+        lex = by_unit.get(uid) if unit.basis != "提及" else None
         lex_score = lex.score / top if lex else 0.0
-        sem = safe_semantic.get(key, 0.0)
+        # 向量属于整块，不能转给从该块裁出的另一句话。没有局部重排模型时宁可保留为上下文候选。
+        sem = safe_semantic.get(key, 0.0) if (
+            unit.basis != "提及" and unit.start == 0 and unit.end == len(by_key[key]["body"])
+        ) else 0.0
         depth = min((_DEPTH_RANK.get(depths.get((key[0], cid), "passing"), 3)
                      for cid in unit.companies), default=3)
         confidence = unit.confidence * (1.15, 1.1, 1.0, 0.7)[depth]
@@ -1942,7 +1945,12 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     for hit in ordered:
         passages = []
         for passage in hit.passages:
-            fingerprint = evidence_fingerprint(passage.excerpt or passage.body)
+            context = [passage.before, passage.excerpt or passage.body, passage.after]
+            if passage.entity_basis == "标题":
+                context.insert(0, passage.title)
+            elif passage.entity_basis == "章节":
+                context.insert(0, passage.heading)
+            fingerprint = evidence_fingerprint("\n".join(context))
             if fingerprint in seen:
                 continue
             passages.append(passage)
@@ -1952,7 +1960,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     ordered = unique
     return SearchResult(
         total=total,
-        partial=len(partial_hits),
+        partial=sum(not hit.full for hit in ordered),
         hits=ordered[offset : offset + limit],
         terms=query.highlight_terms(),
         query=query,
