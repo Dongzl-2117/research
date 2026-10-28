@@ -1,7 +1,7 @@
 """站内 DeepSeek 的固定强度。译制、问库、摘要、观点、论点共用这一组。
 
-模型固定 deepseek-v4-pro（旗舰档，不用 flash），thinking 打开、reasoning_effort=max，
-输出预算不低于 384000，上下文按 1M token。思考模式下 temperature、presence_penalty、
+模型默认 deepseek-flash（DeepSeek-V4.1-Flash），thinking 打开、reasoning_effort=max，
+输出预算不低于 393216，上下文按 1M token。思考模式下 temperature、presence_penalty、
 frequency_penalty 不起作用，请求里一律不发，也不发 fast。
 
 鉴权不在这里，由 researchlib.llm / researchlib.translate.llm 按 DEEPSEEK_API_KEY 加 Bearer。
@@ -15,10 +15,10 @@ from collections.abc import Mapping
 from researchlib.llm_provider import DEEPSEEK_DEFAULT_BASE_URL
 
 DEEPSEEK_BASE_URL = DEEPSEEK_DEFAULT_BASE_URL
-DEEPSEEK_MODEL_ID = "deepseek-v4-pro"
+DEEPSEEK_MODEL_ID = "deepseek-flash"
 DEEPSEEK_REASONING_EFFORT = "max"
-DEEPSEEK_CONTEXT_TOKENS = 1_000_000
-DEEPSEEK_OUTPUT_FLOOR = 384_000
+DEEPSEEK_CONTEXT_TOKENS = 1_048_576
+DEEPSEEK_OUTPUT_FLOOR = 393_216
 
 _ALLOWED_EFFORT = frozenset({"low", "high", "max"})
 
@@ -43,11 +43,9 @@ def _env(environ: Mapping[str, str] | None) -> Mapping[str, str]:
 
 
 def deepseek_model(environ: Mapping[str, str] | None = None) -> str:
-    """DEEPSEEK_MODEL 只能换成别的旗舰，flash 档一律拒绝。"""
+    """DEEPSEEK_MODEL 默认 deepseek-flash。"""
     env = _env(environ)
     model = (env.get("DEEPSEEK_MODEL", "").strip() or DEEPSEEK_MODEL_ID)
-    if "flash" in model.lower():
-        raise RuntimeError(f"站内不用 flash 档：{model}。DeepSeek 固定 {DEEPSEEK_MODEL_ID}。")
     return model
 
 
@@ -62,7 +60,7 @@ def deepseek_reasoning_effort(environ: Mapping[str, str] | None = None) -> str:
 
 
 def deepseek_output_tokens(requested: int | None = None, environ: Mapping[str, str] | None = None) -> int:
-    """输出 token 上限。DEEPSEEK_MAX_TOKENS / LLM_MAX_TOKENS 只能抬高，不能低于 384000。"""
+    """输出 token 上限。DEEPSEEK_MAX_TOKENS / LLM_MAX_TOKENS 只能抬高，不能低于 393216。"""
     env = _env(environ)
     dedicated = env.get("DEEPSEEK_MAX_TOKENS", "").strip()
     if dedicated.isdigit():
@@ -88,6 +86,4 @@ def completion_params(
     forbidden = _FORBIDDEN_FIELDS.intersection(params)
     if forbidden:
         raise RuntimeError(f"DeepSeek 请求不能带 {', '.join(sorted(forbidden))}")
-    if "flash" in str(params["model"]).lower():
-        raise RuntimeError(f"站内不用 flash 档：{params['model']}")
     return params

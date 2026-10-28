@@ -1,6 +1,6 @@
 """站内调 LLM 做译制：默认 DeepSeek，Grok 作为显式选项。
 
-默认 DeepSeek：deepseek-v4-pro + thinking + reasoning_effort=max + 输出至少 384000，
+默认 DeepSeek：deepseek-flash + thinking + reasoning_effort=max + 输出至少 393216，
 上下文 1M，不发 temperature，鉴权用 DEEPSEEK_API_KEY 的 Bearer。
 ``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth（grok-4.7 + xhigh + 至少 128000，不开 fast）。
 模型、推理强度、输出地板和超时与问库、摘要共用 researchlib.deepseek / researchlib.grok。
@@ -58,7 +58,7 @@ class ChatJsonResult:
 
 
 def output_tokens(requested: int | None = None) -> int:
-    """当前提供方的输出预算。DeepSeek 地板 384000，Grok 128000。"""
+    """当前提供方的输出预算。DeepSeek 地板 393216，Grok 128000。"""
     if llm_provider() == PROVIDER_GROK:
         return grok_output_tokens(requested)
     return deepseek_output_tokens(requested)

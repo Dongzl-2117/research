@@ -700,7 +700,24 @@ def company_author_counts(conn, company_id: int, source_ids: list[str]):
     ).fetchall()
 
 
+def expire_stale_answers(conn) -> int:
+    """问库整合超过 ASK_RUNNING_TIMEOUT_S（默认 300 秒）还在 running：标成出错，页面出「重新整合」。"""
+    import os
+
+    raw = os.environ.get("ASK_RUNNING_TIMEOUT_S", "").strip()
+    cap = int(raw) if raw.isdigit() and int(raw) > 0 else 300
+    rows = conn.execute(
+        "UPDATE llm_answers SET status = 'error', error = %s, updated_at = now()"
+        " WHERE status = 'running' AND updated_at < now() - make_interval(secs => %s) RETURNING id",
+        (f"整合超过 {cap // 60} 分钟没完成，已停止等待。可以重新整合。", cap),
+    ).fetchall()
+    if rows:
+        conn.commit()
+    return len(rows)
+
+
 def recent_answers(conn, limit: int = 20):
+    expire_stale_answers(conn)
     return conn.execute(
         "SELECT id, question, scope, status, created_at FROM llm_answers ORDER BY created_at DESC, id DESC LIMIT %s",
         (limit,),
@@ -708,6 +725,7 @@ def recent_answers(conn, limit: int = 20):
 
 
 def get_answer(conn, answer_id: int):
+    expire_stale_answers(conn)
     return conn.execute(
         """
         SELECT id, question, scope, answer, citations, model, status, error, terms, stats, created_at, updated_at
