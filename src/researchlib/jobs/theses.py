@@ -138,9 +138,11 @@ def _run(settings: Settings, company: str | None, loop: bool, sleep: int, force:
                 logger.info("论点 %s：%s 条", item.get("name_zh"), count)
             if fatal or not loop:
                 break
+            # force 只管第一轮：之后和不带 force 一样，只算过期的。否则 loop 会不停地把所有公司重算一遍。
+            force = False
             # loop：没有新公司要算时休眠，睡醒清跳过再试
             if did == 0 and not any(
-                force or needs_build(conn, int(item["id"]), sources_by_id, settings)
+                needs_build(conn, int(item["id"]), sources_by_id, settings)
                 for item in chosen
                 if int(item["id"]) not in skipped
             ):

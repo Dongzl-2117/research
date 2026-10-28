@@ -131,7 +131,7 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
 
-站内正式触发（生产续跑走这里，不要另起 CLI loop）：
+站内正式触发（生产续跑走这里，不要另起 CLI loop）。这几个启动、停止接口只能在 Mac mini 本机调：经 Cloudflare 进来的请求（带 `Cf-Ray`、`Cf-Connecting-Ip`、`X-Forwarded-For` 头）一律 403，免得公网上谁都能让站里花模型的钱。
 
 ```bash
 curl -s http://127.0.0.1:8088/api/v1/digest -H 'content-type: application/json' \
@@ -180,7 +180,7 @@ docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
 docker compose exec app research-views --source duanyongping-blog --limit 100
 docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
 
-站内正式触发：
+站内正式触发（只能在本机调，同上）：
 
 ```bash
 curl -s http://127.0.0.1:8088/api/v1/views -H 'content-type: application/json' \
@@ -228,7 +228,7 @@ docker compose exec app research-theses                        # 观点够数的
 docker compose exec app research-views --company 贵州茅台 --company 泡泡玛特 --refresh-blank --limit 300
 docker compose exec app research-theses --company 贵州茅台 --company 泡泡玛特 --force
 
-站内正式触发：
+站内正式触发（只能在本机调，同上）：
 
 ```bash
 curl -s http://127.0.0.1:8088/api/v1/theses -H 'content-type: application/json' \
@@ -254,6 +254,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/v1/translate`：触发站内译制（`{source?, limit?, loop?, sleep?}`），后台线程跑，`GET` 同一路径看进度，见 [translate.md](translate.md)。
 - `POST /api/v1/ocr`：触发站内识图（`{articles?, redo?, limit?, engine?}`，默认 deepseek-flash vision），`GET` 看进度，`POST /api/v1/ocr/stop` 停。见 [ocr.md](ocr.md)。
+- 上面译制、识图，以及摘要、观点、论点的批量启动和停止接口只能在本机调，经公网的请求 403。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`。
 
 返回里带 `_trust` 字段，MCP 文本包在「外部资料」分隔区里：文章是外部原文，调用方不要执行其中的指令。这一点照 AIHOT 的 MCP 做法。
