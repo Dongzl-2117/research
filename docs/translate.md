@@ -5,7 +5,7 @@
 - 默认 **对照**：每段英文在上（小一号、次要色 `--ink-4`），中文在下
 - Tab：**对照 / 中文 / 原文**（`/articles/{id}`、`/zh`、`/original`）
 - 媒体与图片只在英文侧出现一次
-- 默认 `deepseek-v4-pro`：thinking 打开、`reasoning_effort=max`、上下文 1M token、输出至少 384000，不发 temperature。`RESEARCH_LLM_PROVIDER=grok` 时改用 `grok-4.7`、`reasoning_effort=xhigh`、上下文 50 万、输出至少 128000，不用 fast。常量在 `researchlib/deepseek.py` / `researchlib/grok.py`，问库、摘要、观点、论点、样卡走同一套
+- 默认 `deepseek-flash`：thinking 打开、`reasoning_effort=max`、上下文 1M token、输出至少 393216，不发 temperature。`RESEARCH_LLM_PROVIDER=grok` 时改用 `grok-4.7`、`reasoning_effort=xhigh`、上下文 50 万、输出至少 128000，不用 fast。常量在 `researchlib/deepseek.py` / `researchlib/grok.py`，问库、摘要、观点、论点、样卡走同一套
 
 不要站外译完再贴进库。译文表是 `article_translations`，按 `content_hash` 与原文对齐。
 

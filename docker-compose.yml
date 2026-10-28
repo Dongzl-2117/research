@@ -1,7 +1,7 @@
 # 本机私人库。端口只发布到 127.0.0.1。不要改成 0.0.0.0。
 # 应用端口 8088，避开本机常见的 3000。
 #
-# 站内 LLM 默认 DeepSeek（deepseek-v4-pro / thinking / reasoning_effort=max / 输出至少 384000 / 1M 上下文）。
+# 站内 LLM 默认 DeepSeek（deepseek-flash / thinking / reasoning_effort=max / 输出至少 393216 / 1M 上下文）。
 # Grok OAuth 保留为显式选项：RESEARCH_LLM_PROVIDER=grok，token 在 ./data/secrets/xai-oauth.json。
 # AIHOT 已下线，不再依赖外部卷 aihot_data。
 
@@ -60,9 +60,9 @@ services:
       RESEARCH_LLM_PROVIDER: ${RESEARCH_LLM_PROVIDER:-deepseek}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-pro}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
       DEEPSEEK_REASONING_EFFORT: ${DEEPSEEK_REASONING_EFFORT:-max}
-      DEEPSEEK_MAX_TOKENS: ${DEEPSEEK_MAX_TOKENS:-384000}
+      DEEPSEEK_MAX_TOKENS: ${DEEPSEEK_MAX_TOKENS:-393216}
       # Grok OAuth 只在 RESEARCH_LLM_PROVIDER=grok 时用。落在 research 自有 data/secrets（随 ./data 挂载）。
       XAI_OAUTH_TOKEN_PATH: ${XAI_OAUTH_TOKEN_PATH:-/data/secrets/xai-oauth.json}
       XAI_OAUTH_FILE_UID: ${XAI_OAUTH_FILE_UID:-0}
@@ -70,7 +70,7 @@ services:
       XAI_BASE_URL: ${XAI_BASE_URL:-https://api.x.ai/v1}
       LLM_LONG_TIMEOUT_MS: ${LLM_LONG_TIMEOUT_MS:-1500000}
       # 问库、摘要、观点、论点与译制共用 researchlib/deepseek.py 或 researchlib/grok.py 的强度。
-      # DeepSeek：deepseek-v4-pro / thinking / max / 输出至少 384000 / 上下文 1000000，不发 temperature。
+      # DeepSeek：deepseek-flash / thinking / max / 输出至少 393216 / 上下文 1000000，不发 temperature。
       # Grok：grok-4.7 / xhigh / 输出至少 128000 / 上下文 500000，不发 fast。
       # 摘要不在启动时跑，部署也不会自动跑全库。
       RESEARCH_LLM_CONCURRENCY: ${RESEARCH_LLM_CONCURRENCY:-3}
@@ -104,9 +104,9 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # 图片文字（OCR）。平时不起，用的时候：
+  # RapidOCR 回退。默认识图在 app 里走 deepseek-flash，不需要这个 profile。
   #   docker compose --profile ocr build ocr
-  #   docker compose --profile ocr run --rm ocr research-ocr --limit 500
+  #   docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 500
   ocr:
     profiles: ["ocr"]
     build:
@@ -125,7 +125,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["research-ocr", "--limit", "500"]
+    command: ["research-ocr", "--engine", "rapidocr", "--limit", "500"]
 
 volumes:
   pgdata:

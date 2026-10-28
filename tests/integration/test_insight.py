@@ -192,15 +192,22 @@ def test_long_articles_feed_the_ending_and_the_company_paragraphs(conn, settings
     assert row["id"] in [item["id"] for item in digest_mod.pending_articles(conn, ["fangwei-mp"], 10)]
 
 
-def test_home_only_speaks_up_when_something_is_wrong(conn, settings):
+def test_home_hides_ops_notices_but_status_still_writes(conn, settings):
+    """运维失败仍写 data/status，供值班看；首页不再挂红条。"""
+    from researchlib.health import notices as health_notices
+
     _store_all(conn, settings)
     with TestClient(create_app(settings)) as client:
         assert 'class="notice is-alert"' not in client.get("/").text
         write_status(settings.data_dir, "backup", False, "导出数据库失败（退出码 1）：连不上数据库")
         home = client.get("/").text
-        assert 'class="notice is-alert"' in home and "备份失败" in home and "连不上数据库" in home
+        assert 'class="notice is-alert"' not in home
+        assert "备份失败" not in home
+        found = health_notices(settings.data_dir, settings.display_timezone)
+        assert any("备份失败" in text and "连不上数据库" in text for text in found)
         write_status(settings.data_dir, "backup", True, "7.5M，4 篇")
         assert 'class="notice is-alert"' not in client.get("/").text
+        assert not any("备份失败" in text for text in health_notices(settings.data_dir, settings.display_timezone))
 
 
 def test_quoted_chunk_lands_on_its_paragraph(conn, settings):

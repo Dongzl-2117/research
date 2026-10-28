@@ -45,13 +45,13 @@ BACKUP_DIR/
 | 观点 | `research-views`（同时抽 `VIEWS_WORKERS` 篇，默认 3；持仓和观察的、中文的先排） | `VIEWS_LIMIT`，默认 60 篇 |
 | 摘要 | `research-digest` | `DIGEST_LIMIT`，默认 80 篇 |
 | 论点 | `research-theses --portfolio`（`THESES_SCOPE=all` 补全部，`off` 不跑） | 持仓和观察名单里观点够数的公司，观点变了才算，一家一天最多一次 |
-| 图片文字 | `research-ocr`（`NIGHTLY_OCR=1` 时，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
+| 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
 
 观点、摘要、图片文字各自最多跑 `MINUTES` 分钟（默认 150）。某一步失败不影响后面的步骤。白天、部署和应用启动时都不跑这些。
 
 ## 出问题才提示
 
-每个定时脚本跑完把结果写进 `data/status/<任务>.json`（成功也写）。首页按天的顶上只在出问题时提示一行，正常时什么都不显示：
+每个定时脚本跑完把结果写进 `data/status/<任务>.json`（成功也写）。首页不再挂运维红条；出了问题由值班助手看 status：
 
 | 任务 | 什么时候提示 |
 | --- | --- |
@@ -73,7 +73,7 @@ cd ~/research
 BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；云盘目录另定
 # 默认装方伟公众号、方伟星球的定时抓取；不要：INSTALL_CRAWL=0
 # 默认不装每小时 AIHOT 增量（AIHOT 已下线），以前装过的会顺手卸掉。要装：INSTALL_INGEST_AIHOT=1 BACKUP_DIR=… scripts/install-launchd.sh
-# 不要夜间补齐：INSTALL_NIGHTLY=0；夜间也识别图片里的字：NIGHTLY_OCR=1
+# 不要夜间补齐：INSTALL_NIGHTLY=0；夜间也识别图片里的字（站内 vision，不走 ocr profile）：NIGHTLY_OCR=1
 # 不要自动上线：INSTALL_DEPLOY=0
 ```
 

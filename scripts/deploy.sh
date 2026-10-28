@@ -7,7 +7,7 @@
 #   FORCE=1 scripts/deploy.sh      # 不等 CI、不等别的定时任务，上次失败过的提交也重试
 #
 # 结果写进 data/status/deploy.json，首页只在失败时提示：拉代码、重建失败，重启后应用没起来，CI 没过，
-# 仓库不在 main 或者有没提交的改动，或者 6 小时取不到 main、查不到 CI。偶尔断网的那一轮什么都不记，下一轮再试。
+# 仓库不在 main、有没提交的改动或者没推送的提交，或者 6 小时取不到 main、查不到 CI。偶尔断网的那一轮什么都不记，下一轮再试。
 # 重建失败的提交最多试 3 轮，之后等下一个提交或 FORCE=1。CI 没过的提交每轮再查，CI 重跑通过了就上线。
 # 夜间补齐、定时抓取、备份正在跑时先不重启：它们在容器里跑命令，重建会把它们打断。
 # 定时任务的模板（deploy/launchd/、install-launchd.sh）改了，上线后按上次安装的设置重装一遍。
@@ -114,7 +114,7 @@ else:
 }
 
 deploy_main() {
-  local fetch_err target short last_sha="" last_state="" tries=1 current dirty busy ci age before waited
+  local fetch_err target short last_sha="" last_state="" tries=1 current dirty ahead busy ci age before waited
 
   take_lock
   # 网速掉到每秒 1KB 以下超过一分钟就放弃这一轮，不让一次卡住的拉取挡住以后的每一轮。
@@ -157,7 +157,13 @@ deploy_main() {
   dirty="$(git -C "$REPO" -c core.quotePath=false status --porcelain --untracked-files=no \
     | awk 'NR <= 3 { print substr($0, 4) }' | tr '\n' ' ')"
   if [ -n "$dirty" ]; then
-    status_fail "Mac mini 上的仓库有没提交的改动（${dirty% }），没有自动上线：先提交或还原"
+    status_fail "Mac mini 上的仓库有没提交的改动（${dirty% }），没有自动上线：还原它，要留的走 PR，见 docs/deploy.md「更新」"
+    exit 0
+  fi
+  # 本机 main 上没推送的提交也一样：merge --ff-only 说已经是最新，建出来的镜像带着它们，CI 查的却是 origin/main。
+  if ! git -C "$REPO" merge-base --is-ancestor HEAD "$target"; then
+    ahead="$(git -C "$REPO" rev-list --count "$target..HEAD")"
+    status_fail "Mac mini 上的 ${BRANCH} 有 ${ahead} 个没推送的提交，没有自动上线：存到分支走 PR，再回到 origin/${BRANCH}，见 docs/deploy.md「更新」"
     exit 0
   fi
 

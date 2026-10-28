@@ -1,10 +1,11 @@
 # 图片里的字（OCR）
 
-截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。现在把本地图片（归档里带的、从外链下载来的，见 [ingest.md](ingest.md)）交给 RapidOCR 识别，识别出的字切成段落块进检索。
+截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。现在默认把本地图片交给站内 deepseek-flash 识图（`llm.chat`，多模态 content），识别出的字切成段落块进检索。RapidOCR 只作显式回退，不进主路径。
 
-- 按图片内容哈希只识别一次，结果存在 `image_texts`。多篇引用同一张图不重复识别；识别不出字的也记一行，不反复去认。
-- 置信度低于 0.5 的文字框不要（多半是花纹、二维码认成了字）。文字框按阅读顺序拼：从上到下分行，同一行从左到右。
-- 识别出的汉字、字母、数字够 20 个的图才切检索块：`article_chunks.lang = 'ocr'`，块号从 20000 起，标题「图片里的字」，锚点是 `img-<哈希前 12 位>`。检索和问库走这些块，不另建索引。
+- 按图片内容哈希只识别一次，结果存在 `image_texts`，`engine` 默认 `deepseek-flash-vision`。多篇引用同一张图不重复识别；识别不出字的也记一行，不反复去认。识图失败（无 key 在开工前退出；单张 HTTP 错）记 `engine` 以 `:error` 结尾、正文为空，下次不带 `--redo` 也会重试，不把失败改写成 RapidOCR 的脏字。
+- 识图按气泡从上到下转写：绿色气泡写成「方伟：」，其他人一律「网友：」，不留真实昵称。看不清写 `?`，禁止编造。表格和柱状图要求公司与数字一一对应。提示词在 `researchlib/ocr.py` 的 `VISION_PROMPT`。输出若已经是「方伟：/网友：」，阅读页和旁路仍再剥界面字，不把 UI 行标成说话人。
+- RapidOCR 置信度低于 0.5 的文字框不要（多半是花纹、二维码认成了字）。文字框按阅读顺序拼：从上到下分行，同一行从左到右。有原图时按微信绿气泡底色标本人，没有图时退回「行左缘靠右」。
+- 识别出的汉字、字母、数字够 20 个的图才切检索块：`article_chunks.lang = 'ocr'`，块号从 20000 起，标题「图片里的字」，锚点是 `img-<哈希前 12 位>`。检索块先走和旁路同一套整理，界面字不进检索。检索和问库走这些块，不另建索引。
 - 阅读、摘要、观点放宽到 8 个字。空白、水印、几个字的装饰不算。刚过线的拿不准，算有用，不能漏。不按「是不是微信、是不是表格」分：有可读的字就用。
 - 公司提及不看图片里的字，免得水印、表情包里的字乱记。这条不变。
 - 识别结果另外写在文章旁路 `articles.ocr_text`。微信群聊截图先整理成「方伟：」「网友：」再写入：绿色气泡是作者自己，标成方伟；灰色、带别人昵称的标成网友，不留本名（含「李小红@think」、Kevin）。新识别的靠右行会带侧标记。没有坐标的旧结果里，不带别人昵称的气泡也当绿色本人，不再因为没写「方伟」就标成网友。显示名「方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人。方伟连续说的合成一块，网友每次开口仍分开。跨图重复的句子只留一次。群名、价格（含粘在商品上的「￥19.?」）、小程序及其误识「小小程序」、美团外卖、店名和商品卡、「设为群待办」、状态栏时间（含「10:38≥」）这些界面字去掉。知识星球的引用回复不是这套绿/灰气泡：第一条「方伟看十年」或「方伟看十年作者」账号栏上面的灰字是「网友：」，栏下的回复是「方伟：」，账号栏和下一帖标题去掉；栏上没有正文时仍整段是方伟。表格和贴成长文的图仍是原文。摘要和观点交给模型的正文接上这份整理后的字，和正文一视同仁。有效字少于 8 个的图不进这条旁路。打开文章时按已识别的字重写这一篇的旁路（不重新认图，也不扫全库）。观点和摘要再读这篇时，只要还挂着 `image_texts`，也会按当前规则从原始识别重写，避免库里已经写成「方伟：」的旧旁路把引用回复分不回来。
@@ -14,23 +15,43 @@
 
 ## 阅读页
 
-文章页和飞书目录里的正文现查 `image_texts`，用和旁路同一套整理（`wechat_dialogue`）。群聊显示成「方伟：」「网友：」，连续几张截图合成一段，重复的句子不重复出现。原图不再每张叠一个「点击看原图」，而是收成一行「原图 1」「原图 2」，点开就是图片地址。表格、长文仍按原文换行，原图收在「点击看原图」里。字太少或还没识别的图保持现在的图片。整理完不够读就仍用识别原文，不编对话。新跑完的图刷新页面就能看见，不用重导正文。检索里的「看这张图」仍跳到 `img-<哈希前 12 位>`，落在对应的原图链接上。检索块本身仍是识别原文，方便按原句查找。
+文章页和飞书目录里的正文现查 `image_texts`，用和旁路同一套整理（`wechat_dialogue`）。群聊显示成「方伟：」「网友：」，连续几张截图合成一段，重复的句子不重复出现。原图不再每张叠一个「点击看原图」，而是收成一行「原图 1」「原图 2」，点开就是图片地址。表格、长文仍按原文换行，原图收在「点击看原图」里。字太少或还没识别的图保持现在的图片。整理完不够读就仍用识别原文，不编对话。新跑完的图刷新页面就能看见，不用重导正文。检索里的「看这张图」仍跳到 `img-<哈希前 12 位>`，落在对应的原图链接上。检索块和旁路用同一套整理，界面字不进检索。
 
-## 单独的镜像
+## 站内识图（默认）
 
-RapidOCR 要 onnxruntime 和 OpenCV，装上以后镜像大很多，所以不进主镜像，另有一个 `ocr` 镜像（Dockerfile 里的 `ocr` 阶段，在应用镜像上加 RapidOCR，依赖按 `requirements-ocr.lock` 锁死）。模型文件在安装包里，跑的时候不联网下载。只用 CPU。
+主镜像和 `app` 容器就能跑，不需要 onnx / RapidOCR。`research-ocr` 默认 `--engine vision`，调用站内 `deepseek-flash`（和问库、摘要同一模型）。送识图前会把图压到约 110KB（Pillow，边长≤1280），避免 DeepSeek 转发链路掐断大 data-url；瞬时断连会重试最多 3 次。识图请求的 max_tokens 固定 32768（覆盖站点默认下限；8k/16k 在 thinking 下会把正文挤空），避免流式思考把容器 OOM。也可用站内 API，和译制一样只接受本站或本机 POST：
+
+```bash
+# 定点重认。立刻返回 running，后台识图。
+curl -s -X POST http://127.0.0.1:8088/api/v1/ocr \
+  -H 'Content-Type: application/json' \
+  -d '{"articles":[24002,24007],"redo":true,"limit":50,"engine":"vision"}'
+curl -s http://127.0.0.1:8088/api/v1/ocr
+curl -s -X POST http://127.0.0.1:8088/api/v1/ocr/stop
+
+# 容器里同一条通路
+docker compose exec -T app research-ocr --engine vision --redo --limit 50 \
+  --article 24002 --article 24007
+```
+
+`engine`：`vision`（默认）、`rapidocr`（显式回退）、`auto`（有 LLM 凭证用 vision，否则 RapidOCR）。已经在跑时再 POST 不会开第二个。GET 看进度，不回 API key。单张失败记 `:error` 和空正文，下次会重试。
+
+## RapidOCR 回退
+
+RapidOCR 要 onnxruntime 和 OpenCV，不进主镜像。只有显式指定才走这条，日更不走。
 
 ```bash
 docker compose --profile ocr build ocr
-docker compose --profile ocr run --rm ocr research-ocr --limit 500
-docker compose --profile ocr run --rm ocr research-ocr --limit 5000 --max-minutes 120
+docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 500
+docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 5000 --max-minutes 120
 # 存量已经在 image_texts 里的图，要重认时加 --redo（全库约 2 万张，部署后在 Mac mini 上跑，不要在云端对生产库跑）
-docker compose --profile ocr run --rm ocr research-ocr --redo --limit 5000 --max-minutes 120
+docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --redo --limit 5000 --max-minutes 120
 # 只认某几篇里的图
-docker compose --profile ocr run --rm ocr research-ocr --article 7711 --article 7865 --article 7638 --article 7832 --article 651
+docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr \
+  --article 7711 --article 7865 --article 7638 --article 7832 --article 651
 ```
 
-主镜像里跑 `research-ocr` 会直接退出（退出码 2），提示改用 `ocr` 镜像。
+没装 RapidOCR 时 `--engine rapidocr` 退出码 2。没配 `DEEPSEEK_API_KEY` 时默认的 vision 也是退出码 2，不会悄悄改走 RapidOCR。
 
 OCR 写完后，图片帖的空白观点会因为 `ocr_hash` 对不上而进入补抽。确认「图片里的字进了观点输入」可以看这几篇（约 33 张图）：
 
@@ -60,16 +81,16 @@ docker compose exec app research-views --articles 203,227,473,537,606
 
 ## 每晚补一批
 
-夜间任务（[backup.md](backup.md)）默认不跑 OCR。镜像建好以后：
+夜间任务（[backup.md](backup.md)）默认不跑识图。要每晚补新图：
 
 ```bash
 NIGHTLY_OCR=1 BACKUP_DIR=… scripts/install-launchd.sh
 ```
 
-之后每晚在观点、摘要、论点之后再识别一批（`OCR_LIMIT`，默认 400 张，和其他步骤共用 `MINUTES` 的时间上限），失败了和其他步骤一样记进夜间任务的结果，首页提示。
+之后每晚在观点、摘要、论点之后，于 `app` 容器里跑 `research-ocr --engine vision`（`OCR_LIMIT`，默认 400 张，和其他步骤共用 `MINUTES` 的时间上限）。不再 `docker compose --profile ocr run`。失败了和其他步骤一样记进夜间任务的结果。
 
-第一次可以先手动跑一大批把存量认完，以后每晚只剩新导入的图。
+第一次可以先用上面的 API 或 `research-ocr --article` 定点重认抽验锚点，不要无差别全库 vision。以后每晚只剩新导入的图。
 
 ## CI
 
-CI 会构建 `ocr` 镜像，用 `tests/fixtures/ocr-sample.png`（三行中文）跑一遍，认不出「拼多多」「广告收入」「货币化率」或行的顺序不对就失败。锁文件里的版本升级以后，靠这一步确认还能用。
+CI 会构建 `ocr` 镜像，用 `tests/fixtures/ocr-sample.png`（三行中文）直接调 `rapid_engine()` 跑一遍，认不出「拼多多」「广告收入」「货币化率」或行的顺序不对就失败。这只验收 RapidOCR 回退，不调用 DeepSeek。锁文件里的版本升级以后，靠这一步确认还能用。

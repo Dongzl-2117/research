@@ -6,8 +6,8 @@
 #   scripts/nightly.sh
 #   VIEWS_LIMIT=200 DIGEST_LIMIT=200 MINUTES=300 scripts/nightly.sh
 #   VIEWS_WORKERS=1 scripts/nightly.sh      # 观点一篇一篇抽（默认同时 3 篇）
-#   VIEWS_EFFORT=high scripts/nightly.sh    # 观点这一步用 high 推理（默认跟 .env，DeepSeek 是 max）
-#   NIGHTLY_OCR=1 scripts/nightly.sh        # 先 docker compose --profile ocr build ocr
+#   VIEWS_EFFORT=high scripts/nightly.sh    # 观点这一步用 high 推理（默认跟 .env）
+#   NIGHTLY_OCR=1 scripts/nightly.sh        # 在 app 容器里走站内 deepseek-flash 识图
 #   THESES_SCOPE=all scripts/nightly.sh     # 论点补全部观点够数的公司（默认只补持仓和观察）
 #   THESES_SCOPE=off scripts/nightly.sh     # 不补论点
 set -Euo pipefail
@@ -82,7 +82,7 @@ case "$THESES_SCOPE" in
   *) failed="${failed}${failed:+；}论点（THESES_SCOPE=${THESES_SCOPE} 不认识，只能是 portfolio、all、off）" ;;
 esac
 if [ "$NIGHTLY_OCR" = "1" ]; then
-  step "图片文字" compose --profile ocr run --rm -T ocr research-ocr --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
+  step "图片文字" compose exec -T app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
 fi
 
 if [ -n "$failed" ]; then

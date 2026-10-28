@@ -240,6 +240,23 @@ def test_local_edits_on_the_mini_are_not_shipped(world: World):
     assert world.deploy().returncode == 0 and world.status()["ok"] is True
 
 
+def test_unpushed_commits_on_the_mini_are_not_shipped(world: World):
+    world.ci_says("completed", "success")
+    # 本机 main 比 origin 多一个提交：merge --ff-only 不报错，不拦的话这个提交会被打进镜像。
+    _write(world.mini / "notes.txt", "本机改的\n")
+    _git(world.mini, "commit", "--quiet", "-am", "本机提交")
+    assert world.deploy().returncode == 0
+    status = world.status()
+    assert status["ok"] is False and "1 个没推送的提交" in status["message"]
+    assert world.called() == []
+    # 存到分支，main 回到 origin/main：之后的提交照常上线。
+    _git(world.mini, "branch", "mini-local")
+    _git(world.mini, "reset", "--quiet", "--keep", "origin/main")
+    sha = world.commit("第二版")
+    assert world.deploy().returncode == 0
+    assert world.head() == sha and world.status()["ok"] is True
+
+
 def test_long_outage_is_reported_and_cleared_once_main_is_back(world: World):
     world.ci_says("completed", "success")
     world.deploy()
