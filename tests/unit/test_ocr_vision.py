@@ -70,6 +70,12 @@ def test_vision_prompt_names_the_constraints():
         "PE",
         "半截",
         "Q1/Q2/Q3",
+        "视频号",
+        "已关注",
+        "发讨论",
+        "查看对话",
+        "十大影响力用户",
+        "回复@",
     ):
         assert phrase in VISION_PROMPT, phrase
 
@@ -339,3 +345,20 @@ def test_normalize_drops_coupon_and_fixes_year():
     assert "一年后会" in normalize_vision_text("因为今天的钱可以拿去存款、买国债或投资，一?会变得更多。")
     assert "一?" not in normalize_vision_text("一?后的100元更不值钱")
     assert normalize_vision_text("（此截图为知识星球优惠券推广卡，按规则整段不输出。）") == ""
+
+
+def test_normalize_strips_video_xueqiu_chrome_and_reply_at():
+    assert normalize_vision_text("领教工坊 已关注") == ""
+    assert normalize_vision_text("点击 #领教工坊 查看更多") == ""
+    assert "视频号" not in normalize_vision_text(
+        "更多组织管理与领导力洞见，欢迎关注 @领教工坊 视频号"
+    )
+    assert normalize_vision_text("发讨论") == ""
+    assert normalize_vision_text("756  1555  827") == ""
+    out = normalize_vision_text(
+        "网友：回复@甲:李录投资也很好啊。//@乙:回复@丙:网友会不会是卖完了再吹？"
+    )
+    assert out == "网友：李录投资也很好啊。"
+    assert "//@" not in out
+    assert "回复@" not in out
+
