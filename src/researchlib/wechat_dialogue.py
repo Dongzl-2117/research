@@ -696,7 +696,9 @@ def parse_shot(text: str) -> Shot:
     if not raw_lines:
         return Shot("prose", [], "")
     # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
-    if (
+    # 识图已标「方伟：/网友：」的群聊截图可能内嵌估值表——不能当纯表整段丢掉。
+    labeled_chat = any(_STRUCTURED.match(_plain(line) or "") for line in raw_lines)
+    if not labeled_chat and (
         _is_product_shot(raw_lines)
         or _is_shop_shot(raw_lines)
         or _is_chart_shot(raw_lines)
