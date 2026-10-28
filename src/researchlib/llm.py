@@ -174,6 +174,33 @@ def _post(settings: Settings, token: str, payload: dict) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _message_content(body: dict, label: str) -> str:
+    """取出 choices[0].message 的最终正文。思考过程在 reasoning_content，不算回答。
+
+    content 可能是字符串，也可能是带 text 字段的分段列表；缺字段或洗完是空串都算失败，
+    避免问库把空回答标成 done。
+    """
+    try:
+        message = body["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"{label} 接口返回里没有 choices[0].message") from exc
+    if not isinstance(message, dict):
+        raise LLMError(f"{label} 接口返回里没有 choices[0].message")
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+        )
+    if content is None:
+        content = ""
+    elif not isinstance(content, str):
+        content = str(content)
+    text = content.strip()
+    if not text:
+        raise LLMError(f"{label} 接口返回的正文为空")
+    return text
+
+
 def chat(
     settings: Settings,
     messages: list[dict],
@@ -229,8 +256,8 @@ def chat(
         except json.JSONDecodeError as exc:
             raise _failed(settings, LLMError(f"{label} 接口返回的不是 JSON"), provider=label) from exc
     try:
-        text = body["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError) as exc:
-        raise _failed(settings, LLMError(f"{label} 接口返回里没有 choices[0].message.content"), provider=label) from exc
+        text = _message_content(body, label)
+    except LLMError as exc:
+        raise _failed(settings, exc, provider=label) from None
     record_llm(settings.data_dir, ok=True, provider=label)
-    return text.strip(), str(body.get("model") or payload["model"])
+    return text, str(body.get("model") or payload["model"])
