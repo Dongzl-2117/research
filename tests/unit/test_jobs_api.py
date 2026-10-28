@@ -171,6 +171,36 @@ def test_views_gap_flag_and_origin(tmp_path, isolated_jobs, monkeypatch):
     _wait_stopped(views_job)
 
 
+def test_views_articles_flag(tmp_path, isolated_jobs, monkeypatch):
+    rebuilt = {}
+
+    def _rebuild(conn, article_ids):
+        rebuilt["ids"] = list(article_ids)
+        return len(article_ids)
+
+    monkeypatch.setattr(views_job, "rebuild_articles", _rebuild)
+    monkeypatch.setattr(views_job, "canonical_article_ids", lambda conn, ids, source_ids: list(ids))
+    monkeypatch.setattr(
+        views_job,
+        "articles_for_ids",
+        lambda conn, company_ids, source_ids, article_ids, limit: [],
+    )
+    monkeypatch.setattr(
+        views_job,
+        "gap_articles",
+        lambda conn, company_ids, source_ids, limit, article_ids=None: [],
+    )
+    client = _client(tmp_path)
+    started = client.post("/api/v1/views", json={"articles": [14884], "gap": True, "limit": 3})
+    assert started.status_code == 200
+    body = started.json()
+    assert body["articles"] == [14884]
+    assert body["gap"] is True
+    client.post("/api/v1/views/stop")
+    _wait_stopped(views_job)
+    assert rebuilt.get("ids") == [14884]
+
+
 def test_theses_force_and_missing_credentials(tmp_path, isolated_jobs, monkeypatch):
     monkeypatch.setattr(theses_job, "credentials_problem", lambda settings: "没有配置 DEEPSEEK_API_KEY，任务起不来。")
     client = _client(tmp_path)
@@ -198,6 +228,8 @@ def test_theses_force_and_missing_credentials(tmp_path, isolated_jobs, monkeypat
         "/api/v1/theses/stop",
         "/api/v1/translate",
         "/api/v1/translate/stop",
+        "/api/v1/ocr",
+        "/api/v1/ocr/stop",
     ],
 )
 @pytest.mark.parametrize("header", ["cf-connecting-ip", "cf-ray", "x-forwarded-for"])

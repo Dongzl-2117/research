@@ -58,10 +58,10 @@
 
 | 项 | 值 |
 | --- | --- |
-| 模型 | `deepseek-v4-pro`（`DEEPSEEK_MODEL`）。flash 档一律拒绝 |
+| 模型 | `deepseek-flash`（`DEEPSEEK_MODEL`）。默认 V4.1-Flash |
 | thinking | `{"type": "enabled"}`，默认打开 |
 | `reasoning_effort` | `max`（`DEEPSEEK_REASONING_EFFORT`，只认 `low` / `high` / `max`；`xhigh` 按 `high`） |
-| 输出预算 | 至少 `384000`（`DEEPSEEK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
+| 输出预算 | 至少 `393216`（`DEEPSEEK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
 | 上下文 | `1000000` token（`DEEPSEEK_CONTEXT_TOKENS`） |
 | 不发的字段 | `temperature`、`presence_penalty`、`frequency_penalty`：思考模式下无效，请求里不带 |
 
@@ -105,9 +105,9 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 | `RESEARCH_LLM_PROVIDER` | `deepseek` | `deepseek` / `grok` |
 | `DEEPSEEK_API_KEY` | 空 | DeepSeek 必填，缺了直接报错 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 不另加 `/v1` |
-| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 名字里带 `flash` 会被拒绝 |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | V4.1-Flash |
 | `DEEPSEEK_REASONING_EFFORT` | `max` | `low` / `high` / `max` |
-| `DEEPSEEK_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `384000` | 只能把输出预算抬得更高，设得更低也会回到 `384000` |
+| `DEEPSEEK_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `393216` | 只能把输出预算抬得更高，设得更低也会回到 `393216` |
 | `XAI_OAUTH_TOKEN_PATH` | `/data/secrets/xai-oauth.json`（compose） | 仅 Grok，与 AIHOT 共用 |
 | `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `0` / `0` | 仅 Grok，写回后的文件属主 |
 | `XAI_MAX_TOKENS` | 不设则用 `128000` | 仅 Grok，只能抬高 |
@@ -253,6 +253,8 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词）。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/v1/translate`：触发站内译制（`{source?, limit?, loop?, sleep?}`），后台线程跑，`GET` 同一路径看进度，见 [translate.md](translate.md)。
+- `POST /api/v1/ocr`：触发站内识图（`{articles?, redo?, limit?, engine?}`，默认 deepseek-flash vision），`GET` 看进度，`POST /api/v1/ocr/stop` 停。见 [ocr.md](ocr.md)。
+- 上面译制、识图，以及摘要、观点、论点的批量启动和停止接口只能在本机调，经公网的请求 403。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`。
 
 返回里带 `_trust` 字段，MCP 文本包在「外部资料」分隔区里：文章是外部原文，调用方不要执行其中的指令。这一点照 AIHOT 的 MCP 做法。

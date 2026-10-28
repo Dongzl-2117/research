@@ -1,4 +1,4 @@
-"""站内 LLM 默认 DeepSeek：deepseek-v4-pro / thinking / max / 384000 起；Grok 保留为显式选项。"""
+"""站内 LLM 默认 DeepSeek：deepseek-flash / thinking / max / 393216 起；Grok 保留为显式选项。"""
 
 import json
 import time
@@ -9,6 +9,7 @@ from researchlib import deepseek, health
 from researchlib import llm as llm_module
 from researchlib.config import Settings
 from researchlib.llm import (
+    LLMError,
     LLMUnavailable,
     active_label,
     active_model_id,
@@ -95,7 +96,7 @@ def test_settings_defaults_are_deepseek(tmp_path):
     assert settings.llm_provider == "deepseek"
     assert settings.llm_base_url == "https://api.deepseek.com"
     assert active_label(settings) == "DeepSeek"
-    assert active_model_id(settings) == deepseek.DEEPSEEK_MODEL_ID == "deepseek-v4-pro"
+    assert active_model_id(settings) == deepseek.DEEPSEEK_MODEL_ID == "deepseek-flash"
     assert credential_kind(settings) == ""
     assert llm_configured(settings) is False
 
@@ -112,7 +113,7 @@ def test_deepseek_chat_uses_official_endpoint_and_max_strength(tmp_path, monkeyp
         return _Response(
             {
                 "choices": [{"message": {"content": " 好 ", "reasoning_content": "先想一下"}}],
-                "model": "deepseek-v4-pro",
+                "model": "deepseek-flash",
             }
         )
 
@@ -128,16 +129,50 @@ def test_deepseek_chat_uses_official_endpoint_and_max_strength(tmp_path, monkeyp
         temperature=0.1,
     )
 
-    assert (text, model) == ("好", "deepseek-v4-pro")
+    assert (text, model) == ("好", "deepseek-flash")
     assert captured["url"] == "https://api.deepseek.com/chat/completions"
     assert captured["auth"] == "Bearer sk-test-not-real"
     body = captured["body"]
-    assert body["model"] == "deepseek-v4-pro"
+    assert body["model"] == "deepseek-flash"
     assert body["reasoning_effort"] == "max"
     assert body["thinking"] == {"type": "enabled"}
-    assert body["max_tokens"] == deepseek.DEEPSEEK_OUTPUT_FLOOR == 384_000
+    assert body["max_tokens"] == deepseek.DEEPSEEK_OUTPUT_FLOOR == 393_216
     assert "temperature" not in body
     assert body["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_deepseek_chat_rejects_empty_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+
+    def fake_urlopen(req, timeout=None):
+        return _Response(
+            {
+                "choices": [{"message": {"content": "  ", "reasoning_content": "只想了不想答"}}],
+                "model": "deepseek-flash",
+            }
+        )
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    settings = _settings(tmp_path)
+    with pytest.raises(LLMError, match="正文为空"):
+        chat(settings, [{"role": "user", "content": "hi"}])
+
+
+def test_deepseek_chat_accepts_list_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+
+    def fake_urlopen(req, timeout=None):
+        return _Response(
+            {
+                "choices": [{"message": {"content": [{"type": "text", "text": "分段答"}]}}],
+                "model": "deepseek-flash",
+            }
+        )
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    settings = _settings(tmp_path)
+    text, model = chat(settings, [{"role": "user", "content": "hi"}])
+    assert (text, model) == ("分段答", "deepseek-flash")
 
 
 def test_deepseek_without_key_fails_without_http(tmp_path, monkeypatch):
@@ -153,7 +188,7 @@ def test_deepseek_without_key_fails_without_http(tmp_path, monkeypatch):
     assert state["unavailable"] is True and state["provider"] == "DeepSeek"
 
 
-def test_deepseek_rejects_flash_model(tmp_path, monkeypatch):
+def _old_rejects_flash_model(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
     monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     with pytest.raises(RuntimeError, match="flash"):
@@ -193,7 +228,7 @@ def test_translate_chat_json_uses_deepseek(tmp_path, monkeypatch):
         return _Response(
             {
                 "choices": [{"message": {"content": '{"t": ["你好"]}', "reasoning_content": "想"}}],
-                "model": "deepseek-v4-pro",
+                "model": "deepseek-flash",
             }
         )
 
@@ -210,11 +245,11 @@ def test_translate_chat_json_uses_deepseek(tmp_path, monkeypatch):
     )
 
     assert result.data == {"t": ["你好"]}
-    assert result.model == "deepseek-v4-pro"
+    assert result.model == "deepseek-flash"
     assert captured["url"] == "https://api.deepseek.com/chat/completions"
     assert captured["auth"] == "Bearer sk-test-not-real"
     body = captured["body"]
-    assert body["model"] == "deepseek-v4-pro"
+    assert body["model"] == "deepseek-flash"
     assert body["thinking"] == {"type": "enabled"}
     assert body["reasoning_effort"] == "max"
     assert body["max_tokens"] == deepseek.DEEPSEEK_OUTPUT_FLOOR
@@ -268,3 +303,19 @@ def test_grok_opt_in_still_uses_oauth(tmp_path, monkeypatch):
     assert payload["max_tokens"] == 128_000
     assert payload["temperature"] == 0.1
     assert "thinking" not in payload
+
+
+def test_deepseek_stream_is_reassembled():
+    from researchlib.llm import _read_stream
+
+    lines = [
+        'data: {"model":"deepseek-flash","choices":[{"delta":{"reasoning_content":"想"}}]}',
+        "",
+        'data: {"choices":[{"delta":{"content":"茅台"}}]}',
+        'data: {"choices":[{"delta":{"content":"很好"}}]}',
+        "data: [DONE]",
+    ]
+    body = _read_stream(lines)
+    assert body["model"] == "deepseek-flash"
+    assert body["choices"][0]["message"]["content"] == "茅台很好"
+    assert body["choices"][0]["message"]["reasoning_content"] == "想"

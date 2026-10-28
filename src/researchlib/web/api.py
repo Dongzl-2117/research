@@ -7,15 +7,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from researchlib import theses as thesis_map
 from researchlib.ask import ask, start
+from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.jobs import digest as digest_job
+from researchlib.jobs import ocr as ocr_job
 from researchlib.jobs import theses as theses_job
 from researchlib.jobs import views as views_job
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
@@ -30,6 +34,7 @@ from researchlib.web.routes import _author_groups, _same_origin, active_portfoli
 from researchlib.web.scoping import parse_int, resolve_scope
 
 api = APIRouter()
+logger = logging.getLogger("researchlib.web.api")
 MAX_LIMIT = 50
 TRUST = {
     "content_trust": "untrusted_external_data",
@@ -65,7 +70,7 @@ _TUNNEL_HEADERS = ("cf-connecting-ip", "cf-ray", "cdn-loop", "x-forwarded-for")
 
 
 def _local_only(request: Request) -> None:
-    """启动、停止批量任务（译制、摘要、观点、论点）只在本机调。
+    """启动、停止批量任务（译制、摘要、观点、论点、图片文字）只在本机调。
 
     这些任务花 LLM 的钱，站点公开以后，公网上能调就是谁都能花。站内页面没有调用它们的地方。
     """
@@ -85,6 +90,31 @@ def _int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _ocr_articles(value) -> list[int] | None:
+    """文章 id 列表，或逗号分隔字符串。空表示不限篇。"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("articles 要是文章 id 列表")
+    if isinstance(value, int):
+        return [value]
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace("，", ",").split(",") if part.strip()]
+        try:
+            return [int(part) for part in parts] or None
+        except ValueError as exc:
+            raise ValueError("articles 里要是文章 id") from exc
+    if isinstance(value, list):
+        ids: list[int] = []
+        for item in value:
+            number = _int(item)
+            if number is None:
+                raise ValueError("articles 里要是文章 id")
+            ids.append(number)
+        return ids or None
+    raise ValueError("articles 要是文章 id 列表")
 
 
 def _article_links(base: str, article_id: int, chunk: int | None = None, anchor: str = "") -> dict:
@@ -230,6 +260,9 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     by_id = {source.id: source for source in sources}
     row = queries.get_article(conn, article_id, list(by_id))
     if row is None:
+        return None
+    # 与 HTML 正文页一致：网友帖、「图片」评论壳不对外可读全文。
+    if hide_from_site(row.get("raw_meta"), row.get("title")):
         return None
     settings = request.app.state.settings
     source = by_id[row["source_id"]]
@@ -537,15 +570,21 @@ async def api_ask(request: Request):
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
     params = {key: str(body.get(key) or "") for key in ("author", "source", "company", "from", "to", "article")}
-    wait = body.get("wait", True) is not False
-    with database(request) as conn:
-        sources = active_sources(request, conn)
-        scope, _info = resolve_scope(params, sources)
-        if wait:
-            result = ask(conn, request.app.state.settings, question, scope, sources)
-        else:
+    # 默认不等：检索后立刻返回 id，后台整合。wait=true 会在线程池里跑完再返回，
+    # 绝不能在 async 协程里同步干等，否则整站事件循环被堵死（health/其他页一起挂）。
+    wait = body.get("wait", False) is True
+    settings = request.app.state.settings
+
+    def _run():
+        with database(request) as conn:
+            sources = active_sources(request, conn)
+            scope, _info = resolve_scope(params, sources)
+            if wait:
+                return ask(conn, settings, question, scope, sources)
             # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
-            result = start(conn, request.app.state.settings, question, scope, sources)
+            return start(conn, settings, question, scope, sources)
+
+    result = await run_in_threadpool(_run)
     return _json({**result, "_trust": TRUST})
 
 
@@ -558,7 +597,12 @@ def api_answer(request: Request, answer_id: int):
         raise HTTPException(status_code=404)
     checks = []
     if row["status"] == "done" and row["answer"]:
-        checks = check_answer(row["answer"], row["citations"] or [], {source.author for source in sources})
+        try:
+            checks = check_answer(row["answer"], row["citations"] or [], {source.author for source in sources})
+        except Exception:
+            # 核对规则炸了也不能让整条 GET 500；回答正文照常返回。
+            logger.exception("问库引用核对失败 answer_id=%s", answer_id)
+            checks = []
     return _json(
         {
             "id": row["id"],
@@ -668,8 +712,10 @@ async def api_digest_stop(request: Request):
 async def api_views_start(request: Request):
     """触发批量观点整理。立刻返回，实际在后台线程里跑。
 
-    JSON：{source?, company?, limit?, loop?, sleep?, gap?}。
+    JSON：{source?, company?, articles?, limit?, loop?, sleep?, gap?}。
     gap=true 时补「有提及但没有可用观点」的文章（对应 CLI --gap）。
+    articles 为文章 id 列表（或逗号分隔字符串）时，先按当前算法重挂这些篇的提及
+    （短正文并上 OCR），再只整理这些篇；与 CLI --articles 对应。
     company 为中文名，只整理这家。已经在跑时不会起第二个。
     """
     _local_only(request)
@@ -685,10 +731,12 @@ async def api_views_start(request: Request):
         raise HTTPException(status_code=409, detail=problem)
     source = str(body.get("source") or "").strip()[:100] or None
     company = str(body.get("company") or "").strip()[:100] or None
+    articles = body.get("articles")
     result = views_job.start(
         settings,
         source=source,
         company=company,
+        articles=articles,
         limit=_int(body.get("limit")) or views_job.DEFAULT_LIMIT,
         loop=_flag(body.get("loop")),
         sleep=_int(body.get("sleep")) or views_job.DEFAULT_SLEEP,
@@ -753,6 +801,59 @@ async def api_theses_stop(request: Request):
 
 
 
+@api.post("/api/v1/ocr")
+async def api_ocr_start(request: Request):
+    """触发图片转文字。立刻返回，识图在后台线程里跑。
+
+    JSON：{articles?, redo?, limit?, engine?}。engine 为 vision（默认，deepseek-flash）、
+    rapidocr 或 auto。articles 是文章 id 列表。已经在跑时不会起第二个，返回 started=false。
+    不回凭证。识图失败不回退 RapidOCR。
+    """
+    _local_only(request)
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="请求体要是 JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体要是 JSON 对象")
+    try:
+        articles = _ocr_articles(body.get("articles"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    engine = str(body.get("engine") or "vision").strip() or "vision"
+    settings = request.app.state.settings
+    try:
+        problem = ocr_job.credentials_problem(settings, engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    try:
+        result = ocr_job.start(
+            settings,
+            articles=articles,
+            redo=_flag(body.get("redo")),
+            limit=_int(body.get("limit")) or ocr_job.DEFAULT_LIMIT,
+            engine=engine,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _json(result)
+
+
+@api.get("/api/v1/ocr")
+def api_ocr_status(request: Request):
+    """识图 worker 的进度。没跑过也返回完整字段。不回凭证。"""
+    return _json(ocr_job.status())
+
+
+@api.post("/api/v1/ocr/stop")
+async def api_ocr_stop(request: Request):
+    """请识图 worker 停。正在认的那张会认完。"""
+    _local_only(request)
+    return _json(ocr_job.request_stop())
+
+
 @api.get("/llms.txt")
 def llms_txt(request: Request):
     base = _base(request)
@@ -779,8 +880,9 @@ def llms_txt(request: Request):
         "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms",
         f"- [问答]({base}/api/v1/ask): POST JSON "
         "{question, author?, source?, company?, from?, to?, article?, wait?}，"
-        "默认等整合写完，返回 answer（带 [n]）、citations（第 n 条出处）和 checks（数字、引号、作者、日期"
-        "和所引段落对不上的句子）；wait=false 时先返回 id，"
+        "默认 wait=false：立刻返回 id 与召回段落，后台整合，客户端轮询 /api/v1/answers/{id}；"
+        "wait=true 时在线程池里等整合写完再返回（带 answer / citations / checks）。"
+        "checks 标出数字、引号、作者、日期和所引段落对不上的句子；"
         "再轮询 /api/v1/answers/{id} 直到 status 不是 running",
         "",
         "## 浏览",
@@ -804,10 +906,17 @@ def llms_txt(request: Request):
         "POST /api/v1/translate/stop 停。已在跑时不会开第二个。只在本机调用，经公网的请求 403。不读、不回凭证。",
         f"- [触发摘要]({base}/api/v1/digest): POST JSON {{source?, limit?, loop?, sleep?}}，"
         "GET 看进度，POST /api/v1/digest/stop 停。",
-        f"- [触发观点]({base}/api/v1/views): POST JSON {{source?, company?, limit?, loop?, sleep?, gap?}}，"
-        "GET 看进度，POST /api/v1/views/stop 停。gap=true 对应 CLI --gap。",
+        f"- [触发观点]({base}/api/v1/views): POST JSON {{source?, company?, articles?, limit?, loop?, sleep?, gap?}}，"
+        "GET 看进度，POST /api/v1/views/stop 停。gap=true 对应 CLI --gap；"
+        "articles 先重挂提及（短正文含 OCR）再只整理这些篇。",
         f"- [触发论点]({base}/api/v1/theses): POST JSON {{company?, loop?, sleep?, force?}}，"
-        "GET 看进度，POST /api/v1/theses/stop 停。译制、摘要、观点、论点的启动和停止都只在本机调用，经公网的请求 403。",
+        "GET 看进度，POST /api/v1/theses/stop 停。",
+        f"- [触发图片文字]({base}/api/v1/ocr): POST JSON {{articles?, redo?, limit?, engine?}}，"
+        "engine 为 vision（默认，deepseek-flash 识图）、rapidocr 或 auto。"
+        "后台线程识别，立刻返回 running；GET 同一路径看进度，POST /api/v1/ocr/stop 停。"
+        "已在跑时不会开第二个。识图失败记 engine 以 :error 结尾、正文为空，下次会重试，不回退脏字。"
+        "不读、不回任何凭证。",
+        "译制、摘要、观点、论点、图片文字的启动和停止都只在本机调用，经公网（Cloudflare）进来的请求 403。",
         "",
         "## 字段约定",
         "",
