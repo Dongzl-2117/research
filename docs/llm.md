@@ -58,10 +58,10 @@
 
 | 项 | 值 |
 | --- | --- |
-| 模型 | `deepseek-v4-pro`（`DEEPSEEK_MODEL`）。flash 档一律拒绝 |
+| 模型 | `deepseek-flash`（`DEEPSEEK_MODEL`）。默认 V4.1-Flash |
 | thinking | `{"type": "enabled"}`，默认打开 |
 | `reasoning_effort` | `max`（`DEEPSEEK_REASONING_EFFORT`，只认 `low` / `high` / `max`；`xhigh` 按 `high`） |
-| 输出预算 | 至少 `384000`（`DEEPSEEK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
+| 输出预算 | 至少 `393216`（`DEEPSEEK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
 | 上下文 | `1000000` token（`DEEPSEEK_CONTEXT_TOKENS`） |
 | 不发的字段 | `temperature`、`presence_penalty`、`frequency_penalty`：思考模式下无效，请求里不带 |
 
@@ -105,9 +105,9 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 | `RESEARCH_LLM_PROVIDER` | `deepseek` | `deepseek` / `grok` |
 | `DEEPSEEK_API_KEY` | 空 | DeepSeek 必填，缺了直接报错 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 不另加 `/v1` |
-| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 名字里带 `flash` 会被拒绝 |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | V4.1-Flash |
 | `DEEPSEEK_REASONING_EFFORT` | `max` | `low` / `high` / `max` |
-| `DEEPSEEK_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `384000` | 只能把输出预算抬得更高，设得更低也会回到 `384000` |
+| `DEEPSEEK_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `393216` | 只能把输出预算抬得更高，设得更低也会回到 `393216` |
 | `XAI_OAUTH_TOKEN_PATH` | `/data/secrets/xai-oauth.json`（compose） | 仅 Grok，与 AIHOT 共用 |
 | `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `0` / `0` | 仅 Grok，写回后的文件属主 |
 | `XAI_MAX_TOKENS` | 不设则用 `128000` | 仅 Grok，只能抬高 |

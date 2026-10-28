@@ -5,8 +5,8 @@
 （``XAI_OAUTH_TOKEN_PATH``，Docker 默认 ``/aihot-data/secrets/xai-oauth.json``）。
 DeepSeek 缺 key 时直接报错，不会悄悄退回 Grok；Grok 路径照旧不读 ``XAI_API_KEY``。
 
-强度与译制共用：DeepSeek 见 ``researchlib.deepseek``（deepseek-v4-pro、thinking 打开、
-reasoning_effort=max、输出不低于 384000、上下文 1M、不发 temperature），
+强度与译制共用：DeepSeek 见 ``researchlib.deepseek``（deepseek-flash、thinking 打开、
+reasoning_effort=max、输出不低于 393216、上下文 1M、不发 temperature），
 Grok 见 ``researchlib.grok``（grok-4.7、reasoning_effort=xhigh、输出不低于 128000、50 万上下文、不发 fast）。
 
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
@@ -210,7 +210,7 @@ def chat(
 ) -> tuple[str, str]:
     """返回 (回答文本, 实际模型名)。
 
-    DeepSeek：deepseek-v4-pro / thinking / reasoning_effort=max / 至少 384000，不发 temperature。
+    DeepSeek：deepseek-flash / thinking / reasoning_effort=max / 至少 393216，不发 temperature。
     Grok：grok-4.7 / xhigh / 至少 128000，不发 fast。
     """
     provider = _provider(settings)

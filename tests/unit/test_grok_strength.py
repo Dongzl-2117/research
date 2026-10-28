@@ -97,10 +97,10 @@ def test_shared_constants_are_the_translation_ones():
     assert translate_llm.grok_params is completion_params
     assert "fast" not in GROK_MODEL_ID
     # DeepSeek 那一组也共用，不另抄一份。
-    assert translate_llm.DEEPSEEK_MODEL_ID is deepseek.DEEPSEEK_MODEL_ID == "deepseek-v4-pro"
+    assert translate_llm.DEEPSEEK_MODEL_ID is deepseek.DEEPSEEK_MODEL_ID == "deepseek-flash"
     assert translate_llm.DEEPSEEK_REASONING_EFFORT is deepseek.DEEPSEEK_REASONING_EFFORT == "max"
-    assert translate_llm.DEEPSEEK_CONTEXT_TOKENS is deepseek.DEEPSEEK_CONTEXT_TOKENS == 1_000_000
-    assert translate_llm.DEEPSEEK_OUTPUT_FLOOR is deepseek.DEEPSEEK_OUTPUT_FLOOR == 384_000
+    assert translate_llm.DEEPSEEK_CONTEXT_TOKENS is deepseek.DEEPSEEK_CONTEXT_TOKENS == 1_048_576
+    assert translate_llm.DEEPSEEK_OUTPUT_FLOOR is deepseek.DEEPSEEK_OUTPUT_FLOOR == 393_216
 
 
 def test_output_floor_cannot_be_lowered_by_env(monkeypatch):
