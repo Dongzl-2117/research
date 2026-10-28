@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as html_lib
 import re
 import unicodedata
+from collections.abc import Sequence
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
@@ -13,7 +14,7 @@ from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
 from researchlib.textutil import strip_alert_markers
-from researchlib.wechat_dialogue import parse_shot, render_turns
+from researchlib.wechat_dialogue import HOST, parse_shot, render_turns
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -441,7 +442,8 @@ def flow_ocr_quote_body(text: str) -> str:
     return "\n\n".join(parts)
 
 
-def _dialogue_html(text: str) -> str:
+def _dialogue_html(text: str, host: str = HOST) -> str:
+    """host：截图里绿气泡显示成谁。方伟以外的来源显示那个来源的作者名。"""
     parts: list[str] = []
     for block in text.split("\n\n"):
         block = block.strip("\n")
@@ -451,10 +453,11 @@ def _dialogue_html(text: str) -> str:
         if sep and label in {"方伟", "网友"}:
             flowed = _flow_ocr_lines(rest.lstrip("\n"))
             paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
+            shown = html_lib.escape((host or HOST) if label == HOST else label)
             for index, para in enumerate(paragraphs or [""]):
                 body = html_lib.escape(para)
                 if index == 0:
-                    parts.append(f'<p><span class="who">{label}：</span>{body}</p>')
+                    parts.append(f'<p><span class="who">{shown}：</span>{body}</p>')
                 else:
                     parts.append(f"<p>{body}</p>")
         else:
@@ -475,8 +478,8 @@ def _original_links(items: list[dict]) -> str:
     return f'<p class="ocr-links">{"".join(links)}</p>'
 
 
-def _chat_bundle(items: list[dict], dialogue: str) -> str:
-    inner = _dialogue_html(dialogue)
+def _chat_bundle(items: list[dict], dialogue: str, host: str = HOST) -> str:
+    inner = _dialogue_html(dialogue, host)
     return (
         '<figure class="ocr-shot">'
         f'<div class="ocr-reading ocr-dialogue">{inner}</div>'
@@ -554,13 +557,14 @@ def _hoist_figures_out_of_paragraphs(html: str) -> str:
     return cleaned
 
 
-def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
+def inline_image_ocr(html: str, texts: dict[str, str], *, host: str = HOST) -> str:
     """有可读识别结果的本地图：群聊先显示整理后的对话，原图是一行「原图 N」链接。
 
     连续几张微信截图合成一段，重复的句子只出现一次，不再每张图留一个空架子。
     对话里的截图折行收成一段话，不再在半句中间硬换行。商品图和图表只留原图链接。
     表格和长文仍按原文换行，原图同样用「原图 N」。没认出字的图保持原来的图片。
     texts 是 content_hash → image_texts.text。锚点 id 在原图链接上，检索里的「看这张图」仍跳到这里。
+    host 是这篇的作者：截图里的绿气泡显示成他（方伟以外的来源不写成方伟）。
     """
 
     def finish(value: str) -> str:
@@ -631,7 +635,7 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
                 info = parsed[cursor]
                 outputs[cursor] = _ocr_figure(info["anchor"], info["src"], info["alt"], info["raw"])
         else:
-            outputs[group[0]] = _chat_bundle([parsed[cursor] for cursor in group], dialogue)
+            outputs[group[0]] = _chat_bundle([parsed[cursor] for cursor in group], dialogue, host)
             for cursor in group[1:]:
                 outputs[cursor] = ""
         index = nxt
@@ -654,8 +658,11 @@ def _render_markdown(body: str, mapping: dict[str, str]) -> str:
     return _anchor_images(sanitize_html(html))
 
 
-def render_body(body: str, mapping: dict[str, str], fmt: str | None = None) -> Markup:
+def render_body(
+    body: str, mapping: dict[str, str], fmt: str | None = None, *, owners: Sequence[str] | None = None
+) -> Markup:
+    """owners：评论区只留这些名字（来源作者）。不给时按方伟认。"""
     if fmt == "html":
         html = rewrite_html_images(body or "", mapping)
         return Markup(_anchor_images(sanitize_html(html)))
-    return Markup(assemble_reader_comments(body or "", mapping, _render_markdown))
+    return Markup(assemble_reader_comments(body or "", mapping, _render_markdown, owners))

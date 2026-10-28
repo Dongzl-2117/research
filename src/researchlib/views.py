@@ -51,7 +51,7 @@ from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.web.present import format_date
-from researchlib.wechat_dialogue import speaker_note
+from researchlib.wechat_dialogue import relabel_host, speaker_note
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 logger = logging.getLogger("researchlib.views")
@@ -528,11 +528,13 @@ def read_views(conn, settings: Settings, row, author: str, companies: list[dict]
         header += VOICE_NOTE
         chunks = voice_chunks
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    # 截图里的绿气泡是这篇的作者：别的来源不写成方伟。哈希仍按库里的文字算。
+    ocr_text = relabel_host(ocr_text, author)
     voice_body = body
     body = append_ocr(body, ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
-        note = speaker_note(ocr_text)
+        note = speaker_note(ocr_text, author)
         header += (
             "\n（「图片里的字」是截图里识别出来的，和正文一样算原文。"
             "判断写在图里时也要抽，不要因为来自截图就当成没下判断。"
