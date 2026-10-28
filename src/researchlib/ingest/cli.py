@@ -12,6 +12,7 @@ from researchlib.db import prepare
 from researchlib.ingest.parse import parse_archive
 from researchlib.ingest.store import store_documents
 from researchlib.sources import SourceRejected, load_sources, require_source
+from researchlib.zsxq_comments import source_owners
 
 
 def build_parser(description: str) -> argparse.ArgumentParser:
@@ -45,7 +46,7 @@ def run_markdown_ingest(
     try:
         with tempfile.TemporaryDirectory(prefix="research-ingest-") as tmp:
             docs, errors, archive_files, image_count = parse_archive(
-                args.input, Path(tmp), id_mode=id_mode
+                args.input, Path(tmp), id_mode=id_mode, owners=source_owners(source)
             )
             report = store_documents(
                 conn,

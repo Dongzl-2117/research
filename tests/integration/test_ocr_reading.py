@@ -408,3 +408,37 @@ def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, mon
         (row["id"], company["id"]),
     ).fetchone()
     assert "不太看好" not in view["judgment"] and view["quote"] == "零售的本分是帮消费者省钱"
+
+
+def test_other_sources_name_their_own_author_in_screenshots(conn, settings, tmp_path, monkeypatch):
+    """乘风破浪的帖：截图里的绿气泡在检索块、阅读页、观点和摘要的输入里都写成乘风破浪，不写成方伟。"""
+    image = tmp_path / "own.png"
+    _png(image, b"\x07" * 24)
+    row = _store(conn, settings, "chengfengpolang", "cf-ocr", "群里聊茅台", "群里聊茅台。\n\n![](own.png)\n", [image])
+    _remember(conn, row["id"], "own.png", "方伟：茅台批价这一周没动，渠道仍在观望\n\n网友：短期不宜提价")
+    refresh_article_ocr(conn, row["id"])
+    assert replace_ocr_chunks(conn, row["id"]) >= 1
+    conn.commit()
+    chunk = conn.execute(
+        "SELECT body FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (row["id"],)
+    ).fetchone()
+    assert "乘风破浪：茅台批价" in chunk["body"] and "方伟" not in chunk["body"]
+    # 库里的旁路照旧是固定写法，换名字只在给人看、交给模型时做。
+    stored = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()
+    assert stored["ocr_text"].startswith("方伟：")
+    seen: list[str] = []
+
+    def fake_chat(_settings, messages, **_kwargs):
+        seen.append(messages[-1]["content"])
+        return '{"summary": "批价没动。", "points": [], "tags": []}', "test-model"
+
+    monkeypatch.setattr(digest_mod, "chat", fake_chat)
+    article = conn.execute(
+        "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s",
+        (row["id"],),
+    ).fetchone()
+    digest_mod.digest_article(conn, settings, article, "乘风破浪")
+    assert seen and "乘风破浪：茅台批价" in seen[0] and "方伟：" not in seen[0]
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{row['id']}").text
+    assert "乘风破浪：</span>茅台批价" in page and "方伟：" not in page

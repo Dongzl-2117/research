@@ -76,7 +76,8 @@ from researchlib.web.present import (
 )
 from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
-from researchlib.wechat_dialogue import present_stored_ocr
+from researchlib.wechat_dialogue import canonical_host, present_stored_ocr, relabel_host
+from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 router = APIRouter()
@@ -643,7 +644,9 @@ def _article_view(request: Request, article_id: int, mode: str):
             wanted = int(chunk_arg)
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
             if quoted is not None and (quoted.get("lang") or "") == "ocr":
-                cleaned = flow_ocr_quote_body(present_stored_ocr(quoted["body"]))
+                # 检索块里别的来源已经换成作者名：换回「方伟：」再整理，整理完再换成作者名。
+                presented = present_stored_ocr(canonical_host(quoted["body"], source.author))
+                cleaned = flow_ocr_quote_body(relabel_host(presented, source.author))
                 if cleaned.strip():
                     quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)
@@ -676,8 +679,11 @@ def _article_view(request: Request, article_id: int, mode: str):
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
     original_html = inline_image_ocr(
-        prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent),
+        prepare_body_html(
+            shown_md, article["title"], mapping, fmt, link_index, parent, owners=source_owners(source)
+        ),
         ocr_texts,
+        host=source.author,
     )
 
     has_translation = bool(translation and translation.get("body_html"))
@@ -690,7 +696,7 @@ def _article_view(request: Request, article_id: int, mode: str):
     # 译文是模型写的 HTML，和原文一样过一遍白名单。
     zh_html = finish_html(sanitize_html(translation["body_html"]), link_index, parent) if has_translation else None
     if zh_html:
-        zh_html = inline_image_ocr(zh_html, ocr_texts)
+        zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""
     quoted_marked = False
