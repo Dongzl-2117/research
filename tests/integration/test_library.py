@@ -26,7 +26,7 @@ PNG = (
 )
 
 
-def test_sample_library_pages(conn, settings):
+def test_sample_library_pages(conn, settings, monkeypatch):
     os.environ["ALLOW_SAMPLE_SEED"] = "1"
     load_sample(conn, settings)
     depths = {
@@ -114,7 +114,11 @@ def test_sample_library_pages(conn, settings):
         assert media.headers["content-type"].startswith("image/png")
         assert client.get("/media/fangwei-mp/../../etc/passwd").status_code == 404
         assert client.get("/?source=linwenfeng-mp").status_code == 404
-        assert client.get("/health").json() == {"status": "ok"}
+        # 没带提交号构建的（手动、本地）报 unknown；自动上线传进来的提交号原样报出，上线脚本拿它核对。
+        monkeypatch.delenv("GIT_SHA", raising=False)
+        assert client.get("/health").json() == {"status": "ok", "commit": "unknown"}
+        monkeypatch.setenv("GIT_SHA", "0123456789abcdef0123456789abcdef01234567")
+        assert client.get("/health").json() == {"status": "ok", "commit": "0123456789abcdef0123456789abcdef01234567"}
         assert "Allow: /" in client.get("/robots.txt").text
 
 
