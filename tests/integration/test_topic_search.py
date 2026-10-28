@@ -1,7 +1,9 @@
 """片段搜索契约。向量是固定测试向量，只验证融合与归属，不代表真实语义效果。"""
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
+from tools.retrieval_eval.acceptance.evaluate import Page
 
 from researchlib import embeddings
 from researchlib.ingest.model import ParsedDoc
@@ -165,3 +167,35 @@ def test_chunk_semantics_cannot_label_a_different_local_sentence(conn, settings,
     result = _search(conn, settings, "Costco 商业模式")
     assert result.hits and not result.hits[0].semantic
     assert not any(p.semantic_hit for hit in result.hits for p in hit.passages)
+
+
+@pytest.mark.parametrize("query,body", [
+    ("Costco冷链温控记录", "Costco 依靠年度会费形成持续收入，低价又鼓励顾客续卡。"),
+    ("Netflix推荐算法偏差审计", "Netflix 按观看记录推荐节目，减少寻找内容的时间，促成下月继续付费。"),
+    ("ASML维护合同违约赔偿", "ASML 的维护合同随机器服役持续续签，客户为定期保养付费。"),
+])
+def test_incomplete_topic_is_marked_even_with_a_strong_chunk_vector(conn, settings, monkeypatch, query, body):
+    aid = _store(conn, settings, "partial-topic", "合成机制札记", [("机制", body)])
+    monkeypatch.setattr("researchlib.retrieval.semantic_candidates",
+                        lambda _conn, _query, _scope, rows: (rows, {(aid, 0): 0.95}))
+    with TestClient(create_app(settings)) as client:
+        html = client.get("/search", params={"q": query}).text
+    windows = [n for n in Page(html).root.walk() if n.tag == "blockquote" and n.has_class("item-hit")]
+    assert windows
+    assert all("部分词匹配，主题未核实" in n.text() or "同公司参考" in n.text() for n in windows)
+    assert "语义相关" not in html
+
+
+def test_each_window_has_its_own_literal_coverage_label(conn, settings):
+    _store(conn, settings, "different-labels", "收费观察", [
+        ("收入", "Costco 的会员费与续费率相互影响，稳定的年度收入支持商品低加价。"),
+        ("同行", "Walmart 的门店采用另一套收费安排。"),
+        ("现金", "Costco 的会员费提供一笔持续现金流。"),
+    ])
+    with TestClient(create_app(settings)) as client:
+        html = client.get("/search", params={"q": "Costco 会员费 续费率"}).text
+    windows = [n for n in Page(html).root.walk() if n.tag == "blockquote" and n.has_class("item-hit")]
+    assert len(windows) == 2
+    assert "字面匹配" in windows[0].text()
+    assert "部分词匹配，主题未核实" in windows[1].text()
+    assert "语义相关" not in html

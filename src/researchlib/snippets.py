@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 
 from markupsafe import Markup, escape
 
@@ -61,6 +62,26 @@ def highlight_title(title: str, query: str, *, terms: list[str] | None = None) -
 def highlight_full(text: str, terms: list[str]) -> Markup:
     """整段原文，命中处加 <mark>。问库页展开原文时用。"""
     return Markup(_mark(text or "", [t for t in terms if t]))
+
+
+def literal_match_label(fragments: list[Markup], groups: list[list[str]], *, company: bool = False) -> str:
+    """只说明实际可见原文的字面覆盖，不把词频、向量分或文章级命中当作主题已核实。"""
+    # fragments 是已转义且只插入 mark 的摘录；先移除高亮标签，再解码原文，避免把原文里的标签吞掉。
+    visible = "\n".join(unescape(re.sub(r"</?mark>", "", str(fragment))) for fragment in fragments)
+
+    def contains(form):
+        if not form:
+            return False
+        if re.search(r"[㐀-鿿]", form):
+            return form in visible
+        return bool(re.search(r"(?<![A-Za-z0-9])" + re.escape(form) + r"(?![A-Za-z0-9])", visible, re.I))
+
+    matched = [any(contains(form) for form in forms) for forms in groups]
+    if matched and all(matched):
+        return "字面匹配"
+    if any(matched):
+        return "部分词匹配，主题未核实"
+    return "同公司参考" if company else "参考原文"
 
 
 def _mark(text: str, terms: list[str]) -> str:

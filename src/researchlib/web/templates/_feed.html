@@ -8,7 +8,7 @@
       {% if item.show_author %}<span aria-hidden="true">·</span><a class="quiet" href="{{ item.source_href }}">{{ item.source }}</a>{% endif %}
       {% if item.depth_label %}<span class="depth depth-{{ item.depth }}">{{ item.depth_label }}</span>{% endif %}
       {% if item.hits %}<span class="num">{{ item.hits }} 次</span>{% endif %}
-      {% if item.semantic %}<span class="depth depth-semantic" title="正文没写全搜索词，按意思找到的">语义相关</span>{% endif %}
+      {% if item.semantic and not item.search_passages %}<span class="depth depth-semantic" title="正文没写全搜索词，按意思找到的">语义相关</span>{% endif %}
     </header>
     <h3 class="item-title"><a href="/articles/{{ item.id }}{% if item.chunk is not none and item.chunk is defined %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.title }}</a></h3>
     {% if item.heading %}<p class="item-heading">§ {{ item.heading }}</p>{% endif %}
@@ -18,7 +18,7 @@
     {% elif item.excerpt %}<p class="item-excerpt">{{ item.excerpt }}</p>{% endif %}
     {% if item.search_passages %}{% for passage in item.search_passages %}
     <blockquote class="item-hit">
-      {% if passage.context_only %}<p class="quiet">同公司原文，主题待核对</p>{% endif %}
+      <p class="quiet">{{ passage.match_label }}</p>
       {% if passage.before %}<p class="quiet">上文：{{ passage.before }}</p>{% endif %}
       <p>{{ passage.text }} <a href="{{ passage.url }}">查看这段原文</a></p>
       {% if passage.after %}<p class="quiet">下文：{{ passage.after }}</p>{% endif %}

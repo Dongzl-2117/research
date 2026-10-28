@@ -65,3 +65,22 @@ HTML 实体解码后只规范空白，不在 `<mark>` 边界添加空格，链�
 `*-6dd0319.json` 保留上一 checkpoint 的前十误归反例；`counterfactual-6dd0319.json` 记录
 额外未标注查询仍列出同公司无关主题上下文的局限，不参与冻结门槛计分。
 585 条本地测试通过不等于真实语义模型已验收；PR保持draft，真实模型、最终head独立验收和CI实跑尚待完成。
+
+## 逐片段字面标识回归
+
+独立复验 f53237d 的五题结果已经通过；最后补丁不改检索排序，只统一可见标识。
+`label_checks.py` 在同一冻结 original 语料上额外查询三个独立无答案题，标签/正文保持原样。
+它检查前五实际返回片段是否有“部分词匹配，主题未核实”或“同公司参考”，保留片段文本与后端顺序/分数。
+`labels-f53237d.json` 与 `labels-visible-match.json` 的完整后端顺序/分数相同；本地原冻结库的未标计数
+为2/1/4→0/0/0。不能与独立验收扩展语料的旧计数混用，也不能把标识改善说成主题相关性提高。
+补丁结果按源码 manifest 固定，最终提交还需运行同样命令核验：
+
+```bash
+PYTHONPATH=src python tools/retrieval_eval/acceptance/label_checks.py \
+  --url postgresql://research:research@127.0.0.1:5432/research_eval_acceptance_original \
+  --label <实际完整SHA> --out /tmp/search-labels.json --check
+```
+
+全部主题词也只标“字面匹配”，不表示已回答；搜索不再宣称“语义相关”。
+独立补充的退货凭证两个正例仅一个进前五，真实语义召回仍有缺口；该新增语料本地未复跑。
+本轮不新增费用、模型或查询专属词表，不重试403模型下载或被拒的转ready操作。

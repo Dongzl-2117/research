@@ -1,0 +1,353 @@
+{
+  "label": "f53237dfe08bc6485278bbe0eb9aac67a64e9840",
+  "synthetic_only": true,
+  "mode": "lexical_only",
+  "corpus_sha256": "e230d58faa4c8282965f6054b39a5ff73bbbc0f8b8aca3fd0efd5498e1c2cc9b",
+  "notice": "只检查三个无答案查询的片段降级标识；不改冻结文本、标签、检索结果或排序。\n\n它们由独立验收方补充，冻结 original 语料没有所问证据。不是通用语义质量评测。\n可用 PYTHONPATH 切换版本，报告实际前五、标识缺失计数及后端顺序，供改前/改后比较。\n",
+  "implementation_manifest_sha256": "6f4b021d6f3abc2f01de7df7800c857cb99a19ef7aceb1da4d1020d5a3d81556",
+  "cases": [
+    {
+      "query": "Costco冷链温控记录",
+      "returned_at_5": 5,
+      "unmarked_off_topic_at_5": 2,
+      "top_5": [
+        {
+          "card": 0,
+          "article": "C14",
+          "center": "C14:0",
+          "title": "[合成] 走访长札记",
+          "url": "/articles/14?chunk=0",
+          "visible_text": "Costco 是这次走访的地点。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。经营方面，年度会费形成持续收入，商品保持低加价以提升销量，集中采购和快速周转把单位成本压低。"
+        },
+        {
+          "card": 1,
+          "article": "C07",
+          "center": "C07:0",
+          "title": "[合成] 会议安排甲",
+          "url": "/articles/7?chunk=0",
+          "visible_text": "Costco 商业模式是下周研讨会的题目，地点在三楼，报名表明天发。这里仅记录会议安排，没有展开经营机制。"
+        },
+        {
+          "card": 2,
+          "article": "C06",
+          "center": "C06:0",
+          "title": "[合成] Costco 的货架",
+          "url": "/articles/6?chunk=0",
+          "visible_text": "同公司原文，主题待核对 Costco 对商品仅保留很低的加价，大批量销售让货物迅速离开货架，周转规模摊薄门店开支。 下文：这部分价差并不承担全部利润要求，因为顾客另缴的年度会费提供持续收入；省钱体验反过来鼓励顾客续卡。"
+        },
+        {
+          "card": 3,
+          "article": "C13",
+          "center": "C13:0",
+          "title": "[合成] 文字排版甲",
+          "url": "/articles/13?chunk=0",
+          "visible_text": "同公司原文，主题待核对 Costco 商业模式。Costco 商业模式。Costco 商业模式。这里测试字体大小和标点排版，没有提供任何赚钱方法。"
+        },
+        {
+          "card": 4,
+          "article": "C02",
+          "center": "C02:0",
+          "title": "[合成] 仓储零售札记",
+          "url": "/articles/2?chunk=0",
+          "visible_text": "同公司原文，主题待核对 开市客把单品数量压低，将采购量集中到少数货品；大批量议价降低进货成本，低加价推动销量，货架快速周转又摊薄仓储开支。"
+        }
+      ],
+      "backend_order": [
+        {
+          "article": "C14",
+          "score": 0.5140801203026631,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C07",
+          "score": 0.35813029347954295,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C06",
+          "score": 0.08947038659946091,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C13",
+          "score": 0.06633396437385884,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C02",
+          "score": 0.05898132694315521,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C01",
+          "score": 0.05815766487868345,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C09",
+          "score": 0.049091817849321776,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C03",
+          "score": 0.048191057303100075,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C05",
+          "score": 0.04738855822679518,
+          "chunks": [
+            1
+          ]
+        },
+        {
+          "article": "C11",
+          "score": 0.025366366953372226,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C04",
+          "score": 0.014849999999999999,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "C15",
+          "score": 0.005123249999999999,
+          "chunks": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "query": "Netflix推荐算法偏差审计",
+      "returned_at_5": 5,
+      "unmarked_off_topic_at_5": 1,
+      "top_5": [
+        {
+          "card": 0,
+          "article": "N02",
+          "center": "N02:0",
+          "title": "[合成] 观看选择札记",
+          "url": "/articles/26?chunk=0",
+          "visible_text": "奈飞按观看记录推荐下一部片子，减少寻找内容的时间；观众更容易找到想看的节目，就更愿意在下个月继续付费。"
+        },
+        {
+          "card": 1,
+          "article": "N01",
+          "center": "N01:0",
+          "title": "[合成] 剧集与月费",
+          "url": "/articles/25?chunk=0",
+          "visible_text": "同公司原文，主题待核对 Netflix 每月持续上新连续剧，让观众总有下一部想看的内容，减少看完一部就停缴月费的情况。固定月费与持续内容供给形成反复续费的循环。"
+        },
+        {
+          "card": 2,
+          "article": "N05",
+          "center": "N05:1",
+          "title": "[合成] 流媒体调研丙",
+          "url": "/articles/29?chunk=1",
+          "visible_text": "同公司原文，主题待核对 上文：本节讲 Netflix，后文的它都指这家流媒体平台。 它按观看记录排列片单，缩短观众选片的时间；每周接着上线新内容，让观众在本月看完以后仍有理由继续交下月费用。"
+        },
+        {
+          "card": 3,
+          "article": "N06",
+          "center": "N06:0",
+          "title": "[合成] 会议安排丙",
+          "url": "/articles/30?chunk=0",
+          "visible_text": "同公司原文，主题待核对 Netflix 订阅留存是今天海报上的六个字。请把英文名放大，把中文标签居中；会议只讨论字号，没有讨论观众续费。"
+        },
+        {
+          "card": 4,
+          "article": "N07",
+          "center": "N07:0",
+          "title": "[合成] 同行比较乙",
+          "url": "/articles/31?chunk=0",
+          "visible_text": "同公司原文，主题待核对 Netflix 订阅留存只在开场被念了一遍。"
+        }
+      ],
+      "backend_order": [
+        {
+          "article": "N02",
+          "score": 0.52423932185928,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "N01",
+          "score": 0.05336109040345206,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "N05",
+          "score": 0.04949612121052539,
+          "chunks": [
+            1
+          ]
+        },
+        {
+          "article": "N06",
+          "score": 0.042204907712742795,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "N07",
+          "score": 0.037081453070184435,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "N03",
+          "score": 0.016199999999999996,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "N04",
+          "score": 0.013256509754251961,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "N08",
+          "score": 0.011015231539648881,
+          "chunks": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "query": "ASML维护合同违约赔偿",
+      "returned_at_5": 5,
+      "unmarked_off_topic_at_5": 4,
+      "top_5": [
+        {
+          "card": 0,
+          "article": "A01",
+          "center": "A01:0",
+          "title": "[合成] 光刻机交付之后",
+          "url": "/articles/16?chunk=0",
+          "visible_text": "阿斯麦把维护合同与已安装的机器绑定，客户为定期保养和停机响应持续付费。机器在工厂中服役越久，合同续签带来的现金流越长。"
+        },
+        {
+          "card": 1,
+          "article": "A06",
+          "center": "A06:0",
+          "title": "[合成] 同行比较甲",
+          "url": "/articles/21?chunk=0",
+          "visible_text": "ASML 售后收入只是文档索引。正文真正分析的是应用材料：其保养团队按合同向客户收取服务费，已安装设备越多，合同续签机会越多。"
+        },
+        {
+          "card": 2,
+          "article": "A08",
+          "center": "A08:0",
+          "title": "[合成] ASML 售后收入",
+          "url": "/articles/23?chunk=0",
+          "visible_text": "正文记录午餐的菜单、杯子的数量和桌布颜色，既没有客户合同，也没有设备服务机制。"
+        },
+        {
+          "card": 3,
+          "article": "A04",
+          "center": "A04:1",
+          "title": "[合成] 设备调研乙",
+          "url": "/articles/19?chunk=1",
+          "visible_text": "上文：本节的制造商是 ASML，下面的这家公司均指阿斯麦。 这家公司在设备交付后按年提供保养，客户为快速修复故障付费；装机台数越多，未来可续签的合同就越多。"
+        },
+        {
+          "card": 4,
+          "article": "A02",
+          "center": "A02:0",
+          "title": "[合成] 设备升级札记",
+          "url": "/articles/17?chunk=0",
+          "visible_text": "同公司原文，主题待核对 ASML 向已交付设备提供性能升级和替换配件，客户无需整机重买就能提高产出，这些升级与配件订单在新机交付之外形成收入。"
+        }
+      ],
+      "backend_order": [
+        {
+          "article": "A01",
+          "score": 0.5014756306035485,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "A06",
+          "score": 0.2152259026239643,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "A08",
+          "score": 0.10923993592948847,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "A04",
+          "score": 0.10608170277007975,
+          "chunks": [
+            1
+          ]
+        },
+        {
+          "article": "A02",
+          "score": 0.044042690980909384,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "A05",
+          "score": 0.037438607373360286,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "A03",
+          "score": 0.014849999999999999,
+          "chunks": [
+            0
+          ]
+        },
+        {
+          "article": "A07",
+          "score": 0.014796710505267178,
+          "chunks": [
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}

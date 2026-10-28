@@ -3,7 +3,7 @@ from html.parser import HTMLParser
 import pytest
 
 from researchlib.render import image_anchor, inline_image_ocr, render_body, sanitize_html, tidy_ocr_text
-from researchlib.snippets import highlight_snippet
+from researchlib.snippets import highlight_snippet, literal_match_label
 from researchlib.textutil import argumentative_excerpt, markdown_to_text
 
 
@@ -20,6 +20,25 @@ def test_snippet_escapes_and_marks():
     assert "<script>" not in rendered
     assert "<mark>腾讯</mark>" in rendered
     assert "&lt;" in rendered
+
+
+def test_match_label_counts_visible_theme_in_each_window():
+    groups = [["维护"], ["合同"], ["赔偿"]]
+    partial = highlight_snippet("维护合同在到期后可以续签。", "维护 合同 赔偿")
+    assert literal_match_label([partial], groups, company=True) == "部分词匹配，主题未核实"
+    context = highlight_snippet("上段列出了赔偿条件。", "赔偿")
+    assert literal_match_label([context, partial], groups, company=True) == "字面匹配"
+    unrelated = highlight_snippet("本段讲每年的收入。", "维护 合同 赔偿")
+    assert literal_match_label([unrelated], groups, company=True) == "同公司参考"
+
+
+def test_match_label_does_not_credit_cropped_text_or_english_substrings():
+    body = "维护合同条款。" + "这里是其他说明。" * 40 + "最后才讨论赔偿。"
+    visible = highlight_snippet(body, "维护 合同 赔偿", radius=48)
+    assert "赔偿" not in visible
+    assert literal_match_label([visible], [["维护"], ["合同"], ["赔偿"]]) == "部分词匹配，主题未核实"
+    substring = highlight_snippet("Auditing systems", "audit")
+    assert literal_match_label([substring], [["audit"]], company=True) == "同公司参考"
 
 
 def test_markdown_strips_script_and_rewrites_image():
