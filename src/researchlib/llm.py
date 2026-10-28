@@ -46,7 +46,7 @@ from researchlib.translate.xai_oauth import (
 
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 # 第一次重试前等 5 秒，第二次等 20 秒。接口给了 Retry-After 就按它来，最多等一分钟。
-RETRY_DELAYS = (5.0, 20.0)
+RETRY_DELAYS = (2.0, 5.0, 15.0, 30.0)
 RETRY_AFTER_CAP = 60.0
 
 _slot_lock = threading.Lock()
