@@ -31,6 +31,7 @@ from pathlib import Path
 
 from researchlib.chunks import replace_ocr_chunks
 from researchlib.textutil import collapse_short_spam, fix_obvious_typos
+from researchlib.vision_polish import repair_vision_misreads
 from researchlib.wechat_dialogue import SIDE_SELF, present_ocr_pieces, present_stored_ocr
 
 logger = logging.getLogger("researchlib.ocr")
@@ -92,6 +93,10 @@ VISION_PROMPT = """\
 - 杂志/品牌封面壳不要输出：领教工坊、INSIDE THE BEST、COLMO 等刊头、Logo 字、品牌水印；
   「来源：思想×岭南|…」这类刊源行也不要。封面大字若是正文金句（如「光做家电没有未来」）照写。
 - 同一短句连续刷屏（如「深刻反省」重复十几遍）只保留一次，不要整段复读。
+- 上下文已经把词定死时，识图滑字直接写成对的词，不要照抄错字，也不要凭空改写。
+  例如：家电品牌并列（格力、海尔、空调、冰箱）里的「墓地」写成「美的」；
+  free cash flow 的中间词只错一个字母（如 free case flow）写成 free cash flow。
+  没有这种上下文就照写（去墓地扫墓、单独的 case 不改）。看不清仍写 ?，禁止改数字和观点。
 - 看不清的字写 ?，禁止编造。
 
 若是表格或柱状图：
@@ -472,7 +477,7 @@ def normalize_vision_text(text: str) -> str:
                 lines[-1] = "方伟：…"
             elif "：" not in last and ":" not in last:
                 lines.pop()
-    return fix_obvious_typos(collapse_short_spam("\n".join(lines).strip()))
+    return repair_vision_misreads(fix_obvious_typos(collapse_short_spam("\n".join(lines).strip())))
 
 
 def vision_engine(settings) -> Callable[[Path], str]:

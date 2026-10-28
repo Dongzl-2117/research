@@ -80,6 +80,9 @@ def test_vision_prompt_names_the_constraints():
         "INSIDE THE BEST",
         "COLMO",
         "深刻反省",
+        "墓地",
+        "free case flow",
+        "free cash flow",
     ):
         assert phrase in VISION_PROMPT, phrase
 
