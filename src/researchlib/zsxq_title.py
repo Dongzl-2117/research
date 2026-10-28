@@ -103,6 +103,26 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     return bool(body) and cut_from_body(text, body)
 
 
+def title_needs_ai(title: str) -> bool:
+    """只有空/占位/复述套话/省略号截断/冒号壳/归档头脏标题才值得打 flash。
+
+    星球接口半句截断（对着正文能补全的）仍走确定性规则，避免存量几千篇全打 LLM。
+    只是错字也只抛光，不起题。
+    """
+    text = (title or "").strip()
+    if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
+        return True
+    if _shell_colon(text):
+        return True
+    if re.fullmatch(r"\d{5,}", text):
+        return True
+    if _DATE_ONLY.fullmatch(text):
+        return True
+    if _ARCHIVE_META.search(text):
+        return True
+    return False
+
+
 def polish_title_typos(title: str) -> str:
     """展示层改正标题里的明显错字，不改观点和口语。"""
     current = title or ""

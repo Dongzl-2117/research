@@ -39,7 +39,7 @@ from researchlib.zsxq_comments import (
     guest_comment_authors,
     is_host_comment_author,
 )
-from researchlib.zsxq_title import FANGWEI_ZSXQ, polish_title_typos, stored_zsxq_title, title_needs_repair
+from researchlib.zsxq_title import FANGWEI_ZSXQ, polish_title_typos, stored_zsxq_title, title_needs_ai, title_needs_repair
 from researchlib.zsxq_title_ai import generate_ai_title
 
 FANGWEI_MP = "fangwei-mp"
@@ -260,7 +260,7 @@ def repair_zsxq(
             body_for_title = row["body_text"] or body_md
             replacement = None
             used_ai = False
-            if ai_titles and settings is not None:
+            if ai_titles and settings is not None and title_needs_ai(title):
                 replacement = generate_ai_title(
                     settings,
                     body=body_for_title,
