@@ -172,6 +172,9 @@ def test_synthesize_answers_in_one_call_when_material_fits(monkeypatch):
 
 
 def test_synthesize_extracts_in_batches_then_merges(monkeypatch):
+    import researchlib.ask as _ask
+    monkeypatch.setattr(_ask, "SINGLE_CALL_CHARS", 64000)
+    monkeypatch.setattr(_ask, "BATCH_CHARS", 48000)
     calls = []
 
     def fake_chat(_settings, messages, **kwargs):

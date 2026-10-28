@@ -1,8 +1,8 @@
-"""把微信截图的 OCR 行整理成博客式对话。
+"""把微信截图的 OCR / 识图结果整理成博客式对话。
 
 微信里绿色气泡是作者自己（方伟），通常靠右、上面不写名字；灰色气泡是别人，通常靠左、上面有昵称。
-RapidOCR 不保留颜色。有文字框时，`order_text` 给靠右的行加上不显示的侧标记；没有标记的旧识别结果，
-群聊里不带昵称的气泡按绿色本人处理，带别人昵称的才是网友。不调用模型。
+RapidOCR 有原图时按绿气泡底色给本人行加侧标记，没有图时退回靠右几何。识图若已经写成「方伟：」「网友：」，
+再跑一遍仍剥界面字，不把「可按住转文字 / 继续提问 / AI搜索」这类 UI 行标成说话人。不在这里调用模型。
 
 - 靠右（或没有坐标时、不带别人昵称）的气泡 →「方伟：」
 - 别人的昵称（王小明、李小红、Kevin，以及只写了名字的）→「网友：」，正文里不再留这个名字
@@ -148,6 +148,8 @@ _INLINE = re.compile(r"^(.{1,16}?)[:：]\s*(.+)$")
 _GROUP_TITLE = re.compile(
     r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
     r"|^(?:\d{2,6}\s+).{2,40}[（(]\d{1,4}[）)]$"
+    # 「看十年价投交流(499)」：无「群」字、无未读数前缀的群标题。
+    r"|^[\u4e00-\u9fffA-Za-z0-9·\s]{2,24}[（(]\d{2,4}[）)]$"
 )
 _LATIN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,19}$")
 _LATIN_STOP = frozenset(
@@ -155,9 +157,10 @@ _LATIN_STOP = frozenset(
 )
 _GROUP_BARE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,16}群$")
 _TIME = re.compile(
-    r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}:\d{2}(?::\d{2})?[≥>≤<]*$"
+    r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}[:：]\d{2}(?:[:：]\d{2})?[≥>≤<]*$"
     r"|^(?:昨天|今天|前天|星期[一二三四五六日天])$"
-    r"|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?[≥>≤<]*$"
+    r"|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s*\d{1,2}[:：]\d{2})?[≥>≤<]*$"
+    r"|^\d{1,2}月\d{1,2}日(?:\s*\d{1,2}[:：]\d{2})?[≥>≤<]*$"
 )
 _STATUS = re.compile(
     r"^(?:微信|WeChat|返回|发送|按住\s*说话|以下是新消息|消息免打扰)$"
@@ -166,7 +169,13 @@ _STATUS = re.compile(
     r"|^(?:LTE|Wi-?Fi|VPN|HD|NFC)$",
     re.I,
 )
-_CHROME_WORD = re.compile(r"^(?:设为群待办|设为待办|群待办|小+程序|进入小程序|查看详情|来自小程序)$")
+_CHROME_WORD = re.compile(
+    r"^(?:[^\u4e00-\u9fffA-Za-z0-9]{0,6})?"
+    r"(?:设为群待办|设为待办|群待办|小+程序|进入小程序|查看详情|来自小程序|"
+    r"回到引用位置|可按住\s*转文字|按住\s*转文字|"
+    r"继续提问|AI\s*搜索|加[人入]?会员群|雪球|(?i:LIVE))"
+    r"(?:\s*[A-Za-z])?[。．.\s]*$"
+)
 # ￥17.? 、￥19.?￥22泰式风味红茶：价格可以粘在商品名上，问号是小数点认丢了。
 _PRICE = re.compile(
     r"^(?:券后价?\s*)?(?:[¥￥$]\s*\d+(?:\.\d*)?[\?？]*\s*)+(?:[\u4e00-\u9fffA-Za-z]{0,16})?$"
@@ -178,7 +187,10 @@ _APP_FRAGMENT = re.compile(r"^QuestMobile", re.I)
 _AT_SUFFIX = re.compile(r"@[A-Za-z0-9_\-.]+$")
 _SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加")
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
-_WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
+_WECHAT = re.compile(
+    r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|"
+    r"可按住\s*转文字|按住\s*转文字|回到引用位置|以下是新消息|美团外卖"
+)
 # 公众号文章预览页的「账号名 +关注」：账号名和按钮 OCR 粘在一行，旧规则只认整行「+关注」。
 # 「观察 56个朋友关注 82 455 38 33。」是「N个朋友关注」粘着阅读量、点赞数。
 # 「交易规则 71个朋友关注 53 47 23 写留言」再把留言按钮粘在末尾。
@@ -271,6 +283,16 @@ _SHOP_STRONG = re.compile(
     r"微信小店助手|微信小店交易规则中心"
 )
 _SHOP_WEAK = re.compile(r"点赞补贴价|上滑继续看视频|去参与")
+# 知识星球优惠券 / 立减金推广卡。账号栏「方伟看十年」会把下面误标成方伟。
+_ZSXQ_COUPON = re.compile(r"扫码领取优惠券|立减金")
+_ZSXQ_COUPON_EXTRA = re.compile(r"仅限前\s*\d+\s*名|\d+\s*元立减金")
+# 微博评论卡头：小事7747 山东 2
+_WEIBO_HEADER = re.compile(
+    r"^[A-Za-z0-9_\u4e00-\u9fff]{2,20}\s+[\u4e00-\u9fff]{2,3}\s+\d{1,4}$"
+)
+_WEIBO_FEED_FOOTER = re.compile(
+    r"^(?:[\u4e00-\u9fff]{2,8}(?:新闻)?联播|[\u4e00-\u9fff]{2,8}日报|[\u4e00-\u9fff]{2,8}新闻)$"
+)
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
 _MP_TOKEN = re.compile(
@@ -282,7 +304,10 @@ _ACCOUNT_SPLIT = "\x1f"
 _TRAIL_TIME = re.compile(
     r"\s*(?:上午|下午|晚上|凌晨|昨天|今天|前天)?\s*\d{1,2}:\d{2}(?::\d{2})?\s*$"
 )
-_SUFFIX = re.compile(r"[\s,，]*?(?:设为群待办|设为待办|群待办)\s*$")
+_SUFFIX = re.compile(
+    r"[\s,，]*?(?:设为群待办|设为待办|群待办|回到引用位置|"
+    r"可按住\s*转文字|按住\s*转文字|继续提问|AI\s*搜索)\s*$"
+)
 _PUNCT = re.compile(r"[，。！？、；：,.!?;:\"“”‘’（）()\[\]【】《》<>]")
 
 
@@ -338,7 +363,10 @@ def present_ocr_pieces(pieces: list[str]) -> str:
                 if len(norm) >= 8 and norm not in seen:
                     seen.append(norm)
     flush()
-    return "\n\n".join(blocks)
+    text = "\n\n".join(blocks)
+    text = re.sub(r"一\?会", "一年后会", text)
+    text = re.sub(r"一\?后", "一年后", text)
+    return text
 
 
 def present_stored_ocr(stored: str) -> str:
@@ -672,16 +700,65 @@ def _prose_after_footer(original: str, raw_lines: list[str], stripped: list[str]
     return Shot("prose", [], "\n".join(_plain(line) for line in stripped).strip())
 
 
+def _is_zsxq_coupon_shot(lines: list[str]) -> bool:
+    """知识星球扫码领券 / 立减金推广卡：整段丢掉，不能标方伟。"""
+    joined = "\n".join(lines)
+    if re.search(r"按规则整段不输出|优惠券推广卡", joined):
+        return True
+    if not _ZSXQ_COUPON.search(joined):
+        return False
+    # 短卡，或同时带「仅限前 / N元立减金」
+    if _ZSXQ_COUPON_EXTRA.search(joined):
+        return True
+    return len(re.findall(r"[一-鿿]", joined)) <= 60
+
+
+def _is_weibo_comment_shot(lines: list[str]) -> bool:
+    """微博/资讯评论卡：昵称+地区+数字，正文是评论。"""
+    if not lines:
+        return False
+    head = _plain(lines[0]).strip()
+    if not _WEIBO_HEADER.fullmatch(head):
+        return False
+    return any(len(_plain(line).strip()) >= 8 and _CJK.search(line) for line in lines[1:])
+
+
+def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
+    body: list[str] = []
+    for index, line in enumerate(lines):
+        plain = _plain(line).strip()
+        if index == 0 and _WEIBO_HEADER.fullmatch(plain):
+            continue
+        if _WEIBO_FEED_FOOTER.fullmatch(plain):
+            continue
+        if plain:
+            body.append(plain)
+    if not body:
+        return []
+    return [Turn(speaker=GUEST, lines=body)]
+
+
 def parse_shot(text: str) -> Shot:
     original = (text or "").strip()
     if not original:
         return Shot("prose", [], "")
     raw_lines = [_scrub(line) for line in _normalize(original).splitlines()]
-    raw_lines = [line for line in raw_lines if line]
+    raw_lines = [line for line in raw_lines if line and not _is_ui_chrome(line)]
     if not raw_lines:
-        return Shot("prose", [], original)
+        return Shot("prose", [], "")
+    # 知识星球优惠券推广卡：账号栏会把「扫码领取…」误标方伟，整段当噪音。
+    if _is_zsxq_coupon_shot(raw_lines):
+        return Shot("media", [], "")
+    # 微博/资讯评论卡：昵称行改成网友，不要留「小事7747」这类名字。
+    if _is_weibo_comment_shot(raw_lines):
+        turns = _weibo_guest_turns(raw_lines)
+        if turns:
+            return Shot("dialogue", turns, "", "chat")
+        return Shot("media", [], "")
     # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
-    if (
+    # 识图已标「方伟：/网友：」的群聊截图可能内嵌估值表——不能当纯表整段丢掉。
+    labeled_chat = any(_STRUCTURED.match(_plain(line) or "") for line in raw_lines)
+    if not labeled_chat and (
         _is_product_shot(raw_lines)
         or _is_shop_shot(raw_lines)
         or _is_chart_shot(raw_lines)
@@ -1009,6 +1086,29 @@ def _is_sku(line: str) -> bool:
     return len(line) <= 12
 
 
+def _speaker_body(line: str) -> str:
+    """去掉「方伟：/网友：」，看剩下是不是界面字。"""
+    plain = _plain(line or "").strip()
+    match = _STRUCTURED.match(plain)
+    if match:
+        return (match.group(2) or "").strip()
+    return plain
+
+
+def _is_ui_chrome(line: str) -> bool:
+    """整行是界面字，或说话人后面只剩界面字。这种行不能标成方伟/网友。"""
+    body = _fold(_speaker_body(line))
+    return bool(body) and _CHROME_WORD.fullmatch(body) is not None
+
+
+def _mixed_nickname(name: str) -> bool:
+    """Aaron阿远 这种中英粘在一起的群昵称。不是句子。"""
+    text = (name or "").strip()
+    if not text or len(text) > 16 or re.search(r"[。！？!?，,、；;]", text):
+        return False
+    return bool(re.search(r"[A-Za-z]", text) and _CJK.search(text))
+
+
 def _is_noise(line: str) -> bool:
     folded = _fold(line)
     if not folded or _SYMBOL.fullmatch(folded):
@@ -1016,7 +1116,7 @@ def _is_noise(line: str) -> bool:
     # 截图边缘的单个假名。折行剩下的「的」是汉字，留着。
     if len(folded) == 1 and not _CJK.search(folded) and not folded.isalnum():
         return True
-    if _is_time(line) or _STATUS.fullmatch(folded) or _CHROME_WORD.fullmatch(folded):
+    if _is_time(line) or _STATUS.fullmatch(folded) or _CHROME_WORD.fullmatch(folded) or _is_ui_chrome(line):
         return True
     if _GROUP_TITLE.fullmatch(folded) or _is_price(line) or _SYSTEM.search(folded):
         return True
@@ -1026,6 +1126,12 @@ def _is_noise(line: str) -> bool:
         return True
     # 截图角落的假名。汉字单字（折出来的「的」）不是这种。
     if re.fullmatch(r"[\u3040-\u30ff]+", folded):
+        return True
+    # 「の 可按住转文字」一类：假名开头且几乎没有汉字。界面字本身由 _is_ui_chrome 认。
+    if folded[:1] and "\u3040" <= folded[0] <= "\u30ff" and len(_CJK.findall(folded)) == 0:
+        return True
+    # 模糊 UI 认成的短全大写乱码，例如 HYIIV（元音种类少）。
+    if re.fullmatch(r"[A-Z]{4,8}", folded) and len({ch for ch in folded if ch in "AEIOU"}) <= 1:
         return True
     return False
 
@@ -1172,7 +1278,7 @@ def _guest_label(name: str) -> bool:
         return False
     if _is_host_line(_compact_host(name)):
         return False
-    if _cjk_name(name, 2) or _cjk_name(name, 3) or _latin_name(name):
+    if _cjk_name(name, 2) or _cjk_name(name, 3) or _latin_name(name) or _mixed_nickname(name):
         return True
     chars = _CJK.findall(name)
     return 4 <= len(chars) <= 12 and len(chars) == len(name) and not any(char in _STOP_CHAR for char in chars)
@@ -1243,6 +1349,8 @@ def _walk(lines: list[str], names: set[str], *, self_unnamed: bool) -> list[Turn
             continue
         own = line.startswith(SIDE_SELF)
         text = _plain(line)
+        if _is_ui_chrome(text):
+            continue
         if quote_reply and not past_account:
             if speaker != GUEST:
                 flush()

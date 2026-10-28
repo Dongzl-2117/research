@@ -72,9 +72,12 @@ PRESETS = {
 }
 
 # 一次交给模型的资料上限（字）。超过就分批摘录再汇总。
-SINGLE_CALL_CHARS = 64000
-BATCH_CHARS = 48000
-MAP_WORKERS = 3
+# 容器经 Colima 转发到 DeepSeek 时，请求体超过约 150KB（约 5 万汉字）会被断开；单次请求留在这以下。
+SINGLE_CALL_CHARS = 40000
+BATCH_CHARS = 36000
+# 经 mini 上 en1 TCP 转发时，4 路并发 TLS 易触发 DECRYPTION_FAILED / WRONG_VERSION；
+# 默认 2 路，可用 ASK_MAP_WORKERS 覆盖。
+MAP_WORKERS = max(1, int(os.environ.get("ASK_MAP_WORKERS", "2") or "2"))
 _JSON = re.compile(r"\{.*\}", re.S)
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ask")
@@ -389,6 +392,8 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         synth_report: dict = {}
         note = outline_note(found.outline, found.outline_label)
         answer, model = synthesize(settings, question, passages, synth_report, note)
+        if not (answer or "").strip():
+            raise LLMError("模型返回了空回答")
         finished = time.monotonic()
         cited = set(cited_numbers(answer, len(passages)))
         for item in passages:
