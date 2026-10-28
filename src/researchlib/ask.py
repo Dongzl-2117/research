@@ -389,6 +389,8 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         synth_report: dict = {}
         note = outline_note(found.outline, found.outline_label)
         answer, model = synthesize(settings, question, passages, synth_report, note)
+        if not (answer or "").strip():
+            raise LLMError("模型返回了空回答")
         finished = time.monotonic()
         cited = set(cited_numbers(answer, len(passages)))
         for item in passages:

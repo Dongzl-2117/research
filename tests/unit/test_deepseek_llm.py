@@ -9,6 +9,7 @@ from researchlib import deepseek, health
 from researchlib import llm as llm_module
 from researchlib.config import Settings
 from researchlib.llm import (
+    LLMError,
     LLMUnavailable,
     active_label,
     active_model_id,
@@ -138,6 +139,40 @@ def test_deepseek_chat_uses_official_endpoint_and_max_strength(tmp_path, monkeyp
     assert body["max_tokens"] == deepseek.DEEPSEEK_OUTPUT_FLOOR == 384_000
     assert "temperature" not in body
     assert body["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_deepseek_chat_rejects_empty_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+
+    def fake_urlopen(req, timeout=None):
+        return _Response(
+            {
+                "choices": [{"message": {"content": "  ", "reasoning_content": "只想了不想答"}}],
+                "model": "deepseek-v4-pro",
+            }
+        )
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    settings = _settings(tmp_path)
+    with pytest.raises(LLMError, match="正文为空"):
+        chat(settings, [{"role": "user", "content": "hi"}])
+
+
+def test_deepseek_chat_accepts_list_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+
+    def fake_urlopen(req, timeout=None):
+        return _Response(
+            {
+                "choices": [{"message": {"content": [{"type": "text", "text": "分段答"}]}}],
+                "model": "deepseek-v4-pro",
+            }
+        )
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    settings = _settings(tmp_path)
+    text, model = chat(settings, [{"role": "user", "content": "hi"}])
+    assert (text, model) == ("分段答", "deepseek-v4-pro")
 
 
 def test_deepseek_without_key_fails_without_http(tmp_path, monkeypatch):
