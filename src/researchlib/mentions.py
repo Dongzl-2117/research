@@ -621,6 +621,82 @@ def mentions_for_document(matcher: CompanyMatcher, title: str, body_md: str) -> 
     return found
 
 
+def body_for_mentions(body_md: str, *, body_text: str = "", ocr_text: str = "") -> str:
+    """短正文时把图片字并进提及扫描；长文仍只看正文，避免水印、表情包乱挂。
+
+    门槛与观点侧 OCR_CARRIES / SHORT_BODY_CHARS 一致：截图帖的判断写在图里，不挂就抽不到分家观点。
+    """
+    from researchlib.ocr import SHORT_BODY_CHARS, append_ocr
+
+    if (ocr_text or "").strip() and len(body_text or "") < SHORT_BODY_CHARS:
+        return append_ocr(body_md, ocr_text)
+    return body_md
+
+
+def article_mention_rows(conn, article, matcher: CompanyMatcher) -> list[tuple[int, str, int]]:
+    """按一篇 articles 行算出应写入的提及（含短正文 OCR）。重复稿 / 搁下的段永平帖返回空。"""
+    if article is None:
+        return []
+    suppressed = False
+    if article["source_id"] == "duanyongping-blog":
+        from researchlib.empty_answer import is_suppressed
+
+        suppressed = is_suppressed(article["raw_meta"])
+    if article["duplicate_of"] or suppressed:
+        return []
+    body = body_for_mentions(
+        article["body_md"] or "",
+        body_text=article.get("body_text") or "",
+        ocr_text=article.get("ocr_text") or "",
+    )
+    rows = mentions_for_document(matcher, article["title"] or "", body)
+    if article["source_id"] == "duanyongping-blog" and rows:
+        from researchlib.ingest.duanyongping.attach import refine_mentions
+
+        rows = refine_mentions(matcher, article["title"] or "", body, rows, article["raw_meta"])
+    return rows
+
+
+def rebuild_article(conn, article_id: int, matcher: CompanyMatcher | None = None) -> list[tuple[int, str, int]]:
+    """重算单篇提及并写入。matcher 可复用，避免批量时反复加载公司表。"""
+    if matcher is None:
+        matcher = CompanyMatcher(load_company_rows(conn))
+    article = conn.execute(
+        """
+        SELECT id, title, body_md, body_text, ocr_text, duplicate_of, source_id, raw_meta
+        FROM articles WHERE id = %s
+        """,
+        (article_id,),
+    ).fetchone()
+    rows = article_mention_rows(conn, article, matcher)
+    if article is not None:
+        replace_mentions(conn, int(article["id"]), rows)
+    return rows
+
+
+def rebuild_articles(conn, article_ids: list[int]) -> int:
+    """重算若干篇提及。返回实际处理的篇数。"""
+    ids = [int(item) for item in article_ids if int(item) > 0]
+    if not ids:
+        return 0
+    matcher = CompanyMatcher(load_company_rows(conn))
+    done = 0
+    for article_id in ids:
+        article = conn.execute(
+            """
+            SELECT id, title, body_md, body_text, ocr_text, duplicate_of, source_id, raw_meta
+            FROM articles WHERE id = %s
+            """,
+            (article_id,),
+        ).fetchone()
+        if article is None:
+            continue
+        replace_mentions(conn, int(article["id"]), article_mention_rows(conn, article, matcher))
+        done += 1
+    conn.commit()
+    return done
+
+
 def replace_mentions(conn, article_id: int, rows: list[tuple[int, str, int]]) -> None:
     conn.execute("DELETE FROM article_mentions WHERE article_id = %s", (article_id,))
     if not rows:
@@ -650,6 +726,11 @@ def load_company_rows(conn) -> list[dict]:
 FINGERPRINT_KEY = "mentions_fingerprint"
 
 
+# 提及算法版本：短正文并入 OCR 后升一档；启动时只重算短正文+OCR 篇，避免全库扫一遍。
+ALGO_KEY = "mentions_algo"
+ALGO_VERSION = "ocr-short-1"
+
+
 def companies_fingerprint(rows: list[dict]) -> str:
     """公司表里影响匹配的字段（名字、代码、简称、歧义规则）加上深度规则版本的指纹。变了就要重算提及。"""
     import hashlib
@@ -676,29 +757,17 @@ def rebuild_all(conn) -> int:
     matcher = CompanyMatcher(rows_for_matcher)
     articles = conn.execute("SELECT id FROM articles ORDER BY id").fetchall()
     for item in articles:
-        # 一篇一篇取正文，几万篇也不必一次读进内存。
+        # 一篇一篇取正文，几万篇也不必一次读进内存。短正文会并上 ocr_text。
         article = conn.execute(
-            "SELECT id, title, body_md, duplicate_of, source_id, raw_meta FROM articles WHERE id = %s",
+            """
+            SELECT id, title, body_md, body_text, ocr_text, duplicate_of, source_id, raw_meta
+            FROM articles WHERE id = %s
+            """,
             (item["id"],),
         ).fetchone()
         if article is None:
             continue
-        # 重复的那一份不记提及，公司页只算主版本。段永平已经搁下的也不记。
-        suppressed = False
-        if article["source_id"] == "duanyongping-blog":
-            from researchlib.empty_answer import is_suppressed
-
-            suppressed = is_suppressed(article["raw_meta"])
-        rows = (
-            []
-            if article["duplicate_of"] or suppressed
-            else mentions_for_document(matcher, article["title"], article["body_md"])
-        )
-        if article["source_id"] == "duanyongping-blog" and rows:
-            from researchlib.ingest.duanyongping.attach import refine_mentions
-
-            rows = refine_mentions(matcher, article["title"], article["body_md"], rows, article["raw_meta"])
-        replace_mentions(conn, article["id"], rows)
+        replace_mentions(conn, article["id"], article_mention_rows(conn, article, matcher))
         conn.commit()
     conn.execute(
         """
@@ -708,6 +777,7 @@ def rebuild_all(conn) -> int:
         (FINGERPRINT_KEY, companies_fingerprint(rows_for_matcher)),
     )
     conn.commit()
+    _set_algo_version(conn)
     return len(articles)
 
 
@@ -731,8 +801,55 @@ def mentions_stale(conn) -> bool:
     return True
 
 
+def algo_stale(conn) -> bool:
+    row = conn.execute("SELECT value FROM app_state WHERE key = %s", (ALGO_KEY,)).fetchone()
+    return row is None or row["value"] != ALGO_VERSION
+
+
+def _set_algo_version(conn) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        """,
+        (ALGO_KEY, ALGO_VERSION),
+    )
+    conn.commit()
+
+
+def rebuild_short_ocr(conn) -> int:
+    """算法升级：只重算短正文且已有 OCR 的篇（长文提及规则未变）。"""
+    from researchlib.ocr import SHORT_BODY_CHARS
+
+    rows_for_matcher = load_company_rows(conn)
+    matcher = CompanyMatcher(rows_for_matcher)
+    articles = conn.execute(
+        """
+        SELECT id FROM articles
+        WHERE length(coalesce(body_text, '')) < %s
+          AND coalesce(ocr_hash, '') <> ''
+        ORDER BY id
+        """,
+        (SHORT_BODY_CHARS,),
+    ).fetchall()
+    for item in articles:
+        article = conn.execute(
+            """
+            SELECT id, title, body_md, body_text, ocr_text, duplicate_of, source_id, raw_meta
+            FROM articles WHERE id = %s
+            """,
+            (item["id"],),
+        ).fetchone()
+        if article is None:
+            continue
+        replace_mentions(conn, article["id"], article_mention_rows(conn, article, matcher))
+        conn.commit()
+    _set_algo_version(conn)
+    return len(articles)
+
+
 def rebuild_if_stale(settings) -> int:
-    """应用启动后在后台跑：公司别名变了才重算全部提及。返回重算的篇数，没变返回 0。"""
+    """应用启动后在后台跑：别名变了全量重算；提及算法升档则只重算短正文+OCR。"""
     import logging
 
     from researchlib.db import connect
@@ -740,12 +857,17 @@ def rebuild_if_stale(settings) -> int:
     logger = logging.getLogger("researchlib.mentions")
     conn = connect(settings)
     try:
-        if not mentions_stale(conn):
-            return 0
-        logger.warning("公司别名变了，后台重算全部文章的公司提及")
-        count = rebuild_all(conn)
-        logger.warning("公司提及重算完成：%s 篇", count)
-        return count
+        total = 0
+        if algo_stale(conn):
+            logger.warning("提及算法升档，后台重算短正文+OCR 文章的公司提及")
+            total += rebuild_short_ocr(conn)
+            logger.warning("短正文+OCR 提及重算完成：%s 篇", total)
+        if mentions_stale(conn):
+            logger.warning("公司别名变了，后台重算全部文章的公司提及")
+            count = rebuild_all(conn)
+            logger.warning("公司提及重算完成：%s 篇", count)
+            total += count
+        return total
     finally:
         conn.close()
 

@@ -58,10 +58,10 @@
 
 | 项 | 值 |
 | --- | --- |
-| 模型 | `deepseek-v4-pro`（`DEEPSEEK_MODEL`）。flash 档一律拒绝 |
+| 模型 | `deepseek-flash`（`DEEPSEEK_MODEL`）。默认 V4.1-Flash |
 | thinking | `{"type": "enabled"}`，默认打开 |
 | `reasoning_effort` | `max`（`DEEPSEEK_REASONING_EFFORT`，只认 `low` / `high` / `max`；`xhigh` 按 `high`） |
-| 输出预算 | 至少 `384000`（`DEEPSEEK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
+| 输出预算 | 至少 `393216`（`DEEPSEEK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
 | 上下文 | `1000000` token（`DEEPSEEK_CONTEXT_TOKENS`） |
 | 不发的字段 | `temperature`、`presence_penalty`、`frequency_penalty`：思考模式下无效，请求里不带 |
 
@@ -105,9 +105,9 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 | `RESEARCH_LLM_PROVIDER` | `deepseek` | `deepseek` / `grok` |
 | `DEEPSEEK_API_KEY` | 空 | DeepSeek 必填，缺了直接报错 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 不另加 `/v1` |
-| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 名字里带 `flash` 会被拒绝 |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | V4.1-Flash |
 | `DEEPSEEK_REASONING_EFFORT` | `max` | `low` / `high` / `max` |
-| `DEEPSEEK_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `384000` | 只能把输出预算抬得更高，设得更低也会回到 `384000` |
+| `DEEPSEEK_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `393216` | 只能把输出预算抬得更高，设得更低也会回到 `393216` |
 | `XAI_OAUTH_TOKEN_PATH` | `/data/secrets/xai-oauth.json`（compose） | 仅 Grok，与 AIHOT 共用 |
 | `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `0` / `0` | 仅 Grok，写回后的文件属主 |
 | `XAI_MAX_TOKENS` | 不设则用 `128000` | 仅 Grok，只能抬高 |
@@ -130,6 +130,16 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 ```bash
 docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
+
+站内正式触发（生产续跑走这里，不要另起 CLI loop）：
+
+```bash
+curl -s http://127.0.0.1:8088/api/v1/digest -H 'content-type: application/json' \
+  -d '{"limit":20,"loop":true,"sleep":60}'
+curl -s http://127.0.0.1:8088/api/v1/digest
+curl -s -X POST http://127.0.0.1:8088/api/v1/digest/stop
+```
+
 ```
 
 只处理没有摘要、正文改过、提示词版本旧了、或当时只读了长文开头的文章，从新到旧。卡片优先显示摘要和最多两条要点。JSON 接口的 `summary` / `digest` 字段也有。文章页本身只放标题和正文。摘要只作导读，以原文为准。
@@ -169,6 +179,16 @@ docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
 # 段永平博客先回扫再抽。只跑这个来源，不碰别的作者，也不要在没回扫时全量抽。
 docker compose exec app research-views --source duanyongping-blog --limit 100
 docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
+
+站内正式触发：
+
+```bash
+curl -s http://127.0.0.1:8088/api/v1/views -H 'content-type: application/json' \
+  -d '{"gap":true,"limit":20,"loop":true,"sleep":60}'
+curl -s http://127.0.0.1:8088/api/v1/views
+curl -s -X POST http://127.0.0.1:8088/api/v1/views/stop
+```
+
 ```
 
 `--gap` 的范围：`article_mentions` 里深度不是「一带而过」、又没有一条 about 为真且判断非空的观点。去重后的主版本（有别的稿 `duplicate_of` 指向它）即使提及只是一带而过也补抽，例如 3851 并入 11299 之后要抽 11299。网友帖不抽。已经记成 about=false（论证不在这家公司）的不反复问。
@@ -207,6 +227,16 @@ docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516
 docker compose exec app research-theses                        # 观点够数的公司，过期的才算
 docker compose exec app research-views --company 贵州茅台 --company 泡泡玛特 --refresh-blank --limit 300
 docker compose exec app research-theses --company 贵州茅台 --company 泡泡玛特 --force
+
+站内正式触发：
+
+```bash
+curl -s http://127.0.0.1:8088/api/v1/theses -H 'content-type: application/json' \
+  -d '{"loop":true,"sleep":120}'
+curl -s http://127.0.0.1:8088/api/v1/theses
+curl -s -X POST http://127.0.0.1:8088/api/v1/theses/stop
+```
+
 ```
 
 JSON 和 MCP 的观点接口里都带 `theses`。
@@ -223,6 +253,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词）。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/v1/translate`：触发站内译制（`{source?, limit?, loop?, sleep?}`），后台线程跑，`GET` 同一路径看进度，见 [translate.md](translate.md)。
+- `POST /api/v1/ocr`：触发站内识图（`{articles?, redo?, limit?, engine?}`，默认 deepseek-flash vision），`GET` 看进度，`POST /api/v1/ocr/stop` 停。见 [ocr.md](ocr.md)。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`。
 
 返回里带 `_trust` 字段，MCP 文本包在「外部资料」分隔区里：文章是外部原文，调用方不要执行其中的指令。这一点照 AIHOT 的 MCP 做法。

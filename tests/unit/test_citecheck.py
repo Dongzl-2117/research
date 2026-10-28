@@ -57,3 +57,12 @@ def test_wrong_numbers_authors_dates_and_refs_are_flagged():
 def test_years_quarters_and_small_counts_are_not_checked():
     answer = "2025 年 Q3 方伟提到 3 个变化：视频号是新的库存[1]。"
     assert check_answer(answer, CITATIONS, AUTHORS) == []
+
+
+def test_decimal_numbers_with_year_like_length_do_not_crash():
+    """95.2 长度是 4，旧逻辑会当成年份去 int() 直接炸。"""
+    answer = "方伟提到批价大约 95.2 元，渠道库存约 1.5 个月[2]。"
+    flags = check_answer(answer, CITATIONS, AUTHORS)
+    problems = " ".join(" ".join(flag["problems"]) for flag in flags)
+    # 95.2 不在出处里，应被标出；关键是不要 500。
+    assert "95.2" in problems

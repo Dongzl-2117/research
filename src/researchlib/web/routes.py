@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 from contextlib import contextmanager
@@ -18,6 +19,7 @@ from researchlib import embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
+from researchlib.author_voice import hide_from_site
 from researchlib.boilerplate import clean_article
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
@@ -29,7 +31,6 @@ from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.empty_answer import is_suppressed
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
-from researchlib.health import notices as health_notices
 from researchlib.llm import active_label, active_model_id, llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
@@ -79,6 +80,7 @@ from researchlib.wechat_dialogue import present_stored_ocr
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 router = APIRouter()
+logger = logging.getLogger("researchlib.web.routes")
 SEARCH_PAGE_SIZE = 20
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 TEMPLATES.env.filters["answer_html"] = answer_html
@@ -376,18 +378,24 @@ def home(request: Request):
         scoped = [chosen] if chosen else ids
         jump = parse_day(request.query_params.get("date"))
         if jump is not None:
-            return _jump_to_day(conn, scoped, jump, settings, "/", source=chosen or "")
+            return _jump_to_day(
+                conn, scoped, jump, settings, "/", owner_only=True, source=chosen or ""
+            )
         # 没日期、标了 off_timeline 的条目不进首页按天。作者页仍要。
+        # 读者帖与「图片」评论壳也不进首页；库里保留，正文页 404。
         counts, plan, rows = _load_feed(
-            conn, scoped, settings, _page_arg(request), include_off_timeline=False
+            conn,
+            scoped,
+            settings,
+            _page_arg(request),
+            include_off_timeline=False,
+            owner_only=True,
         )
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
         stale = []
+        # 运维失败（抓取、夜间补齐等）只写 data/status，不进首页红条；由值班助手看 status。
         notices: list[str] = []
-        if plan["page"] == 1:
-            # 备份、导入、Grok 这些出了问题才有；正常时是空的。
-            notices = health_notices(settings.data_dir, settings.display_timezone)
         if plan["page"] == 1 and settings.stale_banner_enabled:
             watched = [by_id[chosen]] if chosen else feed
             stale = stale_sources(
@@ -612,6 +620,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         by_id = _source_map(sources)
         article = queries.get_article(conn, article_id, ids)
         if article is None:
+            raise HTTPException(status_code=404)
+        if hide_from_site(article.get("raw_meta"), article.get("title")):
             raise HTTPException(status_code=404)
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
@@ -858,6 +868,8 @@ def article_revisions(request: Request, article_id: int):
         ids = [source.id for source in sources]
         article = queries.get_article(conn, article_id, ids)
         if article is None:
+            raise HTTPException(status_code=404)
+        if hide_from_site(article.get("raw_meta"), article.get("title")):
             raise HTTPException(status_code=404)
         rows = revision_log.versions(conn, article)
         banner = queries.sample_state(conn, ids)
@@ -1535,6 +1547,17 @@ async def ask_submit(request: Request):
     )
 
 
+
+def _safe_checks(row, citations, sources) -> list:
+    if row["status"] != "done" or not row["answer"]:
+        return []
+    try:
+        return check_answer(row["answer"], citations, {source.author for source in sources})
+    except Exception:
+        logger.exception("问库引用核对失败 answer_id=%s", row.get("id"))
+        return []
+
+
 @router.get("/ask/{answer_id}")
 def ask_answer(request: Request, answer_id: int):
     with database(request) as conn:
@@ -1567,11 +1590,7 @@ def ask_answer(request: Request, answer_id: int):
         "citations": citations,
         "terms": row["terms"] or [],
         "created": format_date(row["created_at"], request.app.state.settings.display_timezone),
-        "checks": (
-            check_answer(row["answer"], citations, {source.author for source in sources})
-            if row["status"] == "done" and row["answer"]
-            else []
-        ),
+        "checks": _safe_checks(row, citations, sources),
         "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
         "missing": labels["missing"],
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),

@@ -1,6 +1,7 @@
 from researchlib.translate.language import is_chinese
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.translate.segments import chunk_segments, shield, top_level_blocks, unshield
+from researchlib.translate.service import _dedupe_consecutive_blocks
 
 
 def test_is_chinese_detects_han_majority():
@@ -59,3 +60,41 @@ def test_blocks_keep_attribute_quotes_escaped():
     assert top_level_blocks(html) == [html]
     assert stamp_paragraph_ids(html) == '<p id="p-1" title="&quot; onmouseover=alert(1) x=&quot;">hi</p>'
     assert top_level_blocks('<p><a href="/s?a=1&amp;b=2">x</a></p>') == ['<p><a href="/s?a=1&amp;b=2">x</a></p>']
+
+
+def test_dedupe_consecutive_identical_paragraphs():
+    html = "<p>第一段内容比较长，用来触发去重。</p><p>第一段内容比较长，用来触发去重。</p><p>第二段不同。</p>"
+    out = _dedupe_consecutive_blocks(html)
+    assert out.count("第一段内容比较长") == 1
+    assert "第二段不同" in out
+
+
+def test_dedupe_keeps_nonconsecutive_repeats():
+    html = "<p>A段落文字足够长了。</p><p>B段落文字足够长了。</p><p>A段落文字足够长了。</p>"
+    out = _dedupe_consecutive_blocks(html)
+    assert out.count("A段落文字足够长了") == 2
+
+
+def test_dedupe_consecutive_paragraphs_inside_one_block():
+    html = (
+        "<div>"
+        "<p>第一段内容比较长，用来触发去重。</p>"
+        "<p>中间另一段，足够长的文字。</p>"
+        "<p>第一段内容比较长，用来触发去重。</p>"
+        "<p>第一段内容比较长，用来触发去重。</p>"
+        "</div>"
+    )
+    out = _dedupe_consecutive_blocks(html)
+    assert out.count("第一段内容比较长") == 2  # 非连续保留，连续去掉一段
+    assert "中间另一段" in out
+
+
+def test_dedupe_identical_paragraph_after_blockquote():
+    html = (
+        "<blockquote><p>Siri 可以在你已经在使用的应用中采取行动，包括像 Stuff 这样的第三方应用。</p></blockquote>"
+        "<p>Siri 可以在你已经在使用的应用中采取行动，包括像 Stuff 这样的第三方应用。</p>"
+        "<p>下一段不同内容，足够长以便保留。</p>"
+    )
+    out = _dedupe_consecutive_blocks(html)
+    assert out.count("Siri 可以在你已经在使用的应用中采取行动") == 1
+    assert "下一段不同内容" in out
