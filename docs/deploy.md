@@ -26,7 +26,7 @@ docker compose up -d --build
 
 几千篇时两步加起来几分钟，期间页面照常能用，只是重复文章和提及还没更新完。
 
-备份、试恢复、夜间补齐、定时抓取和自动上线用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题，首页顶上提示一行。
+备份、试恢复、夜间补齐、定时抓取和自动上线用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题写进 `data/status/`，首页不挂红条。
 
 不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面时只给当前卡片里缺的排队，其余由夜间任务每晚补一批，见 [llm.md](llm.md)。
 
@@ -71,7 +71,7 @@ git pull
 scripts/install-launchd.sh   # 以前装过备份的，BACKUP_DIR 从装好的备份任务里读；没装过的带上 BACKUP_DIR=…
 ```
 
-装好时先跑一轮，不用再另外 `docker compose up -d --build`。日志在 `~/Library/Logs/research/deploy.log`。首页只在出问题时提示一行：
+装好时先跑一轮，不用再另外 `docker compose up -d --build`。日志在 `~/Library/Logs/research/deploy.log`。失败写 `data/status/`，首页不挂红条：
 
 - CI 没过的提交不上线，CI 重跑通过了再上；两小时还没有 CI 结果也提示。
 - 拉代码、重建失败，或者重启后 10 分钟 `/health` 还不通，提示失败的那一步。同一个提交最多试 3 轮，之后等下一个提交。
