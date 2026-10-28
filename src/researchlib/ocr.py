@@ -32,7 +32,12 @@ from pathlib import Path
 from researchlib.chunks import replace_ocr_chunks
 from researchlib.textutil import collapse_short_spam, fix_obvious_typos
 from researchlib.vision_polish import repair_vision_misreads
-from researchlib.wechat_dialogue import SIDE_SELF, present_ocr_pieces, present_stored_ocr
+from researchlib.wechat_dialogue import (
+    SIDE_SELF,
+    drop_broadcast_chrome,
+    present_ocr_pieces,
+    present_stored_ocr,
+)
 
 logger = logging.getLogger("researchlib.ocr")
 
@@ -93,6 +98,10 @@ VISION_PROMPT = """\
 - 杂志/品牌封面壳不要输出：领教工坊、INSIDE THE BEST、COLMO 等刊头、Logo 字、品牌水印；
   「来源：思想×岭南|…」这类刊源行也不要。封面大字若是正文金句（如「光做家电没有未来」）照写。
 - 同一短句连续刷屏（如「深刻反省」重复十几遍）只保留一次，不要整段复读。
+- 视频画面上的角标和主播条不要输出：未成年人请勿饮酒、主播或主持人加名字、底部节目名水印。
+  新闻标题和数字照写。
+- 品牌广告海报只留条款和数字：单独一行的 Logo、四字对仗口号不要输出。保障条款、适用条件照写。
+  书籍目录照写，不要当成界面删掉。
 - 上下文已经把词定死时，识图滑字直接写成对的词，不要照抄错字，也不要凭空改写。
   例如：家电品牌并列（格力、海尔、空调、冰箱）里的「墓地」写成「美的」；
   free cash flow 的中间词只错一个字母（如 free case flow）写成 free cash flow。
@@ -468,7 +477,7 @@ def normalize_vision_text(text: str) -> str:
         if deduped and body and body == prev and _SHORT_REPEAT_TOKEN.fullmatch(body):
             continue
         deduped.append(line)
-    lines = deduped
+    lines = drop_broadcast_chrome(deduped)
     if lines:
         last = lines[-1].strip()
         # 「方伟：名创优品… / 名创优品业务…」——半截尾巴常见编造

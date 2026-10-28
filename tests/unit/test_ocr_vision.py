@@ -83,6 +83,10 @@ def test_vision_prompt_names_the_constraints():
         "墓地",
         "free case flow",
         "free cash flow",
+        "未成年人请勿饮酒",
+        "主播",
+        "节目名水印",
+        "书籍目录",
     ):
         assert phrase in VISION_PROMPT, phrase
 
@@ -398,3 +402,31 @@ COLMO
 def test_normalize_fixes_obvious_typos():
     assert "很新的东西" in normalize_vision_text("网友：AI算力是一个很新都东西")
     assert "很新都东西" not in normalize_vision_text("网友：AI算力是一个很新都东西")
+
+
+def test_normalize_strips_video_badges_and_ad_shell():
+    """24010 / 23173：角标和广告壳在识图后处理就丢掉，不靠语病表。"""
+    video = normalize_vision_text(
+        "“黄酒一哥” 易主！\n"
+        "2026年上半年营业收入达8.53亿元\n"
+        "未成年人请勿饮酒\n"
+        "主播 浩嘉\n"
+        "会稽山超越古越龙山\n"
+        "新经济观察"
+    )
+    assert "8.53亿" in video
+    assert "会稽山超越古越龙山" in video
+    assert "未成年人" not in video
+    assert "主播" not in video
+    assert "新经济观察" not in video
+    assert normalize_vision_text("主播 浩嘉") == ""
+    assert normalize_vision_text("未成年人请勿饮酒") == ""
+
+    poster = normalize_vision_text(
+        "理想\n连山电池保障计划\n双重保障，终身守护。\n补偿同等配置新车\n"
+        "适用条件:\n责任免除见官方条款。终身保障。"
+    )
+    assert "连山电池保障计划" in poster
+    assert "补偿同等配置新车" in poster
+    assert "双重保障" not in poster
+    assert not any(line.strip() == "理想" for line in poster.splitlines())

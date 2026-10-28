@@ -1152,3 +1152,70 @@ INSIDE THE BEST
     assert "回复@" not in text
     assert "//@" not in text
 
+
+# 24010 视频截图：角标、主播名牌、节目水印。新闻标题和数字留下。
+HUANGJIU_OCR = """“黄酒一哥” 易主！
+浙江绍兴会稽山 首度超越古越龙山
+2026年上半年营业收入达8.53亿元
+江浙沪的销售额高达70%以上
+未成年人请勿饮酒
+主播 浩嘉
+会稽山超越古越龙山
+新经济观察"""
+
+# 23173 理想汽车海报：Logo 和口号是壳，保障条款留下。
+LIXIANG_OCR = """理想
+连山电池保障计划
+双重保障，终身守护。
+电池不自燃
+终身保障
+因原厂电池质量问题导致自燃
+车辆达到报废条件
+补偿同等配置新车
+适用条件:
+理想汽车首任车主、非营运车辆，车辆关键零部件按时在官方维保、足额投保车损险、持续开通车联网。
+本保障计划的具体内容、适用条件、责任免除及补偿细则，以理想汽车官方渠道公示的条款为准。"""
+
+
+def test_24010_video_badges_and_23173_ad_shell_are_stripped():
+    text = present_ocr_pieces([HUANGJIU_OCR])
+    assert "8.53亿" in text
+    assert "黄酒一哥" in text
+    assert "会稽山超越古越龙山" in text
+    assert "未成年人请勿饮酒" not in text
+    assert "主播" not in text
+    assert "浩嘉" not in text
+    assert "新经济观察" not in text
+
+    poster = present_ocr_pieces([LIXIANG_OCR])
+    assert "连山电池保障计划" in poster
+    assert "补偿同等配置新车" in poster
+    assert "理想汽车" in poster
+    assert "适用条件" in poster
+    assert "双重保障，终身守护" not in poster
+    assert not any(line.strip() == "理想" for line in poster.splitlines())
+
+    # 句子里提到这些词，不是整行角标，留下。
+    said = "这位主播把黄酒的利润讲得很清楚，一年到头也就一两亿。"
+    assert "主播" in present_ocr_pieces([said])
+    notice = "广告里写着未成年人请勿饮酒，但利润讨论还是要单独看。"
+    assert "未成年人请勿饮酒" in present_ocr_pieces([notice])
+
+    # 书籍目录不是界面，整段留下。
+    toc = "目录\n第一章 商业模式\n第二章 企业文化\n第三章 资本开支还要看回报\n"
+    kept = present_ocr_pieces([toc])
+    assert "目录" in kept
+    assert "第一章" in kept
+    assert "资本开支" in kept
+
+
+def test_video_chrome_is_stripped_on_the_reading_page():
+    digest = "ab" * 32
+    html = str(render_body("![](shot.png)\n", {"shot.png": f"/media/x/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: HUANGJIU_OCR})
+    assert "8.53亿" in page
+    assert "会稽山超越古越龙山" in page
+    assert "未成年人请勿饮酒" not in page
+    assert "主播" not in page
+    assert "新经济观察" not in page
+
