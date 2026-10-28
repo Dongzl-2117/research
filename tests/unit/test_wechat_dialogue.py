@@ -1064,3 +1064,23 @@ def test_labeled_vision_chrome_is_not_a_speaker():
     assert "非共识的下限" in text
     assert "高坝期不是这样说的" in text
     assert not any(line.startswith("方伟：继续") or line.startswith("网友：AI") for line in text.splitlines())
+
+
+def test_labeled_chat_keeps_nested_pe_table():
+    """识图已标说话人的群聊内嵌估值表，不能当纯表 media 丢掉。"""
+    text = """网友：尤其是看到伦敦距离非常近的位子连续开了好几家pop mart
+方伟：因为市场还是按130亿利润去算pe
+网友：如果如我前述：港股Q3同比-45%~-50%公报出来以后，我估的重点区间应在110-120港元
+网友：市值倍数PE 对应股价
+网友：16倍 约133港元
+网友：14倍 约117港元
+网友：12倍 约100港元
+网友：10倍 约84港元
+方伟：而下半年同比去年几乎必然大幅度下滑的
+网友：看看明天市场什么反应
+"""
+    shot = parse_shot(text)
+    assert shot.kind == "dialogue"
+    joined = "\n".join(line for turn in shot.turns for line in turn.lines)
+    assert "110-120" in joined or "110" in joined
+    assert "Q3" in joined or "同比" in joined

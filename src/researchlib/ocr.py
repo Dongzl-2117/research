@@ -47,9 +47,9 @@ OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
 MAX_VISION_BYTES = 10 * 1024 * 1024
 # 经 mini 上 DeepSeek en1 转发时，过大的 data-url 会在 TLS 中途被掐断。
 # 压到这个字节数以下再 base64，payload 大约 150KB 内，和问库分批上限同一量级。
-MAX_VISION_SEND_BYTES = 110_000
-VISION_MAX_SIDE = 1280
-VISION_JPEG_QUALITY = 70
+MAX_VISION_SEND_BYTES = 280_000
+VISION_MAX_SIDE = 1920
+VISION_JPEG_QUALITY = 85
 VISION_TRANSIENT_TRIES = 3
 VISION_MAX_TOKENS = 32768  # 全量 VISION_PROMPT+thinking 下 8k/16k 会把正文挤空；32k 实测有字且不 OOM
 # 检索块要 20 个字；交给观点和摘要的旁路、以及阅读页放宽，短截图也能进正文。
@@ -74,8 +74,12 @@ VISION_PROMPT = """\
 - 按气泡从上到下逐条转写，一条气泡一行。
 - 绿色气泡（自己发的）写成「方伟：」。
 - 其他人一律写成「网友：」，禁止输出真实昵称（不要写 Aaron、Henri、Kevin 或任何群昵称）。
+- 气泡里嵌套的截图、估值表、PE 表、长文卡片必须整段转写，标成「网友：」，禁止因字小整段丢掉。
+- 嵌套表按行输出，指标与数字同一行（如「16倍 约133港元」）。
+- 嵌套图里的季度（Q1/Q2/Q3）、同比正负号、价格区间必须与图内一致，禁止改写或脑补长句。
 - 剥掉界面字，不要输出：可按住转文字、回到引用位置、设为群待办、
   继续提问、AI搜索、状态栏时间、群名、雪球、LIVE、加人会员群、小程序卡片、输入框。
+- 截到屏幕边缘的半截气泡：能认的照写，认不全写 … 或 ?；禁止把半截尾巴编成公司名或新句。
 - 看不清的字写 ?，禁止编造。
 
 若是表格或柱状图：
@@ -294,12 +298,24 @@ def vision_messages(image_bytes: bytes, mime: str) -> list[dict]:
 
 
 def normalize_vision_text(text: str) -> str:
-    """去掉模型偶尔套上的代码围栏。说话人和界面字留给 wechat_dialogue。"""
+    """去掉模型偶尔套上的代码围栏；半截尾巴里乱编的公司名留给 prompt 约束，这里只做轻清理。
+
+    说话人和界面字留给 wechat_dialogue。
+    """
     raw = (text or "").strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
-    return raw.strip()
+    # 模型偶发把截断气泡收成「某某公司?」单行；保留含实质内容的问号行。
+    lines = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{2,8}\?", s) and ("方伟" not in s and "网友" not in s):
+            # 单短词+? 且不像「网友：…」——改成省略，避免「名创优品?」这类编造进检索
+            if "：" not in s and ":" not in s:
+                continue
+        lines.append(line.rstrip())
+    return "\n".join(lines).strip()
 
 
 def vision_engine(settings) -> Callable[[Path], str]:
