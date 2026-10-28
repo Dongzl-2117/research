@@ -88,17 +88,22 @@ def evaluate(conn, sources, corpus, truth, names, originals, *, legacy=False):
         matcher = CompanyMatcher(load_company_rows(conn))
         focus_id = conn.execute("SELECT id FROM companies WHERE name_zh=%s", (case["company"],)).fetchone()["id"]
         focus_terms = [f for t in result.query.content_terms for f in t.forms] if result.query else []
+        entity_terms = [f for t in result.query.terms if t.kind == "company" for f in t.forms] if result.query else []
         wrong_entity = 0
         duplicates = 0
         for i, p in enumerate(ranked):
             text = "\n".join([p.before, p.body, p.after])
             fragment = highlight_snippet(
-                p.body, case["text"], radius=88 if legacy else 260, terms=result.terms,
+                getattr(p, "excerpt", "") or p.body, case["text"], radius=88 if legacy else 500, terms=result.terms,
                 **({} if legacy else {"focus_terms": focus_terms}),
             )
             visible = unescape(re.sub(r"<[^>]+>", "", str(fragment)))
             if not legacy:
-                visible = "\n".join([p.before[:160], visible, p.after[:160]])
+                before = highlight_snippet(p.before, case["text"], radius=240, terms=result.terms,
+                                           focus_terms=entity_terms)
+                after = highlight_snippet(p.after, case["text"], radius=160, terms=result.terms)
+                visible = "\n".join([str(before), visible, str(after)])
+                visible = unescape(re.sub(r"<[^>]+>", "", visible))
             evidence = {key for key, label in truth.items()
                         if key[0] == p.article_id and label == case["id"] and originals[key] in text}
             covered |= evidence
@@ -153,6 +158,9 @@ def main():
             conn, load_sources(source_path), corpus, truth, names, passages, legacy=args.legacy_presentation
         )
         conn.close()
+    text = json.dumps(report, ensure_ascii=False, indent=2)
+    if args.out:
+        args.out.write_text(text + "\n")
     if args.check:
         minimum = json.loads(args.check.read_text())
         for row in report["cases"]:
@@ -162,9 +170,6 @@ def main():
                     raise SystemExit(f"片段评测退步：{row['query']} {metric}={row[metric]} < {expected[metric]}")
             if row["scope_violations"] or row["adjacent_duplicates"] or row["wrong_entity_at_5"]:
                 raise SystemExit(f"片段范围或相邻去重失败：{row['query']}")
-    text = json.dumps(report, ensure_ascii=False, indent=2)
-    if args.out:
-        args.out.write_text(text + "\n")
     for row in report["cases"]:
         print(f"{row['query']}: P@5={row['p_at_5']:.2f}, P@10={row['p_at_10']:.2f}, "
               f"覆盖={row['coverage_at_10']:.2f}, 范围违反={row['scope_violations']}, "
