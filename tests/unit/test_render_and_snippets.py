@@ -254,10 +254,14 @@ def test_24008_quote_paragraphs_and_xueqiu_order_are_in_text_links():
         ),
         {fang: fang_text, nest: nest_text},
     )
-    assert "对自己动刀子</p>" not in page
-    assert "光做家电</p>" not in page
     assert "企业家精神是敢于在最顺的时候对自己动刀子" in page
-    assert "光做家电没有未来" in page
+    assert "时候</p>" not in page and "对自己动刀子</p>" not in page.split("企业家精神", 1)[-1][:80]
+    assert "光做家电</a>" in page and "没有未来</a>" in page
+    assert "刀子光做家电" not in page
+    assert "future.</a>" in page and "转型本质就是转人" in page
+    spirit = page.index("企业家精神是敢于在最顺的时候对自己动刀子")
+    spirit_end = page.index("</p>", spirit)
+    assert "转型本质" not in page[spirit:spirit_end]
     assert page.index("莫尼什：") < page.index("大道会不会考虑") < page.index("李录投资也很好")
     assert "原图 1" not in page and "原图 2" not in page
     fang_at = page.index(f'id="{image_anchor(fang)}"')

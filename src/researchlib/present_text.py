@@ -202,7 +202,9 @@ _LABEL_ONLY = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9·]{1,12}[：:]$")
 _SENTENCE_END = re.compile(r"[。！？!?…]$|(?:[A-Za-z])\.$")
 _CONNECTOR_END = re.compile(r"[，、；：,;:]$")
 _NEW_BLOCK = re.compile(r"^(?:[12]\d{3}\s*年|第[0-9一二三四五六七八九十])")
-# 单独成行就是一句的短应答。标题折行（「光做家电」「没有未来」）不在这里。
+# 单独成行就是一句的短应答，不当成上一行的折行尾巴。
+# 行尾是这些字时，句子多半还没说完（「在最顺的时候」）。不是错字表。
+_UNFINISHED_END = frozenset("的了是在和与或而为把被对从向到着过就也都又再很最不没候时")
 _STANDALONE = frozenset(
     {
         "好的",
@@ -303,12 +305,27 @@ def _is_quote_card(body: str) -> bool:
     return True
 
 
-def merge_wrapped_utterances(text: str) -> str:
-    """把截图折行收成自然段。
+def _is_wrap_continuation(previous: str, nxt: str) -> bool:
+    """上一行是被画面截断的半句，才接到下一行。模型已经分好的段不在这里重切。"""
+    if not previous or not nxt or _sentence_end(previous):
+        return False
+    if _DIALOGUE_LINE.match(nxt) or _NEW_BLOCK.match(nxt):
+        return False
+    if _is_quote_card(nxt) and not _LABEL_ONLY.fullmatch(previous):
+        return False
+    if _LABEL_ONLY.fullmatch(previous) or _CONNECTOR_END.search(previous):
+        return True
+    if nxt in _STANDALONE or _visual_width(nxt) > 6 or previous[-1] not in _UNFINISHED_END:
+        return False
+    # 顶到屏幕宽度、行尾还没说完、下一行又很短：才是半句话，不是模型另起的一段。
+    return _WRAP_MIN <= _visual_width(previous) <= _WRAP_MAX
 
-    「方伟：」「网友：」气泡各留一行，不把两个人的话粘在一起。
-    其余：顶到画面宽度、或短标题被拆开的，接到同一句；句末或另一块才另起一段。
-    已经是自然段时再跑一遍不变。
+
+def merge_wrapped_utterances(text: str) -> str:
+    """只把截断在半句的折行接回去。
+
+    空行是模型分的段，保留。已经写完的一行（哪怕很短）不因为旁边也短就粘上去，
+    也不把整段收成一块。「方伟：」「网友：」气泡各留一行。再跑一遍不变。
     """
     if not text or "\n" not in text:
         return text or ""
@@ -318,71 +335,31 @@ def merge_wrapped_utterances(text: str) -> str:
     labeled = sum(1 for line in nonempty if _DIALOGUE_LINE.match(line))
     if nonempty and labeled * 2 >= len(nonempty):
         return normalized.strip("\n")
-    paragraphs: list[str] = []
-    buf = ""
-    last = ""
-    joined_any = False
-
-    def flush() -> None:
-        nonlocal buf, last
-        if buf.strip():
-            paragraphs.append(buf.strip())
-        buf = ""
-        last = ""
-
-    for raw in raw_lines:
-        line = raw.strip()
+    merged: list[str] = []
+    index = 0
+    while index < len(raw_lines):
+        line = raw_lines[index].strip()
         if not line:
-            flush()
+            merged.append("")
+            index += 1
             continue
         if _DIALOGUE_LINE.match(line):
-            flush()
-            paragraphs.append(line)
+            merged.append(line)
+            index += 1
             continue
-        if _is_quote_card(line) and buf and not _LABEL_ONLY.fullmatch(buf):
-            flush()
-        if not buf:
-            buf = line
-            last = line
-            continue
-        if _LABEL_ONLY.fullmatch(buf) and not _is_quote_card(line):
-            buf = buf + line
-            last = line
-            joined_any = True
-            continue
-        if _sentence_end(last):
-            flush()
-            buf = line
-            last = line
-            continue
-        if _NEW_BLOCK.match(line):
-            flush()
-            buf = line
-            last = line
-            continue
-        width = _visual_width(last)
-        short_next = _visual_width(line) <= 6 and line not in _STANDALONE
-        in_band = _WRAP_MIN <= width <= _WRAP_MAX
-        latin_next = bool(re.match(r"[A-Za-z]", line))
-        both_short = (
-            _visual_width(last) <= 6
-            and _visual_width(line) <= 6
-            and _visual_width(buf) <= 8
-            and last not in _STANDALONE
-            and line not in _STANDALONE
-        )
-        if _CONNECTOR_END.search(last) or (in_band and (short_next or latin_next)) or both_short:
-            buf = _join_parts(buf, line)
-            last = line
-            joined_any = True
-            continue
-        flush()
-        buf = line
-        last = line
-    flush()
-    if not joined_any:
-        return normalized.strip("\n")
-    return "\n\n".join(paragraphs)
+        while index + 1 < len(raw_lines):
+            nxt = raw_lines[index + 1].strip()
+            if not nxt or not _is_wrap_continuation(line, nxt):
+                break
+            # 顶满一行只接后面那一小截。接完就停，避免整句刚好还在宽度里时把下一块标题吞进去。
+            band_only = not _LABEL_ONLY.fullmatch(line) and not _CONNECTOR_END.search(line)
+            line = line + nxt if _LABEL_ONLY.fullmatch(line) else _join_parts(line, nxt)
+            index += 1
+            if band_only:
+                break
+        merged.append(line)
+        index += 1
+    return "\n".join(merged).strip("\n")
 
 
 def _guest_body(line: str) -> str | None:

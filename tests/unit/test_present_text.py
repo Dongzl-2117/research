@@ -234,16 +234,30 @@ _XUEQIU_VISUAL = (
 
 
 def test_merge_wrapped_quote_into_paragraphs():
-    """方洪波金句不是一句一段。折行接上，标题和字幕各自成段。"""
+    """只接半句折行。模型分成多行的标题、字幕不收成一整段。"""
     out = merge_wrapped_utterances(_FANG_LINES)
     assert "企业家精神是敢于在最顺的时候对自己动刀子" in out
     assert "时候\n对自己" not in out
-    assert "光做家电没有未来" in out
-    assert "光做家电\n没有未来" not in out
-    assert "我们光做家电没有未来 that just making home appliances offered no future." in out
-    assert "转型本质就是转人" in out
-    assert out.index("企业家精神") < out.index("光做家电没有未来") < out.index("转型本质")
+    assert "光做家电\n没有未来" in out
+    assert "我们光做家电没有未来\nthat just making" in out
+    assert "对自己动刀子\n\n光做" not in out
+    assert "刀子光做家电" not in out
+    assert "future.\n转型本质" in out
+    assert out.index("企业家精神") < out.index("光做家电") < out.index("转型本质")
     assert merge_wrapped_utterances(out) == out.strip()
+
+
+def test_merge_keeps_blank_lines_the_model_wrote():
+    """识图用空行分的段原样留下，一段里的两句也不拆开。"""
+    written = (
+        "方洪波：企业家精神是敢于在最顺的时候对自己动刀子\n\n"
+        "光做家电没有未来\n\n"
+        "我们光做家电没有未来。that just making home appliances offered no future.\n\n"
+        "转型本质就是转人，在企业最顺的时候对自己动刀子 (1/3)"
+    )
+    assert merge_wrapped_utterances(written) == written
+    one_line = "第一句完了。第二句也在这段里。"
+    assert merge_wrapped_utterances(one_line) == one_line
 
 
 def test_merge_leaves_dialogue_lines_and_long_notes():
