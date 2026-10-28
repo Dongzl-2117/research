@@ -36,6 +36,13 @@ from researchlib.mentions import (
     iter_alias_specs,
     load_company_rows,
 )
+from researchlib.search_evidence import (
+    LocalMatcher,
+    corpus_prior,
+    evidence_fingerprint,
+    evidence_windows,
+    local_evidence,
+)
 from researchlib.web.queries import Scope, scope_clause
 
 # 问句里常见、对召回没有帮助的词。词性过滤之后剩下的套话在这里去掉。
@@ -152,6 +159,9 @@ class Passage:
     before: str = ""
     after: str = ""
     entity_basis: str = ""
+    # 检索页只展示与当前主体相连的原文窗口；body/ord 仍保留完整原块供引用核对。
+    excerpt: str = ""
+    topic_lexical: float = 0.0
 
     @property
     def url(self) -> str:
@@ -837,7 +847,10 @@ def _article_rows(conn, scope: Scope):
     return _prefer_translation(list(rows))
 
 
-def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, enough: int | None = None) -> list[dict]:
+def _candidates(
+    conn, query: Query, scope: Scope, limit: int = CANDIDATES, *,
+    enough: int | None = None, entity_context: bool = False,
+) -> list[dict]:
     """几路召回合并。enough：前两路已经召回这么多块时，不再用「任一少见词」撒网。"""
     found: dict[tuple[int, int], dict] = {}
     keys: list[tuple[int, int]] = []
@@ -892,6 +905,33 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
             if tsq:
                 add_keys(_fts_keys(conn, scope, tsq, params, limit))
         add_rows(_rows_for_keys(conn, keys))
+        if entity_context and company_ids and word_terms:
+            # 公司提及表不依赖中文别名在块内怎样分词。给无题面词、标题主语和跨块指代保留候选通道。
+            # 每篇、总文章数和总块数均封顶，不因一个公司有几万篇就读取全库。
+            where, params = scope_clause(scope)
+            params.update({"context_companies": company_ids, "context_articles": 120,
+                           "context_per_article": 24, "context_limit": limit})
+            add_rows(conn.execute(
+                f"""WITH entity_articles AS MATERIALIZED (
+                    SELECT a.id, a.published_at, bool_or(m.depth <> 'passing') AS deep
+                    FROM articles a JOIN article_mentions m ON m.article_id = a.id
+                    WHERE {where} AND m.company_id = ANY(%(context_companies)s)
+                    GROUP BY a.id
+                    ORDER BY deep DESC, a.published_at DESC NULLS LAST, a.id DESC
+                    LIMIT %(context_articles)s
+                ), context_keys AS (
+                    SELECT c.article_id, c.ord, e.deep, e.published_at,
+                           row_number() OVER (PARTITION BY c.article_id ORDER BY c.ord) AS rn
+                    FROM entity_articles e JOIN articles a ON a.id = e.id
+                    JOIN article_chunks c ON c.article_id = e.id WHERE {current_chunk_sql()}
+                )
+                SELECT {_SELECT_COLUMNS} FROM context_keys k
+                JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
+                JOIN articles a ON a.id = c.article_id
+                WHERE k.rn <= %(context_per_article)s
+                ORDER BY k.deep DESC, k.rn, k.published_at DESC NULLS LAST, c.article_id DESC
+                LIMIT %(context_limit)s""", params,
+            ).fetchall())
     if not word_terms:
         companies = [t for t in query.terms if t.kind == "company"]
         targets = [{"id": t.company_id, **_company_lookup(query, t.company_id)} for t in companies]
@@ -1385,16 +1425,12 @@ def score_rows(
 
 
 def _topical_scores(conn, query, rows, scope, company_rows, semantic):
-    """片段搜索：先验证谈的是谁，再比较谈了什么。公司词频不当作主题相关性。
-
-    标题可提供较弱的主体依据；同节上文可解释代词。正文明确改谈别家公司时，不从标题继承主体。
-    不做领域同义词表，也不把文章级提及直接复制成每一段的事实归属。
-    """
+    """局部主体证据、主题词法/向量、公司上下文先验分别计算，不能由词全命中绕过主体检查。"""
     companies = company_rows if company_rows is not None else load_company_rows(conn)
     focus = {int(c["id"]) for c in query.companies}
     if scope.company_id is not None:
         focus.add(scope.company_id)
-    matcher = cached_matcher("aho", companies)
+    matcher = LocalMatcher(cached_matcher("aho", companies))
     by_key = {(r["article_id"], r["ord"]): dict(r) for r in rows}
     wanted = set()
     for aid, ord_ in by_key:
@@ -1402,7 +1438,6 @@ def _topical_scores(conn, query, rows, scope, company_rows, semantic):
         for neighbor in (ord_ - 1, ord_ + 1):
             if low <= neighbor < high and (aid, neighbor) not in by_key:
                 wanted.add((aid, neighbor))
-    # 相邻段可以补齐跨块论证，也为没有再次点名的代词段提供局部上下文。
     for row in _rows_for_keys(conn, sorted(wanted)):
         by_key[(row["article_id"], row["ord"])] = dict(row)
     guarded = {int(c["id"]) for c in companies if int(c["id"]) in focus and company_rules(c).get("needs")}
@@ -1413,67 +1448,77 @@ def _topical_scores(conn, query, rows, scope, company_rows, semantic):
             " WHERE article_id=ANY(%s) AND company_id=ANY(%s)",
             (sorted({key[0] for key in by_key}), sorted(focus)),
         )}
-    body_subjects = {key: set(matcher.count(r["body"] or "")) for key, r in by_key.items()}
-    heading_subjects = {h: set(matcher.count(h)) for h in {r.get("heading") or "" for r in by_key.values()}}
-    title_subjects = {t: set(matcher.count(t)) for t in {r.get("title") or "" for r in by_key.values()}}
-    eligible, evidence = [], {}
+    forms = sorted({f for t in query.content_terms for f in t.forms if f}, key=len, reverse=True)
+    evidence = {}
     for key, row in by_key.items():
-        row_focus = {cid for cid in focus if cid not in guarded or (key[0], cid) in depths}
-        body_hits = body_subjects[key]
-        heading_hits = heading_subjects[row.get("heading") or ""]
-        own = body_hits & row_focus
-        foreign = body_hits - row_focus
-        before = by_key.get((key[0], key[1] - 1))
-        basis, confidence, proven = "", 0.0, set()
-        if own:
-            basis, confidence = "正文", 1.0
-            proven = own
-        elif foreign:
+        allowed = {cid for cid in focus if cid not in guarded or (key[0], cid) in depths}
+        previous = by_key.get((key[0], key[1] - 1))
+        evidence[key] = evidence_windows(
+            row["body"], local_evidence(row, matcher, allowed, forms, previous=previous)
+        )
+    focus_matcher = LocalMatcher(cached_matcher("aho", [c for c in companies if int(c["id"]) in focus]))
+    corpus_prior(evidence, focus_matcher, forms)
+    safe_semantic = {key: (semantic or {}).get(key, 0.0)
+                     for key, row in by_key.items() if not set(matcher.count(row["body"])) - focus}
+    topic = replace(query, terms=[t for t in query.terms if t.kind != "company"], companies=[])
+    # 一条局部证据对应一个临时块号，复用词法计算；不把标题、别的主体的句子交给主题打分。
+    unit_rows, units = [], {}
+    for key, items in evidence.items():
+        for unit in items:
+            uid = len(units)
+            units[uid] = (key, unit)
+            unit_rows.append({**by_key[key], "ord": uid, "heading": "", "title": "", "body": unit.text})
+    lexical = score_rows(conn, topic, unit_rows, scope=replace(scope, company_id=None), company_rows=companies)
+    by_unit = {p.ord: p for p in lexical}
+    top = max((p.score for p in lexical), default=1.0) or 1.0
+    choices = defaultdict(list)
+    for uid, (key, unit) in units.items():
+        # 排除词和引号仍是硬条件，弱先验不能补回违反条件的候选。
+        if any(_count(unit.text, unit.text.lower(), word) for word in query.excludes):
             continue
-        elif heading_hits & row_focus and not heading_hits - row_focus:
-            basis, confidence = "章节", 0.95
-            proven = heading_hits & row_focus
-        elif before and before.get("heading") == row.get("heading") and (
-            body_subjects[(key[0], key[1] - 1)] & row_focus
-        ) and not (body_subjects[(key[0], key[1] - 1)] - row_focus):
-            basis, confidence = "上文", 0.85
-            proven = body_subjects[(key[0], key[1] - 1)] & row_focus
-        elif title_subjects[row.get("title") or ""] & row_focus:
-            basis, confidence = "标题", 0.55
-            proven = title_subjects[row.get("title") or ""] & row_focus
-        else:
-            # 没有主体依据的词法命中只作很弱的部分命中，不冒充这家公司的证据。
-            confidence = 0.08
-        if proven:
-            depth = min((_DEPTH_RANK.get(depths.get((key[0], cid), "passing"), 3) for cid in proven), default=3)
-            confidence *= (1.15, 1.1, 1.0, 0.25)[depth]
-        evidence[key] = (row, basis, confidence, before, proven)
-        # 标题用于主体依据，不替正文提供主题证据；标题命中仍可经弱的部分命中返回。
-        eligible.append({**row, "title": ""})
-    topical_query = replace(query, terms=[t for t in query.terms if t.kind != "company"], companies=[])
-    scored = score_rows(
-        conn, topical_query, eligible, scope=replace(scope, company_id=None), company_rows=companies, semantic=semantic
-    )
-    for passage in scored:
-        row, basis, confidence, before, proven = evidence[(passage.article_id, passage.ord)]
-        passage.title = row["title"]
-        passage.score *= confidence
-        passage.entity_basis = basis
-        if basis == "上文":
-            passage.before = before["body"]
-        if basis:
-            passage.matched.extend(t.text for t in query.terms if t.company_id in proven)
-    # 仅公司名命中的材料保留在部分命中末尾，不能和有主题证据的片段竞争。
-    have = {(p.article_id, p.ord) for p in scored}
-    weak = max((p.score for p in scored), default=1.0) * 0.01
-    for key, (row, basis, _confidence, _before, proven) in evidence.items():
-        if key not in have and basis and not query.excludes and not any(t.kind == "phrase" for t in query.terms):
-            passage = _passage_from_row(row)
-            passage.score = weak
-            passage.entity_basis = basis
-            passage.matched = [t.text for t in query.terms if t.company_id in proven]
-            scored.append(passage)
-    return scored
+        if any(t.kind == "phrase" and not any(_count(unit.text, unit.text.lower(), f) for f in t.forms)
+               for t in query.terms):
+            continue
+        lex = by_unit.get(uid)
+        lex_score = lex.score / top if lex else 0.0
+        sem = safe_semantic.get(key, 0.0)
+        depth = min((_DEPTH_RANK.get(depths.get((key[0], cid), "passing"), 3)
+                     for cid in unit.companies), default=3)
+        confidence = unit.confidence * (1.15, 1.1, 1.0, 0.7)[depth]
+        if unit.basis == "标题" and not lex and not sem:
+            confidence *= 0.3
+        # 词法/向量是主题证据；先验只作小额候选排序，coverage 和 semantic_hit 均不因此增加。
+        score = confidence * (0.65 * lex_score + 0.35 * sem + 0.18 * unit.prior)
+        if score > 0:
+            choices[key].append((score, uid, lex, sem))
+    passages = []
+    for key, options in choices.items():
+        score, uid, lex, sem = max(options, key=lambda item: item[0])
+        unit = units[uid][1]
+        row = by_key[key]
+        passage = _passage_from_row(row)
+        passage.score = score
+        passage.entity_basis = unit.basis
+        passage.topic_lexical = lex.score / top if lex else 0.0
+        passage.matched = list(lex.matched) if lex else []
+        passage.matched.extend(t.text for t in query.terms if t.company_id in unit.companies)
+        passage.coverage = lex.coverage if lex else 0.0
+        passage.semantic = sem
+        passage.semantic_hit = passage.semantic >= SEMANTIC_STRONG and passage.coverage < 0.99
+        passage.before = unit.context
+        # 显示中心句及紧接的同主体证据。仅拼连续原文，绝不重写或拼接成新的断言。
+        selected = sorted((units[item[1]][1] for item in options), key=lambda item: item.start)
+        lo, hi = unit.start, unit.end
+        for other in selected:
+            if other.start >= hi and not row["body"][hi:other.start].strip() and (
+                other.confidence >= 0.4 and other.end - lo <= 500
+            ):
+                hi = other.end
+        passage.excerpt = row["body"][lo:hi]
+        if lo == 0 and hi == len(row["body"]):
+            passage.excerpt = ""
+        passages.append(passage)
+    return passages
 
 
 # 关键词分和语义分的融合权重。关键词仍是主干：搜的词原样出现的段落最可靠。
@@ -1830,7 +1875,7 @@ def _full_match_tsquery(query: Query, params: dict) -> str:
 
 
 def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0) -> SearchResult:
-    """关键词检索：全部词都命中的文章排前面，其后是只命中一部分的。每篇带最相关的两段原文。"""
+    """先排局部证据，再按文章带出原文窗口。词全命中是说明，不是绕过相关性排序的优先档。"""
     company_rows = load_company_rows(conn)
     query = analyze(conn, text, sources, company_rows=company_rows)
     effective = scope
@@ -1841,7 +1886,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         if query.authors:
             return _author_listing(conn, query, effective, limit, offset)
         return SearchResult(0, 0, [], [], query, {})
-    rows = _candidates(conn, query, effective, limit=2000, enough=2000)
+    rows = _candidates(conn, query, effective, limit=2000, enough=2000, entity_context=True)
     semantic: dict[tuple[int, int], float] = {}
     if query.content_terms:
         rows, semantic = semantic_candidates(conn, query, effective, rows)
@@ -1875,7 +1920,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
             and company_groups <= matched_groups
             and max(p.semantic for p in items) >= SEMANTIC_STRONG
         )
-        score = windows[0].score + 0.3 * sum(p.score for p in windows[1:3])
+        score = windows[0].score
         first = windows[0]
         hits.append(
             ArticleHit(
@@ -1890,7 +1935,21 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2 or any(p.entity_basis for p in h.passages)]
     counts = full_match_counts(conn, query, effective)
     total = max(sum(counts.values()), len(full_hits))
-    ordered = full_hits + partial_hits
+    # 全词共现不能把没有论述的材料硬排在前面。跨文复制的片段在分页前去重，避免占满前 k。
+    ordered = sorted(full_hits + partial_hits, key=lambda hit: hit.score, reverse=True)
+    seen: set[str] = set()
+    unique = []
+    for hit in ordered:
+        passages = []
+        for passage in hit.passages:
+            fingerprint = evidence_fingerprint(passage.excerpt or passage.body)
+            if fingerprint in seen:
+                continue
+            passages.append(passage)
+            seen.add(fingerprint)
+        if passages:
+            unique.append(replace(hit, passages=passages))
+    ordered = unique
     return SearchResult(
         total=total,
         partial=len(partial_hits),
@@ -1912,7 +1971,7 @@ def search_windows(ranked: list[Passage]) -> list[Passage]:
     for passage in sorted(ranked, key=lambda p: p.ord):
         if groups and (
             passage.ord == groups[-1][-1].ord + 1
-            and passage.heading == groups[-1][-1].heading
+            and (passage.heading == groups[-1][-1].heading or passage.entity_basis == "上文")
             and passage.lang == groups[-1][-1].lang
         ):
             groups[-1].append(passage)
@@ -1925,7 +1984,8 @@ def search_windows(ranked: list[Passage]) -> list[Passage]:
         before = by_ord.get(best.ord - 1)
         after = by_ord.get(best.ord + 1)
         windows.append(replace(
-            best, before=before.body if before else best.before, after=after.body if after else best.after
+            best, before=(before.excerpt or before.body) if before else best.before,
+            after=(after.excerpt or after.body) if after else best.after
         ))
     return sorted(windows, key=lambda p: p.score, reverse=True)
 

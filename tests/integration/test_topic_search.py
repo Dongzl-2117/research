@@ -99,3 +99,32 @@ def test_each_visible_excerpt_links_its_own_chunk(conn, settings):
     assert f'href="/articles/{aid}?chunk=0">查看这段原文' in html
     assert f'href="/articles/{aid}?chunk=2">查看这段原文' in html
     assert "本文在这段改谈沃尔玛" not in html
+
+
+def test_title_cannot_reattribute_following_pronoun_after_foreign_subject(conn, settings):
+    bad = _store(conn, settings, "pronoun-foreign", "Costco 经营研究", [
+        ("同行", "Walmart 的经营安排是本段的主角。"),
+        ("现金", "它的商业模式依赖商品价差，这些收入来自它的门店销售。"),
+    ])
+    result = _search(conn, settings, "Costco 商业模式")
+    assert bad not in {hit.article_id for hit in result.hits}
+
+
+def test_repeated_query_label_does_not_outrank_literal_assertion(conn, settings):
+    good = _store(conn, settings, "assertion", "收费结构", [
+        ("收入", "Costco 的商业模式依靠会员持续付费，让商品定价留出较小差额。"),
+    ])
+    _store(conn, settings, "label", "文件题名", [
+        ("目录", "Costco 商业模式。Costco 商业模式。Costco 商业模式。"),
+    ])
+    result = _search(conn, settings, "Costco 商业模式")
+    assert result.hits[0].article_id == good
+
+
+def test_cross_article_copy_does_not_take_two_visible_slots(conn, settings):
+    text = "Costco 的商业模式依靠持续会费，商品定价保持较小差额，使顾客愿意再次续费。"
+    _store(conn, settings, "copy-a", "收费观察甲", [("收费", text)])
+    _store(conn, settings, "copy-b", "收费观察乙", [("收费", text), ("附录", "另记归档日期。")])
+    result = _search(conn, settings, "Costco 商业模式")
+    assert sum(text in (p.excerpt or p.body) for h in result.hits for p in h.passages) == 1
+    assert not any(p.semantic_hit for hit in result.hits for p in hit.passages)

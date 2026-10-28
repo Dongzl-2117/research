@@ -53,13 +53,7 @@
 {% if semantic_note %}<p class="filter-note semantic-note">{{ semantic_note }}</p>{% endif %}
 {% if results %}
 <p class="filter-note"><a class="btn ask-btn" href="/ask?{{ ask_query }}">问 AI</a></p>
-{% if first_partial is none %}
 {{ card_list(results) }}
-{% else %}
-{% if first_partial > 0 %}{{ card_list(results[:first_partial]) }}{% endif %}
-<p class="partial-note">部分命中</p>
-{{ card_list(results[first_partial:]) }}
-{% endif %}
 {{ pager(page, pages, "/search?" ~ page_query ~ "&page=" ~ (page - 1), "/search?" ~ page_query ~ "&page=" ~ (page + 1)) }}
 <p class="count num">{{ total }} 篇全部命中{% if partial_total %} · {{ partial_total }} 篇部分命中{% endif %}</p>
 {% else %}

@@ -1025,6 +1025,8 @@ def search_page(request: Request):
         results = []
         terms = found.terms if found else []
         focus_terms = [form for t in found.query.content_terms for form in t.forms] if found and found.query else []
+        entity_terms = [form for t in found.query.terms if t.kind == "company" for form in t.forms] \
+            if found and found.query else []
         for hit in found.hits if found else []:
             best = hit.passages[0] if hit.passages else None
             row = {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at}
@@ -1038,10 +1040,13 @@ def search_page(request: Request):
                         "search_passages": [
                             {
                                 "text": highlight_snippet(
-                                    p.body, query, radius=260, terms=terms, focus_terms=focus_terms
+                                    p.excerpt or p.body, query, radius=500, terms=terms, focus_terms=focus_terms
                                 ),
                                 "before": (
-                                    highlight_snippet(p.before, query, radius=160, terms=terms) if p.before else ""
+                                    highlight_snippet(
+                                        p.before, query, radius=240, terms=terms, focus_terms=entity_terms
+                                    )
+                                    if p.before else ""
                                 ),
                                 "after": highlight_snippet(p.after, query, radius=160, terms=terms) if p.after else "",
                                 "url": p.url,
@@ -1079,7 +1084,6 @@ def search_page(request: Request):
         "from": info["from"],
         "to": info["to"],
     }
-    first_partial = next((index for index, item in enumerate(results) if item.get("partial")), None)
     return render_page(
         request,
         "search.html",
@@ -1098,7 +1102,6 @@ def search_page(request: Request):
             "entity_companies": entity_companies,
             "entity_authors": entity_authors,
             "results": results,
-            "first_partial": first_partial,
             "partial_total": found.partial if found else 0,
             "semantic_note": semantic_note,
             "search_terms": terms,

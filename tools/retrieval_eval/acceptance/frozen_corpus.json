@@ -1,0 +1,880 @@
+{
+  "synthetic_only": true,
+  "notice": "全部是原创合成测试文本；不是用户真实库，也不作为这些公司的事实资料。",
+  "queries": [
+    {
+      "id": "costco",
+      "text": "Costco 商业模式",
+      "entity": "开市客",
+      "split": "development",
+      "topics": [
+        "会员收入",
+        "低加价",
+        "周转采购",
+        "自有品牌"
+      ]
+    },
+    {
+      "id": "asml",
+      "text": "ASML 售后收入",
+      "entity": "阿斯麦",
+      "split": "holdout",
+      "topics": [
+        "维护合同",
+        "升级配件",
+        "装机续收"
+      ]
+    },
+    {
+      "id": "netflix",
+      "text": "Netflix 订阅留存",
+      "entity": "奈飞",
+      "split": "holdout",
+      "topics": [
+        "内容续费",
+        "个性推荐",
+        "取消摩擦"
+      ]
+    }
+  ],
+  "documents": [
+    {
+      "id": "C01",
+      "title": "[合成] 收费与购物的循环",
+      "case": "无题面主题词的正例",
+      "chunks": [
+        {
+          "text": "Costco 的顾客先缴年度会费再进场购物。持续续卡带来一笔稳定收入，使零售环节可以少赚商品差价，顾客省下的钱又促成下一次续卡。",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "会员收入",
+                "低加价"
+              ],
+              "evidence": [
+                "持续续卡带来一笔稳定收入"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "会员收入": "年度会费",
+                "低加价": "少赚商品差价"
+              }
+            }
+          },
+          "duplicate_group": "costco-fee",
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C02",
+      "title": "[合成] 仓储零售札记",
+      "case": "中文别名与机制",
+      "chunks": [
+        {
+          "text": "开市客把单品数量压低，将采购量集中到少数货品；大批量议价降低进货成本，低加价推动销量，货架快速周转又摊薄仓储开支。",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "低加价",
+                "周转采购"
+              ],
+              "evidence": [
+                "低加价推动销量"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "低加价": "低加价推动销量",
+                "周转采购": "大批量议价降低进货成本"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C03",
+      "title": "[合成] 自有商品札记",
+      "case": "另一中文别名",
+      "chunks": [
+        {
+          "text": "好市多用自有品牌把可比商品的售价压下来，省去部分品牌营销费用，同时让顾客更愿意持续续卡；商品价差与会员关系因此相互加强。",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "自有品牌",
+                "会员收入"
+              ],
+              "evidence": [
+                "省去部分品牌营销费用"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "自有品牌": "自有品牌",
+                "会员收入": "更愿意持续续卡"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C04",
+      "title": "[合成] Warehouse economics",
+      "case": "中文查询与英文原文，无译文",
+      "chunks": [
+        {
+          "text": "Costco collects an annual fee before members shop. Narrow product selection concentrates purchasing volume, while thin merchandise markups encourage repeat visits and fast inventory turnover.",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "会员收入",
+                "低加价",
+                "周转采购"
+              ],
+              "evidence": [
+                "collects an annual fee"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "会员收入": "collects an annual fee",
+                "低加价": "thin merchandise markups",
+                "周转采购": "fast inventory turnover"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C05",
+      "title": "[合成] 零售调研甲",
+      "case": "跨块指代，正例需要上块归属",
+      "chunks": [
+        {
+          "text": "这一节的主角是 Costco，下面的它均指这家仓储卖场。",
+          "labels": {
+            "costco": {
+              "grade": 1,
+              "topics": [],
+              "evidence": [],
+              "required_context": [],
+              "topic_evidence": {}
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        },
+        {
+          "text": "它先向顾客收年度会费，让卖货环节只保留很薄的价差。续卡收入与批量采购带来的低进价一起支持低售价。",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "会员收入",
+                "低加价",
+                "周转采购"
+              ],
+              "evidence": [
+                "先向顾客收年度会费"
+              ],
+              "required_context": [
+                "C05:0"
+              ],
+              "topic_evidence": {
+                "会员收入": "年度会费",
+                "低加价": "很薄的价差",
+                "周转采购": "批量采购带来的低进价"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C06",
+      "title": "[合成] Costco 的货架",
+      "case": "跨段解释，标题提供实体上下文",
+      "chunks": [
+        {
+          "text": "Costco 对商品仅保留很低的加价，大批量销售让货物迅速离开货架，周转规模摊薄门店开支。",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "低加价",
+                "周转采购"
+              ],
+              "evidence": [
+                "周转规模摊薄门店开支"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "低加价": "很低的加价",
+                "周转采购": "周转规模摊薄门店开支"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        },
+        {
+          "text": "这部分价差并不承担全部利润要求，因为顾客另缴的年度会费提供持续收入；省钱体验反过来鼓励顾客续卡。",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "会员收入"
+              ],
+              "evidence": [
+                "年度会费提供持续收入"
+              ],
+              "required_context": [
+                "C06:0"
+              ],
+              "topic_evidence": {
+                "会员收入": "年度会费提供持续收入"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C07",
+      "title": "[合成] 会议安排甲",
+      "case": "强负例：同段词共现无机制",
+      "chunks": [
+        {
+          "text": "Costco 商业模式是下周研讨会的题目，地点在三楼，报名表明天发。这里仅记录会议安排，没有展开经营机制。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C08",
+      "title": "[合成] 排队记录甲",
+      "case": "强负例：不同对象的词共现",
+      "chunks": [
+        {
+          "text": "今天经过 Costco，雨很大。商业模式课程老师也在门口等车。我们只聊了天气和公交到站时间。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C09",
+      "title": "[合成] 零售比较乙",
+      "case": "强负例：其他公司相似机制且点到目标名",
+      "chunks": [
+        {
+          "text": "有人在开场提到了 Costco 商业模式，但本段实际只讨论沃尔玛旗下山姆：山姆先收会员费，再以少数单品集中采购，把费用优势让给顾客。不能据此把山姆的机制归给开市客。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": [
+            "costco"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C10",
+      "title": "[合成] 匿名卖场",
+      "case": "相似机制但实体未知，不应推断目标公司",
+      "chunks": [
+        {
+          "text": "一家没有披露名称的卖场先收会费，以少数货品集中采购，并通过薄利多销提高周转。材料没有说明它是哪家公司。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": [
+            "costco"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C11",
+      "title": "[合成] 随手记甲",
+      "case": "文章级跨块拼词，没有实体主题关系",
+      "chunks": [
+        {
+          "text": "Costco 门口今天停了几辆蓝色汽车，这里只记停车情况。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        },
+        {
+          "text": "商业模式是另一份材料的标签，那份材料讲的是虚构的青柠文具店，本篇未展开它的利润来源。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": [
+            "costco"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C12",
+      "title": "[合成] 另一份仓储札记",
+      "case": "跨文章重复片段，整篇并非重复",
+      "chunks": [
+        {
+          "text": "Costco 的顾客先缴年度会费再进场购物。持续续卡带来一笔稳定收入，使零售环节可以少赚商品差价，顾客省下的钱又促成下一次续卡。",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "会员收入",
+                "低加价"
+              ],
+              "evidence": [
+                "持续续卡带来一笔稳定收入"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "会员收入": "年度会费",
+                "低加价": "少赚商品差价"
+              }
+            }
+          },
+          "duplicate_group": "costco-fee",
+          "wrong_entity_for": []
+        },
+        {
+          "text": "附记只记录纸张尺寸和归档日期，和零售无关。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C13",
+      "title": "[合成] 文字排版甲",
+      "case": "强负例：重复实体和主题词",
+      "chunks": [
+        {
+          "text": "Costco 商业模式。Costco 商业模式。Costco 商业模式。这里测试字体大小和标点排版，没有提供任何赚钱方法。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C14",
+      "title": "[合成] 走访长札记",
+      "case": "机制在块后部，检测高亮窗口截断",
+      "chunks": [
+        {
+          "text": "Costco 是这次走访的地点。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。记录员先确认了集合时间、街道方向、天气和交通情况，这些内容只是行程笔记。经营方面，年度会费形成持续收入，商品保持低加价以提升销量，集中采购和快速周转把单位成本压低。",
+          "labels": {
+            "costco": {
+              "grade": 2,
+              "topics": [
+                "会员收入",
+                "低加价",
+                "周转采购"
+              ],
+              "evidence": [
+                "年度会费形成持续收入"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "会员收入": "年度会费形成持续收入",
+                "低加价": "商品保持低加价",
+                "周转采购": "集中采购和快速周转"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "C15",
+      "title": "[合成] Costco 商业模式",
+      "case": "标题词全命中但正文无关",
+      "chunks": [
+        {
+          "text": "这页的标题用错了，正文仅说明如何修剪阳台植物，以及盆栽在不同季节需要的浇水次数。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "A01",
+      "title": "[合成] 光刻机交付之后",
+      "case": "留出：无题面主题词，中文别名",
+      "chunks": [
+        {
+          "text": "阿斯麦把维护合同与已安装的机器绑定，客户为定期保养和停机响应持续付费。机器在工厂中服役越久，合同续签带来的现金流越长。",
+          "labels": {
+            "asml": {
+              "grade": 2,
+              "topics": [
+                "维护合同",
+                "装机续收"
+              ],
+              "evidence": [
+                "客户为定期保养和停机响应持续付费"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "维护合同": "维护合同",
+                "装机续收": "机器在工厂中服役越久"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "A02",
+      "title": "[合成] 设备升级札记",
+      "case": "留出：机制非同义词枚举",
+      "chunks": [
+        {
+          "text": "ASML 向已交付设备提供性能升级和替换配件，客户无需整机重买就能提高产出，这些升级与配件订单在新机交付之外形成收入。",
+          "labels": {
+            "asml": {
+              "grade": 2,
+              "topics": [
+                "升级配件"
+              ],
+              "evidence": [
+                "新机交付之外形成收入"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "升级配件": "性能升级和替换配件"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "A03",
+      "title": "[合成] Installed systems",
+      "case": "留出：中文查询英文片段",
+      "chunks": [
+        {
+          "text": "ASML earns recurring payments by maintaining systems already running in customer fabs. A growing installed base creates more service contracts, and paid upgrades extend useful machine capacity.",
+          "labels": {
+            "asml": {
+              "grade": 2,
+              "topics": [
+                "维护合同",
+                "升级配件",
+                "装机续收"
+              ],
+              "evidence": [
+                "earns recurring payments by maintaining systems"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "维护合同": "maintaining systems",
+                "升级配件": "paid upgrades",
+                "装机续收": "growing installed base"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "A04",
+      "title": "[合成] 设备调研乙",
+      "case": "留出：跨块实体指代",
+      "chunks": [
+        {
+          "text": "本节的制造商是 ASML，下面的这家公司均指阿斯麦。",
+          "labels": {
+            "asml": {
+              "grade": 1,
+              "topics": [],
+              "evidence": [],
+              "required_context": [],
+              "topic_evidence": {}
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        },
+        {
+          "text": "这家公司在设备交付后按年提供保养，客户为快速修复故障付费；装机台数越多，未来可续签的合同就越多。",
+          "labels": {
+            "asml": {
+              "grade": 2,
+              "topics": [
+                "维护合同",
+                "装机续收"
+              ],
+              "evidence": [
+                "客户为快速修复故障付费"
+              ],
+              "required_context": [
+                "A04:0"
+              ],
+              "topic_evidence": {
+                "维护合同": "按年提供保养",
+                "装机续收": "装机台数越多"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "A05",
+      "title": "[合成] 会议安排乙",
+      "case": "留出：同词强负例",
+      "chunks": [
+        {
+          "text": "ASML 售后收入是培训文件的文件名。请把这几个字设成蓝色，再把页码放到右下角；本页没有讨论收入形成过程。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "A06",
+      "title": "[合成] 同行比较甲",
+      "case": "留出：同主题其他公司",
+      "chunks": [
+        {
+          "text": "ASML 售后收入只是文档索引。正文真正分析的是应用材料：其保养团队按合同向客户收取服务费，已安装设备越多，合同续签机会越多。这里没有证明阿斯麦采用同一做法。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": [
+            "asml"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A07",
+      "title": "[合成] 活动随记乙",
+      "case": "留出：跨块词共现",
+      "chunks": [
+        {
+          "text": "ASML 展台送了一个手提袋，颜色是白色。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        },
+        {
+          "text": "售后收入是虚构的蓝鲸打印店的表格字段，这里只讨论表格宽度，没有分析设备服务。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": [
+            "asml"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A08",
+      "title": "[合成] ASML 售后收入",
+      "case": "留出：标题注入主题",
+      "chunks": [
+        {
+          "text": "正文记录午餐的菜单、杯子的数量和桌布颜色，既没有客户合同，也没有设备服务机制。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "A09",
+      "title": "[合成] 行业机制未署名",
+      "case": "留出：实体不明",
+      "chunks": [
+        {
+          "text": "某设备厂在交付以后签长期维护协议，为更换零件和性能升级另收费。制造商名字缺失，不能认定是哪一家企业。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": [
+            "asml"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "N01",
+      "title": "[合成] 剧集与月费",
+      "case": "留出：无题面主题词",
+      "chunks": [
+        {
+          "text": "Netflix 每月持续上新连续剧，让观众总有下一部想看的内容，减少看完一部就停缴月费的情况。固定月费与持续内容供给形成反复续费的循环。",
+          "labels": {
+            "netflix": {
+              "grade": 2,
+              "topics": [
+                "内容续费"
+              ],
+              "evidence": [
+                "减少看完一部就停缴月费的情况"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "内容续费": "减少看完一部就停缴月费的情况"
+              }
+            }
+          },
+          "duplicate_group": "netflix-content",
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "N02",
+      "title": "[合成] 观看选择札记",
+      "case": "留出：中文别名，因果机制",
+      "chunks": [
+        {
+          "text": "奈飞按观看记录推荐下一部片子，减少寻找内容的时间；观众更容易找到想看的节目，就更愿意在下个月继续付费。",
+          "labels": {
+            "netflix": {
+              "grade": 2,
+              "topics": [
+                "个性推荐"
+              ],
+              "evidence": [
+                "更愿意在下个月继续付费"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "个性推荐": "按观看记录推荐下一部片子"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "N03",
+      "title": "[合成] Subscriber habits",
+      "case": "留出：跨语言",
+      "chunks": [
+        {
+          "text": "Netflix releases a steady sequence of shows so viewers have something new to watch after finishing a series. Personalized recommendations reduce browsing effort and give households another reason to renew each month.",
+          "labels": {
+            "netflix": {
+              "grade": 2,
+              "topics": [
+                "内容续费",
+                "个性推荐"
+              ],
+              "evidence": [
+                "another reason to renew each month"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "内容续费": "steady sequence of shows",
+                "个性推荐": "Personalized recommendations"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "N04",
+      "title": "[合成] Netflix 取消流程札记",
+      "case": "留出：仅标题指明实体",
+      "chunks": [
+        {
+          "text": "这个合成方案让用户在取消前选择暂停一个月，并在回归时保留片单与观看进度，减少重新付费时的操作成本，让暂时离开的观众更容易回来。",
+          "labels": {
+            "netflix": {
+              "grade": 2,
+              "topics": [
+                "取消摩擦"
+              ],
+              "evidence": [
+                "减少重新付费时的操作成本"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "取消摩擦": "减少重新付费时的操作成本"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "N05",
+      "title": "[合成] 流媒体调研丙",
+      "case": "留出：上下文指代",
+      "chunks": [
+        {
+          "text": "本节讲 Netflix，后文的它都指这家流媒体平台。",
+          "labels": {
+            "netflix": {
+              "grade": 1,
+              "topics": [],
+              "evidence": [],
+              "required_context": [],
+              "topic_evidence": {}
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        },
+        {
+          "text": "它按观看记录排列片单，缩短观众选片的时间；每周接着上线新内容，让观众在本月看完以后仍有理由继续交下月费用。",
+          "labels": {
+            "netflix": {
+              "grade": 2,
+              "topics": [
+                "个性推荐",
+                "内容续费"
+              ],
+              "evidence": [
+                "仍有理由继续交下月费用"
+              ],
+              "required_context": [
+                "N05:0"
+              ],
+              "topic_evidence": {
+                "个性推荐": "按观看记录排列片单",
+                "内容续费": "仍有理由继续交下月费用"
+              }
+            }
+          },
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "N06",
+      "title": "[合成] 会议安排丙",
+      "case": "留出：强负例词共现",
+      "chunks": [
+        {
+          "text": "Netflix 订阅留存是今天海报上的六个字。请把英文名放大，把中文标签居中；会议只讨论字号，没有讨论观众续费。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "N07",
+      "title": "[合成] 同行比较乙",
+      "case": "留出：其他公司的类似机制",
+      "chunks": [
+        {
+          "text": "Netflix 订阅留存只在开场被念了一遍。真正的案例是迪士尼：迪士尼把片库与家庭套餐捆绑，鼓励家庭下个月继续付费。本段没有把这个安排归给奈飞。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": [
+            "netflix"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "N08",
+      "title": "[合成] Netflix 订阅留存",
+      "case": "留出：标题共现",
+      "chunks": [
+        {
+          "text": "正文只有机房参观路线、停车楼层和接待时间，不讨论节目、用户或月费。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "N09",
+      "title": "[合成] 另一份剧集笔记",
+      "case": "留出：片段重复但文章不同",
+      "chunks": [
+        {
+          "text": "Netflix 每月持续上新连续剧，让观众总有下一部想看的内容，减少看完一部就停缴月费的情况。固定月费与持续内容供给形成反复续费的循环。",
+          "labels": {
+            "netflix": {
+              "grade": 2,
+              "topics": [
+                "内容续费"
+              ],
+              "evidence": [
+                "减少看完一部就停缴月费的情况"
+              ],
+              "required_context": [],
+              "topic_evidence": {
+                "内容续费": "减少看完一部就停缴月费的情况"
+              }
+            }
+          },
+          "duplicate_group": "netflix-content",
+          "wrong_entity_for": []
+        },
+        {
+          "text": "附录说明本页使用的纸张规格和文档编号。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": []
+        }
+      ]
+    },
+    {
+      "id": "N10",
+      "title": "[合成] 匿名播放平台",
+      "case": "留出：实体不明",
+      "chunks": [
+        {
+          "text": "一家未署名平台通过持续上新节目和推荐片单，让观众反复缴纳月费。材料没有交代平台的名字。",
+          "labels": {},
+          "duplicate_group": null,
+          "wrong_entity_for": [
+            "netflix"
+          ]
+        }
+      ]
+    }
+  ]
+}
