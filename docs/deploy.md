@@ -61,7 +61,11 @@ ollama ps        # 搜一次之后，UNTIL 一列是 Forever 就是常驻了
 
 ## 更新
 
-合并进 main 的改动自己上线。Mac mini 上的定时任务 `com.zldong.research.deploy` 每 10 分钟看一次 main：有新提交，而且这个提交在 GitHub 上的 CI（Tests）通过了，就拉代码、`docker compose up -d --build`，等 `/health` 通了算上线（`scripts/deploy.sh`）。一般合并后 10 到 20 分钟上线。迁移和后台重算在应用启动时自己做；定时任务的模板改了，按上次安装的设置重装。
+合并进 main 的改动自己上线。Mac mini 上的定时任务 `com.zldong.research.deploy` 每 10 分钟看一次 main：有新提交，而且这个提交在 GitHub 上的 CI（Tests）通过了，就拉代码、`docker compose up -d --build`（镜像带上这次的提交号），等 `/health` 报出这个提交算上线（`scripts/deploy.sh`）。一般合并后 10 到 20 分钟上线。迁移和后台重算在应用启动时自己做；定时任务的模板改了，按上次安装的设置重装。上线成功后删掉换下来的旧镜像，只删 Dockerfile 打了 `com.zldong.research` 标签的，Mac mini 上别的项目的不碰。
+
+线上在跑哪个提交：打开 <https://investment.zldong.com/health>，`commit` 就是。手动 `docker compose up -d --build` 建出来的是 `unknown`，要带上提交号：`GIT_SHA=$(git rev-parse HEAD) docker compose up -d --build`。
+
+带新迁移的提交（`src/researchlib/migrations/` 有变化）上线前先跑一次 `scripts/backup.sh`，备份目录用 `install-launchd.sh` 记在 `data/launchd.env` 里的 `BACKUP_DIR`。找不到备份目录或者备份失败，都不上线。迁移在应用启动时跑，跑过了就退不回去，要退数据只能用这份备份，见 [backup.md](backup.md)「真要恢复时」。
 
 只要装一次：
 
@@ -74,7 +78,8 @@ scripts/install-launchd.sh   # 以前装过备份的，BACKUP_DIR 从装好的�
 装好时先跑一轮，不用再另外 `docker compose up -d --build`。日志在 `~/Library/Logs/research/deploy.log`。失败写 `data/status/`，首页不挂红条：
 
 - CI 没过的提交不上线，CI 重跑通过了再上；两小时还没有 CI 结果也提示。
-- 拉代码、重建失败，或者重启后 10 分钟 `/health` 还不通，提示失败的那一步。同一个提交最多试 3 轮，之后等下一个提交。
+- 重建失败，或者重启后 10 分钟 `/health` 还没报出新提交：仓库退回上线前的提交、按它重建，线上回到原来的版本，提示失败的那一步。重建失败的同一个提交最多试 3 轮，之后等下一个提交；建好了却起不来的不自动重试（每试一次线上要停好几分钟），起不来时的应用日志存在 `data/status/deploy-failed.log`。只退代码，数据库不退：新迁移已经跑过的，旧代码接着用这个库，迁移只加不删时没问题。迁移确实要跑很久的，`DEPLOY_WAIT=1800 FORCE=1 scripts/deploy.sh` 多等一会儿。
+- 拉代码失败、迁移前备份失败，提示失败的那一步，线上不动。
 - Mac mini 上的仓库不在 main、有没提交的改动，或者 main 上有没推送的提交（都会被一起打进镜像），不上线，处理办法见下面。
 - 取不到 main、查不到 CI（断网、GitHub 出错）超过 6 小时才提示。一装好就提示「取不到 origin/main」的，多半是 origin 用的 SSH、launchd 里读不到钥匙；仓库是公开的，改成 HTTPS：`git remote set-url origin https://github.com/Dongzl-2117/research.git`。
 
@@ -105,7 +110,8 @@ Mac mini 上的 `~/research` 只给自动上线用。在那台机器上改代码
 
 ```bash
 git pull
-docker compose up -d --build
+BACKUP_DIR=… scripts/backup.sh   # 有新迁移时先备份，目录用 data/launchd.env 里记的那个
+GIT_SHA=$(git rev-parse HEAD) docker compose up -d --build
 scripts/install-launchd.sh   # 定时任务有变化时再跑一次；上次的设置记在 data/launchd.env
 ```
 
