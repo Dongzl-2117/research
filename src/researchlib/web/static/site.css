@@ -1646,53 +1646,69 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   outline-offset: 3px;
   border-radius: 4px;
 }
+/* 图转文字和正文同一套字：不另设 15px，也不铺灰底。
+   没整理成对话的长文仍保留截图里的硬换行（pre-wrap）。
+   「原图 N」在下面，仍是小一号的链接。 */
 .prose .ocr-reading {
   margin: 0;
-  padding: 12px 14px;
-  border-radius: var(--radius-tile);
-  background: var(--bg-sunk);
-  color: var(--prose-ink);
-  font-size: 15px;
-  line-height: 1.75;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .prose .ocr-reading.ocr-chat {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: block;
   white-space: normal;
 }
 .prose .ocr-reading.ocr-chat p {
   margin: 0;
-  padding: 8px 12px;
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px var(--line-soft);
-  line-height: 1.65;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  white-space: normal;
 }
-/* 对话体（图转文字）与正文同一套段落：不加灰底盒子，避免「图片里的字」另起一皮。 */
+.prose .ocr-reading.ocr-chat p + p { margin-top: 1.4em; }
+/* 对话体（图转文字、星球问答）与正文同一套段落。pre-wrap 会把已经收好的折行再画成窄列。 */
 .prose .ocr-reading.ocr-dialogue {
-  display: flex;
-  flex-direction: column;
-  gap: 0.9em;
+  display: block;
   width: 100%;
   padding: 0;
   background: transparent;
   border-radius: 0;
-  font-size: inherit;
   color: inherit;
-  /* 折行已收成段落。pre-wrap 会把截图里的硬换行再画成一条窄字。 */
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
   white-space: normal;
 }
 .prose .ocr-reading.ocr-dialogue p {
-  margin: 0 0 0.9em;
-  line-height: 1.75;
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
   white-space: normal;
 }
-.prose .ocr-reading.ocr-dialogue p:last-child { margin-bottom: 0; }
+.prose .ocr-reading.ocr-dialogue p + p { margin-top: 1.4em; }
+/* .who 只标记说话人。字号、字重、行高、颜色跟所在段落走，不再做成小标题。 */
 .prose p > .who,
-.prose .ocr-reading.ocr-dialogue .who { font-weight: 600; margin: 0; }
+.prose .ocr-reading .who {
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+}
 .prose .ocr-links {
   display: flex;
   flex-wrap: wrap;
