@@ -42,9 +42,9 @@ BACKUP_DIR/
 | 步骤 | 命令 | 上限 |
 | --- | --- | --- |
 | 外链图片 | `research-fetch-images` | `IMAGES_LIMIT`，默认 300 个地址 |
-| 观点 | `research-views` | `VIEWS_LIMIT`，默认 60 篇 |
+| 观点 | `research-views`（同时抽 `VIEWS_WORKERS` 篇，默认 3；持仓和观察的、中文的先排） | `VIEWS_LIMIT`，默认 60 篇 |
 | 摘要 | `research-digest` | `DIGEST_LIMIT`，默认 80 篇 |
-| 论点 | `research-theses`（`THESES_ENABLED=1` 才跑，默认关） | 观点够数的公司，不限持仓 |
+| 论点 | `research-theses --portfolio`（`THESES_SCOPE=all` 补全部，`off` 不跑） | 持仓和观察名单里观点够数的公司，观点变了才算，一家一天最多一次 |
 | 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
 
 观点、摘要、图片文字各自最多跑 `MINUTES` 分钟（默认 150）。某一步失败不影响后面的步骤。白天、部署和应用启动时都不跑这些。

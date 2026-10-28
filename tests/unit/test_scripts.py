@@ -82,12 +82,60 @@ def test_ci_failure_becomes_one_annotation_with_the_tail(capsys):
     assert "::error" not in capsys.readouterr().out
 
 
-def test_nightly_theses_disabled_by_default():
-    """论点夜间步骤默认关：没设 THESES_ENABLED=1 时不跑 research-theses。"""
-    source = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
-    assert 'THESES_ENABLED="${THESES_ENABLED:-0}"' in source
-    assert 'if [ "$THESES_ENABLED" = "1" ]; then' in source
-    assert "research-theses" in source
-    # 默认关时 status_ok 不硬编码带「论点」。
-    assert 'status_ok "外链图片、观点、摘要、论点' not in source
+def _nightly(tmp_path: Path, **env: str) -> tuple[list[str], dict]:
+    """拿假的 docker 跑一遍 nightly.sh，返回每条 docker 命令和写出的状态。"""
+    import json
+    import os
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("没有 bash")
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    for name in ("nightly.sh", "status.sh"):
+        shutil.copy(ROOT / "scripts" / name, repo / "scripts" / name)
+    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "docker.log"
+    fake = bin_dir / "docker"
+    fake.write_text(f'#!/bin/bash\necho "$*" >> "{log}"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    run_env = {
+        "PATH": f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "REPO": str(repo),
+        "STATUS_DIR": str(tmp_path / "status"),
+        "TMPDIR": str(tmp_path),
+        **env,
+    }
+    subprocess.run([bash, str(repo / "scripts" / "nightly.sh")], env=run_env, capture_output=True, text=True)
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    status = json.loads((tmp_path / "status" / "nightly.json").read_text(encoding="utf-8"))
+    return calls, status
+
+
+def test_nightly_views_in_parallel_and_theses_for_the_portfolio(tmp_path: Path):
+    """默认：观点同时抽 3 篇；论点只补持仓和观察名单里的公司（research-theses --portfolio）。"""
+    calls, status = _nightly(tmp_path)
+    views = [call for call in calls if "research-views" in call]
+    assert len(views) == 1 and "--limit 60" in views[0] and "--workers 3" in views[0]
+    assert "DEEPSEEK_REASONING_EFFORT" not in views[0]
+    assert [call for call in calls if "research-theses" in call] == [
+        call for call in calls if call.endswith("research-theses --portfolio")
+    ]
+    assert any(call.endswith("research-theses --portfolio") for call in calls)
+    assert status["ok"] is True and "论点（持仓和观察）" in status["message"]
+
+
+def test_nightly_old_theses_switch_and_views_effort(tmp_path: Path):
+    calls, status = _nightly(tmp_path / "all", THESES_ENABLED="1", VIEWS_EFFORT="high", VIEWS_WORKERS="1")
+    assert any(call.endswith("research-theses") for call in calls)
+    views = next(call for call in calls if "research-views" in call)
+    assert "-e DEEPSEEK_REASONING_EFFORT=high" in views and "--workers 1" in views
+    calls, status = _nightly(tmp_path / "off", THESES_ENABLED="0")
+    assert not any("research-theses" in call for call in calls)
+    assert "论点" not in status["message"]
+    calls, status = _nightly(tmp_path / "typo", THESES_SCOPE="portfolios")
+    assert not any("research-theses" in call for call in calls)
+    assert status["ok"] is False and "THESES_SCOPE=portfolios" in status["message"]
 
