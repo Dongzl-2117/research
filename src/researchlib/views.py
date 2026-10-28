@@ -9,8 +9,10 @@
 - 手动 CLI 批量补（夜间任务也是这个范围）：
 
     research-views                      # 全部被深入谈到的公司，默认最多 100 篇
+    research-views --limit 60 --workers 3   # 夜间：同时抽 3 篇；持仓和观察的、中文的先排
     research-views --company 泡泡玛特 --limit 300
     research-views --source duanyongping-blog --limit 100
+    research-views --articles 1,2,3 --dry-run --out /data/pilot/views.json   # 只抽不写库
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
 图片里有可读的字时，交给模型的正文会接上「图片里的字」，和正文一视同仁。正文很短、判断写在截图里的，
@@ -264,13 +266,27 @@ _STALE = (
 )
 
 
-def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit: int):
-    """还没整理过（或正文、提示词、图片文字变了，或当时只读了开头）的文章。
+# 中文文章：正文开头有汉字。英文来源（Stratechery）排在中文后面。
+_CHINESE_ARTICLE = "(left(a.body_text, 400) ~ '[\u4e00-\u9fff]')"
 
-    深入提及在前。正文很短且图片里有字的，一带而过也算：判断可能在截图里。
+
+def pending_articles(
+    conn, company_ids: list[int], source_ids: list[str], limit: int, *, first: list[int] | None = None
+):
+    """还没整理过（或正文、提示词、图片文字变了，或当时只读了开头）的文章。隐藏、搁下的不算。
+
+    先排深入谈到 first 里公司（持仓和观察）的，再排中文文章，再排深入提及，同一档里新的在前。
+    正文很短且图片里有字的，一带而过也算：判断可能在截图里。
     """
     if not company_ids or not source_ids:
         return []
+    params: list = [company_ids, source_ids, PROMPT_VERSION]
+    # 排序里不能写常量（Postgres 拒绝 ORDER BY false），没有名单时这一档整个不写。
+    priority = ""
+    if first:
+        priority = "bool_or(m.company_id = ANY(%s) AND m.depth <> 'passing') DESC, "
+        params.append(list(first))
+    params.append(limit)
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,
@@ -279,14 +295,27 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = ANY(%s) AND {_VIEW_DEPTH}
-          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST} AND {visible_sql("a")}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         GROUP BY a.id
-        ORDER BY bool_or(m.depth <> 'passing') DESC, a.published_at DESC NULLS LAST, a.id DESC
+        ORDER BY {priority}{_CHINESE_ARTICLE} DESC, bool_or(m.depth <> 'passing') DESC,
+                 a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
         """,
-        (company_ids, source_ids, PROMPT_VERSION, limit),
+        tuple(params),
     ).fetchall()
+
+
+def portfolio_ids(conn, settings: Settings) -> list[int]:
+    """持仓和观察名单（config/portfolio.yaml）里的公司 id。名单读不了或没有就是空的。"""
+    from researchlib.portfolio import load_portfolio
+
+    path = getattr(settings, "portfolio_path", None)
+    names = list(load_portfolio(path).names) if path else []
+    if not names:
+        return []
+    rows = conn.execute("SELECT id FROM companies WHERE name_zh = ANY(%s) ORDER BY id", (names,)).fetchall()
+    return [int(row["id"]) for row in rows]
 
 
 def pending_companies(conn, article_id: int, only_ids: list[int] | None = None) -> list[dict]:
@@ -326,7 +355,7 @@ def mentioned_companies(conn, source_ids: list[str]) -> list[dict]:
           FROM article_mentions m
           JOIN articles a ON a.id = m.article_id
           WHERE m.company_id = c.id AND m.depth <> 'passing'
-            AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%s)
+            AND a.duplicate_of IS NULL AND {_GUEST} AND {visible_sql("a")} AND a.source_id = ANY(%s)
         )
         ORDER BY c.name_zh, c.id
         """,
@@ -350,7 +379,7 @@ def view_companies(conn, source_ids: list[str]) -> list[dict]:
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
-        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST} AND {visible_sql("a")}
           AND {_OCR_CARRIES}
         ORDER BY c.name_zh, c.id
         """,
@@ -362,7 +391,7 @@ def view_companies(conn, source_ids: list[str]) -> list[dict]:
 
 
 def count_pending(conn, company_id: int, source_ids: list[str]) -> int:
-    """还要整理的篇数。失败后在冷却期里的不算，它们要隔几天才会再试。"""
+    """还要整理的篇数。失败后在冷却期里的、隐藏和搁下的不算。"""
     row = conn.execute(
         f"""
         SELECT count(*) AS n
@@ -370,7 +399,7 @@ def count_pending(conn, company_id: int, source_ids: list[str]) -> int:
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = %s AND {_VIEW_DEPTH}
-          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST} AND {visible_sql("a")}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         """,
         (company_id, source_ids, PROMPT_VERSION),
@@ -476,13 +505,14 @@ def coerce_view_for_store(view: dict | None) -> dict:
     }
 
 
-def extract_article(conn, settings: Settings, row, author: str, companies: list[dict]) -> int:
-    """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
-    if not companies:
-        return 0
+def read_views(conn, settings: Settings, row, author: str, companies: list[dict]):
+    """问模型这篇文章里作者对这几家公司的判断，不写库。
+
+    返回 (公司 id → 判断或 None, 模型名, 图片文字的哈希, 用来核对原句的全文)；网友帖、不抽观点的返回 None。
+    """
     meta = raw_meta_of(conn, row)
     if is_guest(meta) or off_views(meta):
-        return 0
+        return None
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
@@ -535,8 +565,20 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
                 for company_id, view in parse_views(text, names).items():
                     parsed[company_id].append(view)
             found = {company_id: _merge_views(parts) for company_id, parts in parsed.items()}
-    written = 0
+    # 收窄到作者本人时，原句必须落在他写的字或图片文字里。
     haystack = append_ocr(voice_body if restricted else (row["body_text"] or ""), ocr_text)
+    return found, model, ocr_digest, haystack
+
+
+def extract_article(conn, settings: Settings, row, author: str, companies: list[dict]) -> int:
+    """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
+    if not companies:
+        return 0
+    read = read_views(conn, settings, row, author, companies)
+    if read is None:
+        return 0
+    found, model, ocr_digest, haystack = read
+    written = 0
     for company_id, view in found.items():
         view = coerce_view_for_store(view)
         about = bool(view["about"])
@@ -698,7 +740,7 @@ def same_period(
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id
-          AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%(sources)s)
+          AND a.duplicate_of IS NULL AND {_GUEST} AND {visible_sql("a")} AND a.source_id = ANY(%(sources)s)
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
                                  AND me.published_at + make_interval(days => %(days)s)
         ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id
@@ -902,6 +944,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
           AND a.source_id = ANY(%s)
           AND a.duplicate_of IS NULL
           AND {_GUEST}
+          AND {visible_sql("a")}
           AND (
             m.depth <> 'passing'
             OR {_OCR_CARRIES}
@@ -953,6 +996,145 @@ def articles_for_ids(conn, company_ids: list[int], source_ids: list[str], articl
     ).fetchall()
 
 
+def _dry_run_record(conn, row, companies: list[dict], read, seconds: float) -> dict:
+    """--dry-run 写进 --out 的一行：这篇抽出了什么，原句核对得上没有，花了多久。不写库。"""
+    names = {int(company["id"]): company["name_zh"] for company in companies}
+    found, model, _ocr_digest, haystack = read if read is not None else ({}, "", "", "")
+    views: dict[str, dict | None] = {}
+    for company_id, view in found.items():
+        if view is None:
+            views[names.get(company_id, str(company_id))] = None
+            continue
+        # 和写库时同一套校正：没有判断就不算 about。
+        view = coerce_view_for_store(view)
+        quote, _chunk = locate_quote(conn, row["id"], haystack, view.get("quote") or "")
+        views[names.get(company_id, str(company_id))] = {
+            "about": bool(view["about"]),
+            "stance": view.get("stance") or "",
+            "judgment": view.get("judgment") or "",
+            "mechanism": view.get("mechanism") or "",
+            "risks": view.get("risks") or [],
+            "quote": view.get("quote") or "",
+            "quote_found": bool(quote_ok(quote)),
+        }
+    return {
+        "article_id": int(row["id"]),
+        "title": row["title"],
+        "model": model,
+        "effort": os.environ.get("DEEPSEEK_REASONING_EFFORT", "").strip() or "max",
+        "seconds": round(seconds, 1),
+        "skipped": read is None,
+        "views": views,
+    }
+
+
+def run_rows(
+    settings: Settings,
+    rows: list,
+    authors: dict[str, str],
+    *,
+    by_ids: bool,
+    workers: int = 1,
+    deadline: float | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """逐篇（workers>1 时几篇同时）抽观点。每个线程自己一条连接。
+
+    返回 {"done", "failed", "records", "unavailable"}。凭证不可用时其余的不再开始，unavailable 带上那个异常。
+    by_ids：行里带着 companies（--gap、--articles），否则按文章现算要整理的公司。dry_run 只抽不写库。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from researchlib.db import connect, ensure_search_session
+
+    lock = threading.Lock()
+    local = threading.local()
+    stop = threading.Event()
+    opened: list = []
+    result: dict = {"done": 0, "failed": 0, "records": [], "unavailable": None}
+    errors: list[BaseException] = []
+    late: list[bool] = []
+
+    def connection():
+        conn = getattr(local, "conn", None)
+        if conn is None:
+            conn = connect(settings)
+            ensure_search_session(conn)
+            local.conn = conn
+            with lock:
+                opened.append(conn)
+        return conn
+
+    def work(row) -> None:
+        if stop.is_set():
+            return
+        if deadline is not None and time.monotonic() > deadline:
+            with lock:
+                if not late:
+                    late.append(True)
+                    print("到了时间上限，先停在这里", file=sys.stderr)
+            stop.set()
+            return
+        conn = connection()
+        try:
+            if by_ids:
+                companies = conn.execute(
+                    "SELECT id, name_zh FROM companies WHERE id = ANY(%s) ORDER BY id",
+                    (list(row["companies"]),),
+                ).fetchall()
+            else:
+                # 一篇里深入谈到的公司一次问完，不限持仓。--company 只决定先排哪些文章。
+                companies = pending_companies(conn, row["id"])
+            author = authors.get(row["source_id"], "")
+            if dry_run:
+                started = time.monotonic()
+                read = read_views(conn, settings, row, author, companies) if companies else None
+                record = _dry_run_record(conn, row, companies, read, time.monotonic() - started)
+                conn.rollback()
+                with lock:
+                    result["records"].append(record)
+                    result["done"] += 1
+                return
+            extract_article(conn, settings, row, author, companies)
+        except LLMUnavailable as exc:
+            with lock:
+                result["unavailable"] = result["unavailable"] or exc
+            stop.set()
+            return
+        except LLMError as exc:
+            conn.rollback()
+            if not dry_run:
+                note_failure(conn, "views", row["id"], exc)
+            with lock:
+                result["failed"] += 1
+            print(f"{row['id']} {row['title']}: {exc}", file=sys.stderr)
+            return
+        except Exception as exc:  # noqa: BLE001
+            conn.rollback()
+            with lock:
+                errors.append(exc)
+            stop.set()
+            return
+        with lock:
+            result["done"] += 1
+
+    try:
+        if workers <= 1:
+            for row in rows:
+                if stop.is_set():
+                    break
+                work(row)
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="views") as pool:
+                list(pool.map(work, rows))
+    finally:
+        for conn in opened:
+            conn.close()
+    if errors:
+        raise errors[0]
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 LLM 凭证。"""
     parser = argparse.ArgumentParser(description="给被深入谈到的公司整理观点时间线（不限持仓和观察名单）")
@@ -967,11 +1149,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停（夜间任务用），0 表示不限")
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="同时整理几篇（每篇一条数据库连接）。同时在跑的模型请求还受 RESEARCH_LLM_CONCURRENCY 限制",
+    )
+    parser.add_argument(
         "--refresh-blank",
         action="store_true",
         help="先删掉判断或态度为空白的观点再重抽（确认抽漏了才用；夜间任务不要加）",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只抽不写库，结果写进 --out（比较推理强度用：配合 DEEPSEEK_REASONING_EFFORT 各跑一遍）",
+    )
+    parser.add_argument("--out", default="", help="--dry-run 的结果写到这个 JSON 文件")
     args = parser.parse_args(argv)
+    if args.dry_run and not args.out:
+        raise SystemExit("--dry-run 要配 --out，结果写进文件")
+    if args.dry_run and args.refresh_blank:
+        raise SystemExit("--dry-run 不删观点，不能和 --refresh-blank 一起用")
     from researchlib.db import prepare
     from researchlib.sources import enabled_sources, load_sources
 
@@ -989,7 +1187,6 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"{'、'.join(unknown)} 不是已启用的来源")
         authors = {item: authors[item] for item in args.source}
     conn = prepare(settings)
-    done = failed = 0
     rows: list = []
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
@@ -1020,33 +1217,30 @@ def main(argv: list[str] | None = None) -> int:
         elif args.articles:
             rows = articles_for_ids(conn, wanted, list(authors), chosen, args.limit)
         else:
-            rows = pending_articles(conn, wanted, list(authors), args.limit)
-        for row in rows:
-            if deadline is not None and time.monotonic() > deadline:
-                print("到了时间上限，先停在这里", file=sys.stderr)
-                break
-            if args.gap or args.articles:
-                companies = conn.execute(
-                    "SELECT id, name_zh FROM companies WHERE id = ANY(%s) ORDER BY id",
-                    (list(row["companies"]),),
-                ).fetchall()
-            else:
-                # 一篇里深入谈到的公司一次问完，不限持仓。--company 只决定先排哪些文章。
-                companies = pending_companies(conn, row["id"])
-            try:
-                extract_article(conn, settings, row, authors.get(row["source_id"], ""), companies)
-                done += 1
-            except LLMUnavailable as exc:
-                print(exc, file=sys.stderr)
-                return 2
-            except LLMError as exc:
-                conn.rollback()
-                note_failure(conn, "views", row["id"], exc)
-                failed += 1
-                print(f"{row['id']} {row['title']}: {exc}", file=sys.stderr)
+            # 先排持仓和观察名单里的公司，再排中文文章。
+            rows = pending_articles(conn, wanted, list(authors), args.limit, first=portfolio_ids(conn, settings))
     finally:
         conn.close()
-    print(f"待整理 {len(rows)} 篇，整理 {done} 篇，失败 {failed} 篇")
+    result = run_rows(
+        settings,
+        rows,
+        authors,
+        by_ids=bool(args.gap or args.articles),
+        workers=max(1, args.workers),
+        deadline=deadline,
+        dry_run=args.dry_run,
+    )
+    if args.dry_run:
+        from pathlib import Path
+
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result["records"], ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"只抽不写：{len(result['records'])} 篇，结果在 {args.out}")
+    if result["unavailable"] is not None:
+        print(result["unavailable"], file=sys.stderr)
+        return 2
+    print(f"待整理 {len(rows)} 篇，整理 {result['done']} 篇，失败 {result['failed']} 篇")
     return 0
 
 

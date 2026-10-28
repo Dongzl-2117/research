@@ -5,20 +5,33 @@
 #
 #   scripts/nightly.sh
 #   VIEWS_LIMIT=200 DIGEST_LIMIT=200 MINUTES=300 scripts/nightly.sh
+#   VIEWS_WORKERS=1 scripts/nightly.sh      # 观点一篇一篇抽（默认同时 3 篇）
+#   VIEWS_EFFORT=high scripts/nightly.sh    # 观点这一步用 high 推理（默认跟 .env）
 #   NIGHTLY_OCR=1 scripts/nightly.sh        # 在 app 容器里走站内 deepseek-flash 识图
-#   THESES_ENABLED=1 scripts/nightly.sh     # 夜间也补论点（默认关）
+#   THESES_SCOPE=all scripts/nightly.sh     # 论点补全部观点够数的公司（默认只补持仓和观察）
+#   THESES_SCOPE=off scripts/nightly.sh     # 不补论点
 set -Euo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 IMAGES_LIMIT="${IMAGES_LIMIT:-300}"
 VIEWS_LIMIT="${VIEWS_LIMIT:-60}"
+# 观点同时抽几篇。篇数上限还是 VIEWS_LIMIT，只是跑得快：一篇一篇来时 MINUTES 分钟常常不够六十篇。
+VIEWS_WORKERS="${VIEWS_WORKERS:-3}"
+# 观点这一步的推理强度（low、high、max）。空着就跟 .env 的 DEEPSEEK_REASONING_EFFORT。
+VIEWS_EFFORT="${VIEWS_EFFORT:-}"
 DIGEST_LIMIT="${DIGEST_LIMIT:-80}"
 OCR_LIMIT="${OCR_LIMIT:-400}"
 NIGHTLY_OCR="${NIGHTLY_OCR:-0}"
 # 语义检索的向量：每晚最多补这么多块（没配 EMBEDDING_BASE_URL 时这一步什么都不做）。
 EMBED_LIMIT="${EMBED_LIMIT:-50000}"
-# 论点默认关。打开后补的是库里观点够数的公司，不限持仓。需要夜间跑时设 THESES_ENABLED=1。
-THESES_ENABLED="${THESES_ENABLED:-0}"
+# 论点：portfolio 只补持仓和观察名单（config/portfolio.yaml，现在 6 家）里观点够数的公司。观点有变化才重算、
+# 一家一天最多一次，所以每晚最多 6 次模型调用。all 补全部观点够数的公司，off 不跑。
+# 以前的开关还认：THESES_ENABLED=1 等于 all，THESES_ENABLED=0 等于 off。
+THESES_SCOPE="${THESES_SCOPE:-portfolio}"
+case "${THESES_ENABLED:-}" in
+  1) THESES_SCOPE=all ;;
+  0) THESES_SCOPE=off ;;
+esac
 # 观点和摘要各自最多跑这么多分钟（xhigh 推理一篇要一两分钟）。
 MINUTES="${MINUTES:-150}"
 TASK=nightly
@@ -54,11 +67,20 @@ step() {
 
 step "外链图片" compose exec -T app research-fetch-images --limit "$IMAGES_LIMIT"
 step "语义向量" compose exec -T app research-embed --limit "$EMBED_LIMIT"
-step "观点" compose exec -T app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES"
-step "摘要" compose exec -T app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
-if [ "$THESES_ENABLED" = "1" ]; then
-  step "论点" compose exec -T app research-theses
+if [ -n "$VIEWS_EFFORT" ]; then
+  step "观点" compose exec -T -e "DEEPSEEK_REASONING_EFFORT=${VIEWS_EFFORT}" app \
+    research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES" --workers "$VIEWS_WORKERS"
+else
+  step "观点" compose exec -T app \
+    research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES" --workers "$VIEWS_WORKERS"
 fi
+step "摘要" compose exec -T app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
+case "$THESES_SCOPE" in
+  portfolio) step "论点" compose exec -T app research-theses --portfolio ;;
+  all) step "论点" compose exec -T app research-theses ;;
+  off) ;;
+  *) failed="${failed}${failed:+；}论点（THESES_SCOPE=${THESES_SCOPE} 不认识，只能是 portfolio、all、off）" ;;
+esac
 if [ "$NIGHTLY_OCR" = "1" ]; then
   step "图片文字" compose exec -T app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
 fi
@@ -68,6 +90,9 @@ if [ -n "$failed" ]; then
   exit 1
 fi
 parts="外链图片、语义向量、观点、摘要"
-[ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
+case "$THESES_SCOPE" in
+  portfolio) parts="${parts}、论点（持仓和观察）" ;;
+  all) parts="${parts}、论点" ;;
+esac
 [ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
 status_ok "$parts"

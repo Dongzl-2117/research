@@ -191,6 +191,22 @@ curl -s -X POST http://127.0.0.1:8088/api/v1/views/stop
 
 ```
 
+夜间任务（`scripts/nightly.sh`）每晚最多整理 `VIEWS_LIMIT` 篇（默认 60），`MINUTES` 分钟（默认 150）到了就停：
+
+- 先排深入谈到持仓和观察名单（`config/portfolio.yaml`）里公司的文章，再排中文文章，最后才是英文（Stratechery）。同一档里新的在前。站内 `POST /api/v1/views` 也按这个顺序。
+- 同时抽 `VIEWS_WORKERS` 篇（默认 3，`research-views --workers`）。篇数上限不变，只是一晚跑得完。同一个进程里同时在跑的模型请求还受 `RESEARCH_LLM_CONCURRENCY` 限制。
+- 隐藏的（短帖、搁下的来源）不排，也不算进公司页「还有 N 篇在整理」。
+- `VIEWS_EFFORT=high` 只让观点这一步用 high 推理，其余仍按 `.env`。
+
+要不要把观点换成 high，先拿同一批文章用两种强度各抽一遍比一比（只抽不写库；20 篇各抽两遍，长文切块的还要多问几次）：
+
+```bash
+docker compose exec -e DEEPSEEK_REASONING_EFFORT=high app research-views --articles 1408,1324,8636 --dry-run --out /data/pilot/views-high.json
+docker compose exec -e DEEPSEEK_REASONING_EFFORT=max app research-views --articles 1408,1324,8636 --dry-run --out /data/pilot/views-max.json
+```
+
+每篇一条：抽出的态度、判断、原句核对得上没有、花了几秒。`--articles` 换成想比的 20 篇。
+
 `--gap` 的范围：`article_mentions` 里深度不是「一带而过」、又没有一条 about 为真且判断非空的观点。去重后的主版本（有别的稿 `duplicate_of` 指向它）即使提及只是一带而过也补抽，例如 3851 并入 11299 之后要抽 11299。网友帖不抽。已经记成 about=false（论证不在这家公司）的不反复问。
 
 超长文档先按段落切块，每块单独问，再合成：同一家公司的不同判断留在 `angles`，态度相反记成两面。论证没有落在这家公司时 `about=false`，不进时间线，也不进论点。一篇可以同时写几家公司，每家用自己的角度。
@@ -221,10 +237,11 @@ curl -s -X POST http://127.0.0.1:8088/api/v1/views/stop
 - 判断或态度为空白、以及网友帖的观点不进这次输入。
 - 谁支持、谁反对、各几篇、最近一次是谁哪天说的，都按引用的观点从库里数。点一条论点，下面的时间线只看这几篇（`?views=t1`）。
 - 观点不到 4 条的公司不做。一家公司一次调用；观点有变化才重算，一天最多一次（按观点集合的指纹和提示词版本缓存）。提示词版本变了，已存的地图也会过期。
-- 打开公司页默认不在后台补（`RESEARCH_THESES_AUTO` 默认 0）。夜间默认也不跑（`THESES_ENABLED` 默认 0）。打开之后范围是观点够数的公司，不写死持仓。启动和部署不跑。
+- 打开公司页默认不在后台补（`RESEARCH_THESES_AUTO` 默认 0）。夜间默认只补持仓和观察名单里观点够数的公司（`THESES_SCOPE=portfolio`，`research-theses --portfolio`，现在 6 家）：观点有变化才重算、一家一天最多一次，所以每晚最多 6 次模型调用。`THESES_SCOPE=all` 补全部观点够数的公司（以前的 `THESES_ENABLED=1`），`THESES_SCOPE=off` 不跑。启动和部署不跑。
 
 ```bash
 docker compose exec app research-theses                        # 观点够数的公司，过期的才算
+docker compose exec app research-theses --portfolio            # 只算持仓和观察名单里的（夜间默认）
 docker compose exec app research-views --company 贵州茅台 --company 泡泡玛特 --refresh-blank --limit 300
 docker compose exec app research-theses --company 贵州茅台 --company 泡泡玛特 --force
 
