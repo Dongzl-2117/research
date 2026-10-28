@@ -47,11 +47,38 @@ class OcrUnavailable(Exception):
     pass
 
 
-def order_text(items) -> str:
+def _bgr_is_wechat_green(bgr) -> bool:
+    """微信自己发的绿气泡约 RGB(149, 236, 105)。抽样点偏绿就当本人。"""
+    try:
+        blue, green, red = (int(v) for v in bgr[:3])
+    except (TypeError, ValueError):
+        return False
+    return green > 150 and green > red + 20 and green > blue + 20 and red < 210
+
+
+def _line_is_self_bubble(image_bgr, left: float, right: float, top: float, bottom: float, width: float) -> bool:
+    """先看气泡颜色；没有图时退回「行左缘过中线偏右」的旧规则。"""
+    if image_bgr is not None:
+        try:
+            height_img, width_img = image_bgr.shape[:2]
+        except (AttributeError, TypeError, ValueError):
+            height_img = width_img = 0
+        if height_img and width_img:
+            cy = int(max(0, min(height_img - 1, (top + bottom) / 2)))
+            # 文字左缘内侧几像素是气泡底色；绿=本人，白/灰=网友。
+            for dx in (-8, -16, -24, 8):
+                x = int(left + dx)
+                if 0 <= x < width_img and _bgr_is_wechat_green(image_bgr[cy, x]):
+                    return True
+            return False
+    return bool(width) and left >= _SELF_SIDE * width
+
+
+def order_text(items, image_bgr=None) -> str:
     """RapidOCR 的结果 [[框, 文字, 置信度], …] 按阅读顺序拼起来：从上到下分行，同一行从左到右。
 
-    靠右的行（绿色气泡，作者自己）前面加一个不显示的侧标记，对话整理时认成方伟。
-    左侧的灰气泡不加。旧的、只有文字没有坐标的识别结果没有这个标记。
+    绿色气泡（作者自己）前面加一个不显示的侧标记，对话整理时认成方伟。
+    有原图时按气泡颜色认；没有图时退回「行左缘靠右」的旧规则。左侧灰气泡不加。
     """
     boxes: list[tuple[float, float, float, float, str]] = []
     width = 0.0
@@ -72,18 +99,30 @@ def order_text(items) -> str:
         boxes.append((min(ys), max(ys), min(xs), right, text))
     boxes.sort(key=lambda box: (box[0], box[2]))
     lines: list[dict] = []
-    for top, bottom, left, _right, text in boxes:
+    for top, bottom, left, right, text in boxes:
         height = max(1.0, bottom - top)
         center = (top + bottom) / 2
         if lines and abs(center - lines[-1]["center"]) <= 0.5 * max(height, lines[-1]["height"]):
-            lines[-1]["items"].append((left, text))
+            lines[-1]["items"].append((left, right, text))
+            lines[-1]["top"] = min(lines[-1]["top"], top)
+            lines[-1]["bottom"] = max(lines[-1]["bottom"], bottom)
         else:
-            lines.append({"center": center, "height": height, "items": [(left, text)]})
+            lines.append(
+                {
+                    "center": center,
+                    "height": height,
+                    "top": top,
+                    "bottom": bottom,
+                    "items": [(left, right, text)],
+                }
+            )
     rendered: list[str] = []
     for line in lines:
-        items_on_line = sorted(line["items"])
-        text = "  ".join(piece for _left, piece in items_on_line)
-        if width and items_on_line[0][0] >= _SELF_SIDE * width:
+        items_on_line = sorted(line["items"], key=lambda item: item[0])
+        text = "  ".join(piece for _left, _right, piece in items_on_line)
+        left = items_on_line[0][0]
+        right = max(item[1] for item in items_on_line)
+        if _line_is_self_bubble(image_bgr, left, right, line["top"], line["bottom"], width):
             text = SIDE_SELF + text
         rendered.append(text)
     return "\n".join(rendered)
@@ -92,6 +131,7 @@ def order_text(items) -> str:
 def rapid_engine() -> Callable[[Path], str]:
     try:
         from rapidocr_onnxruntime import RapidOCR
+        import cv2
     except ImportError as exc:
         raise OcrUnavailable(
             "这个镜像里没装 OCR。用 ocr 镜像跑：docker compose --profile ocr run --rm ocr research-ocr"
@@ -99,8 +139,9 @@ def rapid_engine() -> Callable[[Path], str]:
     engine = RapidOCR()
 
     def recognize(path: Path) -> str:
+        image_bgr = cv2.imread(str(path))
         result, _elapsed = engine(str(path))
-        return order_text(result)
+        return order_text(result, image_bgr=image_bgr)
 
     return recognize
 

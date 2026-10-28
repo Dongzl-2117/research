@@ -993,3 +993,30 @@ def test_mid_paragraph_figure_is_hoisted():
     out2 = _hoist_figures_out_of_paragraphs(sample2)
     assert out2.startswith("<figure")
     assert "<p>——段永平</p>" in out2
+
+
+def test_hold_to_text_and_quote_back_chrome_are_stripped():
+    raw = (
+        "18:52\n"
+        "看十年价投交流群(499)\n"
+        "方伟\n"
+        "我投资想的是底线\n"
+        "一年的底线能不能稳定赚100亿的问题\n"
+        "Cody\n"
+        "应该想一些非共识的。比如下限赚多少钱一年\n"
+        "4月6日12:06\n"
+        "如果你的决策是建立在今年业绩涨了3倍，明年再三倍\n"
+        "回到引用位置\n"
+        "那这种高预期，市场也是这么高预期\n"
+        "可按住转文字\n"
+        "可按住转文字  E\n"
+        "Henri\n"
+        "の  可按住转文字\n"
+        "HYIIV\n"
+    )
+    text = present_ocr_pieces([raw])
+    assert "方伟：" in text
+    assert "网友：" in text
+    for noise in ("可按住转文字", "回到引用位置", "18:52", "4月6日12:06", "看十年价投交流", "Cody", "HYIIV", "の"):
+        assert noise not in text, noise
+    assert "稳定赚100亿的问题" in text or "稳定赚100亿" in text

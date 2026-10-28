@@ -148,6 +148,8 @@ _INLINE = re.compile(r"^(.{1,16}?)[:：]\s*(.+)$")
 _GROUP_TITLE = re.compile(
     r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
     r"|^(?:\d{2,6}\s+).{2,40}[（(]\d{1,4}[）)]$"
+    # 「看十年价投交流(499)」：无「群」字、无未读数前缀的群标题。
+    r"|^[\u4e00-\u9fffA-Za-z0-9·\s]{2,24}[（(]\d{2,4}[）)]$"
 )
 _LATIN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,19}$")
 _LATIN_STOP = frozenset(
@@ -155,9 +157,10 @@ _LATIN_STOP = frozenset(
 )
 _GROUP_BARE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,16}群$")
 _TIME = re.compile(
-    r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}:\d{2}(?::\d{2})?[≥>≤<]*$"
+    r"^(?:上午|下午|晚上|凌晨|昨天|今天|前天|星期[一二三四五六日天])?\s*\d{1,2}[:：]\d{2}(?:[:：]\d{2})?[≥>≤<]*$"
     r"|^(?:昨天|今天|前天|星期[一二三四五六日天])$"
-    r"|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?[≥>≤<]*$"
+    r"|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s*\d{1,2}[:：]\d{2})?[≥>≤<]*$"
+    r"|^\d{1,2}月\d{1,2}日(?:\s*\d{1,2}[:：]\d{2})?[≥>≤<]*$"
 )
 _STATUS = re.compile(
     r"^(?:微信|WeChat|返回|发送|按住\s*说话|以下是新消息|消息免打扰)$"
@@ -166,7 +169,7 @@ _STATUS = re.compile(
     r"|^(?:LTE|Wi-?Fi|VPN|HD|NFC)$",
     re.I,
 )
-_CHROME_WORD = re.compile(r"^(?:设为群待办|设为待办|群待办|小+程序|进入小程序|查看详情|来自小程序)$")
+_CHROME_WORD = re.compile(r"^(?:[^\u4e00-\u9fffA-Za-z0-9]{0,6})?(?:设为群待办|设为待办|群待办|小+程序|进入小程序|查看详情|来自小程序|回到引用位置|可按住\s*转文字|按住\s*转文字)(?:\s*[A-Za-z])?[。．.\s]*$")
 # ￥17.? 、￥19.?￥22泰式风味红茶：价格可以粘在商品名上，问号是小数点认丢了。
 _PRICE = re.compile(
     r"^(?:券后价?\s*)?(?:[¥￥$]\s*\d+(?:\.\d*)?[\?？]*\s*)+(?:[\u4e00-\u9fffA-Za-z]{0,16})?$"
@@ -178,7 +181,7 @@ _APP_FRAGMENT = re.compile(r"^QuestMobile", re.I)
 _AT_SUFFIX = re.compile(r"@[A-Za-z0-9_\-.]+$")
 _SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加")
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
-_WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|以下是新消息|美团外卖")
+_WECHAT = re.compile(r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|可按住\s*转文字|按住\s*转文字|回到引用位置|以下是新消息|美团外卖")
 # 公众号文章预览页的「账号名 +关注」：账号名和按钮 OCR 粘在一行，旧规则只认整行「+关注」。
 # 「观察 56个朋友关注 82 455 38 33。」是「N个朋友关注」粘着阅读量、点赞数。
 # 「交易规则 71个朋友关注 53 47 23 写留言」再把留言按钮粘在末尾。
@@ -282,7 +285,7 @@ _ACCOUNT_SPLIT = "\x1f"
 _TRAIL_TIME = re.compile(
     r"\s*(?:上午|下午|晚上|凌晨|昨天|今天|前天)?\s*\d{1,2}:\d{2}(?::\d{2})?\s*$"
 )
-_SUFFIX = re.compile(r"[\s,，]*?(?:设为群待办|设为待办|群待办)\s*$")
+_SUFFIX = re.compile(r"[\s,，]*?(?:设为群待办|设为待办|群待办|回到引用位置|可按住\s*转文字|按住\s*转文字)\s*$")
 _PUNCT = re.compile(r"[，。！？、；：,.!?;:\"“”‘’（）()\[\]【】《》<>]")
 
 
@@ -1026,6 +1029,12 @@ def _is_noise(line: str) -> bool:
         return True
     # 截图角落的假名。汉字单字（折出来的「的」）不是这种。
     if re.fullmatch(r"[\u3040-\u30ff]+", folded):
+        return True
+    # 「の 可按住转文字」一类：假名开头且几乎没有汉字。
+    if folded[:1] and "\u3040" <= folded[0] <= "\u30ff" and len(_CJK.findall(folded)) == 0:
+        return True
+    # 模糊 UI 认成的短全大写乱码，例如 HYIIV（元音种类少）。
+    if re.fullmatch(r"[A-Z]{4,8}", folded) and len({ch for ch in folded if ch in "AEIOU"}) <= 1:
         return True
     return False
 

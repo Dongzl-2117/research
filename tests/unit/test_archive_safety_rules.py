@@ -167,3 +167,33 @@ def test_ocr_text_order_and_chunks():
     assert [anchor for anchor, _text in chunks] == [image_anchor(digest)]
     assert "1234" in chunks[0][1]
     assert ocr_chunks([("aa" * 32, "字" * (OCR_MIN_CHARS - 1))]) == []
+
+
+def test_ocr_green_bubble_by_color():
+    """有原图时按微信绿气泡认本人，不靠左缘阈值（长绿气泡会靠左）。"""
+
+    class _FakeImage:
+        shape = (160, 400, 3)
+
+        def __getitem__(self, key):
+            y, x = key
+            # 第二行绿气泡带：文字左缘已过中线偏左，旧几何会漏标。
+            if 90 <= y < 130 and 100 <= x < 380:
+                return (105, 236, 149)
+            return (237, 237, 237)
+
+    items = [
+        [[[40, 20], [120, 20], [120, 50], [40, 50]], "王小明", 0.99],
+        [[[50, 45], [160, 45], [160, 65], [50, 65]], "古茗店效还行", 0.99],
+        # 长绿气泡：左缘 x=110 < 0.4*360，几何旧规则会当网友；颜色应标本人。
+        [[[110, 100], [360, 100], [360, 125], [110, 125]], "同店还有压力", 0.99],
+    ]
+    ordered = order_text(items, image_bgr=_FakeImage())
+    lines = ordered.splitlines()
+    assert len(lines) == 3
+    assert not lines[0].startswith(SIDE_SELF)
+    assert not lines[1].startswith(SIDE_SELF)
+    assert lines[2].startswith(SIDE_SELF)
+    # 无图时退回几何：左缘过中线才标本人。
+    geo = order_text(items).splitlines()
+    assert not geo[2].startswith(SIDE_SELF)
