@@ -1,6 +1,8 @@
 """方伟星球存量回写。规则和入库、阅读页是同一套，不另写一套。
 
-- 标题：空的、「无标题」、以省略号结尾的、公司名/话题名冒号壳，改成完整标题；加 `--ai-titles` 时优先用站内 deepseek-flash 根据正文+图片文字+导读起题（含错字抛光），失败再退回确定性首句。写不出来的日期兜底不入库。
+- 标题：空的、「无标题」、以省略号结尾的、公司名/话题名冒号壳，改成完整标题。
+  加 `--ai-titles` 时优先用站内 deepseek-flash 起题（含错字抛光），
+  失败再退回确定性首句。写不出来的日期兜底不入库。
 - 评论：`## 评论（N）` 只留方伟。解析不了的不动，在报告里单列。
 - 图片文字：星球和公众号里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。
   粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重跑 RapidOCR。
@@ -39,7 +41,13 @@ from researchlib.zsxq_comments import (
     guest_comment_authors,
     is_host_comment_author,
 )
-from researchlib.zsxq_title import FANGWEI_ZSXQ, polish_title_typos, stored_zsxq_title, title_needs_ai, title_needs_repair
+from researchlib.zsxq_title import (
+    FANGWEI_ZSXQ,
+    polish_title_typos,
+    stored_zsxq_title,
+    title_needs_ai,
+    title_needs_repair,
+)
 from researchlib.zsxq_title_ai import generate_ai_title
 
 FANGWEI_MP = "fangwei-mp"
