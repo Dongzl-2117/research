@@ -1,7 +1,8 @@
 """微信截图 OCR 整理成「方伟：」「网友：」。
 
-合成样例覆盖说话人、去重和界面字。tests/fixtures/14886_live_shots.txt 是文章 14886
-上线后的三张图的识别结果，按它验收。样本里群友的昵称、群名和店名换成了虚构的，其余照原样。
+合成样例覆盖说话人、去重和界面字。tests/fixtures/14886_live_shots.txt、14879_live_shots.txt
+照文章 14886、14879 那几张截图的识别结果改写：时间、界面字、商品卡、折行和几张图重叠的位置照原样，
+群名、昵称和对话都是编的。
 """
 
 from pathlib import Path
@@ -92,7 +93,7 @@ def test_speaker_rules_and_noise_are_gone():
 
 def test_guest_words_about_fangwei_stay_with_the_guest():
     """句子里出现方伟，只要上面是别人的昵称，仍是灰气泡。"""
-    raw = "微信\n9:41\nKevin\n方伟说得对，同店还有压力，先观望一下\n"
+    raw = "微信\n9:41\nLucas\n方伟说得对，同店还有压力，先观望一下\n"
     text = present_ocr_pieces([raw])
     assert text.startswith("网友：")
     assert "方伟：" not in text
@@ -205,12 +206,12 @@ def test_live_14886_shots_drop_chrome_and_guest_names():
     ):
         assert leaked not in text, leaked
     # 开头没有别人的昵称，是作者自己的绿色气泡。王小明、李小红仍是网友。
-    assert text.startswith("方伟：同样是捕抓")
-    assert "网友：怎么定义古茗做咖啡成功了呢" in text
-    assert "网友：数据确实是好的" in text
-    assert "网友：并且高密度的门店区域" in text
-    assert text.count("成功的也不多，就一个古茗") == 1
-    assert text.count("要么需求侧少喝咖啡") == 1
+    assert text.startswith("方伟：同样是追着")
+    assert "网友：古茗的咖啡怎么就算做起来了呢" in text
+    assert "网友：单量确实是涨的" in text
+    assert "网友：而且门店密集的商圈" in text
+    assert text.count("眼下只有古茗") == 1
+    assert text.count("要么是大家不爱喝了") == 1
     assert "的" in text.splitlines()
 
 
@@ -231,58 +232,58 @@ def _shots_14879() -> list[str]:
 
 
 def test_live_14879_strips_the_guest_nickname_and_splits_turns():
-    """Kevin 是网友昵称。句子里的 @方伟 不另起「方伟：」，显示名「方伟-最近在杭州：」才是。"""
+    """Lucas 是网友昵称。句子里的 @方伟 不另起「方伟：」，显示名「方伟-最近在出差：」才是。"""
     shots = _shots_14879()
     assert len(shots) == 7
     text = present_ocr_pieces(shots)
     assert text.startswith("网友：")
-    assert "网友：Kevin" not in text
-    assert "Kevin" not in text
+    assert "网友：Lucas" not in text
+    assert "Lucas" not in text
     assert text.count("网友：") >= 3
     assert text.count("方伟：") >= 3
-    assert "方伟：会有一批大模型达到" in text
-    assert "方伟-最近在杭州" not in text
+    assert "方伟：会有一批大模型做到" in text
+    assert "方伟-最近在出差" not in text
     for leaked in ("10:57", "10:43", "10:49", "示例", "撤回了一条消息"):
         assert leaked not in text, leaked
     assert "@方伟-最近在" in text
     blocks = text.split("\n\n")
     question = next(block for block in blocks if "@方伟-最近在" in block)
-    assert "Opus5.5" not in question
-    assert any(block.startswith("方伟：Opus5.5确实断档领先") for block in blocks)
-    assert any("但大模型的用户体验评价维度" in block and block.startswith("方伟：") for block in blocks)
-    host = next(block for block in blocks if "会有一批大模型达到" in block and block.startswith("方伟："))
-    assert host.startswith("方伟：会有一批大模型达到")
+    assert "GPT-6" not in question
+    assert any(block.startswith("方伟：GPT-6这一代确实") for block in blocks)
+    assert any("但大家给大模型打分的角度" in block and block.startswith("方伟：") for block in blocks)
+    host = next(block for block in blocks if "会有一批大模型做到" in block and block.startswith("方伟："))
+    assert host.startswith("方伟：会有一批大模型做到")
 
 
-def test_host_status_suffix_on_shot_23820_is_a_fangwei_turn():
-    """23820 的显示名带着「-最近在杭州」，标签只写「方伟：」，后缀不留在正文。"""
+def test_host_status_suffix_is_a_fangwei_turn():
+    """显示名带着「-最近在出差」这种状态，标签只写「方伟：」，后缀不留在正文。"""
     raw = (
         "10:50\n"
-        "Kevin\n"
-        "这个我认可。\n"
-        "方伟-最近在杭州：会有一批大模型达到\n"
-        "Opus5.5当前的智能，且只有十分之一的...\n"
-        "希望有但不可知\n"
-        "差异化一般而言应该是应用层的事情\n"
+        "Lucas\n"
+        "这点我同意。\n"
+        "方伟-最近在出差：会有一批大模型做到\n"
+        "GPT-6现在的水平，价格只要十分之一的...\n"
+        "盼着有但说不准\n"
+        "拉开差距一般是应用层要做的事情\n"
     )
     text = present_ocr_pieces([raw])
-    assert "方伟-最近在杭州" not in text
+    assert "方伟-最近在出差" not in text
     assert (
-        "方伟：会有一批大模型达到\n"
-        "Opus5.5当前的智能，且只有十分之一的...\n"
-        "希望有但不可知\n"
-        "差异化一般而言应该是应用层的事情。"
+        "方伟：会有一批大模型做到\n"
+        "GPT-6现在的水平，价格只要十分之一的...\n"
+        "盼着有但说不准\n"
+        "拉开差距一般是应用层要做的事情。"
     ) in text
-    assert present_ocr_pieces(["Kevin\n方伟说得对，同店还有压力，先观望一下\n微信\n"]).startswith("网友：")
+    assert present_ocr_pieces(["Lucas\n方伟说得对，同店还有压力，先观望一下\n微信\n"]).startswith("网友：")
 
 
 def test_screenshot_wraps_flow_into_one_paragraph():
     """满行的折行接上，短行不把两句粘死。旁路文本仍保留换行，这里只测阅读页用的整理。"""
-    assert _flow_ocr_lines("最近Claude被封号了，用了一些国\n产agents，觉得差距太大了") == (
-        "最近Claude被封号了，用了一些国产agents，觉得差距太大了"
+    assert _flow_ocr_lines("最近Cursor额度用完了，换了一些国\n产agents，发现差得太多了") == (
+        "最近Cursor额度用完了，换了一些国产agents，发现差得太多了"
     )
-    assert _flow_ocr_lines("Opus5.5确实断档领先其他所有大模\n型。") == "Opus5.5确实断档领先其他所有大模型。"
-    assert _flow_ocr_lines("机或者游戏潮玩\n他是一个效率驱动的东西") == "机或者游戏潮玩他是一个效率驱动的东西"
+    assert _flow_ocr_lines("GPT-6这一代确实把其他所有模型甩开\n了。") == "GPT-6这一代确实把其他所有模型甩开了。"
+    assert _flow_ocr_lines("机或者盲盒潮玩\n它是一个拼效率的东西") == "机或者盲盒潮玩它是一个拼效率的东西"
     assert "\n" not in _flow_ocr_lines("同店压力还在，折扣不能再深\n会员那边先不动。")
 
 
@@ -301,25 +302,25 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
     page = inline_image_ocr(str(render_body("\n\n".join(parts) + "\n", mapping)), texts)
     assert "国产agents" in page
     assert "国\n产" not in page
-    assert "根本不是一个代际的产品" in page
-    assert "其他所有大模型" in page
-    assert "智能手机或者游戏潮玩" in page
-    assert "游戏潮玩他是一个效率驱动" in page
-    assert "agents执行复杂任务" in page
-    assert '<span class="who">方伟：</span>会有一批大模型达到' in page
+    assert "压根不在一个水平线上" in page
+    assert "其他所有模型甩开了" in page
+    assert "在比手机或者盲盒潮玩" in page
+    assert "盲盒潮玩它是一个拼效率" in page
+    assert "agents执行长任务" in page
+    assert '<span class="who">方伟：</span>会有一批大模型做到' in page
     assert page.count('<span class="who">方伟：</span>') >= 3
     assert page.count('<span class="who">网友：</span>') >= 3
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
-    assert "Kevin" not in page
+    assert "Lucas" not in page
     # 显示名只用于认出方伟，不写成说话人。句子里的 @ 折行后仍是一整句。
-    assert "方伟-最近在杭州：" not in page
-    assert "@方伟-最近在杭州" in page
+    assert "方伟-最近在出差：" not in page
+    assert "@方伟-最近在出差" in page
     for number in range(1, len(shots) + 1):
         assert f"原图 {number}" in page
     assert page.index("方伟：") < page.index("原图 1")
     # 旁路和检索仍用带换行的整理结果，不因阅读页折行而改掉。
     stored = present_ocr_pieces(shots)
-    assert "用了一些国\n产agents" in stored
+    assert "换了一些国\n产agents" in stored
 
 
 def test_image_post_title_uses_the_sentence_not_the_speaker_label():
