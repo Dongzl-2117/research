@@ -55,6 +55,7 @@ research-fetch-images = "researchlib.remote_images:main"
 research-ocr = "researchlib.ocr:main"
 research-clean = "researchlib.boilerplate:main"
 research-embed = "researchlib.embeddings:main"
+research-status = "researchlib.health:main"
 
 [build-system]
 requires = ["setuptools>=68"]

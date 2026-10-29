@@ -2,7 +2,7 @@
 
 每个任务把结果写进 DATA_DIR/status/<任务>.json：宿主机上的脚本（备份、试恢复、定时抓取、夜间补齐、自动上线）
 在成功和失败时都写，进程里的后台重算和 LLM 调用由这里的函数写。notices() 只在出问题时
-列出来，正常时是空的；首页不显示，值班助手看。LLM 的提示按当时的提供方说（DeepSeek 或 Grok）。
+列出来，正常时是空的；首页不显示，值班助手跑 `research-status` 看。LLM 的提示按当时的提供方说（DeepSeek 或 Grok）。
 
 文件格式：{"task": "backup", "ok": true, "at": "2026-10-20T03:17:42Z", "message": "…"}，
 失败时另记上一次成功的时间 last_ok_at。
@@ -182,3 +182,21 @@ def record_llm(
 def reset_llm_cache() -> None:
     with _llm_lock:
         _llm_cache.clear()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """值班助手看的那几句提示：没有要处理的退出码 0，有就逐条打出来、退出码 1。
+
+        docker compose exec app research-status
+    """
+    if argv:
+        raise SystemExit("research-status 不接受参数")
+    from researchlib.config import Settings
+
+    settings = Settings.from_env()
+    found = notices(settings.data_dir, settings.display_timezone)
+    for text in found:
+        print(text)
+    if not found:
+        print("没有要处理的")
+    return 1 if found else 0

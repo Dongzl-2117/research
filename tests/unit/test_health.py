@@ -146,3 +146,14 @@ def test_deploy_failures_are_reported_but_quiet_weeks_are_not(tmp_path):
     assert health.notices(tmp_path, "Asia/Shanghai", now=NOW) == [
         "自动上线失败（10-20 10:00）：main 上的 abc1234 CI 没通过，没有上线"
     ]
+
+
+def test_status_command_prints_notices(tmp_path, monkeypatch, capsys):
+    """首页不挂红条以后，值班助手用 research-status 看；有问题时退出码 1，脚本也能判断。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    assert health.main([]) == 0
+    assert capsys.readouterr().out.strip() == "没有要处理的"
+    _write(tmp_path, "backup", ok=False, at="2026-10-20T03:17:00Z", message="导出数据库失败（退出码 1）")
+    assert health.main([]) == 1
+    assert capsys.readouterr().out.startswith("备份失败（10-20 11:17）：导出数据库失败")
