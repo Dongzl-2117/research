@@ -18,12 +18,21 @@ pytestmark = pytest.mark.skipif(
     reason="要 bash、git 和 python3",
 )
 
+# compose top app 的标准输出由 DOCKER_TOP 决定，用来假装容器里正在跑的进程。
 FAKE_DOCKER = """#!/bin/bash
-echo "docker $*" >> "$CALLS"
-if [ "${DOCKER_FAILS:-0}" = "1" ]; then
-  echo "镜像没建成" >&2
-  exit 1
-fi
+case "$*" in
+  *" top app")
+    echo "docker compose top app" >> "$CALLS"
+    printf '%s\\n' "${DOCKER_TOP:-}"
+    ;;
+  *)
+    echo "docker $*" >> "$CALLS"
+    if [ "${DOCKER_FAILS:-0}" = "1" ]; then
+      echo "镜像没建成" >&2
+      exit 1
+    fi
+    ;;
+esac
 """
 # GitHub 接口返回测试写好的 CI 结果；没写就当接口出错。应用的健康检查一律通过。
 FAKE_CURL = """#!/bin/bash
@@ -152,7 +161,8 @@ def test_waits_for_ci_and_does_not_ship_a_red_commit(world: World):
     world.commit("改坏了")
     world.ci_says("in_progress")
     assert world.deploy().returncode == 0
-    assert world.called() == ["curl ci"] and world.head() == shipped
+    # 查 CI 之前先 docker compose top app，看容器里有没有 research-translate / research-ocr。
+    assert world.called() == ["docker compose top app", "curl ci"] and world.head() == shipped
     # 被后来的推送取消的那次不算没过。
     world.ci_says("completed", "cancelled")
     assert world.deploy().returncode == 0
@@ -209,6 +219,23 @@ def test_unreachable_github_is_quiet_unless_it_never_worked(world: World):
     assert world.deploy().returncode == 0
     assert world.status()["ok"] is True
     assert world.head() != _git(world.work, "rev-parse", "HEAD")
+
+
+def test_waits_for_translate_or_ocr_in_the_app_container(world: World):
+    world.ci_says("completed", "success")
+    shipped = world.head()
+    sha = world.commit("第二版")
+    for name in ("research-translate", "research-ocr"):
+        result = world.deploy(DOCKER_TOP=f"root 12 1 0 Oct29 ? 00:00:03 {name} --limit 10")
+        assert result.returncode == 0, result.stderr
+        assert world.called() == ["docker compose top app"]
+        assert world.head() == shipped and world.status() is None
+        assert f"{name} 还在跑" in result.stdout
+    # 容器里只有 web：探测过了照常上线。
+    result = world.deploy(DOCKER_TOP="root 7 1 0 Oct29 ? 00:01:00 python -m uvicorn researchlib.web:app")
+    assert result.returncode == 0, result.stderr
+    assert world.head() == sha and world.status()["ok"] is True
+    assert world.called()[0] == "docker compose top app"
 
 
 def test_waits_for_jobs_running_in_the_containers(world: World):
