@@ -4,7 +4,7 @@
 原有公司语料共现先验仍是词法降级；CPU baseline 只有查询与窗口的交叉统计特征。
 无真实双语编码器/交叉编码重排器，本环境此前官方模型请求403，未重试、换路下载或调用付费服务。
 
-当前基于 main `7771a76`；#99 继续保持 draft，#115 提供独立本机标注服务。
+当前基于 main `9d2c7ae`；#99 继续保持 draft，#115 提供独立本机标注服务。
 两分支没有互相复制模块或合并到 main。#73 的部署/身份门禁未整体恢复；本轮无迁移、无默认生产写入。
 
 ## 架构与目前缺口
@@ -38,6 +38,7 @@
 - 权威冻结先连通共享实体、主题、query、文章、文档族、内容与近重复。训练侧再补充审计，不改split或seed。
   新任务桥接已有多个组会被拒绝。连通巨组/缺holdout/无人类标签均报告，不拆组规避。
 - 训练只取train；再次evaluate要求相同权重版本、manifest与train事件/窗口快照的训练记录。
+  manifest_id标识dataset/seed/grouping配置，本身不绑定整个导出内容；还须核对content_hash和训练snapshot_hash。
   这些记录可审计，不能抵御操作者伪造整个文件，不能替代可靠标注来源。
 
 `build_library_provider(connection_factory=..., sources=..., public_base_url=..., topic_resolver=...)`
@@ -86,21 +87,21 @@ PYTHONPATH=src python -m researchlib.ranking evaluate \
 
 ## 实际证据及不能推出的结论
 
-实测摘要见[JSON证据](ranking-pipeline-evidence.json)。完整可复跑输入为`tools/ranking/fixtures/pairs.json`，32个虚构公司/主题/文档族，另含无答案、相当、跳过、不确定、撤回。
-标签全是**程序化模拟弱标**（不是实际LLM判断，也不是人类标注），用于协议测试。固定seed产生32组，train/validation/test=22/3/7；
-一条train标签撤回，train输入21对、明确方向16对。未按测试成绩换seed或修改文本/标签。
+实测摘要见[JSON证据](ranking-pipeline-evidence.json)。完整可复跑输入为`tools/ranking/fixtures/pairs.json`，32个虚构公司任务及对应文档族；同类机制跨公司共享18个明确主题族，另含无答案、相当、跳过、不确定、撤回。
+标签全是**程序化模拟弱标**（不是实际LLM判断，也不是人类标注），用于协议测试。固定seed产生18组，train/validation/test任务=18/9/5；
+一条validation标签撤回，train输入18对、明确方向17对。未按测试成绩换seed或修改文本/标签。
 
 | 留出集 | 方向标签 | 固定中心词法baseline | CPU学习baseline | 评分p50/p95（毫秒） |
 | --- | ---: | ---: | ---: | ---: |
-| validation | 3 | 0/3 | 3/3 | 0.100 / 0.105，3次 |
-| test | 5 | 0/5 | 5/5 | 0.092 / 0.122，7次含非方向样本 |
+| validation | 5 | 0/5 | 5/5 | 0.093 / 0.122，8次含非方向样本 |
+| test | 2 | 0/2 | 2/2 | 0.091 / 0.163，5次含非方向样本 |
 
-manifest=`087ff152e94e03416a028cf2244b0af6e3baea92122203f7b5ddc3a416b6401d`，
-模型revision=`e672185ddf77ac8d62ffd3969f4008e40caaac7c6a66ef747fc0918ea65c4abc`。
-两次导出随机左右和事件ID不同，训练后权重revision相同；CLI训练/重评估也已实跑。
-人工方向标签为0，人工准确率null；test另有neither=1、tie=1，拒答准确率null。
+manifest=`e2a7a0ee59eb1dc0196dfb5fdd979f7d812ae92330596bdb435af2f10d301b9c`，
+模型revision=`f7823db88bc6601219d6f351d00d32224eea8ccc7fe46a20b8eafb3f1a032b5f`。
+随机左右和事件ID不作为模型特征；CLI训练/重评估已实跑，权重字节完全相同。
+人工方向标签为0，人工准确率null；test另有neither=2、tie=1，拒答准确率null。
 这些例子的正负文风/长度有人工构造差异，模型可能学到这些浅层线索；实体/主题ID未重叠不消除生成模板分布偏差。
-**3/3、5/5只证明管道运行，不能称真实未见公司/主题泛化有效，也不是P@5。**
+**5/5、2/2只证明管道运行，不能称真实未见公司/主题泛化有效，也不是P@5。**
 
 真实PG检索provider→HTTP generate在隔离空库通过，连接只读、已知来源/版本保留、其他公司候选未进入对比、语义调用0。
 并发原文更新、无效模型输出、预算回传超时都有真实数据库回归。

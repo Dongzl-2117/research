@@ -2,18 +2,18 @@
   "synthetic_only": true,
   "notice": "原创虚构材料和程序化模拟弱标，只验证管道，非人类金标/真实AI推断/实际企业事实/线上泛化验收。",
   "ui_head": "c63565569d2a71df667f75fdac68e1265de736d8",
-  "manifest_id": "087ff152e94e03416a028cf2244b0af6e3baea92122203f7b5ddc3a416b6401d",
-  "model_revision": "e672185ddf77ac8d62ffd3969f4008e40caaac7c6a66ef747fc0918ea65c4abc",
-  "fixture_sha256": "d38b72b3f0929dc2498c316038a275735bc5d79af42d15f0716fb734e1f69173",
+  "manifest_id": "e2a7a0ee59eb1dc0196dfb5fdd979f7d812ae92330596bdb435af2f10d301b9c",
+  "model_revision": "f7823db88bc6601219d6f351d00d32224eea8ccc7fe46a20b8eafb3f1a032b5f",
+  "fixture_sha256": "1eb37ce9e15502b079a7a0bc2a13b074cdd54c50c8f1dd9cc8ab3ed79a334c0f",
   "splits": {
-    "train": 22,
-    "validation": 3,
-    "test": 7
+    "train": 18,
+    "validation": 9,
+    "test": 5
   },
-  "group_count": 32,
+  "group_count": 18,
   "cold_start": {
     "validation": {
-      "tasks": 3,
+      "tasks": 9,
       "entity_coverage_complete": true,
       "reference_entity_coverage_complete": true,
       "topic_coverage_complete": true,
@@ -22,7 +22,7 @@
       "joint_entity_topic_cold_start": true
     },
     "test": {
-      "tasks": 7,
+      "tasks": 5,
       "entity_coverage_complete": true,
       "reference_entity_coverage_complete": true,
       "topic_coverage_complete": true,
@@ -37,36 +37,36 @@
     "test": 0
   },
   "training": {
-    "data_hash": "66d568e4d926defc7d086373e048fd7b596926b47ca3da52c18e765dc6c625ac",
-    "input_pairs": 21,
-    "used_pairs": 16,
-    "ignored_choices": 5,
+    "data_hash": "922f26e4e5b842fc68d3222cb317f6db8e3e716a1ae3ea70564439739dede971",
+    "input_pairs": 18,
+    "used_pairs": 17,
+    "ignored_choices": 1,
     "filtered_sources": 0,
     "filtered_materials": 0,
     "choice_counts": {
-      "a_better": 6,
-      "b_better": 10,
-      "both_irrelevant": 3,
-      "cannot_judge": 2,
+      "a_better": 8,
+      "b_better": 9,
+      "both_irrelevant": 1,
+      "cannot_judge": 0,
       "tie": 0
     },
     "source_counts": {
-      "ai": 21,
+      "ai": 18,
       "synthetic": 0,
       "user": 0
     },
     "used_source_counts": {
-      "ai": 16,
+      "ai": 17,
       "synthetic": 0,
       "user": 0
     },
     "material_counts": {
       "private_corpus": 0,
-      "synthetic": 21
+      "synthetic": 18
     },
     "used_material_counts": {
       "private_corpus": 0,
-      "synthetic": 16
+      "synthetic": 17
     },
     "seed": 0,
     "epochs": 200,
@@ -74,7 +74,7 @@
     "l2": 0.01,
     "allow_synthetic": true,
     "ai_weight": 0.25,
-    "loss": 0.07983420073382827
+    "loss": 0.08162160591144174
   },
   "checks": {
     "notice": "原创虚构材料与程序化模拟弱标，只验证闭环，不是企业事实、人类金标或AI模型实测。固定输入在分组前定义，不按测试成绩改标签。",
@@ -83,7 +83,7 @@
     "latest_revision_withdrawal": "passed",
     "weak_human_separation": "passed",
     "human_adapter_protocol": "passed; 模拟human类别仅协议测试，未混入学习或金标评测",
-    "cli_train_and_evaluate": "passed; same model revision",
+    "cli_train_and_evaluate": "passed; exact same grouped-model weights",
     "export_late_source_update": "integration regression passed"
   },
   "provider": {
@@ -96,109 +96,13 @@
   "evaluation": {
     "validation": {
       "model_ai_weak": {
-        "pairs": 3,
+        "pairs": 8,
         "choice_counts": {
-          "a_better": 2,
-          "b_better": 1,
-          "both_irrelevant": 0,
-          "cannot_judge": 0,
-          "tie": 0
-        },
-        "directional_pairs": 3,
-        "correct": 3,
-        "incorrect": 0,
-        "directional_score_ties": 0,
-        "directional_accuracy": 1.0,
-        "non_directional_counts": {
-          "tie": 0,
-          "both_irrelevant": 0,
-          "cannot_judge": 0
-        },
-        "score_ties": 0,
-        "latency_ms": {
-          "calls": 3,
-          "p50": 0.100199,
-          "p95": 0.1050032,
-          "min": 0.092949,
-          "max": 0.105537
-        }
-      },
-      "baseline_ai_weak": {
-        "pairs": 3,
-        "choice_counts": {
-          "a_better": 2,
-          "b_better": 1,
-          "both_irrelevant": 0,
-          "cannot_judge": 0,
-          "tie": 0
-        },
-        "directional_pairs": 3,
-        "correct": 0,
-        "incorrect": 3,
-        "directional_score_ties": 0,
-        "directional_accuracy": 0.0,
-        "non_directional_counts": {
-          "tie": 0,
-          "both_irrelevant": 0,
-          "cannot_judge": 0
-        },
-        "score_ties": 0,
-        "latency_ms": {
-          "calls": 3,
-          "p50": 0.089914,
-          "p95": 0.0920497,
-          "min": 0.08779,
-          "max": 0.092287
-        }
-      },
-      "human": {
-        "pairs": 0,
-        "choice_counts": {
-          "a_better": 0,
-          "b_better": 0,
-          "both_irrelevant": 0,
-          "cannot_judge": 0,
-          "tie": 0
-        },
-        "directional_pairs": 0,
-        "correct": 0,
-        "incorrect": 0,
-        "directional_score_ties": 0,
-        "directional_accuracy": null,
-        "non_directional_counts": {
-          "tie": 0,
-          "both_irrelevant": 0,
-          "cannot_judge": 0
-        },
-        "score_ties": 0,
-        "latency_ms": {
-          "calls": 0,
-          "p50": null,
-          "p95": null,
-          "min": null,
-          "max": null
-        }
-      },
-      "no_answer": {
-        "both_irrelevant_pairs_by_source": {
-          "ai": 0,
-          "synthetic": 0,
-          "user": 0
-        },
-        "calibrated_absolute_abstention": false,
-        "abstention_accuracy": null,
-        "reason": "neither/both_irrelevant 只表示两段都不适合；pairwise 排序器没有校准过的绝对拒答能力。"
-      }
-    },
-    "test": {
-      "model_ai_weak": {
-        "pairs": 7,
-        "choice_counts": {
-          "a_better": 2,
-          "b_better": 3,
+          "a_better": 1,
+          "b_better": 4,
           "both_irrelevant": 1,
-          "cannot_judge": 0,
-          "tie": 1
+          "cannot_judge": 2,
+          "tie": 0
         },
         "directional_pairs": 5,
         "correct": 5,
@@ -206,27 +110,27 @@
         "directional_score_ties": 0,
         "directional_accuracy": 1.0,
         "non_directional_counts": {
-          "tie": 1,
+          "tie": 0,
           "both_irrelevant": 1,
-          "cannot_judge": 0
+          "cannot_judge": 2
         },
         "score_ties": 0,
         "latency_ms": {
-          "calls": 7,
-          "p50": 0.092227,
-          "p95": 0.12160929999999999,
-          "min": 0.088111,
-          "max": 0.129592
+          "calls": 8,
+          "p50": 0.0926025,
+          "p95": 0.12206409999999998,
+          "min": 0.088461,
+          "max": 0.134641
         }
       },
       "baseline_ai_weak": {
-        "pairs": 7,
+        "pairs": 8,
         "choice_counts": {
-          "a_better": 2,
-          "b_better": 3,
+          "a_better": 1,
+          "b_better": 4,
           "both_irrelevant": 1,
-          "cannot_judge": 0,
-          "tie": 1
+          "cannot_judge": 2,
+          "tie": 0
         },
         "directional_pairs": 5,
         "correct": 0,
@@ -234,17 +138,17 @@
         "directional_score_ties": 0,
         "directional_accuracy": 0.0,
         "non_directional_counts": {
-          "tie": 1,
+          "tie": 0,
           "both_irrelevant": 1,
-          "cannot_judge": 0
+          "cannot_judge": 2
         },
         "score_ties": 2,
         "latency_ms": {
-          "calls": 7,
-          "p50": 0.085397,
-          "p95": 0.08978710000000001,
-          "min": 0.082993,
-          "max": 0.090454
+          "calls": 8,
+          "p50": 0.088176,
+          "p95": 0.13312559999999998,
+          "min": 0.082252,
+          "max": 0.145937
         }
       },
       "human": {
@@ -285,6 +189,102 @@
         "abstention_accuracy": null,
         "reason": "neither/both_irrelevant 只表示两段都不适合；pairwise 排序器没有校准过的绝对拒答能力。"
       }
+    },
+    "test": {
+      "model_ai_weak": {
+        "pairs": 5,
+        "choice_counts": {
+          "a_better": 1,
+          "b_better": 1,
+          "both_irrelevant": 2,
+          "cannot_judge": 0,
+          "tie": 1
+        },
+        "directional_pairs": 2,
+        "correct": 2,
+        "incorrect": 0,
+        "directional_score_ties": 0,
+        "directional_accuracy": 1.0,
+        "non_directional_counts": {
+          "tie": 1,
+          "both_irrelevant": 2,
+          "cannot_judge": 0
+        },
+        "score_ties": 0,
+        "latency_ms": {
+          "calls": 5,
+          "p50": 0.090705,
+          "p95": 0.16270379999999998,
+          "min": 0.088952,
+          "max": 0.179667
+        }
+      },
+      "baseline_ai_weak": {
+        "pairs": 5,
+        "choice_counts": {
+          "a_better": 1,
+          "b_better": 1,
+          "both_irrelevant": 2,
+          "cannot_judge": 0,
+          "tie": 1
+        },
+        "directional_pairs": 2,
+        "correct": 0,
+        "incorrect": 2,
+        "directional_score_ties": 0,
+        "directional_accuracy": 0.0,
+        "non_directional_counts": {
+          "tie": 1,
+          "both_irrelevant": 2,
+          "cannot_judge": 0
+        },
+        "score_ties": 3,
+        "latency_ms": {
+          "calls": 5,
+          "p50": 0.0875,
+          "p95": 0.1261912,
+          "min": 0.084415,
+          "max": 0.134209
+        }
+      },
+      "human": {
+        "pairs": 0,
+        "choice_counts": {
+          "a_better": 0,
+          "b_better": 0,
+          "both_irrelevant": 0,
+          "cannot_judge": 0,
+          "tie": 0
+        },
+        "directional_pairs": 0,
+        "correct": 0,
+        "incorrect": 0,
+        "directional_score_ties": 0,
+        "directional_accuracy": null,
+        "non_directional_counts": {
+          "tie": 0,
+          "both_irrelevant": 0,
+          "cannot_judge": 0
+        },
+        "score_ties": 0,
+        "latency_ms": {
+          "calls": 0,
+          "p50": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        }
+      },
+      "no_answer": {
+        "both_irrelevant_pairs_by_source": {
+          "ai": 2,
+          "synthetic": 0,
+          "user": 0
+        },
+        "calibrated_absolute_abstention": false,
+        "abstention_accuracy": null,
+        "reason": "neither/both_irrelevant 只表示两段都不适合；pairwise 排序器没有校准过的绝对拒答能力。"
+      }
     }
   },
   "limitations": [
@@ -293,7 +293,7 @@
     "pairwise相对分数没有校准的无答案拒答阈值；neither单独报告。",
     "按实体/主题/文档族的连通闭包可能使划分不足；不会自动拆组或换seed。",
     "正负文风/长度具有合成偏差，未见实体/主题ID不消除模板分布偏差。",
-    "评分延迟只有3/7次CPU调用，不是端到端路由延迟或真实语义模型性能。",
+    "评分延迟只有8/5次CPU调用，不是端到端路由延迟或真实语义模型性能。",
     "provider单独合成库使用模拟private_corpus分类只测协议，不进入训练或人工金标。"
   ]
 }

@@ -146,8 +146,9 @@ def run(output, database_url=None):
     from researchlib.ranking.relevance_adapter import adapt_records, read_preferences
     from researchlib.ranking.runtime import load_reviewed_ranker
     fixture = json.loads((ROOT / "tools/ranking/fixtures/pairs.json").read_text(encoding="utf-8"))
+    assert len(fixture["topic_families"]) == len(fixture["examples"])
     store = Store.initialize(output / "labels.sqlite3",
-                             Manifest(dataset_id="synthetic-ranking-loop-v1", seed=fixture["seed"]))
+                             Manifest(dataset_id=fixture["dataset_id"], seed=fixture["seed"]))
     tasks, expected, decisions = [], {}, {}
     for index, (query, positive, negative, decision) in enumerate(fixture["examples"]):
         candidates = tuple(Candidate(
@@ -157,7 +158,8 @@ def run(output, database_url=None):
             source_url=f"https://example.invalid/fixture/{index}/{side}",
             algorithm=Algorithm(name="authored-synthetic-pair", version="1"),
         ) for side, text in enumerate((positive, negative)))
-        task = Task(query=query, entity_ids=[f"fictional-entity:{index}"], topic_ids=[f"fictional-topic:{index}"],
+        task = Task(query=query, entity_ids=[f"fictional-entity:{index}"],
+                    topic_ids=[f"topic-family:{fixture['topic_families'][index]}"],
                     candidates=candidates, material="synthetic")
         tasks.append(task)
         expected[task.task_id] = candidates[0].candidate_id

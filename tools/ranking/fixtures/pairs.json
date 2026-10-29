@@ -1,7 +1,18 @@
 {
   "synthetic_only": true,
+  "dataset_id": "synthetic-ranking-loop-v2-topics",
   "notice": "原创虚构材料与程序化模拟弱标，只验证闭环，不是企业事实、人类金标或AI模型实测。固定输入在分组前定义，不按测试成绩改标签。",
   "seed": "general-ranking-pipeline-v1",
+  "topic_families": [
+    "transport-efficiency", "water-efficiency", "material-recovery", "transport-efficiency",
+    "queue-management", "switching-costs", "inventory-risk", "customer-retention",
+    "equipment-maintenance", "risk-diversification", "recurring-service-revenue", "off-peak-utilization",
+    "transport-efficiency", "customer-retention", "inventory-risk", "custom-pricing",
+    "material-recovery", "off-peak-utilization", "recurring-service-revenue", "inventory-risk",
+    "production-changeover", "recurring-service-revenue", "off-peak-utilization", "supply-reliability",
+    "return-documentation", "algorithm-audit", "contract-damages", "water-quality",
+    "queue-management", "equipment-maintenance", "equipment-maintenance", "water-efficiency"
+  ],
   "examples": [
     ["青藤航运 减少空载", "青藤航运将返程货源与去程订单配对，减少空载航次，使同样燃油可以运送更多收费货物。", "青藤航运的减少空载研讨会定在周五，通知列出签到时间与会议室座位。", "prefer"],
     ["晨露农场 节约灌溉用水", "晨露农场按土壤含水量开启滴灌，只向根系补水，减少漫灌时的地表蒸发。", "晨露农场今年换了门牌，节约灌溉用水几个字印在员工胸牌背面。", "prefer"],
