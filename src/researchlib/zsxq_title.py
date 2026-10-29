@@ -14,6 +14,9 @@
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
 - 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
   完整分句以冒号收尾（「有两点感触很深：」）不是这种壳。
+- 评论列表的界面残屑要修：「评论（1）」「评论(1)」，「 - 流年（2026-10-28 09」这种名字加钟点，
+  以及重复的「话题：」壳贴在评论头上。前面还剩一句可用的话就切掉残屑；只剩壳才起题。
+  正文里只是提到「评论」的不算。
 - 明显错字走 textutil.fix_obvious_typos（与 present_text.polish_display_text 同一张表），
   不在这里另维护，不改观点和口语。
 
@@ -87,6 +90,25 @@ _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
 # 「泡泡玛特：」「西部矿业：」：整标题以中文/ASCII 冒号收尾的壳。
 _SHELL_COLON = re.compile(r"^.+[：:]\s*$")
+# 评论列表粘进标题。分隔符之后才算界面，避免「在评论（1）里」这种正文。
+# 名字后面要有钟点，或者日期被截在字符串末尾；「（2026-10-28）」只有日期且括号已闭上，不算。
+_UI_EDGE = r"\s：:|｜·•，,。！？!?#）)"
+_UI_BEFORE = rf"(?:^|(?<=[{_UI_EDGE}]))"
+_COMMENT_COUNT = re.compile(
+    _UI_BEFORE + r"#{0,6}\s*评论\s*[（(]\s*\d{1,4}\s*[）)]"
+    r"|评论\s*[（(]\s*\d{1,4}\s*[）)](?=\s*[-–—－]\s*[0-9A-Za-z\u4e00-\u9fff])"
+)
+_COMMENT_STAMP = (
+    r"(?:20\d{2}(?:-\d{1,2}){0,2}(?:[ T]\d{1,2}(?:[:：]\d{2}){0,2})?\s*$"
+    r"|20\d{2}-\d{1,2}-\d{1,2}[ T]\d{1,2}(?:[:：]\d{2}){0,2}\s*[)）])"
+)
+_COMMENT_AUTHOR = re.compile(
+    _UI_BEFORE + r"[-–—－]\s*(?:\*\*|__)?\s*"
+    r"[0-9A-Za-z\u4e00-\u9fff·._]{1,16}\s*(?:\*\*|__)?\s*"
+    r"[（(]\s*" + _COMMENT_STAMP
+)
+# 「泡泡玛特： 泡泡玛特：」重复的话题壳。后面还粘着评论头时，不把重复本身当成一句标题。
+_DUP_LEAD = re.compile(r"^(.{1,16}?)[：:]\s*(?:\1[：:]\s*)+")
 
 
 def repairs_source(source_id: str) -> bool:
@@ -102,13 +124,34 @@ def is_empty_shell(title: str) -> bool:
     return _EMPTY_SHELL.search(title or "") is not None
 
 
+def _comment_list_ui(title: str) -> bool:
+    """标题里粘了评论列表的界面：``评论（1）`` / ``评论(1)``，或 `` - 流年（2026-10-28``。"""
+    text = title or ""
+    return _COMMENT_COUNT.search(text) is not None or _COMMENT_AUTHOR.search(text) is not None
+
+
+def _comment_ui_stem(title: str) -> str | None:
+    """残屑前面的那段。没有残屑时返回 None，残屑就在开头时返回空串。"""
+    text = title or ""
+    starts: list[int] = []
+    for pattern in (_COMMENT_COUNT, _COMMENT_AUTHOR):
+        match = pattern.search(text)
+        if match:
+            starts.append(match.start())
+    if not starts:
+        return None
+    return text[: min(starts)]
+
+
 def title_needs_repair(title: str, body: str = "") -> bool:
     """空标题、占位（含「图片」这种带引号的）、复述套话、空壳导读、纯话题号、带省略号，
-    公司名/话题名冒号壳，明显错字，或混进了归档头。
+    公司名/话题名冒号壳，明显错字，归档头，或评论列表的界面残屑。
 
-    给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
+    句子里只是提到「评论」的不算。给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
     """
     text = (title or "").strip()
+    if _comment_list_ui(text):
+        return True
     if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
         return True
     if _shell_colon(text):
@@ -125,12 +168,15 @@ def title_needs_repair(title: str, body: str = "") -> bool:
 
 
 def title_needs_ai(title: str) -> bool:
-    """只有空/占位/复述套话/空壳导读/省略号截断/冒号壳/归档头脏标题才值得打 flash。
+    """空/占位/复述套话/空壳导读/省略号截断/冒号壳/归档头，以及切不干净的评论残屑，才打 flash。
 
+    残屑前面还剩一句可用的标题时，只把残屑切掉，不打 flash。
     星球接口半句截断（对着正文能补全的）仍走确定性规则，避免存量几千篇全打 LLM。
     只是错字也只抛光，不起题。
     """
     text = (title or "").strip()
+    if _comment_list_ui(text):
+        return not bool(_clean_comment_stem(text))
     if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
         return True
     if _shell_colon(text):
@@ -166,6 +212,28 @@ def _shell_colon(title: str) -> bool:
     if len(stem) > 16:
         return False
     return len(text) <= TITLE_LIMIT
+
+
+def _duplicate_topic_shell(text: str) -> bool:
+    """「泡泡玛特： 泡泡玛特」或带结尾冒号的重复话题壳。不是「问：怎么看茅台」。"""
+    parts = [re.sub(r"\s+", "", part) for part in re.split(r"[：:]", text or "") if part.strip()]
+    if len(parts) < 2:
+        return False
+    head = parts[0]
+    if not head or len(head) > 16 or any(char in head for char in "。！？!?，,；;"):
+        return False
+    return all(part == head for part in parts)
+
+
+def _topic_shell_label(text: str) -> str:
+    """重复的话题壳收成一个「泡泡玛特：」，好让后面的图片文字还能对上公司。不是壳就返回空串。"""
+    raw = re.sub(r"\s+", " ", text or "").strip().rstrip(" \t-–—－|｜·•")
+    if not raw or not (_duplicate_topic_shell(raw) or _shell_colon(raw)):
+        return ""
+    part = re.split(r"[：:]", raw, maxsplit=1)[0].strip()
+    if not part or len(part) > 16 or any(char in part for char in "。！？!?，,；;"):
+        return ""
+    return part + "："
 
 
 def _tidy_clause_colon(text: str) -> str:
@@ -249,6 +317,12 @@ def zsxq_display_title(
     stored = _without_archive_meta((title or "").strip())
     # 正文开头的归档头（作者、时间、点赞数）不是帖子的话，不拿来当标题。
     body = strip_meta(body or "")
+    # 评论残屑前面还有一句可用的话：切掉残屑，不用正文换一句。
+    clean = _clean_comment_stem(stored)
+    if clean:
+        return clean
+    if _comment_list_ui(stored):
+        stored = _topic_shell_label(_comment_ui_stem(stored) or "")
     if stored and not title_needs_repair(stored, body):
         return _tidy_clause_colon(stored)
     # 只是错字：抛光后就能用，不必从正文重抽一句盖掉原标题。
@@ -373,7 +447,13 @@ def _candidates(text: str) -> list[str]:
         ):
             continue
         fitted = _fit(prepared)
-        if not fitted or _contains_cut(fitted) or _placeholder(fitted) or _narration(fitted):
+        if (
+            not fitted
+            or _contains_cut(fitted)
+            or _placeholder(fitted)
+            or _narration(fitted)
+            or _comment_list_ui(fitted)
+        ):
             continue
         found.append(fitted)
     return found
@@ -411,6 +491,10 @@ def _prepare(sentence: str) -> str:
             break
         current = rest
     current = _strip_ellipsis(current).strip().rstrip("。.")
+    if _comment_list_ui(current):
+        current = _excise_comment_ui(current)
+        if not current:
+            return ""
     if current.endswith(("：", ":")) and not _shell_colon(current):
         current = current.rstrip("：:").strip()
     return re.sub(r"\s+", " ", current).strip()
@@ -491,6 +575,7 @@ def _short_snippet(text: str) -> str:
     piece = _clip_dangling(piece) if _dangling(piece) else piece
     if (
         not piece
+        or _comment_list_ui(piece)
         or _placeholder(piece)
         or _spammy(piece)
         or _FILLER.match(piece)
@@ -528,7 +613,14 @@ def _fit(text: str) -> str:
 
 
 def _ok(text: str) -> bool:
-    if not text or _placeholder(text) or _narration(text) or _spammy(text) or _FILLER.match(text):
+    if (
+        not text
+        or _comment_list_ui(text)
+        or _placeholder(text)
+        or _narration(text)
+        or _spammy(text)
+        or _FILLER.match(text)
+    ):
         return False
     if _shell_colon(text):
         return False
@@ -550,6 +642,59 @@ def _clip_dangling(text: str) -> str:
     if match and match.start() >= 4:
         return text[: match.start()].strip()
     return (text or "").strip()
+
+
+def _usable_comment_stem(prefix: str) -> str:
+    """残屑前面的这段能当标题才返回。重复的话题壳、空壳、半截都不要。"""
+    stem = re.sub(r"\s+", " ", prefix or "").strip().rstrip(" \t-–—－|｜·•")
+    if not stem or _duplicate_topic_shell(stem) or _shell_colon(stem) or _comment_list_ui(stem):
+        return ""
+    if _dangling(stem):
+        stem = _clip_dangling(stem)
+    fitted = _fit(polish_title_typos(stem))
+    if (
+        not fitted
+        or _comment_list_ui(fitted)
+        or _duplicate_topic_shell(fitted)
+        or _shell_colon(fitted)
+        or not _ok(fitted)
+        or is_empty_shell(fitted)
+        or title_needs_repair(fitted)
+    ):
+        return ""
+    return fitted
+
+
+def _clean_comment_stem(title: str) -> str:
+    """标题带评论残屑、且前面还剩一句可用的话时，返回那一句。否则返回空串。"""
+    if not _comment_list_ui(title):
+        return ""
+    return _usable_comment_stem(_comment_ui_stem(title) or "")
+
+
+def _excise_comment_ui(text: str) -> str:
+    """从一句里拿掉评论列表残屑。
+
+    前面已经是一句可用的标题，就只留前面。否则删掉残屑，重复的话题壳也拿掉，留下后面的句子。
+    """
+    current = text or ""
+    for _ in range(3):
+        if not _comment_list_ui(current):
+            return current.strip()
+        usable = _usable_comment_stem(_comment_ui_stem(current) or "")
+        if usable:
+            return usable
+        cleaned = current
+        for pattern in (_COMMENT_AUTHOR, _COMMENT_COUNT):
+            cleaned = pattern.sub(" ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(" \t-–—－|｜·•")
+        match = _DUP_LEAD.match(cleaned)
+        if match:
+            cleaned = cleaned[match.end() :].strip()
+        if cleaned == current.strip():
+            return ""
+        current = cleaned
+    return "" if _comment_list_ui(current) else current.strip()
 
 
 def _placeholder(text: str) -> bool:

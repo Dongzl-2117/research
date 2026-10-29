@@ -493,7 +493,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ai-titles",
         action="store_true",
-        help="缺/壳/省略号标题优先用站内 deepseek-flash 起题（失败退回确定性规则）",
+        help="缺/壳/省略号/切不掉的评论残屑标题优先用站内 deepseek-flash 起题（失败退回确定性规则）",
     )
     parser.add_argument(
         "--limit",
