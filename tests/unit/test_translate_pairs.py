@@ -131,29 +131,31 @@ def _quote_repeat_fixture() -> tuple[str, str]:
     return "".join(en_parts), "".join(zh_parts)
 
 
-def test_pairs_align_when_translation_dropped_repeated_quotes():
-    """原文未去重、译文已去重，块数差大于 1 时对照仍逐段配上，不退回纯中文。"""
+def test_pairs_keep_bilingual_when_quote_repeats_make_counts_unequal():
+    """21182 的形状：英文 24 块、中文 16 块。对照仍在，长度取较长的一边，按位置配。"""
     en, zh = _quote_repeat_fixture()
-    assert len(top_level_blocks(en)) == 24
-    assert len(top_level_blocks(zh)) == 16
-    assert abs(len(top_level_blocks(en)) - len(top_level_blocks(zh))) > 1
+    en_blocks = top_level_blocks(en)
+    zh_blocks = top_level_blocks(zh)
+    assert len(en_blocks) == 24
+    assert len(zh_blocks) == 16
+    assert abs(len(en_blocks) - len(zh_blocks)) > 1
     pairs = bilingual_pairs(en, zh)
     assert pairs is not None
-    assert len(pairs) == 16
-    for index, pair in enumerate(pairs):
-        assert pair.anchor == f"p-{index + 1}"
-        assert pair.zh
-        if index % 2 == 0:
-            assert f"引用{index // 2}" in pair.zh
-            assert f"Quoted passage {index // 2}" in pair.en
-        else:
-            assert f"解说{index // 2}" in pair.zh
-            assert f"Commentary {index // 2}" in pair.en
-            assert f"Quoted passage {index // 2}" not in pair.en
+    assert len(pairs) == max(len(en_blocks), len(zh_blocks))
+    assert pairs[0].zh and "引用0" in pairs[0].zh
+    assert "Quoted passage 0" in pairs[0].en
+    assert pairs[0].anchor == "p-1"
+    assert pairs[1].zh and "解说0" in pairs[1].zh
+    assert "Quoted passage 0" in pairs[1].en
+    assert pairs[15].zh and "解说7" in pairs[15].zh
+    assert pairs[15].anchor == "p-16"
+    assert pairs[16].zh is None and pairs[16].anchor is None
+    assert pairs[23].zh is None
+    assert "Commentary 7" in pairs[23].en
 
 
-def test_one_dropped_repeat_does_not_shift_following_paragraph():
-    """只少一段时，旧逻辑会按位置错配。去重后解说段仍对着自己的译文。"""
+def test_one_extra_english_block_still_returns_pairs():
+    """只多一段英文时也不退回纯中文。多出来的原文没有译文。"""
     quote = "Microsoft cloud revenue grew at the low end of the forecast this quarter."
     note = "That pivot is the part that matters for the rest of the year."
     en = (
@@ -167,10 +169,14 @@ def test_one_dropped_repeat_does_not_shift_following_paragraph():
     )
     pairs = bilingual_pairs(en, zh)
     assert pairs is not None
-    assert len(pairs) == 2
+    assert len(pairs) == 3
+    assert pairs[0].zh and "微软云" in pairs[0].zh
+    assert pairs[0].anchor == "p-1"
     assert pairs[1].zh and "真正要紧" in pairs[1].zh
-    assert "pivot" in pairs[1].en
     assert pairs[1].anchor == "p-2"
+    assert "pivot" in pairs[2].en
+    assert pairs[2].zh is None
+    assert pairs[2].anchor is None
 
 
 def test_pairs_keep_repeats_when_translation_kept_them():
@@ -193,21 +199,58 @@ def test_pairs_keep_repeats_when_translation_kept_them():
     assert pairs[2].zh and "第三段" in pairs[2].zh
 
 
-def test_pairs_align_when_model_repeated_a_paragraph():
-    """模型把同一段连吐三遍、入库去重后中文会短一截。对照仍按剩下的段配。"""
+def test_pairs_when_chinese_side_is_longer():
+    """中文比英文多出的段接在后面，en 为空，对照不退回。"""
     sentence = "聚合理论解释平台为什么会赢，这一段足够长所以连续重复要去掉。"
     en = "<p>Aggregation theory explains why platforms win.</p><p>Costs come second in this note.</p>"
     zh = f"<p>{sentence}</p><p>{sentence}</p><p>{sentence}</p><p>成本是后面的第二点。</p>"
-    assert abs(len(top_level_blocks(en)) - len(top_level_blocks(zh))) > 1
+    en_n = len(top_level_blocks(en))
+    zh_n = len(top_level_blocks(zh))
+    assert zh_n - en_n > 1
     pairs = bilingual_pairs(en, zh)
     assert pairs is not None
-    assert len(pairs) == 2
+    assert len(pairs) == zh_n
     assert pairs[0].zh and "聚合理论" in pairs[0].zh
-    assert pairs[1].zh and "成本" in pairs[1].zh
+    assert "Aggregation theory" in pairs[0].en
     assert "Costs come second" in pairs[1].en
+    assert pairs[1].zh and sentence in pairs[1].zh
+    assert pairs[2].en == ""
+    assert pairs[2].zh and sentence in pairs[2].zh
+    assert pairs[3].en == ""
+    assert pairs[3].zh and "成本" in pairs[3].zh
 
 
-def test_pairs_still_none_when_structure_diverges():
+def test_pairs_when_structure_diverges():
+    """块数差得很多也按位置配，不再整页退回纯中文。"""
     en = "".join(f"<p>Paragraph {index} says something distinct.</p>" for index in range(6))
-    zh = "<p>只有两段。</p><p>结构对不上，不该硬配。</p>"
-    assert bilingual_pairs(en, zh) is None
+    zh = "<p>只有两段。</p><p>结构对不上，照样对照。</p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None
+    assert len(pairs) == 6
+    assert pairs[0].zh and "只有两段" in pairs[0].zh
+    assert "Paragraph 0" in pairs[0].en
+    assert pairs[1].zh and "照样对照" in pairs[1].zh
+    assert "Paragraph 1" in pairs[1].en
+    assert all(pair.zh is None for pair in pairs[2:])
+    assert "Paragraph 5" in pairs[5].en
+
+
+def test_pairs_skip_zh_when_same_as_english_or_empty():
+    en = "<p>Same text.</p><p>Has translation.</p><p>Third.</p>"
+    zh = "<p>Same text.</p><p>有译文。</p><p></p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None
+    assert len(pairs) == 3
+    assert pairs[0].zh is None and "Same text." in pairs[0].en
+    assert pairs[1].zh and "有译文" in pairs[1].zh
+    assert pairs[2].zh is None and "Third." in pairs[2].en
+
+
+def test_pairs_none_only_when_both_sides_have_no_blocks():
+    assert bilingual_pairs("", "") is None
+    assert bilingual_pairs("   ", "") is None
+    only_en = bilingual_pairs("<p>Hello.</p>", "")
+    assert only_en is not None and len(only_en) == 1 and only_en[0].zh is None and "Hello." in only_en[0].en
+    only_zh = bilingual_pairs("", "<p>你好。</p>")
+    assert only_zh is not None and len(only_zh) == 1 and only_zh[0].en == ""
+    assert only_zh[0].zh and "你好" in only_zh[0].zh

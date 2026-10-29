@@ -167,8 +167,7 @@ def _dedupe_key(html: str) -> str:
 def _dedupe_consecutive_blocks(html: str) -> str:
     """去掉连续相同的顶层块，以及块内连续相同的 <p>（抽验 22195）。
 
-    译文入库会走这里，原文不会。引用后又跟了一段相同正文时，中文少掉这几段，
-    对照页块数对不上。配对前对两边各跑一遍（见 bilingual_pairs）。
+    只在译文写入前用。对照页按位置配，不靠这次去重决定出不出对照。
     """
     html = html or ""
     blocks = top_level_blocks(html)

@@ -1,4 +1,8 @@
-"""把原文 HTML 与译文 HTML 按顶层块配成中英对照（与 AIHOT bilingualPairs 一致）。"""
+"""把原文 HTML 与译文 HTML 按顶层块的位置配成中英对照。
+
+块数不必相同。能配上的并排，多出来的原文没有译文，多出来的译文单独成段。
+译过就出对照，不因为块数差整页退回中文（Outlook 中英对照邮件、旧 AIHOT 的口径）。
+"""
 
 from __future__ import annotations
 
@@ -79,59 +83,38 @@ def stamp_paragraph_ids(html: str) -> str:
     return "".join(out)
 
 
-def _gap(left: list[str], right: list[str]) -> int:
-    return abs(len(left) - len(right))
-
-
-def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[str], list[str]] | None:
-    """两边顶层块一样多就按原样配。
-
-    译文入库时去掉了连续相同的段，原文没有。展示时又盖了 p-id，字符串不再相同，
-    块数会差一截：差一块以上整页退回纯中文，只差一块则后面的段错位。
-    两边再走一遍同一套去重；差距缩小并且仍在差一块以内，才改用去重后的块。
-    块数本来一样的不动，免得只削掉英文、把译文仍保留的那一段错开。
-    """
-    kids_o = top_level_blocks(original_html)
-    kids_t = top_level_blocks(zh_html)
-    raw_gap = _gap(kids_o, kids_t)
-    if kids_o and raw_gap == 0:
-        return kids_o, kids_t
-    # 懒加载：stamp / mdlinks 会进来，不该为了盖段落号去拉翻译服务。
-    from researchlib.translate.service import _dedupe_consecutive_blocks
-
-    deduped_o = top_level_blocks(_dedupe_consecutive_blocks(original_html))
-    deduped_t = top_level_blocks(_dedupe_consecutive_blocks(zh_html))
-    deduped_gap = _gap(deduped_o, deduped_t)
-    if deduped_o and deduped_t and deduped_gap <= 1 and deduped_gap < raw_gap:
-        return deduped_o, deduped_t
-    if kids_o and raw_gap <= 1:
-        return kids_o, kids_t
-    return None
+def _one_pair(en_html: str, o_text: str, zh_raw: str, zh_text: str, anchor: str | None) -> BilingualPair:
+    """一段对照。译文为空、或纯文本和原文相同，就不显示中文。图片只留在英文侧。"""
+    if not zh_text or zh_text == o_text:
+        return BilingualPair(en=en_html, zh=None, anchor=anchor)
+    zh = zh_raw
+    if re.search(r"<(img|picture|video|source)\b", zh, re.I):
+        zh = _strip_media(zh)
+        if not _plain(zh) or _plain(zh) == o_text:
+            return BilingualPair(en=en_html, zh=None, anchor=anchor)
+    return BilingualPair(en=en_html, zh=zh, anchor=anchor)
 
 
 def bilingual_pairs(original_html: str, zh_html: str) -> list[BilingualPair] | None:
-    blocks = _blocks_for_pairs(original_html, zh_html)
-    if blocks is None:
+    """按位置把顶层块配成对照。两边块数不必相同。
+
+    下标对得上的并排。原文更长时，多出来的段 zh 为 None。译文更长时，多出来的段
+    en 为空，单独接在后面。返回列表的长度等于较长的一边。两边都没有顶层块才返回 None。
+    """
+    kids_o = top_level_blocks(original_html)
+    kids_t = top_level_blocks(zh_html)
+    if not kids_o and not kids_t:
         return None
-    kids_o, kids_t = blocks
     pairs: list[BilingualPair] = []
     n = min(len(kids_o), len(kids_t))
     for i in range(n):
         en_html, _ = _take_anchor(kids_o[i])
         zh_raw, anchor = _take_anchor(kids_t[i])
-        o_text = _plain(kids_o[i])
-        zh_text = _plain(zh_raw)
-        if not zh_text or zh_text == o_text:
-            pairs.append(BilingualPair(en=en_html, zh=None, anchor=anchor))
-            continue
-        zh = zh_raw
-        if re.search(r"<(img|picture|video|source)\b", zh, re.I):
-            zh = _strip_media(zh)
-            if not _plain(zh) or _plain(zh) == o_text:
-                pairs.append(BilingualPair(en=en_html, zh=None, anchor=anchor))
-                continue
-        pairs.append(BilingualPair(en=en_html, zh=zh, anchor=anchor))
+        pairs.append(_one_pair(en_html, _plain(kids_o[i]), zh_raw, _plain(zh_raw), anchor))
     for i in range(n, len(kids_o)):
         en_html, _ = _take_anchor(kids_o[i])
         pairs.append(BilingualPair(en=en_html, zh=None, anchor=None))
+    for i in range(n, len(kids_t)):
+        zh_raw, anchor = _take_anchor(kids_t[i])
+        pairs.append(_one_pair("", "", zh_raw, _plain(zh_raw), anchor))
     return pairs
