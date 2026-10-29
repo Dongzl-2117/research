@@ -9,7 +9,7 @@
 # 结果写进 data/status/deploy.json，首页只在失败时提示：拉代码、重建失败，重启后应用没起来，CI 没过，
 # 仓库不在 main、有没提交的改动或者没推送的提交，或者 6 小时取不到 main、查不到 CI。偶尔断网的那一轮什么都不记，下一轮再试。
 # 重建失败的提交最多试 3 轮，之后等下一个提交或 FORCE=1。CI 没过的提交每轮再查，CI 重跑通过了就上线。
-# 夜间补齐、定时抓取、备份正在跑时先不重启：它们在容器里跑命令，重建会把它们打断。
+# 夜间补齐、定时抓取、备份，以及容器里的 research-translate / research-ocr 正在跑时先不重启：重建会把它们打断。
 # 定时任务的模板（deploy/launchd/、install-launchd.sh）改了，上线后按上次安装的设置重装一遍。
 #
 # 拉代码会改到这个脚本自己，所以全部写在函数里，bash 先读完整个文件再跑。
@@ -78,6 +78,19 @@ busy_job() {
       return 0
     fi
   done
+  # 容器里的 ad-hoc 长任务：compose recreate 会杀掉它们（强制重译 / OCR 重跑）。
+  local top
+  top="$(compose top app 2> /dev/null || true)"
+  case "$top" in
+    *research-translate*)
+      echo "research-translate"
+      return 0
+      ;;
+    *research-ocr*)
+      echo "research-ocr"
+      return 0
+      ;;
+  esac
 }
 
 ci_state() {
