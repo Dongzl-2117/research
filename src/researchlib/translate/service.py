@@ -22,6 +22,7 @@ from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.segments import (
     chunk_segments,
     shield,
+    splice_segments,
     top_level_blocks,
     translatable_blocks,
     unshield,
@@ -266,7 +267,6 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         return TranslateResult(article_id, "skipped", reason="already Chinese")
 
     html, digest = _render_original(conn, article, data_dir)
-    blocks = top_level_blocks(html)
     targets = translatable_blocks(html)
     if not targets:
         return TranslateResult(article_id, "skipped", reason="no translatable text")
@@ -307,17 +307,17 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             translations[offset + i] = restored if restored is not None else text
         offset += len(chunk)
 
-    # 回填到顶层块副本
-    filled = list(blocks)
+    # 按叶子段原位写回。blockquote / 列表 / 表格的外壳留着，只换里面的那一段。
+    replacements: dict[int, str] = {}
     done = 0
-    for (block_index, _src), zh in zip(targets, translations, strict=True):
+    for (segment_index, _src), zh in zip(targets, translations, strict=True):
         if zh:
-            filled[block_index] = zh
+            replacements[segment_index] = _dedupe_consecutive_blocks(zh)
             done += 1
     if not done:
         return TranslateResult(article_id, "skipped", reason="no batch translated")
 
-    zh_html = _assemble_zh_html(filled)
+    zh_html = splice_segments(html, replacements)
     zh_text = re.sub(r"<[^>]+>", " ", zh_html)
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
     title_zh = _translate_title(article["title"] or "", data_dir)

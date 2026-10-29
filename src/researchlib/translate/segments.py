@@ -1,18 +1,35 @@
-"""从渲染后的 HTML 抽出可译顶层块；图片/代码用占位符，译后再还原。"""
+"""从渲染后的 HTML 抽出可译段；图片/代码用占位符，译后再还原。
+
+分段规则与 AIHOT ``editorial/translate.ts`` 的 ``segmentsOf`` 一致：``BLOCK`` 且没有
+块级子节点才是叶子，否则继续访问子节点。因此带 ``<p>`` / 标题 / ``<li>`` 的
+blockquote 会拆开，只有纯文本的短引用仍是一整段 blockquote。
+"""
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 from dataclasses import dataclass
 from html import escape
 from html.parser import HTMLParser
 
-# 与 AIHOT segmentsOf 的 BLOCK 集合对齐：这些是叶子文本块标签。
-_LEAF = frozenset({
-    "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote",
+# AIHOT segmentsOf 的 BLOCK。h1 / h6 不在里面：不是叶子，只往下看子节点。
+_BLOCK = frozenset({
+    "p", "h2", "h3", "h4", "h5", "li", "blockquote",
     "figcaption", "td", "th", "dt", "dd", "caption",
 })
+# AIHOT 的 CONTAINER。直接子节点命中才算 hasBlockChild。dl 不在里面。
+_CONTAINER = re.compile(
+    r"^(?:p|h[2-5]|li|blockquote|figcaption|td|th|dt|dd|caption|ul|ol|table|pre|figure|div)$"
+)
+# cheerio / 浏览器把这些当成空元素。<br> 若按普通开始标签加深度，后面的兄弟节点
+# 会全被吞进当前块（21118 测出来只有 7 个顶层块，最后一块是整篇）。
+_VOID = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
 _SKIP = frozenset({"script", "style", "pre", "code"})
+_PARA_ID = re.compile(r'\bid="(p-\d+)"')
 _MEDIA = re.compile(
     r"<(?:img|source|track)\b[^>]*?/?>"
     r"|<(?:picture|video)\b[^>]*>.*?</(?:picture|video)>",
@@ -45,6 +62,13 @@ class _TopLevelCollector(HTMLParser):
         self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _VOID:
+            piece = self._start(tag, attrs, close=True)
+            if self._skip_depth or self._depth:
+                self._buf.append(piece)
+            else:
+                self.blocks.append(piece)
+            return
         if self._skip_depth:
             self._skip_depth += 1
             self._buf.append(self._start(tag, attrs))
@@ -122,16 +146,194 @@ def top_level_blocks(html: str) -> list[str]:
     return [block for block in parser.blocks if block.strip()]
 
 
+@dataclass(frozen=True)
+class Segment:
+    """一个叶子段。anchor 是自身或最近祖先的 id="p-N"（只给对照页用）。"""
+
+    html: str
+    anchor: str | None = None
+
+
+class _Tx:
+    def __init__(self, data: str) -> None:
+        self.data = data
+
+
+class _El:
+    def __init__(self, name: str, start: str, *, void: bool = False) -> None:
+        self.name = name
+        self.start = start
+        self.void = void
+        self.children: list[_El | _Tx] = []
+        self.replacement: str | None = None
+
+
+class _FragmentParser(HTMLParser):
+    """把片段解析成树。空元素不入栈；结束标签往上匹配，避免 <br> 把后面的兄弟吞进去。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.root = _El("", "")
+        self.stack: list[_El] = [self.root]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        raw = self.get_starttag_text()
+        name = tag.lower()
+        node = _El(name, raw, void=name in _VOID)
+        self.stack[-1].children.append(node)
+        if not node.void:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.stack[-1].children.append(_El(tag.lower(), self.get_starttag_text(), void=True))
+
+    def handle_endtag(self, tag: str) -> None:
+        name = tag.lower()
+        if name in _VOID:
+            return
+        for index in range(len(self.stack) - 1, 0, -1):
+            if self.stack[index].name == name:
+                del self.stack[index:]
+                return
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self.stack[-1].children.append(_Tx(data))
+
+    def handle_entityref(self, name: str) -> None:
+        self.stack[-1].children.append(_Tx(f"&{name};"))
+
+    def handle_charref(self, name: str) -> None:
+        self.stack[-1].children.append(_Tx(f"&#{name};"))
+
+    def handle_comment(self, data: str) -> None:
+        self.stack[-1].children.append(_Tx(f"<!--{data}-->"))
+
+
+def _serialize(nodes: list[_El | _Tx]) -> str:
+    parts: list[str] = []
+    for node in nodes:
+        if isinstance(node, _Tx):
+            parts.append(node.data)
+            continue
+        if node.replacement is not None:
+            parts.append(node.replacement)
+            continue
+        parts.append(node.start)
+        if not node.void:
+            parts.append(_serialize(node.children))
+            parts.append(f"</{node.name}>")
+    return "".join(parts)
+
+
+def _outer(node: _El) -> str:
+    if node.void:
+        return node.start
+    return f"{node.start}{_serialize(node.children)}</{node.name}>"
+
+
+def _plain_text(node: _El) -> str:
+    parts: list[str] = []
+
+    def walk(item: _El | _Tx) -> None:
+        if isinstance(item, _Tx):
+            parts.append(item.data)
+            return
+        for child in item.children:
+            walk(child)
+
+    walk(node)
+    return html_lib.unescape("".join(parts))
+
+
+def _has_letter(node: _El) -> bool:
+    """与 AIHOT ``/\\p{L}/u`` 一样：没有字母的段（纯数字、纯图片）不送去翻译。"""
+    return any(char.isalpha() for char in _plain_text(node))
+
+
+def _para_id(start: str) -> str | None:
+    match = _PARA_ID.search(start or "")
+    return match.group(1) if match else None
+
+
+def _walk(
+    node: _El,
+    ancestors: list[str],
+    used: set[str],
+    out: list[Segment],
+    replacements: dict[int, str] | None,
+) -> None:
+    # pre / code 整段跳过，不译里面的字，和 AIHOT 一样。
+    if node.name in {"pre", "code"}:
+        return
+    own = _para_id(node.start)
+    chain = [*ancestors, own] if own else ancestors
+    has_block_child = any(isinstance(child, _El) and _CONTAINER.match(child.name) for child in node.children)
+    if node.name in _BLOCK and not has_block_child:
+        if not _has_letter(node):
+            return
+        anchor = own
+        if anchor is None:
+            for candidate in reversed(chain):
+                if candidate and candidate not in used:
+                    anchor = candidate
+                    break
+        if anchor:
+            used.add(anchor)
+        out.append(Segment(_outer(node), anchor))
+        if replacements is not None and (len(out) - 1) in replacements:
+            node.replacement = replacements[len(out) - 1]
+        return
+    for child in node.children:
+        if isinstance(child, _El):
+            _walk(child, chain, used, out, replacements)
+
+
+def _parse_and_walk(
+    html: str,
+    replacements: dict[int, str] | None = None,
+) -> tuple[list[Segment], str]:
+    parser = _FragmentParser()
+    parser.feed(html or "")
+    parser.close()
+    found: list[Segment] = []
+    for child in parser.root.children:
+        if isinstance(child, _El):
+            _walk(child, [], set(), found, replacements)
+    return found, _serialize(parser.root.children)
+
+
+def iter_segments(html: str) -> list[Segment]:
+    """AIHOT segmentsOf：文档序的叶子段。没有字母的叶子不返回。"""
+    if not (html or "").strip():
+        return []
+    found, _serialized = _parse_and_walk(html)
+    return found
+
+
+def segments_of(html: str) -> list[str]:
+    """叶子段的 outer HTML。译制和对照都用这一份，不再把整段 blockquote 当一块。"""
+    return [item.html for item in iter_segments(html)]
+
+
+def splice_segments(html: str, replacements: dict[int, str]) -> str:
+    """按 segments_of 的下标，把译文写回原来的叶子，外层 blockquote / 列表 / 表格不动。"""
+    if not html:
+        return ""
+    _found, serialized = _parse_and_walk(html, replacements)
+    return serialized
+
+
 def translatable_blocks(html: str) -> list[tuple[int, str]]:
-    """返回 (原 top-level 下标, 块 HTML)。跳过无拉丁字母的块（纯中文/符号/图）。"""
+    """返回 (segments_of 下标, 段 HTML)。跳过无拉丁字母的段（纯中文/符号/图）。"""
     out: list[tuple[int, str]] = []
-    for index, block in enumerate(top_level_blocks(html)):
-        plain = re.sub(r"<[^>]+>", "", block)
+    for index, segment in enumerate(iter_segments(html)):
+        plain = re.sub(r"<[^>]+>", "", segment.html)
         if not _LATIN.search(plain):
             continue
         if re.fullmatch(r"\s*", plain):
             continue
-        out.append((index, block))
+        out.append((index, segment.html))
     return out
 
 

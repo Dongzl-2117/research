@@ -1,8 +1,9 @@
 """把原文 HTML 与译文 HTML 配成中英对照。
 
-新译文按段原位写回，顶层块和原文一一对应，这里按位置并排即可。
+新译文按叶子段原位写回，和 AIHOT segmentsOf 一样：blockquote 里还有块级子节点时，
+段是里面的 p / 标题 / li，不是整段引用。这里按段的位置并排。
 旧稿若只在中文侧删过连续重复段，两边再走一遍同一套去重，把同段拉齐。
-块数仍对不齐也不整页退回中文：多出来的挂在末尾。
+段数仍对不齐也不整页退回中文：多出来的挂在末尾。
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from researchlib.translate.segments import top_level_blocks
+from researchlib.translate.segments import Segment, iter_segments, top_level_blocks
 
 _MEDIA_TAGS = re.compile(
     r"<(?:img|source|track)\b[^>]*?/?>"
@@ -96,19 +97,29 @@ def _one_pair(en_html: str, o_text: str, zh_raw: str, zh_text: str, anchor: str 
     return BilingualPair(en=en_html, zh=zh, anchor=anchor)
 
 
-def _gap(left: list[str], right: list[str]) -> int:
+def _gap(left: list[object], right: list[object]) -> int:
     return abs(len(left) - len(right))
 
 
-def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[str], list[str]] | None:
-    """结构一致就按原样配。旧稿块数对不齐时，用同一套去重把同段拉齐。
+def _entries(html: str) -> list[Segment]:
+    return iter_segments(html)
+
+
+def _show(segment: Segment) -> tuple[str, str | None]:
+    """去掉段上的段落号。叶子本身没有 id 时，用切段时记下的祖先 id。"""
+    html, anchor = _take_anchor(segment.html)
+    return html, anchor or segment.anchor
+
+
+def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[Segment], list[Segment]] | None:
+    """结构一致就按原样配。旧稿段数对不齐时，用同一套去重把同段拉齐。
 
     译文入库曾经只删中文侧的连续重复段，原文还留着引用后的那一段。展示时两边
-    再跑一遍；比较忽略 id="p-N"。差距变小才改用去重后的块，变小之后仍有差额也
-    按拉齐后的序列配，不退回未去重的错位拼接。两边都没有顶层块才返回 None。
+    再跑一遍；比较忽略 id="p-N"。差距变小才改用去重后的段，变小之后仍有差额也
+    按拉齐后的序列配，不退回未去重的错位拼接。两边都没有叶子段才返回 None。
     """
-    kids_o = top_level_blocks(original_html)
-    kids_t = top_level_blocks(zh_html)
+    kids_o = _entries(original_html)
+    kids_t = _entries(zh_html)
     if not kids_o and not kids_t:
         return None
     if kids_o and kids_t and _gap(kids_o, kids_t) == 0:
@@ -116,15 +127,15 @@ def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[str], list
     # 懒加载：盖段落号不必为了相等的结构去拉翻译服务。
     from researchlib.translate.service import _dedupe_consecutive_blocks
 
-    deduped_o = top_level_blocks(_dedupe_consecutive_blocks(original_html))
-    deduped_t = top_level_blocks(_dedupe_consecutive_blocks(zh_html))
+    deduped_o = _entries(_dedupe_consecutive_blocks(original_html))
+    deduped_t = _entries(_dedupe_consecutive_blocks(zh_html))
     if deduped_o and deduped_t and _gap(deduped_o, deduped_t) < _gap(kids_o, kids_t):
         return deduped_o, deduped_t
     return kids_o, kids_t
 
 
 def bilingual_pairs(original_html: str, zh_html: str) -> list[BilingualPair] | None:
-    """按位置把顶层块配成对照。译过就出对照，不因为块数差返回 None。
+    """按位置把叶子段配成对照。译过就出对照，不因为段数差返回 None。
 
     选中的两边里，下标对得上的并排。原文更长时，多出来的段 zh 为 None。
     译文更长时，多出来的段 en 为空，单独接在后面。长度等于较长的一边。
@@ -136,13 +147,13 @@ def bilingual_pairs(original_html: str, zh_html: str) -> list[BilingualPair] | N
     pairs: list[BilingualPair] = []
     n = min(len(kids_o), len(kids_t))
     for i in range(n):
-        en_html, _ = _take_anchor(kids_o[i])
-        zh_raw, anchor = _take_anchor(kids_t[i])
-        pairs.append(_one_pair(en_html, _plain(kids_o[i]), zh_raw, _plain(zh_raw), anchor))
+        en_html, _en_anchor = _show(kids_o[i])
+        zh_raw, anchor = _show(kids_t[i])
+        pairs.append(_one_pair(en_html, _plain(kids_o[i].html), zh_raw, _plain(zh_raw), anchor))
     for i in range(n, len(kids_o)):
-        en_html, _ = _take_anchor(kids_o[i])
+        en_html, _en_anchor = _take_anchor(kids_o[i].html)
         pairs.append(BilingualPair(en=en_html, zh=None, anchor=None))
     for i in range(n, len(kids_t)):
-        zh_raw, anchor = _take_anchor(kids_t[i])
+        zh_raw, anchor = _show(kids_t[i])
         pairs.append(_one_pair("", "", zh_raw, _plain(zh_raw), anchor))
     return pairs
