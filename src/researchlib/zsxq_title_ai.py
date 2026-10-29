@@ -14,6 +14,7 @@ from researchlib.zsxq_title import (
     TITLE_LIMIT,
     polish_title_typos,
     title_needs_repair,
+    unwrap_title,
 )
 
 PROMPT = """根据下面这篇知识星球帖子的正文、图片里的字和导读，写一个中文标题。
@@ -29,7 +30,6 @@ PROMPT = """根据下面这篇知识星球帖子的正文、图片里的字和�
 - 不要复述「正文为空」「文中未给」「作者开篇判断」这类套话
 """
 
-_WRAP = re.compile(r"^[\s\"'“”‘’「」『』《》【】\[\]（）()]+|[\s\"'“”‘’「」『』《》【】\[\]（）()]+$")
 _LABEL = re.compile(r"^(?:标题|title)\s*[：:=]\s*", re.I)
 
 
@@ -67,7 +67,8 @@ def accept_ai_title(raw: str) -> str | None:
     """校验模型输出：≤40 字、无占位、无省略号壳、无公司名冒号壳。"""
     line = (raw or "").strip().splitlines()[0].strip() if (raw or "").strip() else ""
     line = _LABEL.sub("", line)
-    line = _WRAP.sub("", line).strip()
+    # 只去包住整行的那一对。以前两头的符号一律去掉，「《穷查理宝典》读后感」会剩下落单的「》」。
+    line = unwrap_title(line)
     line = polish_title_typos(line)
     line = re.sub(r"\s+", " ", line).strip().rstrip("。.")
     if not line or len(line) > TITLE_LIMIT:

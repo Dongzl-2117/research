@@ -122,6 +122,42 @@ _EDGE_ELLIPSIS = re.compile(
 )
 
 
+# 要成对的引号、书名号、括号。单引号的后一半也当撇号用（Apple’s），不算。
+MARK_PAIRS = {"“": "”", "「": "」", "『": "』", "《": "》", "（": "）", "(": ")", "【": "】", "〈": "〉", "[": "]"}
+_MARK_OPENERS = {close: open_ for open_, close in MARK_PAIRS.items()}
+_ENUMERATOR = re.compile(r"^\s*(?:\d{1,2}|[一二三四五六七八九十]{1,3}|[A-Za-z])[）)]")
+
+
+def lonely_marks(text: str) -> list[int]:
+    """配不上对的引号、书名号、括号的位置。开头「1）」「一）」这种编号不算。"""
+    text = text or ""
+    lead = _ENUMERATOR.match(text)
+    stack: list[tuple[str, int]] = []
+    lonely: list[int] = []
+    for index in range(lead.end() if lead else 0, len(text)):
+        char = text[index]
+        if char in MARK_PAIRS:
+            stack.append((char, index))
+        elif char in _MARK_OPENERS:
+            # 往外找配对的前一半：「腾讯“说」里「」配得上，夹在中间的“才算落单。
+            depth = next((n for n in range(len(stack) - 1, -1, -1) if stack[n][0] == _MARK_OPENERS[char]), None)
+            if depth is None:
+                lonely.append(index)
+            else:
+                lonely.extend(position for _char, position in stack[depth + 1 :])
+                del stack[depth:]
+    lonely.extend(index for _char, index in stack)
+    return sorted(lonely)
+
+
+def balance_marks(text: str) -> str:
+    """去掉落单的引号、书名号、括号：「“估值越低，…越有利」收成「估值越低，…越有利」。"""
+    lonely = set(lonely_marks(text))
+    if not lonely:
+        return text
+    return "".join(char for index, char in enumerate(text) if index not in lonely).strip()
+
+
 def _heading_stem(text: str) -> str:
     return _EDGE_ELLIPSIS.sub("", (text or "").strip()).strip()
 
@@ -136,6 +172,10 @@ def _same_truncated_heading(heading: str, title: str) -> bool:
     right = _heading_stem(title)
     if len(left) < 8 or len(right) < 8:
         return False
+    if left.startswith(right) or right.startswith(left):
+        return True
+    # 星球的页面标题去掉了落单的前引号，标题行「“这个故事…有两...」还带着。
+    left, right = balance_marks(left), balance_marks(right)
     return left.startswith(right) or right.startswith(left)
 
 
@@ -145,7 +185,8 @@ def strip_duplicate_title(md: str, title: str) -> str:
         return md
     heading = match.group(1).strip()
     wanted = (title or "").strip()
-    if heading == wanted or _same_truncated_heading(heading, wanted):
+    # balance_marks：星球的页面标题去掉了落单的引号，标题行还是「“估值越低，…越有利」。
+    if heading == wanted or balance_marks(heading) == wanted or _same_truncated_heading(heading, wanted):
         return md[match.end() :]
     return md
 

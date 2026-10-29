@@ -120,3 +120,35 @@ def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, s
     assert again["titles"] == 0
     assert again["comments_cleaned"] == 0
     assert again["ocr_rewash"] == 0
+
+
+def test_other_zsxq_sources_get_titles_only(conn, settings):
+    """乘风破浪：只回写标题，非方伟的评论一条不动。不加 titles_only 不让跑。"""
+    import pytest
+
+    source = next(item for item in load_sources(settings.sources_path) if item.id == "chengfengpolang")
+    when = datetime(2026, 9, 27, 14, 41, tzinfo=SHANGHAI)
+    body = (
+        "Temu：值得重视的关税利好\n\n"
+        "中美这次国事访问后达成的对等降税安排，主要是针对几类商品：小家电、玩具、节庆装饰品等。\n\n"
+        "## 评论（1）\n\n- **王小明**（2026-09-27 15:00）\n  同意，半托管早就铺开了。\n"
+    )
+    store_documents(
+        conn,
+        source=source,
+        docs=[ParsedDoc("cf-1250", "Temu：值得重视的关税利好 ...", when, body, {"format": "markdown"}, [])],
+        data_dir=settings.data_dir,
+        archive_files=1,
+        images_in_archive=0,
+        errors=[],
+    )
+    conn.commit()
+    with pytest.raises(SystemExit):
+        repair_zsxq(conn, "chengfengpolang")
+    stats = repair_zsxq(conn, "chengfengpolang", titles_only=True)
+    conn.commit()
+    assert stats["titles"] == 1 and stats["spots"] == []
+    row = conn.execute("SELECT title, body_md FROM articles WHERE external_id = 'cf-1250'").fetchone()
+    assert row["title"] == "Temu：值得重视的关税利好"
+    assert not title_needs_repair(row["title"])
+    assert "王小明" in row["body_md"]

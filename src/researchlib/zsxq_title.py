@@ -1,4 +1,4 @@
-"""方伟知识星球的展示标题。
+"""知识星球的展示标题（方伟星球、乘风破浪，以及以后接进来的 kind: zsxq 来源）。
 
 星球导出经常没有标题，或者把第一句截成「……」。卡片、文章页和重新导入时用这里的规则：
 
@@ -19,6 +19,9 @@
   正文里只是提到「评论」的不算。
 - 明显错字走 textutil.fix_obvious_typos（与 present_text.polish_display_text 同一张表），
   不在这里另维护，不改观点和口语。
+- 引号、书名号、括号配不上对的（截出来的句子只剩前引号「“估值越低，…越有利」）要补：
+  只差这一个符号就去掉它，原标题照用；从正文收出来的句子里落单的符号也去掉。
+  开头「1）」「一）」这种编号的半个括号本来就单用，不算。
 
 读者帖的「读者帖」标在作者行，不写进标题。
 """
@@ -28,7 +31,7 @@ from __future__ import annotations
 import re
 
 from researchlib.boilerplate import strip_meta
-from researchlib.textutil import argumentative_excerpt, fix_obvious_typos
+from researchlib.textutil import MARK_PAIRS, argumentative_excerpt, balance_marks, fix_obvious_typos, lonely_marks
 
 FANGWEI_ZSXQ = "fangwei-zsxq"
 TITLE_LIMIT = 40
@@ -111,8 +114,12 @@ _COMMENT_AUTHOR = re.compile(
 _DUP_LEAD = re.compile(r"^(.{1,16}?)[：:]\s*(?:\1[：:]\s*)+")
 
 
-def repairs_source(source_id: str) -> bool:
-    return source_id == FANGWEI_ZSXQ
+def repairs_source(source_id: str, kind: str = "") -> bool:
+    """标题按这里的规则补：方伟星球，以及别的 kind 是 zsxq 的来源（乘风破浪）。
+
+    识图后的标题重排（followups）只传 source_id，仍只排方伟星球。
+    """
+    return source_id == FANGWEI_ZSXQ or kind == "zsxq"
 
 
 def is_empty_shell(title: str) -> bool:
@@ -145,7 +152,7 @@ def _comment_ui_stem(title: str) -> str | None:
 
 def title_needs_repair(title: str, body: str = "") -> bool:
     """空标题、占位（含「图片」这种带引号的）、复述套话、空壳导读、纯话题号、带省略号，
-    公司名/话题名冒号壳，明显错字，归档头，或评论列表的界面残屑。
+    公司名/话题名冒号壳，明显错字，归档头，评论列表的界面残屑，或引号、括号落单。
 
     句子里只是提到「评论」的不算。给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
     """
@@ -164,6 +171,8 @@ def title_needs_repair(title: str, body: str = "") -> bool:
         return True
     if _ARCHIVE_META.search(text):
         return True
+    if lonely_marks(text):
+        return True
     return bool(body) and cut_from_body(text, body)
 
 
@@ -172,7 +181,7 @@ def title_needs_ai(title: str) -> bool:
 
     残屑前面还剩一句可用的标题时，只把残屑切掉，不打 flash。
     星球接口半句截断（对着正文能补全的）仍走确定性规则，避免存量几千篇全打 LLM。
-    只是错字也只抛光，不起题。
+    只是错字也只抛光，不起题。引号、括号落单只去掉那个符号，也不起题。
     """
     text = (title or "").strip()
     if _comment_list_ui(text):
@@ -305,6 +314,27 @@ def _completed_from_body(title: str, body: str) -> str:
     return polished
 
 
+def _headline_line(title: str, body: str) -> str:
+    """原标题去掉末尾省略号后，在正文里自成一行：那一行就是完整的标题，省略号是导出时加的。
+
+    乘风破浪 1250 的标题是「Temu：值得重视的关税利好 ...」，正文第一行就是「Temu：值得重视的关税利好」。
+    不认这一行，标题会换成正文第一句，帖子自己起的标题反而丢了。
+    """
+    if not _ELLIPSIS_END.search(title or ""):
+        return ""
+    stem = _strip_ellipsis(title)
+    head = _SPACES.sub("", _MARKUP.sub("", stem))
+    if len(head) < 4:
+        return ""
+    if not any(_SPACES.sub("", line) == head for line in _plain(body).splitlines()):
+        return ""
+    # 和 _salvage_stored 一样，导出粘在末尾的「+」不要。
+    fitted = _fit(_prepare(stem).rstrip("+＋").strip())
+    if not fitted or not _ok(fitted) or title_needs_repair(fitted):
+        return ""
+    return fitted
+
+
 def zsxq_display_title(
     title: str,
     *,
@@ -335,9 +365,21 @@ def zsxq_display_title(
         and not cut_from_body(stored, body)
     ):
         return polished
+    # 只是落单了一个引号、括号：去掉那个符号，原标题照用。原标题是正文半句时照旧补全成整句。
+    balanced = balance_marks(polished)
+    if (
+        balanced != polished
+        and _ok(balanced)
+        and not title_needs_repair(balanced, body)
+        and not cut_from_body(stored, body)
+    ):
+        return _tidy_clause_colon(balanced)
     completed = _completed_from_body(stored, body)
     if completed:
         return polish_title_typos(completed)
+    headline = _headline_line(stored, body)
+    if headline:
+        return polish_title_typos(headline)
     for sentence in _candidates(body):
         return polish_title_typos(sentence)
     # 去掉省略号后还是一句可用的原标题，优先于摘要和图片里的字。
@@ -589,7 +631,7 @@ def _short_snippet(text: str) -> str:
     fitted = _fit(piece)
     if not fitted or _contains_cut(fitted):
         return ""
-    return fitted[:18]
+    return balance_marks(fitted[:18])
 
 
 def _fit(text: str) -> str:
@@ -599,7 +641,7 @@ def _fit(text: str) -> str:
     if not cleaned:
         return ""
     if len(cleaned) <= TITLE_LIMIT:
-        return _strip_ellipsis(cleaned).strip()
+        return balance_marks(_strip_ellipsis(cleaned).strip())
     window = cleaned[:TITLE_LIMIT]
     cut = -1
     for index, char in enumerate(window):
@@ -609,7 +651,19 @@ def _fit(text: str) -> str:
         fitted = window[:cut].strip()
     else:
         fitted = window.rstrip(_BREAKS + " ").strip()
-    return _strip_ellipsis(fitted).strip()
+    # 收在逗号处时，后引号常常落在后半句里。
+    return balance_marks(_strip_ellipsis(fitted).strip())
+
+
+def unwrap_title(text: str) -> str:
+    """去掉包住整行的引号、书名号，再去掉落单的符号。
+
+    「《穷查理宝典》读后感」开头的书名号配得上对，是标题的一部分，留着。
+    """
+    current = (text or "").strip().strip("\"'‘’ ")
+    while len(current) >= 2 and MARK_PAIRS.get(current[0]) == current[-1] and not lonely_marks(current[1:-1]):
+        current = current[1:-1].strip().strip("\"'‘’ ")
+    return balance_marks(current)
 
 
 def _ok(text: str) -> bool:
