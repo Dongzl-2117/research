@@ -56,10 +56,12 @@
     {% if body_language == 'pairs' and pairs %}
     <div class="bilingual">
       {% for p in pairs %}
+      {% if p.en or p.zh %}
       <div class="bilingual-pair"{% if p.anchor %} id="{{ p.anchor }}"{% endif %}>
-        <div class="prose bilingual-en with-toolbar" lang="en">{{ p.en }}</div>
+        {% if p.en %}<div class="prose bilingual-en with-toolbar" lang="en">{{ p.en }}</div>{% endif %}
         {% if p.zh %}<div class="prose bilingual-zh with-toolbar">{{ p.zh }}</div>{% endif %}
       </div>
+      {% endif %}
       {% endfor %}
     </div>
     {% elif body_html %}
