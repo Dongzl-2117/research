@@ -22,7 +22,6 @@ def test_home_recent_views_toggle_is_a_button():
         sample_banner=False,
         sources=[],
         active_source="",
-        notices=[],
         stale=[],
         holdings=[
             {

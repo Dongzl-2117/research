@@ -1,7 +1,7 @@
 #!/bin/bash
 # 每月试恢复一次：把最新一份导出恢复到临时库 research_restore_check，核对篇数，然后删掉临时库。
 # 只是演练，不碰正式库。恢复不出来、或者篇数对不上，退出码非 0，日志里写原因。
-# 结果写进 data/status/restore-check.json，失败或四十天没成功时首页提示。
+# 结果写进 data/status/restore-check.json，失败或四十天没成功时 health.notices 会列出来。
 #
 #   BACKUP_DIR=/Volumes/备份盘/research scripts/restore-check.sh
 set -Eeuo pipefail

@@ -95,7 +95,7 @@ for name in $NAMES; do
   echo "已装好 com.zldong.research.${name}"
 done
 if [ "$INSTALL_INGEST_AIHOT" != "1" ]; then
-  # 以前装过、现在不装的，卸掉并删状态文件，免得首页一直提示「AIHOT 定时导入太久没成功」。
+  # 以前装过、现在不装的，卸掉并删状态文件，免得状态里一直挂着「AIHOT 定时导入太久没成功」。
   old="$AGENTS/com.zldong.research.ingest-aihot.plist"
   if [ -f "$old" ]; then
     launchctl bootout "$DOMAIN" "$old" 2>/dev/null || true

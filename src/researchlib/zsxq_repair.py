@@ -9,7 +9,6 @@
   粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重跑 RapidOCR。
 
 改标题或评论会改 `content_hash`，同时把观点、摘要、译文的哈希对齐，避免夜间任务把这几千篇再抽一遍。
-说话人改过的那几篇要另抽观点，命令会在最后印出来。不要加 `--gap`，也不要全库。
 """
 
 from __future__ import annotations
@@ -53,12 +52,6 @@ from researchlib.zsxq_title import (
 from researchlib.zsxq_title_ai import generate_ai_title
 
 FANGWEI_MP = "fangwei-mp"
-# 部署后抽验。12681 是星球留言区；473、606 是公众号，同一类页脚。
-SPOT_ARTICLES = (12681, 473, 606)
-# AI 起题抽验：壳标题、截断、错字。
-AI_TITLE_SPOTS = (23999, 24002, 24006, 24007)
-# 噪音进过观点、要定点重抽的篇。8881 的拼多多已经抽过，不要再放进来。
-VIEW_ARTICLES = (203, 227, 473, 537, 606)
 _HOST_CHROME = re.compile(
     r"条留言|写留言|划线人数|划线\d|赞赏\s*[￥¥$]|分享\s*\d|推荐\s*\d|（作者）|\(作者\)"
 )
@@ -229,10 +222,8 @@ def repair_zsxq(
             "ocr_rewash": 0,
             "ocr_rewash_mp": changed,
             "samples": [],
-            "spots": [],
-            "view_ids": list(VIEW_ARTICLES),
+            "spots": spot_check(conn, spot_ids or []),
         }
-        stats["spots"] = spot_check(conn, spot_ids or list(SPOT_ARTICLES))
         return stats
     if source_id != FANGWEI_ZSXQ:
         raise SystemExit("标题和评论只回写方伟星球（fangwei-zsxq）。公众号只重洗图片文字，用 --source fangwei-mp。")
@@ -278,7 +269,6 @@ def repair_zsxq(
         "ocr_rewash_mp": 0,
         "samples": [],
         "spots": [],
-        "view_ids": [] if titles_only else list(VIEW_ARTICLES),
         "ai_titles": ai_titles,
         "titles_only": titles_only,
     }
@@ -377,16 +367,14 @@ def repair_zsxq(
             replace_mentions(conn, article_id, mentions_for_document(matcher, new_title, new_md))
         if limit and titles_only and stats["titles"] >= limit:
             break
-    if titles_only:
-        stats["spots"] = spot_check(conn, spot_ids or [])
-        return stats
-    stats["ocr_rewash_mp"] = rewash_source_ocr(conn, FANGWEI_MP)
-    stats["spots"] = spot_check(conn, spot_ids or list(SPOT_ARTICLES))
+    if not titles_only:
+        stats["ocr_rewash_mp"] = rewash_source_ocr(conn, FANGWEI_MP)
+    stats["spots"] = spot_check(conn, spot_ids or [])
     return stats
 
 
 def spot_check(conn, article_ids: list[int]) -> list[dict]:
-    """抽验锚点。星球和公众号都认，473、606 不在 fangwei-zsxq 里也能看到。"""
+    """抽检给定的文章：标题还截不截断、评论剩谁、图片文字的页脚有没有挂到方伟。星球和公众号的都认。"""
     if not article_ids:
         return []
     rows = conn.execute(
@@ -472,10 +460,6 @@ def format_report(stats: dict) -> str:
         flag = " 仍截断" if item["title_truncated"] else ""
         source = item.get("source_id") or ""
         lines.append(f"  {item['id']}  {source}  标题「{title}」{flag}  {item['comment']}  {chrome}")
-    if stats["view_ids"]:
-        ids = ",".join(str(item) for item in stats["view_ids"])
-        lines.append("噪音文定点重抽观点（不要 --gap，不要全库；8881 拼多多已经抽过）:")
-        lines.append(f"  docker compose exec app research-views --articles {ids}")
     return "\n".join(lines)
 
 
@@ -510,16 +494,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--spot",
-        default=None,
-        help="抽检的文章 id，逗号分隔（默认 12681,473,606；--ai-titles 时加上 23999,24002,24006,24007）",
+        default="",
+        help="改完以后抽检这些文章，id 逗号分隔（不给就不抽检）",
     )
     args = parser.parse_args(argv)
-    if args.spot is None:
-        spot_ids = [] if args.titles_only and not args.ai_titles else list(SPOT_ARTICLES)
-        if args.ai_titles:
-            spot_ids = list(dict.fromkeys([*spot_ids, *AI_TITLE_SPOTS]))
-    else:
-        spot_ids = [int(part) for part in re.split(r"[\s,]+", args.spot) if part.strip().isdigit()]
+    spot_ids = [int(part) for part in re.split(r"[\s,]+", args.spot) if part.strip().isdigit()]
     from researchlib.config import Settings
     from researchlib.db import prepare
 
