@@ -21,7 +21,10 @@ from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.segments import (
     chunk_segments,
+    coarse_segment_reason,
+    segments_of,
     shield,
+    splice_segments,
     top_level_blocks,
     translatable_blocks,
     unshield,
@@ -266,7 +269,6 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         return TranslateResult(article_id, "skipped", reason="already Chinese")
 
     html, digest = _render_original(conn, article, data_dir)
-    blocks = top_level_blocks(html)
     targets = translatable_blocks(html)
     if not targets:
         return TranslateResult(article_id, "skipped", reason="no translatable text")
@@ -307,17 +309,17 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             translations[offset + i] = restored if restored is not None else text
         offset += len(chunk)
 
-    # 回填到顶层块副本
-    filled = list(blocks)
+    # 按叶子段原位写回。blockquote / 列表 / 表格的外壳留着，只换里面的那一段。
+    replacements: dict[int, str] = {}
     done = 0
-    for (block_index, _src), zh in zip(targets, translations, strict=True):
+    for (segment_index, _src), zh in zip(targets, translations, strict=True):
         if zh:
-            filled[block_index] = zh
+            replacements[segment_index] = _dedupe_consecutive_blocks(zh)
             done += 1
     if not done:
         return TranslateResult(article_id, "skipped", reason="no batch translated")
 
-    zh_html = _assemble_zh_html(filled)
+    zh_html = splice_segments(html, replacements)
     zh_text = re.sub(r"<[^>]+>", " ", zh_html)
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
     title_zh = _translate_title(article["title"] or "", data_dir)
@@ -351,6 +353,75 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         "translated" if complete else "partial",
         segments=done,
     )
+
+
+# 一次重检最多扫这么多篇完整译文，避免无来源时把全库正文读进内存。
+COARSE_SCAN_CAP = 2000
+
+
+def _source_leaf_count(article: dict) -> int:
+    """原文按现在的叶子规则能切成几段。图片地址不影响段数，映射留空。"""
+    fmt = (article.get("raw_meta") or {}).get("format")
+    _frontmatter, body = split_frontmatter(article.get("body_md") or "")
+    if fmt != "html":
+        body = strip_duplicate_title(body, article.get("title") or "")
+    return len(segments_of(str(render_body(body, {}, fmt))))
+
+
+def list_coarse_translations(
+    conn, *, limit: int = 20, source_id: str | None = None
+) -> list[dict[str, object]]:
+    """已完成、但结构还是旧粗分段的译文。按发布时间从新到旧，最多返回 limit 篇。
+
+    先看译文 HTML。段数很少、正文又很长时，再拿原文按现在的规则切一遍：
+    原文叶子远多于当时记下的 segments，就该重译。重译写回之后对不上这条，不会反复抽中。
+    """
+    where = [
+        "t.complete",
+        "t.content_hash = a.content_hash",
+        "a.duplicate_of IS NULL",
+        "coalesce(t.body_html, '') <> ''",
+        "(coalesce(t.segments, 0) <= 40 OR length(coalesce(t.body_html, '')) >= 20000)",
+    ]
+    params: list[object] = []
+    if source_id:
+        where.append("a.source_id = %s")
+        params.append(source_id)
+    params.append(COARSE_SCAN_CAP)
+    rows = conn.execute(
+        f"""
+        SELECT a.id, a.source_id, a.title, a.body_md, a.body_text, a.raw_meta,
+               t.segments, t.body_html
+        FROM articles a
+        JOIN article_translations t ON t.article_id = a.id
+        WHERE {" AND ".join(where)}
+        ORDER BY a.published_at DESC NULLS LAST, a.id DESC
+        LIMIT %s
+        """,
+        params,
+    ).fetchall()
+    found: list[dict[str, object]] = []
+    cap = max(1, limit)
+    for row in rows:
+        recorded = row["segments"]
+        recorded_n = int(recorded) if recorded is not None else None
+        reason = coarse_segment_reason(row["body_html"] or "", recorded_segments=recorded_n)
+        body_chars = len(row["body_text"] or "")
+        if (
+            reason is None
+            and recorded_n is not None
+            and recorded_n <= 30
+            and body_chars >= 8_000
+        ):
+            leaves = _source_leaf_count(row)
+            if leaves >= 12 and recorded_n * 3 < leaves and leaves - recorded_n >= 15:
+                reason = "segments-below-source"
+        if not reason:
+            continue
+        found.append({"id": int(row["id"]), "source": row["source_id"], "reason": reason})
+        if len(found) >= cap:
+            break
+    return found
 
 
 def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:

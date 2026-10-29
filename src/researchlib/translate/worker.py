@@ -17,7 +17,7 @@ from typing import Any
 from researchlib.config import Settings
 from researchlib.llm import active_model_id, llm_configured
 from researchlib.llm_provider import PROVIDER_GROK, llm_provider, provider_label
-from researchlib.translate.service import list_pending_english, translate_article
+from researchlib.translate.service import list_coarse_translations, list_pending_english, translate_article
 from researchlib.translate.xai_oauth import XaiLoginRequiredError
 
 logger = logging.getLogger("researchlib.translate.worker")
@@ -31,6 +31,8 @@ MAX_SLEEP = 3600
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
 _stop = threading.Event()
+# 导入时 worker 已在跑，新文章 id 排在这里，下一轮先译。
+_extra: list[int] = []
 
 
 def _blank_state() -> dict[str, Any]:
@@ -53,6 +55,8 @@ def _blank_state() -> dict[str, Any]:
         "last_error": None,
         "waiting": False,
         "stop_requested": False,
+        "recheck": False,
+        "queued": 0,
     }
 
 
@@ -95,6 +99,16 @@ def _bump(**deltas: int) -> None:
             _state[key] = int(_state.get(key) or 0) + delta
 
 
+def _remember(ids: list[int]) -> int:
+    """把还没排上的 id 加进队尾。调用方要已经拿着 _lock。"""
+    queued = 0
+    for article_id in ids:
+        if article_id not in _extra:
+            _extra.append(article_id)
+            queued += 1
+    return queued
+
+
 def start(
     settings: Settings,
     *,
@@ -102,17 +116,32 @@ def start(
     limit: int = DEFAULT_LIMIT,
     loop: bool = False,
     sleep: int = DEFAULT_SLEEP,
+    recheck: bool = False,
+    article_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """起一个后台线程。已经在跑就不起第二个，只把当前状态带回去。"""
+    """起一个后台线程。已经在跑就不起第二个。
+
+    article_ids 是这次要点名译的篇（导入刚写入的，或调用方已经查好的）。
+    线程还在跑时，这些 id 排进队列，下一轮先译，不另开线程。
+    recheck 时队列来自 list_coarse_translations，完整译文也会重译。
+    """
     global _thread
     source_id = (source or "").strip() or None
     limit = _clamp(limit, DEFAULT_LIMIT, 1, MAX_LIMIT)
     sleep = _clamp(sleep, DEFAULT_SLEEP, MIN_SLEEP, MAX_SLEEP)
+    ids: list[int] = []
+    for article_id in article_ids or []:
+        number = int(article_id)
+        if number not in ids:
+            ids.append(number)
     provider = _provider_of(settings)
     with _lock:
         if _thread is not None and _thread.is_alive():
-            return {**dict(_state), "thread_alive": True, "started": False}
+            queued = _remember(ids)
+            _state["queued"] = len(_extra)
+            return {**dict(_state), "thread_alive": True, "started": False, "queued": queued}
         _stop.clear()
+        _extra.clear()
         _state.clear()
         _state.update(
             _blank_state(),
@@ -121,18 +150,38 @@ def start(
             limit=limit,
             loop=bool(loop),
             sleep=sleep,
+            recheck=bool(recheck),
             provider=provider_label(provider),
             model=active_model_id(settings),
             started_at=_now(),
         )
         _thread = threading.Thread(
             target=_run,
-            args=(settings, source_id, limit, bool(loop), sleep),
+            args=(settings, source_id, limit, bool(loop), sleep, bool(recheck), ids),
             name="translate-worker",
             daemon=True,
         )
         _thread.start()
-        return {**dict(_state), "thread_alive": True, "started": True}
+        return {**dict(_state), "thread_alive": True, "started": True, "queued": 0}
+
+
+def preview_recheck(settings: Settings, *, source: str | None, limit: int) -> dict[str, Any]:
+    """只列出要重译的篇，不起线程，不调模型。"""
+    limit = _clamp(limit, DEFAULT_LIMIT, 1, 500)
+    conn = _connect(settings)
+    try:
+        articles = list_coarse_translations(conn, limit=limit, source_id=source)
+    finally:
+        conn.close()
+    return {
+        "dry_run": True,
+        "recheck": True,
+        "source": (source or "").strip() or None,
+        "limit": limit,
+        "count": len(articles),
+        "articles": articles,
+        "running": False,
+    }
 
 
 def request_stop() -> dict[str, Any]:
@@ -163,16 +212,54 @@ def _connect(settings: Settings):
     return conn
 
 
-def _run(settings: Settings, source: str | None, limit: int, loop: bool, sleep: int) -> None:
+def _take_forced(limit: int, skipped: set[int]) -> list[int]:
+    """取出点名要译的 id。多出来的留在队列里，下一轮再拿。"""
+    with _lock:
+        picked: list[int] = []
+        remain: list[int] = []
+        for article_id in _extra:
+            if article_id in skipped:
+                continue
+            if len(picked) < limit:
+                picked.append(article_id)
+            else:
+                remain.append(article_id)
+        _extra[:] = remain
+        _state["queued"] = len(_extra)
+        return picked
+
+
+def _run(
+    settings: Settings,
+    source: str | None,
+    limit: int,
+    loop: bool,
+    sleep: int,
+    recheck: bool = False,
+    article_ids: list[int] | None = None,
+) -> None:
     conn = None
     skipped: set[int] = set()
     fatal = False
     try:
         conn = _connect(settings)
+        with _lock:
+            _extra[:0] = [article_id for article_id in (article_ids or []) if article_id not in _extra]
         while not _stop.is_set():
-            # limit 加上跳过的数量，免得跳过几篇后这一轮取不满。
-            pending = list_pending_english(conn, limit=limit + len(skipped), source_id=source)
-            ids = [article_id for article_id in pending if article_id not in skipped][:limit]
+            # 导入或调用方点名的篇优先，不跟待译队列抢。
+            ids = _take_forced(limit, skipped)
+            if not ids:
+                if recheck:
+                    rows = list_coarse_translations(
+                        conn, limit=limit + len(skipped), source_id=source
+                    )
+                    ids = [int(row["id"]) for row in rows if int(row["id"]) not in skipped][:limit]
+                else:
+                    # limit 加上跳过的数量，免得跳过几篇后这一轮取不满。
+                    pending = list_pending_english(
+                        conn, limit=limit + len(skipped), source_id=source
+                    )
+                    ids = [article_id for article_id in pending if article_id not in skipped][:limit]
             if not ids:
                 # 队列空，或者只剩本轮失败/跳过的：loop 时睡一会儿再扫，睡醒清掉跳过再给一次机会。
                 if not loop:
@@ -214,8 +301,13 @@ def _run(settings: Settings, source: str | None, limit: int, loop: bool, sleep: 
                     _bump(completed_this_run=1)
                     _update(last_article_id=result.article_id, last_status=result.status, last_error=None)
                 logger.info("译制 #%s %s", result.article_id, result.status)
-            if fatal or not loop:
+            if fatal:
                 break
+            if not loop:
+                with _lock:
+                    more = bool(_extra)
+                if not more:
+                    break
     except Exception as exc:  # noqa: BLE001 - 线程里不能把异常抛出去
         logger.exception("译制 worker 出错")
         _update(last_error=str(exc)[:300])

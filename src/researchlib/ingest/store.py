@@ -65,7 +65,9 @@ def store_documents(
     matcher = CompanyMatcher(load_company_rows(conn))
     for doc in docs:
         try:
-            status, stored, linked, missing, duplicate = _store_one(conn, source, doc, data_dir, matcher)
+            status, article_id, stored, linked, missing, duplicate = _store_one(
+                conn, source, doc, data_dir, matcher
+            )
             conn.commit()
         except Exception as exc:
             report.errors.append(f"{doc.external_id}: {exc}")
@@ -77,6 +79,8 @@ def store_documents(
             report.inserted += 1
         elif status == "updated":
             report.updated += 1
+        if status in {"inserted", "updated"} and article_id is not None and duplicate is None:
+            report.follow_ids.append(int(article_id))
         elif status == "held":
             report.held += 1
         else:
@@ -199,7 +203,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             )
             if held:
                 # 库里的完整原文和它的图片都不动。
-                return "held", 0, 0, 0, None
+                return "held", existing["id"], 0, 0, 0, None
     if existing is None:
         inserted = conn.execute(
             """
@@ -334,7 +338,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 title=stored_row["title"] or "",
                 published_at=stored_row["published_at"],
             )
-    return status, stored, linked, missing, duplicate
+    return status, article_id, stored, linked, missing, duplicate
 
 
 def _hold_if_suspicious(

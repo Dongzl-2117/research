@@ -101,8 +101,8 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 `config/sources.yaml` 里 `stratechery` 现为 **enabled: false**。抓取在盒子跑完、且只有 Passport 全文 / Daily≥5500 合格稿后：
 
 1. 把 `enabled` 改为 `true`
-2. `research-ingest-markdown --source stratechery --input …`
-3. `curl -s http://127.0.0.1:8088/api/v1/translate -H 'content-type: application/json' -d '{"source":"stratechery","limit":10,"loop":true,"sleep":60}'`
+2. `research-ingest-markdown --source stratechery --input …`（新写入的英文会自动排进译制，一次最多 20 篇）
+3. 这一批超过 20 篇时，再 `curl -s http://127.0.0.1:8088/api/v1/translate -H 'content-type: application/json' -d '{"source":"stratechery","limit":10,"loop":true,"sleep":60}'`
 
 游客半截 / guest teaser **不入库、不译**。
 
@@ -112,7 +112,7 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 |---|---|
 | 译制管道已合入、LLM 凭证已配（DeepSeek key，或 AIHOT Grok 已 login 且 `RESEARCH_LLM_PROVIDER=grok`） | 可对库内已有合格英文稿 `POST /api/v1/translate` |
 | Stratechery 仍在抓 | **先不 ingest**；可用英文样例验对照页 |
-| 抓完并 ingest 后 | 对该来源开 `loop` 批量译 |
+| 抓完并 ingest 后 | 新文自动排进译制；积压超过 20 篇再对该来源开 `loop` |
 
 ## 环境变量
 
@@ -120,7 +120,9 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 
 ## 段对齐
 
-入库时，模型返回的 `t` 必须和这批 `segments` 一样长，再按原文顶层块原位写回（和 AIHOT 一样：译文结构跟着原文走）。条数不一致时，先按原批重试一次；仍不一致就把这批对半拆开再译，直到一段对一段。只剩一段还对不齐，这一批失败，错位的 `t` 不入库。
+叶子段和 AIHOT `segmentsOf` 同一条规则：标签在 `p`、`h2`–`h5`、`li`、`blockquote`、`figcaption`、`td`、`th`、`dt`、`dd`、`caption` 里，并且没有块级子节点，才是一段。有块级子节点就继续往下看。所以正文里的大段 `blockquote`（markdown 里连续的 `>`）会拆成里面的段落、标题和列表项；没有块级子节点的短引用仍是一整段 `blockquote`。`dl` 不算块级子节点，包着定义列表的引用按 AIHOT 仍是一整段。
+
+入库时，模型返回的 `t` 必须和这批 `segments` 一样长，再按这些叶子段原位写回（外壳留着，只换那一段）。条数不一致时，先按原批重试一次；仍不一致就把这批对半拆开再译，直到一段对一段。只剩一段还对不齐，这一批失败，错位的 `t` 不入库。
 
 默认一批最多 12 段、24000 字符。超过的另起一批；单段比字符上限还长时单独成批，不从中间切开。整篇原文仍放在 `articleContext` 里（放得下的时候），供统一术语，不拿去凑 `t` 的条数。
 
@@ -128,7 +130,39 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 
 一个译段内部，模型连吐的相同顶层块或相同 `<p>` 会收成一份。不跨段删：原文引用后又跟了一段相同正文时，两段译文都留着，中英顶层块数保持一致。已经只在中文侧删过这些段的旧稿不回写、不重译。
 
-对照页永不因块数差退中文。两边顶层块一样多时按位置并排，一段英文对一段中文。不一样多时，展示层对原文和译文各跑一遍与单段相同的连续块去重（忽略 `id="p-N"`），只有差距变小才改用去重后的块，用来把旧稿里的同段英中对上。对不齐的多余段挂在末尾：多出来的原文没有译文，多出来的译文没有英文。媒体仍只留在英文侧；译文和原文纯文本相同、或译文为空，这一段不显示中文。模型少段或多段仍然整批重试或拆批，不靠展示层去补条数。
+对照页永不因段数差退中文。两边叶子段一样多时按位置并排，一段英文对一段中文。不一样多时，展示层对原文和译文各跑一遍与单段相同的连续块去重（忽略 `id="p-N"`），只有差距变小才改用去重后的段，用来把旧稿里的同段英中对上。对不齐的多余段挂在末尾：多出来的原文没有译文，多出来的译文没有英文。媒体仍只留在英文侧；译文和原文纯文本相同、或译文为空，这一段不显示中文。模型少段或多段仍然整批重试或拆批，不靠展示层去补条数。
+
+已经按旧的粗分段译完、且译文里还留着内层标签的文章，部署后对照会按新的叶子段重排，不必先改库。库里的 `segments` 仍是当时的段数。要按新粒度重译，用 `recheck`：只抽「一个叶子仍包着很多段」或「记下的段数远少于现在能切出的叶子」的完整译文。占全文大约两成的定义列表引用不会被抽中，重译写回之后同一篇也不会反复出现。
+
+先看会重译哪些（不调模型）：
+
+```bash
+curl -s http://127.0.0.1:8088/api/v1/translate \
+  -H 'content-type: application/json' \
+  -d '{"recheck":true,"dry_run":true,"source":"stratechery","limit":200}'
+
+# 全部英文来源（不传 source）
+curl -s http://127.0.0.1:8088/api/v1/translate \
+  -H 'content-type: application/json' \
+  -d '{"recheck":true,"dry_run":true,"limit":200}'
+```
+
+确认篇数可以接受再开跑。每篇按新叶子重译，长文大约十几批 DeepSeek。不带 `recheck` 的 `loop` 只译还没有完整译文的，不会重跑这几篇。
+
+```bash
+curl -s http://127.0.0.1:8088/api/v1/translate \
+  -H 'content-type: application/json' \
+  -d '{"recheck":true,"source":"stratechery","limit":5,"loop":true,"sleep":60}'
+```
+
+容器里等价：
+
+```bash
+docker compose exec app research-translate --recheck --source stratechery --dry-run --limit 200
+docker compose exec app research-translate --recheck --source stratechery --limit 5 --loop --sleep 60
+```
+
+点名几篇仍然可以：`research-translate --article-id 21118`。新导入的英文文章会自动排进译制（一次最多 20 篇）。大批回填超出上限的，用上面的接口续跑。设 `RESEARCH_INGEST_FOLLOW=0` 可以关掉导入后的自动识图和译制。
 
 ## content_hash 与待译队列
 

@@ -1,6 +1,16 @@
+import re
+
 from researchlib.translate.language import is_chinese
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
-from researchlib.translate.segments import chunk_segments, shield, top_level_blocks, unshield
+from researchlib.translate.segments import (
+    chunk_segments,
+    coarse_segment_reason,
+    segments_of,
+    shield,
+    splice_segments,
+    top_level_blocks,
+    unshield,
+)
 from researchlib.translate.service import _assemble_zh_html, _dedupe_consecutive_blocks
 
 
@@ -313,3 +323,205 @@ def test_pairs_none_only_when_both_sides_have_no_blocks():
     only_zh = bilingual_pairs("", "<p>你好。</p>")
     assert only_zh is not None and len(only_zh) == 1 and only_zh[0].en == ""
     assert only_zh[0].zh and "你好" in only_zh[0].zh
+
+
+def _plain_len(html: str) -> int:
+    return len(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html or "")).strip())
+
+
+def test_br_does_not_swallow_the_following_paragraphs():
+    """21118 的测量：引用里一个 <br> 曾把后面所有兄弟节点吞进同一个顶层块。"""
+    html = (
+        "<p>Before the quote.</p>"
+        "<blockquote><p>First line.<br>Second line of the same quote.</p></blockquote>"
+        "<p>After the quote, still its own paragraph.</p>"
+        "<p>Another paragraph that must not join the quote.</p>"
+    )
+    blocks = top_level_blocks(html)
+    assert len(blocks) == 4
+    assert blocks[0].startswith("<p>Before")
+    assert blocks[-1].startswith("<p>Another")
+    assert "After the quote" not in blocks[1]
+    segments = segments_of(html)
+    assert len(segments) == 4
+    assert any("First line." in segment and "Second line" in segment for segment in segments)
+    assert all("After the quote" not in segment or segment.startswith("<p>After") for segment in segments)
+
+
+def test_short_blockquote_without_block_children_stays_one_leaf():
+    """没有块级子节点的短引用仍是一整段 blockquote，不拆开。"""
+    html = "<p>Intro sentence here.</p><blockquote>A short real quotation.</blockquote><p>Follow-up sentence here.</p>"
+    assert segments_of(html) == [
+        "<p>Intro sentence here.</p>",
+        "<blockquote>A short real quotation.</blockquote>",
+        "<p>Follow-up sentence here.</p>",
+    ]
+    # h1 不在 AIHOT 的 BLOCK 里，不单独成段。
+    assert segments_of("<h1>Not a leaf heading.</h1><p>Body paragraph.</p>") == ["<p>Body paragraph.</p>"]
+
+
+def test_definition_list_inside_blockquote_stays_one_leaf():
+    """dl 不在 CONTAINER 里。包着定义列表的引用按 AIHOT 仍是一整段。"""
+    html = (
+        "<blockquote><dl>"
+        "<dt>Line one of the pasted list.</dt>"
+        "<dt>Line two stays inside the same quote.</dt>"
+        "</dl></blockquote>"
+    )
+    assert segments_of(html) == [html]
+
+
+def _daily_quote_html(*, chinese: bool = False) -> str:
+    """21118 的形状：开头几段，一条短引用，然后一个包着几十段和若干标题的大 blockquote。"""
+    intro = "早上好，这是开头。" if chinese else "Good morning, this is the introduction."
+    section = "财报" if chinese else "Earnings"
+    source = "摘自报道：" if chinese else "From the paper:"
+    short = "一条没有内层块的短引用。" if chinese else "A short quotation with no inner blocks."
+    restated = "作者接着用自己的话复述。" if chinese else "The author restates the point afterwards."
+    closing = "长引用之后的收尾。" if chinese else "Closing note after the long quotation."
+    head = "小节" if chinese else "Section"
+    para = "段落" if chinese else "Paragraph"
+    parts = [
+        f"<p>{intro}</p>",
+        f"<h3>{section}</h3>",
+        f"<p>{source}</p>",
+        f"<blockquote>{short}</blockquote>",
+        f"<p>{restated}</p>",
+    ]
+    inner: list[str] = []
+    for index in range(36):
+        if index % 6 == 0:
+            inner.append(f"<h3>{head} {index // 6}</h3>")
+        inner.append(f"<p>{para} {index} stands alone in the bilingual view and is long enough.</p>")
+    parts.append("<blockquote>" + "".join(inner) + "</blockquote>")
+    parts.append(f"<p>{closing}</p>")
+    return "".join(parts)
+
+
+def test_giant_blockquote_splits_into_paragraph_pairs():
+    """大引用里的 p / h3 各成一段。没有任何一对占掉整篇的纯文本。"""
+    english = _daily_quote_html()
+    chinese = _daily_quote_html(chinese=True)
+    segments = segments_of(english)
+    assert len(segments) >= 40
+    assert all(segment.lower().count("<p") <= 1 for segment in segments)
+    assert any(segment.startswith("<blockquote>A short quotation") for segment in segments)
+    giant = [segment for segment in segments if segment.lower().count("<p") > 1]
+    assert giant == []
+    # 顶层仍然是一个大引用；拆开的是叶子段，不是把外壳拆掉。
+    top_giants = [
+        block for block in top_level_blocks(english) if block.lower().count("<p") > 1
+    ]
+    assert len(top_giants) == 1 and top_giants[0].lower().startswith("<blockquote")
+
+    pairs = bilingual_pairs(english, chinese)
+    assert pairs is not None
+    lengths = [_plain_len(pair.en) for pair in pairs]
+    assert len(pairs) == len(segments)
+    assert len(pairs) >= 40
+    assert max(lengths) / sum(lengths) < 0.1
+    assert max(lengths) < 200
+    assert pairs[3].en.startswith("<blockquote>A short quotation")
+    assert pairs[3].zh and "短引用" in pairs[3].zh
+    assert any(pair.zh and "段落 35" in pair.zh and "Paragraph 35" in pair.en for pair in pairs)
+
+
+def test_splice_writes_inner_leaves_and_keeps_blockquote():
+    """译文写回叶子。短引用和大引用的 blockquote 外壳都还在。"""
+    html = (
+        "<p>Intro sentence here.</p>"
+        "<blockquote><p>Short quoted sentence about the quarter.</p></blockquote>"
+        "<blockquote><p>One pasted paragraph.</p><h3>Inside</h3><p>Two pasted paragraph.</p></blockquote>"
+    )
+    assert splice_segments(html, {}) == html
+    segments = segments_of(html)
+    assert [segment.startswith("<h3") for segment in segments] == [False, False, False, True, False]
+    replacements = {
+        index: ("<h3>标题</h3>" if segment.startswith("<h3") else f"<p>译{index}</p>")
+        for index, segment in enumerate(segments)
+    }
+    written = splice_segments(html, replacements)
+    assert written.count("<blockquote>") == 2
+    assert written.count("</blockquote>") == 2
+    assert "<p>译1</p>" in written
+    assert "<h3>标题</h3>" in written
+    assert "Short quoted" not in written
+    assert written.index("<blockquote>") < written.index("<p>译1</p>") < written.index("</blockquote>")
+
+
+def test_markdown_quote_lines_segment_inside_the_blockquote():
+    """连续的 markdown > 行渲染成一个 blockquote，段是里面的 p，不是整段引用。"""
+    import markdown
+
+    source = "\n".join([
+        "Intro paragraph stays outside.",
+        "",
+        "> First quoted paragraph of the daily.",
+        ">",
+        "> ### Pasted heading",
+        ">",
+        "> Second quoted paragraph of the daily.",
+        "",
+        "After the quotation.",
+    ])
+    html = markdown.markdown(source, extensions=["extra", "nl2br", "sane_lists"])
+    assert html.lower().count("<blockquote") == 1
+    segments = segments_of(html)
+    assert len(segments) >= 4
+    quoted = [segment for segment in segments if "First quoted paragraph" in segment]
+    assert quoted and not quoted[0].lower().startswith("<blockquote")
+    assert any("Pasted heading" in segment and segment.lower().startswith("<h3") for segment in segments)
+    assert any("Second quoted paragraph" in segment for segment in segments)
+    assert not any(
+        segment.lower().startswith("<blockquote") and "Second quoted" in segment for segment in segments
+    )
+
+
+def test_coarse_reason_flags_old_segment_count_not_a_definition_list():
+    """段数远少于现在的叶子就要重译。定义列表引用按规则仍是一段，不反复抽中。"""
+    english = _daily_quote_html()
+    leaves = len(segments_of(english))
+    assert leaves >= 40
+    assert coarse_segment_reason(english, recorded_segments=7) == "segments-below-leaves"
+    assert coarse_segment_reason(english, recorded_segments=leaves) is None
+    quote = (
+        "<blockquote><dl>"
+        + "".join(f"<dt>Line {index} of a pasted list stays one quote.</dt>" for index in range(30))
+        + "</dl></blockquote>"
+    )
+    assert segments_of(quote) == [quote]
+    assert coarse_segment_reason(quote, recorded_segments=1) is None
+
+
+def test_list_coarse_uses_source_when_translation_was_flattened():
+    """译文被收成少数几段时，用原文叶子数判断，而不是只看译文 HTML。"""
+    from researchlib.translate.service import list_coarse_translations
+
+    body = "\n\n".join(
+        f"Paragraph {index} explains a distinct point about the market this year." for index in range(24)
+    )
+    row = {
+        "id": 9,
+        "source_id": "stratechery",
+        "title": "A daily",
+        "body_md": body,
+        "body_text": "x" * 8000,
+        "raw_meta": {},
+        "segments": 6,
+        "body_html": "".join(f"<p>Short translated paragraph {index}.</p>" for index in range(6)),
+    }
+
+    class Conn:
+        def execute(self, sql, params):
+            assert "stratechery" in params
+            return self
+
+        def fetchall(self):
+            return [row]
+
+    found = list_coarse_translations(Conn(), limit=10, source_id="stratechery")
+    assert found == [{"id": 9, "source": "stratechery", "reason": "segments-below-source"}]
+
+    row["segments"] = 24
+    row["body_html"] = "".join(f"<p>Paragraph {index} in Chinese remains one leaf.</p>" for index in range(24))
+    assert list_coarse_translations(Conn(), limit=10, source_id="stratechery") == []

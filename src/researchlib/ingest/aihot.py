@@ -239,6 +239,7 @@ def import_aihot(dest, settings: Settings, *, dry_run: bool = False, days: int |
         merged.duplicates += extra.duplicates
         merged.db_rows += extra.db_rows
         merged.errors.extend(extra.errors)
+        merged.follow_ids.extend(extra.follow_ids)
     merged.source_id = "aihot"
     merged.source_name = "AIHOT（多个来源）"
     return merged
@@ -253,6 +254,10 @@ def main(argv: list[str] | None = None) -> int:
     conn = prepare(settings)
     try:
         report = import_aihot(conn, settings, dry_run=args.dry_run, days=args.days)
+        if not args.dry_run:
+            from researchlib.ingest.follow import kick_ingest_followups
+
+            kick_ingest_followups(conn, settings, list(getattr(report, "follow_ids", ()) or []))
     except ImportMapError as exc:
         print(f"导入失败：{exc}", file=sys.stderr)
         return 1
