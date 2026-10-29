@@ -155,15 +155,29 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
 
 
 
+# 对照页在展示时给顶层块盖 id="p-N"。入库去重发生在这之前，比较时要当没盖过。
+_STAMPED_PARA_ID = re.compile(r'\s+id="p-\d+"')
+
+
+def _dedupe_key(html: str) -> str:
+    """压空白，并忽略对照页盖上的段落 id。没有这些 id 时和原来的字符串比较一样。"""
+    return re.sub(r"\s+", " ", _STAMPED_PARA_ID.sub("", html or "")).strip()
+
+
 def _dedupe_consecutive_blocks(html: str) -> str:
-    """去掉模型偶发吐出的连续相同顶层块，以及块内连续相同的 <p>（抽验 22195）。"""
+    """去掉连续相同的顶层块，以及块内连续相同的 <p>（抽验 22195）。
+
+    写入时只对单个译段调用，避免把原文里相邻的两块并成一块。
+    对照页在旧译文已经少了重复段时，对原文和译文各跑一遍，把同段重新对齐。
+    比较时忽略展示层盖上的 id="p-N"。
+    """
     html = html or ""
     blocks = top_level_blocks(html)
     if len(blocks) >= 2:
         out: list[str] = []
         prev_norm: str | None = None
         for block in blocks:
-            norm = re.sub(r"\s+", " ", block).strip()
+            norm = _dedupe_key(block)
             if prev_norm is not None and norm and norm == prev_norm:
                 continue
             out.append(block)
@@ -186,7 +200,7 @@ def _dedupe_consecutive_paragraphs(html: str) -> str:
     drop: list[tuple[int, int]] = []
     prev_norm: str | None = None
     for match in matches:
-        norm = re.sub(r"\s+", " ", match.group(0)).strip()
+        norm = _dedupe_key(match.group(0))
         # 用去标签后的正文长度：短占位（如「是」「好」）不去；测例「第一段…去重。」约 16 字要去。
         plain = re.sub(r"<[^>]+>", "", norm).strip()
         if prev_norm is not None and norm == prev_norm and len(plain) >= 10:
@@ -203,6 +217,15 @@ def _dedupe_consecutive_paragraphs(html: str) -> str:
     out.append(html[last:])
     cleaned = "".join(out)
     return _EMPTY_QUOTE.sub("", cleaned)
+
+
+def _assemble_zh_html(slots: list[str]) -> str:
+    """按原文顶层块原位拼回译文，顶层块数和原文一致。
+
+    一个译段里模型连吐的相同段落收成一份。不跨段删：引用块和下一段相同正文
+    都留着，避免只把中文结构削短。
+    """
+    return "".join(_dedupe_consecutive_blocks(slot) for slot in slots)
 
 
 def _translate_title(title: str, data_dir: Path) -> str:
@@ -294,7 +317,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     if not done:
         return TranslateResult(article_id, "skipped", reason="no batch translated")
 
-    zh_html = _dedupe_consecutive_blocks("".join(filled))
+    zh_html = _assemble_zh_html(filled)
     zh_text = re.sub(r"<[^>]+>", " ", zh_html)
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
     title_zh = _translate_title(article["title"] or "", data_dir)
