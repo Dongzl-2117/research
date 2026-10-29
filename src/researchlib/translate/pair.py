@@ -4,6 +4,7 @@
 段是里面的 p / 标题 / li，不是整段引用。多条或很长的定义列表引用会再拆进 dt / dd。
 这里按段的位置并排。
 旧稿若只在中文侧删过连续重复段，两边再走一遍同一套去重，把同段拉齐。
+叶子数已经一样时也走这一遍：两边都变短且仍然一样长，才收掉引用后的重复段。
 段数仍对不齐也不整页退回中文：多出来的挂在末尾。
 """
 
@@ -113,24 +114,33 @@ def _show(segment: Segment) -> tuple[str, str | None]:
 
 
 def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[Segment], list[Segment]] | None:
-    """结构一致就按原样配。旧稿段数对不齐时，用同一套去重把同段拉齐。
+    """选展示用的叶子段。两边都没有叶子段才返回 None。
 
-    译文入库曾经只删中文侧的连续重复段，原文还留着引用后的那一段。展示时两边
-    再跑一遍；比较忽略 id="p-N"。差距变小才改用去重后的段，变小之后仍有差额也
-    按拉齐后的序列配，不退回未去重的错位拼接。两边都没有叶子段才返回 None。
+    叶子数已经一样时仍对两边各跑一遍连续块去重。两边都变短且仍然一样长，才改用
+    去重后的段，收掉引用后紧跟的同一段正文。只短一边会把长度拉开，仍用未去重的
+    等长序列，不单边丢掉，也不硬配。叶子数本来就不一样时，只有去重后差距变小才
+    改用那一份；变小之后仍有差额也按拉齐后的序列配。比较忽略 id="p-N"。
     """
     kids_o = _entries(original_html)
     kids_t = _entries(zh_html)
     if not kids_o and not kids_t:
         return None
-    if kids_o and kids_t and _gap(kids_o, kids_t) == 0:
-        return kids_o, kids_t
-    # 懒加载：盖段落号不必为了相等的结构去拉翻译服务。
+    raw_gap = _gap(kids_o, kids_t)
+    # 懒加载：页面导入 pair 时不必立刻拉起翻译服务。叶子数已经一样也要跑。
     from researchlib.translate.service import _dedupe_consecutive_blocks
 
     deduped_o = _entries(_dedupe_consecutive_blocks(original_html))
     deduped_t = _entries(_dedupe_consecutive_blocks(zh_html))
-    if deduped_o and deduped_t and _gap(deduped_o, deduped_t) < _gap(kids_o, kids_t):
+    if (
+        raw_gap == 0
+        and deduped_o
+        and deduped_t
+        and len(deduped_o) == len(deduped_t)
+        and len(deduped_o) < len(kids_o)
+        and len(deduped_t) < len(kids_t)
+    ):
+        return deduped_o, deduped_t
+    if deduped_o and deduped_t and _gap(deduped_o, deduped_t) < raw_gap:
         return deduped_o, deduped_t
     return kids_o, kids_t
 
