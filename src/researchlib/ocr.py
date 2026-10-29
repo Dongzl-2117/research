@@ -766,6 +766,8 @@ def run_ocr(
         "missing": 0,
         "articles": 0,
         "last_error": None,
+        "followups": {"digest": [], "zsxq_title": []},
+        "ocr_changed": [],
     }
     touched: set[int] = set()
 
@@ -818,11 +820,50 @@ def run_ocr(
             conn.commit()
             note()
     finally:
+        changed: list[dict] = []
         for article_id in sorted(touched):
-            refresh_article_ocr(conn, article_id)
+            before = _ocr_snapshot(conn, article_id)
+            new_hash = refresh_article_ocr(conn, article_id)
+            if before is None:
+                continue
+            old_hash = before.get("ocr_hash") or ""
+            if not new_hash or new_hash == old_hash:
+                continue
+            after = _ocr_snapshot(conn, article_id) or before
+            body_len = after.get("body_len")
+            if body_len is None:
+                body_len = before.get("body_len") or 0
+            changed.append(
+                {
+                    "id": int(article_id),
+                    "source_id": after.get("source_id") or before.get("source_id") or "",
+                    "body_len": int(body_len),
+                    "old_hash": old_hash,
+                    "new_hash": new_hash,
+                }
+            )
+        if changed:
+            try:
+                from researchlib.followups import note_ocr_changes
+
+                report["followups"] = note_ocr_changes(conn, changed)
+                report["ocr_changed"] = [int(row["id"]) for row in changed]
+            except Exception:
+                logger.exception("识图后续没排上")
         if touched:
             conn.commit()
     return report
+
+
+def _ocr_snapshot(conn, article_id: int):
+    """识图写回前后对照用。正文长度决定要不要重排摘要和标题。"""
+    return conn.execute(
+        """
+        SELECT id, source_id, ocr_hash, length(coalesce(body_text, '')) AS body_len
+        FROM articles WHERE id = %s
+        """,
+        (article_id,),
+    ).fetchone()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -861,6 +902,15 @@ def main(argv: list[str] | None = None) -> int:
             redo=args.redo,
             article_ids=args.article or None,
         )
+        follow = report.get("followups") or {}
+        n_digest = len(follow.get("digest") or [])
+        n_title = len(follow.get("zsxq_title") or [])
+        if n_digest or n_title:
+            print(f"短正文图片文字变了：摘要重排 {n_digest} 篇，标题重排 {n_title} 篇")
+            from researchlib.followups import drain_ocr_followups
+
+            drained = drain_ocr_followups(conn, settings, follow)
+            print(f"已重写摘要 {drained['digest']} 篇，标题 {drained['titles']} 篇")
     finally:
         conn.close()
     print(

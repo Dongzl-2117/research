@@ -140,5 +140,14 @@ def _run(
             report["images"],
             report["failed"],
         )
+        follow = report.get("followups") or {}
+        if follow.get("digest") or follow.get("zsxq_title"):
+            try:
+                from researchlib.followups import drain_ocr_followups
+
+                drained = drain_ocr_followups(conn, settings, follow)
+                logger.info("识图后续：摘要 %s 篇，标题 %s 篇", drained["digest"], drained["titles"])
+            except Exception:
+                logger.exception("识图后续没跑完，已入队的留给下次摘要和标题")
     finally:
         conn.close()

@@ -1,6 +1,7 @@
 """方伟星球存量回写。规则和入库、阅读页是同一套，不另写一套。
 
-- 标题：空的、「无标题」、以省略号结尾的、公司名/话题名冒号壳，改成完整标题。
+- 标题：空的、「无标题」、以省略号结尾的、公司名/话题名冒号壳，
+  以及空壳导读（「没有可读文字」「正文为空」），改成完整标题。
   加 `--ai-titles` 时优先用站内 deepseek-flash 起题（含错字抛光），
   失败再退回确定性首句。写不出来的日期兜底不入库。
 - 评论：`## 评论（N）` 只留方伟。解析不了的不动，在报告里单列。
@@ -21,6 +22,7 @@ from researchlib.boilerplate import clean_markdown, image_hashes, profile_for
 from researchlib.chunks import make_chunks
 from researchlib.duplicates import fingerprint, store_fingerprint
 from researchlib.empty_answer import is_suppressed
+from researchlib.followups import KIND_TITLE, clear_followup, queued_ids
 from researchlib.ingest.store import _body_text
 from researchlib.mentions import CompanyMatcher, load_company_rows, mentions_for_document, replace_mentions
 from researchlib.ocr import compose_ocr_text, hash_ocr
@@ -177,6 +179,23 @@ def rewash_source_ocr(conn, source_id: str) -> int:
     return changed
 
 
+def prefer_queued_rows(rows, queued: list[int]):
+    """识图刚入队的文章排在全表扫描前面，避免 limit 把它们截在后面。"""
+    if not queued:
+        return list(rows)
+    by_id = {int(row["id"]): row for row in rows}
+    seen: set[int] = set()
+    ordered = []
+    for article_id in queued:
+        row = by_id.get(int(article_id))
+        if row is None or int(article_id) in seen:
+            continue
+        ordered.append(row)
+        seen.add(int(article_id))
+    ordered.extend(row for row in rows if int(row["id"]) not in seen)
+    return ordered
+
+
 def repair_zsxq(
     conn,
     source_id: str = FANGWEI_ZSXQ,
@@ -186,12 +205,14 @@ def repair_zsxq(
     settings=None,
     titles_only: bool = False,
     limit: int = 0,
+    article_ids: list[int] | None = None,
 ) -> dict:
     """回写方伟星球的标题、评论，并重洗星球和公众号的 OCR 旁路。不提交事务。
 
-    ai_titles：缺/壳/省略号标题优先走站内 flash 起题；settings 必传。
+    ai_titles：缺/壳/省略号/空壳导读标题优先走站内 flash 起题；settings 必传。
     titles_only：只改标题（增量抓取后补跑用），评论和 OCR 旁路不动。
     limit：最多改这么多标题（0 不限）；增量抓取后补跑用，避免一次打光存量。
+    article_ids：只处理这些篇（识图刚入队的）。不传则全表，入队的排在前面。
     """
     if source_id == FANGWEI_MP:
         changed = rewash_source_ocr(conn, FANGWEI_MP)
@@ -217,18 +238,31 @@ def repair_zsxq(
         raise SystemExit("标题和评论只回写方伟星球（fangwei-zsxq）。公众号只重洗图片文字，用 --source fangwei-mp。")
     profile = profile_for(conn, source_id)
     matcher = CompanyMatcher(load_company_rows(conn))
-    pieces = _image_pieces(conn, source_id)
+    pieces = {} if titles_only else _image_pieces(conn, source_id)
     summaries = _digests(conn, source_id)
     order = "id DESC" if limit else "id"
+    params: list = [source_id]
+    id_filter = ""
+    if article_ids is not None:
+        id_filter = " AND id = ANY(%s)"
+        params.append([int(item) for item in article_ids])
     rows = conn.execute(
         f"""
         SELECT id, title, body_md, body_text, published_at, content_hash, raw_meta, ocr_text
         FROM articles
-        WHERE source_id = %s AND duplicate_of IS NULL
+        WHERE source_id = %s AND duplicate_of IS NULL{id_filter}
         ORDER BY {order}
         """,
-        (source_id,),
+        tuple(params),
     ).fetchall()
+    if article_ids is not None:
+        queued = [int(item) for item in article_ids]
+    elif ai_titles:
+        queued = queued_ids(conn, KIND_TITLE, limit or 50)
+    else:
+        queued = []
+    rows = prefer_queued_rows(rows, queued)
+    queued_set = set(queued)
     stats = {
         "source_id": source_id,
         "scanned": len(rows),
@@ -268,6 +302,7 @@ def repair_zsxq(
             body_for_title = row["body_text"] or body_md
             replacement = None
             used_ai = False
+            # 空壳导读（「没有可读文字」）也走 flash。半句截断仍不在 title_needs_ai 里。
             if ai_titles and settings is not None and title_needs_ai(title):
                 replacement = generate_ai_title(
                     settings,
@@ -316,6 +351,9 @@ def repair_zsxq(
                     new_md = filtered
                     stats["comments_cleaned"] += 1
 
+        # 入队只说明 ocr_hash 变了。标题已经不是空壳就出队，不改字。
+        if article_id in queued_set and not title_needs_ai(new_title):
+            clear_followup(conn, article_id, KIND_TITLE)
         if new_title == title and new_md == body_md and cleaned is None:
             continue
         hashes = image_hashes(conn, article_id)
@@ -464,6 +502,13 @@ def main(argv: list[str] | None = None) -> int:
         help="最多回写这么多标题（0 不限）；增量抓取后补跑建议 30",
     )
     parser.add_argument(
+        "--article",
+        action="append",
+        type=int,
+        default=[],
+        help="只回写这些文章 id，可重复（识图入队后用）",
+    )
+    parser.add_argument(
         "--spot",
         default=None,
         help="抽检的文章 id，逗号分隔（默认 12681,473,606；--ai-titles 时加上 23999,24002,24006,24007）",
@@ -489,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
             settings=settings if args.ai_titles else None,
             titles_only=args.titles_only,
             limit=args.limit,
+            article_ids=args.article or None,
         )
         print(format_report(stats))
         if args.dry_run:
