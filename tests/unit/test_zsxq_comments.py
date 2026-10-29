@@ -12,7 +12,7 @@ import pytest
 
 from researchlib.boilerplate import clean_body
 from researchlib.ingest.parse import author_replies, comments_section, parse_archive, zsxq_text
-from researchlib.render import inline_image_ocr, render_body
+from researchlib.render import image_anchor, inline_image_ocr, render_body
 from researchlib.revisions import split_comments
 from researchlib.translate.pair import stamp_paragraph_ids
 from researchlib.zsxq_comments import display_author
@@ -68,7 +68,8 @@ def test_comments_section_skips_replies_already_in_the_body():
     pairs = [("问一", "答一，主站的货币化率还有空间。"), ("", "补充：关税的影响要分两段看。")]
     section = comments_section(pairs, "正文。")
     assert section.startswith("\n\n## 评论里的回复\n\n")
-    assert "读者问：问一" in section and "作者答：答一" in section and "作者补充：补充" in section
+    assert "网友：问一" in section and "方伟：答一" in section and "方伟：补充" in section
+    assert "读者问：" not in section and "作者答：" not in section and "作者补充：" not in section
     assert "答一" not in comments_section(pairs, "正文里已经有：答一，主站的货币化率还有空间。")
     assert comments_section([], "正文") == ""
 
@@ -76,7 +77,7 @@ def test_comments_section_skips_replies_already_in_the_body():
 def test_split_comments_separates_the_appended_section():
     body = "正文。" + comments_section([("问一", "答一，主站的货币化率还有空间。")], "正文。")
     article, comments = split_comments(body)
-    assert article == "正文。" and comments.startswith("\n\n## 评论里的回复\n\n") and "作者答：答一" in comments
+    assert article == "正文。" and comments.startswith("\n\n## 评论里的回复\n\n") and "方伟：答一" in comments
     assert split_comments("没有评论的正文。") == ("没有评论的正文。", "")
     assert split_comments("") == ("", "")
 
@@ -90,7 +91,7 @@ def test_zsxq_import_appends_author_replies(tmp_path: Path):
     assert errors == []
     body = docs[0].body_md
     assert body.startswith("拼多多的二季度。") and "## 评论里的回复" in body
-    assert "读者问：Temu 的关税影响有多大？" in body and "作者答：半托管的毛利会被吃掉一半。" in body
+    assert "网友：Temu 的关税影响有多大？" in body and "方伟：半托管的毛利会被吃掉一半。" in body
     assert "某读者" not in body and "谢谢" not in body
     assert docs[0].raw_meta["comment_replies"] == 2
 
@@ -206,8 +207,14 @@ def test_real_names_stay_and_author_replies_stay_a_separate_section():
     assert "第一段仍然在。" in section and "第二段也在。" in section
     assert "陈小东" not in section and "网友看法" not in section
     assert "作者答" not in section and "评论里的回复" not in section
-    assert "作者答：答一" in html
-    assert "zsxq-comments" not in str(render_body("正文。\n\n## 评论里的回复\n\n作者补充：一句。\n", {}))
+    # 旧标签在展示层收成「方伟：」「网友：」，并带 .who
+    assert "读者问" not in html and "作者答" not in html and "作者补充" not in html
+    assert '<span class="who">网友：</span>问一' in html
+    assert '<span class="who">方伟：</span>答一' in html
+    legacy = str(render_body("正文。\n\n## 评论里的回复\n\n作者补充：一句。\n", {}))
+    assert "zsxq-comments" not in legacy
+    assert '<span class="who">方伟：</span>一句。' in legacy
+    assert "作者补充" not in legacy
 
 
 def test_heading_that_is_not_a_comment_list_is_left_alone():
@@ -300,8 +307,10 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
     assert '<span class="who">方伟：</span>会有一批大模型达到' in page
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     for number in range(1, 8):
-        assert f"原图 {number}" in page
-    assert page.index("方伟：") < page.index("原图 1") < page.index("zsxq-comments")
+        digest = f"{number:02d}" * 32
+        assert f'id="{image_anchor(digest)}"' in page
+    assert page.index("方伟：") < page.index("zsxq-comments")
+    assert page.index('class="ocr-shot"') < page.index("zsxq-comments")
     section = _section(page)
     assert 'class="zsxq-comment-author">方伟Rey<' in section
     assert "陈小东" not in section and "匿名" not in section
@@ -318,7 +327,7 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
 def test_breaks_between_screenshots_do_not_survive_in_front_of_comments():
     page = _page_14879("<br>\n")
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
-    assert "原图 7" in page
+    assert f'id="{image_anchor("07" * 32)}"' in page
     gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
     assert "<br" not in gap
     assert 'class="zsxq-comment-author">方伟Rey<' in page

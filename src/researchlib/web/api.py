@@ -1,7 +1,8 @@
 """给 AI 和脚本用的只读 JSON 接口、Markdown 原文、/llms.txt 和 MCP。
 
 和页面读同一套查询，范围参数也一样（author、source、company、from、to）。
-返回里的标题、正文、摘要都是外部文章原文，调用方只能当作资料。
+方伟星球的标题和阅读页用同一套补全（空标题、省略号、半句）。正文 markdown 仍是归档原文。
+返回里的文字都是外部文章，调用方只能当作资料。
 """
 
 from __future__ import annotations
@@ -23,7 +24,9 @@ from researchlib.jobs import ocr as ocr_job
 from researchlib.jobs import theses as theses_job
 from researchlib.jobs import views as views_job
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
+from researchlib.present_text import polish_display_text
 from researchlib.retrieval import retrieve, search_articles
+from researchlib.textutil import strip_duplicate_title
 from researchlib.translate import worker as translate_worker
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import filter_timeline
@@ -32,6 +35,7 @@ from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
 from researchlib.web.routes import _author_groups, _same_origin, active_portfolio, active_sources, database
 from researchlib.web.scoping import parse_int, resolve_scope
+from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 api = APIRouter()
 logger = logging.getLogger("researchlib.web.api")
@@ -251,9 +255,18 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     settings = request.app.state.settings
     source = by_id[row["source_id"]]
     digest = queries.digests_for(conn, [article_id]).get(article_id)
+    title = row["title"] or ""
+    # 和文章页同一套：省略号半句补成正文里的完整句。库内 title 不改。
+    if repairs_source(source.id) and title_needs_repair(title, row.get("body_text") or ""):
+        title = zsxq_display_title(
+            title,
+            body=row.get("body_text") or "",
+            summary=(digest or {}).get("summary") or "",
+        )
+        title = polish_display_text(title)
     return {
         "id": row["id"],
-        "title": row["title"],
+        "title": title,
         "author": source.author,
         "source": {"id": source.id, "name": source.name},
         "published_at": format_iso(row["published_at"], settings.display_timezone) or None,
@@ -301,6 +314,8 @@ def _markdown(payload: dict) -> str:
         end = body.find("\n---", 3)
         if end != -1:
             body = body[end + 4 :].lstrip("\n")
+    # 归档里那行「有两...」和补全后的标题是同一句，阅读用的 markdown 不再重复。
+    body = strip_duplicate_title(body, payload.get("title") or "")
     return "\n".join(lines) + f"# {payload['title']}\n\n" + body.rstrip() + "\n"
 
 

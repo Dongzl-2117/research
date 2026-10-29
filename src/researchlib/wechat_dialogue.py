@@ -8,6 +8,7 @@ RapidOCR 有原图时按绿气泡底色给本人行加侧标记，没有图时�
 - 别人的昵称（王小明、李小红、Kevin，以及只写了名字的）→「网友：」，正文里不再留这个名字
 - 显示名「方伟 / 方伟Rey / 方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
+- 雪球 / 微博嵌套回复不是从上到下的时间序：``回复@`` / ``//@`` 从早到晚展开，下面的引用卡片放到回复前面
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
 - 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
@@ -293,6 +294,47 @@ _WEIBO_HEADER = re.compile(
 _WEIBO_FEED_FOOTER = re.compile(
     r"^(?:[\u4e00-\u9fff]{2,8}(?:新闻)?联播|[\u4e00-\u9fff]{2,8}日报|[\u4e00-\u9fff]{2,8}新闻)$"
 )
+# 雪球/微博帖头：2025-10-31 09:35 · 浙江 · 2022年度十大影响力用户
+_FEED_META = re.compile(
+    r"^\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?:\s*[·•・‧∙･．.]\s*.+)?$"
+)
+_INFLUENCE_BADGE = re.compile(
+    r"(?:年度)?十大影响力用户|超级[\u4e00-\u9fffA-Za-z0-9]{2,16}|雪球\d{4}年度"
+)
+# 点赞/评论/转发数字栏：756 1555 827
+_ENGAGEMENT_COUNTS = re.compile(r"^\d{1,6}(?:\s+\d{1,6}){1,4}$")
+_FEED_ACTION = re.compile(r"^(?:发讨论|查看对话)[>〉›]?$")
+_VIDEO_FOLLOWED = re.compile(
+    r"^(?:[\u4e00-\u9fffA-Za-z0-9_\-]{2,20}\s+)?已关注$"
+)
+_VIDEO_CTA = re.compile(
+    r"(?:"
+    r"欢迎关注\s*@?\S{0,40}\s*视频号"
+    r"|点击\s*#\S{1,40}\s*查看更多"
+    r"|作者提示\s*[:：]\s*内容为转载"
+    r"|更多.{0,24}欢迎关注"
+    r")"
+)
+# 主播名牌：「主播 浩嘉」。名字只收两三个字，长句里的「主播」留下。
+_HOST_NAMEPLATE = re.compile(
+    r"^(?:主播|嘉宾)[\u4e00-\u9fff]{2,3}$|^(?:主持人|出镜记者)[\u4e00-\u9fff]{2,3}$"
+)
+# 视频角上的法定标、直播标。整行才算，句子里提到「未成年人」不删。
+_VIDEO_CORNER = re.compile(
+    r"^(?:未成年人请勿饮酒|请勿酒驾|酒后请勿驾车|过量饮酒有害健康|理性饮酒|直播中|正在直播)$"
+)
+# 节目角标，只在已经认出视频壳之后丢掉最后一行。「会稽山超越古越龙山」这类标题不收。
+_SHOW_BUG = re.compile(r"^[\u4e00-\u9fff]{2,6}(?:观察|视界|频道)$")
+# 广告海报顶部的对仗口号：「双重保障，终身守护。」条款正文更长，对不上。
+_AD_SLOGAN = re.compile(r"^[\u4e00-\u9fff]{2,6}[，,][\u4e00-\u9fff]{2,6}。$")
+_BRAND_MASTHEAD = re.compile(
+    r"^(?:领教工坊|INSIDE\s+THE\s+BEST|COLMO)$",
+    re.I,
+)
+_SOURCE_MASTHEAD = re.compile(
+    r"^来源\s*[:：]\s*(?:思想[?？×xX]?岭南|领教工坊)\b"
+)
+_REPLY_AT_MARK = re.compile(r"回复@|//@")
 # 时间行隔开两段话。文字丢掉，但要断开上一句，不能把下一位的话接上去。
 _BREAK = "\x1e"
 _MP_TOKEN = re.compile(
@@ -366,16 +408,23 @@ def present_ocr_pieces(pieces: list[str]) -> str:
     text = "\n\n".join(blocks)
     text = re.sub(r"一\?会", "一年后会", text)
     text = re.sub(r"一\?后", "一年后", text)
-    return text
+    from researchlib.present_text import polish_display_text
+    from researchlib.textutil import collapse_short_spam
+
+    text = collapse_short_spam(text)
+    return polish_display_text(text)
 
 
 def present_stored_ocr(stored: str) -> str:
     """库里可能还是按图拼接的原始识别，也可能已经是对话。两种再跑都得到对话。"""
+    from researchlib.present_text import polish_display_text
+    from researchlib.textutil import collapse_short_spam
+
     text = (stored or "").strip()
     if not text:
         return ""
     pieces = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
-    return present_ocr_pieces(pieces or [text])
+    return polish_display_text(collapse_short_spam(present_ocr_pieces(pieces or [text])))
 
 
 def speaker_note(text: str) -> str:
@@ -505,10 +554,157 @@ def _is_mp_footer(line: str) -> bool:
     return _CJK.findall(residue) == []
 
 
+
+def _is_feed_meta(line: str) -> bool:
+    """雪球/微博帖头时间·地区·影响力行。
+
+    「超级鹿鼎公」这类昵称会命中超级…，不能单凭徽章词当帖头；要有日期行，
+    或整行是「十大影响力用户 / 雪球年度」说明。
+    """
+    plain = _plain(line).strip()
+    if not plain:
+        return False
+    if _FEED_META.fullmatch(plain):
+        return True
+    if re.search(r"[。！？!?]", plain) or len(plain) > 48:
+        return False
+    # 单独的影响力说明行（不含「超级某某」昵称）
+    if re.search(r"(?:年度)?十大影响力用户|雪球\d{4}年度", plain):
+        return True
+    return False
+
+
+def _is_engagement_counts(line: str) -> bool:
+    return _ENGAGEMENT_COUNTS.fullmatch(_plain(line).strip()) is not None
+
+
+def _is_feed_action(line: str) -> bool:
+    return _FEED_ACTION.fullmatch(_plain(line).strip()) is not None
+
+
+def _compact_speaker(line: str) -> str:
+    return re.sub(r"\s+", "", _speaker_body(line))
+
+
+def _is_broadcast_line(line: str) -> bool:
+    """视频主播名牌、角标、直播标。整行才算。"""
+    compact = _compact_speaker(line)
+    if not compact or len(compact) > 16:
+        return False
+    return _HOST_NAMEPLATE.fullmatch(compact) is not None or _VIDEO_CORNER.fullmatch(compact) is not None
+
+
+def _drop_ad_shell(lines: list[str]) -> list[str]:
+    """品牌广告海报的 Logo 和口号。条款、适用条件留下。
+
+    只在同一张图里已经有「适用条件」和保障/免责说明时动手，避免把正文里的短句删掉。
+    书籍目录没有这种形状，整段留下。
+    """
+    blob = "\n".join(_speaker_body(line) for line in lines)
+    if "适用条件" not in blob or not re.search(r"责任免除|官方渠道|终身保障", blob):
+        return lines
+    out: list[str] = []
+    dropped_logo = False
+    for index, line in enumerate(lines):
+        body = _speaker_body(line)
+        compact = re.sub(r"\s+", "", body)
+        nxt = _speaker_body(lines[index + 1]) if index + 1 < len(lines) else ""
+        if (
+            not dropped_logo
+            and index < 2
+            and re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{2,4}", compact)
+            and len(re.sub(r"\s+", "", nxt)) >= 6
+        ):
+            dropped_logo = True
+            continue
+        if index < 4 and _AD_SLOGAN.fullmatch(body.strip()):
+            continue
+        out.append(line)
+    return out
+
+
+def drop_broadcast_chrome(lines: list[str]) -> list[str]:
+    """视频角标、主播条、节目水印，以及品牌广告的 Logo/口号。新闻标题和条款留下。"""
+    if not lines:
+        return lines
+    lines = _drop_ad_shell(lines)
+    if not any(_is_broadcast_line(line) for line in lines):
+        return lines
+    kept = [line for line in lines if not _is_broadcast_line(line)]
+    if len(kept) >= 2 and _SHOW_BUG.fullmatch(_compact_speaker(kept[-1])):
+        kept = kept[:-1]
+    return kept
+
+
+def _is_video_cta(line: str) -> bool:
+    """视频号关注 CTA / 已关注条 / 作者转载提示。"""
+    plain = _plain(line).strip()
+    if not plain:
+        return False
+    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", plain)
+    if _VIDEO_FOLLOWED.fullmatch(body):
+        return True
+    if _VIDEO_CTA.search(body):
+        return True
+    return False
+
+
+def _is_feed_chrome(line: str) -> bool:
+    """雪球/微博/视频号壳：帖头元信息、发讨论、数字栏、关注 CTA；杂志品牌刊头；视频角标。"""
+    if (
+        _is_feed_meta(line)
+        or _is_engagement_counts(line)
+        or _is_feed_action(line)
+        or _is_video_cta(line)
+        or _is_broadcast_line(line)
+    ):
+        return True
+    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", _plain(line).strip())
+    if _BRAND_MASTHEAD.fullmatch(body) or _SOURCE_MASTHEAD.match(body):
+        return True
+    return False
+
+
+def _is_xueqiu_author_nick(line: str, nxt: str) -> bool:
+    """短昵称行，下一行是时间·地区·影响力帖头。"""
+    plain = _plain(line).strip()
+    if not plain or len(plain) > 16 or re.search(r"[。！？!?，,；;：:]", plain):
+        return False
+    if re.search(r"\d{4}-\d{2}-\d{2}", plain):
+        return False
+    if _STRUCTURED.match(plain) or plain in (_GUEST_TURN, _HOST_TURN):
+        return False
+    nxt_plain = _plain(nxt).strip()
+    # 必须是带日期的帖头行，避免标题下一行是「超级某某」昵称时误删标题
+    return bool(nxt_plain) and _FEED_META.fullmatch(nxt_plain) is not None
+
+
+def _collapse_reply_at(line: str) -> str:
+    """「回复@甲:正文 //@乙:…」压成正文；保留已有「网友：/方伟：」前缀。"""
+    plain = (line or "").strip()
+    if not plain:
+        return ""
+    prefix = ""
+    labeled = re.match(r"^((?:方伟|网友)\s*[:：]\s*)", plain)
+    if labeled:
+        prefix = labeled.group(1)
+        plain = plain[labeled.end() :]
+    if not _REPLY_AT_MARK.search(plain):
+        return line.strip()
+    parts = re.split(r"\s*//@\s*", plain)
+    for part in parts:
+        part = re.sub(r"^(?:回复)?@[^\s:：]+[:：]\s*", "", part.strip()).strip()
+        if part:
+            return f"{prefix}{part}".strip()
+    return ""
+
+
 def _is_strong_footer(line: str) -> bool:
     text = _footer_compact(line)
     if not text:
         return False
+    if _is_feed_chrome(line):
+        return True
     if (
         _is_sticky_bar(text)
         or _is_mp_footer(line)
@@ -634,8 +830,14 @@ def _peel_sticky_tail(line: str) -> str:
 def _drop_post_footer(lines: list[str]) -> list[str]:
     """页脚按行丢掉。按钮后面的方伟、网友继续留着，不从第一行按钮截到图末。
 
+    「回复@ / //@」若还留在一行里，按时间从早到晚拆开，不只留最新一条。
+
     「李四留言」和「李四留言1次·关注8个月」改成网友的一轮，名字和关注月数不进正文。
+    视频角标、主播名牌和广告海报的 Logo/口号也在这里剥掉。
     """
+    from researchlib.present_text import expand_reply_chain_line
+
+    lines = drop_broadcast_chrome(lines)
     peeled = [_peel_sticky_tail(line) for line in lines]
     context = _post_chrome_context(peeled)
     kept: list[str] = []
@@ -644,6 +846,12 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
     while index < len(peeled):
         line = peeled[index]
         nxt = peeled[index + 1] if index + 1 < len(peeled) else ""
+        if _is_xueqiu_author_nick(line, nxt):
+            index += 1
+            continue
+        if _is_feed_chrome(line):
+            index += 1
+            continue
         if _bare_guest_name(line) and _is_message_label(nxt):
             kept.append(_GUEST_TURN)
             in_comments = True
@@ -687,17 +895,28 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
         if _is_author_badge(line) or _is_strong_footer(line) or (context and _is_soft_footer(line)):
             index += 1
             continue
-        kept.append(line)
+        expanded = expand_reply_chain_line(line)
+        if expanded is not None:
+            kept.extend(item for item in expanded if item.strip())
+            index += 1
+            continue
+        collapsed = _collapse_reply_at(line)
+        if collapsed:
+            kept.append(collapsed)
         index += 1
     return kept
 
 
 def _prose_after_footer(original: str, raw_lines: list[str], stripped: list[str]) -> Shot:
-    if stripped == raw_lines:
-        return Shot("prose", [], original)
+    from researchlib.present_text import merge_wrapped_utterances
+
     if not stripped:
         return Shot("media", [], "")
-    return Shot("prose", [], "\n".join(_plain(line) for line in stripped).strip())
+    if stripped == raw_lines:
+        body = original
+    else:
+        body = "\n".join(_plain(line) for line in stripped).strip()
+    return Shot("prose", [], merge_wrapped_utterances(body))
 
 
 def _is_zsxq_coupon_shot(lines: list[str]) -> bool:
@@ -731,6 +950,9 @@ def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
             continue
         if _WEIBO_FEED_FOOTER.fullmatch(plain):
             continue
+        if _is_feed_chrome(plain):
+            continue
+        plain = _collapse_reply_at(plain)
         if plain:
             body.append(plain)
     if not body:
@@ -739,7 +961,9 @@ def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
 
 
 def parse_shot(text: str) -> Shot:
-    original = (text or "").strip()
+    from researchlib.present_text import order_nested_replies
+
+    original = order_nested_replies((text or "").strip())
     if not original:
         return Shot("prose", [], "")
     raw_lines = [_scrub(line) for line in _normalize(original).splitlines()]
@@ -1117,6 +1341,8 @@ def _is_noise(line: str) -> bool:
     if len(folded) == 1 and not _CJK.search(folded) and not folded.isalnum():
         return True
     if _is_time(line) or _STATUS.fullmatch(folded) or _CHROME_WORD.fullmatch(folded) or _is_ui_chrome(line):
+        return True
+    if _is_feed_chrome(line):
         return True
     if _GROUP_TITLE.fullmatch(folded) or _is_price(line) or _SYSTEM.search(folded):
         return True

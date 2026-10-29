@@ -146,9 +146,12 @@ def test_reading_page_shows_the_dialogue_once():
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
     assert f'<a class="ocr-link" id="{image_anchor(first)}"' in page
     assert f'<a class="ocr-link" id="{image_anchor(second)}"' in page
-    assert "原图 1" in page and "原图 2" in page
+    assert "原图 1" not in page and "原图 2" not in page
     assert "<details" not in page
-    assert page.index("方伟：") < page.index("原图 1")
+    first_at = page.index(f'id="{image_anchor(first)}"')
+    assert first_at < page.index("瑞幸和古茗都算头部", first_at) < page.index("</a>", first_at)
+    second_at = page.index(f'id="{image_anchor(second)}"')
+    assert second_at < page.index("同店压力还在", second_at) < page.index("</a>", second_at)
 
 
 def test_digest_input_is_the_cleaned_dialogue():
@@ -315,8 +318,9 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
     assert "方伟-最近在杭州：" not in page
     assert "@方伟-最近在杭州" in page
     for number in range(1, len(shots) + 1):
-        assert f"原图 {number}" in page
-    assert page.index("方伟：") < page.index("原图 1")
+        digest = f"{number:02d}" * 32
+        assert f'id="{image_anchor(digest)}"' in page
+        assert f"/media/fangwei-zsxq/ab/{digest}.png" in page
     # 旁路和检索仍用带换行的整理结果，不因阅读页折行而改掉。
     stored = present_ocr_pieces(shots)
     assert "用了一些国\n产agents" in stored
@@ -405,7 +409,8 @@ def test_quote_reply_card_puts_the_guest_above_the_account_bar():
     assert "不太看好" in guest_html and "假本分" in guest_html
     assert "零售的本分" in host_html and "不太看好" not in host_html
     assert "方伟看十年" not in page and "什么才叫做" not in page
-    assert "原图 1" in page
+    assert f'<a class="ocr-link" id="{image_anchor(digest)}"' in page
+    assert "原图 1" not in page
     assert "点击看原图" not in page
     assert "<details" not in page
     assert f'id="{image_anchor(digest)}"' in page
@@ -1111,3 +1116,113 @@ def test_weibo_comment_labeled_guest():
     assert "小事7747" not in text
     assert "龙视新闻联播" not in text
     assert "单日房价" in text
+
+
+def test_24008_xueqiu_and_video_chrome_stripped():
+    """格力公众号插图：视频号关注条、雪球帖头/数字栏、回复@串应剥掉。"""
+    video = """领教工坊
+INSIDE THE BEST
+来源：格力电器董事长方洪波
+转型本质就是转人，不换思想就换人。
+更多组织管理与领导力洞见，欢迎关注 @领教工坊 视频号
+作者提示: 内容为转载
+点击 #领教工坊 查看更多
+领教工坊  已关注
+756  1555  827"""
+    text = present_ocr_pieces([video])
+    assert "转型本质就是转人" in text
+    assert "已关注" not in text
+    assert "视频号" not in text
+    assert "查看更多" not in text
+    assert "作者提示" not in text
+    assert "756" not in text
+
+    xueqiu = """清仓格力
+超级鹿鼎公
+2025-10-31 09:35 · 浙江 · 2022年度十大影响力用户
+格力这波我觉得可以再看看基本面。
+发讨论
+1155  2599  338"""
+    text = present_ocr_pieces([xueqiu])
+    assert "清仓格力" in text
+    assert "基本面" in text
+    assert "超级鹿鼎公" not in text
+    assert "影响力用户" not in text
+    assert "发讨论" not in text
+    assert "1155" not in text
+
+    chain = """回复@网友:李录投资也很好啊。//@网友:回复@网友:网友会不会是卖完了再吹？//@网友:看了下今天雪球上的帖子"""
+    text = present_ocr_pieces([chain])
+    assert "李录投资也很好" in text
+    assert text.index("看了下今天雪球上的帖子") < text.index("会不会是卖完了再吹") < text.index("李录投资也很好")
+    assert "回复@" not in text
+    assert "//@" not in text
+
+
+# 24010 视频截图：角标、主播名牌、节目水印。新闻标题和数字留下。
+HUANGJIU_OCR = """“黄酒一哥” 易主！
+浙江绍兴会稽山 首度超越古越龙山
+2026年上半年营业收入达8.53亿元
+江浙沪的销售额高达70%以上
+未成年人请勿饮酒
+主播 浩嘉
+会稽山超越古越龙山
+新经济观察"""
+
+# 23173 理想汽车海报：Logo 和口号是壳，保障条款留下。
+LIXIANG_OCR = """理想
+连山电池保障计划
+双重保障，终身守护。
+电池不自燃
+终身保障
+因原厂电池质量问题导致自燃
+车辆达到报废条件
+补偿同等配置新车
+适用条件:
+理想汽车首任车主、非营运车辆，车辆关键零部件按时在官方维保、足额投保车损险、持续开通车联网。
+本保障计划的具体内容、适用条件、责任免除及补偿细则，以理想汽车官方渠道公示的条款为准。"""
+
+
+def test_24010_video_badges_and_23173_ad_shell_are_stripped():
+    text = present_ocr_pieces([HUANGJIU_OCR])
+    assert "8.53亿" in text
+    assert "古越龙山2026" not in text
+    assert "黄酒一哥" in text
+    assert "会稽山超越古越龙山" in text
+    assert "未成年人请勿饮酒" not in text
+    assert "主播" not in text
+    assert "浩嘉" not in text
+    assert "新经济观察" not in text
+
+    poster = present_ocr_pieces([LIXIANG_OCR])
+    assert "连山电池保障计划" in poster
+    assert "补偿同等配置新车" in poster
+    assert "理想汽车" in poster
+    assert "适用条件" in poster
+    assert "双重保障，终身守护" not in poster
+    assert not any(line.strip() == "理想" for line in poster.splitlines())
+
+    # 句子里提到这些词，不是整行角标，留下。
+    said = "这位主播把黄酒的利润讲得很清楚，一年到头也就一两亿。"
+    assert "主播" in present_ocr_pieces([said])
+    notice = "广告里写着未成年人请勿饮酒，但利润讨论还是要单独看。"
+    assert "未成年人请勿饮酒" in present_ocr_pieces([notice])
+
+    # 书籍目录不是界面，整段留下。
+    toc = "目录\n第一章 商业模式\n第二章 企业文化\n第三章 资本开支还要看回报\n"
+    kept = present_ocr_pieces([toc])
+    assert "目录" in kept
+    assert "第一章" in kept
+    assert "资本开支" in kept
+
+
+def test_video_chrome_is_stripped_on_the_reading_page():
+    digest = "ab" * 32
+    html = str(render_body("![](shot.png)\n", {"shot.png": f"/media/x/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: HUANGJIU_OCR})
+    assert "8.53亿" in page
+    assert "会稽山超越古越龙山" in page
+    assert "未成年人请勿饮酒" not in page
+    assert "主播" not in page
+    assert "新经济观察" not in page
+

@@ -115,9 +115,37 @@ def first_heading(md: str) -> str | None:
     return match.group(2).strip()
 
 
+# 开头或结尾的省略号。中间的「他说……然后停了」不是截断标题。
+_EDGE_ELLIPSIS = re.compile(
+    r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+"
+    r"|(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
+)
+
+
+def _heading_stem(text: str) -> str:
+    return _EDGE_ELLIPSIS.sub("", (text or "").strip()).strip()
+
+
+def _same_truncated_heading(heading: str, title: str) -> bool:
+    """标题行是页面标题的省略号截断（或反过来）。打开页面时不要再露「有两...」。"""
+    if not heading or not title:
+        return False
+    if _EDGE_ELLIPSIS.search(heading) is None and _EDGE_ELLIPSIS.search(title) is None:
+        return False
+    left = _heading_stem(heading)
+    right = _heading_stem(title)
+    if len(left) < 8 or len(right) < 8:
+        return False
+    return left.startswith(right) or right.startswith(left)
+
+
 def strip_duplicate_title(md: str, title: str) -> str:
     match = re.match(r"\s*#\s+(.+?)\s*(?:\n|$)", md)
-    if match and match.group(1).strip() == title.strip():
+    if not match:
+        return md
+    heading = match.group(1).strip()
+    wanted = (title or "").strip()
+    if heading == wanted or _same_truncated_heading(heading, wanted):
         return md[match.end() :]
     return md
 
@@ -126,6 +154,43 @@ _FILE_URL = re.compile(r"file:///[^\s<>\"')\]]*", re.I)
 _MD_FILE_LINK = re.compile(r"\[([^\]]*)\]\(\s*file:///[^)]*\)", re.I)
 _BARE_PAGE_FILE = re.compile(r"(?<![A-Za-z0-9./])H\.HTM(?:#[^\s<>\"')\]]*)?", re.I)
 _EMPTY_PARENS = re.compile(r"[（(]\s*[）)]")
+
+
+
+# 展示层 / 识图后处理共用：只改明显错字语病，不改观点和口语。
+# 新规则要保守，宁可漏改也不要动作者原意。
+_OBVIOUS_TYPOS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"很新都东西"), "很新的东西"),
+    (re.compile(r"存在运用杠杆"), "存在运营杠杆"),
+    (re.compile(r"思想[?？]岭南"), "思想×岭南"),
+)
+
+
+def fix_obvious_typos(text: str) -> str:
+    """改正文和标题里一眼能看出的错字（如「很新都东西」→「很新的东西」）。
+
+    库内原文不改。present_text.polish_display_text 与识图 normalize 共用此表，避免两套替换打架。
+    """
+    out = text or ""
+    if not out:
+        return out
+    for pat, repl in _OBVIOUS_TYPOS:
+        out = pat.sub(repl, out)
+    return out
+
+
+def collapse_short_spam(text: str, phrases: tuple[str, ...] = ("深刻反省",)) -> str:
+    """同一短句夹空白/标点刷屏时压成一次；允许词内被软换行打断（OCR 常见）。"""
+    out = text or ""
+    if not out:
+        return out
+    for phrase in phrases:
+        if not phrase or len(phrase) < 2:
+            continue
+        inner = r"\s*".join(map(re.escape, phrase))
+        pat = re.compile(rf"(?:{inner})(?:[\s，,、；;]*(?:{inner})){{2,}}")
+        out = pat.sub(phrase, out)
+    return out
 
 
 def scrub_file_page_junk(text: str) -> str:

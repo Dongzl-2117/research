@@ -9,7 +9,13 @@
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
+- 标题以省略号收尾时，先去掉省略号再和正文对齐。正文里那一句不超过 40 字就整句用上；
+  正文也是半截时，收到上一个逗号，不把「有两」这种没写完的半截留在标题上。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
+- 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
+  完整分句以冒号收尾（「有两点感触很深：」）不是这种壳。
+- 明显错字走 textutil.fix_obvious_typos（与 present_text.polish_display_text 同一张表），
+  不在这里另维护，不改观点和口语。
 
 读者帖的「读者帖」标在作者行，不写进标题。
 """
@@ -19,7 +25,7 @@ from __future__ import annotations
 import re
 
 from researchlib.boilerplate import strip_meta
-from researchlib.textutil import argumentative_excerpt
+from researchlib.textutil import argumentative_excerpt, fix_obvious_typos
 
 FANGWEI_ZSXQ = "fangwei-zsxq"
 TITLE_LIMIT = 40
@@ -54,6 +60,8 @@ _EDGE_CUT = re.compile(
     r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+"
     r"|(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
 )
+# 只认开头的省略号。正文同一行「前半...后半」要把后半接回去，不能整行跳过。
+_LEADING_CUT = re.compile(r"^(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})+")
 _DATE_FALLBACK = re.compile(r"^(?:\d{4}-\d{2}-\d{2}\s+)?短帖$")
 # 以前入库补标题时读到了归档头那几行，标题成了「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。
 _ARCHIVE_META = re.compile(r"(?:^|\s)-\s*(?:作者|时间|类型|topic_id)\s*[：:]")
@@ -66,6 +74,8 @@ _NARRATION = re.compile(
 )
 _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”‘’\"'`＂＇。！？!?…·]+")
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
+# 「泡泡玛特：」「西部矿业：」：整标题以中文/ASCII 冒号收尾的壳。
+_SHELL_COLON = re.compile(r"^.+[：:]\s*$")
 
 
 def repairs_source(source_id: str) -> bool:
@@ -73,12 +83,17 @@ def repairs_source(source_id: str) -> bool:
 
 
 def title_needs_repair(title: str, body: str = "") -> bool:
-    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号、带省略号，或混进了归档头。
+    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号、带省略号，
+    公司名/话题名冒号壳，明显错字，或混进了归档头。
 
     给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
     """
     text = (title or "").strip()
     if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
+        return True
+    if _shell_colon(text):
+        return True
+    if polish_title_typos(text) != text:
         return True
     if re.fullmatch(r"\d{5,}", text):
         return True
@@ -89,6 +104,60 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     return bool(body) and cut_from_body(text, body)
 
 
+def title_needs_ai(title: str) -> bool:
+    """只有空/占位/复述套话/省略号截断/冒号壳/归档头脏标题才值得打 flash。
+
+    星球接口半句截断（对着正文能补全的）仍走确定性规则，避免存量几千篇全打 LLM。
+    只是错字也只抛光，不起题。
+    """
+    text = (title or "").strip()
+    if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
+        return True
+    if _shell_colon(text):
+        return True
+    if re.fullmatch(r"\d{5,}", text):
+        return True
+    if _DATE_ONLY.fullmatch(text):
+        return True
+    if _ARCHIVE_META.search(text):
+        return True
+    return False
+
+
+def polish_title_typos(title: str) -> str:
+    """改正标题里的明显错字。替换表在 textutil.fix_obvious_typos，与展示层共用。"""
+    return fix_obvious_typos(title or "")
+
+
+def _shell_colon(title: str) -> bool:
+    """整标题以冒号收尾的壳：「泡泡玛特：」「看数：」。
+
+    中间有逗号或句号的是完整分句（「有两点感触很深：」），不是话题名。
+    没有停顿、又长过公司名的，也不当壳。
+    """
+    text = (title or "").strip()
+    if not text or not _SHELL_COLON.match(text):
+        return False
+    stem = text.rstrip("：:").strip()
+    if not stem:
+        return True
+    if any(char in stem for char in "。！？!?，,；;"):
+        return False
+    if len(stem) > 16:
+        return False
+    return len(text) <= TITLE_LIMIT
+
+
+def _tidy_clause_colon(text: str) -> str:
+    """完整分句末尾的冒号拿掉。话题壳（「泡泡玛特：」）留着，交给补全。"""
+    polished = polish_title_typos(text or "")
+    if polished.endswith(("：", ":")) and not _shell_colon(polished):
+        clipped = polished.rstrip("：:").strip()
+        if clipped:
+            return clipped
+    return polished
+
+
 def _without_archive_meta(title: str) -> str:
     """混进标题的归档头（「 - 作者：… - 时间：…」）切掉，留下前面的原标题。"""
     match = _ARCHIVE_META.search(title)
@@ -96,8 +165,11 @@ def _without_archive_meta(title: str) -> str:
 
 
 def _cut_line(title: str, body: str) -> str:
-    """正文里标题截自的那一行。正文开头不是这几个字，或者这几个字后面就断句了，返回空串。"""
-    head = _SPACES.sub("", _MARKUP.sub("", title or ""))
+    """正文里标题截自的那一行。正文开头不是这几个字，或者这几个字后面就断句了，返回空串。
+
+    标题自己带的省略号先去掉再对齐，否则「有两...」对不上正文里的「有两点」。
+    """
+    head = _SPACES.sub("", _MARKUP.sub("", _strip_ellipsis(title or "")))
     if len(head) < 4:
         return ""
     for line in _plain(strip_meta(body or "")).splitlines():
@@ -110,9 +182,14 @@ def _cut_line(title: str, body: str) -> str:
         if not rest:
             # 标题自己那一行（标题行和标题一样）：看下一行。
             continue
-        if _EDGE_CUT.match(rest):
-            # 导出的标题行「前十几个字...」：截断的记号，正文在下面。
-            continue
+        peeled = _LEADING_CUT.sub("", rest, count=1).lstrip("）)】]」』\"'“”‘’》> ")
+        if peeled != rest:
+            # 导出的标题行「前十几个字...」。后面没字就看下一行；同一行还接着后半句就接上。
+            if not peeled:
+                continue
+            if peeled[0] in _SENTENCE_STOP:
+                return ""
+            return head + peeled
         return "" if rest[0] in _SENTENCE_STOP else line
     return ""
 
@@ -130,9 +207,14 @@ def _completed_from_body(title: str, body: str) -> str:
     # 问号、叹号和别处一样留着；句号、分号不留。
     sentence = re.match(f"[^{_SENTENCE_STOP}]*[{_SENTENCE_STOP}]?", line).group(0).rstrip("；;")
     fitted = _fit(_prepare(sentence))
-    if not fitted or not _ok(fitted) or _contains_cut(fitted) or title_needs_repair(fitted):
+    if not fitted or not _ok(fitted) or _contains_cut(fitted):
         return ""
-    return fitted
+    # 正文那句可能还带着错字。先按共享表抛光，再判断还要不要重抽，
+    # 否则「存在运用杠杆」这类替换会把补全挡掉。
+    polished = polish_title_typos(fitted)
+    if not polished or title_needs_repair(polished):
+        return ""
+    return polished
 
 
 def zsxq_display_title(
@@ -148,24 +230,34 @@ def zsxq_display_title(
     # 正文开头的归档头（作者、时间、点赞数）不是帖子的话，不拿来当标题。
     body = strip_meta(body or "")
     if stored and not title_needs_repair(stored, body):
-        return stored
+        return _tidy_clause_colon(stored)
+    # 只是错字：抛光后就能用，不必从正文重抽一句盖掉原标题。
+    # 原标题是正文半句时不在这里返回：共享错字表一改前缀，就对不上正文。
+    polished = polish_title_typos(stored)
+    if (
+        polished != stored
+        and polished
+        and not title_needs_repair(polished)
+        and not cut_from_body(stored, body)
+    ):
+        return polished
     completed = _completed_from_body(stored, body)
     if completed:
-        return completed
+        return polish_title_typos(completed)
     for sentence in _candidates(body):
-        return sentence
+        return polish_title_typos(sentence)
     # 去掉省略号后还是一句可用的原标题，优先于摘要和图片里的字。
     stem = _salvage_stored(stored)
     if stem:
-        return stem
+        return polish_title_typos(stem)
     for sentence in _candidates(summary):
-        return sentence
+        return polish_title_typos(sentence)
     if _ocr_allowed(stored):
         anchors = _topic_anchors(stored)
         for sentence in _candidates(ocr):
             # 有帖子主题时，图片里的另一则新闻对不上就不拿来当标题。
             if not anchors or _overlaps(sentence, anchors):
-                return sentence
+                return polish_title_typos(sentence)
     snippet = _short_snippet(body) or _short_snippet(summary)
     if _ocr_allowed(stored):
         snippet = snippet or _short_snippet(ocr)
@@ -173,9 +265,9 @@ def zsxq_display_title(
     if date and snippet:
         fitted = _fit(f"{date} {snippet}")
         if fitted:
-            return fitted
+            return polish_title_typos(fitted)
     if snippet:
-        return snippet
+        return polish_title_typos(snippet)
     if date:
         return f"{date} 短帖"
     return "短帖"
@@ -194,8 +286,18 @@ def stored_zsxq_title(
     日期加「短帖」这种兜底不写入：下次打开页面还可以用摘要或图片里的字补。
     原标题本来就能用时返回 None。去掉省略号后还剩一句主干，也会写回去，避免库里继续以「…」结尾。
     """
+    raw = (title or "").strip()
     if not title_needs_repair(title, body):
         return None
+    # 只是错字：直接抛光写回，不必重抽一句。半句截断仍走下面的补全。
+    polished = polish_title_typos(raw)
+    if (
+        polished != raw
+        and polished
+        and not title_needs_repair(polished)
+        and not cut_from_body(raw, body)
+    ):
+        return polished
     repaired = zsxq_display_title(
         title or "",
         body=body or "",
@@ -203,11 +305,31 @@ def stored_zsxq_title(
         ocr=ocr or "",
         when=when or "",
     )
-    if not repaired or repaired == (title or "").strip():
+    if not repaired or repaired == raw:
         return None
     if title_needs_repair(repaired) or _DATE_FALLBACK.fullmatch(repaired):
         return None
     return repaired
+
+
+def _drop_cut_stubs(text: str) -> str:
+    """去掉「前半句...」这种标题行，免得它和下面的完整句粘成一段，整段因为省略号被丢掉。"""
+    lines = (text or "").splitlines()
+    flats = [_SPACES.sub("", _plain(line)) for line in lines]
+    drop: set[int] = set()
+    for index, line in enumerate(lines):
+        if not _contains_cut(line):
+            continue
+        stem = _SPACES.sub("", _strip_ellipsis(_plain(line)))
+        if len(stem) < 4:
+            continue
+        for later in flats[index + 1 : index + 6]:
+            if later.startswith(stem) and len(later) > len(stem):
+                drop.add(index)
+                break
+    if not drop:
+        return text or ""
+    return "\n".join(line for index, line in enumerate(lines) if index not in drop)
 
 
 def _candidates(text: str) -> list[str]:
@@ -216,7 +338,7 @@ def _candidates(text: str) -> list[str]:
     带省略号的半截、「正文为空」和复述摘要（正文几乎、文中未给、作者开篇判断、没有本人的话）丢掉。
     """
     found: list[str] = []
-    for raw in _iter_raw(text):
+    for raw in _iter_raw(_drop_cut_stubs(text)):
         if _spammy(raw) or _contains_cut(raw) or _missing_note(raw) or _narration(raw):
             continue
         prepared = _prepare(raw)
@@ -269,6 +391,8 @@ def _prepare(sentence: str) -> str:
             break
         current = rest
     current = _strip_ellipsis(current).strip().rstrip("。.")
+    if current.endswith(("：", ":")) and not _shell_colon(current):
+        current = current.rstrip("：:").strip()
     return re.sub(r"\s+", " ", current).strip()
 
 
@@ -308,6 +432,22 @@ def _overlaps(sentence: str, anchors: set[str]) -> bool:
     return any(anchor in hay for anchor in anchors)
 
 
+def _clip_ellipsis_tail(title: str, stem: str) -> str:
+    """省略号说明后面没写完。半截收到上一个逗号，不留「有两点感」这种半个词。
+
+    没有逗号（「护城河在哪里…」）就留去掉省略号的主干。本来就没有省略号的，仍只剪逗号后不到四个字的尾巴。
+    """
+    text = (stem or "").strip()
+    if not text:
+        return ""
+    if not _EDGE_CUT.search(title or ""):
+        return _clip_dangling(text) if _dangling(text) else text
+    cut = max(text.rfind(char) for char in "，,；;")
+    if cut >= 8:
+        return text[:cut].strip()
+    return _clip_dangling(text) if _dangling(text) else text
+
+
 def _salvage_stored(title: str) -> str:
     """原标题去掉末尾省略号后，还剩一句不带截断符的话，才拿来兜底。"""
     if _placeholder(title):
@@ -315,7 +455,7 @@ def _salvage_stored(title: str) -> str:
     stem = _prepare(_strip_ellipsis(title)).rstrip("+＋").strip()
     if _contains_cut(stem):
         return ""
-    clipped = _fit(_clip_dangling(stem) if _dangling(stem) else stem)
+    clipped = polish_title_typos(_fit(_clip_ellipsis_tail(title, stem)))
     if clipped and _ok(clipped) and not _contains_cut(clipped) and not title_needs_repair(clipped):
         return clipped
     return ""
@@ -369,6 +509,8 @@ def _fit(text: str) -> str:
 
 def _ok(text: str) -> bool:
     if not text or _placeholder(text) or _narration(text) or _spammy(text) or _FILLER.match(text):
+        return False
+    if _shell_colon(text):
         return False
     if _contains_cut(text):
         return False

@@ -263,7 +263,10 @@ def author_replies(node: dict) -> list[tuple[str, str]]:
 
 
 def comments_section(pairs: list[tuple[str, str]], body: str) -> str:
-    """接在正文后面的「评论里的回复」。正文里已经有的回复（导出时带上了评论）不重复。"""
+    """接在正文后面的「评论里的回复」，标签与正文同一套「网友：」「方伟：」。
+
+    正文里已经有的回复（导出时带上了评论）不重复。
+    """
     seen = "".join(_KEEP_CHARS.findall(body or ""))
     lines: list[str] = []
     for question, reply in pairs:
@@ -272,8 +275,9 @@ def comments_section(pairs: list[tuple[str, str]], body: str) -> str:
             continue
         seen += key
         if question:
-            lines.append(f"读者问：{question}")
-        lines.append(f"作者答：{reply}" if question else f"作者补充：{reply}")
+            lines.append(f"网友：{question}")
+        # 全文一种对话体：星主答写成「方伟：」，读者问写成「网友：」。
+        lines.append(f"方伟：{reply}")
     if not lines:
         return ""
     return COMMENTS_MARKER + "\n\n".join(lines) + "\n"
@@ -490,7 +494,11 @@ def parse_markdown_files(
             section = comments_section(raw_meta["replies"], full_md)
             if section:
                 full_md = full_md.rstrip("\n") + "\n" + section
-                stored_meta["comment_replies"] = section.count("作者答：") + section.count("作者补充：")
+                stored_meta["comment_replies"] = (
+                    section.count("方伟：")
+                    + section.count("作者答：")
+                    + section.count("作者补充：")
+                )
         topic_id = raw_meta.get("topic_id") or (header_topic_id(body) if id_mode == "zsxq" else None)
         if topic_id:
             # 去重按「同一来源、同一话题号」认同一篇。没读到 raw/ 时从归档头里取。

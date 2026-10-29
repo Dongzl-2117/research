@@ -30,7 +30,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from researchlib.chunks import replace_ocr_chunks
-from researchlib.wechat_dialogue import SIDE_SELF, present_ocr_pieces, present_stored_ocr
+from researchlib.present_text import merge_wrapped_utterances, order_nested_replies
+from researchlib.textutil import collapse_short_spam, fix_obvious_typos
+from researchlib.vision_polish import repair_vision_misreads
+from researchlib.wechat_dialogue import (
+    SIDE_SELF,
+    drop_broadcast_chrome,
+    present_ocr_pieces,
+    present_stored_ocr,
+)
 
 logger = logging.getLogger("researchlib.ocr")
 
@@ -84,13 +92,45 @@ VISION_PROMPT = """\
 - 「一年后」「两年后」等常见时间词，中间的「年」看不清也优先写「年」，不要写成「一?后」「一?会」。
 - 知识星球「扫码领取优惠券」「立减金」「仅限前 N 名」推广卡：不要输出任何字（包括说明句），也不要标成「方伟：」。
 - 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）整段标「网友：」，不要留真实昵称。
+- 视频号/公众号关注条不要输出：已关注、点击 #话题 查看更多、欢迎关注 @账号 视频号、作者提示: 内容为转载。
+- 雪球/微博帖头与壳不要输出：发帖昵称、地区、影响力徽章（如十大影响力用户、超级某某）、
+  「发讨论」「查看对话」、点赞评论转发数字栏。
+- 「回复@甲:… //@乙:回复@丙:…」去掉昵称和「回复@」「//@」壳。
+  按时间从早到晚各写一行「网友：」（越靠后的 //@ 越早），不要只留最上面那条新回复。
+- 雪球、微博这类嵌套回复：视觉上靠上的一块常常是较晚的回复，
+  下面缩进或灰底引用卡片是被回复的更早发言。不要按从上到下当成时间顺序。
+  先写较早的发言，再写回复。界面昵称一律「网友：」；
+  引语里的说话人留在正文里（如「莫尼什：我是苹果用户……」）。
+  例：上面是「李录投资也很好……」，中间是「大道会不会考虑和李录做一期对谈节目？」，
+  下面卡片是「莫尼什：我是苹果用户……」。应写成：
+  网友：莫尼什：我是苹果用户……
+  网友：大道会不会考虑和李录做一期对谈节目？
+  网友：李录投资也很好……
+- 杂志/品牌封面壳不要输出：领教工坊、INSIDE THE BEST、COLMO 等刊头、Logo 字、品牌水印；
+  「来源：思想×岭南|…」这类刊源行也不要。封面大字若是正文金句（如「光做家电没有未来」）照写。
+- 同一短句连续刷屏（如「深刻反省」重复十几遍）只保留一次，不要整段复读。
+- 视频画面上的角标和主播条不要输出：未成年人请勿饮酒、主播或主持人加名字、底部节目名水印。
+  新闻标题和数字照写。
+- 品牌广告海报只留条款和数字：单独一行的 Logo、四字对仗口号不要输出。保障条款、适用条件照写。
+  书籍目录照写，不要当成界面删掉。
+- 上下文已经把词定死时，识图滑字直接写成对的词，不要照抄错字，也不要凭空改写。
+  例如：家电品牌并列（格力、海尔、空调、冰箱）里的「墓地」写成「美的」；
+  free cash flow 的中间词只错一个字母（如 free case flow）写成 free cash flow。
+  没有这种上下文就照写（去墓地扫墓、单独的 case 不改）。看不清仍写 ?，禁止改数字和观点。
 - 看不清的字写 ?，禁止编造。
 
 若是表格或柱状图：
 - 公司与数字一一对应，保留行列（公司、指标、数字写在同一行）。
 - 看不清写 ?，禁止编造数字或公司名。
 
-其它截图按阅读顺序逐行转写。看不清写 ?，禁止编造。不要额外评论。
+分段看画面，由你判断，不要套固定段数。
+- 画面上是一块的写成一段，段与段之间空一行。同一句被屏幕截断时写成一句，
+  例如「企业家精神是敢于在最顺的时候」和下一行「对自己动刀子」是一句。
+- 画面上分开的（大标题、字幕、图下说明、另一句话）各自成段，空行隔开。
+- 不要把每个短行都单独成段，也不要把整张图合成一段。
+- 微信或星球气泡仍是一条气泡一行，不要把不同气泡粘成一段。
+
+其它截图按阅读顺序转写，分段同样看画面。看不清写 ?，禁止编造。不要额外评论。
 """
 
 
@@ -306,12 +346,62 @@ _YEAR_TYPO = (
     (re.compile(r"一\?会"), "一年后会"),
     (re.compile(r"一\?后"), "一年后"),
 )
+# 杂志/品牌封面壳（整行丢掉）
+_BRAND_MASTHEAD = re.compile(
+    r"^(?:"
+    r"领教工坊"
+    r"|INSIDE\s+THE\s+BEST"
+    r"|COLMO"
+    r")$",
+    re.I,
+)
+_SOURCE_MASTHEAD = re.compile(
+    r"^来源\s*[:：]\s*(?:思想[?？×xX]?岭南|领教工坊)\b"
+)
+_SHORT_REPEAT_TOKEN = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,12}$")
+
+
+def _collapse_repeated_short_phrases(line: str) -> str:
+    """「深刻反省，深刻反省，…」压成一次；跨逗号/顿号的短词连刷。"""
+    raw = (line or "").rstrip()
+    if not raw:
+        return ""
+    prefix = ""
+    labeled = re.match(r"^((?:方伟|网友)\s*[:：]\s*)", raw)
+    if labeled:
+        prefix = labeled.group(1)
+        raw = raw[labeled.end() :]
+    parts = re.split(r"[，,、；;]+", raw)
+    tokens = [p.strip() for p in parts if p.strip()]
+    if len(tokens) >= 3 and all(_SHORT_REPEAT_TOKEN.fullmatch(t) for t in tokens):
+        if len(set(tokens)) == 1:
+            return f"{prefix}{tokens[0]}".strip()
+        kept: list[str] = []
+        for token in tokens:
+            if kept and kept[-1] == token:
+                continue
+            kept.append(token)
+        if len(kept) < len(tokens):
+            return f"{prefix}{'，'.join(kept)}".strip()
+    return f"{prefix}{raw}".strip() if prefix else line.rstrip()
+
+
+def _is_brand_chrome_line(line: str) -> bool:
+    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", (line or "").strip())
+    if not body:
+        return False
+    if _BRAND_MASTHEAD.fullmatch(body):
+        return True
+    if _SOURCE_MASTHEAD.match(body):
+        return True
+    return False
 
 
 def normalize_vision_text(text: str) -> str:
     """去掉模型偶尔套上的代码围栏；半截尾巴里乱编的公司名留给 prompt 约束，这里只做轻清理。
 
-    说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一? 在这里先收掉。
+    说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一?、品牌刊头、短句刷屏在这里先收掉。
+    只把半句折行接上，模型用空行分开的段保留。雪球嵌套回复改成从早到晚。识图滑字仍交给 vision_polish。
     """
     raw = (text or "").strip()
     if raw.startswith("```"):
@@ -339,7 +429,21 @@ def normalize_vision_text(text: str) -> str:
             continue
         if re.search(r"按规则整段不输出|优惠券推广卡", body):
             continue
-        lines.append(line.rstrip())
+        # 视频号/雪球壳轻清理（wechat_dialogue 还会再剥一轮）
+        if re.fullmatch(r"(?:[\u4e00-\u9fffA-Za-z0-9_\-]{2,20}\s+)?已关注", body):
+            continue
+        if re.search(r"欢迎关注\s*@?\S{0,40}\s*视频号|点击\s*#\S{1,40}\s*查看更多|作者提示\s*[:：]\s*内容为转载", body):
+            continue
+        if re.fullmatch(r"(?:发讨论|查看对话)[>〉›]?", body):
+            continue
+        if re.fullmatch(r"\d{1,6}(?:\s+\d{1,6}){1,4}", body):
+            continue
+        if _is_brand_chrome_line(line):
+            continue
+        collapsed = _collapse_repeated_short_phrases(line.rstrip())
+        if not collapsed:
+            continue
+        lines.append(collapsed)
     # 去掉账号栏后只剩优惠券日期/名额的尾巴
     kept = []
     for line in lines:
@@ -355,6 +459,17 @@ def normalize_vision_text(text: str) -> str:
             continue
         kept.append(line)
     lines = kept
+    # 连续相同短行（跨行刷「深刻反省」）只留一行
+    deduped: list[str] = []
+    for line in lines:
+        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", line.strip())
+        prev = (
+            re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", deduped[-1].strip()) if deduped else None
+        )
+        if deduped and body and body == prev and _SHORT_REPEAT_TOKEN.fullmatch(body):
+            continue
+        deduped.append(line)
+    lines = drop_broadcast_chrome(deduped)
     if lines:
         last = lines[-1].strip()
         # 「方伟：名创优品… / 名创优品业务…」——半截尾巴常见编造
@@ -363,7 +478,8 @@ def normalize_vision_text(text: str) -> str:
                 lines[-1] = "方伟：…"
             elif "：" not in last and ":" not in last:
                 lines.pop()
-    return "\n".join(lines).strip()
+    text = order_nested_replies(merge_wrapped_utterances("\n".join(lines).strip()))
+    return repair_vision_misreads(fix_obvious_typos(collapse_short_spam(text)))
 
 
 def vision_engine(settings) -> Callable[[Path], str]:

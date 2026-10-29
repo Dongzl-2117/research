@@ -36,6 +36,7 @@ from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
+from researchlib.present_text import polish_display_text
 from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import (
@@ -206,10 +207,14 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
     )
     if excerpt_text is None and "body_text" in row:
         excerpt_text = argumentative_excerpt(row["body_text"], title=row["title"], limit=180)
+    # 明显错字只洗纯文本；搜索传入的 title 已是 Markup(<mark>)，再 replace 会丢掉安全标记被 Jinja 转义。
+    plain_title = polish_display_text(row["title"] or "")
+    if title is None:
+        title = plain_title
     card = {
         "id": row["id"],
-        "title": row["title"] if title is None else title,
-        "plain_title": row["title"],
+        "title": title,
+        "plain_title": plain_title,
         "date": format_date(stored, zone),
         "time": format_clock(shown, zone) if known else "",
         "iso": format_iso(shown, zone) if known else day_key(stored, zone),
@@ -223,7 +228,7 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         # 来源名和作者同名时（例如「乘风破浪」）只显示一次。
         "show_author": source.author != source.name,
         "guest": False,
-        "excerpt": excerpt_text or "",
+        "excerpt": polish_display_text(excerpt_text or "") if excerpt_text else "",
         "summary": "",
         "points": [],
         "tags": [],
@@ -281,6 +286,7 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
             ocr=present_stored_ocr(extra.get("ocr_text") or ""),
             when=card.get("date") or "",
         )
+        repaired = polish_display_text(repaired)
         card["plain_title"] = repaired
         card["title"] = repaired
 
@@ -670,8 +676,9 @@ def _article_view(request: Request, article_id: int, mode: str):
         if ".md" in (article["body_md"] or "").lower() or ".md" in zh_blob.lower():
             link_index = load_md_index(conn, article["source_id"])
         # 正文显示前去掉归档头、引流尾巴、二维码和文末招募。库里的 body_md 不改。HTML 同样洗。
-        shown_md = clean_article(conn, article_id, article["source_id"], article["body_md"])
-        display_title = article["title"]
+        # 明显错字在 render_body→present_article_text 再洗一遍（幂等）；此处提前洗是为了标题和 strip 标题一致。
+        shown_md = polish_display_text(clean_article(conn, article_id, article["source_id"], article["body_md"]))
+        display_title = article["title"] or ""
         if repairs_source(source.id) and title_needs_repair(display_title or "", article.get("body_text") or ""):
             material = queries.title_materials(conn, [article_id]).get(article_id) or {}
             display_title = zsxq_display_title(
@@ -681,11 +688,12 @@ def _article_view(request: Request, article_id: int, mode: str):
                 ocr=present_stored_ocr(material.get("ocr_text") or ""),
                 when=format_date(article["published_at"], settings.display_timezone),
             )
+        display_title = polish_display_text(display_title or "")
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
     original_html = inline_image_ocr(
-        prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent),
+        prepare_body_html(shown_md, display_title, mapping, fmt, link_index, parent),
         ocr_texts,
     )
 
@@ -809,8 +817,8 @@ def _tree_body(conn, article, source_id: str):
     fmt = (article["raw_meta"] or {}).get("format")
     parent = str((article["raw_meta"] or {}).get("parent") or "")
     link_index = load_md_index(conn, source_id) if ".md" in (article["body_md"] or "").lower() else None
-    shown_md = clean_article(conn, article["id"], source_id, article["body_md"])
-    html = prepare_body_html(shown_md, article["title"], mapping, fmt, link_index, parent)
+    shown_md = polish_display_text(clean_article(conn, article["id"], source_id, article["body_md"]))
+    html = prepare_body_html(shown_md, polish_display_text(article["title"] or ""), mapping, fmt, link_index, parent)
     return Markup(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
 
@@ -1041,10 +1049,10 @@ def search_page(request: Request):
                 topic_groups.setdefault(term.group, []).extend(term.forms)
 
         def passage_card(p):
-            text = highlight_snippet(p.excerpt or p.body, query, radius=500, terms=terms, focus_terms=focus_terms)
-            before = highlight_snippet(p.before, query, radius=240, terms=terms, focus_terms=entity_terms) \
+            text = highlight_snippet(polish_display_text(p.excerpt or p.body), query, radius=500, terms=terms, focus_terms=focus_terms)
+            before = highlight_snippet(polish_display_text(p.before), query, radius=240, terms=terms, focus_terms=entity_terms) \
                 if p.before else Markup("")
-            after = highlight_snippet(p.after, query, radius=160, terms=terms) if p.after else Markup("")
+            after = highlight_snippet(polish_display_text(p.after), query, radius=160, terms=terms) if p.after else Markup("")
             return {
                 "text": text, "before": before, "after": after, "url": p.url,
                 "match_label": literal_match_label(
@@ -1060,7 +1068,7 @@ def search_page(request: Request):
                     row,
                     by_id[hit.source_id],
                     settings,
-                    title=highlight_title(hit.title, query, terms=terms),
+                    title=highlight_title(polish_display_text(hit.title), query, terms=terms),
                     extra={
                         "search_passages": [passage_card(p) for p in hit.passages[:2]],
                         "heading": best.heading if best else "",
