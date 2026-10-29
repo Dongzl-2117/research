@@ -3,6 +3,12 @@
 分段规则与 AIHOT ``editorial/translate.ts`` 的 ``segmentsOf`` 一致：``BLOCK`` 且没有
 块级子节点才是叶子，否则继续访问子节点。因此带 ``<p>`` / 标题 / ``<li>`` 的
 blockquote 会拆开，只有纯文本的短引用仍是一整段 blockquote。
+
+AIHOT 的 CONTAINER 不含 ``dl``（#119 按 ``segmentsOf`` 移植；本环境没有那份
+TypeScript，不另编一条 AIHOT 规则）。研究站仍把「多条或很长的定义列表引用」拆开：
+叶子里有多条 ``dt`` / ``dd``，或纯文本达到 ``_DEF_DESCEND_PLAIN`` 时，继续往这些
+子节点走。连续四条以上的短 ``dt``，以及只用 ``<br>`` 粘起来的长 ``dt`` / ``dd``，
+再收成大约一段，避免一行一个对照，也避免一条定义仍是几万字。
 """
 
 from __future__ import annotations
@@ -18,10 +24,23 @@ _BLOCK = frozenset({
     "p", "h2", "h3", "h4", "h5", "li", "blockquote",
     "figcaption", "td", "th", "dt", "dd", "caption",
 })
-# AIHOT 的 CONTAINER。直接子节点命中才算 hasBlockChild。dl 不在里面。
+# AIHOT 的 CONTAINER。直接子节点命中才算 hasBlockChild。dl 不在里面：
+# AIHOT 会把 <blockquote><dl>…</dl></blockquote> 收成一个叶子。研究站的拆法在
+# _should_open_definition，不改这条正则，短的单条定义列表仍走 AIHOT。
 _CONTAINER = re.compile(
     r"^(?:p|h[2-5]|li|blockquote|figcaption|td|th|dt|dd|caption|ul|ol|table|pre|figure|div)$"
 )
+# 一条定义（一个 dt 加一个 dd）短过这个长度时，整段引用仍是一个叶子。
+_DEF_DESCEND_PLAIN = 4_000
+# 已经拆进 dt/dd 之后，单条若仍是多行 <br> 粘成的长文，再按行收成段。
+_DEF_BR_PLAIN = 2_000
+# 连续四条以上的 dt 是粘贴被收成的「一行一条」，不是术语表。收成可读的段。
+_DEF_PACK_RUN = 4
+_DEF_PACK_TARGET = 700
+_DEF_PACK_FLOOR = 180
+_DEF_PACK_ALONE = 500
+_DEF_PACK_TAIL = 120
+_SENTENCE_END = (".", "?", "!", "。", "？", "！")
 # cheerio / 浏览器把这些当成空元素。<br> 若按普通开始标签加深度，后面的兄弟节点
 # 会全被吞进当前块（21118 测出来只有 7 个顶层块，最后一块是整篇）。
 _VOID = frozenset({
@@ -256,37 +275,295 @@ def _para_id(start: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _walk(
+def _plain_len_node(node: _El) -> int:
+    return len(re.sub(r"\s+", " ", _plain_text(node)).strip())
+
+
+def _claim_anchor(own: str | None, chain: list[str], used: set[str]) -> str | None:
+    anchor = own
+    if anchor is None:
+        for candidate in reversed(chain):
+            if candidate and candidate not in used:
+                anchor = candidate
+                break
+    if anchor:
+        used.add(anchor)
+    return anchor
+
+
+def _has_dl(node: _El) -> bool:
+    for child in node.children:
+        if isinstance(child, _El) and (child.name == "dl" or _has_dl(child)):
+            return True
+    return False
+
+
+def _count_def_entries(node: _El) -> tuple[int, int]:
+    dt = dd = 0
+    stack: list[_El] = [node]
+    while stack:
+        cur = stack.pop()
+        if cur.name == "dt":
+            dt += 1
+        elif cur.name == "dd":
+            dd += 1
+        stack.extend(child for child in cur.children if isinstance(child, _El))
+    return dt, dd
+
+
+def _has_flow_block(node: _El) -> bool:
+    """dl 里已经有 p / 标题 / 列表，说明上次写回把粘贴收成了段。还要能再切出来。"""
+    for child in node.children:
+        if not isinstance(child, _El):
+            continue
+        if child.name in {"p", "h2", "h3", "h4", "h5", "li", "ul", "ol", "table", "div", "figure"}:
+            return True
+        if _has_flow_block(child):
+            return True
+    return False
+
+
+def _should_open_definition(node: _El) -> bool:
+    """叶子里的 dl 要不要继续往下走。
+
+    一条短定义（一个 dt 加一个 dd，纯文本不到 ``_DEF_DESCEND_PLAIN``）保持整段，
+    和 AIHOT 一样。多条 dt/dd、纯文本已经很长，或里面已经是段落，就拆开。
+    """
+    if not _has_dl(node):
+        return False
+    if _has_flow_block(node):
+        return True
+    dt, dd = _count_def_entries(node)
+    if dt >= 2 or dd >= 2:
+        return True
+    return _plain_len_node(node) >= _DEF_DESCEND_PLAIN
+
+
+def _is_container(name: str, *, descend_dl: bool) -> bool:
+    if _CONTAINER.match(name):
+        return True
+    # 只在「已经决定拆定义列表」的这棵子树里把 dl 当容器。全局 CONTAINER 仍不含 dl。
+    return bool(descend_dl and name == "dl")
+
+
+def _sentence_end(text: str) -> bool:
+    return text.rstrip().endswith(_SENTENCE_END)
+
+
+def _pack_fragments(items: list[object], length_of) -> list[list[object]]:
+    """把一行一条的碎片收成大约一段。单行已经够长就单独留下。"""
+    groups: list[list[object]] = []
+    buf: list[object] = []
+    size = 0
+
+    def flush() -> None:
+        nonlocal size
+        if not buf:
+            return
+        groups.append(buf[:])
+        buf.clear()
+        size = 0
+
+    for item in items:
+        length = int(length_of(item))
+        if length >= _DEF_PACK_ALONE and not buf:
+            groups.append([item])
+            continue
+        if length >= _DEF_PACK_ALONE and buf:
+            flush()
+            groups.append([item])
+            continue
+        buf.append(item)
+        size += length + 1
+        plain = item if isinstance(item, str) else _plain_text(item)
+        ended = _sentence_end(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", str(plain))).strip())
+        if size >= _DEF_PACK_TARGET or (ended and size >= _DEF_PACK_FLOOR):
+            flush()
+    flush()
+    if len(groups) >= 2:
+        tail_len = sum(int(length_of(item)) for item in groups[-1]) + len(groups[-1])
+        prev_len = sum(int(length_of(item)) for item in groups[-2]) + len(groups[-2])
+        if tail_len < _DEF_PACK_TAIL and prev_len + tail_len <= _DEF_PACK_TARGET + 300:
+            groups[-2].extend(groups[-1])
+            groups.pop()
+    return groups
+
+
+def _br_pieces(node: _El) -> list[str] | None:
+    """把 <br> 粘成的长 dt/dd 收成若干段。行数不够或不够长时返回 None，仍是一条。"""
+    if _plain_len_node(node) < _DEF_BR_PLAIN:
+        return None
+    if not any(isinstance(child, _El) and child.name == "br" for child in node.children):
+        return None
+    lines: list[str] = []
+    group: list[_El | _Tx] = []
+
+    def flush_line() -> None:
+        inner = _serialize(group).strip()
+        group.clear()
+        if not inner:
+            return
+        text = html_lib.unescape(re.sub(r"<[^>]+>", "", inner))
+        if not any(char.isalpha() for char in text):
+            return
+        lines.append(inner)
+
+    for child in node.children:
+        if isinstance(child, _El) and child.name == "br":
+            flush_line()
+        else:
+            group.append(child)
+    flush_line()
+    if len(lines) < 2:
+        return None
+    packed = _pack_fragments(lines, lambda inner: len(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", inner)).strip()))
+    pieces = [f"<p>{' '.join(chunk)}</p>" for chunk in packed if chunk]
+    if len(pieces) < 2:
+        return None
+    return pieces
+
+
+def _element_children(node: _El) -> list[_El | _Tx]:
+    """丢掉纯空白文本。dt 之间的换行不能把「一行一条」的粘贴拆成互不相邻。"""
+    return [
+        child
+        for child in node.children
+        if not (isinstance(child, _Tx) and not child.data.strip())
+    ]
+
+
+def _emit_packed_dts(
+    run: list[_El],
+    chain: list[str],
+    used: set[str],
+    out: list[Segment],
+    replacements: dict[int, str] | None,
+) -> None:
+    """连续多条短 dt 收成段。第一条换成译文，其余清空，外壳 dl 还在。"""
+    groups = _pack_fragments(run, _plain_len_node)
+    for group in groups:
+        nodes = [node for node in group if isinstance(node, _El)]
+        if len(nodes) == 1:
+            _walk(nodes[0], chain, used, out, replacements, descend_dl=True)
+            continue
+        inner = " ".join(piece for dt in nodes if (piece := _serialize(dt.children).strip()))
+        text = html_lib.unescape(re.sub(r"<[^>]+>", "", inner))
+        if not any(char.isalpha() for char in text):
+            continue
+        anchor = _claim_anchor(_para_id(nodes[0].start), chain, used)
+        out.append(Segment(f"<p>{inner}</p>", anchor))
+        slot = len(out) - 1
+        if replacements is not None and slot in replacements:
+            nodes[0].replacement = replacements[slot]
+            for extra in nodes[1:]:
+                extra.replacement = ""
+
+
+def _walk_dl(
     node: _El,
     ancestors: list[str],
     used: set[str],
     out: list[Segment],
     replacements: dict[int, str] | None,
 ) -> None:
+    own = _para_id(node.start)
+    chain = [*ancestors, own] if own else ancestors
+    children = _element_children(node)
+    index = 0
+    while index < len(children):
+        child = children[index]
+        if isinstance(child, _El) and child.name == "dt":
+            run: list[_El] = []
+            while index < len(children) and isinstance(children[index], _El) and children[index].name == "dt":
+                run.append(children[index])
+                index += 1
+            if len(run) >= _DEF_PACK_RUN:
+                _emit_packed_dts(run, chain, used, out, replacements)
+            else:
+                for dt in run:
+                    _walk(dt, chain, used, out, replacements, descend_dl=True)
+            continue
+        if isinstance(child, _El):
+            _walk(child, chain, used, out, replacements, descend_dl=True)
+        index += 1
+
+
+def _emit_br_pieces(
+    node: _El,
+    pieces: list[str],
+    own: str | None,
+    chain: list[str],
+    used: set[str],
+    out: list[Segment],
+    replacements: dict[int, str] | None,
+) -> None:
+    """把收好的段写回原节点。dd/dt 外壳留着；p 自己换成这些段，不再套一层。"""
+    first = len(out)
+    for index, piece in enumerate(pieces):
+        anchor = _claim_anchor(own, chain, used) if index == 0 else None
+        out.append(Segment(piece, anchor))
+    if replacements is None:
+        return
+    parts: list[str] = []
+    replaced = False
+    for index, piece in enumerate(pieces):
+        slot = first + index
+        if slot in replacements:
+            parts.append(replacements[slot])
+            replaced = True
+        else:
+            parts.append(piece)
+    if not replaced:
+        return
+    # p 自己就是叶子，换掉它，不要再包一层 p。dd/dt 把拆开的段留在原来的外壳里。
+    if node.name == "p":
+        node.replacement = "".join(parts)
+    else:
+        node.replacement = f"{node.start}{''.join(parts)}</{node.name}>"
+
+
+def _walk(
+    node: _El,
+    ancestors: list[str],
+    used: set[str],
+    out: list[Segment],
+    replacements: dict[int, str] | None,
+    *,
+    descend_dl: bool = False,
+) -> None:
     # pre / code 整段跳过，不译里面的字，和 AIHOT 一样。
     if node.name in {"pre", "code"}:
         return
+    # dl 本身不是叶子。连续的短 dt 收成段；术语表仍是一条 dt、一条 dd。
+    if node.name == "dl":
+        _walk_dl(node, ancestors, used, out, replacements)
+        return
     own = _para_id(node.start)
     chain = [*ancestors, own] if own else ancestors
-    has_block_child = any(isinstance(child, _El) and _CONTAINER.match(child.name) for child in node.children)
+    has_block_child = any(
+        isinstance(child, _El) and _is_container(child.name, descend_dl=descend_dl) for child in node.children
+    )
     if node.name in _BLOCK and not has_block_child:
+        # 还没进入定义列表时，多条或很长的 dl 不在这里收成叶子，改从子节点往下走。
+        if not descend_dl and _should_open_definition(node):
+            for child in node.children:
+                if isinstance(child, _El):
+                    _walk(child, chain, used, out, replacements, descend_dl=True)
+            return
+        pieces = _br_pieces(node) if descend_dl or node.name in {"dt", "dd"} else None
+        if pieces:
+            _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
+            return
         if not _has_letter(node):
             return
-        anchor = own
-        if anchor is None:
-            for candidate in reversed(chain):
-                if candidate and candidate not in used:
-                    anchor = candidate
-                    break
-        if anchor:
-            used.add(anchor)
+        anchor = _claim_anchor(own, chain, used)
         out.append(Segment(_outer(node), anchor))
         if replacements is not None and (len(out) - 1) in replacements:
             node.replacement = replacements[len(out) - 1]
         return
     for child in node.children:
         if isinstance(child, _El):
-            _walk(child, chain, used, out, replacements)
+            _walk(child, chain, used, out, replacements, descend_dl=descend_dl)
 
 
 def _parse_and_walk(
@@ -325,7 +602,8 @@ def coarse_segment_reason(html: str, *, recorded_segments: int | None = None) ->
 
     正确写回之后，大引用的外壳还在，但每个叶子只是一段。这里只抓两种过时结构：
     一个叶子自己仍包着很多段（没按 segmentsOf 拆开），或库里记下的段数远少于
-    现在能切出的叶子。只占全文两成左右的定义列表引用不会被当成要重译。
+    现在能切出的叶子。多条定义列表以前是一个叶子：叶子多出至少 40，或达到原来的三倍，
+    都会抽中。按新叶子写回之后段数对齐，不会反复出现。一条短定义列表仍是一段，不抽。
     """
     text = html or ""
     if not text.strip():
@@ -338,14 +616,11 @@ def coarse_segment_reason(html: str, *, recorded_segments: int | None = None) ->
         dominates = total > 0 and length >= 8_000 and length / total >= 0.5
         if inner >= 8 or (dominates and inner >= 4):
             return "giant-leaf"
-    if (
-        recorded_segments is not None
-        and recorded_segments > 0
-        and len(leaves) >= 12
-        and recorded_segments * 3 < len(leaves)
-        and len(leaves) - recorded_segments >= 15
-    ):
-        return "segments-below-leaves"
+    if recorded_segments is not None and recorded_segments > 0 and len(leaves) >= 12:
+        grew = len(leaves) - recorded_segments
+        # 三倍是旧的大引用。定义列表收成段之后增长没那么陡，多出 40 段也是旧切分。
+        if grew >= 15 and (recorded_segments * 3 < len(leaves) or grew >= 40):
+            return "segments-below-leaves"
     return None
 
 
