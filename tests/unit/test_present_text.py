@@ -212,6 +212,26 @@ def test_ocr_blocks_inherit_prose_font_without_grey_box():
     assert "font-size: 13px" in links
 
 
+def test_prose_links_inherit_text_color_and_keep_underline():
+    """正文链接用周围文字的颜色加下划线，悬停不回到强调色。"""
+    css = _CSS.read_text(encoding="utf-8")
+    rule = css.split(".prose a {", 1)[1].split("}", 1)[0]
+    visited = css.split(".prose a:visited {", 1)[1].split("}", 1)[0]
+    hover = css.split(".prose a:hover {", 1)[1].split("}", 1)[0]
+    assert "color: inherit" in rule
+    assert "text-decoration: underline" in rule
+    assert "currentColor" in rule
+    assert "var(--accent)" not in rule
+    assert "color: inherit" in visited
+    assert "var(--accent)" not in hover
+    assert "currentColor" in hover
+    # 「原图 N」仍是小一号的控件，不跟正文句子抢颜色。
+    original = css.split(".prose .ocr-links a {", 1)[1].split("}", 1)[0]
+    assert "var(--ink-3)" in original
+    original_hover = css.split(".prose .ocr-links a:hover {", 1)[1].split("}", 1)[0]
+    assert "var(--accent)" not in original_hover
+
+
 # 文章 24008 方洪波视频截图：模型按画面折行，一句拆成多行。
 _FANG_LINES = """方洪波：
 企业家精神是敢于在最顺的时候
