@@ -1049,10 +1049,15 @@ def search_page(request: Request):
                 topic_groups.setdefault(term.group, []).extend(term.forms)
 
         def passage_card(p):
-            text = highlight_snippet(polish_display_text(p.excerpt or p.body), query, radius=500, terms=terms, focus_terms=focus_terms)
-            before = highlight_snippet(polish_display_text(p.before), query, radius=240, terms=terms, focus_terms=entity_terms) \
-                if p.before else Markup("")
-            after = highlight_snippet(polish_display_text(p.after), query, radius=160, terms=terms) if p.after else Markup("")
+            text = highlight_snippet(
+                polish_display_text(p.excerpt or p.body), query, radius=500, terms=terms, focus_terms=focus_terms,
+            )
+            before = highlight_snippet(
+                polish_display_text(p.before), query, radius=240, terms=terms, focus_terms=entity_terms,
+            ) if p.before else Markup("")
+            after = highlight_snippet(
+                polish_display_text(p.after), query, radius=160, terms=terms,
+            ) if p.after else Markup("")
             return {
                 "text": text, "before": before, "after": after, "url": p.url,
                 "match_label": literal_match_label(
