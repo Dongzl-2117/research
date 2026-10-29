@@ -80,3 +80,44 @@ def test_fangwei_cards_and_article_replace_cut_off_titles(conn, settings):
         assert "明确…" not in owner_page.text
     stored = conn.execute("SELECT title FROM articles WHERE external_id = 'reader-cut'").fetchone()
     assert stored["title"] == TRUNCATED
+
+
+def test_retitled_article_drops_the_old_export_heading(conn, settings):
+    """1273：导出标题「2026年9月1日」是正文开头的日期。页面换成正文那句后，正文顶上不再留一个日期大标题。"""
+    chengfeng = next(source for source in load_sources(settings.sources_path) if source.id == "chengfengpolang")
+    sentence = "瑞幸咖啡宣布其董事会已批准将股票回购计划的规模从$3亿扩大至$5亿"
+    body = (
+        "# 2026年9月1日\n\n"
+        "- 作者：王小明\n"
+        "- 时间：2026-09-01 18:57 (UTC+8)\n\n"
+        f"2026年9月1日，{sentence}，并在2027年4月前新增授权金额2亿美元。该计划于2026年4月启动，为期12个月。\n"
+    )
+    store_documents(
+        conn,
+        source=chengfeng,
+        docs=[
+            ParsedDoc(
+                "2026-09-01_55521141815842544",
+                "2026年9月1日",
+                datetime(2026, 9, 1, 18, 57, tzinfo=SHANGHAI),
+                body,
+                {"format": "markdown", "filename": "2026-09-01_55521141815842544.md"},
+                [],
+            )
+        ],
+        data_dir=settings.data_dir,
+        archive_files=1,
+        images_in_archive=0,
+        errors=[],
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, title FROM articles WHERE external_id = '2026-09-01_55521141815842544'"
+    ).fetchone()
+    assert row["title"] == "2026年9月1日"
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{row['id']}")
+        assert page.status_code == 200
+        assert f"<h1>{sentence}</h1>" in page.text
+        assert ">2026年9月1日</h" not in page.text
+        assert f"2026年9月1日，{sentence}" in page.text
