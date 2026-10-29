@@ -89,6 +89,8 @@ NIGHTLY_OCR=1 BACKUP_DIR=… scripts/install-launchd.sh
 
 之后每晚在观点、摘要、论点之后，于 `app` 容器里跑 `research-ocr --engine vision`（`OCR_LIMIT`，默认 400 张，和其他步骤共用 `MINUTES` 的时间上限）。不再 `docker compose --profile ocr run`。失败了和其他步骤一样记进夜间任务的结果。
 
+`app` 容器没在跑时，这一步会先 `docker compose up -d app` 再执行，避免 `service app is not running` 直接失败。新导入的带图文章（方伟星球、方伟公众号，以及其他来源）在导入命令结束时就会排进识图，一次最多 40 篇，不必等到 00:37。夜间任务仍补没排上的。设 `RESEARCH_INGEST_FOLLOW=0` 可以关掉导入后的自动识图和译制。
+
 第一次可以先用上面的 API 或 `research-ocr --article` 定点重认抽验锚点，不要无差别全库 vision。以后每晚只剩新导入的图。
 
 ## CI

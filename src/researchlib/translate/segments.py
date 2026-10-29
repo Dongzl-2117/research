@@ -316,6 +316,39 @@ def segments_of(html: str) -> list[str]:
     return [item.html for item in iter_segments(html)]
 
 
+def _plain_len(html: str) -> int:
+    return len(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html or "")).strip())
+
+
+def coarse_segment_reason(html: str, *, recorded_segments: int | None = None) -> str | None:
+    """译文还是旧的粗分段时返回原因，否则 None。
+
+    正确写回之后，大引用的外壳还在，但每个叶子只是一段。这里只抓两种过时结构：
+    一个叶子自己仍包着很多段（没按 segmentsOf 拆开），或库里记下的段数远少于
+    现在能切出的叶子。只占全文两成左右的定义列表引用不会被当成要重译。
+    """
+    text = html or ""
+    if not text.strip():
+        return None
+    leaves = segments_of(text)
+    lengths = [_plain_len(leaf) for leaf in leaves]
+    total = sum(lengths)
+    for leaf, length in zip(leaves, lengths, strict=True):
+        inner = len(re.findall(r"<(?:p|h[1-6]|li)\b", leaf, re.I))
+        dominates = total > 0 and length >= 8_000 and length / total >= 0.5
+        if inner >= 8 or (dominates and inner >= 4):
+            return "giant-leaf"
+    if (
+        recorded_segments is not None
+        and recorded_segments > 0
+        and len(leaves) >= 12
+        and recorded_segments * 3 < len(leaves)
+        and len(leaves) - recorded_segments >= 15
+    ):
+        return "segments-below-leaves"
+    return None
+
+
 def splice_segments(html: str, replacements: dict[int, str]) -> str:
     """按 segments_of 的下标，把译文写回原来的叶子，外层 blockquote / 列表 / 表格不动。"""
     if not html:

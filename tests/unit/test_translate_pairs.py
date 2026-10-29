@@ -4,6 +4,7 @@ from researchlib.translate.language import is_chinese
 from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.translate.segments import (
     chunk_segments,
+    coarse_segment_reason,
     segments_of,
     shield,
     splice_segments,
@@ -471,4 +472,56 @@ def test_markdown_quote_lines_segment_inside_the_blockquote():
     assert quoted and not quoted[0].lower().startswith("<blockquote")
     assert any("Pasted heading" in segment and segment.lower().startswith("<h3") for segment in segments)
     assert any("Second quoted paragraph" in segment for segment in segments)
-    assert not any(segment.lower().startswith("<blockquote") and "Second quoted" in segment for segment in segments)
+    assert not any(
+        segment.lower().startswith("<blockquote") and "Second quoted" in segment for segment in segments
+    )
+
+
+def test_coarse_reason_flags_old_segment_count_not_a_definition_list():
+    """段数远少于现在的叶子就要重译。定义列表引用按规则仍是一段，不反复抽中。"""
+    english = _daily_quote_html()
+    leaves = len(segments_of(english))
+    assert leaves >= 40
+    assert coarse_segment_reason(english, recorded_segments=7) == "segments-below-leaves"
+    assert coarse_segment_reason(english, recorded_segments=leaves) is None
+    quote = (
+        "<blockquote><dl>"
+        + "".join(f"<dt>Line {index} of a pasted list stays one quote.</dt>" for index in range(30))
+        + "</dl></blockquote>"
+    )
+    assert segments_of(quote) == [quote]
+    assert coarse_segment_reason(quote, recorded_segments=1) is None
+
+
+def test_list_coarse_uses_source_when_translation_was_flattened():
+    """译文被收成少数几段时，用原文叶子数判断，而不是只看译文 HTML。"""
+    from researchlib.translate.service import list_coarse_translations
+
+    body = "\n\n".join(
+        f"Paragraph {index} explains a distinct point about the market this year." for index in range(24)
+    )
+    row = {
+        "id": 9,
+        "source_id": "stratechery",
+        "title": "A daily",
+        "body_md": body,
+        "body_text": "x" * 8000,
+        "raw_meta": {},
+        "segments": 6,
+        "body_html": "".join(f"<p>Short translated paragraph {index}.</p>" for index in range(6)),
+    }
+
+    class Conn:
+        def execute(self, sql, params):
+            assert "stratechery" in params
+            return self
+
+        def fetchall(self):
+            return [row]
+
+    found = list_coarse_translations(Conn(), limit=10, source_id="stratechery")
+    assert found == [{"id": 9, "source": "stratechery", "reason": "segments-below-source"}]
+
+    row["segments"] = 24
+    row["body_html"] = "".join(f"<p>Paragraph {index} in Chinese remains one leaf.</p>" for index in range(24))
+    assert list_coarse_translations(Conn(), limit=10, source_id="stratechery") == []

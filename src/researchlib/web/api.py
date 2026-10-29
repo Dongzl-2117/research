@@ -626,8 +626,11 @@ def api_answer(request: Request, answer_id: int):
 async def api_translate_start(request: Request):
     """触发批量译制。立刻返回，实际翻译在后台线程里跑。
 
-    JSON：{source?, limit?, loop?, sleep?}。source 为空表示所有来源；limit 每轮取几篇；
-    loop=true 时空队列休眠 sleep 秒再扫；sleep 最少 5 秒。已经在跑时不会起第二个，返回 started=false。
+    JSON：{source?, limit?, loop?, sleep?, recheck?, dry_run?}。source 为空表示所有来源；
+    limit 每轮取几篇；loop=true 时空队列休眠 sleep 秒再扫；sleep 最少 5 秒。
+    recheck=true 时改查已经译完、但分段还是旧粗粒度的篇，强制重译。
+    dry_run 必须和 recheck 一起用：只返回 id 和原因，不起线程，不调模型。
+    已经在跑时不会起第二个，返回 started=false。
     """
     if not _same_origin(request):
         raise HTTPException(status_code=403, detail="跨站请求被拒绝")
@@ -642,12 +645,23 @@ async def api_translate_start(request: Request):
     if problem:
         raise HTTPException(status_code=409, detail=problem)
     source = str(body.get("source") or "").strip()[:100] or None
+    recheck = _flag(body.get("recheck"))
+    if _flag(body.get("dry_run")):
+        if not recheck:
+            raise HTTPException(status_code=400, detail="dry_run 要和 recheck 一起用")
+        preview = translate_worker.preview_recheck(
+            settings,
+            source=source,
+            limit=_int(body.get("limit")) or 100,
+        )
+        return _json(preview)
     result = translate_worker.start(
         settings,
         source=source,
         limit=_int(body.get("limit")) or translate_worker.DEFAULT_LIMIT,
         loop=_flag(body.get("loop")),
         sleep=_int(body.get("sleep")) or translate_worker.DEFAULT_SLEEP,
+        recheck=recheck,
     )
     return _json(result)
 
@@ -909,8 +923,9 @@ def llms_txt(request: Request):
         "",
         "## 维护",
         "",
-        f"- [触发译制]({base}/api/v1/translate): POST JSON {{source?, limit?, loop?, sleep?}}，"
-        "后台线程按待译队列翻译英文文章，立刻返回 running；GET 同一路径看进度，"
+        f"- [触发译制]({base}/api/v1/translate): POST JSON {{source?, limit?, loop?, sleep?, recheck?, dry_run?}}，"
+        "后台线程按待译队列翻译英文文章；recheck 重译已经完成但分段过粗的篇，"
+        "dry_run 与 recheck 一起用时只返回 id。立刻返回 running；GET 同一路径看进度，"
         "POST /api/v1/translate/stop 停。已在跑时不会开第二个。只在站内或本机调用，不读、不回任何凭证。",
         f"- [触发摘要]({base}/api/v1/digest): POST JSON {{source?, limit?, loop?, sleep?}}，"
         "GET 看进度，POST /api/v1/digest/stop 停。",

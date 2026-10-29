@@ -36,6 +36,7 @@ def isolated_worker(monkeypatch):
     monkeypatch.setattr(worker, "_thread", None)
     monkeypatch.setattr(worker, "_stop", threading.Event())
     monkeypatch.setattr(worker, "_state", worker._blank_state())
+    worker._extra.clear()
     monkeypatch.setattr(worker, "llm_configured", lambda settings: True)
     monkeypatch.setattr(worker, "_connect", lambda settings: FakeConn())
     yield worker
@@ -257,6 +258,92 @@ def test_post_with_wrong_origin_is_forbidden(tmp_path, isolated_worker, monkeypa
     assert allowed.status_code == 200
     client.post("/api/v1/translate/stop", headers={"origin": "https://investment.zldong.com"})
     _wait_stopped()
+
+
+def test_recheck_translates_coarse_rows_not_the_pending_queue(tmp_path, isolated_worker, monkeypatch):
+    seen: list[int] = []
+
+    def fake_coarse(conn, *, limit, source_id=None):
+        assert source_id == "stratechery"
+        return [{"id": 21118, "source": "stratechery", "reason": "segments-below-leaves"}]
+
+    def fake_pending(conn, *, limit, source_id=None):
+        raise AssertionError("recheck 不该去待译队列")
+
+    def fake_translate(conn, article_id, *, data_dir):
+        seen.append(article_id)
+        return TranslateResult(article_id, "translated", segments=40)
+
+    monkeypatch.setattr(worker, "list_coarse_translations", fake_coarse)
+    monkeypatch.setattr(worker, "list_pending_english", fake_pending)
+    monkeypatch.setattr(worker, "translate_article", fake_translate)
+    client = _client(tmp_path)
+
+    started = client.post("/api/v1/translate", json={"source": "stratechery", "recheck": True, "limit": 5})
+    assert started.status_code == 200
+    assert started.json()["recheck"] is True
+    snapshot = _wait_stopped()
+    assert seen == [21118]
+    assert snapshot["completed_this_run"] == 1
+    assert snapshot["last_status"] == "translated"
+
+
+def test_recheck_dry_run_lists_ids_without_translating(tmp_path, isolated_worker, monkeypatch):
+    def fake_coarse(conn, *, limit, source_id=None):
+        assert source_id is None
+        assert limit == 100
+        return [
+            {"id": 21118, "source": "stratechery", "reason": "segments-below-source"},
+            {"id": 21133, "source": "stratechery", "reason": "giant-leaf"},
+        ]
+
+    def fake_translate(conn, article_id, *, data_dir):
+        raise AssertionError("dry_run 不调模型")
+
+    monkeypatch.setattr(worker, "list_coarse_translations", fake_coarse)
+    monkeypatch.setattr(worker, "translate_article", fake_translate)
+    client = _client(tmp_path)
+
+    response = client.post("/api/v1/translate", json={"recheck": True, "dry_run": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dry_run"] is True
+    assert body["count"] == 2
+    assert [item["id"] for item in body["articles"]] == [21118, 21133]
+    assert worker.status()["running"] is False
+
+    missing = client.post("/api/v1/translate", json={"dry_run": True})
+    assert missing.status_code == 400
+
+
+def test_second_start_queues_named_articles(tmp_path, isolated_worker, monkeypatch):
+    """导入时译制已在跑，新文章排进同一条线程，不丢。"""
+    started = threading.Event()
+    release = threading.Event()
+    seen: list[int] = []
+
+    def fake_pending(conn, *, limit, source_id=None):
+        return []
+
+    def fake_translate(conn, article_id, *, data_dir):
+        seen.append(article_id)
+        if article_id == 1:
+            started.set()
+            assert release.wait(timeout=3)
+        return TranslateResult(article_id, "translated", segments=1)
+
+    monkeypatch.setattr(worker, "list_pending_english", fake_pending)
+    monkeypatch.setattr(worker, "translate_article", fake_translate)
+    settings = _client(tmp_path).app.state.settings
+    worker.start(settings, article_ids=[1], limit=5)
+    assert started.wait(timeout=3)
+    queued = worker.start(settings, article_ids=[2, 3], limit=5)
+    assert queued["started"] is False
+    assert queued["queued"] == 2
+    release.set()
+    snapshot = _wait_stopped()
+    assert seen == [1, 2, 3]
+    assert snapshot["completed_this_run"] == 3
 
 
 def test_missing_credentials_is_a_409_not_a_thread(tmp_path, isolated_worker, monkeypatch):

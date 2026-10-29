@@ -9,7 +9,7 @@ import time
 from researchlib.config import Settings
 from researchlib.db import prepare
 from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider
-from researchlib.translate.service import list_pending_english, translate_article
+from researchlib.translate.service import list_coarse_translations, list_pending_english, translate_article
 from researchlib.translate.xai_oauth import XaiLoginRequiredError, xai_oauth_status
 
 
@@ -20,9 +20,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=5, help="待译队列最多取几篇")
     parser.add_argument("--loop", action="store_true", help="worker 模式：空闲时休眠后继续扫")
     parser.add_argument("--sleep", type=int, default=60, help="--loop 时空队列休眠秒数")
+    parser.add_argument(
+        "--recheck",
+        action="store_true",
+        help="重译已经完成、但分段仍是旧粗粒度的篇（大块引用或段数远少于原文）",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="和 --recheck 一起用：只打印篇目，不调模型")
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
+    if args.dry_run and not args.recheck:
+        print("--dry-run 要和 --recheck 一起用", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        conn = prepare(settings)
+        try:
+            rows = list_coarse_translations(
+                conn, limit=max(args.limit, 1), source_id=args.source or None
+            )
+        finally:
+            conn.close()
+        for row in rows:
+            print(f"#{row['id']} {row['source']} {row['reason']}")
+        print(f"共 {len(rows)} 篇")
+        return 0
     if llm_provider() == PROVIDER_GROK:
         status = xai_oauth_status(settings.data_dir)
         if not status.logged_in:
@@ -42,9 +63,17 @@ def main(argv: list[str] | None = None) -> int:
     skipped_failures: set[int] = set()
     try:
         while True:
-            ids = list(args.article_id) if args.article_id else list_pending_english(
-                conn, limit=max(args.limit, 1) + len(skipped_failures), source_id=args.source or None
-            )
+            if args.article_id:
+                ids = list(args.article_id)
+            elif args.recheck:
+                rows = list_coarse_translations(
+                    conn, limit=max(args.limit, 1) + len(skipped_failures), source_id=args.source or None
+                )
+                ids = [int(row["id"]) for row in rows]
+            else:
+                ids = list_pending_english(
+                    conn, limit=max(args.limit, 1) + len(skipped_failures), source_id=args.source or None
+                )
             if not args.article_id:
                 ids = [article_id for article_id in ids if article_id not in skipped_failures][: args.limit]
             if not ids:
@@ -59,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"队列空，{args.sleep}s 后重试…")
                     time.sleep(max(5, args.sleep))
                     continue
-                print("没有待译英文文章。")
+                print("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
                 return 0
             for article_id in ids:
                 try:

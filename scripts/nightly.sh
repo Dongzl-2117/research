@@ -52,15 +52,15 @@ step() {
   failed="${failed}${failed:+；}${name}（退出码 ${rc}${last:+：}${last}）"
 }
 
-step "外链图片" compose exec -T app research-fetch-images --limit "$IMAGES_LIMIT"
-step "语义向量" compose exec -T app research-embed --limit "$EMBED_LIMIT"
-step "观点" compose exec -T app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES"
-step "摘要" compose exec -T app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
+step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMIT"
+step "语义向量" compose_exec app research-embed --limit "$EMBED_LIMIT"
+step "观点" compose_exec app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES"
+step "摘要" compose_exec app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
 if [ "$THESES_ENABLED" = "1" ]; then
-  step "论点" compose exec -T app research-theses
+  step "论点" compose_exec app research-theses
 fi
 if [ "$NIGHTLY_OCR" = "1" ]; then
-  step "图片文字" compose exec -T app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
+  step "图片文字" compose_exec app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
 fi
 
 if [ -n "$failed" ]; then

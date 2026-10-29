@@ -49,6 +49,29 @@ status_fail() {
   status_write false "$1"
 }
 
+compose_exec() {
+  # docker compose exec 在容器没起来时会退出，错误是 service "<名字>" is not running。
+  # 夜间识图踩过。先确认服务在跑，没有就 up -d，再等几秒直到 exec 能进去。
+  # 调用方要先定义 compose（docker compose --project-directory …）。
+  local svc="$1"
+  shift
+  if ! compose ps --status running --services 2>/dev/null | grep -qx "${svc}"; then
+    echo "$(date '+%F %T') ${svc} 没在跑，先启动" >&2
+    compose up -d "${svc}"
+  fi
+  local attempt=0
+  while [ "$attempt" -lt 8 ]; do
+    if compose exec -T "${svc}" true >/dev/null 2>&1; then
+      compose exec -T "${svc}" "$@"
+      return $?
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  echo "service ${svc} is not running" >&2
+  return 1
+}
+
 run_step() {
   # run_step 名字 命令…：命令的标准输出照常（可以重定向到文件），错误输出先收着、跑完再打出来。
   local name="$1"
