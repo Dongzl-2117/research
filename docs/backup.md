@@ -97,7 +97,7 @@ BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；�
 scripts/install-launchd.sh --uninstall
 ```
 
-`BACKUP_DIR` 放在 iCloud Drive 或外接盘上时，launchd 跑的 `/bin/bash` 没有权限写那里，会报「Operation not permitted」（首页会提示备份失败）：在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」里加上 `/bin/bash`。
+`BACKUP_DIR` 放在 iCloud Drive 或外接盘上时，launchd 跑的 `/bin/bash` 没有权限写那里，会报「Operation not permitted」（`data/status/backup.json` 记成失败）：在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」里加上 `/bin/bash`。
 
 ## 真要恢复时
 

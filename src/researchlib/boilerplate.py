@@ -20,6 +20,9 @@
 4. 文末号召：就算这句话没有在很多篇里重复，只要落在正文后面，并且是招募、二维码、
    长按关注、加微信这类号召，显示时整段拿掉。文件名或替代文字像二维码的图也拿掉。
    飞书笔记不走这一条，只去归档头。
+5. 星球长文的导出脚手架：「> 以下为话题摘要，全文见下方「长文」。」、后面的话题摘要
+   （长文开头的截断，和长文重复）、「## 长文：标题」下一行的「原文链接 · 原始 HTML：raw/articles/…」。
+   只留长文正文；摘要的加粗标题和长文标题不一样时留下标题。
 """
 
 from __future__ import annotations
@@ -348,6 +351,37 @@ def strip_meta(body: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+_LONGFORM_NOTE = re.compile(r"^\s*>\s*以下为话题摘要[，,]\s*全文见下方「长文」[。.]?\s*$")
+_LONGFORM_HEADING = re.compile(r"^\s*##\s*长文\s*[:：]\s*(?P<title>\S.*?)\s*$")
+# 「原文链接：https://articles.zsxq.com/… · 原始 HTML：[raw/articles/….html](../../raw/articles/….html)」
+_LONGFORM_SOURCE = re.compile(r"^\s*(?:原文链接\s*[:：]\s*\S+\s*·\s*)?原始\s*HTML\s*[:：]", re.I)
+_BOLD_LINE = re.compile(r"^\s*\*\*(?P<title>[^*]+)\*\*\s*$")
+
+
+def drop_longform_scaffold(body: str) -> str:
+    """星球「话题 + 长文」帖的导出脚手架（模块说明第 5 条）。没有「## 长文：」小标题时原样返回。"""
+    lines = body.split("\n")
+    heading = next((i for i, line in enumerate(lines) if _LONGFORM_HEADING.match(line)), None)
+    if heading is None:
+        return body
+    title = _LONGFORM_HEADING.match(lines[heading]).group("title")
+    note = next((i for i in range(heading) if _LONGFORM_NOTE.match(lines[i])), None)
+    head = lines[:heading] if note is None else lines[:note]
+    keep_heading = True
+    if note is not None:
+        preview = [line for line in lines[note + 1 : heading] if line.strip()]
+        bold = _BOLD_LINE.match(preview[0]) if preview else None
+        # 摘要的加粗标题就是长文标题：页面顶上已经是这个标题，小标题不再重复。
+        keep_heading = not (bold and bold.group("title").strip() == title)
+    rest = lines[heading + 1 :]
+    first = next((i for i, line in enumerate(rest) if line.strip()), None)
+    if first is not None and _LONGFORM_SOURCE.match(rest[first]):
+        rest = rest[first + 1 :]
+    if keep_heading:
+        head = [*head, "", lines[heading]]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join([*head, "", *rest]))
+
+
 def _split_comments(lines: list[str]) -> int:
     for index, line in enumerate(lines):
         if COMMENTS.match(line):
@@ -430,7 +464,7 @@ def clean_body(
     drop_cta 为假时只去归档头和统计出来的模板（飞书笔记用这条）。
     """
     hashes = hashes or {}
-    body = scrub_file_page_junk(strip_meta(body or ""))
+    body = drop_longform_scaffold(scrub_file_page_junk(strip_meta(body or "")))
     lines = body.split("\n")
     split = _split_comments(lines)
     main, rest = lines[:split], lines[split:]
