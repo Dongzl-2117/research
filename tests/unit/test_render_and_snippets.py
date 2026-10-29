@@ -66,6 +66,16 @@ def test_callout_renders_as_a_plain_quote():
     assert "能力圈有多大不要紧！" in html
 
 
+def test_zsxq_hashtag_lines_are_not_headings():
+    """1250 末尾的「#拼多多#」曾被渲染成一级标题。"""
+    html = str(render_body("正文第一段。\n\n#拼多多#\n\n#拼多多# #Temu#\n\n今天聊 #拼多多# 的财报。\n", {}))
+    assert "<h1" not in html
+    assert "<p>#拼多多#</p>" in html and "#拼多多# #Temu#" in html and "今天聊 #拼多多# 的财报。" in html
+    # 真的标题照旧，代码块里的不加反斜杠。
+    assert "<h2>评论（1）</h2>" in str(render_body("## 评论（1）\n", {}))
+    assert "\\#" not in str(render_body("```\n#拼多多#\n```\n", {}))
+
+
 def test_sanitize_javascript_url():
     cleaned = sanitize_html('<a href="javascript:alert(1)">链接</a>')
     assert "javascript:" not in cleaned

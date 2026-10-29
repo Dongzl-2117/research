@@ -689,8 +689,27 @@ def mark_dialogue_speakers(html: str) -> str:
     return _BODY_WHO.sub(replace, html or "")
 
 
+# 星球的话题标签单独占一行（「#拼多多#」「#拼多多# #Temu#」）。Python-Markdown 不要求 # 后面有空格，
+# 会把它渲染成一级标题。
+_HASHTAG_LINE = re.compile(r"^( {0,3})#(?=[^#\s][^#\n]*#(?:[ \t]*#[^#\s][^#\n]*#)*[ \t]*$)")
+
+
+def _escape_hashtag_lines(body: str) -> str:
+    """话题标签行行首的 # 转义掉，照原样显示成一行字。代码块里不动。"""
+    if "#" not in body:
+        return body
+    lines = body.split("\n")
+    fenced = False
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced:
+            lines[index] = _HASHTAG_LINE.sub(r"\1\\#", line, count=1)
+    return "\n".join(lines)
+
+
 def _render_markdown(body: str, mapping: dict[str, str]) -> str:
-    body = present_article_text(strip_alert_markers(body or ""))
+    body = _escape_hashtag_lines(present_article_text(strip_alert_markers(body or "")))
     rewritten = rewrite_html_images(rewrite_markdown_images(body, mapping), mapping)
     html = markdown.markdown(
         rewritten,
