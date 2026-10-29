@@ -1,6 +1,6 @@
 """把一篇英文文章译成中文 HTML，写入 article_translations。
 
-流程对齐 AIHOT editorial/translate.ts：渲染原文 → 抽段 → shield → Grok 对齐翻译 → 回填 → 入库。
+流程对齐 AIHOT editorial/translate.ts：渲染原文 → 抽段 → shield → 站内模型（默认 DeepSeek）按段翻译 → 回填 → 入库。
 站内 worker / CLI 都走这里；不在站外译完再贴。
 """
 

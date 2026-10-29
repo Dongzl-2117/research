@@ -400,8 +400,6 @@ def home(request: Request):
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
         stale = []
-        # 运维失败（抓取、夜间补齐等）只写 data/status，不进首页红条；由值班助手看 status。
-        notices: list[str] = []
         if plan["page"] == 1 and settings.stale_banner_enabled:
             watched = [by_id[chosen]] if chosen else feed
             stale = stale_sources(
@@ -464,7 +462,6 @@ def home(request: Request):
             "sample_banner": banner,
             "holdings": holdings,
             "stale": stale,
-            "notices": notices,
         },
     )
 

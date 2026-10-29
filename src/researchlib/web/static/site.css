@@ -1653,9 +1653,6 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .view-source a { color: var(--ink-3); }
 .view-source a:hover { color: var(--accent); }
 
-/* 首页：备份、导入、Grok 出了问题 */
-.notice.is-alert { background: var(--amber-soft); color: var(--amber-ink); }
-
 /* 首页持仓近况：最近一条判断 */
 .holdings-view .stance, .holdings-view .stance-change { vertical-align: 1px; }
 

@@ -77,6 +77,6 @@ echo "$(date '+%F %T') 补摘要（方伟星球最近缺摘要的）"
 run_step "摘要" compose_exec app research-digest --source fangwei-zsxq --limit 30 --max-minutes 40
 
 echo "$(date '+%F %T') 补标题（空/壳/省略号，站内 flash 起题）"
-run_step "标题" compose_exec app research-repair-zsxq --source fangwei-zsxq --titles-only --ai-titles --limit 30 --spot 23999,24002,24006,24007
+run_step "标题" compose_exec app research-repair-zsxq --source fangwei-zsxq --titles-only --ai-titles --limit 30
 
 status_ok "方伟星球增量完成"

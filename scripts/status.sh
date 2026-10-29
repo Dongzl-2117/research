@@ -1,5 +1,5 @@
 # 定时脚本共用（用 . 引入，不单独跑）：把这次的结果写进 data/status/<任务>.json。
-# 首页只在出问题时提示一行：失败了，或者太久没成功（见 src/researchlib/health.py）。
+# 出问题（失败了，或者太久没成功）时 health.notices 列出来，值班助手看；首页不显示（见 src/researchlib/health.py）。
 #
 #   TASK=backup
 #   . "$REPO/scripts/status.sh"

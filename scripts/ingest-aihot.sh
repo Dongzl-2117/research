@@ -2,7 +2,7 @@
 # 定时增量导入：从 AIHOT 只读导入最近 DAYS 天（默认 14）发布的白名单文章。
 # 只读白名单来源的行；已经导过的不变就跳过，同一篇从文件归档导过的会认成重复，不进列表。
 # 导入完顺手把新文章正文里的外链图片下载到本地（IMAGES_LIMIT，默认 200 张，0 表示不下）。
-# 结果写进 data/status/ingest-aihot.json，失败或六小时没成功时首页提示。
+# 结果写进 data/status/ingest-aihot.json，失败或六小时没成功时 health.notices 会列出来。
 #
 #   scripts/ingest-aihot.sh
 #   DAYS=30 scripts/ingest-aihot.sh

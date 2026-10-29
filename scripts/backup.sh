@@ -4,7 +4,7 @@
 #   BACKUP_DIR=/Volumes/备份盘/research scripts/backup.sh
 #
 # BACKUP_DIR 放另一块盘或云盘同步目录，不要和仓库、Docker 卷在同一块盘上。
-# 定时跑见 docs/backup.md（launchd）。结果写进 data/status/backup.json，失败或太久没成功时首页提示。
+# 定时跑见 docs/backup.md（launchd）。结果写进 data/status/backup.json，失败或太久没成功时 health.notices 会列出来。
 set -Eeuo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
