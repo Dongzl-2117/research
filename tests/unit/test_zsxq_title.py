@@ -630,3 +630,23 @@ def test_other_zsxq_sources_repair_titles_on_cards():
     assert zsxq_display_title("Temu：值得重视的关税利好 ...", body=body.split("\n", 1)[1]) != (
         "Temu：值得重视的关税利好"
     )
+
+
+def test_leading_dateline_is_not_the_whole_title():
+    """1273：导出标题是正文开头的日期「2026年9月1日」。句子太长要在逗号处收，以前只剩这个日期。"""
+    body = (
+        "- 作者：王小明\n"
+        "- 时间：2026-09-01 18:57 (UTC+8)\n\n"
+        "2026年9月1日，瑞幸咖啡宣布其董事会已批准将股票回购计划的规模从$3亿扩大至$5亿，"
+        "并在2027年4月前新增授权金额2亿美元。该计划于2026年4月启动，为期12个月。\n"
+        "#瑞幸咖啡#\n"
+    )
+    assert title_needs_repair("2026年9月1日", body)
+    fixed = zsxq_display_title("2026年9月1日", body=body, when="2026-09-01")
+    assert fixed == "瑞幸咖啡宣布其董事会已批准将股票回购计划的规模从$3亿扩大至$5亿"
+    assert stored_zsxq_title("2026年9月1日", body) == fixed
+    iso = zsxq_display_title("", body="2026-09-01，瑞幸宣布扩大回购，市场反应平淡。\n")
+    assert iso == "瑞幸宣布扩大回购，市场反应平淡"
+    # 日期是句子主语、或去掉日期只剩一两个字的，不动。
+    assert zsxq_display_title("", body="2026年9月1日是个转折点，市场从此不一样了。\n").startswith("2026年9月1日")
+    assert zsxq_display_title("9月1日", body="9月1日，大涨。\n") == "9月1日，大涨"

@@ -41,7 +41,7 @@ from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_h
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
-from researchlib.textutil import argumentative_excerpt
+from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
 from researchlib.translate.pair import bilingual_pairs
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
@@ -680,6 +680,11 @@ def _article_view(request: Request, article_id: int, mode: str):
                 when=format_date(article["published_at"], settings.display_timezone),
             )
         display_title = polish_display_text(display_title or "")
+        original_title = polish_display_text(article["title"] or "")
+        if display_title != original_title:
+            # 页面换了标题（1273「2026年9月1日」换成正文那句）：正文开头导出的旧标题行也不要，
+            # 不然换下来的半句或日期会在正文顶上变成一个大标题。
+            shown_md = strip_duplicate_title(shown_md, original_title)
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
