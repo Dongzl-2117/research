@@ -2,6 +2,7 @@
 
 只处理还没有摘要、正文改过（content_hash 对不上）、提示词版本旧了、当时只读了长文开头，
 或正文很短而图片文字和上次抽的时候不一致的文章。
+短正文的图片文字刚写上时，会先写进 article_followups，排在缺摘要的积压前面，避免被饿死。
 卡片和 JSON 接口优先展示摘要；旧摘要照常显示，同时排进后台重写。失败的记下来，隔几天再试。
 
 两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
@@ -31,6 +32,7 @@ from researchlib.config import Settings
 from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
+from researchlib.followups import KIND_DIGEST, clear_followup
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
@@ -103,10 +105,26 @@ def digest_due(article, digest: dict | None) -> bool:
     return ((digest or {}).get("ocr_hash") or "") != ocr_hash
 
 
+# 短正文、图片文字和摘要对不上。单独拿出来，是为了排在「还没有摘要」前面。
+_OCR_DIGEST_DUE = (
+    "(a.ocr_hash <> '' AND d.ocr_hash IS DISTINCT FROM a.ocr_hash"
+    f" AND length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)})"
+)
+_FOLLOWUP_DIGEST = (
+    "EXISTS (SELECT 1 FROM article_followups f"
+    f" WHERE f.article_id = a.id AND f.kind = '{KIND_DIGEST}')"
+)
 _STALE = (
     "(d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s OR d.head_only"
-    " OR (a.ocr_hash <> '' AND d.ocr_hash IS DISTINCT FROM a.ocr_hash"
-    f" AND length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)}))"
+    f" OR {_OCR_DIGEST_DUE})"
+)
+# 入队的也算到期：哈希已经对齐、但标题曾被漏判时，仍要重写这一次。
+_DUE = f"({_STALE} OR {_FOLLOWUP_DIGEST})"
+# 刚识完图的短正文先写。否则缺摘要的积压（按 limit 截断）会把它们一直留在后面。
+PENDING_ORDER = (
+    f"{_FOLLOWUP_DIGEST} DESC, {_OCR_DIGEST_DUE} DESC, "
+    "(d.article_id IS NULL OR d.content_hash <> a.content_hash) DESC, "
+    "a.published_at DESC NULLS LAST, a.id DESC"
 )
 
 
@@ -118,9 +136,8 @@ def pending_articles(conn, source_ids: list[str], limit: int):
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
           AND {visible_sql("a")}
-          AND {_STALE} AND {cooling_sql('digest', 'a.id')}
-        ORDER BY (d.article_id IS NULL OR d.content_hash <> a.content_hash) DESC,
-                 a.published_at DESC NULLS LAST, a.id DESC
+          AND {_DUE} AND {cooling_sql('digest', 'a.id')}
+        ORDER BY {PENDING_ORDER}
         LIMIT %s
         """,
         (source_ids, PROMPT_VERSION, limit),
@@ -206,6 +223,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
         ),
     )
     clear_failure(conn, "digest", row["id"])
+    clear_followup(conn, int(row["id"]), KIND_DIGEST)
     conn.commit()
     return data
 
@@ -218,7 +236,7 @@ def rows_needing_digest(conn, article_ids: list[int]):
         SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
-        WHERE a.id = ANY(%s) AND {_STALE} AND {cooling_sql('digest', 'a.id')}
+        WHERE a.id = ANY(%s) AND {_DUE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (article_ids, PROMPT_VERSION),

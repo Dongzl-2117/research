@@ -72,6 +72,17 @@ _MISSING_NOTE = re.compile(r"正文(?:为空|没有内容|没有实质|缺失)|�
 _NARRATION = re.compile(
     r"正文几乎|文中未给|作者开篇判断|没有(?:段永平|作者|他|星主)?本人的话|没有段永平的话"
 )
+# 识图之前写成的空壳：标题和导读是同一句「没有可读文字 / 正文为空」。
+# 「正文为空洞…」这种真标题不要算进去。
+_EMPTY_SHELL = re.compile(
+    r"没有可读文字"
+    r"|无法提炼"
+    r"|没有可供概括"
+    r"|没有任何(?:实质)?内容"
+    r"|正文除标题"
+    r"|除标题[^。\n]{0,40}外没有"
+    r"|(?:本文|原文)?正文为空(?!洞)"
+)
 _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”‘’\"'`＂＇。！？!?…·]+")
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
 # 「泡泡玛特：」「西部矿业：」：整标题以中文/ASCII 冒号收尾的壳。
@@ -82,14 +93,23 @@ def repairs_source(source_id: str) -> bool:
     return source_id == FANGWEI_ZSXQ
 
 
+def is_empty_shell(title: str) -> bool:
+    """导读在正文还是空的时候写成的元标题。
+
+    24012 的库内标题就是这一句：正文除标题「图片」外没有可读文字，无法提炼作者的核心判断及其依据。
+    旧的占位表和「正文为空」正则对不上「没有可读文字」，回写会把它当成已经起好的题。
+    """
+    return _EMPTY_SHELL.search(title or "") is not None
+
+
 def title_needs_repair(title: str, body: str = "") -> bool:
-    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号、带省略号，
+    """空标题、占位（含「图片」这种带引号的）、复述套话、空壳导读、纯话题号、带省略号，
     公司名/话题名冒号壳，明显错字，或混进了归档头。
 
     给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
     """
     text = (title or "").strip()
-    if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
+    if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
         return True
     if _shell_colon(text):
         return True
@@ -105,13 +125,13 @@ def title_needs_repair(title: str, body: str = "") -> bool:
 
 
 def title_needs_ai(title: str) -> bool:
-    """只有空/占位/复述套话/省略号截断/冒号壳/归档头脏标题才值得打 flash。
+    """只有空/占位/复述套话/空壳导读/省略号截断/冒号壳/归档头脏标题才值得打 flash。
 
     星球接口半句截断（对着正文能补全的）仍走确定性规则，避免存量几千篇全打 LLM。
     只是错字也只抛光，不起题。
     """
     text = (title or "").strip()
-    if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
+    if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
         return True
     if _shell_colon(text):
         return True
@@ -539,7 +559,7 @@ def _placeholder(text: str) -> bool:
 
 
 def _missing_note(text: str) -> bool:
-    return _MISSING_NOTE.search(text or "") is not None
+    return _MISSING_NOTE.search(text or "") is not None or is_empty_shell(text)
 
 
 def _narration(text: str) -> bool:

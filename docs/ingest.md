@@ -190,7 +190,7 @@ docker compose exec app research-repair-zsxq --dry-run
 docker compose exec app research-repair-zsxq
 ```
 
-缺标题、壳标题、省略号/占位标题还可以加 `--ai-titles`，用站内 deepseek-flash 根据正文 + 图片文字 + 导读起题（失败退回上面的确定性规则）。半句截断和只是错字的不打 flash。增量抓取脚本在补摘要之后会跑：
+缺标题、壳标题、省略号/占位标题，以及空壳导读（「没有可读文字」「本文正文为空」「无法提炼」），还可以加 `--ai-titles`，用站内 deepseek-flash 根据正文 + 图片文字 + 导读起题（失败退回上面的确定性规则）。半句截断和只是错字的不打 flash。短正文的图片文字一旦写上，会把这篇排进标题队列，回写时排在全表扫描前面。增量抓取脚本在补摘要之后会跑：
 
 ```bash
 docker compose exec app research-repair-zsxq --source fangwei-zsxq --titles-only --ai-titles --limit 30 --spot 23999,24002,24006,24007

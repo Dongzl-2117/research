@@ -409,6 +409,15 @@ def test_ai_only_for_shells_placeholders_not_mid_sentence_cuts():
     assert title_needs_ai("无标题")
     assert title_needs_ai("护城河…")
     assert title_needs_ai("")
+    # 识图前写成的空壳导读。旧正则对不上「没有可读文字」，回写会跳过。
+    shell = "正文除标题「图片」外没有可读文字，无法提炼作者的核心判断及其依据"
+    assert title_needs_ai(shell)
+    assert title_needs_repair(shell)
+    assert title_needs_ai("本文正文为空")
+    assert title_needs_ai("本文正文为空，除标题《关于携程与Booking》外没有任何内容")
+    assert title_needs_ai("关于携程与Booking") is False
+    assert title_needs_repair("关于携程与Booking") is False
+    assert title_needs_ai("正文为空洞的口号") is False
     # 错字只抛光，不起题。
     assert title_needs_ai("AI算力是一个很新都东西") is False
     # 半句截断对着正文补，不打 flash。
