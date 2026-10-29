@@ -126,6 +126,8 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 
 有原文的段如果译成空白，这一批失败。译文只要非空就收下，不拿中英字符长度的比例做门槛。
 
+译文写入前会去掉连续相同的顶层块，以及连续相同的 `<p>`（模型把同一段吐两遍，或原文引用后又跟了一段相同正文）。这一步只作用在译文上。对照页先按顶层块数配：两边一样多就按原样逐段对照。不一样多时，对原文和译文各跑一遍同一套去重再比；比较时忽略展示层盖上的 `id="p-N"`。去重把差距缩小，并且缩小后仍在差一块以内，才改用去重后的块。否则沿用原来的规则：差一块以内照旧按位置配，差得更多就退回单语。模型少段或多段仍然整批重试或拆批，不靠这个去重去补条数。
+
 ## content_hash 与待译队列
 
 `article_translations.content_hash` 必须等于 `articles.content_hash` 且 `complete`，这篇才算译完。`content_hash()` 把 `published_at` 固定按 Asia/Shanghai 打戳；若按 UTC `isoformat()` 重算会对不上，待译队列会把已译篇反复拿出来（`--limit 2` 时整队像卡住）。

@@ -155,15 +155,28 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
 
 
 
+# 对照页在展示时给顶层块盖 id="p-N"。入库去重发生在这之前，比较时要当没盖过。
+_STAMPED_PARA_ID = re.compile(r'\s+id="p-\d+"')
+
+
+def _dedupe_key(html: str) -> str:
+    """压空白，并忽略对照页盖上的段落 id。没有这些 id 时和原来的字符串比较一样。"""
+    return re.sub(r"\s+", " ", _STAMPED_PARA_ID.sub("", html or "")).strip()
+
+
 def _dedupe_consecutive_blocks(html: str) -> str:
-    """去掉模型偶发吐出的连续相同顶层块，以及块内连续相同的 <p>（抽验 22195）。"""
+    """去掉连续相同的顶层块，以及块内连续相同的 <p>（抽验 22195）。
+
+    译文入库会走这里，原文不会。引用后又跟了一段相同正文时，中文少掉这几段，
+    对照页块数对不上。配对前对两边各跑一遍（见 bilingual_pairs）。
+    """
     html = html or ""
     blocks = top_level_blocks(html)
     if len(blocks) >= 2:
         out: list[str] = []
         prev_norm: str | None = None
         for block in blocks:
-            norm = re.sub(r"\s+", " ", block).strip()
+            norm = _dedupe_key(block)
             if prev_norm is not None and norm and norm == prev_norm:
                 continue
             out.append(block)
@@ -186,7 +199,7 @@ def _dedupe_consecutive_paragraphs(html: str) -> str:
     drop: list[tuple[int, int]] = []
     prev_norm: str | None = None
     for match in matches:
-        norm = re.sub(r"\s+", " ", match.group(0)).strip()
+        norm = _dedupe_key(match.group(0))
         # 用去标签后的正文长度：短占位（如「是」「好」）不去；测例「第一段…去重。」约 16 字要去。
         plain = re.sub(r"<[^>]+>", "", norm).strip()
         if prev_norm is not None and norm == prev_norm and len(plain) >= 10:
