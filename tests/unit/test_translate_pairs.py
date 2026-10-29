@@ -360,15 +360,69 @@ def test_short_blockquote_without_block_children_stays_one_leaf():
     assert segments_of("<h1>Not a leaf heading.</h1><p>Body paragraph.</p>") == ["<p>Body paragraph.</p>"]
 
 
-def test_definition_list_inside_blockquote_stays_one_leaf():
-    """dl 不在 CONTAINER 里。包着定义列表的引用按 AIHOT 仍是一整段。"""
+def test_short_definition_inside_blockquote_stays_one_leaf():
+    """一条短定义：AIHOT 不拆 dl，研究站也不拆。没有块级子节点的短引用仍是一整段。"""
+    html = "<blockquote><dl><dt>Term</dt><dd>A short definition of that term.</dd></dl></blockquote>"
+    assert segments_of(html) == [html]
+    assert coarse_segment_reason(html, recorded_segments=1) is None
+
+
+def test_definition_list_entries_inside_blockquote_become_leaves():
+    """多条 dt 不再收成一个 blockquote。外壳在写回时留着，叶子是每一条。"""
     html = (
         "<blockquote><dl>"
         "<dt>Line one of the pasted list.</dt>"
-        "<dt>Line two stays inside the same quote.</dt>"
+        "<dt>Line two stays readable on its own.</dt>"
         "</dl></blockquote>"
     )
-    assert segments_of(html) == [html]
+    assert segments_of(html) == [
+        "<dt>Line one of the pasted list.</dt>",
+        "<dt>Line two stays readable on its own.</dt>",
+    ]
+    written = splice_segments(html, {0: "<dt>第一条</dt>", 1: "<dt>第二条</dt>"})
+    assert written.count("<blockquote>") == 1
+    assert written.count("<dl>") == 1
+    assert "第一条" in written and "Line one" not in written
+    assert segments_of(written) == ["<dt>第一条</dt>", "<dt>第二条</dt>"]
+    assert splice_segments(html, {}) == html
+
+
+def test_nested_definition_list_and_long_br_entry_split():
+    """21118 的形状：引用里嵌着 dl，最里面的 dd 是用 <br> 粘起来的长文。条目和行都拆开。"""
+    line = (
+        "Services carried the quarter forward and the installed base kept growing through the year. "
+        "Margins stayed high because the same customers kept paying."
+    )
+    lines = [f"{line} Point {index}." for index in range(16)]
+    html = (
+        "<p>Intro paragraph stays outside the quote.</p>"
+        "<blockquote><dl>"
+        "<dt>Outer heading of the pasted note.</dt>"
+        "<dd><dl>"
+        "<dt>Inner heading one is its own leaf.</dt>"
+        "<dt>Inner heading two is its own leaf.</dt>"
+        f"<dd>{'<br>'.join(lines)}</dd>"
+        "</dl></dd>"
+        "</dl></blockquote>"
+        "<p>Closing paragraph after the quote.</p>"
+    )
+    segments = segments_of(html)
+    lengths = [_plain_len(segment) for segment in segments]
+    assert segments[0].startswith("<p>Intro")
+    assert segments[-1].startswith("<p>Closing")
+    assert any(segment.startswith("<dt>Outer heading") for segment in segments)
+    assert any(segment.startswith("<dt>Inner heading one") for segment in segments)
+    assert any(segment.startswith("<dt>Inner heading two") for segment in segments)
+    assert len(segments) >= 8
+    assert max(lengths) < 2_000
+    assert not any(segment.lower().startswith("<blockquote") for segment in segments)
+    assert not any("Point 0" in segment and "Point 15" in segment for segment in segments)
+    assert coarse_segment_reason(html, recorded_segments=len(segments)) is None
+    replacements = {index: f"<p>译{index}</p>" for index, segment in enumerate(segments)}
+    written = splice_segments(html, replacements)
+    assert written.count("<blockquote>") == 1
+    assert "Point 7" not in written
+    assert len(segments_of(written)) == len(segments)
 
 
 def _daily_quote_html(*, chinese: bool = False) -> str:
@@ -477,20 +531,117 @@ def test_markdown_quote_lines_segment_inside_the_blockquote():
     )
 
 
-def test_coarse_reason_flags_old_segment_count_not_a_definition_list():
-    """段数远少于现在的叶子就要重译。定义列表引用按规则仍是一段，不反复抽中。"""
+def test_markdown_definition_quote_splits_like_stratechery():
+    """extra 把引用里的「: 」收成 dl。长粘贴拆开后没有几万字的叶子。"""
+    import markdown
+
+    lines = [
+        "Intro stays outside.",
+        "",
+        "> Apple just delivered its",
+        "> best quarter ever",
+        "> , underpinned by modest growth.",
+        "> : upgrade cycles are slow and the pasted definition keeps going.",
+    ]
+    row = "The installed base kept paying for services and the margin stayed high. "
+    lines.extend(f"> {row * 2}Row {index}." for index in range(20))
+    lines.extend(["", "After the quotation."])
+    html = markdown.markdown("\n".join(lines), extensions=["extra", "nl2br", "sane_lists"])
+    assert "<dl>" in html and "<dt>" in html
+    segments = segments_of(html)
+    lengths = [_plain_len(segment) for segment in segments]
+    assert any("Intro stays" in segment for segment in segments)
+    assert any("After the quotation" in segment for segment in segments)
+    assert len(segments) >= 4
+    assert max(lengths) < 4_000
+    assert not any(segment.lower().startswith("<blockquote") and _plain_len(segment) > 2_000 for segment in segments)
+
+
+def _pasted_definition_article() -> str:
+    """#119 之后大约 180 段的正文，再加一段被收成一行一条 dt 的长粘贴。"""
+    paras = "".join(
+        f"<p>Paragraph {index} explains a distinct point about the market this year.</p>" for index in range(178)
+    )
+    fragments = "".join(
+        f"<dt>Fragment {index} of the pasted note continues across the wrapped line.</dt>" for index in range(400)
+    )
+    return paras + f"<blockquote><dl>{fragments}</dl></blockquote>"
+
+
+def test_glossary_pairs_stay_one_leaf_each():
+    """术语表是 dt、dd 交替，不把术语收成一段。"""
+    html = (
+        "<blockquote><dl>"
+        "<dt>iPhone</dt><dd>The handset business stayed flat.</dd>"
+        "<dt>Services</dt><dd>The margin business kept growing.</dd>"
+        "<dt>Wearables</dt><dd>The accessory business matured.</dd>"
+        "</dl></blockquote>"
+    )
+    assert [segment.split(">", 1)[0] for segment in segments_of(html)] == [
+        "<dt", "<dd", "<dt", "<dd", "<dt", "<dd",
+    ]
+
+
+def test_consecutive_definition_lines_pack_into_readable_chunks():
+    """粘贴的连续短 dt 收成段，不保留几百个只有几个词的叶子。"""
+    fragments = "".join(f"<dt>Fragment {index} of the wrapped paste.</dt>" for index in range(12))
+    html = f"<blockquote><dl>{fragments}</dl></blockquote>"
+    segments = segments_of(html)
+    assert 1 < len(segments) < 12
+    assert max(_plain_len(segment) for segment in segments) < 700
+    assert all(segment.startswith("<p>") for segment in segments)
+    written = splice_segments(html, {index: f"<p>译{index}</p>" for index in range(len(segments))})
+    assert written.count("<blockquote>") == 1
+    assert "Fragment 0" not in written
+    assert len(segments_of(written)) == len(segments)
+    assert splice_segments(html, {}) == html
+
+
+def test_coarse_reason_flags_old_segment_count_and_definition_lists():
+    """段数远少于现在的叶子就要重译。定义列表粘贴记下的段数对不上时抽中。"""
     english = _daily_quote_html()
     leaves = len(segments_of(english))
     assert leaves >= 40
     assert coarse_segment_reason(english, recorded_segments=7) == "segments-below-leaves"
     assert coarse_segment_reason(english, recorded_segments=leaves) is None
-    quote = (
-        "<blockquote><dl>"
-        + "".join(f"<dt>Line {index} of a pasted list stays one quote.</dt>" for index in range(30))
-        + "</dl></blockquote>"
-    )
-    assert segments_of(quote) == [quote]
-    assert coarse_segment_reason(quote, recorded_segments=1) is None
+    # #119 之后 21118 记下的段数大约是 180。粘贴收成段之后会多出几十段，重检抽得到。
+    quote = _pasted_definition_article()
+    quote_leaves = segments_of(quote)
+    assert len(quote_leaves) >= 178 + 40
+    assert max(_plain_len(segment) for segment in quote_leaves) < 2_000
+    assert coarse_segment_reason(quote, recorded_segments=180) == "segments-below-leaves"
+    assert coarse_segment_reason(quote, recorded_segments=len(quote_leaves)) is None
+
+
+def test_list_coarse_picks_definition_list_when_recorded_count_is_stale():
+    """21118 这种译文：#119 记下大约 180 段，定义列表拆开后多出几十段，重检要抽到。"""
+    from researchlib.translate.service import list_coarse_translations
+
+    quote = _pasted_definition_article()
+    leaves = len(segments_of(quote))
+    row = {
+        "id": 21118,
+        "source_id": "stratechery",
+        "title": "A daily",
+        "body_md": "unused because the translation html already splits",
+        "body_text": "x" * 8000,
+        "raw_meta": {},
+        "segments": 180,
+        "body_html": quote,
+    }
+
+    class Conn:
+        def execute(self, sql, params):
+            assert "stratechery" in params
+            return self
+
+        def fetchall(self):
+            return [row]
+
+    found = list_coarse_translations(Conn(), limit=10, source_id="stratechery")
+    assert found == [{"id": 21118, "source": "stratechery", "reason": "segments-below-leaves"}]
+    row["segments"] = leaves
+    assert list_coarse_translations(Conn(), limit=10, source_id="stratechery") == []
 
 
 def test_list_coarse_uses_source_when_translation_was_flattened():
