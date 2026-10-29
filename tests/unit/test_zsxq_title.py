@@ -490,6 +490,80 @@ def test_ellipsis_mid_phrase_completes_from_the_body_sentence():
     assert "有两点感" not in zsxq_display_title(cut, body=cut)
 
 
+# 24002：库内标题被截断，话题壳重复，后面粘着评论列表的界面。
+LIVE_24002 = "泡泡玛特： 泡泡玛特： 评论（1） - 流年（2026-10-28 09"
+
+
+def test_comment_list_ui_crumbs_need_repair_and_ai():
+    """评论（N）、半角括号、名字加被截断的钟点，都要修。只剩话题壳时才打 flash。"""
+    assert title_needs_repair(LIVE_24002)
+    assert title_needs_ai(LIVE_24002)
+    ascii_variant = "泡泡玛特： 泡泡玛特： 评论(1) - 流年(2026-10-28 09:12)"
+    assert title_needs_repair(ascii_variant)
+    assert title_needs_ai(ascii_variant)
+    glued = "西部矿业：西部矿业：评论（3）-李四（2026-10-27 19"
+    assert title_needs_repair(glued)
+    assert title_needs_ai(glued)
+    # 评论条数被截掉了，重复的话题壳仍贴着评论者。
+    author_only = "泡泡玛特： 泡泡玛特： - 流年（2026-10-28 09"
+    assert title_needs_repair(author_only)
+    assert title_needs_ai(author_only)
+    shown = zsxq_display_title(LIVE_24002, body="泡泡玛特：\n", when="2026-10-28")
+    assert "流年" not in shown
+    assert "评论（" not in shown and "评论(" not in shown
+    assert stored_zsxq_title(LIVE_24002, "泡泡玛特：\n") is None
+
+
+def test_comment_ui_tail_strips_when_a_clean_stem_remains():
+    """残屑前面还有一句，就切掉，不改用正文里的另一句，也不打 flash。"""
+    raw = "茅台批价这一周没动 评论（2） - 王小明（2026-10-28 10:01）"
+    body = "另一句完全不同的判断写在正文里，渠道仍在观望。\n"
+    assert title_needs_repair(raw)
+    assert title_needs_ai(raw) is False
+    assert zsxq_display_title(raw, body=body) == "茅台批价这一周没动"
+    assert stored_zsxq_title(raw, body) == "茅台批价这一周没动"
+    ascii_stem = "渠道仍在观望 评论(1) - 李四(2026-10-28 10:01)"
+    assert title_needs_repair(ascii_stem)
+    assert title_needs_ai(ascii_stem) is False
+    assert zsxq_display_title(ascii_stem, body=body) == "渠道仍在观望"
+
+
+def test_comment_word_in_a_real_title_is_left_alone():
+    """只是提到评论，或括号里不是评论列表的钟点，不动。"""
+    kept = (
+        "怎么看评论区里的分歧",
+        "评论不等于观点",
+        "他在评论里补充了茅台批价",
+        "他在评论（1）里补充了看法",
+        "点赞 2 · 评论 1 · 阅读人数 608",
+        "复盘 - 王小明（2024年报要点）",
+        "估值 - 时间是朋友",
+        "估值 - 时间是朋友（2026-10-28）",
+        "巴菲特致股东信（2026-10-28）",
+        "这篇评论（精选）不算界面",
+    )
+    for title in kept:
+        assert title_needs_repair(title) is False, title
+        assert title_needs_ai(title) is False, title
+        assert zsxq_display_title(title, body="另一句完全不同的正文在这里。") == title
+    assert zsxq_display_title("", body="怎么看评论区里的分歧，渠道还在观望。\n") == "怎么看评论区里的分歧，渠道还在观望"
+
+
+def test_comment_ui_title_can_still_use_a_real_sentence():
+    """壳上粘着残屑时，摘要或图片里的完整句仍能当标题，残屑本身不能。"""
+    digest = "方伟认为泡泡玛特下跌是自身问题，不是名创抢份额。"
+    from_digest = zsxq_display_title(LIVE_24002, body="泡泡玛特：\n", summary=digest)
+    assert from_digest == "泡泡玛特下跌是自身问题，不是名创抢份额"
+    assert "流年" not in from_digest
+    ocr = (
+        "泡泡玛特： 泡泡玛特： 评论（1） - 流年（2026-10-28 09:00）\n"
+        "泡泡玛特下跌是自身问题，不是名创抢份额。\n"
+    )
+    from_ocr = zsxq_display_title(LIVE_24002, body="泡泡玛特：\n", ocr=ocr)
+    assert from_ocr == "泡泡玛特下跌是自身问题，不是名创抢份额"
+    assert stored_zsxq_title(LIVE_24002, "泡泡玛特：\n", ocr=ocr) == from_ocr
+
+
 def test_truncated_heading_is_not_repeated_under_the_repaired_title():
     from researchlib.textutil import strip_duplicate_title
 
