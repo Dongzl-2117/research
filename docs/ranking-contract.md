@@ -35,24 +35,25 @@
 - `recall_channels, lexical_score, semantic_score, semantic_model` 仅说明召回来源；AI标签不能由这些分数冒充人工给出。
 - 稳定候选ID包含查询、来源、原文窗口与版本，不包含学习模型分数；换原文或上下文产生新ID。
 
-一个偏好JSONL记录（JSON键名为接口，不是示意中文翻译）：
+## 偏好持久化：对接UI schema v1，不另建平行格式
 
-```json
-{
-  "schema_version": "research-ranking-v1",
-  "pair_id": "稳定配对ID",
-  "query": {"query_id": "...", "text": "...", "topic_text": "...", "entity_ids": ["..."], "scope": {}, "scope_hash": "...", "parser_version": "research-ranking-v1", "topic_group_id": "审定主题族"},
-  "a": {"candidate_id": "...", "query_id": "...", "source_id": "...", "article_id": "...", "document_family_id": "...", "source_version": "...", "window_hash": "...", "title": "...", "heading": "...", "text": "...", "before": "...", "after": "...", "fragments": [], "entity_ids": ["..."], "entity_basis": "...", "url": "..."},
-  "b": {"与a相同的完整快照结构": "..."},
-  "presentation": {"left_id": "a或b的candidate_id", "right_id": "另一个candidate_id", "presented_at": "2026-10-29T00:00:00Z"},
-  "label": {"choice": "a_better", "source": "user", "rater_id": "不含真实姓名的标注者ID", "created_at": "2026-10-29T00:01:00Z", "model_id": null, "model_revision": null, "prompt_version": null}
-}
-```
+持久化格式以独立标注模块为准：`{schema_version:1, record_type, data}`，
+`record_type=manifest|task|presentation|label_event`。上面的RankQuery/RankCandidate只是排序内部快照，
+由独立adapter转换，UI不依赖其内部JSON字段，不在retrieval里解析表单。
 
-A/B为稳定候选槽位；UI随机左右位置并保存映射，再将左/右选择转换回A/B，不能直接把左当作A训练。
-五种 `choice`：`a_better / b_better / tie / both_irrelevant / cannot_judge`。
-`source`：`user / ai / synthetic`。AI弱标必须记录模型及版本、prompt版本；人工金标来自可信用户操作，不能接受客户端自称user。
-示意JSON只展示字段，不是可训练样本；真实记录必须包含完整有效的两份窗口和来源版本。
+- task：查询/范围、entity_ids/topic_ids、material、task_id、两候选，及group_id/split/manifest_id。
+- candidate：article_id/chunk_id/window_id/document_family_id/content_version/content_hash/candidate_id，
+  article_title/heading/text/context_before/context_after/source_url/algorithm。
+- presentation：presentation_id/task_id/annotator_id/left_id/right_id/created_at。
+- label_event：event_id/request_id/task_id/presentation_id/source/decision/winner_id/revision/created_at，
+  以及split/group_id/manifest_id；source.kind为human或ai_weak。
+- left/right依winner_id和实际左右映射恢复优胜候选，不能把左当数组A；tie/neither/skip/uncertain/withdraw分别保留。
+  读取最新有效revision，撤回不训练。AI弱标与human金标分开，synthetic/private_corpus材料也与标签来源分开。
+- 冻结分组和ID/hash计算使用UI模块的规则与校验，不在adapter猜测新ID，不能跨实体/主题/文档/近重复连通组随机拆分。
+
+建议candidate增加可选`source_id`，以保留原始来源身份及来源覆盖指标；缺失时明确记未知，不能用algorithm.name或
+多来源scope猜出单篇来源。UI未提供原块字符偏移时，adapter记unknown，只保留窗口文本和content_hash，不能伪造原块0起点。
+运行时从数据库导出的片段仍须有可校验的块范围；UI历史快照不能绕过实时实体与原文版本约束直接进入线上排序。
 
 候选正文、上下文和来源当作数据，不执行其中的指令；rater_id不用真实姓名，真实库导出文件不提交公开仓库。
 本模块校验记录一致性，不能仅凭JSON声明证明某人确实标过；标注端需保留可信操作来源。
