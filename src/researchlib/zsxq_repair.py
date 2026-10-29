@@ -1,5 +1,8 @@
 """方伟星球存量回写。规则和入库、阅读页是同一套，不另写一套。
 
+别的星球来源（乘风破浪）只回写标题：`--source chengfengpolang --titles-only`。评论和图片文字的规则是
+照方伟定的，不用在别的星球上。
+
 - 标题：空的、「无标题」、以省略号结尾的、公司名/话题名冒号壳，
   以及空壳导读（「没有可读文字」「正文为空」），改成完整标题。
   加 `--ai-titles` 时优先用站内 deepseek-flash 起题（含错字抛光），
@@ -203,7 +206,7 @@ def repair_zsxq(
     """回写方伟星球的标题、评论，并重洗星球和公众号的 OCR 旁路。不提交事务。
 
     ai_titles：缺/壳/省略号/空壳导读标题优先走站内 flash 起题；settings 必传。
-    titles_only：只改标题（增量抓取后补跑用），评论和 OCR 旁路不动。
+    titles_only：只改标题（增量抓取后补跑用），评论和 OCR 旁路不动。别的星球来源只能这样跑。
     limit：最多改这么多标题（0 不限）；增量抓取后补跑用，避免一次打光存量。
     article_ids：只处理这些篇（识图刚入队的）。不传则全表，入队的排在前面。
     """
@@ -225,8 +228,11 @@ def repair_zsxq(
             "spots": spot_check(conn, spot_ids or []),
         }
         return stats
-    if source_id != FANGWEI_ZSXQ:
-        raise SystemExit("标题和评论只回写方伟星球（fangwei-zsxq）。公众号只重洗图片文字，用 --source fangwei-mp。")
+    if source_id != FANGWEI_ZSXQ and not titles_only:
+        raise SystemExit(
+            "评论和图片文字只回写方伟星球（fangwei-zsxq）。别的星球只回写标题，加 --titles-only；"
+            "公众号只重洗图片文字，用 --source fangwei-mp。"
+        )
     profile = profile_for(conn, source_id)
     matcher = CompanyMatcher(load_company_rows(conn))
     pieces = {} if titles_only else _image_pieces(conn, source_id)
@@ -472,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--titles-only",
         action="store_true",
-        help="只回写标题，评论和图片文字不动",
+        help="只回写标题，评论和图片文字不动。别的星球来源（乘风破浪）只能这样跑",
     )
     parser.add_argument(
         "--ai-titles",
@@ -501,8 +507,13 @@ def main(argv: list[str] | None = None) -> int:
     spot_ids = [int(part) for part in re.split(r"[\s,]+", args.spot) if part.strip().isdigit()]
     from researchlib.config import Settings
     from researchlib.db import prepare
+    from researchlib.sources import load_sources
 
     settings = Settings.from_env()
+    if args.source != FANGWEI_MP:
+        kinds = {source.id: source.kind for source in load_sources(settings.sources_path)}
+        if kinds.get(args.source) != "zsxq":
+            raise SystemExit(f"{args.source} 不是知识星球来源，标题规则只认星球")
     conn = prepare(settings)
     try:
         stats = repair_zsxq(

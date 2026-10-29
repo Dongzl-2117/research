@@ -260,7 +260,7 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     digest = queries.digests_for(conn, [article_id]).get(article_id)
     title = row["title"] or ""
     # 和文章页同一套：省略号半句补成正文里的完整句。库内 title 不改。
-    if repairs_source(source.id) and title_needs_repair(title, row.get("body_text") or ""):
+    if repairs_source(source.id, source.kind) and title_needs_repair(title, row.get("body_text") or ""):
         title = zsxq_display_title(
             title,
             body=row.get("body_text") or "",
