@@ -115,6 +115,44 @@ def test_search_ranks_title_above_body_and_matches_author(conn, settings):
         assert "换个词" not in missing.text
 
 
+def test_search_says_how_many_matches_paging_reaches(conn, settings, monkeypatch):
+    from researchlib import retrieval
+
+    source = _source(settings, "fangwei-mp")
+    bodies = [
+        "第一篇讲独有词条甲乙丙的来历，从一九九八年说起。",
+        "第二篇换个角度：独有词条甲乙丙在海外市场怎么卖。",
+        "第三篇是读者问答，只顺带提到独有词条甲乙丙。",
+    ]
+    store_documents(
+        conn,
+        source=source,
+        docs=[
+            _doc(f"pool-{n}", f"第{n + 1}篇", datetime(2024, 1, n + 1, tzinfo=SHANGHAI), body)
+            for n, body in enumerate(bodies)
+        ],
+        data_dir=settings.data_dir,
+        archive_files=3,
+        images_in_archive=0,
+        errors=[],
+    )
+    original = retrieval._candidates
+
+    def one_passage(conn, query, scope, limit=0, *, enough=None):
+        # 线上候选段落最多 2000 个，常见词全部命中的文章比这多；这里压到 1 个来模拟。
+        return original(conn, query, scope, 1, enough=1)
+
+    monkeypatch.setattr(retrieval, "_candidates", one_passage)
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "独有词条甲乙丙"})
+        assert "3 篇全部命中，按相关度能翻到前 1 篇" in page.text
+        api = client.get("/api/v1/search", params={"q": "独有词条甲乙丙"}).json()
+        assert api["total"] == 3 and api["listed"] == 1 and api["next_offset"] is None
+    monkeypatch.undo()
+    with TestClient(create_app(settings)) as client:
+        assert "按相关度能翻到" not in client.get("/search", params={"q": "独有词条甲乙丙"}).text
+
+
 def test_backfill_fills_null_dates_from_stored_text(conn, settings):
     source = _source(settings, "fangwei-mp")
     store_documents(

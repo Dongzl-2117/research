@@ -1053,6 +1053,8 @@ def search_page(request: Request):
     total_all = sum(count_map.values())
     total = found.total if found else 0
     available = found.available if found else 0
+    # 检索按相关度先取 2000 个段落再排，常见词全部命中的文章比这多，翻页翻不到的要说出来。
+    listed = available - (found.partial if found else 0)
     page, pages, _offset = page_window(available, page, SEARCH_PAGE_SIZE)
     author_counts: dict[str, int] = {}
     source_counts = []
@@ -1097,6 +1099,7 @@ def search_page(request: Request):
             "search_terms": terms,
             "total_all": total_all,
             "total": total,
+            "listed": listed,
             "page": page,
             "pages": pages,
             "base_query": _query_string(**base),
