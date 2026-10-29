@@ -195,7 +195,7 @@ def fake_vectors(conn):
     embeddings.use_embedder(None)
 
 
-def test_search_finds_articles_by_meaning_and_marks_them(conn, settings, fake_vectors):
+def test_vector_candidates_keep_ranking_but_display_literal_scope(conn, settings, fake_vectors):
     _store(
         conn,
         settings,
@@ -215,9 +215,10 @@ def test_search_finds_articles_by_meaning_and_marks_them(conn, settings, fake_ve
         page = client.get("/search", params={"q": "costco 商业模式"}).text
     model = page.find('href="/articles/1')
     store = page.find('href="/articles/2')
-    # 「开市客笔记」一个「商业模式」都没写，按意思排到前面，并标出来。
+    # 固定向量只验证排序契约；未写主题词的片段仍须标参考，不能宣称已核实语义。
     assert 0 <= model < store
-    assert "语义相关" in page[:store]
+    assert "同公司参考" in page[model:store]
+    assert "语义相关" not in page
     assert 'href="/articles/3' not in page
 
 

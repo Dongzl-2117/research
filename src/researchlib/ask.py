@@ -146,14 +146,24 @@ OUTLINE_ITEMS = 200
 OUTLINE_ITEM_CHARS = 60
 
 
-def outline_note(outline: list[str], label: str) -> str:
+def outline_note(
+    outline: list[str], label: str, *, whole: bool = True,
+    total_chars: int | None = None, selected_chars: int | None = None,
+) -> str:
     """只问一篇（或一个目录）而资料只是其中一部分时，告诉模型全貌，让它知道自己没看到哪些。"""
+    coverage = ""
+    if not whole:
+        amount = (
+            f"（正文约 {total_chars} 字，本次提供约 {selected_chars} 字）"
+            if total_chars is not None and selected_chars is not None else ""
+        )
+        coverage = f"\n\n注意：本次只提供了部分原文{amount}，没有读完整篇。未提供的部分不能判定为没有相关内容。"
     if not outline:
-        return ""
+        return coverage
     items = [text if len(text) <= OUTLINE_ITEM_CHARS else text[:OUTLINE_ITEM_CHARS] + "…" for text in outline]
     shown = "\n".join(f"- {text}" for text in items[:OUTLINE_ITEMS])
     more = f"\n（另有 {len(items) - OUTLINE_ITEMS} 条没列出）" if len(items) > OUTLINE_ITEMS else ""
-    return (
+    return coverage + (
         f"\n\n下面的资料只是按问题从中挑出的部分，{label or '全部内容'}如下，供你判断资料覆盖到了哪些、没覆盖哪些。"
         f"问题涉及没给出的部分时，直接说资料里没看到，不要猜。\n{shown}{more}"
     )
@@ -201,7 +211,7 @@ def synthesize(
                 settings,
                 [
                     {"role": "system", "content": MAP_PROMPT},
-                    {"role": "user", "content": f"问题：{question}\n\n资料：\n{_material(batch)}"},
+                    {"role": "user", "content": f"问题：{question}{note}\n\n资料：\n{_material(batch)}"},
                 ],
             )
         except LLMError as exc:
@@ -390,7 +400,10 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         if not passages:
             raise LLMError("范围内没有召回到任何段落。")
         synth_report: dict = {}
-        note = outline_note(found.outline, found.outline_label)
+        note = outline_note(
+            found.outline, found.outline_label, whole=found.whole, total_chars=found.total_chars,
+            selected_chars=sum(len(p.body) for p in found.passages),
+        )
         answer, model = synthesize(settings, question, passages, synth_report, note)
         if not (answer or "").strip():
             raise LLMError("模型返回了空回答")
@@ -411,6 +424,8 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
             "batches": 1 if chars <= SINGLE_CALL_CHARS else len(_batches(passages, BATCH_CHARS)),
             "failed_batches": synth_report.get("failed_batches", []),
             "expansions": expansions,
+            "whole": found.whole,
+            "total_chars": found.total_chars,
         }
         conn.execute(
             """

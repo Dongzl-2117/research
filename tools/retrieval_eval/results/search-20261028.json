@@ -1,0 +1,296 @@
+{
+  "base": "258507aa8d6dae1049e9d296c725d116c7019c52",
+  "mode": "lexical_only",
+  "real_model_tested": false,
+  "note": "P@k按完整窗口人工标签计算，非独立验收包可见指标。范围违反指显式company筛选，实体误归另计；未通过真实语义验收。",
+  "before": [
+    {
+      "query": "Costco 商业模式",
+      "split": "development",
+      "p_at_5": 0.8,
+      "p_at_10": 0.6,
+      "coverage_at_10": 0.46153846153846156,
+      "gold_passages": 13,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 1,
+      "latency_median_ms": 5.62
+    },
+    {
+      "query": "好市多 商业模式",
+      "split": "alias",
+      "p_at_5": 0.8,
+      "p_at_10": 0.6,
+      "coverage_at_10": 0.46153846153846156,
+      "gold_passages": 13,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 1,
+      "latency_median_ms": 5.37
+    },
+    {
+      "query": "开市客 商业模式",
+      "split": "alias",
+      "p_at_5": 0.8,
+      "p_at_10": 0.6,
+      "coverage_at_10": 0.46153846153846156,
+      "gold_passages": 13,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 1,
+      "latency_median_ms": 5.16
+    },
+    {
+      "query": "Adobe 订阅模式",
+      "split": "additional_topics",
+      "p_at_5": 0.6,
+      "p_at_10": 0.5,
+      "coverage_at_10": 1.0,
+      "gold_passages": 5,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 1,
+      "adjacent_duplicates": 1,
+      "latency_median_ms": 4.41
+    },
+    {
+      "query": "Visa 网络效应",
+      "split": "additional_topics",
+      "p_at_5": 0.6,
+      "p_at_10": 0.5,
+      "coverage_at_10": 1.0,
+      "gold_passages": 5,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 1,
+      "adjacent_duplicates": 1,
+      "latency_median_ms": 3.48
+    },
+    {
+      "query": "任天堂 主机周期",
+      "split": "additional_topics",
+      "p_at_5": 0.6,
+      "p_at_10": 0.5,
+      "coverage_at_10": 1.0,
+      "gold_passages": 5,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 1,
+      "adjacent_duplicates": 1,
+      "latency_median_ms": 3.76
+    },
+    {
+      "query": "腾讯 广告变现",
+      "split": "independent",
+      "p_at_5": 0.4,
+      "p_at_10": 0.2,
+      "coverage_at_10": 0.5,
+      "gold_passages": 4,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 1,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 3.85
+    },
+    {
+      "query": "贵州茅台 渠道库存",
+      "split": "independent",
+      "p_at_5": 0.4,
+      "p_at_10": 0.2,
+      "coverage_at_10": 0.5,
+      "gold_passages": 4,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 1,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 3.45
+    }
+  ],
+  "after": [
+    {
+      "query": "Costco 商业模式",
+      "split": "development",
+      "p_at_5": 0.8,
+      "p_at_10": 0.8,
+      "coverage_at_10": 0.6923076923076923,
+      "gold_passages": 13,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 7.8
+    },
+    {
+      "query": "好市多 商业模式",
+      "split": "alias",
+      "p_at_5": 0.8,
+      "p_at_10": 0.8,
+      "coverage_at_10": 0.6923076923076923,
+      "gold_passages": 13,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 6.84
+    },
+    {
+      "query": "开市客 商业模式",
+      "split": "alias",
+      "p_at_5": 0.8,
+      "p_at_10": 0.8,
+      "coverage_at_10": 0.6923076923076923,
+      "gold_passages": 13,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 6.06
+    },
+    {
+      "query": "Adobe 订阅模式",
+      "split": "additional_topics",
+      "p_at_5": 0.8,
+      "p_at_10": 0.5,
+      "coverage_at_10": 1.0,
+      "gold_passages": 5,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 5.54
+    },
+    {
+      "query": "Visa 网络效应",
+      "split": "additional_topics",
+      "p_at_5": 0.8,
+      "p_at_10": 0.5,
+      "coverage_at_10": 1.0,
+      "gold_passages": 5,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 3.65
+    },
+    {
+      "query": "任天堂 主机周期",
+      "split": "additional_topics",
+      "p_at_5": 0.8,
+      "p_at_10": 0.5,
+      "coverage_at_10": 1.0,
+      "gold_passages": 5,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 3.89
+    },
+    {
+      "query": "腾讯 广告变现",
+      "split": "independent",
+      "p_at_5": 0.6,
+      "p_at_10": 0.4,
+      "coverage_at_10": 1.0,
+      "gold_passages": 4,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 4.46
+    },
+    {
+      "query": "贵州茅台 渠道库存",
+      "split": "independent",
+      "p_at_5": 0.8,
+      "p_at_10": 0.4,
+      "coverage_at_10": 1.0,
+      "gold_passages": 4,
+      "scope_violations": 0,
+      "wrong_entity_at_5": 0,
+      "adjacent_duplicates": 0,
+      "latency_median_ms": 4.23
+    }
+  ],
+  "costco_top_before": [
+    {
+      "article": "n05",
+      "chunk": 0,
+      "lang": "",
+      "relevant": false,
+      "text": "本文没有分析 Costco 商业模式，只记录一个待研究的问题。",
+      "visible_text": "本文没有分析 Costco 商业模式，只记录一个待研究的问题。",
+      "url": "/articles/17?chunk=0"
+    },
+    {
+      "article": "c03",
+      "chunk": 0,
+      "lang": "",
+      "relevant": true,
+      "text": "开市客的商业模式依赖会员费与商品低毛利，快速周转减少库存占用。",
+      "visible_text": "开市客的商业模式依赖会员费与商品低毛利，快速周转减少库存占用。",
+      "url": "/articles/3?chunk=0"
+    },
+    {
+      "article": "c09",
+      "chunk": 10000,
+      "lang": "zh",
+      "relevant": true,
+      "text": "开市客的商业模式利用会员费获得持续收入，商品低毛利和高周转为会员提供低价。",
+      "visible_text": "开市客的商业模式利用会员费获得持续收入，商品低毛利和高周转为会员提供低价。",
+      "url": "/articles/9?chunk=10000#p-1"
+    },
+    {
+      "article": "c01",
+      "chunk": 0,
+      "lang": "",
+      "relevant": true,
+      "text": "Costco 的商业模式让会员费承担主要盈利目标，商品薄利用于换取顾客续费。",
+      "visible_text": "Costco 的商业模式让会员费承担主要盈利目标，商品薄利用于换取顾客续费。",
+      "url": "/articles/1?chunk=0"
+    },
+    {
+      "article": "c08",
+      "chunk": 20000,
+      "lang": "ocr",
+      "relevant": true,
+      "text": "Costco 的商业模式：商品低毛利，会员年费形成持续收入，较高周转减少资金占用。",
+      "visible_text": "Costco 的商业模式：商品低毛利，会员年费形成持续收入，较高周转减少资金占用。",
+      "url": "/articles/8?chunk=20000#img-synthetic"
+    }
+  ],
+  "costco_top_after": [
+    {
+      "article": "n05",
+      "chunk": 0,
+      "lang": "",
+      "relevant": false,
+      "text": "本文没有分析 Costco 商业模式，只记录一个待研究的问题。",
+      "visible_text": "\n本文没有分析 Costco 商业模式，只记录一个待研究的问题。\n",
+      "url": "/articles/17?chunk=0"
+    },
+    {
+      "article": "c03",
+      "chunk": 0,
+      "lang": "",
+      "relevant": true,
+      "text": "开市客的商业模式依赖会员费与商品低毛利，快速周转减少库存占用。",
+      "visible_text": "\n开市客的商业模式依赖会员费与商品低毛利，快速周转减少库存占用。\n",
+      "url": "/articles/3?chunk=0"
+    },
+    {
+      "article": "c09",
+      "chunk": 10000,
+      "lang": "zh",
+      "relevant": true,
+      "text": "开市客的商业模式利用会员费获得持续收入，商品低毛利和高周转为会员提供低价。",
+      "visible_text": "\n开市客的商业模式利用会员费获得持续收入，商品低毛利和高周转为会员提供低价。\n",
+      "url": "/articles/9?chunk=10000#p-1"
+    },
+    {
+      "article": "c01",
+      "chunk": 0,
+      "lang": "",
+      "relevant": true,
+      "text": "Costco 的商业模式让会员费承担主要盈利目标，商品薄利用于换取顾客续费。",
+      "visible_text": "\nCostco 的商业模式让会员费承担主要盈利目标，商品薄利用于换取顾客续费。\n",
+      "url": "/articles/1?chunk=0"
+    },
+    {
+      "article": "c08",
+      "chunk": 20000,
+      "lang": "ocr",
+      "relevant": true,
+      "text": "Costco 的商业模式：商品低毛利，会员年费形成持续收入，较高周转减少资金占用。",
+      "visible_text": "\nCostco 的商业模式：商品低毛利，会员年费形成持续收入，较高周转减少资金占用。\n",
+      "url": "/articles/8?chunk=20000#img-synthetic"
+    }
+  ]
+}

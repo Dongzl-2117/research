@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 
 from markupsafe import Markup, escape
 
@@ -26,13 +27,18 @@ def _find(text: str, term: str) -> int:
     return text.find(term)
 
 
-def highlight_snippet(text: str, query: str, *, radius: int = 88, terms: list[str] | None = None) -> Markup:
+def highlight_snippet(
+    text: str, query: str, *, radius: int = 88, terms: list[str] | None = None,
+    focus_terms: list[str] | None = None,
+) -> Markup:
     """取第一处命中附近的一段并高亮。terms 给了就用它（检索实际用到的词，含公司别名和同义词）。"""
     flat = re.sub(r"\s+", " ", text or "").strip()
     if not flat:
         return Markup("")
     terms = [t for t in (terms if terms is not None else extract_terms(query)) if t]
-    positions = [index for term in terms if (index := _find(flat, term)) >= 0]
+    positions = [index for term in (focus_terms or []) if (index := _find(flat, term)) >= 0]
+    if not positions:
+        positions = [index for term in terms if (index := _find(flat, term)) >= 0]
     if not positions:
         fragment = flat[: radius * 2]
         suffix = "…" if len(flat) > len(fragment) else ""
@@ -56,6 +62,26 @@ def highlight_title(title: str, query: str, *, terms: list[str] | None = None) -
 def highlight_full(text: str, terms: list[str]) -> Markup:
     """整段原文，命中处加 <mark>。问库页展开原文时用。"""
     return Markup(_mark(text or "", [t for t in terms if t]))
+
+
+def literal_match_label(fragments: list[Markup], groups: list[list[str]], *, company: bool = False) -> str:
+    """只说明实际可见原文的字面覆盖，不把词频、向量分或文章级命中当作主题已核实。"""
+    # fragments 是已转义且只插入 mark 的摘录；先移除高亮标签，再解码原文，避免把原文里的标签吞掉。
+    visible = "\n".join(unescape(re.sub(r"</?mark>", "", str(fragment))) for fragment in fragments)
+
+    def contains(form):
+        if not form:
+            return False
+        if re.search(r"[㐀-鿿]", form):
+            return form in visible
+        return bool(re.search(r"(?<![A-Za-z0-9])" + re.escape(form) + r"(?![A-Za-z0-9])", visible, re.I))
+
+    matched = [any(contains(form) for form in forms) for forms in groups]
+    if matched and all(matched):
+        return "字面匹配"
+    if any(matched):
+        return "部分词匹配，主题未核实"
+    return "同公司参考" if company else "参考原文"
 
 
 def _mark(text: str, terms: list[str]) -> str:

@@ -1,0 +1,530 @@
+{
+  "synthetic_only": true,
+  "notice": "PR99 exact head 冻结后、运行前标注的新盲留出；均为原创合成，不是实际公司事实或真实用户库。",
+  "companies": [
+    {
+      "name_zh": "Shopify",
+      "name_en": "Shopify",
+      "ticker": "SHOP",
+      "aliases": []
+    },
+    {
+      "name_zh": "诺基亚",
+      "name_en": "Nokia",
+      "ticker": "NOK",
+      "aliases": []
+    }
+  ],
+  "queries": [
+    {
+      "id": "qualcomm",
+      "text": "高通 专利授权收入",
+      "topics": [
+        "按终端计费",
+        "研发许可",
+        "独立于芯片"
+      ],
+      "split": "new_blind_holdout"
+    },
+    {
+      "id": "shopify",
+      "text": "Shopify 商家迁移成本",
+      "topics": [
+        "业务数据",
+        "工具集成",
+        "重建工作"
+      ],
+      "split": "new_blind_holdout"
+    }
+  ],
+  "documents": [
+    {
+      "id": "Q01",
+      "title": "[合成盲留出] 终端计费",
+      "chunks": [
+        {
+          "text": "高通让终端厂商为采用受保护的通信技术缴费，费用跟每台设备的计价基础挂钩，卖出更多手机就带来更多款项；设备厂是否向它采购芯片是另一笔交易。",
+          "labels": {
+            "qualcomm": {
+              "grade": 2,
+              "topics": [
+                "按终端计费",
+                "独立于芯片"
+              ],
+              "topic_evidence": {
+                "按终端计费": "费用跟每台设备的计价基础挂钩",
+                "独立于芯片": "采购芯片是另一笔交易"
+              },
+              "evidence": [
+                "卖出更多手机就带来更多款项"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "Q02",
+      "title": "[合成盲留出] 研发成果札记",
+      "chunks": [
+        {
+          "text": "Qualcomm 通过许可研发成果来收取费用，而不是把全部技术价值埋在一次芯片交易里；被许可设备持续出货时，它可反复收到款项。",
+          "labels": {
+            "qualcomm": {
+              "grade": 2,
+              "topics": [
+                "研发许可",
+                "独立于芯片"
+              ],
+              "topic_evidence": {
+                "研发许可": "通过许可研发成果来收取费用",
+                "独立于芯片": "不是把全部技术价值埋在一次芯片交易里"
+              },
+              "evidence": [
+                "被许可设备持续出货时，它可反复收到款项"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "Q03",
+      "title": "[合成盲留出] Handset payments",
+      "chunks": [
+        {
+          "text": "Qualcomm charges device makers for using protected cellular inventions. Payments are based on shipped handsets, and buying its chips is a separate transaction.",
+          "labels": {
+            "qualcomm": {
+              "grade": 2,
+              "topics": [
+                "按终端计费",
+                "独立于芯片"
+              ],
+              "topic_evidence": {
+                "按终端计费": "Payments are based on shipped handsets",
+                "独立于芯片": "buying its chips is a separate transaction"
+              },
+              "evidence": [
+                "Payments are based on shipped handsets"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "Q04",
+      "title": "[合成盲留出] 高通的研发",
+      "chunks": [
+        {
+          "text": "把通信技术研发形成的权利让设备厂有偿使用，减少对单次芯片销售差价的依赖；即便终端使用别家的处理器，仍可能需要为通信技术使用付钱。",
+          "labels": {
+            "qualcomm": {
+              "grade": 2,
+              "topics": [
+                "研发许可",
+                "独立于芯片"
+              ],
+              "topic_evidence": {
+                "研发许可": "研发形成的权利让设备厂有偿使用",
+                "独立于芯片": "即便终端使用别家的处理器"
+              },
+              "evidence": [
+                "仍可能需要为通信技术使用付钱"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "Q05",
+      "title": "[合成盲留出] 协议计费",
+      "chunks": [
+        {
+          "text": "高通的专利授权收入按被许可终端的销售基础计费。这让技术研发成果可以通过多家设备厂复用并收费，而不是只有卖出自己的芯片时才收到钱。",
+          "labels": {
+            "qualcomm": {
+              "grade": 2,
+              "topics": [
+                "按终端计费",
+                "研发许可",
+                "独立于芯片"
+              ],
+              "topic_evidence": {
+                "按终端计费": "按被许可终端的销售基础计费",
+                "研发许可": "技术研发成果可以通过多家设备厂复用并收费",
+                "独立于芯片": "不是只有卖出自己的芯片时才收到钱"
+              },
+              "evidence": [
+                "通过多家设备厂复用并收费"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "Q06",
+      "title": "[合成盲留出] 通信调研",
+      "chunks": [
+        {
+          "text": "这一节对象是高通，下一段的它也指同一家公司。",
+          "labels": {
+            "qualcomm": {
+              "grade": 1,
+              "topics": [],
+              "topic_evidence": {},
+              "evidence": [],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        },
+        {
+          "text": "它把通信发明以协议形式交给多家设备厂有偿使用，每多生产一批终端便多一笔款项，技术成果因此可以反复变现。",
+          "labels": {
+            "qualcomm": {
+              "grade": 2,
+              "topics": [
+                "研发许可",
+                "按终端计费"
+              ],
+              "topic_evidence": {
+                "研发许可": "通信发明以协议形式交给多家设备厂有偿使用",
+                "按终端计费": "每多生产一批终端便多一笔款项"
+              },
+              "evidence": [
+                "技术成果因此可以反复变现"
+              ],
+              "required_context": [
+                "Q06:0"
+              ]
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "Q07",
+      "title": "[合成盲留出] 培训目录",
+      "chunks": [
+        {
+          "text": "高通 专利授权收入是培训目录上的题目，请把标题放大并居中。本页只安排签到和午餐，没有解释通信技术怎样收钱。",
+          "labels": {},
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "Q08",
+      "title": "[合成盲留出] 通信比较",
+      "chunks": [
+        {
+          "text": "高通 专利授权收入只作为待办标题，真正案例讲诺基亚：诺基亚让设备厂按协议付费，为受保护的通信发明支付对价。这段不说明高通如何赚钱。",
+          "labels": {},
+          "wrong_entity_for": [
+            "qualcomm"
+          ],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "Q09",
+      "title": "[合成盲留出] 匿名技术方案",
+      "chunks": [
+        {
+          "text": "一家未署名的技术企业让终端厂商为采用通信发明缴费，出货越多，按设备支付的款项越多。材料没有说明是哪一家企业。",
+          "labels": {},
+          "wrong_entity_for": [
+            "qualcomm"
+          ],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S01",
+      "title": "[合成盲留出] 店铺数据",
+      "chunks": [
+        {
+          "text": "Shopify 把店铺的商品目录、历史订单和客户分组积累在一起；换到另一套系统要重新导出、核对并接回这些数据，重新搭建工作流程会耗费时间。",
+          "labels": {
+            "shopify": {
+              "grade": 2,
+              "topics": [
+                "业务数据",
+                "重建工作"
+              ],
+              "topic_evidence": {
+                "业务数据": "商品目录、历史订单和客户分组",
+                "重建工作": "重新搭建工作流程会耗费时间"
+              },
+              "evidence": [
+                "重新搭建工作流程会耗费时间"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": "shopify-rebuild"
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "title": "[合成盲留出] 接口与流程",
+      "chunks": [
+        {
+          "text": "Shopify 商家把支付、库存、物流与应用插件接成一条流程，离开时要逐个重做接口并检查旧订单，重新配置越多，换平台要投入的工时越多。",
+          "labels": {
+            "shopify": {
+              "grade": 2,
+              "topics": [
+                "工具集成",
+                "重建工作"
+              ],
+              "topic_evidence": {
+                "工具集成": "支付、库存、物流与应用插件接成一条流程",
+                "重建工作": "换平台要投入的工时越多"
+              },
+              "evidence": [
+                "换平台要投入的工时越多"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S03",
+      "title": "[合成盲留出] Merchant workflow",
+      "chunks": [
+        {
+          "text": "Shopify stores a merchant's catalog, order history, and customer segments. Moving to another platform requires exporting that data and rebuilding payment and fulfillment integrations, creating setup work.",
+          "labels": {
+            "shopify": {
+              "grade": 2,
+              "topics": [
+                "业务数据",
+                "工具集成",
+                "重建工作"
+              ],
+              "topic_evidence": {
+                "业务数据": "catalog, order history, and customer segments",
+                "工具集成": "payment and fulfillment integrations",
+                "重建工作": "creating setup work"
+              },
+              "evidence": [
+                "rebuilding payment and fulfillment integrations"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S04",
+      "title": "[合成盲留出] Shopify的商户工具",
+      "chunks": [
+        {
+          "text": "商户的付款、发货和售后操作接在一条工作流上，另换系统需要重搭接口和重新培训员工，原先积累的流程越多，重建投入就越大。",
+          "labels": {
+            "shopify": {
+              "grade": 2,
+              "topics": [
+                "工具集成",
+                "重建工作"
+              ],
+              "topic_evidence": {
+                "工具集成": "付款、发货和售后操作接在一条工作流上",
+                "重建工作": "重搭接口和重新培训员工"
+              },
+              "evidence": [
+                "重建投入就越大"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S05",
+      "title": "[合成盲留出] 换平台的工作",
+      "chunks": [
+        {
+          "text": "Shopify 的商家迁移成本包含重建商品目录、连接支付物流接口和重新训练操作流程；已经积累的客户分组也要重新校验，这些工作使离开平台需要额外投入。",
+          "labels": {
+            "shopify": {
+              "grade": 2,
+              "topics": [
+                "业务数据",
+                "工具集成",
+                "重建工作"
+              ],
+              "topic_evidence": {
+                "业务数据": "客户分组也要重新校验",
+                "工具集成": "连接支付物流接口",
+                "重建工作": "重新训练操作流程"
+              },
+              "evidence": [
+                "这些工作使离开平台需要额外投入"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S06",
+      "title": "[合成盲留出] 软件调研",
+      "chunks": [
+        {
+          "text": "本节观察 Shopify，后面提到的它就是这个店铺软件平台。",
+          "labels": {
+            "shopify": {
+              "grade": 1,
+              "topics": [],
+              "topic_evidence": {},
+              "evidence": [],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        },
+        {
+          "text": "它把订单、客户分组和库存流程积累在同一处，换用别的工具时必须重建接口和操作习惯，这些重新配置的工作构成离开的阻力。",
+          "labels": {
+            "shopify": {
+              "grade": 2,
+              "topics": [
+                "业务数据",
+                "重建工作"
+              ],
+              "topic_evidence": {
+                "业务数据": "订单、客户分组和库存流程",
+                "重建工作": "重新配置的工作构成离开的阻力"
+              },
+              "evidence": [
+                "重新配置的工作构成离开的阻力"
+              ],
+              "required_context": [
+                "S06:0"
+              ]
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S07",
+      "title": "[合成盲留出] 海报字号",
+      "chunks": [
+        {
+          "text": "Shopify 商家迁移成本是海报的题目，英文名用大字号，中文一行居中。本页只讨论字号和色彩，没有分析换平台需要做什么。",
+          "labels": {},
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S08",
+      "title": "[合成盲留出] 平台比较",
+      "chunks": [
+        {
+          "text": "Shopify 商家迁移成本只是主持人的开场白，实际讲的是亚马逊卖家：亚马逊卖家积累的评价、物流配置和广告设置换平台后要重新建立。这段并没有把这些机制归给 Shopify。",
+          "labels": {},
+          "wrong_entity_for": [
+            "shopify"
+          ],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S09",
+      "title": "[合成盲留出] 匿名店铺软件",
+      "chunks": [
+        {
+          "text": "一家未具名的软件把订单与库存接口接在一起，离开以后需要重新配置工具，积累越多重做越费时。材料没有给出平台名称。",
+          "labels": {},
+          "wrong_entity_for": [
+            "shopify"
+          ],
+          "duplicate_group": null
+        }
+      ]
+    },
+    {
+      "id": "S10",
+      "title": "[合成盲留出] 另一份数据札记",
+      "chunks": [
+        {
+          "text": "Shopify 把店铺的商品目录、历史订单和客户分组积累在一起；换到另一套系统要重新导出、核对并接回这些数据，重新搭建工作流程会耗费时间。",
+          "labels": {
+            "shopify": {
+              "grade": 2,
+              "topics": [
+                "业务数据",
+                "重建工作"
+              ],
+              "topic_evidence": {
+                "业务数据": "商品目录、历史订单和客户分组",
+                "重建工作": "重新搭建工作流程会耗费时间"
+              },
+              "evidence": [
+                "重新搭建工作流程会耗费时间"
+              ],
+              "required_context": []
+            }
+          },
+          "wrong_entity_for": [],
+          "duplicate_group": "shopify-rebuild"
+        },
+        {
+          "text": "附录只说明打印纸的克重与装订方式。",
+          "labels": {},
+          "wrong_entity_for": [],
+          "duplicate_group": null
+        }
+      ]
+    }
+  ]
+}

@@ -96,7 +96,7 @@ def test_chinese_question_finds_the_translation(conn, settings):
     with TestClient(create_app(settings)) as client:
         page = client.get("/search", params={"q": "应用商店 抽成"}).text
         assert f'href="/articles/{article_id}?chunk={TRANSLATION_ORD_BASE + 1}#p-' in page
-        assert "1 篇全部命中" in page
+        assert "1 篇含全部检索词" in page
         api = client.get("/api/v1/search", params={"q": "苹果的护城河", "level": "chunk"}).json()
         assert api["passages"][0]["lang"] == "zh"
 

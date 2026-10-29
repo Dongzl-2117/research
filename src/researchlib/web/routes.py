@@ -39,7 +39,14 @@ from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.present_text import polish_display_text
 from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
-from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
+from researchlib.snippets import (
+    answer_html,
+    highlight_full,
+    highlight_snippet,
+    highlight_title,
+    literal_match_label,
+    mention_snippet,
+)
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt
 from researchlib.translate.pair import bilingual_pairs
@@ -284,14 +291,16 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
         card["title"] = repaired
 
 
-def _decorate(conn, cards: list[dict], settings) -> list[dict]:
+def _decorate(conn, cards: list[dict], settings, *, include_digest: bool = True) -> list[dict]:
     """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
     ids = [card["id"] for card in cards]
     tags = queries.article_tags(conn, ids, per_article=12)
-    digests = queries.digests_for(conn, ids)
+    digests = queries.digests_for(conn, ids) if include_digest else {}
     pending: list[tuple[int, str]] = []
     for card in cards:
         card["tags"] = _visible_tags(card, tags.get(card["id"], []))
+        if not include_digest:
+            continue
         digest = digests.get(card["id"])
         if digest and not card.get("summary"):
             card["summary"] = digest["summary"]
@@ -1030,6 +1039,32 @@ def search_page(request: Request):
         entity_companies = queries.matching_companies(conn, query) if query and page == 1 else []
         results = []
         terms = found.terms if found else []
+        focus_terms = [form for t in found.query.content_terms for form in t.forms] if found and found.query else []
+        entity_terms = [form for t in found.query.terms if t.kind == "company" for form in t.forms] \
+            if found and found.query else []
+        company_reference = bool(found and found.query and (found.query.companies or scope.company_id is not None))
+        topic_groups: dict[int, list[str]] = {}
+        for term in found.query.content_terms if found and found.query else []:
+            if term.group >= 0:
+                topic_groups.setdefault(term.group, []).extend(term.forms)
+
+        def passage_card(p):
+            text = highlight_snippet(
+                polish_display_text(p.excerpt or p.body), query, radius=500, terms=terms, focus_terms=focus_terms,
+            )
+            before = highlight_snippet(
+                polish_display_text(p.before), query, radius=240, terms=terms, focus_terms=entity_terms,
+            ) if p.before else Markup("")
+            after = highlight_snippet(
+                polish_display_text(p.after), query, radius=160, terms=terms,
+            ) if p.after else Markup("")
+            return {
+                "text": text, "before": before, "after": after, "url": p.url,
+                "match_label": literal_match_label(
+                    [before, text, after], list(topic_groups.values()), company=company_reference,
+                ),
+            }
+
         for hit in found.hits if found else []:
             best = hit.passages[0] if hit.passages else None
             row = {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at}
@@ -1040,19 +1075,15 @@ def search_page(request: Request):
                     settings,
                     title=highlight_title(polish_display_text(hit.title), query, terms=terms),
                     extra={
-                        "snippets": [
-                            highlight_snippet(polish_display_text(p.body), query, terms=terms)
-                            for p in hit.passages[:2]
-                        ],
+                        "search_passages": [passage_card(p) for p in hit.passages[:2]],
                         "heading": best.heading if best else "",
                         "chunk": best.ord if best else None,
                         "anchor": best.anchor if best else "",
                         "partial": not hit.full,
-                        "semantic": hit.semantic or bool(best and best.semantic_hit),
                     },
                 )
             )
-        results = _decorate(conn, results, settings)
+        results = _decorate(conn, results, settings, include_digest=False)
     total_all = sum(count_map.values())
     total = found.total if found else 0
     available = found.available if found else 0
@@ -1075,7 +1106,6 @@ def search_page(request: Request):
         "from": info["from"],
         "to": info["to"],
     }
-    first_partial = next((index for index, item in enumerate(results) if item.get("partial")), None)
     return render_page(
         request,
         "search.html",
@@ -1094,7 +1124,6 @@ def search_page(request: Request):
             "entity_companies": entity_companies,
             "entity_authors": entity_authors,
             "results": results,
-            "first_partial": first_partial,
             "partial_total": found.partial if found else 0,
             "semantic_note": semantic_note,
             "search_terms": terms,

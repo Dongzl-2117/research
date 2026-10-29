@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from researchlib import embeddings
-from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE
+from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE, current_chunk_sql
 from researchlib.mentions import (
     CompanyMatcher,
     company_rules,
@@ -35,6 +35,13 @@ from researchlib.mentions import (
     inside,
     iter_alias_specs,
     load_company_rows,
+)
+from researchlib.search_evidence import (
+    LocalMatcher,
+    corpus_prior,
+    evidence_fingerprint,
+    evidence_windows,
+    local_evidence,
 )
 from researchlib.web.queries import Scope, scope_clause
 
@@ -113,6 +120,8 @@ class Query:
     overview: bool
     timeline: bool
     author_intent: bool
+    # 向量只比较主题，公司归属另行验证，避免公司名字本身占满语义相似度。
+    topic_text: str = ""
 
     @property
     def content_terms(self) -> list[Term]:
@@ -149,6 +158,11 @@ class Passage:
     # 交给模型时补上的前后文（同一篇相邻的块）。引用和链接仍落在这一块上。
     before: str = ""
     after: str = ""
+    entity_basis: str = ""
+    # 检索页只展示与当前主体相连的原文窗口；body/ord 仍保留完整原块供引用核对。
+    excerpt: str = ""
+    topic_lexical: float = 0.0
+    entity_ids: tuple[str, ...] = ()
 
     @property
     def url(self) -> str:
@@ -170,6 +184,7 @@ class Retrieval:
     outline_label: str = ""
     # 只问一篇时：这篇一共多少字、交给模型的是不是全文。
     whole: bool = True
+    total_chars: int | None = None
 
 
 @dataclass
@@ -194,6 +209,7 @@ class SearchResult:
     query: Query | None
     counts: dict[str, int]  # 按来源分的全部命中篇数
     available: int = 0  # 能翻到的篇数（全部命中排在前，部分命中在后）
+    ranking: dict | None = None
 
 
 _QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』')
@@ -516,6 +532,7 @@ def analyze(
     companies: list[dict] = []
     authors: list[str] = []
     pairs: list[tuple[str, str]] = []
+    topic_parts: list[str] = list(phrases)
     for index, phrase in enumerate(phrases):
         terms.append(Term(phrase, "phrase", index, forms=[phrase], weight=1.3))
     # 每个词自成一组（组与组之间是「且」）；用 or 连起来的片段并成一组（组内是「或」）。
@@ -541,6 +558,8 @@ def analyze(
                     authors.append(name)
                 masked = masked.replace(name, _SPLITTER)
         tokens = _content_tokens(conn, masked)
+        if tokens:
+            topic_parts.append(masked.strip())
         for token in tokens:
             if not any(t.text == token and t.kind == "word" for t in terms):
                 found.append((token, "word", [token], None))
@@ -594,6 +613,7 @@ def analyze(
         overview=not content,
         timeline=timeline,
         author_intent=author_intent,
+        topic_text=" ".join(topic_parts).strip(),
     )
 
 
@@ -609,7 +629,8 @@ def preset_query(query: Query) -> Query:
 _SELECT_COLUMNS = """
 c.article_id, c.ord, c.heading, c.body, c.lang, c.anchor,
 CASE WHEN c.lang = 'zh' THEN coalesce(
-  nullif((SELECT tr.title_zh FROM article_translations tr WHERE tr.article_id = c.article_id), ''), a.title
+  nullif((SELECT tr.title_zh FROM article_translations tr WHERE tr.article_id = c.article_id
+          AND tr.content_hash = a.content_hash), ''), a.title
 ) ELSE a.title END AS title,
 a.source_id, a.published_at
 """
@@ -621,17 +642,16 @@ def _article_match(tsq: str) -> str:
     写成两个子查询的并集，两边都能走各自的 GIN 索引；写成 OR EXISTS 会退化成逐行过滤，库大了很慢。
     """
     return (
-        f"a.id IN (SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}"
-        f" UNION ALL SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq})"
+        f"a.id IN (WITH article_word_hits AS MATERIALIZED ("
+        f"SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}"
+        f" UNION ALL SELECT tq.article_id FROM article_translations tq JOIN articles ta ON ta.id = tq.article_id"
+        f" WHERE tq.content_hash = ta.content_hash AND tq.search_tsv @@ {tsq}) SELECT id FROM article_word_hits)"
     )
 
 
 def _prefer_translation(rows: list[dict]) -> list[dict]:
-    """同一篇英文文章的原文块和中文译文块都召回时，只留译文块，免得同一段内容占两份名额。"""
-    translated = {row["article_id"] for row in rows if row.get("lang") == "zh"}
-    if not translated:
-        return rows
-    return [row for row in rows if row.get("lang") == "zh" or row["article_id"] not in translated]
+    """不按整篇丢弃原文或 OCR。翻译与原文块并不一一对应，去重在片段选择时完成。"""
+    return rows
 
 
 def _group_tsquery(query: Query, params: dict, *, only_selective: bool, operator: str, prefix: str) -> str:
@@ -677,7 +697,7 @@ def _fts_keys(conn, scope: Scope, tsq: str, params: dict, limit: int, *, company
           SELECT c.article_id, c.ord, c.search_tsv, a.published_at
           FROM article_chunks c
           JOIN articles a ON a.id = c.article_id
-          WHERE {where} AND c.search_tsv @@ {tsq}{extra}
+          WHERE {where} AND {current_chunk_sql()} AND c.search_tsv @@ {tsq}{extra}
           LIMIT %(fts_pool)s
         ) pool
         ORDER BY ts_rank_cd(pool.search_tsv, {tsq}) DESC, pool.published_at DESC NULLS LAST
@@ -713,7 +733,8 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
         conditions.append(_article_match(tsq))
         title_hit = (
             f"(a.title_tsv @@ {tsq} OR a.id IN"
-            f" (SELECT tt.article_id FROM article_translations tt WHERE tt.title_tsv @@ {tsq}))"
+            f" (SELECT tt.article_id FROM article_translations tt JOIN articles ta ON ta.id = tt.article_id"
+            f" WHERE tt.content_hash = ta.content_hash AND tt.title_tsv @@ {tsq}))"
         )
         order = f"{title_hit} DESC, a.published_at DESC NULLS LAST, a.id DESC"
     elif company_ids:
@@ -726,6 +747,7 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
         SELECT a.id,
                CASE WHEN EXISTS (
                  SELECT 1 FROM article_chunks zc WHERE zc.article_id = a.id AND zc.ord = %(zh_first)s
+                   AND {current_chunk_sql('zc')}
                ) THEN %(zh_first)s ELSE 0 END AS first_ord
         FROM articles a
         WHERE {' AND '.join(conditions)}
@@ -747,6 +769,7 @@ def _rows_for_keys(conn, keys: list[tuple[int, int]]) -> list[dict]:
         FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
         JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
         JOIN articles a ON a.id = c.article_id
+        WHERE {current_chunk_sql()}
         """,
         ([key[0] for key in keys], [key[1] for key in keys]),
     ).fetchall()
@@ -763,7 +786,7 @@ def _company_rows(conn, company: dict, scope: Scope, per_year: int):
     tsq = _form_tsquery_sql(_usable_forms(conn, forms), params, "co")
     if not tsq:
         return []
-    where, scope_params = scope_clause(replace(scope, company_id=None))
+    where, scope_params = scope_clause(scope)
     params.update(scope_params)
     params.update({"company": int(company["id"]), "per_year": per_year})
     found: list[dict] = []
@@ -779,7 +802,8 @@ def _company_rows(conn, company: dict, scope: Scope, per_year: int):
               FROM article_mentions m
               JOIN articles a ON a.id = m.article_id
               JOIN article_chunks c ON c.article_id = a.id
-              WHERE m.company_id = %(company)s {depth_filter} AND {where} AND c.search_tsv @@ {tsq}
+              WHERE m.company_id = %(company)s {depth_filter} AND {where}
+                AND {current_chunk_sql()} AND c.search_tsv @@ {tsq}
             ) ranked
             WHERE rn <= %(per_year)s
             """,
@@ -800,7 +824,8 @@ def _leading_rows(conn, scope: Scope, limit: int):
         SELECT {_SELECT_COLUMNS}
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
-        WHERE {where} AND (c.ord < 2 OR (c.ord >= %(zh_first)s AND c.ord < %(zh_first)s + 2))
+        WHERE {where} AND {current_chunk_sql()}
+          AND (c.ord < 2 OR (c.ord >= %(zh_first)s AND c.ord < %(zh_first)s + 2))
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC, c.ord
         LIMIT %(lead_limit)s
         """,
@@ -816,7 +841,7 @@ def _article_rows(conn, scope: Scope):
         SELECT {_SELECT_COLUMNS}
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
-        WHERE {where}
+        WHERE {where} AND {current_chunk_sql()}
         ORDER BY c.ord
         """,
         params,
@@ -824,21 +849,28 @@ def _article_rows(conn, scope: Scope):
     return _prefer_translation(list(rows))
 
 
-def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, enough: int | None = None) -> list[dict]:
+def _candidates(
+    conn, query: Query, scope: Scope, limit: int = CANDIDATES, *,
+    enough: int | None = None, entity_context: bool = False, recall_trace: dict | None = None,
+) -> list[dict]:
     """几路召回合并。enough：前两路已经召回这么多块时，不再用「任一少见词」撒网。"""
     found: dict[tuple[int, int], dict] = {}
     keys: list[tuple[int, int]] = []
     seen: set[tuple[int, int]] = set()
 
-    def add_keys(items):
+    def add_keys(items, channel="lexical"):
         for key in items:
+            if recall_trace is not None:
+                recall_trace.setdefault(key, set()).add(channel)
             if key not in seen:
                 seen.add(key)
                 keys.append(key)
 
-    def add_rows(rows):
+    def add_rows(rows, channel="lexical"):
         for row in rows:
             key = (row["article_id"], row["ord"])
+            if recall_trace is not None:
+                recall_trace.setdefault(key, set()).add(channel)
             if key not in found:
                 found[key] = dict(row)
                 seen.add(key)
@@ -879,10 +911,37 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
             if tsq:
                 add_keys(_fts_keys(conn, scope, tsq, params, limit))
         add_rows(_rows_for_keys(conn, keys))
+        if entity_context and company_ids and word_terms:
+            # 公司提及表不依赖中文别名在块内怎样分词。给无题面词、标题主语和跨块指代保留候选通道。
+            # 每篇、总文章数和总块数均封顶，不因一个公司有几万篇就读取全库。
+            where, params = scope_clause(scope)
+            params.update({"context_companies": company_ids, "context_articles": 120,
+                           "context_per_article": 24, "context_limit": limit})
+            add_rows(conn.execute(
+                f"""WITH entity_articles AS MATERIALIZED (
+                    SELECT a.id, a.published_at, bool_or(m.depth <> 'passing') AS deep
+                    FROM articles a JOIN article_mentions m ON m.article_id = a.id
+                    WHERE {where} AND m.company_id = ANY(%(context_companies)s)
+                    GROUP BY a.id
+                    ORDER BY deep DESC, a.published_at DESC NULLS LAST, a.id DESC
+                    LIMIT %(context_articles)s
+                ), context_keys AS (
+                    SELECT c.article_id, c.ord, e.deep, e.published_at,
+                           row_number() OVER (PARTITION BY c.article_id ORDER BY c.ord) AS rn
+                    FROM entity_articles e JOIN articles a ON a.id = e.id
+                    JOIN article_chunks c ON c.article_id = e.id WHERE {current_chunk_sql()}
+                )
+                SELECT {_SELECT_COLUMNS} FROM context_keys k
+                JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
+                JOIN articles a ON a.id = c.article_id
+                WHERE k.rn <= %(context_per_article)s
+                ORDER BY k.deep DESC, k.rn, k.published_at DESC NULLS LAST, c.article_id DESC
+                LIMIT %(context_limit)s""", params,
+            ).fetchall(), "entity_context")
     if not word_terms:
         companies = [t for t in query.terms if t.kind == "company"]
         targets = [{"id": t.company_id, **_company_lookup(query, t.company_id)} for t in companies]
-        if scope.company_id is not None and all(t["id"] != scope.company_id for t in targets):
+        if scope.company_id is not None and not targets:
             row = conn.execute(
                 "SELECT id, ticker, name_zh, name_en, market, aliases, alias_rules FROM companies WHERE id = %s",
                 (scope.company_id,),
@@ -941,30 +1000,45 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
         embeddings.tune_search(conn, pool)
         near = conn.execute(
             f"""
-            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
+            SELECT e.article_id, e.ord, e.text_hash, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
             FROM chunk_embeddings e
+            WHERE e.model = %(vec_model)s
             ORDER BY e.embedding <=> %(qv)s::{kind}
             LIMIT %(ann_pool)s
             """,
-            {"qv": vector, "ann_pool": pool},
+            {"qv": vector, "ann_pool": pool, "vec_model": embeddings.model_name()},
         ).fetchall()
         allowed = {
-            row["id"]
+            (row["article_id"], row["ord"])
             for row in conn.execute(
-                f"SELECT a.id FROM articles a WHERE a.id = ANY(%(ann_ids)s) AND {where}",
-                {**params, "ann_ids": sorted({row["article_id"] for row in near})},
+                f"""SELECT n.article_id, n.ord
+                FROM unnest(%(ann_ids)s::bigint[], %(ann_ords)s::int[], %(ann_hashes)s::text[])
+                  AS n(article_id, ord, text_hash)
+                JOIN articles a ON a.id = n.article_id
+                JOIN article_chunks c ON c.article_id = n.article_id AND c.ord = n.ord
+                WHERE {where} AND {current_chunk_sql()} AND n.text_hash = md5({embeddings._SOURCE_TEXT})""",
+                {
+                    **params,
+                    "ann_ids": [r["article_id"] for r in near],
+                    "ann_ords": [r["ord"] for r in near],
+                    "ann_hashes": [r["text_hash"] for r in near],
+                },
             ).fetchall()
         }
-        kept = sorted((row for row in near if row["article_id"] in allowed), key=lambda row: -float(row["sim"]))
+        kept = sorted(
+            (row for row in near if (row["article_id"], row["ord"]) in allowed), key=lambda row: -float(row["sim"])
+        )
         if len(kept) >= limit:
             return {(row["article_id"], row["ord"]): float(row["sim"]) for row in kept[:limit]}
-    params.update({"qv": vector, "vec_limit": limit})
+    params.update({"qv": vector, "vec_limit": limit, "vec_model": embeddings.model_name()})
     rows = conn.execute(
         f"""
         SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
         FROM chunk_embeddings e
         JOIN articles a ON a.id = e.article_id
-        WHERE {where}
+        JOIN article_chunks c ON c.article_id = e.article_id AND c.ord = e.ord
+        WHERE {where} AND {current_chunk_sql()}
+          AND e.model = %(vec_model)s AND e.text_hash = md5({embeddings._SOURCE_TEXT})
         ORDER BY e.embedding <=> %(qv)s::{kind}
         LIMIT %(vec_limit)s
         """,
@@ -983,7 +1057,7 @@ def semantic_candidates(
     kind = embeddings.ready(conn)
     if kind is None:
         return rows, {}
-    vector = embeddings.query_vector(query.raw)
+    vector = embeddings.query_vector(query.topic_text if query.companies and query.topic_text else query.raw)
     if vector is None:
         return rows, {}
     literal = embeddings.literal(vector)
@@ -1013,8 +1087,11 @@ def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict]
             SELECT e.article_id, e.ord, 1 - (e.embedding <=> %s::{kind}) AS sim
             FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
             JOIN chunk_embeddings e ON e.article_id = k.article_id AND e.ord = k.ord
+            JOIN articles a ON a.id = e.article_id
+            JOIN article_chunks c ON c.article_id = e.article_id AND c.ord = e.ord
+            WHERE {current_chunk_sql()} AND e.model = %s AND e.text_hash = md5({embeddings._SOURCE_TEXT})
             """,
-            (literal, [key[0] for key in missing], [key[1] for key in missing]),
+            (literal, [key[0] for key in missing], [key[1] for key in missing], embeddings.model_name()),
         ).fetchall():
             sims[(row["article_id"], row["ord"])] = float(row["sim"])
     return sims
@@ -1172,8 +1249,11 @@ def score_rows(
     scope: Scope,
     company_rows: list[dict] | None = None,
     semantic: dict[tuple[int, int], float] | None = None,
+    topical: bool = False,
 ):
     """semantic：{(文章, 块号): 语义分 0～1}。有它时关键词分和语义分按 LEXICAL_WEIGHT 融合，见 fuse_semantic。"""
+    if topical and query.content_terms and (query.companies or scope.company_id is not None):
+        return _topical_scores(conn, query, rows, scope, company_rows, semantic)
     _total, avgdl = _corpus_stats(conn)
     company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
     focus_ids = list(company_ids)
@@ -1345,9 +1425,113 @@ def score_rows(
                 lang=row.get("lang") or "",
                 anchor=row.get("anchor") or "",
                 semantic=sem,
+                entity_ids=tuple(str(cid) for cid in sorted(
+                    set(company_hits) | (set(title_companies) if row["ord"] == 0 else set())
+                )),
             )
         )
     return fuse_semantic(passages, multipliers)
+
+
+def _topical_scores(conn, query, rows, scope, company_rows, semantic):
+    """局部主体证据、主题词法/向量、公司上下文先验分别计算，不能由词全命中绕过主体检查。"""
+    companies = company_rows if company_rows is not None else load_company_rows(conn)
+    focus = {int(c["id"]) for c in query.companies}
+    if scope.company_id is not None:
+        focus.add(scope.company_id)
+    matcher = LocalMatcher(cached_matcher("aho", companies))
+    by_key = {(r["article_id"], r["ord"]): dict(r) for r in rows}
+    wanted = set()
+    for aid, ord_ in by_key:
+        low, high = _ord_range(ord_)
+        for neighbor in (ord_ - 1, ord_ + 1):
+            if low <= neighbor < high and (aid, neighbor) not in by_key:
+                wanted.add((aid, neighbor))
+    for row in _rows_for_keys(conn, sorted(wanted)):
+        by_key[(row["article_id"], row["ord"])] = dict(row)
+    guarded = {int(c["id"]) for c in companies if int(c["id"]) in focus and company_rules(c).get("needs")}
+    depths = {}
+    if by_key:
+        depths = {(r["article_id"], r["company_id"]): r["depth"] for r in conn.execute(
+            "SELECT article_id,company_id,depth FROM article_mentions"
+            " WHERE article_id=ANY(%s) AND company_id=ANY(%s)",
+            (sorted({key[0] for key in by_key}), sorted(focus)),
+        )}
+    forms = sorted({f for t in query.content_terms for f in t.forms if f}, key=len, reverse=True)
+    evidence = {}
+    for key, row in by_key.items():
+        allowed = {cid for cid in focus if cid not in guarded or (key[0], cid) in depths}
+        previous = by_key.get((key[0], key[1] - 1))
+        evidence[key] = evidence_windows(
+            row["body"], local_evidence(row, matcher, allowed, forms, previous=previous)
+        )
+    focus_matcher = LocalMatcher(cached_matcher("aho", [c for c in companies if int(c["id"]) in focus]))
+    corpus_prior(evidence, focus_matcher, forms)
+    safe_semantic = {key: (semantic or {}).get(key, 0.0)
+                     for key, row in by_key.items() if not set(matcher.count(row["body"])) - focus}
+    topic = replace(query, terms=[t for t in query.terms if t.kind != "company"], companies=[])
+    # 一条局部证据对应一个临时块号，复用词法计算；不把标题、别的主体的句子交给主题打分。
+    unit_rows, units = [], {}
+    for key, items in evidence.items():
+        for unit in items:
+            uid = len(units)
+            units[uid] = (key, unit)
+            unit_rows.append({**by_key[key], "ord": uid, "heading": "", "title": "", "body": unit.text})
+    lexical = score_rows(conn, topic, unit_rows, scope=replace(scope, company_id=None), company_rows=companies)
+    by_unit = {p.ord: p for p in lexical}
+    top = max((p.score for p in lexical), default=1.0) or 1.0
+    choices = defaultdict(list)
+    for uid, (key, unit) in units.items():
+        # 排除词和引号仍是硬条件，弱先验不能补回违反条件的候选。
+        if any(_count(unit.text, unit.text.lower(), word) for word in query.excludes):
+            continue
+        if any(t.kind == "phrase" and not any(_count(unit.text, unit.text.lower(), f) for f in t.forms)
+               for t in query.terms):
+            continue
+        lex = by_unit.get(uid) if unit.basis != "提及" else None
+        lex_score = lex.score / top if lex else 0.0
+        # 向量属于整块，不能转给从该块裁出的另一句话。没有局部重排模型时宁可保留为上下文候选。
+        sem = safe_semantic.get(key, 0.0) if (
+            unit.basis != "提及" and unit.start == 0 and unit.end == len(by_key[key]["body"])
+        ) else 0.0
+        depth = min((_DEPTH_RANK.get(depths.get((key[0], cid), "passing"), 3)
+                     for cid in unit.companies), default=3)
+        confidence = unit.confidence * (1.15, 1.1, 1.0, 0.7)[depth]
+        if unit.basis == "标题" and not lex and not sem:
+            confidence *= 0.3
+        # 词法/向量是主题证据；先验只作小额候选排序，coverage 和 semantic_hit 均不因此增加。
+        score = confidence * (0.65 * lex_score + 0.35 * sem + 0.18 * unit.prior)
+        if score > 0:
+            choices[key].append((score, uid, lex, sem))
+    passages = []
+    for key, options in choices.items():
+        score, uid, lex, sem = max(options, key=lambda item: item[0])
+        unit = units[uid][1]
+        row = by_key[key]
+        passage = _passage_from_row(row)
+        passage.score = score
+        passage.entity_basis = unit.basis
+        passage.entity_ids = tuple(str(cid) for cid in sorted(unit.companies))
+        passage.topic_lexical = lex.score / top if lex else 0.0
+        passage.matched = list(lex.matched) if lex else []
+        passage.matched.extend(t.text for t in query.terms if t.company_id in unit.companies)
+        passage.coverage = lex.coverage if lex else 0.0
+        passage.semantic = sem
+        passage.semantic_hit = passage.semantic >= SEMANTIC_STRONG and passage.coverage < 0.99
+        passage.before = unit.context
+        # 显示中心句及紧接的同主体证据。仅拼连续原文，绝不重写或拼接成新的断言。
+        selected = sorted((units[item[1]][1] for item in options), key=lambda item: item.start)
+        lo, hi = unit.start, unit.end
+        for other in selected:
+            if other.start >= hi and not row["body"][hi:other.start].strip() and (
+                other.confidence >= 0.4 and other.end - lo <= 500
+            ):
+                hi = other.end
+        passage.excerpt = row["body"][lo:hi]
+        if lo == 0 and hi == len(row["body"]):
+            passage.excerpt = ""
+        passages.append(passage)
+    return passages
 
 
 # 关键词分和语义分的融合权重。关键词仍是主干：搜的词原样出现的段落最可靠。
@@ -1502,15 +1686,14 @@ def retrieve(
         query = preset_query(query)
     else:
         # 问库是自然语言：库里一次都没出现过的词（「在聊」之类）对召回没用，还会让覆盖率永远凑不满。
-        kept = [t for t in query.terms if t.kind != "word" or t.df > 0]
+        kept = [t for t in query.terms if t.kind != "word" or t.df > 0 or embeddings.enabled()]
         if len(kept) != len(query.terms):
             content = [t for t in kept if t.kind in ("word", "phrase")]
             query = replace(query, terms=kept, overview=not content)
     effective = scope
     if query.authors and scope.source_ids:
         narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
-        if narrowed:
-            effective = replace(scope, source_ids=narrowed)
+        effective = replace(scope, source_ids=narrowed)
     sources_by_id = {source.id: source for source in sources}
     if scope.article_id is not None:
         return _retrieve_article(conn, query, effective, budget, purpose=purpose, semantic_ok=semantic_ok)
@@ -1522,7 +1705,9 @@ def retrieve(
     semantic: dict[tuple[int, int], float] = {}
     if semantic_ok and not query.overview:
         rows, semantic = semantic_candidates(conn, query, effective, rows)
-    scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
+    scored = score_rows(
+        conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic, topical=purpose == "api"
+    )
     picked = select(scored, query, budget, sources_by_id)
     narrowed = effective.date_from or effective.date_to or effective.company_id is not None or query.authors
     if not picked and narrowed and not query.overview:
@@ -1578,7 +1763,9 @@ def _retrieve_article(
         return picked
 
     def result(picked: list[Passage], whole: bool) -> Retrieval:
-        found = Retrieval(picked, query.companies, query.authors, scope, terms, query, len(rows), whole=whole)
+        found = Retrieval(
+            picked, query.companies, query.authors, scope, terms, query, len(rows), whole=whole, total_chars=total
+        )
         if not whole:
             found.outline = outline
             found.outline_label = "这篇的章节"
@@ -1637,7 +1824,8 @@ def attach_context(conn, picked: list[Passage], extra_chars: int, *, span: int =
             SELECT c.article_id, c.ord, c.body
             FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
             JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
-            """,
+            JOIN articles a ON a.id = c.article_id
+            WHERE """ + current_chunk_sql(),
             ([key[0] for key in wanted], [key[1] for key in wanted]),
         ).fetchall()
     }
@@ -1699,27 +1887,54 @@ def _full_match_tsquery(query: Query, params: dict) -> str:
     return _group_tsquery(query, params, only_selective=False, operator="&&", prefix="full")
 
 
-def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0) -> SearchResult:
-    """关键词检索：全部词都命中的文章排前面，其后是只命中一部分的。每篇带最相关的两段原文。"""
+def search_articles(
+    conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0,
+    reranker=None, ranking_observer=None, rerank_limit: int = 80, rerank_budget_ms: float = 250,
+    use_semantic: bool = True,
+) -> SearchResult:
+    """先排局部证据，再按文章带出原文窗口。词全命中是说明，不是绕过相关性排序的优先档。"""
     company_rows = load_company_rows(conn)
     query = analyze(conn, text, sources, company_rows=company_rows)
     effective = scope
     if query.authors and scope.source_ids:
         narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
-        if narrowed:
-            effective = replace(scope, source_ids=narrowed)
+        effective = replace(scope, source_ids=narrowed)
     if not query.terms:
         if query.authors:
             return _author_listing(conn, query, effective, limit, offset)
         return SearchResult(0, 0, [], [], query, {})
-    rows = _candidates(conn, query, effective, limit=2000, enough=2000)
+    learning = reranker is not None or ranking_observer is not None
+    recall_trace = {} if learning else None
+    rows = _candidates(
+        conn, query, effective, limit=2000, enough=2000, entity_context=True, recall_trace=recall_trace,
+    )
     semantic: dict[tuple[int, int], float] = {}
-    if query.content_terms:
+    if query.content_terms and use_semantic:
+        lexical_keys = set(recall_trace or {})
         rows, semantic = semantic_candidates(conn, query, effective, rows)
-    scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
+        if recall_trace is not None:
+            for row in rows:
+                key = (row["article_id"], row["ord"])
+                if key not in lexical_keys or semantic.get(key, 0) > 0:
+                    recall_trace.setdefault(key, set()).add("semantic")
+    scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic, topical=True)
     by_article: dict[int, list[Passage]] = defaultdict(list)
     for passage in scored:
         by_article[passage.article_id].append(passage)
+    article_windows = {}
+    for aid, items in by_article.items():
+        items.sort(key=lambda p: p.score, reverse=True)
+        article_windows[aid] = search_windows(items, preserve_originals=learning)
+    ranking_trace = None
+    if learning:
+        from researchlib.ranking.runtime import rerank_windows
+        windows, ranking_trace = rerank_windows(
+            conn, query, effective, [p for group in article_windows.values() for p in group], recall_trace,
+            reranker=reranker, observer=ranking_observer, limit=rerank_limit, budget_ms=rerank_budget_ms,
+        )
+        article_windows = defaultdict(list)
+        for passage in windows:
+            article_windows[passage.article_id].append(passage)
     groups = {t.group for t in query.terms if t.group >= 0}
     company_groups = {t.group for t in query.terms if t.group >= 0 and t.kind == "company"}
     titles = {p.article_id: p.title for p in scored}
@@ -1727,7 +1942,11 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     title_matcher = cached_matcher("focus", [row for row in company_rows if int(row["id"]) in asked]) if asked else None
     hits: list[ArticleHit] = []
     for article_id, items in by_article.items():
-        items.sort(key=lambda p: p.score, reverse=True)
+        windows = article_windows.get(article_id, [])
+        if not windows:
+            continue
+        if learning:
+            items = windows  # 失效窗口的旧词命中不能用于文章full标志。
         title = titles.get(article_id, "")
         matched_groups = set()
         for term in query.terms:
@@ -1735,7 +1954,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
                 continue
             if any(form in p.matched for p in items for form in term.forms):
                 matched_groups.add(term.group)
-            elif _title_mentions(term, title, title_matcher):
+            elif (not query.companies or term.kind == "company") and _title_mentions(term, title, title_matcher):
                 matched_groups.add(term.group)
         full = groups <= matched_groups
         # 词没写全、但语义上就是在谈这件事的（「costco 商业模式」→ 讲会员费和低毛利的段落），
@@ -1745,11 +1964,11 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
             and company_groups <= matched_groups
             and max(p.semantic for p in items) >= SEMANTIC_STRONG
         )
-        score = items[0].score + 0.3 * sum(p.score for p in items[1:3])
-        first = items[0]
+        score = windows[0].score
+        first = windows[0]
         hits.append(
             ArticleHit(
-                article_id, title, first.source_id, first.published_at, score, full or by_meaning, items[:2],
+                article_id, title, first.source_id, first.published_at, score, full or by_meaning, windows[:2],
                 semantic=by_meaning,
             )
         )
@@ -1757,19 +1976,68 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     partial_hits = sorted((h for h in hits if not h.full), key=lambda h: h.score, reverse=True)
     if partial_hits:
         best = partial_hits[0].score
-        partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
+        partial_hits = [h for h in partial_hits if h.score >= best * 0.2 or any(p.entity_basis for p in h.passages)]
     counts = full_match_counts(conn, query, effective)
     total = max(sum(counts.values()), len(full_hits))
-    ordered = full_hits + partial_hits
+    # 全词共现不能把没有论述的材料硬排在前面。跨文复制的片段在分页前去重，避免占满前 k。
+    ordered = sorted(full_hits + partial_hits, key=lambda hit: hit.score, reverse=True)
+    seen: set[str] = set()
+    unique = []
+    for hit in ordered:
+        passages = []
+        for passage in hit.passages:
+            context = [passage.before, passage.excerpt or passage.body, passage.after]
+            if passage.entity_basis == "标题":
+                context.insert(0, passage.title)
+            elif passage.entity_basis == "章节":
+                context.insert(0, passage.heading)
+            fingerprint = evidence_fingerprint("\n".join(context))
+            if fingerprint in seen:
+                continue
+            passages.append(passage)
+            seen.add(fingerprint)
+        if passages:
+            unique.append(replace(hit, passages=passages))
+    ordered = unique
     return SearchResult(
         total=total,
-        partial=len(partial_hits),
+        partial=sum(not hit.full for hit in ordered),
         hits=ordered[offset : offset + limit],
         terms=query.highlight_terms(),
         query=query,
         counts=counts,
         available=len(ordered),
+        ranking=ranking_trace,
     )
+
+
+def search_windows(ranked: list[Passage], *, preserve_originals: bool = False) -> list[Passage]:
+    """连续同节命中只占一个摘录；中心块的编号、语言和锚点保持原样。"""
+    # 有主题证据的译文可替代同篇只有公司名命中的原文；有独立主题证据的英文和 OCR 始终保留。
+    translated = any(p.lang == "zh" and (p.coverage > 0 or p.semantic > 0) for p in ranked)
+    if translated and not preserve_originals:
+        ranked = [p for p in ranked if p.lang or p.coverage > 0 or p.semantic > 0]
+    groups: list[list[Passage]] = []
+    for passage in sorted(ranked, key=lambda p: p.ord):
+        if groups and (
+            passage.ord == groups[-1][-1].ord + 1
+            and (passage.heading == groups[-1][-1].heading or passage.entity_basis == "上文")
+            and passage.lang == groups[-1][-1].lang
+        ):
+            groups[-1].append(passage)
+        else:
+            groups.append([passage])
+    windows = []
+    for group in groups:
+        best = max(group, key=lambda p: p.score)
+        by_ord = {p.ord: p for p in group}
+        before = by_ord.get(best.ord - 1)
+        after = by_ord.get(best.ord + 1)
+        windows.append(replace(
+            best, before=(before.excerpt or before.body) if before else best.before,
+            after=(after.excerpt or after.body) if after else best.after
+        ))
+    return sorted(windows, key=lambda p: p.score, reverse=True)
 
 
 def _title_mentions(term: Term, title: str, matcher: FocusMatcher | None) -> bool:

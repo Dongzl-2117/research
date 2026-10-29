@@ -60,6 +60,10 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 
 ## 挂着的事（2026-10-27）
 
+- 通用学习排序交接见 [docs/general-ranking-loop.md](docs/general-ranking-loop.md)：#99默认关闭的重排接口、CPU偏好baseline及#115真实导出adapter已做隔离闭环；当前只有程序化模拟弱标，没有人工金标或真实语义模型效果。不要把合成方向胜率当线上P@5，不自动启用权重。实际库标注provider要显式配置只读连接和主题族，真实导出不得提交公开仓库。
+
+- 搜索片段专题见 [docs/search-passages.md](docs/search-passages.md)：局部主体与主题分开排序、旧译文/向量版本过滤、独立片段回链。冻结五题在 f53237d 已独立复验通过；真实双语模型效果尚未验收。最后补丁只调整逐片段标识：“字面匹配”不代表答案，部分词标“主题未核实”，零主题词为“同公司参考”，不能把词法先验/固定向量契约当作语义理解。原检索基线不得降低。
+
 - **#56 合进 main 后撤回了**（撤回提交 58483db）。它是 Codex 做的星球账户资格和引用边界，分支 `codex/wechat-color-ci-savings-20261022`。重新合之前：按它分支上 `docs/availability-gate-2026-10-23.md` 的计划定向回填账户 ID、评论和图片文字；`TRUSTED_OWNERS` 里加上乘风破浪的星主账户，否则这个来源整个不显示；它把迁移从网页启动挪到了 `research-maintain`，`scripts/deploy.sh` 要先跑这一步再重启；和启动时按 `poster_names` 重算星主标记（`posters.refresh_poster_roles`）的做法冲突，要选一种。
 - **自动上线卡在 Mac mini 的本机改动上**：10-27 已经装好并上线过（线上的 demo 文章 8879 已删，#74 的 `/api/v1/digest` 能打开），10-27 22:00（北京时间）首页提示 `~/research` 的 `.gitignore` 有本机改动，之后合并的 #80 没上线。处理命令已经交给 Zhilin（docs/deploy.md「更新」）。首页的「自动上线失败」提示消失就是好了，这条随后删掉。
 - **#73（Codex 的草稿）重写了自动上线和启动**：从提交快照构建、Web 启动不跑迁移、健康检查失败退回旧镜像。它写明第一次上线要人工交接，不能让现在的 `scripts/deploy.sh` 直接把它拉上线；合它之前先读它的 PR 描述和 `docs/deploy-safety.md`。

@@ -1,0 +1,1076 @@
+{
+  "label": "working-r2-not-committed",
+  "corpus": "original",
+  "corpus_sha256": "e230d58faa4c8282965f6054b39a5ff73bbbc0f8b8aca3fd0efd5498e1c2cc9b",
+  "implementation_file": "/tmp/research-retrieval-audit/src/researchlib/retrieval.py",
+  "mode": "lexical_only",
+  "real_embedding_model_tested": false,
+  "database": "research_eval_acceptance_original",
+  "notice": "全部是原创合成测试文本；不是用户真实库，也不作为这些公司的事实资料。",
+  "scoring": "真实 DOM；P 分母固定 k；机制和必要同卡上下文须实际可见；标签仅用于计分；热路由20次。",
+  "article_id_mapping": {
+    "1": "C01",
+    "2": "C02",
+    "3": "C03",
+    "4": "C04",
+    "5": "C05",
+    "6": "C06",
+    "7": "C07",
+    "8": "C08",
+    "9": "C09",
+    "10": "C10",
+    "11": "C11",
+    "12": "C12",
+    "13": "C13",
+    "14": "C14",
+    "15": "C15",
+    "16": "A01",
+    "17": "A02",
+    "18": "A03",
+    "19": "A04",
+    "20": "A05",
+    "21": "A06",
+    "22": "A07",
+    "23": "A08",
+    "24": "A09",
+    "25": "N01",
+    "26": "N02",
+    "27": "N03",
+    "28": "N04",
+    "29": "N05",
+    "30": "N06",
+    "31": "N07",
+    "32": "N08",
+    "33": "N09",
+    "34": "N10"
+  },
+  "cases": [
+    {
+      "id": "costco",
+      "query": "Costco 商业模式",
+      "split": "development",
+      "currently_blind": false,
+      "visible_total": 13,
+      "at_5": {
+        "returned": 5,
+        "visible_relevant": 1,
+        "visible_p": 0.2,
+        "deduplicated_relevant": 1,
+        "visible_deduplicated_p": 0.2,
+        "topic_count": 3,
+        "topic_coverage": 0.75,
+        "topics": [
+          "会员收入",
+          "低加价",
+          "周转采购"
+        ],
+        "wrong_entity_count": 1,
+        "wrong_entity_rate": 0.2,
+        "duplicate_count": 0,
+        "duplicate_rate": 0.0,
+        "windows": [
+          {
+            "card": 0,
+            "article": "C06",
+            "center": "C06:0",
+            "title": "[合成] Costco 的货架",
+            "url": "/articles/6?chunk=0",
+            "visible_text": "Costco 对商品仅保留很低的加价，大批量销售让货物迅速离开货架，周转规模摊薄门店开支。 下文：这部分价差并不承担全部利润要求，因为顾客另缴的年度会费提供持续收入；省钱体验反过来鼓励顾客续卡。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "C06:0",
+              "C06:1"
+            ],
+            "visible_blocks": [
+              "C06:0",
+              "C06:1"
+            ],
+            "topics": [
+              "会员收入",
+              "低加价",
+              "周转采购"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 1,
+            "article": "C08",
+            "center": "C08:0",
+            "title": "[合成] 排队记录甲",
+            "url": "/articles/8?chunk=0",
+            "visible_text": "上文：今天经过 Costco，雨很大。 商业模式课程老师也在门口等车。我们只聊了天气和公交到站时间。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "C08:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 2,
+            "article": "C13",
+            "center": "C13:0",
+            "title": "[合成] 文字排版甲",
+            "url": "/articles/13?chunk=0",
+            "visible_text": "Costco 商业模式。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "C13:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 3,
+            "article": "C09",
+            "center": "C09:0",
+            "title": "[合成] 零售比较乙",
+            "url": "/articles/9?chunk=0",
+            "visible_text": "有人在开场提到了 Costco 商业模式，",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "C09:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": true
+          },
+          {
+            "card": 4,
+            "article": "C15",
+            "center": "C15:0",
+            "title": "[合成] Costco 商业模式",
+            "url": "/articles/15?chunk=0",
+            "visible_text": "这页的标题用错了，正文仅说明如何修剪阳台植物，以及盆栽在不同季节需要的浇水次数。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "C15:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          }
+        ]
+      },
+      "at_10": {
+        "returned": 10,
+        "visible_relevant": 6,
+        "visible_p": 0.6,
+        "deduplicated_relevant": 6,
+        "visible_deduplicated_p": 0.6,
+        "topic_count": 4,
+        "topic_coverage": 1.0,
+        "topics": [
+          "会员收入",
+          "低加价",
+          "周转采购",
+          "自有品牌"
+        ],
+        "wrong_entity_count": 1,
+        "wrong_entity_rate": 0.1,
+        "duplicate_count": 0,
+        "duplicate_rate": 0.0,
+        "windows": [
+          {
+            "card": 0,
+            "article": "C06",
+            "center": "C06:0",
+            "title": "[合成] Costco 的货架",
+            "url": "/articles/6?chunk=0",
+            "visible_text": "Costco 对商品仅保留很低的加价，大批量销售让货物迅速离开货架，周转规模摊薄门店开支。 下文：这部分价差并不承担全部利润要求，因为顾客另缴的年度会费提供持续收入；省钱体验反过来鼓励顾客续卡。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "C06:0",
+              "C06:1"
+            ],
+            "visible_blocks": [
+              "C06:0",
+              "C06:1"
+            ],
+            "topics": [
+              "会员收入",
+              "低加价",
+              "周转采购"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 1,
+            "article": "C08",
+            "center": "C08:0",
+            "title": "[合成] 排队记录甲",
+            "url": "/articles/8?chunk=0",
+            "visible_text": "上文：今天经过 Costco，雨很大。 商业模式课程老师也在门口等车。我们只聊了天气和公交到站时间。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "C08:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 2,
+            "article": "C13",
+            "center": "C13:0",
+            "title": "[合成] 文字排版甲",
+            "url": "/articles/13?chunk=0",
+            "visible_text": "Costco 商业模式。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "C13:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 3,
+            "article": "C09",
+            "center": "C09:0",
+            "title": "[合成] 零售比较乙",
+            "url": "/articles/9?chunk=0",
+            "visible_text": "有人在开场提到了 Costco 商业模式，",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "C09:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": true
+          },
+          {
+            "card": 4,
+            "article": "C15",
+            "center": "C15:0",
+            "title": "[合成] Costco 商业模式",
+            "url": "/articles/15?chunk=0",
+            "visible_text": "这页的标题用错了，正文仅说明如何修剪阳台植物，以及盆栽在不同季节需要的浇水次数。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "C15:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 5,
+            "article": "C05",
+            "center": "C05:1",
+            "title": "[合成] 零售调研甲",
+            "url": "/articles/5?chunk=1",
+            "visible_text": "上文：这一节的主角是 Costco，下面的它均指这家仓储卖场。 它先向顾客收年度会费，让卖货环节只保留很薄的价差。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "C05:1"
+            ],
+            "visible_blocks": [
+              "C05:0",
+              "C05:1"
+            ],
+            "topics": [
+              "会员收入",
+              "低加价"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 6,
+            "article": "C02",
+            "center": "C02:0",
+            "title": "[合成] 仓储零售札记",
+            "url": "/articles/2?chunk=0",
+            "visible_text": "开市客把单品数量压低，将采购量集中到少数货品；大批量议价降低进货成本，低加价推动销量，货架快速周转又摊薄仓储开支。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "C02:0"
+            ],
+            "visible_blocks": [
+              "C02:0"
+            ],
+            "topics": [
+              "低加价",
+              "周转采购"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 7,
+            "article": "C01",
+            "center": "C01:0",
+            "title": "[合成] 收费与购物的循环",
+            "url": "/articles/1?chunk=0",
+            "visible_text": "Costco 的顾客先缴年度会费再进场购物。持续续卡带来一笔稳定收入，使零售环节可以少赚商品差价，顾客省下的钱又促成下一次续卡。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "C01:0"
+            ],
+            "visible_blocks": [
+              "C01:0"
+            ],
+            "topics": [
+              "会员收入",
+              "低加价"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 8,
+            "article": "C03",
+            "center": "C03:0",
+            "title": "[合成] 自有商品札记",
+            "url": "/articles/3?chunk=0",
+            "visible_text": "好市多用自有品牌把可比商品的售价压下来，省去部分品牌营销费用，同时让顾客更愿意持续续卡；商品价差与会员关系因此相互加强。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "C03:0"
+            ],
+            "visible_blocks": [
+              "C03:0"
+            ],
+            "topics": [
+              "会员收入",
+              "自有品牌"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 9,
+            "article": "C14",
+            "center": "C14:0",
+            "title": "[合成] 走访长札记",
+            "url": "/articles/14?chunk=0",
+            "visible_text": "上文：Costco 是这次走访的地点。 经营方面，年度会费形成持续收入，商品保持低加价以提升销量，集中采购和快速周转把单位成本压低。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "C14:0"
+            ],
+            "visible_blocks": [
+              "C14:0"
+            ],
+            "topics": [
+              "会员收入",
+              "低加价",
+              "周转采购"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          }
+        ]
+      },
+      "warm_route_latency_ms": {
+        "samples": 20,
+        "p50": 29.596,
+        "p95": 37.101,
+        "values": [
+          34.893,
+          37.101,
+          30.538,
+          30.223,
+          34.395,
+          32.681,
+          41.197,
+          32.088,
+          24.493,
+          27.499,
+          25.418,
+          24.122,
+          27.792,
+          25.011,
+          29.034,
+          26.827,
+          30.159,
+          27.617,
+          33.658,
+          24.823
+        ]
+      }
+    },
+    {
+      "id": "asml",
+      "query": "ASML 售后收入",
+      "split": "holdout",
+      "currently_blind": false,
+      "visible_total": 8,
+      "at_5": {
+        "returned": 5,
+        "visible_relevant": 3,
+        "visible_p": 0.6,
+        "deduplicated_relevant": 3,
+        "visible_deduplicated_p": 0.6,
+        "topic_count": 3,
+        "topic_coverage": 1.0,
+        "topics": [
+          "升级配件",
+          "维护合同",
+          "装机续收"
+        ],
+        "wrong_entity_count": 1,
+        "wrong_entity_rate": 0.2,
+        "duplicate_count": 0,
+        "duplicate_rate": 0.0,
+        "windows": [
+          {
+            "card": 0,
+            "article": "A08",
+            "center": "A08:0",
+            "title": "[合成] ASML 售后收入",
+            "url": "/articles/23?chunk=0",
+            "visible_text": "正文记录午餐的菜单、杯子的数量和桌布颜色，既没有客户合同，也没有设备服务机制。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "A08:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 1,
+            "article": "A06",
+            "center": "A06:0",
+            "title": "[合成] 同行比较甲",
+            "url": "/articles/21?chunk=0",
+            "visible_text": "上文：ASML 售后收入只是文档索引。 正文真正分析的是应用材料：其保养团队按合同向客户收取服务费，已安装设备越多，合同续签机会越多。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "A06:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": true
+          },
+          {
+            "card": 2,
+            "article": "A02",
+            "center": "A02:0",
+            "title": "[合成] 设备升级札记",
+            "url": "/articles/17?chunk=0",
+            "visible_text": "ASML 向已交付设备提供性能升级和替换配件，客户无需整机重买就能提高产出，这些升级与配件订单在新机交付之外形成收入。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "A02:0"
+            ],
+            "visible_blocks": [
+              "A02:0"
+            ],
+            "topics": [
+              "升级配件"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 3,
+            "article": "A01",
+            "center": "A01:0",
+            "title": "[合成] 光刻机交付之后",
+            "url": "/articles/16?chunk=0",
+            "visible_text": "阿斯麦把维护合同与已安装的机器绑定，客户为定期保养和停机响应持续付费。机器在工厂中服役越久，合同续签带来的现金流越长。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "A01:0"
+            ],
+            "visible_blocks": [
+              "A01:0"
+            ],
+            "topics": [
+              "维护合同",
+              "装机续收"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 4,
+            "article": "A04",
+            "center": "A04:1",
+            "title": "[合成] 设备调研乙",
+            "url": "/articles/19?chunk=1",
+            "visible_text": "上文：本节的制造商是 ASML，下面的这家公司均指阿斯麦。 这家公司在设备交付后按年提供保养，客户为快速修复故障付费；装机台数越多，未来可续签的合同就越多。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "A04:1"
+            ],
+            "visible_blocks": [
+              "A04:0",
+              "A04:1"
+            ],
+            "topics": [
+              "维护合同",
+              "装机续收"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          }
+        ]
+      },
+      "at_10": {
+        "returned": 8,
+        "visible_relevant": 4,
+        "visible_p": 0.4,
+        "deduplicated_relevant": 4,
+        "visible_deduplicated_p": 0.4,
+        "topic_count": 3,
+        "topic_coverage": 1.0,
+        "topics": [
+          "升级配件",
+          "维护合同",
+          "装机续收"
+        ],
+        "wrong_entity_count": 1,
+        "wrong_entity_rate": 0.125,
+        "duplicate_count": 0,
+        "duplicate_rate": 0.0,
+        "windows": [
+          {
+            "card": 0,
+            "article": "A08",
+            "center": "A08:0",
+            "title": "[合成] ASML 售后收入",
+            "url": "/articles/23?chunk=0",
+            "visible_text": "正文记录午餐的菜单、杯子的数量和桌布颜色，既没有客户合同，也没有设备服务机制。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "A08:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 1,
+            "article": "A06",
+            "center": "A06:0",
+            "title": "[合成] 同行比较甲",
+            "url": "/articles/21?chunk=0",
+            "visible_text": "上文：ASML 售后收入只是文档索引。 正文真正分析的是应用材料：其保养团队按合同向客户收取服务费，已安装设备越多，合同续签机会越多。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "A06:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": true
+          },
+          {
+            "card": 2,
+            "article": "A02",
+            "center": "A02:0",
+            "title": "[合成] 设备升级札记",
+            "url": "/articles/17?chunk=0",
+            "visible_text": "ASML 向已交付设备提供性能升级和替换配件，客户无需整机重买就能提高产出，这些升级与配件订单在新机交付之外形成收入。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "A02:0"
+            ],
+            "visible_blocks": [
+              "A02:0"
+            ],
+            "topics": [
+              "升级配件"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 3,
+            "article": "A01",
+            "center": "A01:0",
+            "title": "[合成] 光刻机交付之后",
+            "url": "/articles/16?chunk=0",
+            "visible_text": "阿斯麦把维护合同与已安装的机器绑定，客户为定期保养和停机响应持续付费。机器在工厂中服役越久，合同续签带来的现金流越长。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "A01:0"
+            ],
+            "visible_blocks": [
+              "A01:0"
+            ],
+            "topics": [
+              "维护合同",
+              "装机续收"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 4,
+            "article": "A04",
+            "center": "A04:1",
+            "title": "[合成] 设备调研乙",
+            "url": "/articles/19?chunk=1",
+            "visible_text": "上文：本节的制造商是 ASML，下面的这家公司均指阿斯麦。 这家公司在设备交付后按年提供保养，客户为快速修复故障付费；装机台数越多，未来可续签的合同就越多。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "A04:1"
+            ],
+            "visible_blocks": [
+              "A04:0",
+              "A04:1"
+            ],
+            "topics": [
+              "维护合同",
+              "装机续收"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 5,
+            "article": "A05",
+            "center": "A05:0",
+            "title": "[合成] 会议安排乙",
+            "url": "/articles/20?chunk=0",
+            "visible_text": "上文：ASML 售后收入是培训文件的文件名。 请把这几个字设成蓝色，再把页码放到右下角；本页没有讨论收入形成过程。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "A05:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 6,
+            "article": "A07",
+            "center": "A07:0",
+            "title": "[合成] 活动随记乙",
+            "url": "/articles/22?chunk=0",
+            "visible_text": "ASML 展台送了一个手提袋，颜色是白色。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "A07:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 7,
+            "article": "A03",
+            "center": "A03:0",
+            "title": "[合成] Installed systems",
+            "url": "/articles/18?chunk=0",
+            "visible_text": "ASML earns recurring payments by maintaining systems already running in customer fabs.",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "A03:0"
+            ],
+            "visible_blocks": [
+              "A03:0"
+            ],
+            "topics": [
+              "维护合同"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          }
+        ]
+      },
+      "warm_route_latency_ms": {
+        "samples": 20,
+        "p50": 26.666,
+        "p95": 32.469,
+        "values": [
+          32.469,
+          26.155,
+          26.04,
+          26.129,
+          29.409,
+          30.42,
+          27.69,
+          29.172,
+          27.975,
+          25.48,
+          27.177,
+          38.092,
+          30.911,
+          24.592,
+          24.662,
+          28.359,
+          23.212,
+          24.331,
+          21.685,
+          20.728
+        ]
+      }
+    },
+    {
+      "id": "netflix",
+      "query": "Netflix 订阅留存",
+      "split": "holdout",
+      "currently_blind": false,
+      "visible_total": 8,
+      "at_5": {
+        "returned": 5,
+        "visible_relevant": 3,
+        "visible_p": 0.6,
+        "deduplicated_relevant": 3,
+        "visible_deduplicated_p": 0.6,
+        "topic_count": 3,
+        "topic_coverage": 1.0,
+        "topics": [
+          "个性推荐",
+          "内容续费",
+          "取消摩擦"
+        ],
+        "wrong_entity_count": 1,
+        "wrong_entity_rate": 0.2,
+        "duplicate_count": 0,
+        "duplicate_rate": 0.0,
+        "windows": [
+          {
+            "card": 0,
+            "article": "N04",
+            "center": "N04:0",
+            "title": "[合成] Netflix 取消流程札记",
+            "url": "/articles/28?chunk=0",
+            "visible_text": "这个合成方案让用户在取消前选择暂停一个月，并在回归时保留片单与观看进度，减少重新付费时的操作成本，让暂时离开的观众更容易回来。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "N04:0"
+            ],
+            "visible_blocks": [
+              "N04:0"
+            ],
+            "topics": [
+              "取消摩擦"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 1,
+            "article": "N08",
+            "center": "N08:0",
+            "title": "[合成] Netflix 订阅留存",
+            "url": "/articles/32?chunk=0",
+            "visible_text": "正文只有机房参观路线、停车楼层和接待时间，不讨论节目、用户或月费。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "N08:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 2,
+            "article": "N02",
+            "center": "N02:0",
+            "title": "[合成] 观看选择札记",
+            "url": "/articles/26?chunk=0",
+            "visible_text": "奈飞按观看记录推荐下一部片子，减少寻找内容的时间；观众更容易找到想看的节目，就更愿意在下个月继续付费。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "N02:0"
+            ],
+            "visible_blocks": [
+              "N02:0"
+            ],
+            "topics": [
+              "个性推荐"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 3,
+            "article": "N01",
+            "center": "N01:0",
+            "title": "[合成] 剧集与月费",
+            "url": "/articles/25?chunk=0",
+            "visible_text": "Netflix 每月持续上新连续剧，让观众总有下一部想看的内容，减少看完一部就停缴月费的情况。固定月费与持续内容供给形成反复续费的循环。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "N01:0"
+            ],
+            "visible_blocks": [
+              "N01:0"
+            ],
+            "topics": [
+              "内容续费"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 4,
+            "article": "N07",
+            "center": "N07:0",
+            "title": "[合成] 同行比较乙",
+            "url": "/articles/31?chunk=0",
+            "visible_text": "Netflix 订阅留存只在开场被念了一遍。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "N07:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": true
+          }
+        ]
+      },
+      "at_10": {
+        "returned": 8,
+        "visible_relevant": 4,
+        "visible_p": 0.4,
+        "deduplicated_relevant": 4,
+        "visible_deduplicated_p": 0.4,
+        "topic_count": 3,
+        "topic_coverage": 1.0,
+        "topics": [
+          "个性推荐",
+          "内容续费",
+          "取消摩擦"
+        ],
+        "wrong_entity_count": 1,
+        "wrong_entity_rate": 0.125,
+        "duplicate_count": 0,
+        "duplicate_rate": 0.0,
+        "windows": [
+          {
+            "card": 0,
+            "article": "N04",
+            "center": "N04:0",
+            "title": "[合成] Netflix 取消流程札记",
+            "url": "/articles/28?chunk=0",
+            "visible_text": "这个合成方案让用户在取消前选择暂停一个月，并在回归时保留片单与观看进度，减少重新付费时的操作成本，让暂时离开的观众更容易回来。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "N04:0"
+            ],
+            "visible_blocks": [
+              "N04:0"
+            ],
+            "topics": [
+              "取消摩擦"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 1,
+            "article": "N08",
+            "center": "N08:0",
+            "title": "[合成] Netflix 订阅留存",
+            "url": "/articles/32?chunk=0",
+            "visible_text": "正文只有机房参观路线、停车楼层和接待时间，不讨论节目、用户或月费。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "N08:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 2,
+            "article": "N02",
+            "center": "N02:0",
+            "title": "[合成] 观看选择札记",
+            "url": "/articles/26?chunk=0",
+            "visible_text": "奈飞按观看记录推荐下一部片子，减少寻找内容的时间；观众更容易找到想看的节目，就更愿意在下个月继续付费。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "N02:0"
+            ],
+            "visible_blocks": [
+              "N02:0"
+            ],
+            "topics": [
+              "个性推荐"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 3,
+            "article": "N01",
+            "center": "N01:0",
+            "title": "[合成] 剧集与月费",
+            "url": "/articles/25?chunk=0",
+            "visible_text": "Netflix 每月持续上新连续剧，让观众总有下一部想看的内容，减少看完一部就停缴月费的情况。固定月费与持续内容供给形成反复续费的循环。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "N01:0"
+            ],
+            "visible_blocks": [
+              "N01:0"
+            ],
+            "topics": [
+              "内容续费"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 4,
+            "article": "N07",
+            "center": "N07:0",
+            "title": "[合成] 同行比较乙",
+            "url": "/articles/31?chunk=0",
+            "visible_text": "Netflix 订阅留存只在开场被念了一遍。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "N07:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": true
+          },
+          {
+            "card": 5,
+            "article": "N05",
+            "center": "N05:1",
+            "title": "[合成] 流媒体调研丙",
+            "url": "/articles/29?chunk=1",
+            "visible_text": "上文：本节讲 Netflix，后文的它都指这家流媒体平台。 它按观看记录排列片单，缩短观众选片的时间；每周接着上线新内容，让观众在本月看完以后仍有理由继续交下月费用。",
+            "relevant": true,
+            "deduplicated_relevant": true,
+            "eligible_blocks": [
+              "N05:1"
+            ],
+            "visible_blocks": [
+              "N05:0",
+              "N05:1"
+            ],
+            "topics": [
+              "个性推荐",
+              "内容续费"
+            ],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 6,
+            "article": "N06",
+            "center": "N06:0",
+            "title": "[合成] 会议安排丙",
+            "url": "/articles/30?chunk=0",
+            "visible_text": "Netflix 订阅留存是今天海报上的六个字。请把英文名放大，把中文标签居中；会议只讨论字号，没有讨论观众续费。",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "N06:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          },
+          {
+            "card": 7,
+            "article": "N03",
+            "center": "N03:0",
+            "title": "[合成] Subscriber habits",
+            "url": "/articles/27?chunk=0",
+            "visible_text": "Netflix releases a steady sequence of shows so viewers have something new to watch after finishing a series.",
+            "relevant": false,
+            "deduplicated_relevant": false,
+            "eligible_blocks": [],
+            "visible_blocks": [
+              "N03:0"
+            ],
+            "topics": [],
+            "duplicate": false,
+            "wrong_entity": false
+          }
+        ]
+      },
+      "warm_route_latency_ms": {
+        "samples": 20,
+        "p50": 19.366,
+        "p95": 23.348,
+        "values": [
+          18.315,
+          18.628,
+          17.838,
+          18.097,
+          20.093,
+          19.511,
+          20.951,
+          20.821,
+          19.085,
+          20.654,
+          19.2,
+          22.113,
+          19.75,
+          19.221,
+          18.854,
+          18.89,
+          18.971,
+          23.348,
+          24.711,
+          23.266
+        ]
+      }
+    }
+  ]
+}
