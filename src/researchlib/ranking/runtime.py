@@ -179,6 +179,7 @@ def rerank_windows(
         valid = set()
         trace["status"] = "entity_rules_changed"
     trace["dropped_stale"] = len(candidates) - len(valid)
+    trace["eligible_candidate_ids"] = sorted(c.candidate_id for c in pool if c.candidate_id in valid)
     ordered = sorted((c for c in candidates if c.candidate_id in valid),
                      key=lambda c: -originals[c.candidate_id].score)
     if scores is not None:

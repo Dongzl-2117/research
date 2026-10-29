@@ -25,6 +25,38 @@ def compose(relevance_root):
     researchlib.web.__path__.append(str(base / "web"))
 
 
+def check_adapter_revisions(output, tasks):
+    """模拟human类别只做协议断言，单独SQLite，不进入训练/评估的金标。"""
+    from researchlib.relevance.schema import LabelRequest, LabelSource, Manifest
+    from researchlib.relevance.store import Record, Store
+
+    from researchlib.ranking.relevance_adapter import adapt_records
+    store = Store.initialize(output / "adapter-protocol-only.sqlite3",
+                             Manifest(dataset_id="simulated-label-protocol-only", seed="fixed-protocol-v1"))
+    store.add_tasks(tasks[:2])
+    human = LabelSource(kind="human", labeler_id="simulated-human-protocol-fixture")
+    weak = LabelSource(kind="ai_weak", labeler_id="simulated-ai-protocol-fixture", model_name="not-a-real-model")
+    for index, task in enumerate(tasks[:2]):
+        for actor in (human, weak):
+            presentation = store.present(task.task_id, actor.labeler_id)
+            store.label(LabelRequest(presentation_id=presentation.presentation_id, decision="left",
+                                     expected_revision=0, request_id=f"initial-{index}-{actor.kind}"), actor)
+            if actor.kind == "human":
+                store.label(LabelRequest(presentation_id=presentation.presentation_id,
+                                         decision="withdraw" if index == 0 else "right",
+                                         expected_revision=1, request_id=f"changed-{index}"), actor)
+    data = adapt_records([Record.model_validate_json(line) for line in store.export("all").splitlines()])
+    assert data.report["latest_sources"] == {"human": 2, "ai_weak": 2}
+    assert len(data.pairs) == 3
+    gold = [p for p in data.pairs if p.example.source == "user"]
+    assert len(gold) == 1 and gold[0].task_id == tasks[1].task_id and gold[0].revision == 2
+    p = store.present(tasks[1].task_id, human.labeler_id)
+    winner = gold[0].example.a if gold[0].example.choice == "a_better" else gold[0].example.b
+    assert winner.candidate_id == p.right_id
+    assert len([p for p in data.pairs if p.example.source == "ai"]) == 2
+    return "passed; 模拟human类别仅协议测试，未混入学习或金标评测"
+
+
 def check_provider(database_url, output):
     from urllib.parse import urlsplit
 
@@ -198,6 +230,7 @@ def run(output, database_url=None):
     assert load_reviewed_ranker(output / "model.json")[1]["status"] == "review_required"
     report["fixture"] = {"notice": fixture["notice"], "http_export": "passed", "winner_mapping": "passed",
                          "latest_revision_withdrawal": "passed", "weak_human_separation": "passed",
+                         "human_adapter_protocol": check_adapter_revisions(output, tasks),
                          "input_sha256": __import__("hashlib").sha256(path.read_bytes()).hexdigest()}
     report["provider"] = check_provider(database_url, output) if database_url else {"status": "not_run"}
     write_private(output / "report.json", json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n")

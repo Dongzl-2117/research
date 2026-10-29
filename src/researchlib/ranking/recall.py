@@ -52,4 +52,6 @@ def collect_search_candidates(conn, text, scope, sources, *, limit=80, use_seman
     if not snapshots:
         raise ValueError("查询没有可导出的候选主题")
     query, candidates = snapshots[0]
-    return CandidateBatch(query, candidates, result.ranking or {})
+    trace = result.ranking or {}
+    eligible_ids = set(trace.get("eligible_candidate_ids", ()))
+    return CandidateBatch(query, tuple(c for c in candidates if c.candidate_id in eligible_ids), trace)

@@ -122,3 +122,21 @@ def test_late_model_result_discards_entire_reranking(conn, settings, monkeypatch
                              reranker=GivenScores(ids["b"]), rerank_budget_ms=250)
     assert result.ranking["status"] == "budget_exceeded"
     assert [(h.article_id, h.score) for h in result.hits] == [(h.article_id, h.score) for h in baseline.hits]
+
+
+def test_export_discards_snapshot_invalidated_after_capture(conn, settings, monkeypatch):
+    from researchlib import retrieval
+    sources, scope, ids = _setup(conn, settings)
+    original = retrieval.search_articles
+
+    def concurrent(*args, **kwargs):
+        observer = kwargs["ranking_observer"]
+        def capturing(query, candidates):
+            observer(query, candidates)
+            with psycopg.connect(settings.database_url) as writer:
+                writer.execute("UPDATE article_chunks SET body='合成已更换原文。' WHERE article_id=%s", (ids["a"],))
+        return original(*args, **(kwargs | {"ranking_observer": capturing}))
+    monkeypatch.setattr(retrieval, "search_articles", concurrent)
+    batch = collect_search_candidates(conn, "ASML 升级配件", scope, sources)
+    assert batch.trace["dropped_stale"] >= 1
+    assert str(ids["a"]) not in {c.article_id for c in batch.candidates}

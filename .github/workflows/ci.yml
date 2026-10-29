@@ -42,6 +42,7 @@ jobs:
               - 'requirements*.lock'
             retrieval:
               - 'src/researchlib/retrieval.py'
+              - 'src/researchlib/ranking/**'
               - 'src/researchlib/search_evidence.py'
               - 'src/researchlib/snippets.py'
               - 'src/researchlib/web/routes.py'
@@ -64,6 +65,7 @@ jobs:
               - 'docker/postgres/**'
               - 'config/sources.yaml'
               - 'tools/retrieval_eval/**'
+              - 'tools/ranking/**'
               - 'requirements-dev.lock'
               - '.github/workflows/ci.yml'
 

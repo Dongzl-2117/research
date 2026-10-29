@@ -176,9 +176,11 @@ def build_library_provider(*, connection_factory, sources, public_base_url, topi
         chosen, seen = [], set()
         for candidate in batch.candidates:
             # 两段同文相邻窗通常没有足够比较价值；至少保留不同窗口文字。
-            if candidate.window_hash in seen:
+            visible_key = digest([" ".join(text.split()) for text in
+                                  (candidate.before, candidate.text, candidate.after)])
+            if visible_key in seen:
                 continue
-            seen.add(candidate.window_hash)
+            seen.add(visible_key)
             center = next(f for f in candidate.fragments if f.role == "center")
             chosen.append(schema.Candidate(
                 source_id=candidate.source_id, article_id=candidate.article_id,
