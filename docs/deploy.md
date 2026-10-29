@@ -80,7 +80,7 @@ scripts/install-launchd.sh   # 以前装过备份的，BACKUP_DIR 从装好的�
 
 夜间补齐、定时抓取、备份正在跑时先不重启，等它们跑完：它们在容器里跑命令，重建会把它们打断。
 
-Mac mini 上的 `~/research` 只给自动上线用。在那台机器上改代码的人和 AI 另外 clone 一份（比如 `~/research-dev`）或者用 `git worktree`，改完推分支走 PR；不在 `~/research` 里切分支、改文件、提交。只在本机要忽略的文件写进 `.git/info/exclude`，不改 `.gitignore`。首页提示卡住了，按提示的那种处理：
+Mac mini 上的 `~/research` 只给自动上线用。在那台机器上改代码的人和 AI 另外 clone 一份（比如 `~/research-dev`）或者用 `git worktree`，改完推分支走 PR；不在 `~/research` 里切分支、改文件、提交。只在本机要忽略的文件写进 `.git/info/exclude`，不改 `.gitignore`。`data/status/deploy.json` 写着卡住了，按它说的那种处理：
 
 - 不在 main：`git -C ~/research checkout main`。
 - 有没提交的改动：先 `git -C ~/research diff` 看是什么，要留的推到分支走 PR，然后还原。只是本机加的忽略规则，比如 `.gitignore`，把新加的行挪进 `.git/info/exclude` 再还原：
