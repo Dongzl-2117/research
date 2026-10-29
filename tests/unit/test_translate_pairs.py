@@ -5,9 +5,11 @@ from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.translate.segments import (
     chunk_segments,
     coarse_segment_reason,
+    leaf_count_problem,
     segments_of,
     shield,
     splice_segments,
+    stable_leaf,
     top_level_blocks,
     unshield,
 )
@@ -676,3 +678,166 @@ def test_list_coarse_uses_source_when_translation_was_flattened():
     row["segments"] = 24
     row["body_html"] = "".join(f"<p>Paragraph {index} in Chinese remains one leaf.</p>" for index in range(24))
     assert list_coarse_translations(Conn(), limit=10, source_id="stratechery") == []
+
+
+def _plain_pair(html: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html or "")).strip()
+
+
+def test_stable_leaf_closes_tags_and_keeps_inline_markup():
+    """没闭合的 p 要补上；链接和强调留在这一段里面，不再拆出新叶子。"""
+    closed = stable_leaf('<p>见 <a id="L0">链接</a> 和 <strong>重点</strong>', tag="p")
+    assert closed.startswith("<p>") and closed.endswith("</p>")
+    assert closed.count("<p") == 1
+    assert 'id="L0"' in closed and "链接" in closed and "重点" in closed
+    assert "<br>" in stable_leaf("<p>第一行<br>第二行</p>", tag="p", keep_br=True)
+    flattened = stable_leaf("<p>第一行<br>第二行</p>", tag="dt", keep_br=False)
+    assert flattened == "<dt>第一行 第二行</dt>"
+    merged = stable_leaf("<p>上一段</p><p>下一段</p>", tag="h3")
+    assert merged == "<h3>上一段 下一段</h3>"
+
+
+def _long_dt(label: str) -> str:
+    filler = "The installed base kept paying for services and the margin stayed high. "
+    body = (f"{label} {filler}") * 6
+    assert len(body) >= 500
+    return f"<dt>{body}</dt>"
+
+
+def test_short_dt_writeback_stays_one_to_one_and_does_not_repeat_openings():
+    """21118：连续长 dt 译短后不能重新打包。同一英文开头的两份对照，中文也得是同一段。"""
+    labels = [
+        "Regulatory and legal risks:",
+        "On the macro-policy front Apple stayed cautious about fines:",
+        "Services growth could attract unwanted attention today:",
+        "Wearables, Home and Accessories matured this cycle:",
+        "The Mac Apple Silicon advantage showed up in the quarter:",
+        "Personal computing stayed differentiated in the holiday quarter:",
+    ]
+    iphone = "iPhone – premium focus amid plateau: revenue was flat and the installed base stayed loyal."
+    mac = "Mac – the Apple Silicon advantage: revenue surged and the chip transition paid off this year."
+    html = (
+        "<p>Intro paragraph before the paste.</p>"
+        "<blockquote><dl>" + "".join(_long_dt(label) for label in labels) + "</dl></blockquote>"
+        f"<ul><li>{iphone}</li></ul><p><strong>{iphone}</strong></p>"
+        f"<ul><li>{mac}</li></ul><p><strong>{mac}</strong></p>"
+        "<h3>The Unbundling of Substantiation</h3>"
+        "<p><em>[外部图片已省略]</em></p>"
+        "<p>Closing note after the picture stays its own paragraph.</p>"
+    )
+    segments = segments_of(html)
+    assert len(segments) >= 12
+    assert sum(segment.startswith("<dt") for segment in segments) == 6
+
+    def marker(segment: str, index: int) -> str:
+        plain = _plain_pair(segment)
+        for token in (
+            "Unbundling",
+            "Closing",
+            "Intro",
+            "iPhone",
+            "Mac –",
+            "Regulatory",
+            "macro-policy",
+            "Services growth",
+            "Wearables",
+            "Apple Silicon",
+            "Personal computing",
+        ):
+            if token in plain:
+                return token
+        return f"段{index}"
+
+    replacements = {}
+    for index, segment in enumerate(segments):
+        if "外部图片已省略" in segment:
+            continue
+        # 模型有时不闭合标签，有时把 dt 改成 p。两种都要仍是一段。
+        replacements[index] = f"<p>{marker(segment, index)}的译文"
+
+    written = splice_segments(html, replacements)
+    assert leaf_count_problem(html, written) is None
+    assert len(segments_of(written)) == len(segments)
+    pairs = bilingual_pairs(html, written)
+    assert pairs is not None and len(pairs) == len(segments)
+    assert sum(pair.zh is None for pair in pairs) == 1
+
+    def opening(value: str | None) -> str:
+        return _plain_pair(value or "")[:60]
+
+    for left, right in zip(pairs, pairs[1:], strict=False):
+        if left.en and opening(left.en) == opening(right.en):
+            assert opening(left.zh)[:12] == opening(right.zh)[:12]
+
+    iphone_pairs = [pair for pair in pairs if opening(pair.en).startswith("iPhone – premium")]
+    assert len(iphone_pairs) == 2
+    assert all(pair.zh and "iPhone的译文" in pair.zh for pair in iphone_pairs)
+    assert all(pair.zh and "Mac的译文" not in pair.zh for pair in iphone_pairs)
+
+    wearables = next(pair for pair in pairs if "Wearables, Home and Accessories" in pair.en)
+    assert wearables.zh and "Wearables的译文" in wearables.zh
+    assert "Services growth" not in wearables.zh
+
+    heading = next(pair for pair in pairs if "Unbundling of Substantiation" in pair.en)
+    assert heading.zh and "Unbundling的译文" in heading.zh
+    assert "外部图片已省略" not in heading.zh
+    image = next(pair for pair in pairs if "外部图片已省略" in pair.en)
+    assert image.zh is None
+    closing = pairs[-1]
+    assert "Closing note" in closing.en and closing.zh and "Closing的译文" in closing.zh
+
+
+def test_unclosed_translation_does_not_pair_heading_with_image_stub():
+    """没闭合的译文不能把后面的标题吞掉，标题也不能配上「外部图片已省略」。"""
+    line = (
+        "Services carried the quarter forward and the installed base kept growing through the year. "
+        "Margins stayed high because the same customers kept paying."
+    )
+    lines = [f"{line} Point {index}." for index in range(16)]
+    html = (
+        "<p>Intro paragraph stays outside the quote.</p>"
+        "<blockquote><dl>"
+        "<dt>First heading of the pasted note.</dt>"
+        "<dt>Second heading of the pasted note.</dt>"
+        f"<dd>{'<br>'.join(lines)}</dd>"
+        "</dl></blockquote>"
+        "<h3>The Unbundling of Substantiation</h3>"
+        "<p><em>[外部图片已省略]</em></p>"
+        "<p>Closing note after the picture stays its own paragraph.</p>"
+    )
+    segments = segments_of(html)
+    assert any(segment.startswith("<h3") and "Unbundling" in segment for segment in segments)
+    assert any("外部图片已省略" in segment for segment in segments)
+    assert len(segments) >= 6
+    replacements = {
+        index: "<h3>论证支撑的解绑" if segment.startswith("<h3") else f"<p>译文{index}"
+        for index, segment in enumerate(segments)
+        if "外部图片已省略" not in segment
+    }
+    written = splice_segments(html, replacements)
+    assert leaf_count_problem(html, written) is None
+    pairs = bilingual_pairs(html, written)
+    assert pairs is not None and len(pairs) == len(segments)
+    heading = next(pair for pair in pairs if "Unbundling of Substantiation" in pair.en)
+    assert heading.zh and "论证支撑的解绑" in heading.zh
+    assert "外部图片已省略" not in heading.zh
+    image = next(pair for pair in pairs if "外部图片已省略" in pair.en)
+    assert image.zh is None
+    assert pairs[-1].zh and "译文" in pairs[-1].zh
+    assert "Closing note" in pairs[-1].en
+
+
+def test_soft_dedupe_leaves_a_missing_leaf_paired_with_the_image_stub():
+    """译文已经少了一叶时，同一套去重拉不齐。标题会配上图片占位，文末没有中文。"""
+    english = (
+        "<h3>The Unbundling of Substantiation</h3>"
+        "<p><em>[外部图片已省略]</em></p>"
+        "<p>Closing note after the picture stays visible.</p>"
+    )
+    chinese = "<p><em>[外部图片已省略]</em></p><p>收尾译文。</p>"
+    assert leaf_count_problem(english, chinese) == "leaves 3 vs 2"
+    pairs = bilingual_pairs(english, chinese)
+    assert pairs is not None and len(pairs) == 3
+    assert "Unbundling" in pairs[0].en
+    assert pairs[0].zh and "外部图片已省略" in pairs[0].zh
+    assert "Closing note" in pairs[2].en and pairs[2].zh is None

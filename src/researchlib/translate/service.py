@@ -22,6 +22,7 @@ from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.segments import (
     chunk_segments,
     coarse_segment_reason,
+    leaf_count_problem,
     segments_of,
     shield,
     splice_segments,
@@ -320,6 +321,11 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         return TranslateResult(article_id, "skipped", reason="no batch translated")
 
     zh_html = splice_segments(html, replacements)
+    # 展示会把原文和译文再各切一次。写回若让叶子数变了，按位置并排就会错位；
+    # 这里直接拒绝，不把错位的译文入库。旧稿对不齐只能整篇重译，不能靠展示层硬配。
+    problem = leaf_count_problem(html, zh_html)
+    if problem:
+        raise RuntimeError(f"translation alignment: {problem}")
     zh_text = re.sub(r"<[^>]+>", " ", zh_html)
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
     title_zh = _translate_title(article["title"] or "", data_dir)
