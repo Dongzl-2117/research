@@ -243,6 +243,87 @@ def test_leftover_english_hangs_after_aligned_prefix():
     assert pairs[2].zh is None
 
 
+def test_soft_dedupe_collapses_equal_length_quote_then_body():
+    """叶子数已经一样时，引用后紧跟的同一段正文两边都收成一对。
+
+    21118 在叶子数对齐之后仍有这种连续相同的 <p>。段落号不同也要收掉。
+    后面单独的一段还在自己的位置上。
+    """
+    quote = "Microsoft cloud revenue grew at the low end of the forecast this quarter."
+    note = "That pivot is the part that matters for the rest of the year."
+    zh_quote = "微软云收入落在这个季度预测区间的低端，连续相同只留一份。"
+    zh_note = "真正要紧的是后面这次转向，要留在自己的译文上。"
+    en = f'<blockquote id="p-1"><p>{quote}</p></blockquote><p id="p-2">{quote}</p>'
+    zh = f'<blockquote id="p-1"><p>{zh_quote}</p></blockquote><p id="p-2">{zh_quote}</p>'
+    assert len(segments_of(en)) == len(segments_of(zh)) == 2
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None
+    assert len(pairs) == 1
+    assert quote in pairs[0].en
+    assert pairs[0].zh and zh_quote in pairs[0].zh
+    assert pairs[0].anchor == "p-1"
+
+    en_note = en + f'<p id="p-3">{note}</p>'
+    zh_note_html = zh + f'<p id="p-3">{zh_note}</p>'
+    assert len(segments_of(en_note)) == len(segments_of(zh_note_html)) == 3
+    followed = bilingual_pairs(en_note, zh_note_html)
+    assert followed is not None and len(followed) == 2
+    assert quote in followed[0].en and note not in followed[0].en
+    assert followed[0].zh and zh_quote in followed[0].zh
+    assert note in followed[1].en and quote not in followed[1].en
+    assert followed[1].zh and "真正要紧" in followed[1].zh
+    assert followed[1].anchor == "p-3"
+
+
+def test_soft_dedupe_still_hides_zh_when_text_matches_english():
+    """收成一对之后，译文纯文本仍和原文相同，中文照旧不显示。"""
+    quote = "Microsoft cloud revenue grew at the low end of the forecast this quarter."
+    html = f'<blockquote id="p-1"><p>{quote}</p></blockquote><p id="p-2">{quote}</p>'
+    pairs = bilingual_pairs(html, html)
+    assert pairs is not None and len(pairs) == 1
+    assert pairs[0].zh is None
+    assert quote in pairs[0].en
+
+
+def test_soft_dedupe_keeps_equal_length_when_shrink_would_diverge():
+    """两边都有连续重复，但去掉的段数不同。长度会拉开，仍按原来的等长序列配。"""
+    alpha = "Quoted passage alpha is long enough that a consecutive copy counts as one."
+    beta = "Quoted passage beta is long enough that a consecutive copy counts as one."
+    later = "A later note that appears only once on the English side of the page."
+    zh_alpha = "甲段译文足够长，连续相同要能被去掉，这里先留着。"
+    zh_beta = "乙段译文足够长，连续相同要能被去掉，这里也留着。"
+    en = (
+        f"<blockquote><p>{alpha}</p></blockquote><p>{alpha}</p>"
+        f"<p>{beta}</p><p>{later}</p>"
+    )
+    zh = (
+        f"<blockquote><p>{zh_alpha}</p></blockquote><p>{zh_alpha}</p>"
+        f"<blockquote><p>{zh_beta}</p></blockquote><p>{zh_beta}</p>"
+    )
+    assert len(segments_of(en)) == len(segments_of(zh)) == 4
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 4
+    assert alpha in pairs[0].en and pairs[0].zh and zh_alpha in pairs[0].zh
+    assert alpha in pairs[1].en and pairs[1].zh and zh_alpha in pairs[1].zh
+    assert beta in pairs[2].en and pairs[2].zh and zh_beta in pairs[2].zh
+    assert later in pairs[3].en and pairs[3].zh and zh_beta in pairs[3].zh
+
+
+def test_equal_length_list_item_and_paragraph_stay_two_pairs():
+    """同文的 li 和 p 标签不同。叶子数已经一样时也不收成一段。"""
+    text = "iPhone revenue was flat and the installed base stayed loyal through the year."
+    zh = "iPhone 收入持平，已有用户这一年仍然留着，列表项和正文各留一份。"
+    en = f"<ul><li>{text}</li></ul><p>{text}</p>"
+    zh_html = f"<ul><li>{zh}</li></ul><p>{zh}</p>"
+    leaves = segments_of(en)
+    assert len(leaves) == len(segments_of(zh_html)) == 2
+    assert leaves[0].startswith("<li") and leaves[1].startswith("<p")
+    pairs = bilingual_pairs(en, zh_html)
+    assert pairs is not None and len(pairs) == 2
+    assert all(text in pair.en for pair in pairs)
+    assert all(pair.zh and zh in pair.zh for pair in pairs)
+
+
 def test_pairs_keep_repeats_when_translation_kept_them():
     """两边块数已经一样时，不因为英文侧有重复段就把译文错开。"""
     quote = "Microsoft cloud revenue grew at the low end of the forecast this quarter."
