@@ -392,6 +392,105 @@ def test_retime_matches_dated_external_id_to_topics_json(conn, settings, tmp_pat
     assert conn.execute("SELECT id FROM articles WHERE external_id = 'INDEX'").fetchone() is None
 
 
+def test_retime_without_archive_reads_stored_header(conn, settings):
+    """乘风破浪没有 raw JSON，归档头写「(UTC+8)」，以前读不出来，卡片时间是「—」。不给归档也能从库里改。"""
+    midnight = datetime(2026, 9, 27, 0, 0, tzinfo=SHANGHAI)
+    header = "# Temu：值得重视的关税利好\n\n- 作者：王小明\n- 时间：2026-09-27 14:41 (UTC+8)\n\n"
+    _store(
+        conn,
+        settings,
+        "chengfengpolang",
+        [
+            ParsedDoc(
+                external_id="2026-09-27_14588211154841122",
+                title="Temu：值得重视的关税利好",
+                published_at=midnight,
+                body_md=header + "腾讯的关税影响有限。\n",
+                raw_meta={
+                    "filename": "2026-09-27_14588211154841122.md",
+                    "date_source": "filename",
+                    "time_known": False,
+                },
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="拼多多随想",
+                title="外部 id 里没有话题号",
+                published_at=midnight,
+                body_md="- 时间：2026-09-27 09:05 (UTC+8)\n\n腾讯第二篇。\n",
+                raw_meta={"date_source": "filename", "time_known": False},
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="14588211154841122",
+                title="同一话题，库里已有秒级钟点",
+                published_at=datetime(2026, 9, 27, 14, 41, 22, tzinfo=SHANGHAI),
+                body_md="- 时间：2026-09-27 14:41 (UTC+8)\n\n同一话题的另一行。\n",
+                raw_meta={"create_time": "2026-09-27T14:41:22.487+0800", "date_source": "meta", "time_known": True},
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="2026-09-27_222",
+                title="正文没有钟点",
+                published_at=midnight,
+                body_md="- 时间：2026-09-27\n\n不该被编出时间。\n",
+                raw_meta={"filename": "2026-09-27_222.md", "date_source": "filename", "time_known": False},
+                image_refs=[],
+            ),
+        ],
+    )
+    first = conn.execute(
+        "SELECT id, content_hash FROM articles WHERE external_id = '2026-09-27_14588211154841122'"
+    ).fetchone()
+    tencent = conn.execute("SELECT id FROM companies WHERE name_zh = '腾讯'").fetchone()["id"]
+    conn.execute(
+        """
+        INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance)
+        VALUES (%s, %s, %s, %s, '关税影响有限', 'positive')
+        """,
+        (first["id"], tencent, first["content_hash"], PROMPT_VERSION),
+    )
+    conn.commit()
+    from researchlib.retime import docs_from_library
+
+    stats = refresh_clocks(
+        conn,
+        _source(settings, "chengfengpolang"),
+        docs_from_library(conn, "chengfengpolang"),
+        settings,
+        same_row=True,
+    )
+    assert stats["updated"] == 2
+    assert stats["skipped_no_clock"] == 1
+    assert stats["views"] == 1
+    fixed = conn.execute(
+        "SELECT published_at, content_hash, raw_meta FROM articles WHERE id = %s", (first["id"],)
+    ).fetchone()
+    local = fixed["published_at"].astimezone(SHANGHAI)
+    assert (local.day, local.hour, local.minute) == (27, 14, 41)
+    assert fixed["raw_meta"]["time_known"] is True
+    assert fixed["raw_meta"]["date_source"] == "body"
+    view_hash = conn.execute(
+        "SELECT content_hash FROM company_views WHERE article_id = %s", (first["id"],)
+    ).fetchone()["content_hash"]
+    assert view_hash == fixed["content_hash"]
+    loose = conn.execute("SELECT published_at FROM articles WHERE external_id = '拼多多随想'").fetchone()
+    assert loose["published_at"].astimezone(SHANGHAI).hour == 9
+    bare = conn.execute(
+        "SELECT published_at, raw_meta FROM articles WHERE external_id = '2026-09-27_222'"
+    ).fetchone()
+    assert bare["published_at"].astimezone(SHANGHAI).hour == 0
+    assert bare["raw_meta"]["time_known"] is False
+    # 同话题的另一行本来就有秒级钟点：只改外部 id 相同的那一行，不把它截成整分。
+    sibling = conn.execute(
+        "SELECT published_at FROM articles WHERE external_id = '14588211154841122'"
+    ).fetchone()
+    assert sibling["published_at"].astimezone(SHANGHAI).second == 22
+    # 改过的已经有真实钟点，再跑一遍不再看它们。
+    again = docs_from_library(conn, "chengfengpolang")
+    assert [doc.external_id for doc in again] == ["2026-09-27_222"]
+
+
 def test_home_recent_views_include_non_holdings(conn, settings):
     when_old = datetime(2024, 5, 1, 9, 0, tzinfo=SHANGHAI)
     when_new = datetime(2024, 6, 1, 9, 0, tzinfo=SHANGHAI)

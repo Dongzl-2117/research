@@ -65,5 +65,9 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - 停更的来源没有抓取：孤独进化体（来自已下线的 AIHOT）、黑黑无常（一次性导入的雪球存档）、Stratechery（在另一台机器「盒子」上手动抓再导入）、乘风破浪（没有抓取脚本）。接不接、用什么账号由 Zhilin 定。
 - 网站不展示知识星球读者帖（首页/按天/检索/正文/API 均隐藏，库内保留）；标题为「图片」评论（N）… 的评论壳帖同样隐藏（poster_role 多为 owner）。方伟星球 10 月 20 日以后被误标成读者帖的那批，修好 poster_role 后才会重新露出来；观点靠夜间每晚补 60 篇，一次补完要花 DeepSeek 的钱，没做。
 - 林文丰飞书里的内嵌电子表格只有占位文字，要重新导出才能补。
+- **Mac mini 上还没跑的一次性命令**（都不调 LLM，先加 `--dry-run` 看篇数；跑完删掉那一行）：
+  - `docker compose exec app research-retime --source chengfengpolang`：乘风破浪的发布时间从当天零点改成归档头里的钟点。不跑，乘风破浪的卡片时间一直是「—」，同一天的先后按入库顺序。
+  - `docker compose exec app research-clean --source chengfengpolang --source fangwei-zsxq`：星球长文帖已入库的检索文字和段落块去掉导出脚手架（#124）。不跑，检索片段和问库里长文开头多一遍。
+  - `docker compose exec app research-repair-zsxq --source chengfengpolang --titles-only`：乘风破浪的标题写回库（#128）。不跑，页面和 API 现算，标题检索还按库里的旧标题。
 
 - 通用原文相关性标注采用独立本机服务和 SQLite，见 [docs/relevance-annotations.md](docs/relevance-annotations.md)。主站不挂该入口，不跑迁移或模型；私有原文、标签及导出只留 `data/relevance/` 等私有目录。实际库 provider、远程认证与部署需另行配置，demo 不是真实库。

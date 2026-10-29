@@ -158,7 +158,7 @@ docker compose exec app research-backfill-posters \
 
 再导入一遍同一归档也会写上发帖人，即使正文没变。例：8241 这类读者帖不应再出现在方伟的茅台论点里；7723、7507 同样按发帖人名字核对。文件名里的长数字会拿去对 JSON。`raw/topics/*.json` 也要读：不能因为 `raw/group.json`、`raw/state.json` 已经让「父目录叫 raw」的列表非空，就把 `topics` 跳过，否则 `create_time` 会丢成文件名里的零点。`md/INDEX.md` 是目录，不是话题，不入库；已经在库里的，再导入或跑 `research-retime` 时会删掉。
 
-正文开头的「- 时间：2024-11-28 10:40:22」只在没有 JSON 钟点时使用。没有真实钟点就保持原样，不编造时间。
+正文开头的「- 时间：2024-11-28 10:40:22」只在没有 JSON 钟点时使用。星球导出写成「2026-09-27 14:41 (UTC+8)」，括注去掉后按上海时间读（全角、半角括号都认）。没有真实钟点就保持原样，不编造时间。
 
 方伟星球把零点改成真实 `create_time` 之后，必须再跑一次重排。库里的 external_id 多半是 `YYYY-MM-DD_<topic_id>`，也有纯数字；按最后一个 `_` 后面的话题 id 去对 `raw/topics/<id>.json`，不改外部 id，也不编造时间。第一次部署后只改到了纯数字那 38 篇。这次部署后再跑，方伟星球应更正大约 6837 篇。
 
@@ -175,7 +175,12 @@ docker compose exec app research-retime \
   --dry-run
 ```
 
-乘风破浪如果也是零点，把 `--source` 和 `--input` 换成 `chengfengpolang` 再跑一次。
+手边没有归档时不给 `--input`：从库里存的正文开头「- 时间：」重新取，规则和导入时一样，只看还没有真实钟点（`raw_meta.time_known` 不是 true）的那些篇，改完的再跑不会再动。乘风破浪就是这种情况：没有 raw JSON，归档头的「(UTC+8)」以前读不出来，库里全是当天零点，卡片和按天页的时间显示「—」，同一天的先后按入库顺序排。
+
+```bash
+docker compose exec app research-retime --source chengfengpolang --dry-run
+docker compose exec app research-retime --source chengfengpolang
+```
 
 作者常在评论里回答读者，补充的判断不比正文少。JSON 里的评论只取作者本人的（问答话题里就是回答的人），连同他回复的那条读者评论，接在正文后面的「评论里的回复」一节，标签与正文同一套对话体：「网友：……」「方伟：……」（旧稿里的「读者问 / 作者答 / 作者补充」打开页面时会映射过来）。读者的名字、别的读者之间的评论都不要；作者的回复正文里已经有了的不重复。楼中楼也展开。这一节和正文一样进检索、问库和观点。
 
