@@ -9,6 +9,10 @@ TypeScript，不另编一条 AIHOT 规则）。研究站仍把「多条或很长
 叶子里有多条 ``dt`` / ``dd``，或纯文本达到 ``_DEF_DESCEND_PLAIN`` 时，继续往这些
 子节点走。连续四条以上的短 ``dt``，以及只用 ``<br>`` 粘起来的长 ``dt`` / ``dd``，
 再收成大约一段，避免一行一个对照，也避免一条定义仍是几万字。
+
+写回必须让译文再用同一套规则切出来的叶子数等于原文。模型片段收成一个没有块级
+子节点的叶子；连续 ``dt`` 里单独成段的那一条写成 ``<p>``，避免中文变短后又被按
+字数重新打包。
 """
 
 from __future__ import annotations
@@ -423,6 +427,72 @@ def _br_pieces(node: _El) -> list[str] | None:
     return pieces
 
 
+# 译文里要留下来的行内标签。块级标签不留，否则写回后再切会多出叶子，或把后文吞进去。
+_INLINE = frozenset({
+    "a", "abbr", "b", "bdi", "bdo", "cite", "code", "dfn", "em", "i", "mark",
+    "q", "s", "small", "span", "strong", "sub", "sup", "u",
+})
+
+
+def _html_has_letter(html: str) -> bool:
+    plain = html_lib.unescape(re.sub(r"<[^>]+>", "", html or ""))
+    return any(char.isalpha() for char in plain)
+
+
+def _flatten_inline(html: str, *, keep_br: bool) -> str:
+    """把模型返回的片段收成行内内容。块级标签拆掉，避免再切段时条数变化。"""
+    parser = _FragmentParser()
+    parser.feed(html or "")
+    parser.close()
+    parts: list[str] = []
+
+    def glue() -> None:
+        if parts and not parts[-1].endswith((" ", ">")):
+            parts.append(" ")
+
+    def walk(nodes: list[_El | _Tx]) -> None:
+        for item in nodes:
+            if isinstance(item, _Tx):
+                if item.data:
+                    parts.append(item.data)
+                continue
+            if item.name == "br":
+                parts.append("<br>" if keep_br else " ")
+                continue
+            if item.name == "img":
+                parts.append(item.start)
+                continue
+            if item.name in _INLINE:
+                start = len(parts)
+                walk(item.children)
+                inner = "".join(parts[start:])
+                del parts[start:]
+                parts.append(f"{item.start}{inner}</{item.name}>")
+                continue
+            glue()
+            walk(item.children)
+            glue()
+
+    walk(parser.root.children)
+    return re.sub(r"\s+", " ", "".join(parts)).strip()
+
+
+def stable_leaf(html: str, *, tag: str, keep_br: bool = False) -> str:
+    """一个闭合的叶子。没有块级子节点；会再被 ``<br>`` 拆开的位置不留 ``<br>``。"""
+    name = (tag or "p").lower()
+    if name not in _BLOCK:
+        name = "p"
+    return f"<{name}>{_flatten_inline(html, keep_br=keep_br)}</{name}>"
+
+
+def _stable_replacement(raw: str, *, tag: str, keep_br: bool) -> str | None:
+    """没有字母的写回会被切段丢掉，宁可不替换，也别少一个叶子。"""
+    leaf = stable_leaf(raw, tag=tag, keep_br=keep_br)
+    if not _html_has_letter(leaf):
+        return None
+    return leaf
+
+
 def _element_children(node: _El) -> list[_El | _Tx]:
     """丢掉纯空白文本。dt 之间的换行不能把「一行一条」的粘贴拆成互不相邻。"""
     return [
@@ -444,7 +514,15 @@ def _emit_packed_dts(
     for group in groups:
         nodes = [node for node in group if isinstance(node, _El)]
         if len(nodes) == 1:
+            before = len(out)
             _walk(nodes[0], chain, used, out, replacements, descend_dl=True)
+            # 原文够长才单独成段。译文更短时若仍是 dt，这轮连续 dt 会按中文长度重新打包，
+            # 叶子变少，后面的对照整段错位。只在这里确实只写出一段时改成 p。
+            # <br> 拆成多段的已经各自写好，不能再并成一段。
+            if replacements is not None and len(out) == before + 1 and nodes[0].replacement is not None:
+                leaf = _stable_replacement(nodes[0].replacement, tag="p", keep_br=False)
+                if leaf is not None:
+                    nodes[0].replacement = leaf
             continue
         inner = " ".join(piece for dt in nodes if (piece := _serialize(dt.children).strip()))
         text = html_lib.unescape(re.sub(r"<[^>]+>", "", inner))
@@ -454,9 +532,11 @@ def _emit_packed_dts(
         out.append(Segment(f"<p>{inner}</p>", anchor))
         slot = len(out) - 1
         if replacements is not None and slot in replacements:
-            nodes[0].replacement = replacements[slot]
-            for extra in nodes[1:]:
-                extra.replacement = ""
+            leaf = _stable_replacement(replacements[slot], tag="p", keep_br=False)
+            if leaf is not None:
+                nodes[0].replacement = leaf
+                for extra in nodes[1:]:
+                    extra.replacement = ""
 
 
 def _walk_dl(
@@ -508,8 +588,11 @@ def _emit_br_pieces(
     replaced = False
     for index, piece in enumerate(pieces):
         slot = first + index
+        leaf = None
         if slot in replacements:
-            parts.append(replacements[slot])
+            leaf = _stable_replacement(replacements[slot], tag="p", keep_br=False)
+        if leaf is not None:
+            parts.append(leaf)
             replaced = True
         else:
             parts.append(piece)
@@ -559,7 +642,11 @@ def _walk(
         anchor = _claim_anchor(own, chain, used)
         out.append(Segment(_outer(node), anchor))
         if replacements is not None and (len(out) - 1) in replacements:
-            node.replacement = replacements[len(out) - 1]
+            # 普通段落保留 <br>。定义列表里的叶子会按 <br> 再拆，译文里的 <br> 必须拿掉。
+            keep_br = not (descend_dl or node.name in {"dt", "dd"})
+            leaf = _stable_replacement(replacements[len(out) - 1], tag=node.name, keep_br=keep_br)
+            if leaf is not None:
+                node.replacement = leaf
         return
     for child in node.children:
         if isinstance(child, _El):
@@ -586,6 +673,15 @@ def iter_segments(html: str) -> list[Segment]:
         return []
     found, _serialized = _parse_and_walk(html)
     return found
+
+
+def leaf_count_problem(original_html: str, zh_html: str) -> str | None:
+    """写回后再切，叶子数必须和原文一致。不一致就不能入库，对照会从差额处开始错位。"""
+    en_n = len(iter_segments(original_html))
+    zh_n = len(iter_segments(zh_html))
+    if en_n != zh_n:
+        return f"leaves {en_n} vs {zh_n}"
+    return None
 
 
 def segments_of(html: str) -> list[str]:

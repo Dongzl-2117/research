@@ -239,3 +239,46 @@ def test_missing_t_array_still_raises(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     with pytest.raises(RuntimeError, match="translation JSON missing t"):
         _translate_batch(["<p>Hi.</p>"], {}, tmp_path)
+
+
+def test_translate_article_does_not_store_when_leaf_counts_diverge(monkeypatch, tmp_path: Path):
+    """写回把叶子数改少时不入库。展示层不能靠位置硬配把这段找回来。"""
+
+    class Conn:
+        def __init__(self):
+            self.committed = False
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+            return self
+
+        def fetchone(self):
+            return {
+                "id": 21118,
+                "source_id": "stratechery",
+                "title": "A daily",
+                "published_at": None,
+                "body_md": "<p>First paragraph is long enough.</p><p>Second paragraph is also here.</p>",
+                "body_text": "First paragraph is long enough. Second paragraph is also here.",
+                "raw_meta": {"format": "html"},
+                "content_hash": "x",
+            }
+
+        def fetchall(self):
+            return []
+
+        def commit(self):
+            self.committed = True
+
+    monkeypatch.setattr(
+        "researchlib.translate.service._translate_batch",
+        lambda parts, context, data_dir: ["<p>译</p>"] * len(parts),
+    )
+    monkeypatch.setattr(
+        "researchlib.translate.service.splice_segments",
+        lambda html, replacements: "<p>只有一段。</p>",
+    )
+    conn = Conn()
+    with pytest.raises(RuntimeError, match=r"translation alignment: leaves \d+ vs \d+"):
+        translate_article(conn, 21118, data_dir=tmp_path)
+    assert conn.committed is False
