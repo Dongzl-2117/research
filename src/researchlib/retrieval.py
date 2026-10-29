@@ -162,6 +162,7 @@ class Passage:
     # 检索页只展示与当前主体相连的原文窗口；body/ord 仍保留完整原块供引用核对。
     excerpt: str = ""
     topic_lexical: float = 0.0
+    entity_ids: tuple[str, ...] = ()
 
     @property
     def url(self) -> str:
@@ -208,6 +209,7 @@ class SearchResult:
     query: Query | None
     counts: dict[str, int]  # 按来源分的全部命中篇数
     available: int = 0  # 能翻到的篇数（全部命中排在前，部分命中在后）
+    ranking: dict | None = None
 
 
 _QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』')
@@ -849,22 +851,26 @@ def _article_rows(conn, scope: Scope):
 
 def _candidates(
     conn, query: Query, scope: Scope, limit: int = CANDIDATES, *,
-    enough: int | None = None, entity_context: bool = False,
+    enough: int | None = None, entity_context: bool = False, recall_trace: dict | None = None,
 ) -> list[dict]:
     """几路召回合并。enough：前两路已经召回这么多块时，不再用「任一少见词」撒网。"""
     found: dict[tuple[int, int], dict] = {}
     keys: list[tuple[int, int]] = []
     seen: set[tuple[int, int]] = set()
 
-    def add_keys(items):
+    def add_keys(items, channel="lexical"):
         for key in items:
+            if recall_trace is not None:
+                recall_trace.setdefault(key, set()).add(channel)
             if key not in seen:
                 seen.add(key)
                 keys.append(key)
 
-    def add_rows(rows):
+    def add_rows(rows, channel="lexical"):
         for row in rows:
             key = (row["article_id"], row["ord"])
+            if recall_trace is not None:
+                recall_trace.setdefault(key, set()).add(channel)
             if key not in found:
                 found[key] = dict(row)
                 seen.add(key)
@@ -931,7 +937,7 @@ def _candidates(
                 WHERE k.rn <= %(context_per_article)s
                 ORDER BY k.deep DESC, k.rn, k.published_at DESC NULLS LAST, c.article_id DESC
                 LIMIT %(context_limit)s""", params,
-            ).fetchall())
+            ).fetchall(), "entity_context")
     if not word_terms:
         companies = [t for t in query.terms if t.kind == "company"]
         targets = [{"id": t.company_id, **_company_lookup(query, t.company_id)} for t in companies]
@@ -1419,6 +1425,9 @@ def score_rows(
                 lang=row.get("lang") or "",
                 anchor=row.get("anchor") or "",
                 semantic=sem,
+                entity_ids=tuple(str(cid) for cid in sorted(
+                    set(company_hits) | (set(title_companies) if row["ord"] == 0 else set())
+                )),
             )
         )
     return fuse_semantic(passages, multipliers)
@@ -1502,6 +1511,7 @@ def _topical_scores(conn, query, rows, scope, company_rows, semantic):
         passage = _passage_from_row(row)
         passage.score = score
         passage.entity_basis = unit.basis
+        passage.entity_ids = tuple(str(cid) for cid in sorted(unit.companies))
         passage.topic_lexical = lex.score / top if lex else 0.0
         passage.matched = list(lex.matched) if lex else []
         passage.matched.extend(t.text for t in query.terms if t.company_id in unit.companies)
@@ -1877,7 +1887,11 @@ def _full_match_tsquery(query: Query, params: dict) -> str:
     return _group_tsquery(query, params, only_selective=False, operator="&&", prefix="full")
 
 
-def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0) -> SearchResult:
+def search_articles(
+    conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0,
+    reranker=None, ranking_observer=None, rerank_limit: int = 80, rerank_budget_ms: float = 250,
+    use_semantic: bool = True,
+) -> SearchResult:
     """先排局部证据，再按文章带出原文窗口。词全命中是说明，不是绕过相关性排序的优先档。"""
     company_rows = load_company_rows(conn)
     query = analyze(conn, text, sources, company_rows=company_rows)
@@ -1889,14 +1903,38 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         if query.authors:
             return _author_listing(conn, query, effective, limit, offset)
         return SearchResult(0, 0, [], [], query, {})
-    rows = _candidates(conn, query, effective, limit=2000, enough=2000, entity_context=True)
+    learning = reranker is not None or ranking_observer is not None
+    recall_trace = {} if learning else None
+    rows = _candidates(
+        conn, query, effective, limit=2000, enough=2000, entity_context=True, recall_trace=recall_trace,
+    )
     semantic: dict[tuple[int, int], float] = {}
-    if query.content_terms:
+    if query.content_terms and use_semantic:
+        lexical_keys = set(recall_trace or {})
         rows, semantic = semantic_candidates(conn, query, effective, rows)
+        if recall_trace is not None:
+            for row in rows:
+                key = (row["article_id"], row["ord"])
+                if key not in lexical_keys or semantic.get(key, 0) > 0:
+                    recall_trace.setdefault(key, set()).add("semantic")
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic, topical=True)
     by_article: dict[int, list[Passage]] = defaultdict(list)
     for passage in scored:
         by_article[passage.article_id].append(passage)
+    article_windows = {}
+    for aid, items in by_article.items():
+        items.sort(key=lambda p: p.score, reverse=True)
+        article_windows[aid] = search_windows(items, preserve_originals=learning)
+    ranking_trace = None
+    if learning:
+        from researchlib.ranking.runtime import rerank_windows
+        windows, ranking_trace = rerank_windows(
+            conn, query, effective, [p for group in article_windows.values() for p in group], recall_trace,
+            reranker=reranker, observer=ranking_observer, limit=rerank_limit, budget_ms=rerank_budget_ms,
+        )
+        article_windows = defaultdict(list)
+        for passage in windows:
+            article_windows[passage.article_id].append(passage)
     groups = {t.group for t in query.terms if t.group >= 0}
     company_groups = {t.group for t in query.terms if t.group >= 0 and t.kind == "company"}
     titles = {p.article_id: p.title for p in scored}
@@ -1904,8 +1942,11 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     title_matcher = cached_matcher("focus", [row for row in company_rows if int(row["id"]) in asked]) if asked else None
     hits: list[ArticleHit] = []
     for article_id, items in by_article.items():
-        items.sort(key=lambda p: p.score, reverse=True)
-        windows = search_windows(items)
+        windows = article_windows.get(article_id, [])
+        if not windows:
+            continue
+        if learning:
+            items = windows  # 失效窗口的旧词命中不能用于文章full标志。
         title = titles.get(article_id, "")
         matched_groups = set()
         for term in query.terms:
@@ -1966,14 +2007,15 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         query=query,
         counts=counts,
         available=len(ordered),
+        ranking=ranking_trace,
     )
 
 
-def search_windows(ranked: list[Passage]) -> list[Passage]:
+def search_windows(ranked: list[Passage], *, preserve_originals: bool = False) -> list[Passage]:
     """连续同节命中只占一个摘录；中心块的编号、语言和锚点保持原样。"""
     # 有主题证据的译文可替代同篇只有公司名命中的原文；有独立主题证据的英文和 OCR 始终保留。
     translated = any(p.lang == "zh" and (p.coverage > 0 or p.semantic > 0) for p in ranked)
-    if translated:
+    if translated and not preserve_originals:
         ranked = [p for p in ranked if p.lang or p.coverage > 0 or p.semantic > 0]
     groups: list[list[Passage]] = []
     for passage in sorted(ranked, key=lambda p: p.ord):

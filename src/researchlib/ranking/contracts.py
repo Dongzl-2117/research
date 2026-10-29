@@ -53,12 +53,14 @@ class RankQuery:
 class SourceFragment:
     role: str  # center | before | after
     ord: int
-    start: int
-    end: int
+    start: int | None
+    end: int | None
     text: str
     chunk_version: str
     lang: str = ""
     anchor: str = ""
+    coordinates: str = "chunk"  # UI历史窗口未提供原块偏移时为window，不伪造原块位置。
+    external_chunk_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,7 @@ class RankCandidate:
     lexical_score: float | None = None
     semantic_score: float | None = None
     semantic_model: str | None = None
+    opaque_id: str | None = None  # 已由外部schema校验的候选ID；adapter保留UI的winner_id身份。
 
     def fragment_text(self, role: str) -> str:
         return "\n".join(f.text for f in self.fragments if f.role == role)
@@ -102,7 +105,9 @@ class RankCandidate:
 
     @property
     def candidate_id(self) -> str:
-        return digest([self.query_id, self.source_id, self.article_id, self.window_hash, list(self.entity_ids)])
+        return self.opaque_id or digest(
+            [self.query_id, self.source_id, self.article_id, self.window_hash, list(self.entity_ids)]
+        )
 
     def to_record(self) -> dict:
         record = asdict(self)
@@ -125,7 +130,11 @@ class RankCandidate:
         if sum(f.role == "center" for f in candidate.fragments) != 1:
             raise ValueError("每个候选必须有一个中心原文片段")
         for f in candidate.fragments:
-            if f.role not in {"center", "before", "after"} or not 0 <= f.start <= f.end:
+            if f.role not in {"center", "before", "after"} or f.coordinates not in {"chunk", "window"}:
+                raise ValueError("原文片段范围或角色无效")
+            if f.coordinates == "window" and f.start is None and f.end is None:
+                continue
+            if f.start is None or f.end is None or not 0 <= f.start <= f.end:
                 raise ValueError("原文片段范围或角色无效")
             if f.end - f.start != len(f.text) or not f.chunk_version:
                 raise ValueError("原文片段长度或版本无效")
