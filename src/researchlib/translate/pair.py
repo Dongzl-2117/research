@@ -79,11 +79,41 @@ def stamp_paragraph_ids(html: str) -> str:
     return "".join(out)
 
 
-def bilingual_pairs(original_html: str, zh_html: str) -> list[BilingualPair] | None:
+def _gap(left: list[str], right: list[str]) -> int:
+    return abs(len(left) - len(right))
+
+
+def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[str], list[str]] | None:
+    """两边顶层块一样多就按原样配。
+
+    译文入库时去掉了连续相同的段，原文没有。展示时又盖了 p-id，字符串不再相同，
+    块数会差一截：差一块以上整页退回纯中文，只差一块则后面的段错位。
+    两边再走一遍同一套去重；差距缩小并且仍在差一块以内，才改用去重后的块。
+    块数本来一样的不动，免得只削掉英文、把译文仍保留的那一段错开。
+    """
     kids_o = top_level_blocks(original_html)
     kids_t = top_level_blocks(zh_html)
-    if not kids_o or abs(len(kids_o) - len(kids_t)) > 1:
+    raw_gap = _gap(kids_o, kids_t)
+    if kids_o and raw_gap == 0:
+        return kids_o, kids_t
+    # 懒加载：stamp / mdlinks 会进来，不该为了盖段落号去拉翻译服务。
+    from researchlib.translate.service import _dedupe_consecutive_blocks
+
+    deduped_o = top_level_blocks(_dedupe_consecutive_blocks(original_html))
+    deduped_t = top_level_blocks(_dedupe_consecutive_blocks(zh_html))
+    deduped_gap = _gap(deduped_o, deduped_t)
+    if deduped_o and deduped_t and deduped_gap <= 1 and deduped_gap < raw_gap:
+        return deduped_o, deduped_t
+    if kids_o and raw_gap <= 1:
+        return kids_o, kids_t
+    return None
+
+
+def bilingual_pairs(original_html: str, zh_html: str) -> list[BilingualPair] | None:
+    blocks = _blocks_for_pairs(original_html, zh_html)
+    if blocks is None:
         return None
+    kids_o, kids_t = blocks
     pairs: list[BilingualPair] = []
     n = min(len(kids_o), len(kids_t))
     for i in range(n):
