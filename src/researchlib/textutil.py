@@ -433,6 +433,8 @@ def _markup_raw(text: str) -> str | None:
 
 # 知识星球 Markdown 常在开头写「- 时间：2024-11-28 10:40:22」。只认前几行的列表项，避免正文里的「时间」被当成发布时间。
 _BODY_TIME = re.compile(r"(?m)^[ \t]*[-*][ \t]+时间[ \t]*[:：][ \t]*([^\n]{4,60})")
+# 星球导出写成「2026-09-27 14:41 (UTC+8)」，括注是半角的。去掉括注，按上海时间读，和括注说的一致。
+_TIME_NOTE = re.compile(r"[（(]")
 
 
 def _body_time_raw(text: str) -> str | None:
@@ -440,7 +442,7 @@ def _body_time_raw(text: str) -> str | None:
     match = _BODY_TIME.search(head)
     if not match:
         return None
-    raw = match.group(1).strip().split("（", 1)[0].strip()
+    raw = _TIME_NOTE.split(match.group(1).strip(), maxsplit=1)[0].strip()
     if parse_datetime(raw):
         return raw
     return None
