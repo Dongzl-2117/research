@@ -743,8 +743,21 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose h3 { margin-top: 2em; font-size: 1.1em; }
 .prose h4 { margin-top: 1.6em; }
 .prose :is(h2, h3, h4) + * { margin-top: .7em; }
-.prose a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 3px; }
-.prose a:hover { text-decoration-color: var(--accent); }
+/* 正文链接跟周围文字同色，靠下划线辨认。
+   知识星球截图转写整段都是链接，文内网址也多，再用强调色会铺成一片。
+   悬停只把下划线描实，不改回强调色。导航、页眉、页脚不在 .prose 里。 */
+.prose a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 42%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.prose a:visited { color: inherit; }
+.prose a:hover {
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 2px;
+}
 .prose strong, .prose b { color: var(--ink); font-weight: 650; }
 .prose ul, .prose ol { padding-left: 1.4em; }
 .prose li + li { margin-top: .7em; }
@@ -1276,6 +1289,14 @@ tbody tr:hover td { background: var(--accent-softer); }
 .answer h2 { margin: 0 0 8px; font-size: 18px; }
 .answer h3 { margin: 24px 0 8px; font-size: 15px; }
 .cite { color: var(--accent); font-size: .8em; vertical-align: super; }
+/* 问库、日汇总的出处角标仍用强调色。它是跳到引用的标记，不是正文里的网址。 */
+.prose a.cite,
+.prose a.cite:visited,
+.prose a.cite:hover {
+  color: var(--accent);
+  text-decoration: none;
+  text-decoration-thickness: 1px;
+}
 .citations { margin: 0; padding: 0; list-style: none; }
 .citations li { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
 .citations li:target { background: var(--accent-softer); }
@@ -1724,7 +1745,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   font-size: 13px;
   line-height: 1.4;
 }
-.prose .ocr-links a:hover { color: var(--accent); }
+.prose .ocr-links a:hover { color: var(--ink); }
 .prose .ocr-original { margin-top: 8px; }
 .prose .ocr-original summary {
   cursor: pointer;
