@@ -12,7 +12,7 @@ Grok 见 ``researchlib.grok``（grok-4.7、reasoning_effort=xhigh、输出不低
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
 429、5xx 和连不上这类临时错误退避重试两次；超时不重试（一次已经等了很久）。同一个进程里同时在跑的
 请求有上限（RESEARCH_LLM_CONCURRENCY，默认 3），问库分批、摘要、观点、论点共用。
-每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时首页提示。
+每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时 research-status 会列出来。
 """
 
 from __future__ import annotations

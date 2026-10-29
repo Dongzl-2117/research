@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
 
 
 def _background_upkeep(settings: Settings) -> None:
-    """失败时写进状态文件，首页提示；成功就清掉之前的失败。"""
+    """失败时写进状态文件（research-status 会列出来）；成功就清掉之前的失败。"""
     failed: list[str] = []
     try:
         dedupe_if_needed(settings)

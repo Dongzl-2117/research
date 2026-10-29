@@ -1,5 +1,6 @@
 # 定时脚本共用（用 . 引入，不单独跑）：把这次的结果写进 data/status/<任务>.json。
-# 出问题（失败了，或者太久没成功）时 health.notices 列出来，值班助手看；首页不显示（见 src/researchlib/health.py）。
+# 出问题（失败了，或者太久没成功）时 health.notices 列出来，值班助手跑 docker compose exec app research-status 看；
+# 首页不显示（见 src/researchlib/health.py）。
 #
 #   TASK=backup
 #   . "$REPO/scripts/status.sh"
