@@ -167,7 +167,9 @@ def _dedupe_key(html: str) -> str:
 def _dedupe_consecutive_blocks(html: str) -> str:
     """去掉连续相同的顶层块，以及块内连续相同的 <p>（抽验 22195）。
 
-    只在译文写入前用。对照页按位置配，不靠这次去重决定出不出对照。
+    写入时只对单个译段调用，避免把原文里相邻的两块并成一块。
+    对照页在旧译文已经少了重复段时，对原文和译文各跑一遍，把同段重新对齐。
+    比较时忽略展示层盖上的 id="p-N"。
     """
     html = html or ""
     blocks = top_level_blocks(html)
@@ -215,6 +217,15 @@ def _dedupe_consecutive_paragraphs(html: str) -> str:
     out.append(html[last:])
     cleaned = "".join(out)
     return _EMPTY_QUOTE.sub("", cleaned)
+
+
+def _assemble_zh_html(slots: list[str]) -> str:
+    """按原文顶层块原位拼回译文，顶层块数和原文一致。
+
+    一个译段里模型连吐的相同段落收成一份。不跨段删：引用块和下一段相同正文
+    都留着，避免只把中文结构削短。
+    """
+    return "".join(_dedupe_consecutive_blocks(slot) for slot in slots)
 
 
 def _translate_title(title: str, data_dir: Path) -> str:
@@ -306,7 +317,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     if not done:
         return TranslateResult(article_id, "skipped", reason="no batch translated")
 
-    zh_html = _dedupe_consecutive_blocks("".join(filled))
+    zh_html = _assemble_zh_html(filled)
     zh_text = re.sub(r"<[^>]+>", " ", zh_html)
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
     title_zh = _translate_title(article["title"] or "", data_dir)
