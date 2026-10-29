@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import html as html_lib
+import logging
 import re
 from dataclasses import dataclass
 from html import escape
@@ -26,6 +27,16 @@ from researchlib.translate.segments import (
     unshield,
 )
 
+logger = logging.getLogger("researchlib.translate")
+
+# 一批段太多时 deepseek-flash 容易少返回一段或多返回一段。
+# 先按这个上限切开；调用后条数仍不一致，再对半拆开重试。
+# 单段比字符上限还长时单独成批，不从块中间切开。
+TRANSLATE_BATCH_MAX_SEGMENTS = 12
+TRANSLATE_BATCH_MAX_CHARS = 24_000
+# 拆批时带给下一批的上文 / 下文，和 translate_article 里的窗口一样长。
+_SPLIT_WINDOW = 1600
+
 
 @dataclass
 class TranslateResult:
@@ -36,18 +47,25 @@ class TranslateResult:
 
 
 def translation_problem(sources: list[str], translations: list[str]) -> str | None:
+    """条数必须和原文块一一对应；有原文的段不能译成空白。
+
+    中文通常比英文短，汉字数占英文字符的比例不再当失败。译文非空就收下。
+    """
     if len(translations) != len(sources):
         return "count"
     for src, dst in zip(sources, translations, strict=True):
         if src.strip() and not (dst or "").strip():
             return "empty"
-    joined_src = "\n".join(sources)
-    joined_dst = "\n".join(translations)
-    if len(joined_src) >= 80:
-        han = len(re.findall(r"[\u4e00-\u9fff]", joined_dst))
-        if han < len(joined_src) * 0.15:
-            return "short"
     return None
+
+
+def _batch_chunks(parts: list[str]) -> list[list[str]]:
+    """译制分批。段数和字符都封顶，避免一次要求模型对齐很长的数组。"""
+    return chunk_segments(
+        parts,
+        TRANSLATE_BATCH_MAX_CHARS,
+        max_segments=TRANSLATE_BATCH_MAX_SEGMENTS,
+    )
 
 
 def _render_original(conn, article: dict, data_dir: Path) -> tuple[str, str]:
@@ -66,37 +84,71 @@ def _render_original(conn, article: dict, data_dir: Path) -> tuple[str, str]:
     return html, digest
 
 
-def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[str]:
-    def once(user: dict) -> list[str]:
-        result = chat_json(
-            system=SYSTEM_BODY,
-            user=user,
-            purpose="translate_body",
-            subject="batch",
-            temperature=0.3,
-            max_tokens=min(output_tokens(), max(8000, len("".join(parts)) * 2 + 800)),
-            data_dir=data_dir,
-        )
-        raw = result.data.get("t")
-        if not isinstance(raw, list):
-            raise RuntimeError("translation JSON missing t[]")
-        return [str(item) for item in raw]
+def _coerce_translations(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        raise RuntimeError("translation JSON missing t[]")
+    # JSON null 是空白，交给 empty 拒绝；不要写成字符串 "None"。
+    return ["" if item is None else str(item) for item in raw]
 
+
+def _translate_once(parts: list[str], user: dict, data_dir: Path) -> list[str]:
+    result = chat_json(
+        system=SYSTEM_BODY,
+        user=user,
+        purpose="translate_body",
+        subject="batch",
+        temperature=0.3,
+        max_tokens=min(output_tokens(), max(8000, len("".join(parts)) * 2 + 800)),
+        data_dir=data_dir,
+    )
+    return _coerce_translations(result.data.get("t"))
+
+
+def _translate_split(parts: list[str], context: dict, data_dir: Path) -> list[str]:
+    """对半拆开再译。左右拼回去之后仍然和原来的段一一对应。"""
+    mid = len(parts) // 2
+    left_parts = parts[:mid]
+    right_parts = parts[mid:]
+    left_ctx = dict(context)
+    preview = "\n".join(right_parts[:3])[:_SPLIT_WINDOW]
+    if preview:
+        left_ctx["after"] = preview
+    left = _translate_batch(left_parts, left_ctx, data_dir)
+    right_ctx = dict(context)
+    previous = str(context.get("before") or "")
+    merged = "\n".join(piece for piece in (previous, "\n".join(left)) if piece).strip()
+    if merged:
+        right_ctx["before"] = merged[-_SPLIT_WINDOW:]
+    right = _translate_batch(right_parts, right_ctx, data_dir)
+    return left + right
+
+
+def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[str]:
+    """译一批段。返回值和 parts 等长；对不齐或有空白段就抛错，不把错位数组交出去。"""
+    if not parts:
+        return []
+    # 上一级的 repair 只针对那一批的条数，不能带进更小的一批。
+    context = {key: value for key, value in context.items() if key != "repair"}
     user = {**context, "segments": parts}
-    texts = once(user)
+    texts = _translate_once(parts, user, data_dir)
     problem = translation_problem(parts, texts)
     if problem == "count":
-        # DeepSeek 偶发少段/多段；再要一次严格对齐，仍不对就交给上层跳过。
-        texts = once(
+        # 少段 / 多段先按原批重试一次，要求条数正好。
+        texts = _translate_once(
+            parts,
             {
                 **user,
                 "repair": (
                     f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。"
                     "按 segments 下标一一对应重译，只输出 JSON。"
                 ),
-            }
+            },
+            data_dir,
         )
         problem = translation_problem(parts, texts)
+    if problem == "count" and len(parts) > 1:
+        logger.info("译文条数对不齐（segments=%s t=%s），对半拆开重试", len(parts), len(texts))
+        return _translate_split(parts, context, data_dir)
     if problem:
         raise RuntimeError(f"translation alignment: {problem}")
     return texts
@@ -211,7 +263,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         ]
 
     translations: list[str | None] = [None] * len(parts)
-    chunks = chunk_segments(parts, GROK_INPUT_CHARS)
+    chunks = _batch_chunks(parts)
     offset = 0
     for chunk in chunks:
         before = "\n".join(translations[i] for i in range(offset) if translations[i])[-1600:]

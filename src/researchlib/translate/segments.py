@@ -201,12 +201,23 @@ def unshield(translated: str, shielded: Shielded) -> str | None:
     return text
 
 
-def chunk_segments(parts: list[str], limit: int = 60_000) -> list[list[str]]:
+def chunk_segments(
+    parts: list[str],
+    limit: int = 60_000,
+    *,
+    max_segments: int | None = None,
+) -> list[list[str]]:
+    """按字符上限分批。max_segments 给定时，一批最多这么多段。
+
+    单段比 limit 还长时单独成批，不从中间切开（切开就对不齐原文块）。
+    """
     chunks: list[list[str]] = []
     current: list[str] = []
     size = 0
     for part in parts:
-        if current and size + len(part) > limit:
+        over_chars = bool(current) and size + len(part) > limit
+        over_count = max_segments is not None and bool(current) and len(current) >= max_segments
+        if over_chars or over_count:
             chunks.append(current)
             current = []
             size = 0
