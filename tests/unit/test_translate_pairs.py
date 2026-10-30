@@ -1591,6 +1591,136 @@ def test_nonadjacent_long_english_stacks_collapse_when_chinese_is_short():
     assert sum("Wearables revenue has matured" in pair.en for pair in pairs) == 1
 
 
+def _contain_groups(htmls: list[str], *, min_len: int = 80) -> int:
+    """长英文里，一句整句包含在另一句里的连通组。标点留着，只压空白。"""
+    texts = [_plain_segment(html).casefold() for html in htmls if _plain_len(html) >= min_len]
+    parent = list(range(len(texts)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for later, after in enumerate(texts):
+        for earlier in range(later):
+            before = texts[earlier]
+            if before != after and (before in after or after in before):
+                union(earlier, later)
+    sizes: dict[int, int] = {}
+    for index in range(len(texts)):
+        root = find(index)
+        sizes[root] = sizes.get(root, 0) + 1
+    return sum(1 for count in sizes.values() if count >= 2)
+
+
+_CONTAINED = (
+    "Services revenue has grown explosively, up 13 percent in 2024 to $96.2 billion, "
+    "and now contributes nearly one quarter of total sales.",
+    "This dynamic continued in the latest quarter: hardware product revenue was up a modest 2 percent, "
+    "while Services jumped 14 percent to a record.",
+    "Notably, Services accounted for 21 percent of the quarterly revenue, a share that is steadily rising.",
+    "Apple has now earned over $100 billion from Services in the last four quarters, a remarkable expansion.",
+)
+_CONTAINED_TAIL = (
+    "A trailing note about buybacks appears only in the combined paragraph and must stay visible there."
+)
+_CONTAINED_LONG = " ".join((*_CONTAINED, _CONTAINED_TAIL))
+_CONTAINED_ZH = (
+    "服务增长的短译文，说法甲。",
+    "本季硬件的短译文，说法乙。",
+    "占比上升的短译文，说法丙。",
+    "四年累计的短译文，说法丁。",
+)
+_CONTAINED_ZH_LONG = "整段换了一套说法，先写硬件走平，再写服务扩张和回购，并不嵌进上面的短句。"
+
+
+def test_shorter_leaf_contained_in_longer_paragraph_is_dropped():
+    """22195：短句整句包含在后面的长段里。两遍中文不是逐字嵌套，仍收掉短句，长段和末句留下。
+
+    四句加长段是一组五份，另有一组三份、一组两份。收完包含组为 0。
+    """
+    duo_short = (
+        "The Duo unfolds to reveal a 7.6-inch screen, the largest display ever on an iPhone this year."
+    )
+    duo_mid = (
+        "There is also an outer 5.4-inch screen for use when the phone is folded in half during the day."
+    )
+    duo_long = f"{duo_short} {duo_mid}"
+    solo = "Siri can take action in the apps you already use, including third-party apps like this one."
+    solo_long = (
+        f"{solo} Developers still have to adopt the new capabilities before those apps feel native on the device."
+    )
+    bridge = "The China aside is its own observation and is not copied into either combined paragraph."
+    en = "".join(
+        [
+            *[f"<p>{bit}</p>" for bit in _CONTAINED],
+            f"<p>{bridge}</p>",
+            f"<p>{_CONTAINED_LONG}</p>",
+            f"<blockquote><p>{duo_short}</p><p>{duo_mid}</p></blockquote>",
+            f"<p>{duo_long}</p>",
+            f"<p>{solo_long}</p>",
+            f"<p>{solo}</p>",
+        ]
+    )
+    zh = "".join(
+        [
+            *[f"<p>{bit}</p>" for bit in _CONTAINED_ZH],
+            "<p>夹层讲中国，要留在自己的位置。</p>",
+            f"<p>{_CONTAINED_ZH_LONG}</p>",
+            "<blockquote><p>折叠屏短句的译文。</p><p>外屏短句的译文。</p></blockquote>",
+            "<p>折叠屏整段用了另一套说法，外屏也写在里面，并不照搬短句。</p>",
+            "<p>Siri 整段的译文，开发者还得自己适配。</p>",
+            "<p>Siri 短句的译文，措辞和整段不同。</p>",
+        ]
+    )
+    leaves = segments_of(en)
+    assert len(leaves) == len(segments_of(zh))
+    assert all(_plain_len(bit) >= 80 for bit in (*_CONTAINED, duo_short, duo_mid, solo, _CONTAINED_TAIL))
+    assert all(bit not in _CONTAINED_ZH_LONG for bit in _CONTAINED_ZH)
+    assert _contain_groups(leaves) == 3
+    assert _CONTAINED_TAIL not in _plain_segment(leaves[0])
+
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None
+    shown = [pair.en for pair in pairs]
+    assert _contain_groups(shown) == 0
+    assert _long_en_near_groups(shown) == 0
+    plains = [_plain_segment(pair.en) for pair in pairs]
+    assert plains == [bridge, _CONTAINED_LONG, duo_long, solo_long]
+    assert _CONTAINED_TAIL in plains[1]
+    assert pairs[1].zh and "一套说法" in pairs[1].zh
+    assert pairs[0].zh and "夹层" in pairs[0].zh
+    assert sum("buybacks" in plain for plain in plains) == 1
+    assert all(_plain_len(pair.en) < 1500 for pair in pairs)
+
+
+def test_parenthetical_source_lines_are_not_treated_as_contained():
+    """括号不同的两条来源注释，去掉标点后会嵌在一起，可见文字并不包含。两对都留。"""
+    short = (
+        "Apple FY2025 Q1 earnings call highlights (AlphaStreet) ( news.alphastreet.com ) "
+        "( news.alphastreet.com )."
+    )
+    longer = (
+        "Sources: Apple FY2025 Q1 earnings call highlights (AlphaStreet) ( news.alphastreet.com "
+        "news.alphastreet.com ) plus the Business Insider liveblog of the same call."
+    )
+    assert _plain_len(short) >= 80 and _plain_len(longer) > _plain_len(short)
+    assert repeat_key(short) in repeat_key(longer)
+    assert short.casefold() not in longer.casefold()
+    en = f"<p>{short}</p><p>{longer}</p>"
+    zh = "<p>第一条来源注释。</p><p>第二条来源注释，多了直播博客。</p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 2
+    assert ")." in _plain_segment(pairs[0].en)
+    assert "liveblog" in pairs[1].en
+
+
 def test_repeated_english_stays_when_chinese_is_a_different_sentence():
     """英文隔开重复，但后一次的中文是另一句。两对都留，夹层也不错位。"""
     en = f"<p>{_IPHONE}</p><p>{_BRIDGES[0]}</p><p>{_IPHONE}</p>"

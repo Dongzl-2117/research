@@ -69,7 +69,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - 10-28 开的一批 PR 落后 main，接着做先基于 main 重做：#76、#78、#81、#101、#102 已和 main 冲突。#140 删了 `jobs/` 和批量任务的 HTTP 接口，#76（只许本机调用这些接口）因此作废；#144 删了 `empty_answer.py`，`visible_sql`、`HIDDEN`、`SHORT_POST` 挪到 `researchlib.visibility`，隐藏标记只认 `hidden`，`suppressed`、`source_paused` 不再认。
 - 网站不展示知识星球读者帖（首页/按天/检索/正文/API 均隐藏，库内保留）；标题为「图片」评论（N）… 的评论壳帖同样隐藏（poster_role 多为 owner）。方伟星球 10 月 20 日以后被误标成读者帖的那批，修好 poster_role 后才会重新露出来；观点靠夜间每晚补 60 篇，一次补完要花 DeepSeek 的钱，没做。
 - 林文丰飞书里的内嵌电子表格只有占位文字，要重新导出才能补。
-- 21118、22195 按句切开之后，同一段长英文还会隔开出现两三次（中文译文往往不到 80 字，两边各自去重对不齐条数就整页留着）。叶子已经对齐时按位置收：英文够长并且近重复，中文是同一段（更短也算）就一起不显示。不必为这些重复段再译。若对照仍是两千字的一整对，才点名重译，命令见 [docs/translate.md](docs/translate.md)。21130 的叶子数已经对齐，同一条规则收近重复。
+- 21118、22195 的长英文重复在对照页按位置收：近重复且中文是同一段（更短也算）收掉后一对；短句整句包含在更长的一段里时收短句、留长段。不必为这些重复再译。若对照仍是两千字的一整对，才点名重译，命令见 [docs/translate.md](docs/translate.md)。21130 的叶子数已经对齐，同一条规则收近重复。
 - **Mac mini 上还没跑的一次性命令**（都不调 LLM，先加 `--dry-run` 看篇数；跑完删掉那一行）：
   - `docker compose exec app research-retime --source chengfengpolang`：乘风破浪的发布时间从当天零点改成归档头里的钟点。不跑，乘风破浪的卡片时间一直是「—」，同一天的先后按入库顺序。
   - `docker compose exec app research-clean --source chengfengpolang --source fangwei-zsxq`：星球长文帖已入库的检索文字和段落块去掉导出脚手架（#124）。不跑，检索片段和问库里长文开头多一遍。
