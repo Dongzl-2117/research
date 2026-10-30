@@ -66,7 +66,7 @@ docker compose exec app research-views --articles 203,227,473,537,606
 NIGHTLY_OCR=1 BACKUP_DIR=… scripts/install-launchd.sh
 ```
 
-之后每晚在观点、摘要、论点之后，于 `app` 容器里跑 `research-ocr --engine vision`（`OCR_LIMIT`，默认 400 张，和其他步骤共用 `MINUTES` 的时间上限）。失败了和其他步骤一样记进夜间任务的结果。
+之后每晚在观点、摘要、论点之后，于 `app` 容器里跑 `research-ocr --engine vision`（`OCR_LIMIT`，默认 400 张，和其他步骤共用 `MINUTES` 的时间上限）。失败了和其他步骤一样记进夜间任务的结果。只挂在知识星球读者帖、停用来源下的图不排队（网站上不展示，认了白花钱）；`--article` 点名的照认，读者帖改回星主帖以后，下一晚自然会排上。
 
 `app` 容器没在跑时，这一步会先 `docker compose up -d app` 再执行，避免 `service app is not running` 直接失败。导入命令本身不识图，新导入的带图文章（方伟星球、方伟公众号，以及其他来源）靠这一步识图；没设 `NIGHTLY_OCR=1` 时要手动跑 `research-ocr`。
 
