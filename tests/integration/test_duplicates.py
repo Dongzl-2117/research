@@ -1,5 +1,7 @@
 """同一篇从两条路进来时只留一个主版本。"""
 
+import re
+import textwrap
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -371,3 +373,69 @@ def test_live_zsxq_copy_does_not_beat_a_longer_article_elsewhere(conn, settings)
     _store(conn, settings, "fangwei-zsxq", [_topic_doc(TOPIC, "\n\n".join(paragraphs[:-1]))])
     assert _row(conn, TOPIC)["duplicate_of"] == _row(conn, "mp/full.md")["id"]
     assert _row(conn, "mp/full.md")["duplicate_of"] is None
+
+
+def _english(seed: str, paragraphs: int = 14) -> str:
+    """编的英文长文，八千多字符，每段五句。"""
+    return "\n\n".join(
+        " ".join(
+            f"In part {index} the {seed} argument turns on sentence {line}, which explains why the bundle "
+            f"economics differ for platform number {index * 10 + line}."
+            for line in range(5)
+        )
+        for index in range(paragraphs)
+    )
+
+
+def _wrapped(text: str) -> str:
+    return "\n\n".join(textwrap.fill(paragraph, 72) for paragraph in text.split("\n\n"))
+
+
+def test_hard_wrapped_english_copy_is_the_same_article(conn, settings):
+    """Stratechery 的同一篇从网页归档和会员邮件各进来一次，邮件那份是硬换行的。"""
+    plain = _english("aggregation")
+    _store(conn, settings, "stratechery", [_doc("2025/an-interview.md", "An Interview", plain)])
+    _store(conn, settings, "stratechery", [_doc("member-rss/an-interview.md", "An Interview", _wrapped(plain))])
+    first, second = _row(conn, "2025/an-interview.md"), _row(conn, "member-rss/an-interview.md")
+    assert first["duplicate_of"] is None
+    assert second["duplicate_of"] == first["id"]
+    # 不同的两篇英文不并。
+    _store(conn, settings, "stratechery", [_doc("2025/another.md", "Another", _english("integration"))])
+    assert _row(conn, "2025/another.md")["duplicate_of"] is None
+
+
+def test_new_split_rule_refingerprints_every_article(conn, settings):
+    """认法的版本变了：库里按旧切法存的指纹全部重算，以前漏掉的重复这次认出来。"""
+    from researchlib.duplicates import MIN_SENTENCE, SKETCH, STATE_KEY, VERSION, _hash, normalize
+
+    plain = _english("bundling")
+    _store(conn, settings, "stratechery", [_doc("2025/bundling.md", "Bundling", plain)])
+    _store(conn, settings, "stratechery", [_doc("member-rss/bundling.md", "Bundling", _wrapped(plain))])
+    # 模拟上一版留下的状态：英文整段算一句，两份的指纹对不上，没认出重复。
+    old_split = re.compile(r"[。！？!?；;\n]+")
+    conn.execute("UPDATE articles SET duplicate_of = NULL, duplicate_marked_at = NULL")
+    conn.execute("DELETE FROM article_fingerprints")
+    for row in conn.execute("SELECT id, body_text FROM articles").fetchall():
+        pieces = [normalize(piece) for piece in old_split.split(row["body_text"])]
+        for value in sorted({_hash(piece) for piece in pieces if len(piece) >= MIN_SENTENCE})[:SKETCH]:
+            conn.execute(
+                "INSERT INTO article_fingerprints (article_id, h) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (row["id"], value),
+            )
+    conn.execute("UPDATE articles SET fingerprint_of = content_hash")
+    conn.execute(
+        """
+        INSERT INTO app_state (key, value, updated_at) VALUES (%s, '3', now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        """,
+        (STATE_KEY,),
+    )
+    conn.commit()
+    result = rebuild_duplicates(conn)
+    assert result["fingerprinted"] == 2
+    assert result["duplicates"] == 1
+    assert _row(conn, "member-rss/bundling.md")["duplicate_of"] == _row(conn, "2025/bundling.md")["id"]
+    state = conn.execute("SELECT value FROM app_state WHERE key = %s", (STATE_KEY,)).fetchone()
+    assert state["value"] == VERSION
+    # 版本对上以后再认一遍，不再全部重算指纹。
+    assert rebuild_duplicates(conn)["fingerprinted"] == 0

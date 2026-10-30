@@ -5,6 +5,7 @@ AIHOT 导入的外部 id 是 aihot:<原 id>，文件归档用相对路径或 top
 问库里同一段原文占两个名额，模型还会以为「几篇都这么说」。
 
 怎么认：正文按句切开，只留汉字、字母和数字，每句算一个 64 位哈希。每篇存哈希最小的 32 句当指纹。
+英文段落先把段内换行接回去，再按句末的 . ! ? 切：同一篇的硬换行版本（邮件、RSS）和不换行的切出来一样。
 同一位作者、发布时间前后一周内的文章里，指纹重合够多的才逐句核对：较短那篇至少 80% 的句子
 （且至少 3 句）出现在另一篇里，两篇长度也差不多（短帖要求更接近），才算同一篇。
 同一位作者很多篇都有的句子（页脚、免责声明、口头禅）不算。
@@ -42,11 +43,19 @@ SHORT_LENGTH_RATIO = 0.8
 COMMON_DF = 6
 # 两篇都有发布时间时，只在前后这么多天里找同一篇。
 WINDOW_DAYS = 7
-VERSION = "3"
+# 认法变了就加一：启动时全库重算指纹、重认一遍。4：英文按句切，段内换行接回去。
+VERSION = "4"
 STATE_KEY = "dedupe_version"
 
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _SPLIT = re.compile(r"[。！？!?；;\n]+")
+_BLOCK = re.compile(r"\n[ \t]*\n")
+# 英文句末：. ! ? 后面可以跟引号、括号，再跟空白。
+_LATIN_END = re.compile(r"(?<=[.!?])[\"'”’)\]]*\s+")
+_LETTER = re.compile(r"[A-Za-z]")
+_HAN = re.compile(r"[一-鿿]")
+# 字母不少于这么多、汉字不到字母四分之一的段落按英文切。
+LATIN_BLOCK_LETTERS = 40
 
 
 def normalize(text: str) -> str:
@@ -64,9 +73,21 @@ class Fingerprint:
     length: int
 
 
+def sentences(text: str) -> list[str]:
+    """切成句子。中文按标点和换行切；英文段落先把段内换行接回去，再按句末标点切。"""
+    pieces: list[str] = []
+    for block in _BLOCK.split(text or ""):
+        letters = len(_LETTER.findall(block))
+        if letters >= LATIN_BLOCK_LETTERS and len(_HAN.findall(block)) * 4 < letters:
+            pieces.extend(_LATIN_END.split(" ".join(block.split())))
+        else:
+            pieces.extend(_SPLIT.split(block))
+    return pieces
+
+
 def fingerprint(body_text: str) -> Fingerprint:
     hashes: set[int] = set()
-    for piece in _SPLIT.split(body_text or ""):
+    for piece in sentences(body_text):
         sentence = normalize(piece)
         if len(sentence) >= MIN_SENTENCE:
             hashes.add(_hash(sentence))
@@ -416,10 +437,15 @@ def rebuild_duplicates(conn, matcher=None) -> dict:
     from researchlib.mentions import CompanyMatcher, load_company_rows
 
     matcher = matcher or CompanyMatcher(load_company_rows(conn))
+    state = conn.execute("SELECT value FROM app_state WHERE key = %s", (STATE_KEY,)).fetchone()
+    # 认法变了（比如切句的办法）：旧指纹和新算的对不上，全部重算；否则只补正文改过、没算过的。
+    every = state is None or state["value"] != VERSION
     stale = [
         row["id"]
         for row in conn.execute(
-            "SELECT id FROM articles WHERE fingerprint_of IS DISTINCT FROM content_hash ORDER BY id"
+            "SELECT id FROM articles ORDER BY id"
+            if every
+            else "SELECT id FROM articles WHERE fingerprint_of IS DISTINCT FROM content_hash ORDER BY id"
         ).fetchall()
     ]
     for index, article_id in enumerate(stale, start=1):
