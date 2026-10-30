@@ -22,6 +22,7 @@ from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.present_text import plain_qa_markdown
+from researchlib.render import link_local_images
 from researchlib.retrieval import retrieve, search_articles
 from researchlib.textutil import strip_duplicate_title
 from researchlib.views import FILTERS as VIEW_FILTERS
@@ -237,6 +238,13 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
         body_md = filter_host_comments_markdown(body_md, owners)
     # 问答帖：提问网友的昵称在归档头的「作者」和「提问（网友 → 方伟Rey）」里，阅读页、检索都不露，这里也去掉。
     body_md = plain_qa_markdown(body_md)
+    # 归档里的图是相对路径（星球是「../../images/…」），接口拿到打不开：本地存了的换成站内 /media 的完整地址。
+    images = queries.article_images(conn, article_id)
+    if images:
+        base = _base(request)
+        body_md = link_local_images(
+            body_md, {row["original_ref"]: f"{base}/media/{row['storage_path']}" for row in images}
+        )
     # 和文章页同一套：省略号半句补成正文里的完整句，只有图的帖用图片里的字。库内 title 不改。
     title = display_titles(conn, [row], by_id, settings.display_timezone)[row["id"]]
     return {
@@ -291,6 +299,10 @@ def _markdown(payload: dict) -> str:
             body = body[end + 4 :].lstrip("\n")
     # 归档里那行「有两...」和补全后的标题是同一句，阅读用的 markdown 不再重复。
     body = strip_duplicate_title(body, payload.get("title") or "")
+    # 截图里识别出的字（和检索用的同一份整理）附在最后：只有一句话、字都在图里的帖，光看正文什么都没有。
+    shots = [chunk["text"] for chunk in payload["chunks"] if chunk.get("lang") == "ocr" and chunk["text"].strip()]
+    if shots:
+        body = body.rstrip() + "\n\n## 图片里的字\n\n" + "\n\n".join(text.strip() for text in shots)
     return "\n".join(lines) + f"# {payload['title']}\n\n" + body.rstrip() + "\n"
 
 
@@ -641,7 +653,8 @@ def llms_txt(request: Request):
         "",
         f"- [文章列表]({base}/api/v1/articles): 按时间倒序，范围参数同上",
         f"- [单篇 JSON]({base}/api/v1/articles/{{id}}): 元数据、公司提及深度、LLM 摘要、段落块、Markdown 原文",
-        f"- [单篇 Markdown]({base}/api/v1/articles/{{id}}.md): 带 YAML frontmatter 的原文",
+        f"- [单篇 Markdown]({base}/api/v1/articles/{{id}}.md): 带 YAML frontmatter 的原文，"
+        "图片是站内完整地址，截图里识别出的字附在最后「图片里的字」一节",
         f"- [某一天]({base}/api/v1/days/{{YYYY-MM-DD}}): 那一天的全部文章",
         f"- [作者]({base}/api/v1/authors): 作者、来源、篇数、时间跨度、常谈公司。当前作者：{'、'.join(authors)}",
         f"- [公司]({base}/api/v1/companies): 有提及的公司（all=1 含未提及），篇数、深入篇数、最近提及",

@@ -410,3 +410,37 @@ def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, mon
         (row["id"], company["id"]),
     ).fetchone()
     assert "不太看好" not in view["judgment"] and view["quote"] == "零售的本分是帮消费者省钱"
+
+
+def test_api_markdown_links_local_images_and_appends_their_text(conn, settings, tmp_path):
+    """接口原文：归档里的相对路径换成站内 /media 的完整地址，还没下载的外链图照留；截图里的字附在 .md 最后。"""
+    chat = tmp_path / "chat.png"
+    _png(chat, b"\x03" * 24)
+    row = _store(
+        conn,
+        settings,
+        "fangwei-zsxq",
+        "ocr-api",
+        "这是好文章",
+        "这是好文章\n\n![](../../images/chat.png)\n\n![](https://example.com/far.png)\n",
+        [chat],
+    )
+    _remember(conn, row["id"], "chat.png", CHAT)
+    refresh_article_ocr(conn, row["id"])
+    replace_ocr_chunks(conn, row["id"])
+    conn.commit()
+    storage = conn.execute(
+        "SELECT storage_path FROM article_images WHERE article_id = %s", (row["id"],)
+    ).fetchone()["storage_path"]
+    local = f"]({settings.public_base_url}/media/{storage})"
+
+    with TestClient(create_app(settings)) as client:
+        data = client.get(f"/api/v1/articles/{row['id']}").json()
+        markdown = client.get(f"/api/v1/articles/{row['id']}.md").text
+        assert client.get(f"/media/{storage}").status_code == 200
+    assert local in data["body_markdown"] and "../../images/" not in data["body_markdown"]
+    assert "](https://example.com/far.png)" in data["body_markdown"]
+    assert local in markdown
+    body, shots = markdown.split("\n## 图片里的字\n", 1)
+    assert "瑞幸和古茗都算头部" not in body
+    assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in shots
