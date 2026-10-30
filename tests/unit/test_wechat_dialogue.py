@@ -765,6 +765,16 @@ def test_606_friend_follow_chrome_is_dropped():
     assert "我有14个朋友关注这件事，先放着" in kept
 
 
+def test_friends_who_liked_line_is_dropped():
+    """文章、视频号底下「王小明等3个朋友」「李四等12个朋友赞过」整行丢掉，名字是读者的（10503）。"""
+    raw = "正文这一句要留下，后面还有半句。\n王小明-nft创业等3个朋友\n李四等12个朋友赞过\n"
+    text = present_ocr_pieces([raw])
+    assert "正文这一句要留下" in text
+    assert "个朋友" not in text and "王小明" not in text
+    kept = present_ocr_pieces(["我和王小明等3个朋友一起去看了门店，客流还可以。\n"])
+    assert "王小明等3个朋友一起去看了门店" in kept
+
+
 def test_606_account_name_and_reader_counts_are_follow_chrome():
     """公众号预览页：「账号名 +关注」「观察 56个朋友关注 82 455 38 33。」整行丢掉，正文不截断。"""
     raw = """方伟

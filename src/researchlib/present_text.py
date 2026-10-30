@@ -254,6 +254,20 @@ _LABEL_ONLY = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9·]{1,12}[：:]$")
 _SENTENCE_END = re.compile(r"[。！？!?…]$|(?:[A-Za-z])\.$")
 _CONNECTOR_END = re.compile(r"[，、；：,;:]$")
 _NEW_BLOCK = re.compile(r"^(?:[12]\d{3}\s*年|第[0-9一二三四五六七八九十])")
+# 文章、帖子截图：一整段按屏幕宽度折成好几行，行行差不多一样宽，断在词中间（文章 10503）。
+# 至少三行宽度相差不过一个字、也没有哪一行比它们更宽，才算这种排版：屏幕宽度装不下更宽的行。
+# 已经接成整段的长行在，就不再按短行的宽度接（再跑一遍不变）。
+# 接着往下写的正文，满行里多半夹着逗号句号；标题、字幕、幻灯片一行一条短句，没有，不接。
+# 段首空两格、夹着字母的行窄一点，比满行窄 3.5 个字以内都算满行。
+_FULL_MIN = 12.0
+_FULL_LINES = 3
+_FULL_NEAR = 1.0
+_FULL_SLACK = 3.5
+_INNER_PUNCT = re.compile(r"[，。、；：！？,.;:!?]")
+# 编号、项目符号开头的是另起的一条：「1、」「二、」「①」「（3）」「• 」。
+_LIST_START = re.compile(
+    r"^(?:\d{1,2}(?:[、)）]|[.．](?!\d))|[一二三四五六七八九十]{1,2}、|[①-⑳]|[（(][\d一二三四五六七八九十]{1,2}[)）]|[-•·*]\s)"
+)
 # 单独成行就是一句的短应答，不当成上一行的折行尾巴。
 # 行尾是这些字时，句子多半还没说完（「在最顺的时候」）。不是错字表。
 _UNFINISHED_END = frozenset("的了是在和与或而为把被对从向到着过就也都又再很最不没候时")
@@ -343,6 +357,9 @@ def _join_parts(left: str, right: str) -> str:
         return left + right
     if left[-1] in "，、；：,;:" or right[0] in "，、；：,;:":
         return left + right
+    # 全角的括号、引号贴着汉字写（「资产（asset）」），只有两边都是字母数字时才空一格。
+    if _visual_width(left[-1]) == 1.0 or _visual_width(right[0]) == 1.0:
+        return left + right
     return f"{left} {right}"
 
 
@@ -361,7 +378,7 @@ def _is_wrap_continuation(previous: str, nxt: str) -> bool:
     """上一行是被画面截断的半句，才接到下一行。模型已经分好的段不在这里重切。"""
     if not previous or not nxt or _sentence_end(previous):
         return False
-    if _DIALOGUE_LINE.match(nxt) or _NEW_BLOCK.match(nxt):
+    if _DIALOGUE_LINE.match(nxt) or _NEW_BLOCK.match(nxt) or _LIST_START.match(nxt):
         return False
     if _is_quote_card(nxt) and not _LABEL_ONLY.fullmatch(previous):
         return False
@@ -373,11 +390,43 @@ def _is_wrap_continuation(previous: str, nxt: str) -> bool:
     return _WRAP_MIN <= _visual_width(previous) <= _WRAP_MAX
 
 
+def _full_width(lines: list[str]) -> float | None:
+    """整段按屏幕宽度折行时的满行宽度。凑不出、有更宽的行、不像正文或者里面有表时返回 None。"""
+    from researchlib.ocr_tables import find_tables
+
+    measured = [(_visual_width(line), line) for line in lines if not _DIALOGUE_LINE.match(line)]
+    band = [(width, line) for width, line in measured if width >= _FULL_MIN]
+    best: tuple[int, float] | None = None
+    cluster: list[str] = []
+    for width, _line in band:
+        near = [(other, text) for other, text in band if abs(other - width) <= _FULL_NEAR]
+        candidate = (len(near), max(other for other, _text in near))
+        if best is None or candidate > best:
+            best, cluster = candidate, [text for _other, text in near]
+    if best is None or best[0] < _FULL_LINES:
+        return None
+    running = sum(1 for text in cluster if _INNER_PUNCT.search(text[:-1]))
+    if running * 2 < len(cluster):
+        return None
+    full = best[1]
+    if max(width for width, _line in measured) > full + _FULL_NEAR or find_tables(lines):
+        return None
+    return full
+
+
+def _wraps_at_full_width(previous: str, nxt: str, full: float) -> bool:
+    """上一个屏幕行排满了、断在半句：接上下一行。另起的一条（对话、编号、年份开头）不接。"""
+    if _sentence_end(previous) or _visual_width(previous) < full - _FULL_SLACK:
+        return False
+    return not (_DIALOGUE_LINE.match(nxt) or _NEW_BLOCK.match(nxt) or _LIST_START.match(nxt) or nxt in _STANDALONE)
+
+
 def merge_wrapped_utterances(text: str) -> str:
     """只把截断在半句的折行接回去。
 
     空行是模型分的段，保留。已经写完的一行（哪怕很短）不因为旁边也短就粘上去，
     也不把整段收成一块。「方伟：」「网友：」气泡各留一行。再跑一遍不变。
+    文章截图按屏幕宽度一行一行抄下来的（好几行一样宽、断在词中间），排满的行接成整段。
     """
     if not text or "\n" not in text:
         return text or ""
@@ -387,6 +436,7 @@ def merge_wrapped_utterances(text: str) -> str:
     labeled = sum(1 for line in nonempty if _DIALOGUE_LINE.match(line))
     if nonempty and labeled * 2 >= len(nonempty):
         return normalized.strip("\n")
+    full = _full_width(nonempty)
     merged: list[str] = []
     index = 0
     while index < len(raw_lines):
@@ -399,13 +449,23 @@ def merge_wrapped_utterances(text: str) -> str:
             merged.append(line)
             index += 1
             continue
+        # 这一段最后一个屏幕行：排没排满看它，不看接起来以后的整段。
+        last = line
         while index + 1 < len(raw_lines):
             nxt = raw_lines[index + 1].strip()
-            if not nxt or not _is_wrap_continuation(line, nxt):
+            if not nxt:
+                break
+            if full is not None and _wraps_at_full_width(last, nxt, full):
+                line = _join_parts(line, nxt)
+                last = nxt
+                index += 1
+                continue
+            if not _is_wrap_continuation(line, nxt):
                 break
             # 顶满一行只接后面那一小截。接完就停，避免整句刚好还在宽度里时把下一块标题吞进去。
             band_only = not _LABEL_ONLY.fullmatch(line) and not _CONNECTOR_END.search(line)
             line = line + nxt if _LABEL_ONLY.fullmatch(line) else _join_parts(line, nxt)
+            last = nxt
             index += 1
             if band_only:
                 break
