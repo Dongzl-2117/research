@@ -1,5 +1,9 @@
-"""知识星球评论区只留方伟。"""
+"""知识星球评论区只留来源作者：方伟星球留方伟，别的星球留它自己的星主。"""
 
+from pathlib import Path
+from types import SimpleNamespace
+
+from researchlib.ingest.parse import parse_archive
 from researchlib.render import render_body
 from researchlib.zsxq_comments import (
     assemble_reader_comments,
@@ -7,6 +11,7 @@ from researchlib.zsxq_comments import (
     filter_host_comments_markdown,
     guest_comment_authors,
     is_host_comment_author,
+    source_owners,
 )
 
 SAMPLE = """正文一句。
@@ -82,3 +87,48 @@ def test_render_body_on_article_with_comments():
     assert "方伟Rey" in page
     assert "陈小东" not in page
     assert 'class="zsxq-comments"' in page
+
+
+# 别的星球（乘风破浪这种）：来源作者名加星主的星球昵称。昵称是编的。
+OWNERS = source_owners(SimpleNamespace(author="乘风破浪", poster_names=("赵六",)))
+OTHER = """正文一句，讲关税。
+
+## 评论（3）
+
+- **李四**（2026-09-27 15:00）
+  半托管早就铺开了吗？
+- **赵六**（2026-09-27 15:10）
+  铺开了，这次关税是利好。
+- **方伟Rey**（2026-09-27 15:20）
+  别的星球里的方伟也只是读者。
+"""
+
+
+def test_other_source_keeps_its_own_host():
+    assert OWNERS == ("乘风破浪", "赵六")
+    assert is_host_comment_author("赵六（作者）", OWNERS)
+    assert is_host_comment_author("乘风破浪", OWNERS)
+    assert not is_host_comment_author("方伟Rey", OWNERS)
+    assert not is_host_comment_author("李四", OWNERS)
+    assert guest_comment_authors(OTHER, OWNERS) == ["李四", "方伟Rey"]
+
+    filtered = filter_host_comments_markdown(OTHER, OWNERS)
+    assert "## 评论（1）" in filtered and "铺开了，这次关税是利好" in filtered
+    assert "李四" not in filtered and "方伟Rey" not in filtered
+
+    page = str(render_body(OTHER, {}, owners=OWNERS))
+    assert "铺开了，这次关税是利好" in page
+    assert "李四" not in page and "方伟Rey" not in page
+    # 不给作者名时和以前一样只认方伟。
+    assert "赵六" not in str(render_body(OTHER, {}))
+    # 方伟星球给了作者名，「方伟-最近在杭州」这些显示名照样认。
+    assert is_host_comment_author("方伟-最近在杭州", ("方伟", "方伟Rey"))
+
+
+def test_zsxq_import_keeps_the_sources_own_host(tmp_path: Path):
+    (tmp_path / "md").mkdir()
+    (tmp_path / "md" / "888888.md").write_text(OTHER, encoding="utf-8")
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq", owners=OWNERS)
+    assert errors == []
+    assert "铺开了，这次关税是利好" in docs[0].body_md
+    assert "李四" not in docs[0].body_md and "方伟Rey" not in docs[0].body_md

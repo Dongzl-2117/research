@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as html_lib
 import re
 import unicodedata
+from collections.abc import Sequence
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
@@ -752,8 +753,9 @@ def _render_markdown(body: str, mapping: dict[str, str]) -> str:
     return mark_dialogue_speakers(_anchor_images(sanitize_html(html)))
 
 
-def render_body(body: str, mapping: dict[str, str], fmt: str | None = None) -> Markup:
+def render_body(body: str, mapping: dict[str, str], fmt: str | None = None, *, owners: Sequence[str] = ()) -> Markup:
+    """owners：评论区只留这些名字（来源作者，见 zsxq_comments.source_owners）。不给时按方伟认。"""
     if fmt == "html":
         html = rewrite_html_images(polish_display_text(body or ""), mapping)
         return Markup(_anchor_images(sanitize_html(html)))
-    return Markup(assemble_reader_comments(body or "", mapping, _render_markdown))
+    return Markup(assemble_reader_comments(body or "", mapping, _render_markdown, owners))

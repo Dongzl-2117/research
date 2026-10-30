@@ -407,6 +407,7 @@ def parse_markdown_files(
     images: ImageIndex,
     id_mode: str,
     raw_index: dict[str, dict] | None = None,
+    owners: tuple[str, ...] = (),
 ) -> tuple[list[ParsedDoc], list[str]]:
     docs: list[ParsedDoc] = []
     errors: list[str] = []
@@ -480,10 +481,10 @@ def parse_markdown_files(
             refs.append((dest, images.resolve(ref, path)))
         full_md = normalize_newlines(original)
         if id_mode == "zsxq":
-            # 评论区只留方伟；其他人的仍在 inbox / raw，可逆。
+            # 评论区只留来源作者（owners，不给时按方伟）；其他人的仍在 inbox / raw，可逆。
             from researchlib.zsxq_comments import filter_host_comments_markdown
 
-            full_md = filter_host_comments_markdown(full_md)
+            full_md = filter_host_comments_markdown(full_md, owners)
         stored_meta: dict = {
             "format": "markdown",
             "parent": parent,
@@ -550,7 +551,10 @@ def _owning_root(path: Path, roots: list[Path]) -> Path | None:
     return owners[0]
 
 
-def parse_archive(input_path: Path, work: Path, *, id_mode: str) -> tuple[list[ParsedDoc], list[str], int, int]:
+def parse_archive(
+    input_path: Path, work: Path, *, id_mode: str, owners: tuple[str, ...] = ()
+) -> tuple[list[ParsedDoc], list[str], int, int]:
+    """owners：星球评论区只留这些名字（zsxq_comments.source_owners）。不给时按方伟。"""
     roots = materialize(input_path, work)
     markdown, images, raw_json = iter_files(roots)
     if id_mode == "zsxq":
@@ -576,5 +580,6 @@ def parse_archive(input_path: Path, work: Path, *, id_mode: str) -> tuple[list[P
         images=index,
         id_mode=id_mode,
         raw_index=raw_index,
+        owners=owners,
     )
     return docs, errors, len(markdown), len(images)
