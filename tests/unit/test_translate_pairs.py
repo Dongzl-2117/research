@@ -12,6 +12,7 @@ from researchlib.translate.segments import (
     splice_segments,
     stable_leaf,
     top_level_blocks,
+    translatable_blocks,
     unshield,
 )
 from researchlib.translate.service import _assemble_zh_html, _dedupe_consecutive_blocks
@@ -587,6 +588,75 @@ def test_punctuation_only_br_lines_join_the_neighboring_sentence():
     assert leaf_count_problem(html, written) is None
     assert len(segments_of(written)) == 3
     assert "One." not in written and "一。" in written
+
+
+def _plain_segment(html: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html)).strip()
+
+
+def _write_translatable(html: str) -> str:
+    """按译制的做法写回：没有拉丁字母的叶子不送去翻译，原样留在这一格。"""
+    replacements = {index: f"<p>译文{index}。</p>" for index, _block in translatable_blocks(html)}
+    return splice_segments(html, replacements)
+
+
+def test_closing_paren_line_after_a_sentence_joins_that_sentence():
+    """句末已经收过，下一行只剩「).」时并进前一句。单独成叶的话写回后再切会少一片。"""
+    html = "<p>First sentence is done.<br>).<br>Second sentence follows.</p>"
+    plains = [_plain_segment(segment) for segment in segments_of(html)]
+    assert plains == ["First sentence is done.).", "Second sentence follows."]
+    written = _write_translatable(html)
+    assert leaf_count_problem(html, written) is None
+    assert len(segments_of(written)) == len(plains)
+
+
+def test_soft_wrapped_closing_paren_is_not_split_off_past_seven_hundred_chars():
+    """21130 的形状：一句已经结束，后面的半句累计超过 700 字，句末「).」单独一行。
+
+    按定义列表的 700 字上限切开时，「).」自己成叶。它没有字母，不进 ``t``。
+    同一次写回把其余行换成 ``<p>`` 之后，再切段会丢掉这片，出现 leaves N vs N-1。
+    """
+    clause = "clause about scale and copyright keeps going"
+    lines = ["Opening sentence stays on its own."]
+    pending = 0
+    while pending <= 700:
+        lines.append(clause)
+        pending += len(clause) + 1
+    lines.append(").")
+    assert len(lines) >= 3
+    html = "<p>" + "<br>".join(lines) + "</p>"
+    plains = [_plain_segment(segment) for segment in segments_of(html)]
+    assert plains[0] == "Opening sentence stays on its own."
+    assert len(plains) == 2
+    assert plains[1].count(clause) == lines.count(clause)
+    assert plains[1].endswith("going).")
+    written = _write_translatable(html)
+    assert leaf_count_problem(html, written) is None
+    assert len(segments_of(written)) == 2
+
+
+def test_markdown_blockquote_closing_paren_stays_in_the_sentence():
+    """引用里的软换行（nl2br）累计超过 700 字、句末「).」单独一行时，仍和前一句是一片叶子。"""
+    import markdown
+
+    clause = "clause about scale and copyright keeps going"
+    lines = ["Opening sentence stays on its own.", ""]
+    pending = 0
+    while pending <= 700:
+        lines.append(f"> {clause}")
+        pending += len(clause) + 1
+    lines.append("> ).")
+    html = markdown.markdown("\n".join(lines), extensions=["extra", "nl2br", "sane_lists"])
+    assert "<br" in html.lower()
+    plains = [_plain_segment(segment) for segment in segments_of(html)]
+    assert plains[0] == "Opening sentence stays on its own."
+    assert len(plains) == 2
+    assert plains[1].count(clause) == lines.count(f"> {clause}")
+    assert plains[1].endswith("going).")
+    assert not any(plain == ")." for plain in plains)
+    written = _write_translatable(html)
+    assert leaf_count_problem(html, written) is None
+    assert len(segments_of(written)) == 2
 
 
 def _interview_soft_breaks() -> list[str]:

@@ -12,10 +12,13 @@ TypeScript，不另编一条 AIHOT 规则）。研究站仍把「多条或很长
 
 普通块里用 ``<br>`` 粘起来的长文也按行切开：一个 ``<p>`` 塞几十行、原文只有一两段时，
 对照页不能只出两对。切开之后按句收成叶子：一行自己已经以句号结尾就单独留下，人名、
-链接文字这种半句并进后文，直到句末。不按字数把后面的短句再并进来，中文更短时两边
-组数会岔开，对照就把整段退成一对。写回换成若干 ``<p>``（原来是列表项、引用时外壳
-还在），译文里不再留 ``<br>``。这样译文没有句号、或者比英文短，也不会被重新并段，
-叶子数不变。短的两三行（地址、诗句、署名）不拆，非空行不到 ``_BR_LINES_MIN`` 仍是一整段。
+链接文字这种半句并进后文，直到句末。不按字数把后面的短句再并进来，也不用定义列表
+那条 700 字的上限从半句切开；中文更短时两边组数会岔开，对照就把整段退成一对。
+软换行把句末的「).」留在单独一行时，这一行没有字母，并进相邻的句子。单独留下的话
+不会送去翻译，写回把其余行换成 ``<p>`` 之后再切会被丢掉，英文比中文多一片叶子。
+写回换成若干 ``<p>``（原来是列表项、引用时外壳还在），译文里不再留 ``<br>``。这样
+译文没有句号、或者比英文短，也不会被重新并段，叶子数不变。短的两三行（地址、诗句、
+署名）不拆，非空行不到 ``_BR_LINES_MIN`` 仍是一整段。
 
 写回必须让译文再用同一套规则切出来的叶子数等于原文。模型片段收成一个没有块级
 子节点的叶子；连续 ``dt`` 里单独成段的那一条写成 ``<p>``，避免中文变短后又被按
@@ -374,15 +377,18 @@ def _pack_fragments(
     floor: int | None = None,
     alone: int | None = None,
     merge_tail: bool = True,
+    target: int | None = None,
 ) -> list[list[object]]:
     """把一行一条的碎片收成大约一段。单行已经够长就单独留下。
 
     ``floor`` 是句末就可以收束的最短长度，默认 ``_DEF_PACK_FLOOR``。普通块的软换行传 0：
     每到句末就收，不把后面的短句也并进来。``alone`` 是单行单独成段的长度。
-    ``merge_tail`` 为假时，不把末尾的短组并回上一组。
+    ``merge_tail`` 为假时，不把末尾的短组并回上一组。``target`` 是累计到这个长度就收，
+    默认 ``_DEF_PACK_TARGET``。普通块的软换行传一个到不了的值，只在句末收。
     """
     floor = _DEF_PACK_FLOOR if floor is None else floor
     alone = _DEF_PACK_ALONE if alone is None else alone
+    limit = _DEF_PACK_TARGET if target is None else target
     groups: list[list[object]] = []
     buf: list[object] = []
     size = 0
@@ -408,7 +414,7 @@ def _pack_fragments(
         size += length + 1
         plain = item if isinstance(item, str) else _plain_text(item)
         ended = _sentence_end(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", str(plain))).strip())
-        if size >= _DEF_PACK_TARGET or (ended and size >= floor):
+        if size >= limit or (ended and size >= floor):
             flush()
     flush()
     if merge_tail and len(groups) >= 2:
@@ -444,17 +450,51 @@ def _pack_br_groups(lines: list[str]) -> list[list[str]]:
     """软换行按句收成组。
 
     复用 ``_pack_fragments``，但句末就收（``floor=0``），也不把末尾短句并进上一句，
-    单行再长也不从半句前面撕开。按 180 字再并一次的话，中文只有英文三分之一上下，
-    同一批 ``<br>`` 会切出不同的组数；对照发现段数对不齐，会把整段退成一对。
-    一行自己已经是完整句子时，每行仍是一组。
+    单行再长也不从半句前面撕开。不按 ``_DEF_PACK_TARGET``（700 字）从半句切开：
+    中文更短，同一批 ``<br>`` 会切出不同的组数；切在句末标点前时，剩下的「).」
+    没有字母，写回后再切会被丢掉。按 180 字再并一次也有同样的问题。
+    一行自己已经是完整句子时，每行仍是一组。只剩标点的组并进相邻句子。
     """
-    return _pack_fragments(
+    groups = _pack_fragments(
         lines,
         _html_plain_len,
         floor=0,
         alone=10**9,
         merge_tail=False,
+        target=10**9,
     )
+    return _glue_letterless_br_groups(groups)
+
+
+def _glue_letterless_br_groups(groups: list[list[str]]) -> list[list[str]]:
+    """没有字母的组并进相邻句子。
+
+    上一句已经在句号处收束之后，下一行若只剩「).」，会因为自己以句号结尾再成一组。
+    这组不会送去翻译。同一次写回把有字母的行换成 ``<p>`` 时，这片 ``<p>).</p>``
+    留在原文里，再切段时没有字母的叶子被丢掉，英文就比中文多一片。
+    前面已经有句子就并进去；开头还没有句子，就留到下一句前面。
+    """
+    if len(groups) < 2:
+        return groups
+    glued: list[list[str]] = []
+    pending: list[str] = []
+    for group in groups:
+        if not _html_has_letter("".join(group)):
+            if glued:
+                glued[-1].extend(group)
+            else:
+                pending.extend(group)
+            continue
+        if pending:
+            group = [*pending, *group]
+            pending = []
+        glued.append(list(group))
+    if pending:
+        if glued:
+            glued[-1].extend(pending)
+        else:
+            glued.append(pending)
+    return glued
 
 
 def _br_pieces(node: _El) -> list[str] | None:
@@ -495,8 +535,8 @@ def _br_lines(node: _El) -> list[str] | None:
     """普通块里用 ``<br>`` 粘起来的长文按行切开，返回每行的 inner HTML。
 
     行数不到 ``_BR_LINES_MIN`` 时返回 None，仍是一整段（两行的地址、诗句、署名不拆）。
-    切出来的行再由 ``_pack_br_groups`` 按句收成叶子。只留标点的行也留着，空行
-    （连着两个 ``<br>``）不占叶子。
+    切出来的行再由 ``_pack_br_groups`` 按句收成叶子。只留标点的行也留着，并进相邻的句子，
+    不单独成叶。空行（连着两个 ``<br>``）不占叶子。
     """
     if not any(isinstance(child, _El) and child.name == "br" for child in node.children):
         return None
