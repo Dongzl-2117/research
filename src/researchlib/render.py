@@ -16,7 +16,7 @@ from researchlib.ocr import useful_image_text
 from researchlib.ocr_tables import Table, find_tables
 from researchlib.present_text import merge_wrapped_utterances, polish_display_text, present_article_text
 from researchlib.textutil import strip_alert_markers
-from researchlib.wechat_dialogue import parse_shot, render_turns
+from researchlib.wechat_dialogue import parse_shot, render_shots
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -695,11 +695,9 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
         ):
             group.append(nxt)
             nxt += 1
-        segments: list[tuple[dict, str]] = []
-        for cursor in group:
-            info = parsed[cursor]
-            dialogue = render_turns(info["shot"].turns, seen).strip()
-            segments.append((info, dialogue))
+        infos = [parsed[cursor] for cursor in group]
+        dialogues = render_shots([info["shot"].turns for info in infos], seen)
+        segments = [(info, dialogue.strip()) for info, dialogue in zip(infos, dialogues, strict=True)]
         if not any(text for _info, text in segments):
             for cursor in group:
                 info = parsed[cursor]

@@ -154,6 +154,61 @@ def test_reading_page_shows_the_dialogue_once():
     assert second_at < page.index("同店压力还在", second_at) < page.index("</a>", second_at)
 
 
+# 文章 24020 的形状：四张连着往下截的群聊，每张最底下那行都只截到一半，下一张里同一位置是完整的一行。
+CUT_SHOTS = [
+    "方伟：送货上门最早是抖音启动的\n后面拼多多发现是个好东西\n开始强力推行\n"
+    "现在抖音放弃了，淘宝也推不动，京东是本来就送货上门\n这里反映了很有趣的利益结构问题。",
+    "方伟：现在抖音放弃了，淘宝也推不动，京东是本来就送货上门\n这里反映了很多复杂的利益结构问题\n"
+    "比如淘宝为什么很难推\n他出发点是好的\n但是抖音本来就是一个高投流的商业模式\n一分一毫都要扣的很细，8毛钱就关",
+    "方伟：他出发点是好的\n但是抖音本来就是一个高投流的商业模式\n一分一毫都要扣的很细，8毛钱就关乎ROI正不正都问题\n"
+    "最主要的是利益系统结构问题\n网友：应该只有pdd是按转化率分流量吧。\n"
+    "方伟：当把送货上门标签打在商品上，平台又增加这个标签的权重时\n商家能够看见这8毛钱对ROI的影响，正不正能看得见",
+    "网友：应该只有 pdd 是按转化率分流量吧。\n方伟：当把送货上门标签打在商品上，平台又增加这个标签的权重时\n"
+    "商家能够看见这 8 毛钱对 ROI 的影响，正不正能量看得见\n这也让他有动机持续做",
+]
+
+
+def test_cut_bottom_line_gives_way_to_the_whole_line_in_the_next_shot():
+    """上一张底下那行只截到半句（「8毛钱就关」），或截了一半认错字（「很有趣的」「能看得见」），只留下一张里的那行。"""
+    stored = present_ocr_pieces(CUT_SHOTS)
+    parts = ["（见图）"]
+    mapping: dict[str, str] = {}
+    texts: dict[str, str] = {}
+    for index, shot in enumerate(CUT_SHOTS, start=1):
+        digest = f"{index:02d}" * 32
+        mapping[f"s{index}.png"] = f"/media/fangwei-zsxq/ab/{digest}.png"
+        texts[digest] = shot
+        parts.append(f"![](s{index}.png)")
+    page = inline_image_ocr(str(render_body("\n\n".join(parts) + "\n", mapping)), texts)
+    for text in (stored, page):
+        assert text.count("一分一毫都要扣的很细") == 1
+        assert "8毛钱就关乎ROI正不正都问题" in text
+        assert "很有趣的利益结构问题" not in text
+        assert "很多复杂的利益结构问题" in text
+        assert text.count("商家能够看见这") == 1
+        assert "这也让他有动机持续做" in text
+        # 前面的话一句不少。
+        assert "开始强力推行" in text and "但是抖音本来就是一个高投流的商业模式" in text
+    for index in range(1, len(CUT_SHOTS) + 1):
+        assert f'id="{image_anchor(f"{index:02d}" * 32)}"' in page
+
+
+def test_bottom_line_stays_when_the_next_shot_does_not_line_up():
+    """对不上位置就不动：前一行太短认不准，或者下一张那行是另一个人、另一句话。"""
+    short_before = ["方伟：茅台批价还算稳\n好的\n中秋先看看动销", "方伟：好的\n中秋先看看动销情况再决定加不加仓"]
+    other_speaker = [
+        "方伟：茅台今年的批价还算稳\n中秋先看看动销",
+        "方伟：茅台今年的批价还算稳\n网友：中秋先看看动销怎么样吧",
+    ]
+    other_line = [
+        "方伟：茅台今年的批价还算稳\n中秋先看看动销",
+        "方伟：茅台今年的批价还算稳\n春节前不用着急加仓",
+    ]
+    for shots in (short_before, other_speaker, other_line):
+        lines = [line.rstrip("。") for line in present_ocr_pieces(shots).splitlines()]
+        assert "中秋先看看动销" in lines or "方伟：中秋先看看动销" in lines, shots
+
+
 def test_digest_input_is_the_cleaned_dialogue():
     reading = append_ocr("瑞幸古茗是比较头部的。", compose_ocr_text([SHOT_A, SHOT_B]))
     assert "【图片里的字】" in reading
