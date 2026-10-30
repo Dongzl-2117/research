@@ -44,7 +44,7 @@ docker compose exec app research-translate --source stratechery --limit 5 --loop
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--source` | 空 | 只译该来源 id；空表示所有来源 |
+| `--source` | 空 | 只译该来源 id；空表示所有来源，中文文章不进队列 |
 | `--limit` | 5 | 每轮从待译队列取几篇 |
 | `--loop` | 关 | 队列空后休眠再扫，直到 Ctrl-C |
 | `--sleep` | 60 | `--loop` 空闲时休眠秒数，最少 5 |
