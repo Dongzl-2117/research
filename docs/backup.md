@@ -41,13 +41,17 @@ BACKUP_DIR/
 
 | 步骤 | 命令 | 上限 |
 | --- | --- | --- |
+| 一次性修复 | 脚本里 `once` 列出的命令（改了规则以后重算库里已有的行，不调 LLM） | 每条成功跑一次，见下面 |
 | 外链图片 | `research-fetch-images` | `IMAGES_LIMIT`，默认 300 个地址 |
+| 语义向量 | `research-embed`（没配 `EMBEDDING_BASE_URL` 时什么都不做） | `EMBED_LIMIT`，默认 50000 块 |
 | 观点 | `research-views` | `VIEWS_LIMIT`，默认 60 篇 |
 | 摘要 | `research-digest` | `DIGEST_LIMIT`，默认 80 篇 |
 | 论点 | `research-theses`（`THESES_ENABLED=1` 才跑，默认关） | 观点够数的公司，不限持仓 |
 | 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
 
 观点、摘要、图片文字各自最多跑 `MINUTES` 分钟（默认 150）。某一步失败不影响后面的步骤。白天、部署和应用启动时都不跑这些。
+
+一次性修复：云端的 AI 连不上 Mac mini，改了导入或整理规则以后要把库里已有的行重算一遍的命令，写在 `scripts/nightly.sh` 的 `once` 列表里，不再等人手动跑。每条成功跑完在 `data/status/once/` 下留一个同名标记，以后的夜里跳过；失败的不留标记，夜间补齐记成失败（`research-status` 看得到），下一晚再试。只放不调 LLM、能重复跑的命令；已经跑过的名字不要改，改了会再跑一遍。要重跑某一条，删掉它的标记。
 
 ## 出问题才提示
 

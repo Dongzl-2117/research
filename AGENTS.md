@@ -11,7 +11,7 @@
 ## 正式环境
 
 - Mac mini 上用 docker compose 跑，应用只听 `127.0.0.1:8088`，公网经 Cloudflare Tunnel。网站不登录就能看，核对线上改动可以直接读页面和 `/api/v1/articles/{id}.md`。
-- 云端的 AI 连不上 Mac mini。只能在那边跑的命令（装定时任务、一次性的数据修复）写进 PR 描述的「上线后」一节，由 Zhilin 跑；平时合并就上线，不用他动手。
+- 云端的 AI 连不上 Mac mini。一次性的数据修复（改了规则以后把库里已有的行按新规则重算一遍）加进 `scripts/nightly.sh` 的 `once` 列表，只放不调 LLM、能重复跑的命令：合并后当晚 00:37 的夜间任务跑一次，成功了在 `data/status/once/` 留标记以后不再跑，失败的 `research-status` 报出来、下一晚再试。装定时任务这类只能有人在那边跑的命令，写进 PR 描述的「上线后」一节，由 Zhilin 跑；平时合并就上线，不用他动手。
 - Mac mini 上的 `~/research` 只给自动上线用。在那台机器上干活的人和 AI 另外 clone 一份或者用 `git worktree`，不在 `~/research` 里切分支、改文件、提交；本机才要忽略的文件写进 `.git/info/exclude`。那份仓库不在 main、有本机改动或者有没推送的提交，自动上线都会停下，原因写在 `data/status/deploy.json`，处理办法见 [docs/deploy.md](docs/deploy.md)「更新」。
 - 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、孤独进化体抓取、自动上线）的结果写进 `data/status/<任务>.json`，供值班助手看：`docker compose exec app research-status` 把失败和太久没成功的逐条打出来，有就退出码 1。首页不再挂运维红条，见 [docs/backup.md](docs/backup.md)。
 - 密钥在 Mac mini 的 `.env`。站内 LLM 默认 DeepSeek，见 [docs/llm.md](docs/llm.md)。
@@ -70,10 +70,6 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - 网站不展示知识星球读者帖（首页/按天/检索/正文/API 均隐藏，库内保留）；标题为「图片」评论（N）… 的评论壳帖同样隐藏（poster_role 多为 owner）。方伟星球 10 月 20 日以后被误标成读者帖的那批，修好 poster_role 后才会重新露出来；观点靠夜间每晚补 60 篇，一次补完要花 DeepSeek 的钱，没做。
 - 林文丰飞书里的内嵌电子表格只有占位文字，要重新导出才能补。
 - 21118、22195 的超长对照段要在按句切开上线后点名重译（调 DeepSeek，篇数和命令见 [docs/translate.md](docs/translate.md)）。21130 的叶子数已经对齐，近重复段靠同一套两边去重收，不必为它再译。
-- **Mac mini 上还没跑的一次性命令**（都不调 LLM，先加 `--dry-run` 看篇数；跑完删掉那一行）：
-  - `docker compose exec app research-retime --source chengfengpolang`：乘风破浪的发布时间从当天零点改成归档头里的钟点。不跑，乘风破浪的卡片时间一直是「—」，同一天的先后按入库顺序。
-  - `docker compose exec app research-clean --source chengfengpolang --source fangwei-zsxq`：星球长文帖已入库的检索文字和段落块去掉导出脚手架（#124）。不跑，检索片段和问库里长文开头多一遍。
-  - `docker compose exec app research-repair-zsxq --source chengfengpolang`：乘风破浪的标题写回库（#128），评论区只留星主（#151）。不跑，页面和 API 现算、现滤，可检索和问库还按库里的旧标题，也还搜得到读者的评论和昵称。要等 #155 上线再跑（线上 879 的评论区出现「郑立涛 回复网友」）：早跑了星主在楼中楼里的回答会被当成读者评论从库里清掉，只能重导 inbox 找回。
-  - `docker compose exec app research-rebuild-chunks --ocr`：检索里的图片文字块按现在的整理规则重切（#147）。不跑，检索和问库里 451 篇方伟公众号还搜得到末尾的星球优惠券卡，69 篇群聊截图带着「你邀请"某某"加入了群聊」和群友昵称。只读已识别的字，不识图；改过的块由夜间任务里的 `research-embed`（本机 Ollama）重算向量。
+- 10-29、10-30 挂着的四条一次性修复改由夜间任务跑（`scripts/nightly.sh` 的 `once`）：乘风破浪的钟点（`research-retime`）、乘风破浪的标题和评论区（`research-repair-zsxq`，#155 上线以后才能跑，已上线）、星球长文的导出脚手架（`research-clean`）、图片文字块重切（`research-rebuild-chunks --ocr`）。跑过以后核对：`/api/v1/articles?author=乘风破浪` 的时间不再全是 `T00:00:00`；检索「拼多多 送货上门」乘风破浪那篇的片段里没有读者的评论。
 
 - 通用原文相关性标注采用独立本机服务和 SQLite，见 [docs/relevance-annotations.md](docs/relevance-annotations.md)。主站不挂该入口，不跑迁移或模型；私有原文、标签及导出只留 `data/relevance/` 等私有目录。实际库 provider、远程认证与部署需另行配置，demo 不是真实库。

@@ -1,7 +1,7 @@
 #!/bin/bash
-# 夜间补齐：外链图片、观点、摘要、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
-# 观点和摘要还有时间上限，跑不完的下一晚接着补。白天和部署时都不跑。
-# 某一步失败不影响后面的步骤；结果写进 data/status/nightly.json，有步骤失败或两天没跑成时 health.notices 会列出来。
+# 夜间补齐：先跑还没跑过的一次性数据修复，再给外链图片、语义向量、观点、摘要、论点各补一批，可选图片文字（OCR）。
+# 每一步有篇数上限，观点和摘要还有时间上限，跑不完的下一晚接着补。白天和部署时都不跑。
+# 某一步失败不影响后面的步骤；结果写进 data/status/nightly.json，有步骤失败或两天没跑成时 research-status 会列出来。
 #
 #   scripts/nightly.sh
 #   VIEWS_LIMIT=200 DIGEST_LIMIT=200 MINUTES=300 scripts/nightly.sh
@@ -50,7 +50,36 @@ step() {
   rm -f "$err"
   echo "$(date '+%F %T') 失败：${name}（退出码 ${rc}）" >&2
   failed="${failed}${failed:+；}${name}（退出码 ${rc}${last:+：}${last}）"
+  return "$rc"
 }
+
+# 一次性数据修复：改了导入或整理规则以后，库里已有的行要按新规则重算一遍。云端的 AI 连不上 Mac mini，
+# 这类命令不再等人手动跑，写在下面由夜间任务跑。只放不调 LLM、能重复跑的命令（再跑一遍不改已经改好的行）。
+# 成功跑完一次在 data/status/once/ 下留一个同名标记，以后的夜里跳过；失败的不留标记，下一晚再试。
+# 新加一条接在最后，名字用「日期-做什么」；已经跑过的名字不要改，改了会再跑一遍。
+ONCE_DIR="${ONCE_DIR:-$REPO/data/status/once}"
+once_done=""
+once() {
+  local name="$1"
+  shift
+  if [ -f "$ONCE_DIR/$name" ]; then
+    return 0
+  fi
+  if step "一次性修复 ${name}" "$@"; then
+    mkdir -p "$ONCE_DIR" && date '+%F %T' > "$ONCE_DIR/$name"
+    once_done="${once_done}${once_done:+、}${name}"
+  fi
+  return 0
+}
+
+# 乘风破浪的发布时间从当天零点改成归档头里的钟点（#130）。
+once 2026-10-29-retime-chengfengpolang compose_exec app research-retime --source chengfengpolang
+# 乘风破浪的标题写回库（#128），评论区只留星主（#151），星主在楼中楼里的回答留着（#155）。
+once 2026-10-30-repair-chengfengpolang compose_exec app research-repair-zsxq --source chengfengpolang
+# 星球长文帖的检索文字和段落块去掉导出脚手架（#124）。
+once 2026-10-29-clean-zsxq compose_exec app research-clean --source chengfengpolang --source fangwei-zsxq
+# 检索里的图片文字块按现在的整理规则重切：去掉优惠券卡、入群提示和群友昵称、状态栏（#147）。只读已识别的字，不识图。
+once 2026-10-30-rebuild-ocr-chunks compose_exec app research-rebuild-chunks --ocr
 
 step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMIT"
 step "语义向量" compose_exec app research-embed --limit "$EMBED_LIMIT"
@@ -68,6 +97,7 @@ if [ -n "$failed" ]; then
   exit 1
 fi
 parts="外链图片、语义向量、观点、摘要"
+[ -n "$once_done" ] && parts="一次性修复 ${once_done}；${parts}"
 [ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
 [ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
 status_ok "$parts"

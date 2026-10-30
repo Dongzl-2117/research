@@ -258,7 +258,7 @@ docker compose exec app research-ingest-markdown \
 
 `research-xueqiu-markdown` 把每篇写成 `/data/inbox/heiheiwuchang/{雪球帖子 id}.md`。frontmatter 里有 `id`（雪球帖子 id）、`title`、`url`、`date` 和 `published`（同一个 `published_at`，例如 `2026-04-02 19:15`）、`author: 黑黑无常`。导入器用 frontmatter 的 `id` 当外部 id，所以幂等键是 `(heiheiwuchang, 雪球帖子 id)`。再跑这两条命令不会复制；正文、标题或时间变了才更新。输出目录要和抓取目录分开，避免盖掉原始 md。不要把 `research-ingest-markdown` 直接指到抓取目录：那里的 md 没有 frontmatter，外部 id 会变成文件名（`355280496.md` 而不是 `355280496`），对不上以后的再导入。
 
-这条导入不另外跑摘要和观点。写入时会记公司提及和段落块。新写入或改了正文的篇，若挂了图片会排进识图（一次最多 40 篇），若是英文会排进译制（一次最多 20 篇）。这批帖没有图片，识图没有可做的。摘要和观点仍不在导入时跑：打开首页时，当前这一屏缺摘要的卡片会排队；夜间任务的摘要和观点覆盖所有已启用来源，不另开、不提高。夜间识图（`NIGHTLY_OCR`）仍是没排上的图的兜底。
+这条导入不另外跑摘要和观点，也不识图、不译制（#140 删了导入后排识图、排译制的跟进线程）。写入时会记公司提及和段落块。这批帖没有图片，识图没有可做的。摘要和观点：打开首页时，当前这一屏缺摘要的卡片会排队；夜间任务的摘要和观点覆盖所有已启用来源，不另开、不提高。带图的文章靠夜间识图（`NIGHTLY_OCR=1`）或手动 `research-ocr`，英文的靠 `research-translate`（见 [translate.md](translate.md)）。
 
 ## 飞书和通用 Markdown
 
