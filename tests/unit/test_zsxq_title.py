@@ -831,3 +831,24 @@ def test_leading_reader_mention_stays_out_of_titles():
     for title in ("谢谢 @王小明 的提问，护城河要看十年", "abc@example.com 是我的邮箱"):
         assert title_needs_repair(title) is False, title
         assert zsxq_display_title(title) == title
+
+
+def test_comment_section_heading_is_not_glued_into_a_title():
+    """只有图的帖：「## 评论里的回复」和下一行「读者问：」不粘成「评论里的回复 读者问」（23860），
+    「读者问：」「作者答：」一行一句。已经写进库的这种标题要重取，切不出一句时打 flash。"""
+    asked = "分众传媒可以当做一种能对抗通胀同时有5%收益的债券"
+    body = f"「图片」\n\n评论里的回复\n\n读者问：{asked}\n\n作者答：应该会被绝大多数公司好\n"
+    markdown = "# 「图片」\n\n![](../../images/a.jpg)\n\n## " + body.split("\n\n", 1)[1]
+    for text in (body, markdown):
+        assert zsxq_display_title("「图片」", body=text) == asked
+    glued = "评论里的回复 读者问"
+    assert title_needs_repair(glued)
+    assert title_needs_ai(glued)
+    assert zsxq_display_title(glued, body=body) == asked
+    assert stored_zsxq_title(glued, body) == asked
+    # 前面还有一句可用的话：只切掉小标题，不打 flash。
+    assert zsxq_display_title("茅台的护城河在品牌 评论里的回复 读者问", body=body) == "茅台的护城河在品牌"
+    assert title_needs_ai("茅台的护城河在品牌 评论里的回复 读者问") is False
+    # 句子里只是说到「评论里的回复」的不算。
+    for title in ("我在评论里的回复说过护城河", "评论里的回复说过护城河要看十年"):
+        assert title_needs_repair(title) is False, title
