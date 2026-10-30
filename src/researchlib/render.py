@@ -256,6 +256,16 @@ def rewrite_markdown_images(body: str, mapping: dict[str, str]) -> str:
     return _MD_IMAGE.sub(replace, body)
 
 
+def link_local_images(body: str, mapping: dict[str, str]) -> str:
+    """接口给的 markdown：本地存了的图换成 mapping 里的地址，其余的图（还没下载的外链、缺图）照原样留着。"""
+
+    def replace(match: re.Match[str]) -> str:
+        target = _replace_destination(match.group(2), mapping)
+        return f"![{match.group(1)}]({target})" if target else match.group(0)
+
+    return _MD_IMAGE.sub(replace, body)
+
+
 def rewrite_html_images(html: str, mapping: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
         url = img_tag_url(match.group(0))
