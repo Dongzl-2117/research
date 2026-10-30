@@ -775,6 +775,24 @@ def test_friends_who_liked_line_is_dropped():
     assert "王小明等3个朋友一起去看了门店" in kept
 
 
+def test_pinned_message_bar_is_not_a_guest_turn():
+    """群聊顶上置顶的消息条「王小明：……..  移除」每张都带着（23860），不是这一屏谁说的话。
+
+    当成网友开头的话，下面接着的几行（星主那段话的后半）也会记到网友名下。
+    """
+    shot = (
+        "16:04  :!!! 5G\n1735  看十年·线下深度交流(58)\n王小明：我觉得这篇文章对于茅台写得更深..  移除\n"
+        "分众这种弱互动、弱数据反馈、交易\n不闭环的逻辑就注定了他只能俘获中\n方伟Rey\n他的份额一定是最高的\n"
+    )
+    text = present_ocr_pieces([shot, shot.replace("更深..", "更深...")])
+    assert "移除" not in text and "王小明" not in text and "网友" not in text
+    assert text.startswith("方伟：分众这种弱互动")
+    # 已经整理成「网友：」的旧文字再过一遍也去掉；正文里说到「移除」的不算。
+    assert "移除" not in present_ocr_pieces(["网友：我觉得这篇文章对于茅台写得更深.. 移除\n方伟：同意\n"])
+    kept = parse_shot("李四：这个按钮应该移除\n方伟Rey\n同意")
+    assert [(turn.speaker, turn.lines) for turn in kept.turns] == [("网友", ["这个按钮应该移除"]), ("方伟", ["同意"])]
+
+
 def test_606_account_name_and_reader_counts_are_follow_chrome():
     """公众号预览页：「账号名 +关注」「观察 56个朋友关注 82 455 38 33。」整行丢掉，正文不截断。"""
     raw = """方伟
