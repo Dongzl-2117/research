@@ -21,7 +21,7 @@ from researchlib.ask import ask, start
 from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
-from researchlib.present_text import plain_qa_markdown
+from researchlib.present_text import plain_qa_markdown, polish_display_text
 from researchlib.render import link_local_images
 from researchlib.retrieval import retrieve, search_articles
 from researchlib.textutil import strip_duplicate_title
@@ -247,6 +247,9 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
         )
     # 和文章页同一套：省略号半句补成正文里的完整句，只有图的帖用图片里的字。库内 title 不改。
     title = display_titles(conn, [row], by_id, settings.display_timezone)[row["id"]]
+    if title != polish_display_text(row["title"] or ""):
+        # 也和文章页一样：标题换了，正文开头导出的旧标题行不要，.md 里不会顶着两个不一样的大标题。
+        body_md = strip_duplicate_title(body_md, row["title"] or "")
     return {
         "id": row["id"],
         "title": title,
