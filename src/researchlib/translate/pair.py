@@ -5,12 +5,14 @@
 这里按段的位置并排。
 旧稿若只在中文侧删过连续重复段，两边再走一遍同一套去重，把同段拉齐。
 叶子数已经一样时按位置收：后一对的英文是前面某对的长段近重复，且中文也是那一对的
-同一段（译文更短也算），后一对收掉。英文重复但中文是另一句的留下。
+同一段（译文更短也算），后一对收掉。更短的一句已经整句包含在另一对更长的英文里时，
+收掉短的那一对，长的留下。英文整句相同但中文是另一句的留下。
 段数仍对不齐也不整页退回中文：多出来的挂在末尾。
 """
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -184,7 +186,39 @@ def _drop_aligned_repeats(
             priors.setdefault(bucket, []).append((en_key, zh_key))
         kept_left.append(en)
         kept_right.append(zh)
-    return kept_left, kept_right
+    return _drop_contained_pairs(kept_left, kept_right)
+
+
+def _contained_text(html: str) -> str:
+    """可见文字，只压空白并忽略大小写。标点留着，括号不同的两条来源注释不会变成包含。"""
+    text = html_lib.unescape(re.sub(r"<[^>]+>", " ", html or ""))
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _drop_contained_pairs(
+    left: list[Segment], right: list[Segment]
+) -> tuple[list[Segment], list[Segment]]:
+    """短的长英文整句已经出现在另一对更长的英文里时，收掉短的那一对。
+
+    长的那对留着，所以后面多出来的句子还在。引用按句切开、正文仍是一整段时，
+    切开的句子会整句包含在那一段里；两遍中文往往不是逐字嵌套，仍然收短的。
+    英文整句相同、只是中文不同的两对一样长，不在这里收。
+    """
+    texts = [_contained_text(segment.html) for segment in left]
+    drop: set[int] = set()
+    for index, short in enumerate(texts):
+        if not repeat_long(left[index].html):
+            continue
+        for other, long in enumerate(texts):
+            if other == index or len(long) <= len(short):
+                continue
+            if short in long:
+                drop.add(index)
+                break
+    if not drop:
+        return left, right
+    kept = [index for index in range(len(left)) if index not in drop]
+    return [left[index] for index in kept], [right[index] for index in kept]
 
 
 def _show(segment: Segment) -> tuple[str, str | None]:
@@ -199,7 +233,8 @@ def _best_blocks(
     """按一种切法选两边展示用的叶子。先原样，再看同一套去重。
 
     叶子数已经一样时按位置收重复对：英文够长并且近重复，中文是同一段（更短也算）
-    才整对丢掉。两边各收各的会因为中文不到 80 字而对不齐条数，整页重复都留着。
+    才整对丢掉。短句整句包含在更长的一段里时，收掉短句，长段留下。两边各收各的会因为
+    中文不到 80 字而对不齐条数，整页重复都留着。
     连续相同的块先去掉，再按位置收一次，短的连续重复和隔开的长重复一起收掉。
     叶子数本来就不一样时，两边仍各收各的长叶子，只有差距变小才改用那一份。
     只短一边不硬配。
