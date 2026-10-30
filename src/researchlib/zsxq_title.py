@@ -14,6 +14,8 @@
 - 标题以省略号收尾时，先去掉省略号再和正文对齐。正文里那一句不超过 40 字就整句用上；
   正文也是半截时，收到上一个逗号，不把「有两」这种没写完的半截留在标题上。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
+- 问答帖导出的小标题「提问（网友 → 方伟Rey）」「回答（方伟Rey）」不是帖子的话，括号里是网友的昵称：
+  抽句子时当成断句，不和「问：…」那行、下面的提问拼成一句。已经拼进标题的（10315）重新取。
 - 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
   完整分句以冒号收尾（「有两点感触很深：」）不是这种壳。
 - 评论列表的界面残屑要修：「评论（1）」「评论(1)」，「 - 流年（2026-10-28 09」这种名字加钟点，
@@ -42,6 +44,10 @@ _ELLIPSIS_END = re.compile(
     r"(?:(?:…+|⋯+|‥+|\.{3,}|。{2,}|．{3,})[\s）)】\]」』\"'“”‘’》>]*)+$"
 )
 _HEADING = re.compile(r"^#{1,6}\s+", re.M)
+# 问答导出的小标题「提问（网友 → 方伟Rey）」「回答（方伟Rey）」：括号里是网友的昵称，不是帖子的话。
+# 抽句子时当成断句，不和上一行的「问：…」、下一行的提问拼成一句；已经拼进标题的要重取。
+_QA_LINE = re.compile(r"^[ \t]*(?:#{1,6}[ \t]+)?(?:提问|回答)[ \t]*[（(][^（）()\n]+[）)][ \t]*$", re.M)
+_QA_ASKER = re.compile(r"提问\s*[（(][^（）()]*(?:→|->)[^（）()]*[）)]")
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MARKUP = re.compile(r"[*_`]+")
 # 转述的引子：「作者认为」「方伟判断，」「作者以国债利率为背景，主张」「作者借段永平的话判断，」。
@@ -166,7 +172,8 @@ def _comment_ui_stem(title: str) -> str | None:
 
 def title_needs_repair(title: str, body: str = "") -> bool:
     """空标题、占位（含「图片」这种带引号的）、复述套话、转述的引子、空壳导读、纯话题号、带省略号，
-    公司名/话题名冒号壳，明显错字，归档头，评论列表的界面残屑，或引号、括号落单。
+    公司名/话题名冒号壳，明显错字，归档头，评论列表的界面残屑，问答导出的「提问（网友 → 方伟Rey）」，
+    或引号、括号落单。
 
     句子里只是提到「评论」的不算。给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
     """
@@ -176,6 +183,8 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
         return True
     if strip_narrator(text) != text:
+        return True
+    if _QA_ASKER.search(text):
         return True
     if _shell_colon(text):
         return True
@@ -547,7 +556,8 @@ def _iter_raw(text: str):
 
 
 def _plain(text: str) -> str:
-    cleaned = _IMAGE.sub(" ", text or "")
+    cleaned = _QA_LINE.sub("。", text or "")
+    cleaned = _IMAGE.sub(" ", cleaned)
     cleaned = _HEADING.sub("", cleaned)
     cleaned = _MARKUP.sub("", cleaned)
     return cleaned

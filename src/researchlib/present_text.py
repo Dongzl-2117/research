@@ -135,6 +135,20 @@ def _prefix_speaker(label: str, body: str) -> str:
     return "\n".join(lines).strip("\n")
 
 
+def plain_qa_headings(headings: list[str]) -> list[str]:
+    """问答导出的小标题去掉括号里的名字：「提问（王小明 → 方伟Rey）」成「提问」，「回答（方伟Rey）」成「回答」。
+
+    检索的章节名、问库的引用不带网友的昵称。和阅读页一样，提问、回答两种小标题都有才改。
+    """
+    if not any(_ASK_HEADING.match(item) for item in headings) or not any(
+        _ANSWER_HEADING.match(item) for item in headings
+    ):
+        return list(headings)
+    return [
+        "提问" if _ASK_HEADING.match(item) else "回答" if _ANSWER_HEADING.match(item) else item for item in headings
+    ]
+
+
 def present_zsxq_qa(text: str) -> str:
     """知识星球问答的「提问（…）/ 回答（…）」收成对话段。
 
