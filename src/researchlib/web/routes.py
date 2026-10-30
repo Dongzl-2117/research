@@ -283,6 +283,39 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
         card["title"] = repaired
 
 
+def display_titles(conn, rows, by_id: dict, zone: str) -> dict[int, str]:
+    """卡片以外的列表（作者索引的「最近」、重复文章页、接口）显示的标题，和卡片、文章页同一套：
+    明显错字洗掉；星球的空标题、省略号、半句补成一句。rows 要有 id、source_id、title、published_at。库里的标题不改。
+    """
+    unique = {row["id"]: row for row in rows}
+    titles = {article_id: polish_display_text(row["title"] or "") for article_id, row in unique.items()}
+    stars = [
+        row
+        for row in unique.values()
+        if row["source_id"] in by_id and repairs_source(row["source_id"], by_id[row["source_id"]].kind)
+    ]
+    materials = queries.title_materials(conn, [row["id"] for row in stars]) if stars else {}
+    needy = [
+        row
+        for row in stars
+        if title_needs_repair(titles[row["id"]], (materials.get(row["id"]) or {}).get("body_text") or "")
+    ]
+    if not needy:
+        return titles
+    digests = queries.digests_for(conn, [row["id"] for row in needy])
+    for row in needy:
+        extra = materials.get(row["id"]) or {}
+        repaired = zsxq_display_title(
+            titles[row["id"]],
+            body=extra.get("body_text") or "",
+            summary=(digests.get(row["id"]) or {}).get("summary") or "",
+            ocr=present_stored_ocr(extra.get("ocr_text") or ""),
+            when=format_date(row["published_at"], zone),
+        )
+        titles[row["id"]] = polish_display_text(repaired)
+    return titles
+
+
 def _decorate(conn, cards: list[dict], settings) -> list[dict]:
     """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
     ids = [card["id"] for card in cards]
@@ -501,10 +534,14 @@ def authors_page(request: Request):
                     "sources": [item.name for item in items],
                     "first": format_date(min(firsts), settings.display_timezone) if firsts else "",
                     "last": format_date(max(lasts), settings.display_timezone) if lasts else "",
-                    "latest": latest[0] if latest else None,
+                    "latest": dict(latest[0]) if latest else None,
                     "companies": queries.top_companies(conn, item_ids, 6),
                 }
             )
+        newest = [author["latest"] for author in authors if author["latest"]]
+        titles = display_titles(conn, newest, _source_map(sources), settings.display_timezone)
+        for row in newest:
+            row["title"] = titles[row["id"]]
     authors.sort(key=lambda item: (-item["articles"], item["name"]))
     return render_page(
         request,
@@ -926,7 +963,10 @@ def duplicates_page(request: Request):
         page, pages, offset = page_window(total, _page_arg(request), DUPLICATES_PAGE_SIZE)
         groups = queries.duplicate_groups(conn, ids, DUPLICATES_PAGE_SIZE, offset, only)
         banner = queries.sample_state(conn, ids)
-    zone = settings.display_timezone
+        zone = settings.display_timezone
+        titles = display_titles(
+            conn, [row for group in groups for row in (group["canonical"], *group["duplicates"])], by_id, zone
+        )
     shown = []
     for group in groups:
         canonical = group["canonical"]
@@ -936,7 +976,7 @@ def duplicates_page(request: Request):
             items.append(
                 {
                     "id": row["id"],
-                    "title": row["title"],
+                    "title": titles[row["id"]],
                     "source": by_id[row["source_id"]].name if row["source_id"] in by_id else row["source_id"],
                     "date": format_date(row["published_at"], zone),
                     "marked": format_date(row["duplicate_marked_at"], zone) if row["duplicate_marked_at"] else "",
@@ -947,7 +987,7 @@ def duplicates_page(request: Request):
         shown.append(
             {
                 "id": canonical["id"],
-                "title": canonical["title"],
+                "title": titles[canonical["id"]],
                 "source": by_id[canonical["source_id"]].name if canonical["source_id"] in by_id else "",
                 "date": format_date(canonical["published_at"], zone),
                 "items": items,

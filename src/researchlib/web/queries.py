@@ -215,10 +215,11 @@ def same_article_elsewhere(conn, article_id: int, duplicate_of: int | None, sour
 
 def count_duplicate_groups(conn, source_ids: list[str], only: int | None = None) -> int:
     row = conn.execute(
-        """
+        f"""
         SELECT count(DISTINCT d.duplicate_of) AS n
         FROM articles d JOIN articles c ON c.id = d.duplicate_of
         WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s) AND (%s::bigint IS NULL OR c.id = %s::bigint)
+          AND {site_visible_sql("c")} AND {site_visible_sql("d")}
         """,
         (source_ids, source_ids, only, only),
     ).fetchone()
@@ -226,12 +227,13 @@ def count_duplicate_groups(conn, source_ids: list[str], only: int | None = None)
 
 
 def duplicate_groups(conn, source_ids: list[str], limit: int, offset: int, only: int | None = None) -> list[dict]:
-    """去重核对页：每组一个主版本和指向它的重复，最近认出的在前。"""
+    """去重核对页：每组一个主版本和指向它的重复，最近认出的在前。站内不展示的读者帖、评论壳不列。"""
     heads = conn.execute(
-        """
+        f"""
         SELECT c.id, c.title, c.source_id, c.published_at, c.body_text, max(d.duplicate_marked_at) AS marked
         FROM articles d JOIN articles c ON c.id = d.duplicate_of
         WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s) AND (%s::bigint IS NULL OR c.id = %s::bigint)
+          AND {site_visible_sql("c")} AND {site_visible_sql("d")}
         GROUP BY c.id
         ORDER BY max(d.duplicate_marked_at) DESC NULLS LAST, c.published_at DESC NULLS LAST, c.id DESC
         LIMIT %s OFFSET %s
@@ -242,10 +244,10 @@ def duplicate_groups(conn, source_ids: list[str], limit: int, offset: int, only:
         return []
     members: dict[int, list] = {}
     for row in conn.execute(
-        """
+        f"""
         SELECT id, title, source_id, published_at, body_text, duplicate_of, duplicate_marked_at
         FROM articles
-        WHERE duplicate_of = ANY(%s) AND source_id = ANY(%s)
+        WHERE duplicate_of = ANY(%s) AND source_id = ANY(%s) AND {site_visible_sql("")}
         ORDER BY id
         """,
         ([head["id"] for head in heads], source_ids),
