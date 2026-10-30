@@ -5,6 +5,8 @@
 阅读页改成作者、时间、正文；空白名字写成「匿名」。标题前面那些空 `<br>` 去掉。
 阅读页、入库和接口都只留这个来源的作者自己的评论（方伟星球留方伟，乘风破浪留星主），其他人的可逆隐藏；
 inbox / raw 里的原文不动。作者认来源配置的 author 和 poster_names（`source_owners`），不给时按方伟认。
+楼中楼的回复导出成「乘风破浪 回复 王小明」：看「回复」前面那个人。星主回复读者的留下，写成「乘风破浪 回复网友」，
+不留读者的昵称；读者回复星主的照样不留。
 「评论里的回复」是另一节；阅读页把旧标签映射成「网友：」「方伟：」，与正文同一套对话体。
 """
 
@@ -14,7 +16,7 @@ import html
 import re
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import markdown
 
@@ -41,6 +43,9 @@ _EMPTY_P = re.compile(r"<p\b[^>]*>\s*(?:<br\s*/?>\s*)*</p>\s*$", re.I)
 _BR_END = re.compile(r"<br\s*/?>\s*$", re.I)
 _TRAILING_BR_IN_P = re.compile(r"(?:<br\s*/?>\s*)+(</p>\s*)$", re.I)
 _SECTION_OPEN = re.compile(r"<section\b[^>]*\bclass=\"zsxq-comments\"", re.I)
+# 楼中楼：「乘风破浪 回复 王小明」，回复的人在前。名字里的空格（「李 四 回复 乘风破浪」）留给前一半。
+_REPLY = re.compile(r"^(?P<who>\S.*?)\s+回复\s*(?P<to>.*)$")
+REPLY_TO_GUEST = "回复网友"
 
 
 @dataclass(frozen=True)
@@ -76,12 +81,10 @@ def source_owners(source) -> tuple[str, ...]:
     return tuple(name for name in (source.author, *source.poster_names) if name)
 
 
-def is_host_comment_author(name: str, owners: Sequence[str] = ()) -> bool:
-    """是不是来源作者自己的评论。owners 见 source_owners，不给时按方伟认。空白「匿名」不算。"""
+def _is_owner(shown: str, owners: Sequence[str]) -> bool:
     from researchlib.author_voice import same_person
     from researchlib.wechat_dialogue import _compact_host, _is_host_line
 
-    shown = display_author(name)
     if not shown or shown == ANONYMOUS:
         return False
     # 方伟的显示名花样多（方伟Rey、方伟-最近在杭州），沿用对话整理那一套。
@@ -90,8 +93,33 @@ def is_host_comment_author(name: str, owners: Sequence[str] = ()) -> bool:
     return any(same_person(shown, owner) for owner in owners)
 
 
+def _host_comment(shown: str, owners: Sequence[str]) -> tuple[str, bool] | None:
+    """shown 是 display_author 过的名字。来源作者自己的评论返回 (页面上的名字, 是不是楼中楼的回复)，
+    别人的返回 None。回复读者的名字换成「乘风破浪 回复网友」，回复他自己的照原样。
+    """
+    reply = _REPLY.match(shown)
+    if reply is None:
+        return (shown, False) if _is_owner(shown, owners) else None
+    who = reply.group("who").strip()
+    if not _is_owner(who, owners):
+        return None
+    if _is_owner(display_author(reply.group("to")), owners):
+        return shown, True
+    return f"{who} {REPLY_TO_GUEST}", True
+
+
+def is_host_comment_author(name: str, owners: Sequence[str] = ()) -> bool:
+    """是不是来源作者自己的评论（星主回复别人的也算）。owners 见 source_owners，不给时按方伟认。空白「匿名」不算。"""
+    return _host_comment(display_author(name), owners) is not None
+
+
 def keep_host_comments(comments: list[ReaderComment], owners: Sequence[str] = ()) -> list[ReaderComment]:
-    return [comment for comment in comments if is_host_comment_author(comment.author, owners)]
+    kept: list[ReaderComment] = []
+    for comment in comments:
+        host = _host_comment(comment.author, owners)
+        if host is not None:
+            kept.append(replace(comment, author=host[0]))
+    return kept
 
 
 def _parse_comment_items(section: str) -> list[tuple[str, str, list[str]]] | None:
@@ -145,15 +173,28 @@ def comment_list_authors(md: str) -> list[str] | None:
 
 
 def guest_comment_authors(md: str, owners: Sequence[str] = ()) -> list[str] | None:
-    """不是来源作者的评论人（owners 不给时按方伟）。没有评论节返回 []。解析不了返回 None。"""
+    """评论区里露出来的别人的名字（owners 不给时按方伟）：不是来源作者的评论人，加上星主回复的那位
+    （「乘风破浪 回复 王小明」里的王小明）。没有评论节返回 []。解析不了返回 None。"""
     names = comment_list_authors(md)
     if names is None:
         return None
-    return [name for name in names if not is_host_comment_author(name, owners)]
+    guests: list[str] = []
+    for name in names:
+        host = _host_comment(name, owners)
+        if host is None:
+            guests.append(name)
+        elif host[0] != name:
+            # 星主回复读者，名字里还带着那位读者。
+            guests.append(display_author(_REPLY.match(name).group("to")))
+    return guests
 
 
-def filter_host_comments_markdown(md: str, owners: Sequence[str] = ()) -> str:
-    """正文里的「评论（N）」只留来源作者（owners 不给时按方伟）。一条都不剩就整节去掉。inbox 原文不改。"""
+def filter_host_comments_markdown(md: str, owners: Sequence[str] = (), *, replies: bool = True) -> str:
+    """正文里的「评论（N）」只留来源作者（owners 不给时按方伟）。一条都不剩就整节去掉。inbox 原文不改。
+
+    replies=False 时星主在楼中楼里的回复也不留：导入时话题 JSON 里有这些回复，会连同读者那句
+    一起接进「评论里的回复」（parse.comments_section），比列表里只剩一句回答清楚。
+    """
     match = _HEADING.search(md or "")
     while match and _in_fence(md, match.start()):
         match = _HEADING.search(md, match.end())
@@ -168,14 +209,17 @@ def filter_host_comments_markdown(md: str, owners: Sequence[str] = ()) -> str:
     items = _parse_comment_items(section)
     if items is None:
         return md or ""
-    kept = [(name, when, body) for name, when, body in items if is_host_comment_author(name, owners)]
+    kept: list[tuple[str, str, list[str]]] = []
+    for name, when, body in items:
+        host = _host_comment(display_author(name), owners)
+        if host is not None and (replies or not host[1]):
+            kept.append((host[0], when, body))
     before = md[: match.start()]
     if not kept:
         glued = before.rstrip() + ("\n\n" + after.lstrip("\n") if after.strip() else "\n")
         return glued if glued.endswith("\n") else glued + "\n"
     out = [f"## 评论（{len(kept)}）", ""]
-    for name, when, body in kept:
-        label = display_author(name)
+    for label, when, body in kept:
         out.append(f"- **{label}**（{when}）")
         if any(line.strip() for line in body):
             for line in body:

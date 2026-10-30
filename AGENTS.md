@@ -72,7 +72,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - **Mac mini 上还没跑的一次性命令**（都不调 LLM，先加 `--dry-run` 看篇数；跑完删掉那一行）：
   - `docker compose exec app research-retime --source chengfengpolang`：乘风破浪的发布时间从当天零点改成归档头里的钟点。不跑，乘风破浪的卡片时间一直是「—」，同一天的先后按入库顺序。
   - `docker compose exec app research-clean --source chengfengpolang --source fangwei-zsxq`：星球长文帖已入库的检索文字和段落块去掉导出脚手架（#124）。不跑，检索片段和问库里长文开头多一遍。
-  - `docker compose exec app research-repair-zsxq --source chengfengpolang`：乘风破浪的标题写回库（#128），评论区只留星主（#151）。不跑，页面和 API 现算、现滤，可检索和问库还按库里的旧标题，也还搜得到读者的评论和昵称。
+  - `docker compose exec app research-repair-zsxq --source chengfengpolang`：乘风破浪的标题写回库（#128），评论区只留星主（#151）。不跑，页面和 API 现算、现滤，可检索和问库还按库里的旧标题，也还搜得到读者的评论和昵称。要等 #155 上线再跑（线上 879 的评论区出现「郑立涛 回复网友」）：早跑了星主在楼中楼里的回答会被当成读者评论从库里清掉，只能重导 inbox 找回。
   - `docker compose exec app research-rebuild-chunks --ocr`：检索里的图片文字块按现在的整理规则重切（#147）。不跑，检索和问库里 451 篇方伟公众号还搜得到末尾的星球优惠券卡，69 篇群聊截图带着「你邀请"某某"加入了群聊」和群友昵称。只读已识别的字，不识图；改过的块由夜间任务里的 `research-embed`（本机 Ollama）重算向量。
 
 - 通用原文相关性标注采用独立本机服务和 SQLite，见 [docs/relevance-annotations.md](docs/relevance-annotations.md)。主站不挂该入口，不跑迁移或模型；私有原文、标签及导出只留 `data/relevance/` 等私有目录。实际库 provider、远程认证与部署需另行配置，demo 不是真实库。
