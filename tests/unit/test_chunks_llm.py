@@ -25,6 +25,14 @@ def test_chunks_strip_frontmatter_and_empty_body():
     assert make_chunks("t", "---\ndate: 2024-01-01\n---\n正文") == [("", "正文")]
 
 
+def test_qa_headings_drop_the_asker_name():
+    """星球问答的「提问（网友 → 方伟Rey）」「回答（方伟Rey）」当章节名时不带网友的昵称。没有这对标题的不动。"""
+    body = "# 问：怎么看茅台\n\n## 提问（王小明 → 方伟Rey）\n\n怎么看茅台？\n\n## 回答（方伟Rey）\n\n先看批价。\n"
+    assert make_chunks("问：怎么看茅台", body) == [("提问", "怎么看茅台？"), ("回答", "先看批价。")]
+    notes = "## 回答（续）\n\n上回没说完的。\n"
+    assert make_chunks("笔记", notes) == [("回答（续）", "上回没说完的。")]
+
+
 def test_digest_prompt_is_a_guide_not_advice():
     from researchlib.digest import PROMPT
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import sys
 
+from researchlib.present_text import plain_qa_headings
 from researchlib.textutil import markdown_to_text, split_frontmatter, split_markdown_sections, strip_duplicate_title
 
 TARGET_CHARS = 500
@@ -86,17 +87,25 @@ def _pack_indexed(paragraphs: list[str]) -> list[tuple[int, str]]:
 
 
 def make_chunks(title: str, body_md: str) -> list[tuple[str, str]]:
-    """返回 [(章节标题, 块正文)]，顺序即原文顺序。"""
+    """返回 [(章节标题, 块正文)]，顺序即原文顺序。
+
+    知识星球问答的「提问（网友 → 方伟Rey）」「回答（方伟Rey）」只留「提问」「回答」，章节名里不带网友的昵称。
+    """
     _frontmatter, body = split_frontmatter(body_md or "")
     body = strip_duplicate_title(body, title or "")
     sections, _structured = split_markdown_sections(body)
-    found: list[tuple[str, str]] = []
+    headings: list[str] = []
+    bodies: list[str] = []
     for section in sections:
         heading = ""
         match = _HEADING_LINE.match(section)
         if match:
             heading = markdown_to_text(match.group(1)).strip()[:200]
             section = section[match.end() :]
+        headings.append(heading)
+        bodies.append(section)
+    found: list[tuple[str, str]] = []
+    for heading, section in zip(plain_qa_headings(headings), bodies, strict=True):
         text = markdown_to_text(section)
         paragraphs = [part.strip() for part in re.split(r"\n\s*\n|\n", text) if part.strip()]
         for chunk in _pack(paragraphs):

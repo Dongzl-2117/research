@@ -683,3 +683,29 @@ def test_long_digest_sentence_is_not_cut_inside_a_list():
     # 只有顿号可收时仍收在顿号处。
     head = "宁德时代、比亚迪、特斯拉、蔚来汽车、小鹏汽车、理想汽车、零跑汽车、小米汽车"
     assert zsxq_display_title("…", body=head + "、问界、极氪的价格战\n") == head
+
+
+# 问答帖入库后的检索文字：「## 提问（…）」「## 回答（…）」去掉了井号，只剩一行字。网友名字用虚构的。
+QA_TEXT = (
+    "问：Rey哥，请教一下怎么加群呀\n\n提问（王小明 → 方伟Rey）\n\nRey哥，请教一下怎么加群呀\n\n"
+    "回答（方伟Rey）\n\n后面进来的都是在星球补了差价进去的，群里讨论互动更及时一些。\n"
+)
+QA_GLUED = "问：Rey哥，请教一下怎么加群呀 提问（王小明 → 方伟Rey） Rey哥"
+
+
+def test_qa_scaffold_and_asker_name_stay_out_of_titles():
+    """「提问（网友 → 方伟Rey）」不和上一行的「问：」、下一行的提问拼成一句；已经拼进去的要重取，不打 flash。"""
+    assert zsxq_display_title("", body=QA_TEXT) == "问：Rey哥，请教一下怎么加群呀"
+    markdown = QA_TEXT.replace("提问（", "## 提问（").replace("回答（", "## 回答（")
+    assert zsxq_display_title("", body="# " + markdown) == "问：Rey哥，请教一下怎么加群呀"
+    assert title_needs_repair(QA_GLUED)
+    assert title_needs_ai(QA_GLUED) is False
+    assert zsxq_display_title(QA_GLUED, body=QA_TEXT) == "问：Rey哥，请教一下怎么加群呀"
+    assert stored_zsxq_title(QA_GLUED, QA_TEXT) == "问：Rey哥，请教一下怎么加群呀"
+    # 只有提问那一行开头：跳过它和「方总您好！」这种客套，取下一句。
+    opener = "提问（李四 → 方伟Rey） 方总您好！"
+    text = "提问（李四 → 方伟Rey）\n\n方总您好！想请教一下游戏公司的护城河是什么？\n\n回答（方伟Rey）\n\n先看留存。\n"
+    assert zsxq_display_title(opener, body=text) == "想请教一下游戏公司的护城河是什么？"
+    # 句子里只是说到提问、回答的不算。
+    for title in ("提问比回答更难", "关于提问（续）"):
+        assert title_needs_repair(title) is False, title
