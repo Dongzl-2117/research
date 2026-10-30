@@ -5,6 +5,8 @@
 - 正文里有完整的第一句（问句也算）就用它，去掉句号，一般不超过 40 字。
 - 库内标题去掉省略号后还是一句可用的话，优先于摘要，也优先于图片里的字。
 - 复述摘要不能当标题。句子里出现「正文几乎」「文中未给」「作者开篇判断」，或「没有段永平本人的话」，就丢掉。
+- 摘要和 flash 起的题常带转述的引子（「作者认为」「方伟判断，」「作者以国债利率为背景，主张」），
+  卡片上本来就写着作者，引子去掉，留下判断本身。去掉后不够一句话的不动。
 - 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句时才用，不用无关的配售截图。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
@@ -42,10 +44,19 @@ _ELLIPSIS_END = re.compile(
 _HEADING = re.compile(r"^#{1,6}\s+", re.M)
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MARKUP = re.compile(r"[*_`]+")
+# 转述的引子：「作者认为」「方伟判断，」「作者以国债利率为背景，主张」「作者借段永平的话判断，」。
+# 「方伟说过的」「作者认为的」是句子本身，不是引子。
+_NARRATOR_LEAD = (
+    r"(?:方伟|作者|星主|笔者)"
+    r"(?:(?:以|借|从)[^，,。；;！？!?]{1,30}?(?:[，,]\s*)?)?"
+    r"(?:认为|觉得|判断|指出|提到|说|表示|写道|主张|强调)(?![过的了得])"
+    r"[，,：:\s]*"
+)
+_NARRATOR = re.compile("^" + _NARRATOR_LEAD)
 _LEAD = re.compile(
     r"^(?:"
-    r"(?:方伟|作者|星主|笔者认为)(?:认为|觉得|指出|提到|说|表示|写道)[，,：:\s]*"
-    r"|这篇(?:文章|短帖)?(?:认为|在讲|讨论|说的是|写的是)[，,：:\s]*"
+    + _NARRATOR_LEAD
+    + r"|这篇(?:文章|短帖)?(?:认为|在讲|讨论|说的是|写的是)[，,：:\s]*"
     r"|(?:读者问|作者答|作者补充|方伟|网友)\s*[：:]\s*"
     # 「2026年9月1日，瑞幸咖啡宣布……」开头的日期是电头，卡片上本来就有日期。不去掉的话，
     # 句子太长要在逗号处收时，标题只剩「2026年9月1日」（乘风破浪 1273）。
@@ -154,7 +165,7 @@ def _comment_ui_stem(title: str) -> str | None:
 
 
 def title_needs_repair(title: str, body: str = "") -> bool:
-    """空标题、占位（含「图片」这种带引号的）、复述套话、空壳导读、纯话题号、带省略号，
+    """空标题、占位（含「图片」这种带引号的）、复述套话、转述的引子、空壳导读、纯话题号、带省略号，
     公司名/话题名冒号壳，明显错字，归档头，评论列表的界面残屑，或引号、括号落单。
 
     句子里只是提到「评论」的不算。给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
@@ -163,6 +174,8 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     if _comment_list_ui(text):
         return True
     if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
+        return True
+    if strip_narrator(text) != text:
         return True
     if _shell_colon(text):
         return True
@@ -200,6 +213,21 @@ def title_needs_ai(title: str) -> bool:
     if _ARCHIVE_META.search(text):
         return True
     return False
+
+
+def strip_narrator(title: str) -> str:
+    """去掉开头转述的引子（「作者认为」「方伟判断，」）。剩下的不够一句话时原样返回。
+
+    不进 title_needs_ai：引子去掉就是能用的标题，不用再打 flash。
+    """
+    text = (title or "").strip()
+    match = _NARRATOR.match(text)
+    if not match:
+        return text
+    rest = text[match.end() :].strip()
+    if len(_CJK.findall(rest)) < 4 and len(_MEANINGFUL.findall(rest)) < 8:
+        return text
+    return rest
 
 
 def polish_title_typos(title: str) -> str:
@@ -646,16 +674,25 @@ def _fit(text: str) -> str:
     if len(cleaned) <= TITLE_LIMIT:
         return balance_marks(_strip_ellipsis(cleaned).strip())
     window = cleaned[:TITLE_LIMIT]
-    cut = -1
-    for index, char in enumerate(window):
-        if char in _BREAKS and index >= 8:
-            cut = index
+    # 顿号是列举，收在那里会剩下半截列表（14885「……护城河；资本开支」）。有逗号、分号就收在那里。
+    cut = _last_break(window, "，,；;：:")
+    if cut < 8:
+        cut = _last_break(window, "、")
     if cut >= 8:
         fitted = window[:cut].strip()
     else:
         fitted = window.rstrip(_BREAKS + " ").strip()
     # 收在逗号处时，后引号常常落在后半句里。
     return balance_marks(_strip_ellipsis(fitted).strip())
+
+
+def _last_break(window: str, marks: str) -> int:
+    """window 里第 8 个字以后最后一个停顿的位置，没有就是 -1。"""
+    cut = -1
+    for index, char in enumerate(window):
+        if char in marks and index >= 8:
+            cut = index
+    return cut
 
 
 def unwrap_title(text: str) -> str:

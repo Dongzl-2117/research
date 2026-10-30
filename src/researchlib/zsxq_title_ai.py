@@ -13,6 +13,7 @@ from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured
 from researchlib.zsxq_title import (
     TITLE_LIMIT,
     polish_title_typos,
+    strip_narrator,
     title_needs_repair,
     unwrap_title,
 )
@@ -28,6 +29,7 @@ PROMPT = """根据下面这篇知识星球帖子的正文、图片里的字和�
 - 不要只写公司名或话题名加冒号（例如「泡泡玛特：」「西部矿业：」）
 - 不要把评论列表的界面文字写进标题（例如「评论（1）」「 - 流年（2026-10-28」）
 - 不要复述「正文为空」「文中未给」「作者开篇判断」这类套话
+- 用帖子自己的口吻直接写出判断，不要写成「作者认为」「方伟判断」「作者以……为背景，主张……」这种转述
 """
 
 _LABEL = re.compile(r"^(?:标题|title)\s*[：:=]\s*", re.I)
@@ -64,13 +66,14 @@ def generate_ai_title(
 
 
 def accept_ai_title(raw: str) -> str | None:
-    """校验模型输出：≤40 字、无占位、无省略号壳、无公司名冒号壳。"""
+    """校验模型输出：≤40 字、无占位、无省略号壳、无公司名冒号壳。转述的引子（「作者认为」）去掉再用。"""
     line = (raw or "").strip().splitlines()[0].strip() if (raw or "").strip() else ""
     line = _LABEL.sub("", line)
     # 只去包住整行的那一对。以前两头的符号一律去掉，「《穷查理宝典》读后感」会剩下落单的「》」。
     line = unwrap_title(line)
     line = polish_title_typos(line)
     line = re.sub(r"\s+", " ", line).strip().rstrip("。.")
+    line = strip_narrator(line)
     if not line or len(line) > TITLE_LIMIT:
         return None
     if title_needs_repair(line):
