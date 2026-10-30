@@ -229,6 +229,55 @@ def test_ocr_text_is_escaped_and_prose_keeps_newlines():
     assert f'<a class="ocr-link" id="{image_anchor(digest)}"' in page
 
 
+# 文章 24016：识图把 OK 超市和 Costco 的表读成「一行一条记录，单元格之间一个空格」。
+_OCR_TABLE = """OK超市近4年业绩汇总
+项目 2020/3月末 2021/3月末 2022/3月末 2023/3月末
+年销售额（亿元人民币） 217.6477 254.1157 262.1495 276.3207
+毛利率（%） 21.53% 21.86% 21.98% 21.89%
+门店数（店） 123 128 134 142
+员工人数（人）（兼职工按8小 13038 14873 15572 16284
+注：根据OK财报汇总整理"""
+
+
+def test_ocr_table_renders_as_a_real_table():
+    """24016：OK 超市、Costco 的业绩表要是 <table>，不能一行一段排下去。"""
+    digest = "12" * 32
+    html = str(render_body("![](ok.png)\n", {"ok.png": f"/media/fangwei-mp/12/{digest}.jpg"}))
+    page = inline_image_ocr(html, {digest: _OCR_TABLE})
+    assert '<table class="ocr-table">' in page
+    assert '<thead><tr><th scope="col">项目</th>' in page
+    assert '<th scope="col">2020/3月末</th>' in page
+    assert (
+        '<tr><th scope="row">年销售额（亿元人民币）</th>'
+        "<td>217.6477</td><td>254.1157</td><td>262.1495</td><td>276.3207</td></tr>"
+    ) in page
+    assert '<tr><th scope="row">毛利率（%）</th><td>21.53%</td>' in page
+    # 表头和每一行都不再各占一个 <p>。
+    assert "<p>项目 2020/3月末" not in page
+    assert "<p>年销售额（亿元人民币）" not in page
+    assert "<p>门店数（店） 123" not in page
+    # 标题、注记在表外，仍是段。
+    assert ">OK超市近4年业绩汇总</a></p>" in page
+    assert ">注：根据OK财报汇总整理</a></p>" in page
+    assert page.index("OK超市近4年业绩汇总") < page.index("<table") < page.index("注：根据OK财报汇总整理")
+    # 原图链接和 figure 壳保住；锚点落在第一个块（标题）上。
+    assert 'class="ocr-shot"' in page
+    anchor = f'<a class="ocr-link" id="{image_anchor(digest)}" href="/media/fangwei-mp/12/{digest}.jpg"'
+    assert anchor in page
+    assert 'class="ocr-link ocr-table-link"' in page
+    assert f'href="/media/fangwei-mp/12/{digest}.jpg"' in page[page.index("<table") - 400 : page.index("<table")]
+
+
+def test_ocr_table_cells_are_escaped():
+    digest = "34" * 32
+    html = str(render_body("![](cost.png)\n", {"cost.png": f"/media/x/34/{digest}.jpg"}))
+    page = inline_image_ocr(html, {digest: "项目 <b>FY2023</b> FY2024\n费用率（SG&A） 9.08% 9.14%"})
+    assert "<table" in page
+    assert "&lt;b&gt;FY2023&lt;/b&gt;" in page
+    assert "SG&amp;A" in page
+    assert "<b>" not in page
+
+
 def test_chrome_cleanup_does_not_eat_the_message():
     cleaned = tidy_ocr_text(CHAT)
     assert "微信" not in cleaned.splitlines()

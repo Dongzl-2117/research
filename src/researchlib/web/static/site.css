@@ -728,6 +728,10 @@ tbody tr:hover td { background: var(--accent-softer); }
 /* 文章页正文跟阅读栏一样宽。问库、日汇总仍用上面的 72ch。 */
 .reader-grid .prose { max-width: none; }
 .prose p { margin: 0; }
+/* 公众号/正文段间按原文空开：相邻两段给回一段空白，读起来跟原稿的分段一致。
+   只加这一条，别动 .bilingual-en.prose p + p（译文仍用 0.8em）、.ocr-reading p + p（识图 1.4em）
+   和标题规则；两边都是 p 才生效，段与标题、表格、列表之间仍走上面的 .prose > * + *。 */
+.prose p + p { margin-top: 1.8em; }
 .prose p:empty { display: none; }
 .prose br + br { display: none; }
 .prose > * + * { margin-top: 1.4em; }
@@ -1697,6 +1701,42 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   white-space: normal;
 }
 .prose .ocr-reading p + p { margin-top: 1.4em; }
+/* 识图里的数据表：表头和数据列对齐，不能一行一行排成段落。
+   整张表仍是到原图的链接（.ocr-link），所以链接在这里让位给表格：不画下划线，悬停只给一层浅底。 */
+.prose .ocr-reading a.ocr-table-link {
+  display: block;
+  overflow-x: auto;
+  margin: .35em 0 .1em;
+  border-radius: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+.prose .ocr-reading a.ocr-table-link:hover {
+  outline: 1px solid var(--line-strong);
+  outline-offset: 2px;
+  text-decoration: none;
+}
+.prose .ocr-reading table.ocr-table {
+  display: table;
+  width: 100%;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+.prose .ocr-reading table.ocr-table th,
+.prose .ocr-reading table.ocr-table td {
+  padding: .45em .7em;
+  white-space: nowrap;
+}
+.prose .ocr-reading table.ocr-table th[scope="row"] {
+  white-space: normal;
+  background: transparent;
+  text-align: left;
+}
+.prose .ocr-reading table.ocr-table td,
+.prose .ocr-reading table.ocr-table thead th { text-align: right; }
+.prose .ocr-reading table.ocr-table thead th:first-child { text-align: left; }
 .prose .ocr-links {
   display: flex;
   flex-wrap: wrap;

@@ -12,6 +12,7 @@ import markdown
 from markupsafe import Markup
 
 from researchlib.ocr import useful_image_text
+from researchlib.ocr_tables import Table, find_tables
 from researchlib.present_text import merge_wrapped_utterances, polish_display_text, present_article_text
 from researchlib.textutil import strip_alert_markers
 from researchlib.wechat_dialogue import parse_shot, render_turns
@@ -331,25 +332,57 @@ def tidy_ocr_text(text: str) -> str:
     return raw
 
 
-def _cite(info: dict, inner: str, *, with_id: bool) -> str:
+def _cite(info: dict, inner: str, *, with_id: bool, extra_class: str = "") -> str:
     """这段字本身链到原图。同一张图只有第一处带锚点，检索「看这张图」仍跳到这里。"""
     href = html_lib.escape(info["src"], quote=True)
     id_attr = f' id="{html_lib.escape(info["anchor"], quote=True)}"' if with_id else ""
-    return f'<a class="ocr-link"{id_attr} href="{href}" target="_blank" rel="noopener">{inner}</a>'
+    class_attr = f"ocr-link {extra_class}" if extra_class else "ocr-link"
+    return f'<a class="{class_attr}"{id_attr} href="{href}" target="_blank" rel="noopener">{inner}</a>'
+
+
+def _ocr_table_html(table: Table) -> str:
+    """数据表排成真表格：表头一行，每行左列是项目、右边是数值列。"""
+    head = ""
+    if table.header:
+        cells = "".join(f'<th scope="col">{html_lib.escape(cell)}</th>' for cell in table.header)
+        head = f"<thead><tr>{cells}</tr></thead>"
+    body = "".join(
+        "<tr>"
+        f'<th scope="row">{html_lib.escape(row.label)}</th>'
+        + "".join(f"<td>{html_lib.escape(cell)}</td>" for cell in row.cells)
+        + "</tr>"
+        for row in table.rows
+    )
+    return f'<table class="ocr-table">{head}<tbody>{body}</tbody></table>'
 
 
 def _prose_html(text: str, link: dict | None) -> str:
-    """模型写下的换行就是段。只先接半句折行，每一段的字链到这张图。"""
+    """模型写下的换行就是段。只先接半句折行，每一段的字链到这张图。
+
+    逐行的数据表不按行排：认出来的表整张放进 ``<table>``，表外的标题、注记仍是段。
+    """
     shown = polish_display_text(merge_wrapped_utterances(tidy_ocr_text(text)))
-    paragraphs: list[str] = []
-    for block in re.split(r"\n\s*\n", shown):
-        paragraphs.extend(line.strip() for line in block.splitlines() if line.strip())
-    if not paragraphs and shown.strip():
-        paragraphs = [shown.strip()]
+    lines = shown.splitlines()
+    tables = {table.start: table for table in find_tables(lines)}
     parts: list[str] = []
     first = True
-    for para in paragraphs:
-        inner = html_lib.escape(para)
+    index = 0
+    while index < len(lines):
+        table = tables.get(index)
+        if table is not None:
+            inner = _ocr_table_html(table)
+            if link:
+                # 整张表仍链到原图；锚点落在第一个块上，检索「看这张图」跳到这张表。
+                inner = _cite(link, inner, with_id=first, extra_class="ocr-table-link")
+                first = False
+            parts.append(inner)
+            index = table.end
+            continue
+        line = lines[index].strip()
+        index += 1
+        if not line:
+            continue
+        inner = html_lib.escape(line)
         if link:
             inner = _cite(link, inner, with_id=first)
             first = False
