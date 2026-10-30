@@ -77,6 +77,7 @@ from researchlib.web.present import (
 from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
 from researchlib.wechat_dialogue import present_stored_ocr
+from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 router = APIRouter()
@@ -673,7 +674,7 @@ def _article_view(request: Request, article_id: int, mode: str):
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
     original_html = inline_image_ocr(
-        prepare_body_html(shown_md, display_title, mapping, fmt, link_index, parent),
+        prepare_body_html(shown_md, display_title, mapping, fmt, link_index, parent, owners=source_owners(source)),
         ocr_texts,
     )
 

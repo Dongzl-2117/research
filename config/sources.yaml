@@ -27,6 +27,8 @@ sources:
   - id: chengfengpolang
     name: 乘风破浪
     author: 乘风破浪
+    # 星球里星主的昵称：归档头的「作者」、评论里回答读者的都是这个名字。评论区只留他的。
+    poster_names: [郑立涛]
     kind: zsxq
     enabled: true
     timeline: true

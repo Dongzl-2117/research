@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+from collections.abc import Sequence
 
 from markupsafe import escape
 
@@ -187,9 +188,11 @@ def prepare_body_html(
     fmt: str | None,
     index: MdIndex | None,
     parent: str = "",
+    *,
+    owners: Sequence[str] = (),
 ) -> str:
     _frontmatter, body = split_frontmatter(body_md or "")
     if fmt != "html":
         body = strip_duplicate_title(body, title)
-    rendered = str(render_body(body, mapping, fmt))
+    rendered = str(render_body(body, mapping, fmt, owners=owners))
     return finish_html(rendered, index, parent)

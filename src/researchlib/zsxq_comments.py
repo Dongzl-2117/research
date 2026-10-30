@@ -3,7 +3,8 @@
 归档正文里这一节是 Markdown：`- **名字**（时间）` 再加缩进的正文。
 名字被打成空白（常见是全角空格）时，`**　　**` 做不成强调，星号会原样留在页面上。
 阅读页改成作者、时间、正文；空白名字写成「匿名」。标题前面那些空 `<br>` 去掉。
-阅读页和入库都只留方伟自己的评论，其他人的可逆隐藏；inbox / raw 里的原文不动。
+阅读页、入库和接口都只留这个来源的作者自己的评论（方伟星球留方伟，乘风破浪留星主），其他人的可逆隐藏；
+inbox / raw 里的原文不动。作者认来源配置的 author 和 poster_names（`source_owners`），不给时按方伟认。
 「评论里的回复」是另一节；阅读页把旧标签映射成「网友：」「方伟：」，与正文同一套对话体。
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 import html
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import markdown
@@ -69,18 +71,27 @@ def display_author(raw: str) -> str:
     return text
 
 
-def is_host_comment_author(name: str) -> bool:
-    """是不是方伟自己的评论。空白「匿名」不算。"""
+def source_owners(source) -> tuple[str, ...]:
+    """来源作者在评论里用的名字：author 加 poster_names（星球昵称）。"""
+    return tuple(name for name in (source.author, *source.poster_names) if name)
+
+
+def is_host_comment_author(name: str, owners: Sequence[str] = ()) -> bool:
+    """是不是来源作者自己的评论。owners 见 source_owners，不给时按方伟认。空白「匿名」不算。"""
+    from researchlib.author_voice import same_person
     from researchlib.wechat_dialogue import _compact_host, _is_host_line
 
     shown = display_author(name)
     if not shown or shown == ANONYMOUS:
         return False
-    return _is_host_line(_compact_host(shown))
+    # 方伟的显示名花样多（方伟Rey、方伟-最近在杭州），沿用对话整理那一套。
+    if (not owners or "方伟" in owners) and _is_host_line(_compact_host(shown)):
+        return True
+    return any(same_person(shown, owner) for owner in owners)
 
 
-def keep_host_comments(comments: list[ReaderComment]) -> list[ReaderComment]:
-    return [comment for comment in comments if is_host_comment_author(comment.author)]
+def keep_host_comments(comments: list[ReaderComment], owners: Sequence[str] = ()) -> list[ReaderComment]:
+    return [comment for comment in comments if is_host_comment_author(comment.author, owners)]
 
 
 def _parse_comment_items(section: str) -> list[tuple[str, str, list[str]]] | None:
@@ -133,16 +144,16 @@ def comment_list_authors(md: str) -> list[str] | None:
     return [display_author(name) for name, _when, _body in items]
 
 
-def guest_comment_authors(md: str) -> list[str] | None:
-    """非方伟的评论作者。没有评论节返回 []。解析不了返回 None。"""
+def guest_comment_authors(md: str, owners: Sequence[str] = ()) -> list[str] | None:
+    """不是来源作者的评论人（owners 不给时按方伟）。没有评论节返回 []。解析不了返回 None。"""
     names = comment_list_authors(md)
     if names is None:
         return None
-    return [name for name in names if not is_host_comment_author(name)]
+    return [name for name in names if not is_host_comment_author(name, owners)]
 
 
-def filter_host_comments_markdown(md: str) -> str:
-    """入库用：正文里的「评论（N）」只留方伟。没有方伟评论就整节去掉。inbox 原文不改。"""
+def filter_host_comments_markdown(md: str, owners: Sequence[str] = ()) -> str:
+    """正文里的「评论（N）」只留来源作者（owners 不给时按方伟）。一条都不剩就整节去掉。inbox 原文不改。"""
     match = _HEADING.search(md or "")
     while match and _in_fence(md, match.start()):
         match = _HEADING.search(md, match.end())
@@ -157,7 +168,7 @@ def filter_host_comments_markdown(md: str) -> str:
     items = _parse_comment_items(section)
     if items is None:
         return md or ""
-    kept = [(name, when, body) for name, when, body in items if is_host_comment_author(name)]
+    kept = [(name, when, body) for name, when, body in items if is_host_comment_author(name, owners)]
     before = md[: match.start()]
     if not kept:
         glued = before.rstrip() + ("\n\n" + after.lstrip("\n") if after.strip() else "\n")
@@ -323,13 +334,13 @@ def strip_breaks_before_comments(html: str) -> str:
     return strip_trailing_breaks(html[: match.start()]) + html[match.start() :]
 
 
-def assemble_reader_comments(body: str, mapping: dict[str, str], render_markdown) -> str:
+def assemble_reader_comments(body: str, mapping: dict[str, str], render_markdown, owners: Sequence[str] = ()) -> str:
     before, comments, after = split_reader_comments(body, mapping)
     if not comments:
         return render_markdown(body, mapping)
-    comments = keep_host_comments(comments)
+    comments = keep_host_comments(comments, owners)
     head = strip_trailing_breaks(render_markdown(before, mapping))
-    tail = assemble_reader_comments(after, mapping, render_markdown) if after.strip() else ""
+    tail = assemble_reader_comments(after, mapping, render_markdown, owners) if after.strip() else ""
     if not comments:
         return head + tail
     return head + render_comment_section(comments) + tail

@@ -30,6 +30,7 @@ from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
 from researchlib.web.routes import _author_groups, _same_origin, active_portfolio, active_sources, database
 from researchlib.web.scoping import parse_int, resolve_scope
+from researchlib.zsxq_comments import filter_host_comments_markdown, guest_comment_authors, source_owners
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 api = APIRouter()
@@ -209,6 +210,11 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     settings = request.app.state.settings
     source = by_id[row["source_id"]]
     digest = queries.digests_for(conn, [article_id]).get(article_id)
+    body_md = row["body_md"] or ""
+    owners = source_owners(source)
+    # 和文章页一样，评论区只留来源作者：库里还没清的旧帖（乘风破浪）不把读者的评论吐出去。
+    if guest_comment_authors(body_md, owners):
+        body_md = filter_host_comments_markdown(body_md, owners)
     title = row["title"] or ""
     # 和文章页同一套：省略号半句补成正文里的完整句。库内 title 不改。
     if repairs_source(source.id, source.kind) and title_needs_repair(title, row.get("body_text") or ""):
@@ -245,7 +251,7 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
             {"chunk": c["ord"], "heading": c["heading"], "text": c["body"], "lang": c["lang"] or None}
             for c in queries.article_chunks(conn, article_id)
         ],
-        "body_markdown": row["body_md"],
+        "body_markdown": body_md,
         "links": _article_links(_base(request), article_id),
         "_trust": TRUST,
     }

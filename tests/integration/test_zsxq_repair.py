@@ -1,11 +1,15 @@
-"""方伟星球存量：截断标题回写、非方伟评论清掉、留言区 OCR 重洗。"""
+"""星球存量：截断标题回写、别人的评论清掉、方伟星球的留言区 OCR 重洗。"""
 
 from datetime import datetime
+
+from fastapi.testclient import TestClient
 
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI, content_hash
+from researchlib.web.app import create_app
+from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_repair import repair_zsxq
 from researchlib.zsxq_title import title_needs_repair
 
@@ -113,7 +117,7 @@ def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, s
     assert "李四" not in ocr["ocr_text"] and "条留言" not in ocr["ocr_text"] and "赞赏" not in ocr["ocr_text"]
     spots = {item["id"]: item for item in stats["spots"]}
     assert spots[cut["id"]]["title_truncated"] is False
-    assert spots[comments["id"]]["comment"] == "评论只剩方伟"
+    assert spots[comments["id"]]["comment"] == "评论只剩作者"
     assert spots[ocr_row["id"]]["chrome_under_host"] is False
 
     again = repair_zsxq(conn, spot_ids=[])
@@ -122,16 +126,16 @@ def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, s
     assert again["ocr_rewash"] == 0
 
 
-def test_other_zsxq_sources_get_titles_only(conn, settings):
-    """乘风破浪：只回写标题，非方伟的评论一条不动。不加 titles_only 不让跑。"""
-    import pytest
-
+def test_other_zsxq_sources_keep_their_own_host_comments(conn, settings):
+    """乘风破浪：评论区留它自己的星主，读者的评论在阅读页、接口里不露，回写后检索也搜不到。图片文字不重洗。"""
     source = next(item for item in load_sources(settings.sources_path) if item.id == "chengfengpolang")
     when = datetime(2026, 9, 27, 14, 41, tzinfo=SHANGHAI)
     body = (
         "Temu：值得重视的关税利好\n\n"
         "中美这次国事访问后达成的对等降税安排，主要是针对几类商品：小家电、玩具、节庆装饰品等。\n\n"
-        "## 评论（1）\n\n- **王小明**（2026-09-27 15:00）\n  同意，半托管早就铺开了。\n"
+        "## 评论（2）\n\n"
+        "- **王小明**（2026-09-27 15:00）\n  同意，半托管的灯笼订单早就铺开了。\n"
+        "- **乘风破浪（作者）**（2026-09-27 15:10）\n  铺开了，这次降税对小家电最直接。\n"
     )
     store_documents(
         conn,
@@ -143,12 +147,43 @@ def test_other_zsxq_sources_get_titles_only(conn, settings):
         errors=[],
     )
     conn.commit()
-    with pytest.raises(SystemExit):
-        repair_zsxq(conn, "chengfengpolang")
+    article_id = conn.execute("SELECT id FROM articles WHERE external_id = 'cf-1250'").fetchone()["id"]
+
+    # 库里还没清：阅读页、接口按来源的星主现滤。检索块还是旧的，读者的话搜得到。
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article_id}").text
+        api_md = client.get(f"/api/v1/articles/{article_id}.md").text
+        assert f"/articles/{article_id}" in client.get("/search", params={"q": "灯笼订单"}).text
+    for shown in (page, api_md):
+        assert "这次降税对小家电最直接" in shown
+        assert "王小明" not in shown and "灯笼订单" not in shown
+
     stats = repair_zsxq(conn, "chengfengpolang", titles_only=True)
     conn.commit()
     assert stats["titles"] == 1 and stats["spots"] == []
-    row = conn.execute("SELECT title, body_md FROM articles WHERE external_id = 'cf-1250'").fetchone()
+    row = conn.execute("SELECT title, body_md FROM articles WHERE id = %s", (article_id,)).fetchone()
     assert row["title"] == "Temu：值得重视的关税利好"
     assert not title_needs_repair(row["title"])
     assert "王小明" in row["body_md"]
+
+    owners = {item.id: source_owners(item) for item in load_sources(settings.sources_path)}
+    stats = repair_zsxq(
+        conn, "chengfengpolang", owners=owners["chengfengpolang"], spot_owners=owners, spot_ids=[article_id]
+    )
+    conn.commit()
+    assert stats["comments_dirty"] == 1 and stats["comments_cleaned"] == 1
+    assert stats["ocr_rewash"] == 0 and stats["ocr_rewash_mp"] == 0
+    assert stats["spots"][0]["comment"] == "评论只剩作者"
+    row = conn.execute("SELECT body_md, body_text FROM articles WHERE id = %s", (article_id,)).fetchone()
+    assert "王小明" not in row["body_md"] and "灯笼订单" not in row["body_text"]
+    assert "这次降税对小家电最直接" in row["body_md"]
+    chunks = " ".join(
+        item["body"]
+        for item in conn.execute("SELECT body FROM article_chunks WHERE article_id = %s", (article_id,)).fetchall()
+    )
+    assert "灯笼订单" not in chunks and "这次降税对小家电最直接" in chunks
+    with TestClient(create_app(settings)) as client:
+        assert f"/articles/{article_id}" not in client.get("/search", params={"q": "灯笼订单"}).text
+
+    again = repair_zsxq(conn, "chengfengpolang", owners=owners["chengfengpolang"])
+    assert again["comments_cleaned"] == 0
