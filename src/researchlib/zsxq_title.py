@@ -10,7 +10,8 @@
 - 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句时才用，不用无关的配售截图。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
-  「下图」「如下：」这种引出图片的垫话也算占位。
+  「下图」「如下：」这种引出图片的垫话也算占位。整行只是占位的（导出的标题行「「图片」」）不拿来抽句子，
+  不然会和下一句粘成「「图片」 补充一句……」；已经粘上的重取。
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
   接口先把开头几行用空格接起来再截，标题会跨行，这时把这几行接起来补全。
 - 标题以省略号收尾时，先去掉省略号再和正文对齐。正文里那一句不超过 40 字就整句用上；
@@ -80,6 +81,8 @@ _DANGLING = re.compile(r"[，,；;]\s*([^，,；;]{0,3})$")
 _CJK = re.compile(r"[一-鿿]")
 _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 _PLACEHOLDER = frozenset({"无标题", "未命名", "无题", "暂无标题", "图片", "见图", "短帖"})
+# 「「图片」 虽然不体现在资产负债表……」：导出的占位标题行和下一句粘成了一个标题（23834）。
+_PLACEHOLDER_LEAD = re.compile(r"^[「『“\"]\s*(?:图片|见图|无标题|未命名|无题|暂无标题)\s*[」』”\"]\s+\S")
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+短帖)?")
 _BREAKS = "，,；;、：:"
 # 省略号在开头、结尾或句子中间，都是截断，不是一句完整的话。
@@ -187,6 +190,8 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     if strip_narrator(text) != text:
         return True
     if _QA_ASKER.search(text):
+        return True
+    if _PLACEHOLDER_LEAD.match(text):
         return True
     if _shell_colon(text):
         return True
@@ -535,13 +540,19 @@ def _drop_cut_stubs(text: str) -> str:
     return "\n".join(line for index, line in enumerate(lines) if index not in drop)
 
 
+def _drop_placeholder_lines(text: str) -> str:
+    """整行只是「「图片」」「下图」这种占位的不拿来抽句子：导出的标题行会和下一句粘成「「图片」 补充一句……」。"""
+    lines = (text or "").splitlines()
+    return "\n".join(line for line in lines if not _placeholder(_HEADING.sub("", line)))
+
+
 def _candidates(text: str) -> list[str]:
     """从一段文字里按顺序抽出能当标题的完整句。
 
     带省略号的半截、「正文为空」和复述摘要（正文几乎、文中未给、作者开篇判断、没有本人的话）丢掉。
     """
     found: list[str] = []
-    for raw in _iter_raw(_drop_cut_stubs(text)):
+    for raw in _iter_raw(_drop_placeholder_lines(_drop_cut_stubs(text))):
         if _spammy(raw) or _contains_cut(raw) or _missing_note(raw) or _narration(raw):
             continue
         prepared = _prepare(raw)
@@ -678,7 +689,7 @@ def _salvage_stored(title: str) -> str:
 def _short_snippet(text: str) -> str:
     if _narration(text):
         return ""
-    raw = argumentative_excerpt(_plain(text), limit=80)
+    raw = argumentative_excerpt(_plain(_drop_placeholder_lines(text)), limit=80)
     if _narration(raw):
         return ""
     piece = _prepare(raw)

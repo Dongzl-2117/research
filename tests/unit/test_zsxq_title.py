@@ -396,6 +396,20 @@ def test_filler_titles_are_placeholders():
     assert title_needs_repair("下图是关键") is False
 
 
+def test_placeholder_heading_is_not_glued_onto_the_next_sentence():
+    """导出的标题行「「图片」」和下一句粘成「「图片」 虽然……」（线上 23834）：抽句子时跳过占位行，已经粘上的要重取。"""
+    body = "# 「图片」\n\n虽然不进资产负债表，但会不会体现在利润表里？\n\n![](../../images/a.jpg)\n"
+    asked = "虽然不进资产负债表，但会不会体现在利润表里？"
+    assert stored_zsxq_title("「图片」", body) == asked
+    glued = "「图片」 虽然不进资产负债表，但会不会体现在利润表里"
+    assert title_needs_repair(glued)
+    assert title_needs_ai(glued) is False
+    assert zsxq_display_title(glued, body=body) == asked
+    assert stored_zsxq_title(glued, body) == asked
+    # 只是说到图片的真标题不动。
+    assert title_needs_repair("“图片”里的世界") is False
+
+
 def test_archive_header_never_becomes_a_title():
     """线上 14885：图片帖入库时把归档头读成了标题「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。"""
     body = f"# 「图片」\n\n{ARCHIVE_HEADER}\n![](../../images/a.jpg)\n"

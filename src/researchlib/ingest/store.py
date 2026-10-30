@@ -24,6 +24,7 @@ from researchlib.revisions import article_text, held_before, judge_replacement, 
 from researchlib.sources import Source
 from researchlib.textutil import content_hash, markdown_to_text, strip_duplicate_title
 from researchlib.visibility import HIDDEN, SHORT_POST
+from researchlib.zsxq_title import repairs_source, title_needs_repair
 
 
 def _body_text(title: str, body_md: str, profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> str:
@@ -156,12 +157,22 @@ def apply_length_floor(source: Source, body_md: str, meta: dict) -> dict:
     return meta
 
 
+def _keeps_repaired_title(source: Source, existing, doc: ParsedDoc) -> bool:
+    """星球帖重导：导入算出的标题还要补（只有图的「「图片」」），库里的已经补好了，正文也没改。
+
+    导入时没有图片里的字和摘要，这种标题补不出来；夜间回写（含 flash 起题）补好以后，
+    星球抓取每次整包重导都会把它改回占位，回写再为同一批帖子打 flash。这时留库里的。
+    """
+    stored = existing["title"] or ""
+    if not stored or stored == doc.title or not repairs_source(source.id, source.kind):
+        return False
+    if not title_needs_repair(doc.title, doc.body_md) or title_needs_repair(stored, doc.body_md):
+        return False
+    return article_text(existing["body_md"]) == article_text(doc.body_md)
+
+
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
     profile = profile_for(conn, source.id)
-    body_text = _body_text(doc.title, doc.body_md, profile)
-    digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
-    meta = apply_length_floor(source, doc.body_md, poster)
     existing = conn.execute(
         """
         SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
@@ -170,6 +181,12 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         """,
         (source.id, doc.external_id),
     ).fetchone()
+    if existing is not None and _keeps_repaired_title(source, existing, doc):
+        doc.title = existing["title"]
+    body_text = _body_text(doc.title, doc.body_md, profile)
+    digest = content_hash(doc.title, doc.body_md, doc.published_at)
+    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
+    meta = apply_length_floor(source, doc.body_md, poster)
     keep = False
     article_changed = True
     same_words = False
