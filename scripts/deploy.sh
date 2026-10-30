@@ -6,10 +6,11 @@
 #   scripts/deploy.sh              # 手动跑一次：有新提交并且 CI 过了就上线
 #   FORCE=1 scripts/deploy.sh      # 不等 CI、不等别的定时任务，上次失败过的提交也重试
 #
-# 结果写进 data/status/deploy.json，首页只在失败时提示：拉代码、重建失败，重启后应用没起来，CI 没过，
+# 结果写进 data/status/deploy.json，research-status 只在失败时提示：拉代码、重建失败，重启后应用没起来，CI 没过，
 # 仓库不在 main、有没提交的改动或者没推送的提交，或者 6 小时取不到 main、查不到 CI。偶尔断网的那一轮什么都不记，下一轮再试。
 # 重建失败的提交最多试 3 轮，之后等下一个提交或 FORCE=1。CI 没过的提交每轮再查，CI 重跑通过了就上线。
 # 夜间补齐、定时抓取、备份，以及容器里的 research-translate / research-ocr 正在跑时先不重启：重建会把它们打断。
+# 这样等着不记失败；新提交合并 3 小时了还被挡着，或者上一轮自动上线 2 小时还没跑完，才记成失败。
 # 定时任务的模板（deploy/launchd/、install-launchd.sh）改了，上线后按上次安装的设置重装一遍。
 #
 # 拉代码会改到这个脚本自己，所以全部写在函数里，bash 先读完整个文件再跑。
@@ -59,6 +60,10 @@ take_lock() {
     local holder
     holder="$(cat "$LOCK/pid" 2> /dev/null || true)"
     if [ -n "$holder" ] && kill -0 "$holder" 2> /dev/null; then
+      # 卡住的那一轮会挡住后面每一轮。跑了 2 小时还没完就记下来，不然只看得到「新提交一直没上线」。
+      if [ -n "$(find "$LOCK/pid" -mmin +120 2> /dev/null || true)" ]; then
+        status_fail "上一轮自动上线（进程 ${holder}）跑了两个多小时还没完，这之后合并的都没上线：看 ~/Library/Logs/research/deploy.log"
+      fi
       note "上一轮还在跑（进程 ${holder}），这轮跳过"
       exit 0
     fi
@@ -183,6 +188,10 @@ deploy_main() {
   if [ "${FORCE:-0}" != "1" ]; then
     busy="$(busy_job)"
     if [ -n "$busy" ]; then
+      age=$(($(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$target")))
+      if [ "$age" -gt 10800 ]; then
+        status_fail "${busy} 还在跑，main 上的 ${short} 合并 3 小时了还没上线（等不及就 FORCE=1 scripts/deploy.sh，会打断它）"
+      fi
       note "${busy} 还在跑，跑完再上线 ${short}"
       exit 0
     fi
