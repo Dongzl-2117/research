@@ -482,9 +482,11 @@ def parse_markdown_files(
         full_md = normalize_newlines(original)
         if id_mode == "zsxq":
             # 评论区只留来源作者（owners，不给时按方伟）；其他人的仍在 inbox / raw，可逆。
+            # 有话题 JSON 时，星主在楼中楼里的回复连同读者那句接进下面的「评论里的回复」，列表里不重复；
+            # 没有 JSON（乘风破浪的归档）就留在列表里。
             from researchlib.zsxq_comments import filter_host_comments_markdown
 
-            full_md = filter_host_comments_markdown(full_md, owners)
+            full_md = filter_host_comments_markdown(full_md, owners, replies="replies" not in raw_meta)
         stored_meta: dict = {
             "format": "markdown",
             "parent": parent,

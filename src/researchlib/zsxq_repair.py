@@ -43,7 +43,6 @@ from researchlib.zsxq_comments import (
     comment_list_authors,
     filter_host_comments_markdown,
     guest_comment_authors,
-    is_host_comment_author,
     source_owners,
 )
 from researchlib.zsxq_title import (
@@ -425,7 +424,7 @@ def spot_check(conn, article_ids: list[int], owners: dict[str, tuple[str, ...]] 
             comment = "无评论列表"
         else:
             mine = (owners or {}).get(row["source_id"] or "", ())
-            guests = [name for name in listed if not is_host_comment_author(name, mine)]
+            guests = guest_comment_authors(row["body_md"] or "", mine) or []
             comment = "仍有别人的评论：" + "、".join(guests) if guests else "评论只剩作者"
         raw_parts = pieces.get(article_id) or []
         presented = present_ocr_pieces(raw_parts) if raw_parts else present_stored_ocr(row["ocr_text"] or "")

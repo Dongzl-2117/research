@@ -133,8 +133,10 @@ def test_other_zsxq_sources_keep_their_own_host_comments(conn, settings):
     body = (
         "Temu：值得重视的关税利好\n\n"
         "中美这次国事访问后达成的对等降税安排，主要是针对几类商品：小家电、玩具、节庆装饰品等。\n\n"
-        "## 评论（2）\n\n"
+        "## 评论（3）\n\n"
         "- **王小明**（2026-09-27 15:00）\n  同意，半托管的灯笼订单早就铺开了。\n"
+        # 星主在楼中楼里回答读者：导出写成「乘风破浪 回复 王小明」，要留，昵称不留。
+        "  - **乘风破浪 回复 王小明**（2026-09-27 15:05）\n    节庆装饰的单子三季度才放量。\n"
         "- **乘风破浪（作者）**（2026-09-27 15:10）\n  铺开了，这次降税对小家电最直接。\n"
     )
     store_documents(
@@ -156,6 +158,7 @@ def test_other_zsxq_sources_keep_their_own_host_comments(conn, settings):
         assert f"/articles/{article_id}" in client.get("/search", params={"q": "灯笼订单"}).text
     for shown in (page, api_md):
         assert "这次降税对小家电最直接" in shown
+        assert "节庆装饰的单子三季度才放量" in shown and "乘风破浪 回复网友" in shown
         assert "王小明" not in shown and "灯笼订单" not in shown
 
     stats = repair_zsxq(conn, "chengfengpolang", titles_only=True)
@@ -177,6 +180,8 @@ def test_other_zsxq_sources_keep_their_own_host_comments(conn, settings):
     row = conn.execute("SELECT body_md, body_text FROM articles WHERE id = %s", (article_id,)).fetchone()
     assert "王小明" not in row["body_md"] and "灯笼订单" not in row["body_text"]
     assert "这次降税对小家电最直接" in row["body_md"]
+    assert "- **乘风破浪 回复网友**（2026-09-27 15:05）" in row["body_md"]
+    assert "节庆装饰的单子三季度才放量" in row["body_text"]
     chunks = " ".join(
         item["body"]
         for item in conn.execute("SELECT body FROM article_chunks WHERE article_id = %s", (article_id,)).fetchall()
