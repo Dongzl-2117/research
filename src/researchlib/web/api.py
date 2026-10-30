@@ -177,19 +177,23 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
         }
         next_offset = offset + limit if offset + limit < result.available else None
         # total 是全部命中的篇数；按相关度排序只排得到其中 listed 篇，翻页到这里为止。
-        listed = result.available - result.partial
+        # 语义相关的（词没写全）排在它们中间，单独报 semantic，不算进这两个数。
+        semantic = result.semantic
+        listed = result.available - result.partial - semantic
     else:
         total = queries.count_scoped_articles(conn, scope)
         rows = queries.scoped_articles(conn, scope, limit, offset)
         snippets = {}
         next_offset = offset + limit if offset + limit < total else None
         listed = total
+        semantic = 0
     return {
         "query": query,
         "level": "article",
         "scope": info,
         "total": total,
         "listed": listed,
+        "semantic": semantic,
         "limit": limit,
         "offset": offset,
         "next_offset": next_offset,

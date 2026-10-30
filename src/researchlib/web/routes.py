@@ -1087,7 +1087,8 @@ def search_page(request: Request):
     total = found.total if found else 0
     available = found.available if found else 0
     # 检索按相关度先取 2000 个段落再排，常见词全部命中的文章比这多，翻页翻不到的要说出来。
-    listed = available - (found.partial if found else 0)
+    semantic_total = found.semantic if found else 0
+    listed = available - (found.partial if found else 0) - semantic_total
     page, pages, _offset = page_window(available, page, SEARCH_PAGE_SIZE)
     author_counts: dict[str, int] = {}
     source_counts = []
@@ -1128,6 +1129,7 @@ def search_page(request: Request):
             "results": results,
             "first_partial": first_partial,
             "partial_total": found.partial if found else 0,
+            "semantic_total": semantic_total,
             "semantic_note": semantic_note,
             "search_terms": terms,
             "total_all": total_all,
