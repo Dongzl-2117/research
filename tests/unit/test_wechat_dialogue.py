@@ -1259,6 +1259,22 @@ def test_group_notices_and_status_bar_are_not_anyones_words():
     assert "大家觉得组织是护城河么" in again
 
 
+def test_app_logo_line_is_not_anyones_words():
+    """状态栏和 App 标题识成两行时，单独一行的「■知识星球」也只是界面，不能标成方伟的话（23946）。"""
+    raw = "10:57 :!!! 5GA\n■知识星球\n微信\n看十年交流群(120)\n王小明\n拼多多的护城河是什么呢\n"
+    text = present_ocr_pieces([raw])
+    assert "知识星球" not in text and "5GA" not in text
+    assert "网友：拼多多的护城河是什么呢" in text
+
+    again = present_stored_ocr("方伟：■知识星球。\n\n网友：拼多多的护城河是什么呢。")
+    assert "知识星球" not in again
+    assert "拼多多的护城河是什么呢" in again
+
+    speech = present_ocr_pieces(["微信\n看十年交流群(120)\n王小明\n这些讨论在哪里能看全？\n方伟Rey\n知识星球里有\n"])
+    assert "网友：这些讨论在哪里能看全？" in speech
+    assert "方伟：知识星球里有" in speech
+
+
 def test_invite_words_and_clock_in_speech_stay():
     """话里提到邀请、钟点后面接着汉字，都是正常的话。"""
     speech = "微信\n王小明\n我想邀请大家一起看看这家公司\n方伟Rey\n10:30 开盘以后5G板块一直在跌\n"
