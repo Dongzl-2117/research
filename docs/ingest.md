@@ -9,7 +9,7 @@
 | fangwei-mp | wechat_mp | `research-ingest-wechat` |
 | fangwei-zsxq | zsxq | `research-ingest-zsxq` |
 | chengfengpolang | zsxq | `research-ingest-zsxq` |
-| gudujinhuati | markdown | `research-ingest-markdown` |
+| gudujinhuati | markdown | `research-ingest-markdown`；定时抓取 `research-crawl-wechat` |
 | linwenfeng-mp | wechat_mp | `research-ingest-wechat` |
 | linwenfeng-feishu | feishu | `research-ingest-feishu` |
 | duanyongping-blog | markdown | `research-ingest-duanyongping` |
@@ -120,6 +120,21 @@ docker compose exec app research-ingest-markdown \
 - 外链图片导入时不下载，之后另外下载（见下面「外链图片」）
 
 正文用 UTF-8，失败时再试 GB18030。
+
+## 公众号定时抓取
+
+`research-crawl-wechat` 抓配置里写了 `ghid`（公众号原始 ID，gh_ 开头）的公众号，现在只有孤独进化体。`scripts/crawl-gudujinhuati.sh` 每天 09:20 跑一次（launchd，见 [backup.md](backup.md)）：
+
+```bash
+docker compose exec app research-crawl-wechat --source gudujinhuati --dry-run   # 只看哪些是新的
+docker compose exec app research-crawl-wechat --source gudujinhuati             # 抓新文章、写归档、导入
+```
+
+- 文章列表向极致了（dajiala）查：每查一次约 0.14 元，`--dry-run` 也要查。key 是 `DAJIALA_KEY`，和宿主机上方伟公众号的抓取共用仓库根 `.env` 里那一行，docker compose 透传进容器。极致了限速每分钟 5 次，两次调用之间隔 13 秒。
+- 库里已有的跳过：按正文开头归档头里的 sn、原链接里的 `sn=`，或同一天同标题。AIHOT 和以前的归档导进来的都认得出。
+- 新文章的正文先从公众号原文页（`#js_content`）取，不花钱，图片位置也是对的；原文页要验证、图文消息这种没有正文的，再用极致了的正文（每篇约 0.03 元，图片位置是按段估的）。原文已删除、因违规不能看的只记一份原始数据，以后不再取。一次最多取 `--max-new` 篇（默认 5），其余留到下次。
+- 归档写在 `data/inbox/<来源>/`：`md/<年>/<日期>-<sn>.md` 开头是「- 作者：」「- 时间：…(UTC+8)」「- sn：」「- 原链接：」，和以前导入的公众号归档一样；`raw/articles/<sn>.json` 是极致了的列表项。写完按 `--origin crawl` 导入（外部 id 是归档里的相对路径），图片留图床地址，由脚本接着跑的 `research-fetch-images` 下载。
+- 列表查不到（key 不对、余额不足、限速）或者有文章正文两条路都取不到时退出码 1，`data/status/crawl-gudujinhuati.json` 记成失败。
 
 ## 外链图片
 

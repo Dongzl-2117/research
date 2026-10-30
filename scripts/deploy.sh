@@ -24,7 +24,7 @@ DEPLOY_WAIT="${DEPLOY_WAIT:-600}"
 MAX_TRIES=3
 TASK=deploy
 # 重建时会被打断的定时任务（scripts/ 下的脚本名）。
-JOBS="nightly crawl-fangwei-mp crawl-fangwei-zsxq ingest-aihot backup restore-check"
+JOBS="nightly crawl-fangwei-mp crawl-fangwei-zsxq crawl-gudujinhuati ingest-aihot backup restore-check"
 # launchd 里没有终端：git 要密码时直接失败，不要卡住等输入。
 export GIT_TERMINAL_PROMPT=0
 . "$REPO/scripts/status.sh"

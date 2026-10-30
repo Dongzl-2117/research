@@ -12,6 +12,7 @@
 | `scripts/restore-check.sh` | 把最新一份导出恢复到临时库 `research_restore_check`，核对篇数不少于导出时，然后删掉临时库。不碰正式库 |
 | `scripts/crawl-fangwei-mp.sh` | 方伟公众号增量抓取（极致了接口，`DAJIALA_KEY` 取环境变量或仓库根 `.env`），导入（`--origin crawl`），再给新文章补摘要 |
 | `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（`data/inbox/fangwei-zsxq/dl.py`，令牌在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），再补摘要 |
+| `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，`DAJIALA_KEY` 和方伟公众号共用），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片、补摘要。见 [ingest.md](ingest.md)「公众号定时抓取」 |
 | `scripts/ingest-aihot.sh` | （AIHOT 已下线，默认不装）从 AIHOT 只读导入最近 14 天（`DAYS`）发布的白名单文章，见 [ingest.md](ingest.md)；导完把新文章里的外链图片下载到本地（`IMAGES_LIMIT`，默认 200 张） |
 | `scripts/nightly.sh` | 夜间补齐，见下面 |
 
@@ -94,6 +95,7 @@ BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；�
 | `com.zldong.research.restore-check` | 每月 1 号 04:23 |
 | `com.zldong.research.crawl-fangwei-mp` | 每天 08:10、20:10 |
 | `com.zldong.research.crawl-fangwei-zsxq` | 每天 08:40、20:40 |
+| `com.zldong.research.crawl-gudujinhuati` | 每天 09:20 |
 | `com.zldong.research.ingest-aihot` | 每小时（要装才有） |
 | `com.zldong.research.deploy` | 每 10 分钟，装好时先跑一次（见 [deploy.md](deploy.md)「更新」） |
 

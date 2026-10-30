@@ -38,7 +38,9 @@ sources:
     kind: markdown
     enabled: true
     timeline: true
-    description: 微信公众号「孤独进化体」全文归档（通用 Markdown 目录导入；现从 AIHOT mp-gudujinhua 导出）。
+    # 公众号原始 ID。scripts/crawl-gudujinhuati.sh 每天用它向极致了查新文章（research-crawl-wechat）。
+    ghid: gh_1f869b9dc034
+    description: 微信公众号「孤独进化体」全文归档。以前的文章是 Markdown 归档导入的；10 月 30 日起每天定时抓取（research-crawl-wechat）。
 
   - id: linwenfeng-mp
     name: 林文丰公众号
