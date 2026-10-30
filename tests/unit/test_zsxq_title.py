@@ -764,7 +764,7 @@ def test_long_digest_sentence_is_not_cut_inside_a_list():
     assert zsxq_display_title("…", body=head + "、问界、极氪的价格战\n") == head
 
 
-# 问答帖入库后的检索文字：「## 提问（…）」「## 回答（…）」去掉了井号，只剩一行字。网友名字用虚构的。
+# 问答帖以前入库的检索文字：「## 提问（…）」「## 回答（…）」去掉了井号，只剩一行字。网友名字用虚构的。
 QA_TEXT = (
     "问：Rey哥，请教一下怎么加群呀\n\n提问（王小明 → 方伟Rey）\n\nRey哥，请教一下怎么加群呀\n\n"
     "回答（方伟Rey）\n\n后面进来的都是在星球补了差价进去的，群里讨论互动更及时一些。\n"
@@ -775,6 +775,10 @@ QA_GLUED = "问：Rey哥，请教一下怎么加群呀 提问（王小明 → �
 def test_qa_scaffold_and_asker_name_stay_out_of_titles():
     """「提问（网友 → 方伟Rey）」不和上一行的「问：」、下一行的提问拼成一句；已经拼进去的要重取，不打 flash。"""
     assert zsxq_display_title("", body=QA_TEXT) == "问：Rey哥，请教一下怎么加群呀"
+    # 现在的检索文字（迁移 027 改过的也是）只剩「提问」「回答」两个字一行，照样当断句。
+    plain = QA_TEXT.replace("提问（王小明 → 方伟Rey）", "提问").replace("回答（方伟Rey）", "回答")
+    assert zsxq_display_title("", body=plain) == "问：Rey哥，请教一下怎么加群呀"
+    assert zsxq_display_title("下图", body=plain) == "问：Rey哥，请教一下怎么加群呀"
     markdown = QA_TEXT.replace("提问（", "## 提问（").replace("回答（", "## 回答（")
     assert zsxq_display_title("", body="# " + markdown) == "问：Rey哥，请教一下怎么加群呀"
     assert title_needs_repair(QA_GLUED)

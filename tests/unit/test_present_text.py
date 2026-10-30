@@ -2,13 +2,14 @@
 
 from pathlib import Path
 
-from researchlib.boilerplate import clean_body
+from researchlib.boilerplate import clean_body, search_text
 from researchlib.mdlinks import prepare_body_html
 from researchlib.present_text import (
     expand_reply_chain_line,
     merge_wrapped_utterances,
     normalize_dialogue_labels,
     order_nested_replies,
+    plain_qa_markdown,
     polish_display_text,
     present_article_text,
     present_zsxq_qa,
@@ -104,6 +105,30 @@ def test_24006_qa_headings_render_as_dialogue_paragraphs():
     assert "方伟：而且" not in html
     assert html.count('class="who"') == 2
     assert present_zsxq_qa(present_zsxq_qa(cleaned)) == present_zsxq_qa(cleaned)
+
+
+def test_plain_qa_markdown_keeps_the_asker_name_out():
+    """接口给的原文和检索文字：问答小标题只留「提问」「回答」，归档头里的作者（提问的网友）不要，别的行照旧。"""
+    plain = plain_qa_markdown(_QA_24006)
+    assert "王小明" not in plain and "方伟Rey" not in plain
+    expected = (
+        _QA_24006.replace("- 作者：王小明\n", "")
+        .replace("## 提问（王小明 → 方伟Rey）", "## 提问")
+        .replace("## 回答（方伟Rey）", "## 回答")
+    )
+    assert plain == expected
+    assert plain_qa_markdown(plain) == plain
+    text = search_text(clean_body(_QA_24006), _QA_TITLE)
+    assert "王小明" not in text and "方伟Rey" not in text
+    assert "\n提问\n" in text and "\n回答\n" in text
+    # 提问以后的「作者：」是帖子的话，不动。
+    quoted = _QA_24006.replace("而且，", "- 作者：李四\n\n而且，")
+    assert "- 作者：李四" in plain_qa_markdown(quoted)
+    # 不是问答导出（只有一种小标题、在代码块里）原样返回，归档头也不动。
+    notes = "# 读书笔记\n\n- 作者：王小明\n\n## 回答（续）\n\n上回没说完的。\n"
+    assert plain_qa_markdown(notes) == notes
+    fenced = "- 作者：王小明\n\n```\n## 提问（王小明 → 方伟Rey）\n\n## 回答（方伟Rey）\n```\n"
+    assert plain_qa_markdown(fenced) == fenced
 
 
 def test_qa_keeps_comment_replies_and_host_comment_list():

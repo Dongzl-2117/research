@@ -21,6 +21,7 @@ from researchlib.ask import ask, start
 from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
+from researchlib.present_text import plain_qa_markdown
 from researchlib.retrieval import retrieve, search_articles
 from researchlib.textutil import strip_duplicate_title
 from researchlib.views import FILTERS as VIEW_FILTERS
@@ -234,6 +235,8 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     # 和文章页一样，评论区只留来源作者：库里还没清的旧帖（乘风破浪）不把读者的评论吐出去。
     if guest_comment_authors(body_md, owners):
         body_md = filter_host_comments_markdown(body_md, owners)
+    # 问答帖：提问网友的昵称在归档头的「作者」和「提问（网友 → 方伟Rey）」里，阅读页、检索都不露，这里也去掉。
+    body_md = plain_qa_markdown(body_md)
     # 和文章页同一套：省略号半句补成正文里的完整句，只有图的帖用图片里的字。库内 title 不改。
     title = display_titles(conn, [row], by_id, settings.display_timezone)[row["id"]]
     return {

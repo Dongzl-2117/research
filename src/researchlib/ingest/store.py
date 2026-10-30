@@ -8,7 +8,7 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import assign_poster_role, is_guest
-from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
+from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for, search_text
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
 from researchlib.images import sync_article_images
@@ -22,15 +22,14 @@ from researchlib.mentions import (
 )
 from researchlib.revisions import article_text, held_before, judge_replacement, save_revision, split_comments
 from researchlib.sources import Source
-from researchlib.textutil import content_hash, markdown_to_text, strip_duplicate_title
+from researchlib.textutil import content_hash
 from researchlib.visibility import HIDDEN, SHORT_POST
 from researchlib.zsxq_title import repairs_source, title_needs_repair
 
 
 def _body_text(title: str, body_md: str, profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> str:
     """检索、摘要、观点读的文字：去掉归档头、引流尾巴和广告图之后的正文。"""
-    body = clean_markdown(body_md, profile, hashes)
-    return markdown_to_text(strip_duplicate_title(body, title))
+    return search_text(clean_markdown(body_md, profile, hashes), title)
 
 
 def store_documents(
