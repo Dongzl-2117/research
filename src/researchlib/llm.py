@@ -1,8 +1,8 @@
 """调用站内 LLM（OpenAI 兼容的 chat/completions）。
 
 提供方由 ``RESEARCH_LLM_PROVIDER`` 决定：默认 DeepSeek，用 ``DEEPSEEK_API_KEY`` 加 Bearer；
-``RESEARCH_LLM_PROVIDER=grok`` 时走与 AIHOT 共用的 xAI OAuth
-（``XAI_OAUTH_TOKEN_PATH``，Docker 默认 ``/aihot-data/secrets/xai-oauth.json``）。
+``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth
+（``XAI_OAUTH_TOKEN_PATH``，compose 里是 ``/data/secrets/xai-oauth.json``，用 ``research-xai-login login`` 登录）。
 DeepSeek 缺 key 时直接报错，不会悄悄退回 Grok；Grok 路径照旧不读 ``XAI_API_KEY``。
 
 强度与译制共用：DeepSeek 见 ``researchlib.deepseek``（deepseek-flash、thinking 打开、

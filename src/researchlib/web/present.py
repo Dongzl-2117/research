@@ -388,9 +388,10 @@ def recent_blurb(view: dict | None, digest: dict | None, names: list[str]) -> st
     return str(view.get("judgment") or "").strip()
 
 
-# 断更提示只看最近这几天确实做过定时导入的来源：定时抓取脚本（crawl-*.sh，origin=crawl）或 AIHOT。
+# 断更提示只看最近这几天确实做过定时导入的来源：定时抓取脚本（crawl-*.sh，origin=crawl）。
 # 只手动导归档的来源，或定时任务没装的时候，「很久没有新文章」是常态，提示了也是假警报。
-SCHEDULED_ORIGINS = frozenset({"crawl", "aihot"})
+# 以前从 AIHOT 导入的记作 aihot；AIHOT 下线以后没有新的，不再看。
+SCHEDULED_ORIGINS = frozenset({"crawl"})
 FRESH_IMPORT = timedelta(days=3)
 
 
@@ -403,7 +404,7 @@ def stale_sources(
 ) -> list[dict]:
     """断更的来源：定时导入在跑，但最近一篇离现在比平时的间隔长很多（三倍以上、至少一周）。
 
-    imports：{来源: {"at": 最近一次导入时间, "origin": "crawl" | "aihot" | "archive"}}。
+    imports：{来源: {"at": 最近一次导入时间, "origin": "crawl" | "archive"}}。
     最近不到 10 篇带日期的来源不判断。
     返回 [{"name", "idle_days", "typical", "imported"}]；定时导入的来源全都断更时只返回一条
     {"all": True, "count", "idle_days"}：多半是抓取本身出了问题（令牌过期、接口变了），不是各位作者同时停更。

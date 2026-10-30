@@ -29,7 +29,6 @@ TASKS: dict[str, tuple[str, timedelta | None]] = {
     "crawl-fangwei-mp": ("方伟公众号抓取", timedelta(hours=30)),
     "crawl-fangwei-zsxq": ("方伟星球抓取", timedelta(hours=30)),
     "crawl-gudujinhuati": ("孤独进化体抓取", timedelta(hours=50)),
-    "ingest-aihot": ("AIHOT 定时导入", timedelta(hours=6)),
     "nightly": ("夜间补齐", timedelta(hours=50)),
     "upkeep": ("后台重算", None),
     "deploy": ("自动上线", None),
@@ -126,7 +125,8 @@ def notices(data_dir: Path, zone_name: str, now: datetime | None = None) -> list
                 )
             elif label == "Grok":
                 found.append(
-                    f"Grok 登录失效（{_when(since, zone_name)} 起），摘要、观点和问库都停了：到 AIHOT 那边重新登录。"
+                    f"Grok 登录失效（{_when(since, zone_name)} 起），摘要、观点和问库都停了："
+                    "在 Mac mini 上跑 docker compose exec app research-xai-login login 重新登录。"
                 )
             else:
                 found.append(

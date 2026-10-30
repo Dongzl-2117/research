@@ -2,7 +2,7 @@
 
 ``RESEARCH_LLM_PROVIDER=deepseek|grok``，大小写和首尾空格都不计较。不设、或者填了不认识的值，
 一律按 deepseek——这是 owner 2026-10-22 定的默认，等他说换回 Grok 再改。
-Grok 路径仍然是那份与 AIHOT 共用的 xAI OAuth，只是不再是默认。
+Grok 走 xAI OAuth（research-xai-login），只是不再是默认。
 """
 
 from __future__ import annotations

@@ -36,7 +36,6 @@ def _settings(tmp_path) -> Settings:
             "DATA_DIR": str(tmp_path / "data"),
             "PUBLIC_BASE_URL": "https://investment.zldong.com",
             "SOURCES_FILE": str(ROOT / "config" / "sources.yaml"),
-            "AIHOT_MAP_FILE": str(ROOT / "config" / "aihot_import.yaml"),
             "DISPLAY_TIMEZONE": "Asia/Shanghai",
             "DEEPSEEK_API_KEY": SECRET,
         }
