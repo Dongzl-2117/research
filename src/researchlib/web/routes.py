@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-import os
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -28,7 +27,6 @@ from researchlib.digest import needs_rewrite as digest_needs_rewrite
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
-from researchlib.empty_answer import is_suppressed
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.llm import active_label, active_model_id, llm_configured
@@ -48,6 +46,7 @@ from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
 from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
+from researchlib.visibility import is_hidden
 from researchlib.web import queries
 from researchlib.web.daybrief import compose_day_brief
 from researchlib.web.present import (
@@ -123,9 +122,7 @@ def active_sources(request: Request, conn):
         conn.commit()
         request.app.state.sources = sources
         request.app.state.sources_mtime = mtime
-    # paused 的来源（如段永平）整源先不展示：导航、作者、筛选都不出现。
-    show_paused = os.environ.get("RESEARCH_SHOW_PAUSED", "").strip() == "1"
-    return [s for s in enabled_sources(request.app.state.sources) if show_paused or not s.paused]
+    return enabled_sources(request.app.state.sources)
 
 
 def active_portfolio(request: Request) -> Portfolio:
@@ -327,10 +324,8 @@ def _page_arg(request: Request) -> int:
         return 1
 
 
-def _load_feed(
-    conn, source_ids: list[str], settings, page: int, *, include_off_timeline: bool = True, owner_only: bool = False
-):
-    counts = queries.feed_counts(conn, source_ids, include_off_timeline=include_off_timeline, owner_only=owner_only)
+def _load_feed(conn, source_ids: list[str], settings, page: int, *, owner_only: bool = False):
+    counts = queries.feed_counts(conn, source_ids, owner_only=owner_only)
     plan = plan_feed_page(
         counts["days"],
         counts["undated"],
@@ -344,7 +339,6 @@ def _load_feed(
             source_ids,
             plan["limit"],
             plan["offset"],
-            include_off_timeline=include_off_timeline,
             owner_only=owner_only,
         )
     else:
@@ -353,7 +347,6 @@ def _load_feed(
             source_ids,
             plan["limit"],
             plan["offset"],
-            include_off_timeline=include_off_timeline,
             owner_only=owner_only,
         )
     return counts, plan, rows
@@ -388,16 +381,8 @@ def home(request: Request):
             return _jump_to_day(
                 conn, scoped, jump, settings, "/", owner_only=True, source=chosen or ""
             )
-        # 没日期、标了 off_timeline 的条目不进首页按天。作者页仍要。
-        # 读者帖与「图片」评论壳也不进首页；库里保留，正文页 404。
-        counts, plan, rows = _load_feed(
-            conn,
-            scoped,
-            settings,
-            _page_arg(request),
-            include_off_timeline=False,
-            owner_only=True,
-        )
+        # 读者帖与「图片」评论壳不进首页；库里保留，正文页 404。
+        counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request), owner_only=True)
         banner = queries.sample_state(conn, ids)
         days = _feed_days(conn, rows, by_id, settings)
         stale = []
@@ -635,11 +620,10 @@ def _article_view(request: Request, article_id: int, mode: str):
             if new_hash != (article.get("ocr_hash") or ""):
                 article = {**article, "ocr_hash": new_hash}
         digest = queries.digests_for(conn, [article_id]).get(article_id)
-        empty_answer = is_suppressed(article["raw_meta"])
-        meta = article["raw_meta"] or {}
-        suppressed_reason = str(meta.get("hidden") or meta.get("suppressed") or "")
-        # 短文的图片文字变了也重写摘要。空回答不排进后台。
-        if digest_due(article, digest) and not empty_answer:
+        hidden = is_hidden(article["raw_meta"])
+        hidden_reason = str((article["raw_meta"] or {}).get("hidden") or "")
+        # 短文的图片文字变了也重写摘要。不进列表的不排进后台。
+        if digest_due(article, digest) and not hidden:
             schedule_digests(settings, [(article_id, source.author)])
         ocr_texts = queries.image_ocr_texts(conn, article_id)
         quoted = None
@@ -780,8 +764,8 @@ def _article_view(request: Request, article_id: int, mode: str):
             # 点进文章先看总结：有摘要就放在正文前面。
             "digest_summary": (digest or {}).get("summary") or "",
             "digest_points": _digest_points(digest, limit=6) if digest else [],
-            "empty_answer": empty_answer,
-            "suppressed_reason": suppressed_reason,
+            "hidden": hidden,
+            "hidden_reason": hidden_reason,
             "elsewhere": elsewhere,
             "revised": revised,
             "same_period": others,

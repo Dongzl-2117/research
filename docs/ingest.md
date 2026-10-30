@@ -12,27 +12,11 @@
 | gudujinhuati | markdown | `research-ingest-markdown`；定时抓取 `research-crawl-wechat` |
 | linwenfeng-mp | wechat_mp | `research-ingest-wechat` |
 | linwenfeng-feishu | feishu | `research-ingest-feishu` |
-| duanyongping-blog | markdown | `research-ingest-duanyongping` |
 | heiheiwuchang | markdown | `research-ingest-markdown` |
 
 `linwenfeng-feishu` 保持启用，用 `research-ingest-feishu` 导入，但 `timeline: false`，不进首页按天和日汇总。作者、公司、检索、问库仍能找到它。`linwenfeng-mp` 停用，公众号不入库。雪球「黑黑无常」（`heiheiwuchang`）启用，`timeline: true`，进首页按天。只导入已经抓下来的原创帖和长文，不新抓；转发和评论回复不收。见下面的雪球专节。
 
-`duanyongping-blog`（显示名「段永平」）是离线 PDF，不走定时抓取。有日期的进首页按天；单篇没有日期时 frontmatter 写 `off_timeline: true`，首页按天不收，作者页、公司页和检索仍收。问答整条入库。没有具体公司、只讲方法、列举/致谢/闲聊里点到公司名的，不入库。博友「回复段永平」不当他本人的帖。段永平那一节只剩「回本文开头」这类论坛导航、或洗掉之后没有正文的，整篇不入库；库里已经有的，启动时标 `suppressed=empty_answer`，不进按天、作者列表、公司页和检索，文章地址还开得开，页上写「无有效回答」。观点和摘要只读「段永平」那一节或「段：」段落，读者提问和博友回复不进模型。`file:///H.HTM` 一类页码垃圾在导入时洗掉。
-
-库里已经导入的旧数据，不读 PDF、不调用模型，回扫一遍（不删文章）：
-
-```bash
-docker compose exec app research-ingest-duanyongping --reclassify --dry-run
-docker compose exec app research-ingest-duanyongping --reclassify
-```
-
-洗掉页码垃圾，博友回复标 `poster_role=guest`（不进作者页和观点），没有具体公司或挂靠不成立的标 `off_views` 并摘掉公司提及。段永平那节只剩论坛导航的，标 `suppressed=empty_answer`，摘掉公司提及和观点，不进按天、作者列表和检索。然后只对这个来源抽观点：
-
-```bash
-docker compose exec app research-views --source duanyongping-blog --limit 100
-```
-
-全量 OCR 不在这条命令里。预期 PDF 路径和其余说明见 `scripts/duanyongping/README.md`。
+段永平博客（`duanyongping-blog`，离线 PDF 一次性导入）10-30 下线：配置项、导入命令和只为它写的规则都删了。库里的文章、提及和观点没删，来源停用后网站、接口和问库都不再展示。
 
 幂等键是 `(来源, 外部 id)`。外部 id 优先用 frontmatter 或知识星球 `topic_id`，否则用归档内的相对路径。同一篇再跑一遍不会复制；正文、标题或时间变了才更新。
 
@@ -210,7 +194,7 @@ docker compose exec app research-repair-zsxq --source chengfengpolang --titles-o
 docker compose exec app research-repair-zsxq --source chengfengpolang --titles-only
 ```
 
-库里已经截断的标题、还留着非方伟评论的正文、以及图片文字里的留言区，部署后在 Mac mini 上用同一套规则回写（不重跑 RapidOCR，不访问知识星球）：
+库里已经截断的标题、还留着非方伟评论的正文、以及图片文字里的留言区，部署后在 Mac mini 上用同一套规则回写（不重新识图，不访问知识星球）：
 
 ```bash
 docker compose exec app research-repair-zsxq --dry-run

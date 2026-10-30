@@ -15,7 +15,6 @@ import re
 
 from markupsafe import escape
 
-from researchlib.qa_layout import render_qa_html
 from researchlib.render import render_body
 from researchlib.textutil import split_frontmatter, strip_duplicate_title
 from researchlib.translate.pair import stamp_paragraph_ids
@@ -192,8 +191,5 @@ def prepare_body_html(
     _frontmatter, body = split_frontmatter(body_md or "")
     if fmt != "html":
         body = strip_duplicate_title(body, title)
-        qa = render_qa_html(body, mapping)
-        if qa is not None:
-            return finish_html(qa, index, parent)
     rendered = str(render_body(body, mapping, fmt))
     return finish_html(rendered, index, parent)

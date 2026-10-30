@@ -6,7 +6,6 @@ import urllib.request
 import pytest
 
 from researchlib.chunks import OCR_MIN_CHARS, ocr_chunks
-from researchlib.ocr import order_text
 from researchlib.remote_images import (
     FetchError,
     _checked_create_connection,
@@ -140,24 +139,10 @@ def test_image_extension_sniffs_content():
     assert image_extension(b"????", "image/jpeg") == ".jpg"
 
 
-def test_ocr_text_order_and_chunks():
-    items = [
-        [[[300, 12], [420, 12], [420, 40], [300, 40]], "1234 亿元", 0.98],
-        [[[10, 10], [280, 10], [280, 42], [10, 42]], "广告收入", 0.99],
-        [[[10, 60], [400, 60], [400, 92], [10, 92]], "主站货币化率见顶", 0.95],
-        [[[10, 100], [80, 100], [80, 120], [10, 120]], "噪", 0.2],
-    ]
-    assert order_text(items) == "广告收入  1234 亿元\n主站货币化率见顶"
-    # 靠右的气泡是作者自己。左侧昵称仍是网友。画面右缘取所有框的最大 x。
-    sided = [
-        [[[20, 80], [120, 80], [120, 110], [20, 110]], "王小明", 0.99],
-        [[[20, 120], [280, 120], [280, 160], [20, 160]], "古茗店效还行，折扣不能再深了", 0.99],
-        [[[250, 200], [390, 200], [390, 240], [250, 240]], "同店还有压力", 0.99],
-    ]
-    ordered = order_text(sided)
-    assert ordered.splitlines()[-1].startswith(SIDE_SELF)
-    assert "王小明" in ordered and not ordered.splitlines()[0].startswith(SIDE_SELF)
-    dialogue = present_ocr_pieces([ordered])
+def test_stored_side_marker_and_chunks():
+    # 以前 RapidOCR 认的图，库里靠右的绿气泡行前面有侧标记：整理时认成方伟，左侧昵称仍是网友。
+    stored = f"王小明\n古茗店效还行，折扣不能再深了\n{SIDE_SELF}同店还有压力"
+    dialogue = present_ocr_pieces([stored])
     assert "网友：古茗店效还行，折扣不能再深了" in dialogue
     assert "方伟：同店还有压力" in dialogue
     assert "王小明" not in dialogue
@@ -167,36 +152,6 @@ def test_ocr_text_order_and_chunks():
     assert [anchor for anchor, _text in chunks] == [image_anchor(digest)]
     assert "1234" in chunks[0][1]
     assert ocr_chunks([("aa" * 32, "字" * (OCR_MIN_CHARS - 1))]) == []
-
-
-def test_ocr_green_bubble_by_color():
-    """有原图时按微信绿气泡认本人，不靠左缘阈值（长绿气泡会靠左）。"""
-
-    class _FakeImage:
-        shape = (160, 400, 3)
-
-        def __getitem__(self, key):
-            y, x = key
-            # 第二行绿气泡带：文字左缘已过中线偏左，旧几何会漏标。
-            if 90 <= y < 130 and 100 <= x < 380:
-                return (105, 236, 149)
-            return (237, 237, 237)
-
-    items = [
-        [[[40, 20], [120, 20], [120, 50], [40, 50]], "王小明", 0.99],
-        [[[50, 45], [160, 45], [160, 65], [50, 65]], "古茗店效还行", 0.99],
-        # 长绿气泡：左缘 x=110 < 0.4*360，几何旧规则会当网友；颜色应标本人。
-        [[[110, 100], [360, 100], [360, 125], [110, 125]], "同店还有压力", 0.99],
-    ]
-    ordered = order_text(items, image_bgr=_FakeImage())
-    lines = ordered.splitlines()
-    assert len(lines) == 3
-    assert not lines[0].startswith(SIDE_SELF)
-    assert not lines[1].startswith(SIDE_SELF)
-    assert lines[2].startswith(SIDE_SELF)
-    # 无图时退回几何：左缘过中线才标本人。
-    geo = order_text(items).splitlines()
-    assert not geo[2].startswith(SIDE_SELF)
 
 
 def test_ocr_chunks_drop_hold_to_text():

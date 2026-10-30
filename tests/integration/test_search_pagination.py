@@ -120,27 +120,35 @@ def test_long_article_cannot_hide_other_articles_and_tail_text_is_bounded(conn, 
     assert fetched[0] <= 2300 and fetched[1] <= 7 * retrieval.SEARCH_SNIPPET_CANDIDATES
 
 
-def test_tail_applies_source_author_dates_visibility_and_duplicates(conn, search, monkeypatch):
-    _tail_only(monkeypatch)
+@pytest.mark.parametrize("tail_only", [False, True], ids=["ranked-and-tail", "tail-only"])
+def test_search_applies_source_author_dates_visibility_and_duplicates(conn, search, monkeypatch, tail_only):
+    if tail_only:
+        _tail_only(monkeypatch)
     kept = _article(conn, "可见主版本")
     undated = _article(conn, "无日期", published=None)
     other = _article(conn, "另一个来源", source="gudujinhuati")
     duplicate = _article(conn, "重复版本")
     conn.execute("UPDATE articles SET duplicate_of = %s WHERE id = %s", (kept, duplicate))
     _article(conn, "隐藏", meta={"hidden": "short_post"})
-    _article(conn, "无判断", meta={"suppressed": "empty_answer"})
+    # #144 后只有 hidden 是整篇隐藏标记；遗留字段本身不能排除仍启用来源中的文章。
+    legacy_suppressed = _article(conn, "遗留无判断标记", meta={"suppressed": "empty_answer"})
+    legacy_paused = _article(conn, "遗留来源标记", meta={"source_paused": True})
     _article(conn, "读者帖", source="fangwei-zsxq", meta={"poster_role": "guest"})
     _article(conn, "评论壳", source="fangwei-zsxq", title="「图片」 评论（3）")
     old = _article(conn, "范围外", published=datetime(2023, 1, 1, tzinfo=UTC))
     conn.commit()
     found = search(limit=100)
-    assert set(_ids(found)) == {kept, undated, other, old}
-    assert _ids(found)[-1] == undated
-    assert found.total == found.available == 4 and found.counts == {"fangwei-mp": 3, "gudujinhuati": 1}
-    assert set(_ids(search(scope=Scope(source_ids=["fangwei-mp"])))) == {kept, undated, old}
-    assert set(_ids(search("方伟 paginationneedle"))) == {kept, undated, old}
+    expected = {kept, undated, other, old, legacy_suppressed, legacy_paused}
+    assert set(_ids(found)) == expected
+    if tail_only:
+        assert _ids(found)[-1] == undated
+    assert found.total == found.available == 6 and found.counts == {"fangwei-mp": 5, "gudujinhuati": 1}
+    pages = [article for offset in range(0, found.available, 2) for article in _ids(search(limit=2, offset=offset))]
+    assert pages == _ids(found) and len(pages) == len(set(pages))
+    assert set(_ids(search(scope=Scope(source_ids=["fangwei-mp"])))) == expected - {other}
+    assert set(_ids(search("方伟 paginationneedle"))) == expected - {other}
     scoped = Scope(source_ids=["fangwei-mp"], date_from=date(2024, 6, 1), date_to=date(2024, 6, 1))
-    assert _ids(search(scope=scoped)) == [kept]
+    assert set(_ids(search(scope=scoped))) == {kept, legacy_suppressed, legacy_paused}
     assert _ids(search(scope=Scope(source_ids=["fangwei-mp"], article_id=duplicate))) == [duplicate]
     assert search(scope=Scope()).total == 0
     assert search("absentneedle").total == search("absentneedle").available == 0

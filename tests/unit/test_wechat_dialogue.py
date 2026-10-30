@@ -1226,3 +1226,42 @@ def test_video_chrome_is_stripped_on_the_reading_page():
     assert "主播" not in page
     assert "新经济观察" not in page
 
+
+def test_group_notices_and_status_bar_are_not_anyones_words():
+    """群系统提示里是群友的昵称，不是谁说的话。状态栏连着 App 标题，或者粘在第一句前面，也只是界面。"""
+    raw = (
+        "10:57 :!!! 5GA ■知识星球\n"
+        "微信\n"
+        "看十年交流群(120)\n"
+        "王小明\n"
+        '大家觉得组织是护城河么你邀请"李四"加入了群聊撤销 "李四与群里其他人都不是朋友关系，请注意隐私安全"\n'
+        "你邀请“张三”、“赵六”加入了群聊\n"
+        "撤销\n"
+        "以下为新消息\n"
+        "方伟Rey\n"
+        "组织是支撑，不是护城河本身\n"
+    )
+    text = present_ocr_pieces([raw])
+    leaks = ("李四", "张三", "赵六", "加入了群聊", "隐私安全", "撤销", "以下为新消息", "5GA", "10:57", "知识星球")
+    for leaked in leaks:
+        assert leaked not in text, leaked
+    assert "网友：大家觉得组织是护城河么" in text
+    assert "方伟：组织是支撑，不是护城河本身" in text
+
+    glued = present_ocr_pieces(["11:08 :!!! 5GA 式呢，以前觉得汽车行业是很高大上的\n微信\n王小明\n现在呢\n"])
+    assert "5GA" not in glued and "11:08" not in glued
+    assert "以前觉得汽车行业是很高大上的" in glued
+
+    # 库里已经写成对话的旧旁路，再整理一遍也切掉。
+    stored = '方伟：10:57 :!!! 5GA ■知识星球。\n\n网友：大家觉得组织是护城河么你邀请"李四"加入了群聊撤销'
+    again = present_stored_ocr(stored)
+    assert "李四" not in again and "5GA" not in again and "知识星球" not in again
+    assert "大家觉得组织是护城河么" in again
+
+
+def test_invite_words_and_clock_in_speech_stay():
+    """话里提到邀请、钟点后面接着汉字，都是正常的话。"""
+    speech = "微信\n王小明\n我想邀请大家一起看看这家公司\n方伟Rey\n10:30 开盘以后5G板块一直在跌\n"
+    text = present_ocr_pieces([speech])
+    assert "我想邀请大家一起看看这家公司" in text
+    assert "10:30 开盘以后5G板块一直在跌" in text

@@ -25,3 +25,10 @@ def test_accept_ai_title_keeps_paired_marks_at_the_edges():
     assert accept_ai_title("“腾讯”的护城河还在") == "“腾讯”的护城河还在"
     assert accept_ai_title("腾讯的护城河还在（上）") == "腾讯的护城河还在（上）"
     assert accept_ai_title("“估值越低，回购越划算") == "估值越低，回购越划算"
+
+
+def test_accept_ai_title_drops_the_narrator_lead():
+    """flash 常把题写成「作者认为……」「方伟判断……」。卡片上有作者，引子去掉再用。"""
+    assert accept_ai_title("方伟判断西部矿业安全边际远逊2002年中石油") == "西部矿业安全边际远逊2002年中石油"
+    assert accept_ai_title("作者认为，泡泡玛特下跌是自身问题") == "泡泡玛特下跌是自身问题"
+    assert accept_ai_title("作者认为的好公司要有护城河") == "作者认为的好公司要有护城河"

@@ -3,7 +3,7 @@
 ## 数据怎么组织
 
 - **文章**：`articles`，原文 Markdown 和纯文本，带 zhparser 全文索引。
-- **段落块**：`article_chunks`。正文按 Markdown 章节切，章节内按段落装箱，几百字一块，带章节标题和自己的全文索引。检索片段、问答引用、JSON 接口都落在块上，所以引用能精确到段落（`article_id` + `chunk`）。导入时自动切；`research-rebuild-chunks` 全部重切。进程启动时只给还没有块的文章补切。
+- **段落块**：`article_chunks`。正文按 Markdown 章节切，章节内按段落装箱，几百字一块，带章节标题和自己的全文索引。检索片段、问答引用、JSON 接口都落在块上，所以引用能精确到段落（`article_id` + `chunk`）。导入时自动切；`research-rebuild-chunks` 全部重切，连同图片文字块（`--ocr` 只切图片文字块，见 [ocr.md](ocr.md)）。进程启动时只给还没有块的文章补切。
 - **公司提及**：`article_mentions`，规则见 [mentions.md](mentions.md)。
 - **LLM 摘要**：`article_digests`，按 `content_hash` 对齐正文，记着写它的提示词版本（`prompt_version`）。正文改过、摘要没重算时，页面和接口当作没有摘要；提示词版本旧了的照常显示，同时排进后台重写。打开按天、作者、公司或检索时，当前卡片里缺的摘要会在后台补上；夜间任务每晚补一批，`research-digest` 仍可手动补。应用启动和部署不会跑全库。
 - **观点**：`company_views`，被深入谈到的公司的观点时间线，见下面「观点时间线」。不限持仓。
@@ -161,8 +161,6 @@ docker compose exec app research-views --company 贵州茅台 --refresh-blank
 # 有提及但没有可用观点的都补（标题级命中、空白缓存、去重后留下的主版本）。夜间任务不要加 --gap
 docker compose exec app research-views --gap --company 贵州茅台 --company 泡泡玛特 --limit 800
 docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
-# 段永平博客先回扫再抽。只跑这个来源，不碰别的作者，也不要在没回扫时全量抽。
-docker compose exec app research-views --source duanyongping-blog --limit 100
 docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
 ```
 

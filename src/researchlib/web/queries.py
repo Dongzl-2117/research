@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from researchlib.author_voice import not_comment_shell_sql, site_visible_sql
-from researchlib.empty_answer import visible_sql
+from researchlib.visibility import visible_sql
 
 
 @dataclass(frozen=True)
@@ -85,29 +85,20 @@ def _shanghai_day(column: str = "published_at") -> str:
     # 与 company_months 一样，按 Asia/Shanghai 的日历日切桶。
     return f"date_trunc('day', {column} AT TIME ZONE 'Asia/Shanghai')"
 
-def _off_timeline_clause(include_off_timeline: bool, alias: str = "") -> str:
-    """没日期的段永平条目标了 off_timeline。首页按天不收；作者页要收。"""
-    if include_off_timeline:
-        return ""
-    column = f"{alias}.raw_meta" if alias else "raw_meta"
-    return f" AND coalesce({column}->>'off_timeline', '') <> 'true'"
-
-
-def _listed(include_off_timeline: bool, alias: str = "", *, owner_only: bool = False) -> str:
-    """首页和作者页的文章：没日期的按参数，空回答与「图片」评论壳一律不收。"""
+def _listed(alias: str = "", *, owner_only: bool = False) -> str:
+    """首页和作者页的文章：隐藏的短帖与「图片」评论壳一律不收。"""
     return (
-        _off_timeline_clause(include_off_timeline, alias)
-        + _owner_clause(owner_only, alias)
+        _owner_clause(owner_only, alias)
         + f" AND {not_comment_shell_sql(alias)}"
         + " AND "
         + visible_sql(alias)
     )
 
 
-def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = True, owner_only: bool = False) -> dict:
+def feed_counts(conn, source_ids: list[str], *, owner_only: bool = False) -> dict:
     if not source_ids:
         return {"articles": 0, "days": 0, "undated": 0}
-    extra = _listed(include_off_timeline, owner_only=owner_only)
+    extra = _listed(owner_only=owner_only)
     row = conn.execute(
         f"""
         SELECT count(*) AS articles,
@@ -126,14 +117,12 @@ def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = Tru
     }
 
 
-def list_day_page(
-    conn, source_ids: list[str], limit: int, offset: int, *, include_off_timeline: bool = True, owner_only: bool = False
-):
+def list_day_page(conn, source_ids: list[str], limit: int, offset: int, *, owner_only: bool = False):
     """一页里的几天，以及这些天的全部文章。同一天不会被页边界切开。"""
     if not source_ids:
         return []
-    extra = _listed(include_off_timeline, owner_only=owner_only)
-    extra_a = _listed(include_off_timeline, "a", owner_only=owner_only)
+    extra = _listed(owner_only=owner_only)
+    extra_a = _listed("a", owner_only=owner_only)
     return conn.execute(
         f"""
         WITH days AS (
@@ -159,18 +148,10 @@ def list_day_page(
     ).fetchall()
 
 
-def list_undated_articles(
-    conn,
-    source_ids: list[str],
-    limit: int,
-    offset: int,
-    *,
-    include_off_timeline: bool = True,
-    owner_only: bool = False,
-):
+def list_undated_articles(conn, source_ids: list[str], limit: int, offset: int, *, owner_only: bool = False):
     if not source_ids:
         return []
-    extra = _listed(include_off_timeline, owner_only=owner_only)
+    extra = _listed(owner_only=owner_only)
     return conn.execute(
         f"""
         SELECT id, source_id, title, published_at, body_text,

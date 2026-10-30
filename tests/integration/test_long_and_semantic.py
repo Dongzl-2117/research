@@ -321,10 +321,10 @@ def test_vector_recall_filters_after_the_index_and_falls_back_when_too_few_left(
     assert keys([FANGWEI], 2) == {"笔记 0", "笔记 1"}
     # 范围里只有一篇挤进近邻，不够数：逐块算，离得很远的「天气」也找得到。
     assert keys([FEISHU], 2) == {"会员", "天气"}
-    # 搁下的文章即使离得最近也不出来。
+    # 隐藏的文章（短帖）即使离得最近也不出来。
     first = next(article_id for article_id, title in titles.items() if title == "笔记 0")
     conn.execute(
-        "UPDATE articles SET raw_meta = raw_meta || '{\"suppressed\": \"test\"}'::jsonb WHERE id = %s", (first,)
+        "UPDATE articles SET raw_meta = raw_meta || '{\"hidden\": \"short_post\"}'::jsonb WHERE id = %s", (first,)
     )
     assert keys(both, 2) == {"会员", "笔记 1"}
 

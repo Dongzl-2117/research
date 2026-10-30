@@ -1,7 +1,11 @@
 """把一篇英文文章译成中文 HTML，写入 article_translations。
 
 流程对齐 AIHOT editorial/translate.ts：渲染原文 → 抽段 → shield → 站内模型（默认 DeepSeek）按段翻译 → 回填 → 入库。
-站内 worker / CLI 都走这里；不在站外译完再贴。
+research-translate 走这里；不在站外译完再贴。
+
+译制读的正文和文章页显示的是同一份：都先过 ``boilerplate.clean_article``。归档头
+（如 Stratechery 的 ``- source: member-rss``）、引流尾巴不清洗就会被当成一段送去译，
+页面却把它洗掉了，对照从这一段起整页错一行（22092）。
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
+from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
@@ -72,18 +77,34 @@ def _batch_chunks(parts: list[str]) -> list[list[str]]:
     )
 
 
+def _cleaned_body(conn, article: dict) -> str:
+    """译制读的正文：和文章页显示前同一条清洗，库里 body_md 不动。
+
+    ``- source: member-rss`` 这类归档头、引流尾巴、二维码和星球导出脚手架都在这里
+    去掉。不清洗就直接渲染的话，页面（洗过）和译文（没洗）从第一处脏段起就对不上，
+    叶子数差几段，整页错行。
+    """
+    return clean_article(
+        conn,
+        int(article["id"]),
+        str(article["source_id"]),
+        article.get("body_md") or "",
+    )
+
+
 def _render_original(conn, article: dict, data_dir: Path) -> tuple[str, str]:
-    """返回 (html, content_hash)。"""
+    """返回 (html, content_hash)。html 是清洗后的正文渲染出来的叶子来源。"""
     images = conn.execute(
         "SELECT original_ref, storage_path FROM article_images WHERE article_id = %s",
         (article["id"],),
     ).fetchall()
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article.get("raw_meta") or {}).get("format")
-    _fm, body_md = split_frontmatter(article["body_md"])
+    _fm, body_md = split_frontmatter(_cleaned_body(conn, article))
     if fmt != "html":
         body_md = strip_duplicate_title(body_md, article["title"])
     html = str(render_body(body_md, mapping, fmt))
+    # content_hash 仍按库里的 body_md 算：清洗规则变了不该把已有译文判成过期。
     digest = content_hash(article["title"], article["body_md"], article.get("published_at"))
     return html, digest
 
@@ -365,10 +386,13 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
 COARSE_SCAN_CAP = 2000
 
 
-def _source_leaf_count(article: dict) -> int:
-    """原文按现在的叶子规则能切成几段。图片地址不影响段数，映射留空。"""
+def _source_leaf_count(conn, article: dict) -> int:
+    """原文按现在的叶子规则能切成几段。图片地址不影响段数，映射留空。
+
+    和译制、文章页一样先清洗：重检看的是译制真正能看到的正文，归档头不算叶子。
+    """
     fmt = (article.get("raw_meta") or {}).get("format")
-    _frontmatter, body = split_frontmatter(article.get("body_md") or "")
+    _frontmatter, body = split_frontmatter(_cleaned_body(conn, article))
     if fmt != "html":
         body = strip_duplicate_title(body, article.get("title") or "")
     return len(segments_of(str(render_body(body, {}, fmt))))
@@ -419,7 +443,7 @@ def list_coarse_translations(
             and recorded_n <= 30
             and body_chars >= 8_000
         ):
-            leaves = _source_leaf_count(row)
+            leaves = _source_leaf_count(conn, row)
             if leaves >= 12 and recorded_n * 3 < leaves and leaves - recorded_n >= 15:
                 reason = "segments-below-source"
         if not reason:
@@ -430,9 +454,13 @@ def list_coarse_translations(
     return found
 
 
+# 汉字以外的字符，和 is_chinese 一样只认 U+4E00 到 U+9FFF。
+HAN_OUTSIDE = "[^一-鿿]"
+
+
 def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:
     """尚无译文、或原文 hash 已变的英文文章。同一篇的重复只译主版本。"""
-    params: list[object] = []
+    params: list[object] = [HAN_OUTSIDE]
     where = [
         "a.duplicate_of IS NULL",
         "NOT EXISTS ("
@@ -443,25 +471,28 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
     if source_id:
         where.insert(0, "a.source_id = %s")
         params.append(source_id)
-    # 粗筛：正文前 400 字汉字不多于拉丁的一半
+    # 和 language.is_chinese 同一条规则（标了语言听标的；否则正文前 400 字有汉字、且汉字数的两倍
+    # 不少于拉丁字母数就算中文），在 SQL 里先筛再 LIMIT。以前先按时间取最新的 limit 篇再挑英文，
+    # 不带 --source 时最新的几乎全是中文，永远取不到英文。改规则时两边一起改，集成测试对拍。
+    # 库里几乎全是中文：汉字用「删掉非汉字」数、字母用 regexp_count 数，替换和计数的次数都少；
+    # OFFSET 0 让每篇只算一遍，不被展开到 WHERE 里算两遍。两万多篇约一秒。
     sql = f"""
         SELECT a.id
         FROM articles a
+        CROSS JOIN LATERAL (
+            SELECT length(regexp_replace(head, %s, '', 'g')) AS han,
+                   regexp_count(head, '[A-Za-z]') AS latin
+            FROM (SELECT left(coalesce(nullif(a.body_text, ''), a.body_md, ''), 400) AS head) h
+            OFFSET 0
+        ) lang
         WHERE {" AND ".join(where)}
+          AND CASE a.raw_meta->>'language'
+                WHEN 'zh' THEN false
+                WHEN 'en' THEN true
+                ELSE NOT (lang.han > 0 AND lang.han * 2 >= lang.latin)
+              END
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
     """
     params.append(limit)
-    rows = conn.execute(sql, params).fetchall()
-    out: list[int] = []
-    for row in rows:
-        article = conn.execute(
-            "SELECT body_text, body_md, raw_meta FROM articles WHERE id = %s",
-            (row["id"],),
-        ).fetchone()
-        sample = (article or {}).get("body_text") or (article or {}).get("body_md") or ""
-        language = ((article or {}).get("raw_meta") or {}).get("language")
-        if is_chinese(sample, language=language if isinstance(language, str) else None):
-            continue
-        out.append(int(row["id"]))
-    return out
+    return [int(row["id"]) for row in conn.execute(sql, params).fetchall()]

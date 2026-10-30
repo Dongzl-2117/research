@@ -9,7 +9,7 @@
   失败再退回确定性首句。写不出来的日期兜底不入库。
 - 评论：`## 评论（N）` 只留方伟。解析不了的不动，在报告里单列。
 - 图片文字：星球和公众号里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。
-  粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重跑 RapidOCR。
+  粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重新识图。
 
 改标题或评论会改 `content_hash`，同时把观点、摘要、译文的哈希对齐，避免夜间任务把这几千篇再抽一遍。
 """
@@ -23,13 +23,13 @@ import sys
 from researchlib.boilerplate import clean_markdown, image_hashes, profile_for
 from researchlib.chunks import make_chunks
 from researchlib.duplicates import fingerprint, store_fingerprint
-from researchlib.empty_answer import is_suppressed
 from researchlib.followups import KIND_TITLE, clear_followup, queued_ids
 from researchlib.ingest.store import _body_text
 from researchlib.mentions import CompanyMatcher, load_company_rows, mentions_for_document, replace_mentions
 from researchlib.ocr import compose_ocr_text, hash_ocr
 from researchlib.retime import _realign
 from researchlib.textutil import SHANGHAI, content_hash
+from researchlib.visibility import is_hidden
 from researchlib.wechat_dialogue import (
     _is_author_badge,
     _is_comment_head,
@@ -283,7 +283,7 @@ def repair_zsxq(
         title = row["title"] or ""
         body_md = row["body_md"] or ""
         ocr_text = row["ocr_text"] or ""
-        visible = not is_suppressed(row["raw_meta"])
+        visible = not is_hidden(row["raw_meta"])
         shot_parts = pieces.get(article_id) or []
         cleaned = None if titles_only else _cleaned_ocr(shot_parts, ocr_text)
         new_ocr = ocr_text if cleaned is None else cleaned

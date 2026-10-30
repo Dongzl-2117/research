@@ -487,27 +487,15 @@ def body_for_mentions(body_md: str, *, body_text: str = "", ocr_text: str = "") 
 
 
 def article_mention_rows(conn, article, matcher: CompanyMatcher) -> list[tuple[int, str, int]]:
-    """按一篇 articles 行算出应写入的提及（含短正文 OCR）。重复稿 / 搁下的段永平帖返回空。"""
-    if article is None:
-        return []
-    suppressed = False
-    if article["source_id"] == "duanyongping-blog":
-        from researchlib.empty_answer import is_suppressed
-
-        suppressed = is_suppressed(article["raw_meta"])
-    if article["duplicate_of"] or suppressed:
+    """按一篇 articles 行算出应写入的提及（含短正文 OCR）。重复稿返回空。"""
+    if article is None or article["duplicate_of"]:
         return []
     body = body_for_mentions(
         article["body_md"] or "",
         body_text=article.get("body_text") or "",
         ocr_text=article.get("ocr_text") or "",
     )
-    rows = mentions_for_document(matcher, article["title"] or "", body)
-    if article["source_id"] == "duanyongping-blog" and rows:
-        from researchlib.ingest.duanyongping.attach import refine_mentions
-
-        rows = refine_mentions(matcher, article["title"] or "", body, rows, article["raw_meta"])
-    return rows
+    return mentions_for_document(matcher, article["title"] or "", body)
 
 
 def rebuild_article(conn, article_id: int, matcher: CompanyMatcher | None = None) -> list[tuple[int, str, int]]:

@@ -650,3 +650,36 @@ def test_leading_dateline_is_not_the_whole_title():
     # 日期是句子主语、或去掉日期只剩一两个字的，不动。
     assert zsxq_display_title("", body="2026年9月1日是个转折点，市场从此不一样了。\n").startswith("2026年9月1日")
     assert zsxq_display_title("9月1日", body="9月1日，大涨。\n") == "9月1日，大涨"
+
+
+# 24007、24012、14885：纯图帖的标题是摘要或 flash 写的转述句。卡片上本来就写着作者，引子去掉。
+WEST_MINING = "方伟判断西部矿业安全边际远逊2002年中石油，资源股应按存量矿定价"
+
+
+def test_narrator_lead_is_dropped_from_titles():
+    assert title_needs_repair(WEST_MINING)
+    # 去掉引子就能用，不打 flash。
+    assert title_needs_ai(WEST_MINING) is False
+    plain = "西部矿业安全边际远逊2002年中石油，资源股应按存量矿定价"
+    assert zsxq_display_title(WEST_MINING, body="西部矿业：\n") == plain
+    assert stored_zsxq_title(WEST_MINING, "西部矿业：\n") == plain
+    assert zsxq_display_title("作者以十年期国债1.8%为背景，主张用十年视角看19倍PE") == "用十年视角看19倍PE"
+    assert zsxq_display_title("作者借巴菲特的话判断，用户愿意多付的钱就是产品力") == "用户愿意多付的钱就是产品力"
+    assert zsxq_display_title("作者认为，泡泡玛特下跌是自身问题") == "泡泡玛特下跌是自身问题"
+    # 句子本身用到「作者」「方伟」的不算引子；去掉引子后不够一句话的也不动。
+    for title in ("作者认为的好公司要有护城河", "方伟说过的十年视角", "方伟认为很好", "作者答：茅台还能拿"):
+        assert title_needs_repair(title) is False, title
+        assert zsxq_display_title(title) == title
+
+
+def test_long_digest_sentence_is_not_cut_inside_a_list():
+    """摘要那句太长要收时，不收在顿号处，免得剩下「……护城河；资本开支」半截列表。"""
+    summary = (
+        "作者判断，辨真假问题只看5年、10年后的长期现金流是否动摇护城河；"
+        "资本开支、高管离职、诉讼、货物被截等不伤护城河结构性，都是噪音。"
+    )
+    title = zsxq_display_title("「图片」", body="", summary=summary)
+    assert title == "辨真假问题只看5年、10年后的长期现金流是否动摇护城河"
+    # 只有顿号可收时仍收在顿号处。
+    head = "宁德时代、比亚迪、特斯拉、蔚来汽车、小鹏汽车、理想汽车、零跑汽车、小米汽车"
+    assert zsxq_display_title("…", body=head + "、问界、极氪的价格战\n") == head

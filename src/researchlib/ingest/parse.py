@@ -521,14 +521,6 @@ def parse_markdown_files(
         if path_year_mismatch:
             stored_meta["path_year_mismatch"] = True
             stored_meta["path_year"] = path_year
-        # 段永平博客：没日期的不进按天；问答只把作者那一节交给观点和摘要。
-        voice = frontmatter.get("author_voice")
-        if isinstance(voice, str) and voice.strip():
-            stored_meta["author_voice"] = voice.strip()
-        if frontmatter.get("off_timeline") is True:
-            stored_meta["off_timeline"] = True
-        if frontmatter.get("off_views") is True:
-            stored_meta["off_views"] = True
         docs.append(
             ParsedDoc(
                 external_id=external_id[:500],

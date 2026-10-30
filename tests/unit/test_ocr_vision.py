@@ -128,10 +128,10 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
-def test_vision_without_key_does_not_fall_back(monkeypatch):
+def test_vision_without_key_stops_before_any_image(monkeypatch):
     monkeypatch.setattr("researchlib.llm.llm_configured", lambda settings: False)
-    with pytest.raises(OcrUnavailable, match="rapidocr"):
-        resolve_engine(object(), "vision")
+    with pytest.raises(OcrUnavailable, match="DEEPSEEK_API_KEY"):
+        resolve_engine(object())
 
 
 def test_http_error_is_explicit_empty_not_dirty_text(tmp_path, monkeypatch):

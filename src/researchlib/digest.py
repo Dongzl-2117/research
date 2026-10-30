@@ -27,15 +27,15 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import DUAN_SOURCE, VOICE_NOTE, display_author, for_model, is_guest, raw_meta_of
+from researchlib.author_voice import display_author, raw_meta_of
 from researchlib.config import Settings
-from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.followups import KIND_DIGEST, clear_followup
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
+from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import speaker_note
 
@@ -150,50 +150,30 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"标题：{row['title']}\n作者：{shown_author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
-    source_id = row["source_id"] if "source_id" in row.keys() else ""
-    # 星球读者帖是发帖人自己的正文。for_model 会把它收成空的「作者本人」，摘要不能跟着写成段永平没说话。
-    if is_guest(meta):
-        body = row["body_text"] or ""
-        restricted = False
-    else:
-        body, voice_chunks, restricted = for_model(
-            row["body_text"] or "", chunks, meta, source_id=source_id
-        )
-        if restricted:
-            header += VOICE_NOTE
-            chunks = voice_chunks
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
-    voice_body = body
-    duan_silent = source_id == DUAN_SOURCE and restricted and not voice_body.strip()
-    if not duan_silent:
-        body = append_ocr(voice_body, ocr_text)
-        if ocr_text.strip():
-            chunks = [*chunks, ("图片里的字", ocr_text)]
-            note = speaker_note(ocr_text)
-            header += (
-                "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。"
-                + (note if note else "")
-                + "）"
-            )
-    reduced = False
-    if duan_silent:
-        # 只有段永平这篇里他本人没有字。图片里的字也不写成他的导读。
-        data = {"summary": "（没有段永平本人的话）", "points": [], "tags": []}
-        model = ""
-    else:
-        if len(body) > BODY_LIMIT:
-            body, reduced = digest_input(body, chunks, BODY_LIMIT)
-        if reduced:
-            header += "\n（长文：下面是开头、结尾和各节开头，中间略去的部分用省略号标出）"
-        text, model = chat(
-            settings,
-            [
-                {"role": "system", "content": PROMPT},
-                {"role": "user", "content": header + "\n\n正文：\n" + body},
-            ],
-            temperature=0.1,
+    body = append_ocr(row["body_text"] or "", ocr_text)
+    if ocr_text.strip():
+        chunks = [*chunks, ("图片里的字", ocr_text)]
+        note = speaker_note(ocr_text)
+        header += (
+            "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。"
+            + (note if note else "")
+            + "）"
         )
-        data = parse_digest(text)
+    reduced = False
+    if len(body) > BODY_LIMIT:
+        body, reduced = digest_input(body, chunks, BODY_LIMIT)
+    if reduced:
+        header += "\n（长文：下面是开头、结尾和各节开头，中间略去的部分用省略号标出）"
+    text, model = chat(
+        settings,
+        [
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": header + "\n\n正文：\n" + body},
+        ],
+        temperature=0.1,
+    )
+    data = parse_digest(text)
     conn.execute(
         """
         INSERT INTO article_digests (

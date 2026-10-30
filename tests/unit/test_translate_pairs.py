@@ -777,6 +777,34 @@ def test_coarse_reason_flags_old_segment_count_and_definition_lists():
     assert coarse_segment_reason(quote, recorded_segments=len(quote_leaves)) is None
 
 
+class _RowsConn:
+    """list_coarse_translations 用的假连接，按 SQL 分辨两件事：
+
+    - 译文队列那条多表查询返回给定的 row；
+    - 译制前的清洗（来源 kind）、模板句统计和图片哈希都按「没有」回答，不连库。
+    """
+
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.sql = ""
+
+    def execute(self, sql, params=None):
+        self.sql = sql
+        return self
+
+    def fetchone(self):
+        if "FROM sources" in self.sql:
+            return {"kind": "rss"}
+        if "count(*)" in self.sql:
+            return {"n": 1, "t": ""}
+        return None
+
+    def fetchall(self):
+        if "article_images" in self.sql or self.sql.strip().startswith("SELECT id, body_md FROM articles"):
+            return []
+        return self.rows
+
+
 def test_list_coarse_picks_definition_list_when_recorded_count_is_stale():
     """21118 这种译文：#119 记下大约 180 段，定义列表拆开后多出几十段，重检要抽到。"""
     from researchlib.translate.service import list_coarse_translations
@@ -794,18 +822,10 @@ def test_list_coarse_picks_definition_list_when_recorded_count_is_stale():
         "body_html": quote,
     }
 
-    class Conn:
-        def execute(self, sql, params):
-            assert "stratechery" in params
-            return self
-
-        def fetchall(self):
-            return [row]
-
-    found = list_coarse_translations(Conn(), limit=10, source_id="stratechery")
+    found = list_coarse_translations(_RowsConn([row]), limit=10, source_id="stratechery")
     assert found == [{"id": 21118, "source": "stratechery", "reason": "segments-below-leaves"}]
     row["segments"] = leaves
-    assert list_coarse_translations(Conn(), limit=10, source_id="stratechery") == []
+    assert list_coarse_translations(_RowsConn([row]), limit=10, source_id="stratechery") == []
 
 
 def test_list_coarse_uses_source_when_translation_was_flattened():
@@ -826,20 +846,12 @@ def test_list_coarse_uses_source_when_translation_was_flattened():
         "body_html": "".join(f"<p>Short translated paragraph {index}.</p>" for index in range(6)),
     }
 
-    class Conn:
-        def execute(self, sql, params):
-            assert "stratechery" in params
-            return self
-
-        def fetchall(self):
-            return [row]
-
-    found = list_coarse_translations(Conn(), limit=10, source_id="stratechery")
+    found = list_coarse_translations(_RowsConn([row]), limit=10, source_id="stratechery")
     assert found == [{"id": 9, "source": "stratechery", "reason": "segments-below-source"}]
 
     row["segments"] = 24
     row["body_html"] = "".join(f"<p>Paragraph {index} in Chinese remains one leaf.</p>" for index in range(24))
-    assert list_coarse_translations(Conn(), limit=10, source_id="stratechery") == []
+    assert list_coarse_translations(_RowsConn([row]), limit=10, source_id="stratechery") == []
 
 
 def _plain_pair(html: str) -> str:
