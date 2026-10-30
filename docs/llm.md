@@ -161,8 +161,6 @@ docker compose exec app research-views --company 贵州茅台 --refresh-blank
 # 有提及但没有可用观点的都补（标题级命中、空白缓存、去重后留下的主版本）。夜间任务不要加 --gap
 docker compose exec app research-views --gap --company 贵州茅台 --company 泡泡玛特 --limit 800
 docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
-# 段永平博客先回扫再抽。只跑这个来源，不碰别的作者，也不要在没回扫时全量抽。
-docker compose exec app research-views --source duanyongping-blog --limit 100
 docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
 ```
 

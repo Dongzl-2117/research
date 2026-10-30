@@ -10,7 +10,7 @@
 
     research-views                      # 全部被深入谈到的公司，默认最多 100 篇
     research-views --company 泡泡玛特 --limit 300
-    research-views --source duanyongping-blog --limit 100
+    research-views --source fangwei-mp --limit 100
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
 图片里有可读的字时，交给模型的正文会接上「图片里的字」，和正文一视同仁。正文很短、判断写在截图里的，
@@ -33,21 +33,14 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import (
-    VOICE_NOTE,
-    for_model,
-    is_guest,
-    off_views,
-    raw_meta_of,
-    views_eligible_sql,
-)
+from researchlib.author_voice import is_guest, not_guest_sql, raw_meta_of
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
-from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
+from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import speaker_note
 from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
@@ -56,7 +49,7 @@ logger = logging.getLogger("researchlib.views")
 
 PROMPT_VERSION = 2
 BODY_LIMIT = VIEWS_LIMIT
-_GUEST = views_eligible_sql("a")
+_GUEST = not_guest_sql("a")
 PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文章（含「图片里的字」），摘出作者对指定公司的判断。
 只输出一个 JSON 对象，不要输出别的文字。每家指定的公司都要有一个键，没有下判断就写 null：
 {"公司名": {"about": true, "judgment": "…", "mechanism": "…", "stance": "正面",
@@ -480,26 +473,14 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
     if not companies:
         return 0
-    meta = raw_meta_of(conn, row)
-    if is_guest(meta) or off_views(meta):
+    if is_guest(raw_meta_of(conn, row)):
         return 0
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
-    source_id = row["source_id"] if "source_id" in row.keys() else ""
-    if not source_id and row.get("id"):
-        found = conn.execute("SELECT source_id FROM articles WHERE id = %s", (row["id"],)).fetchone()
-        source_id = found["source_id"] if found else ""
-    body, voice_chunks, restricted = for_model(
-        row["body_text"] or "", chunks, meta, source_id=source_id
-    )
-    if restricted:
-        header += VOICE_NOTE
-        chunks = voice_chunks
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
-    voice_body = body
-    body = append_ocr(body, ocr_text)
+    body = append_ocr(row["body_text"] or "", ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
         note = speaker_note(ocr_text)
@@ -510,39 +491,34 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
             + "）"
         )
     model = ""
-    if restricted and not voice_body.strip() and not ocr_text.strip():
-        # 这篇没有他本人的话，图片里也没有字。记成没下判断，避免反复去问模型。
+    aliases = _company_aliases(conn, list(names.values()))
+    windows = _reading_windows(body, chunks, aliases)
+    if not windows:
         found = {company_id: None for company_id in names.values()}
     else:
-        aliases = _company_aliases(conn, list(names.values()))
-        windows = _reading_windows(body, chunks, aliases)
-        if not windows:
-            found = {company_id: None for company_id in names.values()}
-        else:
-            parsed: dict[int, list] = {company_id: [] for company_id in names.values()}
-            for index, window in enumerate(windows):
-                note = header
-                if len(windows) > 1:
-                    note += f"\n（长文已切成 {len(windows)} 块，这是第 {index + 1} 块。只根据这一块写。）"
-                text, model = chat(
-                    settings,
-                    [
-                        {"role": "system", "content": PROMPT},
-                        {"role": "user", "content": note + "\n\n正文：\n" + window},
-                    ],
-                    temperature=0.1,
-                )
-                for company_id, view in parse_views(text, names).items():
-                    parsed[company_id].append(view)
-            found = {company_id: _merge_views(parts) for company_id, parts in parsed.items()}
+        parsed: dict[int, list] = {company_id: [] for company_id in names.values()}
+        for index, window in enumerate(windows):
+            note = header
+            if len(windows) > 1:
+                note += f"\n（长文已切成 {len(windows)} 块，这是第 {index + 1} 块。只根据这一块写。）"
+            text, model = chat(
+                settings,
+                [
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": note + "\n\n正文：\n" + window},
+                ],
+                temperature=0.1,
+            )
+            for company_id, view in parse_views(text, names).items():
+                parsed[company_id].append(view)
+        found = {company_id: _merge_views(parts) for company_id, parts in parsed.items()}
     written = 0
-    haystack = append_ocr(voice_body if restricted else (row["body_text"] or ""), ocr_text)
     for company_id, view in found.items():
         view = coerce_view_for_store(view)
         about = bool(view["about"])
         judgment = view["judgment"]
-        # 收窄到作者本人时，原句必须落在他写的字或图片文字里。
-        quote, chunk = locate_quote(conn, row["id"], haystack, view.get("quote") or "")
+        # 原句要在正文或图片文字里找得到。
+        quote, chunk = locate_quote(conn, row["id"], body, view.get("quote") or "")
         if not quote_ok(quote):
             quote, chunk = "", None
         conn.execute(
@@ -869,7 +845,7 @@ def _canonical_ids(conn, article_ids: list[int], source_ids: list[str]) -> list[
     found: list[int] = []
     allowed = set(source_ids)
     for row in rows:
-        if row["source_id"] not in allowed or is_guest(row["raw_meta"]) or off_views(row["raw_meta"]):
+        if row["source_id"] not in allowed or is_guest(row["raw_meta"]):
             continue
         canonical = int(row["duplicate_of"] or row["id"])
         if canonical not in found:

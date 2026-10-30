@@ -28,8 +28,6 @@ class Source:
     timeline: bool = True
     # >0：正文（不含评论、空白）不足这么多字的帖子入库时标 hidden=short_post。
     min_chars: int = 0
-    # True：整源先不要。库里已标 hidden=source_paused，导入命令拒绝导入。
-    paused: bool = False
     # 星主在平台上的其他显示名（星球昵称）。发帖人是 author 或这些名字的算原创，不当网友帖。
     poster_names: tuple[str, ...] = ()
     # 公众号原始 ID（gh_ 开头）。写了才能用 research-crawl-wechat 定时抓取。
@@ -69,7 +67,6 @@ def load_sources(path: Path) -> list[Source]:
                 description=str(item.get("description") or ""),
                 timeline=_timeline_flag(item, kind, source_id),
                 min_chars=int(item.get("min_chars") or 0),
-                paused=bool(item.get("paused", False)),
                 poster_names=_poster_names(item, source_id),
                 ghid=str(item.get("ghid") or "").strip(),
             )

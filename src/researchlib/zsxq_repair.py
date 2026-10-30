@@ -23,13 +23,13 @@ import sys
 from researchlib.boilerplate import clean_markdown, image_hashes, profile_for
 from researchlib.chunks import make_chunks
 from researchlib.duplicates import fingerprint, store_fingerprint
-from researchlib.empty_answer import is_suppressed
 from researchlib.followups import KIND_TITLE, clear_followup, queued_ids
 from researchlib.ingest.store import _body_text
 from researchlib.mentions import CompanyMatcher, load_company_rows, mentions_for_document, replace_mentions
 from researchlib.ocr import compose_ocr_text, hash_ocr
 from researchlib.retime import _realign
 from researchlib.textutil import SHANGHAI, content_hash
+from researchlib.visibility import is_hidden
 from researchlib.wechat_dialogue import (
     _is_author_badge,
     _is_comment_head,
@@ -283,7 +283,7 @@ def repair_zsxq(
         title = row["title"] or ""
         body_md = row["body_md"] or ""
         ocr_text = row["ocr_text"] or ""
-        visible = not is_suppressed(row["raw_meta"])
+        visible = not is_hidden(row["raw_meta"])
         shot_parts = pieces.get(article_id) or []
         cleaned = None if titles_only else _cleaned_ocr(shot_parts, ocr_text)
         new_ocr = ocr_text if cleaned is None else cleaned
