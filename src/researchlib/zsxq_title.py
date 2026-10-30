@@ -19,6 +19,8 @@
 - 标题以省略号收尾时，先去掉省略号再和正文对齐。正文里那一句不超过 40 字就整句用上；
   正文也是半截时，收到上一个逗号，不把「有两」这种没写完的半截留在标题上。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
+- 开头点名回复的网友（「@王小明 我后面会写一篇更细的……」）去掉，昵称是网友的，不进标题。
+  昵称后面要跟空格或冒号才认，「@王小明我觉得」分不出昵称在哪断，不动。
 - 问答帖导出的小标题「提问（网友 → 方伟Rey）」「回答（方伟Rey）」不是帖子的话，括号里是网友的昵称：
   抽句子时当成断句，不和「问：…」那行、下面的提问拼成一句。已经拼进标题的（10315）重新取。
 - 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
@@ -65,9 +67,17 @@ _NARRATOR_LEAD = (
     r"[，,：:\s]*"
 )
 _NARRATOR = re.compile("^" + _NARRATOR_LEAD)
+# 星主在帖子开头点名回复的网友：「@王小明 我后面会写……」「回复@李四：……」。
+_MENTION_NAME = r"(?:回复\s*)?@[^\s@，,。！？!?：:；;、（）()「」“”]{1,24}"
+_MENTION = _MENTION_NAME + r"(?:[ \t\u3000\xa0]+|[：:][ \t\u3000\xa0]*)"
+_MENTION_LEAD = re.compile(rf"^(?:{_MENTION})+")
+# 整个标题只剩被点名的昵称：帖子的话在下面几行或图里。
+_MENTION_ONLY = re.compile(rf"^(?:{_MENTION})*{_MENTION_NAME}$")
+_MENTION_LINE = re.compile(rf"(?m)^[ \t]*(?:{_MENTION})+")
 _LEAD = re.compile(
     r"^(?:"
     + _NARRATOR_LEAD
+    + rf"|(?:{_MENTION})+"
     + r"|这篇(?:文章|短帖)?(?:认为|在讲|讨论|说的是|写的是)[，,：:\s]*"
     r"|(?:读者问|作者答|作者补充|方伟|网友)\s*[：:]\s*"
     # 「2026年9月1日，瑞幸咖啡宣布……」开头的日期是电头，卡片上本来就有日期。不去掉的话，
@@ -181,9 +191,9 @@ def _comment_ui_stem(title: str) -> str | None:
 
 
 def title_needs_repair(title: str, body: str = "") -> bool:
-    """空标题、占位（含「图片」这种带引号的）、复述套话、转述的引子、空壳导读、纯话题号、带省略号，
-    公司名/话题名冒号壳，明显错字，归档头，评论列表的界面残屑，问答导出的「提问（网友 → 方伟Rey）」，
-    或引号、括号落单。
+    """空标题、占位（含「图片」这种带引号的）、复述套话、转述的引子、开头点名的网友（「@王小明 」）、
+    空壳导读、纯话题号、带省略号，公司名/话题名冒号壳，明显错字，归档头，评论列表的界面残屑，
+    问答导出的「提问（网友 → 方伟Rey）」，或引号、括号落单。
 
     句子里只是提到「评论」的不算。给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
     """
@@ -193,6 +203,8 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
         return True
     if strip_narrator(text) != text:
+        return True
+    if _mention_led(text):
         return True
     if _QA_ASKER.search(text):
         return True
@@ -234,6 +246,10 @@ def title_needs_ai(title: str) -> bool:
     if _ARCHIVE_META.search(text):
         return True
     return False
+
+
+def _mention_led(text: str) -> bool:
+    return bool(_MENTION_LEAD.match(text) or _MENTION_ONLY.match(text))
 
 
 def strip_narrator(title: str) -> str:
@@ -430,6 +446,8 @@ def zsxq_display_title(
 ) -> str:
     """给卡片和文章页用的标题。原标题能用就原样返回。"""
     stored = _without_archive_meta((title or "").strip())
+    # 开头点名的网友昵称不是帖子的话。正文那几行在 _plain 里一样去掉，半句标题还对得上正文。
+    stored = "" if _MENTION_ONLY.match(stored) else _MENTION_LEAD.sub("", stored).strip()
     # 正文开头的归档头（作者、时间、点赞数）不是帖子的话，不拿来当标题。
     body = strip_meta(body or "")
     # 评论残屑前面还有一句可用的话：切掉残屑，不用正文换一句。
@@ -611,7 +629,7 @@ def _plain(text: str) -> str:
     cleaned = _IMAGE.sub(" ", cleaned)
     cleaned = _HEADING.sub("", cleaned)
     cleaned = _MARKUP.sub("", cleaned)
-    return cleaned
+    return _MENTION_LINE.sub("", cleaned)
 
 
 def _prepare(sentence: str) -> str:
@@ -713,6 +731,7 @@ def _short_snippet(text: str) -> str:
         or _placeholder(piece)
         or _spammy(piece)
         or _FILLER.match(piece)
+        or _mention_led(piece)
         or _contains_cut(raw)
         or _contains_cut(piece)
         or _narration(piece)
@@ -803,7 +822,7 @@ def _ok(text: str) -> bool:
         or _FILLER.match(text)
     ):
         return False
-    if _shell_colon(text):
+    if _shell_colon(text) or _mention_led(text):
         return False
     if _contains_cut(text):
         return False

@@ -806,3 +806,28 @@ def test_qa_scaffold_and_asker_name_stay_out_of_titles():
     # 句子里只是说到提问、回答的不算。
     for title in ("提问比回答更难", "关于提问（续）"):
         assert title_needs_repair(title) is False, title
+
+
+def test_leading_reader_mention_stays_out_of_titles():
+    """星主开头点名回复的网友（23514「@某网友 我后面会写……」）：昵称不进标题，剩下的那句照用，不打 flash。"""
+    mention = "@王小明 我后面会写一篇更细的来分析一下这个财报"
+    body = f"# {mention}\n\n- 作者：方伟Rey\n- 时间：2026-08-21 11:24\n\n{mention}\n\n![](../../images/a.jpg)\n"
+    assert title_needs_repair(mention)
+    assert title_needs_ai(mention) is False
+    assert zsxq_display_title(mention, body=body) == "我后面会写一篇更细的来分析一下这个财报"
+    assert stored_zsxq_title(mention, body) == "我后面会写一篇更细的来分析一下这个财报"
+    # 接口截的半句：去掉昵称后照样对着正文补全（正文那行的昵称一起去掉才对得上）。
+    long_body = "@王小明 我后面会写一篇更细的来分析一下这个财报，今天先说两句。泡泡玛特最值钱的是IP。\n"
+    assert zsxq_display_title("@王小明 我后面会写一篇更", body=long_body) == (
+        "我后面会写一篇更细的来分析一下这个财报，今天先说两句"
+    )
+    assert zsxq_display_title("回复@李四：茅台的护城河在品牌和渠道") == "茅台的护城河在品牌和渠道"
+    assert zsxq_display_title("@王小明 @李四 两位说的都对，护城河要看十年") == "两位说的都对，护城河要看十年"
+    # 标题只剩昵称：用正文下一句；正文也只有昵称，宁可用日期兜底也不把昵称当标题。
+    rest = "泡泡玛特最值钱的是无形的IP资产，资产轻所以ROE高"
+    assert zsxq_display_title("@王小明", body=f"@王小明\n\n{rest}。\n") == rest
+    assert zsxq_display_title("@价值投资的小明", body="@价值投资的小明\n", when="2026-08-21") == "2026-08-21 短帖"
+    # 句子中间提到的、邮箱，不算点名。
+    for title in ("谢谢 @王小明 的提问，护城河要看十年", "abc@example.com 是我的邮箱"):
+        assert title_needs_repair(title) is False, title
+        assert zsxq_display_title(title) == title
