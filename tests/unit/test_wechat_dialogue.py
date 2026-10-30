@@ -534,6 +534,39 @@ def test_cjk_wrap_does_not_insert_space():
     assert "奥 乐齐" not in flow_ocr_quote_body("方伟：其实只有Costco，奥\n乐齐，利德。")
 
 
+# 文章 24020 的写法：识图一条气泡写一行，每行都标了说话人。
+VISION_BUBBLES = (
+    "方伟：现在抖音放弃了，淘宝也推不动，京东是本来就送货上门\n"
+    "方伟：这里反映了很多复杂的利益结构问题\n"
+    "方伟：因为他花了很长时间构建菜鸟驿站\n"
+    "方伟：菜鸟是靠揽件与代收赚钱的\n"
+    "方伟：你推行送货上门，会让很多驿站的流量崩掉，\n"
+    "方伟：这件事跟阿里菜鸟的商业模式有冲突。\n"
+    "网友：那抖音呢\n"
+    "方伟：他出发点是好的\n"
+    "方伟：但是抖音本来就是一个高投流的商业模式"
+)
+
+
+def test_vision_bubbles_keep_a_space_between_messages():
+    """方伟连发的几条气泡之间空一格，不再像屏宽折行那样首尾粘成「构建菜鸟驿站菜鸟是靠揽件」。"""
+    assert parse_shot(VISION_BUBBLES).bubble_lines
+    digest = "ab" * 32
+    html = str(render_body("（见图）\n\n![](a.png)\n", {"a.png": f"/media/fangwei-zsxq/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: VISION_BUBBLES})
+    assert "送货上门 这里反映了很多复杂的利益结构问题 因为他花了很长时间构建菜鸟驿站 菜鸟是靠揽件" in page
+    assert "驿站菜鸟" not in page
+    # 逗号后面不空格；句号收住的照旧另起一段。
+    assert "流量崩掉，这件事跟阿里菜鸟" in page
+    assert "有冲突。 " not in page
+    assert "他出发点是好的 但是抖音本来就是" in page
+    # 旁路和检索仍是一条一行。
+    assert "送货上门\n这里反映了" in present_ocr_pieces([VISION_BUBBLES])
+    # 屏宽折行的旧识别不按气泡算，仍按满行接上。
+    assert not parse_shot(PDD_MOMENTS).bubble_lines
+    assert not parse_shot("\n".join(_shots_14879()[:1])).bubble_lines
+
+
 def test_sentence_end_starts_new_dialogue_paragraph():
     """已经收了句的下一句另起一段，避免星球长聊糊成一大块。"""
     assert _flow_ocr_lines("第一句完了。\n第二句开始。") == "第一句完了。\n\n第二句开始。"

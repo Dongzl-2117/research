@@ -451,12 +451,14 @@ def _visual_width(text: str) -> float:
     return sum(1.0 if unicodedata.east_asian_width(char) in {"W", "F"} else 0.5 for char in text)
 
 
-def _flow_ocr_lines(text: str) -> str:
+def _flow_ocr_lines(text: str, *, bubbles: bool = False) -> str:
     """把截图硬换行收成段。``国\n产agents`` 接成「国产agents」，说话人仍按块分开。
 
     满行直接接上，避免半个词换行。短行后面留一个空格，两句没有句号时不粘成一个词。
     上一行已经收了句，下一行另起一段，避免星球长聊糊成一大段。
     旁路正文仍保留原来的换行，这里只影响阅读页。
+    bubbles：识图一条气泡写一行，每行已是整条消息，不是屏宽折行。不按满行、汉字相接首尾粘上，
+    两条之间空一格，逗号顿号后面不空（24020 以前粘成「构建菜鸟驿站菜鸟是靠揽件」）。
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
@@ -466,6 +468,8 @@ def _flow_ocr_lines(text: str) -> str:
     for line in lines[1:]:
         if _OCR_SENTENCE_END.search(previous):
             merged += "\n\n" + line
+        elif bubbles:
+            merged += ("" if previous[-1] in "，、；：" else " ") + line
         elif _visual_width(previous) >= _OCR_WRAP_WIDTH:
             merged += line
         elif previous and line and _CJK_CHAR.search(previous[-1]) and _CJK_CHAR.search(line[0]):
@@ -495,7 +499,7 @@ def flow_ocr_quote_body(text: str) -> str:
     return "\n\n".join(parts)
 
 
-def _dialogue_html(text: str, link: dict | None = None) -> str:
+def _dialogue_html(text: str, link: dict | None = None, *, bubbles: bool = False) -> str:
     text = polish_display_text(text or "")
     parts: list[str] = []
     first = True
@@ -505,7 +509,7 @@ def _dialogue_html(text: str, link: dict | None = None) -> str:
             continue
         label, sep, rest = block.partition("：")
         if sep and label in {"方伟", "网友"}:
-            flowed = _flow_ocr_lines(rest.lstrip("\n"))
+            flowed = _flow_ocr_lines(rest.lstrip("\n"), bubbles=bubbles)
             paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
             for index, para in enumerate(paragraphs or [""]):
                 body = html_lib.escape(para)
@@ -515,7 +519,7 @@ def _dialogue_html(text: str, link: dict | None = None) -> str:
                     first = False
                 parts.append(f"<p>{inner}</p>")
         else:
-            inner = html_lib.escape(_flow_ocr_lines(block))
+            inner = html_lib.escape(_flow_ocr_lines(block, bubbles=bubbles))
             if link:
                 inner = _cite(link, inner, with_id=first)
                 first = False
@@ -542,7 +546,7 @@ def _chat_bundle(segments: list[tuple[dict, str]]) -> str:
     fallbacks: list[dict] = []
     for info, dialogue in segments:
         if dialogue.strip():
-            chunks.append(_dialogue_html(dialogue, link=info))
+            chunks.append(_dialogue_html(dialogue, link=info, bubbles=info["shot"].bubble_lines))
         else:
             fallbacks.append(info)
     extra = _original_links(fallbacks) if fallbacks else ""
