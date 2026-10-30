@@ -10,7 +10,10 @@
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
 - 雪球 / 微博嵌套回复不是从上到下的时间序：``回复@`` / ``//@`` 从早到晚展开，下面的引用卡片放到回复前面
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
-- 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉
+- 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉。状态栏「10:57 :!!! 5GA ■」连着
+  App 标题、或者粘在第一句话前面的，也只去掉状态栏
+- 群里的系统提示（「你邀请"某某"加入了群聊 撤销」「"某某"与群里其他人都不是朋友关系，请注意隐私安全」、
+  扫码进群、改群名）不是谁说的话，里面还有群友的昵称：整段去掉。和上一句粘成一行的只切这一段
 - 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
   「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」「微信小店」「关注同城 朋友 推荐」都是页脚。
   「李四留言1次·关注8个月」换成网友的一轮。以下为历史留言、共N条回复、留言N次、关注N个月删掉。
@@ -164,7 +167,7 @@ _TIME = re.compile(
     r"|^\d{1,2}月\d{1,2}日(?:\s*\d{1,2}[:：]\d{2})?[≥>≤<]*$"
 )
 _STATUS = re.compile(
-    r"^(?:微信|WeChat|返回|发送|按住\s*说话|以下是新消息|消息免打扰)$"
+    r"^(?:微信|WeChat|返回|发送|按住\s*说话|以下[是为]新消息|消息免打扰|撤销)$"
     r"|^\d{1,3}\s?%$"
     r"|^[45]G$"
     r"|^(?:LTE|Wi-?Fi|VPN|HD|NFC)$",
@@ -186,7 +189,20 @@ _STORE = re.compile(r"^.{1,24}?\s*[（(][^（）()]{1,16}店[）)]$")
 _COMMERCE = re.compile(r"美团外卖|外卖美食|交易保障")
 _APP_FRAGMENT = re.compile(r"^QuestMobile", re.I)
 _AT_SUFFIX = re.compile(r"@[A-Za-z0-9_\-.]+$")
-_SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加")
+_SYSTEM = re.compile(r"撤回了一条消息|拍了拍|以上是打招呼|你已添加|修改群名为|二维码加入了?群聊")
+# 邀请进群和隐私提醒常和上一句话粘成一行，只切这一段（改群名、扫码进群整行丢，见 _SYSTEM）。
+# 名字总带引号，识图有时丢掉后一个；靠开头的引号或「你邀请」定位，不会切进别人的话里。
+_QUOTED = r"[\"“「『][^\"“”「」『』\n]{1,24}?[\"”」』]?"
+_GROUP_NOTICE = re.compile(
+    rf"(?:你|{_QUOTED})邀请[^\n，。！？]{{1,60}}?加入了群聊(?:\s*撤销)?"
+    rf"|{_QUOTED}与群里其他人都不是(?:微信)?朋友关系[，,]?\s*请注意隐私安全[\"”」』]?"
+)
+# 手机截图顶上的状态栏：钟点后面跟着信号、电量，中间没有汉字。
+_STATUS_BAR = re.compile(
+    r"^\d{1,2}[:：]\d{2}(?![:：]?\d)[^\u4e00-\u9fff\n]{0,12}?(?:5G\s?A|[45]G\+?|LTE|Wi-?Fi)[^\u4e00-\u9fff\n]{0,8}",
+    re.I,
+)
+_APP_TITLE = re.compile(r"(?:知识星球|微信|WeChat)[。.]?", re.I)
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
 _WECHAT = re.compile(
     r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|"
@@ -1205,7 +1221,23 @@ def _fold(line: str) -> str:
 
 def _scrub(line: str) -> str:
     line = re.sub(r"\s+", " ", (line or "").strip())
-    return _SUFFIX.sub("", line).strip()
+    return _drop_system_bits(_SUFFIX.sub("", line).strip())
+
+
+def _drop_system_bits(line: str) -> str:
+    """切掉群系统提示和顶上的状态栏。说话人标签和侧标记留着；切完没剩字就整行不要。"""
+    side = SIDE_SELF if line.startswith(SIDE_SELF) else ""
+    rest = line[len(side) :]
+    match = _STRUCTURED.match(rest)
+    label, body = (rest[: match.start(2)], match.group(2)) if match else ("", rest)
+    cleaned = _GROUP_NOTICE.sub(" ", body)
+    cleaned = _STATUS_BAR.sub("", cleaned.strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned == body.strip():
+        return line
+    if not cleaned or (_APP_TITLE.fullmatch(cleaned) and _STATUS_BAR.match(body.strip())):
+        return ""
+    return side + label + cleaned
 
 
 def _norm(line: str) -> str:
