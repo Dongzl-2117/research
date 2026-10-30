@@ -79,6 +79,30 @@ docker compose exec app research-translate --source stratechery --limit 5 --loop
 
 见 `.env.example`。默认 DeepSeek：`RESEARCH_LLM_PROVIDER=deepseek`、`DEEPSEEK_API_KEY`，可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`、`DEEPSEEK_REASONING_EFFORT`、`DEEPSEEK_MAX_TOKENS`。Grok 路径：`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`。两边共用 `LLM_LONG_TIMEOUT_MS`。
 
+## 译制输入：和文章页同一条清洗
+
+译制读的正文先过 `boilerplate.clean_article`，和文章页显示前那一遍是同一条：归档头、引流尾巴、二维码、星球导出脚手架都在送进模型之前去掉。`article_translations.content_hash` 仍按库里的 `body_md` 算，清洗规则变了不会把已有译文判成过期；重检用的原文段数（`list_coarse_translations`）也按清洗后的正文算。
+
+不清洗就会把不该译的行也译出来。Stratechery 周报正文里有一行归档头 `- source: member-rss`，页面早就洗掉了，译制以前照原样送进模型，中文侧于是多一段「来源：member-rss」，英文侧没有，对照从第一对起整页错一行。22092 是这种：英 76 段、中 77 段，77 对里每一对都挪了一位。
+
+这条只管以后译的。改之前译好的篇目，译文里已经多出这一段，展示层不会自己去补，`--recheck` 也抽不到（22092 记的是 `segments = 2`、正文不到 8000 字），只能整篇重译。待重译的 Stratechery 译文这样点名（只查库，不改）：
+
+```sql
+SELECT a.id
+FROM articles a JOIN article_translations t ON t.article_id = a.id
+WHERE t.complete AND t.content_hash = a.content_hash
+  AND t.body_html ILIKE '%member-rss%'
+ORDER BY a.id;
+```
+
+2026-10-30 跑出来 38 篇，全是 stratechery。其中 14 篇的叶子数正好只多这一段（22092、22198、22240 那种「整页错一行」，中英从第一对起全体挪一位），其余是更早的粗分段写回，本来就该重译。重译要花 DeepSeek 的钱，按篇点名：
+
+```bash
+docker compose exec app research-translate --article-id 22092 --article-id 22198
+```
+
+重译写回后叶子和页面一致，不用再跑第二遍。
+
 ## 段对齐
 
 叶子段和 AIHOT `segmentsOf` 同一条规则：标签在 `p`、`h2`–`h5`、`li`、`blockquote`、`figcaption`、`td`、`th`、`dt`、`dd`、`caption` 里，并且没有块级子节点，才是一段。有块级子节点就继续往下看。所以正文里的大段 `blockquote`（markdown 里连续的 `>`）会拆成里面的段落、标题和列表项；没有块级子节点的短引用仍是一整段 `blockquote`。
