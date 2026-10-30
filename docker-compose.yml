@@ -103,27 +103,5 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # RapidOCR 回退。默认识图在 app 里走 deepseek-flash，不需要这个 profile。
-  #   docker compose --profile ocr build ocr
-  #   docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 500
-  ocr:
-    profiles: ["ocr"]
-    build:
-      context: .
-      target: ocr
-    environment:
-      DATABASE_URL: postgresql://research:${POSTGRES_PASSWORD:-research}@db:5432/research
-      DATA_DIR: /data
-      SOURCES_FILE: /app/config/sources.yaml
-      PORTFOLIO_FILE: /app/config/portfolio.yaml
-      DISPLAY_TIMEZONE: Asia/Shanghai
-    volumes:
-      - ./data:/data
-      - ./config:/app/config:ro
-    depends_on:
-      db:
-        condition: service_healthy
-    command: ["research-ocr", "--engine", "rapidocr", "--limit", "500"]
-
 volumes:
   pgdata:

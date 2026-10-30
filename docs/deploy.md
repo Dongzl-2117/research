@@ -109,11 +109,11 @@ docker compose up -d --build
 scripts/install-launchd.sh   # 定时任务有变化时再跑一次；上次的设置记在 data/launchd.env
 ```
 
-图片文字（OCR）用单独的镜像，要用时另外构建，见 [ocr.md](ocr.md)。
+图片文字（OCR）在 `app` 容器里调站内 deepseek-flash 识图，不用另外的镜像，见 [ocr.md](ocr.md)。
 
 ## 依赖锁死
 
-镜像按 `requirements.lock` 装依赖（`pip install --require-hashes`，版本和 hash 都锁死），改代码重新部署不会顺手拉到新版本的 FastAPI、Starlette。`requirements-dev.lock` 给 CI 和本地测试用，`requirements-ocr.lock` 给 OCR 镜像用，版本和应用一致。
+镜像按 `requirements.lock` 装依赖（`pip install --require-hashes`，版本和 hash 都锁死），改代码重新部署不会顺手拉到新版本的 FastAPI、Starlette。`requirements-dev.lock` 给 CI 和本地测试用，版本和应用一致。
 
 升级依赖：
 

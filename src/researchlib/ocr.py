@@ -7,12 +7,10 @@ image_texts（engine 如 ``deepseek-flash-vision``）。识别出的字够多的
 公司提及默认不看图片里的字，免得水印、表情包乱挂；正文短于 SHORT_BODY_CHARS 时例外，
 截图帖要挂上图里的公司才能抽分家观点。
 
-主镜像 / app 容器就能跑识图，不必装 onnx。RapidOCR 只作显式回退（``--engine rapidocr``
-或 ocr 镜像），单张识图失败不悄悄改走 RapidOCR：记 ``engine`` 以 ``:error`` 结尾、正文为空，
-下次不带 ``--redo`` 也会重试，避免静默脏字。
+app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、正文为空，
+下次不带 ``--redo`` 也会重试，不写进脏字。
 
     docker compose exec -T app research-ocr --limit 50
-    docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 500
 
 夜间任务设 NIGHTLY_OCR=1 时，在 app 容器里走识图补一批。
 """
@@ -34,7 +32,6 @@ from researchlib.present_text import merge_wrapped_utterances, order_nested_repl
 from researchlib.textutil import collapse_short_spam, fix_obvious_typos
 from researchlib.vision_polish import repair_vision_misreads
 from researchlib.wechat_dialogue import (
-    SIDE_SELF,
     drop_broadcast_chrome,
     present_ocr_pieces,
     present_stored_ocr,
@@ -42,14 +39,6 @@ from researchlib.wechat_dialogue import (
 
 logger = logging.getLogger("researchlib.ocr")
 
-ENGINE = "rapidocr"
-# CLI / API 的选择，不是写入 image_texts.engine 的名字。
-ENGINE_CHOICES = ("vision", "rapidocr", "auto")
-DEFAULT_ENGINE_CHOICE = "vision"
-# 置信度低于这个的文字框不要：多半是把花纹、二维码认成了字。
-MIN_SCORE = 0.5
-# 行的左边缘超过画面宽度的这个比例，当作靠右的绿色气泡（作者自己）。左侧昵称和灰气泡在这之下。
-_SELF_SIDE = 0.40
 OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
 # 识图请求体太大时跳过，不反复打接口。手机截图远小于这个。
 MAX_VISION_BYTES = 10 * 1024 * 1024
@@ -140,113 +129,6 @@ class OcrUnavailable(Exception):
 
 class OcrImageSkipped(Exception):
     """这张图不再试（太大）。run_ocr 记 :skipped，不占重试。"""
-
-
-def _bgr_is_wechat_green(bgr) -> bool:
-    """微信自己发的绿气泡约 RGB(149, 236, 105)。抽样点偏绿就当本人。"""
-    try:
-        blue, green, red = (int(v) for v in bgr[:3])
-    except (TypeError, ValueError):
-        return False
-    return green > 150 and green > red + 20 and green > blue + 20 and red < 210
-
-
-def _line_is_self_bubble(
-    image_bgr,
-    left: float,
-    right: float,
-    top: float,
-    bottom: float,
-    width: float,
-) -> bool:
-    """先看气泡颜色；没有图时退回「行左缘过中线偏右」的旧规则。"""
-    if image_bgr is not None:
-        try:
-            height_img, width_img = image_bgr.shape[:2]
-        except (AttributeError, TypeError, ValueError):
-            height_img = width_img = 0
-        if height_img and width_img:
-            cy = int(max(0, min(height_img - 1, (top + bottom) / 2)))
-            # 文字左缘内侧几像素是气泡底色；绿=本人，白/灰=网友。
-            for dx in (-8, -16, -24, 8):
-                x = int(left + dx)
-                if 0 <= x < width_img and _bgr_is_wechat_green(image_bgr[cy, x]):
-                    return True
-            return False
-    return bool(width) and left >= _SELF_SIDE * width
-
-
-def order_text(items, image_bgr=None) -> str:
-    """RapidOCR 的结果 [[框, 文字, 置信度], …] 按阅读顺序拼起来：从上到下分行，同一行从左到右。
-
-    绿色气泡（作者自己）前面加一个不显示的侧标记，对话整理时认成方伟。
-    有原图时按气泡颜色认；没有图时退回「行左缘靠右」的旧规则。左侧灰气泡不加。
-    """
-    boxes: list[tuple[float, float, float, float, str]] = []
-    width = 0.0
-    for item in items or []:
-        if not isinstance(item, list | tuple) or len(item) < 2:
-            continue
-        box, text = item[0], str(item[1] or "").strip()
-        score = float(item[2]) if len(item) > 2 and item[2] is not None else 1.0
-        if not text or score < MIN_SCORE:
-            continue
-        try:
-            ys = [float(point[1]) for point in box]
-            xs = [float(point[0]) for point in box]
-        except (TypeError, IndexError, ValueError):
-            continue
-        right = max(xs)
-        width = max(width, right)
-        boxes.append((min(ys), max(ys), min(xs), right, text))
-    boxes.sort(key=lambda box: (box[0], box[2]))
-    lines: list[dict] = []
-    for top, bottom, left, right, text in boxes:
-        height = max(1.0, bottom - top)
-        center = (top + bottom) / 2
-        if lines and abs(center - lines[-1]["center"]) <= 0.5 * max(height, lines[-1]["height"]):
-            lines[-1]["items"].append((left, right, text))
-            lines[-1]["top"] = min(lines[-1]["top"], top)
-            lines[-1]["bottom"] = max(lines[-1]["bottom"], bottom)
-        else:
-            lines.append(
-                {
-                    "center": center,
-                    "height": height,
-                    "top": top,
-                    "bottom": bottom,
-                    "items": [(left, right, text)],
-                }
-            )
-    rendered: list[str] = []
-    for line in lines:
-        items_on_line = sorted(line["items"], key=lambda item: item[0])
-        text = "  ".join(piece for _left, _right, piece in items_on_line)
-        left = items_on_line[0][0]
-        right = max(item[1] for item in items_on_line)
-        if _line_is_self_bubble(image_bgr, left, right, line["top"], line["bottom"], width):
-            text = SIDE_SELF + text
-        rendered.append(text)
-    return "\n".join(rendered)
-
-
-def rapid_engine() -> Callable[[Path], str]:
-    try:
-        import cv2
-        from rapidocr_onnxruntime import RapidOCR
-    except ImportError as exc:
-        raise OcrUnavailable(
-            "这个环境没装 RapidOCR。默认识图走站内 deepseek-flash，不必装 onnx。"
-            "要回退：docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr"
-        ) from exc
-    engine = RapidOCR()
-
-    def recognize(path: Path) -> str:
-        image_bgr = cv2.imread(str(path))
-        result, _elapsed = engine(str(path))
-        return order_text(result, image_bgr=image_bgr)
-
-    return recognize
 
 
 def vision_engine_id(settings=None) -> str:
@@ -483,7 +365,7 @@ def normalize_vision_text(text: str) -> str:
 
 
 def vision_engine(settings) -> Callable[[Path], str]:
-    """站内识图。失败抛给 run_ocr，不在这里改走 RapidOCR。
+    """站内识图。失败抛给 run_ocr，记成 :error。
 
     先压图再送 deepseek-flash，避免 en1 转发把大 data-url 掐断；瞬时网络错误最多再试两次。
     """
@@ -526,38 +408,16 @@ def vision_engine(settings) -> Callable[[Path], str]:
     return recognize
 
 
-def normalize_engine_choice(value: str | None) -> str:
-    choice = (value or DEFAULT_ENGINE_CHOICE).strip().lower()
-    if choice not in ENGINE_CHOICES:
-        allowed = "、".join(ENGINE_CHOICES)
-        raise ValueError(f"engine 只能是 {allowed}")
-    return choice
+def resolve_engine(settings) -> tuple[str, Callable[[Path], str]]:
+    """返回 (写入 image_texts 的 engine 名, recognize)。没有凭证就起不来。
 
-
-def rapidocr_available() -> bool:
-    try:
-        import rapidocr_onnxruntime  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-def resolve_engine(settings, choice: str | None = None) -> tuple[str, Callable[[Path], str]]:
-    """返回 (写入 image_texts 的 engine 名, recognize)。
-
-    vision 没有凭证就失败，不悄悄改走 RapidOCR。auto 才在没凭证时用 RapidOCR。
-    单张 HTTP 失败不在这里回退，由 run_ocr 记 :error。
+    单张 HTTP 失败不在这里处理，由 run_ocr 记 :error。
     """
-    picked = normalize_engine_choice(choice)
-    if picked == "rapidocr":
-        return ENGINE, rapid_engine()
     from researchlib.llm import llm_configured
 
-    if picked == "vision" or llm_configured(settings):
-        if not llm_configured(settings):
-            raise OcrUnavailable("没有配置 DEEPSEEK_API_KEY，识图起不来。要回退 RapidOCR 请显式 --engine rapidocr。")
-        return vision_engine_id(settings), vision_engine(settings)
-    return ENGINE, rapid_engine()
+    if not llm_configured(settings):
+        raise OcrUnavailable("没有配置 DEEPSEEK_API_KEY，识图起不来。")
+    return vision_engine_id(settings), vision_engine(settings)
 
 
 def _fatal_ocr(exc: Exception) -> bool:
@@ -727,18 +587,18 @@ def run_ocr(
     data_dir: Path,
     limit: int,
     recognize: Callable[[Path], str],
-    engine: str = ENGINE,
+    engine: str | None = None,
     deadline: float | None = None,
     *,
     redo: bool = False,
     article_ids: list[int] | None = None,
-    should_stop: Callable[[], bool] | None = None,
-    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """识别一批图片，重切引用它们的文章的图片文字块。返回计数。
 
     单张失败记 ``{engine}:error`` 和空正文，不写入脏字。没凭证或 401/403 整批停。
+    engine 是写进 image_texts 的名字，不给就用默认的 deepseek-flash-vision。
     """
+    engine = engine or vision_engine_id()
     report = {
         "images": 0,
         "with_text": 0,
@@ -750,21 +610,13 @@ def run_ocr(
         "ocr_changed": [],
     }
     touched: set[int] = set()
-
-    def note() -> None:
-        if on_progress is not None:
-            on_progress(dict(report))
-
     try:
         for row in pending_images(conn, limit, redo=redo, article_ids=article_ids):
-            if should_stop is not None and should_stop():
-                break
             if deadline is not None and time.monotonic() > deadline:
                 break
             path = Path(data_dir) / "images" / row["storage_path"]
             if not path.is_file():
                 report["missing"] += 1
-                note()
                 continue
             used = engine
             if path.suffix.lower() not in OCR_EXTS:
@@ -798,7 +650,6 @@ def run_ocr(
                 report["with_text"] += 1
             _touch_articles(conn, row["content_hash"], text or "", touched, report)
             conn.commit()
-            note()
     finally:
         changed: list[dict] = []
         for article_id in sorted(touched):
@@ -847,26 +698,22 @@ def _ocr_snapshot(conn, article_id: int):
 
 
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了，2 引擎起不来（没凭证，或指定了没装的 RapidOCR）。"""
+    """退出码：0 跑完了，2 识图起不来（没配 DEEPSEEK_API_KEY）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
     parser.add_argument("--limit", type=int, default=500, help="这次最多识别多少张图")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
     parser.add_argument("--redo", action="store_true", help="连已经识别过的图也再认一遍（重跑存量）")
     parser.add_argument("--article", action="append", type=int, default=[], help="只认这篇文章里的图，可重复")
-    parser.add_argument(
-        "--engine",
-        choices=list(ENGINE_CHOICES),
-        default=DEFAULT_ENGINE_CHOICE,
-        help="vision=站内 deepseek-flash（默认）；rapidocr=回退；auto=有凭证用 vision，否则 RapidOCR",
-    )
+    # 只剩 vision。留着这个参数，以前写了 --engine vision 的命令（scripts/nightly.sh）照样能跑。
+    parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 deepseek-flash 识图")
     args = parser.parse_args(argv)
     from researchlib.config import Settings
     from researchlib.db import prepare
 
     settings = Settings.from_env()
     try:
-        engine_name, recognize = resolve_engine(settings, args.engine)
-    except (OcrUnavailable, ValueError) as exc:
+        engine_name, recognize = resolve_engine(settings)
+    except OcrUnavailable as exc:
         print(exc, file=sys.stderr)
         return 2
     conn = prepare(settings)

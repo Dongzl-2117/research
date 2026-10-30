@@ -210,7 +210,7 @@ docker compose exec app research-repair-zsxq --source chengfengpolang --titles-o
 docker compose exec app research-repair-zsxq --source chengfengpolang --titles-only
 ```
 
-库里已经截断的标题、还留着非方伟评论的正文、以及图片文字里的留言区，部署后在 Mac mini 上用同一套规则回写（不重跑 RapidOCR，不访问知识星球）：
+库里已经截断的标题、还留着非方伟评论的正文、以及图片文字里的留言区，部署后在 Mac mini 上用同一套规则回写（不重新识图，不访问知识星球）：
 
 ```bash
 docker compose exec app research-repair-zsxq --dry-run
