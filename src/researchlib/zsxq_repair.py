@@ -22,6 +22,7 @@ import sys
 
 from researchlib.boilerplate import clean_markdown, image_hashes, profile_for
 from researchlib.chunks import make_chunks
+from researchlib.digest import enough_text_sql
 from researchlib.duplicates import fingerprint, store_fingerprint
 from researchlib.followups import KIND_TITLE, clear_followup, queued_ids
 from researchlib.ingest.store import _body_text
@@ -138,12 +139,13 @@ def _image_pieces(conn, source_id: str) -> dict[int, list[str]]:
 
 
 def _digests(conn, source_id: str) -> dict[int, str]:
+    # 和页面一样：几乎没字时写下的「正文只有一句，无法归纳」不拿来起标题。
     rows = conn.execute(
-        """
+        f"""
         SELECT d.article_id, d.summary
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
-        WHERE a.source_id = %s AND a.duplicate_of IS NULL
+        WHERE a.source_id = %s AND a.duplicate_of IS NULL AND {enough_text_sql("a")}
         """,
         (source_id,),
     ).fetchall()

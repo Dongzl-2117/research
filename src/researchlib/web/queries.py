@@ -397,15 +397,20 @@ def title_materials(conn, article_ids: list[int]) -> dict[int, dict]:
 
 
 def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
-    """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。提示词版本旧的照常返回，调用方再排队重写。"""
+    """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。提示词版本旧的照常返回，调用方再排队重写。
+
+    正文加图片里的字太少的也当作没有：只有「这是好文章」一句、还没识图时写的摘要只会说「无法归纳」。
+    """
+    from researchlib.digest import enough_text_sql
+
     if not article_ids:
         return {}
     rows = conn.execute(
-        """
+        f"""
         SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version, d.head_only, d.ocr_hash
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
-        WHERE d.article_id = ANY(%s)
+        WHERE d.article_id = ANY(%s) AND {enough_text_sql("a")}
         """,
         (article_ids,),
     ).fetchall()

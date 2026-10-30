@@ -124,6 +124,8 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 
 知识星球的读者帖（`poster_role` 是 `guest`）网站上哪儿都不展示，`research-digest` 和夜间任务不给它们写摘要。
 
+正文加图片里的字，汉字、字母、数字不到 20 个（`digest.MIN_DIGEST_CHARS`）的不写摘要。星球上只有「这是好文章」「下图」一句、字都在截图里的帖，抓下来时还没识图，以前照样写了摘要，模型只能写「正文只有一句，无法归纳」，挂在首页卡片上；现在等识图写上字（识图会把短正文排进摘要的队）再写。以前写下的这种摘要留在库里，`digests_for` 不返回，卡片、文章页、接口都不显示。
+
 ```bash
 docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
