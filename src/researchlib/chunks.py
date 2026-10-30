@@ -244,12 +244,8 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return found
 
 
-def replace_ocr_chunks(conn, article_id: int) -> int:
-    """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
-    conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (article_id,))
-    article = conn.execute("SELECT duplicate_of FROM articles WHERE id = %s", (article_id,)).fetchone()
-    if article is None or article["duplicate_of"] is not None:
-        return 0
+def _article_ocr_chunks(conn, article_id: int) -> list[tuple[str, str]]:
+    """这篇挂着的图片按现在的规则整理、切好的块。"""
     rows = conn.execute(
         """
         SELECT i.content_hash, t.text
@@ -260,7 +256,16 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
         """,
         (article_id,),
     ).fetchall()
-    chunks = ocr_chunks([(row["content_hash"], row["text"]) for row in rows])
+    return ocr_chunks([(row["content_hash"], row["text"]) for row in rows])
+
+
+def replace_ocr_chunks(conn, article_id: int) -> int:
+    """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
+    conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (article_id,))
+    article = conn.execute("SELECT duplicate_of FROM articles WHERE id = %s", (article_id,)).fetchone()
+    if article is None or article["duplicate_of"] is not None:
+        return 0
+    chunks = _article_ocr_chunks(conn, article_id)
     if not chunks:
         return 0
     with conn.cursor() as cur:
@@ -312,20 +317,64 @@ def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
     return len(ids)
 
 
+def rebuild_ocr_chunks(conn, *, dry_run: bool = False) -> tuple[int, int]:
+    """按现在的整理规则重切图片文字块。只读已经识别出的字，不重新识图、不调模型。返回（有识图结果的篇数，块变了的篇数）。
+
+    图片文字块只在识图、导入时切。整理规则改了（去掉优惠券卡、群系统提示），已经切好的块不会自己变，
+    检索里还是旧的字，要跑这一步。块没变的篇不动。articles.ocr_text 也不动，免得短帖的摘要、观点被排去重做。
+    """
+    ids = [
+        row["article_id"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT i.article_id
+            FROM article_images i
+            JOIN image_texts t ON t.content_hash = i.content_hash
+            JOIN articles a ON a.id = i.article_id
+            WHERE a.duplicate_of IS NULL
+            ORDER BY i.article_id
+            """
+        ).fetchall()
+    ]
+    changed = 0
+    for article_id in ids:
+        current = [
+            (row["anchor"], row["body"])
+            for row in conn.execute(
+                "SELECT anchor, body FROM article_chunks WHERE article_id = %s AND lang = 'ocr' ORDER BY ord",
+                (article_id,),
+            ).fetchall()
+        ]
+        if _article_ocr_chunks(conn, article_id) == current:
+            continue
+        changed += 1
+        if not dry_run:
+            replace_ocr_chunks(conn, article_id)
+    if not dry_run:
+        conn.commit()
+    return len(ids), changed
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     from researchlib.config import Settings
     from researchlib.db import prepare
 
-    parser = argparse.ArgumentParser(description="重切全部文章的段落块")
-    parser.parse_args(argv)
+    parser = argparse.ArgumentParser(description="重切全部文章的段落块，连同图片文字块")
+    parser.add_argument("--ocr", action="store_true", help="只重切图片文字块")
+    parser.add_argument("--dry-run", action="store_true", help="只数图片文字块会变的篇数，不写库")
+    args = parser.parse_args(argv)
     conn = prepare(Settings.from_env())
     try:
-        count = backfill_missing_chunks(conn, rebuild=True)
+        count = 0 if (args.ocr or args.dry_run) else backfill_missing_chunks(conn, rebuild=True)
+        scanned, changed = rebuild_ocr_chunks(conn, dry_run=args.dry_run)
     finally:
         conn.close()
-    print(f"已重切 {count} 篇文章的段落块")
+    if count:
+        print(f"已重切 {count} 篇文章的段落块")
+    verb = "会变" if args.dry_run else "重切了"
+    print(f"有识图结果的 {scanned} 篇里，图片文字块{verb} {changed} 篇")
     return 0
 
 
