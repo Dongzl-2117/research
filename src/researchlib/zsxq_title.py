@@ -10,7 +10,9 @@
 - 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句时才用，不用无关的配售截图。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
+  「下图」「如下：」这种引出图片的垫话也算占位。
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
+  接口先把开头几行用空格接起来再截，标题会跨行，这时把这几行接起来补全。
 - 标题以省略号收尾时，先去掉省略号再和正文对齐。正文里那一句不超过 40 字就整句用上；
   正文也是半截时，收到上一个逗号，不把「有两」这种没写完的半截留在标题上。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
@@ -72,7 +74,7 @@ _LEAD = re.compile(
 _SPAM = re.compile(r"扫码|二维码|长按识别|加微信|优惠券")
 _FILLER = re.compile(
     r"^(?:大家好|各位好|早上好|晚上好|分享一下|转一下|如题|同上|呵呵+|哈哈+|嗯+|这个|就是|如下|见图|看图|上图|下图)"
-    r"[，,。！？!?\s]*$"
+    r"[，,。！？!?：:\s]*$"
 )
 _DANGLING = re.compile(r"[，,；;]\s*([^，,；;]{0,3})$")
 _CJK = re.compile(r"[一-鿿]")
@@ -305,16 +307,17 @@ def _cut_line(title: str, body: str) -> str:
     """正文里标题截自的那一行。正文开头不是这几个字，或者这几个字后面就断句了，返回空串。
 
     标题自己带的省略号先去掉再对齐，否则「有两...」对不上正文里的「有两点」。
+    星球接口先把开头几行用空格接起来再截，标题会跨行（23954「……： 混元大模型经历了不」）：
+    这时返回接起来的那几行。
     """
     head = _SPACES.sub("", _MARKUP.sub("", _strip_ellipsis(title or "")))
     if len(head) < 4:
         return ""
-    for line in _plain(strip_meta(body or "")).splitlines():
+    lines = [line for line in _plain(strip_meta(body or "")).splitlines() if _SPACES.sub("", line)]
+    for index, line in enumerate(lines):
         flat = _SPACES.sub("", line)
-        if not flat:
-            continue
         if not flat.startswith(head):
-            return ""
+            return _spanning_cut(head, lines[index:])
         rest = flat[len(head) :]
         if not rest:
             # 标题自己那一行（标题行和标题一样）：看下一行。
@@ -328,6 +331,30 @@ def _cut_line(title: str, body: str) -> str:
                 return ""
             return head + peeled
         return "" if rest[0] in _SENTENCE_STOP else line
+    return ""
+
+
+def _spanning_cut(head: str, lines: list[str]) -> str:
+    """标题跨行：前几行整行都在标题里，最后一行只截了开头。
+
+    线上 23954「……： 混元大模型经历了不」截自说话人那一行和下一行「混元大模型经历了不同阶段，……」；
+    13778「美团短剧这个创意 目前全网最」截自两行「美团短剧这个创意」「目前全网最佳」。
+    标题正好收在行尾、或者收在句号上的不算截断。
+    """
+    taken: list[str] = []
+    remaining = head
+    for line in lines[:4]:
+        flat = _SPACES.sub("", line)
+        if len(flat) < len(remaining) and remaining.startswith(flat):
+            taken.append(line.strip())
+            remaining = remaining[len(flat) :]
+            continue
+        if not taken or not flat.startswith(remaining):
+            return ""
+        rest = flat[len(remaining) :]
+        if not rest or rest[0] in _SENTENCE_STOP:
+            return ""
+        return " ".join([*taken, line.strip()])
     return ""
 
 
@@ -802,9 +829,13 @@ def _excise_comment_ui(text: str) -> str:
 
 
 def _placeholder(text: str) -> bool:
-    """「图片」、『见图』、（无标题）和裸的「图片」都是占位。"""
+    """「图片」、『见图』、（无标题）和裸的「图片」都是占位。
+
+    「下图」「如下：」这种引出图片的垫话也是：问答帖按话题号重导时，接口标题取的是回答开头，
+    线上 23982 的标题就成了「下图」。
+    """
     bare = _WRAP.sub("", text or "")
-    return bare in _PLACEHOLDER
+    return bare in _PLACEHOLDER or _FILLER.match(bare) is not None
 
 
 def _missing_note(text: str) -> bool:

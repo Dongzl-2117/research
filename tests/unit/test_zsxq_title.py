@@ -352,6 +352,50 @@ def test_title_that_ends_where_the_body_breaks_is_left_alone():
     assert stored_zsxq_title("企业文化", "# 企业文化\n\n很多人问企业文化怎么看。\n") is None
 
 
+SPOKEN = "王小明：\n\n大模型训练经历了不同阶段，多次重构，架构化繁为简，更注重训练数据的质量。\n\n后面一段讲算力。\n"
+SPOKEN_CUT = "王小明： 大模型训练经历了不"
+SPOKEN_TITLE = "王小明： 大模型训练经历了不同阶段，多次重构，架构化繁为简，更注重训练数据的质量"
+
+
+def test_api_title_cut_across_a_line_break_is_completed():
+    """星球接口先把开头几行用空格接起来再截，标题跨行（线上 23954「……经历了不」、13778「……目前全网最」）。"""
+    assert title_needs_repair(SPOKEN_CUT) is False
+    assert title_needs_repair(SPOKEN_CUT, SPOKEN)
+    # 和同一行里的半句一样对着正文补，不打 flash。
+    assert title_needs_ai(SPOKEN_CUT) is False
+    assert zsxq_display_title(SPOKEN_CUT, body=SPOKEN) == SPOKEN_TITLE
+    # 导出的标题行带着「...」、中间隔着归档头，照样接得上。
+    exported = f"# 王小明：  大模型训练经历了不...\n\n{ARCHIVE_HEADER}\n{SPOKEN}"
+    assert stored_zsxq_title(SPOKEN_CUT, exported) == SPOKEN_TITLE
+    lines = "拼多多这个广告创意\n目前全网最佳\n\n![](a.jpg)\n"
+    assert zsxq_display_title("拼多多这个广告创意 目前全网最", body=lines) == "拼多多这个广告创意 目前全网最佳"
+    stop = "瑞幸的门店是比较多的。\n我们看看下一步怎么走\n"
+    assert zsxq_display_title("瑞幸的门店是比较多的。 我们看", body=stop) == "瑞幸的门店是比较多的"
+    # 标题正好收在行尾，或者下一行接不上，都不是截断。
+    whole = "构建系统，而非目标\n这个观点有意思\n下一段\n"
+    assert title_needs_repair("构建系统，而非目标 这个观点有意思", whole) is False
+    assert title_needs_repair("拼多多的护城河 在哪里", "拼多多的护城河\n规模效应是第一位的。\n") is False
+
+
+QA_FILLER = (
+    "# 问：Rey，为什么说餐饮的供应链很难做出差异化\n\n"
+    "## 提问（王小明 → 方伟Rey）\n\nRey，为什么说餐饮的供应链很难做出差异化\n\n"
+    "## 回答（方伟Rey）\n\n下图\n\n![](../../images/a.jpg)\n"
+)
+QA_ASKED = "问：Rey，为什么说餐饮的供应链很难做出差异化"
+
+
+def test_filler_titles_are_placeholders():
+    """「下图」「如下：」这种垫话和「见图」一样是占位：线上 23982 问答帖的标题是回答开头的「下图」。"""
+    for filler in ("下图", "如下：", "看图。", "「上图」"):
+        assert title_needs_repair(filler), filler
+        assert title_needs_ai(filler), filler
+        assert zsxq_display_title(filler, body=QA_FILLER) == QA_ASKED
+    assert stored_zsxq_title("下图", QA_FILLER) == QA_ASKED
+    # 只是以这几个字开头的真标题不动。
+    assert title_needs_repair("下图是关键") is False
+
+
 def test_archive_header_never_becomes_a_title():
     """线上 14885：图片帖入库时把归档头读成了标题「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。"""
     body = f"# 「图片」\n\n{ARCHIVE_HEADER}\n![](../../images/a.jpg)\n"
@@ -381,6 +425,27 @@ def test_zsxq_import_completes_a_cut_api_title(tmp_path: Path):
     docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
     assert errors == []
     assert docs[0].title == CUT_SENTENCE
+
+
+def test_zsxq_import_completes_line_spanning_and_filler_api_titles(tmp_path: Path):
+    """按话题号重导时用的是接口标题：跨行截断的补成整句，问答帖的「下图」换成提问。"""
+    (tmp_path / "md").mkdir()
+    (tmp_path / "raw").mkdir()
+    for topic_id, title, body in (
+        ("12345678901234561", SPOKEN_CUT, f"# 王小明：  大模型训练经历了不...\n\n{SPOKEN}"),
+        ("12345678901234562", "下图", QA_FILLER),
+    ):
+        (tmp_path / "md" / f"{topic_id}.md").write_text(body, encoding="utf-8")
+        (tmp_path / "raw" / f"{topic_id}.json").write_text(
+            '{"topic_id": ' + topic_id + ', "create_time": "2026-10-19T10:28:00+00:00", "title": "' + title + '"}',
+            encoding="utf-8",
+        )
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
+    assert errors == []
+    assert {doc.external_id: doc.title for doc in docs} == {
+        "12345678901234561": SPOKEN_TITLE,
+        "12345678901234562": QA_ASKED,
+    }
 
 
 def test_zsxq_import_keeps_the_archive_header_out_of_the_title(tmp_path: Path):
