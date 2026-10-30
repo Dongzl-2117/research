@@ -154,7 +154,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
             if hit.passages
         }
         next_offset = offset + limit if offset + limit < result.available else None
-        # total 是全部命中的篇数；按相关度排序只排得到其中 listed 篇，翻页到这里为止。
+        # 全部命中均可翻页；listed 保留兼容，当前等于 total，部分命中另外接在后面。
         listed = result.available - result.partial
     else:
         total = queries.count_scoped_articles(conn, scope)

@@ -1,0 +1,215 @@
+{
+  "date": "2026-10-30",
+  "base_commit": "87e64940815d2c671e34c41d2300dded1027f218",
+  "prior_pr_head": "423c568ea46e78144d8e3cd0c41f275948214ed0",
+  "tested_code_commit": "0fe4db3eb2419e568aff0495c4c546096cf56064",
+  "maintainer_comment": "https://github.com/Dongzl-2117/research/pull/142#issuecomment-6515201577",
+  "environment": {
+    "python": "3.12.14",
+    "postgres": "16.15",
+    "zhparser": "2.4",
+    "pgvector": "0.6.0",
+    "isolated_port": 55432
+  },
+  "reproduction": {
+    "state": "同步 main 87e6494 后、修正测试前",
+    "test": "tests/integration/test_search_pagination.py::test_tail_applies_source_author_dates_visibility_and_duplicates",
+    "result": "1 failed：遗留 suppressed 标记的文章 id=6 正确可见，旧断言错误地将其排除"
+  },
+  "compatibility": "hidden 继续排除；遗留 suppressed/source_paused 继续可见。真实候选与强制补齐区分别验证来源、作者、日期、可见性、重复版本、计数和逐页顺序。",
+  "tests": {
+    "unit_passed": 613,
+    "integration_passed": 121,
+    "total": 734,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 58.845,
+    "warnings": 1,
+    "warning": "原有 Starlette TestClient httpx 弃用提示",
+    "pagination_cases": [
+      "test_more_than_2000_passages_pages_every_article_stably",
+      "test_long_article_cannot_hide_other_articles_and_tail_text_is_bounded",
+      "test_search_applies_source_author_dates_visibility_and_duplicates[ranked-and-tail]",
+      "test_search_applies_source_author_dates_visibility_and_duplicates[tail-only]",
+      "test_tail_company_filters_or_groups_and_split_passage_matches",
+      "test_tail_translation_title_only_missing_chunks_and_original_anchors",
+      "test_indexed_full_candidate_is_not_misclassified_as_partial",
+      "test_tail_keeps_original_match_when_translation_does_not_match",
+      "test_quoted_and_excluded_words_do_not_reappear_in_tail_or_counts",
+      "test_semantic_promotions_are_counted_once_and_partial_starts_after_all_matches"
+    ]
+  },
+  "checks": {
+    "ruff": "passed",
+    "diff_against_synced_main": "passed"
+  },
+  "retrieval_eval": {
+    "articles": 1500,
+    "tolerance": 0.02,
+    "ask": {
+      "方伟最近怎么看拼多多的护城河": {
+        "precision": 0.2375,
+        "recall": 0.76
+      },
+      "腾讯广告加载率": {
+        "precision": 0.6,
+        "recall": 0.96
+      },
+      "茅台批价和渠道库存": {
+        "precision": 0.8875,
+        "recall": 0.6017
+      },
+      "苹果的定价权": {
+        "precision": 0.8125,
+        "recall": 0.7738
+      },
+      "哪些作者讨论过回购": {
+        "precision": 1.0,
+        "recall": 0.2548
+      },
+      "公司页预设·腾讯": {
+        "precision": 1.0,
+        "recall": 0.153
+      },
+      "作者页预设·乘风破浪": {
+        "precision": 0.9625,
+        "recall": 0.0495
+      },
+      "农夫山泉的成本结构": {
+        "precision": 1.0,
+        "recall": 0.7407
+      },
+      "管理层激励": {
+        "precision": 0.9625,
+        "recall": 0.2484
+      },
+      "低价电商能持续吗": {
+        "precision": 1.0,
+        "recall": 0.1136
+      },
+      "英伟达算力": {
+        "precision": 1.0,
+        "recall": 0.6897
+      },
+      "拼多多出海": {
+        "precision": 0.6625,
+        "recall": 0.7162
+      }
+    },
+    "search": {
+      "腾讯广告加载率": {
+        "precision": 1.0
+      },
+      "茅台批价和渠道库存": {
+        "precision": 1.0
+      },
+      "苹果的定价权": {
+        "precision": 1.0
+      },
+      "农夫山泉的成本结构": {
+        "precision": 1.0
+      },
+      "管理层激励": {
+        "precision": 1.0
+      },
+      "英伟达算力": {
+        "precision": 1.0
+      },
+      "拼多多出海": {
+        "precision": 1.0
+      }
+    }
+  },
+  "pagination": {
+    "6001": {
+      "before": {
+        "module": "/tmp/research-pagination-compat-main-87e6494/src/researchlib/retrieval.py",
+        "query": "paginationneedle",
+        "articles": 6001,
+        "chunks": 8301,
+        "reported_total": 6001,
+        "reported_available": 300,
+        "reachable": 300,
+        "duplicates": 0,
+        "missing": 5701,
+        "unexpected": 0,
+        "stable": true,
+        "counts_ok": false,
+        "empty_after_end": true,
+        "first_ms": 54.65,
+        "median_ms": 41.46,
+        "max_ms": 54.65,
+        "calls": 7,
+        "max_text_rows_per_call": 300,
+        "max_text_rows_per_fetch": 300
+      },
+      "after": {
+        "module": "/workspace/research/src/researchlib/retrieval.py",
+        "query": "paginationneedle",
+        "articles": 6001,
+        "chunks": 8301,
+        "reported_total": 6001,
+        "reported_available": 6001,
+        "reachable": 6001,
+        "duplicates": 0,
+        "missing": 0,
+        "unexpected": 0,
+        "stable": true,
+        "counts_ok": true,
+        "empty_after_end": true,
+        "first_ms": 50.78,
+        "median_ms": 59.95,
+        "max_ms": 95.78,
+        "calls": 65,
+        "max_text_rows_per_call": 400,
+        "max_text_rows_per_fetch": 300
+      }
+    },
+    "24001": {
+      "before": {
+        "module": "/tmp/research-pagination-compat-main-87e6494/src/researchlib/retrieval.py",
+        "query": "paginationneedle capacityneedle",
+        "articles": 24001,
+        "chunks": 26301,
+        "reported_total": 24001,
+        "reported_available": 2300,
+        "reachable": 2300,
+        "duplicates": 0,
+        "missing": 21701,
+        "unexpected": 0,
+        "stable": true,
+        "counts_ok": false,
+        "empty_after_end": true,
+        "first_ms": 379.3,
+        "median_ms": 296.17,
+        "max_ms": 379.3,
+        "calls": 27,
+        "max_text_rows_per_call": 2300,
+        "max_text_rows_per_fetch": 2300
+      },
+      "after": {
+        "module": "/workspace/research/src/researchlib/retrieval.py",
+        "query": "paginationneedle capacityneedle",
+        "articles": 24001,
+        "chunks": 26301,
+        "reported_total": 24001,
+        "reported_available": 24001,
+        "reachable": 24001,
+        "duplicates": 0,
+        "missing": 0,
+        "unexpected": 0,
+        "stable": true,
+        "counts_ok": true,
+        "empty_after_end": true,
+        "first_ms": 342.33,
+        "median_ms": 427.52,
+        "max_ms": 711.12,
+        "calls": 245,
+        "max_text_rows_per_call": 2400,
+        "max_text_rows_per_fetch": 2300
+      }
+    }
+  },
+  "note": "本次重新运行的合成证据，不沿用旧版745项测试或性能数字。每组主线/修复版在同一实例串行运行、各自遍历全部可达页，不能当作生产SLA。最后补充证据的提交仅修改文档。"
+}

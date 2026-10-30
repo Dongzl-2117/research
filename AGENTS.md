@@ -76,3 +76,4 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
   - `docker compose exec app research-rebuild-chunks --ocr`：检索里的图片文字块按现在的整理规则重切（#147）。不跑，检索和问库里 451 篇方伟公众号还搜得到末尾的星球优惠券卡，69 篇群聊截图带着「你邀请"某某"加入了群聊」和群友昵称。只读已识别的字，不识图；改过的块由夜间任务里的 `research-embed`（本机 Ollama）重算向量。
 
 - 通用原文相关性标注采用独立本机服务和 SQLite，见 [docs/relevance-annotations.md](docs/relevance-annotations.md)。主站不挂该入口，不跑迁移或模型；私有原文、标签及导出只留 `data/relevance/` 等私有目录。实际库 provider、远程认证与部署需另行配置，demo 不是真实库。
+- 文章检索已把完整分页和有限相关度候选分开；补齐页不再受段落候选上限截断。计数语义、隔离库回归与性能复现见 [docs/search-pagination-2026-10-30.md](docs/search-pagination-2026-10-30.md)，无需生产迁移或回填；语义/OCR/部分命中的召回仍有窗口。
