@@ -69,21 +69,16 @@
 
 ### Grok OAuth（可选）
 
-设 `RESEARCH_LLM_PROVIDER=grok` 才走这里。译制、问库、摘要使用 research 自有 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`）。AIHOT 已下线，不再共用外部卷。
+设 `RESEARCH_LLM_PROVIDER=grok` 才走这里。译制、问库、摘要使用 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`）。
 
-登录在 AIHOT 侧做一次即可：
-
-```bash
-cd ~/aihot && docker compose exec api node scripts/xai-login.ts login
-```
-
-research 这边只检查状态。`research-xai-login login` 会把 device-code 写进同一路径，一般不必用；`logout` 会删掉共用文件，AIHOT 也会退出。
+登录一次（device-code，在自己的浏览器里用有 Grok 订阅的账号授权），之后 access token 过期前自动刷新：
 
 ```bash
+docker compose exec app research-xai-login login
 docker compose exec app research-xai-login status
 ```
 
-Hermes 的 `auth.json` 格式会被拒绝，不会写进去。AIHOT / research 的 version 1 凭据可以读写。
+`logout` 删掉 token 文件，之后要重新登录。Hermes 的 `auth.json` 格式会被拒绝，不会写进去；version 1 格式的凭据（以前和 AIHOT 共用的那种）可以读写。
 
 Grok 路径只认这一份 OAuth。文件不在、未登录或刷新失败时直接报错，不退回 `XAI_API_KEY`。环境里如果还留着 `XAI_API_KEY`，调用会说明这个变量不会被使用。
 
@@ -108,7 +103,7 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 | `DEEPSEEK_MODEL` | `deepseek-flash` | V4.1-Flash |
 | `DEEPSEEK_REASONING_EFFORT` | `max` | `low` / `high` / `max` |
 | `DEEPSEEK_MAX_TOKENS` / `LLM_MAX_TOKENS` | 不设则用 `393216` | 只能把输出预算抬得更高，设得更低也会回到 `393216` |
-| `XAI_OAUTH_TOKEN_PATH` | `/data/secrets/xai-oauth.json`（compose） | 仅 Grok，与 AIHOT 共用 |
+| `XAI_OAUTH_TOKEN_PATH` | `/data/secrets/xai-oauth.json`（compose） | 仅 Grok |
 | `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID` | `0` / `0` | 仅 Grok，写回后的文件属主 |
 | `XAI_MAX_TOKENS` | 不设则用 `128000` | 仅 Grok，只能抬高 |
 | `XAI_BASE_URL` | `https://api.x.ai/v1` | 仅 Grok |

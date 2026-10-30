@@ -46,9 +46,9 @@ def store_documents(
     rejected: int = 0,
     origin: str = "archive",
 ) -> IngestReport:
-    """origin：archive（手动导入的归档）、crawl（定时抓取脚本导入）或 aihot（从 AIHOT 导入）。
+    """origin：archive（手动导入的归档）或 crawl（定时抓取脚本导入）。以前从 AIHOT 导入的记作 aihot。
 
-    首页断更提示只看后两种。
+    首页断更提示只看 crawl。
     """
     report = IngestReport(
         source_id=source.id,

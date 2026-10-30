@@ -46,8 +46,6 @@ def test_schedule_does_not_queue_during_pytest(monkeypatch, tmp_path):
         bind_port=8088,
         allow_nonlocal_bind=False,
         sources_path=tmp_path / "sources.yaml",
-        aihot_map_path=tmp_path / "map.yaml",
-        aihot_database_url=None,
         display_timezone="Asia/Shanghai",
     )
     monkeypatch.setattr(digest_mod, "llm_configured", lambda _settings: True)

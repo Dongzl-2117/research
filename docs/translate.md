@@ -11,42 +11,26 @@
 
 标题另译一次（存 `title_zh`），失败不影响正文。译文写入后切成中文段落块进检索（`article_chunks` 里 `lang = 'zh'`，带对照页锚点），用中文能搜到、问到英文文章，见 [retrieval.md](retrieval.md)。启动时会给有译文但还没有译文块的文章补切。同一篇的重复不译。
 
-## 和 AIHOT 的关系（仅 `RESEARCH_LLM_PROVIDER=grok`）
+## Grok 凭证（仅 `RESEARCH_LLM_PROVIDER=grok`）
 
-| | AIHOT | research |
-|---|---|---|
-| OAuth | research `data/secrets/xai-oauth.json` | **同一文件**（挂载为 `/data/secrets/xai-oauth.json`） |
-| 登录 | `node scripts/xai-login.ts login`（主入口） | `research-xai-login status` 检查即可；一般**不必**再 login |
-| 调用 | worker `translatePending` / 读者点译 | 站内 `POST /api/v1/translate`（正式）；`research-translate` 只用于开发和排障 |
-| 展示 | `.bilingual-en` / `.bilingual-zh` | 同名 class，同 token |
-
-Mac mini 上 research 的 `docker-compose.yml` 把 `./data` 挂到 `/data`，OAuth 路径：
+Mac mini 上 `docker-compose.yml` 把 `./data` 挂到 `/data`，OAuth 在：
 
 - `XAI_OAUTH_TOKEN_PATH=/data/secrets/xai-oauth.json`
-- `XAI_OAUTH_FILE_UID=1000` / `XAI_OAUTH_FILE_GID=1000`（AIHOT 已下线；research 进程可写回该文件）
+- `XAI_OAUTH_FILE_UID` / `XAI_OAUTH_FILE_GID`：写回后的文件属主，compose 默认 `0` / `0`
 
-双方共用**同一路径**和同一 `.lock`，轮流刷新；不要再复制一份 token。Hermes 的 `auth.json` 格式会被拒绝。
-
-`research-xai-login logout` 会删掉共用文件，AIHOT 也会退出，慎用。
+几个进程用同一路径和同一 `.lock` 轮流刷新。refresh token 每次刷新都会换，不要复制一份到别处用。Hermes 的 `auth.json` 格式会被拒绝。
 
 问库、`research-digest` 和页面上缺摘要的卡片读的是同一份凭证：默认 DeepSeek 的 `DEEPSEEK_API_KEY`，Grok 路径是同一份 token。应用启动和部署不会自动跑全库。
 
 ## 登录（Mac mini）
 
-AIHOT 已登录时，research **无需再授权**：
-
 ```bash
 cd ~/research
-docker compose exec app research-xai-login status
-# 应显示已登录，token 路径在 /data/secrets/xai-oauth.json
+docker compose exec app research-xai-login login    # device-code，在自己的浏览器里授权
+docker compose exec app research-xai-login status   # 应显示已登录，token 路径在 /data/secrets/xai-oauth.json
 ```
 
-若两边都未登录，在 AIHOT 仓库完成一次即可：
-
-```bash
-cd ~/aihot
-docker compose exec api node scripts/xai-login.ts login
-```
+`research-xai-login logout` 删掉 token 文件，之后要重新登录。
 
 ## 译制：站内 API（正式触发方式）
 
@@ -110,7 +94,7 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 
 | 状态 | 动作 |
 |---|---|
-| 译制管道已合入、LLM 凭证已配（DeepSeek key，或 AIHOT Grok 已 login 且 `RESEARCH_LLM_PROVIDER=grok`） | 可对库内已有合格英文稿 `POST /api/v1/translate` |
+| 译制管道已合入、LLM 凭证已配（DeepSeek key，或 Grok 已 login 且 `RESEARCH_LLM_PROVIDER=grok`） | 可对库内已有合格英文稿 `POST /api/v1/translate` |
 | Stratechery 仍在抓 | **先不 ingest**；可用英文样例验对照页 |
 | 抓完并 ingest 后 | 新文自动排进译制；积压超过 20 篇再对该来源开 `loop` |
 

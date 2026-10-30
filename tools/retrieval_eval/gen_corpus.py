@@ -248,7 +248,6 @@ def main() -> int:
         "DATABASE_URL": url,
         "DATA_DIR": str(ROOT / "data" / "eval"),
         "SOURCES_FILE": str(ROOT / "config" / "sources.yaml"),
-        "AIHOT_MAP_FILE": str(ROOT / "config" / "aihot_import.yaml"),
     })
     conn = prepare(settings)
     conn.execute("TRUNCATE articles RESTART IDENTITY CASCADE")

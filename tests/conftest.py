@@ -40,7 +40,6 @@ def settings(database_url, tmp_path):
             "DATA_DIR": str(tmp_path / "data"),
             "PUBLIC_BASE_URL": "https://investment.zldong.com",
             "SOURCES_FILE": str(ROOT / "config" / "sources.yaml"),
-            "AIHOT_MAP_FILE": str(ROOT / "config" / "aihot_import.yaml"),
             "BIND_HOST": "127.0.0.1",
             "BIND_PORT": "8088",
             "DISPLAY_TIMEZONE": "Asia/Shanghai",

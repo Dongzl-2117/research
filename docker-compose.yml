@@ -3,7 +3,6 @@
 #
 # 站内 LLM 默认 DeepSeek（deepseek-flash / thinking / reasoning_effort=max / 输出至少 393216 / 1M 上下文）。
 # Grok OAuth 保留为显式选项：RESEARCH_LLM_PROVIDER=grok，token 在 ./data/secrets/xai-oauth.json。
-# AIHOT 已下线，不再依赖外部卷 aihot_data。
 
 services:
   db:
@@ -53,9 +52,7 @@ services:
       ALLOW_NONLOCAL_BIND: "1"
       SOURCES_FILE: /app/config/sources.yaml
       PORTFOLIO_FILE: /app/config/portfolio.yaml
-      AIHOT_MAP_FILE: /app/config/aihot_import.yaml
       DISPLAY_TIMEZONE: Asia/Shanghai
-      AIHOT_DATABASE_URL: ${AIHOT_DATABASE_URL:-}
       # 默认 DeepSeek：key 从宿主机 .env 透传。缺 key 时直接报错，不会悄悄退回 Grok。
       RESEARCH_LLM_PROVIDER: ${RESEARCH_LLM_PROVIDER:-deepseek}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
@@ -119,7 +116,6 @@ services:
       DATA_DIR: /data
       SOURCES_FILE: /app/config/sources.yaml
       PORTFOLIO_FILE: /app/config/portfolio.yaml
-      AIHOT_MAP_FILE: /app/config/aihot_import.yaml
       DISPLAY_TIMEZONE: Asia/Shanghai
     volumes:
       - ./data:/data

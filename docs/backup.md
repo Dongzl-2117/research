@@ -13,7 +13,6 @@
 | `scripts/crawl-fangwei-mp.sh` | 方伟公众号增量抓取（极致了接口，`DAJIALA_KEY` 取环境变量或仓库根 `.env`），导入（`--origin crawl`），再给新文章补摘要 |
 | `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（`data/inbox/fangwei-zsxq/dl.py`，令牌在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），再补摘要 |
 | `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，`DAJIALA_KEY` 和方伟公众号共用），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片、补摘要。见 [ingest.md](ingest.md)「公众号定时抓取」 |
-| `scripts/ingest-aihot.sh` | （AIHOT 已下线，默认不装）从 AIHOT 只读导入最近 14 天（`DAYS`）发布的白名单文章，见 [ingest.md](ingest.md)；导完把新文章里的外链图片下载到本地（`IMAGES_LIMIT`，默认 200 张） |
 | `scripts/nightly.sh` | 夜间补齐，见下面 |
 
 都通过 `docker compose exec` 在容器里跑，不需要在宿主机装 Postgres 客户端。
@@ -65,7 +64,7 @@ docker compose exec app research-status   # 没问题打「没有要处理的」
 | 备份 | 最近一次失败，或 36 小时没成功 |
 | 试恢复 | 最近一次失败，或 40 天没成功 |
 | 方伟公众号抓取、方伟星球抓取 | 最近一次失败，或 30 小时没成功（装了才看） |
-| AIHOT 定时导入 | 最近一次失败，或 6 小时没成功（装了才看；默认不装） |
+| 孤独进化体抓取 | 最近一次失败，或 50 小时没成功（装了才看） |
 | 夜间补齐 | 有步骤失败，或 50 小时没成功（装了才看） |
 | 自动上线 | 拉代码、重建失败，重启后应用没起来，CI 没过，仓库不在 main 或有没提交的改动，或 6 小时取不到 main、查不到 CI（装了才看） |
 | 后台重算 | 应用启动后认重复、重算提及失败 |
@@ -78,8 +77,8 @@ docker compose exec app research-status   # 没问题打「没有要处理的」
 ```bash
 cd ~/research
 BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；云盘目录另定
-# 默认装方伟公众号、方伟星球的定时抓取；不要：INSTALL_CRAWL=0
-# 默认不装每小时 AIHOT 增量（AIHOT 已下线），以前装过的会顺手卸掉。要装：INSTALL_INGEST_AIHOT=1 BACKUP_DIR=… scripts/install-launchd.sh
+# 默认装方伟公众号、方伟星球、孤独进化体的定时抓取；不要：INSTALL_CRAWL=0
+# 以前装过的每小时 AIHOT 增量导入（ingest-aihot，已删）会顺手卸掉
 # 不要夜间补齐：INSTALL_NIGHTLY=0；夜间也识别图片里的字（站内 vision，不走 ocr profile）：NIGHTLY_OCR=1
 # 不要自动上线：INSTALL_DEPLOY=0
 ```
@@ -96,7 +95,6 @@ BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；�
 | `com.zldong.research.crawl-fangwei-mp` | 每天 08:10、20:10 |
 | `com.zldong.research.crawl-fangwei-zsxq` | 每天 08:40、20:40 |
 | `com.zldong.research.crawl-gudujinhuati` | 每天 09:20 |
-| `com.zldong.research.ingest-aihot` | 每小时（要装才有） |
 | `com.zldong.research.deploy` | 每 10 分钟，装好时先跑一次（见 [deploy.md](deploy.md)「更新」） |
 
 日志在 `~/Library/Logs/research/`。Mac mini 睡着时错过的那一次，醒来后 launchd 会补跑。卸载：

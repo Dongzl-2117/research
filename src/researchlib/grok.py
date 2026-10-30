@@ -1,6 +1,6 @@
 """站内 Grok 的固定强度。译制、问库、摘要、观点、论点共用这一组，避免两套参数以后漂移。
 
-鉴权不在这里。调用方只拿 xAI OAuth access token（与 AIHOT 共用的 xai-oauth.json）。
+鉴权不在这里。调用方只拿 xAI OAuth access token（researchlib.translate.xai_oauth）。
 模型固定 grok-4.7，reasoning_effort=xhigh，输出预算不低于 128000。
 上下文用 grok-4.7 自带的 50 万 token，请求里不另传更小的上限，也不发送 fast。
 """

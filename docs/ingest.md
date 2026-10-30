@@ -49,7 +49,7 @@ docker compose exec app research-views --source duanyongping-blog --limit 100
 
 ## 同一篇只留一份
 
-幂等键管不住两条路进来的同一篇：AIHOT 导入的外部 id 是 `aihot:<原 id>`，文件归档用路径或 `topic_id`，同一篇两边各导一次就是两行；同一位作者在公众号和知识星球之间转发也是。所以每篇写入后还会认一次重复：
+幂等键管不住两条路进来的同一篇：以前从 AIHOT 导入的外部 id 是 `aihot:<原 id>`，文件归档用路径或 `topic_id`，同一篇两边各导一次就是两行；同一位作者在公众号和知识星球之间转发也是。所以每篇写入后还会认一次重复：
 
 - 正文按句切开，只留汉字、字母和数字，每句算一个哈希，每篇存哈希最小的 32 句当指纹（`article_fingerprints`）。
 - 只和同一位作者、发布时间前后一周内的文章比。指纹重合够多的，再逐句核对：较短那篇至少 80% 的句子（且至少 3 句）出现在另一篇里，两篇长度也差不多，才算同一篇。同一位作者很多篇都有的句子（页脚、免责声明）不算。
@@ -138,7 +138,7 @@ docker compose exec app research-crawl-wechat --source gudujinhuati             
 
 ## 外链图片
 
-AIHOT 导入的文章不带图，Markdown 里的 http 图片导入时也不下载，页面上原来只显示「外部图片已省略」；原文删了以后图床地址也可能失效，图表和截图就没了。`research-fetch-images` 把正文里的外链图片（Markdown 图片、`<img>` 的 `src` 和公众号懒加载的 `data-src`）下载下来，按内容哈希存进 `data/images/remote/`，文章页和备份都和归档里的图一样对待：
+以前从 AIHOT 导入的文章不带图，Markdown 里的 http 图片导入时也不下载，页面上原来只显示「外部图片已省略」；原文删了以后图床地址也可能失效，图表和截图就没了。`research-fetch-images` 把正文里的外链图片（Markdown 图片、`<img>` 的 `src` 和公众号懒加载的 `data-src`）下载下来，按内容哈希存进 `data/images/remote/`，文章页和备份都和归档里的图一样对待：
 
 - 只下 http(s)，只连公网地址：每次建连接时核对对方的 IP，内网、本机、Tailscale 这类地址一律断开，跳转和中途换了解析结果也一样；最多跳转 5 次。只收图片，单张不超过 15MB。不带 Referer（公众号图床对外链 Referer 返回占位图）。
 - 每个地址的结果记在 `image_fetches`：别的文章引用同一张图直接复用，不再下载；失败的按次数隔 1、3、7、30 天再试。
@@ -288,34 +288,11 @@ docker compose exec app research-doc-tree --source linwenfeng-feishu
 
 feishu2md 把飞书的高亮块导成 GitHub 提示框：引用块第一行是 `> [!NOTE]`（还有 TIP、IMPORTANT、WARNING、CAUTION）。标记不算正文：转纯文本、切段落块时去掉，文章页显示成普通引用块。迁移 `022_alert_markers.sql` 清掉已入库正文纯文本里的标记；已有的段落块不重切，块里留着标记不影响检索。
 
-## AIHOT（已下线，可选，只读）
+## 导入记录和断更提示
 
-这不是把 AIHOT 的新闻或日报流水线搬过来。只从它的 Postgres `articles` 表 `SELECT` 正文，按白名单写入本库。
+每次导入（文件归档和定时抓取都算）都会在 `app_state` 里记下这个来源最近一次导入的时间、计数和走的哪条路（`import:<来源>`，`origin` 是 `archive` 或 `crawl`；以前从 AIHOT 导入的记作 `aihot`）。文件导入命令默认记 `archive`，定时抓取脚本加 `--origin crawl`。
 
-```bash
-export AIHOT_DATABASE_URL=postgresql://...
-research-ingest-aihot --dry-run
-research-ingest-aihot              # 全读一遍
-research-ingest-aihot --days 14    # 只读最近 14 天发布的（定时增量用）
-```
-
-连接会设成只读事务。列名和来源别名在 `config/aihot_import.yaml`。SQL 里只读映射到本库已启用来源的那些行，别的来源的正文不碰；其余的只数一下，计入「拒绝」。外部 id 形如 `aihot:<原 id>`。同一篇如果已经从文件归档导过，会认成重复（见上面），不会在列表里出现两次。
-
-`--days` 只在发布时间那一列是时间类型时生效；不是的话照常全读。
-
-不要把 `AIHOT_DATABASE_URL` 指回本库。
-
-### 定时增量
-
-`scripts/ingest-aihot.sh` 在容器里跑 `research-ingest-aihot --days 14`。用 launchd 每小时跑一次，见 [backup.md](backup.md)。先确认容器里连得上 AIHOT 的库：
-
-```bash
-docker compose exec app research-ingest-aihot --dry-run --days 14
-```
-
-每次导入（文件归档、定时抓取和 AIHOT 都算）都会在 `app_state` 里记下这个来源最近一次导入的时间、计数和走的哪条路（`import:<来源>`，`origin` 是 `archive`、`crawl` 或 `aihot`）。文件导入命令默认记 `archive`，定时抓取脚本加 `--origin crawl`。
-
-首页按天的顶上，只看最近三天确实在定时导入（`crawl` 或 `aihot`）的来源：最近一篇离现在比它平时的间隔长很多（三倍以上，至少一周）时，提示一行，并带上最近一次导入的时间。手动导入的归档本来就是旧的，不提示；最近不到 10 篇带日期的来源也不判断。定时导入的来源全都停了时只提示一行「多半是抓取本身出了问题」，不逐个列。不想要这行提示设 `RESEARCH_STALE_BANNER=0`。
+首页按天的顶上，只看最近三天确实在定时抓取（`crawl`）的来源：最近一篇离现在比它平时的间隔长很多（三倍以上，至少一周）时，提示一行，并带上最近一次导入的时间。手动导入的归档本来就是旧的，不提示；最近不到 10 篇带日期的来源也不判断。定时导入的来源全都停了时只提示一行「多半是抓取本身出了问题」，不逐个列。不想要这行提示设 `RESEARCH_STALE_BANNER=0`。
 
 ## 计数报告
 
@@ -325,7 +302,7 @@ docker compose exec app research-ingest-aihot --dry-run --days 14
 - 数据库文章：这个来源当前的行数
 - 写入：新增、更新、未变
 - 拦下：新正文像删稿提示或被截短，没有替换库里的原文（见上面「改稿和删稿不覆盖」）
-- 拒绝：没通过白名单的行（文件导入通常是 0，AIHOT 会有）
+- 拒绝：没通过白名单的行（文件导入通常是 0）
 - 重复：写入后认出是库里已有的同一篇
 - 归档图片、新保存图片、挂上文章的图片、缺失图片引用
 
