@@ -10,10 +10,12 @@ TypeScript，不另编一条 AIHOT 规则）。研究站仍把「多条或很长
 子节点走。连续四条以上的短 ``dt``，以及只用 ``<br>`` 粘起来的长 ``dt`` / ``dd``，
 再收成大约一段，避免一行一个对照，也避免一条定义仍是几万字。
 
-普通块里用 ``<br>`` 粘起来的长文（newsletter 的「一行一条」粘贴）也按行拆成叶子：
-一个 ``<p>`` 塞几十行、原文只有一两段时，对照页不能只出两对。这里不重新打包，
-写回仍留在原来那个 ``<p>`` 里、行间仍是 ``<br>``，下次再切叶子数不变，1:1 也就不破。
-短的两三行（地址、诗句、署名）不拆，非空行不到 ``_BR_LINES_MIN`` 仍是一整段。
+普通块里用 ``<br>`` 粘起来的长文也按行切开：一个 ``<p>`` 塞几十行、原文只有一两段时，
+对照页不能只出两对。切开之后按句收成叶子：一行自己已经以句号结尾就单独留下，人名、
+链接文字这种半句并进后文，直到句末。不按字数把后面的短句再并进来，中文更短时两边
+组数会岔开，对照就把整段退成一对。写回换成若干 ``<p>``（原来是列表项、引用时外壳
+还在），译文里不再留 ``<br>``。这样译文没有句号、或者比英文短，也不会被重新并段，
+叶子数不变。短的两三行（地址、诗句、署名）不拆，非空行不到 ``_BR_LINES_MIN`` 仍是一整段。
 
 写回必须让译文再用同一套规则切出来的叶子数等于原文。模型片段收成一个没有块级
 子节点的叶子；连续 ``dt`` 里单独成段的那一条写成 ``<p>``，避免中文变短后又被按
@@ -54,6 +56,8 @@ _DEF_PACK_FLOOR = 180
 _DEF_PACK_ALONE = 500
 _DEF_PACK_TAIL = 120
 _SENTENCE_END = (".", "?", "!", "。", "？", "！")
+# 软换行拼回一句时，下一行以这些标点开头就不再插空格（「Ari Emanuel」接「. Emanuel」）。
+_GLUE_PUNCT = frozenset(".,;:!?)]}。，；：！？、」』）")
 # cheerio / 浏览器把这些当成空元素。<br> 若按普通开始标签加深度，后面的兄弟节点
 # 会全被吞进当前块（21118 测出来只有 7 个顶层块，最后一块是整篇）。
 _VOID = frozenset({
@@ -363,8 +367,22 @@ def _sentence_end(text: str) -> bool:
     return text.rstrip().endswith(_SENTENCE_END)
 
 
-def _pack_fragments(items: list[object], length_of) -> list[list[object]]:
-    """把一行一条的碎片收成大约一段。单行已经够长就单独留下。"""
+def _pack_fragments(
+    items: list[object],
+    length_of,
+    *,
+    floor: int | None = None,
+    alone: int | None = None,
+    merge_tail: bool = True,
+) -> list[list[object]]:
+    """把一行一条的碎片收成大约一段。单行已经够长就单独留下。
+
+    ``floor`` 是句末就可以收束的最短长度，默认 ``_DEF_PACK_FLOOR``。普通块的软换行传 0：
+    每到句末就收，不把后面的短句也并进来。``alone`` 是单行单独成段的长度。
+    ``merge_tail`` 为假时，不把末尾的短组并回上一组。
+    """
+    floor = _DEF_PACK_FLOOR if floor is None else floor
+    alone = _DEF_PACK_ALONE if alone is None else alone
     groups: list[list[object]] = []
     buf: list[object] = []
     size = 0
@@ -379,10 +397,10 @@ def _pack_fragments(items: list[object], length_of) -> list[list[object]]:
 
     for item in items:
         length = int(length_of(item))
-        if length >= _DEF_PACK_ALONE and not buf:
+        if length >= alone and not buf:
             groups.append([item])
             continue
-        if length >= _DEF_PACK_ALONE and buf:
+        if length >= alone and buf:
             flush()
             groups.append([item])
             continue
@@ -390,16 +408,53 @@ def _pack_fragments(items: list[object], length_of) -> list[list[object]]:
         size += length + 1
         plain = item if isinstance(item, str) else _plain_text(item)
         ended = _sentence_end(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", str(plain))).strip())
-        if size >= _DEF_PACK_TARGET or (ended and size >= _DEF_PACK_FLOOR):
+        if size >= _DEF_PACK_TARGET or (ended and size >= floor):
             flush()
     flush()
-    if len(groups) >= 2:
+    if merge_tail and len(groups) >= 2:
         tail_len = sum(int(length_of(item)) for item in groups[-1]) + len(groups[-1])
         prev_len = sum(int(length_of(item)) for item in groups[-2]) + len(groups[-2])
         if tail_len < _DEF_PACK_TAIL and prev_len + tail_len <= _DEF_PACK_TARGET + 300:
             groups[-2].extend(groups[-1])
             groups.pop()
     return groups
+
+
+def _html_plain_len(inner: str) -> int:
+    return len(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", inner or "")).strip())
+
+
+def _join_br_lines(lines: list[str]) -> str:
+    """把同一句里的软换行拼回去。下一行以标点开头时不插空格。"""
+    parts: list[str] = []
+    for line in lines:
+        if not parts:
+            parts.append(line)
+            continue
+        plain = html_lib.unescape(re.sub(r"<[^>]+>", "", line)).lstrip()
+        if plain[:1] in _GLUE_PUNCT:
+            parts.append(line)
+        else:
+            parts.append(" ")
+            parts.append(line)
+    return "".join(parts)
+
+
+def _pack_br_groups(lines: list[str]) -> list[list[str]]:
+    """软换行按句收成组。
+
+    复用 ``_pack_fragments``，但句末就收（``floor=0``），也不把末尾短句并进上一句，
+    单行再长也不从半句前面撕开。按 180 字再并一次的话，中文只有英文三分之一上下，
+    同一批 ``<br>`` 会切出不同的组数；对照发现段数对不齐，会把整段退成一对。
+    一行自己已经是完整句子时，每行仍是一组。
+    """
+    return _pack_fragments(
+        lines,
+        _html_plain_len,
+        floor=0,
+        alone=10**9,
+        merge_tail=False,
+    )
 
 
 def _br_pieces(node: _El) -> list[str] | None:
@@ -429,7 +484,7 @@ def _br_pieces(node: _El) -> list[str] | None:
     flush_line()
     if len(lines) < 2:
         return None
-    packed = _pack_fragments(lines, lambda inner: len(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", inner)).strip()))
+    packed = _pack_fragments(lines, _html_plain_len)
     pieces = [f"<p>{' '.join(chunk)}</p>" for chunk in packed if chunk]
     if len(pieces) < 2:
         return None
@@ -437,11 +492,11 @@ def _br_pieces(node: _El) -> list[str] | None:
 
 
 def _br_lines(node: _El) -> list[str] | None:
-    """普通块里用 ``<br>`` 粘起来的长文按行拆开，返回每行的 inner HTML。
+    """普通块里用 ``<br>`` 粘起来的长文按行切开，返回每行的 inner HTML。
 
     行数不到 ``_BR_LINES_MIN`` 时返回 None，仍是一整段（两行的地址、诗句、署名不拆）。
-    只留标点的行也留着：译文同一个位置常常是「。」「—」，删掉一边就整段错位。
-    空行（连着两个 ``<br>``）不占叶子。
+    切出来的行再由 ``_pack_br_groups`` 按句收成叶子。只留标点的行也留着，空行
+    （连着两个 ``<br>``）不占叶子。
     """
     if not any(isinstance(child, _El) and child.name == "br" for child in node.children):
         return None
@@ -527,18 +582,6 @@ def _stable_replacement(raw: str, *, tag: str, keep_br: bool) -> str | None:
     if not _html_has_letter(leaf):
         return None
     return leaf
-
-
-def _stable_inline(raw: str) -> str | None:
-    """一行译文收成行内内容，写回原来的块里（行之间仍是 ``<br>``）。
-
-    译文里的 ``<br>`` 变成空格：多留一个就会多切一片，写回后叶子数对不上。
-    只剩标点的译文返回 None，保留原文这一行，不让空叶子进来。
-    """
-    inner = _flatten_inline(raw, keep_br=False)
-    if not _html_has_letter(f"<p>{inner}</p>"):
-        return None
-    return inner
 
 
 def _element_children(node: _El) -> list[_El | _Tx]:
@@ -666,30 +709,18 @@ def _emit_br_lines(
     out: list[Segment],
     replacements: dict[int, str] | None,
 ) -> None:
-    """普通块里的每一行各成一段，写回仍留在原来那个标签里，行间还是 ``<br>``。
+    """普通块里的 ``<br>`` 行按句收成叶子，写回换成若干 ``<p>``。
 
-    和 dt/dd 那条路不同：这里不重新打包，也不换外壳。写回后还是一个 ``<p>``（引用、
-    列表项、表格单元同理），下次按同样的规则再切，叶子数一样，对照不会错位。
+    一行已经是完整句子时，每句一个 ``<p>``。半句（链接文字、人名）并进后文，一组一句。
+    不再用 ``<br>`` 把译文串回原来的标签：译文常常不带句号，串回去再切会被并成一段，
+    叶子数就和原文对不上。列表项、引用的外壳留着，里面换成这些 ``<p>``。
     """
-    first = len(out)
-    for index, line in enumerate(lines):
-        anchor = _claim_anchor(own, chain, used) if index == 0 else None
-        out.append(Segment(f"<{node.name}>{line}</{node.name}>", anchor))
-    if replacements is None:
-        return
-    parts: list[str] = []
-    replaced = False
-    for index, line in enumerate(lines):
-        slot = first + index
-        inline = _stable_inline(replacements[slot]) if slot in replacements else None
-        if inline is not None:
-            parts.append(inline)
-            replaced = True
-        else:
-            parts.append(line)
-    if not replaced:
-        return
-    node.replacement = f"{node.start}{'<br>'.join(parts)}</{node.name}>"
+    groups = _pack_br_groups(lines)
+    pieces = [f"<p>{_join_br_lines(group)}</p>" for group in groups]
+    _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
+    # 原来的段落号留在第一句上。对照页还会再盖一次，这里是写回后的译文自己还能对上。
+    if node.name == "p" and node.replacement and node.replacement.startswith("<p>") and node.start.startswith("<p "):
+        node.replacement = node.start + node.replacement[3:]
 
 
 def _walk(
@@ -727,7 +758,7 @@ def _walk(
         if pieces:
             _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
             return
-        # 普通块（p、列表项、引用、表格单元、标题）里用 <br> 粘起来的长文，一行一段。
+        # 普通块（p、列表项、引用、表格单元、标题）里用 <br> 粘起来的长文，按句收成叶子。
         lines = _br_lines(node) if split_br and not in_definition else None
         if lines:
             _emit_br_lines(node, lines, own, chain, used, out, replacements)

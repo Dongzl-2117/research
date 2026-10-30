@@ -4,7 +4,7 @@
 research-translate 走这里；不在站外译完再贴。
 
 译制读的正文和文章页显示的是同一份：都先过 ``boilerplate.clean_article``。归档头
-（如 Stratechery 的 ``- source: member-rss``）、引流尾巴不清洗就会被当成一段送去译，
+（如 Stratechery 的 ``- source: member-rss``、``- rss_link:``）、引流尾巴不清洗就会被当成一段送去译，
 页面却把它洗掉了，对照从这一段起整页错一行（22092）。
 """
 
@@ -80,7 +80,7 @@ def _batch_chunks(parts: list[str]) -> list[list[str]]:
 def _cleaned_body(conn, article: dict) -> str:
     """译制读的正文：和文章页显示前同一条清洗，库里 body_md 不动。
 
-    ``- source: member-rss`` 这类归档头、引流尾巴、二维码和星球导出脚手架都在这里
+    ``- source: member-rss``、``- rss_link:`` 这类归档头、引流尾巴、二维码和星球导出脚手架都在这里
     去掉。不清洗就直接渲染的话，页面（洗过）和译文（没洗）从第一处脏段起就对不上，
     叶子数差几段，整页错行。
     """

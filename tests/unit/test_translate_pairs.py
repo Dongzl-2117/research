@@ -553,12 +553,12 @@ def test_paragraph_with_many_br_splits_into_line_leaves():
     assert len(iter_segments(html, split_br=False)) == 1
 
 
-def test_br_line_write_back_stays_in_the_same_paragraph():
-    """一行一段写回原来的 <p>，行间还是 <br>；再切叶子数不变，id 也留着。"""
+def test_br_line_write_back_stays_one_leaf_per_sentence():
+    """一句一段写回成并列的 <p>。译文没有句号也不会被并回一段，段落号留在第一句。"""
     html = '<p id="p-1">Alpha line.<br>Beta line.<br>Gamma line.</p>'
     assert len(segments_of(html)) == 3
     written = splice_segments(html, {0: "<p>甲</p>", 1: "乙", 2: "<p>丙</p>"})
-    assert written == '<p id="p-1">甲<br>乙<br>丙</p>'
+    assert written == '<p id="p-1">甲</p><p>乙</p><p>丙</p>'
     assert len(segments_of(written)) == 3
     assert leaf_count_problem(html, written) is None
 
@@ -567,7 +567,7 @@ def test_br_line_write_back_keeps_the_list_item_shell():
     html = "<ul><li>First row.<br>Second row.<br>Third row.</li></ul>"
     assert len(segments_of(html)) == 3
     written = splice_segments(html, {0: "第一行。", 1: "第二行。", 2: "第三行。"})
-    assert written == "<ul><li>第一行。<br>第二行。<br>第三行。</li></ul>"
+    assert written == "<ul><li><p>第一行。</p><p>第二行。</p><p>第三行。</p></li></ul>"
     assert len(segments_of(written)) == 3
     assert leaf_count_problem(html, written) is None
 
@@ -578,16 +578,108 @@ def test_two_line_paragraph_stays_one_leaf():
     assert segments_of(html) == [html]
 
 
-def test_punctuation_only_br_lines_stay_leaves():
-    """只留标点的行不删：译文同一个位置可能是「。」，删掉一边整段就错开。"""
+def test_punctuation_only_br_lines_join_the_neighboring_sentence():
+    """只留标点的行不删，并进相邻的句子。两边同一位置都是「—」时，段数不会岔开。"""
     html = "<p>One.<br>—<br>Two.<br>|<br>Three.</p>"
     segments = segments_of(html)
-    assert segments == ["<p>One.</p>", "<p>—</p>", "<p>Two.</p>", "<p>|</p>", "<p>Three.</p>"]
-    written = splice_segments(html, {0: "一。", 2: "二。", 3: "｜", 4: "三。"})
-    # 只有标点的译文不收（「｜」也不算字母），留着原文那一行，叶子数不变。
-    assert written == "<p>一。<br>—<br>二。<br>|<br>三。</p>"
-    assert len(segments_of(written)) == 5
+    assert [re.sub(r"<[^>]+>", "", segment) for segment in segments] == ["One.", "— Two.", "| Three."]
+    written = splice_segments(html, {0: "一。", 1: "破折号，二。", 2: "竖线，三。"})
     assert leaf_count_problem(html, written) is None
+    assert len(segments_of(written)) == 3
+    assert "One." not in written and "一。" in written
+
+
+def _interview_soft_breaks() -> list[str]:
+    """22209 的形状：链接原来占一行，软换行把人名和句号拆开。"""
+    return [
+        "This week’s interview is a conversation with Hollywood super-agent",
+        "Ari Emanuel",
+        ". Emanuel is the Executive Chairman of",
+        "WME Group",
+        ", a live events company.",
+        "Yeah, for sure.",
+        "Topics:",
+        "The State of Social",
+        "|",
+        "Roll the Calls",
+        "Ari Emanuel:",
+        "Can I ask you one question?",
+    ]
+
+
+def _interview_soft_breaks_zh() -> list[str]:
+    return [
+        "本周这场访谈是和好莱坞超级经纪人",
+        "阿里·伊曼纽尔",
+        "。伊曼纽尔是",
+        "WME 集团",
+        "的董事长。",
+        "对，没错。",
+        "主题：",
+        "社交现状",
+        "|",
+        "Roll the Calls",
+        "阿里·伊曼纽尔：",
+        "我能问一个问题吗？",
+    ]
+
+
+def test_soft_break_interview_lines_pack_into_sentences():
+    """半句、人名、链到句号上的续写收成一句，不再各成一对。"""
+    lines = _interview_soft_breaks()
+    html = "<p>" + "<br>".join(lines) + "</p>"
+    segments = segments_of(html)
+    plains = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", segment)).strip() for segment in segments]
+    assert len(lines) == 12
+    assert len(segments) == 3
+    assert plains[0].startswith("This week’s interview")
+    assert "super-agent Ari Emanuel. Emanuel is" in plains[0]
+    assert "WME Group, a live events company." in plains[0]
+    assert plains[1] == "Yeah, for sure."
+    assert plains[2].endswith("Can I ask you one question?")
+    assert "Ari Emanuel:" in plains[2]
+    assert all(plain != "Ari Emanuel" for plain in plains)
+    assert all(len(plain) >= 15 for plain in plains)
+
+
+def test_soft_break_interview_writeback_keeps_leaf_count():
+    """按句写回成若干 <p> 之后再切，叶子数不变，人名不会重新掉成一片。"""
+    html = '<p id="p-1">' + "<br>".join(_interview_soft_breaks()) + "</p>"
+    leaves = segments_of(html)
+    assert len(leaves) == 3
+    assert iter_segments(html)[0].anchor == "p-1"
+    written = splice_segments(html, {index: f"<p>译文{index}。</p>" for index in range(len(leaves))})
+    assert written.count("<br>") == 0
+    assert leaf_count_problem(html, written) is None
+    assert len(segments_of(written)) == len(leaves)
+    assert "Ari Emanuel" not in written
+
+
+def test_parallel_soft_breaks_pack_to_the_same_leaf_count():
+    """句末对齐的中英软换行收成同样多的段，对照按句并排，不退成整段一对。"""
+    en = "<p>" + "<br>".join(_interview_soft_breaks()) + "</p>"
+    zh = "<p>" + "<br>".join(_interview_soft_breaks_zh()) + "</p>"
+    en_leaves = segments_of(en)
+    zh_leaves = segments_of(zh)
+    assert len(en_leaves) == len(zh_leaves) == 3
+    assert len(en_leaves) < len(_interview_soft_breaks())
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 3
+    assert "Ari Emanuel" in pairs[0].en and pairs[0].zh and "阿里·伊曼纽尔" in pairs[0].zh
+    assert "Yeah, for sure." in pairs[1].en and pairs[1].zh and "对，没错。" in pairs[1].zh
+    assert not any(re.sub(r"<[^>]+>", "", pair.en).strip() == "Ari Emanuel" for pair in pairs)
+
+
+def test_soft_break_link_stays_inside_the_sentence():
+    html = (
+        "<p>a conversation with Hollywood super-agent<br>"
+        '<a href="https://example.com/ari">Ari Emanuel</a><br>'
+        ". Emanuel is the chairman of the group.</p>"
+    )
+    segments = segments_of(html)
+    assert len(segments) == 1
+    assert 'href="https://example.com/ari"' in segments[0]
+    assert "Ari Emanuel. Emanuel is" in re.sub(r"<[^>]+>", "", segments[0])
 
 
 def test_br_lines_pair_one_to_one_when_both_sides_match():
