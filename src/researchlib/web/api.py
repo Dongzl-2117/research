@@ -243,7 +243,7 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     if images:
         base = _base(request)
         body_md = link_local_images(
-            body_md, {row["original_ref"]: f"{base}/media/{row['storage_path']}" for row in images}
+            body_md, {image["original_ref"]: f"{base}/media/{image['storage_path']}" for image in images}
         )
     # 和文章页同一套：省略号半句补成正文里的完整句，只有图的帖用图片里的字。库内 title 不改。
     title = display_titles(conn, [row], by_id, settings.display_timezone)[row["id"]]

@@ -216,7 +216,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
 - `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`：原文里本地存了的图换成站内 `/media/…` 的完整地址（JSON 的 `body_markdown`、MCP 的 `get_article` 也一样），还没下载的外链图照原样留着；`.md` 最后附「图片里的字」一节，就是检索用的那份图片文字块。
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
-- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认等整合写完再返回。加 `"wait": false` 时马上返回回答 id 和相关原文，之后轮询下面这个接口。
+- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认马上返回回答 id 和相关原文，后台整合，之后轮询下面这个接口；加 `"wait": true` 时等整合写完再返回。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词）。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`。
