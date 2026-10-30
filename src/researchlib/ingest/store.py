@@ -11,10 +11,7 @@ from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
-from researchlib.empty_answer import hide_empty_answer
 from researchlib.images import sync_article_images
-from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
-from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.model import IngestReport, ParsedDoc
 from researchlib.mentions import (
     CompanyMatcher,
@@ -26,6 +23,7 @@ from researchlib.mentions import (
 from researchlib.revisions import article_text, held_before, judge_replacement, save_revision, split_comments
 from researchlib.sources import Source
 from researchlib.textutil import content_hash, markdown_to_text, strip_duplicate_title
+from researchlib.visibility import HIDDEN, SHORT_POST
 
 
 def _body_text(title: str, body_md: str, profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> str:
@@ -149,8 +147,6 @@ def body_chars(body_md: str) -> int:
 
 def apply_length_floor(source: Source, body_md: str, meta: dict) -> dict:
     """短于来源 min_chars 的帖子标 hidden=short_post；够长则去掉这个标记。"""
-    from researchlib.empty_answer import HIDDEN, SHORT_POST
-
     if source.min_chars <= 0:
         return meta
     if body_chars(body_md) < source.min_chars:
@@ -286,10 +282,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         if stored is not None:
             ocr_text = stored["ocr_text"] or ""
         mention_body = body_for_mentions(doc.body_md, body_text=body_text, ocr_text=ocr_text)
-        mention_rows = mentions_for_document(matcher, doc.title, mention_body)
-        if source.id == DUAN_SOURCE:
-            mention_rows = refine_mentions(matcher, doc.title, mention_body, mention_rows, meta)
-        replace_mentions(conn, article_id, mention_rows)
+        replace_mentions(conn, article_id, mentions_for_document(matcher, doc.title, mention_body))
         replace_chunks(conn, article_id, doc.title, doc.body_md)
     stored, linked, missing = sync_article_images(
         conn,
@@ -320,22 +313,6 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 duplicate = article_id
     if is_guest(meta):
         conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
-    if source.id == DUAN_SOURCE:
-        # 没有段永平本人判断，或那节只剩论坛导航的，整篇搁下。
-        stored_row = conn.execute(
-            "SELECT title, body_md, raw_meta, published_at FROM articles WHERE id = %s",
-            (article_id,),
-        ).fetchone()
-        if stored_row is not None:
-            hide_empty_answer(
-                conn,
-                article_id,
-                stored_row["body_md"] or "",
-                stored_row["raw_meta"],
-                source_id=source.id,
-                title=stored_row["title"] or "",
-                published_at=stored_row["published_at"],
-            )
     return status, article_id, stored, linked, missing, duplicate
 
 

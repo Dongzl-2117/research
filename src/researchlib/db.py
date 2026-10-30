@@ -12,7 +12,6 @@ from researchlib import embeddings
 from researchlib.chunks import backfill_missing_chunks
 from researchlib.companies import seed_companies
 from researchlib.config import Settings
-from researchlib.empty_answer import backfill_empty_answers
 from researchlib.migrate import migrate
 from researchlib.posters import refresh_poster_roles
 from researchlib.sources import load_sources, sync_sources
@@ -55,8 +54,6 @@ def prepare(settings: Settings) -> psycopg.Connection:
         # 003_retrieval 之前入库的文章没有段落块。只补缺的，已有的不动。
         # 不在这里跑摘要；全库摘要只由 research-digest 手动执行。
         backfill_missing_chunks(conn)
-        # 段永平那节只剩论坛导航的旧问答，启动时搁下，不进按天和检索。
-        backfill_empty_answers(conn)
     except Exception:
         conn.rollback()
         conn.close()

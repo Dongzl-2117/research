@@ -386,9 +386,6 @@ def main(argv: list[str] | None = None) -> int:
     if source.kind not in ("markdown", "wechat_mp"):
         print(f"拒绝抓取：{source.id} 的类型是 {source.kind}，只抓公众号（markdown 或 wechat_mp）", file=sys.stderr)
         return 2
-    if source.paused:
-        print(f"拒绝抓取：{source.id}（{source.name}）在配置里先不要（paused）", file=sys.stderr)
-        return 2
     if not source.ghid:
         print(f"拒绝抓取：{source.id} 在 config/sources.yaml 里没写 ghid（公众号原始 ID）", file=sys.stderr)
         return 2

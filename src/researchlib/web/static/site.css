@@ -821,40 +821,6 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose th, .prose td { padding: .5em .75em; border: 1px solid var(--line); text-align: left; }
 .prose th { background: var(--bg-sunk); font-weight: 600; }
 .prose hr { margin: 2em 0; border: 0; border-top: 1px solid var(--line); }
-.prose .qa-block {
-  padding: 14px 16px 16px;
-  border-radius: var(--radius-card);
-}
-.prose .qa-ask {
-  background: var(--bg-sunk);
-  border: 1px solid var(--line-soft);
-}
-.prose .qa-ask .qa-body {
-  padding-left: 12px;
-  border-left: 3px solid var(--line-strong);
-  color: var(--ink-2);
-}
-.prose .qa-answer {
-  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
-}
-.prose .qa-aside {
-  padding-left: 0;
-  padding-right: 0;
-  background: transparent;
-}
-.prose .qa-label {
-  margin: 0 0 8px;
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: .08em;
-}
-.prose .qa-answer .qa-label { color: var(--accent-ink); }
-.prose .qa-body p { margin: 0; line-height: 1.85; }
-.prose .qa-body p + p { margin-top: .85em; }
-.prose .qa-missing { margin: 0; color: var(--ink-4); }
-.prose > .qa-block + .qa-block { margin-top: 14px; }
 /* 知识星球评论跟正文同一栏，不要再套一层更窄的列表。 */
 .prose .zsxq-comments {
   width: 100%;

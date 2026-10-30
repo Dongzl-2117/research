@@ -191,13 +191,6 @@ def strip_duplicate_title(md: str, title: str) -> str:
     return md
 
 
-_FILE_URL = re.compile(r"file:///[^\s<>\"')\]]*", re.I)
-_MD_FILE_LINK = re.compile(r"\[([^\]]*)\]\(\s*file:///[^)]*\)", re.I)
-_BARE_PAGE_FILE = re.compile(r"(?<![A-Za-z0-9./])H\.HTM(?:#[^\s<>\"')\]]*)?", re.I)
-_EMPTY_PARENS = re.compile(r"[（(]\s*[）)]")
-
-
-
 # 展示层 / 识图后处理共用：只改明显错字语病，不改观点和口语。
 # 新规则要保守，宁可漏改也不要动作者原意。
 _OBVIOUS_TYPOS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -232,34 +225,6 @@ def collapse_short_spam(text: str, phrases: tuple[str, ...] = ("深刻反省",))
         pat = re.compile(rf"(?:{inner})(?:[\s，,、；;]*(?:{inner})){{2,}}")
         out = pat.sub(phrase, out)
     return out
-
-
-def scrub_file_page_junk(text: str) -> str:
-    """去掉 PDF 页内链接留下的 `file:///H.HTM` 一类页码垃圾。没有这类字样时原样返回。"""
-    if not text:
-        return text or ""
-    lowered = text.lower()
-    if "file:" not in lowered and "h.htm" not in lowered:
-        return text
-
-    def link(match: re.Match[str]) -> str:
-        label = (match.group(1) or "").strip()
-        if re.fullmatch(r"\d{1,4}", label):
-            return ""
-        return label
-
-    lines: list[str] = []
-    for line in text.split("\n"):
-        cleaned = _MD_FILE_LINK.sub(link, line)
-        cleaned = _FILE_URL.sub("", cleaned)
-        cleaned = _BARE_PAGE_FILE.sub("", cleaned)
-        cleaned = _EMPTY_PARENS.sub("", cleaned)
-        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-        cleaned = re.sub(r"\s+([，。！？、；：])", r"\1", cleaned).rstrip()
-        if not cleaned.strip() and (_FILE_URL.search(line) or _BARE_PAGE_FILE.search(line)):
-            continue
-        lines.append(cleaned)
-    return "\n".join(lines)
 
 
 def strip_alert_markers(md: str) -> str:
