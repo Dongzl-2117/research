@@ -591,13 +591,23 @@ def clean_article(conn, article_id: int, source_id: str, body_md: str) -> str:
     return clean_markdown(body_md, profile_for(conn, source_id), image_hashes(conn, article_id), drop_cta=True)
 
 
+def search_text(cleaned: str, title: str) -> str:
+    """清洗后的正文 → articles.body_text（检索、摘要、观点、卡片摘录读的文字）。
+
+    和标题重复的那行去掉；问答帖的「提问（网友 → 方伟Rey）」只留「提问」，网友的昵称不进来。
+    """
+    from researchlib.present_text import plain_qa_markdown
+    from researchlib.textutil import markdown_to_text, strip_duplicate_title
+
+    return markdown_to_text(plain_qa_markdown(strip_duplicate_title(cleaned, title)))
+
+
 # —— 全库重洗 ——
 
 
 def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> dict:
     """按当前规则重算 body_text 和原文段落块。body_md 不动。返回各来源改动篇数。"""
     from researchlib.chunks import replace_chunks
-    from researchlib.textutil import markdown_to_text, strip_duplicate_title
 
     where = "WHERE duplicate_of IS NULL"
     params: list = []
@@ -612,7 +622,7 @@ def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> 
     for index, row in enumerate(rows, 1):
         seen[row["source_id"]] += 1
         cleaned = clean_article(conn, row["id"], row["source_id"], row["body_md"])
-        text = markdown_to_text(strip_duplicate_title(cleaned, row["title"]))
+        text = search_text(cleaned, row["title"])
         if text == (row["body_text"] or ""):
             continue
         changed[row["source_id"]] += 1

@@ -149,6 +149,44 @@ def plain_qa_headings(headings: list[str]) -> list[str]:
     ]
 
 
+# 问答帖归档头里的作者是提问的网友：「- 作者：王小明」。
+_ARCHIVE_AUTHOR = re.compile(r"^[ \t]*(?:[-*+][ \t]+)?作者[ \t]*[:：]")
+
+
+def plain_qa_markdown(md: str) -> str:
+    """问答导出的 markdown 去掉网友的昵称，给检索文字和接口的原文用。
+
+    「## 提问（王小明 → 方伟Rey）」成「## 提问」，「## 回答（方伟Rey）」成「## 回答」；提问之前归档头那行
+    「- 作者：王小明」不要。和阅读页、检索的章节名一样，提问、回答两种小标题都有才改，别的行不动。
+    """
+    text = md or ""
+    titles = [title for level, title, _body in _split_sections(text) if level]
+    if not any(_ASK_HEADING.match(title) for title in titles) or not any(
+        _ANSWER_HEADING.match(title) for title in titles
+    ):
+        return text
+    out: list[str] = []
+    fence: str | None = None
+    asked = False
+    for line in text.split("\n"):
+        if fence:
+            if line.strip().startswith(fence):
+                fence = None
+        elif fence_match := _FENCE_OPEN.match(line):
+            fence = fence_match.group(1)[:3]
+        elif heading := _ATX.match(line):
+            title = _heading_title(heading.group(2))
+            if _ASK_HEADING.match(title):
+                asked = True
+                line = f"{heading.group(1)} 提问"
+            elif _ANSWER_HEADING.match(title):
+                line = f"{heading.group(1)} 回答"
+        elif not asked and _ARCHIVE_AUTHOR.match(line):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def present_zsxq_qa(text: str) -> str:
     """知识星球问答的「提问（…）/ 回答（…）」收成对话段。
 
