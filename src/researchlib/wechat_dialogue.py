@@ -392,6 +392,8 @@ class Shot:
     prose: str
     # dialogue 子类：moments / group / chat。朋友圈与群聊不要合成一块。
     family: str = ""
+    # 识图按「一条气泡一行」写、每行都标了方伟/网友：行与行之间是两条消息，没有屏宽折行。
+    bubble_lines: bool = False
 
 
 def present_ocr_pieces(pieces: list[str]) -> str:
@@ -1044,7 +1046,8 @@ def parse_shot(text: str) -> Shot:
     had_account = any(_account_line(_plain(line)) for line in stripped)
     family = "moments" if had_account else ("group" if signal else "chat")
     if turns:
-        return Shot("dialogue", turns, "", family)
+        tagged = sum(1 for line in raw_lines if _STRUCTURED.match(_plain(line) or ""))
+        return Shot("dialogue", turns, "", family, bubble_lines=tagged * 2 >= len(raw_lines))
     # 整张都是界面字时不要把原文退回去，否则价格和小程序会漏进正文。
     if signal or names or hosted or labeled:
         return Shot("dialogue", [], "", family)
