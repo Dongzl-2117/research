@@ -4,7 +4,8 @@
 段是里面的 p / 标题 / li，不是整段引用。多条或很长的定义列表引用会再拆进 dt / dd。
 这里按段的位置并排。
 旧稿若只在中文侧删过连续重复段，两边再走一遍同一套去重，把同段拉齐。
-叶子数已经一样时也走这一遍：两边都变短且仍然一样长，才收掉引用后的重复段。
+叶子数已经一样时按位置收：后一对的英文是前面某对的长段近重复，且中文也是那一对的
+同一段（译文更短也算），后一对收掉。英文重复但中文是另一句的留下。
 段数仍对不齐也不整页退回中文：多出来的挂在末尾。
 """
 
@@ -125,7 +126,8 @@ def _drop_repeated_leaves(segments: list[Segment]) -> list[Segment]:
 
     全文相同的后一份丢掉（引用整段再贴一遍，或隔了几段又出现）。紧挨着的后一份如果只是
     前一份的开头（引用里用一个 ``<br>`` 粘了两段，复述只重复了第一段），也丢掉。
-    只共享开头、后文不同的两段都留着。
+    只共享开头、后文不同的两段都留着。叶子数已经对齐时不用这条单边收，改走
+    ``_drop_aligned_repeats``，免得中文更短时条数对不齐、整页重复都留着。
     """
     priors: dict[str, list[str]] = {}
     kept: list[Segment] = []
@@ -140,6 +142,51 @@ def _drop_repeated_leaves(segments: list[Segment]) -> list[Segment]:
     return kept
 
 
+def _translation_repeats(earlier_zh: str, later_zh: str) -> bool:
+    """后一对的中文是不是前面那一对的同一段译文。
+
+    不看 80 字。中文通常比英文短，同一句译文往往不到这个长度。后一对没有译文时，
+    留下它也不会多出内容。两边都空，或去掉标点后相同、只是前面那段的开头、几乎一样，都算。
+    """
+    if not later_zh:
+        return True
+    if not earlier_zh:
+        return False
+    return same_repeat(earlier_zh, later_zh)
+
+
+def _drop_aligned_repeats(
+    left: list[Segment], right: list[Segment]
+) -> tuple[list[Segment], list[Segment]]:
+    """叶子已经按位置对齐时，把重复的后一对整对收掉。
+
+    英文可见文字大约 80 字以上，和前面某一对相同、只是它的开头、或几乎一样
+    （长度差在一成以内、相似度 0.96 以上），并且中文也是那一对的同一段译文。
+    隔了几段再贴出来的同一句同样收，不要求紧挨着。英文重复但中文是另一句的留下，
+    避免把那句译文丢掉，后面的段落因此错位。
+    """
+    if len(left) != len(right):
+        return left, right
+    priors: dict[str, list[tuple[str, str]]] = {}
+    kept_left: list[Segment] = []
+    kept_right: list[Segment] = []
+    for en, zh in zip(left, right, strict=True):
+        en_key = _leaf_key(en.html)
+        zh_key = _leaf_key(zh.html)
+        if repeat_long(en.html):
+            bucket = en_key[:48]
+            repeated = any(
+                same_repeat(prev_en, en_key) and _translation_repeats(prev_zh, zh_key)
+                for prev_en, prev_zh in priors.get(bucket, ())
+            )
+            if repeated:
+                continue
+            priors.setdefault(bucket, []).append((en_key, zh_key))
+        kept_left.append(en)
+        kept_right.append(zh)
+    return kept_left, kept_right
+
+
 def _show(segment: Segment) -> tuple[str, str | None]:
     """去掉段上的段落号。叶子本身没有 id 时，用切段时记下的祖先 id。"""
     html, anchor = _take_anchor(segment.html)
@@ -151,10 +198,11 @@ def _best_blocks(
 ) -> tuple[list[Segment], list[Segment]] | None:
     """按一种切法选两边展示用的叶子。先原样，再看同一套去重。
 
-    连续相同的块，以及纯文本已经出现过的长叶子（列表项和紧跟的同文段落、后文再贴的
-    同一段），两边各跑一遍。叶子数已经一样时，只有两边都变短并且仍然一样长，才改用
-    去重后的段。只短一边会把长度拉开，仍用未去重的等长序列，不单边丢掉，也不硬配。
-    叶子数本来就不一样时，只有去重后差距变小才改用那一份。
+    叶子数已经一样时按位置收重复对：英文够长并且近重复，中文是同一段（更短也算）
+    才整对丢掉。两边各收各的会因为中文不到 80 字而对不齐条数，整页重复都留着。
+    连续相同的块先去掉，再按位置收一次，短的连续重复和隔开的长重复一起收掉。
+    叶子数本来就不一样时，两边仍各收各的长叶子，只有差距变小才改用那一份。
+    只短一边不硬配。
     """
     kids_o = _entries(original_html, split_br=split_br, split_sentences=split_sentences)
     kids_t = _entries(zh_html, split_br=split_br, split_sentences=split_sentences)
@@ -174,11 +222,16 @@ def _best_blocks(
         split_br=split_br,
         split_sentences=split_sentences,
     )
-    candidates = (
-        (block_o, block_t),
-        (_drop_repeated_leaves(kids_o), _drop_repeated_leaves(kids_t)),
-        (_drop_repeated_leaves(block_o), _drop_repeated_leaves(block_t)),
-    )
+    if raw_gap == 0 and len(kids_o) == len(kids_t):
+        candidates = [_drop_aligned_repeats(kids_o, kids_t)]
+        if block_o and block_t and len(block_o) == len(block_t):
+            candidates.append(_drop_aligned_repeats(block_o, block_t))
+    else:
+        candidates = [
+            (block_o, block_t),
+            (_drop_repeated_leaves(kids_o), _drop_repeated_leaves(kids_t)),
+            (_drop_repeated_leaves(block_o), _drop_repeated_leaves(block_t)),
+        ]
     best: tuple[int, int, list[Segment], list[Segment]] | None = None
     for left, right in candidates:
         if not left or not right:
