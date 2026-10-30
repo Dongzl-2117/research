@@ -1,0 +1,194 @@
+{
+  "date": "2026-10-30",
+  "base_commit": "d88b6022c5e0a8191365ddb0bc18a6e2d22bf469",
+  "performance_baseline_commit": "15a04694298403d4a26cd962d732162469591e4c",
+  "environment": {
+    "python": "3.12.14",
+    "postgres": "16.15",
+    "zhparser": "2.4",
+    "pgvector": "0.6.0",
+    "isolated_port": 55432
+  },
+  "tests": {
+    "unit_passed": 625,
+    "integration_passed": 120,
+    "skipped": 0,
+    "seconds": 41.26
+  },
+  "retrieval_eval": {
+    "articles": 1500,
+    "tolerance": 0.02,
+    "ask": {
+      "方伟最近怎么看拼多多的护城河": {
+        "precision": 0.2375,
+        "recall": 0.76
+      },
+      "腾讯广告加载率": {
+        "precision": 0.6,
+        "recall": 0.96
+      },
+      "茅台批价和渠道库存": {
+        "precision": 0.8875,
+        "recall": 0.6017
+      },
+      "苹果的定价权": {
+        "precision": 0.8125,
+        "recall": 0.7738
+      },
+      "哪些作者讨论过回购": {
+        "precision": 1.0,
+        "recall": 0.2548
+      },
+      "公司页预设·腾讯": {
+        "precision": 1.0,
+        "recall": 0.153
+      },
+      "作者页预设·乘风破浪": {
+        "precision": 0.9625,
+        "recall": 0.0495
+      },
+      "农夫山泉的成本结构": {
+        "precision": 1.0,
+        "recall": 0.7407
+      },
+      "管理层激励": {
+        "precision": 0.9625,
+        "recall": 0.2484
+      },
+      "低价电商能持续吗": {
+        "precision": 1.0,
+        "recall": 0.1136
+      },
+      "英伟达算力": {
+        "precision": 1.0,
+        "recall": 0.6897
+      },
+      "拼多多出海": {
+        "precision": 0.6625,
+        "recall": 0.7162
+      }
+    },
+    "search": {
+      "腾讯广告加载率": {
+        "precision": 1.0
+      },
+      "茅台批价和渠道库存": {
+        "precision": 1.0
+      },
+      "苹果的定价权": {
+        "precision": 1.0
+      },
+      "农夫山泉的成本结构": {
+        "precision": 1.0
+      },
+      "管理层激励": {
+        "precision": 1.0
+      },
+      "英伟达算力": {
+        "precision": 1.0
+      },
+      "拼多多出海": {
+        "precision": 1.0
+      }
+    }
+  },
+  "pagination": {
+    "6001": {
+      "before": {
+        "module": "/tmp/research-pagination-latest-base/src/researchlib/retrieval.py",
+        "articles": 6001,
+        "chunks": 8301,
+        "reported_total": 6001,
+        "reported_available": 300,
+        "reachable": 300,
+        "duplicates": 0,
+        "missing": 5701,
+        "unexpected": 0,
+        "stable": true,
+        "counts_ok": false,
+        "empty_after_end": true,
+        "first_ms": 2194.99,
+        "median_ms": 2235.23,
+        "max_ms": 2272.22,
+        "calls": 7,
+        "max_text_rows_per_call": 300,
+        "max_text_rows_per_fetch": 300
+      },
+      "after": {
+        "module": "/workspace/research/src/researchlib/retrieval.py",
+        "query": "paginationneedle",
+        "articles": 6001,
+        "chunks": 8301,
+        "reported_total": 6001,
+        "reported_available": 6001,
+        "reachable": 6001,
+        "duplicates": 0,
+        "missing": 0,
+        "unexpected": 0,
+        "stable": true,
+        "counts_ok": true,
+        "empty_after_end": true,
+        "first_ms": 54.27,
+        "median_ms": 62.56,
+        "max_ms": 101.53,
+        "calls": 65,
+        "max_text_rows_per_call": 400,
+        "max_text_rows_per_fetch": 300
+      }
+    },
+    "24001": {
+      "before": {
+        "module": "/tmp/research-pagination-latest-base/src/researchlib/retrieval.py",
+        "query": "paginationneedle capacityneedle",
+        "articles": 24001,
+        "chunks": 26301,
+        "reported_total": 24001,
+        "reported_available": 2300,
+        "reachable": 2300,
+        "duplicates": 0,
+        "missing": 21701,
+        "unexpected": 0,
+        "stable": true,
+        "counts_ok": false,
+        "empty_after_end": true,
+        "first_ms": 385.35,
+        "median_ms": 294.45,
+        "max_ms": 411.75,
+        "calls": 27,
+        "max_text_rows_per_call": 2300,
+        "max_text_rows_per_fetch": 2300
+      },
+      "after": {
+        "module": "/workspace/research/src/researchlib/retrieval.py",
+        "query": "paginationneedle capacityneedle",
+        "articles": 24001,
+        "chunks": 26301,
+        "reported_total": 24001,
+        "reported_available": 24001,
+        "reachable": 24001,
+        "duplicates": 0,
+        "missing": 0,
+        "unexpected": 0,
+        "stable": true,
+        "counts_ok": true,
+        "empty_after_end": true,
+        "first_ms": 303.82,
+        "median_ms": 415.93,
+        "max_ms": 630.11,
+        "calls": 245,
+        "max_text_rows_per_call": 2400,
+        "max_text_rows_per_fetch": 2300
+      }
+    }
+  },
+  "note": "合成数据；每组先测旧代码再测新代码，遍历各自所有可达页，不是生产测量。性能基线与最终 base 的 retrieval.py 相同。",
+  "earlier_validation": {
+    "base_commit": "c25a9bedd7651b9b9f7286909472d4a3d1987e96",
+    "tests": {
+      "unit_passed": 638,
+      "integration_passed": 119,
+      "skipped": 0,
+      "seconds": 47.85
+    }
+  }
+}

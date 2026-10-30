@@ -61,7 +61,7 @@
 {{ card_list(results[first_partial:]) }}
 {% endif %}
 {{ pager(page, pages, "/search?" ~ page_query ~ "&page=" ~ (page - 1), "/search?" ~ page_query ~ "&page=" ~ (page + 1)) }}
-<p class="count num">{{ total }} 篇全部命中{% if listed is defined and listed < total %}，按相关度能翻到前 {{ listed }} 篇，其余的加来源或时间范围再搜{% endif %}{% if partial_total %} · {{ partial_total }} 篇部分命中{% endif %}</p>
+<p class="count num">{{ total }} 篇全部命中{% if partial_total %} · {{ partial_total }} 篇部分命中{% endif %}</p>
 {% else %}
 <p class="empty">没有找到「{{ query }}」。</p>
 {% endif %}

@@ -187,7 +187,7 @@ class ArticleHit:
 
 @dataclass
 class SearchResult:
-    total: int  # 全部词组都命中的文章数（精确计数）
+    total: int  # 文章索引全部命中与排序窗口内提升的命中的并集，精确去重计数
     partial: int  # 候选里只命中一部分、但相关度够的文章数
     hits: list[ArticleHit]  # 这一页
     terms: list[str]  # 用来高亮的词
@@ -618,11 +618,12 @@ a.source_id, a.published_at
 def _article_match(tsq: str) -> str:
     """文章级的全文命中：原文的标题和正文，加上中文译文的标题和正文。
 
-    写成两个子查询的并集，两边都能走各自的 GIN 索引；写成 OR EXISTS 会退化成逐行过滤，库大了很慢。
+    写成两个子查询的去重并集，两边都能走各自的 GIN 索引。不能用 UNION ALL：可见条件被估成只剩
+    一篇时，规划器会选嵌套循环半连接，对每篇文章重新扫描整个并集。UNION 只聚合文章号，避免反复读全文向量。
     """
     return (
         f"a.id IN (SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}"
-        f" UNION ALL SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq})"
+        f" UNION SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq})"
     )
 
 
@@ -678,9 +679,11 @@ def _fts_keys(conn, scope: Scope, tsq: str, params: dict, limit: int, *, company
           FROM article_chunks c
           JOIN articles a ON a.id = c.article_id
           WHERE {where} AND c.search_tsv @@ {tsq}{extra}
+          ORDER BY c.article_id, c.ord
           LIMIT %(fts_pool)s
         ) pool
-        ORDER BY ts_rank_cd(pool.search_tsv, {tsq}) DESC, pool.published_at DESC NULLS LAST
+        ORDER BY ts_rank_cd(pool.search_tsv, {tsq}) DESC, pool.published_at DESC NULLS LAST,
+                 pool.article_id DESC, pool.ord
         LIMIT %(fts_limit)s
         """,
         params,
@@ -717,7 +720,7 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
         )
         order = f"{title_hit} DESC, a.published_at DESC NULLS LAST, a.id DESC"
     elif company_ids:
-        order = "a.published_at DESC NULLS LAST"
+        order = "a.published_at DESC NULLS LAST, a.id DESC"
     else:
         return []
     params["zh_first"] = TRANSLATION_ORD_BASE
@@ -774,7 +777,7 @@ def _company_rows(conn, company: dict, scope: Scope, per_year: int):
               SELECT {_SELECT_COLUMNS}, m.depth,
                      row_number() OVER (
                        PARTITION BY date_part('year', a.published_at AT TIME ZONE 'Asia/Shanghai')
-                       ORDER BY (m.depth = 'passing'), m.hit_count DESC, a.published_at DESC, c.ord
+                       ORDER BY (m.depth = 'passing'), m.hit_count DESC, a.published_at DESC, a.id DESC, c.ord
                      ) AS rn
               FROM article_mentions m
               JOIN articles a ON a.id = m.article_id
@@ -1700,7 +1703,8 @@ def _full_match_tsquery(query: Query, params: dict) -> str:
 
 
 def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0) -> SearchResult:
-    """关键词检索：全部词都命中的文章排前面，其后是只命中一部分的。每篇带最相关的两段原文。"""
+    """先排有限候选的相关度，再分页补齐文章索引的全部命中，最后列部分命中。见 docs/retrieval.md。"""
+    limit, offset = max(0, limit), max(0, offset)
     company_rows = load_company_rows(conn)
     query = analyze(conn, text, sources, company_rows=company_rows)
     effective = scope
@@ -1716,6 +1720,17 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     semantic: dict[tuple[int, int], float] = {}
     if query.content_terms:
         rows, semantic = semantic_candidates(conn, query, effective, rows)
+    # 只查候选的文章号，既接住词散在不同段落里的全部命中，也统一短语、排除词和可见范围。
+    match_where, match_params = _full_match_clause(query, effective)
+    allowed_where, allowed_params = _search_scope_clause(query, effective)
+    candidates = conn.execute(
+        f"SELECT a.id, ({match_where}) AS full FROM articles a"
+        f" WHERE a.id = ANY(%(candidate_ids)s) AND {allowed_where}",
+        {**match_params, **allowed_params, "candidate_ids": sorted({r["article_id"] for r in rows})},
+    ).fetchall()
+    allowed = {r["id"] for r in candidates}
+    indexed = {r["id"] for r in candidates if r["full"]}
+    rows = [r for r in rows if r["article_id"] in allowed]
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     by_article: dict[int, list[Passage]] = defaultdict(list)
     for passage in scored:
@@ -1727,7 +1742,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     title_matcher = cached_matcher("focus", [row for row in company_rows if int(row["id"]) in asked]) if asked else None
     hits: list[ArticleHit] = []
     for article_id, items in by_article.items():
-        items.sort(key=lambda p: p.score, reverse=True)
+        items.sort(key=lambda p: (-p.score, p.ord))
         title = titles.get(article_id, "")
         matched_groups = set()
         for term in query.terms:
@@ -1737,7 +1752,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
                 matched_groups.add(term.group)
             elif _title_mentions(term, title, title_matcher):
                 matched_groups.add(term.group)
-        full = groups <= matched_groups
+        full = article_id in indexed or groups <= matched_groups
         # 词没写全、但语义上就是在谈这件事的（「costco 商业模式」→ 讲会员费和低毛利的段落），
         # 问到的公司又确实提到了，也排进前面那一档，页面上标「语义相关」。
         by_meaning = (
@@ -1753,22 +1768,35 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
                 semantic=by_meaning,
             )
         )
-    full_hits = sorted((h for h in hits if h.full), key=lambda h: h.score, reverse=True)
-    partial_hits = sorted((h for h in hits if not h.full), key=lambda h: h.score, reverse=True)
+    full_hits = sorted((h for h in hits if h.full), key=lambda h: (-h.score, -h.article_id))
+    partial_hits = sorted((h for h in hits if not h.full), key=lambda h: (-h.score, -h.article_id))
     if partial_hits:
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
     counts = full_match_counts(conn, query, effective)
-    total = max(sum(counts.values()), len(full_hits))
-    ordered = full_hits + partial_hits
+    # OCR、字面匹配或语义提升可能不在文章级全文索引的交集里。数并集，不能用 max 猜总数。
+    for hit in full_hits:
+        if hit.article_id not in indexed:
+            counts[hit.source_id] = counts.get(hit.source_id, 0) + 1
+    total = sum(counts.values())
+    page_hits = full_hits[offset : offset + limit]
+    remaining = limit - len(page_hits)
+    if remaining and offset + limit > len(full_hits) and offset < total:
+        page_hits.extend(_search_tail(
+            conn, query, effective, full_hits, company_rows,
+            limit=remaining, offset=max(0, offset - len(full_hits)),
+        ))
+    if len(page_hits) < limit and offset + limit > total:
+        start = max(0, offset - total)
+        page_hits.extend(partial_hits[start : start + limit - len(page_hits)])
     return SearchResult(
         total=total,
         partial=len(partial_hits),
-        hits=ordered[offset : offset + limit],
+        hits=page_hits,
         terms=query.highlight_terms(),
         query=query,
         counts=counts,
-        available=len(ordered),
+        available=total + len(partial_hits),
     )
 
 
@@ -1786,34 +1814,136 @@ def _title_mentions(term: Term, title: str, matcher: FocusMatcher | None) -> boo
     return any(_count(title, lowered, form) for form in term.forms if form)
 
 
-def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:
-    """全部词组都命中的文章数，按来源分。用文章级全文索引，库再大也只是一次索引交集。"""
-    params: dict = {}
-    word_groups = Query(**{**query.__dict__, "terms": [t for t in query.terms if t.kind != "company"]})
-    tsq = _full_match_tsquery(word_groups, params) if word_groups.terms else ""
-    company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
+def _literal_article_match(word: str, params: dict, key: str) -> str:
+    """短语、排除词按字面核对；英文和逐段打分一样按词边界，不分大小写。"""
+    if _is_cjk(word):
+        params[key] = word
+        test = f"strpos({{text}}, %({key})s) > 0"
+    else:
+        params[key] = r"(^|[^A-Za-z0-9])" + re.escape(word) + r"($|[^A-Za-z0-9])"
+        test = f"{{text}} ~* %({key})s"
+    original = test.format(text="(a.title || E'\\n' || a.body_text)")
+    translated = test.format(text="(lt.title_zh || E'\\n' || lt.body_text)")
+    ocr = test.format(text="(lc.heading || E'\\n' || lc.body)")
+    return (
+        f"({original} OR EXISTS (SELECT 1 FROM article_translations lt"
+        f" WHERE lt.article_id = a.id AND {translated})"
+        f" OR EXISTS (SELECT 1 FROM article_chunks lc"
+        f" WHERE lc.article_id = a.id AND lc.lang = 'ocr' AND {ocr}))"
+    )
+
+
+def _search_scope_clause(query: Query, scope: Scope) -> tuple[str, dict]:
     where, scope_params = scope_clause(scope)
-    params.update(scope_params)
     conditions = [where]
+    for index, word in enumerate(query.excludes):
+        conditions.append("NOT " + _literal_article_match(word, scope_params, f"search_exclude_{index}"))
+    for index, term in enumerate(t for t in query.terms if t.kind == "phrase"):
+        conditions.append(_literal_article_match(term.text, scope_params, f"search_phrase_{index}"))
+    return " AND ".join(conditions), scope_params
+
+
+def _full_match_clause(query: Query, scope: Scope) -> tuple[str, dict]:
+    """计数、候选归档和补齐分页必须共用同一条件。公司沿用提及表，词沿用原文/译文全文索引。"""
+    where, params = _search_scope_clause(query, scope)
+    conditions = [where]
+    by_group: dict[int, list[Term]] = defaultdict(list)
+    for term in query.terms:
+        if term.group >= 0:
+            by_group[term.group].append(term)
+    word_terms = []
+    for group, terms in sorted(by_group.items()):
+        companies = [t.company_id for t in terms if t.kind == "company" and t.company_id is not None]
+        words = [t for t in terms if t.kind != "company"]
+        if not companies:
+            word_terms.extend(words)
+            continue
+        key = f"cnt_company_{group}"
+        params[key] = companies
+        company_match = (
+            "EXISTS (SELECT 1 FROM article_mentions cm WHERE cm.article_id = a.id"
+            f" AND cm.company_id = ANY(%({key})s))"
+        )
+        if words:
+            tsq = _full_match_tsquery(replace(query, terms=words), params)
+            conditions.append(f"({company_match} OR {_article_match(tsq)})")
+        else:
+            conditions.append(company_match)
+    tsq = _full_match_tsquery(replace(query, terms=word_terms), params)
     if tsq:
         conditions.append(_article_match(tsq))
-    for index, company_id in enumerate(company_ids):
-        params[f"cnt_company_{index}"] = company_id
-        conditions.append(
-            f"EXISTS (SELECT 1 FROM article_mentions cm WHERE cm.article_id = a.id"
-            f" AND cm.company_id = %(cnt_company_{index})s)"
-        )
-    if not tsq and not company_ids:
+    if not by_group:
+        conditions.append("false")
+    return " AND ".join(conditions), params
+
+
+def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:
+    """文章索引全部命中的篇数，按来源分；语义等候选窗口内的提升另由 search_articles 去重加入。"""
+    if not query.terms:
         return {}
+    where, params = _full_match_clause(query, scope)
     rows = conn.execute(
-        f"SELECT a.source_id, count(*) AS n FROM articles a WHERE {' AND '.join(conditions)} GROUP BY a.source_id",
+        f"SELECT a.source_id, count(*) AS n FROM articles a WHERE {where} GROUP BY a.source_id",
         params,
     ).fetchall()
     return {row["source_id"]: int(row["n"]) for row in rows}
 
 
+# 补齐页每篇只取少量块再按 BM25 挑两段；限制的是本页取文量，不限制能翻到的文章数。
+SEARCH_SNIPPET_CANDIDATES = 8
+
+
+def _search_tail(
+    conn, query: Query, scope: Scope, ranked: list[ArticleHit], company_rows: list[dict], *, limit: int, offset: int,
+) -> list[ArticleHit]:
+    where, params = _full_match_clause(query, scope)
+    params.update({"ranked_ids": [h.article_id for h in ranked], "tail_limit": limit, "tail_offset": offset})
+    articles = conn.execute(
+        f"SELECT a.id, a.title, a.source_id, a.published_at FROM articles a"
+        f" WHERE {where} AND a.id NOT IN (SELECT unnest(%(ranked_ids)s::bigint[]))"
+        " ORDER BY a.published_at DESC NULLS LAST, a.id DESC LIMIT %(tail_limit)s OFFSET %(tail_offset)s",
+        params,
+    ).fetchall()
+    if not articles:
+        return []
+    params = {"page_ids": [a["id"] for a in articles], "snippet_limit": SEARCH_SNIPPET_CANDIDATES}
+    tsq = _group_tsquery(query, params, only_selective=False, operator="||", prefix="snippet")
+    rank = f"ts_rank_cd(c.search_tsv, {tsq}) DESC," if tsq else ""
+    matched = f"c.search_tsv @@ {tsq}" if tsq else "false"
+    # 先只排块号/索引向量，不把长文正文传回 Python；取文量始终 <= 本页篇数 × 8。
+    keys = conn.execute(
+        f"""
+        SELECT page.id, chosen.ord, chosen.matched
+        FROM unnest(%(page_ids)s::bigint[]) AS page(id)
+        JOIN LATERAL (
+          SELECT c.ord, {matched} AS matched FROM article_chunks c WHERE c.article_id = page.id
+          ORDER BY {rank} (c.lang = 'zh') DESC, c.ord
+          LIMIT %(snippet_limit)s
+        ) chosen ON true
+        """,
+        params,
+    ).fetchall()
+    # 有真正命中的块时不拿无关开头凑数，尤其不能让无关译文挤掉命中的原文。
+    matched_articles = {r["id"] for r in keys if r["matched"]}
+    selected = [(r["id"], r["ord"]) for r in keys if r["matched"] or r["id"] not in matched_articles]
+    rows = _prefer_translation(_rows_for_keys(conn, selected))
+    scored = score_rows(conn, query, rows, scope=scope, company_rows=company_rows)
+    passages: dict[int, list[Passage]] = defaultdict(list)
+    for passage in sorted(scored, key=lambda p: (-p.score, p.ord)):
+        if len(passages[passage.article_id]) < 2:
+            passages[passage.article_id].append(passage)
+    hits = []
+    for article in articles:
+        items = passages[article["id"]]
+        hits.append(ArticleHit(
+            article["id"], items[0].title if items else article["title"], article["source_id"],
+            article["published_at"], items[0].score if items else 0.0, True, items,
+        ))
+    return hits
+
+
 def _author_listing(conn, query: Query, scope: Scope, limit: int, offset: int) -> SearchResult:
-    where, params = scope_clause(scope)
+    where, params = _search_scope_clause(query, scope)
     params.update({"limit": limit, "offset": offset})
     rows = conn.execute(
         f"""
@@ -1824,11 +1954,11 @@ def _author_listing(conn, query: Query, scope: Scope, limit: int, offset: int) -
         """,
         params,
     ).fetchall()
-    total = conn.execute(f"SELECT count(*) AS n FROM articles a WHERE {where}", scope_clause(scope)[1]).fetchone()
+    total = conn.execute(f"SELECT count(*) AS n FROM articles a WHERE {where}", params).fetchone()
     hits = [ArticleHit(r["id"], r["title"], r["source_id"], r["published_at"], 0.0, True, []) for r in rows]
     counts = {}
     for row in conn.execute(
-        f"SELECT a.source_id, count(*) AS n FROM articles a WHERE {where} GROUP BY a.source_id", scope_clause(scope)[1]
+        f"SELECT a.source_id, count(*) AS n FROM articles a WHERE {where} GROUP BY a.source_id", params
     ).fetchall():
         counts[row["source_id"]] = int(row["n"])
     return SearchResult(int(total["n"]), 0, hits, [], query, counts, available=int(total["n"]))

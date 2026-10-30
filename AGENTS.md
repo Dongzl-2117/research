@@ -72,3 +72,4 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
   - `docker compose exec app research-repair-zsxq --source chengfengpolang --titles-only`：乘风破浪的标题写回库（#128）。不跑，页面和 API 现算，标题检索还按库里的旧标题。
 
 - 通用原文相关性标注采用独立本机服务和 SQLite，见 [docs/relevance-annotations.md](docs/relevance-annotations.md)。主站不挂该入口，不跑迁移或模型；私有原文、标签及导出只留 `data/relevance/` 等私有目录。实际库 provider、远程认证与部署需另行配置，demo 不是真实库。
+- 文章检索已把完整分页和有限相关度候选分开；补齐页不再受段落候选上限截断。计数语义、隔离库回归与性能复现见 [docs/search-pagination-2026-10-30.md](docs/search-pagination-2026-10-30.md)，无需生产迁移或回填；语义/OCR/部分命中的召回仍有窗口。

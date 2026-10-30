@@ -115,7 +115,7 @@ def test_search_ranks_title_above_body_and_matches_author(conn, settings):
         assert "换个词" not in missing.text
 
 
-def test_search_says_how_many_matches_paging_reaches(conn, settings, monkeypatch):
+def test_search_pages_all_matches_despite_a_small_ranking_pool(conn, settings, monkeypatch):
     from researchlib import retrieval
 
     source = _source(settings, "fangwei-mp")
@@ -145,12 +145,13 @@ def test_search_says_how_many_matches_paging_reaches(conn, settings, monkeypatch
     monkeypatch.setattr(retrieval, "_candidates", one_passage)
     with TestClient(create_app(settings)) as client:
         page = client.get("/search", params={"q": "独有词条甲乙丙"})
-        assert "3 篇全部命中，按相关度能翻到前 1 篇" in page.text
-        api = client.get("/api/v1/search", params={"q": "独有词条甲乙丙"}).json()
-        assert api["total"] == 3 and api["listed"] == 1 and api["next_offset"] is None
-    monkeypatch.undo()
-    with TestClient(create_app(settings)) as client:
-        assert "按相关度能翻到" not in client.get("/search", params={"q": "独有词条甲乙丙"}).text
+        assert "3 篇全部命中" in page.text and "按相关度能翻到前" not in page.text
+        assert all(f'href="/articles/{n}' in page.text for n in (1, 2, 3))
+        api = client.get("/api/v1/search", params={"q": "独有词条甲乙丙", "limit": 2}).json()
+        assert api["total"] == api["listed"] == 3 and api["next_offset"] == 2
+        last = client.get("/api/v1/search", params={"q": "独有词条甲乙丙", "limit": 2, "offset": 2}).json()
+        assert last["next_offset"] is None and len(last["items"]) == 1
+        assert len({item["id"] for item in api["items"] + last["items"]}) == 3
 
 
 def test_backfill_fills_null_dates_from_stored_text(conn, settings):
