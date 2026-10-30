@@ -354,7 +354,7 @@ def test_title_that_ends_where_the_body_breaks_is_left_alone():
 
 SPOKEN = "王小明：\n\n大模型训练经历了不同阶段，多次重构，架构化繁为简，更注重训练数据的质量。\n\n后面一段讲算力。\n"
 SPOKEN_CUT = "王小明： 大模型训练经历了不"
-SPOKEN_TITLE = "王小明： 大模型训练经历了不同阶段，多次重构，架构化繁为简，更注重训练数据的质量"
+SPOKEN_TITLE = "王小明：大模型训练经历了不同阶段，多次重构，架构化繁为简，更注重训练数据的质量"
 
 
 def test_api_title_cut_across_a_line_break_is_completed():
@@ -363,6 +363,7 @@ def test_api_title_cut_across_a_line_break_is_completed():
     assert title_needs_repair(SPOKEN_CUT, SPOKEN)
     # 和同一行里的半句一样对着正文补，不打 flash。
     assert title_needs_ai(SPOKEN_CUT) is False
+    # 全角冒号后面不像接口那样多一个空格（线上 23954「……： 混元……」）；没有标点的两行照旧隔一个空格。
     assert zsxq_display_title(SPOKEN_CUT, body=SPOKEN) == SPOKEN_TITLE
     # 导出的标题行带着「...」、中间隔着归档头，照样接得上。
     exported = f"# 王小明：  大模型训练经历了不...\n\n{ARCHIVE_HEADER}\n{SPOKEN}"
@@ -762,6 +763,19 @@ def test_long_digest_sentence_is_not_cut_inside_a_list():
     # 只有顿号可收时仍收在顿号处。
     head = "宁德时代、比亚迪、特斯拉、蔚来汽车、小鹏汽车、理想汽车、零跑汽车、小米汽车"
     assert zsxq_display_title("…", body=head + "、问界、极氪的价格战\n") == head
+
+
+def test_comma_cut_does_not_stop_on_a_dangling_word_or_inside_a_comma_list():
+    """句子太长收在逗号上时，不停在「而且」这种几个字的尾巴上（24021），也不停在拿逗号列举的半截上（24017）。"""
+    tail = "一年就算赚到100亿，也要维持30年才能赚回3000亿的市值，而且，赚到的钱还得全部分红回购，不能再投资\n"
+    cut = "一年就算赚到100亿，也要维持30年才能赚回3000亿的市值，而且"
+    assert zsxq_display_title(cut, body=tail) == "一年就算赚到100亿，也要维持30年才能赚回3000亿的市值"
+    asked = "哪有那么多业务不及预期的理由呢，为了找理由而找理由"
+    listing = asked + "，怎么会有人不知道电脑，手机，平板都会因为成本上涨而下滑呢。\n"
+    assert zsxq_display_title("", body=listing) == asked
+    # 后面一段是另起的一句、最后一段也够长，照旧收在最后一个逗号上。
+    moat = "拼多多的护城河在于规模和效率，供应链上越做越深，商家越来越离不开这个平台"
+    assert zsxq_display_title("", body=moat + "，后面还要看海外。\n") == moat
 
 
 # 问答帖以前入库的检索文字：「## 提问（…）」「## 回答（…）」去掉了井号，只剩一行字。网友名字用虚构的。

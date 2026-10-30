@@ -3,6 +3,8 @@
 星球导出经常没有标题，或者把第一句截成「……」。卡片、文章页和重新导入时用这里的规则：
 
 - 正文里有完整的第一句（问句也算）就用它，去掉句号，一般不超过 40 字。
+  太长要收在逗号上时，最后一段只有几个字（「……，而且」）、或者收在拿逗号列举的半截上
+  （「……不知道pc，手机，各类消费电子」），再往前收一个逗号。
 - 库内标题去掉省略号后还是一句可用的话，优先于摘要，也优先于图片里的字。
 - 复述摘要不能当标题。句子里出现「正文几乎」「文中未给」「作者开篇判断」，或「没有段永平本人的话」，就丢掉。
 - 摘要和 flash 起的题常带转述的引子（「作者认为」「方伟判断，」「作者以国债利率为背景，主张」），
@@ -98,6 +100,8 @@ _DATE_FALLBACK = re.compile(r"^(?:\d{4}-\d{2}-\d{2}\s+)?短帖$")
 # 以前入库补标题时读到了归档头那几行，标题成了「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。
 _ARCHIVE_META = re.compile(r"(?:^|\s)-\s*(?:作者|时间|类型|topic_id)\s*[：:]")
 _SENTENCE_STOP = "。！？!?；;"
+# 全角标点自带空白，跨行接回时后面不再加空格。
+_FULLWIDTH_END = re.compile(r"[，。、：；！？）」』》】]$")
 _SPACES = re.compile(r"\s+")
 _MISSING_NOTE = re.compile(r"正文(?:为空|没有内容|没有实质|缺失)|标题仅为|只是一张图|没有可摘的正文")
 # 摘要在复述「这篇写了什么、没写什么」，不是帖子自己的那句话。
@@ -346,6 +350,7 @@ def _spanning_cut(head: str, lines: list[str]) -> str:
     线上 23954「……： 混元大模型经历了不」截自说话人那一行和下一行「混元大模型经历了不同阶段，……」；
     13778「美团短剧这个创意 目前全网最」截自两行「美团短剧这个创意」「目前全网最佳」。
     标题正好收在行尾、或者收在句号上的不算截断。
+    接回去时上一行收在全角标点上（「……：」）直接接，不像接口那样隔一个空格；别的照接口隔一个空格。
     """
     taken: list[str] = []
     remaining = head
@@ -360,8 +365,15 @@ def _spanning_cut(head: str, lines: list[str]) -> str:
         rest = flat[len(remaining) :]
         if not rest or rest[0] in _SENTENCE_STOP:
             return ""
-        return " ".join([*taken, line.strip()])
+        return _join_lines([*taken, line.strip()])
     return ""
+
+
+def _join_lines(lines: list[str]) -> str:
+    joined = lines[0]
+    for line in lines[1:]:
+        joined += ("" if _FULLWIDTH_END.search(joined) else " ") + line
+    return joined
 
 
 def cut_from_body(title: str, body: str) -> bool:
@@ -727,12 +739,38 @@ def _fit(text: str) -> str:
     cut = _last_break(window, "，,；;：:")
     if cut < 8:
         cut = _last_break(window, "、")
+    else:
+        cut = _settled_cut(cleaned, cut)
     if cut >= 8:
         fitted = window[:cut].strip()
     else:
         fitted = window.rstrip(_BREAKS + " ").strip()
     # 收在逗号处时，后引号常常落在后半句里。
     return balance_marks(_strip_ellipsis(fitted).strip())
+
+
+# 收在逗号上也会停在半截：最后一段只有几个字（24021「……3000亿，而且」），
+# 或者逗号后面又是几个字一段再接逗号，是拿逗号列举（24017「……不知道pc，手机，各类消费电子」）。
+# 后面那段是「而且」「当然」这种接下文的词时是另起一句，不算列举。
+_SHORT_PIECE = 4
+_SHORT_ITEM = re.compile(r"([^，,；;：:、。！？!?\s]{1,4})[，,、]")
+_CONNECTIVES = frozenset(
+    {"而且", "并且", "但是", "可是", "不过", "所以", "因此", "因为", "然后", "或者", "以及", "还有", "另外",
+     "同时", "甚至", "比如", "例如", "其实", "如果", "虽然", "即使", "当然", "总之", "首先", "其次", "最后"}
+)
+
+
+def _settled_cut(text: str, cut: int) -> int:
+    """cut 是收标题的那个逗号。会停在半截时往前挪一个逗号，前面不够 8 个字就不挪。"""
+    while True:
+        previous = _last_break(text[:cut], "，,；;：:")
+        if previous < 8:
+            return cut
+        item = _SHORT_ITEM.match(text, cut + 1)
+        listing = item is not None and item.group(1) not in _CONNECTIVES
+        if len(text[previous + 1 : cut].strip()) > _SHORT_PIECE and not listing:
+            return cut
+        cut = previous
 
 
 def _last_break(window: str, marks: str) -> int:
