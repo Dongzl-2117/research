@@ -10,6 +10,8 @@
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
 - 雪球 / 微博嵌套回复不是从上到下的时间序：``回复@`` / ``//@`` 从早到晚展开，下面的引用卡片放到回复前面
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
+- 上一张最底下那行常只截到一半（半句，或认错几个字）。下一张里它的前一行也在、紧跟着同一个人的那行
+  开头结尾对得上时，那是同一行，只留下一张里完整的
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉。状态栏「10:57 :!!! 5GA ■」连着
   App 标题、或者粘在第一句话前面的，也只去掉状态栏
 - 群里的系统提示（「你邀请"某某"加入了群聊 撤销」「"某某"与群里其他人都不是朋友关系，请注意隐私安全」、
@@ -395,14 +397,14 @@ class Shot:
 def present_ocr_pieces(pieces: list[str]) -> str:
     """多张图按顺序合成一篇旁路正文。连续的群聊合并、去重；表格仍是原文。"""
     blocks: list[str] = []
-    pending: list[Turn] = []
+    pending: list[list[Turn]] = []
     seen: list[str] = []
 
     def flush() -> None:
         nonlocal pending
         if not pending:
             return
-        text = render_turns(pending, seen)
+        text = render_turns([turn for turns in _trim_cut_bottoms(pending) for turn in turns], seen)
         pending = []
         if text.strip():
             blocks.append(text.strip())
@@ -414,7 +416,7 @@ def present_ocr_pieces(pieces: list[str]) -> str:
             family = shot.family or "chat"
             if pending and pending_family and family != pending_family:
                 flush()
-            pending.extend(shot.turns)
+            pending.append(shot.turns)
             pending_family = family
             continue
         flush()
@@ -1142,6 +1144,62 @@ def _same_sentence(left: str, right: str) -> bool:
     if shorter not in longer:
         return False
     return len(shorter) * 5 >= len(longer) * 4
+
+
+def _cut_copy(bottom: str, line: str) -> bool:
+    """上一张最底下那行是不是同一行的残缺版：只截到前半句，或者被截了一半、认错几个字。"""
+    if line.startswith(bottom):
+        return True
+    size = min(len(bottom), len(line))
+    head = next((i for i in range(size) if bottom[i] != line[i]), size)
+    tail = next((i for i in range(size) if bottom[-1 - i] != line[-1 - i]), size)
+    return min(head + tail, size) * 5 >= max(len(bottom), len(line)) * 3
+
+
+def _line_slots(turns: list[Turn]) -> list[tuple[int, int, str]]:
+    slots: list[tuple[int, int, str]] = []
+    for turn_id, turn in enumerate(turns):
+        for pos, line in enumerate(turn.lines):
+            norm = _norm(line.strip())
+            if norm:
+                slots.append((turn_id, pos, norm))
+    return slots
+
+
+def _trim_cut_bottoms(shots: list[list[Turn]]) -> list[list[Turn]]:
+    """连续几张截图，上一张最底下那行常常只截到一半：认出来是半句，或者认错几个字。
+
+    下一张里它的前一行也在、紧跟着的那行同一个人说、开头结尾对得上，两行就是同一行：
+    上一张那行不要，留下一张里完整的（24020「8毛钱就关」「很有趣的利益结构问题」）。
+    前一行太短（「好的」）认不准位置，不动。不改传进来的轮次。
+    """
+    result = [[Turn(turn.speaker, list(turn.lines)) for turn in turns] for turns in shots]
+    for upper, lower in zip(result, result[1:], strict=False):
+        above = _line_slots(upper)
+        below = _line_slots(lower)
+        if len(above) < 2:
+            continue
+        turn_id, pos, bottom = above[-1]
+        before = above[-2][2]
+        if len(before) < 6:
+            continue
+        for (_prev_turn, _prev_pos, prev), (next_turn, _next_pos, line) in zip(below, below[1:], strict=False):
+            if not _same_sentence(prev, before):
+                continue
+            if (
+                lower[next_turn].speaker == upper[turn_id].speaker
+                and not _same_sentence(line, bottom)
+                and _cut_copy(bottom, line)
+            ):
+                del upper[turn_id].lines[pos]
+            break
+    return result
+
+
+def render_shots(shots: list[list[Turn]], seen: list[str] | None = None) -> list[str]:
+    """连续几张截图各写一段（阅读页每段链回自己那张图）。先去掉上一张底下截了一半的那行，再逐张去重。"""
+    kept_norms = seen if seen is not None else []
+    return [render_turns(turns, kept_norms) for turns in _trim_cut_bottoms(shots)]
 
 
 def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
