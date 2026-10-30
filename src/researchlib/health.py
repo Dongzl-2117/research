@@ -28,6 +28,7 @@ TASKS: dict[str, tuple[str, timedelta | None]] = {
     "restore-check": ("试恢复", timedelta(days=40)),
     "crawl-fangwei-mp": ("方伟公众号抓取", timedelta(hours=30)),
     "crawl-fangwei-zsxq": ("方伟星球抓取", timedelta(hours=30)),
+    "crawl-gudujinhuati": ("孤独进化体抓取", timedelta(hours=50)),
     "ingest-aihot": ("AIHOT 定时导入", timedelta(hours=6)),
     "nightly": ("夜间补齐", timedelta(hours=50)),
     "upkeep": ("后台重算", None),

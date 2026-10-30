@@ -63,6 +63,8 @@ services:
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
       DEEPSEEK_REASONING_EFFORT: ${DEEPSEEK_REASONING_EFFORT:-max}
       DEEPSEEK_MAX_TOKENS: ${DEEPSEEK_MAX_TOKENS:-393216}
+      # 公众号定时抓取（research-crawl-wechat）用的极致了 key，和宿主机上方伟公众号的抓取共用 .env 里同一行。
+      DAJIALA_KEY: ${DAJIALA_KEY:-}
       # Grok OAuth 只在 RESEARCH_LLM_PROVIDER=grok 时用。落在 research 自有 data/secrets（随 ./data 挂载）。
       XAI_OAUTH_TOKEN_PATH: ${XAI_OAUTH_TOKEN_PATH:-/data/secrets/xai-oauth.json}
       XAI_OAUTH_FILE_UID: ${XAI_OAUTH_FILE_UID:-0}

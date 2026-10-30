@@ -32,6 +32,8 @@ class Source:
     paused: bool = False
     # 星主在平台上的其他显示名（星球昵称）。发帖人是 author 或这些名字的算原创，不当网友帖。
     poster_names: tuple[str, ...] = ()
+    # 公众号原始 ID（gh_ 开头）。写了才能用 research-crawl-wechat 定时抓取。
+    ghid: str = ""
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -69,6 +71,7 @@ def load_sources(path: Path) -> list[Source]:
                 min_chars=int(item.get("min_chars") or 0),
                 paused=bool(item.get("paused", False)),
                 poster_names=_poster_names(item, source_id),
+                ghid=str(item.get("ghid") or "").strip(),
             )
         )
     return sources
