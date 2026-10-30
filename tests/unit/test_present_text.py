@@ -315,6 +315,60 @@ def test_merge_leaves_dialogue_lines_and_long_notes():
     assert "8.53亿" in merged
 
 
+# 文章截图按屏幕宽度一行一行抄下来：行行差不多一样宽，断在词中间（文章 10503 是这样）。
+_SCREEN_WRAPPED = """很多人把开店当成增长，其实新店要先分清楚哪些是
+资产（asset），哪些只是费用（cost）：房租、
+人工和装修摊销加起来，单店每月至少要卖两万杯才
+能打平，而同店销量已经连续三个季度下滑，新店又
+在分流老店的客人，所以扩张越快利润越薄。
+二、怎么看估值
+按明年的利润算市盈率不到十五倍，看起来很便宜，
+但如果同店继续下滑，利润预测本身就要往下调，便
+宜只是表面上的。"""
+
+
+def test_merge_rejoins_lines_wrapped_at_screen_width():
+    """排满的行接成整段，小标题不粘进正文；全角括号贴着汉字，不空格。再跑一遍不变。"""
+    out = merge_wrapped_utterances(_SCREEN_WRAPPED)
+    assert out.splitlines() == [
+        "很多人把开店当成增长，其实新店要先分清楚哪些是资产（asset），哪些只是费用（cost）："
+        "房租、人工和装修摊销加起来，单店每月至少要卖两万杯才能打平，"
+        "而同店销量已经连续三个季度下滑，新店又在分流老店的客人，所以扩张越快利润越薄。",
+        "二、怎么看估值",
+        "按明年的利润算市盈率不到十五倍，看起来很便宜，但如果同店继续下滑，利润预测本身就要往下调，"
+        "便宜只是表面上的。",
+    ]
+    assert merge_wrapped_utterances(out) == out
+
+
+def test_merge_keeps_slides_and_list_items_apart():
+    """一行一条的幻灯片要点（没有逗号句号）不接；编号的条目不粘到上一行，条目自己的折行照接。"""
+    slides = (
+        "毛利率提升至百分之六十二点五创历史新高\n"
+        "经营利润率提升至百分之三十一同比增加五个点\n"
+        "自由现金流达到四百亿元同比增长百分之四十\n"
+        "回购和分红合计三百亿元占自由现金流七成"
+    )
+    assert merge_wrapped_utterances(slides) == slides
+    items = (
+        "我喜欢的公司往往必须同时具备几个特点：\n"
+        "1、竞争优势巨大（我的要求是必须远胜于行业第二\n"
+        "名）且有清晰壁垒；\n"
+        "2、管理层诚信、有长期主义，不会为了短期的数字\n"
+        "去损害长期的竞争力；\n"
+        "3、估值合理，最好是在市场悲观的时候买到，这样\n"
+        "安全边际才足够。"
+    )
+    assert merge_wrapped_utterances(items).splitlines() == [
+        "我喜欢的公司往往必须同时具备几个特点：",
+        "1、竞争优势巨大（我的要求是必须远胜于行业第二名）且有清晰壁垒；",
+        "2、管理层诚信、有长期主义，不会为了短期的数字去损害长期的竞争力；",
+        "3、估值合理，最好是在市场悲观的时候买到，这样安全边际才足够。",
+    ]
+    table = "项目 2024 2025 2026\n营业收入 1200 1500 1800\n经营利润 300 420 560\n净利润 280 390 520"
+    assert merge_wrapped_utterances(table) == table
+
+
 def test_xueqiu_visual_order_becomes_chronological():
     out = order_nested_replies(_XUEQIU_VISUAL)
     assert out.index("莫尼什：") < out.index("大道会不会考虑") < out.index("李录投资也很好")
