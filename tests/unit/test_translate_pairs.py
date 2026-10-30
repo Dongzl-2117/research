@@ -1736,3 +1736,86 @@ def test_repeated_english_stays_when_chinese_is_a_different_sentence():
     assert "first aside" in pairs[1].en and pairs[1].zh and "第二对" in pairs[1].zh
     assert "iPhone revenue" in pairs[2].en and pairs[2].zh and "另一句" in pairs[2].zh
     assert _long_en_near_groups([pair.en for pair in pairs]) == 1
+
+
+_BOUNDARY = "That said, Apple\u2019s results also spotlight a competitive vulnerability in China ."
+_BOUNDARY_ZH = (
+    "话虽如此，苹果的业绩也凸显出其在中国市场的一个竞争弱点。",
+    "不过，苹果的业绩也凸显出其在中国市场的竞争脆弱性。",
+)
+_INTRO_SHORT = (
+    "I am Ben Thompson, the author of Stratechery. This is important information because I want you to "
+    "understand my previous analysis of Apple, and the voice in which I write on Stratechery. I want a "
+    "research report about Apple's latest earnings in the style and voice of Stratechery that is in line "
+    "with my previous analysis."
+)
+_INTRO_LONG = (
+    "I am Ben Thompson, the author of Stratechery. This is important information because I want you to "
+    "understand my previous analysis of Apple, and the voice in which I write on Stratechery. I want a "
+    "research report about Apple's latest earnings for fiscal year 2025 q1 (calendar year 2024 q4). "
+    "There are a couple of angles I am particularly interested in:"
+)
+_INTRO_ZH = (
+    "我是 Ben Thompson，Stratechery 的作者。这个信息很重要，因为我想让你了解我此前对苹果的分析，"
+    "以及我在 Stratechery 写作时的口吻。我想要一份关于苹果最新财报的研究报告，风格和口吻要符合 Stratechery，"
+    "并与此前的分析保持一致。",
+    "我是 Ben Thompson，Stratechery 的作者。这一点很重要，因为我想让你了解我此前对苹果的分析，"
+    "以及我在 Stratechery 写作时的口吻。我想要一份关于苹果最新财报的研究报告，具体是2025财年第一季度"
+    "（即2024自然年第四季度）。我特别关注以下几个角度：",
+)
+
+
+def test_exact_duplicate_on_the_length_boundary_collapses():
+    """正好 80 字的同一句出现两次。其中一次用 <strong> 贴着句号，去掉标签后少一格。
+
+    两遍中文措辞不同，但共享「苹果的业绩也凸显出其在中国市场」。收成一对。
+    """
+    from researchlib.translate.segments import repeat_long
+
+    plain = f"<p>{_BOUNDARY}</p>"
+    strong = (
+        "<p>That said, Apple\u2019s results also spotlight a "
+        "<strong>competitive vulnerability in China</strong>.</p>"
+    )
+    assert _plain_len(plain) == 80
+    assert _plain_len(strong) == 79
+    assert not repeat_long(strong)
+    assert repeat_key(plain) == repeat_key(strong)
+    bridge = "A distinct aside about buybacks sits between the copies and must stay in place."
+    en = f"{plain}<p>{bridge}</p>{strong}"
+    zh = f"<p>{_BOUNDARY_ZH[0]}</p><p>夹层讲回购，要留着。</p><p>{_BOUNDARY_ZH[1]}</p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 2
+    assert _BOUNDARY in _plain_segment(pairs[0].en) or "spotlight" in pairs[0].en
+    assert pairs[0].zh and "竞争" in pairs[0].zh
+    assert "buybacks" in pairs[1].en and pairs[1].zh and "夹层" in pairs[1].zh
+    assert sum("spotlight" in pair.en for pair in pairs) == 1
+
+
+def test_near_prefix_with_the_same_chinese_lineage_drops_the_shorter():
+    """322 字和 352 字的自我介绍：开头约占较短那句的四分之三，后文不同，不是整句包含。
+
+    中文是同一段的另一种说法。收掉短的，长的末尾那一截留下。只共享大约三分之二开头的
+    两份提示仍由另一则测试留着。
+    """
+    assert len(_INTRO_SHORT) == 322 and len(_INTRO_LONG) == 352
+    assert _INTRO_SHORT.casefold() not in _INTRO_LONG.casefold()
+    assert not same_repeat(repeat_key(_INTRO_SHORT), repeat_key(_INTRO_LONG))
+    shared = 0
+    for left, right in zip(_INTRO_SHORT, _INTRO_LONG, strict=False):
+        if left != right:
+            break
+        shared += 1
+    assert shared / len(_INTRO_SHORT) >= 0.75
+    bridge = "The list of angles that follows is a different paragraph and stays beside the longer prompt."
+    # 短的在前，长的在后。收的是短的，不是后出现的那份。
+    en = f"<p>{_INTRO_SHORT}</p><p>{bridge}</p><p>{_INTRO_LONG}</p>"
+    zh = f"<p>{_INTRO_ZH[0]}</p><p>夹层是后面的角度列表，要留着。</p><p>{_INTRO_ZH[1]}</p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 2
+    assert "angles that follows" in pairs[0].en and pairs[0].zh and "夹层" in pairs[0].zh
+    assert "fiscal year 2025" in pairs[1].en
+    assert "previous analysis." not in _plain_segment(pairs[1].en)
+    assert pairs[1].zh and "2025" in pairs[1].zh
+    assert _contain_groups([pair.en for pair in pairs]) == 0
+    assert _long_en_near_groups([pair.en for pair in pairs]) == 0
