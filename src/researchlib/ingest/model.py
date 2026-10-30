@@ -38,8 +38,6 @@ class IngestReport:
     # 知识星球 INDEX.md 不是话题，导入时从库里去掉。
     removed_index: int = 0
     errors: list[str] = field(default_factory=list)
-    # 这次新写入或改了正文、且不是重复篇。导入结束后用来排识图和英文译制。
-    follow_ids: list[int] = field(default_factory=list)
 
     def render(self) -> str:
         lines = [

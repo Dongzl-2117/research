@@ -1,4 +1,8 @@
-"""批量 / 单篇站内翻译。默认 DeepSeek；Grok 需要先 research-xai-login login。"""
+"""批量 / 单篇站内翻译。默认 DeepSeek；Grok 需要先 research-xai-login login。
+
+在 Mac mini 上：docker compose exec app research-translate --source stratechery --limit 10。
+跑的时候自动上线会等它跑完再重建（scripts/deploy.sh）。
+"""
 
 from __future__ import annotations
 
@@ -58,35 +62,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     conn = prepare(settings)
-    # 同一轮 worker 里失败过的 id 先跳过，避免 --limit 很小时反复磕同一篇把队列钉死。
-    # 队列里其他篇都译完后会清空 skip，再给失败篇一次机会。
-    skipped_failures: set[int] = set()
+    # 这一轮失败过的、没有可译正文的 id 先跳过，避免 --limit 很小时反复磕同一篇把队列钉死。
+    # --loop 时队列只剩它们就先睡，睡醒清掉跳过再给一次机会：不睡就会一直重试同一篇，每次都花模型的钱。
+    skipped: set[int] = set()
     try:
         while True:
             if args.article_id:
                 ids = list(args.article_id)
             elif args.recheck:
                 rows = list_coarse_translations(
-                    conn, limit=max(args.limit, 1) + len(skipped_failures), source_id=args.source or None
+                    conn, limit=max(args.limit, 1) + len(skipped), source_id=args.source or None
                 )
                 ids = [int(row["id"]) for row in rows]
             else:
                 ids = list_pending_english(
-                    conn, limit=max(args.limit, 1) + len(skipped_failures), source_id=args.source or None
+                    conn, limit=max(args.limit, 1) + len(skipped), source_id=args.source or None
                 )
             if not args.article_id:
-                ids = [article_id for article_id in ids if article_id not in skipped_failures][: args.limit]
+                ids = [article_id for article_id in ids if article_id not in skipped][: args.limit]
             if not ids:
-                if skipped_failures and args.loop and not args.article_id:
-                    print(
-                        f"其余待译已空，清掉 {len(skipped_failures)} 个失败跳过后再扫…",
-                        file=sys.stderr,
-                    )
-                    skipped_failures.clear()
-                    continue
-                if args.loop:
+                if args.loop and not args.article_id:
                     print(f"队列空，{args.sleep}s 后重试…")
                     time.sleep(max(5, args.sleep))
+                    skipped.clear()
                     continue
                 print("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
                 return 0
@@ -98,9 +96,12 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
                 except Exception as exc:
                     conn.rollback()
-                    skipped_failures.add(article_id)
+                    skipped.add(article_id)
                     print(f"#{article_id} failed: {exc}", file=sys.stderr)
                     continue
+                if result.status in ("skipped", "partial"):
+                    # 没有可译正文、或者有段没译出来：还在待译队列里，这一轮不再碰。
+                    skipped.add(article_id)
                 print(
                     f"#{result.article_id} {result.status}"
                     + (f" segments={result.segments}" if result.segments else "")

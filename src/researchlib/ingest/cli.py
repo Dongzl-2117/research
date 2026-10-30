@@ -9,7 +9,6 @@ from pathlib import Path
 
 from researchlib.config import Settings
 from researchlib.db import prepare
-from researchlib.ingest.follow import kick_ingest_followups
 from researchlib.ingest.parse import parse_archive
 from researchlib.ingest.store import store_documents
 from researchlib.sources import SourceRejected, load_sources, require_source
@@ -59,7 +58,6 @@ def run_markdown_ingest(
                 origin=args.origin,
             )
             print(report.render())
-            kick_ingest_followups(conn, settings, list(getattr(report, "follow_ids", ()) or []))
             if after_store is not None and not report.errors:
                 after_store(conn, source)
     except Exception:

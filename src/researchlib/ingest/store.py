@@ -79,8 +79,6 @@ def store_documents(
             report.inserted += 1
         elif status == "updated":
             report.updated += 1
-        if status in {"inserted", "updated"} and article_id is not None and duplicate is None:
-            report.follow_ids.append(int(article_id))
         elif status == "held":
             report.held += 1
         else:
