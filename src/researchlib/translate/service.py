@@ -28,6 +28,9 @@ from researchlib.translate.segments import (
     chunk_segments,
     coarse_segment_reason,
     leaf_count_problem,
+    repeat_key,
+    repeat_long,
+    same_repeat,
     segments_of,
     shield,
     splice_segments,
@@ -274,6 +277,27 @@ def _translate_title(title: str, data_dir: Path) -> str:
     return ""
 
 
+def reuse_duplicate_sources(sources: list[str], translations: list[str | None]) -> list[str | None]:
+    """同一段正文的后一次译文沿用第一次。返回的列表和原文叶子一样长。"""
+    priors: dict[str, list[tuple[str, str]]] = {}
+    aligned: list[str | None] = []
+    for src, zh in zip(sources, translations, strict=True):
+        key = repeat_key(src)
+        copied = None
+        if repeat_long(src):
+            for earlier, prev_zh in priors.get(key[:48], ()):
+                if prev_zh and same_repeat(earlier, key):
+                    copied = prev_zh
+                    break
+        if copied is not None:
+            aligned.append(copied)
+            continue
+        aligned.append(zh)
+        if repeat_long(src) and zh:
+            priors.setdefault(key[:48], []).append((key, zh))
+    return aligned
+
+
 def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResult:
     article = conn.execute(
         """
@@ -332,9 +356,12 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         offset += len(chunk)
 
     # 按叶子段原位写回。blockquote / 列表 / 表格的外壳留着，只换里面的那一段。
+    # 同一段正文出现两次时，后一次沿用第一次的译文（条数仍与叶子 1:1）。展示再按同一条
+    # 规则把两边都收成一份；这里不删槽位，避免只短一边时对照错位。
+    aligned = reuse_duplicate_sources([src for _index, src in targets], translations)
     replacements: dict[int, str] = {}
     done = 0
-    for (segment_index, _src), zh in zip(targets, translations, strict=True):
+    for (segment_index, _src), zh in zip(targets, aligned, strict=True):
         if zh:
             replacements[segment_index] = _dedupe_consecutive_blocks(zh)
             done += 1
