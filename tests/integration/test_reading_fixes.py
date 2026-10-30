@@ -494,13 +494,15 @@ def test_retime_without_archive_reads_stored_header(conn, settings):
 def test_home_recent_views_include_non_holdings(conn, settings):
     when_old = datetime(2024, 5, 1, 9, 0, tzinfo=SHANGHAI)
     when_new = datetime(2024, 6, 1, 9, 0, tzinfo=SHANGHAI)
+    # 摘要要挂出来，正文得够写摘要（几个字的帖不写摘要）。
+    meituan_body = "美团还在。商家广告越来越贵，佣金率还在往上走，外卖份额守住了。\n"
     _store(
         conn,
         settings,
         "fangwei-mp",
         [
             ParsedDoc("hold", "腾讯旧观点", when_old, "腾讯还在。\n", {}, []),
-            ParsedDoc("other", "美团新观点", when_new, "美团还在。\n", {}, []),
+            ParsedDoc("other", "美团新观点", when_new, meituan_body, {}, []),
         ],
     )
     rows = {
