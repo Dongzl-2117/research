@@ -2,6 +2,10 @@
 
 流程对齐 AIHOT editorial/translate.ts：渲染原文 → 抽段 → shield → 站内模型（默认 DeepSeek）按段翻译 → 回填 → 入库。
 research-translate 走这里；不在站外译完再贴。
+
+译制读的正文和文章页显示的是同一份：都先过 ``boilerplate.clean_article``。归档头
+（如 Stratechery 的 ``- source: member-rss``）、引流尾巴不清洗就会被当成一段送去译，
+页面却把它洗掉了，对照从这一段起整页错一行（22092）。
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
+from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
@@ -72,18 +77,34 @@ def _batch_chunks(parts: list[str]) -> list[list[str]]:
     )
 
 
+def _cleaned_body(conn, article: dict) -> str:
+    """译制读的正文：和文章页显示前同一条清洗，库里 body_md 不动。
+
+    ``- source: member-rss`` 这类归档头、引流尾巴、二维码和星球导出脚手架都在这里
+    去掉。不清洗就直接渲染的话，页面（洗过）和译文（没洗）从第一处脏段起就对不上，
+    叶子数差几段，整页错行。
+    """
+    return clean_article(
+        conn,
+        int(article["id"]),
+        str(article["source_id"]),
+        article.get("body_md") or "",
+    )
+
+
 def _render_original(conn, article: dict, data_dir: Path) -> tuple[str, str]:
-    """返回 (html, content_hash)。"""
+    """返回 (html, content_hash)。html 是清洗后的正文渲染出来的叶子来源。"""
     images = conn.execute(
         "SELECT original_ref, storage_path FROM article_images WHERE article_id = %s",
         (article["id"],),
     ).fetchall()
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article.get("raw_meta") or {}).get("format")
-    _fm, body_md = split_frontmatter(article["body_md"])
+    _fm, body_md = split_frontmatter(_cleaned_body(conn, article))
     if fmt != "html":
         body_md = strip_duplicate_title(body_md, article["title"])
     html = str(render_body(body_md, mapping, fmt))
+    # content_hash 仍按库里的 body_md 算：清洗规则变了不该把已有译文判成过期。
     digest = content_hash(article["title"], article["body_md"], article.get("published_at"))
     return html, digest
 
@@ -365,10 +386,13 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
 COARSE_SCAN_CAP = 2000
 
 
-def _source_leaf_count(article: dict) -> int:
-    """原文按现在的叶子规则能切成几段。图片地址不影响段数，映射留空。"""
+def _source_leaf_count(conn, article: dict) -> int:
+    """原文按现在的叶子规则能切成几段。图片地址不影响段数，映射留空。
+
+    和译制、文章页一样先清洗：重检看的是译制真正能看到的正文，归档头不算叶子。
+    """
     fmt = (article.get("raw_meta") or {}).get("format")
-    _frontmatter, body = split_frontmatter(article.get("body_md") or "")
+    _frontmatter, body = split_frontmatter(_cleaned_body(conn, article))
     if fmt != "html":
         body = strip_duplicate_title(body, article.get("title") or "")
     return len(segments_of(str(render_body(body, {}, fmt))))
@@ -419,7 +443,7 @@ def list_coarse_translations(
             and recorded_n <= 30
             and body_chars >= 8_000
         ):
-            leaves = _source_leaf_count(row)
+            leaves = _source_leaf_count(conn, row)
             if leaves >= 12 and recorded_n * 3 < leaves and leaves - recorded_n >= 15:
                 reason = "segments-below-source"
         if not reason:

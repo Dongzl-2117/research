@@ -11,16 +11,52 @@ from pathlib import Path
 
 import pytest
 
+from researchlib.boilerplate import clean_article
+from researchlib.render import render_body
+from researchlib.textutil import split_frontmatter, strip_duplicate_title
 from researchlib.translate.llm import ChatJsonResult
-from researchlib.translate.segments import chunk_segments
+from researchlib.translate.segments import chunk_segments, leaf_count_problem, segments_of, splice_segments
 from researchlib.translate.service import (
     TRANSLATE_BATCH_MAX_CHARS,
     TRANSLATE_BATCH_MAX_SEGMENTS,
     _batch_chunks,
+    _render_original,
+    _source_leaf_count,
     _translate_batch,
     translate_article,
     translation_problem,
 )
+
+
+class _FakeConn:
+    """只回答译制和清洗用到的那几条查询，不连数据库。
+
+    译制现在和文章页一样先过 ``clean_article``：它要知道来源 kind（决定要不要去引流
+    尾巴），还会按来源统计模板句、查这份文章的图片哈希。这里都按「没有」回答。
+    """
+
+    def __init__(self, article: dict, *, kind: str = "rss") -> None:
+        self.article = article
+        self.kind = kind
+        self.sql = ""
+        self.committed = False
+
+    def execute(self, sql, params=None):
+        self.sql = sql
+        return self
+
+    def fetchone(self):
+        if "FROM sources" in self.sql:
+            return {"kind": self.kind}
+        if "count(*)" in self.sql:
+            return {"n": 0, "t": ""}
+        return self.article
+
+    def fetchall(self):
+        return []
+
+    def commit(self):
+        self.committed = True
 
 
 def _result(items: list[str]) -> ChatJsonResult:
@@ -244,32 +280,18 @@ def test_missing_t_array_still_raises(monkeypatch, tmp_path: Path):
 def test_translate_article_does_not_store_when_leaf_counts_diverge(monkeypatch, tmp_path: Path):
     """写回把叶子数改少时不入库。展示层不能靠位置硬配把这段找回来。"""
 
-    class Conn:
-        def __init__(self):
-            self.committed = False
-
-        def execute(self, sql, params=None):
-            self.sql = sql
-            return self
-
-        def fetchone(self):
-            return {
-                "id": 21118,
-                "source_id": "stratechery",
-                "title": "A daily",
-                "published_at": None,
-                "body_md": "<p>First paragraph is long enough.</p><p>Second paragraph is also here.</p>",
-                "body_text": "First paragraph is long enough. Second paragraph is also here.",
-                "raw_meta": {"format": "html"},
-                "content_hash": "x",
-            }
-
-        def fetchall(self):
-            return []
-
-        def commit(self):
-            self.committed = True
-
+    conn = _FakeConn(
+        {
+            "id": 21118,
+            "source_id": "stratechery",
+            "title": "A daily",
+            "published_at": None,
+            "body_md": "<p>First paragraph is long enough.</p><p>Second paragraph is also here.</p>",
+            "body_text": "First paragraph is long enough. Second paragraph is also here.",
+            "raw_meta": {"format": "html"},
+            "content_hash": "x",
+        }
+    )
     monkeypatch.setattr(
         "researchlib.translate.service._translate_batch",
         lambda parts, context, data_dir: ["<p>译</p>"] * len(parts),
@@ -278,7 +300,85 @@ def test_translate_article_does_not_store_when_leaf_counts_diverge(monkeypatch, 
         "researchlib.translate.service.splice_segments",
         lambda html, replacements: "<p>只有一段。</p>",
     )
-    conn = Conn()
     with pytest.raises(RuntimeError, match=r"translation alignment: leaves \d+ vs \d+"):
         translate_article(conn, 21118, data_dir=tmp_path)
     assert conn.committed is False
+
+
+# 22092 的正文形状：标题下一行是归档头 `- source: member-rss`，跟一段三行 <br> 粘起来的正文。
+_ARCHIVE_HEADER_BODY = """---
+id: "2026/home-at-last"
+title: "Home At Last"
+---
+
+# Home At Last
+- source: member-rss
+
+The best Stratechery content from the week of October 12, 2026.
+
+Listen to this Update in your podcast player
+X: @twostraws
+Welcome back to This Week in Stratechery!
+
+On that note, here were a few of our favorites.
+"""
+
+
+def _home_at_last() -> dict:
+    return {
+        "id": 22092,
+        "source_id": "stratechery",
+        "title": "Home At Last",
+        "published_at": None,
+        "body_md": _ARCHIVE_HEADER_BODY,
+        "body_text": "The best Stratechery content from the week of October 12, 2026.",
+        "raw_meta": {"format": "markdown"},
+        "content_hash": "x",
+    }
+
+
+def test_render_original_drops_archive_header_leaf(tmp_path: Path):
+    """归档头不进译制的叶子：不清洗时 6 段（含 `<li>source: member-rss</li>`），和页面差一整段。"""
+    article = _home_at_last()
+    conn = _FakeConn(article)
+    _frontmatter, raw_body = split_frontmatter(article["body_md"])
+    raw_html = str(render_body(strip_duplicate_title(raw_body, article["title"]), {}, "markdown"))
+    raw_leaves = segments_of(raw_html)
+    assert any("member-rss" in leaf for leaf in raw_leaves)
+
+    html, _digest = _render_original(conn, article, tmp_path)
+    leaves = segments_of(html)
+    assert not any("member-rss" in leaf for leaf in leaves)
+    assert len(leaves) == len(raw_leaves) - 1
+
+
+def test_render_original_uses_the_display_cleaning(tmp_path: Path):
+    """译制读的正文和文章页显示的是同一份：叶子段逐段相同，#135 的 <br> 行拆叶也照样成立。"""
+    article = _home_at_last()
+    conn = _FakeConn(article)
+    shown = clean_article(conn, article["id"], article["source_id"], article["body_md"])
+    _frontmatter, shown_body = split_frontmatter(shown)
+    display_html = str(render_body(strip_duplicate_title(shown_body, article["title"]), {}, "markdown"))
+
+    html, _digest = _render_original(conn, article, tmp_path)
+    assert segments_of(html) == segments_of(display_html)
+    # 三行 <br> 的段落仍是三段，清洗没有把行拆叶关掉。
+    assert len(segments_of(html)) == 5
+
+
+def test_translation_from_cleaned_body_keeps_leaf_counts(tmp_path: Path):
+    """按清洗后的叶子译一遍、原位写回，叶子数不变；不会再有「来源：member-rss」这一对。"""
+    article = _home_at_last()
+    conn = _FakeConn(article)
+    html, _digest = _render_original(conn, article, tmp_path)
+    leaves = segments_of(html)
+    zh = [f"<p>第 {index} 段中文</p>" for index, _leaf in enumerate(leaves, 1)]
+    written = splice_segments(html, dict(enumerate(zh)))
+    assert leaf_count_problem(html, written) is None
+    assert "member-rss" not in written
+
+
+def test_source_leaf_count_ignores_archive_header():
+    """重检用的原文段数也跟着清洗，归档头不算叶子。"""
+    article = _home_at_last()
+    assert _source_leaf_count(_FakeConn(article), article) == 5
