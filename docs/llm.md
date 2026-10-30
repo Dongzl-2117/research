@@ -122,6 +122,8 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 - 打开按天、作者、公司或检索时，当前卡片里还没有摘要（或正文已改）的文章会在后台排队，一次最多排 40 篇，不挡住页面，也不扫全库。没有可用的 LLM 凭证时不排队，卡片改用正文里第一段实质内容，并跳过 sn、点赞、时间戳。
 - `research-digest` 仍可手动补一批。`research-web` 启动、容器拉起和部署都不会跑全库。
 
+知识星球的读者帖（`poster_role` 是 `guest`）网站上哪儿都不展示，`research-digest` 和夜间任务不给它们写摘要。
+
 ```bash
 docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200

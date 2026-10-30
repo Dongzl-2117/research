@@ -3,6 +3,7 @@
 只处理还没有摘要、正文改过（content_hash 对不上）、提示词版本旧了、当时只读了长文开头，
 或正文很短而图片文字和上次抽的时候不一致的文章。
 短正文的图片文字刚写上时，会先写进 article_followups，排在缺摘要的积压前面，避免被饿死。
+知识星球的读者帖网站上哪儿都不展示，不排队写摘要。
 卡片和 JSON 接口优先展示摘要；旧摘要照常显示，同时排进后台重写。失败的记下来，隔几天再试。
 
 两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
@@ -27,7 +28,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import display_author, raw_meta_of
+from researchlib.author_voice import display_author, not_guest_sql, raw_meta_of
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -135,7 +136,7 @@ def pending_articles(conn, source_ids: list[str], limit: int):
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND {visible_sql("a")}
+          AND {visible_sql("a")} AND {not_guest_sql("a")}
           AND {_DUE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY {PENDING_ORDER}
         LIMIT %s
