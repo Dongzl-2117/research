@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -52,13 +53,14 @@ echo "install DEPLOY_SELF=${DEPLOY_SELF:-}" >> "$CALLS"
 """
 
 
-def _git(cwd: Path, *args: str) -> str:
+def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         ["git", "-c", "user.name=测试", "-c", "user.email=test@example.com", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
         check=True,
+        env={**os.environ, **env} if env else None,
     )
     return result.stdout.strip()
 
@@ -94,13 +96,14 @@ class World:
         self.commit("第一版")
         _git(tmp, "clone", "--quiet", "-b", "main", str(self.origin), str(self.mini))
 
-    def commit(self, subject: str, path: str = "notes.txt") -> str:
+    def commit(self, subject: str, path: str = "notes.txt", hours_ago: float = 0) -> str:
         target = self.work / path
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
             handle.write(subject + "\n")
         _git(self.work, "add", "-A")
-        _git(self.work, "commit", "--quiet", "-m", subject)
+        when = f"{int(time.time() - hours_ago * 3600)} +0000"
+        _git(self.work, "commit", "--quiet", "-m", subject, env={"GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when})
         _git(self.work, "push", "--quiet", "origin", "main")
         return _git(self.work, "rev-parse", "HEAD")
 
@@ -236,6 +239,40 @@ def test_waits_for_translate_or_ocr_in_the_app_container(world: World):
     assert result.returncode == 0, result.stderr
     assert world.head() == sha and world.status()["ok"] is True
     assert world.called()[0] == "docker compose top app"
+
+
+def test_waiting_three_hours_behind_a_long_job_is_reported(world: World):
+    world.ci_says("completed", "success")
+    shipped = world.head()
+    sha = world.commit("四小时前合并的", hours_ago=4)
+    top = "root 12 1 0 Oct29 ? 03:00:00 research-translate --source stratechery"
+    result = world.deploy(DOCKER_TOP=top)
+    assert result.returncode == 0, result.stderr
+    assert world.head() == shipped
+    status = world.status()
+    assert status["ok"] is False
+    assert f"research-translate 还在跑，main 上的 {sha[:7]} 合并 3 小时了还没上线" in status["message"]
+    # 跑完了：照常上线，提示消失。
+    assert world.deploy().returncode == 0
+    assert world.head() == sha and world.status()["ok"] is True
+
+
+def test_stuck_previous_run_is_reported_after_two_hours(world: World):
+    world.ci_says("completed", "success")
+    world.commit("第二版")
+    pid = world.mini / "data" / "status" / ".deploy.lock" / "pid"
+    _write(pid, f"{os.getpid()}\n")
+    # 上一轮刚开始跑：这轮安静跳过。
+    result = world.deploy()
+    assert result.returncode == 0 and "上一轮还在跑" in result.stdout
+    assert world.called() == [] and world.status() is None
+    # 跑了三个小时还没完：记成失败，锁留给它。
+    long_ago = time.time() - 3 * 3600
+    os.utime(pid, (long_ago, long_ago))
+    assert world.deploy().returncode == 0
+    status = world.status()
+    assert status["ok"] is False and "跑了两个多小时还没完" in status["message"]
+    assert pid.is_file() and world.called() == []
 
 
 def test_waits_for_jobs_running_in_the_containers(world: World):
