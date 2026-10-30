@@ -218,6 +218,9 @@ _FRIEND_FOLLOW = re.compile(
     r"|[^\d\s。！？!?，,；;：:]{1,20}等\d+个朋友(?:关注|赞过|在看|看过|推荐|喜欢)?)"
     r"[\d\s。．.、，,]*(?:写留言|留言|查看全部留言)?$"
 )
+# 群聊顶上置顶的那条消息：「王小明：我觉得这篇文章对于茅台写得更深..  移除」，每张截图都带着，
+# 不是这一屏里谁说的话。当成网友开头的话，下面接着的几行也会跟着记到网友名下（23860）。
+_PINNED_BAR = re.compile(r"^.{1,24}?[：:].{1,60}?(?:\.{2,}|…+|⋯+)\s*移除$")
 # 知识星球回复头「方伟在学习（作者）2」：这一行下面是方伟的话，不是网友。
 _HOST_BADGE = re.compile(r"^(?P<name>(?:方\s*伟|Rey)[^（()]{0,10})[（(]作者[）)]\d*$")
 # 朋友圈 / 公众号卡片上的账号栏。不是气泡里的话。
@@ -986,7 +989,7 @@ def parse_shot(text: str) -> Shot:
     if not original:
         return Shot("prose", [], "")
     raw_lines = [_scrub(line) for line in _normalize(original).splitlines()]
-    raw_lines = [line for line in raw_lines if line and not _is_ui_chrome(line)]
+    raw_lines = [line for line in raw_lines if line and not _is_ui_chrome(line) and not _PINNED_BAR.match(line)]
     if not raw_lines:
         return Shot("prose", [], "")
     # 知识星球优惠券推广卡：账号栏会把「扫码领取…」误标方伟，整段当噪音。
