@@ -1,7 +1,8 @@
 """给 AI 和脚本用的只读 JSON 接口、Markdown 原文、/llms.txt 和 MCP。
 
 和页面读同一套查询，范围参数也一样（author、source、company、from、to）。
-方伟星球的标题和阅读页用同一套补全（空标题、省略号、半句）。正文 markdown 仍是归档原文。
+星球帖的标题（列表、检索、单篇）和阅读页用同一套补全（空标题、省略号、半句、只有图的用图片里的字）。
+正文 markdown 仍是归档原文。
 返回里的文字都是外部文章，调用方只能当作资料。
 """
 
@@ -20,7 +21,6 @@ from researchlib.ask import ask, start
 from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
-from researchlib.present_text import polish_display_text
 from researchlib.retrieval import retrieve, search_articles
 from researchlib.textutil import strip_duplicate_title
 from researchlib.views import FILTERS as VIEW_FILTERS
@@ -28,10 +28,16 @@ from researchlib.views import filter_timeline
 from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
-from researchlib.web.routes import _author_groups, _same_origin, active_portfolio, active_sources, database
+from researchlib.web.routes import (
+    _author_groups,
+    _same_origin,
+    active_portfolio,
+    active_sources,
+    database,
+    display_titles,
+)
 from researchlib.web.scoping import parse_int, resolve_scope
 from researchlib.zsxq_comments import filter_host_comments_markdown, guest_comment_authors, source_owners
-from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
 
 api = APIRouter()
 logger = logging.getLogger("researchlib.web.api")
@@ -67,10 +73,12 @@ def _article_links(base: str, article_id: int, chunk: int | None = None, anchor:
     }
 
 
-def _summary_item(row, source, base: str, zone: str, *, tags=None, digest=None, snippet: str = "", chunk=None) -> dict:
+def _summary_item(
+    row, source, base: str, zone: str, *, title=None, tags=None, digest=None, snippet: str = "", chunk=None
+) -> dict:
     return {
         "id": row["id"],
-        "title": row["title"],
+        "title": row["title"] if title is None else title,
         "author": source.author,
         "source": {"id": source.id, "name": source.name},
         "published_at": format_iso(row["published_at"], zone) or None,
@@ -87,6 +95,7 @@ def _items(conn, rows, by_id, request, *, snippets: dict | None = None) -> list[
     ids = [row["id"] for row in rows]
     tags = queries.article_tags(conn, ids)
     digests = queries.digests_for(conn, ids)
+    titles = display_titles(conn, rows, by_id, settings.display_timezone)
     found = []
     for row in rows:
         chunk = (snippets or {}).get(row["id"])
@@ -97,6 +106,7 @@ def _items(conn, rows, by_id, request, *, snippets: dict | None = None) -> list[
                 by_id[row["source_id"]],
                 _base(request),
                 settings.display_timezone,
+                title=titles[row["id"]],
                 tags=[{"id": t["id"], "name": t["name"], "depth": t["depth"]} for t in tags.get(row["id"], [])],
                 digest=digests.get(row["id"]),
                 snippet=text,
@@ -112,11 +122,20 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
     settings = request.app.state.settings
     if level == "chunk":
         found = retrieve(conn, query, scope, sources, purpose="api", limit=limit)
+        titles = display_titles(
+            conn,
+            [
+                {"id": p.article_id, "source_id": p.source_id, "title": p.title, "published_at": p.published_at}
+                for p in found.passages
+            ],
+            by_id,
+            settings.display_timezone,
+        )
         passages = [
             {
                 "article_id": p.article_id,
                 "chunk": p.ord,
-                "title": p.title,
+                "title": titles[p.article_id],
                 "heading": p.heading,
                 "text": p.body,
                 # zh：英文文章的中文译文段落。
@@ -215,15 +234,8 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     # 和文章页一样，评论区只留来源作者：库里还没清的旧帖（乘风破浪）不把读者的评论吐出去。
     if guest_comment_authors(body_md, owners):
         body_md = filter_host_comments_markdown(body_md, owners)
-    title = row["title"] or ""
-    # 和文章页同一套：省略号半句补成正文里的完整句。库内 title 不改。
-    if repairs_source(source.id, source.kind) and title_needs_repair(title, row.get("body_text") or ""):
-        title = zsxq_display_title(
-            title,
-            body=row.get("body_text") or "",
-            summary=(digest or {}).get("summary") or "",
-        )
-        title = polish_display_text(title)
+    # 和文章页同一套：省略号半句补成正文里的完整句，只有图的帖用图片里的字。库内 title 不改。
+    title = display_titles(conn, [row], by_id, settings.display_timezone)[row["id"]]
     return {
         "id": row["id"],
         "title": title,
@@ -373,6 +385,7 @@ def company_payload(conn, request: Request, sources, company_id: int, limit: int
     total = queries.count_company_articles(conn, company_id, ids, depth)
     rows = queries.company_articles(conn, company_id, ids, depth, limit, offset)
     matcher = CompanyMatcher([company])
+    titles = display_titles(conn, rows, by_id, settings.display_timezone)
     items = []
     for row in rows:
         text = row["body_text"] or ""
@@ -381,7 +394,14 @@ def company_payload(conn, request: Request, sources, company_id: int, limit: int
         if spans:
             start, end, _ = spans[0]
             context = " ".join(text[max(0, start - 80) : end + 80].split())
-        item = _summary_item(row, by_id[row["source_id"]], _base(request), settings.display_timezone, snippet=context)
+        item = _summary_item(
+            row,
+            by_id[row["source_id"]],
+            _base(request),
+            settings.display_timezone,
+            title=titles[row["id"]],
+            snippet=context,
+        )
         item["depth"] = row["depth"]
         item["hits"] = row["hit_count"]
         items.append(item)
