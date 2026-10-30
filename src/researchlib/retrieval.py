@@ -1765,9 +1765,17 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
     counts = full_match_counts(conn, query, effective)
-    # 语义相关的排在全部命中那一档，但词没写全，来源计数也不数它们：总数只数真的全部命中的，语义相关另报。
+    # 文章级索引要全部词落在同一处（原文、译文或同一张图）：词分在正文和截图里的那篇数不到，
+    # 列表里却算全部命中。按来源取两边大的，总数就是来源计数之和，上下两个数对得上。
+    # 语义相关的排在全部命中那一档，但词没写全，不数，另报。
     by_meaning = sum(1 for hit in full_hits if hit.semantic)
-    total = max(sum(counts.values()), len(full_hits) - by_meaning)
+    listed: dict[str, int] = defaultdict(int)
+    for hit in full_hits:
+        if not hit.semantic:
+            listed[hit.source_id] += 1
+    for source_id, number in listed.items():
+        counts[source_id] = max(counts.get(source_id, 0), number)
+    total = sum(counts.values())
     ordered = full_hits + partial_hits
     return SearchResult(
         total=total,

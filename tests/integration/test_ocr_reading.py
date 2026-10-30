@@ -470,3 +470,27 @@ def test_search_counts_articles_whose_words_are_only_in_screenshots(conn, settin
     assert '<span>方伟知识星球</span><span class="num">1</span>' in page
     assert "2 篇全部命中" in page
     assert api["total"] == 2 and api["semantic"] == 0
+
+
+def test_search_counts_a_post_whose_words_are_split_between_text_and_screenshot(conn, settings, tmp_path):
+    """一个词在正文、另一个只在截图里：列表算全部命中；文章级索引要全部词落在同一处，数不到，来源计数按列表补上。"""
+    chat = tmp_path / "chat.png"
+    _png(chat, b"\x05" * 24)
+    body = "冷链仓配这块先不展开。\n\n![](chat.png)\n"
+    shot = _store(conn, settings, "fangwei-zsxq", "ocr-split", "看图", body, [chat])
+    _remember(
+        conn,
+        shot["id"],
+        "chat.png",
+        "微信\n20:41\n张三\n他们现在主要靠送货上门拉复购\n李四\n对，送货上门的成本也不低\n",
+    )
+    refresh_article_ocr(conn, shot["id"])
+    replace_ocr_chunks(conn, shot["id"])
+    conn.commit()
+
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "冷链仓配 送货上门"}).text
+    assert f'href="/articles/{shot["id"]}?' in page
+    assert "1 篇全部命中" in page
+    assert '<span>全部来源</span><span class="num">1</span>' in page
+    assert '<span>方伟知识星球</span><span class="num">1</span>' in page

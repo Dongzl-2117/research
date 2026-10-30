@@ -1052,6 +1052,9 @@ def search_page(request: Request):
             )
             if found.query and found.query.terms:
                 count_map = full_match_counts(conn, found.query, facet_scope)
+                # 所选来源的数用检索时补过的（列表里排到、文章级索引数不到的也算），和上面的总数一致。
+                for source_id, number in found.counts.items():
+                    count_map[source_id] = max(count_map.get(source_id, 0), number)
             else:
                 count_map = dict(found.counts)
             # 有具体的词才走语义检索；没用上（没配、没算向量、服务连不上）或向量没算完时说一句。
