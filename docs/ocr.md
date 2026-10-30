@@ -10,7 +10,7 @@
 - 公司提及不看图片里的字，免得水印、表情包里的字乱记。这条不变。
 - 识别结果另外写在文章旁路 `articles.ocr_text`。微信群聊截图先整理成「方伟：」「网友：」再写入：绿色气泡是作者自己，标成方伟；灰色、带别人昵称的标成网友，不留本名（含「李小红@think」、Kevin）。新识别的靠右行会带侧标记。没有坐标的旧结果里，不带别人昵称的气泡也当绿色本人，不再因为没写「方伟」就标成网友。显示名「方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人。方伟连续说的合成一块，网友每次开口仍分开。跨图重复的句子只留一次。群名、价格（含粘在商品上的「￥19.?」）、小程序及其误识「小小程序」、美团外卖、店名和商品卡、「设为群待办」、状态栏时间（含「10:38≥」）这些界面字去掉。知识星球的引用回复不是这套绿/灰气泡：第一条「方伟看十年」或「方伟看十年作者」账号栏上面的灰字是「网友：」，栏下的回复是「方伟：」，账号栏和下一帖标题去掉；栏上没有正文时仍整段是方伟。表格和贴成长文的图仍是原文。摘要和观点交给模型的正文接上这份整理后的字，和正文一视同仁。有效字少于 8 个的图不进这条旁路。打开文章时按已识别的字重写这一篇的旁路（不重新认图，也不扫全库）。观点和摘要再读这篇时，只要还挂着 `image_texts`，也会按当前规则从原始识别重写，避免库里已经写成「方伟：」的旧旁路把引用回复分不回来。
 - 正文不足 400 字时，图片文字和上次抽的时候不一致，摘要会重排；打开这篇文章也会只排这一篇，不扫全库。已经写出判断的长文不会因为后补了一张图就整篇重抽。
-- 识图写回 `ocr_hash` 之后（`research-ocr` 或 `POST /api/v1/ocr`），短正文会记进 `article_followups`：摘要一篇、方伟星球再加标题一篇。不看标题现在像不像壳——「没有可读文字」「本文正文为空」这类空壳以前不会被 `title_needs_ai` 认出来。同一次命令里最多接着重写 30 篇；剩下的留在队里。摘要队列把入队的、以及短正文哈希对不上的，排在「还没有摘要」的积压前面。标题回写（`--ai-titles`）也先处理入队的。完好的标题（例如「关于携程与Booking」）只出队，不打模型。长文不因为补了一张图就重排。应用启动不跑这一步。
+- 识图写回 `ocr_hash` 之后（`research-ocr`），短正文会记进 `article_followups`：摘要一篇、方伟星球再加标题一篇。不看标题现在像不像壳——「没有可读文字」「本文正文为空」这类空壳以前不会被 `title_needs_ai` 认出来。同一次命令里最多接着重写 30 篇；剩下的留在队里。摘要队列把入队的、以及短正文哈希对不上的，排在「还没有摘要」的积压前面。标题回写（`--ai-titles`）也先处理入队的。完好的标题（例如「关于携程与Booking」）只出队，不打模型。长文不因为补了一张图就重排。应用启动不跑这一步。
 - 观点队列：深入提及照旧。正文不足 400 字、图片里又有字的，一带而过也抽——判断经常在截图里，不能因为深度是一带而过、或内容来自截图就跳过。长文里顺带一提的公司，不会只因为旁边有张图就抽。夜间任务仍按原来的篇数上限，深入提及排在前面；全库重跑不由这次改动自动开始。单篇可以用 `research-views --articles <id>`。公司不在公司表里就没有观点可抽。
 - 重复文章（见 [ingest.md](ingest.md)）里的图不认。
 
@@ -20,22 +20,14 @@
 
 ## 站内识图（默认）
 
-主镜像和 `app` 容器就能跑，不需要 onnx / RapidOCR。`research-ocr` 默认 `--engine vision`，调用站内 `deepseek-flash`（和问库、摘要同一模型）。送识图前，超过约 210KB 的图用 Pillow 把长边缩到 1920 以内、转成 JPEG，压到 280KB 以内（`ocr.py` 的 `MAX_VISION_SEND_BYTES`、`VISION_MAX_SIDE`），避免 DeepSeek 转发链路掐断大 data-url；瞬时断连会重试最多 3 次。识图请求的 max_tokens 固定 32768（覆盖站点默认下限；8k/16k 在 thinking 下会把正文挤空），避免流式思考把容器 OOM。也可用站内 API，和译制一样只接受本站或本机 POST：
+主镜像和 `app` 容器就能跑，不需要 onnx / RapidOCR。`research-ocr` 默认 `--engine vision`，调用站内 `deepseek-flash`（和问库、摘要同一模型）。送识图前，超过约 210KB 的图用 Pillow 把长边缩到 1920 以内、转成 JPEG，压到 280KB 以内（`ocr.py` 的 `MAX_VISION_SEND_BYTES`、`VISION_MAX_SIDE`），避免 DeepSeek 转发链路掐断大 data-url；瞬时断连会重试最多 3 次。识图请求的 max_tokens 固定 32768（覆盖站点默认下限；8k/16k 在 thinking 下会把正文挤空），避免流式思考把容器 OOM。定点重认：
 
 ```bash
-# 定点重认。立刻返回 running，后台识图。
-curl -s -X POST http://127.0.0.1:8088/api/v1/ocr \
-  -H 'Content-Type: application/json' \
-  -d '{"articles":[24002,24007],"redo":true,"limit":50,"engine":"vision"}'
-curl -s http://127.0.0.1:8088/api/v1/ocr
-curl -s -X POST http://127.0.0.1:8088/api/v1/ocr/stop
-
-# 容器里同一条通路
 docker compose exec -T app research-ocr --engine vision --redo --limit 50 \
   --article 24002 --article 24007
 ```
 
-`engine`：`vision`（默认）、`rapidocr`（显式回退）、`auto`（有 LLM 凭证用 vision，否则 RapidOCR）。已经在跑时再 POST 不会开第二个。GET 看进度，不回 API key。单张失败记 `:error` 和空正文，下次会重试。
+`--engine`：`vision`（默认）、`rapidocr`（显式回退）、`auto`（有 LLM 凭证用 vision，否则 RapidOCR）。单张失败记 `:error` 和空正文，下次会重试。跑的时候自动上线会等它跑完再重建。
 
 ## RapidOCR 回退
 
@@ -90,9 +82,9 @@ NIGHTLY_OCR=1 BACKUP_DIR=… scripts/install-launchd.sh
 
 之后每晚在观点、摘要、论点之后，于 `app` 容器里跑 `research-ocr --engine vision`（`OCR_LIMIT`，默认 400 张，和其他步骤共用 `MINUTES` 的时间上限）。不再 `docker compose --profile ocr run`。失败了和其他步骤一样记进夜间任务的结果。
 
-`app` 容器没在跑时，这一步会先 `docker compose up -d app` 再执行，避免 `service app is not running` 直接失败。新导入的带图文章（方伟星球、方伟公众号，以及其他来源）在导入命令结束时就会排进识图，一次最多 40 篇，不必等到 00:37。夜间任务仍补没排上的。设 `RESEARCH_INGEST_FOLLOW=0` 可以关掉导入后的自动识图和译制。
+`app` 容器没在跑时，这一步会先 `docker compose up -d app` 再执行，避免 `service app is not running` 直接失败。导入命令本身不识图，新导入的带图文章（方伟星球、方伟公众号，以及其他来源）靠这一步识图；没设 `NIGHTLY_OCR=1` 时要手动跑 `research-ocr`。
 
-第一次可以先用上面的 API 或 `research-ocr --article` 定点重认抽验锚点，不要无差别全库 vision。以后每晚只剩新导入的图。
+第一次可以先用 `research-ocr --article` 定点重认抽验锚点，不要无差别全库 vision。以后每晚只剩新导入的图。
 
 短正文的 `ocr_hash` 若在这一步变了，命令结束前会用同一套站内 deepseek-flash 重写最多 30 篇摘要，方伟星球的空壳标题也一起重写；不是全库，长文不重排。没写完的留在 `article_followups`，下次摘要优先拿。
 

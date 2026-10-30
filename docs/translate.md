@@ -32,51 +32,28 @@ docker compose exec app research-xai-login status   # 应显示已登录，token
 
 `research-xai-login logout` 删掉 token 文件，之后要重新登录。
 
-## 译制：站内 API（正式触发方式）
+## 译制：research-translate
 
-生产续跑走站内接口。应用进程里起一个后台线程，复用 `translate.service` 的
-`list_pending_english` / `translate_article`，和 DeepSeek / Grok 那套 `translate.llm` 共用凭证。
-应用启动和部署都**不会**自动开译制，必须显式触发；同一时间只有一个 worker。
+在 Mac mini 上用容器里的命令跑。应用启动和部署都**不会**自动开译制，导入也不会，要自己跑：
 
 ```bash
-# 触发 stratechery 续跑：每轮取 10 篇，队列空了 60 秒后再扫
-# 本机 curl 没有 Origin 头，和 /api/v1/ask 一样放行
-curl -s http://127.0.0.1:8088/api/v1/translate \
-  -H 'content-type: application/json' \
-  -d '{"source":"stratechery","limit":10,"loop":true,"sleep":60}'
-
-# 看进度
-curl -s http://127.0.0.1:8088/api/v1/translate
-
-# 停：正在译的那篇会译完，loop 里的休眠立刻醒
-curl -s -X POST http://127.0.0.1:8088/api/v1/translate/stop
+docker compose exec app research-translate --source stratechery --limit 10   # 从待译队列取 10 篇，译完就退
+docker compose exec app research-translate --article-id 123                  # 点名，可重复
+docker compose exec app research-translate --source stratechery --limit 5 --loop --sleep 60   # 一直跑，队列空了睡 60 秒再扫
 ```
 
-POST 字段：
-
-| 字段 | 默认 | 说明 |
+| 参数 | 默认 | 说明 |
 |---|---|---|
-| `source` | 空 | 只译该来源 id；空表示所有来源 |
-| `limit` | 5 | 每轮从待译队列取几篇，1–100 |
-| `loop` | false | 队列空后休眠再扫，直到 stop |
-| `sleep` | 60 | loop 空闲休眠秒数，5–3600 |
+| `--source` | 空 | 只译该来源 id；空表示所有来源 |
+| `--limit` | 5 | 每轮从待译队列取几篇 |
+| `--loop` | 关 | 队列空后休眠再扫，直到 Ctrl-C |
+| `--sleep` | 60 | `--loop` 空闲时休眠秒数，最少 5 |
+| `--article-id` | 空 | 只译这几篇，可重复 |
+| `--recheck`、`--dry-run` | 关 | 见下面重译旧分段的那一节 |
 
-POST 立刻返回，实际翻译在后台线程里跑。返回 `{running, started, source, limit, loop, sleep, provider, model, started_at, ...}`；
-`started=false` 表示已有 worker 在跑，这次没开第二个。
-GET 同一路径返回 `{running, source, limit, loop, sleep, provider, model, started_at, finished_at, completed_this_run, failed_this_run, skipped_this_run, last_article_id, last_status, last_reason, last_error, waiting, stop_requested, thread_alive}`，不含任何 key / token。
+同一轮里失败过、没有可译正文或者没译全的篇先跳过；`--loop` 时队列只剩它们就先睡，睡醒再给一次机会，不会一直重试同一篇。没配 LLM 凭证时直接退出（退出码 2），不连库。
 
-同一轮里失败过（或没有可译正文）的 id 先跳过，队列空了睡一觉后再给一次机会，和 CLI 的逻辑一致。
-worker 跟着应用进程走：容器重启或部署后就停了，要续跑再 POST 一次。
-没配 LLM 凭证时 POST 返回 409，不会起线程空转。
-
-CLI 保留给开发和排障，生产续跑不用它：
-
-```bash
-docker compose exec app research-translate --article-id 123
-docker compose exec app research-translate --limit 10
-docker compose exec app research-translate --source stratechery --limit 5
-docker compose exec app research-translate --loop --sleep 120 --limit 3
-```
+跑的时候自动上线会等它跑完再重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`），这期间合并的改动要等这一批译完才上线。长时间的 `--loop` 放在 tmux 里跑，用完 Ctrl-C 停掉。
 
 调用参数与 AIHOT 一致：`https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`）。
 
@@ -85,8 +62,8 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 `config/sources.yaml` 里 `stratechery` 现为 **enabled: false**。抓取在盒子跑完、且只有 Passport 全文 / Daily≥5500 合格稿后：
 
 1. 把 `enabled` 改为 `true`
-2. `research-ingest-markdown --source stratechery --input …`（新写入的英文会自动排进译制，一次最多 20 篇）
-3. 这一批超过 20 篇时，再 `curl -s http://127.0.0.1:8088/api/v1/translate -H 'content-type: application/json' -d '{"source":"stratechery","limit":10,"loop":true,"sleep":60}'`
+2. `research-ingest-markdown --source stratechery --input …`
+3. `docker compose exec app research-translate --source stratechery --limit 10`，一批译不完就加 `--loop`
 
 游客半截 / guest teaser **不入库、不译**。
 
@@ -94,9 +71,9 @@ docker compose exec app research-translate --loop --sleep 120 --limit 3
 
 | 状态 | 动作 |
 |---|---|
-| 译制管道已合入、LLM 凭证已配（DeepSeek key，或 Grok 已 login 且 `RESEARCH_LLM_PROVIDER=grok`） | 可对库内已有合格英文稿 `POST /api/v1/translate` |
+| 译制管道已合入、LLM 凭证已配（DeepSeek key，或 Grok 已 login 且 `RESEARCH_LLM_PROVIDER=grok`） | 可对库内已有合格英文稿跑 `research-translate` |
 | Stratechery 仍在抓 | **先不 ingest**；可用英文样例验对照页 |
-| 抓完并 ingest 后 | 新文自动排进译制；积压超过 20 篇再对该来源开 `loop` |
+| 抓完并 ingest 后 | 跑 `research-translate --source stratechery`；积压多就加 `--loop` |
 
 ## 环境变量
 
@@ -127,32 +104,17 @@ AIHOT 的 CONTAINER 不含 `dl`。#119 从 `editorial/translate.ts` 的 `segment
 先看会重译哪些（不调模型）：
 
 ```bash
-curl -s http://127.0.0.1:8088/api/v1/translate \
-  -H 'content-type: application/json' \
-  -d '{"recheck":true,"dry_run":true,"source":"stratechery","limit":200}'
-
-# 全部英文来源（不传 source）
-curl -s http://127.0.0.1:8088/api/v1/translate \
-  -H 'content-type: application/json' \
-  -d '{"recheck":true,"dry_run":true,"limit":200}'
+docker compose exec app research-translate --recheck --dry-run --source stratechery --limit 200
+docker compose exec app research-translate --recheck --dry-run --limit 200   # 全部英文来源
 ```
 
-确认篇数可以接受再开跑。每篇按新叶子重译，长文大约十几批 DeepSeek。不带 `recheck` 的 `loop` 只译还没有完整译文的，不会重跑这几篇。
+确认篇数可以接受再开跑。每篇按新叶子重译，长文大约十几批 DeepSeek。不带 `--recheck` 的 `--loop` 只译还没有完整译文的，不会重跑这几篇。
 
 ```bash
-curl -s http://127.0.0.1:8088/api/v1/translate \
-  -H 'content-type: application/json' \
-  -d '{"recheck":true,"source":"stratechery","limit":5,"loop":true,"sleep":60}'
-```
-
-容器里等价：
-
-```bash
-docker compose exec app research-translate --recheck --source stratechery --dry-run --limit 200
 docker compose exec app research-translate --recheck --source stratechery --limit 5 --loop --sleep 60
 ```
 
-点名几篇仍然可以：`research-translate --article-id 21118`。新导入的英文文章会自动排进译制（一次最多 20 篇）。大批回填超出上限的，用上面的接口续跑。设 `RESEARCH_INGEST_FOLLOW=0` 可以关掉导入后的自动识图和译制。
+点名几篇：`research-translate --article-id 21118`。
 
 #121 之后已经重译过、但写回时把长 `dt` 收成更短结构的文章（21118、21133、21193 这一类），库里的 `segments` 等于那份错误译文的叶子数，`--recheck` 抽不到。部署后只改展示也不能把写丢的叶子找回来，必须点名整篇重译：
 

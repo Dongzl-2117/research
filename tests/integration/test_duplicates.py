@@ -110,6 +110,14 @@ def test_repost_on_another_source_of_the_same_author(conn, settings):
     assert _row(conn, "cf:1")["duplicate_of"] is None
 
 
+def test_import_report_counts_a_duplicate_once(conn, settings):
+    """认出是重复的新篇只算一次新增，不同时算进未变。"""
+    _store(conn, settings, "fangwei-zsxq", [_doc("zsxq:1", "星球转发", BODY + "\n\n星球里补一句：这篇先发在公众号。")])
+    report = _store(conn, settings, "fangwei-mp", [_doc("mp/a.md", "腾讯的广告库存", BODY)])
+    assert _row(conn, "mp/a.md")["duplicate_of"] == _row(conn, "zsxq:1")["id"]
+    assert (report.inserted, report.duplicates, report.unchanged) == (1, 1, 0)
+
+
 def test_shared_footer_does_not_make_different_posts_the_same(conn, settings):
     posts = [
         _doc(

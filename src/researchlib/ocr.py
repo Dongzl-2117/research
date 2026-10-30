@@ -14,7 +14,7 @@ image_texts（engine 如 ``deepseek-flash-vision``）。识别出的字够多的
     docker compose exec -T app research-ocr --limit 50
     docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 500
 
-夜间任务设 NIGHTLY_OCR=1 时，在 app 容器里走识图补一批。站内触发见 POST /api/v1/ocr。
+夜间任务设 NIGHTLY_OCR=1 时，在 app 容器里走识图补一批。
 """
 
 from __future__ import annotations
@@ -540,26 +540,6 @@ def rapidocr_available() -> bool:
     except ImportError:
         return False
     return True
-
-
-def engine_problem(settings, choice: str | None = None) -> str:
-    """开工前的阻碍。空字符串表示可以跑。文案不带凭证。"""
-    from researchlib.jobs.base import credentials_problem
-
-    picked = normalize_engine_choice(choice)
-    if picked == "rapidocr":
-        if rapidocr_available():
-            return ""
-        return "这个环境没装 RapidOCR。默认识图走 vision；回退要用 ocr 镜像并指定 engine=rapidocr。"
-    missing = credentials_problem(settings)
-    if picked == "vision":
-        return missing
-    # auto：有凭证用 vision，否则 RapidOCR。两个都没有才拦下。
-    if not missing:
-        return ""
-    if rapidocr_available():
-        return ""
-    return missing
 
 
 def resolve_engine(settings, choice: str | None = None) -> tuple[str, Callable[[Path], str]]:
