@@ -7,6 +7,8 @@ from researchlib.translate.segments import (
     coarse_segment_reason,
     iter_segments,
     leaf_count_problem,
+    repeat_key,
+    same_repeat,
     segments_of,
     shield,
     splice_segments,
@@ -1041,7 +1043,7 @@ def _long_dt(label: str) -> str:
 
 
 def test_short_dt_writeback_stays_one_to_one_and_does_not_repeat_openings():
-    """21118：连续长 dt 译短后不能重新打包。同一英文开头的两份对照，中文也得是同一段。"""
+    """21118：连续长 dt 译短后不能重新打包。同文的列表项和段落收成一对，中文仍是这一句。"""
     labels = [
         "Regulatory and legal risks:",
         "On the macro-policy front Apple stayed cautious about fines:",
@@ -1095,7 +1097,8 @@ def test_short_dt_writeback_stays_one_to_one_and_does_not_repeat_openings():
     assert leaf_count_problem(html, written) is None
     assert len(segments_of(written)) == len(segments)
     pairs = bilingual_pairs(html, written)
-    assert pairs is not None and len(pairs) == len(segments)
+    # 列表项和紧跟着的同文段落，中文是同一句短译文。按位置收成一对，不把下一段配上来。
+    assert pairs is not None and len(pairs) == len(segments) - 2
     assert sum(pair.zh is None for pair in pairs) == 1
 
     def opening(value: str | None) -> str:
@@ -1106,9 +1109,13 @@ def test_short_dt_writeback_stays_one_to_one_and_does_not_repeat_openings():
             assert opening(left.zh)[:12] == opening(right.zh)[:12]
 
     iphone_pairs = [pair for pair in pairs if opening(pair.en).startswith("iPhone – premium")]
-    assert len(iphone_pairs) == 2
-    assert all(pair.zh and "iPhone的译文" in pair.zh for pair in iphone_pairs)
-    assert all(pair.zh and "Mac的译文" not in pair.zh for pair in iphone_pairs)
+    assert len(iphone_pairs) == 1
+    assert iphone_pairs[0].zh and "iPhone的译文" in iphone_pairs[0].zh
+    assert "Mac的译文" not in iphone_pairs[0].zh
+    mac_pairs = [pair for pair in pairs if opening(pair.en).startswith("Mac –")]
+    assert len(mac_pairs) == 1
+    assert mac_pairs[0].zh and "Mac –的译文" in mac_pairs[0].zh
+    assert "iPhone的译文" not in mac_pairs[0].zh
 
     wearables = next(pair for pair in pairs if "Wearables, Home and Accessories" in pair.en)
     assert wearables.zh and "Wearables的译文" in wearables.zh
@@ -1421,3 +1428,181 @@ def test_reuse_duplicate_sources_copies_the_first_translation():
     got = reuse_duplicate_sources([sentence, other, sentence], ["甲", "乙", "丙"])
     assert got == ["甲", "乙", "甲"]
     assert len(got) == 3
+
+
+def _long_en_near_groups(htmls: list[str], *, min_len: int = 80) -> int:
+    """长英文近重复组：后一份和前面某一份相同、是它的开头，或几乎一样。"""
+    keys: list[str] = []
+    for html in htmls:
+        if _plain_len(html) < min_len:
+            continue
+        keys.append(repeat_key(html))
+    parent = list(range(len(keys)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    buckets: dict[str, list[int]] = {}
+    for index, key in enumerate(keys):
+        buckets.setdefault(key[:48], []).append(index)
+    for members in buckets.values():
+        for later in range(len(members)):
+            for earlier in range(later):
+                before = keys[members[earlier]]
+                after = keys[members[later]]
+                if same_repeat(before, after) or same_repeat(after, before):
+                    union(members[earlier], members[later])
+    sizes: dict[int, int] = {}
+    for index in range(len(keys)):
+        root = find(index)
+        sizes[root] = sizes.get(root, 0) + 1
+    return sum(1 for count in sizes.values() if count >= 2)
+
+
+# 22195 的 Duo 一句隔开再出现；21118 的 iPhone / Services / Wearables 一组隔开出现三次。
+# 中文译文故意短于 80 字：旧规则两边各收，条数对不齐，整页重复都留着。
+_DUO = (
+    "The Duo unfolds to reveal a 7.6-inch screen, the largest display ever on an iPhone, "
+    "and the outer screen stays usable when the phone is folded in half."
+)
+_IPHONE = (
+    "iPhone revenue was essentially flat in the fiscal year and dipped about one percent "
+    "in the holiday quarter, suggesting unit sales are reaching a plateau worldwide."
+)
+_SERVICES = (
+    "Services revenue jumped again and now contributes nearly a quarter of total sales "
+    "across the installed base of phones, tablets, and watches."
+)
+_WEARABLES = (
+    "Wearables revenue has matured, with the Watch and AirPods still leading the premium "
+    "category while the installed base of those devices continues to grow."
+)
+_BRIDGES = (
+    "The first aside explains why the opening report stopped after the holiday quarter.",
+    "The second aside turns to the China business and is not a copy of the first aside.",
+    "The third aside covers Apple Intelligence claims and stays with its own translation.",
+    "The fourth aside closes the note and must not be folded into the repeated section.",
+)
+_ZH_SHORT = {
+    "duo": "折叠后展开是一块 7.6 英寸的屏幕。",
+    "iphone": "iPhone 收入在财年基本持平。",
+    "services": "服务收入又涨了，约占四分之一。",
+    "wearables": "可穿戴收入已经成熟。",
+}
+
+
+def _repeat_stack_fixture() -> tuple[str, str]:
+    """引用里一遍、后文再贴。第三次英文只改一个词，中文仍是那一句短译文。"""
+    iphone_near = _IPHONE.replace("holiday", "holidays", 1)
+    wearables_near = _WEARABLES.replace("continues", "continue", 1)
+    en_parts = [
+        f"<blockquote><p>{_DUO}</p></blockquote>",
+        f"<p>{_BRIDGES[0]}</p>",
+        f"<p>{_DUO}</p>",
+        f"<p>{_IPHONE}</p>",
+        f"<ul><li>{_SERVICES}</li></ul>",
+        f"<p>{_WEARABLES}</p>",
+        f"<p>{_BRIDGES[1]}</p>",
+        f"<p>{iphone_near}</p>",
+        f"<p>{_SERVICES}</p>",
+        f"<p>{wearables_near}</p>",
+        f"<p>{_BRIDGES[2]}</p>",
+        f"<p>{_IPHONE}</p>",
+        f"<p>{_SERVICES.replace('Services', '<strong>Services</strong>', 1)}</p>",
+        f"<p>{_WEARABLES}</p>",
+        f"<p>{_BRIDGES[3]}</p>",
+    ]
+    zh_bridge = (
+        "夹层一写到假日季就停。",
+        "夹层二改看中国，不是第一段。",
+        "夹层三谈苹果智能，单独留下。",
+        "夹层四收束，不能并进重复段。",
+    )
+    zh_parts = [
+        f"<blockquote><p>{_ZH_SHORT['duo']}</p></blockquote>",
+        f"<p>{zh_bridge[0]}</p>",
+        f"<p>{_ZH_SHORT['duo']}</p>",
+        f"<p>{_ZH_SHORT['iphone']}</p>",
+        f"<ul><li>{_ZH_SHORT['services']}</li></ul>",
+        f"<p>{_ZH_SHORT['wearables']}</p>",
+        f"<p>{zh_bridge[1]}</p>",
+        f"<p>{_ZH_SHORT['iphone']}</p>",
+        f"<p>{_ZH_SHORT['services']}</p>",
+        f"<p>{_ZH_SHORT['wearables']}</p>",
+        f"<p>{zh_bridge[2]}</p>",
+        f"<p>{_ZH_SHORT['iphone']}</p>",
+        f"<p>{_ZH_SHORT['services']}</p>",
+        f"<p>{_ZH_SHORT['wearables']}</p>",
+        f"<p>{zh_bridge[3]}</p>",
+    ]
+    return "".join(en_parts), "".join(zh_parts)
+
+
+def test_nonadjacent_long_english_stacks_collapse_when_chinese_is_short():
+    """21118 / 22195：长英文隔了别的段出现两到三次，中文不到 80 字但仍是同一句。
+
+    叶子数对齐时按位置收。近重复组从 4 组变成 0。夹层各留一次，顺序不变。
+    """
+    en, zh = _repeat_stack_fixture()
+    leaves = segments_of(en)
+    assert len(leaves) == len(segments_of(zh))
+    assert all(_plain_len(leaf) >= 80 for leaf in leaves)
+    assert all(_plain_len(bit) < 80 for bit in _ZH_SHORT.values())
+    iphone_near = _IPHONE.replace("holiday", "holidays", 1)
+    assert iphone_near != _IPHONE
+    assert same_repeat(repeat_key(_IPHONE), repeat_key(iphone_near))
+    assert same_repeat(repeat_key(_WEARABLES), repeat_key(_WEARABLES.replace("continues", "continue", 1)))
+    plains = [_plain_segment(leaf) for leaf in leaves]
+    assert [index for index, text in enumerate(plains) if "7.6-inch" in text] == [0, 2]
+    assert [index for index, text in enumerate(plains) if "iPhone revenue" in text] == [3, 7, 11]
+    assert _long_en_near_groups(leaves) == 4
+    assert _long_en_near_groups(leaves, min_len=100) == 4
+
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None
+    shown = [pair.en for pair in pairs]
+    assert _long_en_near_groups(shown) == 0
+    assert _long_en_near_groups(shown, min_len=100) == 0
+    assert [ _plain_segment(pair.en)[:24] for pair in pairs ] == [
+        _DUO[:24],
+        _BRIDGES[0][:24],
+        _IPHONE[:24],
+        _SERVICES[:24],
+        _WEARABLES[:24],
+        _BRIDGES[1][:24],
+        _BRIDGES[2][:24],
+        _BRIDGES[3][:24],
+    ]
+    assert pairs[0].zh and "7.6" in pairs[0].zh
+    assert pairs[2].zh and "基本持平" in pairs[2].zh
+    assert pairs[5].zh and "夹层二" in pairs[5].zh
+    assert pairs[0].anchor is None or pairs[0].en.startswith("<p") or pairs[0].en.startswith("<blockquote")
+    assert sum("7.6-inch" in pair.en for pair in pairs) == 1
+    assert sum("iPhone revenue" in pair.en for pair in pairs) == 1
+    assert sum("Services revenue jumped" in pair.en for pair in pairs) == 1
+    assert sum("Wearables revenue has matured" in pair.en for pair in pairs) == 1
+
+
+def test_repeated_english_stays_when_chinese_is_a_different_sentence():
+    """英文隔开重复，但后一次的中文是另一句。两对都留，夹层也不错位。"""
+    en = f"<p>{_IPHONE}</p><p>{_BRIDGES[0]}</p><p>{_IPHONE}</p>"
+    zh = (
+        f"<p>{_ZH_SHORT['iphone']}</p>"
+        "<p>夹层必须留在第二对。</p>"
+        "<p>这是另一句译文，讲的是服务而不是手机出货，不能因为英文相同就被收掉。</p>"
+    )
+    assert len(segments_of(en)) == len(segments_of(zh)) == 3
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 3
+    assert "iPhone revenue" in pairs[0].en and pairs[0].zh and "基本持平" in pairs[0].zh
+    assert "first aside" in pairs[1].en and pairs[1].zh and "第二对" in pairs[1].zh
+    assert "iPhone revenue" in pairs[2].en and pairs[2].zh and "另一句" in pairs[2].zh
+    assert _long_en_near_groups([pair.en for pair in pairs]) == 1
