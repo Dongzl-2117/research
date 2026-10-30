@@ -1177,3 +1177,247 @@ def test_soft_dedupe_leaves_a_missing_leaf_paired_with_the_image_stub():
     assert "Unbundling" in pairs[0].en
     assert pairs[0].zh and "外部图片已省略" in pairs[0].zh
     assert "Closing note" in pairs[2].en and pairs[2].zh is None
+
+
+def _plateau_sentences(count: int) -> list[str]:
+    return [
+        (
+            f"Point {index} carried the hardware plateau and the installed base kept paying "
+            "through another quarter of record margins."
+        )
+        for index in range(count)
+    ]
+
+
+def test_long_paragraph_splits_into_sentences_and_keeps_the_link():
+    """21118 / 22195 的形状：一段超过 900 字、里面有多句，按句切开，链接留在所在的那一句。"""
+    sentences = _plateau_sentences(10)
+    sentences[1] = (
+        'Point 1 cites <a href="https://example.com/filing">example.com</a> inside the sentence '
+        "about margins and the installed base."
+    )
+    html = '<p id="p-4">' + " ".join(sentences) + "</p>"
+    assert _plain_len(html) > 900
+    leaves = segments_of(html)
+    plains = [_plain_segment(leaf) for leaf in leaves]
+    assert len(leaves) == 10
+    assert all(_plain_len(leaf) <= 900 for leaf in leaves)
+    assert plains[0].startswith("Point 0")
+    assert "example.com/filing" in leaves[1]
+    assert "Point 1 cites" in plains[1]
+    assert "Point 2" not in plains[1]
+    assert not any(plain.startswith("com ") or plain.startswith("9 ") for plain in plains)
+    written = splice_segments(html, {index: f"<p>译文{index}。</p>" for index in range(len(leaves))})
+    assert written.startswith('<p id="p-4">')
+    assert leaf_count_problem(html, written) is None
+    assert len(segments_of(written)) == 10
+
+
+def test_one_long_sentence_is_not_cut_in_the_middle():
+    """没有句号的长句保持一整段。按字数切开会把 21130 那种「).」切成没有字母的叶子。"""
+    clause = "clause about scale and copyright keeps going "
+    html = "<p>" + clause * 30 + "at the end).</p>"
+    assert _plain_len(html) > 900
+    leaves = segments_of(html)
+    assert len(leaves) == 1
+    assert "at the end)." in _plain_segment(leaves[0])
+
+
+def test_decimals_and_domains_are_not_sentence_breaks():
+    """46.9 和 example.com 里的句号不切句。"""
+    sentences = [
+        f"Item {index} rose 46.9 percent after example.com published the filing for the holiday quarter."
+        for index in range(12)
+    ]
+    html = "<p>" + " ".join(sentences) + "</p>"
+    assert _plain_len(html) > 900
+    plains = [_plain_segment(leaf) for leaf in segments_of(html)]
+    assert len(plains) == 12
+    assert all("46.9" in plain and "example.com" in plain for plain in plains)
+
+
+def test_doubled_long_list_item_collapses_when_both_sides_repeat():
+    """21118：长列表项和紧跟着的同文段落，两边都有时收成一份，不再是两千字的两对。"""
+    body = " ".join(_plateau_sentences(10))
+    en = f"<ul><li>{body}</li></ul><p><strong>Point</strong> {body[len('Point'):]}</p>"
+    bits = [
+        (
+            f"第{index}句译文说明硬件平台和服务收入，已有用户这个季度继续付费，利润率维持在纪录高位。"
+            "服务收入托住了出货，已有用户继续留下来，这一句要单独成对，不能并到旁边。请单独保留。"
+        )
+        for index in range(10)
+    ]
+    assert all(len(bit) >= 80 for bit in bits)
+    zh = "<ul><li>" + "".join(f"<p>{bit}</p>" for bit in bits) + "</li></ul>"
+    zh += "".join(f"<p>{bit}</p>" for bit in bits)
+    assert len(segments_of(en)) == 20
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 10
+    assert all(_plain_len(pair.en) <= 900 for pair in pairs)
+    assert pairs[0].en.startswith("<p>Point 0") or "Point 0" in pairs[0].en
+    assert pairs[0].zh and "第0句" in pairs[0].zh
+    assert pairs[9].zh and "第9句" in pairs[9].zh
+    assert sum("Point 0" in pair.en for pair in pairs) == 1
+
+
+def test_repeated_section_collapses_on_both_sides():
+    """21130：连续几段在后文再贴一遍。纯文本相同的后一份两边都收掉，不硬配。"""
+    paragraphs = [
+        (
+            f"<p>Paragraph {index} explains a distinct point about the fair use record "
+            "and is long enough that a repeated block counts as the same leaf.</p>"
+        )
+        for index in range(5)
+    ]
+    en = "".join(paragraphs + paragraphs)
+    zh_bits = [
+        (
+            f"<p>第{index}段译文足够长，用来覆盖引用后再贴一遍的规则，不要收成别的段。"
+            "这段还要把后文写完整，已有用户继续付费，利润率维持在高位，避免因为太短而被重复规则放过。请单独保留。</p>"
+        )
+        for index in range(5)
+    ]
+    assert all(len(re.sub(r"<[^>]+>", "", bit)) >= 80 for bit in zh_bits)
+    zh = "".join(zh_bits + zh_bits)
+    assert len(segments_of(en)) == 10
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 5
+    assert "Paragraph 0" in pairs[0].en and pairs[0].zh and "第0段" in pairs[0].zh
+    assert "Paragraph 4" in pairs[4].en and pairs[4].zh and "第4段" in pairs[4].zh
+
+
+def test_shared_opening_with_a_different_ending_stays_two_pairs():
+    """只共享开头、后文不同的两段都留着，不把第二份提示收成第一份。"""
+    first = (
+        "I am the author of this note. This is important because the report should follow "
+        "the usual voice and stop after the latest quarter."
+    )
+    second = (
+        "I am the author of this note. This is important because the report should follow "
+        "the holiday quarter and the China angle in particular."
+    )
+    en = f"<p>{first}</p><p>{second}</p>"
+    zh = (
+        "<p>第一份提示到最新季度就停，后文和下一份不一样，两段都要留。</p>"
+        "<p>第二份提示改看假日季和中国，不能因为开头相同就被收掉。</p>"
+    )
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 2
+    assert "latest quarter" in pairs[0].en and "holiday quarter" in pairs[1].en
+    assert pairs[0].zh and "最新季度" in pairs[0].zh
+    assert pairs[1].zh and "假日季" in pairs[1].zh
+
+
+def test_blockquote_with_one_br_drops_the_repeated_opening():
+    """22195：引用里一个 <br> 粘了两段，后面的段落只重复第一段。拆开后第一段只出现一次。"""
+    first = " ".join(
+        f"Opening point {index} about the foldable phone and the lock screen layout stays one sentence."
+        for index in range(6)
+    )
+    second = " ".join(
+        f"Following point {index} about developer interfaces and the outer display stays one sentence."
+        for index in range(6)
+    )
+    assert len(first) < 900 < len(first) + len(second)
+    en = f"<blockquote><p>{first}<br>{second}</p></blockquote><p>{first}</p>"
+    line = "这句话专门写长，用来把引用的两段撑过九百字的门槛，这样才会按换行拆开而不是整段一对。"
+    zh_first = " ".join(f"开头{index} {line}" for index in range(16))
+    zh_second = " ".join(f"后文{index} {line}" for index in range(16))
+    assert len(zh_first) < 900 < len(zh_first) + len(zh_second)
+    zh = f"<blockquote><p>{zh_first}<br>{zh_second}</p></blockquote><p>{zh_first}</p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None
+    assert len(pairs) == 2
+    assert "Opening point 0" in pairs[0].en and "Following point" not in pairs[0].en
+    assert "Following point 0" in pairs[1].en and "Opening point 0" not in pairs[1].en
+    assert pairs[0].zh and "开头0" in pairs[0].zh
+    assert pairs[1].zh and "后文0" in pairs[1].zh
+    assert sum("Opening point 0" in pair.en for pair in pairs) == 1
+    assert all(_plain_len(pair.en) < 2_000 for pair in pairs)
+
+
+def test_one_sided_long_repeat_is_not_hard_zipped():
+    """只在英文侧重复的长段不单边丢掉，后记仍对着自己的译文。"""
+    body = " ".join(_plateau_sentences(10))
+    note = "A later distinct note about the quarter that must stay with its own translation and not slide over."
+    en = f"<ul><li>{body}</li></ul><p>{body}</p><p>{note}</p>"
+    zh = (
+        "<ul><li><p>列表项的译文，和后面那段不是同一句。</p></li></ul>"
+        "<p>这不是同一句译文，所以不能为了对齐把英文重复段丢掉，后记还在自己的位置。</p>"
+        "<p>后记要留在第三组，不能配到重复段上。</p>"
+    )
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 3
+    assert "Point 0" in pairs[0].en and pairs[0].zh and "列表项" in pairs[0].zh
+    assert "Point 0" in pairs[1].en and pairs[1].zh and "不是同一句" in pairs[1].zh
+    assert note in pairs[2].en and pairs[2].zh and "第三组" in pairs[2].zh
+
+
+def test_definition_url_fragment_stays_inside_the_sentence():
+    """域名单独一条 dt 时不切成一片叶子，链接留在「( example.com ).」那一句里。"""
+    tail = "The quotation then finishes the sentence about revenue and the installed base. " * 8
+    html = (
+        "<blockquote><dl>"
+        "<dt>See the filing (</dt>"
+        '<dt><a href="https://example.com/10k">example.com</a></dt>'
+        f"<dt>). {tail}</dt>"
+        "<dt>Another short line of the pasted note.</dt>"
+        "<dt>A third line keeps the run long enough to pack.</dt>"
+        "<dt>A fourth line closes the sample paste.</dt>"
+        "</dl></blockquote>"
+    )
+    leaves = segments_of(html)
+    plains = [_plain_segment(leaf) for leaf in leaves]
+    assert plains
+    assert not any(plain == "example.com" for plain in plains)
+    joined = next(leaf for leaf in leaves if "example.com/10k" in leaf)
+    joined_plain = _plain_segment(joined)
+    assert "See the filing" in joined_plain
+    assert "finishes the sentence" in joined_plain
+    assert "example.com)." in joined_plain or "example.com )." in joined_plain
+
+
+def test_prefix_restatement_collapses_when_both_sides_match():
+    """21130 的 Meta 开头：后一段是前一段的开头，两边都是这样时收掉后一段。"""
+    clause = "the company escaped the copyright claim because the record did not show market harm "
+    long = clause * 16 + "and then the opinion turns to the fourth factor."
+    short = (clause * 8).strip()
+    assert short
+    assert _plain_len(short) >= 80
+    assert _plain_len(long) > 900
+    en = f"<p>{long}</p><p>{short}</p>"
+    zh_long = "甲" * 240 + "这段译文先把开头和后文放在一起。"
+    zh_short = "甲" * 240
+    zh = f"<p>{zh_long}</p><p>{zh_short}</p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 1
+    assert "fourth factor" in pairs[0].en
+    assert pairs[0].zh and "后文" in pairs[0].zh
+
+
+def test_near_identical_paragraph_collapses_when_both_sides_match():
+    """差一个词的近重复段，两边都这样时收成一份。后文不同的不收。"""
+    clause = "revenue rose after the filing and the installed base kept paying through the holiday quarter "
+    text = (clause * 6).strip() + "."
+    near = text.replace("holiday", "holidays", 1)
+    assert text != near
+    en = f"<p>{text}</p><p>{near}</p>"
+    zh_a = "甲" * 120 + "。"
+    zh_b = "甲" * 120 + "啊。"
+    zh = f"<p>{zh_a}</p><p>{zh_b}</p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 1
+    assert "holiday quarter" in pairs[0].en
+
+
+def test_reuse_duplicate_sources_copies_the_first_translation():
+    """写回仍是一段对一段：重复段用第一次的译文，不另起一条不同的中文。"""
+    from researchlib.translate.service import reuse_duplicate_sources
+
+    sentence = (
+        "Point zero carried the hardware plateau and the installed base kept paying through another quarter."
+    )
+    other = "A different sentence about the following quarter is also long enough to be its own leaf here."
+    got = reuse_duplicate_sources([sentence, other, sentence], ["甲", "乙", "丙"])
+    assert got == ["甲", "乙", "甲"]
+    assert len(got) == 3

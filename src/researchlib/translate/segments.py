@@ -20,6 +20,11 @@ TypeScript，不另编一条 AIHOT 规则）。研究站仍把「多条或很长
 译文没有句号、或者比英文短，也不会被重新并段，叶子数不变。短的两三行（地址、诗句、
 署名）不拆，非空行不到 ``_BR_LINES_MIN`` 仍是一整段。
 
+没有那么多 ``<br>``、但纯文本超过 ``_LEAF_SPLIT`` 且含多句的叶子（21118 的长列表项、
+22195 引用里用一个 ``<br>`` 粘起来的两千字）也按句切开，写回同样换成若干 ``<p>``。
+网址、小数和缩写里的句号不当成句末。单句再长也不从半句撕开。定义列表不再为了让下一条
+单独成段，把前面没写完的「( example.com」切成一片。
+
 写回必须让译文再用同一套规则切出来的叶子数等于原文。模型片段收成一个没有块级
 子节点的叶子；连续 ``dt`` 里单独成段的那一条写成 ``<p>``，避免中文变短后又被按
 字数重新打包。
@@ -27,6 +32,7 @@ TypeScript，不另编一条 AIHOT 规则）。研究站仍把「多条或很长
 
 from __future__ import annotations
 
+import difflib
 import html as html_lib
 import re
 from dataclasses import dataclass
@@ -58,7 +64,18 @@ _DEF_PACK_TARGET = 700
 _DEF_PACK_FLOOR = 180
 _DEF_PACK_ALONE = 500
 _DEF_PACK_TAIL = 120
+# 纯文本超过这个长度、并且能在句末切开，才拆成多片叶子。普通两三百字的段落仍是一段。
+# 900 能拆开抽验里两千字上下的列表项和引用，又不会把一句已经很长的话从中间撕开。
+_LEAF_SPLIT = 900
+_OVERFLOW_TAGS = frozenset({
+    "p", "li", "blockquote", "dt", "dd", "td", "th", "figcaption", "caption",
+})
 _SENTENCE_END = (".", "?", "!", "。", "？", "！")
+_SENTENCE_CLOSERS = frozenset("\"'”’)]）")
+_ABBREV_TAIL = re.compile(
+    r"(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|Inc|Ltd|Co|Corp|vs|etc|Fig|Eq|St|No|U\.S|U\.K|e\.g|i\.e|a\.m|p\.m)\.$",
+    re.I,
+)
 # 软换行拼回一句时，下一行以这些标点开头就不再插空格（「Ari Emanuel」接「. Emanuel」）。
 _GLUE_PUNCT = frozenset(".,;:!?)]}。，；：！？、」』）")
 # cheerio / 浏览器把这些当成空元素。<br> 若按普通开始标签加深度，后面的兄弟节点
@@ -366,8 +383,94 @@ def _is_container(name: str, *, descend_dl: bool) -> bool:
     return bool(descend_dl and name == "dl")
 
 
+def _dot_is_internal(plain: str, index: int) -> bool:
+    """句号属于小数、网址、域名或缩写，不是句末。"""
+    if index < 0 or index >= len(plain) or plain[index] != ".":
+        return False
+    if index > 0 and plain[index - 1].isdigit() and index + 1 < len(plain) and plain[index + 1].isdigit():
+        return True
+    left = re.search(r"[A-Za-z0-9:/_~%-]+$", plain[max(0, index - 48) : index])
+    right = re.match(r"[A-Za-z0-9/_~%-]+", plain[index + 1 : index + 16])
+    if left and right:
+        blob = f"{left.group(0)}.{right.group(0)}"
+        if re.search(r"https?:", blob, re.I) or re.search(r"(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}", blob):
+            return True
+    return bool(_ABBREV_TAIL.search(plain[max(0, index - 8) : index + 1]))
+
+
+def _starts_new_sentence(char: str) -> bool:
+    if not char:
+        return False
+    if char in "\"'“‘([（" or char.isdigit():
+        return True
+    if "A" <= char <= "Z":
+        return True
+    code = ord(char)
+    return 0x4E00 <= code <= 0x9FFF
+
+
 def _sentence_end(text: str) -> bool:
-    return text.rstrip().endswith(_SENTENCE_END)
+    stripped = text.rstrip()
+    if not stripped or not stripped.endswith(_SENTENCE_END):
+        return False
+    if stripped.endswith(".") and _dot_is_internal(stripped, len(stripped) - 1):
+        return False
+    return True
+
+
+def _sentence_spans(plain: str) -> list[tuple[int, int]]:
+    """按句末切开。切不开（没有第二句）时返回空列表。"""
+    text = plain or ""
+    n = len(text)
+    if not text.strip():
+        return []
+    points: list[tuple[int, int]] = []
+    index = 0
+    while index < n:
+        char = text[index]
+        if char in _SENTENCE_END and not (char == "." and _dot_is_internal(text, index)):
+            end = index + 1
+            while end < n and text[end] in _SENTENCE_CLOSERS:
+                end += 1
+            nxt = end
+            while nxt < n and text[nxt].isspace():
+                nxt += 1
+            cjk = char in "。？！"
+            boundary = nxt >= n or (nxt > end and _starts_new_sentence(text[nxt])) or (
+                cjk and nxt < n and _starts_new_sentence(text[nxt])
+            )
+            if boundary:
+                points.append((end, nxt))
+                index = nxt if nxt > index else index + 1
+                continue
+        index += 1
+    if len(points) < 1:
+        return []
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while start < n and text[start].isspace():
+        start += 1
+    for end, nxt in points:
+        if end > start and text[start:end].strip():
+            spans.append((start, end))
+        start = nxt
+        while start < n and text[start].isspace():
+            start += 1
+    if start < n and text[start:].strip():
+        spans.append((start, n))
+    spans = [(a, b) for a, b in spans if text[a:b].strip()]
+    return spans if len(spans) >= 2 else []
+
+
+def _dangling_fragment(text: str) -> bool:
+    """收尾时只把域名或没有字母的半句并回上一组，不把没写完的正文并进去。"""
+    stripped = (text or "").strip()
+    if not stripped or _sentence_end(stripped):
+        return False
+    if not any(char.isalpha() for char in stripped):
+        return True
+    compact = re.sub(r"[\s()\[\]]+", "", stripped)
+    return bool(re.fullmatch(r"(?:https?://\S+|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})", compact, re.I))
 
 
 def _pack_fragments(
@@ -383,12 +486,13 @@ def _pack_fragments(
 
     ``floor`` 是句末就可以收束的最短长度，默认 ``_DEF_PACK_FLOOR``。普通块的软换行传 0：
     每到句末就收，不把后面的短句也并进来。``alone`` 是单行单独成段的长度。
-    ``merge_tail`` 为假时，不把末尾的短组并回上一组。``target`` 是累计到这个长度就收，
-    默认 ``_DEF_PACK_TARGET``。普通块的软换行传一个到不了的值，只在句末收。
+    ``merge_tail`` 为假时，不把末尾的短组并回上一组。``target`` 不再从半句切开
+    （那会把「( example.com」切成单独一片）；只在句末收。软换行传一个到不了的值。
     """
     floor = _DEF_PACK_FLOOR if floor is None else floor
     alone = _DEF_PACK_ALONE if alone is None else alone
     limit = _DEF_PACK_TARGET if target is None else target
+    floor = min(floor, limit)
     groups: list[list[object]] = []
     buf: list[object] = []
     size = 0
@@ -401,22 +505,28 @@ def _pack_fragments(
         buf.clear()
         size = 0
 
+    def plain_of(item: object) -> str:
+        raw = item if isinstance(item, str) else _plain_text(item) if isinstance(item, _El) else ""
+        return re.sub(r"\s+", " ", html_lib.unescape(re.sub(r"<[^>]+>", "", raw))).strip()
+
     for item in items:
         length = int(length_of(item))
+        # 下一条已经很长时，不要把还没写完的半句（域名、未闭合的括号）先收成一片。
         if length >= alone and not buf:
             groups.append([item])
             continue
-        if length >= alone and buf:
+        if length >= alone and buf and _sentence_end(" ".join(plain_of(piece) for piece in buf)):
             flush()
             groups.append([item])
             continue
         buf.append(item)
         size += length + 1
-        plain = item if isinstance(item, str) else _plain_text(item)
-        ended = _sentence_end(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", str(plain))).strip())
-        if size >= limit or (ended and size >= floor):
+        if _sentence_end(plain_of(item)) and size >= floor:
             flush()
     flush()
+    if len(groups) >= 2 and _dangling_fragment(" ".join(plain_of(piece) for piece in groups[-1])):
+        groups[-2].extend(groups[-1])
+        groups.pop()
     if merge_tail and len(groups) >= 2:
         tail_len = sum(int(length_of(item)) for item in groups[-1]) + len(groups[-1])
         prev_len = sum(int(length_of(item)) for item in groups[-2]) + len(groups[-2])
@@ -525,18 +635,25 @@ def _br_pieces(node: _El) -> list[str] | None:
     if len(lines) < 2:
         return None
     packed = _pack_fragments(lines, _html_plain_len)
-    pieces = [f"<p>{' '.join(chunk)}</p>" for chunk in packed if chunk]
+    pieces: list[str] = []
+    for chunk in packed:
+        if not chunk:
+            continue
+        piece = f"<p>{' '.join(chunk)}</p>"
+        # 句号落在下一行开头时，一组里会含多句。超过门槛再按句切开。
+        more = _overflow_from_html(piece) if _html_plain_len(piece) > _LEAF_SPLIT else None
+        pieces.extend(more or [piece])
     if len(pieces) < 2:
         return None
     return pieces
 
 
-def _br_lines(node: _El) -> list[str] | None:
+def _br_lines(node: _El, *, minimum: int | None = None) -> list[str] | None:
     """普通块里用 ``<br>`` 粘起来的长文按行切开，返回每行的 inner HTML。
 
-    行数不到 ``_BR_LINES_MIN`` 时返回 None，仍是一整段（两行的地址、诗句、署名不拆）。
-    切出来的行再由 ``_pack_br_groups`` 按句收成叶子。只留标点的行也留着，并进相邻的句子，
-    不单独成叶。空行（连着两个 ``<br>``）不占叶子。
+    行数不到 ``minimum``（默认 ``_BR_LINES_MIN``）时返回 None，仍是一整段（两行的地址、
+    诗句、署名不拆）。切出来的行再由 ``_pack_br_groups`` 按句收成叶子。只留标点的行也留着，
+    并进相邻的句子，不单独成叶。空行（连着两个 ``<br>``）不占叶子。
     """
     if not any(isinstance(child, _El) and child.name == "br" for child in node.children):
         return None
@@ -555,7 +672,8 @@ def _br_lines(node: _El) -> list[str] | None:
         else:
             group.append(child)
     flush()
-    return lines if len(lines) >= _BR_LINES_MIN else None
+    need = _BR_LINES_MIN if minimum is None else minimum
+    return lines if len(lines) >= need else None
 
 
 # 译文里要留下来的行内标签。块级标签不留，否则写回后再切会多出叶子，或把后文吞进去。
@@ -641,6 +759,7 @@ def _emit_packed_dts(
     replacements: dict[int, str] | None,
     *,
     split_br: bool = True,
+    split_sentences: bool = True,
 ) -> None:
     """连续多条短 dt 收成段。第一条换成译文，其余清空，外壳 dl 还在。"""
     groups = _pack_fragments(run, _plain_len_node)
@@ -648,7 +767,16 @@ def _emit_packed_dts(
         nodes = [node for node in group if isinstance(node, _El)]
         if len(nodes) == 1:
             before = len(out)
-            _walk(nodes[0], chain, used, out, replacements, descend_dl=True, split_br=split_br)
+            _walk(
+                nodes[0],
+                chain,
+                used,
+                out,
+                replacements,
+                descend_dl=True,
+                split_br=split_br,
+                split_sentences=split_sentences,
+            )
             # 原文够长才单独成段。译文更短时若仍是 dt，这轮连续 dt 会按中文长度重新打包，
             # 叶子变少，后面的对照整段错位。只在这里确实只写出一段时改成 p。
             # <br> 拆成多段的已经各自写好，不能再并成一段。
@@ -661,15 +789,23 @@ def _emit_packed_dts(
         text = html_lib.unescape(re.sub(r"<[^>]+>", "", inner))
         if not any(char.isalpha() for char in text):
             continue
-        anchor = _claim_anchor(_para_id(nodes[0].start), chain, used)
-        out.append(Segment(f"<p>{inner}</p>", anchor))
-        slot = len(out) - 1
-        if replacements is not None and slot in replacements:
-            leaf = _stable_replacement(replacements[slot], tag="p", keep_br=False)
-            if leaf is not None:
-                nodes[0].replacement = leaf
-                for extra in nodes[1:]:
-                    extra.replacement = ""
+        wrapped = f"<p>{inner}</p>"
+        pieces = _overflow_from_html(wrapped) if split_sentences else None
+        if not pieces:
+            pieces = [wrapped]
+        _emit_br_pieces(
+            nodes[0],
+            pieces,
+            _para_id(nodes[0].start),
+            chain,
+            used,
+            out,
+            replacements,
+            wrap=False,
+        )
+        if nodes[0].replacement is not None:
+            for extra in nodes[1:]:
+                extra.replacement = ""
 
 
 def _walk_dl(
@@ -680,6 +816,7 @@ def _walk_dl(
     replacements: dict[int, str] | None,
     *,
     split_br: bool = True,
+    split_sentences: bool = True,
 ) -> None:
     own = _para_id(node.start)
     chain = [*ancestors, own] if own else ancestors
@@ -693,14 +830,170 @@ def _walk_dl(
                 run.append(children[index])
                 index += 1
             if len(run) >= _DEF_PACK_RUN:
-                _emit_packed_dts(run, chain, used, out, replacements, split_br=split_br)
+                _emit_packed_dts(
+                    run,
+                    chain,
+                    used,
+                    out,
+                    replacements,
+                    split_br=split_br,
+                    split_sentences=split_sentences,
+                )
             else:
                 for dt in run:
-                    _walk(dt, chain, used, out, replacements, descend_dl=True, split_br=split_br)
+                    _walk(
+                        dt,
+                        chain,
+                        used,
+                        out,
+                        replacements,
+                        descend_dl=True,
+                        split_br=split_br,
+                        split_sentences=split_sentences,
+                    )
             continue
         if isinstance(child, _El):
-            _walk(child, chain, used, out, replacements, descend_dl=True, split_br=split_br)
+            _walk(
+                child,
+                chain,
+                used,
+                out,
+                replacements,
+                descend_dl=True,
+                split_br=split_br,
+                split_sentences=split_sentences,
+            )
         index += 1
+
+
+@dataclass
+class _Atom:
+    kind: str
+    raw: str
+    plain: str
+    name: str
+
+
+def _atoms_of(nodes: list[_El | _Tx]) -> list[_Atom]:
+    atoms: list[_Atom] = []
+
+    def walk(items: list[_El | _Tx]) -> None:
+        for item in items:
+            if isinstance(item, _Tx):
+                atoms.append(_Atom("text", item.data, html_lib.unescape(item.data), ""))
+                continue
+            if item.name == "br":
+                atoms.append(_Atom("br", "", " ", "br"))
+                continue
+            if item.void:
+                atoms.append(_Atom("void", item.start, "", item.name))
+                continue
+            if item.name in _INLINE:
+                atoms.append(_Atom("start", item.start, "", item.name))
+                walk(item.children)
+                atoms.append(_Atom("end", f"</{item.name}>", "", item.name))
+                continue
+            walk(item.children)
+
+    walk(nodes)
+    return atoms
+
+
+def _render_plain_span(atoms: list[_Atom], start: int, end: int) -> str:
+    """把纯文本区间 [start, end) 渲染回行内 HTML。跨过的行内标签在这一段里补齐。"""
+    pos = 0
+    stack: list[tuple[str, str]] = []
+    out: list[str] = []
+    active = False
+
+    def close_open() -> None:
+        for name, _raw in reversed(stack):
+            out.append(f"</{name}>")
+
+    for atom in atoms:
+        if atom.kind == "start":
+            stack.append((atom.name, atom.raw))
+            if active:
+                out.append(atom.raw)
+            continue
+        if atom.kind == "end":
+            if stack and stack[-1][0] == atom.name:
+                stack.pop()
+            if active:
+                out.append(atom.raw)
+            continue
+        if atom.kind == "void":
+            if active:
+                out.append(atom.raw)
+            continue
+        plen = len(atom.plain)
+        left, right = pos, pos + plen
+        pos = right
+        if plen == 0 or right <= start or left >= end:
+            continue
+        if not active:
+            for _name, raw in stack:
+                out.append(raw)
+            active = True
+        lo = max(left, start) - left
+        hi = min(right, end) - left
+        if atom.kind == "br":
+            out.append(" ")
+        elif lo == 0 and hi == plen:
+            out.append(atom.raw)
+        else:
+            out.append(escape(atom.plain[lo:hi], quote=False))
+        if pos >= end:
+            close_open()
+            break
+    return re.sub(r"\s+", " ", "".join(out)).strip()
+
+
+def _html_sentence_pieces(node: _El) -> list[str] | None:
+    """叶子内部按句切开，返回每一句的行内 HTML。只有一句时返回 None。"""
+    atoms = _atoms_of(node.children)
+    plain = "".join(atom.plain for atom in atoms)
+    spans = _sentence_spans(plain)
+    if len(spans) < 2:
+        return None
+    pieces = [_render_plain_span(atoms, start, end) for start, end in spans]
+    pieces = [piece for piece in pieces if piece and _html_has_letter(piece)]
+    return pieces if len(pieces) >= 2 else None
+
+
+def _overflow_from_html(html: str) -> list[str] | None:
+    parser = _FragmentParser()
+    parser.feed(html or "")
+    parser.close()
+    nodes = [child for child in parser.root.children if isinstance(child, _El)]
+    if len(nodes) != 1:
+        return None
+    return _overflow_pieces(nodes[0])
+
+
+def _overflow_pieces(node: _El) -> list[str] | None:
+    """超长叶子按句切开。一两处 ``<br>`` 先当段落缝；单句再长也不拆。"""
+    if node.name not in _OVERFLOW_TAGS or _plain_len_node(node) <= _LEAF_SPLIT:
+        return None
+    lines = _br_lines(node, minimum=2)
+    if lines and len(lines) < _BR_LINES_MIN:
+        groups = _pack_br_groups(lines)
+        pieces = [f"<p>{_join_br_lines(group)}</p>" for group in groups]
+        exploded: list[str] = []
+        for piece in pieces:
+            more = _overflow_from_html(piece) if _html_plain_len(piece) > _LEAF_SPLIT else None
+            exploded.extend(more or [piece])
+        if len(exploded) >= 2:
+            return exploded
+    sentences = _html_sentence_pieces(node)
+    if not sentences:
+        return None
+    return [f"<p>{piece}</p>" for piece in sentences]
+
+
+def _keep_paragraph_id(node: _El) -> None:
+    if node.name == "p" and node.replacement and node.replacement.startswith("<p>") and node.start.startswith("<p "):
+        node.replacement = node.start + node.replacement[3:]
 
 
 def _emit_br_pieces(
@@ -711,8 +1004,10 @@ def _emit_br_pieces(
     used: set[str],
     out: list[Segment],
     replacements: dict[int, str] | None,
+    *,
+    wrap: bool = True,
 ) -> None:
-    """把收好的段写回原节点。dd/dt 外壳留着；p 自己换成这些段，不再套一层。"""
+    """把收好的段写回原节点。``wrap`` 为假时用这些 ``<p>`` 换掉原节点，不再套一层。"""
     first = len(out)
     for index, piece in enumerate(pieces):
         anchor = _claim_anchor(own, chain, used) if index == 0 else None
@@ -733,11 +1028,12 @@ def _emit_br_pieces(
             parts.append(piece)
     if not replaced:
         return
-    # p 自己就是叶子，换掉它，不要再包一层 p。dd/dt 把拆开的段留在原来的外壳里。
-    if node.name == "p":
+    # p 自己就是叶子，换掉它，不要再包一层 p。列表项和引用把拆开的段留在原来的外壳里。
+    if node.name == "p" or not wrap:
         node.replacement = "".join(parts)
     else:
         node.replacement = f"{node.start}{''.join(parts)}</{node.name}>"
+    _keep_paragraph_id(node)
 
 
 def _emit_br_lines(
@@ -756,11 +1052,13 @@ def _emit_br_lines(
     叶子数就和原文对不上。列表项、引用的外壳留着，里面换成这些 ``<p>``。
     """
     groups = _pack_br_groups(lines)
-    pieces = [f"<p>{_join_br_lines(group)}</p>" for group in groups]
+    pieces: list[str] = []
+    for group in groups:
+        piece = f"<p>{_join_br_lines(group)}</p>"
+        # 软换行把句号留在下一行时，拼回去的一段里会有多句。超过门槛再切开。
+        more = _overflow_from_html(piece) if _html_plain_len(piece) > _LEAF_SPLIT else None
+        pieces.extend(more or [piece])
     _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
-    # 原来的段落号留在第一句上。对照页还会再盖一次，这里是写回后的译文自己还能对上。
-    if node.name == "p" and node.replacement and node.replacement.startswith("<p>") and node.start.startswith("<p "):
-        node.replacement = node.start + node.replacement[3:]
 
 
 def _walk(
@@ -772,13 +1070,22 @@ def _walk(
     *,
     descend_dl: bool = False,
     split_br: bool = True,
+    split_sentences: bool = True,
 ) -> None:
     # pre / code 整段跳过，不译里面的字，和 AIHOT 一样。
     if node.name in {"pre", "code"}:
         return
     # dl 本身不是叶子。连续的短 dt 收成段；术语表仍是一条 dt、一条 dd。
     if node.name == "dl":
-        _walk_dl(node, ancestors, used, out, replacements, split_br=split_br)
+        _walk_dl(
+            node,
+            ancestors,
+            used,
+            out,
+            replacements,
+            split_br=split_br,
+            split_sentences=split_sentences,
+        )
         return
     own = _para_id(node.start)
     chain = [*ancestors, own] if own else ancestors
@@ -790,7 +1097,16 @@ def _walk(
         if not descend_dl and _should_open_definition(node):
             for child in node.children:
                 if isinstance(child, _El):
-                    _walk(child, chain, used, out, replacements, descend_dl=True, split_br=split_br)
+                    _walk(
+                        child,
+                        chain,
+                        used,
+                        out,
+                        replacements,
+                        descend_dl=True,
+                        split_br=split_br,
+                        split_sentences=split_sentences,
+                    )
             return
         # dt / dd 仍只走上面那条按长度打包的路；短定义不拆成一行一对。
         in_definition = descend_dl or node.name in {"dt", "dd"}
@@ -803,6 +1119,12 @@ def _walk(
         if lines:
             _emit_br_lines(node, lines, own, chain, used, out, replacements)
             return
+        # 没有够三行 <br>、但本身已经是多句长文的，按句切开。单句不拆。
+        if split_sentences:
+            overflow = _overflow_pieces(node)
+            if overflow:
+                _emit_br_pieces(node, overflow, own, chain, used, out, replacements)
+                return
         if not _has_letter(node):
             return
         anchor = _claim_anchor(own, chain, used)
@@ -816,7 +1138,16 @@ def _walk(
         return
     for child in node.children:
         if isinstance(child, _El):
-            _walk(child, chain, used, out, replacements, descend_dl=descend_dl, split_br=split_br)
+            _walk(
+                child,
+                chain,
+                used,
+                out,
+                replacements,
+                descend_dl=descend_dl,
+                split_br=split_br,
+                split_sentences=split_sentences,
+            )
 
 
 def _parse_and_walk(
@@ -824,6 +1155,7 @@ def _parse_and_walk(
     replacements: dict[int, str] | None = None,
     *,
     split_br: bool = True,
+    split_sentences: bool = True,
 ) -> tuple[list[Segment], str]:
     parser = _FragmentParser()
     parser.feed(html or "")
@@ -831,19 +1163,33 @@ def _parse_and_walk(
     found: list[Segment] = []
     for child in parser.root.children:
         if isinstance(child, _El):
-            _walk(child, [], set(), found, replacements, split_br=split_br)
+            _walk(
+                child,
+                [],
+                set(),
+                found,
+                replacements,
+                split_br=split_br,
+                split_sentences=split_sentences,
+            )
     return found, _serialize(parser.root.children)
 
 
-def iter_segments(html: str, *, split_br: bool = True) -> list[Segment]:
+def iter_segments(
+    html: str,
+    *,
+    split_br: bool = True,
+    split_sentences: bool = True,
+) -> list[Segment]:
     """AIHOT segmentsOf：文档序的叶子段。没有字母的叶子不返回。
 
     ``split_br=False`` 时不再按 ``<br>`` 拆普通块：用于旧译文，那时一个段落整体一段，
-    拆成行反而和译文对不上。
+    拆成行反而和译文对不上。``split_sentences=False`` 时不再把超长多句叶子按句切开，
+    同样是给旧译文用的：中文还是一整段时，拆开只会让后面的对照错位。
     """
     if not (html or "").strip():
         return []
-    found, _serialized = _parse_and_walk(html, split_br=split_br)
+    found, _serialized = _parse_and_walk(html, split_br=split_br, split_sentences=split_sentences)
     return found
 
 
@@ -856,13 +1202,46 @@ def leaf_count_problem(original_html: str, zh_html: str) -> str | None:
     return None
 
 
-def segments_of(html: str, *, split_br: bool = True) -> list[str]:
+def segments_of(html: str, *, split_br: bool = True, split_sentences: bool = True) -> list[str]:
     """叶子段的 outer HTML。译制和对照都用这一份，不再把整段 blockquote 当一块。"""
-    return [item.html for item in iter_segments(html, split_br=split_br)]
+    return [item.html for item in iter_segments(html, split_br=split_br, split_sentences=split_sentences)]
 
 
 def _plain_len(html: str) -> int:
     return len(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html or "")).strip())
+
+
+def repeat_long(html: str) -> bool:
+    """够长才当重复段。按可见文字计，中文不按去掉空白后的字数，避免短句被收掉。"""
+    text = html_lib.unescape(re.sub(r"<[^>]+>", "", html or ""))
+    return len(re.sub(r"\s+", " ", text).strip()) >= 80
+
+
+def same_repeat(earlier: str, later: str) -> bool:
+    """后一段是不是前一段已经出现过的正文。
+
+    完全相同，或后一段就是前一段的开头，都算。长度接近、只有空格或个别词不同
+    （0.96 以上）也算。只共享开头、后文不同的两段不算。
+    """
+    if not earlier or not later:
+        return False
+    if earlier == later or earlier.startswith(later):
+        return True
+    longer = max(len(earlier), len(later))
+    if abs(len(earlier) - len(later)) / longer > 0.12:
+        return False
+    # autojunk 会把重复出现的词当成垃圾，长段只差一个词时相似度会掉到很低。
+    return difflib.SequenceMatcher(None, earlier, later, autojunk=False).ratio() >= 0.96
+
+
+def repeat_key(html: str) -> str:
+    """比较两片叶子是不是同一段正文：去标签、空白和标点。
+
+    列表项和紧跟着的同文 ``<p>``、域名两侧多出来的空格因此相同。短标题不要拿这个当重复。
+    """
+    text = html_lib.unescape(re.sub(r"<[^>]+>", "", html or ""))
+    text = re.sub(r"\s+", " ", text).strip().casefold()
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
 
 
 def coarse_segment_reason(html: str, *, recorded_segments: int | None = None) -> str | None:
@@ -886,7 +1265,7 @@ def coarse_segment_reason(html: str, *, recorded_segments: int | None = None) ->
             return "giant-leaf"
     # 段数比的是块级叶子，不含普通段落里按 <br> 拆出来的行：旧译文本来就是一个整段
     # 一段，行数对得上就能并排，不该只因为拆了行就抽出来重译。
-    blocks = len(segments_of(text, split_br=False))
+    blocks = len(segments_of(text, split_br=False, split_sentences=False))
     if recorded_segments is not None and recorded_segments > 0 and blocks >= 12:
         grew = blocks - recorded_segments
         # 三倍是旧的大引用。定义列表收成段之后增长没那么陡，多出 40 段也是旧切分。
