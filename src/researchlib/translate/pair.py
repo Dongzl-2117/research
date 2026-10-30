@@ -151,9 +151,10 @@ def _best_blocks(
 def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[Segment], list[Segment]] | None:
     """选展示用的叶子段。两边都没有叶子段才返回 None。
 
-    普通段落里的 ``<br>`` 先按行拆开；只在拆开后两边的差额不再变大时才用这一份。
-    旧译文是把整段（几十行 ``<br>``）当一段译的，行数常和原文差一两行；按行并排会
-    从那行起整段错开，不如整段一对。新译文写回时行数一致，走拆开的那一份。
+    普通段落里的 ``<br>`` 先按句收成段（半句并进句末）；只在收完后两边的差额不再
+    变大时才用这一份。旧译文是把整段（几十行 ``<br>``）当一段译的，行数常和原文
+    差一两行；拆开只会让对照从那行起整段错开，不如整段一对。新译文写回时叶子数
+    一致，走拆开的那一份。
     """
     split = _best_blocks(original_html, zh_html, split_br=True)
     if split is None or _gap(*split) == 0:
