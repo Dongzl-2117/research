@@ -10,6 +10,7 @@ from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.retrieval import retrieve
 from researchlib.sources import enabled_sources, load_sources
+from researchlib.translate.language import is_chinese
 from researchlib.translate.pair import stamp_paragraph_ids
 from researchlib.translate.service import list_pending_english
 from researchlib.web.app import create_app
@@ -107,6 +108,88 @@ def test_pending_english_query_runs_and_skips_translated(conn, settings):
     conn.execute("DELETE FROM article_translations WHERE article_id = %s", (article_id,))
     conn.commit()
     assert article_id in list_pending_english(conn, limit=10)
+
+
+def _store(conn, settings, source_id, docs):
+    sources = {source.id: source for source in load_sources(settings.sources_path)}
+    store_documents(
+        conn,
+        source=sources[source_id],
+        docs=docs,
+        data_dir=settings.data_dir,
+        archive_files=len(docs),
+        images_in_archive=0,
+        errors=[],
+    )
+
+
+def test_pending_english_is_found_behind_newer_chinese(conn, settings):
+    """不带 --source 时最新的几乎全是中文：要先筛掉中文再取前 N 篇，不然取不到英文。"""
+    article_id = _english(conn, settings)
+    conn.execute("DELETE FROM article_translations WHERE article_id = %s", (article_id,))
+    conn.commit()
+    _store(
+        conn,
+        settings,
+        "fangwei-mp",
+        [
+            ParsedDoc(
+                external_id=f"mp/{index}",
+                title=f"第 {index} 篇",
+                published_at=datetime(2025, 6, 1 + index, 8, 0, tzinfo=SHANGHAI),
+                body_md=f"第 {index} 篇讲腾讯第 {index} 个季度的广告收入和视频号的库存，和别的篇不一样。",
+                raw_meta={},
+                image_refs=[],
+            )
+            for index in range(3)
+        ],
+    )
+    assert list_pending_english(conn, limit=1) == [article_id]
+    assert list_pending_english(conn, limit=1, source_id="fangwei-mp") == []
+
+
+LANGUAGE_SAMPLES = {
+    "纯中文": ("腾讯第三季度的广告收入同比增长，视频号的库存还在放量。", {}),
+    "中文夹英文": ("苹果的 App Store 抽成是护城河，Services 收入的占比还在提高。", {}),
+    "英文夹中文": ("Apple raised iPhone prices again and demand held up (护城河).", {}),
+    "纯英文": ("Netflix keeps adding subscribers while raising prices in most markets.", {}),
+    "标了中文": ("Amazon Web Services margins expanded on lower depreciation.", {"language": "zh"}),
+    "标了英文": ("拼多多的海外业务继续亏损，但亏损在收窄。", {"language": "en"}),
+    "只有数字": ("2025 1234 5678 9012", {}),
+}
+
+
+def test_pending_english_sql_agrees_with_is_chinese(conn, settings):
+    """待译队列在 SQL 里判中英文，和 is_chinese 拿同一批文章对拍。"""
+    _store(
+        conn,
+        settings,
+        "gudujinhuati",
+        [
+            ParsedDoc(
+                external_id=f"lang:{name}",
+                title=name,
+                published_at=datetime(2025, 7, 1 + index, 8, 0, tzinfo=SHANGHAI),
+                body_md=body,
+                raw_meta=meta,
+                image_refs=[],
+            )
+            for index, (name, (body, meta)) in enumerate(LANGUAGE_SAMPLES.items())
+        ],
+    )
+    rows = conn.execute(
+        "SELECT id, title, body_text, body_md, raw_meta FROM articles WHERE external_id LIKE 'lang:%'"
+    ).fetchall()
+    assert len(rows) == len(LANGUAGE_SAMPLES)
+    expected = {
+        row["id"]
+        for row in rows
+        if not is_chinese(row["body_text"] or row["body_md"] or "", language=row["raw_meta"].get("language"))
+    }
+    pending = set(list_pending_english(conn, limit=100))
+    assert pending == expected
+    titles = {row["id"]: row["title"] for row in rows}
+    assert {titles[article_id] for article_id in pending} == {"英文夹中文", "纯英文", "标了英文", "只有数字"}
 
 
 def test_translation_html_is_filtered_on_the_article_page(conn, settings):
