@@ -6,12 +6,14 @@
 旧稿若只在中文侧删过连续重复段，两边再走一遍同一套去重，把同段拉齐。
 叶子数已经一样时按位置收：后一对的英文是前面某对的长段近重复，且中文也是那一对的
 同一段（译文更短也算），后一对收掉。更短的一句已经整句包含在另一对更长的英文里时，
-收掉短的那一对，长的留下。英文整句相同但中文是另一句的留下。
+收掉短的那一对，长的留下。开头已经占了较短那句大约四分之三、长度又接近、中文是同一段的
+另一种说法时，也收掉短的。英文整句相同但中文是另一句的留下。
 段数仍对不齐也不整页退回中文：多出来的挂在末尾。
 """
 
 from __future__ import annotations
 
+import difflib
 import html as html_lib
 import re
 from collections.abc import Sequence
@@ -144,6 +146,36 @@ def _drop_repeated_leaves(segments: list[Segment]) -> list[Segment]:
     return kept
 
 
+def _contained_text(html: str) -> str:
+    """可见文字，只压空白并忽略大小写。标点留着，括号不同的两条来源注释不会变成包含。
+
+    标签换成空格再压空白。``<strong>`` 紧挨句号时，和正文里句号前多一个空格是同一长度。
+    """
+    text = html_lib.unescape(re.sub(r"<[^>]+>", " ", html or ""))
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _display_long(html: str) -> bool:
+    """对照页上够不够大约 80 字。和 ``repeat_long`` 同一道门槛，但标签边界按空格计。"""
+    return len(_contained_text(html)) >= 80
+
+
+def _same_lineage(earlier_zh: str, later_zh: str) -> bool:
+    """两句中文是不是同一段的译文，包括措辞不同的那一种。
+
+    完全相同、互为开头、几乎一样，或后一句是空的，沿用原来的规则。分开译的两遍
+    常常只共享中间一长串（大约 12 个字以上），也算同一段。对不上这一串的是另一句。
+    """
+    if _translation_repeats(earlier_zh, later_zh):
+        return True
+    if not earlier_zh or not later_zh:
+        return False
+    match = difflib.SequenceMatcher(None, earlier_zh, later_zh, autojunk=False).find_longest_match(
+        0, len(earlier_zh), 0, len(later_zh)
+    )
+    return match.size >= 12
+
+
 def _translation_repeats(earlier_zh: str, later_zh: str) -> bool:
     """后一对的中文是不是前面那一对的同一段译文。
 
@@ -164,8 +196,9 @@ def _drop_aligned_repeats(
 
     英文可见文字大约 80 字以上，和前面某一对相同、只是它的开头、或几乎一样
     （长度差在一成以内、相似度 0.96 以上），并且中文也是那一对的同一段译文。
-    隔了几段再贴出来的同一句同样收，不要求紧挨着。英文重复但中文是另一句的留下，
-    避免把那句译文丢掉，后面的段落因此错位。
+    标签边界按空格计，句号前多一个空格和 ``<strong>`` 贴着句号算同样长。中文措辞
+    不同但共享一长串时也算同一段。隔了几段再贴出来的同一句同样收，不要求紧挨着。
+    英文重复但中文是另一句的留下，避免把那句译文丢掉，后面的段落因此错位。
     """
     if len(left) != len(right):
         return left, right
@@ -175,10 +208,10 @@ def _drop_aligned_repeats(
     for en, zh in zip(left, right, strict=True):
         en_key = _leaf_key(en.html)
         zh_key = _leaf_key(zh.html)
-        if repeat_long(en.html):
+        if _display_long(en.html):
             bucket = en_key[:48]
             repeated = any(
-                same_repeat(prev_en, en_key) and _translation_repeats(prev_zh, zh_key)
+                same_repeat(prev_en, en_key) and _same_lineage(prev_zh, zh_key)
                 for prev_en, prev_zh in priors.get(bucket, ())
             )
             if repeated:
@@ -186,13 +219,8 @@ def _drop_aligned_repeats(
             priors.setdefault(bucket, []).append((en_key, zh_key))
         kept_left.append(en)
         kept_right.append(zh)
-    return _drop_contained_pairs(kept_left, kept_right)
-
-
-def _contained_text(html: str) -> str:
-    """可见文字，只压空白并忽略大小写。标点留着，括号不同的两条来源注释不会变成包含。"""
-    text = html_lib.unescape(re.sub(r"<[^>]+>", " ", html or ""))
-    return re.sub(r"\s+", " ", text).strip().casefold()
+    kept_left, kept_right = _drop_contained_pairs(kept_left, kept_right)
+    return _drop_near_prefixes(kept_left, kept_right)
 
 
 def _drop_contained_pairs(
@@ -207,12 +235,56 @@ def _drop_contained_pairs(
     texts = [_contained_text(segment.html) for segment in left]
     drop: set[int] = set()
     for index, short in enumerate(texts):
-        if not repeat_long(left[index].html):
+        if not _display_long(left[index].html):
             continue
         for other, long in enumerate(texts):
             if other == index or len(long) <= len(short):
                 continue
             if short in long:
+                drop.add(index)
+                break
+    if not drop:
+        return left, right
+    kept = [index for index in range(len(left)) if index not in drop]
+    return [left[index] for index in kept], [right[index] for index in kept]
+
+
+def _shared_prefix_len(left: str, right: str) -> int:
+    count = 0
+    for char_left, char_right in zip(left, right, strict=False):
+        if char_left != char_right:
+            break
+        count += 1
+    return count
+
+
+def _drop_near_prefixes(
+    left: list[Segment], right: list[Segment]
+) -> tuple[list[Segment], list[Segment]]:
+    """较短的一句有大约四分之三是较长那句的开头，而且两句长度接近时，收掉短的。
+
+    322 字和 352 字的自我介绍是这种：不是整句包含，相似度也到不了 0.96。中文得是
+    同一段的另一种说法。只共享大约三分之二开头、后文明显岔开的两份提示不收。
+    长的那对留下，所以多出来的那一截还在。
+    """
+    texts = [_contained_text(segment.html) for segment in left]
+    zh_keys = [_leaf_key(segment.html) for segment in right]
+    drop: set[int] = set()
+    for index, short in enumerate(texts):
+        if len(short) < 80:
+            continue
+        for other, long in enumerate(texts):
+            if other == index or len(long) <= len(short):
+                continue
+            if (len(long) - len(short)) / len(long) > 0.12:
+                continue
+            if _shared_prefix_len(short, long) < len(short) * 0.75:
+                continue
+            short_zh, long_zh = zh_keys[index], zh_keys[other]
+            if not short_zh:
+                drop.add(index)
+                break
+            if long_zh and _same_lineage(long_zh, short_zh):
                 drop.add(index)
                 break
     if not drop:
