@@ -10,6 +10,11 @@ TypeScript，不另编一条 AIHOT 规则）。研究站仍把「多条或很长
 子节点走。连续四条以上的短 ``dt``，以及只用 ``<br>`` 粘起来的长 ``dt`` / ``dd``，
 再收成大约一段，避免一行一个对照，也避免一条定义仍是几万字。
 
+普通块里用 ``<br>`` 粘起来的长文（newsletter 的「一行一条」粘贴）也按行拆成叶子：
+一个 ``<p>`` 塞几十行、原文只有一两段时，对照页不能只出两对。这里不重新打包，
+写回仍留在原来那个 ``<p>`` 里、行间仍是 ``<br>``，下次再切叶子数不变，1:1 也就不破。
+短的两三行（地址、诗句、署名）不拆，非空行不到 ``_BR_LINES_MIN`` 仍是一整段。
+
 写回必须让译文再用同一套规则切出来的叶子数等于原文。模型片段收成一个没有块级
 子节点的叶子；连续 ``dt`` 里单独成段的那一条写成 ``<p>``，避免中文变短后又被按
 字数重新打包。
@@ -38,6 +43,10 @@ _CONTAINER = re.compile(
 _DEF_DESCEND_PLAIN = 4_000
 # 已经拆进 dt/dd 之后，单条若仍是多行 <br> 粘成的长文，再按行收成段。
 _DEF_BR_PLAIN = 2_000
+# 普通块（p / li / 标题 / 引用）里的 <br>：非空行到这个数才按行拆成叶子。
+# 两行的地址、诗句、署名仍是一整段。门槛按行数而不是字数：中文字数只有英
+# 文的三分之一上下，按字数卡会出现原文拆了、译文没拆，对照整段错开。
+_BR_LINES_MIN = 3
 # 连续四条以上的 dt 是粘贴被收成的「一行一条」，不是术语表。收成可读的段。
 _DEF_PACK_RUN = 4
 _DEF_PACK_TARGET = 700
@@ -427,6 +436,33 @@ def _br_pieces(node: _El) -> list[str] | None:
     return pieces
 
 
+def _br_lines(node: _El) -> list[str] | None:
+    """普通块里用 ``<br>`` 粘起来的长文按行拆开，返回每行的 inner HTML。
+
+    行数不到 ``_BR_LINES_MIN`` 时返回 None，仍是一整段（两行的地址、诗句、署名不拆）。
+    只留标点的行也留着：译文同一个位置常常是「。」「—」，删掉一边就整段错位。
+    空行（连着两个 ``<br>``）不占叶子。
+    """
+    if not any(isinstance(child, _El) and child.name == "br" for child in node.children):
+        return None
+    lines: list[str] = []
+    group: list[_El | _Tx] = []
+
+    def flush() -> None:
+        inner = _serialize(group).strip()
+        group.clear()
+        if inner:
+            lines.append(inner)
+
+    for child in node.children:
+        if isinstance(child, _El) and child.name == "br":
+            flush()
+        else:
+            group.append(child)
+    flush()
+    return lines if len(lines) >= _BR_LINES_MIN else None
+
+
 # 译文里要留下来的行内标签。块级标签不留，否则写回后再切会多出叶子，或把后文吞进去。
 _INLINE = frozenset({
     "a", "abbr", "b", "bdi", "bdo", "cite", "code", "dfn", "em", "i", "mark",
@@ -493,6 +529,18 @@ def _stable_replacement(raw: str, *, tag: str, keep_br: bool) -> str | None:
     return leaf
 
 
+def _stable_inline(raw: str) -> str | None:
+    """一行译文收成行内内容，写回原来的块里（行之间仍是 ``<br>``）。
+
+    译文里的 ``<br>`` 变成空格：多留一个就会多切一片，写回后叶子数对不上。
+    只剩标点的译文返回 None，保留原文这一行，不让空叶子进来。
+    """
+    inner = _flatten_inline(raw, keep_br=False)
+    if not _html_has_letter(f"<p>{inner}</p>"):
+        return None
+    return inner
+
+
 def _element_children(node: _El) -> list[_El | _Tx]:
     """丢掉纯空白文本。dt 之间的换行不能把「一行一条」的粘贴拆成互不相邻。"""
     return [
@@ -508,6 +556,8 @@ def _emit_packed_dts(
     used: set[str],
     out: list[Segment],
     replacements: dict[int, str] | None,
+    *,
+    split_br: bool = True,
 ) -> None:
     """连续多条短 dt 收成段。第一条换成译文，其余清空，外壳 dl 还在。"""
     groups = _pack_fragments(run, _plain_len_node)
@@ -515,7 +565,7 @@ def _emit_packed_dts(
         nodes = [node for node in group if isinstance(node, _El)]
         if len(nodes) == 1:
             before = len(out)
-            _walk(nodes[0], chain, used, out, replacements, descend_dl=True)
+            _walk(nodes[0], chain, used, out, replacements, descend_dl=True, split_br=split_br)
             # 原文够长才单独成段。译文更短时若仍是 dt，这轮连续 dt 会按中文长度重新打包，
             # 叶子变少，后面的对照整段错位。只在这里确实只写出一段时改成 p。
             # <br> 拆成多段的已经各自写好，不能再并成一段。
@@ -545,6 +595,8 @@ def _walk_dl(
     used: set[str],
     out: list[Segment],
     replacements: dict[int, str] | None,
+    *,
+    split_br: bool = True,
 ) -> None:
     own = _para_id(node.start)
     chain = [*ancestors, own] if own else ancestors
@@ -558,13 +610,13 @@ def _walk_dl(
                 run.append(children[index])
                 index += 1
             if len(run) >= _DEF_PACK_RUN:
-                _emit_packed_dts(run, chain, used, out, replacements)
+                _emit_packed_dts(run, chain, used, out, replacements, split_br=split_br)
             else:
                 for dt in run:
-                    _walk(dt, chain, used, out, replacements, descend_dl=True)
+                    _walk(dt, chain, used, out, replacements, descend_dl=True, split_br=split_br)
             continue
         if isinstance(child, _El):
-            _walk(child, chain, used, out, replacements, descend_dl=True)
+            _walk(child, chain, used, out, replacements, descend_dl=True, split_br=split_br)
         index += 1
 
 
@@ -605,6 +657,41 @@ def _emit_br_pieces(
         node.replacement = f"{node.start}{''.join(parts)}</{node.name}>"
 
 
+def _emit_br_lines(
+    node: _El,
+    lines: list[str],
+    own: str | None,
+    chain: list[str],
+    used: set[str],
+    out: list[Segment],
+    replacements: dict[int, str] | None,
+) -> None:
+    """普通块里的每一行各成一段，写回仍留在原来那个标签里，行间还是 ``<br>``。
+
+    和 dt/dd 那条路不同：这里不重新打包，也不换外壳。写回后还是一个 ``<p>``（引用、
+    列表项、表格单元同理），下次按同样的规则再切，叶子数一样，对照不会错位。
+    """
+    first = len(out)
+    for index, line in enumerate(lines):
+        anchor = _claim_anchor(own, chain, used) if index == 0 else None
+        out.append(Segment(f"<{node.name}>{line}</{node.name}>", anchor))
+    if replacements is None:
+        return
+    parts: list[str] = []
+    replaced = False
+    for index, line in enumerate(lines):
+        slot = first + index
+        inline = _stable_inline(replacements[slot]) if slot in replacements else None
+        if inline is not None:
+            parts.append(inline)
+            replaced = True
+        else:
+            parts.append(line)
+    if not replaced:
+        return
+    node.replacement = f"{node.start}{'<br>'.join(parts)}</{node.name}>"
+
+
 def _walk(
     node: _El,
     ancestors: list[str],
@@ -613,13 +700,14 @@ def _walk(
     replacements: dict[int, str] | None,
     *,
     descend_dl: bool = False,
+    split_br: bool = True,
 ) -> None:
     # pre / code 整段跳过，不译里面的字，和 AIHOT 一样。
     if node.name in {"pre", "code"}:
         return
     # dl 本身不是叶子。连续的短 dt 收成段；术语表仍是一条 dt、一条 dd。
     if node.name == "dl":
-        _walk_dl(node, ancestors, used, out, replacements)
+        _walk_dl(node, ancestors, used, out, replacements, split_br=split_br)
         return
     own = _para_id(node.start)
     chain = [*ancestors, own] if own else ancestors
@@ -631,11 +719,18 @@ def _walk(
         if not descend_dl and _should_open_definition(node):
             for child in node.children:
                 if isinstance(child, _El):
-                    _walk(child, chain, used, out, replacements, descend_dl=True)
+                    _walk(child, chain, used, out, replacements, descend_dl=True, split_br=split_br)
             return
-        pieces = _br_pieces(node) if descend_dl or node.name in {"dt", "dd"} else None
+        # dt / dd 仍只走上面那条按长度打包的路；短定义不拆成一行一对。
+        in_definition = descend_dl or node.name in {"dt", "dd"}
+        pieces = _br_pieces(node) if in_definition else None
         if pieces:
             _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
+            return
+        # 普通块（p、列表项、引用、表格单元、标题）里用 <br> 粘起来的长文，一行一段。
+        lines = _br_lines(node) if split_br and not in_definition else None
+        if lines:
+            _emit_br_lines(node, lines, own, chain, used, out, replacements)
             return
         if not _has_letter(node):
             return
@@ -643,19 +738,21 @@ def _walk(
         out.append(Segment(_outer(node), anchor))
         if replacements is not None and (len(out) - 1) in replacements:
             # 普通段落保留 <br>。定义列表里的叶子会按 <br> 再拆，译文里的 <br> 必须拿掉。
-            keep_br = not (descend_dl or node.name in {"dt", "dd"})
+            keep_br = not in_definition
             leaf = _stable_replacement(replacements[len(out) - 1], tag=node.name, keep_br=keep_br)
             if leaf is not None:
                 node.replacement = leaf
         return
     for child in node.children:
         if isinstance(child, _El):
-            _walk(child, chain, used, out, replacements, descend_dl=descend_dl)
+            _walk(child, chain, used, out, replacements, descend_dl=descend_dl, split_br=split_br)
 
 
 def _parse_and_walk(
     html: str,
     replacements: dict[int, str] | None = None,
+    *,
+    split_br: bool = True,
 ) -> tuple[list[Segment], str]:
     parser = _FragmentParser()
     parser.feed(html or "")
@@ -663,15 +760,19 @@ def _parse_and_walk(
     found: list[Segment] = []
     for child in parser.root.children:
         if isinstance(child, _El):
-            _walk(child, [], set(), found, replacements)
+            _walk(child, [], set(), found, replacements, split_br=split_br)
     return found, _serialize(parser.root.children)
 
 
-def iter_segments(html: str) -> list[Segment]:
-    """AIHOT segmentsOf：文档序的叶子段。没有字母的叶子不返回。"""
+def iter_segments(html: str, *, split_br: bool = True) -> list[Segment]:
+    """AIHOT segmentsOf：文档序的叶子段。没有字母的叶子不返回。
+
+    ``split_br=False`` 时不再按 ``<br>`` 拆普通块：用于旧译文，那时一个段落整体一段，
+    拆成行反而和译文对不上。
+    """
     if not (html or "").strip():
         return []
-    found, _serialized = _parse_and_walk(html)
+    found, _serialized = _parse_and_walk(html, split_br=split_br)
     return found
 
 
@@ -684,9 +785,9 @@ def leaf_count_problem(original_html: str, zh_html: str) -> str | None:
     return None
 
 
-def segments_of(html: str) -> list[str]:
+def segments_of(html: str, *, split_br: bool = True) -> list[str]:
     """叶子段的 outer HTML。译制和对照都用这一份，不再把整段 blockquote 当一块。"""
-    return [item.html for item in iter_segments(html)]
+    return [item.html for item in iter_segments(html, split_br=split_br)]
 
 
 def _plain_len(html: str) -> int:
@@ -712,10 +813,13 @@ def coarse_segment_reason(html: str, *, recorded_segments: int | None = None) ->
         dominates = total > 0 and length >= 8_000 and length / total >= 0.5
         if inner >= 8 or (dominates and inner >= 4):
             return "giant-leaf"
-    if recorded_segments is not None and recorded_segments > 0 and len(leaves) >= 12:
-        grew = len(leaves) - recorded_segments
+    # 段数比的是块级叶子，不含普通段落里按 <br> 拆出来的行：旧译文本来就是一个整段
+    # 一段，行数对得上就能并排，不该只因为拆了行就抽出来重译。
+    blocks = len(segments_of(text, split_br=False))
+    if recorded_segments is not None and recorded_segments > 0 and blocks >= 12:
+        grew = blocks - recorded_segments
         # 三倍是旧的大引用。定义列表收成段之后增长没那么陡，多出 40 段也是旧切分。
-        if grew >= 15 and (recorded_segments * 3 < len(leaves) or grew >= 40):
+        if grew >= 15 and (recorded_segments * 3 < blocks or grew >= 40):
             return "segments-below-leaves"
     return None
 

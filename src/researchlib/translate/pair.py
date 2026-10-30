@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from researchlib.translate.segments import Segment, iter_segments, top_level_blocks
@@ -99,12 +100,12 @@ def _one_pair(en_html: str, o_text: str, zh_raw: str, zh_text: str, anchor: str 
     return BilingualPair(en=en_html, zh=zh, anchor=anchor)
 
 
-def _gap(left: list[object], right: list[object]) -> int:
+def _gap(left: Sequence[object], right: Sequence[object]) -> int:
     return abs(len(left) - len(right))
 
 
-def _entries(html: str) -> list[Segment]:
-    return iter_segments(html)
+def _entries(html: str, *, split_br: bool = True) -> list[Segment]:
+    return iter_segments(html, split_br=split_br)
 
 
 def _show(segment: Segment) -> tuple[str, str | None]:
@@ -113,24 +114,26 @@ def _show(segment: Segment) -> tuple[str, str | None]:
     return html, anchor or segment.anchor
 
 
-def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[Segment], list[Segment]] | None:
-    """选展示用的叶子段。两边都没有叶子段才返回 None。
+def _best_blocks(
+    original_html: str, zh_html: str, *, split_br: bool
+) -> tuple[list[Segment], list[Segment]] | None:
+    """按一种切法选两边展示用的叶子。先原样，叶子数没拉近时再看连续块去重后的。
 
     叶子数已经一样时仍对两边各跑一遍连续块去重。两边都变短且仍然一样长，才改用
     去重后的段，收掉引用后紧跟的同一段正文。只短一边会把长度拉开，仍用未去重的
     等长序列，不单边丢掉，也不硬配。叶子数本来就不一样时，只有去重后差距变小才
     改用那一份；变小之后仍有差额也按拉齐后的序列配。比较忽略 id="p-N"。
     """
-    kids_o = _entries(original_html)
-    kids_t = _entries(zh_html)
+    kids_o = _entries(original_html, split_br=split_br)
+    kids_t = _entries(zh_html, split_br=split_br)
     if not kids_o and not kids_t:
         return None
     raw_gap = _gap(kids_o, kids_t)
     # 懒加载：页面导入 pair 时不必立刻拉起翻译服务。叶子数已经一样也要跑。
     from researchlib.translate.service import _dedupe_consecutive_blocks
 
-    deduped_o = _entries(_dedupe_consecutive_blocks(original_html))
-    deduped_t = _entries(_dedupe_consecutive_blocks(zh_html))
+    deduped_o = _entries(_dedupe_consecutive_blocks(original_html), split_br=split_br)
+    deduped_t = _entries(_dedupe_consecutive_blocks(zh_html), split_br=split_br)
     if (
         raw_gap == 0
         and deduped_o
@@ -143,6 +146,22 @@ def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[Segment], 
     if deduped_o and deduped_t and _gap(deduped_o, deduped_t) < raw_gap:
         return deduped_o, deduped_t
     return kids_o, kids_t
+
+
+def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[Segment], list[Segment]] | None:
+    """选展示用的叶子段。两边都没有叶子段才返回 None。
+
+    普通段落里的 ``<br>`` 先按行拆开；只在拆开后两边的差额不再变大时才用这一份。
+    旧译文是把整段（几十行 ``<br>``）当一段译的，行数常和原文差一两行；按行并排会
+    从那行起整段错开，不如整段一对。新译文写回时行数一致，走拆开的那一份。
+    """
+    split = _best_blocks(original_html, zh_html, split_br=True)
+    if split is None or _gap(*split) == 0:
+        return split
+    coarse = _best_blocks(original_html, zh_html, split_br=False)
+    if coarse is None or _gap(*coarse) >= _gap(*split):
+        return split
+    return coarse
 
 
 def bilingual_pairs(original_html: str, zh_html: str) -> list[BilingualPair] | None:
