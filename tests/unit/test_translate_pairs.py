@@ -5,6 +5,7 @@ from researchlib.translate.pair import bilingual_pairs, stamp_paragraph_ids
 from researchlib.translate.segments import (
     chunk_segments,
     coarse_segment_reason,
+    iter_segments,
     leaf_count_problem,
     segments_of,
     shield,
@@ -533,6 +534,86 @@ def _daily_quote_html(*, chinese: bool = False) -> str:
     parts.append("<blockquote>" + "".join(inner) + "</blockquote>")
     parts.append(f"<p>{closing}</p>")
     return "".join(parts)
+
+
+def _digest_lines(count: int) -> list[str]:
+    return [f"Digest line {index} keeps its own row in the email." for index in range(count)]
+
+
+def test_paragraph_with_many_br_splits_into_line_leaves():
+    """22092 的形状：一个 <p> 里塞几十行 <br>，原来只有一段，对照页只能出一对。"""
+    lines = _digest_lines(8)
+    html = f'<p id="p-1">{"<br>".join(lines)}</p>'
+    segments = iter_segments(html)
+    assert len(segments) == 8
+    assert segments[0].html == "<p>Digest line 0 keeps its own row in the email.</p>"
+    assert segments[0].anchor == "p-1" and segments[1].anchor is None
+    assert all(segment.html.count("<p") == 1 for segment in segments)
+    # 不按行拆的那一份只有一个叶子，旧译文用得上。
+    assert len(iter_segments(html, split_br=False)) == 1
+
+
+def test_br_line_write_back_stays_in_the_same_paragraph():
+    """一行一段写回原来的 <p>，行间还是 <br>；再切叶子数不变，id 也留着。"""
+    html = '<p id="p-1">Alpha line.<br>Beta line.<br>Gamma line.</p>'
+    assert len(segments_of(html)) == 3
+    written = splice_segments(html, {0: "<p>甲</p>", 1: "乙", 2: "<p>丙</p>"})
+    assert written == '<p id="p-1">甲<br>乙<br>丙</p>'
+    assert len(segments_of(written)) == 3
+    assert leaf_count_problem(html, written) is None
+
+
+def test_br_line_write_back_keeps_the_list_item_shell():
+    html = "<ul><li>First row.<br>Second row.<br>Third row.</li></ul>"
+    assert len(segments_of(html)) == 3
+    written = splice_segments(html, {0: "第一行。", 1: "第二行。", 2: "第三行。"})
+    assert written == "<ul><li>第一行。<br>第二行。<br>第三行。</li></ul>"
+    assert len(segments_of(written)) == 3
+    assert leaf_count_problem(html, written) is None
+
+
+def test_two_line_paragraph_stays_one_leaf():
+    """两行的地址、诗句、署名不拆。"""
+    html = "<p>First line of the address.<br>Second line of the address.</p>"
+    assert segments_of(html) == [html]
+
+
+def test_punctuation_only_br_lines_stay_leaves():
+    """只留标点的行不删：译文同一个位置可能是「。」，删掉一边整段就错开。"""
+    html = "<p>One.<br>—<br>Two.<br>|<br>Three.</p>"
+    segments = segments_of(html)
+    assert segments == ["<p>One.</p>", "<p>—</p>", "<p>Two.</p>", "<p>|</p>", "<p>Three.</p>"]
+    written = splice_segments(html, {0: "一。", 2: "二。", 3: "｜", 4: "三。"})
+    # 只有标点的译文不收（「｜」也不算字母），留着原文那一行，叶子数不变。
+    assert written == "<p>一。<br>—<br>二。<br>|<br>三。</p>"
+    assert len(segments_of(written)) == 5
+    assert leaf_count_problem(html, written) is None
+
+
+def test_br_lines_pair_one_to_one_when_both_sides_match():
+    """两边的行数一样时按行对照：22092 修好之后就是这一种。"""
+    en = f'<p id="p-1">{"<br>".join(_digest_lines(6))}</p>'
+    zh = f'<p id="p-1">{"<br>".join(f"第{index}行。" for index in range(6))}</p>'
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 6
+    for index, pair in enumerate(pairs):
+        assert f"line {index}" in pair.en
+        assert pair.zh and f"第{index}行" in pair.zh
+
+
+def test_legacy_br_paragraph_with_other_line_count_stays_one_pair():
+    """旧译文把整段几十行当一段译，行数和原文差一行时不拆，免得从那行起错位。"""
+    en = "<p>" + "<br>".join(f"English row {index}." for index in range(5)) + "</p>"
+    zh = "<p>" + "<br>".join(f"中文第{index}行。" for index in range(4)) + "</p>"
+    pairs = bilingual_pairs(en, zh)
+    assert pairs is not None and len(pairs) == 1
+    assert "row 0" in pairs[0].en and pairs[0].zh and "第0行" in pairs[0].zh
+
+
+def test_coarse_reason_ignores_br_lines_in_one_paragraph():
+    """22092：库里记 2 段，按行拆出几十段，但块级叶子仍是 2，不该抽出来花模型钱重译。"""
+    zh = f'<p id="p-1">{"<br>".join(f"第{index}行。" for index in range(30))}</p>'
+    assert coarse_segment_reason(zh, recorded_segments=2) is None
 
 
 def test_giant_blockquote_splits_into_paragraph_pairs():

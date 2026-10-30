@@ -127,3 +127,44 @@ def test_translation_html_is_filtered_on_the_article_page(conn, settings):
     assert "onerror" not in page
     assert "alert(3)" not in page
     assert 'title="" onmouseover' not in page
+
+
+def test_br_line_paragraph_pairs_line_by_line_on_the_page(conn, settings):
+    """22092 的形状：英文一个 <p> 里塞几十行 <br>，对照页要一行一对，不是一整块两对。"""
+    count = 20
+    english = "\n".join(f"Line {index} of the newsletter digest keeps its own row." for index in range(count))
+    zh_html = "<p>" + "<br>".join(f"第{index}行，这一行在对照页上单独成对。" for index in range(count)) + "</p>"
+    sources = {source.id: source for source in load_sources(settings.sources_path)}
+    store_documents(
+        conn,
+        source=sources["gudujinhuati"],
+        docs=[
+            ParsedDoc(
+                external_id="en:br-lines",
+                title="A digest of one paragraph",
+                published_at=datetime(2025, 5, 3, 8, 0, tzinfo=SHANGHAI),
+                body_md=english,
+                raw_meta={"language": "en"},
+                image_refs=[],
+            )
+        ],
+        data_dir=settings.data_dir,
+        archive_files=1,
+        images_in_archive=0,
+        errors=[],
+    )
+    row = conn.execute("SELECT id, content_hash FROM articles WHERE external_id = 'en:br-lines'").fetchone()
+    conn.execute(
+        """
+        INSERT INTO article_translations (article_id, content_hash, title_zh, body_html, body_text, complete, segments)
+        VALUES (%s, %s, '一段里的日报', %s, %s, true, %s)
+        """,
+        (row["id"], row["content_hash"], zh_html, zh_html, count),
+    )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{row['id']}").text
+    assert page.count('class="prose bilingual-en with-toolbar"') == count
+    assert page.count('class="prose bilingual-zh with-toolbar"') == count
+    assert "第0行，这一行在对照页上单独成对。" in page
+    assert "第7行，这一行在对照页上单独成对。" in page
