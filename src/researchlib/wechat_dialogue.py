@@ -1,12 +1,16 @@
 """把微信截图的 OCR / 识图结果整理成博客式对话。
 
 微信里绿色气泡是作者自己（方伟），通常靠右、上面不写名字；灰色气泡是别人，通常靠左、上面有昵称。
-以前 RapidOCR 认的图，库里本人行前面带侧标记（SIDE_SELF），这里照样认。识图若已经写成「方伟：」「网友：」，
-再跑一遍仍剥界面字，不把「可按住转文字 / 继续提问 / AI搜索」这类 UI 行标成说话人。不在这里调用模型。
+以前 RapidOCR 认的图，库里本人行前面带侧标记（SIDE_SELF），这里照样认。识图若已经写成「方伟：」「网友：」
+或「昵称：」，再跑一遍仍剥界面字，不把「可按住转文字 / 继续提问 / AI搜索」这类 UI 行标成说话人。不在这里调用模型。
 
 - 靠右（或没有坐标时、不带别人昵称）的气泡 →「方伟：」
-- 别人的昵称（王小明、李小红、Kevin，以及只写了名字的）→「网友：」，正文里不再留这个名字
+- 别人的昵称（王小明、李小红、Kevin，以及只写了名字的）→「王小明：」，网名照截图留着；
+  以前只写成「网友：」的旧结果仍是「网友：」
 - 显示名「方伟 / 方伟Rey / 方伟-最近在杭州」仍是方伟。句子里的 @方伟 不是说话人
+- 雪球 App 的加群卡（雪球专属交流群、加群交流、股民必入、与高手畅聊热点）、
+  财富陪伴官邀请、影响力徽章、底栏（去基金首页 自选 我的）、风险提示，
+  以及「N位达人赞过 / 投诉 / 屏蔽用户 / 收藏 / 收起」这类页脚整行丢掉，句子里提到的不动
 - 方伟连续说的合成一块；网友每次开口仍分开，不因为都标成网友就并成一段
 - 雪球 / 微博嵌套回复不是从上到下的时间序：``回复@`` / ``//@`` 从早到晚展开，下面的引用卡片放到回复前面
 - 跨图重复的句子只留一次；后一张图只是把上一句又认了一遍时，新的半句接回上一块
@@ -135,9 +139,69 @@ _NOT_NAMES = frozenset(
         "同时",
         "瑞幸",
         "古茗",
+        # 正文里常见的提示语、元信息词：冒号前面这一小段不是网名。
+        "来源",
+        "原文",
+        "原标题",
+        "标题",
+        "作者",
+        "出处",
+        "链接",
+        "备注",
+        "结论",
+        "原因",
+        "方法",
+        "问题",
+        "答案",
+        "建议",
+        "数据",
+        "图表",
+        "正文",
+        "摘要",
+        "背景",
+        "影响",
+        "分析",
+        "观点",
+        "例子",
+        "节选",
+        "全文",
+        "编者按",
+        "时间",
+        "地点",
+        "事件",
+        "人物",
+        "发布",
+        "更新",
+        "风险",
+        "风险提示",
+        "注意事项",
+        "免责声明",
+        "数据来源",
+        "原文链接",
+        "核心观点",
+        "投资建议",
+        "重要提示",
+        "特别提示",
+        "内容摘要",
+        "文章标题",
+        "发布时间",
+        "更新时间",
+        "作者简介",
+        "A股",
+        "B股",
+        "H股",
+        "港股",
+        "美股",
     }
 )
 # 显示名可以带状态后缀：方伟-最近在杭州、方伟Rey、方伟（星主）。句子里的「方伟说得对」不是名字。
+# 这些词开头的一小段是正文（「以下转自茅台官方：…」），不是网名。
+_NOT_NAME_HEAD = re.compile(
+    r"^(?:以下|以上|如下|下面|上述|其中|此外|另外|同时|因此|所以|但是|不过|如果|因为|由于|"
+    r"关于|对于|根据|按照|目前|现在|今天|昨天|明天|今年|去年|首先|其次|然后|最后|总之|"
+    r"总结|结论|原因|方法|问题|答案|建议|注意|来源|原文|标题|作者|备注|说明|风险|数据|"
+    r"转发|转自|摘自|引自|回复|引用)"
+)
 _HOST_LINE = re.compile(
     r"^(?:"
     r"方\s*伟(?:\s*Rey)?"
@@ -149,7 +213,13 @@ _HOST_LINE = re.compile(
 )
 _HOST_PREFIX = re.compile(r"^(方\s*伟(?:\s*Rey)?|Rey)\s+(.+)$", re.I)
 _STRUCTURED = re.compile(r"^(方伟|网友)\s*[:：]\s*(.*)$")
-_INLINE = re.compile(r"^(.{1,16}?)[:：]\s*(.+)$")
+# 识图现在照抄截图上的网名（大道无形我有型：…）。标签只认冒号前的一小段，
+# 不含空白、句读和斜杠；像不像人名交给 _guest_label 判，不堆名字对照表。
+_NICK_LABEL = re.compile(
+    r"^(?P<label>[^\s：:，。！？!?、；/\\]{1,16})\s*[:：]\s*(?P<body>.*)$", re.S
+)
+# 昵称后面粘着雪球/星球的身份徽章：「大道无形我有型作者」。
+_AUTHOR_SUFFIX = re.compile(r"\s*[（(]?作者[）)]?$")
 # 群名不一定带「群」字，例如「1633 示例·线下深度交流(80)」。
 _GROUP_TITLE = re.compile(
     r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
@@ -159,7 +229,7 @@ _GROUP_TITLE = re.compile(
 )
 _LATIN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,19}$")
 _LATIN_STOP = frozenset(
-    {"gpt", "opus", "claude", "codex", "grok", "the", "and", "for", "you", "are", "not", "but"}
+    {"gpt", "opus", "claude", "codex", "grok", "the", "and", "for", "you", "are", "not", "but", "http", "https", "www"}
 )
 _GROUP_BARE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,16}群$")
 _TIME = re.compile(
@@ -311,9 +381,9 @@ _SHOP_WEAK = re.compile(r"点赞补贴价|上滑继续看视频|去参与")
 # 知识星球优惠券 / 立减金推广卡。账号栏「方伟看十年」会把下面误标成方伟。
 _ZSXQ_COUPON = re.compile(r"扫码领取优惠券|立减金")
 _ZSXQ_COUPON_EXTRA = re.compile(r"仅限前\s*\d+\s*名|\d+\s*元立减金")
-# 微博评论卡头：小事7747 山东 2
+# 微博评论卡头：王小明 山东 2
 _WEIBO_HEADER = re.compile(
-    r"^[A-Za-z0-9_\u4e00-\u9fff]{2,20}\s+[\u4e00-\u9fff]{2,3}\s+\d{1,4}$"
+    r"^(?P<name>[A-Za-z0-9_\u4e00-\u9fff]{2,20})\s+[\u4e00-\u9fff]{2,3}\s+\d{1,4}$"
 )
 _WEIBO_FEED_FOOTER = re.compile(
     r"^(?:[\u4e00-\u9fff]{2,8}(?:新闻)?联播|[\u4e00-\u9fff]{2,8}日报|[\u4e00-\u9fff]{2,8}新闻)$"
@@ -328,6 +398,23 @@ _INFLUENCE_BADGE = re.compile(
 # 点赞/评论/转发数字栏：756 1555 827
 _ENGAGEMENT_COUNTS = re.compile(r"^\d{1,6}(?:\s+\d{1,6}){1,4}$")
 _FEED_ACTION = re.compile(r"^(?:发讨论|查看对话)[>〉›]?$")
+# 雪球 App 的加群卡、财富陪伴官邀请和底栏 tab：整行都是广告，句子里提到的不动。
+# 只认行首的广告字样；「他昨天邀请我加入雪球专属交流群」这种句子不动。
+_XUEQIU_AD = re.compile(
+    r"^(?:广告\s*)?(?:[·•・]\s*)?(?:邀请您加入)?\s*"
+    r"(?:雪球专属交流群|加群交流|股民必入|与高手畅聊热点|"
+    r"雪球财富陪伴官|财富陪伴官|畅聊股市热点|进阶投资技巧|"
+    r"雪球[丨|｜]|去基金首页)"
+)
+# 「用户发表的所有文章仅代表个人观点，与雪球的立场无关…」：雪球风险提示。
+_XUEQIU_DISCLAIMER = re.compile(r"用户发表的所有文章仅代表个人观点|投资决策需建立在")
+# 「1434 907收藏投诉 收起」「1171 投诉8屏蔽用户」「4位达人赞过」：整行只有按钮和计数。
+_ENGAGEMENT_FOOTER = re.compile(
+    r"^(?=.*(?:投诉|屏蔽用户|收藏|收起|展开|达人))"
+    r"[\d\s位达人赞过投诉屏蔽用户收藏展开收起·•.。]*$"
+)
+# 雪球帖头/页脚的时间：「2026-07-3105：05·美国·雪球十年知己」「02-0312:48.来自iPad」。
+_FEED_STAMP = re.compile(r"(?:\d{4}-)?\d{1,2}-\d{1,2}\s*\d{1,2}[:：]\d{2}")
 _VIDEO_FOLLOWED = re.compile(
     r"^(?:[\u4e00-\u9fffA-Za-z0-9_\-]{2,20}\s+)?已关注$"
 )
@@ -455,9 +542,12 @@ def present_stored_ocr(stored: str) -> str:
 
 def speaker_note(text: str) -> str:
     """摘要和观点的提示里补一句说话人，没有对话标记时不加。"""
-    if "方伟：" in (text or "") or "网友：" in (text or ""):
-        return "群聊已整理成「方伟：」和「网友：」。方伟是星主，其余人都写成网友，不要把网友的话写成方伟的判断。"
-    return ""
+    if not any(split_speaker(line, names=True) for line in (text or "").splitlines()):
+        return ""
+    return (
+        "截图里的对话已整理成「说话人：正文」：绿气泡是星主方伟，其余说话人写的是截图上的网名。"
+        "方伟是星主，别人的话不要写成方伟的判断。"
+    )
 
 
 def _plain(line: str) -> str:
@@ -600,6 +690,33 @@ def _is_feed_meta(line: str) -> bool:
     return False
 
 
+def _trim_feed_head(line: str) -> str:
+    """雪球帖头把昵称、关注按钮、时间、地区、影响力徽章粘成一行：只留昵称，壳丢掉。
+
+    「大道无形我有型  02-0312:48.来自iPad」→ 大道无形我有型；
+    「基查处  关注」→ 基查处；「川糖周掌门关注的人02-0309:05·湖南」和
+    「发布于2026-02-0313:28来自雪球·广东」整行不要。认不出是昵称就原样返回。
+    """
+    plain = _plain(line).strip()
+    if not plain:
+        return ""
+    stamp = _FEED_STAMP.search(plain)
+    if stamp and not re.search(r"[。！？!?]", plain[stamp.end() :].rstrip("。")):
+        head = plain[: stamp.start()].strip()
+        if not head or re.fullmatch(r"(?:发布于|发布|布于|更新于|来自)", head):
+            return ""
+        trimmed = re.sub(r"(?:关注的人|关注)$", "", head).strip()
+        if re.search(r"关注的人$", head):
+            # 「X关注的人」是推荐位，不是 X 说的话。
+            return ""
+        if _guest_label(trimmed) or _is_host_line(_compact_host(trimmed)):
+            return trimmed
+    follow = re.fullmatch(r"(.{2,16}?)\s+关注", plain)
+    if follow and (_guest_label(follow.group(1)) or _is_host_line(_compact_host(follow.group(1)))):
+        return follow.group(1).strip()
+    return line
+
+
 def _is_engagement_counts(line: str) -> bool:
     return _ENGAGEMENT_COUNTS.fullmatch(_plain(line).strip()) is not None
 
@@ -626,7 +743,7 @@ def _drop_ad_shell(lines: list[str]) -> list[str]:
     只在同一张图里已经有「适用条件」和保障/免责说明时动手，避免把正文里的短句删掉。
     书籍目录没有这种形状，整段留下。
     """
-    blob = "\n".join(_speaker_body(line) for line in lines)
+    blob = "\n".join(_plain(line) for line in lines)
     if "适用条件" not in blob or not re.search(r"责任免除|官方渠道|终身保障", blob):
         return lines
     out: list[str] = []
@@ -667,7 +784,7 @@ def _is_video_cta(line: str) -> bool:
     plain = _plain(line).strip()
     if not plain:
         return False
-    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", plain)
+    body = _speaker_body(plain)
     if _VIDEO_FOLLOWED.fullmatch(body):
         return True
     if _VIDEO_CTA.search(body):
@@ -676,7 +793,7 @@ def _is_video_cta(line: str) -> bool:
 
 
 def _is_feed_chrome(line: str) -> bool:
-    """雪球/微博/视频号壳：帖头元信息、发讨论、数字栏、关注 CTA；杂志品牌刊头；视频角标。"""
+    """雪球/微博/视频号壳：帖头元信息、加群卡、财富陪伴官、数字栏、关注 CTA；杂志品牌刊头；视频角标。"""
     if (
         _is_feed_meta(line)
         or _is_engagement_counts(line)
@@ -685,10 +802,20 @@ def _is_feed_chrome(line: str) -> bool:
         or _is_broadcast_line(line)
     ):
         return True
-    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", _plain(line).strip())
+    plain = _plain(line).strip()
+    body = _speaker_body(line)
+    # 「来源：思想×岭南」被当成「来源」这个网名剥掉以后还要能认出来。
+    if _BRAND_MASTHEAD.fullmatch(plain) or _SOURCE_MASTHEAD.match(plain):
+        return True
     if _BRAND_MASTHEAD.fullmatch(body) or _SOURCE_MASTHEAD.match(body):
         return True
-    return False
+    if body in {"广告", "广告。"}:
+        return True
+    if len(body) <= 40 and _XUEQIU_AD.search(body):
+        return True
+    if _XUEQIU_DISCLAIMER.search(body):
+        return True
+    return _ENGAGEMENT_FOOTER.fullmatch(body) is not None
 
 
 def _is_xueqiu_author_nick(line: str, nxt: str) -> bool:
@@ -706,15 +833,13 @@ def _is_xueqiu_author_nick(line: str, nxt: str) -> bool:
 
 
 def _collapse_reply_at(line: str) -> str:
-    """「回复@甲:正文 //@乙:…」压成正文；保留已有「网友：/方伟：」前缀。"""
+    """「回复@甲:正文 //@乙:…」压成正文；保留已有的「方伟：/网友：/昵称：」前缀。"""
     plain = (line or "").strip()
     if not plain:
         return ""
-    prefix = ""
-    labeled = re.match(r"^((?:方伟|网友)\s*[:：]\s*)", plain)
-    if labeled:
-        prefix = labeled.group(1)
-        plain = plain[labeled.end() :]
+    prefix = speaker_prefix(plain)
+    if prefix:
+        plain = plain[len(prefix) :]
     if not _REPLY_AT_MARK.search(plain):
         return line.strip()
     parts = re.split(r"\s*//@\s*", plain)
@@ -864,7 +989,12 @@ def _drop_post_footer(lines: list[str]) -> list[str]:
     from researchlib.present_text import expand_reply_chain_line
 
     lines = drop_broadcast_chrome(lines)
-    peeled = [_peel_sticky_tail(line) for line in lines]
+    # 雪球帖头把昵称和时间、地区、徽章粘在一行：先只留下昵称，再剥其余壳。
+    peeled = [
+        trimmed
+        for trimmed in (_peel_sticky_tail(_trim_feed_head(line)) for line in lines)
+        if trimmed.strip()
+    ]
     context = _post_chrome_context(peeled)
     kept: list[str] = []
     in_comments = False
@@ -969,10 +1099,14 @@ def _is_weibo_comment_shot(lines: list[str]) -> bool:
 
 
 def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
+    """微博评论卡：昵称+地区+数字那一行是说话人，地区和时间数字丢掉。"""
+    speaker = ""
     body: list[str] = []
     for index, line in enumerate(lines):
         plain = _plain(line).strip()
-        if index == 0 and _WEIBO_HEADER.fullmatch(plain):
+        header = _WEIBO_HEADER.fullmatch(plain) if index == 0 else None
+        if header:
+            speaker = header.group("name")
             continue
         if _WEIBO_FEED_FOOTER.fullmatch(plain):
             continue
@@ -983,7 +1117,7 @@ def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
             body.append(plain)
     if not body:
         return []
-    return [Turn(speaker=GUEST, lines=body)]
+    return [Turn(speaker=speaker or GUEST, lines=body)]
 
 
 def parse_shot(text: str) -> Shot:
@@ -1006,8 +1140,8 @@ def parse_shot(text: str) -> Shot:
             return Shot("dialogue", turns, "", "chat")
         return Shot("media", [], "")
     # 商品图、图表、外网评论截图、数据表先拦下：不能进微信对话。
-    # 识图已标「方伟：/网友：」的群聊截图可能内嵌估值表——不能当纯表整段丢掉。
-    labeled_chat = any(_STRUCTURED.match(_plain(line) or "") for line in raw_lines)
+    # 识图已标「方伟：/网友：」或截图网名的群聊截图可能内嵌估值表——不能当纯表整段丢掉。
+    labeled_chat = any(split_speaker(_plain(line) or "", names=True) for line in raw_lines)
     if not labeled_chat and (
         _is_product_shot(raw_lines)
         or _is_shop_shot(raw_lines)
@@ -1024,7 +1158,11 @@ def parse_shot(text: str) -> Shot:
     visible = [
         _plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN, _HOST_TURN)
     ]
-    labeled = bool(visible) and _STRUCTURED.match(visible[0]) is not None
+    speakers = [speaker[0] for speaker in (split_speaker(line, names=True) for line in visible) if speaker]
+    named = [label for label in speakers if label not in {HOST, GUEST}]
+    # 识图照抄网名时不写「方伟/网友」：两个以上不同的人开口、其中有人连说两次，才算对话截图。
+    named_chat = len(set(named)) >= 2 and any(named.count(label) >= 2 for label in named)
+    labeled = (bool(visible) and split_speaker(visible[0]) is not None) or named_chat
     hosted = (
         any(_is_host_line(line) for line in visible)
         or any(line.startswith(SIDE_SELF) for line in lines)
@@ -1032,11 +1170,7 @@ def parse_shot(text: str) -> Shot:
     )
     if not hosted:
         for line in visible:
-            if _HOST_PREFIX.match(line) or (_STRUCTURED.match(line) and line.startswith(HOST)):
-                hosted = True
-                break
-            inline = _INLINE.match(line)
-            if inline and _is_host_line(_compact_host(inline.group(1))):
+            if _HOST_PREFIX.match(line) or (split_speaker(line) or ("", ""))[0] == HOST:
                 hosted = True
                 break
     if not lines or not (signal or names or labeled or hosted):
@@ -1046,7 +1180,7 @@ def parse_shot(text: str) -> Shot:
     had_account = any(_account_line(_plain(line)) for line in stripped)
     family = "moments" if had_account else ("group" if signal else "chat")
     if turns:
-        tagged = sum(1 for line in raw_lines if _STRUCTURED.match(_plain(line) or ""))
+        tagged = sum(1 for line in raw_lines if split_speaker(_plain(line) or "", names=True))
         return Shot("dialogue", turns, "", family, bubble_lines=tagged * 2 >= len(raw_lines))
     # 整张都是界面字时不要把原文退回去，否则价格和小程序会漏进正文。
     if signal or names or hosted or labeled:
@@ -1254,7 +1388,8 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
         if blocks and blocks[-1][2] == turn_id:
             blocks[-1][1].append(line)
             continue
-        if blocks and speaker == HOST and blocks[-1][0] == HOST:
+        if blocks and speaker == blocks[-1][0] and speaker != GUEST:
+            # 方伟连续说的并成一块；带网名的也是同一个人，不用重复标签。
             blocks[-1][1].append(line)
             blocks[-1][2] = turn_id
             continue
@@ -1269,6 +1404,9 @@ def render_turns(turns: list[Turn], seen: list[str] | None = None) -> str:
 def _close_block(lines: list[str]) -> str:
     """一块话的末尾补上句号，标题和去重才能在说话人交界处停住。已经有句号的不再加。"""
     body = "\n".join(lines)
+    # 截掉页脚后常留下一个逗号（「……缩短配送时间，」），别再补成「，。」。
+    if body and body[-1] in "，、；：,;:":
+        body = body[:-1].rstrip()
     # OCR 常把句号认成半角点，例如「仅供参.」。这种不再补一个全角句号。
     if body and body[-1] not in "。！？!?….":
         body += "。"
@@ -1295,8 +1433,8 @@ def _drop_system_bits(line: str) -> str:
     """切掉群系统提示和顶上的状态栏。说话人标签和侧标记留着；切完没剩字就整行不要。"""
     side = SIDE_SELF if line.startswith(SIDE_SELF) else ""
     rest = line[len(side) :]
-    match = _STRUCTURED.match(rest)
-    label, body = (rest[: match.start(2)], match.group(2)) if match else ("", rest)
+    prefix = speaker_prefix(rest)
+    body = rest[len(prefix) :]
     cleaned = _GROUP_NOTICE.sub(" ", body)
     cleaned = _STATUS_BAR.sub("", cleaned.strip())
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -1304,7 +1442,7 @@ def _drop_system_bits(line: str) -> str:
         return line
     if not cleaned or (_APP_TITLE.fullmatch(cleaned) and _STATUS_BAR.match(body.strip())):
         return ""
-    return side + label + cleaned
+    return side + prefix + cleaned
 
 
 def _norm(line: str) -> str:
@@ -1409,12 +1547,50 @@ def _is_sku(line: str) -> bool:
     return len(line) <= 12
 
 
-def _speaker_body(line: str) -> str:
-    """去掉「方伟：/网友：」，看剩下是不是界面字。"""
+def _clean_label(label: str) -> str:
+    """标签上的 @ 和身份徽章去掉：@大道无形我有型、大道无形我有型作者。"""
+    text = re.sub(r"^@\s*", "", (label or "").strip())
+    return _AUTHOR_SUFFIX.sub("", text).strip()
+
+
+def split_speaker(line: str, *, names: bool = False) -> tuple[str, str] | None:
+    """拆行首的说话人：返回 (标签, 正文)。
+
+    默认只认「方伟」「网友」和方伟的显示名；names=True 再认识图照抄的截图网名
+    （大道无形我有型：…）。冒号前的字像人名才认；「注意：」「10:38」「https:」不是说话人。
+    """
     plain = _plain(line or "").strip()
-    match = _STRUCTURED.match(plain)
-    if match:
-        return (match.group(2) or "").strip()
+    match = _NICK_LABEL.match(plain)
+    if not match:
+        return None
+    label = _clean_label(match.group("label"))
+    if not label:
+        return None
+    body = (match.group("body") or "").strip()
+    if label == HOST or label == GUEST:
+        return label, body
+    if _is_host_line(_compact_host(label)):
+        return HOST, body
+    if names and _guest_label(label):
+        return label, body
+    return None
+
+
+def speaker_prefix(line: str, *, names: bool = False) -> str:
+    """行首说话人标签的原文（含冒号和空格），不是说话人返回空串。"""
+    plain = _plain(line or "").strip()
+    match = _NICK_LABEL.match(plain)
+    if not match or split_speaker(plain, names=names) is None:
+        return ""
+    return plain[: match.start("body")]
+
+
+def _speaker_body(line: str) -> str:
+    """去掉「方伟：/网友：/昵称：」，看剩下是不是界面字。"""
+    plain = _plain(line or "").strip()
+    speaker = split_speaker(plain, names=True)
+    if speaker:
+        return speaker[1]
     return plain
 
 
@@ -1603,33 +1779,29 @@ def _guest_label(name: str) -> bool:
         return False
     if _is_host_line(_compact_host(name)):
         return False
+    if _NOT_NAME_HEAD.match(name):
+        return False
     if _cjk_name(name, 2) or _cjk_name(name, 3) or _latin_name(name) or _mixed_nickname(name):
         return True
     chars = _CJK.findall(name)
-    return 4 <= len(chars) <= 12 and len(chars) == len(name) and not any(char in _STOP_CHAR for char in chars)
+    # 网名可以带「我 / 的」这类字（大道无形我有型）；正文里的提示语已放进 _NOT_NAMES。
+    return 4 <= len(chars) <= 12 and len(chars) == len(name)
 
 
 def _classify(line: str, names: set[str]) -> tuple[str, str]:
-    structured = _STRUCTURED.match(line)
-    if structured:
-        who = HOST if structured.group(1) == HOST else GUEST
-        return who, (structured.group(2) or "").strip()
+    speaker = split_speaker(line, names=True)
+    if speaker:
+        return speaker
     compact = _compact_host(line)
     if _is_host_line(compact):
         return HOST, ""
     prefixed = _HOST_PREFIX.match(line)
     if prefixed:
         return HOST, prefixed.group(2).strip()
-    inline = _INLINE.match(line)
-    if inline:
-        name, rest = inline.group(1).strip(), inline.group(2).strip()
-        if _is_host_line(_compact_host(name)):
-            return HOST, rest
-        if rest and _guest_label(name):
-            return GUEST, rest
     # 名字集合里的行永远是说话人，哪怕下一句很短（「王小明 / 数据确实是好的」）。
+    # 网名照截图留着，不再一律写成「网友：」。
     if line in names:
-        return GUEST, ""
+        return _clean_label(line.strip()), ""
     return "", ""
 
 

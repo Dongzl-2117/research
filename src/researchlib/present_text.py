@@ -249,7 +249,8 @@ def present_article_text(text: str) -> str:
 # 屏幕折行大约 10–24 个汉字宽。更长的是已经写完的一段，不能再往下粘。
 _WRAP_MIN = 10.0
 _WRAP_MAX = 24.0
-_DIALOGUE_LINE = re.compile(r"^(?:方伟|网友)\s*[:：]")
+# 行首说话人：「方伟：」「网友：」，或识图照抄的网名（大道无形我有型：…）。
+_DIALOGUE_LINE = re.compile(r"^[^\s：:，。！？!?、；]{1,16}\s*[:：]")
 _LABEL_ONLY = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9·]{1,12}[：:]$")
 _SENTENCE_END = re.compile(r"[。！？!?…]$|(?:[A-Za-z])\.$")
 _CONNECTOR_END = re.compile(r"[，、；：,;:]$")
@@ -488,53 +489,59 @@ def _as_guest(line: str) -> str:
     return f"网友：{(line or '').strip()}"
 
 
-def _peel_segment(part: str) -> str:
-    """去掉一段雪球回复壳，留下发言。引语里的「莫尼什：」还在。"""
+_REPLY_TARGET = re.compile(r"^(?:回复\s*)?@\s*[^\s：:]{1,32}\s*[:：]\s*")
+_CHAIN_AUTHOR = re.compile(r"^([^\s：:]{1,32})\s*[:：]\s*")
+
+
+def _peel_segment(part: str) -> tuple[str, str]:
+    """去掉一段雪球回复壳，返回 (这一楼的作者, 发言)。
+
+    「回复@甲:正文」是回复甲，作者看上一层；「乙:回复@甲:正文」的作者是乙。
+    引语里的「莫尼什：」是正文，不当壳。
+    """
     text = (part or "").strip()
-    stripped_at = False
-    for _ in range(6):
-        marked = re.match(r"^(?:回复\s*)?@\s*[^\s：:]{1,32}\s*[:：]\s*", text)
-        if marked:
-            text = text[marked.end() :].strip()
-            stripped_at = True
-            continue
-        named = re.match(r"^[^\s：:]{1,32}\s*[:：]\s*((?:回复\s*)?@\s*\S.*)$", text, re.S)
+    author = ""
+    if not re.match(r"^(?:回复\s*)?@", text):
+        named = _CHAIN_AUTHOR.match(text)
         if named:
-            text = named.group(1).strip()
-            stripped_at = True
-            continue
-        break
-    if not stripped_at:
-        handle = re.match(r"^([^\s：:]{1,16})\s*[:：]\s*(\S.*)$", text, re.S)
-        if handle and not re.search(r"[。！？!?，,、；;]", handle.group(1)):
-            text = handle.group(2).strip()
-    return text.strip()
+            author = named.group(1).strip()
+            text = text[named.end() :].strip()
+    for _ in range(6):
+        marked = _REPLY_TARGET.match(text)
+        if not marked:
+            break
+        text = text[marked.end() :].strip()
+    return author, text.strip()
 
 
 def expand_reply_chain_line(line: str) -> list[str] | None:
     """一行里的「回复@ / //@」拆成从早到晚的多条。没有这种标记就返回 None。
 
-    雪球把新回复放在最前，``//@`` 越靠后越早。这里翻成时间顺序，昵称改成「网友：」。
+    雪球把新回复放在最前，``//@`` 越靠后越早。这里翻成时间顺序。
+    每层开头的网名是那一楼的作者，照截图留着；壳里拿不到名字才写「网友：」。
     """
+    from researchlib.wechat_dialogue import speaker_prefix, split_speaker
+
     raw = (line or "").strip()
     if not raw or not _CHAIN_MARK.search(raw):
         return None
-    host = bool(re.match(r"^方伟\s*[:：]", raw))
-    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", raw)
-    bodies: list[str] = []
-    for part in re.split(r"\s*//@\s*", body):
-        peeled = _peel_segment(part)
-        if peeled:
-            bodies.append(peeled)
-    if not bodies:
+    prefix = speaker_prefix(raw, names=True)
+    outer = ""
+    if prefix:
+        outer = (split_speaker(raw, names=True) or ("", ""))[0]
+    body = raw[len(prefix) :] if prefix else raw
+    entries: list[tuple[str, str]] = []
+    for index, part in enumerate(re.split(r"\s*//@\s*", body)):
+        author, said = _peel_segment(part)
+        if not said:
+            continue
+        if index == 0 and not author:
+            author = outer
+        entries.append((author, said))
+    if not entries:
         return []
-    bodies.reverse()
-    lines: list[str] = []
-    last = len(bodies) - 1
-    for index, item in enumerate(bodies):
-        speaker = "方伟：" if host and index == last else "网友："
-        lines.append(f"{speaker}{item}")
-    return lines
+    entries.reverse()
+    return [f"{author or '网友'}：{said}" for author, said in entries]
 
 
 def _maybe_reverse_guest_run(run: list[str]) -> list[str]:

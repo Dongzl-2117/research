@@ -401,12 +401,13 @@ def test_reply_chain_expands_earlier_speech_first():
         "//@王小明:回复@李四:大道会不会考虑和李录做一期对谈节目？"
     )
     expanded = expand_reply_chain_line(line)
+    # //@ 后面是一楼，网名照留；最前面那条回复没写自己的网名，仍是「网友：」。
     assert expanded == [
-        "网友：大道会不会考虑和李录做一期对谈节目？",
+        "王小明：大道会不会考虑和李录做一期对谈节目？",
         "网友：李录投资也很好，目前我不会考虑和任何人做任何节目的。",
     ]
     with_card = line + "\n网友：莫尼什：我是苹果用户。段永平拥有OPPO和vivo，持仓很大。"
     ordered = order_nested_replies(with_card)
     assert ordered.index("莫尼什：") < ordered.index("大道会不会") < ordered.index("李录投资也很好")
-    assert "回复@" not in ordered and "//@" not in ordered and "王小明" not in ordered
+    assert "回复@" not in ordered and "//@" not in ordered
     assert order_nested_replies(ordered) == ordered

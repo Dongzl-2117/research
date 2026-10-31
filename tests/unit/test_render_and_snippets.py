@@ -220,6 +220,14 @@ CHAT = (
 )
 
 
+def test_body_speaker_label_with_a_nickname_is_bold():
+    """正文行首的「昵称：」和「方伟：」一样加粗；来源、结论这类元信息词不是说话人。"""
+    page = str(render_body("大道无形我有型：一吨就是2000瓶。\n", {}))
+    assert '<span class="who">大道无形我有型：</span>一吨就是2000瓶。' in page
+    plain = str(render_body("来源：思想×岭南\n\n结论：先看基本面。\n", {}))
+    assert 'class="who"' not in plain
+
+
 def test_chat_screenshot_is_readable_text_and_the_image_is_collapsed():
     """14886 这种：正文一句，群聊在截图里。阅读页直接给出对话，原图要点开。"""
     digest = "ab" * 32
@@ -241,8 +249,9 @@ def test_chat_screenshot_is_readable_text_and_the_image_is_collapsed():
     linked = page.index(anchor)
     assert linked < page.index("瑞幸和古茗都算头部", linked) < page.index("</a>", linked)
     assert 'class="ocr-reading ocr-dialogue"' in page
-    assert "网友：" in page
-    assert "张三" not in page and "李四" not in page
+    # 截图上的网名当说话人，加粗成 .who；没有绿色气泡（方伟）时也不硬写网友。
+    assert '<span class="who">张三：</span>' in page
+    assert '<span class="who">李四：</span>' in page
     assert "方伟：" not in page
     assert "<p>微信</p>" not in page and "20:41" not in page
     assert page.count('class="ocr-shot"') == 1
