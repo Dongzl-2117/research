@@ -105,6 +105,8 @@ docker compose exec app research-ingest-markdown \
 
 正文用 UTF-8，失败时再试 GB18030。
 
+方伟公众号的抓取脚本（`data/inbox/fangwei-mp/dl.py`，不在仓库里）遇到极致了把换行写成字面上反斜杠 n 的那类正文时原样写进归档，整篇挤成一行。导入时一行里有挨着汉字或中文标点的 `\n`，这一行的 `\n`、`\r\n` 都换回换行；英文和代码里的不动（所有 Markdown 归档都这样处理）。`scripts/crawl-fangwei-mp.sh` 每次都把整个归档目录重新导入，已入库的那几篇下一次抓取时就改过来。
+
 ## 公众号定时抓取
 
 `research-crawl-wechat` 抓配置里写了 `ghid`（公众号原始 ID，gh_ 开头）的公众号，现在只有孤独进化体。`scripts/crawl-gudujinhuati.sh` 每天 09:20 跑一次（launchd，见 [backup.md](backup.md)）：

@@ -346,3 +346,25 @@ Fine.
     assert good.published_at is not None
     assert good.published_at.astimezone(ZoneInfo("Asia/Shanghai")).year == 2025
     assert good.raw_meta.get("path_year_mismatch") is not True
+
+
+def test_wechat_literal_backslash_n_becomes_paragraphs(tmp_path: Path):
+    """抓取脚本把换行写成字面上的反斜杠 n 时，整篇挤成一行：挨着中文的换回换行，代码里的不动。"""
+    body = (
+        "指数兜兜转转两年，又回到了 3600 多点。\\n\\n熊市里股价跌八成也不等于便宜。\\n\\n"
+        "比如美国运通 Platinum\\n\\nAMD 也一样。\\r\\n能做的就是耐心等。\\n"
+    )
+    (tmp_path / "2026-10-23-text.md").write_text(
+        "# 如何缓解熊市中的精神内耗？\n\n- 作者：方伟看十年\n- 时间：2026-10-23 09:22:39 (UTC+8)\n\n"
+        + body
+        + '\n\n```c\nprintf("%d\\n", total);\n```\n',
+        encoding="utf-8",
+    )
+    docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="path")
+    assert errors == []
+    text = docs[0].body_md
+    assert "又回到了 3600 多点。\n\n熊市里股价跌八成也不等于便宜。\n\n比如" in text
+    # 同一行里挨着英文的那处也一起换掉；单个换行留着（页面按 nl2br 显示成换行）。
+    assert "Platinum\n\nAMD 也一样。\n能做的就是耐心等。" in text
+    assert 'printf("%d\\n", total);' in text
+    assert text.count("\\n") == 1

@@ -66,6 +66,27 @@ def read_text_file_safe(path: Path) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+# 有的抓取脚本把换行写成字面上的反斜杠 n（极致了部分类型的正文），整篇挤成一行。
+# 这一行里有挨着汉字或中文标点的才整行换回换行；英文、代码里的 \n 不动。
+_LITERAL_BREAK = re.compile(r"(?<!\\)(?:\\r)?\\n(?:(?:\\r)?\\n)*")
+_CJK = re.compile(r"[\u3000-\u303f\u3400-\u9fff\uff00-\uffef]")
+
+
+def unescape_literal_breaks(text: str) -> str:
+    if "\\n" not in text:
+        return text
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        runs = list(_LITERAL_BREAK.finditer(line))
+        if not any(
+            _CJK.match(line[run.start() - 1 : run.start()]) or _CJK.match(line[run.end() : run.end() + 1])
+            for run in runs
+        ):
+            continue
+        lines[index] = _LITERAL_BREAK.sub(lambda run: "\n" * run.group(0).count("\\n"), line)
+    return "\n".join(lines)
+
+
 def image_refs_in(text: str) -> list[str]:
     refs = [match.group(2) for match in _MD_IMAGE.finditer(text)]
     refs.extend(match.group(1) for match in _HTML_IMAGE.finditer(text))
@@ -414,7 +435,7 @@ def parse_markdown_files(
     text_root = common_root(files)
     for path in files:
         try:
-            original = read_text_file_safe(path)
+            original = unescape_literal_breaks(read_text_file_safe(path))
         except OSError as exc:
             errors.append(f"{path}: {exc}")
             continue
