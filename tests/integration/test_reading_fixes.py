@@ -1,5 +1,6 @@
 """相对 .md 链接、飞书目录树、知识星球真实钟点，以及不限持仓的最近观点。"""
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -629,3 +630,36 @@ def test_feishu_callout_marker_stays_out_of_cards_and_pages(conn, settings):
     assert "旧的石油企业的运行九成是政治" in company
     assert "NOTE]" not in company and "[!NOTE]" not in article
     assert "<blockquote" in article and "旧的石油企业的运行九成是政治" in article
+
+
+def test_reimport_turns_literal_backslash_n_into_paragraphs(conn, settings, tmp_path: Path):
+    """方伟公众号的抓取脚本把换行写成字面上的反斜杠 n：已入库的那篇下次导入时换成真的分段，页面不再露出「\\n」。"""
+    from dataclasses import replace
+
+    from researchlib.ingest.parse import parse_archive
+
+    line = "指数兜兜转转两年，又回到了 3600 多点。\\n\\n熊市里股价跌八成也不等于便宜。\\n\\n能做的就是耐心等。"
+    archive = tmp_path / "fangwei-mp" / "md" / "2026"
+    archive.mkdir(parents=True)
+    (archive / "2026-10-23-0123456789abcdef0123456789abcdef.md").write_text(
+        "# 如何缓解熊市中的精神内耗？\n\n- 作者：方伟看十年\n- 时间：2026-10-23 09:22:39 (UTC+8)\n\n" + line + "\n",
+        encoding="utf-8",
+    )
+    docs, errors, _files, _images = parse_archive(tmp_path / "fangwei-mp", tmp_path / "work", id_mode="path")
+    assert errors == [] and len(docs) == 1
+    fixed = docs[0]
+    # 以前导入的那一版正文里还是字面上的反斜杠 n。
+    _store(conn, settings, "fangwei-mp", [replace(fixed, body_md=fixed.body_md.replace("\n\n熊市", "\\n\\n熊市"))])
+    before = conn.execute(
+        "SELECT id, content_hash FROM articles WHERE external_id = %s", (fixed.external_id,)
+    ).fetchone()
+    _store(conn, settings, "fangwei-mp", [fixed])
+    after = conn.execute(
+        "SELECT body_md, body_text, content_hash FROM articles WHERE id = %s", (before["id"],)
+    ).fetchone()
+    assert after["content_hash"] != before["content_hash"]
+    assert "\\n" not in after["body_md"] and "\\n" not in after["body_text"]
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{before['id']}").text
+    assert "\\n" not in page
+    assert re.search(r'<p id="p-\d+">熊市里股价跌八成也不等于便宜。</p><p id="p-\d+">能做的就是耐心等。</p>', page)
