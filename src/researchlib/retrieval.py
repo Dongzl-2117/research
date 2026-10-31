@@ -1485,6 +1485,22 @@ def _text_key(body: str) -> str:
     return text if len(text) >= 30 else ""
 
 
+def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
+    """按分数顺序取前几块，和已取的块一字不差、或整块包含在里面（反过来也算）的跳过。"""
+    kept: list[Passage] = []
+    keys: list[str] = []
+    for passage in items:
+        key = _text_key(passage.body)
+        if key and any(key in other or other in key for other in keys):
+            continue
+        kept.append(passage)
+        if key:
+            keys.append(key)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
 def retrieve(
     conn,
     question: str,
@@ -1751,11 +1767,14 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
             and company_groups <= matched_groups
             and max(p.semantic for p in items) >= SEMANTIC_STRONG
         )
-        score = items[0].score + 0.3 * sum(p.score for p in items[1:3])
-        first = items[0]
+        # 同一篇里重复的段落只算一次、只摘一次：Stratechery 的引文在正文里又以普通段落出现一遍，
+        # 两块一字不差，页面上的两段片段就是同一段话。
+        shown = _distinct_passages(items, 3)
+        score = shown[0].score + 0.3 * sum(p.score for p in shown[1:3])
+        first = shown[0]
         hits.append(
             ArticleHit(
-                article_id, title, first.source_id, first.published_at, score, full or by_meaning, items[:2],
+                article_id, title, first.source_id, first.published_at, score, full or by_meaning, shown[:2],
                 semantic=by_meaning,
             )
         )
