@@ -10,7 +10,7 @@
 # 仓库不在 main、有没提交的改动或者没推送的提交，或者 6 小时取不到 main、查不到 CI。偶尔断网的那一轮什么都不记，下一轮再试。
 # 重建失败的提交最多试 3 轮，之后等下一个提交或 FORCE=1。CI 没过的提交每轮再查，CI 重跑通过了就上线。
 # 夜间补齐、定时抓取、备份，以及容器里的 research-translate / research-ocr 正在跑时先不重启：重建会把它们打断。
-# 这样等着不记失败；新提交合并 3 小时了还被挡着，或者上一轮自动上线 2 小时还没跑完，才记成失败。
+# 这样等着不记失败；最早一个没上线的合并等了 3 小时还被挡着，或者上一轮自动上线 2 小时还没跑完，才记成失败。
 # 定时任务的模板（deploy/launchd/、install-launchd.sh）改了，上线后按上次安装的设置重装一遍。
 #
 # 拉代码会改到这个脚本自己，所以全部写在函数里，bash 先读完整个文件再跑。
@@ -132,7 +132,7 @@ else:
 }
 
 deploy_main() {
-  local fetch_err target short last_sha="" last_state="" tries=1 current dirty ahead busy ci age before waited
+  local fetch_err target short last_sha="" last_state="" tries=1 current dirty ahead busy ci oldest age before waited
 
   take_lock
   # 网速掉到每秒 1KB 以下超过一分钟就放弃这一轮，不让一次卡住的拉取挡住以后的每一轮。
@@ -188,9 +188,12 @@ deploy_main() {
   if [ "${FORCE:-0}" != "1" ]; then
     busy="$(busy_job)"
     if [ -n "$busy" ]; then
-      age=$(($(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$target")))
+      # 从最早一个还没上线的合并算起。按最新的算，一直有新合并时时间不停往后挪，挡上一整天也不报。
+      oldest="$(git -C "$REPO" log --format=%ct "HEAD..$target" | tail -n 1)"
+      [ -n "$oldest" ] || oldest="$(git -C "$REPO" log -1 --format=%ct "$target")"
+      age=$(($(date +%s) - oldest))
       if [ "$age" -gt 10800 ]; then
-        status_fail "${busy} 还在跑，main 上的 ${short} 合并 3 小时了还没上线（等不及就 FORCE=1 scripts/deploy.sh，会打断它）"
+        status_fail "${busy} 还在跑，最早一个没上线的合并等了 3 小时（main 现在是 ${short}；等不及就 FORCE=1 scripts/deploy.sh，会打断它）"
       fi
       note "${busy} 还在跑，跑完再上线 ${short}"
       exit 0
