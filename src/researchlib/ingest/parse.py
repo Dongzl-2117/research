@@ -446,7 +446,7 @@ def parse_markdown_files(
         if id_mode == "zsxq":
             # 导出标题是空的、被省略号截断，或只是正文开头的十几个字时，能从正文收成一句就写入。
             # 兜底标题留到页面上现算。
-            replacement = stored_zsxq_title(title, body)
+            replacement = stored_zsxq_title(title, body, owners=owners)
             if replacement:
                 title = replacement
         if id_mode == "path":

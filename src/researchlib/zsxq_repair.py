@@ -42,6 +42,7 @@ from researchlib.wechat_dialogue import (
 )
 from researchlib.zsxq_comments import (
     comment_list_authors,
+    drop_guest_comments_text,
     filter_host_comments_markdown,
     guest_comment_authors,
     source_owners,
@@ -300,7 +301,8 @@ def repair_zsxq(
             summary = summaries.get(article_id, "")
             ocr_shown = present_stored_ocr(new_ocr)
             when = _day(row["published_at"])
-            body_for_title = row["body_text"] or body_md
+            # 读者的评论不拿来起题，flash 也不看：只有图的帖以前拿读者那句评论当了标题（23834）。
+            body_for_title = drop_guest_comments_text(row["body_text"] or body_md, owners)
             replacement = None
             used_ai = False
             # 空壳导读（「没有可读文字」）也走 flash。半句截断仍不在 title_needs_ai 里。
@@ -321,6 +323,7 @@ def repair_zsxq(
                     summary=summary,
                     ocr=ocr_shown,
                     when=when,
+                    owners=owners,
                 )
             if replacement:
                 new_title = polish_title_typos(replacement)

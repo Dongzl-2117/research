@@ -46,6 +46,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from researchlib.boilerplate import strip_meta
 from researchlib.textutil import (
@@ -56,6 +57,7 @@ from researchlib.textutil import (
     fix_obvious_typos,
     lonely_marks,
 )
+from researchlib.zsxq_comments import drop_guest_comments_text
 
 FANGWEI_ZSXQ = "fangwei-zsxq"
 TITLE_LIMIT = 40
@@ -196,6 +198,12 @@ _COMMENT_AUTHOR = re.compile(
     r"[0-9A-Za-z\u4e00-\u9fff·._]{1,16}\s*(?:\*\*|__)?\s*"
     r"[（(]\s*" + _COMMENT_STAMP
 )
+# 标题一开头就是评论头「王小明（2026-02-02 21:57）」：拿评论起的题（23834）。网名后面是评论时间，要有钟点；
+# 网名里可能有表情和符号，只排除括号和断句的标点。
+_COMMENT_HEAD = re.compile(
+    r"^\s*(?:\*\*|__)?\s*[^\n（()）。！？!?，,：:；;]{1,16}?\s*(?:\*\*|__)?\s*"
+    r"[（(]\s*20\d{2}-\d{1,2}-\d{1,2}[ T]\d{1,2}[:：]\d{2}(?:[:：]\d{2})?\s*[)）]"
+)
 # 「泡泡玛特： 泡泡玛特：」重复的话题壳。后面还粘着评论头时，不把重复本身当成一句标题。
 _DUP_LEAD = re.compile(r"^(.{1,16}?)[：:]\s*(?:\1[：:]\s*)+")
 
@@ -220,14 +228,14 @@ def is_empty_shell(title: str) -> bool:
 def _comment_list_ui(title: str) -> bool:
     """标题里粘了评论列表的界面：``评论（1）`` / ``评论(1)``，或 `` - 王小明（2026-10-28``。"""
     text = title or ""
-    return _COMMENT_COUNT.search(text) is not None or _COMMENT_AUTHOR.search(text) is not None
+    return any(pattern.search(text) is not None for pattern in (_COMMENT_COUNT, _COMMENT_AUTHOR, _COMMENT_HEAD))
 
 
 def _comment_ui_stem(title: str) -> str | None:
     """残屑前面的那段。没有残屑时返回 None，残屑就在开头时返回空串。"""
     text = title or ""
     starts: list[int] = []
-    for pattern in (_COMMENT_COUNT, _COMMENT_AUTHOR):
+    for pattern in (_COMMENT_COUNT, _COMMENT_AUTHOR, _COMMENT_HEAD):
         match = pattern.search(text)
         if match:
             starts.append(match.start())
@@ -247,6 +255,8 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     if _comment_list_ui(text):
         return True
     if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
+        return True
+    if _wordless(text):
         return True
     if strip_narrator(text) != text:
         return True
@@ -285,6 +295,8 @@ def title_needs_ai(title: str) -> bool:
         return not bool(_clean_comment_stem(text))
     if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
         return True
+    if _wordless(text):
+        return True
     if _shell_colon(text):
         return True
     if re.fullmatch(r"\d{5,}", text):
@@ -294,6 +306,11 @@ def title_needs_ai(title: str) -> bool:
     if _ARCHIVE_META.search(text):
         return True
     return False
+
+
+def _wordless(text: str) -> bool:
+    """标题里一个字也没有，只有表情或标点（23855 的「😃」）。"""
+    return _MEANINGFUL.search(text or "") is None
 
 
 def _mention_led(text: str) -> bool:
@@ -519,13 +536,18 @@ def zsxq_display_title(
     summary: str = "",
     ocr: str = "",
     when: str = "",
+    owners: Sequence[str] = (),
 ) -> str:
-    """给卡片和文章页用的标题。原标题能用就原样返回。"""
+    """给卡片和文章页用的标题。原标题能用就原样返回。
+
+    owners：来源作者在评论里用的名字（zsxq_comments.source_owners），不给时按方伟。评论区里别人的评论
+    不拿来起题。
+    """
     stored = _without_archive_meta((title or "").strip())
     # 开头点名的网友昵称不是帖子的话。正文那几行在 _plain 里一样去掉，半句标题还对得上正文。
     stored = "" if _MENTION_ONLY.match(stored) else _MENTION_LEAD.sub("", stored).strip()
     # 正文开头的归档头（作者、时间、点赞数）和导出时截的标题行「前十几个字...」不是帖子的话，不拿来当标题。
-    body = drop_export_stub(strip_meta(body or ""))
+    body = drop_guest_comments_text(drop_export_stub(strip_meta(body or "")), owners)
     # 评论残屑前面还有一句可用的话：切掉残屑，不用正文换一句。
     clean = _clean_comment_stem(stored)
     if clean:
@@ -595,6 +617,7 @@ def stored_zsxq_title(
     summary: str = "",
     ocr: str = "",
     when: str = "",
+    owners: Sequence[str] = (),
 ) -> str | None:
     """导入和回写时要写进库的标题。规则和页面上的 `zsxq_display_title` 是同一套。
 
@@ -619,6 +642,7 @@ def stored_zsxq_title(
         summary=summary or "",
         ocr=ocr or "",
         when=when or "",
+        owners=owners,
     )
     if not repaired or repaired == raw:
         return None
@@ -967,7 +991,7 @@ def _excise_comment_ui(text: str) -> str:
         if usable:
             return usable
         cleaned = current
-        for pattern in (_COMMENT_AUTHOR, _COMMENT_COUNT):
+        for pattern in (_COMMENT_HEAD, _COMMENT_AUTHOR, _COMMENT_COUNT):
             cleaned = pattern.sub(" ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(" \t-–—－|｜·•")
         match = _DUP_LEAD.match(cleaned)

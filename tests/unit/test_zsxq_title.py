@@ -1045,3 +1045,47 @@ def test_narrator_lead_does_not_split_shuoming():
     # 「说法」「说是」是句子本身，不是「作者说，」。
     assert strip_narrator("作者说法很多，核心是渠道库存") == "作者说法很多，核心是渠道库存"
     assert strip_narrator("作者说是渠道库存的问题") == "作者说是渠道库存的问题"
+
+
+# 23834 的样子：方伟只发了几张图，正文除了导出的「「图片」」只有评论区，两条评论都是读者的。
+READER_ONLY = (
+    "「图片」\n\n"
+    "评论（2）\n"
+    "王小明（2026-02-02 21:57）\n"
+    " 虽然不体现在资产负债表，但是这块业务的现金流很好。\n"
+    "李四（2026-02-02 22:10）\n"
+    " 同意。\n"
+)
+SCREENSHOT = "方伟：我已经抽了15元了，一杯咖啡钱有了。腾讯是要用自己的社交流量把元宝推上去。"
+
+
+def test_reader_comment_is_not_a_title():
+    """只有图的帖，以前拿读者的评论起题：标题成了「王小明（2026-02-02 21:57） 虽然不体现在资产负债表」，
+    文章页的评论区早就不显示这条。读者的评论不拿来起题，用图片里的字、摘要或日期。"""
+    title = zsxq_display_title("「图片」", body=READER_ONLY, ocr=SCREENSHOT, when="2026-02-01")
+    assert "资产负债表" not in title and "同意" not in title and "王小明" not in title
+    assert title == "我已经抽了15元了，一杯咖啡钱有了"
+    assert zsxq_display_title("「图片」", body=READER_ONLY, when="2026-02-01") == "2026-02-01 短帖"
+    # Markdown 原文（导入时）也一样：「## 评论（2）」「- **王小明**（时间）」。
+    md = "「图片」\n\n## 评论（1）\n\n- **王小明**（2026-02-02 21:57）\n  虽然不体现在资产负债表。\n"
+    assert stored_zsxq_title("「图片」", md, when="2026-02-01") is None
+    # 星主自己的评论照旧能起题（24027）；乘风破浪按它自己的星主认。
+    host = READER_ONLY + "方伟Rey（2026-02-02 22:30）\n 现金流好不等于估值便宜。\n"
+    assert zsxq_display_title("「图片」", body=host, when="2026-02-01") == "现金流好不等于估值便宜"
+    other = READER_ONLY.replace("王小明", "郑立涛")
+    owners = ("乘风破浪", "郑立涛")
+    assert "资产负债表" in zsxq_display_title("「图片」", body=other, when="2026-02-01", owners=owners)
+    assert "资产负债表" not in zsxq_display_title("「图片」", body=other, when="2026-02-01")
+
+
+def test_stored_comment_title_and_emoji_need_repair():
+    # 库里已经写进去的评论标题（网名加评论时间开头）要重取，打 flash；正文里只是写着日期的标题不算。
+    stored = "王小明（2026-02-02 21:57） 虽然不体现在资产负债表"
+    assert title_needs_repair(stored) and title_needs_ai(stored)
+    retitled = zsxq_display_title(stored, body=READER_ONLY, ocr=SCREENSHOT, when="2026-02-01")
+    assert retitled == "我已经抽了15元了，一杯咖啡钱有了"
+    assert not title_needs_repair("腾讯财报（2026-02-02）超预期")
+    # 只有表情或标点的标题（23855「😃」）是占位。
+    for wordless in ("😃", "？？？", "👍👍"):
+        assert title_needs_repair(wordless) and title_needs_ai(wordless), wordless
+    assert zsxq_display_title("😃", body="😃\n", when="2026-02-07") == "2026-02-07 短帖"
