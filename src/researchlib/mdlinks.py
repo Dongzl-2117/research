@@ -6,11 +6,16 @@
 
 external_id 是归档里的相对路径（飞书是 `docs/<文件名>.md`）。文件名对不上时，再用
 `__token` 后缀做唯一匹配。http(s)、站内绝对路径和 `#锚点` 不动。
+
+Stratechery 的 external_id 是 frontmatter 里的 `2015/aggregation-theory`，不带 `.md`；正文里指向
+别篇的链接是相对这一篇所在目录（`raw_meta.parent`，比如 `2016`）写的 `../2015/aggregation-theory.md`。
+按目录接上、去掉 `../` 和 `.md` 再找，库里有的就连到那一篇。以前一律标「未收录」。
 """
 
 from __future__ import annotations
 
 import html as html_lib
+import posixpath
 import re
 from collections.abc import Sequence
 
@@ -27,6 +32,7 @@ _HTML_HREF = re.compile(r"""(?i)\bhref\s*=\s*["']([^"']+)["']""")
 _A_TAG = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.I | re.S)
 _HREF_ATTR = re.compile(r"""\bhref\s*=\s*(["'])(.*?)\1""", re.I | re.S)
 _TOKEN = re.compile(r"__([A-Za-z0-9]{4,})$")
+_MD_SUFFIX = re.compile(r"\.(?:md|markdown)$", re.I)
 _TAG = re.compile(r"<[^>]+>")
 
 
@@ -91,12 +97,18 @@ class MdIndex:
         self.by_name: dict[str, list[int]] = {}
         self.by_token: dict[str, list[int]] = {}
         self.by_token_fold: dict[str, list[int]] = {}
+        # 去掉 .md 以后的路径和文件名：external_id 不带 .md、链接带 .md 的（Stratechery）也对得上。
+        self.by_stem: dict[str, list[int]] = {}
+        self.by_stem_name: dict[str, list[int]] = {}
         for row in rows:
             external_id = str(row["external_id"])
             article_id = int(row["id"])
             self.by_external.setdefault(external_id, article_id)
             name = external_id.rsplit("/", 1)[-1]
             self.by_name.setdefault(name.casefold(), []).append(article_id)
+            stem = _MD_SUFFIX.sub("", external_id)
+            self.by_stem.setdefault(stem, []).append(article_id)
+            self.by_stem_name.setdefault(stem.rsplit("/", 1)[-1].casefold(), []).append(article_id)
             token = filename_token(name)
             if token:
                 self.by_token.setdefault(token, []).append(article_id)
@@ -128,6 +140,17 @@ class MdIndex:
         by_name = _unique(self.by_name.get(name.casefold(), []))
         if by_name is not None:
             return by_name
+        # 「../2015/aggregation-theory.md」接在这一篇的目录「2016」后面是「2015/aggregation-theory.md」。
+        joined = posixpath.normpath(posixpath.join(parent, target))
+        while joined.startswith("../"):
+            joined = joined[3:]
+        for key in (joined, target):
+            by_stem = _unique(self.by_stem.get(_MD_SUFFIX.sub("", key), []))
+            if by_stem is not None:
+                return by_stem
+        by_stem_name = _unique(self.by_stem_name.get(_MD_SUFFIX.sub("", name).casefold(), []))
+        if by_stem_name is not None:
+            return by_stem_name
         token = filename_token(name)
         if not token:
             return None

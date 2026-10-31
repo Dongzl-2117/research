@@ -55,3 +55,28 @@ def test_ambiguous_token_is_not_linked():
     assert "未收录" in html
     assert 'href="/articles/3001"' not in html
     assert 'href="/articles/3002"' not in html
+
+
+def test_stratechery_links_to_other_posts_reach_them():
+    """Stratechery 的 external_id 是 frontmatter 里的「2015/aggregation-theory」，不带 .md；
+    正文里指向别篇的链接是相对这一篇所在目录写的「../2015/aggregation-theory.md」。以前一律「未收录」。"""
+    index = MdIndex(
+        [
+            {"id": 21892, "external_id": "2015/aggregation-theory"},
+            {"id": 23038, "external_id": "2016/tv-advertising"},
+            {"id": 23041, "external_id": "2016/same-year-post"},
+        ]
+    )
+    body = (
+        "Aka [Aggregation Theory](../2015/aggregation-theory.md) [↩](#rf4-2191)\n\n"
+        "See [last month](same-year-post.md#part-2) and [an older one](../2014/not-archived.md)."
+    )
+    html = prepare_body_html(body, "TV Advertising", {}, None, index, "2016")
+    assert relative_md_hrefs(html) == []
+    assert 'href="/articles/21892"' in html
+    assert 'href="/articles/23041"' in html
+    assert 'href="#rf4-2191"' in html
+    # 库里没有的那篇照旧留文字、标「未收录」。
+    assert html.count("未收录") == 1 and "an older one" in html
+    # 这一篇的目录没记下来（旧导入）也能按路径找到。
+    assert 'href="/articles/21892"' in prepare_body_html(body, "TV Advertising", {}, None, index, "")
