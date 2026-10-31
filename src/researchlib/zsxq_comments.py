@@ -191,6 +191,52 @@ def guest_comment_authors(md: str, owners: Sequence[str] = ()) -> list[str] | No
     return guests
 
 
+# 检索文字（body_text）里的评论节：「评论（2）」一行，每条是「名字（2026-02-02 21:57）」再跟正文，
+# 列表横线和加粗都没了。Markdown 原文里是「## 评论（2）」「- **名字**（时间）」，两种都认。
+_TEXT_HEADING = re.compile(r"^[ \t]*(?:#{1,6}[ \t]+)?评论[ \t]*[（(][ \t]*\d+[ \t]*[)）][ \t]*$")
+_TEXT_ITEM = re.compile(rf"^[ \t]*(?:{_MARKER}[ \t]+)?(?P<name>.{{0,40}}?)[ \t]*[（(](?P<time>{_TIME})[)）]")
+_TEXT_END = re.compile(r"^[ \t]*(?:#{1,6}[ \t]+\S|评论里的回复[ \t]*$)")
+
+
+def drop_guest_comments_text(text: str, owners: Sequence[str] = ()) -> str:
+    """正文或检索文字里「评论（N）」那一节只留来源作者自己的评论（owners 不给时按方伟），给标题挑句子用。
+
+    只有图的帖以前拿读者的评论起了题：线上 23834 的标题是一位读者的网名、评论时间和那句评论，
+    文章页的评论区早就不显示这条。一条都不剩就连「评论（N）」一起去掉；认不出评论头的节原样留着。
+    """
+    if not text or "评论" not in text:
+        return text or ""
+    lines = text.split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        if not _TEXT_HEADING.match(lines[index]):
+            out.append(lines[index])
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and not _TEXT_END.match(lines[end]) and not _TEXT_HEADING.match(lines[end]):
+            end += 1
+        section = lines[index + 1 : end]
+        if not any(_TEXT_ITEM.match(line) for line in section):
+            out.extend(lines[index:end])
+            index = end
+            continue
+        kept: list[str] = []
+        keep = False
+        for line in section:
+            match = _TEXT_ITEM.match(line)
+            if match:
+                keep = _host_comment(display_author(match.group("name")), owners) is not None
+            if keep:
+                kept.append(line)
+        if kept:
+            out.append(lines[index])
+            out.extend(kept)
+        index = end
+    return "\n".join(out)
+
+
 def filter_host_comments_markdown(md: str, owners: Sequence[str] = (), *, replies: bool = True) -> str:
     """正文里的「评论（N）」只留来源作者（owners 不给时按方伟）。一条都不剩就整节去掉。inbox 原文不改。
 

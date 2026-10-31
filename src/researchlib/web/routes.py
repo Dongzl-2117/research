@@ -234,6 +234,8 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         "points": [],
         "tags": [],
         "body_text": row.get("body_text") or "",
+        # 星球标题要补时只拿来源作者自己的评论起题，读者的评论不算（_repair_zsxq_titles 用完就拿掉）。
+        "owners": source_owners(source),
     }
     if extra:
         card.update(extra)
@@ -286,6 +288,7 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
             summary=card.get("summary") or "",
             ocr=present_stored_ocr(extra.get("ocr_text") or ""),
             when=card.get("date") or "",
+            owners=card.get("owners") or (),
         )
         repaired = polish_display_text(repaired)
         card["plain_title"] = repaired
@@ -333,6 +336,7 @@ def display_titles(conn, rows, by_id: dict, zone: str) -> dict[int, str]:
             summary=(digests.get(row["id"]) or {}).get("summary") or "",
             ocr=present_stored_ocr(extra.get("ocr_text") or ""),
             when=format_date(row["published_at"], zone),
+            owners=source_owners(by_id[row["source_id"]]),
         )
         titles[row["id"]] = polish_display_text(repaired)
     return titles
@@ -370,6 +374,7 @@ def _decorate(conn, cards: list[dict], settings) -> list[dict]:
     _repair_zsxq_titles(conn, cards)
     for card in cards:
         card.pop("body_text", None)
+        card.pop("owners", None)
     if pending:
         schedule_digests(settings, pending)
     return cards
@@ -734,6 +739,7 @@ def _article_view(request: Request, article_id: int, mode: str):
                 summary=(digest or {}).get("summary") or "",
                 ocr=present_stored_ocr(material.get("ocr_text") or ""),
                 when=format_date(article["published_at"], settings.display_timezone),
+                owners=source_owners(source),
             )
         display_title = polish_display_text(display_title or "")
         original_title = polish_display_text(article["title"] or "")
