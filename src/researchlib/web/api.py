@@ -13,6 +13,7 @@ import json
 import logging
 import re
 from datetime import date
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -369,7 +370,8 @@ def authors_payload(conn, request: Request, sources) -> list[dict]:
                     {"id": c["id"], "name": c["name_zh"], "articles": c["n"]}
                     for c in queries.top_companies(conn, ids, 10)
                 ],
-                "links": {"html": f"{_base(request)}/authors/{name}"},
+                # 和网页上的作者链接一样转义：「Ben Thompson」的空格、中文名都编码，Markdown 和脚本里照样能点。
+                "links": {"html": f"{_base(request)}/authors/{quote(name)}"},
             }
         )
     return found

@@ -120,6 +120,10 @@ def test_json_api_and_markdown(conn, settings):
         assert all(item["articles"] > 0 for item in companies)
         authors = client.get("/api/v1/authors").json()["authors"]
         assert {"方伟", "乘风破浪"} <= {item["name"] for item in authors}
+        # 作者链接和网页上一样转义：「Ben Thompson」的空格、中文名都编码。
+        links = {item["name"]: item["links"]["html"] for item in authors}
+        assert links["方伟"] == "https://investment.zldong.com/authors/%E6%96%B9%E4%BC%9F"
+        assert links["Ben Thompson"] == "https://investment.zldong.com/authors/Ben%20Thompson"
         day = article["published_at"][:10]
         assert any(item["id"] == article_id for item in client.get(f"/api/v1/days/{day}").json()["items"])
         assert client.get("/api/v1/articles/999999").status_code == 404
