@@ -266,6 +266,27 @@ def test_search_matches_words_not_one_long_phrase(conn, settings):
         assert "加载" in chunk["terms"]
 
 
+def test_quoted_phrase_is_counted_the_way_it_is_listed(conn, settings):
+    """引号里的词要原样出现，篇数也按原样数。全文索引把「小程序://」切成「小程序」，以前数到所有提到小程序的帖子：
+    页面写「3 篇全部命中，按相关度能翻到前 1 篇，其余的加来源或时间范围再搜」，另外两篇根本没有这句。"""
+    _store(
+        conn,
+        settings,
+        [
+            ("mini", "雪球分享", 1, "#小程序://雪球/Xm9H4vXxNcEEgAF\n\n华润万象生活的生意够硬。"),
+            ("flow", "流量笔记", 2, "微信小程序的流量在涨，小程序生态越来越大。"),
+            ("ads", "广告笔记", 3, "小程序里的广告加载率还低。"),
+        ],
+    )
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": '"小程序://"'}).text
+        quoted = client.get("/api/v1/search", params={"q": '"小程序://"'}).json()
+        plain = client.get("/api/v1/search", params={"q": "小程序"}).json()
+    assert "1 篇全部命中" in page and "其余的加来源" not in page
+    assert quoted["total"] == 1 and [item["id"] for item in quoted["items"]] == [1]
+    assert plain["total"] == 3 and len(plain["items"]) == 3
+
+
 def test_search_snippets_skip_a_repeated_paragraph(conn, settings):
     from researchlib.retrieval import reset_stats_cache, search_articles
     from researchlib.sources import enabled_sources, load_sources
