@@ -1,12 +1,15 @@
+import os
 from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from researchlib import ask as ask_module
 from researchlib.backfill import backfill_published_at
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
+from researchlib.seed import load_sample
 from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI
 from researchlib.web.app import create_app
@@ -280,3 +283,40 @@ def test_bad_ids_and_bodies_get_404_and_400(conn, settings):
             assert reply.json()["error"]["message"] == "请求体要是 JSON 对象"
         call = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["search"]})
         assert call.json()["error"]["code"] == -32602
+
+
+def test_nul_and_out_of_range_numbers_are_not_500(conn, settings, monkeypatch):
+    """地址里的 %00（解出来是 NUL 字符）和超出 bigint 的数字，以前查到 Postgres 或文件系统才报错，回 500。"""
+    os.environ["ALLOW_SAMPLE_SEED"] = "1"
+    load_sample(conn, settings)
+    monkeypatch.setattr(ask_module, "chat", lambda _s, messages, **_k: ("宁德时代在扩产能[1]。", "test-model"))
+    monkeypatch.setattr(ask_module, "llm_configured", lambda _settings: True)
+    huge = "9" * 30
+    with TestClient(create_app(settings)) as client:
+        for path in ("/search?q=%00", '/search?q="宁德%00时代"', "/media/%00", "/media/a%00.png"):
+            page = client.get(path)
+            assert page.status_code == 404, path
+            assert "这里没有内容" in page.text and page.headers["X-Frame-Options"] == "DENY"
+        reply = client.get("/api/v1/search", params={"q": "宁德\x00时代"})
+        assert reply.status_code == 404 and reply.json()["error"]["status"] == 404
+        # 超出 bigint 的 offset 和不是数字的一样当没给；bigint 之内的照常翻页，翻过头是空的。
+        first = client.get("/api/v1/articles").json()["items"]
+        assert client.get(f"/api/v1/articles?offset={huge}").json()["items"] == first
+        assert client.get(f"/api/v1/articles?offset={2**63 - 1}").json()["items"] == []
+        mcp = client.post(
+            "/api/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "search_library", "arguments": {"q": "宁德\x00时代", "offset": 10**30}},
+            },
+        )
+        assert mcp.status_code == 200 and mcp.json()["result"].get("isError") is not True
+        # 请求体里的 NUL（问库的 JSON、表单）走不到地址那一关：检索和存问题时换成空格。
+        asked = client.post("/api/v1/ask", json={"question": "宁德时代\x00的库存和产能", "wait": True})
+        assert asked.status_code == 200 and asked.json()["id"]
+        posted = client.post("/ask", data={"q": "宁德时代\x00的产能"}, follow_redirects=False)
+        assert posted.status_code == 303
+    stored = conn.execute("SELECT question FROM llm_answers ORDER BY id").fetchall()
+    assert [row["question"] for row in stored] == ["宁德时代 的库存和产能", "宁德时代 的产能"]

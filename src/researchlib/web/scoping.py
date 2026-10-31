@@ -19,14 +19,20 @@ def parse_day(value: str | None) -> date | None:
         return None
 
 
+# 地址里的整数（编号、offset、页码）都进 SQL 当 bigint 用。超出范围的和不是数字的一样当没给，
+# 不然 /api/v1/articles?offset=99999999999999999999 查下去报「bigint out of range」，回 500。
+BIGINT_MAX = 2**63 - 1
+
+
 def parse_int(value: str | None) -> int | None:
     text = (value or "").strip()
     if not text:
         return None
     try:
-        return int(text)
+        number = int(text)
     except ValueError:
         return None
+    return number if -BIGINT_MAX <= number <= BIGINT_MAX else None
 
 
 def resolve_scope(params, sources, *, ignore_source: bool = False) -> tuple[Scope, dict]:

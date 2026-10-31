@@ -496,7 +496,8 @@ def analyze(
     expansions: dict[str, list[str]] | None = None,
 ) -> Query:
     """把问题拆成公司、作者、短语、排除词和检索词。expansions 是模型给的同义词：{原词: [同义词]}。"""
-    raw = (question or "").strip()[:500]
+    # 地址栏里的 %00 会变成 NUL 字符，Postgres 的文字不收，切词那一步就报错（检索页、问库都走这里）。
+    raw = (question or "").replace("\x00", " ").strip()[:500]
     text = raw
     phrases: list[str] = []
     for match in _QUOTE.finditer(text):
