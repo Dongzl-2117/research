@@ -160,6 +160,65 @@ docker compose exec app research-translate --article-id 21118 --article-id 22195
 
 差额变大时不会为了拆句把后面的段落错位。
 
+## 对照质量检查：research-bilingual-qa
+
+`research-bilingual-qa` 把人工抽验对照页时看的几条硬指标做成可重复的命令。它按文章页的顺序重算对照：原文同一遍清洗、模板尾巴、md 链接改写和图片文字，译文同一遍白名单，再走 `pair.bilingual_pairs` 和展示用的同一份切叶。只判断，不改库、不重译、不跑 OCR。
+
+| 指标 | 代码里的名字 | 判定 |
+| --- | --- | --- |
+| 巨型 pair | `giant-pair` | 单对英文可见文字 ≥ 2000 字。按句切开之后不该再有 |
+| 近重复组 | `near-duplicate` | 页面上仍是重复、整句包含或近前缀堆的长英文。展示层只在两边叶子一样多时按位置收，条数对不齐的旧译文会留下 |
+| long-empty-ZH | `long-empty-zh` | 对上的那一对英文 ≥ 80 字，中文为空。短行、纯标点可以缺 |
+| 归档头 | `archive-header` | 正文里还留着 `member-rss`、`rss_link`、`- source:` 这类行。`来源：` 单独出现可能是正文里的正常说法，不单独认 |
+| 叶子/对数 | `leaf-gap` | 展示硬排的两边叶子差。差 40 段以上按失败算，差一两段只告警 |
+
+任一项失败就是 `FAIL`，只有告警是 `WARN`，都没有是 `PASS`。报告里同时给细分叶子数（`leaves=英文/中文`）、展示实际用的切法（`display=英文/中文`）和最长一对的英文字符数（`maxEN`）：细分叶子差很大、展示却只差几段，说明这篇还是旧的粗分段译文，展示退回了整段一对。
+
+```bash
+docker compose exec app research-bilingual-qa --article-id 21118
+docker compose exec app research-bilingual-qa --article-id 21118 --article-id 22195 --article-id 22092
+docker compose exec app research-bilingual-qa --source stratechery --limit 20
+docker compose exec app research-bilingual-qa --limit 50 --json --report /data/status/bilingual-qa.json
+docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sample 1
+```
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--article-id` | 空 | 点名，可重复 |
+| `--source`、`--limit` | 空、20 | 不点名时按译文更新时间从新到旧取最近几篇 |
+| `--json` | 关 | 输出一个 JSON 对象 |
+| `--report` | 空 | 另写一份 JSON 文件；`/data/status/` 在宿主机上是 `~/research/data/status/` |
+| `--strict` | 关 | 有警告也返回 1 |
+| `--llm`、`--llm-sample` | 关、3 | 对没有失败项的篇再跑 LLM 抽验，默认最多 3 篇 |
+
+退出码：0 通过（或有警告但没加 `--strict`），1 有失败项（硬指标，或 `--llm` 时模型给 `fail`；加 `--strict` 时警告也算），2 参数、库或 LLM 的问题。只读：连库走 `db.connect`，不跑迁移、不写表；`--report` 只写你给的那个文件。
+
+### LLM 抽验
+
+`--llm` 用站内默认模型（DeepSeek `deepseek-flash`、thinking、`reasoning_effort=max`，和译制、问库共用 `researchlib/deepseek.py` 的常量），判断抽样段落是否成对。每篇最多 12 对：先取硬指标点名的那几对，再按整篇的头、中、尾补；每段截到 1500 字并标 `truncated`，提示词里写明截断不算漏译、错位。提示词在 `researchlib/translate/qa.py` 的 `LLM_SYSTEM`，只判断 `misaligned` / `missing-zh` / `duplicate` / `other`，不改写译文。
+
+模型返回 `verdict` / `score` / `issues` / `summary`，打印在报告里，`--json` 和 `--report` 也带上。`--llm` 默认跳过硬指标已经失败的篇，钱先花在看不出问题的篇上。模型给 `fail` 时整条命令退出 1；给 `warn` 只在 `--strict` 时退出 1。凭证不对、接口错、JSON 收不成结论都退出 2，硬指标的结果照常打印。整个命令不写库。
+
+一次抽验十几对、几千字，跑 3 篇费用很小；但不要在启动或部署时自动跑，也不要接进夜间任务全库扫。旧译文失败多，先按篇点名。
+
+### 锚点（2026-10-31 在正式库上跑出来的）
+
+| 文章 | pairs | 巨型 | 近重复 | long-empty | 叶子差 | 判定 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 21118 | 489 | 0 | 0 | 0 | 0 | PASS |
+| 22195 | 60 | 0 | 0 | 0 | 0 | PASS |
+| 22092 | 17 | 0 | 0 | 0 | 0 | PASS |
+| 22209 | 340 | 0 | 0 | 0 | 2 | WARN |
+| 21130 | 52 | 2 | 8 | 0 | 3（细分 107/66） | FAIL |
+
+21118 的 489 对和人工抽验一致；页面上的 `bilingual-pair` 也是 489 个。22195、22092 同样对得上。
+
+22209 硬指标只告警：文末两段英文没有中文。LLM 抽验抽到正文 112–114、225–227 两处中段错位，人工核对属实（英文讲 TKO 晨会和 AI 设计，中文对到了别的问答）；要修只能点名重译，本 PR 不做。
+
+21130 还是旧的粗分段译文：细分 107/66，展示退回 49/52 那一切法，页面上仍有两对约 3900 字的英文和 8 处重复。它要重译才会变，本 PR 不改库。
+
+旧译文大多会 `WARN` 或 `FAIL`，这不代表新命令坏了：它量的是页面现状。给新译的文章跑、或按篇点名跑，才有门禁意义。译完一批后可以 `--source <id> --limit <篇数>` 看这一批的数字。
+
 ## content_hash 与待译队列
 
 `article_translations.content_hash` 必须等于 `articles.content_hash` 且 `complete`，这篇才算译完。`content_hash()` 把 `published_at` 固定按 Asia/Shanghai 打戳；若按 UTC `isoformat()` 重算会对不上，待译队列会把已译篇反复拿出来（`--limit 2` 时整队像卡住）。

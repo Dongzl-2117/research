@@ -90,7 +90,8 @@ def _bearer(data_dir: Path | None) -> str:
     return key
 
 
-def _extract_json(text: str) -> Any:
+def extract_json(text: str) -> Any:
+    """从模型输出里取 JSON：整段、代码围栏，或首尾花括号之间。"""
     text = (text or "").strip()
     if not text:
         raise ValueError("empty model output")
@@ -173,7 +174,7 @@ def chat_json(
         content = "".join(
             part.get("text", "") if isinstance(part, dict) else str(part) for part in content
         )
-    data = _extract_json(content)
+    data = extract_json(content)
     if not isinstance(data, dict):
         raise RuntimeError(f"{label} JSON 根节点不是对象")
     return ChatJsonResult(
@@ -197,6 +198,7 @@ __all__ = [
     "ChatJsonResult",
     "XaiLoginRequiredError",
     "chat_json",
+    "extract_json",
     "grok_output_tokens",
     "long_timeout_s",
     "model_id",

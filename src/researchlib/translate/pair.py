@@ -160,6 +160,11 @@ def _display_long(html: str) -> bool:
     return len(_contained_text(html)) >= 80
 
 
+def visible_text(html: str) -> str:
+    """对照页上看得见的文字：去标签、压空白、忽略大小写。质检和近重复判断用同一份。"""
+    return _contained_text(html)
+
+
 def _same_lineage(earlier_zh: str, later_zh: str) -> bool:
     """两句中文是不是同一段的译文，包括措辞不同的那一种。
 
@@ -374,6 +379,54 @@ def _blocks_for_pairs(original_html: str, zh_html: str) -> tuple[list[Segment], 
     if coarse is None or _gap(*coarse) >= _gap(*split):
         return split
     return coarse
+
+
+def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
+    """对照里仍然重复的 pair 下标：重复、整句包含、近前缀堆。
+
+    展示层只在两边叶子一样多时按位置收；旧译文条数对不齐，重复会留在页面上。
+    这里复用同一组判断，不改展示结果，只给质检点名。返回按下标排好的去重列表。
+    改了 ``_drop_aligned_repeats`` / ``_drop_contained_pairs`` / ``_drop_near_prefixes``
+    的门槛，这里要一起改。
+    """
+    en_keys = [_leaf_key(pair.en or "") for pair in pairs]
+    zh_keys = [_leaf_key(pair.zh or "") for pair in pairs]
+    texts = [visible_text(pair.en or "") for pair in pairs]
+    redundant: set[int] = set()
+    priors: dict[str, list[tuple[str, str]]] = {}
+    for index, pair in enumerate(pairs):
+        if _display_long(pair.en or ""):
+            bucket = en_keys[index][:48]
+            repeated = any(
+                same_repeat(prior_en, en_keys[index]) and _same_lineage(prior_zh, zh_keys[index])
+                for prior_en, prior_zh in priors.get(bucket, ())
+            )
+            if repeated:
+                redundant.add(index)
+                continue
+            priors.setdefault(bucket, []).append((en_keys[index], zh_keys[index]))
+    for index, short in enumerate(texts):
+        if len(short) < 80:
+            continue
+        for other, long in enumerate(texts):
+            if other == index or len(long) <= len(short):
+                continue
+            if short in long:
+                redundant.add(index)
+                break
+            if (len(long) - len(short)) / len(long) > 0.12:
+                continue
+            if _shared_prefix_len(short, long) < len(short) * 0.75:
+                continue
+            if not zh_keys[index] or (zh_keys[other] and _same_lineage(zh_keys[other], zh_keys[index])):
+                redundant.add(index)
+                break
+    return sorted(redundant)
+
+
+def display_blocks(original_html: str, zh_html: str) -> tuple[list[Segment], list[Segment]] | None:
+    """展示用的两边叶子。质检读同一份，避免再写一套切叶规则。"""
+    return _blocks_for_pairs(original_html, zh_html)
 
 
 def bilingual_pairs(original_html: str, zh_html: str) -> list[BilingualPair] | None:
