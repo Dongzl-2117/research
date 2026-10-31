@@ -1063,15 +1063,27 @@ def search_page(request: Request):
         entity_companies = queries.matching_companies(conn, query) if query and page == 1 else []
         results = []
         terms = found.terms if found else []
-        for hit in found.hits if found else []:
+        hits = found.hits if found else []
+        # 检索卡片不带正文，星球标题是正文开头截下的半句（没有省略号）时认不出来。先按卡片、文章页那一套
+        # 把标题补成整句，再标出命中的词。
+        shown = display_titles(
+            conn,
+            [
+                {"id": hit.article_id, "source_id": hit.source_id, "title": hit.title, "published_at": hit.published_at}
+                for hit in hits
+            ],
+            by_id,
+            settings.display_timezone,
+        )
+        for hit in hits:
             best = hit.passages[0] if hit.passages else None
-            row = {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at}
+            row = {"id": hit.article_id, "title": shown[hit.article_id], "published_at": hit.published_at}
             results.append(
                 _card(
                     row,
                     by_id[hit.source_id],
                     settings,
-                    title=highlight_title(polish_display_text(hit.title), query, terms=terms),
+                    title=highlight_title(shown[hit.article_id], query, terms=terms),
                     extra={
                         "snippets": [
                             highlight_snippet(polish_display_text(p.body), query, terms=terms)

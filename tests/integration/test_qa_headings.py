@@ -1,6 +1,7 @@
 """星球问答帖提问网友的昵称不露在网站上：「提问（网友 → 方伟Rey）」不进检索的章节名和标题（新切的块、迁移 026
 改掉的旧块、检索页），也不进检索文字、卡片和接口的摘录、接口原文和改动页（迁移 027 改掉以前入库的）。"""
 
+import re
 from datetime import datetime
 
 from fastapi.testclient import TestClient
@@ -85,7 +86,8 @@ def test_qa_asker_name_stays_out_of_chunk_headings_and_search(conn, settings):
 
     with TestClient(create_app(settings)) as client:
         page = client.get("/search", params={"q": "击球区"}).text
-    assert "问：请教一下击球区怎么判断" in page
+    # 检索页的标题标出了命中的词，去掉标记再比。
+    assert "问：请教一下击球区怎么判断" in re.sub(r"</?mark>", "", page)
     assert "王小明" not in page
 
 
