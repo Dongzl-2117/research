@@ -21,6 +21,7 @@ from researchlib.ask import ask, start
 from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
+from researchlib.nested_copies import fold_nested_copies
 from researchlib.present_text import plain_qa_markdown, polish_display_text
 from researchlib.render import link_local_images
 from researchlib.retrieval import retrieve, search_articles
@@ -243,6 +244,8 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
         body_md = filter_host_comments_markdown(body_md, owners)
     # 问答帖：提问网友的昵称在归档头的「作者」和「提问（网友 → 方伟Rey）」里，阅读页、检索都不露，这里也去掉。
     body_md = plain_qa_markdown(body_md)
+    # 和文章页单看原文一样：导出时写了两遍的引文、列表项收成一份（nested_copies）。
+    body_md = fold_nested_copies(body_md)
     # 归档里的图是相对路径（星球是「../../images/…」），接口拿到打不开：本地存了的换成站内 /media 的完整地址。
     images = queries.article_images(conn, article_id)
     if images:
