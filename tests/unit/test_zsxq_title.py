@@ -964,3 +964,19 @@ def test_card_excerpt_skips_the_stub_and_the_comment_section():
     # 标题后面紧跟的点是小数的一部分：不当标点去掉，1.5 不摘成 5。
     decimal = argumentative_excerpt("某某公司营收增长到 1.5 万亿，利润创了新高。", title="某某公司营收增长到 1")
     assert not decimal.startswith("5")
+
+
+def test_chat_record_stamp_line_is_not_a_title():
+    """图里转发的聊天记录，每条上面一行是「昵称 时间」：不拿来当标题（23680），已经写进库的也重取。"""
+    first = "飞天茅台 线上 1800 元，线下 2000 元，批发价 1169 元"
+    ocr = f"- 王小明2026-02-13 18:23\n{first}。\n\n李四：直销能收回多少利润？"
+    summary = "方伟以线上1800元、线下2000元、批发价1169元为信号，推演直销收回中间利润。"
+    stored = "- 王小明2026-02-13 18"
+    assert title_needs_repair(stored)
+    assert title_needs_repair("王小明 2026/2/13 9:05")
+    assert not title_needs_repair("2026-02-13 茅台批价")
+    shown = zsxq_display_title(stored, body="茅台：", summary=summary, ocr=ocr)
+    assert shown == "方伟以线上1800元、线下2000元、批发价1169元为信号"
+    # 识完图、还没写摘要时补标题：跳过「昵称 时间」那一行，也不和下一行粘成一句。
+    assert stored_zsxq_title("茅台：", "茅台：", ocr=ocr, when="2026-02-13") == first
+    assert zsxq_display_title(stored, body="茅台：", ocr=ocr) == first

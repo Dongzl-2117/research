@@ -73,6 +73,12 @@ _COMMENT_SECTION = re.compile(r"^[ \t]*(?:#{1,6}[ \t]+)?评论(?:里的回复|[ 
 _LABELED_LINE = re.compile(r"(?m)^([ \t]*(?:读者问|作者答|网友|方伟)[ \t]*[：:].*?[^。！？!?\s])[ \t]*$")
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MARKUP = re.compile(r"[*_`]+")
+_BULLET = re.compile(r"(?m)^[ \t]*[-•·][ \t]+")
+# 图里转发的聊天记录，每条上面一行是「昵称 2026-02-13 18:23」：不是帖子的话，昵称多半还是网友的。
+# 以前拿它当了标题，冒号处一截成了「- 王小明2026-02-13 18」，写进库以后再也不补。
+_STAMP = r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[ \t]*\d{1,2}(?:[:：]\d{2}){0,2}[ \t]*"
+_STAMP_TAIL = re.compile(_STAMP + r"$")
+_STAMP_LINE = re.compile(r"(?m)^[^\n]{0,30}?" + _STAMP + r"(?:\n|$)")
 # 转述的引子：「作者认为」「方伟判断，」「作者以国债利率为背景，主张」「作者借段永平的话判断，」。
 # 「方伟说过的」「作者认为的」是句子本身，不是引子。
 _NARRATOR_LEAD = (
@@ -246,7 +252,7 @@ def title_needs_repair(title: str, body: str = "") -> bool:
         return True
     if _DATE_ONLY.fullmatch(text):
         return True
-    if _ARCHIVE_META.search(text):
+    if _ARCHIVE_META.search(text) or _STAMP_TAIL.search(text):
         return True
     if lonely_marks(text):
         return True
@@ -684,6 +690,8 @@ def _plain(text: str) -> str:
     cleaned = _LABELED_LINE.sub(r"\1。", cleaned)
     cleaned = _IMAGE.sub(" ", cleaned)
     cleaned = _HEADING.sub("", cleaned)
+    cleaned = _STAMP_LINE.sub("", cleaned)
+    cleaned = _BULLET.sub("", cleaned)
     cleaned = _MARKUP.sub("", cleaned)
     return _MENTION_LINE.sub("", cleaned)
 
@@ -723,8 +731,8 @@ def _ocr_allowed(title: str) -> bool:
 def _topic_anchors(title: str) -> set[str]:
     """半截标题里的三字片段。占位标题没有主题，图片里的字可以单独当标题。"""
     stem = re.sub(r"[\s+＋]+", "", _strip_ellipsis(title or ""))
-    # 占位和复述套话没有帖子主题，图片里的字可以单独当标题。
-    if not stem or _placeholder(stem) or _narration(stem):
+    # 占位、复述套话和聊天记录的「昵称 时间」没有帖子主题，图片里的字可以单独当标题。
+    if not stem or _placeholder(stem) or _narration(stem) or _STAMP_TAIL.search(title or ""):
         return set()
     chars = "".join(_CJK.findall(stem))
     if len(chars) < 4:
@@ -881,7 +889,7 @@ def _ok(text: str) -> bool:
         return False
     if _shell_colon(text) or _mention_led(text):
         return False
-    if _contains_cut(text):
+    if _contains_cut(text) or _STAMP_TAIL.search(text):
         return False
     if re.fullmatch(r"[\d\s:：./\-年月日时分秒]+", text):
         return False
