@@ -595,11 +595,13 @@ def search_text(cleaned: str, title: str) -> str:
     """清洗后的正文 → articles.body_text（检索、摘要、观点、卡片摘录读的文字）。
 
     和标题重复的那行去掉；问答帖的「提问（网友 → 方伟Rey）」只留「提问」，网友的昵称不进来。
+    Stratechery 每日更新开头的「Good morning,」「On to the Update:」和结尾的转发须知不进来（housekeeping）。
     """
+    from researchlib.housekeeping import strip_housekeeping
     from researchlib.present_text import plain_qa_markdown
     from researchlib.textutil import markdown_to_text, strip_duplicate_title
 
-    return markdown_to_text(plain_qa_markdown(strip_duplicate_title(cleaned, title)))
+    return markdown_to_text(plain_qa_markdown(strip_duplicate_title(strip_housekeeping(cleaned), title)))
 
 
 # —— 全库重洗 ——

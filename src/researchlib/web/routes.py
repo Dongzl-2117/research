@@ -29,6 +29,7 @@ from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
+from researchlib.housekeeping import strip_housekeeping
 from researchlib.llm import active_label, active_model_id, llm_configured
 from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
@@ -740,10 +741,10 @@ def _article_view(request: Request, article_id: int, mode: str):
             # 页面换了标题（1273「2026年9月1日」换成正文那句）：正文开头导出的旧标题行也不要，
             # 不然换下来的半句或日期会在正文顶上变成一个大标题。
             shown_md = strip_duplicate_title(shown_md, original_title)
-        # 单看原文时（没有译文，或点了「原文」）：导出时写了两遍的引文、列表项收成一份（nested_copies）。
-        # 对照按位置配，译文是照着带重复的原文译的，原文不收。
+        # 单看原文时（没有译文，或点了「原文」）：导出时写了两遍的引文、列表项收成一份（nested_copies），
+        # Stratechery 每日更新开头结尾的套话不显示（housekeeping）。对照按位置配，译文是照着整篇原文译的，原文不收。
         if mode == "original" or not zh_blob:
-            shown_md = fold_nested_copies(shown_md)
+            shown_md = strip_housekeeping(fold_nested_copies(shown_md))
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。

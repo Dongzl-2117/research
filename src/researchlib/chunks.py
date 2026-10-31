@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import sys
 
+from researchlib.housekeeping import strip_housekeeping
 from researchlib.present_text import plain_qa_headings
 from researchlib.textutil import markdown_to_text, split_frontmatter, split_markdown_sections, strip_duplicate_title
 
@@ -90,9 +91,10 @@ def make_chunks(title: str, body_md: str) -> list[tuple[str, str]]:
     """返回 [(章节标题, 块正文)]，顺序即原文顺序。
 
     知识星球问答的「提问（网友 → 方伟Rey）」「回答（方伟Rey）」只留「提问」「回答」，章节名里不带网友的昵称。
+    Stratechery 每日更新开头结尾的套话（housekeeping）不切进块里。
     """
     _frontmatter, body = split_frontmatter(body_md or "")
-    body = strip_duplicate_title(body, title or "")
+    body = strip_duplicate_title(strip_housekeeping(body), title or "")
     sections, _structured = split_markdown_sections(body)
     headings: list[str] = []
     bodies: list[str] = []
