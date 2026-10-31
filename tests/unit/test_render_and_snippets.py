@@ -58,6 +58,29 @@ def test_callout_marker_is_not_part_of_the_text():
     assert argumentative_excerpt(markdown_to_text(quote_first)) == "石油企业的运行九成是政治，一成是石油。"
 
 
+def test_image_file_names_and_empty_links_are_not_text():
+    """检索文字里以前夹着飞书图片的文件名、Stratechery 包在图外的「[](大图地址)」。"""
+    feishu = (
+        "价格带分化加剧。\n\n![image.png](https://example.com/media/a.png)\n\n"
+        "![截屏2025-06-08 19.36.10.png](https://example.com/media/b.png)\n\n"
+        "![IMG_8718.JPG](https://example.com/media/c.jpg)\n\n品牌还在。"
+    )
+    assert markdown_to_text(feishu) == "价格带分化加剧。\n\n品牌还在。"
+    stratechery = (
+        "goes deeper than hardware sales.\n\n"
+        "[](https://example.com/wp-content/uploads/2017/06/Screen-Shot-2017-06-01-at-7.40.43-PM.png?ssl=1)\n\n"
+        "![Screen Shot 2017-06-01 at 7.40.43 PM](https://example.com/Screen-Shot.png?resize=640%2C478&ssl=1)\n\n"
+        "[![img0110](https://example.com/IMG0110.png?ssl=1)](https://example.com/IMG0110.png)\n\n"
+        "This is why India matters."
+    )
+    text = markdown_to_text(stratechery)
+    assert "png" not in text and "Screen" not in text and "img0110" not in text and "](" not in text
+    assert text.startswith("goes deeper than hardware sales.") and text.endswith("This is why India matters.")
+    # 说了图里是什么的替代文字、有字的链接照留。
+    kept = markdown_to_text("![腾讯 2024 年收入结构](https://example.com/x.png) 见[年报](https://example.com/r.pdf)")
+    assert kept == "腾讯 2024 年收入结构 见年报"
+
+
 def test_callout_renders_as_a_plain_quote():
     html = str(render_body(CALLOUT, {}))
     assert "[!" not in html and "NOTE" not in html
