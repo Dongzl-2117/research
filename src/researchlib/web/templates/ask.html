@@ -124,7 +124,7 @@
 <section class="card panel">
   <h2>最近问过</h2>
   <ul class="sibling-list">
-    {% for row in history %}<li><a href="/ask/{{ row.id }}">{{ row.question }}</a>{% if row.scope.article_id %} <span class="quiet">只用一篇</span>{% elif row.scope.tree_id %} <span class="quiet">只用一个目录</span>{% endif %}{% if row.status == "running" %} <span class="quiet">整合中</span>{% elif row.status == "error" %} <span class="quiet">没整合完</span>{% endif %}</li>{% endfor %}
+    {% for row in history %}{% set since, until = row.scope.date_from, row.scope.date_to %}<li><a href="/ask/{{ row.id }}">{{ row.question }}</a>{% if row.scope.article_id %} <span class="quiet">只用一篇</span>{% elif row.scope.tree_id %} <span class="quiet">只用一个目录</span>{% endif %}{% if since and since == until %} <span class="quiet num">{{ since }}</span>{% elif since or until %} <span class="quiet num">{{ since or "最早" }} 至 {{ until or "最近" }}</span>{% endif %}{% if row.status == "running" %} <span class="quiet">整合中</span>{% elif row.status == "error" %} <span class="quiet">没整合完</span>{% endif %}</li>{% endfor %}
   </ul>
 </section>
 {% endif %}
