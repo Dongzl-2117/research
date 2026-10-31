@@ -222,8 +222,8 @@ CHAT = (
 
 def test_body_speaker_label_with_a_nickname_is_bold():
     """正文行首的「昵称：」和「方伟：」一样加粗；来源、结论这类元信息词不是说话人。"""
-    page = str(render_body("大道无形我有型：一吨就是2000瓶。\n", {}))
-    assert '<span class="who">大道无形我有型：</span>一吨就是2000瓶。' in page
+    page = str(render_body("春风十里我自在：一吨就是2000瓶。\n", {}))
+    assert '<span class="who">春风十里我自在：</span>一吨就是2000瓶。' in page
     plain = str(render_body("来源：思想×岭南\n\n结论：先看基本面。\n", {}))
     assert 'class="who"' not in plain
 

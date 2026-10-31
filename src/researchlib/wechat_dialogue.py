@@ -213,12 +213,12 @@ _HOST_LINE = re.compile(
 )
 _HOST_PREFIX = re.compile(r"^(方\s*伟(?:\s*Rey)?|Rey)\s+(.+)$", re.I)
 _STRUCTURED = re.compile(r"^(方伟|网友)\s*[:：]\s*(.*)$")
-# 识图现在照抄截图上的网名（大道无形我有型：…）。标签只认冒号前的一小段，
+# 识图现在照抄截图上的网名（春风十里我自在：…）。标签只认冒号前的一小段，
 # 不含空白、句读和斜杠；像不像人名交给 _guest_label 判，不堆名字对照表。
 _NICK_LABEL = re.compile(
     r"^(?P<label>[^\s：:，。！？!?、；/\\]{1,16})\s*[:：]\s*(?P<body>.*)$", re.S
 )
-# 昵称后面粘着雪球/星球的身份徽章：「大道无形我有型作者」。
+# 昵称后面粘着雪球/星球的身份徽章：「春风十里我自在作者」。
 _AUTHOR_SUFFIX = re.compile(r"\s*[（(]?作者[）)]?$")
 # 群名不一定带「群」字，例如「1633 示例·线下深度交流(80)」。
 _GROUP_TITLE = re.compile(
@@ -693,8 +693,8 @@ def _is_feed_meta(line: str) -> bool:
 def _trim_feed_head(line: str) -> str:
     """雪球帖头把昵称、关注按钮、时间、地区、影响力徽章粘成一行：只留昵称，壳丢掉。
 
-    「大道无形我有型  02-0312:48.来自iPad」→ 大道无形我有型；
-    「基查处  关注」→ 基查处；「川糖周掌门关注的人02-0309:05·湖南」和
+    「春风十里我自在  02-0312:48.来自iPad」→ 春风十里我自在；
+    「赵小六  关注」→ 赵小六；「江南张掌柜关注的人02-0309:05·湖南」和
     「发布于2026-02-0313:28来自雪球·广东」整行不要。认不出是昵称就原样返回。
     """
     plain = _plain(line).strip()
@@ -1548,7 +1548,7 @@ def _is_sku(line: str) -> bool:
 
 
 def _clean_label(label: str) -> str:
-    """标签上的 @ 和身份徽章去掉：@大道无形我有型、大道无形我有型作者。"""
+    """标签上的 @ 和身份徽章去掉：@春风十里我自在、春风十里我自在作者。"""
     text = re.sub(r"^@\s*", "", (label or "").strip())
     return _AUTHOR_SUFFIX.sub("", text).strip()
 
@@ -1557,7 +1557,7 @@ def split_speaker(line: str, *, names: bool = False) -> tuple[str, str] | None:
     """拆行首的说话人：返回 (标签, 正文)。
 
     默认只认「方伟」「网友」和方伟的显示名；names=True 再认识图照抄的截图网名
-    （大道无形我有型：…）。冒号前的字像人名才认；「注意：」「10:38」「https:」不是说话人。
+    （春风十里我自在：…）。冒号前的字像人名才认；「注意：」「10:38」「https:」不是说话人。
     """
     plain = _plain(line or "").strip()
     match = _NICK_LABEL.match(plain)
@@ -1601,7 +1601,7 @@ def _is_ui_chrome(line: str) -> bool:
 
 
 def _mixed_nickname(name: str) -> bool:
-    """Aaron阿远 这种中英粘在一起的群昵称。不是句子。"""
+    """Tony小李 这种中英粘在一起的群昵称。不是句子。"""
     text = (name or "").strip()
     if not text or len(text) > 16 or re.search(r"[。！？!?，,、；;]", text):
         return False
@@ -1784,7 +1784,7 @@ def _guest_label(name: str) -> bool:
     if _cjk_name(name, 2) or _cjk_name(name, 3) or _latin_name(name) or _mixed_nickname(name):
         return True
     chars = _CJK.findall(name)
-    # 网名可以带「我 / 的」这类字（大道无形我有型）；正文里的提示语已放进 _NOT_NAMES。
+    # 网名可以带「我 / 的」这类字（春风十里我自在）；正文里的提示语已放进 _NOT_NAMES。
     return 4 <= len(chars) <= 12 and len(chars) == len(name)
 
 

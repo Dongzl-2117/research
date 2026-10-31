@@ -249,7 +249,7 @@ def present_article_text(text: str) -> str:
 # 屏幕折行大约 10–24 个汉字宽。更长的是已经写完的一段，不能再往下粘。
 _WRAP_MIN = 10.0
 _WRAP_MAX = 24.0
-# 行首说话人：「方伟：」「网友：」，或识图照抄的网名（大道无形我有型：…）。
+# 行首说话人：「方伟：」「网友：」，或识图照抄的网名（春风十里我自在：…）。
 _DIALOGUE_LINE = re.compile(r"^[^\s：:，。！？!?、；]{1,16}\s*[:：]")
 _LABEL_ONLY = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9·]{1,12}[：:]$")
 _SENTENCE_END = re.compile(r"[。！？!?…]$|(?:[A-Za-z])\.$")
