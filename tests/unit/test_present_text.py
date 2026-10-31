@@ -237,19 +237,35 @@ def test_ocr_blocks_inherit_prose_font_without_grey_box():
     assert "font-size: 13px" in links
 
 
-def test_prose_links_inherit_text_color_and_keep_underline():
-    """正文链接用周围文字的颜色加下划线，悬停不回到强调色。"""
+def test_prose_links_use_blue_but_ocr_reading_keeps_text_color():
+    """正文外链回到蓝链；识图转写整段都是链接，仍跟周围文字同色。"""
     css = _CSS.read_text(encoding="utf-8")
+    root = css.split(":root {", 1)[1].split("}", 1)[0]
+    dark = css.split('[data-theme="dark"] {', 1)[1].split("}", 1)[0]
+    assert "--link:" in root and "--link-visited:" in root
+    assert "--link:" in dark and "--link-visited:" in dark
     rule = css.split(".prose a {", 1)[1].split("}", 1)[0]
     visited = css.split(".prose a:visited {", 1)[1].split("}", 1)[0]
     hover = css.split(".prose a:hover {", 1)[1].split("}", 1)[0]
-    assert "color: inherit" in rule
+    assert "color: var(--link)" in rule
     assert "text-decoration: underline" in rule
     assert "currentColor" in rule
     assert "var(--accent)" not in rule
-    assert "color: inherit" in visited
+    assert "color: var(--link-visited)" in visited
     assert "var(--accent)" not in hover
     assert "currentColor" in hover
+    # 识图转写的字本身是链到原图的链接：不刷蓝，靠淡下划线辨认。
+    ocr = css.split(".prose .ocr-reading a {", 1)[1].split("}", 1)[0]
+    assert "color: inherit" in ocr
+    assert "text-decoration: underline" in ocr
+    ocr_visited = css.split(".prose .ocr-reading a:visited {", 1)[1].split("}", 1)[0]
+    assert "color: inherit" in ocr_visited
+    ocr_hover = css.split(".prose .ocr-reading a:hover {", 1)[1].split("}", 1)[0]
+    assert "color: inherit" in ocr_hover
+    # 表格整张也是链接：比上面那条更具体，仍不画下划线。
+    table = css.split(".prose .ocr-reading a.ocr-table-link {", 1)[1].split("}", 1)[0]
+    assert "color: inherit" in table
+    assert "text-decoration: none" in table
     # 「原图 N」仍是小一号的控件，不跟正文句子抢颜色。
     original = css.split(".prose .ocr-links a {", 1)[1].split("}", 1)[0]
     assert "var(--ink-3)" in original

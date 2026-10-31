@@ -36,6 +36,10 @@
   --shadow-card-hover: 0 3px 12px #202a300e;
   --shadow-thumb: 0 1px 2px #1c27331a, 0 1px 1px #1c27330a;
   --prose-ink: #26323a;
+  /* 正文外链（.prose a）用的蓝，和 teal 的强调色分开：读正文时一眼能认出可点。
+     浅色底 #faf9f6 上对比度 5.9:1，点过的链接用偏紫的一档区分。 */
+  --link: #1a5fb4;
+  --link-visited: #6b3fa0;
   --code-bg: #f6f7f4;
   --selection: #176b7529;
   --ease: cubic-bezier(.25, 1, .5, 1);
@@ -91,6 +95,9 @@
   --shadow-card-hover: none;
   --shadow-thumb: 0 1px 2px #00000073;
   --prose-ink: #d7dfdf;
+  /* 深色底上提亮：--bg #13191c 上对比度 8.6:1。 */
+  --link: #7db8ff;
+  --link-visited: #c9a3ff;
   --code-bg: #10151c;
   --selection: #12ccd838;
 }
@@ -747,17 +754,18 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose h3 { margin-top: 2em; font-size: 1.1em; }
 .prose h4 { margin-top: 1.6em; }
 .prose :is(h2, h3, h4) + * { margin-top: .7em; }
-/* 正文链接跟周围文字同色，靠下划线辨认。
-   知识星球截图转写整段都是链接，文内网址也多，再用强调色会铺成一片。
-   悬停只把下划线描实，不改回强调色。导航、页眉、页脚不在 .prose 里。 */
+/* 正文里的外链回到蓝链：原文、译文、中文页凡 .prose 内的普通链接都用 --link，
+   点过的用 --link-visited。仍保留下划线，颜色之外还有一层可辨认的记号。
+   识图转写是例外（整段每个字都链到原图，铺成蓝色会糊成一片），
+   见后面 .prose .ocr-reading a：那里跟周围文字同色。导航、页眉、页脚不在 .prose 里。 */
 .prose a {
-  color: inherit;
+  color: var(--link);
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, currentColor 42%, transparent);
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
-.prose a:visited { color: inherit; }
+.prose a:visited { color: var(--link-visited); }
 .prose a:hover {
   text-decoration-color: currentColor;
   text-decoration-thickness: 2px;
@@ -1647,6 +1655,22 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   line-height: inherit;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 识图的例外：转写出来的每个字都链到原图（.ocr-link），整段铺蓝等于给这段刷底色，
+   所以这里跟周围文字同色，只留一道淡下划线；悬停把下划线描实。
+   下面的 a.ocr-table-link（整张表是链接）比这条更具体，仍不画下划线。 */
+.prose .ocr-reading a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 42%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.prose .ocr-reading a:visited { color: inherit; }
+.prose .ocr-reading a:hover {
+  color: inherit;
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 2px;
 }
 .prose .ocr-reading.ocr-chat {
   display: block;
