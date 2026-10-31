@@ -38,6 +38,18 @@ def _add_class(block: str) -> str:
     return f"<{tag}{attrs}>{block[match.end():]}"
 
 
+def _reach(text: str, target: str, position: int) -> int | None:
+    """这一段接在块里 position 处，接上以后吃到哪。接不上返回 None。"""
+    rest = target[position:]
+    if text.startswith(rest[:_KEY]) and len(text) >= len(rest):
+        return len(target)  # 块在这一段中间结束
+    # 容几个字的出入：有序列表的序号、标点之类在两边的写法不一样。
+    found = target.find(text, position, position + len(text) + _SLACK)
+    if found < 0 or found - position > _SLACK:
+        return None
+    return found + len(text)
+
+
 def _follow(blocks: list[str], norms: list[str], target: str, start: int, consumed: int) -> tuple[list[int], int]:
     """从 start 这一段顺着往下吃：后面的段落文字接得上块里剩下的字就算上，直到块吃完。返回 (段落, 吃到哪)。"""
     covered = [start]
@@ -48,17 +60,17 @@ def _follow(blocks: list[str], norms: list[str], target: str, start: int, consum
         text = norms[index]
         if not text or "<img" in blocks[index] or text.endswith("缺图") or text == "外部图片已省略":
             continue  # 只有图（或缺图占位）的段落：块里没有它的字，跳过，接着往下看
-        rest = target[position:]
-        if text.startswith(rest[:_KEY]) and len(text) >= len(rest):
-            covered.append(index)  # 块在这一段中间结束
-            position = len(target)
-            break
-        # 容几个字的出入：有序列表的序号、标点之类在两边的写法不一样。
-        found = target.find(text, position, position + len(text) + _SLACK)
-        if found < 0 or found - position > _SLACK:
+        reached = _reach(text, target, position)
+        if reached is None:
+            # 导出时写了两遍的引文、列表项，页面上收成了一份（nested_copies），块里还是两遍：
+            # 紧接着又是刚标上的那段时，跳过这一遍再接。
+            last = norms[covered[-1]]
+            if len(last) >= _KEY and target.startswith(last, position):
+                reached = _reach(text, target, position + len(last))
+        if reached is None:
             break
         covered.append(index)
-        position = found + len(text)
+        position = reached
     return covered, position
 
 

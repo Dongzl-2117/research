@@ -59,13 +59,14 @@ docker compose exec app research-translate --source stratechery --limit 5 --loop
 
 ## Stratechery
 
-`config/sources.yaml` 里 `stratechery` 现为 **enabled: false**。抓取在盒子跑完、且只有 Passport 全文 / Daily≥5500 合格稿后：
+全量归档已入库，`config/sources.yaml` 里 `stratechery` 是 `enabled: true`（#61）。盒子上再抓到 Passport 全文 / Daily≥5500 合格稿时：
 
-1. 把 `enabled` 改为 `true`
-2. `research-ingest-markdown --source stratechery --input …`
-3. `docker compose exec app research-translate --source stratechery --limit 10`，一批译不完就加 `--loop`
+1. `research-ingest-markdown --source stratechery --input …`
+2. `docker compose exec app research-translate --source stratechery --limit 10`，一批译不完就加 `--loop`
 
 游客半截 / guest teaser **不入库、不译**。
+
+导出的引文、带段落的列表项和脚注都写了两遍：先是一行纯文字（链接、加粗都没了），紧跟着是里面每一段带格式的副本。单看原文时（文章页没有译文、点了「原文」，以及 `/api/v1/articles/{id}.md`）显示前把副本放回引文、列表项，纯文字那份不显示（`researchlib/nested_copies.py`）。库里的 `body_md` 不改，译制、检索、问库读的还是两遍。已有译文是照着两遍译的，中英对照照旧按位置配：过 80 字的重复对由对照页自己收，短的引文和脚注两遍都还在。以后译的也照两遍送进模型。
 
 ## 何时开跑翻译
 
