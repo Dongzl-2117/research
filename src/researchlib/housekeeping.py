@@ -33,6 +33,15 @@ directly.」和「Have a great day.」；2018 年底还有一句「Stratechery g
 只看开头十五段；结尾从最后一段往前，碰到别的话就停。「Good morning,」和「On to the Update:」之间
 作者写的话留着。
 
+「段」按空行切，另外两种导出要细分：
+
+- 邮件导出的标题行下面不空行，直接跟着「**Listen to this post:**」。以前一整块当标题跳过，问候和
+  「On to the Interview:」去掉了，「Listen to this post:」留在正文第一行（线上 21343、21625）。
+  标题行单独算一段。
+- 2026 年的网页导出整篇一行一段，中间没有空行，链接还被拆成几行。开头的「Listen…」「Good morning,」
+  「On to the Update:」单独占一行时单独算一段；结尾那一块从最后一行往前，找最长的、整段都是套话的
+  几行（线上 22178 开头结尾一句都没去掉）。
+
 用在检索文字和段落块（boilerplate.search_text、chunks.make_chunks）、单看原文的文章页和
 /api/v1/articles/{id}.md。中英对照和只看中文照旧：译文是照着整篇译的，对照按位置配，原文这边少几段
 就和译文错开。译制也照旧整篇送。库里的 body_md 不改。
@@ -58,6 +67,8 @@ _RULE = re.compile(r"^[ \t]{0,3}(?:[-*_][ \t]*){3,}$")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 # 链接被拆成几行导出时（2026 年的网页导出），标点前会多一个空格：「visit Stratechery .」。
 _SPACE_BEFORE_MARK = re.compile(r" (?=[,.:;!?])")
+# 看不见的格式字符（零宽空格、零宽连字、BOM、软连字符）。邮件和网页导出里偶尔夹着，比对前去掉。
+_INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u2060-\u2064\ufeff]")
 
 
 def _patterns(*patterns: str) -> tuple[re.Pattern[str], ...]:
@@ -87,14 +98,16 @@ _SIGNOFF = _patterns(
     r"to receive it in your podcast player, visit stratechery[.!]?",
     r"stratechery gift subscriptions are perfect for (?:christmas|the holidays)(?: and are available here)?[.!]?",
     # 2026 年网页导出页脚的播客列表：「Add to your podcast player: Stratechery | Sharp Tech | …」。
-    r"add to your podcast player:?(?: [^|.!?]{1,40}(?: \| [^|.!?]{1,40})*)?",
+    r"add to your podcast player:?(?: [^|｜.!?]{1,40}(?: [|｜] [^|｜.!?]{1,40})*)?",
 )
 OPENER_BLOCKS = 4
 HEAD_BLOCKS = 15
+# 一块的结尾最多往前看这么多行找套话。2026 年网页导出的页脚连播客列表约 20 行。
+TAIL_LINES = 60
 
 
 def _text(lines: list[str]) -> str:
-    text = html_lib.unescape(markdown_to_text("\n".join(lines)))
+    text = _INVISIBLE.sub("", html_lib.unescape(markdown_to_text("\n".join(lines))))
     return _SPACE_BEFORE_MARK.sub("", re.sub(r"\s+", " ", text)).strip()
 
 
@@ -116,17 +129,60 @@ def _is_rule(lines: list[str]) -> bool:
     return all(_RULE.match(line) for line in lines)
 
 
+def _opening_line(line: str) -> bool:
+    """这一行单独就是一句开头的套话：「Listen…」「Good morning,」「On to the Update:」。"""
+    if not _ANY.search(line):
+        return False
+    text = _text([line])
+    return _any(text, _OPENERS) or _any(text, _HEAD)
+
+
+def _units(lines: list[str]) -> list[tuple[int, int, bool]]:
+    """按空行切的块，再把标题行和单独占一行的开头套话切出来，各算一段：[(起, 止, 含不含围栏代码)]，止不含。"""
+    units: list[tuple[int, int, bool]] = []
+    for start, end, code in markdown_blocks(lines):
+        if code:
+            units.append((start, end, code))
+            continue
+        piece = start
+        for number in range(start, end):
+            if _HEADING.match(lines[number]) or _opening_line(lines[number]):
+                if piece < number:
+                    units.append((piece, number, False))
+                units.append((number, number + 1, False))
+                piece = number + 1
+        if piece < end:
+            units.append((piece, end, False))
+    return units
+
+
+def _signoff_tail(lines: list[str], start: int, end: int) -> int | None:
+    """这一段最后几行整截都是结尾套话时，返回最长那一截从哪一行起；没有就是 None。
+
+    2026 年的网页导出整篇一行一段，套话和正文在同一段里，链接还被拆成几行（「visit Stratechery」「.」），
+    所以往前一行一行接着试，不在第一行对不上时就停。整段都是套话的情况调用方已经看过。
+    """
+    first = max(start + 1, end - TAIL_LINES)
+    if not _ANY.search("\n".join(lines[first:end])):
+        return None
+    found = None
+    for number in range(end - 1, first - 1, -1):
+        if is_signoff(_text(lines[number:end])):
+            found = number
+    return found
+
+
 def strip_housekeeping(md: str) -> str:
-    """去掉开头的「Listen…」「Good morning,」「On to the Update:」和结尾的套话段落。没有就原样返回。"""
+    """去掉开头的「Listen…」「Good morning,」「On to the Update:」和结尾的套话。没有就原样返回。"""
     if not md or not _ANY.search(md):
         return md or ""
     front = _FRONTMATTER.match(md)
     head, body = (md[: front.end()], md[front.end() :]) if front else ("", md)
     lines = body.split("\n")
-    blocks = markdown_blocks(lines)
-    drop: set[int] = set()
+    units = _units(lines)
+    gone: set[int] = set()
     seen = 0
-    for index, (start, end, code) in enumerate(blocks):
+    for start, end, code in units:
         if seen >= HEAD_BLOCKS:
             break
         chunk = lines[start:end]
@@ -135,29 +191,32 @@ def strip_housekeeping(md: str) -> str:
         if not code:
             text = _text(chunk)
             if (seen < OPENER_BLOCKS and _any(text, _OPENERS)) or _any(text, _HEAD):
-                drop.add(index)
+                gone.update(range(start, end))
         seen += 1
-    first_signoff = None
-    for index in range(len(blocks) - 1, -1, -1):
-        start, end, code = blocks[index]
-        chunk = lines[start:end]
-        if code or index in drop:
+    keep = len(units)  # units[keep:] 是结尾的套话和夹在中间的分隔线
+    for index in range(len(units) - 1, -1, -1):
+        start, end, code = units[index]
+        if code or start in gone:
             break
+        chunk = lines[start:end]
         if _is_rule(chunk):
             continue
-        if not is_signoff(_text(chunk)):
-            break
-        first_signoff = index
-    if first_signoff is not None:
+        if is_signoff(_text(chunk)):
+            keep = index
+            continue
+        cut = _signoff_tail(lines, start, end)
+        if cut is not None:
+            gone.update(range(cut, end))
+            keep = index + 1
+        break
+    if keep < len(units):
         # 套话和后面的分隔线都去掉，套话前面隔开正文的分隔线也去掉。
-        drop.update(range(first_signoff, len(blocks)))
-        before = first_signoff - 1
-        while before >= 0 and not blocks[before][2] and _is_rule(lines[blocks[before][0] : blocks[before][1]]):
-            drop.add(before)
-            before -= 1
-    if not drop:
+        while keep > 0 and not units[keep - 1][2] and _is_rule(lines[units[keep - 1][0] : units[keep - 1][1]]):
+            keep -= 1
+        for start, end, _code in units[keep:]:
+            gone.update(range(start, end))
+    if not gone:
         return md
-    gone = {line for index in drop for line in range(blocks[index][0], blocks[index][1])}
     kept = "\n".join(line for number, line in enumerate(lines) if number not in gone)
     kept = re.sub(r"\n{3,}", "\n\n", kept).strip("\n")
     return head + kept + ("\n" if body.endswith("\n") and kept else "")

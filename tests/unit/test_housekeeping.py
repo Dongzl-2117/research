@@ -1,5 +1,7 @@
 """Stratechery 每日更新开头结尾的套话：检索文字、段落块、单看原文时不要。"""
 
+import pytest
+
 from researchlib.boilerplate import search_text
 from researchlib.chunks import make_chunks
 from researchlib.housekeeping import is_signoff, strip_housekeeping
@@ -107,6 +109,54 @@ Thanks for being a supporter, and have a great day!
 """
 
 
+# 线上邮件导出的样子（21343、21625）：标题行下面不空行，直接是「**Listen to this post:**」。
+GLUED = """# Widget Interview
+**Listen to this post:**
+
+Good morning,
+
+Today's Daily Update Interview is with Jane Doe, an analyst who covers widgets.
+
+On to the Interview:
+
+**Jane Doe, welcome to Stratechery.**
+"""
+
+# 线上 2026 年网页导出的样子（22178）：一行一段，中间没有空行，链接拆成几行；页脚几段之间隔着 {gap}。
+WEB_LINES = """# Gadget Day
+- source: member-rss
+
+The new gadget is official, and the question is how big the market is.
+Listen to this Update in your podcast player
+Good morning,
+On
+yesterday's episode of Example Show
+, the hosts discussed the gadget launch.
+On to the Update:
+Gadget Day
+From
+Example News
+:
+The gadget launch tells us a lot about where the company is heading next.
+This Update will be available as a podcast later today. To receive it in your podcast player,
+visit Stratechery
+.
+{gap}
+The Stratechery Update is intended for a single recipient, but occasional forwarding is totally fine! \
+If you would like to order multiple subscriptions for your team with a group discount (minimum 5), \
+please contact me directly.
+{gap}
+Thanks for being a subscriber, and have a great day!
+{gap}
+Add to your podcast player:
+Stratechery
+|
+Sharp Tech
+|
+Dithering
+"""
+
+
 def test_update_opening_and_signoff_are_dropped_but_the_note_stays():
     out = strip_housekeeping(UPDATE_2023)
     for gone in ("Listen to this post", "Good morning", "On to the Update", "podcast later today",
@@ -137,6 +187,48 @@ def test_interview_reminder_and_transcript():
     assert "As a reminder" not in out and "On to the Interview" not in out
     assert "JD: Thanks for having me, good morning." in out
     assert "also available as a podcast" not in out and "supporter" not in out
+
+
+
+def test_title_line_glued_to_listen():
+    # 以前标题和「Listen…」算一整块当标题跳过：问候去掉了，「Listen to this post:」留在正文第一行。
+    assert strip_housekeeping(GLUED) == (
+        "# Widget Interview\n\n"
+        "Today's Daily Update Interview is with Jane Doe, an analyst who covers widgets.\n\n"
+        "**Jane Doe, welcome to Stratechery.**\n"
+    )
+
+
+@pytest.mark.parametrize("gap", ["", "&nbsp;", "\u200b"])
+def test_one_line_per_paragraph_web_export(gap):
+    out = strip_housekeeping(WEB_LINES.replace("{gap}", gap))
+    for gone in ("Listen to this Update", "Good morning", "On to the Update", "podcast later today",
+                 "visit Stratechery", "single recipient", "great day", "Add to your podcast player", "Dithering"):
+        assert gone not in out, gone
+    # 归档头、导语、作者写给读者的话（拆成三行的那句）、正文都在。
+    assert out.startswith("# Gadget Day\n- source: member-rss\n\nThe new gadget is official")
+    assert "On\nyesterday's episode of Example Show\n, the hosts discussed the gadget launch.\nGadget Day\n" in out
+    assert out.endswith("where the company is heading next.\n")
+
+
+def test_greeting_inside_a_one_line_transcript_stays():
+    # 一行一段的访谈：嘉宾单独一行的「Good morning.」在开头四段之外，留着。
+    md = "\n".join(
+        [
+            "Listen to this post:",
+            "Good morning,",
+            "Today's Daily Update Interview is with Jane Doe.",
+            "On to the Interview:",
+            "Jane Doe, welcome to Stratechery.",
+            "JD:",
+            "Good morning.",
+            "Thanks for having me.",
+        ]
+    )
+    assert strip_housekeeping(md) == (
+        "Today's Daily Update Interview is with Jane Doe.\nJane Doe, welcome to Stratechery.\nJD:\n"
+        "Good morning.\nThanks for having me."
+    )
 
 
 def test_lookalikes_stay():
