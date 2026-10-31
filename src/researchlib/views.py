@@ -33,7 +33,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import is_guest, not_guest_sql, raw_meta_of
+from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_sql
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
@@ -49,7 +49,8 @@ logger = logging.getLogger("researchlib.views")
 
 PROMPT_VERSION = 2
 BODY_LIMIT = VIEWS_LIMIT
-_GUEST = not_guest_sql("a")
+# 网站上不展示的（读者帖、「图片」评论壳）不抽观点，也不进观点时间线：公司页上的观点链不过去。
+_SHOWN = site_visible_sql("a")
 PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文章（含「图片里的字」），摘出作者对指定公司的判断。
 只输出一个 JSON 对象，不要输出别的文字。每家指定的公司都要有一个键，没有下判断就写 null：
 {"公司名": {"about": true, "judgment": "…", "mechanism": "…", "stance": "正面",
@@ -272,7 +273,7 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = ANY(%s) AND {_VIEW_DEPTH}
-          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         GROUP BY a.id
         ORDER BY bool_or(m.depth <> 'passing') DESC, a.published_at DESC NULLS LAST, a.id DESC
@@ -319,7 +320,7 @@ def mentioned_companies(conn, source_ids: list[str]) -> list[dict]:
           FROM article_mentions m
           JOIN articles a ON a.id = m.article_id
           WHERE m.company_id = c.id AND m.depth <> 'passing'
-            AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%s)
+            AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%s)
         )
         ORDER BY c.name_zh, c.id
         """,
@@ -343,7 +344,7 @@ def view_companies(conn, source_ids: list[str]) -> list[dict]:
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
-        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_OCR_CARRIES}
         ORDER BY c.name_zh, c.id
         """,
@@ -363,7 +364,7 @@ def count_pending(conn, company_id: int, source_ids: list[str]) -> int:
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = %s AND {_VIEW_DEPTH}
-          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         """,
         (company_id, source_ids, PROMPT_VERSION),
@@ -473,7 +474,7 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
     if not companies:
         return 0
-    if is_guest(raw_meta_of(conn, row)):
+    if hide_from_site(raw_meta_of(conn, row), row["title"]):
         return 0
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
@@ -585,7 +586,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND {_GUEST} AND {visible_sql("a")}
+          AND {_SHOWN} AND {visible_sql("a")}
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
@@ -676,7 +677,7 @@ def same_period(
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id
-          AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%(sources)s)
+          AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%(sources)s)
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
                                  AND me.published_at + make_interval(days => %(days)s)
         ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id
@@ -835,17 +836,17 @@ def _id_list(text: str) -> list[int]:
 
 
 def _canonical_ids(conn, article_ids: list[int], source_ids: list[str]) -> list[int]:
-    """重复稿换成主版本。网友帖和不在来源里的跳过。"""
+    """重复稿换成主版本。网站上不展示的和不在来源里的跳过。"""
     if not article_ids:
         return []
     rows = conn.execute(
-        "SELECT id, duplicate_of, source_id, raw_meta FROM articles WHERE id = ANY(%s)",
+        "SELECT id, duplicate_of, source_id, raw_meta, title FROM articles WHERE id = ANY(%s)",
         (list(article_ids),),
     ).fetchall()
     found: list[int] = []
     allowed = set(source_ids)
     for row in rows:
-        if row["source_id"] not in allowed or is_guest(row["raw_meta"]):
+        if row["source_id"] not in allowed or hide_from_site(row["raw_meta"], row["title"]):
             continue
         canonical = int(row["duplicate_of"] or row["id"])
         if canonical not in found:
@@ -879,7 +880,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
         WHERE m.company_id = ANY(%s)
           AND a.source_id = ANY(%s)
           AND a.duplicate_of IS NULL
-          AND {_GUEST}
+          AND {_SHOWN}
           AND (
             m.depth <> 'passing'
             OR {_OCR_CARRIES}
@@ -922,7 +923,7 @@ def articles_for_ids(conn, company_ids: list[int], source_ids: list[str], articl
         FROM articles a
         JOIN article_mentions m ON m.article_id = a.id AND m.company_id = ANY(%s)
         WHERE a.id = ANY(%s) AND a.source_id = ANY(%s)
-          AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.duplicate_of IS NULL AND {_SHOWN}
         GROUP BY a.id
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s

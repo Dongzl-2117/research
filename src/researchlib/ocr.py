@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from researchlib.author_voice import not_guest_sql
+from researchlib.author_voice import site_visible_sql
 from researchlib.chunks import replace_ocr_chunks
 from researchlib.present_text import merge_wrapped_utterances, order_nested_replies
 from researchlib.textutil import collapse_short_spam, fix_obvious_typos
@@ -436,7 +436,7 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
 
     redo 时连 image_texts 里已有的哈希也再认一遍。article_ids 只认这几篇挂着的图。
     engine 以 :error 结尾的行不算认完，不带 redo 也会重试；:skipped 和空正文的成功行不重试。
-    不点名文章时，只挂在知识星球读者帖、停用来源下的图不认：网站上不展示，认了白花钱。
+    不点名文章时，只挂在知识星球读者帖、「图片」评论壳、停用来源下的图不认：网站上不展示，认了白花钱。
     """
     where = ["a.duplicate_of IS NULL"]
     params: list = []
@@ -444,7 +444,7 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
         where.append("i.article_id = ANY(%s)")
         params.append(list(article_ids))
     else:
-        where.append(not_guest_sql("a"))
+        where.append(site_visible_sql("a"))
         where.append("EXISTS (SELECT 1 FROM sources s WHERE s.id = a.source_id AND s.enabled)")
     if not redo:
         where.append(
