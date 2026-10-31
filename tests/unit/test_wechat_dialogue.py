@@ -113,14 +113,14 @@ def test_vision_labels_keep_the_real_nickname():
     raw = (
         "微信\n看十年交流群(120)\n"
         "方伟：我按Q1收入倒推过，大约12万瓶一天。\n"
-        "大道无形我有型：一吨就是2000瓶，100吨就是20万瓶。\n"
-        "川糖周掌门：这个成绩可谓炸裂，至少100吨每天。\n"
-        "大道无形我有型：对哦，酒的密度小一点。\n"
+        "春风十里我自在：一吨就是2000瓶，100吨就是20万瓶。\n"
+        "江南张掌柜：这个成绩可谓炸裂，至少100吨每天。\n"
+        "春风十里我自在：对哦，酒的密度小一点。\n"
     )
     text = present_ocr_pieces([raw])
     assert text.startswith("方伟：")
-    assert "大道无形我有型：一吨就是2000瓶" in text
-    assert "川糖周掌门：这个成绩可谓炸裂" in text
+    assert "春风十里我自在：一吨就是2000瓶" in text
+    assert "江南张掌柜：这个成绩可谓炸裂" in text
     assert "网友：" not in text
     # 再整理一遍不变，写进 articles.ocr_text 的也是这份。
     assert present_stored_ocr(text) == text
@@ -146,8 +146,8 @@ def test_xueqiu_group_card_and_badges_are_stripped():
         "·畅聊股市热点·进阶投资技巧\n"
         "加群交流\n"
         "去基金首页  自选  我的\n"
-        "大道无形我有型  02-0312:48.来自iPad\n"
-        "回复@石家庄市民：这两点相当于再造了一两个茅台。\n"
+        "春风十里我自在  02-0312:48.来自iPad\n"
+        "回复@邯郸老张：这两点相当于再造了一两个茅台。\n"
         "2026-07-3105：05·美国·雪球十年知己\n"
         "1171  投诉8屏蔽用户\n"
         "4位达人赞过\n"
@@ -1193,7 +1193,7 @@ def test_hold_to_text_and_quote_back_chrome_are_stripped():
         "方伟\n"
         "我投资想的是底线\n"
         "一年的底线能不能稳定赚100亿的问题\n"
-        "Cody\n"
+        "Jack\n"
         "应该想一些非共识的。比如下限赚多少钱一年\n"
         "4月6日12:06\n"
         "如果你的决策是建立在今年业绩涨了3倍，明年再三倍\n"
@@ -1201,14 +1201,14 @@ def test_hold_to_text_and_quote_back_chrome_are_stripped():
         "那这种高预期，市场也是这么高预期\n"
         "可按住转文字\n"
         "可按住转文字  E\n"
-        "Henri\n"
+        "Peter\n"
         "の  可按住转文字\n"
         "HYIIV\n"
     )
     text = present_ocr_pieces([raw])
     assert "方伟：" in text
     # 群友的网名照写。
-    assert "Cody：" in text
+    assert "Jack：" in text
     for noise in (
         "可按住转文字",
         "回到引用位置",
@@ -1233,13 +1233,13 @@ def test_labeled_vision_chrome_is_not_a_speaker():
         "LIVE\n"
         "加人会员群\n"
         "网友：非共识的下限要先想清楚\n"
-        "Aaron阿远：高坝期不是这样说的\n"
-        "Henri：每般利间先放一边\n"
+        "Tony小李：高坝期不是这样说的\n"
+        "Peter：每般利间先放一边\n"
     )
     text = compose_ocr_text([raw])
     assert "方伟：" in text
     assert "网友：" in text
-    assert "Aaron阿远：" in text and "Henri：" in text
+    assert "Tony小李：" in text and "Peter：" in text
     for noise in (
         "可按住转文字",
         "继续提问",
