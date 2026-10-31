@@ -255,7 +255,7 @@ def test_day_page_shows_real_clock_and_summary(conn, settings):
         day = client.get("/days/2024-10-19")
         assert day.status_code == 200
         assert "日汇总" in day.text
-        assert "方伟：" in day.text
+        assert 'href="/ask?preset=day&amp;from=2024-10-19&amp;to=2024-10-19"' in day.text
         assert "方伟知识星球短帖" in day.text
         assert "13:29" in day.text
         assert "AI 整合" not in day.text

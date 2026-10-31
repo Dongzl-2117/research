@@ -631,8 +631,12 @@ def neighbor_days(conn, scope: Scope, day: date) -> tuple[date | None, date | No
     return previous["d"], following["d"]
 
 
-def day_answer(conn, day: date, source_ids: list[str], company_id: int | None):
-    """已经问过的、正好覆盖这一天和同一范围的回答。没有就不现算。"""
+def day_answer(conn, day: date, source_ids: list[str], company_id: int | None, ignore: tuple[str, ...] = ()):
+    """已经问过的、正好覆盖这一天和同一范围的回答。没有就不现算。
+
+    ignore 是不进按天的来源（飞书文库）。问库页不分来源问的，范围里有它们，按天页的范围里没有，
+    比来源时不算这一处差别。只问一篇、一个目录的不算这一天的总结。
+    """
     rows = conn.execute(
         """
         SELECT id, question, answer, citations, model, scope, created_at
@@ -646,12 +650,14 @@ def day_answer(conn, day: date, source_ids: list[str], company_id: int | None):
     wanted = set(source_ids)
     for row in rows:
         scope = row["scope"] or {}
+        if scope.get("article_id") or scope.get("tree_id"):
+            continue
         saved_company = scope.get("company_id")
         if company_id is None and saved_company:
             continue
         if company_id is not None and saved_company != company_id:
             continue
-        if set(scope.get("source_ids") or []) != wanted:
+        if set(scope.get("source_ids") or []) - set(ignore) != wanted:
             continue
         return row
     return None

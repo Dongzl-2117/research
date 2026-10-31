@@ -1485,9 +1485,9 @@ def _day_back(info: dict, company) -> str:
 
 @router.get("/days/{day}")
 def day_page(request: Request, day: str):
-    """从时间轴点进某一天：先给汇总，再按作者列出这一天的文章。只含有发布时间的来源。
+    """从时间轴点进某一天：问过这一天的先给那条回答，再按作者列出这一天的文章。只含有发布时间的来源。
 
-    日汇总本身不算模型。缺摘要的卡片在后台补，不挡住这一页。
+    这一页不调模型。没问过的给一个按钮，到问库页用同一范围问；缺摘要的卡片在后台补，不挡住这一页。
     """
     try:
         found = date.fromisoformat(day)
@@ -1515,7 +1515,8 @@ def day_page(request: Request, day: str):
             )
         )
         previous, following = queries.neighbor_days(conn, scope, found)
-        saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id)
+        elsewhere = tuple(source.id for source in sources if not source.timeline)
+        saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id, elsewhere)
         company = queries.get_company(conn, info["company"]) if info["company"] else None
         banner = queries.sample_state(conn, [source.id for source in sources])
     brief = compose_day_brief(cards)
@@ -1527,13 +1528,16 @@ def day_page(request: Request, day: str):
             return ""
         return f"/days/{target.isoformat()}" + (f"?{scope_query}" if scope_query else "")
 
+    ask_href = f"/ask?preset=day&from={key}&to={key}" + (f"&{scope_query}" if scope_query else "")
+
     answer = None
     if saved:
+        # 按钮问的是一段给模型的指令，标题换成它问的事；出处只列回答里引了的。
         answer = {
             "id": saved["id"],
-            "question": saved["question"],
+            "question": "这一天的主要判断" if saved["question"] == PRESETS["day"] else saved["question"],
             "answer": saved["answer"],
-            "citations": saved["citations"] or [],
+            "citations": [item for item in saved["citations"] or [] if item.get("cited")],
             "model": saved["model"],
         }
     if company:
@@ -1554,6 +1558,7 @@ def day_page(request: Request, day: str):
             "count": len(cards),
             "brief": brief,
             "answer": answer,
+            "ask_href": ask_href,
             "prev_href": href(previous),
             "next_href": href(following),
             "back_href": _day_back(info, company),

@@ -237,7 +237,7 @@ def test_bilingual_template_hides_empty_english_on_leftover_zh():
     assert html.count("bilingual-pair") == 2
 
 
-def test_day_template_opens_on_a_summary():
+def test_day_template_lists_the_day_and_offers_to_ask():
     html = _env().get_template("day.html").render(
         title="10月19日",
         canonical="https://investment.zldong.com/days/2024-10-19",
@@ -257,8 +257,8 @@ def test_day_template_opens_on_a_summary():
         prev_href="",
         next_href="/days/2024-10-20",
         answer=None,
+        ask_href="/ask?preset=day&from=2024-10-19&to=2024-10-19",
         brief={
-            "lead": "方伟：这篇短帖在讲宁德时代。",
             "authors": 1,
             "companies": [{"id": 9, "name": "宁德时代"}],
             "sections": [
@@ -279,7 +279,10 @@ def test_day_template_opens_on_a_summary():
         },
     )
     assert "日汇总" in html
-    assert "方伟：这篇短帖在讲宁德时代。" in html
+    # 导读只在文章那一行出现一次，上面不再拿它冒充这一天的总结。
+    assert html.count("这篇短帖在讲宁德时代。") == 1
+    assert "这一天的总结" not in html
+    assert 'href="/ask?preset=day&amp;from=2024-10-19&amp;to=2024-10-19"' in html
     assert "13:29" in html
     assert "AI 整合" not in html
     assert 'href="/days/2024-10-20"' in html
