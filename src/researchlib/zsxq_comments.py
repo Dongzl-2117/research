@@ -20,6 +20,8 @@ from dataclasses import dataclass, replace
 
 import markdown
 
+from researchlib.textutil import escape_times
+
 ANONYMOUS = "匿名"
 
 _HEADING = re.compile(r"^##\s*评论\s*[（(]\s*\d+\s*[)）]\s*$", re.M)
@@ -270,7 +272,7 @@ def _comment_body_html(text: str, mapping: dict[str, str]) -> str:
     flowed = _flow(_BR.sub("\n", text or ""))
     if not flowed.strip():
         return ""
-    rewritten = rewrite_html_images(rewrite_markdown_images(flowed, mapping), mapping)
+    rewritten = rewrite_html_images(rewrite_markdown_images(escape_times(flowed), mapping), mapping)
     rendered = markdown.markdown(rewritten, extensions=["extra", "sane_lists"], output_format="html")
     return _anchor_images(sanitize_html(rendered))
 

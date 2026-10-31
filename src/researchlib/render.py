@@ -15,7 +15,7 @@ from markupsafe import Markup
 from researchlib.ocr import useful_image_text
 from researchlib.ocr_tables import Table, find_tables
 from researchlib.present_text import merge_wrapped_utterances, polish_display_text, present_article_text
-from researchlib.textutil import strip_alert_markers
+from researchlib.textutil import escape_times, strip_alert_markers
 from researchlib.wechat_dialogue import parse_shot, render_shots
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
 
@@ -755,7 +755,7 @@ def _escape_hashtag_lines(body: str) -> str:
 
 
 def _render_markdown(body: str, mapping: dict[str, str]) -> str:
-    body = _escape_hashtag_lines(present_article_text(strip_alert_markers(body or "")))
+    body = escape_times(_escape_hashtag_lines(present_article_text(strip_alert_markers(body or ""))))
     rewritten = rewrite_html_images(rewrite_markdown_images(body, mapping), mapping)
     html = markdown.markdown(
         rewritten,

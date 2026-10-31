@@ -6,6 +6,8 @@ import re
 
 from markupsafe import Markup, escape
 
+from researchlib.textutil import escape_times
+
 _TERM = re.compile(r"[A-Za-z0-9][A-Za-z0-9.\-]*|[\u4e00-\u9fff]+")
 
 
@@ -94,5 +96,5 @@ def answer_html(text: str) -> Markup:
     """LLM 回答转成 HTML。先转义再走 Markdown，回答里的 HTML 不会生效；[n] 换成跳到出处的链接。"""
     import markdown
 
-    html = markdown.markdown(str(escape(text or "")), extensions=["sane_lists"])
+    html = markdown.markdown(escape_times(str(escape(text or ""))), extensions=["sane_lists"])
     return Markup(_CITE.sub(lambda m: f'<a class="cite" href="#c-{m.group(1)}">[{m.group(1)}]</a>', html))

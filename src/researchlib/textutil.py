@@ -25,7 +25,16 @@ _DEFAULT_ALTS = frozenset(
     | {"图片", "截图", "截屏", "屏幕截图", "微信图片", "未命名"}
 )
 _TAG = re.compile(r"<[^>]+>")
-_EMPH = re.compile(r"(\*\*|__|\*|_|~~)")
+# 乘号：单个「*」两边紧挨着字母、数字或汉字，至少一边是英文字母、数字或括号（「DAU*人均PV」「CTR*1000」
+# 「(广告加载率)*广告填充率」「30%*收入」）。林文丰飞书的公式这么写，以前被当成斜体标记：页面上乘号没了、
+# 夹在中间的一段变斜体，检索文字里「eCPM=CPA_bid*CTR*CVR*1000」成了「eCPM=CPAbidCTRCVR1000」。
+# 两边都是汉字的「这是*重点*」、外面是空格或标点的「*not*:」照旧是斜体。
+TIMES_SIGN = re.compile(r"(?<=[A-Za-z0-9)）%])\*(?=[^\W_(（])|(?<=[^\W_)）%])\*(?=[A-Za-z0-9(（])")
+# 两边是空格的「2.0 * 0.015」Markdown 本来就不当斜体，转成文字时也留着。
+_SPACED_STAR = re.compile(r"(?<=[ \t])\*(?=[ \t])")
+_RULE = re.compile(r"^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$", re.M)
+# 强调标记。下划线只认贴着词边的：「CPA_bid」「md5__1038」里的是字，Markdown 也不当它是斜体。
+_EMPH = re.compile(r"\*+|~~|(?<!\w)_+|_+(?!\w)")
 # GitHub 提示框的标记。feishu2md 把飞书的高亮块导成引用块，第一行写「[!NOTE]」。
 _ALERT = r"\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]"
 _ALERT_LINE = re.compile(r"^[ \t]{0,3}>[ \t]*" + _ALERT + r"[ \t]*$\n?", re.M | re.I)
@@ -269,6 +278,24 @@ def _image_alt(match: re.Match[str]) -> str:
     return alt
 
 
+# 代码块、行内代码和链接地址里的「*」不动。
+_CODE_OR_URL = re.compile(r"```.*?```|~~~.*?~~~|(`+)[^`].*?\1|\]\([^)]*\)", re.S)
+
+
+def escape_times(md: str) -> str:
+    """公式里的乘号前加反斜杠，渲染 Markdown 时不再当成斜体标记（哪些算乘号见 TIMES_SIGN）。"""
+    if "*" not in (md or ""):
+        return md or ""
+    parts: list[str] = []
+    last = 0
+    for match in _CODE_OR_URL.finditer(md):
+        parts.append(TIMES_SIGN.sub(r"\\*", md[last : match.start()]))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(TIMES_SIGN.sub(r"\\*", md[last:]))
+    return "".join(parts)
+
+
 def markdown_to_text(md: str) -> str:
     text = _FENCE.sub(" ", strip_alert_markers(md))
     text = re.sub(r"`([^`]*)`", r"\1", text)
@@ -276,7 +303,9 @@ def markdown_to_text(md: str) -> str:
     text = _LINK.sub(r"\1", text)
     text = _TAG.sub(" ", text)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
-    text = _EMPH.sub("", text)
+    text = _RULE.sub("", text)
+    text = _SPACED_STAR.sub("\x00", TIMES_SIGN.sub("\x00", text))
+    text = _EMPH.sub("", text).replace("\x00", "*")
     text = re.sub(r"^\s{0,3}>\s?", "", text, flags=re.M)
     text = re.sub(r"^\s*[-+*]\s+", "", text, flags=re.M)
     text = re.sub(r"[ \t]+", " ", text)
