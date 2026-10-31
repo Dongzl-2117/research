@@ -3,7 +3,7 @@ from html.parser import HTMLParser
 import pytest
 
 from researchlib.render import image_anchor, inline_image_ocr, render_body, sanitize_html, tidy_ocr_text
-from researchlib.snippets import highlight_snippet
+from researchlib.snippets import answer_html, highlight_snippet
 from researchlib.textutil import argumentative_excerpt, markdown_to_text
 
 
@@ -79,6 +79,28 @@ def test_image_file_names_and_empty_links_are_not_text():
     # 说了图里是什么的替代文字、有字的链接照留。
     kept = markdown_to_text("![腾讯 2024 年收入结构](https://example.com/x.png) 见[年报](https://example.com/r.pdf)")
     assert kept == "腾讯 2024 年收入结构 见年报"
+
+
+def test_times_sign_in_formulas_is_not_italics():
+    """林文丰飞书的公式：「DAU*人均PV*Ad load」以前渲染成「DAU<em>人均PV</em>Ad load」，检索文字连下划线一起删光。"""
+    formula = "1.Ad revenue =DAU*人均PV*Ad load*广告展现率*CPM，eCPM=CPA_bid*CTR*CVR*1000"
+    html = str(render_body(formula, {}))
+    assert "<em>" not in html and "DAU*人均PV*Ad load*广告展现率*CPM" in html and "CPA_bid*CTR*CVR*1000" in html
+    assert "<em>" not in str(answer_html("按 DAU*人均PV*CPM 算"))
+    assert markdown_to_text(formula) == formula
+    assert markdown_to_text("eCPM = ￥2.0 * 0.015 * 1000，(广告加载率)*填充率，毛利率30%*收入") == (
+        "eCPM = ￥2.0 * 0.015 * 1000，(广告加载率)*填充率，毛利率30%*收入"
+    )
+    # 真的斜体、加粗照旧；代码和链接地址里的不动。
+    styled = "这是*重点*内容，are *not*: and **加粗**，代码 `a*b` 见[x](https://example.com/a*b)"
+    html = str(render_body(styled, {}))
+    assert "<em>重点</em>" in html and "<em>not</em>" in html and "<strong>加粗</strong>" in html
+    assert "<code>a*b</code>" in html and 'href="https://example.com/a*b"' in html
+    assert markdown_to_text(styled) == "这是重点内容，are not: and 加粗，代码 a*b 见x"
+    # 词中间的下划线是字；分隔线不进文字。
+    assert markdown_to_text("md5__1038 和 snake_case，_斜体_ 和 __加粗__\n\n* * *\n\n正文") == (
+        "md5__1038 和 snake_case，斜体 和 加粗\n\n正文"
+    )
 
 
 def test_callout_renders_as_a_plain_quote():
