@@ -197,6 +197,30 @@ def rewrite_relative_md_links(html: str, index: MdIndex, parent: str = "") -> st
     return _A_TAG.sub(replace, html)
 
 
+# 接口给的 markdown 里的链接：[文字](地址) 或 [文字](<带空格的地址>)，可以带 "标题"。图片（前面有「!」）不算。
+_MD_INLINE_LINK = re.compile(r"""(?<!!)\[([^\[\]]*)\]\(\s*(?:<([^<>\n]+)>|([^)\s<>]+))(?:\s+"[^"\n]*")?\s*\)""")
+_MD_FENCED = re.compile(r"(```.*?```|~~~.*?~~~)", re.S)
+
+
+def link_markdown_articles(md: str, index: MdIndex, parent: str, base: str) -> str:
+    """接口给的 markdown：相对 .md 链接换成站内文章的完整地址，库里没有的去掉链接、留下文字。
+
+    和文章页同一套找法（``MdIndex.resolve``），读接口的拿到的链接点得开。代码块里的不动。
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        text, href = match.group(1), match.group(2) or match.group(3)
+        if relative_md_path(href) is None:
+            return match.group(0)
+        article_id = index.resolve(href, parent)
+        if article_id is None:
+            return text
+        return f"[{text}]({base}/articles/{article_id})"
+
+    pieces = _MD_FENCED.split(md or "")
+    return "".join(piece if number % 2 else _MD_INLINE_LINK.sub(replace, piece) for number, piece in enumerate(pieces))
+
+
 def finish_html(html: str, index: MdIndex | None, parent: str = "") -> str:
     """渲染之后、段落编号之前：先改相对 .md 链接，再盖 p-id。"""
     if html and ".md" in html.lower():

@@ -80,3 +80,28 @@ def test_stratechery_links_to_other_posts_reach_them():
     assert html.count("未收录") == 1 and "an older one" in html
     # 这一篇的目录没记下来（旧导入）也能按路径找到。
     assert 'href="/articles/21892"' in prepare_body_html(body, "TV Advertising", {}, None, index, "")
+
+
+def test_api_markdown_links_point_at_site_articles():
+    """/api/v1/articles/{id}.md 里的相对 .md 链接换成站内完整地址，库里没有的只留文字。"""
+    from researchlib.mdlinks import link_markdown_articles
+
+    index = MdIndex(
+        [
+            {"id": 21892, "external_id": "2015/aggregation-theory"},
+            {"id": 23050, "external_id": "2016/same year post"},
+        ]
+    )
+    md = (
+        "Aka [Aggregation Theory](../2015/aggregation-theory.md) [↩](#rf4-2191)\n\n"
+        "See [an older one](../2014/not-archived.md \"Old\"), [elsewhere](https://example.com/a.md), "
+        "![chart](../2015/chart.png) and [spaced](<same year post.md>).\n\n"
+        "```\n[in code](../2015/aggregation-theory.md)\n```"
+    )
+    linked = link_markdown_articles(md, index, "2016", "https://investment.zldong.com")
+    assert linked == (
+        "Aka [Aggregation Theory](https://investment.zldong.com/articles/21892) [↩](#rf4-2191)\n\n"
+        "See an older one, [elsewhere](https://example.com/a.md), "
+        "![chart](../2015/chart.png) and [spaced](https://investment.zldong.com/articles/23050).\n\n"
+        "```\n[in code](../2015/aggregation-theory.md)\n```"
+    )

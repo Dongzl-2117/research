@@ -20,6 +20,7 @@ from researchlib import theses as thesis_map
 from researchlib.ask import ask, start
 from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
+from researchlib.mdlinks import link_markdown_articles, load_md_index
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.nested_copies import fold_nested_copies
 from researchlib.present_text import plain_qa_markdown, polish_display_text
@@ -253,6 +254,10 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
         body_md = link_local_images(
             body_md, {image["original_ref"]: f"{base}/media/{image['storage_path']}" for image in images}
         )
+    # 指向库里别篇的相对 .md 链接（飞书目录、Stratechery 的交叉引用）：换成站内完整地址，和文章页连到同一篇。
+    if ".md" in body_md.lower():
+        parent = str((row["raw_meta"] or {}).get("parent") or "")
+        body_md = link_markdown_articles(body_md, load_md_index(conn, row["source_id"]), parent, _base(request))
     # 和文章页同一套：省略号半句补成正文里的完整句，只有图的帖用图片里的字。库内 title 不改。
     title = display_titles(conn, [row], by_id, settings.display_timezone)[row["id"]]
     if title != polish_display_text(row["title"] or ""):
@@ -669,7 +674,7 @@ def llms_txt(request: Request):
         f"- [文章列表]({base}/api/v1/articles): 按时间倒序，范围参数同上",
         f"- [单篇 JSON]({base}/api/v1/articles/{{id}}): 元数据、公司提及深度、LLM 摘要、段落块、Markdown 原文",
         f"- [单篇 Markdown]({base}/api/v1/articles/{{id}}.md): 带 YAML frontmatter 的原文，"
-        "图片是站内完整地址，截图里识别出的字附在最后「图片里的字」一节",
+        "图片和指向库里别篇的链接是站内完整地址，截图里识别出的字附在最后「图片里的字」一节",
         f"- [某一天]({base}/api/v1/days/{{YYYY-MM-DD}}): 那一天的全部文章",
         f"- [作者]({base}/api/v1/authors): 作者、来源、篇数、时间跨度、常谈公司。当前作者：{'、'.join(authors)}",
         f"- [公司]({base}/api/v1/companies): 有提及的公司（all=1 含未提及），篇数、深入篇数、最近提及",
