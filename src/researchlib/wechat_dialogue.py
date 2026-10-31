@@ -483,11 +483,15 @@ class Shot:
     bubble_lines: bool = False
 
 
-def present_ocr_pieces(pieces: list[str]) -> str:
-    """多张图按顺序合成一篇旁路正文。连续的群聊合并、去重；表格仍是原文。"""
+def present_ocr_pieces(pieces: list[str], seen: list[str] | None = None) -> str:
+    """多张图按顺序合成一篇旁路正文。连续的群聊合并、去重；表格仍是原文。
+
+    seen：前面几张图已经写出来的句子（就地更新）。检索块一张图切一块，传同一个 seen，
+    后一张截图和上一张重叠的那几句就不再进它的块。
+    """
     blocks: list[str] = []
     pending: list[list[Turn]] = []
-    seen: list[str] = []
+    seen = [] if seen is None else seen
 
     def flush() -> None:
         nonlocal pending
