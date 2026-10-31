@@ -83,6 +83,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mcp)
     app.include_router(router)
 
+    # 地址里的 %00 解出来是 NUL 字符：Postgres 的文字和文件路径都不收，查下去只会 500（/search?q=%00、/media/%00）。
+    # 正常链接不会带它，当成没有这一页。写在 privacy_headers 前面，这样回的 404 也带那几个响应头。
+    @app.middleware("http")
+    async def reject_nul(request: Request, call_next):
+        if "\x00" in request.url.path or b"%00" in request.scope.get("query_string", b""):
+            return await server_error(request, StarletteHTTPException(status_code=404))
+        return await call_next(request)
+
     @app.middleware("http")
     async def privacy_headers(request: Request, call_next):
         response = await call_next(request)
