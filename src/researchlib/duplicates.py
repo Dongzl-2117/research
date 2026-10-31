@@ -42,11 +42,17 @@ SHORT_LENGTH_RATIO = 0.8
 COMMON_DF = 6
 # 两篇都有发布时间时，只在前后这么多天里找同一篇。
 WINDOW_DAYS = 7
-VERSION = "3"
+# 4：英文正文按句切。指纹的切法变了，升版本时全库重算指纹再认一遍。
+VERSION = "4"
 STATE_KEY = "dedupe_version"
 
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _SPLIT = re.compile(r"[。！？!?；;\n]+")
+# 英文正文换行当空格、按句号切：同一篇从网站和邮件两条路进来，网站版说话人名字单占一行、句子中间还断行，
+# 邮件版不断，按行切两边一句也对不上（Stratechery 22029 和 22210 是同一篇访谈）。中文正文照旧按行切。
+_EN_SPLIT = re.compile(r"(?<=[.!?;])\s+|(?<=[。！？；])\s*")
+_LATIN = re.compile(r"[A-Za-z]")
+_HAN = re.compile(r"[一-鿿]")
 
 
 def normalize(text: str) -> str:
@@ -64,9 +70,16 @@ class Fingerprint:
     length: int
 
 
+def _pieces(body_text: str) -> list[str]:
+    text = body_text or ""
+    if len(_HAN.findall(text)) * 10 < len(_LATIN.findall(text)):
+        return _EN_SPLIT.split(re.sub(r"\s+", " ", text))
+    return _SPLIT.split(text)
+
+
 def fingerprint(body_text: str) -> Fingerprint:
     hashes: set[int] = set()
-    for piece in _SPLIT.split(body_text or ""):
+    for piece in _pieces(body_text):
         sentence = normalize(piece)
         if len(sentence) >= MIN_SENTENCE:
             hashes.add(_hash(sentence))
@@ -407,16 +420,16 @@ class _Union:
 
 
 def rebuild_duplicates(conn, matcher=None) -> dict:
-    """全库重认一遍。先补算指纹，再两两核对、按组挑主版本。返回计数。"""
+    """全库重认一遍。先补算指纹，再两两核对、按组挑主版本。返回计数。
+
+    认法升了版本时指纹全部重算：切句的办法可能变了，旧指纹和新算的对不上。
+    """
     from researchlib.mentions import CompanyMatcher, load_company_rows
 
     matcher = matcher or CompanyMatcher(load_company_rows(conn))
-    stale = [
-        row["id"]
-        for row in conn.execute(
-            "SELECT id FROM articles WHERE fingerprint_of IS DISTINCT FROM content_hash ORDER BY id"
-        ).fetchall()
-    ]
+    state = conn.execute("SELECT value FROM app_state WHERE key = %s", (STATE_KEY,)).fetchone()
+    where = "" if state is None or state["value"] != VERSION else "WHERE fingerprint_of IS DISTINCT FROM content_hash"
+    stale = [row["id"] for row in conn.execute(f"SELECT id FROM articles {where} ORDER BY id").fetchall()]
     for index, article_id in enumerate(stale, start=1):
         row = conn.execute("SELECT body_text, content_hash FROM articles WHERE id = %s", (article_id,)).fetchone()
         store_fingerprint(conn, article_id, row["content_hash"], fingerprint(row["body_text"]))
