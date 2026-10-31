@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
@@ -105,3 +106,38 @@ def test_search_page_completes_a_star_title_cut_without_ellipsis(conn, settings)
     assert f">{whole}</a>" in card
     title = marked.split('class="item-title"', 1)[1].split("</h3>", 1)[0]
     assert "<mark>视频号</mark>支持连接你的小程序了 那些人无我有的东西是最值钱的" in title
+
+
+def test_ask_page_shows_the_repaired_star_title_for_citations(conn, settings):
+    """问库出处的标题是写回答时存下的快照。回答页、接口和「只用这篇」按卡片那一套显示整句，核对照旧用快照。"""
+    when = datetime(2026, 9, 27, 14, 41, tzinfo=SHANGHAI)
+    _store(conn, settings, "chengfengpolang", [ParsedDoc("cf-temu", CUT, when, BODY, {"format": "markdown"}, [])])
+    article_id = _row(conn, "cf-temu")["id"]
+    citation = {
+        "n": 1,
+        "article_id": article_id,
+        "ord": 0,
+        "title": CUT,
+        "heading": "",
+        "text": "中美这次国事访问后达成的对等降税安排，主要是针对几类商品：小家电、玩具、节庆装饰品等。",
+        "source_id": "chengfengpolang",
+        "source": "乘风破浪",
+        "author": "乘风破浪",
+        "date": "2026-09-27",
+        "url": f"/articles/{article_id}?chunk=0",
+    }
+    answer_id = conn.execute(
+        "INSERT INTO llm_answers (question, scope, answer, citations, model, status)"
+        " VALUES ('Temu 的关税利好是什么', %s, '对等降税主要针对小家电、玩具[1]。', %s, 'test', 'done') RETURNING id",
+        (Jsonb({"article_id": article_id}), Jsonb([citation])),
+    ).fetchone()["id"]
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/ask/{answer_id}").text
+        data = client.get(f"/api/v1/answers/{answer_id}").json()
+    assert f">{WHOLE}</a>" in page and CUT not in page
+    assert [item["title"] for item in data["citations"]] == [WHOLE]
+    assert data["checks"] == []
+    # 写回答时存下的快照不改。
+    stored = conn.execute("SELECT citations FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()["citations"]
+    assert stored[0]["title"] == CUT

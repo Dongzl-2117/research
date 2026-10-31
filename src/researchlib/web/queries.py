@@ -704,6 +704,16 @@ def expire_stale_answers(conn) -> int:
     return len(rows)
 
 
+def title_rows(conn, article_ids: list[int]):
+    """按现在的库取这几篇的标题，给 display_titles 用。"""
+    if not article_ids:
+        return []
+    return conn.execute(
+        "SELECT id, source_id, title, published_at FROM articles WHERE id = ANY(%s)",
+        (sorted(set(article_ids)),),
+    ).fetchall()
+
+
 def recent_answers(conn, limit: int = 20):
     expire_stale_answers(conn)
     return conn.execute(
