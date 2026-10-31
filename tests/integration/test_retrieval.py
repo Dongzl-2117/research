@@ -287,6 +287,31 @@ def test_quoted_phrase_is_counted_the_way_it_is_listed(conn, settings):
     assert plain["total"] == 3 and len(plain["items"]) == 3
 
 
+
+def test_excluded_word_is_counted_the_way_it_is_listed(conn, settings):
+    """排除词篇数和列表同一条：写到小程序的每一块都写着广告的那篇不数，有一块干净的照数。
+    以前篇数不看排除词：页面写「3 篇全部命中，按相关度能翻到前 2 篇，其余的加来源或时间范围再搜」。"""
+    clean = "小程序的用户时长在涨。" + "这一块还要再看几个季度。" * 45
+    _store(
+        conn,
+        settings,
+        [
+            ("flow", "流量笔记", 1, "微信小程序的流量在涨，小程序生态越来越大。"),
+            ("ads", "广告笔记", 2, "小程序里的广告加载率还低。"),
+            ("both", "生态笔记", 3, clean + "\n\n" + "公司的广告业务另说，" * 40),
+        ],
+    )
+    chunks = conn.execute("SELECT body FROM article_chunks WHERE article_id = 3 AND lang = '' ORDER BY ord").fetchall()
+    assert len(chunks) == 2 and "广告" not in chunks[0]["body"]
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "小程序 -广告"}).text
+        found = client.get("/api/v1/search", params={"q": "小程序 -广告"}).json()
+        plain = client.get("/api/v1/search", params={"q": "小程序"}).json()
+    assert sorted(item["id"] for item in found["items"]) == [1, 3]
+    assert found["total"] == 2
+    assert "2 篇全部命中" in page and "其余的加来源" not in page
+    assert plain["total"] == 3
+
 def test_search_snippets_skip_a_repeated_paragraph(conn, settings):
     from researchlib.retrieval import reset_stats_cache, search_articles
     from researchlib.sources import enabled_sources, load_sources

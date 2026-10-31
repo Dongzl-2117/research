@@ -1880,6 +1880,31 @@ def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:
             f"EXISTS (SELECT 1 FROM article_chunks pc WHERE pc.article_id = a.id"
             f" AND pc.search_tsv @@ {words} AND {literal})"
         )
+    # 排除词也和结果列表同一条（score_rows 里写着排除词的段落不要）：每个词组都要在一块不含排除词的块里命中，
+    # 或者写在标题里。以前不看排除词，线上「小程序 -广告」写着 569 篇全部命中，列表只有 504 篇，
+    # 另外 65 篇写到小程序的每一块都写着广告，加来源、时间范围也翻不到。
+    if query.excludes and word_groups.terms:
+        chunk_text = "coalesce(xc.heading, '') || chr(10) || xc.body"
+        clean = " AND ".join(
+            f"NOT ({_literal_sql(word, chunk_text, params, f'cnt_exclude_{index}')})"
+            for index, word in enumerate(query.excludes)
+        )
+        by_group: dict[int, list[str]] = defaultdict(list)
+        for term in word_groups.terms:
+            if term.group >= 0:
+                by_group[term.group].extend(form for form in term.forms if form)
+        for group, forms in sorted(by_group.items()):
+            if not forms:
+                continue
+            words = _form_tsquery_sql(forms, params, f"cnt_clean_{group}")
+            titled = " OR ".join(
+                _literal_sql(form, "coalesce(a.title, '')", params, f"cnt_title_{group}_{index}")
+                for index, form in enumerate(forms)
+            )
+            conditions.append(
+                f"({titled} OR EXISTS (SELECT 1 FROM article_chunks xc WHERE xc.article_id = a.id"
+                f" AND xc.search_tsv @@ {words} AND {clean}))"
+            )
     if not tsq and not company_ids:
         return {}
     rows = conn.execute(
