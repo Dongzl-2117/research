@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -125,6 +126,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
             status_code=500,
         )
+
+    # 带类型的参数只有路径里的编号。编号不是数字（/articles/abc、/api/v1/answers/abc）就是没有这一页，
+    # 和 /api/v1/articles/abc 一样回 404；FastAPI 默认回 422 和一串英文 JSON。
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc: RequestValidationError):
+        return await server_error(request, StarletteHTTPException(status_code=404))
 
     return app
 

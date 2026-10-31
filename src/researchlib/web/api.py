@@ -568,6 +568,8 @@ async def api_ask(request: Request):
         body = await request.json()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="请求体要是 JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="请求体要是 JSON 对象")
     question = str(body.get("question") or "").strip()[:500]
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
