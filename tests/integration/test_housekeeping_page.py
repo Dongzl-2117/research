@@ -38,8 +38,43 @@ ARTICLE = (
 )
 
 
-def _store(conn, settings) -> dict[str, int]:
+# 线上的两种导出。邮件导出：标题行下面不空行就是「**Listen to this post:**」（21343）。
+# 2026 年网页导出：一行一段，中间没有空行，链接拆成几行（22178）。
+GLUED = (
+    "# Widget Interview\n"
+    "**Listen to this post:**\n\n"
+    "Good morning,\n\n"
+    "Today's Daily Update Interview is with Jane Doe, an analyst who covers widgets.\n\n"
+    "On to the Interview:\n\n"
+    "**Jane Doe, welcome to Stratechery.**\n\n"
+    "JD: Thanks for having me, the widget market is bigger than people think.\n"
+)
+WEB = (
+    "# Gadget Day\n"
+    "- source: member-rss\n\n"
+    "The new gadget is official, and the question is how big the market is.\n"
+    "Listen to this Update in your podcast player\n"
+    "Good morning,\n"
+    "On to the Update:\n"
+    "The gadget launch tells us a lot about where the company is heading next.\n"
+    "This Update will be available as a podcast later today. To receive it in your podcast player,\n"
+    "visit Stratechery\n"
+    ".\n"
+    "&nbsp;\n"
+    f"{SIGNOFF.replace(chr(10), ' ')}\n"
+    "&nbsp;\n"
+    "Thanks for being a subscriber, and have a great day!\n"
+    "&nbsp;\n"
+    "Add to your podcast player:\nStratechery\n|\nSharp Tech\n"
+)
+
+
+def _store(conn, settings, docs=None) -> dict[str, int]:
     sources = {source.id: source for source in load_sources(settings.sources_path)}
+    docs = docs or (
+        ("2026/widget-earnings", "Widget Earnings", UPDATE, 2),
+        ("2026/gadget-subscriptions", "Gadget Subscriptions", ARTICLE, 3),
+    )
     store_documents(
         conn,
         source=sources["stratechery"],
@@ -52,13 +87,10 @@ def _store(conn, settings) -> dict[str, int]:
                 raw_meta={"language": "en"},
                 image_refs=[],
             )
-            for external_id, title, body, day in (
-                ("2026/widget-earnings", "Widget Earnings", UPDATE, 2),
-                ("2026/gadget-subscriptions", "Gadget Subscriptions", ARTICLE, 3),
-            )
+            for external_id, title, body, day in docs
         ],
         data_dir=settings.data_dir,
-        archive_files=2,
+        archive_files=len(docs),
         images_in_archive=0,
         errors=[],
     )
@@ -128,3 +160,28 @@ def test_bilingual_pairs_stay_aligned(conn, settings):
     assert en_before.count("bilingual-en") == zh_before.count("bilingual-en")
     # 点「原文」只看英文：套话不显示。
     assert "single recipient" not in _prose(original) and NOTE in _prose(original)
+
+
+def test_glued_title_and_one_line_exports(conn, settings):
+    ids = _store(
+        conn,
+        settings,
+        (("2026/widget-interview", "Widget Interview", GLUED, 4), ("2026/gadget-day", "Gadget Day", WEB, 5)),
+    )
+    interview, gadget = ids["2026/widget-interview"], ids["2026/gadget-day"]
+    with TestClient(create_app(settings)) as client:
+        pages = {key: _prose(client.get(f"/articles/{key}").text) for key in (interview, gadget)}
+        mds = {key: client.get(f"/api/v1/articles/{key}.md").text for key in (interview, gadget)}
+    texts = {
+        row["id"]: row["body_text"]
+        for row in conn.execute("SELECT id, body_text FROM articles WHERE id = ANY(%s)", ([interview, gadget],))
+    }
+    for key in (interview, gadget):
+        for gone in ("Listen to this", "Good morning", "On to the", "single recipient", "great day", "Sharp Tech"):
+            assert gone not in pages[key], (key, gone)
+            assert gone not in mds[key], (key, gone)
+            assert gone not in texts[key], (key, gone)
+    assert "Today's Daily Update Interview is with Jane Doe" in pages[interview]
+    assert "JD: Thanks for having me" in mds[interview]
+    assert "where the company is heading next." in pages[gadget]
+    assert mds[gadget].rstrip().endswith("where the company is heading next.")

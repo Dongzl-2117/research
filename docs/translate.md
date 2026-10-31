@@ -68,7 +68,7 @@ docker compose exec app research-translate --source stratechery --limit 5 --loop
 
 导出的引文、带段落的列表项和脚注都写了两遍：先是一行纯文字（链接、加粗都没了），紧跟着是里面每一段带格式的副本。单看原文时（文章页没有译文、点了「原文」，以及 `/api/v1/articles/{id}.md`）显示前把副本放回引文、列表项，纯文字那份不显示（`researchlib/nested_copies.py`）。库里的 `body_md` 不改，译制、检索、问库读的还是两遍。已有译文是照着两遍译的，中英对照照旧按位置配：过 80 字的重复对由对照页自己收，短的引文和脚注两遍都还在。以后译的也照两遍送进模型。
 
-每日更新照邮件导出，开头的「Listen to this post:」「Good morning,」「On to the Update:」和结尾的播客提示、转发须知（「intended for a single recipient」「order multiple subscriptions for your team」）、「Thanks for being a subscriber, and have a great day!」几乎每篇都有。检索文字和段落块不收这几句，单看原文时也不显示（`researchlib/housekeeping.py`）；「Good morning,」和「On to the Update:」之间作者写的话（更正、回应读者、播客预告）留着。中英对照和只看中文照旧：已有译文里这几句也译了，对照按位置配，原文这边少几段就和译文错开。以后译的也照旧整篇送。
+每日更新照邮件导出，开头的「Listen to this post:」「Good morning,」「On to the Update:」和结尾的播客提示、转发须知（「intended for a single recipient」「order multiple subscriptions for your team」）、「Thanks for being a subscriber, and have a great day!」几乎每篇都有。检索文字和段落块不收这几句，单看原文时也不显示（`researchlib/housekeeping.py`）；「Good morning,」和「On to the Update:」之间作者写的话（更正、回应读者、播客预告）留着。邮件导出的标题行下面常常不空行就跟着「**Listen to this post:**」，标题行单独算一段；2026 年网页导出（`- source: member-rss`）整篇一行一段、中间没有空行，开头的几句按行认，结尾从最后一行往前找最长的一截套话。中英对照和只看中文照旧：已有译文里这几句也译了，对照按位置配，原文这边少几段就和译文错开。以后译的也照旧整篇送。
 
 ## 何时开跑翻译
 
