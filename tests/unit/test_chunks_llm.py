@@ -5,8 +5,9 @@ import pytest
 from researchlib.chunks import MAX_CHARS, make_chunks
 from researchlib.digest import parse_digest
 from researchlib.llm import LLMError
+from researchlib.mentions import CompanyMatcher
 from researchlib.retrieval import cited_numbers
-from researchlib.snippets import answer_html, mention_snippet
+from researchlib.snippets import answer_html, mention_sentence, mention_snippet, mention_spans
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,12 +80,46 @@ def test_answer_html_escapes_and_links_citations():
     assert '<a class="cite" href="#c-1">[1]</a>' in html
 
 
-def test_mention_snippet_marks_first_hit():
-    text = "前面很多字。" * 30 + "宁德时代的毛利率" + "后面。" * 30
+def test_mention_snippet_takes_the_sentence():
+    # 提及原句：从命中所在那句的句首取到句末，不从半句、半个词开始。
+    text = "前面很多字。" * 30 + "宁德时代的毛利率还在往上走，储能占比也在提高。" + "后面。" * 30
+    start = text.index("宁德时代")
+    snippet = str(mention_snippet(text, [(start, start + 4, 1)], radius=40))
+    assert snippet == "<mark>宁德时代</mark>的毛利率还在往上走，储能占比也在提高。"
+    # 句子比 radius 长：在 radius 处截，带省略号。
+    text = "前面很多字" * 30 + "宁德时代的毛利率" + "后面" * 30
     start = text.index("宁德时代")
     snippet = str(mention_snippet(text, [(start, start + 4, 1)], radius=10))
     assert "<mark>宁德时代</mark>" in snippet
     assert snippet.startswith("…") and snippet.endswith("…")
+
+
+def test_mention_sentence_for_the_api():
+    english = "Apple grew services. Tencent keeps compounding in games while ads recover. Next one here."
+    start = english.index("Tencent")
+    assert mention_sentence(english, [(start, start + 7, 1)]) == (
+        "Tencent keeps compounding in games while ads recover."
+    )
+    # 没有句末可停：前后在 radius 处截，英文不截在半个词上。
+    words = "word " * 40 + "Tencent" + " more" * 40
+    start = words.index("Tencent")
+    sentence = mention_sentence(words, [(start, start + 7, 1)], radius=32)
+    assert sentence.startswith("…word ") and sentence.endswith(" more…")
+    # 提及在一行很短的话题行上（「-拼多多」）：接着取到下一句，不只给这一行。
+    topic = "-拼多多\n提问了一个很糟糕的问题，对于渠道而言，拼单不是关键。后面还有很多话。"
+    assert mention_sentence(topic, [(1, 4, 1)]) == "-拼多多 提问了一个很糟糕的问题，对于渠道而言，拼单不是关键。"
+    assert mention_sentence("", [(0, 1, 1)]) == "" and mention_sentence("拼多多", []) == ""
+
+
+def test_mention_spans_fall_back_to_image_text():
+    matcher = CompanyMatcher([{"id": 7, "name_zh": "拼多多", "name_en": "PDD", "aliases": []}])
+    text, spans = mention_spans(matcher, "美团", "「图片」", "")
+    assert spans == []
+    text, spans = mention_spans(matcher, "美团", "「图片」", "拼多多的百亿补贴还在，美团的外卖守住了")
+    assert spans and text[spans[0][0] : spans[0][1]] == "拼多多"
+    # 正文里有提及时只看正文。
+    text, spans = mention_spans(matcher, "", "拼多多三季度的广告收入", "图里也写着拼多多")
+    assert text == "拼多多三季度的广告收入" and spans[0][:2] == (0, 3)
 
 
 def test_startup_does_not_run_digest():

@@ -39,7 +39,14 @@ from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.present_text import polish_display_text
 from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
-from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
+from researchlib.snippets import (
+    answer_html,
+    highlight_full,
+    highlight_snippet,
+    highlight_title,
+    mention_snippet,
+    mention_spans,
+)
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
 from researchlib.translate.pair import bilingual_pairs
@@ -1333,8 +1340,7 @@ def company_page(request: Request, company_id: int):
                         "depth_label": DEPTH_LABELS[row["depth"]],
                         "hits": row["hit_count"],
                         "snippet": mention_snippet(
-                            row["body_text"] or "",
-                            matcher.document(row["title"], row["body_text"] or "").spans(row["body_text"] or ""),
+                            *mention_spans(matcher, row["title"], row["body_text"], row["ocr_text"])
                         ),
                     },
                 )
