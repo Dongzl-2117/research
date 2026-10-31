@@ -29,7 +29,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import display_author, not_guest_sql, raw_meta_of
+from researchlib.author_voice import display_author, raw_meta_of, site_visible_sql
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -152,7 +152,7 @@ def pending_articles(conn, source_ids: list[str], limit: int):
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND {visible_sql("a")} AND {not_guest_sql("a")}
+          AND {visible_sql("a")} AND {site_visible_sql("a")}
           AND {_DUE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY {PENDING_ORDER}
         LIMIT %s
