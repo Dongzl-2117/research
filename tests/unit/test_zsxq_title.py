@@ -10,6 +10,7 @@ from researchlib.web.routes import _repair_zsxq_titles
 from researchlib.zsxq_title import (
     shorten_long_title,
     stored_zsxq_title,
+    strip_narrator,
     title_needs_ai,
     title_needs_repair,
     zsxq_display_title,
@@ -579,25 +580,25 @@ def test_ellipsis_mid_phrase_completes_from_the_body_sentence():
 
 
 # 24002：库内标题被截断，话题壳重复，后面粘着评论列表的界面。
-LIVE_24002 = "泡泡玛特： 泡泡玛特： 评论（1） - 流年（2026-10-28 09"
+LIVE_24002 = "泡泡玛特： 泡泡玛特： 评论（1） - 王小明（2026-10-28 09"
 
 
 def test_comment_list_ui_crumbs_need_repair_and_ai():
     """评论（N）、半角括号、名字加被截断的钟点，都要修。只剩话题壳时才打 flash。"""
     assert title_needs_repair(LIVE_24002)
     assert title_needs_ai(LIVE_24002)
-    ascii_variant = "泡泡玛特： 泡泡玛特： 评论(1) - 流年(2026-10-28 09:12)"
+    ascii_variant = "泡泡玛特： 泡泡玛特： 评论(1) - 王小明(2026-10-28 09:12)"
     assert title_needs_repair(ascii_variant)
     assert title_needs_ai(ascii_variant)
     glued = "西部矿业：西部矿业：评论（3）-李四（2026-10-27 19"
     assert title_needs_repair(glued)
     assert title_needs_ai(glued)
     # 评论条数被截掉了，重复的话题壳仍贴着评论者。
-    author_only = "泡泡玛特： 泡泡玛特： - 流年（2026-10-28 09"
+    author_only = "泡泡玛特： 泡泡玛特： - 王小明（2026-10-28 09"
     assert title_needs_repair(author_only)
     assert title_needs_ai(author_only)
     shown = zsxq_display_title(LIVE_24002, body="泡泡玛特：\n", when="2026-10-28")
-    assert "流年" not in shown
+    assert "王小明" not in shown
     assert "评论（" not in shown and "评论(" not in shown
     assert stored_zsxq_title(LIVE_24002, "泡泡玛特：\n") is None
 
@@ -642,9 +643,9 @@ def test_comment_ui_title_can_still_use_a_real_sentence():
     digest = "方伟认为泡泡玛特下跌是自身问题，不是名创抢份额。"
     from_digest = zsxq_display_title(LIVE_24002, body="泡泡玛特：\n", summary=digest)
     assert from_digest == "泡泡玛特下跌是自身问题，不是名创抢份额"
-    assert "流年" not in from_digest
+    assert "王小明" not in from_digest
     ocr = (
-        "泡泡玛特： 泡泡玛特： 评论（1） - 流年（2026-10-28 09:00）\n"
+        "泡泡玛特： 泡泡玛特： 评论（1） - 王小明（2026-10-28 09:00）\n"
         "泡泡玛特下跌是自身问题，不是名创抢份额。\n"
     )
     from_ocr = zsxq_display_title(LIVE_24002, body="泡泡玛特：\n", ocr=ocr)
@@ -980,3 +981,67 @@ def test_chat_record_stamp_line_is_not_a_title():
     # 识完图、还没写摘要时补标题：跳过「昵称 时间」那一行，也不和下一行粘成一句。
     assert stored_zsxq_title("茅台：", "茅台：", ocr=ocr, when="2026-02-13") == first
     assert zsxq_display_title(stored, body="茅台：", ocr=ocr) == first
+
+
+def test_mini_program_share_link_is_not_a_title():
+    """微信小程序卡片复制出来只剩一串地址（24027「#小程序://雪球/…」）：当占位，从正文和评论里星主那句起题。"""
+    stored = "#小程序://雪球/AbCd1234XyZ"
+    body = (
+        f"{stored}\n\n"
+        "评论（1）\n"
+        "方伟Rey（2026-10-31 09:26）\n"
+        "某某公司：生意够硬，安全边际却不算厚 $某某公司(01234)$ 我看了一段时间了。我把年报...\n"
+    )
+    assert title_needs_repair(stored)
+    assert title_needs_ai(stored)
+    # 评论头「方伟Rey（2026-10-31 09:26）」也不当标题：去掉地址以后下一行就是它，以前会截成「方伟Rey2026-10-31 09」。
+    assert zsxq_display_title(stored, body=body, when="2026-10-31") == "某某公司：生意够硬"
+    assert stored_zsxq_title(stored, body, when="2026-10-31") == "某某公司：生意够硬"
+    # 只有地址和图、也没有摘要：日期兜底，不再把地址当标题。
+    assert zsxq_display_title(stored, body=stored + "\n", when="2026-10-31") == "2026-10-31 短帖"
+    # 夹在句子里的地址，抽句子时拿掉；标题里带着地址的也重取。
+    inline = "看这篇 #小程序://雪球/AbCd1234XyZ 腾讯的广告加载率还有空间。\n"
+    assert "小程序" not in zsxq_display_title("图片", body=inline)
+    glued = "#小程序://雪球/AbCd1234XyZ 腾讯的广告"
+    assert title_needs_repair(glued)
+    assert zsxq_display_title(glued, body="腾讯的广告加载率还有空间。\n") == "腾讯的广告加载率还有空间"
+    # 卡片摘录也跳过只有地址的那一行。
+    assert argumentative_excerpt(f"{stored}\n\n这家公司的生意够硬。") == "这家公司的生意够硬。"
+
+
+GAME_SUMMARY = "作者借一位玩家的体验说明：持续付费来自皮肤的外观、多元玩法和朋友组队，赛季更新维持新鲜感。"
+
+
+def test_sentence_before_a_list_is_not_a_topic_shell():
+    """「跟一位玩了十年的游戏玩家聊天：」下面是 1. 2. 3.：这是一句引出下文的话，不是「泡泡玛特：」那种话题壳。
+
+    以前当成壳，正文末尾又有「……」，整段都不拿来起题：卡片成了「2026-10-31 短帖」，
+    文章页从摘要里取，又只去掉了「作者借……说」，成了「明：……」（24030）。
+    """
+    stored = "跟一位玩了十年的游戏玩家聊天：..."
+    body = (
+        "跟一位玩了十年的游戏玩家聊天：\n"
+        "1.从15年开始玩，累计投入三四万\n"
+        "2.主要是买皮肤，皮肤没有功能加成，就是看着好看\n"
+        "3.每周玩十几个小时，主要是和朋友组队\n"
+        "……\n"
+    )
+    expected = "跟一位玩了十年的游戏玩家聊天"
+    assert title_needs_repair(expected + "：") is False
+    assert zsxq_display_title(stored, body=body, when="2026-10-31") == expected
+    assert zsxq_display_title(stored, body=body, summary=GAME_SUMMARY, when="2026-10-31") == expected
+    assert stored_zsxq_title(stored, body, summary=GAME_SUMMARY) == expected
+    # 公司名、话题名照旧是壳。
+    assert title_needs_repair("华润万象生活：")
+    assert title_needs_repair("看数：")
+
+
+def test_narrator_lead_does_not_split_shuoming():
+    """摘要开头「作者借……说明：」整个是引子，去掉后留下判断本身；不再只去掉到「说」，剩下「明：……」。"""
+    title = zsxq_display_title("图片", body="", summary=GAME_SUMMARY)
+    assert title == "持续付费来自皮肤的外观、多元玩法和朋友组队，赛季更新维持新鲜感"
+    assert strip_narrator("作者说，茅台的渠道库存在降") == "茅台的渠道库存在降"
+    assert strip_narrator("作者说明：本文只谈渠道库存") == "本文只谈渠道库存"
+    # 「说法」「说是」是句子本身，不是「作者说，」。
+    assert strip_narrator("作者说法很多，核心是渠道库存") == "作者说法很多，核心是渠道库存"
+    assert strip_narrator("作者说是渠道库存的问题") == "作者说是渠道库存的问题"

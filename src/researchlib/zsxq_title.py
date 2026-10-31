@@ -16,6 +16,7 @@
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
   「下图」「如下：」这种引出图片的垫话也算占位。整行只是占位的（导出的标题行「「图片」」）不拿来抽句子，
   不然会和下一句粘成「「图片」 补充一句……」；已经粘上的重取。
+  微信小程序卡片复制出来的地址（「#小程序://雪球/…」）也是占位，夹在句子里的抽句子时拿掉。
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
   接口先把开头几行用空格接起来再截，标题会跨行，这时把这几行接起来补全。
 - 标题以省略号收尾时，先去掉省略号再和正文对齐。正文里那一句不超过 40 字就整句用上；
@@ -26,8 +27,9 @@
 - 问答帖导出的小标题「提问（网友 → 方伟Rey）」「回答（方伟Rey）」不是帖子的话，括号里是网友的昵称：
   抽句子时当成断句，不和「问：…」那行、下面的提问拼成一句。已经拼进标题的（10315）重新取。
 - 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
-  完整分句以冒号收尾（「有两点感触很深：」）不是这种壳。
-- 评论列表的界面残屑要修：「评论（1）」「评论(1)」，「 - 流年（2026-10-28 09」这种名字加钟点，
+  完整分句以冒号收尾（「有两点感触很深：」）不是这种壳；冒号前超过 10 个字、引出下面 1. 2. 3. 的一句话
+  （「跟一位王者十年的游戏玩家聊天：」）也不是，去掉冒号照用。
+- 评论列表的界面残屑要修：「评论（1）」「评论(1)」，「 - 王小明（2026-10-28 09」这种名字加钟点，
   「评论里的回复」那一节的小标题，以及重复的「话题：」壳贴在评论头上。前面还剩一句可用的话就切掉残屑；
   只剩壳才起题。正文里只是提到「评论」的不算。抽句子时这些小标题当断句，「读者问：」「作者答：」一行一句。
 - 明显错字走 textutil.fix_obvious_typos（与 present_text.polish_display_text 同一张表），
@@ -78,13 +80,17 @@ _BULLET = re.compile(r"(?m)^[ \t]*[-•·][ \t]+")
 # 以前拿它当了标题，冒号处一截成了「- 王小明2026-02-13 18」，写进库以后再也不补。
 _STAMP = r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[ \t]*\d{1,2}(?:[:：]\d{2}){0,2}[ \t]*"
 _STAMP_TAIL = re.compile(_STAMP + r"$")
-_STAMP_LINE = re.compile(r"(?m)^[^\n]{0,30}?" + _STAMP + r"(?:\n|$)")
+# 评论区每条上面也有一行「- **方伟Rey**（2026-10-31 09:26）」，钟点外面包着括号。
+# 只有一个小程序地址的帖子（24027），去掉地址以后下一句就是这行，以前会截成「方伟Rey2026-10-31 09」。
+_STAMP_LINE = re.compile(r"(?m)^[^\n]{0,30}?" + _STAMP + r"[)）]?[ \t]*(?:\n|$)")
 # 转述的引子：「作者认为」「方伟判断，」「作者以国债利率为背景，主张」「作者借段永平的话判断，」。
 # 「方伟说过的」「作者认为的」是句子本身，不是引子。
+# 「说」后面是「明」「服」「法」「话」「是」时是一个词，不是「作者说，」：摘要写「作者借一位玩家的体验说明：……」，
+# 以前只去掉「作者借……说」，标题成了「明：持续付费和高频游玩……」（24030）。「说明」整个算引子。
 _NARRATOR_LEAD = (
     r"(?:方伟|作者|星主|笔者)"
     r"(?:(?:以|借|从)[^，,。；;！？!?]{1,30}?(?:[，,]\s*)?)?"
-    r"(?:认为|觉得|判断|指出|提到|说|表示|写道|主张|强调)(?![过的了得])"
+    r"(?:认为|觉得|判断|指出|提到|说明|说(?![明服法话是])|表示|写道|主张|强调)(?![过的了得])"
     r"[，,：:\s]*"
 )
 _NARRATOR = re.compile("^" + _NARRATOR_LEAD)
@@ -126,6 +132,10 @@ _DANGLING = re.compile(r"[，,；;]\s*([^，,；;]{0,3})$")
 _CJK = re.compile(r"[一-鿿]")
 _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 _PLACEHOLDER = frozenset({"无标题", "未命名", "无题", "暂无标题", "图片", "见图", "短帖"})
+# 微信里分享的小程序卡片，复制出来只剩一串地址「#小程序://雪球/Xm9H4vXxNcEEgAF」，不是帖子的话。
+# 整个标题只是这串地址的（24027）算占位；夹在句子里的，抽句子时拿掉。
+_SHARE = re.compile(r"#?小程序://[^\s。！？!?，,|｜]+")
+_SHARE_ONLY = re.compile(r"(?:#?小程序://[^\s。！？!?，,|｜]+\s*)+")
 # 「「图片」 虽然不体现在资产负债表……」：导出的占位标题行和下一句粘成了一个标题（23834）。
 _PLACEHOLDER_LEAD = re.compile(r"^[「『“\"]\s*(?:图片|见图|无标题|未命名|无题|暂无标题)\s*[」』”\"]\s+\S")
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+短帖)?")
@@ -165,6 +175,8 @@ _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
 # 「泡泡玛特：」「西部矿业：」：整标题以中文/ASCII 冒号收尾的壳。
 _SHELL_COLON = re.compile(r"^.+[：:]\s*$")
+# 冒号前超过这么多字就不当壳。
+_SHELL_MAX = 10
 # 评论列表粘进标题。分隔符之后才算界面，避免「在评论（1）里」这种正文。
 # 名字后面要有钟点，或者日期被截在字符串末尾；「（2026-10-28）」只有日期且括号已闭上，不算。
 _UI_EDGE = r"\s：:|｜·•，,。！？!?#）)"
@@ -206,7 +218,7 @@ def is_empty_shell(title: str) -> bool:
 
 
 def _comment_list_ui(title: str) -> bool:
-    """标题里粘了评论列表的界面：``评论（1）`` / ``评论(1)``，或 `` - 流年（2026-10-28``。"""
+    """标题里粘了评论列表的界面：``评论（1）`` / ``评论(1)``，或 `` - 王小明（2026-10-28``。"""
     text = title or ""
     return _COMMENT_COUNT.search(text) is not None or _COMMENT_AUTHOR.search(text) is not None
 
@@ -243,6 +255,8 @@ def title_needs_repair(title: str, body: str = "") -> bool:
     if _QA_ASKER.search(text):
         return True
     if _PLACEHOLDER_LEAD.match(text):
+        return True
+    if _SHARE.search(text):
         return True
     if _shell_colon(text):
         return True
@@ -320,7 +334,9 @@ def _shell_colon(title: str) -> bool:
         return True
     if any(char in stem for char in "。！？!?，,；;"):
         return False
-    if len(stem) > 16:
+    # 公司名、话题名不长（「泡泡玛特」「西部矿业」「看数」）。十几个字的是一句引出下文的话：
+    # 「跟一位王者十年的游戏玩家聊天：」下面是 1. 2. 3.，以前当成壳，标题换成了「2026-10-31 短帖」（24030）。
+    if len(stem) > _SHELL_MAX:
         return False
     return len(text) <= TITLE_LIMIT
 
@@ -513,7 +529,7 @@ def zsxq_display_title(
     # 评论残屑前面还有一句可用的话：切掉残屑，不用正文换一句。
     clean = _clean_comment_stem(stored)
     if clean:
-        return clean
+        return _tidy_clause_colon(clean)
     if _comment_list_ui(stored):
         stored = _topic_shell_label(_comment_ui_stem(stored) or "")
     if stored and not title_needs_repair(stored, body):
@@ -689,6 +705,7 @@ def _plain(text: str) -> str:
     cleaned = _COMMENT_SECTION.sub("。", cleaned)
     cleaned = _LABELED_LINE.sub(r"\1。", cleaned)
     cleaned = _IMAGE.sub(" ", cleaned)
+    cleaned = _SHARE.sub(" ", cleaned)
     cleaned = _HEADING.sub("", cleaned)
     cleaned = _STAMP_LINE.sub("", cleaned)
     cleaned = _BULLET.sub("", cleaned)
@@ -969,7 +986,9 @@ def _placeholder(text: str) -> bool:
     线上 23982 的标题就成了「下图」。
     """
     bare = _WRAP.sub("", text or "")
-    return bare in _PLACEHOLDER or _FILLER.match(bare) is not None
+    if bare in _PLACEHOLDER or _FILLER.match(bare) is not None:
+        return True
+    return _SHARE_ONLY.fullmatch((text or "").strip()) is not None
 
 
 def _missing_note(text: str) -> bool:

@@ -600,7 +600,8 @@ _CLOCK = r"\d{1,2}[:：]\d{2}(?::\d{2})?"
 _DATE = r"\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+" + _CLOCK + r")?"
 _COUNT = r"(?:点赞|赞|评论|回复|阅读|在看|打赏|收藏|浏览)\s*[:：]?\s*\d+"
 _KEY_VALUE = r"(?:" + _META_KEY + r")\s*[:：]?\s*\d+"
-_URL = r"(?:https?://|www\.)[^\s。！？!?，,|｜]+"
+# 微信小程序卡片复制出来的「#小程序://雪球/Xm9H4vXxNcEEgAF」也算地址：只有它的一行不当导读。
+_URL = r"(?:https?://|www\.|#?小程序://)[^\s。！？!?，,|｜]+"
 _LEADING_META = re.compile(
     r"^(?:" + "|".join((_DATE, _CLOCK, _KEY_VALUE, _COUNT, _URL)) + r")(?:\s+|$)",
     re.I,
