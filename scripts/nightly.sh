@@ -1,6 +1,7 @@
 #!/bin/bash
 # 夜间补齐：外链图片、观点、摘要、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
 # 观点和摘要还有时间上限，跑不完的下一晚接着补。白天和部署时都不跑。
+# 识图紧跟在外链图片后面：当天的截图帖先识出字，向量、观点、摘要第一遍就读得到。
 # 某一步失败不影响后面的步骤；结果写进 data/status/nightly.json，有步骤失败或两天没跑成时 health.notices 会列出来。
 #
 #   scripts/nightly.sh
@@ -53,21 +54,23 @@ step() {
 }
 
 step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMIT"
+# 以前识图排在最后：当天的截图帖先拿一行正文抽观点（白花一次），第二晚识了字才重抽；图片文字块也要等一晚才有向量。
+if [ "$NIGHTLY_OCR" = "1" ]; then
+  step "图片文字" compose_exec app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
+fi
 step "语义向量" compose_exec app research-embed --limit "$EMBED_LIMIT"
 step "观点" compose_exec app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES"
 step "摘要" compose_exec app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
 if [ "$THESES_ENABLED" = "1" ]; then
   step "论点" compose_exec app research-theses
 fi
-if [ "$NIGHTLY_OCR" = "1" ]; then
-  step "图片文字" compose_exec app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
-fi
 
 if [ -n "$failed" ]; then
   status_fail "失败的步骤：${failed}"
   exit 1
 fi
-parts="外链图片、语义向量、观点、摘要"
-[ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
+parts="外链图片"
 [ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
+parts="${parts}、语义向量、观点、摘要"
+[ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
 status_ok "$parts"
