@@ -288,6 +288,10 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
         repaired = polish_display_text(repaired)
         card["plain_title"] = repaired
         card["title"] = repaired
+        if card.get("body_text"):
+            # 摘录跟着换上的标题重取：原标题是半句时，按原标题取的摘录是那句的后半截（「会有什么样的结果」）。
+            excerpt = argumentative_excerpt(card["body_text"], title=repaired, limit=180)
+            card["excerpt"] = polish_display_text(excerpt) if excerpt else ""
 
 
 def display_titles(conn, rows, by_id: dict, zone: str) -> dict[int, str]:
