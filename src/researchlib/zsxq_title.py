@@ -46,7 +46,14 @@ from __future__ import annotations
 import re
 
 from researchlib.boilerplate import strip_meta
-from researchlib.textutil import MARK_PAIRS, argumentative_excerpt, balance_marks, fix_obvious_typos, lonely_marks
+from researchlib.textutil import (
+    MARK_PAIRS,
+    argumentative_excerpt,
+    balance_marks,
+    drop_export_stub,
+    fix_obvious_typos,
+    lonely_marks,
+)
 
 FANGWEI_ZSXQ = "fangwei-zsxq"
 TITLE_LIMIT = 40
@@ -360,7 +367,7 @@ def _cut_line(title: str, body: str) -> str:
     head = _SPACES.sub("", _MARKUP.sub("", _strip_ellipsis(title or "")))
     if len(head) < 4:
         return ""
-    lines = [line for line in _plain(strip_meta(body or "")).splitlines() if _SPACES.sub("", line)]
+    lines = [line for line in _plain(drop_export_stub(strip_meta(body or ""))).splitlines() if _SPACES.sub("", line)]
     for index, line in enumerate(lines):
         flat = _SPACES.sub("", line)
         if not flat.startswith(head):
@@ -469,7 +476,7 @@ def shorten_long_title(title: str, body: str) -> str:
     if len(text) <= TITLE_LIMIT or not _CJK.search(text):
         return text
     head = _SPACES.sub("", _MARKUP.sub("", text))
-    if not _SPACES.sub("", _MARKUP.sub("", (body or "")[: len(text) * 3])).startswith(head):
+    if not _SPACES.sub("", _MARKUP.sub("", drop_export_stub(body or "")[: len(text) * 3])).startswith(head):
         return text
     sentence = re.match(f"[^{_SENTENCE_STOP}]*[{_SENTENCE_STOP}]?", text).group(0).rstrip("；;")
     prepared = _prepare(sentence)
@@ -495,8 +502,8 @@ def zsxq_display_title(
     stored = _without_archive_meta((title or "").strip())
     # 开头点名的网友昵称不是帖子的话。正文那几行在 _plain 里一样去掉，半句标题还对得上正文。
     stored = "" if _MENTION_ONLY.match(stored) else _MENTION_LEAD.sub("", stored).strip()
-    # 正文开头的归档头（作者、时间、点赞数）不是帖子的话，不拿来当标题。
-    body = strip_meta(body or "")
+    # 正文开头的归档头（作者、时间、点赞数）和导出时截的标题行「前十几个字...」不是帖子的话，不拿来当标题。
+    body = drop_export_stub(strip_meta(body or ""))
     # 评论残屑前面还有一句可用的话：切掉残屑，不用正文换一句。
     clean = _clean_comment_stem(stored)
     if clean:

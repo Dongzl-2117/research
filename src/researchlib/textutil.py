@@ -116,10 +116,29 @@ def first_heading(md: str) -> str | None:
 
 
 # 开头或结尾的省略号。中间的「他说……然后停了」不是截断标题。
-_EDGE_ELLIPSIS = re.compile(
-    r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+"
-    r"|(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
-)
+_TRAILING_ELLIPSIS = r"(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
+_EDGE_ELLIPSIS = re.compile(r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+|" + _TRAILING_ELLIPSIS)
+_STUB_END = re.compile(_TRAILING_ELLIPSIS)
+
+
+def drop_export_stub(text: str) -> str:
+    """去掉正文第一行导出时截的标题「前十几个字...」，下一行就是它截自的那句。
+
+    星球老帖入库时没认出这一行，检索文字（body_text）开头多了它：卡片摘录以「IT之家 5 月 11 日消息...」
+    或「...」开头，半句标题也对不上正文、补不全（13364、9501）。重洗检索文字（research-clean）以后库里就没有了。
+    """
+    lines = (text or "").split("\n")
+    filled = [index for index, line in enumerate(lines) if line.strip()]
+    if len(filled) < 2:
+        return text
+    first = lines[filled[0]].strip()
+    stem = _STUB_END.sub("", first)
+    if stem == first:
+        return text
+    stem = re.sub(r"\s+", "", stem)
+    if len(stem) < 4 or not re.sub(r"\s+", "", lines[filled[1]]).startswith(stem):
+        return text
+    return "\n".join(lines[filled[1] :])
 
 
 # 要成对的引号、书名号、括号。单引号的后一半也当撇号用（Apple’s），不算。
@@ -656,17 +675,35 @@ def _strip_title_label(line: str, title: str) -> str:
     return line
 
 
+# 星球帖导出的评论区小标题。卡片摘录只取帖子本身，不读到读者的提问里去。
+_COMMENT_HEADER = re.compile(r"^(?:#{1,6}\s*)?评论(?:里的回复|\s*[（(]\d+[）)])$")
+_CLAUSE_EDGE = " ，,。；;：:！!？?"
+# 标题后面剩下的句读和省略号。「Amazon.com」「2.5 亿」的点后面跟着字母数字，不算。
+_AFTER_TITLE = re.compile(r"^(?:[\s，,。；;、！!？?…⋯]|\.(?![0-9A-Za-z]))+")
+
+
 def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
     """从正文前部取一句实质内容。
 
     跳过 sn、点赞、钟点，以及公众号 / 知识星球开头的作者、时间、原链接、
-    来源、重复标题和只有 URL 的行。没有实质内容就返回空串。
+    来源、重复标题和只有 URL 的行。星球帖的评论区不算正文，读到「评论里的回复」就停。
+    没有实质内容就返回空串。
     """
     kept: list[str] = []
-    for raw_line in (text or "").splitlines():
+    for raw_line in drop_export_stub(text or "").splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
-        if title and line.startswith(title):
-            line = line[len(title) :].strip(" ：:|-")
+        if _COMMENT_HEADER.match(line):
+            break
+        # 页面标题是第一句中间的一个分句（星球标题去掉了「IT之家 5 月 11 日消息，」这种电头）：从标题后面接着取，
+        # 不把标题再摘一遍。标题太短、或者前后不是断句的，不这么认：「腾讯」出现在句子里不等于这句就是标题。
+        start = line.find(title) if title and not kept and len(title) >= 8 else -1
+        if start > 0:
+            after = line[start + len(title) : start + len(title) + 1]
+            if line[start - 1] not in _CLAUSE_EDGE or (after and after not in _CLAUSE_EDGE):
+                start = -1
+        if title and (line.startswith(title) or start > 0):
+            # 标题那句后面只剩「。」「...」或逗号开头的后半句：标点不留。
+            line = _AFTER_TITLE.sub("", line[max(start, 0) + len(title) :].strip(" ：:|-"))
         line = _strip_title_label(line, title)
         line = _strip_leading_meta(line)
         if not line or _META_LINE.match(line):
@@ -691,6 +728,8 @@ def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
         break
     if not chosen:
         chosen = blob
+    if not re.search(r"[0-9A-Za-z\u4e00-\u9fff]", chosen):
+        return ""
     if len(chosen) <= limit:
         return chosen
     return chosen[: limit - 1] + "…"

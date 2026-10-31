@@ -5,6 +5,7 @@ from pathlib import Path
 from markupsafe import Markup
 
 from researchlib.ingest.parse import header_topic_id, parse_archive
+from researchlib.textutil import argumentative_excerpt, drop_export_stub
 from researchlib.web.routes import _repair_zsxq_titles
 from researchlib.zsxq_title import (
     shorten_long_title,
@@ -909,3 +910,57 @@ def test_first_paragraph_used_as_title_is_cut_to_its_first_sentence():
     assert shorten_long_title(english, english + " More text.") == english
     assert shorten_long_title("增长是无关紧要的特质", "增长是无关紧要的特质，正文。") == "增长是无关紧要的特质"
 
+
+# 星球老帖的检索文字开头多一行导出时截的标题「前十几个字...」，下一行才是正文（线上 13364、11911、11319）。
+STUB_BODY = (
+    "某某网 5 月 11 日消息...\n"
+    "某某网 5 月 11 日消息，某某科技报道称，拼多多旗下的快递代收业务已正式定名为“拼多多驿站”，"
+    "支持 24 小时全天自助取件以及送货上门。\n"
+    "拼多多的团队风格，要么不做，一做就是疾风暴雨。"
+)
+
+
+def test_export_stub_line_does_not_block_the_title_repair():
+    """标题后来补得比导出的那一行长，正文第一行还是「某某网 5 月 11 日消息...」：
+    以前对不上正文，标题一直停在电头上。"""
+    title = "某某网 5 月 11 日消息，某某科技报道称"
+    assert drop_export_stub(STUB_BODY).startswith("某某网 5 月 11 日消息，某某科技报道称，拼多多")
+    assert title_needs_repair(title, STUB_BODY)
+    assert zsxq_display_title(title, body=STUB_BODY) == "拼多多旗下的快递代收业务已正式定名为“拼多多驿站”"
+    half = "上月超跌的都慢慢回来了，三年后你们再看，就知道好公司与烂公司，拉长周期看"
+    body = f"上月超跌的都慢慢回来了，三年...\n{half}会有什么样的结果\n"
+    assert zsxq_display_title(half, body=body) == "上月超跌的都慢慢回来了，三年后你们再看，就知道好公司与烂公司"
+    # 不是导出行的不去：没有省略号、下一行不是从它开始、只剩两三个字。
+    for text in ("我觉得...\n其实不是这样的", "前面一句。\n前面一句。还有", "腾讯...\n腾讯的游戏"):
+        assert drop_export_stub(text) == text
+
+
+def test_card_excerpt_skips_the_stub_and_the_comment_section():
+    card = {
+        "id": 11911,
+        "source_id": "fangwei-zsxq",
+        "plain_title": "我的观点类似，肯定会有第二波",
+        "title": "我的观点类似，肯定会有第二波",
+        "summary": "",
+        "date": "2025-05-12",
+        "body_text": (
+            "我的观点类似，肯定会有第二波...\n我的观点类似，肯定会有第二波，不用害怕没有上车机会\n"
+            "评论里的回复\n读者问：如果再有第二波机会怎么办\n作者答：会有的"
+        ),
+        "excerpt": "... 不用害怕没有上车机会 评论里的回复 读者问：如果再有第二波机会怎么办",
+    }
+    _repair_zsxq_titles(_Conn([{"id": 11911, "body_text": card["body_text"], "ocr_text": ""}]), [card])
+    assert card["title"] == "我的观点类似，肯定会有第二波，不用害怕没有上车机会"
+    # 标题已经是整句，后面只有评论区：摘录空着，不再摘读者的提问。
+    assert card["excerpt"] == ""
+    # 按原标题取的摘录也不以「...」开头、不读到评论区里去。
+    assert argumentative_excerpt(card["body_text"], title="我的观点类似，肯定会有第二波") == "不用害怕没有上车机会"
+    # 标题是第一句中间的分句：摘录从标题后面接着取，不把标题再摘一遍。
+    title = "拼多多旗下的快递代收业务已正式定名为“拼多多驿站”"
+    assert argumentative_excerpt(STUB_BODY, title=title) == "支持 24 小时全天自助取件以及送货上门。"
+    # 正文只有标题那一句：摘录空着，不留一个「。」。
+    only = "在你们看来是批评，在我个人看来...\n在你们看来是批评，在我个人看来是褒奖。"
+    assert argumentative_excerpt(only, title="在你们看来是批评，在我个人看来是褒奖") == ""
+    # 标题后面紧跟的点是小数的一部分：不当标点去掉，1.5 不摘成 5。
+    decimal = argumentative_excerpt("某某公司营收增长到 1.5 万亿，利润创了新高。", title="某某公司营收增长到 1")
+    assert not decimal.startswith("5")
