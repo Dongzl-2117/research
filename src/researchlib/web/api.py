@@ -29,7 +29,8 @@ from researchlib.nested_copies import fold_nested_copies
 from researchlib.present_text import plain_qa_markdown, polish_display_text
 from researchlib.render import link_local_images
 from researchlib.retrieval import retrieve, search_articles
-from researchlib.textutil import strip_duplicate_title
+from researchlib.snippets import mention_sentence, mention_spans
+from researchlib.textutil import opening_excerpt, strip_duplicate_title
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import filter_timeline
 from researchlib.views import timeline as view_timeline
@@ -108,7 +109,8 @@ def _items(conn, rows, by_id, request, *, snippets: dict | None = None) -> list[
     found = []
     for row in rows:
         chunk = (snippets or {}).get(row["id"])
-        text = chunk["body"] if chunk else (row.get("body_text") or "")[:300]
+        # 没有检索词时给正文开头一段，和卡片一样跳过归档头和标题那句（星球帖的标题多半就是第一句）。
+        text = chunk["body"] if chunk else opening_excerpt(row.get("body_text") or "", title=titles[row["id"]])
         found.append(
             _summary_item(
                 row,
@@ -427,12 +429,7 @@ def company_payload(conn, request: Request, sources, company_id: int, limit: int
     titles = display_titles(conn, rows, by_id, settings.display_timezone)
     items = []
     for row in rows:
-        text = row["body_text"] or ""
-        spans = matcher.document(row["title"], text).spans(text)
-        context = ""
-        if spans:
-            start, end, _ = spans[0]
-            context = " ".join(text[max(0, start - 80) : end + 80].split())
+        context = mention_sentence(*mention_spans(matcher, row["title"], row["body_text"], row["ocr_text"]))
         item = _summary_item(
             row,
             by_id[row["source_id"]],
@@ -697,5 +694,7 @@ def llms_txt(request: Request):
         "- 公司提及深度 depth：title 标题、whole 全文、section 单节、passing 一带而过。",
         "- published_at 是原文发布时间，带 +08:00。日期不详的文章为 null。",
         "- summary / digest 由 LLM 生成，只作导读，以原文为准。",
+        "- snippet：带 q 检索时是命中的那段；不带 q 的列表（文章列表、某一天）是正文开头一段，不重复标题、不含归档头；"
+        "单家公司里是提及原句，正文里没有时从图片里的字找。",
     ]
     return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; charset=utf-8")

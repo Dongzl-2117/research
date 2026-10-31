@@ -827,7 +827,7 @@ def company_articles(conn, company_id: int, source_ids: list[str], depth: str | 
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.published_at, a.source_id, m.depth, m.hit_count,
-               left(a.body_text, 20000) AS body_text,
+               left(a.body_text, 20000) AS body_text, left(coalesce(a.ocr_text, ''), 8000) AS ocr_text,
                {_CLOCK_FIELDS}
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}

@@ -728,13 +728,9 @@ _CLAUSE_EDGE = " ，,。；;：:！!？?"
 _AFTER_TITLE = re.compile(r"^(?:[\s，,。；;、！!？?…⋯]|\.(?![0-9A-Za-z]))+")
 
 
-def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
-    """从正文前部取一句实质内容。
-
-    跳过 sn、点赞、钟点，以及公众号 / 知识星球开头的作者、时间、原链接、
-    来源、重复标题和只有 URL 的行。星球帖的评论区不算正文，读到「评论里的回复」就停。
-    没有实质内容就返回空串。
-    """
+def _lead_lines(text: str, title: str) -> list[str]:
+    """正文开头的行：跳过 sn、点赞、钟点，以及公众号 / 知识星球开头的作者、时间、原链接、
+    来源、重复标题和只有 URL 的行。星球帖的评论区不算正文，读到「评论里的回复」就停。"""
     kept: list[str] = []
     for raw_line in drop_export_stub(text or "").splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
@@ -757,11 +753,20 @@ def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
         if title and line == title.strip():
             continue
         kept.append(line)
-    blob = _strip_leading_meta(" ".join(kept))
+    return kept
+
+
+def _lead_blob(lines: list[str], title: str) -> str:
+    blob = _strip_leading_meta(" ".join(lines))
     if title and blob.startswith(title):
         blob = _strip_leading_meta(blob[len(title) :].strip())
     blob = _strip_title_label(blob, title)
-    blob = _strip_leading_meta(blob)
+    return _strip_leading_meta(blob)
+
+
+def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
+    """从正文前部取一句实质内容。开头哪些行不算见 _lead_lines。没有实质内容就返回空串。"""
+    blob = _lead_blob(_lead_lines(text, title), title)
     if not blob:
         return ""
     parts = re.split(r"(?<=[。！？!?])\s*", blob)
@@ -779,3 +784,31 @@ def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
     if len(chosen) <= limit:
         return chosen
     return chosen[: limit - 1] + "…"
+
+
+# 句末：中文句号问号叹号分号，英文的句点要后面跟着空白（「2.5 亿」「Amazon.com」不算）。
+_OPENING_STOP = re.compile(r"[。！？!?；;]|\.(?=\s)")
+
+
+def opening_excerpt(text: str, title: str = "", limit: int = 300) -> str:
+    """接口列表没有检索词时给的摘录：正文开头一段。哪些行不算见 _lead_lines。
+
+    小标题紧跟着一段以它开头的话（「拼多多送货上门：」下一行「拼多多送货上门：最早是……」）只留那段。
+    超过 limit 时截在 limit 以内最后一个句末，句末太靠前（不到一半）就硬截。没有实质内容返回空串。
+    """
+    lines = _lead_lines(text, title)
+    lines = [
+        line
+        for index, line in enumerate(lines)
+        if not (len(line) >= 4 and index + 1 < len(lines) and lines[index + 1].startswith(line))
+    ]
+    blob = _lead_blob(lines, title)
+    if not re.search(r"[0-9A-Za-z一-鿿]", blob):
+        return ""
+    if len(blob) <= limit:
+        return blob
+    cut = blob[: limit - 1]
+    stops = [match.end() for match in _OPENING_STOP.finditer(cut)]
+    if stops and stops[-1] >= limit // 2:
+        cut = cut[: stops[-1]]
+    return cut.rstrip() + "…"
