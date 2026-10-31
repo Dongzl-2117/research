@@ -633,12 +633,29 @@ def _article_match(tsq: str, *, ocr: bool = False) -> str:
     return f"a.id IN ({' UNION ALL '.join(parts)})"
 
 
-def _prefer_translation(rows: list[dict]) -> list[dict]:
-    """同一篇英文文章的原文块和中文译文块都召回时，只留译文块，免得同一段内容占两份名额。"""
+def _prefer_translation(rows: list[dict], phrases: list[str] | None = None) -> list[dict]:
+    """同一篇英文文章的原文块和中文译文块都召回时，只留译文块，免得同一段内容占两份名额。
+
+    phrases：引号里要原样出现的词。原文块里原样写着的留下：英文原句只在原文块里，丢了它，这篇在打分那一步
+    就因为译文块里没有这句被整篇滤掉。线上搜「"Listen to this Update in your podcast player"」，
+    侧栏数到 38 篇，结果一篇没有：语义召回把这些文章译文里「在播客播放器里收听」那块带了进来。
+    """
     translated = {row["article_id"] for row in rows if row.get("lang") == "zh"}
     if not translated:
         return rows
-    return [row for row in rows if row.get("lang") == "zh" or row["article_id"] not in translated]
+
+    def quoted(row: dict) -> bool:
+        text = (row.get("heading") or "") + "\n" + (row.get("body") or "")
+        lowered = text.lower()
+        return any(_count(text, lowered, phrase) for phrase in phrases or ())
+
+    return [
+        row for row in rows if row.get("lang") == "zh" or row["article_id"] not in translated or quoted(row)
+    ]
+
+
+def _phrases(query: Query) -> list[str]:
+    return [term.forms[0] for term in query.terms if term.kind == "phrase" and term.forms]
 
 
 def _group_tsquery(query: Query, params: dict, *, only_selective: bool, operator: str, prefix: str) -> str:
@@ -904,7 +921,7 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
             add_rows(_rows_for_keys(conn, title_keys))
         if not targets:
             add_rows(_leading_rows(conn, scope, 600))
-    return _prefer_translation(list(found.values()))
+    return _prefer_translation(list(found.values()), _phrases(query))
 
 
 # —— 语义召回 ——
@@ -1004,7 +1021,7 @@ def semantic_candidates(
     have = {(row["article_id"], row["ord"]) for row in rows}
     new_keys = [key for key in sims if key not in have]
     rows = list(rows) + [dict(row) for row in _rows_for_keys(conn, new_keys)]
-    return _prefer_translation(rows), semantic_scores(sims)
+    return _prefer_translation(rows, _phrases(query)), semantic_scores(sims)
 
 
 def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int]):
@@ -1145,6 +1162,18 @@ def _form_counter(form: str):
         return lambda text, _lowered: text.count(form)
     pattern = re.compile(r"(?<![A-Za-z0-9])" + re.escape(form.lower()) + r"(?![A-Za-z0-9])")
     return lambda _text, lowered: len(pattern.findall(lowered))
+
+
+_REGEX_SPECIAL = re.compile(r"([\\^$.|?*+()\[\]{}])")
+
+
+def _literal_sql(form: str, column: str, params: dict, key: str) -> str:
+    """SQL 里「这段文字原样含有 form」，和 _form_counter 同一个口径：中文按字面，英文按词边界、不分大小写。"""
+    if _is_cjk(form):
+        params[key] = form
+        return f"strpos({column}, %({key})s) > 0"
+    params[key] = r"(?<![A-Za-z0-9])" + _REGEX_SPECIAL.sub(r"\\\1", form) + r"(?![A-Za-z0-9])"
+    return f"({column}) ~* %({key})s"
 
 
 def _count(text: str, lowered: str, form: str) -> int:
@@ -1839,6 +1868,17 @@ def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:
         conditions.append(
             f"EXISTS (SELECT 1 FROM article_mentions cm WHERE cm.article_id = a.id"
             f" AND cm.company_id = %(cnt_company_{index})s)"
+        )
+    # 引号里的词要原样出现，和结果列表同一条（score_rows 里没有原样写着这句的段落不要）：
+    # 全文索引只认切出来的词，「"小程序://"」数到的是所有提到小程序的帖子：线上页面写着「196 篇全部命中，
+    # 按相关度能翻到前 1 篇，其余的加来源或时间范围再搜」，列表却只收原样写着这句的段落。
+    # 先用块的全文索引筛出含这几个词的块，再逐字核对，常见词的引号检索也不用把整篇每块都过一遍。
+    for index, phrase in enumerate(_phrases(query)):
+        words = _form_tsquery_sql([phrase], params, f"cnt_quote_words_{index}")
+        literal = _literal_sql(phrase, "coalesce(pc.heading, '') || chr(10) || pc.body", params, f"cnt_quote_{index}")
+        conditions.append(
+            f"EXISTS (SELECT 1 FROM article_chunks pc WHERE pc.article_id = a.id"
+            f" AND pc.search_tsv @@ {words} AND {literal})"
         )
     if not tsq and not company_ids:
         return {}
