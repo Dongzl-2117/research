@@ -59,7 +59,7 @@ def _key(md: str) -> str:
     return _NON_KEY.sub("", text)
 
 
-def _blocks(lines: list[str]) -> list[tuple[int, int, bool]]:
+def markdown_blocks(lines: list[str]) -> list[tuple[int, int, bool]]:
     """按空行切块：[(起, 止, 含不含围栏代码)]，止不含。围栏代码里的空行不切。"""
     found: list[tuple[int, int, bool]] = []
     start: int | None = None
@@ -141,7 +141,7 @@ def fold_nested_copies(md: str) -> str:
     if not md or ("\n" not in md):
         return md or ""
     lines = md.split("\n")
-    blocks = _blocks(lines)
+    blocks = markdown_blocks(lines)
     edits: list[tuple[int, int, list[str]]] = []
     index = 0
     while index < len(blocks):
