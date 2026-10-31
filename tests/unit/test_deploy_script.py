@@ -251,10 +251,30 @@ def test_waiting_three_hours_behind_a_long_job_is_reported(world: World):
     assert world.head() == shipped
     status = world.status()
     assert status["ok"] is False
-    assert f"research-translate 还在跑，main 上的 {sha[:7]} 合并 3 小时了还没上线" in status["message"]
+    assert "research-translate 还在跑，最早一个没上线的合并等了 3 小时" in status["message"]
+    assert f"main 现在是 {sha[:7]}" in status["message"]
     # 跑完了：照常上线，提示消失。
     assert world.deploy().returncode == 0
     assert world.head() == sha and world.status()["ok"] is True
+
+
+def test_fresh_merges_do_not_hide_a_long_wait(world: World):
+    """10-31：四个多小时没上线，期间一直有新合并，按最新的提交算总不到 3 小时，没报。"""
+    world.ci_says("completed", "success")
+    shipped = world.head()
+    world.commit("四小时前合并的", hours_ago=4)
+    sha = world.commit("刚合并的")
+    top = "root 12 1 0 Oct29 ? 04:00:00 research-translate --source stratechery"
+    assert world.deploy(DOCKER_TOP=top).returncode == 0
+    assert world.head() == shipped
+    status = world.status()
+    assert status["ok"] is False and f"main 现在是 {sha[:7]}" in status["message"]
+    # 刚合并、前面没有积压：照常安静地等。
+    world.deploy()
+    world.commit("又一个")
+    result = world.deploy(DOCKER_TOP=top)
+    assert result.returncode == 0 and "还在跑，跑完再上线" in result.stdout
+    assert world.status()["ok"] is True
 
 
 def test_stuck_previous_run_is_reported_after_two_hours(world: World):

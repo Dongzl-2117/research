@@ -78,7 +78,7 @@ scripts/install-launchd.sh   # 以前装过备份的，BACKUP_DIR 从装好的�
 - Mac mini 上的仓库不在 main、有没提交的改动，或者 main 上有没推送的提交（都会被一起打进镜像），不上线，处理办法见下面。
 - 取不到 main、查不到 CI（断网、GitHub 出错）超过 6 小时才提示。一装好就提示「取不到 origin/main」的，多半是 origin 用的 SSH、launchd 里读不到钥匙；仓库是公开的，改成 HTTPS：`git remote set-url origin https://github.com/Dongzl-2117/research.git`。
 
-夜间补齐、定时抓取、备份，以及容器里手动起的 `research-translate`、`research-ocr` 正在跑时先不重启，等它们跑完：重建会把它们打断。这样等着本来不留记录：10-29 夜里合并的改动约 4 小时没上线，从外面看不出卡在哪。现在新提交合并 3 小时了还被挡着，或者上一轮自动上线跑了 2 小时还没完（比如重建卡住），`deploy.json` 记成失败，`research-status` 会打出来。等不及就 `FORCE=1 scripts/deploy.sh`，正在跑的会被打断。
+夜间补齐、定时抓取、备份，以及容器里手动起的 `research-translate`、`research-ocr` 正在跑时先不重启，等它们跑完：重建会把它们打断。这样等着本来不留记录：10-29 夜里合并的改动约 4 小时没上线，从外面看不出卡在哪。现在最早一个没上线的合并等了 3 小时还被挡着，或者上一轮自动上线跑了 2 小时还没完（比如重建卡住），`deploy.json` 记成失败，`research-status` 会打出来。以前按 main 上最新的提交算，10-31 一直有新合并，挡了四个多小时也没报。等不及就 `FORCE=1 scripts/deploy.sh`，正在跑的会被打断。
 
 Mac mini 上的 `~/research` 只给自动上线用。在那台机器上改代码的人和 AI 另外 clone 一份（比如 `~/research-dev`）或者用 `git worktree`，改完推分支走 PR；不在 `~/research` 里切分支、改文件、提交。只在本机要忽略的文件写进 `.git/info/exclude`，不改 `.gitignore`。`data/status/deploy.json` 写着卡住了，按它说的那种处理：
 
