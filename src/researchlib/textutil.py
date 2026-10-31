@@ -14,7 +14,16 @@ _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
 _HEADING = re.compile(r"^(#{1,6})\s+(\S.*?)\s*$", re.M)
 _FENCE = re.compile(r"```.*?```", re.S)
 _IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
-_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+# 链接文字可以是空的：Stratechery 包在图外面的「[](大图地址)」以前整串地址留在检索文字里。
+_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+# 图片的替代文字只是文件名或截图的默认名，不是正文：飞书导出的「image.png」「截屏2025-06-08 19.36.10.png」，
+# Stratechery 的「Screen Shot 2017-06-01 at 7.40.43 PM」「img0110」。以前检索片段里夹着这些。
+_IMAGE_FILE = re.compile(r"\.(?:png|jpe?g|gif|webp|bmp|heic|svg|tiff?)$", re.I)
+_ALT_STAMP = re.compile(r"\b(?:at|[ap]m)\b|[\d\W_]+", re.I)
+_DEFAULT_ALTS = frozenset(
+    {"", "image", "img", "screenshot", "photo", "picture", "untitled"}
+    | {"图片", "截图", "截屏", "屏幕截图", "微信图片", "未命名"}
+)
 _TAG = re.compile(r"<[^>]+>")
 _EMPH = re.compile(r"(\*\*|__|\*|_|~~)")
 # GitHub 提示框的标记。feishu2md 把飞书的高亮块导成引用块，第一行写「[!NOTE]」。
@@ -253,10 +262,17 @@ def strip_alert_markers(md: str) -> str:
     return _ALERT_LEAD.sub(r"\1", _ALERT_LINE.sub("", md))
 
 
+def _image_alt(match: re.Match[str]) -> str:
+    alt = match.group(1).strip()
+    if _IMAGE_FILE.search(alt) or _ALT_STAMP.sub("", alt).lower() in _DEFAULT_ALTS:
+        return ""
+    return alt
+
+
 def markdown_to_text(md: str) -> str:
     text = _FENCE.sub(" ", strip_alert_markers(md))
     text = re.sub(r"`([^`]*)`", r"\1", text)
-    text = _IMAGE.sub(r"\1", text)
+    text = _IMAGE.sub(_image_alt, text)
     text = _LINK.sub(r"\1", text)
     text = _TAG.sub(" ", text)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
