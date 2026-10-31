@@ -316,6 +316,18 @@ def display_titles(conn, rows, by_id: dict, zone: str) -> dict[int, str]:
     return titles
 
 
+def cited_titles(conn, citations: list[dict], sources, zone: str) -> list[dict]:
+    """问库出处里的标题是写回答时存下的快照（星球的「泡泡玛特：」、正文开头截下的半句），
+    换成按现在的库算的、和卡片一样的标题再显示。核对引用照旧用快照，那是模型当时读到的。"""
+    ids = [int(item["article_id"]) for item in citations if item.get("article_id") is not None]
+    if not ids:
+        return citations
+    titles = display_titles(conn, queries.title_rows(conn, ids), _source_map(sources), zone)
+    return [
+        {**item, "title": titles.get(item.get("article_id")) or item.get("title") or ""} for item in citations
+    ]
+
+
 def _decorate(conn, cards: list[dict], settings) -> list[dict]:
     """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
     ids = [card["id"] for card in cards]
@@ -1548,6 +1560,9 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
     article = None
     if info.get("article"):
         article = queries.get_article(conn, info["article"], [source.id for source in sources])
+    if article is not None:
+        zone = request.app.state.settings.display_timezone
+        article = {**article, "title": display_titles(conn, [article], _source_map(sources), zone)[article["id"]]}
     tree = None
     if info.get("tree"):
         tree = queries.get_article(conn, info["tree"], [source.id for source in sources])
@@ -1640,7 +1655,10 @@ def ask_answer(request: Request, answer_id: int):
         context["question"] = row["question"]
         banner = queries.sample_state(conn, [source.id for source in sources])
         labels = feedback_marks(conn, answer_id)
-    citations = row["citations"] or []
+        citations = row["citations"] or []
+        zone = request.app.state.settings.display_timezone
+        shown = cited_titles(conn, citations, sources, zone)
+        missing = cited_titles(conn, labels["missing"], sources, zone)
     result = {
         "id": row["id"],
         "question": row["question"],
@@ -1648,12 +1666,12 @@ def ask_answer(request: Request, answer_id: int):
         "error": row["error"],
         "status": row["status"],
         "model": row["model"],
-        "citations": citations,
+        "citations": shown,
         "terms": row["terms"] or [],
-        "created": format_date(row["created_at"], request.app.state.settings.display_timezone),
+        "created": format_date(row["created_at"], zone),
         "checks": _safe_checks(row, citations, sources),
         "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
-        "missing": labels["missing"],
+        "missing": missing,
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
         "failed_batches": list(((row.get("stats") or {}).get("failed_batches")) or []),
         "batches": int(((row.get("stats") or {}).get("batches")) or 0),

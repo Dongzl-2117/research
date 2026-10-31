@@ -35,6 +35,7 @@ from researchlib.web.routes import (
     _same_origin,
     active_portfolio,
     active_sources,
+    cited_titles,
     database,
     display_titles,
 )
@@ -594,8 +595,9 @@ def api_answer(request: Request, answer_id: int):
     with database(request) as conn:
         sources = active_sources(request, conn)
         row = queries.get_answer(conn, answer_id)
-    if row is None:
-        raise HTTPException(status_code=404)
+        if row is None:
+            raise HTTPException(status_code=404)
+        citations = cited_titles(conn, row["citations"] or [], sources, request.app.state.settings.display_timezone)
     checks = []
     if row["status"] == "done" and row["answer"]:
         try:
@@ -612,7 +614,8 @@ def api_answer(request: Request, answer_id: int):
             "status": row["status"],
             "error": row["error"] or None,
             "answer": row["answer"],
-            "citations": row["citations"],
+            # 标题和卡片一样按现在的库算；checks 照旧按写回答时的快照核对。
+            "citations": citations,
             # 没核对上的句子：数字、引号、作者、日期和所引段落对不上，或几乎没有一样的说法。
             "checks": checks,
             "terms": row["terms"],
