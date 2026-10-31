@@ -266,6 +266,24 @@ def test_search_matches_words_not_one_long_phrase(conn, settings):
         assert "加载" in chunk["terms"]
 
 
+def test_search_snippets_skip_a_repeated_paragraph(conn, settings):
+    from researchlib.retrieval import reset_stats_cache, search_articles
+    from researchlib.sources import enabled_sources, load_sources
+    from researchlib.web.queries import Scope
+
+    # 引文在正文里又以普通段落出现一遍（Stratechery）：两块一字不差，检索页上的两段片段是同一段话。
+    quote = "腾讯的广告加载率还在提升，广告加载率越高，视频号的广告库存越值钱。" + "商家的投放在往视频号挪。" * 36
+    other = "小程序里的广告也在增加，但是基数小。" + "这一块的收入还要几个季度才看得出来。" * 26
+    _store(conn, settings, [("quoted", "广告笔记", 1, f"{quote}\n\n{other}\n\n{quote}")])
+    rows = conn.execute("SELECT body FROM article_chunks WHERE article_id = 1 AND lang = '' ORDER BY ord").fetchall()
+    assert [row["body"] for row in rows] == [quote, other, quote]
+    reset_stats_cache()
+    sources = enabled_sources(load_sources(settings.sources_path))
+    found = search_articles(conn, "广告加载率", Scope(source_ids=[source.id for source in sources]), sources)
+    assert [hit.article_id for hit in found.hits] == [1]
+    assert sorted(passage.body for passage in found.hits[0].passages) == sorted([quote, other])
+
+
 def test_company_question_only_uses_passages_about_the_company(conn, settings):
     from researchlib.retrieval import retrieve
     from researchlib.sources import enabled_sources, load_sources
