@@ -37,6 +37,8 @@
   开头「1）」「一）」这种编号的半个括号本来就单用，不算。
 
 读者帖的「读者帖」标在作者行，不写进标题。
+
+别的来源也有拿正文第一段当标题的（雪球黑黑无常的短帖），由 shorten_long_title 收成第一句。
 """
 
 from __future__ import annotations
@@ -455,6 +457,30 @@ def _headline_line(title: str, body: str) -> str:
     if not fitted or not _ok(fitted) or title_needs_repair(fitted):
         return ""
     return fitted
+
+
+def shorten_long_title(title: str, body: str) -> str:
+    """整段正文当了标题的，收成第一句：雪球黑黑无常的短帖没有标题，导入时拿正文第一段当标题，
+    最长三百多字（20404）。所有来源都适用，只认长过 TITLE_LIMIT、正文又正是从它开始的；
+    公众号标题、飞书文档名不是正文开头那一段，不动。太长时和别处一样收在逗号处。
+    """
+    text = (title or "").strip()
+    # 英文标题（Stratechery）本来就常过 40 个字母，不按这条收。
+    if len(text) <= TITLE_LIMIT or not _CJK.search(text):
+        return text
+    head = _SPACES.sub("", _MARKUP.sub("", text))
+    if not _SPACES.sub("", _MARKUP.sub("", (body or "")[: len(text) * 3])).startswith(head):
+        return text
+    sentence = re.match(f"[^{_SENTENCE_STOP}]*[{_SENTENCE_STOP}]?", text).group(0).rstrip("；;")
+    prepared = _prepare(sentence)
+    fitted = _fit(prepared)
+    rest = prepared[len(fitted) :].lstrip() if prepared.startswith(fitted) else ""
+    if rest and rest[0] not in _BREAKS + _SENTENCE_STOP:
+        # 40 个字里没有能收的逗号，_fit 硬切在半个词上（「……在过去六十年里通过伯」）：收在第一个逗号。
+        clause = re.split(f"[{_BREAKS}]", prepared, maxsplit=1)[0].strip()
+        if _ok(clause) and len(clause) <= TITLE_LIMIT:
+            fitted = clause
+    return fitted if _ok(fitted) else text
 
 
 def zsxq_display_title(

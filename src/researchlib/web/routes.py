@@ -78,7 +78,13 @@ from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
 from researchlib.wechat_dialogue import present_stored_ocr
 from researchlib.zsxq_comments import source_owners
-from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
+from researchlib.zsxq_title import (
+    TITLE_LIMIT,
+    repairs_source,
+    shorten_long_title,
+    title_needs_repair,
+    zsxq_display_title,
+)
 
 router = APIRouter()
 logger = logging.getLogger("researchlib.web.routes")
@@ -199,7 +205,8 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
     if excerpt_text is None and "body_text" in row:
         excerpt_text = argumentative_excerpt(row["body_text"], title=row["title"], limit=180)
     # 明显错字只洗纯文本；搜索传入的 title 已是 Markup(<mark>)，再 replace 会丢掉安全标记被 Jinja 转义。
-    plain_title = polish_display_text(row["title"] or "")
+    # 整段正文当了标题的（黑黑无常的短帖）收成第一句。
+    plain_title = polish_display_text(shorten_long_title(row["title"] or "", row.get("body_text") or ""))
     if title is None:
         title = plain_title
     card = {
@@ -288,13 +295,22 @@ def display_titles(conn, rows, by_id: dict, zone: str) -> dict[int, str]:
     明显错字洗掉；星球的空标题、省略号、半句补成一句。rows 要有 id、source_id、title、published_at。库里的标题不改。
     """
     unique = {row["id"]: row for row in rows}
-    titles = {article_id: polish_display_text(row["title"] or "") for article_id, row in unique.items()}
     stars = [
         row
         for row in unique.values()
         if row["source_id"] in by_id and repairs_source(row["source_id"], by_id[row["source_id"]].kind)
     ]
-    materials = queries.title_materials(conn, [row["id"] for row in stars]) if stars else {}
+    # 长标题要对着正文开头看是不是整段正文当了标题（黑黑无常的短帖），和星球的一起取正文。
+    wanted = {row["id"] for row in stars} | {
+        article_id for article_id, row in unique.items() if len(row["title"] or "") > TITLE_LIMIT
+    }
+    materials = queries.title_materials(conn, sorted(wanted)) if wanted else {}
+    titles = {
+        article_id: polish_display_text(
+            shorten_long_title(row["title"] or "", (materials.get(article_id) or {}).get("body_text") or "")
+        )
+        for article_id, row in unique.items()
+    }
     needy = [
         row
         for row in stars
@@ -701,7 +717,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         # 正文显示前去掉归档头、引流尾巴、二维码和文末招募。库里的 body_md 不改。HTML 同样洗。
         # 明显错字在 render_body→present_article_text 再洗一遍（幂等）；此处提前洗是为了标题和 strip 标题一致。
         shown_md = polish_display_text(clean_article(conn, article_id, article["source_id"], article["body_md"]))
-        display_title = article["title"] or ""
+        display_title = shorten_long_title(article["title"] or "", article.get("body_text") or "")
         if repairs_source(source.id, source.kind) and title_needs_repair(
             display_title or "", article.get("body_text") or ""
         ):

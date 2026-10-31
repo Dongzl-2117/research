@@ -141,3 +141,26 @@ def test_ask_page_shows_the_repaired_star_title_for_citations(conn, settings):
     # 写回答时存下的快照不改。
     stored = conn.execute("SELECT citations FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()["citations"]
     assert stored[0]["title"] == CUT
+
+
+def test_first_paragraph_title_shows_its_first_sentence(conn, settings):
+    """黑黑无常的短帖拿正文第一段当了标题（20404 一百八十多字）。卡片、文章页、接口都只显示第一句，正文照旧完整。"""
+    paragraph = (
+        "盲盒对潮玩公司真正的贡献不是创造了几十亿的营收，而是让全世界看到了潮玩IP的价值和公司运营IP的能力。"
+        "这真正意义上让公司有能力拿到各大顶级商圈的黄金点位，也拿到最好的设计师资源。"
+    )
+    body = paragraph + "\n\n第二段讲门店：一线城市的旗舰店撑起品牌，二三线城市的门店贡献利润，海外门店的坪效更高。\n"
+    short = "盲盒对潮玩公司真正的贡献不是创造了几十亿的营收"
+    when = datetime(2026, 7, 20, 17, 40, tzinfo=SHANGHAI)
+    _store(conn, settings, "heiheiwuchang", [ParsedDoc("xq-1", paragraph, when, body, {"format": "markdown"}, [])])
+    article_id = _row(conn, "xq-1")["id"]
+    with TestClient(create_app(settings)) as client:
+        author = client.get("/authors/黑黑无常").text
+        page = client.get(f"/articles/{article_id}").text
+        listing = client.get("/api/v1/articles", params={"author": "黑黑无常"}).json()
+    assert f'<a href="/articles/{article_id}">{short}</a>' in author
+    assert f"<h1>{short}</h1>" in page
+    # 第一段还在正文里，只出现一次。
+    assert page.count("也拿到最好的设计师资源") == 1
+    assert [item["title"] for item in listing["items"]] == [short]
+    assert _row(conn, "xq-1")["title"] == paragraph
