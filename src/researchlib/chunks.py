@@ -219,6 +219,8 @@ OCR_ORD_BASE = 20000
 OCR_HEADING = "图片里的字"
 # 识别出的有效字（汉字、字母、数字）少于这个数的图不进检索：多半是装饰图、表情包或水印。
 OCR_MIN_CHARS = 20
+# 跨图去重只看去掉标点后至少这么多字的句子（和 wechat_dialogue._same_sentence 认「几乎整句」的下限一样）。
+OCR_DEDUPE_CHARS = 8
 _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 
 
@@ -227,19 +229,24 @@ def ocr_chunks(texts: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
     先按微信对话规则整理（去可按住转文字等界面字、标方伟/网友），再切块进检索，
     与 articles.ocr_text / 阅读页旁路同一套 present。整理完没剩下可读的字就不进检索。
+    长群聊分几张截，后一张开头常和上一张结尾重叠：和文章页一样，前面的图写过的句子不再进后面的块，
+    以前接口「图片里的字」、检索片段和抽观点的输入里这几句各出现两遍。
     """
     from researchlib.render import image_anchor
     from researchlib.wechat_dialogue import present_ocr_pieces
 
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
+    written: list[str] = []
     for digest, text in texts:
         if digest in seen:
             continue
         seen.add(digest)
         if len(_MEANINGFUL.findall(text or "")) < OCR_MIN_CHARS:
             continue
-        cleaned = present_ocr_pieces([text or ""])
+        cleaned = present_ocr_pieces([text or ""], written)
+        # 只拿整句去重：「同意」这种短回复、RapidOCR 单独认成一行的网名，后面的图里照留。
+        written[:] = [norm for norm in written if len(norm) >= OCR_DEDUPE_CHARS]
         if len(_MEANINGFUL.findall(cleaned)) < OCR_MIN_CHARS:
             continue
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]

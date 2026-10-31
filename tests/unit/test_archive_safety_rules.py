@@ -153,6 +153,28 @@ def test_stored_side_marker_and_chunks():
     assert ocr_chunks([("aa" * 32, "字" * (OCR_MIN_CHARS - 1))]) == []
 
 
+def test_ocr_chunks_skip_sentences_an_earlier_screenshot_already_had():
+    """长群聊分几张截，后一张开头和上一张结尾重叠：重叠的整句只进前一张的块，和文章页一样。
+    「同意」这种短回复不算重叠，后面的图里照留。"""
+    first = (
+        "张三：瑞幸和古茗都算头部，但瑞幸同店还有压力，开店速度也慢下来了\n"
+        "王五：同意\n"
+        "方伟：美团守住了，内部也认为外卖这事基本缓过来了\n"
+    )
+    second = (
+        "方伟：美团守住了，内部也认为外卖这事基本缓过来了\n"
+        "李四：阿里四处开火，到处花钱，淘天的数据差的话股价会掉不少\n"
+        "王五：同意\n"
+    )
+    chunks = ocr_chunks([("aa" * 32, first), ("bb" * 32, second)])
+    assert [anchor for anchor, _text in chunks] == [image_anchor("aa" * 32), image_anchor("bb" * 32)]
+    assert "外卖这事基本缓过来了" in chunks[0][1]
+    assert "外卖这事基本缓过来了" not in chunks[1][1]
+    assert "阿里四处开火" in chunks[1][1] and "王五：同意" in chunks[1][1]
+    # 整张都是前面写过的句子，剩下的不够切块。
+    assert len(ocr_chunks([("aa" * 32, first), ("cc" * 32, first)])) == 1
+
+
 def test_ocr_chunks_drop_hold_to_text():
     digest = "ab" * 32
     raw = "方伟\n一年的底线能不能稳定赚100亿，先把下限想清楚再谈扩张\n可按住转文字\n回到引用位置\n"
