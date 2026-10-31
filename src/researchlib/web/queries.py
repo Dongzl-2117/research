@@ -715,9 +715,21 @@ def title_rows(conn, article_ids: list[int]):
 
 
 def recent_answers(conn, limit: int = 20):
+    """最近问过的问题。同一个问题、同一个范围问了好几遍的只列一次，按最后一次问的时间排；
+    其中有整合完的就链到最近整合完的那次，不链到重启时中断的那几次。"""
     expire_stale_answers(conn)
     return conn.execute(
-        "SELECT id, question, scope, status, created_at FROM llm_answers ORDER BY created_at DESC, id DESC LIMIT %s",
+        """
+        SELECT id, question, scope, status, created_at
+        FROM (
+          SELECT DISTINCT ON (question, scope) id, question, scope, status, created_at,
+                 max(created_at) OVER (PARTITION BY question, scope) AS asked_at
+          FROM llm_answers
+          ORDER BY question, scope, status = 'done' DESC, created_at DESC, id DESC
+        ) latest
+        ORDER BY asked_at DESC, id DESC
+        LIMIT %s
+        """,
         (limit,),
     ).fetchall()
 

@@ -358,6 +358,40 @@ def test_interrupted_answer_can_be_retried(conn, settings, monkeypatch):
         assert "重新整合好了" in client.get(f"/ask/{row['id']}").text
 
 
+def test_ask_history_lists_a_repeated_question_once(conn, settings):
+    """同一个问题问了很多遍（上线重启时中断了好几次），「最近问过」以前十几条全是它。"""
+    _sample(conn, settings)
+    fangwei = Jsonb({"source_ids": ["fangwei-mp", "fangwei-zsxq"], "article_id": None})
+    one_article = Jsonb({"source_ids": ["fangwei-mp", "fangwei-zsxq"], "article_id": 1})
+    rows = [
+        ("方伟怎么看茅台", fangwei, "error", 1),
+        ("方伟怎么看茅台", fangwei, "done", 2),
+        ("方伟怎么看茅台", fangwei, "error", 3),
+        ("方伟怎么看茅台", one_article, "error", 4),
+        ("泡泡玛特的底线利润", fangwei, "done", 5),
+        ("方伟怎么看茅台", fangwei, "error", 6),
+    ]
+    ids = [
+        conn.execute(
+            "INSERT INTO llm_answers (question, scope, answer, citations, model, status, created_at)"
+            " VALUES (%s, %s, '', '[]', '', %s, now() - make_interval(mins => 10 - %s)) RETURNING id",
+            (question, scope, status, minute),
+        ).fetchone()["id"]
+        for question, scope, status, minute in rows
+    ]
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/ask").text
+    history = page[page.index("最近问过") :]
+    # 整个库里问的那组按最后一次问的时间排在最前，链到整合完的那次；只用一篇的另列一条，标出来。
+    assert history.count("方伟怎么看茅台") == 2
+    assert history.index(f'href="/ask/{ids[1]}"') < history.index(f'href="/ask/{ids[4]}"')
+    assert history.index(f'href="/ask/{ids[4]}"') < history.index(f'href="/ask/{ids[3]}"')
+    assert "只用一篇" in history
+    for skipped in (ids[0], ids[2], ids[5]):
+        assert f'href="/ask/{skipped}"' not in history
+
+
 def test_companies_page_pins_holdings_and_company_page_defaults_to_deep(conn, settings):
     _sample(conn, settings)
     tencent = _company_id(conn, "腾讯")
