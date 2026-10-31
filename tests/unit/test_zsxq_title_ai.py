@@ -14,7 +14,7 @@ def test_accept_ai_title_rejects_shells_placeholders_and_ellipsis():
     assert accept_ai_title("存在运用杠杆") == "存在运营杠杆"
     assert accept_ai_title("很长" * 30) is None
     # 24002：评论列表残屑不能当模型给出的标题。
-    live = "泡泡玛特： 泡泡玛特： 评论（1） - 流年（2026-10-28 09"
+    live = "泡泡玛特： 泡泡玛特： 评论（1） - 王小明（2026-10-28 09"
     assert accept_ai_title(live) is None
 
 
