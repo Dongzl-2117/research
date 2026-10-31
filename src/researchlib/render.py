@@ -16,7 +16,7 @@ from researchlib.ocr import useful_image_text
 from researchlib.ocr_tables import Table, find_tables
 from researchlib.present_text import merge_wrapped_utterances, polish_display_text, present_article_text
 from researchlib.textutil import escape_times, strip_alert_markers
-from researchlib.wechat_dialogue import parse_shot, render_shots
+from researchlib.wechat_dialogue import parse_shot, render_shots, speaker_prefix, split_speaker
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -490,9 +490,10 @@ def flow_ocr_quote_body(text: str) -> str:
         block = block.strip("\n")
         if not block.strip():
             continue
-        label, sep, rest = block.partition("：")
-        if sep and label in {"方伟", "网友"}:
-            flowed = _flow_ocr_lines(rest.lstrip("\n"))
+        prefix = speaker_prefix(block, names=True)
+        if prefix:
+            label = (split_speaker(block, names=True) or ("", ""))[0]
+            flowed = _flow_ocr_lines(block[len(prefix) :].lstrip("\n"))
             parts.append(f"{label}：{flowed}")
         else:
             parts.append(_flow_ocr_lines(block))
@@ -507,13 +508,14 @@ def _dialogue_html(text: str, link: dict | None = None, *, bubbles: bool = False
         block = block.strip("\n")
         if not block.strip():
             continue
-        label, sep, rest = block.partition("：")
-        if sep and label in {"方伟", "网友"}:
-            flowed = _flow_ocr_lines(rest.lstrip("\n"), bubbles=bubbles)
+        prefix = speaker_prefix(block, names=True)
+        if prefix:
+            label = (split_speaker(block, names=True) or ("", ""))[0]
+            flowed = _flow_ocr_lines(block[len(prefix) :].lstrip("\n"), bubbles=bubbles)
             paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
             for index, para in enumerate(paragraphs or [""]):
                 body = html_lib.escape(para)
-                inner = f'<span class="who">{label}：</span>{body}' if index == 0 else body
+                inner = f'<span class="who">{html_lib.escape(label)}：</span>{body}' if index == 0 else body
                 if link:
                     inner = _cite(link, inner, with_id=first)
                     first = False
@@ -721,15 +723,17 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
 
 
 _BODY_WHO = re.compile(
-    r"(<p\b[^>]*>)(\s*)(方伟|网友)([：:])",
+    r"(<p\b[^>]*>)(\s*)([^\s：:，。！？!?<>]{1,16})([：:])",
 )
 
 
 def mark_dialogue_speakers(html: str) -> str:
-    """正文和评论里行首的「方伟：」「网友：」加粗，和 OCR 对话同一套 .who。"""
+    """正文和评论里行首的「方伟：」「网友：」「昵称：」加粗，和 OCR 对话同一套 .who。"""
 
     def replace(match: re.Match[str]) -> str:
         open_tag, space, who, colon = match.groups()
+        if split_speaker(f"{who}{colon}", names=True) is None:
+            return match.group(0)
         return f'{open_tag}{space}<span class="who">{who}{colon}</span>'
 
     return _BODY_WHO.sub(replace, html or "")

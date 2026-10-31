@@ -281,16 +281,17 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     conn.commit()
     saved = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()["ocr_text"]
     assert saved.startswith("方伟：瑞幸和古茗都算头部")
-    assert "网友：古茗店效还行" in saved
+    assert "王小明：古茗店效还行" in saved
     assert saved.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert "王小明" not in saved and "李小红" not in saved and "设为群待办" not in saved
+    # 网名照截图留着；界面字和商品卡仍要删。
+    assert "李小红：先看到这里" in saved and "设为群待办" not in saved
     assert "小程序" not in saved and "交流群" not in saved and "¥" not in saved
 
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{row['id']}").text
-    assert "方伟：" in page and "网友：" in page
+    assert "方伟：" in page and "王小明：" in page
     assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert "王小明" not in page and "设为群待办" not in page
+    assert "设为群待办" not in page
     assert f'id="{image_anchor(first_hash)}"' in page and f'id="{image_anchor(second_hash)}"' in page
     assert "原图 1" not in page and "原图 2" not in page
     assert page.count('class="ocr-shot"') == 1
@@ -310,9 +311,9 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     digest_mod.digest_article(conn, settings, digest_row, "方伟")
     assert "【图片里的字】" in seen[0]
     assert "方伟：瑞幸和古茗都算头部" in seen[0]
-    assert "网友：古茗店效还行" in seen[0]
-    assert "不要把网友的话写成方伟的判断" in seen[0]
-    assert "王小明" not in seen[0] and "设为群待办" not in seen[0] and "小程序" not in seen[0]
+    assert "王小明：古茗店效还行" in seen[0]
+    assert "别人的话不要写成方伟的判断" in seen[0]
+    assert "设为群待办" not in seen[0] and "小程序" not in seen[0]
 
     prompts = []
 
@@ -328,10 +329,10 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     ).fetchone()
     views_mod.extract_article(conn, settings, article, "方伟", [company])
     assert "方伟：瑞幸和古茗都算头部" in prompts[0]
-    assert "网友：" in prompts[0]
-    assert "不要把网友的话写成方伟的判断" in prompts[0]
+    assert "王小明：" in prompts[0]
+    assert "别人的话不要写成方伟的判断" in prompts[0]
     assert "不要因为来自截图就当成没下判断" in prompts[0]
-    assert "王小明" not in prompts[0] and "设为群待办" not in prompts[0]
+    assert "设为群待办" not in prompts[0]
 
 
 # 文章 8881 的真实识别。旧旁路曾把栏上的「不太看好」整段收成方伟。
@@ -401,7 +402,7 @@ def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, mon
     assert "网友：" in guest and "不太看好" in guest
     assert "零售的本分" in host and "不太看好" not in host
     assert "方伟看十年" not in prompt and "什么才叫做" not in prompt
-    assert "不要把网友的话写成方伟的判断" in prompt
+    assert "别人的话不要写成方伟的判断" in prompt
     saved = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()["ocr_text"]
     assert saved.startswith("网友：拼多多，我是始终不太看好")
     assert "方伟：零售的本分是帮消费者省钱" in saved

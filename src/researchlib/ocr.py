@@ -36,6 +36,8 @@ from researchlib.wechat_dialogue import (
     drop_broadcast_chrome,
     present_ocr_pieces,
     present_stored_ocr,
+    speaker_prefix,
+    split_speaker,
 )
 
 logger = logging.getLogger("researchlib.ocr")
@@ -71,8 +73,9 @@ VISION_PROMPT = """\
 若是微信或知识星球聊天截图：
 - 按气泡从上到下逐条转写，一条气泡一行。
 - 绿色气泡（自己发的）写成「方伟：」。
-- 其他人一律写成「网友：」，禁止输出真实昵称（不要写 Aaron、Henri、Kevin 或任何群昵称）。
-- 气泡里嵌套的截图、估值表、PE 表、长文卡片必须整段转写，标成「网友：」，禁止因字小整段丢掉。
+- 其他人写成「截图上的网名：」，网名照界面原样抄（如「大道无形我有型：」「川糖周掌门：」），
+  不要改写成「网友：」，也不要猜真名。看不清网名时才写「网友：」；同一个人前后用同一个网名。
+- 气泡里嵌套的截图、估值表、PE 表、长文卡片必须整段转写，放在那个气泡的网名下，禁止因字小整段丢掉。
 - 嵌套表按行输出，指标与数字同一行（如「16倍 约133港元」）。
 - 嵌套图里的季度（Q1/Q2/Q3）、同比正负号、价格区间必须与图内一致，禁止改写或脑补长句。
 - 剥掉界面字，不要输出：可按住转文字、回到引用位置、设为群待办、
@@ -81,20 +84,25 @@ VISION_PROMPT = """\
   也禁止用本图其它气泡里出现过的公司名补全（例如不要把「…各种/各自的 IP 业务」写成「名创优品…」）。
 - 「一年后」「两年后」等常见时间词，中间的「年」看不清也优先写「年」，不要写成「一?后」「一?会」。
 - 知识星球「扫码领取优惠券」「立减金」「仅限前 N 名」推广卡：不要输出任何字（包括说明句），也不要标成「方伟：」。
-- 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）整段标「网友：」，不要留真实昵称。
+- 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）：网名照写，地区和数字不要输出。
 - 视频号/公众号关注条不要输出：已关注、点击 #话题 查看更多、欢迎关注 @账号 视频号、作者提示: 内容为转载。
-- 雪球/微博帖头与壳不要输出：发帖昵称、地区、影响力徽章（如十大影响力用户、超级某某）、
-  「发讨论」「查看对话」、点赞评论转发数字栏。
-- 「回复@甲:… //@乙:回复@丙:…」去掉昵称和「回复@」「//@」壳。
-  按时间从早到晚各写一行「网友：」（越靠后的 //@ 越早），不要只留最上面那条新回复。
+- 雪球/微博帖头与壳不要输出：地区、影响力徽章（十年知己、十大影响力用户、超级某某）、
+  发布时间、「发讨论」「查看对话」、点赞评论转发数字栏、「N位达人赞过」「投诉」「屏蔽用户」。
+  发帖人的网名留着，写在它说的话前面。
+- 雪球加群卡和广告不要输出：雪球专属交流群、加群交流、股民必入、与高手畅聊热点、
+  雪球财富陪伴官·小雪、邀请您加入雪球专属交流群、畅聊股市热点、进阶投资技巧、
+  底栏「去基金首页 自选 我的」、「广告」标、风险提示「用户发表的所有文章仅代表个人观点…」。
+- 「回复@甲:… //@乙:回复@丙:…」去掉「回复@」「//@」壳，名字是那一楼的作者，写在句首。
+  按时间从早到晚各写一行「甲：」（越靠后的 //@ 越早），不要只留最上面那条新回复。
 - 雪球、微博这类嵌套回复：视觉上靠上的一块常常是较晚的回复，
   下面缩进或灰底引用卡片是被回复的更早发言。不要按从上到下当成时间顺序。
-  先写较早的发言，再写回复。界面昵称一律「网友：」；
+  先写较早的发言，再写回复。每楼开头写那一楼的网名，看不清才写「网友：」；
   引语里的说话人留在正文里（如「莫尼什：我是苹果用户……」）。
-  例：上面是「李录投资也很好……」，中间是「大道会不会考虑和李录做一期对谈节目？」，
-  下面卡片是「莫尼什：我是苹果用户……」。应写成：
-  网友：莫尼什：我是苹果用户……
-  网友：大道会不会考虑和李录做一期对谈节目？
+  例：上面是「李录投资也很好……」（网名看不清），中间是大道无形我有型的
+  「大道会不会考虑和李录做一期对谈节目？」，下面卡片是「莫尼什：我是苹果用户……」。
+  应写成：
+  莫尼什：我是苹果用户……
+  大道无形我有型：大道会不会考虑和李录做一期对谈节目？
   网友：李录投资也很好……
 - 杂志/品牌封面壳不要输出：领教工坊、INSIDE THE BEST、COLMO 等刊头、Logo 字、品牌水印；
   「来源：思想×岭南|…」这类刊源行也不要。封面大字若是正文金句（如「光做家电没有未来」）照写。
@@ -249,11 +257,9 @@ def _collapse_repeated_short_phrases(line: str) -> str:
     raw = (line or "").rstrip()
     if not raw:
         return ""
-    prefix = ""
-    labeled = re.match(r"^((?:方伟|网友)\s*[:：]\s*)", raw)
-    if labeled:
-        prefix = labeled.group(1)
-        raw = raw[labeled.end() :]
+    prefix = speaker_prefix(raw)
+    if prefix:
+        raw = raw[len(prefix) :]
     parts = re.split(r"[，,、；;]+", raw)
     tokens = [p.strip() for p in parts if p.strip()]
     if len(tokens) >= 3 and all(_SHORT_REPEAT_TOKEN.fullmatch(t) for t in tokens):
@@ -269,8 +275,14 @@ def _collapse_repeated_short_phrases(line: str) -> str:
     return f"{prefix}{raw}".strip() if prefix else line.rstrip()
 
 
+def _body_of(line: str) -> str:
+    """去掉行首说话人（方伟、网友或截图网名）后剩下的字。"""
+    speaker = split_speaker(line, names=True)
+    return speaker[1] if speaker else (line or "").strip()
+
+
 def _is_brand_chrome_line(line: str) -> bool:
-    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", (line or "").strip())
+    body = _body_of(line)
     if not body:
         return False
     if _BRAND_MASTHEAD.fullmatch(body):
@@ -307,7 +319,7 @@ def normalize_vision_text(text: str) -> str:
             if "：" not in s and ":" not in s:
                 continue
         # 单行优惠券话术（含已标方伟的）丢掉
-        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", s)
+        body = _body_of(s)
         if _COUPON_MARK.search(body) and len(body) <= 40:
             continue
         if re.search(r"按规则整段不输出|优惠券推广卡", body):
@@ -331,7 +343,7 @@ def normalize_vision_text(text: str) -> str:
     kept = []
     for line in lines:
         s = line.strip()
-        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", s)
+        body = _body_of(s)
         if re.fullmatch(r"仅限前\s*\d+\s*名", body):
             continue
         if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}\s*\d{1,2}:\d{2}\s*至\s*\d{4}/\d{1,2}/\d{1,2}\s*\d{1,2}:\d{2}", body):
@@ -345,10 +357,8 @@ def normalize_vision_text(text: str) -> str:
     # 连续相同短行（跨行刷「深刻反省」）只留一行
     deduped: list[str] = []
     for line in lines:
-        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", line.strip())
-        prev = (
-            re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", deduped[-1].strip()) if deduped else None
-        )
+        body = _body_of(line)
+        prev = _body_of(deduped[-1]) if deduped else None
         if deduped and body and body == prev and _SHORT_REPEAT_TOKEN.fullmatch(body):
             continue
         deduped.append(line)

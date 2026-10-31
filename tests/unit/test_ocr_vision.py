@@ -41,9 +41,12 @@ def test_vision_prompt_names_the_constraints():
         "绿色气泡",
         "方伟：",
         "网友：",
-        "Aaron",
-        "Henri",
-        "Kevin",
+        "截图上的网名",
+        "看不清网名",
+        "加群卡",
+        "财富陪伴官",
+        "去基金首页",
+        "十年知己",
         "可按住转文字",
         "回到引用位置",
         "设为群待办",
@@ -240,7 +243,8 @@ def test_normalize_strips_video_xueqiu_chrome_and_reply_at():
     out = normalize_vision_text(
         "网友：回复@甲:李录投资也很好啊。//@乙:回复@丙:网友会不会是卖完了再吹？"
     )
-    assert out == "网友：网友会不会是卖完了再吹？\n网友：李录投资也很好啊。"
+    # //@ 后面那一楼的网名留着；最新一条没有自己的网名，仍是「网友：」。
+    assert out == "乙：网友会不会是卖完了再吹？\n网友：李录投资也很好啊。"
     assert out.index("会不会是卖完了再吹") < out.index("李录投资也很好")
     assert "//@" not in out
     assert "回复@" not in out

@@ -140,12 +140,11 @@ def test_image_extension_sniffs_content():
 
 
 def test_stored_side_marker_and_chunks():
-    # 以前 RapidOCR 认的图，库里靠右的绿气泡行前面有侧标记：整理时认成方伟，左侧昵称仍是网友。
+    # 以前 RapidOCR 认的图，库里靠右的绿气泡行前面有侧标记：整理时认成方伟，左侧昵称照写。
     stored = f"王小明\n古茗店效还行，折扣不能再深了\n{SIDE_SELF}同店还有压力"
     dialogue = present_ocr_pieces([stored])
-    assert "网友：古茗店效还行，折扣不能再深了" in dialogue
+    assert "王小明：古茗店效还行，折扣不能再深了" in dialogue
     assert "方伟：同店还有压力" in dialogue
-    assert "王小明" not in dialogue
     digest = "cd" * 32
     chunks = ocr_chunks([(digest, "拼多多二季度营收同比增长\n广告收入 1234 亿元"), (digest, "重复的图不算第二次"),
                          ("ef" * 32, "装饰")])
