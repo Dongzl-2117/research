@@ -194,6 +194,7 @@ class SearchResult:
     query: Query | None
     counts: dict[str, int]  # 按来源分的全部命中篇数
     available: int = 0  # 能翻到的篇数（全部命中排在前，部分命中在后）
+    semantic: int = 0  # 词没写全、按意思排进前面那一档的篇数（标「语义相关」），不算进 total
 
 
 _QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』')
@@ -615,15 +616,20 @@ a.source_id, a.published_at
 """
 
 
-def _article_match(tsq: str) -> str:
+def _article_match(tsq: str, *, ocr: bool = False) -> str:
     """文章级的全文命中：原文的标题和正文，加上中文译文的标题和正文。
 
-    写成两个子查询的并集，两边都能走各自的 GIN 索引；写成 OR EXISTS 会退化成逐行过滤，库大了很慢。
+    写成几个子查询的并集，各自都能走 GIN 索引；写成 OR EXISTS 会退化成逐行过滤，库大了很慢。
+    ocr：再算上图片里的字（lang = 'ocr' 的检索块）。只在截图里写了这个词的星球帖，结果里列着，
+    数篇数时也要数到（「送货上门」结果 55 篇，来源计数只数到 16 篇）。
     """
-    return (
-        f"a.id IN (SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}"
-        f" UNION ALL SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq})"
-    )
+    parts = [
+        f"SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}",
+        f"SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq}",
+    ]
+    if ocr:
+        parts.append(f"SELECT oc.article_id FROM article_chunks oc WHERE oc.lang = 'ocr' AND oc.search_tsv @@ {tsq}")
+    return f"a.id IN ({' UNION ALL '.join(parts)})"
 
 
 def _prefer_translation(rows: list[dict]) -> list[dict]:
@@ -1759,7 +1765,17 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
     counts = full_match_counts(conn, query, effective)
-    total = max(sum(counts.values()), len(full_hits))
+    # 文章级索引要全部词落在同一处（原文、译文或同一张图）：词分在正文和截图里的那篇数不到，
+    # 列表里却算全部命中。按来源取两边大的，总数就是来源计数之和，上下两个数对得上。
+    # 语义相关的排在全部命中那一档，但词没写全，不数，另报。
+    by_meaning = sum(1 for hit in full_hits if hit.semantic)
+    listed: dict[str, int] = defaultdict(int)
+    for hit in full_hits:
+        if not hit.semantic:
+            listed[hit.source_id] += 1
+    for source_id, number in listed.items():
+        counts[source_id] = max(counts.get(source_id, 0), number)
+    total = sum(counts.values())
     ordered = full_hits + partial_hits
     return SearchResult(
         total=total,
@@ -1769,6 +1785,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         query=query,
         counts=counts,
         available=len(ordered),
+        semantic=by_meaning,
     )
 
 
@@ -1796,7 +1813,7 @@ def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:
     params.update(scope_params)
     conditions = [where]
     if tsq:
-        conditions.append(_article_match(tsq))
+        conditions.append(_article_match(tsq, ocr=True))
     for index, company_id in enumerate(company_ids):
         params[f"cnt_company_{index}"] = company_id
         conditions.append(

@@ -1052,6 +1052,9 @@ def search_page(request: Request):
             )
             if found.query and found.query.terms:
                 count_map = full_match_counts(conn, found.query, facet_scope)
+                # 所选来源的数用检索时补过的（列表里排到、文章级索引数不到的也算），和上面的总数一致。
+                for source_id, number in found.counts.items():
+                    count_map[source_id] = max(count_map.get(source_id, 0), number)
             else:
                 count_map = dict(found.counts)
             # 有具体的词才走语义检索；没用上（没配、没算向量、服务连不上）或向量没算完时说一句。
@@ -1087,7 +1090,8 @@ def search_page(request: Request):
     total = found.total if found else 0
     available = found.available if found else 0
     # 检索按相关度先取 2000 个段落再排，常见词全部命中的文章比这多，翻页翻不到的要说出来。
-    listed = available - (found.partial if found else 0)
+    semantic_total = found.semantic if found else 0
+    listed = available - (found.partial if found else 0) - semantic_total
     page, pages, _offset = page_window(available, page, SEARCH_PAGE_SIZE)
     author_counts: dict[str, int] = {}
     source_counts = []
@@ -1128,6 +1132,7 @@ def search_page(request: Request):
             "results": results,
             "first_partial": first_partial,
             "partial_total": found.partial if found else 0,
+            "semantic_total": semantic_total,
             "semantic_note": semantic_note,
             "search_terms": terms,
             "total_all": total_all,
