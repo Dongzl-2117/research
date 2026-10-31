@@ -43,7 +43,7 @@ from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import speaker_note
-from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
+from researchlib.zsxq_title import repairs_source, shorten_long_title, title_needs_repair, zsxq_display_title
 
 logger = logging.getLogger("researchlib.views")
 
@@ -604,7 +604,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         risks = list(row["risks"] or [])
         falsifiers = list(row["falsifiers"] or [])
         shown_date = format_date(row["published_at"], settings.display_timezone)
-        title = row["title"]
+        title = shorten_long_title(row["title"] or "", row.get("body_text") or "")
         if repairs_source(row["source_id"], source.kind if source else "") and title_needs_repair(
             title or "", row.get("body_text") or ""
         ):

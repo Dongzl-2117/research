@@ -6,7 +6,13 @@ from markupsafe import Markup
 
 from researchlib.ingest.parse import header_topic_id, parse_archive
 from researchlib.web.routes import _repair_zsxq_titles
-from researchlib.zsxq_title import stored_zsxq_title, title_needs_ai, title_needs_repair, zsxq_display_title
+from researchlib.zsxq_title import (
+    shorten_long_title,
+    stored_zsxq_title,
+    title_needs_ai,
+    title_needs_repair,
+    zsxq_display_title,
+)
 
 FULL = "大模型生意的护城河在哪里，明确还不是一个能够回答的话题"
 BODY = FULL + "。\n\n作者没有写出为什么现在答不了。\n"
@@ -880,3 +886,26 @@ def test_comment_section_heading_is_not_glued_into_a_title():
     # 句子里只是说到「评论里的回复」的不算。
     for title in ("我在评论里的回复说过护城河", "评论里的回复说过护城河要看十年"):
         assert title_needs_repair(title) is False, title
+
+
+def test_first_paragraph_used_as_title_is_cut_to_its_first_sentence():
+    """20404：雪球短帖没有标题，导入时拿正文第一段当标题，一百多字。只收正文正是从它开始的长标题。"""
+    paragraph = (
+        "盲盒对潮玩公司真正的贡献不是创造了几十亿的营收，而是让全世界看到了潮玩IP的价值和公司运营IP的能力。"
+        "这真正意义上让公司有能力拿到各大顶级商圈的黄金点位。"
+    )
+    body = paragraph + "\n\n第二段接着讲门店。\n"
+    assert shorten_long_title(paragraph, body) == "盲盒对潮玩公司真正的贡献不是创造了几十亿的营收"
+    # 第一句就短于 40 字的整句用上。
+    short_first = "周转率是单品思维，毛利额是品类结构思维。对货架电商来说，以爆款为核心会让平台越来越像大卖场。"
+    assert shorten_long_title(short_first, short_first) == "周转率是单品思维，毛利额是品类结构思维"
+    # 40 个字里没有能收的逗号时收在第一个逗号，不硬切在半个词上。
+    no_comma = "正如你所知道的，沃伦·巴菲特（Warren Buffett）在过去六十年里通过伯克希尔哈撒韦公司创造了惊人的复合回报。"
+    assert shorten_long_title(no_comma, no_comma) == "正如你所知道的"
+    # 正文不是从标题开始的长标题（飞书文档名）、英文标题、不到 40 字的标题都不动。
+    doc = "硬折扣零售基于用户需求的货品筛选与匹配，实现高的性价比（低价无需以牺牲质量为代价）、周转、ROE 和用户信任"
+    assert shorten_long_title(doc, "这份文档先讲选品。") == doc
+    english = "Microsoft Earnings, Copilot and Azure, Bing and the Chatbot Opportunity"
+    assert shorten_long_title(english, english + " More text.") == english
+    assert shorten_long_title("增长是无关紧要的特质", "增长是无关紧要的特质，正文。") == "增长是无关紧要的特质"
+
