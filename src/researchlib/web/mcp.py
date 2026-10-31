@@ -218,6 +218,8 @@ def handle_message(request: Request, message: dict) -> dict | None:
     params = message.get("params") or {}
     if msg_id is None:
         return None
+    if not isinstance(params, dict):
+        return _rpc_error(msg_id, -32602, "params 要是对象")
     if method == "initialize":
         wanted = params.get("protocolVersion")
         version = wanted if wanted in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]

@@ -260,3 +260,23 @@ def test_day_page_shows_real_clock_and_summary(conn, settings):
         assert "13:29" in day.text
         assert "AI 整合" not in day.text
         assert client.get("/days/not-a-day").status_code == 404
+
+
+def test_bad_ids_and_bodies_get_404_and_400(conn, settings):
+    """编号不是数字的页面和接口回 404，和 /api/v1/articles/abc 一样，不回 FastAPI 的 422 英文 JSON；
+    问库接口和 MCP 收到不是对象的 JSON 回 400 和 -32602，不回 500。"""
+    with TestClient(create_app(settings)) as client:
+        for path in ("/articles/abc", "/companies/abc", "/ask/abc"):
+            page = client.get(path)
+            assert page.status_code == 404
+            assert "这里没有内容" in page.text
+        for path in ("/api/v1/articles/abc", "/api/v1/companies/abc", "/api/v1/answers/abc"):
+            reply = client.get(path)
+            assert reply.status_code == 404
+            assert reply.json() == {"error": {"status": 404, "message": "Not Found"}}
+        for body in ("[1, 2]", '"腾讯怎么样"', "null"):
+            reply = client.post("/api/v1/ask", content=body, headers={"content-type": "application/json"})
+            assert reply.status_code == 400
+            assert reply.json()["error"]["message"] == "请求体要是 JSON 对象"
+        call = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["search"]})
+        assert call.json()["error"]["code"] == -32602
