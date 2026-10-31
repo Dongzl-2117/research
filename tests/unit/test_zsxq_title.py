@@ -732,6 +732,34 @@ def test_leading_dateline_is_not_the_whole_title():
     assert zsxq_display_title("9月1日", body="9月1日，大涨。\n") == "9月1日，大涨"
 
 
+def test_news_dateline_and_source_are_not_the_whole_title():
+    """13364：转发的新闻第一句太长，收在逗号处时标题只剩「IT之家 5 月 11 日消息，Tech 星球报道称」。"""
+    body = (
+        "IT之家 5 月 11 日消息，Tech 星球报道称，拼多多旗下的快递代收业务已正式定名为“拼多多驿站”，"
+        "支持 24 小时自助取件和送货上门。\n\n快递行业的竞争会更激烈。\n"
+    )
+    whole = "拼多多旗下的快递代收业务已正式定名为“拼多多驿站”"
+    lead = "IT之家 5 月 11 日消息，Tech 星球报道称"
+    assert zsxq_display_title("", body=body) == whole
+    assert title_needs_repair(lead, body)
+    assert zsxq_display_title(lead, body=body) == whole
+    assert stored_zsxq_title(lead, body) == whole
+    # 接口标题截在前引号前面：补全时引号和空格照正文留着。
+    cut = "IT之家 5 月 11 日消息，Tech 星球报道称，拼多多旗下的快递代收业务已正式定名为"
+    assert zsxq_display_title(cut, body=body) == whole
+    for sentence, plain in (
+        ("财联社10月30日电，拼多多三季度营收增长放缓。\n", "拼多多三季度营收增长放缓"),
+        ("新华社北京10月30日电，快递业务量同比增长两成。\n", "快递业务量同比增长两成"),
+        ("据彭博社报道，苹果明年推出折叠屏手机。\n", "苹果明年推出折叠屏手机"),
+        ("据报道，拼多多计划扩大欧洲业务。\n", "拼多多计划扩大欧洲业务"),
+        ("华尔街日报报道称：英伟达的新芯片推迟发货。\n", "英伟达的新芯片推迟发货"),
+    ):
+        assert zsxq_display_title("", body=sentence) == plain, sentence
+    # 「电话会」「报道说明」是句子本身，不是电头。
+    for sentence in ("10月30日电话会上，管理层说利润率会回升。\n", "这篇报道说明市场情绪很差。\n"):
+        assert zsxq_display_title("", body=sentence) == sentence.strip().rstrip("。"), sentence
+
+
 # 24007、24012、14885：纯图帖的标题是摘要或 flash 写的转述句。卡片上本来就写着作者，引子去掉。
 WEST_MINING = "方伟判断西部矿业安全边际远逊2002年中石油，资源股应按存量矿定价"
 
