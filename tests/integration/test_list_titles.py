@@ -85,3 +85,23 @@ def test_duplicates_page_skips_hidden_reader_posts(conn, settings):
     assert "拼多多的二季度：主站的货币化率还有空间" in page and "空间……" not in page
     assert f'/articles/{reader_main["id"]}"' not in page and "王小明" not in page
     assert "王小明" not in only and "没有认出重复的文章" in only
+
+
+def test_search_page_completes_a_star_title_cut_without_ellipsis(conn, settings):
+    """星球导出的标题是正文开头截下的半句、没有省略号时，检索页卡片和别处一样补成整句，命中的词照样标出来。"""
+    cut = "视频号支持连接你的小程序了 那些"
+    whole = "视频号支持连接你的小程序了 那些人无我有的东西是最值钱的"
+    body = (
+        "[视频号支持连接你的小程序了](https://mp.weixin.qq.com/s/abc)\n"
+        "那些人无我有的东西是最值钱的，其实很多东西到最后都会走向公共资源化，比如技术\n"
+    )
+    when = datetime(2026, 9, 27, 14, 41, tzinfo=SHANGHAI)
+    _store(conn, settings, "fangwei-zsxq", [ParsedDoc("4554001", cut, when, body, {"format": "markdown"}, [])])
+    assert _row(conn, "4554001")["title"] == cut
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "公共资源化"}).text
+        marked = client.get("/search", params={"q": "视频号"}).text
+    card = page.split('class="item-title"', 1)[1].split("</h3>", 1)[0]
+    assert f">{whole}</a>" in card
+    title = marked.split('class="item-title"', 1)[1].split("</h3>", 1)[0]
+    assert "<mark>视频号</mark>支持连接你的小程序了 那些人无我有的东西是最值钱的" in title
