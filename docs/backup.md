@@ -42,10 +42,13 @@ BACKUP_DIR/
 | 步骤 | 命令 | 上限 |
 | --- | --- | --- |
 | 外链图片 | `research-fetch-images` | `IMAGES_LIMIT`，默认 300 个地址 |
+| 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
+| 语义向量 | `research-embed`（没配 `EMBEDDING_BASE_URL` 时什么都不做） | `EMBED_LIMIT`，默认 50000 块 |
 | 观点 | `research-views` | `VIEWS_LIMIT`，默认 60 篇 |
 | 摘要 | `research-digest` | `DIGEST_LIMIT`，默认 80 篇 |
 | 论点 | `research-theses`（`THESES_ENABLED=1` 才跑，默认关） | 观点够数的公司，不限持仓 |
-| 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
+
+按表里的顺序跑。识图排在向量、观点、摘要前面：当天的截图帖先识出字，观点和摘要第一遍就读得到，图片文字块当晚就有向量。以前识图排在最后，截图帖当晚先拿一行正文抽观点（白花一次），第二晚才带着图里的字重抽。
 
 观点、摘要、图片文字各自最多跑 `MINUTES` 分钟（默认 150）。某一步失败不影响后面的步骤。白天、部署和应用启动时都不跑这些。
 
