@@ -214,7 +214,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 
 - `GET /api/v1/search?q=…`：文章级检索，和检索页同一套排序（全部词都命中的在前），带范围参数、`limit`（≤50）、`offset`，每条带最相关的一段和公司标签。`total` 是全部词都命中的篇数（标题、正文、译文、图片里的字都算），`listed` 是其中按相关度翻得到的篇数，`semantic` 是词没写全、按意思排进前面的篇数，不算进 `total`。
 - `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
-- `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`：原文里本地存了的图换成站内 `/media/…` 的完整地址（JSON 的 `body_markdown`、MCP 的 `get_article` 也一样），还没下载的外链图照原样留着；`.md` 最后附「图片里的字」一节，就是检索用的那份图片文字块。
+- `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`：原文里本地存了的图换成站内 `/media/…` 的完整地址（JSON 的 `body_markdown`、MCP 的 `get_article` 也一样），还没下载的外链图照原样留着；`.md` 最后附「图片里的字」一节，就是检索用的那份图片文字块。正文仍是归档原文，归档头照旧在，只有 Stratechery 网页导出归档头里的 `- rss_link:` 不给：那是导出脚本拉取用的个人订阅地址，文章页和检索文字从 #157 起就不要。
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
 - `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认马上返回回答 id 和相关原文，后台整合，之后轮询下面这个接口；加 `"wait": true` 时等整合写完再返回。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词）。
