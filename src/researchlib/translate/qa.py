@@ -1,7 +1,8 @@
 """对照页质量检查：硬指标 + 可选 LLM 抽验。
 
-只读。页面的对照由 ``pair.bilingual_pairs`` 现算，这里读同一份：原文先过和文章页同一条
-清洗、md 链接改写和图片文字，译文过同一遍白名单。指标只判断，不改库、不重译。
+只读。原文先过和文章页同一条清洗、md 链接改写和图片文字，译文过同一遍白名单。
+叶子指标检查潜在逐段配对；页面遇到内容遗漏会保留完整区块，段数不齐会分开显示。
+另用不依赖可译叶子的检查核对实际展示和未译内容，指标只判断，不改库、不重译。
 
 五条硬指标，和人工抽验的口径一致：
 
@@ -31,6 +32,7 @@ from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.present_text import polish_display_text
 from researchlib.render import inline_image_ocr, sanitize_html
 from researchlib.sources import load_sources
+from researchlib.translate.display import article_pairs, content_gaps, protected_content_gaps
 from researchlib.translate.llm import extract_json
 from researchlib.translate.pair import (
     BilingualPair,
@@ -128,6 +130,9 @@ class BilingualReport:
     near_duplicates: tuple[int, ...]
     long_empty_zh: tuple[int, ...]
     archive_markers: tuple[str, ...]
+    source_projection_loss: int = 0
+    translation_projection_loss: int = 0
+    display_notice: str = ""
     issues: tuple[CheckIssue, ...] = ()
     llm: dict[str, Any] | None = None
 
@@ -166,6 +171,8 @@ class BilingualReport:
             "nearDuplicates": list(self.near_duplicates),
             "longEmptyZh": list(self.long_empty_zh),
             "archiveMarkers": list(self.archive_markers),
+            "preservation": {"original": self.source_projection_loss, "translated": self.translation_projection_loss},
+            "displayNotice": self.display_notice,
             "issues": [issue.as_dict() for issue in self.issues],
             "llm": self.llm,
         }
@@ -210,6 +217,15 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
     markers = tuple(dict.fromkeys(_archive_markers(en_html) + _archive_markers(zh_html)))
 
     issues: list[CheckIssue] = []
+    # 不复用可译叶子：两边同漏一个数字/图片时，叶子数仍然相等。
+    missing = protected_content_gaps(en_html, zh_html)
+    if missing:
+        issues.append(CheckIssue("protected-content-loss", "fail", missing, "译文缺少原文未译的数字、图片或代码"))
+    displayed = article_pairs(en_html, zh_html)
+    source_loss = content_gaps(en_html, "".join(pair.en for pair in displayed.pairs))
+    translation_loss = content_gaps(zh_html, "".join(pair.zh or pair.en for pair in displayed.pairs))
+    if source_loss or translation_loss:
+        issues.append(CheckIssue("display-content-loss", "fail", source_loss + translation_loss, "正文投影遗漏内容"))
     if giant:
         issues.append(
             CheckIssue(
@@ -275,6 +291,9 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
         near_duplicates=near_duplicates,
         long_empty_zh=long_empty,
         archive_markers=markers,
+        source_projection_loss=source_loss,
+        translation_projection_loss=translation_loss,
+        display_notice=displayed.notice,
         issues=tuple(issues),
     )
 

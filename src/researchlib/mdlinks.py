@@ -21,6 +21,7 @@ from collections.abc import Sequence
 
 from markupsafe import escape
 
+from researchlib.article_layout import mark_unavailable_tables, readable_headings
 from researchlib.render import render_body
 from researchlib.textutil import split_frontmatter, strip_duplicate_title
 from researchlib.translate.pair import stamp_paragraph_ids
@@ -225,7 +226,7 @@ def finish_html(html: str, index: MdIndex | None, parent: str = "") -> str:
     """渲染之后、段落编号之前：先改相对 .md 链接，再盖 p-id。"""
     if html and ".md" in html.lower():
         html = rewrite_relative_md_links(html, index or MdIndex([]), parent)
-    return stamp_paragraph_ids(html)
+    return stamp_paragraph_ids(mark_unavailable_tables(readable_headings(html)))
 
 
 def prepare_body_html(

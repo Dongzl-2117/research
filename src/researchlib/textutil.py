@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from researchlib.output_safety import redact_subscription_links
+
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
 _HEADING = re.compile(r"^(#{1,6})\s+(\S.*?)\s*$", re.M)
@@ -273,8 +275,11 @@ def strip_alert_markers(md: str) -> str:
 
 def _image_alt(match: re.Match[str]) -> str:
     alt = match.group(1).strip()
-    if _IMAGE_FILE.search(alt) or _ALT_STAMP.sub("", alt).lower() in _DEFAULT_ALTS:
+    stem = _IMAGE_FILE.sub("", alt)
+    if (_ALT_STAMP.sub("", stem).lower() in _DEFAULT_ALTS
+            or re.fullmatch(r"(?:md5[_-]?)?[0-9a-f]{24,64}", stem, re.I)):
         return ""
+    # 带扩展名的说明仍可能是唯一的图表语义（「腾讯收入结构.png」），不能一概删掉。
     return alt
 
 
@@ -583,7 +588,7 @@ def derive_title(frontmatter: dict, body: str, filename: str, extra: str | None 
 
 
 def excerpt(text: str, limit: int = 120, title: str = "") -> str:
-    flat = re.sub(r"\s+", " ", text).strip()
+    flat = re.sub(r"\s+", " ", redact_subscription_links(text)).strip()
     if title and flat.startswith(title):
         flat = flat[len(title) :].strip()
     if len(flat) <= limit:
@@ -731,6 +736,7 @@ _AFTER_TITLE = re.compile(r"^(?:[\s，,。；;、！!？?…⋯]|\.(?![0-9A-Za-z
 def _lead_lines(text: str, title: str) -> list[str]:
     """正文开头的行：跳过 sn、点赞、钟点，以及公众号 / 知识星球开头的作者、时间、原链接、
     来源、重复标题和只有 URL 的行。星球帖的评论区不算正文，读到「评论里的回复」就停。"""
+    text = redact_subscription_links(text or "")
     kept: list[str] = []
     for raw_line in drop_export_stub(text or "").splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()

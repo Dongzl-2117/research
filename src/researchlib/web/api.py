@@ -27,6 +27,7 @@ from researchlib.housekeeping import strip_housekeeping
 from researchlib.mdlinks import link_markdown_articles, load_md_index
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.nested_copies import fold_nested_copies
+from researchlib.output_safety import redact_output, redact_subscription_links
 from researchlib.present_text import plain_qa_markdown, polish_display_text
 from researchlib.render import link_local_images
 from researchlib.retrieval import retrieve, search_articles
@@ -60,7 +61,7 @@ FEED_ADDRESS = re.compile(r"^[ \t]*[-*+][ \t]*rss_link[ \t]*[:：][^\n]*(?:\n|\Z
 
 
 def _json(data, status_code: int = 200) -> JSONResponse:
-    return JSONResponse(data, status_code=status_code, media_type="application/json; charset=utf-8")
+    return JSONResponse(redact_output(data), status_code=status_code, media_type="application/json; charset=utf-8")
 
 
 def _limit(request: Request, default: int = 20) -> tuple[int, int]:
@@ -330,7 +331,7 @@ def _markdown(payload: dict) -> str:
     shots = [chunk["text"] for chunk in payload["chunks"] if chunk.get("lang") == "ocr" and chunk["text"].strip()]
     if shots:
         body = body.rstrip() + "\n\n## 图片里的字\n\n" + "\n\n".join(text.strip() for text in shots)
-    return "\n".join(lines) + f"# {payload['title']}\n\n" + body.rstrip() + "\n"
+    return redact_subscription_links("\n".join(lines) + f"# {payload['title']}\n\n" + body.rstrip() + "\n")
 
 
 @api.get("/api/v1/articles/{ref}")

@@ -49,7 +49,7 @@ from researchlib.snippets import (
 )
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
-from researchlib.translate.pair import bilingual_pairs
+from researchlib.translate.display import article_pairs
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
@@ -167,6 +167,8 @@ def _latest_item(row, by_id, settings) -> dict | None:
 
 
 def render_page(request: Request, name: str, context: dict, status_code: int = 200):
+    from researchlib.output_safety import redact_output
+
     settings = request.app.state.settings
     path = request.url.path
     if request.url.query:
@@ -181,7 +183,7 @@ def render_page(request: Request, name: str, context: dict, status_code: int = 2
         "active_source": "",
     }
     payload.update(context)
-    return templates().TemplateResponse(request, name, payload, status_code=status_code)
+    return templates().TemplateResponse(request, name, redact_output(payload), status_code=status_code)
 
 
 def _source_map(sources):
@@ -786,7 +788,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         zh_html, quoted_marked = mark_quoted(zh_html, quoted["body"])
     # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。
     paired = has_translation and zh_html and mode != "original"
-    raw_pairs = bilingual_pairs(original_html, zh_html) if paired else None
+    pair_display = article_pairs(original_html, zh_html) if paired else None
+    raw_pairs = pair_display.pairs if pair_display else None
     pairs = None
     if raw_pairs:
         pairs = [
@@ -849,6 +852,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "has_translation": has_translation,
             "translation_complete": translation_complete,
             "pairs": pairs or [],
+            "pair_notice": pair_display.notice if pair_display else "",
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
             "quoted_marked": quoted_marked,

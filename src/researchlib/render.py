@@ -12,6 +12,7 @@ from urllib.parse import unquote
 import markdown
 from markupsafe import Markup
 
+from researchlib.article_layout import mark_unavailable_tables, readable_headings
 from researchlib.ocr import useful_image_text
 from researchlib.ocr_tables import Table, find_tables
 from researchlib.present_text import merge_wrapped_utterances, polish_display_text, present_article_text
@@ -766,12 +767,12 @@ def _render_markdown(body: str, mapping: dict[str, str]) -> str:
         extensions=["extra", "nl2br", "sane_lists"],
         output_format="html",
     )
-    return mark_dialogue_speakers(_anchor_images(sanitize_html(html)))
+    return mark_unavailable_tables(readable_headings(mark_dialogue_speakers(_anchor_images(sanitize_html(html)))))
 
 
 def render_body(body: str, mapping: dict[str, str], fmt: str | None = None, *, owners: Sequence[str] = ()) -> Markup:
     """owners：评论区只留这些名字（来源作者，见 zsxq_comments.source_owners）。不给时按方伟认。"""
     if fmt == "html":
         html = rewrite_html_images(polish_display_text(body or ""), mapping)
-        return Markup(_anchor_images(sanitize_html(html)))
+        return Markup(mark_unavailable_tables(readable_headings(_anchor_images(sanitize_html(html)))))
     return Markup(assemble_reader_comments(body or "", mapping, _render_markdown, owners))
