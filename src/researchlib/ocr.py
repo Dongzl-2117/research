@@ -7,14 +7,12 @@ image_texts（engine 如 ``deepseek-flash-vision``）。识别出的字够多的
 公司提及默认不看图片里的字，免得水印、表情包乱挂；正文短于 SHORT_BODY_CHARS 时例外，
 截图帖要挂上图里的公司才能抽分家观点。
 
-主镜像 / app 容器就能跑识图，不必装 onnx。RapidOCR 只作显式回退（``--engine rapidocr``
-或 ocr 镜像），单张识图失败不悄悄改走 RapidOCR：记 ``engine`` 以 ``:error`` 结尾、正文为空，
-下次不带 ``--redo`` 也会重试，避免静默脏字。
+app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、正文为空，
+下次不带 ``--redo`` 也会重试，不写进脏字。
 
     docker compose exec -T app research-ocr --limit 50
-    docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr --limit 500
 
-夜间任务设 NIGHTLY_OCR=1 时，在 app 容器里走识图补一批。站内触发见 POST /api/v1/ocr。
+夜间任务设 NIGHTLY_OCR=1 时，在 app 容器里走识图补一批。
 """
 
 from __future__ import annotations
@@ -29,19 +27,21 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from researchlib.author_voice import site_visible_sql
 from researchlib.chunks import replace_ocr_chunks
-from researchlib.wechat_dialogue import SIDE_SELF, present_ocr_pieces, present_stored_ocr
+from researchlib.present_text import merge_wrapped_utterances, order_nested_replies
+from researchlib.textutil import collapse_short_spam, fix_obvious_typos
+from researchlib.vision_polish import repair_vision_misreads
+from researchlib.wechat_dialogue import (
+    drop_broadcast_chrome,
+    present_ocr_pieces,
+    present_stored_ocr,
+    speaker_prefix,
+    split_speaker,
+)
 
 logger = logging.getLogger("researchlib.ocr")
 
-ENGINE = "rapidocr"
-# CLI / API 的选择，不是写入 image_texts.engine 的名字。
-ENGINE_CHOICES = ("vision", "rapidocr", "auto")
-DEFAULT_ENGINE_CHOICE = "vision"
-# 置信度低于这个的文字框不要：多半是把花纹、二维码认成了字。
-MIN_SCORE = 0.5
-# 行的左边缘超过画面宽度的这个比例，当作靠右的绿色气泡（作者自己）。左侧昵称和灰气泡在这之下。
-_SELF_SIDE = 0.40
 OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
 # 识图请求体太大时跳过，不反复打接口。手机截图远小于这个。
 MAX_VISION_BYTES = 10 * 1024 * 1024
@@ -73,8 +73,9 @@ VISION_PROMPT = """\
 若是微信或知识星球聊天截图：
 - 按气泡从上到下逐条转写，一条气泡一行。
 - 绿色气泡（自己发的）写成「方伟：」。
-- 其他人一律写成「网友：」，禁止输出真实昵称（不要写 Aaron、Henri、Kevin 或任何群昵称）。
-- 气泡里嵌套的截图、估值表、PE 表、长文卡片必须整段转写，标成「网友：」，禁止因字小整段丢掉。
+- 其他人写成「截图上的网名：」，网名照界面原样抄（如「春风十里我自在：」「江南张掌柜：」），
+  不要改写成「网友：」，也不要猜真名。看不清网名时才写「网友：」；同一个人前后用同一个网名。
+- 气泡里嵌套的截图、估值表、PE 表、长文卡片必须整段转写，放在那个气泡的网名下，禁止因字小整段丢掉。
 - 嵌套表按行输出，指标与数字同一行（如「16倍 约133港元」）。
 - 嵌套图里的季度（Q1/Q2/Q3）、同比正负号、价格区间必须与图内一致，禁止改写或脑补长句。
 - 剥掉界面字，不要输出：可按住转文字、回到引用位置、设为群待办、
@@ -83,14 +84,51 @@ VISION_PROMPT = """\
   也禁止用本图其它气泡里出现过的公司名补全（例如不要把「…各种/各自的 IP 业务」写成「名创优品…」）。
 - 「一年后」「两年后」等常见时间词，中间的「年」看不清也优先写「年」，不要写成「一?后」「一?会」。
 - 知识星球「扫码领取优惠券」「立减金」「仅限前 N 名」推广卡：不要输出任何字（包括说明句），也不要标成「方伟：」。
-- 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）整段标「网友：」，不要留真实昵称。
+- 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）：网名照写，地区和数字不要输出。
+- 视频号/公众号关注条不要输出：已关注、点击 #话题 查看更多、欢迎关注 @账号 视频号、作者提示: 内容为转载。
+- 雪球/微博帖头与壳不要输出：地区、影响力徽章（十年知己、十大影响力用户、超级某某）、
+  发布时间、「发讨论」「查看对话」、点赞评论转发数字栏、「N位达人赞过」「投诉」「屏蔽用户」。
+  发帖人的网名留着，写在它说的话前面。
+- 雪球加群卡和广告不要输出：雪球专属交流群、加群交流、股民必入、与高手畅聊热点、
+  雪球财富陪伴官·小雪、邀请您加入雪球专属交流群、畅聊股市热点、进阶投资技巧、
+  底栏「去基金首页 自选 我的」、「广告」标、风险提示「用户发表的所有文章仅代表个人观点…」。
+- 「回复@甲:… //@乙:回复@丙:…」去掉「回复@」「//@」壳，名字是那一楼的作者，写在句首。
+  按时间从早到晚各写一行「甲：」（越靠后的 //@ 越早），不要只留最上面那条新回复。
+- 雪球、微博这类嵌套回复：视觉上靠上的一块常常是较晚的回复，
+  下面缩进或灰底引用卡片是被回复的更早发言。不要按从上到下当成时间顺序。
+  先写较早的发言，再写回复。每楼开头写那一楼的网名，看不清才写「网友：」；
+  引语里的说话人留在正文里（如「莫尼什：我是苹果用户……」）。
+  例：上面是「李录投资也很好……」（网名看不清），中间是春风十里我自在的
+  「大道会不会考虑和李录做一期对谈节目？」，下面卡片是「莫尼什：我是苹果用户……」。
+  应写成：
+  莫尼什：我是苹果用户……
+  春风十里我自在：大道会不会考虑和李录做一期对谈节目？
+  网友：李录投资也很好……
+- 杂志/品牌封面壳不要输出：领教工坊、INSIDE THE BEST、COLMO 等刊头、Logo 字、品牌水印；
+  「来源：思想×岭南|…」这类刊源行也不要。封面大字若是正文金句（如「光做家电没有未来」）照写。
+- 同一短句连续刷屏（如「深刻反省」重复十几遍）只保留一次，不要整段复读。
+- 视频画面上的角标和主播条不要输出：未成年人请勿饮酒、主播或主持人加名字、底部节目名水印。
+  新闻标题和数字照写。
+- 品牌广告海报只留条款和数字：单独一行的 Logo、四字对仗口号不要输出。保障条款、适用条件照写。
+  书籍目录照写，不要当成界面删掉。
+- 上下文已经把词定死时，识图滑字直接写成对的词，不要照抄错字，也不要凭空改写。
+  例如：家电品牌并列（格力、海尔、空调、冰箱）里的「墓地」写成「美的」；
+  free cash flow 的中间词只错一个字母（如 free case flow）写成 free cash flow。
+  没有这种上下文就照写（去墓地扫墓、单独的 case 不改）。看不清仍写 ?，禁止改数字和观点。
 - 看不清的字写 ?，禁止编造。
 
 若是表格或柱状图：
 - 公司与数字一一对应，保留行列（公司、指标、数字写在同一行）。
 - 看不清写 ?，禁止编造数字或公司名。
 
-其它截图按阅读顺序逐行转写。看不清写 ?，禁止编造。不要额外评论。
+分段看画面，由你判断，不要套固定段数。
+- 画面上是一块的写成一段，段与段之间空一行。同一句被屏幕截断时写成一句，
+  例如「企业家精神是敢于在最顺的时候」和下一行「对自己动刀子」是一句。
+- 画面上分开的（大标题、字幕、图下说明、另一句话）各自成段，空行隔开。
+- 不要把每个短行都单独成段，也不要把整张图合成一段。
+- 微信或星球气泡仍是一条气泡一行，不要把不同气泡粘成一段。
+
+其它截图按阅读顺序转写，分段同样看画面。看不清写 ?，禁止编造。不要额外评论。
 """
 
 
@@ -100,113 +138,6 @@ class OcrUnavailable(Exception):
 
 class OcrImageSkipped(Exception):
     """这张图不再试（太大）。run_ocr 记 :skipped，不占重试。"""
-
-
-def _bgr_is_wechat_green(bgr) -> bool:
-    """微信自己发的绿气泡约 RGB(149, 236, 105)。抽样点偏绿就当本人。"""
-    try:
-        blue, green, red = (int(v) for v in bgr[:3])
-    except (TypeError, ValueError):
-        return False
-    return green > 150 and green > red + 20 and green > blue + 20 and red < 210
-
-
-def _line_is_self_bubble(
-    image_bgr,
-    left: float,
-    right: float,
-    top: float,
-    bottom: float,
-    width: float,
-) -> bool:
-    """先看气泡颜色；没有图时退回「行左缘过中线偏右」的旧规则。"""
-    if image_bgr is not None:
-        try:
-            height_img, width_img = image_bgr.shape[:2]
-        except (AttributeError, TypeError, ValueError):
-            height_img = width_img = 0
-        if height_img and width_img:
-            cy = int(max(0, min(height_img - 1, (top + bottom) / 2)))
-            # 文字左缘内侧几像素是气泡底色；绿=本人，白/灰=网友。
-            for dx in (-8, -16, -24, 8):
-                x = int(left + dx)
-                if 0 <= x < width_img and _bgr_is_wechat_green(image_bgr[cy, x]):
-                    return True
-            return False
-    return bool(width) and left >= _SELF_SIDE * width
-
-
-def order_text(items, image_bgr=None) -> str:
-    """RapidOCR 的结果 [[框, 文字, 置信度], …] 按阅读顺序拼起来：从上到下分行，同一行从左到右。
-
-    绿色气泡（作者自己）前面加一个不显示的侧标记，对话整理时认成方伟。
-    有原图时按气泡颜色认；没有图时退回「行左缘靠右」的旧规则。左侧灰气泡不加。
-    """
-    boxes: list[tuple[float, float, float, float, str]] = []
-    width = 0.0
-    for item in items or []:
-        if not isinstance(item, list | tuple) or len(item) < 2:
-            continue
-        box, text = item[0], str(item[1] or "").strip()
-        score = float(item[2]) if len(item) > 2 and item[2] is not None else 1.0
-        if not text or score < MIN_SCORE:
-            continue
-        try:
-            ys = [float(point[1]) for point in box]
-            xs = [float(point[0]) for point in box]
-        except (TypeError, IndexError, ValueError):
-            continue
-        right = max(xs)
-        width = max(width, right)
-        boxes.append((min(ys), max(ys), min(xs), right, text))
-    boxes.sort(key=lambda box: (box[0], box[2]))
-    lines: list[dict] = []
-    for top, bottom, left, right, text in boxes:
-        height = max(1.0, bottom - top)
-        center = (top + bottom) / 2
-        if lines and abs(center - lines[-1]["center"]) <= 0.5 * max(height, lines[-1]["height"]):
-            lines[-1]["items"].append((left, right, text))
-            lines[-1]["top"] = min(lines[-1]["top"], top)
-            lines[-1]["bottom"] = max(lines[-1]["bottom"], bottom)
-        else:
-            lines.append(
-                {
-                    "center": center,
-                    "height": height,
-                    "top": top,
-                    "bottom": bottom,
-                    "items": [(left, right, text)],
-                }
-            )
-    rendered: list[str] = []
-    for line in lines:
-        items_on_line = sorted(line["items"], key=lambda item: item[0])
-        text = "  ".join(piece for _left, _right, piece in items_on_line)
-        left = items_on_line[0][0]
-        right = max(item[1] for item in items_on_line)
-        if _line_is_self_bubble(image_bgr, left, right, line["top"], line["bottom"], width):
-            text = SIDE_SELF + text
-        rendered.append(text)
-    return "\n".join(rendered)
-
-
-def rapid_engine() -> Callable[[Path], str]:
-    try:
-        import cv2
-        from rapidocr_onnxruntime import RapidOCR
-    except ImportError as exc:
-        raise OcrUnavailable(
-            "这个环境没装 RapidOCR。默认识图走站内 deepseek-flash，不必装 onnx。"
-            "要回退：docker compose --profile ocr run --rm ocr research-ocr --engine rapidocr"
-        ) from exc
-    engine = RapidOCR()
-
-    def recognize(path: Path) -> str:
-        image_bgr = cv2.imread(str(path))
-        result, _elapsed = engine(str(path))
-        return order_text(result, image_bgr=image_bgr)
-
-    return recognize
 
 
 def vision_engine_id(settings=None) -> str:
@@ -306,12 +237,66 @@ _YEAR_TYPO = (
     (re.compile(r"一\?会"), "一年后会"),
     (re.compile(r"一\?后"), "一年后"),
 )
+# 杂志/品牌封面壳（整行丢掉）
+_BRAND_MASTHEAD = re.compile(
+    r"^(?:"
+    r"领教工坊"
+    r"|INSIDE\s+THE\s+BEST"
+    r"|COLMO"
+    r")$",
+    re.I,
+)
+_SOURCE_MASTHEAD = re.compile(
+    r"^来源\s*[:：]\s*(?:思想[?？×xX]?岭南|领教工坊)\b"
+)
+_SHORT_REPEAT_TOKEN = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,12}$")
+
+
+def _collapse_repeated_short_phrases(line: str) -> str:
+    """「深刻反省，深刻反省，…」压成一次；跨逗号/顿号的短词连刷。"""
+    raw = (line or "").rstrip()
+    if not raw:
+        return ""
+    prefix = speaker_prefix(raw)
+    if prefix:
+        raw = raw[len(prefix) :]
+    parts = re.split(r"[，,、；;]+", raw)
+    tokens = [p.strip() for p in parts if p.strip()]
+    if len(tokens) >= 3 and all(_SHORT_REPEAT_TOKEN.fullmatch(t) for t in tokens):
+        if len(set(tokens)) == 1:
+            return f"{prefix}{tokens[0]}".strip()
+        kept: list[str] = []
+        for token in tokens:
+            if kept and kept[-1] == token:
+                continue
+            kept.append(token)
+        if len(kept) < len(tokens):
+            return f"{prefix}{'，'.join(kept)}".strip()
+    return f"{prefix}{raw}".strip() if prefix else line.rstrip()
+
+
+def _body_of(line: str) -> str:
+    """去掉行首说话人（方伟、网友或截图网名）后剩下的字。"""
+    speaker = split_speaker(line, names=True)
+    return speaker[1] if speaker else (line or "").strip()
+
+
+def _is_brand_chrome_line(line: str) -> bool:
+    body = _body_of(line)
+    if not body:
+        return False
+    if _BRAND_MASTHEAD.fullmatch(body):
+        return True
+    if _SOURCE_MASTHEAD.match(body):
+        return True
+    return False
 
 
 def normalize_vision_text(text: str) -> str:
     """去掉模型偶尔套上的代码围栏；半截尾巴里乱编的公司名留给 prompt 约束，这里只做轻清理。
 
-    说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一? 在这里先收掉。
+    说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一?、品牌刊头、短句刷屏在这里先收掉。
+    只把半句折行接上，模型用空行分开的段保留。雪球嵌套回复改成从早到晚。识图滑字仍交给 vision_polish。
     """
     raw = (text or "").strip()
     if raw.startswith("```"):
@@ -334,17 +319,31 @@ def normalize_vision_text(text: str) -> str:
             if "：" not in s and ":" not in s:
                 continue
         # 单行优惠券话术（含已标方伟的）丢掉
-        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", s)
+        body = _body_of(s)
         if _COUPON_MARK.search(body) and len(body) <= 40:
             continue
         if re.search(r"按规则整段不输出|优惠券推广卡", body):
             continue
-        lines.append(line.rstrip())
+        # 视频号/雪球壳轻清理（wechat_dialogue 还会再剥一轮）
+        if re.fullmatch(r"(?:[\u4e00-\u9fffA-Za-z0-9_\-]{2,20}\s+)?已关注", body):
+            continue
+        if re.search(r"欢迎关注\s*@?\S{0,40}\s*视频号|点击\s*#\S{1,40}\s*查看更多|作者提示\s*[:：]\s*内容为转载", body):
+            continue
+        if re.fullmatch(r"(?:发讨论|查看对话)[>〉›]?", body):
+            continue
+        if re.fullmatch(r"\d{1,6}(?:\s+\d{1,6}){1,4}", body):
+            continue
+        if _is_brand_chrome_line(line):
+            continue
+        collapsed = _collapse_repeated_short_phrases(line.rstrip())
+        if not collapsed:
+            continue
+        lines.append(collapsed)
     # 去掉账号栏后只剩优惠券日期/名额的尾巴
     kept = []
     for line in lines:
         s = line.strip()
-        body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", s)
+        body = _body_of(s)
         if re.fullmatch(r"仅限前\s*\d+\s*名", body):
             continue
         if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}\s*\d{1,2}:\d{2}\s*至\s*\d{4}/\d{1,2}/\d{1,2}\s*\d{1,2}:\d{2}", body):
@@ -355,6 +354,15 @@ def normalize_vision_text(text: str) -> str:
             continue
         kept.append(line)
     lines = kept
+    # 连续相同短行（跨行刷「深刻反省」）只留一行
+    deduped: list[str] = []
+    for line in lines:
+        body = _body_of(line)
+        prev = _body_of(deduped[-1]) if deduped else None
+        if deduped and body and body == prev and _SHORT_REPEAT_TOKEN.fullmatch(body):
+            continue
+        deduped.append(line)
+    lines = drop_broadcast_chrome(deduped)
     if lines:
         last = lines[-1].strip()
         # 「方伟：名创优品… / 名创优品业务…」——半截尾巴常见编造
@@ -363,11 +371,12 @@ def normalize_vision_text(text: str) -> str:
                 lines[-1] = "方伟：…"
             elif "：" not in last and ":" not in last:
                 lines.pop()
-    return "\n".join(lines).strip()
+    text = order_nested_replies(merge_wrapped_utterances("\n".join(lines).strip()))
+    return repair_vision_misreads(fix_obvious_typos(collapse_short_spam(text)))
 
 
 def vision_engine(settings) -> Callable[[Path], str]:
-    """站内识图。失败抛给 run_ocr，不在这里改走 RapidOCR。
+    """站内识图。失败抛给 run_ocr，记成 :error。
 
     先压图再送 deepseek-flash，避免 en1 转发把大 data-url 掐断；瞬时网络错误最多再试两次。
     """
@@ -410,58 +419,16 @@ def vision_engine(settings) -> Callable[[Path], str]:
     return recognize
 
 
-def normalize_engine_choice(value: str | None) -> str:
-    choice = (value or DEFAULT_ENGINE_CHOICE).strip().lower()
-    if choice not in ENGINE_CHOICES:
-        allowed = "、".join(ENGINE_CHOICES)
-        raise ValueError(f"engine 只能是 {allowed}")
-    return choice
+def resolve_engine(settings) -> tuple[str, Callable[[Path], str]]:
+    """返回 (写入 image_texts 的 engine 名, recognize)。没有凭证就起不来。
 
-
-def rapidocr_available() -> bool:
-    try:
-        import rapidocr_onnxruntime  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-def engine_problem(settings, choice: str | None = None) -> str:
-    """开工前的阻碍。空字符串表示可以跑。文案不带凭证。"""
-    from researchlib.jobs.base import credentials_problem
-
-    picked = normalize_engine_choice(choice)
-    if picked == "rapidocr":
-        if rapidocr_available():
-            return ""
-        return "这个环境没装 RapidOCR。默认识图走 vision；回退要用 ocr 镜像并指定 engine=rapidocr。"
-    missing = credentials_problem(settings)
-    if picked == "vision":
-        return missing
-    # auto：有凭证用 vision，否则 RapidOCR。两个都没有才拦下。
-    if not missing:
-        return ""
-    if rapidocr_available():
-        return ""
-    return missing
-
-
-def resolve_engine(settings, choice: str | None = None) -> tuple[str, Callable[[Path], str]]:
-    """返回 (写入 image_texts 的 engine 名, recognize)。
-
-    vision 没有凭证就失败，不悄悄改走 RapidOCR。auto 才在没凭证时用 RapidOCR。
-    单张 HTTP 失败不在这里回退，由 run_ocr 记 :error。
+    单张 HTTP 失败不在这里处理，由 run_ocr 记 :error。
     """
-    picked = normalize_engine_choice(choice)
-    if picked == "rapidocr":
-        return ENGINE, rapid_engine()
     from researchlib.llm import llm_configured
 
-    if picked == "vision" or llm_configured(settings):
-        if not llm_configured(settings):
-            raise OcrUnavailable("没有配置 DEEPSEEK_API_KEY，识图起不来。要回退 RapidOCR 请显式 --engine rapidocr。")
-        return vision_engine_id(settings), vision_engine(settings)
-    return ENGINE, rapid_engine()
+    if not llm_configured(settings):
+        raise OcrUnavailable("没有配置 DEEPSEEK_API_KEY，识图起不来。")
+    return vision_engine_id(settings), vision_engine(settings)
 
 
 def _fatal_ocr(exc: Exception) -> bool:
@@ -479,12 +446,16 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
 
     redo 时连 image_texts 里已有的哈希也再认一遍。article_ids 只认这几篇挂着的图。
     engine 以 :error 结尾的行不算认完，不带 redo 也会重试；:skipped 和空正文的成功行不重试。
+    不点名文章时，只挂在知识星球读者帖、「图片」评论壳、停用来源下的图不认：网站上不展示，认了白花钱。
     """
     where = ["a.duplicate_of IS NULL"]
     params: list = []
     if article_ids:
         where.append("i.article_id = ANY(%s)")
         params.append(list(article_ids))
+    else:
+        where.append(site_visible_sql("a"))
+        where.append("EXISTS (SELECT 1 FROM sources s WHERE s.id = a.source_id AND s.enabled)")
     if not redo:
         where.append(
             "NOT EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash"
@@ -631,18 +602,18 @@ def run_ocr(
     data_dir: Path,
     limit: int,
     recognize: Callable[[Path], str],
-    engine: str = ENGINE,
+    engine: str | None = None,
     deadline: float | None = None,
     *,
     redo: bool = False,
     article_ids: list[int] | None = None,
-    should_stop: Callable[[], bool] | None = None,
-    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """识别一批图片，重切引用它们的文章的图片文字块。返回计数。
 
     单张失败记 ``{engine}:error`` 和空正文，不写入脏字。没凭证或 401/403 整批停。
+    engine 是写进 image_texts 的名字，不给就用默认的 deepseek-flash-vision。
     """
+    engine = engine or vision_engine_id()
     report = {
         "images": 0,
         "with_text": 0,
@@ -650,23 +621,17 @@ def run_ocr(
         "missing": 0,
         "articles": 0,
         "last_error": None,
+        "followups": {"digest": [], "zsxq_title": []},
+        "ocr_changed": [],
     }
     touched: set[int] = set()
-
-    def note() -> None:
-        if on_progress is not None:
-            on_progress(dict(report))
-
     try:
         for row in pending_images(conn, limit, redo=redo, article_ids=article_ids):
-            if should_stop is not None and should_stop():
-                break
             if deadline is not None and time.monotonic() > deadline:
                 break
             path = Path(data_dir) / "images" / row["storage_path"]
             if not path.is_file():
                 report["missing"] += 1
-                note()
                 continue
             used = engine
             if path.suffix.lower() not in OCR_EXTS:
@@ -700,36 +665,70 @@ def run_ocr(
                 report["with_text"] += 1
             _touch_articles(conn, row["content_hash"], text or "", touched, report)
             conn.commit()
-            note()
     finally:
+        changed: list[dict] = []
         for article_id in sorted(touched):
-            refresh_article_ocr(conn, article_id)
+            before = _ocr_snapshot(conn, article_id)
+            new_hash = refresh_article_ocr(conn, article_id)
+            if before is None:
+                continue
+            old_hash = before.get("ocr_hash") or ""
+            if not new_hash or new_hash == old_hash:
+                continue
+            after = _ocr_snapshot(conn, article_id) or before
+            body_len = after.get("body_len")
+            if body_len is None:
+                body_len = before.get("body_len") or 0
+            changed.append(
+                {
+                    "id": int(article_id),
+                    "source_id": after.get("source_id") or before.get("source_id") or "",
+                    "body_len": int(body_len),
+                    "old_hash": old_hash,
+                    "new_hash": new_hash,
+                }
+            )
+        if changed:
+            try:
+                from researchlib.followups import note_ocr_changes
+
+                report["followups"] = note_ocr_changes(conn, changed)
+                report["ocr_changed"] = [int(row["id"]) for row in changed]
+            except Exception:
+                logger.exception("识图后续没排上")
         if touched:
             conn.commit()
     return report
 
 
+def _ocr_snapshot(conn, article_id: int):
+    """识图写回前后对照用。正文长度决定要不要重排摘要和标题。"""
+    return conn.execute(
+        """
+        SELECT id, source_id, ocr_hash, length(coalesce(body_text, '')) AS body_len
+        FROM articles WHERE id = %s
+        """,
+        (article_id,),
+    ).fetchone()
+
+
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了，2 引擎起不来（没凭证，或指定了没装的 RapidOCR）。"""
+    """退出码：0 跑完了，2 识图起不来（没配 DEEPSEEK_API_KEY）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
     parser.add_argument("--limit", type=int, default=500, help="这次最多识别多少张图")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
     parser.add_argument("--redo", action="store_true", help="连已经识别过的图也再认一遍（重跑存量）")
     parser.add_argument("--article", action="append", type=int, default=[], help="只认这篇文章里的图，可重复")
-    parser.add_argument(
-        "--engine",
-        choices=list(ENGINE_CHOICES),
-        default=DEFAULT_ENGINE_CHOICE,
-        help="vision=站内 deepseek-flash（默认）；rapidocr=回退；auto=有凭证用 vision，否则 RapidOCR",
-    )
+    # 只剩 vision。留着这个参数，以前写了 --engine vision 的命令（scripts/nightly.sh）照样能跑。
+    parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 deepseek-flash 识图")
     args = parser.parse_args(argv)
     from researchlib.config import Settings
     from researchlib.db import prepare
 
     settings = Settings.from_env()
     try:
-        engine_name, recognize = resolve_engine(settings, args.engine)
-    except (OcrUnavailable, ValueError) as exc:
+        engine_name, recognize = resolve_engine(settings)
+    except OcrUnavailable as exc:
         print(exc, file=sys.stderr)
         return 2
     conn = prepare(settings)
@@ -745,6 +744,15 @@ def main(argv: list[str] | None = None) -> int:
             redo=args.redo,
             article_ids=args.article or None,
         )
+        follow = report.get("followups") or {}
+        n_digest = len(follow.get("digest") or [])
+        n_title = len(follow.get("zsxq_title") or [])
+        if n_digest or n_title:
+            print(f"短正文图片文字变了：摘要重排 {n_digest} 篇，标题重排 {n_title} 篇")
+            from researchlib.followups import drain_ocr_followups
+
+            drained = drain_ocr_followups(conn, settings, follow)
+            print(f"已重写摘要 {drained['digest']} 篇，标题 {drained['titles']} 篇")
     finally:
         conn.close()
     print(

@@ -85,6 +85,41 @@ def test_gap_includes_title_mention_and_kept_original_but_not_guest(conn, settin
     assert duplicate["id"] not in found
 
 
+def test_comment_shell_views_are_neither_queued_nor_shown(conn, settings):
+    """「图片」评论壳网站上不展示（文章页 404）：观点不补抽，库里已有的也不进公司页时间线和论点。"""
+    from researchlib.theses import companies_with_views, views_for
+    from researchlib.views import pending_articles, timeline
+
+    meta = {"poster_name": "方伟Rey", "poster_id": "1001"}
+    owner = _store(
+        conn, settings, "fangwei-zsxq", "owner-moutai", "茅台批价",
+        "贵州茅台的批价这一周没动，渠道仍在观望；茅台的提价空间要看飞天的动销。\n", meta,
+    )
+    shell = _store(
+        conn, settings, "fangwei-zsxq", "shell-moutai", "「图片」 评论（3） - 李四",
+        "贵州茅台的系列酒拖累了收入，茅台今年的增长主要靠直销渠道和i茅台。\n", meta,
+    )
+    assert shell["id"] != owner["id"]
+    company = conn.execute("SELECT id FROM companies WHERE name_zh = '贵州茅台'").fetchone()["id"]
+    sources = ["fangwei-zsxq"]
+    assert {row["id"] for row in gap_articles(conn, [company], sources, 20)} == {owner["id"]}
+    assert {row["id"] for row in pending_articles(conn, [company], sources, 20)} == {owner["id"]}
+
+    for row in (owner, shell):
+        conn.execute(
+            """
+            INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance, about)
+            VALUES (%s, %s, %s, %s, '茅台的提价空间要看飞天的动销', 'positive', true)
+            """,
+            (row["id"], company, row["content_hash"], PROMPT_VERSION),
+        )
+    conn.commit()
+    by_id = {source.id: source for source in load_sources(settings.sources_path) if source.id in sources}
+    assert [item["article_id"] for item in timeline(conn, company, by_id, settings)] == [owner["id"]]
+    assert [item["article_id"] for item in views_for(conn, company, by_id, settings)] == [owner["id"]]
+    assert companies_with_views(conn, sources, minimum=2) == []
+
+
 def test_star_nickname_posts_count_as_the_owners(conn, settings):
     """方伟在星球的显示名是「方伟Rey」。10 月 20 日以后按话题 JSON 导入的帖都被标成了读者帖，再导入一遍就改回来。"""
     body = "美亚光电的设备不错，贵州茅台的批价这一周没动，渠道仍在观望。\n"

@@ -14,9 +14,27 @@ _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
 _HEADING = re.compile(r"^(#{1,6})\s+(\S.*?)\s*$", re.M)
 _FENCE = re.compile(r"```.*?```", re.S)
 _IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
-_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+# 链接文字可以是空的：Stratechery 包在图外面的「[](大图地址)」以前整串地址留在检索文字里。
+_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+# 图片的替代文字只是文件名或截图的默认名，不是正文：飞书导出的「image.png」「截屏2025-06-08 19.36.10.png」，
+# Stratechery 的「Screen Shot 2017-06-01 at 7.40.43 PM」「img0110」。以前检索片段里夹着这些。
+_IMAGE_FILE = re.compile(r"\.(?:png|jpe?g|gif|webp|bmp|heic|svg|tiff?)$", re.I)
+_ALT_STAMP = re.compile(r"\b(?:at|[ap]m)\b|[\d\W_]+", re.I)
+_DEFAULT_ALTS = frozenset(
+    {"", "image", "img", "screenshot", "photo", "picture", "untitled"}
+    | {"图片", "截图", "截屏", "屏幕截图", "微信图片", "未命名"}
+)
 _TAG = re.compile(r"<[^>]+>")
-_EMPH = re.compile(r"(\*\*|__|\*|_|~~)")
+# 乘号：单个「*」两边紧挨着字母、数字或汉字，至少一边是英文字母、数字或括号（「DAU*人均PV」「CTR*1000」
+# 「(广告加载率)*广告填充率」「30%*收入」）。林文丰飞书的公式这么写，以前被当成斜体标记：页面上乘号没了、
+# 夹在中间的一段变斜体，检索文字里「eCPM=CPA_bid*CTR*CVR*1000」成了「eCPM=CPAbidCTRCVR1000」。
+# 两边都是汉字的「这是*重点*」、外面是空格或标点的「*not*:」照旧是斜体。
+TIMES_SIGN = re.compile(r"(?<=[A-Za-z0-9)）%])\*(?=[^\W_(（])|(?<=[^\W_)）%])\*(?=[A-Za-z0-9(（])")
+# 两边是空格的「2.0 * 0.015」Markdown 本来就不当斜体，转成文字时也留着。
+_SPACED_STAR = re.compile(r"(?<=[ \t])\*(?=[ \t])")
+_RULE = re.compile(r"^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$", re.M)
+# 强调标记。下划线只认贴着词边的：「CPA_bid」「md5__1038」里的是字，Markdown 也不当它是斜体。
+_EMPH = re.compile(r"\*+|~~|(?<!\w)_+|_+(?!\w)")
 # GitHub 提示框的标记。feishu2md 把飞书的高亮块导成引用块，第一行写「[!NOTE]」。
 _ALERT = r"\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]"
 _ALERT_LINE = re.compile(r"^[ \t]{0,3}>[ \t]*" + _ALERT + r"[ \t]*$\n?", re.M | re.I)
@@ -115,45 +133,135 @@ def first_heading(md: str) -> str | None:
     return match.group(2).strip()
 
 
+# 开头或结尾的省略号。中间的「他说……然后停了」不是截断标题。
+_TRAILING_ELLIPSIS = r"(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
+_EDGE_ELLIPSIS = re.compile(r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+|" + _TRAILING_ELLIPSIS)
+_STUB_END = re.compile(_TRAILING_ELLIPSIS)
+
+
+def drop_export_stub(text: str) -> str:
+    """去掉正文第一行导出时截的标题「前十几个字...」，下一行就是它截自的那句。
+
+    星球老帖入库时没认出这一行，检索文字（body_text）开头多了它：卡片摘录以「IT之家 5 月 11 日消息...」
+    或「...」开头，半句标题也对不上正文、补不全（13364、9501）。重洗检索文字（research-clean）以后库里就没有了。
+    """
+    lines = (text or "").split("\n")
+    filled = [index for index, line in enumerate(lines) if line.strip()]
+    if len(filled) < 2:
+        return text
+    first = lines[filled[0]].strip()
+    stem = _STUB_END.sub("", first)
+    if stem == first:
+        return text
+    stem = re.sub(r"\s+", "", stem)
+    if len(stem) < 4 or not re.sub(r"\s+", "", lines[filled[1]]).startswith(stem):
+        return text
+    return "\n".join(lines[filled[1] :])
+
+
+# 要成对的引号、书名号、括号。单引号的后一半也当撇号用（Apple’s），不算。
+MARK_PAIRS = {"“": "”", "「": "」", "『": "』", "《": "》", "（": "）", "(": ")", "【": "】", "〈": "〉", "[": "]"}
+_MARK_OPENERS = {close: open_ for open_, close in MARK_PAIRS.items()}
+_ENUMERATOR = re.compile(r"^\s*(?:\d{1,2}|[一二三四五六七八九十]{1,3}|[A-Za-z])[）)]")
+
+
+def lonely_marks(text: str) -> list[int]:
+    """配不上对的引号、书名号、括号的位置。开头「1）」「一）」这种编号不算。"""
+    text = text or ""
+    lead = _ENUMERATOR.match(text)
+    stack: list[tuple[str, int]] = []
+    lonely: list[int] = []
+    for index in range(lead.end() if lead else 0, len(text)):
+        char = text[index]
+        if char in MARK_PAIRS:
+            stack.append((char, index))
+        elif char in _MARK_OPENERS:
+            # 往外找配对的前一半：「腾讯“说」里「」配得上，夹在中间的“才算落单。
+            depth = next((n for n in range(len(stack) - 1, -1, -1) if stack[n][0] == _MARK_OPENERS[char]), None)
+            if depth is None:
+                lonely.append(index)
+            else:
+                lonely.extend(position for _char, position in stack[depth + 1 :])
+                del stack[depth:]
+    lonely.extend(index for _char, index in stack)
+    return sorted(lonely)
+
+
+def balance_marks(text: str) -> str:
+    """去掉落单的引号、书名号、括号：「“估值越低，…越有利」收成「估值越低，…越有利」。"""
+    lonely = set(lonely_marks(text))
+    if not lonely:
+        return text
+    return "".join(char for index, char in enumerate(text) if index not in lonely).strip()
+
+
+def _heading_stem(text: str) -> str:
+    return _EDGE_ELLIPSIS.sub("", (text or "").strip()).strip()
+
+
+def _same_truncated_heading(heading: str, title: str) -> bool:
+    """标题行是页面标题的省略号截断（或反过来）。打开页面时不要再露「有两...」。"""
+    if not heading or not title:
+        return False
+    if _EDGE_ELLIPSIS.search(heading) is None and _EDGE_ELLIPSIS.search(title) is None:
+        return False
+    left = _heading_stem(heading)
+    right = _heading_stem(title)
+    if len(left) < 8 or len(right) < 8:
+        return False
+    if left.startswith(right) or right.startswith(left):
+        return True
+    # 星球的页面标题去掉了落单的前引号，标题行「“这个故事…有两...」还带着。
+    left, right = balance_marks(left), balance_marks(right)
+    return left.startswith(right) or right.startswith(left)
+
+
 def strip_duplicate_title(md: str, title: str) -> str:
     match = re.match(r"\s*#\s+(.+?)\s*(?:\n|$)", md)
-    if match and match.group(1).strip() == title.strip():
+    if not match:
+        return md
+    heading = match.group(1).strip()
+    wanted = (title or "").strip()
+    # balance_marks：星球的页面标题去掉了落单的引号，标题行还是「“估值越低，…越有利」。
+    if heading == wanted or balance_marks(heading) == wanted or _same_truncated_heading(heading, wanted):
         return md[match.end() :]
     return md
 
 
-_FILE_URL = re.compile(r"file:///[^\s<>\"')\]]*", re.I)
-_MD_FILE_LINK = re.compile(r"\[([^\]]*)\]\(\s*file:///[^)]*\)", re.I)
-_BARE_PAGE_FILE = re.compile(r"(?<![A-Za-z0-9./])H\.HTM(?:#[^\s<>\"')\]]*)?", re.I)
-_EMPTY_PARENS = re.compile(r"[（(]\s*[）)]")
+# 展示层 / 识图后处理共用：只改明显错字语病，不改观点和口语。
+# 新规则要保守，宁可漏改也不要动作者原意。
+_OBVIOUS_TYPOS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"很新都东西"), "很新的东西"),
+    (re.compile(r"存在运用杠杆"), "存在运营杠杆"),
+    (re.compile(r"思想[?？]岭南"), "思想×岭南"),
+)
 
 
-def scrub_file_page_junk(text: str) -> str:
-    """去掉 PDF 页内链接留下的 `file:///H.HTM` 一类页码垃圾。没有这类字样时原样返回。"""
-    if not text:
-        return text or ""
-    lowered = text.lower()
-    if "file:" not in lowered and "h.htm" not in lowered:
-        return text
+def fix_obvious_typos(text: str) -> str:
+    """改正文和标题里一眼能看出的错字（如「很新都东西」→「很新的东西」）。
 
-    def link(match: re.Match[str]) -> str:
-        label = (match.group(1) or "").strip()
-        if re.fullmatch(r"\d{1,4}", label):
-            return ""
-        return label
+    库内原文不改。present_text.polish_display_text 与识图 normalize 共用此表，避免两套替换打架。
+    """
+    out = text or ""
+    if not out:
+        return out
+    for pat, repl in _OBVIOUS_TYPOS:
+        out = pat.sub(repl, out)
+    return out
 
-    lines: list[str] = []
-    for line in text.split("\n"):
-        cleaned = _MD_FILE_LINK.sub(link, line)
-        cleaned = _FILE_URL.sub("", cleaned)
-        cleaned = _BARE_PAGE_FILE.sub("", cleaned)
-        cleaned = _EMPTY_PARENS.sub("", cleaned)
-        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-        cleaned = re.sub(r"\s+([，。！？、；：])", r"\1", cleaned).rstrip()
-        if not cleaned.strip() and (_FILE_URL.search(line) or _BARE_PAGE_FILE.search(line)):
+
+def collapse_short_spam(text: str, phrases: tuple[str, ...] = ("深刻反省",)) -> str:
+    """同一短句夹空白/标点刷屏时压成一次；允许词内被软换行打断（OCR 常见）。"""
+    out = text or ""
+    if not out:
+        return out
+    for phrase in phrases:
+        if not phrase or len(phrase) < 2:
             continue
-        lines.append(cleaned)
-    return "\n".join(lines)
+        inner = r"\s*".join(map(re.escape, phrase))
+        pat = re.compile(rf"(?:{inner})(?:[\s，,、；;]*(?:{inner})){{2,}}")
+        out = pat.sub(phrase, out)
+    return out
 
 
 def strip_alert_markers(md: str) -> str:
@@ -163,14 +271,41 @@ def strip_alert_markers(md: str) -> str:
     return _ALERT_LEAD.sub(r"\1", _ALERT_LINE.sub("", md))
 
 
+def _image_alt(match: re.Match[str]) -> str:
+    alt = match.group(1).strip()
+    if _IMAGE_FILE.search(alt) or _ALT_STAMP.sub("", alt).lower() in _DEFAULT_ALTS:
+        return ""
+    return alt
+
+
+# 代码块、行内代码和链接地址里的「*」不动。
+_CODE_OR_URL = re.compile(r"```.*?```|~~~.*?~~~|(`+)[^`].*?\1|\]\([^)]*\)", re.S)
+
+
+def escape_times(md: str) -> str:
+    """公式里的乘号前加反斜杠，渲染 Markdown 时不再当成斜体标记（哪些算乘号见 TIMES_SIGN）。"""
+    if "*" not in (md or ""):
+        return md or ""
+    parts: list[str] = []
+    last = 0
+    for match in _CODE_OR_URL.finditer(md):
+        parts.append(TIMES_SIGN.sub(r"\\*", md[last : match.start()]))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(TIMES_SIGN.sub(r"\\*", md[last:]))
+    return "".join(parts)
+
+
 def markdown_to_text(md: str) -> str:
     text = _FENCE.sub(" ", strip_alert_markers(md))
     text = re.sub(r"`([^`]*)`", r"\1", text)
-    text = _IMAGE.sub(r"\1", text)
+    text = _IMAGE.sub(_image_alt, text)
     text = _LINK.sub(r"\1", text)
     text = _TAG.sub(" ", text)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
-    text = _EMPH.sub("", text)
+    text = _RULE.sub("", text)
+    text = _SPACED_STAR.sub("\x00", TIMES_SIGN.sub("\x00", text))
+    text = _EMPH.sub("", text).replace("\x00", "*")
     text = re.sub(r"^\s{0,3}>\s?", "", text, flags=re.M)
     text = re.sub(r"^\s*[-+*]\s+", "", text, flags=re.M)
     text = re.sub(r"[ \t]+", " ", text)
@@ -327,6 +462,8 @@ def _markup_raw(text: str) -> str | None:
 
 # 知识星球 Markdown 常在开头写「- 时间：2024-11-28 10:40:22」。只认前几行的列表项，避免正文里的「时间」被当成发布时间。
 _BODY_TIME = re.compile(r"(?m)^[ \t]*[-*][ \t]+时间[ \t]*[:：][ \t]*([^\n]{4,60})")
+# 星球导出写成「2026-09-27 14:41 (UTC+8)」，括注是半角的。去掉括注，按上海时间读，和括注说的一致。
+_TIME_NOTE = re.compile(r"[（(]")
 
 
 def _body_time_raw(text: str) -> str | None:
@@ -334,7 +471,7 @@ def _body_time_raw(text: str) -> str | None:
     match = _BODY_TIME.search(head)
     if not match:
         return None
-    raw = match.group(1).strip().split("（", 1)[0].strip()
+    raw = _TIME_NOTE.split(match.group(1).strip(), maxsplit=1)[0].strip()
     if parse_datetime(raw):
         return raw
     return None
@@ -463,7 +600,8 @@ _CLOCK = r"\d{1,2}[:：]\d{2}(?::\d{2})?"
 _DATE = r"\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+" + _CLOCK + r")?"
 _COUNT = r"(?:点赞|赞|评论|回复|阅读|在看|打赏|收藏|浏览)\s*[:：]?\s*\d+"
 _KEY_VALUE = r"(?:" + _META_KEY + r")\s*[:：]?\s*\d+"
-_URL = r"(?:https?://|www\.)[^\s。！？!?，,|｜]+"
+# 微信小程序卡片复制出来的「#小程序://雪球/Xm9H4vXxNcEEgAF」也算地址：只有它的一行不当导读。
+_URL = r"(?:https?://|www\.|#?小程序://)[^\s。！？!?，,|｜]+"
 _LEADING_META = re.compile(
     r"^(?:" + "|".join((_DATE, _CLOCK, _KEY_VALUE, _COUNT, _URL)) + r")(?:\s+|$)",
     re.I,
@@ -583,17 +721,31 @@ def _strip_title_label(line: str, title: str) -> str:
     return line
 
 
-def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
-    """从正文前部取一句实质内容。
+# 星球帖导出的评论区小标题。卡片摘录只取帖子本身，不读到读者的提问里去。
+_COMMENT_HEADER = re.compile(r"^(?:#{1,6}\s*)?评论(?:里的回复|\s*[（(]\d+[）)])$")
+_CLAUSE_EDGE = " ，,。；;：:！!？?"
+# 标题后面剩下的句读和省略号。「Amazon.com」「2.5 亿」的点后面跟着字母数字，不算。
+_AFTER_TITLE = re.compile(r"^(?:[\s，,。；;、！!？?…⋯]|\.(?![0-9A-Za-z]))+")
 
-    跳过 sn、点赞、钟点，以及公众号 / 知识星球开头的作者、时间、原链接、
-    来源、重复标题和只有 URL 的行。没有实质内容就返回空串。
-    """
+
+def _lead_lines(text: str, title: str) -> list[str]:
+    """正文开头的行：跳过 sn、点赞、钟点，以及公众号 / 知识星球开头的作者、时间、原链接、
+    来源、重复标题和只有 URL 的行。星球帖的评论区不算正文，读到「评论里的回复」就停。"""
     kept: list[str] = []
-    for raw_line in (text or "").splitlines():
+    for raw_line in drop_export_stub(text or "").splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
-        if title and line.startswith(title):
-            line = line[len(title) :].strip(" ：:|-")
+        if _COMMENT_HEADER.match(line):
+            break
+        # 页面标题是第一句中间的一个分句（星球标题去掉了「IT之家 5 月 11 日消息，」这种电头）：从标题后面接着取，
+        # 不把标题再摘一遍。标题太短、或者前后不是断句的，不这么认：「腾讯」出现在句子里不等于这句就是标题。
+        start = line.find(title) if title and not kept and len(title) >= 8 else -1
+        if start > 0:
+            after = line[start + len(title) : start + len(title) + 1]
+            if line[start - 1] not in _CLAUSE_EDGE or (after and after not in _CLAUSE_EDGE):
+                start = -1
+        if title and (line.startswith(title) or start > 0):
+            # 标题那句后面只剩「。」「...」或逗号开头的后半句：标点不留。
+            line = _AFTER_TITLE.sub("", line[max(start, 0) + len(title) :].strip(" ：:|-"))
         line = _strip_title_label(line, title)
         line = _strip_leading_meta(line)
         if not line or _META_LINE.match(line):
@@ -601,11 +753,20 @@ def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
         if title and line == title.strip():
             continue
         kept.append(line)
-    blob = _strip_leading_meta(" ".join(kept))
+    return kept
+
+
+def _lead_blob(lines: list[str], title: str) -> str:
+    blob = _strip_leading_meta(" ".join(lines))
     if title and blob.startswith(title):
         blob = _strip_leading_meta(blob[len(title) :].strip())
     blob = _strip_title_label(blob, title)
-    blob = _strip_leading_meta(blob)
+    return _strip_leading_meta(blob)
+
+
+def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
+    """从正文前部取一句实质内容。开头哪些行不算见 _lead_lines。没有实质内容就返回空串。"""
+    blob = _lead_blob(_lead_lines(text, title), title)
     if not blob:
         return ""
     parts = re.split(r"(?<=[。！？!?])\s*", blob)
@@ -618,6 +779,36 @@ def argumentative_excerpt(text: str, limit: int = 180, title: str = "") -> str:
         break
     if not chosen:
         chosen = blob
+    if not re.search(r"[0-9A-Za-z\u4e00-\u9fff]", chosen):
+        return ""
     if len(chosen) <= limit:
         return chosen
     return chosen[: limit - 1] + "…"
+
+
+# 句末：中文句号问号叹号分号，英文的句点要后面跟着空白（「2.5 亿」「Amazon.com」不算）。
+_OPENING_STOP = re.compile(r"[。！？!?；;]|\.(?=\s)")
+
+
+def opening_excerpt(text: str, title: str = "", limit: int = 300) -> str:
+    """接口列表没有检索词时给的摘录：正文开头一段。哪些行不算见 _lead_lines。
+
+    小标题紧跟着一段以它开头的话（「拼多多送货上门：」下一行「拼多多送货上门：最早是……」）只留那段。
+    超过 limit 时截在 limit 以内最后一个句末，句末太靠前（不到一半）就硬截。没有实质内容返回空串。
+    """
+    lines = _lead_lines(text, title)
+    lines = [
+        line
+        for index, line in enumerate(lines)
+        if not (len(line) >= 4 and index + 1 < len(lines) and lines[index + 1].startswith(line))
+    ]
+    blob = _lead_blob(lines, title)
+    if not re.search(r"[0-9A-Za-z一-鿿]", blob):
+        return ""
+    if len(blob) <= limit:
+        return blob
+    cut = blob[: limit - 1]
+    stops = [match.end() for match in _OPENING_STOP.finditer(cut)]
+    if stops and stops[-1] >= limit // 2:
+        cut = cut[: stops[-1]]
+    return cut.rstrip() + "…"

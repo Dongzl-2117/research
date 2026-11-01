@@ -8,13 +8,10 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import assign_poster_role, is_guest
-from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for
+from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for, search_text
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
-from researchlib.empty_answer import hide_empty_answer
 from researchlib.images import sync_article_images
-from researchlib.ingest.duanyongping import SOURCE_ID as DUAN_SOURCE
-from researchlib.ingest.duanyongping.attach import refine_mentions
 from researchlib.ingest.model import IngestReport, ParsedDoc
 from researchlib.mentions import (
     CompanyMatcher,
@@ -25,13 +22,14 @@ from researchlib.mentions import (
 )
 from researchlib.revisions import article_text, held_before, judge_replacement, save_revision, split_comments
 from researchlib.sources import Source
-from researchlib.textutil import content_hash, markdown_to_text, strip_duplicate_title
+from researchlib.textutil import content_hash
+from researchlib.visibility import HIDDEN, SHORT_POST
+from researchlib.zsxq_title import repairs_source, title_needs_repair
 
 
 def _body_text(title: str, body_md: str, profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> str:
     """检索、摘要、观点读的文字：去掉归档头、引流尾巴和广告图之后的正文。"""
-    body = clean_markdown(body_md, profile, hashes)
-    return markdown_to_text(strip_duplicate_title(body, title))
+    return search_text(clean_markdown(body_md, profile, hashes), title)
 
 
 def store_documents(
@@ -46,9 +44,9 @@ def store_documents(
     rejected: int = 0,
     origin: str = "archive",
 ) -> IngestReport:
-    """origin：archive（手动导入的归档）、crawl（定时抓取脚本导入）或 aihot（从 AIHOT 导入）。
+    """origin：archive（手动导入的归档）或 crawl（定时抓取脚本导入）。以前从 AIHOT 导入的记作 aihot。
 
-    首页断更提示只看后两种。
+    首页断更提示只看 crawl。
     """
     report = IngestReport(
         source_id=source.id,
@@ -65,7 +63,9 @@ def store_documents(
     matcher = CompanyMatcher(load_company_rows(conn))
     for doc in docs:
         try:
-            status, stored, linked, missing, duplicate = _store_one(conn, source, doc, data_dir, matcher)
+            status, article_id, stored, linked, missing, duplicate = _store_one(
+                conn, source, doc, data_dir, matcher
+            )
             conn.commit()
         except Exception as exc:
             report.errors.append(f"{doc.external_id}: {exc}")
@@ -147,8 +147,6 @@ def body_chars(body_md: str) -> int:
 
 def apply_length_floor(source: Source, body_md: str, meta: dict) -> dict:
     """短于来源 min_chars 的帖子标 hidden=short_post；够长则去掉这个标记。"""
-    from researchlib.empty_answer import HIDDEN, SHORT_POST
-
     if source.min_chars <= 0:
         return meta
     if body_chars(body_md) < source.min_chars:
@@ -158,12 +156,22 @@ def apply_length_floor(source: Source, body_md: str, meta: dict) -> dict:
     return meta
 
 
+def _keeps_repaired_title(source: Source, existing, doc: ParsedDoc) -> bool:
+    """星球帖重导：导入算出的标题还要补（只有图的「「图片」」），库里的已经补好了，正文也没改。
+
+    导入时没有图片里的字和摘要，这种标题补不出来；夜间回写（含 flash 起题）补好以后，
+    星球抓取每次整包重导都会把它改回占位，回写再为同一批帖子打 flash。这时留库里的。
+    """
+    stored = existing["title"] or ""
+    if not stored or stored == doc.title or not repairs_source(source.id, source.kind):
+        return False
+    if not title_needs_repair(doc.title, doc.body_md) or title_needs_repair(stored, doc.body_md):
+        return False
+    return article_text(existing["body_md"]) == article_text(doc.body_md)
+
+
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
     profile = profile_for(conn, source.id)
-    body_text = _body_text(doc.title, doc.body_md, profile)
-    digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
-    meta = apply_length_floor(source, doc.body_md, poster)
     existing = conn.execute(
         """
         SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
@@ -172,6 +180,12 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         """,
         (source.id, doc.external_id),
     ).fetchone()
+    if existing is not None and _keeps_repaired_title(source, existing, doc):
+        doc.title = existing["title"]
+    body_text = _body_text(doc.title, doc.body_md, profile)
+    digest = content_hash(doc.title, doc.body_md, doc.published_at)
+    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
+    meta = apply_length_floor(source, doc.body_md, poster)
     keep = False
     article_changed = True
     same_words = False
@@ -199,7 +213,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
             )
             if held:
                 # 库里的完整原文和它的图片都不动。
-                return "held", 0, 0, 0, None
+                return "held", existing["id"], 0, 0, 0, None
     if existing is None:
         inserted = conn.execute(
             """
@@ -284,10 +298,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         if stored is not None:
             ocr_text = stored["ocr_text"] or ""
         mention_body = body_for_mentions(doc.body_md, body_text=body_text, ocr_text=ocr_text)
-        mention_rows = mentions_for_document(matcher, doc.title, mention_body)
-        if source.id == DUAN_SOURCE:
-            mention_rows = refine_mentions(matcher, doc.title, mention_body, mention_rows, meta)
-        replace_mentions(conn, article_id, mention_rows)
+        replace_mentions(conn, article_id, mentions_for_document(matcher, doc.title, mention_body))
         replace_chunks(conn, article_id, doc.title, doc.body_md)
     stored, linked, missing = sync_article_images(
         conn,
@@ -318,23 +329,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 duplicate = article_id
     if is_guest(meta):
         conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
-    if source.id == DUAN_SOURCE:
-        # 没有段永平本人判断，或那节只剩论坛导航的，整篇搁下。
-        stored_row = conn.execute(
-            "SELECT title, body_md, raw_meta, published_at FROM articles WHERE id = %s",
-            (article_id,),
-        ).fetchone()
-        if stored_row is not None:
-            hide_empty_answer(
-                conn,
-                article_id,
-                stored_row["body_md"] or "",
-                stored_row["raw_meta"],
-                source_id=source.id,
-                title=stored_row["title"] or "",
-                published_at=stored_row["published_at"],
-            )
-    return status, stored, linked, missing, duplicate
+    return status, article_id, stored, linked, missing, duplicate
 
 
 def _hold_if_suspicious(

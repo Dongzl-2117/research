@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 每天 09:20 孤独进化体公众号抓取并入库（极致了查列表 + 公众号原文页，DAJIALA_KEY）。由 scripts/install-launchd.sh 安装。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zldong.research.crawl-gudujinhuati</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/crawl-gudujinhuati.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+    <key>REPO</key>
+    <string>__REPO__</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>20</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__LOGS__/crawl-gudujinhuati.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGS__/crawl-gudujinhuati.err.log</string>
+</dict>
+</plist>

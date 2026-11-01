@@ -78,7 +78,7 @@ def test_stale_banner_only_watches_scheduled_imports():
     times = {"a": every_three_days, "b": daily}
     # 定时导入在跑、只有甲停了：提示甲。
     found = stale_sources(
-        sources, times, {"a": {"at": fresh, "origin": "aihot"}, "b": {"at": fresh, "origin": "aihot"}},
+        sources, times, {"a": {"at": fresh, "origin": "crawl"}, "b": {"at": fresh, "origin": "crawl"}},
         "Asia/Shanghai", now=NOW,
     )
     assert [item["name"] for item in found] == ["甲公众号"]
@@ -86,10 +86,10 @@ def test_stale_banner_only_watches_scheduled_imports():
     # 只手动导过归档、或者定时导入几天没跑了：不提示。
     assert stale_sources(sources, times, {"a": {"at": fresh, "origin": "archive"}}, "Asia/Shanghai", now=NOW) == []
     old = NOW - timedelta(days=5)
-    assert stale_sources(sources, times, {"a": {"at": old, "origin": "aihot"}}, "Asia/Shanghai", now=NOW) == []
-    # 定时导入的来源全都断更：多半是 AIHOT 抓取停了，只说一次。
+    assert stale_sources(sources, times, {"a": {"at": old, "origin": "crawl"}}, "Asia/Shanghai", now=NOW) == []
+    # 定时导入的来源全都断更：多半是抓取本身停了，只说一次。
     both = {"a": every_three_days, "b": every_three_days}
-    imports = {"a": {"at": fresh, "origin": "aihot"}, "b": {"at": fresh, "origin": "aihot"}}
+    imports = {"a": {"at": fresh, "origin": "crawl"}, "b": {"at": fresh, "origin": "crawl"}}
     assert stale_sources(sources, both, imports, "Asia/Shanghai", now=NOW) == [
         {"all": True, "count": 2, "idle_days": 20}
     ]
@@ -104,15 +104,15 @@ def test_crawl_tasks_are_watched(tmp_path):
     assert any(text.startswith("方伟星球抓取已经 47 小时没成功了") for text in found)
 
 
-def test_stale_banner_watches_crawl_imports():
-    """AIHOT 下线以后，定时抓取脚本导入的来源（origin=crawl）也要看。"""
+def test_stale_banner_ignores_old_aihot_imports():
+    """AIHOT 导入已删。库里以前记的 origin=aihot 不再当定时导入。"""
     every_three_days = [NOW - timedelta(days=20 + 3 * index) for index in range(15)]
     sources = [SimpleNamespace(id="a", name="甲公众号")]
     fresh = NOW - timedelta(hours=5)
     found = stale_sources(
-        sources, {"a": every_three_days}, {"a": {"at": fresh, "origin": "crawl"}}, "Asia/Shanghai", now=NOW
+        sources, {"a": every_three_days}, {"a": {"at": fresh, "origin": "aihot"}}, "Asia/Shanghai", now=NOW
     )
-    assert [item["name"] for item in found] == ["甲公众号"]
+    assert found == []
 
 
 def test_ingest_cli_records_crawl_origin(monkeypatch, tmp_path):
@@ -146,3 +146,14 @@ def test_deploy_failures_are_reported_but_quiet_weeks_are_not(tmp_path):
     assert health.notices(tmp_path, "Asia/Shanghai", now=NOW) == [
         "自动上线失败（10-20 10:00）：main 上的 abc1234 CI 没通过，没有上线"
     ]
+
+
+def test_status_command_prints_notices(tmp_path, monkeypatch, capsys):
+    """首页不挂红条以后，值班助手用 research-status 看；有问题时退出码 1，脚本也能判断。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    assert health.main([]) == 0
+    assert capsys.readouterr().out.strip() == "没有要处理的"
+    _write(tmp_path, "backup", ok=False, at="2026-10-20T03:17:00Z", message="导出数据库失败（退出码 1）")
+    assert health.main([]) == 1
+    assert capsys.readouterr().out.startswith("备份失败（10-20 11:17）：导出数据库失败")

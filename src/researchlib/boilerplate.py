@@ -5,13 +5,10 @@
 - 文章页显示正文之前；
 - 算 body_text 和段落块之前（检索、摘要、观点读的都是清洗后的文字）。
 
-`file:///H.HTM` 这类 PDF 页内链接从显示和检索文字里去掉，不改这里的三条统计规则。
-段永平博客要连 body_md 一起洗掉时，用 `research-ingest-duanyongping --reclassify`。
-
 三条规则，都按同一来源多篇文章的统计来判，不写死某个作者的话术：
 
 1. 归档头：正文开头那几行「- 作者：」「- 时间：」「- sn：」「- 原链接：」「- 原始数据：」
-   「- 类型：」「- 点赞 · 评论 · 阅读人数」「- topic_id：」，整块去掉。
+   「- 类型：」「- 点赞 · 评论 · 阅读人数」「- topic_id：」「- rss_link：」，整块去掉。
 2. 模板句：同一来源里在很多篇（至少 max(5, 2%) 篇）都出现的整行。文末从第一行模板句起，
    后面几乎全是模板句、引流关键词或几个字的碎行时，整段切掉（招募被拆成一行几个字的也切得到）。
    正文中间的模板句只在带引流关键词时去掉；飞书那类重复的小标题不带关键词，留着。
@@ -20,6 +17,9 @@
 4. 文末号召：就算这句话没有在很多篇里重复，只要落在正文后面，并且是招募、二维码、
    长按关注、加微信这类号召，显示时整段拿掉。文件名或替代文字像二维码的图也拿掉。
    飞书笔记不走这一条，只去归档头。
+5. 星球长文的导出脚手架：「> 以下为话题摘要，全文见下方「长文」。」、后面的话题摘要
+   （长文开头的截断，和长文重复）、「## 长文：标题」下一行的「原文链接 · 原始 HTML：raw/articles/…」。
+   只留长文正文；摘要的加粗标题和长文标题不一样时留下标题。
 """
 
 from __future__ import annotations
@@ -30,8 +30,6 @@ import threading
 from collections import Counter
 from dataclasses import dataclass, field
 
-from researchlib.textutil import scrub_file_page_junk
-
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _IMAGE = re.compile(
     r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)|<img\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"'][^>]*>", re.I
@@ -39,7 +37,7 @@ _IMAGE = re.compile(
 _HEADING = re.compile(r"^\s*#{1,6}\s+\S")
 _META_KEYS = (
     r"作者|时间|发布时间|类型|点赞|sn|topic_id|原链接|原文链接|原始数据|来源|公众号|阅读人数|阅读|"
-    r"ghid|appmsgid|position|author|url|source"
+    r"ghid|appmsgid|position|author|url|source|rss_link"
 )
 _META_LINE = re.compile(r"^\s*[-*]\s*(?:" + _META_KEYS + r")\s*(?:[:：]|\s+\d|\s*·)", re.I)
 # 带这些词的行在文末算引流。统计尾巴用它；单独出现在研究正文里（比如讨论扫码支付）不够切段。
@@ -348,6 +346,37 @@ def strip_meta(body: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+_LONGFORM_NOTE = re.compile(r"^\s*>\s*以下为话题摘要[，,]\s*全文见下方「长文」[。.]?\s*$")
+_LONGFORM_HEADING = re.compile(r"^\s*##\s*长文\s*[:：]\s*(?P<title>\S.*?)\s*$")
+# 「原文链接：https://articles.zsxq.com/… · 原始 HTML：[raw/articles/….html](../../raw/articles/….html)」
+_LONGFORM_SOURCE = re.compile(r"^\s*(?:原文链接\s*[:：]\s*\S+\s*·\s*)?原始\s*HTML\s*[:：]", re.I)
+_BOLD_LINE = re.compile(r"^\s*\*\*(?P<title>[^*]+)\*\*\s*$")
+
+
+def drop_longform_scaffold(body: str) -> str:
+    """星球「话题 + 长文」帖的导出脚手架（模块说明第 5 条）。没有「## 长文：」小标题时原样返回。"""
+    lines = body.split("\n")
+    heading = next((i for i, line in enumerate(lines) if _LONGFORM_HEADING.match(line)), None)
+    if heading is None:
+        return body
+    title = _LONGFORM_HEADING.match(lines[heading]).group("title")
+    note = next((i for i in range(heading) if _LONGFORM_NOTE.match(lines[i])), None)
+    head = lines[:heading] if note is None else lines[:note]
+    keep_heading = True
+    if note is not None:
+        preview = [line for line in lines[note + 1 : heading] if line.strip()]
+        bold = _BOLD_LINE.match(preview[0]) if preview else None
+        # 摘要的加粗标题就是长文标题：页面顶上已经是这个标题，小标题不再重复。
+        keep_heading = not (bold and bold.group("title").strip() == title)
+    rest = lines[heading + 1 :]
+    first = next((i for i, line in enumerate(rest) if line.strip()), None)
+    if first is not None and _LONGFORM_SOURCE.match(rest[first]):
+        rest = rest[first + 1 :]
+    if keep_heading:
+        head = [*head, "", lines[heading]]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join([*head, "", *rest]))
+
+
 def _split_comments(lines: list[str]) -> int:
     for index, line in enumerate(lines):
         if COMMENTS.match(line):
@@ -430,7 +459,7 @@ def clean_body(
     drop_cta 为假时只去归档头和统计出来的模板（飞书笔记用这条）。
     """
     hashes = hashes or {}
-    body = scrub_file_page_junk(strip_meta(body or ""))
+    body = drop_longform_scaffold(strip_meta(body or ""))
     lines = body.split("\n")
     split = _split_comments(lines)
     main, rest = lines[:split], lines[split:]
@@ -562,13 +591,25 @@ def clean_article(conn, article_id: int, source_id: str, body_md: str) -> str:
     return clean_markdown(body_md, profile_for(conn, source_id), image_hashes(conn, article_id), drop_cta=True)
 
 
+def search_text(cleaned: str, title: str) -> str:
+    """清洗后的正文 → articles.body_text（检索、摘要、观点、卡片摘录读的文字）。
+
+    和标题重复的那行去掉；问答帖的「提问（网友 → 方伟Rey）」只留「提问」，网友的昵称不进来。
+    Stratechery 每日更新开头的「Good morning,」「On to the Update:」和结尾的转发须知不进来（housekeeping）。
+    """
+    from researchlib.housekeeping import strip_housekeeping
+    from researchlib.present_text import plain_qa_markdown
+    from researchlib.textutil import markdown_to_text, strip_duplicate_title
+
+    return markdown_to_text(plain_qa_markdown(strip_duplicate_title(strip_housekeeping(cleaned), title)))
+
+
 # —— 全库重洗 ——
 
 
 def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> dict:
     """按当前规则重算 body_text 和原文段落块。body_md 不动。返回各来源改动篇数。"""
     from researchlib.chunks import replace_chunks
-    from researchlib.textutil import markdown_to_text, strip_duplicate_title
 
     where = "WHERE duplicate_of IS NULL"
     params: list = []
@@ -583,7 +624,7 @@ def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> 
     for index, row in enumerate(rows, 1):
         seen[row["source_id"]] += 1
         cleaned = clean_article(conn, row["id"], row["source_id"], row["body_md"])
-        text = markdown_to_text(strip_duplicate_title(cleaned, row["title"]))
+        text = search_text(cleaned, row["title"])
         if text == (row["body_text"] or ""):
             continue
         changed[row["source_id"]] += 1

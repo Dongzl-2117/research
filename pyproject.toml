@@ -21,10 +21,6 @@ dev = [
   "pytest>=8.3",
   "ruff>=0.7",
 ]
-# 图片文字（OCR）。只装进 ocr 镜像，见 docs/ocr.md。
-ocr = [
-  "rapidocr-onnxruntime>=1.3",
-]
 
 [project.scripts]
 research-web = "researchlib.web.app:main"
@@ -33,8 +29,6 @@ research-ingest-zsxq = "researchlib.ingest.zsxq:main"
 research-ingest-feishu = "researchlib.ingest.feishu:main"
 research-ingest-markdown = "researchlib.ingest.markdown_dir:main"
 research-xueqiu-markdown = "researchlib.ingest.xueqiu:main"
-research-ingest-duanyongping = "researchlib.ingest.duanyongping.cli:main"
-research-ingest-aihot = "researchlib.ingest.aihot:main"
 research-seed-sample = "researchlib.seed:main"
 research-rebuild-mentions = "researchlib.mentions:main"
 research-backfill-dates = "researchlib.backfill:main"
@@ -42,6 +36,7 @@ research-backfill-posters = "researchlib.posters:main"
 research-repair-zsxq = "researchlib.zsxq_repair:main"
 research-xai-login = "researchlib.translate.cli_login:main"
 research-translate = "researchlib.translate.cli:main"
+research-bilingual-qa = "researchlib.translate.cli_qa:main"
 research-rebuild-chunks = "researchlib.chunks:main"
 research-digest = "researchlib.digest:main"
 research-pilot = "researchlib.pilot:main"
@@ -52,9 +47,11 @@ research-doc-tree = "researchlib.doctree:main"
 research-retime = "researchlib.retime:main"
 research-theses = "researchlib.theses:main"
 research-fetch-images = "researchlib.remote_images:main"
+research-crawl-wechat = "researchlib.wechat_crawl:main"
 research-ocr = "researchlib.ocr:main"
 research-clean = "researchlib.boilerplate:main"
 research-embed = "researchlib.embeddings:main"
+research-status = "researchlib.health:main"
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -6,16 +6,21 @@
 
 external_id 是归档里的相对路径（飞书是 `docs/<文件名>.md`）。文件名对不上时，再用
 `__token` 后缀做唯一匹配。http(s)、站内绝对路径和 `#锚点` 不动。
+
+Stratechery 的 external_id 是 frontmatter 里的 `2015/aggregation-theory`，不带 `.md`；正文里指向
+别篇的链接是相对这一篇所在目录（`raw_meta.parent`，比如 `2016`）写的 `../2015/aggregation-theory.md`。
+按目录接上、去掉 `../` 和 `.md` 再找，库里有的就连到那一篇。以前一律标「未收录」。
 """
 
 from __future__ import annotations
 
 import html as html_lib
+import posixpath
 import re
+from collections.abc import Sequence
 
 from markupsafe import escape
 
-from researchlib.qa_layout import render_qa_html
 from researchlib.render import render_body
 from researchlib.textutil import split_frontmatter, strip_duplicate_title
 from researchlib.translate.pair import stamp_paragraph_ids
@@ -27,6 +32,7 @@ _HTML_HREF = re.compile(r"""(?i)\bhref\s*=\s*["']([^"']+)["']""")
 _A_TAG = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.I | re.S)
 _HREF_ATTR = re.compile(r"""\bhref\s*=\s*(["'])(.*?)\1""", re.I | re.S)
 _TOKEN = re.compile(r"__([A-Za-z0-9]{4,})$")
+_MD_SUFFIX = re.compile(r"\.(?:md|markdown)$", re.I)
 _TAG = re.compile(r"<[^>]+>")
 
 
@@ -91,12 +97,18 @@ class MdIndex:
         self.by_name: dict[str, list[int]] = {}
         self.by_token: dict[str, list[int]] = {}
         self.by_token_fold: dict[str, list[int]] = {}
+        # 去掉 .md 以后的路径和文件名：external_id 不带 .md、链接带 .md 的（Stratechery）也对得上。
+        self.by_stem: dict[str, list[int]] = {}
+        self.by_stem_name: dict[str, list[int]] = {}
         for row in rows:
             external_id = str(row["external_id"])
             article_id = int(row["id"])
             self.by_external.setdefault(external_id, article_id)
             name = external_id.rsplit("/", 1)[-1]
             self.by_name.setdefault(name.casefold(), []).append(article_id)
+            stem = _MD_SUFFIX.sub("", external_id)
+            self.by_stem.setdefault(stem, []).append(article_id)
+            self.by_stem_name.setdefault(stem.rsplit("/", 1)[-1].casefold(), []).append(article_id)
             token = filename_token(name)
             if token:
                 self.by_token.setdefault(token, []).append(article_id)
@@ -128,6 +140,17 @@ class MdIndex:
         by_name = _unique(self.by_name.get(name.casefold(), []))
         if by_name is not None:
             return by_name
+        # 「../2015/aggregation-theory.md」接在这一篇的目录「2016」后面是「2015/aggregation-theory.md」。
+        joined = posixpath.normpath(posixpath.join(parent, target))
+        while joined.startswith("../"):
+            joined = joined[3:]
+        for key in (joined, target):
+            by_stem = _unique(self.by_stem.get(_MD_SUFFIX.sub("", key), []))
+            if by_stem is not None:
+                return by_stem
+        by_stem_name = _unique(self.by_stem_name.get(_MD_SUFFIX.sub("", name).casefold(), []))
+        if by_stem_name is not None:
+            return by_stem_name
         token = filename_token(name)
         if not token:
             return None
@@ -174,6 +197,30 @@ def rewrite_relative_md_links(html: str, index: MdIndex, parent: str = "") -> st
     return _A_TAG.sub(replace, html)
 
 
+# 接口给的 markdown 里的链接：[文字](地址) 或 [文字](<带空格的地址>)，可以带 "标题"。图片（前面有「!」）不算。
+_MD_INLINE_LINK = re.compile(r"""(?<!!)\[([^\[\]]*)\]\(\s*(?:<([^<>\n]+)>|([^)\s<>]+))(?:\s+"[^"\n]*")?\s*\)""")
+_MD_FENCED = re.compile(r"(```.*?```|~~~.*?~~~)", re.S)
+
+
+def link_markdown_articles(md: str, index: MdIndex, parent: str, base: str) -> str:
+    """接口给的 markdown：相对 .md 链接换成站内文章的完整地址，库里没有的去掉链接、留下文字。
+
+    和文章页同一套找法（``MdIndex.resolve``），读接口的拿到的链接点得开。代码块里的不动。
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        text, href = match.group(1), match.group(2) or match.group(3)
+        if relative_md_path(href) is None:
+            return match.group(0)
+        article_id = index.resolve(href, parent)
+        if article_id is None:
+            return text
+        return f"[{text}]({base}/articles/{article_id})"
+
+    pieces = _MD_FENCED.split(md or "")
+    return "".join(piece if number % 2 else _MD_INLINE_LINK.sub(replace, piece) for number, piece in enumerate(pieces))
+
+
 def finish_html(html: str, index: MdIndex | None, parent: str = "") -> str:
     """渲染之后、段落编号之前：先改相对 .md 链接，再盖 p-id。"""
     if html and ".md" in html.lower():
@@ -188,12 +235,11 @@ def prepare_body_html(
     fmt: str | None,
     index: MdIndex | None,
     parent: str = "",
+    *,
+    owners: Sequence[str] = (),
 ) -> str:
     _frontmatter, body = split_frontmatter(body_md or "")
     if fmt != "html":
         body = strip_duplicate_title(body, title)
-        qa = render_qa_html(body, mapping)
-        if qa is not None:
-            return finish_html(qa, index, parent)
-    rendered = str(render_body(body, mapping, fmt))
+    rendered = str(render_body(body, mapping, fmt, owners=owners))
     return finish_html(rendered, index, parent)

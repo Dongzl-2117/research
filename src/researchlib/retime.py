@@ -11,8 +11,12 @@
 并用同一条 ±30 天窗口重数同期。正文没变时，把观点、摘要、译文的 content_hash 对齐到新时间，
 避免夜间任务把「只改了钟点」当成正文变了、按旧理解再抽一遍。
 
+不给 ``--input`` 时不读归档，用库里存的正文开头「- 时间：」，规则和导入时一样，只看库里还没有
+真实钟点的那些篇。
+
     research-retime --source fangwei-zsxq --input /data/inbox/fangwei-zsxq
     research-retime --source fangwei-zsxq --input /data/inbox/fangwei-zsxq --dry-run
+    research-retime --source chengfengpolang --dry-run
 """
 
 from __future__ import annotations
@@ -29,7 +33,13 @@ from researchlib.config import Settings
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import forget_index_articles
 from researchlib.sources import Source
-from researchlib.textutil import SHANGHAI, content_hash, date_from_filename
+from researchlib.textutil import (
+    SHANGHAI,
+    content_hash,
+    date_from_filename,
+    resolve_published_at,
+    split_frontmatter,
+)
 
 _INDEX_IDS = frozenset({"index", "index.md", "index.markdown"})
 
@@ -60,6 +70,48 @@ def _doc_topic_id(doc: ParsedDoc) -> str | None:
         if text.isdigit():
             return text
     return topic_id_from_external_id(doc.external_id)
+
+
+def docs_from_library(conn, source_id: str) -> list[ParsedDoc]:
+    """没有归档时，从库里存的正文重新取发布时间，和导入走同一个 resolve_published_at。
+
+    只看库里还是当天零点（或没有日期）、又没标 time_known 的。正文开头也没有带钟点的「- 时间：」的，
+    time_known 仍是 false，refresh_clocks 会跳过，不编造时间。
+    """
+    rows = conn.execute(
+        "SELECT external_id, title, body_md, published_at, raw_meta FROM articles WHERE source_id = %s",
+        (source_id,),
+    ).fetchall()
+    docs = []
+    for row in rows:
+        meta = dict(row["raw_meta"] or {})
+        if meta.get("time_known") is True:
+            continue
+        stored_at = row["published_at"]
+        if stored_at is not None:
+            local = stored_at.astimezone(SHANGHAI)
+            if (local.hour, local.minute, local.second) != (0, 0, 0):
+                continue
+        body = row["body_md"] or ""
+        frontmatter, _rest = split_frontmatter(body)
+        when, date_source, known = resolve_published_at(
+            frontmatter=frontmatter,
+            hints=meta,
+            filename=str(meta.get("filename") or ""),
+            text=body,
+            extra_filenames=(str(row["external_id"] or ""),),
+        )
+        docs.append(
+            ParsedDoc(
+                external_id=row["external_id"],
+                title=row["title"],
+                published_at=when,
+                body_md=body,
+                raw_meta={"date_source": date_source, "time_known": known},
+                image_refs=[],
+            )
+        )
+    return docs
 
 
 def _same_instant(left, right) -> bool:
@@ -202,8 +254,20 @@ def _tracked_ids(conn, settings: Settings) -> list[int] | None:
     return None
 
 
-def refresh_clocks(conn, source: Source, docs: list[ParsedDoc], settings: Settings, *, dry_run: bool = False) -> dict:
-    """改 published_at 和 raw_meta.create_time，对齐哈希，再按新时间重走态度变化和同期。"""
+def refresh_clocks(
+    conn,
+    source: Source,
+    docs: list[ParsedDoc],
+    settings: Settings,
+    *,
+    dry_run: bool = False,
+    same_row: bool = False,
+) -> dict:
+    """改 published_at 和 raw_meta.create_time，对齐哈希，再按新时间重走态度变化和同期。
+
+    归档里的一篇按话题号对上库里同一话题的所有行。same_row 用于 docs_from_library 逐行生成的 docs：
+    只改外部 id 相同的那一行，不把一行正文里的钟点连带写到同话题的别的行上。
+    """
     from researchlib.sources import enabled_sources, load_sources
 
     sources_by_id = {item.id: item for item in enabled_sources(load_sources(settings.sources_path))}
@@ -239,7 +303,9 @@ def refresh_clocks(conn, source: Source, docs: list[ParsedDoc], settings: Settin
             (source.id,),
         ).fetchall()
         by_topic: dict[str, list] = {}
+        by_external: dict[str, list] = {}
         for row in stored:
+            by_external.setdefault(row["external_id"], []).append(row)
             key = topic_id_from_external_id(row["external_id"])
             if key:
                 by_topic.setdefault(key, []).append(row)
@@ -248,8 +314,11 @@ def refresh_clocks(conn, source: Source, docs: list[ParsedDoc], settings: Settin
             if not doc.raw_meta.get("time_known") or doc.published_at is None:
                 stats["skipped_no_clock"] += 1
                 continue
-            topic_id = _doc_topic_id(doc)
-            matches = [row for row in by_topic.get(topic_id or "", []) if row["id"] not in seen]
+            if same_row:
+                candidates = by_external.get(doc.external_id, [])
+            else:
+                candidates = by_topic.get(_doc_topic_id(doc) or "", [])
+            matches = [row for row in candidates if row["id"] not in seen]
             if not matches:
                 stats["missing"] += 1
                 continue
@@ -340,7 +409,11 @@ def render_stats(stats: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="用归档里的真实 create_time 更正知识星球时间，并重排观点时间线")
     parser.add_argument("--source", required=True, help="知识星球来源 id，例如 fangwei-zsxq")
-    parser.add_argument("--input", required=True, type=Path, help="归档目录（含 md/ 和 raw/topics/）")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        help="归档目录（含 md/ 和 raw/topics/）。不给就用库里正文开头的「- 时间：」",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只统计，不写库")
     args = parser.parse_args(argv)
     from researchlib.db import prepare
@@ -353,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     except SourceRejected as exc:
         print(f"拒绝：{exc}", file=sys.stderr)
         return 2
-    if not args.input.exists():
+    if args.input is not None and not args.input.exists():
         print(f"找不到归档：{args.input}", file=sys.stderr)
         return 1
     # 确认来源在启用列表里，重排态度变化时别的作者也算得上。
@@ -362,11 +435,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     conn = prepare(settings)
     try:
-        with tempfile.TemporaryDirectory(prefix="research-retime-") as tmp:
-            docs, errors, _files, _images = parse_archive(args.input, Path(tmp), id_mode="zsxq")
+        errors: list[str] = []
+        if args.input is None:
+            docs = docs_from_library(conn, source.id)
+        else:
+            with tempfile.TemporaryDirectory(prefix="research-retime-") as tmp:
+                docs, errors, _files, _images = parse_archive(args.input, Path(tmp), id_mode="zsxq")
         for item in errors:
             print(item, file=sys.stderr)
-        stats = refresh_clocks(conn, source, docs, settings, dry_run=args.dry_run)
+        stats = refresh_clocks(
+            conn, source, docs, settings, dry_run=args.dry_run, same_row=args.input is None
+        )
     except Exception:
         conn.rollback()
         raise

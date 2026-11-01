@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -18,12 +19,21 @@ pytestmark = pytest.mark.skipif(
     reason="要 bash、git 和 python3",
 )
 
+# compose top app 的标准输出由 DOCKER_TOP 决定，用来假装容器里正在跑的进程。
 FAKE_DOCKER = """#!/bin/bash
-echo "docker $*" >> "$CALLS"
-if [ "${DOCKER_FAILS:-0}" = "1" ]; then
-  echo "镜像没建成" >&2
-  exit 1
-fi
+case "$*" in
+  *" top app")
+    echo "docker compose top app" >> "$CALLS"
+    printf '%s\\n' "${DOCKER_TOP:-}"
+    ;;
+  *)
+    echo "docker $*" >> "$CALLS"
+    if [ "${DOCKER_FAILS:-0}" = "1" ]; then
+      echo "镜像没建成" >&2
+      exit 1
+    fi
+    ;;
+esac
 """
 # GitHub 接口返回测试写好的 CI 结果；没写就当接口出错。应用的健康检查一律通过。
 FAKE_CURL = """#!/bin/bash
@@ -43,13 +53,14 @@ echo "install DEPLOY_SELF=${DEPLOY_SELF:-}" >> "$CALLS"
 """
 
 
-def _git(cwd: Path, *args: str) -> str:
+def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         ["git", "-c", "user.name=测试", "-c", "user.email=test@example.com", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
         check=True,
+        env={**os.environ, **env} if env else None,
     )
     return result.stdout.strip()
 
@@ -85,13 +96,14 @@ class World:
         self.commit("第一版")
         _git(tmp, "clone", "--quiet", "-b", "main", str(self.origin), str(self.mini))
 
-    def commit(self, subject: str, path: str = "notes.txt") -> str:
+    def commit(self, subject: str, path: str = "notes.txt", hours_ago: float = 0) -> str:
         target = self.work / path
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
             handle.write(subject + "\n")
         _git(self.work, "add", "-A")
-        _git(self.work, "commit", "--quiet", "-m", subject)
+        when = f"{int(time.time() - hours_ago * 3600)} +0000"
+        _git(self.work, "commit", "--quiet", "-m", subject, env={"GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when})
         _git(self.work, "push", "--quiet", "origin", "main")
         return _git(self.work, "rev-parse", "HEAD")
 
@@ -152,7 +164,8 @@ def test_waits_for_ci_and_does_not_ship_a_red_commit(world: World):
     world.commit("改坏了")
     world.ci_says("in_progress")
     assert world.deploy().returncode == 0
-    assert world.called() == ["curl ci"] and world.head() == shipped
+    # 查 CI 之前先 docker compose top app，看容器里有没有 research-translate / research-ocr。
+    assert world.called() == ["docker compose top app", "curl ci"] and world.head() == shipped
     # 被后来的推送取消的那次不算没过。
     world.ci_says("completed", "cancelled")
     assert world.deploy().returncode == 0
@@ -209,6 +222,77 @@ def test_unreachable_github_is_quiet_unless_it_never_worked(world: World):
     assert world.deploy().returncode == 0
     assert world.status()["ok"] is True
     assert world.head() != _git(world.work, "rev-parse", "HEAD")
+
+
+def test_waits_for_translate_or_ocr_in_the_app_container(world: World):
+    world.ci_says("completed", "success")
+    shipped = world.head()
+    sha = world.commit("第二版")
+    for name in ("research-translate", "research-ocr"):
+        result = world.deploy(DOCKER_TOP=f"root 12 1 0 Oct29 ? 00:00:03 {name} --limit 10")
+        assert result.returncode == 0, result.stderr
+        assert world.called() == ["docker compose top app"]
+        assert world.head() == shipped and world.status() is None
+        assert f"{name} 还在跑" in result.stdout
+    # 容器里只有 web：探测过了照常上线。
+    result = world.deploy(DOCKER_TOP="root 7 1 0 Oct29 ? 00:01:00 python -m uvicorn researchlib.web:app")
+    assert result.returncode == 0, result.stderr
+    assert world.head() == sha and world.status()["ok"] is True
+    assert world.called()[0] == "docker compose top app"
+
+
+def test_waiting_three_hours_behind_a_long_job_is_reported(world: World):
+    world.ci_says("completed", "success")
+    shipped = world.head()
+    sha = world.commit("四小时前合并的", hours_ago=4)
+    top = "root 12 1 0 Oct29 ? 03:00:00 research-translate --source stratechery"
+    result = world.deploy(DOCKER_TOP=top)
+    assert result.returncode == 0, result.stderr
+    assert world.head() == shipped
+    status = world.status()
+    assert status["ok"] is False
+    assert "research-translate 还在跑，最早一个没上线的合并等了 3 小时" in status["message"]
+    assert f"main 现在是 {sha[:7]}" in status["message"]
+    # 跑完了：照常上线，提示消失。
+    assert world.deploy().returncode == 0
+    assert world.head() == sha and world.status()["ok"] is True
+
+
+def test_fresh_merges_do_not_hide_a_long_wait(world: World):
+    """10-31：四个多小时没上线，期间一直有新合并，按最新的提交算总不到 3 小时，没报。"""
+    world.ci_says("completed", "success")
+    shipped = world.head()
+    world.commit("四小时前合并的", hours_ago=4)
+    sha = world.commit("刚合并的")
+    top = "root 12 1 0 Oct29 ? 04:00:00 research-translate --source stratechery"
+    assert world.deploy(DOCKER_TOP=top).returncode == 0
+    assert world.head() == shipped
+    status = world.status()
+    assert status["ok"] is False and f"main 现在是 {sha[:7]}" in status["message"]
+    # 刚合并、前面没有积压：照常安静地等。
+    world.deploy()
+    world.commit("又一个")
+    result = world.deploy(DOCKER_TOP=top)
+    assert result.returncode == 0 and "还在跑，跑完再上线" in result.stdout
+    assert world.status()["ok"] is True
+
+
+def test_stuck_previous_run_is_reported_after_two_hours(world: World):
+    world.ci_says("completed", "success")
+    world.commit("第二版")
+    pid = world.mini / "data" / "status" / ".deploy.lock" / "pid"
+    _write(pid, f"{os.getpid()}\n")
+    # 上一轮刚开始跑：这轮安静跳过。
+    result = world.deploy()
+    assert result.returncode == 0 and "上一轮还在跑" in result.stdout
+    assert world.called() == [] and world.status() is None
+    # 跑了三个小时还没完：记成失败，锁留给它。
+    long_ago = time.time() - 3 * 3600
+    os.utime(pid, (long_ago, long_ago))
+    assert world.deploy().returncode == 0
+    status = world.status()
+    assert status["ok"] is False and "跑了两个多小时还没完" in status["message"]
+    assert pid.is_file() and world.called() == []
 
 
 def test_waits_for_jobs_running_in_the_containers(world: World):

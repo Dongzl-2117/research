@@ -6,7 +6,6 @@ import urllib.request
 import pytest
 
 from researchlib.chunks import OCR_MIN_CHARS, ocr_chunks
-from researchlib.ocr import order_text
 from researchlib.remote_images import (
     FetchError,
     _checked_create_connection,
@@ -140,27 +139,12 @@ def test_image_extension_sniffs_content():
     assert image_extension(b"????", "image/jpeg") == ".jpg"
 
 
-def test_ocr_text_order_and_chunks():
-    items = [
-        [[[300, 12], [420, 12], [420, 40], [300, 40]], "1234 亿元", 0.98],
-        [[[10, 10], [280, 10], [280, 42], [10, 42]], "广告收入", 0.99],
-        [[[10, 60], [400, 60], [400, 92], [10, 92]], "主站货币化率见顶", 0.95],
-        [[[10, 100], [80, 100], [80, 120], [10, 120]], "噪", 0.2],
-    ]
-    assert order_text(items) == "广告收入  1234 亿元\n主站货币化率见顶"
-    # 靠右的气泡是作者自己。左侧昵称仍是网友。画面右缘取所有框的最大 x。
-    sided = [
-        [[[20, 80], [120, 80], [120, 110], [20, 110]], "王小明", 0.99],
-        [[[20, 120], [280, 120], [280, 160], [20, 160]], "古茗店效还行，折扣不能再深了", 0.99],
-        [[[250, 200], [390, 200], [390, 240], [250, 240]], "同店还有压力", 0.99],
-    ]
-    ordered = order_text(sided)
-    assert ordered.splitlines()[-1].startswith(SIDE_SELF)
-    assert "王小明" in ordered and not ordered.splitlines()[0].startswith(SIDE_SELF)
-    dialogue = present_ocr_pieces([ordered])
-    assert "网友：古茗店效还行，折扣不能再深了" in dialogue
+def test_stored_side_marker_and_chunks():
+    # 以前 RapidOCR 认的图，库里靠右的绿气泡行前面有侧标记：整理时认成方伟，左侧昵称照写。
+    stored = f"王小明\n古茗店效还行，折扣不能再深了\n{SIDE_SELF}同店还有压力"
+    dialogue = present_ocr_pieces([stored])
+    assert "王小明：古茗店效还行，折扣不能再深了" in dialogue
     assert "方伟：同店还有压力" in dialogue
-    assert "王小明" not in dialogue
     digest = "cd" * 32
     chunks = ocr_chunks([(digest, "拼多多二季度营收同比增长\n广告收入 1234 亿元"), (digest, "重复的图不算第二次"),
                          ("ef" * 32, "装饰")])
@@ -169,34 +153,26 @@ def test_ocr_text_order_and_chunks():
     assert ocr_chunks([("aa" * 32, "字" * (OCR_MIN_CHARS - 1))]) == []
 
 
-def test_ocr_green_bubble_by_color():
-    """有原图时按微信绿气泡认本人，不靠左缘阈值（长绿气泡会靠左）。"""
-
-    class _FakeImage:
-        shape = (160, 400, 3)
-
-        def __getitem__(self, key):
-            y, x = key
-            # 第二行绿气泡带：文字左缘已过中线偏左，旧几何会漏标。
-            if 90 <= y < 130 and 100 <= x < 380:
-                return (105, 236, 149)
-            return (237, 237, 237)
-
-    items = [
-        [[[40, 20], [120, 20], [120, 50], [40, 50]], "王小明", 0.99],
-        [[[50, 45], [160, 45], [160, 65], [50, 65]], "古茗店效还行", 0.99],
-        # 长绿气泡：左缘 x=110 < 0.4*360，几何旧规则会当网友；颜色应标本人。
-        [[[110, 100], [360, 100], [360, 125], [110, 125]], "同店还有压力", 0.99],
-    ]
-    ordered = order_text(items, image_bgr=_FakeImage())
-    lines = ordered.splitlines()
-    assert len(lines) == 3
-    assert not lines[0].startswith(SIDE_SELF)
-    assert not lines[1].startswith(SIDE_SELF)
-    assert lines[2].startswith(SIDE_SELF)
-    # 无图时退回几何：左缘过中线才标本人。
-    geo = order_text(items).splitlines()
-    assert not geo[2].startswith(SIDE_SELF)
+def test_ocr_chunks_skip_sentences_an_earlier_screenshot_already_had():
+    """长群聊分几张截，后一张开头和上一张结尾重叠：重叠的整句只进前一张的块，和文章页一样。
+    「同意」这种短回复不算重叠，后面的图里照留。"""
+    first = (
+        "张三：瑞幸和古茗都算头部，但瑞幸同店还有压力，开店速度也慢下来了\n"
+        "王五：同意\n"
+        "方伟：美团守住了，内部也认为外卖这事基本缓过来了\n"
+    )
+    second = (
+        "方伟：美团守住了，内部也认为外卖这事基本缓过来了\n"
+        "李四：阿里四处开火，到处花钱，淘天的数据差的话股价会掉不少\n"
+        "王五：同意\n"
+    )
+    chunks = ocr_chunks([("aa" * 32, first), ("bb" * 32, second)])
+    assert [anchor for anchor, _text in chunks] == [image_anchor("aa" * 32), image_anchor("bb" * 32)]
+    assert "外卖这事基本缓过来了" in chunks[0][1]
+    assert "外卖这事基本缓过来了" not in chunks[1][1]
+    assert "阿里四处开火" in chunks[1][1] and "王五：同意" in chunks[1][1]
+    # 整张都是前面写过的句子，剩下的不够切块。
+    assert len(ocr_chunks([("aa" * 32, first), ("cc" * 32, first)])) == 1
 
 
 def test_ocr_chunks_drop_hold_to_text():

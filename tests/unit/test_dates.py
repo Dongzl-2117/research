@@ -73,3 +73,15 @@ def test_body_time_line_beats_filename_midnight_not_json():
     )
     assert meta_source == "meta" and meta_known is True
     assert meta.astimezone(SHANGHAI).hour == 10
+
+
+def test_body_time_line_with_half_width_zone_note():
+    when, source, known = resolve_published_at(
+        filename="2026-09-27_14588211154841122.md",
+        text="# 标题\n\n- 作者：王小明\n- 时间：2026-09-27 14:41 (UTC+8)\n\n正文\n",
+    )
+    assert source == "body" and known is True
+    local = when.astimezone(SHANGHAI)
+    assert (local.day, local.hour, local.minute) == (27, 14, 41)
+    full_width, _source, full_known = resolve_published_at(text="- 时间：2026-09-27 14:41（北京时间）\n")
+    assert full_known is True and full_width.astimezone(SHANGHAI).hour == 14

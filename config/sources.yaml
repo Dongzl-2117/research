@@ -27,6 +27,8 @@ sources:
   - id: chengfengpolang
     name: 乘风破浪
     author: 乘风破浪
+    # 星球里星主的昵称：归档头的「作者」、评论里回答读者的都是这个名字。评论区只留他的。
+    poster_names: [郑立涛]
     kind: zsxq
     enabled: true
     timeline: true
@@ -38,7 +40,9 @@ sources:
     kind: markdown
     enabled: true
     timeline: true
-    description: 微信公众号「孤独进化体」全文归档（通用 Markdown 目录导入；现从 AIHOT mp-gudujinhua 导出）。
+    # 公众号原始 ID。scripts/crawl-gudujinhuati.sh 每天用它向极致了查新文章（research-crawl-wechat）。
+    ghid: gh_1f869b9dc034
+    description: 微信公众号「孤独进化体」全文归档。以前的文章是 Markdown 归档导入的；10 月 30 日起每天定时抓取（research-crawl-wechat）。
 
   - id: linwenfeng-mp
     name: 林文丰公众号
@@ -62,16 +66,7 @@ sources:
     kind: markdown
     enabled: true
     timeline: true
-    description: Ben Thompson / Stratechery 全文归档。Passport 全文、Daily≥5500 字门槛；游客半截不入库。入库后由站内 DeepSeek（默认）自动译制。
-
-  - id: duanyongping-blog
-    name: 段永平
-    author: 段永平
-    kind: markdown
-    enabled: true
-    paused: true
-    timeline: true
-    description: 【2026-10-22 先不要：库里已标 hidden=source_paused，站上不出现】段永平博客文章合集（2006–2018）离线 PDF。只收论证落在具体公司上、且他本人有话说的篇目。论坛导航冒充回答的问答整篇不收。有日期的进按天，没日期的只进作者、公司和检索。
+    description: Ben Thompson / Stratechery 全文归档。Passport 全文、Daily≥5500 字门槛；游客半截不入库。入库后在 Mac mini 上跑 research-translate --source stratechery 译制（docs/translate.md）。
 
   - id: heiheiwuchang
     name: 黑黑无常

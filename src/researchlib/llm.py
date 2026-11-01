@@ -1,8 +1,8 @@
 """调用站内 LLM（OpenAI 兼容的 chat/completions）。
 
 提供方由 ``RESEARCH_LLM_PROVIDER`` 决定：默认 DeepSeek，用 ``DEEPSEEK_API_KEY`` 加 Bearer；
-``RESEARCH_LLM_PROVIDER=grok`` 时走与 AIHOT 共用的 xAI OAuth
-（``XAI_OAUTH_TOKEN_PATH``，Docker 默认 ``/aihot-data/secrets/xai-oauth.json``）。
+``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth
+（``XAI_OAUTH_TOKEN_PATH``，compose 里是 ``/data/secrets/xai-oauth.json``，用 ``research-xai-login login`` 登录）。
 DeepSeek 缺 key 时直接报错，不会悄悄退回 Grok；Grok 路径照旧不读 ``XAI_API_KEY``。
 
 强度与译制共用：DeepSeek 见 ``researchlib.deepseek``（deepseek-flash、thinking 打开、
@@ -12,7 +12,7 @@ Grok 见 ``researchlib.grok``（grok-4.7、reasoning_effort=xhigh、输出不低
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
 429、5xx 和连不上这类临时错误退避重试两次；超时不重试（一次已经等了很久）。同一个进程里同时在跑的
 请求有上限（RESEARCH_LLM_CONCURRENCY，默认 3），问库分批、摘要、观点、论点共用。
-每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时首页提示。
+每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时 research-status 会列出来。
 """
 
 from __future__ import annotations
