@@ -116,3 +116,37 @@ def test_pending_articles_cover_all_tracked_companies_once(conn, settings):
     pending = views_mod.pending_companies(conn, first["id"], ids)
     assert {item["id"] for item in pending} <= set(ids)
     assert views_mod.count_pending(conn, _tencent(conn)["id"], sources) >= 1
+
+
+def test_only_flips_between_bullish_and_bearish_count_as_changes(conn, settings):
+    """看好 → 两面 → 看好 不算态度变化；看好 → 两面 → 看淡 只在看淡那篇标一次「看好 → 看淡」。"""
+    sources = {source.id: source for source in load_sources(settings.sources_path)}
+    stances = ["positive", "mixed", "positive", "neutral", "mixed", "negative", "mixed", "negative"]
+    docs = [
+        ParsedDoc(
+            external_id=f"mp/tencent-{index}",
+            title=f"腾讯第 {index} 篇",
+            published_at=datetime(2025, 1 + index, 1, 9, 0, tzinfo=SHANGHAI),
+            body_md=f"腾讯的广告第 {index} 次。腾讯的游戏第 {index} 次。腾讯的云第 {index} 次。",
+            raw_meta={},
+            image_refs=[],
+        )
+        for index in range(len(stances))
+    ]
+    store_documents(conn, source=sources["fangwei-mp"], docs=docs, data_dir=settings.data_dir,
+                    archive_files=len(docs), images_in_archive=0, errors=[])
+    company = _tencent(conn)
+    for index, stance in enumerate(stances):
+        row = _article(conn, f"mp/tencent-{index}")
+        conn.execute(
+            """
+            INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (row["id"], company["id"], row["content_hash"], views_mod.PROMPT_VERSION, f"第 {index} 篇的判断", stance),
+        )
+    conn.commit()
+    items = views_mod.timeline(conn, company["id"], sources, settings)
+    changed = [(item["title"], item["previous_label"], item["stance_label"]) for item in items if item["changed"]]
+    assert changed == [("腾讯第 5 篇", "看好", "看淡")]
+    assert [item["title"] for item in views_mod.filter_timeline(items, "change")] == ["腾讯第 5 篇"]
