@@ -1,5 +1,6 @@
 # 定时脚本共用（用 . 引入，不单独跑）：把这次的结果写进 data/status/<任务>.json。
-# 首页只在出问题时提示一行：失败了，或者太久没成功（见 src/researchlib/health.py）。
+# 出问题（失败了，或者太久没成功）时 health.notices 列出来，值班助手跑 docker compose exec app research-status 看；
+# 首页不显示（见 src/researchlib/health.py）。
 #
 #   TASK=backup
 #   . "$REPO/scripts/status.sh"
@@ -47,6 +48,29 @@ status_ok() {
 
 status_fail() {
   status_write false "$1"
+}
+
+compose_exec() {
+  # docker compose exec 在容器没起来时会退出，错误是 service "<名字>" is not running。
+  # 夜间识图踩过。先确认服务在跑，没有就 up -d，再等几秒直到 exec 能进去。
+  # 调用方要先定义 compose（docker compose --project-directory …）。
+  local svc="$1"
+  shift
+  if ! compose ps --status running --services 2>/dev/null | grep -qx "${svc}"; then
+    echo "$(date '+%F %T') ${svc} 没在跑，先启动" >&2
+    compose up -d "${svc}"
+  fi
+  local attempt=0
+  while [ "$attempt" -lt 8 ]; do
+    if compose exec -T "${svc}" true >/dev/null 2>&1; then
+      compose exec -T "${svc}" "$@"
+      return $?
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  echo "service ${svc} is not running" >&2
+  return 1
 }
 
 run_step() {

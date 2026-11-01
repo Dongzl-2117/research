@@ -26,9 +26,11 @@ def test_day_brief_is_filled_without_a_model():
             },
         ]
     )
-    assert brief["lead"].startswith("方伟：广告业务是这篇的主体。")
-    assert "乘风破浪：" in brief["lead"]
+    # 不拿各篇导读拼一段总结：拼出来的就是下面各组第一篇的导读，原样贴两遍。
+    assert "lead" not in brief
     assert brief["authors"] == 2
+    assert [section["author"] for section in brief["sections"]] == ["方伟", "乘风破浪"]
     assert brief["sections"][0]["items"][0]["blurb"] == "广告业务是这篇的主体。"
+    assert brief["sections"][1]["items"][0]["blurb"] == "只剩正文开头。"
     assert brief["companies"] == [{"id": 7, "name": "腾讯"}]
-    assert compose_day_brief([])["lead"] == ""
+    assert compose_day_brief([])["sections"] == []

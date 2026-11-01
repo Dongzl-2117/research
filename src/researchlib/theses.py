@@ -28,7 +28,7 @@ from datetime import UTC, datetime, timedelta
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import not_guest_sql
+from researchlib.author_voice import site_visible_sql
 from researchlib.claims import claim_side, is_hedge, looks_like_list, quote_ok, same_repost
 from researchlib.config import Settings
 from researchlib.failures import clear_failure, note_failure
@@ -110,7 +110,7 @@ def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) ->
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s)
-          AND a.duplicate_of IS NULL AND {not_guest_sql("a")}
+          AND a.duplicate_of IS NULL AND {site_visible_sql("a")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (company_id, list(sources_by_id)),
@@ -703,13 +703,13 @@ def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) 
     if not source_ids:
         return []
     return conn.execute(
-        """
+        f"""
         SELECT c.id, c.name_zh
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
-          AND coalesce(a.raw_meta->>'poster_role', '') <> 'guest'
+          AND {site_visible_sql("a")}
         GROUP BY c.id, c.name_zh
         HAVING count(*) >= %s
         ORDER BY c.name_zh, c.id

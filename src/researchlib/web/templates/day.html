@@ -20,6 +20,9 @@
     {% for item in brief.companies %}<li><a class="tag" href="/companies/{{ item.id }}">{{ item.name }}</a></li>{% endfor %}
   </ul>
   {% endif %}
+  {% if count and not answer %}
+  <p class="head-actions"><a class="btn ask-btn" href="{{ ask_href }}">问 AI：这一天的主要判断</a></p>
+  {% endif %}
   {% if prev_href or next_href %}
   <nav class="day-switch" aria-label="相邻的日子">
     {% if prev_href %}<a href="{{ prev_href }}">前一天</a>{% endif %}
@@ -30,8 +33,8 @@
 {% if count == 0 %}
 <p class="empty">这一天没有文章。</p>
 {% else %}
+{% if answer %}
 <section class="day-lead" aria-label="这一天的总结">
-  {% if answer %}
   <h2>{{ answer.question }}</h2>
   <div class="prose answer-body">{{ answer.answer | answer_html }}</div>
   <p class="quiet">{% if answer.model %}{{ answer.model }} · {% endif %}<a href="/ask/{{ answer.id }}">查看这条汇总的出处</a></p>
@@ -40,15 +43,13 @@
     {% for item in answer.citations %}
     <li id="c-{{ item.n }}">
       <p class="item-meta"><span class="num">[{{ item.n }}]</span> <a href="{{ item.url }}">{{ item.title }}</a>{% if item.author %} · {{ item.author }}{% endif %}{% if item.date %} · {{ item.date }}{% endif %}</p>
-      {% if item.text %}<p class="item-excerpt">{{ item.text }}</p>{% endif %}
+      {% if item.text %}<p class="item-excerpt">{{ item.text | highlight_snippet([], 75) }}</p>{% endif %}
     </li>
     {% endfor %}
   </ol>
   {% endif %}
-  {% else %}
-  <p>{{ brief.lead }}</p>
-  {% endif %}
 </section>
+{% endif %}
 {% for section in brief.sections %}
 <section class="day-section" aria-label="{{ section.author }}">
   <h2>{{ section.author }} <span class="num quiet">{{ section.count }}</span></h2>

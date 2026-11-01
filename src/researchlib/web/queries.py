@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from researchlib.author_voice import not_comment_shell_sql, site_visible_sql
-from researchlib.empty_answer import visible_sql
+from researchlib.visibility import visible_sql
 
 
 @dataclass(frozen=True)
@@ -85,29 +85,20 @@ def _shanghai_day(column: str = "published_at") -> str:
     # 与 company_months 一样，按 Asia/Shanghai 的日历日切桶。
     return f"date_trunc('day', {column} AT TIME ZONE 'Asia/Shanghai')"
 
-def _off_timeline_clause(include_off_timeline: bool, alias: str = "") -> str:
-    """没日期的段永平条目标了 off_timeline。首页按天不收；作者页要收。"""
-    if include_off_timeline:
-        return ""
-    column = f"{alias}.raw_meta" if alias else "raw_meta"
-    return f" AND coalesce({column}->>'off_timeline', '') <> 'true'"
-
-
-def _listed(include_off_timeline: bool, alias: str = "", *, owner_only: bool = False) -> str:
-    """首页和作者页的文章：没日期的按参数，空回答与「图片」评论壳一律不收。"""
+def _listed(alias: str = "", *, owner_only: bool = False) -> str:
+    """首页和作者页的文章：隐藏的短帖与「图片」评论壳一律不收。"""
     return (
-        _off_timeline_clause(include_off_timeline, alias)
-        + _owner_clause(owner_only, alias)
+        _owner_clause(owner_only, alias)
         + f" AND {not_comment_shell_sql(alias)}"
         + " AND "
         + visible_sql(alias)
     )
 
 
-def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = True, owner_only: bool = False) -> dict:
+def feed_counts(conn, source_ids: list[str], *, owner_only: bool = False) -> dict:
     if not source_ids:
         return {"articles": 0, "days": 0, "undated": 0}
-    extra = _listed(include_off_timeline, owner_only=owner_only)
+    extra = _listed(owner_only=owner_only)
     row = conn.execute(
         f"""
         SELECT count(*) AS articles,
@@ -126,14 +117,12 @@ def feed_counts(conn, source_ids: list[str], *, include_off_timeline: bool = Tru
     }
 
 
-def list_day_page(
-    conn, source_ids: list[str], limit: int, offset: int, *, include_off_timeline: bool = True, owner_only: bool = False
-):
+def list_day_page(conn, source_ids: list[str], limit: int, offset: int, *, owner_only: bool = False):
     """一页里的几天，以及这些天的全部文章。同一天不会被页边界切开。"""
     if not source_ids:
         return []
-    extra = _listed(include_off_timeline, owner_only=owner_only)
-    extra_a = _listed(include_off_timeline, "a", owner_only=owner_only)
+    extra = _listed(owner_only=owner_only)
+    extra_a = _listed("a", owner_only=owner_only)
     return conn.execute(
         f"""
         WITH days AS (
@@ -159,18 +148,10 @@ def list_day_page(
     ).fetchall()
 
 
-def list_undated_articles(
-    conn,
-    source_ids: list[str],
-    limit: int,
-    offset: int,
-    *,
-    include_off_timeline: bool = True,
-    owner_only: bool = False,
-):
+def list_undated_articles(conn, source_ids: list[str], limit: int, offset: int, *, owner_only: bool = False):
     if not source_ids:
         return []
-    extra = _listed(include_off_timeline, owner_only=owner_only)
+    extra = _listed(owner_only=owner_only)
     return conn.execute(
         f"""
         SELECT id, source_id, title, published_at, body_text,
@@ -185,22 +166,6 @@ def list_undated_articles(
         """,
         (source_ids, limit, offset),
     ).fetchall()
-
-
-def source_article_counts(conn, source_ids: list[str]) -> dict[str, int]:
-    if not source_ids:
-        return {}
-    rows = conn.execute(
-        f"""
-        SELECT source_id, count(*) AS n
-        FROM articles
-        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
-          AND {visible_sql()}
-        GROUP BY source_id
-        """,
-        (source_ids,),
-    ).fetchall()
-    return {row["source_id"]: int(row["n"]) for row in rows}
 
 
 def get_article(conn, article_id: int, source_ids: list[str]):
@@ -234,10 +199,11 @@ def same_article_elsewhere(conn, article_id: int, duplicate_of: int | None, sour
 
 def count_duplicate_groups(conn, source_ids: list[str], only: int | None = None) -> int:
     row = conn.execute(
-        """
+        f"""
         SELECT count(DISTINCT d.duplicate_of) AS n
         FROM articles d JOIN articles c ON c.id = d.duplicate_of
         WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s) AND (%s::bigint IS NULL OR c.id = %s::bigint)
+          AND {site_visible_sql("c")} AND {site_visible_sql("d")}
         """,
         (source_ids, source_ids, only, only),
     ).fetchone()
@@ -245,12 +211,13 @@ def count_duplicate_groups(conn, source_ids: list[str], only: int | None = None)
 
 
 def duplicate_groups(conn, source_ids: list[str], limit: int, offset: int, only: int | None = None) -> list[dict]:
-    """去重核对页：每组一个主版本和指向它的重复，最近认出的在前。"""
+    """去重核对页：每组一个主版本和指向它的重复，最近认出的在前。站内不展示的读者帖、评论壳不列。"""
     heads = conn.execute(
-        """
+        f"""
         SELECT c.id, c.title, c.source_id, c.published_at, c.body_text, max(d.duplicate_marked_at) AS marked
         FROM articles d JOIN articles c ON c.id = d.duplicate_of
         WHERE d.source_id = ANY(%s) AND c.source_id = ANY(%s) AND (%s::bigint IS NULL OR c.id = %s::bigint)
+          AND {site_visible_sql("c")} AND {site_visible_sql("d")}
         GROUP BY c.id
         ORDER BY max(d.duplicate_marked_at) DESC NULLS LAST, c.published_at DESC NULLS LAST, c.id DESC
         LIMIT %s OFFSET %s
@@ -261,10 +228,10 @@ def duplicate_groups(conn, source_ids: list[str], limit: int, offset: int, only:
         return []
     members: dict[int, list] = {}
     for row in conn.execute(
-        """
+        f"""
         SELECT id, title, source_id, published_at, body_text, duplicate_of, duplicate_marked_at
         FROM articles
-        WHERE duplicate_of = ANY(%s) AND source_id = ANY(%s)
+        WHERE duplicate_of = ANY(%s) AND source_id = ANY(%s) AND {site_visible_sql("")}
         ORDER BY id
         """,
         ([head["id"] for head in heads], source_ids),
@@ -414,15 +381,20 @@ def title_materials(conn, article_ids: list[int]) -> dict[int, dict]:
 
 
 def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
-    """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。提示词版本旧的照常返回，调用方再排队重写。"""
+    """只取和当前正文对得上的摘要。正文改过而摘要没重算的，当作没有。提示词版本旧的照常返回，调用方再排队重写。
+
+    正文加图片里的字太少的也当作没有：只有「这是好文章」一句、还没识图时写的摘要只会说「无法归纳」。
+    """
+    from researchlib.digest import enough_text_sql
+
     if not article_ids:
         return {}
     rows = conn.execute(
-        """
+        f"""
         SELECT d.article_id, d.summary, d.points, d.tags, d.model, d.prompt_version, d.head_only, d.ocr_hash
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
-        WHERE d.article_id = ANY(%s)
+        WHERE d.article_id = ANY(%s) AND {enough_text_sql("a")}
         """,
         (article_ids,),
     ).fetchall()
@@ -465,6 +437,7 @@ def recent_publish_times(conn, source_ids: list[str], per_source: int = 31) -> d
           FROM articles
           WHERE source_id = ANY(%s) AND duplicate_of IS NULL AND published_at IS NOT NULL
             AND published_at <= now() + interval '1 day'
+            AND {site_visible_sql("")}
             AND {visible_sql()}
         ) recent
         WHERE rn <= %s
@@ -479,7 +452,7 @@ def recent_publish_times(conn, source_ids: list[str], per_source: int = 31) -> d
 
 
 def last_imports(conn, source_ids: list[str]) -> dict[str, dict]:
-    """每个来源最近一次导入：{来源: {"at": 时间, "origin": "crawl" | "aihot" | "archive"}}。
+    """每个来源最近一次导入：{来源: {"at": 时间, "origin": "crawl" | "archive"}}。
 
     导入命令写进 app_state 的 import:<来源>。早先的记录没有 origin，当作手动导入的归档。
     """
@@ -569,8 +542,7 @@ def day_offset(conn, source_ids: list[str], day, *, owner_only: bool = False) ->
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date > %s
-          {_owner_clause(owner_only)}
-          AND {visible_sql()}
+          {_listed(owner_only=owner_only)}
         """,
         (source_ids, day),
     ).fetchone()
@@ -588,8 +560,7 @@ def nearest_day(conn, source_ids: list[str], day, *, owner_only: bool = False):
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date <= %s
-          {_owner_clause(owner_only)}
-          AND {visible_sql()}
+          {_listed(owner_only=owner_only)}
         """,
         (source_ids, day),
     ).fetchone()
@@ -643,8 +614,12 @@ def neighbor_days(conn, scope: Scope, day: date) -> tuple[date | None, date | No
     return previous["d"], following["d"]
 
 
-def day_answer(conn, day: date, source_ids: list[str], company_id: int | None):
-    """已经问过的、正好覆盖这一天和同一范围的回答。没有就不现算。"""
+def day_answer(conn, day: date, source_ids: list[str], company_id: int | None, ignore: tuple[str, ...] = ()):
+    """已经问过的、正好覆盖这一天和同一范围的回答。没有就不现算。
+
+    ignore 是不进按天的来源（飞书文库）。问库页不分来源问的，范围里有它们，按天页的范围里没有，
+    比来源时不算这一处差别。只问一篇、一个目录的不算这一天的总结。
+    """
     rows = conn.execute(
         """
         SELECT id, question, answer, citations, model, scope, created_at
@@ -658,12 +633,14 @@ def day_answer(conn, day: date, source_ids: list[str], company_id: int | None):
     wanted = set(source_ids)
     for row in rows:
         scope = row["scope"] or {}
+        if scope.get("article_id") or scope.get("tree_id"):
+            continue
         saved_company = scope.get("company_id")
         if company_id is None and saved_company:
             continue
         if company_id is not None and saved_company != company_id:
             continue
-        if set(scope.get("source_ids") or []) != wanted:
+        if set(scope.get("source_ids") or []) - set(ignore) != wanted:
             continue
         return row
     return None
@@ -679,6 +656,7 @@ def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 5
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND published_at IS NOT NULL
           AND (published_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN %s AND %s
+          AND {site_visible_sql("")}
           AND {visible_sql()}
         ORDER BY published_at DESC, id DESC
         LIMIT %s
@@ -716,10 +694,32 @@ def expire_stale_answers(conn) -> int:
     return len(rows)
 
 
+def title_rows(conn, article_ids: list[int]):
+    """按现在的库取这几篇的标题，给 display_titles 用。"""
+    if not article_ids:
+        return []
+    return conn.execute(
+        "SELECT id, source_id, title, published_at FROM articles WHERE id = ANY(%s)",
+        (sorted(set(article_ids)),),
+    ).fetchall()
+
+
 def recent_answers(conn, limit: int = 20):
+    """最近问过的问题。同一个问题、同一个范围问了好几遍的只列一次，按最后一次问的时间排；
+    其中有整合完的就链到最近整合完的那次，不链到重启时中断的那几次。"""
     expire_stale_answers(conn)
     return conn.execute(
-        "SELECT id, question, scope, status, created_at FROM llm_answers ORDER BY created_at DESC, id DESC LIMIT %s",
+        """
+        SELECT id, question, scope, status, created_at
+        FROM (
+          SELECT DISTINCT ON (question, scope) id, question, scope, status, created_at,
+                 max(created_at) OVER (PARTITION BY question, scope) AS asked_at
+          FROM llm_answers
+          ORDER BY question, scope, status = 'done' DESC, created_at DESC, id DESC
+        ) latest
+        ORDER BY asked_at DESC, id DESC
+        LIMIT %s
+        """,
         (limit,),
     ).fetchall()
 
@@ -827,7 +827,7 @@ def company_articles(conn, company_id: int, source_ids: list[str], depth: str | 
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.published_at, a.source_id, m.depth, m.hit_count,
-               left(a.body_text, 20000) AS body_text,
+               left(a.body_text, 20000) AS body_text, left(coalesce(a.ocr_text, ''), 8000) AS ocr_text,
                {_CLOCK_FIELDS}
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}

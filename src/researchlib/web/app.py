@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -48,7 +49,7 @@ async def lifespan(app: FastAPI):
 
 
 def _background_upkeep(settings: Settings) -> None:
-    """失败时写进状态文件，首页提示；成功就清掉之前的失败。"""
+    """失败时写进状态文件（research-status 会列出来）；成功就清掉之前的失败。"""
     failed: list[str] = []
     try:
         dedupe_if_needed(settings)
@@ -81,6 +82,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api)
     app.include_router(mcp)
     app.include_router(router)
+
+    # 地址里的 %00 解出来是 NUL 字符：Postgres 的文字和文件路径都不收，查下去只会 500（/search?q=%00、/media/%00）。
+    # 正常链接不会带它，当成没有这一页。写在 privacy_headers 前面，这样回的 404 也带那几个响应头。
+    @app.middleware("http")
+    async def reject_nul(request: Request, call_next):
+        if "\x00" in request.url.path or b"%00" in request.scope.get("query_string", b""):
+            return await server_error(request, StarletteHTTPException(status_code=404))
+        return await call_next(request)
 
     @app.middleware("http")
     async def privacy_headers(request: Request, call_next):
@@ -125,6 +134,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
             status_code=500,
         )
+
+    # 带类型的参数只有路径里的编号。编号不是数字（/articles/abc、/api/v1/answers/abc）就是没有这一页，
+    # 和 /api/v1/articles/abc 一样回 404；FastAPI 默认回 422 和一串英文 JSON。
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc: RequestValidationError):
+        return await server_error(request, StarletteHTTPException(status_code=404))
 
     return app
 

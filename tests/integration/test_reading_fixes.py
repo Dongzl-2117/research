@@ -1,5 +1,6 @@
 """相对 .md 链接、飞书目录树、知识星球真实钟点，以及不限持仓的最近观点。"""
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -392,16 +393,117 @@ def test_retime_matches_dated_external_id_to_topics_json(conn, settings, tmp_pat
     assert conn.execute("SELECT id FROM articles WHERE external_id = 'INDEX'").fetchone() is None
 
 
+def test_retime_without_archive_reads_stored_header(conn, settings):
+    """乘风破浪没有 raw JSON，归档头写「(UTC+8)」，以前读不出来，卡片时间是「—」。不给归档也能从库里改。"""
+    midnight = datetime(2026, 9, 27, 0, 0, tzinfo=SHANGHAI)
+    header = "# Temu：值得重视的关税利好\n\n- 作者：王小明\n- 时间：2026-09-27 14:41 (UTC+8)\n\n"
+    _store(
+        conn,
+        settings,
+        "chengfengpolang",
+        [
+            ParsedDoc(
+                external_id="2026-09-27_14588211154841122",
+                title="Temu：值得重视的关税利好",
+                published_at=midnight,
+                body_md=header + "腾讯的关税影响有限。\n",
+                raw_meta={
+                    "filename": "2026-09-27_14588211154841122.md",
+                    "date_source": "filename",
+                    "time_known": False,
+                },
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="拼多多随想",
+                title="外部 id 里没有话题号",
+                published_at=midnight,
+                body_md="- 时间：2026-09-27 09:05 (UTC+8)\n\n腾讯第二篇。\n",
+                raw_meta={"date_source": "filename", "time_known": False},
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="14588211154841122",
+                title="同一话题，库里已有秒级钟点",
+                published_at=datetime(2026, 9, 27, 14, 41, 22, tzinfo=SHANGHAI),
+                body_md="- 时间：2026-09-27 14:41 (UTC+8)\n\n同一话题的另一行。\n",
+                raw_meta={"create_time": "2026-09-27T14:41:22.487+0800", "date_source": "meta", "time_known": True},
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="2026-09-27_222",
+                title="正文没有钟点",
+                published_at=midnight,
+                body_md="- 时间：2026-09-27\n\n不该被编出时间。\n",
+                raw_meta={"filename": "2026-09-27_222.md", "date_source": "filename", "time_known": False},
+                image_refs=[],
+            ),
+        ],
+    )
+    first = conn.execute(
+        "SELECT id, content_hash FROM articles WHERE external_id = '2026-09-27_14588211154841122'"
+    ).fetchone()
+    tencent = conn.execute("SELECT id FROM companies WHERE name_zh = '腾讯'").fetchone()["id"]
+    conn.execute(
+        """
+        INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance)
+        VALUES (%s, %s, %s, %s, '关税影响有限', 'positive')
+        """,
+        (first["id"], tencent, first["content_hash"], PROMPT_VERSION),
+    )
+    conn.commit()
+    from researchlib.retime import docs_from_library
+
+    stats = refresh_clocks(
+        conn,
+        _source(settings, "chengfengpolang"),
+        docs_from_library(conn, "chengfengpolang"),
+        settings,
+        same_row=True,
+    )
+    assert stats["updated"] == 2
+    assert stats["skipped_no_clock"] == 1
+    assert stats["views"] == 1
+    fixed = conn.execute(
+        "SELECT published_at, content_hash, raw_meta FROM articles WHERE id = %s", (first["id"],)
+    ).fetchone()
+    local = fixed["published_at"].astimezone(SHANGHAI)
+    assert (local.day, local.hour, local.minute) == (27, 14, 41)
+    assert fixed["raw_meta"]["time_known"] is True
+    assert fixed["raw_meta"]["date_source"] == "body"
+    view_hash = conn.execute(
+        "SELECT content_hash FROM company_views WHERE article_id = %s", (first["id"],)
+    ).fetchone()["content_hash"]
+    assert view_hash == fixed["content_hash"]
+    loose = conn.execute("SELECT published_at FROM articles WHERE external_id = '拼多多随想'").fetchone()
+    assert loose["published_at"].astimezone(SHANGHAI).hour == 9
+    bare = conn.execute(
+        "SELECT published_at, raw_meta FROM articles WHERE external_id = '2026-09-27_222'"
+    ).fetchone()
+    assert bare["published_at"].astimezone(SHANGHAI).hour == 0
+    assert bare["raw_meta"]["time_known"] is False
+    # 同话题的另一行本来就有秒级钟点：只改外部 id 相同的那一行，不把它截成整分。
+    sibling = conn.execute(
+        "SELECT published_at FROM articles WHERE external_id = '14588211154841122'"
+    ).fetchone()
+    assert sibling["published_at"].astimezone(SHANGHAI).second == 22
+    # 改过的已经有真实钟点，再跑一遍不再看它们。
+    again = docs_from_library(conn, "chengfengpolang")
+    assert [doc.external_id for doc in again] == ["2026-09-27_222"]
+
+
 def test_home_recent_views_include_non_holdings(conn, settings):
     when_old = datetime(2024, 5, 1, 9, 0, tzinfo=SHANGHAI)
     when_new = datetime(2024, 6, 1, 9, 0, tzinfo=SHANGHAI)
+    # 摘要要挂出来，正文得够写摘要（几个字的帖不写摘要）。
+    meituan_body = "美团还在。商家广告越来越贵，佣金率还在往上走，外卖份额守住了。\n"
     _store(
         conn,
         settings,
         "fangwei-mp",
         [
             ParsedDoc("hold", "腾讯旧观点", when_old, "腾讯还在。\n", {}, []),
-            ParsedDoc("other", "美团新观点", when_new, "美团还在。\n", {}, []),
+            ParsedDoc("other", "美团新观点", when_new, meituan_body, {}, []),
         ],
     )
     rows = {
@@ -528,3 +630,36 @@ def test_feishu_callout_marker_stays_out_of_cards_and_pages(conn, settings):
     assert "旧的石油企业的运行九成是政治" in company
     assert "NOTE]" not in company and "[!NOTE]" not in article
     assert "<blockquote" in article and "旧的石油企业的运行九成是政治" in article
+
+
+def test_reimport_turns_literal_backslash_n_into_paragraphs(conn, settings, tmp_path: Path):
+    """方伟公众号的抓取脚本把换行写成字面上的反斜杠 n：已入库的那篇下次导入时换成真的分段，页面不再露出「\\n」。"""
+    from dataclasses import replace
+
+    from researchlib.ingest.parse import parse_archive
+
+    line = "指数兜兜转转两年，又回到了 3600 多点。\\n\\n熊市里股价跌八成也不等于便宜。\\n\\n能做的就是耐心等。"
+    archive = tmp_path / "fangwei-mp" / "md" / "2026"
+    archive.mkdir(parents=True)
+    (archive / "2026-10-23-0123456789abcdef0123456789abcdef.md").write_text(
+        "# 如何缓解熊市中的精神内耗？\n\n- 作者：方伟看十年\n- 时间：2026-10-23 09:22:39 (UTC+8)\n\n" + line + "\n",
+        encoding="utf-8",
+    )
+    docs, errors, _files, _images = parse_archive(tmp_path / "fangwei-mp", tmp_path / "work", id_mode="path")
+    assert errors == [] and len(docs) == 1
+    fixed = docs[0]
+    # 以前导入的那一版正文里还是字面上的反斜杠 n。
+    _store(conn, settings, "fangwei-mp", [replace(fixed, body_md=fixed.body_md.replace("\n\n熊市", "\\n\\n熊市"))])
+    before = conn.execute(
+        "SELECT id, content_hash FROM articles WHERE external_id = %s", (fixed.external_id,)
+    ).fetchone()
+    _store(conn, settings, "fangwei-mp", [fixed])
+    after = conn.execute(
+        "SELECT body_md, body_text, content_hash FROM articles WHERE id = %s", (before["id"],)
+    ).fetchone()
+    assert after["content_hash"] != before["content_hash"]
+    assert "\\n" not in after["body_md"] and "\\n" not in after["body_text"]
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{before['id']}").text
+    assert "\\n" not in page
+    assert re.search(r'<p id="p-\d+">熊市里股价跌八成也不等于便宜。</p><p id="p-\d+">能做的就是耐心等。</p>', page)

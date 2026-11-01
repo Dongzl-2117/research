@@ -1,4 +1,4 @@
-from researchlib.textutil import argumentative_excerpt
+from researchlib.textutil import argumentative_excerpt, opening_excerpt
 
 
 def test_excerpt_skips_sn_likes_and_timestamp():
@@ -121,3 +121,33 @@ def test_excerpt_strips_chinese_header_prefix_on_the_same_line():
 
 def test_excerpt_keeps_short_claim_without_a_period():
     assert argumentative_excerpt("核心判断：广告加载率在下降").startswith("核心判断：")
+
+
+def test_api_opening_skips_title_meta_and_repeated_heading():
+    """接口列表没有检索词时的摘录：正文开头一段，不重复标题、不带归档头。"""
+    body = (
+        "贵州茅台：第三季度净利润199.51亿元，同比增长3.78%\n"
+        "在这么差的Q3大环境还能增长就厉害了。直营占比还在提高。\n"
+    )
+    assert opening_excerpt(body, title="贵州茅台：第三季度净利润199.51亿元，同比增长3.78%") == (
+        "在这么差的Q3大环境还能增长就厉害了。直营占比还在提高。"
+    )
+    # 小标题紧接着一段以它开头的话，只留那段。
+    body = "拼多多送货上门：\n拼多多送货上门：最早是另一家平台推出的，后来拼多多大力推。\n"
+    assert opening_excerpt(body, title="我就是看不到送货上门的标签在哪里") == (
+        "拼多多送货上门：最早是另一家平台推出的，后来拼多多大力推。"
+    )
+    body = "sn: 8821\nlikes: 14\n2024-10-19 13:29\n这篇把广告加载率下降写成了核心判断。"
+    assert opening_excerpt(body) == "这篇把广告加载率下降写成了核心判断。"
+    # 读到评论区就停；整篇只有标题那句时给空串。
+    assert opening_excerpt("这是好文章\n\n## 评论里的回复\n\n同意。", title="这是好文章") == ""
+
+
+def test_api_opening_cuts_at_a_sentence_end():
+    body = "腾讯的广告加载率还在提升。" * 30
+    text = opening_excerpt(body, limit=100)
+    assert len(text) <= 100 and text.endswith("。…")
+    # 句末太靠前就硬截。
+    body = "前一句很短。" + "这一句很长没有句号" * 40
+    text = opening_excerpt(body, limit=100)
+    assert len(text) == 100 and text.endswith("…")

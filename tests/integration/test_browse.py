@@ -1,12 +1,15 @@
+import os
 from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from researchlib import ask as ask_module
 from researchlib.backfill import backfill_published_at
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
+from researchlib.seed import load_sample
 from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI
 from researchlib.web.app import create_app
@@ -115,6 +118,44 @@ def test_search_ranks_title_above_body_and_matches_author(conn, settings):
         assert "换个词" not in missing.text
 
 
+def test_search_says_how_many_matches_paging_reaches(conn, settings, monkeypatch):
+    from researchlib import retrieval
+
+    source = _source(settings, "fangwei-mp")
+    bodies = [
+        "第一篇讲独有词条甲乙丙的来历，从一九九八年说起。",
+        "第二篇换个角度：独有词条甲乙丙在海外市场怎么卖。",
+        "第三篇是读者问答，只顺带提到独有词条甲乙丙。",
+    ]
+    store_documents(
+        conn,
+        source=source,
+        docs=[
+            _doc(f"pool-{n}", f"第{n + 1}篇", datetime(2024, 1, n + 1, tzinfo=SHANGHAI), body)
+            for n, body in enumerate(bodies)
+        ],
+        data_dir=settings.data_dir,
+        archive_files=3,
+        images_in_archive=0,
+        errors=[],
+    )
+    original = retrieval._candidates
+
+    def one_passage(conn, query, scope, limit=0, *, enough=None):
+        # 线上候选段落最多 2000 个，常见词全部命中的文章比这多；这里压到 1 个来模拟。
+        return original(conn, query, scope, 1, enough=1)
+
+    monkeypatch.setattr(retrieval, "_candidates", one_passage)
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "独有词条甲乙丙"})
+        assert "3 篇全部命中，按相关度能翻到前 1 篇" in page.text
+        api = client.get("/api/v1/search", params={"q": "独有词条甲乙丙"}).json()
+        assert api["total"] == 3 and api["listed"] == 1 and api["next_offset"] is None
+    monkeypatch.undo()
+    with TestClient(create_app(settings)) as client:
+        assert "按相关度能翻到" not in client.get("/search", params={"q": "独有词条甲乙丙"}).text
+
+
 def test_backfill_fills_null_dates_from_stored_text(conn, settings):
     source = _source(settings, "fangwei-mp")
     store_documents(
@@ -217,8 +258,65 @@ def test_day_page_shows_real_clock_and_summary(conn, settings):
         day = client.get("/days/2024-10-19")
         assert day.status_code == 200
         assert "日汇总" in day.text
-        assert "方伟：" in day.text
+        assert 'href="/ask?preset=day&amp;from=2024-10-19&amp;to=2024-10-19"' in day.text
         assert "方伟知识星球短帖" in day.text
         assert "13:29" in day.text
         assert "AI 整合" not in day.text
         assert client.get("/days/not-a-day").status_code == 404
+
+
+def test_bad_ids_and_bodies_get_404_and_400(conn, settings):
+    """编号不是数字的页面和接口回 404，和 /api/v1/articles/abc 一样，不回 FastAPI 的 422 英文 JSON；
+    问库接口和 MCP 收到不是对象的 JSON 回 400 和 -32602，不回 500。"""
+    with TestClient(create_app(settings)) as client:
+        for path in ("/articles/abc", "/companies/abc", "/ask/abc"):
+            page = client.get(path)
+            assert page.status_code == 404
+            assert "这里没有内容" in page.text
+        for path in ("/api/v1/articles/abc", "/api/v1/companies/abc", "/api/v1/answers/abc"):
+            reply = client.get(path)
+            assert reply.status_code == 404
+            assert reply.json() == {"error": {"status": 404, "message": "Not Found"}}
+        for body in ("[1, 2]", '"腾讯怎么样"', "null"):
+            reply = client.post("/api/v1/ask", content=body, headers={"content-type": "application/json"})
+            assert reply.status_code == 400
+            assert reply.json()["error"]["message"] == "请求体要是 JSON 对象"
+        call = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["search"]})
+        assert call.json()["error"]["code"] == -32602
+
+
+def test_nul_and_out_of_range_numbers_are_not_500(conn, settings, monkeypatch):
+    """地址里的 %00（解出来是 NUL 字符）和超出 bigint 的数字，以前查到 Postgres 或文件系统才报错，回 500。"""
+    os.environ["ALLOW_SAMPLE_SEED"] = "1"
+    load_sample(conn, settings)
+    monkeypatch.setattr(ask_module, "chat", lambda _s, messages, **_k: ("宁德时代在扩产能[1]。", "test-model"))
+    monkeypatch.setattr(ask_module, "llm_configured", lambda _settings: True)
+    huge = "9" * 30
+    with TestClient(create_app(settings)) as client:
+        for path in ("/search?q=%00", '/search?q="宁德%00时代"', "/media/%00", "/media/a%00.png"):
+            page = client.get(path)
+            assert page.status_code == 404, path
+            assert "这里没有内容" in page.text and page.headers["X-Frame-Options"] == "DENY"
+        reply = client.get("/api/v1/search", params={"q": "宁德\x00时代"})
+        assert reply.status_code == 404 and reply.json()["error"]["status"] == 404
+        # 超出 bigint 的 offset 和不是数字的一样当没给；bigint 之内的照常翻页，翻过头是空的。
+        first = client.get("/api/v1/articles").json()["items"]
+        assert client.get(f"/api/v1/articles?offset={huge}").json()["items"] == first
+        assert client.get(f"/api/v1/articles?offset={2**63 - 1}").json()["items"] == []
+        mcp = client.post(
+            "/api/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "search_library", "arguments": {"q": "宁德\x00时代", "offset": 10**30}},
+            },
+        )
+        assert mcp.status_code == 200 and mcp.json()["result"].get("isError") is not True
+        # 请求体里的 NUL（问库的 JSON、表单）走不到地址那一关：检索和存问题时换成空格。
+        asked = client.post("/api/v1/ask", json={"question": "宁德时代\x00的库存和产能", "wait": True})
+        assert asked.status_code == 200 and asked.json()["id"]
+        posted = client.post("/ask", data={"q": "宁德时代\x00的产能"}, follow_redirects=False)
+        assert posted.status_code == 303
+    stored = conn.execute("SELECT question FROM llm_answers ORDER BY id").fetchall()
+    assert [row["question"] for row in stored] == ["宁德时代 的库存和产能", "宁德时代 的产能"]

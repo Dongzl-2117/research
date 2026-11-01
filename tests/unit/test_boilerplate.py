@@ -45,6 +45,23 @@ def test_meta_header_is_removed():
     assert "正文第一句" in out and out.startswith("# 标题")
 
 
+def test_rss_link_meta_line_is_removed():
+    """Stratechery 归档头的 `- rss_link:` 和 `- source:` 一样，正文开始前整行去掉。"""
+    body = (
+        "# 标题\n\n"
+        "- source: member-rss\n"
+        "- rss_link: https://stratechery.com/?access_token=example\n"
+        "\n"
+        "正文第一句，讲渠道优势。\n"
+    )
+    stripped = strip_meta(body)
+    assert "rss_link" not in stripped and "access_token" not in stripped and "member-rss" not in stripped
+    assert "正文第一句" in stripped and stripped.startswith("# 标题")
+    cleaned = clean_body(body)
+    assert "rss_link" not in cleaned and "access_token" not in cleaned and "member-rss" not in cleaned
+    assert "正文第一句" in cleaned
+
+
 BARE_HEADER = """# 渠道怎么看
 
 作者：方伟
@@ -66,6 +83,57 @@ def test_zsxq_header_removed_and_comments_kept():
     out = clean_body(ZSXQ)
     assert "点赞" not in out and "topic_id" not in out
     assert "## 评论（1）" in out and "风投逻辑" in out
+
+
+LONGFORM = """# 后发制人是优秀组织的试金石
+
+- 作者：王小明
+- 时间：2025-02-23 10:24 (UTC+8)
+- 类型：talk
+- topic_id：`1525` · 原链接：https://wx.zsxq.com/topic/1525
+- 原始数据：[raw/topics/1525.json](../../raw/topics/1525.json)
+
+> 以下为话题摘要，全文见下方「长文」。
+
+**后发制人是优秀组织的试金石**
+
+上个周末，腾讯旗下的微信搜索接入了新模型，这是一个影响深远的事情...
+
+## 长文：后发制人是优秀组织的试金石
+
+原文链接：https://articles.zsxq.com/id_abc.html · 原始 HTML：[raw/articles/abc.html](../../raw/articles/abc.html)
+
+上个周末，腾讯旗下的微信搜索接入了新模型，这是一个影响深远的事情，意味着腾讯找到了切入方式。
+
+第二段讲组织能力。
+
+## 评论（1）
+
+- **李四**（2025-02-23 11:00）
+  写得好
+"""
+
+
+def test_zsxq_longform_scaffold_is_dropped():
+    out = clean_body(LONGFORM)
+    assert "以下为话题摘要" not in out and "原始 HTML" not in out and "raw/articles" not in out
+    assert "长文：" not in out and "**后发制人" not in out
+    # 摘要和长文开头是同一句，只留长文里那一遍。
+    assert out.count("上个周末") == 1 and "意味着腾讯找到了切入方式" in out and "第二段讲组织能力" in out
+    assert "## 评论（1）" in out and "写得好" in out
+
+
+def test_zsxq_longform_heading_kept_when_titles_differ():
+    body = LONGFORM.replace("**后发制人是优秀组织的试金石**", "**周末随手记**")
+    out = clean_body(body)
+    assert "## 长文：后发制人是优秀组织的试金石" in out
+    assert "以下为话题摘要" not in out and "周末随手记" not in out and "raw/articles" not in out
+
+
+def test_zsxq_longform_source_line_dropped_without_summary_note():
+    source = "原文链接：https://articles.zsxq.com/id_abc.html · 原始 HTML：[raw/articles/abc.html](x)"
+    out = clean_body(f"# t\n\n## 长文：标题\n\n{source}\n\n正文。\n")
+    assert "## 长文：标题" in out and "正文。" in out and "raw/articles" not in out
 
 
 def test_meta_like_line_inside_body_is_kept():
