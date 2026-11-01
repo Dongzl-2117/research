@@ -44,7 +44,7 @@ def test_rechunk_relocates_quote_and_clears_removed_reference(conn, settings, mo
             (article_id, company, article["content_hash"], quote, ordinal),
         )
     conn.commit()
-    monkeypatch.setattr("researchlib.chunks._article_ocr_chunks", lambda *_args: old[1:])
+    monkeypatch.setattr("researchlib.chunks._article_ocr_chunks", lambda *_args, **_kwargs: old[1:])
     assert replace_ocr_chunks(conn, article_id) == 2
     references = {row["company_id"]: row["chunk_ord"] for row in conn.execute(
         "SELECT company_id, chunk_ord FROM company_views WHERE article_id = %s", (article_id,),

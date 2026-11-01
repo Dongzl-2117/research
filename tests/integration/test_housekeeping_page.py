@@ -1,5 +1,6 @@
 """Stratechery 每日更新开头结尾的套话：检索不命中，单看原文的页面和 .md 接口不显示，对照照旧。"""
 
+import dataclasses
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -71,13 +72,15 @@ WEB = (
 
 def _store(conn, settings, docs=None) -> dict[str, int]:
     sources = {source.id: source for source in load_sources(settings.sources_path)}
+    # 这几篇是编的短样本，不测 stratechery 的 min_chars 门槛（短帖标 hidden 的那套在 test_length_floor 里测）。
+    strat = dataclasses.replace(sources["stratechery"], min_chars=0)
     docs = docs or (
         ("2026/widget-earnings", "Widget Earnings", UPDATE, 2),
         ("2026/gadget-subscriptions", "Gadget Subscriptions", ARTICLE, 3),
     )
     store_documents(
         conn,
-        source=sources["stratechery"],
+        source=strat,
         docs=[
             ParsedDoc(
                 external_id=external_id,

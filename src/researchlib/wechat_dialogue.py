@@ -34,6 +34,10 @@
 仍整段是方伟。留言区是另一类版式，不靠这条分界。
 电商商品图、带坐标轴的图表、数据表、Reddit 等外网评论截图不套对话，阅读页只留原图链接。
 已经整理过的「方伟：」「网友：」再跑一遍还是同一份，方便写回 articles.ocr_text。
+
+「方伟：」是库里、识图结果和检索块的固定写法，意思是截图里发帖人自己的绿气泡。方伟的来源就是方伟；
+别的来源（乘风破浪、孤独进化体……）给读者看、交给模型时用 relabel_host 换成那个来源的作者名，
+库里不改。换过名字的文字不要再交给 parse_shot：先用 canonical_host 换回来。
 """
 
 from __future__ import annotations
@@ -220,6 +224,8 @@ _NICK_LABEL = re.compile(
 )
 # 昵称后面粘着雪球/星球的身份徽章：「春风十里我自在作者」。
 _AUTHOR_SUFFIX = re.compile(r"\s*[（(]?作者[）)]?$")
+# 整理好的文字里行首的「方伟：」。relabel_host 换名字用。
+_HOST_LABEL = re.compile(r"(?m)^(\s*)方伟\s*[:：]")
 # 群名不一定带「群」字，例如「1633 示例·线下深度交流(80)」。
 _GROUP_TITLE = re.compile(
     r"^(?:\d{1,6}\s+)?[^\n（(]{0,24}群\s*[（(]\d{2,4}[）)]$"
@@ -276,10 +282,13 @@ _STATUS_BAR = re.compile(
 )
 _APP_TITLE = re.compile(r"(?:知识星球|微信|WeChat)[。.]?", re.I)
 _SYMBOL = re.compile(r"^[\s<>+=…\.。,，、·]+$")
+# 聊天界面才有的字。出现在哪一行都算。
 _WECHAT = re.compile(
-    r"微信|WeChat|设为群待办|设为待办|群待办|小+程序|按住\s*说话|"
-    r"可按住\s*转文字|按住\s*转文字|回到引用位置|以下是新消息|美团外卖"
+    r"设为群待办|设为待办|群待办|按住\s*说话|可按住\s*转文字|按住\s*转文字|回到引用位置|以下是新消息"
 )
+# 这些字在新闻、微博正文里也常见（「微信支付」「美团外卖的补贴」），只有自己占一行时才是聊天界面：
+# 状态栏的「微信」、小程序卡片角上的「小程序」「美团外卖」。
+_WECHAT_LINE = re.compile(r"^(?:微信|WeChat)(?:\s*[（(]\d{1,4}[)）])?$|^小+程序$|^美团外卖$", re.I)
 # 公众号文章预览页的「账号名 +关注」：账号名和按钮 OCR 粘在一行，旧规则只认整行「+关注」。
 # 「观察 56个朋友关注 82 455 38 33。」是「N个朋友关注」粘着阅读量、点赞数。
 # 「交易规则 71个朋友关注 53 47 23 写留言」再把留言按钮粘在末尾。
@@ -544,14 +553,37 @@ def present_stored_ocr(stored: str) -> str:
     return polish_display_text(collapse_short_spam(present_ocr_pieces(pieces or [text])))
 
 
-def speaker_note(text: str) -> str:
-    """摘要和观点的提示里补一句说话人，没有对话标记时不加。"""
+def speaker_note(text: str, host: str = HOST) -> str:
+    """摘要和观点的提示里补一句说话人，没有对话标记时不加。host 是这篇的作者（文字已经 relabel_host 过）。"""
     if not any(split_speaker(line, names=True) for line in (text or "").splitlines()):
         return ""
+    name = (host or "").strip() or HOST
+    if name == HOST:
+        return (
+            "截图里的对话已整理成「说话人：正文」：绿气泡是星主方伟，其余说话人写的是截图上的网名。"
+            "方伟是星主，别人的话不要写成方伟的判断。"
+        )
     return (
-        "截图里的对话已整理成「说话人：正文」：绿气泡是星主方伟，其余说话人写的是截图上的网名。"
-        "方伟是星主，别人的话不要写成方伟的判断。"
+        f"截图里的对话已整理成「说话人：正文」：绿气泡是这篇的作者{name}，其余说话人写的是截图上的网名。"
+        f"{name}是发这篇的作者，别人的话不要写成{name}的判断。"
     )
+
+
+def relabel_host(text: str, host: str = HOST) -> str:
+    """别的来源的截图：行首的「方伟：」换成这个来源的作者名。方伟的来源原样返回。"""
+    name = (host or "").strip()
+    if not text or not name or name == HOST or name == GUEST:
+        return text or ""
+    return _HOST_LABEL.sub(lambda match: f"{match.group(1)}{name}：", text)
+
+
+def canonical_host(text: str, host: str = HOST) -> str:
+    """relabel_host 的反方向：换回「方伟：」，好再交给 parse_shot 整理。"""
+    name = (host or "").strip()
+    if not text or not name or name == HOST or name == GUEST:
+        return text or ""
+    pattern = re.compile(r"(?m)^(\s*)" + re.escape(name) + r"\s*[:：]")
+    return pattern.sub(lambda match: f"{match.group(1)}{HOST}：", text)
 
 
 def _plain(line: str) -> str:
@@ -1177,6 +1209,10 @@ def parse_shot(text: str) -> Shot:
             if _HOST_PREFIX.match(line) or (split_speaker(line) or ("", ""))[0] == HOST:
                 hosted = True
                 break
+    if names and not (signal or labeled or hosted) and not _names_carry_a_chat(names, visible):
+        # 没有聊天界面、没有方伟、没有标好的说话人，只靠一个三字行像昵称：新闻截图开头的
+        # 「财联社」「格隆汇」也是这样。不当群聊，免得把整段新闻写成谁说的话。
+        names = set()
     if not lines or not (signal or names or labeled or hosted):
         return _prose_after_footer(original, raw_lines, stripped)
     # 群聊里没有坐标时，不写别人昵称的气泡是作者自己的绿色气泡。有侧标记时以标记为准。
@@ -1462,6 +1498,8 @@ def _wechat_signal(lines: list[str]) -> bool:
     if any(_GROUP_TITLE.match(line) for line in lines):
         return True
     if any(_account_line(line) for line in lines):
+        return True
+    if any(_WECHAT_LINE.match(_fold(line).strip()) for line in lines):
         return True
     return _WECHAT.search("\n".join(lines)) is not None
 
@@ -1775,6 +1813,13 @@ def _speaker_names(lines: list[str], signal: bool) -> set[str]:
     if signal and len(pairs) >= 2:
         names.update(pairs)
     return names
+
+
+def _names_carry_a_chat(names: set[str], visible: list[str]) -> bool:
+    """只靠昵称认群聊时，要有两个不同的人，或者同一个人开口不止一次。"""
+    if len(names) >= 2:
+        return True
+    return any(visible.count(name) >= 2 for name in names)
 
 
 def _guest_label(name: str) -> bool:
