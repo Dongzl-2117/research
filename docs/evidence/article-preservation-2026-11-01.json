@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-01T09:34:03+00:00",
+  "generatedAt": "2026-11-01T09:45:28+00:00",
   "baseline": "9b678ca62ce71c449b1edbdf6c1d6ab41b041f9d",
   "scope": "仅合成数据与本地独立测试实例；未读取生产资料、调用模型、合并或部署。",
   "checks": {
@@ -10,13 +10,13 @@
     "pipCheck": "passed"
   },
   "pytest": {
-    "tests": 907,
+    "tests": 910,
     "failures": 0,
     "errors": 0,
     "skipped": 0,
-    "seconds": 43.285,
+    "seconds": 48.658,
     "groups": {
-      "unit": 757,
+      "unit": 760,
       "integration": 150
     },
     "warnings": [
@@ -187,8 +187,8 @@
     "src/researchlib/render.py": "3fe6697cc1b1933a95f0ef7eeba4a796c1a893b51374f7f8be101933ab40d6a9",
     "src/researchlib/snippets.py": "234d66735c38afc729857768c7e27916c0a8a416b7caf78b37bf4c8859ba8d93",
     "src/researchlib/textutil.py": "295e272123c6be083bbe639236ad7d41b9d3294a9597b637a1f9047c503e1c05",
-    "src/researchlib/translate/display.py": "bd1806fb8c6ca4b0be516989d39a0512281693b3a28dcc22a5faf898a5f8d652",
-    "src/researchlib/translate/qa.py": "a14ee36ee60ef00c4136e8f1a2c6b1c007f450f06e857b17f091ff8e9145f3f4",
+    "src/researchlib/translate/display.py": "45fa32ad5c4cd5a49f1d482a94368a1273fe9e4089c073737347cc10a2bdda88",
+    "src/researchlib/translate/qa.py": "693dffe0a89ca5a943bae4465904ff3dd90e35148a1eda8ef61ce9db69d0bf54",
     "src/researchlib/views.py": "febabdca69b8db2d214a45b3f66961003b86f448e709004665865f14e75c14fd",
     "src/researchlib/web/api.py": "0bf281d7f3b1585f23a2b1f8e0e8c6285129fcba92663505e1d5b34f47a421c6",
     "src/researchlib/web/mcp.py": "bb91721e8feed26bc9fbed55c9522304c8f50227e60ac755c4bfbfaf315dd995",
@@ -200,11 +200,30 @@
     "tests/integration/test_feed_address_api.py": "903d8a9088fb964feba0e9dc3c0f54125dac298bdfd6dea99ac25ab2d430a148",
     "tests/integration/test_nested_copies_page.py": "5dc6e2148c78e8e05c6e08d730970aabfe57096ecea4eaddadba97cdea2f841c",
     "tests/integration/test_ocr_quote_references.py": "f8fc3c69ba68d3de249dd5442ba3762b8ac73b6ad0ec3a4ff71e66894eed6694",
-    "tests/unit/test_article_preservation.py": "331b347e0fb7932eb38aaa3ab5043be70639dcce9fc9126748026c4a0ea81c88",
+    "tests/unit/test_article_preservation.py": "e4dd15a4457d9dfc87dbc15253fafad9d79859849da0667ef446bdbf96ccc453",
     "tests/unit/test_output_safety.py": "e019512d516105f77ec5b42bbd23580bba9b6169faf280552936b4632f8f786c",
     "tests/unit/test_present_text.py": "ec4506f3764289a329b4dfbe946c5b3687ca80052caf560d37f0104425b372fb",
     "tests/unit/test_render_and_snippets.py": "a306fb473add0263b71abde01426c92431a7cb60183ddabb158a19c4d2a93f00",
     "tools/article_layout_fixture.py": "13359ccbc82245ea8722318940322506dc67521157e3ae214f7505c25f235149",
     "tools/article_layout_smoke.cjs": "01cbfdc25e3746e8c1873ae2966025b15b76043fc506b12a6844639add01b8e1"
+  },
+  "reviewRegression": {
+    "priorHead": "db0f1403d97d8c61bcc19119d1dad2ee5a38b648",
+    "tests": 3,
+    "failuresExpected": 3,
+    "results": [
+      {
+        "name": "test_repeated_paragraphs_retain_distinct_translated_resources[link]",
+        "result": "failed"
+      },
+      {
+        "name": "test_repeated_paragraphs_retain_distinct_translated_resources[image]",
+        "result": "failed"
+      },
+      {
+        "name": "test_final_projection_guard_rejects_loss_from_a_later_block_transform",
+        "result": "failed"
+      }
+    ]
   }
 }

@@ -32,7 +32,7 @@ from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.present_text import polish_display_text
 from researchlib.render import inline_image_ocr, sanitize_html
 from researchlib.sources import load_sources
-from researchlib.translate.display import article_pairs, content_gaps, protected_content_gaps
+from researchlib.translate.display import article_pairs, projection_gaps, protected_content_gaps
 from researchlib.translate.llm import extract_json
 from researchlib.translate.pair import (
     BilingualPair,
@@ -222,8 +222,7 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
     if missing:
         issues.append(CheckIssue("protected-content-loss", "fail", missing, "译文缺少原文未译的数字、图片或代码"))
     displayed = article_pairs(en_html, zh_html)
-    source_loss = content_gaps(en_html, "".join(pair.en for pair in displayed.pairs))
-    translation_loss = content_gaps(zh_html, "".join(pair.zh or pair.en for pair in displayed.pairs))
+    source_loss, translation_loss = projection_gaps(en_html, zh_html, displayed.pairs)
     if source_loss or translation_loss:
         issues.append(CheckIssue("display-content-loss", "fail", source_loss + translation_loss, "正文投影遗漏内容"))
     if giant:

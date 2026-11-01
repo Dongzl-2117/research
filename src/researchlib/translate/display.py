@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import re
-from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -67,6 +67,13 @@ class PairDisplay:
     notice: str = ""
 
 
+def projection_gaps(original: str, translated: str, pairs: Sequence[BilingualPair]) -> tuple[int, int]:
+    """检查最终展示：原文在原文侧完整，译文的共享图片允许只出现在原文侧。"""
+    en = "".join(pair.en for pair in pairs)
+    visible = "".join(pair.en + (pair.zh or "") for pair in pairs)
+    return content_gaps(original, en), content_gaps(translated, visible)
+
+
 def _shared_media_removed(en: str, zh: str) -> str:
     shared = _Facts(en).media
 
@@ -93,6 +100,13 @@ def _separate(original: str, translated: str, notice: str) -> PairDisplay:
     return PairDisplay([BilingualPair(en, None), BilingualPair("", zh or None)], notice)
 
 
+def _checked_display(original: str, translated: str, pairs: list[BilingualPair]) -> PairDisplay:
+    # 所有区块处理结束后再核对一次；不能假定中途的保留检查覆盖后续整理。
+    if any(projection_gaps(original, translated, pairs)):
+        return _separate(original, translated, "无法完整逐段展示，以下分别保留原文和译文。")
+    return PairDisplay(pairs)
+
+
 def article_pairs(original: str, translated: str) -> PairDisplay:
     """普通段沿用细分对照；无法无损投影的表格、列表等按完整原区块显示。"""
     leaves = display_blocks(original, translated)
@@ -103,9 +117,7 @@ def article_pairs(original: str, translated: str) -> PairDisplay:
             original, translated,
             "译文段落与原文对不上，以下分别展示完整原文和译文。",
         )
-    en_projection = "".join(pair.en for pair in raw)
-    zh_projection = "".join(pair.zh or pair.en for pair in raw)
-    if not content_gaps(original, en_projection) and not content_gaps(translated, zh_projection):
+    if not any(projection_gaps(original, translated, raw)):
         return PairDisplay(raw)
     left, right = top_level_blocks(original), top_level_blocks(translated)
     compatible = len(left) == len(right) and all(
@@ -116,27 +128,15 @@ def article_pairs(original: str, translated: str) -> PairDisplay:
     )
     if compatible:
         pairs: list[BilingualPair] = []
-        def key(pair):
-            facts = _Facts(pair.en)
-            return visible_text(pair.en), visible_text(pair.zh or ""), tuple(sorted(facts.links | facts.media))
-
-        remaining = Counter(key(pair) for pair in raw)
-        selected = set(remaining)
         for en, zh in zip(left, right, strict=True):
             projected = bilingual_pairs(en, zh) or []
-            # 完整列表已恢复时，不把紧跟着、已确定去重的同文同译段再贴一遍。
-            # 只收已选中过的完全相同普通段；新文字、不同链接和结构一律保留。
-            if (_ROOT.match(en) and _ROOT.match(en).group(1) == "p" and projected
-                    and all(key(pair) in selected and remaining[key(pair)] == 0 for pair in projected)):
-                continue
-            for pair in projected:
-                remaining[key(pair)] -= 1
-            if (content_gaps(en, "".join(p.en for p in projected))
-                    or content_gaps(zh, "".join(p.zh or p.en for p in projected))):
+            # 此处已经为保留内容退回原区块，不再按文字二次去重。
+            # 两份中文同文但资料链接或图片不同，必须全部留下。
+            if any(projection_gaps(en, zh, projected)):
                 pairs.append(_whole_pair(en, zh))
             else:
                 pairs.extend(projected)
-        return PairDisplay(pairs)
+        return _checked_display(original, translated, pairs)
     return _separate(
         original, translated,
         "这篇的结构无法逐段对应，以下分别展示完整原文和译文。",

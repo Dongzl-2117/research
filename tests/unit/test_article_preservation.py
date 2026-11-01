@@ -2,9 +2,12 @@
 
 from html.parser import HTMLParser
 
+import pytest
+
 from researchlib.render import render_body
+from researchlib.translate import display
 from researchlib.translate.display import article_pairs, content_gaps
-from researchlib.translate.pair import stamp_paragraph_ids
+from researchlib.translate.pair import BilingualPair, stamp_paragraph_ids
 from researchlib.translate.qa import report_from_html
 from researchlib.translate.segments import splice_segments
 
@@ -60,6 +63,42 @@ def test_identical_text_does_not_hide_a_different_translated_source_link():
     translated = '<p>Read <a href="https://example.org/translated">this report</a>.</p>'
     view = article_pairs(source, translated)
     assert 'href="https://example.org/translated"' in _project(view.pairs, "zh")
+
+
+@pytest.mark.parametrize("kind", ["link", "image"])
+def test_repeated_paragraphs_retain_distinct_translated_resources(kind):
+    paragraph = "The same long synthetic paragraph explains how distribution and operating costs affect this market."
+    source = f"<p>{paragraph}</p>" * 2
+    resources = [f'<a href="/{name}">报告</a>' if kind == "link" else f'<img src="/media/{name}.png">'
+                 for name in ("a", "b")]
+    translated = "".join(f"<p>这两段译文可见文字完全相同。{resource}</p>" for resource in resources)
+    view = article_pairs(source, translated)
+    actual = "".join(pair.en + (pair.zh or "") for pair in view.pairs)
+    assert len(view.pairs) == 2
+    assert content_gaps(source, _project(view.pairs, "en")) == 0
+    assert content_gaps(translated, actual) == 0
+    for name in ("a", "b"):
+        assert (f'href="/{name}"' if kind == "link" else f'src="/media/{name}.png"') in actual
+
+
+def test_final_projection_guard_rejects_loss_from_a_later_block_transform(monkeypatch):
+    source = "<p>Read this report.</p><pre>return 42</pre>"
+    translated = '<p>阅读<a href="/translated-report">这份报告</a>。</p><pre>return 42</pre>'
+    real_whole_pair = display._whole_pair
+
+    def lose_translated_link(en, zh):
+        pair = real_whole_pair(en, zh)
+        return BilingualPair(pair.en, (pair.zh or "").replace('href="/translated-report"', ""), pair.anchor)
+
+    # 模拟后续完整区块整理错误地删了 href；最终检查必须拒绝这个投影。
+    monkeypatch.setattr(display, "_whole_pair", lose_translated_link)
+    monkeypatch.setattr(display, "bilingual_pairs", lambda *_args: [])
+    view = article_pairs(source, translated)
+    actual = "".join(pair.en + (pair.zh or "") for pair in view.pairs)
+    assert view.notice
+    assert content_gaps(source, _project(view.pairs, "en")) == 0
+    assert content_gaps(translated, actual) == 0
+    assert all(not (pair.en and pair.zh) for pair in view.pairs)
 
 
 def test_structural_qa_catches_loss_even_when_translatable_leaf_counts_match():
