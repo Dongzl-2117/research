@@ -8,7 +8,7 @@
 
 | 脚本 | 做什么 |
 | --- | --- |
-| `scripts/backup.sh` | `pg_dump` 导出一份（custom 格式），用 `pg_restore --list` 读一遍确认完整，再增量同步图片。导出保留 30 天（`KEEP_DAYS`）。导出前记下篇数，存在 `research-时间.dump.articles` 里 |
+| `scripts/backup.sh` | `pg_dump` 导出一份（custom 格式），用 `pg_restore --list` 读一遍确认完整，再增量同步图片。导出保留 30 天（`KEEP_DAYS`）。导出前记下篇数，存在 `research-时间.dump.articles` 里。自动上线遇到带新迁移的提交，上线前也跑一次（见 [deploy.md](deploy.md)「更新」） |
 | `scripts/restore-check.sh` | 把最新一份导出恢复到临时库 `research_restore_check`，核对篇数不少于导出时，然后删掉临时库。不碰正式库 |
 | `scripts/crawl-fangwei-mp.sh` | 方伟公众号增量抓取（极致了接口，`DAJIALA_KEY` 取环境变量或仓库根 `.env`），导入（`--origin crawl`），再给新文章补摘要 |
 | `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（`data/inbox/fangwei-zsxq/dl.py`，令牌在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），再补摘要 |
