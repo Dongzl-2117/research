@@ -42,7 +42,7 @@ from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_co
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
-from researchlib.wechat_dialogue import speaker_note
+from researchlib.wechat_dialogue import relabel_host, speaker_note
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import repairs_source, shorten_long_title, title_needs_repair, zsxq_display_title
 
@@ -482,10 +482,12 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    # 截图里的绿气泡是这篇的作者：别的来源不写成方伟。哈希仍按库里的文字算。
+    ocr_text = relabel_host(ocr_text, author)
     body = append_ocr(row["body_text"] or "", ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
-        note = speaker_note(ocr_text)
+        note = speaker_note(ocr_text, author)
         header += (
             "\n（「图片里的字」是截图里识别出来的，和正文一样算原文。"
             "判断写在图里时也要抽，不要因为来自截图就当成没下判断。"

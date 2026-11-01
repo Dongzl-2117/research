@@ -16,7 +16,7 @@ from researchlib.ocr import useful_image_text
 from researchlib.ocr_tables import Table, find_tables
 from researchlib.present_text import merge_wrapped_utterances, polish_display_text, present_article_text
 from researchlib.textutil import escape_times, strip_alert_markers
-from researchlib.wechat_dialogue import parse_shot, render_shots, speaker_prefix, split_speaker
+from researchlib.wechat_dialogue import HOST, parse_shot, render_shots, speaker_prefix, split_speaker
 from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -500,7 +500,8 @@ def flow_ocr_quote_body(text: str) -> str:
     return "\n\n".join(parts)
 
 
-def _dialogue_html(text: str, link: dict | None = None, *, bubbles: bool = False) -> str:
+def _dialogue_html(text: str, link: dict | None = None, *, bubbles: bool = False, host: str = HOST) -> str:
+    """host：截图里绿气泡显示成谁。方伟以外的来源显示那个来源的作者名。"""
     text = polish_display_text(text or "")
     parts: list[str] = []
     first = True
@@ -513,9 +514,10 @@ def _dialogue_html(text: str, link: dict | None = None, *, bubbles: bool = False
             label = (split_speaker(block, names=True) or ("", ""))[0]
             flowed = _flow_ocr_lines(block[len(prefix) :].lstrip("\n"), bubbles=bubbles)
             paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
+            shown = html_lib.escape((host or HOST) if label == HOST else label)
             for index, para in enumerate(paragraphs or [""]):
                 body = html_lib.escape(para)
-                inner = f'<span class="who">{html_lib.escape(label)}：</span>{body}' if index == 0 else body
+                inner = f'<span class="who">{shown}：</span>{body}' if index == 0 else body
                 if link:
                     inner = _cite(link, inner, with_id=first)
                     first = False
@@ -542,13 +544,13 @@ def _original_links(items: list[dict]) -> str:
     return f'<p class="ocr-links">{"".join(links)}</p>'
 
 
-def _chat_bundle(segments: list[tuple[dict, str]]) -> str:
+def _chat_bundle(segments: list[tuple[dict, str]], *, host: str = HOST) -> str:
     """每张图贡献的字链到那张图。整段重复、没有新字的图仍留一个「原图」链接。"""
     chunks: list[str] = []
     fallbacks: list[dict] = []
     for info, dialogue in segments:
         if dialogue.strip():
-            chunks.append(_dialogue_html(dialogue, link=info, bubbles=info["shot"].bubble_lines))
+            chunks.append(_dialogue_html(dialogue, link=info, bubbles=info["shot"].bubble_lines, host=host))
         else:
             fallbacks.append(info)
     extra = _original_links(fallbacks) if fallbacks else ""
@@ -631,13 +633,14 @@ def _hoist_figures_out_of_paragraphs(html: str) -> str:
     return cleaned
 
 
-def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
+def inline_image_ocr(html: str, texts: dict[str, str], *, host: str = HOST) -> str:
     """有可读识别结果的本地图：先显示整理后的字，这些字本身链到原图。
 
     连续几张微信截图合成一段，重复的句子只出现一次。每张图新写出来的那几句链到它自己的地址；
     整段都是重复、没有新字时，仍留一个「原图 N」，图片不会丢。商品图和图表没有可读正文，只留原图链接。
     半句折行会接上；模型空开的段保持原样，不收成一整段，也不按句再拆。没认出字的图保持原来的图片。
     texts 是 content_hash → image_texts.text。锚点 id 在这段字的链接上，检索里的「看这张图」仍跳到这里。
+    host 是这篇的作者：截图里的绿气泡显示成他（方伟以外的来源不写成方伟）。
     """
 
     def finish(value: str) -> str:
@@ -709,7 +712,7 @@ def inline_image_ocr(html: str, texts: dict[str, str]) -> str:
                 info = parsed[cursor]
                 outputs[cursor] = _ocr_figure(info["anchor"], info["src"], info["alt"], info["raw"])
         else:
-            outputs[group[0]] = _chat_bundle(segments)
+            outputs[group[0]] = _chat_bundle(segments, host=host)
             for cursor in group[1:]:
                 outputs[cursor] = ""
         index = nxt

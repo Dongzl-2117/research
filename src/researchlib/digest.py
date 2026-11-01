@@ -39,7 +39,7 @@ from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
-from researchlib.wechat_dialogue import speaker_note
+from researchlib.wechat_dialogue import relabel_host, speaker_note
 
 logger = logging.getLogger("researchlib.digest")
 
@@ -168,10 +168,12 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     header = f"标题：{row['title']}\n作者：{shown_author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    # 截图里的绿气泡是发这篇的人：别的来源、星球读者帖都不写成方伟。
+    ocr_text = relabel_host(ocr_text, shown_author)
     body = append_ocr(row["body_text"] or "", ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
-        note = speaker_note(ocr_text)
+        note = speaker_note(ocr_text, shown_author)
         header += (
             "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。"
             + (note if note else "")
