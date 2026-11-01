@@ -38,6 +38,7 @@ from researchlib.translate.segments import (
     translatable_blocks,
     unshield,
 )
+from researchlib.visibility import visible_sql
 
 logger = logging.getLogger("researchlib.translate")
 
@@ -486,10 +487,11 @@ HAN_OUTSIDE = "[^一-鿿]"
 
 
 def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:
-    """尚无译文、或原文 hash 已变的英文文章。同一篇的重复只译主版本。"""
+    """尚无译文、或原文 hash 已变的英文文章。同一篇的重复只译主版本；隐藏的（短帖、每周汇总）不译。"""
     params: list[object] = [HAN_OUTSIDE]
     where = [
         "a.duplicate_of IS NULL",
+        visible_sql("a"),
         "NOT EXISTS ("
         " SELECT 1 FROM article_translations t"
         " WHERE t.article_id = a.id AND t.content_hash = a.content_hash AND t.complete"
