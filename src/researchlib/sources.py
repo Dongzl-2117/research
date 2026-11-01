@@ -26,7 +26,7 @@ class Source:
     description: str = ""
     # True：首页按天和 /days。False：只进作者、公司、检索、问库（飞书文库）。
     timeline: bool = True
-    # >0：正文（不含评论、空白）不足这么多字的帖子入库时标 hidden=short_post。
+    # >0：正文（不含评论、空白）不足这么多字的帖子入库时标 hidden=short_post。改了以后启动时重标已入库的。
     min_chars: int = 0
     # 星主在平台上的其他显示名（星球昵称）。发帖人是 author 或这些名字的算原创，不当网友帖。
     poster_names: tuple[str, ...] = ()
