@@ -238,6 +238,7 @@ def prepare_body_html(
     *,
     owners: Sequence[str] = (),
 ) -> str:
+    """owners：评论区只留这些名字（来源作者），见 zsxq_comments.source_owners。"""
     _frontmatter, body = split_frontmatter(body_md or "")
     if fmt != "html":
         body = strip_duplicate_title(body, title)
