@@ -581,12 +581,19 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
 _CHANGE_SIGNALS = ("positive", "negative")
 
 
+def _verified_chunk(row: dict) -> int | None:
+    """旧块已经重切过也要在读取时守住引用；无原句证据时只打开文章。"""
+    wanted = plain_cite(row.get("quote") or "")
+    return row.get("chunk_ord") if wanted and wanted in plain_cite(row.get("chunk_body") or "") else None
+
+
 def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司全部下了判断的观点，按时间从旧到新标出态度变化，再按新到旧返回。"""
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.metrics,
-               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, a.title, a.published_at, a.source_id,
+               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, c.body AS chunk_body,
+               a.title, a.published_at, a.source_id,
                left(a.body_text, 2000) AS body_text
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
@@ -637,8 +644,8 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
                 "falsifiers": falsifiers,
                 "metrics": list(row["metrics"] or []),
                 "quote": row["quote"],
-                "chunk": row["chunk_ord"],
-                "anchor": row["chunk_anchor"] or "",
+                "chunk": _verified_chunk(row),
+                "anchor": (row["chunk_anchor"] or "") if _verified_chunk(row) is not None else "",
                 "risky": bool(risks or falsifiers or stance in ("negative", "mixed")),
             }
         )
@@ -680,12 +687,15 @@ def same_period(
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.company_id, c.name_zh, v.judgment, v.stance, v.chunk_ord,
+               v.quote, chunk.body AS chunk_body,
                a.title, a.published_at, a.source_id
         FROM articles me
         JOIN article_mentions m ON m.article_id = me.id AND m.depth <> 'passing' {company_sql}
         JOIN company_views v ON v.company_id = m.company_id AND {REAL_VIEW_SQL}
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
+        LEFT JOIN article_chunks chunk ON chunk.article_id = v.article_id AND chunk.ord = v.chunk_ord
+          AND chunk.lang IN ('', 'ocr')
         WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id
           AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%(sources)s)
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
@@ -714,7 +724,7 @@ def same_period(
                 "judgment": row["judgment"],
                 "stance": row["stance"] or "",
                 "stance_label": STANCE_LABELS.get(row["stance"] or "", "") if row["stance"] != "neutral" else "",
-                "chunk": row["chunk_ord"],
+                "chunk": _verified_chunk(row),
                 "title": row["title"],
             }
         )

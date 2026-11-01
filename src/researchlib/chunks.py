@@ -281,24 +281,47 @@ def _article_ocr_chunks(conn, article_id: int, host: str = "") -> list[tuple[str
 
 def replace_ocr_chunks(conn, article_id: int) -> int:
     """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
+    from researchlib.claims import plain_cite
+
+    # 块号会被复用。先记下观点的原图，再按原句匹配新块，不能让旧号悄悄指向邻图。
+    references = conn.execute(
+        "SELECT v.company_id, v.quote, c.anchor FROM company_views v"
+        " LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord"
+        " WHERE v.article_id = %s AND v.chunk_ord >= %s AND v.chunk_ord < %s",
+        (article_id, OCR_ORD_BASE, OCR_ORD_BASE + MAX_CHUNKS),
+    ).fetchall()
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'ocr'", (article_id,))
     article = conn.execute(
         "SELECT a.duplicate_of, s.author FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = %s",
         (article_id,),
     ).fetchone()
-    if article is None or article["duplicate_of"] is not None:
-        return 0
-    chunks = _article_ocr_chunks(conn, article_id, host=article["author"] or "")
-    if not chunks:
-        return 0
-    with conn.cursor() as cur:
-        cur.executemany(
-            "INSERT INTO article_chunks (article_id, ord, heading, body, lang, anchor)"
-            " VALUES (%s, %s, %s, %s, 'ocr', %s)",
-            [
-                (article_id, OCR_ORD_BASE + index, OCR_HEADING, text, anchor)
-                for index, (anchor, text) in enumerate(chunks)
-            ],
+    chunks = (
+        _article_ocr_chunks(conn, article_id, host=article["author"] or "")
+        if article is not None and article["duplicate_of"] is None
+        else []
+    )
+    if chunks:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO article_chunks (article_id, ord, heading, body, lang, anchor)"
+                " VALUES (%s, %s, %s, %s, 'ocr', %s)",
+                [
+                    (article_id, OCR_ORD_BASE + index, OCR_HEADING, text, anchor)
+                    for index, (anchor, text) in enumerate(chunks)
+                ],
+            )
+    for reference in references:
+        wanted = plain_cite(reference["quote"] or "")
+        matches = [
+            (index, anchor) for index, (anchor, text) in enumerate(chunks)
+            if wanted and wanted in plain_cite(text)
+        ]
+        # 同一句仍在原图时优先原图；重叠句去重到前图后，只链到确实含原句的那一块。
+        matches.sort(key=lambda item: item[1] != reference["anchor"])
+        ordinal = OCR_ORD_BASE + matches[0][0] if matches else None
+        conn.execute(
+            "UPDATE company_views SET chunk_ord = %s WHERE article_id = %s AND company_id = %s",
+            (ordinal, article_id, reference["company_id"]),
         )
     return len(chunks)
 

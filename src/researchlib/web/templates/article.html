@@ -54,6 +54,7 @@
     {% endif %}
 
     {% if body_language == 'pairs' and pairs %}
+    {% if pair_notice %}<p class="body-note">{{ pair_notice }}</p>{% endif %}
     <div class="bilingual">
       {% for p in pairs %}
       {% if p.en or p.zh %}
@@ -88,6 +89,7 @@
     {% endif %}
   </article>
 </div>
+<script src="/static/article.js" defer></script>
 {% if quoted_marked %}
 <script>
   // 带 ?chunk= 打开时滚到引用的那段。地址里已有锚点就听锚点的。

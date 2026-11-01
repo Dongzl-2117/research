@@ -79,6 +79,9 @@ def test_image_file_names_and_empty_links_are_not_text():
     # 说了图里是什么的替代文字、有字的链接照留。
     kept = markdown_to_text("![腾讯 2024 年收入结构](https://example.com/x.png) 见[年报](https://example.com/r.pdf)")
     assert kept == "腾讯 2024 年收入结构 见年报"
+    assert markdown_to_text("![腾讯收入结构.png](https://example.com/x.png)") == "腾讯收入结构.png"
+    assert markdown_to_text("![Revenue mix 2026.svg](https://example.com/x.svg)") == "Revenue mix 2026.svg"
+    assert markdown_to_text("![" + "a" * 64 + ".png](https://example.com/x.png)") == ""
 
 
 def test_times_sign_in_formulas_is_not_italics():

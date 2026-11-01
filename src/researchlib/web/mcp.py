@@ -199,6 +199,9 @@ def run_tool(request: Request, name: str, args: dict):
 
 
 def _result(payload) -> dict:
+    from researchlib.output_safety import redact_output
+
+    payload = redact_output(payload)
     text = json.dumps(payload, ensure_ascii=False, default=str)
     fenced = f"{PREAMBLE}\n\n［外部资料开始］\n{text}\n［外部资料结束］"
     return {"content": [{"type": "text", "text": fenced}], "structuredContent": payload, "isError": False}

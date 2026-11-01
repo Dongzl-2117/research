@@ -831,7 +831,14 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose pre code { padding: 0; border: 0; background: transparent; font-size: inherit; }
 .prose table { display: block; overflow-x: auto; border-collapse: collapse; font-size: 14px; line-height: 1.55; }
 .prose th, .prose td { padding: .5em .75em; border: 1px solid var(--line); text-align: left; }
+/* 宽表按单元格的最小可读宽度横向滚动，避免正文的 anywhere 把财务数字拆成竖排。 */
+.prose :is(th, td) { min-width: 5.5em; overflow-wrap: normal; word-break: normal; font-variant-numeric: tabular-nums; }
 .prose th { background: var(--bg-sunk); font-weight: 600; }
+.article-toc { margin: 1.5em 0; padding: .8em 1em; border: 1px solid var(--line); border-radius: var(--radius-tile); }
+.article-toc summary { cursor: pointer; font-weight: 600; }
+.article-toc ol { max-height: 40vh; overflow-y: auto; padding-left: 1.5em; }
+.article-toc li { margin-top: .5em; }
+.prose .source-missing { padding: .8em 1em; border-left: 3px solid var(--line-strong); background: var(--bg-sunk); }
 .prose hr { margin: 2em 0; border: 0; border-top: 1px solid var(--line); }
 /* 知识星球评论跟正文同一栏，不要再套一层更窄的列表。 */
 .prose .zsxq-comments {

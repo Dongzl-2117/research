@@ -204,7 +204,7 @@ def test_wen_heading_that_is_not_the_question_stays():
 还要看投放。
 """
     html = str(render_body(body, {}))
-    assert "<h1>问：先看这张表</h1>" in html
+    assert "<h2>问：先看这张表</h2>" in html
     assert '<span class="who">网友：</span>利润率以后怎么走？' in html
     assert '<span class="who">方伟：</span>还要看投放。' in html
     assert "提问（" not in html

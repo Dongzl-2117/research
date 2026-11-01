@@ -102,9 +102,10 @@ def test_bilingual_pairs_keep_the_export_as_is(conn, settings):
     with TestClient(create_app(settings)) as client:
         pairs = client.get(f"/articles/{article_id}").text
         original = client.get(f"/articles/{article_id}/original").text
-    # 对照：译文是照着两份译的，原文照旧两份，一段对一段。过 80 字的列表项和副本由对照页
-    # 自己收成一对（translate/pair.py），短的引文两份都还在。
-    assert pairs.count('class="prose bilingual-en with-toolbar"') == 5
+    # 后一份有前一份没有的资料链接，不能只因文字近重复就把链接一起删掉。
+    # 列表外壳和那份带链接的正文均保留，短引文的两份也仍在。
+    assert pairs.count('class="prose bilingual-en with-toolbar"') == 6
+    assert "<ul>" in pairs and 'href="https://example.com/ads"' in pairs
     assert pairs.count(QUOTE) == 2
     assert "先说一下这些数字。" in pairs
     # 点「原文」只看英文：收成一份。
