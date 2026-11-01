@@ -1,25 +1,63 @@
-"""方伟知识星球的展示标题。
+"""知识星球的展示标题（方伟星球、乘风破浪，以及以后接进来的 kind: zsxq 来源）。
 
 星球导出经常没有标题，或者把第一句截成「……」。卡片、文章页和重新导入时用这里的规则：
 
 - 正文里有完整的第一句（问句也算）就用它，去掉句号，一般不超过 40 字。
+  太长要收在逗号上时，最后一段只有几个字（「……，而且」）、或者收在拿逗号列举的半截上
+  （「……不知道pc，手机，各类消费电子」），再往前收一个逗号。
 - 库内标题去掉省略号后还是一句可用的话，优先于摘要，也优先于图片里的字。
 - 复述摘要不能当标题。句子里出现「正文几乎」「文中未给」「作者开篇判断」，或「没有段永平本人的话」，就丢掉。
+- 摘要和 flash 起的题常带转述的引子（「作者认为」「方伟判断，」「作者以国债利率为背景，主张」），
+  卡片上本来就写着作者，引子去掉，留下判断本身。去掉后不够一句话的不动。
+- 转发新闻的帖子，第一句开头的电头和出处（「IT之家 5 月 11 日消息，」「据彭博社报道，」「Tech 星球报道称，」）
+  同样去掉：卡片上有日期，出处在正文里。不去掉的话句子太长收在逗号处，标题只剩电头。
 - 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句时才用，不用无关的配售截图。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
+  「下图」「如下：」这种引出图片的垫话也算占位。整行只是占位的（导出的标题行「「图片」」）不拿来抽句子，
+  不然会和下一句粘成「「图片」 补充一句……」；已经粘上的重取。
+  微信小程序卡片复制出来的地址（「#小程序://雪球/…」）也是占位，夹在句子里的抽句子时拿掉。
 - 星球接口给的标题只是正文开头的十几个字，不带省略号。正文从这几个字开始、又没在这里断句，就补全成那一句。
+  接口先把开头几行用空格接起来再截，标题会跨行，这时把这几行接起来补全。
+- 标题以省略号收尾时，先去掉省略号再和正文对齐。正文里那一句不超过 40 字就整句用上；
+  正文也是半截时，收到上一个逗号，不把「有两」这种没写完的半截留在标题上。
 - 归档头（「- 作者：… - 时间：…」）混进标题的，重新取。
+- 开头点名回复的网友（「@王小明 我后面会写一篇更细的……」）去掉，昵称是网友的，不进标题。
+  昵称后面要跟空格或冒号才认，「@王小明我觉得」分不出昵称在哪断，不动。
+- 问答帖导出的小标题「提问（网友 → 方伟Rey）」「回答（方伟Rey）」不是帖子的话，括号里是网友的昵称：
+  抽句子时当成断句，不和「问：…」那行、下面的提问拼成一句。已经拼进标题的（10315）重新取。
+- 公司名/话题名加冒号的壳标题（「泡泡玛特：」「西部矿业：」）也要补。
+  完整分句以冒号收尾（「有两点感触很深：」）不是这种壳；冒号前超过 10 个字、引出下面 1. 2. 3. 的一句话
+  （「跟一位王者十年的游戏玩家聊天：」）也不是，去掉冒号照用。
+- 评论列表的界面残屑要修：「评论（1）」「评论(1)」，「 - 王小明（2026-10-28 09」这种名字加钟点，
+  「评论里的回复」那一节的小标题，以及重复的「话题：」壳贴在评论头上。前面还剩一句可用的话就切掉残屑；
+  只剩壳才起题。正文里只是提到「评论」的不算。抽句子时这些小标题当断句，「读者问：」「作者答：」一行一句。
+- 明显错字走 textutil.fix_obvious_typos（与 present_text.polish_display_text 同一张表），
+  不在这里另维护，不改观点和口语。
+- 引号、书名号、括号配不上对的（截出来的句子只剩前引号「“估值越低，…越有利」）要补：
+  只差这一个符号就去掉它，原标题照用；从正文收出来的句子里落单的符号也去掉。
+  开头「1）」「一）」这种编号的半个括号本来就单用，不算。
 
 读者帖的「读者帖」标在作者行，不写进标题。
+
+别的来源也有拿正文第一段当标题的（雪球黑黑无常的短帖），由 shorten_long_title 收成第一句。
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from researchlib.boilerplate import strip_meta
-from researchlib.textutil import argumentative_excerpt
+from researchlib.textutil import (
+    MARK_PAIRS,
+    argumentative_excerpt,
+    balance_marks,
+    drop_export_stub,
+    fix_obvious_typos,
+    lonely_marks,
+)
+from researchlib.zsxq_comments import drop_guest_comments_text
 
 FANGWEI_ZSXQ = "fangwei-zsxq"
 TITLE_LIMIT = 40
@@ -28,24 +66,80 @@ _ELLIPSIS_END = re.compile(
     r"(?:(?:…+|⋯+|‥+|\.{3,}|。{2,}|．{3,})[\s）)】\]」』\"'“”‘’》>]*)+$"
 )
 _HEADING = re.compile(r"^#{1,6}\s+", re.M)
+# 问答导出的小标题「提问（网友 → 方伟Rey）」「回答（方伟Rey）」：括号里是网友的昵称，不是帖子的话。
+# 抽句子时当成断句，不和上一行的「问：…」、下一行的提问拼成一句；已经拼进标题的要重取。
+# 检索文字（body_text）里这两行只剩「提问」「回答」，单独成行的也一样。
+_QA_LINE = re.compile(r"^[ \t]*(?:#{1,6}[ \t]+)?(?:提问|回答)[ \t]*(?:[（(][^（）()\n]+[）)])?[ \t]*$", re.M)
+_QA_ASKER = re.compile(r"提问\s*[（(][^（）()]*(?:→|->)[^（）()]*[）)]")
+# 评论区的小标题（「## 评论里的回复」「## 评论（3）」）不是帖子的话，「读者问：」「作者答：」这种一行是一句。
+# 不当断句的话，只有图的帖会把小标题和下一行粘成「评论里的回复 读者问」（23860）。
+_COMMENT_SECTION = re.compile(r"^[ \t]*(?:#{1,6}[ \t]+)?评论(?:里的回复|[ \t]*[（(]\d+[）)])[ \t]*$", re.M)
+_LABELED_LINE = re.compile(r"(?m)^([ \t]*(?:读者问|作者答|网友|方伟)[ \t]*[：:].*?[^。！？!?\s])[ \t]*$")
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MARKUP = re.compile(r"[*_`]+")
+_BULLET = re.compile(r"(?m)^[ \t]*[-•·][ \t]+")
+# 图里转发的聊天记录，每条上面一行是「昵称 2026-02-13 18:23」：不是帖子的话，昵称多半还是网友的。
+# 以前拿它当了标题，冒号处一截成了「- 王小明2026-02-13 18」，写进库以后再也不补。
+_STAMP = r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[ \t]*\d{1,2}(?:[:：]\d{2}){0,2}[ \t]*"
+_STAMP_TAIL = re.compile(_STAMP + r"$")
+# 评论区每条上面也有一行「- **方伟Rey**（2026-10-31 09:26）」，钟点外面包着括号。
+# 只有一个小程序地址的帖子（24027），去掉地址以后下一句就是这行，以前会截成「方伟Rey2026-10-31 09」。
+_STAMP_LINE = re.compile(r"(?m)^[^\n]{0,30}?" + _STAMP + r"[)）]?[ \t]*(?:\n|$)")
+# 转述的引子：「作者认为」「方伟判断，」「作者以国债利率为背景，主张」「作者借段永平的话判断，」。
+# 「方伟说过的」「作者认为的」是句子本身，不是引子。
+# 「说」后面是「明」「服」「法」「话」「是」时是一个词，不是「作者说，」：摘要写「作者借一位玩家的体验说明：……」，
+# 以前只去掉「作者借……说」，标题成了「明：持续付费和高频游玩……」（24030）。「说明」整个算引子。
+_NARRATOR_LEAD = (
+    r"(?:方伟|作者|星主|笔者)"
+    r"(?:(?:以|借|从)[^，,。；;！？!?]{1,30}?(?:[，,]\s*)?)?"
+    r"(?:认为|觉得|判断|指出|提到|说明|说(?![明服法话是])|表示|写道|主张|强调)(?![过的了得])"
+    r"[，,：:\s]*"
+)
+_NARRATOR = re.compile("^" + _NARRATOR_LEAD)
+# 星主在帖子开头点名回复的网友：「@王小明 我后面会写……」「回复@李四：……」。
+_MENTION_NAME = r"(?:回复\s*)?@[^\s@，,。！？!?：:；;、（）()「」“”]{1,24}"
+_MENTION = _MENTION_NAME + r"(?:[ \t\u3000\xa0]+|[：:][ \t\u3000\xa0]*)"
+_MENTION_LEAD = re.compile(rf"^(?:{_MENTION})+")
+# 整个标题只剩被点名的昵称：帖子的话在下面几行或图里。
+_MENTION_ONLY = re.compile(rf"^(?:{_MENTION})*{_MENTION_NAME}$")
+_MENTION_LINE = re.compile(rf"(?m)^[ \t]*(?:{_MENTION})+")
+# 转发的新闻开头的电头和出处：「IT之家 5 月 11 日消息，」「财联社10月30日电，」「据彭博社报道，」「Tech 星球报道称，」。
+_MEDIA = r"[0-9A-Za-z一-鿿·&\- ]{1,16}?"
+_NEWS_LEAD = (
+    rf"(?:{_MEDIA}\s*)?(?:20\d{{2}}\s*年\s*)?\d{{1,2}}\s*月\s*\d{{1,2}}\s*日\s*"
+    r"(?:[上下]午|早间|晚间|凌晨)?\s*(?:消息|电|讯)\s*[，,]\s*"
+    rf"|据\s*(?:{_MEDIA}\s*)?(?:报道|消息)(?:称|说)?\s*[，,：:]\s*"
+    rf"|{_MEDIA}\s*报道(?:称|说)\s*[，,：:]\s*"
+)
 _LEAD = re.compile(
     r"^(?:"
-    r"(?:方伟|作者|星主|笔者认为)(?:认为|觉得|指出|提到|说|表示|写道)[，,：:\s]*"
-    r"|这篇(?:文章|短帖)?(?:认为|在讲|讨论|说的是|写的是)[，,：:\s]*"
+    + _NARRATOR_LEAD
+    + rf"|(?:{_MENTION})+"
+    + r"|这篇(?:文章|短帖)?(?:认为|在讲|讨论|说的是|写的是)[，,：:\s]*"
     r"|(?:读者问|作者答|作者补充|方伟|网友)\s*[：:]\s*"
-    r")"
+    # 「2026年9月1日，瑞幸咖啡宣布……」开头的日期是电头，卡片上本来就有日期。不去掉的话，
+    # 句子太长要在逗号处收时，标题只剩「2026年9月1日」（乘风破浪 1273）。
+    r"|(?:(?:20\d{2}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日|20\d{2}[-./]\d{1,2}[-./]\d{1,2})\s*[，,]\s*"
+    # 新闻的电头和出处同理：不去掉的话标题只剩「IT之家 5 月 11 日消息，Tech 星球报道称」（13364）。
+    + "|"
+    + _NEWS_LEAD
+    + r")"
 )
 _SPAM = re.compile(r"扫码|二维码|长按识别|加微信|优惠券")
 _FILLER = re.compile(
     r"^(?:大家好|各位好|早上好|晚上好|分享一下|转一下|如题|同上|呵呵+|哈哈+|嗯+|这个|就是|如下|见图|看图|上图|下图)"
-    r"[，,。！？!?\s]*$"
+    r"[，,。！？!?：:\s]*$"
 )
 _DANGLING = re.compile(r"[，,；;]\s*([^，,；;]{0,3})$")
 _CJK = re.compile(r"[一-鿿]")
 _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 _PLACEHOLDER = frozenset({"无标题", "未命名", "无题", "暂无标题", "图片", "见图", "短帖"})
+# 微信里分享的小程序卡片，复制出来只剩一串地址「#小程序://雪球/Xm9H4vXxNcEEgAF」，不是帖子的话。
+# 整个标题只是这串地址的（24027）算占位；夹在句子里的，抽句子时拿掉。
+_SHARE = re.compile(r"#?小程序://[^\s。！？!?，,|｜]+")
+_SHARE_ONLY = re.compile(r"(?:#?小程序://[^\s。！？!?，,|｜]+\s*)+")
+# 「「图片」 虽然不体现在资产负债表……」：导出的占位标题行和下一句粘成了一个标题（23834）。
+_PLACEHOLDER_LEAD = re.compile(r"^[「『“\"]\s*(?:图片|见图|无标题|未命名|无题|暂无标题)\s*[」』”\"]\s+\S")
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+短帖)?")
 _BREAKS = "，,；;、：:"
 # 省略号在开头、结尾或句子中间，都是截断，不是一句完整的话。
@@ -54,31 +148,156 @@ _EDGE_CUT = re.compile(
     r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+"
     r"|(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
 )
+# 只认开头的省略号。正文同一行「前半...后半」要把后半接回去，不能整行跳过。
+_LEADING_CUT = re.compile(r"^(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})+")
 _DATE_FALLBACK = re.compile(r"^(?:\d{4}-\d{2}-\d{2}\s+)?短帖$")
 # 以前入库补标题时读到了归档头那几行，标题成了「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。
 _ARCHIVE_META = re.compile(r"(?:^|\s)-\s*(?:作者|时间|类型|topic_id)\s*[：:]")
 _SENTENCE_STOP = "。！？!?；;"
+# 全角标点自带空白，跨行接回时后面不再加空格。
+_FULLWIDTH_END = re.compile(r"[，。、：；！？）」』》】]$")
 _SPACES = re.compile(r"\s+")
 _MISSING_NOTE = re.compile(r"正文(?:为空|没有内容|没有实质|缺失)|标题仅为|只是一张图|没有可摘的正文")
 # 摘要在复述「这篇写了什么、没写什么」，不是帖子自己的那句话。
 _NARRATION = re.compile(
     r"正文几乎|文中未给|作者开篇判断|没有(?:段永平|作者|他|星主)?本人的话|没有段永平的话"
 )
+# 识图之前写成的空壳：标题和导读是同一句「没有可读文字 / 正文为空」。
+# 「正文为空洞…」这种真标题不要算进去。
+_EMPTY_SHELL = re.compile(
+    r"没有可读文字"
+    r"|无法提炼"
+    r"|没有可供概括"
+    r"|没有任何(?:实质)?内容"
+    r"|正文除标题"
+    r"|除标题[^。\n]{0,40}外没有"
+    r"|(?:本文|原文)?正文为空(?!洞)"
+)
 _WRAP = re.compile(r"[\s（）()【】\[\]〔〕〈〉《》<>「」『』“”‘’\"'`＂＇。！？!?…·]+")
 _STOP = frozenset("的是了在和与也就都而及或被把对从到这那你我他她它中")
+# 「泡泡玛特：」「西部矿业：」：整标题以中文/ASCII 冒号收尾的壳。
+_SHELL_COLON = re.compile(r"^.+[：:]\s*$")
+# 冒号前超过这么多字就不当壳。
+_SHELL_MAX = 10
+# 评论列表粘进标题。分隔符之后才算界面，避免「在评论（1）里」这种正文。
+# 名字后面要有钟点，或者日期被截在字符串末尾；「（2026-10-28）」只有日期且括号已闭上，不算。
+_UI_EDGE = r"\s：:|｜·•，,。！？!?#）)"
+_UI_BEFORE = rf"(?:^|(?<=[{_UI_EDGE}]))"
+_COMMENT_COUNT = re.compile(
+    _UI_BEFORE + r"#{0,6}\s*评论\s*[（(]\s*\d{1,4}\s*[）)]"
+    r"|评论\s*[（(]\s*\d{1,4}\s*[）)](?=\s*[-–—－]\s*[0-9A-Za-z\u4e00-\u9fff])"
+    # 「评论里的回复」那一节的小标题（23860「评论里的回复 读者问」）。
+    + r"|" + _UI_BEFORE + r"#{0,6}\s*评论里的回复(?=\s|$|[：:])"
+)
+_COMMENT_STAMP = (
+    r"(?:20\d{2}(?:-\d{1,2}){0,2}(?:[ T]\d{1,2}(?:[:：]\d{2}){0,2})?\s*$"
+    r"|20\d{2}-\d{1,2}-\d{1,2}[ T]\d{1,2}(?:[:：]\d{2}){0,2}\s*[)）])"
+)
+_COMMENT_AUTHOR = re.compile(
+    _UI_BEFORE + r"[-–—－]\s*(?:\*\*|__)?\s*"
+    r"[0-9A-Za-z\u4e00-\u9fff·._]{1,16}\s*(?:\*\*|__)?\s*"
+    r"[（(]\s*" + _COMMENT_STAMP
+)
+# 标题一开头就是评论头「王小明（2026-02-02 21:57）」：拿评论起的题（23834）。网名后面是评论时间，要有钟点；
+# 网名里可能有表情和符号，只排除括号和断句的标点。
+_COMMENT_HEAD = re.compile(
+    r"^\s*(?:\*\*|__)?\s*[^\n（()）。！？!?，,：:；;]{1,16}?\s*(?:\*\*|__)?\s*"
+    r"[（(]\s*20\d{2}-\d{1,2}-\d{1,2}[ T]\d{1,2}[:：]\d{2}(?:[:：]\d{2})?\s*[)）]"
+)
+# 「泡泡玛特： 泡泡玛特：」重复的话题壳。后面还粘着评论头时，不把重复本身当成一句标题。
+_DUP_LEAD = re.compile(r"^(.{1,16}?)[：:]\s*(?:\1[：:]\s*)+")
 
 
-def repairs_source(source_id: str) -> bool:
-    return source_id == FANGWEI_ZSXQ
+def repairs_source(source_id: str, kind: str = "") -> bool:
+    """标题按这里的规则补：方伟星球，以及别的 kind 是 zsxq 的来源（乘风破浪）。
+
+    识图后的标题重排（followups）只传 source_id，仍只排方伟星球。
+    """
+    return source_id == FANGWEI_ZSXQ or kind == "zsxq"
+
+
+def is_empty_shell(title: str) -> bool:
+    """导读在正文还是空的时候写成的元标题。
+
+    24012 的库内标题就是这一句：正文除标题「图片」外没有可读文字，无法提炼作者的核心判断及其依据。
+    旧的占位表和「正文为空」正则对不上「没有可读文字」，回写会把它当成已经起好的题。
+    """
+    return _EMPTY_SHELL.search(title or "") is not None
+
+
+def _comment_list_ui(title: str) -> bool:
+    """标题里粘了评论列表的界面：``评论（1）`` / ``评论(1)``，或 `` - 王小明（2026-10-28``。"""
+    text = title or ""
+    return any(pattern.search(text) is not None for pattern in (_COMMENT_COUNT, _COMMENT_AUTHOR, _COMMENT_HEAD))
+
+
+def _comment_ui_stem(title: str) -> str | None:
+    """残屑前面的那段。没有残屑时返回 None，残屑就在开头时返回空串。"""
+    text = title or ""
+    starts: list[int] = []
+    for pattern in (_COMMENT_COUNT, _COMMENT_AUTHOR, _COMMENT_HEAD):
+        match = pattern.search(text)
+        if match:
+            starts.append(match.start())
+    if not starts:
+        return None
+    return text[: min(starts)]
 
 
 def title_needs_repair(title: str, body: str = "") -> bool:
-    """空标题、占位（含「图片」这种带引号的）、复述套话、纯话题号、带省略号，或混进了归档头。
+    """空标题、占位（含「图片」这种带引号的）、复述套话、转述的引子、开头点名的网友（「@王小明 」）、
+    空壳导读、纯话题号、带省略号，公司名/话题名冒号壳，明显错字，归档头，评论列表的界面残屑，
+    问答导出的「提问（网友 → 方伟Rey）」，或引号、括号落单。
 
-    给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
+    句子里只是提到「评论」的不算。给了正文时，标题是正文第一句开头截下的半句也算（见 cut_from_body）。
     """
     text = (title or "").strip()
-    if not text or _placeholder(text) or _narration(text) or _EDGE_CUT.search(text):
+    if _comment_list_ui(text):
+        return True
+    if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
+        return True
+    if _wordless(text):
+        return True
+    if strip_narrator(text) != text:
+        return True
+    if _mention_led(text):
+        return True
+    if _QA_ASKER.search(text):
+        return True
+    if _PLACEHOLDER_LEAD.match(text):
+        return True
+    if _SHARE.search(text):
+        return True
+    if _shell_colon(text):
+        return True
+    if polish_title_typos(text) != text:
+        return True
+    if re.fullmatch(r"\d{5,}", text):
+        return True
+    if _DATE_ONLY.fullmatch(text):
+        return True
+    if _ARCHIVE_META.search(text) or _STAMP_TAIL.search(text):
+        return True
+    if lonely_marks(text):
+        return True
+    return bool(body) and cut_from_body(text, body)
+
+
+def title_needs_ai(title: str) -> bool:
+    """空/占位/复述套话/空壳导读/省略号截断/冒号壳/归档头，以及切不干净的评论残屑，才打 flash。
+
+    残屑前面还剩一句可用的标题时，只把残屑切掉，不打 flash。
+    星球接口半句截断（对着正文能补全的）仍走确定性规则，避免存量几千篇全打 LLM。
+    只是错字也只抛光，不起题。引号、括号落单只去掉那个符号，也不起题。
+    """
+    text = (title or "").strip()
+    if _comment_list_ui(text):
+        return not bool(_clean_comment_stem(text))
+    if not text or _placeholder(text) or _narration(text) or is_empty_shell(text) or _EDGE_CUT.search(text):
+        return True
+    if _wordless(text):
+        return True
+    if _shell_colon(text):
         return True
     if re.fullmatch(r"\d{5,}", text):
         return True
@@ -86,7 +305,89 @@ def title_needs_repair(title: str, body: str = "") -> bool:
         return True
     if _ARCHIVE_META.search(text):
         return True
-    return bool(body) and cut_from_body(text, body)
+    return False
+
+
+def _wordless(text: str) -> bool:
+    """标题里一个字也没有，只有表情或标点（23855 的「😃」）。"""
+    return _MEANINGFUL.search(text or "") is None
+
+
+def _mention_led(text: str) -> bool:
+    return bool(_MENTION_LEAD.match(text) or _MENTION_ONLY.match(text))
+
+
+def strip_narrator(title: str) -> str:
+    """去掉开头转述的引子（「作者认为」「方伟判断，」）。剩下的不够一句话时原样返回。
+
+    不进 title_needs_ai：引子去掉就是能用的标题，不用再打 flash。
+    """
+    text = (title or "").strip()
+    match = _NARRATOR.match(text)
+    if not match:
+        return text
+    rest = text[match.end() :].strip()
+    if len(_CJK.findall(rest)) < 4 and len(_MEANINGFUL.findall(rest)) < 8:
+        return text
+    return rest
+
+
+def polish_title_typos(title: str) -> str:
+    """改正标题里的明显错字。替换表在 textutil.fix_obvious_typos，与展示层共用。"""
+    return fix_obvious_typos(title or "")
+
+
+def _shell_colon(title: str) -> bool:
+    """整标题以冒号收尾的壳：「泡泡玛特：」「看数：」。
+
+    中间有逗号或句号的是完整分句（「有两点感触很深：」），不是话题名。
+    没有停顿、又长过公司名的，也不当壳。
+    """
+    text = (title or "").strip()
+    if not text or not _SHELL_COLON.match(text):
+        return False
+    stem = text.rstrip("：:").strip()
+    if not stem:
+        return True
+    if any(char in stem for char in "。！？!?，,；;"):
+        return False
+    # 公司名、话题名不长（「泡泡玛特」「西部矿业」「看数」）。十几个字的是一句引出下文的话：
+    # 「跟一位王者十年的游戏玩家聊天：」下面是 1. 2. 3.，以前当成壳，标题换成了「2026-10-31 短帖」（24030）。
+    if len(stem) > _SHELL_MAX:
+        return False
+    return len(text) <= TITLE_LIMIT
+
+
+def _duplicate_topic_shell(text: str) -> bool:
+    """「泡泡玛特： 泡泡玛特」或带结尾冒号的重复话题壳。不是「问：怎么看茅台」。"""
+    parts = [re.sub(r"\s+", "", part) for part in re.split(r"[：:]", text or "") if part.strip()]
+    if len(parts) < 2:
+        return False
+    head = parts[0]
+    if not head or len(head) > 16 or any(char in head for char in "。！？!?，,；;"):
+        return False
+    return all(part == head for part in parts)
+
+
+def _topic_shell_label(text: str) -> str:
+    """重复的话题壳收成一个「泡泡玛特：」，好让后面的图片文字还能对上公司。不是壳就返回空串。"""
+    raw = re.sub(r"\s+", " ", text or "").strip().rstrip(" \t-–—－|｜·•")
+    if not raw or not (_duplicate_topic_shell(raw) or _shell_colon(raw)):
+        return ""
+    part = re.split(r"[：:]", raw, maxsplit=1)[0].strip()
+    if not part or len(part) > 16 or any(char in part for char in "。！？!?，,；;"):
+        return ""
+    return part + "："
+
+
+def _tidy_clause_colon(text: str) -> str:
+    """完整分句末尾的冒号拿掉。话题壳（「泡泡玛特：」）留着，交给补全。"""
+    polished = polish_title_typos(text or "")
+    if polished.endswith(("：", ":")) and not _shell_colon(polished):
+        clipped = polished.rstrip("：:").strip()
+        if clipped:
+            return clipped
+    return polished
 
 
 def _without_archive_meta(title: str) -> str:
@@ -96,25 +397,68 @@ def _without_archive_meta(title: str) -> str:
 
 
 def _cut_line(title: str, body: str) -> str:
-    """正文里标题截自的那一行。正文开头不是这几个字，或者这几个字后面就断句了，返回空串。"""
-    head = _SPACES.sub("", _MARKUP.sub("", title or ""))
+    """正文里标题截自的那一行。正文开头不是这几个字，或者这几个字后面就断句了，返回空串。
+
+    标题自己带的省略号先去掉再对齐，否则「有两...」对不上正文里的「有两点」。
+    星球接口先把开头几行用空格接起来再截，标题会跨行（23954「……： 混元大模型经历了不」）：
+    这时返回接起来的那几行。
+    """
+    head = _SPACES.sub("", _MARKUP.sub("", _strip_ellipsis(title or "")))
     if len(head) < 4:
         return ""
-    for line in _plain(strip_meta(body or "")).splitlines():
+    lines = [line for line in _plain(drop_export_stub(strip_meta(body or ""))).splitlines() if _SPACES.sub("", line)]
+    for index, line in enumerate(lines):
         flat = _SPACES.sub("", line)
-        if not flat:
-            continue
         if not flat.startswith(head):
-            return ""
+            return _spanning_cut(head, lines[index:])
         rest = flat[len(head) :]
         if not rest:
             # 标题自己那一行（标题行和标题一样）：看下一行。
             continue
-        if _EDGE_CUT.match(rest):
-            # 导出的标题行「前十几个字...」：截断的记号，正文在下面。
-            continue
+        peeled = _LEADING_CUT.sub("", rest, count=1)
+        if peeled != rest:
+            # 导出的标题行「前十几个字...」。后面没字就看下一行；同一行还接着后半句就接上。
+            # 没有省略号时不剥引号：标题正好截在「定名为」后面，正文下一个字是前引号「“拼多多驿站”」。
+            peeled = peeled.lstrip("）)】]」』\"'“”‘’》> ")
+            if not peeled:
+                continue
+            if peeled[0] in _SENTENCE_STOP:
+                return ""
+            return head + peeled
         return "" if rest[0] in _SENTENCE_STOP else line
     return ""
+
+
+def _spanning_cut(head: str, lines: list[str]) -> str:
+    """标题跨行：前几行整行都在标题里，最后一行只截了开头。
+
+    线上 23954「……： 混元大模型经历了不」截自说话人那一行和下一行「混元大模型经历了不同阶段，……」；
+    13778「美团短剧这个创意 目前全网最」截自两行「美团短剧这个创意」「目前全网最佳」。
+    标题正好收在行尾、或者收在句号上的不算截断。
+    接回去时上一行收在全角标点上（「……：」）直接接，不像接口那样隔一个空格；别的照接口隔一个空格。
+    """
+    taken: list[str] = []
+    remaining = head
+    for line in lines[:4]:
+        flat = _SPACES.sub("", line)
+        if len(flat) < len(remaining) and remaining.startswith(flat):
+            taken.append(line.strip())
+            remaining = remaining[len(flat) :]
+            continue
+        if not taken or not flat.startswith(remaining):
+            return ""
+        rest = flat[len(remaining) :]
+        if not rest or rest[0] in _SENTENCE_STOP:
+            return ""
+        return _join_lines([*taken, line.strip()])
+    return ""
+
+
+def _join_lines(lines: list[str]) -> str:
+    joined = lines[0]
+    for line in lines[1:]:
+        joined += ("" if _FULLWIDTH_END.search(joined) else " ") + line
+    return joined
 
 
 def cut_from_body(title: str, body: str) -> bool:
@@ -130,9 +474,59 @@ def _completed_from_body(title: str, body: str) -> str:
     # 问号、叹号和别处一样留着；句号、分号不留。
     sentence = re.match(f"[^{_SENTENCE_STOP}]*[{_SENTENCE_STOP}]?", line).group(0).rstrip("；;")
     fitted = _fit(_prepare(sentence))
-    if not fitted or not _ok(fitted) or _contains_cut(fitted) or title_needs_repair(fitted):
+    if not fitted or not _ok(fitted) or _contains_cut(fitted):
+        return ""
+    # 正文那句可能还带着错字。先按共享表抛光，再判断还要不要重抽，
+    # 否则「存在运用杠杆」这类替换会把补全挡掉。
+    polished = polish_title_typos(fitted)
+    if not polished or title_needs_repair(polished):
+        return ""
+    return polished
+
+
+def _headline_line(title: str, body: str) -> str:
+    """原标题去掉末尾省略号后，在正文里自成一行：那一行就是完整的标题，省略号是导出时加的。
+
+    乘风破浪 1250 的标题是「Temu：值得重视的关税利好 ...」，正文第一行就是「Temu：值得重视的关税利好」。
+    不认这一行，标题会换成正文第一句，帖子自己起的标题反而丢了。
+    """
+    if not _ELLIPSIS_END.search(title or ""):
+        return ""
+    stem = _strip_ellipsis(title)
+    head = _SPACES.sub("", _MARKUP.sub("", stem))
+    if len(head) < 4:
+        return ""
+    if not any(_SPACES.sub("", line) == head for line in _plain(body).splitlines()):
+        return ""
+    # 和 _salvage_stored 一样，导出粘在末尾的「+」不要。
+    fitted = _fit(_prepare(stem).rstrip("+＋").strip())
+    if not fitted or not _ok(fitted) or title_needs_repair(fitted):
         return ""
     return fitted
+
+
+def shorten_long_title(title: str, body: str) -> str:
+    """整段正文当了标题的，收成第一句：雪球黑黑无常的短帖没有标题，导入时拿正文第一段当标题，
+    最长三百多字（20404）。所有来源都适用，只认长过 TITLE_LIMIT、正文又正是从它开始的；
+    公众号标题、飞书文档名不是正文开头那一段，不动。太长时和别处一样收在逗号处。
+    """
+    text = (title or "").strip()
+    # 英文标题（Stratechery）本来就常过 40 个字母，不按这条收。
+    if len(text) <= TITLE_LIMIT or not _CJK.search(text):
+        return text
+    head = _SPACES.sub("", _MARKUP.sub("", text))
+    if not _SPACES.sub("", _MARKUP.sub("", drop_export_stub(body or "")[: len(text) * 3])).startswith(head):
+        return text
+    sentence = re.match(f"[^{_SENTENCE_STOP}]*[{_SENTENCE_STOP}]?", text).group(0).rstrip("；;")
+    prepared = _prepare(sentence)
+    fitted = _fit(prepared)
+    rest = prepared[len(fitted) :].lstrip() if prepared.startswith(fitted) else ""
+    if rest and rest[0] not in _BREAKS + _SENTENCE_STOP:
+        # 40 个字里没有能收的逗号，_fit 硬切在半个词上（「……在过去六十年里通过伯」）：收在第一个逗号。
+        clause = re.split(f"[{_BREAKS}]", prepared, maxsplit=1)[0].strip()
+        if _ok(clause) and len(clause) <= TITLE_LIMIT:
+            fitted = clause
+    return fitted if _ok(fitted) else text
 
 
 def zsxq_display_title(
@@ -142,30 +536,65 @@ def zsxq_display_title(
     summary: str = "",
     ocr: str = "",
     when: str = "",
+    owners: Sequence[str] = (),
 ) -> str:
-    """给卡片和文章页用的标题。原标题能用就原样返回。"""
+    """给卡片和文章页用的标题。原标题能用就原样返回。
+
+    owners：来源作者在评论里用的名字（zsxq_comments.source_owners），不给时按方伟。评论区里别人的评论
+    不拿来起题。
+    """
     stored = _without_archive_meta((title or "").strip())
-    # 正文开头的归档头（作者、时间、点赞数）不是帖子的话，不拿来当标题。
-    body = strip_meta(body or "")
+    # 开头点名的网友昵称不是帖子的话。正文那几行在 _plain 里一样去掉，半句标题还对得上正文。
+    stored = "" if _MENTION_ONLY.match(stored) else _MENTION_LEAD.sub("", stored).strip()
+    # 正文开头的归档头（作者、时间、点赞数）和导出时截的标题行「前十几个字...」不是帖子的话，不拿来当标题。
+    body = drop_guest_comments_text(drop_export_stub(strip_meta(body or "")), owners)
+    # 评论残屑前面还有一句可用的话：切掉残屑，不用正文换一句。
+    clean = _clean_comment_stem(stored)
+    if clean:
+        return _tidy_clause_colon(clean)
+    if _comment_list_ui(stored):
+        stored = _topic_shell_label(_comment_ui_stem(stored) or "")
     if stored and not title_needs_repair(stored, body):
-        return stored
+        return _tidy_clause_colon(stored)
+    # 只是错字：抛光后就能用，不必从正文重抽一句盖掉原标题。
+    # 原标题是正文半句时不在这里返回：共享错字表一改前缀，就对不上正文。
+    polished = polish_title_typos(stored)
+    if (
+        polished != stored
+        and polished
+        and not title_needs_repair(polished)
+        and not cut_from_body(stored, body)
+    ):
+        return polished
+    # 只是落单了一个引号、括号：去掉那个符号，原标题照用。原标题是正文半句时照旧补全成整句。
+    balanced = balance_marks(polished)
+    if (
+        balanced != polished
+        and _ok(balanced)
+        and not title_needs_repair(balanced, body)
+        and not cut_from_body(stored, body)
+    ):
+        return _tidy_clause_colon(balanced)
     completed = _completed_from_body(stored, body)
     if completed:
-        return completed
+        return polish_title_typos(completed)
+    headline = _headline_line(stored, body)
+    if headline:
+        return polish_title_typos(headline)
     for sentence in _candidates(body):
-        return sentence
+        return polish_title_typos(sentence)
     # 去掉省略号后还是一句可用的原标题，优先于摘要和图片里的字。
     stem = _salvage_stored(stored)
     if stem:
-        return stem
+        return polish_title_typos(stem)
     for sentence in _candidates(summary):
-        return sentence
+        return polish_title_typos(sentence)
     if _ocr_allowed(stored):
         anchors = _topic_anchors(stored)
         for sentence in _candidates(ocr):
             # 有帖子主题时，图片里的另一则新闻对不上就不拿来当标题。
             if not anchors or _overlaps(sentence, anchors):
-                return sentence
+                return polish_title_typos(sentence)
     snippet = _short_snippet(body) or _short_snippet(summary)
     if _ocr_allowed(stored):
         snippet = snippet or _short_snippet(ocr)
@@ -173,9 +602,9 @@ def zsxq_display_title(
     if date and snippet:
         fitted = _fit(f"{date} {snippet}")
         if fitted:
-            return fitted
+            return polish_title_typos(fitted)
     if snippet:
-        return snippet
+        return polish_title_typos(snippet)
     if date:
         return f"{date} 短帖"
     return "短帖"
@@ -188,26 +617,64 @@ def stored_zsxq_title(
     summary: str = "",
     ocr: str = "",
     when: str = "",
+    owners: Sequence[str] = (),
 ) -> str | None:
     """导入和回写时要写进库的标题。规则和页面上的 `zsxq_display_title` 是同一套。
 
     日期加「短帖」这种兜底不写入：下次打开页面还可以用摘要或图片里的字补。
     原标题本来就能用时返回 None。去掉省略号后还剩一句主干，也会写回去，避免库里继续以「…」结尾。
     """
+    raw = (title or "").strip()
     if not title_needs_repair(title, body):
         return None
+    # 只是错字：直接抛光写回，不必重抽一句。半句截断仍走下面的补全。
+    polished = polish_title_typos(raw)
+    if (
+        polished != raw
+        and polished
+        and not title_needs_repair(polished)
+        and not cut_from_body(raw, body)
+    ):
+        return polished
     repaired = zsxq_display_title(
         title or "",
         body=body or "",
         summary=summary or "",
         ocr=ocr or "",
         when=when or "",
+        owners=owners,
     )
-    if not repaired or repaired == (title or "").strip():
+    if not repaired or repaired == raw:
         return None
     if title_needs_repair(repaired) or _DATE_FALLBACK.fullmatch(repaired):
         return None
     return repaired
+
+
+def _drop_cut_stubs(text: str) -> str:
+    """去掉「前半句...」这种标题行，免得它和下面的完整句粘成一段，整段因为省略号被丢掉。"""
+    lines = (text or "").splitlines()
+    flats = [_SPACES.sub("", _plain(line)) for line in lines]
+    drop: set[int] = set()
+    for index, line in enumerate(lines):
+        if not _contains_cut(line):
+            continue
+        stem = _SPACES.sub("", _strip_ellipsis(_plain(line)))
+        if len(stem) < 4:
+            continue
+        for later in flats[index + 1 : index + 6]:
+            if later.startswith(stem) and len(later) > len(stem):
+                drop.add(index)
+                break
+    if not drop:
+        return text or ""
+    return "\n".join(line for index, line in enumerate(lines) if index not in drop)
+
+
+def _drop_placeholder_lines(text: str) -> str:
+    """整行只是「「图片」」「下图」这种占位的不拿来抽句子：导出的标题行会和下一句粘成「「图片」 补充一句……」。"""
+    lines = (text or "").splitlines()
+    return "\n".join(line for line in lines if not _placeholder(_HEADING.sub("", line)))
 
 
 def _candidates(text: str) -> list[str]:
@@ -216,7 +683,7 @@ def _candidates(text: str) -> list[str]:
     带省略号的半截、「正文为空」和复述摘要（正文几乎、文中未给、作者开篇判断、没有本人的话）丢掉。
     """
     found: list[str] = []
-    for raw in _iter_raw(text):
+    for raw in _iter_raw(_drop_placeholder_lines(_drop_cut_stubs(text))):
         if _spammy(raw) or _contains_cut(raw) or _missing_note(raw) or _narration(raw):
             continue
         prepared = _prepare(raw)
@@ -231,7 +698,13 @@ def _candidates(text: str) -> list[str]:
         ):
             continue
         fitted = _fit(prepared)
-        if not fitted or _contains_cut(fitted) or _placeholder(fitted) or _narration(fitted):
+        if (
+            not fitted
+            or _contains_cut(fitted)
+            or _placeholder(fitted)
+            or _narration(fitted)
+            or _comment_list_ui(fitted)
+        ):
             continue
         found.append(fitted)
     return found
@@ -252,15 +725,22 @@ def _iter_raw(text: str):
 
 
 def _plain(text: str) -> str:
-    cleaned = _IMAGE.sub(" ", text or "")
+    cleaned = _QA_LINE.sub("。", text or "")
+    cleaned = _COMMENT_SECTION.sub("。", cleaned)
+    cleaned = _LABELED_LINE.sub(r"\1。", cleaned)
+    cleaned = _IMAGE.sub(" ", cleaned)
+    cleaned = _SHARE.sub(" ", cleaned)
     cleaned = _HEADING.sub("", cleaned)
+    cleaned = _STAMP_LINE.sub("", cleaned)
+    cleaned = _BULLET.sub("", cleaned)
     cleaned = _MARKUP.sub("", cleaned)
-    return cleaned
+    return _MENTION_LINE.sub("", cleaned)
 
 
 def _prepare(sentence: str) -> str:
     current = sentence.strip()
-    for _ in range(2):
+    # 引子可以连着几层：「方伟：IT之家 5 月 11 日消息，Tech 星球报道称，……」。
+    for _ in range(3):
         match = _LEAD.match(current)
         if not match:
             break
@@ -269,6 +749,12 @@ def _prepare(sentence: str) -> str:
             break
         current = rest
     current = _strip_ellipsis(current).strip().rstrip("。.")
+    if _comment_list_ui(current):
+        current = _excise_comment_ui(current)
+        if not current:
+            return ""
+    if current.endswith(("：", ":")) and not _shell_colon(current):
+        current = current.rstrip("：:").strip()
     return re.sub(r"\s+", " ", current).strip()
 
 
@@ -286,8 +772,8 @@ def _ocr_allowed(title: str) -> bool:
 def _topic_anchors(title: str) -> set[str]:
     """半截标题里的三字片段。占位标题没有主题，图片里的字可以单独当标题。"""
     stem = re.sub(r"[\s+＋]+", "", _strip_ellipsis(title or ""))
-    # 占位和复述套话没有帖子主题，图片里的字可以单独当标题。
-    if not stem or _placeholder(stem) or _narration(stem):
+    # 占位、复述套话和聊天记录的「昵称 时间」没有帖子主题，图片里的字可以单独当标题。
+    if not stem or _placeholder(stem) or _narration(stem) or _STAMP_TAIL.search(title or ""):
         return set()
     chars = "".join(_CJK.findall(stem))
     if len(chars) < 4:
@@ -308,6 +794,22 @@ def _overlaps(sentence: str, anchors: set[str]) -> bool:
     return any(anchor in hay for anchor in anchors)
 
 
+def _clip_ellipsis_tail(title: str, stem: str) -> str:
+    """省略号说明后面没写完。半截收到上一个逗号，不留「有两点感」这种半个词。
+
+    没有逗号（「护城河在哪里…」）就留去掉省略号的主干。本来就没有省略号的，仍只剪逗号后不到四个字的尾巴。
+    """
+    text = (stem or "").strip()
+    if not text:
+        return ""
+    if not _EDGE_CUT.search(title or ""):
+        return _clip_dangling(text) if _dangling(text) else text
+    cut = max(text.rfind(char) for char in "，,；;")
+    if cut >= 8:
+        return text[:cut].strip()
+    return _clip_dangling(text) if _dangling(text) else text
+
+
 def _salvage_stored(title: str) -> str:
     """原标题去掉末尾省略号后，还剩一句不带截断符的话，才拿来兜底。"""
     if _placeholder(title):
@@ -315,7 +817,7 @@ def _salvage_stored(title: str) -> str:
     stem = _prepare(_strip_ellipsis(title)).rstrip("+＋").strip()
     if _contains_cut(stem):
         return ""
-    clipped = _fit(_clip_dangling(stem) if _dangling(stem) else stem)
+    clipped = polish_title_typos(_fit(_clip_ellipsis_tail(title, stem)))
     if clipped and _ok(clipped) and not _contains_cut(clipped) and not title_needs_repair(clipped):
         return clipped
     return ""
@@ -324,16 +826,18 @@ def _salvage_stored(title: str) -> str:
 def _short_snippet(text: str) -> str:
     if _narration(text):
         return ""
-    raw = argumentative_excerpt(_plain(text), limit=80)
+    raw = argumentative_excerpt(_plain(_drop_placeholder_lines(text)), limit=80)
     if _narration(raw):
         return ""
     piece = _prepare(raw)
     piece = _clip_dangling(piece) if _dangling(piece) else piece
     if (
         not piece
+        or _comment_list_ui(piece)
         or _placeholder(piece)
         or _spammy(piece)
         or _FILLER.match(piece)
+        or _mention_led(piece)
         or _contains_cut(raw)
         or _contains_cut(piece)
         or _narration(piece)
@@ -344,7 +848,7 @@ def _short_snippet(text: str) -> str:
     fitted = _fit(piece)
     if not fitted or _contains_cut(fitted):
         return ""
-    return fitted[:18]
+    return balance_marks(fitted[:18])
 
 
 def _fit(text: str) -> str:
@@ -354,23 +858,79 @@ def _fit(text: str) -> str:
     if not cleaned:
         return ""
     if len(cleaned) <= TITLE_LIMIT:
-        return _strip_ellipsis(cleaned).strip()
+        return balance_marks(_strip_ellipsis(cleaned).strip())
     window = cleaned[:TITLE_LIMIT]
-    cut = -1
-    for index, char in enumerate(window):
-        if char in _BREAKS and index >= 8:
-            cut = index
+    # 顿号是列举，收在那里会剩下半截列表（14885「……护城河；资本开支」）。有逗号、分号就收在那里。
+    cut = _last_break(window, "，,；;：:")
+    if cut < 8:
+        cut = _last_break(window, "、")
+    else:
+        cut = _settled_cut(cleaned, cut)
     if cut >= 8:
         fitted = window[:cut].strip()
     else:
         fitted = window.rstrip(_BREAKS + " ").strip()
-    return _strip_ellipsis(fitted).strip()
+    # 收在逗号处时，后引号常常落在后半句里。
+    return balance_marks(_strip_ellipsis(fitted).strip())
+
+
+# 收在逗号上也会停在半截：最后一段只有几个字（24021「……3000亿，而且」），
+# 或者逗号后面又是几个字一段再接逗号，是拿逗号列举（24017「……不知道pc，手机，各类消费电子」）。
+# 后面那段是「而且」「当然」这种接下文的词时是另起一句，不算列举。
+_SHORT_PIECE = 4
+_SHORT_ITEM = re.compile(r"([^，,；;：:、。！？!?\s]{1,4})[，,、]")
+_CONNECTIVES = frozenset(
+    {"而且", "并且", "但是", "可是", "不过", "所以", "因此", "因为", "然后", "或者", "以及", "还有", "另外",
+     "同时", "甚至", "比如", "例如", "其实", "如果", "虽然", "即使", "当然", "总之", "首先", "其次", "最后"}
+)
+
+
+def _settled_cut(text: str, cut: int) -> int:
+    """cut 是收标题的那个逗号。会停在半截时往前挪一个逗号，前面不够 8 个字就不挪。"""
+    while True:
+        previous = _last_break(text[:cut], "，,；;：:")
+        if previous < 8:
+            return cut
+        item = _SHORT_ITEM.match(text, cut + 1)
+        listing = item is not None and item.group(1) not in _CONNECTIVES
+        if len(text[previous + 1 : cut].strip()) > _SHORT_PIECE and not listing:
+            return cut
+        cut = previous
+
+
+def _last_break(window: str, marks: str) -> int:
+    """window 里第 8 个字以后最后一个停顿的位置，没有就是 -1。"""
+    cut = -1
+    for index, char in enumerate(window):
+        if char in marks and index >= 8:
+            cut = index
+    return cut
+
+
+def unwrap_title(text: str) -> str:
+    """去掉包住整行的引号、书名号，再去掉落单的符号。
+
+    「《穷查理宝典》读后感」开头的书名号配得上对，是标题的一部分，留着。
+    """
+    current = (text or "").strip().strip("\"'‘’ ")
+    while len(current) >= 2 and MARK_PAIRS.get(current[0]) == current[-1] and not lonely_marks(current[1:-1]):
+        current = current[1:-1].strip().strip("\"'‘’ ")
+    return balance_marks(current)
 
 
 def _ok(text: str) -> bool:
-    if not text or _placeholder(text) or _narration(text) or _spammy(text) or _FILLER.match(text):
+    if (
+        not text
+        or _comment_list_ui(text)
+        or _placeholder(text)
+        or _narration(text)
+        or _spammy(text)
+        or _FILLER.match(text)
+    ):
         return False
-    if _contains_cut(text):
+    if _shell_colon(text) or _mention_led(text):
+        return False
+    if _contains_cut(text) or _STAMP_TAIL.search(text):
         return False
     if re.fullmatch(r"[\d\s:：./\-年月日时分秒]+", text):
         return False
@@ -390,14 +950,73 @@ def _clip_dangling(text: str) -> str:
     return (text or "").strip()
 
 
+def _usable_comment_stem(prefix: str) -> str:
+    """残屑前面的这段能当标题才返回。重复的话题壳、空壳、半截都不要。"""
+    stem = re.sub(r"\s+", " ", prefix or "").strip().rstrip(" \t-–—－|｜·•")
+    if not stem or _duplicate_topic_shell(stem) or _shell_colon(stem) or _comment_list_ui(stem):
+        return ""
+    if _dangling(stem):
+        stem = _clip_dangling(stem)
+    fitted = _fit(polish_title_typos(stem))
+    if (
+        not fitted
+        or _comment_list_ui(fitted)
+        or _duplicate_topic_shell(fitted)
+        or _shell_colon(fitted)
+        or not _ok(fitted)
+        or is_empty_shell(fitted)
+        or title_needs_repair(fitted)
+    ):
+        return ""
+    return fitted
+
+
+def _clean_comment_stem(title: str) -> str:
+    """标题带评论残屑、且前面还剩一句可用的话时，返回那一句。否则返回空串。"""
+    if not _comment_list_ui(title):
+        return ""
+    return _usable_comment_stem(_comment_ui_stem(title) or "")
+
+
+def _excise_comment_ui(text: str) -> str:
+    """从一句里拿掉评论列表残屑。
+
+    前面已经是一句可用的标题，就只留前面。否则删掉残屑，重复的话题壳也拿掉，留下后面的句子。
+    """
+    current = text or ""
+    for _ in range(3):
+        if not _comment_list_ui(current):
+            return current.strip()
+        usable = _usable_comment_stem(_comment_ui_stem(current) or "")
+        if usable:
+            return usable
+        cleaned = current
+        for pattern in (_COMMENT_HEAD, _COMMENT_AUTHOR, _COMMENT_COUNT):
+            cleaned = pattern.sub(" ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(" \t-–—－|｜·•")
+        match = _DUP_LEAD.match(cleaned)
+        if match:
+            cleaned = cleaned[match.end() :].strip()
+        if cleaned == current.strip():
+            return ""
+        current = cleaned
+    return "" if _comment_list_ui(current) else current.strip()
+
+
 def _placeholder(text: str) -> bool:
-    """「图片」、『见图』、（无标题）和裸的「图片」都是占位。"""
+    """「图片」、『见图』、（无标题）和裸的「图片」都是占位。
+
+    「下图」「如下：」这种引出图片的垫话也是：问答帖按话题号重导时，接口标题取的是回答开头，
+    线上 23982 的标题就成了「下图」。
+    """
     bare = _WRAP.sub("", text or "")
-    return bare in _PLACEHOLDER
+    if bare in _PLACEHOLDER or _FILLER.match(bare) is not None:
+        return True
+    return _SHARE_ONLY.fullmatch((text or "").strip()) is not None
 
 
 def _missing_note(text: str) -> bool:
-    return _MISSING_NOTE.search(text or "") is not None
+    return _MISSING_NOTE.search(text or "") is not None or is_empty_shell(text)
 
 
 def _narration(text: str) -> bool:

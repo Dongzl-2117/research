@@ -8,7 +8,6 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from researchlib.ingest.aihot import import_aihot
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.ingest.wechat import main as wechat_main
@@ -148,66 +147,6 @@ def test_wechat_ingest_is_idempotent(monkeypatch, tmp_path, database_url, conn):
         "SELECT title, body_md FROM articles WHERE source_id = 'fangwei-mp'"
     ).fetchone()
     assert "游戏" in row["body_md"]
-
-
-def test_aihot_import_filters_whitelist(conn, settings, tmp_path):
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS aihot_articles (
-          id bigint PRIMARY KEY,
-          title text,
-          content text,
-          source text,
-          published_at timestamptz
-        )
-        """
-    )
-    conn.execute("DELETE FROM aihot_articles")
-    conn.execute(
-        """
-        INSERT INTO aihot_articles (id, title, content, source, published_at) VALUES
-          (1, '腾讯备忘', '这是从别处读来的腾讯笔记', 'fangwei-mp', '2024-01-02'),
-          (2, '停用源', '林文丰公众号正文', 'linwenfeng-mp', '2024-01-03'),
-          (3, '未知', '不属于白名单', 'random-blog', '2024-01-04')
-        """
-    )
-    conn.commit()
-    spec = tmp_path / "map.yaml"
-    spec.write_text(
-        """
-table: aihot_articles
-columns:
-  external_id: [id]
-  title: [title]
-  body: [content]
-  source: [source]
-  published_at: [published_at]
-source_map: {}
-""",
-        encoding="utf-8",
-    )
-    imported = settings.__class__.from_env(
-        {
-            "DATABASE_URL": settings.database_url,
-            "DATA_DIR": str(settings.data_dir),
-            "PUBLIC_BASE_URL": settings.public_base_url,
-            "SOURCES_FILE": str(settings.sources_path),
-            "AIHOT_MAP_FILE": str(spec),
-            "AIHOT_DATABASE_URL": settings.database_url,
-            "BIND_HOST": "127.0.0.1",
-            "BIND_PORT": "8088",
-        }
-    )
-    report = import_aihot(conn, imported)
-    assert report.inserted == 1
-    assert report.rejected == 2
-    again = import_aihot(conn, imported)
-    assert again.inserted == 0
-    assert again.unchanged == 1
-    assert again.rejected == 2
-    row = conn.execute("SELECT external_id FROM articles WHERE source_id = 'fangwei-mp'").fetchone()
-    assert row["external_id"] == "aihot:1"
-    assert conn.execute("SELECT count(*) AS n FROM articles").fetchone()["n"] == 1
 
 
 def test_index_batch_stays_fast(conn, settings):

@@ -48,13 +48,12 @@ jobs:
               - 'src/researchlib/companies.py'
               - 'src/researchlib/company_seed.py'
               - 'src/researchlib/embeddings.py'
-              - 'src/researchlib/empty_answer.py'
+              - 'src/researchlib/visibility.py'
               - 'src/researchlib/sources.py'
               - 'src/researchlib/db.py'
               - 'src/researchlib/migrate.py'
               - 'src/researchlib/ask.py'
               - 'src/researchlib/web/queries.py'
-              - 'src/researchlib/ingest/duanyongping/attach.py'
               - 'src/researchlib/migrations/**'
               - 'docker/postgres/**'
               - 'config/sources.yaml'
@@ -124,48 +123,27 @@ jobs:
       - name: Lock files install on arm64
         if: ${{ !cancelled() }}
         run: |
-          for lock in requirements.lock requirements-ocr.lock; do
-            python tools/ci/annotate.py "arm64 下载 $lock" -- \
-              pip download --quiet --only-binary=:all: --require-hashes -r "$lock" -d /tmp/arm64 \
-              --python-version 3.12 --implementation cp --abi cp312 \
-              --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 \
-              --platform manylinux_2_24_aarch64 --platform manylinux_2_27_aarch64 \
-              --platform manylinux_2_28_aarch64 --platform manylinux_2_31_aarch64 \
-              --platform manylinux_2_34_aarch64 --platform manylinux_2_35_aarch64 \
-              --platform manylinux_2_36_aarch64
-          done
+          python tools/ci/annotate.py "arm64 下载 requirements.lock" -- \
+            pip download --quiet --only-binary=:all: --require-hashes -r requirements.lock -d /tmp/arm64 \
+            --python-version 3.12 --implementation cp --abi cp312 \
+            --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 \
+            --platform manylinux_2_24_aarch64 --platform manylinux_2_27_aarch64 \
+            --platform manylinux_2_28_aarch64 --platform manylinux_2_31_aarch64 \
+            --platform manylinux_2_34_aarch64 --platform manylinux_2_35_aarch64 \
+            --platform manylinux_2_36_aarch64
 
       # 下面几步只在改了镜像相关的文件时跑。
       - name: Compose file is valid
         if: ${{ !cancelled() && steps.filter.outputs.images == 'true' }}
-        run: |
-          docker compose config --quiet
-          docker compose --profile ocr config --quiet
+        run: docker compose config --quiet
 
-      # ocr 镜像建在 app 镜像之上，两个都按锁文件（--require-hashes）装依赖。
-      - name: Build the app and OCR images
+      # app 镜像按锁文件（--require-hashes）装依赖。
+      - name: Build the app image
         id: images
         if: ${{ !cancelled() && steps.filter.outputs.images == 'true' }}
-        run: python3 tools/ci/annotate.py "构建镜像" -- docker build --progress=plain --target ocr -t research-ocr .
+        run: python3 tools/ci/annotate.py "构建镜像" -- docker build --progress=plain -t research-app .
 
       - name: Installed packages are consistent
         if: ${{ !cancelled() && steps.images.outcome == 'success' }}
-        run: python3 tools/ci/annotate.py "镜像里的依赖" -- docker run --rm research-ocr pip check
+        run: python3 tools/ci/annotate.py "镜像里的依赖" -- docker run --rm research-app pip check
 
-      - name: OCR reads the sample image
-        if: ${{ !cancelled() && steps.images.outcome == 'success' }}
-        run: |
-          cat > /tmp/ocr_smoke.py <<'EOF'
-          from pathlib import Path
-
-          from researchlib.ocr import rapid_engine
-
-          text = rapid_engine()(Path("/fixtures/ocr-sample.png"))
-          print(text)
-          for words in ("拼多多", "广告收入", "货币化率"):
-              assert words in text, f"没认出「{words}」"
-          assert text.index("拼多多") < text.index("货币化率"), "行的顺序不对"
-          EOF
-          python3 tools/ci/annotate.py "OCR 样图" -- docker run --rm \
-            -v "$PWD/tests/fixtures:/fixtures:ro" -v /tmp/ocr_smoke.py:/tmp/ocr_smoke.py:ro \
-            research-ocr python /tmp/ocr_smoke.py

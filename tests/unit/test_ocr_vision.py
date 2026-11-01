@@ -1,17 +1,12 @@
-"""识图组包、失败不回退、API 单例。不连库、不调真 DeepSeek。"""
+"""识图组包、失败不回退、文字清理。不连库、不调真 DeepSeek。"""
 
 from __future__ import annotations
 
-import threading
-import time
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from researchlib.config import Settings
-from researchlib.jobs import ocr as ocr_job
 from researchlib.llm import LLMError
 from researchlib.ocr import (
     VISION_PROMPT,
@@ -24,7 +19,6 @@ from researchlib.ocr import (
     vision_engine_id,
     vision_messages,
 )
-from researchlib.web.api import api
 
 ROOT = Path(__file__).resolve().parents[2]
 SECRET = "sk-ocr-vision-must-not-leak"
@@ -36,7 +30,6 @@ def _settings(tmp_path) -> Settings:
             "DATA_DIR": str(tmp_path / "data"),
             "PUBLIC_BASE_URL": "https://investment.zldong.com",
             "SOURCES_FILE": str(ROOT / "config" / "sources.yaml"),
-            "AIHOT_MAP_FILE": str(ROOT / "config" / "aihot_import.yaml"),
             "DISPLAY_TIMEZONE": "Asia/Shanghai",
             "DEEPSEEK_API_KEY": SECRET,
         }
@@ -48,9 +41,12 @@ def test_vision_prompt_names_the_constraints():
         "绿色气泡",
         "方伟：",
         "网友：",
-        "Aaron",
-        "Henri",
-        "Kevin",
+        "截图上的网名",
+        "看不清网名",
+        "加群卡",
+        "财富陪伴官",
+        "去基金首页",
+        "十年知己",
         "可按住转文字",
         "回到引用位置",
         "设为群待办",
@@ -70,6 +66,28 @@ def test_vision_prompt_names_the_constraints():
         "PE",
         "半截",
         "Q1/Q2/Q3",
+        "视频号",
+        "已关注",
+        "发讨论",
+        "查看对话",
+        "十大影响力用户",
+        "回复@",
+        "从早到晚",
+        "不要把每个短行都单独成段",
+        "不要把整张图合成一段",
+        "空行",
+        "引用卡片",
+        "领教工坊",
+        "INSIDE THE BEST",
+        "COLMO",
+        "深刻反省",
+        "墓地",
+        "free case flow",
+        "free cash flow",
+        "未成年人请勿饮酒",
+        "主播",
+        "节目名水印",
+        "书籍目录",
     ):
         assert phrase in VISION_PROMPT, phrase
 
@@ -113,10 +131,10 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
-def test_vision_without_key_does_not_fall_back(monkeypatch):
+def test_vision_without_key_stops_before_any_image(monkeypatch):
     monkeypatch.setattr("researchlib.llm.llm_configured", lambda settings: False)
-    with pytest.raises(OcrUnavailable, match="rapidocr"):
-        resolve_engine(object(), "vision")
+    with pytest.raises(OcrUnavailable, match="DEEPSEEK_API_KEY"):
+        resolve_engine(object())
 
 
 def test_http_error_is_explicit_empty_not_dirty_text(tmp_path, monkeypatch):
@@ -166,133 +184,6 @@ def test_nightly_uses_app_vision_not_ocr_profile():
     assert "research-ocr --engine vision" in text
 
 
-class FakeConn:
-    def close(self):
-        return None
-
-    def execute(self, *args, **kwargs):
-        class Result:
-            def fetchall(self_inner):
-                return []
-
-            def fetchone(self_inner):
-                return None
-
-        return Result()
-
-
-@pytest.fixture
-def isolated_ocr(monkeypatch):
-    monkeypatch.setattr(ocr_job._worker, "_thread", None)
-    monkeypatch.setattr(ocr_job._worker, "_stop", threading.Event())
-    monkeypatch.setattr(ocr_job._worker, "_state", ocr_job._worker._blank())
-    monkeypatch.setattr(ocr_job, "connect", lambda settings: FakeConn())
-    monkeypatch.setattr(ocr_job, "credentials_problem", lambda settings, engine=None: "")
-    yield ocr_job
-    ocr_job._worker.stop_event.set()
-    if ocr_job._worker._thread is not None:
-        ocr_job._worker._thread.join(timeout=3)
-
-
-def _client(tmp_path) -> TestClient:
-    app = FastAPI()
-    app.state.settings = _settings(tmp_path)
-    app.include_router(api)
-    return TestClient(app)
-
-
-def _wait_stopped(timeout: float = 3.0) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snapshot = ocr_job.status()
-        if not snapshot["running"]:
-            return snapshot
-        time.sleep(0.01)
-    raise AssertionError(f"识图 worker 没停下：{ocr_job.status()}")
-
-
-def test_ocr_api_does_not_start_a_second_worker(tmp_path, isolated_ocr, monkeypatch):
-    started = threading.Event()
-    release = threading.Event()
-    calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append(kwargs)
-        started.set()
-        while not release.is_set() and not ocr_job._worker.stop_event.is_set():
-            release.wait(0.05)
-        return {"images": 1, "with_text": 1, "failed": 0, "missing": 0, "articles": 1, "last_error": None}
-
-    monkeypatch.setattr("researchlib.ocr.pending_images", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        "researchlib.ocr.resolve_engine",
-        lambda settings, choice: ("deepseek-flash-vision", lambda path: ""),
-    )
-    monkeypatch.setattr("researchlib.ocr.run_ocr", fake_run)
-    client = _client(tmp_path)
-
-    first = client.post(
-        "/api/v1/ocr",
-        json={"articles": [24002, 24007], "redo": True, "limit": 50, "engine": "vision"},
-    )
-    assert first.status_code == 200
-    assert first.json()["started"] is True
-    assert first.json()["running"] is True
-    assert SECRET not in first.text
-    assert started.wait(timeout=2)
-
-    second = client.post("/api/v1/ocr", json={"articles": [1], "redo": False})
-    assert second.status_code == 200
-    assert second.json()["started"] is False
-    assert second.json()["running"] is True
-    assert SECRET not in second.text
-
-    status = client.get("/api/v1/ocr")
-    assert status.status_code == 200
-    body = status.json()
-    for key in ("running", "engine", "redo", "images", "failed", "last_error", "thread_alive"):
-        assert key in body
-    assert body["running"] is True
-    assert SECRET not in status.text
-    assert "sk-" not in status.text
-
-    stopped = client.post("/api/v1/ocr/stop")
-    assert stopped.status_code == 200
-    assert stopped.json()["stopped"] is True
-    release.set()
-    final = _wait_stopped()
-    assert final["running"] is False
-    assert len(calls) == 1
-    assert calls[0]["redo"] is True
-    assert calls[0]["article_ids"] == [24002, 24007]
-    assert calls[0]["engine"] == "deepseek-flash-vision"
-
-
-def test_ocr_api_rejects_cross_origin_and_missing_key(tmp_path, isolated_ocr, monkeypatch):
-    client = _client(tmp_path)
-    blocked = client.post("/api/v1/ocr", json={"limit": 1}, headers={"origin": "https://evil.example"})
-    assert blocked.status_code == 403
-    blocked_stop = client.post("/api/v1/ocr/stop", headers={"origin": "https://evil.example"})
-    assert blocked_stop.status_code == 403
-
-    def missing(_settings, engine=None):
-        return "没有配置 DEEPSEEK_API_KEY，识图起不来。"
-
-    monkeypatch.setattr(ocr_job, "credentials_problem", missing)
-    denied = client.post("/api/v1/ocr", json={"engine": "vision"})
-    assert denied.status_code == 409
-    assert "DEEPSEEK_API_KEY" in denied.json()["detail"]
-    assert SECRET not in denied.text
-    assert ocr_job.status()["running"] is False
-
-
-def test_llms_txt_documents_ocr_endpoint():
-    """llms.txt 的文案写在 api.py 里，真正渲染要连库，集成测才打 GET。"""
-    api_src = (ROOT / "src" / "researchlib" / "web" / "api.py").read_text(encoding="utf-8")
-    assert "/api/v1/ocr" in api_src
-    assert "触发图片文字" in api_src
-
-
 def test_prepare_vision_image_shrinks_large_jpeg():
     raw = (Path(__file__).resolve().parents[1] / "fixtures" / "ocr-vision-large.jpg").read_bytes()
     assert len(raw) > 120_000
@@ -339,3 +230,79 @@ def test_normalize_drops_coupon_and_fixes_year():
     assert "一年后会" in normalize_vision_text("因为今天的钱可以拿去存款、买国债或投资，一?会变得更多。")
     assert "一?" not in normalize_vision_text("一?后的100元更不值钱")
     assert normalize_vision_text("（此截图为知识星球优惠券推广卡，按规则整段不输出。）") == ""
+
+
+def test_normalize_strips_video_xueqiu_chrome_and_reply_at():
+    assert normalize_vision_text("领教工坊 已关注") == ""
+    assert normalize_vision_text("点击 #领教工坊 查看更多") == ""
+    assert "视频号" not in normalize_vision_text(
+        "更多组织管理与领导力洞见，欢迎关注 @领教工坊 视频号"
+    )
+    assert normalize_vision_text("发讨论") == ""
+    assert normalize_vision_text("756  1555  827") == ""
+    out = normalize_vision_text(
+        "网友：回复@甲:李录投资也很好啊。//@乙:回复@丙:网友会不会是卖完了再吹？"
+    )
+    # //@ 后面那一楼的网名留着；最新一条没有自己的网名，仍是「网友：」。
+    assert out == "乙：网友会不会是卖完了再吹？\n网友：李录投资也很好啊。"
+    assert out.index("会不会是卖完了再吹") < out.index("李录投资也很好")
+    assert "//@" not in out
+    assert "回复@" not in out
+
+def test_normalize_strips_brand_masthead_and_collapses_spam():
+    raw = """方洪波：
+企业家精神是敢于在最顺的时候对自己动刀子
+领教工坊
+INSIDE THE BEST
+来源：思想?岭南 | 对话方洪波：企业发展如何穿越周期、基业长青？
+光做家电没有未来
+COLMO
+我们光做家电没有未来
+"""
+    out = normalize_vision_text(raw)
+    assert "领教工坊" not in out
+    assert "INSIDE THE BEST" not in out.upper().replace("  ", " ")
+    assert "COLMO" not in out
+    assert "来源" not in out
+    assert "光做家电没有未来" in out
+    assert "企业家精神" in out
+    assert "思想×岭南" not in out  # 整行刊源已剥，不必保留
+
+    spam = "清仓格力\n深刻反省，深刻反省，深刻反省，深刻反省，深刻反省，深刻反省，深刻反省"
+    collapsed = normalize_vision_text(spam)
+    assert collapsed.count("深刻反省") == 1
+    soft = "深刻反省，深刻\n反省，深刻反省，深刻反省"
+    assert normalize_vision_text(soft).count("深刻反省") == 1
+
+
+def test_normalize_fixes_obvious_typos():
+    assert "很新的东西" in normalize_vision_text("网友：AI算力是一个很新都东西")
+    assert "很新都东西" not in normalize_vision_text("网友：AI算力是一个很新都东西")
+
+
+def test_normalize_strips_video_badges_and_ad_shell():
+    """24010 / 23173：角标和广告壳在识图后处理就丢掉，不靠语病表。"""
+    video = normalize_vision_text(
+        "“黄酒一哥” 易主！\n"
+        "2026年上半年营业收入达8.53亿元\n"
+        "未成年人请勿饮酒\n"
+        "主播 浩嘉\n"
+        "会稽山超越古越龙山\n"
+        "新经济观察"
+    )
+    assert "8.53亿" in video
+    assert "会稽山超越古越龙山" in video
+    assert "未成年人" not in video
+    assert "主播" not in video
+    assert "新经济观察" not in video
+    assert normalize_vision_text("主播 浩嘉") == ""
+    assert normalize_vision_text("未成年人请勿饮酒") == ""
+
+    poster = normalize_vision_text(
+        "理想\n连山电池保障计划\n双重保障，终身守护。\n补偿同等配置新车\n"
+        "适用条件:\n责任免除见官方条款。终身保障。"
+    )
+    assert "连山电池保障计划" in poster
+    assert "补偿同等配置新车" in poster
+    assert "双重保障" not in poster
+    assert not any(line.strip() == "理想" for line in poster.splitlines())

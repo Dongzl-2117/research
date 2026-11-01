@@ -342,7 +342,6 @@ def test_theses_auto_disabled_by_default():
             "DATA_DIR": "/tmp/research-test-data",
             "PUBLIC_BASE_URL": "https://investment.zldong.com",
             "SOURCES_FILE": "config/sources.yaml",
-            "AIHOT_MAP_FILE": "config/aihot_import.yaml",
             "BIND_HOST": "127.0.0.1",
             "BIND_PORT": "8088",
         }
@@ -353,7 +352,6 @@ def test_theses_auto_disabled_by_default():
             "DATA_DIR": "/tmp/research-test-data",
             "PUBLIC_BASE_URL": "https://investment.zldong.com",
             "SOURCES_FILE": "config/sources.yaml",
-            "AIHOT_MAP_FILE": "config/aihot_import.yaml",
             "BIND_HOST": "127.0.0.1",
             "BIND_PORT": "8088",
             "RESEARCH_THESES_AUTO": "1",

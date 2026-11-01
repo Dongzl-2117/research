@@ -120,6 +120,10 @@ def test_json_api_and_markdown(conn, settings):
         assert all(item["articles"] > 0 for item in companies)
         authors = client.get("/api/v1/authors").json()["authors"]
         assert {"方伟", "乘风破浪"} <= {item["name"] for item in authors}
+        # 作者链接和网页上一样转义：「Ben Thompson」的空格、中文名都编码。
+        links = {item["name"]: item["links"]["html"] for item in authors}
+        assert links["方伟"] == "https://investment.zldong.com/authors/%E6%96%B9%E4%BC%9F"
+        assert links["Ben Thompson"] == "https://investment.zldong.com/authors/Ben%20Thompson"
         day = article["published_at"][:10]
         assert any(item["id"] == article_id for item in client.get(f"/api/v1/days/{day}").json()["items"])
         assert client.get("/api/v1/articles/999999").status_code == 404
@@ -266,6 +270,70 @@ def test_search_matches_words_not_one_long_phrase(conn, settings):
         assert "加载" in chunk["terms"]
 
 
+def test_quoted_phrase_is_counted_the_way_it_is_listed(conn, settings):
+    """引号里的词要原样出现，篇数也按原样数。全文索引把「小程序://」切成「小程序」，以前数到所有提到小程序的帖子：
+    页面写「3 篇全部命中，按相关度能翻到前 1 篇，其余的加来源或时间范围再搜」，另外两篇根本没有这句。"""
+    _store(
+        conn,
+        settings,
+        [
+            ("mini", "雪球分享", 1, "#小程序://雪球/Xm9H4vXxNcEEgAF\n\n华润万象生活的生意够硬。"),
+            ("flow", "流量笔记", 2, "微信小程序的流量在涨，小程序生态越来越大。"),
+            ("ads", "广告笔记", 3, "小程序里的广告加载率还低。"),
+        ],
+    )
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": '"小程序://"'}).text
+        quoted = client.get("/api/v1/search", params={"q": '"小程序://"'}).json()
+        plain = client.get("/api/v1/search", params={"q": "小程序"}).json()
+    assert "1 篇全部命中" in page and "其余的加来源" not in page
+    assert quoted["total"] == 1 and [item["id"] for item in quoted["items"]] == [1]
+    assert plain["total"] == 3 and len(plain["items"]) == 3
+
+
+
+def test_excluded_word_is_counted_the_way_it_is_listed(conn, settings):
+    """排除词篇数和列表同一条：写到小程序的每一块都写着广告的那篇不数，有一块干净的照数。
+    以前篇数不看排除词：页面写「3 篇全部命中，按相关度能翻到前 2 篇，其余的加来源或时间范围再搜」。"""
+    clean = "小程序的用户时长在涨。" + "这一块还要再看几个季度。" * 45
+    _store(
+        conn,
+        settings,
+        [
+            ("flow", "流量笔记", 1, "微信小程序的流量在涨，小程序生态越来越大。"),
+            ("ads", "广告笔记", 2, "小程序里的广告加载率还低。"),
+            ("both", "生态笔记", 3, clean + "\n\n" + "公司的广告业务另说，" * 40),
+        ],
+    )
+    chunks = conn.execute("SELECT body FROM article_chunks WHERE article_id = 3 AND lang = '' ORDER BY ord").fetchall()
+    assert len(chunks) == 2 and "广告" not in chunks[0]["body"]
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "小程序 -广告"}).text
+        found = client.get("/api/v1/search", params={"q": "小程序 -广告"}).json()
+        plain = client.get("/api/v1/search", params={"q": "小程序"}).json()
+    assert sorted(item["id"] for item in found["items"]) == [1, 3]
+    assert found["total"] == 2
+    assert "2 篇全部命中" in page and "其余的加来源" not in page
+    assert plain["total"] == 3
+
+def test_search_snippets_skip_a_repeated_paragraph(conn, settings):
+    from researchlib.retrieval import reset_stats_cache, search_articles
+    from researchlib.sources import enabled_sources, load_sources
+    from researchlib.web.queries import Scope
+
+    # 引文在正文里又以普通段落出现一遍（Stratechery）：两块一字不差，检索页上的两段片段是同一段话。
+    quote = "腾讯的广告加载率还在提升，广告加载率越高，视频号的广告库存越值钱。" + "商家的投放在往视频号挪。" * 36
+    other = "小程序里的广告也在增加，但是基数小。" + "这一块的收入还要几个季度才看得出来。" * 26
+    _store(conn, settings, [("quoted", "广告笔记", 1, f"{quote}\n\n{other}\n\n{quote}")])
+    rows = conn.execute("SELECT body FROM article_chunks WHERE article_id = 1 AND lang = '' ORDER BY ord").fetchall()
+    assert [row["body"] for row in rows] == [quote, other, quote]
+    reset_stats_cache()
+    sources = enabled_sources(load_sources(settings.sources_path))
+    found = search_articles(conn, "广告加载率", Scope(source_ids=[source.id for source in sources]), sources)
+    assert [hit.article_id for hit in found.hits] == [1]
+    assert sorted(passage.body for passage in found.hits[0].passages) == sorted([quote, other])
+
+
 def test_company_question_only_uses_passages_about_the_company(conn, settings):
     from researchlib.retrieval import retrieve
     from researchlib.sources import enabled_sources, load_sources
@@ -338,6 +406,40 @@ def test_interrupted_answer_can_be_retried(conn, settings, monkeypatch):
         retried = client.post(f"/ask/{row['id']}/retry", follow_redirects=False)
         assert retried.status_code == 303
         assert "重新整合好了" in client.get(f"/ask/{row['id']}").text
+
+
+def test_ask_history_lists_a_repeated_question_once(conn, settings):
+    """同一个问题问了很多遍（上线重启时中断了好几次），「最近问过」以前十几条全是它。"""
+    _sample(conn, settings)
+    fangwei = Jsonb({"source_ids": ["fangwei-mp", "fangwei-zsxq"], "article_id": None})
+    one_article = Jsonb({"source_ids": ["fangwei-mp", "fangwei-zsxq"], "article_id": 1})
+    rows = [
+        ("方伟怎么看茅台", fangwei, "error", 1),
+        ("方伟怎么看茅台", fangwei, "done", 2),
+        ("方伟怎么看茅台", fangwei, "error", 3),
+        ("方伟怎么看茅台", one_article, "error", 4),
+        ("泡泡玛特的底线利润", fangwei, "done", 5),
+        ("方伟怎么看茅台", fangwei, "error", 6),
+    ]
+    ids = [
+        conn.execute(
+            "INSERT INTO llm_answers (question, scope, answer, citations, model, status, created_at)"
+            " VALUES (%s, %s, '', '[]', '', %s, now() - make_interval(mins => 10 - %s)) RETURNING id",
+            (question, scope, status, minute),
+        ).fetchone()["id"]
+        for question, scope, status, minute in rows
+    ]
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/ask").text
+    history = page[page.index("最近问过") :]
+    # 整个库里问的那组按最后一次问的时间排在最前，链到整合完的那次；只用一篇的另列一条，标出来。
+    assert history.count("方伟怎么看茅台") == 2
+    assert history.index(f'href="/ask/{ids[1]}"') < history.index(f'href="/ask/{ids[4]}"')
+    assert history.index(f'href="/ask/{ids[4]}"') < history.index(f'href="/ask/{ids[3]}"')
+    assert "只用一篇" in history
+    for skipped in (ids[0], ids[2], ids[5]):
+        assert f'href="/ask/{skipped}"' not in history
 
 
 def test_companies_page_pins_holdings_and_company_page_defaults_to_deep(conn, settings):

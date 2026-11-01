@@ -82,6 +82,26 @@ def test_ci_failure_becomes_one_annotation_with_the_tail(capsys):
     assert "::error" not in capsys.readouterr().out
 
 
+def test_nightly_starts_app_before_ocr():
+    """识图在 app 容器里跑。容器没起来时先 up，避免 service app is not running。"""
+    nightly = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
+    status = (ROOT / "scripts" / "status.sh").read_text(encoding="utf-8")
+    assert "compose_exec app research-ocr" in nightly
+    assert "compose up -d" in status
+    assert "is not running" in status
+    for name in ("crawl-fangwei-mp.sh", "crawl-fangwei-zsxq.sh"):
+        text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert "compose_exec app research-ingest" in text
+
+
+def test_nightly_reads_images_before_views_and_digests():
+    """识图紧跟外链图片，排在向量、观点、摘要前面：当天的截图帖第一遍就带着图里的字抽。"""
+    nightly = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
+    steps = ("research-fetch-images", "research-ocr", "research-embed", "research-views", "research-digest")
+    order = [nightly.index(f"compose_exec app {name}") for name in steps]
+    assert order == sorted(order)
+
+
 def test_nightly_theses_disabled_by_default():
     """论点夜间步骤默认关：没设 THESES_ENABLED=1 时不跑 research-theses。"""
     source = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")

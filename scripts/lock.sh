@@ -2,7 +2,6 @@
 # 依赖锁文件，版本和 hash 都锁死：
 #   requirements.lock      应用镜像。Dockerfile 用 pip install --require-hashes 只装这里面的
 #   requirements-dev.lock  CI 和本地测试：应用的依赖加 pytest、ruff、httpx，版本和上面一致
-#   requirements-ocr.lock  ocr 镜像：再加 RapidOCR，版本和上面一致
 #
 #   scripts/lock.sh                            # pyproject.toml 改了依赖以后：已锁的版本不动，只补新加的
 #   scripts/lock.sh --upgrade                  # 全部升到最新
@@ -21,7 +20,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 UV_VERSION="${UV_VERSION:-0.12.20}"
 COOLDOWN_DAYS="${COOLDOWN_DAYS:-14}"
 PYTHON_IMAGE="python:3.12-slim-bookworm"
-LOCKS="requirements.lock requirements-dev.lock requirements-ocr.lock"
+LOCKS="requirements.lock requirements-dev.lock"
 
 if ! command -v uv > /dev/null 2>&1; then
   exec docker run --rm -v "${REPO}:/repo" -w /repo -e UV_VERSION="${UV_VERSION}" -e COOLDOWN_DAYS="${COOLDOWN_DAYS}" \
@@ -94,7 +93,6 @@ pins() {
 compile "$target/requirements.lock"
 pins "$target/requirements.lock" > "$work/runtime.txt"
 compile "$target/requirements-dev.lock" --extra dev --constraint "$work/runtime.txt"
-compile "$target/requirements-ocr.lock" --extra ocr --constraint "$work/runtime.txt"
 
 if [ "$mode" = write ]; then
   echo "已更新：${LOCKS}"

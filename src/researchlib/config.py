@@ -57,13 +57,11 @@ class Settings:
     bind_port: int
     allow_nonlocal_bind: bool
     sources_path: Path
-    aihot_map_path: Path
-    aihot_database_url: str | None
     display_timezone: str
     page_size: int = 20
     days_per_page: int = 14
     # 问库、摘要、观点、论点、译制都走 OpenAI 兼容的 chat/completions。
-    # 默认 DeepSeek（DEEPSEEK_API_KEY）；RESEARCH_LLM_PROVIDER=grok 时走与 AIHOT 共用的 xAI OAuth。
+    # 默认 DeepSeek（DEEPSEEK_API_KEY）；RESEARCH_LLM_PROVIDER=grok 时走 xAI OAuth（research-xai-login）。
     # 具体强度在 researchlib.deepseek / researchlib.grok，不读 API key 的字段不进 Settings。
     llm_provider: str = "deepseek"
     llm_base_url: str = "https://api.deepseek.com"
@@ -72,7 +70,7 @@ class Settings:
     llm_concurrency: int = 3
     # 持仓和观察名单。没有这个文件就当没有持仓。
     portfolio_path: Path | None = None
-    # 首页断更提示。只看最近几天确实在做定时导入的来源，AIHOT 抓取停着、只手动导归档时不会假警报。
+    # 首页断更提示。只看最近几天确实在做定时抓取的来源，抓取停着、只手动导归档时不会假警报。
     # 不想要时设 RESEARCH_STALE_BANNER=0。
     stale_banner_enabled: bool = True
     # 打开公司页时是否在后台自动补论点。默认关。打开后也不限持仓：观点够数的公司都会排。
@@ -93,9 +91,7 @@ class Settings:
         data_dir = Path(environ.get("DATA_DIR", "data"))
         if not data_dir.is_absolute():
             data_dir = Path.cwd() / data_dir
-        aihot = environ.get("AIHOT_DATABASE_URL", "").strip() or None
         sources = environ.get("SOURCES_FILE")
-        aihot_map = environ.get("AIHOT_MAP_FILE")
         provider = llm_provider(environ)
         return Settings(
             database_url=environ.get(
@@ -108,8 +104,6 @@ class Settings:
             bind_port=int(environ.get("BIND_PORT", str(DEFAULT_BIND_PORT))),
             allow_nonlocal_bind=environ.get("ALLOW_NONLOCAL_BIND", "0") == "1",
             sources_path=Path(sources) if sources else _existing_or_repo("config/sources.yaml"),
-            aihot_map_path=Path(aihot_map) if aihot_map else _existing_or_repo("config/aihot_import.yaml"),
-            aihot_database_url=aihot,
             display_timezone=environ.get("DISPLAY_TIMEZONE", "Asia/Shanghai"),
             page_size=int(environ.get("PAGE_SIZE", "20")),
             days_per_page=max(1, int(environ.get("DAYS_PER_PAGE", "14"))),

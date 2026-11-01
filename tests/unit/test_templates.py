@@ -22,7 +22,6 @@ def test_home_recent_views_toggle_is_a_button():
         sample_banner=False,
         sources=[],
         active_source="",
-        notices=[],
         stale=[],
         holdings=[
             {
@@ -201,7 +200,44 @@ def test_article_template_is_title_body_and_bilingual_tabs():
     assert "AI 整合" not in html
 
 
-def test_day_template_opens_on_a_summary():
+def test_bilingual_template_hides_empty_english_on_leftover_zh():
+    html = _env().get_template("article.html").render(
+        title="Note",
+        canonical="https://investment.zldong.com/articles/1",
+        public_host="investment.zldong.com",
+        query="",
+        nav="archive",
+        sample_banner=False,
+        sources=[],
+        active_source="",
+        source=_Source(),
+        article={"id": 1, "title": "Note"},
+        iso="2026-01-01",
+        date="2026-01-01",
+        time="12:00",
+        relative="昨天",
+        title_zh="笔记",
+        body_language="pairs",
+        has_translation=True,
+        translation_complete=True,
+        pairs=[
+            {"en": "Hello", "zh": "你好", "anchor": "p-1"},
+            {"en": "", "zh": "多出来的译文。", "anchor": "p-2"},
+            {"en": "", "zh": None, "anchor": None},
+        ],
+        body_html=None,
+        original_url="",
+        siblings=[],
+        quoted=None,
+    )
+    assert html.count("bilingual-en") == 1
+    assert html.count("bilingual-zh") == 2
+    assert "多出来的译文。" in html
+    assert 'id="p-2"' in html
+    assert html.count("bilingual-pair") == 2
+
+
+def test_day_template_lists_the_day_and_offers_to_ask():
     html = _env().get_template("day.html").render(
         title="10月19日",
         canonical="https://investment.zldong.com/days/2024-10-19",
@@ -221,8 +257,8 @@ def test_day_template_opens_on_a_summary():
         prev_href="",
         next_href="/days/2024-10-20",
         answer=None,
+        ask_href="/ask?preset=day&from=2024-10-19&to=2024-10-19",
         brief={
-            "lead": "方伟：这篇短帖在讲宁德时代。",
             "authors": 1,
             "companies": [{"id": 9, "name": "宁德时代"}],
             "sections": [
@@ -243,7 +279,10 @@ def test_day_template_opens_on_a_summary():
         },
     )
     assert "日汇总" in html
-    assert "方伟：这篇短帖在讲宁德时代。" in html
+    # 导读只在文章那一行出现一次，上面不再拿它冒充这一天的总结。
+    assert html.count("这篇短帖在讲宁德时代。") == 1
+    assert "这一天的总结" not in html
+    assert 'href="/ask?preset=day&amp;from=2024-10-19&amp;to=2024-10-19"' in html
     assert "13:29" in html
     assert "AI 整合" not in html
     assert 'href="/days/2024-10-20"' in html

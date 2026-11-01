@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="relevance-csrf" content="{{ csrf }}"><title>原文相关性标注</title>
+  <style>
+    body{font:17px/1.7 system-ui,sans-serif;max-width:1080px;margin:28px auto;padding:0 20px;color:#172c32;background:#faf9f6}
+    button,input{font:inherit} button{padding:8px 14px;margin:5px 4px 5px 0;cursor:pointer}button:disabled{cursor:wait;opacity:.5}
+    h1{font-size:1.5rem}h2{font-size:1.2rem}.muted{color:#58676b}.pair{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+    article{background:white;border:1px solid #ced8d7;padding:20px;border-radius:6px;min-width:0}
+    .passage{white-space:pre-wrap;overflow-wrap:anywhere}.context{color:#536366;font-size:.95rem}.query{font-weight:650}
+    .error{color:#9e2525} [hidden]{display:none!important} a{color:#176b75}input{padding:7px;max-width:100%;box-sizing:border-box}
+    #query-input{width:65%}#status{min-height:1.7em}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #176b75;outline-offset:3px}
+    @media(max-width:700px){.pair{grid-template-columns:1fr}#query-input{width:100%}}
+  </style>
+  <script src="/annotate/app.js" defer></script>
+</head>
+<body>
+  <h1>哪段原文更能回应这个查询？</h1>
+  <p class="muted">比较查询相关性，结合所列上下文。这里的文字是待评的原文片段；无需判断生成答案是否真实。</p>
+  <p class="muted">“相当”表示两段都有帮助且相关性接近；两段都不能回应查询时选“都不相关”。材料不足以比较可选“无法判断”；“跳过”只结束本条，不表示相关或不相关。</p>
+  <p class="muted">本机标注身份：{{ annotator }} · human · <a href="/api/relevance/export">导出私有 human JSONL</a></p>
+  {% if provider_enabled %}
+  <form id="generate"><label for="query-input">从已配置的实际库获取候选</label><br>
+    <input id="query-input" required maxlength="3000"><button type="submit">获取一对原文</button>
+  </form>
+  {% else %}<p class="muted">未配置实际库候选接口：下面只展示显式导入的任务。合成演示不能检索你的资料库。</p>{% endif %}
+  <p id="status" role="status" aria-live="polite"></p>
+  <p id="progress" class="muted"></p><p id="coverage" role="status" class="error"></p>
+  <button id="previous" hidden>纠正上一条</button><button id="back" hidden>回到待标任务</button>
+  <main id="task" hidden>
+    <p id="material"></p><p id="query" class="query"></p><p id="scope" class="muted"></p>
+    <div class="pair"><article aria-label="原文 A"><h2>A</h2><h3 id="left-title"></h3>
+      <p id="left-heading" class="muted"></p><p id="left-before" class="passage context"></p>
+      <p id="left-text" class="passage"></p><p id="left-after" class="passage context"></p>
+      <a id="left-source" target="_blank" rel="noopener noreferrer">打开 A 来源</a></article>
+    <article aria-label="原文 B"><h2>B</h2><h3 id="right-title"></h3>
+      <p id="right-heading" class="muted"></p><p id="right-before" class="passage context"></p>
+      <p id="right-text" class="passage"></p><p id="right-after" class="passage context"></p>
+      <a id="right-source" target="_blank" rel="noopener noreferrer">打开 B 来源</a></article></div>
+    <p id="prior" class="muted"></p>
+    <div id="decisions" aria-label="相关性判定">
+      <button data-decision="left">A 更相关</button><button data-decision="right">B 更相关</button>
+      <button data-decision="tie">相当</button><button data-decision="neither">都不相关</button>
+      <button data-decision="skip">跳过</button><button data-decision="uncertain">无法判断</button>
+      <button id="withdraw" data-decision="withdraw" hidden>撤销这条标签</button>
+    </div>
+    <button id="next" hidden>下一条</button>
+  </main>
+  <p id="empty" hidden>当前任务已标完。可以纠正上一条，或由操作员导入新的冻结任务。</p>
+</body>
+</html>

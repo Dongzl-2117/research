@@ -194,6 +194,7 @@ class SearchResult:
     query: Query | None
     counts: dict[str, int]  # 按来源分的全部命中篇数
     available: int = 0  # 能翻到的篇数（全部命中排在前，部分命中在后）
+    semantic: int = 0  # 词没写全、按意思排进前面那一档的篇数（标「语义相关」），不算进 total
 
 
 _QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』')
@@ -495,7 +496,8 @@ def analyze(
     expansions: dict[str, list[str]] | None = None,
 ) -> Query:
     """把问题拆成公司、作者、短语、排除词和检索词。expansions 是模型给的同义词：{原词: [同义词]}。"""
-    raw = (question or "").strip()[:500]
+    # 地址栏里的 %00 会变成 NUL 字符，Postgres 的文字不收，切词那一步就报错（检索页、问库都走这里）。
+    raw = (question or "").replace("\x00", " ").strip()[:500]
     text = raw
     phrases: list[str] = []
     for match in _QUOTE.finditer(text):
@@ -615,23 +617,45 @@ a.source_id, a.published_at
 """
 
 
-def _article_match(tsq: str) -> str:
+def _article_match(tsq: str, *, ocr: bool = False) -> str:
     """文章级的全文命中：原文的标题和正文，加上中文译文的标题和正文。
 
-    写成两个子查询的并集，两边都能走各自的 GIN 索引；写成 OR EXISTS 会退化成逐行过滤，库大了很慢。
+    写成几个子查询的并集，各自都能走 GIN 索引；写成 OR EXISTS 会退化成逐行过滤，库大了很慢。
+    ocr：再算上图片里的字（lang = 'ocr' 的检索块）。只在截图里写了这个词的星球帖，结果里列着，
+    数篇数时也要数到（「送货上门」结果 55 篇，来源计数只数到 16 篇）。
     """
-    return (
-        f"a.id IN (SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}"
-        f" UNION ALL SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq})"
-    )
+    parts = [
+        f"SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}",
+        f"SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq}",
+    ]
+    if ocr:
+        parts.append(f"SELECT oc.article_id FROM article_chunks oc WHERE oc.lang = 'ocr' AND oc.search_tsv @@ {tsq}")
+    return f"a.id IN ({' UNION ALL '.join(parts)})"
 
 
-def _prefer_translation(rows: list[dict]) -> list[dict]:
-    """同一篇英文文章的原文块和中文译文块都召回时，只留译文块，免得同一段内容占两份名额。"""
+def _prefer_translation(rows: list[dict], phrases: list[str] | None = None) -> list[dict]:
+    """同一篇英文文章的原文块和中文译文块都召回时，只留译文块，免得同一段内容占两份名额。
+
+    phrases：引号里要原样出现的词。原文块里原样写着的留下：英文原句只在原文块里，丢了它，这篇在打分那一步
+    就因为译文块里没有这句被整篇滤掉。线上搜「"Listen to this Update in your podcast player"」，
+    侧栏数到 38 篇，结果一篇没有：语义召回把这些文章译文里「在播客播放器里收听」那块带了进来。
+    """
     translated = {row["article_id"] for row in rows if row.get("lang") == "zh"}
     if not translated:
         return rows
-    return [row for row in rows if row.get("lang") == "zh" or row["article_id"] not in translated]
+
+    def quoted(row: dict) -> bool:
+        text = (row.get("heading") or "") + "\n" + (row.get("body") or "")
+        lowered = text.lower()
+        return any(_count(text, lowered, phrase) for phrase in phrases or ())
+
+    return [
+        row for row in rows if row.get("lang") == "zh" or row["article_id"] not in translated or quoted(row)
+    ]
+
+
+def _phrases(query: Query) -> list[str]:
+    return [term.forms[0] for term in query.terms if term.kind == "phrase" and term.forms]
 
 
 def _group_tsquery(query: Query, params: dict, *, only_selective: bool, operator: str, prefix: str) -> str:
@@ -897,7 +921,7 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
             add_rows(_rows_for_keys(conn, title_keys))
         if not targets:
             add_rows(_leading_rows(conn, scope, 600))
-    return _prefer_translation(list(found.values()))
+    return _prefer_translation(list(found.values()), _phrases(query))
 
 
 # —— 语义召回 ——
@@ -997,7 +1021,7 @@ def semantic_candidates(
     have = {(row["article_id"], row["ord"]) for row in rows}
     new_keys = [key for key in sims if key not in have]
     rows = list(rows) + [dict(row) for row in _rows_for_keys(conn, new_keys)]
-    return _prefer_translation(rows), semantic_scores(sims)
+    return _prefer_translation(rows, _phrases(query)), semantic_scores(sims)
 
 
 def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int]):
@@ -1138,6 +1162,18 @@ def _form_counter(form: str):
         return lambda text, _lowered: text.count(form)
     pattern = re.compile(r"(?<![A-Za-z0-9])" + re.escape(form.lower()) + r"(?![A-Za-z0-9])")
     return lambda _text, lowered: len(pattern.findall(lowered))
+
+
+_REGEX_SPECIAL = re.compile(r"([\\^$.|?*+()\[\]{}])")
+
+
+def _literal_sql(form: str, column: str, params: dict, key: str) -> str:
+    """SQL 里「这段文字原样含有 form」，和 _form_counter 同一个口径：中文按字面，英文按词边界、不分大小写。"""
+    if _is_cjk(form):
+        params[key] = form
+        return f"strpos({column}, %({key})s) > 0"
+    params[key] = r"(?<![A-Za-z0-9])" + _REGEX_SPECIAL.sub(r"\\\1", form) + r"(?![A-Za-z0-9])"
+    return f"({column}) ~* %({key})s"
 
 
 def _count(text: str, lowered: str, form: str) -> int:
@@ -1479,6 +1515,22 @@ def _text_key(body: str) -> str:
     return text if len(text) >= 30 else ""
 
 
+def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
+    """按分数顺序取前几块，和已取的块一字不差、或整块包含在里面（反过来也算）的跳过。"""
+    kept: list[Passage] = []
+    keys: list[str] = []
+    for passage in items:
+        key = _text_key(passage.body)
+        if key and any(key in other or other in key for other in keys):
+            continue
+        kept.append(passage)
+        if key:
+            keys.append(key)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
 def retrieve(
     conn,
     question: str,
@@ -1745,11 +1797,14 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
             and company_groups <= matched_groups
             and max(p.semantic for p in items) >= SEMANTIC_STRONG
         )
-        score = items[0].score + 0.3 * sum(p.score for p in items[1:3])
-        first = items[0]
+        # 同一篇里重复的段落只算一次、只摘一次：Stratechery 的引文在正文里又以普通段落出现一遍，
+        # 两块一字不差，页面上的两段片段就是同一段话。
+        shown = _distinct_passages(items, 3)
+        score = shown[0].score + 0.3 * sum(p.score for p in shown[1:3])
+        first = shown[0]
         hits.append(
             ArticleHit(
-                article_id, title, first.source_id, first.published_at, score, full or by_meaning, items[:2],
+                article_id, title, first.source_id, first.published_at, score, full or by_meaning, shown[:2],
                 semantic=by_meaning,
             )
         )
@@ -1759,7 +1814,17 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
     counts = full_match_counts(conn, query, effective)
-    total = max(sum(counts.values()), len(full_hits))
+    # 文章级索引要全部词落在同一处（原文、译文或同一张图）：词分在正文和截图里的那篇数不到，
+    # 列表里却算全部命中。按来源取两边大的，总数就是来源计数之和，上下两个数对得上。
+    # 语义相关的排在全部命中那一档，但词没写全，不数，另报。
+    by_meaning = sum(1 for hit in full_hits if hit.semantic)
+    listed: dict[str, int] = defaultdict(int)
+    for hit in full_hits:
+        if not hit.semantic:
+            listed[hit.source_id] += 1
+    for source_id, number in listed.items():
+        counts[source_id] = max(counts.get(source_id, 0), number)
+    total = sum(counts.values())
     ordered = full_hits + partial_hits
     return SearchResult(
         total=total,
@@ -1769,6 +1834,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         query=query,
         counts=counts,
         available=len(ordered),
+        semantic=by_meaning,
     )
 
 
@@ -1796,13 +1862,49 @@ def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:
     params.update(scope_params)
     conditions = [where]
     if tsq:
-        conditions.append(_article_match(tsq))
+        conditions.append(_article_match(tsq, ocr=True))
     for index, company_id in enumerate(company_ids):
         params[f"cnt_company_{index}"] = company_id
         conditions.append(
             f"EXISTS (SELECT 1 FROM article_mentions cm WHERE cm.article_id = a.id"
             f" AND cm.company_id = %(cnt_company_{index})s)"
         )
+    # 引号里的词要原样出现，和结果列表同一条（score_rows 里没有原样写着这句的段落不要）：
+    # 全文索引只认切出来的词，「"小程序://"」数到的是所有提到小程序的帖子：线上页面写着「196 篇全部命中，
+    # 按相关度能翻到前 1 篇，其余的加来源或时间范围再搜」，列表却只收原样写着这句的段落。
+    # 先用块的全文索引筛出含这几个词的块，再逐字核对，常见词的引号检索也不用把整篇每块都过一遍。
+    for index, phrase in enumerate(_phrases(query)):
+        words = _form_tsquery_sql([phrase], params, f"cnt_quote_words_{index}")
+        literal = _literal_sql(phrase, "coalesce(pc.heading, '') || chr(10) || pc.body", params, f"cnt_quote_{index}")
+        conditions.append(
+            f"EXISTS (SELECT 1 FROM article_chunks pc WHERE pc.article_id = a.id"
+            f" AND pc.search_tsv @@ {words} AND {literal})"
+        )
+    # 排除词也和结果列表同一条（score_rows 里写着排除词的段落不要）：每个词组都要在一块不含排除词的块里命中，
+    # 或者写在标题里。以前不看排除词，线上「小程序 -广告」写着 569 篇全部命中，列表只有 504 篇，
+    # 另外 65 篇写到小程序的每一块都写着广告，加来源、时间范围也翻不到。
+    if query.excludes and word_groups.terms:
+        chunk_text = "coalesce(xc.heading, '') || chr(10) || xc.body"
+        clean = " AND ".join(
+            f"NOT ({_literal_sql(word, chunk_text, params, f'cnt_exclude_{index}')})"
+            for index, word in enumerate(query.excludes)
+        )
+        by_group: dict[int, list[str]] = defaultdict(list)
+        for term in word_groups.terms:
+            if term.group >= 0:
+                by_group[term.group].extend(form for form in term.forms if form)
+        for group, forms in sorted(by_group.items()):
+            if not forms:
+                continue
+            words = _form_tsquery_sql(forms, params, f"cnt_clean_{group}")
+            titled = " OR ".join(
+                _literal_sql(form, "coalesce(a.title, '')", params, f"cnt_title_{group}_{index}")
+                for index, form in enumerate(forms)
+            )
+            conditions.append(
+                f"({titled} OR EXISTS (SELECT 1 FROM article_chunks xc WHERE xc.article_id = a.id"
+                f" AND xc.search_tsv @@ {words} AND {clean}))"
+            )
     if not tsq and not company_ids:
         return {}
     rows = conn.execute(

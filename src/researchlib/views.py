@@ -10,7 +10,7 @@
 
     research-views                      # 全部被深入谈到的公司，默认最多 100 篇
     research-views --company 泡泡玛特 --limit 300
-    research-views --source duanyongping-blog --limit 100
+    research-views --source fangwei-mp --limit 100
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
 图片里有可读的字时，交给模型的正文会接上「图片里的字」，和正文一视同仁。正文很短、判断写在截图里的，
@@ -33,30 +33,25 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import (
-    VOICE_NOTE,
-    for_model,
-    is_guest,
-    off_views,
-    raw_meta_of,
-    views_eligible_sql,
-)
+from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_sql
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
-from researchlib.empty_answer import visible_sql
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
+from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import speaker_note
-from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
+from researchlib.zsxq_comments import source_owners
+from researchlib.zsxq_title import repairs_source, shorten_long_title, title_needs_repair, zsxq_display_title
 
 logger = logging.getLogger("researchlib.views")
 
 PROMPT_VERSION = 2
 BODY_LIMIT = VIEWS_LIMIT
-_GUEST = views_eligible_sql("a")
+# 网站上不展示的（读者帖、「图片」评论壳）不抽观点，也不进观点时间线：公司页上的观点链不过去。
+_SHOWN = site_visible_sql("a")
 PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文章（含「图片里的字」），摘出作者对指定公司的判断。
 只输出一个 JSON 对象，不要输出别的文字。每家指定的公司都要有一个键，没有下判断就写 null：
 {"公司名": {"about": true, "judgment": "…", "mechanism": "…", "stance": "正面",
@@ -279,7 +274,7 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = ANY(%s) AND {_VIEW_DEPTH}
-          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         GROUP BY a.id
         ORDER BY bool_or(m.depth <> 'passing') DESC, a.published_at DESC NULLS LAST, a.id DESC
@@ -326,7 +321,7 @@ def mentioned_companies(conn, source_ids: list[str]) -> list[dict]:
           FROM article_mentions m
           JOIN articles a ON a.id = m.article_id
           WHERE m.company_id = c.id AND m.depth <> 'passing'
-            AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%s)
+            AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%s)
         )
         ORDER BY c.name_zh, c.id
         """,
@@ -350,7 +345,7 @@ def view_companies(conn, source_ids: list[str]) -> list[dict]:
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
-        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_OCR_CARRIES}
         ORDER BY c.name_zh, c.id
         """,
@@ -370,7 +365,7 @@ def count_pending(conn, company_id: int, source_ids: list[str]) -> int:
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = %s AND {_VIEW_DEPTH}
-          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         """,
         (company_id, source_ids, PROMPT_VERSION),
@@ -480,26 +475,14 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
     if not companies:
         return 0
-    meta = raw_meta_of(conn, row)
-    if is_guest(meta) or off_views(meta):
+    if hide_from_site(raw_meta_of(conn, row), row["title"]):
         return 0
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
-    source_id = row["source_id"] if "source_id" in row.keys() else ""
-    if not source_id and row.get("id"):
-        found = conn.execute("SELECT source_id FROM articles WHERE id = %s", (row["id"],)).fetchone()
-        source_id = found["source_id"] if found else ""
-    body, voice_chunks, restricted = for_model(
-        row["body_text"] or "", chunks, meta, source_id=source_id
-    )
-    if restricted:
-        header += VOICE_NOTE
-        chunks = voice_chunks
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
-    voice_body = body
-    body = append_ocr(body, ocr_text)
+    body = append_ocr(row["body_text"] or "", ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
         note = speaker_note(ocr_text)
@@ -510,39 +493,34 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
             + "）"
         )
     model = ""
-    if restricted and not voice_body.strip() and not ocr_text.strip():
-        # 这篇没有他本人的话，图片里也没有字。记成没下判断，避免反复去问模型。
+    aliases = _company_aliases(conn, list(names.values()))
+    windows = _reading_windows(body, chunks, aliases)
+    if not windows:
         found = {company_id: None for company_id in names.values()}
     else:
-        aliases = _company_aliases(conn, list(names.values()))
-        windows = _reading_windows(body, chunks, aliases)
-        if not windows:
-            found = {company_id: None for company_id in names.values()}
-        else:
-            parsed: dict[int, list] = {company_id: [] for company_id in names.values()}
-            for index, window in enumerate(windows):
-                note = header
-                if len(windows) > 1:
-                    note += f"\n（长文已切成 {len(windows)} 块，这是第 {index + 1} 块。只根据这一块写。）"
-                text, model = chat(
-                    settings,
-                    [
-                        {"role": "system", "content": PROMPT},
-                        {"role": "user", "content": note + "\n\n正文：\n" + window},
-                    ],
-                    temperature=0.1,
-                )
-                for company_id, view in parse_views(text, names).items():
-                    parsed[company_id].append(view)
-            found = {company_id: _merge_views(parts) for company_id, parts in parsed.items()}
+        parsed: dict[int, list] = {company_id: [] for company_id in names.values()}
+        for index, window in enumerate(windows):
+            note = header
+            if len(windows) > 1:
+                note += f"\n（长文已切成 {len(windows)} 块，这是第 {index + 1} 块。只根据这一块写。）"
+            text, model = chat(
+                settings,
+                [
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": note + "\n\n正文：\n" + window},
+                ],
+                temperature=0.1,
+            )
+            for company_id, view in parse_views(text, names).items():
+                parsed[company_id].append(view)
+        found = {company_id: _merge_views(parts) for company_id, parts in parsed.items()}
     written = 0
-    haystack = append_ocr(voice_body if restricted else (row["body_text"] or ""), ocr_text)
     for company_id, view in found.items():
         view = coerce_view_for_store(view)
         about = bool(view["about"])
         judgment = view["judgment"]
-        # 收窄到作者本人时，原句必须落在他写的字或图片文字里。
-        quote, chunk = locate_quote(conn, row["id"], haystack, view.get("quote") or "")
+        # 原句要在正文或图片文字里找得到。
+        quote, chunk = locate_quote(conn, row["id"], body, view.get("quote") or "")
         if not quote_ok(quote):
             quote, chunk = "", None
         conn.execute(
@@ -612,7 +590,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND {_GUEST} AND {visible_sql("a")}
+          AND {_SHOWN} AND {visible_sql("a")}
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
@@ -633,9 +611,13 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         risks = list(row["risks"] or [])
         falsifiers = list(row["falsifiers"] or [])
         shown_date = format_date(row["published_at"], settings.display_timezone)
-        title = row["title"]
-        if repairs_source(row["source_id"]) and title_needs_repair(title or "", row.get("body_text") or ""):
-            title = zsxq_display_title(title or "", body=row.get("body_text") or "", when=shown_date)
+        title = shorten_long_title(row["title"] or "", row.get("body_text") or "")
+        if repairs_source(row["source_id"], source.kind if source else "") and title_needs_repair(
+            title or "", row.get("body_text") or ""
+        ):
+            title = zsxq_display_title(
+                title or "", body=row.get("body_text") or "", when=shown_date, owners=source_owners(source)
+            )
         items.append(
             {
                 "article_id": row["article_id"],
@@ -703,7 +685,7 @@ def same_period(
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id
-          AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%(sources)s)
+          AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%(sources)s)
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
                                  AND me.published_at + make_interval(days => %(days)s)
         ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id
@@ -862,17 +844,17 @@ def _id_list(text: str) -> list[int]:
 
 
 def _canonical_ids(conn, article_ids: list[int], source_ids: list[str]) -> list[int]:
-    """重复稿换成主版本。网友帖和不在来源里的跳过。"""
+    """重复稿换成主版本。网站上不展示的和不在来源里的跳过。"""
     if not article_ids:
         return []
     rows = conn.execute(
-        "SELECT id, duplicate_of, source_id, raw_meta FROM articles WHERE id = ANY(%s)",
+        "SELECT id, duplicate_of, source_id, raw_meta, title FROM articles WHERE id = ANY(%s)",
         (list(article_ids),),
     ).fetchall()
     found: list[int] = []
     allowed = set(source_ids)
     for row in rows:
-        if row["source_id"] not in allowed or is_guest(row["raw_meta"]) or off_views(row["raw_meta"]):
+        if row["source_id"] not in allowed or hide_from_site(row["raw_meta"], row["title"]):
             continue
         canonical = int(row["duplicate_of"] or row["id"])
         if canonical not in found:
@@ -906,7 +888,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
         WHERE m.company_id = ANY(%s)
           AND a.source_id = ANY(%s)
           AND a.duplicate_of IS NULL
-          AND {_GUEST}
+          AND {_SHOWN}
           AND (
             m.depth <> 'passing'
             OR {_OCR_CARRIES}
@@ -949,7 +931,7 @@ def articles_for_ids(conn, company_ids: list[int], source_ids: list[str], articl
         FROM articles a
         JOIN article_mentions m ON m.article_id = a.id AND m.company_id = ANY(%s)
         WHERE a.id = ANY(%s) AND a.source_id = ANY(%s)
-          AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.duplicate_of IS NULL AND {_SHOWN}
         GROUP BY a.id
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
