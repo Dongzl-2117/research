@@ -158,6 +158,63 @@ def test_deepseek_chat_rejects_empty_content(tmp_path, monkeypatch):
         chat(settings, [{"role": "user", "content": "hi"}])
 
 
+def test_deepseek_chat_retries_empty_content_with_bigger_budget(tmp_path, monkeypatch):
+    """思考模式把 max_tokens 耗尽时，提高额度再要一次，不把 reasoning 当正文。"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    payloads = []
+
+    def fake_post(_settings, _token, payload):
+        payloads.append(dict(payload))
+        if len(payloads) == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "", "reasoning_content": "只想了很久"},
+                        "finish_reason": "length",
+                    }
+                ],
+                "model": "deepseek-flash",
+            }
+        return {
+            "choices": [{"message": {"content": "正文来了", "reasoning_content": "想"}}],
+            "model": "deepseek-flash",
+        }
+
+    monkeypatch.setattr(llm_module, "_post", fake_post)
+    settings = _settings(tmp_path)
+    text, model = chat(
+        settings,
+        [{"role": "user", "content": "hi"}],
+        exact_max_tokens=512,
+    )
+
+    assert (text, model) == ("正文来了", "deepseek-flash")
+    assert [item["max_tokens"] for item in payloads] == [512, 8704]
+    assert len(payloads) == 2
+
+
+def test_deepseek_chat_does_not_retry_without_reasoning(tmp_path, monkeypatch):
+    """正文空但没思考内容，不是额度被吃光，不重发。"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    calls = []
+
+    def fake_post(_settings, _token, _payload):
+        calls.append(1)
+        return {"choices": [{"message": {"content": ""}}], "model": "deepseek-flash"}
+
+    monkeypatch.setattr(llm_module, "_post", fake_post)
+    with pytest.raises(LLMError, match="正文为空"):
+        chat(_settings(tmp_path), [{"role": "user", "content": "hi"}], exact_max_tokens=512)
+    assert len(calls) == 1
+
+
+def test_empty_content_budget_bump_is_capped():
+    assert llm_module._bumped_max_tokens(512) == 8704
+    assert llm_module._bumped_max_tokens(100_000) == 131_072
+    # 已经超过封顶值时不再发第二次同样的请求。
+    assert llm_module._bumped_max_tokens(393_216) < 393_216
+
+
 def test_deepseek_chat_accepts_list_content(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
 
