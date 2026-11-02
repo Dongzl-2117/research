@@ -51,6 +51,7 @@ from researchlib.snippets import (
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
 from researchlib.translate.display import article_pairs
+from researchlib.translate.service import translation_mapping_status
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
@@ -725,6 +726,10 @@ def _article_view(request: Request, article_id: int, mode: str):
                     quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)
         translation = queries.get_translation(conn, article_id)
+        mapping_status = (
+            translation_mapping_status(conn, article, translation, settings.data_dir)
+            if translation and translation.get("body_html") else "legacy-unverified"
+        )
         elsewhere = [
             {"id": row["id"], "source": by_id[row["source_id"]].name}
             for row in queries.same_article_elsewhere(conn, article_id, article["duplicate_of"], ids)
@@ -778,6 +783,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         translation
         and translation.get("complete")
         and translation.get("content_hash") == article.get("content_hash")
+        and mapping_status in {"recorded", "legacy-unverified"}
     )
     # 译文是模型写的 HTML，和原文一样过一遍白名单。
     zh_html = finish_html(sanitize_html(translation["body_html"]), link_index, parent) if has_translation else None
@@ -792,7 +798,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         zh_html, quoted_marked = mark_quoted(zh_html, quoted["body"])
     # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。
     paired = has_translation and zh_html and mode != "original"
-    pair_display = article_pairs(original_html, zh_html) if paired else None
+    pair_display = article_pairs(original_html, zh_html, mapping_status=mapping_status) if paired else None
     raw_pairs = pair_display.pairs if pair_display else None
     pairs = None
     if raw_pairs:
@@ -838,6 +844,14 @@ def _article_view(request: Request, article_id: int, mode: str):
         {
             "nav": "archive",
             "title": display_title,
+            "mapping_notice": (
+                "这份旧译文尚未核验逐段对应；段数相同也不代表译义准确。"
+                if has_translation and mapping_status == "legacy-unverified" and mode != "original" else ""
+            ),
+            "translation_notice": (
+                "原文或处理规则已变化，旧译文需要复核。"
+                if mapping_status not in {"recorded", "legacy-unverified"} else "译文尚未完整完成。"
+            ),
             "display_title": display_title,
             "article": article,
             "source": source,

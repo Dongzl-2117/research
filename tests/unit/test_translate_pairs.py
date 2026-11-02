@@ -175,29 +175,23 @@ def _quote_repeat_fixture() -> tuple[str, str]:
     return "".join(en_parts), "".join(zh_parts)
 
 
-def test_pairs_realign_when_translation_dropped_repeated_quotes():
-    """21182 的形状：英文 24 块、中文 16 块，差大于 1。对照仍在，引用对着引用，解说对着解说。"""
+def test_source_only_repeats_do_not_prove_alignment():
+    """英文有重复、中文少段，不以单边去重证明对应，完整保留两侧。"""
     en, zh = _quote_repeat_fixture()
     assert len(top_level_blocks(en)) == 24
     assert len(top_level_blocks(zh)) == 16
     assert abs(len(top_level_blocks(en)) - len(top_level_blocks(zh))) > 1
-    pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 16
-    for index, pair in enumerate(pairs):
-        assert pair.anchor == f"p-{index + 1}"
-        assert pair.zh
-        if index % 2 == 0:
-            assert f"引用{index // 2}" in pair.zh
-            assert f"Quoted passage {index // 2}" in pair.en
-        else:
-            assert f"解说{index // 2}" in pair.zh
-            assert f"Commentary {index // 2}" in pair.en
-            assert f"Quoted passage {index // 2}" not in pair.en
+    from researchlib.translate.display import article_pairs
+
+    view = article_pairs(en, zh)
+    assert view.notice
+    assert all(not (pair.en and pair.zh) for pair in view.pairs)
+    assert all(f"Commentary {index}" in view.pairs[0].en for index in range(8))
+    assert all(f"解说{index}" in (view.pairs[1].zh or "") for index in range(8))
 
 
-def test_one_dropped_repeat_realigns_following_paragraph():
-    """只少一段重复引用时，解说仍对着自己的译文，不退回纯中文。"""
+def test_one_dropped_repeat_uses_complete_fallback():
+    """少一段也不能猜漏的是哪次出现；保留完整两侧与明确提示。"""
     quote = "Microsoft cloud revenue grew at the low end of the forecast this quarter."
     note = "That pivot is the part that matters for the rest of the year."
     en = (
@@ -209,19 +203,17 @@ def test_one_dropped_repeat_realigns_following_paragraph():
         '<blockquote id="p-1"><p>微软云收入落在预测低端。</p></blockquote>'
         '<p id="p-2">真正要紧的是后面这次转向。</p>'
     )
-    pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 2
-    assert pairs[0].zh and "微软云" in pairs[0].zh
-    assert "Microsoft cloud" in pairs[0].en
-    assert pairs[0].anchor == "p-1"
-    assert pairs[1].zh and "真正要紧" in pairs[1].zh
-    assert "pivot" in pairs[1].en
-    assert pairs[1].anchor == "p-2"
+    from researchlib.translate.display import article_pairs
+
+    view = article_pairs(en, zh)
+    assert view.notice
+    assert quote in view.pairs[0].en and note in view.pairs[0].en
+    assert "真正要紧" in (view.pairs[1].zh or "")
+    assert all(not (pair.en and pair.zh) for pair in view.pairs)
 
 
-def test_leftover_english_hangs_after_aligned_prefix():
-    """去重把重复引用对齐之后，后面多出来的英文挂在末尾，没有译文。"""
+def test_missing_middle_and_tail_are_not_hard_paired():
+    """重复和缺段同时存在时，不把后文硬配到前面的译文。"""
     quote = "Quoted passage is long enough that consecutive copies count as one block."
     note = "Commentary follows the quote and must stay with its own translation."
     extra = "A later paragraph that the translation never reached."
@@ -236,15 +228,13 @@ def test_leftover_english_hangs_after_aligned_prefix():
         '<p id="p-2">解说要留在自己的译文上。</p>'
     )
     assert abs(len(top_level_blocks(en)) - len(top_level_blocks(zh))) > 1
-    pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 3
-    assert pairs[0].zh and "引用足够长" in pairs[0].zh
-    assert "Quoted passage" in pairs[0].en
-    assert pairs[1].zh and "解说要留" in pairs[1].zh
-    assert "Commentary follows" in pairs[1].en
-    assert "later paragraph" in pairs[2].en
-    assert pairs[2].zh is None
+    from researchlib.translate.display import article_pairs
+
+    view = article_pairs(en, zh)
+    assert view.notice
+    assert note in view.pairs[0].en and extra in view.pairs[0].en
+    assert view.pairs[0].en.count(quote) == 2
+    assert "解说要留" in (view.pairs[1].zh or "")
 
 
 def test_soft_dedupe_collapses_equal_length_quote_then_body():
@@ -306,11 +296,10 @@ def test_soft_dedupe_keeps_equal_length_when_shrink_would_diverge():
     )
     assert len(segments_of(en)) == len(segments_of(zh)) == 4
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 4
+    assert pairs is not None and len(pairs) == 3
     assert alpha in pairs[0].en and pairs[0].zh and zh_alpha in pairs[0].zh
-    assert alpha in pairs[1].en and pairs[1].zh and zh_alpha in pairs[1].zh
-    assert beta in pairs[2].en and pairs[2].zh and zh_beta in pairs[2].zh
-    assert later in pairs[3].en and pairs[3].zh and zh_beta in pairs[3].zh
+    assert beta in pairs[1].en and pairs[1].zh and zh_beta in pairs[1].zh
+    assert later in pairs[2].en and pairs[2].zh and zh_beta in pairs[2].zh
 
 
 def test_equal_length_list_item_and_paragraph_stay_two_pairs():
@@ -349,18 +338,18 @@ def test_pairs_keep_repeats_when_translation_kept_them():
 
 
 def test_pairs_when_model_repeated_a_paragraph():
-    """中文连吐三遍时先收成一份再配，成本对着自己的英文，不整页退回。"""
+    """旧稿多吐的译段完整保留，不单边删掉来声称对应正确。"""
     sentence = "聚合理论解释平台为什么会赢，这一段足够长所以连续重复要去掉。"
     en = "<p>Aggregation theory explains why platforms win.</p><p>Costs come second in this note.</p>"
     zh = f"<p>{sentence}</p><p>{sentence}</p><p>{sentence}</p><p>成本是后面的第二点。</p>"
     assert abs(len(top_level_blocks(en)) - len(top_level_blocks(zh))) > 1
-    pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 2
-    assert pairs[0].zh and "聚合理论" in pairs[0].zh
-    assert "Aggregation theory" in pairs[0].en
-    assert pairs[1].zh and "成本" in pairs[1].zh
-    assert "Costs come second" in pairs[1].en
+    from researchlib.translate.display import article_pairs
+
+    view = article_pairs(en, zh)
+    assert view.notice
+    assert (view.pairs[1].zh or "").count(sentence) == 3
+    assert "Costs come second" in view.pairs[0].en
+    assert "成本" in (view.pairs[1].zh or "")
 
 
 def test_pairs_when_structure_diverges():
@@ -1098,7 +1087,7 @@ def test_short_dt_writeback_stays_one_to_one_and_does_not_repeat_openings():
     assert len(segments_of(written)) == len(segments)
     pairs = bilingual_pairs(html, written)
     # 列表项和紧跟着的同文段落，中文是同一句短译文。按位置收成一对，不把下一段配上来。
-    assert pairs is not None and len(pairs) == len(segments) - 2
+    assert pairs is not None and len(pairs) == len(segments)
     assert sum(pair.zh is None for pair in pairs) == 1
 
     def opening(value: str | None) -> str:
@@ -1109,11 +1098,11 @@ def test_short_dt_writeback_stays_one_to_one_and_does_not_repeat_openings():
             assert opening(left.zh)[:12] == opening(right.zh)[:12]
 
     iphone_pairs = [pair for pair in pairs if opening(pair.en).startswith("iPhone – premium")]
-    assert len(iphone_pairs) == 1
+    assert len(iphone_pairs) == 2
     assert iphone_pairs[0].zh and "iPhone的译文" in iphone_pairs[0].zh
     assert "Mac的译文" not in iphone_pairs[0].zh
     mac_pairs = [pair for pair in pairs if opening(pair.en).startswith("Mac –")]
-    assert len(mac_pairs) == 1
+    assert len(mac_pairs) == 2
     assert mac_pairs[0].zh and "Mac –的译文" in mac_pairs[0].zh
     assert "iPhone的译文" not in mac_pairs[0].zh
 
@@ -1384,8 +1373,8 @@ def test_definition_url_fragment_stays_inside_the_sentence():
     assert "example.com)." in joined_plain or "example.com )." in joined_plain
 
 
-def test_prefix_restatement_collapses_when_both_sides_match():
-    """21130 的 Meta 开头：后一段是前一段的开头，两边都是这样时收掉后一段。"""
+def test_prefix_restatement_preserves_both_translations():
+    """原文有包含关系，不足以删掉另一份中文表达。"""
     clause = "the company escaped the copyright claim because the record did not show market harm "
     long = clause * 16 + "and then the opinion turns to the fourth factor."
     short = (clause * 8).strip()
@@ -1397,13 +1386,14 @@ def test_prefix_restatement_collapses_when_both_sides_match():
     zh_short = "甲" * 240
     zh = f"<p>{zh_long}</p><p>{zh_short}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 1
-    assert "fourth factor" in pairs[0].en
-    assert pairs[0].zh and "后文" in pairs[0].zh
+    assert pairs is not None and len(pairs) == 2
+    assert "fourth factor" in pairs[0].en and short in pairs[1].en
+    assert pairs[0].zh and zh_long in pairs[0].zh
+    assert pairs[1].zh and zh_short in pairs[1].zh
 
 
-def test_near_identical_paragraph_collapses_when_both_sides_match():
-    """差一个词的近重复段，两边都这样时收成一份。后文不同的不收。"""
+def test_near_identical_paragraphs_preserve_distinct_words():
+    """相似度高但不同的词和译文都保留。"""
     clause = "revenue rose after the filing and the installed base kept paying through the holiday quarter "
     text = (clause * 6).strip() + "."
     near = text.replace("holiday", "holidays", 1)
@@ -1413,12 +1403,14 @@ def test_near_identical_paragraph_collapses_when_both_sides_match():
     zh_b = "甲" * 120 + "啊。"
     zh = f"<p>{zh_a}</p><p>{zh_b}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 1
-    assert "holiday quarter" in pairs[0].en
+    assert pairs is not None and len(pairs) == 2
+    assert text in pairs[0].en and near in pairs[1].en
+    assert pairs[0].zh and zh_a in pairs[0].zh
+    assert pairs[1].zh and zh_b in pairs[1].zh
 
 
-def test_reuse_duplicate_sources_copies_the_first_translation():
-    """写回仍是一段对一段：重复段用第一次的译文，不另起一条不同的中文。"""
+def test_duplicate_sources_preserve_each_returned_translation():
+    """重复原文也保留每次实际返回的译文，不在写回后复制覆盖。"""
     from researchlib.translate.service import reuse_duplicate_sources
 
     sentence = (
@@ -1426,7 +1418,7 @@ def test_reuse_duplicate_sources_copies_the_first_translation():
     )
     other = "A different sentence about the following quarter is also long enough to be its own leaf here."
     got = reuse_duplicate_sources([sentence, other, sentence], ["甲", "乙", "丙"])
-    assert got == ["甲", "乙", "甲"]
+    assert got == ["甲", "乙", "丙"]
     assert len(got) == 3
 
 
@@ -1547,10 +1539,7 @@ def _repeat_stack_fixture() -> tuple[str, str]:
 
 
 def test_nonadjacent_long_english_stacks_collapse_when_chinese_is_short():
-    """21118 / 22195：长英文隔了别的段出现两到三次，中文不到 80 字但仍是同一句。
-
-    叶子数对齐时按位置收。近重复组从 4 组变成 0。夹层各留一次，顺序不变。
-    """
+    """隔开的精确重复整对可折叠；近似说法和有意义结构保留。"""
     en, zh = _repeat_stack_fixture()
     leaves = segments_of(en)
     assert len(leaves) == len(segments_of(zh))
@@ -1569,26 +1558,16 @@ def test_nonadjacent_long_english_stacks_collapse_when_chinese_is_short():
     pairs = bilingual_pairs(en, zh)
     assert pairs is not None
     shown = [pair.en for pair in pairs]
-    assert _long_en_near_groups(shown) == 0
-    assert _long_en_near_groups(shown, min_len=100) == 0
-    assert [ _plain_segment(pair.en)[:24] for pair in pairs ] == [
-        _DUO[:24],
-        _BRIDGES[0][:24],
-        _IPHONE[:24],
-        _SERVICES[:24],
-        _WEARABLES[:24],
-        _BRIDGES[1][:24],
-        _BRIDGES[2][:24],
-        _BRIDGES[3][:24],
-    ]
-    assert pairs[0].zh and "7.6" in pairs[0].zh
-    assert pairs[2].zh and "基本持平" in pairs[2].zh
-    assert pairs[5].zh and "夹层二" in pairs[5].zh
-    assert pairs[0].anchor is None or pairs[0].en.startswith("<p") or pairs[0].en.startswith("<blockquote")
+    # 仅精确重复可折叠；不同词尾、列表结构和另一种译法必须留下。
+    assert {_plain_segment(item) for item in leaves} == {_plain_segment(item) for item in shown}
+    assert _long_en_near_groups(shown) > 0
+    from researchlib.translate.pair import redundant_pairs
+
+    assert redundant_pairs(pairs) == []
     assert sum("7.6-inch" in pair.en for pair in pairs) == 1
-    assert sum("iPhone revenue" in pair.en for pair in pairs) == 1
-    assert sum("Services revenue jumped" in pair.en for pair in pairs) == 1
-    assert sum("Wearables revenue has matured" in pair.en for pair in pairs) == 1
+    assert sum("iPhone revenue" in pair.en for pair in pairs) == 2
+    assert sum("Wearables revenue has matured" in pair.en for pair in pairs) == 2
+    assert any(pair.zh and "夹层二" in pair.zh for pair in pairs)
 
 
 def _contain_groups(htmls: list[str], *, min_len: int = 80) -> int:
@@ -1640,11 +1619,8 @@ _CONTAINED_ZH = (
 _CONTAINED_ZH_LONG = "整段换了一套说法，先写硬件走平，再写服务扩张和回购，并不嵌进上面的短句。"
 
 
-def test_shorter_leaf_contained_in_longer_paragraph_is_dropped():
-    """22195：短句整句包含在后面的长段里。两遍中文不是逐字嵌套，仍收掉短句，长段和末句留下。
-
-    四句加长段是一组五份，另有一组三份、一组两份。收完包含组为 0。
-    """
+def test_contained_source_does_not_justify_deleting_alternate_translation():
+    """原文包含另一句时，独有中文措辞仍完整保留。"""
     duo_short = (
         "The Duo unfolds to reveal a 7.6-inch screen, the largest display ever on an iPhone this year."
     )
@@ -1689,15 +1665,11 @@ def test_shorter_leaf_contained_in_longer_paragraph_is_dropped():
     pairs = bilingual_pairs(en, zh)
     assert pairs is not None
     shown = [pair.en for pair in pairs]
-    assert _contain_groups(shown) == 0
-    assert _long_en_near_groups(shown) == 0
-    plains = [_plain_segment(pair.en) for pair in pairs]
-    assert plains == [bridge, _CONTAINED_LONG, duo_long, solo_long]
-    assert _CONTAINED_TAIL in plains[1]
-    assert pairs[1].zh and "一套说法" in pairs[1].zh
-    assert pairs[0].zh and "夹层" in pairs[0].zh
-    assert sum("buybacks" in plain for plain in plains) == 1
-    assert all(_plain_len(pair.en) < 1500 for pair in pairs)
+    assert [_plain_segment(item) for item in shown] == [_plain_segment(item) for item in leaves]
+    assert _contain_groups(shown) == 3
+    assert sum("buybacks" in item for item in shown) == 1
+    assert any(pair.zh and "Siri 短句的译文" in pair.zh for pair in pairs)
+    assert any(pair.zh and "一套说法" in pair.zh for pair in pairs)
 
 
 def test_parenthetical_source_lines_are_not_treated_as_contained():
@@ -1765,11 +1737,8 @@ _INTRO_ZH = (
 )
 
 
-def test_exact_duplicate_on_the_length_boundary_collapses():
-    """正好 80 字的同一句出现两次。其中一次用 <strong> 贴着句号，去掉标签后少一格。
-
-    两遍中文措辞不同，但共享「苹果的业绩也凸显出其在中国市场」。收成一对。
-    """
+def test_boundary_duplicate_with_alternate_wording_is_preserved():
+    """原文正好 80 字但中文措辞不同，两次译文都保留。"""
     from researchlib.translate.segments import repeat_long
 
     plain = f"<p>{_BOUNDARY}</p>"
@@ -1785,19 +1754,15 @@ def test_exact_duplicate_on_the_length_boundary_collapses():
     en = f"{plain}<p>{bridge}</p>{strong}"
     zh = f"<p>{_BOUNDARY_ZH[0]}</p><p>夹层讲回购，要留着。</p><p>{_BOUNDARY_ZH[1]}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 2
-    assert _BOUNDARY in _plain_segment(pairs[0].en) or "spotlight" in pairs[0].en
-    assert pairs[0].zh and "竞争" in pairs[0].zh
+    assert pairs is not None and len(pairs) == 3
+    assert sum("spotlight" in pair.en for pair in pairs) == 2
+    assert pairs[0].zh and _BOUNDARY_ZH[0] in pairs[0].zh
+    assert pairs[2].zh and _BOUNDARY_ZH[1] in pairs[2].zh
     assert "buybacks" in pairs[1].en and pairs[1].zh and "夹层" in pairs[1].zh
-    assert sum("spotlight" in pair.en for pair in pairs) == 1
 
 
-def test_near_prefix_with_the_same_chinese_lineage_drops_the_shorter():
-    """322 字和 352 字的自我介绍：开头约占较短那句的四分之三，后文不同，不是整句包含。
-
-    中文是同一段的另一种说法。收掉短的，长的末尾那一截留下。只共享大约三分之二开头的
-    两份提示仍由另一则测试留着。
-    """
+def test_near_prefix_with_alternate_translation_is_preserved():
+    """前缀相似不能证明另一种译法可删除。"""
     assert len(_INTRO_SHORT) == 322 and len(_INTRO_LONG) == 352
     assert _INTRO_SHORT.casefold() not in _INTRO_LONG.casefold()
     assert not same_repeat(repeat_key(_INTRO_SHORT), repeat_key(_INTRO_LONG))
@@ -1812,10 +1777,8 @@ def test_near_prefix_with_the_same_chinese_lineage_drops_the_shorter():
     en = f"<p>{_INTRO_SHORT}</p><p>{bridge}</p><p>{_INTRO_LONG}</p>"
     zh = f"<p>{_INTRO_ZH[0]}</p><p>夹层是后面的角度列表，要留着。</p><p>{_INTRO_ZH[1]}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 2
-    assert "angles that follows" in pairs[0].en and pairs[0].zh and "夹层" in pairs[0].zh
-    assert "fiscal year 2025" in pairs[1].en
-    assert "previous analysis." not in _plain_segment(pairs[1].en)
-    assert pairs[1].zh and "2025" in pairs[1].zh
-    assert _contain_groups([pair.en for pair in pairs]) == 0
-    assert _long_en_near_groups([pair.en for pair in pairs]) == 0
+    assert pairs is not None and len(pairs) == 3
+    assert _INTRO_SHORT in pairs[0].en and _INTRO_LONG in pairs[2].en
+    assert pairs[0].zh and _INTRO_ZH[0] in pairs[0].zh
+    assert pairs[2].zh and _INTRO_ZH[1] in pairs[2].zh
+    assert "angles that follows" in pairs[1].en and pairs[1].zh and "夹层" in pairs[1].zh

@@ -98,7 +98,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--llm-sample", type=int, default=3, help="最多抽验几篇（默认 3）")
     parser.add_argument("--strict", action="store_true", help="有警告也返回 1")
+    parser.add_argument("--classify", action="store_true", help="只读列出旧译文分类和下一步；不修改或重译")
     args = parser.parse_args(argv)
+    if args.classify and args.llm:
+        print("--classify 不调模型，不能和 --llm 一起用", file=sys.stderr)
+        return 2
 
     settings = Settings.from_env()
     if args.llm:
@@ -108,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"LLM 不可用：{exc}", file=sys.stderr)
             return 2
     conn = connect(settings)
+    conn.read_only = True
     reports: list[qa.BilingualReport] = []
     skipped = 0
     try:
@@ -162,9 +167,13 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = 1 if summary["fail"] or llm_fail or (args.strict and (summary["warn"] or llm_warn)) else 0
     if llm_error:
         exit_code = 2
+    articles = [report.as_dict() for report in reports]
+    if args.classify:
+        for item, report in zip(articles, reports, strict=True):
+            item["legacyPlan"] = qa.classify_legacy(report)
     payload = {
         "generatedAt": datetime.now(UTC).isoformat(timespec="seconds"),
-        "articles": [report.as_dict() for report in reports],
+        "articles": articles,
         "summary": summary,
         "exitCode": exit_code,
     }
@@ -174,6 +183,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         for report in reports:
             _print_report(report)
+            if args.classify:
+                plan = qa.classify_legacy(report)
+                print(f"  {plan['category']}: {plan['action']}")
         print(
             f"检查 {summary['checked']} 篇：pass {summary['pass']}、"
             f"warn {summary['warn']}、fail {summary['fail']}"

@@ -17,10 +17,18 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
+from psycopg.types.json import Jsonb
+
 from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
+from researchlib.translate.integrity import (
+    make_provenance,
+    provenance_problem,
+    segment_problem,
+    source_manifest,
+)
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
@@ -28,9 +36,6 @@ from researchlib.translate.segments import (
     chunk_segments,
     coarse_segment_reason,
     leaf_count_problem,
-    repeat_key,
-    repeat_long,
-    same_repeat,
     segments_of,
     shield,
     splice_segments,
@@ -62,13 +67,17 @@ class TranslateResult:
 def translation_problem(sources: list[str], translations: list[str]) -> str | None:
     """条数必须和原文块一一对应；有原文的段不能译成空白。
 
-    中文通常比英文短，汉字数占英文字符的比例不再当失败。译文非空就收下。
+    中文通常比英文短，不用长度比例拒绝。数字和资料必须属于对应段。
     """
     if len(translations) != len(sources):
         return "count"
     for src, dst in zip(sources, translations, strict=True):
         if src.strip() and not (dst or "").strip():
             return "empty"
+    for src, dst in zip(sources, translations, strict=True):
+        problem = segment_problem(src, dst)
+        if problem:
+            return problem
     return None
 
 
@@ -108,14 +117,28 @@ def _render_original(conn, article: dict, data_dir: Path) -> tuple[str, str]:
     if fmt != "html":
         body_md = strip_duplicate_title(body_md, article["title"])
     html = str(render_body(body_md, mapping, fmt))
-    # content_hash 仍按库里的 body_md 算：清洗规则变了不该把已有译文判成过期。
+    # 原始 hash 保留队列兼容；清洗/切段变化由 provenance 单独核验，不自动重译旧稿。
     digest = content_hash(article["title"], article["body_md"], article.get("published_at"))
     return html, digest
 
 
-def _coerce_translations(raw: object) -> list[str]:
+def translation_mapping_status(conn, article: dict, translation: dict, data_dir: Path) -> str:
+    """独立于旧 complete/队列规则核验读取，不因处理版本变化自动花钱重译。"""
+    if translation.get("content_hash") != article.get("content_hash"):
+        return "raw-input-changed"
+    if translation.get("provenance") is None:
+        return "legacy-unverified"
+    original, _digest = _render_original(conn, article, data_dir)
+    return provenance_problem(original, translation["body_html"], translation["provenance"]) or "recorded"
+
+
+def _coerce_translations(raw: object, returned_ids: object, expected_ids: list[str]) -> list[str]:
     if not isinstance(raw, list):
         raise RuntimeError("translation JSON missing t[]")
+    if returned_ids != expected_ids:
+        raise RuntimeError("translation alignment: segment IDs missing, duplicated, unknown or out of order")
+    if any(item is not None and not isinstance(item, str) for item in raw):
+        raise RuntimeError("translation alignment: non-text segment")
     # JSON null 是空白，交给 empty 拒绝；不要写成字符串 "None"。
     return ["" if item is None else str(item) for item in raw]
 
@@ -130,7 +153,7 @@ def _translate_once(parts: list[str], user: dict, data_dir: Path) -> list[str]:
         max_tokens=min(output_tokens(), max(8000, len("".join(parts)) * 2 + 800)),
         data_dir=data_dir,
     )
-    return _coerce_translations(result.data.get("t"))
+    return _coerce_translations(result.data.get("t"), result.data.get("ids"), user["segmentIds"])
 
 
 def _translate_split(parts: list[str], context: dict, data_dir: Path) -> list[str]:
@@ -139,11 +162,15 @@ def _translate_split(parts: list[str], context: dict, data_dir: Path) -> list[st
     left_parts = parts[:mid]
     right_parts = parts[mid:]
     left_ctx = dict(context)
+    if "segmentIds" in context:
+        left_ctx["segmentIds"] = context["segmentIds"][:mid]
     preview = "\n".join(right_parts[:3])[:_SPLIT_WINDOW]
     if preview:
         left_ctx["after"] = preview
     left = _translate_batch(left_parts, left_ctx, data_dir)
     right_ctx = dict(context)
+    if "segmentIds" in context:
+        right_ctx["segmentIds"] = context["segmentIds"][mid:]
     previous = str(context.get("before") or "")
     merged = "\n".join(piece for piece in (previous, "\n".join(left)) if piece).strip()
     if merged:
@@ -158,6 +185,20 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
         return []
     # 上一级的 repair 只针对那一批的条数，不能带进更小的一批。
     context = {key: value for key, value in context.items() if key != "repair"}
+    ids = context["segmentIds"] if "segmentIds" in context else [
+        entry["id"] for entry in source_manifest("".join(parts))
+    ]
+    if "segmentIds" in context and (
+        not isinstance(ids, list) or len(ids) != len(parts)
+        or any(not isinstance(item, str) for item in ids) or len(set(ids)) != len(ids)
+    ):
+        raise RuntimeError("translation alignment: invalid request segment IDs")
+    # 标题或纯文字单段不一定被 HTML 切段器识别，身份仍使用请求中的出现位置。
+    if len(ids) != len(parts):
+        from researchlib.translate.integrity import fingerprint
+
+        ids = [f"s{index}-{fingerprint(part)[:16]}" for index, part in enumerate(parts)]
+    context = {**context, "segmentIds": ids}
     user = {**context, "segments": parts}
     texts = _translate_once(parts, user, data_dir)
     problem = translation_problem(parts, texts)
@@ -279,24 +320,10 @@ def _translate_title(title: str, data_dir: Path) -> str:
 
 
 def reuse_duplicate_sources(sources: list[str], translations: list[str | None]) -> list[str | None]:
-    """同一段正文的后一次译文沿用第一次。返回的列表和原文叶子一样长。"""
-    priors: dict[str, list[tuple[str, str]]] = {}
-    aligned: list[str | None] = []
-    for src, zh in zip(sources, translations, strict=True):
-        key = repeat_key(src)
-        copied = None
-        if repeat_long(src):
-            for earlier, prev_zh in priors.get(key[:48], ()):
-                if prev_zh and same_repeat(earlier, key):
-                    copied = prev_zh
-                    break
-        if copied is not None:
-            aligned.append(copied)
-            continue
-        aligned.append(zh)
-        if repeat_long(src) and zh:
-            priors.setdefault(key[:48], []).append((key, zh))
-    return aligned
+    """兼容旧调用方：保留每次实际返回的译文，绝不在模型返回后覆盖另一段。"""
+    if len(sources) != len(translations):
+        raise RuntimeError("translation alignment: count")
+    return list(translations)
 
 
 def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResult:
@@ -321,6 +348,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         return TranslateResult(article_id, "skipped", reason="no translatable text")
 
     shielded = [shield(block) for _idx, block in targets]
+    manifest = source_manifest(html)
     parts = [item.html for item in shielded]
     joined = "\n\n".join(parts)
     context: dict = {
@@ -343,28 +371,40 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         after = "\n".join(parts[after_start : after_start + 3])[:1600]
         batch_ctx = {
             **context,
+            "segmentIds": [manifest[index]["id"] for index, _src in targets[offset:after_start]],
             "before": before or None,
             "after": after or None,
         }
-        try:
-            got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
-        except Exception:
-            # 整批失败时再试一次
-            got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
-        for i, text in enumerate(got):
-            restored = unshield(text, shielded[offset + i])
-            translations[offset + i] = restored if restored is not None else text
+        for attempt in range(2):
+            try:
+                got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
+                if len(got) != len(chunk):
+                    raise RuntimeError("translation alignment: count")
+                restored_batch = []
+                for i, text in enumerate(got):
+                    restored = unshield(text, shielded[offset + i])
+                    if restored is None:
+                        raise RuntimeError(f"translation restoration failed: segment {offset + i}")
+                    problem = segment_problem(targets[offset + i][1], restored)
+                    if problem:
+                        raise RuntimeError(f"translation alignment: segment {offset + i} {problem}")
+                    restored_batch.append(restored)
+                translations[offset:after_start] = restored_batch
+                break
+            except Exception:
+                if attempt:
+                    # 校验失败前没有写库，已存在的好译文和检索块原样保留。
+                    raise
         offset += len(chunk)
 
     # 按叶子段原位写回。blockquote / 列表 / 表格的外壳留着，只换里面的那一段。
-    # 同一段正文出现两次时，后一次沿用第一次的译文（条数仍与叶子 1:1）。展示再按同一条
-    # 规则把两边都收成一份；这里不删槽位，避免只短一边时对照错位。
+    # 保留每次实际返回的译文，不以相似原文覆盖另一次输出，也不在写入时删槽位。
     aligned = reuse_duplicate_sources([src for _index, src in targets], translations)
     replacements: dict[int, str] = {}
     done = 0
     for (segment_index, _src), zh in zip(targets, aligned, strict=True):
         if zh:
-            replacements[segment_index] = _dedupe_consecutive_blocks(zh)
+            replacements[segment_index] = zh
             done += 1
     if not done:
         return TranslateResult(article_id, "skipped", reason="no batch translated")
@@ -375,6 +415,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     problem = leaf_count_problem(html, zh_html)
     if problem:
         raise RuntimeError(f"translation alignment: {problem}")
+    provenance = make_provenance(html, zh_html)
     zh_text = re.sub(r"<[^>]+>", " ", zh_html)
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
     title_zh = _translate_title(article["title"] or "", data_dir)
@@ -382,12 +423,19 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     needs_title_zh = bool(en_title) and not is_chinese(en_title)
     # 英文标题译空不算 complete（抽验 22195：segments 齐但 title_zh 空仍标 complete）
     complete = done == len(targets) and (bool(title_zh) if needs_title_zh else True)
+    if not complete:
+        previous = conn.execute(
+            "SELECT complete FROM article_translations WHERE article_id = %s", (article_id,),
+        ).fetchone()
+        if previous and previous.get("complete"):
+            return TranslateResult(article_id, "partial", segments=done, reason="保留已有完整译文；新标题未完成")
     conn.execute(
         """
         INSERT INTO article_translations (
-          article_id, lang, content_hash, title_zh, body_html, body_text, complete, origin, segments, updated_at
+          article_id, lang, content_hash, title_zh, body_html, body_text, complete, origin,
+          segments, provenance, updated_at
         )
-        VALUES (%s, 'zh', %s, %s, %s, %s, %s, 'model', %s, now())
+        VALUES (%s, 'zh', %s, %s, %s, %s, %s, 'model', %s, %s, now())
         ON CONFLICT (article_id) DO UPDATE SET
           content_hash = EXCLUDED.content_hash,
           title_zh = EXCLUDED.title_zh,
@@ -396,9 +444,10 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
           complete = EXCLUDED.complete,
           origin = EXCLUDED.origin,
           segments = EXCLUDED.segments,
+          provenance = EXCLUDED.provenance,
           updated_at = now()
         """,
-        (article_id, digest, title_zh, zh_html, zh_text, complete, done),
+        (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance)),
     )
     # 译文切块进检索：中文问题也能找到英文文章，引用落到对照页那一段。
     replace_translation_chunks(conn, article_id)

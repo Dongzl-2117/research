@@ -1,25 +1,8 @@
-"""对照页质量检查：硬指标 + 可选 LLM 抽验。
+"""对照页质量检查：只读指标、旧稿分类和显式启用的模型抽验。
 
-只读。原文先过和文章页同一条清洗、md 链接改写和图片文字，译文过同一遍白名单。
-指标按页面上真正显示的那一份（``display.article_pairs``）算，不按细对齐算：细对齐
-再漂亮，页面整页退回两篇长文也是失败。另用不依赖可译叶子的检查核对实际展示和未译内容，
-指标只判断，不改库、不重译。
-
-六条硬指标，和人工抽验的口径一致：
-
-1. 整页退回：展示层分别显示完整原文和译文（``displayNotice`` 非空）。此时读不出对照。
-2. 巨型 pair：一对英文的可见文字达到 2000 字。按句切开之后不该再有。
-3. 近重复组：页面上还留着能安全收掉的重复、整句包含或近前缀长英文。收掉会丢原文里的
-   独有文字、数字或资料链接的那一对要留着，那种不算缺陷。
-4. long-empty-ZH：对上的那一对英文够长（80 字）却没有中文。
-5. 归档头：正文里还留着 ``member-rss`` / ``rss_link`` / ``- source:`` 这类行。
-6. 叶子/对数异常：展示硬排的两边叶子差；差到 40 段按失败算，差一两段只告警。
-
-展示比细对齐叶子少了原文内容按失败记；译文这一侧只丢了另一种译法的措辞不算失败（收重复
-本来就会这样），少图片或资料链接才算，措辞的差额只记进 ``preservation.translated``。
-
-LLM 抽验用站内默认模型（DeepSeek deepseek-flash，thinking + reasoning_effort=max），
-只对抽到的段落打分挑刺，结果回给调用方，不写库。
+巨型段、完整回退及缺中文均按实际页面计算。原始段数差、内容出现次数和顺序、
+资源归属、有序对应记录分别检查，不用去重后的等段数替代验证。旧译文没有记录则告警；
+通过结构检查仍不代表语义已审核。默认及 --classify 均不调用模型，不改正文或完成状态。
 """
 
 from __future__ import annotations
@@ -38,6 +21,7 @@ from researchlib.present_text import polish_display_text
 from researchlib.render import inline_image_ocr, sanitize_html
 from researchlib.sources import load_sources
 from researchlib.translate.display import article_pairs, leaf_projection_gaps, protected_content_gaps
+from researchlib.translate.integrity import segment_problem
 from researchlib.translate.llm import extract_json
 from researchlib.translate.pair import (
     BilingualPair,
@@ -46,6 +30,7 @@ from researchlib.translate.pair import (
     visible_text,
 )
 from researchlib.translate.segments import iter_segments
+from researchlib.translate.service import translation_mapping_status
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import shorten_long_title
 
@@ -103,6 +88,7 @@ class ArticleTexts:
     title: str
     en_html: str
     zh_html: str
+    mapping_status: str = "legacy-unverified"
 
 
 @dataclass(frozen=True)
@@ -137,6 +123,7 @@ class BilingualReport:
     source_projection_loss: int = 0
     translation_projection_loss: int = 0
     display_notice: str = ""
+    mapping_status: str = "legacy-unverified"
     issues: tuple[CheckIssue, ...] = ()
     llm: dict[str, Any] | None = None
 
@@ -177,6 +164,8 @@ class BilingualReport:
             "archiveMarkers": list(self.archive_markers),
             "preservation": {"original": self.source_projection_loss, "translated": self.translation_projection_loss},
             "displayNotice": self.display_notice,
+            "mappingStatus": self.mapping_status,
+            "semanticReview": "not-reviewed",
             "issues": [issue.as_dict() for issue in self.issues],
             "llm": self.llm,
         }
@@ -198,17 +187,20 @@ def _archive_markers(html: str) -> tuple[str, ...]:
     return tuple(found)
 
 
-def report_from_html(article_id: int, source_id: str, title: str, en_html: str, zh_html: str) -> BilingualReport:
+def report_from_html(
+    article_id: int, source_id: str, title: str, en_html: str, zh_html: str,
+    *, mapping_status: str = "legacy-unverified",
+) -> BilingualReport:
     """在已经渲染好的两边 HTML 上算指标。单测和多篇批量都走这一个入口。
 
     页面指标（巨型 pair、近重复、长英文没中文、最长英文）按 ``article_pairs`` 返回的
     真实展示算，不按细对齐算：整页退回两篇长文时，细对齐可能很漂亮，页面却没法看。
     """
-    displayed = article_pairs(en_html, zh_html)
+    displayed = article_pairs(en_html, zh_html, mapping_status=mapping_status)
     pairs: list[BilingualPair] = displayed.pairs
     en_leaves = len(iter_segments(en_html))
     zh_leaves = len(iter_segments(zh_html))
-    blocks = display_blocks(en_html, zh_html)
+    blocks = display_blocks(en_html, zh_html, dedupe=False)
     en_blocks = len(blocks[0]) if blocks else 0
     zh_blocks = len(blocks[1]) if blocks else 0
     paired = min(en_blocks, zh_blocks)
@@ -225,12 +217,21 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
             index
             for index in range(min(paired, len(pairs)))
             if len(texts[index]) >= LONG_EN_CHARS and not (pairs[index].zh or "").strip()
+            and re.search(r"[A-Za-z]", texts[index])
         )
     )
     near_duplicates = tuple(redundant_pairs(pairs))
     markers = tuple(dict.fromkeys(_archive_markers(en_html) + _archive_markers(zh_html)))
 
     issues: list[CheckIssue] = []
+    if mapping_status == "legacy-unverified":
+        issues.append(CheckIssue("mapping-unverified", "warn", 1, "旧译文没有有序对应记录，结构通过不证明译义准确"))
+    elif mapping_status != "recorded":
+        issues.append(CheckIssue("mapping-invalid", "fail", 1, mapping_status))
+    if blocks and len(blocks[0]) == len(blocks[1]):
+        wrong = sum(bool(segment_problem(en.html, zh.html)) for en, zh in zip(*blocks, strict=True))
+        if wrong:
+            issues.append(CheckIssue("mapping-facts", "fail", wrong, "数字、链接、图片或代码不属于对应原段"))
     # 不复用可译叶子：两边同漏一个数字/图片时，叶子数仍然相等。
     missing = protected_content_gaps(en_html, zh_html)
     if missing:
@@ -240,6 +241,8 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
         issues.append(
             CheckIssue("display-content-loss", "fail", source_loss, "展示比细对齐叶子少了原文的字、图片或链接")
         )
+    if translation_loss:
+        issues.append(CheckIssue("translation-content-loss", "fail", translation_loss, "展示少了译文的内容或出现顺序"))
     if material_loss:
         issues.append(
             CheckIssue("translation-material-loss", "fail", material_loss, "展示少了译文里的图片或资料链接")
@@ -275,14 +278,14 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
         )
     if markers:
         issues.append(CheckIssue("archive-header", "fail", len(markers), "、".join(markers[:3])))
-    display_gap = abs(en_blocks - zh_blocks)
+    display_gap = max(abs(en_blocks - zh_blocks), abs(en_leaves - zh_leaves))
     if display_gap >= LEAF_GAP_FAIL:
         issues.append(
             CheckIssue(
                 "leaf-gap",
                 "fail",
                 display_gap,
-                f"展示硬排的叶子差 {display_gap} 段（英文 {en_blocks}、中文 {zh_blocks}）",
+                f"原始或展示叶子差 {display_gap} 段（原始英文 {en_leaves}、中文 {zh_leaves}）",
             )
         )
     elif display_gap:
@@ -291,7 +294,7 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
                 "leaf-gap",
                 "warn",
                 display_gap,
-                f"展示硬排的叶子差 {display_gap} 段（英文 {en_blocks}、中文 {zh_blocks}）",
+                f"原始或展示叶子差 {display_gap} 段（原始英文 {en_leaves}、中文 {zh_leaves}）",
             )
         )
     return BilingualReport(
@@ -314,6 +317,7 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
         source_projection_loss=source_loss,
         translation_projection_loss=translation_loss,
         display_notice=displayed.notice,
+        mapping_status=mapping_status,
         issues=tuple(issues),
     )
 
@@ -323,11 +327,23 @@ def _preview(indexes: Sequence[int], limit: int = 8) -> str:
     return shown + (" …" if len(indexes) > limit else "")
 
 
+def classify_legacy(report: BilingualReport) -> dict[str, str]:
+    """只读分类：区分无损展示与必须先核对原稿的重译候选，不据段数生成付费任务。"""
+    codes = {issue.code for issue in report.issues}
+    if codes & {"mapping-facts", "protected-content-loss", "translation-content-loss", "mapping-invalid"}:
+        return {"category": "retranslation-review", "action": "核对对应原段与旧译文；缺失译义须另行授权重译"}
+    if report.display_notice or report.fine_gap:
+        return {"category": "unmapped-review", "action": "保留完整两侧；逐段核对后区分无损重建与确需重译"}
+    if report.mapping_status == "legacy-unverified":
+        return {"category": "lossless-display-only", "action": "可保留当前完整展示；没有语义证据，不回填为已核验"}
+    return {"category": "recorded", "action": "保留有序记录；语义准确性仍需单独抽验"}
+
+
 def load_article_texts(conn, settings: Settings, article_id: int) -> ArticleTexts | None:
     """按文章页的顺序拼出英文和中文 HTML。没有译文返回 None。"""
     article = conn.execute(
         """
-        SELECT id, source_id, title, body_md, body_text, raw_meta
+        SELECT id, source_id, title, body_md, body_text, raw_meta, content_hash, published_at
         FROM articles WHERE id = %s
         """,
         (article_id,),
@@ -335,12 +351,13 @@ def load_article_texts(conn, settings: Settings, article_id: int) -> ArticleText
     if article is None:
         raise QaError(f"#{article_id} 不存在")
     translation = conn.execute(
-        "SELECT body_html FROM article_translations WHERE article_id = %s",
+        "SELECT body_html, content_hash, provenance FROM article_translations WHERE article_id = %s",
         (article_id,),
     ).fetchone()
     if translation is None or not translation["body_html"]:
         return None
     zh_blob = translation["body_html"] or ""
+    mapping_status = translation_mapping_status(conn, article, translation, settings.data_dir)
     link_index = None
     if ".md" in (article["body_md"] or "").lower() or ".md" in zh_blob.lower():
         link_index = load_md_index(conn, article["source_id"])
@@ -382,6 +399,7 @@ def load_article_texts(conn, settings: Settings, article_id: int) -> ArticleText
         title=str(article["title"] or ""),
         en_html=en_html,
         zh_html=zh_html,
+        mapping_status=mapping_status,
     )
 
 
@@ -390,7 +408,10 @@ def check_article(conn, settings: Settings, article_id: int) -> BilingualReport 
     texts = load_article_texts(conn, settings, article_id)
     if texts is None:
         return None
-    return report_from_html(texts.article_id, texts.source_id, texts.title, texts.en_html, texts.zh_html)
+    return report_from_html(
+        texts.article_id, texts.source_id, texts.title, texts.en_html, texts.zh_html,
+        mapping_status=texts.mapping_status,
+    )
 
 
 def translated_article_ids(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:
@@ -546,7 +567,7 @@ def pairs_for_review(conn, settings: Settings, article_id: int) -> list[Bilingua
     texts = load_article_texts(conn, settings, article_id)
     if texts is None:
         return []
-    return article_pairs(texts.en_html, texts.zh_html).pairs
+    return article_pairs(texts.en_html, texts.zh_html, mapping_status=texts.mapping_status).pairs
 
 
 __all__ = [

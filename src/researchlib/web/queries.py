@@ -999,7 +999,7 @@ def companies_by_name(conn, names: list[str]) -> dict[str, dict]:
 def get_translation(conn, article_id: int) -> dict | None:
     return conn.execute(
         """
-        SELECT article_id, content_hash, title_zh, body_html, body_text, complete, origin, segments
+        SELECT article_id, content_hash, title_zh, body_html, body_text, complete, origin, segments, provenance
         FROM article_translations
         WHERE article_id = %s AND lang = 'zh'
         """,

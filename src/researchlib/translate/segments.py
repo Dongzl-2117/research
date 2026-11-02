@@ -1333,6 +1333,9 @@ def unshield(translated: str, shielded: Shielded) -> str | None:
         return None
     if any(counts.get(i) != 1 for i in range(len(shielded.tokens))):
         return None
+    link_ids = re.findall(r'''<a\b[^>]*\bid=["']L(\d+)["']''', translated, flags=re.I)
+    if sorted(int(item) for item in link_ids) != list(range(len(shielded.link_attrs))):
+        return None
 
     def put_token(match: re.Match[str]) -> str:
         return shielded.tokens[int(match.group(1))]

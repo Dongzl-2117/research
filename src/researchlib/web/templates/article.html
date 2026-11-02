@@ -49,10 +49,11 @@
       </nav>
     </div>
     {% if not translation_complete and body_language != 'original' %}
-    <p class="body-note">{% if body_language == 'pairs' %}部分段落没有译文。{% else %}译文不完整。{% endif %}</p>
+    <p class="body-note">{{ translation_notice or '译文尚未完整完成。' }}</p>
     {% endif %}
     {% endif %}
 
+    {% if mapping_notice %}<p class="body-note">{{ mapping_notice }}</p>{% endif %}
     {% if body_language == 'pairs' and pairs %}
     {% if pair_notice %}<p class="body-note">{{ pair_notice }}</p>{% endif %}
     <div class="bilingual">

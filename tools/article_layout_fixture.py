@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,11 +43,31 @@ def generate(output: Path) -> None:
                      + "The synthetic analysis considers revenue, costs and distribution across different periods. " * 5
                      + "\n\n")
     original = prepare_body_html(body, "Synthetic report", {"chart.svg": "/media/chart.svg"}, None, None)
-    replacements = {index: f"<p>这是第{index}段合成译文，用来验收完整内容和排版。</p>"
-                    for index, _html in translatable_blocks(original)}
+    replacements = {
+        index: "<p>这是合成译文，用来验收完整内容和排版。"
+        + "、".join(re.findall(r"\d+(?:[.,]\d+)*", re.sub(r"<[^>]+>", "", part))) + "</p>"
+        for index, part in translatable_blocks(original)
+    }
     translated = finish_html(splice_segments(original, replacements), None)
-    for name, zh in (("complete", translated), ("misaligned", "<p>这是缺少中段的旧译文。</p>")):
-        view = article_pairs(original, zh)
+    amounts = [
+        ("<p>Alpha earned 10 dollars from new subscribers and retained its distribution advantage "
+         "throughout the quarter.</p>"),
+        ("<p>Beta spent 20 dollars on a different infrastructure business after the demand outlook "
+         "changed materially.</p>"),
+        ("<p>Gamma held 30 dollars of cash and plans to reinvest that money in regional logistics "
+         "facilities this year.</p>"),
+    ]
+    chinese = ["<p>甲赚了10美元。</p>", "<p>乙花了20美元。</p>", "<p>丙持有30美元。</p>"]
+    alternate = "<p>新增订阅带来10美元，分发优势保持。</p>"
+    cases = [
+        ("complete", original, translated),
+        ("misaligned", original, "<p>这是缺少中段的旧译文。</p>"),
+        ("missing-middle", amounts[0] * 2 + "".join(amounts[1:]), chinese[0] + alternate + chinese[2]),
+        ("amount-swap", "".join(amounts), chinese[0] + chinese[2] + chinese[1]),
+        ("alternate-wording", amounts[0] * 2, chinese[0] + alternate),
+    ]
+    for name, en, zh in cases:
+        view = article_pairs(en, zh)
         context = {
             "title": "合成排版验收", "canonical": "http://127.0.0.1/", "public_host": "127.0.0.1",
             "source": SimpleNamespace(id="synthetic", author="合成作者", name="合成来源", timeline=False),

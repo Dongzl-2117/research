@@ -59,8 +59,8 @@ class _FakeConn:
         self.committed = True
 
 
-def _result(items: list[str]) -> ChatJsonResult:
-    return ChatJsonResult(data={"t": items}, model="deepseek-flash", usage=None, latency_ms=1)
+def _result(items: list[str], ids: list[str]) -> ChatJsonResult:
+    return ChatJsonResult(data={"t": items, "ids": ids}, model="deepseek-flash", usage=None, latency_ms=1)
 
 
 def _han(text: str) -> int:
@@ -125,8 +125,8 @@ def test_repair_fixes_count_without_splitting(monkeypatch, tmp_path: Path):
         repair = "repair" in kwargs["user"]
         calls.append((len(segments), repair))
         if repair:
-            return _result([f"<p>译{segment}</p>" for segment in segments])
-        return _result(["<p>只有一段</p>"])
+            return _result([f"<p>译{segment}</p>" for segment in segments], kwargs["user"]["segmentIds"])
+        return _result(["<p>只有一段</p>"], kwargs["user"]["segmentIds"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     parts = ["<p>a</p>", "<p>b</p>", "<p>c</p>", "<p>d</p>"]
@@ -143,8 +143,8 @@ def test_count_after_repair_splits_and_keeps_one_to_one(monkeypatch, tmp_path: P
         segments = kwargs["user"]["segments"]
         calls.append(len(segments))
         if len(segments) > 2:
-            return _result(["<p>合并掉了</p>"])
-        return _result([f"<p>译:{segment}</p>" for segment in segments])
+            return _result(["<p>合并掉了</p>"], kwargs["user"]["segmentIds"])
+        return _result([f"<p>译:{segment}</p>" for segment in segments], kwargs["user"]["segmentIds"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     parts = [f"<p>block-{index}</p>" for index in range(4)]
@@ -162,8 +162,8 @@ def test_count_mismatch_splits_until_single_segments(monkeypatch, tmp_path: Path
         calls.append(len(segments))
         if len(segments) != 1:
             # 多一段，条数永远对不上，直到拆成单段。
-            return _result(["<p>x</p>"] * (len(segments) + 1))
-        return _result([f"<p>译:{segments[0]}</p>"])
+            return _result(["<p>x</p>"] * (len(segments) + 1), kwargs["user"]["segmentIds"])
+        return _result([f"<p>译:{segments[0]}</p>"], kwargs["user"]["segmentIds"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     parts = [f"<p>p{index}</p>" for index in range(4)]
@@ -179,8 +179,8 @@ def test_odd_split_does_not_drop_a_segment(monkeypatch, tmp_path: Path):
         segments = kwargs["user"]["segments"]
         calls.append(len(segments))
         if len(segments) != 1:
-            return _result(["<p>x</p>"] * (len(segments) - 1))
-        return _result([f"<p>{segments[0]}</p>"])
+            return _result(["<p>x</p>"] * (len(segments) - 1), kwargs["user"]["segmentIds"])
+        return _result([f"<p>{segments[0]}</p>"], kwargs["user"]["segmentIds"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     parts = ["A", "B", "C"]
@@ -194,7 +194,7 @@ def test_single_segment_count_mismatch_still_raises(monkeypatch, tmp_path: Path)
 
     def fake(**kwargs):
         calls.append("repair" in kwargs["user"])
-        return _result(["<p>一</p>", "<p>二</p>"])
+        return _result(["<p>一</p>", "<p>二</p>"], kwargs["user"]["segmentIds"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     with pytest.raises(RuntimeError, match="translation alignment: count"):
@@ -211,7 +211,7 @@ def test_empty_segment_fails_without_split_or_repair(monkeypatch, tmp_path: Path
         calls.append(len(segments))
         out = [f"<p>译{index}</p>" for index in range(len(segments))]
         out[1] = "  "
-        return _result(out)
+        return _result(out, kwargs["user"]["segmentIds"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     with pytest.raises(RuntimeError, match="translation alignment: empty"):
@@ -221,7 +221,8 @@ def test_empty_segment_fails_without_split_or_repair(monkeypatch, tmp_path: Path
 
 def test_null_item_counts_as_empty(monkeypatch, tmp_path: Path):
     def fake(**kwargs):
-        return ChatJsonResult(data={"t": [None]}, model="deepseek-flash", usage=None, latency_ms=1)
+        return ChatJsonResult(data={"t": [None], "ids": kwargs["user"]["segmentIds"]},
+                              model="deepseek-flash", usage=None, latency_ms=1)
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     with pytest.raises(RuntimeError, match="translation alignment: empty"):
@@ -234,7 +235,7 @@ def test_short_translation_is_stored_by_the_batch_path(monkeypatch, tmp_path: Pa
     assert _han(dst) < len(src) * 0.15
 
     def fake(**kwargs):
-        return _result([dst])
+        return _result([dst], kwargs["user"]["segmentIds"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     assert _translate_batch([src], {}, tmp_path) == [dst]
@@ -248,8 +249,8 @@ def test_split_passes_neighbor_context(monkeypatch, tmp_path: Path):
         seen.append(user)
         segments = user["segments"]
         if len(segments) > 1:
-            return _result(["<p>短了</p>"])
-        return _result([f"<p>译:{segments[0]}</p>"])
+            return _result(["<p>短了</p>"], kwargs["user"]["segmentIds"])
+        return _result([f"<p>译:{segments[0]}</p>"], kwargs["user"]["segmentIds"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     parts = ["<p>left</p>", "<p>right</p>"]

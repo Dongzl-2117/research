@@ -25,7 +25,8 @@ BETA = BETA.strip()
 
 
 def report_of(en_html: str, zh_html: str, *, article_id: int = 1) -> qa.BilingualReport:
-    return qa.report_from_html(article_id, "stratechery", "A test article", en_html, zh_html)
+    return qa.report_from_html(article_id, "stratechery", "A test article", en_html, zh_html,
+                               mapping_status="recorded")
 
 
 def test_clean_article_passes():
@@ -114,7 +115,7 @@ def test_redundant_pairs_matches_display_rules():
     ]
     assert redundant_pairs(pairs) == [1]
     longer = BilingualPair(en=f"<p>{ALPHA} And one more sentence to be longer.</p>", zh="<p>乙段中文。</p>")
-    assert redundant_pairs([pairs[0], longer]) == [0]
+    assert redundant_pairs([pairs[0], longer]) == []
     assert redundant_pairs([pairs[0]]) == []
 
 
@@ -223,6 +224,17 @@ def test_cli_llm_is_opt_in(fake_cli, monkeypatch):
     monkeypatch.setattr(cli_qa.qa, "review_with_llm", lambda *args: pytest.fail("没加 --llm 不该调模型"))
     monkeypatch.setattr(cli_qa, "ensure_llm", lambda settings: pytest.fail("没加 --llm 不该检查凭证"))
     assert cli_qa.main(["--article-id", "1"]) == 0
+
+
+def test_classify_is_read_only_and_never_calls_models(fake_cli, monkeypatch, capsys):
+    _settings, conn = fake_cli
+    report = qa.report_from_html(1, "synthetic", "合成报告", "<p>Alpha earned 10 dollars.</p>", "<p>甲赚了10美元。</p>")
+    monkeypatch.setattr(cli_qa.qa, "check_article", lambda *args: report)
+    monkeypatch.setattr(cli_qa, "ensure_llm", lambda *args: pytest.fail("只读分类不能调用模型"))
+    assert cli_qa.main(["--article-id", "1", "--classify", "--json"]) == 0
+    assert conn.read_only is True
+    assert json.loads(capsys.readouterr().out)["articles"][0]["legacyPlan"]["category"] == "lossless-display-only"
+    assert cli_qa.main(["--article-id", "1", "--classify", "--llm"]) == 2
 
 
 def test_cli_llm_reviews_clean_articles_only(fake_cli, monkeypatch, capsys):

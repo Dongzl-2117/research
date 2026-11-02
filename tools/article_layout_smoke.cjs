@@ -62,8 +62,22 @@ const {chromium} = require('playwright-core');
       assert((await page.locator('.body-note').innerText()).includes('分别展示完整原文和译文'));
       assert.equal(await page.locator('.bilingual-en table').count(), 1);
       assert.equal(await page.locator('.bilingual-pair:has(.bilingual-en):has(.bilingual-zh)').count(), 0);
+      for (const name of ['missing-middle', 'amount-swap']) {
+        await page.goto(origin + '/' + name + '.html');
+        assert((await page.locator('.body-note').innerText()).includes('分别展示完整原文和译文'));
+        assert.equal(await page.locator('.bilingual-pair:has(.bilingual-en):has(.bilingual-zh)').count(), 0);
+        assert((await page.locator('.bilingual-en').innerText()).includes('Beta spent 20'));
+        await page.screenshot({path: path.join(directory, `${name}-${width}.png`)});
+      }
+      await page.goto(origin + '/alternate-wording.html');
+      assert.equal(await page.locator('.bilingual-pair').count(), 2);
+      const alternate = (await page.locator('.bilingual-zh').allTextContents()).join(' ');
+      assert(alternate.includes('甲赚了10美元') && alternate.includes('新增订阅带来10美元'));
+      await page.screenshot({path: path.join(directory, `alternate-wording-${width}.png`)});
       assert.equal(errors.length, 0, errors.join('\n'));
-      results.push({width, ...metrics, tocNavigation: true, misalignmentNotice: true, javascriptErrors: errors.length});
+      results.push({width, ...metrics, tocNavigation: true, misalignmentNotice: true,
+        missingMiddleFallback: true, swappedAmountFallback: true, alternateWordingPreserved: true,
+        javascriptErrors: errors.length});
       await page.close();
     }
     console.log(JSON.stringify({directory, results}, null, 2));

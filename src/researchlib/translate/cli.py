@@ -65,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     # 这一轮失败过的、没有可译正文的 id 先跳过，避免 --limit 很小时反复磕同一篇把队列钉死。
     # --loop 时队列只剩它们就先睡，睡醒清掉跳过再给一次机会：不睡就会一直重试同一篇，每次都花模型的钱。
     skipped: set[int] = set()
+    had_failure = False
     try:
         while True:
             if args.article_id:
@@ -87,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
                     skipped.clear()
                     continue
                 print("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
-                return 0
+                return 1 if had_failure else 0
             for article_id in ids:
                 try:
                     result = translate_article(conn, article_id, data_dir=settings.data_dir)
@@ -95,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"需要重新登录：{exc}", file=sys.stderr)
                     return 2
                 except Exception as exc:
+                    had_failure = True
                     conn.rollback()
                     skipped.add(article_id)
                     print(f"#{article_id} failed: {exc}", file=sys.stderr)
@@ -102,13 +104,15 @@ def main(argv: list[str] | None = None) -> int:
                 if result.status in ("skipped", "partial"):
                     # 没有可译正文、或者有段没译出来：还在待译队列里，这一轮不再碰。
                     skipped.add(article_id)
+                if result.status == "partial":
+                    had_failure = True
                 print(
                     f"#{result.article_id} {result.status}"
                     + (f" segments={result.segments}" if result.segments else "")
                     + (f" ({result.reason})" if result.reason else "")
                 )
             if not args.loop or args.article_id:
-                return 0
+                return 1 if had_failure else 0
     finally:
         conn.close()
 

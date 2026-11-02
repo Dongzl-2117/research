@@ -63,9 +63,14 @@ def test_a_failed_article_does_not_stop_the_rest(conn, monkeypatch, capsys):
     seen: list[int] = []
     monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [31, 32])
     monkeypatch.setattr(cli, "translate_article", _translate(seen, fail={31}))
-    assert cli.main(["--limit", "2"]) == 0
+    assert cli.main(["--limit", "2"]) == 1
     assert seen == [31, 32] and conn.rolled_back == 1
     assert "#31 failed: 对齐失败" in capsys.readouterr().err
+
+
+def test_partial_article_returns_failure_status(conn, monkeypatch):
+    monkeypatch.setattr(cli, "translate_article", _translate([], status="partial"))
+    assert cli.main(["--article-id", "31"]) == 1
 
 
 @pytest.mark.parametrize("outcome", ["raises", "skipped", "partial"])

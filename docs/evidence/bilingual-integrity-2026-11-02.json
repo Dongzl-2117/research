@@ -1,0 +1,115 @@
+{
+  "baseCommit": "7a9a80ed66c8c335f43c2b3b3be752b64febe046",
+  "scope": "仅代码、合成测试和文档；未执行生产访问、历史写回或付费模型",
+  "tests": {
+    "command": "pytest tests -q",
+    "passed": 968,
+    "failed": 0,
+    "skipped": 0,
+    "unit": 813,
+    "integration": 155,
+    "warnings": [
+      "既有 Starlette TestClient / httpx 弃用提示"
+    ]
+  },
+  "oldRedNewGreen": {
+    "suite": "tests/unit/test_bilingual_regressions.py",
+    "baselineFailed": 8,
+    "baselinePassed": 1,
+    "fixedPassed": 9
+  },
+  "checks": {
+    "ruff": "passed",
+    "diffWhitespace": "passed",
+    "hashLockedInstall": "passed",
+    "editableInstall": "passed",
+    "pipCheck": "passed",
+    "lockCheck": "passed"
+  },
+  "database": {
+    "isolated": true,
+    "postgres": "16.15",
+    "zhparser": "2.4",
+    "pgvector": "0.6.0",
+    "halfvecTested": false
+  },
+  "retrieval": {
+    "isolated": true,
+    "articles": 1500,
+    "chunks": 10463,
+    "baselineRegression": false,
+    "searchCases": 7,
+    "allSearchPrecisionAt20": 1.0,
+    "paidModelCalls": 0
+  },
+  "browser": {
+    "results": [
+      {
+        "width": 1440,
+        "viewport": 1440,
+        "documentWidth": 1440,
+        "tableWidth": 1204,
+        "tableContent": 1663,
+        "cellLines": 1,
+        "tabIndex": 0,
+        "tocNavigation": true,
+        "misalignmentNotice": true,
+        "missingMiddleFallback": true,
+        "swappedAmountFallback": true,
+        "alternateWordingPreserved": true,
+        "javascriptErrors": 0
+      },
+      {
+        "width": 390,
+        "viewport": 390,
+        "documentWidth": 390,
+        "tableWidth": 358,
+        "tableContent": 1660,
+        "cellLines": 1,
+        "tabIndex": 0,
+        "tocNavigation": true,
+        "misalignmentNotice": true,
+        "missingMiddleFallback": true,
+        "swappedAmountFallback": true,
+        "alternateWordingPreserved": true,
+        "javascriptErrors": 0
+      }
+    ]
+  },
+  "remoteCI": "精确 head、运行链接和终态记录于 PR 描述；草稿跳过不等于通过",
+  "limitations": [
+    "结构和身份不证明任意译义准确",
+    "旧稿未重写或重译",
+    "保守数字与身份协议未用付费模型实测",
+    "不可无损细分的巨型区块仍会报失败"
+  ],
+  "sha256": {
+    "AGENTS.md": "ac82396f6f675f5a52e959e86c0f0e43c1a5f9ef41204afd04cf7b780ecf1b32",
+    "docs/bilingual-integrity-2026-11-02.md": "dc101180bb5bdee6d1124a2fec8ec88f0f5f935c6e9d89ecf844e2818b57483d",
+    "docs/translate.md": "68393749cb91a4e5ccc4adbd9080745448a628907d5805e4f4178599e8e257ed",
+    "src/researchlib/migrations/028_translation_provenance.sql": "34132e9c54472a25c6f04cfff60a13c9d2f45a798b4716e82b6c7b6f8c3bc1cf",
+    "src/researchlib/translate/cli.py": "7cfb7c41e6eb3da73441035c3148f54ecb0518ec3fd43a78683df56be4bea194",
+    "src/researchlib/translate/cli_qa.py": "4cb2964992f8d4ddf846bb8cc1060f381c3b307ec2cda889c114e6ce1fd1467e",
+    "src/researchlib/translate/display.py": "55e03d8b1710e9d5b189cc1445ec040f6447a257e23e5704a681329fe6e3e50d",
+    "src/researchlib/translate/integrity.py": "1ff28fca3750fab640aa31b84c2461a7d1a5481e6f9403e0531d643b5e50ff9d",
+    "src/researchlib/translate/pair.py": "6a639bf642295b6334f5f075983fd950f2aa94fcf2a0bb55f5cbf96b22f733a2",
+    "src/researchlib/translate/prompts.py": "e06e2fcff7c352aee614790b2a012cc7609a521545c69f960a13e1eb40bebcd3",
+    "src/researchlib/translate/qa.py": "8dabd9bf91d2b5922840a7fbec1a37188203b75624a915fbddc774f8e188a4ee",
+    "src/researchlib/translate/segments.py": "26f63f3b91419130ef8fd5bd74d819e6738cc5e9065e27171d562aa0beb5d9dd",
+    "src/researchlib/translate/service.py": "d33ebc110f8f03cda6d595b08d88484a9fa9c46f70bf54ef51506ad2ae5f872e",
+    "src/researchlib/web/queries.py": "ac6caa939513e3cf405d985908df421fa5eb637ff9daff9098d91b79e2b26ca9",
+    "src/researchlib/web/routes.py": "6577caf59737d0e5e0ea4903458bd9d43c4e23e887dfcdfda3b6380451278d39",
+    "src/researchlib/web/templates/article.html": "004cfaded396d7976105aeb61c416260aac3ec4230811990a813384688827d85",
+    "tests/integration/test_nested_copies_page.py": "01ae763fd64115b8d800ad42e284884869414067912220ff4f703eeeb41a4aaf",
+    "tests/integration/test_translation_integrity_db.py": "2a0ce2a6d00ed58a516bf41bed12e2111cf356692b6b4b3d1adebe429b9cc4a9",
+    "tests/unit/test_article_preservation.py": "af38852901b9dcbda9cdfa56a44b37f29692acb2478cfcbf4c726c9e28c505c0",
+    "tests/unit/test_bilingual_regressions.py": "d9eef54b4e83f4805c5572e720ff81aa91199bf930c0ce08aa8616c436010c7b",
+    "tests/unit/test_translate_alignment.py": "9b2655cfec8bc2511c17115e6cfe65fc4da7b83dc907164ddc48981f1ab99ebc",
+    "tests/unit/test_translate_cli.py": "d3e4b2e684948eaa9b1b551de8792dce37c636f3c0f33868406ebc2d76116c92",
+    "tests/unit/test_translate_pairs.py": "efbe19eed326a3651135b744bd771107a8701b52bf449908a888eb76408347f7",
+    "tests/unit/test_translate_qa.py": "ec8f837086121dfc2c5f07d5e19af685683296ff6d9208b0d033579ef90d13ba",
+    "tests/unit/test_translation_integrity.py": "d0fe27eafe9a1ee0dff581e354ddfdb6850a220e53f5d131743e55d39e45c59a",
+    "tools/article_layout_fixture.py": "2f2851bd91323534f25c44cccf07aa19589ec178e4a62e77b180db375e001284",
+    "tools/article_layout_smoke.cjs": "5ebd31851a02dc1663f397eecb1643011c7d46ab56417ce0101fd0c22ac0b746"
+  }
+}

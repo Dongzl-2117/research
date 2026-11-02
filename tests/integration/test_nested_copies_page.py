@@ -104,7 +104,9 @@ def test_bilingual_pairs_keep_the_export_as_is(conn, settings):
         original = client.get(f"/articles/{article_id}/original").text
     # 后一份有前一份没有的资料链接，不能只因文字近重复就把链接一起删掉。
     # 列表外壳和那份带链接的正文均保留，短引文的两份也仍在。
-    assert pairs.count('class="prose bilingual-en with-toolbar"') == 6
+    # 旧译文漏了 ads 链接，不能因叶子条数相同就声称逐段对应。
+    assert pairs.count('class="prose bilingual-en with-toolbar"') == 1
+    assert "译文的数字或资料与原段不符" in pairs
     assert "<ul>" in pairs and 'href="https://example.com/ads"' in pairs
     assert pairs.count(QUOTE) == 2
     assert "先说一下这些数字。" in pairs

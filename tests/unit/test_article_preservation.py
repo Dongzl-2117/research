@@ -165,8 +165,9 @@ def test_repeated_paragraph_is_dropped_from_the_page_not_the_whole_article():
     view = article_pairs(source, translated)
     assert view.notice == ""
     assert len(view.pairs) == 40
-    assert content_gaps(source, _project(view.pairs, "en")) == 0
-    assert content_gaps(translated, "".join(pair.en + (pair.zh or "") for pair in view.pairs)) == 0
+    # 原始计数如实指出折叠了一次出现，只有经过两侧精确核对的整对可获豁免。
+    assert content_gaps(source, _project(view.pairs, "en")) > 0
+    assert display.leaf_projection_gaps(source, translated, view.pairs) == (0, 0, 0)
 
 
 def test_near_duplicate_that_carries_unique_words_is_kept_without_falling_back():
@@ -215,5 +216,6 @@ def test_whole_block_display_also_drops_repeated_rows():
     assert view.notice == ""
     assert "Report" in _project(view.pairs, "en")
     assert _project(view.pairs, "en").count("Paragraph 3 explains") == 1
-    assert content_gaps(source, _project(view.pairs, "en")) == 0
+    assert content_gaps(source, _project(view.pairs, "en")) > 0
+    assert display.leaf_projection_gaps(source, translated, view.pairs) == (0, 0, 0)
 

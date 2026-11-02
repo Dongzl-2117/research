@@ -61,7 +61,7 @@ python tools/retrieval_eval/gen_corpus.py --articles 1500
 python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json
 ```
 
-## 挂着的事（2026-10-31）
+## 挂着的事（2026-11-02）
 
 - 本次文章展示与引用修复的交接见 [docs/article-preservation-2026-11-01.md](docs/article-preservation-2026-11-01.md)：对照投影遗漏时保留完整区块，段数不齐时分开展示；旧订阅地址在输出前遮住；OCR 重切同步校验观点定位。没有执行历史清洗或重切，不要把代码修好当成旧库已修复。原有近重复规则若会吞掉独有文字、数字、资料链接或结构，展示完整性优先。
 
@@ -74,7 +74,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - 10-28 开的一批 PR 落后 main，接着做先基于 main 重做：#76、#78、#81、#101、#102 已和 main 冲突。#140 删了 `jobs/` 和批量任务的 HTTP 接口，#76（只许本机调用这些接口）因此作废；#144 删了 `empty_answer.py`，`visible_sql`、`HIDDEN`、`SHORT_POST` 挪到 `researchlib.visibility`，隐藏标记只认 `hidden`，`suppressed`、`source_paused` 不再认。
 - 网站不展示知识星球读者帖（首页/按天/检索/正文/API 均隐藏，库内保留）；标题为「图片」评论（N）… 的评论壳帖同样隐藏（poster_role 多为 owner）。两种都不抽观点、不写摘要、不识图，已有的观点不进公司页。方伟星球 10 月 20 日以后被误标成读者帖的那批，修好 poster_role 后才会重新露出来；观点靠夜间每晚补 60 篇，一次补完要花 DeepSeek 的钱，没做。
 - 林文丰飞书里的内嵌电子表格只有占位文字，要重新导出才能补。
-- 21118、22195 的长英文重复在对照页按位置收：近重复且中文是同一段（更短或措辞不同也算）收掉后一对；短句整句包含在更长的一段里，或较短那句大约四分之三是较长那句的开头且长度接近，收短句、留长段。正好 80 字的一句不因标签贴着句号少算一格。不必为这些重复再译。若对照仍是两千字的一整对，才点名重译，命令见 [docs/translate.md](docs/translate.md)。21130 的叶子数已经对齐，同一条规则收近重复。
+- 双语对应记录与验收边界见 [docs/bilingual-integrity-2026-11-02.md](docs/bilingual-integrity-2026-11-02.md)。新译段保留有序身份、规范输入指纹和处理版本；旧完整稿不因缺少记录或版本变化自动进入付费队列。展示只折叠两侧文字、资源和有效结构都精确相同的整对，不收掉另一种译法，也不单边删段凑齐数量。旧稿无记录至少告警；数量相同不证明译义正确。历史错译/缺译须先只读分类，再另行授权恢复或重译；没有执行生产数据修复。
 - **Mac mini 上还没跑的一次性命令**（都不调 LLM，先加 `--dry-run` 看篇数；跑完删掉那一行）：
   - `docker compose exec app research-retime --source chengfengpolang`：乘风破浪的发布时间从当天零点改成归档头里的钟点。不跑，乘风破浪的卡片时间一直是「—」，同一天的先后按入库顺序。
   - `docker compose exec app research-clean --source chengfengpolang --source fangwei-zsxq --source linwenfeng-feishu --source stratechery`：星球长文帖已入库的检索文字和段落块去掉导出脚手架（#124），星球老帖检索文字开头那行导出时截的「前十几个字...」也一并去掉；林文丰飞书和 Stratechery 的检索文字去掉图片文件名（「image.png」「截屏2025-06-08 19.36.10.png」「Screen Shot 2017-06-01 at 7.40.43 PM」）和包在图外的大图地址（#192），公式里的乘号和词中间的下划线照原样留着（#194，以前「eCPM=CPA_bid*CTR*CVR*1000」成了「eCPM=CPAbidCTRCVR1000」）；Stratechery 每日更新开头的「Listen to this post:」「Good morning,」「On to the Update:」和结尾的播客提示、转发须知、「have a great day」不再进检索文字和段落块（#199；标题行下面不空行的邮件导出和一行一段的 2026 网页导出也认，#206）。不跑，检索片段和问库里长文开头多一遍，飞书约 300 篇、Stratechery 约 290 篇的检索片段夹着文件名和 wp-content 地址，搜 subscriptions 这类词 Stratechery 命中 1700 多篇、片段常是转发须知；页面上的标题和卡片摘录已经绕开导出标题那一行。
