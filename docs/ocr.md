@@ -22,7 +22,7 @@
 
 ## 站内识图
 
-`app` 容器就能跑。`research-ocr` 调用站内 `deepseek-flash`（和问库、摘要同一模型）。送识图前，超过约 210KB 的图用 Pillow 把长边缩到 1920 以内、转成 JPEG，压到 280KB 以内（`ocr.py` 的 `MAX_VISION_SEND_BYTES`、`VISION_MAX_SIDE`），避免 DeepSeek 转发链路掐断大 data-url；瞬时断连会重试最多 3 次。识图请求的 max_tokens 固定 32768（覆盖站点默认下限；8k/16k 在 thinking 下会把正文挤空），避免流式思考把容器 OOM。定点重认：
+`app` 容器就能跑。`research-ocr` 调用站内 `deepseek-flash`（和问库、摘要同一模型）。送识图前，超过约 210KB 的图用 Pillow 把长边缩到 1920 以内、转成 JPEG，压到 280KB 以内（`ocr.py` 的 `MAX_VISION_SEND_BYTES`、`VISION_MAX_SIDE`），避免 DeepSeek 转发链路掐断大 data-url；瞬时断连会重试最多 3 次。识图请求的 max_tokens 固定 65536（覆盖站点默认下限；8k/16k/32k 在 thinking 下会把正文挤空，text 侧另有空正文自动加额度重试），避免流式思考把容器 OOM。定点重认：
 
 ```bash
 docker compose exec -T app research-ocr --redo --limit 50 \

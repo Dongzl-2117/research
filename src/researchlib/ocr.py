@@ -51,7 +51,7 @@ MAX_VISION_SEND_BYTES = 280_000
 VISION_MAX_SIDE = 1920
 VISION_JPEG_QUALITY = 85
 VISION_TRANSIENT_TRIES = 3
-VISION_MAX_TOKENS = 32768  # 全量 VISION_PROMPT+thinking 下 8k/16k 会把正文挤空；32k 实测有字且不 OOM
+VISION_MAX_TOKENS = 65536  # 全量 VISION_PROMPT+thinking 下 8k/16k 会把正文挤空，32k 仍偶发；64k 配合 llm 的空正文重试
 # 检索块要 20 个字；交给观点和摘要的旁路、以及阅读页放宽，短截图也能进正文。
 READING_MIN_CHARS = 8
 # 正文短于这个字数时，图片文字和上次抽摘要、观点时不一致就要重抽。长文不因为后补一张图整篇重来。

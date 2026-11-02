@@ -58,7 +58,8 @@ def generate_ai_title(
                 {"role": "user", "content": material},
             ],
             temperature=0.1,
-            exact_max_tokens=512,
+            # 思考模式会先花几千 token；512 常常只剩思考、正文为空，留 4096 给标题。
+            exact_max_tokens=4096,
         )
     except (LLMUnavailable, LLMError):
         return None

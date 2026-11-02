@@ -48,6 +48,9 @@ RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 # 第一次重试前等 5 秒，第二次等 20 秒。接口给了 Retry-After 就按它来，最多等一分钟。
 RETRY_DELAYS = (2.0, 5.0, 15.0, 30.0)
 RETRY_AFTER_CAP = 60.0
+# 思考模式把 max_tokens 花在 reasoning_content 上时，正文会是空的。
+# 这时把额度翻倍再要一次；封顶 131072，识图这类长输出也不至于把容器撑爆。
+EMPTY_CONTENT_MAX_TOKENS = 131_072
 
 _slot_lock = threading.Lock()
 _slots: dict[int, threading.BoundedSemaphore] = {}
@@ -245,6 +248,27 @@ def _message_content(body: dict, label: str) -> str:
     return text
 
 
+def _reasoning_text(body: dict) -> str:
+    """取 message.reasoning_content（思考过程），没有就返回空串。"""
+    try:
+        message = body["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    if not isinstance(message, dict):
+        return ""
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, list):
+        reasoning = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part) for part in reasoning
+        )
+    return reasoning.strip() if isinstance(reasoning, str) else ""
+
+
+def _bumped_max_tokens(current: int) -> int:
+    """正文被思考挤空时的备用额度：取两倍与加 8192 的较大者，封顶 131072。"""
+    return min(max(current * 2, current + 8192), EMPTY_CONTENT_MAX_TOKENS)
+
+
 def chat(
     settings: Settings,
     messages: list[dict],
@@ -275,11 +299,11 @@ def chat(
     body = None
     refreshed = False
     retries = 0
+    budget_bumped = False
     while True:
         try:
             with _slot(settings):
                 body = _post(settings, token, payload)
-            break
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
             if provider == PROVIDER_GROK and not refreshed and is_stale_xai_access(exc.code, detail):
@@ -303,9 +327,18 @@ def chat(
             raise _failed(settings, LLMError(f"连不上 {label} 接口：{exc}"), provider=label) from exc
         except json.JSONDecodeError as exc:
             raise _failed(settings, LLMError(f"{label} 接口返回的不是 JSON"), provider=label) from exc
-    try:
-        text = _message_content(body, label)
-    except LLMError as exc:
-        raise _failed(settings, exc, provider=label) from None
+        try:
+            text = _message_content(body, label)
+        except LLMError as exc:
+            current = int(payload.get("max_tokens") or 0)
+            bumped = _bumped_max_tokens(current)
+            if not budget_bumped and bumped > current and _reasoning_text(body):
+                # 思考模式把额度耗尽时 content 为空、reasoning_content 有字：
+                # 提高 max_tokens 再要一次（只加这一次，不占 HTTP 重试次数）。
+                payload["max_tokens"] = bumped
+                budget_bumped = True
+                continue
+            raise _failed(settings, exc, provider=label) from None
+        break
     record_llm(settings.data_dir, ok=True, provider=label)
     return text, str(body.get("model") or payload["model"])
