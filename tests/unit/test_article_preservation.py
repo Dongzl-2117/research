@@ -140,3 +140,80 @@ def test_unavailable_table_placeholder_remains_explicit():
     assert 'class="source-missing" role="note"' in rendered
     assert "内嵌表格未取到" in rendered and "原导出未包含此表格" in rendered
     assert "下一段。" in rendered and "<table" not in rendered
+
+
+_PARA_EN = (
+    "<p>Paragraph {index} explains how distribution and operating costs shape the market "
+    "in this synthetic article.</p>"
+)
+_PARA_ZH = "<p>第 {index} 段说明分销和运营成本如何影响这个合成例子里的市场。</p>"
+
+
+def _paragraphs(count: int, *, offset: int = 1) -> tuple[str, str]:
+    indexes = range(offset, offset + count)
+    return (
+        "".join(_PARA_EN.format(index=index) for index in indexes),
+        "".join(_PARA_ZH.format(index=index) for index in indexes),
+    )
+
+
+def test_repeated_paragraph_is_dropped_from_the_page_not_the_whole_article():
+    """细对很多、其中一段整段重复：收掉重复那一对，其余照常逐段并排。"""
+    en, zh = _paragraphs(40)
+    source = en + _PARA_EN.format(index=7)
+    translated = zh + _PARA_ZH.format(index=7)
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 40
+    assert content_gaps(source, _project(view.pairs, "en")) == 0
+    assert content_gaps(translated, "".join(pair.en + (pair.zh or "") for pair in view.pairs)) == 0
+
+
+def test_near_duplicate_that_carries_unique_words_is_kept_without_falling_back():
+    """21118 那类正文：英文一个块里用 <br> 分很多行，译文是很多段，整块对不上。
+
+    近前缀的那一对带着独有的说法，收掉就会丢字。这时展示层要留着它，也不能整页退回。
+    """
+    common = (
+        "The company reported strong device revenue growth across every region and the services business "
+        "expanded at a double digit rate for the quarter"
+    )
+    short = f"{common} but falling margins."
+    long = f"{common} and rising margins with steady demand."
+    lines = [short, long] + [
+        f"Line {index} of the synthetic article explains distribution costs in plain words." for index in range(1, 24)
+    ]
+    source = "<p>" + "<br>".join(lines) + "</p>"
+    translated = (
+        "<p>公司各地区的设备收入增长强劲，服务业务本季度实现两位数增长，但利润率下滑。</p>"
+        "<p>公司各地区的设备收入增长强劲，服务业务本季度实现两位数增长，并且利润率上升、需求稳定。</p>"
+    ) + "".join(f"<p>第 {index} 行用平实的话说明分销成本。</p>" for index in range(1, 24))
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert "falling" in _project(view.pairs, "en")
+    assert content_gaps(source, _project(view.pairs, "en")) == 0
+
+
+def test_soft_dedupe_that_would_lose_text_is_ignored(monkeypatch):
+    """软去重是展示层：真收了会丢原文内容时，宁可整份细对都留着，也不整页分开。"""
+    en, zh = _paragraphs(30)
+
+    # 模拟一条过宽的去重判断：第 5 段带着独有文字，收掉就少内容。
+    monkeypatch.setattr(display, "redundant_pairs", lambda pairs: [5])
+    view = article_pairs(en, zh)
+    assert view.notice == ""
+    assert len(view.pairs) == 30
+    assert content_gaps(en, _project(view.pairs, "en")) == 0
+
+
+def test_whole_block_display_also_drops_repeated_rows():
+    """整块对照的页面上，重复的段也收掉；标题这类整块内容照旧留着。"""
+    en, zh = _paragraphs(6)
+    source = "<h2>Report</h2>" + en + _PARA_EN.format(index=3)
+    translated = "<h2>报告</h2>" + zh + _PARA_ZH.format(index=3)
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert "Report" in _project(view.pairs, "en")
+    assert _project(view.pairs, "en").count("Paragraph 3 explains") == 1
+    assert content_gaps(source, _project(view.pairs, "en")) == 0
+

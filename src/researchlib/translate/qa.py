@@ -1,17 +1,22 @@
 """对照页质量检查：硬指标 + 可选 LLM 抽验。
 
 只读。原文先过和文章页同一条清洗、md 链接改写和图片文字，译文过同一遍白名单。
-叶子指标检查潜在逐段配对；页面遇到内容遗漏会保留完整区块，段数不齐会分开显示。
-另用不依赖可译叶子的检查核对实际展示和未译内容，指标只判断，不改库、不重译。
+指标按页面上真正显示的那一份（``display.article_pairs``）算，不按细对齐算：细对齐
+再漂亮，页面整页退回两篇长文也是失败。另用不依赖可译叶子的检查核对实际展示和未译内容，
+指标只判断，不改库、不重译。
 
-五条硬指标，和人工抽验的口径一致：
+六条硬指标，和人工抽验的口径一致：
 
-1. 巨型 pair：一对英文的可见文字达到 2000 字。按句切开之后不该再有。
-2. 近重复组：页面上还留着重复、整句包含或近前缀的长英文。展示层只在两边叶子一样多时
-   按位置收；条数对不齐的旧译文会留下来。
-3. long-empty-ZH：对上的那一对英文够长（80 字）却没有中文。
-4. 归档头：正文里还留着 ``member-rss`` / ``rss_link`` / ``- source:`` 这类行。
-5. 叶子/对数异常：展示硬排的两边叶子差；差到 40 段按失败算，差一两段只告警。
+1. 整页退回：展示层分别显示完整原文和译文（``displayNotice`` 非空）。此时读不出对照。
+2. 巨型 pair：一对英文的可见文字达到 2000 字。按句切开之后不该再有。
+3. 近重复组：页面上还留着能安全收掉的重复、整句包含或近前缀长英文。收掉会丢原文里的
+   独有文字、数字或资料链接的那一对要留着，那种不算缺陷。
+4. long-empty-ZH：对上的那一对英文够长（80 字）却没有中文。
+5. 归档头：正文里还留着 ``member-rss`` / ``rss_link`` / ``- source:`` 这类行。
+6. 叶子/对数异常：展示硬排的两边叶子差；差到 40 段按失败算，差一两段只告警。
+
+展示比细对齐叶子少了原文内容按失败记；译文这一侧只丢了另一种译法的措辞不算失败（收重复
+本来就会这样），少图片或资料链接才算，措辞的差额只记进 ``preservation.translated``。
 
 LLM 抽验用站内默认模型（DeepSeek deepseek-flash，thinking + reasoning_effort=max），
 只对抽到的段落打分挑刺，结果回给调用方，不写库。
@@ -32,11 +37,10 @@ from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
 from researchlib.present_text import polish_display_text
 from researchlib.render import inline_image_ocr, sanitize_html
 from researchlib.sources import load_sources
-from researchlib.translate.display import article_pairs, projection_gaps, protected_content_gaps
+from researchlib.translate.display import article_pairs, leaf_projection_gaps, protected_content_gaps
 from researchlib.translate.llm import extract_json
 from researchlib.translate.pair import (
     BilingualPair,
-    bilingual_pairs,
     display_blocks,
     redundant_pairs,
     visible_text,
@@ -195,8 +199,13 @@ def _archive_markers(html: str) -> tuple[str, ...]:
 
 
 def report_from_html(article_id: int, source_id: str, title: str, en_html: str, zh_html: str) -> BilingualReport:
-    """在已经渲染好的两边 HTML 上算指标。单测和多篇批量都走这一个入口。"""
-    pairs: list[BilingualPair] = bilingual_pairs(en_html, zh_html) or []
+    """在已经渲染好的两边 HTML 上算指标。单测和多篇批量都走这一个入口。
+
+    页面指标（巨型 pair、近重复、长英文没中文、最长英文）按 ``article_pairs`` 返回的
+    真实展示算，不按细对齐算：整页退回两篇长文时，细对齐可能很漂亮，页面却没法看。
+    """
+    displayed = article_pairs(en_html, zh_html)
+    pairs: list[BilingualPair] = displayed.pairs
     en_leaves = len(iter_segments(en_html))
     zh_leaves = len(iter_segments(zh_html))
     blocks = display_blocks(en_html, zh_html)
@@ -208,10 +217,15 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
 
     texts = [visible_text(pair.en or "") for pair in pairs]
     giant = tuple(index for index, text in enumerate(texts) if len(text) >= GIANT_EN_CHARS)
-    long_empty = tuple(
-        index
-        for index in range(min(paired, len(pairs)))
-        if len(texts[index]) >= LONG_EN_CHARS and not (pairs[index].zh or "").strip()
+    # 整页分开展示时，英文那一段本来就没有中文，不算漏译；分开本身已经按失败记。
+    long_empty = (
+        ()
+        if displayed.notice
+        else tuple(
+            index
+            for index in range(min(paired, len(pairs)))
+            if len(texts[index]) >= LONG_EN_CHARS and not (pairs[index].zh or "").strip()
+        )
     )
     near_duplicates = tuple(redundant_pairs(pairs))
     markers = tuple(dict.fromkeys(_archive_markers(en_html) + _archive_markers(zh_html)))
@@ -221,10 +235,17 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
     missing = protected_content_gaps(en_html, zh_html)
     if missing:
         issues.append(CheckIssue("protected-content-loss", "fail", missing, "译文缺少原文未译的数字、图片或代码"))
-    displayed = article_pairs(en_html, zh_html)
-    source_loss, translation_loss = projection_gaps(en_html, zh_html, displayed.pairs)
-    if source_loss or translation_loss:
-        issues.append(CheckIssue("display-content-loss", "fail", source_loss + translation_loss, "正文投影遗漏内容"))
+    source_loss, translation_loss, material_loss = leaf_projection_gaps(en_html, zh_html, pairs)
+    if source_loss:
+        issues.append(
+            CheckIssue("display-content-loss", "fail", source_loss, "展示比细对齐叶子少了原文的字、图片或链接")
+        )
+    if material_loss:
+        issues.append(
+            CheckIssue("translation-material-loss", "fail", material_loss, "展示少了译文里的图片或资料链接")
+        )
+    if displayed.notice:
+        issues.append(CheckIssue("display-fallback-separate", "fail", len(pairs), displayed.notice))
     if giant:
         issues.append(
             CheckIssue(
@@ -521,11 +542,11 @@ def review_with_llm(
 
 
 def pairs_for_review(conn, settings: Settings, article_id: int) -> list[BilingualPair]:
-    """重新取这一篇的对照，给 LLM 抽验拼抽样用。"""
+    """重新取这一篇的对照，给 LLM 抽验拼抽样用。取的是页面上真正显示的那一份。"""
     texts = load_article_texts(conn, settings, article_id)
     if texts is None:
         return []
-    return bilingual_pairs(texts.en_html, texts.zh_html) or []
+    return article_pairs(texts.en_html, texts.zh_html).pairs
 
 
 __all__ = [

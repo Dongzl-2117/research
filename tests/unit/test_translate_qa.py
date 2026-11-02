@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,13 +51,16 @@ def test_giant_pair_is_flagged():
     assert [issue.code for issue in report.issues] == ["giant-pair"]
 
 
-def test_contained_pair_left_on_page_is_flagged():
+def test_shortfall_pair_falls_back_to_separate_and_fails():
+    """少一段就无法知道漏的是哪一段：分开展示，按失败记，不再假装配对。"""
     longer = ALPHA + " Plus one more clause that makes this paragraph clearly longer than the first one."
     report = report_of(f"<p>{ALPHA}</p><p>{longer}</p>", "<p>甲段中文。</p>")
     assert report.status == "fail"
-    assert report.near_duplicates == (0,)
-    assert "near-duplicate" in {issue.code for issue in report.issues}
-    assert "leaf-gap" in {issue.code for issue in report.issues}
+    assert report.display_notice
+    assert report.pairs == 2
+    assert "display-fallback-separate" in {issue.code for issue in report.issues}
+    # 分开展示时没有逐对重复可收，近重复不该在这里点名。
+    assert report.near_duplicates == ()
 
 
 def test_long_english_without_chinese_is_flagged():
@@ -91,8 +95,9 @@ def test_large_leaf_gap_fails_and_small_gap_warns():
     assert any(issue.code == "leaf-gap" and issue.level == "fail" for issue in big.issues)
 
     small = report_of(f"<p>{ALPHA}</p><p>{BETA}</p>", "<p>甲段中文。</p>")
-    assert small.status == "warn"
+    assert small.status == "fail"
     assert any(issue.code == "leaf-gap" and issue.level == "warn" for issue in small.issues)
+    assert any(issue.code == "display-fallback-separate" for issue in small.issues)
 
 
 def test_tail_extra_leaves_do_not_count_as_long_empty():
@@ -118,7 +123,7 @@ def test_review_messages_sample_flagged_pairs_and_truncate():
     en = f"<p>{long_sentence}</p>" + "".join(f"<p>{ALPHA}</p><p>{BETA}</p>" for _ in range(4))
     zh = "<p>一整段中文。</p>" + "".join("<p>甲段中文。</p><p>乙段中文。</p>" for _ in range(4))
     report = report_of(en, zh)
-    pairs = qa.bilingual_pairs(en, zh) or []
+    pairs = qa.article_pairs(en, zh).pairs
     messages = qa.build_review_messages(report, pairs, max_pairs=6, chars=120)
     payload = json.loads(messages[1]["content"])
     indexes = [item["i"] for item in payload["pairs"]]
@@ -182,7 +187,11 @@ def test_cli_returns_one_on_hard_failure_and_zero_on_pass(fake_cli, monkeypatch,
 
 
 def test_cli_strict_turns_warning_into_failure(fake_cli, monkeypatch):
-    warn_report = report_of(f"<p>{ALPHA}</p><p>{BETA}</p>", "<p>甲段中文。</p>")
+    clean = report_of(f"<p>{ALPHA}</p>", "<p>甲段中文。</p>")
+    warn_report = dataclasses.replace(
+        clean, issues=(qa.CheckIssue("leaf-gap", "warn", 1, "展示硬排的叶子差 1 段"),)
+    )
+    assert warn_report.status == "warn"
     monkeypatch.setattr(cli_qa.qa, "check_article", lambda conn, settings, article_id: warn_report)
     assert cli_qa.main(["--article-id", "1"]) == 0
     assert cli_qa.main(["--article-id", "1", "--strict"]) == 1
