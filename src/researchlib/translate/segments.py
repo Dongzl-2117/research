@@ -1134,7 +1134,8 @@ def _walk(
             keep_br = not in_definition
             leaf = _stable_replacement(replacements[len(out) - 1], tag=node.name, keep_br=keep_br)
             if leaf is not None:
-                node.replacement = leaf
+                # value/start、脚注 id 等属于源结构，模型只替换里面的文字。
+                node.replacement = node.start + leaf[leaf.index(">") + 1:]
         return
     for child in node.children:
         if isinstance(child, _El):
@@ -1280,6 +1281,32 @@ def splice_segments(html: str, replacements: dict[int, str]) -> str:
         return ""
     _found, serialized = _parse_and_walk(html, replacements)
     return serialized
+
+
+def split_sentence_paragraphs(html: str) -> str:
+    """供旧稿候选重排使用；调用方必须核对有序唯一锚点，不能仅凭句数配对。"""
+    parser = _FragmentParser()
+    parser.feed(html)
+    parser.close()
+
+    def walk(node: _El):
+        if node.name in {"pre", "code"}:
+            return
+        if node.name == "p":
+            pieces = _html_sentence_pieces(node)
+            if pieces:
+                later = re.sub(r'''\s+id=["'][^"']*["']''', "", node.start)
+                node.replacement = "".join(
+                    (node.start if index == 0 else later) + piece + "</p>"
+                    for index, piece in enumerate(pieces)
+                )
+                return
+        for child in node.children:
+            if isinstance(child, _El):
+                walk(child)
+
+    walk(parser.root)
+    return _serialize(parser.root.children)
 
 
 def translatable_blocks(html: str) -> list[tuple[int, str]]:

@@ -11,6 +11,8 @@ from markupsafe import Markup
 
 from researchlib.mdlinks import finish_html, prepare_body_html
 from researchlib.translate.display import article_pairs
+from researchlib.translate.pair import stamp_paragraph_ids
+from researchlib.translate.provenance import receipt, source_manifest
 from researchlib.translate.segments import splice_segments, translatable_blocks
 from researchlib.web.routes import templates
 
@@ -42,18 +44,44 @@ def generate(output: Path) -> None:
                      + "The synthetic analysis considers revenue, costs and distribution across different periods. " * 5
                      + "\n\n")
     original = prepare_body_html(body, "Synthetic report", {"chart.svg": "/media/chart.svg"}, None, None)
-    replacements = {index: f"<p>这是第{index}段合成译文，用来验收完整内容和排版。</p>"
-                    for index, _html in translatable_blocks(original)}
-    translated = finish_html(splice_segments(original, replacements), None)
-    for name, zh in (("complete", translated), ("misaligned", "<p>这是缺少中段的旧译文。</p>")):
-        view = article_pairs(original, zh)
+    manifest = source_manifest(original)
+    normalized = manifest["source_snapshot"]
+    analysis = "The synthetic analysis considers revenue, costs and distribution across different periods."
+    replacements = {index: fragment.replace("Financial results", "财务结果").replace("Period", "期间")
+                    .replace("Section", "章节").replace("Paragraph", "段落")
+                    .replace(analysis, "合成分析讨论各期间的收入、成本和分销。")
+                    for index, fragment in translatable_blocks(normalized)}
+    raw_translation = splice_segments(normalized, replacements)
+    proof = receipt(manifest, raw_translation)
+    repeat_source = "<p>Synthetic subscriber profit was 10 dollars.</p>" * 2 + "<p>Costs were 20 dollars.</p>"
+    repeat_target = "<p>合成订户利润为10美元。</p>" * 2 + "<p>成本为20美元。</p>"
+    repeat_proof = receipt(source_manifest(repeat_source), repeat_target)
+    coarse_source = "<blockquote><p>" + " ".join(
+        f"Topic {i} explains the independent market mechanism and why subscriber retention improves regional revenue."
+        for i in range(25)
+    ) + "</p></blockquote>"
+    coarse_target = "<blockquote><p>" + "".join(
+        f"议题{i}解释独立市场机制与区域订户收入。" for i in range(25)
+    ) + "</p></blockquote>"
+    cases = [
+        ("complete", original, raw_translation, proof),
+        ("misaligned", original, "<p>这是缺少中段的旧译文。</p>", None),
+        ("repeated", repeat_source, repeat_target, repeat_proof),
+        ("incompatible", repeat_source.replace("10 dollars", "30 dollars"), repeat_target, repeat_proof),
+        ("anchored", coarse_source, coarse_target, None),
+    ]
+    for name, en, zh, provenance in cases:
+        view = article_pairs(stamp_paragraph_ids(en), finish_html(zh, None), provenance=provenance,
+                             canonical_source=en, canonical_target=zh)
         context = {
             "title": "合成排版验收", "canonical": "http://127.0.0.1/", "public_host": "127.0.0.1",
             "source": SimpleNamespace(id="synthetic", author="合成作者", name="合成来源", timeline=False),
             "sources": [], "article": {"id": 1, "title": "合成排版验收", "duplicate_of": None},
             "date": "2026-01-01", "body_language": "pairs", "has_translation": True,
             "translation_complete": True, "pair_notice": view.notice,
-            "pairs": [{"en": Markup(pair.en), "zh": Markup(pair.zh) if pair.zh else None, "anchor": pair.anchor}
+            "pair_correspondence": view.correspondence,
+            "pairs": [{"en": Markup(pair.en), "zh": Markup(pair.zh) if pair.zh else None,
+                       "anchor": pair.anchor, "repeat_of": pair.repeat_of}
                       for pair in view.pairs],
         }
         page = templates().env.get_template("article.html").render(context)

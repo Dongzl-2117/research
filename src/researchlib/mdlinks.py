@@ -22,8 +22,7 @@ from collections.abc import Sequence
 from markupsafe import escape
 
 from researchlib.article_layout import mark_unavailable_tables, readable_headings
-from researchlib.render import render_body
-from researchlib.textutil import split_frontmatter, strip_duplicate_title
+from researchlib.render import canonical_body_html
 from researchlib.translate.pair import stamp_paragraph_ids
 
 _FENCE = re.compile(r"```.*?```", re.S)
@@ -240,8 +239,5 @@ def prepare_body_html(
     owners: Sequence[str] = (),
 ) -> str:
     """owners：评论区只留这些名字（来源作者），见 zsxq_comments.source_owners。"""
-    _frontmatter, body = split_frontmatter(body_md or "")
-    if fmt != "html":
-        body = strip_duplicate_title(body, title)
-    rendered = str(render_body(body, mapping, fmt, owners=owners))
+    rendered = canonical_body_html(body_md, title, mapping, fmt, owners=owners)
     return finish_html(rendered, index, parent)

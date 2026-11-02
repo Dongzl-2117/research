@@ -92,7 +92,6 @@ def test_final_projection_guard_rejects_loss_from_a_later_block_transform(monkey
 
     # 模拟后续完整区块整理错误地删了 href；最终检查必须拒绝这个投影。
     monkeypatch.setattr(display, "_whole_pair", lose_translated_link)
-    monkeypatch.setattr(display, "bilingual_pairs", lambda *_args: [])
     view = article_pairs(source, translated)
     actual = "".join(pair.en + (pair.zh or "") for pair in view.pairs)
     assert view.notice
@@ -157,14 +156,15 @@ def _paragraphs(count: int, *, offset: int = 1) -> tuple[str, str]:
     )
 
 
-def test_repeated_paragraph_is_dropped_from_the_page_not_the_whole_article():
-    """细对很多、其中一段整段重复：收掉重复那一对，其余照常逐段并排。"""
+def test_repeated_paragraph_is_collapsible_without_losing_its_occurrence():
+    """只折叠完全相同的整对，出现位置及内容仍保留，其余逐段并排。"""
     en, zh = _paragraphs(40)
     source = en + _PARA_EN.format(index=7)
     translated = zh + _PARA_ZH.format(index=7)
     view = article_pairs(source, translated)
     assert view.notice == ""
-    assert len(view.pairs) == 40
+    assert len(view.pairs) == 41
+    assert view.pairs[-1].repeat_of == 6
     assert content_gaps(source, _project(view.pairs, "en")) == 0
     assert content_gaps(translated, "".join(pair.en + (pair.zh or "") for pair in view.pairs)) == 0
 
@@ -199,21 +199,22 @@ def test_soft_dedupe_that_would_lose_text_is_ignored(monkeypatch):
     en, zh = _paragraphs(30)
 
     # 模拟一条过宽的去重判断：第 5 段带着独有文字，收掉就少内容。
-    monkeypatch.setattr(display, "redundant_pairs", lambda pairs: [5])
+    monkeypatch.setattr(display, "redundant_pairs", lambda pairs: [5], raising=False)
     view = article_pairs(en, zh)
     assert view.notice == ""
     assert len(view.pairs) == 30
     assert content_gaps(en, _project(view.pairs, "en")) == 0
 
 
-def test_whole_block_display_also_drops_repeated_rows():
-    """整块对照的页面上，重复的段也收掉；标题这类整块内容照旧留着。"""
+def test_heading_and_repeated_occurrences_both_survive_display():
+    """标题保留，完全相同的重复整对标记折叠而不删除。"""
     en, zh = _paragraphs(6)
     source = "<h2>Report</h2>" + en + _PARA_EN.format(index=3)
     translated = "<h2>报告</h2>" + zh + _PARA_ZH.format(index=3)
     view = article_pairs(source, translated)
     assert view.notice == ""
     assert "Report" in _project(view.pairs, "en")
-    assert _project(view.pairs, "en").count("Paragraph 3 explains") == 1
+    assert _project(view.pairs, "en").count("Paragraph 3 explains") == 2
+    assert view.pairs[-1].repeat_of == 3
     assert content_gaps(source, _project(view.pairs, "en")) == 0
 

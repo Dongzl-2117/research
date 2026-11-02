@@ -1,12 +1,8 @@
-"""对照的完整性保护：叶子投影有遗漏时，回到完整区块；段数不齐时不硬配。
+"""逐段对照与保真检查。
 
-细对齐（叶子按位置并排）是默认展示。软去重属于展示层：它只该收掉页面上重复的那几对，
-不能把投影检查弄失败、再整页退回「整篇英文 + 整篇中文」。所以顺序是
-「不去重的细对 → 投影检查 → 展示层收重复」，收重复时只收删了也不丢原文内容的 pair。
-
-投影有缺口时先看整块对照（标题、表格和列表外壳留着）；整块对不上、缺口又正好等于
-切叶子本来就带不走的那点内容时，仍用细对。只有细对本身在丢正文（两边叶子条数不同，
-或缺口不是切叶子造成的）才分别展示完整原文和译文。
+新稿先核验 canonical 源文和持久回执；旧稿保留明确的不确定性。无法配对时保留两份全文。
+展示单元保留引用、列表和表格结构；完全相同的整对可折叠，文字、资源和出现位置仍在。
+没有删除译段来凑数量的路径。图片文字在配对后渲染，不参与模型源段身份。
 """
 
 from __future__ import annotations
@@ -19,19 +15,71 @@ from html.parser import HTMLParser
 
 from researchlib.translate.pair import (
     BilingualPair,
-    bilingual_pairs,
     display_blocks,
-    pairs_from_blocks,
-    redundant_pairs,
     visible_text,
 )
-from researchlib.translate.segments import Segment, iter_segments, top_level_blocks
+from researchlib.translate.segments import iter_segments, top_level_blocks
 
 _STRUCTURE = frozenset({"table", "thead", "tbody", "tr", "td", "th", "ul", "ol", "dl", "dt", "dd", "pre", "code"})
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _ROOT = re.compile(r"^<([a-z][a-z0-9]*)\b", re.I)
 _IMG = re.compile(r"<img\b[^>]*>", re.I)
 _SRC = re.compile(r'''\bsrc=["']([^"']*)["']''', re.I)
+
+
+class _Identifiers(HTMLParser):
+    def __init__(self, value):
+        super().__init__()
+        self.ids = []
+        self.feed(value)
+
+    def handle_starttag(self, tag, attrs):
+        self.ids.extend(value for name, value in attrs if name == "id" and value)
+
+
+def _unique_ids(pairs: list[BilingualPair]) -> list[BilingualPair]:
+    """中英两份和列表外壳可能同用脚注 id；只保留一个真实锚点，href 不改写。"""
+    from dataclasses import replace
+
+    seen = {p.anchor for p in pairs if p.anchor}
+
+    class Clean(HTMLParser):
+        def __init__(self, value):
+            super().__init__(convert_charrefs=False)
+            self.out = []
+            self.feed(value)
+
+        def start(self, tag, attrs, close):
+            kept = []
+            for name, value in attrs:
+                if name == "id":
+                    if not value or value in seen:
+                        continue
+                    seen.add(value)
+                kept.append(f' {name}="{html.escape(value, quote=True)}"' if value is not None else f" {name}")
+            self.out.append(f"<{tag}{''.join(kept)}{' /' if close else ''}>")
+
+        def handle_starttag(self, tag, attrs):
+            self.start(tag, attrs, False)
+
+        def handle_startendtag(self, tag, attrs):
+            self.start(tag, attrs, True)
+
+        def handle_endtag(self, tag):
+            self.out.append(f"</{tag}>")
+
+        def handle_data(self, data):
+            self.out.append(data)
+
+        def handle_entityref(self, name):
+            self.out.append(f"&{name};")
+
+        def handle_charref(self, name):
+            self.out.append(f"&#{name};")
+
+    # 脚注优先落在中文；中文没有该锚点时仍能落到原文。
+    result = [replace(p, zh="".join(Clean(p.zh).out) if p.zh else None) for p in pairs]
+    return [replace(p, en="".join(Clean(p.en).out)) for p in result]
 
 
 class _Facts(HTMLParser):
@@ -74,13 +122,23 @@ def protected_content_gaps(source: str, translated: str) -> int:
     protected = [block for block in blocks if not iter_segments(block)]
     # 数字单元格可能嵌在表格里，不是顶层块。
     protected.extend(re.findall(r"<(?:td|th)\b[^>]*>\s*([\d\s.,%+−—/-]+)\s*</(?:td|th)>", source, re.I))
-    return content_gaps("".join(protected), translated)
+    from collections import Counter
+
+    from researchlib.translate.provenance import Resources
+
+    before, after = Resources(source), Resources(translated)
+    return (content_gaps("".join(protected), translated)
+            + sum((Counter(before.codes) - Counter(after.codes)).values())
+            + sum((Counter(before.media) - Counter(after.media)).values()))
 
 
 @dataclass(frozen=True)
 class PairDisplay:
     pairs: list[BilingualPair]
     notice: str = ""
+    correspondence: str = "legacy"
+    correspondence_reason: str = ""
+    leaf_counts: tuple[int, int] = (0, 0)
 
 
 def _gaps(source_en: str, source_zh: str, pairs: Sequence[BilingualPair]) -> tuple[int, int]:
@@ -94,14 +152,38 @@ def projection_gaps(original: str, translated: str, pairs: Sequence[BilingualPai
     return _gaps(original, translated, pairs)
 
 
+def ordered_projection_gaps(
+    original: str, translated: str, pairs: Sequence[BilingualPair], *, separate: bool = False,
+) -> tuple[int, int]:
+    """独立检查实际投影的文字顺序和重数；共享媒体可在同一对原文侧出现。"""
+    from collections import Counter
+
+    from researchlib.translate.provenance import Resources
+
+    def plain(value):
+        return re.sub(r"\s+", "", html.unescape(re.sub(r"<[^>]+>", "", value)))
+
+    en = "".join(p.en for p in pairs)
+    zh = "".join((p.zh or "") if separate else (p.zh if p.zh is not None else p.en) for p in pairs)
+    visible = en + "".join(p.zh or "" for p in pairs)
+    left, right, shown_en, shown = Resources(original), Resources(translated), Resources(en), Resources(visible)
+    return (
+        int(plain(original) != plain(en))
+        + sum((Counter(left.links) - Counter(shown_en.links)).values())
+        + sum((Counter(left.media) - Counter(shown_en.media)).values()),
+        int(plain(translated) != plain(zh))
+        + sum((Counter(right.links) - Counter(shown.links)).values())
+        + sum((Counter(right.media) - Counter(shown.media)).values()),
+    )
+
+
 def leaf_projection_gaps(
     original: str, translated: str, pairs: Sequence[BilingualPair]
 ) -> tuple[int, int, int]:
     """展示的 pairs 相对细对齐叶子缺了什么：原文侧、译文侧、译文侧的图片和链接。
 
     细对齐叶子是送去译制的那一份；它没带上的图片链接、纯数字块不算展示层遗漏，
-    由 ``protected_content_gaps`` 单独看。软去重是唯一会在这里现形的删减：收掉重复段时
-    另一种译法的措辞会少，原文侧和资料链接不能少。
+    由 ``protected_content_gaps`` 单独看。此函数仅保留兼容统计；对应关系由持久回执核验，实际保真由有序投影另查。
     """
     leaves = display_blocks(original, translated, dedupe=False)
     if leaves is None:
@@ -113,28 +195,27 @@ def leaf_projection_gaps(
 
 
 def _material_gaps(source: str, displayed: str) -> int:
-    """只看图片和链接：另一种译法的措辞可以收，资料链接不能少。"""
+    """兼容资源统计；不授权删除译文文字。"""
     before, after = _Facts(source), _Facts(displayed)
     return len(before.media - after.media) + len(before.links - after.links)
 
 
-def _duplicate_free(pairs: list[BilingualPair]) -> list[BilingualPair]:
-    """展示层收重复：只收掉删了也不丢原文内容的重复 pair。
-
-    ``redundant_pairs`` 与质检共用一套门槛，页面上剩下的都不是能安全收掉的重复。
-    """
-    drop = set(redundant_pairs(pairs))
-    if not drop:
-        return pairs
-    return [pair for index, pair in enumerate(pairs) if index not in drop]
-
-
 def _shared_media_removed(en: str, zh: str) -> str:
-    shared = _Facts(en).media
+    from researchlib.translate.provenance import Resources
+
+    shared = [key for key in Resources(en).media if key[0] == "img"]
+    position = 0
+    sharing = True
 
     def keep(match):
-        src = _SRC.search(match.group())
-        return "" if src and html.unescape(src.group(1)) in shared else match.group()
+        nonlocal position, sharing
+        facts = Resources(match.group()).media
+        key = facts[0] if facts else None
+        if sharing and position < len(shared) and key == shared[position]:
+            position += 1
+            return ""
+        sharing = False
+        return match.group()
 
     return _IMG.sub(keep, zh)
 
@@ -142,8 +223,11 @@ def _shared_media_removed(en: str, zh: str) -> str:
 def _whole_pair(en: str, zh: str) -> BilingualPair:
     anchor = re.search(r'\bid="(p-\d+)"', zh) or re.search(r'\bid="(p-\d+)"', en)
     en, zh = _PARA_ID.sub("", en), _PARA_ID.sub("", zh)
+    full_zh = zh
     zh = _shared_media_removed(en, zh)
-    if visible_text(en) == visible_text(zh) and not content_gaps(zh, en):
+    if visible_text(en) == visible_text(zh) and not any(
+        ordered_projection_gaps(en, full_zh, [BilingualPair(en, None)]),
+    ):
         zh = ""
     return BilingualPair(en=en, zh=zh or None, anchor=anchor.group(1) if anchor else None)
 
@@ -155,107 +239,101 @@ def _separate(original: str, translated: str, notice: str) -> PairDisplay:
     return PairDisplay([BilingualPair(en, None), BilingualPair("", zh or None)], notice)
 
 
-def _checked_display(original: str, translated: str, pairs: list[BilingualPair]) -> PairDisplay:
-    # 所有区块处理结束后再核对一次；不能假定中途的保留检查覆盖后续整理。
-    if any(projection_gaps(original, translated, pairs)):
-        return _separate(original, translated, "无法完整逐段展示，以下分别保留原文和译文。")
-    return PairDisplay(pairs)
-
-
-def _whole_blocks(original: str, translated: str) -> PairDisplay | None:
-    """整块对照：每个顶层区块内部还配得上的，仍然逐段并排。区块结构对不上返回 None。"""
-    left, right = top_level_blocks(original), top_level_blocks(translated)
-    compatible = len(left) == len(right) and all(
-        (_ROOT.match(en).group(1) if _ROOT.match(en) else "")
-        == (_ROOT.match(zh).group(1) if _ROOT.match(zh) else "")
-        and len(iter_segments(en)) == len(iter_segments(zh))
-        for en, zh in zip(left, right, strict=True)
-    )
-    if not compatible:
-        return None
-    pairs: list[BilingualPair] = []
-    for en, zh in zip(left, right, strict=True):
-        projected = bilingual_pairs(en, zh) or []
-        if any(projection_gaps(en, zh, projected)):
-            # 这一块里的细对会丢内容：整块留下，资料链接和图片都在。
-            pairs.append(_whole_pair(en, zh))
-        else:
-            pairs.extend(projected)
-    checked = _checked_display(original, translated, pairs)
-    if checked.notice:
-        return checked
-    # 完整区块确认无误之后再收重复：只收原文内容在别处都还在的那几对。
-    return PairDisplay(_duplicate_free(checked.pairs))
-
-
-def _legacy_display(original: str, translated: str) -> PairDisplay:
-    """两边叶子条数不同的老办法：先在同一套去重里把条数拉齐，再配位置。"""
-    leaves = display_blocks(original, translated)
-    if leaves and len(leaves[0]) != len(leaves[1]):
-        # 无法知道漏的是中间哪一段。把多余段挂到末尾会把后面的每一句都配错。
-        return _separate(
-            original, translated,
-            "译文段落与原文对不上，以下分别展示完整原文和译文。",
-        )
-    raw = bilingual_pairs(original, translated) or []
-    if not any(projection_gaps(original, translated, raw)):
-        return PairDisplay(raw)
-    whole = _whole_blocks(original, translated)
-    if whole is not None:
-        return whole
-    return _separate(
-        original, translated,
-        "这篇的结构无法逐段对应，以下分别展示完整原文和译文。",
-    )
-
-
-def _leaf_extraction_gaps(
-    original: str, translated: str, leaves: tuple[list[Segment], list[Segment]]
-) -> tuple[int, int]:
-    """切叶子这一步本身相对整篇原文丢了什么：标题、表格外壳、图片链接这些不送译的内容。"""
-    return (
-        content_gaps(original, "".join(item.html for item in leaves[0])),
-        content_gaps(translated, "".join(item.html for item in leaves[1])),
-    )
-
-
-def _shown_pairs(
-    original: str, translated: str, full: list[BilingualPair], loss: tuple[int, int]
+def article_pairs(
+    original: str, translated: str, *, provenance: dict | None = None,
+    canonical_source: str | None = None, canonical_target: str | None = None,
+    ocr_texts: dict[str, str] | None = None, host: str | None = None,
 ) -> PairDisplay:
-    """收重复之后再看一眼原文侧：真丢了原文里的东西就整份细对都留着。"""
-    shown = _duplicate_free(full)
-    if projection_gaps(original, translated, shown)[0] != loss[0]:
-        return PairDisplay(full)
-    return PairDisplay(shown)
+    """逐段身份优先；旧稿只作明确标记的结构对照，不删段凑数量。
 
-
-def article_pairs(original: str, translated: str) -> PairDisplay:
-    """普通段沿用细分对照；软去重只在展示层收，不把整页打回两篇长文。
-
-    顺序：完整细对 → 投影检查 → 展示层收重复。软去重放在投影检查之后：收掉重复的
-    那几对之后，原文若比细对少了内容，就整份细对都留着，也不再退成两篇长文。
+    映射由未装饰的 canonical 输入核验；图片文字在配对后加入，避免它参与翻译分段。
     """
-    leaves = display_blocks(original, translated, dedupe=False)
-    if leaves is None:
-        return PairDisplay([])
-    if len(leaves[0]) != len(leaves[1]):
-        # 无法知道漏的是中间哪一段。把多余段挂到末尾会把后面的每一句都配错。
-        return _legacy_display(original, translated)
-    full = pairs_from_blocks(leaves[0], leaves[1])
-    loss = projection_gaps(original, translated, full)
-    if not any(loss):
-        return _shown_pairs(original, translated, full, loss)
-    whole = _whole_blocks(original, translated)
-    if whole is not None:
-        # 整块对得上时保留完整区块：标题、表格和列表外壳比逐句并排更重要。
-        return whole
-    if loss != _leaf_extraction_gaps(original, translated, leaves):
-        # 细对本身就在丢内容，不是切叶子带走的：这时逐段并排会漏正文。
-        return _separate(
-            original, translated,
-            "这篇的结构无法逐段对应，以下分别展示完整原文和译文。",
-        )
-    return _shown_pairs(original, translated, full, loss)
+    from dataclasses import replace
+
+    from researchlib.translate.layout import paired_units
+    from researchlib.translate.provenance import (
+        AlignmentError,
+        MappingState,
+        anchored_legacy_reflow,
+        leaf_problem,
+        materialize,
+        verify,
+    )
+
+    state = verify(canonical_source if canonical_source is not None else original,
+                   canonical_target if canonical_target is not None else translated, provenance)
+    counts = (len(iter_segments(original)), len(iter_segments(translated)))
+    if state.status == "incompatible":
+        result = _separate(original, translated, "译文来源或处理版本已变化，以下保留两份全文，需核对对应关系。")
+    else:
+        try:
+            en = materialize(original)
+            zh = materialize(translated)
+            left, right = iter_segments(en), iter_segments(zh)
+            if len(left) != len(right) and state.status == "legacy":
+                reflow = anchored_legacy_reflow(en, zh)
+                if reflow:
+                    en, zh = reflow
+                    left, right = iter_segments(en), iter_segments(zh)
+                    state = MappingState("legacy-anchors", "unique-ordered-anchors")
+            counts = (len(left), len(right))
+            if len(left) != len(right):
+                result = _separate(original, translated, "译文段落与原文对不上，以下分别展示完整原文和译文。")
+            elif any(leaf_problem(a.html, b.html) == "numbers" for a, b in zip(left, right, strict=True)):
+                result = _separate(
+                    original, translated, "段落数字锚点不一致，无法确认对应关系，以下保留完整原文和译文。",
+                )
+            else:
+                fragments = paired_units(en, zh)
+                if fragments:
+                    pairs = []
+                    anchors = set()
+                    exact_pairs = {}
+                    for a, b in fragments:
+                        key = (_PARA_ID.sub("", a), _PARA_ID.sub("", b))
+                        pair = _whole_pair(a, b)
+                        if key in exact_pairs:
+                            pair = replace(pair, repeat_of=exact_pairs[key])
+                        else:
+                            exact_pairs[key] = len(pairs)
+                        if pair.anchor in anchors:
+                            pair = replace(pair, anchor=None)
+                        if pair.anchor:
+                            anchors.add(pair.anchor)
+                        aliases = []
+                        for alias in re.findall(r'\bid="(p-\d+)"', b + a):
+                            if alias not in anchors:
+                                aliases.append(f'<span id="{alias}" class="para-anchor"></span>')
+                                anchors.add(alias)
+                        remaining = set(_Identifiers(pair.en + (pair.zh or "")).ids)
+                        for alias in _Identifiers(b + a).ids:
+                            if re.fullmatch(r"p-\d+", alias) or alias in remaining:
+                                continue
+                            aliases.append(f'<span id="{html.escape(alias, quote=True)}" class="para-anchor"></span>')
+                            remaining.add(alias)
+                        if aliases:
+                            pair = replace(pair, en="".join(aliases) + pair.en)
+                        pairs.append(pair)
+                    result = PairDisplay(pairs)
+                else:
+                    result = _separate(original, translated, "结构无法逐段对应，以下保留完整原文和译文。")
+        except AlignmentError:
+            result = _separate(original, translated, "分段无法保真，以下保留完整原文和译文。")
+    if not result.notice and any(ordered_projection_gaps(original, translated, result.pairs)):
+        result = _separate(original, translated, "无法完整逐段展示，以下分别保留原文和译文。")
+    if result.notice:
+        counts = (len(iter_segments(original)), len(iter_segments(translated)))
+    result = replace(result, correspondence=("unmapped" if result.notice else state.status),
+                     correspondence_reason=state.reason, leaf_counts=counts)
+    result = replace(result, pairs=_unique_ids(result.pairs))
+    if ocr_texts:
+        from researchlib.render import HOST, inline_image_ocr
+
+        result = replace(result, pairs=[replace(p,
+            en=inline_image_ocr(p.en, ocr_texts, host=host or HOST),
+            zh=inline_image_ocr(p.zh, ocr_texts, host=host or HOST) if p.zh else None,
+        ) for p in result.pairs])
+    return result
 
 
 __all__ = [

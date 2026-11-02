@@ -779,3 +779,15 @@ def render_body(body: str, mapping: dict[str, str], fmt: str | None = None, *, o
         html = rewrite_html_images(polish_display_text(body or ""), mapping)
         return Markup(mark_unavailable_tables(readable_headings(_anchor_images(sanitize_html(html)))))
     return Markup(assemble_reader_comments(body or "", mapping, _render_markdown, owners))
+
+
+def canonical_body_html(
+    body_md: str, title: str, mapping: dict[str, str], fmt: str | None, *, owners: Sequence[str] = (),
+) -> str:
+    """翻译和页面共用的原始渲染，不加临时段落号、站内链接改写或图片文字。"""
+    from researchlib.textutil import split_frontmatter, strip_duplicate_title
+
+    _frontmatter, body = split_frontmatter(body_md or "")
+    if fmt != "html":
+        body = strip_duplicate_title(body, title)
+    return str(render_body(body, mapping, fmt, owners=owners))

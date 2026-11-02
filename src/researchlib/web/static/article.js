@@ -36,3 +36,20 @@
   toc.append(list);
   body.before(toc);
 })();
+
+// 重复整对只是折叠，引用仍应打开对应的出现位置。
+(function () {
+  function openBilingualReference() {
+    var targetId = '';
+    try { targetId = decodeURIComponent(location.hash.slice(1)); } catch (_) { return; }
+    var item = targetId ? document.getElementById(targetId) : null;
+    item = item || document.querySelector('.is-quoted');
+    var opened = false;
+    for (var node = item; node; node = node.parentElement) {
+      if (node.tagName === 'DETAILS' && !node.open) { node.open = true; opened = true; }
+    }
+    if (opened && item) item.scrollIntoView({block: 'center'});
+  }
+  openBilingualReference();
+  window.addEventListener('hashchange', openBilingualReference);
+}());

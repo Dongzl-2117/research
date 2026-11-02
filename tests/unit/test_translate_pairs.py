@@ -175,29 +175,19 @@ def _quote_repeat_fixture() -> tuple[str, str]:
     return "".join(en_parts), "".join(zh_parts)
 
 
-def test_pairs_realign_when_translation_dropped_repeated_quotes():
-    """21182 的形状：英文 24 块、中文 16 块，差大于 1。对照仍在，引用对着引用，解说对着解说。"""
+def test_missing_quote_copies_are_unmapped():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     en, zh = _quote_repeat_fixture()
     assert len(top_level_blocks(en)) == 24
     assert len(top_level_blocks(zh)) == 16
     assert abs(len(top_level_blocks(en)) - len(top_level_blocks(zh))) > 1
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 16
-    for index, pair in enumerate(pairs):
-        assert pair.anchor == f"p-{index + 1}"
-        assert pair.zh
-        if index % 2 == 0:
-            assert f"引用{index // 2}" in pair.zh
-            assert f"Quoted passage {index // 2}" in pair.en
-        else:
-            assert f"解说{index // 2}" in pair.zh
-            assert f"Commentary {index // 2}" in pair.en
-            assert f"Quoted passage {index // 2}" not in pair.en
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
-def test_one_dropped_repeat_realigns_following_paragraph():
-    """只少一段重复引用时，解说仍对着自己的译文，不退回纯中文。"""
+def test_one_missing_repeat_is_unmapped():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     quote = "Microsoft cloud revenue grew at the low end of the forecast this quarter."
     note = "That pivot is the part that matters for the rest of the year."
     en = (
@@ -210,18 +200,12 @@ def test_one_dropped_repeat_realigns_following_paragraph():
         '<p id="p-2">真正要紧的是后面这次转向。</p>'
     )
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 2
-    assert pairs[0].zh and "微软云" in pairs[0].zh
-    assert "Microsoft cloud" in pairs[0].en
-    assert pairs[0].anchor == "p-1"
-    assert pairs[1].zh and "真正要紧" in pairs[1].zh
-    assert "pivot" in pairs[1].en
-    assert pairs[1].anchor == "p-2"
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
-def test_leftover_english_hangs_after_aligned_prefix():
-    """去重把重复引用对齐之后，后面多出来的英文挂在末尾，没有译文。"""
+def test_leftover_english_is_not_positionally_paired():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     quote = "Quoted passage is long enough that consecutive copies count as one block."
     note = "Commentary follows the quote and must stay with its own translation."
     extra = "A later paragraph that the translation never reached."
@@ -237,56 +221,27 @@ def test_leftover_english_hangs_after_aligned_prefix():
     )
     assert abs(len(top_level_blocks(en)) - len(top_level_blocks(zh))) > 1
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 3
-    assert pairs[0].zh and "引用足够长" in pairs[0].zh
-    assert "Quoted passage" in pairs[0].en
-    assert pairs[1].zh and "解说要留" in pairs[1].zh
-    assert "Commentary follows" in pairs[1].en
-    assert "later paragraph" in pairs[2].en
-    assert pairs[2].zh is None
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
-def test_soft_dedupe_collapses_equal_length_quote_then_body():
-    """叶子数已经一样时，引用后紧跟的同一段正文两边都收成一对。
-
-    21118 在叶子数对齐之后仍有这种连续相同的 <p>。段落号不同也要收掉。
-    后面单独的一段还在自己的位置上。
-    """
+def test_soft_dedupe_retains_equal_length_quote_then_body():
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     quote = "Microsoft cloud revenue grew at the low end of the forecast this quarter."
-    note = "That pivot is the part that matters for the rest of the year."
     zh_quote = "微软云收入落在这个季度预测区间的低端，连续相同只留一份。"
-    zh_note = "真正要紧的是后面这次转向，要留在自己的译文上。"
     en = f'<blockquote id="p-1"><p>{quote}</p></blockquote><p id="p-2">{quote}</p>'
     zh = f'<blockquote id="p-1"><p>{zh_quote}</p></blockquote><p id="p-2">{zh_quote}</p>'
     assert len(segments_of(en)) == len(segments_of(zh)) == 2
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 1
-    assert quote in pairs[0].en
-    assert pairs[0].zh and zh_quote in pairs[0].zh
-    assert pairs[0].anchor == "p-1"
-
-    en_note = en + f'<p id="p-3">{note}</p>'
-    zh_note_html = zh + f'<p id="p-3">{zh_note}</p>'
-    assert len(segments_of(en_note)) == len(segments_of(zh_note_html)) == 3
-    followed = bilingual_pairs(en_note, zh_note_html)
-    assert followed is not None and len(followed) == 2
-    assert quote in followed[0].en and note not in followed[0].en
-    assert followed[0].zh and zh_quote in followed[0].zh
-    assert note in followed[1].en and quote not in followed[1].en
-    assert followed[1].zh and "真正要紧" in followed[1].zh
-    assert followed[1].anchor == "p-3"
+    _assert_retained_pairs(en, zh, pairs, 2)
 
 
 def test_soft_dedupe_still_hides_zh_when_text_matches_english():
-    """收成一对之后，译文纯文本仍和原文相同，中文照旧不显示。"""
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     quote = "Microsoft cloud revenue grew at the low end of the forecast this quarter."
     html = f'<blockquote id="p-1"><p>{quote}</p></blockquote><p id="p-2">{quote}</p>'
     pairs = bilingual_pairs(html, html)
-    assert pairs is not None and len(pairs) == 1
-    assert pairs[0].zh is None
-    assert quote in pairs[0].en
+    _assert_retained_pairs(html, html, pairs, 2)
 
 
 def test_soft_dedupe_keeps_equal_length_when_shrink_would_diverge():
@@ -348,68 +303,48 @@ def test_pairs_keep_repeats_when_translation_kept_them():
     assert pairs[2].zh and "第三段" in pairs[2].zh
 
 
-def test_pairs_when_model_repeated_a_paragraph():
-    """中文连吐三遍时先收成一份再配，成本对着自己的英文，不整页退回。"""
+def test_extra_model_paragraph_is_unmapped():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     sentence = "聚合理论解释平台为什么会赢，这一段足够长所以连续重复要去掉。"
     en = "<p>Aggregation theory explains why platforms win.</p><p>Costs come second in this note.</p>"
     zh = f"<p>{sentence}</p><p>{sentence}</p><p>{sentence}</p><p>成本是后面的第二点。</p>"
     assert abs(len(top_level_blocks(en)) - len(top_level_blocks(zh))) > 1
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 2
-    assert pairs[0].zh and "聚合理论" in pairs[0].zh
-    assert "Aggregation theory" in pairs[0].en
-    assert pairs[1].zh and "成本" in pairs[1].zh
-    assert "Costs come second" in pairs[1].en
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
-def test_pairs_when_structure_diverges():
-    """没有可去重的重复段时仍出对照：前面对齐，多出来的原文挂在末尾且没有译文。"""
+def test_divergent_structure_is_unmapped():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     en = "".join(f"<p>Paragraph {index} says something distinct.</p>" for index in range(6))
     zh = "<p>只有两段。</p><p>结构对不上，照样对照。</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 6
-    assert pairs[0].zh and "只有两段" in pairs[0].zh
-    assert "Paragraph 0" in pairs[0].en
-    assert pairs[1].zh and "照样对照" in pairs[1].zh
-    assert "Paragraph 1" in pairs[1].en
-    assert all(pair.zh is None for pair in pairs[2:])
-    assert "Paragraph 5" in pairs[5].en
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
-def test_leftover_chinese_hangs_when_nothing_to_dedupe():
-    """没有重复段可对齐时，多出来的译文接在末尾，en 为空，对照不退回。"""
+def test_leftover_chinese_is_not_positionally_paired():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     en = "<p>Only one English paragraph here.</p>"
     zh = "<p>只有一段对得上。</p><p>后面多出来的译文。</p><p>再多一段，内容不同。</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 3
-    assert "Only one" in pairs[0].en
-    assert pairs[0].zh and "对得上" in pairs[0].zh
-    assert pairs[1].en == "" and pairs[1].zh and "多出来" in pairs[1].zh
-    assert pairs[2].en == "" and pairs[2].zh and "再多一段" in pairs[2].zh
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
-def test_pairs_skip_zh_when_same_as_english_or_empty():
+def test_empty_target_slot_does_not_shift_following_pairs():
     en = "<p>Same text.</p><p>Has translation.</p><p>Third.</p>"
     zh = "<p>Same text.</p><p>有译文。</p><p></p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 3
-    assert pairs[0].zh is None and "Same text." in pairs[0].en
-    assert pairs[1].zh and "有译文" in pairs[1].zh
-    assert pairs[2].zh is None and "Third." in pairs[2].en
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
-def test_pairs_none_only_when_both_sides_have_no_blocks():
+def test_empty_or_one_sided_text_has_no_structural_pair():
     assert bilingual_pairs("", "") is None
-    assert bilingual_pairs("   ", "") is None
-    only_en = bilingual_pairs("<p>Hello.</p>", "")
-    assert only_en is not None and len(only_en) == 1 and only_en[0].zh is None and "Hello." in only_en[0].en
-    only_zh = bilingual_pairs("", "<p>你好。</p>")
-    assert only_zh is not None and len(only_zh) == 1 and only_zh[0].en == ""
-    assert only_zh[0].zh and "你好" in only_zh[0].zh
+    assert bilingual_pairs("<p>Hello.</p>", "") is None
+    assert bilingual_pairs("", "<p>你好。</p>") is None
+
 
 
 def _plain_len(html: str) -> int:
@@ -765,13 +700,13 @@ def test_br_lines_pair_one_to_one_when_both_sides_match():
         assert pair.zh and f"第{index}行" in pair.zh
 
 
-def test_legacy_br_paragraph_with_other_line_count_stays_one_pair():
-    """旧译文把整段几十行当一段译，行数和原文差一行时不拆，免得从那行起错位。"""
+def test_legacy_br_line_count_mismatch_is_unmapped():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     en = "<p>" + "<br>".join(f"English row {index}." for index in range(5)) + "</p>"
     zh = "<p>" + "<br>".join(f"中文第{index}行。" for index in range(4)) + "</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 1
-    assert "row 0" in pairs[0].en and pairs[0].zh and "第0行" in pairs[0].zh
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
 def test_coarse_reason_ignores_br_lines_in_one_paragraph():
@@ -1043,7 +978,7 @@ def _long_dt(label: str) -> str:
 
 
 def test_short_dt_writeback_stays_one_to_one_and_does_not_repeat_openings():
-    """21118：连续长 dt 译短后不能重新打包。同文的列表项和段落收成一对，中文仍是这一句。"""
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     labels = [
         "Regulatory and legal risks:",
         "On the macro-policy front Apple stayed cautious about fines:",
@@ -1097,41 +1032,11 @@ def test_short_dt_writeback_stays_one_to_one_and_does_not_repeat_openings():
     assert leaf_count_problem(html, written) is None
     assert len(segments_of(written)) == len(segments)
     pairs = bilingual_pairs(html, written)
-    # 列表项和紧跟着的同文段落，中文是同一句短译文。按位置收成一对，不把下一段配上来。
-    assert pairs is not None and len(pairs) == len(segments) - 2
-    assert sum(pair.zh is None for pair in pairs) == 1
-
-    def opening(value: str | None) -> str:
-        return _plain_pair(value or "")[:60]
-
-    for left, right in zip(pairs, pairs[1:], strict=False):
-        if left.en and opening(left.en) == opening(right.en):
-            assert opening(left.zh)[:12] == opening(right.zh)[:12]
-
-    iphone_pairs = [pair for pair in pairs if opening(pair.en).startswith("iPhone – premium")]
-    assert len(iphone_pairs) == 1
-    assert iphone_pairs[0].zh and "iPhone的译文" in iphone_pairs[0].zh
-    assert "Mac的译文" not in iphone_pairs[0].zh
-    mac_pairs = [pair for pair in pairs if opening(pair.en).startswith("Mac –")]
-    assert len(mac_pairs) == 1
-    assert mac_pairs[0].zh and "Mac –的译文" in mac_pairs[0].zh
-    assert "iPhone的译文" not in mac_pairs[0].zh
-
-    wearables = next(pair for pair in pairs if "Wearables, Home and Accessories" in pair.en)
-    assert wearables.zh and "Wearables的译文" in wearables.zh
-    assert "Services growth" not in wearables.zh
-
-    heading = next(pair for pair in pairs if "Unbundling of Substantiation" in pair.en)
-    assert heading.zh and "Unbundling的译文" in heading.zh
-    assert "外部图片已省略" not in heading.zh
-    image = next(pair for pair in pairs if "外部图片已省略" in pair.en)
-    assert image.zh is None
-    closing = pairs[-1]
-    assert "Closing note" in closing.en and closing.zh and "Closing的译文" in closing.zh
+    _assert_retained_pairs(html, written, pairs, 14)
 
 
-def test_unclosed_translation_does_not_pair_heading_with_image_stub():
-    """没闭合的译文不能把后面的标题吞掉，标题也不能配上「外部图片已省略」。"""
+def test_unclosed_translation_with_wrong_anchors_is_unmapped():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     line = (
         "Services carried the quarter forward and the installed base kept growing through the year. "
         "Margins stayed high because the same customers kept paying."
@@ -1160,18 +1065,12 @@ def test_unclosed_translation_does_not_pair_heading_with_image_stub():
     written = splice_segments(html, replacements)
     assert leaf_count_problem(html, written) is None
     pairs = bilingual_pairs(html, written)
-    assert pairs is not None and len(pairs) == len(segments)
-    heading = next(pair for pair in pairs if "Unbundling of Substantiation" in pair.en)
-    assert heading.zh and "论证支撑的解绑" in heading.zh
-    assert "外部图片已省略" not in heading.zh
-    image = next(pair for pair in pairs if "外部图片已省略" in pair.en)
-    assert image.zh is None
-    assert pairs[-1].zh and "译文" in pairs[-1].zh
-    assert "Closing note" in pairs[-1].en
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(html, written)
 
 
-def test_soft_dedupe_leaves_a_missing_leaf_paired_with_the_image_stub():
-    """译文已经少了一叶时，同一套去重拉不齐。标题会配上图片占位，文末没有中文。"""
+def test_missing_leaf_is_not_paired_with_image_stub():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     english = (
         "<h3>The Unbundling of Substantiation</h3>"
         "<p><em>[外部图片已省略]</em></p>"
@@ -1180,10 +1079,8 @@ def test_soft_dedupe_leaves_a_missing_leaf_paired_with_the_image_stub():
     chinese = "<p><em>[外部图片已省略]</em></p><p>收尾译文。</p>"
     assert leaf_count_problem(english, chinese) == "leaves 3 vs 2"
     pairs = bilingual_pairs(english, chinese)
-    assert pairs is not None and len(pairs) == 3
-    assert "Unbundling" in pairs[0].en
-    assert pairs[0].zh and "外部图片已省略" in pairs[0].zh
-    assert "Closing note" in pairs[2].en and pairs[2].zh is None
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(english, chinese)
 
 
 def _plateau_sentences(count: int) -> list[str]:
@@ -1243,8 +1140,8 @@ def test_decimals_and_domains_are_not_sentence_breaks():
     assert all("46.9" in plain and "example.com" in plain for plain in plains)
 
 
-def test_doubled_long_list_item_collapses_when_both_sides_repeat():
-    """21118：长列表项和紧跟着的同文段落，两边都有时收成一份，不再是两千字的两对。"""
+def test_doubled_long_list_item_retains_when_both_sides_repeat():
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     body = " ".join(_plateau_sentences(10))
     en = f"<ul><li>{body}</li></ul><p><strong>Point</strong> {body[len('Point'):]}</p>"
     bits = [
@@ -1259,16 +1156,11 @@ def test_doubled_long_list_item_collapses_when_both_sides_repeat():
     zh += "".join(f"<p>{bit}</p>" for bit in bits)
     assert len(segments_of(en)) == 20
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 10
-    assert all(_plain_len(pair.en) <= 900 for pair in pairs)
-    assert pairs[0].en.startswith("<p>Point 0") or "Point 0" in pairs[0].en
-    assert pairs[0].zh and "第0句" in pairs[0].zh
-    assert pairs[9].zh and "第9句" in pairs[9].zh
-    assert sum("Point 0" in pair.en for pair in pairs) == 1
+    _assert_retained_pairs(en, zh, pairs, 20)
 
 
-def test_repeated_section_collapses_on_both_sides():
-    """21130：连续几段在后文再贴一遍。纯文本相同的后一份两边都收掉，不硬配。"""
+def test_repeated_section_retains_on_both_sides():
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     paragraphs = [
         (
             f"<p>Paragraph {index} explains a distinct point about the fair use record "
@@ -1288,9 +1180,7 @@ def test_repeated_section_collapses_on_both_sides():
     zh = "".join(zh_bits + zh_bits)
     assert len(segments_of(en)) == 10
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 5
-    assert "Paragraph 0" in pairs[0].en and pairs[0].zh and "第0段" in pairs[0].zh
-    assert "Paragraph 4" in pairs[4].en and pairs[4].zh and "第4段" in pairs[4].zh
+    _assert_retained_pairs(en, zh, pairs, 10)
 
 
 def test_shared_opening_with_a_different_ending_stays_two_pairs():
@@ -1315,8 +1205,8 @@ def test_shared_opening_with_a_different_ending_stays_two_pairs():
     assert pairs[1].zh and "假日季" in pairs[1].zh
 
 
-def test_blockquote_with_one_br_drops_the_repeated_opening():
-    """22195：引用里一个 <br> 粘了两段，后面的段落只重复第一段。拆开后第一段只出现一次。"""
+def test_quote_with_conflicting_numbers_is_unmapped():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     first = " ".join(
         f"Opening point {index} about the foldable phone and the lock screen layout stays one sentence."
         for index in range(6)
@@ -1333,18 +1223,12 @@ def test_blockquote_with_one_br_drops_the_repeated_opening():
     assert len(zh_first) < 900 < len(zh_first) + len(zh_second)
     zh = f"<blockquote><p>{zh_first}<br>{zh_second}</p></blockquote><p>{zh_first}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    assert len(pairs) == 2
-    assert "Opening point 0" in pairs[0].en and "Following point" not in pairs[0].en
-    assert "Following point 0" in pairs[1].en and "Opening point 0" not in pairs[1].en
-    assert pairs[0].zh and "开头0" in pairs[0].zh
-    assert pairs[1].zh and "后文0" in pairs[1].zh
-    assert sum("Opening point 0" in pair.en for pair in pairs) == 1
-    assert all(_plain_len(pair.en) < 2_000 for pair in pairs)
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
-def test_one_sided_long_repeat_is_not_hard_zipped():
-    """只在英文侧重复的长段不单边丢掉，后记仍对着自己的译文。"""
+def test_one_sided_long_repeat_is_unmapped():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     body = " ".join(_plateau_sentences(10))
     note = "A later distinct note about the quarter that must stay with its own translation and not slide over."
     en = f"<ul><li>{body}</li></ul><p>{body}</p><p>{note}</p>"
@@ -1354,10 +1238,8 @@ def test_one_sided_long_repeat_is_not_hard_zipped():
         "<p>后记要留在第三组，不能配到重复段上。</p>"
     )
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 3
-    assert "Point 0" in pairs[0].en and pairs[0].zh and "列表项" in pairs[0].zh
-    assert "Point 0" in pairs[1].en and pairs[1].zh and "不是同一句" in pairs[1].zh
-    assert note in pairs[2].en and pairs[2].zh and "第三组" in pairs[2].zh
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
 def test_definition_url_fragment_stays_inside_the_sentence():
@@ -1384,8 +1266,8 @@ def test_definition_url_fragment_stays_inside_the_sentence():
     assert "example.com)." in joined_plain or "example.com )." in joined_plain
 
 
-def test_prefix_restatement_collapses_when_both_sides_match():
-    """21130 的 Meta 开头：后一段是前一段的开头，两边都是这样时收掉后一段。"""
+def test_prefix_restatement_retains_when_both_sides_match():
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     clause = "the company escaped the copyright claim because the record did not show market harm "
     long = clause * 16 + "and then the opinion turns to the fourth factor."
     short = (clause * 8).strip()
@@ -1397,13 +1279,11 @@ def test_prefix_restatement_collapses_when_both_sides_match():
     zh_short = "甲" * 240
     zh = f"<p>{zh_long}</p><p>{zh_short}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 1
-    assert "fourth factor" in pairs[0].en
-    assert pairs[0].zh and "后文" in pairs[0].zh
+    _assert_retained_pairs(en, zh, pairs, 2)
 
 
-def test_near_identical_paragraph_collapses_when_both_sides_match():
-    """差一个词的近重复段，两边都这样时收成一份。后文不同的不收。"""
+def test_near_identical_paragraph_retains_when_both_sides_match():
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     clause = "revenue rose after the filing and the installed base kept paying through the holiday quarter "
     text = (clause * 6).strip() + "."
     near = text.replace("holiday", "holidays", 1)
@@ -1413,12 +1293,11 @@ def test_near_identical_paragraph_collapses_when_both_sides_match():
     zh_b = "甲" * 120 + "啊。"
     zh = f"<p>{zh_a}</p><p>{zh_b}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 1
-    assert "holiday quarter" in pairs[0].en
+    _assert_retained_pairs(en, zh, pairs, 2)
 
 
-def test_reuse_duplicate_sources_copies_the_first_translation():
-    """写回仍是一段对一段：重复段用第一次的译文，不另起一条不同的中文。"""
+def test_reuse_duplicate_sources_preserves_an_existing_translation():
+    """已经有译文的源段不因重复而被另一种措辞覆盖。"""
     from researchlib.translate.service import reuse_duplicate_sources
 
     sentence = (
@@ -1426,7 +1305,7 @@ def test_reuse_duplicate_sources_copies_the_first_translation():
     )
     other = "A different sentence about the following quarter is also long enough to be its own leaf here."
     got = reuse_duplicate_sources([sentence, other, sentence], ["甲", "乙", "丙"])
-    assert got == ["甲", "乙", "甲"]
+    assert got == ["甲", "乙", "丙"]
     assert len(got) == 3
 
 
@@ -1546,11 +1425,8 @@ def _repeat_stack_fixture() -> tuple[str, str]:
     return "".join(en_parts), "".join(zh_parts)
 
 
-def test_nonadjacent_long_english_stacks_collapse_when_chinese_is_short():
-    """21118 / 22195：长英文隔了别的段出现两到三次，中文不到 80 字但仍是同一句。
-
-    叶子数对齐时按位置收。近重复组从 4 组变成 0。夹层各留一次，顺序不变。
-    """
+def test_nonadjacent_long_english_stacks_remain_when_chinese_is_short():
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     en, zh = _repeat_stack_fixture()
     leaves = segments_of(en)
     assert len(leaves) == len(segments_of(zh))
@@ -1567,28 +1443,7 @@ def test_nonadjacent_long_english_stacks_collapse_when_chinese_is_short():
     assert _long_en_near_groups(leaves, min_len=100) == 4
 
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    shown = [pair.en for pair in pairs]
-    assert _long_en_near_groups(shown) == 0
-    assert _long_en_near_groups(shown, min_len=100) == 0
-    assert [ _plain_segment(pair.en)[:24] for pair in pairs ] == [
-        _DUO[:24],
-        _BRIDGES[0][:24],
-        _IPHONE[:24],
-        _SERVICES[:24],
-        _WEARABLES[:24],
-        _BRIDGES[1][:24],
-        _BRIDGES[2][:24],
-        _BRIDGES[3][:24],
-    ]
-    assert pairs[0].zh and "7.6" in pairs[0].zh
-    assert pairs[2].zh and "基本持平" in pairs[2].zh
-    assert pairs[5].zh and "夹层二" in pairs[5].zh
-    assert pairs[0].anchor is None or pairs[0].en.startswith("<p") or pairs[0].en.startswith("<blockquote")
-    assert sum("7.6-inch" in pair.en for pair in pairs) == 1
-    assert sum("iPhone revenue" in pair.en for pair in pairs) == 1
-    assert sum("Services revenue jumped" in pair.en for pair in pairs) == 1
-    assert sum("Wearables revenue has matured" in pair.en for pair in pairs) == 1
+    _assert_retained_pairs(en, zh, pairs, 15)
 
 
 def _contain_groups(htmls: list[str], *, min_len: int = 80) -> int:
@@ -1640,11 +1495,8 @@ _CONTAINED_ZH = (
 _CONTAINED_ZH_LONG = "整段换了一套说法，先写硬件走平，再写服务扩张和回购，并不嵌进上面的短句。"
 
 
-def test_shorter_leaf_contained_in_longer_paragraph_is_dropped():
-    """22195：短句整句包含在后面的长段里。两遍中文不是逐字嵌套，仍收掉短句，长段和末句留下。
-
-    四句加长段是一组五份，另有一组三份、一组两份。收完包含组为 0。
-    """
+def test_containment_does_not_prove_correspondence():
+    """保留原合成输入：结构或数字锚点冲突时拒绝硬配，页面保留两份资料。"""
     duo_short = (
         "The Duo unfolds to reveal a 7.6-inch screen, the largest display ever on an iPhone this year."
     )
@@ -1687,17 +1539,8 @@ def test_shorter_leaf_contained_in_longer_paragraph_is_dropped():
     assert _CONTAINED_TAIL not in _plain_segment(leaves[0])
 
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None
-    shown = [pair.en for pair in pairs]
-    assert _contain_groups(shown) == 0
-    assert _long_en_near_groups(shown) == 0
-    plains = [_plain_segment(pair.en) for pair in pairs]
-    assert plains == [bridge, _CONTAINED_LONG, duo_long, solo_long]
-    assert _CONTAINED_TAIL in plains[1]
-    assert pairs[1].zh and "一套说法" in pairs[1].zh
-    assert pairs[0].zh and "夹层" in pairs[0].zh
-    assert sum("buybacks" in plain for plain in plains) == 1
-    assert all(_plain_len(pair.en) < 1500 for pair in pairs)
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
 def test_parenthetical_source_lines_are_not_treated_as_contained():
@@ -1765,11 +1608,8 @@ _INTRO_ZH = (
 )
 
 
-def test_exact_duplicate_on_the_length_boundary_collapses():
-    """正好 80 字的同一句出现两次。其中一次用 <strong> 贴着句号，去掉标签后少一格。
-
-    两遍中文措辞不同，但共享「苹果的业绩也凸显出其在中国市场」。收成一对。
-    """
+def test_exact_duplicate_on_the_length_boundary_retains():
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     from researchlib.translate.segments import repeat_long
 
     plain = f"<p>{_BOUNDARY}</p>"
@@ -1785,19 +1625,11 @@ def test_exact_duplicate_on_the_length_boundary_collapses():
     en = f"{plain}<p>{bridge}</p>{strong}"
     zh = f"<p>{_BOUNDARY_ZH[0]}</p><p>夹层讲回购，要留着。</p><p>{_BOUNDARY_ZH[1]}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 2
-    assert _BOUNDARY in _plain_segment(pairs[0].en) or "spotlight" in pairs[0].en
-    assert pairs[0].zh and "竞争" in pairs[0].zh
-    assert "buybacks" in pairs[1].en and pairs[1].zh and "夹层" in pairs[1].zh
-    assert sum("spotlight" in pair.en for pair in pairs) == 1
+    _assert_retained_pairs(en, zh, pairs, 3)
 
 
 def test_near_prefix_with_the_same_chinese_lineage_drops_the_shorter():
-    """322 字和 352 字的自我介绍：开头约占较短那句的四分之三，后文不同，不是整句包含。
-
-    中文是同一段的另一种说法。收掉短的，长的末尾那一截留下。只共享大约三分之二开头的
-    两份提示仍由另一则测试留着。
-    """
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
     assert len(_INTRO_SHORT) == 322 and len(_INTRO_LONG) == 352
     assert _INTRO_SHORT.casefold() not in _INTRO_LONG.casefold()
     assert not same_repeat(repeat_key(_INTRO_SHORT), repeat_key(_INTRO_LONG))
@@ -1812,10 +1644,32 @@ def test_near_prefix_with_the_same_chinese_lineage_drops_the_shorter():
     en = f"<p>{_INTRO_SHORT}</p><p>{bridge}</p><p>{_INTRO_LONG}</p>"
     zh = f"<p>{_INTRO_ZH[0]}</p><p>夹层是后面的角度列表，要留着。</p><p>{_INTRO_ZH[1]}</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 2
-    assert "angles that follows" in pairs[0].en and pairs[0].zh and "夹层" in pairs[0].zh
-    assert "fiscal year 2025" in pairs[1].en
-    assert "previous analysis." not in _plain_segment(pairs[1].en)
-    assert pairs[1].zh and "2025" in pairs[1].zh
-    assert _contain_groups([pair.en for pair in pairs]) == 0
-    assert _long_en_near_groups([pair.en for pair in pairs]) == 0
+    _assert_retained_pairs(en, zh, pairs, 3)
+
+
+def _text_in_order(value):
+    from html import unescape
+
+    return re.sub(r"\s+", "", unescape(re.sub(r"<[^>]+>", "", value)))
+
+
+def _assert_retained_pairs(en, zh, pairs, expected):
+    """保留原合成输入：逐段保留两侧文字和出现顺序，不删除另一份译法。"""
+    from researchlib.translate.segments import iter_segments
+
+    assert pairs is not None and len(pairs) == expected
+    left, right = iter_segments(en), iter_segments(zh)
+    assert [_text_in_order(p.en) for p in pairs] == [_text_in_order(s.html) for s in left]
+    assert [_text_in_order(p.zh if p.zh is not None else p.en) for p in pairs] == [
+        _text_in_order(s.html) for s in right
+    ]
+
+
+def _assert_unmapped_page_keeps_everything(en, zh):
+    from researchlib.translate.display import article_pairs
+
+    page = article_pairs(en, zh)
+    assert page.notice
+    assert all(not (pair.en and pair.zh) for pair in page.pairs)
+    assert _text_in_order("".join(p.en for p in page.pairs)) == _text_in_order(en)
+    assert _text_in_order("".join(p.zh or "" for p in page.pairs)) == _text_in_order(zh)

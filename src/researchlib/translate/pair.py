@@ -1,18 +1,8 @@
-"""把原文 HTML 与译文 HTML 配成中英对照。
+"""有序叶子的兼容结构接口。
 
-新译文按叶子段原位写回，和 AIHOT segmentsOf 一样：blockquote 里还有块级子节点时，
-段是里面的 p / 标题 / li，不是整段引用。多条或很长的定义列表引用会再拆进 dt / dd。
-这里按段的位置并排。
-旧稿若只在中文侧删过连续重复段，两边再走一遍同一套去重，把同段拉齐。
-叶子数已经一样时按位置收：后一对的英文是前面某对的长段近重复，且中文也是那一对的
-同一段（译文更短也算），后一对收掉。更短的一句已经整句包含在另一对更长的英文里时，
-收掉短的那一对，长的留下。开头已经占了较短那句大约四分之三、长度又接近、中文是同一段的
-另一种说法时，也收掉短的。英文整句相同但中文是另一句的留下。
-段数仍对不齐也不整页退回中文：多出来的挂在末尾。
-
-这一层的去重会删内容，只给「两边本来对不齐、靠收段拉齐」的旧稿用。叶子数对得上时
-展示层先用不去重的细对（``dedupe=False``）过投影检查，再自己收重复
-（``redundant_pairs``），不收掉会丢原文内容的那一对。
+不再单侧删段、收近前缀或切回粗粒度来凑段数；不能对应时不给位置候选。
+完整页面使用 display.article_pairs，读取持久回执并单独报告旧稿不确定性。
+redundant_pairs 仅用于提示可能重复的位置，不授权删除任何源文或译文。
 """
 
 from __future__ import annotations
@@ -27,7 +17,6 @@ from researchlib.translate.segments import (
     Segment,
     iter_segments,
     repeat_key,
-    repeat_long,
     same_repeat,
     top_level_blocks,
 )
@@ -44,6 +33,7 @@ class BilingualPair:
     en: str
     zh: str | None
     anchor: str | None = None
+    repeat_of: int | None = None
 
 
 def _norm(text: str) -> str:
@@ -105,15 +95,12 @@ def stamp_paragraph_ids(html: str) -> str:
 
 
 def _one_pair(en_html: str, o_text: str, zh_raw: str, zh_text: str, anchor: str | None) -> BilingualPair:
-    """一段对照。译文为空、或纯文本和原文相同，就不显示中文。图片只留在英文侧。"""
-    if not zh_text or zh_text == o_text:
-        return BilingualPair(en=en_html, zh=None, anchor=anchor)
-    zh = zh_raw
-    if re.search(r"<(img|picture|video|source)\b", zh, re.I):
-        zh = _strip_media(zh)
-        if not _plain(zh) or _plain(zh) == o_text:
-            return BilingualPair(en=en_html, zh=None, anchor=anchor)
-    return BilingualPair(en=en_html, zh=zh, anchor=anchor)
+    """兼容叶子入口也保留独有译文资源，共享媒体只隐藏对应的那一份。"""
+    from dataclasses import replace
+
+    from researchlib.translate.display import _whole_pair
+
+    return replace(_whole_pair(en_html, zh_raw), anchor=anchor)
 
 
 def _gap(left: Sequence[object], right: Sequence[object]) -> int:
@@ -127,27 +114,6 @@ def _entries(html: str, *, split_br: bool = True, split_sentences: bool = True) 
 def _leaf_key(html: str) -> str:
     """去标签、空白和标点。列表项和紧跟着的同文段落、域名两侧多出来的空格因此对得上。"""
     return repeat_key(html)
-
-
-def _drop_repeated_leaves(segments: list[Segment]) -> list[Segment]:
-    """同一套规则去掉已经出现过的长叶子。
-
-    全文相同的后一份丢掉（引用整段再贴一遍，或隔了几段又出现）。紧挨着的后一份如果只是
-    前一份的开头（引用里用一个 ``<br>`` 粘了两段，复述只重复了第一段），也丢掉。
-    只共享开头、后文不同的两段都留着。叶子数已经对齐时不用这条单边收，改走
-    ``_drop_aligned_repeats``，免得中文更短时条数对不齐、整页重复都留着。
-    """
-    priors: dict[str, list[str]] = {}
-    kept: list[Segment] = []
-    for segment in segments:
-        key = _leaf_key(segment.html)
-        if repeat_long(segment.html):
-            bucket = key[:48]
-            if any(same_repeat(earlier, key) for earlier in priors.get(bucket, ())):
-                continue
-            priors.setdefault(bucket, []).append(key)
-        kept.append(segment)
-    return kept
 
 
 def _contained_text(html: str) -> str:
@@ -198,66 +164,6 @@ def _translation_repeats(earlier_zh: str, later_zh: str) -> bool:
     return same_repeat(earlier_zh, later_zh)
 
 
-def _drop_aligned_repeats(
-    left: list[Segment], right: list[Segment]
-) -> tuple[list[Segment], list[Segment]]:
-    """叶子已经按位置对齐时，把重复的后一对整对收掉。
-
-    英文可见文字大约 80 字以上，和前面某一对相同、只是它的开头、或几乎一样
-    （长度差在一成以内、相似度 0.96 以上），并且中文也是那一对的同一段译文。
-    标签边界按空格计，句号前多一个空格和 ``<strong>`` 贴着句号算同样长。中文措辞
-    不同但共享一长串时也算同一段。隔了几段再贴出来的同一句同样收，不要求紧挨着。
-    英文重复但中文是另一句的留下，避免把那句译文丢掉，后面的段落因此错位。
-    """
-    if len(left) != len(right):
-        return left, right
-    priors: dict[str, list[tuple[str, str]]] = {}
-    kept_left: list[Segment] = []
-    kept_right: list[Segment] = []
-    for en, zh in zip(left, right, strict=True):
-        en_key = _leaf_key(en.html)
-        zh_key = _leaf_key(zh.html)
-        if _display_long(en.html):
-            bucket = en_key[:48]
-            repeated = any(
-                same_repeat(prev_en, en_key) and _same_lineage(prev_zh, zh_key)
-                for prev_en, prev_zh in priors.get(bucket, ())
-            )
-            if repeated:
-                continue
-            priors.setdefault(bucket, []).append((en_key, zh_key))
-        kept_left.append(en)
-        kept_right.append(zh)
-    kept_left, kept_right = _drop_contained_pairs(kept_left, kept_right)
-    return _drop_near_prefixes(kept_left, kept_right)
-
-
-def _drop_contained_pairs(
-    left: list[Segment], right: list[Segment]
-) -> tuple[list[Segment], list[Segment]]:
-    """短的长英文整句已经出现在另一对更长的英文里时，收掉短的那一对。
-
-    长的那对留着，所以后面多出来的句子还在。引用按句切开、正文仍是一整段时，
-    切开的句子会整句包含在那一段里；两遍中文往往不是逐字嵌套，仍然收短的。
-    英文整句相同、只是中文不同的两对一样长，不在这里收。
-    """
-    texts = [_contained_text(segment.html) for segment in left]
-    drop: set[int] = set()
-    for index, short in enumerate(texts):
-        if not _display_long(left[index].html):
-            continue
-        for other, long in enumerate(texts):
-            if other == index or len(long) <= len(short):
-                continue
-            if short in long:
-                drop.add(index)
-                break
-    if not drop:
-        return left, right
-    kept = [index for index in range(len(left)) if index not in drop]
-    return [left[index] for index in kept], [right[index] for index in kept]
-
-
 def _shared_prefix_len(left: str, right: str) -> int:
     count = 0
     for char_left, char_right in zip(left, right, strict=False):
@@ -267,130 +173,18 @@ def _shared_prefix_len(left: str, right: str) -> int:
     return count
 
 
-def _drop_near_prefixes(
-    left: list[Segment], right: list[Segment]
-) -> tuple[list[Segment], list[Segment]]:
-    """较短的一句有大约四分之三是较长那句的开头，而且两句长度接近时，收掉短的。
-
-    322 字和 352 字的自我介绍是这种：不是整句包含，相似度也到不了 0.96。中文得是
-    同一段的另一种说法。只共享大约三分之二开头、后文明显岔开的两份提示不收。
-    长的那对留下，所以多出来的那一截还在。
-    """
-    texts = [_contained_text(segment.html) for segment in left]
-    zh_keys = [_leaf_key(segment.html) for segment in right]
-    drop: set[int] = set()
-    for index, short in enumerate(texts):
-        if len(short) < 80:
-            continue
-        for other, long in enumerate(texts):
-            if other == index or len(long) <= len(short):
-                continue
-            if (len(long) - len(short)) / len(long) > 0.12:
-                continue
-            if _shared_prefix_len(short, long) < len(short) * 0.75:
-                continue
-            short_zh, long_zh = zh_keys[index], zh_keys[other]
-            if not short_zh:
-                drop.add(index)
-                break
-            if long_zh and _same_lineage(long_zh, short_zh):
-                drop.add(index)
-                break
-    if not drop:
-        return left, right
-    kept = [index for index in range(len(left)) if index not in drop]
-    return [left[index] for index in kept], [right[index] for index in kept]
-
-
 def _show(segment: Segment) -> tuple[str, str | None]:
     """去掉段上的段落号。叶子本身没有 id 时，用切段时记下的祖先 id。"""
     html, anchor = _take_anchor(segment.html)
     return html, anchor or segment.anchor
 
 
-def _best_blocks(
-    original_html: str, zh_html: str, *, split_br: bool, split_sentences: bool, dedupe: bool = True
-) -> tuple[list[Segment], list[Segment]] | None:
-    """按一种切法选两边展示用的叶子。先原样，再看同一套去重。
-
-    ``dedupe=False`` 时只切叶子，不做任何会删内容的整理：展示层投影检查要用这一份。
-    叶子数已经一样时按位置收重复对：英文够长并且近重复，中文是同一段（更短也算）
-    才整对丢掉。短句整句包含在更长的一段里时，收掉短句，长段留下。两边各收各的会因为
-    中文不到 80 字而对不齐条数，整页重复都留着。
-    连续相同的块先去掉，再按位置收一次，短的连续重复和隔开的长重复一起收掉。
-    叶子数本来就不一样时，两边仍各收各的长叶子，只有差距变小才改用那一份。
-    只短一边不硬配。
-    """
-    kids_o = _entries(original_html, split_br=split_br, split_sentences=split_sentences)
-    kids_t = _entries(zh_html, split_br=split_br, split_sentences=split_sentences)
-    if not kids_o and not kids_t:
-        return None
-    if not dedupe:
-        return kids_o, kids_t
-    raw_gap = _gap(kids_o, kids_t)
-    # 懒加载：页面导入 pair 时不必立刻拉起翻译服务。叶子数已经一样也要跑。
-    from researchlib.translate.service import _dedupe_consecutive_blocks
-
-    block_o = _entries(
-        _dedupe_consecutive_blocks(original_html),
-        split_br=split_br,
-        split_sentences=split_sentences,
-    )
-    block_t = _entries(
-        _dedupe_consecutive_blocks(zh_html),
-        split_br=split_br,
-        split_sentences=split_sentences,
-    )
-    if raw_gap == 0 and len(kids_o) == len(kids_t):
-        candidates = [_drop_aligned_repeats(kids_o, kids_t)]
-        if block_o and block_t and len(block_o) == len(block_t):
-            candidates.append(_drop_aligned_repeats(block_o, block_t))
-    else:
-        candidates = [
-            (block_o, block_t),
-            (_drop_repeated_leaves(kids_o), _drop_repeated_leaves(kids_t)),
-            (_drop_repeated_leaves(block_o), _drop_repeated_leaves(block_t)),
-        ]
-    best: tuple[int, int, list[Segment], list[Segment]] | None = None
-    for left, right in candidates:
-        if not left or not right:
-            continue
-        gap = _gap(left, right)
-        equal_shrink = (
-            raw_gap == 0
-            and gap == 0
-            and len(left) == len(right)
-            and len(left) < len(kids_o)
-            and len(right) < len(kids_t)
-        )
-        if not equal_shrink and gap >= raw_gap:
-            continue
-        if best is None or gap < best[0] or (gap == best[0] == 0 and len(left) < best[1]):
-            best = (gap, len(left), left, right)
-    if best is None:
-        return kids_o, kids_t
-    return best[2], best[3]
-
-
 def _blocks_for_pairs(
-    original_html: str, zh_html: str, *, dedupe: bool = True
+    original_html: str, zh_html: str, *, dedupe: bool = False
 ) -> tuple[list[Segment], list[Segment]] | None:
-    """选展示用的叶子段。两边都没有叶子段才返回 None。
-
-    超长多句先按句切开，普通段落里的 ``<br>`` 也按句收成段。只在收完后两边的差额
-    不再变大时才用这一份。旧译文是把整段当一段译的，拆开只会让对照从那句起错开，
-    这时仍整段一对。新译文写回时叶子数一致，走拆开的那一份。
-    ``dedupe=False`` 交给 ``_best_blocks``：只切段，不删任何内容。
-    """
-    split = _best_blocks(original_html, zh_html, split_br=True, split_sentences=True, dedupe=dedupe)
-    if split is None or _gap(*split) == 0:
-        return split
-    coarse = _best_blocks(
-        original_html, zh_html, split_br=False, split_sentences=False, dedupe=dedupe
-    )
-    if coarse is None or _gap(*coarse) >= _gap(*split):
-        return split
-    return coarse
+    """只返回有序原始叶子；兼容 dedupe 参数，但不再删段或改用粗粒度凑数量。"""
+    left, right = _entries(original_html), _entries(zh_html)
+    return (left, right) if left or right else None
 
 
 _WORDS = re.compile(r"\w+")
@@ -450,14 +244,10 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
 
 
 def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
-    """展示页上还能收掉的重复 pair 下标：重复、整句包含、近前缀堆。
+    """诊断可能重复的位置，不授权删除。
 
-    删掉一对之前还要看内容：原文这一侧带的字、图片地址和链接若只在它自己身上，
-    这一对留着——少一个数字或资料链接比页面上多一段重复更糟（AGENTS.md）。译文这一侧
-    只看图片和链接：重复段另一种译法的措辞可以收，资料链接不能少。
-    从后往前收，留下最先出现的那一对；删掉一对之后，前面那对的独有内容也跟着算数。
-    展示层用同一份判断收重复，质检用它点名页面上还剩的重复：细对投影通过之后再收，
-    收不掉的不是缺陷，是完整性优先。
+    这份兼容指标仍用词项和资料交集找相似段，不能证明两份译法含义相同。
+    页面保留全部出现，只有两侧 HTML 完全一致时才作可展开折叠。
     """
     candidates = _repeat_candidates(pairs)
     if not candidates:
@@ -488,15 +278,17 @@ def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
 def display_blocks(
     original_html: str, zh_html: str, *, dedupe: bool = True
 ) -> tuple[list[Segment], list[Segment]] | None:
-    """展示用的两边叶子。质检读同一份，避免再写一套切叶规则。
+    """有序原始叶子；dedupe 参数保留兼容，不再整理条数。
 
-    ``dedupe=False`` 只切叶子，不给展示层删内容：投影检查拿这一份当基准。
+    数量不同时由调用方明确处理，不单侧删除或改用粗粒度来凑数量。
     """
     return _blocks_for_pairs(original_html, zh_html, dedupe=dedupe)
 
 
 def pairs_from_blocks(kids_o: Sequence[Segment], kids_t: Sequence[Segment]) -> list[BilingualPair]:
-    """把已经切好的两边叶子按下标配成对照。展示层先切好叶子时用这一份，不重复切。"""
+    """结构候选；条数不同时不配位置。页面应使用带状态的 article_pairs。"""
+    if len(kids_o) != len(kids_t):
+        return []
     pairs: list[BilingualPair] = []
     n = min(len(kids_o), len(kids_t))
     for i in range(n):
@@ -513,15 +305,17 @@ def pairs_from_blocks(kids_o: Sequence[Segment], kids_t: Sequence[Segment]) -> l
 
 
 def bilingual_pairs(
-    original_html: str, zh_html: str, *, dedupe: bool = True
+    original_html: str, zh_html: str, *, dedupe: bool = False
 ) -> list[BilingualPair] | None:
-    """按位置把叶子段配成对照。译过就出对照，不因为段数差返回 None。
+    """兼容结构入口，不再靠去重／粗分段修复条数；无法配对时返回 None。
 
-    选中的两边里，下标对得上的并排。原文更长时，多出来的段 zh 为 None。
-    译文更长时，多出来的段 en 为空，单独接在后面。长度等于较长的一边。
-    ``dedupe=False`` 用未去重的叶子：展示层先看完整细对的投影，再自己收重复。
+    等长仍不证明语义对应。完整页面用 article_pairs 读取回执并展示可信度。
     """
-    blocks = _blocks_for_pairs(original_html, zh_html, dedupe=dedupe)
-    if blocks is None:
+    from researchlib.translate.provenance import leaf_problem
+
+    blocks = _blocks_for_pairs(original_html, zh_html)
+    if blocks is None or len(blocks[0]) != len(blocks[1]):
         return None
-    return pairs_from_blocks(blocks[0], blocks[1])
+    if any(leaf_problem(a.html, b.html) == "numbers" for a, b in zip(*blocks, strict=True)):
+        return None
+    return pairs_from_blocks(*blocks)
