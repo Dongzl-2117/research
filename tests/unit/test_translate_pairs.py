@@ -1233,7 +1233,7 @@ def test_decimals_and_domains_are_not_sentence_breaks():
 
 
 def test_doubled_long_list_item_collapses_when_both_sides_repeat():
-    """21118：长列表项和紧跟着的同文段落，两边都有时收成一份，不再是两千字的两对。"""
+    """精确重复句仍可折叠，首句的独有强调结构保留。"""
     body = " ".join(_plateau_sentences(10))
     en = f"<ul><li>{body}</li></ul><p><strong>Point</strong> {body[len('Point'):]}</p>"
     bits = [
@@ -1248,12 +1248,13 @@ def test_doubled_long_list_item_collapses_when_both_sides_repeat():
     zh += "".join(f"<p>{bit}</p>" for bit in bits)
     assert len(segments_of(en)) == 20
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 10
+    assert pairs is not None and len(pairs) == 11
     assert all(_plain_len(pair.en) <= 900 for pair in pairs)
     assert pairs[0].en.startswith("<p>Point 0") or "Point 0" in pairs[0].en
     assert pairs[0].zh and "第0句" in pairs[0].zh
     assert pairs[9].zh and "第9句" in pairs[9].zh
-    assert sum("Point 0" in pair.en for pair in pairs) == 1
+    assert sum("Point 0" in _plain_segment(pair.en) for pair in pairs) == 2
+    assert any("<strong>Point</strong>" in pair.en for pair in pairs)
 
 
 def test_repeated_section_collapses_on_both_sides():

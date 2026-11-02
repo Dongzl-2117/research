@@ -83,9 +83,16 @@ def content_gaps(source: str, displayed: str) -> int:
 def protected_content_gaps(source: str, translated: str) -> int:
     """译制未处理的图片、代码和纯数字区块，不应在译文里消失。"""
     blocks = top_level_blocks(source)
-    protected = [block for block in blocks if not iter_segments(block)]
-    # 数字单元格可能嵌在表格里，不是顶层块。
-    protected.extend(re.findall(r"<(?:td|th)\b[^>]*>\s*([\d\s.,%+−—/-]+)\s*</(?:td|th)>", source, re.I))
+    protected = []
+    for block in blocks:
+        if not iter_segments(block):
+            protected.append(block)
+        else:
+            # 整个无叶子表格已保留时不再追加单元格；混合表格保留完整单元格，
+            # 避免把相邻的 10 / 20 拼成额外的 1020。
+            protected.extend(re.findall(
+                r"<(?:td|th)\b[^>]*>\s*[\d\s.,%+−—/-]+\s*</(?:td|th)>", block, re.I,
+            ))
     return content_gaps("".join(protected), translated)
 
 

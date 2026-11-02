@@ -74,9 +74,29 @@ const {chromium} = require('playwright-core');
       const alternate = (await page.locator('.bilingual-zh').allTextContents()).join(' ');
       assert(alternate.includes('甲赚了10美元') && alternate.includes('新增订阅带来10美元'));
       await page.screenshot({path: path.join(directory, `alternate-wording-${width}.png`)});
+      for (const name of ['heading-body', 'body-heading']) {
+        await page.goto(origin + '/' + name + '.html');
+        assert.equal(await page.locator('.bilingual-pair').count(), 2);
+        assert.equal(await page.locator('.bilingual-en h2').count(), 1);
+        assert.equal(await page.locator('.bilingual-en p').count(), 1);
+        assert.equal(await page.locator('.bilingual-zh h2').count(), 1);
+        assert.equal(await page.locator('.bilingual-zh p').count(), 1);
+        await page.screenshot({path: path.join(directory, `${name}-${width}.png`)});
+      }
+      await page.goto(origin + '/line-breaks.html');
+      assert.equal(await page.locator('.bilingual-pair').count(), 2);
+      assert.equal(await page.locator('.bilingual-en br').count(), 1);
+      assert.equal(await page.locator('.bilingual-zh br').count(), 1);
+      await page.screenshot({path: path.join(directory, `line-breaks-${width}.png`)});
+      await page.goto(origin + '/numeric-table.html');
+      assert.deepEqual(await page.locator('.bilingual-en td').allTextContents(), ['10', '20']);
+      assert((await page.locator('.bilingual-zh').innerText()).includes('销售概览'));
+      assert.equal(await page.locator('.body-note').count(), 0);
+      await page.screenshot({path: path.join(directory, `numeric-table-${width}.png`)});
       assert.equal(errors.length, 0, errors.join('\n'));
       results.push({width, ...metrics, tocNavigation: true, misalignmentNotice: true,
         missingMiddleFallback: true, swappedAmountFallback: true, alternateWordingPreserved: true,
+        headingBodyRolesPreserved: true, lineBreaksPreserved: true, numericTablePreserved: true,
         javascriptErrors: errors.length});
       await page.close();
     }

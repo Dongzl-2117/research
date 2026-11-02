@@ -264,7 +264,7 @@ def report_from_html(
                 "near-duplicate",
                 "fail",
                 len(near_duplicates),
-                f"页面上仍是重复/包含/近前缀，下标 {_preview(near_duplicates)}",
+                f"页面上仍有文字和完整结构都相同的重复对，下标 {_preview(near_duplicates)}",
             )
         )
     if long_empty:

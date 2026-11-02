@@ -70,11 +70,50 @@ def segment_problem(source: str, translated: str) -> str | None:
     return None
 
 
+class _RepeatShape(HTMLParser):
+    """重复身份保留完整标签/属性/文字事件序列，包括标签相对于文字的位置。"""
+
+    _VOID = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+                       "track", "wbr"})
+
+    def __init__(self, document: str):
+        super().__init__(convert_charrefs=True)
+        self.events: list[tuple] = []
+        self._code_depth = 0
+        self.feed(document or "")
+        self.close()
+
+    def handle_starttag(self, tag, attrs):
+        # 只忽略读取时生成的段锚点；标题层级、段落、br、强调、脚注和资源属性全部保留。
+        attrs = [(name, value) for name, value in attrs
+                 if not (name == "id" and re.fullmatch(r"p-\d+", value or ""))]
+        # 唯一属性的书写顺序不改变 HTML 含义；重复属性的先后可能有意义，不擅自排序。
+        if len({name for name, _value in attrs}) == len(attrs):
+            attrs.sort()
+        self.events.append(("start", tag, tuple(attrs)))
+        if tag in {"pre", "code"}:
+            self._code_depth += 1
+
+    def handle_endtag(self, tag):
+        self.events.append(("end", tag))
+        if tag in {"pre", "code"}:
+            self._code_depth = max(0, self._code_depth - 1)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self._VOID:
+            self.handle_endtag(tag)
+
+    def handle_data(self, data):
+        self.events.append(("text", data if self._code_depth else re.sub(r"\s+", " ", data)))
+
+    def handle_comment(self, data):
+        self.events.append(("comment", data))
+
+
 def repeat_identity(document: str) -> tuple:
-    """只允许两侧各自文字、资源和有意义结构都相同的整对折叠。"""
-    facts = SegmentFacts(document)
-    return (re.sub(r"\s+", " ", "".join(facts.text)).strip(), tuple(facts.resources),
-            tuple(facts.code), tuple(facts.structure))
+    """只折叠规范化 HTML 事件完全相同的整对，不能以同文抹掉标题、正文或换行差异。"""
+    return tuple(_RepeatShape(document).events)
 
 
 def fingerprint(document: str) -> str:

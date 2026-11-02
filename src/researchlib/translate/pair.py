@@ -87,7 +87,7 @@ def stamp_paragraph_ids(html: str) -> str:
 
 
 def _one_pair(en_html: str, o_text: str, zh_raw: str, zh_text: str, anchor: str | None) -> BilingualPair:
-    """一段对照。译文为空、或纯文本和原文相同，就不显示中文。图片只留在英文侧。"""
+    """一段对照。译文为空或完整结构相同才省略；共用图片只留在英文侧。"""
     from researchlib.translate.integrity import SegmentFacts, repeat_identity
 
     if not zh_text or repeat_identity(en_html) == repeat_identity(zh_raw):

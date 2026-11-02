@@ -3,10 +3,10 @@
   "scope": "仅代码、合成测试和文档；未执行生产访问、历史写回或付费模型",
   "tests": {
     "command": "pytest tests -q",
-    "passed": 968,
+    "passed": 988,
     "failed": 0,
     "skipped": 0,
-    "unit": 813,
+    "unit": 833,
     "integration": 155,
     "warnings": [
       "既有 Starlette TestClient / httpx 弃用提示"
@@ -57,6 +57,9 @@
         "missingMiddleFallback": true,
         "swappedAmountFallback": true,
         "alternateWordingPreserved": true,
+        "headingBodyRolesPreserved": true,
+        "lineBreaksPreserved": true,
+        "numericTablePreserved": true,
         "javascriptErrors": 0
       },
       {
@@ -72,6 +75,9 @@
         "missingMiddleFallback": true,
         "swappedAmountFallback": true,
         "alternateWordingPreserved": true,
+        "headingBodyRolesPreserved": true,
+        "lineBreaksPreserved": true,
+        "numericTablePreserved": true,
         "javascriptErrors": 0
       }
     ]
@@ -85,16 +91,16 @@
   ],
   "sha256": {
     "AGENTS.md": "ac82396f6f675f5a52e959e86c0f0e43c1a5f9ef41204afd04cf7b780ecf1b32",
-    "docs/bilingual-integrity-2026-11-02.md": "dc101180bb5bdee6d1124a2fec8ec88f0f5f935c6e9d89ecf844e2818b57483d",
-    "docs/translate.md": "68393749cb91a4e5ccc4adbd9080745448a628907d5805e4f4178599e8e257ed",
+    "docs/bilingual-integrity-2026-11-02.md": "818a7fe4644f3635ccf7411cf55a7545ae9fe7dd843d6b8f6db5e4dce4c4ac9a",
+    "docs/translate.md": "15a55d85dcedf5910e1114924109a56d0fb99f4670a0ca27103be0049f6d56b7",
     "src/researchlib/migrations/028_translation_provenance.sql": "34132e9c54472a25c6f04cfff60a13c9d2f45a798b4716e82b6c7b6f8c3bc1cf",
     "src/researchlib/translate/cli.py": "7cfb7c41e6eb3da73441035c3148f54ecb0518ec3fd43a78683df56be4bea194",
     "src/researchlib/translate/cli_qa.py": "4cb2964992f8d4ddf846bb8cc1060f381c3b307ec2cda889c114e6ce1fd1467e",
-    "src/researchlib/translate/display.py": "55e03d8b1710e9d5b189cc1445ec040f6447a257e23e5704a681329fe6e3e50d",
-    "src/researchlib/translate/integrity.py": "1ff28fca3750fab640aa31b84c2461a7d1a5481e6f9403e0531d643b5e50ff9d",
-    "src/researchlib/translate/pair.py": "6a639bf642295b6334f5f075983fd950f2aa94fcf2a0bb55f5cbf96b22f733a2",
+    "src/researchlib/translate/display.py": "cbc16a3070819d2979c7f1fe6b6356f51b230ae37386029c9235fdf74fd60840",
+    "src/researchlib/translate/integrity.py": "13e8c2c35b61c524f3308204850ecb624526f7c3fdf24669fa56eb852ecc9f20",
+    "src/researchlib/translate/pair.py": "48d570f2c2ce42f3ddadb46f293f5aec339a7ad9fd7dbf15bdaa65da0d19d735",
     "src/researchlib/translate/prompts.py": "e06e2fcff7c352aee614790b2a012cc7609a521545c69f960a13e1eb40bebcd3",
-    "src/researchlib/translate/qa.py": "8dabd9bf91d2b5922840a7fbec1a37188203b75624a915fbddc774f8e188a4ee",
+    "src/researchlib/translate/qa.py": "83e517c2851096beb5f0c156fc44e334eb0ffbfc90707006db94022e8cf1e98d",
     "src/researchlib/translate/segments.py": "26f63f3b91419130ef8fd5bd74d819e6738cc5e9065e27171d562aa0beb5d9dd",
     "src/researchlib/translate/service.py": "d33ebc110f8f03cda6d595b08d88484a9fa9c46f70bf54ef51506ad2ae5f872e",
     "src/researchlib/web/queries.py": "ac6caa939513e3cf405d985908df421fa5eb637ff9daff9098d91b79e2b26ca9",
@@ -106,10 +112,26 @@
     "tests/unit/test_bilingual_regressions.py": "d9eef54b4e83f4805c5572e720ff81aa91199bf930c0ce08aa8616c436010c7b",
     "tests/unit/test_translate_alignment.py": "9b2655cfec8bc2511c17115e6cfe65fc4da7b83dc907164ddc48981f1ab99ebc",
     "tests/unit/test_translate_cli.py": "d3e4b2e684948eaa9b1b551de8792dce37c636f3c0f33868406ebc2d76116c92",
-    "tests/unit/test_translate_pairs.py": "efbe19eed326a3651135b744bd771107a8701b52bf449908a888eb76408347f7",
+    "tests/unit/test_translate_pairs.py": "f74eb13bfdaceaab1c7d2d0e5f201cd75235e7362a02e97cec7d7d2a175a1dcb",
     "tests/unit/test_translate_qa.py": "ec8f837086121dfc2c5f07d5e19af685683296ff6d9208b0d033579ef90d13ba",
     "tests/unit/test_translation_integrity.py": "d0fe27eafe9a1ee0dff581e354ddfdb6850a220e53f5d131743e55d39e45c59a",
-    "tools/article_layout_fixture.py": "2f2851bd91323534f25c44cccf07aa19589ec178e4a62e77b180db375e001284",
-    "tools/article_layout_smoke.cjs": "5ebd31851a02dc1663f397eecb1643011c7d46ab56417ce0101fd0c22ac0b746"
+    "tools/article_layout_fixture.py": "f2df68497e575f13bc9d945e5269644421cd07b64575d4c9e4e54d9ee04e7332",
+    "tools/article_layout_smoke.cjs": "5b8747748a387f29d0edf8ef002b2f83a3dc9b04d307b7de4670a4b5ba4730e3",
+    "tests/unit/test_bilingual_structure_preservation.py": "856a59fa18510586c005fef611b4b52d228a12afa2d55fd227db8b057a1d590d"
+  },
+  "reviewRegression": {
+    "baselineCommit": "825e60956c678140a0d9b6d0b474d71228d73d36",
+    "suite": "tests/unit/test_bilingual_structure_preservation.py",
+    "baselineFailed": 17,
+    "baselinePassed": 3,
+    "fixedPassed": 20,
+    "coverage": [
+      "标题/正文先后顺序",
+      "不同标题层级",
+      "换行有无和位置",
+      "QA 检出误删",
+      "完整数字表格正例",
+      "真实缺少数字单元格反例"
+    ]
   }
 }

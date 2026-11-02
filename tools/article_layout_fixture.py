@@ -65,6 +65,14 @@ def generate(output: Path) -> None:
         ("missing-middle", amounts[0] * 2 + "".join(amounts[1:]), chinese[0] + alternate + chinese[2]),
         ("amount-swap", "".join(amounts), chinese[0] + chinese[2] + chinese[1]),
         ("alternate-wording", amounts[0] * 2, chinese[0] + alternate),
+        ("heading-body", "<h2>Important summary</h2><p>Important summary</p>",
+         "<h2>重要总结</h2><p>重要总结</p>"),
+        ("body-heading", "<p>Important summary</p><h2>Important summary</h2>",
+         "<p>重要总结</p><h2>重要总结</h2>"),
+        ("line-breaks", "<p>Line one<br>Line two</p><p>Line oneLine two</p>",
+         "<p>第一行<br>第二行</p><p>第一行第二行</p>"),
+        ("numeric-table", "<table><tr><td>10</td><td>20</td></tr></table><p>Sales overview.</p>",
+         "<table><tr><td>10</td><td>20</td></tr></table><p>销售概览。</p>"),
     ]
     for name, en, zh in cases:
         view = article_pairs(en, zh)
