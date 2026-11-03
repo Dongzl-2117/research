@@ -311,11 +311,11 @@ def bilingual_pairs(
 
     等长仍不证明语义对应。完整页面用 article_pairs 读取回执并展示可信度。
     """
-    from researchlib.translate.provenance import leaf_problem
+    from researchlib.translate.provenance import positional_numbers_conflict
 
     blocks = _blocks_for_pairs(original_html, zh_html)
     if blocks is None or len(blocks[0]) != len(blocks[1]):
         return None
-    if any(leaf_problem(a.html, b.html) == "numbers" for a, b in zip(*blocks, strict=True)):
+    if positional_numbers_conflict([a.html for a in blocks[0]], [b.html for b in blocks[1]]):
         return None
     return pairs_from_blocks(*blocks)

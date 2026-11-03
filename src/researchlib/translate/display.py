@@ -262,8 +262,8 @@ def article_pairs(
         AlignmentError,
         MappingState,
         anchored_legacy_reflow,
-        leaf_problem,
         materialize,
+        positional_numbers_conflict,
         verify,
     )
 
@@ -286,7 +286,7 @@ def article_pairs(
             counts = (len(left), len(right))
             if len(left) != len(right):
                 result = _separate(original, translated, "译文段落与原文对不上，以下分别展示完整原文和译文。")
-            elif any(leaf_problem(a.html, b.html) == "numbers" for a, b in zip(left, right, strict=True)):
+            elif positional_numbers_conflict([a.html for a in left], [b.html for b in right]):
                 result = _separate(
                     original, translated, "段落数字锚点不一致，无法确认对应关系，以下保留完整原文和译文。",
                 )

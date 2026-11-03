@@ -1,5 +1,6 @@
 """独立于翻译叶子计数的合成回归：原文内容、数字、结构和引用不能因对照丢失。"""
 
+import re
 from html.parser import HTMLParser
 
 import pytest
@@ -217,4 +218,94 @@ def test_heading_and_repeated_occurrences_both_survive_display():
     assert _project(view.pairs, "en").count("Paragraph 3 explains") == 2
     assert view.pairs[-1].repeat_of == 3
     assert content_gaps(source, _project(view.pairs, "en")) == 0
+
+
+def _squash(value: str) -> str:
+    from html import unescape
+
+    return re.sub(r"\s+", "", unescape(re.sub(r"<[^>]+>", "", value or "")))
+
+
+def test_definition_citation_parentheses_stay_in_fine_pairs():
+    """长定义里的来源注释被换行拆成「) (」。丢掉括号会让物化失败，整页退成两列。"""
+    from researchlib.translate.provenance import materialize
+    from researchlib.translate.segments import segments_of
+
+    sentences = [
+        f"Clause {name} explains distribution costs and the installed base for this quarter."
+        for name in (
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+            "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+            "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey",
+            "xray", "yankee", "zulu", "amber", "birch", "cedar", "dune",
+        )
+    ]
+    body = "<br>".join([
+        "Buyers were new to those devices (",
+        "example.com",
+        ") (",
+        "example.com",
+        ")). The note then explains the installed base.",
+        *sentences,
+        "As the note put it, the experience feels more personal.",
+        "(",
+        "example.com",
+        ") It is a classic move that ties software to the hardware advantage.",
+    ])
+    source = f"<dl><dd>{body}</dd></dl>"
+    assert len(_squash(source)) > 2000
+    rendered = materialize(source)
+    assert _squash(rendered) == _squash(source)
+    leaves = segments_of(source)
+    translated = "".join(
+        "<p>这一句说明分销成本和已有用户，单独成对，不写数字。</p>" for _index in range(len(leaves))
+    )
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == len(leaves) > 2
+    shown = _squash(_project(view.pairs, "en"))
+    assert "(example.com)(example.com)" in shown
+    assert "personal.”(example.com)" in shown or "personal.(example.com)" in shown
+    assert max(len(_squash(pair.en)) for pair in view.pairs) < 2000
+
+
+def test_localized_numbers_do_not_collapse_equal_pairs():
+    """300,000 写成 30万、100% 写成百分之百，不能把已经对齐的段落退成整页两列。"""
+    facts = [
+        ("Services revenue reached $300,000 in the holiday quarter and the base kept paying.",
+         "服务收入在假日季度达到 30 万美元，已有用户继续付费。"),
+        ("The success rate was 100% across every region in this short note.",
+         "这篇短文里各地区的成功率是百分之百。"),
+        ("China sales were $69.1 billion during the quarter and missed the prior forecast.",
+         "该季度中国销售额为 691 亿美元，低于原先的预期。"),
+        ("September 9, 2026 is the date written beside the foldable phone screenshot.",
+         "折叠屏那张图旁边写的日期是 2026 年 9 月 9 日。"),
+    ]
+    filler = (
+        "Distribution costs and the installed base stay in this sentence about the quarter.",
+        "这句只讲分销成本和已有用户，没有需要换算的数字。",
+    )
+    en_bits = [en for en, _zh in facts] + [filler[0]] * 8
+    zh_bits = [zh for _en, zh in facts] + [filler[1]] * 8
+    source = "".join(f"<p>{bit}</p>" for bit in en_bits)
+    translated = "".join(f"<p>{bit}</p>" for bit in zh_bits)
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 12
+    assert all(pair.en and pair.zh for pair in view.pairs)
+
+
+def test_reordered_numeric_anchors_still_use_separate_columns():
+    """同一批数字整段对调时，仍然不能按位置硬配。"""
+    source = "".join(
+        f"<p>Topic {index} explains the independent market mechanism and customer retention.</p>"
+        for index in range(6)
+    )
+    translated = "".join(
+        f"<p>议题{index}说明独立的市场机制和客户留存。</p>" for index in reversed(range(6))
+    )
+    view = article_pairs(source, translated)
+    assert view.notice
+    assert len(view.pairs) == 2
+    assert all(not (pair.en and pair.zh) for pair in view.pairs)
 
