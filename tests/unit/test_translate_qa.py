@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from researchlib.translate import cli_qa, qa
+from researchlib.translate.display import protected_content_gaps
 from researchlib.translate.pair import BilingualPair, redundant_pairs
 
 ALPHA = (
@@ -282,3 +283,51 @@ def test_cli_llm_warn_only_fails_with_strict(fake_cli, monkeypatch):
     _llm_verdict(monkeypatch, "warn")
     assert cli_qa.main(["--article-id", "1", "--llm"]) == 0
     assert cli_qa.main(["--article-id", "1", "--llm", "--strict"]) == 1
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["numeric", "mixed"])
+def test_intact_numeric_cells_do_not_create_a_missing_concatenated_number(mixed):
+    header = "<tr><th>Period</th><th>Revenue</th></tr>" if mixed else ""
+    table = f"<table>{header}<tr><td>10</td><td>20</td></tr></table>"
+    translated = table.replace("Period", "期间").replace("Revenue", "收入")
+    assert protected_content_gaps(table, translated) == 0
+    report = report_of(table + "<p>Sales overview.</p>", translated + "<p>销售概览。</p>")
+    assert report.status == "warn"
+    assert {issue.code for issue in report.issues} == {"alignment-unverified"}
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["numeric", "mixed"])
+def test_genuinely_missing_numeric_cell_still_fails(mixed):
+    header = "<tr><th>Period</th><th>Revenue</th></tr>" if mixed else ""
+    table = f"<table>{header}<tr><td>10</td><td>20</td></tr></table>"
+    translated = table.replace("<td>20</td>", "").replace("Period", "期间").replace("Revenue", "收入")
+    assert protected_content_gaps(table, translated) > 0
+    report = report_of(table + "<p>Sales overview.</p>", translated + "<p>销售概览。</p>")
+    assert report.status == "fail"
+    assert "protected-content-loss" in {issue.code for issue in report.issues}
+
+
+def test_numeric_tables_remain_eligible_for_optional_stub_review(fake_cli, monkeypatch, capsys):
+    numeric = "<table><tr><td>10</td><td>20</td></tr></table>"
+    mixed = "<table><tr><th>Revenue</th></tr><tr><td>10</td><td>20</td></tr></table>"
+    reports = {
+        1: report_of(numeric + "<p>Sales overview.</p>", numeric + "<p>销售概览。</p>", article_id=1),
+        2: report_of(mixed + "<p>Sales overview.</p>", mixed.replace("Revenue", "收入") + "<p>销售概览。</p>",
+                     article_id=2),
+        3: report_of(numeric + "<p>Sales overview.</p>",
+                     numeric.replace("<td>20</td>", "") + "<p>销售概览。</p>", article_id=3),
+    }
+    reviewed = []
+    monkeypatch.setattr(cli_qa.qa, "check_article", lambda conn, settings, article_id: reports[article_id])
+    monkeypatch.setattr(cli_qa, "ensure_llm", lambda settings: None)
+    monkeypatch.setattr(cli_qa.qa, "pairs_for_review", lambda *args: [])
+
+    def review(settings, report, pairs):
+        reviewed.append(report.article_id)
+        return {"verdict": "pass", "score": 100, "issues": [], "summary": "合成替身", "model": "synthetic"}
+
+    monkeypatch.setattr(cli_qa.qa, "review_with_llm", review)
+    assert cli_qa.main(["--article-id", "1", "--article-id", "2", "--article-id", "3",
+                        "--llm", "--llm-sample", "3", "--json"]) == 1
+    assert reviewed == [1, 2]
+    assert json.loads(capsys.readouterr().out)["summary"]["llm"]["checked"] == 2
