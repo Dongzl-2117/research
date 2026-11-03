@@ -98,9 +98,15 @@ _MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augu
            "September", "October", "November", "December")
 _MONTH_NUMBERS = {name[:3].lower(): index for index, name in enumerate(_MONTHS, 1)}
 _MONTH_PATTERN = "|".join((*_MONTHS, *(month[:3] for month in _MONTHS), "Sept"))
+_VERSION_VALUE = r"\d[0-9A-Za-z]*(?:[._+-][0-9A-Za-z]+)*"
 _POSITIONAL_NUMBER = re.compile(
-    rf"(?P<month>{_MONTH_PATTERN})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?(?:,\s*|\s+)(?P<year>\d{{4}})\b"
+    rf"(?<![A-Za-z0-9_])(?:version|ver\.?|v)\s*[:：]?\s*(?P<version_en>{_VERSION_VALUE})"
+    rf"|版本\s*v?\s*(?P<version_zh>{_VERSION_VALUE})"
+    rf"|(?<![A-Za-z0-9_])(?P<version_suffix>{_VERSION_VALUE})\s*版本?"
+    r"|\b(?:in|since)\s+['’‘](?P<short_year>\d{2})(?![\dA-Za-z'’])"
+    rf"|(?P<month>{_MONTH_PATTERN})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?(?:,\s*|\s+)(?P<year>\d{{4}})\b"
     r"|(?P<zh_year>\d{4})\s*年\s*(?P<zh_month>\d{1,2})\s*月\s*(?P<zh_day>\d{1,2})\s*日"
+    r"|(?<!\d)(?P<year_only>\d{4})\s*年"
     r"|百分之(?P<zh_percent>百|一百|[一二三四五六七八九]?十[一二三四五六七八九]?|[零〇一二三四五六七八九])"
     r"(?![零〇一二三四五六七八九十百千万亿两点])"
     r"|(?<!\d)(?P<amount>[-−+]?\d[\d,]*(?:\.\d+)?)(?:\s*(?P<unit>"
@@ -114,7 +120,16 @@ def _positional_numbers(value: str) -> list[tuple]:
     """只读展示识别明确等值的单位、百分比和完整日期；不用于新稿回执。"""
     facts = []
     for match in _POSITIONAL_NUMBER.finditer(_number_text(value)):
-        if match["month"] or match["zh_year"]:
+        version = match["version_en"] or match["version_zh"] or match["version_suffix"]
+        if version:
+            # 版本是标识符，3.10 和 3.1、1.0 和 1 都不同；不能交给 Decimal 抹去末尾的零。
+            facts.append(("version", version))
+        elif match["short_year"]:
+            facts.append(("short-year", int(match["short_year"])))
+        elif match["year_only"]:
+            year = int(match["year_only"])
+            facts.append(("calendar-year", year) if year else ("invalid-year", match.group()))
+        elif match["month"] or match["zh_year"]:
             year = int(match["year"] or match["zh_year"])
             month = (_MONTH_NUMBERS[match["month"][:3].lower()]
                      if match["month"] else int(match["zh_month"]))
@@ -147,11 +162,29 @@ def _positional_numbers(value: str) -> list[tuple]:
     return facts
 
 
+def _same_positional_fact(left: tuple, right: tuple) -> bool:
+    if left == right:
+        return True
+    if right[0] == "calendar-year":
+        left, right = right, left
+    if left[0] == "calendar-year":
+        if right[0] == "number":
+            return left[1] == right[1]
+        if right[0] == "short-year":
+            # 缩写没有表达世纪，只核对已表达的末两位；旧稿仍标未核验，不推断世纪。
+            return left[1] % 100 == right[1]
+    return False
+
+
 def positional_numbers_conflict(sources: Sequence[str], targets: Sequence[str]) -> bool:
     """先识别明确等值的本地化，再按槽位、顺序和重数比较；正确段数不能抵消错误段。"""
     if len(sources) != len(targets):
         return True
-    return any(_positional_numbers(en) != _positional_numbers(zh) for en, zh in zip(sources, targets, strict=True))
+    for en, zh in zip(sources, targets, strict=True):
+        left, right = _positional_numbers(en), _positional_numbers(zh)
+        if len(left) != len(right) or any(not _same_positional_fact(a, b) for a, b in zip(left, right, strict=True)):
+            return True
+    return False
 
 
 def leaf_problem(source: str, target: str) -> str | None:
