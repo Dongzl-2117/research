@@ -6,7 +6,10 @@ import hashlib
 import html
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 from html.parser import HTMLParser
 
 from researchlib.translate.segments import iter_segments, splice_segments, split_sentence_paragraphs, top_level_blocks
@@ -78,12 +81,77 @@ class Resources(HTMLParser):
             self.text.append(data)
 
 
-def numeric_anchors(value: str) -> list[str]:
+def _number_text(value: str) -> str:
     text = " ".join(Resources(value).text)
     # Q1–Q4 常译为第一至第四季度；仅规范这个明确的财务序数，不把普通中文词汇当数字。
     text = re.sub(r"(?<![零〇一二三四五六七八九十百千万亿两])第?([一二三四])季度",
                   lambda match: str("一二三四".index(match[1]) + 1) + "季度", text)
-    return [m.group().replace(",", "").replace("−", "-").replace("％", "%") for m in _NUMBER.finditer(text)]
+    return text
+
+
+def numeric_anchors(value: str) -> list[str]:
+    return [m.group().replace(",", "").replace("−", "-").replace("％", "%")
+            for m in _NUMBER.finditer(_number_text(value))]
+
+
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August",
+           "September", "October", "November", "December")
+_MONTH_NUMBERS = {name[:3].lower(): index for index, name in enumerate(_MONTHS, 1)}
+_MONTH_PATTERN = "|".join((*_MONTHS, *(month[:3] for month in _MONTHS), "Sept"))
+_POSITIONAL_NUMBER = re.compile(
+    rf"(?P<month>{_MONTH_PATTERN})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?(?:,\s*|\s+)(?P<year>\d{{4}})\b"
+    r"|(?P<zh_year>\d{4})\s*年\s*(?P<zh_month>\d{1,2})\s*月\s*(?P<zh_day>\d{1,2})\s*日"
+    r"|百分之(?P<zh_percent>百|一百|[一二三四五六七八九]?十[一二三四五六七八九]?|[零〇一二三四五六七八九])"
+    r"(?![零〇一二三四五六七八九十百千万亿两点])"
+    r"|(?<!\d)(?P<amount>[-−+]?\d[\d,]*(?:\.\d+)?)(?:\s*(?P<unit>"
+    r"trillion\b|billion\b|million\b|thousand\b|万亿|亿|万|千|percent\b|%|％))?", re.I,
+)
+_SCALE_EXPONENTS = {"thousand": 3, "million": 6, "billion": 9, "trillion": 12,
+                    "千": 3, "万": 4, "亿": 8, "万亿": 12}
+
+
+def _positional_numbers(value: str) -> list[tuple]:
+    """只读展示识别明确等值的单位、百分比和完整日期；不用于新稿回执。"""
+    facts = []
+    for match in _POSITIONAL_NUMBER.finditer(_number_text(value)):
+        if match["month"] or match["zh_year"]:
+            year = int(match["year"] or match["zh_year"])
+            month = (_MONTH_NUMBERS[match["month"][:3].lower()]
+                     if match["month"] else int(match["zh_month"]))
+            day = int(match["day"] or match["zh_day"])
+            try:
+                facts.append(("date", date(year, month, day)))
+            except ValueError:
+                # 非法日期不能让展示崩溃，也不能与另一种写法碰巧等值。
+                facts.append(("invalid-date", match.group()))
+        elif match["zh_percent"]:
+            word = match["zh_percent"]
+            digits = "零一二三四五六七八九"
+            if word in {"百", "一百"}:
+                amount = 100
+            elif "十" in word:
+                tens, ones = word.split("十")
+                amount = (digits.index(tens) if tens else 1) * 10 + (digits.index(ones) if ones else 0)
+            else:
+                amount = 0 if word == "〇" else digits.index(word)
+            facts.append(("percent", Decimal(amount)))
+        else:
+            amount = Decimal(match["amount"].replace(",", "").replace("−", "-"))
+            unit = (match["unit"] or "").lower()
+            if unit in {"%", "％", "percent"}:
+                facts.append(("percent", amount))
+            else:
+                # 移动十进制指数，不做受当前 Decimal 精度影响的乘法，超长金额也不能碰撞。
+                sign, digits, exponent = amount.as_tuple()
+                facts.append(("number", Decimal((sign, digits, exponent + _SCALE_EXPONENTS.get(unit, 0)))))
+    return facts
+
+
+def positional_numbers_conflict(sources: Sequence[str], targets: Sequence[str]) -> bool:
+    """先识别明确等值的本地化，再按槽位、顺序和重数比较；正确段数不能抵消错误段。"""
+    if len(sources) != len(targets):
+        return True
+    return any(_positional_numbers(en) != _positional_numbers(zh) for en, zh in zip(sources, targets, strict=True))
 
 
 def leaf_problem(source: str, target: str) -> str | None:

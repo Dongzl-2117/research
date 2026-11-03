@@ -608,7 +608,13 @@ def _glue_letterless_br_groups(groups: list[list[str]]) -> list[list[str]]:
 
 
 def _br_pieces(node: _El) -> list[str] | None:
-    """把 <br> 粘成的长 dt/dd 收成若干段。行数不够或不够长时返回 None，仍是一条。"""
+    """把 <br> 粘成的长 dt/dd 收成若干段。行数不够或不够长时返回 None，仍是一条。
+
+    只有括号的行没有字母，不能丢掉。来源注释常被软换行拆成「example.com」「) (」
+    「example.com」。丢掉「) (」再写回，原文少了括号，物化会认为分段无法保真。
+    打包仍只看有字行，叶子数和已入库译文一致；切完再把括号贴回相邻行。
+    若拿带括号的文本重新按句切，「(」会被当成新句，英文比译文多一片。
+    """
     if _plain_len_node(node) < _DEF_BR_PLAIN:
         return None
     if not any(isinstance(child, _El) and child.name == "br" for child in node.children):
@@ -619,12 +625,8 @@ def _br_pieces(node: _El) -> list[str] | None:
     def flush_line() -> None:
         inner = _serialize(group).strip()
         group.clear()
-        if not inner:
-            return
-        text = html_lib.unescape(re.sub(r"<[^>]+>", "", inner))
-        if not any(char.isalpha() for char in text):
-            return
-        lines.append(inner)
+        if inner:
+            lines.append(inner)
 
     for child in node.children:
         if isinstance(child, _El) and child.name == "br":
@@ -634,18 +636,71 @@ def _br_pieces(node: _El) -> list[str] | None:
     flush_line()
     if len(lines) < 2:
         return None
-    packed = _pack_fragments(lines, _html_plain_len)
+    # 打包仍只看有字的行，条数和原先丢掉括号时一致，已入库的译文对得上。
+    # 括号行记在相邻有字行上，切完再贴回去，物化才不会少字。
+    metas: list[dict[str, object]] = []
+    pending: list[str] = []
+    for line in lines:
+        if _html_has_letter(line):
+            metas.append({"line": line, "prefix": pending, "suffix": []})
+            pending = []
+        elif metas:
+            metas[-1]["suffix"].append(line)
+        else:
+            pending.append(line)
+    if pending and metas:
+        metas[-1]["suffix"].extend(pending)
+    if len(metas) < 2:
+        return None
+    packed = _pack_fragments([str(meta["line"]) for meta in metas], _html_plain_len)
     pieces: list[str] = []
+    cursor = 0
     for chunk in packed:
         if not chunk:
             continue
-        piece = f"<p>{' '.join(chunk)}</p>"
-        # 句号落在下一行开头时，一组里会含多句。超过门槛再按句切开。
-        more = _overflow_from_html(piece) if _html_plain_len(piece) > _LEAF_SPLIT else None
-        pieces.extend(more or [piece])
+        group = metas[cursor:cursor + len(chunk)]
+        cursor += len(chunk)
+        # 先按有字行切，叶子数和旧译文一致。( 会让「。” (」被看成新句，不能拿它重新切。
+        core = f"<p>{' '.join(str(meta['line']) for meta in group)}</p>"
+        more = _overflow_from_html(core) if _html_plain_len(core) > _LEAF_SPLIT else None
+        pieces.extend(_place_br_marks(more or [core], group))
     if len(pieces) < 2:
         return None
     return pieces
+
+
+def _place_br_marks(pieces: list[str], metas: list[dict[str, object]]) -> list[str]:
+    """把括号行插回已经切好的叶子，不增加叶子。"""
+    placed = pieces[:]
+    pi = 0
+    offset = 0
+    for meta in metas:
+        line = str(meta["line"])
+        found = None
+        for index in range(pi, len(placed)):
+            start = offset if index == pi else 0
+            idx = placed[index].find(line, start)
+            if idx != -1:
+                found = (index, idx)
+                break
+        prefix = [part for part in meta["prefix"] if isinstance(part, str)]
+        suffix = [part for part in meta["suffix"] if isinstance(part, str)]
+        if found is None:
+            extra = prefix + suffix
+            if extra and placed:
+                placed[-1] = _join_br_lines([placed[-1], _join_br_lines(extra)])
+            continue
+        index, idx = found
+        end = idx + len(line)
+        mid = line
+        if prefix:
+            mid = _join_br_lines([_join_br_lines(prefix), mid])
+        if suffix:
+            mid = _join_br_lines([mid, _join_br_lines(suffix)])
+        placed[index] = placed[index][:idx] + mid + placed[index][end:]
+        pi = index
+        offset = idx + len(mid)
+    return placed
 
 
 def _br_lines(node: _El, *, minimum: int | None = None) -> list[str] | None:
