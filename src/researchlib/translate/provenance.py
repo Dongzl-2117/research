@@ -109,17 +109,21 @@ _POSITIONAL_NUMBER = re.compile(
     r"|(?<!\d)(?P<year_only>\d{4})\s*年"
     r"|百分之(?P<zh_percent>百|一百|[一二三四五六七八九]?十[一二三四五六七八九]?|[零〇一二三四五六七八九])"
     r"(?![零〇一二三四五六七八九十百千万亿两点])"
-    r"|(?<!\d)(?P<amount>[-−+]?\d[\d,]*(?:\.\d+)?)(?:\s*(?P<unit>"
-    r"trillion\b|billion\b|million\b|thousand\b|万亿|亿|万|千|percent\b|%|％))?", re.I,
+    r"|(?<!\d)(?P<amount>[-−+]?\d[\d,]*(?:\.\d+)*)(?:\s*(?P<unit>"
+    r"trillion\b|billion\b|million\b|thousand\b|万亿|亿|万|千|percent\b|%|％|"
+    r"dollars?\b|euros?\b|pounds?\b|yen\b|USD\b|EUR\b|GBP\b|CNY\b|RMB\b|JPY\b|"
+    r"美元|人民币|日元|欧元|英镑|元))?", re.I,
 )
 _SCALE_EXPONENTS = {"thousand": 3, "million": 6, "billion": 9, "trillion": 12,
                     "千": 3, "万": 4, "亿": 8, "万亿": 12}
+_CURRENCY_PREFIX = re.compile(r"(?:[$€£¥￥]|(?<![A-Za-z])(?:USD|EUR|GBP|CNY|RMB|JPY))\s*$", re.I)
 
 
 def _positional_numbers(value: str) -> list[tuple]:
     """只读展示识别明确等值的单位、百分比和完整日期；不用于新稿回执。"""
     facts = []
-    for match in _POSITIONAL_NUMBER.finditer(_number_text(value)):
+    text = _number_text(value)
+    for match in _POSITIONAL_NUMBER.finditer(text):
         version = match["version_en"] or match["version_zh"] or match["version_suffix"]
         if version:
             # 版本是标识符，3.10 和 3.1、1.0 和 1 都不同；不能交给 Decimal 抹去末尾的零。
@@ -151,8 +155,14 @@ def _positional_numbers(value: str) -> list[tuple]:
                 amount = 0 if word == "〇" else digits.index(word)
             facts.append(("percent", Decimal(amount)))
         else:
-            amount = Decimal(match["amount"].replace(",", "").replace("−", "-"))
+            raw = match["amount"].replace(",", "").replace("−", "-")
             unit = (match["unit"] or "").lower()
+            quantity = bool(unit or _CURRENCY_PREFIX.search(text[:match.start()]))
+            if not quantity or raw.count(".") > 1:
+                # 未标记的 3.10 可能是版本／标识符，不能先转为 3.1 再猜用途。
+                facts.append(("invalid-quantity" if quantity else "literal-number", raw))
+                continue
+            amount = Decimal(raw)
             if unit in {"%", "％", "percent"}:
                 facts.append(("percent", amount))
             else:
@@ -165,11 +175,20 @@ def _positional_numbers(value: str) -> list[tuple]:
 def _same_positional_fact(left: tuple, right: tuple) -> bool:
     if left == right:
         return True
+    if {left[0], right[0]} <= {"version", "literal-number"}:
+        return left[1] == right[1]
+    if right[0] == "literal-number":
+        left, right = right, left
+    if left[0] == "literal-number" and right[0] == "number":
+        # 有单位一侧可写成普通数字；另一侧无单位时只接受规范写法，不把未知标识符做小数约分。
+        fixed = format(right[1], "f")
+        canonical = fixed.rstrip("0").rstrip(".") if "." in fixed else fixed
+        return left[1] == canonical
     if right[0] == "calendar-year":
         left, right = right, left
     if left[0] == "calendar-year":
-        if right[0] == "number":
-            return left[1] == right[1]
+        if right[0] == "literal-number":
+            return str(left[1]) == right[1]
         if right[0] == "short-year":
             # 缩写没有表达世纪，只核对已表达的末两位；旧稿仍标未核验，不推断世纪。
             return left[1] % 100 == right[1]
