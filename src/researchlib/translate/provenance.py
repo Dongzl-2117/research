@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -81,6 +82,28 @@ def numeric_anchors(value: str) -> list[str]:
     facts = Resources(value)
     return [m.group().replace(",", "").replace("−", "-").replace("％", "%")
             for m in _NUMBER.finditer(" ".join(facts.text))]
+
+
+def positional_numbers_conflict(sources: Sequence[str], targets: Sequence[str]) -> bool:
+    """等长叶子仍不能硬配的两种数字情况。
+
+    同一批数字换了段落，或过半段落的数字列表对不上，说明位置不可信。
+    少数段落把 300,000 写成 30万、把 69.1 写成 691、把 100% 写成百分之百，
+    全集已经不同，这是译法，不能因此把整页退成两列。
+    """
+    from collections import Counter
+
+    if len(sources) != len(targets):
+        return True
+    left = [tuple(numeric_anchors(item)) for item in sources]
+    right = [tuple(numeric_anchors(item)) for item in targets]
+    if left == right or not left:
+        return False
+    tokens = Counter(anchor for row in left for anchor in row)
+    if tokens and tokens == Counter(anchor for row in right for anchor in row):
+        return True
+    mismatches = sum(en != zh for en, zh in zip(left, right, strict=True))
+    return mismatches * 2 > len(left)
 
 
 def leaf_problem(source: str, target: str) -> str | None:
