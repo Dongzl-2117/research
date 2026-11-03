@@ -241,3 +241,11 @@ PYTHONPATH=src python scripts/repair_content_hash_tz.py --apply
 ```
 
 worker 同一次运行（CLI 的 `--loop` 或站内 API 的 `loop`）里失败过的 id 会先跳过，避免对齐失败把队列钉死。
+
+## 2026-11-02：来源回执与旧稿核验
+
+当前修复及操作交接见 [双语映射说明](bilingual-mapping-2026-11-02.md)。上面的历史 PASS／段数记录是当时作者核对的结果，不代表当前旧库已经通过逐段语义验收。新稿须带有序源段身份和持久回执，数字及资源按槽核对；不再用近重复复用覆盖译文，也不删段凑数量。
+
+没有回执的旧稿明确标记未核验，QA 至少 WARN；不兼容则保留完整原文和译文并 FAIL。可以无损按唯一有序事实锚点展开的旧粗段会细分展示，仍需人工核对。完全相同的整对只折叠，内容和引用位置仍在。
+
+新 `research-bilingual-audit --dry-run` 始终只读，可输出不含正文的定向计划；没有 apply、模型请求、启动维护或自动历史回填。`research-translate --recheck --dry-run` 也改为只读。CLI 同一进程内失败篇在 loop 睡醒后仍跳过，失败退出码为 1；人工检查后重启才再试。

@@ -62,8 +62,28 @@ const {chromium} = require('playwright-core');
       assert((await page.locator('.body-note').innerText()).includes('分别展示完整原文和译文'));
       assert.equal(await page.locator('.bilingual-en table').count(), 1);
       assert.equal(await page.locator('.bilingual-pair:has(.bilingual-en):has(.bilingual-zh)').count(), 0);
+      await page.goto(origin + '/repeated.html');
+      assert.equal(await page.locator('.bilingual-pair').count(), 3);
+      assert.equal(await page.locator('details.bilingual-repeat').count(), 1);
+      assert.equal(await page.locator('details.bilingual-repeat').evaluate(d => d.open), false);
+      await page.goto(origin + '/repeated.html#p-2');
+      await page.waitForFunction(() => document.querySelector('details.bilingual-repeat').open);
+      assert.equal(await page.locator('#p-2').count(), 1);
+      await page.screenshot({path: path.join(directory, `repeated-${width}.png`)});
+      await page.goto(origin + '/repeated.html#%');
+      await page.goto(origin + '/incompatible.html');
+      assert((await page.locator('.body-note').innerText()).includes('来源或处理版本'));
+      assert.equal(await page.locator('.bilingual-pair:has(.bilingual-en):has(.bilingual-zh)').count(), 0);
+      await page.goto(origin + '/anchored.html');
+      assert.equal(await page.locator('.bilingual-pair').count(), 25);
+      assert((await page.locator('.body-note').innerText()).includes('尚未人工核验'));
+      const lengths = await page.locator('.bilingual-en').allTextContents();
+      assert(Math.max(...lengths.map(text => text.length)) < 2000);
+      await page.screenshot({path: path.join(directory, `anchored-${width}.png`)});
       assert.equal(errors.length, 0, errors.join('\n'));
-      results.push({width, ...metrics, tocNavigation: true, misalignmentNotice: true, javascriptErrors: errors.length});
+      results.push({width, ...metrics, tocNavigation: true, misalignmentNotice: true,
+        repeatPreservedAndHashExpanded: true, incompatibleReceiptFallback: true,
+        anchoredLegacyPairs: 25, anchoredLegacyWarning: true, javascriptErrors: errors.length});
       await page.close();
     }
     console.log(JSON.stringify({directory, results}, null, 2));

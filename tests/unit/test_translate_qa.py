@@ -35,7 +35,8 @@ def test_clean_article_passes():
     )
     zh = "".join(f"<p>第{index}段讲平台和聚合，句子够长，和英文对得上。</p>" for index in range(3))
     report = report_of(en, zh)
-    assert report.status == "pass"
+    assert report.status == "warn"
+    assert report.correspondence == "legacy"
     assert report.pairs == 3
     assert report.en_leaves == report.zh_leaves == 3
     assert report.max_en_chars >= 80
@@ -48,7 +49,7 @@ def test_giant_pair_is_flagged():
     assert report.status == "fail"
     assert report.giant == (0,)
     assert report.max_en_chars >= qa.GIANT_EN_CHARS
-    assert [issue.code for issue in report.issues] == ["giant-pair"]
+    assert {issue.code for issue in report.issues} == {"alignment-unverified", "giant-pair"}
 
 
 def test_shortfall_pair_falls_back_to_separate_and_fails():
@@ -208,11 +209,11 @@ def test_cli_json_and_report_file(fake_cli, monkeypatch, tmp_path, capsys):
     assert printed["articles"][0]["articleId"] == 1
     assert printed["summary"] == {
         "checked": 1,
-        "pass": 1,
-        "warn": 0,
+        "pass": 0,
+        "warn": 1,
         "fail": 0,
         "skipped": 0,
-        "issues": {},
+        "issues": {"alignment-unverified": 1},
         "llm": {"checked": 0, "pass": 0, "warn": 0, "fail": 0},
     }
 

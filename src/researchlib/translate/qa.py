@@ -33,15 +33,14 @@ from typing import Any
 
 from researchlib.boilerplate import clean_article
 from researchlib.config import Settings
-from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
+from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index
 from researchlib.present_text import polish_display_text
-from researchlib.render import inline_image_ocr, sanitize_html
+from researchlib.render import sanitize_html
 from researchlib.sources import load_sources
-from researchlib.translate.display import article_pairs, leaf_projection_gaps, protected_content_gaps
+from researchlib.translate.display import article_pairs, ordered_projection_gaps, protected_content_gaps
 from researchlib.translate.llm import extract_json
 from researchlib.translate.pair import (
     BilingualPair,
-    display_blocks,
     redundant_pairs,
     visible_text,
 )
@@ -103,6 +102,11 @@ class ArticleTexts:
     title: str
     en_html: str
     zh_html: str
+    provenance: dict | None = None
+    canonical_source: str | None = None
+    canonical_target: str | None = None
+    ocr_texts: dict | None = None
+    host: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,9 @@ class BilingualReport:
     source_projection_loss: int = 0
     translation_projection_loss: int = 0
     display_notice: str = ""
+    correspondence: str = "legacy"
+    correspondence_reason: str = ""
+    semantic_status: str = "not-reviewed"
     issues: tuple[CheckIssue, ...] = ()
     llm: dict[str, Any] | None = None
 
@@ -177,6 +184,8 @@ class BilingualReport:
             "archiveMarkers": list(self.archive_markers),
             "preservation": {"original": self.source_projection_loss, "translated": self.translation_projection_loss},
             "displayNotice": self.display_notice,
+            "correspondence": {"status": self.correspondence, "reason": self.correspondence_reason},
+            "semantics": self.semantic_status,
             "issues": [issue.as_dict() for issue in self.issues],
             "llm": self.llm,
         }
@@ -198,19 +207,19 @@ def _archive_markers(html: str) -> tuple[str, ...]:
     return tuple(found)
 
 
-def report_from_html(article_id: int, source_id: str, title: str, en_html: str, zh_html: str) -> BilingualReport:
+def report_from_html(
+    article_id: int, source_id: str, title: str, en_html: str, zh_html: str, **display_options,
+) -> BilingualReport:
     """在已经渲染好的两边 HTML 上算指标。单测和多篇批量都走这一个入口。
 
     页面指标（巨型 pair、近重复、长英文没中文、最长英文）按 ``article_pairs`` 返回的
     真实展示算，不按细对齐算：整页退回两篇长文时，细对齐可能很漂亮，页面却没法看。
     """
-    displayed = article_pairs(en_html, zh_html)
+    displayed = article_pairs(en_html, zh_html, **display_options)
     pairs: list[BilingualPair] = displayed.pairs
     en_leaves = len(iter_segments(en_html))
     zh_leaves = len(iter_segments(zh_html))
-    blocks = display_blocks(en_html, zh_html)
-    en_blocks = len(blocks[0]) if blocks else 0
-    zh_blocks = len(blocks[1]) if blocks else 0
+    en_blocks, zh_blocks = displayed.leaf_counts
     paired = min(en_blocks, zh_blocks)
     tail_en = max(0, en_blocks - paired)
     tail_zh = max(0, zh_blocks - paired)
@@ -224,25 +233,32 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
         else tuple(
             index
             for index in range(min(paired, len(pairs)))
-            if len(texts[index]) >= LONG_EN_CHARS and not (pairs[index].zh or "").strip()
+            if len(texts[index]) >= LONG_EN_CHARS and re.search(r"[A-Za-z]", texts[index])
+            and not (pairs[index].zh or "").strip()
         )
     )
     near_duplicates = tuple(redundant_pairs(pairs))
     markers = tuple(dict.fromkeys(_archive_markers(en_html) + _archive_markers(zh_html)))
 
     issues: list[CheckIssue] = []
+    if displayed.correspondence.startswith("legacy"):
+        issues.append(CheckIssue("alignment-unverified", "warn", 1, "旧译文缺少源段回执；结构相等不证明语义对应"))
     # 不复用可译叶子：两边同漏一个数字/图片时，叶子数仍然相等。
     missing = protected_content_gaps(en_html, zh_html)
     if missing:
         issues.append(CheckIssue("protected-content-loss", "fail", missing, "译文缺少原文未译的数字、图片或代码"))
-    source_loss, translation_loss, material_loss = leaf_projection_gaps(en_html, zh_html, pairs)
+    preserved = article_pairs(en_html, zh_html, **{k: v for k, v in display_options.items() if k != "ocr_texts"})
+    source_loss, translation_loss = ordered_projection_gaps(
+        en_html, zh_html, preserved.pairs, separate=bool(preserved.notice),
+    )
     if source_loss:
         issues.append(
             CheckIssue("display-content-loss", "fail", source_loss, "展示比细对齐叶子少了原文的字、图片或链接")
         )
-    if material_loss:
+    if translation_loss:
         issues.append(
-            CheckIssue("translation-material-loss", "fail", material_loss, "展示少了译文里的图片或资料链接")
+            CheckIssue("translation-material-loss", "fail", translation_loss,
+                       "展示少了译文文字、图片或资料链接")
         )
     if displayed.notice:
         issues.append(CheckIssue("display-fallback-separate", "fail", len(pairs), displayed.notice))
@@ -259,9 +275,9 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
         issues.append(
             CheckIssue(
                 "near-duplicate",
-                "fail",
+                "warn",
                 len(near_duplicates),
-                f"页面上仍是重复/包含/近前缀，下标 {_preview(near_duplicates)}",
+                f"源文中存在重复出现的段落，已保留对应位置，下标 {_preview(near_duplicates)}",
             )
         )
     if long_empty:
@@ -314,6 +330,8 @@ def report_from_html(article_id: int, source_id: str, title: str, en_html: str, 
         source_projection_loss=source_loss,
         translation_projection_loss=translation_loss,
         display_notice=displayed.notice,
+        correspondence=displayed.correspondence,
+        correspondence_reason=displayed.correspondence_reason,
         issues=tuple(issues),
     )
 
@@ -335,7 +353,7 @@ def load_article_texts(conn, settings: Settings, article_id: int) -> ArticleText
     if article is None:
         raise QaError(f"#{article_id} 不存在")
     translation = conn.execute(
-        "SELECT body_html FROM article_translations WHERE article_id = %s",
+        "SELECT body_html, provenance FROM article_translations WHERE article_id = %s",
         (article_id,),
     ).fetchone()
     if translation is None or not translation["body_html"]:
@@ -363,25 +381,18 @@ def load_article_texts(conn, settings: Settings, article_id: int) -> ArticleText
         row["content_hash"]: row["text"] or ""
         for row in conn.execute(_OCR_SQL, (article_id,)).fetchall()
     }
-    en_html = inline_image_ocr(
-        prepare_body_html(
-            shown_md,
-            display_title,
-            mapping,
-            fmt,
-            link_index,
-            parent,
-            owners=source_owners(source) if source else (),
-        ),
-        ocr,
-    )
-    zh_html = inline_image_ocr(finish_html(sanitize_html(zh_blob), link_index, parent), ocr)
+    canonical = canonical_body_html(shown_md, display_title, mapping, fmt,
+                                    owners=source_owners(source) if source else ())
+    en_html = finish_html(canonical, link_index, parent)
+    zh_html = finish_html(sanitize_html(zh_blob), link_index, parent)
     return ArticleTexts(
         article_id=int(article["id"]),
         source_id=str(article["source_id"]),
         title=str(article["title"] or ""),
         en_html=en_html,
         zh_html=zh_html,
+        provenance=translation.get("provenance"), canonical_source=canonical, canonical_target=zh_blob,
+        ocr_texts=ocr, host=source.author if source else None,
     )
 
 
@@ -390,7 +401,13 @@ def check_article(conn, settings: Settings, article_id: int) -> BilingualReport 
     texts = load_article_texts(conn, settings, article_id)
     if texts is None:
         return None
-    return report_from_html(texts.article_id, texts.source_id, texts.title, texts.en_html, texts.zh_html)
+    return report_from_html(texts.article_id, texts.source_id, texts.title, texts.en_html, texts.zh_html,
+                            **_display_options(texts))
+
+
+def _display_options(texts: ArticleTexts) -> dict:
+    return {name: getattr(texts, name) for name in
+            ("provenance", "canonical_source", "canonical_target", "ocr_texts", "host")}
 
 
 def translated_article_ids(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:
@@ -546,7 +563,7 @@ def pairs_for_review(conn, settings: Settings, article_id: int) -> list[Bilingua
     texts = load_article_texts(conn, settings, article_id)
     if texts is None:
         return []
-    return article_pairs(texts.en_html, texts.zh_html).pairs
+    return article_pairs(texts.en_html, texts.zh_html, **_display_options(texts)).pairs
 
 
 __all__ = [

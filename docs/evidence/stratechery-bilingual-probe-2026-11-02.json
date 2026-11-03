@@ -1,0 +1,674 @@
+{
+  "baseline": "8a857d801040600216fd851b2df6b07bc068fa92",
+  "scope": "合成内容、内存 SQL 与模型替身；无生产、数据库、付费调用或发布",
+  "note": "断言成功说明重现当前问题，不表示这些问题已修复；无产品代码改动。",
+  "case_count": 11,
+  "control_count": 3,
+  "cases": {
+    "equal_count_reordered_is_stored_complete": {
+      "result": {
+        "article_id": 990001,
+        "status": "translated",
+        "segments": 3,
+        "reason": null
+      },
+      "complete": true,
+      "committed_to_memory_only": true,
+      "original_html": "<p>Acme earned 10 dollars from new subscribers while the platform kept its important distribution advantage.</p>\n<p>Beta lost 20 dollars after a different customer group reduced demand for its infrastructure business.</p>\n<p>Gamma held 30 dollars of cash and now plans to reinvest that money into regional logistics facilities.</p>",
+      "stored_html": "<p>甲公司从新订户赚了10美元，仍保持平台分发优势。</p>\n<p>丙公司持有30美元现金，计划投资区域物流设施。</p>\n<p>乙公司因另一类客户需求减少而亏损20美元。</p>",
+      "body_request_has_segment_ids": false,
+      "view": {
+        "raw_leaves": [
+          3,
+          3
+        ],
+        "notice": "",
+        "page_pairs": [
+          [
+            "acme earned 10 dollars from new subscribers while the platform kept its important distribution advantage.",
+            "甲公司从新订户赚了10美元，仍保持平台分发优势。"
+          ],
+          [
+            "beta lost 20 dollars after a different customer group reduced demand for its infrastructure business.",
+            "丙公司持有30美元现金，计划投资区域物流设施。"
+          ],
+          [
+            "gamma held 30 dollars of cash and now plans to reinvest that money into regional logistics facilities.",
+            "乙公司因另一类客户需求减少而亏损20美元。"
+          ]
+        ],
+        "projection_gaps": [
+          0,
+          0
+        ],
+        "qa": {
+          "articleId": 990001,
+          "source": "stratechery",
+          "title": "Synthetic audit",
+          "status": "pass",
+          "pairs": 3,
+          "enLeaves": 3,
+          "zhLeaves": 3,
+          "displayLeaves": [
+            3,
+            3
+          ],
+          "fineGap": 0,
+          "displayGap": 0,
+          "paired": 3,
+          "tail": {
+            "en": 0,
+            "zh": 0
+          },
+          "maxEnChars": 105,
+          "giant": [],
+          "nearDuplicates": [],
+          "longEmptyZh": [],
+          "archiveMarkers": [],
+          "preservation": {
+            "original": 0,
+            "translated": 0
+          },
+          "displayNotice": "",
+          "issues": [],
+          "llm": null
+        }
+      }
+    },
+    "dedupe_hides_a_missing_middle": {
+      "raw_leaves": [
+        4,
+        3
+      ],
+      "notice": "",
+      "page_pairs": [
+        [
+          "acme earned 10 dollars from new subscribers while the platform kept its important distribution advantage.",
+          "甲公司从新订户赚了10美元，仍保持平台分发优势。"
+        ],
+        [
+          "beta lost 20 dollars after a different customer group reduced demand for its infrastructure business.",
+          "新增订阅带来10美元利润，甲公司的渠道优势还在。"
+        ],
+        [
+          "gamma held 30 dollars of cash and now plans to reinvest that money into regional logistics facilities.",
+          "丙公司持有30美元现金，计划投资区域物流设施。"
+        ]
+      ],
+      "projection_gaps": [
+        0,
+        0
+      ],
+      "qa": {
+        "articleId": 990001,
+        "source": "stratechery",
+        "title": "Synthetic audit",
+        "status": "pass",
+        "pairs": 3,
+        "enLeaves": 4,
+        "zhLeaves": 3,
+        "displayLeaves": [
+          3,
+          3
+        ],
+        "fineGap": 1,
+        "displayGap": 0,
+        "paired": 3,
+        "tail": {
+          "en": 0,
+          "zh": 0
+        },
+        "maxEnChars": 105,
+        "giant": [],
+        "nearDuplicates": [],
+        "longEmptyZh": [],
+        "archiveMarkers": [],
+        "preservation": {
+          "original": 0,
+          "translated": 0
+        },
+        "displayNotice": "",
+        "issues": [],
+        "llm": null
+      }
+    },
+    "near_duplicate_reuse_overwrites_a_correct_amount": {
+      "result": {
+        "article_id": 990001,
+        "status": "translated",
+        "segments": 2,
+        "reason": null
+      },
+      "complete": true,
+      "committed_to_memory_only": true,
+      "original_html": "<p>The platform reported strong subscriber momentum across its primary distribution channels and maintained its regional commercial advantages; quarterly profit was 10 dollars.</p>\n<p>The platform reported strong subscriber momentum across its primary distribution channels and maintained its regional commercial advantages; quarterly profit was 20 dollars.</p>",
+      "stored_html": "<p>平台主要分销渠道订户增长强劲，区域商业优势稳定，本季度利润为10美元。</p>\n<p>平台主要分销渠道订户增长强劲，区域商业优势稳定，本季度利润为10美元。</p>",
+      "body_request_has_segment_ids": false,
+      "view": {
+        "raw_leaves": [
+          2,
+          2
+        ],
+        "notice": "",
+        "page_pairs": [
+          [
+            "the platform reported strong subscriber momentum across its primary distribution channels and maintained its regional commercial advantages; quarterly profit was 10 dollars.",
+            "平台主要分销渠道订户增长强劲，区域商业优势稳定，本季度利润为10美元。"
+          ],
+          [
+            "the platform reported strong subscriber momentum across its primary distribution channels and maintained its regional commercial advantages; quarterly profit was 20 dollars.",
+            "平台主要分销渠道订户增长强劲，区域商业优势稳定，本季度利润为10美元。"
+          ]
+        ],
+        "projection_gaps": [
+          0,
+          0
+        ],
+        "qa": {
+          "articleId": 990001,
+          "source": "stratechery",
+          "title": "Synthetic audit",
+          "status": "pass",
+          "pairs": 1,
+          "enLeaves": 2,
+          "zhLeaves": 2,
+          "displayLeaves": [
+            1,
+            1
+          ],
+          "fineGap": 0,
+          "displayGap": 0,
+          "paired": 1,
+          "tail": {
+            "en": 0,
+            "zh": 0
+          },
+          "maxEnChars": 173,
+          "giant": [],
+          "nearDuplicates": [],
+          "longEmptyZh": [],
+          "archiveMarkers": [],
+          "preservation": {
+            "original": 0,
+            "translated": 0
+          },
+          "displayNotice": "",
+          "issues": [],
+          "llm": null
+        }
+      },
+      "correct_stub_outputs": [
+        "<p>平台主要分销渠道订户增长强劲，区域商业优势稳定，本季度利润为10美元。</p>",
+        "<p>平台主要分销渠道订户增长强劲，区域商业优势稳定，本季度利润为20美元。</p>"
+      ]
+    },
+    "duplicate_reuse_copies_the_other_source_link": {
+      "result": {
+        "article_id": 990001,
+        "status": "translated",
+        "segments": 2,
+        "reason": null
+      },
+      "complete": true,
+      "committed_to_memory_only": true,
+      "original_html": "<p>Acme earned 10 dollars from new subscribers while the platform kept its important distribution <a href=\"https://example.invalid/one\">advantage</a>.</p>\n<p>Acme earned 10 dollars from new subscribers while the platform kept its important distribution <a href=\"https://example.invalid/two\">advantage</a>.</p>",
+      "stored_html": "<p>甲公司从新订户赚了10美元，仍保持平台分发<a href=\"https://example.invalid/one\">优势</a>。</p>\n<p>甲公司从新订户赚了10美元，仍保持平台分发<a href=\"https://example.invalid/one\">优势</a>。</p>",
+      "body_request_has_segment_ids": false,
+      "view": {
+        "raw_leaves": [
+          2,
+          2
+        ],
+        "notice": "",
+        "page_pairs": [
+          [
+            "acme earned 10 dollars from new subscribers while the platform kept its important distribution advantage .",
+            "甲公司从新订户赚了10美元，仍保持平台分发 优势 。"
+          ],
+          [
+            "acme earned 10 dollars from new subscribers while the platform kept its important distribution advantage .",
+            "甲公司从新订户赚了10美元，仍保持平台分发 优势 。"
+          ]
+        ],
+        "projection_gaps": [
+          0,
+          0
+        ],
+        "qa": {
+          "articleId": 990001,
+          "source": "stratechery",
+          "title": "Synthetic audit",
+          "status": "pass",
+          "pairs": 1,
+          "enLeaves": 2,
+          "zhLeaves": 2,
+          "displayLeaves": [
+            1,
+            1
+          ],
+          "fineGap": 0,
+          "displayGap": 0,
+          "paired": 1,
+          "tail": {
+            "en": 0,
+            "zh": 0
+          },
+          "maxEnChars": 106,
+          "giant": [],
+          "nearDuplicates": [],
+          "longEmptyZh": [],
+          "archiveMarkers": [],
+          "preservation": {
+            "original": 0,
+            "translated": 0
+          },
+          "displayNotice": "",
+          "issues": [],
+          "llm": null
+        }
+      },
+      "correct_after_unshield_before_reuse": [
+        "<p>甲公司从新订户赚了10美元，仍保持平台分发<a href=\"https://example.invalid/one\">优势</a>。</p>",
+        "<p>甲公司从新订户赚了10美元，仍保持平台分发<a href=\"https://example.invalid/two\">优势</a>。</p>"
+      ]
+    },
+    "failed_unshield_is_stored_complete": {
+      "result": {
+        "article_id": 990001,
+        "status": "translated",
+        "segments": 1,
+        "reason": null
+      },
+      "complete": true,
+      "committed_to_memory_only": true,
+      "original_html": "<p>See the chart of subscriber demand and the durable advantages in platform distribution. <code>rate = 42</code></p>",
+      "stored_html": "<p>请看订户需求与平台分发优势的图表。</p>",
+      "body_request_has_segment_ids": false,
+      "view": {
+        "raw_leaves": [
+          1,
+          1
+        ],
+        "notice": "",
+        "page_pairs": [
+          [
+            "see the chart of subscriber demand and the durable advantages in platform distribution. rate = 42",
+            "请看订户需求与平台分发优势的图表。"
+          ]
+        ],
+        "projection_gaps": [
+          0,
+          0
+        ],
+        "qa": {
+          "articleId": 990001,
+          "source": "stratechery",
+          "title": "Synthetic audit",
+          "status": "pass",
+          "pairs": 1,
+          "enLeaves": 1,
+          "zhLeaves": 1,
+          "displayLeaves": [
+            1,
+            1
+          ],
+          "fineGap": 0,
+          "displayGap": 0,
+          "paired": 1,
+          "tail": {
+            "en": 0,
+            "zh": 0
+          },
+          "maxEnChars": 97,
+          "giant": [],
+          "nearDuplicates": [],
+          "longEmptyZh": [],
+          "archiveMarkers": [],
+          "preservation": {
+            "original": 0,
+            "translated": 0
+          },
+          "displayNotice": "",
+          "issues": [],
+          "llm": null
+        }
+      },
+      "unshield_returned_none": true
+    },
+    "cleaner_drift_does_not_change_translation_hash": {
+      "method": "替身模拟旧清洗器保留归档头；当前清洗器正常执行",
+      "raw_md": "# Synthetic audit\n- source: member-rss\n\nThe platform retains its independent distribution business and subscriber network.\n\nThe next paragraph considers regional infrastructure investment and logistics.",
+      "old_html": "<ul>\n<li>source: member-rss</li>\n</ul>\n<p>The platform retains its independent distribution business and subscriber network.</p>\n<p>The next paragraph considers regional infrastructure investment and logistics.</p>",
+      "current_html": "<p>The platform retains its independent distribution business and subscriber network.</p>\n<p>The next paragraph considers regional infrastructure investment and logistics.</p>",
+      "old_hash": "327cedf8ae350bab50ab4cd9f1df0331ff322d718fcf76fcb5e120e2831288d8",
+      "current_hash": "327cedf8ae350bab50ab4cd9f1df0331ff322d718fcf76fcb5e120e2831288d8",
+      "leaves": [
+        3,
+        2
+      ]
+    },
+    "legacy_coarse_mode_is_still_one_giant_pair": {
+      "raw_leaves": [
+        25,
+        1
+      ],
+      "notice": "",
+      "page_pairs": [
+        [
+          "topic 0 explains the independent market mechanism and why customer retention improves revenue across regions. topic 1 explains the independent market mechanism and why customer retention improves revenue across regions. topic 2 explains the independent market mechanism and why customer retention improves revenue across regions. topic 3 explains the independent market mechanism and why customer retention improves revenue across regions. topic 4 explains the independent market mechanism and why customer retention improves revenue across regions. topic 5 explains the independent market mechanism and why customer retention improves revenue across regions. topic 6 explains the independent market mechanism and why customer retention improves revenue across regions. topic 7 explains the independent market mechanism and why customer retention improves revenue across regions. topic 8 explains the independent market mechanism and why customer retention improves revenue across regions. topic 9 explains the independent market mechanism and why customer retention improves revenue across regions. topic 10 explains the independent market mechanism and why customer retention improves revenue across regions. topic 11 explains the independent market mechanism and why customer retention improves revenue across regions. topic 12 explains the independent market mechanism and why customer retention improves revenue across regions. topic 13 explains the independent market mechanism and why customer retention improves revenue across regions. topic 14 explains the independent market mechanism and why customer retention improves revenue across regions. topic 15 explains the independent market mechanism and why customer retention improves revenue across regions. topic 16 explains the independent market mechanism and why customer retention improves revenue across regions. topic 17 explains the independent market mechanism and why customer retention improves revenue across regions. topic 18 explains the independent market mechanism and why customer retention improves revenue across regions. topic 19 explains the independent market mechanism and why customer retention improves revenue across regions. topic 20 explains the independent market mechanism and why customer retention improves revenue across regions. topic 21 explains the independent market mechanism and why customer retention improves revenue across regions. topic 22 explains the independent market mechanism and why customer retention improves revenue across regions. topic 23 explains the independent market mechanism and why customer retention improves revenue across regions. topic 24 explains the independent market mechanism and why customer retention improves revenue across regions.",
+          "议题0说明独立市场机制以及客户留存如何提高各地区收入。议题1说明独立市场机制以及客户留存如何提高各地区收入。议题2说明独立市场机制以及客户留存如何提高各地区收入。议题3说明独立市场机制以及客户留存如何提高各地区收入。议题4说明独立市场机制以及客户留存如何提高各地区收入。议题5说明独立市场机制以及客户留存如何提高各地区收入。议题6说明独立市场机制以及客户留存如何提高各地区收入。议题7说明独立市场机制以及客户留存如何提高各地区收入。议题8说明独立市场机制以及客户留存如何提高各地区收入。议题9说明独立市场机制以及客户留存如何提高各地区收入。议题10说明独立市场机制以及客户留存如何提高各地区收入。议题11说明独立市场机制以及客户留存如何提高各地区收入。议题12说明独立市场机制以及客户留存如何提高各地区收入。议题13说明独立市场机制以及客户留存如何提高各地区收入。议题14说明独立市场机制以及客户留存如何提高各地区收入。议题15说明独立市场机制以及客户留存如何提高各地区收入。议题16说明独立市场机制以及客户留存如何提高各地区收入。议题17说明独立市场机制以及客户留存如何提高各地区收入。议题18说明独立市场机制以及客户留存如何提高各地区收入。议题19说明独立市场机制以及客户留存如何提高各地区收入。议题20说明独立市场机制以及客户留存如何提高各地区收入。议题21说明独立市场机制以及客户留存如何提高各地区收入。议题22说明独立市场机制以及客户留存如何提高各地区收入。议题23说明独立市场机制以及客户留存如何提高各地区收入。议题24说明独立市场机制以及客户留存如何提高各地区收入。"
+        ]
+      ],
+      "projection_gaps": [
+        0,
+        0
+      ],
+      "qa": {
+        "articleId": 990001,
+        "source": "stratechery",
+        "title": "Synthetic audit",
+        "status": "fail",
+        "pairs": 1,
+        "enLeaves": 25,
+        "zhLeaves": 1,
+        "displayLeaves": [
+          1,
+          1
+        ],
+        "fineGap": 24,
+        "displayGap": 0,
+        "paired": 1,
+        "tail": {
+          "en": 0,
+          "zh": 0
+        },
+        "maxEnChars": 2764,
+        "giant": [
+          0
+        ],
+        "nearDuplicates": [],
+        "longEmptyZh": [],
+        "archiveMarkers": [],
+        "preservation": {
+          "original": 0,
+          "translated": 0
+        },
+        "displayNotice": "",
+        "issues": [
+          {
+            "code": "giant-pair",
+            "level": "fail",
+            "count": 1,
+            "detail": "单对英文 >= 2000 字，下标 0"
+          }
+        ],
+        "llm": null
+      }
+    },
+    "pr212_full_document_fallback_differs_from_qa_pair_metrics": {
+      "raw_leaves": [
+        25,
+        24
+      ],
+      "notice": "译文段落与原文对不上，以下分别展示完整原文和译文。",
+      "page_pairs": [
+        [
+          "topic 0 explains the independent market mechanism and why customer retention improves revenue across regions. topic 1 explains the independent market mechanism and why customer retention improves revenue across regions. topic 2 explains the independent market mechanism and why customer retention improves revenue across regions. topic 3 explains the independent market mechanism and why customer retention improves revenue across regions. topic 4 explains the independent market mechanism and why customer retention improves revenue across regions. topic 5 explains the independent market mechanism and why customer retention improves revenue across regions. topic 6 explains the independent market mechanism and why customer retention improves revenue across regions. topic 7 explains the independent market mechanism and why customer retention improves revenue across regions. topic 8 explains the independent market mechanism and why customer retention improves revenue across regions. topic 9 explains the independent market mechanism and why customer retention improves revenue across regions. topic 10 explains the independent market mechanism and why customer retention improves revenue across regions. topic 11 explains the independent market mechanism and why customer retention improves revenue across regions. topic 12 explains the independent market mechanism and why customer retention improves revenue across regions. topic 13 explains the independent market mechanism and why customer retention improves revenue across regions. topic 14 explains the independent market mechanism and why customer retention improves revenue across regions. topic 15 explains the independent market mechanism and why customer retention improves revenue across regions. topic 16 explains the independent market mechanism and why customer retention improves revenue across regions. topic 17 explains the independent market mechanism and why customer retention improves revenue across regions. topic 18 explains the independent market mechanism and why customer retention improves revenue across regions. topic 19 explains the independent market mechanism and why customer retention improves revenue across regions. topic 20 explains the independent market mechanism and why customer retention improves revenue across regions. topic 21 explains the independent market mechanism and why customer retention improves revenue across regions. topic 22 explains the independent market mechanism and why customer retention improves revenue across regions. topic 23 explains the independent market mechanism and why customer retention improves revenue across regions. topic 24 explains the independent market mechanism and why customer retention improves revenue across regions.",
+          ""
+        ],
+        [
+          "",
+          "议题0说明独立市场机制以及客户留存如何提高各地区收入。 议题1说明独立市场机制以及客户留存如何提高各地区收入。 议题2说明独立市场机制以及客户留存如何提高各地区收入。 议题3说明独立市场机制以及客户留存如何提高各地区收入。 议题4说明独立市场机制以及客户留存如何提高各地区收入。 议题5说明独立市场机制以及客户留存如何提高各地区收入。 议题6说明独立市场机制以及客户留存如何提高各地区收入。 议题7说明独立市场机制以及客户留存如何提高各地区收入。 议题8说明独立市场机制以及客户留存如何提高各地区收入。 议题9说明独立市场机制以及客户留存如何提高各地区收入。 议题10说明独立市场机制以及客户留存如何提高各地区收入。 议题11说明独立市场机制以及客户留存如何提高各地区收入。 议题13说明独立市场机制以及客户留存如何提高各地区收入。 议题14说明独立市场机制以及客户留存如何提高各地区收入。 议题15说明独立市场机制以及客户留存如何提高各地区收入。 议题16说明独立市场机制以及客户留存如何提高各地区收入。 议题17说明独立市场机制以及客户留存如何提高各地区收入。 议题18说明独立市场机制以及客户留存如何提高各地区收入。 议题19说明独立市场机制以及客户留存如何提高各地区收入。 议题20说明独立市场机制以及客户留存如何提高各地区收入。 议题21说明独立市场机制以及客户留存如何提高各地区收入。 议题22说明独立市场机制以及客户留存如何提高各地区收入。 议题23说明独立市场机制以及客户留存如何提高各地区收入。 议题24说明独立市场机制以及客户留存如何提高各地区收入。"
+        ]
+      ],
+      "projection_gaps": [
+        0,
+        0
+      ],
+      "qa": {
+        "articleId": 990001,
+        "source": "stratechery",
+        "title": "Synthetic audit",
+        "status": "warn",
+        "pairs": 25,
+        "enLeaves": 25,
+        "zhLeaves": 24,
+        "displayLeaves": [
+          25,
+          24
+        ],
+        "fineGap": 1,
+        "displayGap": 1,
+        "paired": 24,
+        "tail": {
+          "en": 1,
+          "zh": 0
+        },
+        "maxEnChars": 110,
+        "giant": [],
+        "nearDuplicates": [],
+        "longEmptyZh": [],
+        "archiveMarkers": [],
+        "preservation": {
+          "original": 0,
+          "translated": 0
+        },
+        "displayNotice": "译文段落与原文对不上，以下分别展示完整原文和译文。",
+        "issues": [
+          {
+            "code": "leaf-gap",
+            "level": "warn",
+            "count": 1,
+            "detail": "展示硬排的叶子差 1 段（英文 25、中文 24）"
+          }
+        ],
+        "llm": null
+      },
+      "actual_page_max_en_chars": 2764
+    },
+    "export_quote_has_distinct_original_and_translation_inputs": {
+      "raw_md": "> A note about demand and subscriber retention.\n\nA note about demand and subscriber retention.",
+      "folded_md": "> A note about demand and subscriber retention.",
+      "raw_leaves": 2,
+      "folded_leaves": 1
+    },
+    "export_list_has_distinct_original_and_translation_inputs": {
+      "raw_md": "- Search: Customer demand improves retention.\n\n**Search:** Customer demand improves retention.",
+      "folded_md": "- **Search:** Customer demand improves retention.",
+      "raw_leaves": 2,
+      "folded_leaves": 1
+    },
+    "export_footnote_has_distinct_original_and_translation_inputs": {
+      "raw_md": "- A note about demand and subscriber retention ↩\n\nA note about demand and subscriber retention [↩](#synthetic-note)",
+      "folded_md": "- A note about demand and subscriber retention [↩](#synthetic-note)",
+      "raw_leaves": 2,
+      "folded_leaves": 1
+    }
+  },
+  "controls": {
+    "missing_middle_without_dedupe_is_safely_separated": {
+      "raw_leaves": [
+        3,
+        2
+      ],
+      "notice": "译文段落与原文对不上，以下分别展示完整原文和译文。",
+      "page_pairs": [
+        [
+          "acme earned 10 dollars from new subscribers while the platform kept its important distribution advantage. beta lost 20 dollars after a different customer group reduced demand for its infrastructure business. gamma held 30 dollars of cash and now plans to reinvest that money into regional logistics facilities.",
+          ""
+        ],
+        [
+          "",
+          "甲公司从新订户赚了10美元，仍保持平台分发优势。 丙公司持有30美元现金，计划投资区域物流设施。"
+        ]
+      ],
+      "projection_gaps": [
+        0,
+        0
+      ],
+      "qa": {
+        "articleId": 990001,
+        "source": "stratechery",
+        "title": "Synthetic audit",
+        "status": "warn",
+        "pairs": 3,
+        "enLeaves": 3,
+        "zhLeaves": 2,
+        "displayLeaves": [
+          3,
+          2
+        ],
+        "fineGap": 1,
+        "displayGap": 1,
+        "paired": 2,
+        "tail": {
+          "en": 1,
+          "zh": 0
+        },
+        "maxEnChars": 105,
+        "giant": [],
+        "nearDuplicates": [],
+        "longEmptyZh": [],
+        "archiveMarkers": [],
+        "preservation": {
+          "original": 0,
+          "translated": 0
+        },
+        "displayNotice": "译文段落与原文对不上，以下分别展示完整原文和译文。",
+        "issues": [
+          {
+            "code": "leaf-gap",
+            "level": "warn",
+            "count": 1,
+            "detail": "展示硬排的叶子差 1 段（英文 3、中文 2）"
+          }
+        ],
+        "llm": null
+      }
+    },
+    "pr212_keeps_different_links_in_stored_chinese": {
+      "raw_leaves": [
+        2,
+        2
+      ],
+      "notice": "",
+      "page_pairs": [
+        [
+          "acme earned 10 dollars from new subscribers while the platform kept its important distribution advantage.",
+          "甲公司从新订户赚了10美元，仍保持平台分发 优势 。"
+        ],
+        [
+          "acme earned 10 dollars from new subscribers while the platform kept its important distribution advantage.",
+          "甲公司从新订户赚了10美元，仍保持平台分发 优势 。"
+        ]
+      ],
+      "projection_gaps": [
+        0,
+        0
+      ],
+      "qa": {
+        "articleId": 990001,
+        "source": "stratechery",
+        "title": "Synthetic audit",
+        "status": "pass",
+        "pairs": 1,
+        "enLeaves": 2,
+        "zhLeaves": 2,
+        "displayLeaves": [
+          1,
+          1
+        ],
+        "fineGap": 0,
+        "displayGap": 0,
+        "paired": 1,
+        "tail": {
+          "en": 0,
+          "zh": 0
+        },
+        "maxEnChars": 105,
+        "giant": [],
+        "nearDuplicates": [],
+        "longEmptyZh": [],
+        "archiveMarkers": [],
+        "preservation": {
+          "original": 0,
+          "translated": 0
+        },
+        "displayNotice": "",
+        "issues": [],
+        "llm": null
+      }
+    },
+    "numeric_table_image_code_heading_and_list_shell_survive": {
+      "raw_leaves": [
+        3,
+        3
+      ],
+      "notice": "",
+      "page_pairs": [
+        [
+          "chart",
+          "图表"
+        ],
+        [
+          "",
+          ""
+        ],
+        [
+          "rate = 42",
+          ""
+        ],
+        [
+          "revenue 1234",
+          "收入 1234"
+        ],
+        [
+          "first point",
+          "第一点"
+        ]
+      ],
+      "projection_gaps": [
+        0,
+        0
+      ],
+      "qa": {
+        "articleId": 990001,
+        "source": "stratechery",
+        "title": "Synthetic audit",
+        "status": "pass",
+        "pairs": 3,
+        "enLeaves": 3,
+        "zhLeaves": 3,
+        "displayLeaves": [
+          3,
+          3
+        ],
+        "fineGap": 0,
+        "displayGap": 0,
+        "paired": 3,
+        "tail": {
+          "en": 0,
+          "zh": 0
+        },
+        "maxEnChars": 11,
+        "giant": [],
+        "nearDuplicates": [],
+        "longEmptyZh": [],
+        "archiveMarkers": [],
+        "preservation": {
+          "original": 0,
+          "translated": 0
+        },
+        "displayNotice": "",
+        "issues": [],
+        "llm": null
+      }
+    }
+  },
+  "exploratory": {
+    "method": "仅在进程内以恒等函数替代 reuse_duplicate_sources；无产品源码修改",
+    "amounts_retained": true,
+    "distinct_source_links_retained": true,
+    "scope": "只证明去掉写入前复用可修复这两例；不修复等长错序或旧数据问题"
+  }
+}

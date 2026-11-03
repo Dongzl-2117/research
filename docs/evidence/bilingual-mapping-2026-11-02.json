@@ -1,0 +1,153 @@
+{
+  "baseline": "7a9a80ed66c8c335f43c2b3b3be752b64febe046",
+  "branch": "codex/bilingual-provenance-20261102",
+  "recordedUTC": "2026-11-02T10:44:01.899927+00:00",
+  "environment": {
+    "python": "3.12.14",
+    "postgres": "16.15",
+    "zhparser": "2.4",
+    "pgvector": "0.6.0",
+    "halfvec": "not tested",
+    "database": "disposable local tmpfs synthetic only",
+    "productionAccess": false
+  },
+  "checks": {
+    "fullSuite": {
+      "command": "DATABASE_URL=${BILINGUAL_TEST_DATABASE_URL} pytest -q tests/unit tests/integration",
+      "passed": 987,
+      "unitCollected": 829,
+      "integrationCollected": 158,
+      "failed": 0,
+      "skipped": 0,
+      "durationSeconds": 131.11,
+      "warnings": [
+        "Starlette: existing httpx TestClient deprecation"
+      ]
+    },
+    "oldRedNewGreen": {
+      "baseline": "7a9a80ed66c8c335f43c2b3b3be752b64febe046",
+      "testFile": "tests/unit/test_bilingual_regressions.py",
+      "oldFailed": 8,
+      "newPassed": 8,
+      "fixtures": "same baseline API tests, fabricated only",
+      "oldCommand": "PYTHONPATH=/workspace/research-bilingual-old/src pytest -q /tmp/test_bilingual_old_red.py"
+    },
+    "lint": {
+      "command": "ruff check .",
+      "status": "passed"
+    },
+    "diffWhitespace": {
+      "command": "git diff --check",
+      "status": "passed"
+    },
+    "dependencies": {
+      "installation": "requirements-dev.lock --require-hashes plus editable --no-deps",
+      "pipCheck": "passed"
+    },
+    "retrieval": {
+      "generatorArticles": 1500,
+      "chunks": 10463,
+      "mentions": 4975,
+      "command": "DATABASE_URL=${BILINGUAL_EVAL_DATABASE_URL} python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json",
+      "status": "passed-no-regression",
+      "askCases": 12,
+      "askAveragePrecision": 0.84,
+      "articleCases": 7,
+      "articleTop20Precision": 1.0,
+      "modelCalls": 0
+    },
+    "browser": {
+      "command": "ARTICLE_PYTHON=/workspace/stratechery-audit-venv/bin/python ARTICLE_CHROMIUM=/usr/bin/chromium node tools/article_layout_smoke.cjs",
+      "status": "passed",
+      "chromium": "154.0.8037.57",
+      "externalRequests": "all blocked",
+      "results": [
+        {
+          "width": 1440,
+          "viewport": 1440,
+          "documentWidth": 1440,
+          "tableWidth": 1204,
+          "tableContent": 1663,
+          "cellLines": 1,
+          "tabIndex": 0,
+          "tocNavigation": true,
+          "misalignmentNotice": true,
+          "repeatPreservedAndHashExpanded": true,
+          "incompatibleReceiptFallback": true,
+          "anchoredLegacyPairs": 25,
+          "anchoredLegacyWarning": true,
+          "javascriptErrors": 0
+        },
+        {
+          "width": 390,
+          "viewport": 390,
+          "documentWidth": 390,
+          "tableWidth": 358,
+          "tableContent": 1660,
+          "cellLines": 1,
+          "tabIndex": 0,
+          "tocNavigation": true,
+          "misalignmentNotice": true,
+          "repeatPreservedAndHashExpanded": true,
+          "incompatibleReceiptFallback": true,
+          "anchoredLegacyPairs": 25,
+          "anchoredLegacyWarning": true,
+          "javascriptErrors": 0
+        }
+      ],
+      "screenshots": [
+        "bilingual-desktop-2026-11-02.png",
+        "bilingual-mobile-2026-11-02.png"
+      ]
+    }
+  },
+  "codeFileSHA256": {
+    "src/researchlib/mdlinks.py": "98c9061b05440267f7762a60e5e44971d75a9132949471fc247b118479b88e8c",
+    "src/researchlib/migrations/028_translation_provenance.sql": "eed14500b2b1ffb79f0908589b3e6ec6c7d37b12a7d9f002536107cddd5244a8",
+    "src/researchlib/render.py": "99a9129f3012e4032ef7b915344394f300cf35039d0948404ba9464fe75bef0b",
+    "src/researchlib/translate/audit.py": "37ed3bc7b419c8a663c052438b1130a399fd8d708889ec6ab88886263e5e8904",
+    "src/researchlib/translate/cli.py": "a0f31b8bdf240426e0a22145e7636e01824e86244c5ff9a6ce3169e9d8b77634",
+    "src/researchlib/translate/display.py": "032a2121f63923212a9091290519c723c232e8fbf6e36d50bdae9105413e5cf0",
+    "src/researchlib/translate/layout.py": "f8d5a802c072c4577746c84607bc1a0ab04f21f4b4a747d3138546831b3c5179",
+    "src/researchlib/translate/pair.py": "6d7ca13b565f1acd5e4a21811ffd5c19568659a367a50a34a9c16abef97ef8ae",
+    "src/researchlib/translate/prompts.py": "ae18b17a853e0b3509c395ee3d9817e67779beede0b9753a1c7929ebcbda1e5f",
+    "src/researchlib/translate/provenance.py": "c853e8949fedfde5cc33cfbb27d49e346951083a5790f71d528d383c9e4b8e24",
+    "src/researchlib/translate/qa.py": "857b44e189123031e47095de82b2898937dd386dcbd27ff44579a995a3e923c9",
+    "src/researchlib/translate/segments.py": "a6bc60a751ba6972c133ed2c98ef51358f8dcbb79692cd15ea3d0ed9d4e4a22e",
+    "src/researchlib/translate/service.py": "3898891db1f37e47e85e284352a002da1c47e9dd12e86e1b49ee34488a51bfb8",
+    "src/researchlib/web/queries.py": "ac6caa939513e3cf405d985908df421fa5eb637ff9daff9098d91b79e2b26ca9",
+    "src/researchlib/web/routes.py": "c6c377f12257fd5925d2b4e0e1c5fa152523ab4a4e8a55b7b45d7942818301c9",
+    "src/researchlib/web/static/article.js": "ba0b24c29f8b44c066b4955733b0885a447762a51124d31c0c0addb4a62c2623",
+    "src/researchlib/web/static/site.css": "164cc362384cf19c6a497c52326d13c583f0d1fdc10c106c14e143a74cfda936",
+    "src/researchlib/web/templates/article.html": "be66e1fefa7ab4a18d60d22cfd493ae1d3ce0cd1f7e071710f9ebf6d82cefca5",
+    "tests/integration/test_bilingual_provenance_db.py": "7aa814a12f9e38f2370e3ef4f4ee5947181173f77218f53e89280a188d349238",
+    "tests/unit/test_article_preservation.py": "16f2b9c5563f14a0613ccc5e10c07045c8db452a4385a981ad6495ed021afe74",
+    "tests/unit/test_bilingual_provenance.py": "76b21041ef2e76628df8525e98a92c0f52d3002393ce4f34077c19b68f863bc3",
+    "tests/unit/test_bilingual_regressions.py": "204255c6e123449cad01b8740bbeb8a47924a25cd3236342a42df9e0c6610fa3",
+    "tests/unit/test_translate_cli.py": "e1cca7eff2c4ee3aaf31d6bafa58ac5214010557789ef045bc885abdfedda28c",
+    "tests/unit/test_translate_pairs.py": "2f532dfee3b9f8716a1afffe91d128ddba27f9c6a4aae629465aecf66eb19744",
+    "tests/unit/test_translate_qa.py": "43809921333f8a1342a2b162f03b95cfb520de4612f26ceed5d79a6f1e2a285b",
+    "tools/article_layout_fixture.py": "54a4c7086be0954098aa858145097b9eb7a5fce8aaf9e4bcf3f175d3b471357a",
+    "tools/article_layout_smoke.cjs": "bebdc9da7eec51f531a047dfceabb971f75961dfb3cd374ef617d0540a4555d9",
+    "tools/stratechery_bilingual_probe.py": "872cde57792cf8f07f46f0174a330b35240450b8759bb7b2b1cf0e999da753cf"
+  },
+  "migration": {
+    "number": "028",
+    "kind": "additive metadata column and empty failure table",
+    "backfill": false,
+    "completeChanged": false,
+    "newPaidQueue": false
+  },
+  "remoteCI": {
+    "expectedDraftTests": "skipped under unchanged CI policy; not a pass",
+    "finalActualStatus": "see PR check and parent handoff"
+  },
+  "limits": [
+    "No production article snapshots or corpus acceptance",
+    "No historical data writes",
+    "No actual translation, OCR or embedding model calls",
+    "IDs and numeric/resource checks do not prove semantics",
+    "Legacy unanchored or incompatible data may require separately authorized review or retranslation",
+    "No merge, ready-for-review, deployment or automatic repair"
+  ]
+}

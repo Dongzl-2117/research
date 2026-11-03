@@ -1990,3 +1990,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 /* 观点卡：出处放顶上，关联业务 */
 .view-source-top { margin: 0 0 .2rem; font-weight: 600; }
 .view-business { font-size: .85em; padding: 0 .4em; border: 1px solid currentColor; border-radius: 4px; opacity: .75; }
+
+.bilingual-repeat { margin-block: .7rem; }
+.bilingual-repeat > summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+.tx-list-continuation::marker { content: ''; }

@@ -1,0 +1,85 @@
+# 双语对应关系：修复与安全交接（2026-11-02）
+
+本次基于 main `7a9a80ed66c8c335f43c2b3b3be752b64febe046`（已合并 #212、#215）。修复翻译写入、逐段来源记录、对照展示和 QA，并提供历史资料的只读分类。所有回归、数据库和浏览器资料均为合成样本；没有访问正式网站或数据库，没有真实模型调用，没有执行历史修复。原始调查及当时的复现见 [离线报告](stratechery-bilingual-investigation-2026-11-02.md)，它记录的是旧基线，不是本次修复的现状。
+
+## 修复范围与验收
+
+| 问题 | 现在的行为 | 对应验证 |
+| --- | --- | --- |
+| 相似源段复用，把正确的 20 美元或另一份 URL 改成前段的 10 美元／URL | 写入不再复用；兼容辅助函数只给逐字相同源 HTML 的空槽补值，保留代码空格、资源和已有译文 | `test_bilingual_regressions.py` 金额／链接；`test_bilingual_provenance.py` 精确空槽复用 |
+| 占位符、代码还原失败，仍写 complete 或覆盖好版本 | 还原、逐槽数字和资源、外壳及完整回执全部通过后才写入；失败回滚，另存拒绝记录 | 单元还原反例；数据库旧译文和中文检索块不变 |
+| 两边独立去重，把 EN[A,A,B,C]／ZH[ZA,ZA2,ZC] 凑成相同段数并把 B 对给 ZA2 | 不删段凑数量，不用粗段数覆盖细分段结论；无法映射则保留全文和提示，QA FAIL | 同一反例在 #215 基线失败，修复后通过 |
+| 等长响应错 ID、漏项、重复项、乱序或缺身份 | 正式请求带每段 ID 和源摘要，响应必须逐项原样返回；错误拒收 | 六类身份反例；正确 ID 配错数字仍拒收 |
+| raw hash 未变，cleaner／segmenter 改动后旧稿静默继续当作对应 | 持久 canonical 输入摘要、版本、顺序、出现次数、DOM 路径和源／目标 HTML 摘要；显示前复核 | 版本漂移、源变、目标变、数据库存取和文章页 |
+| 相似中文被删除，独有信息丢失 | 不删不同措辞；完全相同的整对用原生 details 折叠，出现位置、内容和锚点都保留 | 两种独有措辞、重复整对、折叠内引用定位 |
+| 引用／列表／脚注粗块，或 br 长段变成巨块 | 共用源段物化；按有序叶子边界展示并保留列表编号、引用外壳、表格、脚注链接 | 嵌套引用／列表／脚注、45 段 br、列表 value、唯一脚注锚点 |
+| 可无损展开的旧粗段只能整页回退 | 仅在逐句有非空、唯一、有序数字／链接锚点且完整投影不变时只读展开；仍标旧稿未核验 | 25 对旧粗段展开；重复锚点／交换锚点拒绝 |
+| QA 用修过段数的中间结果 PASS，漏报真实回退、巨块和代码损失 | 使用真实页面配对，再独立检查文字顺序、重数、资源和代码；分别报告 preservation、correspondence、semantics | 4／3 假绿、行内代码损失、实际回退／巨块、旧等长 WARN |
+| 失败后每次 loop 睡醒重新调用模型 | 同一进程保留失败跳过集合，非循环有失败退出 1；人工检查后重启才再试 | 两轮睡醒只调用一次的 CLI 替身测试 |
+| 只想诊断旧稿，命令却跑启动维护 | 新 audit 始终只读，旧 `--recheck --dry-run` 也不调用 prepare | 数据库只读事务、无资料写入、无模型调用 |
+
+ID／摘要回显能约束响应身份，数字／链接能发现一部分串段；**它们不证明句子语义正确**。正确 ID 配错但没有事实锚点的中文仍可能通过结构检查，回归中专门保留这一边界。新回执的 `semantic_status` 和 QA 的 `semantics` 都是 `not-reviewed`，没有伪造人工验收。
+
+## 持久回执和向后兼容
+
+迁移 `028_translation_provenance.sql` 只添加 `article_translations.provenance jsonb NOT NULL DEFAULT '{}'` 和空的 `translation_attempts` 表。没有 backfill，没有改变旧 complete，没有按新版本把所有旧稿重排进付费队列，也没有启动或后台重算。
+
+新回执含 schema、cleaner／segmenter／prompt 版本、canonical 源快照及摘要、逐段 ID／顺序／路径／源摘要／目标摘要和实际模型身份。相同文字的重复出现有不同 ID，不能相互抵消。快照会增加新译文的存储量；保留它是为了核验版本和无损恢复候选。
+
+`canonical_body_html` 是翻译、文章页和 QA 共用的渲染入口。页面段落号、站内链接装饰、OCR 文字在核验后处理。清洗／分段／提示约束有变化时维护者必须相应递增版本；即使漏递增，只要 canonical HTML 改变，输入指纹仍会发现不兼容。
+
+| 页面状态 | 含义 | 展示／QA |
+| --- | --- | --- |
+| `mapped` | 当前 canonical 输入、处理版本和逐段回执一致 | 逐段展示；结构可 PASS，语义仍未核验 |
+| `legacy` | 没有回执，只有有限结构依据 | 尝试保留全部内容的逐段展示，并提示旧稿未核验；QA WARN |
+| `legacy-anchors` | 旧粗段可无损展开，具有唯一有序事实锚点 | 展开显示并提示未人工核验；QA WARN |
+| `unmapped` | 段数、事实锚点、输入、版本、回执或投影不兼容 | 明确提示并保留完整两份；QA FAIL |
+
+表格保持完整行列及合并关系，代码原样保留。不能安全映射的旧稿仍可能较长；本轮不借删除内容或假配对消除告警。没有唯一锚点的旧巨段、无标点长句和真实语义错译需要定向核对，不能宣称所有历史文章已修好。
+
+失败请求不覆盖已有完整稿、部分稿或检索块。CLI 回滚后仅记录 `rejected`／`failed` 和固定原因码，不存原文、URL、模型响应；有好版本时它继续可用。已有历史 `complete=false` 仍按原队列规则处理，未新增自动付费入口。
+
+## 与 #212、#215 的衔接
+
+#212 的完整投影保护继续保留，并加强为顺序／出现次数和资源检查。#215 的细分段展示、真实页面 QA 统计继续保留；其“允许收掉另一种译法”的有损规则被移除。完全相同的整对可以折叠，但不删除。
+
+#215 作者报告过 21118 变为 540 对、约 1106 篇的整页回退从 370 降到 10。那是作者当时的库上结果，本次没有读取该库，不把这些数量当成当前逐段语义验收，也不以这批数字代替本 PR 的合成回归。
+
+## 历史资料：只读分类与定向计划
+
+下面命令仅供已获授权的维护者在其本地私有环境执行；本次没有执行。审核时可额外用数据库只读角色，或者 `PGOPTIONS='-c default_transaction_read_only=on'`。命令内部还会设置只读事务，使用 `db.connect`，不调用 `db.prepare`，可以在应用新迁移前运行。
+
+```bash
+research-bilingual-audit --source stratechery --limit 20 --dry-run --plan /tmp/private-bilingual-plan.json
+research-bilingual-audit --article-id 990001 --limit 1 --dry-run
+```
+
+990001 是虚构示例编号，实际操作须明确列出已授权文章。计划仅含 ID、来源、hash、分类、建议动作和展示数量，没有正文或订阅 URL；仍留在私有目录，不上传原文。
+
+| 分类 | 下一步 | 是否需要重译 |
+| --- | --- | --- |
+| `mapped` | 无数据操作，按需人工语义抽查 | 不需要结构重译 |
+| `lossless-candidate` | 从原回执生成内存候选；仅当完整目标 hash 恢复且当前源／版本仍兼容才列此类 | 有无损候选，不调用模型 |
+| `legacy-structural` | 人工核对逐段对应，含可安全展开的旧粗段 | 不能凭数量决定 |
+| `unmapped` | 核对缺段、额外段、清洗变更和语义；确定预算后点名重译 | 缺少可验证映射时才考虑 |
+
+本 PR **没有 apply 命令**。未来若批准只恢复 `lossless-candidate`：先备份点名文章及中文检索块；写入前用计划中的 article hash、translation hash、源 fingerprint 作乐观锁并锁文章；复核原回执完整目标 hash；同一事务写回该篇并重切该篇中文块，再跑页面投影和语义核对。任何输入变化立即退出。旧稿没有可靠回执时，不能自动补签一个“verified”记录。
+
+需要模型的情况先给出篇数、字符量和费用，另获授权后才执行点名翻译。本轮授权是代码和草稿 PR，未执行历史数据改写或真实模型调用。
+
+## 可重现验证
+
+精确结果和环境见 [验证清单](evidence/bilingual-mapping-2026-11-02.json)。旧红新绿文件只调用既有入口，可在 #215 基线直接运行：8 个反例全部失败；相同文件在修复分支全部通过。
+
+最终完整测试 **987 passed（829 单元、158 集成），0 failed、0 skipped**，耗时 131.11 秒；只有既有 Starlette TestClient 的 httpx 弃用告警。ruff、依赖一致性、检索基线和两种宽度浏览器检查均通过。合成页面截图：[桌面 1440](evidence/bilingual-desktop-2026-11-02.png)、[手机 390／旧粗段展开](evidence/bilingual-mobile-2026-11-02.png)。
+
+```bash
+ruff check .
+DATABASE_URL="$BILINGUAL_TEST_DATABASE_URL" pytest tests/unit tests/integration
+DATABASE_URL="$BILINGUAL_EVAL_DATABASE_URL" python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json
+ARTICLE_PYTHON=/workspace/stratechery-audit-venv/bin/python ARTICLE_CHROMIUM=/usr/bin/chromium node tools/article_layout_smoke.cjs
+```
+
+两个数据库变量须配置为本地隔离的 `research_test`、`research_eval`，连接值留在本地，不写进仓库。1500 篇、10463 块和 4975 个公司提及由仓库生成器建立；没有检索真实资料或请求嵌入模型。集成测试使用 PostgreSQL 16.15、zhparser 2.4、pgvector 0.6.0；未测试新版 halfvec 能力。浏览器拦截全部外网请求，桌面 1440 和手机 390 宽均检查表格横向滚动、目录定位、回退提示、折叠内引用、25 对旧粗段展开和无 JS 错误。
+
+草稿 PR 的远端 Tests 按仓库既有规则跳过；跳过不计为通过。保持草稿，不为触发 CI 擅自转待审。没有合并、部署或真实文章的上线验收。

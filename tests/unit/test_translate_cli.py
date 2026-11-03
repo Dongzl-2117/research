@@ -14,6 +14,13 @@ class FakeConn:
     def __init__(self):
         self.rolled_back = 0
         self.closed = False
+        self.statements = []
+
+    def execute(self, sql, params=None):
+        self.statements.append(sql)
+
+    def commit(self):
+        pass
 
     def rollback(self):
         self.rolled_back += 1
@@ -33,6 +40,7 @@ def conn(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "llm_provider", lambda: "deepseek")
     monkeypatch.setattr(cli, "deepseek_api_key", lambda: "sk-test")
     monkeypatch.setattr(cli, "prepare", lambda settings: fake)
+    monkeypatch.setattr(cli, "connect", lambda settings: fake)
     return fake
 
 
@@ -63,7 +71,7 @@ def test_a_failed_article_does_not_stop_the_rest(conn, monkeypatch, capsys):
     seen: list[int] = []
     monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [31, 32])
     monkeypatch.setattr(cli, "translate_article", _translate(seen, fail={31}))
-    assert cli.main(["--limit", "2"]) == 0
+    assert cli.main(["--limit", "2"]) == 1
     assert seen == [31, 32] and conn.rolled_back == 1
     assert "#31 failed: 对齐失败" in capsys.readouterr().err
 
@@ -87,6 +95,31 @@ def test_loop_sleeps_instead_of_retrying_the_same_article(conn, monkeypatch, out
     with pytest.raises(Slept):
         cli.main(["--loop", "--limit", "1", "--sleep", "30"])
     assert seen == [51] and slept == [30]
+
+
+def test_rejected_article_is_not_retried_after_another_sleep(conn, monkeypatch):
+    seen = []
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) == 2:
+            raise Slept
+
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, **kwargs: [51])
+    monkeypatch.setattr(cli, "translate_article", _translate(seen, fail={51}))
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+    with pytest.raises(Slept):
+        cli.main(["--loop", "--limit", "1", "--sleep", "30"])
+    assert seen == [51] and slept == [30, 30]
+    assert sum("INSERT INTO translation_attempts" in sql for sql in conn.statements) == 1
+
+
+def test_recheck_dry_run_never_calls_database_prepare(conn, monkeypatch):
+    monkeypatch.setattr(cli, "prepare", lambda *args: pytest.fail("只读检查不能启动迁移或维护"))
+    monkeypatch.setattr(cli, "list_coarse_translations", lambda *args, **kwargs: [])
+    assert cli.main(["--recheck", "--dry-run"]) == 0
+    assert conn.statements == ["SET TRANSACTION READ ONLY"]
 
 
 def test_recheck_takes_coarse_rows_not_the_pending_queue(conn, monkeypatch):

@@ -41,7 +41,7 @@ pip install --require-hashes -r requirements-dev.lock
 pip install --no-deps -e .
 ruff check .
 pytest tests/unit
-DATABASE_URL=postgresql://research:research@127.0.0.1:5432/research_test pytest tests/integration
+DATABASE_URL="$RESEARCH_TEST_DATABASE_URL" pytest tests/integration
 ```
 
 集成测试要带 zhparser 和 pgvector 的 Postgres：`docker compose up -d db` 后建 `research_test` 库。连不上库时集成测试全部跳过，跳过不等于通过。以 root 跑时 `tests/unit/test_xai_oauth_owner.py::test_desired_owner_from_existing_file` 必定失败（它查文件属主），和改动无关。
@@ -52,7 +52,7 @@ DATABASE_URL=postgresql://research:research@127.0.0.1:5432/research_test pytest 
 2. scws：解开 `docker/postgres/vendor/scws-1.2.3.tar.bz2`，`./configure --prefix=/usr/local && make install && ldconfig`
 3. zhparser：用 `docker/postgres/Dockerfile` 里 `ZHPARSER_COMMIT` 那个提交的源码，`make && make install`
 4. pgvector：Ubuntu 自带的包太旧（没有 halfvec），从源码编 0.8 以上
-5. 建角色 `research`（密码 `research`，SUPERUSER）和库 `research_test`、`research_eval`，两个库里都 `CREATE EXTENSION zhparser; CREATE EXTENSION vector;`
+5. 在隔离的本地实例建测试角色和 `research_test`、`research_eval` 库；由该实例管理员给两个库执行 `CREATE EXTENSION zhparser; CREATE EXTENSION vector;`。连接凭据只在本地配置，`RESEARCH_TEST_DATABASE_URL` 指向测试库，不写进仓库。
 
 改了检索相关的文件（清单在 `ci.yml` 的 `retrieval`）时再跑检索评测：
 
@@ -74,7 +74,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - 10-28 开的一批 PR 落后 main，接着做先基于 main 重做：#76、#78、#81、#101、#102 已和 main 冲突。#140 删了 `jobs/` 和批量任务的 HTTP 接口，#76（只许本机调用这些接口）因此作废；#144 删了 `empty_answer.py`，`visible_sql`、`HIDDEN`、`SHORT_POST` 挪到 `researchlib.visibility`，隐藏标记只认 `hidden`，`suppressed`、`source_paused` 不再认。
 - 网站不展示知识星球读者帖（首页/按天/检索/正文/API 均隐藏，库内保留）；标题为「图片」评论（N）… 的评论壳帖同样隐藏（poster_role 多为 owner）。两种都不抽观点、不写摘要、不识图，已有的观点不进公司页。方伟星球 10 月 20 日以后被误标成读者帖的那批，修好 poster_role 后才会重新露出来；观点靠夜间每晚补 60 篇，一次补完要花 DeepSeek 的钱，没做。
 - 林文丰飞书里的内嵌电子表格只有占位文字，要重新导出才能补。
-- 21118、22195 的长英文重复在对照页按位置收：近重复且中文是同一段（更短或措辞不同也算）收掉后一对；短句整句包含在更长的一段里，或较短那句大约四分之三是较长那句的开头且长度接近，收短句、留长段。正好 80 字的一句不因标签贴着句号少算一格。不必为这些重复再译。若对照仍是两千字的一整对，才点名重译，命令见 [docs/translate.md](docs/translate.md)。21130 的叶子数已经对齐，同一条规则收近重复。
+- 双语译制和对照的源段回执、旧稿只读分类与交接见 [docs/bilingual-mapping-2026-11-02.md](docs/bilingual-mapping-2026-11-02.md)。新稿逐段校验身份、数字和资源；不许近重复复用覆盖已有译文，也不许删段／切回粗段凑数量。完全相同的整对只折叠，内容和锚点仍保留。旧稿缺回执时明确标未核验；有有序唯一数字／资料锚点的旧粗段可只读展开，仍不宣称语义通过。028 只加元数据字段和空的失败记录表，不回填、不改变旧 complete、不新排付费队列。先用 `research-bilingual-audit --dry-run` 分类，再定向评审历史修复；本轮没有改正式资料。
 - **Mac mini 上还没跑的一次性命令**（都不调 LLM，先加 `--dry-run` 看篇数；跑完删掉那一行）：
   - `docker compose exec app research-retime --source chengfengpolang`：乘风破浪的发布时间从当天零点改成归档头里的钟点。不跑，乘风破浪的卡片时间一直是「—」，同一天的先后按入库顺序。
   - `docker compose exec app research-clean --source chengfengpolang --source fangwei-zsxq --source linwenfeng-feishu --source stratechery`：星球长文帖已入库的检索文字和段落块去掉导出脚手架（#124），星球老帖检索文字开头那行导出时截的「前十几个字...」也一并去掉；林文丰飞书和 Stratechery 的检索文字去掉图片文件名（「image.png」「截屏2025-06-08 19.36.10.png」「Screen Shot 2017-06-01 at 7.40.43 PM」）和包在图外的大图地址（#192），公式里的乘号和词中间的下划线照原样留着（#194，以前「eCPM=CPA_bid*CTR*CVR*1000」成了「eCPM=CPAbidCTRCVR1000」）；Stratechery 每日更新开头的「Listen to this post:」「Good morning,」「On to the Update:」和结尾的播客提示、转发须知、「have a great day」不再进检索文字和段落块（#199；标题行下面不空行的邮件导出和一行一段的 2026 网页导出也认，#206）。不跑，检索片段和问库里长文开头多一遍，飞书约 300 篇、Stratechery 约 290 篇的检索片段夹着文件名和 wp-content 地址，搜 subscriptions 这类词 Stratechery 命中 1700 多篇、片段常是转发须知；页面上的标题和卡片摘录已经绕开导出标题那一行。

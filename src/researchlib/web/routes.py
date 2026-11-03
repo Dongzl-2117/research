@@ -32,7 +32,7 @@ from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.housekeeping import strip_housekeeping
 from researchlib.llm import active_label, active_model_id, llm_configured
-from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
+from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.nested_copies import fold_nested_copies
 from researchlib.ocr import refresh_article_ocr
@@ -766,8 +766,10 @@ def _article_view(request: Request, article_id: int, mode: str):
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
+    canonical_original = canonical_body_html(shown_md, display_title, mapping, fmt, owners=source_owners(source))
+    pair_original = finish_html(canonical_original, link_index, parent)
     original_html = inline_image_ocr(
-        prepare_body_html(shown_md, display_title, mapping, fmt, link_index, parent, owners=source_owners(source)),
+        pair_original,
         ocr_texts,
         host=source.author,
     )
@@ -781,6 +783,7 @@ def _article_view(request: Request, article_id: int, mode: str):
     )
     # 译文是模型写的 HTML，和原文一样过一遍白名单。
     zh_html = finish_html(sanitize_html(translation["body_html"]), link_index, parent) if has_translation else None
+    pair_translated = zh_html
     if zh_html:
         zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
@@ -788,19 +791,36 @@ def _article_view(request: Request, article_id: int, mode: str):
     quoted_marked = False
     if quoted is not None and quoted_lang == "":
         original_html, quoted_marked = mark_quoted(original_html, quoted["body"])
+        pair_original, _marked = mark_quoted(pair_original, quoted["body"])
     elif quoted is not None and quoted_lang == "zh" and zh_html:
         zh_html, quoted_marked = mark_quoted(zh_html, quoted["body"])
+        pair_translated, _marked = mark_quoted(pair_translated, quoted["body"])
     # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。
     paired = has_translation and zh_html and mode != "original"
-    pair_display = article_pairs(original_html, zh_html) if paired else None
+    pair_display = article_pairs(
+        pair_original, pair_translated, provenance=translation.get("provenance"),
+        canonical_source=canonical_original, canonical_target=translation["body_html"],
+        ocr_texts=ocr_texts, host=source.author,
+    ) if paired else None
     raw_pairs = pair_display.pairs if pair_display else None
     pairs = None
     if raw_pairs:
+        if quoted is not None and quoted_lang in {"", "zh"}:
+            from dataclasses import replace
+
+            marked = []
+            for pair in raw_pairs:
+                side = "en" if quoted_lang == "" else "zh"
+                value, found = mark_quoted(getattr(pair, side) or "", quoted["body"])
+                quoted_marked = quoted_marked or found
+                marked.append(replace(pair, **{side: value}) if found else pair)
+            raw_pairs = marked
         pairs = [
             {
                 "en": Markup(p.en),
                 "zh": Markup(p.zh) if p.zh else None,
                 "anchor": p.anchor,
+                "repeat_of": p.repeat_of,
             }
             for p in raw_pairs
         ]
@@ -855,6 +875,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "body_language": body_language,
             "has_translation": has_translation,
             "translation_complete": translation_complete,
+            "pair_correspondence": pair_display.correspondence if pair_display else "",
             "pairs": pairs or [],
             "pair_notice": pair_display.notice if pair_display else "",
             "title_zh": (translation or {}).get("title_zh") or "",

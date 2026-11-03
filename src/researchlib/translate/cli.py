@@ -11,9 +11,14 @@ import sys
 import time
 
 from researchlib.config import Settings
-from researchlib.db import prepare
+from researchlib.db import connect, prepare
 from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider
-from researchlib.translate.service import list_coarse_translations, list_pending_english, translate_article
+from researchlib.translate.service import (
+    list_coarse_translations,
+    list_pending_english,
+    record_translation_failure,
+    translate_article,
+)
 from researchlib.translate.xai_oauth import XaiLoginRequiredError, xai_oauth_status
 
 
@@ -37,12 +42,14 @@ def main(argv: list[str] | None = None) -> int:
         print("--dry-run 要和 --recheck 一起用", file=sys.stderr)
         return 2
     if args.dry_run:
-        conn = prepare(settings)
+        conn = connect(settings)
         try:
+            conn.execute("SET TRANSACTION READ ONLY")
             rows = list_coarse_translations(
                 conn, limit=max(args.limit, 1), source_id=args.source or None
             )
         finally:
+            conn.rollback()
             conn.close()
         for row in rows:
             print(f"#{row['id']} {row['source']} {row['reason']}")
@@ -63,8 +70,9 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = prepare(settings)
     # 这一轮失败过的、没有可译正文的 id 先跳过，避免 --limit 很小时反复磕同一篇把队列钉死。
-    # --loop 时队列只剩它们就先睡，睡醒清掉跳过再给一次机会：不睡就会一直重试同一篇，每次都花模型的钱。
+    # --loop 睡醒也保留跳过集合；人工复查原因后重启，才会再尝试失败篇。
     skipped: set[int] = set()
+    failed = False
     try:
         while True:
             if args.article_id:
@@ -84,10 +92,10 @@ def main(argv: list[str] | None = None) -> int:
                 if args.loop and not args.article_id:
                     print(f"队列空，{args.sleep}s 后重试…")
                     time.sleep(max(5, args.sleep))
-                    skipped.clear()
+                    # 本进程不再请求失败篇，避免质量拒绝每隔一分钟就重试花钱。
                     continue
                 print("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
-                return 0
+                return 1 if failed else 0
             for article_id in ids:
                 try:
                     result = translate_article(conn, article_id, data_dir=settings.data_dir)
@@ -96,7 +104,13 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
                 except Exception as exc:
                     conn.rollback()
+                    failed = True
                     skipped.add(article_id)
+                    try:
+                        record_translation_failure(conn, article_id, exc)
+                    except Exception:
+                        conn.rollback()
+                        print(f"#{article_id} 失败回执未能保存", file=sys.stderr)
                     print(f"#{article_id} failed: {exc}", file=sys.stderr)
                     continue
                 if result.status in ("skipped", "partial"):
@@ -108,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
                     + (f" ({result.reason})" if result.reason else "")
                 )
             if not args.loop or args.article_id:
-                return 0
+                return 1 if failed else 0
     finally:
         conn.close()
 
