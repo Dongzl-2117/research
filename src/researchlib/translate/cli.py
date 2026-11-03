@@ -24,7 +24,8 @@ from researchlib.translate.xai_oauth import XaiLoginRequiredError, xai_oauth_sta
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="用站内 LLM（默认 DeepSeek，可切 Grok OAuth）翻译英文文章")
-    parser.add_argument("--article-id", type=int, action="append", default=[], help="指定文章 id，可重复")
+    parser.add_argument("--article-id", type=int, action="append", default=[],
+                        help="指定文章 id，可重复；优先于来源和数量限制，停用来源仍跳过")
     parser.add_argument("--source", default="", help="只处理该来源 id")
     parser.add_argument("--limit", type=int, default=5, help="待译队列最多取几篇")
     parser.add_argument("--loop", action="store_true", help="worker 模式：空闲时休眠后继续扫")
@@ -45,15 +46,31 @@ def main(argv: list[str] | None = None) -> int:
         conn = connect(settings)
         try:
             conn.execute("SET TRANSACTION READ ONLY")
-            rows = list_coarse_translations(
-                conn, limit=max(args.limit, 1), source_id=args.source or None
-            )
+            if args.article_id:
+                ids = list(dict.fromkeys(args.article_id))
+                found = conn.execute(
+                    "SELECT a.id, a.source_id AS source, s.enabled"
+                    " FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ANY(%s)",
+                    (ids,),
+                ).fetchall()
+                by_id = {row["id"]: row for row in found}
+                rows = [{"id": identity, "source": by_id[identity]["source"] if identity in by_id else "-",
+                         "reason": ("explicit-article" if by_id[identity]["enabled"] else "source-disabled")
+                         if identity in by_id else "not-found"} for identity in ids]
+            else:
+                rows = list_coarse_translations(
+                    conn, limit=max(args.limit, 1), source_id=args.source or None
+                )
         finally:
             conn.rollback()
             conn.close()
         for row in rows:
             print(f"#{row['id']} {row['source']} {row['reason']}")
-        print(f"共 {len(rows)} 篇")
+        if args.article_id:
+            eligible = sum(row["reason"] == "explicit-article" for row in rows)
+            print(f"共指定 {len(rows)} 篇，可处理 {eligible} 篇（仍须通过语言与译文校验）")
+        else:
+            print(f"共 {len(rows)} 篇")
         return 0
     if llm_provider() == PROVIDER_GROK:
         status = xai_oauth_status(settings.data_dir)
@@ -76,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while True:
             if args.article_id:
-                ids = list(args.article_id)
+                ids = list(dict.fromkeys(args.article_id))
             elif args.recheck:
                 rows = list_coarse_translations(
                     conn, limit=max(args.limit, 1) + len(skipped), source_id=args.source or None

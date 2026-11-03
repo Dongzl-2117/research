@@ -86,7 +86,8 @@ def test_lossless_reconstruction_is_only_a_read_only_candidate():
     candidate = pr.reconstruction(A + B, proof)
     assert candidate == ZA + ZB
     plan = classify(A + B, ZA + ZC, proof)
-    assert plan["category"] == "lossless-candidate"
+    assert plan["category"] == "target-conflict"
+    assert plan["action"] == "review-target-edits"
     assert plan["writes"] is False and plan["modelCalls"] == 0
     assert plan["candidateHash"] == pr.digest(candidate)
     assert pr.reconstruction(A + C, proof) is None

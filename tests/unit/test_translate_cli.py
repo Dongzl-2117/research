@@ -157,3 +157,12 @@ def test_missing_key_stops_before_touching_the_database(conn, monkeypatch, capsy
     monkeypatch.setattr(cli, "prepare", lambda settings: pytest.fail("没有 key 不该连库"))
     assert cli.main([]) == 2
     assert "DEEPSEEK_API_KEY" in capsys.readouterr().err
+
+
+def test_explicit_ids_keep_request_order_without_duplicate_calls(conn, monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, 'translate_article', _translate(seen))
+    monkeypatch.setattr(cli, 'list_coarse_translations', lambda *a, **kw: pytest.fail('显式 id 不进入队列'))
+    assert cli.main(['--recheck', '--article-id', '72', '--article-id', '71', '--article-id', '72',
+                     '--source', 'unrelated', '--limit', '1']) == 0
+    assert seen == [72, 71]

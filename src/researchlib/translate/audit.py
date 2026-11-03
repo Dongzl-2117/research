@@ -9,7 +9,14 @@ from pathlib import Path
 from researchlib.config import Settings
 from researchlib.db import connect
 from researchlib.translate.display import article_pairs
-from researchlib.translate.provenance import AlignmentError, digest, reconstruction, source_manifest, verify
+from researchlib.translate.provenance import (
+    AlignmentError,
+    canonical_html,
+    digest,
+    reconstruction,
+    source_manifest,
+    verify,
+)
 from researchlib.translate.service import _render_original
 
 
@@ -19,6 +26,9 @@ def classify(source: str, translated: str, provenance: dict | None) -> dict:
     candidate = reconstruction(source, provenance) if provenance else None
     if state.status == "mapped":
         category, action = "mapped", "none"
+    elif candidate is not None and canonical_html(translated) != canonical_html(candidate):
+        # 旧回执只证明旧目标能重建，不能授权覆盖后来修订、增删或换过资源的当前中文。
+        category, action = "target-conflict", "review-target-edits"
     elif candidate is not None:
         category, action = "lossless-candidate", "restore-from-receipt"
     elif state.status == "legacy" and not display.notice:

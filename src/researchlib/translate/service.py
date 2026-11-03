@@ -332,13 +332,16 @@ def reuse_duplicate_sources(sources: list[str], translations: list[str | None]) 
 def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResult:
     article = conn.execute(
         """
-        SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash
-        FROM articles WHERE id = %s
+        SELECT a.id, a.source_id, a.title, a.published_at, a.body_md, a.body_text, a.raw_meta,
+               a.content_hash, s.enabled AS source_enabled
+        FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = %s
         """,
         (article_id,),
     ).fetchone()
     if article is None:
         return TranslateResult(article_id, "skipped", reason="not found")
+    if not article["source_enabled"]:
+        return TranslateResult(article_id, "skipped", reason="source disabled")
 
     sample = article.get("body_text") or article.get("body_md") or ""
     language = (article.get("raw_meta") or {}).get("language")
@@ -428,11 +431,15 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     provenance = receipt(manifest, zh_html, model=", ".join(sorted(models)) or model_id())
     # 模型请求期间可有新的导入；锁住文章后重新核对，不能把旧输入的结果盖到新原稿上。
     current = conn.execute(
-        "SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash"
-        " FROM articles WHERE id = %s FOR UPDATE", (article_id,),
+        "SELECT a.id, a.source_id, a.title, a.published_at, a.body_md, a.body_text, a.raw_meta,"
+        " a.content_hash, s.enabled AS source_enabled"
+        " FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = %s FOR UPDATE OF a, s",
+        (article_id,),
     ).fetchone()
     if current is None or current["content_hash"] != article["content_hash"]:
         raise AlignmentError("source-changed-during-request")
+    if not current["source_enabled"]:
+        raise AlignmentError("source-disabled-during-request")
     current_html, _raw_hash = _render_original(conn, current, data_dir)
     if source_manifest(current_html)["source_fingerprint"] != manifest["source_fingerprint"]:
         raise AlignmentError("canonical-source-changed-during-request")
@@ -491,6 +498,7 @@ def list_coarse_translations(
     原文叶子远多于当时记下的 segments，就该重译。重译写回之后对不上这条，不会反复抽中。
     """
     where = [
+        "s.enabled",
         "t.complete",
         "t.content_hash = a.content_hash",
         "a.duplicate_of IS NULL",
@@ -507,6 +515,7 @@ def list_coarse_translations(
         SELECT a.id, a.source_id, a.title, a.body_md, a.body_text, a.raw_meta,
                t.segments, t.body_html
         FROM articles a
+        JOIN sources s ON s.id = a.source_id
         JOIN article_translations t ON t.article_id = a.id
         WHERE {" AND ".join(where)}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
@@ -546,6 +555,7 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
     """尚无译文、或原文 hash 已变的英文文章。同一篇的重复只译主版本；隐藏的（短帖、每周汇总）不译。"""
     params: list[object] = [HAN_OUTSIDE]
     where = [
+        "s.enabled",
         "a.duplicate_of IS NULL",
         visible_sql("a"),
         "NOT EXISTS ("
@@ -564,6 +574,7 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
     sql = f"""
         SELECT a.id
         FROM articles a
+        JOIN sources s ON s.id = a.source_id
         CROSS JOIN LATERAL (
             SELECT length(regexp_replace(head, %s, '', 'g')) AS han,
                    regexp_count(head, '[A-Za-z]') AS latin
