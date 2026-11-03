@@ -37,7 +37,13 @@ from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index
 from researchlib.present_text import polish_display_text
 from researchlib.render import sanitize_html
 from researchlib.sources import load_sources
-from researchlib.translate.display import article_pairs, ordered_projection_gaps, protected_content_gaps
+from researchlib.translate.display import (
+    _material_gaps,
+    article_pairs,
+    content_gaps,
+    ordered_projection_gaps,
+    protected_content_gaps,
+)
 from researchlib.translate.llm import extract_json
 from researchlib.translate.pair import (
     BilingualPair,
@@ -248,9 +254,19 @@ def report_from_html(
     if missing:
         issues.append(CheckIssue("protected-content-loss", "fail", missing, "译文缺少原文未译的数字、图片或代码"))
     preserved = article_pairs(en_html, zh_html, **{k: v for k, v in display_options.items() if k != "ocr_texts"})
-    source_loss, translation_loss = ordered_projection_gaps(
-        en_html, zh_html, preserved.pairs, separate=bool(preserved.notice),
-    )
+    if preserved.notice:
+        source_loss, translation_loss = ordered_projection_gaps(
+            en_html, zh_html, preserved.pairs, separate=True,
+        )
+        wording_loss = translation_loss
+    else:
+        # 软去重会少掉重复出现的那一份。原文侧仍按词、链接和结构计；译文只把少掉的图片和链接当失败。
+        en_shown = "".join(pair.en for pair in preserved.pairs)
+        zh_shown = "".join(pair.zh if pair.zh is not None else pair.en for pair in preserved.pairs)
+        visible = "".join(pair.en + (pair.zh or "") for pair in preserved.pairs)
+        source_loss = content_gaps(en_html, en_shown)
+        translation_loss = _material_gaps(zh_html, visible)
+        wording_loss = content_gaps(zh_html, zh_shown)
     if source_loss:
         issues.append(
             CheckIssue("display-content-loss", "fail", source_loss, "展示比细对齐叶子少了原文的字、图片或链接")
@@ -328,7 +344,7 @@ def report_from_html(
         long_empty_zh=long_empty,
         archive_markers=markers,
         source_projection_loss=source_loss,
-        translation_projection_loss=translation_loss,
+        translation_projection_loss=wording_loss,
         display_notice=displayed.notice,
         correspondence=displayed.correspondence,
         correspondence_reason=displayed.correspondence_reason,
