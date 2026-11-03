@@ -18,7 +18,8 @@ PROMPT_VERSION = 2
 PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt": PROMPT_VERSION}
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
-_NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
+# Q3、FY2026、H100 中的数字也属于事实；不能因前一字符是拉丁字母而漏掉。
+_NUMBER = re.compile(r"(?<!\d)[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
 
 
 class AlignmentError(RuntimeError):
@@ -78,9 +79,10 @@ class Resources(HTMLParser):
 
 
 def numeric_anchors(value: str) -> list[str]:
-    facts = Resources(value)
-    return [m.group().replace(",", "").replace("−", "-").replace("％", "%")
-            for m in _NUMBER.finditer(" ".join(facts.text))]
+    text = " ".join(Resources(value).text)
+    # Q1–Q4 常译为第一至第四季度；仅规范这个明确的财务序数，不把普通中文词汇当数字。
+    text = re.sub(r"第?([一二三四])季度", lambda match: str("一二三四".index(match[1]) + 1) + "季度", text)
+    return [m.group().replace(",", "").replace("−", "-").replace("％", "%") for m in _NUMBER.finditer(text)]
 
 
 def leaf_problem(source: str, target: str) -> str | None:

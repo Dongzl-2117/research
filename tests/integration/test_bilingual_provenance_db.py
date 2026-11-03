@@ -165,3 +165,43 @@ def test_source_change_while_model_is_running_does_not_write_a_stale_result(conn
     finally:
         if other:
             other.close()
+
+
+def test_generated_translation_keeps_chinese_only_footnote_targets(conn, settings, monkeypatch):
+    body = ('<p><a id="back-1" href="#note-1">First paragraph 10 dollars.</a></p>'
+            '<p><a id="note-1" name="original-note" href="#back-1">Second paragraph 20 dollars.</a></p>')
+    article_id = article(conn, settings, body)
+    monkeypatch.setattr(service, "chat_json", model)
+    assert service.translate_article(conn, article_id, data_dir=settings.data_dir).status == "translated"
+    stored = snapshot(conn, article_id)
+    assert 'id="note-1"' in stored["body_html"] and 'id="back-1"' in stored["body_html"]
+    assert 'name="original-note"' in stored["body_html"]
+    assert qa.check_article(conn, settings, article_id).correspondence == "mapped"
+    monkeypatch.setattr("researchlib.web.routes.schedule_digests", lambda *args: None)
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article_id}/zh").text
+    for anchor in ("note-1", "back-1"):
+        assert f'id="{anchor}"' in page and f'href="#{anchor}"' in page
+
+
+def test_changed_embedded_quarter_cannot_overwrite_a_good_translation(conn, settings, monkeypatch):
+    article_id = article(conn, settings, BODY.replace("10 dollars", "FY2026 Q3 revenue of 10 dollars"))
+    monkeypatch.setattr(service, "chat_json", model)
+    service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    before = snapshot(conn, article_id)
+    chunks = conn.execute("SELECT ord, body FROM article_chunks WHERE article_id=%s ORDER BY ord",
+                          (article_id,)).fetchall()
+
+    def changed(**kwargs):
+        result = model(**kwargs)
+        for item in result.data["t"]:
+            item["html"] = item["html"].replace("Q3", "Q4")
+        return result
+
+    monkeypatch.setattr(service, "chat_json", changed)
+    with pytest.raises(AlignmentError, match="numbers"):
+        service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    conn.rollback()
+    assert snapshot(conn, article_id) == before
+    assert conn.execute("SELECT ord, body FROM article_chunks WHERE article_id=%s ORDER BY ord",
+                        (article_id,)).fetchall() == chunks

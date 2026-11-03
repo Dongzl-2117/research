@@ -202,26 +202,36 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
     # 上一级的 repair 只针对那一批的条数，不能带进更小的一批。
     context = {key: value for key, value in context.items() if key != "repair"}
     user = {**context, "segments": parts}
-    texts = _translate_once(parts, user, data_dir)
+
+    def request(payload):
+        try:
+            return _translate_once(parts, payload, data_dir)
+        except AlignmentError as exc:
+            if exc.code != "response-count":
+                raise
+            # 正式身份协议在数组长度检查时已拒绝响应，交回同一套有界重试/拆批。
+            return []
+
+    texts = request(user)
     problem = translation_problem(parts, texts)
     if problem == "count":
         # 少段 / 多段先按原批重试一次，要求条数正好。
-        texts = _translate_once(
-            parts,
+        texts = request(
             {
                 **user,
                 "repair": (
-                    f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。"
+                    f"上一次 t 数量与请求不一致，必须正好 {len(parts)}。"
                     "按 segments 下标一一对应重译，只输出 JSON。"
                 ),
             },
-            data_dir,
         )
         problem = translation_problem(parts, texts)
     if problem == "count" and len(parts) > 1:
         logger.info("译文条数对不齐（segments=%s t=%s），对半拆开重试", len(parts), len(texts))
         return _translate_split(parts, context, data_dir)
     if problem:
+        if problem == "count" and "segment_ids" in context:
+            raise AlignmentError("response-count")
         raise RuntimeError(f"translation alignment: {problem}")
     return texts
 

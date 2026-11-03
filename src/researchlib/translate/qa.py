@@ -44,6 +44,7 @@ from researchlib.translate.pair import (
     redundant_pairs,
     visible_text,
 )
+from researchlib.translate.provenance import Resources
 from researchlib.translate.segments import iter_segments
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import shorten_long_title
@@ -225,6 +226,7 @@ def report_from_html(
     tail_zh = max(0, zh_blocks - paired)
 
     texts = [visible_text(pair.en or "") for pair in pairs]
+    prose = [" ".join(Resources(pair.en or "").text) for pair in pairs]
     giant = tuple(index for index, text in enumerate(texts) if len(text) >= GIANT_EN_CHARS)
     # 整页分开展示时，英文那一段本来就没有中文，不算漏译；分开本身已经按失败记。
     long_empty = (
@@ -233,7 +235,7 @@ def report_from_html(
         else tuple(
             index
             for index in range(min(paired, len(pairs)))
-            if len(texts[index]) >= LONG_EN_CHARS and re.search(r"[A-Za-z]", texts[index])
+            if len(prose[index]) >= LONG_EN_CHARS and re.search(r"[A-Za-z]", prose[index])
             and not (pairs[index].zh or "").strip()
         )
     )
