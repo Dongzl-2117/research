@@ -40,6 +40,10 @@ def test_chinese_financial_quarter_words_keep_the_same_numeric_identity(quarter)
     assert pr.leaf_problem(source, target.replace('三季度', '四季度')) == "numbers"
 
 
+def test_quarter_normalization_does_not_extract_a_suffix_from_a_larger_ordinal():
+    assert pr.leaf_problem('<p>Q3 revenue was 10 dollars.</p>', '<p>第十三季度收入为10美元。</p>') == "numbers"
+
+
 def test_numeric_mismatch_is_not_hidden_by_a_simultaneous_link_mismatch():
     source = '<p>Revenue was 10 dollars. <a href="https://example.invalid/a">Report</a></p>'
     target = '<p>收入为20美元。<a href="https://example.invalid/b">报告</a></p>'

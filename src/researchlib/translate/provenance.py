@@ -81,7 +81,8 @@ class Resources(HTMLParser):
 def numeric_anchors(value: str) -> list[str]:
     text = " ".join(Resources(value).text)
     # Q1–Q4 常译为第一至第四季度；仅规范这个明确的财务序数，不把普通中文词汇当数字。
-    text = re.sub(r"第?([一二三四])季度", lambda match: str("一二三四".index(match[1]) + 1) + "季度", text)
+    text = re.sub(r"(?<![零〇一二三四五六七八九十百千万亿两])第?([一二三四])季度",
+                  lambda match: str("一二三四".index(match[1]) + 1) + "季度", text)
     return [m.group().replace(",", "").replace("−", "-").replace("％", "%") for m in _NUMBER.finditer(text)]
 
 
