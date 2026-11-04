@@ -370,6 +370,7 @@ def test_deepseek_stream_is_reassembled():
         "",
         'data: {"choices":[{"delta":{"content":"茅台"}}]}',
         'data: {"choices":[{"delta":{"content":"很好"}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
         "data: [DONE]",
     ]
     body = _read_stream(lines)

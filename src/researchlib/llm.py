@@ -191,29 +191,48 @@ def _read_stream(lines) -> dict:
     reasoning: list[str] = []
     model = ""
     usage = None
+    done = False
+    finished = False
     for raw in lines:
         line = raw.strip()
         if not line.startswith("data:"):
             continue
         data = line[5:].strip()
         if data == "[DONE]":
+            done = True
             break
+        if not data:
+            continue
         try:
             chunk = json.loads(data)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise LLMError('模型流包含无效 JSON') from exc
+        if not isinstance(chunk, dict) or chunk.get('error'):
+            raise LLMError('模型流返回错误')
         model = chunk.get("model") or model
         usage = chunk.get("usage") or usage
         for choice in chunk.get("choices") or []:
+            if not isinstance(choice, dict):
+                raise LLMError('模型流包含无效候选')
+            if choice.get('index', 0) != 0:
+                continue
+            reason = choice.get('finish_reason')
+            if reason is not None:
+                if reason != 'stop':
+                    raise LLMError('模型流未完整完成')
+                finished = True
             delta = choice.get("delta") or {}
             if delta.get("content"):
                 content.append(delta["content"])
             if delta.get("reasoning_content"):
                 reasoning.append(delta["reasoning_content"])
+    if not done or not finished:
+        raise LLMError('模型流中途结束，缺少完成标记')
     body = {
         "model": model,
         "choices": [
-            {"message": {"role": "assistant", "content": "".join(content), "reasoning_content": "".join(reasoning)}}
+            {"message": {"role": "assistant", "content": "".join(content), "reasoning_content": "".join(reasoning)},
+             "finish_reason": 'stop'}
         ],
     }
     if usage is not None:

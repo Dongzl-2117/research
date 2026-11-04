@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
+from starlette.concurrency import run_in_threadpool
 
 from researchlib import embeddings
 from researchlib import revisions as revision_log
@@ -1679,6 +1680,11 @@ async def ask_submit(request: Request):
     question = str(form.get("q") or "").strip()[:500]
     keys = ("author", "source", "company", "from", "to", "article", "tree")
     params = {key: str(form.get(key) or "") for key in keys}
+    return await run_in_threadpool(_ask_submit_sync, request, question, params)
+
+
+def _ask_submit_sync(request: Request, question: str, params: dict):
+    """数据库、检索及可能的同步测试模型都在事件循环外运行。"""
     with database(request) as conn:
         sources = active_sources(request, conn)
         scope, info = resolve_scope(params, sources)
@@ -1798,7 +1804,7 @@ async def ask_feedback(request: Request, answer_id: int):
 
 
 @router.post("/ask/{answer_id}/retry")
-async def ask_retry(request: Request, answer_id: int):
+def ask_retry(request: Request, answer_id: int):
     if not _same_origin(request):
         raise HTTPException(status_code=403, detail="跨站请求被拒绝")
     with database(request) as conn:

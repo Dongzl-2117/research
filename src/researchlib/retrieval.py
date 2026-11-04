@@ -1936,7 +1936,7 @@ def _author_listing(conn, query: Query, scope: Scope, limit: int, offset: int) -
     return SearchResult(int(total["n"]), 0, hits, [], query, counts, available=int(total["n"]))
 
 
-_CITE = re.compile(r"\[(\d{1,3})\]")
+_CITE = re.compile(r"\[(\d+)\]")
 
 
 def cited_numbers(answer: str, count: int) -> list[int]:

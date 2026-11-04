@@ -168,7 +168,7 @@ def mention_sentence(text: str, spans: list[tuple[int, int, int]], *, radius: in
     return ("…" if cut_start else "") + sentence + ("…" if cut_end else "")
 
 
-_CITE = re.compile(r"\[(\d{1,3})\]")
+_CITE = re.compile(r"\[(\d+)\]")
 
 
 def answer_html(text: str) -> Markup:
