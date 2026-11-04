@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from researchlib import embeddings
-from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE
+from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE, current_chunk_sql
 from researchlib.mentions import (
     CompanyMatcher,
     company_rules,
@@ -187,13 +187,14 @@ class ArticleHit:
 
 @dataclass
 class SearchResult:
-    total: int  # 文章索引全部命中与排序窗口内提升的命中的并集，精确去重计数
+    total: int  # 全部词组都命中的文章数（精确计数）
     partial: int  # 候选里只命中一部分、但相关度够的文章数
     hits: list[ArticleHit]  # 这一页
     terms: list[str]  # 用来高亮的词
     query: Query | None
     counts: dict[str, int]  # 按来源分的全部命中篇数
     available: int = 0  # 能翻到的篇数（全部命中排在前，部分命中在后）
+    semantic: int = 0  # 词没写全、按意思排进前面那一档的篇数（标「语义相关」），不算进 total
 
 
 _QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』')
@@ -486,6 +487,34 @@ def _whitespace_pieces(text: str) -> list[tuple[str, bool]]:
     return pieces
 
 
+def _query_pieces(text: str, author_names: list[str]) -> list[tuple[str, str, bool]]:
+    """保留引号、否定和 OR 的先后关系；已知多词作者作为完整名字读取。"""
+    names = '|'.join(r'\s+'.join(map(re.escape, name.split())) for name in author_names) or r'(?!)'
+    tokens = re.compile(
+        rf'(?P<negative>[-－])?(?:(?P<quoted>{_QUOTE.pattern})'
+        rf'|(?P<author>(?<![A-Za-z0-9_])(?:{names})(?![A-Za-z0-9_]))|(?P<word>[^\s]+))'
+    )
+    pieces = []
+    joined = False
+    for match in tokens.finditer(text):
+        kind = 'phrase' if match['quoted'] else 'author' if match['author'] else 'word'
+        value = match[kind if kind != 'phrase' else 'quoted']
+        if kind == 'phrase':
+            value = next(value for value in _QUOTE.fullmatch(value).groups() if value)
+        value = value.strip()
+        if not value:
+            continue
+        if match['negative']:
+            pieces.append(('exclude', value, False))
+            continue
+        if kind == 'word' and value in {'or', 'OR', '|', '或'}:
+            joined = True
+            continue
+        pieces.append((kind, value, joined))
+        joined = False
+    return pieces
+
+
 def analyze(
     conn,
     question: str,
@@ -495,34 +524,40 @@ def analyze(
     expansions: dict[str, list[str]] | None = None,
 ) -> Query:
     """把问题拆成公司、作者、短语、排除词和检索词。expansions 是模型给的同义词：{原词: [同义词]}。"""
-    raw = (question or "").strip()[:500]
-    text = raw
-    phrases: list[str] = []
-    for match in _QUOTE.finditer(text):
-        phrase = next(group for group in match.groups() if group)
-        if phrase.strip() and phrase.strip() not in phrases:
-            phrases.append(phrase.strip())
-    text = _QUOTE.sub(" ", text)
-    excludes = [match.group(1) for match in _EXCLUDE.finditer(text) if match.group(1)]
-    text = _EXCLUDE.sub(" ", text)
-    years = sorted({int(year) for year in _YEAR.findall(text)})
+    # 地址栏里的 %00 会变成 NUL 字符，Postgres 的文字不收，切词那一步就报错（检索页、问库都走这里）。
+    raw = (question or "").replace("\x00", " ").strip()[:500]
 
     rows = company_rows if company_rows is not None else load_company_rows(conn)
     matcher = cached_matcher("aho", rows) if rows else None
     by_id = {int(row["id"]): row for row in rows}
     author_names = sorted({source.author for source in sources if source.author}, key=len, reverse=True)
+    pieces = _query_pieces(raw, author_names)
+    excludes = list(dict.fromkeys(value for kind, value, _ in pieces if kind == 'exclude'))
+    years = sorted({int(year) for kind, value, _ in pieces if kind != 'exclude' for year in _YEAR.findall(value)})
 
     terms: list[Term] = []
     companies: list[dict] = []
     authors: list[str] = []
     pairs: list[tuple[str, str]] = []
-    for index, phrase in enumerate(phrases):
-        terms.append(Term(phrase, "phrase", index, forms=[phrase], weight=1.3))
     # 每个词自成一组（组与组之间是「且」）；用 or 连起来的片段并成一组（组内是「或」）。
-    next_group = len(phrases)
+    next_group = 0
     piece_group = -1
-    for piece, joined in _whitespace_pieces(text):
+    for kind, piece, joined in pieces:
+        if kind == 'exclude':
+            continue
+        if kind == 'author':
+            name = next(name for name in author_names if name.split() == piece.split())
+            if name not in authors:
+                authors.append(name)
+            continue
         shared = piece_group if joined and piece_group >= 0 else None
+        if kind == 'phrase':
+            group = shared if shared is not None else next_group
+            if shared is None:
+                next_group += 1
+            terms.append(Term(piece, 'phrase', group, forms=[piece], weight=1.3))
+            piece_group = group
+            continue
         masked = piece
         found: list[tuple[str, str, list[str], int | None]] = []  # (文字, 类型, 写法, 公司 id)
         if matcher is not None:
@@ -609,30 +644,37 @@ def preset_query(query: Query) -> Query:
 _SELECT_COLUMNS = """
 c.article_id, c.ord, c.heading, c.body, c.lang, c.anchor,
 CASE WHEN c.lang = 'zh' THEN coalesce(
-  nullif((SELECT tr.title_zh FROM article_translations tr WHERE tr.article_id = c.article_id), ''), a.title
+  nullif((SELECT tr.title_zh FROM article_translations tr WHERE tr.article_id = c.article_id
+          AND tr.content_hash=a.content_hash), ''), a.title
 ) ELSE a.title END AS title,
 a.source_id, a.published_at
 """
 
 
-def _article_match(tsq: str) -> str:
+def _article_match(tsq: str, *, ocr: bool = False) -> str:
     """文章级的全文命中：原文的标题和正文，加上中文译文的标题和正文。
 
-    写成两个子查询的去重并集，两边都能走各自的 GIN 索引。不能用 UNION ALL：可见条件被估成只剩
-    一篇时，规划器会选嵌套循环半连接，对每篇文章重新扫描整个并集。UNION 只聚合文章号，避免反复读全文向量。
+    写成几个子查询的并集，各自都能走 GIN 索引；写成 OR EXISTS 会退化成逐行过滤，库大了很慢。
+    ocr：再算上图片里的字（lang = 'ocr' 的检索块）。只在截图里写了这个词的星球帖，结果里列着，
+    数篇数时也要数到（「送货上门」结果 55 篇，来源计数只数到 16 篇）。
     """
-    return (
-        f"a.id IN (SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}"
-        f" UNION SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq})"
-    )
+    parts = [
+        f"SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}",
+        f"SELECT tq.article_id FROM article_translations tq JOIN articles ta ON ta.id=tq.article_id"
+        f" WHERE tq.content_hash=ta.content_hash AND tq.search_tsv @@ {tsq}",
+    ]
+    if ocr:
+        parts.append(f"SELECT oc.article_id FROM article_chunks oc WHERE oc.lang = 'ocr' AND oc.search_tsv @@ {tsq}")
+    return f"a.id IN ({' UNION '.join(parts)})"
 
 
-def _prefer_translation(rows: list[dict]) -> list[dict]:
-    """同一篇英文文章的原文块和中文译文块都召回时，只留译文块，免得同一段内容占两份名额。"""
-    translated = {row["article_id"] for row in rows if row.get("lang") == "zh"}
-    if not translated:
-        return rows
-    return [row for row in rows if row.get("lang") == "zh" or row["article_id"] not in translated]
+def _prefer_translation(rows: list[dict], phrases: list[str] | None = None) -> list[dict]:
+    """保留逐块证据；同篇有中文不能授权丢掉英文或OCR，重复片段由选择器处理。"""
+    return rows
+
+
+def _phrases(query: Query) -> list[str]:
+    return [term.forms[0] for term in query.terms if term.kind == "phrase" and term.forms]
 
 
 def _group_tsquery(query: Query, params: dict, *, only_selective: bool, operator: str, prefix: str) -> str:
@@ -678,12 +720,10 @@ def _fts_keys(conn, scope: Scope, tsq: str, params: dict, limit: int, *, company
           SELECT c.article_id, c.ord, c.search_tsv, a.published_at
           FROM article_chunks c
           JOIN articles a ON a.id = c.article_id
-          WHERE {where} AND c.search_tsv @@ {tsq}{extra}
-          ORDER BY c.article_id, c.ord
+          WHERE {where} AND {current_chunk_sql()} AND c.search_tsv @@ {tsq}{extra}
           LIMIT %(fts_pool)s
         ) pool
-        ORDER BY ts_rank_cd(pool.search_tsv, {tsq}) DESC, pool.published_at DESC NULLS LAST,
-                 pool.article_id DESC, pool.ord
+        ORDER BY ts_rank_cd(pool.search_tsv, {tsq}) DESC, pool.published_at DESC NULLS LAST
         LIMIT %(fts_limit)s
         """,
         params,
@@ -716,11 +756,12 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
         conditions.append(_article_match(tsq))
         title_hit = (
             f"(a.title_tsv @@ {tsq} OR a.id IN"
-            f" (SELECT tt.article_id FROM article_translations tt WHERE tt.title_tsv @@ {tsq}))"
+            f" (SELECT tt.article_id FROM article_translations tt JOIN articles ta ON ta.id=tt.article_id"
+            f" WHERE tt.content_hash=ta.content_hash AND tt.title_tsv @@ {tsq}))"
         )
         order = f"{title_hit} DESC, a.published_at DESC NULLS LAST, a.id DESC"
     elif company_ids:
-        order = "a.published_at DESC NULLS LAST, a.id DESC"
+        order = "a.published_at DESC NULLS LAST"
     else:
         return []
     params["zh_first"] = TRANSLATION_ORD_BASE
@@ -729,6 +770,7 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
         SELECT a.id,
                CASE WHEN EXISTS (
                  SELECT 1 FROM article_chunks zc WHERE zc.article_id = a.id AND zc.ord = %(zh_first)s
+                   AND {current_chunk_sql('zc')}
                ) THEN %(zh_first)s ELSE 0 END AS first_ord
         FROM articles a
         WHERE {' AND '.join(conditions)}
@@ -750,6 +792,7 @@ def _rows_for_keys(conn, keys: list[tuple[int, int]]) -> list[dict]:
         FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
         JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
         JOIN articles a ON a.id = c.article_id
+        WHERE {current_chunk_sql()}
         """,
         ([key[0] for key in keys], [key[1] for key in keys]),
     ).fetchall()
@@ -777,12 +820,13 @@ def _company_rows(conn, company: dict, scope: Scope, per_year: int):
               SELECT {_SELECT_COLUMNS}, m.depth,
                      row_number() OVER (
                        PARTITION BY date_part('year', a.published_at AT TIME ZONE 'Asia/Shanghai')
-                       ORDER BY (m.depth = 'passing'), m.hit_count DESC, a.published_at DESC, a.id DESC, c.ord
+                       ORDER BY (m.depth = 'passing'), m.hit_count DESC, a.published_at DESC, c.ord
                      ) AS rn
               FROM article_mentions m
               JOIN articles a ON a.id = m.article_id
               JOIN article_chunks c ON c.article_id = a.id
-              WHERE m.company_id = %(company)s {depth_filter} AND {where} AND c.search_tsv @@ {tsq}
+              WHERE m.company_id = %(company)s {depth_filter} AND {where}
+                AND {current_chunk_sql()} AND c.search_tsv @@ {tsq}
             ) ranked
             WHERE rn <= %(per_year)s
             """,
@@ -803,7 +847,8 @@ def _leading_rows(conn, scope: Scope, limit: int):
         SELECT {_SELECT_COLUMNS}
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
-        WHERE {where} AND (c.ord < 2 OR (c.ord >= %(zh_first)s AND c.ord < %(zh_first)s + 2))
+        WHERE {where} AND {current_chunk_sql()}
+          AND (c.ord < 2 OR (c.ord >= %(zh_first)s AND c.ord < %(zh_first)s + 2))
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC, c.ord
         LIMIT %(lead_limit)s
         """,
@@ -819,7 +864,7 @@ def _article_rows(conn, scope: Scope):
         SELECT {_SELECT_COLUMNS}
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
-        WHERE {where}
+        WHERE {where} AND {current_chunk_sql()}
         ORDER BY c.ord
         """,
         params,
@@ -900,7 +945,7 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
             add_rows(_rows_for_keys(conn, title_keys))
         if not targets:
             add_rows(_leading_rows(conn, scope, 600))
-    return _prefer_translation(list(found.values()))
+    return _prefer_translation(list(found.values()), _phrases(query))
 
 
 # —— 语义召回 ——
@@ -929,7 +974,8 @@ def _vector_filter(scope: Scope, company_ids: list[int] | None) -> tuple[str, di
     return where, params
 
 
-def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, company_ids: list[int] | None = None):
+def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, company_ids: list[int] | None = None,
+                 model: str | None = None):
     """范围内和问题最相近的块。
 
     范围条件不能和按距离排序写进同一条查询：文章表的「可见」条件是 jsonb 表达式，没有统计信息，规划器按默认
@@ -939,26 +985,35 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
     公司的文章）再逐块算，窄范围逐块算本来就快。只问一篇或一个目录时直接逐块算。
     """
     where, params = _vector_filter(scope, company_ids)
+    params['embedding_model'] = embeddings.model_name() if model is None else model
     if scope.article_id is None and scope.tree_id is None:
         pool = limit * ANN_OVERFETCH
         embeddings.tune_search(conn, pool)
         near = conn.execute(
             f"""
-            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
+            SELECT e.article_id, e.ord, e.text_hash, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
             FROM chunk_embeddings e
+            WHERE e.model=%(embedding_model)s
             ORDER BY e.embedding <=> %(qv)s::{kind}
             LIMIT %(ann_pool)s
             """,
-            {"qv": vector, "ann_pool": pool},
+            {"qv": vector, "ann_pool": pool, 'embedding_model': params['embedding_model']},
         ).fetchall()
         allowed = {
-            row["id"]
+            (row['article_id'], row['ord']): row['text_hash']
             for row in conn.execute(
-                f"SELECT a.id FROM articles a WHERE a.id = ANY(%(ann_ids)s) AND {where}",
-                {**params, "ann_ids": sorted({row["article_id"] for row in near})},
+                f"SELECT e.article_id,e.ord,e.text_hash"
+                " FROM unnest(%(ann_ids)s::bigint[],%(ann_ords)s::int[]) AS k(article_id,ord)"
+                " JOIN article_chunks c ON c.article_id=k.article_id AND c.ord=k.ord"
+                " JOIN articles a ON a.id=c.article_id"
+                " JOIN chunk_embeddings e ON e.article_id=c.article_id AND e.ord=c.ord"
+                f" WHERE {where} AND {embeddings.current_embedding_sql()}",
+                {**params, 'ann_ids': [row['article_id'] for row in near], 'ann_ords': [row['ord'] for row in near]},
             ).fetchall()
         }
-        kept = sorted((row for row in near if row["article_id"] in allowed), key=lambda row: -float(row["sim"]))
+        kept = sorted((row for row in near if (row['article_id'], row['ord']) in allowed
+                       and row['text_hash'] == allowed[(row['article_id'], row['ord'])]),
+                      key=lambda row: -float(row['sim']))
         if len(kept) >= limit:
             return {(row["article_id"], row["ord"]): float(row["sim"]) for row in kept[:limit]}
     params.update({"qv": vector, "vec_limit": limit})
@@ -966,8 +1021,9 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
         f"""
         SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
         FROM chunk_embeddings e
+        JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord
         JOIN articles a ON a.id = e.article_id
-        WHERE {where}
+        WHERE {where} AND {embeddings.current_embedding_sql()}
         ORDER BY e.embedding <=> %(qv)s::{kind}
         LIMIT %(vec_limit)s
         """,
@@ -986,38 +1042,49 @@ def semantic_candidates(
     kind = embeddings.ready(conn)
     if kind is None:
         return rows, {}
+    model = embeddings.model_name()
     vector = embeddings.query_vector(query.raw)
     if vector is None:
+        return rows, {}
+    if embeddings.model_name() != model:
         return rows, {}
     literal = embeddings.literal(vector)
     company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
     try:
         with conn.transaction():
-            sims = _vector_lookup(conn, kind, literal, scope, rows, pool, company_ids)
+            sims = _vector_lookup(conn, kind, literal, scope, rows, pool, company_ids, model=model)
     except Exception as exc:  # 向量这一路出错不能拖垮检索：退回只用关键词。
         embeddings.logger.warning("语义召回失败，只用关键词：%s", exc)
+        return rows, {}
+    if embeddings.model_name() != model:
         return rows, {}
     have = {(row["article_id"], row["ord"]) for row in rows}
     new_keys = [key for key in sims if key not in have]
     rows = list(rows) + [dict(row) for row in _rows_for_keys(conn, new_keys)]
-    return _prefer_translation(rows), semantic_scores(sims)
+    return _prefer_translation(rows, _phrases(query)), semantic_scores(sims)
 
 
-def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int]):
-    sims = _vector_keys(conn, kind, literal, scope, pool, company_ids=company_ids or None)
+def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int],
+                   *, model: str | None = None):
+    model = embeddings.model_name() if model is None else model
+    sims = _vector_keys(conn, kind, literal, scope, pool, company_ids=company_ids or None, model=model)
     if company_ids:
-        for key, sim in _vector_keys(conn, kind, literal, scope, VECTOR_OPEN_POOL).items():
+        for key, sim in _vector_keys(conn, kind, literal, scope, VECTOR_OPEN_POOL, model=model).items():
             sims.setdefault(key, sim)
     have = {(row["article_id"], row["ord"]) for row in rows}
     missing = [key for key in have if key not in sims]
     if missing:
         for row in conn.execute(
             f"""
-            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %s::{kind}) AS sim
-            FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
+            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
+            FROM unnest(%(ids)s::bigint[], %(ords)s::int[]) AS k(article_id, ord)
             JOIN chunk_embeddings e ON e.article_id = k.article_id AND e.ord = k.ord
+            JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord
+            JOIN articles a ON a.id=c.article_id
+            WHERE {embeddings.current_embedding_sql()}
             """,
-            (literal, [key[0] for key in missing], [key[1] for key in missing]),
+            {'qv': literal, 'ids': [key[0] for key in missing], 'ords': [key[1] for key in missing],
+             'embedding_model': model},
         ).fetchall():
             sims[(row["article_id"], row["ord"])] = float(row["sim"])
     return sims
@@ -1143,6 +1210,18 @@ def _form_counter(form: str):
     return lambda _text, lowered: len(pattern.findall(lowered))
 
 
+_REGEX_SPECIAL = re.compile(r"([\\^$.|?*+()\[\]{}])")
+
+
+def _literal_sql(form: str, column: str, params: dict, key: str) -> str:
+    """SQL 里「这段文字原样含有 form」，和 _form_counter 同一个口径：中文按字面，英文按词边界、不分大小写。"""
+    if _is_cjk(form):
+        params[key] = form
+        return f"strpos({column}, %({key})s) > 0"
+    params[key] = r"(?<![A-Za-z0-9])" + _REGEX_SPECIAL.sub(r"\\\1", form) + r"(?![A-Za-z0-9])"
+    return f"({column}) ~* %({key})s"
+
+
 def _count(text: str, lowered: str, form: str) -> int:
     if not form:
         return 0
@@ -1225,7 +1304,10 @@ def score_rows(
             continue
         group_weight[term.group] = max(group_weight.get(term.group, 0.0), term.idf * term.weight)
     total_weight = sum(group_weight.values())
-    phrases = [t for t in query.terms if t.kind == "phrase"]
+    mandatory_phrases: dict[int, list[Term]] = defaultdict(list)
+    for term in query.terms:
+        if term.kind == 'phrase' and not any(t.group == term.group and t.kind != 'phrase' for t in query.terms):
+            mandatory_phrases[term.group].append(term)
 
     passages: list[Passage] = []
     multipliers: list[float] = []
@@ -1236,7 +1318,8 @@ def score_rows(
         lowered = text.lower()
         if any(_count(text, lowered, word) for word in query.excludes):
             continue
-        if any(counters[id(phrase)][0][1](text, lowered) == 0 for phrase in phrases):
+        if mandatory_phrases and not any(counters[id(phrase)][0][1](text, lowered)
+                                         for alternatives in mandatory_phrases.values() for phrase in alternatives):
             continue
         dl = max(len(text), 1)
         norm = K1 * (1 - B + B * dl / max(avgdl, 1))
@@ -1296,7 +1379,9 @@ def score_rows(
         # 公司：段落里确实谈到了这家公司才算；整篇深入谈的文章再加一点。
         if focus_ids:
             hits = sum(company_hits.get(cid, 0) for cid in focus_ids)
-            if hits == 0 and row["ord"] == 0 and any(title_companies.get(cid) for cid in focus_ids):
+            if hits == 0 and row["ord"] == _ord_range(row['ord'])[0] and any(
+                title_companies.get(cid) for cid in focus_ids
+            ):
                 hits = 1
             if query.overview:
                 if hits == 0:
@@ -1317,7 +1402,7 @@ def score_rows(
                 score *= (1.15, 1.1, 1.05, 0.7)[best]
         elif query.overview:
             # 只有作者或日期范围：开头那块最能代表全文；谈到具体公司的段落比套话更有信息量。
-            score = 1.0 / (1 + row["ord"])
+            score = 1.0 / (1 + row['ord'] - _ord_range(row['ord'])[0])
             if any(name in text for name in deep_names.get(row["article_id"], ())):
                 score *= 1.8
             coverage = 1.0
@@ -1482,6 +1567,22 @@ def _text_key(body: str) -> str:
     return text if len(text) >= 30 else ""
 
 
+def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
+    """按分数顺序取前几块，和已取的块一字不差、或整块包含在里面（反过来也算）的跳过。"""
+    kept: list[Passage] = []
+    keys: list[str] = []
+    for passage in items:
+        key = _text_key(passage.body)
+        if key and any(key in other or other in key for other in keys):
+            continue
+        kept.append(passage)
+        if key:
+            keys.append(key)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
 def retrieve(
     conn,
     question: str,
@@ -1499,8 +1600,14 @@ def retrieve(
         budget = Budget(limit, max(budget.chars, limit * 900), budget.per_article)
     company_rows = load_company_rows(conn)
     query = analyze(conn, question, sources, company_rows=company_rows, expansions=expansions)
+    # 明确的按日概览仍按日期取文章；内容词零命中不能据此改成概览。
+    if (scope.date_from or scope.date_to) and re.fullmatch(
+        r"(?:这一天|当天|这天)(?:大家)?(?:都)?在聊(?:什么|啥)[？?。!！\s]*", query.raw
+    ):
+        query = preset_query(query)
     # 语义检索只用在有具体内容的问题上：「汇总这一天」「库里怎么看腾讯」这类没有可比的语义。
     semantic_ok = not preset and any(t.kind in ("word", "phrase") for t in query.terms)
+    semantic_only = semantic_ok and not any(t.df > 0 for t in query.terms if t.kind in ('word', 'phrase'))
     if preset:
         query = preset_query(query)
     else:
@@ -1508,12 +1615,12 @@ def retrieve(
         kept = [t for t in query.terms if t.kind != "word" or t.df > 0]
         if len(kept) != len(query.terms):
             content = [t for t in kept if t.kind in ("word", "phrase")]
-            query = replace(query, terms=kept, overview=not content)
+            if content or not semantic_ok:
+                query = replace(query, terms=kept, overview=not content)
     effective = scope
     if query.authors and scope.source_ids:
         narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
-        if narrowed:
-            effective = replace(scope, source_ids=narrowed)
+        effective = replace(scope, source_ids=narrowed)
     sources_by_id = {source.id: source for source in sources}
     if scope.article_id is not None:
         return _retrieve_article(conn, query, effective, budget, purpose=purpose, semantic_ok=semantic_ok)
@@ -1522,13 +1629,15 @@ def retrieve(
         budget = replace(budget, per_article=max(budget.per_article, TREE_PER_ARTICLE))
     per_channel = min(CANDIDATES, max(400, budget.passages * 8))
     rows = _candidates(conn, query, effective, limit=per_channel, enough=budget.passages * 6)
+    if semantic_only:
+        rows = []
     semantic: dict[tuple[int, int], float] = {}
     if semantic_ok and not query.overview:
         rows, semantic = semantic_candidates(conn, query, effective, rows)
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     picked = select(scored, query, budget, sources_by_id)
     narrowed = effective.date_from or effective.date_to or effective.company_id is not None or query.authors
-    if not picked and narrowed and not query.overview:
+    if not picked and narrowed and not query.overview and not semantic_only:
         # 范围已经很窄（某天、某位作者、某家公司）但词没召回到：退回按范围取，像「汇总这一天」。
         fallback = preset_query(query)
         rows = _candidates(conn, fallback, effective, limit=per_channel, enough=budget.passages * 6)
@@ -1636,10 +1745,12 @@ def attach_context(conn, picked: list[Passage], extra_chars: int, *, span: int =
     bodies = {
         (row["article_id"], row["ord"]): row["body"]
         for row in conn.execute(
-            """
+            f"""
             SELECT c.article_id, c.ord, c.body
             FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
             JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
+            JOIN articles a ON a.id=c.article_id
+            WHERE {current_chunk_sql()}
             """,
             ([key[0] for key in wanted], [key[1] for key in wanted]),
         ).fetchall()
@@ -1710,8 +1821,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     effective = scope
     if query.authors and scope.source_ids:
         narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
-        if narrowed:
-            effective = replace(scope, source_ids=narrowed)
+        effective = replace(scope, source_ids=narrowed)
     if not query.terms:
         if query.authors:
             return _author_listing(conn, query, effective, limit, offset)
@@ -1723,48 +1833,46 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     # 只查候选的文章号，既接住词散在不同段落里的全部命中，也统一短语、排除词和可见范围。
     match_where, match_params = _full_match_clause(query, effective)
     allowed_where, allowed_params = _search_scope_clause(query, effective)
+    company_terms = [t for t in query.terms if t.kind == 'company' and not any(
+        other.group == t.group and other.kind != 'company' for other in query.terms
+    )]
+    company_where, company_params = (_full_match_clause(replace(query, terms=company_terms), effective)
+                                     if company_terms else ('true', {}))
     candidates = conn.execute(
-        f"SELECT a.id, ({match_where}) AS full FROM articles a"
+        f"SELECT a.id, ({match_where}) AS full, ({company_where}) AS company_match FROM articles a"
         f" WHERE a.id = ANY(%(candidate_ids)s) AND {allowed_where}",
-        {**match_params, **allowed_params, "candidate_ids": sorted({r["article_id"] for r in rows})},
+        {**match_params, **allowed_params, **company_params,
+         "candidate_ids": sorted({r["article_id"] for r in rows})},
     ).fetchall()
     allowed = {r["id"] for r in candidates}
     indexed = {r["id"] for r in candidates if r["full"]}
+    company_matched = {r['id'] for r in candidates if r['company_match']}
     rows = [r for r in rows if r["article_id"] in allowed]
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     by_article: dict[int, list[Passage]] = defaultdict(list)
     for passage in scored:
         by_article[passage.article_id].append(passage)
-    groups = {t.group for t in query.terms if t.group >= 0}
-    company_groups = {t.group for t in query.terms if t.group >= 0 and t.kind == "company"}
     titles = {p.article_id: p.title for p in scored}
-    asked = {t.company_id for t in query.terms if t.kind == "company"}
-    title_matcher = cached_matcher("focus", [row for row in company_rows if int(row["id"]) in asked]) if asked else None
     hits: list[ArticleHit] = []
     for article_id, items in by_article.items():
         items.sort(key=lambda p: (-p.score, p.ord))
         title = titles.get(article_id, "")
-        matched_groups = set()
-        for term in query.terms:
-            if term.group < 0:
-                continue
-            if any(form in p.matched for p in items for form in term.forms):
-                matched_groups.add(term.group)
-            elif _title_mentions(term, title, title_matcher):
-                matched_groups.add(term.group)
-        full = article_id in indexed or groups <= matched_groups
+        full = article_id in indexed
         # 词没写全、但语义上就是在谈这件事的（「costco 商业模式」→ 讲会员费和低毛利的段落），
         # 问到的公司又确实提到了，也排进前面那一档，页面上标「语义相关」。
         by_meaning = (
             not full
-            and company_groups <= matched_groups
+            and article_id in company_matched
             and max(p.semantic for p in items) >= SEMANTIC_STRONG
         )
-        score = items[0].score + 0.3 * sum(p.score for p in items[1:3])
-        first = items[0]
+        # 同一篇里重复的段落只算一次、只摘一次：Stratechery 的引文在正文里又以普通段落出现一遍，
+        # 两块一字不差，页面上的两段片段就是同一段话。
+        shown = _distinct_passages(items, 3)
+        score = shown[0].score + 0.3 * sum(p.score for p in shown[1:3])
+        first = shown[0]
         hits.append(
             ArticleHit(
-                article_id, title, first.source_id, first.published_at, score, full or by_meaning, items[:2],
+                article_id, title, first.source_id, first.published_at, score, full or by_meaning, shown[:2],
                 semantic=by_meaning,
             )
         )
@@ -1774,20 +1882,19 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
     counts = full_match_counts(conn, query, effective)
-    # OCR、字面匹配或语义提升可能不在文章级全文索引的交集里。数并集，不能用 max 猜总数。
-    for hit in full_hits:
-        if hit.article_id not in indexed:
-            counts[hit.source_id] = counts.get(hit.source_id, 0) + 1
+    # 字面命中用同一数据库集合计数；语义集合另报，两者按文章身份去重后分页。
+    by_meaning = sum(hit.semantic for hit in full_hits)
     total = sum(counts.values())
+    full_total = total + by_meaning
     page_hits = full_hits[offset : offset + limit]
     remaining = limit - len(page_hits)
-    if remaining and offset + limit > len(full_hits) and offset < total:
+    if remaining and offset + limit > len(full_hits) and offset < full_total:
         page_hits.extend(_search_tail(
             conn, query, effective, full_hits, company_rows,
             limit=remaining, offset=max(0, offset - len(full_hits)),
         ))
-    if len(page_hits) < limit and offset + limit > total:
-        start = max(0, offset - total)
+    if len(page_hits) < limit and offset + limit > full_total:
+        start = max(0, offset - full_total)
         page_hits.extend(partial_hits[start : start + limit - len(page_hits)])
     return SearchResult(
         total=total,
@@ -1796,7 +1903,8 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         terms=query.highlight_terms(),
         query=query,
         counts=counts,
-        available=total + len(partial_hits),
+        available=full_total + len(partial_hits),
+        semantic=by_meaning,
     )
 
 
@@ -1827,7 +1935,7 @@ def _literal_article_match(word: str, params: dict, key: str) -> str:
     ocr = test.format(text="(lc.heading || E'\\n' || lc.body)")
     return (
         f"({original} OR EXISTS (SELECT 1 FROM article_translations lt"
-        f" WHERE lt.article_id = a.id AND {translated})"
+        f" WHERE lt.article_id = a.id AND lt.content_hash=a.content_hash AND {translated})"
         f" OR EXISTS (SELECT 1 FROM article_chunks lc"
         f" WHERE lc.article_id = a.id AND lc.lang = 'ocr' AND {ocr}))"
     )
@@ -1836,11 +1944,51 @@ def _literal_article_match(word: str, params: dict, key: str) -> str:
 def _search_scope_clause(query: Query, scope: Scope) -> tuple[str, dict]:
     where, scope_params = scope_clause(scope)
     conditions = [where]
-    for index, word in enumerate(query.excludes):
-        conditions.append("NOT " + _literal_article_match(word, scope_params, f"search_exclude_{index}"))
-    for index, term in enumerate(t for t in query.terms if t.kind == "phrase"):
-        conditions.append(_literal_article_match(term.text, scope_params, f"search_phrase_{index}"))
+    if query.authors:
+        scope_params['search_authors'] = query.authors
+        conditions.append('a.source_id IN (SELECT id FROM sources WHERE author=ANY(%(search_authors)s))')
+    groups = {term.group for term in query.terms if term.kind == 'phrase'}
+    for group in groups:
+        terms = [t for t in query.terms if t.group == group]
+        if all(t.kind == 'phrase' for t in terms):
+            conditions.append('(' + ' OR '.join(
+                _qualified_article_term(term, query, scope_params, f'search_phrase_{group}_{index}')
+                for index, term in enumerate(terms)
+            ) + ')')
     return " AND ".join(conditions), scope_params
+
+
+def _qualified_article_term(term: Term, query: Query, params: dict, key: str) -> str:
+    """排除词限定作为证据的标题／块，沿用主线语义，不因别处出现排除词删掉整篇。"""
+    if not query.excludes:
+        if term.kind == 'phrase':
+            return _literal_article_match(term.text, params, key)
+        tsq = _form_tsquery_sql(term.forms or [term.text], params, key)
+        return _article_match(tsq, ocr=True) if tsq else 'false'
+
+    def clean(column, prefix):
+        return ' AND '.join('NOT (' + _literal_sql(word, column, params, f'{key}_{prefix}_{index}') + ')'
+                            for index, word in enumerate(query.excludes))
+
+    body = "coalesce(ec.heading,'') || chr(10) || ec.body"
+    title = "coalesce(a.title,'')"
+    if term.kind in {'phrase', 'company'}:
+        forms = term.forms or [term.text]
+        body_hit = ' OR '.join(_literal_sql(form, body, params, f'{key}_body_{i}') for i, form in enumerate(forms))
+        title_hit = ' OR '.join(_literal_sql(form, title, params, f'{key}_title_{i}') for i, form in enumerate(forms))
+    else:
+        tsq = _form_tsquery_sql(term.forms or [term.text], params, key)
+        body_hit, title_hit = f'ec.search_tsv @@ {tsq}', f'a.title_tsv @@ {tsq}'
+    clean_body = clean(body, 'body_clean')
+    has_clean = ('(NOT EXISTS(SELECT 1 FROM article_chunks ec WHERE ec.article_id=a.id'
+                 f' AND {current_chunk_sql("ec")}) OR EXISTS('
+                 'SELECT 1 FROM article_chunks ec WHERE ec.article_id=a.id'
+                 f' AND {current_chunk_sql("ec")} AND {clean_body}))')
+    return (
+        f'((({title_hit}) AND {clean(title, "title_clean")} AND {has_clean}) OR EXISTS('
+        'SELECT 1 FROM article_chunks ec WHERE ec.article_id=a.id'
+        f' AND {current_chunk_sql("ec")} AND ({body_hit}) AND {clean_body}))'
+    )
 
 
 def _full_match_clause(query: Query, scope: Scope) -> tuple[str, dict]:
@@ -1851,27 +1999,21 @@ def _full_match_clause(query: Query, scope: Scope) -> tuple[str, dict]:
     for term in query.terms:
         if term.group >= 0:
             by_group[term.group].append(term)
-    word_terms = []
     for group, terms in sorted(by_group.items()):
-        companies = [t.company_id for t in terms if t.kind == "company" and t.company_id is not None]
-        words = [t for t in terms if t.kind != "company"]
-        if not companies:
-            word_terms.extend(words)
-            continue
-        key = f"cnt_company_{group}"
-        params[key] = companies
-        company_match = (
-            "EXISTS (SELECT 1 FROM article_mentions cm WHERE cm.article_id = a.id"
-            f" AND cm.company_id = ANY(%({key})s))"
-        )
-        if words:
-            tsq = _full_match_tsquery(replace(query, terms=words), params)
-            conditions.append(f"({company_match} OR {_article_match(tsq)})")
-        else:
-            conditions.append(company_match)
-    tsq = _full_match_tsquery(replace(query, terms=word_terms), params)
-    if tsq:
-        conditions.append(_article_match(tsq))
+        alternatives = []
+        for index, term in enumerate(terms):
+            key = f'cnt_{group}_{index}'
+            if term.kind == 'company' and term.company_id is not None:
+                params[key] = term.company_id
+                alternatives.append('EXISTS (SELECT 1 FROM article_mentions cm WHERE cm.article_id=a.id'
+                                    f' AND cm.company_id=%({key})s)')
+                if query.excludes:
+                    alternatives[-1] = '(' + alternatives[-1] + ' AND ' + _qualified_article_term(
+                        term, query, params, key + '_evidence',
+                    ) + ')'
+            else:
+                alternatives.append(_qualified_article_term(term, query, params, key))
+        conditions.append('(' + ' OR '.join(alternatives) + ')' if alternatives else 'false')
     if not by_group:
         conditions.append("false")
     return " AND ".join(conditions), params
@@ -1916,7 +2058,8 @@ def _search_tail(
         SELECT page.id, chosen.ord, chosen.matched
         FROM unnest(%(page_ids)s::bigint[]) AS page(id)
         JOIN LATERAL (
-          SELECT c.ord, {matched} AS matched FROM article_chunks c WHERE c.article_id = page.id
+          SELECT c.ord, {matched} AS matched FROM article_chunks c JOIN articles a ON a.id=c.article_id
+          WHERE c.article_id = page.id AND {current_chunk_sql()}
           ORDER BY {rank} (c.lang = 'zh') DESC, c.ord
           LIMIT %(snippet_limit)s
         ) chosen ON true

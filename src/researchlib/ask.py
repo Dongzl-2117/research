@@ -318,6 +318,8 @@ def _inline() -> bool:
 
 def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run_inline: bool | None = None) -> dict:
     """检索原文并登记一次整合。返回的 id 为 None 表示没交给模型（没配置或没召回到资料）。"""
+    # 问题里的 NUL 字符存不进 Postgres（llm_answers.question），和检索那边一样换成空格。
+    question = (question or "").replace("\x00", " ")
     preset = is_preset(question)
     found = retrieve(conn, question, scope, sources, purpose="display", preset=preset)
     passages = _passages(found, sources, settings)

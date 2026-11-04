@@ -1,0 +1,89 @@
+{
+  "baseline": "8a857d801040600216fd851b2df6b07bc068fa92",
+  "branch": "detached HEAD",
+  "remoteMainLastVerifiedUTC": "2026-11-02 05:23:12 UTC",
+  "pr212": {
+    "merged": true,
+    "mergedAt": "2026-11-01T10:30:17Z",
+    "head": "85635d7f74c3fedbe235b06b5a0cd5c9b81f7a24",
+    "merge": "492ce22713a237e4b2aa140dec2580187e01acda",
+    "checks": [
+      {
+        "name": "Tests",
+        "status": "completed",
+        "conclusion": "success",
+        "completed_at": "2026-11-01T10:27:56Z",
+        "html_url": "https://github.com/Dongzl-2117/research/actions/runs/41297293111/job/124820701257"
+      }
+    ]
+  },
+  "mainChecks": [
+    {
+      "name": "Tests",
+      "status": "completed",
+      "conclusion": "success",
+      "completed_at": "2026-11-02T01:21:17Z",
+      "html_url": "https://github.com/Dongzl-2117/research/actions/runs/41371848553/job/125043792748"
+    }
+  ],
+  "dependencies": {
+    "python": "3.12.14",
+    "installedWith": "pip install --require-hashes -r requirements-dev.lock",
+    "pipCheck": "No broken requirements found."
+  },
+  "checks": [
+    {
+      "command": "pytest -q tests/unit/test_translate_alignment.py tests/unit/test_translate_pairs.py tests/unit/test_translate_qa.py tests/unit/test_article_preservation.py tests/unit/test_nested_copies.py tests/unit/test_housekeeping.py",
+      "passed": 150,
+      "failed": 0,
+      "skipped": 0,
+      "durationSeconds": 1.59
+    },
+    {
+      "command": "pytest -q tests/unit/test_boilerplate.py tests/unit/test_render_and_snippets.py",
+      "passed": 52,
+      "failed": 0,
+      "skipped": 0,
+      "durationSeconds": 0.35
+    },
+    {
+      "command": "PYTHONPATH=src python tools/stratechery_bilingual_probe.py --out docs/evidence/stratechery-bilingual-probe-2026-11-02.json",
+      "exitCode": 0,
+      "diagnosticCases": 11,
+      "controls": 3,
+      "note": "诊断断言成功说明复现当前缺陷，非产品修复通过"
+    },
+    {
+      "command": "ruff check tools/stratechery_bilingual_probe.py",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    },
+    {
+      "command": "pip check",
+      "exitCode": 0
+    }
+  ],
+  "productSourceChanged": false,
+  "committed": false,
+  "pushed": false,
+  "newPR": false,
+  "exploratoryPatch": "Only runtime monkeypatch to bypass reuse_duplicate_sources; no source changes.",
+  "excludedActions": [
+    "production website requests",
+    "live database",
+    "Mac mini",
+    "paid models",
+    "OCR",
+    "retranslation",
+    "reimport",
+    "cleanup",
+    "rebuild",
+    "deploy",
+    "push",
+    "PR publication"
+  ],
+  "remainingEvidence": "A sanitized failing article source + stored translation, status/hash/time, and deployed commit; screenshot around 2-3 wrong pairs for symptom triage."
+}

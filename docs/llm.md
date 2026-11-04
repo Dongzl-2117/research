@@ -3,7 +3,7 @@
 ## 数据怎么组织
 
 - **文章**：`articles`，原文 Markdown 和纯文本，带 zhparser 全文索引。
-- **段落块**：`article_chunks`。正文按 Markdown 章节切，章节内按段落装箱，几百字一块，带章节标题和自己的全文索引。检索片段、问答引用、JSON 接口都落在块上，所以引用能精确到段落（`article_id` + `chunk`）。导入时自动切；`research-rebuild-chunks` 全部重切，连同图片文字块（`--ocr` 只切图片文字块，见 [ocr.md](ocr.md)）。进程启动时只给还没有块的文章补切。
+- **段落块**：`article_chunks`。正文按 Markdown 章节切，章节内按段落装箱，几百字一块，带章节标题和自己的全文索引。检索片段、问答引用、JSON 接口都落在块上，所以引用能精确到段落（`article_id` + `chunk`）。导入时自动切；`research-rebuild-chunks` 全部重切，连同图片文字块（`--ocr` 只切图片文字块，见 [ocr.md](ocr.md)）。进程启动时只给还没有块的文章补切。知识星球问答导出的小标题「提问（网友 → 方伟Rey）」「回答（方伟Rey）」当章节名时只留「提问」「回答」，检索结果、问库引用和接口里不带网友的昵称（已入库的由迁移 026 改掉）。检索文字（`articles.body_text`，卡片和接口列表的摘录从这里取）同样只留「提问」「回答」；接口给的原文去掉这两行括号里的名字，也去掉归档头那行「作者」（问答帖的作者是提问的网友）。已入库的检索文字和改动记录由迁移 027 改掉。
 - **公司提及**：`article_mentions`，规则见 [mentions.md](mentions.md)。
 - **LLM 摘要**：`article_digests`，按 `content_hash` 对齐正文，记着写它的提示词版本（`prompt_version`）。正文改过、摘要没重算时，页面和接口当作没有摘要；提示词版本旧了的照常显示，同时排进后台重写。打开按天、作者、公司或检索时，当前卡片里缺的摘要会在后台补上；夜间任务每晚补一批，`research-digest` 仍可手动补。应用启动和部署不会跑全库。
 - **观点**：`company_views`，被深入谈到的公司的观点时间线，见下面「观点时间线」。不限持仓。
@@ -44,7 +44,7 @@
 
 进程重启时没写完的整合标成中断（`status = error`），回答页有「重新整合」。没有可用的 LLM 凭证时，问库只列召回的原文段落，不存记录。
 
-入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；检索结果页「问 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：已有的文章摘要或正文里的一句实质内容先拼成一段总结，如果之前问过正好覆盖这一天的问题，也把那条回答放在最上面。日汇总那段不算模型。缺摘要的卡片在后台补，不挡住这一页，也不跑全库。
+入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；日汇总页「问 AI：这一天的主要判断」；检索结果页「问 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：按作者列出这一天的文章，每篇一句摘要或正文里的一句实质内容。之前问过正好覆盖这一天、同一范围的问题，那条回答放在最上面；比范围时不算飞书文库这类不进按天的来源，问库页不分来源问的也认。没问过就给「问 AI」按钮，点了才调模型。打开这一页不调模型；缺摘要的卡片在后台补，不挡住这一页，也不跑全库。问库页「最近问过」里按日期问的，问题后面写着日期。
 
 ## LLM 凭证（默认 DeepSeek，可选 Grok）
 
@@ -122,6 +122,10 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 - 打开按天、作者、公司或检索时，当前卡片里还没有摘要（或正文已改）的文章会在后台排队，一次最多排 40 篇，不挡住页面，也不扫全库。没有可用的 LLM 凭证时不排队，卡片改用正文里第一段实质内容，并跳过 sn、点赞、时间戳。
 - `research-digest` 仍可手动补一批。`research-web` 启动、容器拉起和部署都不会跑全库。
 
+知识星球的读者帖（`poster_role` 是 `guest`）和标题是「「图片」 评论（N）」的评论壳网站上哪儿都不展示，`research-digest`、`research-views` 和夜间任务不给它们写摘要、抽观点，库里已有的观点也不进公司页时间线和论点。
+
+正文加图片里的字，汉字、字母、数字不到 20 个（`digest.MIN_DIGEST_CHARS`）的不写摘要。星球上只有「这是好文章」「下图」一句、字都在截图里的帖，抓下来时还没识图，以前照样写了摘要，模型只能写「正文只有一句，无法归纳」，挂在首页卡片上；现在等识图写上字（识图会把短正文排进摘要的队）再写。以前写下的这种摘要留在库里，`digests_for` 不返回，卡片、文章页、接口都不显示。
+
 ```bash
 docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
@@ -149,7 +153,7 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 - 每条：作者的判断、作者给出的机制、态度（看好 / 看淡 / 两面 / 中性）。风险、推翻条件、要盯的验证指标只在原文谈到时才有，没谈到就空着。
 - 原句逐字核对过（只比汉字、字母、数字）才显示，并链到它所在的段落；对不上就不显示，免得把模型的转述当成原话。
 - 判断或态度为空白的行不进时间线，也不进论点。那是「没下判断」的缓存，避免反复问模型。确认是抽漏了，用 `--refresh-blank` 删掉再抽；夜间任务不要加这个参数。
-- 筛选：全部、风险与反方（有风险或推翻条件、或态度是看淡、两面）、态度变化（同一位作者这篇的态度和他上一篇不同；中性不算信号）。点作者名只看这位作者。
+- 筛选：全部、风险与反方（有风险或推翻条件、或态度是看淡、两面）、态度变化（同一位作者从看好变成看淡、或从看淡变成看好；中性、两面不算信号，看好 → 两面 → 看好不算变了）。点作者名只看这位作者。
 - 一篇文章里深入谈到的几家公司一次整理，不为每家公司各问一次模型。按正文 `content_hash` 和 `views.PROMPT_VERSION` 缓存，正文或提示词变了才重抽。
 
 两条写入路径，和摘要一样：打开公司页时，这家公司最近还没整理的文章在后台排队（一次最多 20 篇），页面上写「还有 N 篇在整理」；夜间任务每晚补一批；也可以手动批量补：
@@ -208,11 +212,11 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 
 说明在 `/llms.txt`。JSON 和 MCP 挂在现有 FastAPI 进程上（容器内 8088，compose 只发布到 `127.0.0.1:8088`），不另开端口。都在 Cloudflare Access 后面：外部 agent 要用 Access 的 service token。
 
-- `GET /api/v1/search?q=…`：文章级检索，和检索页同一套排序（全部词都命中的在前），带范围参数、`limit`（≤50）、`offset`，每条带最相关的一段和公司标签。
+- `GET /api/v1/search?q=…`：文章级检索，和检索页同一套排序（全部词都命中的在前），带范围参数、`limit`（≤50）、`offset`，每条带最相关的一段和公司标签。`total` 是全部词都命中的篇数（标题、正文、译文、图片里的字都算；引号里的词要在某一段里原样出现，和结果列表同一条），`listed` 是其中按相关度翻得到的篇数，`semantic` 是词没写全、按意思排进前面的篇数，不算进 `total`。
 - `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
-- `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`
+- `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`：原文里本地存了的图换成站内 `/media/…` 的完整地址（JSON 的 `body_markdown`、MCP 的 `get_article` 也一样），还没下载的外链图照原样留着；`.md` 最后附「图片里的字」一节，就是检索用的那份图片文字块。正文仍是归档原文，归档头照旧在，只有 Stratechery 网页导出归档头里的 `- rss_link:` 不给：那是导出脚本拉取用的个人订阅地址，文章页和检索文字从 #157 起就不要。
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
-- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认等整合写完再返回。加 `"wait": false` 时马上返回回答 id 和相关原文，之后轮询下面这个接口。
+- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认马上返回回答 id 和相关原文，后台整合，之后轮询下面这个接口；加 `"wait": true` 时等整合写完再返回。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词）。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`。

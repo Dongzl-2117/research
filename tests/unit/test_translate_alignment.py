@@ -338,7 +338,7 @@ def _home_at_last() -> dict:
 
 
 def test_render_original_drops_archive_header_leaf(tmp_path: Path):
-    """归档头不进译制的叶子：不清洗时 6 段（含 `<li>source: member-rss</li>`），和页面差一整段。"""
+    """归档头不进译制的叶子：不清洗时多一段 `<li>source: member-rss</li>`，和页面差一整段。"""
     article = _home_at_last()
     conn = _FakeConn(article)
     _frontmatter, raw_body = split_frontmatter(article["body_md"])
@@ -362,8 +362,8 @@ def test_render_original_uses_the_display_cleaning(tmp_path: Path):
 
     html, _digest = _render_original(conn, article, tmp_path)
     assert segments_of(html) == segments_of(display_html)
-    # 三行 <br> 的段落仍是三段，清洗没有把行拆叶关掉。
-    assert len(segments_of(html)) == 5
+    # 三行软换行没有句号，收成一句；前后两个完整段落仍各是一段。清洗没有把分段关掉。
+    assert len(segments_of(html)) == 3
 
 
 def test_translation_from_cleaned_body_keeps_leaf_counts(tmp_path: Path):
@@ -381,4 +381,22 @@ def test_translation_from_cleaned_body_keeps_leaf_counts(tmp_path: Path):
 def test_source_leaf_count_ignores_archive_header():
     """重检用的原文段数也跟着清洗，归档头不算叶子。"""
     article = _home_at_last()
-    assert _source_leaf_count(_FakeConn(article), article) == 5
+    assert _source_leaf_count(_FakeConn(article), article) == 3
+
+
+def test_clean_article_strips_rss_link():
+    """`- rss_link:` 和 `- source:` 一样，clean_article 在送译前去掉，不进叶子。"""
+    body = """# Home At Last
+
+- source: member-rss
+- rss_link: https://stratechery.com/?access_token=example
+
+The best sentence of the week stays in the body.
+"""
+    article = _home_at_last()
+    article["body_md"] = body
+    cleaned = clean_article(_FakeConn(article), article["id"], article["source_id"], body)
+    assert "rss_link" not in cleaned
+    assert "access_token" not in cleaned
+    assert "member-rss" not in cleaned
+    assert "best sentence" in cleaned

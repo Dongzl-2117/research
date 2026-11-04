@@ -106,6 +106,8 @@ def test_long_article_cannot_hide_other_articles_and_tail_text_is_bounded(conn, 
         return original(connection, keys)
 
     monkeypatch.setattr(retrieval, "_rows_for_keys", record)
+    # 索引同分时候选顺序依赖执行计划；固定被长文占满的窗口，独立验证补齐与取文上限。
+    monkeypatch.setattr(retrieval, '_candidates', lambda c, *a, **kw: record(c, [(long_id, n) for n in range(2000)]))
     all_ids = []
     for offset in range(0, 402, 73):
         found = search(word, limit=73, offset=offset)
@@ -186,7 +188,7 @@ def test_tail_translation_title_only_missing_chunks_and_original_anchors(conn, s
     conn.execute(
         "INSERT INTO article_translations"
         " (article_id, content_hash, title_zh, body_html, body_text, complete, segments)"
-        " VALUES (%s, 'synthetic', '译文笔记', '<p>paginationneedle 的中文解释。</p>',"
+        " VALUES (%s, 'synthetic:English original', '译文笔记', '<p>paginationneedle 的中文解释。</p>',"
         " 'paginationneedle 的中文解释。', true, 1)", (translated,),
     )
     conn.execute(
@@ -253,8 +255,8 @@ def test_semantic_promotions_are_counted_once_and_partial_starts_after_all_match
         retrieval, "semantic_candidates", lambda *_args, **_kwargs: (rows, {(semantic, 0): 0.9, (partial, 0): 0.4}),
     )
     result = search(limit=10)
-    assert result.total == sum(result.counts.values()) == 4
-    assert result.available == 5 and result.partial == 1
+    assert result.total == sum(result.counts.values()) == 3
+    assert result.available == 5 and result.partial == 1 and result.semantic == 1
     assert _ids(result) == [semantic, *sorted(lexical, reverse=True), partial]
     assert all(h.full for h in result.hits[:4]) and result.hits[0].semantic
     assert not result.hits[-1].full
@@ -269,5 +271,5 @@ def test_semantic_promotions_are_counted_once_and_partial_starts_after_all_match
         lambda *_args, **_kwargs: (both, {(semantic, 0): 0.9, (partial, 0): 0.4, (lexical_id, 0): 0.95}),
     )
     overlap = search(limit=10)
-    assert overlap.total == sum(overlap.counts.values()) == 4 and overlap.available == 5
+    assert overlap.total == sum(overlap.counts.values()) == 3 and overlap.available == 5 and overlap.semantic == 1
     assert len(_ids(overlap)) == len(set(_ids(overlap))) == 5

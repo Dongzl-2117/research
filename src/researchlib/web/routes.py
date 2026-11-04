@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import os
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -29,18 +30,27 @@ from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
+from researchlib.housekeeping import strip_housekeeping
 from researchlib.llm import active_label, active_model_id, llm_configured
-from researchlib.mdlinks import finish_html, load_md_index, prepare_body_html
+from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
+from researchlib.nested_copies import fold_nested_copies
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.present_text import polish_display_text
 from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
-from researchlib.snippets import answer_html, highlight_full, highlight_snippet, highlight_title, mention_snippet
+from researchlib.snippets import (
+    answer_html,
+    highlight_full,
+    highlight_snippet,
+    highlight_title,
+    mention_snippet,
+    mention_spans,
+)
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
-from researchlib.translate.pair import bilingual_pairs
+from researchlib.translate.display import article_pairs
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
@@ -75,9 +85,16 @@ from researchlib.web.present import (
     weekday_label,
 )
 from researchlib.web.quoting import mark_quoted
-from researchlib.web.scoping import parse_day, resolve_scope
-from researchlib.wechat_dialogue import present_stored_ocr
-from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
+from researchlib.web.scoping import BIGINT_MAX, parse_day, resolve_scope
+from researchlib.wechat_dialogue import canonical_host, present_stored_ocr, relabel_host
+from researchlib.zsxq_comments import source_owners
+from researchlib.zsxq_title import (
+    TITLE_LIMIT,
+    repairs_source,
+    shorten_long_title,
+    title_needs_repair,
+    zsxq_display_title,
+)
 
 router = APIRouter()
 logger = logging.getLogger("researchlib.web.routes")
@@ -151,6 +168,8 @@ def _latest_item(row, by_id, settings) -> dict | None:
 
 
 def render_page(request: Request, name: str, context: dict, status_code: int = 200):
+    from researchlib.output_safety import redact_output
+
     settings = request.app.state.settings
     path = request.url.path
     if request.url.query:
@@ -165,7 +184,7 @@ def render_page(request: Request, name: str, context: dict, status_code: int = 2
         "active_source": "",
     }
     payload.update(context)
-    return templates().TemplateResponse(request, name, payload, status_code=status_code)
+    return templates().TemplateResponse(request, name, redact_output(payload), status_code=status_code)
 
 
 def _source_map(sources):
@@ -198,7 +217,8 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
     if excerpt_text is None and "body_text" in row:
         excerpt_text = argumentative_excerpt(row["body_text"], title=row["title"], limit=180)
     # 明显错字只洗纯文本；搜索传入的 title 已是 Markup(<mark>)，再 replace 会丢掉安全标记被 Jinja 转义。
-    plain_title = polish_display_text(row["title"] or "")
+    # 整段正文当了标题的（黑黑无常的短帖）收成第一句。
+    plain_title = polish_display_text(shorten_long_title(row["title"] or "", row.get("body_text") or ""))
     if title is None:
         title = plain_title
     card = {
@@ -224,6 +244,8 @@ def _card(row, source, settings, *, title=None, excerpt_text=None, extra=None, z
         "points": [],
         "tags": [],
         "body_text": row.get("body_text") or "",
+        # 星球标题要补时只拿来源作者自己的评论起题，读者的评论不算（_repair_zsxq_titles 用完就拿掉）。
+        "owners": source_owners(source),
     }
     if extra:
         card.update(extra)
@@ -276,10 +298,70 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
             summary=card.get("summary") or "",
             ocr=present_stored_ocr(extra.get("ocr_text") or ""),
             when=card.get("date") or "",
+            owners=card.get("owners") or (),
         )
         repaired = polish_display_text(repaired)
         card["plain_title"] = repaired
         card["title"] = repaired
+        if card.get("body_text"):
+            # 摘录跟着换上的标题重取：原标题是半句时，按原标题取的摘录是那句的后半截（「会有什么样的结果」）。
+            excerpt = argumentative_excerpt(card["body_text"], title=repaired, limit=180)
+            card["excerpt"] = polish_display_text(excerpt) if excerpt else ""
+
+
+def display_titles(conn, rows, by_id: dict, zone: str) -> dict[int, str]:
+    """卡片以外的列表（作者索引的「最近」、重复文章页、接口）显示的标题，和卡片、文章页同一套：
+    明显错字洗掉；星球的空标题、省略号、半句补成一句。rows 要有 id、source_id、title、published_at。库里的标题不改。
+    """
+    unique = {row["id"]: row for row in rows}
+    stars = [
+        row
+        for row in unique.values()
+        if row["source_id"] in by_id and repairs_source(row["source_id"], by_id[row["source_id"]].kind)
+    ]
+    # 长标题要对着正文开头看是不是整段正文当了标题（黑黑无常的短帖），和星球的一起取正文。
+    wanted = {row["id"] for row in stars} | {
+        article_id for article_id, row in unique.items() if len(row["title"] or "") > TITLE_LIMIT
+    }
+    materials = queries.title_materials(conn, sorted(wanted)) if wanted else {}
+    titles = {
+        article_id: polish_display_text(
+            shorten_long_title(row["title"] or "", (materials.get(article_id) or {}).get("body_text") or "")
+        )
+        for article_id, row in unique.items()
+    }
+    needy = [
+        row
+        for row in stars
+        if title_needs_repair(titles[row["id"]], (materials.get(row["id"]) or {}).get("body_text") or "")
+    ]
+    if not needy:
+        return titles
+    digests = queries.digests_for(conn, [row["id"] for row in needy])
+    for row in needy:
+        extra = materials.get(row["id"]) or {}
+        repaired = zsxq_display_title(
+            titles[row["id"]],
+            body=extra.get("body_text") or "",
+            summary=(digests.get(row["id"]) or {}).get("summary") or "",
+            ocr=present_stored_ocr(extra.get("ocr_text") or ""),
+            when=format_date(row["published_at"], zone),
+            owners=source_owners(by_id[row["source_id"]]),
+        )
+        titles[row["id"]] = polish_display_text(repaired)
+    return titles
+
+
+def cited_titles(conn, citations: list[dict], sources, zone: str) -> list[dict]:
+    """问库出处里的标题是写回答时存下的快照（星球的「泡泡玛特：」、正文开头截下的半句），
+    换成按现在的库算的、和卡片一样的标题再显示。核对引用照旧用快照，那是模型当时读到的。"""
+    ids = [int(item["article_id"]) for item in citations if item.get("article_id") is not None]
+    if not ids:
+        return citations
+    titles = display_titles(conn, queries.title_rows(conn, ids), _source_map(sources), zone)
+    return [
+        {**item, "title": titles.get(item.get("article_id")) or item.get("title") or ""} for item in citations
+    ]
 
 
 def _decorate(conn, cards: list[dict], settings) -> list[dict]:
@@ -302,6 +384,7 @@ def _decorate(conn, cards: list[dict], settings) -> list[dict]:
     _repair_zsxq_titles(conn, cards)
     for card in cards:
         card.pop("body_text", None)
+        card.pop("owners", None)
     if pending:
         schedule_digests(settings, pending)
     return cards
@@ -500,10 +583,14 @@ def authors_page(request: Request):
                     "sources": [item.name for item in items],
                     "first": format_date(min(firsts), settings.display_timezone) if firsts else "",
                     "last": format_date(max(lasts), settings.display_timezone) if lasts else "",
-                    "latest": latest[0] if latest else None,
+                    "latest": dict(latest[0]) if latest else None,
                     "companies": queries.top_companies(conn, item_ids, 6),
                 }
             )
+        newest = [author["latest"] for author in authors if author["latest"]]
+        titles = display_titles(conn, newest, _source_map(sources), settings.display_timezone)
+        for row in newest:
+            row["title"] = titles[row["id"]]
     authors.sort(key=lambda item: (-item["articles"], item["name"]))
     return render_page(
         request,
@@ -631,7 +718,9 @@ def _article_view(request: Request, article_id: int, mode: str):
             wanted = int(chunk_arg)
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
             if quoted is not None and (quoted.get("lang") or "") == "ocr":
-                cleaned = flow_ocr_quote_body(present_stored_ocr(quoted["body"]))
+                # 检索块里别的来源已经换成作者名：换回「方伟：」再整理，整理完再换成作者名。
+                presented = present_stored_ocr(canonical_host(quoted["body"], source.author))
+                cleaned = flow_ocr_quote_body(relabel_host(presented, source.author))
                 if cleaned.strip():
                     quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)
@@ -651,7 +740,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         # 正文显示前去掉归档头、引流尾巴、二维码和文末招募。库里的 body_md 不改。HTML 同样洗。
         # 明显错字在 render_body→present_article_text 再洗一遍（幂等）；此处提前洗是为了标题和 strip 标题一致。
         shown_md = polish_display_text(clean_article(conn, article_id, article["source_id"], article["body_md"]))
-        display_title = article["title"] or ""
+        display_title = shorten_long_title(article["title"] or "", article.get("body_text") or "")
         if repairs_source(source.id, source.kind) and title_needs_repair(
             display_title or "", article.get("body_text") or ""
         ):
@@ -662,6 +751,7 @@ def _article_view(request: Request, article_id: int, mode: str):
                 summary=(digest or {}).get("summary") or "",
                 ocr=present_stored_ocr(material.get("ocr_text") or ""),
                 when=format_date(article["published_at"], settings.display_timezone),
+                owners=source_owners(source),
             )
         display_title = polish_display_text(display_title or "")
         original_title = polish_display_text(article["title"] or "")
@@ -669,12 +759,19 @@ def _article_view(request: Request, article_id: int, mode: str):
             # 页面换了标题（1273「2026年9月1日」换成正文那句）：正文开头导出的旧标题行也不要，
             # 不然换下来的半句或日期会在正文顶上变成一个大标题。
             shown_md = strip_duplicate_title(shown_md, original_title)
+        # 单看原文时（没有译文，或点了「原文」）：导出时写了两遍的引文、列表项收成一份（nested_copies），
+        # Stratechery 每日更新开头结尾的套话不显示（housekeeping）。对照按位置配，译文是照着整篇原文译的，原文不收。
+        if mode == "original" or not zh_blob:
+            shown_md = strip_housekeeping(fold_nested_copies(shown_md))
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
+    canonical_original = canonical_body_html(shown_md, display_title, mapping, fmt, owners=source_owners(source))
+    pair_original = finish_html(canonical_original, link_index, parent)
     original_html = inline_image_ocr(
-        prepare_body_html(shown_md, display_title, mapping, fmt, link_index, parent),
+        pair_original,
         ocr_texts,
+        host=source.author,
     )
 
     has_translation = bool(translation and translation.get("body_html"))
@@ -686,23 +783,44 @@ def _article_view(request: Request, article_id: int, mode: str):
     )
     # 译文是模型写的 HTML，和原文一样过一遍白名单。
     zh_html = finish_html(sanitize_html(translation["body_html"]), link_index, parent) if has_translation else None
+    pair_translated = zh_html
     if zh_html:
-        zh_html = inline_image_ocr(zh_html, ocr_texts)
+        zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""
     quoted_marked = False
     if quoted is not None and quoted_lang == "":
         original_html, quoted_marked = mark_quoted(original_html, quoted["body"])
+        pair_original, _marked = mark_quoted(pair_original, quoted["body"])
     elif quoted is not None and quoted_lang == "zh" and zh_html:
         zh_html, quoted_marked = mark_quoted(zh_html, quoted["body"])
-    raw_pairs = bilingual_pairs(original_html, zh_html) if has_translation and zh_html else None
+        pair_translated, _marked = mark_quoted(pair_translated, quoted["body"])
+    # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。
+    paired = has_translation and zh_html and mode != "original"
+    pair_display = article_pairs(
+        pair_original, pair_translated, provenance=translation.get("provenance"),
+        canonical_source=canonical_original, canonical_target=translation["body_html"],
+        ocr_texts=ocr_texts, host=source.author,
+    ) if paired else None
+    raw_pairs = pair_display.pairs if pair_display else None
     pairs = None
     if raw_pairs:
+        if quoted is not None and quoted_lang in {"", "zh"}:
+            from dataclasses import replace
+
+            marked = []
+            for pair in raw_pairs:
+                side = "en" if quoted_lang == "" else "zh"
+                value, found = mark_quoted(getattr(pair, side) or "", quoted["body"])
+                quoted_marked = quoted_marked or found
+                marked.append(replace(pair, **{side: value}) if found else pair)
+            raw_pairs = marked
         pairs = [
             {
                 "en": Markup(p.en),
                 "zh": Markup(p.zh) if p.zh else None,
                 "anchor": p.anchor,
+                "repeat_of": p.repeat_of,
             }
             for p in raw_pairs
         ]
@@ -757,7 +875,9 @@ def _article_view(request: Request, article_id: int, mode: str):
             "body_language": body_language,
             "has_translation": has_translation,
             "translation_complete": translation_complete,
+            "pair_correspondence": pair_display.correspondence if pair_display else "",
             "pairs": pairs or [],
+            "pair_notice": pair_display.notice if pair_display else "",
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
             "quoted_marked": quoted_marked,
@@ -925,7 +1045,10 @@ def duplicates_page(request: Request):
         page, pages, offset = page_window(total, _page_arg(request), DUPLICATES_PAGE_SIZE)
         groups = queries.duplicate_groups(conn, ids, DUPLICATES_PAGE_SIZE, offset, only)
         banner = queries.sample_state(conn, ids)
-    zone = settings.display_timezone
+        zone = settings.display_timezone
+        titles = display_titles(
+            conn, [row for group in groups for row in (group["canonical"], *group["duplicates"])], by_id, zone
+        )
     shown = []
     for group in groups:
         canonical = group["canonical"]
@@ -935,7 +1058,7 @@ def duplicates_page(request: Request):
             items.append(
                 {
                     "id": row["id"],
-                    "title": row["title"],
+                    "title": titles[row["id"]],
                     "source": by_id[row["source_id"]].name if row["source_id"] in by_id else row["source_id"],
                     "date": format_date(row["published_at"], zone),
                     "marked": format_date(row["duplicate_marked_at"], zone) if row["duplicate_marked_at"] else "",
@@ -946,7 +1069,7 @@ def duplicates_page(request: Request):
         shown.append(
             {
                 "id": canonical["id"],
-                "title": canonical["title"],
+                "title": titles[canonical["id"]],
                 "source": by_id[canonical["source_id"]].name if canonical["source_id"] in by_id else "",
                 "date": format_date(canonical["published_at"], zone),
                 "items": items,
@@ -1007,8 +1130,13 @@ def search_page(request: Request):
         semantic_note = ""
         if query:
             found = search_articles(
-                conn, query, scope, sources, limit=SEARCH_PAGE_SIZE, offset=(page - 1) * SEARCH_PAGE_SIZE
+                conn, query, scope, sources, limit=SEARCH_PAGE_SIZE,
+                offset=min(BIGINT_MAX, (page - 1) * SEARCH_PAGE_SIZE),
             )
+            current_page, _pages, current_offset = page_window(found.available, page, SEARCH_PAGE_SIZE)
+            if current_page != page:
+                found = search_articles(conn, query, scope, sources, limit=SEARCH_PAGE_SIZE, offset=current_offset)
+                page = current_page
             if found.query and found.query.terms:
                 count_map = full_match_counts(conn, found.query, facet_scope)
             else:
@@ -1019,15 +1147,27 @@ def search_page(request: Request):
         entity_companies = queries.matching_companies(conn, query) if query and page == 1 else []
         results = []
         terms = found.terms if found else []
-        for hit in found.hits if found else []:
+        hits = found.hits if found else []
+        # 检索卡片不带正文，星球标题是正文开头截下的半句（没有省略号）时认不出来。先按卡片、文章页那一套
+        # 把标题补成整句，再标出命中的词。
+        shown = display_titles(
+            conn,
+            [
+                {"id": hit.article_id, "source_id": hit.source_id, "title": hit.title, "published_at": hit.published_at}
+                for hit in hits
+            ],
+            by_id,
+            settings.display_timezone,
+        )
+        for hit in hits:
             best = hit.passages[0] if hit.passages else None
-            row = {"id": hit.article_id, "title": hit.title, "published_at": hit.published_at}
+            row = {"id": hit.article_id, "title": shown[hit.article_id], "published_at": hit.published_at}
             results.append(
                 _card(
                     row,
                     by_id[hit.source_id],
                     settings,
-                    title=highlight_title(polish_display_text(hit.title), query, terms=terms),
+                    title=highlight_title(shown[hit.article_id], query, terms=terms),
                     extra={
                         "snippets": [
                             highlight_snippet(polish_display_text(p.body), query, terms=terms)
@@ -1046,7 +1186,8 @@ def search_page(request: Request):
     total = found.total if found else 0
     available = found.available if found else 0
     # 相关度候选排前，文章索引的其余全部命中随后补齐，部分命中最后列。
-    listed = available - (found.partial if found else 0)
+    listed = total
+    semantic_total = found.semantic if found else 0
     page, pages, _offset = page_window(available, page, SEARCH_PAGE_SIZE)
     author_counts: dict[str, int] = {}
     source_counts = []
@@ -1087,6 +1228,7 @@ def search_page(request: Request):
             "results": results,
             "first_partial": first_partial,
             "partial_total": found.partial if found else 0,
+            "semantic_total": semantic_total,
             "semantic_note": semantic_note,
             "search_terms": terms,
             "total_all": total_all,
@@ -1229,8 +1371,7 @@ def company_page(request: Request, company_id: int):
                         "depth_label": DEPTH_LABELS[row["depth"]],
                         "hits": row["hit_count"],
                         "snippet": mention_snippet(
-                            row["body_text"] or "",
-                            matcher.document(row["title"], row["body_text"] or "").spans(row["body_text"] or ""),
+                            *mention_spans(matcher, row["title"], row["body_text"], row["ocr_text"])
                         ),
                     },
                 )
@@ -1395,9 +1536,9 @@ def _day_back(info: dict, company) -> str:
 
 @router.get("/days/{day}")
 def day_page(request: Request, day: str):
-    """从时间轴点进某一天：先给汇总，再按作者列出这一天的文章。只含有发布时间的来源。
+    """从时间轴点进某一天：问过这一天的先给那条回答，再按作者列出这一天的文章。只含有发布时间的来源。
 
-    日汇总本身不算模型。缺摘要的卡片在后台补，不挡住这一页。
+    这一页不调模型。没问过的给一个按钮，到问库页用同一范围问；缺摘要的卡片在后台补，不挡住这一页。
     """
     try:
         found = date.fromisoformat(day)
@@ -1425,7 +1566,8 @@ def day_page(request: Request, day: str):
             )
         )
         previous, following = queries.neighbor_days(conn, scope, found)
-        saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id)
+        elsewhere = tuple(source.id for source in sources if not source.timeline)
+        saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id, elsewhere)
         company = queries.get_company(conn, info["company"]) if info["company"] else None
         banner = queries.sample_state(conn, [source.id for source in sources])
     brief = compose_day_brief(cards)
@@ -1437,13 +1579,16 @@ def day_page(request: Request, day: str):
             return ""
         return f"/days/{target.isoformat()}" + (f"?{scope_query}" if scope_query else "")
 
+    ask_href = f"/ask?preset=day&from={key}&to={key}" + (f"&{scope_query}" if scope_query else "")
+
     answer = None
     if saved:
+        # 按钮问的是一段给模型的指令，标题换成它问的事；出处只列回答里引了的。
         answer = {
             "id": saved["id"],
-            "question": saved["question"],
+            "question": "这一天的主要判断" if saved["question"] == PRESETS["day"] else saved["question"],
             "answer": saved["answer"],
-            "citations": saved["citations"] or [],
+            "citations": [item for item in saved["citations"] or [] if item.get("cited")],
             "model": saved["model"],
         }
     if company:
@@ -1464,6 +1609,7 @@ def day_page(request: Request, day: str):
             "count": len(cards),
             "brief": brief,
             "answer": answer,
+            "ask_href": ask_href,
             "prev_href": href(previous),
             "next_href": href(following),
             "back_href": _day_back(info, company),
@@ -1490,6 +1636,9 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
     article = None
     if info.get("article"):
         article = queries.get_article(conn, info["article"], [source.id for source in sources])
+    if article is not None:
+        zone = request.app.state.settings.display_timezone
+        article = {**article, "title": display_titles(conn, [article], _source_map(sources), zone)[article["id"]]}
     tree = None
     if info.get("tree"):
         tree = queries.get_article(conn, info["tree"], [source.id for source in sources])
@@ -1582,7 +1731,10 @@ def ask_answer(request: Request, answer_id: int):
         context["question"] = row["question"]
         banner = queries.sample_state(conn, [source.id for source in sources])
         labels = feedback_marks(conn, answer_id)
-    citations = row["citations"] or []
+        citations = row["citations"] or []
+        zone = request.app.state.settings.display_timezone
+        shown = cited_titles(conn, citations, sources, zone)
+        missing = cited_titles(conn, labels["missing"], sources, zone)
     result = {
         "id": row["id"],
         "question": row["question"],
@@ -1590,12 +1742,12 @@ def ask_answer(request: Request, answer_id: int):
         "error": row["error"],
         "status": row["status"],
         "model": row["model"],
-        "citations": citations,
+        "citations": shown,
         "terms": row["terms"] or [],
-        "created": format_date(row["created_at"], request.app.state.settings.display_timezone),
+        "created": format_date(row["created_at"], zone),
         "checks": _safe_checks(row, citations, sources),
         "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
-        "missing": labels["missing"],
+        "missing": missing,
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
         "failed_batches": list(((row.get("stats") or {}).get("failed_batches")) or []),
         "batches": int(((row.get("stats") or {}).get("batches")) or 0),
@@ -1711,8 +1863,14 @@ def pilot_page(request: Request):
     )
 
 
+def deployed_commit() -> str:
+    """镜像构建时的提交号（Dockerfile 的 GIT_SHA，自动上线传进来）。手动构建或本地跑是 unknown。"""
+    return os.environ.get("GIT_SHA", "").strip() or "unknown"
+
+
 @router.get("/health")
 def health(request: Request):
+    # commit 是线上在跑的提交：scripts/deploy.sh 等它报出新提交才算上线，外面也能拿它核对上线了没有。
     try:
         conn = connect(request.app.state.settings)
         try:
@@ -1720,8 +1878,12 @@ def health(request: Request):
         finally:
             conn.close()
     except Exception:
-        return Response(content='{"status":"down"}', status_code=503, media_type="application/json")
-    return {"status": "ok"}
+        return Response(
+            content=f'{{"status":"down","commit":"{deployed_commit()}"}}',
+            status_code=503,
+            media_type="application/json",
+        )
+    return {"status": "ok", "commit": deployed_commit()}
 
 
 @router.get("/robots.txt")

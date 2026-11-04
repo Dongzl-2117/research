@@ -54,13 +54,18 @@
     {% endif %}
 
     {% if body_language == 'pairs' and pairs %}
+    {% if pair_notice %}<p class="body-note">{{ pair_notice }}</p>{% endif %}
+    {% if pair_correspondence == 'legacy' %}<p class="body-note">旧译文未记录源段映射，目前按结构对照；段落语义对应尚未核验。</p>{% endif %}
+    {% if pair_correspondence == 'legacy-anchors' %}<p class="body-note">旧粗段已按唯一数字或资料锚点展开；语义对应尚未人工核验。</p>{% endif %}
     <div class="bilingual">
       {% for p in pairs %}
       {% if p.en or p.zh %}
+      {% if p.repeat_of is defined and p.repeat_of is not none %}<details class="bilingual-repeat"><summary>与前文完全相同的对照，再次出现（点击展开）</summary>{% endif %}
       <div class="bilingual-pair"{% if p.anchor %} id="{{ p.anchor }}"{% endif %}>
         {% if p.en %}<div class="prose bilingual-en with-toolbar" lang="en">{{ p.en }}</div>{% endif %}
         {% if p.zh %}<div class="prose bilingual-zh with-toolbar">{{ p.zh }}</div>{% endif %}
       </div>
+      {% if p.repeat_of is defined and p.repeat_of is not none %}</details>{% endif %}
       {% endif %}
       {% endfor %}
     </div>
@@ -88,6 +93,7 @@
     {% endif %}
   </article>
 </div>
+<script src="/static/article.js" defer></script>
 {% if quoted_marked %}
 <script>
   // 带 ?chunk= 打开时滚到引用的那段。地址里已有锚点就听锚点的。

@@ -219,6 +219,9 @@ def test_search_finds_articles_by_meaning_and_marks_them(conn, settings, fake_ve
     assert 0 <= model < store
     assert "语义相关" in page[:store]
     assert 'href="/articles/3' not in page
+    # 它不算「全部命中」：上面的篇数和左边的来源计数（全文索引数的）对得上，语义相关另报。
+    assert "0 篇全部命中 · 1 篇语义相关 · 1 篇部分命中" in page
+    assert '<span>全部来源</span><span class="num">0</span>' in page
 
 
 def test_semantic_channel_degrades_to_keywords_when_the_service_fails(conn, settings, fake_vectors):

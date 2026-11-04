@@ -281,16 +281,17 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     conn.commit()
     saved = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()["ocr_text"]
     assert saved.startswith("方伟：瑞幸和古茗都算头部")
-    assert "网友：古茗店效还行" in saved
+    assert "王小明：古茗店效还行" in saved
     assert saved.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert "王小明" not in saved and "李小红" not in saved and "设为群待办" not in saved
+    # 网名照截图留着；界面字和商品卡仍要删。
+    assert "李小红：先看到这里" in saved and "设为群待办" not in saved
     assert "小程序" not in saved and "交流群" not in saved and "¥" not in saved
 
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{row['id']}").text
-    assert "方伟：" in page and "网友：" in page
+    assert "方伟：" in page and "王小明：" in page
     assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert "王小明" not in page and "设为群待办" not in page
+    assert "设为群待办" not in page
     assert f'id="{image_anchor(first_hash)}"' in page and f'id="{image_anchor(second_hash)}"' in page
     assert "原图 1" not in page and "原图 2" not in page
     assert page.count('class="ocr-shot"') == 1
@@ -310,9 +311,9 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     digest_mod.digest_article(conn, settings, digest_row, "方伟")
     assert "【图片里的字】" in seen[0]
     assert "方伟：瑞幸和古茗都算头部" in seen[0]
-    assert "网友：古茗店效还行" in seen[0]
-    assert "不要把网友的话写成方伟的判断" in seen[0]
-    assert "王小明" not in seen[0] and "设为群待办" not in seen[0] and "小程序" not in seen[0]
+    assert "王小明：古茗店效还行" in seen[0]
+    assert "别人的话不要写成方伟的判断" in seen[0]
+    assert "设为群待办" not in seen[0] and "小程序" not in seen[0]
 
     prompts = []
 
@@ -328,10 +329,10 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     ).fetchone()
     views_mod.extract_article(conn, settings, article, "方伟", [company])
     assert "方伟：瑞幸和古茗都算头部" in prompts[0]
-    assert "网友：" in prompts[0]
-    assert "不要把网友的话写成方伟的判断" in prompts[0]
+    assert "王小明：" in prompts[0]
+    assert "别人的话不要写成方伟的判断" in prompts[0]
     assert "不要因为来自截图就当成没下判断" in prompts[0]
-    assert "王小明" not in prompts[0] and "设为群待办" not in prompts[0]
+    assert "设为群待办" not in prompts[0]
 
 
 # 文章 8881 的真实识别。旧旁路曾把栏上的「不太看好」整段收成方伟。
@@ -401,7 +402,7 @@ def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, mon
     assert "网友：" in guest and "不太看好" in guest
     assert "零售的本分" in host and "不太看好" not in host
     assert "方伟看十年" not in prompt and "什么才叫做" not in prompt
-    assert "不要把网友的话写成方伟的判断" in prompt
+    assert "别人的话不要写成方伟的判断" in prompt
     saved = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()["ocr_text"]
     assert saved.startswith("网友：拼多多，我是始终不太看好")
     assert "方伟：零售的本分是帮消费者省钱" in saved
@@ -410,3 +411,87 @@ def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, mon
         (row["id"], company["id"]),
     ).fetchone()
     assert "不太看好" not in view["judgment"] and view["quote"] == "零售的本分是帮消费者省钱"
+
+
+def test_api_markdown_links_local_images_and_appends_their_text(conn, settings, tmp_path):
+    """接口原文：归档里的相对路径换成站内 /media 的完整地址，还没下载的外链图照留；截图里的字附在 .md 最后。"""
+    chat = tmp_path / "chat.png"
+    _png(chat, b"\x03" * 24)
+    row = _store(
+        conn,
+        settings,
+        "fangwei-zsxq",
+        "ocr-api",
+        "这是好文章",
+        "这是好文章\n\n![](../../images/chat.png)\n\n![](https://example.com/far.png)\n",
+        [chat],
+    )
+    _remember(conn, row["id"], "chat.png", CHAT)
+    refresh_article_ocr(conn, row["id"])
+    replace_ocr_chunks(conn, row["id"])
+    conn.commit()
+    storage = conn.execute(
+        "SELECT storage_path FROM article_images WHERE article_id = %s", (row["id"],)
+    ).fetchone()["storage_path"]
+    local = f"]({settings.public_base_url}/media/{storage})"
+
+    with TestClient(create_app(settings)) as client:
+        data = client.get(f"/api/v1/articles/{row['id']}").json()
+        markdown = client.get(f"/api/v1/articles/{row['id']}.md").text
+        assert client.get(f"/media/{storage}").status_code == 200
+    assert local in data["body_markdown"] and "../../images/" not in data["body_markdown"]
+    assert "](https://example.com/far.png)" in data["body_markdown"]
+    assert local in markdown
+    body, shots = markdown.split("\n## 图片里的字\n", 1)
+    assert "瑞幸和古茗都算头部" not in body
+    assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in shots
+
+
+def test_search_counts_articles_whose_words_are_only_in_screenshots(conn, settings, tmp_path):
+    """只在截图里写了检索词的帖，结果里列着，上面的篇数和左边的来源计数也要数到（以前「送货上门」55 对 16）。"""
+    chat = tmp_path / "chat.png"
+    _png(chat, b"\x04" * 24)
+    shot = _store(conn, settings, "fangwei-zsxq", "ocr-count", "看图", "看图\n\n![](chat.png)\n", [chat])
+    _remember(
+        conn,
+        shot["id"],
+        "chat.png",
+        "微信\n20:41\n张三\n独有词条丁戊己这个说法是群里先提的，后来大家都这么叫\n李四\n对，独有词条丁戊己确实好记\n",
+    )
+    refresh_article_ocr(conn, shot["id"])
+    replace_ocr_chunks(conn, shot["id"])
+    _store(conn, settings, "fangwei-mp", "body-count", "正文里写了", "正文里写了独有词条丁戊己的来历。\n", [])
+    conn.commit()
+
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "独有词条丁戊己"}).text
+        api = client.get("/api/v1/search", params={"q": "独有词条丁戊己"}).json()
+    assert page.count('href="/articles/') >= 2
+    assert '<span>全部来源</span><span class="num">2</span>' in page
+    assert '<span>方伟知识星球</span><span class="num">1</span>' in page
+    assert "2 篇全部命中" in page
+    assert api["total"] == 2 and api["semantic"] == 0
+
+
+def test_search_counts_a_post_whose_words_are_split_between_text_and_screenshot(conn, settings, tmp_path):
+    """一个词在正文、另一个只在截图里：列表算全部命中；文章级索引要全部词落在同一处，数不到，来源计数按列表补上。"""
+    chat = tmp_path / "chat.png"
+    _png(chat, b"\x05" * 24)
+    body = "冷链仓配这块先不展开。\n\n![](chat.png)\n"
+    shot = _store(conn, settings, "fangwei-zsxq", "ocr-split", "看图", body, [chat])
+    _remember(
+        conn,
+        shot["id"],
+        "chat.png",
+        "微信\n20:41\n张三\n他们现在主要靠送货上门拉复购\n李四\n对，送货上门的成本也不低\n",
+    )
+    refresh_article_ocr(conn, shot["id"])
+    replace_ocr_chunks(conn, shot["id"])
+    conn.commit()
+
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "冷链仓配 送货上门"}).text
+    assert f'href="/articles/{shot["id"]}?' in page
+    assert "1 篇全部命中" in page
+    assert '<span>全部来源</span><span class="num">1</span>' in page
+    assert '<span>方伟知识星球</span><span class="num">1</span>' in page

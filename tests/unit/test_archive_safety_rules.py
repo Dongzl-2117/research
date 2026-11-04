@@ -140,18 +140,39 @@ def test_image_extension_sniffs_content():
 
 
 def test_stored_side_marker_and_chunks():
-    # 以前 RapidOCR 认的图，库里靠右的绿气泡行前面有侧标记：整理时认成方伟，左侧昵称仍是网友。
+    # 以前 RapidOCR 认的图，库里靠右的绿气泡行前面有侧标记：整理时认成方伟，左侧昵称照写。
     stored = f"王小明\n古茗店效还行，折扣不能再深了\n{SIDE_SELF}同店还有压力"
     dialogue = present_ocr_pieces([stored])
-    assert "网友：古茗店效还行，折扣不能再深了" in dialogue
+    assert "王小明：古茗店效还行，折扣不能再深了" in dialogue
     assert "方伟：同店还有压力" in dialogue
-    assert "王小明" not in dialogue
     digest = "cd" * 32
     chunks = ocr_chunks([(digest, "拼多多二季度营收同比增长\n广告收入 1234 亿元"), (digest, "重复的图不算第二次"),
                          ("ef" * 32, "装饰")])
     assert [anchor for anchor, _text in chunks] == [image_anchor(digest)]
     assert "1234" in chunks[0][1]
     assert ocr_chunks([("aa" * 32, "字" * (OCR_MIN_CHARS - 1))]) == []
+
+
+def test_ocr_chunks_skip_sentences_an_earlier_screenshot_already_had():
+    """长群聊分几张截，后一张开头和上一张结尾重叠：重叠的整句只进前一张的块，和文章页一样。
+    「同意」这种短回复不算重叠，后面的图里照留。"""
+    first = (
+        "张三：瑞幸和古茗都算头部，但瑞幸同店还有压力，开店速度也慢下来了\n"
+        "王五：同意\n"
+        "方伟：美团守住了，内部也认为外卖这事基本缓过来了\n"
+    )
+    second = (
+        "方伟：美团守住了，内部也认为外卖这事基本缓过来了\n"
+        "李四：阿里四处开火，到处花钱，淘天的数据差的话股价会掉不少\n"
+        "王五：同意\n"
+    )
+    chunks = ocr_chunks([("aa" * 32, first), ("bb" * 32, second)])
+    assert [anchor for anchor, _text in chunks] == [image_anchor("aa" * 32), image_anchor("bb" * 32)]
+    assert "外卖这事基本缓过来了" in chunks[0][1]
+    assert "外卖这事基本缓过来了" not in chunks[1][1]
+    assert "阿里四处开火" in chunks[1][1] and "王五：同意" in chunks[1][1]
+    # 整张都是前面写过的句子，剩下的不够切块。
+    assert len(ocr_chunks([("aa" * 32, first), ("cc" * 32, first)])) == 1
 
 
 def test_ocr_chunks_drop_hold_to_text():

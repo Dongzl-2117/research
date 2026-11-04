@@ -379,3 +379,56 @@ def test_live_zsxq_copy_does_not_beat_a_longer_article_elsewhere(conn, settings)
     _store(conn, settings, "fangwei-zsxq", [_topic_doc(TOPIC, "\n\n".join(paragraphs[:-1]))])
     assert _row(conn, TOPIC)["duplicate_of"] == _row(conn, "mp/full.md")["id"]
     assert _row(conn, "mp/full.md")["duplicate_of"] is None
+
+
+# 同一篇英文访谈的两份（虚构）：网站版说话人名字单占一行、句子中间断行，邮件版开头多两行、说话人和话在同一行。
+TURNS = [
+    ("Jane Doe", "Hi Ben, thanks for having me. It has been a long time since we last talked about platforms."),
+    ("Ben Thompson", "Right. Well, five years reaffirms my commitment to doing these interviews every so often."),
+    ("JD", "Oh my goodness, that is a different podcast than the one I expected, but I am happy to be here."),
+    ("BT", "Wait, so was there no student newspaper website when you started, or did you build it yourself?"),
+    ("JD", "On the front page we did not run a headline about the website, because nobody thought it mattered."),
+    ("BT", "Yeah, we are going to get to that. But first, how did the policy team at the company get started?"),
+    ("JD", "It is not that long ago even if it feels like it. The team was three people and a lot of travel."),
+    ("BT", "The interesting thing to me is how the incentives shifted once the advertising business took off."),
+]
+
+
+def _wrapped(text):
+    words = text.split(" ")
+    return " ".join(words[:6]) + "\n" + " ".join(words[6:])
+
+
+SITE = "An interview with a former policy lead about platforms.\n\n" + "\n\n".join(
+    f"{who}:\n{_wrapped(said)}" for who, said in TURNS
+)
+EMAIL = "Listen to this post:\n\nGood morning,\n\n" + "\n\n".join(f"{who}: {said}" for who, said in TURNS)
+
+
+def test_english_copies_with_different_line_breaks_are_the_same(conn, settings):
+    """以前按行切句，两份一句也对不上（Stratechery 22029 和 22210），两张卡、两份译文。"""
+    assert same_article(fingerprint(SITE), fingerprint(EMAIL))
+    other = "\n\n".join(f"{who}: {said.replace('the', 'a')} Something else entirely." for who, said in TURNS[:3])
+    assert not same_article(fingerprint(SITE), fingerprint(other))
+    _store(conn, settings, "stratechery", [_doc("2025/an-interview", "An Interview with Jane Doe", SITE)])
+    _store(conn, settings, "stratechery", [_doc("2025/interview-jane-doe", "An Interview with Jane Doe", EMAIL)])
+    first, second = _row(conn, "2025/an-interview"), _row(conn, "2025/interview-jane-doe")
+    assert (first["duplicate_of"], second["duplicate_of"]) in {(second["id"], None), (None, first["id"])}
+
+
+def test_rebuild_after_a_version_bump_recomputes_every_fingerprint(conn, settings):
+    """切句的办法变了：旧版本算的指纹即使内容没变也要重算，不然新旧两种哈希对不上。"""
+    _store(conn, settings, "stratechery", [_doc("2025/an-interview", "An Interview with Jane Doe", SITE)])
+    _store(conn, settings, "stratechery", [_doc("2025/interview-jane-doe", "An Interview with Jane Doe", EMAIL)])
+    # 升版本之前的样子：没认出重复，指纹是旧算法算的（这里换成对不上的哈希），记的版本是 3。
+    conn.execute("UPDATE articles SET duplicate_of = NULL")
+    conn.execute("UPDATE article_fingerprints SET h = -h - 1")
+    conn.execute(
+        "INSERT INTO app_state (key, value) VALUES ('dedupe_version', '3')"
+        " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    )
+    conn.commit()
+    result = rebuild_duplicates(conn)
+    assert result["fingerprinted"] == 2 and result["duplicates"] == 1
+    # 版本记上以后，再跑只补内容变了的。
+    assert rebuild_duplicates(conn)["fingerprinted"] == 0

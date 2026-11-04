@@ -23,7 +23,7 @@ from researchlib.web.api import (
     views_payload,
 )
 from researchlib.web.routes import _same_origin, active_sources, database
-from researchlib.web.scoping import resolve_scope
+from researchlib.web.scoping import BIGINT_MAX, resolve_scope
 
 mcp = APIRouter()
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -137,7 +137,7 @@ class ToolError(Exception):
 def _limits(args: dict) -> tuple[int, int]:
     try:
         limit = max(1, min(50, int(args.get("limit") or 20)))
-        offset = max(0, int(args.get("offset") or 0))
+        offset = min(BIGINT_MAX, max(0, int(args.get("offset") or 0)))
     except (TypeError, ValueError) as exc:
         raise ToolError("limit、offset 要是整数") from exc
     return limit, offset
@@ -199,6 +199,9 @@ def run_tool(request: Request, name: str, args: dict):
 
 
 def _result(payload) -> dict:
+    from researchlib.output_safety import redact_output
+
+    payload = redact_output(payload)
     text = json.dumps(payload, ensure_ascii=False, default=str)
     fenced = f"{PREAMBLE}\n\n［外部资料开始］\n{text}\n［外部资料结束］"
     return {"content": [{"type": "text", "text": fenced}], "structuredContent": payload, "isError": False}
@@ -218,6 +221,8 @@ def handle_message(request: Request, message: dict) -> dict | None:
     params = message.get("params") or {}
     if msg_id is None:
         return None
+    if not isinstance(params, dict):
+        return _rpc_error(msg_id, -32602, "params 要是对象")
     if method == "initialize":
         wanted = params.get("protocolVersion")
         version = wanted if wanted in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]

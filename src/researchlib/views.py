@@ -33,7 +33,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import is_guest, not_guest_sql, raw_meta_of
+from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_sql
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
@@ -42,14 +42,16 @@ from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_co
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
-from researchlib.wechat_dialogue import speaker_note
-from researchlib.zsxq_title import repairs_source, title_needs_repair, zsxq_display_title
+from researchlib.wechat_dialogue import relabel_host, speaker_note
+from researchlib.zsxq_comments import source_owners
+from researchlib.zsxq_title import repairs_source, shorten_long_title, title_needs_repair, zsxq_display_title
 
 logger = logging.getLogger("researchlib.views")
 
 PROMPT_VERSION = 2
 BODY_LIMIT = VIEWS_LIMIT
-_GUEST = not_guest_sql("a")
+# 网站上不展示的（读者帖、「图片」评论壳）不抽观点，也不进观点时间线：公司页上的观点链不过去。
+_SHOWN = site_visible_sql("a")
 PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文章（含「图片里的字」），摘出作者对指定公司的判断。
 只输出一个 JSON 对象，不要输出别的文字。每家指定的公司都要有一个键，没有下判断就写 null：
 {"公司名": {"about": true, "judgment": "…", "mechanism": "…", "stance": "正面",
@@ -272,7 +274,7 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = ANY(%s) AND {_VIEW_DEPTH}
-          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         GROUP BY a.id
         ORDER BY bool_or(m.depth <> 'passing') DESC, a.published_at DESC NULLS LAST, a.id DESC
@@ -319,7 +321,7 @@ def mentioned_companies(conn, source_ids: list[str]) -> list[dict]:
           FROM article_mentions m
           JOIN articles a ON a.id = m.article_id
           WHERE m.company_id = c.id AND m.depth <> 'passing'
-            AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%s)
+            AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%s)
         )
         ORDER BY c.name_zh, c.id
         """,
@@ -343,7 +345,7 @@ def view_companies(conn, source_ids: list[str]) -> list[dict]:
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
-        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+        WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_OCR_CARRIES}
         ORDER BY c.name_zh, c.id
         """,
@@ -363,7 +365,7 @@ def count_pending(conn, company_id: int, source_ids: list[str]) -> int:
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = %s AND {_VIEW_DEPTH}
-          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
           AND {_STALE} AND {cooling_sql('views', 'a.id')}
         """,
         (company_id, source_ids, PROMPT_VERSION),
@@ -473,17 +475,19 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
     """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
     if not companies:
         return 0
-    if is_guest(raw_meta_of(conn, row)):
+    if hide_from_site(raw_meta_of(conn, row), row["title"]):
         return 0
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    # 截图里的绿气泡是这篇的作者：别的来源不写成方伟。哈希仍按库里的文字算。
+    ocr_text = relabel_host(ocr_text, author)
     body = append_ocr(row["body_text"] or "", ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
-        note = speaker_note(ocr_text)
+        note = speaker_note(ocr_text, author)
         header += (
             "\n（「图片里的字」是截图里识别出来的，和正文一样算原文。"
             "判断写在图里时也要抽，不要因为来自截图就当成没下判断。"
@@ -573,19 +577,29 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
 
 # —— 时间线 ——
 
+# 算态度变化时只看这两种态度。
+_CHANGE_SIGNALS = ("positive", "negative")
+
+
+def _verified_chunk(row: dict) -> int | None:
+    """旧块已经重切过也要在读取时守住引用；无原句证据时只打开文章。"""
+    wanted = plain_cite(row.get("quote") or "")
+    return row.get("chunk_ord") if wanted and wanted in plain_cite(row.get("chunk_body") or "") else None
+
 
 def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司全部下了判断的观点，按时间从旧到新标出态度变化，再按新到旧返回。"""
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.metrics,
-               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, a.title, a.published_at, a.source_id,
+               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, c.body AS chunk_body,
+               a.title, a.published_at, a.source_id,
                left(a.body_text, 2000) AS body_text
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND {_GUEST} AND {visible_sql("a")}
+          AND {_SHOWN} AND {visible_sql("a")}
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
@@ -597,18 +611,22 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         author = source.author if source else row["source_id"]
         stance = row["stance"] or ""
         previous = last.get(author)
-        # 中性不算信号：看好 → 中性 → 看好 不算变了；看好 → 看淡、两面 → 看好 算。
-        changed = bool(stance and stance != "neutral" and previous and previous != stance)
-        if stance and stance != "neutral":
+        # 只有看好和看淡互换才算态度变化。中性、两面不算信号：看好 → 两面 → 看好、看好 → 中性 → 看好
+        # 都不算变了；看好 → 两面 → 看淡 算一次（从看好变成看淡）。两面常常只是这篇多写了几句风险。
+        signal = stance in _CHANGE_SIGNALS
+        changed = bool(signal and previous and previous != stance)
+        if signal:
             last[author] = stance
         risks = list(row["risks"] or [])
         falsifiers = list(row["falsifiers"] or [])
         shown_date = format_date(row["published_at"], settings.display_timezone)
-        title = row["title"]
+        title = shorten_long_title(row["title"] or "", row.get("body_text") or "")
         if repairs_source(row["source_id"], source.kind if source else "") and title_needs_repair(
             title or "", row.get("body_text") or ""
         ):
-            title = zsxq_display_title(title or "", body=row.get("body_text") or "", when=shown_date)
+            title = zsxq_display_title(
+                title or "", body=row.get("body_text") or "", when=shown_date, owners=source_owners(source)
+            )
         items.append(
             {
                 "article_id": row["article_id"],
@@ -626,8 +644,8 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
                 "falsifiers": falsifiers,
                 "metrics": list(row["metrics"] or []),
                 "quote": row["quote"],
-                "chunk": row["chunk_ord"],
-                "anchor": row["chunk_anchor"] or "",
+                "chunk": _verified_chunk(row),
+                "anchor": (row["chunk_anchor"] or "") if _verified_chunk(row) is not None else "",
                 "risky": bool(risks or falsifiers or stance in ("negative", "mixed")),
             }
         )
@@ -669,14 +687,17 @@ def same_period(
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.company_id, c.name_zh, v.judgment, v.stance, v.chunk_ord,
+               v.quote, chunk.body AS chunk_body,
                a.title, a.published_at, a.source_id
         FROM articles me
         JOIN article_mentions m ON m.article_id = me.id AND m.depth <> 'passing' {company_sql}
         JOIN company_views v ON v.company_id = m.company_id AND {REAL_VIEW_SQL}
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
+        LEFT JOIN article_chunks chunk ON chunk.article_id = v.article_id AND chunk.ord = v.chunk_ord
+          AND chunk.lang IN ('', 'ocr')
         WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id
-          AND a.duplicate_of IS NULL AND {_GUEST} AND a.source_id = ANY(%(sources)s)
+          AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%(sources)s)
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
                                  AND me.published_at + make_interval(days => %(days)s)
         ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id
@@ -703,7 +724,7 @@ def same_period(
                 "judgment": row["judgment"],
                 "stance": row["stance"] or "",
                 "stance_label": STANCE_LABELS.get(row["stance"] or "", "") if row["stance"] != "neutral" else "",
-                "chunk": row["chunk_ord"],
+                "chunk": _verified_chunk(row),
                 "title": row["title"],
             }
         )
@@ -835,17 +856,17 @@ def _id_list(text: str) -> list[int]:
 
 
 def _canonical_ids(conn, article_ids: list[int], source_ids: list[str]) -> list[int]:
-    """重复稿换成主版本。网友帖和不在来源里的跳过。"""
+    """重复稿换成主版本。网站上不展示的和不在来源里的跳过。"""
     if not article_ids:
         return []
     rows = conn.execute(
-        "SELECT id, duplicate_of, source_id, raw_meta FROM articles WHERE id = ANY(%s)",
+        "SELECT id, duplicate_of, source_id, raw_meta, title FROM articles WHERE id = ANY(%s)",
         (list(article_ids),),
     ).fetchall()
     found: list[int] = []
     allowed = set(source_ids)
     for row in rows:
-        if row["source_id"] not in allowed or is_guest(row["raw_meta"]):
+        if row["source_id"] not in allowed or hide_from_site(row["raw_meta"], row["title"]):
             continue
         canonical = int(row["duplicate_of"] or row["id"])
         if canonical not in found:
@@ -879,7 +900,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
         WHERE m.company_id = ANY(%s)
           AND a.source_id = ANY(%s)
           AND a.duplicate_of IS NULL
-          AND {_GUEST}
+          AND {_SHOWN}
           AND (
             m.depth <> 'passing'
             OR {_OCR_CARRIES}
@@ -922,7 +943,7 @@ def articles_for_ids(conn, company_ids: list[int], source_ids: list[str], articl
         FROM articles a
         JOIN article_mentions m ON m.article_id = a.id AND m.company_id = ANY(%s)
         WHERE a.id = ANY(%s) AND a.source_id = ANY(%s)
-          AND a.duplicate_of IS NULL AND {_GUEST}
+          AND a.duplicate_of IS NULL AND {_SHOWN}
         GROUP BY a.id
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s

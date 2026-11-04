@@ -1,0 +1,229 @@
+{
+  "generatedAt": "2026-11-01T09:45:28+00:00",
+  "baseline": "9b678ca62ce71c449b1edbdf6c1d6ab41b041f9d",
+  "scope": "仅合成数据与本地独立测试实例；未读取生产资料、调用模型、合并或部署。",
+  "checks": {
+    "ruff": "passed",
+    "diffWhitespace": "passed",
+    "lockedDependencies": "installed with --require-hashes",
+    "editableInstall": "passed",
+    "pipCheck": "passed"
+  },
+  "pytest": {
+    "tests": 910,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 48.658,
+    "groups": {
+      "unit": 760,
+      "integration": 150
+    },
+    "warnings": [
+      "既有 Starlette TestClient/httpx 弃用提示 1 条"
+    ]
+  },
+  "baselineRegression": {
+    "tests": 4,
+    "failuresExpected": 3,
+    "results": [
+      {
+        "name": "test_article_bilingual_original_and_chinese_retain_nontranslatable_content",
+        "result": "failed"
+      },
+      {
+        "name": "test_feed_address_stays_out_of_every_output[False]",
+        "result": "passed"
+      },
+      {
+        "name": "test_feed_address_stays_out_of_every_output[True]",
+        "result": "failed"
+      },
+      {
+        "name": "test_rechunk_relocates_quote_and_clears_removed_reference",
+        "result": "failed"
+      }
+    ]
+  },
+  "database": {
+    "host": "127.0.0.1",
+    "port": 55436,
+    "databases": [
+      "research_test",
+      "research_eval"
+    ],
+    "postgresql": "16.15",
+    "zhparser": "2.4",
+    "pgvector": "0.6.0",
+    "halfvecVerified": false
+  },
+  "browser": {
+    "results": [
+      {
+        "width": 1440,
+        "viewport": 1440,
+        "documentWidth": 1440,
+        "tableWidth": 1204,
+        "tableContent": 1663,
+        "cellLines": 1,
+        "tabIndex": 0,
+        "tocNavigation": true,
+        "misalignmentNotice": true,
+        "javascriptErrors": 0
+      },
+      {
+        "width": 390,
+        "viewport": 390,
+        "documentWidth": 390,
+        "tableWidth": 358,
+        "tableContent": 1660,
+        "cellLines": 1,
+        "tabIndex": 0,
+        "tocNavigation": true,
+        "misalignmentNotice": true,
+        "javascriptErrors": 0
+      }
+    ],
+    "python": "3.12.14",
+    "chromium": "Chromium 154.0.8037.57 built on Debian GNU/Linux 13 (trixie)",
+    "network": "仅回环临时静态服务器，外网请求被拦截；未启动主应用"
+  },
+  "retrieval": {
+    "check": "passed against existing tools/retrieval_eval/baseline.json",
+    "articles": 1500,
+    "chunks": 10463,
+    "mentions": 4975,
+    "results": {
+      "articles": 1500,
+      "tolerance": 0.02,
+      "ask": {
+        "方伟最近怎么看拼多多的护城河": {
+          "precision": 0.2375,
+          "recall": 0.76
+        },
+        "腾讯广告加载率": {
+          "precision": 0.6,
+          "recall": 0.96
+        },
+        "茅台批价和渠道库存": {
+          "precision": 0.8875,
+          "recall": 0.6017
+        },
+        "苹果的定价权": {
+          "precision": 0.8125,
+          "recall": 0.7738
+        },
+        "哪些作者讨论过回购": {
+          "precision": 1.0,
+          "recall": 0.2548
+        },
+        "公司页预设·腾讯": {
+          "precision": 1.0,
+          "recall": 0.153
+        },
+        "作者页预设·乘风破浪": {
+          "precision": 0.9625,
+          "recall": 0.0495
+        },
+        "农夫山泉的成本结构": {
+          "precision": 1.0,
+          "recall": 0.7407
+        },
+        "管理层激励": {
+          "precision": 0.9625,
+          "recall": 0.2484
+        },
+        "低价电商能持续吗": {
+          "precision": 1.0,
+          "recall": 0.1136
+        },
+        "英伟达算力": {
+          "precision": 1.0,
+          "recall": 0.6897
+        },
+        "拼多多出海": {
+          "precision": 0.6625,
+          "recall": 0.7162
+        }
+      },
+      "search": {
+        "腾讯广告加载率": {
+          "precision": 1.0
+        },
+        "茅台批价和渠道库存": {
+          "precision": 1.0
+        },
+        "苹果的定价权": {
+          "precision": 1.0
+        },
+        "农夫山泉的成本结构": {
+          "precision": 1.0
+        },
+        "管理层激励": {
+          "precision": 1.0
+        },
+        "英伟达算力": {
+          "precision": 1.0
+        },
+        "拼多多出海": {
+          "precision": 1.0
+        }
+      }
+    }
+  },
+  "notRun": [
+    "生产全量审计",
+    "真实译文语义验收",
+    "真实 OCR 准确率",
+    "历史清洗或重建",
+    "付费 LLM 调用",
+    "合并或部署"
+  ],
+  "codeSha256": {
+    "src/researchlib/article_layout.py": "9a8f77fefd8bcc4cb023cbdc6db833847edf5131a01f410f78a400963edb122e",
+    "src/researchlib/chunks.py": "18b814a754d977da763078ef7b8dd8a17a27aeae7fd1c12efdd00934f573a120",
+    "src/researchlib/mdlinks.py": "03bfa1a724f7bbbfc46eee10e9ce4fe4ea3d3b37ed06f8d576bbeb60087bec7f",
+    "src/researchlib/output_safety.py": "367ea5057203df76f9df2f26d87f426e4341f79e361ebb0877f4fa23e50b3e90",
+    "src/researchlib/render.py": "3fe6697cc1b1933a95f0ef7eeba4a796c1a893b51374f7f8be101933ab40d6a9",
+    "src/researchlib/snippets.py": "234d66735c38afc729857768c7e27916c0a8a416b7caf78b37bf4c8859ba8d93",
+    "src/researchlib/textutil.py": "295e272123c6be083bbe639236ad7d41b9d3294a9597b637a1f9047c503e1c05",
+    "src/researchlib/translate/display.py": "45fa32ad5c4cd5a49f1d482a94368a1273fe9e4089c073737347cc10a2bdda88",
+    "src/researchlib/translate/qa.py": "693dffe0a89ca5a943bae4465904ff3dd90e35148a1eda8ef61ce9db69d0bf54",
+    "src/researchlib/views.py": "febabdca69b8db2d214a45b3f66961003b86f448e709004665865f14e75c14fd",
+    "src/researchlib/web/api.py": "0bf281d7f3b1585f23a2b1f8e0e8c6285129fcba92663505e1d5b34f47a421c6",
+    "src/researchlib/web/mcp.py": "bb91721e8feed26bc9fbed55c9522304c8f50227e60ac755c4bfbfaf315dd995",
+    "src/researchlib/web/routes.py": "09e7db9b5178d289614855cf8342df8d4e2b8227ab54e651e37b7c7af8632333",
+    "src/researchlib/web/static/article.js": "7ab93454de27871aec62c2c794cad6f5c2514239056ffc1f2dab7a5273a6097e",
+    "src/researchlib/web/static/site.css": "b7e962d360d7148d410a032fde58b1b640403f8b37acf0cd41f343220fc44666",
+    "src/researchlib/web/templates/article.html": "eee66c42c2d64619843e781bb60640cb151dba046321acff10d35289c9228198",
+    "tests/integration/test_article_preservation_page.py": "5a091a842dc28bc72c84334271305761320f7a018dc302c05592fca23a5c9b1c",
+    "tests/integration/test_feed_address_api.py": "903d8a9088fb964feba0e9dc3c0f54125dac298bdfd6dea99ac25ab2d430a148",
+    "tests/integration/test_nested_copies_page.py": "5dc6e2148c78e8e05c6e08d730970aabfe57096ecea4eaddadba97cdea2f841c",
+    "tests/integration/test_ocr_quote_references.py": "f8fc3c69ba68d3de249dd5442ba3762b8ac73b6ad0ec3a4ff71e66894eed6694",
+    "tests/unit/test_article_preservation.py": "e4dd15a4457d9dfc87dbc15253fafad9d79859849da0667ef446bdbf96ccc453",
+    "tests/unit/test_output_safety.py": "e019512d516105f77ec5b42bbd23580bba9b6169faf280552936b4632f8f786c",
+    "tests/unit/test_present_text.py": "ec4506f3764289a329b4dfbe946c5b3687ca80052caf560d37f0104425b372fb",
+    "tests/unit/test_render_and_snippets.py": "a306fb473add0263b71abde01426c92431a7cb60183ddabb158a19c4d2a93f00",
+    "tools/article_layout_fixture.py": "13359ccbc82245ea8722318940322506dc67521157e3ae214f7505c25f235149",
+    "tools/article_layout_smoke.cjs": "01cbfdc25e3746e8c1873ae2966025b15b76043fc506b12a6844639add01b8e1"
+  },
+  "reviewRegression": {
+    "priorHead": "db0f1403d97d8c61bcc19119d1dad2ee5a38b648",
+    "tests": 3,
+    "failuresExpected": 3,
+    "results": [
+      {
+        "name": "test_repeated_paragraphs_retain_distinct_translated_resources[link]",
+        "result": "failed"
+      },
+      {
+        "name": "test_repeated_paragraphs_retain_distinct_translated_resources[image]",
+        "result": "failed"
+      },
+      {
+        "name": "test_final_projection_guard_rejects_loss_from_a_later_block_transform",
+        "result": "failed"
+      }
+    ]
+  }
+}

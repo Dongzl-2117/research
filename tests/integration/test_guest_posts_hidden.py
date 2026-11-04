@@ -1,4 +1,4 @@
-"""读者帖不进网站展示：首页、按天、检索、正文都 404/看不到。"""
+"""读者帖不进网站展示：首页、按天、检索、正文、接口和 MCP 都 404/看不到。"""
 
 from datetime import datetime
 
@@ -30,7 +30,7 @@ def test_guest_posts_hidden_from_site(conn, settings):
                 raw_meta={
                     "format": "markdown",
                     "filename": "guest-bubble.md",
-                    "poster_name": "Simon",
+                    "poster_name": "王小明",
                     "poster_role": "guest",
                     "topic_id": "guest-bubble",
                 },
@@ -68,7 +68,7 @@ def test_guest_posts_hidden_from_site(conn, settings):
         home = client.get("/")
         assert home.status_code == 200
         assert "泡泡玛特三季度腰斩" not in home.text
-        assert "Simon" not in home.text
+        assert "王小明" not in home.text
         assert "读者帖" not in home.text
         assert "泡泡玛特观察" in home.text
         assert "星主自己写的一句" in home.text
@@ -90,7 +90,7 @@ def test_guest_posts_hidden_from_site(conn, settings):
         assert owner_page.status_code == 200
         assert "泡泡玛特观察" in owner_page.text
         assert "星主自己写的一句" in owner_page.text
-        assert "Simon" not in owner_page.text
+        assert "王小明" not in owner_page.text
         assert client.get(f"/api/v1/articles/{owner_id}").status_code == 200
 
 
@@ -179,3 +179,54 @@ def test_guest_and_comment_shell_api_404(conn, settings):
         assert client.get(f"/articles/{owner_id}").status_code == 200
         assert client.get(f"/api/v1/articles/{owner_id}").status_code == 200
         assert client.get(f"/api/v1/articles/{owner_id}.md").status_code == 200
+
+        # 接口和 MCP 的按天列表也只列网站上列得出来的，标题和正文开头不从这里漏出去。
+        day = client.get("/api/v1/days/2026-10-27").json()
+        assert [item["id"] for item in day["items"]] == [owner_id]
+        assert day["total"] == 1
+        call = client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": "get_day", "arguments": {"date": "2026-10-27"}}},
+        ).json()
+        assert [item["id"] for item in call["result"]["structuredContent"]["items"]] == [owner_id]
+
+
+def test_jump_skips_days_that_only_have_a_comment_shell(conn, settings):
+    """跳到某天：那天只有「图片」评论壳的，落到更早的、列得出来的一天，页码也按列得出来的天数算。"""
+    zsxq = _source(settings, "fangwei-zsxq")
+
+    def doc(external_id, title, when, body):
+        return ParsedDoc(
+            external_id=external_id,
+            title=title,
+            published_at=when,
+            body_md=body,
+            raw_meta={
+                "format": "markdown",
+                "filename": f"{external_id}.md",
+                "poster_name": "方伟Rey",
+                "poster_role": "owner",
+                "topic_id": external_id,
+            },
+            image_refs=[],
+        )
+
+    store_documents(
+        conn,
+        source=zsxq,
+        docs=[
+            doc("owner-early", "星主早一天的帖", datetime(2026, 10, 25, 9, 0, tzinfo=SHANGHAI),
+                "这是星主自己的长文判断，多写一点免得被当成空壳。\n"),
+            doc("shell-only-day", "「图片」 评论（2） - 某读者", datetime(2026, 10, 26, 9, 0, tzinfo=SHANGHAI),
+                "「图片」\n\n## 评论里的回复\n\n作者答了一句。\n"),
+        ],
+        data_dir=settings.data_dir,
+        archive_files=2,
+        images_in_archive=0,
+        errors=[],
+    )
+    with TestClient(create_app(settings)) as client:
+        jumped = client.get("/", params={"date": "2026-10-26"}, follow_redirects=False)
+        assert jumped.status_code == 303
+        assert jumped.headers["location"] == "/#d-2026-10-25"

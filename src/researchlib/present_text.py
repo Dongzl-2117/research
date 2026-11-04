@@ -135,6 +135,58 @@ def _prefix_speaker(label: str, body: str) -> str:
     return "\n".join(lines).strip("\n")
 
 
+def plain_qa_headings(headings: list[str]) -> list[str]:
+    """问答导出的小标题去掉括号里的名字：「提问（王小明 → 方伟Rey）」成「提问」，「回答（方伟Rey）」成「回答」。
+
+    检索的章节名、问库的引用不带网友的昵称。和阅读页一样，提问、回答两种小标题都有才改。
+    """
+    if not any(_ASK_HEADING.match(item) for item in headings) or not any(
+        _ANSWER_HEADING.match(item) for item in headings
+    ):
+        return list(headings)
+    return [
+        "提问" if _ASK_HEADING.match(item) else "回答" if _ANSWER_HEADING.match(item) else item for item in headings
+    ]
+
+
+# 问答帖归档头里的作者是提问的网友：「- 作者：王小明」。
+_ARCHIVE_AUTHOR = re.compile(r"^[ \t]*(?:[-*+][ \t]+)?作者[ \t]*[:：]")
+
+
+def plain_qa_markdown(md: str) -> str:
+    """问答导出的 markdown 去掉网友的昵称，给检索文字和接口的原文用。
+
+    「## 提问（王小明 → 方伟Rey）」成「## 提问」，「## 回答（方伟Rey）」成「## 回答」；提问之前归档头那行
+    「- 作者：王小明」不要。和阅读页、检索的章节名一样，提问、回答两种小标题都有才改，别的行不动。
+    """
+    text = md or ""
+    titles = [title for level, title, _body in _split_sections(text) if level]
+    if not any(_ASK_HEADING.match(title) for title in titles) or not any(
+        _ANSWER_HEADING.match(title) for title in titles
+    ):
+        return text
+    out: list[str] = []
+    fence: str | None = None
+    asked = False
+    for line in text.split("\n"):
+        if fence:
+            if line.strip().startswith(fence):
+                fence = None
+        elif fence_match := _FENCE_OPEN.match(line):
+            fence = fence_match.group(1)[:3]
+        elif heading := _ATX.match(line):
+            title = _heading_title(heading.group(2))
+            if _ASK_HEADING.match(title):
+                asked = True
+                line = f"{heading.group(1)} 提问"
+            elif _ANSWER_HEADING.match(title):
+                line = f"{heading.group(1)} 回答"
+        elif not asked and _ARCHIVE_AUTHOR.match(line):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def present_zsxq_qa(text: str) -> str:
     """知识星球问答的「提问（…）/ 回答（…）」收成对话段。
 
@@ -197,11 +249,26 @@ def present_article_text(text: str) -> str:
 # 屏幕折行大约 10–24 个汉字宽。更长的是已经写完的一段，不能再往下粘。
 _WRAP_MIN = 10.0
 _WRAP_MAX = 24.0
-_DIALOGUE_LINE = re.compile(r"^(?:方伟|网友)\s*[:：]")
+# 行首说话人：「方伟：」「网友：」，或识图照抄的网名（春风十里我自在：…）。
+_DIALOGUE_LINE = re.compile(r"^[^\s：:，。！？!?、；]{1,16}\s*[:：]")
 _LABEL_ONLY = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9·]{1,12}[：:]$")
 _SENTENCE_END = re.compile(r"[。！？!?…]$|(?:[A-Za-z])\.$")
 _CONNECTOR_END = re.compile(r"[，、；：,;:]$")
 _NEW_BLOCK = re.compile(r"^(?:[12]\d{3}\s*年|第[0-9一二三四五六七八九十])")
+# 文章、帖子截图：一整段按屏幕宽度折成好几行，行行差不多一样宽，断在词中间（文章 10503）。
+# 至少三行宽度相差不过一个字、也没有哪一行比它们更宽，才算这种排版：屏幕宽度装不下更宽的行。
+# 已经接成整段的长行在，就不再按短行的宽度接（再跑一遍不变）。
+# 接着往下写的正文，满行里多半夹着逗号句号；标题、字幕、幻灯片一行一条短句，没有，不接。
+# 段首空两格、夹着字母的行窄一点，比满行窄 3.5 个字以内都算满行。
+_FULL_MIN = 12.0
+_FULL_LINES = 3
+_FULL_NEAR = 1.0
+_FULL_SLACK = 3.5
+_INNER_PUNCT = re.compile(r"[，。、；：！？,.;:!?]")
+# 编号、项目符号开头的是另起的一条：「1、」「二、」「①」「（3）」「• 」。
+_LIST_START = re.compile(
+    r"^(?:\d{1,2}(?:[、)）]|[.．](?!\d))|[一二三四五六七八九十]{1,2}、|[①-⑳]|[（(][\d一二三四五六七八九十]{1,2}[)）]|[-•·*]\s)"
+)
 # 单独成行就是一句的短应答，不当成上一行的折行尾巴。
 # 行尾是这些字时，句子多半还没说完（「在最顺的时候」）。不是错字表。
 _UNFINISHED_END = frozenset("的了是在和与或而为把被对从向到着过就也都又再很最不没候时")
@@ -291,6 +358,9 @@ def _join_parts(left: str, right: str) -> str:
         return left + right
     if left[-1] in "，、；：,;:" or right[0] in "，、；：,;:":
         return left + right
+    # 全角的括号、引号贴着汉字写（「资产（asset）」），只有两边都是字母数字时才空一格。
+    if _visual_width(left[-1]) == 1.0 or _visual_width(right[0]) == 1.0:
+        return left + right
     return f"{left} {right}"
 
 
@@ -309,7 +379,7 @@ def _is_wrap_continuation(previous: str, nxt: str) -> bool:
     """上一行是被画面截断的半句，才接到下一行。模型已经分好的段不在这里重切。"""
     if not previous or not nxt or _sentence_end(previous):
         return False
-    if _DIALOGUE_LINE.match(nxt) or _NEW_BLOCK.match(nxt):
+    if _DIALOGUE_LINE.match(nxt) or _NEW_BLOCK.match(nxt) or _LIST_START.match(nxt):
         return False
     if _is_quote_card(nxt) and not _LABEL_ONLY.fullmatch(previous):
         return False
@@ -321,11 +391,43 @@ def _is_wrap_continuation(previous: str, nxt: str) -> bool:
     return _WRAP_MIN <= _visual_width(previous) <= _WRAP_MAX
 
 
+def _full_width(lines: list[str]) -> float | None:
+    """整段按屏幕宽度折行时的满行宽度。凑不出、有更宽的行、不像正文或者里面有表时返回 None。"""
+    from researchlib.ocr_tables import find_tables
+
+    measured = [(_visual_width(line), line) for line in lines if not _DIALOGUE_LINE.match(line)]
+    band = [(width, line) for width, line in measured if width >= _FULL_MIN]
+    best: tuple[int, float] | None = None
+    cluster: list[str] = []
+    for width, _line in band:
+        near = [(other, text) for other, text in band if abs(other - width) <= _FULL_NEAR]
+        candidate = (len(near), max(other for other, _text in near))
+        if best is None or candidate > best:
+            best, cluster = candidate, [text for _other, text in near]
+    if best is None or best[0] < _FULL_LINES:
+        return None
+    running = sum(1 for text in cluster if _INNER_PUNCT.search(text[:-1]))
+    if running * 2 < len(cluster):
+        return None
+    full = best[1]
+    if max(width for width, _line in measured) > full + _FULL_NEAR or find_tables(lines):
+        return None
+    return full
+
+
+def _wraps_at_full_width(previous: str, nxt: str, full: float) -> bool:
+    """上一个屏幕行排满了、断在半句：接上下一行。另起的一条（对话、编号、年份开头）不接。"""
+    if _sentence_end(previous) or _visual_width(previous) < full - _FULL_SLACK:
+        return False
+    return not (_DIALOGUE_LINE.match(nxt) or _NEW_BLOCK.match(nxt) or _LIST_START.match(nxt) or nxt in _STANDALONE)
+
+
 def merge_wrapped_utterances(text: str) -> str:
     """只把截断在半句的折行接回去。
 
     空行是模型分的段，保留。已经写完的一行（哪怕很短）不因为旁边也短就粘上去，
     也不把整段收成一块。「方伟：」「网友：」气泡各留一行。再跑一遍不变。
+    文章截图按屏幕宽度一行一行抄下来的（好几行一样宽、断在词中间），排满的行接成整段。
     """
     if not text or "\n" not in text:
         return text or ""
@@ -335,6 +437,7 @@ def merge_wrapped_utterances(text: str) -> str:
     labeled = sum(1 for line in nonempty if _DIALOGUE_LINE.match(line))
     if nonempty and labeled * 2 >= len(nonempty):
         return normalized.strip("\n")
+    full = _full_width(nonempty)
     merged: list[str] = []
     index = 0
     while index < len(raw_lines):
@@ -347,13 +450,23 @@ def merge_wrapped_utterances(text: str) -> str:
             merged.append(line)
             index += 1
             continue
+        # 这一段最后一个屏幕行：排没排满看它，不看接起来以后的整段。
+        last = line
         while index + 1 < len(raw_lines):
             nxt = raw_lines[index + 1].strip()
-            if not nxt or not _is_wrap_continuation(line, nxt):
+            if not nxt:
+                break
+            if full is not None and _wraps_at_full_width(last, nxt, full):
+                line = _join_parts(line, nxt)
+                last = nxt
+                index += 1
+                continue
+            if not _is_wrap_continuation(line, nxt):
                 break
             # 顶满一行只接后面那一小截。接完就停，避免整句刚好还在宽度里时把下一块标题吞进去。
             band_only = not _LABEL_ONLY.fullmatch(line) and not _CONNECTOR_END.search(line)
             line = line + nxt if _LABEL_ONLY.fullmatch(line) else _join_parts(line, nxt)
+            last = nxt
             index += 1
             if band_only:
                 break
@@ -376,53 +489,59 @@ def _as_guest(line: str) -> str:
     return f"网友：{(line or '').strip()}"
 
 
-def _peel_segment(part: str) -> str:
-    """去掉一段雪球回复壳，留下发言。引语里的「莫尼什：」还在。"""
+_REPLY_TARGET = re.compile(r"^(?:回复\s*)?@\s*[^\s：:]{1,32}\s*[:：]\s*")
+_CHAIN_AUTHOR = re.compile(r"^([^\s：:]{1,32})\s*[:：]\s*")
+
+
+def _peel_segment(part: str) -> tuple[str, str]:
+    """去掉一段雪球回复壳，返回 (这一楼的作者, 发言)。
+
+    「回复@甲:正文」是回复甲，作者看上一层；「乙:回复@甲:正文」的作者是乙。
+    引语里的「莫尼什：」是正文，不当壳。
+    """
     text = (part or "").strip()
-    stripped_at = False
-    for _ in range(6):
-        marked = re.match(r"^(?:回复\s*)?@\s*[^\s：:]{1,32}\s*[:：]\s*", text)
-        if marked:
-            text = text[marked.end() :].strip()
-            stripped_at = True
-            continue
-        named = re.match(r"^[^\s：:]{1,32}\s*[:：]\s*((?:回复\s*)?@\s*\S.*)$", text, re.S)
+    author = ""
+    if not re.match(r"^(?:回复\s*)?@", text):
+        named = _CHAIN_AUTHOR.match(text)
         if named:
-            text = named.group(1).strip()
-            stripped_at = True
-            continue
-        break
-    if not stripped_at:
-        handle = re.match(r"^([^\s：:]{1,16})\s*[:：]\s*(\S.*)$", text, re.S)
-        if handle and not re.search(r"[。！？!?，,、；;]", handle.group(1)):
-            text = handle.group(2).strip()
-    return text.strip()
+            author = named.group(1).strip()
+            text = text[named.end() :].strip()
+    for _ in range(6):
+        marked = _REPLY_TARGET.match(text)
+        if not marked:
+            break
+        text = text[marked.end() :].strip()
+    return author, text.strip()
 
 
 def expand_reply_chain_line(line: str) -> list[str] | None:
     """一行里的「回复@ / //@」拆成从早到晚的多条。没有这种标记就返回 None。
 
-    雪球把新回复放在最前，``//@`` 越靠后越早。这里翻成时间顺序，昵称改成「网友：」。
+    雪球把新回复放在最前，``//@`` 越靠后越早。这里翻成时间顺序。
+    每层开头的网名是那一楼的作者，照截图留着；壳里拿不到名字才写「网友：」。
     """
+    from researchlib.wechat_dialogue import speaker_prefix, split_speaker
+
     raw = (line or "").strip()
     if not raw or not _CHAIN_MARK.search(raw):
         return None
-    host = bool(re.match(r"^方伟\s*[:：]", raw))
-    body = re.sub(r"^(?:方伟|网友)\s*[:：]\s*", "", raw)
-    bodies: list[str] = []
-    for part in re.split(r"\s*//@\s*", body):
-        peeled = _peel_segment(part)
-        if peeled:
-            bodies.append(peeled)
-    if not bodies:
+    prefix = speaker_prefix(raw, names=True)
+    outer = ""
+    if prefix:
+        outer = (split_speaker(raw, names=True) or ("", ""))[0]
+    body = raw[len(prefix) :] if prefix else raw
+    entries: list[tuple[str, str]] = []
+    for index, part in enumerate(re.split(r"\s*//@\s*", body)):
+        author, said = _peel_segment(part)
+        if not said:
+            continue
+        if index == 0 and not author:
+            author = outer
+        entries.append((author, said))
+    if not entries:
         return []
-    bodies.reverse()
-    lines: list[str] = []
-    last = len(bodies) - 1
-    for index, item in enumerate(bodies):
-        speaker = "方伟：" if host and index == last else "网友："
-        lines.append(f"{speaker}{item}")
-    return lines
+    entries.reverse()
+    return [f"{author or '网友'}：{said}" for author, said in entries]
 
 
 def _maybe_reverse_guest_run(run: list[str]) -> list[str]:

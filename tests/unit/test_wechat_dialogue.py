@@ -1,7 +1,8 @@
-"""微信截图 OCR 整理成「方伟：」「网友：」。
+"""微信截图 OCR 整理成「方伟：」「网友：」或截图上的网名。
 
-合成样例覆盖说话人、去重和界面字。tests/fixtures/14886_live_shots.txt 是文章 14886
-上线后的三张图的识别结果，按它验收。样本里群友的昵称、群名和店名换成了虚构的，其余照原样。
+合成样例覆盖说话人、去重和界面字。tests/fixtures/14886_live_shots.txt、14879_live_shots.txt
+照文章 14886、14879 那几张截图的识别结果改写：时间、界面字、商品卡、折行和几张图重叠的位置照原样，
+群名、昵称和对话都是编的。
 """
 
 from pathlib import Path
@@ -59,9 +60,9 @@ Rey
 EXPECTED = (
     "方伟：瑞幸和古茗都算头部，但瑞幸同店还有压力。\n"
     "\n"
-    "网友：古茗店效还行，瑞幸的折扣不能再深了。\n"
+    "王小明：古茗店效还行，瑞幸的折扣不能再深了。\n"
     "\n"
-    "网友：先看到这里，不展开了。\n"
+    "李小红：先看到这里，不展开了。\n"
     "\n"
     "方伟：同店压力还在，折扣不能再深\n"
     "会员那边先不动。"
@@ -80,8 +81,9 @@ def test_14886_screenshot_becomes_one_dialogue():
 def test_speaker_rules_and_noise_are_gone():
     text = present_ocr_pieces([SHOT_A, SHOT_B])
     assert text.count("方伟：") == 2
-    assert text.count("网友：") == 2
-    assert "王小明" not in text and "李小红" not in text and "Rey" not in text
+    # 网名照截图留着，不再一律写成「网友：」。
+    assert text.count("王小明：") == 1 and text.count("李小红：") == 1
+    assert "Rey" not in text
     for noise in ("设为群待办", "小程序", "¥9.9", "瑞幸咖啡", "交流群", "9:41", "20:41", "100%", "5G", "微信"):
         assert noise not in text
     # 跨图重复的句子只留一次。两位网友各开一块，方伟后来又说的话另起一块。
@@ -91,10 +93,10 @@ def test_speaker_rules_and_noise_are_gone():
 
 
 def test_guest_words_about_fangwei_stay_with_the_guest():
-    """句子里出现方伟，只要上面是别人的昵称，仍是灰气泡。"""
-    raw = "微信\n9:41\nKevin\n方伟说得对，同店还有压力，先观望一下\n"
+    """句子里出现方伟，只要上面是别人的昵称，仍是灰气泡，网名照写。"""
+    raw = "微信\n9:41\nLucas\n方伟说得对，同店还有压力，先观望一下\n"
     text = present_ocr_pieces([raw])
-    assert text.startswith("网友：")
+    assert text.startswith("Lucas：")
     assert "方伟：" not in text
     assert "方伟说得对，同店还有压力，先观望一下" in text
 
@@ -107,12 +109,82 @@ def test_unnamed_bubble_in_a_group_chat_is_the_host():
     assert "网友：" not in text
 
 
+def test_vision_labels_keep_the_real_nickname():
+    """识图照抄截图网名：绿气泡仍是方伟，别人写各自的网名，不再一律「网友：」。"""
+    raw = (
+        "微信\n看十年交流群(120)\n"
+        "方伟：我按Q1收入倒推过，大约12万瓶一天。\n"
+        "春风十里我自在：一吨就是2000瓶，100吨就是20万瓶。\n"
+        "江南张掌柜：这个成绩可谓炸裂，至少100吨每天。\n"
+        "春风十里我自在：对哦，酒的密度小一点。\n"
+    )
+    text = present_ocr_pieces([raw])
+    assert text.startswith("方伟：")
+    assert "春风十里我自在：一吨就是2000瓶" in text
+    assert "江南张掌柜：这个成绩可谓炸裂" in text
+    assert "网友：" not in text
+    # 再整理一遍不变，写进 articles.ocr_text 的也是这份。
+    assert present_stored_ocr(text) == text
+
+
+def test_green_bubble_is_still_fangwei_when_others_have_names():
+    """群里别人都有网名时，不写名字的气泡（绿色）仍是方伟。"""
+    raw = "微信\n看十年交流群(120)\n王小明\n今天加了一点茅台\n方伟Rey\n我也是\n"
+    text = present_ocr_pieces([raw])
+    assert text.startswith("王小明：今天加了一点茅台")
+    assert "方伟：我也是" in text
+
+
+def test_xueqiu_group_card_and_badges_are_stripped():
+    """雪球加群卡、财富陪伴官、影响力徽章、底栏和风险提示整段删掉，真人说的话留下。"""
+    raw = (
+        "方伟：i茅台上每天平均卖大概20万瓶酒，有人能买到很正常啊！\n"
+        "雪球专属交流群  加群交流\n"
+        "股民必入与高手畅聊热点\n"
+        "广告\n"
+        "雪球财富陪伴官·小雪\n"
+        "邀请您加入雪球专属交流群\n"
+        "·畅聊股市热点·进阶投资技巧\n"
+        "加群交流\n"
+        "去基金首页  自选  我的\n"
+        "春风十里我自在  02-0312:48.来自iPad\n"
+        "回复@邯郸老张：这两点相当于再造了一两个茅台。\n"
+        "2026-07-3105：05·美国·雪球十年知己\n"
+        "1171  投诉8屏蔽用户\n"
+        "4位达人赞过\n"
+        "风险提示：用户发表的所有文章仅代表个人观点，与雪球的立场无关，投资决策需建立在独立思考之上\n"
+        "雪球丨基金股票交流交易...持牌金融机构\n"
+    )
+    text = present_ocr_pieces([raw])
+    assert "i茅台上每天平均卖大概20万瓶酒" in text
+    assert "这两点相当于再造了一两个茅台" in text
+    for shell in (
+        "雪球专属交流群",
+        "加群交流",
+        "股民必入",
+        "与高手畅聊热点",
+        "财富陪伴官",
+        "畅聊股市热点",
+        "进阶投资技巧",
+        "去基金首页",
+        "十年知己",
+        "影响力用户",
+        "达人赞过",
+        "投诉",
+        "屏蔽用户",
+        "风险提示",
+        "持牌金融机构",
+    ):
+        assert shell not in text, shell
+    assert not any(line.strip() in {"广告", "广告。"} for line in text.splitlines())
+
+
 def test_host_aliases_and_inline_names():
     raw = "方伟（星主）\n会员那边先不动\n王小明：古茗店效还行，折扣不能再深了\n"
     text = present_ocr_pieces([raw])
     assert text.startswith("方伟：会员那边先不动")
-    assert "网友：古茗店效还行，折扣不能再深了" in text
-    assert "王小明" not in text and "星主" not in text
+    assert "王小明：古茗店效还行，折扣不能再深了" in text
+    assert "星主" not in text
 
 
 def test_consecutive_same_speaker_merges_and_table_stays():
@@ -139,8 +211,8 @@ def test_reading_page_shows_the_dialogue_once():
     assert "瑞幸古茗是比较头部的" in page
     assert 'class="ocr-reading ocr-dialogue"' in page
     assert '<span class="who">方伟：</span>瑞幸和古茗都算头部，但瑞幸同店还有压力' in page
-    assert '<span class="who">网友：</span>古茗店效还行，瑞幸的折扣不能再深了' in page
-    assert "王小明" not in page and "设为群待办" not in page and "小程序" not in page
+    assert '<span class="who">王小明：</span>古茗店效还行，瑞幸的折扣不能再深了' in page
+    assert "设为群待办" not in page and "小程序" not in page
     assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
     assert page.count('class="ocr-shot"') == 1
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
@@ -154,11 +226,68 @@ def test_reading_page_shows_the_dialogue_once():
     assert second_at < page.index("同店压力还在", second_at) < page.index("</a>", second_at)
 
 
+# 文章 24020 的形状：四张连着往下截的群聊，每张最底下那行都只截到一半，下一张里同一位置是完整的一行。
+CUT_SHOTS = [
+    "方伟：送货上门最早是抖音启动的\n后面拼多多发现是个好东西\n开始强力推行\n"
+    "现在抖音放弃了，淘宝也推不动，京东是本来就送货上门\n这里反映了很有趣的利益结构问题。",
+    "方伟：现在抖音放弃了，淘宝也推不动，京东是本来就送货上门\n这里反映了很多复杂的利益结构问题\n"
+    "比如淘宝为什么很难推\n他出发点是好的\n但是抖音本来就是一个高投流的商业模式\n一分一毫都要扣的很细，8毛钱就关",
+    "方伟：他出发点是好的\n但是抖音本来就是一个高投流的商业模式\n一分一毫都要扣的很细，8毛钱就关乎ROI正不正都问题\n"
+    "最主要的是利益系统结构问题\n网友：应该只有pdd是按转化率分流量吧。\n"
+    "方伟：当把送货上门标签打在商品上，平台又增加这个标签的权重时\n商家能够看见这8毛钱对ROI的影响，正不正能看得见",
+    "网友：应该只有 pdd 是按转化率分流量吧。\n方伟：当把送货上门标签打在商品上，平台又增加这个标签的权重时\n"
+    "商家能够看见这 8 毛钱对 ROI 的影响，正不正能量看得见\n这也让他有动机持续做",
+]
+
+
+def test_cut_bottom_line_gives_way_to_the_whole_line_in_the_next_shot():
+    """上一张底下那行只截到半句（「8毛钱就关」），或截了一半认错字（「很有趣的」「能看得见」），只留下一张里的那行。"""
+    stored = present_ocr_pieces(CUT_SHOTS)
+    parts = ["（见图）"]
+    mapping: dict[str, str] = {}
+    texts: dict[str, str] = {}
+    for index, shot in enumerate(CUT_SHOTS, start=1):
+        digest = f"{index:02d}" * 32
+        mapping[f"s{index}.png"] = f"/media/fangwei-zsxq/ab/{digest}.png"
+        texts[digest] = shot
+        parts.append(f"![](s{index}.png)")
+    page = inline_image_ocr(str(render_body("\n\n".join(parts) + "\n", mapping)), texts)
+    for text in (stored, page):
+        assert text.count("一分一毫都要扣的很细") == 1
+        assert "8毛钱就关乎ROI正不正都问题" in text
+        assert "很有趣的利益结构问题" not in text
+        assert "很多复杂的利益结构问题" in text
+        assert text.count("商家能够看见这") == 1
+        assert "这也让他有动机持续做" in text
+        # 前面的话一句不少。
+        assert "开始强力推行" in text and "但是抖音本来就是一个高投流的商业模式" in text
+    for index in range(1, len(CUT_SHOTS) + 1):
+        assert f'id="{image_anchor(f"{index:02d}" * 32)}"' in page
+
+
+def test_bottom_line_stays_when_the_next_shot_does_not_line_up():
+    """对不上位置就不动：前一行太短认不准，或者下一张那行是另一个人、另一句话。"""
+    short_before = ["方伟：茅台批价还算稳\n好的\n中秋先看看动销", "方伟：好的\n中秋先看看动销情况再决定加不加仓"]
+    other_speaker = [
+        "方伟：茅台今年的批价还算稳\n中秋先看看动销",
+        "方伟：茅台今年的批价还算稳\n网友：中秋先看看动销怎么样吧",
+    ]
+    other_line = [
+        "方伟：茅台今年的批价还算稳\n中秋先看看动销",
+        "方伟：茅台今年的批价还算稳\n春节前不用着急加仓",
+    ]
+    for shots in (short_before, other_speaker, other_line):
+        lines = [line.rstrip("。") for line in present_ocr_pieces(shots).splitlines()]
+        assert "中秋先看看动销" in lines or "方伟：中秋先看看动销" in lines, shots
+
+
 def test_digest_input_is_the_cleaned_dialogue():
     reading = append_ocr("瑞幸古茗是比较头部的。", compose_ocr_text([SHOT_A, SHOT_B]))
     assert "【图片里的字】" in reading
     assert EXPECTED in reading
-    assert "设为群待办" not in reading and "王小明" not in reading
+    assert "设为群待办" not in reading
+    # 网名保留，汇总和观点里能看出是谁说的。
+    assert "王小明：古茗店效还行" in reading
 
 
 def _live_shots() -> list[str]:
@@ -180,14 +309,12 @@ def _live_shots() -> list[str]:
 
 
 def test_live_14886_shots_drop_chrome_and_guest_names():
-    """线上三张图：价格粘在商品上、小小程序、@备注、短回复前的名字都不能漏进对话。"""
+    """线上三张图：价格粘在商品上、小小程序、@备注、短回复前的名字都不能漏进对话；网名照留。"""
     shots = _live_shots()
     assert len(shots) == 3
     text = present_ocr_pieces(shots)
     assert present_stored_ocr(text) == text
     for leaked in (
-        "王小明",
-        "李小红",
         "@think",
         "￥",
         "¥",
@@ -207,13 +334,13 @@ def test_live_14886_shots_drop_chrome_and_guest_names():
         "万象城",
     ):
         assert leaked not in text, leaked
-    # 开头没有别人的昵称，是作者自己的绿色气泡。王小明、李小红仍是网友。
-    assert text.startswith("方伟：同样是捕抓")
-    assert "网友：怎么定义古茗做咖啡成功了呢" in text
-    assert "网友：数据确实是好的" in text
-    assert "网友：并且高密度的门店区域" in text
-    assert text.count("成功的也不多，就一个古茗") == 1
-    assert text.count("要么需求侧少喝咖啡") == 1
+    # 开头没有别人的昵称，是作者自己的绿色气泡。王小明、李小红写各自的网名。
+    assert text.startswith("方伟：同样是追着“厚乳拿铁”")
+    assert "王小明：古茗的咖啡怎么就算做起来了呢" in text
+    assert "单量确实是涨的" in text
+    assert "李小红：而且门店密集的商圈" in text
+    assert text.count("眼下只有古茗") == 1
+    assert text.count("要么是大家不爱喝了") == 1
     assert "的" in text.splitlines()
 
 
@@ -233,59 +360,58 @@ def _shots_14879() -> list[str]:
     return [shot for shot in shots if shot]
 
 
-def test_live_14879_strips_the_guest_nickname_and_splits_turns():
-    """Kevin 是网友昵称。句子里的 @方伟 不另起「方伟：」，显示名「方伟-最近在杭州：」才是。"""
+def test_live_14879_keeps_the_guest_nickname_and_splits_turns():
+    """Lucas 是截图上的网名，照写。句子里的 @方伟 不另起「方伟：」，显示名「方伟-最近在出差：」才是。"""
     shots = _shots_14879()
     assert len(shots) == 7
     text = present_ocr_pieces(shots)
-    assert text.startswith("网友：")
-    assert "网友：Kevin" not in text
-    assert "Kevin" not in text
-    assert text.count("网友：") >= 3
+    assert text.startswith("Lucas：")
+    assert "网友：Lucas" not in text
+    assert text.count("Lucas：") >= 3
     assert text.count("方伟：") >= 3
-    assert "方伟：会有一批大模型达到" in text
-    assert "方伟-最近在杭州" not in text
+    assert "方伟：会有一批大模型做到" in text
+    assert "方伟-最近在出差" not in text
     for leaked in ("10:57", "10:43", "10:49", "示例", "撤回了一条消息"):
         assert leaked not in text, leaked
     assert "@方伟-最近在" in text
     blocks = text.split("\n\n")
     question = next(block for block in blocks if "@方伟-最近在" in block)
-    assert "Opus5.5" not in question
-    assert any(block.startswith("方伟：Opus5.5确实断档领先") for block in blocks)
-    assert any("但大模型的用户体验评价维度" in block and block.startswith("方伟：") for block in blocks)
-    host = next(block for block in blocks if "会有一批大模型达到" in block and block.startswith("方伟："))
-    assert host.startswith("方伟：会有一批大模型达到")
+    assert "GPT-6这一代" not in question
+    assert any(block.startswith("方伟：GPT-6这一代确实把其他所有模型甩开") for block in blocks)
+    assert any("但大家给大模型打分的角度" in block and block.startswith("方伟：") for block in blocks)
+    host = next(block for block in blocks if "会有一批大模型做到" in block and block.startswith("方伟："))
+    assert host.startswith("方伟：会有一批大模型做到")
 
 
-def test_host_status_suffix_on_shot_23820_is_a_fangwei_turn():
-    """23820 的显示名带着「-最近在杭州」，标签只写「方伟：」，后缀不留在正文。"""
+def test_host_status_suffix_is_a_fangwei_turn():
+    """显示名带着「-最近在出差」这种状态，标签只写「方伟：」，后缀不留在正文。"""
     raw = (
         "10:50\n"
-        "Kevin\n"
-        "这个我认可。\n"
-        "方伟-最近在杭州：会有一批大模型达到\n"
-        "Opus5.5当前的智能，且只有十分之一的...\n"
-        "希望有但不可知\n"
-        "差异化一般而言应该是应用层的事情\n"
+        "Lucas\n"
+        "这点我同意。\n"
+        "方伟-最近在出差：会有一批大模型做到\n"
+        "GPT-6现在的水平，价格只要十分之一的...\n"
+        "盼着有但说不准\n"
+        "拉开差距一般是应用层要做的事情\n"
     )
     text = present_ocr_pieces([raw])
-    assert "方伟-最近在杭州" not in text
+    assert "方伟-最近在出差" not in text
     assert (
-        "方伟：会有一批大模型达到\n"
-        "Opus5.5当前的智能，且只有十分之一的...\n"
-        "希望有但不可知\n"
-        "差异化一般而言应该是应用层的事情。"
+        "方伟：会有一批大模型做到\n"
+        "GPT-6现在的水平，价格只要十分之一的...\n"
+        "盼着有但说不准\n"
+        "拉开差距一般是应用层要做的事情。"
     ) in text
-    assert present_ocr_pieces(["Kevin\n方伟说得对，同店还有压力，先观望一下\n微信\n"]).startswith("网友：")
+    assert present_ocr_pieces(["Lucas\n方伟说得对，同店还有压力，先观望一下\n微信\n"]).startswith("Lucas：")
 
 
 def test_screenshot_wraps_flow_into_one_paragraph():
     """满行的折行接上，短行不把两句粘死。旁路文本仍保留换行，这里只测阅读页用的整理。"""
-    assert _flow_ocr_lines("最近Claude被封号了，用了一些国\n产agents，觉得差距太大了") == (
-        "最近Claude被封号了，用了一些国产agents，觉得差距太大了"
+    assert _flow_ocr_lines("最近Cursor额度用完了，换了一些国\n产agents，发现差得太多了") == (
+        "最近Cursor额度用完了，换了一些国产agents，发现差得太多了"
     )
-    assert _flow_ocr_lines("Opus5.5确实断档领先其他所有大模\n型。") == "Opus5.5确实断档领先其他所有大模型。"
-    assert _flow_ocr_lines("机或者游戏潮玩\n他是一个效率驱动的东西") == "机或者游戏潮玩他是一个效率驱动的东西"
+    assert _flow_ocr_lines("GPT-6这一代确实把其他所有模型甩开\n了。") == "GPT-6这一代确实把其他所有模型甩开了。"
+    assert _flow_ocr_lines("机或者盲盒潮玩\n它是一个拼效率的东西") == "机或者盲盒潮玩它是一个拼效率的东西"
     assert "\n" not in _flow_ocr_lines("同店压力还在，折扣不能再深\n会员那边先不动。")
 
 
@@ -304,26 +430,26 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
     page = inline_image_ocr(str(render_body("\n\n".join(parts) + "\n", mapping)), texts)
     assert "国产agents" in page
     assert "国\n产" not in page
-    assert "根本不是一个代际的产品" in page
-    assert "其他所有大模型" in page
-    assert "智能手机或者游戏潮玩" in page
-    assert "游戏潮玩他是一个效率驱动" in page
-    assert "agents执行复杂任务" in page
-    assert '<span class="who">方伟：</span>会有一批大模型达到' in page
+    assert "压根不在一个水平线上" in page
+    assert "其他所有模型" in page
+    assert "手机或者盲盒潮玩" in page
+    assert "盲盒潮玩它是一个拼效率" in page
+    assert "agents执行长任务" in page
+    assert '<span class="who">方伟：</span>会有一批大模型做到' in page
     assert page.count('<span class="who">方伟：</span>') >= 3
-    assert page.count('<span class="who">网友：</span>') >= 3
+    assert page.count('<span class="who">Lucas：</span>') >= 3
     assert page.count('class="ocr-reading ocr-dialogue"') == 1
-    assert "Kevin" not in page
+    assert "网友：" not in page
     # 显示名只用于认出方伟，不写成说话人。句子里的 @ 折行后仍是一整句。
-    assert "方伟-最近在杭州：" not in page
-    assert "@方伟-最近在杭州" in page
+    assert "方伟-最近在出差：" not in page
+    assert "@方伟-最近在出差" in page
     for number in range(1, len(shots) + 1):
         digest = f"{number:02d}" * 32
         assert f'id="{image_anchor(digest)}"' in page
         assert f"/media/fangwei-zsxq/ab/{digest}.png" in page
     # 旁路和检索仍用带换行的整理结果，不因阅读页折行而改掉。
     stored = present_ocr_pieces(shots)
-    assert "用了一些国\n产agents" in stored
+    assert "换了一些国\n产agents" in stored
 
 
 def test_image_post_title_uses_the_sentence_not_the_speaker_label():
@@ -477,6 +603,39 @@ def test_cjk_wrap_does_not_insert_space():
     )
     assert _flow_ocr_lines("其实只有Costco，奥\n乐齐，利德。") == "其实只有Costco，奥乐齐，利德。"
     assert "奥 乐齐" not in flow_ocr_quote_body("方伟：其实只有Costco，奥\n乐齐，利德。")
+
+
+# 文章 24020 的写法：识图一条气泡写一行，每行都标了说话人。
+VISION_BUBBLES = (
+    "方伟：现在抖音放弃了，淘宝也推不动，京东是本来就送货上门\n"
+    "方伟：这里反映了很多复杂的利益结构问题\n"
+    "方伟：因为他花了很长时间构建菜鸟驿站\n"
+    "方伟：菜鸟是靠揽件与代收赚钱的\n"
+    "方伟：你推行送货上门，会让很多驿站的流量崩掉，\n"
+    "方伟：这件事跟阿里菜鸟的商业模式有冲突。\n"
+    "网友：那抖音呢\n"
+    "方伟：他出发点是好的\n"
+    "方伟：但是抖音本来就是一个高投流的商业模式"
+)
+
+
+def test_vision_bubbles_keep_a_space_between_messages():
+    """方伟连发的几条气泡之间空一格，不再像屏宽折行那样首尾粘成「构建菜鸟驿站菜鸟是靠揽件」。"""
+    assert parse_shot(VISION_BUBBLES).bubble_lines
+    digest = "ab" * 32
+    html = str(render_body("（见图）\n\n![](a.png)\n", {"a.png": f"/media/fangwei-zsxq/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: VISION_BUBBLES})
+    assert "送货上门 这里反映了很多复杂的利益结构问题 因为他花了很长时间构建菜鸟驿站 菜鸟是靠揽件" in page
+    assert "驿站菜鸟" not in page
+    # 逗号后面不空格；句号收住的照旧另起一段。
+    assert "流量崩掉，这件事跟阿里菜鸟" in page
+    assert "有冲突。 " not in page
+    assert "他出发点是好的 但是抖音本来就是" in page
+    # 旁路和检索仍是一条一行。
+    assert "送货上门\n这里反映了" in present_ocr_pieces([VISION_BUBBLES])
+    # 屏宽折行的旧识别不按气泡算，仍按满行接上。
+    assert not parse_shot(PDD_MOMENTS).bubble_lines
+    assert not parse_shot("\n".join(_shots_14879()[:1])).bubble_lines
 
 
 def test_sentence_end_starts_new_dialogue_paragraph():
@@ -765,6 +924,34 @@ def test_606_friend_follow_chrome_is_dropped():
     assert "我有14个朋友关注这件事，先放着" in kept
 
 
+def test_friends_who_liked_line_is_dropped():
+    """文章、视频号底下「王小明等3个朋友」「李四等12个朋友赞过」整行丢掉，名字是读者的（10503）。"""
+    raw = "正文这一句要留下，后面还有半句。\n王小明-nft创业等3个朋友\n李四等12个朋友赞过\n"
+    text = present_ocr_pieces([raw])
+    assert "正文这一句要留下" in text
+    assert "个朋友" not in text and "王小明" not in text
+    kept = present_ocr_pieces(["我和王小明等3个朋友一起去看了门店，客流还可以。\n"])
+    assert "王小明等3个朋友一起去看了门店" in kept
+
+
+def test_pinned_message_bar_is_not_a_guest_turn():
+    """群聊顶上置顶的消息条「王小明：……..  移除」每张都带着（23860），不是这一屏谁说的话。
+
+    当成网友开头的话，下面接着的几行（星主那段话的后半）也会记到网友名下。
+    """
+    shot = (
+        "16:04  :!!! 5G\n1735  看十年·线下深度交流(58)\n王小明：我觉得这篇文章对于茅台写得更深..  移除\n"
+        "分众这种弱互动、弱数据反馈、交易\n不闭环的逻辑就注定了他只能俘获中\n方伟Rey\n他的份额一定是最高的\n"
+    )
+    text = present_ocr_pieces([shot, shot.replace("更深..", "更深...")])
+    assert "移除" not in text and "王小明" not in text and "网友" not in text
+    assert text.startswith("方伟：分众这种弱互动")
+    # 已经整理成「网友：」的旧文字再过一遍也去掉；正文里说到「移除」的不算。
+    assert "移除" not in present_ocr_pieces(["网友：我觉得这篇文章对于茅台写得更深.. 移除\n方伟：同意\n"])
+    kept = parse_shot("李四：这个按钮应该移除\n方伟Rey\n同意")
+    assert [(turn.speaker, turn.lines) for turn in kept.turns] == [("李四", ["这个按钮应该移除"]), ("方伟", ["同意"])]
+
+
 def test_606_account_name_and_reader_counts_are_follow_chrome():
     """公众号预览页：「账号名 +关注」「观察 56个朋友关注 82 455 38 33。」整行丢掉，正文不截断。"""
     raw = """方伟
@@ -1007,7 +1194,7 @@ def test_hold_to_text_and_quote_back_chrome_are_stripped():
         "方伟\n"
         "我投资想的是底线\n"
         "一年的底线能不能稳定赚100亿的问题\n"
-        "Cody\n"
+        "Jack\n"
         "应该想一些非共识的。比如下限赚多少钱一年\n"
         "4月6日12:06\n"
         "如果你的决策是建立在今年业绩涨了3倍，明年再三倍\n"
@@ -1015,20 +1202,20 @@ def test_hold_to_text_and_quote_back_chrome_are_stripped():
         "那这种高预期，市场也是这么高预期\n"
         "可按住转文字\n"
         "可按住转文字  E\n"
-        "Henri\n"
+        "Peter\n"
         "の  可按住转文字\n"
         "HYIIV\n"
     )
     text = present_ocr_pieces([raw])
     assert "方伟：" in text
-    assert "网友：" in text
+    # 群友的网名照写。
+    assert "Jack：" in text
     for noise in (
         "可按住转文字",
         "回到引用位置",
         "18:52",
         "4月6日12:06",
         "看十年价投交流",
-        "Cody",
         "HYIIV",
         "の",
     ):
@@ -1037,7 +1224,7 @@ def test_hold_to_text_and_quote_back_chrome_are_stripped():
 
 
 def test_labeled_vision_chrome_is_not_a_speaker():
-    """识图已经写成方伟/网友时，界面行仍要剥掉，不能标成说话人。"""
+    """识图已经写成方伟/网友或网名时，界面行仍要剥掉，不能标成说话人。"""
     raw = (
         "方伟：可按住转文字\n"
         "方伟：一年的底线能不能稳定赚100亿\n"
@@ -1047,12 +1234,13 @@ def test_labeled_vision_chrome_is_not_a_speaker():
         "LIVE\n"
         "加人会员群\n"
         "网友：非共识的下限要先想清楚\n"
-        "Aaron阿远：高坝期不是这样说的\n"
-        "Henri：每般利间先放一边\n"
+        "Tony小李：高坝期不是这样说的\n"
+        "Peter：每般利间先放一边\n"
     )
     text = compose_ocr_text([raw])
     assert "方伟：" in text
     assert "网友：" in text
+    assert "Tony小李：" in text and "Peter：" in text
     for noise in (
         "可按住转文字",
         "继续提问",
@@ -1060,9 +1248,6 @@ def test_labeled_vision_chrome_is_not_a_speaker():
         "雪球",
         "LIVE",
         "加人会员群",
-        "Aaron",
-        "Henri",
-        "阿远",
     ):
         assert noise not in text, noise
     assert "稳定赚100亿" in text
@@ -1104,7 +1289,7 @@ def test_zsxq_coupon_card_is_noise():
 
 
 def test_weibo_comment_labeled_guest():
-    raw = """小事7747 山东 2
+    raw = """王小明 山东 2
 说实话单日房价超过300的
 酒店其中七成以上的客人都
 是单位出差，为了多开票只
@@ -1112,8 +1297,9 @@ def test_weibo_comment_labeled_guest():
 亚朵酒店靠卖枕头被子半年...
 龙视新闻联播"""
     text = present_ocr_pieces([raw])
-    assert text.startswith("网友：")
-    assert "小事7747" not in text
+    # 微博评论卡的昵称是说话人，地区和数字删掉。
+    assert text.startswith("王小明：")
+    assert "山东" not in text
     assert "龙视新闻联播" not in text
     assert "单日房价" in text
 
@@ -1138,7 +1324,7 @@ INSIDE THE BEST
     assert "756" not in text
 
     xueqiu = """清仓格力
-超级鹿鼎公
+王小明
 2025-10-31 09:35 · 浙江 · 2022年度十大影响力用户
 格力这波我觉得可以再看看基本面。
 发讨论
@@ -1146,7 +1332,8 @@ INSIDE THE BEST
     text = present_ocr_pieces([xueqiu])
     assert "清仓格力" in text
     assert "基本面" in text
-    assert "超级鹿鼎公" not in text
+    # 网名留下，时间、地区、影响力徽章、发讨论和数字栏删掉。
+    assert "王小明" in text
     assert "影响力用户" not in text
     assert "发讨论" not in text
     assert "1155" not in text
@@ -1245,7 +1432,7 @@ def test_group_notices_and_status_bar_are_not_anyones_words():
     leaks = ("李四", "张三", "赵六", "加入了群聊", "隐私安全", "撤销", "以下为新消息", "5GA", "10:57", "知识星球")
     for leaked in leaks:
         assert leaked not in text, leaked
-    assert "网友：大家觉得组织是护城河么" in text
+    assert "王小明：大家觉得组织是护城河么" in text
     assert "方伟：组织是支撑，不是护城河本身" in text
 
     glued = present_ocr_pieces(["11:08 :!!! 5GA 式呢，以前觉得汽车行业是很高大上的\n微信\n王小明\n现在呢\n"])
@@ -1257,6 +1444,22 @@ def test_group_notices_and_status_bar_are_not_anyones_words():
     again = present_stored_ocr(stored)
     assert "李四" not in again and "5GA" not in again and "知识星球" not in again
     assert "大家觉得组织是护城河么" in again
+
+
+def test_app_logo_line_is_not_anyones_words():
+    """状态栏和 App 标题识成两行时，单独一行的「■知识星球」也只是界面，不能标成方伟的话（23946）。"""
+    raw = "10:57 :!!! 5GA\n■知识星球\n微信\n看十年交流群(120)\n王小明\n拼多多的护城河是什么呢\n"
+    text = present_ocr_pieces([raw])
+    assert "知识星球" not in text and "5GA" not in text
+    assert "王小明：拼多多的护城河是什么呢" in text
+
+    again = present_stored_ocr("方伟：■知识星球。\n\n网友：拼多多的护城河是什么呢。")
+    assert "知识星球" not in again
+    assert "拼多多的护城河是什么呢" in again
+
+    speech = present_ocr_pieces(["微信\n看十年交流群(120)\n王小明\n这些讨论在哪里能看全？\n方伟Rey\n知识星球里有\n"])
+    assert "王小明：这些讨论在哪里能看全？" in speech
+    assert "方伟：知识星球里有" in speech
 
 
 def test_invite_words_and_clock_in_speech_stay():

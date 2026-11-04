@@ -1,8 +1,10 @@
 """用 LLM 给每篇文章写摘要、要点和标签，存进 article_digests。
 
 只处理还没有摘要、正文改过（content_hash 对不上）、提示词版本旧了、当时只读了长文开头，
-或正文很短而图片文字和上次抽的时候不一致的文章。
+或正文很短而图片文字和上次抽的时候不一致的文章。正文加图片里的字不到 MIN_DIGEST_CHARS 个字的不写：
+只有「这是好文章」一句的帖，模型只能写「正文只有一句，无法归纳」；带图的等识图写上字以后再写。
 短正文的图片文字刚写上时，会先写进 article_followups，排在缺摘要的积压前面，避免被饿死。
+知识星球的读者帖网站上哪儿都不展示，不排队写摘要。
 卡片和 JSON 接口优先展示摘要；旧摘要照常显示，同时排进后台重写。失败的记下来，隔几天再试。
 
 两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
@@ -27,7 +29,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import display_author, raw_meta_of
+from researchlib.author_voice import display_author, raw_meta_of, site_visible_sql
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
@@ -37,7 +39,7 @@ from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
-from researchlib.wechat_dialogue import speaker_note
+from researchlib.wechat_dialogue import relabel_host, speaker_note
 
 logger = logging.getLogger("researchlib.digest")
 
@@ -105,6 +107,21 @@ def digest_due(article, digest: dict | None) -> bool:
     return ((digest or {}).get("ocr_hash") or "") != ocr_hash
 
 
+# 正文加图片里的字，汉字、字母、数字不到这么多个就不写摘要。星球上只有「这是好文章」「下图」一句、
+# 字都在图里的帖，抓下来时还没识图，模型只能写「正文只有一句，无法归纳」，挂在卡片上还不如原文。
+# 识图写上字以后够数了再写（识图会把短正文排进摘要的队）。
+MIN_DIGEST_CHARS = 20
+
+
+def enough_text_sql(alias: str = "a") -> str:
+    """这篇的正文加图片里的字够不够写摘要。各取前 400 字来数，长文不用整篇过正则。"""
+    return (
+        f"length(regexp_replace(left(coalesce({alias}.body_text, ''), 400)"
+        f" || left(coalesce({alias}.ocr_text, ''), 400), '[^0-9A-Za-z一-鿿]', '', 'g'))"
+        f" >= {MIN_DIGEST_CHARS}"
+    )
+
+
 # 短正文、图片文字和摘要对不上。单独拿出来，是为了排在「还没有摘要」前面。
 _OCR_DIGEST_DUE = (
     "(a.ocr_hash <> '' AND d.ocr_hash IS DISTINCT FROM a.ocr_hash"
@@ -118,8 +135,8 @@ _STALE = (
     "(d.article_id IS NULL OR d.content_hash <> a.content_hash OR d.prompt_version < %s OR d.head_only"
     f" OR {_OCR_DIGEST_DUE})"
 )
-# 入队的也算到期：哈希已经对齐、但标题曾被漏判时，仍要重写这一次。
-_DUE = f"({_STALE} OR {_FOLLOWUP_DIGEST})"
+# 入队的也算到期：哈希已经对齐、但标题曾被漏判时，仍要重写这一次。字太少的都不算到期。
+_DUE = f"(({_STALE} OR {_FOLLOWUP_DIGEST}) AND {enough_text_sql('a')})"
 # 刚识完图的短正文先写。否则缺摘要的积压（按 limit 截断）会把它们一直留在后面。
 PENDING_ORDER = (
     f"{_FOLLOWUP_DIGEST} DESC, {_OCR_DIGEST_DUE} DESC, "
@@ -135,7 +152,7 @@ def pending_articles(conn, source_ids: list[str], limit: int):
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND {visible_sql("a")}
+          AND {visible_sql("a")} AND {site_visible_sql("a")}
           AND {_DUE} AND {cooling_sql('digest', 'a.id')}
         ORDER BY {PENDING_ORDER}
         LIMIT %s
@@ -151,10 +168,12 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     header = f"标题：{row['title']}\n作者：{shown_author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    # 截图里的绿气泡是发这篇的人：别的来源、星球读者帖都不写成方伟。
+    ocr_text = relabel_host(ocr_text, shown_author)
     body = append_ocr(row["body_text"] or "", ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
-        note = speaker_note(ocr_text)
+        note = speaker_note(ocr_text, shown_author)
         header += (
             "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。"
             + (note if note else "")

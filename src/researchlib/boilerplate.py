@@ -8,7 +8,7 @@
 三条规则，都按同一来源多篇文章的统计来判，不写死某个作者的话术：
 
 1. 归档头：正文开头那几行「- 作者：」「- 时间：」「- sn：」「- 原链接：」「- 原始数据：」
-   「- 类型：」「- 点赞 · 评论 · 阅读人数」「- topic_id：」，整块去掉。
+   「- 类型：」「- 点赞 · 评论 · 阅读人数」「- topic_id：」「- rss_link：」，整块去掉。
 2. 模板句：同一来源里在很多篇（至少 max(5, 2%) 篇）都出现的整行。文末从第一行模板句起，
    后面几乎全是模板句、引流关键词或几个字的碎行时，整段切掉（招募被拆成一行几个字的也切得到）。
    正文中间的模板句只在带引流关键词时去掉；飞书那类重复的小标题不带关键词，留着。
@@ -37,7 +37,7 @@ _IMAGE = re.compile(
 _HEADING = re.compile(r"^\s*#{1,6}\s+\S")
 _META_KEYS = (
     r"作者|时间|发布时间|类型|点赞|sn|topic_id|原链接|原文链接|原始数据|来源|公众号|阅读人数|阅读|"
-    r"ghid|appmsgid|position|author|url|source"
+    r"ghid|appmsgid|position|author|url|source|rss_link"
 )
 _META_LINE = re.compile(r"^\s*[-*]\s*(?:" + _META_KEYS + r")\s*(?:[:：]|\s+\d|\s*·)", re.I)
 # 带这些词的行在文末算引流。统计尾巴用它；单独出现在研究正文里（比如讨论扫码支付）不够切段。
@@ -591,13 +591,25 @@ def clean_article(conn, article_id: int, source_id: str, body_md: str) -> str:
     return clean_markdown(body_md, profile_for(conn, source_id), image_hashes(conn, article_id), drop_cta=True)
 
 
+def search_text(cleaned: str, title: str) -> str:
+    """清洗后的正文 → articles.body_text（检索、摘要、观点、卡片摘录读的文字）。
+
+    和标题重复的那行去掉；问答帖的「提问（网友 → 方伟Rey）」只留「提问」，网友的昵称不进来。
+    Stratechery 每日更新开头的「Good morning,」「On to the Update:」和结尾的转发须知不进来（housekeeping）。
+    """
+    from researchlib.housekeeping import strip_housekeeping
+    from researchlib.present_text import plain_qa_markdown
+    from researchlib.textutil import markdown_to_text, strip_duplicate_title
+
+    return markdown_to_text(plain_qa_markdown(strip_duplicate_title(strip_housekeeping(cleaned), title)))
+
+
 # —— 全库重洗 ——
 
 
 def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> dict:
     """按当前规则重算 body_text 和原文段落块。body_md 不动。返回各来源改动篇数。"""
     from researchlib.chunks import replace_chunks
-    from researchlib.textutil import markdown_to_text, strip_duplicate_title
 
     where = "WHERE duplicate_of IS NULL"
     params: list = []
@@ -612,7 +624,7 @@ def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> 
     for index, row in enumerate(rows, 1):
         seen[row["source_id"]] += 1
         cleaned = clean_article(conn, row["id"], row["source_id"], row["body_md"])
-        text = markdown_to_text(strip_duplicate_title(cleaned, row["title"]))
+        text = search_text(cleaned, row["title"])
         if text == (row["body_text"] or ""):
             continue
         changed[row["source_id"]] += 1

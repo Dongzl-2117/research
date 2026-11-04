@@ -66,6 +66,27 @@ def read_text_file_safe(path: Path) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+# 有的抓取脚本把换行写成字面上的反斜杠 n（极致了部分类型的正文），整篇挤成一行。
+# 这一行里有挨着汉字或中文标点的才整行换回换行；英文、代码里的 \n 不动。
+_LITERAL_BREAK = re.compile(r"(?<!\\)(?:\\r)?\\n(?:(?:\\r)?\\n)*")
+_CJK = re.compile(r"[\u3000-\u303f\u3400-\u9fff\uff00-\uffef]")
+
+
+def unescape_literal_breaks(text: str) -> str:
+    if "\\n" not in text:
+        return text
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        runs = list(_LITERAL_BREAK.finditer(line))
+        if not any(
+            _CJK.match(line[run.start() - 1 : run.start()]) or _CJK.match(line[run.end() : run.end() + 1])
+            for run in runs
+        ):
+            continue
+        lines[index] = _LITERAL_BREAK.sub(lambda run: "\n" * run.group(0).count("\\n"), line)
+    return "\n".join(lines)
+
+
 def image_refs_in(text: str) -> list[str]:
     refs = [match.group(2) for match in _MD_IMAGE.finditer(text)]
     refs.extend(match.group(1) for match in _HTML_IMAGE.finditer(text))
@@ -407,13 +428,14 @@ def parse_markdown_files(
     images: ImageIndex,
     id_mode: str,
     raw_index: dict[str, dict] | None = None,
+    owners: tuple[str, ...] = (),
 ) -> tuple[list[ParsedDoc], list[str]]:
     docs: list[ParsedDoc] = []
     errors: list[str] = []
     text_root = common_root(files)
     for path in files:
         try:
-            original = read_text_file_safe(path)
+            original = unescape_literal_breaks(read_text_file_safe(path))
         except OSError as exc:
             errors.append(f"{path}: {exc}")
             continue
@@ -424,7 +446,7 @@ def parse_markdown_files(
         if id_mode == "zsxq":
             # 导出标题是空的、被省略号截断，或只是正文开头的十几个字时，能从正文收成一句就写入。
             # 兜底标题留到页面上现算。
-            replacement = stored_zsxq_title(title, body)
+            replacement = stored_zsxq_title(title, body, owners=owners)
             if replacement:
                 title = replacement
         if id_mode == "path":
@@ -480,10 +502,12 @@ def parse_markdown_files(
             refs.append((dest, images.resolve(ref, path)))
         full_md = normalize_newlines(original)
         if id_mode == "zsxq":
-            # 评论区只留方伟；其他人的仍在 inbox / raw，可逆。
+            # 评论区只留来源作者（owners，不给时按方伟）；其他人的仍在 inbox / raw，可逆。
+            # 有话题 JSON 时，星主在楼中楼里的回复连同读者那句接进下面的「评论里的回复」，列表里不重复；
+            # 没有 JSON（乘风破浪的归档）就留在列表里。
             from researchlib.zsxq_comments import filter_host_comments_markdown
 
-            full_md = filter_host_comments_markdown(full_md)
+            full_md = filter_host_comments_markdown(full_md, owners, replies="replies" not in raw_meta)
         stored_meta: dict = {
             "format": "markdown",
             "parent": parent,
@@ -550,7 +574,10 @@ def _owning_root(path: Path, roots: list[Path]) -> Path | None:
     return owners[0]
 
 
-def parse_archive(input_path: Path, work: Path, *, id_mode: str) -> tuple[list[ParsedDoc], list[str], int, int]:
+def parse_archive(
+    input_path: Path, work: Path, *, id_mode: str, owners: tuple[str, ...] = ()
+) -> tuple[list[ParsedDoc], list[str], int, int]:
+    """owners：星球评论区只留这些名字（zsxq_comments.source_owners）。不给时按方伟。"""
     roots = materialize(input_path, work)
     markdown, images, raw_json = iter_files(roots)
     if id_mode == "zsxq":
@@ -576,5 +603,6 @@ def parse_archive(input_path: Path, work: Path, *, id_mode: str) -> tuple[list[P
         images=index,
         id_mode=id_mode,
         raw_index=raw_index,
+        owners=owners,
     )
     return docs, errors, len(markdown), len(images)

@@ -1,14 +1,14 @@
-"""方伟星球存量回写。规则和入库、阅读页是同一套，不另写一套。
+"""知识星球存量回写。规则和入库、阅读页是同一套，不另写一套。
 
-别的星球来源（乘风破浪）只回写标题：`--source chengfengpolang --titles-only`。评论和图片文字的规则是
-照方伟定的，不用在别的星球上。
+别的星球来源（乘风破浪）回写标题和评论：`--source chengfengpolang`。图片文字的整理规则是照方伟定的
+（绿气泡记成方伟），只重洗方伟星球和方伟公众号。
 
 - 标题：空的、「无标题」、以省略号结尾的、公司名/话题名冒号壳，
   以及空壳导读（「没有可读文字」「正文为空」），改成完整标题。
   加 `--ai-titles` 时优先用站内 deepseek-flash 起题（含错字抛光），
   失败再退回确定性首句。写不出来的日期兜底不入库。
-- 评论：`## 评论（N）` 只留方伟。解析不了的不动，在报告里单列。
-- 图片文字：星球和公众号里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。
+- 评论：`## 评论（N）` 只留来源作者（来源配置的 author 和 poster_names）。解析不了的不动，在报告里单列。
+- 图片文字（只有方伟星球）：星球和公众号里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。
   粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重新识图。
 
 改标题或评论会改 `content_hash`，同时把观点、摘要、译文的哈希对齐，避免夜间任务把这几千篇再抽一遍。
@@ -22,6 +22,7 @@ import sys
 
 from researchlib.boilerplate import clean_markdown, image_hashes, profile_for
 from researchlib.chunks import make_chunks
+from researchlib.digest import enough_text_sql
 from researchlib.duplicates import fingerprint, store_fingerprint
 from researchlib.followups import KIND_TITLE, clear_followup, queued_ids
 from researchlib.ingest.store import _body_text
@@ -41,9 +42,10 @@ from researchlib.wechat_dialogue import (
 )
 from researchlib.zsxq_comments import (
     comment_list_authors,
+    drop_guest_comments_text,
     filter_host_comments_markdown,
     guest_comment_authors,
-    is_host_comment_author,
+    source_owners,
 )
 from researchlib.zsxq_title import (
     FANGWEI_ZSXQ,
@@ -138,12 +140,13 @@ def _image_pieces(conn, source_id: str) -> dict[int, list[str]]:
 
 
 def _digests(conn, source_id: str) -> dict[int, str]:
+    # 和页面一样：几乎没字时写下的「正文只有一句，无法归纳」不拿来起标题。
     rows = conn.execute(
-        """
+        f"""
         SELECT d.article_id, d.summary
         FROM article_digests d
         JOIN articles a ON a.id = d.article_id AND a.content_hash = d.content_hash
-        WHERE a.source_id = %s AND a.duplicate_of IS NULL
+        WHERE a.source_id = %s AND a.duplicate_of IS NULL AND {enough_text_sql("a")}
         """,
         (source_id,),
     ).fetchall()
@@ -202,13 +205,17 @@ def repair_zsxq(
     titles_only: bool = False,
     limit: int = 0,
     article_ids: list[int] | None = None,
+    owners: tuple[str, ...] = (),
+    spot_owners: dict[str, tuple[str, ...]] | None = None,
 ) -> dict:
-    """回写方伟星球的标题、评论，并重洗星球和公众号的 OCR 旁路。不提交事务。
+    """回写星球的标题、评论；方伟星球再重洗星球和公众号的 OCR 旁路。不提交事务。
 
     ai_titles：缺/壳/省略号/空壳导读标题优先走站内 flash 起题；settings 必传。
-    titles_only：只改标题（增量抓取后补跑用），评论和 OCR 旁路不动。别的星球来源只能这样跑。
+    titles_only：只改标题（增量抓取后补跑用），评论和 OCR 旁路不动。
     limit：最多改这么多标题（0 不限）；增量抓取后补跑用，避免一次打光存量。
     article_ids：只处理这些篇（识图刚入队的）。不传则全表，入队的排在前面。
+    owners：评论区只留这些名字（source_owners）。不给时按方伟。
+    spot_owners：抽检时按文章的来源认作者，{来源: owners}。不给时按方伟。
     """
     if source_id == FANGWEI_MP:
         changed = rewash_source_ocr(conn, FANGWEI_MP)
@@ -224,18 +231,16 @@ def repair_zsxq(
             "comments_unparsed": 0,
             "ocr_rewash": 0,
             "ocr_rewash_mp": changed,
+            "rewash": True,
             "samples": [],
-            "spots": spot_check(conn, spot_ids or []),
+            "spots": spot_check(conn, spot_ids or [], spot_owners),
         }
         return stats
-    if source_id != FANGWEI_ZSXQ and not titles_only:
-        raise SystemExit(
-            "评论和图片文字只回写方伟星球（fangwei-zsxq）。别的星球只回写标题，加 --titles-only；"
-            "公众号只重洗图片文字，用 --source fangwei-mp。"
-        )
+    # 图片文字的整理把绿气泡记成方伟，只用在方伟星球上。
+    rewash = source_id == FANGWEI_ZSXQ and not titles_only
     profile = profile_for(conn, source_id)
     matcher = CompanyMatcher(load_company_rows(conn))
-    pieces = {} if titles_only else _image_pieces(conn, source_id)
+    pieces = _image_pieces(conn, source_id) if rewash else {}
     summaries = _digests(conn, source_id)
     order = "id DESC" if limit else "id"
     params: list = [source_id]
@@ -277,6 +282,7 @@ def repair_zsxq(
         "spots": [],
         "ai_titles": ai_titles,
         "titles_only": titles_only,
+        "rewash": rewash,
     }
     for row in rows:
         article_id = int(row["id"])
@@ -285,7 +291,7 @@ def repair_zsxq(
         ocr_text = row["ocr_text"] or ""
         visible = not is_hidden(row["raw_meta"])
         shot_parts = pieces.get(article_id) or []
-        cleaned = None if titles_only else _cleaned_ocr(shot_parts, ocr_text)
+        cleaned = _cleaned_ocr(shot_parts, ocr_text) if rewash else None
         new_ocr = ocr_text if cleaned is None else cleaned
         if cleaned is not None:
             stats["ocr_rewash"] += 1
@@ -295,7 +301,8 @@ def repair_zsxq(
             summary = summaries.get(article_id, "")
             ocr_shown = present_stored_ocr(new_ocr)
             when = _day(row["published_at"])
-            body_for_title = row["body_text"] or body_md
+            # 读者的评论不拿来起题，flash 也不看：只有图的帖以前拿读者那句评论当了标题（23834）。
+            body_for_title = drop_guest_comments_text(row["body_text"] or body_md, owners)
             replacement = None
             used_ai = False
             # 空壳导读（「没有可读文字」）也走 flash。半句截断仍不在 title_needs_ai 里。
@@ -316,6 +323,7 @@ def repair_zsxq(
                     summary=summary,
                     ocr=ocr_shown,
                     when=when,
+                    owners=owners,
                 )
             if replacement:
                 new_title = polish_title_typos(replacement)
@@ -339,10 +347,10 @@ def repair_zsxq(
             stats["comments_unparsed"] += 1
         elif listed:
             stats["comments_with_section"] += 1
-            guests = guest_comment_authors(body_md) or []
+            guests = guest_comment_authors(body_md, owners) or []
             if guests:
                 stats["comments_dirty"] += 1
-                filtered = filter_host_comments_markdown(body_md)
+                filtered = filter_host_comments_markdown(body_md, owners)
                 if filtered != body_md:
                     new_md = filtered
                     stats["comments_cleaned"] += 1
@@ -373,14 +381,17 @@ def repair_zsxq(
             replace_mentions(conn, article_id, mentions_for_document(matcher, new_title, new_md))
         if limit and titles_only and stats["titles"] >= limit:
             break
-    if not titles_only:
+    if rewash:
         stats["ocr_rewash_mp"] = rewash_source_ocr(conn, FANGWEI_MP)
-    stats["spots"] = spot_check(conn, spot_ids or [])
+    stats["spots"] = spot_check(conn, spot_ids or [], spot_owners)
     return stats
 
 
-def spot_check(conn, article_ids: list[int]) -> list[dict]:
-    """抽检给定的文章：标题还截不截断、评论剩谁、图片文字的页脚有没有挂到方伟。星球和公众号的都认。"""
+def spot_check(conn, article_ids: list[int], owners: dict[str, tuple[str, ...]] | None = None) -> list[dict]:
+    """抽检给定的文章：标题还截不截断、评论剩谁、图片文字的页脚有没有挂到方伟。星球和公众号的都认。
+
+    owners：{来源: 作者名}，评论按这篇所在来源的作者认。不给时按方伟。
+    """
     if not article_ids:
         return []
     rows = conn.execute(
@@ -417,8 +428,9 @@ def spot_check(conn, article_ids: list[int]) -> list[dict]:
         elif not listed:
             comment = "无评论列表"
         else:
-            guests = [name for name in listed if not is_host_comment_author(name)]
-            comment = "仍有非方伟：" + "、".join(guests) if guests else "评论只剩方伟"
+            mine = (owners or {}).get(row["source_id"] or "", ())
+            guests = guest_comment_authors(row["body_md"] or "", mine) or []
+            comment = "仍有别人的评论：" + "、".join(guests) if guests else "评论只剩作者"
         raw_parts = pieces.get(article_id) or []
         presented = present_ocr_pieces(raw_parts) if raw_parts else present_stored_ocr(row["ocr_text"] or "")
         report.append(
@@ -438,18 +450,19 @@ def spot_check(conn, article_ids: list[int]) -> list[dict]:
 def format_report(stats: dict) -> str:
     titles_only = bool(stats.get("titles_only"))
     lines = [
-        f"{'只回写标题' if titles_only else '方伟星球回写'}（{stats['source_id']}），扫描 {stats['scanned']} 篇",
+        f"{'只回写标题' if titles_only else '星球回写'}（{stats['source_id']}），扫描 {stats['scanned']} 篇",
         f"标题回写: {stats['titles']}（其中可见 {stats['titles_visible']}；flash 起题 {stats.get('titles_ai', 0)}）",
         f"标题仍无法收成一句: {stats['titles_unresolved']}",
     ]
     if not titles_only:
         lines += [
             f"评论节: {stats['comments_with_section']}",
-            f"评论含非方伟: {stats['comments_dirty']}",
+            f"评论含别人的: {stats['comments_dirty']}",
             f"评论已清理: {stats['comments_cleaned']}",
             f"评论节未能按列表解析: {stats['comments_unparsed']}",
-            f"对话重洗: 星球 {stats['ocr_rewash']}，公众号 {stats.get('ocr_rewash_mp', 0)}",
         ]
+    if stats.get("rewash"):
+        lines.append(f"对话重洗: 星球 {stats['ocr_rewash']}，公众号 {stats.get('ocr_rewash_mp', 0)}")
     if stats["samples"]:
         lines.append("标题样例:")
         for item in stats["samples"]:
@@ -471,14 +484,14 @@ def format_report(stats: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="回写方伟星球的截断标题和非方伟评论，并重洗星球与公众号里带页脚的图片文字"
+        description="回写星球的截断标题和别人的评论；方伟星球再重洗星球与公众号里带页脚的图片文字"
     )
     parser.add_argument("--source", default=FANGWEI_ZSXQ)
     parser.add_argument("--dry-run", action="store_true", help="只打印会改什么，不提交")
     parser.add_argument(
         "--titles-only",
         action="store_true",
-        help="只回写标题，评论和图片文字不动。别的星球来源（乘风破浪）只能这样跑",
+        help="只回写标题，评论和图片文字不动",
     )
     parser.add_argument(
         "--ai-titles",
@@ -510,10 +523,10 @@ def main(argv: list[str] | None = None) -> int:
     from researchlib.sources import load_sources
 
     settings = Settings.from_env()
-    if args.source != FANGWEI_MP:
-        kinds = {source.id: source.kind for source in load_sources(settings.sources_path)}
-        if kinds.get(args.source) != "zsxq":
-            raise SystemExit(f"{args.source} 不是知识星球来源，标题规则只认星球")
+    sources = {source.id: source for source in load_sources(settings.sources_path)}
+    if args.source != FANGWEI_MP and getattr(sources.get(args.source), "kind", "") != "zsxq":
+        raise SystemExit(f"{args.source} 不是知识星球来源，标题规则只认星球")
+    owners = {source_id: source_owners(source) for source_id, source in sources.items()}
     conn = prepare(settings)
     try:
         stats = repair_zsxq(
@@ -525,6 +538,8 @@ def main(argv: list[str] | None = None) -> int:
             titles_only=args.titles_only,
             limit=args.limit,
             article_ids=args.article or None,
+            owners=owners.get(args.source, ()),
+            spot_owners=owners,
         )
         print(format_report(stats))
         if args.dry_run:

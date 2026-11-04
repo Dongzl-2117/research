@@ -45,6 +45,23 @@ def test_meta_header_is_removed():
     assert "正文第一句" in out and out.startswith("# 标题")
 
 
+def test_rss_link_meta_line_is_removed():
+    """Stratechery 归档头的 `- rss_link:` 和 `- source:` 一样，正文开始前整行去掉。"""
+    body = (
+        "# 标题\n\n"
+        "- source: member-rss\n"
+        "- rss_link: https://stratechery.com/?access_token=example\n"
+        "\n"
+        "正文第一句，讲渠道优势。\n"
+    )
+    stripped = strip_meta(body)
+    assert "rss_link" not in stripped and "access_token" not in stripped and "member-rss" not in stripped
+    assert "正文第一句" in stripped and stripped.startswith("# 标题")
+    cleaned = clean_body(body)
+    assert "rss_link" not in cleaned and "access_token" not in cleaned and "member-rss" not in cleaned
+    assert "正文第一句" in cleaned
+
+
 BARE_HEADER = """# 渠道怎么看
 
 作者：方伟

@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from researchlib import retrieval
 from researchlib.chunks import TRANSLATION_ORD_BASE, make_chunks_from_html, replace_translation_chunks
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
@@ -108,6 +109,43 @@ def test_pending_english_query_runs_and_skips_translated(conn, settings):
     conn.execute("DELETE FROM article_translations WHERE article_id = %s", (article_id,))
     conn.commit()
     assert article_id in list_pending_english(conn, limit=10)
+
+
+def test_stale_translation_body_and_title_are_not_search_evidence(conn, settings):
+    article_id = _english(conn, settings)
+    conn.execute("UPDATE articles SET content_hash='synthetic-revised-source' WHERE id=%s", (article_id,))
+    conn.commit()
+    sources = enabled_sources(load_sources(settings.sources_path))
+    scope = Scope(source_ids=[source.id for source in sources])
+    for question in ('应用商店 抽成', '定价权'):
+        found = retrieve(conn, question, scope, sources, purpose='search')
+        assert not any(p.article_id == article_id and p.lang == 'zh' for p in found.passages)
+    # 这里只过滤证据；旧行和旧块仍保留，后续修复由明确的操作决定。
+    saved = conn.execute('SELECT complete FROM article_translations WHERE article_id=%s', (article_id,)).fetchone()
+    assert saved['complete']
+    assert conn.execute("SELECT count(*) AS n FROM article_chunks WHERE article_id=%s AND lang='zh'",
+                        (article_id,)).fetchone()['n'] == 2
+
+
+def test_unquoted_original_and_ocr_hits_survive_same_article_translation(conn, settings, monkeypatch):
+    article_id = _english(conn, settings)
+    conn.execute("INSERT INTO article_chunks(article_id,ord,heading,body,lang,anchor)"
+                 " VALUES(%s,20000,'图片文字','uniquepicturefact syntheticchart','ocr','synthetic-chart')",
+                 (article_id,))
+    conn.commit()
+    sources = enabled_sources(load_sources(settings.sources_path))
+    scope = Scope(source_ids=[source.id for source in sources])
+    original = retrieval._candidates
+
+    def with_translation(c, q, s, **kwargs):
+        rows = original(c, q, s, **kwargs)
+        return rows + retrieval._rows_for_keys(c, [(article_id, TRANSLATION_ORD_BASE)])
+
+    monkeypatch.setattr(retrieval, '_candidates', with_translation)
+    for question, expected_lang in [('regulators', ''), ('uniquepicturefact', 'ocr')]:
+        found = retrieve(conn, question, scope, sources, purpose='search')
+        assert any(p.article_id == article_id and p.lang == expected_lang and question in p.body
+                   for p in found.passages), (question, found)
 
 
 def _store(conn, settings, source_id, docs):
@@ -251,3 +289,23 @@ def test_br_line_paragraph_pairs_line_by_line_on_the_page(conn, settings):
     assert page.count('class="prose bilingual-zh with-toolbar"') == count
     assert "第0行，这一行在对照页上单独成对。" in page
     assert "第7行，这一行在对照页上单独成对。" in page
+
+
+def test_quoted_english_phrase_keeps_the_original_passage(conn, settings, monkeypatch):
+    """引号里的英文原句只在原文块里。语义召回带进来同一篇的译文块时，原文块不能被「只留译文」丢掉：
+    线上搜「"Listen to this Update in your podcast player"」侧栏数到 38 篇，结果一篇没有。"""
+    article_id = _english(conn, settings)
+    # 语义这一路把「服务」那节的译文块召回进来（线上是向量近邻，这里直接给）。
+    monkeypatch.setattr(retrieval.embeddings, "ready", lambda _conn: "vector")
+    monkeypatch.setattr(retrieval.embeddings, "query_vector", lambda _text: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(
+        retrieval, "_vector_lookup", lambda *_args: {(article_id, TRANSLATION_ORD_BASE + 1): 0.9}
+    )
+    with TestClient(create_app(settings)) as client:
+        quoted = client.get("/api/v1/search", params={"q": '"take rate is the real moat"'}).json()
+        # 「moat; regulators」：切词以后两个词挨着，原文中间隔着分号，不算原样出现。
+        missing = client.get("/api/v1/search", params={"q": '"real moat regulators"'}).json()
+    assert quoted["total"] == 1 and [item["id"] for item in quoted["items"]] == [article_id]
+    assert "real moat" in quoted["items"][0]["snippet"]
+    # 词挨着、句子却不是这样写的，不算命中，也不数。
+    assert missing["total"] == 0 and missing["items"] == []
