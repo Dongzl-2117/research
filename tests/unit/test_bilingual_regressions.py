@@ -43,6 +43,7 @@ class MemoryConn:
     def execute(self, sql, params=None):
         if "INSERT INTO article_translations" in sql:
             self.writes.append(params)
+            return Rows({'article_id': self.article['id']})
         elif "FROM articles WHERE id" in sql:
             return Rows(self.article)
         elif "FROM sources" in sql:
@@ -65,6 +66,13 @@ def translate(body, outputs, tmp_path, *, mutate=None):
         user = kwargs["user"]
         values = ["合成标题"] if user["segments"] == ["Synthetic audit"] else outputs
         if "segment_ids" in user:
+            if user["segment_ids"] != ["title"]:
+                rendered, _digest = service._render_original(conn, conn.article, tmp_path)
+                manifest = service.source_manifest(rendered)
+                targets = service.translatable_blocks(manifest["source_snapshot"])
+                by_id = {manifest["segments"][index]["id"]: text
+                         for (index, _source), text in zip(targets, outputs, strict=True)}
+                values = [by_id[identity] for identity in user["segment_ids"]]
             values = [{"id": identity, "source_hash": source_hash, "html": text}
                       for identity, source_hash, text in zip(user["segment_ids"], user["source_hashes"], values,
                                                              strict=True)]

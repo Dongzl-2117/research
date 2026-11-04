@@ -26,7 +26,7 @@ from researchlib.textutil import content_hash, split_frontmatter, strip_duplicat
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, model_id, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
-from researchlib.translate.provenance import AlignmentError, leaf_problem, receipt, source_manifest
+from researchlib.translate.provenance import AlignmentError, Resources, leaf_problem, receipt, source_manifest
 from researchlib.translate.provenance import digest as segment_digest
 from researchlib.translate.segments import (
     chunk_segments,
@@ -88,6 +88,10 @@ def translation_problem(sources: list[str], translations: list[str]) -> str | No
     for src, dst in zip(sources, translations, strict=True):
         if src.strip() and not (dst or "").strip():
             return "empty"
+        if any(char.isalpha() for char in ''.join(Resources(src).text)) and not any(
+            char.isalpha() for char in ''.join(Resources(dst or '').text)
+        ):
+            return "no-text"
     return None
 
 
@@ -202,26 +206,36 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
     # 上一级的 repair 只针对那一批的条数，不能带进更小的一批。
     context = {key: value for key, value in context.items() if key != "repair"}
     user = {**context, "segments": parts}
-    texts = _translate_once(parts, user, data_dir)
+
+    def request(payload):
+        try:
+            return _translate_once(parts, payload, data_dir)
+        except AlignmentError as exc:
+            if exc.code != "response-count":
+                raise
+            # 正式身份协议在数组长度检查时已拒绝响应，交回同一套有界重试/拆批。
+            return []
+
+    texts = request(user)
     problem = translation_problem(parts, texts)
     if problem == "count":
         # 少段 / 多段先按原批重试一次，要求条数正好。
-        texts = _translate_once(
-            parts,
+        texts = request(
             {
                 **user,
                 "repair": (
-                    f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。"
+                    f"上一次 t 数量与请求不一致，必须正好 {len(parts)}。"
                     "按 segments 下标一一对应重译，只输出 JSON。"
                 ),
             },
-            data_dir,
         )
         problem = translation_problem(parts, texts)
     if problem == "count" and len(parts) > 1:
         logger.info("译文条数对不齐（segments=%s t=%s），对半拆开重试", len(parts), len(texts))
         return _translate_split(parts, context, data_dir)
     if problem:
+        if problem == "count" and "segment_ids" in context:
+            raise AlignmentError("response-count")
         raise RuntimeError(f"translation alignment: {problem}")
     return texts
 
@@ -345,6 +359,10 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     if is_chinese(sample, language=language if isinstance(language, str) else None):
         return TranslateResult(article_id, "skipped", reason="already Chinese")
 
+    previous = conn.execute(
+        "SELECT to_jsonb(t) AS target_snapshot FROM article_translations t WHERE article_id=%s", (article_id,),
+    ).fetchone()
+    target_snapshot = previous['target_snapshot'] if previous else None
     html, digest = _render_original(conn, article, data_dir)
     manifest = source_manifest(html)
     html = manifest["source_snapshot"]
@@ -436,26 +454,34 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     current_html, _raw_hash = _render_original(conn, current, data_dir)
     if source_manifest(current_html)["source_fingerprint"] != manifest["source_fingerprint"]:
         raise AlignmentError("canonical-source-changed-during-request")
-    conn.execute(
-        """
-        INSERT INTO article_translations (
-          article_id, lang, content_hash, title_zh, body_html, body_text, complete,
-          origin, segments, provenance, updated_at
-        )
-        VALUES (%s, 'zh', %s, %s, %s, %s, %s, 'model', %s, %s, now())
-        ON CONFLICT (article_id) DO UPDATE SET
-          content_hash = EXCLUDED.content_hash,
-          title_zh = EXCLUDED.title_zh,
-          body_html = EXCLUDED.body_html,
-          body_text = EXCLUDED.body_text,
-          complete = EXCLUDED.complete,
-          origin = EXCLUDED.origin,
-          segments = EXCLUDED.segments,
-          provenance = EXCLUDED.provenance,
-          updated_at = now()
-        """,
-        (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance)),
-    )
+    if target_snapshot is None:
+        saved = conn.execute(
+            """
+            INSERT INTO article_translations (
+              article_id, lang, content_hash, title_zh, body_html, body_text, complete,
+              origin, segments, provenance, updated_at
+            )
+            VALUES (%s, 'zh', %s, %s, %s, %s, %s, 'model', %s, %s, now())
+            ON CONFLICT (article_id) DO NOTHING
+            RETURNING article_id
+            """,
+            (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance)),
+        ).fetchone()
+    else:
+        # 已存在的目标只允许条件更新；删除也是并发变更，不能通过 INSERT 把它复活。
+        saved = conn.execute(
+            """
+            UPDATE article_translations AS existing SET
+              content_hash=%s, title_zh=%s, body_html=%s, body_text=%s, complete=%s,
+              origin='model', segments=%s, provenance=%s, updated_at=now()
+            WHERE article_id=%s AND to_jsonb(existing)=%s::jsonb
+            RETURNING article_id
+            """,
+            (digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance), article_id, Jsonb(target_snapshot)),
+        ).fetchone()
+    if saved is None:
+        # 冲突行在写入时原子比较；也覆盖请求开始时没有译文、随后另一请求先写入的情形。
+        raise AlignmentError('target-changed-during-request')
     # 译文切块进检索：中文问题也能找到英文文章，引用落到对照页那一段。
     replace_translation_chunks(conn, article_id)
     conn.commit()

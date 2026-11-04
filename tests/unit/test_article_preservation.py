@@ -637,7 +637,7 @@ def test_paragraph_merge_survives_a_sentence_whose_chinese_matches_english():
     # 第一句中文故意和英文相同，展示时不单列；其余仍是另一段的中文。
     translated += f"<p>{services[0]}</p>"
     translated += "".join(
-        f"<p>服务段第{index}句，只讲订阅，不要写进中国段。</p>" for index in range(1, len(services))
+        "<p>服务段的后续句子，只讲订阅，不要写进中国段。</p>" for _ in range(1, len(services))
     )
     view = article_pairs(source, translated)
     assert view.notice == ""
@@ -645,12 +645,15 @@ def test_paragraph_merge_survives_a_sentence_whose_chinese_matches_english():
     assert len(china) == 1
     assert "In Q1 FY2025" in china[0].en and "channel inventory" in china[0].en
     assert "185 亿美元" in (china[0].zh or "")
-    assert "服务段第" not in (china[0].zh or "")
+    assert "服务段的后续句子" not in (china[0].zh or "")
     assert "data-src-para" not in china[0].en
     services_pairs = [pair for pair in view.pairs if "Services revenue" in (pair.en or "")]
     assert len(services_pairs) == 1
     assert "订阅" in (services_pairs[0].zh or "")
     assert '<a href="https://www.businessinsider.com/live">the earnings liveblog</a>' in (china[0].zh or "")
+    # 源文没有句子编号：合法并段的夹具不凭空加数字，真正额外数字仍必须回退。
+    changed = article_pairs(source, translated.replace("服务段的后续句子", "服务段第9句", 1))
+    assert changed.notice
 
 
 def test_source_groups_merge_short_siblings_after_the_marker_is_stripped():
@@ -705,8 +708,8 @@ def test_blank_normalized_long_english_hides_the_later_copy():
     assert len(_visible(spaced)) >= 80
     assert _blank_key(spaced) == _blank_key(tight) == _blank_key(doubled)
     zh = (
-        "<p>服务仍是增长故事的核心。战略是把硬件购买者转化为经常性收入客户。</p>"
-        "<p>服务仍是增长故事的核心。战略是把硬件购买者转化为持续贡献经常性收入的客户。</p>"
+        "<p>第一季度服务仍是增长故事的核心。战略是把硬件购买者转化为经常性收入客户。</p>"
+        "<p>第一季度服务仍是增长故事的核心。战略是把硬件购买者转化为持续贡献经常性收入的客户。</p>"
     )
     for earlier, later in ((spaced, tight), (doubled, tight)):
         view = article_pairs(f"<p>{earlier}</p><p>{later}</p>", zh)
@@ -759,8 +762,8 @@ def test_tag_spaces_do_not_keep_a_blank_normalized_services_duplicate():
     assert _blank_key(spaced) == _blank_key(tight)
     assert len(_visible(spaced)) >= 80
     zh = (
-        "<p>服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为经常性收入客户。</p>"
-        "<p>服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为持续贡献经常性收入的客户。</p>"
+        "<p>第一季度服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为经常性收入客户。</p>"
+        "<p>第一季度服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为持续贡献经常性收入的客户。</p>"
     )
     view = article_pairs(f"<p>{spaced}</p><p>{tight}</p>", zh)
     assert view.notice == ""
@@ -812,8 +815,8 @@ def test_services_and_health_blank_duplicates_drop_from_two_groups_to_zero():
     )
     translated = (
         "<ul><li><p>无关的回购列表要留着。</p></li></ul>"
-        "<p>服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为经常性收入客户。</p>"
-        "<p>服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为持续贡献经常性收入的客户。</p>"
+        "<p>第一季度服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为经常性收入客户。</p>"
+        "<p>第一季度服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为持续贡献经常性收入的客户。</p>"
         "<p>夹层必须留在自己的位置。</p>"
         "<p>健康与安全仍在品牌故事里。这也是与竞争对手拉开差距的一个领域。</p>"
         "<p>健康与安全仍在品牌故事里。这也是区别于竞争对手的一个领域。</p>"

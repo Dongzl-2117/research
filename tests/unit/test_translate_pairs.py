@@ -1544,7 +1544,7 @@ def test_containment_does_not_prove_correspondence():
 
 
 def test_parenthetical_source_lines_are_not_treated_as_contained():
-    """括号不同的两条来源注释，去掉标点后会嵌在一起，可见文字并不包含。两对都留。"""
+    """括号不同的来源不能相互删除；中文省略财年和季度时须完整回退，不能假配对。"""
     short = (
         "Apple FY2025 Q1 earnings call highlights (AlphaStreet) ( news.alphastreet.com ) "
         "( news.alphastreet.com )."
@@ -1559,9 +1559,8 @@ def test_parenthetical_source_lines_are_not_treated_as_contained():
     en = f"<p>{short}</p><p>{longer}</p>"
     zh = "<p>第一条来源注释。</p><p>第二条来源注释，多了直播博客。</p>"
     pairs = bilingual_pairs(en, zh)
-    assert pairs is not None and len(pairs) == 2
-    assert ")." in _plain_segment(pairs[0].en)
-    assert "liveblog" in pairs[1].en
+    assert pairs is None
+    _assert_unmapped_page_keeps_everything(en, zh)
 
 
 def test_repeated_english_stays_when_chinese_is_a_different_sentence():
@@ -1640,7 +1639,7 @@ def test_near_prefix_with_the_same_chinese_lineage_drops_the_shorter():
         shared += 1
     assert shared / len(_INTRO_SHORT) >= 0.75
     bridge = "The list of angles that follows is a different paragraph and stays beside the longer prompt."
-    # 短的在前，长的在后。收的是短的，不是后出现的那份。
+    # 短的在前，长的在后；两种措辞都留在各自出现的位置。
     en = f"<p>{_INTRO_SHORT}</p><p>{bridge}</p><p>{_INTRO_LONG}</p>"
     zh = f"<p>{_INTRO_ZH[0]}</p><p>夹层是后面的角度列表，要留着。</p><p>{_INTRO_ZH[1]}</p>"
     pairs = bilingual_pairs(en, zh)

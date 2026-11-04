@@ -42,7 +42,7 @@ from html.parser import HTMLParser
 # AIHOT segmentsOf 的 BLOCK。h1 / h6 不在里面：不是叶子，只往下看子节点。
 _BLOCK = frozenset({
     "p", "h2", "h3", "h4", "h5", "li", "blockquote",
-    "figcaption", "td", "th", "dt", "dd", "caption",
+    "figcaption", "td", "th", "dt", "dd", "caption", "div",
 })
 # AIHOT 的 CONTAINER。直接子节点命中才算 hasBlockChild。dl 不在里面：
 # AIHOT 会把 <blockquote><dl>…</dl></blockquote> 收成一个叶子。研究站的拆法在
@@ -222,6 +222,8 @@ class _El:
         self.void = void
         self.children: list[_El | _Tx] = []
         self.replacement: str | None = None
+        self.source_group = ''
+        self.attrs: dict[str, str | None] = {}
 
 
 class _FragmentParser(HTMLParser):
@@ -231,17 +233,23 @@ class _FragmentParser(HTMLParser):
         super().__init__(convert_charrefs=False)
         self.root = _El("", "")
         self.stack: list[_El] = [self.root]
+        self._source_group = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         raw = self.get_starttag_text()
         name = tag.lower()
         node = _El(name, raw, void=name in _VOID)
+        node.attrs = dict(attrs)
+        self._source_group += 1
+        node.source_group = str(self._source_group)
         self.stack[-1].children.append(node)
         if not node.void:
             self.stack.append(node)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.stack[-1].children.append(_El(tag.lower(), self.get_starttag_text(), void=True))
+        node = _El(tag.lower(), self.get_starttag_text(), void=True)
+        node.attrs = dict(attrs)
+        self.stack[-1].children.append(node)
 
     def handle_endtag(self, tag: str) -> None:
         name = tag.lower()
@@ -734,13 +742,19 @@ def _br_lines(node: _El, *, minimum: int | None = None) -> list[str] | None:
 # 译文里要留下来的行内标签。块级标签不留，否则写回后再切会多出叶子，或把后文吞进去。
 _INLINE = frozenset({
     "a", "abbr", "b", "bdi", "bdo", "cite", "code", "dfn", "em", "i", "mark",
-    "q", "s", "small", "span", "strong", "sub", "sup", "u",
+    "q", "s", "small", "span", "strong", "sub", "sup", "u", "del", "ins",
 })
 
 
 def _html_has_letter(html: str) -> bool:
     plain = html_lib.unescape(re.sub(r"<[^>]+>", "", html or ""))
     return any(char.isalpha() for char in plain)
+
+
+def _normalize_inline_space(value: str) -> str:
+    protected = re.split(r"(<code\b[^>]*>.*?</code>|<pre\b[^>]*>.*?</pre>)", value, flags=re.I | re.S)
+    return ''.join(part if index % 2 else re.sub(r'\s+', ' ', part)
+                   for index, part in enumerate(protected)).strip()
 
 
 def _flatten_inline(html: str, *, keep_br: bool) -> str:
@@ -778,7 +792,7 @@ def _flatten_inline(html: str, *, keep_br: bool) -> str:
             glue()
 
     walk(parser.root.children)
-    return re.sub(r"\s+", " ", "".join(parts)).strip()
+    return _normalize_inline_space(''.join(parts))
 
 
 def stable_leaf(html: str, *, tag: str, keep_br: bool = False) -> str:
@@ -939,6 +953,12 @@ def _atoms_of(nodes: list[_El | _Tx]) -> list[_Atom]:
             if isinstance(item, _Tx):
                 atoms.append(_Atom("text", item.data, html_lib.unescape(item.data), ""))
                 continue
+            if item.name in {'pre', 'code', 'a', 'img', 'picture', 'video', 'source', 'track'} or (
+                item.attrs.get('id') or item.attrs.get('name')
+            ):
+                # 代码和命名节点作为整体归属一个叶子；重开跨句标签会重复脚注或链接。
+                atoms.append(_Atom('protected', _outer(item), '\ufffc', item.name))
+                continue
             if item.name == "br":
                 atoms.append(_Atom("br", "", " ", "br"))
                 continue
@@ -1003,7 +1023,7 @@ def _render_plain_span(atoms: list[_Atom], start: int, end: int) -> str:
         if pos >= end:
             close_open()
             break
-    return re.sub(r"\s+", " ", "".join(out)).strip()
+    return _normalize_inline_space(''.join(out))
 
 
 def _html_sentence_pieces(node: _El) -> list[str] | None:
@@ -1058,16 +1078,6 @@ def _keep_paragraph_id(node: _El) -> None:
     extra = f" {group.group(0)}" if group and "data-src-para" not in node.start else ""
     opening = node.start[:-1] + extra + ">"
     node.replacement = opening + node.replacement[match.end():]
-
-
-_SRC_PARA_SEQ = 0
-
-
-def _alloc_src_para() -> str:
-    """同一次按句切开的叶子共用一个编号，展示时再并回原来的段落。"""
-    global _SRC_PARA_SEQ
-    _SRC_PARA_SEQ += 1
-    return str(_SRC_PARA_SEQ)
 
 
 def _mark_src_para(piece: str, group: str) -> str:
@@ -1143,6 +1153,33 @@ def _emit_br_lines(
     _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
 
 
+def _wrap_div_text(node: _El) -> None:
+    """混合容器里的直接文字仍是正文；只给行内连续内容补段，不拆原有块或锚点。"""
+    if node.name != 'div' or not any(isinstance(child, _El) and _is_container(child.name, descend_dl=True)
+                                     for child in node.children):
+        return
+    children = []
+    run = []
+
+    def flush():
+        if not run:
+            return
+        paragraph = _El('p', '<p>')
+        paragraph.source_group = node.source_group
+        paragraph.children = list(run)
+        children.extend([paragraph] if _has_letter(paragraph) else run)
+        run.clear()
+
+    for child in node.children:
+        if isinstance(child, _El) and _is_container(child.name, descend_dl=True):
+            flush()
+            children.append(child)
+        else:
+            run.append(child)
+    flush()
+    node.children = children
+
+
 def _walk(
     node: _El,
     ancestors: list[str],
@@ -1157,6 +1194,7 @@ def _walk(
     # pre / code 整段跳过，不译里面的字，和 AIHOT 一样。
     if node.name in {"pre", "code"}:
         return
+    _wrap_div_text(node)
     # dl 本身不是叶子。连续的短 dt 收成段；术语表仍是一条 dt、一条 dd。
     if node.name == "dl":
         _walk_dl(
@@ -1206,7 +1244,8 @@ def _walk(
         if split_sentences:
             overflow = _overflow_pieces(node)
             if overflow:
-                group = _alloc_src_para()
+                # 使用本次解析树的节点序号；进程全局计数会让同一原稿的回执每次都变化。
+                group = node.source_group
                 overflow = [_mark_src_para(piece, group) for piece in overflow]
                 _emit_br_pieces(node, overflow, own, chain, used, out, replacements)
                 return
@@ -1398,7 +1437,7 @@ def translatable_blocks(html: str) -> list[tuple[int, str]]:
     """返回 (segments_of 下标, 段 HTML)。跳过无拉丁字母的段（纯中文/符号/图）。"""
     out: list[tuple[int, str]] = []
     for index, segment in enumerate(iter_segments(html)):
-        plain = re.sub(r"<[^>]+>", "", segment.html)
+        plain = re.sub(r"<[^>]+>", "", _PRE_CODE.sub('', segment.html))
         if not _LATIN.search(plain):
             continue
         if re.fullmatch(r"\s*", plain):
@@ -1445,6 +1484,9 @@ def unshield(translated: str, shielded: Shielded) -> str | None:
         return None
     if any(counts.get(i) != 1 for i in range(len(shielded.tokens))):
         return None
+    link_ids = re.findall(r'''<a\b[^>]*\bid=["']L(\d+)["']''', translated, flags=re.I)
+    if sorted(map(int, link_ids)) != list(range(len(shielded.link_attrs))):
+        return None
 
     def put_token(match: re.Match[str]) -> str:
         return shielded.tokens[int(match.group(1))]
@@ -1461,8 +1503,6 @@ def unshield(translated: str, shielded: Shielded) -> str | None:
         attrs = shielded.link_attrs[index]
         parts = ["<a"]
         for key, value in attrs.items():
-            if key.lower() == "id":
-                continue
             parts.append(f' {key}="{value}"')
         parts.append(f">{inner}</a>")
         return "".join(parts)

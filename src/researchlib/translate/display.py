@@ -27,7 +27,6 @@ from researchlib.translate.pair import (
 from researchlib.translate.segments import iter_segments, repeat_key, same_repeat, top_level_blocks
 
 _STRUCTURE = frozenset({"table", "thead", "tbody", "tr", "td", "th", "ul", "ol", "dl", "dt", "dd", "pre", "code"})
-_PARA_ID = re.compile(r'\s+id="p-\d+"')
 _ROOT = re.compile(r"^<([a-z][a-z0-9]*)\b", re.I)
 _IMG = re.compile(r"<img\b[^>]*>", re.I)
 _SRC = re.compile(r'''\bsrc=["']([^"']*)["']''', re.I)
@@ -122,6 +121,52 @@ def content_gaps(source: str, displayed: str) -> int:
             + len(before.structures - after.structures))
 
 
+def _numeric_table_cells(document: str) -> list[tuple]:
+    """数字单元格连同所在行列按序核对；集合会漏掉重复、换位和百分号。"""
+    class Tables(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.tables = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == 'table':
+                table = {'row': -1, 'col': -1, 'cell': None, 'facts': []}
+                self.tables.append(table)
+                self.stack.append(table)
+            elif self.stack:
+                table = self.stack[-1]
+                if tag == 'tr':
+                    table['row'] += 1
+                    table['col'] = -1
+                elif tag in {'td', 'th'}:
+                    table['col'] += 1
+                    table['cell'] = (table['row'], table['col'], tag,
+                                     attrs.get('rowspan'), attrs.get('colspan'), [])
+
+        def handle_data(self, data):
+            if self.stack and self.stack[-1]['cell'] is not None:
+                self.stack[-1]['cell'][-1].append(data)
+
+        def handle_endtag(self, tag):
+            if not self.stack:
+                return
+            table = self.stack[-1]
+            if tag in {'td', 'th'} and table['cell'] is not None:
+                *position, fragments = table['cell']
+                text = re.sub(r'\s+', '', ''.join(fragments))
+                if re.search(r'\d', text) and not any(char.isalpha() for char in text):
+                    table['facts'].append((*position, text))
+                table['cell'] = None
+            elif tag == 'table':
+                self.stack.pop()
+
+    parser = Tables()
+    parser.feed(document)
+    return [tuple(table['facts']) for table in parser.tables]
+
+
 def protected_content_gaps(source: str, translated: str) -> int:
     """译制未处理的图片、代码和纯数字区块，不应在译文里消失。"""
     blocks = top_level_blocks(source)
@@ -140,7 +185,8 @@ def protected_content_gaps(source: str, translated: str) -> int:
     from researchlib.translate.provenance import Resources
 
     before, after = Resources(source), Resources(translated)
-    return (content_gaps("".join(protected), translated)
+    numeric_tables = int(_numeric_table_cells(source) != _numeric_table_cells(translated))
+    return (content_gaps("".join(protected), translated) + numeric_tables
             + sum((Counter(before.codes) - Counter(after.codes)).values())
             + sum((Counter(before.media) - Counter(after.media)).values()))
 
@@ -234,20 +280,61 @@ def _shared_media_removed(en: str, zh: str) -> str:
 
 
 def _whole_pair(en: str, zh: str) -> BilingualPair:
-    anchor = re.search(r'\bid="(p-\d+)"', zh) or re.search(r'\bid="(p-\d+)"', en)
-    en, zh = _PARA_ID.sub("", en), _PARA_ID.sub("", zh)
+    anchor = next((value for value in _Identifiers(zh + en).ids if re.fullmatch(r'p-\d+', value)), None)
     full_zh = zh
     zh = _shared_media_removed(en, zh)
     if visible_text(en) == visible_text(zh) and not any(
         ordered_projection_gaps(en, full_zh, [BilingualPair(en, None)]),
     ):
         zh = ""
-    return BilingualPair(en=en, zh=zh or None, anchor=anchor.group(1) if anchor else None)
+    return BilingualPair(en=en, zh=zh or None, anchor=anchor)
+
+
+def _paragraph_key(value: str) -> str:
+    """比较时忽略根块的段落编号；正文、代码和行内命名锚点里的同样字样保留。"""
+    class Key(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.out = []
+            self.first = True
+
+        def start(self, tag, attrs, close=False):
+            if self.first:
+                attrs = [(key, val) for key, val in attrs
+                         if not (key == 'id' and val and re.fullmatch(r'p-\d+', val))]
+                self.first = False
+                rendered = ''.join(f' {key}="{html.escape(val, quote=True)}"' if val is not None else f' {key}'
+                                   for key, val in attrs)
+                self.out.append(f'<{tag}{rendered}{" /" if close else ""}>')
+            else:
+                self.out.append(self.get_starttag_text())
+
+        def handle_starttag(self, tag, attrs):
+            self.start(tag, attrs)
+
+        def handle_startendtag(self, tag, attrs):
+            self.start(tag, attrs, True)
+
+        def handle_endtag(self, tag):
+            self.out.append(f'</{tag}>')
+
+        def handle_data(self, data):
+            self.out.append(data)
+
+        def handle_entityref(self, name):
+            self.out.append(f'&{name};')
+
+        def handle_charref(self, name):
+            self.out.append(f'&#{name};')
+
+    parser = Key()
+    parser.feed(value)
+    return ''.join(parser.out)
 
 
 def _separate(original: str, translated: str, notice: str) -> PairDisplay:
-    # 译文块的 p-N 引用仍落在译文；原文不抢这些 id，图片锚点只留一份。
-    en = _PARA_ID.sub("", original)
+    # 保留真实属性和文字；最终由 HTMLParser 只在实际标签上处理重复 ID。
+    en = original
     zh = _shared_media_removed(en, translated)
     return PairDisplay([BilingualPair(en, None), BilingualPair("", zh or None)], notice)
 
@@ -754,7 +841,7 @@ def article_pairs(
                     anchors = set()
                     exact_pairs = {}
                     for a, b in fragments:
-                        key = (_PARA_ID.sub("", a), _PARA_ID.sub("", b))
+                        key = (_paragraph_key(a), _paragraph_key(b))
                         pair = _whole_pair(a, b)
                         if key in exact_pairs:
                             pair = replace(pair, repeat_of=exact_pairs[key])
@@ -765,8 +852,9 @@ def article_pairs(
                         if pair.anchor:
                             anchors.add(pair.anchor)
                         aliases = []
-                        for alias in re.findall(r'\bid="(p-\d+)"', b + a):
-                            if alias not in anchors:
+                        remaining = set(_Identifiers(pair.en + (pair.zh or "")).ids)
+                        for alias in _Identifiers(b + a).ids:
+                            if re.fullmatch(r'p-\d+', alias) and alias not in anchors and alias not in remaining:
                                 aliases.append(f'<span id="{alias}" class="para-anchor"></span>')
                                 anchors.add(alias)
                         remaining = set(_Identifiers(pair.en + (pair.zh or "")).ids)
