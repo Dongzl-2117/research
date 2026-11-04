@@ -492,7 +492,7 @@ def _query_pieces(text: str, author_names: list[str]) -> list[tuple[str, str, bo
     names = '|'.join(r'\s+'.join(map(re.escape, name.split())) for name in author_names) or r'(?!)'
     tokens = re.compile(
         rf'(?P<negative>[-－])?(?:(?P<quoted>{_QUOTE.pattern})'
-        rf'|(?P<author>(?<![A-Za-z0-9_])(?:{names})(?![A-Za-z0-9_]))|(?P<word>[^\s]+))'
+        rf'|(?P<author>(?<![A-Za-z0-9_])(?:{names})(?![A-Za-z0-9_]))|(?P<word>[^\s"“”「」『』]+))'
     )
     pieces = []
     joined = False
@@ -1254,6 +1254,7 @@ def score_rows(
     scope: Scope,
     company_rows: list[dict] | None = None,
     semantic: dict[tuple[int, int], float] | None = None,
+    phrases_across_chunks: bool = False,
 ):
     """semantic：{(文章, 块号): 语义分 0～1}。有它时关键词分和语义分按 LEXICAL_WEIGHT 融合，见 fuse_semantic。"""
     _total, avgdl = _corpus_stats(conn)
@@ -1306,7 +1307,8 @@ def score_rows(
     total_weight = sum(group_weight.values())
     mandatory_phrases: dict[int, list[Term]] = defaultdict(list)
     for term in query.terms:
-        if term.kind == 'phrase' and not any(t.group == term.group and t.kind != 'phrase' for t in query.terms):
+        if term.kind == 'phrase' and not any(t.group == term.group and t.kind not in {'phrase', 'expansion'}
+                                            for t in query.terms):
             mandatory_phrases[term.group].append(term)
 
     passages: list[Passage] = []
@@ -1318,9 +1320,12 @@ def score_rows(
         lowered = text.lower()
         if any(_count(text, lowered, word) for word in query.excludes):
             continue
-        if mandatory_phrases and not any(counters[id(phrase)][0][1](text, lowered)
-                                         for alternatives in mandatory_phrases.values() for phrase in alternatives):
-            continue
+        if mandatory_phrases:
+            matches = [any(counters[id(phrase)][0][1](text, lowered) for phrase in alternatives)
+                       for alternatives in mandatory_phrases.values()]
+            # 文章列表已在 SQL 核对全部组，可从不同块选证据；逐段召回／ASK 必须本块满足每组。
+            if not (any(matches) if phrases_across_chunks else all(matches)):
+                continue
         dl = max(len(text), 1)
         norm = K1 * (1 - B + B * dl / max(avgdl, 1))
         company_hits = matcher.count(text) if matcher is not None else {}
@@ -1630,14 +1635,18 @@ def retrieve(
     per_channel = min(CANDIDATES, max(400, budget.passages * 8))
     rows = _candidates(conn, query, effective, limit=per_channel, enough=budget.passages * 6)
     if semantic_only:
-        rows = []
+        # 正文块词频不包含文章标题；只保留实际命中内容词的标题证据，不保留公司概览。
+        rows = [row for row in rows if any(
+            _count(row.get('title') or '', (row.get('title') or '').lower(), form)
+            for term in query.terms if term.kind in {'word', 'phrase'} for form in term.forms if form
+        )]
     semantic: dict[tuple[int, int], float] = {}
     if semantic_ok and not query.overview:
         rows, semantic = semantic_candidates(conn, query, effective, rows)
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     picked = select(scored, query, budget, sources_by_id)
     narrowed = effective.date_from or effective.date_to or effective.company_id is not None or query.authors
-    if not picked and narrowed and not query.overview and not semantic_only:
+    if not picked and narrowed and not query.overview and not semantic_only and not _phrases(query):
         # 范围已经很窄（某天、某位作者、某家公司）但词没召回到：退回按范围取，像「汇总这一天」。
         fallback = preset_query(query)
         rows = _candidates(conn, fallback, effective, limit=per_channel, enough=budget.passages * 6)
@@ -1848,7 +1857,8 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     indexed = {r["id"] for r in candidates if r["full"]}
     company_matched = {r['id'] for r in candidates if r['company_match']}
     rows = [r for r in rows if r["article_id"] in allowed]
-    scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
+    scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic,
+                        phrases_across_chunks=True)
     by_article: dict[int, list[Passage]] = defaultdict(list)
     for passage in scored:
         by_article[passage.article_id].append(passage)
@@ -2070,7 +2080,7 @@ def _search_tail(
     matched_articles = {r["id"] for r in keys if r["matched"]}
     selected = [(r["id"], r["ord"]) for r in keys if r["matched"] or r["id"] not in matched_articles]
     rows = _prefer_translation(_rows_for_keys(conn, selected))
-    scored = score_rows(conn, query, rows, scope=scope, company_rows=company_rows)
+    scored = score_rows(conn, query, rows, scope=scope, company_rows=company_rows, phrases_across_chunks=True)
     passages: dict[int, list[Passage]] = defaultdict(list)
     for passage in sorted(scored, key=lambda p: (-p.score, p.ord)):
         if len(passages[passage.article_id]) < 2:
