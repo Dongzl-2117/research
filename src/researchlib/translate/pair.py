@@ -125,6 +125,15 @@ def _contained_text(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
+def _text_content(html: str) -> str:
+    """去标签后的原文，标签不换成空格，空白原样留着。
+
+    ``<strong>story</strong>.`` 是 ``story.``，不是 ``story .``。句号前多出来的空格、
+    ``( macrumors.com )`` 里的空格因此还在，不会被当成和另一份连标点都相同。
+    """
+    return html_lib.unescape(re.sub(r"<[^>]+>", "", html or "")).casefold()
+
+
 def _display_long(html: str) -> bool:
     """对照页上够不够大约 80 字。和 ``repeat_long`` 同一道门槛，但标签边界按空格计。"""
     return len(_contained_text(html)) >= 80
@@ -255,13 +264,22 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
 
 
 def _exact_zh_is_unique(
-    index: int, en_visible: Sequence[str], zh_tokens: Sequence[set[str]], alive: set[int],
+    index: int, en_visible: Sequence[str], en_htmls: Sequence[str],
+    zh_tokens: Sequence[set[str]], alive: set[int],
 ) -> bool:
-    """英文整段相同，且没有任何一份还留着的译文覆盖这里的中文词。"""
+    """英文连空白都一样，且没有任何一份还留着的译文覆盖这里的中文词。
+
+    只差空白的长英文不走这里。标签边界插进去的空格、句号前的空格、括号里域名两侧的空格，
+    压成一格之后会和另一份重合，但去掉标签后的原文并不相同。那种仍按重复收成一对。
+    """
     mine = en_visible[index]
     if len(mine) < 80:
         return False
-    others = [other for other in alive if other != index and en_visible[other] == mine]
+    raw = _text_content(en_htmls[index])
+    others = [
+        other for other in alive
+        if other != index and en_visible[other] == mine and _text_content(en_htmls[other]) == raw
+    ]
     if not others:
         return False
     return not any(zh_tokens[index] <= zh_tokens[other] for other in others)
@@ -270,7 +288,8 @@ def _exact_zh_is_unique(
 def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
     """展示层可以不显示的重复下标。不改段，也不证明两份译文含义相同。
 
-    词、图片和链接至少还要在别的对上出现一次。英文整段相同、中文却各有独有说法时，两对都留。
+    词、图片和链接至少还要在别的对上出现一次。英文连空白都一样、中文却各有独有说法时，两对都留。
+    只差空白的长英文（句号前的空格、括号里的域名空格、连续空格）收成一对，不因译文措辞略有不同留下。
     """
     candidates = _repeat_candidates(pairs)
     if not candidates:
@@ -278,6 +297,7 @@ def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
     en_facts = [pair_facts(pair.en or "") for pair in pairs]
     visible = [en_facts[index] | _material_facts(pairs[index].zh or "") for index in range(len(pairs))]
     en_visible = [visible_text(pair.en or "") for pair in pairs]
+    en_htmls = [pair.en or "" for pair in pairs]
     zh_tokens = [_zh_tokens(pair.zh or "") for pair in pairs]
     en_counts: dict[str, int] = {}
     visible_counts: dict[str, int] = {}
@@ -289,7 +309,7 @@ def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
     alive = set(range(len(pairs)))
     drop: list[int] = []
     for index in sorted(candidates, reverse=True):
-        if _exact_zh_is_unique(index, en_visible, zh_tokens, alive):
+        if _exact_zh_is_unique(index, en_visible, en_htmls, zh_tokens, alive):
             continue
         if any(en_counts.get(fact, 0) < 2 for fact in en_facts[index]):
             continue
