@@ -211,6 +211,8 @@ def test_article_template_is_title_body_and_bilingual_tabs():
     assert "主要看这篇文章" not in html
     assert 'data-chat-close' in html
     assert 'aria-label="收起"' in html
+    assert 'class="chat-split"' in html
+    assert 'role="separator"' in html
     assert "research-article-chat" in html
     assert "<h2>来源</h2>" not in html
     assert "方伟微信公众号历史归档" not in html

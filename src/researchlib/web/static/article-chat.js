@@ -16,6 +16,8 @@
 
   const wideQuery = window.matchMedia('(min-width: 1320px)');
   const storageKey = 'research-article-chat';
+  const ratioKey = 'research-article-chat-ratio';
+  const split = stage.querySelector('.chat-split');
   let pending = false;
   let session = 0;
   let composing = false;
@@ -63,12 +65,117 @@
       panel.classList.remove('is-open');
       stage.classList.toggle('is-chat-closed', preferClosed());
       toggle.setAttribute('aria-expanded', preferClosed() ? 'false' : 'true');
+      if (!document.documentElement.hasAttribute('data-chat-ratio')) {
+        const stored = readRatio();
+        if (stored != null) showRatio(stored);
+      }
+      paintSplit();
       return;
     }
     stage.classList.remove('is-chat-closed');
     const open = panel.classList.contains('is-open');
     backdrop.hidden = !open;
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function readRatio() {
+    try {
+      const value = parseFloat(localStorage.getItem(ratioKey));
+      if (value > 0.12 && value < 0.8) return value;
+    } catch (e) {}
+    return null;
+  }
+
+  function writeRatio(value) {
+    try {
+      if (value == null) localStorage.removeItem(ratioKey);
+      else localStorage.setItem(ratioKey, String(value));
+    } catch (e) {}
+  }
+
+  function showRatio(value) {
+    if (value == null) {
+      document.documentElement.style.removeProperty('--chat-ratio');
+      document.documentElement.removeAttribute('data-chat-ratio');
+      return;
+    }
+    document.documentElement.style.setProperty('--chat-ratio', String(value));
+    document.documentElement.setAttribute('data-chat-ratio', '1');
+  }
+
+  function paintSplit() {
+    if (!split || !isWide() || preferClosed()) return;
+    const total = stage.getBoundingClientRect().width;
+    const chat = panel.getBoundingClientRect().width;
+    if (total > 0) split.setAttribute('aria-valuenow', String(Math.round((chat / total) * 100)));
+  }
+
+  function setRatio(value, remember) {
+    showRatio(value);
+    if (remember) writeRatio(value);
+    if (isWide()) window.requestAnimationFrame(paintSplit);
+  }
+
+  function resetRatio() {
+    setRatio(null, true);
+  }
+
+  if (split) {
+    let drag = null;
+    split.addEventListener('pointerdown', (event) => {
+      if (!isWide() || preferClosed() || event.button !== 0) return;
+      event.preventDefault();
+      split.setPointerCapture(event.pointerId);
+      drag = {
+        x: event.clientX,
+        width: panel.getBoundingClientRect().width,
+        total: stage.getBoundingClientRect().width,
+      };
+    });
+    split.addEventListener('pointermove', (event) => {
+      if (!drag) return;
+      const next = drag.width + (drag.x - event.clientX);
+      const ratio = Math.min(0.72, Math.max(0.18, next / drag.total));
+      setRatio(ratio, false);
+    });
+    function endDrag(event) {
+      if (!drag) return;
+      drag = null;
+      if (event && split.hasPointerCapture && split.hasPointerCapture(event.pointerId)) {
+        split.releasePointerCapture(event.pointerId);
+      }
+      const total = stage.getBoundingClientRect().width;
+      const chat = panel.getBoundingClientRect().width;
+      if (total > 0) setRatio(chat / total, true);
+    }
+    split.addEventListener('pointerup', endDrag);
+    split.addEventListener('pointercancel', endDrag);
+    split.addEventListener('dblclick', () => {
+      if (!isWide() || preferClosed()) return;
+      resetRatio();
+    });
+    split.addEventListener('keydown', (event) => {
+      if (!isWide() || preferClosed()) return;
+      const total = stage.getBoundingClientRect().width || 1;
+      const current = panel.getBoundingClientRect().width / total;
+      const step = event.shiftKey ? 0.08 : 0.02;
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        setRatio(Math.min(0.72, current + step), true);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        setRatio(Math.max(0.18, current - step), true);
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        setRatio(0.72, true);
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        setRatio(0.18, true);
+      }
+    });
+    window.addEventListener('resize', () => {
+      if (isWide()) paintSplit();
+    });
   }
 
   function fitInput() {

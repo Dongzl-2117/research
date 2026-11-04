@@ -2059,10 +2059,12 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .bilingual-repeat > summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
 .tx-list-continuation::marker { content: ''; }
 
-/* 阅读页右侧对话。窄屏是底部抽屉，不把 680px 阅读栏挤出横向滚动。
-   主区域放得下 680 + 间距 + 320 时才并排（大约视口 1320px，左侧导航还在）。
-   宽屏收起后阅读栏回到中间；偏好写在 html[data-article-chat="closed"]，避免脚本执行前闪一下。 */
+/* 阅读页右侧对话。窄屏是底部抽屉，不把阅读栏挤出横向滚动。
+   宽屏（大约视口 1320px，左侧导航还在）正文和问这篇并排：正文最多约 680px，
+   问这篇吃掉右边剩下的宽度。拖中间的分隔可以改比例，记在 --chat-ratio。
+   收起后阅读栏回到中间；偏好写在 html[data-article-chat="closed"]，避免脚本执行前闪一下。 */
 .read-with-chat { min-width: 0; max-width: 100%; }
+.chat-split { display: none; }
 .article-chat {
   position: fixed;
   z-index: 55;
@@ -2345,38 +2347,80 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   .chat-toggle { bottom: calc(70px + env(safe-area-inset-bottom)); }
 }
 @media (min-width: 1320px) {
+  .shell:has(.read-with-chat) main { padding-right: 8px; padding-left: 12px; }
   .read-with-chat {
     display: grid;
-    grid-template-columns: minmax(0, var(--reading-column)) 320px;
-    column-gap: 36px;
+    grid-template-columns: minmax(0, var(--reading-column)) 8px minmax(260px, 1fr);
+    column-gap: 0;
     align-items: start;
-    justify-content: center;
-    width: min(100%, calc(var(--reading-column) + 36px + 320px));
-    margin-inline: auto;
+    justify-content: stretch;
+    width: 100%;
+    margin-inline: 0;
+  }
+  html[data-chat-ratio] .read-with-chat {
+    grid-template-columns: minmax(360px, 1fr) 8px minmax(260px, min(calc(var(--chat-ratio) * 100%), calc(100% - 368px)));
   }
   .read-with-chat .reader-grid {
     width: 100%;
     max-width: var(--reading-column);
     margin: 0;
   }
+  html[data-chat-ratio] .read-with-chat .reader-grid { max-width: none; }
+  .read-with-chat .chat-split {
+    display: block;
+    position: sticky;
+    top: 12px;
+    height: calc(100dvh - 24px);
+    width: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .read-with-chat .chat-split::before {
+    content: "";
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    left: 50%;
+    width: 1px;
+    background: var(--line);
+    transform: translateX(-50%);
+  }
+  .read-with-chat .chat-split:hover::before,
+  .read-with-chat .chat-split:focus-visible::before {
+    width: 2px;
+    background: var(--ink-4);
+  }
   .read-with-chat .article-chat {
     position: sticky;
-    top: 16px;
+    top: 12px;
     right: auto;
     bottom: auto;
     left: auto;
     z-index: 1;
-    width: 320px;
-    height: calc(100dvh - 32px);
-    max-height: calc(100dvh - 32px);
-    padding: 2px 2px 8px 16px;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    height: calc(100dvh - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 0 0 4px 8px;
     border: 0;
-    border-left: 1px solid var(--line);
     border-radius: 0;
     background: transparent;
     box-shadow: none;
     transform: none;
     visibility: visible;
+  }
+  .read-with-chat .article-chat .chat-log,
+  .read-with-chat .article-chat .chat-form,
+  .read-with-chat .article-chat .chat-composer,
+  .read-with-chat .article-chat .chat-form textarea {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
   }
   .chat-toggle {
     top: 16px;
@@ -2391,7 +2435,12 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
     width: 100%;
   }
   .read-with-chat.is-chat-closed .reader-grid,
-  html[data-article-chat="closed"] .read-with-chat .reader-grid { margin-inline: auto; }
+  html[data-article-chat="closed"] .read-with-chat .reader-grid {
+    max-width: var(--reading-column);
+    margin-inline: auto;
+  }
+  .read-with-chat.is-chat-closed .chat-split,
+  html[data-article-chat="closed"] .read-with-chat .chat-split { display: none; }
   .read-with-chat.is-chat-closed .article-chat,
   html[data-article-chat="closed"] .read-with-chat .article-chat { display: none; }
   .read-with-chat.is-chat-closed ~ .chat-toggle,
