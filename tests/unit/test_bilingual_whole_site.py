@@ -32,6 +32,18 @@ def test_direct_div_text_is_a_leaf_without_flattening_nested_blocks():
     assert target == '<div>直接中文句子。</div><div><p>内层句子。</p></div>'
 
 
+def test_mixed_div_text_is_not_lost_beside_block_children():
+    source = '<div id="original-note">First <em>note</em>.<p>Middle paragraph.</p>Last note.</div>'
+    manifest = pr.source_manifest(source)
+    assert len(manifest['segments']) == 3
+    assert '<em>note</em>' in manifest['source_snapshot'] and 'id="original-note"' in manifest['source_snapshot']
+    target = splice_segments(manifest['source_snapshot'], {
+        0: '<p>第一条<em>注释</em>。</p>', 1: '<p>中间段落。</p>', 2: '<p>最后注释。</p>',
+    })
+    assert pr.verify(source, target, pr.receipt(manifest, target)).status == 'mapped'
+    assert 'First' not in target and 'Last' not in target and 'id="original-note"' in target
+
+
 def test_code_whitespace_survives_all_receipt_stages():
     source = '<p>Use <code>a  b\n c</code> here.</p>'
     target = '<p>这里使用<code>a  b\n c</code>。</p>'

@@ -1140,6 +1140,33 @@ def _emit_br_lines(
     _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
 
 
+def _wrap_div_text(node: _El) -> None:
+    """混合容器里的直接文字仍是正文；只给行内连续内容补段，不拆原有块或锚点。"""
+    if node.name != 'div' or not any(isinstance(child, _El) and _is_container(child.name, descend_dl=True)
+                                     for child in node.children):
+        return
+    children = []
+    run = []
+
+    def flush():
+        if not run:
+            return
+        paragraph = _El('p', '<p>')
+        paragraph.source_group = node.source_group
+        paragraph.children = list(run)
+        children.extend([paragraph] if _has_letter(paragraph) else run)
+        run.clear()
+
+    for child in node.children:
+        if isinstance(child, _El) and _is_container(child.name, descend_dl=True):
+            flush()
+            children.append(child)
+        else:
+            run.append(child)
+    flush()
+    node.children = children
+
+
 def _walk(
     node: _El,
     ancestors: list[str],
@@ -1154,6 +1181,7 @@ def _walk(
     # pre / code 整段跳过，不译里面的字，和 AIHOT 一样。
     if node.name in {"pre", "code"}:
         return
+    _wrap_div_text(node)
     # dl 本身不是叶子。连续的短 dt 收成段；术语表仍是一条 dt、一条 dd。
     if node.name == "dl":
         _walk_dl(
