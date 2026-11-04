@@ -540,19 +540,62 @@ def _join_html(parts: list[str]) -> str:
     return f"{opening}{inner}</{tag}>"
 
 
-def _coalesce_source_paragraphs(pairs: list[BilingualPair]) -> list[BilingualPair]:
-    """按句切开的同一源段落并回一对。``<br>`` 粘出来的长文没有这个标记，仍按句留。"""
+def _shown_plain(pairs: Sequence[BilingualPair], side: str) -> str:
+    parts = []
+    for pair in pairs:
+        value = pair.zh if side == "zh" else pair.en
+        parts.append(value or "")
+    return re.sub(r"\s+", "", html.unescape(re.sub(r"<[^>]+>", "", "".join(parts))))
+
+
+def _shown_resources(pairs: Sequence[BilingualPair], side: str) -> tuple:
+    from researchlib.translate.provenance import Resources
+
+    blob = "".join((pair.zh if side == "zh" else pair.en) or "" for pair in pairs)
+    facts = Resources(blob)
+    return (tuple(facts.links), tuple(facts.media), tuple(facts.codes))
+
+
+def _coalesce_preserves(before: Sequence[BilingualPair], after: Sequence[BilingualPair]) -> bool:
+    """并段前后，页面上真正画出的中英文、链接和图片要一样。
+
+    有的句子中文和英文相同，对照不单列中文（zh 是 None）。整页投影会把这句英文算进译文侧。
+    并进仍有中文的那一段之后，译文侧不再整段退回英文，旧的整页投影会误判丢字，从而放弃所有并段。
+    这里只比实际画出来的文字。
+    """
+    if _shown_plain(before, "en") != _shown_plain(after, "en"):
+        return False
+    if _shown_plain(before, "zh") != _shown_plain(after, "zh"):
+        return False
+    return _shown_resources(before, "en") == _shown_resources(after, "en") and (
+        _shown_resources(before, "zh") == _shown_resources(after, "zh")
+    )
+
+
+def _coalesce_source_paragraphs(
+    pairs: list[BilingualPair], groups: Sequence[str | None] | None = None,
+) -> list[BilingualPair]:
+    """按句切开的同一源段落并回一对。``<br>`` 粘出来的长文没有这个标记，仍按句留。
+
+    ``groups`` 来自原文 materialize 后的叶子，和对照叶同一顺序。配对 HTML 上的
+    ``data-src-para`` 丢了也按这个并。
+    """
     from dataclasses import replace
 
-    grouped: list[list[BilingualPair]] = []
-    for pair in pairs:
-        gid = _src_para(pair.en or "")
-        if gid and grouped and _src_para(grouped[-1][0].en or "") == gid:
-            grouped[-1].append(pair)
+    def gid_at(index: int, pair: BilingualPair) -> str | None:
+        if groups is not None and index < len(groups) and groups[index]:
+            return groups[index]
+        return _src_para(pair.en or "")
+
+    grouped: list[tuple[str | None, list[BilingualPair]]] = []
+    for index, pair in enumerate(pairs):
+        gid = gid_at(index, pair)
+        if gid and grouped and grouped[-1][0] == gid:
+            grouped[-1][1].append(pair)
         else:
-            grouped.append([pair])
+            grouped.append((gid, [pair]))
     result: list[BilingualPair] = []
-    for group in grouped:
+    for _gid, group in grouped:
         if len(group) == 1:
             pair = group[0]
             result.append(replace(
@@ -764,13 +807,16 @@ def article_pairs(
             result = _separate(original, translated, "分段无法保真，以下保留完整原文和译文。")
     if not result.notice and any(ordered_projection_gaps(original, translated, result.pairs)):
         result = _separate(original, translated, "无法完整逐段展示，以下分别保留原文和译文。")
-    # 投影先看完整对照。按句切开的同一源段落先并回去；并完仍对得上原文才用这一份。
+    # 投影先看完整对照。按原文叶子的分段标记把同一段并回去；并段前后页面上的字和链接不变才采用。
     # 旧粗段按唯一锚点展开成句之后不再并回去，否则整段又合成一对。
     # 然后才隐藏重复；隐藏不得少掉原文里的词、链接或结构，否则整份留着。
     if not result.notice:
         if state.status != "legacy-anchors":
-            coalesced = _coalesce_source_paragraphs(result.pairs)
-            if not any(ordered_projection_gaps(original, translated, coalesced)):
+            groups = [_src_para(item.html) for item in left] if len(left) == len(result.pairs) else None
+            coalesced = _coalesce_source_paragraphs(result.pairs, groups)
+            # 整页投影会把「中文和英文相同、所以不单列」算成译文侧丢字，从而放弃所有并段。
+            # 只要求并段前后页面上的文字、链接和图片不变。
+            if _coalesce_preserves(result.pairs, coalesced):
                 result = replace(result, pairs=coalesced)
         result = replace(result, pairs=_hide_repeated_pairs(result.pairs))
         result = replace(result, pairs=_restore_pair_links(result.pairs))
