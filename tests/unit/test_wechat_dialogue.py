@@ -1468,3 +1468,134 @@ def test_invite_words_and_clock_in_speech_stay():
     text = present_ocr_pieces([speech])
     assert "我想邀请大家一起看看这家公司" in text
     assert "10:30 开盘以后5G板块一直在跌" in text
+
+
+# 文章 24039 的形状：聊天记录页的标题，以及带国旗的网名写进方伟同一段。网名和句子是编的。
+CHAT_RECORD_SHOT = """\
+方伟：这块没有内容分发平台，也有可能突然暴雷
+群聊的聊天记录
+王小明：好奇你对这块的看法，账上大部分是现金了。
+方伟：上面那层的分发权才是竞争
+方伟：没有这一层就只能按存量算
+李四：视频号没引到什么流。
+方伟：你想想你今年听到的新歌
+阿明🇫🇷：全域广告改变了很多😂，现在感觉压力很大
+方伟：是不是从短视频里冒出来的
+"""
+
+CHAT_RECORD_TEXT = """\
+方伟：这块没有内容分发平台，也有可能突然暴雷。
+
+王小明：好奇你对这块的看法，账上大部分是现金了。
+
+方伟：上面那层的分发权才是竞争
+没有这一层就只能按存量算。
+
+李四：视频号没引到什么流。
+
+方伟：你想想你今年听到的新歌。
+
+阿明🇫🇷：全域广告改变了很多😂，现在感觉压力很大。
+
+方伟：是不是从短视频里冒出来的。"""
+
+
+def test_group_chat_record_title_is_not_speech():
+    """「群聊的聊天记录」是转发卡片和聊天记录页的标题，单独成行或粘在句尾都不进正文。"""
+    alone = present_ocr_pieces(
+        [
+            "方伟：这块没有内容分发平台，也有可能突然暴雷\n"
+            "群聊的聊天记录\n"
+            "王小明：好奇你对这块的看法。\n"
+        ]
+    )
+    assert "群聊的聊天记录" not in alone
+    assert "方伟：这块没有内容分发平台，也有可能突然暴雷。" in alone
+    assert "王小明：好奇你对这块的看法。" in alone
+
+    dotted = present_ocr_pieces(["群聊的聊天记录。\n方伟：上面那层才是竞争\n"])
+    assert "群聊的聊天记录" not in dotted
+    assert dotted == "方伟：上面那层才是竞争。"
+
+    dated = present_ocr_pieces(["群聊的聊天记录\n2026年10月31日\n方伟：上面那层才是竞争\n"])
+    assert "群聊的聊天记录" not in dated and "2026年10月31日" not in dated
+    header = present_ocr_pieces(["群聊的聊天记录 2026年10月31日\n方伟：上面那层才是竞争\n"])
+    assert header == "方伟：上面那层才是竞争。"
+
+    trailing = present_ocr_pieces(["方伟：也有可能突然暴雷的 群聊的聊天记录。\n"])
+    assert trailing == "方伟：也有可能突然暴雷的。"
+    glued = present_ocr_pieces(["方伟：也有可能突然暴雷的群聊的聊天记录。\n"])
+    assert glued == "方伟：也有可能突然暴雷的。"
+    between = present_ocr_pieces(
+        ["方伟：也有可能突然暴雷的 群聊的聊天记录 王小明：好奇你对这块的看法。\n"]
+    )
+    assert between == "方伟：也有可能突然暴雷的。\n\n王小明：好奇你对这块的看法。"
+
+    mentioned = present_ocr_pieces(["方伟：我把群聊的聊天记录转给了他，他没回。\n"])
+    assert mentioned == "方伟：我把群聊的聊天记录转给了他，他没回。"
+
+
+def test_flag_nickname_on_its_own_line_is_not_folded_into_the_host():
+    """带国旗的网名是另一位。他后面那条方伟不再并进前一段。"""
+    raw = (
+        "方伟：你想想你今年听到的新歌\n"
+        "阿明🇫🇷：全域广告改变了很多😂，现在感觉压力很大\n"
+        "方伟：是不是从短视频里冒出来的\n"
+    )
+    text = present_ocr_pieces([raw])
+    assert text == (
+        "方伟：你想想你今年听到的新歌。\n\n"
+        "阿明🇫🇷：全域广告改变了很多😂，现在感觉压力很大。\n\n"
+        "方伟：是不是从短视频里冒出来的。"
+    )
+    assert present_stored_ocr(text) == text
+    # 聊天记录页上绿气泡写的是 Rey，仍是方伟，不跟前一位并成一段。
+    as_rey = present_ocr_pieces(
+        [
+            "方伟：你想想你今年听到的新歌\n"
+            "阿明🇫🇷：全域广告改变了很多\n"
+            "Rey：是不是从短视频里冒出来的\n"
+        ]
+    )
+    assert as_rey == (
+        "方伟：你想想你今年听到的新歌。\n\n"
+        "阿明🇫🇷：全域广告改变了很多。\n\n"
+        "方伟：是不是从短视频里冒出来的。"
+    )
+
+
+def test_mid_paragraph_speaker_change_splits_utterances():
+    """已经粘成一行的「方伟：… 网名：… 方伟：…」按冒号切开。只提到名字、没有冒号的不切。"""
+    raw = "方伟：你想想你今年听到的新歌 阿明🇫🇷：全域广告改变了很多😂 方伟：是不是从短视频里冒出来的"
+    assert present_ocr_pieces([raw]) == (
+        "方伟：你想想你今年听到的新歌。\n\n"
+        "阿明🇫🇷：全域广告改变了很多😂。\n\n"
+        "方伟：是不是从短视频里冒出来的。"
+    )
+    mention = present_ocr_pieces(
+        ["方伟：你跟阿明🇫🇷聊过，他觉得压力很大。\n方伟：先说 结论：再看数字。\n"]
+    )
+    assert mention == "方伟：你跟阿明🇫🇷聊过，他觉得压力很大。\n先说 结论：再看数字。"
+    assert "阿明🇫🇷：" not in mention
+    assert not any(line.startswith("结论：") for line in mention.splitlines())
+
+
+def test_chat_record_shot_reads_as_separate_speakers():
+    """24039 那一串：标题不出现，国旗网名单独一行，下一条仍是方伟。"""
+    assert present_ocr_pieces([CHAT_RECORD_SHOT]) == CHAT_RECORD_TEXT
+    assert present_stored_ocr(CHAT_RECORD_TEXT) == CHAT_RECORD_TEXT
+    digest = "ab" * 32
+    html = str(render_body("见图。\n\n![](a.png)\n", {"a.png": f"/media/fangwei-zsxq/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: CHAT_RECORD_SHOT})
+    assert "群聊的聊天记录" not in page
+    assert '<span class="who">方伟：</span>你想想你今年听到的新歌。' in page
+    assert '<span class="who">阿明🇫🇷：</span>全域广告改变了很多😂，现在感觉压力很大。' in page
+    assert '<span class="who">方伟：</span>是不是从短视频里冒出来的。' in page
+    song = page.index("你想想你今年听到的新歌")
+    flag = page.index("阿明🇫🇷")
+    nxt = page.index("是不是从短视频里冒出来的")
+    assert song < flag < nxt
+    assert "阿明" not in page[song : page.index("</p>", song)]
+    assert "</p>" in page[song:flag]
+    assert "</p>" in page[flag:nxt]
+    assert "上面那层的分发权才是竞争 没有这一层就只能按存量算。" in page
