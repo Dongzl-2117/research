@@ -9,7 +9,14 @@ from pathlib import Path
 from researchlib.config import Settings
 from researchlib.db import connect
 from researchlib.translate.display import article_pairs
-from researchlib.translate.provenance import AlignmentError, digest, reconstruction, source_manifest, verify
+from researchlib.translate.provenance import (
+    AlignmentError,
+    canonical_html,
+    digest,
+    reconstruction,
+    source_manifest,
+    verify,
+)
 from researchlib.translate.service import _render_original
 
 
@@ -19,6 +26,9 @@ def classify(source: str, translated: str, provenance: dict | None) -> dict:
     candidate = reconstruction(source, provenance) if provenance else None
     if state.status == "mapped":
         category, action = "mapped", "none"
+    elif candidate is not None and canonical_html(translated) != canonical_html(candidate):
+        # 旧回执只证明旧目标能重建，不能授权覆盖后来修订、增删或换过资源的当前中文。
+        category, action = "target-conflict", "review-target-edits"
     elif candidate is not None:
         category, action = "lossless-candidate", "restore-from-receipt"
     elif state.status == "legacy" and not display.notice:
@@ -60,13 +70,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.source:
             where.append("a.source_id = %s")
             params.append(args.source)
-        params.append(max(1, args.limit))
+        limit = ''
+        if not args.article_id:
+            params.append(max(1, args.limit))
+            limit = ' LIMIT %s'
         rows = conn.execute(
             "SELECT a.*, t.body_html AS translated_html, t.content_hash AS translation_content_hash,"
             " coalesce(to_jsonb(t)->'provenance', '{}'::jsonb) AS provenance"
             " FROM articles a JOIN article_translations t ON t.article_id = a.id"
             + (" WHERE " + " AND ".join(where) if where else "")
-            + " ORDER BY a.id LIMIT %s", params,
+            + " ORDER BY a.id" + limit, params,
         ).fetchall()
         plan = []
         for row in rows:

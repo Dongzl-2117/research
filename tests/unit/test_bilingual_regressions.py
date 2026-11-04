@@ -34,7 +34,7 @@ class Rows:
 
 class MemoryConn:
     def __init__(self, body):
-        self.article = {"id": 990001, "source_id": "stratechery", "title": "Synthetic audit",
+        self.article = {"id": 990001, "source_id": "stratechery", "source_enabled": True, "title": "Synthetic audit",
                         "body_md": body, "body_text": "English synthetic article.", "published_at": None,
                         "raw_meta": {"format": "markdown"}, "content_hash": "synthetic"}
         self.writes = []
@@ -44,7 +44,7 @@ class MemoryConn:
         if "INSERT INTO article_translations" in sql:
             self.writes.append(params)
             return Rows({'article_id': self.article['id']})
-        elif "FROM articles WHERE id" in sql:
+        elif "FROM articles a" in sql:
             return Rows(self.article)
         elif "FROM sources" in sql:
             return Rows({"kind": "markdown"})

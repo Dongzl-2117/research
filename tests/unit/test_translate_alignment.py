@@ -36,7 +36,7 @@ class _FakeConn:
     """
 
     def __init__(self, article: dict, *, kind: str = "rss") -> None:
-        self.article = article
+        self.article = {"source_enabled": True, **article}
         self.kind = kind
         self.sql = ""
         self.committed = False
