@@ -11,17 +11,11 @@
   const input = panel.querySelector('textarea');
   const submit = form && form.querySelector('button[type="submit"]');
   const log = panel.querySelector('.chat-log');
-  const articleId = panel.getAttribute('data-article');
   const scopeSelect = form && form.querySelector('select[name="article"]');
-  const articleChip = panel.querySelector('[data-chat-article]');
-  if (!form || !input || !submit || !log || !articleId || !scopeSelect) return;
-
-  const hint = form.querySelector('.chat-hint');
-  if (hint) hint.appendChild(document.createTextNode(' · 每轮独立提问'));
+  if (!form || !input || !submit || !log || !scopeSelect) return;
 
   const wideQuery = window.matchMedia('(min-width: 1320px)');
   const storageKey = 'research-article-chat';
-  const emptyText = '默认检索整个资料库，可选择只问这篇。\n每轮独立提问，不沿用上文。';
   let pending = false;
   let session = 0;
   let composing = false;
@@ -80,6 +74,14 @@
   function fitInput() {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+  }
+
+  function progress(turn, message) {
+    turn.status.className = 'chat-status';
+    const detail = document.createElement('span');
+    detail.className = 'sr';
+    detail.textContent = message;
+    turn.status.replaceChildren(document.createTextNode('…'), detail);
   }
 
   function scrollLog() {
@@ -169,13 +171,7 @@
     });
   }
 
-  function updateScope() {
-    if (articleChip) articleChip.hidden = scopeSelect.value !== String(articleId);
-  }
-
   function createTurn(question, article) {
-    const empty = log.querySelector('.chat-empty');
-    if (empty) empty.remove();
     const user = document.createElement('div');
     user.className = 'chat-bubble chat-bubble-user';
     const label = document.createElement('p');
@@ -210,7 +206,7 @@
       if (kind === 'refill') {
         input.value = turn.question;
         scopeSelect.value = turn.article;
-        updateScope(); fitInput(); input.focus();
+        fitInput(); input.focus();
       } else {
         beginRecovery(turn, kind);
       }
@@ -306,7 +302,7 @@
     } else if (!turn.id) {
       pause(turn, data.error || '没有召回到可引用的原文。', 'refill');
     } else if (data.status === 'running') {
-      turn.status.textContent = '已找到原文，正在由问库整合…';
+      progress(turn, '已找到原文，正在由问库整合');
       poll(turn, token);
     } else {
       pause(turn, '回答状态异常，可打开完整回答查看。');
@@ -354,8 +350,7 @@
     const token = ++session;
     cancelRequests();
     setPending(true);
-    turn.status.className = 'chat-status';
-    turn.status.textContent = kind === 'retry' ? '正在重新整合…' : '正在读取回答…';
+    progress(turn, kind === 'retry' ? '正在重新整合' : '正在读取回答');
     if (kind === 'retry') {
       try {
         // 与完整回答页使用同一重试动作；仅 error 状态会领取原任务，不创建另一条回答。
@@ -373,13 +368,6 @@
 
   function resetLog() {
     log.replaceChildren();
-    const empty = document.createElement('p');
-    empty.className = 'chat-empty';
-    emptyText.split('\n').forEach((line, index) => {
-      if (index) empty.appendChild(document.createElement('br'));
-      empty.appendChild(document.createTextNode(line));
-    });
-    log.appendChild(empty);
   }
 
   toggle.addEventListener('click', () => {
@@ -405,7 +393,6 @@
   });
   if (wideQuery.addEventListener) wideQuery.addEventListener('change', syncLayout);
   else if (wideQuery.addListener) wideQuery.addListener(syncLayout);
-  scopeSelect.addEventListener('change', updateScope);
   input.addEventListener('input', fitInput);
   input.addEventListener('compositionstart', () => { composing = true; });
   input.addEventListener('compositionend', () => { composing = false; });
@@ -425,7 +412,7 @@
     setPending(true);
     const article = scopeSelect.value;
     const turn = createTurn(question, article);
-    turn.status.textContent = article ? '正在这篇文章里检索…' : '正在资料库里检索…';
+    progress(turn, article ? '正在这篇文章里检索' : '正在资料库里检索');
     input.value = '';
     fitInput(); scrollLog();
     try {
@@ -440,6 +427,5 @@
     }
   });
 
-  updateScope();
   syncLayout();
 })();

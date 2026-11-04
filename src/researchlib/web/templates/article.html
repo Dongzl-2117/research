@@ -102,26 +102,18 @@
       <button type="button" data-chat-close aria-label="收起" title="收起">收起</button>
     </div>
   </header>
-  <div class="chat-log" role="log" aria-live="polite" aria-relevant="additions">
-    <p class="chat-empty">默认检索整个资料库，可选择只问这篇。<br>每轮独立提问，不沿用上文。</p>
-  </div>
+  <p id="article-chat-mode" class="sr">每轮独立提问，不沿用上文。范围由下方选择；默认检索整个资料库。</p>
+  <div class="chat-log" role="log" aria-live="polite" aria-relevant="additions"></div>
   <form class="chat-form" action="/ask" method="post">
     <div class="chat-composer">
-      <div class="chat-context">
-        <label class="sr" for="article-chat-scope">问库范围</label>
-        <select id="article-chat-scope" name="article" aria-label="问库范围">
-          <option value="">整个资料库</option>
-          <option value="{{ article.id }}">只问这篇</option>
-        </select>
-        <span class="chat-chip" data-chat-article hidden title="{{ display_title or article.title }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.8h7l5 4.8v11.6H7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 3.8V8.8h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span class="chat-chip-name">{{ display_title or article.title }}</span>
-        </span>
-      </div>
       <label class="sr" for="article-chat-q">问题</label>
-      <textarea id="article-chat-q" name="q" rows="2" maxlength="500" placeholder="向问库提问" enterkeyhint="send" required></textarea>
+      <textarea id="article-chat-q" name="q" aria-describedby="article-chat-mode" rows="2" maxlength="500" enterkeyhint="send" required></textarea>
       <div class="chat-composer-bar">
-        <p class="chat-hint">Enter 发送，Shift+Enter 换行</p>
+        <label class="sr" for="article-chat-scope">问库范围</label>
+        <select id="article-chat-scope" class="chat-range" name="article" aria-label="问库范围" aria-describedby="article-chat-mode">
+          <option value="">整个资料库 · 单轮</option>
+          <option value="{{ article.id }}">只问这篇 · 单轮</option>
+        </select>
         <button type="submit" aria-label="发送" title="发送">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V7.5M7.8 11.2 12 7l4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>

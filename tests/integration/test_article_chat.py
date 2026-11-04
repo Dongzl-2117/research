@@ -25,11 +25,14 @@ def test_sidebar_exposes_scope_and_single_turn_and_noscript_uses_original_ask(co
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{identity}").text
         assert 'id="article-chat"' in page and 'class="chat-toggle"' in page
-        assert 'class="reader-grid"' in page and 'class="chat-chip"' in page
+        assert 'class="reader-grid"' in page
         assert 'name="article" aria-label="问库范围"' in page
-        assert '<option value="">整个资料库</option>' in page
-        assert f'<option value="{identity}">只问这篇</option>' in page
+        assert '<option value="">整个资料库 · 单轮</option>' in page
+        assert f'<option value="{identity}">只问这篇 · 单轮</option>' in page
         assert '每轮独立提问，不沿用上文' in page
+        assert 'aria-describedby="article-chat-mode"' in page
+        assert 'chat-chip' not in page and 'chat-hint' not in page
+        assert 'placeholder=' not in page.split('id="article-chat-q"', 1)[1].split('>', 1)[0]
         assert 'form class="chat-form" action="/ask" method="post"' in page
         assert 'type="hidden" name="article"' not in page
         broad = client.post('/ask', data={'q': '腾讯', 'article': ''})

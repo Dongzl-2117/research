@@ -201,11 +201,13 @@ def test_article_template_is_title_body_and_bilingual_tabs():
     assert 'class="chat-toggle"' in html
     assert ">问 AI</span>" in html
     assert 'action="/ask"' in html
-    assert 'class="chat-chip"' in html
+    assert "chat-chip" not in html
+    assert "chat-hint" not in html
     assert 'class="chat-composer"' in html
-    assert "Enter 发送，Shift+Enter 换行" in html
-    assert "默认检索整个资料库" in html and "每轮独立提问" in html
-    assert 'placeholder="向问库提问"' in html
+    assert "Enter 发送" not in html
+    assert "先看这篇" not in html
+    assert 'id="article-chat-q"' in html
+    assert 'placeholder=' not in html.split('id="article-chat-q"', 1)[1].split(">", 1)[0]
     assert "主要看这篇文章" not in html
     assert 'data-chat-close' in html
     assert 'aria-label="收起"' in html
