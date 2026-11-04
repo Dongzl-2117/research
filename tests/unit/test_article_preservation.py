@@ -512,6 +512,400 @@ def test_distinct_long_paragraphs_stay_one_to_one():
     assert _near_prefix_groups([pair.en for pair in view.pairs]) == 0
 
 
+def _pad_sentence(sentence: str) -> str:
+    clause = " with distribution costs and the installed base staying visible in this clause about the quarter"
+    if sentence.endswith("."):
+        return sentence[:-1] + clause + "."
+    return sentence + clause
+
+
+def _china_sentences() -> tuple[list[str], list[str]]:
+    """21118 中国段的形状：一段里好几句，链接的锚文本不是光秃秃的域名。"""
+    en = [
+        "Apple’s results in Greater China this quarter reveal a sobering reality about a decade of flat sales.",
+        (
+            'In Q1 FY2025, revenue in China dropped 11% year-on-year, to about $18.5 billion '
+            '(<a href="https://www.businessinsider.com/live">the earnings liveblog</a>).'
+        ),
+        (
+            'Management explained that channel inventory cuts drove more than half of the decline '
+            '(<a href="https://www.businessinsider.com/channel">the call transcript</a>).'
+        ),
+        "The historical context stays in the same paragraph as the revenue sentence and the inventory note.",
+        "A further sentence about the installed base keeps this source paragraph past the split threshold.",
+        "One last sentence records that the market has been cyclical rather than a single bad quarter.",
+    ]
+    en = [_pad_sentence(sentence) for sentence in en]
+    zh = [
+        "苹果本季度在大中华区的业绩揭示了近十年销售基本持平的严峻现实。",
+        "2025 财年第一季度，中国收入同比下降 11%，降至约 185 亿美元（the earnings liveblog）。",
+        "管理层解释说，渠道库存减少导致了超过一半的降幅（the call transcript）。",
+        "历史背景必须和收入那一句、库存那一句留在同一段。",
+        "再补一句已有用户，让这一段超过按句切开的门槛。",
+        "最后一句说明市场是周期性的，而不是单独一个糟糕的季度。",
+    ]
+    return en, zh
+
+
+def test_source_paragraph_stays_one_pair_and_keeps_descriptive_links():
+    """21118 中国段：原文是一整段，对照不再拆成互不相干的句子。描述性锚文本留在中英两边。"""
+    en, zh = _china_sentences()
+    heading = "<h4>China: A Plateaued Market and Huawei’s Resurgence</h4>"
+    source = heading + "<p>" + " ".join(en) + "</p>"
+    translated = "<h4>中国：市场陷入平台期，华为强势回归</h4>" + "".join(f"<p>{line}</p>" for line in zh)
+    assert len(re.sub(r"<[^>]+>", "", source)) > 900
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    bodies = [pair for pair in view.pairs if "historical context" in (pair.en or "")]
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert "In Q1 FY2025" in body.en and "channel inventory" in body.en
+    assert "185 亿美元" in (body.zh or "") and "历史背景" in (body.zh or "")
+    for href, anchor in (
+        ("https://www.businessinsider.com/live", "the earnings liveblog"),
+        ("https://www.businessinsider.com/channel", "the call transcript"),
+    ):
+        assert f'<a href="{href}">{anchor}</a>' in body.en
+        assert f'<a href="{href}">{anchor}</a>' in (body.zh or "")
+    shown = _project(view.pairs, "en") + _project(view.pairs, "zh")
+    assert "(businessinsider.com)" not in shown and "（businessinsider.com）" not in shown
+    heading_pairs = [pair for pair in view.pairs if "Plateaued Market" in (pair.en or "")]
+    assert len(heading_pairs) == 1
+    assert "185 亿美元" not in (heading_pairs[0].zh or "")
+    assert "historical context" not in (heading_pairs[0].en or "")
+
+
+def test_naked_parenthetical_hosts_become_links_without_being_duplicated():
+    """译文把域名留在括号里、丢掉了标签。套回原来的 href，不再贴一个相同的括号域名。"""
+    en = [
+        (
+            "In Q1 FY2025, revenue in China dropped 11% year-on-year, to about $18.5 billion "
+            '(<a href="https://www.businessinsider.com/live">businessinsider.com</a>).'
+        ),
+        (
+            "By 2016 and 2017, Greater China revenue was falling double-digits "
+            '(<a href="https://stratechery.com/one">stratechery.com</a>) '
+            '(<a href="https://stratechery.com/two">stratechery.com</a>).'
+        ),
+        "The historical note stays with those two citations inside the original paragraph.",
+        "Another sentence about the installed base keeps the paragraph from being one short line.",
+        "A closing sentence records the cyclical pattern of sales in that market over the decade.",
+    ]
+    zh = [
+        "2025 财年第一季度，中国收入同比下降 11%，降至约 185 亿美元（businessinsider.com）。",
+        "到 2016 年和 2017 年，大中华区营收两位数下滑（stratechery.com）（stratechery.com）。",
+        "历史说明和这两条引用留在原来的那一段里。",
+        "再写一句已有用户，避免这一段短到不用并。",
+        "结尾一句记下这十年里销售的周期。",
+    ]
+    en = [_pad_sentence(sentence) for sentence in en]
+    source = "<p>" + " ".join(en) + "</p>"
+    translated = "".join(f"<p>{line}</p>" for line in zh)
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 1
+    pair = view.pairs[0]
+    assert '<a href="https://www.businessinsider.com/live">businessinsider.com</a>' in (pair.zh or "")
+    assert '<a href="https://stratechery.com/one">stratechery.com</a>' in (pair.zh or "")
+    assert '<a href="https://stratechery.com/two">stratechery.com</a>' in (pair.zh or "")
+    plain_zh = re.sub(r"<[^>]+>", "", pair.zh or "")
+    assert plain_zh.count("businessinsider.com") == 1
+    assert plain_zh.count("stratechery.com") == 2
+    assert "（businessinsider.com）" not in (pair.zh or "")
+    assert "（stratechery.com）（stratechery.com）" not in (pair.zh or "")
+
+
+def test_paragraph_merge_survives_a_sentence_whose_chinese_matches_english():
+    """另一段里有一句中文和英文相同、对照不单列中文。不能因此放弃把中国段并回一对。
+
+    21118 的译文已经是许多短 ``<p>``，没有 data-src-para。原文那一段仍是一整块。
+    并段若被整页投影误判丢字，这些短段会原样留在页面上。
+    """
+    en, zh = _china_sentences()
+    pad = (
+        " with distribution costs and the installed base staying visible through the holiday quarter"
+        " and the following one while subscriptions kept the margin high"
+    )
+    services = [
+        f"Services revenue still appears to have room to grow across the installed base{pad}.",
+        f"The margin on those subscriptions stayed high while hardware sales were flat{pad}.",
+        f"A later services sentence keeps this second paragraph past the split threshold{pad}.",
+        f"One more services sentence belongs with the two above and not with the China paragraph{pad}.",
+    ]
+    source = "<p>" + " ".join(en) + "</p><p>" + " ".join(services) + "</p>"
+    translated = "".join(f"<p>{line}</p>" for line in zh)
+    # 第一句中文故意和英文相同，展示时不单列；其余仍是另一段的中文。
+    translated += f"<p>{services[0]}</p>"
+    translated += "".join(
+        f"<p>服务段第{index}句，只讲订阅，不要写进中国段。</p>" for index in range(1, len(services))
+    )
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    china = [pair for pair in view.pairs if "historical context" in (pair.en or "")]
+    assert len(china) == 1
+    assert "In Q1 FY2025" in china[0].en and "channel inventory" in china[0].en
+    assert "185 亿美元" in (china[0].zh or "")
+    assert "服务段第" not in (china[0].zh or "")
+    assert "data-src-para" not in china[0].en
+    services_pairs = [pair for pair in view.pairs if "Services revenue" in (pair.en or "")]
+    assert len(services_pairs) == 1
+    assert "订阅" in (services_pairs[0].zh or "")
+    assert '<a href="https://www.businessinsider.com/live">the earnings liveblog</a>' in (china[0].zh or "")
+
+
+def test_source_groups_merge_short_siblings_after_the_marker_is_stripped():
+    """配对 HTML 上的 data-src-para 丢了，仍按原文叶子的分组把同一段的短 ``<p>`` 并回去。"""
+    from researchlib.translate.display import _coalesce_source_paragraphs
+    from researchlib.translate.segments import iter_segments
+
+    en, zh = _china_sentences()
+    source = "<p>" + " ".join(en) + "</p>"
+    leaves = iter_segments(source)
+    assert len(leaves) == len(zh) > 1
+    groups = []
+    pairs = []
+    for leaf, line in zip(leaves, zh, strict=True):
+        match = re.search(r'data-src-para="(\d+)"', leaf.html)
+        groups.append(match.group(1) if match else None)
+        plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", leaf.html)).strip()
+        pairs.append(BilingualPair(en=f"<p>{plain}</p>", zh=f"<p>{line}</p>"))
+    assert len(set(groups)) == 1 and groups[0]
+    merged = _coalesce_source_paragraphs(pairs, groups)
+    assert len(merged) == 1
+    assert "In Q1 FY2025" in merged[0].en and "historical context" in merged[0].en
+    assert "185 亿美元" in (merged[0].zh or "")
+    assert "data-src-para" not in merged[0].en
+
+
+def _blank_key(html: str) -> str:
+    from html import unescape
+
+    return re.sub(r"\s+", "", unescape(re.sub(r"<[^>]+>", "", html or ""))).casefold()
+
+
+def _blank_long_groups(htmls: list[str], *, min_len: int = 80) -> int:
+    """长英文按去掉全部空白后的原文分组。句号前的空格、括号里的空格因此相同。"""
+    groups: dict[str, int] = {}
+    for html in htmls:
+        if len(_visible(html)) < min_len:
+            continue
+        key = _blank_key(html)
+        groups[key] = groups.get(key, 0) + 1
+    return sum(1 for count in groups.values() if count >= 2)
+
+
+def test_blank_normalized_long_english_hides_the_later_copy():
+    """``story .`` 和 ``story.``、连续空格，去掉空白后是同一段长英文。只留先出现的那一对。"""
+    spaced = (
+        "Services remain the centerpiece of the growth story . In Q1 the installed base "
+        "kept paying and the margin stayed high through the whole year."
+    )
+    tight = spaced.replace("story .", "story.")
+    doubled = tight.replace("story.", "story  .")
+    assert len(_visible(spaced)) >= 80
+    assert _blank_key(spaced) == _blank_key(tight) == _blank_key(doubled)
+    zh = (
+        "<p>服务仍是增长故事的核心。战略是把硬件购买者转化为经常性收入客户。</p>"
+        "<p>服务仍是增长故事的核心。战略是把硬件购买者转化为持续贡献经常性收入的客户。</p>"
+    )
+    for earlier, later in ((spaced, tight), (doubled, tight)):
+        view = article_pairs(f"<p>{earlier}</p><p>{later}</p>", zh)
+        assert view.notice == ""
+        assert len(view.pairs) == 1
+        assert _blank_long_groups([pair.en for pair in view.pairs]) == 0
+
+
+def test_blank_normalized_parenthetical_host_hides_the_later_copy():
+    """``( macrumors.com )`` 和 ``(macrumors.com)`` 去掉空白后相同。后一份不再单独成对。"""
+    spaced = (
+        "Health and safety stayed in the brand story ( macrumors.com ) and the hearing "
+        "feature changed a customer's year ( macrumors.com ) without changing the revenue line."
+    )
+    tight = spaced.replace("( macrumors.com )", "(macrumors.com)")
+    assert len(_visible(spaced)) >= 80
+    assert _blank_key(spaced) == _blank_key(tight)
+    assert _visible(spaced) != _visible(tight)
+    zh = (
+        "<p>健康与安全仍在品牌故事里。这也是与竞争对手拉开差距的一个领域。</p>"
+        "<p>健康与安全仍在品牌故事里。这也是区别于竞争对手的一个领域。</p>"
+    )
+    view = article_pairs(f"<p>{spaced}</p><p>{tight}</p>", zh)
+    assert view.notice == ""
+    assert len(view.pairs) == 1
+    assert "( macrumors.com )" in _project(view.pairs, "en")
+    assert _blank_long_groups([pair.en for pair in view.pairs]) == 0
+
+
+def test_tag_spaces_do_not_keep_a_blank_normalized_services_duplicate():
+    """21118 的形状：纯文字那份在句号和域名两侧多了空格，带链接的那份用标签隔开。
+
+    标签换成空格之后两份可见文字相同，译文只是换了说法。去掉空白后仍是同一段，只留带链接的一对。
+    """
+    from researchlib.translate.pair import _text_content, visible_text
+
+    spaced = (
+        "Services – the ecosystem monetization engine: the services segment continues to be "
+        "the centerpiece of its growth story . In Q1 revenue kept climbing "
+        "( macrumors.com ) while the installed base kept paying through the year."
+    )
+    tight = (
+        "<strong>Services – the ecosystem monetization engine:</strong> the services segment continues to be "
+        "the <strong>centerpiece of its growth story</strong>. In Q1 revenue kept climbing "
+        '(<a href="https://www.macrumors.com/earnings">macrumors.com</a>) '
+        "while the installed base kept paying through the year."
+    )
+    assert visible_text(spaced) == visible_text(tight)
+    assert _text_content(spaced) != _text_content(tight)
+    assert _blank_key(spaced) == _blank_key(tight)
+    assert len(_visible(spaced)) >= 80
+    zh = (
+        "<p>服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为经常性收入客户。</p>"
+        "<p>服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为持续贡献经常性收入的客户。</p>"
+    )
+    view = article_pairs(f"<p>{spaced}</p><p>{tight}</p>", zh)
+    assert view.notice == ""
+    assert len(view.pairs) == 1
+    assert 'href="https://www.macrumors.com/earnings"' in view.pairs[0].en
+    assert _blank_long_groups([pair.en for pair in view.pairs]) == 0
+    assert "经常性收入客户" in (view.pairs[0].zh or "")
+
+
+def test_services_and_health_blank_duplicates_drop_from_two_groups_to_zero():
+    """近似 21118：Services、Health 各有一份带空格的列表和一份带链接的段落。收完各组只剩一对。"""
+    from researchlib.translate.segments import segments_of
+
+    services_spaced = (
+        "Services – the ecosystem monetization engine: the services segment continues to be "
+        "the centerpiece of its growth story . In Q1 revenue kept climbing "
+        "( macrumors.com ) while the installed base kept paying through the year."
+    )
+    services_tight = (
+        "<strong>Services – the ecosystem monetization engine:</strong> the services segment continues to be "
+        "the <strong>centerpiece of its growth story</strong>. In Q1 revenue kept climbing "
+        '(<a href="https://www.macrumors.com/earnings">macrumors.com</a>) '
+        "while the installed base kept paying through the year."
+    )
+    health_spaced = (
+        "Health and safety narrative: the company read anecdotes of how the watch saved lives "
+        "( macrumors.com ) and how hearing features changed a customer's life "
+        "( macrumors.com ) during the call, which is part of the brand strategy this year."
+    )
+    health_tight = (
+        "<strong>Health and safety narrative:</strong> the company read anecdotes of how the watch saved lives "
+        '(<a href="https://www.macrumors.com/health">macrumors.com</a>) and how hearing features changed a '
+        "customer's life "
+        '(<a href="https://www.macrumors.com/hearing">macrumors.com</a>) during the call, which is part of '
+        "the brand strategy this year."
+    )
+    filler = (
+        "<ul><li><p>An unrelated list item about buybacks stays on the page and keeps the list structure "
+        "visible beside the repeated sections.</p></li></ul>"
+    )
+    bridge = "<p>The bridge between the copies is its own sentence and must stay put beside them.</p>"
+    source = (
+        filler
+        + f"<ul><li><p>{services_spaced}</p></li></ul>"
+        + f"<p>{services_tight}</p>"
+        + bridge
+        + f"<ul><li><p>{health_spaced}</p></li></ul>"
+        + f"<p>{health_tight}</p>"
+    )
+    translated = (
+        "<ul><li><p>无关的回购列表要留着。</p></li></ul>"
+        "<p>服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为经常性收入客户。</p>"
+        "<p>服务业务仍是增长故事的核心。战略很明确：把硬件购买者转化为持续贡献经常性收入的客户。</p>"
+        "<p>夹层必须留在自己的位置。</p>"
+        "<p>健康与安全仍在品牌故事里。这也是与竞争对手拉开差距的一个领域。</p>"
+        "<p>健康与安全仍在品牌故事里。这也是区别于竞争对手的一个领域。</p>"
+    )
+    leaves = segments_of(source)
+    assert len(leaves) == len(segments_of(translated)) == 6
+    assert _blank_long_groups(leaves) == 2
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 4
+    assert _blank_long_groups([pair.en for pair in view.pairs]) == 0
+    assert sum("ecosystem monetization" in pair.en for pair in view.pairs) == 1
+    assert sum("Health and safety narrative" in pair.en for pair in view.pairs) == 1
+    shown = _project(view.pairs, "en")
+    assert 'href="https://www.macrumors.com/earnings"' in shown
+    assert 'href="https://www.macrumors.com/health"' in shown
+    assert 'href="https://www.macrumors.com/hearing"' in shown
+    assert any("unrelated list item" in pair.en for pair in view.pairs)
+    assert any("bridge between" in pair.en for pair in view.pairs)
+    assert content_gaps(source, shown) == 0
+
+
+def test_identical_english_with_unique_chinese_stays_two_pairs():
+    """连空白都一样的两段，中文各有一句独有说法时，两对都留。"""
+    same = (
+        "Microsoft cloud revenue grew at the low end of the forecast this quarter "
+        "and the installed base kept paying."
+    )
+    assert len(_visible(same)) >= 80
+    source = f"<p>{same}</p><p>{same}</p>"
+    translated = (
+        "<p>这是一段共同的中文说明，介绍平台的重要渠道优势。甲独有的信息。</p>"
+        "<p>这是一段共同的中文说明，介绍平台的重要渠道优势。乙独有的信息。</p>"
+    )
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 2
+    assert "甲独有的信息" in (view.pairs[0].zh or "")
+    assert "乙独有的信息" in (view.pairs[1].zh or "")
+
+
+def test_different_chinese_sentence_stays_beside_the_repeated_english():
+    """英文相同，但后一次的中文是另一句。两对都留，夹层不错位。"""
+    sentence = (
+        "iPhone revenue was essentially flat in the fiscal year and dipped about one percent "
+        "in the holiday quarter, suggesting unit sales are reaching a plateau worldwide."
+    )
+    aside = "The first aside explains why the opening report stopped after the holiday quarter and stays."
+    source = f"<p>{sentence}</p><p>{aside}</p><p>{sentence}</p>"
+    translated = (
+        "<p>iPhone 收入在财年基本持平。</p>"
+        "<p>夹层必须留在第二对。</p>"
+        "<p>这是另一句译文，讲的是服务而不是手机出货，不能因为英文相同就被收掉。</p>"
+    )
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 3
+    assert "基本持平" in (view.pairs[0].zh or "")
+    assert "第二对" in (view.pairs[1].zh or "")
+    assert "另一句" in (view.pairs[2].zh or "")
+
+
+def test_short_whitespace_footnote_is_not_soft_hidden():
+    """不到长英文门槛的脚注，只差一个空格也不收。"""
+    source = "<p>See note .</p><p>See note.</p>"
+    translated = "<p>短注甲。</p><p>短注乙，说法不同。</p>"
+    assert len(_visible(source)) < 80
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 2
+
+
+def test_absorbed_translation_does_not_repeat_a_parenthetical_host():
+    """短句并进长段时，长段已经有的括号域名不再贴第二次。独有说法仍留下。"""
+    short = f"{_LONG} (example.com)."
+    long = f"{short} A trailing note about buybacks appears only on the longer copy."
+    short_html = short.replace(
+        "example.com", '<a href="https://example.invalid/report">example.com</a>', 1,
+    )
+    source = f"<p>{short_html}</p><p>{long}</p>"
+    translated = (
+        "<p>分销成本和已有用户决定优势（example.com）。甲独有的补充。</p>"
+        "<p>分销成本和已有用户决定优势（example.com）。回购只写在长段里。</p>"
+    )
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    zh = "".join(pair.zh or "" for pair in view.pairs)
+    assert zh.count("example.com") == 1
+    assert "甲独有的补充" in zh and "回购" in zh
+    assert 'href="https://example.invalid/report"' in _project(view.pairs, "en")
+
+
 def test_soft_dedupe_does_not_fail_projection_or_near_duplicate_qa():
     source = f"<blockquote><p>{_LONG}</p></blockquote><p>{_LONG}</p><p>{_LONG}</p>"
     translated = f"<blockquote><p>{_LONG_ZH}</p></blockquote><p>{_LONG_ZH}</p><p>{_LONG_ZH}</p>"
