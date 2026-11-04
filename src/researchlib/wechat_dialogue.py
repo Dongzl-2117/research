@@ -231,7 +231,7 @@ _STRUCTURED = re.compile(r"^(方伟|网友)\s*[:：]\s*(.*)$")
 # 识图现在照抄截图上的网名（春风十里我自在：…）。标签只认冒号前的一小段，
 # 不含空白、句读和斜杠；像不像人名交给 _guest_label 判，不堆名字对照表。
 _NICK_LABEL = re.compile(
-    r"^(?P<label>[^\s：:，。！？!?、；/\\]{1,16})\s*[:：]\s*(?P<body>.*)$", re.S
+    r"^(?P<label>[^\s：:，。！？!?、；/\\]{1,20})\s*[:：]\s*(?P<body>.*)$", re.S
 )
 # 昵称后面粘着雪球/星球的身份徽章：「春风十里我自在作者」。
 _AUTHOR_SUFFIX = re.compile(r"\s*[（(]?作者[）)]?$")
@@ -495,7 +495,7 @@ _NICK_DECORATION = re.compile(
     "]+"
 )
 # 一行里中途的「网名：」。标签本身不含空白和句读；前面必须是空白，避免切进「对王小明：」。
-_SPEAKER_MARK = re.compile(r"(?P<label>[^\s：:，。！？!?、；/\\]{1,16})\s*[:：]")
+_SPEAKER_MARK = re.compile(r"(?P<label>[^\s：:，。！？!?、；/\\]{1,20})\s*[:：]")
 # 指标按可组合的修饰词、量和度量识别，而不是逐个补「净资产收益率」等完整字段。
 # 冒号只能证明它是标签；财务指标不能因此被赋予新的说话人身份。
 _FINANCIAL_LABEL = re.compile(
@@ -515,6 +515,13 @@ _NAME_START = frozenset(
     "戚孔汤池鲁季乔牛阿小老"
 )
 _NICK_IDENTITY_END = re.compile(r"(?:先生|女士|同学|老师|掌柜|居士|客|君)$|我.*(?:自在|逍遥|自由)$")
+# 拉丁昵称没有汉字姓名形状：独立行首标签还须接明显的发言开头。
+# 数值、单位或不能确认的文字不据此变成人名，保留原字并提示边界未核实。
+_SPEECH_LEAD = re.compile(
+    r"^(?:我(?![司国行方])|我们|你|他|她|咱们|同意|不同意|赞同|不赞同|谢谢|收到|明白|好的|是的|"
+    r"(?:I|We|You|He|She|They|Yes|No|Thanks|Agreed)\b)", re.I,
+)
+_MEASUREMENT_LEAD = re.compile(r"^(?:[+\-−¥￥$\d.]|约|百分之|同比|环比|增长|下降|增加|减少|占比)")
 _PUNCT = re.compile(r"[，。！？、；：,.!?;:\"“”‘’（）()\[\]【】《》<>]")
 
 
@@ -1215,7 +1222,7 @@ def _nick_core(name: str) -> str:
 def _is_embedded_speaker(label: str, known: set[str]) -> bool:
     """行中间的冒号本身不证明换人，须有独立昵称或姓名形状等额外依据。"""
     cleaned = _clean_label(label)
-    if not cleaned or any(mark in cleaned for mark in ".@"):
+    if not cleaned or '@' in cleaned or ('.' in cleaned and cleaned not in known):
         return False
     if cleaned in {HOST, GUEST} or _is_host_line(_compact_host(cleaned)):
         return True
@@ -1234,26 +1241,48 @@ def _is_embedded_speaker(label: str, known: set[str]) -> bool:
     )
 
 
+def _latin_speech_label(label: str, body: str) -> bool:
+    """独立一行的拉丁昵称有发言语境才确认；不把未知英文指标名按字形直接当人。"""
+    cleaned = _clean_label(label)
+    return bool(
+        _latin_name(_nick_core(cleaned)) and _guest_label(cleaned) and _SPEECH_LEAD.match((body or '').lstrip())
+    )
+
+
 def _known_speaker_labels(lines: list[str]) -> set[str]:
     """独立的无冒号昵称行可佐证另一处标签；重复出现的「指标：」不能自证为人名。"""
-    bare = {_plain(line).strip() for line in lines if _guest_label(_plain(line).strip())}
+    bare = set()
+    for index, line in enumerate(lines[:-1]):
+        label = _plain(line).strip()
+        following = _plain(lines[index + 1]).strip()
+        if (
+            _guest_label(label) and (_content(following) or _SPEECH_LEAD.match(following))
+            and not _MEASUREMENT_LEAD.match(following)
+        ):
+            bare.add(label)
     marked = {
         _clean_label(match.group('label'))
         for line in lines for match in _SPEAKER_MARK.finditer(_plain(line))
         if match.start() == 0 or _plain(line)[match.start() - 1].isspace()
     }
-    return bare & marked
+    spoken_latin = set()
+    for line in lines:
+        head = _NICK_LABEL.match(_plain(line))
+        if head and _latin_speech_label(head.group('label'), head.group('body')):
+            spoken_latin.add(_clean_label(head.group('label')))
+    # 裸名称行须另有正文语境；数值行不能把同名指标自行证明成人。
+    return (bare & marked) | spoken_latin
 
 
 def _uncertain_speaker_boundary(lines: list[str], known: set[str]) -> bool:
-    """行首或行中未知中文标签都可能是字段；缺少人物依据时保留整段原字。"""
+    """行首或行中任何文字标签都可能是字段，不按中文／拉丁字母区别对待。"""
     for line in lines:
         text = _plain(line)
         for match in _SPEAKER_MARK.finditer(text):
             if match.start() and not text[match.start() - 1].isspace():
                 continue
             label = _clean_label(match.group('label'))
-            if _CJK.search(label) and _guest_label(label) and not _is_embedded_speaker(label, known):
+            if _guest_label(label) and not _is_embedded_speaker(label, known):
                 return True
     return False
 
@@ -1343,7 +1372,15 @@ def parse_shot(text: str) -> Shot:
         labeled_chat or _wechat_signal(stripped) or any(line.startswith(SIDE_SELF) for line in raw_lines)
     ):
         # 既不捏造下一位，也不把可能的新昵称折进上一位：整段保持未归属的原识别文字。
-        return _prose_after_footer(original, scrubbed_lines, _drop_post_footer(scrubbed_lines))
+        kept = []
+        for line in _drop_post_footer(scrubbed_lines):
+            plain = _plain(line)
+            if _is_noise(plain):
+                continue
+            # 已知作者的显示名仍可规范；这不推断未知标签归谁，也不保留纯界面行。
+            host = split_speaker(plain)
+            kept.append(f'{host[0]}：{host[1]}' if host else line)
+        return _prose_after_footer(original, scrubbed_lines, kept)
     signal = _wechat_signal(stripped)
     lines = _prepare_lines(stripped)
     names = _speaker_names(lines, signal) | known
@@ -1725,7 +1762,15 @@ def _is_card_anchor(line: str) -> bool:
 def _latin_name(line: str) -> bool:
     text = (line or "").strip()
     if not _LATIN_NAME.fullmatch(text):
-        return False
+        normalized = unicodedata.normalize('NFC', text)
+        def latin_letter(char: str) -> bool:
+            return unicodedata.name(char, '').startswith('LATIN ')
+
+        if not (
+            3 <= len(normalized) <= 20 and latin_letter(normalized[0])
+            and all(latin_letter(char) or char in '0123456789._-' for char in normalized)
+        ):
+            return False
     if text.lower() in _LATIN_STOP or _is_host_line(_compact_host(text)):
         return False
     return True
@@ -1770,7 +1815,7 @@ def split_speaker(line: str, *, names: bool = False) -> tuple[str, str] | None:
         return label, body
     if _is_host_line(_compact_host(label)):
         return HOST, body
-    if names and _is_embedded_speaker(label, set()):
+    if names and (_is_embedded_speaker(label, set()) or _latin_speech_label(label, body)):
         return label, body
     return None
 

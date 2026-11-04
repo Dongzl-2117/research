@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 
 from researchlib import ask as ask_mod
@@ -21,7 +22,7 @@ from researchlib.retrieval import retrieve
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.app import create_app
 from researchlib.web.queries import Scope
-from researchlib.wechat_dialogue import parse_shot, speaker_note
+from researchlib.wechat_dialogue import attribution_uncertain, parse_shot, speaker_note
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 CHAT = (
@@ -142,6 +143,58 @@ def test_uncertain_inline_labels_keep_raw_text_and_reach_models_as_uncertain(con
     assert rebuild_ocr_chunks(conn, dry_run=True)[1] == 1
     assert rebuild_ocr_chunks(conn)[1] == 1
     assert rebuild_ocr_chunks(conn)[1] == 0
+    assert conn.execute('SELECT text FROM image_texts WHERE content_hash=%s', (digest,)).fetchone()['text'] == raw
+
+
+@pytest.mark.parametrize('unknown_metric', [False, True])
+def test_latin_boundary_is_preserved_in_chunks_and_actual_model_prompts(
+    conn, settings, tmp_path, monkeypatch, unknown_metric,
+):
+    image = tmp_path / 'latin.png'
+    _png(image, b'\x39' * 24)
+    article = _store(
+        conn, settings, 'fangwei-zsxq', 'synthetic-latin-label', '合成英文昵称边界',
+        '本篇记录不同人的判断。\n\n![](latin.png)\n', [image],
+    )
+    other = 'NewRatio：123.45%' if unknown_metric else 'Alice：我认为可以提价。'
+    raw = f'方伟：我的判断是先观察。\n{other}'
+    digest = _remember(conn, article['id'], 'latin.png', raw)
+    refresh_article_ocr(conn, article['id'])
+    replace_ocr_chunks(conn, article['id'])
+    conn.commit()
+    saved = conn.execute('SELECT ocr_text FROM articles WHERE id=%s', (article['id'],)).fetchone()['ocr_text']
+    chunk = conn.execute(
+        "SELECT body,heading FROM article_chunks WHERE article_id=%s AND lang='ocr'", (article['id'],),
+    ).fetchone()
+    assert other in saved and other in chunk['body']
+    assert attribution_uncertain(saved) == unknown_metric
+    if unknown_metric:
+        assert saved == raw and chunk['heading'] == OCR_UNCERTAIN_HEADING
+        assert parse_shot(saved).turns == []
+    else:
+        assert chunk['heading'] == OCR_HEADING
+        assert [turn.speaker for turn in parse_shot(chunk['body']).turns] == ['方伟', 'Alice']
+        assert parse_shot(chunk['body']).turns[0].lines == ['我的判断是先观察。']
+    sources = enabled_sources(load_sources(settings.sources_path))
+    found = retrieve(conn, '概括这篇', Scope(source_ids=['fangwei-zsxq'], article_id=article['id']), sources)
+    prompt = ask_mod._material(ask_mod._passages(found, sources, settings))
+    assert other in prompt
+    assert (OCR_UNCERTAIN_HEADING in prompt) == unknown_metric
+    # 摘要真实入口使用替身，只检查实际送出的资料与说话人说明，不请求任何模型。
+    seen = []
+
+    def fake_chat(_settings, messages, **_kwargs):
+        seen.append(messages[1]['content'])
+        return '{"summary":"合成导读","points":[],"tags":[]}', 'synthetic'
+
+    monkeypatch.setattr(digest_mod, 'chat', fake_chat)
+    row = conn.execute(
+        'SELECT id,title,body_text,content_hash,published_at,source_id,ocr_hash FROM articles WHERE id=%s',
+        (article['id'],),
+    ).fetchone()
+    digest_mod.digest_article(conn, settings, row, '方伟')
+    assert seen and other in seen[0]
+    assert ('尚未确认其说话人边界' in seen[0]) == unknown_metric
     assert conn.execute('SELECT text FROM image_texts WHERE content_hash=%s', (digest,)).fetchone()['text'] == raw
 
 

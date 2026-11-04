@@ -21,6 +21,7 @@ from researchlib.render import (
 )
 from researchlib.wechat_dialogue import (
     SIDE_SELF,
+    attribution_uncertain,
     parse_shot,
     present_ocr_pieces,
     present_stored_ocr,
@@ -1659,6 +1660,58 @@ def test_positive_nickname_shapes_still_split_on_the_same_line(nickname):
 @pytest.mark.parametrize('field', ['净资产收益率', '资本开支', '营业成本', '研发费用', '净利润率', '2025年研发费用率'])
 def test_financial_labels_are_not_speaker_prefixes_for_other_consumers(field):
     assert split_speaker(f'{field}：百分之十', names=True) is None
+
+
+@pytest.mark.parametrize('nickname', [
+    'Alice', 'Bob', 'alice_27', 'Kevin-7', 'Alice🇫🇷', 'José', 'Zoë', 'François', 'AlexanderResearch', 'alice.27',
+])
+@pytest.mark.parametrize('speech', ['我认为可以提价。', 'I think pricing can improve.'])
+def test_latin_nickname_on_a_separate_line_keeps_its_speech(nickname, speech):
+    raw = f'方伟：我的判断是先观察。\n{nickname}：{speech}'
+    shot = parse_shot(raw)
+    assert [turn.speaker for turn in shot.turns] == ['方伟', nickname]
+    assert shot.turns[0].lines == ['我的判断是先观察。']
+    assert shot.turns[1].lines == [speech]
+    shown = present_ocr_pieces([raw])
+    assert f'{nickname}：{speech}' in shown
+    assert present_stored_ocr(shown) == shown
+    assert not attribution_uncertain(raw)
+    assert split_speaker(f'{nickname}：{speech}', names=True) == (nickname, speech)
+
+
+@pytest.mark.parametrize('separator', [' ', '\n'])
+@pytest.mark.parametrize('label', ['UnknownMetric', 'NewRatio', 'Backlog', 'Typical', 'UnknownMetricRatio'])
+def test_unknown_latin_metric_labels_remain_raw_and_explicitly_uncertain(label, separator):
+    raw = f'方伟：先看经营数据。{separator}{label}：123.45%'
+    shot = parse_shot(raw)
+    assert shot.kind == 'prose' and shot.turns == [] and shot.prose == raw
+    assert attribution_uncertain(raw)
+    assert present_ocr_pieces([raw]) == raw
+    assert present_stored_ocr(raw) == raw
+    assert '尚未确认其说话人边界' in speaker_note(raw)
+    assert split_speaker(f'{label}：123.45%', names=True) is None
+
+
+def test_inline_latin_nickname_needs_independent_speech_evidence():
+    raw = '方伟：先观察。 Alice：我认为可以提价。'
+    assert parse_shot(raw).prose == raw and attribution_uncertain(raw)
+    supported = 'Alice：我先补一个例子。\n方伟：先观察。 Alice：我认为可以提价。'
+    assert [turn.speaker for turn in parse_shot(supported).turns] == ['Alice', '方伟', 'Alice']
+    assert not attribution_uncertain(supported)
+
+
+def test_bare_latin_metric_next_to_an_empty_value_is_not_name_evidence():
+    raw = 'NewRatio\nN/A\n方伟：先看数据。 NewRatio：123.45%'
+    assert attribution_uncertain(raw)
+    assert parse_shot(raw).kind == 'prose'
+    assert present_ocr_pieces([raw]) == raw
+
+
+@pytest.mark.parametrize('metric', ['ROE', 'EPS', 'EBITDA', 'CAPEX'])
+def test_known_latin_financial_metrics_do_not_become_speakers(metric):
+    raw = f'方伟：先看数据。\n{metric}：10.5%'
+    assert [turn.speaker for turn in parse_shot(raw).turns] == ['方伟']
+    assert f'{metric}：10.5%' in present_ocr_pieces([raw])
 
 
 def test_chat_record_shot_stays_an_image_and_models_keep_speakers():
