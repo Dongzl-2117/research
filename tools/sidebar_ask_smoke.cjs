@@ -46,7 +46,7 @@ const {chromium} = require('playwright-core');
   const results = [];
 
   async function casePage(options = {}) {
-    const page = await browser.newPage({viewport: {width: 1440, height: 900}});
+    const page = await browser.newPage({viewport: options.viewport || {width: 1440, height: 900}});
     page.setDefaultTimeout(2500);
     page.setDefaultNavigationTimeout(10000);
     const errors = [];
@@ -57,6 +57,9 @@ const {chromium} = require('playwright-core');
       window.setTimeout = (fn, delay, ...args) => native(fn,
         delay >= 10000 ? 100 : (delay >= 800 && delay <= 5000 ? 1 : delay), ...args);
     });
+    await page.addInitScript(storage => {
+      Object.entries(storage).forEach(([key, value]) => localStorage.setItem(key, value));
+    }, options.storage || {});
     const state = {posts: [], gets: 0, retries: 0, mode: options.mode || 'done'};
     if (state.mode === 'body-timeout') await page.setExtraHTTPHeaders({'x-test-hang-body': '1'});
     await page.route('**/*', async route => {
@@ -99,7 +102,8 @@ const {chromium} = require('playwright-core');
       await route.continue();
     });
     await page.goto(origin + '/complete.html');
-    await page.waitForFunction(() => document.querySelector('.chat-toggle').getAttribute('aria-expanded') === 'true');
+    const expanded = options.storage?.['research-article-chat'] === 'closed' ? 'false' : 'true';
+    await page.waitForFunction(value => document.querySelector('.chat-toggle').getAttribute('aria-expanded') === value, expanded);
     return {page, state, errors};
   }
 
@@ -238,6 +242,72 @@ const {chromium} = require('playwright-core');
       await page.locator('.chat-toggle').click();
       assert(await panel.isVisible());
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    });
+    await check('分隔键盘首尾与步进的ARIA范围和实际宽度一致', {viewport: {width: 1920, height: 900}}, async ({page}) => {
+      const split = page.locator('.chat-split');
+      async function position(key, expected) {
+        await split.focus(); await page.keyboard.press(key);
+        await page.waitForFunction(value => {
+          const stage = document.querySelector('.read-with-chat').getBoundingClientRect().width;
+          const panel = document.querySelector('.article-chat').getBoundingClientRect().width;
+          const now = Number(document.querySelector('.chat-split').getAttribute('aria-valuenow'));
+          return now === value && now === Math.round(panel / stage * 100);
+        }, expected);
+        assert.equal(Number(await split.getAttribute('aria-valuemin')), 18);
+        assert.equal(Number(await split.getAttribute('aria-valuemax')), 72);
+      }
+      await position('Home', 72);
+      await position('ArrowLeft', 72);
+      await position('End', 18);
+      await position('ArrowRight', 18);
+      await position('ArrowLeft', 20);
+      await position('Shift+ArrowLeft', 28);
+      await position('ArrowRight', 26);
+      await position('Shift+ArrowRight', 18);
+    });
+    await check('保存42%且初始收起时重新展开即时同步ARIA', {
+      viewport: {width: 1920, height: 900},
+      storage: {'research-article-chat': 'closed', 'research-article-chat-ratio': '0.42'},
+    }, async ({page}) => {
+      for (let round = 0; round < 2; round += 1) {
+        assert.equal(await page.locator('.chat-split').isVisible(), false);
+        await page.locator('.chat-toggle').click();
+        await page.waitForFunction(() => {
+          const stage = document.querySelector('.read-with-chat').getBoundingClientRect().width;
+          const panel = document.querySelector('.article-chat').getBoundingClientRect().width;
+          const value = Number(document.querySelector('.chat-split').getAttribute('aria-valuenow'));
+          return value === 42 && value === Math.round(panel / stage * 100);
+        });
+        await page.locator('[data-chat-close]').click();
+        if (round === 0) await page.reload();
+      }
+    });
+    await check('窗口变化及旧比例超出调节边界时ARIA仍如实包含实际宽度', {}, async ({page}) => {
+      async function actualPosition() {
+        await page.waitForFunction(() => {
+          const stage = document.querySelector('.read-with-chat').getBoundingClientRect().width;
+          const panel = document.querySelector('.article-chat').getBoundingClientRect().width;
+          return Number(document.querySelector('.chat-split').getAttribute('aria-valuenow')) === Math.round(panel / stage * 100);
+        });
+        const values = await page.locator('.chat-split').evaluate(node => ({
+          min: Number(node.getAttribute('aria-valuemin')),
+          max: Number(node.getAttribute('aria-valuemax')),
+          now: Number(node.getAttribute('aria-valuenow')),
+        }));
+        assert(values.min <= values.now && values.now <= values.max);
+        return values.now;
+      }
+      for (const width of [3840, 1320, 1920]) {
+        await page.setViewportSize({width, height: 1200});
+        const value = await actualPosition();
+        if (width === 3840) assert(value > 72, `默认宽栏实际比例为${value}%`);
+      }
+      await page.setViewportSize({width: 3840, height: 1200});
+      for (const value of ['0.13', '0.78']) {
+        await page.evaluate(ratio => localStorage.setItem('research-article-chat-ratio', ratio), value);
+        await page.reload();
+        assert.equal(await actualPosition(), Math.round(Number(value) * 100));
+      }
     });
     await check('清空丢弃迟到响应并保留原侧栏布局', {mode: 'delayed'}, async ({page}) => {
       await send(page); await page.locator('[data-chat-clear]').click();

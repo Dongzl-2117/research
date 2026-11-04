@@ -18,6 +18,8 @@
   const storageKey = 'research-article-chat';
   const ratioKey = 'research-article-chat-ratio';
   const split = stage.querySelector('.chat-split');
+  const minRatio = 0.18;
+  const maxRatio = 0.72;
   let pending = false;
   let session = 0;
   let composing = false;
@@ -56,6 +58,7 @@
       backdrop.hidden = !open;
     }
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open && isWide()) window.requestAnimationFrame(paintSplit);
     if (open && remember) input.focus();
   }
 
@@ -107,7 +110,12 @@
     if (!split || !isWide() || preferClosed()) return;
     const total = stage.getBoundingClientRect().width;
     const chat = panel.getBoundingClientRect().width;
-    if (total > 0) split.setAttribute('aria-valuenow', String(Math.round((chat / total) * 100)));
+    if (total <= 0 || chat <= 0) return;
+    const value = Math.round((chat / total) * 100);
+    // 默认宽栏或旧保存比例可能超出调节边界；仍如实报告实际宽度，且不落在声明范围之外。
+    split.setAttribute('aria-valuemin', String(Math.min(minRatio * 100, value)));
+    split.setAttribute('aria-valuemax', String(Math.max(maxRatio * 100, value)));
+    split.setAttribute('aria-valuenow', String(value));
   }
 
   function setRatio(value, remember) {
@@ -135,7 +143,7 @@
     split.addEventListener('pointermove', (event) => {
       if (!drag) return;
       const next = drag.width + (drag.x - event.clientX);
-      const ratio = Math.min(0.72, Math.max(0.18, next / drag.total));
+      const ratio = Math.min(maxRatio, Math.max(minRatio, next / drag.total));
       setRatio(ratio, false);
     });
     function endDrag(event) {
@@ -161,16 +169,16 @@
       const step = event.shiftKey ? 0.08 : 0.02;
       if (event.key === 'ArrowLeft') {
         event.preventDefault();
-        setRatio(Math.min(0.72, current + step), true);
+        setRatio(Math.min(maxRatio, current + step), true);
       } else if (event.key === 'ArrowRight') {
         event.preventDefault();
-        setRatio(Math.max(0.18, current - step), true);
+        setRatio(Math.max(minRatio, current - step), true);
       } else if (event.key === 'Home') {
         event.preventDefault();
-        setRatio(0.72, true);
+        setRatio(maxRatio, true);
       } else if (event.key === 'End') {
         event.preventDefault();
-        setRatio(0.18, true);
+        setRatio(minRatio, true);
       }
     });
     window.addEventListener('resize', () => {
