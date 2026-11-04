@@ -199,7 +199,14 @@ def test_article_template_is_title_body_and_bilingual_tabs():
     assert 'id="article-chat"' in html
     assert 'data-article="1"' in html
     assert 'class="chat-toggle"' in html
+    assert ">问 AI</span>" in html
     assert 'action="/ask"' in html
+    assert 'class="chat-chip"' in html
+    assert 'class="chat-composer"' in html
+    assert "Enter 发送，Shift+Enter 换行" in html
+    assert 'data-chat-close' in html
+    assert 'aria-label="收起"' in html
+    assert "research-article-chat" in html
     assert "<h2>来源</h2>" not in html
     assert "方伟微信公众号历史归档" not in html
     assert "AI 整合" not in html

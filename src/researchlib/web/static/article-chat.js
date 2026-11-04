@@ -1,5 +1,6 @@
 // 阅读页右侧对话。提问走 /api/v1/ask（chat=true），回答轮询 /api/v1/answers/{id}。
 // 多轮只留在这一页的内存里：清空、收起后换页，或整页刷新，上文就没了。
+// 宽屏是否收起记在 localStorage（research-article-chat）。窄屏抽屉仍每次从关上开始。
 (() => {
   const panel = document.getElementById('article-chat');
   const stage = document.querySelector('.read-with-chat');
@@ -14,7 +15,8 @@
   if (!form || !input || !submit || !log || !articleId) return;
 
   const wideQuery = window.matchMedia('(min-width: 1320px)');
-  const emptyText = '可以问这篇的判断和依据，也可以问库里还有谁写过相关的内容。';
+  const storageKey = 'research-article-chat';
+  const emptyText = '主要看这篇文章。\n需要时会引用库里的其他文章。';
   let turns = [];
   let pending = false;
   let session = 0;
@@ -24,8 +26,22 @@
     return wideQuery.matches;
   }
 
-  function setOpen(open) {
+  function preferClosed() {
+    return document.documentElement.getAttribute('data-article-chat') === 'closed';
+  }
+
+  function rememberDesktop(open) {
+    if (!isWide()) return;
+    try {
+      localStorage.setItem(storageKey, open ? 'open' : 'closed');
+    } catch (e) {}
+    if (open) document.documentElement.removeAttribute('data-article-chat');
+    else document.documentElement.setAttribute('data-article-chat', 'closed');
+  }
+
+  function setOpen(open, remember) {
     if (isWide()) {
+      if (remember) rememberDesktop(open);
       stage.classList.toggle('is-chat-closed', !open);
       panel.classList.remove('is-open');
       backdrop.hidden = true;
@@ -35,19 +51,26 @@
       backdrop.hidden = !open;
     }
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) input.focus();
+    if (open && remember) input.focus();
   }
 
   function syncLayout() {
     if (isWide()) {
       backdrop.hidden = true;
       panel.classList.remove('is-open');
-      toggle.setAttribute('aria-expanded', stage.classList.contains('is-chat-closed') ? 'false' : 'true');
+      stage.classList.toggle('is-chat-closed', preferClosed());
+      toggle.setAttribute('aria-expanded', preferClosed() ? 'false' : 'true');
       return;
     }
+    stage.classList.remove('is-chat-closed');
     const open = panel.classList.contains('is-open');
     backdrop.hidden = !open;
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function fitInput() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
   }
 
   function scrollLog() {
@@ -185,16 +208,19 @@
     log.replaceChildren();
     const empty = document.createElement('p');
     empty.className = 'chat-empty';
-    empty.textContent = emptyText;
+    emptyText.split('\n').forEach((line, index) => {
+      if (index) empty.appendChild(document.createElement('br'));
+      empty.appendChild(document.createTextNode(line));
+    });
     log.appendChild(empty);
   }
 
   toggle.addEventListener('click', () => {
-    if (isWide()) setOpen(true);
-    else setOpen(!panel.classList.contains('is-open'));
+    if (isWide()) setOpen(true, true);
+    else setOpen(!panel.classList.contains('is-open'), true);
   });
-  backdrop.addEventListener('click', () => setOpen(false));
-  panel.querySelector('[data-chat-close]').addEventListener('click', () => setOpen(false));
+  backdrop.addEventListener('click', () => setOpen(false, true));
+  panel.querySelector('[data-chat-close]').addEventListener('click', () => setOpen(false, true));
   panel.querySelector('[data-chat-clear]').addEventListener('click', () => {
     session += 1;
     pending = false;
@@ -207,14 +233,15 @@
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (isWide()) {
-      if (!stage.classList.contains('is-chat-closed')) setOpen(false);
+      if (!stage.classList.contains('is-chat-closed')) setOpen(false, true);
       return;
     }
-    if (panel.classList.contains('is-open')) setOpen(false);
+    if (panel.classList.contains('is-open')) setOpen(false, true);
   });
   if (wideQuery.addEventListener) wideQuery.addEventListener('change', syncLayout);
   else if (wideQuery.addListener) wideQuery.addListener(syncLayout);
 
+  input.addEventListener('input', fitInput);
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -235,6 +262,7 @@
     const history = turns.slice();
     turns.push({ role: 'user', content: question });
     input.value = '';
+    fitInput();
     clearStatus();
     statusNode = document.createElement('p');
     statusNode.className = 'chat-status';
