@@ -709,7 +709,8 @@ def article_pairs(
 ) -> PairDisplay:
     """逐段身份优先；旧稿只作明确标记的结构对照，不删段凑数量。
 
-    映射由未装饰的 canonical 输入核验；图片文字在配对后加入，避免它参与翻译分段。
+    映射由未装饰的 canonical 输入核验。识图文字不进对照页（``inline_image_ocr`` 保留原图），
+    避免把转写铺进英文或中文栏；摘要、问库和检索另走 present。
     """
     from dataclasses import replace
 
@@ -805,6 +806,7 @@ def article_pairs(
     if ocr_texts:
         from researchlib.render import HOST, inline_image_ocr
 
+        # 阅读页不把识图换成对话。这里仍走同一函数，确认图留在配对之后的 HTML 里。
         result = replace(result, pairs=[replace(p,
             en=inline_image_ocr(p.en, ocr_texts, host=host or HOST),
             zh=inline_image_ocr(p.zh, ocr_texts, host=host or HOST) if p.zh else None,

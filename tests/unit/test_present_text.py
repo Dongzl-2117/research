@@ -223,6 +223,19 @@ def test_plain_headings_and_fenced_qa_are_left_alone():
     assert present_zsxq_qa(crlf) == crlf
 
 
+def test_reading_column_is_narrow_and_images_fit_it():
+    """文章栏接近公众号宽度，图不超过这一栏。"""
+    css = _CSS.read_text(encoding="utf-8")
+    assert "--reading-column: 680px" in css
+    column = css.split(".reader-grid {", 1)[1].split("}", 1)[0]
+    assert "max-width: var(--reading-column)" in column
+    assert "width: 100%" in column
+    images = css.split(".prose img, .prose video {", 1)[1].split("}", 1)[0]
+    assert "max-width: 100%" in images
+    assert "720px" not in images
+    assert "max-height: min(56vh, 480px)" in images
+
+
 def test_ocr_blocks_inherit_prose_font_without_grey_box():
     css = _CSS.read_text(encoding="utf-8")
     rules = css.split(".prose .ocr-reading {", 1)[1].split(".prose .ocr-links {", 1)[0]
