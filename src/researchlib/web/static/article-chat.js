@@ -16,7 +16,6 @@
 
   const wideQuery = window.matchMedia('(min-width: 1320px)');
   const storageKey = 'research-article-chat';
-  const emptyText = '先看这篇。\n别处有关的，也会引用。';
   let turns = [];
   let pending = false;
   let session = 0;
@@ -206,13 +205,6 @@
 
   function resetLog() {
     log.replaceChildren();
-    const empty = document.createElement('p');
-    empty.className = 'chat-empty';
-    emptyText.split('\n').forEach((line, index) => {
-      if (index) empty.appendChild(document.createElement('br'));
-      empty.appendChild(document.createTextNode(line));
-    });
-    log.appendChild(empty);
   }
 
   toggle.addEventListener('click', () => {
@@ -256,8 +248,6 @@
     if (!question || pending) return;
     pending = true;
     submit.disabled = true;
-    const empty = log.querySelector('.chat-empty');
-    if (empty) empty.remove();
     appendUser(question);
     const history = turns.slice();
     turns.push({ role: 'user', content: question });
@@ -266,7 +256,7 @@
     clearStatus();
     statusNode = document.createElement('p');
     statusNode.className = 'chat-status';
-    statusNode.textContent = '正在根据这篇文章查找…';
+    statusNode.textContent = '…';
     log.appendChild(statusNode);
     scrollLog();
     const token = session;
