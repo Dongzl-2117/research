@@ -512,6 +512,129 @@ def test_distinct_long_paragraphs_stay_one_to_one():
     assert _near_prefix_groups([pair.en for pair in view.pairs]) == 0
 
 
+def _pad_sentence(sentence: str) -> str:
+    clause = " with distribution costs and the installed base staying visible in this clause about the quarter"
+    if sentence.endswith("."):
+        return sentence[:-1] + clause + "."
+    return sentence + clause
+
+
+def _china_sentences() -> tuple[list[str], list[str]]:
+    """21118 中国段的形状：一段里好几句，链接的锚文本不是光秃秃的域名。"""
+    en = [
+        "Apple’s results in Greater China this quarter reveal a sobering reality about a decade of flat sales.",
+        (
+            'In Q1 FY2025, revenue in China dropped 11% year-on-year, to about $18.5 billion '
+            '(<a href="https://www.businessinsider.com/live">the earnings liveblog</a>).'
+        ),
+        (
+            'Management explained that channel inventory cuts drove more than half of the decline '
+            '(<a href="https://www.businessinsider.com/channel">the call transcript</a>).'
+        ),
+        "The historical context stays in the same paragraph as the revenue sentence and the inventory note.",
+        "A further sentence about the installed base keeps this source paragraph past the split threshold.",
+        "One last sentence records that the market has been cyclical rather than a single bad quarter.",
+    ]
+    en = [_pad_sentence(sentence) for sentence in en]
+    zh = [
+        "苹果本季度在大中华区的业绩揭示了近十年销售基本持平的严峻现实。",
+        "2025 财年第一季度，中国收入同比下降 11%，降至约 185 亿美元（the earnings liveblog）。",
+        "管理层解释说，渠道库存减少导致了超过一半的降幅（the call transcript）。",
+        "历史背景必须和收入那一句、库存那一句留在同一段。",
+        "再补一句已有用户，让这一段超过按句切开的门槛。",
+        "最后一句说明市场是周期性的，而不是单独一个糟糕的季度。",
+    ]
+    return en, zh
+
+
+def test_source_paragraph_stays_one_pair_and_keeps_descriptive_links():
+    """21118 中国段：原文是一整段，对照不再拆成互不相干的句子。描述性锚文本留在中英两边。"""
+    en, zh = _china_sentences()
+    heading = "<h4>China: A Plateaued Market and Huawei’s Resurgence</h4>"
+    source = heading + "<p>" + " ".join(en) + "</p>"
+    translated = "<h4>中国：市场陷入平台期，华为强势回归</h4>" + "".join(f"<p>{line}</p>" for line in zh)
+    assert len(re.sub(r"<[^>]+>", "", source)) > 900
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    bodies = [pair for pair in view.pairs if "historical context" in (pair.en or "")]
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert "In Q1 FY2025" in body.en and "channel inventory" in body.en
+    assert "185 亿美元" in (body.zh or "") and "历史背景" in (body.zh or "")
+    for href, anchor in (
+        ("https://www.businessinsider.com/live", "the earnings liveblog"),
+        ("https://www.businessinsider.com/channel", "the call transcript"),
+    ):
+        assert f'<a href="{href}">{anchor}</a>' in body.en
+        assert f'<a href="{href}">{anchor}</a>' in (body.zh or "")
+    shown = _project(view.pairs, "en") + _project(view.pairs, "zh")
+    assert "(businessinsider.com)" not in shown and "（businessinsider.com）" not in shown
+    heading_pairs = [pair for pair in view.pairs if "Plateaued Market" in (pair.en or "")]
+    assert len(heading_pairs) == 1
+    assert "185 亿美元" not in (heading_pairs[0].zh or "")
+    assert "historical context" not in (heading_pairs[0].en or "")
+
+
+def test_naked_parenthetical_hosts_become_links_without_being_duplicated():
+    """译文把域名留在括号里、丢掉了标签。套回原来的 href，不再贴一个相同的括号域名。"""
+    en = [
+        (
+            "In Q1 FY2025, revenue in China dropped 11% year-on-year, to about $18.5 billion "
+            '(<a href="https://www.businessinsider.com/live">businessinsider.com</a>).'
+        ),
+        (
+            "By 2016 and 2017, Greater China revenue was falling double-digits "
+            '(<a href="https://stratechery.com/one">stratechery.com</a>) '
+            '(<a href="https://stratechery.com/two">stratechery.com</a>).'
+        ),
+        "The historical note stays with those two citations inside the original paragraph.",
+        "Another sentence about the installed base keeps the paragraph from being one short line.",
+        "A closing sentence records the cyclical pattern of sales in that market over the decade.",
+    ]
+    zh = [
+        "2025 财年第一季度，中国收入同比下降 11%，降至约 185 亿美元（businessinsider.com）。",
+        "到 2016 年和 2017 年，大中华区营收两位数下滑（stratechery.com）（stratechery.com）。",
+        "历史说明和这两条引用留在原来的那一段里。",
+        "再写一句已有用户，避免这一段短到不用并。",
+        "结尾一句记下这十年里销售的周期。",
+    ]
+    en = [_pad_sentence(sentence) for sentence in en]
+    source = "<p>" + " ".join(en) + "</p>"
+    translated = "".join(f"<p>{line}</p>" for line in zh)
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 1
+    pair = view.pairs[0]
+    assert '<a href="https://www.businessinsider.com/live">businessinsider.com</a>' in (pair.zh or "")
+    assert '<a href="https://stratechery.com/one">stratechery.com</a>' in (pair.zh or "")
+    assert '<a href="https://stratechery.com/two">stratechery.com</a>' in (pair.zh or "")
+    plain_zh = re.sub(r"<[^>]+>", "", pair.zh or "")
+    assert plain_zh.count("businessinsider.com") == 1
+    assert plain_zh.count("stratechery.com") == 2
+    assert "（businessinsider.com）" not in (pair.zh or "")
+    assert "（stratechery.com）（stratechery.com）" not in (pair.zh or "")
+
+
+def test_absorbed_translation_does_not_repeat_a_parenthetical_host():
+    """短句并进长段时，长段已经有的括号域名不再贴第二次。独有说法仍留下。"""
+    short = f"{_LONG} (example.com)."
+    long = f"{short} A trailing note about buybacks appears only on the longer copy."
+    short_html = short.replace(
+        "example.com", '<a href="https://example.invalid/report">example.com</a>', 1,
+    )
+    source = f"<p>{short_html}</p><p>{long}</p>"
+    translated = (
+        "<p>分销成本和已有用户决定优势（example.com）。甲独有的补充。</p>"
+        "<p>分销成本和已有用户决定优势（example.com）。回购只写在长段里。</p>"
+    )
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    zh = "".join(pair.zh or "" for pair in view.pairs)
+    assert zh.count("example.com") == 1
+    assert "甲独有的补充" in zh and "回购" in zh
+    assert 'href="https://example.invalid/report"' in _project(view.pairs, "en")
+
+
 def test_soft_dedupe_does_not_fail_projection_or_near_duplicate_qa():
     source = f"<blockquote><p>{_LONG}</p></blockquote><p>{_LONG}</p><p>{_LONG}</p>"
     translated = f"<blockquote><p>{_LONG_ZH}</p></blockquote><p>{_LONG_ZH}</p><p>{_LONG_ZH}</p>"

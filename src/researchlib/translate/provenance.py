@@ -8,6 +8,8 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 from html.parser import HTMLParser
 
 from researchlib.translate.segments import iter_segments, splice_segments, split_sentence_paragraphs, top_level_blocks
@@ -17,9 +19,9 @@ CLEANER_VERSION = 1
 SEGMENTER_VERSION = 1
 PROMPT_VERSION = 2
 PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt": PROMPT_VERSION}
-_PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
-_NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
+# Q3、FY2026、H100 中的数字也属于事实；不能因前一字符是拉丁字母而漏掉。
+_NUMBER = re.compile(r"(?<!\d)[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
 
 
 class AlignmentError(RuntimeError):
@@ -36,17 +38,21 @@ def digest(value: object) -> str:
 
 
 def canonical_html(value: str) -> str:
-    """去掉页面临时锚点；不忽略链接、数字、出现次数或标签层级。"""
-    value = _PARA_ID.sub("", value or "").strip()
+    """核对盖页面锚点前的实际输入；真实 id、代码和文字都属于内容。"""
+    value = (value or "").strip()
     # Markdown 在相邻块之间补的换行不是源内容；行内标签间的空格和代码原样保留。
     blocks = r"p|h[1-6]|blockquote|li|ul|ol|dl|dt|dd|table|thead|tbody|tr|pre|figure|div"
-    return re.sub(rf"(</(?:{blocks})>)[ \t\r\n]+(?=<(?:{blocks})\b)", r"\1", value)
+    parts = re.split(r"(<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>)", value, flags=re.I | re.S)
+    return ''.join(part if index % 2 else re.sub(
+        rf"(</(?:{blocks})>)[ \t\r\n]+(?=<(?:{blocks})\b)", r"\1", part,
+    ) for index, part in enumerate(parts))
 
 
 class Resources(HTMLParser):
     def __init__(self, value: str):
         super().__init__(convert_charrefs=True)
         self.links: list[str] = []
+        self.anchors: list[tuple[str, str, str]] = []
         self.media: list[tuple] = []
         self.codes: list[str] = []
         self.code_depth = 0
@@ -56,6 +62,7 @@ class Resources(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        self.anchors.extend((tag, name, attrs[name]) for name in ('id', 'name') if attrs.get(name))
         if tag == "a":
             self.links.append(attrs.get("href", ""))
         if tag in {"img", "source", "track", "video"}:
@@ -78,32 +85,137 @@ class Resources(HTMLParser):
             self.text.append(data)
 
 
+def _number_text(value: str) -> str:
+    text = " ".join(Resources(value).text)
+    # Q1–Q4 常译为第一至第四季度；仅规范这个明确的财务序数，不把普通中文词汇当数字。
+    text = re.sub(r"(?<![零〇一二三四五六七八九十百千万亿两])第?([一二三四])季度",
+                  lambda match: str("一二三四".index(match[1]) + 1) + "季度", text)
+    return text
+
+
 def numeric_anchors(value: str) -> list[str]:
-    facts = Resources(value)
     return [m.group().replace(",", "").replace("−", "-").replace("％", "%")
-            for m in _NUMBER.finditer(" ".join(facts.text))]
+            for m in _NUMBER.finditer(_number_text(value))]
+
+
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August",
+           "September", "October", "November", "December")
+_MONTH_NUMBERS = {name[:3].lower(): index for index, name in enumerate(_MONTHS, 1)}
+_MONTH_PATTERN = "|".join((*_MONTHS, *(month[:3] for month in _MONTHS), "Sept"))
+_VERSION_VALUE = r"\d[0-9A-Za-z]*(?:[._+-][0-9A-Za-z]+)*"
+_POSITIONAL_NUMBER = re.compile(
+    r"(?<![A-Za-z0-9_])Q(?P<quarter_first>[1-4])\s*(?:FY|fiscal\s+year)\s*"
+    r"(?P<fy_after>\d{4})(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])(?:FY|fiscal\s+year)\s*(?P<fy_first>\d{4})\s*"
+    r"Q(?P<quarter_after>[1-4])(?![A-Za-z0-9_])"
+    r"|(?<!\d)(?P<fy_zh>\d{4})\s*财年\s*第?(?P<quarter_zh>[1-4])\s*季度"
+    rf"|(?<![A-Za-z0-9_])(?:version|ver\.?|v)\s*[:：]?\s*(?P<version_en>{_VERSION_VALUE})"
+    rf"|版本\s*v?\s*(?P<version_zh>{_VERSION_VALUE})"
+    rf"|(?<![A-Za-z0-9_])(?P<version_suffix>{_VERSION_VALUE})\s*版本?"
+    r"|\b(?:in|since)\s+['’‘](?P<short_year>\d{2})(?![\dA-Za-z'’])"
+    rf"|(?P<month>{_MONTH_PATTERN})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?(?:,\s*|\s+)(?P<year>\d{{4}})\b"
+    r"|(?P<zh_year>\d{4})\s*年\s*(?P<zh_month>\d{1,2})\s*月\s*(?P<zh_day>\d{1,2})\s*日"
+    r"|(?<!\d)(?P<year_only>\d{4})\s*年"
+    r"|百分之(?P<zh_percent>百|一百|[一二三四五六七八九]?十[一二三四五六七八九]?|[零〇一二三四五六七八九])"
+    r"(?![零〇一二三四五六七八九十百千万亿两点])"
+    r"|(?<!\d)(?P<amount>[-−+]?\d[\d,]*(?:\.\d+)*)(?:\s*(?P<unit>"
+    r"trillion\b|billion\b|million\b|thousand\b|万亿|亿|万|千|percent\b|%|％|"
+    r"dollars?\b|euros?\b|pounds?\b|yen\b|USD\b|EUR\b|GBP\b|CNY\b|RMB\b|JPY\b|"
+    r"美元|人民币|日元|欧元|英镑|元))?", re.I,
+)
+_SCALE_EXPONENTS = {"thousand": 3, "million": 6, "billion": 9, "trillion": 12,
+                    "千": 3, "万": 4, "亿": 8, "万亿": 12}
+_CURRENCY_PREFIX = re.compile(r"(?:[$€£¥￥]|(?<![A-Za-z])(?:USD|EUR|GBP|CNY|RMB|JPY))\s*$", re.I)
+
+
+def _positional_numbers(value: str) -> list[tuple]:
+    """只读展示识别明确等值的单位、百分比和完整日期；不用于新稿回执。"""
+    facts = []
+    text = _number_text(value)
+    for match in _POSITIONAL_NUMBER.finditer(text):
+        version = match["version_en"] or match["version_zh"] or match["version_suffix"]
+        if match['quarter_first'] or match['quarter_after'] or match['quarter_zh']:
+            facts.append(('fiscal-quarter', int(match['fy_after'] or match['fy_first'] or match['fy_zh']),
+                          int(match['quarter_first'] or match['quarter_after'] or match['quarter_zh'])))
+        elif version:
+            # 版本是标识符，3.10 和 3.1、1.0 和 1 都不同；不能交给 Decimal 抹去末尾的零。
+            facts.append(("version", version))
+        elif match["short_year"]:
+            facts.append(("short-year", int(match["short_year"])))
+        elif match["year_only"]:
+            year = int(match["year_only"])
+            facts.append(("calendar-year", year) if year else ("invalid-year", match.group()))
+        elif match["month"] or match["zh_year"]:
+            year = int(match["year"] or match["zh_year"])
+            month = (_MONTH_NUMBERS[match["month"][:3].lower()]
+                     if match["month"] else int(match["zh_month"]))
+            day = int(match["day"] or match["zh_day"])
+            try:
+                facts.append(("date", date(year, month, day)))
+            except ValueError:
+                # 非法日期不能让展示崩溃，也不能与另一种写法碰巧等值。
+                facts.append(("invalid-date", match.group()))
+        elif match["zh_percent"]:
+            word = match["zh_percent"]
+            digits = "零一二三四五六七八九"
+            if word in {"百", "一百"}:
+                amount = 100
+            elif "十" in word:
+                tens, ones = word.split("十")
+                amount = (digits.index(tens) if tens else 1) * 10 + (digits.index(ones) if ones else 0)
+            else:
+                amount = 0 if word == "〇" else digits.index(word)
+            facts.append(("percent", Decimal(amount)))
+        else:
+            raw = match["amount"].replace(",", "").replace("−", "-")
+            unit = (match["unit"] or "").lower()
+            quantity = bool(unit or _CURRENCY_PREFIX.search(text[:match.start()]))
+            if not quantity or raw.count(".") > 1:
+                # 未标记的 3.10 可能是版本／标识符，不能先转为 3.1 再猜用途。
+                facts.append(("invalid-quantity" if quantity else "literal-number", raw))
+                continue
+            amount = Decimal(raw)
+            if unit in {"%", "％", "percent"}:
+                facts.append(("percent", amount))
+            else:
+                # 移动十进制指数，不做受当前 Decimal 精度影响的乘法，超长金额也不能碰撞。
+                sign, digits, exponent = amount.as_tuple()
+                facts.append(("number", Decimal((sign, digits, exponent + _SCALE_EXPONENTS.get(unit, 0)))))
+    return facts
+
+
+def _same_positional_fact(left: tuple, right: tuple) -> bool:
+    if left == right:
+        return True
+    if {left[0], right[0]} <= {"version", "literal-number"}:
+        return left[1] == right[1]
+    if right[0] == "literal-number":
+        left, right = right, left
+    if left[0] == "literal-number" and right[0] == "number":
+        # 有单位一侧可写成普通数字；另一侧无单位时只接受规范写法，不把未知标识符做小数约分。
+        fixed = format(right[1], "f")
+        canonical = fixed.rstrip("0").rstrip(".") if "." in fixed else fixed
+        return left[1] == canonical
+    if right[0] == "calendar-year":
+        left, right = right, left
+    if left[0] == "calendar-year":
+        if right[0] == "literal-number":
+            return str(left[1]) == right[1]
+        if right[0] == "short-year":
+            # 缩写没有表达世纪，只核对已表达的末两位；旧稿仍标未核验，不推断世纪。
+            return left[1] % 100 == right[1]
+    return False
 
 
 def positional_numbers_conflict(sources: Sequence[str], targets: Sequence[str]) -> bool:
-    """等长叶子仍不能硬配的两种数字情况。
-
-    同一批数字换了段落，或过半段落的数字列表对不上，说明位置不可信。
-    少数段落把 300,000 写成 30万、把 69.1 写成 691、把 100% 写成百分之百，
-    全集已经不同，这是译法，不能因此把整页退成两列。
-    """
-    from collections import Counter
-
+    """先识别明确等值的本地化，再按槽位、顺序和重数比较；正确段数不能抵消错误段。"""
     if len(sources) != len(targets):
         return True
-    left = [tuple(numeric_anchors(item)) for item in sources]
-    right = [tuple(numeric_anchors(item)) for item in targets]
-    if left == right or not left:
-        return False
-    tokens = Counter(anchor for row in left for anchor in row)
-    if tokens and tokens == Counter(anchor for row in right for anchor in row):
-        return True
-    mismatches = sum(en != zh for en, zh in zip(left, right, strict=True))
-    return mismatches * 2 > len(left)
+    for en, zh in zip(sources, targets, strict=True):
+        left, right = _positional_numbers(en), _positional_numbers(zh)
+        if len(left) != len(right) or any(not _same_positional_fact(a, b) for a, b in zip(left, right, strict=True)):
+            return True
+    return False
 
 
 def leaf_problem(source: str, target: str) -> str | None:
@@ -115,6 +227,12 @@ def leaf_problem(source: str, target: str) -> str | None:
         return "media"
     if before.codes != after.codes:
         return "code"
+    if before.anchors != after.anchors:
+        return "anchors"
+    if any(char.isalpha() for char in ''.join(before.text)) and not any(
+        char.isalpha() for char in ''.join(after.text)
+    ):
+        return "no-text"
     if numeric_anchors(source) != numeric_anchors(target):
         return "numbers"
     if re.search(r"⟦\d+⟧", target):
