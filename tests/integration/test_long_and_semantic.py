@@ -164,6 +164,10 @@ def test_ask_scoped_to_a_feishu_folder_only_reads_its_subtree(conn, settings, mo
         assert "只用这个目录" in page and f'name="tree" value="{pdd}"' in page
         asked = client.post("/ask", data={"q": "飞轮效应", "tree": str(pdd)}).text
         assert "全托管" in asked and "渠道库存" not in asked
+        # 新聊天输入走 JSON 接口时也必须保留目录，不能静默变成全库检索。
+        chat_entry = client.post("/api/v1/ask", json={"question": "飞轮效应", "tree": str(pdd)}).json()
+        assert {item["article_id"] for item in chat_entry["citations"]} == {child}
+        assert chat_entry["answer_html"] == ""  # 无模型，只给真实召回；没有伪造生成。
 
 
 # —— 语义检索：用一个按「概念」数词的假向量模型，不依赖真的向量服务 ——

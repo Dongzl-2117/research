@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 
 from markupsafe import Markup, escape
 
@@ -168,12 +169,56 @@ def mention_sentence(text: str, spans: list[tuple[int, int, int]], *, radius: in
     return ("…" if cut_start else "") + sentence + ("…" if cut_end else "")
 
 
-_CITE = re.compile(r"\[(\d{1,3})\]")
+_CITE = re.compile(r"\[(\d+)\]")
 
 
-def answer_html(text: str) -> Markup:
-    """LLM 回答转成 HTML。先转义再走 Markdown，回答里的 HTML 不会生效；[n] 换成跳到出处的链接。"""
+class _AnswerCitations(HTMLParser):
+    """只改正文文字；代码、链接及标签属性里的 [n] 保持原样。"""
+
+    def __init__(self, citations: list[dict] | None) -> None:
+        super().__init__(convert_charrefs=False)
+        self.known = None if citations is None else {str(item.get("n")) for item in citations}
+        self.out: list[str] = []
+        self.excluded = 0
+
+    def handle_starttag(self, tag, attrs):
+        self.out.append(self.get_starttag_text())
+        if tag in {"a", "code", "pre"}:
+            self.excluded += 1
+
+    def handle_endtag(self, tag):
+        self.out.append(f"</{tag}>")
+        if tag in {"a", "code", "pre"}:
+            self.excluded = max(0, self.excluded - 1)
+
+    def handle_data(self, data):
+        if not self.excluded:
+            data = _CITE.sub(
+                lambda match: (
+                    f'<a class="cite" href="#c-{match[1]}">[{match[1]}]</a>'
+                    if self.known is None or match[1] in self.known else match[0]
+                ), data,
+            )
+        self.out.append(data)
+
+    def handle_entityref(self, name):
+        self.out.append(f"&{name};")
+
+    def handle_charref(self, name):
+        self.out.append(f"&#{name};")
+
+
+def answer_html(text: str, citations: list[dict] | None = None) -> Markup:
+    """问库共用 Markdown 排版；禁用原始 HTML，再清理链接，引用仅指向已知原文。"""
     import markdown
 
-    html = markdown.markdown(escape_times(str(escape(text or ""))), extensions=["sane_lists"])
-    return Markup(_CITE.sub(lambda m: f'<a class="cite" href="#c-{m.group(1)}">[{m.group(1)}]</a>', html))
+    from researchlib.render import sanitize_html
+
+    renderer = markdown.Markdown(extensions=["sane_lists", "fenced_code", "tables"])
+    renderer.preprocessors.deregister("html_block")
+    renderer.inlinePatterns.deregister("html")
+    html = sanitize_html(renderer.convert(escape_times(text or "")))
+    parser = _AnswerCitations(citations)
+    parser.feed(html)
+    parser.close()
+    return Markup("".join(parser.out))

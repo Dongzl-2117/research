@@ -1,0 +1,141 @@
+/* 问库的两个入口共用阅读和输入样式，文章正文继续使用原来的阅读规则。 */
+.shell:has(.ask-workspace) main { padding-bottom: 0; }
+.shell:has(.ask-workspace) .frame { display: flex; flex-direction: column; height: calc(100dvh - 56px - 64px - env(safe-area-inset-bottom)); max-width: 960px; }
+.ask-workspace { display: flex; flex: 1; flex-direction: column; width: 100%; min-height: 0; margin-inline: auto; }
+.ask-head { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; min-height: 60px; border-bottom: 1px solid var(--line-soft); }
+.ask-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.ask-heading h1 { margin: 0; color: var(--ink); font-size: 19px; font-weight: 650; letter-spacing: -.03em; }
+.ask-heading > span { color: var(--ink-4); font-size: 12px; white-space: nowrap; }
+.ask-head-actions { display: flex; align-items: center; gap: 14px; }
+.ask-new, .ask-history > summary { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; color: var(--ink-3); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.ask-new:hover, .ask-history > summary:hover { color: var(--ink); }
+.ask-new > span { font-size: 19px; }
+.ask-history { position: relative; }
+.ask-history > summary { list-style: none; }
+.ask-history > summary::-webkit-details-marker { display: none; }
+.ask-history[open] > summary { color: var(--ink); }
+.ask-history nav { position: absolute; z-index: 35; right: 0; top: calc(100% + 4px); width: min(340px, calc(100vw - 40px)); max-height: min(60dvh, 480px); overflow-y: auto; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 8px 36px color-mix(in srgb, var(--ink) 10%, transparent); }
+.ask-history ul { margin: 0; padding: 0; list-style: none; }
+.ask-history li a { display: block; padding: 12px; border-radius: 8px; color: var(--ink-2); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ask-history li a:hover, .ask-history a[aria-current] { background: var(--bg-sunk); }
+.ask-history li span { display: block; margin-top: 4px; color: var(--ink-4); font-size: 11px; }
+.ask-history li span span { display: inline; margin: 0; color: inherit; font: inherit; }
+.ask-workspace > .chat-log { display: flex; flex: 1 1 auto; flex-direction: column; gap: 28px; min-height: 0; width: 100%; max-width: 800px; margin-inline: auto; padding: 32px 20px; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scroll-padding: 24px; }
+.ask-welcome { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; min-height: 180px; padding-bottom: 24px; text-align: center; }
+.ask-symbol { width: 34px; height: 34px; margin-bottom: 18px; color: var(--accent); }
+.ask-welcome h2 { margin: 0; color: var(--ink); font-size: clamp(21px, 2.2vw, 29px); font-weight: 600; letter-spacing: -.03em; }
+.ask-welcome p { margin: 12px 0 0; color: var(--ink-4); font-size: 14px; line-height: 1.7; }
+.ask-workspace .chat-bubble { min-width: 0; margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+.ask-workspace .chat-bubble-user { align-self: flex-end; width: fit-content; max-width: 85%; padding: 12px 18px; border-radius: 20px 20px 5px 20px; background: var(--bg-muted); font-size: 15px; line-height: 1.7; }
+.ask-workspace .chat-bubble-user p { margin: 0; white-space: pre-wrap; }
+.ask-workspace .chat-bubble-assistant { align-self: stretch; width: 100%; }
+:is(.ask-workspace, .article-chat) .chat-scope { margin: 0 0 4px; color: var(--ink-3); font-size: 11px; line-height: 1.6; }
+:is(.ask-workspace, .article-chat) .chat-status { display: flex; align-items: center; gap: 9px; margin: 8px 0 12px; color: var(--ink-3); font-size: 13px; font-style: normal; line-height: 1.7; }
+:is(.ask-workspace, .article-chat) .chat-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+:is(.ask-workspace, .article-chat) .chat-markdown { max-width: none; margin: 0; padding: 0; border: 0; color: var(--ink-2); font-size: 16px; letter-spacing: 0; line-height: 1.85; overflow-wrap: anywhere; }
+:is(.ask-workspace, .article-chat) .chat-markdown > :first-child { margin-top: 0; }
+:is(.ask-workspace, .article-chat) .chat-markdown > * + *,
+:is(.ask-workspace, .article-chat) .chat-markdown p + p { margin-top: 1em; }
+:is(.ask-workspace, .article-chat) .chat-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 1.5em 0 .55em; color: var(--ink); font-size: 1.08em; font-weight: 650; line-height: 1.6; letter-spacing: 0; }
+:is(.ask-workspace, .article-chat) .chat-markdown :is(h1, h2) { font-size: 1.2em; }
+:is(.ask-workspace, .article-chat) .chat-markdown :is(ul, ol) { padding-left: 1.5em; margin-bottom: 0; }
+:is(.ask-workspace, .article-chat) .chat-markdown li + li { margin-top: .5em; }
+:is(.ask-workspace, .article-chat) .chat-markdown li > p { margin: 0; }
+:is(.ask-workspace, .article-chat) .chat-markdown blockquote { margin-inline: 0; padding: 3px 0 3px 16px; border-left: 3px solid var(--line-strong); background: transparent; color: var(--ink-3); }
+:is(.ask-workspace, .article-chat) .chat-markdown pre { max-width: 100%; padding: 14px 16px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--code-bg); font-size: 13px; line-height: 1.7; white-space: pre; overflow-x: auto; }
+:is(.ask-workspace, .article-chat) .chat-markdown pre code { padding: 0; background: none; border: 0; white-space: pre; }
+:is(.ask-workspace, .article-chat) .chat-markdown table { display: block; width: max-content; max-width: 100%; border-collapse: collapse; overflow-x: auto; font-size: 13px; line-height: 1.7; }
+:is(.ask-workspace, .article-chat) .chat-markdown :is(th, td) { min-width: 6em; padding: 9px 12px; border: 1px solid var(--line); text-align: left; }
+:is(.ask-workspace, .article-chat) .chat-markdown th { background: var(--bg-sunk); }
+:is(.ask-workspace, .article-chat) .chat-markdown a.cite { display: inline; margin-inline: 2px; padding: 1px 5px; border-radius: 4px; background: var(--accent-softer); color: var(--accent-ink); font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: 2px; text-decoration: none; white-space: nowrap; }
+:is(.ask-workspace, .article-chat) .chat-markdown a.cite:hover { background: var(--accent-soft); text-decoration: underline; }
+:is(.ask-workspace, .article-chat) .chat-error,
+:is(.ask-workspace, .article-chat) .chat-warning,
+:is(.ask-workspace, .article-chat) .chat-warnings { margin: 14px 0; padding: 12px 14px; border-radius: 9px; background: var(--amber-soft); color: var(--amber-ink); font-size: 13px; line-height: 1.75; overflow-wrap: anywhere; }
+:is(.ask-workspace, .article-chat) .chat-warnings ul { margin: 6px 0 0; padding-left: 18px; }
+:is(.ask-workspace, .article-chat) .chat-warnings h3 { margin: 0; font-size: 13px; }
+:is(.ask-workspace, .article-chat) .chat-source-links { display: flex; flex-wrap: wrap; gap: 6px; margin: 20px 0 0; padding: 0; list-style: none; }
+:is(.ask-workspace, .article-chat) .chat-source-links li { min-width: 0; max-width: 100%; }
+:is(.ask-workspace, .article-chat) .chat-source-links a { display: block; max-width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-3); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+:is(.ask-workspace, .article-chat) .chat-source-links a:hover { background: var(--bg-sunk); color: var(--ink); }
+:is(.ask-workspace, .article-chat) .chat-evidence { margin: 14px 0 0; font-size: 13px; line-height: 1.7; }
+:is(.ask-workspace, .article-chat) .chat-evidence summary { min-height: 32px; padding-block: 5px; color: var(--ink-3); cursor: pointer; }
+:is(.ask-workspace, .article-chat) .chat-evidence ol { padding-left: 22px; }
+:is(.ask-workspace, .article-chat) .chat-evidence li { padding: 10px 0; }
+:is(.ask-workspace, .article-chat) .chat-evidence p { margin: 8px 0 0; color: var(--ink-3); white-space: pre-wrap; }
+:is(.ask-workspace, .article-chat) .chat-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 12px; color: var(--ink-3); font-size: 12px; }
+:is(.ask-workspace, .article-chat) .chat-recovery:empty { display: none; }
+:is(.ask-workspace, .article-chat) .chat-recovery :is(a, button) { display: inline-flex; align-items: center; min-height: 32px; padding: 0; border: 0; background: transparent; color: var(--ink-3); font: inherit; cursor: pointer; }
+:is(.ask-workspace, .article-chat) .chat-recovery :is(a, button):hover { color: var(--accent-ink); text-decoration: underline; }
+:is(.ask-workspace, .article-chat) .chat-recovery button:disabled { opacity: .5; cursor: wait; }
+:is(.ask-workspace, .article-chat) .answer-meta { margin: 16px 0 0; color: var(--ink-4); font-size: 11px; line-height: 1.6; }
+.ask-workspace .chat-form { display: block; flex: none; width: 100%; max-width: 800px; margin: 0 auto; padding: 0 20px 12px; }
+.ask-filters { margin-bottom: 10px; color: var(--ink-3); font-size: 12px; }
+.ask-filters summary { min-height: 32px; max-width: 100%; padding-block: 6px; cursor: pointer; overflow-wrap: anywhere; }
+.ask-filters summary span { margin-left: 8px; color: var(--ink-4); }
+.ask-filters .filter-grid { gap: 8px 14px; margin: 6px 0 14px; }
+.ask-filters :is(select, input) { min-width: 0; max-width: 100%; min-height: 36px; }
+.ask-workspace .chat-composer, .article-chat .chat-composer { padding: 4px; border: 1px solid var(--line-strong); border-radius: 20px; background: var(--surface); box-shadow: 0 2px 8px color-mix(in srgb, var(--ink) 3%, transparent); }
+.ask-workspace .chat-composer:focus-within, .article-chat .chat-composer:focus-within { border-color: var(--ink-4); box-shadow: 0 0 0 2px var(--accent-softer); }
+.ask-workspace .chat-form textarea, .article-chat .chat-form textarea { display: block; width: 100%; min-height: 52px; max-height: 140px; padding: 12px 14px 4px; border: 0; border-radius: 16px; background: transparent; color: var(--ink); font: inherit; font-size: 15px; line-height: 1.6; resize: none; box-shadow: none; }
+.ask-workspace .chat-form textarea:focus { outline: 0; box-shadow: none; }
+.ask-workspace .chat-form textarea::placeholder { color: var(--ink-4); }
+.ask-workspace .chat-composer-bar, .article-chat .chat-composer-bar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; padding: 4px 6px 6px 14px; }
+.composer-hint { margin-right: auto; color: var(--ink-4); font-size: 11px; }
+.chat-count { color: var(--ink-4); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ask-workspace .chat-form button[type="submit"], .article-chat .chat-form button[type="submit"] { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: var(--ink); color: var(--bg); cursor: pointer; }
+.ask-workspace .chat-form button[type="submit"]:hover, .article-chat .chat-form button[type="submit"]:hover { background: var(--ink-2); color: var(--bg); }
+.ask-workspace .chat-form button[type="submit"]:disabled, .article-chat .chat-form button[type="submit"]:disabled { opacity: .4; cursor: wait; }
+.ask-workspace .chat-form button[type="submit"] svg, .article-chat .chat-form button[type="submit"] svg { width: 19px; height: 19px; }
+.composer-footnote { margin: 9px 0 0; color: var(--ink-4); font-size: 11px; line-height: 1.6; text-align: center; }
+.chat-notice { flex: none; margin: 12px 20px 0; padding: 8px 12px; border-radius: 8px; background: var(--bg-sunk); color: var(--ink-3); font-size: 13px; line-height: 1.6; }
+.ask-workspace .answer-sources { margin-top: 24px; }
+.ask-workspace .answer-sources h3 { margin: 0 0 10px; color: var(--ink-3); font-size: 12px; font-weight: 500; }
+.ask-workspace .answer-sources h3 span { margin-left: 4px; }
+.ask-workspace .citations { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ask-workspace .citations > li { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; opacity: 1; }
+.ask-workspace .citations li:target { border-color: var(--accent); background: var(--accent-softer); }
+.ask-workspace .citations .item-meta { display: flex; align-items: baseline; gap: 6px; margin: 0; color: var(--ink-2); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.source-number { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding-inline: 4px; border-radius: 5px; background: var(--bg-sunk); color: var(--ink-3); font-size: 11px; }
+.source-byline { margin: 5px 0 4px; color: var(--ink-4); font-size: 11px; line-height: 1.6; }
+.ask-workspace .passage-foot { margin-top: 6px; gap: 6px; }
+.ask-workspace .passage-full summary { padding-block: 4px; font-size: 12px; }
+.ask-workspace .mark-form { margin-top: 2px; }
+.ask-workspace .mark { min-height: 28px; border-color: transparent; font-size: 11px; }
+.ask-workspace .answer-feedback { margin-top: 18px; color: var(--ink-4); font-size: 12px; }
+.answer-feedback > summary { min-height: 32px; padding-block: 6px; cursor: pointer; }
+.ask-workspace .missing-form { margin-top: 4px; padding-top: 0; border: 0; }
+.ask-workspace .retry-form button { min-height: 36px; padding: 6px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 13px; cursor: pointer; }
+.article-chat .chat-head { align-items: baseline; min-height: 44px; padding: 0 4px 8px; border-bottom: 1px solid var(--line-soft); }
+.article-chat .chat-head h2 { font-size: 15px; }
+.article-chat .chat-head-actions button { min-height: 36px; color: var(--ink-3); font-size: 12px; }
+.article-chat .chat-log { gap: 20px; padding: 18px 6px 24px; scrollbar-width: thin; }
+.article-chat .chat-bubble-user { max-width: 90%; padding: 10px 14px; border-radius: 18px 18px 4px 18px; background: var(--bg-muted); line-height: 1.7; }
+.article-chat .chat-bubble-user > p:last-child { white-space: pre-wrap; }
+.article-chat .chat-markdown { font-size: 15px; line-height: 1.85; }
+.article-chat .chat-form { padding-top: 8px; }
+.article-chat .chat-range { min-height: 32px; font-size: 12px; }
+:is(.ask-workspace, .article-chat) [hidden] { display: none; }
+@media (min-width: 1024px) {
+  .shell:has(.ask-workspace) main { padding-top: 0; }
+  .shell:has(.ask-workspace) .frame { height: 100dvh; }
+  .ask-head { min-height: 76px; padding-inline: 20px; }
+  .ask-workspace .chat-form { padding-bottom: 20px; }
+}
+@media (max-width: 600px) {
+  .ask-heading > span { display: none; }
+  .ask-head-actions { gap: 12px; }
+  .ask-workspace > .chat-log { gap: 24px; padding: 24px 0; }
+  .ask-workspace .chat-form { padding: 0 0 8px; }
+  .ask-workspace .chat-bubble-user { max-width: 92%; padding: 10px 14px; }
+  .ask-workspace .citations { grid-template-columns: minmax(0, 1fr); }
+  .ask-filters :is(input, select) { font-size: 16px; min-height: 44px; }
+  .ask-filters .filter-grid { gap: 8px; }
+  .ask-workspace .chat-form textarea, .article-chat .chat-form textarea { font-size: 16px; }
+  .ask-workspace .chat-form button[type="submit"], .article-chat .chat-form button[type="submit"] { width: 44px; height: 44px; }
+  .article-chat .chat-head-actions button, .article-chat .chat-range { min-height: 44px; }
+  :is(.ask-workspace, .article-chat) .chat-recovery :is(a, button),
+  .ask-workspace .passage-full summary, .ask-workspace .mark,
+  .ask-workspace .ask-filters > summary, .answer-feedback > summary { min-height: 44px; }
+  .composer-footnote { font-size: 10px; }
+}

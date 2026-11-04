@@ -1,0 +1,5 @@
+/* 无脚本时侧栏改为文末的原生表单，窄屏也能直接提问。 */
+.read-with-chat { display: block; }
+.read-with-chat .article-chat { display: flex; position: static; width: 100%; height: auto; max-height: none; margin-top: 24px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); transform: none; visibility: visible; box-shadow: none; }
+.chat-toggle, .chat-split, .chat-backdrop, .chat-head-actions { display: none !important; }
+.article-chat .chat-log { display: none; }
