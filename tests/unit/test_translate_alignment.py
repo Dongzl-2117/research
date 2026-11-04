@@ -46,6 +46,8 @@ class _FakeConn:
         return self
 
     def fetchone(self):
+        if 'target_snapshot' in self.sql:
+            return None
         if "FROM sources" in self.sql:
             return {"kind": self.kind}
         if "count(*)" in self.sql:

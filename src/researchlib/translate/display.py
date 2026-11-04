@@ -120,6 +120,52 @@ def content_gaps(source: str, displayed: str) -> int:
             + len(before.structures - after.structures))
 
 
+def _numeric_table_cells(document: str) -> list[tuple]:
+    """数字单元格连同所在行列按序核对；集合会漏掉重复、换位和百分号。"""
+    class Tables(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.tables = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == 'table':
+                table = {'row': -1, 'col': -1, 'cell': None, 'facts': []}
+                self.tables.append(table)
+                self.stack.append(table)
+            elif self.stack:
+                table = self.stack[-1]
+                if tag == 'tr':
+                    table['row'] += 1
+                    table['col'] = -1
+                elif tag in {'td', 'th'}:
+                    table['col'] += 1
+                    table['cell'] = (table['row'], table['col'], tag,
+                                     attrs.get('rowspan'), attrs.get('colspan'), [])
+
+        def handle_data(self, data):
+            if self.stack and self.stack[-1]['cell'] is not None:
+                self.stack[-1]['cell'][-1].append(data)
+
+        def handle_endtag(self, tag):
+            if not self.stack:
+                return
+            table = self.stack[-1]
+            if tag in {'td', 'th'} and table['cell'] is not None:
+                *position, fragments = table['cell']
+                text = re.sub(r'\s+', '', ''.join(fragments))
+                if re.search(r'\d', text) and not any(char.isalpha() for char in text):
+                    table['facts'].append((*position, text))
+                table['cell'] = None
+            elif tag == 'table':
+                self.stack.pop()
+
+    parser = Tables()
+    parser.feed(document)
+    return [tuple(table['facts']) for table in parser.tables]
+
+
 def protected_content_gaps(source: str, translated: str) -> int:
     """译制未处理的图片、代码和纯数字区块，不应在译文里消失。"""
     blocks = top_level_blocks(source)
@@ -138,7 +184,8 @@ def protected_content_gaps(source: str, translated: str) -> int:
     from researchlib.translate.provenance import Resources
 
     before, after = Resources(source), Resources(translated)
-    return (content_gaps("".join(protected), translated)
+    numeric_tables = int(_numeric_table_cells(source) != _numeric_table_cells(translated))
+    return (content_gaps("".join(protected), translated) + numeric_tables
             + sum((Counter(before.codes) - Counter(after.codes)).values())
             + sum((Counter(before.media) - Counter(after.media)).values()))
 

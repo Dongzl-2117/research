@@ -26,7 +26,7 @@ from researchlib.textutil import content_hash, split_frontmatter, strip_duplicat
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, model_id, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
-from researchlib.translate.provenance import AlignmentError, leaf_problem, receipt, source_manifest
+from researchlib.translate.provenance import AlignmentError, Resources, leaf_problem, receipt, source_manifest
 from researchlib.translate.provenance import digest as segment_digest
 from researchlib.translate.segments import (
     chunk_segments,
@@ -88,6 +88,10 @@ def translation_problem(sources: list[str], translations: list[str]) -> str | No
     for src, dst in zip(sources, translations, strict=True):
         if src.strip() and not (dst or "").strip():
             return "empty"
+        if any(char.isalpha() for char in ''.join(Resources(src).text)) and not any(
+            char.isalpha() for char in ''.join(Resources(dst or '').text)
+        ):
+            return "no-text"
     return None
 
 
@@ -355,6 +359,10 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     if is_chinese(sample, language=language if isinstance(language, str) else None):
         return TranslateResult(article_id, "skipped", reason="already Chinese")
 
+    previous = conn.execute(
+        "SELECT to_jsonb(t) AS target_snapshot FROM article_translations t WHERE article_id=%s", (article_id,),
+    ).fetchone()
+    target_snapshot = previous['target_snapshot'] if previous else None
     html, digest = _render_original(conn, article, data_dir)
     manifest = source_manifest(html)
     html = manifest["source_snapshot"]
@@ -446,9 +454,9 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     current_html, _raw_hash = _render_original(conn, current, data_dir)
     if source_manifest(current_html)["source_fingerprint"] != manifest["source_fingerprint"]:
         raise AlignmentError("canonical-source-changed-during-request")
-    conn.execute(
+    saved = conn.execute(
         """
-        INSERT INTO article_translations (
+        INSERT INTO article_translations AS existing (
           article_id, lang, content_hash, title_zh, body_html, body_text, complete,
           origin, segments, provenance, updated_at
         )
@@ -463,9 +471,15 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
           segments = EXCLUDED.segments,
           provenance = EXCLUDED.provenance,
           updated_at = now()
+        WHERE to_jsonb(existing) = %s::jsonb
+        RETURNING article_id
         """,
-        (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance)),
-    )
+        (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance),
+         Jsonb(target_snapshot) if target_snapshot is not None else None),
+    ).fetchone()
+    if saved is None:
+        # 冲突行在写入时原子比较；也覆盖请求开始时没有译文、随后另一请求先写入的情形。
+        raise AlignmentError('target-changed-during-request')
     # 译文切块进检索：中文问题也能找到英文文章，引用落到对照页那一段。
     replace_translation_chunks(conn, article_id)
     conn.commit()

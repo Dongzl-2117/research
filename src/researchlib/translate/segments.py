@@ -42,7 +42,7 @@ from html.parser import HTMLParser
 # AIHOT segmentsOf 的 BLOCK。h1 / h6 不在里面：不是叶子，只往下看子节点。
 _BLOCK = frozenset({
     "p", "h2", "h3", "h4", "h5", "li", "blockquote",
-    "figcaption", "td", "th", "dt", "dd", "caption",
+    "figcaption", "td", "th", "dt", "dd", "caption", "div",
 })
 # AIHOT 的 CONTAINER。直接子节点命中才算 hasBlockChild。dl 不在里面：
 # AIHOT 会把 <blockquote><dl>…</dl></blockquote> 收成一个叶子。研究站的拆法在
@@ -734,7 +734,7 @@ def _br_lines(node: _El, *, minimum: int | None = None) -> list[str] | None:
 # 译文里要留下来的行内标签。块级标签不留，否则写回后再切会多出叶子，或把后文吞进去。
 _INLINE = frozenset({
     "a", "abbr", "b", "bdi", "bdo", "cite", "code", "dfn", "em", "i", "mark",
-    "q", "s", "small", "span", "strong", "sub", "sup", "u",
+    "q", "s", "small", "span", "strong", "sub", "sup", "u", "del", "ins",
 })
 
 
@@ -778,7 +778,10 @@ def _flatten_inline(html: str, *, keep_br: bool) -> str:
             glue()
 
     walk(parser.root.children)
-    return re.sub(r"\s+", " ", "".join(parts)).strip()
+    protected = re.split(r"(<code\b[^>]*>.*?</code>|<pre\b[^>]*>.*?</pre>)",
+                         ''.join(parts), flags=re.I | re.S)
+    return ''.join(part if index % 2 else re.sub(r'\s+', ' ', part)
+                   for index, part in enumerate(protected)).strip()
 
 
 def stable_leaf(html: str, *, tag: str, keep_br: bool = False) -> str:
@@ -1368,7 +1371,7 @@ def translatable_blocks(html: str) -> list[tuple[int, str]]:
     """返回 (segments_of 下标, 段 HTML)。跳过无拉丁字母的段（纯中文/符号/图）。"""
     out: list[tuple[int, str]] = []
     for index, segment in enumerate(iter_segments(html)):
-        plain = re.sub(r"<[^>]+>", "", segment.html)
+        plain = re.sub(r"<[^>]+>", "", _PRE_CODE.sub('', segment.html))
         if not _LATIN.search(plain):
             continue
         if re.fullmatch(r"\s*", plain):

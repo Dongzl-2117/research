@@ -233,7 +233,7 @@ def report_from_html(
 
     texts = [visible_text(pair.en or "") for pair in pairs]
     prose = [" ".join(Resources(pair.en or "").text) for pair in pairs]
-    giant = tuple(index for index, text in enumerate(texts) if len(text) >= GIANT_EN_CHARS)
+    giant = tuple(index for index, text in enumerate(prose) if len(text) >= GIANT_EN_CHARS)
     # 整页分开展示时，英文那一段本来就没有中文，不算漏译；分开本身已经按失败记。
     long_empty = (
         ()

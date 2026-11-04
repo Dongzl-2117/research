@@ -43,6 +43,7 @@ class MemoryConn:
     def execute(self, sql, params=None):
         if "INSERT INTO article_translations" in sql:
             self.writes.append(params)
+            return Rows({'article_id': self.article['id']})
         elif "FROM articles WHERE id" in sql:
             return Rows(self.article)
         elif "FROM sources" in sql:

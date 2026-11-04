@@ -205,3 +205,92 @@ def test_changed_embedded_quarter_cannot_overwrite_a_good_translation(conn, sett
     assert snapshot(conn, article_id) == before
     assert conn.execute("SELECT ord, body FROM article_chunks WHERE article_id=%s ORDER BY ord",
                         (article_id,)).fetchall() == chunks
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_concurrent_target_edits_survive_an_inflight_translation(conn, settings, monkeypatch, existing):
+    from researchlib.db import connect
+
+    article_id = article(conn, settings)
+    monkeypatch.setattr(service, 'chat_json', model)
+    if existing:
+        service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    changed = False
+    expected = {}
+
+    def edited(**kwargs):
+        nonlocal changed
+        if not changed:
+            changed = True
+            with connect(settings) as other:
+                other.execute(
+                    "INSERT INTO article_translations(article_id,content_hash,body_html,body_text,complete,title_zh)"
+                    " SELECT id,content_hash,'<p>后来人工保留的独有中文。</p>',"
+                    " '后来人工保留的独有中文。',true,'人工标题'"
+                    " FROM articles WHERE id=%s ON CONFLICT(article_id) DO UPDATE SET"
+                    " body_html=EXCLUDED.body_html,body_text=EXCLUDED.body_text,title_zh=EXCLUDED.title_zh",
+                    (article_id,),
+                )
+                from researchlib.chunks import replace_translation_chunks
+
+                replace_translation_chunks(other, article_id)
+                other.commit()
+                expected['row'] = snapshot(other, article_id)
+                expected['chunks'] = other.execute(
+                    "SELECT ord,body FROM article_chunks WHERE article_id=%s AND lang='zh' ORDER BY ord",
+                    (article_id,),
+                ).fetchall()
+        return model(**kwargs)
+
+    monkeypatch.setattr(service, 'chat_json', edited)
+    with pytest.raises(AlignmentError, match='target-changed-during-request'):
+        service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    conn.rollback()
+    assert snapshot(conn, article_id) == expected['row']
+    assert conn.execute("SELECT ord,body FROM article_chunks WHERE article_id=%s AND lang='zh' ORDER BY ord",
+                        (article_id,)).fetchall() == expected['chunks']
+
+
+@pytest.mark.parametrize('output', ['<p>123</p>', '<p>...</p>', '<p></p>'])
+def test_numeric_or_empty_model_response_cannot_overwrite_complete_translation(conn, settings, monkeypatch, output):
+    article_id = article(conn, settings)
+    monkeypatch.setattr(service, 'chat_json', model)
+    service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    before = snapshot(conn, article_id)
+
+    def empty(**kwargs):
+        result = model(**kwargs)
+        for item in result.data['t']:
+            item['html'] = output
+        return result
+
+    monkeypatch.setattr(service, 'chat_json', empty)
+    with pytest.raises((RuntimeError, AlignmentError)):
+        service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    conn.rollback()
+    assert snapshot(conn, article_id) == before
+
+
+def test_div_edit_markup_code_spaces_and_non_anchor_targets_roundtrip(conn, settings, monkeypatch):
+    body = ('<div>First paragraph <del>old</del><ins>new</ins> 10 dollars. '
+            '<code>x  y\n z</code><sup id="note-back">1</sup><span id="note-target">note</span></div>')
+    article_id = article(conn, settings, body)
+    monkeypatch.setattr(service, 'chat_json', model)
+    assert service.translate_article(conn, article_id, data_dir=settings.data_dir).status == 'translated'
+    saved = snapshot(conn, article_id)['body_html']
+    for part in ('<div>', '<del>old</del>', '<ins>new</ins>', '<code>x  y\n z</code>',
+                 'id="note-back"', 'id="note-target"', '第一段'):
+        assert part in saved
+    before = snapshot(conn, article_id)
+
+    def missing_id(**kwargs):
+        result = model(**kwargs)
+        for item in result.data['t']:
+            item['html'] = item['html'].replace('id="note-target"', '')
+        return result
+
+    monkeypatch.setattr(service, 'chat_json', missing_id)
+    with pytest.raises(AlignmentError, match='anchors'):
+        service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    conn.rollback()
+    assert snapshot(conn, article_id) == before

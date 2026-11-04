@@ -19,7 +19,6 @@ CLEANER_VERSION = 1
 SEGMENTER_VERSION = 1
 PROMPT_VERSION = 2
 PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt": PROMPT_VERSION}
-_PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
 # Q3、FY2026、H100 中的数字也属于事实；不能因前一字符是拉丁字母而漏掉。
 _NUMBER = re.compile(r"(?<!\d)[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
@@ -39,17 +38,21 @@ def digest(value: object) -> str:
 
 
 def canonical_html(value: str) -> str:
-    """去掉页面临时锚点；不忽略链接、数字、出现次数或标签层级。"""
-    value = _PARA_ID.sub("", value or "").strip()
+    """核对盖页面锚点前的实际输入；真实 id、代码和文字都属于内容。"""
+    value = (value or "").strip()
     # Markdown 在相邻块之间补的换行不是源内容；行内标签间的空格和代码原样保留。
     blocks = r"p|h[1-6]|blockquote|li|ul|ol|dl|dt|dd|table|thead|tbody|tr|pre|figure|div"
-    return re.sub(rf"(</(?:{blocks})>)[ \t\r\n]+(?=<(?:{blocks})\b)", r"\1", value)
+    parts = re.split(r"(<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>)", value, flags=re.I | re.S)
+    return ''.join(part if index % 2 else re.sub(
+        rf"(</(?:{blocks})>)[ \t\r\n]+(?=<(?:{blocks})\b)", r"\1", part,
+    ) for index, part in enumerate(parts))
 
 
 class Resources(HTMLParser):
     def __init__(self, value: str):
         super().__init__(convert_charrefs=True)
         self.links: list[str] = []
+        self.anchors: list[tuple[str, str, str]] = []
         self.media: list[tuple] = []
         self.codes: list[str] = []
         self.code_depth = 0
@@ -59,6 +62,7 @@ class Resources(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        self.anchors.extend((tag, name, attrs[name]) for name in ('id', 'name') if attrs.get(name))
         if tag == "a":
             self.links.append(attrs.get("href", ""))
         if tag in {"img", "source", "track", "video"}:
@@ -215,6 +219,12 @@ def leaf_problem(source: str, target: str) -> str | None:
         return "media"
     if before.codes != after.codes:
         return "code"
+    if before.anchors != after.anchors:
+        return "anchors"
+    if any(char.isalpha() for char in ''.join(before.text)) and not any(
+        char.isalpha() for char in ''.join(after.text)
+    ):
+        return "no-text"
     if numeric_anchors(source) != numeric_anchors(target):
         return "numbers"
     if re.search(r"⟦\d+⟧", target):
