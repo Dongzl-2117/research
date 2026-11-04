@@ -615,6 +615,68 @@ def test_naked_parenthetical_hosts_become_links_without_being_duplicated():
     assert "（stratechery.com）（stratechery.com）" not in (pair.zh or "")
 
 
+def test_paragraph_merge_survives_a_sentence_whose_chinese_matches_english():
+    """另一段里有一句中文和英文相同、对照不单列中文。不能因此放弃把中国段并回一对。
+
+    21118 的译文已经是许多短 ``<p>``，没有 data-src-para。原文那一段仍是一整块。
+    并段若被整页投影误判丢字，这些短段会原样留在页面上。
+    """
+    en, zh = _china_sentences()
+    pad = (
+        " with distribution costs and the installed base staying visible through the holiday quarter"
+        " and the following one while subscriptions kept the margin high"
+    )
+    services = [
+        f"Services revenue still appears to have room to grow across the installed base{pad}.",
+        f"The margin on those subscriptions stayed high while hardware sales were flat{pad}.",
+        f"A later services sentence keeps this second paragraph past the split threshold{pad}.",
+        f"One more services sentence belongs with the two above and not with the China paragraph{pad}.",
+    ]
+    source = "<p>" + " ".join(en) + "</p><p>" + " ".join(services) + "</p>"
+    translated = "".join(f"<p>{line}</p>" for line in zh)
+    # 第一句中文故意和英文相同，展示时不单列；其余仍是另一段的中文。
+    translated += f"<p>{services[0]}</p>"
+    translated += "".join(
+        f"<p>服务段第{index}句，只讲订阅，不要写进中国段。</p>" for index in range(1, len(services))
+    )
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    china = [pair for pair in view.pairs if "historical context" in (pair.en or "")]
+    assert len(china) == 1
+    assert "In Q1 FY2025" in china[0].en and "channel inventory" in china[0].en
+    assert "185 亿美元" in (china[0].zh or "")
+    assert "服务段第" not in (china[0].zh or "")
+    assert "data-src-para" not in china[0].en
+    services_pairs = [pair for pair in view.pairs if "Services revenue" in (pair.en or "")]
+    assert len(services_pairs) == 1
+    assert "订阅" in (services_pairs[0].zh or "")
+    assert '<a href="https://www.businessinsider.com/live">the earnings liveblog</a>' in (china[0].zh or "")
+
+
+def test_source_groups_merge_short_siblings_after_the_marker_is_stripped():
+    """配对 HTML 上的 data-src-para 丢了，仍按原文叶子的分组把同一段的短 ``<p>`` 并回去。"""
+    from researchlib.translate.display import _coalesce_source_paragraphs
+    from researchlib.translate.segments import iter_segments
+
+    en, zh = _china_sentences()
+    source = "<p>" + " ".join(en) + "</p>"
+    leaves = iter_segments(source)
+    assert len(leaves) == len(zh) > 1
+    groups = []
+    pairs = []
+    for leaf, line in zip(leaves, zh, strict=True):
+        match = re.search(r'data-src-para="(\d+)"', leaf.html)
+        groups.append(match.group(1) if match else None)
+        plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", leaf.html)).strip()
+        pairs.append(BilingualPair(en=f"<p>{plain}</p>", zh=f"<p>{line}</p>"))
+    assert len(set(groups)) == 1 and groups[0]
+    merged = _coalesce_source_paragraphs(pairs, groups)
+    assert len(merged) == 1
+    assert "In Q1 FY2025" in merged[0].en and "historical context" in merged[0].en
+    assert "185 亿美元" in (merged[0].zh or "")
+    assert "data-src-para" not in merged[0].en
+
+
 def test_absorbed_translation_does_not_repeat_a_parenthetical_host():
     """短句并进长段时，长段已经有的括号域名不再贴第二次。独有说法仍留下。"""
     short = f"{_LONG} (example.com)."
