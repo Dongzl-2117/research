@@ -16,7 +16,7 @@
 
   const wideQuery = window.matchMedia('(min-width: 1320px)');
   const storageKey = 'research-article-chat';
-  const emptyText = '主要看这篇文章。\n需要时会引用库里的其他文章。';
+  const emptyText = '先看这篇。\n别处有关的，也会引用。';
   let turns = [];
   let pending = false;
   let session = 0;

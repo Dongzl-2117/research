@@ -264,13 +264,19 @@ def _clean_line(text: str) -> str:
 
 
 def html_to_markdown(html: str, *, root_id: str | None = None) -> tuple[str, list[str]]:
-    """HTML → (Markdown, 按顺序的图片地址)。给了 root_id 时只转那个元素里面的部分。"""
+    """HTML → (Markdown, 按顺序的图片地址)。给了 root_id 时只转那个元素里面的部分。
+
+    转完按阅读页同一套规则接上被切到下一段开头的句读、拼回拆开的年份。
+    已经入库的文章不改原文，打开时 ``present_article_text`` 再收一次。
+    """
+    from researchlib.present_text import rejoin_broken_paragraphs
+
     parser = _Converter(root_id)
     parser.feed(html or "")
     markdown, images = parser.finish()
     if root_id and not parser.found:
         return "", []
-    return markdown, images
+    return rejoin_broken_paragraphs(markdown), images
 
 
 def page_markdown(page_html: str) -> tuple[str, list[str]]:

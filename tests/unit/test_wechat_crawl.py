@@ -119,6 +119,24 @@ def test_dajiala_body_turns_literal_backslash_n_into_breaks():
     assert images == ["https://mmbiz.qpic.cn/y/0?wx_fmt=jpeg"]
 
 
+def test_wechat_html_rejoins_leading_punctuation_and_split_year():
+    """导入时就接上。图在句读前面时，句读回到上一段，字留在图后面。"""
+    html = (
+        "<p>吃的量就跟自己掏钱买的时候差不多了</p>"
+        '<p><img src="https://mmbiz.qpic.cn/a.jpg">，巧克力是会腻的</p>'
+        "<p>才算非常便宜。</p><p>1</p><p>988 年标普。</p>"
+    )
+    markdown, images = dajiala_markdown(html)
+    assert images == ["https://mmbiz.qpic.cn/a.jpg"]
+    assert markdown == (
+        "吃的量就跟自己掏钱买的时候差不多了，\n\n"
+        "![](https://mmbiz.qpic.cn/a.jpg)\n\n"
+        "巧克力是会腻的\n\n"
+        "才算非常便宜。\n\n"
+        "1988 年标普。"
+    )
+
+
 def test_bold_split_across_paragraphs_is_dropped_not_left_dangling():
     markdown, _ = dajiala_markdown("<strong><p>一</p><p>二</p></strong><p>链接<a href='https://a.example/x'>原文</a></p>")
     assert markdown == "一\n\n二\n\n链接[原文](https://a.example/x)"
