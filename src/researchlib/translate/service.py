@@ -473,7 +473,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     )
 
 
-# 一次重检最多扫这么多篇完整译文，避免无来源时把全库正文读进内存。
+# 每批重检最多读取这些行；逐批推进游标，避免旧稿永久排在首批之外。
 COARSE_SCAN_CAP = 2000
 
 
@@ -509,41 +509,57 @@ def list_coarse_translations(
     if source_id:
         where.append("a.source_id = %s")
         params.append(source_id)
-    params.append(COARSE_SCAN_CAP)
-    rows = conn.execute(
-        f"""
-        SELECT a.id, a.source_id, a.title, a.body_md, a.body_text, a.raw_meta,
-               t.segments, t.body_html
-        FROM articles a
-        JOIN sources s ON s.id = a.source_id
-        JOIN article_translations t ON t.article_id = a.id
-        WHERE {" AND ".join(where)}
-        ORDER BY a.published_at DESC NULLS LAST, a.id DESC
-        LIMIT %s
-        """,
-        params,
-    ).fetchall()
     found: list[dict[str, object]] = []
     cap = max(1, limit)
-    for row in rows:
-        recorded = row["segments"]
-        recorded_n = int(recorded) if recorded is not None else None
-        reason = coarse_segment_reason(row["body_html"] or "", recorded_segments=recorded_n)
-        body_chars = len(row["body_text"] or "")
-        if (
-            reason is None
-            and recorded_n is not None
-            and recorded_n <= 30
-            and body_chars >= 8_000
-        ):
-            leaves = _source_leaf_count(conn, row)
-            if leaves >= 12 and recorded_n * 3 < leaves and leaves - recorded_n >= 15:
-                reason = "segments-below-source"
-        if not reason:
-            continue
-        found.append({"id": int(row["id"]), "source": row["source_id"], "reason": reason})
-        if len(found) >= cap:
+    cursor = None
+    batch_size = max(1, COARSE_SCAN_CAP)
+    while len(found) < cap:
+        conditions = list(where)
+        page_params = list(params)
+        if cursor is not None:
+            published, identity = cursor
+            if published is None:
+                conditions.append('(a.published_at IS NULL AND a.id < %s)')
+                page_params.append(identity)
+            else:
+                conditions.append('(a.published_at < %s OR a.published_at IS NULL'
+                                  ' OR (a.published_at = %s AND a.id < %s))')
+                page_params.extend((published, published, identity))
+        page_params.append(batch_size)
+        rows = conn.execute(
+            f"""
+            SELECT a.id, a.source_id, a.title, a.body_md, a.body_text, a.raw_meta, a.published_at,
+                   t.segments, t.body_html
+            FROM articles a
+            JOIN sources s ON s.id = a.source_id
+            JOIN article_translations t ON t.article_id = a.id
+            WHERE {" AND ".join(conditions)}
+            ORDER BY a.published_at DESC NULLS LAST, a.id DESC
+            LIMIT %s
+            """, page_params,
+        ).fetchall()
+        for row in rows:
+            recorded = row["segments"]
+            recorded_n = int(recorded) if recorded is not None else None
+            reason = coarse_segment_reason(row["body_html"] or "", recorded_segments=recorded_n)
+            body_chars = len(row["body_text"] or "")
+            if (
+                reason is None
+                and recorded_n is not None
+                and recorded_n <= 30
+                and body_chars >= 8_000
+            ):
+                leaves = _source_leaf_count(conn, row)
+                if leaves >= 12 and recorded_n * 3 < leaves and leaves - recorded_n >= 15:
+                    reason = "segments-below-source"
+            if not reason:
+                continue
+            found.append({"id": int(row["id"]), "source": row["source_id"], "reason": reason})
+            if len(found) >= cap:
+                return found
+        if len(rows) < batch_size:
             break
+        cursor = (rows[-1]['published_at'], rows[-1]['id'])
     return found
 
 

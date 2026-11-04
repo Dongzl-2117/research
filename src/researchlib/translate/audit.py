@@ -70,13 +70,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.source:
             where.append("a.source_id = %s")
             params.append(args.source)
-        params.append(max(1, args.limit))
+        limit = ''
+        if not args.article_id:
+            params.append(max(1, args.limit))
+            limit = ' LIMIT %s'
         rows = conn.execute(
             "SELECT a.*, t.body_html AS translated_html, t.content_hash AS translation_content_hash,"
             " coalesce(to_jsonb(t)->'provenance', '{}'::jsonb) AS provenance"
             " FROM articles a JOIN article_translations t ON t.article_id = a.id"
             + (" WHERE " + " AND ".join(where) if where else "")
-            + " ORDER BY a.id LIMIT %s", params,
+            + " ORDER BY a.id" + limit, params,
         ).fetchall()
         plan = []
         for row in rows:
