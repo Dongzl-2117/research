@@ -1,4 +1,4 @@
-"""阅读页把截图里的字展开；摘要和观点的输入同样读到这些字。
+"""阅读页留原图；摘要和观点的输入仍然读到截图里整理后的字。
 
 样例按 14886 的形状：正文一句，判断在群聊截图里。公司提及表仍不看图片。
 """
@@ -95,17 +95,14 @@ def test_reader_shows_chat_text_and_collapses_the_screenshot(conn, settings, tmp
 
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{row['id']}").text
-    assert "瑞幸古茗是比较头部的" in page
-    assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in page
-    assert "古茗店效还行，瑞幸的折扣不能再深了" in page
-    assert f'<a class="ocr-link" id="{image_anchor(chat_hash)}"' in page
-    assert "原图 1" not in page
-    assert f'<img id="{image_anchor(chat_hash)}"' not in page
-    assert "<details" not in page
-    linked = page.index(f'id="{image_anchor(chat_hash)}"')
-    assert linked < page.index("瑞幸和古茗都算头部", linked) < page.index("</a>", linked)
-    assert f'<img id="{image_anchor(logo_hash)}"' in page
-    assert page.count('class="ocr-shot"') == 1
+    prose = page.split('class="prose"', 1)[1].split("</article>", 1)[0]
+    assert "瑞幸古茗是比较头部的" in prose
+    assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" not in prose
+    assert "古茗店效还行" not in prose
+    assert "ocr-link" not in prose and "ocr-reading" not in prose and "ocr-shot" not in prose
+    assert f'<img id="{image_anchor(chat_hash)}"' in prose
+    assert f'<img id="{image_anchor(logo_hash)}"' in prose
+    assert "原图 1" not in prose
 
 
 def test_short_screenshot_post_is_read_by_views_and_digest(conn, settings, tmp_path, monkeypatch):
@@ -289,13 +286,13 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
 
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{row['id']}").text
-    assert "方伟：" in page and "王小明：" in page
-    assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert "设为群待办" not in page
-    assert f'id="{image_anchor(first_hash)}"' in page and f'id="{image_anchor(second_hash)}"' in page
-    assert "原图 1" not in page and "原图 2" not in page
-    assert page.count('class="ocr-shot"') == 1
-    assert "<details" not in page
+    prose = page.split('class="prose"', 1)[1].split("</article>", 1)[0]
+    assert "瑞幸古茗是比较头部的" in prose
+    assert "方伟：" not in prose and "王小明：" not in prose
+    assert "古茗店效还行" not in prose and "设为群待办" not in prose
+    assert "ocr-link" not in prose and "ocr-reading" not in prose
+    assert f'<img id="{image_anchor(first_hash)}"' in prose
+    assert f'<img id="{image_anchor(second_hash)}"' in prose
 
     seen = []
 

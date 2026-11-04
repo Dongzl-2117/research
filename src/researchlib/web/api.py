@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from researchlib import theses as thesis_map
+from researchlib.article_chat import start_chat
 from researchlib.ask import ask, start
 from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
@@ -593,6 +594,34 @@ async def api_ask(request: Request):
     # 绝不能在 async 协程里同步干等，否则整站事件循环被堵死（health/其他页一起挂）。
     wait = body.get("wait", False) is True
     settings = request.app.state.settings
+    # 阅读页侧栏：仍走这条问答接口。chat=true 时以 article 为主，并可再检索库里其他文章。
+    # history 是此前几轮，离开页面由浏览器丢掉。不传 chat 时和原来的问库一样。
+    if body.get("chat") is True:
+        article_id = parse_int(str(body.get("article") or ""))
+        if article_id is None:
+            raise HTTPException(status_code=400, detail="阅读页对话需要 article")
+        history = body.get("history") if isinstance(body.get("history"), list) else []
+
+        def _chat():
+            with database(request) as conn:
+                sources = active_sources(request, conn)
+                article = queries.get_article(conn, article_id, [source.id for source in sources])
+                if article is None or hide_from_site(article.get("raw_meta"), article.get("title")):
+                    return None
+                return start_chat(
+                    conn,
+                    settings,
+                    question,
+                    article_id,
+                    sources,
+                    history,
+                    run_inline=True if wait else None,
+                )
+
+        result = await run_in_threadpool(_chat)
+        if result is None:
+            raise HTTPException(status_code=404)
+        return _json({**result, "_trust": TRUST})
 
     def _run():
         with database(request) as conn:
@@ -674,7 +703,9 @@ def llms_txt(request: Request):
         "默认 wait=false：立刻返回 id 与召回段落，后台整合，客户端轮询 /api/v1/answers/{id}；"
         "wait=true 时在线程池里等整合写完再返回（带 answer / citations / checks）。"
         "checks 标出数字、引号、作者、日期和所引段落对不上的句子；"
-        "再轮询 /api/v1/answers/{id} 直到 status 不是 running",
+        "再轮询 /api/v1/answers/{id} 直到 status 不是 running。"
+        "阅读页侧栏另加 chat=true、article（必填）和 history（此前的 {role, content}）："
+        "优先这篇，问题需要时再检索库里其他文章，引用仍是 [n]，对应 citations 里的 /articles/{id}。",
         "",
         "## 浏览",
         "",

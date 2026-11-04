@@ -17,7 +17,10 @@
 - 上一张最底下那行常只截到一半（半句，或认错几个字）。下一张里它的前一行也在、紧跟着同一个人的那行
   开头结尾对得上时，那是同一行，只留下一张里完整的
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉。状态栏「10:57 :!!! 5GA ■」连着
-  App 标题、或者粘在第一句话前面的，也只去掉状态栏
+  App 标题、或者粘在第一句话前面的，也只去掉状态栏。转发卡片和聊天记录页的标题「群聊的聊天记录」
+  （可带日期）单独成行，或粘在气泡末尾，都不进正文；句子中间提到这几个字的留下
+- 网名可以带国旗、表情（阿明🇫🇷：）。一行里中途又出现「网名：」是下一位开口，要切开。
+  句子里只提到名字、后面没有冒号的，仍是同一句
 - 群里的系统提示（「你邀请"某某"加入了群聊 撤销」「"某某"与群里其他人都不是朋友关系，请注意隐私安全」、
   扫码进群、改群名）不是谁说的话，里面还有群友的昵称：整段去掉。和上一句粘成一行的只切这一段
 - 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
@@ -255,7 +258,8 @@ _CHROME_WORD = re.compile(
     r"^(?:[^\u4e00-\u9fffA-Za-z0-9]{0,6})?"
     r"(?:设为群待办|设为待办|群待办|小+程序|进入小程序|查看详情|来自小程序|"
     r"回到引用位置|可按住\s*转文字|按住\s*转文字|"
-    r"继续提问|AI\s*搜索|加[人入]?会员群|雪球|知识星球|(?i:LIVE))"
+    r"继续提问|AI\s*搜索|加[人入]?会员群|雪球|知识星球|(?i:LIVE)|"
+    r"群聊的聊天记录(?:\s*\d{4}年\d{1,2}月\d{1,2}日)?)"
     r"(?:\s*[A-Za-z])?[。．.\s]*$"
 )
 # ￥17.? 、￥19.?￥22泰式风味红茶：价格可以粘在商品名上，问号是小数点认丢了。
@@ -467,9 +471,23 @@ _TRAIL_TIME = re.compile(
     r"\s*(?:上午|下午|晚上|凌晨|昨天|今天|前天)?\s*\d{1,2}:\d{2}(?::\d{2})?\s*$"
 )
 _SUFFIX = re.compile(
-    r"[\s,，]*?(?:设为群待办|设为待办|群待办|回到引用位置|"
-    r"可按住\s*转文字|按住\s*转文字|继续提问|AI\s*搜索)\s*$"
+    r"(?:[\s,，]*?(?:设为群待办|设为待办|群待办|回到引用位置|"
+    r"可按住\s*转文字|按住\s*转文字|继续提问|AI\s*搜索)\s*"
+    r"|[\s,，]*?群聊的聊天记录(?:\s*\d{4}年\d{1,2}月\d{1,2}日)?\s*[。．.]*)\s*$"
 )
+# 网名后面的国旗、表情不参与「像不像人名」。正文里的表情不走这里。
+_NICK_DECORATION = re.compile(
+    "["
+    "\U0001F1E6-\U0001F1FF"  # 区域指示符，两个组成一面国旗
+    "\U0001F300-\U0001FAFF"
+    "\u2600-\u27BF"
+    "\uFE0F"
+    "\u200D"
+    "\u20E3"
+    "]+"
+)
+# 一行里中途的「网名：」。标签本身不含空白和句读；前面必须是空白，避免切进「对王小明：」。
+_SPEAKER_MARK = re.compile(r"(?P<label>[^\s：:，。！？!?、；/\\]{1,16})\s*[:：]")
 _PUNCT = re.compile(r"[，。！？、；：,.!?;:\"“”‘’（）()\[\]【】《》<>]")
 
 
@@ -1156,14 +1174,68 @@ def _weibo_guest_turns(lines: list[str]) -> list[Turn]:
     return [Turn(speaker=speaker or GUEST, lines=body)]
 
 
+def _nick_core(name: str) -> str:
+    """去掉网名上的国旗和表情，剩下的才拿来判断像不像人名。"""
+    return _NICK_DECORATION.sub("", name or "").strip()
+
+
+def _is_embedded_speaker(label: str) -> bool:
+    """行中间的「名：」算不算下一位。纯英文冒号（Typical:）不是，方伟的显示名仍是。"""
+    cleaned = _clean_label(label)
+    if not cleaned or any(mark in cleaned for mark in ".@"):
+        return False
+    if cleaned in {HOST, GUEST} or _is_host_line(_compact_host(cleaned)):
+        return True
+    core = _nick_core(cleaned)
+    return bool(core and _CJK.search(core) and _guest_label(cleaned))
+
+
+def _split_speaker_line(line: str) -> list[str]:
+    """一行里空白后面又出现「网名：」时切开。没有冒号的提到名字，整行不动。
+
+    绿气泡的侧标记只留在仍没有别人网名的那一段，切出去的下一位不再被当成方伟。
+    """
+    side = SIDE_SELF if line.startswith(SIDE_SELF) else ""
+    text = line[len(side) :]
+    if "：" not in text and ":" not in text:
+        return [line]
+    cuts = [
+        match
+        for match in _SPEAKER_MARK.finditer(text)
+        if (match.start() == 0 or text[match.start() - 1].isspace()) and _is_embedded_speaker(match.group("label"))
+    ]
+    if not cuts or (len(cuts) == 1 and cuts[0].start() == 0):
+        return [line]
+    starts = [match.start() for match in cuts]
+    if starts[0] != 0:
+        starts.insert(0, 0)
+    starts.append(len(text))
+    parts = [text[begin:end].strip() for begin, end in zip(starts, starts[1:], strict=False)]
+    parts = [part for part in parts if part]
+    if not parts:
+        return [line]
+    if side:
+        head = _SPEAKER_MARK.match(parts[0])
+        if head is None or not _is_embedded_speaker(head.group("label")):
+            parts[0] = side + parts[0]
+    return parts
+
+
 def parse_shot(text: str) -> Shot:
     from researchlib.present_text import order_nested_replies
 
     original = order_nested_replies((text or "").strip())
     if not original:
         return Shot("prose", [], "")
-    raw_lines = [_scrub(line) for line in _normalize(original).splitlines()]
-    raw_lines = [line for line in raw_lines if line and not _is_ui_chrome(line) and not _PINNED_BAR.match(line)]
+    raw_lines: list[str] = []
+    for line in _normalize(original).splitlines():
+        scrubbed = _scrub(line)
+        if not scrubbed:
+            continue
+        for piece in _split_speaker_line(scrubbed):
+            peeled = _scrub(piece)
+            if peeled and not _is_ui_chrome(peeled) and not _PINNED_BAR.match(peeled):
+                raw_lines.append(peeled)
     if not raw_lines:
         return Shot("prose", [], "")
     # 知识星球优惠券推广卡：账号栏会把「扫码领取…」误标方伟，整段当噪音。
@@ -1830,11 +1902,19 @@ def _guest_label(name: str) -> bool:
         return False
     if _NOT_NAME_HEAD.match(name):
         return False
-    if _cjk_name(name, 2) or _cjk_name(name, 3) or _latin_name(name) or _mixed_nickname(name):
+    core = _nick_core(name)
+    if not core:
+        return False
+    if core != name:
+        if core in _NOT_NAMES or _utterance(core) or _NOT_NAME_HEAD.match(core):
+            return False
+        if _is_host_line(_compact_host(core)):
+            return False
+    if _cjk_name(core, 2) or _cjk_name(core, 3) or _latin_name(core) or _mixed_nickname(core):
         return True
-    chars = _CJK.findall(name)
+    chars = _CJK.findall(core)
     # 网名可以带「我 / 的」这类字（春风十里我自在）；正文里的提示语已放进 _NOT_NAMES。
-    return 4 <= len(chars) <= 12 and len(chars) == len(name)
+    return 4 <= len(chars) <= 12 and len(chars) == len(core)
 
 
 def _classify(line: str, names: set[str]) -> tuple[str, str]:

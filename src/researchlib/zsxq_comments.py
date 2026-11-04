@@ -419,7 +419,7 @@ def strip_trailing_breaks(html: str) -> str:
 
 
 def strip_breaks_before_comments(html: str) -> str:
-    """评论节前面不要留一串空换行。图片被换成对话之后，段尾的 <br> 也算。"""
+    """评论节前面不要留一串空换行。阅读页不再把图换成对话，正文组装时已经收过段尾空行。"""
     match = _SECTION_OPEN.search(html or "")
     if not match:
         return html or ""

@@ -50,6 +50,7 @@ def test_vision_prompt_names_the_constraints():
         "可按住转文字",
         "回到引用位置",
         "设为群待办",
+        "群聊的聊天记录",
         "继续提问",
         "AI搜索",
         "状态栏时间",

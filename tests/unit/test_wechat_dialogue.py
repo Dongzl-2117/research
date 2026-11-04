@@ -195,7 +195,7 @@ def test_consecutive_same_speaker_merges_and_table_stays():
     assert "方伟：" not in compose_ocr_text([table])
 
 
-def test_reading_page_shows_the_dialogue_once():
+def test_reading_page_keeps_both_shots_and_models_see_the_dialogue_once():
     first = "ab" * 32
     second = "cd" * 32
     html = str(
@@ -208,22 +208,20 @@ def test_reading_page_shows_the_dialogue_once():
         )
     )
     page = inline_image_ocr(html, {first: SHOT_A, second: SHOT_B})
+    assert page == html
     assert "瑞幸古茗是比较头部的" in page
-    assert 'class="ocr-reading ocr-dialogue"' in page
-    assert '<span class="who">方伟：</span>瑞幸和古茗都算头部，但瑞幸同店还有压力' in page
-    assert '<span class="who">王小明：</span>古茗店效还行，瑞幸的折扣不能再深了' in page
+    assert f'<img id="{image_anchor(first)}"' in page and f'<img id="{image_anchor(second)}"' in page
+    assert "ocr-reading" not in page and "ocr-link" not in page and "ocr-shot" not in page
+    assert '<span class="who">' not in page
+    assert "古茗店效还行，瑞幸的折扣不能再深了" not in page
     assert "设为群待办" not in page and "小程序" not in page
-    assert page.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    assert page.count('class="ocr-shot"') == 1
-    assert page.count('class="ocr-reading ocr-dialogue"') == 1
-    assert f'<a class="ocr-link" id="{image_anchor(first)}"' in page
-    assert f'<a class="ocr-link" id="{image_anchor(second)}"' in page
-    assert "原图 1" not in page and "原图 2" not in page
-    assert "<details" not in page
-    first_at = page.index(f'id="{image_anchor(first)}"')
-    assert first_at < page.index("瑞幸和古茗都算头部", first_at) < page.index("</a>", first_at)
-    second_at = page.index(f'id="{image_anchor(second)}"')
-    assert second_at < page.index("同店压力还在", second_at) < page.index("</a>", second_at)
+    stored = present_ocr_pieces([SHOT_A, SHOT_B])
+    assert "方伟：瑞幸和古茗都算头部，但瑞幸同店还有压力" in stored
+    assert "王小明：古茗店效还行，瑞幸的折扣不能再深了" in stored
+    assert stored.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
+    assert "设为群待办" not in stored and "小程序" not in stored
+    model = append_ocr("瑞幸古茗是比较头部的。", stored)
+    assert "【图片里的字】" in model and "同店压力还在" in model
 
 
 # 文章 24020 的形状：四张连着往下截的群聊，每张最底下那行都只截到一半，下一张里同一位置是完整的一行。
@@ -251,18 +249,21 @@ def test_cut_bottom_line_gives_way_to_the_whole_line_in_the_next_shot():
         mapping[f"s{index}.png"] = f"/media/fangwei-zsxq/ab/{digest}.png"
         texts[digest] = shot
         parts.append(f"![](s{index}.png)")
-    page = inline_image_ocr(str(render_body("\n\n".join(parts) + "\n", mapping)), texts)
-    for text in (stored, page):
-        assert text.count("一分一毫都要扣的很细") == 1
-        assert "8毛钱就关乎ROI正不正都问题" in text
-        assert "很有趣的利益结构问题" not in text
-        assert "很多复杂的利益结构问题" in text
-        assert text.count("商家能够看见这") == 1
-        assert "这也让他有动机持续做" in text
-        # 前面的话一句不少。
-        assert "开始强力推行" in text and "但是抖音本来就是一个高投流的商业模式" in text
+    html = str(render_body("\n\n".join(parts) + "\n", mapping))
+    page = inline_image_ocr(html, texts)
+    assert page == html
+    assert stored.count("一分一毫都要扣的很细") == 1
+    assert "8毛钱就关乎ROI正不正都问题" in stored
+    assert "很有趣的利益结构问题" not in stored
+    assert "很多复杂的利益结构问题" in stored
+    assert stored.count("商家能够看见这") == 1
+    assert "这也让他有动机持续做" in stored
+    assert "开始强力推行" in stored and "但是抖音本来就是一个高投流的商业模式" in stored
+    assert "8毛钱就关乎ROI" not in page and "开始强力推行" not in page
     for index in range(1, len(CUT_SHOTS) + 1):
-        assert f'id="{image_anchor(f"{index:02d}" * 32)}"' in page
+        digest = f"{index:02d}" * 32
+        assert f'<img id="{image_anchor(digest)}"' in page
+    assert "ocr-reading" not in page and "ocr-link" not in page
 
 
 def test_bottom_line_stays_when_the_next_shot_does_not_line_up():
@@ -415,8 +416,8 @@ def test_screenshot_wraps_flow_into_one_paragraph():
     assert "\n" not in _flow_ocr_lines("同店压力还在，折扣不能再深\n会员那边先不动。")
 
 
-def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
-    """14879 的硬换行是截图宽度，不是分段。阅读页收成一段，说话人和原图链接还在。"""
+def test_live_14879_reading_page_keeps_shots_and_models_keep_turns():
+    """14879 的硬换行是截图宽度。阅读页留每张图；说话人和折行只在交给模型的整理结果里。"""
     shots = _shots_14879()
     parts = ["（见图）"]
     mapping: dict[str, str] = {}
@@ -427,28 +428,23 @@ def test_live_14879_reading_page_flows_wraps_and_keeps_turns():
         mapping[name] = f"/media/fangwei-zsxq/ab/{digest}.png"
         texts[digest] = shot
         parts.append(f"![]({name})")
-    page = inline_image_ocr(str(render_body("\n\n".join(parts) + "\n", mapping)), texts)
-    assert "国产agents" in page
-    assert "国\n产" not in page
-    assert "压根不在一个水平线上" in page
-    assert "其他所有模型" in page
-    assert "手机或者盲盒潮玩" in page
-    assert "盲盒潮玩它是一个拼效率" in page
-    assert "agents执行长任务" in page
-    assert '<span class="who">方伟：</span>会有一批大模型做到' in page
-    assert page.count('<span class="who">方伟：</span>') >= 3
-    assert page.count('<span class="who">Lucas：</span>') >= 3
-    assert page.count('class="ocr-reading ocr-dialogue"') == 1
-    assert "网友：" not in page
-    # 显示名只用于认出方伟，不写成说话人。句子里的 @ 折行后仍是一整句。
-    assert "方伟-最近在出差：" not in page
-    assert "@方伟-最近在出差" in page
+    html = str(render_body("\n\n".join(parts) + "\n", mapping))
+    page = inline_image_ocr(html, texts)
+    assert page == html
+    assert "产agents" not in page and "Lucas" not in page
+    assert "ocr-reading" not in page and "ocr-link" not in page and '<span class="who">' not in page
     for number in range(1, len(shots) + 1):
         digest = f"{number:02d}" * 32
         assert f'id="{image_anchor(digest)}"' in page
-        assert f"/media/fangwei-zsxq/ab/{digest}.png" in page
-    # 旁路和检索仍用带换行的整理结果，不因阅读页折行而改掉。
+        assert f'src="/media/fangwei-zsxq/ab/{digest}.png"' in page
     stored = present_ocr_pieces(shots)
+    assert "产agents" in stored
+    assert "会有一批大模型做到" in stored
+    assert "Lucas：" in stored and "方伟：" in stored
+    assert "网友：" not in stored
+    assert "方伟-最近在出差：" not in stored
+    assert "@方伟-最近在" in stored
+    # 旁路和检索仍用带换行的整理结果。
     assert "换了一些国\n产agents" in stored
 
 
@@ -525,22 +521,15 @@ def test_quote_reply_card_puts_the_guest_above_the_account_bar():
     assert "方伟看十年" not in text and "什么才叫做" not in text
 
     digest = "29" * 32
-    page = inline_image_ocr(
-        str(render_body("（见图）\n\n![](p.png)\n", {"p.png": f"/media/x/ab/{digest}.png"})),
-        {digest: PDD_MOMENTS},
-    )
-    assert 'class="ocr-reading ocr-dialogue"' in page
-    assert '<span class="who">网友：</span>' in page and '<span class="who">方伟：</span>' in page
-    guest_html, host_html = page.split('<span class="who">方伟：</span>', 1)
-    assert "不太看好" in guest_html and "假本分" in guest_html
-    assert "零售的本分" in host_html and "不太看好" not in host_html
-    assert "方伟看十年" not in page and "什么才叫做" not in page
-    assert f'<a class="ocr-link" id="{image_anchor(digest)}"' in page
-    assert "原图 1" not in page
-    assert "点击看原图" not in page
-    assert "<details" not in page
-    assert f'id="{image_anchor(digest)}"' in page
-    assert page.index("网友：") < page.index("不太看好") < page.index("方伟：") < page.index("零售的本分")
+    html = str(render_body("（见图）\n\n![](p.png)\n", {"p.png": f"/media/x/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: PDD_MOMENTS})
+    assert page == html
+    assert f'id="{image_anchor(digest)}"' in page and f'src="/media/x/ab/{digest}.png"' in page
+    assert "ocr-reading" not in page and "ocr-link" not in page and '<span class="who">' not in page
+    assert "不太看好" not in page and "零售的本分" not in page and "方伟看十年" not in page
+    model = append_ocr("（见图）", text)
+    assert "【图片里的字】" in model
+    assert model.index("网友：") < model.index("不太看好") < model.index("方伟：") < model.index("零售的本分")
 
 
 def test_account_bar_is_the_quote_reply_divider_not_a_bubble():
@@ -571,29 +560,26 @@ def test_account_bar_is_the_quote_reply_divider_not_a_bubble():
     assert "方伟：零售的本分是帮消费者省钱。" in marked
 
 
-def test_product_and_chart_shots_are_links_only():
-    """亚马逊 / Temu 商品图和图表不套对话，只留原图链接。"""
+def test_product_and_chart_shots_stay_images():
+    """亚马逊 / Temu 商品图和图表在阅读页仍是图，不把识图铺成对话。"""
     assert parse_shot(AMAZON_PRODUCT).kind == "media"
     assert parse_shot(META_CHART).kind == "media"
     a, c = "e5" * 32, "ad" * 32
-    page = inline_image_ocr(
-        str(
-            render_body(
-                "![](a.png)\n\n![](c.png)\n",
-                {
-                    "a.png": f"/media/x/ab/{a}.png",
-                    "c.png": f"/media/x/ab/{c}.png",
-                },
-            )
-        ),
-        {a: AMAZON_PRODUCT, c: META_CHART},
+    html = str(
+        render_body(
+            "![](a.png)\n\n![](c.png)\n",
+            {
+                "a.png": f"/media/x/ab/{a}.png",
+                "c.png": f"/media/x/ab/{c}.png",
+            },
+        )
     )
+    page = inline_image_ocr(html, {a: AMAZON_PRODUCT, c: META_CHART})
+    assert page == html
+    assert f'<img id="{image_anchor(a)}"' in page and f'<img id="{image_anchor(c)}"' in page
     assert "方伟：" not in page and "网友：" not in page
-    assert "运动水杯" not in page and "Sponsored" not in page
-    assert "Builtwith" not in page
-    assert "原图 1" in page and "原图 2" in page
-    assert "点击看原图" not in page
-    assert page.count('class="ocr-shot"') == 1
+    assert "运动水杯" not in page and "Sponsored" not in page and "Builtwith" not in page
+    assert "ocr-shot" not in page and "原图 1" not in page
 
 
 
@@ -625,14 +611,14 @@ def test_vision_bubbles_keep_a_space_between_messages():
     digest = "ab" * 32
     html = str(render_body("（见图）\n\n![](a.png)\n", {"a.png": f"/media/fangwei-zsxq/ab/{digest}.png"}))
     page = inline_image_ocr(html, {digest: VISION_BUBBLES})
-    assert "送货上门 这里反映了很多复杂的利益结构问题 因为他花了很长时间构建菜鸟驿站 菜鸟是靠揽件" in page
-    assert "驿站菜鸟" not in page
-    # 逗号后面不空格；句号收住的照旧另起一段。
-    assert "流量崩掉，这件事跟阿里菜鸟" in page
-    assert "有冲突。 " not in page
-    assert "他出发点是好的 但是抖音本来就是" in page
-    # 旁路和检索仍是一条一行。
-    assert "送货上门\n这里反映了" in present_ocr_pieces([VISION_BUBBLES])
+    assert page == html
+    assert f'<img id="{image_anchor(digest)}"' in page
+    assert "ocr-reading" not in page and "构建菜鸟驿站" not in page
+    stored = present_ocr_pieces([VISION_BUBBLES])
+    # 旁路和检索仍是一条一行，不把气泡首尾粘成「驿站菜鸟」。
+    assert "送货上门\n这里反映了" in stored
+    assert "驿站菜鸟" not in stored
+    assert "菜鸟是靠揽件" in stored
     # 屏宽折行的旧识别不按气泡算，仍按满行接上。
     assert not parse_shot(PDD_MOMENTS).bubble_lines
     assert not parse_shot("\n".join(_shots_14879()[:1])).bubble_lines
@@ -679,19 +665,19 @@ A&P，西尔斯，再到1960年代的折
 """
 
 
-def test_reddit_and_table_shots_are_links_only():
-    """Reddit 评论楼和 SCF 数据表只留原图，不套方伟/网友。"""
+def test_reddit_and_table_shots_stay_images():
+    """Reddit 评论楼和 SCF 数据表在阅读页仍是图，不套方伟/网友。"""
     assert parse_shot(REDDIT_COMMENT).kind == "media"
     assert parse_shot(REDDIT_COMMENT_2).kind == "media"
     assert parse_shot(SCF_TABLE).kind == "media"
     digest = "01" * 32
-    page = inline_image_ocr(
-        str(render_body("![](r.png)\n", {"r.png": f"/media/x/ab/{digest}.png"})),
-        {digest: REDDIT_COMMENT},
-    )
+    html = str(render_body("![](r.png)\n", {"r.png": f"/media/x/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: REDDIT_COMMENT})
+    assert page == html
+    assert f'<img id="{image_anchor(digest)}"' in page
     assert "方伟：" not in page and "网友：" not in page
     assert "Templar" not in page and "I agree" not in page
-    assert "原图 1" in page
+    assert "ocr-link" not in page and "原图 1" not in page
 
 
 def test_moments_then_group_not_one_blob():
@@ -712,20 +698,21 @@ def test_moments_then_group_not_one_blob():
     assert "最强大的公司" in text
     assert "美国的零售历史是从梅西百货" in text
     a, b = "29" * 32, "2b" * 32
-    page = inline_image_ocr(
-        str(
-            render_body(
-                "![](a.png)\n\n![](b.png)\n",
-                {
-                    "a.png": f"/media/x/ab/{a}.png",
-                    "b.png": f"/media/x/ab/{b}.png",
-                },
-            )
-        ),
-        {a: truncated, b: GROUP_RETAIL},
+    html = str(
+        render_body(
+            "![](a.png)\n\n![](b.png)\n",
+            {
+                "a.png": f"/media/x/ab/{a}.png",
+                "b.png": f"/media/x/ab/{b}.png",
+            },
+        )
     )
-    assert page.count('class="ocr-reading ocr-dialogue"') == 2
-    assert "公司美国的零售" not in page
+    page = inline_image_ocr(html, {a: truncated, b: GROUP_RETAIL})
+    assert page == html
+    assert f'<img id="{image_anchor(a)}"' in page and f'<img id="{image_anchor(b)}"' in page
+    assert "ocr-reading" not in page
+    assert "公司美国的零售" not in page and "美国的零售历史" not in page
+    assert "美国的零售历史是从梅西百货" in text
 
 # 文章 12681 这一类：星球帖子截图的留言区和赞赏栏，不是引用回复的账号栏。
 ZSXQ_POST_12681 = """方伟
@@ -761,13 +748,14 @@ def test_12681_comment_footer_is_not_spoken_by_fangwei():
         assert noise not in text
     assert "渠道库存还是偏高" not in text.split("网友：", 1)[0]
     digest = "12" * 32
-    page = inline_image_ocr(
-        str(render_body("（见图）\n\n![](p.png)\n", {"p.png": f"/media/x/ab/{digest}.png"})),
-        {digest: ZSXQ_POST_12681},
-    )
-    assert '<span class="who">方伟：</span>茅台批价这一周没动' in page
-    assert '<span class="who">网友：</span>渠道库存还是偏高' in page
+    html = str(render_body("（见图）\n\n![](p.png)\n", {"p.png": f"/media/x/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: ZSXQ_POST_12681})
+    assert page == html
+    assert f'<img id="{image_anchor(digest)}"' in page
+    assert "ocr-reading" not in page and "茅台批价" not in page and "渠道库存" not in page
     assert "李四" not in page and "划线" not in page and "赞赏" not in page
+    model = append_ocr("（见图）", text)
+    assert "方伟：茅台批价这一周没动" in model and "网友：渠道库存还是偏高" in model
 
 
 def test_author_badge_is_chrome_and_footer_does_not_eat_the_reply():
@@ -1403,15 +1391,16 @@ def test_24010_video_badges_and_23173_ad_shell_are_stripped():
     assert "资本开支" in kept
 
 
-def test_video_chrome_is_stripped_on_the_reading_page():
+def test_video_chrome_is_stripped_for_models_not_pasted_on_the_image():
     digest = "ab" * 32
     html = str(render_body("![](shot.png)\n", {"shot.png": f"/media/x/ab/{digest}.png"}))
     page = inline_image_ocr(html, {digest: HUANGJIU_OCR})
-    assert "8.53亿" in page
-    assert "会稽山超越古越龙山" in page
-    assert "未成年人请勿饮酒" not in page
-    assert "主播" not in page
-    assert "新经济观察" not in page
+    assert page == html
+    assert f'<img id="{image_anchor(digest)}"' in page
+    assert "8.53亿" not in page and "会稽山" not in page and "ocr-reading" not in page
+    stored = present_ocr_pieces([HUANGJIU_OCR])
+    assert "8.53亿" in stored and "会稽山超越古越龙山" in stored
+    assert "未成年人请勿饮酒" not in stored and "主播" not in stored and "新经济观察" not in stored
 
 
 def test_group_notices_and_status_bar_are_not_anyones_words():
@@ -1468,3 +1457,136 @@ def test_invite_words_and_clock_in_speech_stay():
     text = present_ocr_pieces([speech])
     assert "我想邀请大家一起看看这家公司" in text
     assert "10:30 开盘以后5G板块一直在跌" in text
+
+
+# 文章 24039 的形状：聊天记录页的标题，以及带国旗的网名写进方伟同一段。网名和句子是编的。
+CHAT_RECORD_SHOT = """\
+方伟：这块没有内容分发平台，也有可能突然暴雷
+群聊的聊天记录
+王小明：好奇你对这块的看法，账上大部分是现金了。
+方伟：上面那层的分发权才是竞争
+方伟：没有这一层就只能按存量算
+李四：视频号没引到什么流。
+方伟：你想想你今年听到的新歌
+阿明🇫🇷：全域广告改变了很多😂，现在感觉压力很大
+方伟：是不是从短视频里冒出来的
+"""
+
+CHAT_RECORD_TEXT = """\
+方伟：这块没有内容分发平台，也有可能突然暴雷。
+
+王小明：好奇你对这块的看法，账上大部分是现金了。
+
+方伟：上面那层的分发权才是竞争
+没有这一层就只能按存量算。
+
+李四：视频号没引到什么流。
+
+方伟：你想想你今年听到的新歌。
+
+阿明🇫🇷：全域广告改变了很多😂，现在感觉压力很大。
+
+方伟：是不是从短视频里冒出来的。"""
+
+
+def test_group_chat_record_title_is_not_speech():
+    """「群聊的聊天记录」是转发卡片和聊天记录页的标题，单独成行或粘在句尾都不进正文。"""
+    alone = present_ocr_pieces(
+        [
+            "方伟：这块没有内容分发平台，也有可能突然暴雷\n"
+            "群聊的聊天记录\n"
+            "王小明：好奇你对这块的看法。\n"
+        ]
+    )
+    assert "群聊的聊天记录" not in alone
+    assert "方伟：这块没有内容分发平台，也有可能突然暴雷。" in alone
+    assert "王小明：好奇你对这块的看法。" in alone
+
+    dotted = present_ocr_pieces(["群聊的聊天记录。\n方伟：上面那层才是竞争\n"])
+    assert "群聊的聊天记录" not in dotted
+    assert dotted == "方伟：上面那层才是竞争。"
+
+    dated = present_ocr_pieces(["群聊的聊天记录\n2026年10月31日\n方伟：上面那层才是竞争\n"])
+    assert "群聊的聊天记录" not in dated and "2026年10月31日" not in dated
+    header = present_ocr_pieces(["群聊的聊天记录 2026年10月31日\n方伟：上面那层才是竞争\n"])
+    assert header == "方伟：上面那层才是竞争。"
+
+    trailing = present_ocr_pieces(["方伟：也有可能突然暴雷的 群聊的聊天记录。\n"])
+    assert trailing == "方伟：也有可能突然暴雷的。"
+    glued = present_ocr_pieces(["方伟：也有可能突然暴雷的群聊的聊天记录。\n"])
+    assert glued == "方伟：也有可能突然暴雷的。"
+    between = present_ocr_pieces(
+        ["方伟：也有可能突然暴雷的 群聊的聊天记录 王小明：好奇你对这块的看法。\n"]
+    )
+    assert between == "方伟：也有可能突然暴雷的。\n\n王小明：好奇你对这块的看法。"
+
+    mentioned = present_ocr_pieces(["方伟：我把群聊的聊天记录转给了他，他没回。\n"])
+    assert mentioned == "方伟：我把群聊的聊天记录转给了他，他没回。"
+
+
+def test_flag_nickname_on_its_own_line_is_not_folded_into_the_host():
+    """带国旗的网名是另一位。他后面那条方伟不再并进前一段。"""
+    raw = (
+        "方伟：你想想你今年听到的新歌\n"
+        "阿明🇫🇷：全域广告改变了很多😂，现在感觉压力很大\n"
+        "方伟：是不是从短视频里冒出来的\n"
+    )
+    text = present_ocr_pieces([raw])
+    assert text == (
+        "方伟：你想想你今年听到的新歌。\n\n"
+        "阿明🇫🇷：全域广告改变了很多😂，现在感觉压力很大。\n\n"
+        "方伟：是不是从短视频里冒出来的。"
+    )
+    assert present_stored_ocr(text) == text
+    # 聊天记录页上绿气泡写的是 Rey，仍是方伟，不跟前一位并成一段。
+    as_rey = present_ocr_pieces(
+        [
+            "方伟：你想想你今年听到的新歌\n"
+            "阿明🇫🇷：全域广告改变了很多\n"
+            "Rey：是不是从短视频里冒出来的\n"
+        ]
+    )
+    assert as_rey == (
+        "方伟：你想想你今年听到的新歌。\n\n"
+        "阿明🇫🇷：全域广告改变了很多。\n\n"
+        "方伟：是不是从短视频里冒出来的。"
+    )
+
+
+def test_mid_paragraph_speaker_change_splits_utterances():
+    """已经粘成一行的「方伟：… 网名：… 方伟：…」按冒号切开。只提到名字、没有冒号的不切。"""
+    raw = "方伟：你想想你今年听到的新歌 阿明🇫🇷：全域广告改变了很多😂 方伟：是不是从短视频里冒出来的"
+    assert present_ocr_pieces([raw]) == (
+        "方伟：你想想你今年听到的新歌。\n\n"
+        "阿明🇫🇷：全域广告改变了很多😂。\n\n"
+        "方伟：是不是从短视频里冒出来的。"
+    )
+    mention = present_ocr_pieces(
+        ["方伟：你跟阿明🇫🇷聊过，他觉得压力很大。\n方伟：先说 结论：再看数字。\n"]
+    )
+    assert mention == "方伟：你跟阿明🇫🇷聊过，他觉得压力很大。\n先说 结论：再看数字。"
+    assert "阿明🇫🇷：" not in mention
+    assert not any(line.startswith("结论：") for line in mention.splitlines())
+
+
+def test_chat_record_shot_stays_an_image_and_models_keep_speakers():
+    """24039：阅读页是原图。标题不进模型输入，国旗网名单独成轮，下一条仍是方伟。"""
+    assert present_ocr_pieces([CHAT_RECORD_SHOT]) == CHAT_RECORD_TEXT
+    assert present_stored_ocr(CHAT_RECORD_TEXT) == CHAT_RECORD_TEXT
+    digest = "ab" * 32
+    html = str(render_body("见图。\n\n![](a.png)\n", {"a.png": f"/media/fangwei-zsxq/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: CHAT_RECORD_SHOT})
+    assert page == html
+    assert f'id="{image_anchor(digest)}"' in page
+    assert f'src="/media/fangwei-zsxq/ab/{digest}.png"' in page
+    assert "ocr-reading" not in page and "ocr-link" not in page and '<span class="who">' not in page
+    assert "群聊的聊天记录" not in page and "你想想你今年听到的新歌" not in page
+    assert "阿明" not in page
+    model = append_ocr("见图。", CHAT_RECORD_TEXT)
+    assert "【图片里的字】" in model
+    assert "群聊的聊天记录" not in model
+    song = model.index("你想想你今年听到的新歌")
+    flag = model.index("阿明🇫🇷")
+    nxt = model.index("是不是从短视频里冒出来的")
+    assert song < flag < nxt
+    assert "上面那层的分发权才是竞争" in model
