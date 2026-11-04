@@ -240,10 +240,178 @@ def present_zsxq_qa(text: str) -> str:
     return rewritten
 
 
+# 句读被切到下一段（或图后面那一行）的开头。开引号不算，那是下一段自己的。
+_LEAD_PUNCT = re.compile(r"^[，。、；：！？,.;:!?…]+")
+_ONLY_OPEN = re.compile(r"^[“\"「『‘]+$")
+_PAGE_DIGIT = re.compile(r"^\d{1,3}$")
+_YEAR_LEAD = re.compile(r"^(\d+)\s*年")
+_ENDED = re.compile(r"[。！？!?]$")
+_IMAGE_LINE = re.compile(r"^!\[[^\]]*\]\([^)]*\)\s*$")
+_LIST_LINE = re.compile(r"^(?:[-*+]\s|\d+[.)、]\s)")
+_STOP_LINE = re.compile(r"^(?:#{1,6}\s|>|\||</?[A-Za-z]|```|~~~)")
+_HR_LINE = re.compile(r"^[-*_]{3,}$")
+
+
+def _fence_mask(lines: list[str]) -> list[bool]:
+    mask = [False] * len(lines)
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if fence:
+            mask[index] = True
+            if stripped.startswith(fence):
+                fence = None
+            continue
+        if stripped.startswith(("```", "~~~")):
+            fence = stripped[:3]
+            mask[index] = True
+    return mask
+
+
+def _is_image_line(line: str) -> bool:
+    return _IMAGE_LINE.match(line.strip()) is not None
+
+
+def _is_prose_line(line: str, fenced: bool) -> bool:
+    if fenced:
+        return False
+    stripped = line.strip()
+    if not stripped or _is_image_line(stripped):
+        return False
+    if _STOP_LINE.match(stripped) or _LIST_LINE.match(stripped) or _HR_LINE.match(stripped):
+        return False
+    return True
+
+
+def _delete_line(lines: list[str], mask: list[bool], index: int) -> None:
+    """删掉这一行。夹在两个空行中间时再收掉多出来的那一个空行。"""
+    lines.pop(index)
+    mask.pop(index)
+    if 0 < index < len(lines) and not lines[index].strip() and not lines[index - 1].strip():
+        lines.pop(index)
+        mask.pop(index)
+
+
+def _earlier_prose(lines: list[str], mask: list[bool], index: int) -> int | None:
+    """往前找能接句读的那一行。标题、列表、代码、表格挡住；空行和图片可以跨过。"""
+    cursor = index - 1
+    while cursor >= 0:
+        if _is_prose_line(lines[cursor], mask[cursor]):
+            return cursor
+        if lines[cursor].strip() and not _is_image_line(lines[cursor]):
+            return None
+        cursor -= 1
+    return None
+
+
+def _only_blanks_between(lines: list[str], earlier: int, index: int) -> bool:
+    """两行之间只有空行（或紧挨着）才并成一段。隔着图片就只挪句读，字留在图后面。"""
+    return all(not lines[cursor].strip() for cursor in range(earlier + 1, index))
+
+
+def _next_prose(lines: list[str], mask: list[bool], index: int) -> int | None:
+    cursor = index + 1
+    while cursor < len(lines):
+        if lines[cursor].strip() and not _is_image_line(lines[cursor]):
+            if not _is_prose_line(lines[cursor], mask[cursor]):
+                return None
+            return cursor
+        cursor += 1
+    return None
+
+
+def rejoin_broken_paragraphs(text: str) -> str:
+    """收掉切到下一段开头的句读，以及单独成段的页码。
+
+    公众号按段切开（图后面常常只隔一个硬换行）时，逗号、句号会落到下一段开头，
+    读起来像「，巧克力…」（文章 24040）。同一段里的硬换行，以及只隔了空行的下一段，
+    整句接回去。隔着图片时，句读挪到上一段末尾，剩下的字留在图后面。单独成段的
+    一到三位数字，和下一段拼得成「1988 年」这种年份，就是被拆开的首位；拼不成、
+    上一段又已经收了句，则是页脚页码，不留。标题、列表、代码块、表格不跨。再跑一遍不变。
+    """
+    raw = text or ""
+    if not raw:
+        return ""
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n").replace("\ufffc", "")
+    lines = normalized.split("\n")
+    mask = _fence_mask(lines)
+    dirty = normalized != raw
+    index = 0
+    while index < len(lines):
+        if not _is_prose_line(lines[index], mask[index]):
+            index += 1
+            continue
+        stripped = lines[index].strip()
+        own = (index == 0 or not lines[index - 1].strip()) and (
+            index == len(lines) - 1 or not lines[index + 1].strip()
+        )
+        if own and _PAGE_DIGIT.fullmatch(stripped):
+            nxt = index + 1
+            while nxt < len(lines) and not lines[nxt].strip():
+                nxt += 1
+            if nxt < len(lines) and _is_prose_line(lines[nxt], mask[nxt]):
+                year = _YEAR_LEAD.match(lines[nxt].lstrip())
+                if year:
+                    combined = stripped + year.group(1)
+                    if re.fullmatch(r"(?:19|20)\d{2}", combined):
+                        lines[nxt] = combined + lines[nxt].lstrip()[year.end(1) :]
+                        _delete_line(lines, mask, index)
+                        dirty = True
+                        continue
+            earlier = _earlier_prose(lines, mask, index)
+            next_text = lines[nxt].lstrip() if nxt < len(lines) else ""
+            if (
+                earlier is not None
+                and _ENDED.search(lines[earlier].rstrip())
+                and not next_text[:1].isdigit()
+            ):
+                _delete_line(lines, mask, index)
+                dirty = True
+                continue
+            index += 1
+            continue
+        if _ONLY_OPEN.fullmatch(stripped):
+            nxt = _next_prose(lines, mask, index)
+            if nxt is not None:
+                lines[nxt] = stripped + lines[nxt].lstrip()
+                _delete_line(lines, mask, index)
+                dirty = True
+                continue
+            index += 1
+            continue
+        lead = _LEAD_PUNCT.match(stripped)
+        if lead:
+            earlier = _earlier_prose(lines, mask, index)
+            if earlier is None:
+                index += 1
+                continue
+            punct = lead.group(0)
+            rest = stripped[len(punct) :].lstrip()
+            previous = lines[earlier].rstrip()
+            if punct and previous.endswith(punct):
+                punct = ""
+            if _only_blanks_between(lines, earlier, index):
+                lines[earlier] = previous + punct + rest
+                _delete_line(lines, mask, index)
+            else:
+                lines[earlier] = previous + punct
+                if rest:
+                    lines[index] = rest
+                    index += 1
+                else:
+                    _delete_line(lines, mask, index)
+            dirty = True
+            continue
+        index += 1
+    if not dirty:
+        return raw
+    return "\n".join(lines)
+
+
 def present_article_text(text: str) -> str:
-    """正文进阅读页前：问答标题收成对话，旧标签统一，再改错字。"""
+    """正文进阅读页前：问答标题收成对话，旧标签统一，改错字，再接上被切开的句读。"""
     text = present_zsxq_qa(text or "")
-    return polish_display_text(normalize_dialogue_labels(text))
+    return rejoin_broken_paragraphs(polish_display_text(normalize_dialogue_labels(text)))
 
 
 # 屏幕折行大约 10–24 个汉字宽。更长的是已经写完的一段，不能再往下粘。

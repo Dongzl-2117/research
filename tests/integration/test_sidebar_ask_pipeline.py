@@ -177,10 +177,34 @@ def test_sidebar_long_input_and_supplied_history_have_original_single_turn_seman
 def test_sidebar_async_submission_uses_original_job_executor(conn, settings, monkeypatch, model):
     _article(conn, 'async')
     submitted = []
+
+    def capture(*args, **kwargs):
+        submitted.append((args, kwargs))
+
+    def assert_submission(identity):
+        args, kwargs = submitted[-1]
+        assert args[0] is ask_module.run_job and args[-1] == identity
+        # 主线尚无令牌列时 JSON 读取为 NULL；#224 的异步领取必须传入刚存储的同一令牌。
+        token = conn.execute(
+            "SELECT to_jsonb(a)->>'run_token' AS token FROM llm_answers a WHERE id=%s", (identity,),
+        ).fetchone()['token']
+        if token:
+            assert kwargs == {'run_token': token}
+        else:
+            assert kwargs == {}
+        return token
+
     monkeypatch.setattr(ask_module, '_inline', lambda: False)
-    monkeypatch.setattr(ask_module._executor, 'submit', lambda *args: submitted.append(args))
+    monkeypatch.setattr(ask_module._executor, 'submit', capture)
     with TestClient(create_app(settings)) as client:
         first = client.post('/api/v1/ask', json={'question': '渠道优势', 'source': 'fangwei-mp'}).json()
-    assert first['status'] == 'running' and first['citations']
-    assert len(submitted) == 1 and submitted[0][0] is ask_module.run_job
-    assert submitted[0][-1] == first['id']
+        assert first['status'] == 'running' and first['citations']
+        assert len(submitted) == 1
+        first_token = assert_submission(first['id'])
+        conn.execute("UPDATE llm_answers SET status='error' WHERE id=%s", (first['id'],))
+        conn.commit()
+        retried = client.post(f"/ask/{first['id']}/retry", follow_redirects=False)
+        assert retried.status_code == 303 and len(submitted) == 2
+        retry_token = assert_submission(first['id'])
+        if first_token:
+            assert retry_token and retry_token != first_token
