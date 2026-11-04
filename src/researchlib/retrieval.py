@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from researchlib import embeddings
-from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE
+from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE, current_chunk_sql
 from researchlib.mentions import (
     CompanyMatcher,
     company_rules,
@@ -611,7 +611,8 @@ def preset_query(query: Query) -> Query:
 _SELECT_COLUMNS = """
 c.article_id, c.ord, c.heading, c.body, c.lang, c.anchor,
 CASE WHEN c.lang = 'zh' THEN coalesce(
-  nullif((SELECT tr.title_zh FROM article_translations tr WHERE tr.article_id = c.article_id), ''), a.title
+  nullif((SELECT tr.title_zh FROM article_translations tr WHERE tr.article_id = c.article_id
+          AND tr.content_hash=a.content_hash), ''), a.title
 ) ELSE a.title END AS title,
 a.source_id, a.published_at
 """
@@ -626,7 +627,8 @@ def _article_match(tsq: str, *, ocr: bool = False) -> str:
     """
     parts = [
         f"SELECT ai.id FROM articles ai WHERE ai.search_tsv @@ {tsq}",
-        f"SELECT tq.article_id FROM article_translations tq WHERE tq.search_tsv @@ {tsq}",
+        f"SELECT tq.article_id FROM article_translations tq JOIN articles ta ON ta.id=tq.article_id"
+        f" WHERE tq.content_hash=ta.content_hash AND tq.search_tsv @@ {tsq}",
     ]
     if ocr:
         parts.append(f"SELECT oc.article_id FROM article_chunks oc WHERE oc.lang = 'ocr' AND oc.search_tsv @@ {tsq}")
@@ -634,24 +636,8 @@ def _article_match(tsq: str, *, ocr: bool = False) -> str:
 
 
 def _prefer_translation(rows: list[dict], phrases: list[str] | None = None) -> list[dict]:
-    """同一篇英文文章的原文块和中文译文块都召回时，只留译文块，免得同一段内容占两份名额。
-
-    phrases：引号里要原样出现的词。原文块里原样写着的留下：英文原句只在原文块里，丢了它，这篇在打分那一步
-    就因为译文块里没有这句被整篇滤掉。线上搜「"Listen to this Update in your podcast player"」，
-    侧栏数到 38 篇，结果一篇没有：语义召回把这些文章译文里「在播客播放器里收听」那块带了进来。
-    """
-    translated = {row["article_id"] for row in rows if row.get("lang") == "zh"}
-    if not translated:
-        return rows
-
-    def quoted(row: dict) -> bool:
-        text = (row.get("heading") or "") + "\n" + (row.get("body") or "")
-        lowered = text.lower()
-        return any(_count(text, lowered, phrase) for phrase in phrases or ())
-
-    return [
-        row for row in rows if row.get("lang") == "zh" or row["article_id"] not in translated or quoted(row)
-    ]
+    """保留逐块证据；同篇有中文不能授权丢掉英文或OCR，重复片段由选择器处理。"""
+    return rows
 
 
 def _phrases(query: Query) -> list[str]:
@@ -701,7 +687,7 @@ def _fts_keys(conn, scope: Scope, tsq: str, params: dict, limit: int, *, company
           SELECT c.article_id, c.ord, c.search_tsv, a.published_at
           FROM article_chunks c
           JOIN articles a ON a.id = c.article_id
-          WHERE {where} AND c.search_tsv @@ {tsq}{extra}
+          WHERE {where} AND {current_chunk_sql()} AND c.search_tsv @@ {tsq}{extra}
           LIMIT %(fts_pool)s
         ) pool
         ORDER BY ts_rank_cd(pool.search_tsv, {tsq}) DESC, pool.published_at DESC NULLS LAST
@@ -737,7 +723,8 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
         conditions.append(_article_match(tsq))
         title_hit = (
             f"(a.title_tsv @@ {tsq} OR a.id IN"
-            f" (SELECT tt.article_id FROM article_translations tt WHERE tt.title_tsv @@ {tsq}))"
+            f" (SELECT tt.article_id FROM article_translations tt JOIN articles ta ON ta.id=tt.article_id"
+            f" WHERE tt.content_hash=ta.content_hash AND tt.title_tsv @@ {tsq}))"
         )
         order = f"{title_hit} DESC, a.published_at DESC NULLS LAST, a.id DESC"
     elif company_ids:
@@ -750,6 +737,7 @@ def _title_keys(conn, query: Query, scope: Scope, limit: int) -> list[tuple[int,
         SELECT a.id,
                CASE WHEN EXISTS (
                  SELECT 1 FROM article_chunks zc WHERE zc.article_id = a.id AND zc.ord = %(zh_first)s
+                   AND {current_chunk_sql('zc')}
                ) THEN %(zh_first)s ELSE 0 END AS first_ord
         FROM articles a
         WHERE {' AND '.join(conditions)}
@@ -771,6 +759,7 @@ def _rows_for_keys(conn, keys: list[tuple[int, int]]) -> list[dict]:
         FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
         JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
         JOIN articles a ON a.id = c.article_id
+        WHERE {current_chunk_sql()}
         """,
         ([key[0] for key in keys], [key[1] for key in keys]),
     ).fetchall()
@@ -803,7 +792,8 @@ def _company_rows(conn, company: dict, scope: Scope, per_year: int):
               FROM article_mentions m
               JOIN articles a ON a.id = m.article_id
               JOIN article_chunks c ON c.article_id = a.id
-              WHERE m.company_id = %(company)s {depth_filter} AND {where} AND c.search_tsv @@ {tsq}
+              WHERE m.company_id = %(company)s {depth_filter} AND {where}
+                AND {current_chunk_sql()} AND c.search_tsv @@ {tsq}
             ) ranked
             WHERE rn <= %(per_year)s
             """,
@@ -824,7 +814,8 @@ def _leading_rows(conn, scope: Scope, limit: int):
         SELECT {_SELECT_COLUMNS}
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
-        WHERE {where} AND (c.ord < 2 OR (c.ord >= %(zh_first)s AND c.ord < %(zh_first)s + 2))
+        WHERE {where} AND {current_chunk_sql()}
+          AND (c.ord < 2 OR (c.ord >= %(zh_first)s AND c.ord < %(zh_first)s + 2))
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC, c.ord
         LIMIT %(lead_limit)s
         """,
@@ -840,7 +831,7 @@ def _article_rows(conn, scope: Scope):
         SELECT {_SELECT_COLUMNS}
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
-        WHERE {where}
+        WHERE {where} AND {current_chunk_sql()}
         ORDER BY c.ord
         """,
         params,
@@ -950,7 +941,8 @@ def _vector_filter(scope: Scope, company_ids: list[int] | None) -> tuple[str, di
     return where, params
 
 
-def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, company_ids: list[int] | None = None):
+def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, company_ids: list[int] | None = None,
+                 model: str | None = None):
     """范围内和问题最相近的块。
 
     范围条件不能和按距离排序写进同一条查询：文章表的「可见」条件是 jsonb 表达式，没有统计信息，规划器按默认
@@ -960,26 +952,35 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
     公司的文章）再逐块算，窄范围逐块算本来就快。只问一篇或一个目录时直接逐块算。
     """
     where, params = _vector_filter(scope, company_ids)
+    params['embedding_model'] = embeddings.model_name() if model is None else model
     if scope.article_id is None and scope.tree_id is None:
         pool = limit * ANN_OVERFETCH
         embeddings.tune_search(conn, pool)
         near = conn.execute(
             f"""
-            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
+            SELECT e.article_id, e.ord, e.text_hash, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
             FROM chunk_embeddings e
+            WHERE e.model=%(embedding_model)s
             ORDER BY e.embedding <=> %(qv)s::{kind}
             LIMIT %(ann_pool)s
             """,
-            {"qv": vector, "ann_pool": pool},
+            {"qv": vector, "ann_pool": pool, 'embedding_model': params['embedding_model']},
         ).fetchall()
         allowed = {
-            row["id"]
+            (row['article_id'], row['ord']): row['text_hash']
             for row in conn.execute(
-                f"SELECT a.id FROM articles a WHERE a.id = ANY(%(ann_ids)s) AND {where}",
-                {**params, "ann_ids": sorted({row["article_id"] for row in near})},
+                f"SELECT e.article_id,e.ord,e.text_hash"
+                " FROM unnest(%(ann_ids)s::bigint[],%(ann_ords)s::int[]) AS k(article_id,ord)"
+                " JOIN article_chunks c ON c.article_id=k.article_id AND c.ord=k.ord"
+                " JOIN articles a ON a.id=c.article_id"
+                " JOIN chunk_embeddings e ON e.article_id=c.article_id AND e.ord=c.ord"
+                f" WHERE {where} AND {embeddings.current_embedding_sql()}",
+                {**params, 'ann_ids': [row['article_id'] for row in near], 'ann_ords': [row['ord'] for row in near]},
             ).fetchall()
         }
-        kept = sorted((row for row in near if row["article_id"] in allowed), key=lambda row: -float(row["sim"]))
+        kept = sorted((row for row in near if (row['article_id'], row['ord']) in allowed
+                       and row['text_hash'] == allowed[(row['article_id'], row['ord'])]),
+                      key=lambda row: -float(row['sim']))
         if len(kept) >= limit:
             return {(row["article_id"], row["ord"]): float(row["sim"]) for row in kept[:limit]}
     params.update({"qv": vector, "vec_limit": limit})
@@ -987,8 +988,9 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
         f"""
         SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
         FROM chunk_embeddings e
+        JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord
         JOIN articles a ON a.id = e.article_id
-        WHERE {where}
+        WHERE {where} AND {embeddings.current_embedding_sql()}
         ORDER BY e.embedding <=> %(qv)s::{kind}
         LIMIT %(vec_limit)s
         """,
@@ -1007,16 +1009,21 @@ def semantic_candidates(
     kind = embeddings.ready(conn)
     if kind is None:
         return rows, {}
+    model = embeddings.model_name()
     vector = embeddings.query_vector(query.raw)
     if vector is None:
+        return rows, {}
+    if embeddings.model_name() != model:
         return rows, {}
     literal = embeddings.literal(vector)
     company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
     try:
         with conn.transaction():
-            sims = _vector_lookup(conn, kind, literal, scope, rows, pool, company_ids)
+            sims = _vector_lookup(conn, kind, literal, scope, rows, pool, company_ids, model=model)
     except Exception as exc:  # 向量这一路出错不能拖垮检索：退回只用关键词。
         embeddings.logger.warning("语义召回失败，只用关键词：%s", exc)
+        return rows, {}
+    if embeddings.model_name() != model:
         return rows, {}
     have = {(row["article_id"], row["ord"]) for row in rows}
     new_keys = [key for key in sims if key not in have]
@@ -1024,21 +1031,27 @@ def semantic_candidates(
     return _prefer_translation(rows, _phrases(query)), semantic_scores(sims)
 
 
-def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int]):
-    sims = _vector_keys(conn, kind, literal, scope, pool, company_ids=company_ids or None)
+def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int],
+                   *, model: str | None = None):
+    model = embeddings.model_name() if model is None else model
+    sims = _vector_keys(conn, kind, literal, scope, pool, company_ids=company_ids or None, model=model)
     if company_ids:
-        for key, sim in _vector_keys(conn, kind, literal, scope, VECTOR_OPEN_POOL).items():
+        for key, sim in _vector_keys(conn, kind, literal, scope, VECTOR_OPEN_POOL, model=model).items():
             sims.setdefault(key, sim)
     have = {(row["article_id"], row["ord"]) for row in rows}
     missing = [key for key in have if key not in sims]
     if missing:
         for row in conn.execute(
             f"""
-            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %s::{kind}) AS sim
-            FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
+            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
+            FROM unnest(%(ids)s::bigint[], %(ords)s::int[]) AS k(article_id, ord)
             JOIN chunk_embeddings e ON e.article_id = k.article_id AND e.ord = k.ord
+            JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord
+            JOIN articles a ON a.id=c.article_id
+            WHERE {embeddings.current_embedding_sql()}
             """,
-            (literal, [key[0] for key in missing], [key[1] for key in missing]),
+            {'qv': literal, 'ids': [key[0] for key in missing], 'ords': [key[1] for key in missing],
+             'embedding_model': model},
         ).fetchall():
             sims[(row["article_id"], row["ord"])] = float(row["sim"])
     return sims
@@ -1329,7 +1342,9 @@ def score_rows(
         # 公司：段落里确实谈到了这家公司才算；整篇深入谈的文章再加一点。
         if focus_ids:
             hits = sum(company_hits.get(cid, 0) for cid in focus_ids)
-            if hits == 0 and row["ord"] == 0 and any(title_companies.get(cid) for cid in focus_ids):
+            if hits == 0 and row["ord"] == _ord_range(row['ord'])[0] and any(
+                title_companies.get(cid) for cid in focus_ids
+            ):
                 hits = 1
             if query.overview:
                 if hits == 0:
@@ -1350,7 +1365,7 @@ def score_rows(
                 score *= (1.15, 1.1, 1.05, 0.7)[best]
         elif query.overview:
             # 只有作者或日期范围：开头那块最能代表全文；谈到具体公司的段落比套话更有信息量。
-            score = 1.0 / (1 + row["ord"])
+            score = 1.0 / (1 + row['ord'] - _ord_range(row['ord'])[0])
             if any(name in text for name in deep_names.get(row["article_id"], ())):
                 score *= 1.8
             coverage = 1.0
@@ -1548,8 +1563,14 @@ def retrieve(
         budget = Budget(limit, max(budget.chars, limit * 900), budget.per_article)
     company_rows = load_company_rows(conn)
     query = analyze(conn, question, sources, company_rows=company_rows, expansions=expansions)
+    # 明确的按日概览仍按日期取文章；内容词零命中不能据此改成概览。
+    if (scope.date_from or scope.date_to) and re.fullmatch(
+        r"(?:这一天|当天|这天)(?:大家)?(?:都)?在聊(?:什么|啥)[？?。!！\s]*", query.raw
+    ):
+        query = preset_query(query)
     # 语义检索只用在有具体内容的问题上：「汇总这一天」「库里怎么看腾讯」这类没有可比的语义。
     semantic_ok = not preset and any(t.kind in ("word", "phrase") for t in query.terms)
+    semantic_only = semantic_ok and not any(t.df > 0 for t in query.terms if t.kind in ('word', 'phrase'))
     if preset:
         query = preset_query(query)
     else:
@@ -1557,7 +1578,8 @@ def retrieve(
         kept = [t for t in query.terms if t.kind != "word" or t.df > 0]
         if len(kept) != len(query.terms):
             content = [t for t in kept if t.kind in ("word", "phrase")]
-            query = replace(query, terms=kept, overview=not content)
+            if content or not semantic_ok:
+                query = replace(query, terms=kept, overview=not content)
     effective = scope
     if query.authors and scope.source_ids:
         narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
@@ -1571,13 +1593,15 @@ def retrieve(
         budget = replace(budget, per_article=max(budget.per_article, TREE_PER_ARTICLE))
     per_channel = min(CANDIDATES, max(400, budget.passages * 8))
     rows = _candidates(conn, query, effective, limit=per_channel, enough=budget.passages * 6)
+    if semantic_only:
+        rows = []
     semantic: dict[tuple[int, int], float] = {}
     if semantic_ok and not query.overview:
         rows, semantic = semantic_candidates(conn, query, effective, rows)
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     picked = select(scored, query, budget, sources_by_id)
     narrowed = effective.date_from or effective.date_to or effective.company_id is not None or query.authors
-    if not picked and narrowed and not query.overview:
+    if not picked and narrowed and not query.overview and not semantic_only:
         # 范围已经很窄（某天、某位作者、某家公司）但词没召回到：退回按范围取，像「汇总这一天」。
         fallback = preset_query(query)
         rows = _candidates(conn, fallback, effective, limit=per_channel, enough=budget.passages * 6)
@@ -1685,10 +1709,12 @@ def attach_context(conn, picked: list[Passage], extra_chars: int, *, span: int =
     bodies = {
         (row["article_id"], row["ord"]): row["body"]
         for row in conn.execute(
-            """
+            f"""
             SELECT c.article_id, c.ord, c.body
             FROM unnest(%s::bigint[], %s::int[]) AS k(article_id, ord)
             JOIN article_chunks c ON c.article_id = k.article_id AND c.ord = k.ord
+            JOIN articles a ON a.id=c.article_id
+            WHERE {current_chunk_sql()}
             """,
             ([key[0] for key in wanted], [key[1] for key in wanted]),
         ).fetchall()

@@ -138,6 +138,15 @@ def replace_chunks(conn, article_id: int, title: str, body_md: str) -> int:
 
 # 译文的块和原文的块放在同一张表里，块号从这里起，和原文的块号（最多 MAX_CHUNKS）不会撞。
 TRANSLATION_ORD_BASE = 10000
+
+
+def current_chunk_sql(chunk: str = 'c', article: str = 'a') -> str:
+    """旧译文仍可阅读；检索只接受与当前原文hash相符的中文块。"""
+    return (
+        f"({chunk}.lang <> 'zh' OR EXISTS (SELECT 1 FROM article_translations current_tr"
+        f" WHERE current_tr.article_id={article}.id AND current_tr.lang='zh'"
+        f" AND current_tr.content_hash={article}.content_hash))"
+    )
 _HTML_HEADING = re.compile(r"^\s*<h[1-6]\b", re.I)
 _TAG = re.compile(r"<[^>]+>")
 _SPACE = re.compile(r"[ \t ]+")
