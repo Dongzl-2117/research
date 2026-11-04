@@ -2,7 +2,7 @@
 
 不再单侧删段、收近前缀或切回粗粒度来凑段数；不能对应时不给位置候选。
 完整页面使用 display.article_pairs，读取持久回执并单独报告旧稿不确定性。
-redundant_pairs 仅用于提示可能重复的位置，不授权删除任何源文或译文。
+redundant_pairs 列出展示层可以不显示的重复下标，不改入库的段，也不用来凑段数。
 """
 
 from __future__ import annotations
@@ -206,24 +206,35 @@ def pair_facts(html: str) -> set[str]:
     return {f"w:{word}" for word in _WORDS.findall(text)} | _material_facts(html)
 
 
+def _zh_tokens(html: str) -> set[str]:
+    text = html_lib.unescape(re.sub(r"<[^>]+>", " ", html or ""))
+    return set(re.findall(r"\w+", text))
+
+
 def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
-    """页面上看起来重复的 pair：重复、整句包含、近前缀堆，不管删了会不会丢东西。"""
+    """页面上看起来重复的 pair：重复、整句包含、近前缀堆，不管删了会不会丢东西。
+
+    后出现的那一对，以及被它对照上的先前那一对，都列出来。链接只在后一份上时，
+    先前那份没有独有文字，可以改留带链接的后一份。
+    """
     en_keys = [_leaf_key(pair.en or "") for pair in pairs]
     zh_keys = [_leaf_key(pair.zh or "") for pair in pairs]
     texts = [visible_text(pair.en or "") for pair in pairs]
     redundant: set[int] = set()
-    priors: dict[str, list[tuple[str, str]]] = {}
+    priors: dict[str, list[tuple[str, str, int]]] = {}
     for index, pair in enumerate(pairs):
         if _display_long(pair.en or ""):
             bucket = en_keys[index][:48]
-            repeated = any(
-                same_repeat(prior_en, en_keys[index]) and _same_lineage(prior_zh, zh_keys[index])
-                for prior_en, prior_zh in priors.get(bucket, ())
-            )
-            if repeated:
+            matched = [
+                prior_index
+                for prior_en, prior_zh, prior_index in priors.get(bucket, ())
+                if same_repeat(prior_en, en_keys[index]) and _same_lineage(prior_zh, zh_keys[index])
+            ]
+            if matched:
                 redundant.add(index)
+                redundant.update(matched)
                 continue
-            priors.setdefault(bucket, []).append((en_keys[index], zh_keys[index]))
+            priors.setdefault(bucket, []).append((en_keys[index], zh_keys[index], index))
     for index, short in enumerate(texts):
         if len(short) < 80:
             continue
@@ -243,17 +254,31 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
     return sorted(redundant)
 
 
-def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
-    """诊断可能重复的位置，不授权删除。
+def _exact_zh_is_unique(
+    index: int, en_visible: Sequence[str], zh_tokens: Sequence[set[str]], alive: set[int],
+) -> bool:
+    """英文整段相同，且没有任何一份还留着的译文覆盖这里的中文词。"""
+    mine = en_visible[index]
+    if len(mine) < 80:
+        return False
+    others = [other for other in alive if other != index and en_visible[other] == mine]
+    if not others:
+        return False
+    return not any(zh_tokens[index] <= zh_tokens[other] for other in others)
 
-    这份兼容指标仍用词项和资料交集找相似段，不能证明两份译法含义相同。
-    页面保留全部出现，只有两侧 HTML 完全一致时才作可展开折叠。
+
+def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
+    """展示层可以不显示的重复下标。不改段，也不证明两份译文含义相同。
+
+    词、图片和链接至少还要在别的对上出现一次。英文整段相同、中文却各有独有说法时，两对都留。
     """
     candidates = _repeat_candidates(pairs)
     if not candidates:
         return []
     en_facts = [pair_facts(pair.en or "") for pair in pairs]
     visible = [en_facts[index] | _material_facts(pairs[index].zh or "") for index in range(len(pairs))]
+    en_visible = [visible_text(pair.en or "") for pair in pairs]
+    zh_tokens = [_zh_tokens(pair.zh or "") for pair in pairs]
     en_counts: dict[str, int] = {}
     visible_counts: dict[str, int] = {}
     for index, facts in enumerate(en_facts):
@@ -261,13 +286,17 @@ def redundant_pairs(pairs: Sequence[BilingualPair]) -> list[int]:
             en_counts[fact] = en_counts.get(fact, 0) + 1
         for fact in visible[index]:
             visible_counts[fact] = visible_counts.get(fact, 0) + 1
+    alive = set(range(len(pairs)))
     drop: list[int] = []
     for index in sorted(candidates, reverse=True):
+        if _exact_zh_is_unique(index, en_visible, zh_tokens, alive):
+            continue
         if any(en_counts.get(fact, 0) < 2 for fact in en_facts[index]):
             continue
         if any(visible_counts.get(fact, 0) < 2 for fact in visible[index]):
             continue
         drop.append(index)
+        alive.remove(index)
         for fact in en_facts[index]:
             en_counts[fact] -= 1
         for fact in visible[index]:
@@ -311,11 +340,11 @@ def bilingual_pairs(
 
     等长仍不证明语义对应。完整页面用 article_pairs 读取回执并展示可信度。
     """
-    from researchlib.translate.provenance import leaf_problem
+    from researchlib.translate.provenance import positional_numbers_conflict
 
     blocks = _blocks_for_pairs(original_html, zh_html)
     if blocks is None or len(blocks[0]) != len(blocks[1]):
         return None
-    if any(leaf_problem(a.html, b.html) == "numbers" for a, b in zip(*blocks, strict=True)):
+    if positional_numbers_conflict([a.html for a in blocks[0]], [b.html for b in blocks[1]]):
         return None
     return pairs_from_blocks(*blocks)

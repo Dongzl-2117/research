@@ -1,5 +1,6 @@
 """独立于翻译叶子计数的合成回归：原文内容、数字、结构和引用不能因对照丢失。"""
 
+import re
 from html.parser import HTMLParser
 
 import pytest
@@ -156,17 +157,17 @@ def _paragraphs(count: int, *, offset: int = 1) -> tuple[str, str]:
     )
 
 
-def test_repeated_paragraph_is_collapsible_without_losing_its_occurrence():
-    """只折叠完全相同的整对，出现位置及内容仍保留，其余逐段并排。"""
+def test_repeated_paragraph_is_shown_once_without_falling_back():
+    """同一段长英文隔开再出现时只留一份。原文的词还在，也不整页分开。"""
     en, zh = _paragraphs(40)
     source = en + _PARA_EN.format(index=7)
     translated = zh + _PARA_ZH.format(index=7)
     view = article_pairs(source, translated)
     assert view.notice == ""
-    assert len(view.pairs) == 41
-    assert view.pairs[-1].repeat_of == 6
+    assert len(view.pairs) == 40
+    assert _project(view.pairs, "en").count("Paragraph 7 explains") == 1
     assert content_gaps(source, _project(view.pairs, "en")) == 0
-    assert content_gaps(translated, "".join(pair.en + (pair.zh or "") for pair in view.pairs)) == 0
+    assert "第 7 段" in "".join(pair.zh or "" for pair in view.pairs)
 
 
 def test_near_duplicate_that_carries_unique_words_is_kept_without_falling_back():
@@ -206,15 +207,321 @@ def test_soft_dedupe_that_would_lose_text_is_ignored(monkeypatch):
     assert content_gaps(en, _project(view.pairs, "en")) == 0
 
 
-def test_heading_and_repeated_occurrences_both_survive_display():
-    """标题保留，完全相同的重复整对标记折叠而不删除。"""
+def test_heading_and_repeated_occurrences_keep_the_heading_and_one_copy():
+    """标题保留。完全相同的长英文只显示一次，不整页分开。"""
     en, zh = _paragraphs(6)
     source = "<h2>Report</h2>" + en + _PARA_EN.format(index=3)
     translated = "<h2>报告</h2>" + zh + _PARA_ZH.format(index=3)
     view = article_pairs(source, translated)
     assert view.notice == ""
     assert "Report" in _project(view.pairs, "en")
-    assert _project(view.pairs, "en").count("Paragraph 3 explains") == 2
-    assert view.pairs[-1].repeat_of == 3
+    assert _project(view.pairs, "en").count("Paragraph 3 explains") == 1
     assert content_gaps(source, _project(view.pairs, "en")) == 0
+
+
+def _squash(value: str) -> str:
+    from html import unescape
+
+    return re.sub(r"\s+", "", unescape(re.sub(r"<[^>]+>", "", value or "")))
+
+
+def test_definition_citation_parentheses_stay_in_fine_pairs():
+    """长定义里的来源注释被换行拆成「) (」。丢掉括号会让物化失败，整页退成两列。"""
+    from researchlib.translate.provenance import materialize
+    from researchlib.translate.segments import segments_of
+
+    sentences = [
+        f"Clause {name} explains distribution costs and the installed base for this quarter."
+        for name in (
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+            "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+            "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey",
+            "xray", "yankee", "zulu", "amber", "birch", "cedar", "dune",
+        )
+    ]
+    body = "<br>".join([
+        "Buyers were new to those devices (",
+        "example.com",
+        ") (",
+        "example.com",
+        ")). The note then explains the installed base.",
+        *sentences,
+        "As the note put it, the experience feels more personal.",
+        "(",
+        "example.com",
+        ") It is a classic move that ties software to the hardware advantage.",
+    ])
+    source = f"<dl><dd>{body}</dd></dl>"
+    assert len(_squash(source)) > 2000
+    rendered = materialize(source)
+    assert _squash(rendered) == _squash(source)
+    leaves = segments_of(source)
+    translated = "".join(
+        "<p>这一句说明分销成本和已有用户，单独成对，不写数字。</p>" for _index in range(len(leaves))
+    )
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == len(leaves) > 2
+    shown = _squash(_project(view.pairs, "en"))
+    assert "(example.com)(example.com)" in shown
+    assert "personal.”(example.com)" in shown or "personal.(example.com)" in shown
+    assert max(len(_squash(pair.en)) for pair in view.pairs) < 2000
+
+
+def test_localized_numbers_do_not_collapse_equal_pairs():
+    """300,000 写成 30万、100% 写成百分之百，不能把已经对齐的段落退成整页两列。"""
+    facts = [
+        ("Services revenue reached $300,000 in the holiday quarter and the base kept paying.",
+         "服务收入在假日季度达到 30 万美元，已有用户继续付费。"),
+        ("The success rate was 100% across every region in this short note.",
+         "这篇短文里各地区的成功率是百分之百。"),
+        ("China sales were $69.1 billion during the quarter and missed the prior forecast.",
+         "该季度中国销售额为 691 亿美元，低于原先的预期。"),
+        ("September 9, 2026 is the date written beside the foldable phone screenshot.",
+         "折叠屏那张图旁边写的日期是 2026 年 9 月 9 日。"),
+    ]
+    filler = (
+        "Distribution costs and the installed base stay in this sentence about the quarter.",
+        "这句只讲分销成本和已有用户，没有需要换算的数字。",
+    )
+    en_bits = [en for en, _zh in facts] + [filler[0]] * 8
+    zh_bits = [zh for _en, zh in facts] + [filler[1]] * 8
+    source = "".join(f"<p>{bit}</p>" for bit in en_bits)
+    translated = "".join(f"<p>{bit}</p>" for bit in zh_bits)
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    # 四条带数字的句子各留一对；重复的夹层只显示一次，不因译法把整页分开。
+    assert len(view.pairs) == 5
+    assert all(pair.en and pair.zh for pair in view.pairs)
+    shown = _project(view.pairs, "en")
+    for snippet in ("300,000", "100%", "69.1", "September 9, 2026", filler[0]):
+        assert snippet in shown
+
+
+def test_reordered_numeric_anchors_still_use_separate_columns():
+    """同一批数字整段对调时，仍然不能按位置硬配。"""
+    source = "".join(
+        f"<p>Topic {index} explains the independent market mechanism and customer retention.</p>"
+        for index in range(6)
+    )
+    translated = "".join(
+        f"<p>议题{index}说明独立的市场机制和客户留存。</p>" for index in reversed(range(6))
+    )
+    view = article_pairs(source, translated)
+    assert view.notice
+    assert len(view.pairs) == 2
+    assert all(not (pair.en and pair.zh) for pair in view.pairs)
+
+
+_LONG = (
+    "Distribution costs and the installed base shape how this platform keeps its advantage "
+    "across regions through the whole year."
+)
+_LONG_ZH = "分销成本和已有用户决定这个平台怎样在各地保住优势，这一句不写数字。"
+
+
+def _visible(html: str) -> str:
+    from html import unescape
+
+    text = unescape(re.sub(r"<[^>]+>", " ", html or ""))
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _exact_long_groups(htmls: list[str], *, min_len: int = 80) -> int:
+    groups: dict[str, int] = {}
+    for html in htmls:
+        text = _visible(html)
+        if len(text) < min_len:
+            continue
+        groups[text] = groups.get(text, 0) + 1
+    return sum(1 for count in groups.values() if count >= 2)
+
+
+def _contain_long_groups(htmls: list[str], *, min_len: int = 80) -> int:
+    texts = [_visible(html) for html in htmls if len(_visible(html)) >= min_len]
+    parent = list(range(len(texts)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for later, after in enumerate(texts):
+        for earlier in range(later):
+            before = texts[earlier]
+            if before != after and (before in after or after in before):
+                union(earlier, later)
+    sizes: dict[int, int] = {}
+    for index in range(len(texts)):
+        root = find(index)
+        sizes[root] = sizes.get(root, 0) + 1
+    return sum(1 for count in sizes.values() if count >= 2)
+
+
+def _near_prefix_groups(htmls: list[str], *, min_len: int = 80) -> int:
+    texts = [_visible(html) for html in htmls if len(_visible(html)) >= min_len]
+    parent = list(range(len(texts)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    def shared(left: str, right: str) -> int:
+        count = 0
+        for char_left, char_right in zip(left, right, strict=False):
+            if char_left != char_right:
+                break
+            count += 1
+        return count
+
+    for later, after in enumerate(texts):
+        for earlier in range(later):
+            before = texts[earlier]
+            short, long = (before, after) if len(before) <= len(after) else (after, before)
+            if not short or short in long or (len(long) - len(short)) / len(long) > 0.12:
+                continue
+            if shared(short, long) >= len(short) * 0.75:
+                union(earlier, later)
+    sizes: dict[int, int] = {}
+    for index in range(len(texts)):
+        root = find(index)
+        sizes[root] = sizes.get(root, 0) + 1
+    return sum(1 for count in sizes.values() if count >= 2)
+
+
+def test_display_hides_exact_long_english_even_when_wrappers_differ():
+    """21118 的形状：同一句在引用和正文里各出现，HTML 外壳不同，页面只留一份。"""
+    body = _LONG
+    source = (
+        f"<blockquote><p>{body}</p></blockquote>"
+        f"<p>A bridge sentence sits between the copies and stays.</p><p>{body}</p>"
+    )
+    translated = f"<blockquote><p>{_LONG_ZH}</p></blockquote><p>夹层留下。</p><p>{_LONG_ZH}</p>"
+    view = article_pairs(source, translated)
+    shown = [pair.en for pair in view.pairs]
+    assert view.notice == ""
+    assert _exact_long_groups(shown) == 0
+    assert _contain_long_groups(shown) == 0
+    assert sum(body[:24] in pair.en for pair in view.pairs) == 1
+    assert any("bridge sentence" in pair.en for pair in view.pairs)
+    assert content_gaps(source, _project(view.pairs, "en")) == 0
+
+
+def test_display_hides_three_exact_copies_and_keeps_every_anchor():
+    body = _LONG
+    source = "".join(f'<p id="p-{index}">{body}</p>' for index in (1, 2, 3))
+    translated = "".join(f'<p id="p-{index}">{_LONG_ZH}</p>' for index in (1, 2, 3))
+    view = article_pairs(source, translated)
+    html = "".join(pair.en + (pair.zh or "") for pair in view.pairs)
+    assert view.notice == ""
+    assert len(view.pairs) == 1
+    assert view.pairs[0].anchor == "p-1"
+    assert _exact_long_groups([pair.en for pair in view.pairs]) == 0
+    assert 'id="p-2"' in html and 'id="p-3"' in html
+
+
+def test_display_keeps_the_linked_copy_when_the_earlier_text_has_no_link():
+    """近前缀：先出现的一份只有括号里的域名，后一份才有资料链接。留带链接的那份。"""
+    plain = f"<p>{_LONG} ( example.com ).</p>"
+    linked = f'<p>{_LONG} (<a href="https://example.invalid/report">example.com</a>).</p>'
+    bridge = "<p>The bridge between the copies is its own sentence and must stay put.</p>"
+    source = plain + bridge + linked
+    translated = f"<p>{_LONG_ZH}</p><p>夹层留下。</p><p>{_LONG_ZH}</p>"
+    view = article_pairs(source, translated)
+    shown = [pair.en for pair in view.pairs]
+    assert view.notice == ""
+    assert _exact_long_groups(shown) == 0
+    assert _near_prefix_groups(shown) == 0
+    assert 'href="https://example.invalid/report"' in _project(view.pairs, "en")
+    assert any("bridge between" in pair.en for pair in view.pairs)
+    assert content_gaps(source, _project(view.pairs, "en")) == 0
+
+
+def test_display_moves_a_contained_short_link_onto_the_longer_paragraph():
+    """短句整句包含在后文里，短句上有一条长段没有的链接。链接留在长段，短句不再单列。"""
+    short = (
+        "Services revenue has grown across the installed base and now carries the margin "
+        "for this platform."
+    )
+    tail = "A trailing note about buybacks appears only in the combined paragraph and must stay visible there."
+    long = f"{short} {tail}"
+    short_html = short.replace("installed base", '<a href="/articles/990001">installed base</a>', 1)
+    source = f"<p>{short_html}</p><p>The China aside is not a copy of either services paragraph.</p><p>{long}</p>"
+    translated = (
+        "<p>服务收入靠已有用户撑起这个平台的利润。</p>"
+        "<p>夹层讲的是别的事。</p>"
+        "<p>服务收入靠已有用户撑起这个平台的利润。回购只写在长段里。</p>"
+    )
+    view = article_pairs(source, translated)
+    shown = [pair.en for pair in view.pairs]
+    assert view.notice == ""
+    assert _contain_long_groups(shown) == 0
+    assert _exact_long_groups(shown) == 0
+    assert 'href="/articles/990001"' in _project(view.pairs, "en")
+    assert any("buybacks" in pair.en for pair in view.pairs)
+    assert any("China aside" in pair.en for pair in view.pairs)
+    assert sum("Services revenue has grown" in pair.en for pair in view.pairs) == 1
+    assert content_gaps(source, _project(view.pairs, "en")) == 0
+
+
+def test_contained_short_keeps_chinese_that_the_longer_translation_lacks():
+    """短句被长段包含时不再单列，但这句译文里多出来的说法要留在长段下面。"""
+    short = _LONG
+    long = f"{_LONG} A trailing note about buybacks appears only on the longer copy."
+    source = f"<p>{short}</p><p>{long}</p>"
+    translated = (
+        "<p>分销成本和已有用户决定优势。甲独有的补充。</p>"
+        "<p>分销成本和已有用户决定优势。长段改写了后半，并写上回购。</p>"
+    )
+    view = article_pairs(source, translated)
+    zh = "".join(pair.zh or "" for pair in view.pairs)
+    assert view.notice == ""
+    assert _contain_long_groups([pair.en for pair in view.pairs]) == 0
+    assert sum("Distribution costs and the installed base shape" in pair.en for pair in view.pairs) == 1
+    assert "buybacks" in _project(view.pairs, "en")
+    assert "甲独有的补充" in zh and "回购" in zh
+
+
+def test_distinct_long_paragraphs_stay_one_to_one():
+    """22209 的形状：长英文各不相同，软去重一对都不收，也不整页分开。"""
+    sentences = [
+        f"Topic {name} explains a different mechanism of distribution and retention in this note."
+        for name in ("alpha", "bravo", "charlie", "delta", "echo")
+    ]
+    chinese = ("甲句只讲分销。", "乙句只讲留存。", "丙句只讲定价。", "丁句只讲渠道。", "戊句只讲服务。")
+    source = "".join(f"<p>{sentence}</p>" for sentence in sentences)
+    translated = "".join(f"<p>{line}这一句和前后都不重复。</p>" for line in chinese)
+    view = article_pairs(source, translated)
+    assert view.notice == ""
+    assert len(view.pairs) == 5
+    assert _exact_long_groups([pair.en for pair in view.pairs]) == 0
+    assert _contain_long_groups([pair.en for pair in view.pairs]) == 0
+    assert _near_prefix_groups([pair.en for pair in view.pairs]) == 0
+
+
+def test_soft_dedupe_does_not_fail_projection_or_near_duplicate_qa():
+    source = f"<blockquote><p>{_LONG}</p></blockquote><p>{_LONG}</p><p>{_LONG}</p>"
+    translated = f"<blockquote><p>{_LONG_ZH}</p></blockquote><p>{_LONG_ZH}</p><p>{_LONG_ZH}</p>"
+    report = report_from_html(21118, "synthetic", "合成", source, translated)
+    assert report.display_notice == ""
+    assert report.pairs == 1
+    assert report.near_duplicates == ()
+    assert report.giant == ()
+    assert not any(
+        issue.code in {"display-content-loss", "display-fallback-separate", "translation-material-loss"}
+        for issue in report.issues
+    )
 

@@ -139,10 +139,12 @@ def test_ordered_list_item_values_and_inline_protected_code_survive_roundtrip():
     assert view.correspondence == "mapped"
 
 
-def test_exact_duplicate_is_collapsible_but_still_has_both_occurrences():
+def test_exact_duplicate_is_shown_once_and_keeps_the_sentence():
     view = article_pairs(A + A, ZA + ZA)
-    assert len(view.pairs) == 2 and view.pairs[1].repeat_of == 0
-    assert "".join(p.en for p in view.pairs).count("Acme earned") == 2
+    assert view.notice == ""
+    assert len(view.pairs) == 1
+    assert "".join(p.en for p in view.pairs).count("Acme earned") == 1
+    assert "10美元" in (view.pairs[0].zh or "")
 
 
 @pytest.mark.parametrize("bad", [[], "not-an-object", 1, {"schema": 999}])
