@@ -1,0 +1,382 @@
+{
+  "auditBase": "5c19a8e183983181497617c4b9f17c1b33d162eb",
+  "initialMain": "f90b83d5131cad4069dd076dfbfb262573dc8e1d",
+  "verificationMain": "cb234fe18677dc2e74543abfb5fbc85fcf856445",
+  "codeHeads": {
+    "142": "14171c7802b81d5941c1eaf332faf23862628612",
+    "219": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+    "220": "50464e54e3a67a3f5bedaca0fdac06438b133ecc",
+    "223": "0d1dcba9bb9ad2e6bd69a58240e9b43ad7201c7e",
+    "224": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+    "225": "07704b8d9ab30a3c9b1f997799e68672c2871f82"
+  },
+  "items": [
+    {
+      "id": "1",
+      "finding": "回答任务租约、心跳与过期工作者",
+      "status": "code-fixed-draft",
+      "pr": 224,
+      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "result": "领取 token＋心跳＋原子写入；迟到成功和错误不覆盖新轮次",
+      "regression": "轮次竞态、重复领取、心跳集成",
+      "limitations": "不保证已发出的外部请求可取消"
+    },
+    {
+      "id": "2a",
+      "finding": "译文偏好隐藏英文/OCR命中",
+      "status": "code-fixed-draft",
+      "pr": 225,
+      "codeHead": "07704b8d9ab30a3c9b1f997799e68672c2871f82",
+      "result": "同篇英文／OCR／中文均保留进入排序",
+      "regression": "选择器单测、真实英文和OCR入库召回",
+      "limitations": "仍受正常相关度与每篇预算选择"
+    },
+    {
+      "id": "2b",
+      "finding": "零词频问题跳过语义召回",
+      "status": "code-fixed-draft",
+      "pr": 225,
+      "codeHead": "07704b8d9ab30a3c9b1f997799e68672c2871f82",
+      "result": "零词频内容问题保留并尝试语义，不改成无关概览",
+      "regression": "语义调用替身、无向量空结果、日期概览正例",
+      "limitations": "无向量服务则没有语义证据；未验证真实模型质量"
+    },
+    {
+      "id": "3a",
+      "finding": "空或纯数字响应保留英文并complete",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "空标签／数字／标点响应在写回前拒绝",
+      "regression": "纯HTML反例、旧complete和检索块保留",
+      "limitations": "有文字不证明译得正确"
+    },
+    {
+      "id": "3b",
+      "finding": "canonical移除真实文本代码及p-N锚点",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "canonical保留真实p-N目标、代码与正文中的id字样",
+      "regression": "三个不同位置的反例与回执回读",
+      "limitations": "实际输入变化的旧回执仍可能不兼容，不回填"
+    },
+    {
+      "id": "3c",
+      "finding": "del/ins行内标记丢失",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "行内del／ins通过分段、写回与回执",
+      "regression": "纯HTML与入库回读",
+      "limitations": "仅保真，不判断编辑内容语义"
+    },
+    {
+      "id": "3d",
+      "finding": "行内代码空白误拒",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "代码内部空格与换行不压缩",
+      "regression": "materialize、splice、receipt和入库回读",
+      "limitations": "代码本身不翻译"
+    },
+    {
+      "id": "3e",
+      "finding": "div直接英文漏译",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "识别直接文本div，并为混有子块的直接正文补稳定段落",
+      "regression": "纯div、嵌套块、混合前后正文和回执",
+      "limitations": "保留原有块和锚点，不做历史重切"
+    },
+    {
+      "id": "3f",
+      "finding": "非a脚注ID丢失",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "逐段按序核对非a节点的id／name，缺少即拒绝",
+      "regression": "sup／span正例、缺ID拒绝并保留旧行",
+      "limitations": "不猜缺少目标的原位置"
+    },
+    {
+      "id": "3g",
+      "finding": "旧数字表格QA顺序重数标点",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "数字单元格带行列、重数、标点和结构核对",
+      "regression": "完整数字／混合表格正例，换位／缺格／重复／百分号负例",
+      "limitations": "未译数字区块按原样保留，不是通用语义等价判断"
+    },
+    {
+      "id": "3h",
+      "finding": "长代码giant误报",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "巨型代码不计入巨型英文散文，丢代码仍失败",
+      "regression": "长代码正例、缺代码负例",
+      "limitations": "真正巨型散文和完整回退仍如实提示"
+    },
+    {
+      "id": "3i",
+      "finding": "并发中文修订被覆盖",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "最终upsert原子比较整个初始中文行",
+      "regression": "已有行和新插入行两种并发修改、检索块保留",
+      "limitations": "仅防止此请求覆盖较新目标，不处理历史冲突"
+    },
+    {
+      "id": "3j",
+      "finding": "audit指定ID受limit截断",
+      "status": "code-fixed-draft",
+      "pr": 220,
+      "codeHead": "50464e54e3a67a3f5bedaca0fdac06438b133ecc",
+      "result": "audit显式ID不受默认／较小limit截断",
+      "regression": "27个ID配limit1的只读集成",
+      "limitations": "来源条件仍取显式交集；不执行历史修复"
+    },
+    {
+      "id": "3k",
+      "finding": "重检2000行饥饿",
+      "status": "code-fixed-draft",
+      "pr": 220,
+      "codeHead": "50464e54e3a67a3f5bedaca0fdac06438b133ecc",
+      "result": "按发布时间＋ID游标分批推进重检",
+      "regression": "越过健康页、同日期与无日期、停用来源过滤",
+      "limitations": "全扫描可能更慢，但每批内存有界"
+    },
+    {
+      "id": "4",
+      "finding": "不完整重导丢本地图片映射",
+      "status": "code-fixed-draft",
+      "pr": 223,
+      "codeHead": "0d1dcba9bb9ad2e6bd69a58240e9b43ad7201c7e",
+      "result": "缺输入图片或清单时保留未变正文的既有本地映射",
+      "regression": "旧3失败；新文件更新、缺清单、缺文件、真实删除共5集成",
+      "limitations": "不能恢复历史已经丢失的关联或磁盘文件"
+    },
+    {
+      "id": "5a",
+      "finding": "引号OR和否定短语",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "保留引号OR顺序；否定短语不进入正向组",
+      "regression": "引号OR、混合OR、否定短语的旧反例",
+      "limitations": "不支持任意括号查询语言"
+    },
+    {
+      "id": "5b",
+      "finding": "多词作者识别",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "已知多词作者作为完整名字识别",
+      "regression": "Ben Thompson来源作者合成资料",
+      "limitations": "作者来自启用来源配置，不猜陌生人"
+    },
+    {
+      "id": "5c",
+      "finding": "作者和来源交集",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "作者和显式来源取交集，空交集不扩宽",
+      "regression": "关键词和相关原文的空交集集成",
+      "limitations": "显式无效来源沿用既有404规则"
+    },
+    {
+      "id": "5d",
+      "finding": "公司标题消歧",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "汇总不再用标题字面绕过公司消歧",
+      "regression": "水果苹果与公司提及的正反例",
+      "limitations": "公司范围仍沿用提及表，不重做历史实体标注"
+    },
+    {
+      "id": "5e",
+      "finding": "排除条件计数",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "排除条件同时用于列表和计数的干净证据",
+      "regression": "公司无可用证据0计数、另有干净块正例",
+      "limitations": "保留按块排除语义，别处出现排除词不删整篇"
+    },
+    {
+      "id": "5f",
+      "finding": "OR计数",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "文章匹配按组内OR／组间AND求集合",
+      "regression": "公司OR、混合OR、引号OR与尾页",
+      "limitations": "字面和语义集合单独统计"
+    },
+    {
+      "id": "5g",
+      "finding": "跨块计数",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "各词组可来自当前原文、译文、OCR不同块",
+      "regression": "原文＋图、分散段落和当前译文集成",
+      "limitations": "旧hash译文不参与证据"
+    },
+    {
+      "id": "5h",
+      "finding": "计数集合并集",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "字面集合精确计数，按文章身份合并分页，语义另报",
+      "regression": "候选外索引＋候选跨图并集；语义重叠只计一次",
+      "limitations": "语义和部分命中仍受候选窗口限制"
+    },
+    {
+      "id": "5i",
+      "finding": "越界分页钳位后空页",
+      "status": "code-fixed-draft",
+      "pr": 142,
+      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "result": "HTML页码钳位后重取正确一页并限制SQL整数",
+      "regression": "999页与最大bigint页码集成",
+      "limitations": "offset不提供跨数据变动的冻结快照"
+    },
+    {
+      "id": "6a",
+      "finding": "数字小数边界10%/10.5%",
+      "status": "code-fixed-draft",
+      "pr": 224,
+      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "result": "引用完整小数匹配，10%不冒充10.5%",
+      "regression": "数字引用单测与原有反馈集成",
+      "limitations": "规则提示复核，不证明事实成立"
+    },
+    {
+      "id": "6b",
+      "finding": "数字单位15%/15x",
+      "status": "code-fixed-draft",
+      "pr": 224,
+      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "result": "引用数字连单位核对，15%不冒充15x",
+      "regression": "单位差异负例与等值字面正例",
+      "limitations": "不是所有金融单位的语义换算器"
+    },
+    {
+      "id": "6c",
+      "finding": "数字正负号",
+      "status": "code-fixed-draft",
+      "pr": 224,
+      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "result": "保留并核对数字正负号",
+      "regression": "正负号、全角／减号边界单测",
+      "limitations": "未验证所有自然语言数词"
+    },
+    {
+      "id": "6d",
+      "finding": "999以上引用编号",
+      "status": "code-fixed-draft",
+      "pr": 224,
+      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "result": "引用编号不再限三位，检查和回链一致",
+      "regression": "1000以上编号检查与HTML回链",
+      "limitations": "仍只接受范围内的有效引用编号"
+    },
+    {
+      "id": "6e",
+      "finding": "停用来源历史回答可读",
+      "status": "code-fixed-draft",
+      "pr": 224,
+      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "result": "停用／不存在来源的历史回答整条隐藏",
+      "regression": "列表、HTML、API及数据库原行保留集成",
+      "limitations": "没有扩展到另行受阻的完整安全审计"
+    },
+    {
+      "id": "6f",
+      "finding": "HTML异步问答阻塞事件循环",
+      "status": "code-fixed-draft",
+      "pr": 224,
+      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "result": "HTML阻塞问答步骤和重试进入线程池",
+      "regression": "事件循环可继续推进的异步回归",
+      "limitations": "没有做真实并发流量压测"
+    },
+    {
+      "id": "6g",
+      "finding": "译文概览排序惩罚",
+      "status": "code-fixed-draft",
+      "pr": 225,
+      "codeHead": "07704b8d9ab30a3c9b1f997799e68672c2871f82",
+      "result": "概览位置以本语言的ord起点计算",
+      "regression": "原文0和译文10000同分正例",
+      "limitations": "不保证中英片段永远获得相同相关度"
+    },
+    {
+      "id": "6h",
+      "finding": "过期或模型不符向量",
+      "status": "code-fixed-draft",
+      "pr": 225,
+      "codeHead": "07704b8d9ab30a3c9b1f997799e68672c2871f82",
+      "result": "ANN、补查、覆盖率核对当前模型／输入hash／译文有效性",
+      "regression": "固定向量的旧hash、错模型、正文变更与查询模型切换",
+      "limitations": "同名模型权重与历史实际输入无法独立证明，不批量重算"
+    },
+    {
+      "id": "6i",
+      "finding": "不完整或错误SSE误成功",
+      "status": "code-fixed-draft",
+      "pr": 224,
+      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "result": "SSE要求主候选stop和DONE，错误或截断拒绝",
+      "regression": "错误帧、坏JSON、length、缺终态、usage正例",
+      "limitations": "未请求真实服务验证兼容性"
+    },
+    {
+      "id": "3l",
+      "finding": "随后主线226的源段标记不稳定",
+      "status": "code-fixed-draft",
+      "pr": 219,
+      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "result": "随后主线226的段落编号改为解析树内稳定标识",
+      "regression": "两个旧反例、重复／交错／并发manifest与自回执",
+      "limitations": "保留226／227展示意图；不凭对应证明语义"
+    }
+  ],
+  "unresolvedConfirmedItems": [],
+  "integration": {
+    "passed": 1211,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 105.97,
+    "localCommit": "6b0591f03475df1d8a940b67edf756c6e7fe52cc",
+    "sourceManifestSha256": "63702d75f4173d48e424fa09fa85135a032fe8a777ed13445664540c6e0dfd8e",
+    "sourceFiles": 154,
+    "retrievalBaseline": "1500 articles / 10463 chunks / 4975 mentions; unchanged baseline passed",
+    "browserWidths": [
+      1440,
+      390
+    ],
+    "javascriptErrors": 0
+  },
+  "notPerformed": [
+    "production access or historical writes",
+    "real LLM/OCR/embedding API requests",
+    "remote merge, ready transition or deploy",
+    "blocked separate security investigation"
+  ],
+  "testLimits": [
+    "synthetic data and stubs; no semantic accuracy or production prevalence proof",
+    "PostgreSQL16.15 / zhparser2.4 / pgvector0.6; halfvec not tested",
+    "draft CI Tests completed/skipped, not pass"
+  ]
+}
