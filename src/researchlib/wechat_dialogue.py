@@ -496,6 +496,8 @@ _NICK_DECORATION = re.compile(
 )
 # 一行里中途的「网名：」。标签本身不含空白和句读；前面必须是空白，避免切进「对王小明：」。
 _SPEAKER_MARK = re.compile(r"(?P<label>[^\s：:，。！？!?、；/\\]{1,20})\s*[:：]")
+# 不确定性扫描独立于可确认的人名长度／字形；锚定词首，长串不逐后缀反复扫描。
+_POSSIBLE_SPEAKER_MARK = re.compile(r"(?<!\S)(?P<label>[^\s：:，。！？!?、；/\\]+)\s*[:：]")
 # 指标按可组合的修饰词、量和度量识别，而不是逐个补「净资产收益率」等完整字段。
 # 冒号只能证明它是标签；财务指标不能因此被赋予新的说话人身份。
 _FINANCIAL_LABEL = re.compile(
@@ -1275,14 +1277,24 @@ def _known_speaker_labels(lines: list[str]) -> set[str]:
 
 
 def _uncertain_speaker_boundary(lines: list[str], known: set[str]) -> bool:
-    """行首或行中任何文字标签都可能是字段，不按中文／拉丁字母区别对待。"""
+    """候选扫描不借用人名分类器，短、带撇号或超长标签无法确认时也不静默归人。"""
     for line in lines:
         text = _plain(line)
-        for match in _SPEAKER_MARK.finditer(text):
-            if match.start() and not text[match.start() - 1].isspace():
-                continue
+        if _is_time(text):
+            continue
+        for match in _POSSIBLE_SPEAKER_MARK.finditer(text):
             label = _clean_label(match.group('label'))
-            if _guest_label(label) and not _is_embedded_speaker(label, known):
+            core = _nick_core(label)
+            if _is_embedded_speaker(label, known):
+                continue
+            if not core or core in _NOT_NAMES or _NOT_NAME_HEAD.match(core) or _FINANCIAL_LABEL.fullmatch(core):
+                continue
+            tail = text[match.end():].lstrip()
+            if core.lower() in {'http', 'https', 'ftp'} and tail.startswith('//'):
+                continue
+            if core.lower() == 'mailto' and '@' in tail:
+                continue
+            if any(char.isalpha() for char in core):
                 return True
     return False
 

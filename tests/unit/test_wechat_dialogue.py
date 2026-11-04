@@ -1707,6 +1707,35 @@ def test_bare_latin_metric_next_to_an_empty_value_is_not_name_evidence():
     assert present_ocr_pieces([raw]) == raw
 
 
+@pytest.mark.parametrize('label', [
+    'Al', "O'Brien", 'O’Connor', 'ResearchNicknameBeyondTwentyCharacters', 'Long' + 'x' * 256,
+])
+@pytest.mark.parametrize('separator', [' ', '\n'])
+@pytest.mark.parametrize('speech', ['我认为可以提价。', '123.45%'])
+def test_unsupported_label_shape_is_retained_with_uncertainty(label, separator, speech):
+    raw = f'方伟：我的判断是先观察。{separator}{label}：{speech}'
+    shot = parse_shot(raw)
+    assert shot.kind == 'prose' and shot.turns == [] and shot.prose == raw
+    assert attribution_uncertain(raw)
+    assert present_ocr_pieces([raw]) == raw
+    assert present_stored_ocr(raw) == raw
+    assert '尚未确认其说话人边界' in speaker_note(raw)
+    assert split_speaker(f'{label}：{speech}', names=True) is None
+
+
+@pytest.mark.parametrize('metric', ['PE', 'TotalAdjustedOperatingMarginForQuarter', "Owner'sEquity"])
+def test_unsupported_metric_is_not_promoted_to_a_speaker(metric):
+    raw = f'方伟：先看数据。\n{metric}：10.5%'
+    assert parse_shot(raw).turns == []
+    assert present_ocr_pieces([raw]) == raw and attribution_uncertain(raw)
+
+
+def test_short_words_and_a_url_in_speech_are_not_speaker_labels():
+    raw = '方伟：我先观察 Al 的说法，股票代码 ABC 还没核实。 https://example.invalid/report'
+    assert not attribution_uncertain(raw)
+    assert [turn.speaker for turn in parse_shot(raw).turns] == ['方伟']
+
+
 @pytest.mark.parametrize('metric', ['ROE', 'EPS', 'EBITDA', 'CAPEX'])
 def test_known_latin_financial_metrics_do_not_become_speakers(metric):
     raw = f'方伟：先看数据。\n{metric}：10.5%'
