@@ -1790,7 +1790,10 @@ async def ask_feedback(request: Request, answer_id: int):
                 chunk = int(chunk_raw) if chunk_raw.isdigit() else None
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="缺少文章") from exc
-            toggle_irrelevant(conn, answer_id, article_id, chunk)
+            try:
+                toggle_irrelevant(conn, answer_id, article_id, chunk)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail="库里没有这篇文章") from exc
             anchor = str(form.get("n") or "")
             return RedirectResponse(f"/ask/{answer_id}" + (f"#c-{anchor}" if anchor.isdigit() else ""), status_code=303)
         if label == "missing":

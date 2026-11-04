@@ -40,7 +40,8 @@ def marks(conn, answer_id: int) -> dict:
         """
         SELECT f.article_id, f.chunk_ord, f.label, f.note, a.title
         FROM answer_feedback f JOIN articles a ON a.id = f.article_id
-        WHERE f.answer_id = %s
+        JOIN sources s ON s.id=a.source_id
+        WHERE f.answer_id = %s AND s.enabled
         ORDER BY f.created_at
         """,
         (answer_id,),
@@ -59,11 +60,18 @@ def _answer(conn, answer_id: int):
     return conn.execute("SELECT id, question, scope FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()
 
 
+def _require_enabled_article(conn, article_id: int) -> None:
+    if conn.execute('SELECT 1 FROM articles a JOIN sources s ON s.id=a.source_id'
+                    ' WHERE a.id=%s AND s.enabled', (article_id,)).fetchone() is None:
+        raise ValueError(f'库里没有文章 {article_id}')
+
+
 def toggle_irrelevant(conn, answer_id: int, article_id: int, chunk_ord: int | None) -> bool:
     """标或取消「不相关」。返回标完之后是不是不相关。"""
     answer = _answer(conn, answer_id)
     if answer is None:
         raise LookupError("没有这条回答")
+    _require_enabled_article(conn, article_id)
     removed = conn.execute(
         """
         DELETE FROM answer_feedback
@@ -96,9 +104,7 @@ def add_missing(conn, answer_id: int, ref: str, note: str = "") -> int:
     article_id, chunk = parse_article_ref(ref)
     if article_id is None:
         raise ValueError("贴文章链接或编号，例如 /articles/123")
-    exists = conn.execute("SELECT 1 FROM articles WHERE id = %s", (article_id,)).fetchone()
-    if exists is None:
-        raise ValueError(f"库里没有文章 {article_id}")
+    _require_enabled_article(conn, article_id)
     conn.execute(
         """
         INSERT INTO answer_feedback (answer_id, question, scope, article_id, chunk_ord, label, note)
