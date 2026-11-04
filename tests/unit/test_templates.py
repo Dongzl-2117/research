@@ -192,6 +192,7 @@ def test_article_template_is_title_body_and_bilingual_tabs():
     assert "你好" in html
     assert "被引用的段落" in html
     assert "Note" in html
+    assert html.index("<h1>") < html.index('class="byline"')
     assert "方伟" in html
     assert "打开原文" not in html
     assert "问 AI：这篇讲了什么" not in html

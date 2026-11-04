@@ -37,6 +37,7 @@
   </nav>
   <article class="reader doc-read">
     {% if article %}
+    <h1>{{ article.title }}</h1>
     <p class="byline">
       <a href="/authors/{{ source.author | urlencode }}?source={{ source.id }}">{{ source.author }}</a>
       <span aria-hidden="true">·</span>
@@ -48,7 +49,6 @@
       <a href="/ask?tree={{ article.id }}">问这个目录</a>
       {% endif %}
     </p>
-    <h1>{{ article.title }}</h1>
     {% if body_html %}<div class="prose">{{ body_html }}</div>{% endif %}
     {% else %}
     <h1>{{ source.name }}</h1>

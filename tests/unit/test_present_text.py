@@ -224,16 +224,38 @@ def test_plain_headings_and_fenced_qa_are_left_alone():
 
 
 def test_reading_column_is_narrow_and_images_fit_it():
-    """文章栏接近公众号宽度，图不超过这一栏。"""
+    """文章栏接近公众号宽度。图不超出这一栏，单屏截图按栏宽铺开，不被 480px 压小。"""
     css = _CSS.read_text(encoding="utf-8")
     assert "--reading-column: 680px" in css
     column = css.split(".reader-grid {", 1)[1].split("}", 1)[0]
     assert "max-width: var(--reading-column)" in column
     assert "width: 100%" in column
+    assert "min-width: 0" in column
     images = css.split(".prose img, .prose video {", 1)[1].split("}", 1)[0]
     assert "max-width: 100%" in images
+    assert "width: auto" in images
     assert "720px" not in images
-    assert "max-height: min(56vh, 480px)" in images
+    assert "56vh" not in images
+    assert "480px" not in images
+    assert "max-height: 1800px" in images
+    assert "cursor: zoom-in" in css.split(".prose img {", 1)[1].split("}", 1)[0]
+    reading = css.split(".reader-grid .prose,\n.doc-read .prose {", 1)[1].split("}", 1)[0]
+    assert "font-size: 17px" in reading
+    assert "line-height: 1.65" in reading
+    assert "letter-spacing: 0" in reading
+    gap = css.split(".reader-grid .prose:not(.bilingual-en) p + p,", 1)[1].split("}", 1)[0]
+    assert "margin-top: 1.15em" in gap
+    title = css.split(".reader h1 {", 1)[1].split("}", 1)[0]
+    assert "font-size: 22px" in title
+    assert "letter-spacing: 0" in title
+    assert "text-wrap: balance" in title
+    assert ".shell:has(.reader) .sidebar" in css
+    assert ".reader h1 { font-size: 32px" not in css
+    assert ".reader h1 { font-size: 36px" not in css
+    assert css.count(".reader h1 {") == 1
+    english = css.split(".bilingual-en.prose {", 1)[1].split("}", 1)[0]
+    assert "letter-spacing: 0" in english
+    assert "line-height: 1.65" in english
 
 
 def test_ocr_blocks_inherit_prose_font_without_grey_box():

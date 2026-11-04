@@ -8,6 +8,10 @@
         {% if tree_back %}返回目录{% else %}返回{% endif %}
       </a>
     </div>
+    <h1>{{ display_title or article.title }}</h1>
+    {% if title_zh and body_language != 'original' %}
+    <p class="title-zh">{{ title_zh }}</p>
+    {% endif %}
     <p class="byline">
       <a href="{% if source.timeline %}/?source={{ source.id }}{% else %}/authors/{{ source.author | urlencode }}?source={{ source.id }}{% endif %}">{{ source.name }}</a>
       <span aria-hidden="true">·</span>
@@ -19,12 +23,8 @@
       {% if revised %}<span aria-hidden="true">·</span><a class="revised" href="/articles/{{ article.id }}/revisions">{{ revised }}</a>{% endif %}
       <span aria-hidden="true">·</span><a href="/ask?article={{ article.id }}">问这篇</a>
     </p>
-    <h1>{{ display_title or article.title }}</h1>
     {% if hidden %}
     <p class="article-note">{% if hidden_reason == "short_post" %}短帖，暂只收长文。{% endif %}这篇不出现在按天、作者列表和检索里。</p>
-    {% endif %}
-    {% if title_zh and body_language != 'original' %}
-    <p class="title-zh">{{ title_zh }}</p>
     {% endif %}
     {% if digest_summary %}
     <section class="article-digest" aria-label="总结">
