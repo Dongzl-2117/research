@@ -27,6 +27,11 @@
           document.documentElement.setAttribute("data-recent-views", "collapsed");
         }
       } catch (e) {}
+      try {
+        if (localStorage.getItem("research-article-chat") === "closed") {
+          document.documentElement.setAttribute("data-article-chat", "closed");
+        }
+      } catch (e) {}
     })();
   </script>
   <link rel="stylesheet" href="/static/site.css">

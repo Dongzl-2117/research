@@ -1,8 +1,10 @@
 """逐段对照与保真检查。
 
 新稿先核验 canonical 源文和持久回执；旧稿保留明确的不确定性。无法配对时保留两份全文。
-展示单元保留引用、列表和表格结构。有序投影通过之后，再隐藏长英文的重复、整句包含和近前缀；
-留下的那一对必须仍有这些文字、数字、链接和结构，锚点改挂过去。中文各自带独有说法的不隐藏。
+展示单元保留引用、列表和表格结构。有序投影通过之后，先把同一源段落里按句切开的叶子并回去，
+再隐藏长英文的重复、整句包含和近前缀；留下的那一对必须仍有这些文字、数字、链接和结构，锚点改挂过去。
+英文连空白都一样、中文却各有独有说法的不隐藏。只差空白的长英文收成一对，多出来的中文句子挂回去。
+英文里的链接补到中文仍写着同一锚文本、但丢掉标签的位置，不另写括号域名。
 这一步不删入库的段，也不把整页退回两列。图片文字在配对后渲染，不参与模型源段身份。
 """
 
@@ -260,6 +262,29 @@ def _plain_words(value: str) -> set[str]:
     return set(re.findall(r"\w+", text))
 
 
+_ZH_SENTENCE = re.compile(r"(?<=[。！？])")
+
+
+def _novel_zh(extra: str, host: str) -> str:
+    """host 里还没有的中文句子。整段只是另一种说法时，不要把已经有的句子再贴一遍。"""
+    if not extra or _plain_words(extra) <= _plain_words(host):
+        return ""
+    parts = [part for part in _ZH_SENTENCE.split(extra) if _plain_words(part)]
+    if len(parts) <= 1:
+        return extra
+    host_words = _plain_words(host)
+    novel = [part for part in parts if not _plain_words(part) <= host_words]
+    if not novel:
+        return ""
+    if len(novel) == len(parts):
+        return extra
+    body = "".join(novel).strip()
+    if re.search(r"<(?:p|li|blockquote|div|ul|ol|h[1-6])\b", body, re.I):
+        return body
+    cleaned = re.sub(r"</(?:p|li|ul|ol|blockquote|div|h[1-6])>", "", body, flags=re.I).strip()
+    return f"<p>{cleaned}</p>" if cleaned else ""
+
+
 def _hrefs(value: str) -> set[str]:
     return {html.unescape(item) for item in _HREF.findall(value or "")}
 
@@ -343,6 +368,8 @@ def _absorb_contained(
         zh = updated[host].zh or ""
         extra = updated[index].zh or ""
         if extra and not _plain_words(extra) <= _plain_words(zh):
+            extra = _drop_duplicate_cites(extra, zh)
+        if extra and not _plain_words(extra) <= _plain_words(zh):
             zh += extra
         updated[host] = replace(updated[host], en=grafted, zh=zh or None)
         drop.add(index)
@@ -403,7 +430,18 @@ def _hide_repeated_pairs(pairs: list[BilingualPair]) -> list[BilingualPair]:
         if host is None:
             continue
         host_zh = updated[host].zh or ""
-        if _plain_words(extra) <= _plain_words(host_zh):
+        dropped_en = updated[index].en or ""
+        host_en = updated[host].en or ""
+        # 锚点可以挂到相邻段，译文只挂回英文确实是同一段的那一对，避免标题吃进下一段。
+        same_passage = bool(visible_text(dropped_en)) and (
+            visible_text(dropped_en) in visible_text(host_en)
+            or visible_text(host_en) in visible_text(dropped_en)
+            or _same_lineage(_leaf_key(host_en), _leaf_key(dropped_en))
+        )
+        if not same_passage:
+            continue
+        extra = _novel_zh(_drop_duplicate_cites(extra, host_zh), host_zh)
+        if not extra:
             continue
         updated[host] = replace(updated[host], zh=host_zh + extra)
     kept = [index for index in range(len(updated)) if index not in drop]
@@ -433,6 +471,237 @@ def _hide_repeated_pairs(pairs: list[BilingualPair]) -> list[BilingualPair]:
     return result
 
 
+_SRC_PARA = re.compile(r'\bdata-src-para="(\d+)"')
+_CITE = re.compile(
+    r"[（(]\s*(?:<a\b[^>]*>\s*)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})\s*(?:</a>\s*)?[）)]",
+    re.I,
+)
+_HOST = re.compile(r"https?://(?:www\.)?([^/?#]+)", re.I)
+
+
+def _src_para(value: str) -> str | None:
+    match = _SRC_PARA.search(value or "")
+    return match.group(1) if match else None
+
+
+def _strip_src_para(value: str) -> str:
+    return re.sub(r'\s+data-src-para="\d+"', "", value or "")
+
+
+def _unwrap_element(value: str) -> tuple[str, str, str] | None:
+    match = re.match(r"^(<([a-z0-9]+)\b[^>]*>)(.*)</\2>\s*$", (value or "").strip(), re.I | re.S)
+    if not match:
+        return None
+    return match.group(1), match.group(2).lower(), match.group(3).strip()
+
+
+def _join_html(parts: list[str]) -> str:
+    """把同一源段落拆开的叶子拼回去。外壳只留一份，句子之间补一个空格。"""
+    pieces = [part.strip() for part in parts if part and part.strip()]
+    if not pieces:
+        return ""
+    if len(pieces) == 1:
+        return _strip_src_para(pieces[0])
+    opened = [_unwrap_element(part) for part in pieces]
+    if any(item is None for item in opened):
+        return _strip_src_para(" ".join(pieces))
+    tag = opened[0][1]
+    if any(item[1] != tag for item in opened):
+        return _strip_src_para(" ".join(pieces))
+    inners = [item[2] for item in opened]
+    if all(_unwrap_element(inner) for inner in inners):
+        inner = _join_html(inners)
+    else:
+        inner = " ".join(inners)
+    opening = _strip_src_para(opened[0][0])
+    return f"{opening}{inner}</{tag}>"
+
+
+def _shown_plain(pairs: Sequence[BilingualPair], side: str) -> str:
+    parts = []
+    for pair in pairs:
+        value = pair.zh if side == "zh" else pair.en
+        parts.append(value or "")
+    return re.sub(r"\s+", "", html.unescape(re.sub(r"<[^>]+>", "", "".join(parts))))
+
+
+def _shown_resources(pairs: Sequence[BilingualPair], side: str) -> tuple:
+    from researchlib.translate.provenance import Resources
+
+    blob = "".join((pair.zh if side == "zh" else pair.en) or "" for pair in pairs)
+    facts = Resources(blob)
+    return (tuple(facts.links), tuple(facts.media), tuple(facts.codes))
+
+
+def _coalesce_preserves(before: Sequence[BilingualPair], after: Sequence[BilingualPair]) -> bool:
+    """并段前后，页面上真正画出的中英文、链接和图片要一样。
+
+    有的句子中文和英文相同，对照不单列中文（zh 是 None）。整页投影会把这句英文算进译文侧。
+    并进仍有中文的那一段之后，译文侧不再整段退回英文，旧的整页投影会误判丢字，从而放弃所有并段。
+    这里只比实际画出来的文字。
+    """
+    if _shown_plain(before, "en") != _shown_plain(after, "en"):
+        return False
+    if _shown_plain(before, "zh") != _shown_plain(after, "zh"):
+        return False
+    return _shown_resources(before, "en") == _shown_resources(after, "en") and (
+        _shown_resources(before, "zh") == _shown_resources(after, "zh")
+    )
+
+
+def _coalesce_source_paragraphs(
+    pairs: list[BilingualPair], groups: Sequence[str | None] | None = None,
+) -> list[BilingualPair]:
+    """按句切开的同一源段落并回一对。``<br>`` 粘出来的长文没有这个标记，仍按句留。
+
+    ``groups`` 来自原文 materialize 后的叶子，和对照叶同一顺序。配对 HTML 上的
+    ``data-src-para`` 丢了也按这个并。
+    """
+    from dataclasses import replace
+
+    def gid_at(index: int, pair: BilingualPair) -> str | None:
+        if groups is not None and index < len(groups) and groups[index]:
+            return groups[index]
+        return _src_para(pair.en or "")
+
+    grouped: list[tuple[str | None, list[BilingualPair]]] = []
+    for index, pair in enumerate(pairs):
+        gid = gid_at(index, pair)
+        if gid and grouped and grouped[-1][0] == gid:
+            grouped[-1][1].append(pair)
+        else:
+            grouped.append((gid, [pair]))
+    result: list[BilingualPair] = []
+    for _gid, group in grouped:
+        if len(group) == 1:
+            pair = group[0]
+            result.append(replace(
+                pair,
+                en=_strip_src_para(pair.en),
+                zh=_strip_src_para(pair.zh) if pair.zh else pair.zh,
+            ))
+            continue
+        anchors: list[str] = []
+        for pair in group:
+            if pair.anchor and pair.anchor not in anchors:
+                anchors.append(pair.anchor)
+        en = _join_html([pair.en for pair in group])
+        zh_parts = [pair.zh or "" for pair in group]
+        zh = _join_html(zh_parts) if any(zh_parts) else None
+        extra = [
+            anchor for anchor in anchors[1:]
+            if f'id="{anchor}"' not in en and f"id='{anchor}'" not in en
+        ]
+        if extra:
+            spans = "".join(
+                f'<span id="{html.escape(anchor, quote=True)}" class="para-anchor"></span>'
+                for anchor in extra
+            )
+            en = spans + en
+        result.append(BilingualPair(en=en, zh=zh or None, anchor=anchors[0] if anchors else None))
+    return result
+
+
+def _http_host(href: str) -> str:
+    match = _HOST.match(html.unescape(href or "").strip())
+    return match.group(1).lower() if match else ""
+
+
+def _href_count(value: str, href: str) -> int:
+    return sum(1 for item in _HREF.findall(value or "") if html.unescape(item) == href)
+
+
+def _wrap_text(updated: str, href: str, anchor: str) -> str | None:
+    parts = [re.escape(part) for part in anchor.split() if part]
+    if len(anchor) < 4 or not parts:
+        return None
+    matches = [
+        match for match in re.finditer(r"\s+".join(parts), updated, re.I)
+        if _outside_tag(updated, match.start()) and not _inside_open_anchor(updated, match.start())
+    ]
+    if not matches:
+        return None
+    match = matches[0]
+    wrapped = f'<a href="{html.escape(href, quote=True)}">{match.group(0)}</a>'
+    return updated[: match.start()] + wrapped + updated[match.end() :]
+
+
+def _wrap_naked_host(updated: str, href: str, anchor: str) -> str | None:
+    names: list[str] = []
+    host = _http_host(href)
+    if host:
+        names.append(host)
+    if re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}", anchor or "") and anchor.lower() not in names:
+        names.append(anchor)
+    for name in names:
+        pattern = re.compile(rf"[（(]\s*({re.escape(name)})\s*[）)]", re.I)
+        for match in pattern.finditer(updated):
+            if not _outside_tag(updated, match.start(1)) or _inside_open_anchor(updated, match.start(1)):
+                continue
+            wrapped = f'<a href="{html.escape(href, quote=True)}">{match.group(1)}</a>'
+            return updated[: match.start(1)] + wrapped + updated[match.end(1) :]
+    return None
+
+
+def _mirror_links(donor: str, host: str) -> str:
+    """donor 里有、host 里还没有的链接，套到 host 已有的锚文本或括号域名上。不新增文字。"""
+    pending: list[tuple[str, str]] = []
+    for attrs, inner in _LINK.findall(donor or ""):
+        href_match = _HREF.search(attrs)
+        if not href_match:
+            continue
+        href = html.unescape(href_match.group(1))
+        anchor = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", inner))).strip()
+        if href and anchor:
+            pending.append((href, anchor))
+    updated = host or ""
+    for href, anchor in pending:
+        wanted = sum(1 for item, _anchor in pending if item == href)
+        if _href_count(updated, href) >= wanted:
+            continue
+        placed = _wrap_text(updated, href, anchor) or _wrap_naked_host(updated, href, anchor)
+        if placed is not None:
+            updated = placed
+    return updated
+
+
+def _restore_pair_links(pairs: list[BilingualPair]) -> list[BilingualPair]:
+    from dataclasses import replace
+
+    restored: list[BilingualPair] = []
+    for pair in pairs:
+        if not pair.zh:
+            restored.append(pair)
+            continue
+        zh = _mirror_links(pair.en or "", pair.zh)
+        en = _mirror_links(zh, pair.en or "")
+        if en == (pair.en or "") and zh == pair.zh:
+            restored.append(pair)
+        else:
+            restored.append(replace(pair, en=en, zh=zh))
+    return restored
+
+
+def _cite_hosts(value: str) -> set[str]:
+    return {match.group(1).casefold() for match in _CITE.finditer(value or "")}
+
+
+def _drop_duplicate_cites(extra: str, host: str) -> str:
+    """挂译文时，host 已经有的括号域名不再贴第二次。不同 href 的仍留下。"""
+    present = _cite_hosts(host)
+    host_hrefs = _hrefs(host)
+
+    def repl(match: re.Match[str]) -> str:
+        hrefs = _hrefs(match.group(0))
+        if hrefs and hrefs <= host_hrefs:
+            return ""
+        if not hrefs and match.group(1).casefold() in present:
+            return ""
+        return match.group(0)
+
+    return _CITE.sub(repl, extra or "")
+
+
 def article_pairs(
     original: str, translated: str, *, provenance: dict | None = None,
     canonical_source: str | None = None, canonical_target: str | None = None,
@@ -440,7 +709,8 @@ def article_pairs(
 ) -> PairDisplay:
     """逐段身份优先；旧稿只作明确标记的结构对照，不删段凑数量。
 
-    映射由未装饰的 canonical 输入核验；图片文字在配对后加入，避免它参与翻译分段。
+    映射由未装饰的 canonical 输入核验。识图文字不进对照页（``inline_image_ocr`` 保留原图），
+    避免把转写铺进英文或中文栏；摘要、问库和检索另走 present。
     """
     from dataclasses import replace
 
@@ -515,9 +785,19 @@ def article_pairs(
             result = _separate(original, translated, "分段无法保真，以下保留完整原文和译文。")
     if not result.notice and any(ordered_projection_gaps(original, translated, result.pairs)):
         result = _separate(original, translated, "无法完整逐段展示，以下分别保留原文和译文。")
-    # 投影先看完整对照。通过之后才隐藏重复；隐藏不得少掉原文里的词、链接或结构，否则整份留着。
+    # 投影先看完整对照。按原文叶子的分段标记把同一段并回去；并段前后页面上的字和链接不变才采用。
+    # 旧粗段按唯一锚点展开成句之后不再并回去，否则整段又合成一对。
+    # 然后才隐藏重复；隐藏不得少掉原文里的词、链接或结构，否则整份留着。
     if not result.notice:
+        if state.status != "legacy-anchors":
+            groups = [_src_para(item.html) for item in left] if len(left) == len(result.pairs) else None
+            coalesced = _coalesce_source_paragraphs(result.pairs, groups)
+            # 整页投影会把「中文和英文相同、所以不单列」算成译文侧丢字，从而放弃所有并段。
+            # 只要求并段前后页面上的文字、链接和图片不变。
+            if _coalesce_preserves(result.pairs, coalesced):
+                result = replace(result, pairs=coalesced)
         result = replace(result, pairs=_hide_repeated_pairs(result.pairs))
+        result = replace(result, pairs=_restore_pair_links(result.pairs))
     if result.notice:
         counts = (len(iter_segments(original)), len(iter_segments(translated)))
     result = replace(result, correspondence=("unmapped" if result.notice else state.status),
@@ -526,6 +806,7 @@ def article_pairs(
     if ocr_texts:
         from researchlib.render import HOST, inline_image_ocr
 
+        # 阅读页不把识图换成对话。这里仍走同一函数，确认图留在配对之后的 HTML 里。
         result = replace(result, pairs=[replace(p,
             en=inline_image_ocr(p.en, ocr_texts, host=host or HOST),
             zh=inline_image_ocr(p.zh, ocr_texts, host=host or HOST) if p.zh else None,

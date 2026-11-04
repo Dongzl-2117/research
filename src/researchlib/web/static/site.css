@@ -4,6 +4,8 @@
   color-scheme: light;
   --page-max-wide: max(1200px, calc(270dvh - 236px));
   --page-max-reading: max(1100px, calc(200dvh - 236px));
+  /* 文章阅读栏，对齐微信公众号正文宽度（约 677px），落在 640–720 之间。 */
+  --reading-column: 680px;
   --bg: #faf9f6;
   --bg-sunk: #f3f3ef;
   --bg-muted: #e9ede9;
@@ -581,14 +583,16 @@ mark {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 28px;
-  /* 72ch 大约三十多个汉字，宽屏上正文会缩在中间，两边空出一大截。
-     栏宽跟正文字号走，最多约 90 个汉字；更窄的窗口就占满主区域。 */
-  max-width: 90em;
+  /* 公众号式窄栏：标题、正文、图都收在中间这一列，不铺满宽屏。窄窗口占满主区域。 */
+  width: 100%;
+  min-width: 0;
+  max-width: var(--reading-column);
   margin: 0 auto;
   padding-bottom: 24px;
   font-size: var(--text-prose);
 }
-.reader-top { display: flex; align-items: center; min-height: 48px; }
+.reader { min-width: 0; }
+.reader-top { display: flex; align-items: center; min-height: 36px; }
 .back {
   display: inline-flex;
   align-items: center;
@@ -611,14 +615,21 @@ mark {
   font-size: var(--text-byline);
 }
 .byline a:hover { color: var(--accent); }
-.title-zh { margin: 8px 0 0; color: var(--ink-4); font-size: var(--text-byline); }
+.title-zh { margin: 6px 0 0; color: var(--ink-4); font-size: var(--text-byline); line-height: 1.5; }
+/* 公众号文首：标题在上（约 22px），作者和时间在下，不再是元数据条压着大标题。 */
 .reader h1 {
-  margin: 0;
+  margin: 2px 0 0;
   color: var(--ink);
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.38;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.4;
+  text-wrap: balance;
+}
+.reader .byline {
+  margin: 12px 0 22px;
+  font-size: 15px;
+  line-height: 1.5;
 }
 .identity {
   display: flex;
@@ -732,12 +743,24 @@ tbody tr:hover td { background: var(--accent-softer); }
   overflow-wrap: anywhere;
   max-width: 72ch;
 }
-/* 文章页正文跟阅读栏一样宽。问库、日汇总仍用上面的 72ch。 */
+/* 文章页正文跟阅读栏一样宽（--reading-column）。问库、日汇总仍用上面的 72ch。 */
 .reader-grid .prose { max-width: none; }
+/* 阅读页（文章 / 中文 / 对照 / 飞书目录）贴近公众号：17px、行高 1.65、字距 0。
+   问库和日汇总仍用上面 .prose 的 16px、1.85、.012em。英文对照列在后面单独收小。 */
+.reader-grid .prose,
+.doc-read .prose {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+  font-size: 17px;
+  letter-spacing: 0;
+  line-height: 1.65;
+}
+.reader-grid .prose:not(.bilingual-en) p + p,
+.doc-read .prose:not(.bilingual-en) p + p { margin-top: 1.15em; }
 .prose p { margin: 0; }
-/* 公众号/正文段间按原文空开：相邻两段给回一段空白，读起来跟原稿的分段一致。
-   只加这一条，别动 .bilingual-en.prose p + p（译文仍用 0.8em）、.ocr-reading p + p（识图 1.4em）
-   和标题规则；两边都是 p 才生效，段与标题、表格、列表之间仍走上面的 .prose > * + *。 */
+/* 问库、日汇总的段距仍按一段空白。阅读页用上面更紧的 1.15em。
+   别动 .bilingual-en.prose p + p（译文仍用 0.8em）、.ocr-reading p + p（识图 1.4em）。 */
 .prose p + p { margin-top: 1.8em; }
 .prose p:empty { display: none; }
 .prose br + br { display: none; }
@@ -784,16 +807,18 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose img, .prose video {
   display: block;
   width: auto;
-  max-width: min(100%, 720px);
+  /* 不比阅读栏更宽。限高只拦住特别长的拼接图：单屏聊天截图约 1080×2340，
+     在 680px 栏里高度约 1470，低于 1800px，于是按栏宽铺满，字能直接读。点开仍看大图。 */
+  max-width: 100%;
   height: auto;
-  /* 竖图（长截图、海报）限高，不撑满一屏；点开看大图。 */
-  max-height: min(70vh, 720px);
-  margin: 1.4em auto;
-  border-radius: var(--radius-tile);
-  background: var(--bg-sunk);
+  max-height: 1800px;
+  margin: 0.75em auto;
+  border-radius: 0;
+  background: transparent;
   object-fit: contain;
 }
-.prose img { cursor: zoom-in; box-shadow: 0 0 0 1px var(--line-soft); }
+.prose img { cursor: zoom-in; }
+.prose img + br { display: none; }
 .prose p > img:only-child { margin-block: .4em; }
 .img-zoom {
   position: fixed;
@@ -892,7 +917,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   max-width: none;
   margin-top: 6px;
 }
-.prose .zsxq-comment-body p { margin: 0; line-height: 1.85; }
+.prose .zsxq-comment-body p { margin: 0; line-height: inherit; }
 .prose .zsxq-comment-body p + p { margin-top: 0.75em; }
 .article-note {
   margin: 14px 0 0;
@@ -998,13 +1023,46 @@ tbody tr:hover td { background: var(--accent-softer); }
   .item-excerpt { margin-top: 8px; font-size: var(--text-excerpt-lg); -webkit-line-clamp: 3; }
   .flat .item-card { margin-top: 0; }
   .reader-grid { grid-template-columns: minmax(0, 1fr); gap: 40px; align-items: start; }
-  .reader-top { min-height: 32px; margin-bottom: 8px; }
+  .reader-top { min-height: 28px; margin-bottom: 2px; }
   .back { color: var(--ink-3); font-size: 13px; }
-  .reader h1 { font-size: 32px; line-height: 1.34; }
   .prose { margin-top: 36px; }
+  /* 读文章时左侧导航还在，收掉右边框和底色，少跟正文抢。 */
+  .shell:has(.reader) {
+    background: var(--bg-sunk);
+  }
+  .shell:has(.reader) .sidebar {
+    width: 160px;
+    padding: 18px 10px 12px;
+    border-right-color: transparent;
+    background: transparent;
+  }
+  .shell:has(.reader) .brand {
+    height: 40px;
+    margin-bottom: 10px;
+    color: var(--ink-3);
+    font-size: 16px;
+  }
+  .shell:has(.reader) .nav-label { padding-top: 10px; }
+  .shell:has(.reader) .nav-link {
+    height: 34px;
+    color: var(--ink-3);
+    font-size: 13px;
+  }
+  .shell:has(.reader) .nav-link[aria-current="page"] {
+    background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink);
+  }
+  .shell:has(.reader) .nav-link[aria-current="page"] svg { color: var(--ink-2); }
+  .shell:has(.reader-grid) .reader-grid,
+  .shell:has(.doc-read) .doc-read {
+    background: var(--surface);
+    padding-top: 12px;
+    padding-bottom: 56px;
+  }
+  /* 白边画在栏外，正文和图仍是 680px，不会把栏挤窄，也不占滚动宽度。 */
+  .shell:has(.reader-grid) .reader-grid { box-shadow: 0 0 0 16px var(--surface); }
 }
 @media (min-width: 1280px) {
-  .reader h1 { font-size: 36px; line-height: 1.3; }
   .reader-grid, .doc-read { font-size: var(--text-prose-lg); }
   .prose { font-size: var(--text-prose-lg); }
 }
@@ -1076,12 +1134,10 @@ tbody tr:hover td { background: var(--accent-softer); }
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
-  font-size: 14px;
-  line-height: 1.68;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0;
   color: var(--ink-4);
-}
-@media (min-width: 80rem) {
-  .bilingual-en.prose { font-size: 15px; }
 }
 .bilingual-en.prose :is(h2, h3, h4, h5) { font-size: 1em; margin-top: 1.4em; }
 .bilingual-en.prose p + p { margin-top: 0.8em; }
@@ -1971,7 +2027,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .doc-twist::before { content: "▶"; }
 .doc-nav details[open] > summary .doc-twist { display: inline-block; transform: rotate(90deg); }
 .doc-branch > a { flex: 1 1 auto; min-width: 0; width: auto; }
-.doc-read { min-width: 0; max-width: 72ch; font-size: var(--text-prose); }
+.doc-read { min-width: 0; max-width: var(--reading-column); font-size: var(--text-prose); }
 .doc-read .prose { max-width: none; }
 @media (max-width: 800px) {
   .doc-shell { grid-template-columns: minmax(0, 1fr); }
@@ -1982,10 +2038,18 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .holdings-now li.recent-item { display: block; padding: 6px 0; }
 .holdings-row .holdings-when { font-size: 12.5px; }
 
-/* 文章页顶部总结 */
-.article-digest { margin: 1rem 0 1.5rem; padding: .8rem 1rem; border-left: 3px solid var(--accent, #3b6); background: var(--surface-2, rgba(127,127,127,.06)); border-radius: 6px; }
-.article-digest-summary { margin: 0; line-height: 1.7; }
-.article-digest-points { margin: .5rem 0 0; padding-left: 1.2rem; line-height: 1.65; }
+/* 文章页顶部总结：留着，但别用青绿条去跟正文抢。 */
+.article-digest {
+  margin: 0 0 1.35rem;
+  padding: .7rem .95rem;
+  border-left: 2px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--bg-sunk);
+  color: var(--ink-2);
+  font-size: 15px;
+}
+.article-digest-summary { margin: 0; line-height: 1.65; }
+.article-digest-points { margin: .4rem 0 0; padding-left: 1.15rem; line-height: 1.6; }
 .article-digest .ai-badge { margin-right: .4rem; }
 /* 观点卡：出处放顶上，关联业务 */
 .view-source-top { margin: 0 0 .2rem; font-weight: 600; }
@@ -1994,3 +2058,371 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .bilingual-repeat { margin-block: .7rem; }
 .bilingual-repeat > summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
 .tx-list-continuation::marker { content: ''; }
+
+/* 阅读页右侧对话。窄屏是底部抽屉，不把 680px 阅读栏挤出横向滚动。
+   主区域放得下 680 + 间距 + 320 时才并排（大约视口 1320px，左侧导航还在）。
+   宽屏收起后阅读栏回到中间；偏好写在 html[data-article-chat="closed"]，避免脚本执行前闪一下。 */
+.read-with-chat { min-width: 0; max-width: 100%; }
+.article-chat {
+  position: fixed;
+  z-index: 55;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  height: min(78dvh, 640px);
+  max-height: min(78dvh, 640px);
+  min-width: 0;
+  padding: 10px 14px 12px;
+  overflow: hidden;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 14px 14px 0 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  letter-spacing: 0;
+  line-height: 1.6;
+  box-shadow: 0 -8px 24px color-mix(in srgb, var(--ink) 8%, transparent);
+  transform: translateY(110%);
+  visibility: hidden;
+  transition: transform .2s var(--ease);
+}
+.article-chat.is-open { transform: none; visibility: visible; }
+.article-chat .chat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 0 8px;
+  border: 0;
+}
+.article-chat .chat-head h2 {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+}
+.article-chat .chat-head-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.article-chat .chat-head-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-4);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.article-chat .chat-head-actions button:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+.article-chat .chat-log {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 2px 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.article-chat .chat-log::-webkit-scrollbar { width: 6px; }
+.article-chat .chat-log::-webkit-scrollbar-track { background: transparent; }
+.article-chat .chat-log::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--line-strong);
+}
+.article-chat .chat-empty {
+  margin: 0;
+  color: var(--ink-4);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.article-chat .chat-log > .chat-empty {
+  margin: 8px 4px 0;
+  text-align: center;
+  text-wrap: balance;
+}
+.article-chat .chat-status {
+  margin: 0;
+  color: var(--ink-4);
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.5;
+}
+.article-chat .chat-error {
+  margin: 0;
+  color: var(--amber-ink);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.article-chat .chat-error a { color: var(--accent); }
+.article-chat .chat-bubble {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  letter-spacing: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.article-chat .chat-bubble p { margin: 0; }
+.article-chat .chat-bubble p + p { margin-top: 8px; }
+.article-chat .chat-bubble strong { font-weight: 650; }
+.article-chat .chat-bubble-user {
+  align-self: flex-end;
+  width: fit-content;
+  max-width: 88%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border-end-end-radius: 4px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.article-chat .chat-bubble-assistant {
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  padding: 1px 1px 0;
+  color: var(--ink);
+}
+.article-chat a.cite {
+  color: var(--ink-3);
+  font-size: .86em;
+  font-weight: 650;
+  text-decoration: none;
+}
+.article-chat a.cite:hover { color: var(--accent); }
+.article-chat .chat-sources { margin: 8px 0 0; padding: 0; list-style: none; }
+.article-chat .chat-sources li { min-width: 0; }
+.article-chat .chat-sources li + li { margin-top: 3px; }
+.article-chat .chat-sources a {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.45;
+  text-decoration: none;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.article-chat .chat-sources a:hover { color: var(--ink); text-decoration: underline; }
+.article-chat .chat-form {
+  display: block;
+  flex: none;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.article-chat .chat-composer {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.article-chat .chat-composer:focus-within {
+  border-color: color-mix(in srgb, var(--ink) 28%, var(--line));
+}
+.article-chat .chat-context {
+  display: flex;
+  min-width: 0;
+  padding: 8px 8px 0;
+}
+.article-chat .chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 72%, var(--surface));
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1;
+}
+.article-chat .chat-chip svg { width: 12px; height: 12px; flex: none; color: var(--ink-4); }
+.article-chat .chat-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.article-chat .chat-form textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 140px;
+  padding: 8px 10px 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  letter-spacing: 0;
+  line-height: 1.5;
+  resize: none;
+  box-shadow: none;
+}
+.article-chat .chat-form textarea:focus,
+.article-chat .chat-form textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.article-chat .chat-form textarea::placeholder { color: var(--ink-4); }
+.article-chat .chat-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 6px 6px 10px;
+}
+.article-chat .chat-hint {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-4);
+  font-size: 11px;
+  line-height: 1.3;
+}
+.article-chat .chat-form button[type="submit"] {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink-2);
+}
+.article-chat .chat-form button[type="submit"]:hover {
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  color: var(--ink);
+}
+.article-chat .chat-form button[type="submit"]:disabled { opacity: .4; }
+.article-chat .chat-form button[type="submit"] svg { width: 16px; height: 16px; }
+.chat-toggle {
+  position: fixed;
+  z-index: 45;
+  right: 16px;
+  bottom: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 550;
+  letter-spacing: 0;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.chat-toggle svg { width: 15px; height: 15px; flex: none; }
+.chat-toggle:hover { border-color: var(--line-strong); color: var(--ink); }
+.read-with-chat:has(.article-chat.is-open) ~ .chat-toggle { visibility: hidden; }
+.chat-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: rgb(0 0 0 / .28);
+}
+@media (max-width: 1023px) {
+  .article-chat { bottom: calc(54px + env(safe-area-inset-bottom)); }
+  .article-chat .chat-form textarea { font-size: 16px; }
+  .chat-toggle { bottom: calc(70px + env(safe-area-inset-bottom)); }
+}
+@media (min-width: 1320px) {
+  .read-with-chat {
+    display: grid;
+    grid-template-columns: minmax(0, var(--reading-column)) 320px;
+    column-gap: 36px;
+    align-items: start;
+    justify-content: center;
+    width: min(100%, calc(var(--reading-column) + 36px + 320px));
+    margin-inline: auto;
+  }
+  .read-with-chat .reader-grid {
+    width: 100%;
+    max-width: var(--reading-column);
+    margin: 0;
+  }
+  .read-with-chat .article-chat {
+    position: sticky;
+    top: 16px;
+    right: auto;
+    bottom: auto;
+    left: auto;
+    z-index: 1;
+    width: 320px;
+    height: calc(100dvh - 32px);
+    max-height: calc(100dvh - 32px);
+    padding: 2px 2px 8px 16px;
+    border: 0;
+    border-left: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+    visibility: visible;
+  }
+  .chat-toggle {
+    top: 16px;
+    right: 16px;
+    bottom: auto;
+    display: none;
+    box-shadow: none;
+  }
+  .read-with-chat.is-chat-closed,
+  html[data-article-chat="closed"] .read-with-chat {
+    display: block;
+    width: 100%;
+  }
+  .read-with-chat.is-chat-closed .reader-grid,
+  html[data-article-chat="closed"] .read-with-chat .reader-grid { margin-inline: auto; }
+  .read-with-chat.is-chat-closed .article-chat,
+  html[data-article-chat="closed"] .read-with-chat .article-chat { display: none; }
+  .read-with-chat.is-chat-closed ~ .chat-toggle,
+  html[data-article-chat="closed"] .chat-toggle { display: inline-flex; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .article-chat { transition: none; }
+}

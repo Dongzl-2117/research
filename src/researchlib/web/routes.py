@@ -769,6 +769,7 @@ def _article_view(request: Request, article_id: int, mode: str):
     # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
     canonical_original = canonical_body_html(shown_md, display_title, mapping, fmt, owners=source_owners(source))
     pair_original = finish_html(canonical_original, link_index, parent)
+    # 阅读页留原图。ocr_texts 不铺进正文；摘要、观点、问这篇和检索另读 image_texts。
     original_html = inline_image_ocr(
         pair_original,
         ocr_texts,
@@ -920,6 +921,7 @@ def _tree_body(conn, article, source_id: str):
     link_index = load_md_index(conn, source_id) if ".md" in (article["body_md"] or "").lower() else None
     shown_md = polish_display_text(clean_article(conn, article["id"], source_id, article["body_md"]))
     html = prepare_body_html(shown_md, polish_display_text(article["title"] or ""), mapping, fmt, link_index, parent)
+    # 目录右侧也是阅读：留原图，不把识图文字换进去。
     return Markup(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
 

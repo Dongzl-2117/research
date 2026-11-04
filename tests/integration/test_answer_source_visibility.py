@@ -32,3 +32,29 @@ def test_disabled_scope_or_citation_hides_history_without_deleting_it(conn, sett
         finally:
             conn.execute("UPDATE sources SET enabled=true WHERE id='stratechery'")
             conn.commit()
+
+
+def test_recent_answers_combines_source_visibility_and_sidebar_history_filter(conn):
+    """同步主线时，两种过滤必须同时保留；允许查看的侧栏回答仍能按 id 读取。"""
+    identities = {}
+    for enabled in (False, True):
+        for chat in (False, True):
+            source = 'fangwei-mp' if enabled else 'stratechery'
+            scope = {'source_ids': [source], 'chat': chat}
+            row = conn.execute(
+                'INSERT INTO llm_answers(question,scope,answer,citations,status)'
+                " VALUES(%s,%s,'合成回答','[]','done') RETURNING id",
+                (f'合成历史-{enabled}-{chat}', Jsonb(scope)),
+            ).fetchone()
+            identities[enabled, chat] = row['id']
+    conn.execute("UPDATE sources SET enabled=false WHERE id='stratechery'")
+    conn.commit()
+    try:
+        assert [row['id'] for row in queries.recent_answers(conn)] == [identities[True, False]]
+        assert queries.get_answer(conn, identities[True, True]) is not None
+        assert queries.get_answer(conn, identities[False, False]) is None
+        assert queries.get_answer(conn, identities[False, True]) is None
+        assert conn.execute('SELECT count(*) AS n FROM llm_answers').fetchone()['n'] == 4
+    finally:
+        conn.execute("UPDATE sources SET enabled=true WHERE id='stratechery'")
+        conn.commit()

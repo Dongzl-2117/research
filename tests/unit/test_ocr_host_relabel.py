@@ -6,7 +6,8 @@
 """
 
 from researchlib.chunks import ocr_chunks
-from researchlib.render import _dialogue_html
+from researchlib.ocr import append_ocr
+from researchlib.render import image_anchor, inline_image_ocr, render_body
 from researchlib.wechat_dialogue import (
     canonical_host,
     present_ocr_pieces,
@@ -47,15 +48,19 @@ def test_speaker_note_names_the_source_author():
     assert speaker_note("正文一句，没有截图对话。", "乘风破浪") == ""
 
 
-def test_reader_page_shows_the_source_author():
+def test_reader_page_keeps_the_image_and_models_see_the_source_author():
     stored = present_ocr_pieces([CHAT])
-    own = _dialogue_html(stored)
-    assert '<span class="who">方伟：</span>' in own
-    other = _dialogue_html(relabel_host(stored, "乘风破浪"), host="乘风破浪")
-    assert '<span class="who">乘风破浪：</span>' in other and "方伟：" not in other
-    # 库里没换名字的旧块，渲染时按 host 显示，也不出现「方伟：」。
-    legacy = _dialogue_html(stored, host="乘风破浪")
-    assert '<span class="who">乘风破浪：</span>' in legacy and "方伟：" not in legacy
+    digest = "ab" * 32
+    html = str(render_body("见图。\n\n![](a.png)\n", {"a.png": f"/media/x/ab/{digest}.png"}))
+    page = inline_image_ocr(html, {digest: CHAT}, host="乘风破浪")
+    assert page == html
+    assert f'<img id="{image_anchor(digest)}"' in page
+    assert "ocr-reading" not in page and '<span class="who">' not in page
+    assert "乘风破浪：" not in page and "同店压力" not in page
+    model = append_ocr("见图。", relabel_host(stored, "乘风破浪"))
+    assert model.startswith("见图。") and "【图片里的字】" in model
+    assert "乘风破浪：" in model and "方伟：" not in model
+    assert "同店压力还在" in model
 
 
 def test_ocr_chunks_relabel_for_other_sources():
