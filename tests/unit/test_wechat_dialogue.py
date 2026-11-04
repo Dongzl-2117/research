@@ -7,6 +7,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from researchlib.ocr import append_ocr, compose_ocr_text
 from researchlib.render import (
     _dialogue_html,
@@ -1567,6 +1569,34 @@ def test_mid_paragraph_speaker_change_splits_utterances():
     assert mention == "方伟：你跟阿明🇫🇷聊过，他觉得压力很大。\n先说 结论：再看数字。"
     assert "阿明🇫🇷：" not in mention
     assert not any(line.startswith("结论：") for line in mention.splitlines())
+
+
+@pytest.mark.parametrize("field", ["净利润", "营收", "营业收入", "毛利率", "现金流", "假设", "情景"])
+@pytest.mark.parametrize("separator", [" ", "\n"])
+def test_financial_and_reasoning_labels_stay_in_the_same_speech(field, separator):
+    """字段即使在空格或折行后，也不能冒充新昵称并改变归属。"""
+    raw = f"方伟：先看经营情况。{separator}{field}：增长百分之十。"
+    shot = parse_shot(raw)
+    assert shot.kind == "dialogue"
+    assert [turn.speaker for turn in shot.turns] == ["方伟"]
+    text = present_ocr_pieces([raw])
+    assert f"{field}：增长百分之十" in text
+    assert text.count("方伟：") == 1 and "\n\n" not in text
+    assert present_stored_ocr(text) == text
+
+
+def test_financial_labels_do_not_hide_real_inline_nicknames():
+    raw = (
+        "方伟：净利润：增长百分之十 营收：增长百分之二十 "
+        "阿明🇫🇷：假设：明年需求不变 王小明：我还想看现金流 方伟：再核对报表"
+    )
+    shot = parse_shot(raw)
+    assert [turn.speaker for turn in shot.turns] == ["方伟", "阿明🇫🇷", "王小明", "方伟"]
+    text = present_ocr_pieces([raw])
+    assert "净利润：增长百分之十 营收：增长百分之二十" in text
+    assert "阿明🇫🇷：假设：明年需求不变" in text
+    assert "王小明：我还想看现金流" in text
+    assert present_stored_ocr(text) == text
 
 
 def test_chat_record_shot_stays_an_image_and_models_keep_speakers():

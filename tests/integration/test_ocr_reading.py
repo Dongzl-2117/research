@@ -14,10 +14,11 @@ from researchlib import views as views_mod
 from researchlib.chunks import replace_ocr_chunks
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
-from researchlib.ocr import refresh_article_ocr
+from researchlib.ocr import append_ocr, refresh_article_ocr
 from researchlib.render import image_anchor
 from researchlib.sources import load_sources
 from researchlib.web.app import create_app
+from researchlib.wechat_dialogue import parse_shot
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 CHAT = (
@@ -69,6 +70,39 @@ def _remember(conn, article_id: int, ref: str, text: str) -> str:
         (row["content_hash"], text),
     )
     return row["content_hash"]
+
+
+def test_financial_labels_keep_attribution_in_model_text_and_ocr_chunks(conn, settings, tmp_path):
+    image = tmp_path / "metrics.png"
+    _png(image, b"\x19" * 24)
+    article = _store(
+        conn, settings, "fangwei-zsxq", "synthetic-field-labels", "合成财务讨论",
+        "本篇讨论经营情况。\n\n![](metrics.png)\n", [image],
+    )
+    raw = (
+        "方伟：先看经营情况 营收：增长百分之二十 净利润：增长百分之十 假设：需求不变 "
+        "阿明🇫🇷：继续核对现金流 方伟：再看下一季度"
+    )
+    digest = _remember(conn, article["id"], "metrics.png", raw)
+    refresh_article_ocr(conn, article["id"])
+    assert replace_ocr_chunks(conn, article["id"]) >= 1
+    conn.commit()
+    saved = conn.execute('SELECT ocr_text FROM articles WHERE id=%s', (article['id'],)).fetchone()['ocr_text']
+    chunks = conn.execute(
+        "SELECT body,anchor FROM article_chunks WHERE article_id=%s AND lang='ocr' ORDER BY ord",
+        (article['id'],),
+    ).fetchall()
+    for text in [saved, '\n'.join(chunk['body'] for chunk in chunks)]:
+        assert [turn.speaker for turn in parse_shot(text).turns] == ['方伟', '阿明🇫🇷', '方伟']
+        assert '营收：增长百分之二十 净利润：增长百分之十 假设：需求不变' in text
+    assert saved in append_ocr('正文。', saved)
+    assert all(chunk['anchor'] == image_anchor(digest) for chunk in chunks)
+    assert conn.execute('SELECT text FROM image_texts WHERE content_hash=%s', (digest,)).fetchone()['text'] == raw
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article['id']}").text
+    prose = page.split('class="prose"', 1)[1].split('</article>', 1)[0]
+    assert f'<img id="{image_anchor(digest)}"' in prose
+    assert 'ocr-reading' not in prose and '增长百分之二十' not in prose
 
 
 def test_reader_shows_chat_text_and_collapses_the_screenshot(conn, settings, tmp_path):
