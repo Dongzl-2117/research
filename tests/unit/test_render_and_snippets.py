@@ -2,9 +2,11 @@ from html.parser import HTMLParser
 
 import pytest
 
+from researchlib.ocr import append_ocr, compose_ocr_text
 from researchlib.render import image_anchor, inline_image_ocr, render_body, sanitize_html, tidy_ocr_text
 from researchlib.snippets import answer_html, highlight_snippet
 from researchlib.textutil import argumentative_excerpt, markdown_to_text
+from researchlib.wechat_dialogue import present_ocr_pieces
 
 
 def test_snippet_keeps_a_late_hit():
@@ -223,6 +225,57 @@ CHAT = (
 )
 
 
+def test_ask_prompt_includes_an_ocr_chunk_beside_the_body():
+    """问这篇吃的是检索块。图片文字块进资料，不靠阅读页 HTML。"""
+    from researchlib.ask import build_messages
+
+    body = "瑞幸古茗是比较头部的。"
+    ocr = present_ocr_pieces([CHAT])
+    passages = [
+        {
+            "n": 1,
+            "title": "图片",
+            "author": "方伟",
+            "source": "方伟知识星球",
+            "date": "2026-10-18",
+            "heading": "",
+            "text": body,
+            "before": "",
+            "after": "",
+        },
+        {
+            "n": 2,
+            "title": "图片",
+            "author": "方伟",
+            "source": "方伟知识星球",
+            "date": "2026-10-18",
+            "heading": "图片里的字",
+            "text": ocr,
+            "before": "",
+            "after": "",
+        },
+    ]
+    prompt = build_messages("同店怎么样", passages)[1]["content"]
+    assert body in prompt and "图片里的字" in prompt
+    assert "张三：" in prompt and "瑞幸和古茗都算头部" in prompt
+    assert prompt.index(body) < prompt.index("图片里的字")
+
+
+def test_bilingual_pairs_keep_images_when_ocr_texts_are_passed():
+    from researchlib.translate.display import article_pairs
+
+    digest = "ab" * 32
+    img = f'<img id="{image_anchor(digest)}" src="/media/stratechery/ab/{digest}.png" alt="">'
+    en = f"<p>Aggregation still compounds.</p><p>{img}</p>"
+    zh = "<p>聚合仍在复利。</p><p>图留在原文这一侧。</p>"
+    shown = article_pairs(en, zh, ocr_texts={digest: CHAT}, host="Ben Thompson")
+    html = "".join((pair.en or "") + (pair.zh or "") for pair in shown.pairs)
+    assert f'<img id="{image_anchor(digest)}"' in html
+    assert "ocr-reading" not in html and "ocr-link" not in html and '<span class="who">' not in html
+    assert "瑞幸和古茗都算头部" not in html
+    assert "Aggregation still compounds." in html and "聚合仍在复利。" in html
+
+
 def test_body_speaker_label_with_a_nickname_is_bold():
     """正文行首的「昵称：」和「方伟：」一样加粗；来源、结论这类元信息词不是说话人。"""
     page = str(render_body("春风十里我自在：一吨就是2000瓶。\n", {}))
@@ -231,8 +284,8 @@ def test_body_speaker_label_with_a_nickname_is_bold():
     assert 'class="who"' not in plain
 
 
-def test_chat_screenshot_is_readable_text_and_the_image_is_collapsed():
-    """14886 这种：正文一句，群聊在截图里。阅读页直接给出对话，原图要点开。"""
+def test_chat_screenshot_stays_an_image_and_models_still_read_the_ocr():
+    """14886 这种：正文一句，群聊在截图里。阅读页留原图；整理后的对话只进模型输入。"""
     digest = "ab" * 32
     html = str(
         render_body(
@@ -241,23 +294,23 @@ def test_chat_screenshot_is_readable_text_and_the_image_is_collapsed():
         )
     )
     page = inline_image_ocr(html, {digest: CHAT})
+    assert page == html
     assert "瑞幸古茗是比较头部的" in page
-    assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in page
-    assert "古茗店效还行" in page
-    anchor = f'<a class="ocr-link" id="{image_anchor(digest)}" href="/media/fangwei-zsxq/ab/{digest}.png"'
-    assert anchor in page
-    assert "原图 1" not in page
-    assert f'<img id="{image_anchor(digest)}"' not in page
-    assert "<details" not in page
-    linked = page.index(anchor)
-    assert linked < page.index("瑞幸和古茗都算头部", linked) < page.index("</a>", linked)
-    assert 'class="ocr-reading ocr-dialogue"' in page
-    # 截图上的网名当说话人，加粗成 .who；没有绿色气泡（方伟）时也不硬写网友。
-    assert '<span class="who">张三：</span>' in page
-    assert '<span class="who">李四：</span>' in page
-    assert "方伟：" not in page
-    assert "<p>微信</p>" not in page and "20:41" not in page
-    assert page.count('class="ocr-shot"') == 1
+    assert f'id="{image_anchor(digest)}"' in page
+    assert f'src="/media/fangwei-zsxq/ab/{digest}.png"' in page
+    assert "ocr-link" not in page and "ocr-reading" not in page and "ocr-shot" not in page
+    assert '<span class="who">' not in page
+    assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" not in page
+    assert "古茗店效还行" not in page
+    presented = present_ocr_pieces([CHAT])
+    model = append_ocr("瑞幸古茗是比较头部的。", presented)
+    assert "【图片里的字】" in model
+    assert model.index("瑞幸古茗是比较头部的") < model.index("【图片里的字】")
+    assert "张三：" in presented and "李四：" in presented
+    assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in model
+    assert "古茗店效还行" in model
+    assert "方伟：" not in presented
+    assert "微信" not in presented.splitlines() and "20:41" not in presented
 
 
 def test_short_or_empty_ocr_keeps_the_image():
@@ -269,7 +322,8 @@ def test_short_or_empty_ocr_keeps_the_image():
     assert inline_image_ocr(html, {}) == html
 
 
-def test_ocr_text_is_escaped_and_prose_keeps_newlines():
+def test_ocr_prose_stays_out_of_the_reading_html():
+    """识图正文里的标签不能进阅读页。模型仍读到原文两段。"""
     digest = "ef" * 32
     html = str(render_body("![](note.png)\n", {"note.png": f"/media/x/ef/{digest}.png"}))
     prose = (
@@ -277,13 +331,13 @@ def test_ocr_text_is_escaped_and_prose_keeps_newlines():
         "第二段继续写机制，不是一行一句的聊天记录。"
     )
     page = inline_image_ocr(html, {digest: prose})
-    assert "<script>" not in page
-    assert "&lt;script&gt;" in page
-    assert "第二段继续写机制" in page
-    assert 'class="ocr-reading"' in page and "ocr-chat" not in page
-    assert "渠道反馈和批价。" in page
-    assert page.index("渠道反馈和批价。") < page.index("第二段继续写机制")
-    assert f'<a class="ocr-link" id="{image_anchor(digest)}"' in page
+    assert page == html
+    assert f'<img id="{image_anchor(digest)}"' in page
+    assert "<script>" not in page and "渠道反馈和批价" not in page and "第二段继续写机制" not in page
+    assert "ocr-reading" not in page and "ocr-link" not in page
+    model = append_ocr("", compose_ocr_text([prose]))
+    assert "渠道反馈和批价" in model and "第二段继续写机制" in model
+    assert model.index("渠道反馈和批价") < model.index("第二段继续写机制")
 
 
 # 文章 24016：识图把 OK 超市和 Costco 的表读成「一行一条记录，单元格之间一个空格」。
@@ -296,43 +350,34 @@ _OCR_TABLE = """OK超市近4年业绩汇总
 注：根据OK财报汇总整理"""
 
 
-def test_ocr_table_renders_as_a_real_table():
-    """24016：OK 超市、Costco 的业绩表要是 <table>，不能一行一段排下去。"""
+def test_ocr_table_stays_on_the_image_and_in_the_model_input():
+    """24016：阅读页是业绩截图本身。数字表只出现在交给模型的图片文字里。"""
     digest = "12" * 32
     html = str(render_body("![](ok.png)\n", {"ok.png": f"/media/fangwei-mp/12/{digest}.jpg"}))
     page = inline_image_ocr(html, {digest: _OCR_TABLE})
-    assert '<table class="ocr-table">' in page
-    assert '<thead><tr><th scope="col">项目</th>' in page
-    assert '<th scope="col">2020/3月末</th>' in page
-    assert (
-        '<tr><th scope="row">年销售额（亿元人民币）</th>'
-        "<td>217.6477</td><td>254.1157</td><td>262.1495</td><td>276.3207</td></tr>"
-    ) in page
-    assert '<tr><th scope="row">毛利率（%）</th><td>21.53%</td>' in page
-    # 表头和每一行都不再各占一个 <p>。
-    assert "<p>项目 2020/3月末" not in page
-    assert "<p>年销售额（亿元人民币）" not in page
-    assert "<p>门店数（店） 123" not in page
-    # 标题、注记在表外，仍是段。
-    assert ">OK超市近4年业绩汇总</a></p>" in page
-    assert ">注：根据OK财报汇总整理</a></p>" in page
-    assert page.index("OK超市近4年业绩汇总") < page.index("<table") < page.index("注：根据OK财报汇总整理")
-    # 原图链接和 figure 壳保住；锚点落在第一个块（标题）上。
-    assert 'class="ocr-shot"' in page
-    anchor = f'<a class="ocr-link" id="{image_anchor(digest)}" href="/media/fangwei-mp/12/{digest}.jpg"'
-    assert anchor in page
-    assert 'class="ocr-link ocr-table-link"' in page
-    assert f'href="/media/fangwei-mp/12/{digest}.jpg"' in page[page.index("<table") - 400 : page.index("<table")]
+    assert page == html
+    assert f'id="{image_anchor(digest)}"' in page
+    assert f'src="/media/fangwei-mp/12/{digest}.jpg"' in page
+    assert "ocr-table" not in page and "ocr-link" not in page and "<table" not in page
+    assert "217.6477" not in page and "OK超市近4年业绩汇总" not in page
+    model = append_ocr("见图。", compose_ocr_text([_OCR_TABLE]))
+    assert "【图片里的字】" in model
+    assert "OK超市近4年业绩汇总" in model
+    assert "217.6477" in model and "21.53%" in model
+    assert "注：根据OK财报汇总整理" in model
+    assert model.index("OK超市近4年业绩汇总") < model.index("217.6477") < model.index("注：根据OK财报汇总整理")
 
 
-def test_ocr_table_cells_are_escaped():
+def test_ocr_markup_is_not_inserted_into_reading_html():
     digest = "34" * 32
     html = str(render_body("![](cost.png)\n", {"cost.png": f"/media/x/34/{digest}.jpg"}))
-    page = inline_image_ocr(html, {digest: "项目 <b>FY2023</b> FY2024\n费用率（SG&A） 9.08% 9.14%"})
-    assert "<table" in page
-    assert "&lt;b&gt;FY2023&lt;/b&gt;" in page
-    assert "SG&amp;A" in page
-    assert "<b>" not in page
+    raw = "项目 <b>FY2023</b> FY2024\n费用率（SG&A） 9.08% 9.14%"
+    page = inline_image_ocr(html, {digest: raw})
+    assert page == html
+    assert f'<img id="{image_anchor(digest)}"' in page
+    assert "<b>" not in page and "FY2023" not in page and "9.08%" not in page
+    model = append_ocr("", compose_ocr_text([raw]))
+    assert "FY2023" in model and "9.08%" in model and "SG&A" in model
 
 
 def test_chrome_cleanup_does_not_eat_the_message():
@@ -342,8 +387,8 @@ def test_chrome_cleanup_does_not_eat_the_message():
     assert tidy_ocr_text("微信\n20:41\n昨天") == "微信\n20:41\n昨天"
 
 
-def test_24008_quote_paragraphs_and_xueqiu_order_are_in_text_links():
-    """24008：方洪波收成自然段，雪球较早的发言在前，字本身链到原图。"""
+def test_24008_screenshots_stay_images_while_models_read_the_transcript():
+    """24008：公众号两张截图在阅读页仍是图。方洪波折行和雪球时间顺序只进模型输入。"""
     fang = "ab" * 32
     nest = "cd" * 32
     fang_text = (
@@ -358,34 +403,22 @@ def test_24008_quote_paragraphs_and_xueqiu_order_are_in_text_links():
         "网友：莫尼什：我是苹果用户。段永平拥有OPPO和vivo，也有一个很大的股票投资组合。"
         "他最大的持仓是苹果，直接竞争对手。他是我的朋友。你知道他怎么跟我说的吗？他…\n"
     )
-    page = inline_image_ocr(
-        str(
-            render_body(
-                "![](fang.png)\n\n![](nest.png)\n",
-                {
-                    "fang.png": f"/media/fangwei-mp/96/{fang}.jpg",
-                    "nest.png": f"/media/fangwei-mp/8b/{nest}.jpg",
-                },
-            )
-        ),
-        {fang: fang_text, nest: nest_text},
+    html = str(
+        render_body(
+            "![](fang.png)\n\n![](nest.png)\n",
+            {
+                "fang.png": f"/media/fangwei-mp/96/{fang}.jpg",
+                "nest.png": f"/media/fangwei-mp/8b/{nest}.jpg",
+            },
+        )
     )
-    assert "企业家精神是敢于在最顺的时候对自己动刀子" in page
-    assert "时候</p>" not in page and "对自己动刀子</p>" not in page.split("企业家精神", 1)[-1][:80]
-    assert "光做家电</a>" in page and "没有未来</a>" in page
-    assert "刀子光做家电" not in page
-    assert "future.</a>" in page and "转型本质就是转人" in page
-    spirit = page.index("企业家精神是敢于在最顺的时候对自己动刀子")
-    spirit_end = page.index("</p>", spirit)
-    assert "转型本质" not in page[spirit:spirit_end]
-    assert page.index("莫尼什：") < page.index("大道会不会考虑") < page.index("李录投资也很好")
-    assert "原图 1" not in page and "原图 2" not in page
-    fang_at = page.index(f'id="{image_anchor(fang)}"')
-    assert fang_at < page.index("企业家精神是敢于在最顺的时候对自己动刀子", fang_at)
-    assert f'href="/media/fangwei-mp/96/{fang}.jpg"' in page[fang_at : page.index("</a>", fang_at)]
-    nest_at = page.index(f'id="{image_anchor(nest)}"')
-    assert nest_at < page.index("莫尼什：", nest_at) < page.index("</a>", nest_at)
-    assert f'href="/media/fangwei-mp/8b/{nest}.jpg"' in page[nest_at : page.index("</a>", nest_at)]
-    reply_at = page.index("李录投资也很好")
-    reply_open = page.rindex("<a ", 0, reply_at)
-    assert f"/media/fangwei-mp/8b/{nest}.jpg" in page[reply_open : page.index("</a>", reply_at)]
+    page = inline_image_ocr(html, {fang: fang_text, nest: nest_text})
+    assert page == html
+    assert f'id="{image_anchor(fang)}"' in page and f'src="/media/fangwei-mp/96/{fang}.jpg"' in page
+    assert f'id="{image_anchor(nest)}"' in page and f'src="/media/fangwei-mp/8b/{nest}.jpg"' in page
+    assert "ocr-link" not in page and "ocr-reading" not in page
+    assert "企业家精神" not in page and "莫尼什" not in page and "李录投资" not in page
+    model = append_ocr("见图。", compose_ocr_text([fang_text, nest_text]))
+    assert "企业家精神是敢于在最顺的时候对自己动刀子" in model
+    assert "刀子光做家电" not in model
+    assert model.index("莫尼什：") < model.index("大道会不会考虑") < model.index("李录投资也很好")

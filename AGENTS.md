@@ -33,6 +33,7 @@
 - 不在启动或上线时跑 `research-views`、`research-digest`、`research-theses` 这类花 LLM 钱的批量任务。夜间任务每晚有上限。要一次跑一大批，先在 PR 里写出篇数和大概费用，等 Zhilin 同意。这类任务（译制、摘要、观点、论点、识图）只有命令行入口 `docker compose exec app research-*`，网页和 API 触发它们的接口 #140 删了。
 - 整个来源先不展示：把 `config/sources.yaml` 里那一项的 `enabled` 改成 `false`。从配置里删掉的来源，启动时 `sync_sources` 也记成停用。停用的来源网站、接口、问库都不出现，导入会拒绝，摘要、观点、论点不再处理，库里的行留着。
 - 不跳过、不禁用测试来让 CI 变绿。
+- 阅读页（文章、对照、飞书目录右侧）保留原图，不把识图文字铺进正文。整理后的字只给摘要、观点、问这篇和检索（`present_ocr` / `articles.ocr_text` / `article_chunks.lang = ocr`）。见 [docs/ocr.md](docs/ocr.md)。
 
 ## 本地测试
 

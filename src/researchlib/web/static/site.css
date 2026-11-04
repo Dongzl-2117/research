@@ -4,6 +4,8 @@
   color-scheme: light;
   --page-max-wide: max(1200px, calc(270dvh - 236px));
   --page-max-reading: max(1100px, calc(200dvh - 236px));
+  /* 文章阅读栏，对齐微信公众号正文宽度（约 677px），落在 640–720 之间。 */
+  --reading-column: 680px;
   --bg: #faf9f6;
   --bg-sunk: #f3f3ef;
   --bg-muted: #e9ede9;
@@ -581,9 +583,9 @@ mark {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 28px;
-  /* 72ch 大约三十多个汉字，宽屏上正文会缩在中间，两边空出一大截。
-     栏宽跟正文字号走，最多约 90 个汉字；更窄的窗口就占满主区域。 */
-  max-width: 90em;
+  /* 公众号式窄栏：标题、正文、图都收在中间这一列，不铺满宽屏。窄窗口占满主区域。 */
+  width: 100%;
+  max-width: var(--reading-column);
   margin: 0 auto;
   padding-bottom: 24px;
   font-size: var(--text-prose);
@@ -732,7 +734,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   overflow-wrap: anywhere;
   max-width: 72ch;
 }
-/* 文章页正文跟阅读栏一样宽。问库、日汇总仍用上面的 72ch。 */
+/* 文章页正文跟阅读栏一样宽（--reading-column）。问库、日汇总仍用上面的 72ch。 */
 .reader-grid .prose { max-width: none; }
 .prose p { margin: 0; }
 /* 公众号/正文段间按原文空开：相邻两段给回一段空白，读起来跟原稿的分段一致。
@@ -784,11 +786,11 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose img, .prose video {
   display: block;
   width: auto;
-  max-width: min(100%, 720px);
+  /* 跟阅读栏走，不比栏更宽；竖图再限高，长截图不占满一屏。点开仍看大图。 */
+  max-width: 100%;
   height: auto;
-  /* 竖图（长截图、海报）限高，不撑满一屏；点开看大图。 */
-  max-height: min(70vh, 720px);
-  margin: 1.4em auto;
+  max-height: min(56vh, 480px);
+  margin: 1.2em auto;
   border-radius: var(--radius-tile);
   background: var(--bg-sunk);
   object-fit: contain;
@@ -1971,7 +1973,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .doc-twist::before { content: "▶"; }
 .doc-nav details[open] > summary .doc-twist { display: inline-block; transform: rotate(90deg); }
 .doc-branch > a { flex: 1 1 auto; min-width: 0; width: auto; }
-.doc-read { min-width: 0; max-width: 72ch; font-size: var(--text-prose); }
+.doc-read { min-width: 0; max-width: var(--reading-column); font-size: var(--text-prose); }
 .doc-read .prose { max-width: none; }
 @media (max-width: 800px) {
   .doc-shell { grid-template-columns: minmax(0, 1fr); }

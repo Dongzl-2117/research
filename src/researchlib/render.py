@@ -14,11 +14,10 @@ from markupsafe import Markup
 
 from researchlib.article_layout import mark_unavailable_tables, readable_headings
 from researchlib.ocr import useful_image_text
-from researchlib.ocr_tables import Table, find_tables
-from researchlib.present_text import merge_wrapped_utterances, polish_display_text, present_article_text
+from researchlib.present_text import polish_display_text, present_article_text
 from researchlib.textutil import escape_times, strip_alert_markers
-from researchlib.wechat_dialogue import HOST, parse_shot, render_shots, speaker_prefix, split_speaker
-from researchlib.zsxq_comments import assemble_reader_comments, strip_breaks_before_comments
+from researchlib.wechat_dialogue import HOST, speaker_prefix, split_speaker
+from researchlib.zsxq_comments import assemble_reader_comments
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
@@ -311,12 +310,6 @@ _CHROME_LINE = re.compile(
     r")$",
     re.I,
 )
-_P_ONLY_IMG = re.compile(r"<p\b[^>]*>\s*(<img\b[^>]*>)\s*</p>", re.I)
-_IMG_ID = re.compile(r'\bid="(img-[0-9a-f]{12})"', re.I)
-_IMG_SRC_HASH = re.compile(r'\bsrc="(/media/[^"]*?([0-9a-f]{64})\.[A-Za-z0-9]+)"', re.I)
-_IMG_ALT = re.compile(r'\balt="([^"]*)"', re.I)
-
-
 def tidy_ocr_text(text: str) -> str:
     """阅读页上的轻量整理：拿掉单独成行的界面字，保留换行。
 
@@ -345,100 +338,11 @@ def tidy_ocr_text(text: str) -> str:
 
 
 def _cite(info: dict, inner: str, *, with_id: bool, extra_class: str = "") -> str:
-    """这段字本身链到原图。同一张图只有第一处带锚点，检索「看这张图」仍跳到这里。"""
+    """对话 HTML 里把这段字链到原图。阅读页不走这里，锚点在 ``<img>`` 上。"""
     href = html_lib.escape(info["src"], quote=True)
     id_attr = f' id="{html_lib.escape(info["anchor"], quote=True)}"' if with_id else ""
     class_attr = f"ocr-link {extra_class}" if extra_class else "ocr-link"
     return f'<a class="{class_attr}"{id_attr} href="{href}" target="_blank" rel="noopener">{inner}</a>'
-
-
-def _ocr_table_html(table: Table) -> str:
-    """数据表排成真表格：表头一行，每行左列是项目、右边是数值列。"""
-    head = ""
-    if table.header:
-        cells = "".join(f'<th scope="col">{html_lib.escape(cell)}</th>' for cell in table.header)
-        head = f"<thead><tr>{cells}</tr></thead>"
-    body = "".join(
-        "<tr>"
-        f'<th scope="row">{html_lib.escape(row.label)}</th>'
-        + "".join(f"<td>{html_lib.escape(cell)}</td>" for cell in row.cells)
-        + "</tr>"
-        for row in table.rows
-    )
-    return f'<table class="ocr-table">{head}<tbody>{body}</tbody></table>'
-
-
-def _prose_html(text: str, link: dict | None) -> str:
-    """模型写下的换行就是段。只先接半句折行，每一段的字链到这张图。
-
-    逐行的数据表不按行排：认出来的表整张放进 ``<table>``，表外的标题、注记仍是段。
-    """
-    shown = polish_display_text(merge_wrapped_utterances(tidy_ocr_text(text)))
-    lines = shown.splitlines()
-    tables = {table.start: table for table in find_tables(lines)}
-    parts: list[str] = []
-    first = True
-    index = 0
-    while index < len(lines):
-        table = tables.get(index)
-        if table is not None:
-            inner = _ocr_table_html(table)
-            if link:
-                # 整张表仍链到原图；锚点落在第一个块上，检索「看这张图」跳到这张表。
-                inner = _cite(link, inner, with_id=first, extra_class="ocr-table-link")
-                first = False
-            parts.append(inner)
-            index = table.end
-            continue
-        line = lines[index].strip()
-        index += 1
-        if not line:
-            continue
-        inner = html_lib.escape(line)
-        if link:
-            inner = _cite(link, inner, with_id=first)
-            first = False
-        parts.append(f"<p>{inner}</p>")
-    return "".join(parts)
-
-
-def _ocr_figure(anchor: str, src: str, alt: str, text: str) -> str:
-    link = {"anchor": anchor, "src": src}
-    inner = _prose_html(text, link)
-    if not inner:
-        return _media_bundle([link])
-    return f'<figure class="ocr-shot"><div class="ocr-reading">{inner}</div></figure>'
-
-
-def _media_bundle(items: list[dict]) -> str:
-    """商品图、图表：不展示 OCR 乱码，只留「原图 N」。"""
-    return f'<figure class="ocr-shot">{_original_links(items)}</figure>'
-
-
-
-def _img_spec(tag: str) -> tuple[str, str, str, str] | None:
-    id_match = _IMG_ID.search(tag)
-    src_match = _IMG_SRC_HASH.search(tag)
-    if not id_match or not src_match:
-        return None
-    alt_match = _IMG_ALT.search(tag)
-    alt = alt_match.group(1) if alt_match else ""
-    return id_match.group(1), src_match.group(1), alt, src_match.group(2)
-
-
-def _image_spans(html: str) -> list[tuple[int, int, str]]:
-    """按出现顺序找出图片。单独成段的 <p><img></p> 整段换掉，避免留下空段落。"""
-    covered: list[tuple[int, int]] = []
-    spans: list[tuple[int, int, str]] = []
-    for match in _P_ONLY_IMG.finditer(html):
-        spans.append((match.start(), match.end(), match.group(1)))
-        covered.append((match.start(), match.end()))
-    for match in _IMG_TAG.finditer(html):
-        if any(start <= match.start() and match.end() <= end for start, end in covered):
-            continue
-        spans.append((match.start(), match.end(), match.group(0)))
-    spans.sort()
-    return spans
 
 
 # 微信气泡一行大约 15 个汉字。顶到边的是折行，短行多半是这句说完了。
@@ -457,7 +361,7 @@ def _flow_ocr_lines(text: str, *, bubbles: bool = False) -> str:
 
     满行直接接上，避免半个词换行。短行后面留一个空格，两句没有句号时不粘成一个词。
     上一行已经收了句，下一行另起一段，避免星球长聊糊成一大段。
-    旁路正文仍保留原来的换行，这里只影响阅读页。
+    旁路正文仍保留原来的换行。阅读页不把识图铺进正文，这里只服务引用条。
     bubbles：识图一条气泡写一行，每行已是整条消息，不是屏宽折行。不按满行、汉字相接首尾粘上，
     两条之间空一格，逗号顿号后面不空（24020 以前粘成「构建菜鸟驿站菜鸟是靠揽件」）。
     """
@@ -502,7 +406,7 @@ def flow_ocr_quote_body(text: str) -> str:
 
 
 def _dialogue_html(text: str, link: dict | None = None, *, bubbles: bool = False, host: str = HOST) -> str:
-    """host：截图里绿气泡显示成谁。方伟以外的来源显示那个来源的作者名。"""
+    """把整理后的对话排成 HTML。阅读页不调用。host 是绿气泡显示成谁。"""
     text = polish_display_text(text or "")
     parts: list[str] = []
     first = True
@@ -530,39 +434,6 @@ def _dialogue_html(text: str, link: dict | None = None, *, bubbles: bool = False
                 first = False
             parts.append(f"<p>{inner}</p>")
     return "".join(parts)
-
-
-
-def _original_links(items: list[dict]) -> str:
-    """连续截图的原图收成一行文字链接，点开就是图片地址。"""
-    links: list[str] = []
-    for number, info in enumerate(items, start=1):
-        safe_src = html_lib.escape(info["src"], quote=True)
-        safe_id = html_lib.escape(info["anchor"], quote=True)
-        links.append(
-            f'<a class="ocr-link" id="{safe_id}" href="{safe_src}" target="_blank" rel="noopener">原图 {number}</a>'
-        )
-    return f'<p class="ocr-links">{"".join(links)}</p>'
-
-
-def _chat_bundle(segments: list[tuple[dict, str]], *, host: str = HOST) -> str:
-    """每张图贡献的字链到那张图。整段重复、没有新字的图仍留一个「原图」链接。"""
-    chunks: list[str] = []
-    fallbacks: list[dict] = []
-    for info, dialogue in segments:
-        if dialogue.strip():
-            chunks.append(_dialogue_html(dialogue, link=info, bubbles=info["shot"].bubble_lines, host=host))
-        else:
-            fallbacks.append(info)
-    extra = _original_links(fallbacks) if fallbacks else ""
-    if not chunks:
-        return f'<figure class="ocr-shot">{extra}</figure>'
-    return (
-        '<figure class="ocr-shot">'
-        f'<div class="ocr-reading ocr-dialogue">{"".join(chunks)}</div>'
-        f"{extra}"
-        "</figure>"
-    )
 
 
 
@@ -634,94 +505,15 @@ def _hoist_figures_out_of_paragraphs(html: str) -> str:
     return cleaned
 
 
-def inline_image_ocr(html: str, texts: dict[str, str], *, host: str = HOST) -> str:
-    """有可读识别结果的本地图：先显示整理后的字，这些字本身链到原图。
+def inline_image_ocr(html: str, texts: dict[str, str] | None = None, *, host: str = HOST) -> str:
+    """阅读页保留原图，不把识图文字铺进版面。
 
-    连续几张微信截图合成一段，重复的句子只出现一次。每张图新写出来的那几句链到它自己的地址；
-    整段都是重复、没有新字时，仍留一个「原图 N」，图片不会丢。商品图和图表没有可读正文，只留原图链接。
-    半句折行会接上；模型空开的段保持原样，不收成一整段，也不按句再拆。没认出字的图保持原来的图片。
-    texts 是 content_hash → image_texts.text。锚点 id 在这段字的链接上，检索里的「看这张图」仍跳到这里。
-    host 是这篇的作者：截图里的绿气泡显示成他（方伟以外的来源不写成方伟）。
+    ``texts`` 是 content_hash → image_texts.text，``host`` 是这篇作者。阅读 HTML 都不用：
+    整理后的字只进摘要、观点、问这篇和检索（``present_ocr_pieces`` / ``append_ocr`` / ``ocr_chunks``）。
+    点开图片仍走原来的 ``<img>``（锚点 ``img-`` 还在图上，检索「看这张图」跳到这张图）。
     """
-
-    def finish(value: str) -> str:
-        # 截图收成一段对话之后，原来夹在图片之间的 <br> 会落到评论标题前面，也会卡在 figure 前后。
-        cleaned = strip_breaks_before_comments(value)
-        cleaned = re.sub(r"(?:<br\s*/?>\s*)+(?=<figure\b)", "", cleaned, flags=re.I)
-        cleaned = re.sub(r"(?<=</figure>)\s*(?:<br\s*/?>\s*)+", "", cleaned, flags=re.I)
-        return _hoist_figures_out_of_paragraphs(cleaned)
-
-    if not html or not texts:
-        return finish(html or "")
-    spans = _image_spans(html)
-    if not spans:
-        return finish(html)
-    parsed: list[dict | None] = []
-    for _start, _end, tag in spans:
-        spec = _img_spec(tag)
-        if spec is None:
-            parsed.append(None)
-            continue
-        anchor, src, alt, digest = spec
-        raw = texts.get(digest) or ""
-        if not useful_image_text(raw):
-            parsed.append(None)
-            continue
-        parsed.append(
-            {"anchor": anchor, "src": src, "alt": alt, "raw": raw, "shot": parse_shot(raw)}
-        )
-    outputs: list[str | None] = [None] * len(spans)
-    seen: list[str] = []
-    index = 0
-    while index < len(spans):
-        item = parsed[index]
-        if item is None:
-            index += 1
-            continue
-        if item["shot"].kind == "media":
-            group = [index]
-            nxt = index + 1
-            while nxt < len(spans) and parsed[nxt] is not None and parsed[nxt]["shot"].kind == "media":
-                group.append(nxt)
-                nxt += 1
-            outputs[group[0]] = _media_bundle([parsed[cursor] for cursor in group])
-            for cursor in group[1:]:
-                outputs[cursor] = ""
-            index = nxt
-            continue
-        if item["shot"].kind != "dialogue":
-            shown = item["shot"].prose if item["shot"].kind == "prose" else item["raw"]
-            outputs[index] = _ocr_figure(item["anchor"], item["src"], item["alt"], shown)
-            index += 1
-            continue
-        group = [index]
-        nxt = index + 1
-        family = item["shot"].family or "chat"
-        while (
-            nxt < len(spans)
-            and parsed[nxt] is not None
-            and parsed[nxt]["shot"].kind == "dialogue"
-            and (parsed[nxt]["shot"].family or "chat") == family
-        ):
-            group.append(nxt)
-            nxt += 1
-        infos = [parsed[cursor] for cursor in group]
-        dialogues = render_shots([info["shot"].turns for info in infos], seen)
-        segments = [(info, dialogue.strip()) for info, dialogue in zip(infos, dialogues, strict=True)]
-        if not any(text for _info, text in segments):
-            for cursor in group:
-                info = parsed[cursor]
-                outputs[cursor] = _ocr_figure(info["anchor"], info["src"], info["alt"], info["raw"])
-        else:
-            outputs[group[0]] = _chat_bundle(segments, host=host)
-            for cursor in group[1:]:
-                outputs[cursor] = ""
-        index = nxt
-    result = html
-    for (start, end, _tag), output in zip(reversed(spans), reversed(outputs), strict=True):
-        if output is not None:
-            result = result[:start] + output + result[end:]
-    return finish(result)
+    _ = texts, host
+    return html or ""
 
 
 
