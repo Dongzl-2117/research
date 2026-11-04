@@ -1604,14 +1604,8 @@ def retrieve(
         rows, semantic = semantic_candidates(conn, query, effective, rows)
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     picked = select(scored, query, budget, sources_by_id)
-    narrowed = effective.date_from or effective.date_to or effective.company_id is not None or query.authors
-    if not picked and narrowed and not query.overview and not semantic_only:
-        # 范围已经很窄（某天、某位作者、某家公司）但词没召回到：退回按范围取，像「汇总这一天」。
-        fallback = preset_query(query)
-        rows = _candidates(conn, fallback, effective, limit=per_channel, enough=budget.passages * 6)
-        scored = score_rows(conn, fallback, rows, scope=effective, company_rows=company_rows)
-        picked = select(scored, fallback, budget, sources_by_id)
-        query = fallback
+    # 具体内容在当前范围没有词汇或语义证据时，保持无证据。
+    # 概览意图已在 analyze / preset_query 中确定，不能因召回为空而丢掉问题里的内容条件。
     if purpose in CONTEXT_PURPOSES:
         extra = budget.chars * (TREE_CONTEXT_SHARE if scope.tree_id is not None else CONTEXT_SHARE)
         attach_context(conn, picked, int(extra), span=2 if scope.tree_id is not None else 1)
