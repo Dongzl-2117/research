@@ -1,14 +1,14 @@
 {
   "auditBase": "5c19a8e183983181497617c4b9f17c1b33d162eb",
   "initialMain": "f90b83d5131cad4069dd076dfbfb262573dc8e1d",
-  "verificationMain": "cb234fe18677dc2e74543abfb5fbc85fcf856445",
+  "verificationMain": "a406b72982464bafc0b0de31427b22aa8f86ff27",
   "codeHeads": {
-    "142": "14171c7802b81d5941c1eaf332faf23862628612",
-    "219": "8770e039f96522641fb85ddf70c6f049809ee7d1",
-    "220": "50464e54e3a67a3f5bedaca0fdac06438b133ecc",
+    "219": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+    "220": "b5fc1b7654b013cb02a0deae7e298563d76937fa",
+    "142": "fbf8c77995e786fbe6663b0819a2679f59258233",
     "223": "0d1dcba9bb9ad2e6bd69a58240e9b43ad7201c7e",
-    "224": "f6fc36c9e66e82255693c3260f91aecfe9064732",
-    "225": "07704b8d9ab30a3c9b1f997799e68672c2871f82"
+    "224": "63976eb07f94befd891ba18984a05059acfd3feb",
+    "225": "0bc553ebafffe67730371b85c66c126a1d0f7cf1"
   },
   "items": [
     {
@@ -16,7 +16,7 @@
       "finding": "回答任务租约、心跳与过期工作者",
       "status": "code-fixed-draft",
       "pr": 224,
-      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
       "result": "领取 token＋心跳＋原子写入；迟到成功和错误不覆盖新轮次",
       "regression": "轮次竞态、重复领取、心跳集成",
       "limitations": "不保证已发出的外部请求可取消"
@@ -26,7 +26,7 @@
       "finding": "译文偏好隐藏英文/OCR命中",
       "status": "code-fixed-draft",
       "pr": 225,
-      "codeHead": "07704b8d9ab30a3c9b1f997799e68672c2871f82",
+      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
       "result": "同篇英文／OCR／中文均保留进入排序",
       "regression": "选择器单测、真实英文和OCR入库召回",
       "limitations": "仍受正常相关度与每篇预算选择"
@@ -36,8 +36,8 @@
       "finding": "零词频问题跳过语义召回",
       "status": "code-fixed-draft",
       "pr": 225,
-      "codeHead": "07704b8d9ab30a3c9b1f997799e68672c2871f82",
-      "result": "零词频内容问题保留并尝试语义，不改成无关概览",
+      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
+      "result": "零词频内容问题尝试语义，同时保留真正命中标题的词证据，不改成无关概览",
       "regression": "语义调用替身、无向量空结果、日期概览正例",
       "limitations": "无向量服务则没有语义证据；未验证真实模型质量"
     },
@@ -46,7 +46,7 @@
       "finding": "空或纯数字响应保留英文并complete",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
       "result": "空标签／数字／标点响应在写回前拒绝",
       "regression": "纯HTML反例、旧complete和检索块保留",
       "limitations": "有文字不证明译得正确"
@@ -56,8 +56,8 @@
       "finding": "canonical移除真实文本代码及p-N锚点",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
-      "result": "canonical保留真实p-N目标、代码与正文中的id字样",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "result": "canonical与完整展示回退均按标签处理，保留真实p-N目标、代码与正文中的id字样",
       "regression": "三个不同位置的反例与回执回读",
       "limitations": "实际输入变化的旧回执仍可能不兼容，不回填"
     },
@@ -66,7 +66,7 @@
       "finding": "del/ins行内标记丢失",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
       "result": "行内del／ins通过分段、写回与回执",
       "regression": "纯HTML与入库回读",
       "limitations": "仅保真，不判断编辑内容语义"
@@ -76,8 +76,8 @@
       "finding": "行内代码空白误拒",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
-      "result": "代码内部空格与换行不压缩",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "result": "长段按句切分把代码当完整原子，内部空格与换行不压缩",
       "regression": "materialize、splice、receipt和入库回读",
       "limitations": "代码本身不翻译"
     },
@@ -86,7 +86,7 @@
       "finding": "div直接英文漏译",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
       "result": "识别直接文本div，并为混有子块的直接正文补稳定段落",
       "regression": "纯div、嵌套块、混合前后正文和回执",
       "limitations": "保留原有块和锚点，不做历史重切"
@@ -96,8 +96,8 @@
       "finding": "非a脚注ID丢失",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
-      "result": "逐段按序核对非a节点的id／name，缺少即拒绝",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "result": "切分保留空／跨句命名节点；建立快照前及逐段按序核对原始id／name",
       "regression": "sup／span正例、缺ID拒绝并保留旧行",
       "limitations": "不猜缺少目标的原位置"
     },
@@ -106,7 +106,7 @@
       "finding": "旧数字表格QA顺序重数标点",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
       "result": "数字单元格带行列、重数、标点和结构核对",
       "regression": "完整数字／混合表格正例，换位／缺格／重复／百分号负例",
       "limitations": "未译数字区块按原样保留，不是通用语义等价判断"
@@ -116,7 +116,7 @@
       "finding": "长代码giant误报",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
       "result": "巨型代码不计入巨型英文散文，丢代码仍失败",
       "regression": "长代码正例、缺代码负例",
       "limitations": "真正巨型散文和完整回退仍如实提示"
@@ -126,9 +126,9 @@
       "finding": "并发中文修订被覆盖",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
-      "result": "最终upsert原子比较整个初始中文行",
-      "regression": "已有行和新插入行两种并发修改、检索块保留",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "result": "初始缺行仅插入，初始有行仅按整行快照条件更新，拒绝并发删除后复活",
+      "regression": "已有行修改、并发插入、调用期间删除、写入前删除；检索块保留",
       "limitations": "仅防止此请求覆盖较新目标，不处理历史冲突"
     },
     {
@@ -136,7 +136,7 @@
       "finding": "audit指定ID受limit截断",
       "status": "code-fixed-draft",
       "pr": 220,
-      "codeHead": "50464e54e3a67a3f5bedaca0fdac06438b133ecc",
+      "codeHead": "b5fc1b7654b013cb02a0deae7e298563d76937fa",
       "result": "audit显式ID不受默认／较小limit截断",
       "regression": "27个ID配limit1的只读集成",
       "limitations": "来源条件仍取显式交集；不执行历史修复"
@@ -146,7 +146,7 @@
       "finding": "重检2000行饥饿",
       "status": "code-fixed-draft",
       "pr": 220,
-      "codeHead": "50464e54e3a67a3f5bedaca0fdac06438b133ecc",
+      "codeHead": "b5fc1b7654b013cb02a0deae7e298563d76937fa",
       "result": "按发布时间＋ID游标分批推进重检",
       "regression": "越过健康页、同日期与无日期、停用来源过滤",
       "limitations": "全扫描可能更慢，但每批内存有界"
@@ -166,8 +166,8 @@
       "finding": "引号OR和否定短语",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
-      "result": "保留引号OR顺序；否定短语不进入正向组",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "result": "相邻中英引号保留；逐段／ASK每个必含组均须满足，OR／否定组保持语义",
       "regression": "引号OR、混合OR、否定短语的旧反例",
       "limitations": "不支持任意括号查询语言"
     },
@@ -176,7 +176,7 @@
       "finding": "多词作者识别",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
       "result": "已知多词作者作为完整名字识别",
       "regression": "Ben Thompson来源作者合成资料",
       "limitations": "作者来自启用来源配置，不猜陌生人"
@@ -186,7 +186,7 @@
       "finding": "作者和来源交集",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
       "result": "作者和显式来源取交集，空交集不扩宽",
       "regression": "关键词和相关原文的空交集集成",
       "limitations": "显式无效来源沿用既有404规则"
@@ -196,7 +196,7 @@
       "finding": "公司标题消歧",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
       "result": "汇总不再用标题字面绕过公司消歧",
       "regression": "水果苹果与公司提及的正反例",
       "limitations": "公司范围仍沿用提及表，不重做历史实体标注"
@@ -206,7 +206,7 @@
       "finding": "排除条件计数",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
       "result": "排除条件同时用于列表和计数的干净证据",
       "regression": "公司无可用证据0计数、另有干净块正例",
       "limitations": "保留按块排除语义，别处出现排除词不删整篇"
@@ -216,7 +216,7 @@
       "finding": "OR计数",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
       "result": "文章匹配按组内OR／组间AND求集合",
       "regression": "公司OR、混合OR、引号OR与尾页",
       "limitations": "字面和语义集合单独统计"
@@ -226,7 +226,7 @@
       "finding": "跨块计数",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
       "result": "各词组可来自当前原文、译文、OCR不同块",
       "regression": "原文＋图、分散段落和当前译文集成",
       "limitations": "旧hash译文不参与证据"
@@ -236,7 +236,7 @@
       "finding": "计数集合并集",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
       "result": "字面集合精确计数，按文章身份合并分页，语义另报",
       "regression": "候选外索引＋候选跨图并集；语义重叠只计一次",
       "limitations": "语义和部分命中仍受候选窗口限制"
@@ -246,7 +246,7 @@
       "finding": "越界分页钳位后空页",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "14171c7802b81d5941c1eaf332faf23862628612",
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
       "result": "HTML页码钳位后重取正确一页并限制SQL整数",
       "regression": "999页与最大bigint页码集成",
       "limitations": "offset不提供跨数据变动的冻结快照"
@@ -256,7 +256,7 @@
       "finding": "数字小数边界10%/10.5%",
       "status": "code-fixed-draft",
       "pr": 224,
-      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
       "result": "引用完整小数匹配，10%不冒充10.5%",
       "regression": "数字引用单测与原有反馈集成",
       "limitations": "规则提示复核，不证明事实成立"
@@ -266,7 +266,7 @@
       "finding": "数字单位15%/15x",
       "status": "code-fixed-draft",
       "pr": 224,
-      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
       "result": "引用数字连单位核对，15%不冒充15x",
       "regression": "单位差异负例与等值字面正例",
       "limitations": "不是所有金融单位的语义换算器"
@@ -276,7 +276,7 @@
       "finding": "数字正负号",
       "status": "code-fixed-draft",
       "pr": 224,
-      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
       "result": "保留并核对数字正负号",
       "regression": "正负号、全角／减号边界单测",
       "limitations": "未验证所有自然语言数词"
@@ -286,7 +286,7 @@
       "finding": "999以上引用编号",
       "status": "code-fixed-draft",
       "pr": 224,
-      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
       "result": "引用编号不再限三位，检查和回链一致",
       "regression": "1000以上编号检查与HTML回链",
       "limitations": "仍只接受范围内的有效引用编号"
@@ -296,8 +296,8 @@
       "finding": "停用来源历史回答可读",
       "status": "code-fixed-draft",
       "pr": 224,
-      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
-      "result": "停用／不存在来源的历史回答整条隐藏",
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
+      "result": "停用／不存在来源的历史回答隐藏；反馈读写过滤来源，原记录保留",
       "regression": "列表、HTML、API及数据库原行保留集成",
       "limitations": "没有扩展到另行受阻的完整安全审计"
     },
@@ -306,7 +306,7 @@
       "finding": "HTML异步问答阻塞事件循环",
       "status": "code-fixed-draft",
       "pr": 224,
-      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
       "result": "HTML阻塞问答步骤和重试进入线程池",
       "regression": "事件循环可继续推进的异步回归",
       "limitations": "没有做真实并发流量压测"
@@ -316,7 +316,7 @@
       "finding": "译文概览排序惩罚",
       "status": "code-fixed-draft",
       "pr": 225,
-      "codeHead": "07704b8d9ab30a3c9b1f997799e68672c2871f82",
+      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
       "result": "概览位置以本语言的ord起点计算",
       "regression": "原文0和译文10000同分正例",
       "limitations": "不保证中英片段永远获得相同相关度"
@@ -326,7 +326,7 @@
       "finding": "过期或模型不符向量",
       "status": "code-fixed-draft",
       "pr": 225,
-      "codeHead": "07704b8d9ab30a3c9b1f997799e68672c2871f82",
+      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
       "result": "ANN、补查、覆盖率核对当前模型／输入hash／译文有效性",
       "regression": "固定向量的旧hash、错模型、正文变更与查询模型切换",
       "limitations": "同名模型权重与历史实际输入无法独立证明，不批量重算"
@@ -336,7 +336,7 @@
       "finding": "不完整或错误SSE误成功",
       "status": "code-fixed-draft",
       "pr": 224,
-      "codeHead": "f6fc36c9e66e82255693c3260f91aecfe9064732",
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
       "result": "SSE要求主候选stop和DONE，错误或截断拒绝",
       "regression": "错误帧、坏JSON、length、缺终态、usage正例",
       "limitations": "未请求真实服务验证兼容性"
@@ -346,27 +346,55 @@
       "finding": "随后主线226的源段标记不稳定",
       "status": "code-fixed-draft",
       "pr": 219,
-      "codeHead": "8770e039f96522641fb85ddf70c6f049809ee7d1",
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
       "result": "随后主线226的段落编号改为解析树内稳定标识",
       "regression": "两个旧反例、重复／交错／并发manifest与自回执",
-      "limitations": "保留226／227展示意图；不凭对应证明语义"
+      "limitations": "保留226／227／228展示意图；不凭对应证明语义"
     }
   ],
   "unresolvedConfirmedItems": [],
   "integration": {
-    "passed": 1211,
+    "passed": 1242,
     "failed": 0,
     "skipped": 0,
-    "seconds": 105.97,
-    "localCommit": "6b0591f03475df1d8a940b67edf756c6e7fe52cc",
-    "sourceManifestSha256": "63702d75f4173d48e424fa09fa85135a032fe8a777ed13445664540c6e0dfd8e",
+    "seconds": 113.46,
+    "localCommit": "11e718554328e9587f51391178e2e18b8ae7b5cb",
+    "sourceManifestSha256": "e0d4c979e69f5a997420e21b20a0f842157f1d30aa8f33a81ee95fa441e1cdf4",
     "sourceFiles": 154,
     "retrievalBaseline": "1500 articles / 10463 chunks / 4975 mentions; unchanged baseline passed",
     "browserWidths": [
       1440,
       390
     ],
-    "javascriptErrors": 0
+    "javascriptErrors": 0,
+    "runtimeTestCommit": "fdd53275ad487cea61eda2b49a04487713554695",
+    "runtimeUnchangedAfterTest": true,
+    "pagination": {
+      "query": "paginationneedle",
+      "articles": 2408,
+      "chunks": 4708,
+      "reported_total": 2408,
+      "reported_available": 2408,
+      "reachable": 2408,
+      "duplicates": 0,
+      "missing": 0,
+      "unexpected": 0,
+      "stable": true,
+      "counts_ok": true,
+      "empty_after_end": true,
+      "first_ms": 49.65,
+      "median_ms": 42.25,
+      "max_ms": 60.17,
+      "calls": 29,
+      "max_text_rows_per_call": 400,
+      "max_text_rows_per_fetch": 300
+    },
+    "logSha256": {
+      "full": "43169c0cd69c489bce1b0d22f99079f1a97a79dbf559dc0c22c9e1bdec3a9343",
+      "browser": "2e0a4d8d05aafebc03dedf929e45c3922863801819296f35b79eaf804cb24278",
+      "retrieval": "45e4502b2cb8966e17cb99a3fc6265d30d2a19c2c49db31fe34bc394068435f0",
+      "pagination": "7dbcbdb46ef5b26c84e240c78baf5eb2a386ff56d55741081f8f9ce2d1ab28c2"
+    }
   },
   "notPerformed": [
     "production access or historical writes",
@@ -378,5 +406,134 @@
     "synthetic data and stubs; no semantic accuracy or production prevalence proof",
     "PostgreSQL16.15 / zhparser2.4 / pgvector0.6; halfvec not tested",
     "draft CI Tests completed/skipped, not pass"
-  ]
+  ],
+  "independentReview": [
+    {
+      "id": "R1",
+      "pr": 219,
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "finding": "并发删除目标会被 INSERT 复活",
+      "result": "初始有行仅条件 UPDATE，缺行仅 INSERT DO NOTHING；两种删除竞态旧2失败、新通过，未变目标正例通过",
+      "tests": [
+        "tests/integration/test_bilingual_provenance_db.py"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R2",
+      "pr": 220,
+      "codeHead": "b5fc1b7654b013cb02a0deae7e298563d76937fa",
+      "finding": "叠加分支落后于最终 #219",
+      "result": "普通合并最终依赖；#219 为 #220 祖先，left/right 为 0/5",
+      "tests": [
+        "docs/translation-scan-2026-11-04.md"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R3",
+      "pr": 142,
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "finding": "相邻中英引号被贪婪词项吞掉",
+      "result": "引号边界停止；API 和 ASK 保留完整必含短语",
+      "tests": [
+        "tests/integration/test_quoted_passage_contract.py"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R4",
+      "pr": 142,
+      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "finding": "多个必含短语从 AND 退成任选",
+      "result": "逐段、普通及深度 ASK 组间 AND；组内 OR、否定短语、扩展词和文章跨块正例保留",
+      "tests": [
+        "tests/integration/test_quoted_passage_contract.py"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R5",
+      "pr": 219,
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "finding": "真正长段拆句压缩代码空白",
+      "result": "代码作为完整原子保留字节，实际产生40个以上叶子的正例及写回保护通过",
+      "tests": [
+        "tests/unit/test_long_source_resources.py"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R6",
+      "pr": 219,
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "finding": "空命名锚点丢失、跨句身份复制后仍可签回执",
+      "result": "命名节点完整归属一叶；快照前比较原始锚点，空 span/sup、跨句 span、链接和图片保留",
+      "tests": [
+        "tests/unit/test_long_source_resources.py"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R7",
+      "pr": 225,
+      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
+      "finding": "正文零词频清掉标题独有词命中",
+      "result": "保留真实标题词证据；直接召回和 API 大小写正例通过，没证据不退概览；旧2失败",
+      "tests": [
+        "tests/integration/test_title_only_evidence.py"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R8",
+      "pr": 224,
+      "codeHead": "63976eb07f94befd891ba18984a05059acfd3feb",
+      "finding": "反馈标题、链接和备注暴露停用来源",
+      "result": "marks 联查启用来源；添加缺失／无关标记先核对来源，原记录保留；旧2失败",
+      "tests": [
+        "tests/integration/test_feedback_source_visibility.py"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R9",
+      "pr": 219,
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "finding": "完整回退的全局 p-N 正则误删正文及代码",
+      "result": "按真实标签读取／去重 ID；正文、代码与真实脚注正例通过",
+      "tests": [
+        "tests/unit/test_long_source_resources.py"
+      ],
+      "status": "code-fixed-draft"
+    },
+    {
+      "id": "R10",
+      "pr": 219,
+      "codeHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "finding": "随后 #228 的去重夹具遗漏英文已有季度",
+      "result": "补齐正例中文第一季度，遗漏或改为第四季度必须完整回退；精确 a406b72 两旧反例失败",
+      "tests": [
+        "tests/unit/test_article_preservation.py",
+        "tests/unit/test_long_source_resources.py"
+      ],
+      "status": "code-fixed-draft"
+    }
+  ],
+  "stackRelations": {
+    "220": {
+      "basePR": 219,
+      "baseHead": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
+      "head": "b5fc1b7654b013cb02a0deae7e298563d76937fa",
+      "behind": 0,
+      "ahead": 5
+    },
+    "142": {
+      "basePR": 225,
+      "baseHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
+      "head": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "behind": 0,
+      "ahead": 7
+    }
+  }
 }
