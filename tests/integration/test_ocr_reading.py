@@ -9,16 +9,19 @@ from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from researchlib import ask as ask_mod
 from researchlib import digest as digest_mod
 from researchlib import views as views_mod
-from researchlib.chunks import replace_ocr_chunks
+from researchlib.chunks import OCR_HEADING, OCR_UNCERTAIN_HEADING, rebuild_ocr_chunks, replace_ocr_chunks
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.ocr import append_ocr, refresh_article_ocr
 from researchlib.render import image_anchor
-from researchlib.sources import load_sources
+from researchlib.retrieval import retrieve
+from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.app import create_app
-from researchlib.wechat_dialogue import parse_shot
+from researchlib.web.queries import Scope
+from researchlib.wechat_dialogue import parse_shot, speaker_note
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 CHAT = (
@@ -81,6 +84,8 @@ def test_financial_labels_keep_attribution_in_model_text_and_ocr_chunks(conn, se
     )
     raw = (
         "方伟：先看经营情况 营收：增长百分之二十 净利润：增长百分之十 假设：需求不变 "
+        "净资产：123.45亿元 净资产收益率：10.5% 资本开支：-2.5亿元 "
+        "营业成本：7.25亿元 研发费用：0.25亿元 净利润率：9.75% "
         "阿明🇫🇷：继续核对现金流 方伟：再看下一季度"
     )
     digest = _remember(conn, article["id"], "metrics.png", raw)
@@ -95,6 +100,8 @@ def test_financial_labels_keep_attribution_in_model_text_and_ocr_chunks(conn, se
     for text in [saved, '\n'.join(chunk['body'] for chunk in chunks)]:
         assert [turn.speaker for turn in parse_shot(text).turns] == ['方伟', '阿明🇫🇷', '方伟']
         assert '营收：增长百分之二十 净利润：增长百分之十 假设：需求不变' in text
+        assert '净资产：123.45亿元 净资产收益率：10.5% 资本开支：-2.5亿元' in text
+        assert '营业成本：7.25亿元 研发费用：0.25亿元 净利润率：9.75%' in text
     assert saved in append_ocr('正文。', saved)
     assert all(chunk['anchor'] == image_anchor(digest) for chunk in chunks)
     assert conn.execute('SELECT text FROM image_texts WHERE content_hash=%s', (digest,)).fetchone()['text'] == raw
@@ -103,6 +110,39 @@ def test_financial_labels_keep_attribution_in_model_text_and_ocr_chunks(conn, se
     prose = page.split('class="prose"', 1)[1].split('</article>', 1)[0]
     assert f'<img id="{image_anchor(digest)}"' in prose
     assert 'ocr-reading' not in prose and '增长百分之二十' not in prose
+
+
+def test_uncertain_inline_labels_keep_raw_text_and_reach_models_as_uncertain(conn, settings, tmp_path):
+    image = tmp_path / 'uncertain.png'
+    _png(image, b'\x29' * 24)
+    article = _store(
+        conn, settings, 'fangwei-zsxq', 'synthetic-uncertain-labels', '合成待核验讨论',
+        '本篇保留待核验的识别文字。\n\n![](uncertain.png)\n', [image],
+    )
+    raw = '方伟：先留原句 待核验项：逐个检查 云间拾光客：我也想核对 方伟：等下一份报表'
+    digest = _remember(conn, article['id'], 'uncertain.png', raw)
+    refresh_article_ocr(conn, article['id'])
+    replace_ocr_chunks(conn, article['id'])
+    conn.commit()
+    saved = conn.execute('SELECT ocr_text FROM articles WHERE id=%s', (article['id'],)).fetchone()['ocr_text']
+    assert saved == raw
+    assert '尚未确认其说话人边界' in speaker_note(saved)
+    chunk = conn.execute(
+        "SELECT heading,body,anchor FROM article_chunks WHERE article_id=%s AND lang='ocr'", (article['id'],),
+    ).fetchone()
+    assert chunk == {'heading': OCR_UNCERTAIN_HEADING, 'body': raw, 'anchor': image_anchor(digest)}
+    sources = enabled_sources(load_sources(settings.sources_path))
+    found = retrieve(conn, '概括这篇', Scope(source_ids=['fangwei-zsxq'], article_id=article['id']), sources)
+    material = ask_mod._material(ask_mod._passages(found, sources, settings))
+    assert OCR_UNCERTAIN_HEADING in material and raw in material
+    # 只缺警示标题也应被维护命令识别；dry-run 仍不写，正文与原始识别均不改。
+    conn.execute("UPDATE article_chunks SET heading=%s WHERE article_id=%s AND lang='ocr'",
+                 (OCR_HEADING, article['id']))
+    conn.commit()
+    assert rebuild_ocr_chunks(conn, dry_run=True)[1] == 1
+    assert rebuild_ocr_chunks(conn)[1] == 1
+    assert rebuild_ocr_chunks(conn)[1] == 0
+    assert conn.execute('SELECT text FROM image_texts WHERE content_hash=%s', (digest,)).fetchone()['text'] == raw
 
 
 def test_reader_shows_chat_text_and_collapses_the_screenshot(conn, settings, tmp_path):

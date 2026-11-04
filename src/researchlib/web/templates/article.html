@@ -102,23 +102,13 @@
       <button type="button" data-chat-close aria-label="收起" title="收起">收起</button>
     </div>
   </header>
-  <div class="chat-log" role="log" aria-live="polite" aria-relevant="additions">
-    <p class="chat-empty">主要看这篇文章。<br>需要时会引用库里的其他文章。</p>
-  </div>
+  <div class="chat-log" role="log" aria-live="polite" aria-relevant="additions"></div>
   <form class="chat-form" action="/ask" method="post">
     <input type="hidden" name="article" value="{{ article.id }}">
     <div class="chat-composer">
-      <div class="chat-context">
-        <span class="sr">当前文章</span>
-        <span class="chat-chip" title="{{ display_title or article.title }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.8h7l5 4.8v11.6H7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 3.8V8.8h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span class="chat-chip-name">{{ display_title or article.title }}</span>
-        </span>
-      </div>
       <label class="sr" for="article-chat-q">问题</label>
-      <textarea id="article-chat-q" name="q" rows="2" maxlength="500" placeholder="问这篇文章，或问库里相关的说法" enterkeyhint="send" required></textarea>
+      <textarea id="article-chat-q" name="q" rows="2" maxlength="500" enterkeyhint="send" required></textarea>
       <div class="chat-composer-bar">
-        <p class="chat-hint">Enter 发送，Shift+Enter 换行</p>
         <button type="submit" aria-label="发送" title="发送">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V7.5M7.8 11.2 12 7l4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>

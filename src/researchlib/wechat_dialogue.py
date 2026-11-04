@@ -19,8 +19,8 @@
 - 群名、价格标签、小程序、设为群待办、状态栏时间电量这些界面字去掉。状态栏「10:57 :!!! 5GA ■」连着
   App 标题、或者粘在第一句话前面的，也只去掉状态栏。转发卡片和聊天记录页的标题「群聊的聊天记录」
   （可带日期）单独成行，或粘在气泡末尾，都不进正文；句子中间提到这几个字的留下
-- 网名可以带国旗、表情（阿明🇫🇷：）。一行里中途又出现「网名：」是下一位开口，要切开。
-  句子里只提到名字、后面没有冒号的，仍是同一句
+- 网名可以带国旗、表情（阿明🇫🇷：）。冒号标签有独立昵称、姓名形状等依据时才切开；
+  财务指标保留原归属。无法确认的行首或行中标签保留整段原字，不捏造新说话人，模型侧明确未核实
 - 群里的系统提示（「你邀请"某某"加入了群聊 撤销」「"某某"与群里其他人都不是朋友关系，请注意隐私安全」、
   扫码进群、改群名）不是谁说的话，里面还有群友的昵称：整段去掉。和上一句粘成一行的只切这一段
 - 知识星球和公众号的页脚按行丢掉，后面的对话留下，不从第一行按钮截到图末。
@@ -194,33 +194,7 @@ _NOT_NAMES = frozenset(
         "发布时间",
         "更新时间",
         "作者简介",
-        # 财务字段和推理小标题也会跟在空格后或单独折行，不能当成下一位说话人。
-        "营收",
-        "收入",
-        "营业收入",
-        "利润",
-        "净利润",
-        "归母净利润",
-        "扣非净利润",
-        "营业利润",
-        "经营利润",
-        "毛利润",
-        "毛利率",
-        "净利率",
-        "利润率",
-        "现金流",
-        "自由现金流",
-        "经营现金流",
-        "经营现金流量",
-        "资产",
-        "负债",
-        "市值",
-        "市盈率",
-        "每股收益",
-        "每股净资产",
-        "同比",
-        "环比",
-        "增速",
+        # 推理小标题跟在空格后或单独折行时，也不是下一位说话人。
         "假设",
         "情景",
         "前提",
@@ -522,6 +496,25 @@ _NICK_DECORATION = re.compile(
 )
 # 一行里中途的「网名：」。标签本身不含空白和句读；前面必须是空白，避免切进「对王小明：」。
 _SPEAKER_MARK = re.compile(r"(?P<label>[^\s：:，。！？!?、；/\\]{1,16})\s*[:：]")
+# 指标按可组合的修饰词、量和度量识别，而不是逐个补「净资产收益率」等完整字段。
+# 冒号只能证明它是标签；财务指标不能因此被赋予新的说话人身份。
+_FINANCIAL_LABEL = re.compile(
+    r"^(?:(?:19|20)\d{2}年|第?[一二三四1-4]季度|季度|年度|本期|上期|同期|期初|期末|"
+    r"全年|当期|上年|去年|今年|每股|平均|合计|小计|调整后|调整前|扣非|归母|归属母公司|"
+    r"税前|税后|营业|经营|研发|销售|管理|财务|资本|自由|总|净|毛)*"
+    r"(?:营收|收入|利润|利率|利|现金流量?|资产|负债|权益|收益|成本|费用|开支|投入|资本|现金|"
+    r"市值|市盈率|市净率|营运资金|同比|环比|增速|ROE|ROA|ROI|EPS|EBITDA|EBIT|CAPEX)"
+    r"(?:(?:收益|回报|同比|环比|增长|变动|增减|下降)*(?:率|额|量|占比|增速|变化))?$",
+    re.I,
+)
+# 新说话人标签需要额外依据：独立昵称行、昵称装饰，或常见姓名／称呼的形状。
+# 这只是保守的边界线索，不把所有二至十二个汉字都当成人名。
+_NAME_START = frozenset(
+    "王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许邓冯韩曹曾彭萧蔡潘田董袁于余叶蒋杜苏魏程吕丁沈"
+    "任姚卢傅钟姜崔谭廖范汪陆金石戴贾韦夏邱方侯邹熊孟秦白江阎薛尹段雷黎史龙陶贺顾毛郝龚邵万钱严覃武"
+    "戚孔汤池鲁季乔牛阿小老"
+)
+_NICK_IDENTITY_END = re.compile(r"(?:先生|女士|同学|老师|掌柜|居士|客|君)$|我.*(?:自在|逍遥|自由)$")
 _PUNCT = re.compile(r"[，。！？、；：,.!?;:\"“”‘’（）()\[\]【】《》<>]")
 
 
@@ -607,6 +600,12 @@ def present_stored_ocr(stored: str) -> str:
 
 def speaker_note(text: str, host: str = HOST) -> str:
     """摘要和观点的提示里补一句说话人，没有对话标记时不加。host 是这篇的作者（文字已经 relabel_host 过）。"""
+    text = canonical_host(text, host)
+    if attribution_uncertain(text):
+        return (
+            "截图中有缺少独立依据的冒号标签，已保留原识别文字，尚未确认其说话人边界。"
+            "不要把这些标签自行当成新说话人，也不要把有歧义的发言归为作者的判断。"
+        )
     if not any(split_speaker(line, names=True) for line in (text or "").splitlines()):
         return ""
     name = (host or "").strip() or HOST
@@ -1213,18 +1212,64 @@ def _nick_core(name: str) -> str:
     return _NICK_DECORATION.sub("", name or "").strip()
 
 
-def _is_embedded_speaker(label: str) -> bool:
-    """行中间的「名：」算不算下一位。纯英文冒号（Typical:）不是，方伟的显示名仍是。"""
+def _is_embedded_speaker(label: str, known: set[str]) -> bool:
+    """行中间的冒号本身不证明换人，须有独立昵称或姓名形状等额外依据。"""
     cleaned = _clean_label(label)
     if not cleaned or any(mark in cleaned for mark in ".@"):
         return False
     if cleaned in {HOST, GUEST} or _is_host_line(_compact_host(cleaned)):
         return True
     core = _nick_core(cleaned)
-    return bool(core and _CJK.search(core) and _guest_label(cleaned))
+    if not core or not _guest_label(cleaned):
+        return False
+    if cleaned in known:
+        return True
+    if not _CJK.search(core):
+        return False
+    return (
+        core != cleaned
+        or (len(core) in (2, 3) and core[0] in _NAME_START)
+        or (len(core) >= 4 and bool(_NICK_IDENTITY_END.search(core)))
+        or (len(core) >= 4 and core[-2] in '阿小老' and core[-1] in _NAME_START)
+    )
 
 
-def _split_speaker_line(line: str) -> list[str]:
+def _known_speaker_labels(lines: list[str]) -> set[str]:
+    """独立的无冒号昵称行可佐证另一处标签；重复出现的「指标：」不能自证为人名。"""
+    bare = {_plain(line).strip() for line in lines if _guest_label(_plain(line).strip())}
+    marked = {
+        _clean_label(match.group('label'))
+        for line in lines for match in _SPEAKER_MARK.finditer(_plain(line))
+        if match.start() == 0 or _plain(line)[match.start() - 1].isspace()
+    }
+    return bare & marked
+
+
+def _uncertain_speaker_boundary(lines: list[str], known: set[str]) -> bool:
+    """行首或行中未知中文标签都可能是字段；缺少人物依据时保留整段原字。"""
+    for line in lines:
+        text = _plain(line)
+        for match in _SPEAKER_MARK.finditer(text):
+            if match.start() and not text[match.start() - 1].isspace():
+                continue
+            label = _clean_label(match.group('label'))
+            if _CJK.search(label) and _guest_label(label) and not _is_embedded_speaker(label, known):
+                return True
+    return False
+
+
+def attribution_uncertain(text: str) -> bool:
+    """供模型提示和检索块元信息共用；正文保留原字，歧义放在证据标签里。"""
+    from researchlib.present_text import order_nested_replies
+
+    lines = [
+        scrubbed for line in _normalize(order_nested_replies((text or '').strip())).splitlines()
+        if (scrubbed := _scrub(line))
+    ]
+    return _uncertain_speaker_boundary(lines, _known_speaker_labels(lines))
+
+
+def _split_speaker_line(line: str, known: set[str]) -> list[str]:
     """一行里空白后面又出现「网名：」时切开。没有冒号的提到名字，整行不动。
 
     绿气泡的侧标记只留在仍没有别人网名的那一段，切出去的下一位不再被当成方伟。
@@ -1236,7 +1281,8 @@ def _split_speaker_line(line: str) -> list[str]:
     cuts = [
         match
         for match in _SPEAKER_MARK.finditer(text)
-        if (match.start() == 0 or text[match.start() - 1].isspace()) and _is_embedded_speaker(match.group("label"))
+        if (match.start() == 0 or text[match.start() - 1].isspace())
+        and _is_embedded_speaker(match.group("label"), known)
     ]
     if not cuts or (len(cuts) == 1 and cuts[0].start() == 0):
         return [line]
@@ -1250,7 +1296,7 @@ def _split_speaker_line(line: str) -> list[str]:
         return [line]
     if side:
         head = _SPEAKER_MARK.match(parts[0])
-        if head is None or not _is_embedded_speaker(head.group("label")):
+        if head is None or not _is_embedded_speaker(head.group("label"), known):
             parts[0] = side + parts[0]
     return parts
 
@@ -1261,12 +1307,12 @@ def parse_shot(text: str) -> Shot:
     original = order_nested_replies((text or "").strip())
     if not original:
         return Shot("prose", [], "")
+    scrubbed_lines = [scrubbed for line in _normalize(original).splitlines() if (scrubbed := _scrub(line))]
+    known = _known_speaker_labels(scrubbed_lines)
+    uncertain = _uncertain_speaker_boundary(scrubbed_lines, known)
     raw_lines: list[str] = []
-    for line in _normalize(original).splitlines():
-        scrubbed = _scrub(line)
-        if not scrubbed:
-            continue
-        for piece in _split_speaker_line(scrubbed):
+    for scrubbed in scrubbed_lines:
+        for piece in _split_speaker_line(scrubbed, known):
             peeled = _scrub(piece)
             if peeled and not _is_ui_chrome(peeled) and not _PINNED_BAR.match(peeled):
                 raw_lines.append(peeled)
@@ -1293,9 +1339,14 @@ def parse_shot(text: str) -> Shot:
     ):
         return Shot("media", [], "")
     stripped = _drop_post_footer(raw_lines)
+    if uncertain and (
+        labeled_chat or _wechat_signal(stripped) or any(line.startswith(SIDE_SELF) for line in raw_lines)
+    ):
+        # 既不捏造下一位，也不把可能的新昵称折进上一位：整段保持未归属的原识别文字。
+        return _prose_after_footer(original, scrubbed_lines, _drop_post_footer(scrubbed_lines))
     signal = _wechat_signal(stripped)
     lines = _prepare_lines(stripped)
-    names = _speaker_names(lines, signal)
+    names = _speaker_names(lines, signal) | known
     # 已经是「方伟：」「网友：」的块再跑也要能合并，不能因为界面字已经被拿掉就退回原文。
     visible = [
         _plain(line) for line in lines if line not in (_BREAK, _ACCOUNT_SPLIT, _GUEST_TURN, _HOST_TURN)
@@ -1719,7 +1770,7 @@ def split_speaker(line: str, *, names: bool = False) -> tuple[str, str] | None:
         return label, body
     if _is_host_line(_compact_host(label)):
         return HOST, body
-    if names and _guest_label(label):
+    if names and _is_embedded_speaker(label, set()):
         return label, body
     return None
 
@@ -1939,6 +1990,8 @@ def _guest_label(name: str) -> bool:
     core = _nick_core(name)
     if not core:
         return False
+    if _FINANCIAL_LABEL.fullmatch(core):
+        return False
     if core != name:
         if core in _NOT_NAMES or _utterance(core) or _NOT_NAME_HEAD.match(core):
             return False
@@ -1955,6 +2008,9 @@ def _classify(line: str, names: set[str]) -> tuple[str, str]:
     speaker = split_speaker(line, names=True)
     if speaker:
         return speaker
+    marked = _NICK_LABEL.match(line)
+    if marked and (label := _clean_label(marked.group('label'))) in names:
+        return label, (marked.group('body') or '').strip()
     compact = _compact_host(line)
     if _is_host_line(compact):
         return HOST, ""
