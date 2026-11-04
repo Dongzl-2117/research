@@ -196,6 +196,10 @@ def test_article_template_is_title_body_and_bilingual_tabs():
     assert "方伟" in html
     assert "打开原文" not in html
     assert "问 AI：这篇讲了什么" not in html
+    assert 'id="article-chat"' in html
+    assert 'data-article="1"' in html
+    assert 'class="chat-toggle"' in html
+    assert 'action="/ask"' in html
     assert "<h2>来源</h2>" not in html
     assert "方伟微信公众号历史归档" not in html
     assert "AI 整合" not in html

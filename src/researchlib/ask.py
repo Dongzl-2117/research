@@ -128,6 +128,9 @@ def _material(passages: list[dict]) -> str:
         head = f"[{item['n']}] 《{item['title']}》 {item['author']} · {item['source']} · {item['date']}"
         if item["heading"]:
             head += f" · 章节：{item['heading']}"
+        # 阅读页侧栏会标「当前文章」或「库里其他文章」。问库不带这个字段，标题行和以前一样。
+        if item.get("place_label"):
+            head += f" · {item['place_label']}"
         body = item["text"]
         if item.get("before"):
             body = f"（上文）{item['before']}\n（命中段）{body}"
@@ -159,9 +162,9 @@ def outline_note(outline: list[str], label: str) -> str:
     )
 
 
-def build_messages(question: str, passages: list[dict], note: str = "") -> list[dict]:
+def build_messages(question: str, passages: list[dict], note: str = "", system: str | None = None) -> list[dict]:
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system or SYSTEM_PROMPT},
         {"role": "user", "content": f"问题：{question}{note}\n\n资料：\n{_material(passages)}"},
     ]
 
@@ -183,16 +186,23 @@ def _batches(passages: list[dict], limit: int) -> list[list[dict]]:
 
 
 def synthesize(
-    settings: Settings, question: str, passages: list[dict], report: dict | None = None, note: str = ""
+    settings: Settings,
+    question: str,
+    passages: list[dict],
+    report: dict | None = None,
+    note: str = "",
+    system: str | None = None,
 ) -> tuple[str, str]:
     """资料一次读得完就一次作答；读不完就分批摘录，再把摘录汇总成回答。返回 (回答, 模型名)。
 
     分批时某一批重试后仍然失败，不让整条回答报错：其余各批照常汇总，回答里注明哪几批没读到，
     report["failed_batches"] 记下批号。全部失败才报错。
+    system 留给阅读页侧栏；不传就用问库的系统提示。
     """
+    prompt = system or SYSTEM_PROMPT
     total = sum(_size(item) for item in passages)
     if total <= SINGLE_CALL_CHARS:
-        return chat(settings, build_messages(question, passages, note))
+        return chat(settings, build_messages(question, passages, note, system=prompt))
     batches = _batches(passages, BATCH_CHARS)
 
     def extract(batch: list[dict]) -> str | None:
@@ -226,7 +236,7 @@ def synthesize(
         numbers = "、".join(str(index) for index in failed)
         missing = f"\n\n注意：资料共分 {len(batches)} 批，第 {numbers} 批读取失败，没有摘录。在结尾说明回答可能不全。"
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": prompt},
         {
             "role": "user",
             "content": (
