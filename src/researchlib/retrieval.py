@@ -1594,7 +1594,11 @@ def retrieve(
     per_channel = min(CANDIDATES, max(400, budget.passages * 8))
     rows = _candidates(conn, query, effective, limit=per_channel, enough=budget.passages * 6)
     if semantic_only:
-        rows = []
+        # 正文块词频不包含文章标题；只保留实际命中内容词的标题证据，不保留公司概览。
+        rows = [row for row in rows if any(
+            _count(row.get('title') or '', (row.get('title') or '').lower(), form)
+            for term in query.terms if term.kind in {'word', 'phrase'} for form in term.forms if form
+        )]
     semantic: dict[tuple[int, int], float] = {}
     if semantic_ok and not query.overview:
         rows, semantic = semantic_candidates(conn, query, effective, rows)
