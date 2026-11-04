@@ -5,10 +5,10 @@
   "codeHeads": {
     "219": "60db04399982be0889a6ff2b7c7b1aa4fd2162d9",
     "220": "b5fc1b7654b013cb02a0deae7e298563d76937fa",
-    "142": "fbf8c77995e786fbe6663b0819a2679f59258233",
+    "142": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
     "223": "0d1dcba9bb9ad2e6bd69a58240e9b43ad7201c7e",
     "224": "63976eb07f94befd891ba18984a05059acfd3feb",
-    "225": "0bc553ebafffe67730371b85c66c126a1d0f7cf1"
+    "225": "7738e1102b64ec85c0258faccff1eeacbab0f0c0"
   },
   "items": [
     {
@@ -26,7 +26,7 @@
       "finding": "译文偏好隐藏英文/OCR命中",
       "status": "code-fixed-draft",
       "pr": 225,
-      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
+      "codeHead": "7738e1102b64ec85c0258faccff1eeacbab0f0c0",
       "result": "同篇英文／OCR／中文均保留进入排序",
       "regression": "选择器单测、真实英文和OCR入库召回",
       "limitations": "仍受正常相关度与每篇预算选择"
@@ -36,7 +36,7 @@
       "finding": "零词频问题跳过语义召回",
       "status": "code-fixed-draft",
       "pr": 225,
-      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
+      "codeHead": "7738e1102b64ec85c0258faccff1eeacbab0f0c0",
       "result": "零词频内容问题尝试语义，同时保留真正命中标题的词证据，不改成无关概览",
       "regression": "语义调用替身、无向量空结果、日期概览正例",
       "limitations": "无向量服务则没有语义证据；未验证真实模型质量"
@@ -166,7 +166,7 @@
       "finding": "引号OR和否定短语",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "相邻中英引号保留；逐段／ASK每个必含组均须满足，OR／否定组保持语义",
       "regression": "引号OR、混合OR、否定短语的旧反例",
       "limitations": "不支持任意括号查询语言"
@@ -176,7 +176,7 @@
       "finding": "多词作者识别",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "已知多词作者作为完整名字识别",
       "regression": "Ben Thompson来源作者合成资料",
       "limitations": "作者来自启用来源配置，不猜陌生人"
@@ -186,7 +186,7 @@
       "finding": "作者和来源交集",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "作者和显式来源取交集，空交集不扩宽",
       "regression": "关键词和相关原文的空交集集成",
       "limitations": "显式无效来源沿用既有404规则"
@@ -196,7 +196,7 @@
       "finding": "公司标题消歧",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "汇总不再用标题字面绕过公司消歧",
       "regression": "水果苹果与公司提及的正反例",
       "limitations": "公司范围仍沿用提及表，不重做历史实体标注"
@@ -206,7 +206,7 @@
       "finding": "排除条件计数",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "排除条件同时用于列表和计数的干净证据",
       "regression": "公司无可用证据0计数、另有干净块正例",
       "limitations": "保留按块排除语义，别处出现排除词不删整篇"
@@ -216,7 +216,7 @@
       "finding": "OR计数",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "文章匹配按组内OR／组间AND求集合",
       "regression": "公司OR、混合OR、引号OR与尾页",
       "limitations": "字面和语义集合单独统计"
@@ -226,7 +226,7 @@
       "finding": "跨块计数",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "各词组可来自当前原文、译文、OCR不同块",
       "regression": "原文＋图、分散段落和当前译文集成",
       "limitations": "旧hash译文不参与证据"
@@ -236,7 +236,7 @@
       "finding": "计数集合并集",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "字面集合精确计数，按文章身份合并分页，语义另报",
       "regression": "候选外索引＋候选跨图并集；语义重叠只计一次",
       "limitations": "语义和部分命中仍受候选窗口限制"
@@ -246,7 +246,7 @@
       "finding": "越界分页钳位后空页",
       "status": "code-fixed-draft",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "result": "HTML页码钳位后重取正确一页并限制SQL整数",
       "regression": "999页与最大bigint页码集成",
       "limitations": "offset不提供跨数据变动的冻结快照"
@@ -316,7 +316,7 @@
       "finding": "译文概览排序惩罚",
       "status": "code-fixed-draft",
       "pr": 225,
-      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
+      "codeHead": "7738e1102b64ec85c0258faccff1eeacbab0f0c0",
       "result": "概览位置以本语言的ord起点计算",
       "regression": "原文0和译文10000同分正例",
       "limitations": "不保证中英片段永远获得相同相关度"
@@ -326,7 +326,7 @@
       "finding": "过期或模型不符向量",
       "status": "code-fixed-draft",
       "pr": 225,
-      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
+      "codeHead": "7738e1102b64ec85c0258faccff1eeacbab0f0c0",
       "result": "ANN、补查、覆盖率核对当前模型／输入hash／译文有效性",
       "regression": "固定向量的旧hash、错模型、正文变更与查询模型切换",
       "limitations": "同名模型权重与历史实际输入无法独立证明，不批量重算"
@@ -358,7 +358,7 @@
     "failed": 0,
     "skipped": 0,
     "seconds": 113.46,
-    "localCommit": "11e718554328e9587f51391178e2e18b8ae7b5cb",
+    "localCommit": "b45b3873cf4b9df7b24779e1e4a513e5d3bd601b",
     "sourceManifestSha256": "e0d4c979e69f5a997420e21b20a0f842157f1d30aa8f33a81ee95fa441e1cdf4",
     "sourceFiles": 154,
     "retrievalBaseline": "1500 articles / 10463 chunks / 4975 mentions; unchanged baseline passed",
@@ -433,7 +433,7 @@
     {
       "id": "R3",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "finding": "相邻中英引号被贪婪词项吞掉",
       "result": "引号边界停止；API 和 ASK 保留完整必含短语",
       "tests": [
@@ -444,7 +444,7 @@
     {
       "id": "R4",
       "pr": 142,
-      "codeHead": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "finding": "多个必含短语从 AND 退成任选",
       "result": "逐段、普通及深度 ASK 组间 AND；组内 OR、否定短语、扩展词和文章跨块正例保留",
       "tests": [
@@ -477,7 +477,7 @@
     {
       "id": "R7",
       "pr": 225,
-      "codeHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
+      "codeHead": "7738e1102b64ec85c0258faccff1eeacbab0f0c0",
       "finding": "正文零词频清掉标题独有词命中",
       "result": "保留真实标题词证据；直接召回和 API 大小写正例通过，没证据不退概览；旧2失败",
       "tests": [
@@ -530,10 +530,48 @@
     },
     "142": {
       "basePR": 225,
-      "baseHead": "0bc553ebafffe67730371b85c66c126a1d0f7cf1",
-      "head": "fbf8c77995e786fbe6663b0819a2679f59258233",
+      "baseHead": "7738e1102b64ec85c0258faccff1eeacbab0f0c0",
+      "head": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
       "behind": 0,
-      "ahead": 7
+      "ahead": 9
+    }
+  },
+  "searchBranchSynchronization": {
+    "main": "a406b72982464bafc0b0de31427b22aa8f86ff27",
+    "ordinaryMerges": true,
+    "forcePush": false,
+    "runtimeUnchangedFromCombinedTest": true,
+    "branches": {
+      "225": {
+        "codeHead": "7738e1102b64ec85c0258faccff1eeacbab0f0c0",
+        "behindMain": 0,
+        "aheadMain": 3,
+        "passed": 1026,
+        "failed": 0,
+        "skipped": 0,
+        "seconds": 88.75,
+        "retrievalBaseline": "passed unchanged",
+        "ciRun": 41763804977,
+        "testsJob": 126357358031,
+        "ciConclusion": "completed/skipped",
+        "fullLogSha256": "b8b1b3efaebd461e8eacf6f7f3c46bf01a71ed2a95658898d843b2a376e9523b",
+        "retrievalLogSha256": "30b145c90a6488e2fcbe41b0d84b4dd2330ee22868ebf8af1e00b40d03668cbe"
+      },
+      "142": {
+        "codeHead": "4d0e30e2040c40fb6d810fbd12b1e2b644a83bef",
+        "behindMain": 0,
+        "aheadMain": 12,
+        "passed": 1050,
+        "failed": 0,
+        "skipped": 0,
+        "seconds": 94.9,
+        "retrievalBaseline": "passed unchanged",
+        "ciRun": 41764070665,
+        "testsJob": 126358210156,
+        "ciConclusion": "completed/skipped",
+        "fullLogSha256": "6d0b8be661a1de56b20e5da8de871a5fa3c414fcfb950d22106f73a9aace6923",
+        "retrievalLogSha256": "14b03f8febb250fa14dadf25c6fe97e30ee0d132357e28892e12be1da4d02d13"
+      }
     }
   }
 }

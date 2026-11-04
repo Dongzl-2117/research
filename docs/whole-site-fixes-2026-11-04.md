@@ -10,8 +10,8 @@
 | --- | --- | --- | ---: | --- | --- |
 | [#223](https://github.com/Dongzl-2117/research/pull/223) | 不完整重导保留图片映射 | `0d1dcba9bb9ad2e6bd69a58240e9b43ad7201c7e` | 1007 | main | [skipped](https://github.com/Dongzl-2117/research/actions/runs/41748501157/job/126307430070) |
 | [#224](https://github.com/Dongzl-2117/research/pull/224) | 回答轮次、引用、来源与流式处理 | `63976eb07f94befd891ba18984a05059acfd3feb` | 1031 | main | [skipped](https://github.com/Dongzl-2117/research/actions/runs/41760954707/job/126348270970) |
-| [#225](https://github.com/Dongzl-2117/research/pull/225) | 原文证据、零词频与向量有效性 | `0bc553ebafffe67730371b85c66c126a1d0f7cf1` | 1014 | main | [skipped](https://github.com/Dongzl-2117/research/actions/runs/41761390390/job/126349698952) |
-| [#142](https://github.com/Dongzl-2117/research/pull/142) | 检索条件、计数与分页 | `fbf8c77995e786fbe6663b0819a2679f59258233` | 1038 | #225 | [skipped](https://github.com/Dongzl-2117/research/actions/runs/41761821404/job/126351015182) |
+| [#225](https://github.com/Dongzl-2117/research/pull/225) | 原文证据、零词频与向量有效性 | `7738e1102b64ec85c0258faccff1eeacbab0f0c0` | 1026 | main | [skipped](https://github.com/Dongzl-2117/research/actions/runs/41763804977/job/126357358031) |
+| [#142](https://github.com/Dongzl-2117/research/pull/142) | 检索条件、计数与分页 | `4d0e30e2040c40fb6d810fbd12b1e2b644a83bef` | 1050 | #225 | [skipped](https://github.com/Dongzl-2117/research/actions/runs/41764070665/job/126358210156) |
 | [#219](https://github.com/Dongzl-2117/research/pull/219) | 双语内容、回执与并发写入 | `60db04399982be0889a6ff2b7c7b1aa4fd2162d9` | 1157 | main | [skipped](https://github.com/Dongzl-2117/research/actions/runs/41762122913/job/126351976308) |
 | [#220](https://github.com/Dongzl-2117/research/pull/220) | 译文运维范围与扫描进度 | `b5fc1b7654b013cb02a0deae7e298563d76937fa` | 1172 | #219 | [skipped](https://github.com/Dongzl-2117/research/actions/runs/41762452066/job/126353034220) |
 
@@ -77,11 +77,22 @@
 | R9 | 完整回退的全局 p-N 正则误删正文及代码 | #219 | 按真实标签读取／去重 ID；正文、代码与真实脚注正例通过；`tests/unit/test_long_source_resources.py` |
 | R10 | 随后 #228 的去重夹具遗漏英文已有季度 | #219 | 补齐正例中文第一季度，遗漏或改为第四季度必须完整回退；精确 a406b72 两旧反例失败；`tests/unit/test_article_preservation.py`、`tests/unit/test_long_source_resources.py` |
 
-#220 的直接合并父提交是最终 #219；精确比较 **0 落后／5 领先**。#142 已包含最终 #225，代码验收比较 **0 落后／7 领先**。这些都是自己分支的普通同步，无强推。
+#220 的直接合并父提交是最终 #219；精确比较 **0 落后／5 领先**。#142 已包含最终 #225，代码验收比较 **0 落后／9 领先**。这些都是自己分支的普通同步，无强推。
 联合实跑提交为 `fdd53275ad487cea61eda2b49a04487713554695`；随后同步 #220 最终提交仅增加交接文档，`src` 与 `tests` 均未变化。
 本次另重跑完整分页：2408篇／4708块，遗漏、重复、额外结果0，29次查询，顺序稳定、尾页后为空；每次最多400行正文、单次fetch最多300行。合成中位42.25ms、最大60.17ms，不是生产SLA。
 
 复跑使用 hash 锁定依赖、`ruff check .`、`pytest tests/unit tests/integration`，明确指向独立的本地 research_test。检索用 `tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.json`；分页用 `tools/retrieval_eval/pagination.py --articles 2407 --long-chunks 2301 --check` 并显式指定隔离 research_eval_pagination 库；浏览器用 `tools/article_layout_smoke.cjs`。模型和向量均为替身，浏览器拦截外网。
+
+## 搜索分支与最新主线同步
+
+独立复核进一步确认：此前联合快照虽含最新 main，#225 和 #142 自身历史仍落后三个主线提交。
+先在 #225 普通合并 main a406b72，再将最终 #225 普通合并到 #142，两次均无冲突、无强推。
+#225 代码验收 head 7738e1102b64ec85c0258faccff1eeacbab0f0c0：1026 passed、0 failed、0 skipped（88.75秒），相对 main 0 落后／3 领先。
+#142 代码验收 head 4d0e30e2040c40fb6d810fbd12b1e2b644a83bef：1050 passed、0 failed、0 skipped（94.90秒），相对 main 0 落后／12 领先，相对最新 #225 0 落后／9 领先。
+两个分支重跑1500篇合成检索基线均无退步；#225 同步后的1440／390宽展示通过。精确代码head的Tests均completed/skipped，不是实跑通过。
+
+离线合入两个最新提交后，`src` 与 `tests` 和此前1242项实跑提交完全相同，源清单摘要仍为 e0d4c979e69f5a997420e21b20a0f842157f1d30aa8f33a81ee95fa441e1cdf4。
+本交接随后以纯文档提交更新 #142；最终发布head、CI与包括该文档提交的领先数量见PR说明。没有合并远端PR、转待审、部署、生产访问、付费调用或历史写回。
 
 ## 历史资料与未执行范围
 
