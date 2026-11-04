@@ -1,5 +1,5 @@
-// 阅读页右侧对话。提问走 /api/v1/ask（chat=true），回答轮询 /api/v1/answers/{id}。
-// 多轮只留在这一页的内存里：清空、收起后换页，或整页刷新，上文就没了。
+// 阅读页是原问库的另一个入口；每轮独立，范围由读者显式选择。
+// 清空只清界面，不取消后台任务，也不删除问库记录。
 // 宽屏是否收起记在 localStorage（research-article-chat）。窄屏抽屉仍每次从关上开始。
 (() => {
   const panel = document.getElementById('article-chat');
@@ -12,15 +12,24 @@
   const submit = form && form.querySelector('button[type="submit"]');
   const log = panel.querySelector('.chat-log');
   const articleId = panel.getAttribute('data-article');
-  if (!form || !input || !submit || !log || !articleId) return;
+  const scopeSelect = form && form.querySelector('select[name="article"]');
+  const articleChip = panel.querySelector('[data-chat-article]');
+  if (!form || !input || !submit || !log || !articleId || !scopeSelect) return;
+
+  const hint = form.querySelector('.chat-hint');
+  if (hint) hint.appendChild(document.createTextNode(' · 每轮独立提问'));
 
   const wideQuery = window.matchMedia('(min-width: 1320px)');
   const storageKey = 'research-article-chat';
-  const emptyText = '主要看这篇文章。\n需要时会引用库里的其他文章。';
-  let turns = [];
+  const emptyText = '默认检索整个资料库，可选择只问这篇。\n每轮独立提问，不沿用上文。';
   let pending = false;
   let session = 0;
-  let statusNode = null;
+  let composing = false;
+  const timers = new Set();
+  const controllers = new Set();
+  const maxPolls = 300;
+  const maxNetworkFailures = 3;
+  const requestTimeout = 15000;
 
   function isWide() {
     return wideQuery.matches;
@@ -84,124 +93,282 @@
   }
 
   function safeArticleUrl(url) {
-    if (typeof url !== 'string' || !url.startsWith('/articles/')) return '';
+    if (typeof url !== 'string' || !/^\/articles\/\d+(?:[?#]|$)/.test(url)) return '';
     if (/[\s<>"']/.test(url)) return '';
     return url;
   }
 
   function renderAnswerHtml(text, citations) {
-    const byN = {};
-    (citations || []).forEach((item) => { byN[item.n] = item; });
+    const byN = Object.create(null);
+    (citations || []).forEach((item) => { if (item) byN[item.n] = item; });
     return String(text || '').split(/\n{2,}/).map((block) => {
       const lines = block.split('\n').map((line) => {
         const escaped = escapeHtml(line).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-        return escaped.replace(/\[(\d{1,3})\]/g, (match, num) => {
-          const item = byN[Number(num)];
-          const href = item && safeArticleUrl(item.url);
-          if (!href) return match;
-          return `<a class="cite" href="${href}">[${num}]</a>`;
+        return escaped.replace(/\[(\d+)\]/g, (match, num) => {
+          const href = byN[Number(num)] && safeArticleUrl(byN[Number(num)].url);
+          return href ? `<a class="cite" href="${escapeHtml(href)}">[${num}]</a>` : match;
         });
       });
       return `<p>${lines.join('<br>')}</p>`;
     }).join('');
   }
 
-  function appendSources(parent, citations) {
-    const seen = {};
-    const items = [];
-    (citations || []).forEach((item) => {
-      if (!item || !item.cited || seen[item.article_id]) return;
-      if (!safeArticleUrl(item.url)) return;
-      seen[item.article_id] = true;
-      items.push(item);
-    });
-    if (!items.length) return;
-    const list = document.createElement('ul');
-    list.className = 'chat-sources';
-    items.forEach((item) => {
-      const li = document.createElement('li');
-      const link = document.createElement('a');
-      link.href = safeArticleUrl(item.url);
-      const same = String(item.article_id) === String(articleId);
-      link.textContent = `${same ? '这篇 · ' : ''}${item.title || '文章'}`;
-      li.appendChild(link);
-      list.appendChild(li);
-    });
-    parent.appendChild(list);
+  function setPending(value) {
+    pending = value;
+    submit.disabled = value;
+    log.querySelectorAll('button.chat-action').forEach((button) => { button.disabled = value; });
   }
 
-  function appendUser(question) {
-    const bubble = document.createElement('div');
-    bubble.className = 'chat-bubble chat-bubble-user';
-    const paragraph = document.createElement('p');
-    paragraph.textContent = question;
-    bubble.appendChild(paragraph);
-    log.appendChild(bubble);
+  function cancelRequests() {
+    timers.forEach((timer) => window.clearTimeout(timer));
+    timers.clear();
+    controllers.forEach((controller) => controller.abort());
+    controllers.clear();
   }
 
-  function appendAnswer(data) {
+  function later(callback, delay) {
+    const timer = window.setTimeout(() => { timers.delete(timer); callback(); }, delay);
+    timers.add(timer);
+  }
+
+  async function fetchTimed(url, options = {}, read = async (response) => response) {
+    const controller = new AbortController();
+    controllers.add(controller);
+    const timer = window.setTimeout(() => controller.abort(), requestTimeout);
+    try {
+      const response = await fetch(url, { credentials: 'same-origin', ...options, signal: controller.signal });
+      return await read(response);
+    } finally {
+      window.clearTimeout(timer);
+      controllers.delete(controller);
+    }
+  }
+
+  function errorText(data, fallback) {
+    const error = data && (data.error || data.detail);
+    if (typeof error === 'string') return error;
+    if (error && typeof error.message === 'string') return error.message;
+    return fallback;
+  }
+
+  async function jsonRequest(url, options) {
+    return fetchTimed(url, options, async (response) => {
+      let data;
+      try { data = await response.json(); } catch (error) {
+        const invalid = new Error('没有读到有效的问库响应');
+        invalid.status = response.status;
+        throw invalid;
+      }
+      if (!response.ok) {
+        const error = new Error(errorText(data, '暂时无法读取问库'));
+        error.status = response.status;
+        throw error;
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('问库响应格式不正确');
+      return data;
+    });
+  }
+
+  function updateScope() {
+    if (articleChip) articleChip.hidden = scopeSelect.value !== String(articleId);
+  }
+
+  function createTurn(question, article) {
+    const empty = log.querySelector('.chat-empty');
+    if (empty) empty.remove();
+    const user = document.createElement('div');
+    user.className = 'chat-bubble chat-bubble-user';
+    const label = document.createElement('p');
+    label.className = 'chat-scope';
+    label.textContent = article ? '范围：只问这篇' : '范围：整个资料库';
+    const text = document.createElement('p');
+    text.textContent = question;
+    user.append(label, text);
+    log.appendChild(user);
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble chat-bubble-assistant';
-    bubble.innerHTML = renderAnswerHtml(data.answer, data.citations);
-    appendSources(bubble, data.citations);
+    const status = document.createElement('p');
+    status.className = 'chat-status';
+    status.setAttribute('role', 'status');
+    const content = document.createElement('div');
+    content.className = 'chat-content';
+    const links = document.createElement('div');
+    links.className = 'chat-recovery';
+    bubble.append(status, content, links);
     log.appendChild(bubble);
+    return { question, article, status, content, links, id: null };
   }
 
-  function clearStatus() {
-    if (statusNode && statusNode.parentNode) statusNode.remove();
-    statusNode = null;
+  function action(turn, label, kind) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `chat-action chat-${kind}`;
+    button.textContent = label;
+    button.disabled = pending;
+    button.addEventListener('click', () => {
+      if (pending) return;
+      if (kind === 'refill') {
+        input.value = turn.question;
+        scopeSelect.value = turn.article;
+        updateScope(); fitInput(); input.focus();
+      } else {
+        beginRecovery(turn, kind);
+      }
+    });
+    turn.links.appendChild(button);
   }
 
-  function showError(message) {
-    clearStatus();
-    const note = document.createElement('p');
-    note.className = 'chat-error';
-    note.textContent = message || '没有答出来';
-    log.appendChild(note);
-    scrollLog();
+  function recovery(turn, kind) {
+    turn.links.replaceChildren();
+    const link = document.createElement('a');
+    link.className = 'chat-open-answer';
+    link.href = turn.id ? `/ask/${turn.id}` : '/ask';
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = turn.id ? '打开完整回答' : '打开问库';
+    turn.links.appendChild(link);
+    if (kind === 'resume') action(turn, '继续查看', 'resume');
+    if (kind === 'retry') action(turn, '重新整合', 'retry');
+    if (kind === 'refill') action(turn, '回填问题', 'refill');
   }
 
-  function finish(data) {
-    pending = false;
-    submit.disabled = false;
-    clearStatus();
-    turns.push({ role: 'assistant', content: data.answer || '' });
-    appendAnswer(data);
-    scrollLog();
-  }
-
-  function poll(id, token) {
-    let tries = 0;
-    function tick() {
-      if (token !== session) return;
-      fetch(`/api/v1/answers/${id}`, { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
-        .then((response) => (response.ok ? response.json() : null))
-        .then((data) => {
-          if (token !== session) return;
-          if (!data || data.status === 'running') {
-            tries += 1;
-            if (tries > 80) {
-              pending = false;
-              submit.disabled = false;
-              showError('这一轮还没写完。可以再到问这篇看，或重新问一次。');
-              return;
-            }
-            window.setTimeout(tick, tries < 8 ? 1500 : 4000);
-            return;
-          }
-          if (data.status === 'error' || !data.answer) {
-            pending = false;
-            submit.disabled = false;
-            showError(data.error || '没有答出来');
-            return;
-          }
-          finish(data);
-        })
-        .catch(() => {
-          if (token === session) window.setTimeout(tick, 4000);
-        });
+  function renderData(turn, data) {
+    turn.content.replaceChildren();
+    if (data.answer) {
+      const body = document.createElement('div');
+      body.innerHTML = renderAnswerHtml(data.answer, data.citations);
+      turn.content.appendChild(body);
     }
-    window.setTimeout(tick, 800);
+    const missed = (data.stats && data.stats.failed_batches) || data.failed_batches || [];
+    if (missed.length) {
+      const note = document.createElement('p');
+      note.className = 'chat-warning chat-partial';
+      note.textContent = `第 ${missed.join('、')} 批资料未读到，回答可能不全。可打开完整回答，或重新提问。`;
+      turn.content.appendChild(note);
+    }
+    if (Array.isArray(data.checks) && data.checks.length) {
+      const warnings = document.createElement('section');
+      warnings.className = 'chat-warnings';
+      warnings.setAttribute('aria-label', '需要回原文核对');
+      const title = document.createElement('p');
+      title.textContent = '以下句子需要回原文核对：';
+      warnings.appendChild(title);
+      const list = document.createElement('ul');
+      data.checks.forEach((flag) => {
+        const item = document.createElement('li');
+        item.textContent = `${flag.sentence || ''}：${(flag.problems || []).join('；')}`;
+        list.appendChild(item);
+      });
+      warnings.appendChild(list);
+      turn.content.appendChild(warnings);
+    }
+    const citations = Array.isArray(data.citations) ? data.citations : [];
+    if (citations.length) {
+      const evidence = document.createElement('details');
+      evidence.className = 'chat-evidence';
+      const summary = document.createElement('summary');
+      summary.textContent = `检索原文 ${citations.length} 段`;
+      const list = document.createElement('ol');
+      citations.forEach((item) => {
+        const entry = document.createElement('li');
+        const url = safeArticleUrl(item.url);
+        const title = document.createElement(url ? 'a' : 'span');
+        if (url) title.href = url;
+        title.textContent = `[${item.n}] ${item.title || '文章'}`;
+        const text = document.createElement('p');
+        text.textContent = item.text || '';
+        entry.append(title, text);
+        list.appendChild(entry);
+      });
+      evidence.append(summary, list);
+      turn.content.appendChild(evidence);
+    }
+  }
+
+  function pause(turn, message, kind = 'resume') {
+    turn.status.className = 'chat-error';
+    turn.status.textContent = message;
+    setPending(false);
+    recovery(turn, kind);
+    scrollLog();
+  }
+
+  function accept(turn, data, token) {
+    if (token !== session) return;
+    if (/^[1-9]\d*$/.test(String(data.id))) turn.id = String(data.id);
+    renderData(turn, data);
+    recovery(turn);
+    if (data.status === 'done' && data.answer) {
+      turn.status.textContent = '';
+      setPending(false);
+    } else if (data.status === 'error') {
+      pause(turn, data.error || '问库整合失败', turn.id ? 'retry' : 'refill');
+    } else if (!turn.id) {
+      pause(turn, data.error || '没有召回到可引用的原文。', 'refill');
+    } else if (data.status === 'running') {
+      turn.status.textContent = '已找到原文，正在由问库整合…';
+      poll(turn, token);
+    } else {
+      pause(turn, '回答状态异常，可打开完整回答查看。');
+    }
+    scrollLog();
+  }
+
+  function poll(turn, token) {
+    let attempts = 0;
+    let failures = 0;
+    const deadline = Date.now() + 30 * 60 * 1000;
+    async function tick() {
+      if (token !== session) return;
+      attempts += 1;
+      try {
+        const data = await jsonRequest(`/api/v1/answers/${turn.id}`, { headers: { Accept: 'application/json' } });
+        if (token !== session) return;
+        failures = 0;
+        if (data.status !== 'running') {
+          accept(turn, data, token);
+          return;
+        }
+        if (attempts >= maxPolls || Date.now() >= deadline) {
+          pause(turn, '回答仍在整合，可稍后继续查看。');
+          return;
+        }
+      } catch (error) {
+        if (token !== session) return;
+        failures += 1;
+        if (error.status === 403 || error.status === 404) {
+          pause(turn, '无法读取这条回答，可打开完整回答核对。', '');
+          return;
+        }
+        if (failures >= maxNetworkFailures || attempts >= maxPolls || Date.now() >= deadline) {
+          pause(turn, '暂时无法读取进度，回答可能仍在整合。可稍后继续查看。');
+          return;
+        }
+      }
+      later(tick, attempts < 8 ? 1500 : 4000);
+    }
+    later(tick, 800);
+  }
+
+  async function beginRecovery(turn, kind) {
+    const token = ++session;
+    cancelRequests();
+    setPending(true);
+    turn.status.className = 'chat-status';
+    turn.status.textContent = kind === 'retry' ? '正在重新整合…' : '正在读取回答…';
+    if (kind === 'retry') {
+      try {
+        // 与完整回答页使用同一重试动作；仅 error 状态会领取原任务，不创建另一条回答。
+        await fetchTimed(`/ask/${turn.id}/retry`, { method: 'POST', headers: { Accept: 'text/html' } }, async (response) => {
+          if (!response.ok) throw new Error('未确认重新整合');
+          await response.text();
+        });
+      } catch (error) {
+        if (token === session) pause(turn, '未确认重新整合结果，请先继续查看这条回答。');
+        return;
+      }
+    }
+    if (token === session) poll(turn, token);
   }
 
   function resetLog() {
@@ -223,10 +390,8 @@
   panel.querySelector('[data-chat-close]').addEventListener('click', () => setOpen(false, true));
   panel.querySelector('[data-chat-clear]').addEventListener('click', () => {
     session += 1;
-    pending = false;
-    turns = [];
-    submit.disabled = false;
-    statusNode = null;
+    cancelRequests();
+    setPending(false);
     resetLog();
     input.focus();
   });
@@ -240,77 +405,41 @@
   });
   if (wideQuery.addEventListener) wideQuery.addEventListener('change', syncLayout);
   else if (wideQuery.addListener) wideQuery.addListener(syncLayout);
-
+  scopeSelect.addEventListener('change', updateScope);
   input.addEventListener('input', fitInput);
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; });
   input.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229) {
       event.preventDefault();
-      if (form.requestSubmit) form.requestSubmit();
-      else submit.click();
+      if (!pending) form.requestSubmit ? form.requestSubmit() : submit.click();
     }
   });
 
-  form.addEventListener('submit', (event) => {
+  form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const question = input.value.trim();
-    if (!question || pending) return;
-    pending = true;
-    submit.disabled = true;
-    const empty = log.querySelector('.chat-empty');
-    if (empty) empty.remove();
-    appendUser(question);
-    const history = turns.slice();
-    turns.push({ role: 'user', content: question });
+    if (!question || pending || composing) return;
+    const token = ++session;
+    cancelRequests();
+    setPending(true);
+    const article = scopeSelect.value;
+    const turn = createTurn(question, article);
+    turn.status.textContent = article ? '正在这篇文章里检索…' : '正在资料库里检索…';
     input.value = '';
-    fitInput();
-    clearStatus();
-    statusNode = document.createElement('p');
-    statusNode.className = 'chat-status';
-    statusNode.textContent = '正在根据这篇文章查找…';
-    log.appendChild(statusNode);
-    scrollLog();
-    const token = session;
-    fetch('/api/v1/ask', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({
-        question,
-        article: String(articleId),
-        chat: true,
-        history,
-        wait: false,
-      }),
-    })
-      .then((response) => response.json().then((body) => ({ ok: response.ok, body })))
-      .then(({ ok, body }) => {
-        if (token !== session) return;
-        if (!ok || !body || body.id == null) {
-          pending = false;
-          submit.disabled = false;
-          const message = body && body.error && (body.error.message || body.error);
-          showError(typeof message === 'string' ? message : '没有答出来');
-          return;
-        }
-        if (body.status === 'done' && body.answer) {
-          finish(body);
-          return;
-        }
-        if (body.status === 'error') {
-          pending = false;
-          submit.disabled = false;
-          showError(body.error || '没有答出来');
-          return;
-        }
-        poll(body.id, token);
-      })
-      .catch(() => {
-        if (token !== session) return;
-        pending = false;
-        submit.disabled = false;
-        showError('没有连上。可以再试一次。');
+    fitInput(); scrollLog();
+    try {
+      const data = await jsonRequest('/api/v1/ask', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ question, ...(article ? { article } : {}), wait: false }),
       });
+      accept(turn, data, token);
+    } catch (error) {
+      if (token !== session) return;
+      pause(turn, error.status ? error.message : '未确认提交结果，可先打开问库查看记录。', 'refill');
+    }
   });
 
+  updateScope();
   syncLayout();
 })();
