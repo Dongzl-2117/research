@@ -585,12 +585,14 @@ mark {
   gap: 28px;
   /* 公众号式窄栏：标题、正文、图都收在中间这一列，不铺满宽屏。窄窗口占满主区域。 */
   width: 100%;
+  min-width: 0;
   max-width: var(--reading-column);
   margin: 0 auto;
   padding-bottom: 24px;
   font-size: var(--text-prose);
 }
-.reader-top { display: flex; align-items: center; min-height: 48px; }
+.reader { min-width: 0; }
+.reader-top { display: flex; align-items: center; min-height: 36px; }
 .back {
   display: inline-flex;
   align-items: center;
@@ -613,14 +615,21 @@ mark {
   font-size: var(--text-byline);
 }
 .byline a:hover { color: var(--accent); }
-.title-zh { margin: 8px 0 0; color: var(--ink-4); font-size: var(--text-byline); }
+.title-zh { margin: 6px 0 0; color: var(--ink-4); font-size: var(--text-byline); line-height: 1.5; }
+/* 公众号文首：标题在上（约 22px），作者和时间在下，不再是元数据条压着大标题。 */
 .reader h1 {
-  margin: 0;
+  margin: 2px 0 0;
   color: var(--ink);
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.38;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.4;
+  text-wrap: balance;
+}
+.reader .byline {
+  margin: 12px 0 22px;
+  font-size: 15px;
+  line-height: 1.5;
 }
 .identity {
   display: flex;
@@ -736,10 +745,22 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 /* 文章页正文跟阅读栏一样宽（--reading-column）。问库、日汇总仍用上面的 72ch。 */
 .reader-grid .prose { max-width: none; }
+/* 阅读页（文章 / 中文 / 对照 / 飞书目录）贴近公众号：17px、行高 1.65、字距 0。
+   问库和日汇总仍用上面 .prose 的 16px、1.85、.012em。英文对照列在后面单独收小。 */
+.reader-grid .prose,
+.doc-read .prose {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+  font-size: 17px;
+  letter-spacing: 0;
+  line-height: 1.65;
+}
+.reader-grid .prose:not(.bilingual-en) p + p,
+.doc-read .prose:not(.bilingual-en) p + p { margin-top: 1.15em; }
 .prose p { margin: 0; }
-/* 公众号/正文段间按原文空开：相邻两段给回一段空白，读起来跟原稿的分段一致。
-   只加这一条，别动 .bilingual-en.prose p + p（译文仍用 0.8em）、.ocr-reading p + p（识图 1.4em）
-   和标题规则；两边都是 p 才生效，段与标题、表格、列表之间仍走上面的 .prose > * + *。 */
+/* 问库、日汇总的段距仍按一段空白。阅读页用上面更紧的 1.15em。
+   别动 .bilingual-en.prose p + p（译文仍用 0.8em）、.ocr-reading p + p（识图 1.4em）。 */
 .prose p + p { margin-top: 1.8em; }
 .prose p:empty { display: none; }
 .prose br + br { display: none; }
@@ -786,16 +807,18 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose img, .prose video {
   display: block;
   width: auto;
-  /* 跟阅读栏走，不比栏更宽；竖图再限高，长截图不占满一屏。点开仍看大图。 */
+  /* 不比阅读栏更宽。限高只拦住特别长的拼接图：单屏聊天截图约 1080×2340，
+     在 680px 栏里高度约 1470，低于 1800px，于是按栏宽铺满，字能直接读。点开仍看大图。 */
   max-width: 100%;
   height: auto;
-  max-height: min(56vh, 480px);
-  margin: 1.2em auto;
-  border-radius: var(--radius-tile);
-  background: var(--bg-sunk);
+  max-height: 1800px;
+  margin: 0.75em auto;
+  border-radius: 0;
+  background: transparent;
   object-fit: contain;
 }
-.prose img { cursor: zoom-in; box-shadow: 0 0 0 1px var(--line-soft); }
+.prose img { cursor: zoom-in; }
+.prose img + br { display: none; }
 .prose p > img:only-child { margin-block: .4em; }
 .img-zoom {
   position: fixed;
@@ -894,7 +917,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   max-width: none;
   margin-top: 6px;
 }
-.prose .zsxq-comment-body p { margin: 0; line-height: 1.85; }
+.prose .zsxq-comment-body p { margin: 0; line-height: inherit; }
 .prose .zsxq-comment-body p + p { margin-top: 0.75em; }
 .article-note {
   margin: 14px 0 0;
@@ -1000,13 +1023,46 @@ tbody tr:hover td { background: var(--accent-softer); }
   .item-excerpt { margin-top: 8px; font-size: var(--text-excerpt-lg); -webkit-line-clamp: 3; }
   .flat .item-card { margin-top: 0; }
   .reader-grid { grid-template-columns: minmax(0, 1fr); gap: 40px; align-items: start; }
-  .reader-top { min-height: 32px; margin-bottom: 8px; }
+  .reader-top { min-height: 28px; margin-bottom: 2px; }
   .back { color: var(--ink-3); font-size: 13px; }
-  .reader h1 { font-size: 32px; line-height: 1.34; }
   .prose { margin-top: 36px; }
+  /* 读文章时左侧导航还在，收掉右边框和底色，少跟正文抢。 */
+  .shell:has(.reader) {
+    background: var(--bg-sunk);
+  }
+  .shell:has(.reader) .sidebar {
+    width: 160px;
+    padding: 18px 10px 12px;
+    border-right-color: transparent;
+    background: transparent;
+  }
+  .shell:has(.reader) .brand {
+    height: 40px;
+    margin-bottom: 10px;
+    color: var(--ink-3);
+    font-size: 16px;
+  }
+  .shell:has(.reader) .nav-label { padding-top: 10px; }
+  .shell:has(.reader) .nav-link {
+    height: 34px;
+    color: var(--ink-3);
+    font-size: 13px;
+  }
+  .shell:has(.reader) .nav-link[aria-current="page"] {
+    background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink);
+  }
+  .shell:has(.reader) .nav-link[aria-current="page"] svg { color: var(--ink-2); }
+  .shell:has(.reader-grid) .reader-grid,
+  .shell:has(.doc-read) .doc-read {
+    background: var(--surface);
+    padding-top: 12px;
+    padding-bottom: 56px;
+  }
+  /* 白边画在栏外，正文和图仍是 680px，不会把栏挤窄，也不占滚动宽度。 */
+  .shell:has(.reader-grid) .reader-grid { box-shadow: 0 0 0 16px var(--surface); }
 }
 @media (min-width: 1280px) {
-  .reader h1 { font-size: 36px; line-height: 1.3; }
   .reader-grid, .doc-read { font-size: var(--text-prose-lg); }
   .prose { font-size: var(--text-prose-lg); }
 }
@@ -1078,12 +1134,10 @@ tbody tr:hover td { background: var(--accent-softer); }
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
-  font-size: 14px;
-  line-height: 1.68;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0;
   color: var(--ink-4);
-}
-@media (min-width: 80rem) {
-  .bilingual-en.prose { font-size: 15px; }
 }
 .bilingual-en.prose :is(h2, h3, h4, h5) { font-size: 1em; margin-top: 1.4em; }
 .bilingual-en.prose p + p { margin-top: 0.8em; }
@@ -1984,10 +2038,18 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .holdings-now li.recent-item { display: block; padding: 6px 0; }
 .holdings-row .holdings-when { font-size: 12.5px; }
 
-/* 文章页顶部总结 */
-.article-digest { margin: 1rem 0 1.5rem; padding: .8rem 1rem; border-left: 3px solid var(--accent, #3b6); background: var(--surface-2, rgba(127,127,127,.06)); border-radius: 6px; }
-.article-digest-summary { margin: 0; line-height: 1.7; }
-.article-digest-points { margin: .5rem 0 0; padding-left: 1.2rem; line-height: 1.65; }
+/* 文章页顶部总结：留着，但别用青绿条去跟正文抢。 */
+.article-digest {
+  margin: 0 0 1.35rem;
+  padding: .7rem .95rem;
+  border-left: 2px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--bg-sunk);
+  color: var(--ink-2);
+  font-size: 15px;
+}
+.article-digest-summary { margin: 0; line-height: 1.65; }
+.article-digest-points { margin: .4rem 0 0; padding-left: 1.15rem; line-height: 1.6; }
 .article-digest .ai-badge { margin-right: .4rem; }
 /* 观点卡：出处放顶上，关联业务 */
 .view-source-top { margin: 0 0 .2rem; font-weight: 600; }
