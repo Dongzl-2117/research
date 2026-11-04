@@ -2092,7 +2092,8 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .article-chat.is-open { transform: none; visibility: visible; }
 .article-chat .chat-head {
   display: flex;
-  align-items: center;
+  /* 标题 14px、按钮原来 12px，居中对齐时字号小的那一行会浮在基线上面。改成同一行高，基线对齐。 */
+  align-items: baseline;
   gap: 8px;
   flex: none;
   min-height: 32px;
@@ -2107,28 +2108,27 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0;
-  line-height: 1.3;
+  line-height: 32px;
 }
 .article-chat .chat-head-actions {
   display: flex;
   flex: none;
-  align-items: center;
+  align-items: baseline;
   gap: 2px;
   margin-left: auto;
 }
 .article-chat .chat-head-actions button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 28px;
+  display: inline-block;
+  height: auto;
   padding: 0 6px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--ink-4);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
   letter-spacing: 0;
+  line-height: 32px;
 }
 .article-chat .chat-head-actions button:hover {
   background: color-mix(in srgb, var(--ink) 6%, transparent);

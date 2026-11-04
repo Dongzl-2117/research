@@ -185,3 +185,11 @@ def test_reading_column_stays_680_and_chat_collapses_before_it_would_overflow():
     assert "/api/v1/ask" in js
     assert "research-article-chat" in js
     assert 'localStorage.getItem("research-article-chat")' in base
+    assert "align-items: baseline" in css
+    assert "先看这篇。\\n别处有关的，也会引用。" in js
+    assert "主要看这篇文章" not in js
+    template = (ROOT / "src/researchlib/web/templates/article.html").read_text(encoding="utf-8")
+    assert "先看这篇。<br>别处有关的，也会引用。" in template
+    assert 'placeholder="问这篇，或别处怎么说"' in template
+    assert "主要看这篇文章" not in template
+    assert "问这篇文章，或问库里相关的说法" not in template

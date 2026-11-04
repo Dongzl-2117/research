@@ -204,6 +204,9 @@ def test_article_template_is_title_body_and_bilingual_tabs():
     assert 'class="chat-chip"' in html
     assert 'class="chat-composer"' in html
     assert "Enter 发送，Shift+Enter 换行" in html
+    assert "先看这篇。" in html and "别处有关的，也会引用。" in html
+    assert 'placeholder="问这篇，或别处怎么说"' in html
+    assert "主要看这篇文章" not in html
     assert 'data-chat-close' in html
     assert 'aria-label="收起"' in html
     assert "research-article-chat" in html
