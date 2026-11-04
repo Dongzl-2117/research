@@ -3,7 +3,8 @@
 新稿先核验 canonical 源文和持久回执；旧稿保留明确的不确定性。无法配对时保留两份全文。
 展示单元保留引用、列表和表格结构。有序投影通过之后，先把同一源段落里按句切开的叶子并回去，
 再隐藏长英文的重复、整句包含和近前缀；留下的那一对必须仍有这些文字、数字、链接和结构，锚点改挂过去。
-中文各自带独有说法的不隐藏。英文里的链接补到中文仍写着同一锚文本、但丢掉标签的位置，不另写括号域名。
+英文连空白都一样、中文却各有独有说法的不隐藏。只差空白的长英文收成一对，多出来的中文句子挂回去。
+英文里的链接补到中文仍写着同一锚文本、但丢掉标签的位置，不另写括号域名。
 这一步不删入库的段，也不把整页退回两列。图片文字在配对后渲染，不参与模型源段身份。
 """
 
@@ -26,7 +27,6 @@ from researchlib.translate.pair import (
 from researchlib.translate.segments import iter_segments, repeat_key, same_repeat, top_level_blocks
 
 _STRUCTURE = frozenset({"table", "thead", "tbody", "tr", "td", "th", "ul", "ol", "dl", "dt", "dd", "pre", "code"})
-_PARA_ID = re.compile(r'\s+id="p-\d+"')
 _ROOT = re.compile(r"^<([a-z][a-z0-9]*)\b", re.I)
 _IMG = re.compile(r"<img\b[^>]*>", re.I)
 _SRC = re.compile(r'''\bsrc=["']([^"']*)["']''', re.I)
@@ -280,20 +280,61 @@ def _shared_media_removed(en: str, zh: str) -> str:
 
 
 def _whole_pair(en: str, zh: str) -> BilingualPair:
-    anchor = re.search(r'\bid="(p-\d+)"', zh) or re.search(r'\bid="(p-\d+)"', en)
-    en, zh = _PARA_ID.sub("", en), _PARA_ID.sub("", zh)
+    anchor = next((value for value in _Identifiers(zh + en).ids if re.fullmatch(r'p-\d+', value)), None)
     full_zh = zh
     zh = _shared_media_removed(en, zh)
     if visible_text(en) == visible_text(zh) and not any(
         ordered_projection_gaps(en, full_zh, [BilingualPair(en, None)]),
     ):
         zh = ""
-    return BilingualPair(en=en, zh=zh or None, anchor=anchor.group(1) if anchor else None)
+    return BilingualPair(en=en, zh=zh or None, anchor=anchor)
+
+
+def _paragraph_key(value: str) -> str:
+    """比较时忽略根块的段落编号；正文、代码和行内命名锚点里的同样字样保留。"""
+    class Key(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.out = []
+            self.first = True
+
+        def start(self, tag, attrs, close=False):
+            if self.first:
+                attrs = [(key, val) for key, val in attrs
+                         if not (key == 'id' and val and re.fullmatch(r'p-\d+', val))]
+                self.first = False
+                rendered = ''.join(f' {key}="{html.escape(val, quote=True)}"' if val is not None else f' {key}'
+                                   for key, val in attrs)
+                self.out.append(f'<{tag}{rendered}{" /" if close else ""}>')
+            else:
+                self.out.append(self.get_starttag_text())
+
+        def handle_starttag(self, tag, attrs):
+            self.start(tag, attrs)
+
+        def handle_startendtag(self, tag, attrs):
+            self.start(tag, attrs, True)
+
+        def handle_endtag(self, tag):
+            self.out.append(f'</{tag}>')
+
+        def handle_data(self, data):
+            self.out.append(data)
+
+        def handle_entityref(self, name):
+            self.out.append(f'&{name};')
+
+        def handle_charref(self, name):
+            self.out.append(f'&#{name};')
+
+    parser = Key()
+    parser.feed(value)
+    return ''.join(parser.out)
 
 
 def _separate(original: str, translated: str, notice: str) -> PairDisplay:
-    # 译文块的 p-N 引用仍落在译文；原文不抢这些 id，图片锚点只留一份。
-    en = _PARA_ID.sub("", original)
+    # 保留真实属性和文字；最终由 HTMLParser 只在实际标签上处理重复 ID。
+    en = original
     zh = _shared_media_removed(en, translated)
     return PairDisplay([BilingualPair(en, None), BilingualPair("", zh or None)], notice)
 
@@ -306,6 +347,29 @@ _IMG_SRC = re.compile(r"""<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 def _plain_words(value: str) -> set[str]:
     text = html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
     return set(re.findall(r"\w+", text))
+
+
+_ZH_SENTENCE = re.compile(r"(?<=[。！？])")
+
+
+def _novel_zh(extra: str, host: str) -> str:
+    """host 里还没有的中文句子。整段只是另一种说法时，不要把已经有的句子再贴一遍。"""
+    if not extra or _plain_words(extra) <= _plain_words(host):
+        return ""
+    parts = [part for part in _ZH_SENTENCE.split(extra) if _plain_words(part)]
+    if len(parts) <= 1:
+        return extra
+    host_words = _plain_words(host)
+    novel = [part for part in parts if not _plain_words(part) <= host_words]
+    if not novel:
+        return ""
+    if len(novel) == len(parts):
+        return extra
+    body = "".join(novel).strip()
+    if re.search(r"<(?:p|li|blockquote|div|ul|ol|h[1-6])\b", body, re.I):
+        return body
+    cleaned = re.sub(r"</(?:p|li|ul|ol|blockquote|div|h[1-6])>", "", body, flags=re.I).strip()
+    return f"<p>{cleaned}</p>" if cleaned else ""
 
 
 def _hrefs(value: str) -> set[str]:
@@ -463,8 +527,8 @@ def _hide_repeated_pairs(pairs: list[BilingualPair]) -> list[BilingualPair]:
         )
         if not same_passage:
             continue
-        extra = _drop_duplicate_cites(extra, host_zh)
-        if not extra or _plain_words(extra) <= _plain_words(host_zh):
+        extra = _novel_zh(_drop_duplicate_cites(extra, host_zh), host_zh)
+        if not extra:
             continue
         updated[host] = replace(updated[host], zh=host_zh + extra)
     kept = [index for index in range(len(updated)) if index not in drop]
@@ -540,19 +604,62 @@ def _join_html(parts: list[str]) -> str:
     return f"{opening}{inner}</{tag}>"
 
 
-def _coalesce_source_paragraphs(pairs: list[BilingualPair]) -> list[BilingualPair]:
-    """按句切开的同一源段落并回一对。``<br>`` 粘出来的长文没有这个标记，仍按句留。"""
+def _shown_plain(pairs: Sequence[BilingualPair], side: str) -> str:
+    parts = []
+    for pair in pairs:
+        value = pair.zh if side == "zh" else pair.en
+        parts.append(value or "")
+    return re.sub(r"\s+", "", html.unescape(re.sub(r"<[^>]+>", "", "".join(parts))))
+
+
+def _shown_resources(pairs: Sequence[BilingualPair], side: str) -> tuple:
+    from researchlib.translate.provenance import Resources
+
+    blob = "".join((pair.zh if side == "zh" else pair.en) or "" for pair in pairs)
+    facts = Resources(blob)
+    return (tuple(facts.links), tuple(facts.media), tuple(facts.codes))
+
+
+def _coalesce_preserves(before: Sequence[BilingualPair], after: Sequence[BilingualPair]) -> bool:
+    """并段前后，页面上真正画出的中英文、链接和图片要一样。
+
+    有的句子中文和英文相同，对照不单列中文（zh 是 None）。整页投影会把这句英文算进译文侧。
+    并进仍有中文的那一段之后，译文侧不再整段退回英文，旧的整页投影会误判丢字，从而放弃所有并段。
+    这里只比实际画出来的文字。
+    """
+    if _shown_plain(before, "en") != _shown_plain(after, "en"):
+        return False
+    if _shown_plain(before, "zh") != _shown_plain(after, "zh"):
+        return False
+    return _shown_resources(before, "en") == _shown_resources(after, "en") and (
+        _shown_resources(before, "zh") == _shown_resources(after, "zh")
+    )
+
+
+def _coalesce_source_paragraphs(
+    pairs: list[BilingualPair], groups: Sequence[str | None] | None = None,
+) -> list[BilingualPair]:
+    """按句切开的同一源段落并回一对。``<br>`` 粘出来的长文没有这个标记，仍按句留。
+
+    ``groups`` 来自原文 materialize 后的叶子，和对照叶同一顺序。配对 HTML 上的
+    ``data-src-para`` 丢了也按这个并。
+    """
     from dataclasses import replace
 
-    grouped: list[list[BilingualPair]] = []
-    for pair in pairs:
-        gid = _src_para(pair.en or "")
-        if gid and grouped and _src_para(grouped[-1][0].en or "") == gid:
-            grouped[-1].append(pair)
+    def gid_at(index: int, pair: BilingualPair) -> str | None:
+        if groups is not None and index < len(groups) and groups[index]:
+            return groups[index]
+        return _src_para(pair.en or "")
+
+    grouped: list[tuple[str | None, list[BilingualPair]]] = []
+    for index, pair in enumerate(pairs):
+        gid = gid_at(index, pair)
+        if gid and grouped and grouped[-1][0] == gid:
+            grouped[-1][1].append(pair)
         else:
-            grouped.append([pair])
+            grouped.append((gid, [pair]))
     result: list[BilingualPair] = []
-    for group in grouped:
+    for _gid, group in grouped:
         if len(group) == 1:
             pair = group[0]
             result.append(replace(
@@ -733,7 +840,7 @@ def article_pairs(
                     anchors = set()
                     exact_pairs = {}
                     for a, b in fragments:
-                        key = (_PARA_ID.sub("", a), _PARA_ID.sub("", b))
+                        key = (_paragraph_key(a), _paragraph_key(b))
                         pair = _whole_pair(a, b)
                         if key in exact_pairs:
                             pair = replace(pair, repeat_of=exact_pairs[key])
@@ -744,8 +851,9 @@ def article_pairs(
                         if pair.anchor:
                             anchors.add(pair.anchor)
                         aliases = []
-                        for alias in re.findall(r'\bid="(p-\d+)"', b + a):
-                            if alias not in anchors:
+                        remaining = set(_Identifiers(pair.en + (pair.zh or "")).ids)
+                        for alias in _Identifiers(b + a).ids:
+                            if re.fullmatch(r'p-\d+', alias) and alias not in anchors and alias not in remaining:
                                 aliases.append(f'<span id="{alias}" class="para-anchor"></span>')
                                 anchors.add(alias)
                         remaining = set(_Identifiers(pair.en + (pair.zh or "")).ids)
@@ -764,13 +872,16 @@ def article_pairs(
             result = _separate(original, translated, "分段无法保真，以下保留完整原文和译文。")
     if not result.notice and any(ordered_projection_gaps(original, translated, result.pairs)):
         result = _separate(original, translated, "无法完整逐段展示，以下分别保留原文和译文。")
-    # 投影先看完整对照。按句切开的同一源段落先并回去；并完仍对得上原文才用这一份。
+    # 投影先看完整对照。按原文叶子的分段标记把同一段并回去；并段前后页面上的字和链接不变才采用。
     # 旧粗段按唯一锚点展开成句之后不再并回去，否则整段又合成一对。
     # 然后才隐藏重复；隐藏不得少掉原文里的词、链接或结构，否则整份留着。
     if not result.notice:
         if state.status != "legacy-anchors":
-            coalesced = _coalesce_source_paragraphs(result.pairs)
-            if not any(ordered_projection_gaps(original, translated, coalesced)):
+            groups = [_src_para(item.html) for item in left] if len(left) == len(result.pairs) else None
+            coalesced = _coalesce_source_paragraphs(result.pairs, groups)
+            # 整页投影会把「中文和英文相同、所以不单列」算成译文侧丢字，从而放弃所有并段。
+            # 只要求并段前后页面上的文字、链接和图片不变。
+            if _coalesce_preserves(result.pairs, coalesced):
                 result = replace(result, pairs=coalesced)
         result = replace(result, pairs=_hide_repeated_pairs(result.pairs))
         result = replace(result, pairs=_restore_pair_links(result.pairs))

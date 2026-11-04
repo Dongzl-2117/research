@@ -461,29 +461,31 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     current_html, _raw_hash = _render_original(conn, current, data_dir)
     if source_manifest(current_html)["source_fingerprint"] != manifest["source_fingerprint"]:
         raise AlignmentError("canonical-source-changed-during-request")
-    saved = conn.execute(
-        """
-        INSERT INTO article_translations AS existing (
-          article_id, lang, content_hash, title_zh, body_html, body_text, complete,
-          origin, segments, provenance, updated_at
-        )
-        VALUES (%s, 'zh', %s, %s, %s, %s, %s, 'model', %s, %s, now())
-        ON CONFLICT (article_id) DO UPDATE SET
-          content_hash = EXCLUDED.content_hash,
-          title_zh = EXCLUDED.title_zh,
-          body_html = EXCLUDED.body_html,
-          body_text = EXCLUDED.body_text,
-          complete = EXCLUDED.complete,
-          origin = EXCLUDED.origin,
-          segments = EXCLUDED.segments,
-          provenance = EXCLUDED.provenance,
-          updated_at = now()
-        WHERE to_jsonb(existing) = %s::jsonb
-        RETURNING article_id
-        """,
-        (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance),
-         Jsonb(target_snapshot) if target_snapshot is not None else None),
-    ).fetchone()
+    if target_snapshot is None:
+        saved = conn.execute(
+            """
+            INSERT INTO article_translations (
+              article_id, lang, content_hash, title_zh, body_html, body_text, complete,
+              origin, segments, provenance, updated_at
+            )
+            VALUES (%s, 'zh', %s, %s, %s, %s, %s, 'model', %s, %s, now())
+            ON CONFLICT (article_id) DO NOTHING
+            RETURNING article_id
+            """,
+            (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance)),
+        ).fetchone()
+    else:
+        # 已存在的目标只允许条件更新；删除也是并发变更，不能通过 INSERT 把它复活。
+        saved = conn.execute(
+            """
+            UPDATE article_translations AS existing SET
+              content_hash=%s, title_zh=%s, body_html=%s, body_text=%s, complete=%s,
+              origin='model', segments=%s, provenance=%s, updated_at=now()
+            WHERE article_id=%s AND to_jsonb(existing)=%s::jsonb
+            RETURNING article_id
+            """,
+            (digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance), article_id, Jsonb(target_snapshot)),
+        ).fetchone()
     if saved is None:
         # 冲突行在写入时原子比较；也覆盖请求开始时没有译文、随后另一请求先写入的情形。
         raise AlignmentError('target-changed-during-request')

@@ -250,8 +250,8 @@ def materialize(value: str) -> str:
     before, after = Resources(value), Resources(result)
     def plain(text):
         return re.sub(r"\s+", "", html.unescape(_TAG.sub("", text)))
-    if plain(value) != plain(result) or (before.links, before.media, before.codes) != (
-        after.links, after.media, after.codes
+    if plain(value) != plain(result) or (before.links, before.media, before.codes, before.anchors) != (
+        after.links, after.media, after.codes, after.anchors
     ):
         raise AlignmentError("materialize-content")
     return result
