@@ -222,6 +222,7 @@ class _El:
         self.void = void
         self.children: list[_El | _Tx] = []
         self.replacement: str | None = None
+        self.source_group = ''
 
 
 class _FragmentParser(HTMLParser):
@@ -231,11 +232,14 @@ class _FragmentParser(HTMLParser):
         super().__init__(convert_charrefs=False)
         self.root = _El("", "")
         self.stack: list[_El] = [self.root]
+        self._source_group = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         raw = self.get_starttag_text()
         name = tag.lower()
         node = _El(name, raw, void=name in _VOID)
+        self._source_group += 1
+        node.source_group = str(self._source_group)
         self.stack[-1].children.append(node)
         if not node.void:
             self.stack.append(node)
@@ -789,7 +793,9 @@ def stable_leaf(html: str, *, tag: str, keep_br: bool = False) -> str:
     name = (tag or "p").lower()
     if name not in _BLOCK:
         name = "p"
-    return f"<{name}>{_flatten_inline(html, keep_br=keep_br)}</{name}>"
+    group = re.search(r'\bdata-src-para="(\d+)"', html or "")
+    attr = f' data-src-para="{group.group(1)}"' if group else ""
+    return f"<{name}{attr}>{_flatten_inline(html, keep_br=keep_br)}</{name}>"
 
 
 def _stable_replacement(raw: str, *, tag: str, keep_br: bool) -> str | None:
@@ -1050,8 +1056,23 @@ def _overflow_pieces(node: _El) -> list[str] | None:
 
 
 def _keep_paragraph_id(node: _El) -> None:
-    if node.name == "p" and node.replacement and node.replacement.startswith("<p>") and node.start.startswith("<p "):
-        node.replacement = node.start + node.replacement[3:]
+    if node.name != "p" or not node.replacement or not node.start.startswith("<p "):
+        return
+    match = re.match(r"<p\b([^>]*)>", node.replacement, re.I)
+    if not match:
+        return
+    group = re.search(r'\bdata-src-para="\d+"', match.group(1))
+    extra = f" {group.group(0)}" if group and "data-src-para" not in node.start else ""
+    opening = node.start[:-1] + extra + ">"
+    node.replacement = opening + node.replacement[match.end():]
+
+
+def _mark_src_para(piece: str, group: str) -> str:
+    if not re.match(r"<p\b", piece or "", re.I):
+        return piece
+    if re.search(r"\bdata-src-para=", piece, re.I):
+        return piece
+    return re.sub(r"^<p\b", f'<p data-src-para="{group}"', piece, count=1, flags=re.I)
 
 
 def _emit_br_pieces(
@@ -1178,9 +1199,13 @@ def _walk(
             _emit_br_lines(node, lines, own, chain, used, out, replacements)
             return
         # 没有够三行 <br>、但本身已经是多句长文的，按句切开。单句不拆。
+        # 这几句标上同一个 data-src-para，对照页再并回原来的段落；<br> 粘出来的长文不标。
         if split_sentences:
             overflow = _overflow_pieces(node)
             if overflow:
+                # 使用本次解析树的节点序号；进程全局计数会让同一原稿的回执每次都变化。
+                group = node.source_group
+                overflow = [_mark_src_para(piece, group) for piece in overflow]
                 _emit_br_pieces(node, overflow, own, chain, used, out, replacements)
                 return
         if not _has_letter(node):

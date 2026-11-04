@@ -104,7 +104,12 @@ _MONTH_NUMBERS = {name[:3].lower(): index for index, name in enumerate(_MONTHS, 
 _MONTH_PATTERN = "|".join((*_MONTHS, *(month[:3] for month in _MONTHS), "Sept"))
 _VERSION_VALUE = r"\d[0-9A-Za-z]*(?:[._+-][0-9A-Za-z]+)*"
 _POSITIONAL_NUMBER = re.compile(
-    rf"(?<![A-Za-z0-9_])(?:version|ver\.?|v)\s*[:：]?\s*(?P<version_en>{_VERSION_VALUE})"
+    r"(?<![A-Za-z0-9_])Q(?P<quarter_first>[1-4])\s*(?:FY|fiscal\s+year)\s*"
+    r"(?P<fy_after>\d{4})(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])(?:FY|fiscal\s+year)\s*(?P<fy_first>\d{4})\s*"
+    r"Q(?P<quarter_after>[1-4])(?![A-Za-z0-9_])"
+    r"|(?<!\d)(?P<fy_zh>\d{4})\s*财年\s*第?(?P<quarter_zh>[1-4])\s*季度"
+    rf"|(?<![A-Za-z0-9_])(?:version|ver\.?|v)\s*[:：]?\s*(?P<version_en>{_VERSION_VALUE})"
     rf"|版本\s*v?\s*(?P<version_zh>{_VERSION_VALUE})"
     rf"|(?<![A-Za-z0-9_])(?P<version_suffix>{_VERSION_VALUE})\s*版本?"
     r"|\b(?:in|since)\s+['’‘](?P<short_year>\d{2})(?![\dA-Za-z'’])"
@@ -129,7 +134,10 @@ def _positional_numbers(value: str) -> list[tuple]:
     text = _number_text(value)
     for match in _POSITIONAL_NUMBER.finditer(text):
         version = match["version_en"] or match["version_zh"] or match["version_suffix"]
-        if version:
+        if match['quarter_first'] or match['quarter_after'] or match['quarter_zh']:
+            facts.append(('fiscal-quarter', int(match['fy_after'] or match['fy_first'] or match['fy_zh']),
+                          int(match['quarter_first'] or match['quarter_after'] or match['quarter_zh'])))
+        elif version:
             # 版本是标识符，3.10 和 3.1、1.0 和 1 都不同；不能交给 Decimal 抹去末尾的零。
             facts.append(("version", version))
         elif match["short_year"]:

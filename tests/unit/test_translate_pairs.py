@@ -1112,7 +1112,7 @@ def test_long_paragraph_splits_into_sentences_and_keeps_the_link():
     assert "Point 2" not in plains[1]
     assert not any(plain.startswith("com ") or plain.startswith("9 ") for plain in plains)
     written = splice_segments(html, {index: f"<p>译文{index}。</p>" for index in range(len(leaves))})
-    assert written.startswith('<p id="p-4">')
+    assert written.startswith('<p id="p-4"')
     assert leaf_count_problem(html, written) is None
     assert len(segments_of(written)) == 10
 
