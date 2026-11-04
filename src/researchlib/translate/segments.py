@@ -223,6 +223,7 @@ class _El:
         self.children: list[_El | _Tx] = []
         self.replacement: str | None = None
         self.source_group = ''
+        self.attrs: dict[str, str | None] = {}
 
 
 class _FragmentParser(HTMLParser):
@@ -238,6 +239,7 @@ class _FragmentParser(HTMLParser):
         raw = self.get_starttag_text()
         name = tag.lower()
         node = _El(name, raw, void=name in _VOID)
+        node.attrs = dict(attrs)
         self._source_group += 1
         node.source_group = str(self._source_group)
         self.stack[-1].children.append(node)
@@ -245,7 +247,9 @@ class _FragmentParser(HTMLParser):
             self.stack.append(node)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.stack[-1].children.append(_El(tag.lower(), self.get_starttag_text(), void=True))
+        node = _El(tag.lower(), self.get_starttag_text(), void=True)
+        node.attrs = dict(attrs)
+        self.stack[-1].children.append(node)
 
     def handle_endtag(self, tag: str) -> None:
         name = tag.lower()
@@ -747,6 +751,12 @@ def _html_has_letter(html: str) -> bool:
     return any(char.isalpha() for char in plain)
 
 
+def _normalize_inline_space(value: str) -> str:
+    protected = re.split(r"(<code\b[^>]*>.*?</code>|<pre\b[^>]*>.*?</pre>)", value, flags=re.I | re.S)
+    return ''.join(part if index % 2 else re.sub(r'\s+', ' ', part)
+                   for index, part in enumerate(protected)).strip()
+
+
 def _flatten_inline(html: str, *, keep_br: bool) -> str:
     """把模型返回的片段收成行内内容。块级标签拆掉，避免再切段时条数变化。"""
     parser = _FragmentParser()
@@ -782,10 +792,7 @@ def _flatten_inline(html: str, *, keep_br: bool) -> str:
             glue()
 
     walk(parser.root.children)
-    protected = re.split(r"(<code\b[^>]*>.*?</code>|<pre\b[^>]*>.*?</pre>)",
-                         ''.join(parts), flags=re.I | re.S)
-    return ''.join(part if index % 2 else re.sub(r'\s+', ' ', part)
-                   for index, part in enumerate(protected)).strip()
+    return _normalize_inline_space(''.join(parts))
 
 
 def stable_leaf(html: str, *, tag: str, keep_br: bool = False) -> str:
@@ -946,6 +953,12 @@ def _atoms_of(nodes: list[_El | _Tx]) -> list[_Atom]:
             if isinstance(item, _Tx):
                 atoms.append(_Atom("text", item.data, html_lib.unescape(item.data), ""))
                 continue
+            if item.name in {'pre', 'code', 'a', 'img', 'picture', 'video', 'source', 'track'} or (
+                item.attrs.get('id') or item.attrs.get('name')
+            ):
+                # 代码和命名节点作为整体归属一个叶子；重开跨句标签会重复脚注或链接。
+                atoms.append(_Atom('protected', _outer(item), '\ufffc', item.name))
+                continue
             if item.name == "br":
                 atoms.append(_Atom("br", "", " ", "br"))
                 continue
@@ -1010,7 +1023,7 @@ def _render_plain_span(atoms: list[_Atom], start: int, end: int) -> str:
         if pos >= end:
             close_open()
             break
-    return re.sub(r"\s+", " ", "".join(out)).strip()
+    return _normalize_inline_space(''.join(out))
 
 
 def _html_sentence_pieces(node: _El) -> list[str] | None:
