@@ -31,6 +31,11 @@
         if (localStorage.getItem("research-article-chat") === "closed") {
           document.documentElement.setAttribute("data-article-chat", "closed");
         }
+        var chatRatio = parseFloat(localStorage.getItem("research-article-chat-ratio"));
+        if (chatRatio > 0.12 && chatRatio < 0.8) {
+          document.documentElement.style.setProperty("--chat-ratio", String(chatRatio));
+          document.documentElement.setAttribute("data-chat-ratio", "1");
+        }
       } catch (e) {}
     })();
   </script>
