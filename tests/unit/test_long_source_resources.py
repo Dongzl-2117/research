@@ -55,3 +55,14 @@ def test_fallback_keeps_real_named_paragraph_anchors():
     assert displayed.notice
     shown = ''.join(pair.en + (pair.zh or '') for pair in displayed.pairs)
     assert 'id="p-7"' in shown and 'href="#p-7"' in shown and 'id="p-9"' in shown
+
+
+@pytest.mark.parametrize('target', ['服务收入继续增长。', '第四季度服务收入继续增长。'])
+def test_whitespace_duplicate_does_not_hide_missing_or_wrong_quarter(target):
+    sentence = ('Services remain the centerpiece of the growth story . In Q1 the installed base '
+                'kept paying and the margin stayed high through the whole year.')
+    source = f'<p>{sentence}</p><p>{sentence.replace("story .", "story.")}</p>'
+    displayed = article_pairs(source, f'<p>{target}</p><p>{target}</p>')
+    assert displayed.notice
+    shown = ''.join(pair.en for pair in displayed.pairs)
+    assert shown.count('Q1') == 2

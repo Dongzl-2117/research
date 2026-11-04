@@ -3,7 +3,8 @@
 新稿先核验 canonical 源文和持久回执；旧稿保留明确的不确定性。无法配对时保留两份全文。
 展示单元保留引用、列表和表格结构。有序投影通过之后，先把同一源段落里按句切开的叶子并回去，
 再隐藏长英文的重复、整句包含和近前缀；留下的那一对必须仍有这些文字、数字、链接和结构，锚点改挂过去。
-中文各自带独有说法的不隐藏。英文里的链接补到中文仍写着同一锚文本、但丢掉标签的位置，不另写括号域名。
+英文连空白都一样、中文却各有独有说法的不隐藏。只差空白的长英文收成一对，多出来的中文句子挂回去。
+英文里的链接补到中文仍写着同一锚文本、但丢掉标签的位置，不另写括号域名。
 这一步不删入库的段，也不把整页退回两列。图片文字在配对后渲染，不参与模型源段身份。
 """
 
@@ -348,6 +349,29 @@ def _plain_words(value: str) -> set[str]:
     return set(re.findall(r"\w+", text))
 
 
+_ZH_SENTENCE = re.compile(r"(?<=[。！？])")
+
+
+def _novel_zh(extra: str, host: str) -> str:
+    """host 里还没有的中文句子。整段只是另一种说法时，不要把已经有的句子再贴一遍。"""
+    if not extra or _plain_words(extra) <= _plain_words(host):
+        return ""
+    parts = [part for part in _ZH_SENTENCE.split(extra) if _plain_words(part)]
+    if len(parts) <= 1:
+        return extra
+    host_words = _plain_words(host)
+    novel = [part for part in parts if not _plain_words(part) <= host_words]
+    if not novel:
+        return ""
+    if len(novel) == len(parts):
+        return extra
+    body = "".join(novel).strip()
+    if re.search(r"<(?:p|li|blockquote|div|ul|ol|h[1-6])\b", body, re.I):
+        return body
+    cleaned = re.sub(r"</(?:p|li|ul|ol|blockquote|div|h[1-6])>", "", body, flags=re.I).strip()
+    return f"<p>{cleaned}</p>" if cleaned else ""
+
+
 def _hrefs(value: str) -> set[str]:
     return {html.unescape(item) for item in _HREF.findall(value or "")}
 
@@ -503,8 +527,8 @@ def _hide_repeated_pairs(pairs: list[BilingualPair]) -> list[BilingualPair]:
         )
         if not same_passage:
             continue
-        extra = _drop_duplicate_cites(extra, host_zh)
-        if not extra or _plain_words(extra) <= _plain_words(host_zh):
+        extra = _novel_zh(_drop_duplicate_cites(extra, host_zh), host_zh)
+        if not extra:
             continue
         updated[host] = replace(updated[host], zh=host_zh + extra)
     kept = [index for index in range(len(updated)) if index not in drop]
