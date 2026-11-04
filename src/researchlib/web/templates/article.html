@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block body %}
+<div class="read-with-chat">
 <div class="reader-grid">
   <article class="reader">
     <div class="reader-top">
@@ -93,7 +94,33 @@
     {% endif %}
   </article>
 </div>
+<aside id="article-chat" class="article-chat" data-article="{{ article.id }}" aria-label="问这篇">
+  <header class="chat-head">
+    <div class="chat-head-bar">
+      <h2>问这篇</h2>
+      <div class="chat-head-actions">
+        <button type="button" data-chat-clear>清空</button>
+        <button type="button" data-chat-close>收起</button>
+      </div>
+    </div>
+    <p>主要看这篇文章。需要时会引用库里的其他文章。</p>
+  </header>
+  <div class="chat-log" role="log" aria-live="polite" aria-relevant="additions">
+    <p class="chat-empty">可以问这篇的判断和依据，也可以问库里还有谁写过相关的内容。</p>
+  </div>
+  <form class="chat-form" action="/ask" method="post">
+    <input type="hidden" name="article" value="{{ article.id }}">
+    <label class="sr" for="article-chat-q">问题</label>
+    <textarea id="article-chat-q" name="q" rows="2" maxlength="500" placeholder="问这篇文章，或问库里相关的说法" required></textarea>
+    <button type="submit">发送</button>
+  </form>
+  <noscript><p class="chat-empty">没有脚本时，发送会打开问库里的「问这篇」。</p></noscript>
+</aside>
+</div>
+<button type="button" class="chat-toggle" aria-controls="article-chat" aria-expanded="false">问 AI</button>
+<button type="button" class="chat-backdrop" hidden aria-label="关闭对话"></button>
 <script src="/static/article.js" defer></script>
+<script src="/static/article-chat.js" defer></script>
 {% if quoted_marked %}
 <script>
   // 带 ?chunk= 打开时滚到引用的那段。地址里已有锚点就听锚点的。
