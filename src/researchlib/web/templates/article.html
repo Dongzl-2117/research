@@ -94,29 +94,34 @@
     {% endif %}
   </article>
 </div>
-<div class="chat-split" role="separator" aria-orientation="vertical" aria-label="调整正文和问这篇的宽度" aria-controls="article-chat" tabindex="0" aria-valuemin="15" aria-valuemax="70" aria-valuenow="32"></div>
-<aside id="article-chat" class="article-chat" data-article="{{ article.id }}" aria-label="问这篇">
+<div class="chat-split" role="separator" aria-orientation="vertical" aria-label="调整正文和问库的宽度" aria-controls="article-chat" tabindex="0" aria-valuemin="18" aria-valuemax="72" aria-valuenow="32"></div>
+<aside id="article-chat" class="article-chat" data-article="{{ article.id }}" aria-label="问库">
   <header class="chat-head">
-    <h2>问这篇</h2>
+    <h2>问库</h2>
     <div class="chat-head-actions">
       <button type="button" data-chat-clear aria-label="清空" title="清空">清空</button>
       <button type="button" data-chat-close aria-label="收起" title="收起">收起</button>
     </div>
   </header>
+  <p id="article-chat-mode" class="sr">每轮独立提问，不沿用上文。范围由下方选择；默认检索整个资料库。</p>
   <div class="chat-log" role="log" aria-live="polite" aria-relevant="additions"></div>
   <form class="chat-form" action="/ask" method="post">
-    <input type="hidden" name="article" value="{{ article.id }}">
     <div class="chat-composer">
       <label class="sr" for="article-chat-q">问题</label>
-      <textarea id="article-chat-q" name="q" rows="2" maxlength="500" enterkeyhint="send" required></textarea>
+      <textarea id="article-chat-q" name="q" aria-describedby="article-chat-mode" rows="2" maxlength="500" enterkeyhint="send" required></textarea>
       <div class="chat-composer-bar">
+        <label class="sr" for="article-chat-scope">问库范围</label>
+        <select id="article-chat-scope" class="chat-range" name="article" aria-label="问库范围" aria-describedby="article-chat-mode">
+          <option value="">整个资料库 · 单轮</option>
+          <option value="{{ article.id }}">只问这篇 · 单轮</option>
+        </select>
         <button type="submit" aria-label="发送" title="发送">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V7.5M7.8 11.2 12 7l4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
       </div>
     </div>
   </form>
-  <noscript><p class="chat-empty">没有脚本时，发送会打开问库里的「问这篇」。</p></noscript>
+  <noscript><p class="chat-empty">没有脚本时，发送会打开问库，按所选范围提问。</p></noscript>
 </aside>
 </div>
 <button type="button" class="chat-toggle" aria-controls="article-chat" aria-expanded="false">
