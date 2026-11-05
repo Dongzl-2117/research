@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,12 @@ from researchlib.sources import enabled_sources, load_sources
 
 
 def validate_dsn(dsn):
+    # libpq/psycopg 还会在解析显式 DSN 之后读 PG*。逐个漏列会留下新版本的继承入口，
+    # 包括 PGSERVICEFILE/PGSYSCONFDIR 的服务文件查找。只检查名称，不读取或回显凭据值；
+    # 拒绝而不临时清空全局环境，避免与同进程的其他连接互相干扰。
+    inherited = sorted(name for name in os.environ if name.startswith("PG"))
+    if inherited:
+        raise ValueError("捕获不接受继承的 PG* 配置，请在独立命令环境移除：" + ", ".join(inherited))
     params = conninfo_to_dict(dsn)
     # 不允许生产名称、远程主机、多个 host/hostaddr 或 libpq service 覆盖目标。
     if params.get("dbname") not in {"research_experiment", "research_eval", "research_test"}:
@@ -32,6 +39,13 @@ def validate_dsn(dsn):
         raise ValueError("离线副本必须显式位于本机回环地址")
     if any(key in params for key in ("hostaddr", "service", "servicefile", "options")):
         raise ValueError("不接受 hostaddr/service/options 间接覆盖目标")
+    port = params.get("port", "5432")
+    if not (port.isascii() and port.isdecimal() and len(port) <= 5 and 1 <= int(port) <= 65535):
+        raise ValueError("端口必须是 1～65535 的单个整数")
+    params["port"] = str(int(port))
+    # localhost 的解析结果也不作为目标；host 仅保留给 TLS/认证使用。
+    params["hostaddr"] = "::1" if params["host"] == "::1" else "127.0.0.1"
+    params["connect_timeout"] = "5"
     return params
 
 
@@ -48,7 +62,7 @@ def capture(dsn: str, sources_path: Path, specs: list[QuerySpec]) -> Snapshot:
     used_ids = {source for spec in specs for source in spec.scope.source_ids}
     # 此命令独立进程使用自己的缓存，不和主站共进程；从新库捕获前清空旧统计。
     reset_stats_cache()
-    with psycopg.connect(**params, row_factory=dict_row, connect_timeout=5, autocommit=True) as conn:
+    with psycopg.connect(**params, row_factory=dict_row, autocommit=True) as conn:
         conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
         try:
             conn.execute("SET LOCAL statement_timeout = '20s'")

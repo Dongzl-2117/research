@@ -52,15 +52,10 @@ def variant(case, tuning: Tuning, sources):
         context=case.qa_context, parameters=tuning.scoring(),
     )
     budget = Budget(tuning.passages, tuning.chars, tuning.per_article)
-    picked = select(scored, case.qa_query, budget, sources, min_score_ratio=tuning.min_score_ratio)
-    # 主站 select 为保留整段允许第一段超预算；实验单次生成在这里额外限制，绝不截断原文。
-    bounded = []
-    used = 0
-    for p in picked:
-        if used + len(p.body) > tuning.chars:
-            continue
-        bounded.append(p)
-        used += len(p.body)
+    # 主站允许第一段超预算以保留完整原文；单次实验先剔除放不下的整段，
+    # 再交给 select 分配段数/字符预算，避免大段先占名额、事后移除又丢掉可用的小段。
+    fitting = [p for p in scored if len(p.body) <= tuning.chars]
+    bounded = select(fitting, case.qa_query, budget, sources, min_score_ratio=tuning.min_score_ratio)
     _context(bounded, case.neighbours, int(tuning.chars * 0.3))
     passages = [_passage_dict(i, p, sources, "Asia/Shanghai") for i, p in enumerate(bounded, 1)]
     system = SYSTEM_PROMPT + ("\n\n实验附加要求：\n" + tuning.prompt_note if tuning.prompt_note else "")

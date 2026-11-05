@@ -116,3 +116,24 @@ def test_capture_rejects_no_terms_rather_than_pretending_to_compare(conn, settin
     question = spec(["fangwei-mp"]).model_copy(update={"query": "总结一下"})
     with pytest.raises(ValueError, match="明确检索词"):
         capture(settings.database_url, settings.sources_path, [question])
+
+
+def test_capture_pins_real_localhost_connection_address(conn, settings, monkeypatch):
+    _, first, _ = seed(conn, settings)
+    from psycopg.conninfo import make_conninfo
+
+    import researchlib.experiments.capture as module
+
+    original = module.psycopg.connect
+    connected = []
+    def local_only_connect(**kwargs):
+        assert kwargs["host"] == "localhost" and kwargs["hostaddr"] == "127.0.0.1"
+        assert kwargs["port"].isdigit() and kwargs["dbname"] == "research_test"
+        connection = original(**kwargs)
+        connected.append(connection.pgconn.hostaddr.decode())
+        return connection
+    monkeypatch.setattr(module.psycopg, "connect", local_only_connect)
+    snapshot = capture(
+        make_conninfo(settings.database_url, host="localhost"), settings.sources_path, [spec([first.id])],
+    )
+    assert connected == ["127.0.0.1"] and snapshot.cases[0].rows
