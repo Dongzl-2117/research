@@ -1,7 +1,9 @@
 """站内 LLM 默认 DeepSeek：deepseek-flash / thinking / max / 393216 起；Grok 保留为显式选项。"""
 
 import json
+import ssl
 import time
+import urllib.error
 
 import pytest
 
@@ -9,6 +11,8 @@ from researchlib import deepseek, health
 from researchlib import llm as llm_module
 from researchlib.config import Settings
 from researchlib.llm import (
+    RETRY_DELAYS,
+    IncompleteStream,
     LLMError,
     LLMUnavailable,
     active_label,
@@ -17,19 +21,33 @@ from researchlib.llm import (
     credential_kind,
     ensure_oauth,
     llm_configured,
+    read_chat_completion,
 )
 from researchlib.llm_provider import llm_provider
 from researchlib.translate import llm as translate_llm
+from researchlib.translate.llm import LLMTransportError
 
 
 class _Response:
     status = 200
 
     def __init__(self, payload: dict):
-        self._body = json.dumps(payload).encode()
+        self._buf = json.dumps(payload).encode()
 
-    def read(self):
-        return self._body
+    def read(self, _amt=-1):
+        data, self._buf = self._buf, b""
+        return data
+
+    def readline(self, _limit=-1):
+        if not self._buf:
+            return b""
+        cut = self._buf.find(b"\n")
+        if cut < 0:
+            data, self._buf = self._buf, b""
+            return data
+        line = self._buf[: cut + 1]
+        self._buf = self._buf[cut + 1 :]
+        return line
 
     def __enter__(self):
         return self
@@ -138,6 +156,7 @@ def test_deepseek_chat_uses_official_endpoint_and_max_strength(tmp_path, monkeyp
     assert body["thinking"] == {"type": "enabled"}
     assert body["max_tokens"] == deepseek.DEEPSEEK_OUTPUT_FLOOR == 393_216
     assert "temperature" not in body
+    assert body["stream"] is True
     assert body["messages"] == [{"role": "user", "content": "hi"}]
 
 
@@ -311,6 +330,7 @@ def test_translate_chat_json_uses_deepseek(tmp_path, monkeypatch):
     assert body["reasoning_effort"] == "max"
     assert body["max_tokens"] == deepseek.DEEPSEEK_OUTPUT_FLOOR
     assert body["response_format"] == {"type": "json_object"}
+    assert body["stream"] is True
     assert "temperature" not in body
     assert captured["timeout"] == 12
 
@@ -376,3 +396,228 @@ def test_deepseek_stream_is_reassembled():
     assert body["model"] == "deepseek-flash"
     assert body["choices"][0]["message"]["content"] == "茅台很好"
     assert body["choices"][0]["message"]["reasoning_content"] == "想"
+
+
+def _ssl_eof() -> ssl.SSLError:
+    return ssl.SSLError(
+        "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1011)"
+    )
+
+
+class _Scripted:
+    """按顺序交出 SSE 行；下一项若是异常，就在下一次读时抛出。"""
+
+    def __init__(self, events):
+        self._events = list(events)
+
+    def readline(self, _limit=-1):
+        if not self._events:
+            return b""
+        event = self._events.pop(0)
+        if isinstance(event, BaseException):
+            raise event
+        if isinstance(event, str):
+            if not event.endswith("\n"):
+                event += "\n"
+            event = event.encode()
+        return event
+
+    def read(self, _amt=-1):
+        rest = []
+        while self._events:
+            event = self._events.pop(0)
+            if isinstance(event, BaseException):
+                raise event
+            rest.append(event.encode() if isinstance(event, str) else event)
+        return b"".join(rest)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+def _delta(content=None, reasoning=None, model=None, finish=None, usage=None) -> str:
+    chunk: dict = {"choices": [{"delta": {}}]}
+    delta = chunk["choices"][0]["delta"]
+    if content is not None:
+        delta["content"] = content
+    if reasoning is not None:
+        delta["reasoning_content"] = reasoning
+    if model:
+        chunk["model"] = model
+    if finish:
+        chunk["choices"][0]["finish_reason"] = finish
+    if usage:
+        chunk["usage"] = usage
+    return "data: " + json.dumps(chunk, ensure_ascii=False)
+
+
+def _clean_sse(content: str) -> list:
+    return [
+        _delta(reasoning="先想一下", model="deepseek-flash"),
+        _delta(content=content),
+        _delta(finish="stop", usage={"total_tokens": 3}),
+        "data: [DONE]",
+    ]
+
+
+def test_clean_sse_stream_assembles_content_not_reasoning():
+    body = read_chat_completion(_Scripted(_clean_sse("完整译文")), stream=True)
+    message = body["choices"][0]["message"]
+    assert message["content"] == "完整译文"
+    assert message["reasoning_content"] == "先想一下"
+    assert body["model"] == "deepseek-flash"
+    assert body["usage"] == {"total_tokens": 3}
+
+
+def test_midstream_ssl_eof_discards_partial_bytes():
+    partial = _Scripted([_delta(content="半截译文"), _ssl_eof()])
+    with pytest.raises(IncompleteStream, match="UNEXPECTED_EOF_WHILE_READING") as caught:
+        read_chat_completion(partial, stream=True)
+    assert "半截" not in str(caught.value)
+
+
+def test_truncated_sse_without_done_is_not_a_completion():
+    """有 finish_reason、内容也能拼完，但没有 [DONE]，仍是半截流。"""
+    truncated = _Scripted([_delta(content="半截译文"), _delta(finish="stop")])
+    with pytest.raises(IncompleteStream, match=r"\[DONE\]") as caught:
+        read_chat_completion(truncated, stream=True)
+    assert "半截" not in str(caught.value)
+
+
+def test_chat_retries_midstream_ssl_eof_and_returns_the_finished_stream(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    settings = _settings(tmp_path)
+    bodies = []
+    outcomes = [
+        _Scripted([_delta(content="半截译文"), _ssl_eof()]),
+        _Scripted(_clean_sse("完整译文")),
+    ]
+
+    def fake_urlopen(req, timeout=None):
+        bodies.append(json.loads(req.data.decode()))
+        assert timeout == settings.llm_timeout
+        return outcomes.pop(0)
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda _seconds: None)
+    text, model = chat(settings, [{"role": "user", "content": "hi"}])
+
+    assert (text, model) == ("完整译文", "deepseek-flash")
+    assert "半截" not in text
+    assert len(bodies) == 2
+    assert bodies[0] == bodies[1]
+    assert bodies[0]["stream"] is True
+    assert bodies[0]["thinking"] == {"type": "enabled"}
+    assert bodies[0]["reasoning_effort"] == "max"
+    assert bodies[0]["max_tokens"] == deepseek.DEEPSEEK_OUTPUT_FLOOR
+
+
+def test_chat_gives_up_after_the_retry_budget_without_partial_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(1)
+        return _Scripted([_delta(content="半截译文"), _ssl_eof()])
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda _seconds: None)
+    with pytest.raises(LLMError, match="UNEXPECTED_EOF_WHILE_READING") as caught:
+        chat(_settings(tmp_path), [{"role": "user", "content": "hi"}])
+    assert len(calls) == len(RETRY_DELAYS) + 1
+    assert "半截" not in str(caught.value)
+
+
+def test_translate_retries_urlerror_and_midstream_eof_without_partial_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    bodies = []
+    outcomes = [
+        urllib.error.URLError(_ssl_eof()),
+        _Scripted([_delta(content='{"t": ["半截"]}'), _ssl_eof()]),
+        _Scripted(_clean_sse('{"t": ["全文"]}')),
+    ]
+
+    def fake_urlopen(req, timeout=None):
+        bodies.append(json.loads(req.data.decode()))
+        assert timeout == 12
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    sleeps = []
+    monkeypatch.setattr(translate_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(translate_llm.time, "sleep", sleeps.append)
+    result = translate_llm.chat_json(
+        system="sys",
+        user={"segments": ["hi"]},
+        purpose="translate_body",
+        subject="batch",
+        temperature=0.3,
+        max_tokens=800,
+        data_dir=tmp_path,
+        timeout_s=12,
+    )
+
+    assert result.data == {"t": ["全文"]}
+    assert result.model == "deepseek-flash"
+    assert result.usage == {"total_tokens": 3}
+    assert len(bodies) == 3
+    assert bodies[0] == bodies[1] == bodies[2]
+    assert bodies[0]["stream"] is True
+    assert bodies[0]["thinking"] == {"type": "enabled"}
+    assert bodies[0]["reasoning_effort"] == "max"
+    assert bodies[0]["max_tokens"] == deepseek.DEEPSEEK_OUTPUT_FLOOR
+    assert "temperature" not in bodies[0]
+    assert sleeps == list(RETRY_DELAYS[:2])
+
+
+def test_translate_truncated_sse_is_not_returned_as_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(json.loads(req.data.decode()))
+        return _Scripted([_delta(content='{"t": ["半截"]}'), _delta(finish="stop")])
+
+    sleeps = []
+    monkeypatch.setattr(translate_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(translate_llm.time, "sleep", sleeps.append)
+    with pytest.raises(LLMTransportError, match=r"\[DONE\]") as caught:
+        translate_llm.chat_json(
+            system="sys",
+            user={"segments": ["hi"]},
+            purpose="translate_body",
+            subject="batch",
+            data_dir=tmp_path,
+            timeout_s=12,
+        )
+    assert len(calls) == len(RETRY_DELAYS) + 1
+    assert sleeps == list(RETRY_DELAYS)
+    assert calls[0] == calls[-1]
+    assert "半截" not in str(caught.value)
+
+
+def test_translate_timeout_is_not_retried(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(1)
+        raise urllib.error.URLError(TimeoutError("The read operation timed out"))
+
+    monkeypatch.setattr(translate_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(translate_llm.time, "sleep", lambda _seconds: None)
+    with pytest.raises(LLMTransportError, match="timed out"):
+        translate_llm.chat_json(
+            system="sys",
+            user={"segments": ["hi"]},
+            purpose="translate_body",
+            subject="batch",
+            data_dir=tmp_path,
+            timeout_s=12,
+        )
+    assert calls == [1]

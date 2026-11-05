@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="experiment-csrf" content="{{ csrf }}">
+  <meta name="experiment-api-base" content="{{ prefix }}/api/experiments/">
+  <title>算法实验室 · 研究库</title>
+  <link rel="stylesheet" href="{{ prefix }}/experiments/static/experiments.css">
+  <script defer src="{{ prefix }}/experiments/static/experiments.js"></script>
+</head>
+<body>
+<main>
+  {% if website_mode %}<p class="hint"><a href="/">返回研究库</a></p>{% endif %}
+  <header class="page-head"><div><p class="eyebrow">RESEARCH / EXPERIMENTS</p><h1>算法实验室<span class="badge">{{ "所有者管理" if website_mode else "本机对照" }}</span></h1>
+    <p class="intro">同一组问题，两套算法。看结果，再决定怎样调。</p></div>
+    <p class="boundary">独立实验，不影响网站默认搜索<br>不做随机流量分配，不自动发布参数</p></header>
+  <div id="notice" class="notice" role="status">正在读取实验快照…</div>
+  <div id="error" class="error" role="alert" hidden></div>
+  <section class="panel" aria-labelledby="questions-title">
+    <div class="section-head"><div><p class="eyebrow">01 / FIXED QUESTIONS</p><h2 id="questions-title">选一组问题</h2></div>
+      <a href="{{ prefix }}/api/experiments/snapshot" download>下载资料快照</a></div>
+    <p class="hint">每轮使用相同原文、来源范围和时间。新增问题需要重新捕获快照。</p>
+    <div id="questions" class="questions"></div>
+  </section>
+  <section class="panel" aria-labelledby="parameters-title">
+    <div class="section-head"><div><p class="eyebrow">02 / TWO VARIANTS</p><h2 id="parameters-title">调整候选方案</h2></div>
+      <div class="actions"><button id="export-config" class="subtle" type="button">导出参数</button>
+        <label class="file-button">导入参数<input id="import-config" type="file" accept="application/json"></label></div></div>
+    <p class="hint">基线使用当前词法评分公式与实验预算。固定候选池；不调用向量服务或自动扩词。参数超出安全范围会被拒绝。</p>
+    <div class="variants"><div class="variant"><h3><span class="marker">A</span>基线 <button id="reset-baseline" class="text-button">恢复默认</button></h3>
+      <p class="hint presets baseline-presets">当前词法默认参数；也可以手动设定基线。</p>
+      <div id="baseline-fields" class="fields"></div></div>
+      <div class="variant candidate"><h3><span class="marker">B</span>候选 <button id="copy-baseline" class="text-button">从基线复制</button></h3>
+      <div class="presets"><button type="button" data-preset="title">更重视标题</button><button type="button" data-preset="coverage">更重视完整命中</button></div>
+      <div id="candidate-fields" class="fields"></div></div></div>
+    <div class="run-bar"><div><strong>先比较检索，再评价回答</strong><p class="hint">运行对照不调用模型。没有自动优胜、统计显著性或自动上线。</p></div>
+      <button id="compare" class="primary" type="button">运行双方案对照 <span aria-hidden="true">↗</span></button></div>
+  </section>
+  <section id="results" class="panel" aria-labelledby="results-title" hidden>
+    <div class="section-head"><div><p class="eyebrow">03 / COMPARE & REVIEW</p><h2 id="results-title">看看哪一版更有用</h2></div>
+      <a id="export-results" download>导出结果与评价</a></div>
+    <div class="toolbar"><label>历史对照 <select id="history"><option value="">选择已保存对照</option></select></label>
+      <span id="run-meta" class="hint"></span></div>
+    <div class="tabs" role="tablist" aria-label="比较内容">
+      <button role="tab" aria-selected="true" data-target="search">关键词搜索</button>
+      <button role="tab" aria-selected="false" data-target="retrieval">问库检索</button>
+      <button role="tab" aria-selected="false" data-target="answer">问库回答</button></div>
+    <p id="mode-hint" class="hint"></p><div id="summary" class="summary" aria-live="polite"></div>
+    <div id="case-results"></div>
+  </section>
+  <p id="status" class="status" aria-live="polite"></p>
+  <footer>结果只反映这组冻结问题上的人工偏好；调参题不是独立留出验证。原文、提示词和评价均保留在本机。</footer>
+</main>
+<dialog id="source-dialog"><div class="section-head"><h2>冻结原文</h2><button id="close-source" aria-label="关闭原文">关闭</button></div>
+  <p id="source-meta" class="hint"></p><pre id="source-text"></pre></dialog>
+</body></html>

@@ -182,6 +182,7 @@ def render_page(request: Request, name: str, context: dict, status_code: int = 2
         "sample_banner": False,
         "sources": [],
         "active_source": "",
+        "experiment_admin_url": getattr(request.state, "experiment_admin_url", None),
     }
     payload.update(context)
     return templates().TemplateResponse(request, name, redact_output(payload), status_code=status_code)
