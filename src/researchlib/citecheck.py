@@ -17,8 +17,8 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-_CLAIM = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]+)?(?:\s*\[\d{1,3}\])*")
-_REF = re.compile(r"\[(\d{1,3})\]")
+_CLAIM = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]+)?(?:\s*\[\d+\])*")
+_REF = re.compile(r"\[(\d+)\]")
 _FULL_DATE = re.compile(r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?")
 _DATE_LIKE = re.compile(
     r"(?<!\d)\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?"
@@ -27,7 +27,10 @@ _DATE_LIKE = re.compile(
     r"|(?<![\dA-Za-z])(?:FY|Q|H)\d{1,4}"
     r"|(?<!\d)\d{2,4}\s*(?:财年|年度|季度|Q[1-4])"
 )
-_NUMBER = re.compile(r"(?<![\d.])(\d+(?:[,，]\d{3})*(?:\.\d+)?)\s*(%|％|‰|倍|个百分点|bp)?")
+_NUMBER = re.compile(
+    r"(?<![\d.])([+−-]?\d+(?:[,，]\d{3})*(?:\.\d+)?)\s*"
+    r"(个百分点|%|％|‰|倍|(?:bp|x)(?![A-Za-z])|×)?", re.I,
+)
 _QUOTED = re.compile(r"「([^」]{4,})」|“([^”]{4,})”|\"([^\"]{4,})\"")
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _CJK_RUN = re.compile(r"[一-鿿]+")
@@ -48,7 +51,7 @@ def _plain(text: str) -> str:
 
 
 def _digits(text: str) -> str:
-    return re.sub(r"[,，\s]", "", (text or "").translate(_FULLWIDTH))
+    return re.sub(r"[,，\s]", "", (text or "").translate(_FULLWIDTH)).replace('−', '-')
 
 
 def _bigrams(text: str) -> set[str]:
@@ -89,8 +92,12 @@ def _numbers(text: str) -> list[str]:
 
 
 def _number_in(number: str, haystack: str) -> bool:
-    core = re.match(r"[\d.]+", number).group(0)
-    return re.search(r"(?<![\d.])" + re.escape(core) + r"(?!\d)", haystack) is not None
+    def token(match):
+        return _digits(match[1]), (match[2] or '').lower().replace('％', '%').replace('×', 'x')
+
+    wanted = _NUMBER.fullmatch(number.translate(_FULLWIDTH))
+    return wanted is not None and any(token(match) == token(wanted)
+                                      for match in _NUMBER.finditer(haystack.translate(_FULLWIDTH)))
 
 
 def _iso(year: str, month: str, day: str) -> str:
@@ -114,7 +121,7 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     digits = _digits(raw)
     plain = _plain(raw)
     for number in _numbers(text):
-        if not _number_in(number, digits):
+        if not _number_in(number, raw):
             problems.append(f"数字 {number} 不在所引段落里")
     for match in _QUOTED.finditer(text):
         quoted = next(group for group in match.groups() if group)

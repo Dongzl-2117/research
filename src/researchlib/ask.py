@@ -19,7 +19,9 @@ import os
 import re
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict, fields
 from datetime import date
 
@@ -82,6 +84,45 @@ _JSON = re.compile(r"\{.*\}", re.S)
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ask")
 _inline_lock = threading.Lock()
+HEARTBEAT_INTERVAL_S = 30.0
+
+
+@contextmanager
+def _keep_alive(settings, answer_id: int, token: str):
+    """模型阻塞期间用独立连接续租；领取失效后停止，绝不改写其它轮次。"""
+    from researchlib.db import connect
+    from researchlib.web.queries import answer_running_timeout_s
+
+    stop = threading.Event()
+    interval = min(HEARTBEAT_INTERVAL_S, max(.05, answer_running_timeout_s() / 3))
+
+    def heartbeat():
+        heartbeat_conn = None
+        try:
+            while not stop.wait(interval):
+                if heartbeat_conn is None:
+                    heartbeat_conn = connect(settings)
+                row = heartbeat_conn.execute(
+                    "UPDATE llm_answers SET updated_at=clock_timestamp()"
+                    " WHERE id=%s AND run_token=%s AND status='running' AND worker_claimed RETURNING id",
+                    (answer_id, token),
+                ).fetchone()
+                heartbeat_conn.commit()
+                if row is None:
+                    return
+        except Exception:
+            logger.exception('回答心跳失败 answer_id=%s', answer_id)
+        finally:
+            if heartbeat_conn is not None:
+                heartbeat_conn.close()
+
+    thread = threading.Thread(target=heartbeat, name=f'answer-heartbeat-{answer_id}', daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=1)
 
 
 def is_preset(question: str) -> bool:
@@ -351,13 +392,14 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
     if not llm_configured(settings):
         result["error"] = f"没有可用的 {active_label(settings)} 凭证，只给出召回的原文段落。"
         return result
+    token = uuid.uuid4().hex
     row = conn.execute(
         """
-        INSERT INTO llm_answers (question, scope, answer, citations, model, status, terms)
-        VALUES (%s, %s, '', %s, '', 'running', %s)
+        INSERT INTO llm_answers (question, scope, answer, citations, model, status, terms, run_token)
+        VALUES (%s, %s, '', %s, '', 'running', %s, %s)
         RETURNING id
         """,
-        (question, Jsonb(result["scope"]), Jsonb(passages), Jsonb(found.terms)),
+        (question, Jsonb(result["scope"]), Jsonb(passages), Jsonb(found.terms), token),
     ).fetchone()
     conn.commit()
     result["id"] = row["id"]
@@ -365,13 +407,13 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
     inline = _inline() if run_inline is None else run_inline
     if inline:
         with _inline_lock:
-            run_job(settings, row["id"], conn=conn)
+            run_job(settings, row["id"], conn=conn, run_token=token)
     else:
-        _executor.submit(run_job, settings, row["id"])
+        _executor.submit(run_job, settings, row["id"], run_token=token)
     return result
 
 
-def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
+def run_job(settings: Settings, answer_id: int, *, conn=None, run_token: str | None = None) -> None:
     """后台整合。conn 不传时自己开连接。出错写进 error，不往外抛。"""
     from researchlib.db import connect, ensure_search_session
     from researchlib.sources import enabled_sources, load_sources
@@ -380,10 +422,22 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
     if own:
         conn = connect(settings)
         ensure_search_session(conn)
+    token = run_token or uuid.uuid4().hex
+    claimed = False
+    keepalive = None
     try:
-        row = conn.execute("SELECT question, scope FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()
+        row = conn.execute(
+            "UPDATE llm_answers SET worker_claimed=true, run_token=%s, updated_at=clock_timestamp()"
+            " WHERE id=%s AND status='running' AND NOT worker_claimed"
+            " AND (run_token=%s OR (%s AND run_token='')) RETURNING question,scope",
+            (token, answer_id, token, run_token is None),
+        ).fetchone()
+        conn.commit()
         if row is None:
             return
+        claimed = True
+        keepalive = _keep_alive(settings, answer_id, token)
+        keepalive.__enter__()
         question = row["question"]
         stored = row["scope"] or {}
         preset = bool(stored.get("preset"))
@@ -429,31 +483,37 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
             UPDATE llm_answers
             SET answer = %s, citations = %s, model = %s, status = 'done', error = '', terms = %s, stats = %s,
                 updated_at = now()
-            WHERE id = %s
+            WHERE id = %s AND run_token = %s AND status = 'running' AND worker_claimed
             """,
-            (answer, Jsonb(passages), model, Jsonb(found.terms), Jsonb(stats), answer_id),
+            (answer, Jsonb(passages), model, Jsonb(found.terms), Jsonb(stats), answer_id, token),
         )
         conn.commit()
     except Exception as exc:
         # 任何失败都要落到页面上，不能让任务悄悄消失。
         logger.exception("问库整合失败 %s", answer_id)
         conn.rollback()
+        if not claimed:
+            return
         message = str(exc) if isinstance(exc, LLMError | LLMUnavailable) else f"整合失败：{exc}"
         conn.execute(
-            "UPDATE llm_answers SET status = 'error', error = %s, updated_at = now() WHERE id = %s",
-            (message[:500], answer_id),
+            "UPDATE llm_answers SET status = 'error', error = %s, updated_at = now()"
+            " WHERE id = %s AND run_token=%s AND status='running' AND worker_claimed",
+            (message[:500], answer_id, token),
         )
         conn.commit()
     finally:
+        if keepalive is not None:
+            keepalive.__exit__(None, None, None)
         if own:
             conn.close()
 
 
 def retry(conn, settings: Settings, answer_id: int, *, run_inline: bool | None = None) -> bool:
+    token = uuid.uuid4().hex
     row = conn.execute(
-        "UPDATE llm_answers SET status = 'running', error = '', updated_at = now()"
+        "UPDATE llm_answers SET status = 'running', error = '', updated_at = now(), run_token=%s,worker_claimed=false"
         " WHERE id = %s AND status = 'error' RETURNING id",
-        (answer_id,),
+        (token, answer_id),
     ).fetchone()
     conn.commit()
     if row is None:
@@ -461,9 +521,9 @@ def retry(conn, settings: Settings, answer_id: int, *, run_inline: bool | None =
     inline = _inline() if run_inline is None else run_inline
     if inline:
         with _inline_lock:
-            run_job(settings, answer_id, conn=conn)
+            run_job(settings, answer_id, conn=conn, run_token=token)
     else:
-        _executor.submit(run_job, settings, answer_id)
+        _executor.submit(run_job, settings, answer_id, run_token=token)
     return True
 
 

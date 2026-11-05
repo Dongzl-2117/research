@@ -678,12 +678,16 @@ def company_author_counts(conn, company_id: int, source_ids: list[str]):
     ).fetchall()
 
 
-def expire_stale_answers(conn) -> int:
-    """问库整合超过 ASK_RUNNING_TIMEOUT_S（默认 600 秒）还在 running：标成出错，页面出「重新整合」。"""
+def answer_running_timeout_s() -> int:
     import os
 
     raw = os.environ.get("ASK_RUNNING_TIMEOUT_S", "").strip()
-    cap = int(raw) if raw.isdigit() and int(raw) > 0 else 600
+    return int(raw) if raw.isdigit() and int(raw) > 0 else 600
+
+
+def expire_stale_answers(conn) -> int:
+    """超过心跳租期仍未续租才过期，不把正在等待模型的活跃轮次当失败。"""
+    cap = answer_running_timeout_s()
     rows = conn.execute(
         "UPDATE llm_answers SET status = 'error', error = %s, updated_at = now()"
         " WHERE status = 'running' AND updated_at < now() - make_interval(secs => %s) RETURNING id",
@@ -704,6 +708,30 @@ def title_rows(conn, article_ids: list[int]):
     ).fetchall()
 
 
+def _answer_sources_visible(alias: str) -> str:
+    """旧回答保存了来源快照；当前停用的来源不能由历史入口再次输出。"""
+    return f"""
+      NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(
+          CASE WHEN jsonb_typeof({alias}.scope->'source_ids')='array'
+               THEN {alias}.scope->'source_ids' ELSE '[]'::jsonb END
+        ) AS wanted(id)
+        LEFT JOIN sources current_source ON current_source.id=wanted.id
+        WHERE NOT coalesce(current_source.enabled,false)
+      ) AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof({alias}.citations)='array' THEN {alias}.citations ELSE '[]'::jsonb END
+        ) AS saved(item)
+        LEFT JOIN articles current_article ON current_article.id::text=saved.item->>'article_id'
+        LEFT JOIN sources snapshot_source
+          ON snapshot_source.id=coalesce(nullif(saved.item->>'source_id',''),current_article.source_id)
+        LEFT JOIN sources article_source ON article_source.id=current_article.source_id
+        WHERE NOT coalesce(snapshot_source.enabled,false)
+           OR (current_article.id IS NOT NULL AND NOT coalesce(article_source.enabled,false))
+      )
+    """
+
+
 def recent_answers(conn, limit: int = 20):
     """最近问过的问题。同一个问题、同一个范围问了好几遍的只列一次，按最后一次问的时间排；
     其中有整合完的就链到最近整合完的那次，不链到重启时中断的那几次。
@@ -712,13 +740,13 @@ def recent_answers(conn, limit: int = 20):
     """
     expire_stale_answers(conn)
     return conn.execute(
-        """
+        f"""
         SELECT id, question, scope, status, created_at
         FROM (
           SELECT DISTINCT ON (question, scope) id, question, scope, status, created_at,
                  max(created_at) OVER (PARTITION BY question, scope) AS asked_at
-          FROM llm_answers
-          WHERE coalesce(scope->>'chat', '') <> 'true'
+          FROM llm_answers history WHERE {_answer_sources_visible('history')}
+            AND coalesce(history.scope->>'chat', '') <> 'true'
           ORDER BY question, scope, status = 'done' DESC, created_at DESC, id DESC
         ) latest
         ORDER BY asked_at DESC, id DESC
@@ -731,10 +759,10 @@ def recent_answers(conn, limit: int = 20):
 def get_answer(conn, answer_id: int):
     expire_stale_answers(conn)
     return conn.execute(
-        """
+        f"""
         SELECT id, question, scope, answer, citations, model, status, error, terms, stats, created_at, updated_at
-        FROM llm_answers
-        WHERE id = %s
+        FROM llm_answers saved_answer
+        WHERE id = %s AND {_answer_sources_visible('saved_answer')}
         """,
         (answer_id,),
     ).fetchone()
