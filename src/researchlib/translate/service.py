@@ -13,7 +13,9 @@ from __future__ import annotations
 import html as html_lib
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 
@@ -26,7 +28,13 @@ from researchlib.textutil import content_hash, split_frontmatter, strip_duplicat
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, model_id, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
-from researchlib.translate.provenance import AlignmentError, leaf_problem, receipt, source_manifest
+from researchlib.translate.provenance import (
+    ALIGNMENT_VERSION,
+    AlignmentError,
+    leaf_problem,
+    receipt,
+    source_manifest,
+)
 from researchlib.translate.provenance import digest as segment_digest
 from researchlib.translate.segments import (
     chunk_segments,
@@ -68,12 +76,64 @@ class BatchTexts(list[str]):
         self.models = tuple(models)
 
 
+# 和质量拒绝、请求失败的冷却是同一套数。改这里时把 list_pending_english 的 SQL 一起改。
+REJECT_RETRY_BUDGET = 2
+REJECT_RETRY_COOLDOWN = timedelta(hours=12)
+FAIL_RETRY_COOLDOWNS = (
+    timedelta(minutes=15),
+    timedelta(minutes=30),
+    timedelta(hours=1),
+    timedelta(hours=3),
+    timedelta(hours=12),
+)
+
+
+def _sql_interval(delta: timedelta) -> str:
+    return f"{int(delta.total_seconds())} seconds"
+
+
+def retry_blocked(attempts: Sequence[tuple[str, datetime]], *, now: datetime) -> bool:
+    """同一原文 hash、同一检查版本下，这次要不要先别再花钱。
+
+    对齐拒绝：12 小时内不重试；满 2 次后，直到原文 hash 或 ALIGNMENT_VERSION 变了才再试。
+    请求失败：按次数把间隔从 15 分钟拉到 12 小时，不设永久次数上限，宕机结束后还能回来。
+    """
+    rejected = [stamp for status, stamp in attempts if status == "rejected"]
+    failed = [stamp for status, stamp in attempts if status == "failed"]
+    if len(rejected) >= REJECT_RETRY_BUDGET:
+        return True
+    if rejected and max(rejected) > now - REJECT_RETRY_COOLDOWN:
+        return True
+    if failed:
+        latest = max(failed)
+        step = FAIL_RETRY_COOLDOWNS[min(len(failed), len(FAIL_RETRY_COOLDOWNS)) - 1]
+        if latest > now - step:
+            return True
+    return False
+
+
 def record_translation_failure(conn, article_id: int, error: Exception) -> None:
     """由 CLI 在回滚后记录失败，不改译文或检索块；不保存正文或响应。"""
     rejected = isinstance(error, AlignmentError)
+    content_hash = None
+    row = conn.execute("SELECT content_hash FROM articles WHERE id = %s", (article_id,))
+    if row is not None:
+        fetched = row.fetchone()
+        if fetched:
+            content_hash = fetched["content_hash"]
     conn.execute(
-        "INSERT INTO translation_attempts (article_id, status, reason) VALUES (%s, %s, %s)",
-        (article_id, "rejected" if rejected else "failed", error.code if rejected else "request-failed"),
+        """
+        INSERT INTO translation_attempts
+          (article_id, status, reason, content_hash, alignment_version)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (
+            article_id,
+            "rejected" if rejected else "failed",
+            error.code if rejected else "request-failed",
+            content_hash,
+            ALIGNMENT_VERSION,
+        ),
     )
     conn.commit()
 
@@ -556,6 +616,48 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
     if source_id:
         where.insert(0, "a.source_id = %s")
         params.append(source_id)
+    # 同一原文、同一检查版本下，对齐拒绝有冷却和次数；请求失败只拉长间隔。
+    # 进程重启不会把刚拒绝的文章立刻拿回来。hash 或 ALIGNMENT_VERSION 变了，条件对不上，会再试。
+    fail_case = ["CASE", "WHEN fail.n <= 1 THEN %s"]
+    for index in range(2, len(FAIL_RETRY_COOLDOWNS)):
+        fail_case.append(f"WHEN fail.n = {index} THEN %s")
+    fail_case.append("ELSE %s")
+    fail_case.append("END")
+    where.append(
+        """NOT EXISTS (
+        SELECT 1 FROM (
+          SELECT count(*)::int AS n, max(created_at) AS latest
+          FROM translation_attempts
+          WHERE article_id = a.id
+            AND content_hash = a.content_hash
+            AND alignment_version = %s
+            AND status = 'rejected'
+        ) rej
+        WHERE rej.n >= %s OR rej.latest > now() - %s::interval
+        )"""
+    )
+    where.append(
+        f"""NOT EXISTS (
+        SELECT 1 FROM (
+          SELECT count(*)::int AS n, max(created_at) AS latest
+          FROM translation_attempts
+          WHERE article_id = a.id
+            AND content_hash = a.content_hash
+            AND alignment_version = %s
+            AND status = 'failed'
+        ) fail
+        WHERE fail.n > 0 AND fail.latest > now() - (
+          {" ".join(fail_case)}
+        )::interval
+        )"""
+    )
+    params.extend([
+        ALIGNMENT_VERSION,
+        REJECT_RETRY_BUDGET,
+        _sql_interval(REJECT_RETRY_COOLDOWN),
+        ALIGNMENT_VERSION,
+        *[_sql_interval(item) for item in FAIL_RETRY_COOLDOWNS],
+    ])
     # 和 language.is_chinese 同一条规则（标了语言听标的；否则正文前 400 字有汉字、且汉字数的两倍
     # 不少于拉丁字母数就算中文），在 SQL 里先筛再 LIMIT。以前先按时间取最新的 limit 篇再挑英文，
     # 不带 --source 时最新的几乎全是中文，永远取不到英文。改规则时两边一起改，集成测试对拍。

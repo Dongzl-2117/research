@@ -240,7 +240,7 @@ PYTHONPATH=src python scripts/repair_content_hash_tz.py          # dry-run
 PYTHONPATH=src python scripts/repair_content_hash_tz.py --apply
 ```
 
-worker 同一次运行（CLI 的 `--loop` 或站内 API 的 `loop`）里失败过的 id 会先跳过，避免对齐失败把队列钉死。
+对齐拒绝会写入 `translation_attempts`（原文 hash 和检查版本）。同一 hash、同一版本下，12 小时内不再送模型；满 2 次后一直停，直到原文变了或 `ALIGNMENT_VERSION` 加一。请求失败只把间隔从 15 分钟拉到 12 小时，不设永久次数。本进程里失败过的 id 仍会先跳过。点名 `--article-id` 不受这条队列限制。
 
 ## 2026-11-02：来源回执与旧稿核验
 
@@ -248,4 +248,4 @@ worker 同一次运行（CLI 的 `--loop` 或站内 API 的 `loop`）里失败�
 
 没有回执的旧稿明确标记未核验，QA 至少 WARN；不兼容则保留完整原文和译文并 FAIL。可以无损按唯一有序事实锚点展开的旧粗段会细分展示，仍需人工核对。有序投影通过之后，展示层会再隐藏长英文的重复、整句包含和近前缀：留下的那一对仍要有这些文字、数字、链接和结构，锚点改挂过去；中文各自带独有说法的不隐藏。这一步不改库，也不把整页退回两列。
 
-新 `research-bilingual-audit --dry-run` 始终只读，可输出不含正文的定向计划；没有 apply、模型请求、启动维护或自动历史回填。`research-translate --recheck --dry-run` 也改为只读。CLI 同一进程内失败篇在 loop 睡醒后仍跳过，失败退出码为 1；人工检查后重启才再试。
+新 `research-bilingual-audit --dry-run` 始终只读，可输出不含正文的定向计划；没有 apply、模型请求、启动维护或自动历史回填。`research-translate --recheck --dry-run` 也改为只读。CLI 同一进程内失败篇在 loop 睡醒后仍跳过，失败退出码为 1。重启进程也不会立刻重试：对齐拒绝看 `translation_attempts` 的冷却和次数，原文 hash 或检查版本变了才重新排队。
