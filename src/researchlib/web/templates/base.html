@@ -71,6 +71,10 @@
             <span>问库</span>
           </a>
         </div>
+        {% if experiment_admin_url %}
+        <div class="nav-label">管理</div>
+        <a class="nav-link" href="{{ experiment_admin_url }}">算法实验室</a>
+        {% endif %}
         {% if sources %}
         <div class="nav-label">来源</div>
         <div class="nav-group">
@@ -104,6 +108,7 @@
         {% if sample_banner %}
         <p class="banner">当前库里全是示例数据。</p>
         {% endif %}
+        {% if experiment_admin_url %}<p class="quiet"><a href="{{ experiment_admin_url }}">管理 · 算法实验室</a></p>{% endif %}
         {% block body %}{% endblock %}
       </div>
     </main>

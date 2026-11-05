@@ -53,9 +53,11 @@ docker compose exec app research-translate --source stratechery --limit 5 --loop
 
 同一轮里失败过、没有可译正文或者没译全的篇先跳过；`--loop` 时队列只剩它们就先睡，睡醒再给一次机会，不会一直重试同一篇。没配 LLM 凭证时直接退出（退出码 2），不连库。
 
+DeepSeek 译制走流式。思考模式要是一次把整段响应读完，连接会空等很久，TLS 在中途被拆掉（`UNEXPECTED_EOF_WHILE_READING`），这次已经开始计费，译文一个字都不会入库。`chat_json` 按行读，看到 `data: [DONE]` 才把拼接结果交给对齐；中途断开或流提前结束都丢掉半截，按 2、5、15、30 秒重发同一请求。超时不重试。模型、thinking、`reasoning_effort` 和输出预算不变，也不会改走 Grok。连接预算用完仍失败记 `request-failed`，不再把同一批立刻再打一遍。标题上的连接失败同样记请求失败，不记成对齐拒绝。
+
 跑的时候自动上线会等它跑完再重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`），这期间合并的改动要等这一批译完才上线。长时间的 `--loop` 放在 tmux 里跑，用完 Ctrl-C 停掉。
 
-调用参数与 AIHOT 一致：`https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`）。
+Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`），流式每一行的空闲上限也是这一段。
 
 ## Stratechery
 
@@ -240,7 +242,7 @@ PYTHONPATH=src python scripts/repair_content_hash_tz.py          # dry-run
 PYTHONPATH=src python scripts/repair_content_hash_tz.py --apply
 ```
 
-worker 同一次运行（CLI 的 `--loop` 或站内 API 的 `loop`）里失败过的 id 会先跳过，避免对齐失败把队列钉死。
+对齐拒绝会写入 `translation_attempts`（原文 hash 和检查版本）。同一 hash、同一版本下，12 小时内不再送模型；满 2 次后一直停，直到原文变了或 `ALIGNMENT_VERSION` 加一。请求失败只把间隔从 15 分钟拉到 12 小时，不设永久次数。本进程里失败过的 id 仍会先跳过。点名 `--article-id` 不受这条队列限制。
 
 ## 2026-11-02：来源回执与旧稿核验
 
@@ -248,4 +250,4 @@ worker 同一次运行（CLI 的 `--loop` 或站内 API 的 `loop`）里失败�
 
 没有回执的旧稿明确标记未核验，QA 至少 WARN；不兼容则保留完整原文和译文并 FAIL。可以无损按唯一有序事实锚点展开的旧粗段会细分展示，仍需人工核对。有序投影通过之后，展示层会再隐藏长英文的重复、整句包含和近前缀：留下的那一对仍要有这些文字、数字、链接和结构，锚点改挂过去；中文各自带独有说法的不隐藏。这一步不改库，也不把整页退回两列。
 
-新 `research-bilingual-audit --dry-run` 始终只读，可输出不含正文的定向计划；没有 apply、模型请求、启动维护或自动历史回填。`research-translate --recheck --dry-run` 也改为只读。CLI 同一进程内失败篇在 loop 睡醒后仍跳过，失败退出码为 1；人工检查后重启才再试。
+新 `research-bilingual-audit --dry-run` 始终只读，可输出不含正文的定向计划；没有 apply、模型请求、启动维护或自动历史回填。`research-translate --recheck --dry-run` 也改为只读。CLI 同一进程内失败篇在 loop 睡醒后仍跳过，失败退出码为 1。重启进程也不会立刻重试：对齐拒绝看 `translation_attempts` 的冷却和次数，原文 hash 或检查版本变了才重新排队。

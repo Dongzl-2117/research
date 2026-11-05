@@ -39,34 +39,37 @@ def sync_article_images(
     source_id: str,
     data_dir: Path,
     refs: list[tuple[str, Path | None]],
+    keep_unlisted: bool = False,
 ) -> tuple[int, int, int]:
-    """返回 (新保存文件数, 挂上的引用数, 缺失引用数)。"""
-    linked_rows: list[tuple[str, str, str]] = []
+    """返回 (新保存文件数, 挂上的引用数, 本次归档缺失数)。缺文件不能抹掉已有映射。"""
+    existing_rows = {
+        row['original_ref']: (row['storage_path'], row['content_hash'])
+        for row in conn.execute(
+            'SELECT original_ref, storage_path, content_hash FROM article_images'
+            ' WHERE article_id = %s AND NOT remote', (article_id,),
+        ).fetchall()
+    }
+    linked = dict(existing_rows) if keep_unlisted else {}
     stored = 0
     missing = 0
     for original, path in refs:
         if path is None or not path.is_file():
             missing += 1
+            if original in existing_rows:
+                linked[original] = existing_rows[original]
             continue
         if path.suffix.lower() not in IMAGE_EXTS:
             missing += 1
+            if original in existing_rows:
+                linked[original] = existing_rows[original]
             continue
         digest, relative, created = store_image_file(data_dir, source_id, path)
         if created:
             stored += 1
-        linked_rows.append((original, relative, digest))
+        linked[original] = (relative, digest)
+    linked_rows = [(original, relative, digest) for original, (relative, digest) in linked.items()]
     # 只管归档里带的本地图片（remote = false）。从正文外链下载来的图另由 remote_images 管，这里不动。
-    existing = {
-        (row["original_ref"], row["content_hash"])
-        for row in conn.execute(
-            """
-            SELECT original_ref, content_hash
-            FROM article_images
-            WHERE article_id = %s AND NOT remote
-            """,
-            (article_id,),
-        ).fetchall()
-    }
+    existing = {(original, digest) for original, (_relative, digest) in existing_rows.items()}
     new_set = {(original, digest) for original, _relative, digest in linked_rows}
     if existing == new_set and len(existing) == len(linked_rows):
         return stored, len(linked_rows), missing

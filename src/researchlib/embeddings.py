@@ -28,6 +28,8 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 
+from researchlib.chunks import current_chunk_sql
+
 logger = logging.getLogger("researchlib.embeddings")
 
 # bge-m3 的维度。换模型时维度要一样，不一样就报错，不悄悄截断。
@@ -167,15 +169,20 @@ def query_vector(text: str) -> list[float] | None:
             return None
         cold = not _state.failed and now - _state.last_ok > WARM_FOR_S
         embedder = _state.cold_embedder if cold else _state.query_embedder
+        identity = (_state.model, _state.query_embedder, _state.cold_embedder)
     try:
         vector = embedder([text])[0]
     except EmbeddingError as exc:
         logger.warning("语义检索暂停 %s 秒：%s", int(RETRY_AFTER_S), exc)
         with _state.lock:
+            if identity != (_state.model, _state.query_embedder, _state.cold_embedder):
+                return None
             _state.down_until = time.monotonic() + RETRY_AFTER_S
             _state.failed = True
         return None
     with _state.lock:
+        if identity != (_state.model, _state.query_embedder, _state.cold_embedder):
+            return None
         _state.last_ok = time.monotonic()
         _state.failed = False
         _state.cache[text] = vector
@@ -296,7 +303,7 @@ def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = 
         FROM article_chunks c
         JOIN articles a ON a.id = c.article_id
         LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
-        WHERE a.duplicate_of IS NULL
+        WHERE a.duplicate_of IS NULL AND {current_chunk_sql()}
           AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %s)
           {skipped}
         ORDER BY a.published_at DESC NULLS LAST, c.article_id, c.ord
@@ -307,7 +314,13 @@ def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = 
 
 
 def _source_text(row: dict) -> str:
-    return "\n".join(part for part in (row["title"], row["heading"], row["body"]) if part)
+    return "\n".join(part or '' for part in (row["title"], row["heading"], row["body"]))
+
+
+def current_embedding_sql(embedding: str = 'e', chunk: str = 'c', article: str = 'a') -> str:
+    return (f"{embedding}.model=%(embedding_model)s"
+            f" AND {embedding}.text_hash=md5(concat_ws(E'\\n',{article}.title,{chunk}.heading,{chunk}.body))"
+            f" AND {current_chunk_sql(chunk, article)}")
 
 
 def _embed_rows(rows: list[dict], bad: list[tuple[int, int]]) -> list[tuple[dict, list[float]]]:
@@ -393,11 +406,13 @@ def coverage(conn) -> tuple[int, int]:
     if column_type(conn) is None:
         return 0, 0
     row = conn.execute(
-        """
-        SELECT (SELECT count(*) FROM chunk_embeddings) AS done,
-               (SELECT count(*) FROM article_chunks c JOIN articles a ON a.id = c.article_id
-                WHERE a.duplicate_of IS NULL) AS total
-        """
+        f"""
+        SELECT count(e.article_id) AS done,count(*) AS total
+        FROM article_chunks c JOIN articles a ON a.id=c.article_id
+        LEFT JOIN chunk_embeddings e ON e.article_id=c.article_id AND e.ord=c.ord
+          AND {current_embedding_sql()}
+        WHERE a.duplicate_of IS NULL AND {current_chunk_sql()}
+        """, {'embedding_model': model_name()},
     ).fetchone()
     return int(row["done"]), int(row["total"])
 
