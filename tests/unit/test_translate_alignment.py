@@ -14,7 +14,7 @@ import pytest
 from researchlib.boilerplate import clean_article
 from researchlib.render import render_body
 from researchlib.textutil import split_frontmatter, strip_duplicate_title
-from researchlib.translate.llm import ChatJsonResult
+from researchlib.translate.llm import ChatJsonResult, LLMTransportError
 from researchlib.translate.segments import chunk_segments, leaf_count_problem, segments_of, splice_segments
 from researchlib.translate.service import (
     TRANSLATE_BATCH_MAX_CHARS,
@@ -23,6 +23,7 @@ from researchlib.translate.service import (
     _render_original,
     _source_leaf_count,
     _translate_batch,
+    _translate_title,
     translate_article,
     translation_problem,
 )
@@ -275,6 +276,45 @@ def test_missing_t_array_still_raises(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     with pytest.raises(RuntimeError, match="translation JSON missing t"):
         _translate_batch(["<p>Hi.</p>"], {}, tmp_path)
+
+
+def test_transport_error_does_not_open_a_second_batch(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake(**kwargs):
+        calls.append(kwargs["user"].get("segment_ids"))
+        raise LLMTransportError("连不上 DeepSeek 接口：ssl eof")
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    conn = _FakeConn(
+        {
+            "id": 21118,
+            "source_id": "stratechery",
+            "title": "A daily",
+            "published_at": None,
+            "body_md": "<p>First paragraph is long enough.</p><p>Second paragraph is also here.</p>",
+            "body_text": "First paragraph is long enough. Second paragraph is also here.",
+            "raw_meta": {"format": "html"},
+            "content_hash": "x",
+        }
+    )
+    with pytest.raises(LLMTransportError):
+        translate_article(conn, 21118, data_dir=tmp_path)
+    assert len(calls) == 1
+    assert conn.committed is False
+
+
+def test_title_transport_error_is_not_retried_as_a_blank_title(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake(**kwargs):
+        calls.append(kwargs["user"].get("segment_ids"))
+        raise LLMTransportError("连不上")
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    with pytest.raises(LLMTransportError):
+        _translate_title("Weekly Update", tmp_path)
+    assert calls == [["title"]]
 
 
 def test_translate_article_does_not_store_when_leaf_counts_diverge(monkeypatch, tmp_path: Path):

@@ -211,5 +211,6 @@ def test_chat_json_uses_the_same_strength(tmp_path, monkeypatch):
     assert body["reasoning_effort"] == "xhigh"
     assert body["max_tokens"] == grok.GROK_OUTPUT_FLOOR
     assert body["response_format"] == {"type": "json_object"}
+    assert "stream" not in body
     assert "fast" not in body
     assert captured["timeout"] == 12
