@@ -33,8 +33,14 @@ def main(argv=None):
             command.add_argument("--sources", type=Path, help="私有快照必填；来源策略变更时拒绝启动")
             models = command.add_mutually_exclusive_group()
             models.add_argument("--generator", help="显式选配 module:function；默认无任何模型入口")
+            command.add_argument("--generator-version", help="自定义适配器必填；模型、参数或代码变化时更新版本")
             models.add_argument("--site-model", action="store_true", help="选配站内受支持模型，仅确认后调用")
     args = parser.parse_args(argv)
+    if args.command == "serve":
+        if args.generator and (not args.generator_version or not args.generator_version.strip()):
+            parser.error("--generator 必须同时提供 --generator-version，模型、参数或代码变化时更新版本")
+        if args.generator_version is not None and not args.generator:
+            parser.error("--generator-version 只能与 --generator 一起使用")
     try:
         if args.command == "demo":
             from researchlib.experiments.demo import demo_snapshot
@@ -71,7 +77,8 @@ def main(argv=None):
                     generator = SiteModelGenerator(Settings.from_env(dict(os.environ)))
                 app = create_experiment_app(
                     snapshot, args.db, sources_path=args.sources, generator=generator,
-                    generator_label=generator.label if args.site_model else args.generator,
+                    generator_label=(generator.label if args.site_model else
+                                     f"{args.generator}@{args.generator_version.strip()}" if args.generator else None),
                     daily_limit=5 if args.site_model else None,
                 )
                 print(f"本机算法实验台：http://127.0.0.1:{args.port}/experiments")

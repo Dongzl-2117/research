@@ -20,7 +20,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 from datetime import date
 
 from psycopg.types.json import Jsonb
@@ -122,15 +122,20 @@ def _passages(found: Retrieval, sources, settings: Settings, *, chronological: b
     ]
 
 
+def _material_head(item: dict) -> str:
+    """原文与分批后的目录用同一身份信息，避免汇总时丢掉当前文章归属。"""
+    head = f"[{item['n']}] 《{item['title']}》 {item['author']} · {item['source']} · {item['date']}"
+    if item["heading"]:
+        head += f" · 章节：{item['heading']}"
+    if item.get("place_label"):
+        head += f" · {item['place_label']}"
+    return head
+
+
 def _material(passages: list[dict]) -> str:
     blocks = []
     for item in passages:
-        head = f"[{item['n']}] 《{item['title']}》 {item['author']} · {item['source']} · {item['date']}"
-        if item["heading"]:
-            head += f" · 章节：{item['heading']}"
-        # 阅读页侧栏会标「当前文章」或「库里其他文章」。问库不带这个字段，标题行和以前一样。
-        if item.get("place_label"):
-            head += f" · {item['place_label']}"
+        head = _material_head(item)
         body = item["text"]
         if item.get("before"):
             body = f"（上文）{item['before']}\n（命中段）{body}"
@@ -210,8 +215,8 @@ def synthesize(
             text, _model = chat(
                 settings,
                 [
-                    {"role": "system", "content": MAP_PROMPT},
-                    {"role": "user", "content": f"问题：{question}\n\n资料：\n{_material(batch)}"},
+                    {"role": "system", "content": prompt + "\n\n本步骤只摘录，按以下规则输出：\n" + MAP_PROMPT},
+                    {"role": "user", "content": f"问题：{question}{note}\n\n资料：\n{_material(batch)}"},
                 ],
             )
         except LLMError as exc:
@@ -227,9 +232,7 @@ def synthesize(
     if len(failed) == len(batches):
         raise LLMError(f"分 {len(batches)} 批读资料，每一批都失败了")
     kept = [note for note in notes if note and note.strip("「」 \n") != "无"]
-    catalog = "\n".join(
-        f"[{item['n']}] 《{item['title']}》 {item['author']} · {item['date']}" for item in passages
-    )
+    catalog = "\n".join(_material_head(item) for item in passages)
     joined = "\n\n".join(f"第 {i} 批摘录：\n{note}" for i, note in enumerate(kept, start=1)) or "（各批都没有相关内容）"
     missing = ""
     if failed:
@@ -314,6 +317,15 @@ def scope_from_json(data: dict) -> Scope:
     return Scope(**values)
 
 
+def _live_scope(scope: Scope, sources) -> Scope:
+    """执行时把保存的来源和当时仍启用的来源求交。公司、日期、目录和文章条件不动。"""
+    active = {source.id for source in sources}
+    kept = [source_id for source_id in scope.source_ids if source_id in active]
+    if kept == list(scope.source_ids):
+        return scope
+    return replace(scope, source_ids=kept)
+
+
 def _detected(found: Retrieval) -> dict:
     return {
         "companies": [{"id": c["id"], "name": c["name_zh"]} for c in found.companies],
@@ -387,10 +399,22 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         question = row["question"]
         stored = row["scope"] or {}
         preset = bool(stored.get("preset"))
-        scope = scope_from_json(stored)
         sources = enabled_sources(load_sources(settings.sources_path))
+        scope = _live_scope(scope_from_json(stored), sources)
         expansions: dict[str, list[str]] = {}
         started = time.monotonic()
+        if not scope.source_ids:
+            # 排队后全部来源都撤了：不扩词、不调用模型，也不再返回登记时看到的原文。
+            conn.execute(
+                """
+                UPDATE llm_answers
+                SET status = 'error', error = %s, citations = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                ("范围内没有召回到任何段落。", Jsonb([]), answer_id),
+            )
+            conn.commit()
+            return
         if not preset:
             originals = [t.text for t in analyze(conn, question, sources).terms if t.kind == "word"]
             expansions = expand_terms(settings, question, originals)
@@ -400,7 +424,16 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         passages = _passages(found, sources, settings, chronological=chronological)
         retrieved = time.monotonic()
         if not passages:
-            raise LLMError("范围内没有召回到任何段落。")
+            conn.execute(
+                """
+                UPDATE llm_answers
+                SET status = 'error', error = %s, citations = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                ("范围内没有召回到任何段落。", Jsonb([]), answer_id),
+            )
+            conn.commit()
+            return
         synth_report: dict = {}
         note = outline_note(found.outline, found.outline_label)
         answer, model = synthesize(settings, question, passages, synth_report, note)

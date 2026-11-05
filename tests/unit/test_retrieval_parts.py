@@ -180,7 +180,7 @@ def test_synthesize_extracts_in_batches_then_merges(monkeypatch):
     def fake_chat(_settings, messages, **kwargs):
         calls.append((messages, kwargs))
         system = messages[0]["content"]
-        if system == ask_module.MAP_PROMPT:
+        if ask_module.MAP_PROMPT in system:
             first = messages[1]["content"].split("资料：\n", 1)[1]
             number = first.split("]", 1)[0].lstrip("[")
             return ("无" if number == "1" else f"要点 [{number}]"), "grok-test"
@@ -189,7 +189,7 @@ def test_synthesize_extracts_in_batches_then_merges(monkeypatch):
     monkeypatch.setattr(ask_module, "chat", fake_chat)
     items = _items(120, 700)
     answer, _model = synthesize(None, "问题", items)
-    maps = [c for c in calls if c[0][0]["content"] == ask_module.MAP_PROMPT]
+    maps = [c for c in calls if ask_module.MAP_PROMPT in c[0][0]["content"]]
     reduce = [c for c in calls if c[0][0]["content"] == ask_module.SYSTEM_PROMPT]
     assert len(maps) >= 2 and len(reduce) == 1
     assert all(c[1].get("reasoning_effort") is None for c in maps)

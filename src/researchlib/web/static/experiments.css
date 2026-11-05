@@ -4,3 +4,5 @@
 @media(prefers-reduced-motion:no-preference){button,a{transition:background .15s,color .15s}}
 
 .baseline-presets{min-height:28px;align-items:center}
+/* 完整范围按实际保存字段换行，长来源 ID 不撑宽手机页面。 */
+.scope{overflow-wrap:anywhere}.case-head>div,.question>span{min-width:0}

@@ -318,6 +318,52 @@ def test_generation_partial_failure_keeps_success_and_never_retries(snapshot, st
         store.label(run["id"], rating(target="answer"))
 
 
+def test_custom_generator_revision_isolates_answers_ratings_and_old_pending_runs(snapshot, store):
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return answer()
+    first = client_for(snapshot, store, generator=generate, generator_label="synthetic-stub:v1")
+    old = start(first)
+    route = f"/api/experiments/runs/{old['id']}/generate"
+    body = {"case_id": "demo-1", "acknowledge_cost": True, "request_id": "generate-0001"}
+    assert first.post(route, json=body).json()["status"] == "done"
+    store.label(old["id"], rating(target="answer"))
+    original = store.export(old["id"])
+    second = client_for(snapshot, store, generator=generate, generator_label="synthetic-stub:v2")
+    new = start(second)
+    assert new["id"] != old["id"] and new["generation_profile"] != old["generation_profile"]
+    assert start(second)["id"] == new["id"]
+    assert all(value is None for value in store.export(new["id"])["generations"].values())
+    assert store.export(new["id"])["rating_events"] == []
+    # 已生成及尚未生成的旧题均拒绝用新适配器补写，历史仍原样可读。
+    assert second.post(route, json=body).status_code == 409
+    assert second.post(route, json={**body, "case_id": "demo-2"}).status_code == 409
+    assert second.get(f"/api/experiments/runs/{old['id']}").json() == original
+    assert len(calls) == 2
+    new_route = f"/api/experiments/runs/{new['id']}/generate"
+    body = {**body, "request_id": "generate-new-configuration"}
+    generated = second.post(new_route, json=body)
+    assert generated.json()["status"] == "done" and len(calls) == 4
+    assert second.post(new_route, json=body).json() == generated.json() and len(calls) == 4
+    assert store.export(old["id"]) == original
+    assert {r["id"] for r in store.history()} == {old["id"], new["id"]}
+
+
+def test_enabling_a_custom_generator_does_not_reuse_an_unbound_run(snapshot, store):
+    unbound = start(client_for(snapshot, store))
+    calls = []
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return answer()
+    client = client_for(snapshot, store, generator=generate, generator_label="synthetic-stub:v1")
+    response = client.post(f"/api/experiments/runs/{unbound['id']}/generate", json={
+        "case_id": "demo-1", "acknowledge_cost": True, "request_id": "generate-0001",
+    })
+    assert response.status_code == 409 and calls == []
+    assert start(client)["id"] != unbound["id"]
+
+
 def test_concurrent_generation_only_one_pair_and_interruption_unknown(snapshot, store):
     begun, finish = Event(), Event()
     calls = []

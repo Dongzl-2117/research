@@ -46,6 +46,9 @@ def create_experiment_app(snapshot: Snapshot, db_path: Path, *, sources_path: Pa
     if public_origin and website is None:
         raise ValueError("网站入口没有可核验的所有者认证，拒绝启用")
     plan = getattr(generator, "plan", None)
+    # 自定义适配器也绑定版本身份；换模型后不能读到同一 run 的旧答案与评价。
+    profile = (plan["id"] if plan and plan.get("kind") == "site_model" else
+               digest({"kind": "custom_adapter", "label": generator_label, "plan": plan}) if generator else None)
     if plan and plan.get("kind") == "site_model" and daily_limit is None:
         daily_limit = 5
     if daily_limit is not None and (type(daily_limit) is not int or not 1 <= daily_limit <= 20):
@@ -142,13 +145,13 @@ def create_experiment_app(snapshot: Snapshot, db_path: Path, *, sources_path: Pa
                       for c in snapshot.cases],
             "defaults": Tuning().model_dump(), "history": store.history(),
             "generator": generator_label if generator else None, "generation_plan": plan,
+            "generation_profile": profile,
             "daily_limit": daily_limit, "daily_used": store.daily_generation_count(),
             "access_mode": "owner_website" if website else "local_only",
         }
 
     @app.post("/api/experiments/compare")
     def run(body: CompareRequest):
-        profile = plan["id"] if plan else None
         key = run_id(snapshot, body, generation_profile=profile)
         try:
             return store.get(key)
@@ -194,7 +197,7 @@ def create_experiment_app(snapshot: Snapshot, db_path: Path, *, sources_path: Pa
         if plan and body.configuration_id != plan["id"]:
             raise Conflict("模型调用计划已变化或未确认，请刷新后重新核对费用与预算")
         run = store.get(key)
-        if plan and run.get("generation_profile") != plan["id"]:
+        if run.get("generation_profile") != profile:
             raise Conflict("此对照绑定不同模型计划，请重新运行检索对照后再确认生成")
         case = next((c for c in run["cases"] if c["id"] == body.case_id), None)
         if case is None:

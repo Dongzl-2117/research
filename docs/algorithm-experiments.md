@@ -105,10 +105,18 @@ python -m researchlib.experiments serve \
 ```bash
 python -m researchlib.experiments serve \
   --snapshot data/experiments/private-v1.json --db data/experiments/private-v1.sqlite3 \
-  --sources config/sources.yaml --generator your_adapter:generate
+  --sources config/sources.yaml --generator your_adapter:generate --generator-version model-config-v1
 ```
 
 适配器同步接口：`generate(*, messages: list[dict], max_output_tokens: int) -> dict`。返回字段为 `text, model, model_version`，可选 `input_tokens, output_tokens, cost, currency`；金额只有有币种时才接受，未知费用/用量保留 null。必须自行实现输出上限、HTTP 超时及真实版本回报；适配器内部调用及重试由其实现负责。不要在适配器导入时自动调用模型。另有内置的站内受支持模型适配器（见下节），也未在本次工作中调用真实模型或验证真实模型质量。
+
+自定义适配器必须显式给出 `--generator-version`；更换模型、参数、端点或代码时更新它。
+仅 `module:function` 无法反映外部配置变化，因此缺版本时拒绝启动。版本身份绑定对照 ID，
+同配置重复提交仍幂等，换配置建立新对照，不复用旧答案或评价。旧历史保留可读，但拒绝用新配置
+补写旧对照。程序直接调用 `create_experiment_app` 时，`generator_label` 同样必须包含可区分配置的版本身份；
+适配器不更新身份就无法自动识别其内部变化。`model_version` 是调用后的实际回执，不能替代调用前的配置身份。
+
+选题和结果页都展示实际保存的来源、公司 ID、文章 ID、目录 ID 及上海日历日期范围，未设条件标为不限。
 
 网页必须勾选当前题的数据传递/费用确认后才调用。实验台每题仅各调用两侧适配器一次；自身无扩词、分批、自动重试。自定义适配器每侧传 `max_output_tokens=1500`，完整提示词超 40000 字符或任一侧无证据时拒绝调用。主站完整问库可能另有扩词、分批和重试，**不能把“两侧”当作实际 HTTP 次数或据此估造费用**。
 

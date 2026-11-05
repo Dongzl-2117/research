@@ -40,6 +40,10 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     await page.goto(url + '/experiments');
     await page.locator('#questions input').first().waitFor();
     assert.equal(await page.locator('#questions input:checked').count(), 3);
+    const scopeText = '来源：demo-a、demo-b · 公司：ID 17 · 文章：不限 · 目录：ID 23 · 日期（上海）：2026-11-01 至 2026-11-05';
+    assert.equal(await page.locator('#questions .scope').first().textContent(), scopeText);
+    assert((await page.locator('#questions .scope').nth(1).textContent()).includes('文章：ID 3'));
+    assert((await page.locator('#questions .scope').nth(2).textContent()).includes('不限起日 至 不限止日'));
     await page.locator('[data-preset="title"]').click();
     assert.equal(await page.locator('#candidate-fields [data-key="title_tf"]').inputValue(), '1');
     assert.equal(await page.locator('#baseline-fields [data-key="title_tf"]').inputValue(), '0.5');
@@ -49,6 +53,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     assert(await page.locator('#status').textContent(), '检索对照已保存');
     // 双击仅一个评价事件；修改、撤销保留最新修订。
     const first = page.locator('.case').first();
+    assert.equal(await first.locator('.scope').textContent(), scopeText);
     await first.getByRole('button', {name:'B 更好', exact:true}).evaluate(button => {button.click(); button.click();});
     await page.waitForFunction(() => document.querySelector('.rating').textContent.includes('修订 1'));
     const exportState = () => page.evaluate(async () => {
@@ -56,6 +61,10 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
       return (await fetch('/api/experiments/runs/' + key)).json();
     });
     assert.equal((await exportState()).rating_events.length, 1);
+    assert.deepEqual((await exportState()).run.cases[0].scope, {
+      source_ids:['demo-a','demo-b'],company_id:17,article_id:null,tree_id:23,
+      date_from:'2026-11-01',date_to:'2026-11-05',
+    });
     await first.getByRole('button', {name:'相当', exact:true}).click();
     await page.waitForFunction(() => document.querySelector('.rating').textContent.includes('修订 2'));
     await first.getByRole('button', {name:'撤销评价', exact:true}).click();
@@ -68,6 +77,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     assert.equal(await page.evaluate(() => window.compromised), undefined);
     await page.reload(); await page.locator('.case').first().waitFor();
     assert.equal(new URL(page.url()).hash, firstRun);
+    assert.equal(await page.locator('.case .scope').first().textContent(), scopeText);
     assert((await page.locator('.rating').first().textContent()).includes('修订 3'));
     await page.getByRole('tab', {name:'关键词搜索'}).focus();
     await page.keyboard.press('ArrowRight');
@@ -90,6 +100,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
     for (const width of [1440, 1024, 390]) {
       await page.setViewportSize({width, height:900});
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), String(width));
+      assert.equal(await page.locator('.case .scope').first().textContent(), scopeText);
       if (process.env.EXPERIMENT_SCREENSHOT_DIR && [1440,390].includes(width)) {
         await fs.mkdir(process.env.EXPERIMENT_SCREENSHOT_DIR, {recursive:true});
         await page.screenshot({path:path.join(process.env.EXPERIMENT_SCREENSHOT_DIR, `experiments-${width}.png`),fullPage:true});
