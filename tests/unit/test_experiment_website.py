@@ -368,3 +368,90 @@ def test_changed_site_model_plan_requires_new_comparison_before_model_call(tmp_p
     assert new_run["id"] != old_run["id"]
     assert new_run["generation_profile"] != old_run["generation_profile"]
     assert len(store.history()) == 2 and store.get(old_run["id"]) == old_run
+
+
+@pytest.mark.parametrize('provider', ['deepseek', 'grok'])
+@pytest.mark.parametrize('revoke', ['source', 'session'])
+def test_revoked_while_waiting_for_model_slot_never_reads_credentials_or_posts(
+    tmp_path, monkeypatch, provider, revoke,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import BoundedSemaphore, Event
+
+    settings, _, store, sessions, client = setup_site(tmp_path, models=True, provider=provider, private=True)
+    run = start(client)
+    slot, waiting = BoundedSemaphore(1), Event()
+    posts, credentials = [], []
+
+    class QueuedSlot:
+        def __enter__(self):
+            waiting.set()
+            assert slot.acquire(timeout=5)
+            return self
+        def __exit__(self, *args):
+            slot.release()
+
+    monkeypatch.setattr(llm, '_slot', lambda settings: QueuedSlot())
+    monkeypatch.setattr(llm, '_deepseek_token', lambda: credentials.append('deepseek') or 'synthetic-token')
+    monkeypatch.setattr(llm, '_oauth_token', lambda *args, **kwargs: credentials.append('grok') or 'synthetic-token')
+    def fake_open(self, req, timeout=None):
+        posts.append(req.full_url)
+        return Response(answer())
+    monkeypatch.setattr(urllib.request.OpenerDirector, 'open', fake_open)
+
+    assert slot.acquire(timeout=5)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(generate, client, run)
+        try:
+            assert waiting.wait(5) and not pending.done()
+            if revoke == 'session':
+                sessions.clear()
+            else:
+                sources = yaml.safe_load(settings.sources_path.read_text())
+                sources['sources'][0]['enabled'] = False
+                settings.sources_path.write_text(yaml.safe_dump(sources))
+        finally:
+            slot.release()
+        response = pending.result(timeout=5)
+
+    assert response.status_code == 403
+    assert posts == [] and credentials == []
+    assert '合成回答' not in response.text
+    record = store.generation(run['id'], 'demo-1')
+    assert record['status'] == 'failed' and record['sides'] == {}
+    # 占位/适配器尝试包含排队，不等于已经发送了模型 POST；仍保守占用每日额度。
+    assert record['attempted_sides'] == ['baseline'] and store.daily_generation_count() == 1
+    assert client.get(BASE + f"runs/{run['id']}/export").status_code == 403
+
+
+@pytest.mark.parametrize('revoke', ['source', 'session'])
+def test_permission_revoked_during_credential_preparation_stops_model_post(tmp_path, monkeypatch, revoke):
+    settings, _, store, sessions, client = setup_site(tmp_path, models=True, provider='grok', private=True)
+    run = start(client)
+    posts = []
+    def prepare_credentials(*args, **kwargs):
+        # 模拟 OAuth 凭据准备期间发生撤销；不读真实凭据，也不发送认证或模型请求。
+        if revoke == 'session':
+            sessions.clear()
+        else:
+            sources = yaml.safe_load(settings.sources_path.read_text())
+            sources['sources'][0]['enabled'] = False
+            settings.sources_path.write_text(yaml.safe_dump(sources))
+        return 'synthetic-token-only'
+    monkeypatch.setattr(llm, '_oauth_token', prepare_credentials)
+    def fake_open(self, req, timeout=None):
+        posts.append(req.full_url)
+        return Response(answer())
+    monkeypatch.setattr(urllib.request.OpenerDirector, 'open', fake_open)
+    response = generate(client, run)
+    assert response.status_code == 403 and posts == []
+    assert store.generation(run['id'], 'demo-1')['status'] == 'failed'
+
+
+def test_site_model_requires_a_send_authorization_callback_before_credentials(tmp_path, monkeypatch):
+    credentials = []
+    monkeypatch.setattr(llm, '_deepseek_token', lambda: credentials.append(1) or 'synthetic-token')
+    generator = SiteModelGenerator(Settings.from_env({'DATA_DIR': str(tmp_path)}))
+    with pytest.raises(ValueError, match='授权检查'):
+        generator(messages=[{'role': 'user', 'content': '合成问题'}], max_output_tokens=1500, before_send=None)
+    assert credentials == []

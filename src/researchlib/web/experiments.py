@@ -210,10 +210,10 @@ def create_experiment_app(snapshot: Snapshot, db_path: Path, *, sources_path: Pa
         operation["configuration_id"] = plan["id"] if plan else None
         def check_generation_access():
             try:
-                check_sources()
                 current_owner = from_thread.run(website.owner, request) if website else None
                 if website and (current_owner is None or website.csrf(current_owner) != request.state.experiment_csrf):
                     raise ValueError("所有者会话已撤销或改变")
+                check_sources()
             except (ValueError, OSError):
                 operation["status"] = "failed"
                 operation["error"] = "来源授权或所有者会话已变更，停止后续生成；已发出的请求可能计费"
@@ -225,9 +225,15 @@ def create_experiment_app(snapshot: Snapshot, db_path: Path, *, sources_path: Pa
             operation["attempted_sides"].append(side)
             store.save_generation(key, body.case_id, operation)
             try:
-                answer = Answer.model_validate(generator(messages=case[side]["messages"], max_output_tokens=1500))
+                kwargs = {"messages": case[side]["messages"], "max_output_tokens": 1500}
+                if plan and plan.get("kind") == "site_model":
+                    kwargs["before_send"] = check_generation_access
+                answer = Answer.model_validate(generator(**kwargs))
                 operation["sides"][side] = answer.model_dump()
                 store.save_generation(key, body.case_id, operation)
+            except HTTPException:
+                # 发送前回调已保存拒绝结果；保留 403，不把授权撤销转成普通模型错误。
+                raise
             except Exception:
                 # 已发生的调用可能计费；保留占位和成功侧，断线或失败均不自动再次调用。
                 operation["status"] = "failed"

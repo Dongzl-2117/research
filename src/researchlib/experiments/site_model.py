@@ -37,7 +37,7 @@ class SiteModelGenerator:
         # 仅限本实验短回答；主站强度、下限和自动任务的请求都不改。
         self.payload = {**self.payload, "max_tokens": 1500, "stream": False}
         self.configuration_id = digest({
-            "version": "site-model-once-v1", "provider": provider, "payload": self.payload,
+            "version": "site-model-once-v2", "provider": provider, "payload": self.payload,
             "base_url": settings.llm_base_url, "read_timeout_s": self.settings.llm_timeout,
         })
         self.label = provider_label(provider) + " · " + str(self.payload["model"])
@@ -49,20 +49,25 @@ class SiteModelGenerator:
             "reasoning_effort": self.payload.get("reasoning_effort"),
         }
 
-    def __call__(self, *, messages, max_output_tokens):
+    def __call__(self, *, messages, max_output_tokens, before_send):
         if max_output_tokens != 1500 or sum(len(m.get("content", "")) for m in messages) > 40000:
             raise ValueError("实验输入或输出预算无效")
-        token = llm._oauth_token(self.settings) if self.provider == PROVIDER_GROK else llm._deepseek_token()
-        request = urllib.request.Request(
-            self.settings.llm_base_url + "/chat/completions",
-            data=json.dumps({**copy.deepcopy(self.payload), "messages": messages}, ensure_ascii=False).encode(),
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
-                     "Accept": "application/json"},
-            method="POST",
-        )
-        # 使用站内并发限制；任何 HTTP 错误、空正文、超时或截断均不刷新重发/扩大预算。
-        opener = urllib.request.build_opener(_NoRedirect())
+        if not callable(before_send):
+            raise ValueError("站内实验模型缺少发送前授权检查")
+        # 排队本身不授予发送权限。取得名额后先复查，避免已撤销的等待者读取/刷新凭据；
+        # 凭据准备也可能阻塞，因此在所有准备结束后、紧邻 open 前再次检查。
         with llm._slot(self.settings):
+            before_send()
+            token = llm._oauth_token(self.settings) if self.provider == PROVIDER_GROK else llm._deepseek_token()
+            request = urllib.request.Request(
+                self.settings.llm_base_url + "/chat/completions",
+                data=json.dumps({**copy.deepcopy(self.payload), "messages": messages}, ensure_ascii=False).encode(),
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                         "Accept": "application/json"},
+                method="POST",
+            )
+            opener = urllib.request.build_opener(_NoRedirect())
+            before_send()
             with opener.open(request, timeout=self.settings.llm_timeout) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
