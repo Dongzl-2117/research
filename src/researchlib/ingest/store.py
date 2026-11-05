@@ -306,6 +306,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         source_id=source.id,
         data_dir=data_dir,
         refs=doc.image_refs,
+        keep_unlisted=status == 'unchanged' or not article_changed,
     )
     if status != "unchanged":
         # 图片挂上以后才知道哪张是广告图：按图片哈希再洗一遍文字和块。

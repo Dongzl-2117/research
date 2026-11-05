@@ -1407,6 +1407,60 @@ def translatable_blocks(html: str) -> list[tuple[int, str]]:
     return out
 
 
+def _parse_attrs(attr_text: str) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    for am in re.finditer(
+        r"([^\s=]+)(?:\s*=\s*\"([^\"]*)\"|\s*=\s*'([^']*)'|\s*=\s*([^\s>]+))?",
+        attr_text,
+    ):
+        key = am.group(1).lower()
+        value = am.group(2) or am.group(3) or am.group(4) or ""
+        attrs[key] = value
+    return attrs
+
+
+def _iter_anchor_tags(html: str):
+    """按引号找出 ``<a>...</a>``。属性值里的 ``>`` 不能把开始标签截断。"""
+    lower = html.lower()
+    index = 0
+    while True:
+        start = lower.find("<a", index)
+        if start < 0:
+            return
+        after = start + 2
+        if after < len(html) and html[after] not in " \t\r\n>/":
+            index = after
+            continue
+        quote = ""
+        cursor = after
+        while cursor < len(html):
+            char = html[cursor]
+            if quote:
+                if char == quote:
+                    quote = ""
+                cursor += 1
+                continue
+            if char in "\"'":
+                quote = char
+                cursor += 1
+                continue
+            if char == ">":
+                break
+            cursor += 1
+        else:
+            return
+        inner_start = cursor + 1
+        close = lower.find("</a>", inner_start)
+        if close < 0:
+            return
+        yield start, close + 4, html[after:cursor], html[inner_start:close]
+        index = close + 4
+
+
+# 模型有时把占位括号写成全角。编号仍须刚好各出现一次。
+_TOKEN = re.compile(r"(?:⟦|【|〔)\s*(\d+)\s*(?:⟧|】|〕)")
+
+
 def shield(html: str) -> Shielded:
     tokens: list[str] = []
 
@@ -1417,28 +1471,25 @@ def shield(html: str) -> Shielded:
     cleaned = _PRE_CODE.sub(media_or_code, html)
     cleaned = _MEDIA.sub(media_or_code, cleaned)
     link_attrs: list[dict[str, str]] = []
-
-    def link_repl(match: re.Match[str]) -> str:
-        attrs_raw = match.group(1) or ""
-        inner = match.group(2)
-        attrs: dict[str, str] = {}
-        for am in re.finditer(
-            r"([^\s=]+)(?:\s*=\s*\"([^\"]*)\"|\s*=\s*'([^']*)'|\s*=\s*([^\s>]+))?",
-            attrs_raw,
-        ):
-            key = am.group(1)
-            value = am.group(2) or am.group(3) or am.group(4) or ""
-            attrs[key] = value
-        link_attrs.append(attrs)
-        return f'<a id="L{len(link_attrs) - 1}">{inner}</a>'
-
-    cleaned = re.sub(r"<a\b([^>]*)>(.*?)</a>", link_repl, cleaned, flags=re.I | re.S)
-    return Shielded(html=cleaned, tokens=tokens, link_attrs=link_attrs)
+    pieces: list[str] = []
+    cursor = 0
+    for start, end, attr_text, inner in _iter_anchor_tags(cleaned):
+        pieces.append(cleaned[cursor:start])
+        attrs = _parse_attrs(attr_text)
+        if not (attrs.get("href") or "").strip():
+            # 旧帖里的 ``<a name>`` / 空锚不是外链。留在待译文本里，模型几乎总会丢掉。
+            pieces.append(inner)
+        else:
+            link_attrs.append(attrs)
+            pieces.append(f'<a id="L{len(link_attrs) - 1}">{inner}</a>')
+        cursor = end
+    pieces.append(cleaned[cursor:])
+    return Shielded(html="".join(pieces), tokens=tokens, link_attrs=link_attrs)
 
 
 def unshield(translated: str, shielded: Shielded) -> str | None:
     counts: dict[int, int] = {}
-    for match in re.finditer(r"⟦(\d+)⟧", translated):
+    for match in _TOKEN.finditer(translated):
         index = int(match.group(1))
         counts[index] = counts.get(index, 0) + 1
     if len(counts) != len(shielded.tokens):
@@ -1449,28 +1500,37 @@ def unshield(translated: str, shielded: Shielded) -> str | None:
     def put_token(match: re.Match[str]) -> str:
         return shielded.tokens[int(match.group(1))]
 
-    text = re.sub(r"⟦(\d+)⟧", put_token, translated)
+    text = _TOKEN.sub(put_token, translated)
     seen: set[int] = set()
-
-    def put_link(match: re.Match[str]) -> str:
-        index = int(match.group(1))
-        inner = match.group(2)
+    pieces: list[str] = []
+    cursor = 0
+    for start, end, attr_text, inner in _iter_anchor_tags(text):
+        pieces.append(text[cursor:start])
+        attrs = _parse_attrs(attr_text)
+        id_match = re.fullmatch(r"L(\d+)", attrs.get("id", ""), re.I)
+        if id_match is None:
+            pieces.append(text[start:end])
+            cursor = end
+            continue
+        index = int(id_match.group(1))
         if index in seen or index >= len(shielded.link_attrs):
-            return match.group(0)
+            pieces.append(text[start:end])
+            cursor = end
+            continue
         seen.add(index)
-        attrs = shielded.link_attrs[index]
+        restored = shielded.link_attrs[index]
         parts = ["<a"]
-        for key, value in attrs.items():
-            if key.lower() == "id":
+        for key, value in restored.items():
+            if key == "id":
                 continue
             parts.append(f' {key}="{value}"')
         parts.append(f">{inner}</a>")
-        return "".join(parts)
-
-    text = re.sub(r'<a\s+id="L(\d+)">(.*?)</a>', put_link, text, flags=re.I | re.S)
+        pieces.append("".join(parts))
+        cursor = end
+    pieces.append(text[cursor:])
     if len(seen) != len(shielded.link_attrs):
         return None
-    return text
+    return "".join(pieces)
 
 
 def chunk_segments(

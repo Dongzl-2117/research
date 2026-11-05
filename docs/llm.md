@@ -65,6 +65,8 @@
 | 上下文 | `1000000` token（`DEEPSEEK_CONTEXT_TOKENS`） |
 | 不发的字段 | `temperature`、`presence_penalty`、`frequency_penalty`：思考模式下无效，请求里不带 |
 
+DeepSeek 的请求带 `stream: true`，按行读 SSE。思考要是不流式，响应头要等整段推理结束才到，连接上没有字节，中间设备会把 TLS 拆掉（`UNEXPECTED_EOF_WHILE_READING`）。服务端往往已经开始计费，客户端一个字都没拿到。看到 `data: [DONE]` 才把增量拼成回答；流提前结束或读到一半断开，丢掉半截，按下面的间隔重试同一请求。每一行的等待上限就是长超时（默认 25 分钟），不再另设更短的空闲超时。Grok 仍是一次读完的 JSON。
+
 最终答案在 `choices[0].message.content`；`reasoning_content` 里的思考过程不往页面上放。
 
 ### Grok OAuth（可选）
@@ -111,7 +113,7 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 | `RESEARCH_LLM_TIMEOUT` | 不设 | 秒。比上面的长超时更短时会被抬到同一条，不能单独把问库调弱 |
 | `RESEARCH_LLM_CONCURRENCY` | `3` | 同一个进程里同时在跑的 LLM 请求上限，问库分批、摘要、观点、论点共用 |
 
-429、5xx、连接被重置这类临时错误退避重试两次（等 5 秒、20 秒；接口给了 `Retry-After` 就按它，最多等一分钟）。超时不重试：一次已经等了很久。凭证不可用或连续失败 3 次，首页顶上提示一行，写明是 DeepSeek 还是 Grok（见 [backup.md](backup.md)「出问题才提示」）。
+429、5xx、连接被重置、流读到一半的 TLS EOF 按 2、5、15、30 秒退避重试（接口给了 `Retry-After` 就按它，最多等一分钟）。超时不重试：一次已经等了很久。译制和问库用同一组间隔。凭证不可用或连续失败 3 次，首页顶上提示一行，写明是 DeepSeek 还是 Grok（见 [backup.md](backup.md)「出问题才提示」）。
 
 ## 摘要
 
