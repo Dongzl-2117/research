@@ -10,20 +10,23 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+import unicodedata
 
 from researchlib.translate.segments import top_level_blocks
 
 QUOTED_CLASS = "is-quoted"
-_KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _TAG = re.compile(r"<[^>]+>")
 _OPEN = re.compile(r"^<([a-z0-9]+)\b([^>]*)>", re.I)
 _CLASS = re.compile(r'\bclass="([^"]*)"', re.I)
 _KEY = 24
-_SLACK = 8
 
 
 def _norm(text: str) -> str:
-    return "".join(_KEEP.findall(html_lib.unescape(text or ""))).lower()
+    # 保留符号、大小写及兼容字符的语义：>／<、1/23／12/3、m／M、²／2 都不能混同。
+    # 仅收起排版空白；数字之间的空白仍留边界，避免 1 23 和 12 3 被粘成同一个数。
+    text = unicodedata.normalize("NFC", html_lib.unescape(text or "")).replace("−", "-")
+    text = re.sub(r"\s+", " ", text)
+    return re.sub(r"(?<!\d) | (?!\d)", "", text)
 
 
 def _add_class(block: str) -> str:
@@ -41,13 +44,11 @@ def _add_class(block: str) -> str:
 def _reach(text: str, target: str, position: int) -> int | None:
     """这一段接在块里 position 处，接上以后吃到哪。接不上返回 None。"""
     rest = target[position:]
-    if text.startswith(rest[:_KEY]) and len(text) >= len(rest):
+    if text.startswith(rest):
         return len(target)  # 块在这一段中间结束
-    # 容几个字的出入：有序列表的序号、标点之类在两边的写法不一样。
-    found = target.find(text, position, position + len(text) + _SLACK)
-    if found < 0 or found - position > _SLACK:
+    if not target.startswith(text, position):
         return None
-    return found + len(text)
+    return position + len(text)
 
 
 def _follow(blocks: list[str], norms: list[str], target: str, start: int, consumed: int) -> tuple[list[int], int]:
@@ -58,7 +59,8 @@ def _follow(blocks: list[str], norms: list[str], target: str, start: int, consum
         if position >= len(target):
             break
         text = norms[index]
-        if not text or "<img" in blocks[index] or text.endswith("缺图") or text == "外部图片已省略":
+        if (not text or text in {"外部图片已省略", "[外部图片已省略]"}
+                or re.fullmatch(r"\[[^\[\]]*缺图\]", text)):
             continue  # 只有图（或缺图占位）的段落：块里没有它的字，跳过，接着往下看
         reached = _reach(text, target, position)
         if reached is None:
@@ -84,23 +86,30 @@ def mark_quoted(html: str, chunk_text: str) -> tuple[str, bool]:
         return html, False
     norms = [_norm(_TAG.sub("", block)) for block in blocks]
     head = target[:_KEY]
+    matches = []
     for index, text in enumerate(norms):
         if len(text) < 4:
             continue
         # 这一段就是块的开头，或者块从这一段中间开始（长段落被切成了几块）。
-        if target.startswith(text[:_KEY]):
+        if target in text:
+            covered, position = [index], len(target)
+        elif target.startswith(text):
             consumed = len(text)
+            covered, position = _follow(blocks, norms, target, index, consumed)
         else:
             found = text.find(head)
-            if found < 0:
+            if found < 0 or not target.startswith(text[found:]):
                 continue
             consumed = len(text) - found
-        covered, position = _follow(blocks, norms, target, index, consumed)
-        if consumed < _KEY and len(covered) == 1 and position < len(target):
-            # 很短的一段碰巧和块的开头一样（小标题、一句话），后面又接不上：不是这里，接着找。
+            covered, position = _follow(blocks, norms, target, index, consumed)
+        if position != len(target):
+            # 共同前缀不足以确认，必须核对整块。否则保留页面顶部的准确引用框。
             continue
-        out = list(blocks)
-        for block in covered:
-            out[block] = _add_class(blocks[block])
-        return "".join(out), True
-    return html, False
+        if covered not in matches:
+            matches.append(covered)
+    if len(matches) != 1:
+        return html, False
+    out = list(blocks)
+    for block in matches[0]:
+        out[block] = _add_class(blocks[block])
+    return "".join(out), True

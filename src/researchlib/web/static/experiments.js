@@ -21,6 +21,13 @@
     return node;
   };
   const fail = error => { $('error').textContent = error.message || String(error); $('error').hidden = false; };
+  function scopeText(scope) {
+    return '来源：' + scope.source_ids.join('、') +
+      ' · 公司：' + (scope.company_id == null ? '不限' : 'ID ' + scope.company_id) +
+      ' · 文章：' + (scope.article_id == null ? '不限' : 'ID ' + scope.article_id) +
+      ' · 目录：' + (scope.tree_id == null ? '不限' : 'ID ' + scope.tree_id) +
+      ' · 日期（上海）：' + (scope.date_from || '不限起日') + ' 至 ' + (scope.date_to || '不限止日');
+  }
   async function api(path, body) {
     const response = await fetch(apiBase + path, body === undefined ? {} : {
       method: 'POST', headers: {'Content-Type': 'application/json', 'X-Experiment-CSRF': csrf}, body: JSON.stringify(body),
@@ -164,6 +171,8 @@
       box.append(el('p', operation.status === 'done' ? '两侧答案已保存；刷新不会再次调用模型。' : operation.status === 'failed' ? operation.error : '已有生成占位。若进程曾中断，实际调用结果可能未知；不会自动再次调用。'));
     } else if (!state.generator) {
       box.append(el('p', '当前未启用模型。可导出提示词；要在本机生成，启动时需明确配置生成适配器。'));
+    } else if (current.run.generation_profile !== state.generation_profile) {
+      box.append(el('p', '模型配置已变化。历史结果仍可查看，请重新运行检索对照后再确认生成。'));
     } else {
       const plan = state.generation_plan;
       box.append(el('p', '当前模型/适配器：' + state.generator + '。实际费用未知，不等于免费。'));
@@ -196,7 +205,7 @@
     $('case-results').replaceChildren();
     for (const c of run.cases) {
       const node = el('article', undefined, 'case'); const head = el('div', undefined, 'case-head');
-      const text = el('div'); text.append(el('h3', c.query)); text.append(el('p', '范围：' + c.scope.source_ids.join('、') + (c.scope.article_id ? ' · 文章 ' + c.scope.article_id : ''), 'hint'));
+      const text = el('div'); text.append(el('h3', c.query)); text.append(el('p', scopeText(c.scope), 'hint scope'));
       head.append(text, el('p', 'Top 10 集合重叠：' + (c.search_overlap_at_10 == null ? '无结果' : Math.round(c.search_overlap_at_10 * 100) + '%'), 'hint')); node.append(head);
       const generation = current.generations[c.id];
       if (target === 'answer') node.append(generationControls(c, generation));
@@ -254,7 +263,7 @@
     $('notice').textContent = (state.material === 'synthetic' ? '合成演示资料 · 以下人物与文章均为虚构，仅验证功能，不代表真实搜索质量。' : '离线私有快照 · 来源权限在本机检查；原文不会从主站实时更新。') + ' 冻结于 ' + state.created_at.slice(0, 10) + '。';
     for (const c of state.cases) {
       const label = el('label', undefined, 'question'); const input = el('input'); input.type = 'checkbox'; input.value = c.id; input.checked = true;
-      const text = el('span', c.query); text.append(el('span', c.scope.source_ids.join(' · '), 'hint'));
+      const text = el('span', c.query); text.append(el('span', scopeText(c.scope), 'hint scope'));
       label.append(input, text); $('questions').append(label);
     }
     makeFields('baseline'); makeFields('candidate'); refreshHistory(state.history);

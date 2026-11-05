@@ -1822,8 +1822,26 @@ def media(request: Request, storage_path: str):
     target = (root / storage_path).resolve()
     if not target.is_relative_to(root) or not target.is_file():
         raise HTTPException(status_code=404)
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        if not queries.media_visible(conn, storage_path, [source.id for source in sources]):
+            raise HTTPException(status_code=404)
     media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    return FileResponse(target, media_type=media_type)
+    safe_types = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/svg+xml"}
+    inline = media_type in safe_types
+    # SVG 保留原图，用响应级沙箱阻止直达、iframe、object 中的脚本、外连和同源权限。
+    # 其它扩展名一律下载，避免存量 HTML 等文件成为站内可执行文档。
+    return FileResponse(
+        target, media_type=media_type if inline else "application/octet-stream",
+        filename=None if inline else target.name,
+        content_disposition_type="attachment",
+        headers={
+            "Content-Security-Policy": "sandbox; default-src 'none'; script-src 'none'; "
+            "style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @router.get("/pilot")

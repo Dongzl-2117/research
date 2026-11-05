@@ -184,7 +184,7 @@ def test_synthesize_keeps_going_when_one_batch_fails(monkeypatch):
     monkeypatch.setattr(_ask, "BATCH_CHARS", 48000)
     def fake_chat(_settings, messages, **_kwargs):
         system = messages[0]["content"]
-        if system == ask_module.MAP_PROMPT:
+        if ask_module.MAP_PROMPT in system:
             first = messages[1]["content"].split("资料：\n", 1)[1]
             number = int(first.split("]", 1)[0].lstrip("["))
             if number == 1:

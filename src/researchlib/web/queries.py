@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 
-from researchlib.author_voice import not_comment_shell_sql, site_visible_sql
+from researchlib.author_voice import hide_from_site, not_comment_shell_sql, site_visible_sql
 from researchlib.visibility import visible_sql
 
 
@@ -250,6 +250,26 @@ def article_images(conn, article_id: int):
         """,
         (article_id,),
     ).fetchall()
+
+
+def media_visible(conn, storage_path: str, source_ids: list[str]) -> bool:
+    """文件须仍有可打开的文章引用；共享图只要有一个合法引用就保留。
+
+    与文章直达页一致，短帖和重复版本仍可打开；网友帖、评论壳及停用来源不可。
+    不信任路径前缀：外链图片可能存于 remote/，也可能被多个来源共用。
+    """
+    rows = conn.execute(
+        """
+        SELECT a.title, a.raw_meta FROM article_images i
+        JOIN articles a ON a.id = i.article_id
+        JOIN sources s ON s.id = a.source_id
+        WHERE i.storage_path = %s AND a.source_id = ANY(%s) AND s.enabled
+        """,
+        (storage_path, source_ids),
+    ).fetchall()
+    # 与直达页复用同一个判断，包括标题前空白和评论壳的完整数字格式。
+    # 不能 LIMIT 1：第一个引用被隐藏时，后面仍可能有合法共享引用。
+    return any(not hide_from_site(row["raw_meta"], row["title"]) for row in rows)
 
 
 def image_ocr_texts(conn, article_id: int) -> dict[str, str]:

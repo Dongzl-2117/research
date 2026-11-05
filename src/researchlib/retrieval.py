@@ -236,6 +236,30 @@ _YEAR = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 _LATIN_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9.+\-]*$")
 _CJK = re.compile(r"[㐀-鿿]")
 _SPLITTER = "，"
+# 文章指代必须直接处在比较句尾结构中，不能把日本文化、脚本文件里的「本文」当指代。
+_ARTICLE_COMPARISON = re.compile(
+    r"(?P<reference>当前(?:这篇(?:文章)?|(?:的)?文章)|这篇(?:文章)?|本篇(?:文章)?|本文)"
+    r"(?:\s*的?\s*(?:核心)?(?:判断|观点|看法|结论|说法|论点|分析))?\s*"
+    r"(?P<request>有(?:何|什么|哪些)(?:不同|差异|区别|异同)|(?:对比|比较)(?:一下)?)[？?。!！\s]*$"
+)
+
+
+def _article_comparison_spans(text: str, author_names: list[str]) -> list[tuple[int, int]]:
+    """只掩去确认的指代和比较请求原坐标，词内同形文字及引号外的真实主题不动。"""
+    match = _ARTICLE_COMPARISON.search(text)
+    if match is None or not any(name in text for name in author_names):
+        return []
+    before = text[:match.start("reference")]
+    if before and not (before[-1].isspace() or before[-1] in "，,；;。.!！？?：:、（(["):
+        # 无空白的中文指代须有明确的「作者／观点 + 与／和／跟／同」边界。
+        # 「日本文」「合同本文」即使紧挨比较请求，也不能从词内截掉「本文」。
+        join = re.search(r"(?:与|和|跟|同)\s*$", before)
+        left = before[:join.start()].rstrip() if join else ""
+        subjects = [*author_names, *(name + "的" for name in author_names),
+                    "判断", "观点", "看法", "结论", "说法", "论点", "分析"]
+        if join is None or not any(left.endswith(subject) for subject in subjects):
+            return []
+    return [match.span("reference"), match.span("request")]
 
 
 def _is_cjk(text: str) -> bool:
@@ -546,6 +570,7 @@ def analyze(
     matcher = cached_matcher("aho", rows) if rows else None
     by_id = {int(row["id"]): row for row in rows}
     author_names = sorted({source.author for source in sources if source.author}, key=len, reverse=True)
+    comparison_spans = _article_comparison_spans(text, author_names)
 
     terms: list[Term] = []
     companies: list[dict] = []
@@ -556,9 +581,17 @@ def analyze(
     # 每个词自成一组（组与组之间是「且」）；用 or 连起来的片段并成一组（组内是「或」）。
     next_group = len(phrases)
     piece_group = -1
+    piece_cursor = 0
     for piece, joined in _whitespace_pieces(text):
+        piece_start = text.index(piece, piece_cursor)
+        piece_cursor = piece_start + len(piece)
         shared = piece_group if joined and piece_group >= 0 else None
         masked = piece
+        # 先按原坐标拿掉句尾指代和比较请求，长度不变，后面的公司坐标仍然对准原文。
+        for start, end in comparison_spans:
+            low, high = max(0, start - piece_start), min(len(piece), end - piece_start)
+            if low < high:
+                masked = masked[:low] + " " * (high - low) + masked[high:]
         found: list[tuple[str, str, list[str], int | None]] = []  # (文字, 类型, 写法, 公司 id)
         if matcher is not None:
             spans = sorted(matcher.spans(piece), key=lambda span: span[0])
@@ -809,7 +842,8 @@ def _company_rows(conn, company: dict, scope: Scope, per_year: int):
     tsq = _form_tsquery_sql(_usable_forms(conn, forms), params, "co")
     if not tsq:
         return []
-    where, scope_params = scope_clause(replace(scope, company_id=None))
+    # 问题里的公司是召回目标，页面显式选择的公司仍是边界，两者取交集。
+    where, scope_params = scope_clause(scope)
     params.update(scope_params)
     params.update({"company": int(company["id"]), "per_year": per_year})
     found: list[dict] = []
@@ -1588,6 +1622,14 @@ def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
     return kept
 
 
+def _scope_for_question(scope: Scope, query: Query, sources) -> Scope:
+    """显式「只问这篇」保持读者选定的文章。没指定文章时，问题里的作者才收窄来源。"""
+    if scope.article_id is not None or not query.authors or not scope.source_ids:
+        return scope
+    narrowed = [source.id for source in sources if source.author in query.authors and source.id in scope.source_ids]
+    return replace(scope, source_ids=narrowed) if narrowed else scope
+
+
 def retrieve(
     conn,
     question: str,
@@ -1622,11 +1664,7 @@ def retrieve(
             content = [t for t in kept if t.kind in ("word", "phrase")]
             if content or not semantic_ok:
                 query = replace(query, terms=kept, overview=not content)
-    effective = scope
-    if query.authors and scope.source_ids:
-        narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
-        if narrowed:
-            effective = replace(scope, source_ids=narrowed)
+    effective = _scope_for_question(scope, query, sources)
     sources_by_id = {source.id: source for source in sources}
     if scope.article_id is not None:
         return _retrieve_article(conn, query, effective, budget, purpose=purpose, semantic_ok=semantic_ok)
@@ -1870,11 +1908,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     """关键词检索：全部词都命中的文章排前面，其后是只命中一部分的。每篇带最相关的两段原文。"""
     company_rows = load_company_rows(conn)
     query = analyze(conn, text, sources, company_rows=company_rows)
-    effective = scope
-    if query.authors and scope.source_ids:
-        narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
-        if narrowed:
-            effective = replace(scope, source_ids=narrowed)
+    effective = _scope_for_question(scope, query, sources)
     if not query.terms:
         if query.authors:
             return _author_listing(conn, query, effective, limit, offset)

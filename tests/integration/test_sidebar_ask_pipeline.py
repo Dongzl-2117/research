@@ -140,7 +140,7 @@ def test_sidebar_long_summary_uses_original_deep_budget_and_batch_failure_report
 
     def fake_chat(_settings, messages, **_kwargs):
         body = messages[-1]['content']
-        if messages[0]['content'] == ask_module.MAP_PROMPT:
+        if ask_module.MAP_PROMPT in messages[0]['content']:
             if '合成文末唯一证据' in body:
                 seen_tail.append(True)
             if '合成章节0：' in body:
