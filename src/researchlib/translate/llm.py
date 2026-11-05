@@ -1,14 +1,18 @@
 """站内调 LLM 做译制：默认 DeepSeek，Grok 作为显式选项。
 
 默认 DeepSeek：deepseek-flash + thinking + reasoning_effort=max + 输出至少 393216，
-上下文 1M，不发 temperature，鉴权用 DEEPSEEK_API_KEY 的 Bearer。
-``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth（grok-4.7 + xhigh + 至少 128000，不开 fast）。
+上下文 1M，不发 temperature，鉴权用 DEEPSEEK_API_KEY 的 Bearer。请求走流式，
+按行读到 ``data: [DONE]`` 才采用；中途 TLS EOF 按与问库相同的间隔重试同一请求，
+半截内容不当译文。
+``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth（grok-4.7 + xhigh + 至少 128000，不开 fast），不流式。
 模型、推理强度、输出地板和超时与问库、摘要共用 researchlib.deepseek / researchlib.grok。
 """
 
 from __future__ import annotations
 
+import http.client
 import json
+import logging
 import re
 import time
 import urllib.error
@@ -47,6 +51,12 @@ from researchlib.translate.xai_oauth import (
     get_xai_access_token,
     is_stale_xai_access,
 )
+
+logger = logging.getLogger("researchlib.translate")
+
+
+class LLMTransportError(RuntimeError):
+    """同一请求的连接错误已经按 RETRY_DELAYS 重试完。半截响应没有当成译文。"""
 
 
 @dataclass
@@ -120,13 +130,21 @@ def chat_json(
     data_dir: Path | None = None,
     timeout_s: float | None = None,
 ) -> ChatJsonResult:
-    """POST {base}/chat/completions。强度按当前提供方，DeepSeek 默认 max / 384k / thinking。"""
+    """POST {base}/chat/completions。强度按当前提供方，DeepSeek 默认 max / 393216 / thinking，并走流式。"""
+    # llm 加载时会进 translate 包。顶上再导 researchlib.llm 会环，所以放在调用里。
+    from researchlib.llm import RETRY_DELAYS, RETRY_STATUS, IncompleteStream, read_chat_completion
+    from researchlib.llm import _is_timeout as _transport_timeout
+    from researchlib.llm import _retry_after as _http_retry_after
+
     del purpose, subject  # 保留形参便于日后打回执；当前不落库
     provider = llm_provider()
     label = provider_label(provider)
     endpoint = f"{llm_base_url()}/chat/completions"
     user_text = user if isinstance(user, str) else json.dumps(user, ensure_ascii=False)
     params = _params(temperature, max_tokens)
+    # 思考模式若不流式，响应头要等整段推理结束才到，连接中间没有字节，TLS 会被对端拆掉。
+    # 流式让 reasoning 增量保持连接有数据。模型、thinking、reasoning_effort、max_tokens 不改。
+    stream = provider != PROVIDER_GROK and str(params["model"]).startswith("deepseek")
     body = {
         **params,
         "messages": [
@@ -135,11 +153,13 @@ def chat_json(
         ],
         "response_format": {"type": "json_object"},
     }
+    if stream:
+        body["stream"] = True
     payload = json.dumps(body).encode("utf-8")
     timeout = timeout_s if timeout_s is not None else long_timeout_s()
     bearer = _bearer(data_dir)
 
-    def post(token: str) -> tuple[int, str]:
+    def post(token: str) -> dict:
         req = urllib.request.Request(
             endpoint,
             data=payload,
@@ -147,25 +167,43 @@ def chat_json(
             headers={
                 "content-type": "application/json",
                 "authorization": f"Bearer {token}",
+                "accept": "text/event-stream" if stream else "application/json",
             },
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.status, resp.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            return exc.code, exc.read().decode("utf-8", errors="replace")
+        # timeout 同时是连接和每一次读的空闲上限，思考模式默认 25 分钟。
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return read_chat_completion(resp, stream=stream)
 
     started = time.time()
-    status, text = post(bearer)
-    if provider == PROVIDER_GROK and status >= 400 and is_stale_xai_access(status, text):
-        bearer = get_xai_access_token(data_dir, force=True, discard_access_token=bearer)
-        status, text = post(bearer)
-    if status >= 400:
-        raise RuntimeError(f"{label} HTTP {status}: {text[:500]}")
-    try:
-        response = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"{label} 返回非 JSON：{text[:300]}") from exc
+    refreshed = False
+    retries = 0
+    while True:
+        try:
+            response = post(bearer)
+            break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            if provider == PROVIDER_GROK and not refreshed and is_stale_xai_access(exc.code, detail):
+                refreshed = True
+                bearer = get_xai_access_token(data_dir, force=True, discard_access_token=bearer)
+                continue
+            if exc.code in RETRY_STATUS and retries < len(RETRY_DELAYS):
+                delay = _http_retry_after(exc) or RETRY_DELAYS[retries]
+                logger.info("译制请求 HTTP %s，%.0f 秒后重试同一请求", exc.code, delay)
+                time.sleep(delay)
+                retries += 1
+                continue
+            raise RuntimeError(f"{label} HTTP {exc.code}: {detail[:500]}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{label} 返回非 JSON") from exc
+        except (urllib.error.URLError, IncompleteStream, OSError, http.client.HTTPException) as exc:
+            # 超时表示这一次已经等满了长超时，不再重发。其余连接错误重试同一份 payload。
+            if _transport_timeout(exc) or retries >= len(RETRY_DELAYS):
+                raise LLMTransportError(f"连不上 {label} 接口：{exc}") from exc
+            delay = RETRY_DELAYS[retries]
+            logger.info("译制请求中断（%s），%.0f 秒后重试同一请求", exc, delay)
+            time.sleep(delay)
+            retries += 1
     choice = (response.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     # 思考过程在 reasoning_content，只取最终答案。
@@ -196,6 +234,7 @@ __all__ = [
     "GROK_OUTPUT_FLOOR",
     "GROK_REASONING_EFFORT",
     "ChatJsonResult",
+    "LLMTransportError",
     "XaiLoginRequiredError",
     "chat_json",
     "extract_json",

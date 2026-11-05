@@ -26,7 +26,7 @@ from researchlib.chunks import replace_translation_chunks
 from researchlib.render import canonical_body_html, render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
 from researchlib.translate.language import is_chinese
-from researchlib.translate.llm import GROK_INPUT_CHARS, chat_json, model_id, output_tokens
+from researchlib.translate.llm import GROK_INPUT_CHARS, LLMTransportError, chat_json, model_id, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import (
     ALIGNMENT_VERSION,
@@ -352,7 +352,10 @@ def _assemble_zh_html(slots: list[str]) -> str:
 
 
 def _translate_title(title: str, data_dir: Path) -> str:
-    """标题单独译一次，给检索和列表用。失败返回空串，由 complete 规则判为未完成。"""
+    """标题单独译一次，给检索和列表用。模型没译好返回空串，由 complete 规则判为未完成。
+
+    连接错误在 chat_json 里已经按预算重试过。这里再吞掉会记成对齐拒绝，两次之后这篇文章就不再译。
+    """
     title = (title or "").strip()
     if not title or is_chinese(title):
         return ""
@@ -362,6 +365,8 @@ def _translate_title(title: str, data_dir: Path) -> str:
             texts = _translate_batch([escape(title)], {
                 "segment_ids": ["title"], "source_hashes": [segment_digest(escape(title))],
             }, data_dir)
+        except LLMTransportError:
+            raise
         except Exception as exc:  # noqa: BLE001 — 标题失败要重试一次再放弃
             last_exc = exc
             continue
@@ -443,8 +448,11 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         }
         try:
             got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
+        except LLMTransportError:
+            # 同一次请求已经按 RETRY_DELAYS 重试过。再开一批会把失败时的花费乘二。
+            raise
         except Exception:
-            # 整批失败时再试一次
+            # 条数或内容对不齐时再试一次。
             got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
         for i, text in enumerate(got):
             restored = unshield(text, shielded[offset + i])

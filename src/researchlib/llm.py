@@ -10,8 +10,9 @@ reasoning_effort=max、输出不低于 393216、上下文 1M、不发 temperatur
 Grok 见 ``researchlib.grok``（grok-4.7、reasoning_effort=xhigh、输出不低于 128000、50 万上下文、不发 fast）。
 
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
-429、5xx 和连不上这类临时错误退避重试两次；超时不重试（一次已经等了很久）。同一个进程里同时在跑的
-请求有上限（RESEARCH_LLM_CONCURRENCY，默认 3），问库分批、摘要、观点、论点共用。
+429、5xx 和连不上（含流读到一半的 TLS EOF）按 RETRY_DELAYS 退避重试；超时不重试。
+DeepSeek 打开流式，按行读 SSE。没看到 ``data: [DONE]`` 就丢掉已经拼上的半截，不当作成功。
+同一个进程里同时在跑的请求有上限（RESEARCH_LLM_CONCURRENCY，默认 3），问库分批、摘要、观点、论点共用。
 每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时 research-status 会列出来。
 """
 
@@ -45,7 +46,8 @@ from researchlib.translate.xai_oauth import (
 )
 
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
-# 第一次重试前等 5 秒，第二次等 20 秒。接口给了 Retry-After 就按它来，最多等一分钟。
+# 依次等 2、5、15、30 秒。接口给了 Retry-After 就按它来，最多等一分钟。
+# 译制的 chat_json 用同一组间隔，改这里两边一起变。
 RETRY_DELAYS = (2.0, 5.0, 15.0, 30.0)
 RETRY_AFTER_CAP = 60.0
 # 思考模式把 max_tokens 花在 reasoning_content 上时，正文会是空的。
@@ -62,6 +64,10 @@ class LLMUnavailable(Exception):
 
 class LLMError(Exception):
     """接口返回错误或格式不对。"""
+
+
+class IncompleteStream(OSError):
+    """SSE 在 ``data: [DONE]`` 之前断了。已经读到的半截不能当成一次成功的回答。"""
 
 
 def _provider(settings: Settings) -> str:
@@ -162,6 +168,66 @@ def _failed(settings: Settings, exc: Exception, *, provider: str | None = None) 
     return exc
 
 
+def _decode_chunk(raw: bytes | str) -> str:
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", "replace")
+
+
+def _read_body(response) -> str:
+    return _decode_chunk(response.read())
+
+
+def _iter_text_lines(response):
+    """按行读响应。每一行最多等 urlopen 传入的超时，思考模式用的是长超时。"""
+    while True:
+        raw = response.readline()
+        if not raw:
+            return
+        yield _decode_chunk(raw)
+
+
+def _sse_done(line: str) -> bool:
+    text = line.strip()
+    if not text.startswith("data:"):
+        return False
+    return text[5:].strip() == "[DONE]"
+
+
+def read_chat_completion(response, *, stream: bool) -> dict:
+    """读完一次 chat/completions。
+
+    流式时逐行读，看到 ``data: [DONE]`` 才把增量拼回 message。
+    中途 SSL、连接重置或流提前结束都抛 IncompleteStream，调用方重试；已经读到的字不返回。
+    对端若忽略 stream、回了一整段 JSON，仍按非流式解析。
+    每一行的等待上限是 urlopen 的 timeout（思考模式默认 25 分钟）。
+    不另设更短的空闲超时，避免把还在思考的连接当成断开再花一次。
+    """
+    if not stream:
+        return json.loads(_read_body(response))
+    lines: list[str] = []
+    try:
+        for line in _iter_text_lines(response):
+            if not lines and not line.strip():
+                continue
+            if not lines and line.lstrip().startswith("{"):
+                return json.loads(line + _read_body(response))
+            lines.append(line)
+            if _sse_done(line):
+                return _read_stream(lines)
+    except IncompleteStream:
+        raise
+    except TimeoutError:
+        raise
+    except json.JSONDecodeError:
+        raise
+    except urllib.error.HTTPError:
+        raise
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        raise IncompleteStream(f"SSE 中途断开：{exc}") from exc
+    raise IncompleteStream("SSE 在 [DONE] 之前结束")
+
+
 def _post(settings: Settings, token: str, payload: dict) -> dict:
     request = urllib.request.Request(
         settings.llm_base_url + "/chat/completions",
@@ -175,14 +241,12 @@ def _post(settings: Settings, token: str, payload: dict) -> dict:
     )
     stream = str(payload.get("model", "")).startswith("deepseek")
     if stream:
-        # 思考模式长时间不出字，代理会断开空闲连接；流式让连接一直有数据。
+        # 思考模式长时间不出字，中间设备会拆掉空闲连接。流式让推理增量一直往连接上写。
         request.data = json.dumps({**payload, "stream": True}, ensure_ascii=False).encode("utf-8")
         request.add_header("Accept", "text/event-stream")
+    # 套接字超时是 settings.llm_timeout：连接和随后每一次读都用它，默认 25 分钟。
     with urllib.request.urlopen(request, timeout=settings.llm_timeout) as response:
-        text = response.read().decode("utf-8", "replace")
-    if not stream or text.lstrip().startswith("{"):
-        return json.loads(text)
-    return _read_stream(text.splitlines())
+        return read_chat_completion(response, stream=stream)
 
 
 def _read_stream(lines) -> dict:

@@ -53,9 +53,11 @@ docker compose exec app research-translate --source stratechery --limit 5 --loop
 
 同一轮里失败过、没有可译正文或者没译全的篇先跳过；`--loop` 时队列只剩它们就先睡，睡醒再给一次机会，不会一直重试同一篇。没配 LLM 凭证时直接退出（退出码 2），不连库。
 
+DeepSeek 译制走流式。思考模式要是一次把整段响应读完，连接会空等很久，TLS 在中途被拆掉（`UNEXPECTED_EOF_WHILE_READING`），这次已经开始计费，译文一个字都不会入库。`chat_json` 按行读，看到 `data: [DONE]` 才把拼接结果交给对齐；中途断开或流提前结束都丢掉半截，按 2、5、15、30 秒重发同一请求。超时不重试。模型、thinking、`reasoning_effort` 和输出预算不变，也不会改走 Grok。连接预算用完仍失败记 `request-failed`，不再把同一批立刻再打一遍。标题上的连接失败同样记请求失败，不记成对齐拒绝。
+
 跑的时候自动上线会等它跑完再重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`），这期间合并的改动要等这一批译完才上线。长时间的 `--loop` 放在 tmux 里跑，用完 Ctrl-C 停掉。
 
-调用参数与 AIHOT 一致：`https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`）。
+Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`），流式每一行的空闲上限也是这一段。
 
 ## Stratechery
 
