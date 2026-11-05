@@ -111,6 +111,43 @@ def test_pending_english_query_runs_and_skips_translated(conn, settings):
     assert article_id in list_pending_english(conn, limit=10)
 
 
+def test_stale_translation_body_and_title_are_not_search_evidence(conn, settings):
+    article_id = _english(conn, settings)
+    conn.execute("UPDATE articles SET content_hash='synthetic-revised-source' WHERE id=%s", (article_id,))
+    conn.commit()
+    sources = enabled_sources(load_sources(settings.sources_path))
+    scope = Scope(source_ids=[source.id for source in sources])
+    for question in ('应用商店 抽成', '定价权'):
+        found = retrieve(conn, question, scope, sources, purpose='search')
+        assert not any(p.article_id == article_id and p.lang == 'zh' for p in found.passages)
+    # 这里只过滤证据；旧行和旧块仍保留，后续修复由明确的操作决定。
+    saved = conn.execute('SELECT complete FROM article_translations WHERE article_id=%s', (article_id,)).fetchone()
+    assert saved['complete']
+    assert conn.execute("SELECT count(*) AS n FROM article_chunks WHERE article_id=%s AND lang='zh'",
+                        (article_id,)).fetchone()['n'] == 2
+
+
+def test_unquoted_original_and_ocr_hits_survive_same_article_translation(conn, settings, monkeypatch):
+    article_id = _english(conn, settings)
+    conn.execute("INSERT INTO article_chunks(article_id,ord,heading,body,lang,anchor)"
+                 " VALUES(%s,20000,'图片文字','uniquepicturefact syntheticchart','ocr','synthetic-chart')",
+                 (article_id,))
+    conn.commit()
+    sources = enabled_sources(load_sources(settings.sources_path))
+    scope = Scope(source_ids=[source.id for source in sources])
+    original = retrieval._candidates
+
+    def with_translation(c, q, s, **kwargs):
+        rows = original(c, q, s, **kwargs)
+        return rows + retrieval._rows_for_keys(c, [(article_id, TRANSLATION_ORD_BASE)])
+
+    monkeypatch.setattr(retrieval, '_candidates', with_translation)
+    for question, expected_lang in [('regulators', ''), ('uniquepicturefact', 'ocr')]:
+        found = retrieve(conn, question, scope, sources, purpose='search')
+        assert any(p.article_id == article_id and p.lang == expected_lang and question in p.body
+                   for p in found.passages), (question, found)
+
+
 def _store(conn, settings, source_id, docs):
     sources = {source.id: source for source in load_sources(settings.sources_path)}
     store_documents(
