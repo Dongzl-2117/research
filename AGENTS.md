@@ -84,4 +84,4 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 
 - 通用原文相关性标注采用独立本机服务和 SQLite，见 [docs/relevance-annotations.md](docs/relevance-annotations.md)。主站不挂该入口，不跑迁移或模型；私有原文、标签及导出只留 `data/relevance/` 等私有目录。实际库 provider、远程认证与部署需另行配置，demo 不是真实库。
 
-- 算法 A/B 的第一版为独立本机实验台，见 [docs/algorithm-experiments.md](docs/algorithm-experiments.md)。只捕获明确本机离线副本，复用评分/聚合/选段；不把调参题偏好当留出收益。参数只按请求传入，主站没有实验路由，默认没有生成适配器。不要将其公开代理或自动应用候选；真实副本、远程认证与上线均需后续独立配置。
+- 算法 A/B 的第一版为独立本机实验台，见 [docs/algorithm-experiments.md](docs/algorithm-experiments.md)。只捕获明确本机离线副本，复用评分/聚合/选段；不把调参题偏好当留出收益。参数只按请求传入；新增网站管理接入默认关闭，必须由审核过的所有者认证适配器装配，不能只设开关或信任代理头。站内 DeepSeek/Grok 短回答适配可选配，逐题确认、1500 token/侧、无自动重试、默认每日5组；不自动应用候选。真实认证、副本、模型凭据与部署仍未配置，见文档前置条件。

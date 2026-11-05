@@ -2,6 +2,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const csrf = document.querySelector('meta[name="experiment-csrf"]').content;
+  const apiBase = document.querySelector('meta[name="experiment-api-base"]').content;
   const names = {baseline: 'A · 基线', candidate: 'B · 候选'};
   const decisions = {baseline: 'A 更好', candidate: 'B 更好', tie: '相当', neither: '都不好', skip: '跳过', uncertain: '无法判断', withdraw: '撤销评价'};
   const descriptors = [
@@ -21,7 +22,7 @@
   };
   const fail = error => { $('error').textContent = error.message || String(error); $('error').hidden = false; };
   async function api(path, body) {
-    const response = await fetch('/api/experiments/' + path, body === undefined ? {} : {
+    const response = await fetch(apiBase + path, body === undefined ? {} : {
       method: 'POST', headers: {'Content-Type': 'application/json', 'X-Experiment-CSRF': csrf}, body: JSON.stringify(body),
     });
     const value = await response.json();
@@ -164,7 +165,10 @@
     } else if (!state.generator) {
       box.append(el('p', '当前未启用模型。可导出提示词；要在本机生成，启动时需明确配置生成适配器。'));
     } else {
-      box.append(el('p', '当前适配器：' + state.generator + '。实际费用未知。输出上限每侧 1500 tokens，实际用量由适配器回报。'));
+      const plan = state.generation_plan;
+      box.append(el('p', '当前模型/适配器：' + state.generator + '。实际费用未知，不等于免费。'));
+      if (plan) box.append(el('p', '每题至多 ' + plan.max_model_requests + ' 次模型请求；每侧输出预算 ' + plan.max_output_tokens_per_side + ' tokens（可能含思考）。不自动扩词、分批、重试或扩大预算。网络读写超时 ' + plan.read_timeout_s + ' 秒，非绝对总时限。'));
+      if (state.daily_limit != null) box.append(el('p', '每日最多 ' + state.daily_limit + ' 组（UTC）；当前已占用 ' + state.daily_used + ' 组。失败或结果未知也计入额度。'));
       const label = el('label'); const check = el('input'); check.type = 'checkbox';
       label.append(check, document.createTextNode(' 我接受把这两侧资料交给所配置模型，并承担可能的调用费用。')); box.append(label);
       const button = el('button', '生成当前问题的两版回答');
@@ -172,15 +176,15 @@
       check.addEventListener('change', () => { button.disabled = !check.checked; });
       button.addEventListener('click', () => action(async () => {
         button.disabled = true; $('status').textContent = '正在生成。结果会分别保存，刷新不会重发调用。';
-        try { await api('runs/' + current.run.id + '/generate', {case_id: caseData.id, acknowledge_cost: true, request_id: crypto.randomUUID()}); }
-        finally { current = await api('runs/' + current.run.id); render(); }
+        try { await api('runs/' + current.run.id + '/generate', {case_id: caseData.id, acknowledge_cost: true, configuration_id: state.generation_plan?.id || null, request_id: crypto.randomUUID()}); }
+        finally { current = await api('runs/' + current.run.id); state = {...state, ...(await api('state'))}; render(); }
       })); box.append(button);
     }
     return box;
   }
   function render() {
     const run = current.run;
-    $('export-results').href = '/api/experiments/runs/' + run.id + '/export';
+    $('export-results').href = apiBase + 'runs/' + run.id + '/export';
     $('run-meta').textContent = '快照 ' + run.snapshot_id.slice(0, 8) + ' · 对照 ' + run.id.slice(0, 8) + ' · ' + (run.material === 'synthetic' ? '合成资料' : '离线资料');
     $('mode-hint').textContent = {
       search: '文章仍按全部词命中优先，再按得分排序。比较的是固定词法候选池的前 20 篇；重叠度不是准确率。',

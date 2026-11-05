@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 from pathlib import Path
 
 from pydantic import TypeAdapter
@@ -30,7 +31,9 @@ def main(argv=None):
         if name == "serve":
             command.add_argument("--port", type=int, default=8100)
             command.add_argument("--sources", type=Path, help="私有快照必填；来源策略变更时拒绝启动")
-            command.add_argument("--generator", help="显式选配 module:function；默认无任何模型入口")
+            models = command.add_mutually_exclusive_group()
+            models.add_argument("--generator", help="显式选配 module:function；默认无任何模型入口")
+            models.add_argument("--site-model", action="store_true", help="选配站内受支持模型，仅确认后调用")
     args = parser.parse_args(argv)
     try:
         if args.command == "demo":
@@ -60,8 +63,17 @@ def main(argv=None):
                     generator = getattr(importlib.import_module(module), name)
                     if not callable(generator):
                         raise ValueError("generator 必须可调用")
-                app = create_experiment_app(snapshot, args.db, sources_path=args.sources,
-                                            generator=generator, generator_label=args.generator)
+                if args.site_model:
+                    from researchlib.config import Settings
+                    from researchlib.experiments.site_model import SiteModelGenerator
+
+                    # 只读当前进程的显式环境，不自动加载 .env 或创建任何模型/业务任务。
+                    generator = SiteModelGenerator(Settings.from_env(dict(os.environ)))
+                app = create_experiment_app(
+                    snapshot, args.db, sources_path=args.sources, generator=generator,
+                    generator_label=generator.label if args.site_model else args.generator,
+                    daily_limit=5 if args.site_model else None,
+                )
                 print(f"本机算法实验台：http://127.0.0.1:{args.port}/experiments")
                 uvicorn.run(app, host="127.0.0.1", port=args.port, proxy_headers=False, access_log=False)
     except (ValueError, OSError, json.JSONDecodeError) as exc:

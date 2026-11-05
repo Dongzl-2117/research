@@ -13,12 +13,15 @@ from researchlib.retrieval import Budget, _ord_range, rank_articles, score_rows,
 
 def implementation_sha() -> str:
     root = Path(__file__).resolve().parents[1]
-    paths = [root / name for name in ("retrieval.py", "ask.py", "experiments/engine.py", "experiments/schema.py")]
+    paths = [root / name for name in (
+        "retrieval.py", "ask.py", "experiments/engine.py", "experiments/schema.py", "experiments/site_model.py",
+    )]
     return hashlib.sha256(b"\n".join(p.read_bytes() for p in paths)).hexdigest()
 
 
-def run_id(snapshot: Snapshot, request: CompareRequest):
-    return digest({"snapshot": snapshot.fingerprint, "request": request.model_dump(), "engine": implementation_sha()})
+def run_id(snapshot: Snapshot, request: CompareRequest, *, generation_profile=None):
+    return digest({"snapshot": snapshot.fingerprint, "request": request.model_dump(),
+                   "engine": implementation_sha(), "generation_profile": generation_profile})
 
 
 def _context(picked, neighbours, extra):
@@ -73,7 +76,7 @@ def variant(case, tuning: Tuning, sources):
     }
 
 
-def compare(snapshot: Snapshot, request: CompareRequest):
+def compare(snapshot: Snapshot, request: CompareRequest, *, generation_profile=None):
     by_id = {case.spec.id: case for case in snapshot.cases}
     if not set(request.case_ids) <= by_id.keys():
         raise ValueError("问题不在当前快照中")
@@ -90,7 +93,8 @@ def compare(snapshot: Snapshot, request: CompareRequest):
     # datetime 交给统一 JSON 序列化；不把时间/耗时伪装为评分提升。
     import json
     payload = {
-        "id": run_id(snapshot, request), "schema_version": 1, "recipe": VERSION,
+        "id": run_id(snapshot, request, generation_profile=generation_profile),
+        "schema_version": 1, "recipe": VERSION, "generation_profile": generation_profile,
         "snapshot_id": snapshot.fingerprint, "implementation_sha": implementation_sha(),
         "created_at": now(), "material": snapshot.material, "request": request.model_dump(),
         "cases": results, "model_calls": 0, "cost": None,

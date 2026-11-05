@@ -28,6 +28,8 @@ class Model(BaseModel):
 
 
 class Tuning(Model):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, validate_default=True)
+
     k1: float = Field(1.2, ge=0.1, le=3)
     b: float = Field(0.4, ge=0, le=1)
     title_tf: float = Field(0.5, ge=0, le=2)
@@ -179,12 +181,14 @@ class RatingRequest(Model):
 
 
 class GenerateRequest(Model):
+    configuration_id: str | None = Field(None, max_length=128)
     case_id: str
     acknowledge_cost: Literal[True]
     request_id: str = Field(min_length=8, max_length=100)
 
 
 class Answer(Model):
+    request_profile: str | None = Field(None, max_length=128)
     text: str = Field(min_length=1, max_length=60000)
     model: str = Field(min_length=1, max_length=200)
     model_version: str = Field(min_length=1, max_length=200)

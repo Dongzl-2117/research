@@ -95,7 +95,7 @@ class Store:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def label(self, run_id, request: RatingRequest):
+    def label(self, run_id, request: RatingRequest, *, actor="local-operator"):
         run = self.get(run_id)
         case = next((c for c in run["cases"] if c["id"] == request.case_id), None)
         if case is None:
@@ -109,7 +109,8 @@ class Store:
             previous = conn.execute("SELECT payload FROM ratings WHERE request_id=?", (request.request_id,)).fetchone()
             if previous:
                 event = json.loads(previous[0])
-                if event["run_id"] != run_id or event["request"] != request.model_dump():
+                if (event["run_id"] != run_id or event["request"] != request.model_dump()
+                        or event.get("actor", "local-operator") != actor):
                     raise Conflict("请求编号已用于另一次评价")
                 return event
             revision = conn.execute(
@@ -118,13 +119,21 @@ class Store:
             ).fetchone()[0]
             if request.expected_revision != revision:
                 raise Conflict("评价已更新，请刷新后修改")
-            event = {"run_id": run_id, "request": request.model_dump(), "revision": revision + 1, "created_at": now()}
+            event = {"run_id": run_id, "request": request.model_dump(), "revision": revision + 1,
+                     "created_at": now(), "actor": actor}
             conn.execute("INSERT INTO ratings VALUES (?,?,?,?,?,?)", (
                 run_id, request.case_id, request.target, revision + 1, request.request_id, canonical(event),
             ))
             return event
 
-    def claim_generation(self, run_id, case_id, request_id, provider):
+    def daily_generation_count(self):
+        with self.connect() as conn:
+            return conn.execute(
+                "SELECT count(*) FROM generations WHERE json_extract(payload,'$.created_at') LIKE ?",
+                (now()[:10] + "%",),
+            ).fetchone()[0]
+
+    def claim_generation(self, run_id, case_id, request_id, provider, *, daily_limit=None, actor="local-operator"):
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -134,7 +143,15 @@ class Store:
                 return json.loads(row[0]), False
             if conn.execute("SELECT 1 FROM generations WHERE request_id=?", (request_id,)).fetchone():
                 raise Conflict("请求编号已用于其他生成")
-            value = {"status": "running", "provider": provider, "created_at": now(), "sides": {}, "attempted_sides": []}
+            if daily_limit is not None:
+                count = conn.execute(
+                    "SELECT count(*) FROM generations WHERE json_extract(payload,'$.created_at') LIKE ?",
+                    (now()[:10] + "%",),
+                ).fetchone()[0]
+                if count >= daily_limit:
+                    raise Conflict("今日生成组数额度已用尽；失败和未知结果也计入，不会调用模型")
+            value = {"status": "running", "provider": provider, "created_at": now(), "sides": {},
+                     "attempted_sides": [], "actor": actor}
             conn.execute("INSERT INTO generations VALUES (?,?,?,?)", (run_id, case_id, request_id, canonical(value)))
             return value, True
 
