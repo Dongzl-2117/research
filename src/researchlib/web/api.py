@@ -31,7 +31,7 @@ from researchlib.output_safety import redact_output, redact_subscription_links
 from researchlib.present_text import plain_qa_markdown, polish_display_text
 from researchlib.render import link_local_images
 from researchlib.retrieval import retrieve, search_articles
-from researchlib.snippets import mention_sentence, mention_spans
+from researchlib.snippets import answer_html, mention_sentence, mention_spans
 from researchlib.textutil import opening_excerpt, strip_duplicate_title
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import filter_timeline
@@ -589,7 +589,7 @@ async def api_ask(request: Request):
     question = str(body.get("question") or "").strip()[:500]
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
-    params = {key: str(body.get(key) or "") for key in ("author", "source", "company", "from", "to", "article")}
+    params = {key: str(body.get(key) or "") for key in ("author", "source", "company", "from", "to", "article", "tree")}
     # 默认不等：检索后立刻返回 id，后台整合。wait=true 会在线程池里跑完再返回，
     # 绝不能在 async 协程里同步干等，否则整站事件循环被堵死（health/其他页一起挂）。
     wait = body.get("wait", False) is True
@@ -608,7 +608,11 @@ async def api_ask(request: Request):
             return start(conn, settings, question, scope, sources)
 
     result = await run_in_threadpool(_run)
-    return _json({**result, "_trust": TRUST})
+    return _json({
+        **result,
+        "answer_html": str(answer_html(result.get("answer") or "", result.get("citations") or [])),
+        "_trust": TRUST,
+    })
 
 
 @api.get("/api/v1/answers/{answer_id}")
@@ -635,6 +639,7 @@ def api_answer(request: Request, answer_id: int):
             "status": row["status"],
             "error": row["error"] or None,
             "answer": row["answer"],
+            "answer_html": str(answer_html(row["answer"] or "", citations)),
             # 标题和卡片一样按现在的库算；checks 照旧按写回答时的快照核对。
             "citations": citations,
             # 没核对上的句子：数字、引号、作者、日期和所引段落对不上，或几乎没有一样的说法。

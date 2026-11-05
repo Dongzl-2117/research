@@ -23,7 +23,7 @@ def generate(output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     (output / "static").mkdir(exist_ok=True)
     (output / "media").mkdir(exist_ok=True)
-    for name in ("site.css", "article.js"):
+    for name in ("site.css", "article.js", "article-chat.js", "ask-chat.css", "ask-chat-noscript.css"):
         shutil.copyfile(ROOT / "src/researchlib/web/static" / name, output / "static" / name)
     (output / "media/chart.svg").write_text(
         '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="180">'

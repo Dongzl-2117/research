@@ -1,17 +1,15 @@
 {% extends "base.html" %}
+{% block styles %}<link rel="stylesheet" href="/static/ask-chat.css">{% endblock %}
 {% macro passage(item, result) %}
 {% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
-<li id="c-{{ item.n }}" class="{% if item.cited %}cited{% endif %}{% if flagged %} flagged{% endif %}">
-  <p class="item-meta"><span class="num">[{{ item.n }}]</span> <a href="{{ item.url }}">{{ item.title }}</a> · {{ item.author }} · {{ item.date }}{% if item.heading %} · § {{ item.heading }}{% endif %}</p>
-  <p class="item-excerpt">{{ item.text | highlight_snippet(result.terms, 150) }}</p>
+<li id="c-{{ item.n }}" tabindex="-1" class="{% if item.cited %}cited{% endif %}{% if flagged %} flagged{% endif %}">
+  <p class="item-meta"><span class="source-number">{{ item.n }}</span> <a href="{{ item.url }}">{{ item.title }}</a></p>
+  <p class="source-byline">{{ item.author }} · {{ item.date }}{% if item.heading %} · {{ item.heading }}{% endif %}</p>
   <div class="passage-foot">
-    <details class="passage-full"><summary>展开这段</summary><p>{{ item.text | highlight_full(result.terms) }}</p></details>
+    <details class="passage-full"><summary>查看原文</summary><p>{{ item.text | highlight_full(result.terms) }}</p></details>
     {% if result.id %}
     <form class="mark-form" action="/ask/{{ result.id }}/feedback" method="post">
-      <input type="hidden" name="label" value="irrelevant">
-      <input type="hidden" name="article" value="{{ item.article_id }}">
-      <input type="hidden" name="chunk" value="{{ item.ord }}">
-      <input type="hidden" name="n" value="{{ item.n }}">
+      <input type="hidden" name="label" value="irrelevant"><input type="hidden" name="article" value="{{ item.article_id }}"><input type="hidden" name="chunk" value="{{ item.ord }}"><input type="hidden" name="n" value="{{ item.n }}">
       <button type="submit" class="mark{% if flagged %} is-on{% endif %}" aria-pressed="{{ 'true' if flagged else 'false' }}">{% if flagged %}已标不相关{% else %}不相关{% endif %}</button>
     </form>
     {% endif %}
@@ -19,135 +17,89 @@
 </li>
 {% endmacro %}
 {% block body %}
-<header class="page-head">
-  <h1>问库</h1>
-</header>
-{% if not llm_ready %}
-<p class="banner">没有可用的 {{ llm_label | default("LLM") }} 凭证，只列出相关原文。</p>
-{% endif %}
-<form class="ask-form" action="/ask" method="post">
-  <label class="sr" for="ask-q">问题</label>
-  <textarea id="ask-q" name="q" rows="3" maxlength="500" placeholder="例如：方伟最近怎么看腾讯的游戏业务？" required>{{ question }}</textarea>
-  <div class="filter-grid">
-    <label>作者
-      <select name="author">
-        <option value="">全部作者</option>
-        {% for name in authors %}<option value="{{ name }}" {% if filters.author == name %}selected{% endif %}>{{ name }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>
-    <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
+<section id="ask-chat" class="ask-workspace" aria-label="问库">
+  <header class="ask-head">
+    <div class="ask-heading"><h1>问库</h1><span>每次独立提问</span></div>
+    <div class="ask-head-actions">
+      {% if history %}
+      <details class="ask-history">
+        <summary>最近问过</summary>
+        <nav aria-label="最近问过"><ul>
+          {% for row in history %}{% set since, until = row.scope.date_from, row.scope.date_to %}
+          <li><a href="/ask/{{ row.id }}"{% if result and row.id == result.id %} aria-current="page"{% endif %}>{{ row.question }}
+            <span>{% if row.scope.article_id %}只用一篇 · {% elif row.scope.tree_id %}只用一个目录 · {% endif %}{% if since and since == until %}<span class="quiet num">{{ since }}</span> · {% elif since or until %}<span class="quiet num">{{ since or "最早" }} 至 {{ until or "最近" }}</span> · {% endif %}{% if row.status == "running" %}整合中{% elif row.status == "error" %}没整合完{% else %}查看回答{% endif %}</span>
+          </a></li>{% endfor %}
+        </ul></nav>
+      </details>
+      {% endif %}
+      <a class="ask-new" href="/ask">新问题 <span aria-hidden="true">＋</span></a>
+    </div>
+  </header>
+  {% if not llm_ready %}<p class="chat-notice">没有可用的 {{ llm_label | default("LLM") }} 凭证，只列出相关原文。</p>{% endif %}
+  <p id="ask-mode" class="sr">每轮只提交当前问题，不沿用上文。作者、日期和指定资料范围会随本次提问提交。回答可通过引用回到原文核对。</p>
+  <div class="chat-log" role="region" aria-label="提问与回答" tabindex="0">
+    {% if not result %}
+    <div class="ask-welcome"><svg class="ask-symbol" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 6.5h18v15H14l-7 5v-5zM12 12h8m-8 5h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><h2>想从资料里了解什么？</h2><p>从一个问题开始，沿着引用读回原文。</p></div>
+    {% else %}
+    <div class="chat-bubble chat-bubble-user"><p>{{ result.question }}</p></div>
+    <section class="answer chat-bubble chat-bubble-assistant" aria-label="回答" data-answer-id="{{ result.id or '' }}" data-answer-status="{{ result.status }}"{% if result.status == "running" %} data-poll="/api/v1/answers/{{ result.id }}"{% endif %}>
+      <p class="chat-status{% if result.status != 'running' %} sr{% endif %}" role="status">{% if result.status == "running" %}正在整合回答…{% endif %}</p>
+      <div class="chat-content">
+        {% if result.error %}
+        <p class="chat-error" role="alert">{{ result.error }}</p>
+        {% if result.status == "error" and result.id %}<form class="retry-form" action="/ask/{{ result.id }}/retry" method="post"><button type="submit">重新整合</button></form>{% endif %}
+        {% endif %}
+        {% if result.failed_batches %}<p class="chat-warning chat-partial">资料分 {{ result.batches }} 批读，第 {{ result.failed_batches | join("、") }} 批未读到，回答可能不全。</p>{% endif %}
+        {% if result.answer %}<div class="prose answer-body chat-markdown">{{ result.answer | answer_html(result.citations) }}</div>{% endif %}
+        {% if result.checks %}
+        <section class="checks chat-warnings" aria-label="没核对上的句子">
+          <h3>需要回原文核对 <span class="num">{{ result.checks | length }}</span></h3>
+          <ul>{% for flag in result.checks %}<li><p class="check-sentence">{{ flag.sentence }}{% for n in flag.refs %} <a class="cite" href="#c-{{ n }}">[{{ n }}]</a>{% endfor %}</p><p class="check-problems">{{ flag.problems | join("；") }}</p></li>{% endfor %}</ul>
+        </section>
+        {% endif %}
+        {% set cited = result.citations | selectattr("cited") | list %}
+        {% if result.answer and cited %}
+        <section class="answer-sources" aria-label="出处"><h3>出处 <span class="num">{{ cited | length }}</span></h3><ol class="citations">{% for item in cited %}{{ passage(item, result) }}{% endfor %}</ol></section>
+        {% set rest = result.citations | rejectattr("cited") | list %}
+        {% if rest %}<details class="more-passages chat-evidence"><summary>其余检索到的原文 · {{ rest | length }} 段</summary><ol class="citations">{% for item in rest %}{{ passage(item, result) }}{% endfor %}</ol></details>{% endif %}
+        {% elif result.citations %}
+        <section class="answer-sources" aria-label="相关原文"><h3>相关原文 <span class="num">{{ result.citations | length }}</span></h3><ol class="citations plain">{% for item in result.citations %}{{ passage(item, result) }}{% endfor %}</ol></section>
+        {% endif %}
+        {% if result.id %}
+        <details class="answer-feedback"{% if result.feedback_error or result.missing %} open{% endif %}><summary>补充遗漏的文章</summary>
+          <form id="missing" class="missing-form" action="/ask/{{ result.id }}/feedback" method="post">
+            <input type="hidden" name="label" value="missing"><label class="sr" for="missing-ref">漏了哪篇</label><input id="missing-ref" name="ref" type="text" inputmode="url" placeholder="文章链接或编号" autocomplete="off" required><button type="submit">补上</button>
+          </form>
+          {% if result.feedback_error %}<p class="chat-error" role="alert">{{ result.feedback_error }}</p>{% endif %}
+          {% if result.missing %}<ul class="missing-list" aria-label="补上的文章">{% for item in result.missing %}<li><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.title }}</a></li>{% endfor %}</ul>{% endif %}
+        </details>
+        {% endif %}
+        {% if result.model or result.created %}<p class="answer-meta">{{ result.model }}{% if result.model and result.created %} · {% endif %}{{ result.created }}</p>{% endif %}
+      </div>
+      <div class="chat-recovery"></div>
+    </section>
+    {% endif %}
   </div>
-  {% if filters.source %}<input type="hidden" name="source" value="{{ filters.source }}">{% endif %}
-  {% if company %}
-  <input type="hidden" name="company" value="{{ company.id }}">
-  <p class="filter-note">只用提到 <a href="/companies/{{ company.id }}">{{ company.name_zh }}</a> 的文章。</p>
-  {% endif %}
-  {% if article %}
-  <input type="hidden" name="article" value="{{ article.id }}">
-  <p class="filter-note">只用这篇：<a href="/articles/{{ article.id }}">{{ article.title }}</a></p>
-  {% endif %}
-  {% if tree %}
-  <input type="hidden" name="tree" value="{{ tree.id }}">
-  <p class="filter-note">只用这个目录：<a href="/sources/{{ tree.source_id }}/tree/{{ tree.id }}">{{ tree.title }}</a> 和它下面的全部子篇</p>
-  {% endif %}
-  <button type="submit">提问</button>
-</form>
-{% if result %}
-<section class="answer" aria-label="回答"{% if result.status == "running" %} data-poll="/api/v1/answers/{{ result.id }}"{% endif %}>
-  <h2>{{ result.question }}</h2>
-  {% if result.status == "running" %}
-  <p class="answer-status" role="status"><span class="spinner" aria-hidden="true"></span>正在整合</p>
-  {% endif %}
-  {% if result.error %}
-  <p class="banner">{{ result.error }}</p>
-  {% if result.status == "error" and result.id %}
-  <form class="retry-form" action="/ask/{{ result.id }}/retry" method="post"><button type="submit">重新整合</button></form>
-  {% endif %}
-  {% endif %}
-  {% if result.answer %}
-  {% if result.failed_batches %}<p class="banner">资料分 {{ result.batches }} 批读，第 {{ result.failed_batches | join("、") }} 批 {{ llm_label | default("LLM") }} 出错没读到，回答可能不全。可以重新问一次。</p>{% endif %}
-  <div class="prose answer-body">{{ result.answer | answer_html }}</div>
-  {% if result.model or result.created %}<p class="quiet">{{ result.model }}{% if result.model and result.created %} · {% endif %}{{ result.created }}</p>{% endif %}
-  {% endif %}
-  {% if result.checks %}
-  <section class="checks" aria-label="没核对上的句子">
-    <h3>没核对上 <span class="num quiet">{{ result.checks | length }}</span></h3>
-    <ul>
-      {% for flag in result.checks %}
-      <li>
-        <p class="check-sentence">{{ flag.sentence }}{% for n in flag.refs %} <a class="cite" href="#c-{{ n }}">[{{ n }}]</a>{% endfor %}</p>
-        <p class="check-problems">{{ flag.problems | join("；") }}</p>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-  {% set cited = result.citations | selectattr("cited") | list %}
-  {% if result.answer and cited %}
-  <h3>出处 <span class="num quiet">{{ cited | length }}</span></h3>
-  <ol class="citations">
-    {% for item in cited %}{{ passage(item, result) }}{% endfor %}
-  </ol>
-  {% set rest = result.citations | rejectattr("cited") | list %}
-  {% if rest %}
-  <details class="more-passages">
-    <summary>其余检索到的原文 <span class="num">{{ rest | length }}</span></summary>
-    <ol class="citations">
-      {% for item in rest %}{{ passage(item, result) }}{% endfor %}
-    </ol>
-  </details>
-  {% endif %}
-  {% elif result.citations %}
-  <h3>相关原文 <span class="num quiet">{{ result.citations | length }}</span></h3>
-  <ol class="citations plain">
-    {% for item in result.citations %}{{ passage(item, result) }}{% endfor %}
-  </ol>
-  {% endif %}
-  {% if result.id %}
-  <form id="missing" class="missing-form" action="/ask/{{ result.id }}/feedback" method="post">
-    <input type="hidden" name="label" value="missing">
-    <label for="missing-ref">漏了哪篇</label>
-    <input id="missing-ref" name="ref" type="text" inputmode="url" placeholder="文章链接或编号" autocomplete="off" required>
-    <button type="submit">补上</button>
+  <form class="ask-form chat-form" action="/ask" method="post">
+    {% if filters.source %}<input type="hidden" name="source" value="{{ filters.source }}">{% endif %}
+    {% if company %}<input type="hidden" name="company" value="{{ company.id }}">{% endif %}
+    <input type="hidden" name="article" value="{{ article.id if article else '' }}">
+    {% if tree %}<input type="hidden" name="tree" value="{{ tree.id }}">{% endif %}
+    <details class="ask-filters"{% if filters.author or filters.from or filters.to %} open{% endif %}>
+      <summary>资料范围 <span>{% if article %}只用这篇：{{ article.title }}{% elif tree %}只用这个目录：{{ tree.title }}{% elif company %}提到 {{ company.name_zh }} 的文章{% elif filters.source %}指定来源{% else %}整个资料库{% endif %}{% if filters.author %} · {{ filters.author }}{% endif %}{% if filters.from or filters.to %} · {{ filters.from or '最早' }} 至 {{ filters.to or '最近' }}{% endif %}</span></summary>
+      <div class="filter-grid">
+        <label>作者 <select name="author"><option value="">全部作者</option>{% for name in authors %}<option value="{{ name }}"{% if filters.author == name %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+        <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>
+        <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
+      </div>
+    </details>
+    <div class="chat-composer">
+      <label class="sr" for="ask-q">问题</label>
+      <textarea id="ask-q" name="q" rows="2" maxlength="500" aria-describedby="ask-mode" enterkeyhint="send" placeholder="向资料库提问…" required>{% if not result %}{{ question }}{% endif %}</textarea>
+      <div class="chat-composer-bar"><span class="composer-hint">每次独立提问</span><span class="chat-count" aria-hidden="true"></span><button type="submit" aria-label="发送问题" title="发送问题"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m-5 5 5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+    </div>
+    <p class="composer-footnote">回答依据检索到的资料生成，请结合引用核对。</p>
   </form>
-  {% if result.feedback_error %}<p class="banner">{{ result.feedback_error }}</p>{% endif %}
-  {% if result.missing %}
-  <ul class="missing-list" aria-label="补上的文章">
-    {% for item in result.missing %}<li><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.title }}</a></li>{% endfor %}
-  </ul>
-  {% endif %}
-  {% endif %}
 </section>
-{% endif %}
-{% if history %}
-<section class="card panel">
-  <h2>最近问过</h2>
-  <ul class="sibling-list">
-    {% for row in history %}{% set since, until = row.scope.date_from, row.scope.date_to %}<li><a href="/ask/{{ row.id }}">{{ row.question }}</a>{% if row.scope.article_id %} <span class="quiet">只用一篇</span>{% elif row.scope.tree_id %} <span class="quiet">只用一个目录</span>{% endif %}{% if since and since == until %} <span class="quiet num">{{ since }}</span>{% elif since or until %} <span class="quiet num">{{ since or "最早" }} 至 {{ until or "最近" }}</span>{% endif %}{% if row.status == "running" %} <span class="quiet">整合中</span>{% elif row.status == "error" %} <span class="quiet">没整合完</span>{% endif %}</li>{% endfor %}
-  </ul>
-</section>
-{% endif %}
-<script>
-  (function () {
-    var box = document.querySelector("[data-poll]");
-    if (!box) return;
-    var url = box.getAttribute("data-poll");
-    var tries = 0;
-    function tick() {
-      tries += 1;
-      fetch(url, { headers: { Accept: "application/json" }, credentials: "same-origin" })
-        .then(function (response) { return response.ok ? response.json() : null; })
-        .then(function (data) {
-          if (data && data.status && data.status !== "running") {
-            window.location.reload();
-            return;
-          }
-          window.setTimeout(tick, tries < 30 ? 4000 : 15000);
-        })
-        .catch(function () { window.setTimeout(tick, 15000); });
-    }
-    window.setTimeout(tick, 4000);
-  })();
-</script>
+<script src="/static/article-chat.js" defer></script>
 {% endblock %}

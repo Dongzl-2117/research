@@ -1,23 +1,24 @@
-// 阅读页是原问库的另一个入口；每轮独立，范围由读者显式选择。
+// 完整问库和阅读侧栏共用提问、恢复和展示逻辑；每轮独立提交。
 // 清空只清界面，不取消后台任务，也不删除问库记录。
 // 宽屏是否收起记在 localStorage（research-article-chat）。窄屏抽屉仍每次从关上开始。
 (() => {
-  const panel = document.getElementById('article-chat');
+  const fullPage = !!document.getElementById('ask-chat');
+  const panel = document.getElementById(fullPage ? 'ask-chat' : 'article-chat');
   const stage = document.querySelector('.read-with-chat');
   const toggle = document.querySelector('.chat-toggle');
   const backdrop = document.querySelector('.chat-backdrop');
-  if (!panel || !stage || !toggle || !backdrop) return;
+  if (!panel || (!fullPage && (!stage || !toggle || !backdrop))) return;
   const form = panel.querySelector('.chat-form');
   const input = panel.querySelector('textarea');
   const submit = form && form.querySelector('button[type="submit"]');
   const log = panel.querySelector('.chat-log');
-  const scopeSelect = form && form.querySelector('select[name="article"]');
+  const scopeSelect = form && form.querySelector('[name="article"]');
   if (!form || !input || !submit || !log || !scopeSelect) return;
 
   const wideQuery = window.matchMedia('(min-width: 1320px)');
   const storageKey = 'research-article-chat';
   const ratioKey = 'research-article-chat-ratio';
-  const split = stage.querySelector('.chat-split');
+  const split = stage && stage.querySelector('.chat-split');
   const minRatio = 0.18;
   const maxRatio = 0.72;
   let pending = false;
@@ -28,6 +29,32 @@
   const maxPolls = 300;
   const maxNetworkFailures = 3;
   const requestTimeout = 15000;
+  let modal = false;
+  let previousOverflow = '';
+  const inertNodes = new Map();
+
+  function syncModal(open) {
+    if (fullPage) return;
+    const active = open && !isWide();
+    if (active === modal) return;
+    modal = active;
+    if (active) {
+      panel.setAttribute('role', 'dialog');
+      panel.setAttribute('aria-modal', 'true');
+      previousOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      document.querySelectorAll('.reader-grid, .sidebar, .mobile-bar, .tabbar').forEach((node) => {
+        inertNodes.set(node, node.inert);
+        node.inert = true;
+      });
+    } else {
+      panel.removeAttribute('role');
+      panel.removeAttribute('aria-modal');
+      document.body.style.overflow = previousOverflow;
+      inertNodes.forEach((value, node) => { node.inert = value; });
+      inertNodes.clear();
+    }
+  }
 
   function isWide() {
     return wideQuery.matches;
@@ -58,8 +85,10 @@
       backdrop.hidden = !open;
     }
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    syncModal(open);
     if (open && isWide()) window.requestAnimationFrame(paintSplit);
     if (open && remember) input.focus();
+    if (!open && panel.contains(document.activeElement)) toggle.focus();
   }
 
   function syncLayout() {
@@ -68,6 +97,8 @@
       panel.classList.remove('is-open');
       stage.classList.toggle('is-chat-closed', preferClosed());
       toggle.setAttribute('aria-expanded', preferClosed() ? 'false' : 'true');
+      syncModal(false);
+      if (preferClosed() && panel.contains(document.activeElement)) toggle.focus();
       if (!document.documentElement.hasAttribute('data-chat-ratio')) {
         const stored = readRatio();
         if (stored != null) showRatio(stored);
@@ -79,6 +110,8 @@
     const open = panel.classList.contains('is-open');
     backdrop.hidden = !open;
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    syncModal(open);
+    if (!open && panel.contains(document.activeElement)) toggle.focus();
   }
 
   function readRatio() {
@@ -189,14 +222,13 @@
   function fitInput() {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+    const count = form.querySelector('.chat-count');
+    if (count) count.textContent = input.value.length >= 400 ? `${input.value.length} / 500` : '';
   }
 
   function progress(turn, message) {
     turn.status.className = 'chat-status';
-    const detail = document.createElement('span');
-    detail.className = 'sr';
-    detail.textContent = message;
-    turn.status.replaceChildren(document.createTextNode('…'), detail);
+    turn.status.textContent = message + '…';
   }
 
   function scrollLog() {
@@ -233,6 +265,7 @@
   function setPending(value) {
     pending = value;
     submit.disabled = value;
+    submit.setAttribute('aria-label', value ? '正在等待回答' : '发送问题');
     log.querySelectorAll('button.chat-action').forEach((button) => { button.disabled = value; });
   }
 
@@ -287,11 +320,13 @@
   }
 
   function createTurn(question, article) {
+    const welcome = log.querySelector('.ask-welcome');
+    if (welcome) welcome.remove();
     const user = document.createElement('div');
     user.className = 'chat-bubble chat-bubble-user';
     const label = document.createElement('p');
     label.className = 'chat-scope';
-    label.textContent = article ? '范围：只问这篇' : '范围：整个资料库';
+    label.textContent = fullPage ? scopeText() : (article ? '范围：只问这篇' : '范围：整个资料库');
     const text = document.createElement('p');
     text.textContent = question;
     user.append(label, text);
@@ -307,7 +342,7 @@
     links.className = 'chat-recovery';
     bubble.append(status, content, links);
     log.appendChild(bubble);
-    return { question, article, status, content, links, id: null };
+    return { question, article, status, content, links, user, id: null };
   }
 
   function action(turn, label, kind) {
@@ -321,6 +356,10 @@
       if (kind === 'refill') {
         input.value = turn.question;
         scopeSelect.value = turn.article;
+        ['author', 'source', 'company', 'from', 'to', 'article', 'tree'].forEach((key) => {
+          if (form.elements.namedItem(key)) form.elements.namedItem(key).value = (turn.params || {})[key] || '';
+        });
+        updateScope();
         fitInput(); input.focus();
       } else {
         beginRecovery(turn, kind);
@@ -334,8 +373,7 @@
     const link = document.createElement('a');
     link.className = 'chat-open-answer';
     link.href = turn.id ? `/ask/${turn.id}` : '/ask';
-    link.target = '_blank';
-    link.rel = 'noopener';
+    if (!fullPage) { link.target = '_blank'; link.rel = 'noopener'; }
     link.textContent = turn.id ? '打开完整回答' : '打开问库';
     turn.links.appendChild(link);
     if (kind === 'resume') action(turn, '继续查看', 'resume');
@@ -347,7 +385,17 @@
     turn.content.replaceChildren();
     if (data.answer) {
       const body = document.createElement('div');
-      body.innerHTML = renderAnswerHtml(data.answer, data.citations);
+      body.className = 'prose chat-markdown';
+      // answer_html 由同源接口的共用 Markdown 渲染器清理；旧服务响应仍可安全显示文字。
+      body.innerHTML = typeof data.answer_html === 'string' ? data.answer_html : renderAnswerHtml(data.answer, data.citations);
+      body.querySelectorAll('a.cite').forEach((link) => {
+        const number = (link.getAttribute('href') || '').match(/^#c-(\d+)$/);
+        if (!number && safeArticleUrl(link.getAttribute('href'))) return;
+        const item = number && (data.citations || []).find((entry) => String(entry.n) === number[1]);
+        const url = item && safeArticleUrl(item.url);
+        if (url) link.href = url;
+        else link.replaceWith(document.createTextNode(link.textContent));
+      });
       turn.content.appendChild(body);
     }
     const missed = (data.stats && data.stats.failed_batches) || data.failed_batches || [];
@@ -375,6 +423,20 @@
     }
     const citations = Array.isArray(data.citations) ? data.citations : [];
     if (citations.length) {
+      const cited = citations.filter((item) => item.cited && safeArticleUrl(item.url));
+      if (cited.length) {
+        const sources = document.createElement('ul');
+        sources.className = 'chat-source-links';
+        sources.setAttribute('aria-label', '引用来源');
+        cited.forEach((item) => {
+          const entry = document.createElement('li');
+          const link = document.createElement('a');
+          link.href = safeArticleUrl(item.url);
+          link.textContent = `[${item.n}] ${item.title || '文章'}`;
+          entry.appendChild(link); sources.appendChild(entry);
+        });
+        turn.content.appendChild(sources);
+      }
       const evidence = document.createElement('details');
       evidence.className = 'chat-evidence';
       const summary = document.createElement('summary');
@@ -394,6 +456,12 @@
       evidence.append(summary, list);
       turn.content.appendChild(evidence);
     }
+    if (data.model) {
+      const meta = document.createElement('p');
+      meta.className = 'answer-meta';
+      meta.textContent = data.model;
+      turn.content.appendChild(meta);
+    }
   }
 
   function pause(turn, message, kind = 'resume') {
@@ -407,10 +475,17 @@
   function accept(turn, data, token) {
     if (token !== session) return;
     if (/^[1-9]\d*$/.test(String(data.id))) turn.id = String(data.id);
+    if (fullPage && turn.id) window.history.replaceState(null, '', `/ask/${turn.id}`);
+    if (turn.restored && !input.value.trim() && (data.status === 'done' || data.status === 'error')) {
+      window.location.reload();
+      return;
+    }
+    const following = log.scrollHeight - log.scrollTop - log.clientHeight < 96;
     renderData(turn, data);
     recovery(turn);
     if (data.status === 'done' && data.answer) {
-      turn.status.textContent = '';
+      turn.status.className = 'sr';
+      turn.status.textContent = '回答已完成';
       setPending(false);
     } else if (data.status === 'error') {
       pause(turn, data.error || '问库整合失败', turn.id ? 'retry' : 'refill');
@@ -422,7 +497,7 @@
     } else {
       pause(turn, '回答状态异常，可打开完整回答查看。');
     }
-    scrollLog();
+    if (following && turn.user) log.scrollTop += turn.user.getBoundingClientRect().top - log.getBoundingClientRect().top - 16;
   }
 
   function poll(turn, token) {
@@ -485,6 +560,7 @@
     log.replaceChildren();
   }
 
+  if (!fullPage) {
   toggle.addEventListener('click', () => {
     if (isWide()) setOpen(true, true);
     else setOpen(!panel.classList.contains('is-open'), true);
@@ -508,6 +584,26 @@
   });
   if (wideQuery.addEventListener) wideQuery.addEventListener('change', syncLayout);
   else if (wideQuery.addListener) wideQuery.addListener(syncLayout);
+  }
+  panel.addEventListener('keydown', (event) => {
+    if (!modal || event.key !== 'Tab') return;
+    const targets = Array.from(panel.querySelectorAll('a, button, textarea, select, input, summary, [tabindex]'))
+      .filter((node) => !node.disabled && node.tabIndex >= 0 && node.getClientRects().length);
+    const first = targets[0], last = targets[targets.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+
+  const scopeSummary = form.querySelector('.ask-filters summary span');
+  const baseScope = scopeSummary ? scopeSummary.textContent.split(' · ')[0] : '';
+  function scopeText() {
+    const values = new FormData(form);
+    return [baseScope, values.get('author'),
+      values.get('from') || values.get('to') ? `${values.get('from') || '最早'} 至 ${values.get('to') || '最近'}` : '']
+      .filter(Boolean).join(' · ');
+  }
+  function updateScope() { if (scopeSummary) scopeSummary.textContent = scopeText(); }
+  form.addEventListener('change', updateScope);
   input.addEventListener('input', fitInput);
   input.addEventListener('compositionstart', () => { composing = true; });
   input.addEventListener('compositionend', () => { composing = false; });
@@ -527,13 +623,18 @@
     setPending(true);
     const article = scopeSelect.value;
     const turn = createTurn(question, article);
+    turn.params = {};
+    for (const key of ['author', 'source', 'company', 'from', 'to', 'article', 'tree']) {
+      const value = new FormData(form).get(key);
+      if (value) turn.params[key] = String(value);
+    }
     progress(turn, article ? '正在这篇文章里检索' : '正在资料库里检索');
     input.value = '';
     fitInput(); scrollLog();
     try {
       const data = await jsonRequest('/api/v1/ask', {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ question, ...(article ? { article } : {}), wait: false }),
+        body: JSON.stringify({ question, ...turn.params, wait: false }),
       });
       accept(turn, data, token);
     } catch (error) {
@@ -542,5 +643,33 @@
     }
   });
 
-  syncLayout();
+  if (!fullPage) syncLayout();
+  else {
+    const restored = log.querySelector('[data-answer-status="running"][data-answer-id]');
+    if (restored && /^[1-9]\d*$/.test(restored.dataset.answerId)) {
+      const turn = {id: restored.dataset.answerId, restored: true,
+        status: restored.querySelector('.chat-status'), content: restored.querySelector('.chat-content'),
+        links: restored.querySelector('.chat-recovery')};
+      setPending(true);
+      recovery(turn);
+      poll(turn, session);
+    }
+    const history = panel.querySelector('.ask-history');
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && history && history.open) {
+        history.open = false;
+        history.querySelector('summary').focus();
+      }
+    });
+    log.addEventListener('click', (event) => {
+      const cite = event.target.closest('a.cite[href^="#c-"]');
+      if (!cite) return;
+      const target = document.getElementById(cite.getAttribute('href').slice(1));
+      if (!target) return;
+      let ancestor = target.parentElement;
+      while (ancestor && ancestor !== log) { if (ancestor.tagName === 'DETAILS') ancestor.open = true; ancestor = ancestor.parentElement; }
+      target.focus({preventScroll: true});
+    });
+  }
+  fitInput();
 })();
