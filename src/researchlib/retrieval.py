@@ -68,6 +68,39 @@ DF_TTL_S = 600.0
 
 
 @dataclass(frozen=True)
+class ScoreParameters:
+    """按请求传入的评分参数；默认值与现有线上公式一致，不修改模块全局变量。"""
+
+    k1: float = K1
+    b: float = B
+    title_tf: float = 0.5
+    title_bonus: float = 0.3
+    phrase_bonus: float = 0.5
+    coverage_power: float = 2.0
+
+    def __post_init__(self):
+        ranges = {
+            "k1": (0.1, 3.0), "b": (0.0, 1.0), "title_tf": (0.0, 2.0),
+            "title_bonus": (0.0, 2.0), "phrase_bonus": (0.0, 2.0), "coverage_power": (0.5, 4.0),
+        }
+        for name, (low, high) in ranges.items():
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+                raise ValueError(f"{name} 必须在 {low}～{high} 之间")
+
+
+@dataclass(frozen=True)
+class ScoreContext:
+    """评分所需的只读资料，可连同候选冻结到离线实验；时间也可冻结。"""
+
+    avgdl: float
+    company_rows: list[dict]
+    depths: list[dict]
+    deep_names: dict[int, list[str]]
+    as_of: datetime | None = None
+
+
+@dataclass(frozen=True)
 class Budget:
     passages: int
     chars: int
@@ -1198,12 +1231,12 @@ def _count(text: str, lowered: str, form: str) -> int:
     return len(re.findall(pattern, lowered))
 
 
-def _age_days(published) -> float | None:
+def _age_days(published, *, now: datetime | None = None) -> float | None:
     if published is None:
         return None
     if isinstance(published, datetime):
         moment = published if published.tzinfo else published.replace(tzinfo=UTC)
-        return max(0.0, (datetime.now(UTC) - moment).total_seconds() / 86400)
+        return max(0.0, ((now or datetime.now(UTC)) - moment).total_seconds() / 86400)
     return None
 
 
@@ -1211,6 +1244,34 @@ def _year_of(published) -> int | None:
     if isinstance(published, datetime):
         return published.year
     return None
+
+
+def score_context(conn, query: Query, rows: list[dict], scope: Scope, company_rows=None) -> ScoreContext:
+    """只装载评分上下文；不迁移、写库、配置向量服务或调用模型。"""
+    _total, avgdl = _corpus_stats(conn)
+    focus_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
+    if scope.company_id is not None and scope.company_id not in focus_ids:
+        focus_ids.append(scope.company_id)
+    companies = company_rows if company_rows is not None else (load_company_rows(conn) if focus_ids else [])
+    deep_names: dict[int, list[str]] = {}
+    if query.overview and not focus_ids and rows:
+        for item in conn.execute(
+            """
+            SELECT m.article_id, c.name_zh, c.name_en, c.aliases
+            FROM article_mentions m JOIN companies c ON c.id = m.company_id
+            WHERE m.article_id = ANY(%s) AND m.depth <> 'passing'
+            """, (sorted({row["article_id"] for row in rows}),),
+        ).fetchall():
+            names = [item["name_zh"], item["name_en"], *(item["aliases"] or [])]
+            deep_names.setdefault(item["article_id"], []).extend(n for n in names if n and len(n) >= 2)
+    depths = []
+    if focus_ids and rows:
+        depths = conn.execute(
+            "SELECT article_id, company_id, depth FROM article_mentions"
+            " WHERE article_id = ANY(%s) AND company_id = ANY(%s)",
+            (sorted({row["article_id"] for row in rows}), focus_ids),
+        ).fetchall()
+    return ScoreContext(avgdl, companies, depths, deep_names)
 
 
 def score_rows(
@@ -1221,49 +1282,25 @@ def score_rows(
     scope: Scope,
     company_rows: list[dict] | None = None,
     semantic: dict[tuple[int, int], float] | None = None,
+    parameters: ScoreParameters | None = None,
+    context: ScoreContext | None = None,
 ):
     """semantic：{(文章, 块号): 语义分 0～1}。有它时关键词分和语义分按 LEXICAL_WEIGHT 融合，见 fuse_semantic。"""
-    _total, avgdl = _corpus_stats(conn)
-    company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
-    focus_ids = list(company_ids)
+    context = context or score_context(conn, query, rows, scope, company_rows)
+    params = parameters or ScoreParameters()
+    avgdl = context.avgdl
+    focus_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
     if scope.company_id is not None and scope.company_id not in focus_ids:
         focus_ids.append(scope.company_id)
-    matcher = None
-    # 「苹果」这类要佐证的公司：文章没被记为提到它（比如通篇在讲烟台苹果），段落里的字面命中也不算。
-    guarded: set[int] = set()
-    if focus_ids:
-        rows_for_matcher = company_rows if company_rows is not None else load_company_rows(conn)
-        focus_rows = [row for row in rows_for_matcher if int(row["id"]) in focus_ids]
-        matcher = cached_matcher("focus", focus_rows)
-        guarded = {int(row["id"]) for row in focus_rows if company_rules(row).get("needs")}
-    # 只有作者或日期范围时：这些文章深入谈了哪些公司，段落里出现这些名字的更有信息量。
-    deep_names: dict[int, list[str]] = {}
-    if query.overview and not focus_ids and rows:
-        for item in conn.execute(
-            """
-            SELECT m.article_id, c.name_zh, c.name_en, c.aliases
-            FROM article_mentions m
-            JOIN companies c ON c.id = m.company_id
-            WHERE m.article_id = ANY(%s) AND m.depth <> 'passing'
-            """,
-            (sorted({row["article_id"] for row in rows}),),
-        ).fetchall():
-            names = [item["name_zh"], item["name_en"], *(item["aliases"] or [])]
-            deep_names.setdefault(item["article_id"], []).extend(n for n in names if n and len(n) >= 2)
+    focus_rows = [row for row in context.company_rows if int(row["id"]) in focus_ids]
+    matcher = cached_matcher("focus", focus_rows) if focus_ids else None
+    guarded = {int(row["id"]) for row in focus_rows if company_rules(row).get("needs")}
+    deep_names = context.deep_names
     counters = {
         id(term): [(form, _form_counter(form)) for form in term.forms if form]
-        for term in query.terms
-        if term.kind != "company"
+        for term in query.terms if term.kind != "company"
     }
-    depths: dict[tuple[int, int], str] = {}
-    if focus_ids and rows:
-        article_ids = sorted({row["article_id"] for row in rows})
-        for item in conn.execute(
-            "SELECT article_id, company_id, depth FROM article_mentions"
-            " WHERE article_id = ANY(%s) AND company_id = ANY(%s)",
-            (article_ids, focus_ids),
-        ).fetchall():
-            depths[(item["article_id"], item["company_id"])] = item["depth"]
+    depths = {(item["article_id"], item["company_id"]): item["depth"] for item in context.depths}
 
     group_weight: dict[int, float] = {}
     for term in query.terms:
@@ -1285,7 +1322,7 @@ def score_rows(
         if any(counters[id(phrase)][0][1](text, lowered) == 0 for phrase in phrases):
             continue
         dl = max(len(text), 1)
-        norm = K1 * (1 - B + B * dl / max(avgdl, 1))
+        norm = params.k1 * (1 - params.b + params.b * dl / max(avgdl, 1))
         company_hits = matcher.count(text) if matcher is not None else {}
         title = row.get("title") or ""
         title_lowered = title.lower()
@@ -1314,12 +1351,12 @@ def score_rows(
                         found_forms.append(form)
                     title_tf += counter(title, title_lowered) if title else 0
             # 标题写到的词，算进这篇每一段的上下文：标题是「腾讯专文」，正文不必句句写腾讯。
-            effective_tf = tf + 0.5 * min(title_tf, 2)
+            effective_tf = tf + params.title_tf * min(title_tf, 2)
             if effective_tf <= 0:
                 continue
-            score += term.weight * term.idf * effective_tf * (K1 + 1) / (effective_tf + norm)
+            score += term.weight * term.idf * effective_tf * (params.k1 + 1) / (effective_tf + norm)
             if title_tf:
-                score += 0.3 * term.idf * term.weight
+                score += params.title_bonus * term.idf * term.weight
             if term.group >= 0:
                 if tf > 0:
                     matched_groups.add(term.group)
@@ -1336,8 +1373,8 @@ def score_rows(
             if first + second in text:
                 idf_a = next((t.idf for t in query.terms if t.text == first), 0.0)
                 idf_b = next((t.idf for t in query.terms if t.text == second), 0.0)
-                score += 0.5 * (idf_a + idf_b)
-        score *= 0.1 + 0.9 * coverage**2
+                score += params.phrase_bonus * (idf_a + idf_b)
+        score *= 0.1 + 0.9 * coverage**params.coverage_power
 
         # 公司：段落里确实谈到了这家公司才算；整篇深入谈的文章再加一点。
         if focus_ids:
@@ -1373,7 +1410,7 @@ def score_rows(
         if score <= 0 and sem <= 0:
             continue
         mult = 1.0
-        age = _age_days(row.get("published_at"))
+        age = _age_days(row.get("published_at"), now=context.as_of)
         if query.recent and age is not None:
             mult *= 0.55 + 0.9 * math.exp(-age / 400)
         if query.years:
@@ -1474,12 +1511,17 @@ def article_caps(ranked: list[Passage], per_article: int) -> dict[int, int]:
     }
 
 
-def select(passages: list[Passage], query: Query, budget: Budget, sources_by_id: dict | None = None) -> list[Passage]:
+def select(
+    passages: list[Passage], query: Query, budget: Budget, sources_by_id: dict | None = None,
+    *, min_score_ratio: float = 0.12,
+) -> list[Passage]:
+    if isinstance(min_score_ratio, bool) or not 0 <= min_score_ratio <= 0.5:
+        raise ValueError("min_score_ratio 必须在 0～0.5 之间")
     ranked = sorted(passages, key=lambda p: (p.score, p.published_at is not None, p.published_at), reverse=True)
     if not ranked:
         return []
     if not query.overview:
-        floor = ranked[0].score * 0.12
+        floor = ranked[0].score * min_score_ratio
         ranked = [p for p in ranked if p.score >= floor]
         # 全部词组都命中的段落已经不少时，只命中一半以下的就不要了，免得用噪音填满名额。
         full = sum(1 for p in ranked if p.coverage >= 0.99)
@@ -1775,24 +1817,8 @@ def _full_match_tsquery(query: Query, params: dict) -> str:
     return _group_tsquery(query, params, only_selective=False, operator="&&", prefix="full")
 
 
-def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0) -> SearchResult:
-    """关键词检索：全部词都命中的文章排前面，其后是只命中一部分的。每篇带最相关的两段原文。"""
-    company_rows = load_company_rows(conn)
-    query = analyze(conn, text, sources, company_rows=company_rows)
-    effective = scope
-    if query.authors and scope.source_ids:
-        narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
-        if narrowed:
-            effective = replace(scope, source_ids=narrowed)
-    if not query.terms:
-        if query.authors:
-            return _author_listing(conn, query, effective, limit, offset)
-        return SearchResult(0, 0, [], [], query, {})
-    rows = _candidates(conn, query, effective, limit=2000, enough=2000)
-    semantic: dict[tuple[int, int], float] = {}
-    if query.content_terms:
-        rows, semantic = semantic_candidates(conn, query, effective, rows)
-    scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
+def rank_articles(scored: list[Passage], query: Query, company_rows: list[dict]) -> list[ArticleHit]:
+    """文章聚合规则与线上检索共用；离线实验不复制另一套排序。"""
     by_article: dict[int, list[Passage]] = defaultdict(list)
     for passage in scored:
         by_article[passage.article_id].append(passage)
@@ -1837,6 +1863,30 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     if partial_hits:
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
+    return full_hits + partial_hits
+
+
+def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0) -> SearchResult:
+    """关键词检索：全部词都命中的文章排前面，其后是只命中一部分的。每篇带最相关的两段原文。"""
+    company_rows = load_company_rows(conn)
+    query = analyze(conn, text, sources, company_rows=company_rows)
+    effective = scope
+    if query.authors and scope.source_ids:
+        narrowed = [s.id for s in sources if s.author in query.authors and s.id in scope.source_ids]
+        if narrowed:
+            effective = replace(scope, source_ids=narrowed)
+    if not query.terms:
+        if query.authors:
+            return _author_listing(conn, query, effective, limit, offset)
+        return SearchResult(0, 0, [], [], query, {})
+    rows = _candidates(conn, query, effective, limit=2000, enough=2000)
+    semantic: dict[tuple[int, int], float] = {}
+    if query.content_terms:
+        rows, semantic = semantic_candidates(conn, query, effective, rows)
+    scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
+    ordered = rank_articles(scored, query, company_rows)
+    full_hits = [h for h in ordered if h.full]
+    partial_hits = [h for h in ordered if not h.full]
     counts = full_match_counts(conn, query, effective)
     # 文章级索引要全部词落在同一处（原文、译文或同一张图）：词分在正文和截图里的那篇数不到，
     # 列表里却算全部命中。按来源取两边大的，总数就是来源计数之和，上下两个数对得上。

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from researchlib.translate.numbers import same_numeric_facts
 from researchlib.translate.segments import iter_segments, splice_segments, split_sentence_paragraphs, top_level_blocks
 
 SCHEMA_VERSION = 1
@@ -17,6 +18,9 @@ CLEANER_VERSION = 1
 SEGMENTER_VERSION = 1
 PROMPT_VERSION = 2
 PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt": PROMPT_VERSION}
+# 只给失败重试用，不写进回执。改数字或链接还原规则时加一，旧拒绝才会重新进队列。
+# 不要放进 PIPELINE：那会把已经核对过的译文整篇标成不兼容。
+ALIGNMENT_VERSION = 1
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
@@ -106,16 +110,22 @@ def positional_numbers_conflict(sources: Sequence[str], targets: Sequence[str]) 
     return mismatches * 2 > len(left)
 
 
+def _resource_hrefs(facts: Resources) -> list[str]:
+    """没有地址的书签（旧文 ``<a name>``）不是资料链接。"""
+    return [href for href in facts.links if href]
+
+
 def leaf_problem(source: str, target: str) -> str | None:
-    """数字按请求约定原序保留；资源逐段、带重数比较，不能拿别处的资源抵消。"""
+    """数字按事实原序保留；资源逐段、带重数比较，不能拿别处的资源抵消。"""
     before, after = Resources(source), Resources(target)
-    if before.links != after.links:
+    if _resource_hrefs(before) != _resource_hrefs(after):
         return "links"
     if before.media != after.media:
         return "media"
     if before.codes != after.codes:
         return "code"
-    if numeric_anchors(source) != numeric_anchors(target):
+    # 字符级相同的直接过。只有对不上时才认日期、单位和财季的等值写法，避免把版本号约成小数。
+    if numeric_anchors(source) != numeric_anchors(target) and not same_numeric_facts(source, target):
         return "numbers"
     if re.search(r"⟦\d+⟧", target):
         return "placeholder"

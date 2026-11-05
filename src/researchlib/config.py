@@ -83,6 +83,13 @@ class Settings:
     embedding_api_key: str = ""
     embedding_timeout: float = 20.0
 
+    # 网站实验需额外的服务端所有者认证；仅设开关不能绕过认证。默认不挂路由。
+    experiments_enabled: bool = False
+    experiments_snapshot: Path | None = None
+    experiments_db: Path | None = None
+    experiments_site_model: bool = False
+    experiments_daily_pairs: int = 5
+
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> Settings:
         if environ is None:
@@ -122,6 +129,14 @@ class Settings:
             embedding_model=environ.get("EMBEDDING_MODEL", "").strip() or "bge-m3",
             embedding_api_key=environ.get("EMBEDDING_API_KEY", "").strip(),
             embedding_timeout=float(environ.get("EMBEDDING_TIMEOUT_S", "20") or "20"),
+            experiments_enabled=environ.get("RESEARCH_EXPERIMENTS_ENABLED", "0") == "1",
+            experiments_snapshot=Path(environ["RESEARCH_EXPERIMENTS_SNAPSHOT"])
+            if environ.get("RESEARCH_EXPERIMENTS_SNAPSHOT") else None,
+            experiments_db=Path(environ["RESEARCH_EXPERIMENTS_DB"])
+            if environ.get("RESEARCH_EXPERIMENTS_DB") else None,
+            experiments_site_model=environ.get("RESEARCH_EXPERIMENTS_SITE_MODEL", "0") == "1",
+            experiments_daily_pairs=int(environ.get("RESEARCH_EXPERIMENTS_DAILY_PAIRS", "5")),
+
         )
 
     @property

@@ -69,8 +69,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     conn = prepare(settings)
-    # 这一轮失败过的、没有可译正文的 id 先跳过，避免 --limit 很小时反复磕同一篇把队列钉死。
-    # --loop 睡醒也保留跳过集合；人工复查原因后重启，才会再尝试失败篇。
+    # 本进程里失败或没译完的 id 先跳过。库里的 translation_attempts 另有冷却，
+    # 进程重启也不会把刚拒绝的文章立刻拿回来。
     skipped: set[int] = set()
     failed = False
     try:
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.loop and not args.article_id:
                     print(f"队列空，{args.sleep}s 后重试…")
                     time.sleep(max(5, args.sleep))
-                    # 本进程不再请求失败篇，避免质量拒绝每隔一分钟就重试花钱。
+                    # 库里的冷却已经挡住刚失败的篇；这里只是避免空转时立刻再查。
                     continue
                 print("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
                 return 1 if failed else 0

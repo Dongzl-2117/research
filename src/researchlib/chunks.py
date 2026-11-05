@@ -226,6 +226,7 @@ def replace_translation_chunks(conn, article_id: int) -> int:
 # 图片里的字（OCR）的块：lang = 'ocr'，块号从这里起，anchor 是文章页上那张图的 id。
 OCR_ORD_BASE = 20000
 OCR_HEADING = "图片里的字"
+OCR_UNCERTAIN_HEADING = "图片里的字（说话人边界未核实）"
 # 识别出的有效字（汉字、字母、数字）少于这个数的图不进检索：多半是装饰图、表情包或水印。
 OCR_MIN_CHARS = 20
 # 跨图去重只看去掉标点后至少这么多字的句子（和 wechat_dialogue._same_sentence 认「几乎整句」的下限一样）。
@@ -288,6 +289,18 @@ def _article_ocr_chunks(conn, article_id: int, host: str = "") -> list[tuple[str
     return ocr_chunks([(row["content_hash"], row["text"]) for row in rows], host=host)
 
 
+def _uncertain_ocr_anchors(conn, article_id: int) -> set[str]:
+    """按整张图判定，不能因切块后缺少前面的昵称依据而改变置信状态。"""
+    from researchlib.render import image_anchor
+    from researchlib.wechat_dialogue import attribution_uncertain
+
+    rows = conn.execute(
+        'SELECT i.content_hash,t.text FROM article_images i JOIN image_texts t ON t.content_hash=i.content_hash'
+        ' WHERE i.article_id=%s', (article_id,),
+    ).fetchall()
+    return {image_anchor(row['content_hash']) for row in rows if attribution_uncertain(row['text'])}
+
+
 def replace_ocr_chunks(conn, article_id: int) -> int:
     """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
     from researchlib.claims import plain_cite
@@ -310,12 +323,14 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
         else []
     )
     if chunks:
+        uncertain_anchors = _uncertain_ocr_anchors(conn, article_id)
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO article_chunks (article_id, ord, heading, body, lang, anchor)"
                 " VALUES (%s, %s, %s, %s, 'ocr', %s)",
                 [
-                    (article_id, OCR_ORD_BASE + index, OCR_HEADING, text, anchor)
+                    (article_id, OCR_ORD_BASE + index,
+                     OCR_UNCERTAIN_HEADING if anchor in uncertain_anchors else OCR_HEADING, text, anchor)
                     for index, (anchor, text) in enumerate(chunks)
                 ],
             )
@@ -398,9 +413,9 @@ def rebuild_ocr_chunks(conn, *, sources: list[str] | None = None, dry_run: bool 
     changed = 0
     for article_id in ids:
         current = [
-            (row["anchor"], row["body"])
+            (row["anchor"], row["heading"], row["body"])
             for row in conn.execute(
-                "SELECT anchor, body FROM article_chunks WHERE article_id = %s AND lang = 'ocr' ORDER BY ord",
+                "SELECT anchor, heading, body FROM article_chunks WHERE article_id = %s AND lang = 'ocr' ORDER BY ord",
                 (article_id,),
             ).fetchall()
         ]
@@ -408,7 +423,12 @@ def rebuild_ocr_chunks(conn, *, sources: list[str] | None = None, dry_run: bool 
             "SELECT s.author FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = %s", (article_id,)
         ).fetchone()
         host = (author["author"] if author else "") or ""
-        if _article_ocr_chunks(conn, article_id, host=host) == current:
+        uncertain_anchors = _uncertain_ocr_anchors(conn, article_id)
+        expected = [
+            (anchor, OCR_UNCERTAIN_HEADING if anchor in uncertain_anchors else OCR_HEADING, text)
+            for anchor, text in _article_ocr_chunks(conn, article_id, host=host)
+        ]
+        if expected == current:
             continue
         changed += 1
         if not dry_run:
