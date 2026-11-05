@@ -83,3 +83,5 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
   - `docker compose exec app research-rebuild-chunks --ocr`：检索里的图片文字块按现在的整理规则重切（#147）。不跑，检索和问库里 451 篇方伟公众号还搜得到末尾的星球优惠券卡，69 篇群聊截图带着「你邀请"某某"加入了群聊」和群友昵称；分几张截的长群聊，重叠的整句在相邻两块里各一遍（重切后只留前一块的）。只读已识别的字，不识图；改过的块由夜间任务里的 `research-embed`（本机 Ollama）重算向量。
 
 - 通用原文相关性标注采用独立本机服务和 SQLite，见 [docs/relevance-annotations.md](docs/relevance-annotations.md)。主站不挂该入口，不跑迁移或模型；私有原文、标签及导出只留 `data/relevance/` 等私有目录。实际库 provider、远程认证与部署需另行配置，demo 不是真实库。
+
+- 算法 A/B 的第一版为独立本机实验台，见 [docs/algorithm-experiments.md](docs/algorithm-experiments.md)。只捕获明确本机离线副本，复用评分/聚合/选段；不把调参题偏好当留出收益。参数只按请求传入，主站没有实验路由，默认没有生成适配器。不要将其公开代理或自动应用候选；真实副本、远程认证与上线均需后续独立配置。
