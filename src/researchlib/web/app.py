@@ -74,7 +74,7 @@ def _background_upkeep(settings: Settings) -> None:
         write_status(settings.data_dir, "upkeep", True)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, experiment_owner_verifier=None) -> FastAPI:
     app = FastAPI(
         title="投资研究库",
         docs_url=None,
@@ -88,6 +88,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api)
     app.include_router(mcp)
     app.include_router(router)
+
+    if app.state.settings.experiments_enabled:
+        from researchlib.web.experiment_site import attach_experiment_admin
+
+        attach_experiment_admin(app, app.state.settings, experiment_owner_verifier)
 
     # 地址里的 %00 解出来是 NUL 字符：Postgres 的文字和文件路径都不收，查下去只会 500（/search?q=%00、/media/%00）。
     # 正常链接不会带它，当成没有这一页。写在 privacy_headers 前面，这样回的 404 也带那几个响应头。

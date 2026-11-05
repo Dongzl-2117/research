@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block body %}
+<div class="read-with-chat">
 <div class="reader-grid">
   <article class="reader">
     <div class="reader-top">
@@ -8,6 +9,10 @@
         {% if tree_back %}返回目录{% else %}返回{% endif %}
       </a>
     </div>
+    <h1>{{ display_title or article.title }}</h1>
+    {% if title_zh and body_language != 'original' %}
+    <p class="title-zh">{{ title_zh }}</p>
+    {% endif %}
     <p class="byline">
       <a href="{% if source.timeline %}/?source={{ source.id }}{% else %}/authors/{{ source.author | urlencode }}?source={{ source.id }}{% endif %}">{{ source.name }}</a>
       <span aria-hidden="true">·</span>
@@ -19,12 +24,8 @@
       {% if revised %}<span aria-hidden="true">·</span><a class="revised" href="/articles/{{ article.id }}/revisions">{{ revised }}</a>{% endif %}
       <span aria-hidden="true">·</span><a href="/ask?article={{ article.id }}">问这篇</a>
     </p>
-    <h1>{{ display_title or article.title }}</h1>
     {% if hidden %}
     <p class="article-note">{% if hidden_reason == "short_post" %}短帖，暂只收长文。{% endif %}这篇不出现在按天、作者列表和检索里。</p>
-    {% endif %}
-    {% if title_zh and body_language != 'original' %}
-    <p class="title-zh">{{ title_zh }}</p>
     {% endif %}
     {% if digest_summary %}
     <section class="article-digest" aria-label="总结">
@@ -93,7 +94,38 @@
     {% endif %}
   </article>
 </div>
+<div class="chat-split" role="separator" aria-orientation="vertical" aria-label="调整正文和问这篇的宽度" aria-controls="article-chat" tabindex="0" aria-valuemin="15" aria-valuemax="70" aria-valuenow="32"></div>
+<aside id="article-chat" class="article-chat" data-article="{{ article.id }}" aria-label="问这篇">
+  <header class="chat-head">
+    <h2>问这篇</h2>
+    <div class="chat-head-actions">
+      <button type="button" data-chat-clear aria-label="清空" title="清空">清空</button>
+      <button type="button" data-chat-close aria-label="收起" title="收起">收起</button>
+    </div>
+  </header>
+  <div class="chat-log" role="log" aria-live="polite" aria-relevant="additions"></div>
+  <form class="chat-form" action="/ask" method="post">
+    <input type="hidden" name="article" value="{{ article.id }}">
+    <div class="chat-composer">
+      <label class="sr" for="article-chat-q">问题</label>
+      <textarea id="article-chat-q" name="q" rows="2" maxlength="500" enterkeyhint="send" required></textarea>
+      <div class="chat-composer-bar">
+        <button type="submit" aria-label="发送" title="发送">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V7.5M7.8 11.2 12 7l4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+  </form>
+  <noscript><p class="chat-empty">没有脚本时，发送会打开问库里的「问这篇」。</p></noscript>
+</aside>
+</div>
+<button type="button" class="chat-toggle" aria-controls="article-chat" aria-expanded="false">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v8.2H9.2L5 19.2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+  <span>问 AI</span>
+</button>
+<button type="button" class="chat-backdrop" hidden aria-label="关闭对话"></button>
 <script src="/static/article.js" defer></script>
+<script src="/static/article-chat.js" defer></script>
 {% if quoted_marked %}
 <script>
   // 带 ?chunk= 打开时滚到引用的那段。地址里已有锚点就听锚点的。

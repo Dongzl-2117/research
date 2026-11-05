@@ -15,6 +15,7 @@ from researchlib.ingest.parse import author_replies, comments_section, parse_arc
 from researchlib.render import image_anchor, inline_image_ocr, render_body
 from researchlib.revisions import split_comments
 from researchlib.translate.pair import stamp_paragraph_ids
+from researchlib.wechat_dialogue import present_ocr_pieces
 from researchlib.zsxq_comments import display_author
 
 OWNER = {"user_id": 1001, "name": "方伟"}
@@ -300,25 +301,31 @@ def _page_14879(image_joiner: str) -> str:
     return inline_image_ocr(rendered, texts)
 
 
-def test_14879_shots_keep_dialogue_and_comments_share_the_column():
-    """原图链接和说话人不动。评论接在后面只留方伟，标题前没有空 <br>。"""
+def test_14879_shots_stay_images_and_comments_share_the_column():
+    """截图留在原处。评论接在后面只留方伟，标题前没有空 <br>。识图对话只给模型。"""
     page = _page_14879("\n\n")
-    assert "国产agents" in page
-    assert '<span class="who">方伟：</span>会有一批大模型做到' in page
-    assert page.count('class="ocr-reading ocr-dialogue"') == 1
+    assert "ocr-reading" not in page and "ocr-link" not in page and "ocr-shot" not in page
+    assert "国产agents" not in page
+    last_image = 0
     for number in range(1, 8):
         digest = f"{number:02d}" * 32
-        assert f'id="{image_anchor(digest)}"' in page
-    assert page.index("方伟：") < page.index("zsxq-comments")
-    assert page.index('class="ocr-shot"') < page.index("zsxq-comments")
+        marker = f'<img id="{image_anchor(digest)}"'
+        assert marker in page
+        last_image = max(last_image, page.index(marker))
+    assert last_image < page.index("zsxq-comments")
     section = _section(page)
     assert 'class="zsxq-comment-author">方伟Rey<' in section
     assert "陈小东" not in section and "匿名" not in section
     assert "**" not in section and "\u3000" not in section
-    gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
-    assert "<br" not in gap
+    # 最后一张图到评论标题之间，不留导出时垫的空 <br>。
+    assert "<br" not in page[last_image : page.index("zsxq-comments")]
+    stored = present_ocr_pieces(_shots_14879())
+    assert "产agents" in stored and "方伟：" in stored
     css = (Path(__file__).resolve().parents[2] / "src/researchlib/web/static/site.css").read_text()
     assert ".reader-grid .prose { max-width: none; }" in css
+    assert "--reading-column: 680px" in css
+    column = css.split(".reader-grid {", 1)[1].split("}", 1)[0]
+    assert "var(--reading-column)" in column
     rule = css.split(".prose .zsxq-comments {", 1)[1].split("}", 1)[0]
     assert "max-width: none" in rule
     assert "list-style: none" in css.split(".prose .zsxq-comment-list {", 1)[1].split("}", 1)[0]
@@ -326,8 +333,8 @@ def test_14879_shots_keep_dialogue_and_comments_share_the_column():
 
 def test_breaks_between_screenshots_do_not_survive_in_front_of_comments():
     page = _page_14879("<br>\n")
-    assert page.count('class="ocr-reading ocr-dialogue"') == 1
-    assert f'id="{image_anchor("07" * 32)}"' in page
-    gap = page[page.rindex("</figure>") : page.index("zsxq-comments")]
-    assert "<br" not in gap
+    assert "ocr-reading" not in page
+    assert f'<img id="{image_anchor("07" * 32)}"' in page
+    last_image = page.rindex("<img ")
+    assert "<br" not in page[last_image : page.index("zsxq-comments")]
     assert 'class="zsxq-comment-author">方伟Rey<' in page

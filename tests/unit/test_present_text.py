@@ -13,6 +13,7 @@ from researchlib.present_text import (
     polish_display_text,
     present_article_text,
     present_zsxq_qa,
+    rejoin_broken_paragraphs,
 )
 from researchlib.render import render_body
 
@@ -223,6 +224,41 @@ def test_plain_headings_and_fenced_qa_are_left_alone():
     assert present_zsxq_qa(crlf) == crlf
 
 
+def test_reading_column_is_narrow_and_images_fit_it():
+    """文章栏接近公众号宽度。图不超出这一栏，单屏截图按栏宽铺开，不被 480px 压小。"""
+    css = _CSS.read_text(encoding="utf-8")
+    assert "--reading-column: 680px" in css
+    column = css.split(".reader-grid {", 1)[1].split("}", 1)[0]
+    assert "max-width: var(--reading-column)" in column
+    assert "width: 100%" in column
+    assert "min-width: 0" in column
+    images = css.split(".prose img, .prose video {", 1)[1].split("}", 1)[0]
+    assert "max-width: 100%" in images
+    assert "width: auto" in images
+    assert "720px" not in images
+    assert "56vh" not in images
+    assert "480px" not in images
+    assert "max-height: 1800px" in images
+    assert "cursor: zoom-in" in css.split(".prose img {", 1)[1].split("}", 1)[0]
+    reading = css.split(".reader-grid .prose,\n.doc-read .prose {", 1)[1].split("}", 1)[0]
+    assert "font-size: 17px" in reading
+    assert "line-height: 1.65" in reading
+    assert "letter-spacing: 0" in reading
+    gap = css.split(".reader-grid .prose:not(.bilingual-en) p + p,", 1)[1].split("}", 1)[0]
+    assert "margin-top: 1.15em" in gap
+    title = css.split(".reader h1 {", 1)[1].split("}", 1)[0]
+    assert "font-size: 22px" in title
+    assert "letter-spacing: 0" in title
+    assert "text-wrap: balance" in title
+    assert ".shell:has(.reader) .sidebar" in css
+    assert ".reader h1 { font-size: 32px" not in css
+    assert ".reader h1 { font-size: 36px" not in css
+    assert css.count(".reader h1 {") == 1
+    english = css.split(".bilingual-en.prose {", 1)[1].split("}", 1)[0]
+    assert "letter-spacing: 0" in english
+    assert "line-height: 1.65" in english
+
+
 def test_ocr_blocks_inherit_prose_font_without_grey_box():
     css = _CSS.read_text(encoding="utf-8")
     rules = css.split(".prose .ocr-reading {", 1)[1].split(".prose .ocr-links {", 1)[0]
@@ -393,6 +429,67 @@ def test_xueqiu_visual_order_becomes_chronological():
     assert order_nested_replies(plain) == plain
     mixed = "网友：大道会不会考虑？\n方伟：先不谈。\n网友：莫尼什：我是苹果用户，这段引用要很长才像卡片。"
     assert order_nested_replies(mixed) == mixed
+
+
+# 文章 24040 的形状：图后面硬换行把逗号留在下一行，页码「1」是「1988 年」被拆开的首位。
+_BROKEN_24040 = """吃的量就跟自己掏钱买的时候差不多了
+
+![](shot.jpg)
+，巧克力是会腻的，绝大多数东西都会腻。
+
+但可乐没有味觉记忆。”
+
+老巴能够洞察到可乐“不会腻”这一点是非常厉害的，能高频消费可乐的人是越来越多的）
+
+，另一点厉害的洞察是“可乐=快乐”。
+
+机会成本是 8.85% 的时候，那就是 PE≈6.78 才算非常便宜。
+
+1
+
+988 年标普 500 TTM PE 大致就在 10～12 倍区间。
+
+1、AI 短剧能赚钱吗？
+"""
+
+
+def test_rejoin_moves_leading_punctuation_and_splits_year_back():
+    """24040：阅读栏不要以逗号起段，也不要留下拆开的页码数字。"""
+    out = rejoin_broken_paragraphs(_BROKEN_24040)
+    assert out == rejoin_broken_paragraphs(out)
+    assert "\n，" not in out and not out.startswith("，")
+    assert "，巧克力" not in out
+    assert "越来越多的），另一点厉害的洞察是" in out
+    assert "差不多了，\n\n![](shot.jpg)\n巧克力是会腻的" in out
+    assert "\n1\n" not in out
+    assert "1988 年标普 500 TTM PE" in out
+    assert "1、AI 短剧能赚钱吗？" in out
+    html = str(render_body(out, {"shot.jpg": "/media/x/ab/" + "ab" * 32 + ".jpg"}))
+    assert "，巧克力" not in html
+    assert ">，" not in html and ">。" not in html and ">？" not in html
+    assert ">1</p>" not in html
+    assert "1988 年标普" in html
+    # 图仍紧挨后面那一句（一个硬换行），不把图单独撑成上下都空一段。
+    assert "<br" in html and "巧克力是会腻的" in html
+
+
+def test_rejoin_drops_orphan_page_digit_and_keeps_real_short_lines():
+    orphan = "才算非常便宜。\n\n12\n\n本来还想展开讲讲长江电力。\n"
+    assert rejoin_broken_paragraphs(orphan) == "才算非常便宜。\n\n本来还想展开讲讲长江电力。\n"
+    kept = "答案是\n\n1\n\n就这样"
+    assert rejoin_broken_paragraphs(kept) == kept
+    # 下一段以数字开头、又拼不成年份：不动，免得把页码和「2026 年」粘成「22026 年」。
+    kept_year = "收句。\n\n2\n\n2026 年还这样。\n"
+    assert rejoin_broken_paragraphs(kept_year) == kept_year
+    quote = "他说：\n\n“\n\n大众的判断有时候跟事实差很远。\n"
+    assert rejoin_broken_paragraphs(quote) == "他说：\n\n“大众的判断有时候跟事实差很远。\n"
+    period = "付出过高的价格\n\n。\n\n下一句。"
+    assert rejoin_broken_paragraphs(period) == "付出过高的价格。\n\n下一句。"
+    # 代码块挡住，里面的逗号和单独的数字都不动，后面的正文也不跨过去接。
+    fenced = "收句\n\n```\n，这行在代码里\n1\n```\n\n，这行要接上。\n"
+    assert rejoin_broken_paragraphs(fenced) == fenced
+    untouched = "第一段说完了。\n\n第二段另起，不该并进去。\n"
+    assert rejoin_broken_paragraphs(untouched) == untouched
 
 
 def test_reply_chain_expands_earlier_speech_first():
