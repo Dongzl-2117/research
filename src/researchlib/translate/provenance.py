@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
-from researchlib.translate.numbers import same_numeric_facts
+from researchlib.translate.numbers import digits_hide_scale_change, same_numeric_facts
 from researchlib.translate.segments import iter_segments, splice_segments, split_sentence_paragraphs, top_level_blocks
 
 SCHEMA_VERSION = 1
@@ -20,7 +20,7 @@ PROMPT_VERSION = 2
 PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt": PROMPT_VERSION}
 # 只给失败重试用，不写进回执。改数字或链接还原规则时加一，旧拒绝才会重新进队列。
 # 不要放进 PIPELINE：那会把已经核对过的译文整篇标成不兼容。
-ALIGNMENT_VERSION = 1
+ALIGNMENT_VERSION = 2
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
@@ -124,8 +124,12 @@ def leaf_problem(source: str, target: str) -> str | None:
         return "media"
     if before.codes != after.codes:
         return "code"
-    # 字符级相同的直接过。只有对不上时才认日期、单位和财季的等值写法，避免把版本号约成小数。
-    if numeric_anchors(source) != numeric_anchors(target) and not same_numeric_facts(source, target):
+    # 字符级相同通常直接过，避免把版本号约成小数。两边数字串一样但数量级不同
+    # （10 billion 写成 10亿）仍然是另一个数。数字串不同才走日期、单位和财季的等值。
+    if numeric_anchors(source) == numeric_anchors(target):
+        if digits_hide_scale_change(source, target):
+            return "numbers"
+    elif not same_numeric_facts(source, target):
         return "numbers"
     if re.search(r"⟦\d+⟧", target):
         return "placeholder"

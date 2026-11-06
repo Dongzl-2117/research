@@ -10,8 +10,10 @@
 ``$69.1 billion`` 写成 ``691亿美元``、``100%`` 写成 ``百分之百``、``Q3`` 写成
 ``第3季度`` 也过不了。模型每次都这样译，worker 就反复花钱。
 
-这里只放行能对上的日期、财季、百分数和带单位的金额。数值变了、数字对调、版本号
-少了末尾的零、把 ``'48`` 猜成 ``1948``，仍然不等。
+这里只放行能对上的日期、财季、百分数和带单位的金额。2015–2017 的财报段落里，
+模型还会把 ``$243 million`` 写成 ``2亿4300万``、把 ``Q2’16`` 写成 ``2016年第二季度``、
+把 ``one billion`` 写成 ``10亿``，并把日期或百分数挪到金额前面。这些仍然是同一批事实。
+数值变了、同一类数字对调、版本号少了末尾的零、把单独的 ``'48`` 猜成 ``1948``，仍然不等。
 """
 
 from __future__ import annotations
@@ -34,7 +36,12 @@ _MONTH_RE = "|".join(sorted(
     key=len,
     reverse=True,
 ))
-_SCALE_EXP = {"thousand": 3, "million": 6, "billion": 9, "trillion": 12, "万": 4, "亿": 8, "万亿": 12}
+_SCALE_EXP = {
+    "thousand": 3, "million": 6, "billion": 9, "trillion": 12,
+    "k": 3, "m": 6, "bn": 9, "b": 9,
+    "万亿": 12, "千亿": 11, "百亿": 10, "十亿": 9, "亿": 8,
+    "千万": 7, "百万": 6, "十万": 5, "万": 4, "千": 3, "百": 2,
+}
 _CN_DIGIT = {**{ch: index for index, ch in enumerate("零一二三四五六七八九")}, "〇": 0}
 _SPELLED = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
@@ -48,7 +55,11 @@ _SPELLED_RE = "|".join(sorted(_SPELLED, key=len, reverse=True))
 _TENS = "twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety"
 _ONES = "one|two|three|four|five|six|seven|eight|nine"
 _AMOUNT = r"[-−+]?\d[\d,]*(?:\.\d+)?"
-_SCALE = r"(?:trillion|billion|million|thousand)\b|万亿|亿|万"
+_SCALE = (
+    r"(?:trillion|billion|million|thousand|bn)\b|[kmb]\b"
+    r"|万亿|千亿|百亿|十亿|千万|百万|十万|亿|万|千|百"
+)
+_ORDERED_KINDS = ("date", "pct", "fiscal", "range", "half")
 _CURRENCY = r"(?:dollars?|euros?|pounds?|yen|美元|人民币|日元|欧元|英镑)\b"
 _RANGE_DASH = r"[-–—~至到]"
 
@@ -60,53 +71,96 @@ class Fact:
     hard: bool = True
 
 
+def digits_hide_scale_change(source: str, target: str) -> bool:
+    """可见数字串相同，并不表示数量级相同。
+
+    ``$10-15 billion`` 和 ``10亿至15亿`` 的数字都是 10、15，但前者是 100亿到 150亿。
+    译文如果根本没有硬数字（``one billion`` 写成 ``十亿``），不在这里判。
+    """
+    if same_numeric_facts(source, target):
+        return False
+    return any(fact.hard for fact in _merge(_extract(target)))
+
+
 def same_numeric_facts(source: str, target: str) -> bool:
-    """硬事实按顺序对上。月份名可以挪到句首；英文数词和脚注号可以不出现。"""
+    """硬事实按顺序对上。月份名可以挪到句首；日期、百分数和财季可以挪到金额前后。
+
+    英文数词和脚注号可以不出现。同一类事实（两个日期、两个百分数）不能互换。
+    """
     return _align(_merge(_extract(source)), _merge(_extract(target)))
 
 
 def _align(source: list[Fact], target: list[Fact]) -> bool:
     # 中文常把「in March」挪到金额前面。月份单独浮动，不能拿来解释一个普通数字。
+    # 日期、百分数、财季也常换到金额另一侧，但各自仍按原来的先后，不能用季号去解释一个裸数字。
     floaters = [fact for fact in source if fact.kind == "month"]
-    seq = [fact for fact in source if fact.kind != "month"]
+    buckets = {kind: [] for kind in _ORDERED_KINDS}
+    seq: list[Fact] = []
+    for fact in source:
+        if fact.kind == "month":
+            continue
+        bucket = buckets.get(fact.kind)
+        if fact.hard and bucket is not None and len(bucket) < 8:
+            bucket.append(fact)
+        else:
+            seq.append(fact)
     if len(floaters) > 10:
-        seq = [*seq, *(Fact("soft", fact.key, hard=False) for fact in floaters[10:])]
+        seq.extend(Fact("soft", fact.key, hard=False) for fact in floaters[10:])
         floaters = floaters[:10]
-    n, m = len(seq), len(target)
-    masks = 1 << len(floaters)
-    ok = [[[False] * masks for _ in range(m + 1)] for _ in range(n + 1)]
-    ok[0][0][0] = True
-    for i in range(n + 1):
-        for j in range(m + 1):
-            for mask in range(masks):
-                if not ok[i][j][mask]:
-                    continue
-                if i < n and not seq[i].hard:
-                    ok[i + 1][j][mask] = True
-                if i < n and j < m and _compatible(seq[i], target[j]):
-                    ok[i + 1][j + 1][mask] = True
-                if j < m:
-                    for index, floater in enumerate(floaters):
-                        bit = 1 << index
-                        if mask & bit or not _compatible(floater, target[j]):
-                            continue
-                        ok[i][j + 1][mask | bit] = True
-    return any(ok[n][m])
+    limits = tuple(len(buckets[kind]) for kind in _ORDERED_KINDS)
+    start = (0, 0, (0,) * len(_ORDERED_KINDS), 0)
+    seen = {start}
+    stack = [start]
+
+    def add(state: tuple) -> None:
+        if state not in seen:
+            seen.add(state)
+            stack.append(state)
+
+    visits = 0
+    while stack:
+        visits += 1
+        if visits > 50_000:
+            return False
+        i, j, cursors, mask = stack.pop()
+        if i == len(seq) and j == len(target) and cursors == limits:
+            return True
+        if i < len(seq) and not seq[i].hard:
+            add((i + 1, j, cursors, mask))
+        if i < len(seq) and j < len(target) and _compatible(seq[i], target[j]):
+            add((i + 1, j + 1, cursors, mask))
+        if j >= len(target):
+            continue
+        for index, kind in enumerate(_ORDERED_KINDS):
+            cursor = cursors[index]
+            if cursor >= limits[index]:
+                continue
+            if not _compatible(buckets[kind][cursor], target[j], bare_quarter=False):
+                continue
+            nxt = list(cursors)
+            nxt[index] += 1
+            add((i, j + 1, tuple(nxt), mask))
+        for index, floater in enumerate(floaters):
+            bit = 1 << index
+            if mask & bit or not _compatible(floater, target[j], bare_quarter=False):
+                continue
+            add((i, j + 1, cursors, mask | bit))
+    return False
 
 
-def _compatible(left: Fact, right: Fact) -> bool:
+def _compatible(left: Fact, right: Fact, *, bare_quarter: bool = True) -> bool:
     if left.kind == right.kind and left.key == right.key:
         return True
     if {left.kind, right.kind} <= {"qty", "literal", "soft"} and left.key == right.key:
         return True
-    for fact, other in ((left, right), (right, left)):
-        if (
-            fact.kind == "fiscal"
-            and re.fullmatch(r"Q[1-4]", fact.key)
-            and other.kind in {"literal", "qty"}
-            and other.key == fact.key[1:]
-        ):
-            return True
+    if (
+        bare_quarter
+        and left.kind == "fiscal"
+        and re.fullmatch(r"Q[1-4]", left.key)
+        and right.kind in {"literal", "qty", "soft"}
+        and right.key == left.key[1:]
+    ):
+        return True
     return False
 
 
@@ -198,22 +252,58 @@ def _text(html: str) -> str:
     return "".join(parser.parts)
 
 
+def _mark_footnote(text: str) -> str:
+    """句号后紧贴的脚注号不是金额。``million.1 Don’t``、``April 24.2 It’s`` 可以不译出。"""
+
+    def marker(number: str) -> str:
+        return f"\u0001{number}\u0001"
+
+    text = re.sub(
+        r"(?<=[A-Za-z])\.(?P<n>\d{1,2})(?=\s*(?:[A-Z]|$))",
+        lambda match: marker(match.group("n")),
+        text,
+    )
+    text = re.sub(
+        rf"\b(?P<mon>{_MONTH_RE})\.?\s+(?P<day>\d{{1,2}})\.(?P<n>\d{{1,2}})(?=\s+[A-Z])",
+        lambda match: f"{match.group('mon')} {match.group('day')}{marker(match.group('n'))}",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"(?<=\d{4})\.(?P<n>\d{1,2})(?=\s+[A-Z])",
+        lambda match: marker(match.group("n")),
+        text,
+    )
+    return text
+
+
 def _extract(html: str) -> list[Fact]:
-    text = _text(html)
-    found: list[tuple[int, int, Fact]] = []
+    text = _mark_footnote(_text(html))
+    found: list[tuple[int, int, int, Fact]] = []
     for pattern, handler in _PATTERNS:
         for match in pattern.finditer(text):
-            fact = handler(match)
-            if fact is not None:
-                found.append((match.start(), match.end(), fact))
-    found.sort(key=lambda item: (item[0], item[0] - item[1]))
+            emitted = handler(match)
+            if emitted is None:
+                continue
+            facts = emitted if isinstance(emitted, list) else [emitted]
+            for seq, fact in enumerate(facts):
+                if fact is not None:
+                    found.append((match.start(), match.end(), seq, fact))
+    found.sort(key=lambda item: (item[0], item[0] - item[1], item[2]))
     chosen: list[Fact] = []
     cursor = 0
-    for start, end, fact in found:
+    index = 0
+    while index < len(found):
+        start, end, _seq, fact = found[index]
         if start < cursor:
+            index += 1
             continue
         chosen.append(fact)
         cursor = end
+        index += 1
+        while index < len(found) and found[index][0] == start and found[index][1] == end:
+            chosen.append(found[index][3])
+            index += 1
     return chosen
 
 
@@ -438,17 +528,153 @@ def _on_cn_percent(match: re.Match[str]) -> Fact | None:
     return Fact("pct", str(value))
 
 
+def _expand_yy(raw: str) -> str | None:
+    """财季缩写里的两位年。单独的 ``'48`` 不走这里，不把世纪猜出来。"""
+    if re.fullmatch(r"\d{4}", raw):
+        return f"{int(raw):04d}"
+    if re.fullmatch(r"\d{2}", raw):
+        year = int(raw)
+        base = 2000 if year < 40 else 1900
+        return f"{base + year:04d}"
+    return None
+
+
+def _half_fact(which: str, year: str | None) -> Fact:
+    if year and (expanded := _expand_yy(year)):
+        return Fact("half", f"{expanded}H{which}")
+    return Fact("soft", f"H{which}", hard=False)
+
+
+def _on_half_en(match: re.Match[str]) -> Fact:
+    which = match.group("h")
+    if not which.isdigit():
+        which = "1" if which.lower() == "first" else "2"
+    return _half_fact(which, match.groupdict().get("y"))
+
+
+def _on_half_zh(match: re.Match[str]) -> Fact:
+    which = "1" if match.group("w") == "上" else "2"
+    return _half_fact(which, match.groupdict().get("y"))
+
+
+def _on_q_short(match: re.Match[str]) -> Fact | None:
+    quarter = match.group("q")
+    year = match.groupdict().get("y")
+    if year:
+        expanded = _expand_yy(year)
+        if expanded is None:
+            return None
+        return Fact("fiscal", f"{expanded}Q{quarter}")
+    return Fact("fiscal", f"Q{quarter}")
+
+
+def _on_fy_short(match: re.Match[str]) -> Fact | None:
+    expanded = _expand_yy(match.group("y"))
+    if expanded is None:
+        return None
+    return Fact("literal", expanded)
+
+
+def _signed(amount: Decimal, sign: str | None) -> Decimal:
+    if sign:
+        return -abs(amount)
+    return amount
+
+
 def _on_qty(match: re.Match[str]) -> Fact | None:
     raw = match.group("amount")
     prefix, scale, currency = match.group("prefix"), match.group("scale"), match.group("currency")
-    if not (prefix or scale or currency or (raw and "," in raw)):
-        return None
-    amount = _decimal(raw or "")
+    sign = match.group("sign")
+    if raw == "两":
+        # 「两家」交给后面的量词；没有单位的「两」不是一笔金额。
+        if not (prefix or scale or currency):
+            return None
+        amount: Decimal | None = Decimal(2)
+    else:
+        # 单独的负号不够：``2016-17`` 里的连字符不是负数。
+        if not (prefix or scale or currency or (raw and "," in raw)):
+            return None
+        amount = _decimal(raw or "")
     if amount is None:
         return None
     if scale:
-        amount = amount.scaleb(_SCALE_EXP[scale.lower()])
+        key = scale.lower()
+        if key in {"k", "m", "b"} and not prefix:
+            return None
+        amount = amount.scaleb(_SCALE_EXP[key])
+    if sign in {"-", "−", "负"}:
+        amount = _signed(amount, sign)
     return Fact("qty", _qty_key(amount))
+
+
+def _on_cn_compound(match: re.Match[str]) -> Fact | None:
+    """``2亿4300万`` 是一个数，不是 2亿再加一个无关的 4300万。"""
+    head = Decimal(2) if match.group("a") == "两" else _decimal(match.group("a"))
+    tail = _decimal(match.group("b"))
+    if head is None or tail is None:
+        return None
+    total = head * Decimal(10) ** 8 + tail * Decimal(10) ** _SCALE_EXP[match.group("u")]
+    total = _signed(total, match.group("sign"))
+    return Fact("qty", _qty_key(total))
+
+
+def _on_money_span(match: re.Match[str]) -> list[Fact] | None:
+    scale = match.group("scale").lower()
+    left, right = _decimal(match.group("a")), _decimal(match.group("b"))
+    if left is None or right is None or scale not in _SCALE_EXP:
+        return None
+    exp = _SCALE_EXP[scale]
+    return [Fact("qty", _qty_key(left.scaleb(exp))), Fact("qty", _qty_key(right.scaleb(exp)))]
+
+
+def _on_percent_span(match: re.Match[str]) -> list[Fact] | None:
+    left, right = _decimal(match.group("a")), _decimal(match.group("b"))
+    if left is None or right is None:
+        return None
+    return [Fact("pct", _qty_key(left)), Fact("pct", _qty_key(right))]
+
+
+def _on_cents(match: re.Match[str]) -> Fact | None:
+    amount = _decimal(match.group("n"))
+    if amount is None:
+        return None
+    return Fact("qty", _qty_key(amount / Decimal(100)))
+
+
+def _spelled_head(head: str) -> Decimal | None:
+    text = re.sub(r"\s+", " ", head.lower().replace("-", " ")).strip()
+    if text in {"half", "half a"}:
+        return Decimal("0.5")
+    if text in {"a", "an"}:
+        return Decimal(1)
+    parts = text.split(" ")
+    if len(parts) == 2 and parts[0] in _SPELLED and parts[1] in _SPELLED:
+        total = _SPELLED[parts[0]] + _SPELLED[parts[1]]
+        if total >= 20:
+            return Decimal(total)
+        return None
+    value = _SPELLED.get(text)
+    if value is None:
+        return None
+    return Decimal(value)
+
+
+def _on_spelled_scale(match: re.Match[str]) -> Fact | None:
+    head = _spelled_head(match.group("head"))
+    if head is None:
+        return None
+    if match.group("hundred"):
+        head *= 100
+    scale = (match.group("scale") or match.group("scale2") or "").lower()
+    if scale == "percent":
+        if not match.group("hundred") and match.group("head").lower() in {"a", "an", "half", "half a"}:
+            return None
+        return Fact("pct", _qty_key(head))
+    if scale:
+        return Fact("qty", _qty_key(head.scaleb(_SCALE_EXP[scale])))
+    if match.group("hundred"):
+        return Fact("qty", _qty_key(head))
+    return None
 
 
 def _on_literal(match: re.Match[str]) -> Fact | None:
@@ -476,18 +702,34 @@ def _on_spelled(match: re.Match[str]) -> Fact | None:
     return Fact("soft", str(value), hard=False)
 
 
+_ORD = r"(?:st|nd|rd|th)?"
 _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     (re.compile(
-        rf"\b(?P<m1>{_MONTH_RE})\.?\s+(?P<d1>\d{{1,2}})\s*{_RANGE_DASH}\s*"
-        rf"(?P<m2>{_MONTH_RE})\.?\s+(?P<d2>\d{{1,2}}),?\s*(?P<y>\d{{4}})\b",
+        rf"\b(?P<m1>{_MONTH_RE})\.?\s+(?P<d1>\d{{1,2}}){_ORD}\s+(?:to|through)\s+"
+        rf"(?P<m2>{_MONTH_RE})\.?\s+(?P<d2>\d{{1,2}}){_ORD},?\s*(?P<y>\d{{4}})\b",
         re.I,
     ), _on_cross_en),
     (re.compile(
-        rf"\b(?P<m>{_MONTH_RE})\.?\s+(?P<d1>\d{{1,2}})\s*{_RANGE_DASH}\s*(?P<d2>\d{{1,2}}),?\s*(?P<y>\d{{4}})\b",
+        rf"\b(?P<m>{_MONTH_RE})\.?\s+(?P<d1>\d{{1,2}}){_ORD}\s+(?:to|through)\s+"
+        rf"(?P<d2>\d{{1,2}}){_ORD},?\s*(?P<y>\d{{4}})\b",
         re.I,
     ), _on_span_en),
     (re.compile(
-        rf"\b(?P<m>{_MONTH_RE})\.?\s+(?P<d>\d{{1,2}})(?:st|nd|rd|th)?,?\s+(?P<y>\d{{4}})\b",
+        rf"\b(?P<m1>{_MONTH_RE})\.?\s+(?P<d1>\d{{1,2}}){_ORD}\s*{_RANGE_DASH}\s*"
+        rf"(?P<m2>{_MONTH_RE})\.?\s+(?P<d2>\d{{1,2}}){_ORD},?\s*(?P<y>\d{{4}})\b",
+        re.I,
+    ), _on_cross_en),
+    (re.compile(
+        rf"\b(?P<m>{_MONTH_RE})\.?\s+(?P<d1>\d{{1,2}}){_ORD}\s*{_RANGE_DASH}\s*"
+        rf"(?P<d2>\d{{1,2}}){_ORD},?\s*(?P<y>\d{{4}})\b",
+        re.I,
+    ), _on_span_en),
+    (re.compile(
+        rf"\b(?P<d>\d{{1,2}}){_ORD}\s+(?:of\s+)?(?P<m>{_MONTH_RE})\.?,?\s+(?P<y>\d{{4}})\b",
+        re.I,
+    ), _on_full_en),
+    (re.compile(
+        rf"\b(?P<m>{_MONTH_RE})\.?\s+(?P<d>\d{{1,2}}){_ORD},?\s+(?P<y>\d{{4}})\b",
         re.I,
     ), _on_full_en),
     (re.compile(
@@ -507,28 +749,62 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     (re.compile(rf"\b(?P<m>{_MONTH_RE})\.?\s+(?P<d>\d{{1,2}})(?:st|nd|rd|th)?\b", re.I), _on_month_day),
     (re.compile(r"(?P<m>\d{1,2})\s*月\s*(?P<d>\d{1,2})\s*[日号]"), _on_month_day_zh),
     (re.compile(r"(?<!\d)(?P<y>\d{4})[-/](?P<m>\d{1,2})[-/](?P<d>\d{1,2})(?!\d)"), _on_iso),
+    (re.compile(r"\bH(?P<h>[12])\s*['’]?\s*(?P<y>\d{2}|\d{4})\b", re.I), _on_half_en),
+    (re.compile(r"\b(?P<h>[12])H\s*['’]?\s*(?P<y>\d{2}|\d{4})\b", re.I), _on_half_en),
+    (re.compile(r"\b(?:the\s+)?(?P<h>first|second)\s+half\s+of\s+(?P<y>\d{4})\b", re.I), _on_half_en),
+    (re.compile(r"(?P<y>\d{4})\s*年\s*(?P<w>上|下)半年"), _on_half_zh),
+    (re.compile(r"\bH(?P<h>[12])\b", re.I), _on_half_en),
+    (re.compile(r"\b(?P<h>[12])H\b", re.I), _on_half_en),
+    (re.compile(r"(?<![上下])(?P<w>上|下)半年"), _on_half_zh),
     (re.compile(r"\bFY\s*(?P<y>\d{4})\s*Q(?P<q>[1-4])\b", re.I), _on_fy_q),
     (re.compile(r"\bQ(?P<q>[1-4])\s*FY\s*(?P<y>\d{4})\b", re.I), _on_fy_q),
+    (re.compile(r"\bQ(?P<q>[1-4])\s*['’](?P<y>\d{2})\b"), _on_q_short),
+    (re.compile(r"\b(?P<q>[1-4])Q\s*FY\s*['’]?(?P<y>\d{2,4})\b", re.I), _on_q_short),
+    (re.compile(r"\b(?P<q>[1-4])Q\s*['’]?(?P<y>\d{2,4})\b", re.I), _on_q_short),
+    (re.compile(r"\bFQ(?P<q>[1-4])(?:\s*['’]?(?P<y>\d{2,4}))?\b", re.I), _on_q_short),
     (re.compile(r"\bQ(?P<q>[1-4])\s+(?P<y>\d{4})\b", re.I), _on_fy_q),
+    (re.compile(r"\bFY\s*['’]?(?P<y>\d{2})\b", re.I), _on_fy_short),
     (re.compile(r"(?P<y>\d{4})\s*财年\s*第?\s*(?P<q>[1-4一二三四])\s*季度"), _on_fy_q),
     (re.compile(r"第?\s*(?P<q>[1-4一二三四])\s*季度\s*(?P<y>\d{4})\s*年"), _on_fy_q),
     (re.compile(
-        r"\b(?P<q>1st|2nd|3rd|4th|first|second|third|fourth)\s+quarter(?:\s+of)?\s+(?P<y>\d{4})\b",
+        r"\b(?P<q>1st|2nd|3rd|4th|first|second|third|fourth)[-\s]+quarter(?:\s+of)?\s+(?P<y>\d{4})\b",
         re.I,
     ), _on_fy_q),
     (re.compile(r"\bQ(?P<q>[1-4])\b", re.I), _on_q),
     (re.compile(r"第?\s*(?P<q>[1-4一二三四])\s*季度"), _on_q),
-    (re.compile(r"\b(?P<q>1st|2nd|3rd|4th|first|second|third|fourth)\s+quarter\b", re.I), _on_q),
+    (re.compile(r"\b(?P<q>1st|2nd|3rd|4th|first|second|third|fourth)[-\s]+quarter\b", re.I), _on_q),
+    (re.compile(
+        rf"(?<!\d)(?P<a>{_AMOUNT})\s*(?:-|–|—|to)\s*(?P<b>{_AMOUNT})\s*(?:%|％|percent\b)",
+        re.I,
+    ), _on_percent_span),
+    (re.compile(rf"\(\s*(?P<n>{_AMOUNT})\s*\)\s*(?:%|％|percent\b)", re.I), _on_percent),
     (re.compile(rf"(?<!\d)(?P<n>{_AMOUNT})\s*(?:%|％|percent\b)", re.I), _on_percent),
     (re.compile(
         r"百分之(?P<n>百|一百|[一二三四五六七八九]?十[一二三四五六七八九]?|[零〇一二三四五六七八九])"
         r"(?![零〇一二三四五六七八九十百千万亿])",
     ), _on_cn_percent),
     (re.compile(
+        rf"\$\s*(?P<a>{_AMOUNT})\s*(?:-|–|—|to)\s*\$?\s*(?P<b>{_AMOUNT})\s*"
+        rf"(?P<scale>trillion|billion|million|thousand)\b",
+        re.I,
+    ), _on_money_span),
+    (re.compile(
+        r"(?:(?P<sign>[-−负])\s*)?(?P<a>\d+(?:\.\d+)?|两)\s*亿\s*(?P<b>\d+(?:\.\d+)?)\s*(?P<u>千万|百万|万)",
+    ), _on_cn_compound),
+    (re.compile(rf"(?P<n>{_AMOUNT})\s*(?:cents?|美分)\b", re.I), _on_cents),
+    (re.compile(
+        rf"\b(?P<head>half\s+a|half|a|an|{_TENS}-(?:{_ONES})|{_SPELLED_RE})\s+"
+        rf"(?:(?P<hundred>hundred)(?:\s+(?P<scale>trillion|billion|million|thousand|percent))?|"
+        rf"(?P<scale2>trillion|billion|million|thousand|percent))\b",
+        re.I,
+    ), _on_spelled_scale),
+    (re.compile(
+        rf"(?:(?P<sign>[-−负])\s*)?"
         rf"(?:(?P<prefix>[$€£¥￥]|(?:USD|EUR|GBP|CNY|RMB|JPY)(?=\s*\d))\s*)?"
-        rf"(?P<amount>{_AMOUNT})(?:\s*(?P<scale>{_SCALE}))?(?:\s*(?P<currency>{_CURRENCY}))?",
+        rf"(?P<amount>{_AMOUNT}|两)(?:\s*(?P<scale>{_SCALE}))?(?:\s*(?P<currency>{_CURRENCY}))?",
         re.I,
     ), _on_qty),
+    (re.compile(r"两(?=[个家次年倍周天名款项])"), lambda _match: Fact("literal", "2")),
     (re.compile(r"(?P<m>\d{1,2})\s*月"), _on_month_only_zh),
     (re.compile(rf"\b(?P<bare>{_MONTH_RE})\b", re.I), _on_bare_month),
     (re.compile(rf"\b(?:{_TENS})-(?:{_ONES})\b", re.I), _on_spelled),
