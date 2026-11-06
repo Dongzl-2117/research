@@ -1243,6 +1243,11 @@ def _parse_and_walk(
     split_br: bool = True,
     split_sentences: bool = True,
 ) -> tuple[list[Segment], str]:
+    # 编号按这一次解析从 1 起算。用进程全局累加的话，同一篇长文在译前、译后各
+    # materialize 一次，data-src-para 就会不同，回执指纹对不上，整篇被记成
+    # canonical-source-changed，模型已经译完的字也入库不了。
+    global _SRC_PARA_SEQ
+    _SRC_PARA_SEQ = 0
     parser = _FragmentParser()
     parser.feed(html or "")
     parser.close()
@@ -1457,8 +1462,12 @@ def _iter_anchor_tags(html: str):
         index = close + 4
 
 
-# 模型有时把占位括号写成全角。编号仍须刚好各出现一次。
-_TOKEN = re.compile(r"(?:⟦|【|〔)\s*(\d+)\s*(?:⟧|】|〕)")
+# 模型有时把占位括号写成全角、写成 [[0]]，或在括号里加上「图」。编号仍须刚好各出现一次。
+_TOKEN = re.compile(
+    r"(?:⟦|【|〔|〖|〈|⟨|［)\s*(?:图|图片|image|img)?\s*(\d+)\s*(?:⟧|】|〕|〗|〉|⟩|］)"
+    r"|\[\[\s*(\d+)\s*\]\]",
+    re.I,
+)
 
 
 def shield(html: str) -> Shielded:
@@ -1487,10 +1496,27 @@ def shield(html: str) -> Shielded:
     return Shielded(html="".join(pieces), tokens=tokens, link_attrs=link_attrs)
 
 
+def _token_index(match: re.Match[str]) -> int:
+    raw = match.group(1) if match.group(1) is not None else match.group(2)
+    return int(raw)
+
+
+def _link_open(attrs: dict[str, str], inner: str) -> str:
+    parts = ["<a"]
+    for key, value in attrs.items():
+        if key == "id":
+            continue
+        parts.append(f' {key}="{value}"')
+    parts.append(f">{inner}</a>")
+    return "".join(parts)
+
+
 def unshield(translated: str, shielded: Shielded) -> str | None:
+    # 模型有时把占位和标签转义后放进 JSON。先还原，再认括号。
+    translated = html_lib.unescape(translated or "")
     counts: dict[int, int] = {}
     for match in _TOKEN.finditer(translated):
-        index = int(match.group(1))
+        index = _token_index(match)
         counts[index] = counts.get(index, 0) + 1
     if len(counts) != len(shielded.tokens):
         return None
@@ -1498,37 +1524,49 @@ def unshield(translated: str, shielded: Shielded) -> str | None:
         return None
 
     def put_token(match: re.Match[str]) -> str:
-        return shielded.tokens[int(match.group(1))]
+        return shielded.tokens[_token_index(match)]
 
     text = _TOKEN.sub(put_token, translated)
+    indexed: list[tuple[int, int, dict[str, str], str, int | None]] = []
+    for start, end, attr_text, inner in _iter_anchor_tags(text):
+        attrs = _parse_attrs(attr_text)
+        id_match = re.fullmatch(r"L(\d+)", attrs.get("id", "").strip(), re.I)
+        index = int(id_match.group(1)) if id_match else None
+        indexed.append((start, end, attrs, inner, index))
+    expected = len(shielded.link_attrs)
+    found_ids = {index for *_rest, index in indexed if index is not None}
+    # 只写了 L1..Ln、没有 L0 时，当成从 1 起数。两种编号混在一起就维持原样，下面会对不上。
+    if expected and found_ids == set(range(1, expected + 1)) and 0 not in found_ids:
+        indexed = [
+            (start, end, attrs, inner, index - 1 if index is not None else None)
+            for start, end, attrs, inner, index in indexed
+        ]
     seen: set[int] = set()
     pieces: list[str] = []
     cursor = 0
-    for start, end, attr_text, inner in _iter_anchor_tags(text):
+    for start, end, attrs, inner, index in indexed:
         pieces.append(text[cursor:start])
-        attrs = _parse_attrs(attr_text)
-        id_match = re.fullmatch(r"L(\d+)", attrs.get("id", ""), re.I)
-        if id_match is None:
+        chosen: int | None = None
+        if index is not None and index not in seen and 0 <= index < expected:
+            chosen = index
+        else:
+            href = (attrs.get("href") or "").strip()
+            if href:
+                hits = [
+                    slot for slot, stored in enumerate(shielded.link_attrs)
+                    if slot not in seen and (stored.get("href") or "").strip() == href
+                ]
+                if len(hits) == 1:
+                    chosen = hits[0]
+        if chosen is None:
             pieces.append(text[start:end])
             cursor = end
             continue
-        index = int(id_match.group(1))
-        if index in seen or index >= len(shielded.link_attrs):
-            pieces.append(text[start:end])
-            cursor = end
-            continue
-        seen.add(index)
-        restored = shielded.link_attrs[index]
-        parts = ["<a"]
-        for key, value in restored.items():
-            if key == "id":
-                continue
-            parts.append(f' {key}="{value}"')
-        parts.append(f">{inner}</a>")
-        pieces.append("".join(parts))
+        seen.add(chosen)
+        pieces.append(_link_open(shielded.link_attrs[chosen], inner))
         cursor = end
     pieces.append(text[cursor:])
-    if len(seen) != len(shielded.link_attrs):
+    if len(seen) != expected:
         return None
     return "".join(pieces)
 
