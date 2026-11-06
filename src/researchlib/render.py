@@ -505,15 +505,183 @@ def _hoist_figures_out_of_paragraphs(html: str) -> str:
     return cleaned
 
 
+# 识图只用来判断这张图该挨着哪一段，字本身不进阅读页。
+_IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
+_P_BLOCK = re.compile(r"<p\b[^>]*>.*?</p>", re.I | re.S)
+_HASH_IN_SRC = re.compile(r"""\bsrc\s*=\s*["'][^"']*?([0-9a-f]{64})""", re.I)
+_BR_AFTER = re.compile(r"\s*<br\s*/?>", re.I)
+_EMPTY_P = re.compile(r"<p\b[^>]*>(?:\s|<br\s*/?>)*</p>", re.I)
+_YEAR_VALUE = re.compile(r"((?:19|20)\d{2})\D{0,8}(\d{2,6}(?:\.\d+)?)")
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_PERCENT = re.compile(r"%")
+# 短过这个的重合不当成「这张图就是在讲这一段」，免得年份、常用词把图拖走。
+_PHRASE = 5
+
+
+def _plain_fragment(fragment: str) -> str:
+    text = _IMG_TAG.sub(" ", fragment)
+    text = re.sub(r"<br\s*/?>", " ", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    return html_lib.unescape(text)
+
+
+def _cjk(text: str) -> str:
+    return "".join(ch for ch in text if "\u4e00" <= ch <= "\u9fff")
+
+
+def _phrase_overlap(left: str, right: str) -> int:
+    """两边汉字里最长的一段重合。短于 ``_PHRASE`` 记 0。"""
+    if len(left) < _PHRASE or len(right) < _PHRASE:
+        return 0
+    cap = min(24, len(left), len(right))
+    for size in range(cap, _PHRASE - 1, -1):
+        grams = {left[index : index + size] for index in range(len(left) - size + 1)}
+        for index in range(len(right) - size + 1):
+            if right[index : index + size] in grams:
+                return size
+    return 0
+
+
+def _table_score(ocr: str, paragraph: str) -> int:
+    """按年排的数据表：段落里同时出现表上的年份和某个数值（百分号后面的不算）才算对上。"""
+    rows = _YEAR_VALUE.findall(ocr)
+    if len(rows) < 5:
+        return 0
+    years = {year for year, _value in rows}
+    values: set[str] = set()
+    for _year, raw in rows:
+        number = int(float(raw))
+        if number >= 10:
+            values.add(str(number))
+    seen_years: set[str] = set()
+    seen_values: set[str] = set()
+    for match in _NUMBER.finditer(paragraph):
+        raw = match.group(0)
+        if _PERCENT.match(paragraph, match.end()):
+            continue
+        if re.fullmatch(r"(?:19|20)\d{2}", raw.split(".", 1)[0]):
+            seen_years.add(raw.split(".", 1)[0])
+            continue
+        number = int(float(raw))
+        if number >= 10:
+            seen_values.add(str(number))
+    if not (years & seen_years) or not (values & seen_values):
+        return 0
+    return len(values & seen_values) * 10 + len(years & seen_years)
+
+
+def _best_paragraph(ocr: str, paragraphs: list[str]) -> int | None:
+    cjk_ocr = _cjk(ocr)
+    phrases = [_phrase_overlap(cjk_ocr, _cjk(paragraph)) for paragraph in paragraphs]
+    if phrases and max(phrases) >= _PHRASE:
+        best = max(phrases)
+        winners = [index for index, score in enumerate(phrases) if score == best]
+        return winners[0] if len(winners) == 1 else None
+    tables = [_table_score(ocr, paragraph) for paragraph in paragraphs]
+    if not tables or max(tables) <= 0:
+        return None
+    best = max(tables)
+    winners = [index for index, score in enumerate(tables) if score == best]
+    return winners[0] if len(winners) == 1 else None
+
+
+def _relocate_images(html: str, texts: dict[str, str]) -> str:
+    """图被估到了别的段里时，按识图里的字挪回对得上的那一段前面。
+
+    挪的是 ``<img>`` 本身。识图文字不写进正文。已经挨着对的段、对不上、或两段一样像，就留在原地。
+    评论区里的图不动。没有改动时返回原来的字符串。
+    """
+    comments_at = html.find('class="zsxq-comments"')
+    paragraphs = []
+    for match in _P_BLOCK.finditer(html):
+        if comments_at != -1 and match.start() >= comments_at:
+            continue
+        paragraphs.append((match.start(), match.end(), _plain_fragment(match.group(0))))
+    if not paragraphs:
+        return html
+    plain = [item[2] for item in paragraphs]
+    moves: list[tuple[int, int, str, int]] = []
+    for image in _IMG_TAG.finditer(html):
+        if comments_at != -1 and image.start() >= comments_at:
+            continue
+        found = _HASH_IN_SRC.search(image.group(0))
+        if found is None:
+            continue
+        ocr = (texts.get(found.group(1)) or "").strip()
+        if len(_cjk(ocr)) < _PHRASE and len(_YEAR_VALUE.findall(ocr)) < 5:
+            continue
+        target = _best_paragraph(ocr, plain)
+        if target is None:
+            continue
+        containing = next(
+            (index for index, item in enumerate(paragraphs) if item[0] <= image.start() < item[1]),
+            None,
+        )
+        if containing == target:
+            continue
+        if containing is None:
+            previous = next(
+                (
+                    index
+                    for index in range(len(paragraphs) - 1, -1, -1)
+                    if paragraphs[index][1] <= image.start()
+                ),
+                None,
+            )
+            following = next(
+                (index for index, item in enumerate(paragraphs) if item[0] > image.start()),
+                None,
+            )
+            if target in {previous, following}:
+                continue
+        end = image.end()
+        broken = _BR_AFTER.match(html, end)
+        if broken:
+            end = broken.end()
+        start = image.start()
+        if containing is not None:
+            inner_from = html.find(">", paragraphs[containing][0]) + 1
+            inner_to = paragraphs[containing][1] - len("</p>")
+            leftover = html[inner_from:start] + html[end:inner_to]
+            # 同段里还有别的图时不能把整段删掉，否则两张图的删除区间叠在一起。
+            if not _IMG_TAG.search(leftover) and not _plain_fragment(leftover).strip():
+                start, end = paragraphs[containing][0], paragraphs[containing][1]
+        moves.append((start, end, image.group(0), paragraphs[target][0]))
+    if not moves:
+        return html
+    cuts: list[tuple[int, int]] = []
+    for start, end, _img, _target in moves:
+        if (start, end) not in cuts:
+            cuts.append((start, end))
+
+    def adjust(pos: int) -> int:
+        return pos - sum(end - start for start, end in cuts if end <= pos)
+
+    grouped: dict[int, list[str]] = {}
+    for _start, _end, img, target in sorted(moves, key=lambda item: item[0]):
+        grouped.setdefault(adjust(target), []).append(img)
+    updated = html
+    for start, end, _img, _target in sorted(moves, key=lambda item: item[0], reverse=True):
+        updated = updated[:start] + updated[end:]
+    for pos in sorted(grouped, reverse=True):
+        updated = updated[:pos] + "".join(grouped[pos]) + updated[pos:]
+    return _EMPTY_P.sub("", updated)
+
+
 def inline_image_ocr(html: str, texts: dict[str, str] | None = None, *, host: str = HOST) -> str:
     """阅读页保留原图，不把识图文字铺进版面。
 
-    ``texts`` 是 content_hash → image_texts.text，``host`` 是这篇作者。阅读 HTML 都不用：
-    整理后的字只进摘要、观点、问这篇和检索（``present_ocr_pieces`` / ``append_ocr`` / ``ocr_chunks``）。
-    点开图片仍走原来的 ``<img>``（锚点 ``img-`` 还在图上，检索「看这张图」跳到这张图）。
+    ``texts`` 是 content_hash → image_texts.text，``host`` 是这篇作者。字只进摘要、观点、问这篇和检索
+    （``present_ocr_pieces`` / ``append_ocr`` / ``ocr_chunks``）。点开图片仍走原来的 ``<img>``
+    （锚点 ``img-`` 还在图上，检索「看这张图」跳到这张图）。
+
+    极致了按段估的图片会整组堆在开头、插进无关的引文里。这里只用识图里的字判断该挨着哪一段，
+    把 ``<img>`` 挪到那一段前面；对不上、或本来就挨着，原样留着。正文不出现识图文字。
     """
-    _ = texts, host
-    return html or ""
+    _ = host
+    if not html or not texts:
+        return html or ""
+    return _relocate_images(html, texts)
 
 
 

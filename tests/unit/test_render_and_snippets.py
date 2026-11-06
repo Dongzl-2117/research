@@ -422,3 +422,52 @@ def test_24008_screenshots_stay_images_while_models_read_the_transcript():
     assert "企业家精神是敢于在最顺的时候对自己动刀子" in model
     assert "刀子光做家电" not in model
     assert model.index("莫尼什：") < model.index("大道会不会考虑") < model.index("李录投资也很好")
+
+
+def test_misplaced_wechat_images_move_beside_the_matching_paragraph():
+    """估到引文里的图，按识图挪到对得上的那一段前面。字不进正文，本来就挨着的不动。"""
+    shot = "ab" * 32
+    chart = "cd" * 32
+    shot_src = f"/media/fangwei-mp/ab/{shot}.jpg"
+    chart_src = f"/media/fangwei-mp/cd/{chart}.jpg"
+    shot_img = f'<img id="{image_anchor(shot)}" src="{shot_src}" alt="">'
+    chart_img = f'<img id="{image_anchor(chart)}" src="{chart_src}" alt="">'
+    html = (
+        f"<p>可乐没有味觉记忆，早上喝一罐也不会腻。</p>"
+        f"<p>{shot_img}<br>奶油苏打喝多了会腻。</p>"
+        f"<p>{chart_img}</p>"
+        "<p>王小明谈到这件事就表态：</p>"
+        "<p>我从来不看生成出来的短剧，塑料感太重。</p>"
+        "<p>北美票房在 2020 年以前还能到 115 亿美元，最近只剩下 85 亿。</p>"
+    )
+    shot_ocr = "王小明：我从来不看生成出来的短剧\n塑料感太重"
+    chart_ocr = "\n".join(
+        [
+            "2014 103.61",
+            "2015 111.50",
+            "2016 113.80",
+            "2017 110.80",
+            "2018 118.90",
+            "2019 113.60",
+            "2020 21.10",
+            "2024 85.70",
+            "2025 86.60",
+        ]
+    )
+    page = inline_image_ocr(html, {shot: shot_ocr, chart: chart_ocr})
+    assert page == inline_image_ocr(page, {shot: shot_ocr, chart: chart_ocr})
+    assert "ocr-reading" not in page and "103.61" not in page and "王小明：" not in page
+    assert "奶油苏打喝多了会腻" in page and "可乐没有味觉记忆" in page
+    quote = page.index("我从来不看生成出来的短剧")
+    table = page.index("北美票房在 2020 年以前")
+    assert page.index(shot_img) < quote
+    assert page.index("王小明谈到这件事就表态") < page.index(shot_img) < quote
+    assert page.index(chart_img) < table
+    assert "85 亿" in page
+    # 已经放在对的段前面时，再跑也不改字符串。
+    parked = (
+        "<p>开场一句。</p>"
+        f"{shot_img}"
+        "<p>我从来不看生成出来的短剧，塑料感太重。</p>"
+    )
+    assert inline_image_ocr(parked, {shot: shot_ocr}) == parked

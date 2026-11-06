@@ -1059,8 +1059,18 @@ tbody tr:hover td { background: var(--accent-softer); }
     padding-top: 12px;
     padding-bottom: 56px;
   }
-  /* 白边画在栏外，正文和图仍是 680px，不会把栏挤窄，也不占滚动宽度。 */
-  .shell:has(.reader-grid) .reader-grid { box-shadow: 0 0 0 16px var(--surface); }
+  /* 白边留在栏内。以前用 16px 外扩阴影，阴影盖住右侧分割条，字又贴着栏边，第一笔会被裁掉。
+     正文左右各让出 20px；图用负边距铺回整栏（仍是 680px），不缩进。 */
+  .shell:has(.reader-grid) .reader-grid {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+  .shell:has(.reader-grid) .reader-grid .prose :is(img, video) {
+    width: calc(100% + 40px);
+    max-width: none;
+    margin-left: -20px;
+    margin-right: -20px;
+  }
 }
 @media (min-width: 1280px) {
   .reader-grid, .doc-read { font-size: var(--text-prose-lg); }
@@ -2406,7 +2416,8 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
     min-width: 0;
     height: calc(100dvh - 24px);
     max-height: calc(100dvh - 24px);
-    padding: 0 0 4px 8px;
+    /* 分割条在正文栏外的 8px 槽里。对话区内边距跟栏宽一起伸缩，不要贴着分割条和窗口边。 */
+    padding: 12px 20px 16px 24px;
     border: 0;
     border-radius: 0;
     background: transparent;
