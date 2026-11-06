@@ -15,6 +15,13 @@ def test_reading_column_stays_680_and_chat_collapses_before_it_would_overflow():
     assert "translateY(110%)" in css
     assert "@media (min-width: 1320px)" in css
     assert "minmax(0, var(--reading-column)) 8px minmax(260px, 1fr)" in css
+    # 外扩阴影会盖住 8px 分割条，字又贴着栏边。白边改留在栏内，图仍铺满 680。
+    assert "box-shadow: 0 0 0 16px" not in css
+    assert "padding-left: 20px" in css and "padding-right: 20px" in css
+    assert "margin-left: -20px" in css and "width: calc(100% + 40px)" in css
+    wide = css.split("@media (min-width: 1320px)", 1)[1]
+    assert "padding: 0 0 4px 8px" not in css
+    assert "padding: 12px 20px 16px 24px" in wide
     assert "data-chat-ratio" in css
     assert "col-resize" in css
     assert ".is-chat-closed" in css
