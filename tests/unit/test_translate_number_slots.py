@@ -118,6 +118,15 @@ def _problem(source: str, target: str) -> str | None:
     ("Growth was between 10 and 15 percent.", "增长在10%到15%之间。"),
     ("One billion PCs were already in use.", "已经有十亿台电脑在使用。"),
     ("A million users joined.", "百万用户加入了。"),
+    ("That was in November, 2014, and again in November, 2014.", "那是在2014年11月，后来又是2014年11月。"),
+    ("Rules changed as of August, 2005.", "规则在2005年8月变了。"),
+    ("Press enter. (Try twice)", "按回车。（试两次）"),
+    ("The gap was twice as large.", "差距有两倍大。"),
+    ("Growth was double-digit.", "增长是两位数。"),
+    ("On startup, click on Other.", "第一步：启动时点击“其他”。"),
+    ("It is the after-the-fact and before-the-fact distinction.", "这是事后和事前这两种区分。"),
+    ("Consider the two bugs, local access or the network.", "想想这两个漏洞，本地访问或网络这两种方式。"),
+    ("The spin-out was a few years ago and the premium was 46%.", "分拆是两三年前的事，溢价是46%。"),
     ("That was the critical point a decade ago.", "那是十年前的关键节点。"),
     ("GitHub mattered a century ago in this note.", "在这篇笔记里，GitHub 是一百年前的事。"),
 ])
@@ -171,6 +180,11 @@ def test_archive_patterns_pass_the_slot_number_check(source, target):
     ("Sales were between $10 and $15 billion.", "销售额在10亿到15亿美元之间。"),
     ("One billion PCs were already in use.", "已经有一亿台电脑在使用。"),
     ("That was the critical point a decade ago.", "那是五年前的关键节点。"),
+    ("That was in November, 2014.", "那是在2015年11月。"),
+    ("Press enter. (Try twice)", "按回车。（试三次）"),
+    ("Consider the two bugs this week.", "想想本周的三个漏洞。"),
+    ("There are 5 companies in the sample.", "样本里有3家公司。"),
+    ("On startup, click on Other.", "第五步：启动时点击“其他”。"),
 ])
 def test_changed_amounts_dates_and_versions_still_fail_the_slot(source, target):
     assert _problem(source, target) == "numbers"

@@ -197,6 +197,12 @@ def _align(source: list[Fact], target: list[Fact]) -> bool:
     if len(floaters) > 10:
         seq.extend(Fact("soft", fact.key, hard=False) for fact in floaters[10:])
         floaters = floaters[:10]
+    # 原文里出现过的 1–9。用来判断译文多出来的「两种 / 第一步」是在数已经有的东西，
+    # 还是把 two 改成了三。
+    small = {
+        fact.key for fact in source
+        if fact.key.isdigit() and 1 <= int(fact.key) <= 9
+    }
     limits = tuple(len(buckets[kind]) for kind in _ORDERED_KINDS)
     start = (0, 0, (0,) * len(_ORDERED_KINDS), 0)
     seen = {start}
@@ -235,7 +241,20 @@ def _align(source: list[Fact], target: list[Fact]) -> bool:
             if mask & bit or not _compatible(floater, target[j], bare_quarter=False):
                 continue
             add((i, j + 1, cursors, mask | bit))
+        if _optional_count(target[j], small):
+            add((i, j + 1, cursors, mask))
     return False
+
+
+def _optional_count(fact: Fact, source_small: set[str]) -> bool:
+    """并列项常被写成「两种」「第一步」，原文并没有这个数。
+
+    只放过 1–4 的裸数字。原文已经有别的 1–9 时，不能拿一个新的个数换掉它。
+    金额仍是 qty，``$2`` 写成别的数不会从这里漏过去。
+    """
+    if fact.kind != "literal" or fact.key not in {"1", "2", "3", "4"}:
+        return False
+    return not source_small or fact.key in source_small
 
 
 def _compatible(left: Fact, right: Fact, *, bare_quarter: bool = True) -> bool:
@@ -918,7 +937,7 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     (re.compile(
         r"(?P<m>\d{1,2})\s*月\s*(?P<d>\d{1,2})\s*[日号]\s*[，,]\s*(?P<y>\d{4})\s*年",
     ), _on_full_zh),
-    (re.compile(rf"\b(?P<m>{_MONTH_RE})\.?\s+(?P<y>\d{{4}})\b", re.I), _on_month_year),
+    (re.compile(rf"\b(?P<m>{_MONTH_RE})\.?,?\s+(?P<y>\d{{4}})\b", re.I), _on_month_year),
     (re.compile(r"(?P<y>\d{4})\s*年\s*(?P<m>\d{1,2})\s*月"), _on_year_month),
     (re.compile(rf"\b(?P<m>{_MONTH_RE})\.?\s+(?P<d>\d{{1,2}})(?:st|nd|rd|th)?\b", re.I), _on_month_day),
     (re.compile(r"(?P<m>\d{1,2})\s*月\s*(?P<d>\d{1,2})\s*[日号]"), _on_month_day_zh),
@@ -1017,6 +1036,8 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     ), _on_out_of),
     (re.compile(r"\b(?P<y>(?:19|20)\d{2})\s*[-–—]\s*(?P<yy>\d{2})\b"), _on_year_span),
     (re.compile(r"\b(?:both|either)\b", re.I), _on_both),
+    (re.compile(r"\b(?:twice|twofold|doubled?)\b", re.I), lambda _m: Fact("soft", "2", hard=False)),
+    (re.compile(r"\b(?:thrice|threefold|tripled)\b", re.I), lambda _m: Fact("soft", "3", hard=False)),
     (re.compile(r"\b(?:a\s+)?half(?:\s*-\s*|\s+)(?:a\s+)?dozen\b", re.I), lambda _m: Fact("soft", "6", hard=False)),
     (re.compile(r"\ba\s+dozen\b", re.I), lambda _m: Fact("soft", "12", hard=False)),
     (re.compile(r"\b(?:decades?|centur(?:y|ies))\b", re.I), _on_decade),
