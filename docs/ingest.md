@@ -123,6 +123,21 @@ docker compose exec app research-crawl-wechat --source gudujinhuati             
 - 归档写在 `data/inbox/<来源>/`：`md/<年>/<日期>-<sn>.md` 开头是「- 作者：」「- 时间：…(UTC+8)」「- sn：」「- 原链接：」，和以前导入的公众号归档一样；`raw/articles/<sn>.json` 是极致了的列表项。写完按 `--origin crawl` 导入（外部 id 是归档里的相对路径），图片留图床地址，由脚本接着跑的 `research-fetch-images` 下载。
 - 列表查不到（key 不对、余额不足、限速）或者有文章正文两条路都取不到时退出码 1，`data/status/crawl-gudujinhuati.json`（方伟公众号是 `crawl-fangwei-mp.json`）记成失败。
 
+### 方伟公众号老文章的图
+
+11 月 7 日以前入库的方伟公众号文章，正文是极致了的，图按段估的位置（第 N 张图放在第 N 段后面）。`research-place-wechat-images` 按公众号原文页把图挪回原位，`scripts/crawl-fangwei-mp.sh` 每次导入之后跑一批（`PLACE_LIMIT`，默认 50 篇，新的先看）：
+
+```bash
+docker compose exec app research-place-wechat-images --source fangwei-mp --dry-run --limit 20   # 照样取原文页、算怎么挪，不写库
+docker compose exec app research-place-wechat-images --source fangwei-mp --limit 50
+```
+
+- 只取原文页（`#js_content`），不花钱，两次之间隔 2 秒。字一个不改，只挪单独成行的图：两边的字只比字母、数字和汉字（标点、空白、加粗、链接地址都不算），对齐后把原文页上每张图前面的那个字对到库里的正文里，图放到离它最近的行与行之间。行里的字不拆。
+- 哪张图是原文页上的哪张：图床地址里图片的 id 对得上就按 id，对不上或者是归档里带的本地文件，两边张数一样就按先后。张数不一样、先后不一样、字有一成以上对不上、有图和字在同一行，都不挪，原因记在 `raw_meta.images_checked`（这一版规则下不再取；规则改了加 `wechat_layout.LAYOUT_VERSION`，会再看一遍），阅读页照旧按识图挪。
+- 挪好的和新抓的一样记 `raw_meta.images = "page"`。作者写的字没变，导入认作「只是图挪了位置」：不记旧版，观点、摘要的哈希跟过来，不重抽；检索块和提及按新正文重算（块里的字和原来一样）。归档文件不改：整目录重新导入时，库里按原文页摆好的留着，归档里同样的字、同样的图只是位置不同就不覆盖；作者改了字照常替换，替换后又等着重新摆。
+- 原文已删除、因违规不能看的记下不再取。微信要验证就这次先停；连着 3 篇取不到原文页（连不上、页面认不出）也先停，这几篇不记，下次再看。只有写库出错时退出码非 0。
+- 还剩多少：`--dry-run --limit 0` 打出「等着按原文页摆图的」篇数。
+
 ## 外链图片
 
 以前从 AIHOT 导入的文章不带图，Markdown 里的 http 图片导入时也不下载，页面上原来只显示「外部图片已省略」；原文删了以后图床地址也可能失效，图表和截图就没了。`research-fetch-images` 把正文里的外链图片（Markdown 图片、`<img>` 的 `src` 和公众号懒加载的 `data-src`）下载下来，按内容哈希存进 `data/images/remote/`，文章页和备份都和归档里的图一样对待：

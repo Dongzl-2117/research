@@ -20,7 +20,14 @@ from researchlib.mentions import (
     mentions_for_document,
     replace_mentions,
 )
-from researchlib.revisions import article_text, held_before, judge_replacement, save_revision, split_comments
+from researchlib.revisions import (
+    article_text,
+    held_before,
+    images_moved_only,
+    judge_replacement,
+    save_revision,
+    split_comments,
+)
 from researchlib.sources import Source
 from researchlib.textutil import SHANGHAI, content_hash
 from researchlib.visibility import HIDDEN, SHORT_POST
@@ -188,6 +195,11 @@ def _keep_filled_clock(existing, doc: ParsedDoc) -> None:
     doc.raw_meta.update({key: old[key] for key in ("date_source", "time_known", "calendar_day") if key in old})
 
 
+def _images_from_page(meta) -> bool:
+    """图的位置照公众号原文页（新抓的归档头「- 图片位置：原文页」，或按原文页挪过的老文章）。"""
+    return (meta or {}).get("images") == "page"
+
+
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
     profile = profile_for(conn, source.id)
     existing = conn.execute(
@@ -211,13 +223,21 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     if existing is not None and existing["content_hash"] != digest:
         old_article, old_comments = split_comments(existing["body_md"])
         new_article, new_comments = split_comments(doc.body_md)
-        if (old_article == new_article and existing["title"] == doc.title) or (
-            article_text(existing["body_md"]) == article_text(doc.body_md)
+        moved_only = images_moved_only(old_article, new_article)
+        if (
+            (old_article == new_article and existing["title"] == doc.title)
+            or article_text(existing["body_md"]) == article_text(doc.body_md)
+            or moved_only
         ):
             # 作者写的正文没变：只是接在后面的「评论里的回复」变了，或者归档头里的点赞、阅读数变了、
-            # 标题换了补法。不算改稿。回复少了（这次导出没带评论，或者回复被删了）时库里那份更全，不动。
+            # 标题换了补法，或者只是图挪了位置。不算改稿。回复少了（这次导出没带评论，或者回复被删了）
+            # 时库里那份更全，不动。
             article_changed = False
-            keep = len(new_comments) < len(old_comments)
+            keep = len(new_comments) < len(old_comments) or (
+                # 库里的图已经按公众号原文页摆过（researchlib.wechat_layout），归档里还是极致了估的位置：
+                # 留库里的。归档整目录每次都重新导入，不留的话每抓一次就退回估的位置。
+                moved_only and _images_from_page(existing["raw_meta"]) and not _images_from_page(doc.raw_meta)
+            )
             same_words = new_comments == old_comments
         else:
             held = _hold_if_suspicious(
