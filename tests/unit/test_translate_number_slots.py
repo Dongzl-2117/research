@@ -154,6 +154,30 @@ def _problem(source: str, target: str) -> str | None:
     ("The service is about $100/month and the content is about $60/subscriber.",
      "这项服务平均每月约100美元，内容成本约为每位订户60美元。"),
     ("Turner made $0.80 for every $1.", "特纳每获得1美元，就能获得约0.80美元。"),
+    ("The letter goes out every two weeks.", "这封信每两周发出一次。"),
+    ("The letter goes out every 2 weeks.", "这封信每两周发出一次。"),
+    ("Maintenance runs every two days.", "维护每两天做一次。"),
+    ("It costs $10 every two weeks.", "费用是每两周10美元。"),
+    ("The letter goes out every week.", "这封信每周发出一次。"),
+    ("One day everyone will use it.", "有一天每个人都会用它。"),
+    ("One day, the market will notice.", "总有一天市场会注意到。"),
+    ("The cloud business could one day help it generate $150 billion in revenue.",
+     "这项云业务有朝一日能帮助其创造1500亿美元的收入。"),
+    ("Nvidia believed the cloud business could one day help it generate $150 billion in revenue.",
+     "英伟达当时认为，这项云业务有朝一日能帮助其创造 1,500 亿美元的收入。"),
+    ("It is one day of football.", "这是一天的橄榄球。"),
+    ("The fix took one day.", "修复花了一天。"),
+    ("It arrived one day later.", "一天后到了。"),
+    ("Wait up to one day.", "最多等一天。"),
+    ("A day will come when this matters.", "总有一天这会变得重要。"),
+    ("A couple of weeks later the note resurfaced.", "两周后这篇笔记又冒出来了。"),
+    ("A couple of weeks later the note resurfaced.", "2周后这篇笔记又冒出来了。"),
+    ("From three to five hours.", "花了3至5小时。"),
+    ("From one to seven days.", "一至七天。"),
+    ("The outage lasted less than 24 hours.", "故障不到 24 小时就结束了。"),
+    ("In the early 80s the market shifted.", "市场在20世纪80年代初变了。"),
+    ("It may be like Apple — the 80s version.", "它可能像苹果——而且是80年代那个苹果。"),
+    ("The archive covers the 2010s.", "档案覆盖21世纪10年代。"),
     ("Week of March 25-29, 2013", "2013年3月25日至29日这一周"),
 ])
 def test_archive_patterns_pass_the_slot_number_check(source, target):
@@ -511,6 +535,155 @@ _LIVE_FALSE_REJECTS = [
 
 
 # 版本 5 实跑的八段。前两篇在版本 4 能过，版本 5 把「一周 / 8天」和每月标价判错。
+# 版本 6 实跑五个失败槽的原样 HTML。字句与附件一致，不改译文。
+_V6_EXACT_SLOTS = [
+    (
+        21998,
+        (
+            "<p data-src-para=\"1\">In the wake of "
+            "the #MeToo movement, countless women"
+            " have taken to Facebook to express t"
+            "heir frustration and disappointment "
+            "with men and have been promptly shut"
+            " down or silenced, banned from the p"
+            "latform for periods ranging from one"
+            " to seven days.</p>"
+        ),
+        (
+            "<p data-src-para=\"1\">在 #MeToo 运动之后，无"
+            "数女性在 Facebook 上表达她们对男性的不满和失望，却迅速被封禁或"
+            "禁言，被禁止使用该平台1至7天。</p>"
+        ),
+    ),
+    (
+        22065,
+        (
+            "<p>As the week draws to a close, it’"
+            "s definitely been a long one for App"
+            "le’s software engineers. The nightma"
+            "re started on Tuesday, after a Twitt"
+            "er user disclosed a critical securit"
+            "y vulnerability for macOS High Sierr"
+            "a that allowed anyone with physical "
+            "access to a Mac to gain system admin"
+            "istrator privileges without even ent"
+            "ering a password. As software bugs g"
+            "o, this one was embarrassing and cri"
+            "tical, but Apple managed to fix it l"
+            "ess than 24 hours after it was publi"
+            "cly disclosed.<br> “Security is a to"
+            "p priority for every Apple product, "
+            "and regrettably we stumbled with thi"
+            "s release of macOS,” admitted an App"
+            "le spokesperson. “We greatly regret "
+            "this error and we apologize to all M"
+            "ac users, both for releasing with th"
+            "is vulnerability and for the concern"
+            " it has caused. Our customers deserv"
+            "e better. We are auditing our develo"
+            "pment processes to help prevent this"
+            " from happening again.”</p>"
+        ),
+        (
+            "<p>随着本周接近尾声，对苹果的软件工程师来说，这无疑是漫长的一周。噩梦"
+            "始于周二：一名 Twitter 用户披露了 macOS High Sie"
+            "rra 的一个严重安全漏洞，任何人只要能够物理接触一台 Mac，甚至无需"
+            "输入密码，就能获得系统管理员权限。就软件缺陷而言，这个漏洞既令人难堪又极"
+            "其严重，但苹果在漏洞公开披露后不到 24 小时内就完成了修复。<br>“"
+            "安全是每一款苹果产品的首要任务，遗憾的是我们在这次 macOS 发布上出"
+            "了差错。”苹果发言人承认道，“我们对这一错误深表遗憾，并向所有 Mac "
+            "用户致歉，既为发布时带有这一漏洞，也为它造成的担忧。我们的用户理应得到更"
+            "好的产品。我们正在审查开发流程，以帮助防止此类事件再次发生。” </p>"
+        ),
+    ),
+    (
+        21985,
+        (
+            "<p>Beginning in the late 90s two new"
+            " broadband technologies began to bec"
+            "ome available: cable modems and DSL "
+            "over phone lines. DSL was a big impr"
+            "ovement over dial-up, offering faste"
+            "r speeds, always-on connectivity, th"
+            "e ability to still use your phone li"
+            "ne for voice calls, etc. And, keepin"
+            "g with the established regulatory re"
+            "gime for telephone lines, DSL servic"
+            "es were also covered by Title II, wh"
+            "ich meant that multiple ISPs could u"
+            "se the telephone lines. Cable modems"
+            ", though, were unregulated (and thus"
+            " ISP service was held exclusively by"
+            " cable companies).</p>"
+        ),
+        (
+            "<p>从20世纪90年代末开始，两种新的宽带技术逐渐面世：电缆调制解调器"
+            "和通过电话线提供的DSL。DSL相比拨号上网是一大进步：速度更快、可始终"
+            "在线，还能继续用电话线打语音电话，等等。而且，按照电话线路既有的监管制度"
+            "，DSL服务也受Title II约束，这意味着多家ISP可以使用电话线路"
+            "。不过，电缆调制解调器不受监管（因此ISP服务完全由有线电视公司把持）。"
+            "</p>"
+        ),
+    ),
+    (
+        21934,
+        (
+            "<p>This ethos pervades every part of"
+            " Meredith, from editorial content (c"
+            "urated by title to multiple demograp"
+            "hics) to business models (circulatio"
+            "n plus ads plus content marketing pl"
+            "us the second most valuable brand li"
+            "censing program after Disney) to bac"
+            "k-end integration (Meredith has an a"
+            "verage of 800 data points on 100 mil"
+            "lion American women). The company ma"
+            "y look like a publisher and call its"
+            "elf a marketer, but, to <a href=\"htt"
+            "p://www.berkshirehathaway.com/letter"
+            "s/1991.html\">reference a Warren Buff"
+            "ett letter</a> I’ve <a href=\"../2016"
+            "/how-the-snap-spectacles-story-broke"
+            "-facebook-overestimated-video-metric"
+            ".md\">referenced</a> <a href=\"espns-c"
+            "uts-espns-history-espn-from-franchis"
+            "e-to-business.md\">before</a>, Meredi"
+            "th is a <em>business</em>:</p>"
+        ),
+        (
+            "<p>这种理念渗透到梅雷迪思的每个部分，从编辑内容（按刊物针对不同人群精"
+            "心策划）到商业模式（发行量加广告加内容营销，再加上仅次于迪士尼的全球第二"
+            "值钱的品牌授权项目），再到后端整合（梅雷迪思对1亿美国女性平均掌握800"
+            "个数据点）。这家公司看起来像出版商，也自称营销公司，但借用<a href"
+            "=\"http://www.berkshirehathaway.com/l"
+            "etters/1991.html\">沃伦·巴菲特的一封信</a>——我<"
+            "a href=\"../2016/how-the-snap-spectac"
+            "les-story-broke-facebook-overestimat"
+            "ed-video-metric.md\">之前</a>曾<a href=\""
+            "espns-cuts-espns-history-espn-from-f"
+            "ranchise-to-business.md\">引用</a>过——的话"
+            "来说，梅雷迪思是一门<em>生意</em>：</p>"
+        ),
+    ),
+    (
+        22054,
+        (
+            "<p>Last year Turner made about $0.80"
+            " in advertising revenue for every $1"
+            " in subscription revenue; applying t"
+            "hat ratio to our hypothetical market"
+            " means a further $2.9 million in hig"
+            "h margin advertising revenue per mon"
+            "th.</p>"
+        ),
+        (
+            "<p>去年，特纳每获得1美元订阅收入，就产生约0.80美元的广告收入；把"
+            "这个比例套用到我们假设的市场，意味着每月还能带来290万美元的高利润率广"
+            "告收入。</p>"
+        ),
+    ),
+]
+
 _V6_REGRESSIONS = [
     (
         21926,
@@ -593,7 +766,7 @@ _V6_REGRESSIONS = [
 ]
 
 
-@pytest.mark.parametrize(("article_id", "source", "target"), _V6_REGRESSIONS)
+@pytest.mark.parametrize(("article_id", "source", "target"), _V6_REGRESSIONS + _V6_EXACT_SLOTS)
 def test_v6_live_regressions_match(article_id, source, target):
     assert same_numeric_facts(source, target) is True, article_id
     assert pr.leaf_problem(source, target) is None
@@ -611,8 +784,22 @@ def test_duration_units_and_per_period_prices_keep_their_facts():
     assert ("duration", "day:8") in keys("eight personal days")
     assert ("duration", "day:8") in keys("8天")
     assert ("duration", "day:12") in keys("十二天")
-    assert ("duration", "week:~2") in keys("a couple of weeks")
-    assert ("duration", "week:~2") in keys("几周")
+    assert ("duration", "week:couple") in keys("a couple of weeks")
+    assert ("duration", "week:~") in keys("a few weeks")
+    assert ("duration", "week:~") in keys("几周")
+    assert ("duration", "week:2") in keys("两周")
+    assert keys("every two weeks") == [("duration", "week:2")]
+    assert keys("每两周") == [("duration", "week:2")]
+    assert keys("every week") == []
+    assert keys("每周") == []
+    assert not any(kind == "duration" for kind, _key in keys("could one day help"))
+    assert not any(kind == "duration" for kind, _key in keys("有一天每个人都会"))
+    assert not any(kind == "duration" for kind, _key in keys("有朝一日"))
+    assert not any(kind == "duration" for kind, _key in keys("将来某天"))
+    assert ("duration", "day:1") in keys("one day later")
+    assert ("duration", "day:1") in keys("one day of football")
+    assert ("duration", "day:1") in keys("it took one day")
+    assert keys("the day of the report") == []
     assert ("duration", "week:2") in keys("two weeks")
     assert ("duration", "week:some") in keys("the weeks prior")
     assert ("duration", "week:some") in keys("前几周")
@@ -662,6 +849,26 @@ def test_live_false_rejects_now_match(article_id, source, target):
     ("I charge $10/month or $100/year.", "我收费是每月10美元。"),
     ("The service is about $100/month and the content is about $60/subscriber.",
      "这项服务平均每月约100美元。"),
+    ("The letter goes out every two weeks.", "这封信每3周发出一次。"),
+    ("The letter goes out every two weeks.", "这封信每两天发出一次。"),
+    ("The letter goes out every two days.", "这封信每两周发出一次。"),
+    ("It resurfaced a few weeks later.", "两周后又冒出来了。"),
+    ("It resurfaced a few weeks later.", "三周后又冒出来了。"),
+    ("It resurfaced a couple of weeks later.", "三周后又冒出来了。"),
+    ("It resurfaced a couple of days later.", "两周后又冒出来了。"),
+    ("Banned for one to seven days.", "被禁1至8天。"),
+    ("Banned for one to seven days.", "被禁1至7周。"),
+    ("Banned for two to seven days.", "被禁1至7天。"),
+    ("Fixed in less than 24 hours.", "不到 24 天就修好了。"),
+    ("Fixed in less than 24 hours.", "不到 25 小时就修好了。"),
+    ("Beginning in the late 90s.", "从20世纪80年代末开始。"),
+    ("Beginning in the late 90s.", "从19世纪90年代末开始。"),
+    ("800 data points on 100 million women.", "对1亿人掌握100个数据点。"),
+    ("Profit was 10 then 20.", "先是20然后是10。"),
+    ("Made $0.80 for every $1.", "每获得0.80美元，就产生约1美元。"),
+    ("One day everyone will use it.", "一天后每个人都会用它。"),
+    ("The fix took one day.", "有一天就修好了。"),
+    ("It is one day of football.", "这是将来某天的橄榄球。"),
 ])
 def test_scale_digit_and_clock_changes_still_fail(source, target):
     assert same_numeric_facts(P(source), P(target)) is False

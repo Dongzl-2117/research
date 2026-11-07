@@ -819,7 +819,7 @@ _A_MOD_OK = {
     "additional", "further", "other", "first", "second", "third", "fourth", "fifth",
     "sixth", "seventh", "eighth", "ninth", "tenth", "last", "next", "past",
 }
-# couple / few / 几 是大约两个，不是写死的 two。
+# couple 大约就是两个，可以写成两、2 或几。few / 几 仍是没写死的小数，不能收成确切的 2。
 _APPROX_TWO = {"couple", "few", "几"}
 _DURATION_SKIP = {
     "of", "and", "or", "to", "in", "on", "for", "per", "than", "from", "with", "by", "at",
@@ -830,8 +830,10 @@ _DURATION_SKIP = {
 
 def _duration_count(raw: str) -> str | None:
     text = raw.strip().lower()
-    if text in _APPROX_TWO:
-        return "~2"
+    if text == "couple":
+        return "couple"
+    if text in {"few", "几"}:
+        return "~"
     if text in {"a", "an"}:
         return "1"
     if text.isdigit():
@@ -851,6 +853,16 @@ def _duration_unit(raw: str) -> str | None:
     return _DURATION_UNIT.get(raw.lower(), _DURATION_UNIT.get(raw))
 
 
+def _durations_match(source: str, target: str) -> bool:
+    """couple 可以写成两、2 或几。few 只和几相等。two 不能收成几。"""
+    if source == target:
+        return True
+    if source.endswith(":couple"):
+        stem = source[: -len("couple")]
+        return target in {f"{stem}2", f"{stem}~", f"{stem}couple"}
+    return False
+
+
 def _duration_fact(unit_raw: str, count: str) -> Fact | None:
     unit = _duration_unit(unit_raw)
     if unit is None:
@@ -858,11 +870,11 @@ def _duration_fact(unit_raw: str, count: str) -> Fact | None:
     return Fact("duration", f"{unit}:{count}")
 
 
-def _durations_match(source: str, target: str) -> bool:
-    """同一单位、同一个数。原文的 couple/few/几 可以写成两；原文写明 two 不能收成几。"""
-    if source == target:
-        return True
-    return source.endswith("~2") and target == source.replace("~2", "2")
+def _explicit_interval(raw_n: str | None) -> bool:
+    """every two weeks、每两周写明了间隔个数。a/an 和没写数的每周不是。"""
+    if not raw_n:
+        return False
+    return raw_n.strip().lower() not in {"a", "an"}
 
 
 def _rate_not_duration(text: str, start: int, end: int) -> bool:
@@ -903,8 +915,11 @@ def _each_copies(text: str, start: int) -> int:
     return 1
 
 
-def _emit_duration(text: str, start: int, end: int, unit_raw: str, count: str) -> Fact | list[Fact] | None:
-    if _rate_not_duration(text, start, end):
+def _emit_duration(
+    text: str, start: int, end: int, unit_raw: str, count: str, raw_n: str | None = None,
+) -> Fact | list[Fact] | None:
+    # 写明的个数不能因为「每 / every」丢掉；没写个数的每周、once a week 才不是硬时段。
+    if not _explicit_interval(raw_n) and _rate_not_duration(text, start, end):
         return None
     fact = _duration_fact(unit_raw, count)
     if fact is None:
@@ -932,8 +947,11 @@ def _on_en_duration(match: re.Match[str]) -> Fact | list[Fact] | None:
         for word in mods
     ):
         return None
-    if any(word in _APPROX_TWO for word in mods) or (raw_n or "").lower() in _APPROX_TWO:
-        count = "~2"
+    head = (raw_n or "").lower()
+    if "couple" in mods or head == "couple":
+        count = "couple"
+    elif "few" in mods or head in {"few", "几"}:
+        count = "~"
     elif groups.get("vague"):
         count = "some"
     elif raw_n:
@@ -958,7 +976,49 @@ def _on_en_duration(match: re.Match[str]) -> Fact | list[Fact] | None:
         count = "1"
     if count is None:
         return None
-    return _emit_duration(match.string, match.start(), match.end(), unit, count)
+    if _en_someday(match.string, match.start(), match.end(), raw_n, unit):
+        # 占住 one/a day，避免再落成软的 1，从而放过译文里多出来的「一个」。
+        return Fact("soft", "someday", hard=False)
+    return _emit_duration(match.string, match.start(), match.end(), unit, count, raw_n)
+
+
+def _en_someday(text: str, start: int, end: int, raw_n: str | None, unit: str) -> bool:
+    """``could one day help``、``one day everyone will`` 是「有朝一日」，不是量出来的一天。
+
+    ``one day later``、``one day of``、``up to one day``、``it took one day`` 仍是一天。
+    """
+    if _duration_unit(unit) != "day" or (raw_n or "").lower() not in {"one", "a", "an"}:
+        return False
+    before = text[max(0, start - 24):start]
+    after = text[end:end + 48]
+    if re.match(
+        r"\s+(?:later|ago|after|before|off|long|of|more|only|prior|earlier|left|out)\b",
+        after,
+        re.I,
+    ):
+        return False
+    if re.search(
+        r"\b(?:for|in|within|after|before|over|during|another|spend|spent|spending|"
+        r"take|took|taken|takes|taking|last|lasts|lasted|lasting|wait|waited|waiting|"
+        r"need|needed|give|given|gave|about|around|just|only|per|once|up\s+to)\s+$",
+        before,
+        re.I,
+    ):
+        return False
+    if re.search(r"\b(?:could|would|might|may|can|will)\s+$", before, re.I):
+        return True
+    # hope to one day。up to one day 已在上面当成量出来的上限。
+    if re.search(r"\bto\s+$", before, re.I):
+        return True
+    if re.match(r"\s*,", after):
+        return True
+    if re.match(r"\s+will\s+come\b", after, re.I):
+        return True
+    return re.match(
+        r"\s+(?:it|he|she|they|we|you|i|there|someone|people|everybody|everyone|this|that)\b",
+        after,
+        re.I,
+    ) is not None
 
 
 def _on_zh_duration(match: re.Match[str]) -> Fact | list[Fact] | None:
@@ -973,6 +1033,8 @@ def _on_zh_duration(match: re.Match[str]) -> Fact | list[Fact] | None:
         return None
     if raw_n == "一" and unit in {"天", "日"} and match.string[max(0, match.start() - 1):match.start()] == "的":
         return None
+    if _zh_someday(match.string, match.start(), match.end(), raw_n, unit):
+        return Fact("soft", "someday", hard=False)
     # 前几周、近几个月是没写死个数的一段时间；单独的几周仍是 couple/few。
     if pre in {"前", "近"} and raw_n == "几":
         count = "some"
@@ -982,7 +1044,72 @@ def _on_zh_duration(match: re.Match[str]) -> Fact | list[Fact] | None:
         count = "1"
     if count is None:
         return None
-    return _emit_duration(match.string, match.start(), match.end(), unit, count)
+    return _emit_duration(match.string, match.start(), match.end(), unit, count, raw_n)
+
+
+def _zh_someday(text: str, start: int, end: int, raw_n: str | None, unit: str) -> bool:
+    """「有一天 / 总有一天 / 某一天」是将来，不是数出来的一天。后面跟着后、时间、假仍是一天。"""
+    if raw_n != "一" or unit not in {"天", "日"}:
+        return False
+    after = text[end:end + 6]
+    if re.match(r"(?:后|之后|以前|之前|时间|假|左右|内|里)", after):
+        return False
+    pre = text[max(0, start - 3):start]
+    return "有" in pre or pre.endswith("某")
+
+
+def _on_duration_span(match: re.Match[str]) -> list[Fact] | None:
+    """``one to seven days`` 和 ``1至7天`` 是同一段起止，单位共用，顺序不能反。"""
+    unit = _duration_unit(match.group("u"))
+    left, right = _duration_count(match.group("n")), _duration_count(match.group("m"))
+    if unit is None or left is None or right is None or left in {"couple", "~"} or right in {"couple", "~"}:
+        return None
+    return [Fact("duration", f"{unit}:{left}"), Fact("duration", f"{unit}:{right}")]
+
+
+def _on_prior_one(match: re.Match[str]) -> Fact | None:
+    """``the week ... a long one`` 里的 one 回指刚才的周、天、小时，不是另外一个 1。"""
+    before = re.split(r"[.!?。！？]", match.string[max(0, match.start() - 240):match.start()])[-1]
+    found = list(re.finditer(r"\b(?:weeks?|months?|days?|hours?)\b|个月|小时|周|天", before, re.I))
+    if not found:
+        return None
+    raw = found[-1].group(0)
+    return _duration_fact(raw, "1")
+
+
+def _on_en_decade(match: re.Match[str]) -> Fact:
+    """``late 90s`` 是 1990 年代。30–99 落在 20 世纪，00–29 落在 21 世纪。"""
+    yy = int(match.group("yy"))
+    base = 1900 + yy if yy >= 30 else 2000 + yy
+    return Fact("decade", str(base))
+
+
+def _on_zh_decade(match: re.Match[str]) -> Fact:
+    """``20世纪90年代末`` 是 1990 年代。世纪序数不是另外一个 20。"""
+    century, yy = int(match.group("c")), int(match.group("yy"))
+    return Fact("decade", str((century - 1) * 100 + yy))
+
+
+def _tally(points: Decimal | None, people: Decimal | None) -> Fact | None:
+    if points is None or people is None:
+        return None
+    return Fact("tally", f"{_qty_key(points)}/{_qty_key(people)}")
+
+
+def _on_points_en(match: re.Match[str]) -> Fact | None:
+    people = _decimal(match.group("people"))
+    scale = (match.group("scale") or "").lower()
+    if people is None or scale not in _SCALE_EXP:
+        return None
+    return _tally(_decimal(match.group("points")), people.scaleb(_SCALE_EXP[scale]))
+
+
+def _on_points_zh(match: re.Match[str]) -> Fact | None:
+    people = _decimal(match.group("people"))
+    scale = match.group("ps")
+    if people is None or scale not in _SCALE_EXP:
+        return None
+    return _tally(_decimal(match.group("points")), people.scaleb(_SCALE_EXP[scale]))
 
 
 def _on_duration(match: re.Match[str]) -> Fact | None:
@@ -994,7 +1121,7 @@ def _on_duration(match: re.Match[str]) -> Fact | None:
 
 
 _RATIO_LINK = re.compile(
-    r"对应|相当于|就能|就有|就会|就可以|获得|带来|换成|换得|换来|得到",
+    r"对应|相当于|就能|就有|就会|就可以|获得|带来|产生|产出|换成|换得|换来|得到",
 )
 _RATIO_NOISE = re.compile(
     r"\d|%|％|每位|订户|每月|每年|每周|每天|每个月|小时|个月|"
@@ -1321,9 +1448,43 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     ), _on_en_duration),
     (re.compile(r"\b(?P<u>week)\s+of\b", re.I), _on_en_duration),
     (re.compile(
+        r"\ba(?:\s+[A-Za-z]+){1,2}\s+one\b",
+        re.I,
+    ), _on_prior_one),
+    (re.compile(
+        rf"\b(?:from\s+)?(?P<n>{_TENS}-(?:{_ONES})|{_TENS}|{_ONES}|ten|eleven|twelve|\d{{1,3}})"
+        rf"\s+(?:to|through)\s+"
+        rf"(?P<m>{_TENS}-(?:{_ONES})|{_TENS}|{_ONES}|ten|eleven|twelve|\d{{1,3}})"
+        rf"\s+(?P<u>weeks?|months?|days?|hours?)\b",
+        re.I,
+    ), _on_duration_span),
+    (re.compile(r"\b(?P<full>(?:19|20)\d{2})s\b"), lambda match: Fact(
+        "decade", str(int(match.group("full")) // 10 * 10),
+    )),
+    (re.compile(
+        r"\b(?:the|late|early|mid|middle)\s+(?P<yy>\d{2})s\b",
+        re.I,
+    ), _on_en_decade),
+    (re.compile(
+        r"(?P<c>[12]\d)\s*世纪\s*(?P<yy>\d{2})\s*年代",
+    ), _on_zh_decade),
+    (re.compile(r"(?<!世纪)(?<![0-9])(?P<yy>\d{2})\s*年代"), _on_en_decade),
+    (re.compile(
+        rf"(?P<points>{_AMOUNT})\s+data\s+points?\s+on\s+(?P<people>{_AMOUNT})\s+"
+        rf"(?P<scale>million|billion|thousand)\b",
+        re.I,
+    ), _on_points_en),
+    (re.compile(
+        rf"(?P<people>{_AMOUNT})\s*(?P<ps>亿|万)[^。\n]{{0,24}}?(?P<points>{_AMOUNT})\s*个\s*数据点",
+    ), _on_points_zh),
+    (re.compile(
+        rf"(?P<points>{_AMOUNT})\s*个\s*数据点[^。\n]{{0,24}}?(?P<people>{_AMOUNT})\s*(?P<ps>亿|万)",
+    ), _on_points_zh),
+    (re.compile(
         rf"\b(?:(?P<pre>first|last|next|past|previous|coming|following)\s+)?"
         rf"(?P<n>{_TENS}-(?:{_ONES})|{_TENS}|{_ONES}|ten|eleven|twelve|a|an|few|couple|\d{{1,3}})"
-        rf"(?:\s+(?P<m1>[A-Za-z]+)(?:\s+(?P<m2>[A-Za-z]+))?)?\s+"
+        rf"(?:\s+(?P<m1>(?!(?:every|each|per|once|this|that|the|a|an)\b)[A-Za-z]+)"
+        rf"(?:\s+(?P<m2>(?!(?:every|each|per|once|this|that|the|a|an)\b)[A-Za-z]+))?)?\s+"
         rf"(?P<u>weeks?|months?|days?|hours?)\b",
         re.I,
     ), _on_en_duration),
@@ -1339,9 +1500,16 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     (re.compile(r"\b(?P<n>\d{1,2})(?P<u>mo)\b", re.I), _on_duration),
     (re.compile(
         r"(?<![0-9零〇一二三四五六七八九两])"
+        r"(?P<n>[一二三四五六七八九两]?十[一二三四五六七八九]?|[一二三四五六七八九两]|\d{1,3})"
+        r"\s*(?:至|到|—|–|-)\s*"
+        r"(?P<m>[一二三四五六七八九两]?十[一二三四五六七八九]?|[一二三四五六七八九两]|\d{1,3})"
+        r"\s*(?P<u>星期|小时|个月|周|天)",
+    ), _on_duration_span),
+    (re.compile(
+        r"(?<![0-9零〇一二三四五六七八九两])"
         r"(?:(?<![以])(?P<pre>头|前|近|过去|这|那|本|上|下|每))?"
         r"(?P<n>[一二三四五六七八九两]?十[一二三四五六七八九]?|[一二三四五六七八九两几]|\d{1,3})?"
-        r"个?(?P<u>星期|小时|个月|周|天)(?!刊|期|围|末|[一二三四五六日])",
+        r"\s*个?\s*(?P<u>星期|小时|个月|周|天)(?!刊|期|围|末|[一二三四五六日])",
     ), _on_zh_duration),
     (re.compile(r"(?<![个以])(?P<pre>本|这|上|下)(?P<u>月)(?!个)"), _on_zh_duration),
     (re.compile(
