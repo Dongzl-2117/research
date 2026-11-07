@@ -38,7 +38,13 @@ from researchlib.nested_copies import fold_nested_copies
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.present_text import polish_display_text
-from researchlib.render import flow_ocr_quote_body, images_placed_by_estimate, inline_image_ocr, sanitize_html
+from researchlib.render import (
+    flow_ocr_quote_body,
+    images_placed_by_estimate,
+    inline_image_ocr,
+    lazy_images,
+    sanitize_html,
+)
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import (
     answer_html,
@@ -852,8 +858,8 @@ def _article_view(request: Request, article_id: int, mode: str):
             raw_pairs = marked
         pairs = [
             {
-                "en": Markup(p.en),
-                "zh": Markup(p.zh) if p.zh else None,
+                "en": Markup(lazy_images(p.en)),
+                "zh": Markup(lazy_images(p.zh)) if p.zh else None,
                 "anchor": p.anchor,
                 "repeat_of": p.repeat_of,
             }
@@ -872,9 +878,9 @@ def _article_view(request: Request, article_id: int, mode: str):
     if body_language == "pairs":
         body_html = None
     elif body_language == "zh":
-        body_html = Markup(zh_html) if zh_html else None
+        body_html = Markup(lazy_images(zh_html)) if zh_html else None
     else:
-        body_html = Markup(original_html)
+        body_html = Markup(lazy_images(original_html))
     # 高亮的段落这一页上看得见才算：只看中文时，原文里标的那段不显示。
     if quoted_marked and body_language != "pairs":
         quoted_marked = (body_language == "zh") == (quoted_lang == "zh")
@@ -957,8 +963,8 @@ def _tree_body(conn, article, source):
     html = prepare_body_html(shown_md, polish_display_text(article["title"] or ""), mapping, fmt, link_index, parent)
     # 目录右侧也是阅读：留原图，不把识图文字换进去。飞书的图本来就在原文位置，不挪。
     if not images_placed_by_estimate(source.kind):
-        return Markup(html)
-    return Markup(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
+        return Markup(lazy_images(html))
+    return Markup(lazy_images(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"]))))
 
 
 def _source_tree(request: Request, source_id: str, article_id: int | None):
