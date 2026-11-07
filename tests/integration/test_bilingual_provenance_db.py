@@ -266,3 +266,32 @@ def test_source_change_while_model_is_running_does_not_write_a_stale_result(conn
     finally:
         if other:
             other.close()
+
+
+def test_omission_review_reads_the_stored_receipt_without_writing(conn, settings, monkeypatch, capsys):
+    """漏句抽查按库里的回执取段，问完只打印，不碰译文、回执和尝试记录。"""
+    from researchlib.translate import cli_qa, omission
+
+    article_id = article(conn, settings)
+    monkeypatch.setattr(service, "chat_json", model)
+    service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    before = snapshot(conn, article_id)
+    pairs = omission.receipt_pairs(omission.load_receipt(conn, article_id))
+    assert [(pair.en, pair.zh) for pair in pairs] == [
+        ("First paragraph 10 dollars.", "第一段10美元."), ("Second paragraph 20 dollars.", "第二段20美元."),
+    ]
+
+    def reviewer(**kwargs):
+        rows = [{"i": index, "missing": ["20 dollars"]} for index, pair in enumerate(kwargs["user"]["pairs"])
+                if "Second" in pair["en"]]
+        return ChatJsonResult(data={"t": rows}, model="synthetic-model", usage={"prompt_tokens": 50}, latency_ms=0)
+
+    monkeypatch.setattr(omission, "chat_json", reviewer)
+    monkeypatch.setattr(cli_qa, "ensure_llm", lambda settings: None)
+    monkeypatch.setattr(cli_qa.Settings, "from_env", staticmethod(lambda: settings))
+    assert cli_qa.main(["--omissions", "--article-id", str(article_id)]) == 0
+    out = capsys.readouterr().out
+    assert f"#{article_id} pairs=2 flagged=1" in out and "[1] 漏：20 dollars" in out
+    assert snapshot(conn, article_id) == before
+    assert conn.execute("SELECT count(*) AS n FROM translation_attempts WHERE article_id=%s",
+                        (article_id,)).fetchone()["n"] == 0
