@@ -38,7 +38,7 @@ from researchlib.nested_copies import fold_nested_copies
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.present_text import polish_display_text
-from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
+from researchlib.render import flow_ocr_quote_body, images_placed_by_estimate, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import (
     answer_html,
@@ -728,7 +728,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         # 短文的图片文字变了也重写摘要。不进列表的不排进后台。
         if digest_due(article, digest) and not hidden:
             schedule_digests(settings, [(article_id, source.author)])
-        ocr_texts = queries.image_ocr_texts(conn, article_id)
+        # 只用来把估错位置的图挪回去；图本来就在原文位置的来源不挪。
+        ocr_texts = queries.image_ocr_texts(conn, article_id) if images_placed_by_estimate(source.kind) else {}
         quoted = None
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
@@ -939,7 +940,8 @@ def article_page_original(request: Request, article_id: int):
     return _article_view(request, article_id, "original")
 
 
-def _tree_body(conn, article, source_id: str):
+def _tree_body(conn, article, source):
+    source_id = source.id
     images = queries.article_images(conn, article["id"])
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
@@ -947,7 +949,9 @@ def _tree_body(conn, article, source_id: str):
     link_index = load_md_index(conn, source_id) if ".md" in (article["body_md"] or "").lower() else None
     shown_md = polish_display_text(clean_article(conn, article["id"], source_id, article["body_md"]))
     html = prepare_body_html(shown_md, polish_display_text(article["title"] or ""), mapping, fmt, link_index, parent)
-    # 目录右侧也是阅读：留原图，不把识图文字换进去。
+    # 目录右侧也是阅读：留原图，不把识图文字换进去。飞书的图本来就在原文位置，不挪。
+    if not images_placed_by_estimate(source.kind):
+        return Markup(html)
     return Markup(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
 
@@ -972,7 +976,7 @@ def _source_tree(request: Request, source_id: str, article_id: int | None):
             article = queries.get_article(conn, current, [source_id])
             if article is None:
                 raise HTTPException(status_code=404)
-            body_html = _tree_body(conn, article, source_id)
+            body_html = _tree_body(conn, article, source)
         if root is not None:
             mark_open(root, current)
         for node in orphans:

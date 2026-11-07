@@ -35,7 +35,7 @@ from researchlib.boilerplate import clean_article
 from researchlib.config import Settings
 from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index
 from researchlib.present_text import polish_display_text
-from researchlib.render import sanitize_html
+from researchlib.render import images_placed_by_estimate, sanitize_html
 from researchlib.sources import load_sources
 from researchlib.translate.display import (
     _material_gaps,
@@ -402,10 +402,11 @@ def load_article_texts(conn, settings: Settings, article_id: int) -> ArticleText
     ).fetchall()
     fmt = (article.get("raw_meta") or {}).get("format")
     parent = str((article.get("raw_meta") or {}).get("parent") or "")
+    # 和文章页一样：识图只用来挪估错位置的图，图本来就在原文位置的来源（Stratechery）不挪。
     ocr = {
         row["content_hash"]: row["text"] or ""
         for row in conn.execute(_OCR_SQL, (article_id,)).fetchall()
-    }
+    } if source is not None and images_placed_by_estimate(source.kind) else {}
     owners = source_owners(source) if source else ()
     # 和文章页同一套：下载来的外链图不算进回执，译文里的占位换成图再配对。
     _shown, pairing = bilingual_sources(

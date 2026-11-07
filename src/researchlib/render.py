@@ -710,6 +710,18 @@ def _relocate_images(html: str, texts: dict[str, str]) -> str:
     return _EMPTY_P.sub("", updated)
 
 
+# 极致了的公众号正文按段估图的位置（第 N 张图放在第 N 段后面），图会整组堆在开头的引文里（#244）。
+# 别的来源图就在原文的位置：飞书、星球、Stratechery、雪球存档；孤独进化体的正文先从公众号原文页取。
+# 按识图挪只会挪错：飞书一张利润表截图跟在「下图是年报里的合并利润表：」后面，和下一节的一段同有
+# 「归属于母公司股东的净利润」，比「合并利润表」长，就被挪到了那一段前面。
+_ESTIMATED_IMAGE_KINDS = frozenset({"wechat_mp"})
+
+
+def images_placed_by_estimate(kind: str) -> bool:
+    """这种来源的图位置是估的，阅读页可以按识图把图挪回对得上的段落（``inline_image_ocr``）。"""
+    return kind in _ESTIMATED_IMAGE_KINDS
+
+
 def inline_image_ocr(html: str, texts: dict[str, str] | None = None, *, host: str = HOST) -> str:
     """阅读页保留原图，不把识图文字铺进版面。
 
@@ -719,6 +731,7 @@ def inline_image_ocr(html: str, texts: dict[str, str] | None = None, *, host: st
 
     极致了按段估的图片会整组堆在开头、插进无关的引文里。这里只用识图里的字判断该挨着哪一段，
     把 ``<img>`` 挪到那一段前面；对不上、或本来就挨着，原样留着。正文不出现识图文字。
+    图位置本来就对的来源不要传 ``texts``（见 ``images_placed_by_estimate``）。
     """
     _ = host
     if not html or not texts:
