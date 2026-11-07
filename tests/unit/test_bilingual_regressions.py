@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import patch
 
 import pytest
@@ -58,6 +59,70 @@ class MemoryConn:
         self.committed = True
 
 
+def verifier_double(user: dict) -> dict:
+    """测试替身：按硬事实的位置各交一条引用；数字对不上就交冲突。"""
+    from researchlib.translate.harness import _fold
+    from researchlib.translate.numbers import _extract_located
+
+    def spans(html: str):
+        text, chosen = _extract_located(_fold(html))
+        return text, chosen
+
+    source_text, source_all = spans(user["source"])
+    target_text, target_all = spans(user["target"])
+    source_soft = {fact.key for fact, _start, _end in source_all if not fact.hard}
+    source_spans = [(fact, start, end) for fact, start, end in source_all if fact.hard]
+    target_spans = [(fact, start, end) for fact, start, end in target_all if fact.hard]
+
+    def bare(text: str, occupied) -> str:
+        for match in re.finditer(r"[A-Za-z]{2,}|[一-鿿]+", text):
+            start, end = match.span()
+            if not any(fact_start < end and fact_end > start for _fact, fact_start, fact_end in occupied):
+                return match.group(0)
+        return text[:1] or "x"
+
+    claims = []
+    used = set()
+    conflict = False
+    for fact, start, end in source_spans:
+        quote = source_text[start:end]
+        pair = next(
+            (
+                index for index, (other, _start, _end) in enumerate(target_spans)
+                if index not in used and other.kind == fact.kind and other.key == fact.key
+            ),
+            None,
+        )
+        if pair is None:
+            target_quote = bare(target_text, target_spans)
+            conflict = True
+        else:
+            used.add(pair)
+            _other, target_start, target_end = target_spans[pair]
+            target_quote = target_text[target_start:target_end]
+        claims.append({
+            "source": quote, "target": target_quote,
+            "object_source": quote, "object_target": target_quote, "same": pair is not None,
+        })
+    for index, (fact, start, end) in enumerate(target_spans):
+        if index in used:
+            continue
+        quote = target_text[start:end]
+        same = fact.key in source_soft
+        claims.append({
+            "source": bare(source_text, source_spans), "target": quote,
+            "object_source": bare(source_text, source_spans), "object_target": quote, "same": same,
+        })
+        conflict = conflict or not same
+    if not claims:
+        claims.append({
+            "source": bare(source_text, source_spans), "target": bare(target_text, target_spans),
+            "object_source": bare(source_text, source_spans), "object_target": bare(target_text, target_spans),
+            "same": True,
+        })
+    return {"evidence_id": user["evidence_id"], "verdict": "conflict" if conflict else "equivalent", "claims": claims}
+
+
 def translate(body, outputs, tmp_path, *, mutate=None):
     """模型替身按段 id 回 outputs 里那一段：整批、拆开后的半批和单段补译都拿到同一份。"""
     conn = MemoryConn(body)
@@ -66,18 +131,22 @@ def translate(body, outputs, tmp_path, *, mutate=None):
 
     def fake(**kwargs):
         user = kwargs["user"]
+        if user.get("verify"):
+            return ChatJsonResult(data=verifier_double(user), model="synthetic-model", usage=None, latency_ms=0)
         values = ["合成标题"] if user["segments"] == ["Synthetic audit"] else outputs
-        if "segment_ids" in user:
-            if user["segment_ids"] != ["title"]:
-                for identity in user["segment_ids"]:
+        identities = user.get("segment_ids")
+        hashes = user.get("source_hashes")
+        if identities and hashes:
+            if identities != ["title"]:
+                for identity in identities:
                     if identity not in assigned:
                         assigned[identity] = next(pending)
-                values = [assigned[identity] for identity in user["segment_ids"]]
-            values = [{"id": identity, "source_hash": source_hash, "html": text}
-                      for identity, source_hash, text in zip(user["segment_ids"], user["source_hashes"], values,
-                                                             strict=True)]
-            if mutate and user["segment_ids"] != ["title"]:
-                values = mutate(values)
+                values = [assigned[identity] for identity in identities]
+            if len(identities) == len(hashes) == len(values):
+                values = [{"id": identity, "source_hash": source_hash, "html": text}
+                          for identity, source_hash, text in zip(identities, hashes, values, strict=True)]
+                if mutate and identities != ["title"]:
+                    values = mutate(values)
         return ChatJsonResult(data={"t": values}, model="synthetic-model", usage=None, latency_ms=0)
 
     with patch.object(service, "chat_json", side_effect=fake), patch.object(service, "replace_translation_chunks"):

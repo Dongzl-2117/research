@@ -1,0 +1,86 @@
+[
+  {
+    "id": 21998,
+    "expect": "accept",
+    "source": "<p data-src-para=\"1\">In the wake of the #MeToo movement, countless women have taken to Facebook to express their frustration and disappointment with men and have been promptly shut down or silenced, banned from the platform for periods ranging from one to seven days.</p>",
+    "target": "<p data-src-para=\"1\">在 #MeToo 运动之后，无数女性在 Facebook 上表达她们对男性的不满和失望，却迅速被封禁或禁言，被禁止使用该平台1至7天。</p>"
+  },
+  {
+    "id": 22065,
+    "expect": "accept",
+    "source": "<p>As the week draws to a close, it’s definitely been a long one for Apple’s software engineers. The nightmare started on Tuesday, after a Twitter user disclosed a critical security vulnerability for macOS High Sierra that allowed anyone with physical access to a Mac to gain system administrator privileges without even entering a password. As software bugs go, this one was embarrassing and critical, but Apple managed to fix it less than 24 hours after it was publicly disclosed.<br> “Security is a top priority for every Apple product, and regrettably we stumbled with this release of macOS,” admitted an Apple spokesperson. “We greatly regret this error and we apologize to all Mac users, both for releasing with this vulnerability and for the concern it has caused. Our customers deserve better. We are auditing our development processes to help prevent this from happening again.”</p>",
+    "target": "<p>随着本周接近尾声，对苹果的软件工程师来说，这无疑是漫长的一周。噩梦始于周二：一名 Twitter 用户披露了 macOS High Sierra 的一个严重安全漏洞，任何人只要能够物理接触一台 Mac，甚至无需输入密码，就能获得系统管理员权限。就软件缺陷而言，这个漏洞既令人难堪又极其严重，但苹果在漏洞公开披露后不到 24 小时内就完成了修复。<br>“安全是每一款苹果产品的首要任务，遗憾的是我们在这次 macOS 发布上出了差错。”苹果发言人承认道，“我们对这一错误深表遗憾，并向所有 Mac 用户致歉，既为发布时带有这一漏洞，也为它造成的担忧。我们的用户理应得到更好的产品。我们正在审查开发流程，以帮助防止此类事件再次发生。” </p>"
+  },
+  {
+    "id": 21985,
+    "expect": "accept",
+    "source": "<p>Beginning in the late 90s two new broadband technologies began to become available: cable modems and DSL over phone lines. DSL was a big improvement over dial-up, offering faster speeds, always-on connectivity, the ability to still use your phone line for voice calls, etc. And, keeping with the established regulatory regime for telephone lines, DSL services were also covered by Title II, which meant that multiple ISPs could use the telephone lines. Cable modems, though, were unregulated (and thus ISP service was held exclusively by cable companies).</p>",
+    "target": "<p>从20世纪90年代末开始，两种新的宽带技术逐渐面世：电缆调制解调器和通过电话线提供的DSL。DSL相比拨号上网是一大进步：速度更快、可始终在线，还能继续用电话线打语音电话，等等。而且，按照电话线路既有的监管制度，DSL服务也受Title II约束，这意味着多家ISP可以使用电话线路。不过，电缆调制解调器不受监管（因此ISP服务完全由有线电视公司把持）。</p>"
+  },
+  {
+    "id": 21934,
+    "expect": "accept",
+    "source": "<p>This ethos pervades every part of Meredith, from editorial content (curated by title to multiple demographics) to business models (circulation plus ads plus content marketing plus the second most valuable brand licensing program after Disney) to back-end integration (Meredith has an average of 800 data points on 100 million American women). The company may look like a publisher and call itself a marketer, but, to <a href=\"http://www.berkshirehathaway.com/letters/1991.html\">reference a Warren Buffett letter</a> I’ve <a href=\"../2016/how-the-snap-spectacles-story-broke-facebook-overestimated-video-metric.md\">referenced</a> <a href=\"espns-cuts-espns-history-espn-from-franchise-to-business.md\">before</a>, Meredith is a <em>business</em>:</p>",
+    "target": "<p>这种理念渗透到梅雷迪思的每个部分，从编辑内容（按刊物针对不同人群精心策划）到商业模式（发行量加广告加内容营销，再加上仅次于迪士尼的全球第二值钱的品牌授权项目），再到后端整合（梅雷迪思对1亿美国女性平均掌握800个数据点）。这家公司看起来像出版商，也自称营销公司，但借用<a href=\"http://www.berkshirehathaway.com/letters/1991.html\">沃伦·巴菲特的一封信</a>——我<a href=\"../2016/how-the-snap-spectacles-story-broke-facebook-overestimated-video-metric.md\">之前</a>曾<a href=\"espns-cuts-espns-history-espn-from-franchise-to-business.md\">引用</a>过——的话来说，梅雷迪思是一门<em>生意</em>：</p>"
+  },
+  {
+    "id": 22054,
+    "expect": "accept",
+    "source": "<p>Last year Turner made about $0.80 in advertising revenue for every $1 in subscription revenue; applying that ratio to our hypothetical market means a further $2.9 million in high margin advertising revenue per month.</p>",
+    "target": "<p>去年，特纳每获得1美元订阅收入，就产生约0.80美元的广告收入；把这个比例套用到我们假设的市场，意味着每月还能带来290万美元的高利润率广告收入。</p>"
+  },
+  {
+    "id": "12:15AM->PM",
+    "expect": "contradict",
+    "source": "<p>The call is at 12:15AM.</p>",
+    "target": "<p>电话在12:15PM。</p>"
+  },
+  {
+    "id": "November->December",
+    "expect": "contradict",
+    "source": "<p>Shipped in November 2014.</p>",
+    "target": "<p>2014年12月发出。</p>"
+  },
+  {
+    "id": "Q4->Q3",
+    "expect": "contradict",
+    "source": "<p>Demand was fiscal Q4.</p>",
+    "target": "<p>需求是第3财季。</p>"
+  },
+  {
+    "id": "1.85-billion-scale",
+    "expect": "contradict",
+    "source": "<p>The deal was $1.85 billion.</p>",
+    "target": "<p>交易是1.85亿美元。</p>"
+  },
+  {
+    "id": "revenue-cost-swap",
+    "expect": "contradict",
+    "source": "<p>Revenue was 10 million and costs were 20 million.</p>",
+    "target": "<p>收入2000万，成本1000万。</p>"
+  },
+  {
+    "id": "points-people-swap",
+    "expect": "contradict",
+    "source": "<p>800 data points on 100 million women.</p>",
+    "target": "<p>对800人掌握1亿个数据点。</p>"
+  },
+  {
+    "id": "revenue-10-as-cost",
+    "expect": "contradict",
+    "source": "<p>Revenue was $10.</p>",
+    "target": "<p>成本是10美元。</p>"
+  },
+  {
+    "id": "rose-10-as-fall",
+    "expect": "contradict",
+    "source": "<p>Revenue rose 10%.</p>",
+    "target": "<p>收入下降10%。</p>"
+  },
+  {
+    "id": "version-objects-swapped",
+    "expect": "contradict",
+    "source": "<p>App 3.10 replaced tool 3.2.</p>",
+    "target": "<p>工具 3.10 取代了应用 3.2。</p>"
+  }
+]

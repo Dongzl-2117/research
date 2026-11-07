@@ -56,7 +56,7 @@ def test_identity_errors_that_persist_down_to_one_segment_still_reject(tmp_path,
 
 
 def test_wrong_text_with_correct_ids_is_rejected_when_numeric_anchors_disagree(tmp_path):
-    with pytest.raises(pr.AlignmentError, match="numbers-misplaced"):
+    with pytest.raises(pr.AlignmentError, match="numbers"):
         translate(A + B + C, [ZA, ZC, ZB], tmp_path)
 
 

@@ -27,8 +27,11 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # 6：a week、糟糕的一周、过去一周、week-old、各一周和 8 天是同一段时间；
 # couple/few/几周可以写成两周，写明 two 不能收成几。每月、每年的标价不是「每 X 美元就有 Y 美元」。
 # 7：数字对不上的段不再让整篇作废：同一批里这几段补译一次，还对不上就照样写入，记进回执的 number_review。
-# 数字和同一批另一段原文正好一致（串段）仍整批重译。版本 6 及以前因数字被拒的文章重新进队列。
-ALIGNMENT_VERSION = 7
+# 8：有硬事实就独立核验，单笔数字也不跳过。一条引用只盖住一笔事实。
+# 对象可以在引用外面，但要是同一句里的连续原文；空对象不行。same 必须是明确的
+# true 或 false。核验确认冲突的段不入库；模型看不出、修一次仍不确定的段照样写入，
+# 序号进 number_review。核验过了的段不再按规则重算待核。
+ALIGNMENT_VERSION = 8
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
@@ -37,9 +40,13 @@ _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
 class AlignmentError(RuntimeError):
     """拒绝覆盖好版本；错误码不带原文、地址或模型响应。"""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, detail: str = ""):
         self.code = code
-        super().__init__(f"translation alignment: {code}")
+        self.detail = detail
+        message = f"translation alignment: {code}"
+        if detail:
+            message = f"{message} {detail}"
+        super().__init__(message)
 
 
 def digest(value: object) -> str:
@@ -226,10 +233,17 @@ def _skeleton(value: str) -> str:
     }))
 
 
-def receipt(manifest: dict, translated: str, *, model: str = "") -> dict:
+def receipt(
+    manifest: dict,
+    translated: str,
+    *,
+    model: str = "",
+    review: Sequence[int] | None = None,
+) -> dict:
     """每个槽位的资源和完整外壳都通过，才签发可持久化回执。
 
-    数字对不上的槽位照签，序号记进 ``number_review``。``verify`` 不比较这一项：
+    ``review`` 由独立核验给出：模型看不出、修一次仍不确定的槽位序号。传 None 时
+    退回按现在的数字规则重算，只给旧调用和测试用。``verify`` 不比较 ``number_review``：
     数字规则以后再改，已经入库的回执不会因此变成不兼容、整页退成两栏。
     """
     targets = iter_segments(translated)
@@ -237,31 +251,34 @@ def receipt(manifest: dict, translated: str, *, model: str = "") -> dict:
         raise AlignmentError("receipt-count")
     if _skeleton(manifest["source_snapshot"]) != _skeleton(translated):
         raise AlignmentError("receipt-skeleton")
+    wanted = None if review is None else {int(item) for item in review}
     entries = []
-    review = []
+    unverified = []
     for source, target in zip(manifest["segments"], targets, strict=True):
         problem = structure_problem(source["source"], target.html)
         if problem:
             raise AlignmentError(f"slot-{source['ordinal']}-{problem}")
-        if not numbers_agree(source["source"], target.html):
-            review.append(source["ordinal"])
+        if wanted is not None:
+            if int(source["ordinal"]) in wanted:
+                unverified.append(source["ordinal"])
+        elif not numbers_agree(source["source"], target.html):
+            unverified.append(source["ordinal"])
         entries.append({**source, "target": target.html, "target_hash": digest(canonical_html(target.html))})
     return {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
-            "semantic_status": "not-reviewed", "number_review": review}
+            "semantic_status": "not-reviewed", "number_review": unverified}
 
 
 def unverified_numbers(provenance: dict | None) -> list[int]:
-    """按现在的数字规则重算回执里数字没对上的槽位序号。没有回执的旧稿返回空。"""
+    """回执里独立核验没给出结论的槽位序号。没有回执的旧稿返回空。"""
     if not isinstance(provenance, dict):
         return []
     found = []
-    for item in provenance.get("segments") or []:
+    for item in provenance.get("number_review") or []:
         try:
-            if not numbers_agree(item["source"], item["target"]):
-                found.append(int(item["ordinal"]))
-        except (KeyError, TypeError, ValueError):
+            found.append(int(item))
+        except (TypeError, ValueError):
             continue
-    return found
+    return sorted(set(found))
 
 
 @dataclass(frozen=True)

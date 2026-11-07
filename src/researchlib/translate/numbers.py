@@ -411,7 +411,8 @@ def _mark_footnote(text: str) -> str:
     return text
 
 
-def _extract(html: str) -> list[Fact]:
+def _extract_located(html: str) -> tuple[str, list[tuple[Fact, int, int]]]:
+    """抽出事实和它在可见文字里的位置。等值规则仍由 ``_extract`` 走合并后的结果。"""
     text = _mark_footnote(_text(html))
     found: list[tuple[int, int, int, Fact]] = []
     for pattern, handler in _PATTERNS:
@@ -438,6 +439,11 @@ def _extract(html: str) -> list[Fact]:
         while index < len(found) and found[index][0] == start and found[index][1] == end:
             chosen.append((found[index][3], start, end))
             index += 1
+    return text, chosen
+
+
+def _extract(html: str) -> list[Fact]:
+    text, chosen = _extract_located(html)
     return _merge_near(chosen, text)
 
 

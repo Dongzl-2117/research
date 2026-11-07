@@ -306,6 +306,24 @@ def test_failed_wordpress_cdn_fetches_are_queued_again(conn):
 def _echo_translation(**kwargs):
     """译制替身：每段照原样回，只把几个英文词换成中文；回执要的 id 和摘要原样带回。"""
     user = kwargs["user"]
+    if user.get("verify"):
+        source, target = user["source"], user["target"]
+        claims = [
+            {
+                "source": f"{number} dollars", "target": f"{number}美元",
+                "object_source": "paragraph", "object_target": "段", "same": True,
+            }
+            for number in ("10", "20", "30")
+            if f"{number} dollars" in source and f"{number}美元" in target
+        ]
+        return ChatJsonResult(
+            data={
+                "evidence_id": user["evidence_id"],
+                "verdict": "equivalent" if claims else "uncertain",
+                "claims": claims,
+            },
+            model="synthetic-model", usage=None, latency_ms=0,
+        )
     values = []
     for identity, source_hash, html in zip(user["segment_ids"], user["source_hashes"], user["segments"], strict=True):
         for english, chinese in (("First paragraph", "第一段"), ("Second paragraph", "第二段"),

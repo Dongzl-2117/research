@@ -27,8 +27,34 @@ def article(conn, settings, body=BODY):
     return conn.execute("SELECT id FROM articles WHERE external_id = 'synthetic-bilingual'").fetchone()["id"]
 
 
+def verifier(user):
+    """独立核验替身：合成片段各交一条原文和译文都在的引用。"""
+    source, target = user["source"], user["target"]
+    pairs = [
+        ("First paragraph 10 dollars", "第一段10美元", "First paragraph", "第一段"),
+        ("Second paragraph 20 dollars", "第二段20美元", "Second paragraph", "第二段"),
+        ("In the 1990s", "20世纪90年代", "Microsoft", "微软"),
+        ("Synthetic audit", "合成审计", "Synthetic audit", "合成审计"),
+    ]
+    claims = [
+        {
+            "source": en, "target": zh,
+            "object_source": obj_en, "object_target": obj_zh,
+            "value": "", "relation": "", "same": True,
+        }
+        for en, zh, obj_en, obj_zh in pairs if en in source and zh in target
+    ]
+    return {
+        "evidence_id": user["evidence_id"],
+        "verdict": "equivalent" if claims else "uncertain",
+        "claims": claims,
+    }
+
+
 def model(**kwargs):
     user = kwargs["user"]
+    if user.get("verify"):
+        return ChatJsonResult(data=verifier(user), model="synthetic-model", usage=None, latency_ms=0)
     values = []
     for identity, source_hash, html in zip(user["segment_ids"], user["source_hashes"], user["segments"], strict=True):
         translated = html.replace("Synthetic audit", "合成审计")
@@ -82,6 +108,13 @@ def test_unverified_numbers_are_stored_listed_and_still_paired_on_the_page(conn,
     article_id = article(conn, settings, f"<p>{english}</p><p>Second paragraph 20 dollars.</p>")
 
     def decade(**kwargs):
+        if kwargs["user"].get("verify"):
+            if "1990s" in kwargs["user"]["source"]:
+                return ChatJsonResult(
+                    data={"evidence_id": kwargs["user"]["evidence_id"], "verdict": "uncertain", "claims": []},
+                    model="synthetic-model", usage=None, latency_ms=0,
+                )
+            return model(**kwargs)
         result = model(**kwargs)
         for item in result.data["t"]:
             item["html"] = item["html"].replace(english, "20世纪90年代，微软主导了个人电脑。")
@@ -113,6 +146,8 @@ def test_rejected_attempt_preserves_good_translation_and_search_chunks(conn, set
                           (article_id,)).fetchall()
 
     def missing(**kwargs):
+        if kwargs["user"].get("verify"):
+            return model(**kwargs)
         result = model(**kwargs)
         for item in result.data["t"]:
             item["html"] = item["html"].replace("⟦0⟧", "")

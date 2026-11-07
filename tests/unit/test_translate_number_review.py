@@ -1,4 +1,4 @@
-"""数字没对上不再让整篇作废：补译一次，仍不行就照样写入并记进 number_review。
+"""数字核验：确认冲突的不入库；模型看不出、修一次仍不确定的写入并记 number_review。
 
 串段、链接图片代码不对、身份一直对不上仍拒收。合成样本，不调真模型、不连库。
 """
@@ -13,7 +13,9 @@ from test_bilingual_regressions import ZA, ZB, ZC, A, B, C, MemoryConn
 from researchlib.translate import provenance as pr
 from researchlib.translate import service
 from researchlib.translate.display import article_pairs
+from researchlib.translate.harness import _fold
 from researchlib.translate.llm import ChatJsonResult, LLMTransportError
+from researchlib.translate.numbers import _extract_located
 from researchlib.translate.qa import report_from_html
 
 # 规则认不出、但意思没错的两种写法：年代写成世纪，地点状语挪到前面。
@@ -37,6 +39,55 @@ def zh_for(segment: str) -> str:
     return next(text for key, text in _BY_KEYWORD.items() if key in segment)
 
 
+def _facts(html: str):
+    text, chosen = _extract_located(_fold(html))
+    return text, [(fact, start, end) for fact, start, end in chosen if fact.hard]
+
+
+def verifier_double(user: dict) -> dict:
+    """规则认得出就按原文事实各交一条引用；认不出又没明显冲突时交不确定。"""
+    source, target = user["source"], user["target"]
+    source_text, source_spans = _facts(source)
+    target_text, target_spans = _facts(target)
+    if pr.numbers_agree(source, target):
+        claims = []
+        used = set()
+        for fact, start, end in source_spans:
+            pair = next(
+                (
+                    index for index, (other, _start, _end) in enumerate(target_spans)
+                    if index not in used and other.kind == fact.kind and other.key == fact.key
+                ),
+                None,
+            )
+            if pair is None:
+                continue
+            used.add(pair)
+            _other, target_start, target_end = target_spans[pair]
+            source_quote = source_text[start:end]
+            target_quote = target_text[target_start:target_end]
+            claims.append({
+                "source": source_quote, "target": target_quote,
+                "object_source": source_quote, "object_target": target_quote, "same": True,
+            })
+        if claims:
+            return {"evidence_id": user["evidence_id"], "verdict": "equivalent", "claims": claims}
+    strong = {"qty", "pct", "clock", "date", "fiscal", "ratio"}
+    source_keys = sorted(fact.key for fact, _start, _end in source_spans if fact.kind in strong)
+    target_keys = sorted(fact.key for fact, _start, _end in target_spans if fact.kind in strong)
+    if source_keys and target_keys and source_keys != target_keys:
+        source_quote = source_text[source_spans[0][1]:source_spans[0][2]]
+        target_quote = target_text[target_spans[0][1]:target_spans[0][2]]
+        return {
+            "evidence_id": user["evidence_id"], "verdict": "conflict",
+            "claims": [{
+                "source": source_quote, "target": target_quote,
+                "object_source": source_quote, "object_target": target_quote, "same": False,
+            }],
+        }
+    return {"evidence_id": user["evidence_id"], "verdict": "uncertain", "claims": []}
+
+
 def run(body, answer, tmp_path, *, title="Synthetic audit", title_zh="合成标题", rows_hook=None, calls=None):
     """answer(segments, repair) 按送来的段回译文；少回几条就是条数不对。rows_hook 可以改坏身份。"""
     conn = MemoryConn(body)
@@ -45,6 +96,8 @@ def run(body, answer, tmp_path, *, title="Synthetic audit", title_zh="合成标�
 
     def fake(**kwargs):
         user = kwargs["user"]
+        if user.get("verify"):
+            return ChatJsonResult(data=verifier_double(user), model="synthetic-model", usage=None, latency_ms=0)
         if user.get("segment_ids") == ["title"]:
             rows = [{"id": "title", "source_hash": user["source_hashes"][0], "html": title_zh}]
             return ChatJsonResult(data={"t": rows}, model="synthetic-model", usage=None, latency_ms=0)
@@ -79,9 +132,9 @@ def test_unverifiable_numbers_are_written_and_listed_for_review(tmp_path):
     assert proof["number_review"] == [0, 1]
     assert stored[5] is True
     assert pr.verify(DECADE + STAFF + PLAIN, stored[3], proof).status == "mapped"
-    # 原批一次；数字没对上的两段合成一次补译，提示里带着原文数字。
-    assert [len(segs) for segs, _repair in calls] == [3, 2]
-    assert calls[1][1] and "1990" in calls[1][1] and "1000" in calls[1][1]
+    # 原批一次；核验没结论的两段各自定向补译一次（互不影响）。
+    assert [len(segs) for segs, _repair in calls] == [3, 1, 1]
+    assert calls[1][1] and "1990" in calls[1][1] and calls[2][1] and "1000" in calls[2][1]
 
 
 def test_repaired_slot_replaces_the_unverified_one(tmp_path):
@@ -124,7 +177,7 @@ def test_repair_request_failure_does_not_fail_the_article(tmp_path):
 
 
 def test_numbers_moved_to_another_slot_still_reject(tmp_path):
-    with pytest.raises(pr.AlignmentError, match="numbers-misplaced"):
+    with pytest.raises(pr.AlignmentError, match="numbers"):
         run(A + B + C, lambda segs, _repair: [ZA, ZC, ZB][: len(segs)], tmp_path)
 
 

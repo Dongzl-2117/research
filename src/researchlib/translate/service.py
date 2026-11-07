@@ -25,6 +25,12 @@ from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import canonical_body_html, render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
+from researchlib.translate.harness import (
+    fact_brief,
+    has_hard_fact,
+    note_reject,
+    settle_numbers,
+)
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import (
     GROK_INPUT_CHARS,
@@ -38,9 +44,7 @@ from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import (
     ALIGNMENT_VERSION,
     AlignmentError,
-    misplaced_slot,
     numbers_agree,
-    numeric_anchors,
     receipt,
     source_manifest,
     structure_problem,
@@ -323,19 +327,13 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
     return texts
 
 
-_NUMBER_REPAIR = (
-    "这几段上一次的译文里，数字、日期、金额或百分数没能和原文逐一对上。重译这几段："
-    "原文里的每个数都要写出来，数值和单位不变，不漏写，也不要把别段的数字写进来。"
-)
-
-
 def _restore_batch(
     texts: list[str], shields: list, sources: list[str], offset: int,
 ) -> tuple[list[str], list[int]]:
     """把一批译文还原成带链接、图片的 HTML。
 
     链接、图片、代码、占位符不对就抛错（整批重来）。数字对不上的段只记下标，
-    除非它的数字正好是同一批另一段原文的，那是串段，也抛错。
+    交给独立核验；解析器不单独决定收不收。
     """
     restored: list[str] = []
     flagged: list[int] = []
@@ -349,51 +347,7 @@ def _restore_batch(
         if not numbers_agree(source, value):
             flagged.append(index)
         restored.append(value)
-    wrong = misplaced_slot(sources, restored, flagged)
-    if wrong is not None:
-        raise AlignmentError(f"slot-{offset + wrong}-numbers-misplaced")
     return restored, flagged
-
-
-def _repair_numbers(
-    parts: list[str], context: dict, shields: list, sources: list[str],
-    restored: list[str], flagged: list[int], data_dir: Path,
-) -> tuple[list[str], list[int], tuple[str, ...]]:
-    """数字对不上的几段单独再译一次。
-
-    重译过了数字核对才换上；还对不上、结构坏了或者请求失败，都留着原来那份，下标仍记着。
-    这一步只是补救，不会让整篇失败。
-    """
-    hints = []
-    for number, index in enumerate(flagged, 1):
-        anchors = numeric_anchors(sources[index])
-        if anchors:
-            hints.append(f"第{number}段原文的数字：{'、'.join(anchors)}")
-    subset = [parts[index] for index in flagged]
-    user = {key: value for key, value in context.items() if key not in {"segment_ids", "source_hashes", "repair"}}
-    if "segment_ids" in context:
-        user["segment_ids"] = [context["segment_ids"][index] for index in flagged]
-        user["source_hashes"] = [context["source_hashes"][index] for index in flagged]
-    user["segments"] = subset
-    user["repair"] = _NUMBER_REPAIR + ("；".join(hints) + "。" if hints else "")
-    try:
-        texts = _translate_once(subset, user, data_dir)
-    except Exception as exc:  # noqa: BLE001 — 补救失败就用原来那份，不让整篇作废
-        logger.info("数字没对上的 %s 段重译没成（%s），保留原译文", len(flagged), exc)
-        return restored, flagged, ()
-    if translation_problem(subset, texts):
-        return restored, flagged, ()
-    fixed = list(restored)
-    still: list[int] = []
-    for index, text in zip(flagged, texts, strict=True):
-        value = unshield(text, shields[index])
-        if (value is not None and structure_problem(sources[index], value) is None
-                and numbers_agree(sources[index], value)):
-            fixed[index] = value
-        else:
-            still.append(index)
-    used = tuple(getattr(texts, "models", ())) if len(still) < len(flagged) else ()
-    return fixed, still, used
 
 
 def _exhausted(error: Exception) -> bool:
@@ -406,9 +360,10 @@ def _exhausted(error: Exception) -> bool:
 def _settle_batch(
     parts: list[str], context: dict, shields: list, sources: list[str], offset: int, data_dir: Path,
 ) -> tuple[list[str], list[int], set[str]]:
-    """译一批、还原、核对。结构不对或串段时整批再译一次，仍不对就抛错。
+    """译一批、还原、核对。结构不对时整批再译一次，仍不对就抛错。
 
-    返回还原后的译文、数字仍没对上的下标和实际用到的模型。
+    返回还原后的译文、解析器认为数字没对上的下标（只作线索）和实际用到的模型。
+    数字收不收由 ``settle_numbers`` 的独立核验决定，解析器不单独否决。
     """
     error: Exception | None = None
     for _attempt in range(2):
@@ -424,11 +379,7 @@ def _settle_batch(
                 raise
             error = exc
             continue
-        models = set(getattr(got, "models", ()))
-        if flagged:
-            restored, flagged, more = _repair_numbers(parts, context, shields, sources, restored, flagged, data_dir)
-            models.update(more)
-        return restored, flagged, models
+        return restored, flagged, set(getattr(got, "models", ()))
     raise error if error is not None else AlignmentError("batch")
 
 
@@ -581,6 +532,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
 
     translations: list[str | None] = [None] * len(parts)
     models: set[str] = set()
+    review_slots: set[int] = set()
     chunks = _batch_chunks(parts)
     offset = 0
     for chunk in chunks:
@@ -595,8 +547,9 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             "source_hashes": [manifest["segments"][targets[offset + i][0]]["source_hash"] for i in range(len(chunk))],
         }
         slots = range(offset, offset + len(chunk))
-        # 一段数字没对上不再让整篇作废：补译一次，还不行就照样写入，回执里记进 number_review。
-        # 链接、图片、代码、占位符不对，或者数字串到同一批别的段，仍整批再译一次，再不行整篇不入库。
+        # 译一批、还原。链接、图片、代码、占位符不对就整批再译一次，再不行整篇不入库。
+        # 数字是否保真由 settle_numbers 独立核验：确认冲突的不入库；模型看不出、
+        # 修一次仍不确定的段照样写入，序号记进回执 number_review。
         restored, _flagged, used = _settle_batch(
             chunk,
             {k: v for k, v in batch_ctx.items() if v},
@@ -606,6 +559,31 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             data_dir,
         )
         for i, text in zip(slots, restored, strict=True):
+            source_html = targets[i][1]
+            segment = manifest["segments"][targets[i][0]]
+            if has_hard_fact(source_html) or has_hard_fact(text):
+                text, numbers, number_stages = settle_numbers(
+                    source_html, text, data_dir,
+                    segment_id=segment["id"], source_hash=segment["source_hash"],
+                )
+                if numbers is None:
+                    review_slots.discard(segment["ordinal"])
+                elif numbers == "numbers-uncertain":
+                    review_slots.add(segment["ordinal"])
+                else:
+                    note_reject(
+                        data_dir,
+                        article_id=article_id,
+                        slot=f"slot-{i}-{numbers}",
+                        kind=numbers,
+                        source=source_html,
+                        draft=number_stages[-1]["output"],
+                        stages=number_stages,
+                    )
+                    raise AlignmentError(
+                        f"slot-{i}-{numbers}",
+                        fact_brief(source_html, number_stages[-1]["output"]),
+                    )
             translations[i] = text
         models.update(used)
         offset += len(chunk)
@@ -638,7 +616,9 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     complete = done == len(targets) and (bool(title_zh) if needs_title_zh else True)
     if not complete:
         raise AlignmentError("incomplete")
-    provenance = receipt(manifest, zh_html, model=", ".join(sorted(models)) or model_id())
+    provenance = receipt(
+        manifest, zh_html, model=", ".join(sorted(models)) or model_id(), review=sorted(review_slots),
+    )
     # 模型请求期间可有新的导入；锁住文章后重新核对，不能把旧输入的结果盖到新原稿上。
     current = conn.execute(
         "SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash"
