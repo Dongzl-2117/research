@@ -170,7 +170,14 @@ def _problem(source: str, target: str) -> str | None:
     ("It arrived one day later.", "一天后到了。"),
     ("Wait up to one day.", "最多等一天。"),
     ("A day will come when this matters.", "总有一天这会变得重要。"),
-    ("A couple of weeks later the note resurfaced.", "几周后这篇笔记又冒出来了。"),
+    ("A couple of weeks later the note resurfaced.", "两周后这篇笔记又冒出来了。"),
+    ("A couple of weeks later the note resurfaced.", "2周后这篇笔记又冒出来了。"),
+    ("From three to five hours.", "花了3至5小时。"),
+    ("From one to seven days.", "一至七天。"),
+    ("The outage lasted less than 24 hours.", "故障不到 24 小时就结束了。"),
+    ("In the early 80s the market shifted.", "市场在20世纪80年代初变了。"),
+    ("It may be like Apple — the 80s version.", "它可能像苹果——而且是80年代那个苹果。"),
+    ("The archive covers the 2010s.", "档案覆盖21世纪10年代。"),
     ("Week of March 25-29, 2013", "2013年3月25日至29日这一周"),
 ])
 def test_archive_patterns_pass_the_slot_number_check(source, target):
@@ -461,7 +468,7 @@ _LIVE_FALSE_REJECTS = [
         "<p>苹果是容易处理的例子，我特意从它开始：一旦涉及辱骂和人身剥削，"
         "用“投资回报”这样的说法就麻烦得多。但这并不意味着"
         "相关高管没有做过这样的真实计算：就苹果而言，我想大多数人都会同意，"
-        "与其把钱投在论坛审核上、指望在帖子几周后被转到 "
+        "与其把钱投在论坛审核上、指望在帖子两周后被转到 "
         "Twitter 之前就发现它，不如用来加强最初漏掉这个漏洞的内部质量控制团队。</p>",
     ),
     (
@@ -607,6 +614,39 @@ _V6_REGRESSIONS = [
         "<p>平均每月支付约100美元，而内容成本约为每位订户60美元。"
         "35美元/月的服务利润更低，这意味着每月利润约40美元。</p>",
     ),
+    # 版本 6 实跑。中文只用报告里的原句；没给全的槽不补写中间。
+    (
+        21998,
+        "<p>banned from the platform for periods ranging from one to seven days</p>",
+        "<p>被禁止使用该平台1至7天</p>",
+    ),
+    (
+        22065,
+        "<p>As the week draws to a close, it’s definitely been a long one for Apple’s software engineers. "
+        "The nightmare started on Tuesday, after a Twitter user disclosed a critical security vulnerability "
+        "for macOS High Sierra that allowed anyone with physical access to a Mac to gain system "
+        "administrator privileges without even entering a password. As software bugs go, this one was "
+        "embarrassing and critical, but Apple managed to fix it less than 24 hours after it was "
+        "publicly disclosed.</p>",
+        "<p>随着本周接近尾声，这无疑是漫长的一周。不到 24 小时。</p>",
+    ),
+    (
+        21985,
+        "<p>Beginning in the late 90s two new broadband technologies began to become available.</p>",
+        "<p>20世纪90年代末</p>",
+    ),
+    (
+        21934,
+        "<p>the second most valuable brand licensing program after Disney to back-end integration "
+        "(Meredith has an average of 800 data points on 100 million American women)</p>",
+        "<p>全球第二，对1亿美国女性平均掌握800个数据点</p>",
+    ),
+    (
+        22054,
+        "<p>Last year Turner made about $0.80 in advertising revenue for every $1 in subscription "
+        "revenue.</p>",
+        "<p>每获得1美元订阅收入，就产生约0.80美元的广告收入</p>",
+    ),
 ]
 
 
@@ -628,9 +668,10 @@ def test_duration_units_and_per_period_prices_keep_their_facts():
     assert ("duration", "day:8") in keys("eight personal days")
     assert ("duration", "day:8") in keys("8天")
     assert ("duration", "day:12") in keys("十二天")
-    assert ("duration", "week:~") in keys("a couple of weeks")
+    assert ("duration", "week:couple") in keys("a couple of weeks")
+    assert ("duration", "week:~") in keys("a few weeks")
     assert ("duration", "week:~") in keys("几周")
-    assert ("duration", "week:2") not in keys("a couple of weeks")
+    assert ("duration", "week:2") in keys("两周")
     assert keys("every two weeks") == [("duration", "week:2")]
     assert keys("每两周") == [("duration", "week:2")]
     assert keys("every week") == []
@@ -695,8 +736,20 @@ def test_live_false_rejects_now_match(article_id, source, target):
     ("The letter goes out every two weeks.", "这封信每3周发出一次。"),
     ("The letter goes out every two weeks.", "这封信每两天发出一次。"),
     ("The letter goes out every two days.", "这封信每两周发出一次。"),
-    ("It resurfaced a couple of weeks later.", "两周后又冒出来了。"),
+    ("It resurfaced a few weeks later.", "两周后又冒出来了。"),
     ("It resurfaced a few weeks later.", "三周后又冒出来了。"),
+    ("It resurfaced a couple of weeks later.", "三周后又冒出来了。"),
+    ("It resurfaced a couple of days later.", "两周后又冒出来了。"),
+    ("Banned for one to seven days.", "被禁1至8天。"),
+    ("Banned for one to seven days.", "被禁1至7周。"),
+    ("Banned for two to seven days.", "被禁1至7天。"),
+    ("Fixed in less than 24 hours.", "不到 24 天就修好了。"),
+    ("Fixed in less than 24 hours.", "不到 25 小时就修好了。"),
+    ("Beginning in the late 90s.", "从20世纪80年代末开始。"),
+    ("Beginning in the late 90s.", "从19世纪90年代末开始。"),
+    ("800 data points on 100 million women.", "对1亿人掌握100个数据点。"),
+    ("Profit was 10 then 20.", "先是20然后是10。"),
+    ("Made $0.80 for every $1.", "每获得0.80美元，就产生约1美元。"),
     ("One day everyone will use it.", "一天后每个人都会用它。"),
     ("The fix took one day.", "有一天就修好了。"),
     ("It is one day of football.", "这是将来某天的橄榄球。"),

@@ -267,6 +267,8 @@ def _same_amount(left: str, right: str) -> bool:
 def _compatible(left: Fact, right: Fact, *, bare_quarter: bool = True) -> bool:
     if left.kind == "clock" and right.kind == "clock" and _clocks_match(left.key, right.key):
         return True
+    if left.kind == "duration" and right.kind == "duration" and _durations_match(left.key, right.key):
+        return True
     if left.kind == right.kind and left.key == right.key:
         return True
     kinds = {left.kind, right.kind}
@@ -817,7 +819,7 @@ _A_MOD_OK = {
     "additional", "further", "other", "first", "second", "third", "fourth", "fifth",
     "sixth", "seventh", "eighth", "ninth", "tenth", "last", "next", "past",
 }
-# couple / few / 几 是没写死的小数，键是「~」，不是 2。
+# couple 大约就是两个，可以写成两、2 或几。few / 几 仍是没写死的小数，不能收成确切的 2。
 _APPROX_TWO = {"couple", "few", "几"}
 _DURATION_SKIP = {
     "of", "and", "or", "to", "in", "on", "for", "per", "than", "from", "with", "by", "at",
@@ -828,7 +830,9 @@ _DURATION_SKIP = {
 
 def _duration_count(raw: str) -> str | None:
     text = raw.strip().lower()
-    if text in _APPROX_TWO:
+    if text == "couple":
+        return "couple"
+    if text in {"few", "几"}:
         return "~"
     if text in {"a", "an"}:
         return "1"
@@ -847,6 +851,16 @@ def _duration_count(raw: str) -> str | None:
 
 def _duration_unit(raw: str) -> str | None:
     return _DURATION_UNIT.get(raw.lower(), _DURATION_UNIT.get(raw))
+
+
+def _durations_match(source: str, target: str) -> bool:
+    """couple 可以写成两、2 或几。few 只和几相等。two 不能收成几。"""
+    if source == target:
+        return True
+    if source.endswith(":couple"):
+        stem = source[: -len("couple")]
+        return target in {f"{stem}2", f"{stem}~", f"{stem}couple"}
+    return False
 
 
 def _duration_fact(unit_raw: str, count: str) -> Fact | None:
@@ -933,7 +947,10 @@ def _on_en_duration(match: re.Match[str]) -> Fact | list[Fact] | None:
         for word in mods
     ):
         return None
-    if any(word in _APPROX_TWO for word in mods) or (raw_n or "").lower() in _APPROX_TWO:
+    head = (raw_n or "").lower()
+    if "couple" in mods or head == "couple":
+        count = "couple"
+    elif "few" in mods or head in {"few", "几"}:
         count = "~"
     elif groups.get("vague"):
         count = "some"
@@ -1041,6 +1058,60 @@ def _zh_someday(text: str, start: int, end: int, raw_n: str | None, unit: str) -
     return "有" in pre or pre.endswith("某")
 
 
+def _on_duration_span(match: re.Match[str]) -> list[Fact] | None:
+    """``one to seven days`` 和 ``1至7天`` 是同一段起止，单位共用，顺序不能反。"""
+    unit = _duration_unit(match.group("u"))
+    left, right = _duration_count(match.group("n")), _duration_count(match.group("m"))
+    if unit is None or left is None or right is None or left in {"couple", "~"} or right in {"couple", "~"}:
+        return None
+    return [Fact("duration", f"{unit}:{left}"), Fact("duration", f"{unit}:{right}")]
+
+
+def _on_prior_one(match: re.Match[str]) -> Fact | None:
+    """``the week ... a long one`` 里的 one 回指刚才的周、天、小时，不是另外一个 1。"""
+    before = re.split(r"[.!?。！？]", match.string[max(0, match.start() - 240):match.start()])[-1]
+    found = list(re.finditer(r"\b(?:weeks?|months?|days?|hours?)\b|个月|小时|周|天", before, re.I))
+    if not found:
+        return None
+    raw = found[-1].group(0)
+    return _duration_fact(raw, "1")
+
+
+def _on_en_decade(match: re.Match[str]) -> Fact:
+    """``late 90s`` 是 1990 年代。30–99 落在 20 世纪，00–29 落在 21 世纪。"""
+    yy = int(match.group("yy"))
+    base = 1900 + yy if yy >= 30 else 2000 + yy
+    return Fact("decade", str(base))
+
+
+def _on_zh_decade(match: re.Match[str]) -> Fact:
+    """``20世纪90年代末`` 是 1990 年代。世纪序数不是另外一个 20。"""
+    century, yy = int(match.group("c")), int(match.group("yy"))
+    return Fact("decade", str((century - 1) * 100 + yy))
+
+
+def _tally(points: Decimal | None, people: Decimal | None) -> Fact | None:
+    if points is None or people is None:
+        return None
+    return Fact("tally", f"{_qty_key(points)}/{_qty_key(people)}")
+
+
+def _on_points_en(match: re.Match[str]) -> Fact | None:
+    people = _decimal(match.group("people"))
+    scale = (match.group("scale") or "").lower()
+    if people is None or scale not in _SCALE_EXP:
+        return None
+    return _tally(_decimal(match.group("points")), people.scaleb(_SCALE_EXP[scale]))
+
+
+def _on_points_zh(match: re.Match[str]) -> Fact | None:
+    people = _decimal(match.group("people"))
+    scale = match.group("ps")
+    if people is None or scale not in _SCALE_EXP:
+        return None
+    return _tally(_decimal(match.group("points")), people.scaleb(_SCALE_EXP[scale]))
+
+
 def _on_duration(match: re.Match[str]) -> Fact | None:
     raw_n = match.group("n") if "n" in match.groupdict() else None
     count = _duration_count(raw_n) if raw_n else "2"
@@ -1050,7 +1121,7 @@ def _on_duration(match: re.Match[str]) -> Fact | None:
 
 
 _RATIO_LINK = re.compile(
-    r"对应|相当于|就能|就有|就会|就可以|获得|带来|换成|换得|换来|得到",
+    r"对应|相当于|就能|就有|就会|就可以|获得|带来|产生|产出|换成|换得|换来|得到",
 )
 _RATIO_NOISE = re.compile(
     r"\d|%|％|每位|订户|每月|每年|每周|每天|每个月|小时|个月|"
@@ -1377,6 +1448,39 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     ), _on_en_duration),
     (re.compile(r"\b(?P<u>week)\s+of\b", re.I), _on_en_duration),
     (re.compile(
+        r"\ba(?:\s+[A-Za-z]+){1,2}\s+one\b",
+        re.I,
+    ), _on_prior_one),
+    (re.compile(
+        rf"\b(?:from\s+)?(?P<n>{_TENS}-(?:{_ONES})|{_TENS}|{_ONES}|ten|eleven|twelve|\d{{1,3}})"
+        rf"\s+(?:to|through)\s+"
+        rf"(?P<m>{_TENS}-(?:{_ONES})|{_TENS}|{_ONES}|ten|eleven|twelve|\d{{1,3}})"
+        rf"\s+(?P<u>weeks?|months?|days?|hours?)\b",
+        re.I,
+    ), _on_duration_span),
+    (re.compile(r"\b(?P<full>(?:19|20)\d{2})s\b"), lambda match: Fact(
+        "decade", str(int(match.group("full")) // 10 * 10),
+    )),
+    (re.compile(
+        r"\b(?:the|late|early|mid|middle)\s+(?P<yy>\d{2})s\b",
+        re.I,
+    ), _on_en_decade),
+    (re.compile(
+        r"(?P<c>[12]\d)\s*世纪\s*(?P<yy>\d{2})\s*年代",
+    ), _on_zh_decade),
+    (re.compile(r"(?<!世纪)(?<![0-9])(?P<yy>\d{2})\s*年代"), _on_en_decade),
+    (re.compile(
+        rf"(?P<points>{_AMOUNT})\s+data\s+points?\s+on\s+(?P<people>{_AMOUNT})\s+"
+        rf"(?P<scale>million|billion|thousand)\b",
+        re.I,
+    ), _on_points_en),
+    (re.compile(
+        rf"(?P<people>{_AMOUNT})\s*(?P<ps>亿|万)[^。\n]{{0,24}}?(?P<points>{_AMOUNT})\s*个\s*数据点",
+    ), _on_points_zh),
+    (re.compile(
+        rf"(?P<points>{_AMOUNT})\s*个\s*数据点[^。\n]{{0,24}}?(?P<people>{_AMOUNT})\s*(?P<ps>亿|万)",
+    ), _on_points_zh),
+    (re.compile(
         rf"\b(?:(?P<pre>first|last|next|past|previous|coming|following)\s+)?"
         rf"(?P<n>{_TENS}-(?:{_ONES})|{_TENS}|{_ONES}|ten|eleven|twelve|a|an|few|couple|\d{{1,3}})"
         rf"(?:\s+(?P<m1>(?!(?:every|each|per|once|this|that|the|a|an)\b)[A-Za-z]+)"
@@ -1396,9 +1500,16 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     (re.compile(r"\b(?P<n>\d{1,2})(?P<u>mo)\b", re.I), _on_duration),
     (re.compile(
         r"(?<![0-9零〇一二三四五六七八九两])"
+        r"(?P<n>[一二三四五六七八九两]?十[一二三四五六七八九]?|[一二三四五六七八九两]|\d{1,3})"
+        r"\s*(?:至|到|—|–|-)\s*"
+        r"(?P<m>[一二三四五六七八九两]?十[一二三四五六七八九]?|[一二三四五六七八九两]|\d{1,3})"
+        r"\s*(?P<u>星期|小时|个月|周|天)",
+    ), _on_duration_span),
+    (re.compile(
+        r"(?<![0-9零〇一二三四五六七八九两])"
         r"(?:(?<![以])(?P<pre>头|前|近|过去|这|那|本|上|下|每))?"
         r"(?P<n>[一二三四五六七八九两]?十[一二三四五六七八九]?|[一二三四五六七八九两几]|\d{1,3})?"
-        r"个?(?P<u>星期|小时|个月|周|天)(?!刊|期|围|末|[一二三四五六日])",
+        r"\s*个?\s*(?P<u>星期|小时|个月|周|天)(?!刊|期|围|末|[一二三四五六日])",
     ), _on_zh_duration),
     (re.compile(r"(?<![个以])(?P<pre>本|这|上|下)(?P<u>月)(?!个)"), _on_zh_duration),
     (re.compile(
