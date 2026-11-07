@@ -49,6 +49,7 @@ from researchlib.web.routes import (
     retitle_views,
 )
 from researchlib.web.scoping import parse_int, resolve_scope
+from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.zsxq_comments import filter_host_comments_markdown, guest_comment_authors, source_owners
 
 api = APIRouter()
@@ -260,6 +261,9 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     # 和文章页单看原文一样：导出时写了两遍的引文、列表项收成一份（nested_copies），
     # Stratechery 每日更新开头结尾的套话去掉（housekeeping）。
     body_md = strip_housekeeping(fold_nested_copies(body_md))
+    # 2026 网页导出一个文本节点一行：和单看原文一样拼回段落。
+    if is_web_export(row["body_md"] or ""):
+        body_md = join_web_export_lines(body_md)
     # 归档里的图是相对路径（星球是「../../images/…」），接口拿到打不开：本地存了的换成站内 /media 的完整地址。
     images = queries.article_images(conn, article_id)
     if images:
