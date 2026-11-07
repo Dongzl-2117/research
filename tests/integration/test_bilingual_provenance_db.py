@@ -61,6 +61,7 @@ def test_real_write_jsonb_page_and_qa_use_the_same_mapping(conn, settings, monke
         page = client.get(f"/articles/{article_id}").text
         assert page.count('class="bilingual-pair"') == report.pairs == 2
         assert "旧译文未记录源段映射" not in page
+        assert 'class="bilingual" data-correspondence="mapped">' in page
         assert "第一段10美元" in page and "第二段20美元" in page
         chunk = conn.execute("SELECT ord FROM article_chunks WHERE article_id=%s AND lang='zh' ORDER BY ord LIMIT 1",
                              (article_id,)).fetchone()["ord"]

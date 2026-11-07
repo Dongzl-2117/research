@@ -57,10 +57,11 @@
     {% endif %}
 
     {% if body_language == 'pairs' and pairs %}
-    {% if pair_notice %}<p class="body-note">{{ pair_notice }}</p>{% endif %}
-    {% if pair_correspondence == 'legacy' %}<p class="body-note">旧译文未记录源段映射，目前按结构对照；段落语义对应尚未核验。</p>{% endif %}
-    {% if pair_correspondence == 'legacy-anchors' %}<p class="body-note">旧粗段已按唯一数字或资料锚点展开；语义对应尚未人工核验。</p>{% endif %}
-    <div class="bilingual">
+    {# 给读者只说一句：退成两份全文时告诉他怎么读。对应状态（mapped、legacy、legacy-anchors、unmapped）
+       和退成两份的具体原因是维护用的，写在 data 属性里，curl 一页就看得到，页面上不显示。
+       QA 和审计照旧读 PairDisplay.notice。 #}
+    {% if pair_notice %}<p class="body-note">这篇译文和原文没法逐段对上，下面先放完整原文，再放完整译文。</p>{% endif %}
+    <div class="bilingual"{% if pair_correspondence %} data-correspondence="{{ pair_correspondence }}"{% endif %}{% if pair_notice %} data-note="{{ pair_notice }}"{% endif %}>
       {% for p in pairs %}
       {% if p.en or p.zh %}
       {% if p.repeat_of is defined and p.repeat_of is not none %}<details class="bilingual-repeat"><summary>与前文完全相同的对照，再次出现（点击展开）</summary>{% endif %}
