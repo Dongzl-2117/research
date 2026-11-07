@@ -28,8 +28,9 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # couple/few/几周可以写成两周，写明 two 不能收成几。每月、每年的标价不是「每 X 美元就有 Y 美元」。
 # 7：曾用数字多重集合放行。只出现在未合并的隔离试跑里，正式环境没有跑过。
 # 8：有硬事实就独立核验，单笔数字也不跳过。一条引用只盖住一笔事实。
-# 对象字段不能空，same 必须是明确的 true 或 false。钟点、日期、月份、财季、
-# 百分数、年份和金额都不丢。没通过只修一次再核验。修复回执要带回 id 和 source_hash。
+# 对象可以在引用外面，但要是同一句里的连续原文；空对象不行。same 必须是明确的
+# true 或 false。钟点、日期、月份、财季、百分数、年份和金额都不丢。
+# 没通过只修一次再核验。修复回执要带回 id 和 source_hash。
 ALIGNMENT_VERSION = 8
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
