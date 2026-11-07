@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import patch
 
 import pytest
@@ -58,22 +59,69 @@ class MemoryConn:
         self.committed = True
 
 
+def verifier_double(user: dict) -> dict:
+    """测试替身：按硬事实的位置各交一条引用。整段一笔不算数。"""
+    from researchlib.translate.harness import _fold
+    from researchlib.translate.numbers import _extract_located
+
+    def spans(html: str):
+        text, chosen = _extract_located(_fold(html))
+        return text, [(fact, start, end) for fact, start, end in chosen if fact.hard]
+
+    def bare(text: str, occupied) -> str:
+        for match in re.finditer(r"[A-Za-z]{2,}|[一-鿿]+", text):
+            start, end = match.span()
+            if not any(fact_start < end and fact_end > start for _fact, fact_start, fact_end in occupied):
+                return match.group(0)
+        return text[:1] or "x"
+
+    source_text, source_spans = spans(user["source"])
+    target_text, target_spans = spans(user["target"])
+    claims = []
+    used = set()
+    for fact, start, end in source_spans:
+        quote = source_text[start:end]
+        pair = next(
+            (
+                index for index, (other, _start, _end) in enumerate(target_spans)
+                if index not in used and other.kind == fact.kind and other.key == fact.key
+            ),
+            None,
+        )
+        if pair is None:
+            target_quote = bare(target_text, target_spans)
+        else:
+            used.add(pair)
+            _other, target_start, target_end = target_spans[pair]
+            target_quote = target_text[target_start:target_end]
+        claims.append({
+            "source": quote, "target": target_quote,
+            "object_source": quote, "object_target": target_quote, "same": True,
+        })
+    for index, (_fact, start, end) in enumerate(target_spans):
+        if index in used:
+            continue
+        quote = target_text[start:end]
+        claims.append({
+            "source": bare(source_text, source_spans), "target": quote,
+            "object_source": bare(source_text, source_spans), "object_target": quote, "same": True,
+        })
+    if not claims:
+        claims.append({
+            "source": bare(source_text, source_spans), "target": bare(target_text, target_spans),
+            "object_source": bare(source_text, source_spans), "object_target": bare(target_text, target_spans),
+            "same": True,
+        })
+    return {"evidence_id": user["evidence_id"], "verdict": "equivalent", "claims": claims}
+
+
 def translate(body, outputs, tmp_path, *, mutate=None):
     conn = MemoryConn(body)
 
     def fake(**kwargs):
         user = kwargs["user"]
         if user.get("verify"):
-            return ChatJsonResult(
-                data={
-                    "evidence_id": user["evidence_id"],
-                    "verdict": "equivalent",
-                    "claims": [{"source": user["source"], "target": user["target"], "same": True}],
-                },
-                model="synthetic-model",
-                usage=None,
-                latency_ms=0,
-            )
+            return ChatJsonResult(data=verifier_double(user), model="synthetic-model", usage=None, latency_ms=0)
         values = ["合成标题"] if user["segments"] == ["Synthetic audit"] else outputs
         identities = user.get("segment_ids")
         hashes = user.get("source_hashes")

@@ -244,7 +244,7 @@ PYTHONPATH=src python scripts/repair_content_hash_tz.py --apply
 
 对齐拒绝会写入 `translation_attempts`（原文 hash 和检查版本）。同一 hash、同一版本下，12 小时内不再送模型；满 2 次后一直停，直到原文变了或 `ALIGNMENT_VERSION` 加一。请求失败只把间隔从 15 分钟拉到 12 小时，不设永久次数。本进程里失败过的 id 仍会先跳过。点名 `--article-id` 不受这条队列限制。
 
-解析器只作线索。一笔数字且全量检查已经通过，直接留下。其余另做一次核验：必须交回能在原文和译文里逐字找到的片段，结论是等价、冲突或不确定。没有片段的结论不能通过；片段里的钟点、日期、月份、财季或金额若冲突，也不能通过。没通过只修一次，回执必须带回同一段的 id 和 source_hash，再核验。没入库时，各阶段的输入、输出和核验结论写在数据目录 `translate-rejects/<文章id>.jsonl`，里面没有密钥。隔离样本是 `python tools/translate_semantic_sample.py`，没有密钥会直接退出。
+有硬事实就必须另做一次核验，一笔数字也要看对象和方向。核验要交回每条只盖住一笔事实的原文片段，对象字段不能空，`same` 必须明确是 true 或 false。没有片段、整段话盖住多笔、或同一处引用算两次，都不能通过。钟点、日期、月份、财季、百分数、年份和金额若在片段里冲突，也不能通过。没通过只修一次，回执必须带回同一段的 id 和 source_hash，再核验。没入库的记录在 `translate-rejects/<文章id>.jsonl`。隔离样本是 `python tools/translate_semantic_sample.py`；没有密钥会退出，单条网络失败记为未测并继续其余项。
 
 ## 2026-11-02：来源回执与旧稿核验
 

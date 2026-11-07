@@ -245,14 +245,26 @@ def test_same_binding_accepts_format_and_argument_order(source, target):
 
 def test_repair_is_kept_only_when_the_checker_passes(tmp_path, monkeypatch):
     def fake(**kwargs):
-        if kwargs["user"].get("verify"):
-            return ChatJsonResult(
-                data={"evidence_id": kwargs["user"]["evidence_id"], "verdict": "uncertain", "claims": []},
-                model="synthetic-model",
-                usage=None,
-                latency_ms=0,
-            )
-        assert "不要自己宣布通过" in kwargs["user"]["repair"]
+        user = kwargs["user"]
+        if user.get("verify"):
+            if "20美元" in user["target"]:
+                data = {
+                    "evidence_id": user["evidence_id"], "verdict": "conflict",
+                    "claims": [{
+                        "source": "10 dollars", "target": "20美元",
+                        "object_source": "dollars", "object_target": "美元", "same": False,
+                    }],
+                }
+            else:
+                data = {
+                    "evidence_id": user["evidence_id"], "verdict": "equivalent",
+                    "claims": [{
+                        "source": "10 dollars", "target": "10美元",
+                        "object_source": "dollars", "object_target": "美元", "same": True,
+                    }],
+                }
+            return ChatJsonResult(data=data, model="synthetic-model", usage=None, latency_ms=0)
+        assert "不要自己宣布通过" in user["repair"]
         return ChatJsonResult(
             data={"t": ["<p>利润为10美元。</p>"]},
             model="synthetic-model",
@@ -273,7 +285,10 @@ def test_repeating_a_wrong_amount_is_still_rejected(tmp_path, monkeypatch):
                 data={
                     "evidence_id": user["evidence_id"],
                     "verdict": "conflict",
-                    "claims": [{"source": "10 dollars", "target": "20美元", "same": False}],
+                    "claims": [{
+                        "source": "10 dollars", "target": "20美元",
+                        "object_source": "dollars", "object_target": "美元", "same": False,
+                    }],
                 },
                 model="synthetic-model",
                 usage=None,
@@ -301,15 +316,19 @@ def test_same_numbers_on_swapped_objects_are_binding():
 
 
 _GROUNDED = {
-    21998: [{"source": "one to seven days", "target": "1至7天", "same": True}],
+    21998: [
+        {"source": "one", "target": "1至", "object_source": "one", "object_target": "1", "same": True},
+        {"source": "seven days", "target": "7天", "object_source": "days", "object_target": "天", "same": True},
+    ],
     22065: [
-        {"source": "As the week", "target": "本周", "same": True},
-        {"source": "a long one", "target": "漫长的一周", "same": True},
-        {"source": "less than 24 hours", "target": "不到 24 小时", "same": True},
+        {"source": "the week", "target": "本周", "object_source": "week", "object_target": "周", "same": True},
+        {"source": "a long one", "target": "一周", "object_source": "one", "object_target": "周", "same": True},
+        {"source": "24 hours", "target": "24 小时", "object_source": "hours", "object_target": "小时", "same": True},
     ],
     21985: [
-        {"source": "late 90s", "target": "20世纪90年代末", "same": True},
-        {"source": "two", "target": "两种", "same": True},
+        {"source": "late 90s", "target": "90年代末", "object_source": "late", "object_target": "末", "same": True},
+        {"source": "in the", "target": "20世纪", "object_source": "in", "object_target": "世纪", "same": True},
+        {"source": "two", "target": "两种", "object_source": "two", "object_target": "种", "same": True},
     ],
     21934: [
         {
@@ -320,14 +339,19 @@ _GROUNDED = {
             "source": "100 million American women", "target": "1亿美国女性",
             "object_source": "women", "object_target": "女性", "same": True,
         },
+        {"source": "second", "target": "第二", "object_source": "second", "object_target": "第", "same": True},
     ],
     22054: [
         {
             "source": "$0.80 in advertising revenue for every $1",
-            "target": "每获得1美元订阅收入，就产生约0.80美元",
-            "same": True,
+            "target": "1美元",
+            "object_source": "advertising", "object_target": "美元", "same": True,
         },
-        {"source": "$2.9 million", "target": "290万美元", "same": True},
+        {"source": "$0.80", "target": "0.80美元", "object_source": "0.80", "object_target": "美元", "same": True},
+        {
+            "source": "$2.9 million", "target": "290万美元",
+            "object_source": "million", "object_target": "美元", "same": True,
+        },
     ],
 }
 
@@ -361,16 +385,58 @@ def test_saved_live_slots_pass_when_quotes_ground_the_same_facts(tmp_path, monke
     assert code is None and text == target and stages[0]["step"] == "verify"
 
 
+def test_single_number_object_and_direction_are_not_cleared_by_the_parser(tmp_path, monkeypatch):
+    samples = [
+        ("<p>Revenue was $10.</p>", "<p>成本是10美元。</p>",
+         {"source": "Revenue was $10", "target": "成本是10美元", "object_source": "Revenue", "object_target": "成本"}),
+        ("<p>Revenue rose 10%.</p>", "<p>收入下降10%。</p>",
+         {"source": "Revenue rose 10%", "target": "收入下降10%", "object_source": "rose", "object_target": "下降"}),
+        ("<p>App 3.10 replaced tool 3.2.</p>", "<p>工具 3.10 取代了应用 3.2。</p>",
+         {"source": "App 3.10", "target": "工具 3.10", "object_source": "App", "object_target": "工具"}),
+    ]
+    calls = []
+
+    for source, target, claim in samples:
+        calls.clear()
+
+        def fake_for(claim=claim, target=target, **kwargs):
+            calls.append(True)
+            user = kwargs["user"]
+            if user.get("verify"):
+                return ChatJsonResult(
+                    data={
+                        "evidence_id": user["evidence_id"], "verdict": "conflict",
+                        "claims": [{**claim, "same": False}],
+                    },
+                    model="synthetic-model", usage=None, latency_ms=0,
+                )
+            return ChatJsonResult(data={"t": [target]}, model="synthetic-model", usage=None, latency_ms=0)
+
+        monkeypatch.setattr("researchlib.translate.service.chat_json", fake_for)
+        text, code, stages = settle_numbers(source, target, tmp_path)
+        assert calls and code and text == target
+        assert stages[0]["step"] == "verify"
+        found = apply_report(source, target, {
+            "evidence_id": evidence_id(source, target), "verdict": "conflict",
+            "claims": [{**claim, "same": False}],
+        })
+        assert found.status == "contradict"
+
+
 def test_grounded_conflicts_block_time_scale_and_binding():
     samples = [
         ("<p>The call is at 12:15AM.</p>", "<p>电话在12:15PM。</p>",
-         [{"source": "12:15AM", "target": "12:15PM", "same": True}], "equivalent"),
+         [{"source": "12:15AM", "target": "12:15PM", "object_source": "AM", "object_target": "PM", "same": True}],
+         "equivalent"),
         ("<p>Shipped in November 2014.</p>", "<p>2014年12月发出。</p>",
-         [{"source": "November 2014", "target": "2014年12月", "same": False}], "conflict"),
+         [{"source": "November 2014", "target": "2014年12月", "object_source": "November",
+           "object_target": "12月", "same": False}], "conflict"),
         ("<p>Demand was fiscal Q4.</p>", "<p>需求是第3财季。</p>",
-         [{"source": "fiscal Q4", "target": "第3财季", "same": False}], "conflict"),
+         [{"source": "fiscal Q4", "target": "第3财季", "object_source": "fiscal",
+           "object_target": "财季", "same": False}], "conflict"),
         ("<p>The deal was $1.85 billion.</p>", "<p>交易是1.85亿美元。</p>",
-         [{"source": "$1.85 billion", "target": "1.85亿美元", "same": True}], "equivalent"),
+         [{"source": "$1.85 billion", "target": "1.85亿美元", "object_source": "billion",
+           "object_target": "亿", "same": True}], "equivalent"),
         ("<p>Revenue was 10 million and costs were 20 million.</p>", "<p>收入2000万，成本1000万。</p>", [
             {"source": "Revenue was 10 million", "target": "收入2000万",
              "object_source": "Revenue", "object_target": "收入", "same": False},

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from researchlib.translate.llm import LLMTransportError, output_tokens
-from researchlib.translate.numbers import _clocks_match, _extract, _text
+from researchlib.translate.numbers import _clocks_match, _extract, _extract_located, _text
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import leaf_problem, numeric_anchors
 from researchlib.translate.segments import Shielded, unshield
@@ -36,17 +36,17 @@ _UNSHIELD_NOTE = (
 )
 _UNIT_GAP = re.compile(r"(?<=\d)\s+(?=个月|星期|小时|天|周)")
 _TRACKED = ("clock", "date", "month", "fiscal", "duration", "ratio")
-_COVER = ("clock", "date", "month", "fiscal", "qty", "duration", "ratio")
 _VERIFY_SYSTEM = (
     "你核对英文片段和中文译文是否同一批事实。不要翻译，不要改写，不要宣布检查通过。\n"
     "只输出 JSON："
     '{"evidence_id":"原样带回","verdict":"equivalent|conflict|uncertain",'
-    '"claims":[{"source":"英文里逐字存在的片段","target":"中文里逐字存在的片段",'
+    '"claims":[{"source":"只含一笔事实的英文片段","target":"只含一笔事实的中文片段",'
     '"value":"这个数或时间","object_source":"英文片段里的对象","object_target":"中文片段里的对象",'
     '"relation":"比例、起止、时间或空","same":true}]}\n'
-    "equivalent 和 conflict 都必须有 claims。source、target 必须能在对应一侧逐字找到。\n"
-    "数字写法和中文语序可以不同。单位、数量级、钟点上下午、日期、月份、财季、对象或关系不同就是 conflict。\n"
-    "每一笔硬事实都要有一条 claim。看不出就 uncertain。"
+    "equivalent 时 same 必须是 true，conflict 时 same 必须是 false。对象字段不能空，而且必须出现在对应片段里。\n"
+    "一条 claim 只许盖住一笔事实，不能用整段话盖住多笔。每一笔事实都要有自己的 claim。\n"
+    "数字写法和中文语序可以不同。单位、数量级、钟点上下午、日期、月份、财季、对象或方向不同就是 conflict。\n"
+    "看不出就 uncertain。"
 )
 
 
@@ -288,17 +288,34 @@ def _related(left: list[str], right: list[str]) -> bool:
     return False
 
 
-def _covers(html: str, quotes: list[str]) -> bool:
-    needed: dict[tuple[str, str], int] = {}
-    for item in _hard_keys(html, _COVER):
-        needed[item] = needed.get(item, 0) + 1
-    if not needed:
-        return True
-    found: dict[tuple[str, str], int] = {}
-    for quote in quotes:
-        for item in _hard_keys(quote, _COVER):
-            found[item] = found.get(item, 0) + 1
-    return all(found.get(item, 0) >= count for item, count in needed.items())
+def _fact_spans(html: str) -> tuple[str, list[tuple[int, int]]]:
+    text, chosen = _extract_located(_fold(html))
+    spans = [(start, end) for fact, start, end in chosen if fact.hard]
+    return text, spans
+
+
+def _bind_quote(text: str, spans: list[tuple[int, int]], quote: str, used: set[int]) -> tuple[str, int | None]:
+    """一条引用最多盖住一个还没用过的硬事实。整段盖住多笔事实不算数。"""
+    folded = _fold(quote)
+    if not folded or folded not in text:
+        return "miss", None
+    search = 0
+    saw_many = False
+    while True:
+        start = text.find(folded, search)
+        if start < 0:
+            break
+        end = start + len(folded)
+        inside = [index for index, (fact_start, fact_end) in enumerate(spans)
+                  if start <= fact_start and fact_end <= end and index not in used]
+        if len(inside) > 1:
+            saw_many = True
+        elif len(inside) == 1:
+            return "one", inside[0]
+        search = start + 1
+    if saw_many:
+        return "many", None
+    return "none", None
 
 
 def apply_report(source: str, target: str, data: object) -> Judgment:
@@ -330,29 +347,42 @@ def apply_report(source: str, target: str, data: object) -> Judgment:
             (target_quote, "object_target"),
         ):
             word = claim.get(name)
-            if isinstance(word, str) and word and word not in quote:
+            if not isinstance(word, str) or not word.strip() or word not in quote:
                 return Judgment("uncertain", "evidence-missing")
-        if verdict == "equivalent" and claim.get("same") is False:
-            return Judgment("contradict", "binding")
+        if verdict == "equivalent" and claim.get("same") is not True:
+            return Judgment("uncertain", "evidence-missing")
+        if verdict == "conflict" and claim.get("same") is not False:
+            return Judgment("uncertain", "evidence-missing")
         clash = _span_conflict(source_quote, target_quote)
         if clash and verdict == "equivalent":
             return Judgment("contradict", clash)
         source_quotes.append(source_quote)
         target_quotes.append(target_quote)
+    source_text, source_spans = _fact_spans(source)
+    target_text, target_spans = _fact_spans(target)
+    used_source: set[int] = set()
+    used_target: set[int] = set()
+    for source_quote, target_quote in zip(source_quotes, target_quotes, strict=True):
+        source_bind, source_index = _bind_quote(source_text, source_spans, source_quote, used_source)
+        target_bind, target_index = _bind_quote(target_text, target_spans, target_quote, used_target)
+        broad = "many" in {source_bind, target_bind}
+        if "miss" in {source_bind, target_bind} or broad:
+            return Judgment("uncertain", "evidence-broad" if broad else "evidence-missing")
+        if source_bind == "none" and target_bind == "none":
+            return Judgment("uncertain", "evidence-missing")
+        if source_bind == "one" and source_index is not None:
+            used_source.add(source_index)
+        if target_bind == "one" and target_index is not None:
+            used_target.add(target_index)
     if verdict == "conflict":
         return Judgment("contradict", "conflict")
-    if not _covers(source, source_quotes) or not _covers(target, target_quotes):
+    if used_source != set(range(len(source_spans))) or used_target != set(range(len(target_spans))):
         return Judgment("uncertain", "evidence-incomplete")
     return Judgment("accept", "equivalent")
 
 
-def _parser_clears(source: str, target: str) -> bool:
-    """只有一笔硬事实、而且全量检查已经通过时，没有第二笔对象可对调。"""
-    source, target = _fold(source), _fold(target)
-    if leaf_problem(source, target) is not None:
-        return False
-    hard = [fact for fact in _extract(target) if fact.hard and fact.kind in _COVER]
-    return len(hard) < 2
+def _has_hard_fact(html: str) -> bool:
+    return any(fact.hard for fact in _extract(_fold(html)))
 
 
 def clues(source: str, target: str) -> str:
@@ -395,11 +425,11 @@ def settle_numbers(
     segment_id: str | None = None,
     source_hash: str | None = None,
 ) -> tuple[str, str | None, list[dict]]:
-    """解析器只在单笔且已经通过时放行。其余做独立核验；没通过只修一次再核验。"""
-    if _parser_clears(source, draft):
+    """有硬事实就独立核验，单笔数字也不跳过。没有硬事实才直接留下。没通过只修一次再核验。"""
+    if not _has_hard_fact(source) and not _has_hard_fact(draft):
         return draft, None, [{
             "step": "check", "input": source, "output": draft,
-            "status": "accept", "reason": "single",
+            "status": "accept", "reason": "no-number",
         }]
     try:
         first, raw = verify_facts(source, draft, data_dir)
@@ -423,12 +453,6 @@ def settle_numbers(
             "rejected": rejected, "status": "discarded", "reason": identity,
         })
         return draft, _code("uncertain"), stages
-    if _parser_clears(source, revised):
-        stages.append({
-            "step": "repair", "input": source, "output": revised,
-            "status": "accept", "reason": "single",
-        })
-        return revised, None, stages
     try:
         second, raw_second = verify_facts(source, revised, data_dir)
     except LLMTransportError:

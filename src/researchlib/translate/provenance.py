@@ -27,9 +27,9 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # 6：a week、糟糕的一周、过去一周、week-old、各一周和 8 天是同一段时间；
 # couple/few/几周可以写成两周，写明 two 不能收成几。每月、每年的标价不是「每 X 美元就有 Y 美元」。
 # 7：曾用数字多重集合放行。只出现在未合并的隔离试跑里，正式环境没有跑过。
-# 8：解析器只作线索。单笔且全量检查已通过才直接留下；其余由独立核验看原文引用。
-# 没有片段的结论不能通过。片段里的钟点、日期、月份、财季、金额若冲突也不能通过。
-# 没通过只修一次再核验。修复回执必须带回同一段的 id 和 source_hash。
+# 8：有硬事实就独立核验，单笔数字也不跳过。一条引用只盖住一笔事实。
+# 对象字段不能空，same 必须是明确的 true 或 false。钟点、日期、月份、财季、
+# 百分数、年份和金额都不丢。没通过只修一次再核验。修复回执要带回 id 和 source_hash。
 ALIGNMENT_VERSION = 8
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
