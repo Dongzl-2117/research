@@ -141,6 +141,9 @@ _SHARE_ONLY = re.compile(r"(?:#?小程序://[^\s。！？!?，,|｜]+\s*)+")
 # 「「图片」 虽然不体现在资产负债表……」：导出的占位标题行和下一句粘成了一个标题（23834）。
 _PLACEHOLDER_LEAD = re.compile(r"^[「『“\"]\s*(?:图片|见图|无标题|未命名|无题|暂无标题)\s*[」』”\"]\s+\S")
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}(?:\s+短帖)?")
+# #206 以前引子只去掉到「说」，摘要里「作者借……说明：持续付费……」剩下「明：持续付费……」，
+# 补标题时写进了库（24030）。现在的引子规则不会再这样截，库里已经有的认出来重取。
+_SHUO_LEFTOVER = re.compile(r"^[明服法话是][：:]")
 _BREAKS = "，,；;、：:"
 # 省略号在开头、结尾或句子中间，都是截断，不是一句完整的话。
 _CUT = re.compile(r"…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}")
@@ -264,7 +267,7 @@ def title_needs_repair(title: str, body: str = "") -> bool:
         return True
     if _QA_ASKER.search(text):
         return True
-    if _PLACEHOLDER_LEAD.match(text):
+    if _PLACEHOLDER_LEAD.match(text) or _SHUO_LEFTOVER.match(text):
         return True
     if _SHARE.search(text):
         return True

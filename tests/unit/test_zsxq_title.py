@@ -1012,6 +1012,15 @@ def test_mini_program_share_link_is_not_a_title():
 GAME_SUMMARY = "作者借一位玩家的体验说明：持续付费来自皮肤的外观、多元玩法和朋友组队，赛季更新维持新鲜感。"
 
 
+GAME_BODY = (
+    "跟一位玩了十年的游戏玩家聊天：\n"
+    "1.从15年开始玩，累计投入三四万\n"
+    "2.主要是买皮肤，皮肤没有功能加成，就是看着好看\n"
+    "3.每周玩十几个小时，主要是和朋友组队\n"
+    "……\n"
+)
+
+
 def test_sentence_before_a_list_is_not_a_topic_shell():
     """「跟一位玩了十年的游戏玩家聊天：」下面是 1. 2. 3.：这是一句引出下文的话，不是「泡泡玛特：」那种话题壳。
 
@@ -1019,13 +1028,7 @@ def test_sentence_before_a_list_is_not_a_topic_shell():
     文章页从摘要里取，又只去掉了「作者借……说」，成了「明：……」（24030）。
     """
     stored = "跟一位玩了十年的游戏玩家聊天：..."
-    body = (
-        "跟一位玩了十年的游戏玩家聊天：\n"
-        "1.从15年开始玩，累计投入三四万\n"
-        "2.主要是买皮肤，皮肤没有功能加成，就是看着好看\n"
-        "3.每周玩十几个小时，主要是和朋友组队\n"
-        "……\n"
-    )
+    body = GAME_BODY
     expected = "跟一位玩了十年的游戏玩家聊天"
     assert title_needs_repair(expected + "：") is False
     assert zsxq_display_title(stored, body=body, when="2026-10-31") == expected
@@ -1045,6 +1048,22 @@ def test_narrator_lead_does_not_split_shuoming():
     # 「说法」「说是」是句子本身，不是「作者说，」。
     assert strip_narrator("作者说法很多，核心是渠道库存") == "作者说法很多，核心是渠道库存"
     assert strip_narrator("作者说是渠道库存的问题") == "作者说是渠道库存的问题"
+
+
+def test_leftover_of_the_old_narrator_cut_is_taken_again():
+    """#206 以前截剩的「明：……」已经写进了库（24030）：文章页、卡片和 research-repair-zsxq 都认出来重取。"""
+    stored = "明：持续付费来自皮肤的外观、多元玩法和朋友组队，赛季更新维持新鲜感"
+    assert title_needs_repair(stored)
+    # 原标题已经被盖掉；正文是一句引子加列表，抽不出整句：取摘要去掉引子以后的判断本身。
+    judged = "持续付费来自皮肤的外观、多元玩法和朋友组队，赛季更新维持新鲜感"
+    assert zsxq_display_title(stored, body=GAME_BODY, summary=GAME_SUMMARY, when="2026-10-31") == judged
+    assert stored_zsxq_title(stored, GAME_BODY, summary=GAME_SUMMARY) == judged
+    # 正文有能用的整句就用正文的。
+    plain = "皮肤是这款游戏最赚钱的地方。\n"
+    assert zsxq_display_title(stored, body=plain, summary=GAME_SUMMARY) == "皮肤是这款游戏最赚钱的地方"
+    # 正文里本来就以这几个字开头的句子照用。
+    for title in ("明天再写这家公司", "是的，逻辑没有变", "法国的奢侈品牌", "服务业的提价权", "话题索引"):
+        assert not title_needs_repair(title), title
 
 
 # 23834 的样子：方伟只发了几张图，正文除了导出的「「图片」」只有评论区，两条评论都是读者的。
