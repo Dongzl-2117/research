@@ -34,6 +34,7 @@
 - 整个来源先不展示：把 `config/sources.yaml` 里那一项的 `enabled` 改成 `false`。从配置里删掉的来源，启动时 `sync_sources` 也记成停用。停用的来源网站、接口、问库都不出现，导入会拒绝，摘要、观点、论点不再处理，库里的行留着。
 - 不跳过、不禁用测试来让 CI 变绿。
 - 阅读页（文章、对照、飞书目录右侧）保留原图，不把识图文字铺进正文。整理后的字只给摘要、观点、问这篇和检索（`present_ocr` / `articles.ocr_text` / `article_chunks.lang = ocr`）。见 [docs/ocr.md](docs/ocr.md)。
+- 识图 11-07 起交回结构（`image_texts.units`，`researchlib/ocr_units.py`）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，由看得见图的模型标好，后面只排版和拼接。`wechat_dialogue`、`vision_polish`、`normalize_vision_text` 冻结，只整理以前的自由文字。识图出错改 `VISION_PROMPT` 里的通用说明，不加按 App、按案例的规则。见 [docs/ocr.md](docs/ocr.md)「识图交回结构」。
 
 ## 本地测试
 
@@ -63,6 +64,8 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 ```
 
 ## 挂着的事（2026-10-31）
+
+- 识图交回结构（11-07）上线后：跑过一晚，按 [docs/ocr.md](docs/ocr.md)「识图交回结构」里的两条 SQL 看每张图实际用了多少 token、`:invalid` 有几张，算出按新格式重认旧图（约 2 万张）要花多少，由 Zhilin 定重不重认；旧图重认完再删冻结的旧规则。下图失败（`image_fetches`）还没进 `research-status`。
 
 - 本次文章展示与引用修复的交接见 [docs/article-preservation-2026-11-01.md](docs/article-preservation-2026-11-01.md)：对照投影遗漏时保留完整区块，段数不齐时分开展示；旧订阅地址在输出前遮住；OCR 重切同步校验观点定位。没有执行历史清洗或重切，不要把代码修好当成旧库已修复。原有近重复规则若会吞掉独有文字、数字、资料链接或结构，展示完整性优先。
 

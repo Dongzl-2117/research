@@ -7,8 +7,13 @@ image_texts（engine 如 ``deepseek-flash-vision``）。识别出的字够多的
 公司提及默认不看图片里的字，免得水印、表情包乱挂；正文短于 SHORT_BODY_CHARS 时例外，
 截图帖要挂上图里的公司才能抽分家观点。
 
+识图交回结构（JSON，见 ``researchlib.ocr_units``）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，
+都由看得见图的模型标好，存进 image_texts.units，后面只排版和拼接，不再按规则猜。
+units 为空的是以前的自由文字，仍由 wechat_dialogue 的旧规则整理（冻结，不再往里加）。
+
 app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、正文为空，
-下次不带 ``--redo`` 也会重试，不写进脏字。
+下次不带 ``--redo`` 也会重试，不写进脏字。JSON 连着两次读不出来记 ``:invalid``，
+不自动重试（重试又要花钱），``--redo --article`` 点名重认。
 
     docker compose exec -T app research-ocr --limit 50
 
@@ -25,17 +30,31 @@ import re
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import site_visible_sql
 from researchlib.chunks import replace_ocr_chunks
+from researchlib.ocr_units import (
+    ImageText,
+    UnitsError,
+    format_blocks,
+    format_units,
+    has_dialogue,
+    parse_reply,
+    stitch,
+)
 from researchlib.present_text import merge_wrapped_utterances, order_nested_replies
 from researchlib.textutil import collapse_short_spam, fix_obvious_typos
 from researchlib.vision_polish import repair_vision_misreads
 from researchlib.wechat_dialogue import (
+    attribution_uncertain,
     drop_broadcast_chrome,
     present_ocr_pieces,
     present_stored_ocr,
+    speaker_note,
     speaker_prefix,
     split_speaker,
 )
@@ -66,69 +85,48 @@ _MIME = {
     ".gif": "image/gif",
 }
 
-# 写进代码，单测对短语。模型输出仍会再经 wechat_dialogue 剥界面字。
+# 识图只交结构，不按 App 列界面字、不按案例补规则：遇到新版式改这里的通用说明（见 researchlib.ocr_units）。
 VISION_PROMPT = """\
-你在把投资研究截图转成可检索的纯文字。只输出图里的字，不要额外评论，不要解释，不要用 markdown。
+你在把投资研究文章里的一张图转成结构化的文字，给检索、摘要和观点用。\
+只输出一个 JSON 对象，不要 markdown 代码块，不要解释。
 
-若是微信或知识星球聊天截图：
-- 按气泡从上到下逐条转写，一条气泡一行。
-- 绿色气泡（自己发的）写成「方伟：」。
-- 其他人写成「截图上的网名：」，网名照界面原样抄（如「春风十里我自在：」「江南张掌柜：」），
-  不要改写成「网友：」，也不要猜真名。看不清网名时才写「网友：」；同一个人前后用同一个网名。
-- 气泡里嵌套的截图、估值表、PE 表、长文卡片必须整段转写，放在那个气泡的网名下，禁止因字小整段丢掉。
-- 嵌套表按行输出，指标与数字同一行（如「16倍 约133港元」）。
-- 嵌套图里的季度（Q1/Q2/Q3）、同比正负号、价格区间必须与图内一致，禁止改写或脑补长句。
-- 剥掉界面字，不要输出：可按住转文字、回到引用位置、设为群待办、
-  继续提问、AI搜索、状态栏时间、群名、群聊的聊天记录、雪球、LIVE、加人会员群、小程序卡片、输入框。
-- 截到屏幕边缘的半截气泡：能认的照写，认不全写 … 或 ?；禁止把半截尾巴编成公司名或新句，
-  也禁止用本图其它气泡里出现过的公司名补全（例如不要把「…各种/各自的 IP 业务」写成「名创优品…」）。
-- 「一年后」「两年后」等常见时间词，中间的「年」看不清也优先写「年」，不要写成「一?后」「一?会」。
-- 知识星球「扫码领取优惠券」「立减金」「仅限前 N 名」推广卡：不要输出任何字（包括说明句），也不要标成「方伟：」。
-- 微博/新闻评论卡（昵称+地区+数字，或「xx新闻联播」条）：网名照写，地区和数字不要输出。
-- 视频号/公众号关注条不要输出：已关注、点击 #话题 查看更多、欢迎关注 @账号 视频号、作者提示: 内容为转载。
-- 雪球/微博帖头与壳不要输出：地区、影响力徽章（十年知己、十大影响力用户、超级某某）、
-  发布时间、「发讨论」「查看对话」、点赞评论转发数字栏、「N位达人赞过」「投诉」「屏蔽用户」。
-  发帖人的网名留着，写在它说的话前面。
-- 雪球加群卡和广告不要输出：雪球专属交流群、加群交流、股民必入、与高手畅聊热点、
-  雪球财富陪伴官·小雪、邀请您加入雪球专属交流群、畅聊股市热点、进阶投资技巧、
-  底栏「去基金首页 自选 我的」、「广告」标、风险提示「用户发表的所有文章仅代表个人观点…」。
-- 「回复@甲:… //@乙:回复@丙:…」去掉「回复@」「//@」壳，名字是那一楼的作者，写在句首。
-  按时间从早到晚各写一行「甲：」（越靠后的 //@ 越早），不要只留最上面那条新回复。
-- 雪球、微博这类嵌套回复：视觉上靠上的一块常常是较晚的回复，
-  下面缩进或灰底引用卡片是被回复的更早发言。不要按从上到下当成时间顺序。
-  先写较早的发言，再写回复。每楼开头写那一楼的网名，看不清才写「网友：」；
-  引语里的说话人留在正文里（如「莫尼什：我是苹果用户……」）。
-  例：上面是「李录投资也很好……」（网名看不清），中间是春风十里我自在的
-  「大道会不会考虑和李录做一期对谈节目？」，下面卡片是「莫尼什：我是苹果用户……」。
-  应写成：
-  莫尼什：我是苹果用户……
-  春风十里我自在：大道会不会考虑和李录做一期对谈节目？
-  网友：李录投资也很好……
-- 杂志/品牌封面壳不要输出：领教工坊、INSIDE THE BEST、COLMO 等刊头、Logo 字、品牌水印；
-  「来源：思想×岭南|…」这类刊源行也不要。封面大字若是正文金句（如「光做家电没有未来」）照写。
-- 同一短句连续刷屏（如「深刻反省」重复十几遍）只保留一次，不要整段复读。
-- 视频画面上的角标和主播条不要输出：未成年人请勿饮酒、主播或主持人加名字、底部节目名水印。
-  新闻标题和数字照写。
-- 品牌广告海报只留条款和数字：单独一行的 Logo、四字对仗口号不要输出。保障条款、适用条件照写。
-  书籍目录照写，不要当成界面删掉。
-- 上下文已经把词定死时，识图滑字直接写成对的词，不要照抄错字，也不要凭空改写。
-  例如：家电品牌并列（格力、海尔、空调、冰箱）里的「墓地」写成「美的」；
-  free cash flow 的中间词只错一个字母（如 free case flow）写成 free cash flow。
-  没有这种上下文就照写（去墓地扫墓、单独的 case 不改）。看不清仍写 ?，禁止改数字和观点。
-- 看不清的字写 ?，禁止编造。
+格式：{"kind": "…", "blocks": […]}
 
-若是表格或柱状图：
-- 公司与数字一一对应，保留行列（公司、指标、数字写在同一行）。
-- 看不清写 ?，禁止编造数字或公司名。
+kind 写这张图是什么：chat（聊天记录）、post（帖子、评论和回复）、\
+text（成段的文字：文章、新闻、书页、公告、幻灯片）、table（表格）、chart（图表）、\
+photo（照片、表情包等没有可读文字的图）、other。
 
-分段看画面，由你判断，不要套固定段数。
-- 画面上是一块的写成一段，段与段之间空一行。同一句被屏幕截断时写成一句，
-  例如「企业家精神是敢于在最顺的时候」和下一行「对自己动刀子」是一句。
-- 画面上分开的（大标题、字幕、图下说明、另一句话）各自成段，空行隔开。
-- 不要把每个短行都单独成段，也不要把整张图合成一段。
-- 微信或星球气泡仍是一条气泡一行，不要把不同气泡粘成一段。
+blocks 按阅读顺序排，每块是下面一种：
+- 消息：{"type": "message", "speaker": "显示名", "self": false, "text": "这条说的话"}
+  聊天、帖子、评论里一个人发的一条。
+  speaker 照图上显示的名字抄，表情、国旗、符号也照抄；看不到名字写空串，不要猜，也不要改成「网友」这类称呼。
+  self：只有聊天界面里截图的人自己发的写 true，也就是靠右的（常是绿色的）气泡，这种气泡旁边一般没有名字。\
+其余都写 false，包括帖子、评论和回复：名字旁标着作者、楼主的，是那个帖子的作者，不一定是截图的人，名字照抄在 speaker。
+  有引用或回复时加 "quote": {"speaker": "…", "self": false, "text": "被引用的那条"}，\
+引用框、灰色卡片、「回复@某某：」后面的原话都算。
+  被图片上下边缘截掉一部分的那条加 "cut": "top" 或 "bottom"，只写看得到的字，不要补全。
+  消息里嵌着的截图、表格、文章卡片，把里面的字写进 text，表格一行写一行。
+- 段落：{"type": "text", "text": "…"}。成段的文字一段一块，标题、正文段落、图注各自成块。\
+被图片边缘截断的段落同样加 "cut"。
+- 表格：{"type": "table", "rows": [["…", "…"], …]}。一行一个数组，有表头放第一行。\
+图表把图上标出来的数据按系列或类目写成行，图上没标的数不要估。
 
-其它截图按阅读顺序转写，分段同样看画面。看不清写 ?，禁止编造。不要额外评论。
+怎么写：
+1. 只写图里的内容，界面一概不写。内容是人说的话、文章正文、表格和图表里的字和数字、图片本身印着的字。\
+界面是状态栏、App 和群的名字、按钮、输入框、菜单和标签栏、发送时间、已读和点赞评论转发收藏的数字、\
+头像旁的徽章和地区、系统提示（谁加入了群、撤回了消息、拍了拍）、广告和推广引流卡片（优惠券、加群、关注、二维码）、\
+水印和 Logo。拿不准时想一想：读者转述这张图时会不会说这句话，不会说的就不写。
+2. 消息按发言先后排。聊天从上往下；回复链里被回复的那条更早，写进 quote 或排在前面。
+3. 屏幕宽度造成的折行接成一句；画面上本来分开的段落分成几块。同一句话刷屏只写一次。
+4. 照着图认字，不要编。看不清的字写 ?，不要用图里别处出现过的词补；数字、正负号、单位、年份和季度照图上写。\
+字形相近、上下文只容得下一个词时，写那个词。
+5. 没有可读文字的图，blocks 写 []。
+
+例子（王小明发的一条被图片上边缘截掉了开头；截图的人在右边引用它回了一句）：
+{"kind": "chat", "blocks": [\
+{"type": "message", "speaker": "王小明", "self": false, "text": "毛利率35%，比去年高", "cut": "top"}, \
+{"type": "message", "speaker": "", "self": true, "text": "先看现金流", \
+"quote": {"speaker": "王小明", "self": false, "text": "毛利率35%，比去年高"}}]}
 """
 
 
@@ -375,26 +373,49 @@ def normalize_vision_text(text: str) -> str:
     return repair_vision_misreads(fix_obvious_typos(collapse_short_spam(text)))
 
 
-def vision_engine(settings) -> Callable[[Path], str]:
+@dataclass
+class Recognition:
+    """一张图识出来的东西。units 为空是模型没按结构交（旧格式的文字），error 非空是结构读不出来。"""
+
+    text: str
+    units: dict | None = None
+    usage: dict = field(default_factory=dict)
+    error: str = ""
+
+
+# 模型回了 JSON 却读不出来时，同一张图最多再要这么多次。还不行记 :invalid，不再自动重试，免得每晚为它花钱。
+VISION_UNITS_RETRIES = 1
+
+
+def read_vision_reply(reply: str) -> tuple[str, dict | None]:
+    """模型的回答 → (存进 image_texts.text 的字, units)。
+
+    按结构交的：字由 units 排出来（读旧列的地方照样能用），units 存原样结构。
+    没按结构交的（自由文字）：照旧经 normalize_vision_text 轻清理，units 为空，后面走旧规则。
+    像 JSON 却读不出来的抛 UnitsError。
+    """
+    units = parse_reply(reply)
+    if units is None:
+        return normalize_vision_text(reply), None
+    return format_units(units), units
+
+
+def vision_engine(settings) -> Callable[[Path], Recognition]:
     """站内识图。失败抛给 run_ocr，记成 :error。
 
     先压图再送 deepseek-flash，避免 en1 转发把大 data-url 掐断；瞬时网络错误最多再试两次。
+    回答像 JSON 却读不出来（多半是截断了），再要一次；还不行交回 error，run_ocr 记 :invalid。
     """
     import time
 
     from researchlib import llm
 
-    def recognize(path: Path) -> str:
-        raw = path.read_bytes()
-        if len(raw) > MAX_VISION_BYTES:
-            raise OcrImageSkipped(f"超过 {MAX_VISION_BYTES} 字节，识图跳过")
-        payload, mime = prepare_vision_image(raw, image_mime(path))
-        messages = vision_messages(payload, mime)
+    def ask(messages: list[dict], usage: dict) -> str:
         last_exc: BaseException | None = None
         for attempt in range(VISION_TRANSIENT_TRIES):
             try:
-                text, _model = llm.chat(settings, messages, exact_max_tokens=VISION_MAX_TOKENS)
-                return normalize_vision_text(text)
+                text, _model = llm.chat(settings, messages, exact_max_tokens=VISION_MAX_TOKENS, usage=usage)
+                return text
             except llm.LLMError as exc:
                 last_exc = exc
                 detail = str(exc)
@@ -416,10 +437,28 @@ def vision_engine(settings) -> Callable[[Path], str]:
         assert last_exc is not None
         raise last_exc
 
+    def recognize(path: Path) -> Recognition:
+        raw = path.read_bytes()
+        if len(raw) > MAX_VISION_BYTES:
+            raise OcrImageSkipped(f"超过 {MAX_VISION_BYTES} 字节，识图跳过")
+        payload, mime = prepare_vision_image(raw, image_mime(path))
+        messages = vision_messages(payload, mime)
+        usage: dict = {}
+        problem = ""
+        for _attempt in range(1 + VISION_UNITS_RETRIES):
+            try:
+                text, units = read_vision_reply(ask(messages, usage))
+            except UnitsError as exc:
+                problem = str(exc)
+                logger.info("识图结构读不出来 %s：%s", path, exc)
+                continue
+            return Recognition(text, units, usage)
+        return Recognition("", None, usage, problem)
+
     return recognize
 
 
-def resolve_engine(settings) -> tuple[str, Callable[[Path], str]]:
+def resolve_engine(settings) -> tuple[str, Callable[[Path], Recognition]]:
     """返回 (写入 image_texts 的 engine 名, recognize)。没有凭证就起不来。
 
     单张 HTTP 失败不在这里处理，由 run_ocr 记 :error。
@@ -445,7 +484,7 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
     """还没识别过的本地图片，按引用它的文章从新到旧。重复文章里的图不算。
 
     redo 时连 image_texts 里已有的哈希也再认一遍。article_ids 只认这几篇挂着的图。
-    engine 以 :error 结尾的行不算认完，不带 redo 也会重试；:skipped 和空正文的成功行不重试。
+    engine 以 :error 结尾的行不算认完，不带 redo 也会重试；:skipped、:invalid 和空正文的成功行不重试。
     不点名文章时，只挂在知识星球读者帖、「图片」评论壳、停用来源下的图不认：网站上不展示，认了白花钱。
     """
     where = ["a.duplicate_of IS NULL"]
@@ -485,21 +524,71 @@ def useful_image_text(text: str) -> bool:
     return len(_MEANINGFUL.findall(text or "")) >= READING_MIN_CHARS
 
 
-def compose_ocr_text(pieces: list[str]) -> str:
+def compose_ocr_text(pieces: list, owners: tuple[str, ...] = ()) -> str:
     """按图片顺序拼成观点和摘要能读的旁路正文。
 
-    太短的（水印、表情）丢掉。微信群聊截图整理成「方伟：」「网友：」，
-    表格和长文保持原文。识图若已经带说话人，仍再剥界面字。
-    这份字给摘要、观点、问库和检索；阅读页不铺进正文，只留原图。
+    pieces 是每张图的识别结果：字符串（旧格式），或 ``ImageText``（带 units 的是结构化的）。
+    owners 是这篇来源作者本人的名字（``article_owners``）：结构化的图里显示名是这些账号的，写成作者。
+    太短的（水印、表情）丢掉。这份字给摘要、观点、问库和检索；阅读页不铺进正文，只留原图。
+
+    全是旧格式时和以前一字不差：微信群聊截图整理成「方伟：」「网友：」，表格和长文保持原文，
+    识图若已经带说话人仍再剥界面字（wechat_dialogue，冻结）。
+    有结构化的图时，结构化的那几张只排版、按首尾重合拼接（``ocr_units``），不再过旧规则；
+    夹在中间的旧格式图仍按旧规则整理，前后顺序不变。
     """
-    useful: list[str] = []
-    for piece in pieces:
-        text = (piece or "").strip()
-        if useful_image_text(text):
-            useful.append(text)
-    if not useful:
-        return ""
-    return present_ocr_pieces(useful)
+    records = [piece if isinstance(piece, ImageText) else ImageText("", piece or "", None) for piece in pieces]
+    if not any(record.units is not None for record in records):
+        useful = [text for text in ((record.text or "").strip() for record in records) if useful_image_text(text)]
+        if not useful:
+            return ""
+        return present_ocr_pieces(useful)
+    return "\n\n".join(
+        text for _record, text in _structured_pieces(records, legacy_runs=True, owners=owners) if text
+    )
+
+
+def _structured_pieces(
+    records: list[ImageText], *, legacy_runs: bool, owners: tuple[str, ...] = ()
+) -> list[tuple[ImageText, str]]:
+    """有结构化图的一篇：[(那张图, 整理好的字)]。同一张图出现两次只算第一次。
+
+    结构化的图按首尾重合拼接后排版，引用的那条前面写过就不再写。
+    legacy_runs：连着的几张旧格式图一起交给旧规则（拼旁路正文时，旧规则要把连着的群聊合成一块），
+    这一串的字挂在第一张上；为 False 时一张一张整理（检索块一张图一块）。两种都共用一份「写过的句子」去重。
+    """
+    seen_digests: set[str] = set()
+    ordered: list[ImageText] = []
+    for record in records:
+        if record.digest and record.digest in seen_digests:
+            continue
+        if record.digest:
+            seen_digests.add(record.digest)
+        ordered.append(record)
+    stitched = stitch([record.units for record in ordered])
+    found: list[tuple[ImageText, str]] = []
+    written: set[str] = set()
+    seen: list[str] = []
+    run: list[ImageText] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        useful = [record.text.strip() for record in run if useful_image_text(record.text or "")]
+        text = present_ocr_pieces(useful, seen).strip() if useful else ""
+        found.append((run[0], text))
+        run.clear()
+
+    for record, blocks in zip(ordered, stitched, strict=True):
+        if blocks is None:
+            run.append(record)
+            if not legacy_runs:
+                flush()
+            continue
+        flush()
+        text = format_blocks(blocks, written, owners)
+        found.append((record, text if useful_image_text(text) else ""))
+    flush()
+    return found
 
 
 def hash_ocr(text: str) -> str:
@@ -518,11 +607,11 @@ def append_ocr(body: str, ocr_text: str) -> str:
     return f"{base}\n\n{block}" if base else block
 
 
-def refresh_article_ocr(conn, article_id: int) -> str:
-    """按这篇已识别的图重写 articles.ocr_text / ocr_hash。返回哈希。"""
+def article_image_texts(conn, article_id: int) -> list[ImageText]:
+    """这篇已识别的图，按在正文里的先后。"""
     rows = conn.execute(
         """
-        SELECT t.text
+        SELECT i.content_hash, t.text, t.units
         FROM article_images i
         JOIN image_texts t ON t.content_hash = i.content_hash
         WHERE i.article_id = %s
@@ -530,7 +619,25 @@ def refresh_article_ocr(conn, article_id: int) -> str:
         """,
         (article_id,),
     ).fetchall()
-    text = compose_ocr_text([row["text"] for row in rows])
+    return [ImageText(row["content_hash"], row["text"] or "", row["units"]) for row in rows]
+
+
+def article_owners(conn, article_id: int) -> tuple[str, ...]:
+    """这篇来源的作者本人在各平台的名字：sources.author 加 poster_names（启动时从来源配置同步）。"""
+    row = conn.execute(
+        "SELECT s.author, s.poster_names FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = %s",
+        (article_id,),
+    ).fetchone()
+    if row is None:
+        return ()
+    return tuple(name for name in (row["author"], *(row["poster_names"] or ())) if name)
+
+
+def refresh_article_ocr(conn, article_id: int) -> str:
+    """按这篇已识别的图重写 articles.ocr_text / ocr_hash。返回哈希。"""
+    images = article_image_texts(conn, article_id)
+    owners = article_owners(conn, article_id) if any(image.units is not None for image in images) else ()
+    text = compose_ocr_text(images, owners)
     digest = hash_ocr(text)
     current = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
@@ -560,18 +667,10 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
     这篇还挂着 image_texts 时，先按当前规则从原始识别重写 articles.ocr_text。
     阅读页本来就现解析 image_texts；观点如果只重跑库里已经写成「方伟：」的旁路，
     账号栏已经被拿掉，引用回复分不回来。没有图时，仍把库里的旁路再整理一次。
+    有结构化的图时，重写出来的就是定稿：说话人是识图标好的，不再拿旧规则过一遍。
     """
-    has_images = conn.execute(
-        """
-        SELECT 1
-        FROM article_images i
-        JOIN image_texts t ON t.content_hash = i.content_hash
-        WHERE i.article_id = %s
-        LIMIT 1
-        """,
-        (article_id,),
-    ).fetchone()
-    if has_images:
+    images = article_image_texts(conn, article_id)
+    if images:
         refresh_article_ocr(conn, article_id)
     row = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
@@ -579,6 +678,8 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
     ).fetchone()
     if row is None:
         return "", ""
+    if any(image.units is not None for image in images):
+        return row["ocr_text"] or "", row["ocr_hash"] or ""
     cleaned = present_stored_ocr(row["ocr_text"] or "")
     digest = hash_ocr(cleaned)
     if cleaned != (row["ocr_text"] or "") or digest != (row["ocr_hash"] or ""):
@@ -587,6 +688,23 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
             (cleaned, digest, article_id),
         )
     return cleaned, digest
+
+
+def ocr_speaker_note(conn, article_id: int, text: str, host: str) -> str:
+    """摘要和观点提示里那句说话人说明（``speaker_note``）。text 是已经换成作者名的图片文字。
+
+    全是旧格式的图：照旧从文字里判断有没有对话、冒号前的名字拿不拿得准。
+    有结构化的图：对话是识图标好的，有消息就算有对话；只有旧格式的那几张还按旧规则看边界拿不拿得准。
+    """
+    images = article_image_texts(conn, article_id)
+    if not any(image.units is not None for image in images):
+        return speaker_note(text, host)
+    legacy = [image.text for image in images if image.units is None]
+    dialogue = any(has_dialogue(image.units) for image in images) or any(
+        split_speaker(line, names=True) for piece in legacy for line in piece.splitlines()
+    )
+    uncertain = any(attribution_uncertain(piece) for piece in legacy)
+    return speaker_note(text, host, dialogue=dialogue, uncertain=uncertain)
 
 
 def _touch_articles(conn, content_hash: str, text: str, touched: set[int], report: dict) -> None:
@@ -602,7 +720,7 @@ def run_ocr(
     conn,
     data_dir: Path,
     limit: int,
-    recognize: Callable[[Path], str],
+    recognize: Callable[[Path], Recognition | str],
     engine: str | None = None,
     deadline: float | None = None,
     *,
@@ -612,15 +730,23 @@ def run_ocr(
     """识别一批图片，重切引用它们的文章的图片文字块。返回计数。
 
     单张失败记 ``{engine}:error`` 和空正文，不写入脏字。没凭证或 401/403 整批停。
+    结构读不出来记 ``{engine}:invalid``，不自动重试。
     engine 是写进 image_texts 的名字，不给就用默认的 deepseek-flash-vision。
+    recognize 交回 ``Recognition``；交回字符串的当旧格式（测试和以前的引擎这样写）。
+    报告里 structured 是按结构交回的张数，plain 是交回自由文字的，tokens 是接口报的用量合计。
     """
     engine = engine or vision_engine_id()
     report = {
         "images": 0,
         "with_text": 0,
         "failed": 0,
+        "invalid": 0,
+        "structured": 0,
+        "plain": 0,
         "missing": 0,
         "articles": 0,
+        "tokens": {},
+        "metered": 0,
         "last_error": None,
         "followups": {"digest": [], "zsxq_title": []},
         "ocr_changed": [],
@@ -635,36 +761,58 @@ def run_ocr(
                 report["missing"] += 1
                 continue
             used = engine
+            result = Recognition("")
             if path.suffix.lower() not in OCR_EXTS:
-                text = ""
                 used = f"{engine}:skipped"
             else:
                 try:
-                    text = recognize(path)
+                    found = recognize(path)
+                    result = found if isinstance(found, Recognition) else Recognition(found or "")
                 except OcrImageSkipped as exc:
                     logger.info("跳过图片 %s：%s", path, exc)
-                    text = ""
                     used = f"{engine}:skipped"
                 except Exception as exc:  # 单张图坏了不拖垮整批；鉴权失败除外
                     if _fatal_ocr(exc):
                         raise
                     logger.warning("图片识别失败 %s：%s", path, exc)
-                    text = ""
                     used = f"{engine}:error"
                     report["failed"] += 1
                     report["last_error"] = str(exc)[:300]
+                else:
+                    if result.error:
+                        logger.warning("图片识别结果读不出来 %s：%s", path, result.error)
+                        used = f"{engine}:invalid"
+                        report["invalid"] += 1
+                        report["last_error"] = result.error[:300]
+                        result = Recognition("", None, result.usage)
+                    elif result.units is not None:
+                        report["structured"] += 1
+                    else:
+                        report["plain"] += 1
+                    if result.usage:
+                        report["metered"] += 1
+                        for name, value in result.usage.items():
+                            report["tokens"][name] = report["tokens"].get(name, 0) + value
+            text = result.text or ""
             conn.execute(
                 """
-                INSERT INTO image_texts (content_hash, engine, text) VALUES (%s, %s, %s)
+                INSERT INTO image_texts (content_hash, engine, text, units, usage) VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (content_hash) DO UPDATE
-                    SET engine = EXCLUDED.engine, text = EXCLUDED.text, created_at = now()
+                    SET engine = EXCLUDED.engine, text = EXCLUDED.text, units = EXCLUDED.units,
+                        usage = EXCLUDED.usage, created_at = now()
                 """,
-                (row["content_hash"], used, text or ""),
+                (
+                    row["content_hash"],
+                    used,
+                    text,
+                    Jsonb(result.units) if result.units is not None else None,
+                    Jsonb(result.usage) if result.usage else None,
+                ),
             )
             report["images"] += 1
             if text.strip():
                 report["with_text"] += 1
-            _touch_articles(conn, row["content_hash"], text or "", touched, report)
+            _touch_articles(conn, row["content_hash"], text, touched, report)
             conn.commit()
     finally:
         changed: list[dict] = []
@@ -761,7 +909,35 @@ def main(argv: list[str] | None = None) -> int:
         f"失败 {report['failed']} 张，文件缺失 {report['missing']} 张，"
         f"更新了 {report['articles']} 篇的图片文字"
     )
+    for line in describe_report(report):
+        print(line)
     return 0
+
+
+def describe_report(report: dict) -> list[str]:
+    """识图报告里格式和用量那几行：按结构交回的比例、读不出来的张数、接口报的 token。"""
+    lines = []
+    answered = report.get("structured", 0) + report.get("plain", 0) + report.get("invalid", 0)
+    if answered:
+        line = (
+            f"其中按结构交回 {report.get('structured', 0)} 张，"
+            f"交回自由文字 {report.get('plain', 0)} 张（按旧规则整理）"
+        )
+        if report.get("invalid"):
+            line += f"，结构读不出来 {report['invalid']} 张（记 :invalid，不自动重试；--redo --article 点名重认）"
+        lines.append(line)
+    tokens = report.get("tokens") or {}
+    metered = report.get("metered", 0)
+    if metered:
+        prompt, completion = tokens.get("prompt", 0), tokens.get("completion", 0)
+        thinking = f"（其中思考 {tokens['reasoning']}）" if "reasoning" in tokens else ""
+        lines.append(
+            f"用量（接口报了用量的 {metered} 张）：输入 {prompt} token，输出 {completion} token{thinking}；"
+            f"平均每张输入 {round(prompt / metered)}、输出 {round(completion / metered)}"
+        )
+    elif answered:
+        lines.append("接口这次没报用量，花费看 DeepSeek 账单")
+    return lines
 
 
 if __name__ == "__main__":

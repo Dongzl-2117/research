@@ -125,14 +125,15 @@ def sync_sources(conn, sources: list[Source]) -> None:
     for source in sources:
         conn.execute(
             """
-            INSERT INTO sources (id, name, author, kind, enabled, description)
-            VALUES (%(id)s, %(name)s, %(author)s, %(kind)s, %(enabled)s, %(description)s)
+            INSERT INTO sources (id, name, author, kind, enabled, description, poster_names)
+            VALUES (%(id)s, %(name)s, %(author)s, %(kind)s, %(enabled)s, %(description)s, %(poster_names)s)
             ON CONFLICT (id) DO UPDATE SET
               name = EXCLUDED.name,
               author = EXCLUDED.author,
               kind = EXCLUDED.kind,
               enabled = EXCLUDED.enabled,
-              description = EXCLUDED.description
+              description = EXCLUDED.description,
+              poster_names = EXCLUDED.poster_names
             """,
             {
                 "id": source.id,
@@ -141,6 +142,7 @@ def sync_sources(conn, sources: list[Source]) -> None:
                 "kind": source.kind,
                 "enabled": source.enabled,
                 "description": source.description,
+                "poster_names": list(source.poster_names),
             },
         )
     conn.execute(

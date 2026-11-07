@@ -55,6 +55,8 @@ RETRY_AFTER_CAP = 60.0
 EMPTY_CONTENT_MAX_TOKENS = 131_072
 
 _slot_lock = threading.Lock()
+# 接口不认 stream_options（去掉以后同一请求就成了）时记下，这个进程里后面的请求不再带，免得每张图先白挨一次 4xx。
+_STREAM_USAGE = True
 _slots: dict[int, threading.BoundedSemaphore] = {}
 
 
@@ -328,6 +330,21 @@ def _reasoning_text(body: dict) -> str:
     return reasoning.strip() if isinstance(reasoning, str) else ""
 
 
+def add_usage(total: dict | None, reported) -> None:
+    """把接口报的一次用量加进 total：prompt、completion，以及 completion 里思考用掉的 reasoning。"""
+    if total is None or not isinstance(reported, dict):
+        return
+    details = reported.get("completion_tokens_details")
+    found = {
+        "prompt": reported.get("prompt_tokens"),
+        "completion": reported.get("completion_tokens"),
+        "reasoning": details.get("reasoning_tokens") if isinstance(details, dict) else None,
+    }
+    for name, value in found.items():
+        if type(value) is int and value >= 0:
+            total[name] = total.get(name, 0) + value
+
+
 def _bumped_max_tokens(current: int) -> int:
     """正文被思考挤空时的备用额度：取两倍与加 8192 的较大者，封顶 131072。"""
     return min(max(current * 2, current + 8192), EMPTY_CONTENT_MAX_TOKENS)
@@ -340,12 +357,17 @@ def chat(
     max_tokens: int | None = None,
     temperature: float = 0.2,
     exact_max_tokens: int | None = None,
+    usage: dict | None = None,
 ) -> tuple[str, str]:
     """返回 (回答文本, 实际模型名)。
 
     DeepSeek：deepseek-flash / thinking / reasoning_effort=max / 至少 393216，不发 temperature。
     Grok：grok-4.7 / xhigh / 至少 128000，不发 fast。
     ``exact_max_tokens`` 会覆盖上面的下限（识图转写不需要几十万输出，否则容器 OOM）。
+    ``usage``：传一个 dict 进来，返回时加上这次实际用掉的 token（prompt、completion、其中思考的 reasoning），
+    正文被思考挤空、加额度再要的那一次也算。接口没报用量就不加。DeepSeek 流式要请求里带
+    ``stream_options.include_usage`` 才报，只有传了 usage 的调用才带；接口不认这个字段就去掉再发一次，
+    去掉以后成了，这个进程后面的请求就不再带。
     """
     provider = _provider(settings)
     label = provider_label(provider)
@@ -356,6 +378,8 @@ def chat(
         payload = {**deepseek_params(max_tokens=max_tokens), "messages": messages}
     if exact_max_tokens is not None:
         payload["max_tokens"] = int(exact_max_tokens)
+    if usage is not None and _STREAM_USAGE and str(payload.get("model", "")).startswith("deepseek"):
+        payload["stream_options"] = {"include_usage": True}
     try:
         token = _oauth_token(settings) if provider == PROVIDER_GROK else _deepseek_token()
     except LLMUnavailable as exc:
@@ -364,6 +388,7 @@ def chat(
     refreshed = False
     retries = 0
     budget_bumped = False
+    dropped_stream_usage = False
     while True:
         try:
             with _slot(settings):
@@ -378,6 +403,12 @@ def chat(
                 except LLMUnavailable as unavailable:
                     raise _failed(settings, unavailable, provider=label) from None
                 continue
+            if exc.code in (400, 422) and "stream_options" in payload:
+                # 只为报用量加的字段。接口或转发不认它时报错的说法不一，4xx 一律去掉再发一次，这次不要用量；
+                # 别的原因的 4xx 再发一次还是同样的错，照常报出去（4xx 不计费）。
+                payload.pop("stream_options")
+                dropped_stream_usage = True
+                continue
             if exc.code in RETRY_STATUS and retries < len(RETRY_DELAYS):
                 time.sleep(_retry_after(exc) or RETRY_DELAYS[retries])
                 retries += 1
@@ -391,6 +422,7 @@ def chat(
             raise _failed(settings, LLMError(f"连不上 {label} 接口：{exc}"), provider=label) from exc
         except json.JSONDecodeError as exc:
             raise _failed(settings, LLMError(f"{label} 接口返回的不是 JSON"), provider=label) from exc
+        add_usage(usage, body.get("usage") if isinstance(body, dict) else None)
         try:
             text = _message_content(body, label)
         except LLMError as exc:
@@ -404,5 +436,13 @@ def chat(
                 continue
             raise _failed(settings, exc, provider=label) from None
         break
+    if dropped_stream_usage:
+        _forget_stream_usage()
     record_llm(settings.data_dir, ok=True, provider=label)
     return text, str(body.get("model") or payload["model"])
+
+
+def _forget_stream_usage() -> None:
+    """接口不认 stream_options：这个进程后面的请求不再带，识图报告会写「接口这次没报用量」。"""
+    global _STREAM_USAGE
+    _STREAM_USAGE = False

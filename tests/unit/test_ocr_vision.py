@@ -36,61 +36,38 @@ def _settings(tmp_path) -> Settings:
     )
 
 
-def test_vision_prompt_names_the_constraints():
+def test_vision_prompt_asks_for_structure_not_app_rules():
+    """提示词是一份通用说明：交 JSON，说话人、截图主人、引用、截断各自成字段，界面字按一条原则不写。
+
+    以前这里对着几十个按案例写的短语（雪球加群卡、领教工坊、墓地……），每来一种版式就补一条。
+    现在不认 App：遇到新版式改通用说明，不往提示词里加案例。
+    """
     for phrase in (
-        "绿色气泡",
-        "方伟：",
-        "网友：",
-        "截图上的网名",
-        "看不清网名",
-        "加群卡",
-        "财富陪伴官",
-        "去基金首页",
-        "十年知己",
-        "可按住转文字",
-        "回到引用位置",
-        "设为群待办",
-        "群聊的聊天记录",
-        "继续提问",
-        "AI搜索",
-        "状态栏时间",
-        "群名",
-        "雪球",
-        "LIVE",
-        "加人会员群",
-        "小程序",
-        "一一对应",
-        "?",
-        "禁止编造",
-        "不要额外评论",
-        "嵌套",
-        "PE",
-        "半截",
-        "Q1/Q2/Q3",
-        "视频号",
-        "已关注",
-        "发讨论",
-        "查看对话",
-        "十大影响力用户",
-        "回复@",
-        "从早到晚",
-        "不要把每个短行都单独成段",
-        "不要把整张图合成一段",
-        "空行",
-        "引用卡片",
-        "领教工坊",
-        "INSIDE THE BEST",
-        "COLMO",
-        "深刻反省",
-        "墓地",
-        "free case flow",
-        "free cash flow",
-        "未成年人请勿饮酒",
-        "主播",
-        "节目名水印",
-        "书籍目录",
+        "只输出一个 JSON 对象",
+        '"kind"',
+        '"blocks"',
+        '"type": "message"',
+        '"speaker"',
+        '"self"',
+        '"quote"',
+        '"cut": "top" 或 "bottom"',
+        '"type": "text"',
+        '"type": "table"',
+        "只有聊天界面里截图的人自己发的写 true",
+        "是那个帖子的作者，不一定是截图的人",
+        "看不到名字写空串",
+        "只写图里的内容，界面一概不写",
+        "读者转述这张图时会不会说这句话",
+        "被回复的那条更早",
+        "只写看得到的字，不要补全",
+        "看不清的字写 ?",
+        "不要用图里别处出现过的词补",
+        "图上没标的数不要估",
+        "blocks 写 []",
     ):
         assert phrase in VISION_PROMPT, phrase
+    for case_rule in ("雪球专属交流群", "领教工坊", "墓地", "方伟：", "网友：", "十年知己"):
+        assert case_rule not in VISION_PROMPT, case_rule
 
 
 def test_default_engine_id_is_deepseek_flash_vision():
@@ -117,9 +94,12 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
         return "```\n方伟：底线\n网友：非共识\n```", "deepseek-flash"
 
     monkeypatch.setattr("researchlib.llm.chat", fake_chat)
-    text = vision_engine(_settings(tmp_path))(image)
-    assert text == "方伟：底线\n网友：非共识"
+    found = vision_engine(_settings(tmp_path))(image)
+    # 模型没按结构交（自由文字）：照旧轻清理，units 为空，后面走旧规则。
+    assert found.text == "方伟：底线\n网友：非共识"
+    assert found.units is None
     assert seen.get("kwargs", {}).get("exact_max_tokens") == 65536
+    assert seen["kwargs"].get("usage") == {}
     assert normalize_vision_text("```text\n方伟：底线\n```") == "方伟：底线"
     assert (
         normalize_vision_text("方伟：就是去年上头买拉布布的人撤走了不少\n方伟：名创优品业务…")
@@ -218,7 +198,7 @@ def test_vision_recognize_compresses_before_chat(tmp_path, monkeypatch):
             "researchlib.ocr.prepare_vision_image",
             lambda image_bytes, mime: (image_bytes[:80_000], "image/jpeg"),
         )
-    text = vision_engine(_settings(tmp_path))(path)
+    text = vision_engine(_settings(tmp_path))(path).text
     assert "方伟" in text
     assert seen["mime"] == "image/jpeg"
     assert seen["bytes"] <= 280_000

@@ -48,6 +48,7 @@ def test_guest_digest_keeps_body_and_ocr(monkeypatch):
 
     monkeypatch.setattr(digest_mod, "original_chunks", chunks)
     monkeypatch.setattr(digest_mod, "article_ocr", ocr)
+    monkeypatch.setattr(digest_mod, "ocr_speaker_note", lambda _conn, _article_id, text, host: "")
     monkeypatch.setattr(digest_mod, "chat", chat)
     conn = _Conn()
     data = digest_mod.digest_article(conn, SimpleNamespace(display_timezone="Asia/Shanghai"), _row(), "方伟")
