@@ -146,7 +146,7 @@ docker compose exec app research-digest --source fangwei-mp --limit 200
 
 ### 失败了怎么办
 
-摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-pilot` 同样）。不会在两个提供方之间自动切换。
+摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2。不会在两个提供方之间自动切换。
 
 ## 观点时间线
 

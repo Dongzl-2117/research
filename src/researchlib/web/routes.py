@@ -1874,44 +1874,6 @@ def media(request: Request, storage_path: str):
     )
 
 
-@router.get("/pilot")
-def pilot_page(request: Request):
-    """新抽取规则的样卡和首页展开总结样稿，给复核用。只读 DATA_DIR/pilot 下的 JSON，不碰线上观点。"""
-    import json as _json
-    from pathlib import Path as _Path
-
-    from researchlib.pilot import SUMMARY_FILE, VIEWS_FILE, pilot_cards
-
-    settings = request.app.state.settings
-    base = _Path(settings.data_dir) / "pilot"
-    views = _json.loads((base / VIEWS_FILE).read_text()) if (base / VIEWS_FILE).exists() else {"articles": {}}
-    summaries = _json.loads((base / SUMMARY_FILE).read_text()) if (base / SUMMARY_FILE).exists() else {}
-    labels = {"positive": "看好", "negative": "看淡", "mixed": "两面", "neutral": "中性"}
-    names = [("腾讯", 1), ("贵州茅台", 49), ("泡泡玛特", 2990)]
-    groups = []
-    for name, company_id in names:
-        cards = pilot_cards(views, company_id, 20)
-        for card in cards:
-            card["stance_label"] = labels.get(card["stance"], "")
-            siblings = [c for c in views["articles"].get(str(card["article_id"]), []) if c is not card and c["about"]]
-            card["siblings"] = [c["company"] for c in siblings]
-        dropped = [
-            c
-            for cards_ in views["articles"].values()
-            for c in cards_
-            if c["company_id"] == company_id and not c["about"]
-        ]
-        groups.append({"name": name, "id": company_id, "cards": cards, "dropped": dropped,
-                       "summary": summaries.get(name)})
-    with database(request) as conn:
-        sources = active_sources(request, conn)
-    return render_page(
-        request, "pilot.html",
-        {"nav": "", "title": "样卡复核", "groups": groups, "updated": views.get("updated_at", ""),
-         "sources": sources, "sample_banner": None},
-    )
-
-
 def deployed_commit() -> str:
     """镜像构建时的提交号（Dockerfile 的 GIT_SHA，自动上线传进来）。手动构建或本地跑是 unknown。"""
     return os.environ.get("GIT_SHA", "").strip() or "unknown"
