@@ -1,16 +1,19 @@
 """公众号定时抓取：极致了（dajiala）查最新文章，新文章的正文从公众号原文页取，写成归档 Markdown 再导入。
 
     docker compose exec app research-crawl-wechat --source gudujinhuati
-    docker compose exec app research-crawl-wechat --source gudujinhuati --dry-run   # 只看哪些是新的
+    docker compose exec app research-crawl-wechat --source fangwei-mp --dry-run   # 只看哪些是新的
 
-- 来源在 config/sources.yaml 里写 ``ghid``（公众号原始 ID，gh_ 开头）。key 是环境变量 ``DAJIALA_KEY``，
-  和方伟公众号的抓取共用（仓库根 .env，docker compose 透传进容器）。
+- 来源在 config/sources.yaml 里写 ``ghid``（公众号原始 ID，gh_ 开头），现在是孤独进化体和方伟公众号。
+  key 是环境变量 ``DAJIALA_KEY``（仓库根 .env，docker compose 透传进容器）。
 - 极致了按次收费：查一次最新文章列表约 0.14 元（--dry-run 也要查），取一篇正文约 0.03 元。
   正文先从原文页取（不花钱，图片位置也是对的），原文页取不到（要验证、图文消息之类）才用极致了的正文。
+  极致了的正文按段估图的位置（第 N 张图放在第 N 段后面），归档头不写「图片位置：原文页」。
 - 库里已有的（按 sn，或同一天同标题）跳过，一次最多取 --max-new 篇新文章。原文已删除、因违规不能看的，
   记一份原始数据就不再取。
+- 列表里有比库里最新一篇还早的文章，却一篇都对不上库里的：多半是 ghid 写成了别的号，这次一篇都不取。
 - 归档写在 DATA_DIR/inbox/<来源>/：md/<年>/<日期>-<sn>.md、raw/articles/<sn>.json，格式和以前导入的公众号归档一样
-  （正文开头「- 作者：」「- 时间：」「- sn：」「- 原链接：」）。图片留图床地址，入库后由 research-fetch-images 下载。
+  （正文开头「- 作者：」「- 时间：」「- sn：」「- 原链接：」，正文从原文页取的再加一行「- 图片位置：原文页」）。
+  图片留图床地址，入库后由 research-fetch-images 下载。
 """
 
 from __future__ import annotations
@@ -202,6 +205,24 @@ def known_articles(conn, source_id: str) -> tuple[set[str], set[tuple[str, str]]
     return sns, titles
 
 
+def newest_article(conn, source_id: str) -> datetime | None:
+    row = conn.execute(
+        "SELECT max(published_at) AS newest FROM articles WHERE source_id = %s",
+        (source_id,),
+    ).fetchone()
+    return row["newest"] if row else None
+
+
+def wrong_account(posts: list[Post], known: int, newest: datetime | None) -> bool:
+    """列表里有比库里最新一篇还早的文章，却一篇都对不上：抓的多半不是这个号（ghid 写错了）。
+
+    列表里的文章都比库里新的，是很久没抓、新文章超过一页，照常取。
+    """
+    if known or newest is None:
+        return False
+    return any((published(post) or newest) < newest for post in posts)
+
+
 def archived_sns(inbox: Path) -> set[str]:
     """归档目录里已经写过的（导入失败也算，导入那一步会再试）。"""
     folder = inbox / "raw" / "articles"
@@ -214,7 +235,11 @@ def published(post: Post) -> datetime | None:
     return datetime.fromtimestamp(post.post_time, UTC).astimezone(SHANGHAI) if post.post_time > 0 else None
 
 
-def archive_markdown(post: Post, body: str, author: str) -> str:
+# 归档头里这一行说明图就在公众号原文的位置，阅读页不用再按识图去挪（researchlib.render.images_placed_by_estimate）。
+IMAGES_FROM_PAGE = "- 图片位置：原文页"
+
+
+def archive_markdown(post: Post, body: str, author: str, *, images_from_page: bool = False) -> str:
     when = published(post)
     lines = [f"# {post.title}", "", f"- 作者：{author}"]
     if when is not None:
@@ -222,6 +247,8 @@ def archive_markdown(post: Post, body: str, author: str) -> str:
     lines.append(f"- sn：`{post.sn}`")
     lines.append(f"- 原链接：{post.url}")
     lines.append(f"- 原始数据：[raw/articles/{post.sn}.json](../../raw/articles/{post.sn}.json)")
+    if images_from_page:
+        lines.append(IMAGES_FROM_PAGE)
     return "\n".join(lines) + "\n\n" + body.strip() + "\n"
 
 
@@ -265,6 +292,9 @@ class CrawlReport:
         if self.dry_run:
             lines.append(f"新文章: {len(self.new)}（--dry-run，没取正文、没写归档）")
             lines.extend(f"  + {item}" for item in self.new)
+            if self.failed:
+                lines.append(f"失败: {len(self.failed)}")
+                lines.extend(f"  ! {item}" for item in self.failed)
             return "\n".join(lines)
         lines.append(f"新写入归档: {len(self.written)}")
         lines.extend(f"  + {item}" for item in self.written)
@@ -315,6 +345,7 @@ def crawl(
     report.listed = len(posts)
     sns, titles = known_articles(conn, source.id)
     sns |= archived_sns(inbox)
+    fresh: list[Post] = []
     for post in posts:
         if not _HEX32.match(post.sn):
             report.failed.append(f"{_label(post)}：列表里没有 sn，认不出是哪篇")
@@ -322,6 +353,15 @@ def crawl(
         if post.sn in sns or (_title_key(post.title), _day(published(post))) in titles:
             report.known += 1
             continue
+        fresh.append(post)
+    if fresh and wrong_account(fresh, report.known, newest_article(conn, source.id)):
+        report.failed.append(
+            f"列表里 {len(fresh)} 篇，有比库里最新一篇还早的，却一篇都对不上库里的："
+            f"多半不是这个号（ghid {ghid}），这次一篇都不取"
+        )
+        report.cost = client.cost
+        return report
+    for post in fresh:
         if dry_run:
             report.new.append(_label(post))
             continue
@@ -357,7 +397,10 @@ def crawl(
                 report.failed.append(f"{_label(post)}：{unavailable}；极致了的正文也是空的")
                 continue
         _write(raw_path, json.dumps(_raw_record(post, body_from=body_from, detail=detail), ensure_ascii=False))
-        _write(archive_path(inbox, post), archive_markdown(post, body, source.author))
+        _write(
+            archive_path(inbox, post),
+            archive_markdown(post, body, source.author, images_from_page=body_from == "page"),
+        )
         where = "原文页" if body_from == "page" else "极致了正文，图片位置是估的"
         report.written.append(f"{_label(post)}（{where}，{len(images)} 张图）")
     report.cost = client.cost

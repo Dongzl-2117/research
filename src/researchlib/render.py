@@ -717,9 +717,15 @@ def _relocate_images(html: str, texts: dict[str, str]) -> str:
 _ESTIMATED_IMAGE_KINDS = frozenset({"wechat_mp"})
 
 
-def images_placed_by_estimate(kind: str) -> bool:
-    """这种来源的图位置是估的，阅读页可以按识图把图挪回对得上的段落（``inline_image_ocr``）。"""
-    return kind in _ESTIMATED_IMAGE_KINDS
+def images_placed_by_estimate(kind: str, meta: dict | None = None) -> bool:
+    """这篇的图位置是估的，阅读页可以按识图把图挪回对得上的段落（``inline_image_ocr``）。
+
+    只有方伟公众号（kind ``wechat_mp``）以前的正文是极致了按段估的位置。正文从公众号原文页取的
+    （归档头「- 图片位置：原文页」，导入时记成 ``raw_meta.images = "page"``）图本来就在原位，不挪。
+    """
+    if kind not in _ESTIMATED_IMAGE_KINDS:
+        return False
+    return (meta or {}).get("images") != "page"
 
 
 def inline_image_ocr(html: str, texts: dict[str, str] | None = None, *, host: str = HOST) -> str:

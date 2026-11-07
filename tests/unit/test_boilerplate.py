@@ -43,6 +43,9 @@ def test_meta_header_is_removed():
     out = strip_meta(HEADER)
     assert "sn：" not in out and "原链接" not in out and "原始数据" not in out and "作者：" not in out
     assert "正文第一句" in out and out.startswith("# 标题")
+    # 从公众号原文页取的正文多一行「图片位置：原文页」，同样是归档头。
+    page = HEADER.replace("\n\n正文第一句", "\n- 图片位置：原文页\n\n正文第一句")
+    assert strip_meta(page) == out
 
 
 def test_rss_link_meta_line_is_removed():

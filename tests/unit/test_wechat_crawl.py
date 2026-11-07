@@ -46,10 +46,15 @@ class FakeConn:
 
     def execute(self, sql, params=None):
         rows = self.rows
+        newest = max((row["published_at"] for row in rows if row.get("published_at")), default=None)
 
         class Result:
             def fetchall(self):
                 return rows
+
+            def fetchone(self):
+                assert "max(published_at)" in sql
+                return {"newest": newest}
 
         return Result()
 
@@ -172,6 +177,8 @@ def test_archive_header_matches_the_old_wechat_archives():
         f"- sn：`{SN_NEW}`\n- 原链接：https://mp.weixin.qq.com/s?sn={SN_NEW}\n"
         f"- 原始数据：[raw/articles/{SN_NEW}.json](../../raw/articles/{SN_NEW}.json)\n\n正文\n"
     )
+    page = archive_markdown(post, "正文", "孤独进化体", images_from_page=True)
+    assert page.endswith(f"(../../raw/articles/{SN_NEW}.json)\n- 图片位置：原文页\n\n正文\n")
 
 
 def test_crawl_writes_only_new_articles(tmp_path):
@@ -205,6 +212,8 @@ def test_crawl_writes_only_new_articles(tmp_path):
     assert "第一段，接着写。" in text and "看不见的字" not in text and "微信扫一扫" not in text
     raw = json.loads((tmp_path / "raw" / "articles" / f"{SN_NEW}.json").read_text(encoding="utf-8"))
     assert raw["body_from"] == "page" and raw["post"]["sn"] == SN_NEW
+    # 正文从原文页取：归档头写明图在原文的位置，阅读页不再按识图挪图。
+    assert "\n- 图片位置：原文页\n\n第一段" in text
     rendered = report.render()
     assert "新写入归档: 1" in rendered and "原文页，1 张图" in rendered
     assert "花费 0.14 元，余额 9.50 元" in rendered
@@ -226,8 +235,45 @@ def test_crawl_falls_back_to_dajiala_when_the_page_has_no_body(tmp_path):
     assert len(client.article_calls) == 1
     text = (tmp_path / "md" / "2026" / f"2026-10-12-{SN_NEW}.md").read_text(encoding="utf-8")
     assert text.rstrip().endswith("极致了给的正文")
+    # 极致了的正文按段估图的位置：不写「图片位置：原文页」。
+    assert "图片位置" not in text
     assert "极致了正文" in report.written[0]
     assert report.cost == pytest.approx(0.17)
+
+
+def test_crawl_takes_nothing_when_the_list_is_another_account(tmp_path):
+    """ghid 写成了别的号：列表里有比库里最新一篇还早的文章，却一篇都对不上，一篇都不取。"""
+    client = FakeClient(
+        [
+            _post(SN_NEW, "别的号的新文章", datetime(2026, 10, 12, 1, 0, tzinfo=UTC)),
+            _post(SN_SAME_TITLE, "别的号的旧文章", datetime(2026, 9, 1, 1, 0, tzinfo=UTC)),
+        ]
+    )
+    conn = FakeConn([_known(sn=SN_OLD, title="库里最新的一篇", when=datetime(2026, 10, 10, 1, 0, tzinfo=UTC))])
+    report = crawl(conn, SOURCE, ghid="gh_test", inbox=tmp_path, client=client,
+                   fetch=lambda url: pytest.fail("不是这个号，不该取原文页"))
+    assert report.written == [] and client.article_calls == []
+    assert report.failed == [
+        "列表里 2 篇，有比库里最新一篇还早的，却一篇都对不上库里的：多半不是这个号（ghid gh_test），这次一篇都不取"
+    ]
+    assert not tmp_path.joinpath("md").exists()
+    assert "失败: 1" in report.render()
+    dry = crawl(conn, SOURCE, ghid="gh_test", inbox=tmp_path, client=client,
+                fetch=lambda url: pytest.fail("dry run 不取正文"), dry_run=True)
+    assert dry.new == [] and "多半不是这个号" in dry.render()
+
+
+def test_crawl_still_takes_posts_newer_than_the_library(tmp_path):
+    """很久没抓、新文章超过一页：列表里都比库里新，一篇对不上也照常取。"""
+    client = FakeClient(
+        [
+            _post(SN_NEW, "新的一篇", datetime(2026, 10, 12, 1, 0, tzinfo=UTC)),
+            _post(SN_SAME_TITLE, "前一天的", datetime(2026, 10, 11, 1, 0, tzinfo=UTC)),
+        ]
+    )
+    conn = FakeConn([_known(sn=SN_OLD, title="很久以前的", when=datetime(2026, 9, 1, 1, 0, tzinfo=UTC))])
+    report = crawl(conn, SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=lambda url: PAGE)
+    assert report.failed == [] and len(report.written) == 2
 
 
 def test_crawl_reports_a_failure_when_both_ways_fail(tmp_path):

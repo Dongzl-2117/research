@@ -553,3 +553,15 @@ def test_reader_images_load_lazily_without_touching_other_markup():
     assert '<IMG SRC="/media/c.png" loading="eager">' in once
     assert once.count("loading=") == 3 and "<p>imgur 不是图</p>" in once
     assert lazy_images("") == "" and lazy_images("<p>没有图</p>") == "<p>没有图</p>"
+
+
+def test_only_wechat_bodies_with_estimated_positions_get_their_images_moved():
+    """方伟公众号以前的正文是极致了按段估的图位置；从公众号原文页取的（raw_meta.images = page）和别的来源都不挪。"""
+    from researchlib.render import images_placed_by_estimate
+
+    assert images_placed_by_estimate("wechat_mp")
+    assert images_placed_by_estimate("wechat_mp", {"format": "markdown"})
+    assert not images_placed_by_estimate("wechat_mp", {"images": "page"})
+    assert not images_placed_by_estimate("feishu")
+    assert not images_placed_by_estimate("markdown", {})
+

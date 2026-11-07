@@ -12,7 +12,9 @@ sources:
     kind: wechat_mp
     enabled: true
     timeline: true
-    description: 方伟微信公众号历史归档（Markdown + 图片）
+    # 公众号「方伟看十年」的原始 ID。scripts/crawl-fangwei-mp.sh 每天两次用它向极致了查新文章（research-crawl-wechat）。
+    ghid: gh_00a6a367d877
+    description: 方伟微信公众号历史归档（Markdown + 图片）。11 月 7 日起和孤独进化体一样定时抓取，正文从公众号原文页取（research-crawl-wechat）。
 
   - id: fangwei-zsxq
     name: 方伟知识星球

@@ -36,7 +36,7 @@ _IMAGE = re.compile(
 )
 _HEADING = re.compile(r"^\s*#{1,6}\s+\S")
 _META_KEYS = (
-    r"作者|时间|发布时间|类型|点赞|sn|topic_id|原链接|原文链接|原始数据|来源|公众号|阅读人数|阅读|"
+    r"作者|时间|发布时间|类型|点赞|sn|topic_id|原链接|原文链接|原始数据|图片位置|来源|公众号|阅读人数|阅读|"
     r"ghid|appmsgid|position|author|url|source|rss_link"
 )
 _META_LINE = re.compile(r"^\s*[-*]\s*(?:" + _META_KEYS + r")\s*(?:[:：]|\s+\d|\s*·)", re.I)

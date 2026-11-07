@@ -89,9 +89,22 @@ def test_nightly_starts_app_before_ocr():
     assert "compose_exec app research-ocr" in nightly
     assert "compose up -d" in status
     assert "is not running" in status
-    for name in ("crawl-fangwei-mp.sh", "crawl-fangwei-zsxq.sh"):
+    commands = {
+        "crawl-fangwei-mp.sh": "compose_exec app research-crawl-wechat",
+        "crawl-gudujinhuati.sh": "compose_exec app research-crawl-wechat",
+        "crawl-fangwei-zsxq.sh": "compose_exec app research-ingest",
+    }
+    for name, command in commands.items():
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
-        assert "compose_exec app research-ingest" in text
+        assert command in text
+
+
+def test_fangwei_mp_crawl_takes_bodies_from_the_original_page():
+    """方伟公众号和孤独进化体同一条路：research-crawl-wechat 从原文页取正文，不再跑仓库外的 dl.py。"""
+    text = (ROOT / "scripts" / "crawl-fangwei-mp.sh").read_text(encoding="utf-8")
+    assert 'research-crawl-wechat --source "$SOURCE"' in text and "SOURCE=fangwei-mp" in text
+    assert "python3" not in text and 'dl.py"' not in text
+    assert text.index("research-crawl-wechat") < text.index("research-fetch-images") < text.index("research-digest")
 
 
 def test_nightly_reads_images_before_views_and_digests():

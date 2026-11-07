@@ -1,12 +1,17 @@
 #!/bin/bash
-# 方伟公众号增量抓取 + 入库。不启 AIHOT worker，只用极致了 key（环境变量 DAJIALA_KEY，否则仓库根 .env）。
+# 方伟公众号每天抓两次（launchd 08:10、20:10）：容器里的 research-crawl-wechat 向极致了查最新文章（每次约 0.14 元），
+# 新文章的正文从公众号原文页取，图就在原文的位置（取不到才用极致了的正文，每篇约 0.03 元），写进
+# data/inbox/fangwei-mp 并导入（--origin crawl）；再下载外链图片、给新文章补摘要。和孤独进化体同一条路。
+# 极致了 key 是仓库根 .env 的 DAJIALA_KEY，docker compose 透传进容器。
+# 11 月 7 日以前用的 data/inbox/fangwei-mp/dl.py（不在仓库里）取的是极致了按段估图位置的正文，现在不再调用；
+# 它写下的归档留在 data/inbox/fangwei-mp，research-crawl-wechat 每次照旧把整个目录重新导入。
 #   scripts/crawl-fangwei-mp.sh
-#   MAX_PAGES=5 scripts/crawl-fangwei-mp.sh
+#   MAX_NEW=10 scripts/crawl-fangwei-mp.sh
 set -Eeuo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
-INBOX="$REPO/data/inbox/fangwei-mp"
-MAX_PAGES="${MAX_PAGES:-3}"
+SOURCE=fangwei-mp
+MAX_NEW="${MAX_NEW:-5}"
 TASK=crawl-fangwei-mp
 . "$REPO/scripts/status.sh"
 trap 'STATUS_FAILED_LINE=$LINENO; STATUS_FAILED_CMD=$BASH_COMMAND' ERR
@@ -16,40 +21,14 @@ compose() {
   docker compose --project-directory "$REPO" -f "$REPO/docker-compose.yml" "$@"
 }
 
-# 从 .env 里取 DAJIALA_KEY 一行（去掉两端的空白、\r 和成对引号），不 source 整个文件，
-# 免得把 DATABASE_URL 等变量一起导出到当前 shell。
-env_file_key() {
-  local file="$1" line
-  [ -f "$file" ] || return 1
-  line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?DAJIALA_KEY[[:space:]]*=' "$file" | tail -n 1 || true)"
-  [ -n "$line" ] || return 1
-  line="${line#*=}"
-  line="$(printf '%s' "$line" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-  case "$line" in
-    \"*) line="${line#\"}"; line="${line%\"}" ;;
-    \'*) line="${line#\'}"; line="${line%\'}" ;;
-  esac
-  printf '%s' "$line"
-}
+echo "$(date '+%F %T') 开始方伟公众号抓取（这次最多 ${MAX_NEW} 篇新文章）"
+run_step "抓取并导入" compose_exec app research-crawl-wechat --source "$SOURCE" --max-new "$MAX_NEW"
 
-# 读极致了 key：优先环境变量，其次仓库根 .env（research/.env，已 gitignore；ENV_FILE 可覆盖）。
-ENV_FILE="${ENV_FILE:-$REPO/.env}"
-if [ -z "${DAJIALA_KEY:-}" ]; then
-  DAJIALA_KEY="$(env_file_key "$ENV_FILE" || true)"
-fi
-if [ -z "${DAJIALA_KEY:-}" ]; then
-  status_fail "缺少 DAJIALA_KEY（环境变量和 $ENV_FILE 都没有）"
-  exit 2
-fi
-
-echo "$(date '+%F %T') 开始方伟公众号增量抓取（最多 ${MAX_PAGES} 页列表）"
-run_step "增量抓取" env DAJIALA_KEY="$DAJIALA_KEY" python3 "$INBOX/dl.py" --incremental --max-pages "$MAX_PAGES"
-
-echo "$(date '+%F %T') 导入 research 库"
-run_step "导入" compose_exec app research-ingest-wechat --source fangwei-mp --input /data/inbox/fangwei-mp --origin crawl
+echo "$(date '+%F %T') 下载外链图片"
+run_step "下载外链图片" compose_exec app research-fetch-images --limit 200
 
 # 给最近没有摘要的方伟公众号补摘要（上限 20，避免拖太久）
 echo "$(date '+%F %T') 补摘要"
-run_step "摘要" compose_exec app research-digest --source fangwei-mp --limit 20
+run_step "摘要" compose_exec app research-digest --source "$SOURCE" --limit 20
 
-status_ok "方伟公众号增量完成"
+status_ok "方伟公众号抓取完成"

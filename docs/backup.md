@@ -10,9 +10,9 @@
 | --- | --- |
 | `scripts/backup.sh` | `pg_dump` 导出一份（custom 格式），用 `pg_restore --list` 读一遍确认完整，再增量同步图片。导出保留 30 天（`KEEP_DAYS`）。导出前记下篇数，存在 `research-时间.dump.articles` 里。自动上线遇到带新迁移的提交，上线前也跑一次（见 [deploy.md](deploy.md)「更新」） |
 | `scripts/restore-check.sh` | 把最新一份导出恢复到临时库 `research_restore_check`，核对篇数不少于导出时，然后删掉临时库。不碰正式库 |
-| `scripts/crawl-fangwei-mp.sh` | 方伟公众号增量抓取（极致了接口，`DAJIALA_KEY` 取环境变量或仓库根 `.env`），导入（`--origin crawl`），再给新文章补摘要 |
+| `scripts/crawl-fangwei-mp.sh` | 方伟公众号抓取：和孤独进化体同一条路，容器里的 `research-crawl-wechat` 查最新文章，正文从公众号原文页取，写进 `data/inbox/fangwei-mp` 并导入（`--origin crawl`）；再下载外链图片、补摘要。11 月 7 日以前用仓库外的 `dl.py`（极致了按段估图位置的正文），它写下的归档照旧每次重新导入 |
 | `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（`data/inbox/fangwei-zsxq/dl.py`，令牌在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），再补摘要 |
-| `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，`DAJIALA_KEY` 和方伟公众号共用），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片、补摘要。见 [ingest.md](ingest.md)「公众号定时抓取」 |
+| `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，仓库根 `.env` 的 `DAJIALA_KEY`），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片、补摘要。见 [ingest.md](ingest.md)「公众号定时抓取」 |
 | `scripts/nightly.sh` | 夜间补齐，见下面 |
 
 都通过 `docker compose exec` 在容器里跑，不需要在宿主机装 Postgres 客户端。
