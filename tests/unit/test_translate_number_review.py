@@ -1,6 +1,7 @@
 """数字没对上不再让整篇作废：补译一次，仍不行就照样写入并记进 number_review。
 
-串段、链接图片代码不对、身份一直对不上仍拒收。合成样本，不调真模型、不连库。
+串段、链接图片代码不对、身份一直对不上的那几段不写进中文：单独重译，还不行先放英文，
+序号记进 untranslated，别的段照常写入。整篇一段都译不出来才拒收。合成样本，不调真模型、不连库。
 """
 
 from __future__ import annotations
@@ -37,9 +38,13 @@ def zh_for(segment: str) -> str:
     return next(text for key, text in _BY_KEYWORD.items() if key in segment)
 
 
-def run(body, answer, tmp_path, *, title="Synthetic audit", title_zh="合成标题", rows_hook=None, calls=None):
-    """answer(segments, repair) 按送来的段回译文；少回几条就是条数不对。rows_hook 可以改坏身份。"""
-    conn = MemoryConn(body)
+def run(body, answer, tmp_path, *, title="Synthetic audit", title_zh="合成标题", rows_hook=None, calls=None,
+        conn=None, reuse=True):
+    """answer(segments, repair) 按送来的段回译文；少回几条就是条数不对。rows_hook 可以改坏身份。
+
+    传 ``conn`` 时接着用那一份假库（比如设好了 ``previous``，看按段复用）。
+    """
+    conn = MemoryConn(body) if conn is None else conn
     conn.article["title"] = title
     calls = [] if calls is None else calls
 
@@ -59,7 +64,7 @@ def run(body, answer, tmp_path, *, title="Synthetic audit", title_zh="合成标�
         return ChatJsonResult(data={"t": rows}, model="synthetic-model", usage=None, latency_ms=0)
 
     with patch.object(service, "chat_json", side_effect=fake), patch.object(service, "replace_translation_chunks"):
-        result = service.translate_article(conn, 990001, data_dir=tmp_path)
+        result = service.translate_article(conn, 990001, data_dir=tmp_path, reuse=reuse)
     return conn, result, calls
 
 
@@ -123,9 +128,21 @@ def test_repair_request_failure_does_not_fail_the_article(tmp_path):
     assert conn.writes[0][7].obj["number_review"] == [0]
 
 
-def test_numbers_moved_to_another_slot_still_reject(tmp_path):
-    with pytest.raises(pr.AlignmentError, match="numbers-misplaced"):
-        run(A + B + C, lambda segs, _repair: [ZA, ZC, ZB][: len(segs)], tmp_path)
+def test_numbers_moved_to_another_slot_are_never_written_there(tmp_path):
+    """串段时那次回答整批不信，拆开重问；一直串的段先放英文，不把别段的数字写进来。"""
+    conn, result, calls = run(A + B + C, lambda segs, _repair: [ZA, ZC, ZB][: len(segs)], tmp_path)
+    stored = conn.writes[0]
+    body, proof = stored[3], stored[7].obj
+    assert result.status == "partial" and result.untranslated == 2
+    assert stored[5] is False
+    assert proof["untranslated"] == [1, 2]
+    assert "10美元" in body and "20美元" not in body and "30美元" not in body
+    assert "Beta lost 20 dollars" in body and "Gamma held 30 dollars" in body
+    assert pr.verify(A + B + C, body, proof).status == "mapped"
+    # 整批一次，拆开两半，串段的两段各自单独再问两次。
+    assert [len(segs) for segs, _repair in calls] == [3, 1, 2, 1, 1, 1, 1, 1, 1]
+    assert any(repair and "别的段的数字" in repair for _segs, repair in calls)
+    assert conn.attempts == [("rejected", "untranslated:numbers-misplaced")]
 
 
 def test_misplaced_slot_needs_another_source_with_hard_numbers():
@@ -161,13 +178,31 @@ def test_count_mismatch_with_segment_ids_repairs_then_splits(tmp_path):
     assert body.index("10美元") < body.index("20美元") < body.index("30美元")
 
 
-def test_identity_errors_that_never_clear_stop_at_the_first_single_segment(tmp_path):
-    """身份一直回错：原批、重来，拆到第一段单独一批再试两次就停，不再整批重走一遍。"""
+def test_identity_error_on_one_segment_leaves_only_that_segment_english(tmp_path):
+    """以前拆到这一段单独一批还对不上就整篇作废；现在只空出这一段，前后两段照常写入。"""
+    calls: list = []
+
+    def wrong_beta(rows):
+        return [{**row, "source_hash": "wrong"} if "乙公司" in row["html"] else row for row in rows]
+
+    conn, result, _calls = run(A + B + C, lambda segs, _repair: [zh_for(s) for s in segs], tmp_path,
+                               calls=calls, rows_hook=wrong_beta)
+    stored = conn.writes[0]
+    body, proof = stored[3], stored[7].obj
+    assert result.status == "partial" and result.segments == 2 and result.untranslated == 1
+    assert proof["untranslated"] == [1]
+    assert "10美元" in body and "30美元" in body and "Beta lost 20 dollars" in body
+    assert pr.verify(A + B + C, body, proof).status == "mapped"
+    # 原批、重来、拆开；这一段单独问两次就停，不再单独重译。
+    assert [len(segs) for segs, _repair in calls] == [3, 3, 1, 2, 2, 1, 1, 1]
+
+
+def test_identity_errors_on_every_segment_still_reject_the_article(tmp_path):
     calls: list = []
     with pytest.raises(pr.AlignmentError, match="response-source-hash"):
         run(A + B + C, lambda segs, _repair: [zh_for(s) for s in segs], tmp_path, calls=calls,
             rows_hook=lambda rows: [{**rows[0], "source_hash": "wrong"}, *rows[1:]])
-    assert [len(segs) for segs, _repair in calls] == [3, 3, 1, 1]
+    assert [len(segs) for segs, _repair in calls] == [3, 3, 1, 1, 2, 2, 1, 1, 1, 1]
 
 
 def test_dropped_link_is_retried_once_then_written(tmp_path):
@@ -183,9 +218,27 @@ def test_dropped_link_is_retried_once_then_written(tmp_path):
     assert attempts == [1, 1]
 
 
-def test_dropped_link_twice_still_rejects(tmp_path):
-    with pytest.raises(pr.AlignmentError):
+def test_dropped_link_on_the_only_segment_still_rejects(tmp_path):
+    # 丢了链接，还原时 L0 找不到，记成 unshield。
+    with pytest.raises(pr.AlignmentError, match="slot-0-unshield"):
         run(LINKED, lambda segs, _repair: [ZH_LINK_DROPPED], tmp_path)
+
+
+def test_dropped_link_on_one_segment_keeps_the_rest(tmp_path):
+    """一段一直丢链接：单独重译两次，提示带上上一次哪里不对，还不行这段先放英文。"""
+
+    def answer(segs, _repair):
+        return [ZH_LINK_DROPPED if "memo" in segment else zh_for(segment) for segment in segs]
+
+    conn, result, calls = run(LINKED + PLAIN, answer, tmp_path)
+    stored = conn.writes[0]
+    body, proof = stored[3], stored[7].obj
+    assert result.status == "partial"
+    assert proof["untranslated"] == [0]
+    assert 'href="https://example.invalid/memo"' in body and "Read " in body
+    assert "分发仍然比任何单一产品功能更重要" in body
+    assert [len(segs) for segs, _repair in calls] == [2, 1, 1]
+    assert all("链接" in repair and "原样保留" in repair for _segs, repair in calls[1:])
 
 
 def test_title_numbers_written_differently_do_not_fail_the_article(tmp_path):

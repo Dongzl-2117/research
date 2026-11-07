@@ -14,7 +14,7 @@ import html as html_lib
 import logging
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
@@ -28,6 +28,8 @@ from researchlib.textutil import content_hash, split_frontmatter, strip_duplicat
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import (
     GROK_INPUT_CHARS,
+    LLMConfigError,
+    LLMHTTPError,
     LLMTransportError,
     XaiLoginRequiredError,
     chat_json,
@@ -42,17 +44,23 @@ from researchlib.translate.provenance import (
     numbers_agree,
     numeric_anchors,
     receipt,
+    reusable_targets,
+    reuse_key,
+    shape_problem,
     source_manifest,
     structure_problem,
 )
 from researchlib.translate.provenance import digest as segment_digest
 from researchlib.translate.segments import (
+    Shielded,
     chunk_segments,
     coarse_segment_reason,
+    iter_segments,
     leaf_count_problem,
     segments_of,
     shield,
     splice_segments,
+    stable_leaf,
     top_level_blocks,
     translatable_blocks,
     unshield,
@@ -66,8 +74,10 @@ logger = logging.getLogger("researchlib.translate")
 # 单段比字符上限还长时单独成批，不从块中间切开。
 TRANSLATE_BATCH_MAX_SEGMENTS = 12
 TRANSLATE_BATCH_MAX_CHARS = 24_000
-# 拆批时带给下一批的上文 / 下文，和 translate_article 里的窗口一样长。
+# 带给每一批的上文 / 下文有多长。拆批、单段重译也用这个窗口。
 _SPLIT_WINDOW = 1600
+# 一段在一批里没过（空白、链接或占位符不对、串段），单独再译几次。还不行就先放英文。
+_SLOT_RETRIES = 2
 
 
 @dataclass
@@ -78,14 +88,23 @@ class TranslateResult:
     reason: str | None = None
     # 数字没能自动核对上、照样写入的段数（回执里的 number_review）。
     review: int = 0
+    # 这次没译出来、先放英文的段数（回执里的 untranslated）。下次只补这几段。
+    untranslated: int = 0
+    # 原文没变、直接用了已有译文的段数。
+    reused: int = 0
 
 
-class BatchTexts(list[str]):
-    """保留实际返回的模型身份；不把运行回执混入发给模型的文章资料。"""
+class BatchTexts(list):
+    """一批译文，和送去的段按下标一一对应。
 
-    def __init__(self, values, models=()):
+    某段到最后也没和请求对上（条数、身份、回答不能用），那一位是 None，原因在 ``problems`` 里。
+    保留实际返回的模型身份；不把运行回执混入发给模型的文章资料。
+    """
+
+    def __init__(self, values, models=(), problems=None):
         super().__init__(values)
         self.models = tuple(models)
+        self.problems = dict(problems or {})
 
 
 # 和质量拒绝、请求失败的冷却是同一套数。改这里时把 list_pending_english 的 SQL 一起改。
@@ -124,6 +143,18 @@ def retry_blocked(attempts: Sequence[tuple[str, datetime]], *, now: datetime) ->
     return False
 
 
+def _record_attempt(conn, article_id: int, status: str, reason: str, content_hash: str | None) -> None:
+    """记一次没译完的尝试，供待译队列算冷却和次数。不提交，由调用方提交。"""
+    conn.execute(
+        """
+        INSERT INTO translation_attempts
+          (article_id, status, reason, content_hash, alignment_version)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (article_id, status, reason, content_hash, ALIGNMENT_VERSION),
+    )
+
+
 def record_translation_failure(conn, article_id: int, error: Exception) -> None:
     """由 CLI 在回滚后记录失败，不改译文或检索块；不保存正文或响应。"""
     rejected = isinstance(error, AlignmentError)
@@ -133,19 +164,11 @@ def record_translation_failure(conn, article_id: int, error: Exception) -> None:
         fetched = row.fetchone()
         if fetched:
             content_hash = fetched["content_hash"]
-    conn.execute(
-        """
-        INSERT INTO translation_attempts
-          (article_id, status, reason, content_hash, alignment_version)
-        VALUES (%s, %s, %s, %s, %s)
-        """,
-        (
-            article_id,
-            "rejected" if rejected else "failed",
-            error.code if rejected else "request-failed",
-            content_hash,
-            ALIGNMENT_VERSION,
-        ),
+    _record_attempt(
+        conn, article_id,
+        "rejected" if rejected else "failed",
+        error.code if rejected else "request-failed",
+        content_hash,
     )
     conn.commit()
 
@@ -248,7 +271,7 @@ def _translate_once(parts: list[str], user: dict, data_dir: Path) -> list[str]:
     )
 
 
-def _translate_split(parts: list[str], context: dict, data_dir: Path) -> list[str]:
+def _translate_split(parts: list[str], context: dict, data_dir: Path) -> BatchTexts:
     """对半拆开再译。左右拼回去之后仍然和原来的段一一对应。"""
     mid = len(parts) // 2
     left_parts = parts[:mid]
@@ -266,61 +289,94 @@ def _translate_split(parts: list[str], context: dict, data_dir: Path) -> list[st
         right_ctx["segment_ids"] = context["segment_ids"][mid:]
         right_ctx["source_hashes"] = context["source_hashes"][mid:]
     previous = str(context.get("before") or "")
-    merged = "\n".join(piece for piece in (previous, "\n".join(left)) if piece).strip()
+    merged = "\n".join(piece for piece in (previous, "\n".join(text for text in left if text)) if piece).strip()
     if merged:
         right_ctx["before"] = merged[-_SPLIT_WINDOW:]
     right = _translate_batch(right_parts, right_ctx, data_dir)
-    return BatchTexts(left + right, (*getattr(left, "models", ()), *getattr(right, "models", ())))
+    return BatchTexts(
+        list(left) + list(right),
+        (*left.models, *right.models),
+        {**left.problems, **{mid + index: code for index, code in right.problems.items()}},
+    )
+
+
+# 400 是这一次请求本身不行（内容被拒、太长、参数不对），换小一点的批可能就过。
+_CONTENT_HTTP_STATUS = frozenset({400, 413, 422})
+
+
+def _service_failure(error: BaseException) -> bool:
+    """这次失败是账号或服务那头的事（断线、限流、欠费、5xx、没配密钥），换哪一段问都一样，这篇先停。"""
+    if isinstance(error, (LLMTransportError, XaiLoginRequiredError, LLMConfigError)):
+        return True
+    return isinstance(error, LLMHTTPError) and error.status not in _CONTENT_HTTP_STATUS
+
+
+def _problem_code(error: Exception) -> str:
+    """回答用不了的原因，写进回执、日志和 translation_attempts。不带原文和模型响应。"""
+    if isinstance(error, AlignmentError):
+        return error.code
+    if isinstance(error, LLMHTTPError):
+        return f"http-{error.status}"
+    if str(error) == "translation alignment: count":
+        return "response-count"
+    return "response-unusable"
 
 
 def _reply(parts: list[str], user: dict, data_dir: Path) -> tuple[list[str], Exception | None]:
-    """调一次模型。条数不对、id 或 source_hash 没有逐项回显时把错误交回去，由上一级重来或拆批。
+    """调一次模型。回答用不了时把错误交回去，由上一级重来或拆批。
 
+    用不了包括：条数不对、id 或 source_hash 没有逐项回显、不是 JSON、没有 t[]、这一批被拒（HTTP 400）。
+    断线、限流、欠费这类服务那头的错误照样抛出去，换一批问也一样。
     #217 加逐段身份之后，条数不对在 ``_coerce_translations`` 里就抛了，原来的重试、拆批一次也没走到，
     模型少回一段整篇就作废。
     """
     try:
         texts = _translate_once(parts, user, data_dir)
-    except AlignmentError as exc:
-        if exc.code.startswith("response-"):
-            return [], exc
-        raise
+    except (RuntimeError, ValueError) as exc:
+        if _service_failure(exc):
+            raise
+        return [], exc
     if len(texts) != len(parts):
         return texts, RuntimeError("translation alignment: count")
     return texts, None
 
 
 def _repair_note(parts: list[str], texts: list[str], mismatch: Exception) -> str:
-    if isinstance(mismatch, AlignmentError):
+    if isinstance(mismatch, AlignmentError) and mismatch.code.startswith("response-"):
         return (
             f"上一次 t 没有和 segments 逐项对上（{mismatch.code}）。必须正好 {len(parts)} 项，"
             "按顺序原样带回每段的 id 和 source_hash。按 segments 下标一一对应重译，只输出 JSON。"
         )
-    return f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。按 segments 下标一一对应重译，只输出 JSON。"
+    if str(mismatch) == "translation alignment: count":
+        return f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。按 segments 下标一一对应重译，只输出 JSON。"
+    return (
+        f"上一次的回答没法用（{_problem_code(mismatch)}）。"
+        f"按 segments 下标一一对应重译，必须正好 {len(parts)} 项，只输出 JSON。"
+    )
 
 
-def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[str]:
-    """译一批段。返回值和 parts 等长；对不齐或有空白段就抛错，不把错位数组交出去。
+def _translate_batch(parts: list[str], context: dict, data_dir: Path, *, repair: str | None = None) -> BatchTexts:
+    """译一批段。返回值和 parts 等长、按下标一一对应，不把错位数组交出去。
 
-    少段、多段或身份没对上：先按原批重试一次；仍不对就对半拆开再译，直到一段一批。
+    回答用不了（少段、多段、身份没对上、不是 JSON、这一批被拒）：先按原批重来一次；仍不对就对半拆开再译，
+    直到一段一批。一段一批也重来过还不行，只空出这一位（None），同一批别的段照常交回。
+    空白的译文原样交回，由 ``_settle_batch`` 单独重译那一段。``repair`` 只放进第一次请求。
     """
     if not parts:
-        return []
-    # 上一级的 repair 只针对那一批的条数，不能带进更小的一批。
+        return BatchTexts([])
+    # 上一级的 repair 只针对那一批，不能带进更小的一批。
     context = {key: value for key, value in context.items() if key != "repair"}
     user = {**context, "segments": parts}
-    texts, mismatch = _reply(parts, user, data_dir)
+    texts, mismatch = _reply(parts, {**user, "repair": repair} if repair else user, data_dir)
     if mismatch:
         texts, mismatch = _reply(parts, {**user, "repair": _repair_note(parts, texts, mismatch)}, data_dir)
     if mismatch and len(parts) > 1:
         logger.info("译文和这一批对不齐（segments=%s：%s），对半拆开重试", len(parts), mismatch)
         return _translate_split(parts, context, data_dir)
     if mismatch:
-        raise mismatch
-    problem = translation_problem(parts, texts)
-    if problem:
-        raise RuntimeError(f"translation alignment: {problem}")
-    return texts
+        logger.info("这一段单独问了两次仍没和请求对上（%s），先空着", _problem_code(mismatch))
+        return BatchTexts([None], getattr(texts, "models", ()), {0: _problem_code(mismatch)})
+    return BatchTexts(texts, getattr(texts, "models", ()))
 
 
 _NUMBER_REPAIR = (
@@ -328,108 +384,230 @@ _NUMBER_REPAIR = (
     "原文里的每个数都要写出来，数值和单位不变，不漏写，也不要把别段的数字写进来。"
 )
 
+# 一段单独重译时告诉模型上一次哪里不对。只是提示，收不收仍按还原和逐段核对。
+_KEEP_TOKENS = "⟦0⟧ 这类占位符要原样放进译文，每个恰好一次。"
+_SLOT_NOTES = {
+    "empty": "上一次这一段的译文是空的。把这一段完整译出来。",
+    "unshield": "上一次这一段的占位符或链接没有原样保留。" + _KEEP_TOKENS
+    + "<a id=\"L0\"> 这类链接也要原样保留，只译里面的文字。",
+    "placeholder": "上一次这一段的占位符没有原样保留。" + _KEEP_TOKENS,
+    "links": "上一次这一段的链接对不上。保留每个 <a id=\"Ln\">…</a>，不增不减，id 不变，只译里面的文字。",
+    "media": "上一次这一段的图片占位对不上。" + _KEEP_TOKENS,
+    "code": "上一次这一段的代码占位对不上。" + _KEEP_TOKENS,
+    "numbers-misplaced": "上一次这一段的译文里写的是别的段的数字。只译这一段，"
+    "原文里的数字都要写出来，不要写别段的内容。",
+    "shape": "上一次这一段的译文会被拆成好几段（多了换行或段落标签）。译成一段，不要加 <br> 或新的段落标签。",
+}
 
-def _restore_batch(
-    texts: list[str], shields: list, sources: list[str], offset: int,
-) -> tuple[list[str], list[int]]:
-    """把一批译文还原成带链接、图片的 HTML。
 
-    链接、图片、代码、占位符不对就抛错（整批重来）。数字对不上的段只记下标，
-    除非它的数字正好是同一批另一段原文的，那是串段，也抛错。
+@dataclass(frozen=True)
+class _Slots:
+    """一篇文章的可译段，下标就是 translatable_blocks 里的第几段。"""
+
+    parts: list[str]  # 送给模型的 HTML（链接、图片、代码已经换成占位）
+    shields: list[Shielded]
+    sources: list[str]  # 原文叶子 HTML
+    ids: list[str]
+    hashes: list[str]
+
+
+@dataclass
+class _Progress:
+    """这一次译出来的段。键是可译段的下标。"""
+
+    values: dict[int, str] = field(default_factory=dict)
+    # 数字没对上、照样收下的段。
+    flagged: set[int] = field(default_factory=set)
+    # 重试完仍没译出来的段和原因。
+    gaps: dict[int, str] = field(default_factory=dict)
+    models: set[str] = field(default_factory=set)
+
+
+def _window(slots: _Slots, progress: _Progress, indices: list[int], base: dict) -> dict:
+    """这几段的上文（前面已经译好的中文）和下文（后面三段原文），各截 _SPLIT_WINDOW 字。"""
+    first, last = indices[0], indices[-1]
+    before = "\n".join(progress.values[index] for index in sorted(progress.values) if index < first)
+    after = "\n".join(slots.parts[last + 1 : last + 4])
+    context = {key: value for key, value in base.items() if key not in {"before", "after"}}
+    if before:
+        context["before"] = before[-_SPLIT_WINDOW:]
+    if after:
+        context["after"] = after[:_SPLIT_WINDOW]
+    return context
+
+
+def _ask(slots: _Slots, indices: list[int], context: dict, data_dir: Path, *, repair: str | None = None) -> BatchTexts:
+    user = {key: value for key, value in context.items()
+            if value and key not in {"segment_ids", "source_hashes", "repair"}}
+    user["segment_ids"] = [slots.ids[index] for index in indices]
+    user["source_hashes"] = [slots.hashes[index] for index in indices]
+    return _translate_batch([slots.parts[index] for index in indices], user, data_dir, repair=repair)
+
+
+_LEAF_TAG = re.compile(r"\s*<([a-zA-Z][a-zA-Z0-9]*)")
+
+
+def _restore_slot(slots: _Slots, index: int, text: str) -> tuple[str | None, str | None]:
+    """把一段译文还原成带链接、图片的 HTML 并核对。返回 (HTML, None) 或 (None, 问题)。
+
+    除了链接、图片、代码、占位符，还看这一段写回以后是不是仍然只切出一段：
+    译文里多了几个 ``<br>`` 或段落标签，写回再切就多出叶子，整篇对照从这里错开。
+    定义列表里的 dt、dd 另有打包规则，单看一段判断不了，交给 ``_sign`` 整篇核。
     """
-    restored: list[str] = []
-    flagged: list[int] = []
-    for index, (text, item, source) in enumerate(zip(texts, shields, sources, strict=True)):
-        value = unshield(text, item)
-        if value is None:
-            raise AlignmentError("unshield")
-        problem = structure_problem(source, value)
+    if not (text or "").strip():
+        return None, "empty"
+    value = unshield(text, slots.shields[index])
+    if value is None:
+        return None, "unshield"
+    problem = structure_problem(slots.sources[index], value)
+    if problem:
+        return None, problem
+    tag = _LEAF_TAG.match(slots.sources[index])
+    name = tag.group(1).lower() if tag else "p"
+    if name not in {"dt", "dd"} and len(iter_segments(stable_leaf(value, tag=name, keep_br=True))) != 1:
+        return None, "shape"
+    return value, None
+
+
+def _accept(slots: _Slots, indices: list[int], texts: BatchTexts) -> tuple[dict[int, str], set[int], dict[int, str]]:
+    """一次回答里逐段还原、核对。返回 (能用的段, 其中数字没对上的段, 不能用的段和原因)。
+
+    一段不能用不连累别的段。身份没对上的段（None）原因带 ``response-`` 或 ``http-`` 前缀，
+    它已经单独问过两次，不再单独重译。
+    """
+    good: dict[int, str] = {}
+    flagged: set[int] = set()
+    bad: dict[int, str] = {}
+    for position, index in enumerate(indices):
+        text = texts[position] if position < len(texts) else None
+        if text is None:
+            bad[index] = getattr(texts, "problems", {}).get(position, "response-missing")
+            continue
+        value, problem = _restore_slot(slots, index, text)
         if problem:
-            raise AlignmentError(f"slot-{offset + index}-{problem}")
-        if not numbers_agree(source, value):
-            flagged.append(index)
-        restored.append(value)
-    wrong = misplaced_slot(sources, restored, flagged)
+            bad[index] = problem
+            continue
+        good[index] = value
+        if not numbers_agree(slots.sources[index], value):
+            flagged.add(index)
+    return good, flagged, bad
+
+
+def _misplaced(slots: _Slots, neighbors: list[int], good: dict[int, str], flagged: set[int]) -> int | None:
+    """数字没对上的段里，有没有哪段写的正好是同一批另一段原文的数字（串段）。返回那一段的下标。"""
+    if not flagged:
+        return None
+    sources = [slots.sources[index] for index in neighbors]
+    targets = [good.get(index, "") for index in neighbors]
+    positions = [neighbors.index(index) for index in sorted(flagged) if index in neighbors]
+    wrong = misplaced_slot(sources, targets, positions)
+    return None if wrong is None else neighbors[wrong]
+
+
+def _identity_gap(problem: str) -> bool:
+    return problem.startswith(("response-", "http-"))
+
+
+def _retry_slot(
+    slots: _Slots, index: int, problem: str, base: dict, data_dir: Path, progress: _Progress, neighbors: list[int],
+) -> None:
+    """这一段单独再译，最多 _SLOT_RETRIES 次，提示带上一次哪里不对。还不行就空着（先放英文），记下原因。"""
+    for _attempt in range(_SLOT_RETRIES):
+        texts = _ask(slots, [index], _window(slots, progress, [index], base), data_dir,
+                     repair=_SLOT_NOTES.get(problem))
+        progress.models.update(getattr(texts, "models", ()))
+        good, flagged, bad = _accept(slots, [index], texts)
+        if index in good:
+            if _misplaced(slots, neighbors, good, flagged) == index:
+                problem = "numbers-misplaced"
+                continue
+            progress.values[index] = good[index]
+            if index in flagged:
+                progress.flagged.add(index)
+            return
+        problem = bad[index]
+        if _identity_gap(problem):
+            break
+    logger.info("第 %s 段单独重译后仍没过（%s），先放英文", index, problem)
+    progress.gaps[index] = problem
+
+
+def _settle_part(
+    slots: _Slots, indices: list[int], base: dict, data_dir: Path, progress: _Progress, neighbors: list[int],
+) -> None:
+    """问一次、逐段收下能用的；不能用的段单独重译。串段时这次回答整批不信，拆成两半重问。"""
+    texts = _ask(slots, indices, _window(slots, progress, indices, base), data_dir)
+    progress.models.update(getattr(texts, "models", ()))
+    good, flagged, bad = _accept(slots, indices, texts)
+    wrong = _misplaced(slots, neighbors, good, flagged)
+    if wrong is not None and len(indices) > 1:
+        # 数字串到别的段，说明这次回答里段和段可能整体错开了，数字没毛病的段也不能信。
+        logger.info("第 %s 段写的是同一批别的段的数字，这 %s 段拆成两半重译", wrong, len(indices))
+        mid = len(indices) // 2
+        _settle_part(slots, indices[:mid], base, data_dir, progress, neighbors)
+        _settle_part(slots, indices[mid:], base, data_dir, progress, neighbors)
+        return
     if wrong is not None:
-        raise AlignmentError(f"slot-{offset + wrong}-numbers-misplaced")
-    return restored, flagged
+        del good[wrong]
+        flagged.discard(wrong)
+        bad[wrong] = "numbers-misplaced"
+    progress.values.update(good)
+    progress.flagged |= flagged
+    for index, problem in bad.items():
+        if _identity_gap(problem):
+            progress.gaps[index] = problem
+        else:
+            _retry_slot(slots, index, problem, base, data_dir, progress, neighbors)
 
 
-def _repair_numbers(
-    parts: list[str], context: dict, shields: list, sources: list[str],
-    restored: list[str], flagged: list[int], data_dir: Path,
-) -> tuple[list[str], list[int], tuple[str, ...]]:
-    """数字对不上的几段单独再译一次。
+def _repair_numbers(slots: _Slots, flagged: list[int], base: dict, data_dir: Path, progress: _Progress) -> None:
+    """数字对不上的几段合成一次再译。
 
-    重译过了数字核对才换上；还对不上、结构坏了或者请求失败，都留着原来那份，下标仍记着。
+    重译过了数字核对才换上；还对不上、结构坏了或者请求失败，都留着原来那份，仍记为数字待核。
     这一步只是补救，不会让整篇失败。
     """
     hints = []
     for number, index in enumerate(flagged, 1):
-        anchors = numeric_anchors(sources[index])
+        anchors = numeric_anchors(slots.sources[index])
         if anchors:
             hints.append(f"第{number}段原文的数字：{'、'.join(anchors)}")
-    subset = [parts[index] for index in flagged]
-    user = {key: value for key, value in context.items() if key not in {"segment_ids", "source_hashes", "repair"}}
-    if "segment_ids" in context:
-        user["segment_ids"] = [context["segment_ids"][index] for index in flagged]
-        user["source_hashes"] = [context["source_hashes"][index] for index in flagged]
+    subset = [slots.parts[index] for index in flagged]
+    user = {key: value for key, value in _window(slots, progress, flagged, base).items()
+            if value and key not in {"segment_ids", "source_hashes", "repair"}}
+    user["segment_ids"] = [slots.ids[index] for index in flagged]
+    user["source_hashes"] = [slots.hashes[index] for index in flagged]
     user["segments"] = subset
     user["repair"] = _NUMBER_REPAIR + ("；".join(hints) + "。" if hints else "")
     try:
         texts = _translate_once(subset, user, data_dir)
     except Exception as exc:  # noqa: BLE001 — 补救失败就用原来那份，不让整篇作废
         logger.info("数字没对上的 %s 段重译没成（%s），保留原译文", len(flagged), exc)
-        return restored, flagged, ()
+        return
     if translation_problem(subset, texts):
-        return restored, flagged, ()
-    fixed = list(restored)
-    still: list[int] = []
+        return
+    fixed = False
     for index, text in zip(flagged, texts, strict=True):
-        value = unshield(text, shields[index])
-        if (value is not None and structure_problem(sources[index], value) is None
-                and numbers_agree(sources[index], value)):
-            fixed[index] = value
-        else:
-            still.append(index)
-    used = tuple(getattr(texts, "models", ())) if len(still) < len(flagged) else ()
-    return fixed, still, used
+        value = unshield(text, slots.shields[index])
+        if (value is not None and structure_problem(slots.sources[index], value) is None
+                and numbers_agree(slots.sources[index], value)):
+            progress.values[index] = value
+            progress.flagged.discard(index)
+            fixed = True
+    if fixed:
+        progress.models.update(getattr(texts, "models", ()))
 
 
-def _exhausted(error: Exception) -> bool:
-    """条数或身份对不上的错误从 _translate_batch 出来时，已经重来过、拆到一段一批了。"""
-    if isinstance(error, AlignmentError):
-        return error.code.startswith("response-")
-    return str(error) == "translation alignment: count"
+def _settle_batch(slots: _Slots, indices: list[int], base: dict, data_dir: Path, progress: _Progress) -> None:
+    """译一批、还原、逐段核对，结果写进 progress。
 
-
-def _settle_batch(
-    parts: list[str], context: dict, shields: list, sources: list[str], offset: int, data_dir: Path,
-) -> tuple[list[str], list[int], set[str]]:
-    """译一批、还原、核对。结构不对或串段时整批再译一次，仍不对就抛错。
-
-    返回还原后的译文、数字仍没对上的下标和实际用到的模型。
+    一段不能用（空白、链接或占位符不对、串段）只重译这一段；身份一直对不上的段已经拆到一段一批问过。
+    还不行的段记进 progress.gaps，整篇照常往下译。数字没对上的段合成一次补译，仍不行照样收下、记为待核。
+    断线、限流这类服务那头的错误照样抛出去，已经收下的段留在 progress 里。
     """
-    error: Exception | None = None
-    for _attempt in range(2):
-        try:
-            got = _translate_batch(parts, context, data_dir)
-            restored, flagged = _restore_batch(got, shields, sources, offset)
-        except (LLMTransportError, XaiLoginRequiredError):
-            # 同一次请求已经按 RETRY_DELAYS 重试过。再开一批会把失败时的花费乘二。
-            raise
-        except Exception as exc:  # noqa: BLE001 — 内容对不齐时整批再试一次
-            if _exhausted(exc):
-                # 已经重来并拆到一段一批还对不上，整批再走一遍只会把花费翻倍。
-                raise
-            error = exc
-            continue
-        models = set(getattr(got, "models", ()))
-        if flagged:
-            restored, flagged, more = _repair_numbers(parts, context, shields, sources, restored, flagged, data_dir)
-            models.update(more)
-        return restored, flagged, models
-    raise error if error is not None else AlignmentError("batch")
+    _settle_part(slots, indices, base, data_dir, progress, list(indices))
+    flagged = sorted(index for index in progress.flagged if index in set(indices))
+    if flagged:
+        _repair_numbers(slots, flagged, base, data_dir, progress)
 
 
 
@@ -498,9 +676,9 @@ def _assemble_zh_html(slots: list[str]) -> str:
 
 
 def _translate_title(title: str, data_dir: Path) -> str:
-    """标题单独译一次，给检索和列表用。模型没译好返回空串，由 complete 规则判为未完成。
+    """标题单独译一次，给检索和列表用。模型没译好返回空串，这篇记为没译完，下次只补标题。
 
-    连接错误在 chat_json 里已经按预算重试过。这里再吞掉会记成对齐拒绝，两次之后这篇文章就不再译。
+    连接错误在 chat_json 里已经按预算重试过，这里照样抛出去，由 translate_article 先把正文存下。
     数字没对上时再要一次；两次都没对上就用第一次的，标题不再因为数字写法让整篇作废。
     """
     title = (title or "").strip()
@@ -513,11 +691,14 @@ def _translate_title(title: str, data_dir: Path) -> str:
             texts = _translate_batch([source], {
                 "segment_ids": ["title"], "source_hashes": [segment_digest(source)],
             }, data_dir)
-        except (LLMTransportError, XaiLoginRequiredError):
-            raise
-        except Exception:  # noqa: BLE001 — 标题失败要重试一次再放弃
+        except Exception as exc:  # noqa: BLE001 — 标题失败要重试一次再放弃
+            if _service_failure(exc):
+                raise
             continue
-        plain = re.sub(r"<[^>]+>", "", texts[0] if texts else "")
+        text = texts[0] if texts else None
+        if not text:
+            continue
+        plain = re.sub(r"<[^>]+>", "", text)
         got = html_lib.unescape(re.sub(r"\s+", " ", plain)).strip()[:300]
         if not got or structure_problem(source, got):
             continue
@@ -542,7 +723,111 @@ def reuse_duplicate_sources(sources: list[str], translations: list[str | None]) 
     return aligned
 
 
-def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResult:
+def _pending_batches(slots: _Slots, done: dict[int, str]) -> list[list[int]]:
+    """还没有译文的段按原文顺序分批。连续的几段放一起，再按段数和字数封顶。
+
+    第一次译整篇时就是全文按 _batch_chunks 切；只补几段时，隔开的段各自成批，上下文另带。
+    """
+    runs: list[list[int]] = []
+    for index in range(len(slots.parts)):
+        if index in done:
+            continue
+        if runs and runs[-1][-1] == index - 1:
+            runs[-1].append(index)
+        else:
+            runs.append([index])
+    batches: list[list[int]] = []
+    for run in runs:
+        start = 0
+        for chunk in _batch_chunks([slots.parts[index] for index in run]):
+            batches.append(run[start : start + len(chunk)])
+            start += len(chunk)
+    return batches
+
+
+def _previous_translation(conn, article_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT content_hash, title_zh, body_html, complete, provenance"
+        " FROM article_translations WHERE article_id = %s AND lang = 'zh'",
+        (article_id,),
+    )
+    found = row.fetchone() if row is not None else None
+    return found if isinstance(found, dict) else None
+
+
+def _reuse(previous: dict | None, sources: list[str]) -> dict[int, str]:
+    """已有回执里原文没变的段，直接拿来用。同一段原文出现几次，按先后一一对上，多出来的照常译。"""
+    known = reusable_targets((previous or {}).get("provenance"))
+    if not known:
+        return {}
+    reused: dict[int, str] = {}
+    for index, source in enumerate(sources):
+        options = known.get(reuse_key(source))
+        if options:
+            reused[index] = options.pop(0)
+    return reused
+
+
+def _breaking_slots(manifest: dict, html: str, kept: dict[int, str]) -> list[int]:
+    """哪几段一写回，叶子数或外壳就和原文不一样了。对半找，只在整篇写回对不上时才走。"""
+
+    def broken(keys: list[int]) -> bool:
+        candidate = splice_segments(html, {key: kept[key] for key in keys})
+        return bool(leaf_count_problem(html, candidate) or shape_problem(manifest, candidate))
+
+    def find(keys: list[int]) -> list[int]:
+        if not keys or not broken(keys):
+            return []
+        if len(keys) == 1:
+            return keys
+        mid = len(keys) // 2
+        return find(keys[:mid]) + find(keys[mid:])
+
+    return find(sorted(kept))
+
+
+def _sign(
+    manifest: dict, html: str, replacements: dict[int, str], gaps: set[int], *, model: str,
+) -> tuple[str, dict, set[int]]:
+    """写回并签回执。返回 (译文 HTML, 回执, 写回后才露出问题、退回英文的叶子序号)。
+
+    每段收下前已经单独核过链接、图片、代码和占位符。这里兜住只有整篇写回以后才看得出的问题
+    （译文被再切成两段、外壳变了），把出问题的那几段退回英文，其余照签。找不出是哪几段就整篇不入库。
+    """
+    kept = dict(replacements)
+    dropped: set[int] = set()
+    while True:
+        zh_html = splice_segments(html, kept)
+        try:
+            if leaf_count_problem(html, zh_html):
+                raise AlignmentError("receipt-count")
+            return zh_html, receipt(manifest, zh_html, model=model, untranslated=sorted(gaps | dropped)), dropped
+        except AlignmentError as exc:
+            slot = re.fullmatch(r"slot-(\d+)-[\w-]+", exc.code)
+            if slot and int(slot.group(1)) in kept:
+                bad = [int(slot.group(1))]
+            elif exc.code in {"receipt-count", "receipt-skeleton"}:
+                bad = _breaking_slots(manifest, html, kept)
+            else:
+                raise
+            if not bad:
+                raise
+            logger.info("写回后叶子或外壳对不上（%s），第 %s 个叶子退回英文", exc.code, bad)
+            for ordinal in bad:
+                kept.pop(ordinal, None)
+            dropped.update(bad)
+            if not kept:
+                raise
+
+
+def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = True) -> TranslateResult:
+    """译一篇写进 article_translations。
+
+    一段出错不连累整篇：身份、链接、占位符一直对不上或者串段的那几段先放英文，序号记进回执的
+    ``untranslated``，这篇记为没译完（complete 为假），过了冷却再进队列，下次只补这几段。
+    请求断线、限流时已经译好的段先存下。``reuse`` 为真时，已有回执里原文没变的段直接用，不再花钱重译；
+    想整篇重来（换了模型或提示词）时传 False。
+    """
     article = conn.execute(
         """
         SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash
@@ -566,8 +851,15 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         return TranslateResult(article_id, "skipped", reason="no translatable text")
 
     shielded = [shield(block) for _idx, block in targets]
-    parts = [item.html for item in shielded]
-    joined = "\n\n".join(parts)
+    entries = [manifest["segments"][index] for index, _block in targets]
+    slots = _Slots(
+        parts=[item.html for item in shielded],
+        shields=shielded,
+        sources=[block for _index, block in targets],
+        ids=[entry["id"] for entry in entries],
+        hashes=[entry["source_hash"] for entry in entries],
+    )
+    joined = "\n\n".join(slots.parts)
     context: dict = {
         "articleTitle": (article["title"] or "")[:500],
     }
@@ -579,107 +871,147 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             re.sub(r"<[^>]+>", "", h).strip()[:160] for h in headings[:24] if re.sub(r"<[^>]+>", "", h).strip()
         ]
 
-    translations: list[str | None] = [None] * len(parts)
-    models: set[str] = set()
-    chunks = _batch_chunks(parts)
-    offset = 0
-    for chunk in chunks:
-        before = "\n".join(translations[i] for i in range(offset) if translations[i])[-1600:]
-        after_start = offset + len(chunk)
-        after = "\n".join(parts[after_start : after_start + 3])[:1600]
-        batch_ctx = {
-            **context,
-            "before": before or None,
-            "after": after or None,
-            "segment_ids": [manifest["segments"][targets[offset + i][0]]["id"] for i in range(len(chunk))],
-            "source_hashes": [manifest["segments"][targets[offset + i][0]]["source_hash"] for i in range(len(chunk))],
-        }
-        slots = range(offset, offset + len(chunk))
-        # 一段数字没对上不再让整篇作废：补译一次，还不行就照样写入，回执里记进 number_review。
-        # 链接、图片、代码、占位符不对，或者数字串到同一批别的段，仍整批再译一次，再不行整篇不入库。
-        restored, _flagged, used = _settle_batch(
-            chunk,
-            {k: v for k, v in batch_ctx.items() if v},
-            [shielded[i] for i in slots],
-            [targets[i][1] for i in slots],
-            offset,
-            data_dir,
-        )
-        for i, text in zip(slots, restored, strict=True):
-            translations[i] = text
-        models.update(used)
-        offset += len(chunk)
+    previous = _previous_translation(conn, article_id)
+    # 已有回执里原文没变的段。默认直接用，只译剩下的；--fresh 时整篇重译，哪段重译失败才退回用它，
+    # 重译不会让已有的好译文变差。
+    known = _reuse(previous, slots.sources)
+    progress = _Progress(values=dict(known) if reuse else {})
+    service_error: Exception | None = None
+    batches = _pending_batches(slots, progress.values)
+    for number, indices in enumerate(batches):
+        try:
+            # 一段数字没对上：同一批补译一次，还不行照样写入，回执里记进 number_review。
+            # 一段链接、图片、代码、占位符不对，或者数字串到同一批别的段：只重译这一段，还不行先放英文。
+            _settle_batch(slots, indices, context, data_dir, progress)
+        except (RuntimeError, ValueError) as exc:
+            if not _service_failure(exc) or isinstance(exc, XaiLoginRequiredError):
+                raise
+            # 断线、限流、欠费：后面的批问了也一样。已经译好的段先存下，下次接着译。
+            service_error = exc
+            logger.info("#%s 第 %s/%s 批请求失败（%s），已译的段先存下", article_id, number + 1, len(batches), exc)
+            break
 
-    # 按叶子段原位写回。blockquote / 列表 / 表格的外壳留着，只换里面的那一段。
-    # 每个响应只归其自身槽位；重复出现也不能用前一份中文覆盖另一份。
-    # 字数或相似度都不授权改写响应。完整回执通过后才允许入库。
-    aligned = translations
-    replacements: dict[int, str] = {}
-    done = 0
-    for (segment_index, _src), zh in zip(targets, aligned, strict=True):
-        if zh:
-            replacements[segment_index] = zh
-            done += 1
-    if not done:
-        return TranslateResult(article_id, "skipped", reason="no batch translated")
+    translated_now = set(progress.values) - set(known if reuse else ())
+    if not reuse:
+        for index, value in known.items():
+            progress.values.setdefault(index, value)
+    reused = len(set(progress.values) - translated_now)
 
-    zh_html = splice_segments(html, replacements)
-    # 展示会把原文和译文再各切一次。写回若让叶子数变了，按位置并排就会错位；
-    # 这里直接拒绝，不把错位的译文入库。旧稿对不齐只能整篇重译，不能靠展示层硬配。
-    problem = leaf_count_problem(html, zh_html)
-    if problem:
-        raise RuntimeError(f"translation alignment: {problem}")
-    zh_text = re.sub(r"<[^>]+>", " ", zh_html)
-    zh_text = re.sub(r"\s+", " ", zh_text).strip()
-    title_zh = _translate_title(article["title"] or "", data_dir)
+    title_zh = ""
     en_title = (article["title"] or "").strip()
     needs_title_zh = bool(en_title) and not is_chinese(en_title)
-    # 英文标题译空不算 complete（抽验 22195：segments 齐但 title_zh 空仍标 complete）
-    complete = done == len(targets) and (bool(title_zh) if needs_title_zh else True)
-    if not complete:
-        raise AlignmentError("incomplete")
-    provenance = receipt(manifest, zh_html, model=", ".join(sorted(models)) or model_id())
-    # 模型请求期间可有新的导入；锁住文章后重新核对，不能把旧输入的结果盖到新原稿上。
-    current = conn.execute(
-        "SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash"
-        " FROM articles WHERE id = %s FOR UPDATE", (article_id,),
-    ).fetchone()
-    if current is None or current["content_hash"] != article["content_hash"]:
-        raise AlignmentError("source-changed-during-request")
-    current_html, _raw_hash = _render_original(conn, current, data_dir)
-    if source_manifest(current_html)["source_fingerprint"] != manifest["source_fingerprint"]:
-        raise AlignmentError("canonical-source-changed-during-request")
-    conn.execute(
-        """
-        INSERT INTO article_translations (
-          article_id, lang, content_hash, title_zh, body_html, body_text, complete,
-          origin, segments, provenance, updated_at
-        )
-        VALUES (%s, 'zh', %s, %s, %s, %s, %s, 'model', %s, %s, now())
-        ON CONFLICT (article_id) DO UPDATE SET
-          content_hash = EXCLUDED.content_hash,
-          title_zh = EXCLUDED.title_zh,
-          body_html = EXCLUDED.body_html,
-          body_text = EXCLUDED.body_text,
-          complete = EXCLUDED.complete,
-          origin = EXCLUDED.origin,
-          segments = EXCLUDED.segments,
-          provenance = EXCLUDED.provenance,
-          updated_at = now()
-        """,
-        (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance)),
+    old_title = str((previous or {}).get("title_zh") or "") if (previous or {}).get("content_hash") == digest else ""
+    if needs_title_zh:
+        if reuse and old_title:
+            title_zh = old_title
+        elif service_error is None:
+            try:
+                title_zh = _translate_title(article["title"] or "", data_dir)
+            except (RuntimeError, ValueError) as exc:
+                if not _service_failure(exc) or isinstance(exc, XaiLoginRequiredError):
+                    raise
+                service_error = exc
+        title_zh = title_zh or old_title
+
+    gaps = {index: progress.gaps.get(index, "request-failed" if service_error else "not-asked")
+            for index in range(len(slots.parts)) if index not in progress.values}
+    # 一段都没译出来；或者整篇重译（--fresh）一段新的都没译成、全靠退回旧译文：不写库，把错交给 CLI 记冷却。
+    if not progress.values or (not reuse and not translated_now and (progress.gaps or service_error)):
+        if service_error is not None:
+            raise service_error
+        failures = progress.gaps or gaps
+        first = min(failures)
+        raise AlignmentError(f"slot-{first}-{failures[first]}")
+
+    # 按叶子段原位写回。blockquote / 列表 / 表格的外壳留着，只换里面的那一段。没译出来的段留着英文。
+    # 每个响应只归其自身槽位；重复出现也不能用前一份中文覆盖另一份。
+    # 字数或相似度都不授权改写响应。完整回执通过后才允许入库。
+    ordinal_of = [index for index, _block in targets]
+    replacements = {ordinal_of[index]: value for index, value in progress.values.items()}
+    # 复用的段是上一次那个模型译的，回执里两次的模型都记上。
+    models = set(progress.models)
+    if reused:
+        earlier = str(((previous or {}).get("provenance") or {}).get("model") or "")
+        models.update(name.strip() for name in earlier.split(",") if name.strip())
+    zh_html, provenance, dropped = _sign(
+        manifest, html, replacements, {ordinal_of[index] for index in gaps},
+        model=", ".join(sorted(models)) or model_id(),
     )
-    # 译文切块进检索：中文问题也能找到英文文章，引用落到对照页那一段。
-    replace_translation_chunks(conn, article_id)
+    for index, ordinal in enumerate(ordinal_of):
+        if ordinal in dropped:
+            gaps[index] = "receipt-shape"
+    done = len(slots.parts) - len(gaps)
+    zh_text = re.sub(r"<[^>]+>", " ", zh_html)
+    zh_text = re.sub(r"\s+", " ", zh_text).strip()
+    # 英文标题译空不算 complete（抽验 22195：segments 齐但 title_zh 空仍标 complete）
+    complete = not gaps and (bool(title_zh) if needs_title_zh else True)
+    # 和库里那份一字不差（都是复用的，或者重译出来一样）就不再写，检索块也不重切。
+    unchanged = bool(previous) and (
+        previous.get("content_hash") == digest
+        and previous.get("body_html") == zh_html
+        and str(previous.get("title_zh") or "") == title_zh
+        and bool(previous.get("complete")) == complete
+    )
+    if not unchanged:
+        # 模型请求期间可有新的导入；锁住文章后重新核对，不能把旧输入的结果盖到新原稿上。
+        current = conn.execute(
+            "SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash"
+            " FROM articles WHERE id = %s FOR UPDATE", (article_id,),
+        ).fetchone()
+        if current is None or current["content_hash"] != article["content_hash"]:
+            raise AlignmentError("source-changed-during-request")
+        current_html, _raw_hash = _render_original(conn, current, data_dir)
+        if source_manifest(current_html)["source_fingerprint"] != manifest["source_fingerprint"]:
+            raise AlignmentError("canonical-source-changed-during-request")
+        conn.execute(
+            """
+            INSERT INTO article_translations (
+              article_id, lang, content_hash, title_zh, body_html, body_text, complete,
+              origin, segments, provenance, updated_at
+            )
+            VALUES (%s, 'zh', %s, %s, %s, %s, %s, 'model', %s, %s, now())
+            ON CONFLICT (article_id) DO UPDATE SET
+              content_hash = EXCLUDED.content_hash,
+              title_zh = EXCLUDED.title_zh,
+              body_html = EXCLUDED.body_html,
+              body_text = EXCLUDED.body_text,
+              complete = EXCLUDED.complete,
+              origin = EXCLUDED.origin,
+              segments = EXCLUDED.segments,
+              provenance = EXCLUDED.provenance,
+              updated_at = now()
+            """,
+            (article_id, digest, title_zh, zh_html, zh_text, complete, done, Jsonb(provenance)),
+        )
+        # 译文切块进检索：中文问题也能找到英文文章，引用落到对照页那一段。
+        replace_translation_chunks(conn, article_id)
+    # 哪几类问题让段先放英文（links、shape、http-400…），只有标题没译出来时是 title-empty。
+    # 打印出来、记进 translation_attempts.reason，以后按原因查，不必再翻日志。
+    why = ",".join(sorted(set(gaps.values()))) if gaps else "title-empty"
+    if not complete:
+        # 没译完的也记一次尝试：断线按请求失败拉长间隔，别的按拒绝算（12 小时冷却、同一版本 2 次）。
+        # 不记的话待译队列马上又把它拿回来。
+        _record_attempt(
+            conn, article_id,
+            "failed" if service_error else "rejected",
+            "request-failed" if service_error else f"untranslated:{why}",
+            article["content_hash"],
+        )
     conn.commit()
     review = len(provenance.get("number_review") or [])
     if review:
         logger.info("#%s 有 %s 段数字没能自动核对上，照样写入，回执 number_review 里有序号", article_id, review)
+    if gaps:
+        logger.info("#%s 有 %s 段没译出来，先放英文，回执 untranslated 里有序号：%s",
+                    article_id, len(gaps), sorted(set(gaps.values())))
     return TranslateResult(
         article_id,
         "translated" if complete else "partial",
         segments=done,
+        reason=("request-failed" if service_error else why) if not complete else ("unchanged" if unchanged else None),
         review=review,
+        untranslated=len(gaps),
+        reused=reused,
     )
 
 

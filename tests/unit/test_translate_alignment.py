@@ -1,4 +1,4 @@
-"""译文对齐：条数必须一一对应；对不齐就拆批。空白段拒绝；中英长短不一收下。
+"""译文对齐：条数必须一一对应；对不齐就拆批，拆到一段还对不上只空出那一段。中英长短不一收下。
 
 不连数据库、不调真 LLM。模型用脚本替身，专门复现以前会 raise 的 count / short。
 """
@@ -20,6 +20,7 @@ from researchlib.translate.service import (
     TRANSLATE_BATCH_MAX_CHARS,
     TRANSLATE_BATCH_MAX_SEGMENTS,
     _batch_chunks,
+    _pending_batches,
     _render_original,
     _source_leaf_count,
     _translate_batch,
@@ -114,8 +115,8 @@ def test_chunk_segments_honors_max_segments():
 
 
 def test_translate_article_uses_capped_batches():
-    source = inspect.getsource(translate_article)
-    assert "_batch_chunks(parts)" in source
+    assert "_pending_batches(" in inspect.getsource(translate_article)
+    assert "_batch_chunks(" in inspect.getsource(_pending_batches)
 
 
 def test_repair_fixes_count_without_splitting(monkeypatch, tmp_path: Path):
@@ -190,7 +191,7 @@ def test_odd_split_does_not_drop_a_segment(monkeypatch, tmp_path: Path):
     assert got == ["<p>A</p>", "<p>B</p>", "<p>C</p>"]
 
 
-def test_single_segment_count_mismatch_still_raises(monkeypatch, tmp_path: Path):
+def test_single_segment_count_mismatch_leaves_only_that_slot_empty(monkeypatch, tmp_path: Path):
     calls: list[bool] = []
 
     def fake(**kwargs):
@@ -198,13 +199,32 @@ def test_single_segment_count_mismatch_still_raises(monkeypatch, tmp_path: Path)
         return _result(["<p>一</p>", "<p>二</p>"])
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
-    with pytest.raises(RuntimeError, match="translation alignment: count"):
-        _translate_batch(["<p>Only one block.</p>"], {}, tmp_path)
-    # 原批一次，repair 一次，单段无法再拆。
+    got = _translate_batch(["<p>Only one block.</p>"], {}, tmp_path)
+    # 原批一次，repair 一次，单段无法再拆：这一位空着，原因交给上一级记进回执。
     assert calls == [False, True]
+    assert got == [None]
+    assert got.problems == {0: "response-count"}
 
 
-def test_empty_segment_fails_without_split_or_repair(monkeypatch, tmp_path: Path):
+def test_one_unaligned_slot_does_not_drop_its_neighbors(monkeypatch, tmp_path: Path):
+    """以前拆到一段还对不上就整批抛错，同一批已经译好的段一起作废。"""
+
+    def fake(**kwargs):
+        segments = kwargs["user"]["segments"]
+        if segments == ["<p>b</p>"]:
+            return _result([])
+        if len(segments) > 1 and "<p>b</p>" in segments:
+            return _result(["<p>少了一段</p>"])
+        return _result([f"<p>译{segment}</p>" for segment in segments])
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    got = _translate_batch(["<p>a</p>", "<p>b</p>", "<p>c</p>"], {}, tmp_path)
+    assert got == ["<p>译<p>a</p></p>", None, "<p>译<p>c</p></p>"]
+    assert got.problems == {1: "response-count"}
+
+
+def test_empty_segment_is_handed_back_without_split_or_repair(monkeypatch, tmp_path: Path):
+    """空白只是这一段的事：原批不重来、不拆，交给 _settle_batch 单独重译那一段。"""
     calls: list[int] = []
 
     def fake(**kwargs):
@@ -215,9 +235,9 @@ def test_empty_segment_fails_without_split_or_repair(monkeypatch, tmp_path: Path
         return _result(out)
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
-    with pytest.raises(RuntimeError, match="translation alignment: empty"):
-        _translate_batch(["<p>a</p>", "<p>b</p>", "<p>c</p>"], {}, tmp_path)
+    got = _translate_batch(["<p>a</p>", "<p>b</p>", "<p>c</p>"], {}, tmp_path)
     assert calls == [3]
+    assert got == ["<p>译0</p>", "  ", "<p>译2</p>"]
 
 
 def test_null_item_counts_as_empty(monkeypatch, tmp_path: Path):
@@ -225,8 +245,8 @@ def test_null_item_counts_as_empty(monkeypatch, tmp_path: Path):
         return ChatJsonResult(data={"t": [None]}, model="deepseek-flash", usage=None, latency_ms=1)
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
-    with pytest.raises(RuntimeError, match="translation alignment: empty"):
-        _translate_batch(["<p>Hello.</p>"], {}, tmp_path)
+    # JSON null 是空白，不是字符串 "None"。
+    assert _translate_batch(["<p>Hello.</p>"], {}, tmp_path) == [""]
 
 
 def test_short_translation_is_stored_by_the_batch_path(monkeypatch, tmp_path: Path):
@@ -269,13 +289,45 @@ def test_split_passes_neighbor_context(monkeypatch, tmp_path: Path):
     assert "repair" not in right
 
 
-def test_missing_t_array_still_raises(monkeypatch, tmp_path: Path):
+def test_missing_t_array_is_retried_then_left_empty(monkeypatch, tmp_path: Path):
+    calls: list[bool] = []
+
     def fake(**kwargs):
+        calls.append("repair" in kwargs["user"])
         return ChatJsonResult(data={"note": "no t"}, model="deepseek-flash", usage=None, latency_ms=1)
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
-    with pytest.raises(RuntimeError, match="translation JSON missing t"):
-        _translate_batch(["<p>Hi.</p>"], {}, tmp_path)
+    got = _translate_batch(["<p>Hi.</p>"], {}, tmp_path)
+    assert calls == [False, True]
+    assert got == [None]
+    assert got.problems == {0: "response-unusable"}
+
+
+def test_rejected_batch_is_split_but_a_dead_service_is_not(monkeypatch, tmp_path: Path):
+    """HTTP 400 是这一批本身不行，拆小了再问；402、5xx 是账号或服务的事，问哪一段都一样，直接抛。"""
+    from researchlib.translate.llm import LLMHTTPError
+
+    calls: list[int] = []
+
+    def refused(**kwargs):
+        segments = kwargs["user"]["segments"]
+        calls.append(len(segments))
+        if "<p>b</p>" in segments:
+            raise LLMHTTPError(400, "DeepSeek HTTP 400: Content Exists Risk")
+        return _result([f"<p>译{segment}</p>" for segment in segments])
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", refused)
+    got = _translate_batch(["<p>a</p>", "<p>b</p>"], {}, tmp_path)
+    assert got == ["<p>译<p>a</p></p>", None]
+    assert got.problems == {1: "http-400"}
+    assert calls == [2, 2, 1, 1, 1]
+
+    def broke(**kwargs):
+        raise LLMHTTPError(402, "DeepSeek HTTP 402: Insufficient Balance")
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", broke)
+    with pytest.raises(LLMHTTPError):
+        _translate_batch(["<p>a</p>", "<p>b</p>"], {}, tmp_path)
 
 
 def test_transport_error_does_not_open_a_second_batch(monkeypatch, tmp_path: Path):
@@ -318,7 +370,7 @@ def test_title_transport_error_is_not_retried_as_a_blank_title(monkeypatch, tmp_
 
 
 def test_translate_article_does_not_store_when_leaf_counts_diverge(monkeypatch, tmp_path: Path):
-    """写回把叶子数改少时不入库。展示层不能靠位置硬配把这段找回来。"""
+    """写回把叶子数改了、又找不出是哪几段时不入库。展示层不能靠位置硬配把这段找回来。"""
 
     conn = _FakeConn(
         {
@@ -334,13 +386,13 @@ def test_translate_article_does_not_store_when_leaf_counts_diverge(monkeypatch, 
     )
     monkeypatch.setattr(
         "researchlib.translate.service._translate_batch",
-        lambda parts, context, data_dir: ["<p>译</p>"] * len(parts),
+        lambda parts, context, data_dir, **_kwargs: ["<p>译</p>"] * len(parts),
     )
     monkeypatch.setattr(
         "researchlib.translate.service.splice_segments",
         lambda html, replacements: "<p>只有一段。</p>",
     )
-    with pytest.raises(RuntimeError, match=r"translation alignment: leaves \d+ vs \d+"):
+    with pytest.raises(RuntimeError, match="translation alignment: receipt-count"):
         translate_article(conn, 21118, data_dir=tmp_path)
     assert conn.committed is False
 

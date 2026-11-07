@@ -55,9 +55,15 @@ def test_identity_errors_that_persist_down_to_one_segment_still_reject(tmp_path,
         translate(A + B + C, [ZA, ZB, ZC], tmp_path, mutate=mutation)
 
 
-def test_wrong_text_with_correct_ids_is_rejected_when_numeric_anchors_disagree(tmp_path):
-    with pytest.raises(pr.AlignmentError, match="numbers-misplaced"):
-        translate(A + B + C, [ZA, ZC, ZB], tmp_path)
+def test_wrong_text_with_correct_ids_is_never_written_where_numeric_anchors_disagree(tmp_path):
+    """身份对、内容是别段的：拆开、单独重问都还是别段的数字，这两段先放英文，对的那段照常写入。"""
+    conn = translate(A + B + C, [ZA, ZC, ZB], tmp_path)
+    stored = conn.writes[0]
+    body, proof = stored[3], stored[7].obj
+    assert stored[5] is False
+    assert proof["untranslated"] == [1, 2]
+    assert "10美元" in body and "20美元" not in body and "30美元" not in body
+    assert pr.verify(A + B + C, body, proof).status == "mapped"
 
 
 def test_receipt_preserves_order_duplicate_occurrences_and_alternate_wording(tmp_path):

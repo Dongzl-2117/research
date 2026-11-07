@@ -1023,12 +1023,13 @@ _KEPT_TAG = re.compile(r"<(?:a|img|source|track|video|code)\b[^>]*>", re.I)
 
 
 def _split_keeps_content(node: _El, pieces: list[str]) -> bool:
-    """按句切开后，字和链接、图片、代码要和整段一样，不一样就整段留着不切。
+    """切开后，字和链接、图片、代码要和整块一样（先后也一样），不一样就整块留着不切。
 
-    两种会丢：句末紧跟的空锚点（Stratechery 访谈导出时目录锚点写成 ``[]()``）落在两句之间，
-    哪一句都不带它；句号落在链接文字里（「[J. Q.] Public」），一个链接被切成两个。
-    整篇因此过不了 materialize，译制一开始就拒收，以后也一直拒。能切开而不丢东西的段照旧切，
-    所以已经入库的回执都不受影响。旧稿候选重排（``split_sentence_paragraphs``）不走这里，照旧。
+    按句切、按 ``<br>`` 行切、定义列表按行切都过这一道。按句切有两种会丢：句末紧跟的空锚点
+    （Stratechery 访谈导出时目录锚点写成 ``[]()``）落在两句之间，哪一句都不带它；句号落在链接文字里
+    （「[J. Q.] Public」），一个链接被切成两个。整篇因此过不了 materialize，译制一开始就拒收，以后也一直拒。
+    能切开而不丢东西的块照旧切，所以已经入库的回执都不受影响。
+    旧稿候选重排（``split_sentence_paragraphs``）不走这里，照旧。
     """
     whole = _serialize(node.children)
     joined = "".join(pieces)
@@ -1061,7 +1062,7 @@ def _overflow_pieces(node: _El) -> list[str] | None:
         for piece in pieces:
             more = _overflow_from_html(piece) if _html_plain_len(piece) > _LEAF_SPLIT else None
             exploded.extend(more or [piece])
-        if len(exploded) >= 2:
+        if len(exploded) >= 2 and _split_keeps_content(node, exploded):
             return exploded
     sentences = _html_sentence_pieces(node)
     if not sentences or not _split_keeps_content(node, sentences):
@@ -1147,12 +1148,13 @@ def _emit_br_lines(
     used: set[str],
     out: list[Segment],
     replacements: dict[int, str] | None,
-) -> None:
+) -> bool:
     """普通块里的 ``<br>`` 行按句收成叶子，写回换成若干 ``<p>``。
 
     一行已经是完整句子时，每句一个 ``<p>``。半句（链接文字、人名）并进后文，一组一句。
     不再用 ``<br>`` 把译文串回原来的标签：译文常常不带句号，串回去再切会被并成一段，
     叶子数就和原文对不上。列表项、引用的外壳留着，里面换成这些 ``<p>``。
+    切开以后少了或多了字、链接、图片、代码时不切，返回 False，由调用方照别的办法处理这一块。
     """
     groups = _pack_br_groups(lines)
     pieces: list[str] = []
@@ -1161,7 +1163,10 @@ def _emit_br_lines(
         # 软换行把句号留在下一行时，拼回去的一段里会有多句。超过门槛再切开。
         more = _overflow_from_html(piece) if _html_plain_len(piece) > _LEAF_SPLIT else None
         pieces.extend(more or [piece])
+    if not _split_keeps_content(node, pieces):
+        return False
     _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
+    return True
 
 
 def _walk(
@@ -1213,14 +1218,15 @@ def _walk(
             return
         # dt / dd 仍只走上面那条按长度打包的路；短定义不拆成一行一对。
         in_definition = descend_dl or node.name in {"dt", "dd"}
+        # 每种切法都只在切开以后字、链接、图片、代码一样不少时才用（_split_keeps_content），
+        # 否则这一块照下一种办法处理，最后整块一段。会丢东西的切法以前让整篇过不了 materialize。
         pieces = _br_pieces(node) if in_definition else None
-        if pieces:
+        if pieces and _split_keeps_content(node, pieces):
             _emit_br_pieces(node, pieces, own, chain, used, out, replacements)
             return
         # 普通块（p、列表项、引用、表格单元、标题）里用 <br> 粘起来的长文，按句收成叶子。
         lines = _br_lines(node) if split_br and not in_definition else None
-        if lines:
-            _emit_br_lines(node, lines, own, chain, used, out, replacements)
+        if lines and _emit_br_lines(node, lines, own, chain, used, out, replacements):
             return
         # 没有够三行 <br>、但本身已经是多句长文的，按句切开。单句不拆。
         # 这几句标上同一个 data-src-para，对照页再并回原来的段落；<br> 粘出来的长文不标。

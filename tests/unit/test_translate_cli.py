@@ -44,9 +44,11 @@ def conn(monkeypatch, tmp_path):
     return fake
 
 
-def _translate(seen, *, fail=(), status="translated"):
-    def fake(conn, article_id, *, data_dir):
+def _translate(seen, *, fail=(), status="translated", reuse_seen=None):
+    def fake(conn, article_id, *, data_dir, reuse=True):
         seen.append(article_id)
+        if reuse_seen is not None:
+            reuse_seen.append(reuse)
         if article_id in fail:
             raise RuntimeError("对齐失败")
         return TranslateResult(article_id, status, segments=2)
@@ -184,7 +186,7 @@ def test_queue_run_stops_before_starting_when_a_release_is_waiting(conn, monkeyp
 def test_queue_run_finishes_the_article_in_hand_then_makes_way(conn, monkeypatch, tmp_path):
     seen: list[int] = []
 
-    def translate(conn, article_id, *, data_dir):
+    def translate(conn, article_id, *, data_dir, reuse=True):
         seen.append(article_id)
         # 译第一篇的时候自动上线来请它停。
         _deploy_waits(tmp_path)
@@ -223,3 +225,18 @@ def test_named_articles_and_stale_requests_are_translated_anyway(conn, monkeypat
     monkeypatch.setattr(cli, "list_pending_english", lambda conn, **kwargs: [73])
     assert cli.main(["--limit", "1"]) == 0
     assert seen == [71, 72, 73]
+
+
+def test_fresh_turns_off_reuse_and_partial_counts_are_printed(conn, monkeypatch, capsys):
+    reuse_seen: list[bool] = []
+    monkeypatch.setattr(cli, "translate_article", _translate([], reuse_seen=reuse_seen))
+    assert cli.main(["--article-id", "7"]) == 0
+    assert cli.main(["--article-id", "7", "--fresh"]) == 0
+    assert reuse_seen == [True, False]
+
+    def partial(conn, article_id, *, data_dir, reuse=True):
+        return TranslateResult(article_id, "partial", segments=5, untranslated=2, reused=3)
+
+    monkeypatch.setattr(cli, "translate_article", partial)
+    assert cli.main(["--article-id", "8"]) == 0
+    assert "#8 partial segments=5 reused=3 untranslated=2" in capsys.readouterr().out

@@ -50,7 +50,7 @@ from researchlib.translate.pair import (
     redundant_pairs,
     visible_text,
 )
-from researchlib.translate.provenance import unverified_numbers
+from researchlib.translate.provenance import untranslated_slots, unverified_numbers
 from researchlib.translate.remote_media import bilingual_sources
 from researchlib.translate.segments import iter_segments
 from researchlib.zsxq_comments import source_owners
@@ -258,6 +258,13 @@ def report_from_html(
             issues.append(CheckIssue(
                 "numbers-unverified", "warn", len(review),
                 f"数字没能自动核对上、照样写入的段，回执序号 {_preview(review)}；对照原文核一下",
+            ))
+        # 写入时一直没译出来、先放英文的段。过了冷却 research-translate 只补这几段。
+        gaps = untranslated_slots(display_options.get("provenance"))
+        if gaps:
+            issues.append(CheckIssue(
+                "untranslated", "warn", len(gaps),
+                f"没译出来、先放英文的段，回执序号 {_preview(gaps)}；下次译制只补这几段",
             ))
     # 不复用可译叶子：两边同漏一个数字/图片时，叶子数仍然相等。
     missing = protected_content_gaps(en_html, zh_html)

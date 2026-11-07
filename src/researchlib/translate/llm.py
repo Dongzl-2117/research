@@ -59,6 +59,22 @@ class LLMTransportError(RuntimeError):
     """同一请求的连接错误已经按 RETRY_DELAYS 重试完。半截响应没有当成译文。"""
 
 
+class LLMHTTPError(RuntimeError):
+    """接口回了 HTTP 错误（429、5xx 已经按 RETRY_DELAYS 重试完）。
+
+    ``status`` 给译制分辨：400 是这一次请求本身不行（内容被拒、太长），换小一点的批可能就过；
+    401、402、429、5xx 是账号或服务的事，换哪一段问都一样。
+    """
+
+    def __init__(self, status: int, message: str):
+        self.status = status
+        super().__init__(message)
+
+
+class LLMConfigError(RuntimeError):
+    """没配密钥这类本机配置问题，问哪一段都一样。"""
+
+
 @dataclass
 class ChatJsonResult:
     data: dict[str, Any]
@@ -93,7 +109,7 @@ def _bearer(data_dir: Path | None) -> str:
         return get_xai_access_token(data_dir)
     key = deepseek_api_key()
     if not key:
-        raise RuntimeError(
+        raise LLMConfigError(
             "没有配置 DEEPSEEK_API_KEY，DeepSeek 译不了。"
             "把 key 写进 .env（compose 的 DEEPSEEK_API_KEY），或者设 RESEARCH_LLM_PROVIDER=grok 用回 Grok OAuth。"
         )
@@ -193,7 +209,7 @@ def chat_json(
                 time.sleep(delay)
                 retries += 1
                 continue
-            raise RuntimeError(f"{label} HTTP {exc.code}: {detail[:500]}") from exc
+            raise LLMHTTPError(exc.code, f"{label} HTTP {exc.code}: {detail[:500]}") from exc
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"{label} 返回非 JSON") from exc
         except (urllib.error.URLError, IncompleteStream, OSError, http.client.HTTPException) as exc:
@@ -234,6 +250,8 @@ __all__ = [
     "GROK_OUTPUT_FLOOR",
     "GROK_REASONING_EFFORT",
     "ChatJsonResult",
+    "LLMConfigError",
+    "LLMHTTPError",
     "LLMTransportError",
     "XaiLoginRequiredError",
     "chat_json",
