@@ -9,6 +9,7 @@ from researchlib.render import (
     _phrase_overlap,
     image_anchor,
     inline_image_ocr,
+    lazy_images,
     render_body,
     sanitize_html,
     tidy_ocr_text,
@@ -536,3 +537,19 @@ def test_image_relocation_on_a_long_article_keeps_its_choices():
             assert at < target and not any(at < page.index(p) < target for p in paragraphs), index
         else:
             assert page.index(paragraphs[index - 1]) < at < page.index(paragraphs[index]), index
+
+
+def test_reader_images_load_lazily_without_touching_other_markup():
+    """阅读页的图滚到附近才下。已经写了 loading 的不改，别的标签和图片地址不动，加两遍和加一遍一样。"""
+    html = (
+        '<p>正文<img id="img-ab" src="/media/a.png" alt="图"></p>'
+        '<p><img src="/media/b.png" alt="" /></p>'
+        '<p><IMG SRC="/media/c.png" loading="eager"></p><p>imgur 不是图</p>'
+    )
+    once = lazy_images(html)
+    assert once == lazy_images(once)
+    assert '<img id="img-ab" src="/media/a.png" alt="图" loading="lazy" decoding="async">' in once
+    assert '<img src="/media/b.png" alt="" loading="lazy" decoding="async" />' in once
+    assert '<IMG SRC="/media/c.png" loading="eager">' in once
+    assert once.count("loading=") == 3 and "<p>imgur 不是图</p>" in once
+    assert lazy_images("") == "" and lazy_images("<p>没有图</p>") == "<p>没有图</p>"

@@ -1,5 +1,6 @@
 """真实文章路由上的合成保真回归，不排模型任务、不读取业务资料。"""
 
+import re
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
@@ -55,4 +56,8 @@ def test_article_bilingual_original_and_chinese_retain_nontranslatable_content(c
                             f'src="{mapping[image.name]}"'):
                 assert content in page
             assert 'src="/static/article.js?v=' in page
+            # 正文的图滚到附近才下；译制和对照核验用的原文 HTML 不带这两个属性。
+            shown = [tag for tag in re.findall(r"<img\b[^>]*>", page) if 'src="/media/' in tag]
+            assert shown and all('loading="lazy"' in tag and 'decoding="async"' in tag for tag in shown), suffix
+    assert "loading=" not in en and "loading=" not in zh
     assert conn.execute("SELECT body_md FROM articles WHERE id = %s", (article["id"],)).fetchone()["body_md"] == body

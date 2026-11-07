@@ -739,6 +739,26 @@ def inline_image_ocr(html: str, texts: dict[str, str] | None = None, *, host: st
     return _relocate_images(html, texts)
 
 
+def lazy_images(html: str) -> str:
+    """阅读页正文里的图滚到附近才下（``loading="lazy"``），解码不挡页面（``decoding="async"``）。
+
+    /media 回 ``private, no-store``，浏览器不留图：以前每打开一次文章（切「对照」「原文」也算），
+    几十张图一起从 Mac mini 经隧道重下一遍，第一屏的图要跟后面几十张抢带宽，没往下读的也照样下完。
+    只在交给模板前最后加：译制、对照核验和回执用的原文 HTML 不带这两个属性
+    （``canonical_body_html`` 一改，旧译文的回执就对不上）。
+    """
+
+    def add(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        if re.search(r"\sloading\s*=", tag, re.I):
+            return tag
+        closing = " />" if tag.endswith("/>") else ">"
+        head = tag[: -len(closing.strip())].rstrip()
+        return f'{head} loading="lazy" decoding="async"{closing}'
+
+    return _IMG_TAG.sub(add, html or "")
+
+
 
 
 _BODY_WHO = re.compile(
