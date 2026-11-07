@@ -46,6 +46,7 @@ from researchlib.web.routes import (
     cited_titles,
     database,
     display_titles,
+    retitle_views,
 )
 from researchlib.web.scoping import parse_int, resolve_scope
 from researchlib.zsxq_comments import filter_host_comments_markdown, guest_comment_authors, source_owners
@@ -486,7 +487,7 @@ def views_payload(
     if company is None:
         return None
     by_id = {source.id: source for source in sources}
-    items = view_timeline(conn, company_id, by_id, settings)
+    items = retitle_views(conn, view_timeline(conn, company_id, by_id, settings), by_id, settings.display_timezone)
     theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
     thesis = next((item for item in theses if item["key"] == kind), None)
     chosen = thesis_map.mask_unrelated_quotes(

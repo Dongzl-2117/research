@@ -353,6 +353,20 @@ def display_titles(conn, rows, by_id: dict, zone: str) -> dict[int, str]:
     return titles
 
 
+def retitle_views(conn, items: list[dict], by_id: dict, zone: str) -> list[dict]:
+    """观点时间线（公司页「观点」、接口 /views）的标题换成和卡片、文章页同一套。
+
+    views.timeline 补星球标题时只看正文。只有截图的帖正文是「图片」，补出来是「2026-10-30 短帖」；
+    卡片和文章页还看图片里的字和摘要，补成那句话。by_id 是来源 id 到来源。
+    """
+    if not items:
+        return items
+    titles = display_titles(conn, queries.title_rows(conn, [item["article_id"] for item in items]), by_id, zone)
+    for item in items:
+        item["title"] = titles.get(item["article_id"]) or item["title"]
+    return items
+
+
 def cited_titles(conn, citations: list[dict], sources, zone: str) -> list[dict]:
     """问库出处里的标题是写回答时存下的快照（星球的「泡泡玛特：」、正文开头截下的半句），
     换成按现在的库算的、和卡片一样的标题再显示。核对引用照旧用快照，那是模型当时读到的。"""
@@ -1473,7 +1487,7 @@ def _company_views(request: Request, conn, company, by_id: dict, author: str) ->
     settings = request.app.state.settings
     kind = request.query_params.get("views") or ""
     company_id = int(company["id"])
-    items = view_timeline(conn, company_id, by_id, settings)
+    items = retitle_views(conn, view_timeline(conn, company_id, by_id, settings), by_id, settings.display_timezone)
     # 「还有几篇没整理」按当前筛的作者算；排队仍然按全部来源。
     scope_ids = [sid for sid, source in by_id.items() if not author or source.author == author]
     pending = count_view_pending(conn, company_id, scope_ids)
