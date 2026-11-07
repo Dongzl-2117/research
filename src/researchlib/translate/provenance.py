@@ -28,7 +28,9 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # couple/few/几周可以写成两周，写明 two 不能收成几。每月、每年的标价不是「每 X 美元就有 Y 美元」。
 # 7：数字对不上的段不再让整篇作废：同一批里这几段补译一次，还对不上就照样写入，记进回执的 number_review。
 # 数字和同一批另一段原文正好一致（串段）仍整批重译。版本 6 及以前因数字被拒的文章重新进队列。
-ALIGNMENT_VERSION = 7
+# 8：长段按句切开会丢掉或多出链接（句末紧贴的空锚点、链接文字里的缩写名）时整段不切。
+# 这类文章以前在 materialize 就拒收（materialize-content），现在能译，重新进队列。
+ALIGNMENT_VERSION = 8
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
