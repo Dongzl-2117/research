@@ -3,9 +3,9 @@
 这种导出一个文本节点一行、整篇不空行：链接字单独一行，后面的「, mostly …」「. After that …」
 另起一行，小标题也只是单独一行。阅读页一行一个换行，一句话被链接拆成三四行。
 
-只给单看原文的文章页和文章接口（``/api/v1/articles/{id}``、``.md``、MCP 的 ``get_article``）用。对照页、只看中文和译制读的是
-``canonical_body_html``，那里的段是旧译文按位置配对用的，拼了就和已有译文对不上
-（见 docs/bilingual-mapping-2026-11-02.md）。
+只给单看原文的文章页和文章接口（``/api/v1/articles/{id}``、``.md``、MCP 的 ``get_article``）用。
+对照页、只看中文和译制读的是 ``canonical_body_html``，那里的段是旧译文按位置配对用的，
+拼了就和已有译文对不上（见 docs/bilingual-mapping-2026-11-02.md）。
 
 每一行只看它和已经拼好的上一段：
 
