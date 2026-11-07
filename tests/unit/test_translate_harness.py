@@ -7,7 +7,7 @@ import pytest
 from test_bilingual_regressions import MemoryConn
 
 from researchlib.translate import service
-from researchlib.translate.harness import numeric_verdict, settle_numbers, settle_unshield
+from researchlib.translate.harness import apply_report, evidence_id, numeric_verdict, settle_numbers, settle_unshield
 from researchlib.translate.llm import ChatJsonResult, _params
 from researchlib.translate.provenance import AlignmentError, leaf_problem
 from researchlib.translate.segments import shield
@@ -245,6 +245,13 @@ def test_same_binding_accepts_format_and_argument_order(source, target):
 
 def test_repair_is_kept_only_when_the_checker_passes(tmp_path, monkeypatch):
     def fake(**kwargs):
+        if kwargs["user"].get("verify"):
+            return ChatJsonResult(
+                data={"evidence_id": kwargs["user"]["evidence_id"], "verdict": "uncertain", "claims": []},
+                model="synthetic-model",
+                usage=None,
+                latency_ms=0,
+            )
         assert "不要自己宣布通过" in kwargs["user"]["repair"]
         return ChatJsonResult(
             data={"t": ["<p>利润为10美元。</p>"]},
@@ -259,19 +266,31 @@ def test_repair_is_kept_only_when_the_checker_passes(tmp_path, monkeypatch):
 
 
 def test_repeating_a_wrong_amount_is_still_rejected(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "researchlib.translate.service.chat_json",
-        lambda **kwargs: ChatJsonResult(
+    def fake(**kwargs):
+        user = kwargs["user"]
+        if user.get("verify"):
+            return ChatJsonResult(
+                data={
+                    "evidence_id": user["evidence_id"],
+                    "verdict": "conflict",
+                    "claims": [{"source": "10 dollars", "target": "20美元", "same": False}],
+                },
+                model="synthetic-model",
+                usage=None,
+                latency_ms=0,
+            )
+        return ChatJsonResult(
             data={"t": ["<p>利润为20美元。</p>"]},
             model="synthetic-model",
             usage=None,
             latency_ms=0,
-        ),
-    )
+        )
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
     text, code, stages = settle_numbers("<p>Profit was 10 dollars.</p>", "<p>利润为20美元。</p>", tmp_path)
     assert code == "numbers" and "20美元" in text
-    assert [item["step"] for item in stages] == ["generate", "repair"]
-    assert "20美元" in stages[-1]["output"]
+    assert "verify" in [item["step"] for item in stages]
+    assert stages[-1]["status"] == "contradict"
 
 
 def test_same_numbers_on_swapped_objects_are_binding():
@@ -281,22 +300,108 @@ def test_same_numbers_on_swapped_objects_are_binding():
     ) == "binding"
 
 
-def test_saved_live_slots_are_not_passed_by_an_echo(tmp_path, monkeypatch):
-    def echo(**kwargs):
-        draft = kwargs["user"]["repair"].rsplit("译文:\n", 1)[-1]
-        return ChatJsonResult(data={"t": [draft]}, model="synthetic-model", usage=None, latency_ms=0)
+_GROUNDED = {
+    21998: [{"source": "one to seven days", "target": "1至7天", "same": True}],
+    22065: [
+        {"source": "As the week", "target": "本周", "same": True},
+        {"source": "a long one", "target": "漫长的一周", "same": True},
+        {"source": "less than 24 hours", "target": "不到 24 小时", "same": True},
+    ],
+    21985: [
+        {"source": "late 90s", "target": "20世纪90年代末", "same": True},
+        {"source": "two", "target": "两种", "same": True},
+    ],
+    21934: [
+        {
+            "source": "800 data points", "target": "800个数据点",
+            "object_source": "data points", "object_target": "数据点", "same": True,
+        },
+        {
+            "source": "100 million American women", "target": "1亿美国女性",
+            "object_source": "women", "object_target": "女性", "same": True,
+        },
+    ],
+    22054: [
+        {
+            "source": "$0.80 in advertising revenue for every $1",
+            "target": "每获得1美元订阅收入，就产生约0.80美元",
+            "same": True,
+        },
+        {"source": "$2.9 million", "target": "290万美元", "same": True},
+    ],
+}
 
-    monkeypatch.setattr("researchlib.translate.service.chat_json", echo)
+
+def _equivalent(source: str, target: str, claims: list[dict]) -> dict:
+    return {"evidence_id": evidence_id(source, target), "verdict": "equivalent", "claims": claims}
+
+
+def test_saved_live_slots_pass_when_quotes_ground_the_same_facts(tmp_path, monkeypatch):
     for article_id, source, target in _LIVE:
-        text, code, stages = settle_numbers(source, target, tmp_path)
-        assert code and text == target and stages[-1]["status"] != "accept", article_id
+        found = apply_report(source, target, _equivalent(source, target, _GROUNDED[article_id]))
+        assert found.status == "accept", article_id
+        bare = apply_report(source, target, {
+            "evidence_id": evidence_id(source, target), "verdict": "equivalent", "claims": [],
+        })
+        assert bare.status == "uncertain", article_id
+
+    article_id, source, target = _LIVE[0]
+
+    def fake(**kwargs):
+        assert kwargs["user"].get("verify")
+        return ChatJsonResult(
+            data=_equivalent(source, target, _GROUNDED[article_id]),
+            model="synthetic-model",
+            usage=None,
+            latency_ms=0,
+        )
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    text, code, stages = settle_numbers(source, target, tmp_path)
+    assert code is None and text == target and stages[0]["step"] == "verify"
+
+
+def test_grounded_conflicts_block_time_scale_and_binding():
+    samples = [
+        ("<p>The call is at 12:15AM.</p>", "<p>电话在12:15PM。</p>",
+         [{"source": "12:15AM", "target": "12:15PM", "same": True}], "equivalent"),
+        ("<p>Shipped in November 2014.</p>", "<p>2014年12月发出。</p>",
+         [{"source": "November 2014", "target": "2014年12月", "same": False}], "conflict"),
+        ("<p>Demand was fiscal Q4.</p>", "<p>需求是第3财季。</p>",
+         [{"source": "fiscal Q4", "target": "第3财季", "same": False}], "conflict"),
+        ("<p>The deal was $1.85 billion.</p>", "<p>交易是1.85亿美元。</p>",
+         [{"source": "$1.85 billion", "target": "1.85亿美元", "same": True}], "equivalent"),
+        ("<p>Revenue was 10 million and costs were 20 million.</p>", "<p>收入2000万，成本1000万。</p>", [
+            {"source": "Revenue was 10 million", "target": "收入2000万",
+             "object_source": "Revenue", "object_target": "收入", "same": False},
+        ], "conflict"),
+        ("<p>800 data points on 100 million women.</p>", "<p>对800人掌握1亿个数据点。</p>", [
+            {"source": "800 data points", "target": "800人",
+             "object_source": "data points", "object_target": "人", "same": False},
+            {"source": "100 million women", "target": "1亿个数据点",
+             "object_source": "women", "object_target": "数据点", "same": False},
+        ], "conflict"),
+    ]
+    for source, target, claims, verdict in samples:
+        found = apply_report(source, target, {
+            "evidence_id": evidence_id(source, target), "verdict": verdict, "claims": claims,
+        })
+        assert found.status == "contradict", (source, found)
 
 
 def test_repair_with_the_wrong_source_hash_is_discarded(tmp_path, monkeypatch):
     def fake(**kwargs):
+        user = kwargs["user"]
+        if user.get("verify"):
+            return ChatJsonResult(
+                data={"evidence_id": user["evidence_id"], "verdict": "uncertain", "claims": []},
+                model="synthetic-model",
+                usage=None,
+                latency_ms=0,
+            )
         return ChatJsonResult(
             data={"t": [{
-                "id": kwargs["user"]["segment_ids"][0],
+                "id": user["segment_ids"][0],
                 "source_hash": "not-the-source",
                 "html": "<p>利润为10美元。</p>",
             }]},
@@ -318,6 +423,13 @@ def test_repair_with_the_wrong_source_hash_is_discarded(tmp_path, monkeypatch):
     assert stages[-1]["rejected"] == "<p>利润为10美元。</p>"
 
     def missing_id(**kwargs):
+        if kwargs["user"].get("verify"):
+            return ChatJsonResult(
+                data={"evidence_id": kwargs["user"]["evidence_id"], "verdict": "uncertain", "claims": []},
+                model="synthetic-model",
+                usage=None,
+                latency_ms=0,
+            )
         return ChatJsonResult(
             data={"t": [{"html": "<p>利润为10美元。</p>", "source_hash": "source-hash"}]},
             model="synthetic-model",
@@ -387,16 +499,24 @@ def test_a_rejected_article_does_not_store_a_translation(tmp_path):
     calls = []
 
     def fake(**kwargs):
-        calls.append(kwargs["user"])
-        if kwargs["user"]["segments"] == ["Synthetic audit"]:
+        user = kwargs["user"]
+        calls.append(user)
+        if user.get("verify"):
+            return ChatJsonResult(
+                data={"evidence_id": user["evidence_id"], "verdict": "uncertain", "claims": []},
+                model="synthetic-model",
+                usage=None,
+                latency_ms=0,
+            )
+        if user.get("segments") == ["Synthetic audit"]:
             values = ["合成标题"]
         else:
             values = ["<p>甲公司从新订户赚了20美元，仍保持平台分发。</p>"]
-        if "segment_ids" in kwargs["user"]:
+        if "segment_ids" in user:
             values = [
                 {"id": identity, "source_hash": source_hash, "html": text}
                 for identity, source_hash, text in zip(
-                    kwargs["user"]["segment_ids"], kwargs["user"]["source_hashes"], values, strict=True,
+                    user["segment_ids"], user["source_hashes"], values, strict=True,
                 )
             ]
         return ChatJsonResult(data={"t": values}, model="synthetic-model", usage=None, latency_ms=0)
@@ -405,8 +525,8 @@ def test_a_rejected_article_does_not_store_a_translation(tmp_path):
         with pytest.raises(AlignmentError, match="numbers"):
             service.translate_article(conn, 990001, data_dir=tmp_path)
     assert conn.writes == [] and conn.committed is False
-    assert len(calls) == 2
-    assert "repair" in calls[1]
+    assert any("repair" in call for call in calls)
+    assert any(call.get("verify") for call in calls)
     saved = (tmp_path / "translate-rejects" / "990001.jsonl").read_text(encoding="utf-8")
     assert "10 dollars" in saved and "20美元" in saved
     assert '"step": "repair"' in saved and "DEEPSEEK" not in saved and "api_key" not in saved.lower()

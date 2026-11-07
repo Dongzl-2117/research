@@ -1,14 +1,15 @@
-"""译制闭环：结构完整性和全部数字事实分开判。
+"""译制闭环：结构是硬要求，数字事实另做独立核验。
 
-结构（占位、链接、图片、代码、条数）不对就只修这一段一次。
-数字先做写法折叠（数字和中文单位之间的空格），再交给原来的全量检查。
-钟点、日期、月份、财季、时段、比例、金额都参与，不能因为没单独收成证据就放过。
-检查通过才留下。没通过只修一次，再用同一条检查复核；模型不能自己宣布通过。
-没入库的每一阶段输入、输出和原因都留下，不含密钥。
+占位、链接、图片、代码、条数不对，只修这一段一次。
+解析器只提供线索，解析对不上不等于事实错，解析对上也不单独放行多数字的句子。
+独立核验要交回能在原文和译文里逐字找到的片段，以及等价、冲突或不确定。
+没有片段的布尔结论不能通过。片段里的钟点、日期、月份、财季、金额若互相矛盾，也不能通过。
+没通过只修一次，再用同一种核验复核。没入库的各阶段都留下，不含密钥。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -16,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from researchlib.translate.llm import LLMTransportError, output_tokens
-from researchlib.translate.numbers import _extract
+from researchlib.translate.numbers import _clocks_match, _extract, _text
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import leaf_problem, numeric_anchors
 from researchlib.translate.segments import Shielded, unshield
@@ -35,6 +36,18 @@ _UNSHIELD_NOTE = (
 )
 _UNIT_GAP = re.compile(r"(?<=\d)\s+(?=个月|星期|小时|天|周)")
 _TRACKED = ("clock", "date", "month", "fiscal", "duration", "ratio")
+_COVER = ("clock", "date", "month", "fiscal", "qty", "duration", "ratio")
+_VERIFY_SYSTEM = (
+    "你核对英文片段和中文译文是否同一批事实。不要翻译，不要改写，不要宣布检查通过。\n"
+    "只输出 JSON："
+    '{"evidence_id":"原样带回","verdict":"equivalent|conflict|uncertain",'
+    '"claims":[{"source":"英文里逐字存在的片段","target":"中文里逐字存在的片段",'
+    '"value":"这个数或时间","object_source":"英文片段里的对象","object_target":"中文片段里的对象",'
+    '"relation":"比例、起止、时间或空","same":true}]}\n'
+    "equivalent 和 conflict 都必须有 claims。source、target 必须能在对应一侧逐字找到。\n"
+    "数字写法和中文语序可以不同。单位、数量级、钟点上下午、日期、月份、财季、对象或关系不同就是 conflict。\n"
+    "每一笔硬事实都要有一条 claim。看不出就 uncertain。"
+)
 
 
 @dataclass
@@ -207,6 +220,173 @@ def _code(reason: str) -> str:
     return "numbers"
 
 
+def evidence_id(source: str, target: str) -> str:
+    raw = (_fold(source) + "\n" + _fold(target)).encode()
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _visible(html: str) -> str:
+    try:
+        return _text(html or "")
+    except Exception:
+        return html or ""
+
+
+def _quoted(html: str, quote: str) -> bool:
+    if quote in (html or "") or quote in _visible(html):
+        return True
+    folded = _fold(html)
+    return _fold(quote) in folded or _fold(quote) in _visible(folded)
+
+
+def _hard_keys(html: str, kinds: tuple[str, ...]) -> list[tuple[str, str]]:
+    found = []
+    for fact in _extract(_fold(html)):
+        if fact.hard and fact.kind in kinds:
+            found.append((fact.kind, fact.key))
+    return found
+
+
+def _span_conflict(source_quote: str, target_quote: str) -> str | None:
+    """片段里两边都解析出的钟点、日期、月份、财季、时段、比例、金额必须相容。一边没解析出来只是写法。"""
+    for kind in ("date", "month", "fiscal", "duration", "ratio"):
+        left = [key for item, key in _hard_keys(source_quote, (kind,))]
+        right = [key for item, key in _hard_keys(target_quote, (kind,))]
+        if left and right and sorted(left) != sorted(right):
+            return "conflict"
+    left_clock = [key for _item, key in _hard_keys(source_quote, ("clock",))]
+    right_clock = [key for _item, key in _hard_keys(target_quote, ("clock",))]
+    if left_clock and right_clock:
+        if not (len(left_clock) == len(right_clock) == 1 and _clocks_match(left_clock[0], right_clock[0])):
+            if left_clock != right_clock:
+                return "conflict"
+    left_qty = [key for _item, key in _hard_keys(source_quote, ("qty",))]
+    right_qty = [key for _item, key in _hard_keys(target_quote, ("qty",))]
+    if left_qty and right_qty and sorted(left_qty) != sorted(right_qty):
+        anchors = numeric_anchors(source_quote)
+        if anchors and anchors == numeric_anchors(target_quote):
+            return "scale"
+        return "conflict"
+    kinds = ("qty", "literal", "clock", "date", "fiscal", "duration", "ratio")
+    left = [key for _kind, key in _hard_keys(source_quote, kinds)]
+    right = [key for _kind, key in _hard_keys(target_quote, kinds)]
+    if left and right and not _related(left, right):
+        return "conflict"
+    return None
+
+
+def _related(left: list[str], right: list[str]) -> bool:
+    if set(left) & set(right):
+        return True
+    for key in (*left, *right):
+        if "/" not in key:
+            continue
+        parts = set(key.split("/"))
+        other = right if key in left else left
+        if parts & set(other):
+            return True
+    return False
+
+
+def _covers(html: str, quotes: list[str]) -> bool:
+    needed: dict[tuple[str, str], int] = {}
+    for item in _hard_keys(html, _COVER):
+        needed[item] = needed.get(item, 0) + 1
+    if not needed:
+        return True
+    found: dict[tuple[str, str], int] = {}
+    for quote in quotes:
+        for item in _hard_keys(quote, _COVER):
+            found[item] = found.get(item, 0) + 1
+    return all(found.get(item, 0) >= count for item, count in needed.items())
+
+
+def apply_report(source: str, target: str, data: object) -> Judgment:
+    """核验结论必须带回 evidence_id 和能对上原文的片段。没有依据就不能通过。"""
+    if not isinstance(data, dict) or data.get("evidence_id") != evidence_id(source, target):
+        return Judgment("uncertain", "evidence-id")
+    verdict = data.get("verdict")
+    claims = data.get("claims")
+    if verdict not in {"equivalent", "conflict", "uncertain"} or not isinstance(claims, list):
+        return Judgment("uncertain", "evidence-missing")
+    if verdict == "uncertain":
+        return Judgment("uncertain", "uncertain")
+    if not claims:
+        return Judgment("uncertain", "evidence-missing")
+    source_quotes: list[str] = []
+    target_quotes: list[str] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            return Judgment("uncertain", "evidence-missing")
+        source_quote, target_quote = claim.get("source"), claim.get("target")
+        if not isinstance(source_quote, str) or not isinstance(target_quote, str):
+            return Judgment("uncertain", "evidence-missing")
+        if not source_quote.strip() or not target_quote.strip():
+            return Judgment("uncertain", "evidence-missing")
+        if not _quoted(source, source_quote) or not _quoted(target, target_quote):
+            return Judgment("uncertain", "evidence-missing")
+        for quote, name in (
+            (source_quote, "object_source"),
+            (target_quote, "object_target"),
+        ):
+            word = claim.get(name)
+            if isinstance(word, str) and word and word not in quote:
+                return Judgment("uncertain", "evidence-missing")
+        if verdict == "equivalent" and claim.get("same") is False:
+            return Judgment("contradict", "binding")
+        clash = _span_conflict(source_quote, target_quote)
+        if clash and verdict == "equivalent":
+            return Judgment("contradict", clash)
+        source_quotes.append(source_quote)
+        target_quotes.append(target_quote)
+    if verdict == "conflict":
+        return Judgment("contradict", "conflict")
+    if not _covers(source, source_quotes) or not _covers(target, target_quotes):
+        return Judgment("uncertain", "evidence-incomplete")
+    return Judgment("accept", "equivalent")
+
+
+def _parser_clears(source: str, target: str) -> bool:
+    """只有一笔硬事实、而且全量检查已经通过时，没有第二笔对象可对调。"""
+    source, target = _fold(source), _fold(target)
+    if leaf_problem(source, target) is not None:
+        return False
+    hard = [fact for fact in _extract(target) if fact.hard and fact.kind in _COVER]
+    return len(hard) < 2
+
+
+def clues(source: str, target: str) -> str:
+    def one(html: str) -> str:
+        bits = [f"{fact.kind}:{fact.key}" for fact in _extract(_fold(html))]
+        return " ".join(bits[:16])
+
+    return f"{one(source)} => {one(target)}"
+
+
+def verify_facts(source: str, target: str, data_dir: Path) -> tuple[Judgment, dict]:
+    """另一次调用。生成稿不能自己说正确；返回的片段还要能在两侧原文里找到。"""
+    import researchlib.translate.service as translate_service
+
+    payload = {
+        "verify": True,
+        "evidence_id": evidence_id(source, target),
+        "source": source,
+        "target": target,
+        "clues": clues(source, target),
+    }
+    result = translate_service.chat_json(
+        system=_VERIFY_SYSTEM,
+        user=payload,
+        purpose="translate_verify",
+        subject="slot",
+        temperature=0.3,
+        max_tokens=min(output_tokens(), 8000),
+        data_dir=data_dir,
+    )
+    data = result.data if isinstance(result.data, dict) else {}
+    return apply_report(source, target, data), data
+
+
 def settle_numbers(
     source: str,
     draft: str,
@@ -215,11 +395,19 @@ def settle_numbers(
     segment_id: str | None = None,
     source_hash: str | None = None,
 ) -> tuple[str, str | None, list[dict]]:
-    """证据一致就留下。否则只修一次，再用证据判，不采信模型的自我声明。"""
-    first = judge_numbers(source, draft)
+    """解析器只在单笔且已经通过时放行。其余做独立核验；没通过只修一次再核验。"""
+    if _parser_clears(source, draft):
+        return draft, None, [{
+            "step": "check", "input": source, "output": draft,
+            "status": "accept", "reason": "single",
+        }]
+    try:
+        first, raw = verify_facts(source, draft, data_dir)
+    except LLMTransportError:
+        raise
     stages = [{
-        "step": "generate", "input": source, "output": draft,
-        "status": first.status, "reason": first.reason,
+        "step": "verify", "input": source, "output": draft,
+        "status": first.status, "reason": first.reason, "report": raw,
     }]
     if first.status == "accept":
         return draft, None, stages
@@ -229,13 +417,30 @@ def settle_numbers(
         )
     except LLMTransportError:
         raise
-    second = judge_numbers(source, revised)
+    if identity:
+        stages.append({
+            "step": "repair", "input": source, "output": draft,
+            "rejected": rejected, "status": "discarded", "reason": identity,
+        })
+        return draft, _code("uncertain"), stages
+    if _parser_clears(source, revised):
+        stages.append({
+            "step": "repair", "input": source, "output": revised,
+            "status": "accept", "reason": "single",
+        })
+        return revised, None, stages
+    try:
+        second, raw_second = verify_facts(source, revised, data_dir)
+    except LLMTransportError:
+        raise
     stages.append({
-        "step": "repair", "input": source, "output": revised,
-        "rejected": rejected, "status": second.status,
-        "reason": identity or second.reason,
+        "step": "repair", "input": source, "output": revised, "reason": "recheck",
     })
-    if not identity and second.status == "accept":
+    stages.append({
+        "step": "verify", "input": source, "output": revised,
+        "status": second.status, "reason": second.reason, "report": raw_second,
+    })
+    if second.status == "accept":
         return revised, None, stages
     reason = second.reason if second.status == "contradict" else "uncertain"
     return revised, _code(reason), stages

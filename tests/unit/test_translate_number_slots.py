@@ -317,6 +317,17 @@ def test_archive_shaped_article_translates_without_a_slot_number_reject(tmp_path
         from researchlib.translate.llm import ChatJsonResult
 
         user = kwargs["user"]
+        if user.get("verify"):
+            return ChatJsonResult(
+                data={
+                    "evidence_id": user["evidence_id"],
+                    "verdict": "equivalent",
+                    "claims": [{"source": user["source"], "target": user["target"], "same": True}],
+                },
+                model="synthetic-model",
+                usage=None,
+                latency_ms=0,
+            )
         segments = user["segments"]
         if segments == [escape(title)]:
             values = [localize(escape(title))]
@@ -369,6 +380,17 @@ def test_long_article_is_not_rejected_as_canonical_source_changed(tmp_path):
         from researchlib.translate.llm import ChatJsonResult
 
         user = kwargs["user"]
+        if user.get("verify"):
+            return ChatJsonResult(
+                data={
+                    "evidence_id": user["evidence_id"],
+                    "verdict": "equivalent",
+                    "claims": [{"source": user["source"], "target": user["target"], "same": True}],
+                },
+                model="synthetic-model",
+                usage=None,
+                latency_ms=0,
+            )
         segments = user["segments"]
         if segments == [escape("Long note")]:
             values = ["长笔记"]

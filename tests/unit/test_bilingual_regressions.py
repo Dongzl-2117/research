@@ -63,6 +63,17 @@ def translate(body, outputs, tmp_path, *, mutate=None):
 
     def fake(**kwargs):
         user = kwargs["user"]
+        if user.get("verify"):
+            return ChatJsonResult(
+                data={
+                    "evidence_id": user["evidence_id"],
+                    "verdict": "equivalent",
+                    "claims": [{"source": user["source"], "target": user["target"], "same": True}],
+                },
+                model="synthetic-model",
+                usage=None,
+                latency_ms=0,
+            )
         values = ["合成标题"] if user["segments"] == ["Synthetic audit"] else outputs
         identities = user.get("segment_ids")
         hashes = user.get("source_hashes")
