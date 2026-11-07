@@ -243,9 +243,8 @@ def present_zsxq_qa(text: str) -> str:
 # 句读被切到下一段（或图后面那一行）的开头。开引号不算，那是下一段自己的。
 _LEAD_PUNCT = re.compile(r"^[，。、；：！？,.;:!?…]+")
 _ONLY_OPEN = re.compile(r"^[“\"「『‘]+$")
-_PAGE_DIGIT = re.compile(r"^\d{1,3}$")
+_LONE_DIGITS = re.compile(r"^\d{1,3}$")
 _YEAR_LEAD = re.compile(r"^(\d+)\s*年")
-_ENDED = re.compile(r"[。！？!?]$")
 _IMAGE_LINE = re.compile(r"^!\[[^\]]*\]\([^)]*\)\s*$")
 _LIST_LINE = re.compile(r"^(?:[-*+]\s|\d+[.)、]\s)")
 _STOP_LINE = re.compile(r"^(?:#{1,6}\s|>|\||</?[A-Za-z]|```|~~~)")
@@ -321,13 +320,14 @@ def _next_prose(lines: list[str], mask: list[bool], index: int) -> int | None:
 
 
 def rejoin_broken_paragraphs(text: str) -> str:
-    """收掉切到下一段开头的句读，以及单独成段的页码。
+    """收掉切到下一段开头的句读，拼回被拆开的年份。
 
     公众号按段切开（图后面常常只隔一个硬换行）时，逗号、句号会落到下一段开头，
     读起来像「，巧克力…」（文章 24040）。同一段里的硬换行，以及只隔了空行的下一段，
     整句接回去。隔着图片时，句读挪到上一段末尾，剩下的字留在图后面。单独成段的
-    一到三位数字，和下一段拼得成「1988 年」这种年份，就是被拆开的首位；拼不成、
-    上一段又已经收了句，则是页脚页码，不留。标题、列表、代码块、表格不跨。再跑一遍不变。
+    一到三位数字，和下一段拼得成「1988 年」这种年份，就是被拆开的首位，拼回去；
+    拼不成的照原样留着：公众号常把「01」「02」单独一段当小节号，删了就丢了字。
+    标题、列表、代码块、表格不跨。再跑一遍不变。
     """
     raw = text or ""
     if not raw:
@@ -345,7 +345,7 @@ def rejoin_broken_paragraphs(text: str) -> str:
         own = (index == 0 or not lines[index - 1].strip()) and (
             index == len(lines) - 1 or not lines[index + 1].strip()
         )
-        if own and _PAGE_DIGIT.fullmatch(stripped):
+        if own and _LONE_DIGITS.fullmatch(stripped):
             nxt = index + 1
             while nxt < len(lines) and not lines[nxt].strip():
                 nxt += 1
@@ -358,16 +358,6 @@ def rejoin_broken_paragraphs(text: str) -> str:
                         _delete_line(lines, mask, index)
                         dirty = True
                         continue
-            earlier = _earlier_prose(lines, mask, index)
-            next_text = lines[nxt].lstrip() if nxt < len(lines) else ""
-            if (
-                earlier is not None
-                and _ENDED.search(lines[earlier].rstrip())
-                and not next_text[:1].isdigit()
-            ):
-                _delete_line(lines, mask, index)
-                dirty = True
-                continue
             index += 1
             continue
         if _ONLY_OPEN.fullmatch(stripped):
