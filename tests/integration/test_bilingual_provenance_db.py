@@ -55,11 +55,20 @@ def model(**kwargs):
     user = kwargs["user"]
     if user.get("verify"):
         return ChatJsonResult(data=verifier(user), model="synthetic-model", usage=None, latency_ms=0)
-    values = []
-    for identity, source_hash, html in zip(user["segment_ids"], user["source_hashes"], user["segments"], strict=True):
+
+    def one(html: str) -> str:
         translated = html.replace("Synthetic audit", "合成审计")
         translated = translated.replace("First paragraph ", "第一段").replace("Second paragraph ", "第二段")
         translated = translated.replace(" dollars", "美元").replace("source: member-rss", "归档头")
+        return translated
+
+    if "segment_ids" not in user:
+        # 占位/链接丢了走 settle_unshield 的单段定向修复，没有段身份字段。
+        return ChatJsonResult(data={"t": [one(user["segments"][0])]}, model="synthetic-model",
+                              usage=None, latency_ms=0)
+    values = []
+    for identity, source_hash, html in zip(user["segment_ids"], user["source_hashes"], user["segments"], strict=True):
+        translated = one(html)
         values.append({"id": identity, "source_hash": source_hash, "html": translated})
     return ChatJsonResult(data={"t": values}, model="synthetic-model", usage=None, latency_ms=0)
 
@@ -149,8 +158,13 @@ def test_rejected_attempt_preserves_good_translation_and_search_chunks(conn, set
         if kwargs["user"].get("verify"):
             return model(**kwargs)
         result = model(**kwargs)
+        cleaned = []
         for item in result.data["t"]:
-            item["html"] = item["html"].replace("⟦0⟧", "")
+            if isinstance(item, dict):
+                cleaned.append({**item, "html": item["html"].replace("⟦0⟧", "")})
+            else:
+                cleaned.append(item.replace("⟦0⟧", ""))
+        result.data["t"] = cleaned
         return result
 
     monkeypatch.setattr(service, "chat_json", missing)

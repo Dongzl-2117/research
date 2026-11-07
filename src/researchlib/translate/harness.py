@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from researchlib.translate.llm import LLMTransportError, output_tokens
-from researchlib.translate.numbers import _clocks_match, _extract, _extract_located, _text
+from researchlib.translate.numbers import _clocks_match, _durations_match, _extract, _extract_located, _text
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import leaf_problem, numeric_anchors, structure_problem
 from researchlib.translate.segments import Shielded, unshield
@@ -248,12 +248,33 @@ def _hard_keys(html: str, kinds: tuple[str, ...]) -> list[tuple[str, str]]:
     return found
 
 
+def _durations_agree(left: list[str], right: list[str]) -> bool:
+    """同一单位、同一个数，原文的 couple/few 可以写成两；顺序不限。"""
+    if len(left) != len(right):
+        return False
+    remaining = list(right)
+    for key in left:
+        for index, candidate in enumerate(remaining):
+            if _durations_match(key, candidate):
+                remaining.pop(index)
+                break
+        else:
+            return False
+    return True
+
+
 def _span_conflict(source_quote: str, target_quote: str) -> str | None:
     """片段里两边都解析出的钟点、日期、月份、财季、时段、比例、金额必须相容。一边没解析出来只是写法。"""
     for kind in ("date", "month", "fiscal", "duration", "ratio"):
         left = [key for item, key in _hard_keys(source_quote, (kind,))]
         right = [key for item, key in _hard_keys(target_quote, (kind,))]
-        if left and right and sorted(left) != sorted(right):
+        if not (left and right):
+            continue
+        if kind == "duration":
+            # 「a couple of weeks」和「两周」是同一段时间；不能因为原文带 ~ 就判冲突。
+            if not _durations_agree(left, right):
+                return "conflict"
+        elif sorted(left) != sorted(right):
             return "conflict"
     left_clock = [key for _item, key in _hard_keys(source_quote, ("clock",))]
     right_clock = [key for _item, key in _hard_keys(target_quote, ("clock",))]
@@ -278,6 +299,9 @@ def _span_conflict(source_quote: str, target_quote: str) -> str | None:
 
 def _related(left: list[str], right: list[str]) -> bool:
     if set(left) & set(right):
+        return True
+    # 「a couple of weeks」和「两周」键不同，但说的是同一段时间。
+    if any(_durations_match(one, other) for one in left for other in right):
         return True
     for key in (*left, *right):
         if "/" not in key:

@@ -385,6 +385,32 @@ def test_saved_live_slots_pass_when_quotes_ground_the_same_facts(tmp_path, monke
     assert code is None and text == target and stages[0]["step"] == "verify"
 
 
+def test_approximate_duration_in_evidence_is_equivalent():
+    source = "<p>It appeared a couple of weeks later.</p>"
+    target = "<p>它在两周后出现。</p>"
+    found = apply_report(source, target, _equivalent(source, target, [{
+        "source": "a couple of weeks later",
+        "target": "两周后",
+        "object_source": "It",
+        "object_target": "它",
+        "same": True,
+    }]))
+    assert found.status == "accept"
+
+
+def test_exact_duration_is_not_downgraded_to_approximate():
+    source = "<p>It appeared two weeks later.</p>"
+    target = "<p>它在几周后出现。</p>"
+    found = apply_report(source, target, _equivalent(source, target, [{
+        "source": "two weeks later",
+        "target": "几周后",
+        "object_source": "It",
+        "object_target": "它",
+        "same": True,
+    }]))
+    assert found.status == "contradict"
+
+
 def test_single_number_object_and_direction_are_not_cleared_by_the_parser(tmp_path, monkeypatch):
     samples = [
         ("<p>Revenue was $10.</p>", "<p>成本是10美元。</p>",

@@ -103,6 +103,9 @@ def run(body, answer, tmp_path, *, title="Synthetic audit", title_zh="合成标�
             return ChatJsonResult(data={"t": rows}, model="synthetic-model", usage=None, latency_ms=0)
         calls.append((list(user["segments"]), user.get("repair")))
         texts = answer(user["segments"], user.get("repair"))
+        if user.get("repair") and "segment_ids" not in user:
+            # 占位/链接丢了走 settle_unshield 的单段定向修复，没有段身份字段。
+            return ChatJsonResult(data={"t": [texts[0]]}, model="synthetic-model", usage=None, latency_ms=0)
         # 故意不 strict：answer 少回几条时，模型那边就是少回了几条。
         rows = [{"id": identity, "source_hash": source_hash, "html": text}
                 for identity, source_hash, text in zip(user["segment_ids"], user["source_hashes"], texts,

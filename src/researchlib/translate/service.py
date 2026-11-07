@@ -30,6 +30,7 @@ from researchlib.translate.harness import (
     has_hard_fact,
     note_reject,
     settle_numbers,
+    settle_unshield,
 )
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import (
@@ -329,17 +330,30 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[st
 
 def _restore_batch(
     texts: list[str], shields: list, sources: list[str], offset: int,
+    data_dir: Path, article_id: int,
 ) -> tuple[list[str], list[int]]:
     """把一批译文还原成带链接、图片的 HTML。
 
-    链接、图片、代码、占位符不对就抛错（整批重来）。数字对不上的段只记下标，
-    交给独立核验；解析器不单独决定收不收。
+    链接、图片、代码、占位符不对时只修这一段一次，仍不行就抛错（整批重来）。
+    数字对不上的段只记下标，交给独立核验；解析器不单独决定收不收。
     """
     restored: list[str] = []
     flagged: list[int] = []
     for index, (text, item, source) in enumerate(zip(texts, shields, sources, strict=True)):
         value = unshield(text, item)
+        stages: list[dict] = []
         if value is None:
+            value, stages = settle_unshield(item.html, text, item, data_dir)
+        if value is None:
+            note_reject(
+                data_dir,
+                article_id=article_id,
+                slot=f"slot-{offset + index}-unshield",
+                kind="unshield",
+                source=item.html,
+                draft=text,
+                stages=stages,
+            )
             raise AlignmentError("unshield")
         problem = structure_problem(source, value)
         if problem:
@@ -358,7 +372,8 @@ def _exhausted(error: Exception) -> bool:
 
 
 def _settle_batch(
-    parts: list[str], context: dict, shields: list, sources: list[str], offset: int, data_dir: Path,
+    parts: list[str], context: dict, shields: list, sources: list[str], offset: int,
+    data_dir: Path, article_id: int,
 ) -> tuple[list[str], list[int], set[str]]:
     """译一批、还原、核对。结构不对时整批再译一次，仍不对就抛错。
 
@@ -369,7 +384,7 @@ def _settle_batch(
     for _attempt in range(2):
         try:
             got = _translate_batch(parts, context, data_dir)
-            restored, flagged = _restore_batch(got, shields, sources, offset)
+            restored, flagged = _restore_batch(got, shields, sources, offset, data_dir, article_id)
         except (LLMTransportError, XaiLoginRequiredError):
             # 同一次请求已经按 RETRY_DELAYS 重试过。再开一批会把失败时的花费乘二。
             raise
@@ -557,6 +572,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             [targets[i][1] for i in slots],
             offset,
             data_dir,
+            article_id,
         )
         for i, text in zip(slots, restored, strict=True):
             source_html = targets[i][1]

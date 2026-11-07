@@ -171,6 +171,36 @@ def test_same_visible_source_keeps_its_own_restored_link(tmp_path):
     assert "example.invalid/one" in conn.writes[0][3] and "example.invalid/two" in conn.writes[0][3]
 
 
+def test_missing_link_id_is_repaired_once_before_reject(tmp_path):
+    body = '<p>Acme kept its <a href="https://example.invalid/chart">distribution advantage</a>.</p>'
+    wrong = "<p>甲公司保住了它的<a>分发优势</a>。</p>"
+    good = '<p>甲公司保住了它的<a id="L0">分发优势</a>。</p>'
+    calls = []
+
+    def fake(**kwargs):
+        user = kwargs["user"]
+        calls.append(user)
+        if user.get("repair"):
+            return ChatJsonResult(data={"t": [good]}, model="synthetic-model", usage=None, latency_ms=0)
+        if user.get("segment_ids") == ["title"]:
+            title = {"id": "title", "source_hash": user["source_hashes"][0], "html": "合成标题"}
+            return ChatJsonResult(data={"t": [title]}, model="synthetic-model", usage=None, latency_ms=0)
+        identities = user.get("segment_ids") or []
+        hashes = user.get("source_hashes") or []
+        values = [
+            {"id": identity, "source_hash": source_hash, "html": wrong}
+            for identity, source_hash in zip(identities, hashes, strict=True)
+        ]
+        return ChatJsonResult(data={"t": values}, model="synthetic-model", usage=None, latency_ms=0)
+
+    conn = MemoryConn(body)
+    with patch.object(service, "chat_json", side_effect=fake), patch.object(service, "replace_translation_chunks"):
+        service.translate_article(conn, 990001, data_dir=tmp_path)
+    assert any("repair" in user for user in calls)
+    stored = conn.writes[0][3]
+    assert 'href="https://example.invalid/chart"' in stored and "分发优势" in stored
+
+
 def test_failed_restoration_is_rejected_before_any_translation_write(tmp_path):
     source = '<p>See the chart. <code>rate = 42</code><img src="/media/synthetic.png"></p>'
     with pytest.raises(RuntimeError, match="unshield"):
