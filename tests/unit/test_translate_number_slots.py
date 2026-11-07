@@ -535,6 +535,155 @@ _LIVE_FALSE_REJECTS = [
 
 
 # 版本 5 实跑的八段。前两篇在版本 4 能过，版本 5 把「一周 / 8天」和每月标价判错。
+# 版本 6 实跑五个失败槽的原样 HTML。字句与附件一致，不改译文。
+_V6_EXACT_SLOTS = [
+    (
+        21998,
+        (
+            "<p data-src-para=\"1\">In the wake of "
+            "the #MeToo movement, countless women"
+            " have taken to Facebook to express t"
+            "heir frustration and disappointment "
+            "with men and have been promptly shut"
+            " down or silenced, banned from the p"
+            "latform for periods ranging from one"
+            " to seven days.</p>"
+        ),
+        (
+            "<p data-src-para=\"1\">在 #MeToo 运动之后，无"
+            "数女性在 Facebook 上表达她们对男性的不满和失望，却迅速被封禁或"
+            "禁言，被禁止使用该平台1至7天。</p>"
+        ),
+    ),
+    (
+        22065,
+        (
+            "<p>As the week draws to a close, it’"
+            "s definitely been a long one for App"
+            "le’s software engineers. The nightma"
+            "re started on Tuesday, after a Twitt"
+            "er user disclosed a critical securit"
+            "y vulnerability for macOS High Sierr"
+            "a that allowed anyone with physical "
+            "access to a Mac to gain system admin"
+            "istrator privileges without even ent"
+            "ering a password. As software bugs g"
+            "o, this one was embarrassing and cri"
+            "tical, but Apple managed to fix it l"
+            "ess than 24 hours after it was publi"
+            "cly disclosed.<br> “Security is a to"
+            "p priority for every Apple product, "
+            "and regrettably we stumbled with thi"
+            "s release of macOS,” admitted an App"
+            "le spokesperson. “We greatly regret "
+            "this error and we apologize to all M"
+            "ac users, both for releasing with th"
+            "is vulnerability and for the concern"
+            " it has caused. Our customers deserv"
+            "e better. We are auditing our develo"
+            "pment processes to help prevent this"
+            " from happening again.”</p>"
+        ),
+        (
+            "<p>随着本周接近尾声，对苹果的软件工程师来说，这无疑是漫长的一周。噩梦"
+            "始于周二：一名 Twitter 用户披露了 macOS High Sie"
+            "rra 的一个严重安全漏洞，任何人只要能够物理接触一台 Mac，甚至无需"
+            "输入密码，就能获得系统管理员权限。就软件缺陷而言，这个漏洞既令人难堪又极"
+            "其严重，但苹果在漏洞公开披露后不到 24 小时内就完成了修复。<br>“"
+            "安全是每一款苹果产品的首要任务，遗憾的是我们在这次 macOS 发布上出"
+            "了差错。”苹果发言人承认道，“我们对这一错误深表遗憾，并向所有 Mac "
+            "用户致歉，既为发布时带有这一漏洞，也为它造成的担忧。我们的用户理应得到更"
+            "好的产品。我们正在审查开发流程，以帮助防止此类事件再次发生。” </p>"
+        ),
+    ),
+    (
+        21985,
+        (
+            "<p>Beginning in the late 90s two new"
+            " broadband technologies began to bec"
+            "ome available: cable modems and DSL "
+            "over phone lines. DSL was a big impr"
+            "ovement over dial-up, offering faste"
+            "r speeds, always-on connectivity, th"
+            "e ability to still use your phone li"
+            "ne for voice calls, etc. And, keepin"
+            "g with the established regulatory re"
+            "gime for telephone lines, DSL servic"
+            "es were also covered by Title II, wh"
+            "ich meant that multiple ISPs could u"
+            "se the telephone lines. Cable modems"
+            ", though, were unregulated (and thus"
+            " ISP service was held exclusively by"
+            " cable companies).</p>"
+        ),
+        (
+            "<p>从20世纪90年代末开始，两种新的宽带技术逐渐面世：电缆调制解调器"
+            "和通过电话线提供的DSL。DSL相比拨号上网是一大进步：速度更快、可始终"
+            "在线，还能继续用电话线打语音电话，等等。而且，按照电话线路既有的监管制度"
+            "，DSL服务也受Title II约束，这意味着多家ISP可以使用电话线路"
+            "。不过，电缆调制解调器不受监管（因此ISP服务完全由有线电视公司把持）。"
+            "</p>"
+        ),
+    ),
+    (
+        21934,
+        (
+            "<p>This ethos pervades every part of"
+            " Meredith, from editorial content (c"
+            "urated by title to multiple demograp"
+            "hics) to business models (circulatio"
+            "n plus ads plus content marketing pl"
+            "us the second most valuable brand li"
+            "censing program after Disney) to bac"
+            "k-end integration (Meredith has an a"
+            "verage of 800 data points on 100 mil"
+            "lion American women). The company ma"
+            "y look like a publisher and call its"
+            "elf a marketer, but, to <a href=\"htt"
+            "p://www.berkshirehathaway.com/letter"
+            "s/1991.html\">reference a Warren Buff"
+            "ett letter</a> I’ve <a href=\"../2016"
+            "/how-the-snap-spectacles-story-broke"
+            "-facebook-overestimated-video-metric"
+            ".md\">referenced</a> <a href=\"espns-c"
+            "uts-espns-history-espn-from-franchis"
+            "e-to-business.md\">before</a>, Meredi"
+            "th is a <em>business</em>:</p>"
+        ),
+        (
+            "<p>这种理念渗透到梅雷迪思的每个部分，从编辑内容（按刊物针对不同人群精"
+            "心策划）到商业模式（发行量加广告加内容营销，再加上仅次于迪士尼的全球第二"
+            "值钱的品牌授权项目），再到后端整合（梅雷迪思对1亿美国女性平均掌握800"
+            "个数据点）。这家公司看起来像出版商，也自称营销公司，但借用<a href"
+            "=\"http://www.berkshirehathaway.com/l"
+            "etters/1991.html\">沃伦·巴菲特的一封信</a>——我<"
+            "a href=\"../2016/how-the-snap-spectac"
+            "les-story-broke-facebook-overestimat"
+            "ed-video-metric.md\">之前</a>曾<a href=\""
+            "espns-cuts-espns-history-espn-from-f"
+            "ranchise-to-business.md\">引用</a>过——的话"
+            "来说，梅雷迪思是一门<em>生意</em>：</p>"
+        ),
+    ),
+    (
+        22054,
+        (
+            "<p>Last year Turner made about $0.80"
+            " in advertising revenue for every $1"
+            " in subscription revenue; applying t"
+            "hat ratio to our hypothetical market"
+            " means a further $2.9 million in hig"
+            "h margin advertising revenue per mon"
+            "th.</p>"
+        ),
+        (
+            "<p>去年，特纳每获得1美元订阅收入，就产生约0.80美元的广告收入；把"
+            "这个比例套用到我们假设的市场，意味着每月还能带来290万美元的高利润率广"
+            "告收入。</p>"
+        ),
+    ),
+]
+
 _V6_REGRESSIONS = [
     (
         21926,
@@ -614,43 +763,10 @@ _V6_REGRESSIONS = [
         "<p>平均每月支付约100美元，而内容成本约为每位订户60美元。"
         "35美元/月的服务利润更低，这意味着每月利润约40美元。</p>",
     ),
-    # 版本 6 实跑。中文只用报告里的原句；没给全的槽不补写中间。
-    (
-        21998,
-        "<p>banned from the platform for periods ranging from one to seven days</p>",
-        "<p>被禁止使用该平台1至7天</p>",
-    ),
-    (
-        22065,
-        "<p>As the week draws to a close, it’s definitely been a long one for Apple’s software engineers. "
-        "The nightmare started on Tuesday, after a Twitter user disclosed a critical security vulnerability "
-        "for macOS High Sierra that allowed anyone with physical access to a Mac to gain system "
-        "administrator privileges without even entering a password. As software bugs go, this one was "
-        "embarrassing and critical, but Apple managed to fix it less than 24 hours after it was "
-        "publicly disclosed.</p>",
-        "<p>随着本周接近尾声，这无疑是漫长的一周。不到 24 小时。</p>",
-    ),
-    (
-        21985,
-        "<p>Beginning in the late 90s two new broadband technologies began to become available.</p>",
-        "<p>20世纪90年代末</p>",
-    ),
-    (
-        21934,
-        "<p>the second most valuable brand licensing program after Disney to back-end integration "
-        "(Meredith has an average of 800 data points on 100 million American women)</p>",
-        "<p>全球第二，对1亿美国女性平均掌握800个数据点</p>",
-    ),
-    (
-        22054,
-        "<p>Last year Turner made about $0.80 in advertising revenue for every $1 in subscription "
-        "revenue.</p>",
-        "<p>每获得1美元订阅收入，就产生约0.80美元的广告收入</p>",
-    ),
 ]
 
 
-@pytest.mark.parametrize(("article_id", "source", "target"), _V6_REGRESSIONS)
+@pytest.mark.parametrize(("article_id", "source", "target"), _V6_REGRESSIONS + _V6_EXACT_SLOTS)
 def test_v6_live_regressions_match(article_id, source, target):
     assert same_numeric_facts(source, target) is True, article_id
     assert pr.leaf_problem(source, target) is None
