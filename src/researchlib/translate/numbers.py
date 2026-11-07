@@ -63,9 +63,10 @@ _SCALE = (
     r"(?:trillion|billion|million|thousand|bn)\b|[kmb]\b"
     r"|万亿|千亿|百亿|十亿|千万|百万|十万|亿|万|千|百"
 )
-_ORDERED_KINDS = ("date", "pct", "fiscal", "range", "half", "year")
+_ORDERED_KINDS = ("date", "pct", "fiscal", "range", "half", "year", "clock", "duration")
 _EN_SCALE = r"trillion|billion|million|thousand"
-_CURRENCY = r"(?:dollars?|euros?|pounds?|yen|美元|人民币|日元|欧元|英镑)\b"
+# 中文「美元」后面经常还是汉字。\b 只认在词字符和非词字符之间，元和后面的字都算词字符，边界对不上。
+_CURRENCY = r"(?:dollars?|euros?|pounds?|yen)\b|美元|人民币|日元|欧元|英镑"
 _RANGE_DASH = r"[-–—~至到]"
 
 
@@ -257,10 +258,19 @@ def _optional_count(fact: Fact, source_small: set[str]) -> bool:
     return not source_small or fact.key in source_small
 
 
+def _same_amount(left: str, right: str) -> bool:
+    """金额可以丢掉小数尾部的 0。版本号两边都是字面量，不走这里，``3.10`` 不等于 ``3.1``。"""
+    a, b = _decimal(left), _decimal(right)
+    return a is not None and b is not None and a == b
+
+
 def _compatible(left: Fact, right: Fact, *, bare_quarter: bool = True) -> bool:
     if left.kind == right.kind and left.key == right.key:
         return True
-    if {left.kind, right.kind} <= {"qty", "literal", "soft"} and left.key == right.key:
+    kinds = {left.kind, right.kind}
+    if kinds <= {"qty", "literal", "soft"} and left.key == right.key:
+        return True
+    if "qty" in kinds and kinds <= {"qty", "literal", "soft"} and _same_amount(left.key, right.key):
         return True
     if (
         bare_quarter
@@ -749,6 +759,46 @@ def _on_percent_span(match: re.Match[str]) -> list[Fact] | None:
     return [Fact("pct", _qty_key(left)), Fact("pct", _qty_key(right))]
 
 
+def _on_clock(match: re.Match[str]) -> Fact | None:
+    hour, minute = int(match.group("h")), int(match.group("mi"))
+    if not (0 <= hour <= 24 and 0 <= minute <= 59):
+        return None
+    return Fact("clock", f"{hour}:{minute:02d}")
+
+
+def _duration_key(raw: str) -> str | None:
+    if raw.isdigit():
+        return str(int(raw))
+    if raw == "两":
+        return "2"
+    spelled = _SPELLED.get(raw.lower())
+    if spelled is not None:
+        return str(spelled)
+    value = _cn_token(raw)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _on_duration(match: re.Match[str]) -> Fact | None:
+    key = _duration_key(match.group("n"))
+    if key is None:
+        return None
+    return Fact("duration", key)
+
+
+def _on_couple(_match: re.Match[str]) -> Fact:
+    return Fact("duration", "2")
+
+
+def _on_per(match: re.Match[str]) -> Fact | None:
+    """``$0.80 for every $1`` 和 ``每1美元……0.80美元`` 是同一个比例，谁写在前面都行。"""
+    part, unit = _decimal(match.group("a")), _decimal(match.group("b"))
+    if part is None or unit is None:
+        return None
+    return Fact("ratio", f"{_qty_key(part)}/{_qty_key(unit)}")
+
+
 def _on_cents(match: re.Match[str]) -> Fact | None:
     amount = _decimal(match.group("n"))
     if amount is None:
@@ -1014,9 +1064,40 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
         re.I,
     ), _on_spelled_scale),
     (re.compile(
+        r"\b(?P<h>\d{1,2})\s*[:：]\s*(?P<mi>\d{2})\s*(?:AM|PM|a\.m\.|p\.m\.)?\b",
+        re.I,
+    ), _on_clock),
+    (re.compile(r"(?P<h>\d{1,2})\s*点\s*(?P<mi>\d{1,2})\s*分"), _on_clock),
+    (re.compile(
+        r"\b(?:a\s+)?couple\s+of\s+(?:weeks?|months?|days?|hours?)\b",
+        re.I,
+    ), _on_couple),
+    (re.compile(
+        rf"\b(?:first|last|next|past)?\s*(?P<n>{_ONES}|ten|eleven|twelve|\d{{1,2}})\s+"
+        rf"(?:weeks?|months?|days?|hours?)\b",
+        re.I,
+    ), _on_duration),
+    (re.compile(
+        r"(?:头|前|近|过去)(?P<n>[一二三四五六七八九十两]|\d{1,2})\s*个?\s*月",
+    ), _on_duration),
+    (re.compile(
+        r"(?<![0-9零〇一二三四五六七八九两这那每某])(?P<n>[一二三四五六七八九十两])\s*个\s*月",
+    ), _on_duration),
+    (re.compile(
+        r"(?<![0-9零〇一二三四五六七八九两这那每某])(?P<n>[一二三四五六七八九十两])\s*(?:周|小时)",
+    ), _on_duration),
+    (re.compile(
+        rf"\$\s*(?P<a>{_AMOUNT})\b(?:(?!\$).){{0,80}}?\bfor every\s+\$\s*(?P<b>{_AMOUNT})\b",
+        re.I,
+    ), _on_per),
+    (re.compile(
+        rf"每(?:获得|有)?[^。\n]{{0,16}}?(?P<b>{_AMOUNT})\s*美元"
+        rf"[^。\n]{{0,40}}?(?:约|大约)?\s*(?P<a>{_AMOUNT})\s*美元",
+    ), _on_per),
+    (re.compile(
         rf"(?:(?P<sign>[-−负])\s*)?"
         rf"(?:(?P<prefix>[$€£¥￥]|(?:USD|EUR|GBP|CNY|RMB|JPY)(?=\s*\d))\s*)?"
-        rf"(?P<amount>{_AMOUNT}|两)(?:\s*(?P<scale>{_SCALE}))?(?:\s*(?P<currency>{_CURRENCY}))?",
+        rf"(?P<amount>{_AMOUNT}|两)(?:\s*(?:多|余)?\s*(?P<scale>{_SCALE}))?(?:\s*(?P<currency>{_CURRENCY}))?",
         re.I,
     ), _on_qty),
     (re.compile(

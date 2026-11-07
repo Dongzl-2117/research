@@ -22,7 +22,8 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # 不要放进 PIPELINE：那会把已经核对过的译文整篇标成不兼容。
 # 3：下一季度不是 Q1；财季、中文数字、6/10、up from 和可移动的四位年份按同一事实放行。
 # 4：``November, 2014`` 就是 2014年11月；twice 是两次；原文没写个数时，多出来的「两种 / 第一步」可以不计入。
-ALIGNMENT_VERSION = 4
+# 5：金额尾零相同；900多万是 900 万；12:15 是一个钟点；头七个月、两周可以挪到金额前面。
+ALIGNMENT_VERSION = 5
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
