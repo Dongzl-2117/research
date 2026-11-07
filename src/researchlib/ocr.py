@@ -926,6 +926,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--article", action="append", type=int, default=[], help="只认这篇文章里的图，可重复")
     # 只剩 vision。留着这个参数，以前写了 --engine vision 的命令（scripts/nightly.sh）照样能跑。
     parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 deepseek-flash 识图")
+    parser.add_argument(
+        "--compare",
+        type=int,
+        default=0,
+        metavar="N",
+        help="挑 N 张按旧说明认过的图用现在的说明重认，不写库，原图和新旧结果打成一个包（data/ocr-compare/）",
+    )
     args = parser.parse_args(argv)
     from researchlib.config import Settings
     from researchlib.db import prepare
@@ -937,6 +944,8 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
     conn = prepare(settings)
+    if args.compare > 0:
+        return _compare(conn, settings, recognize, args.compare)
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
         report = run_ocr(
@@ -978,6 +987,30 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"自动上线在等 {report['deploy_waiting'][:7]}：先停在这里，"
             "/health 报出新提交后再跑一次，从没认完的接着认"
+        )
+    return 0
+
+
+def _compare(conn, settings, recognize, size: int) -> int:
+    """--compare：新旧识图对比包，见 ``researchlib.ocr_compare``。不写库。"""
+    from researchlib.ocr_compare import run_compare
+
+    workers = max(1, int(settings.llm_concurrency or 1))
+    try:
+        report = run_compare(conn, settings.data_dir, recognize, size, workers=workers)
+    finally:
+        conn.close()
+    bundle = Path(report["bundle"])
+    print(
+        f"对比包：{bundle}（仓库目录下的 data/{bundle.parent.name}/{bundle.name}）。{report['images']} 张图："
+        f"按结构交回 {report['structured']} 张，自由文字 {report['plain']} 张，失败或读不出来 {report['failed']} 张"
+    )
+    tokens = report["tokens"]
+    if report["images"]:
+        print(
+            f"用量：输入 {tokens.get('prompt', 0)} token，输出 {tokens.get('completion', 0)} token"
+            f"（其中思考 {tokens.get('reasoning', 0)}）；平均每张 {report['seconds'] / report['images']:.0f} 秒，"
+            f"{workers} 张一起认"
         )
     return 0
 
