@@ -192,6 +192,61 @@ def test_run_ocr_makes_way_for_a_waiting_deploy(tmp_path, monkeypatch):
     assert calls == [1] and pointed["deploy_waiting"] == ""
 
 
+def test_several_images_are_read_at_once_and_written_in_order(tmp_path, monkeypatch):
+    """几张一起认：先认完的不先写，按挑出来的先后写（新文章的图在前）。"""
+    import itertools
+    import threading
+    import time as time_module
+
+    first_three = threading.Barrier(3)
+    calls = itertools.count()
+
+    def slow_first(path):
+        if next(calls) < 3:
+            first_three.wait(timeout=5)  # 三张同时在认才过得去，否则这张记失败
+        if path.name == "0.png":
+            time_module.sleep(0.1)
+        return Recognition(f"字{path.stem}")
+
+    images = tmp_path / "images"
+    images.mkdir()
+    rows = []
+    for index in range(5):
+        (images / f"{index}.png").write_bytes(b"png")
+        rows.append({"content_hash": f"{index:02d}" * 32, "storage_path": f"{index}.png"})
+    monkeypatch.setattr("researchlib.ocr.pending_images", lambda *args, **kwargs: rows)
+    conn = _Conn()
+    report = run_ocr(conn, tmp_path, 5, slow_first, engine="deepseek-flash-vision", workers=3)
+    assert [write[2] for write in conn.writes] == ["字0", "字1", "字2", "字3", "字4"]
+    assert report["images"] == 5 and report["failed"] == 0
+
+
+def test_deadline_stops_new_images_but_writes_the_ones_already_paid_for(tmp_path, monkeypatch):
+    """到点了不再开新的；已经发出去的几张照写，钱不白花。"""
+    import threading
+    from types import SimpleNamespace
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr("researchlib.ocr.time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    both_sent = threading.Barrier(2)
+
+    def recognize(path):
+        both_sent.wait(timeout=5)  # 两张都发出去了
+        clock["now"] = 100.0  # 这时过点
+        return Recognition(f"字{path.stem}")
+
+    images = tmp_path / "images"
+    images.mkdir()
+    rows = []
+    for index in range(6):
+        (images / f"{index}.png").write_bytes(b"png")
+        rows.append({"content_hash": f"{index:02d}" * 32, "storage_path": f"{index}.png"})
+    monkeypatch.setattr("researchlib.ocr.pending_images", lambda *args, **kwargs: rows)
+    conn = _Conn()
+    report = run_ocr(conn, tmp_path, 6, recognize, engine="deepseek-flash-vision", deadline=50.0, workers=2)
+    assert report["images"] == 2 and [write[2] for write in conn.writes] == ["字0", "字1"]
+
+
 def test_report_says_when_the_api_reported_no_usage():
     report = {"structured": 2, "plain": 0, "invalid": 0, "tokens": {}, "metered": 0}
     assert describe_report(report)[-1] == "接口这次没报用量，花费看 DeepSeek 账单"

@@ -98,9 +98,13 @@ def test_short_body_hash_change_requeues_without_reading_the_title():
 
 
 def test_pending_order_puts_ocr_ahead_of_missing_digests():
+    """入队的、写摘要时还没见过图片里的字的先写；只是图片里的字变了的和缺摘要的一起按发布时间排。"""
     order = digest_mod.PENDING_ORDER
     assert order.index("article_followups") < order.index("content_hash <> a.content_hash")
-    assert order.index("ocr_hash IS DISTINCT FROM a.ocr_hash") < order.index("content_hash <> a.content_hash")
+    assert order.index("coalesce(d.ocr_hash, '') = ''") < order.index("content_hash <> a.content_hash")
+    tier = order.index("d.article_id IS NULL OR d.content_hash <> a.content_hash")
+    assert order.index("ocr_hash IS DISTINCT FROM a.ocr_hash") > tier
+    assert order.index("ocr_hash IS DISTINCT FROM a.ocr_hash") < order.index("a.published_at DESC")
 
 
 def test_run_ocr_requeues_digest_and_title_when_short_body_hash_changes(tmp_path, monkeypatch):
@@ -129,6 +133,34 @@ def test_run_ocr_requeues_digest_and_title_when_short_body_hash_changes(tmp_path
     assert report["followups"]["zsxq_title"] == [24012]
     assert report["ocr_changed"] == [24012]
     assert conn.commits >= 1
+
+
+def test_bulk_redo_leaves_digests_to_the_nightly_queue(tmp_path, monkeypatch):
+    """全库重认一次改上千篇：不记进 article_followups 插队，也不当场重写；点名重认照旧入队。"""
+    image = tmp_path / "images" / "a.png"
+    image.parent.mkdir()
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    monkeypatch.setattr(
+        ocr_mod,
+        "pending_images",
+        lambda *args, **kwargs: [{"content_hash": "ab", "storage_path": "a.png"}],
+    )
+    for redo, article_ids, queued in ((True, None, False), (True, [24012], True)):
+        snaps = iter(
+            [
+                {"id": 24012, "source_id": "fangwei-zsxq", "ocr_hash": "old", "body_len": 2},
+                {"id": 24012, "source_id": "fangwei-zsxq", "ocr_hash": "newhash", "body_len": 2},
+            ]
+        )
+        monkeypatch.setattr(ocr_mod, "_ocr_snapshot", lambda conn, article_id, snaps=snaps: next(snaps))
+        monkeypatch.setattr(ocr_mod, "refresh_article_ocr", lambda conn, article_id: "newhash")
+        conn = _Conn()
+        report = ocr_mod.run_ocr(
+            conn, tmp_path, 5, lambda _path: "方伟：茅台", redo=redo, article_ids=article_ids
+        )
+        assert report["ocr_changed"] == [24012]
+        assert bool(conn.writes) is queued
+        assert bool(report["followups"]["digest"]) is queued
 
 
 def test_queued_title_rows_jump_the_scan():

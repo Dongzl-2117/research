@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import tarfile
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +22,6 @@ from pathlib import Path
 from researchlib.ocr import (
     MAX_VISION_BYTES,
     VISION_PROMPT_VERSION,
-    Recognition,
     _fatal_ocr,
     _pending_where,
     article_image_texts,
@@ -31,6 +29,7 @@ from researchlib.ocr import (
     compose_ocr_text,
     image_mime,
     prepare_vision_image,
+    recognize_one,
 )
 from researchlib.ocr_units import ImageText
 
@@ -119,16 +118,6 @@ def _article(conn, article_id: int) -> dict:
     return dict(row) if row else {"id": article_id}
 
 
-def _recognize(recognize, path: Path) -> tuple[Recognition | None, Exception | None, float]:
-    started = time.monotonic()
-    try:
-        found = recognize(path)
-    except Exception as exc:  # 单张失败照记；鉴权失败由调用方整批停
-        return None, exc, time.monotonic() - started
-    result = found if isinstance(found, Recognition) else Recognition(found or "")
-    return result, None, time.monotonic() - started
-
-
 def run_compare(conn, data_dir: Path, recognize, size: int, *, workers: int = 3) -> dict:
     """认样本、写包。返回报告（含包的路径）。不写 image_texts，也不动文章。"""
     data_dir = Path(data_dir)
@@ -144,7 +133,7 @@ def run_compare(conn, data_dir: Path, recognize, size: int, *, workers: int = 3)
             continue
         jobs.append((row, path))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = [pool.submit(_recognize, recognize, path) for _row, path in jobs]
+        futures = [pool.submit(recognize_one, recognize, path) for _row, path in jobs]
         outcomes = []
         for future in futures:
             outcomes.append(future.result())
