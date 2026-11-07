@@ -204,6 +204,7 @@ docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sam
 | `--report` | 空 | 另写一份 JSON 文件；`/data/status/` 在宿主机上是 `~/research/data/status/` |
 | `--strict` | 关 | 有警告也返回 1 |
 | `--llm`、`--llm-sample` | 关、3 | 对没有失败项的篇再跑 LLM 抽验，默认最多 3 篇 |
+| `--omissions` | 关 | 段内漏句抽查，不跑硬指标，见下面「段内漏句抽查」 |
 
 退出码：0 通过（或有警告但没加 `--strict`），1 有失败项（硬指标，或 `--llm` 时模型给 `fail`；加 `--strict` 时警告也算），2 参数、库或 LLM 的问题。只读：连库走 `db.connect`，不跑迁移、不写表；`--report` 只写你给的那个文件。
 
@@ -214,6 +215,22 @@ docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sam
 模型返回 `verdict` / `score` / `issues` / `summary`，打印在报告里，`--json` 和 `--report` 也带上。`--llm` 默认跳过硬指标已经失败的篇，钱先花在看不出问题的篇上。模型给 `fail` 时整条命令退出 1；给 `warn` 只在 `--strict` 时退出 1。凭证不对、接口错、JSON 收不成结论都退出 2，硬指标的结果照常打印。整个命令不写库。
 
 一次抽验十几对、几千字，跑 3 篇费用很小；但不要在启动或部署时自动跑，也不要接进夜间任务全库扫。旧译文失败多，先按篇点名。
+
+### 段内漏句抽查：`--omissions`（2026-11-07）
+
+条数、段身份、链接、数字都逐段核过以后，剩下没有自动检查的是一段里漏译了某句、某个分句、数字或名字。`--omissions` 按回执逐段把英文和中文交给站内模型（同一组 DeepSeek 常量），让它摘出中文漏掉的英文原文：
+
+```bash
+docker compose exec app research-bilingual-qa --omissions --source stratechery --limit 50
+docker compose exec app research-bilingual-qa --omissions --article-id 22188 --json --report /data/status/omissions.json
+```
+
+- 段对来自回执 `provenance.segments`，和当时送去译的那一段一一对应，不受对照页并段、去重的影响。没有回执的旧稿跳过；先放英文的段（`untranslated`）不送。不点名时按译文更新时间取最近几篇，和别的模式一样。
+- 一批最多 12 对、8000 个英文字符。模型摘出来的原文要能在这一段英文里逐字找到（忽略大小写、弯引号、破折号和空白）才计入；找不到的丢掉，只记条数（`unverified`）。
+- 每篇打印 `pairs`、`flagged`，每处漏掉的英文和这一段中文的开头；最后两行是疑似漏句的段数和比例、模型用量（请求次数、输入和其中缓存命中、输出和其中思考 token），按当时的 DeepSeek 价目乘。
+- 只读：不写库，不改回执，不拦入库。结果是线索，措辞不同、几句并一句被当成漏的误报，要人看一眼。
+- 一批回答用不了（不是 JSON、HTTP 400 按内容拒）记 `failedBatches`，这几对不算进比例的分母。断线、限流、欠费、没配密钥时整条命令停下，退出码 2，已经核完的篇照常打印。
+- 花钱。平均一篇 Stratechery 约 65 段、1.9 万英文字符，送进去约 1.2 万输入 token；输出主要是思考 token，事先算不准。先跑几十篇，看最后一行的用量再决定扩不扩大。不要接进启动、部署或夜间任务。
 
 ### 锚点（2026-10-31 在正式库上跑出来的）
 

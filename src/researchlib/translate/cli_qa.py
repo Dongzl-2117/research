@@ -4,6 +4,7 @@
     docker compose exec app research-bilingual-qa --source stratechery --limit 20
     docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sample 1
     docker compose exec app research-bilingual-qa --limit 50 --json --report /data/status/bilingual-qa.json
+    docker compose exec app research-bilingual-qa --omissions --source stratechery --limit 50
 
 退出码：0 通过（或有警告但没加 --strict），1 有失败项（硬指标，或 --llm 时模型给 fail；
 加 --strict 时警告也算），2 参数、库或 LLM 凭证的问题。
@@ -21,7 +22,7 @@ from typing import Any
 from researchlib.config import Settings
 from researchlib.db import connect
 from researchlib.llm import LLMError, LLMUnavailable, ensure_llm
-from researchlib.translate import qa
+from researchlib.translate import omission, qa
 
 DEFAULT_LIMIT = 20
 
@@ -79,6 +80,100 @@ def _print_report(report: qa.BilingualReport) -> None:
             print(f"    - [{issue.get('index')}] {issue.get('kind')}: {issue.get('note')}")
 
 
+def _omission_lines(result: omission.ArticleOmissions, pairs: dict[int, omission.Pair]) -> list[str]:
+    if result.skipped:
+        return [f"#{result.article_id} 跳过：{result.skipped}"]
+    head = f"#{result.article_id} pairs={result.pairs} flagged={len(result.findings)}"
+    if result.unverified:
+        head += f" unverified={result.unverified}"
+    if result.failed_batches:
+        head += f" failed_batches={result.failed_batches}"
+    lines = [head]
+    for ordinal, quotes in sorted(result.findings.items()):
+        lines.extend(f"  [{ordinal}] 漏：{quote}" for quote in quotes)
+        zh = pairs[ordinal].zh if ordinal in pairs else ""
+        lines.append(f"       中文：{zh[:160]}{'…' if len(zh) > 160 else ''}")
+    return lines
+
+
+def _omissions(args: argparse.Namespace, settings: Settings) -> int:
+    """段内漏句抽查。只读：读回执、问模型、打印；不写库，不改回执。"""
+    try:
+        ensure_llm(settings)
+    except LLMUnavailable as exc:
+        print(f"LLM 不可用：{exc}", file=sys.stderr)
+        return 2
+    conn = connect(settings)
+    results: list[omission.ArticleOmissions] = []
+    details: list[dict[str, Any]] = []
+    usage = omission.Usage()
+    exit_code = 0
+    try:
+        if args.article_id:
+            ids = list(dict.fromkeys(args.article_id))
+        else:
+            ids = qa.translated_article_ids(conn, limit=max(1, args.limit), source_id=args.source or None)
+        for article_id in ids:
+            pairs = omission.receipt_pairs(omission.load_receipt(conn, article_id))
+            by_ordinal = {pair.ordinal: pair for pair in pairs}
+            if not pairs:
+                result = omission.ArticleOmissions(article_id, skipped="没有回执（旧稿）或没有可核的段")
+            else:
+                try:
+                    result = omission.review_pairs(article_id, pairs, data_dir=settings.data_dir)
+                except (RuntimeError, ValueError) as exc:
+                    print(f"#{article_id} 抽查停下：{exc}", file=sys.stderr)
+                    exit_code = 2
+                    break
+            results.append(result)
+            details.append(result.as_dict(by_ordinal))
+            usage.merge(result.usage)
+            if not args.json:
+                for line in _omission_lines(result, by_ordinal):
+                    print(line, flush=True)
+    finally:
+        conn.close()
+
+    reviewed = [result for result in results if not result.skipped]
+    checked = sum(result.checked for result in reviewed)
+    flagged = sum(len(result.findings) for result in reviewed)
+    summary = {
+        "articles": len(reviewed),
+        "skipped": len(results) - len(reviewed),
+        "pairs": checked,
+        "flagged": flagged,
+        "rate": round(flagged / checked, 4) if checked else 0.0,
+        "unverified": sum(result.unverified for result in reviewed),
+        "failedBatches": sum(result.failed_batches for result in reviewed),
+        "usage": usage.as_dict(),
+    }
+    payload = {
+        "generatedAt": datetime.now(UTC).isoformat(timespec="seconds"),
+        "articles": details,
+        "summary": summary,
+        "exitCode": exit_code,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        rate = f"{summary['rate'] * 100:.1f}%"
+        print(
+            f"核对 {summary['articles']} 篇 {checked} 段：{flagged} 段疑似漏句（{rate}）"
+            + (f"；模型摘的原文找不到、丢掉 {summary['unverified']} 条" if summary["unverified"] else "")
+            + (f"；{summary['failedBatches']} 批回答用不了、没核" if summary["failedBatches"] else "")
+            + (f"；{summary['skipped']} 篇跳过" if summary["skipped"] else "")
+        )
+        print(
+            f"用量：请求 {usage.requests} 次，输入 {usage.prompt:,} token（缓存命中 {usage.cache_hit:,}），"
+            f"输出 {usage.completion:,} token（思考 {usage.reasoning:,}）"
+        )
+    if args.report:
+        path = Path(args.report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="对照页质量检查：硬指标 + 可选 LLM 抽验（只读）")
     parser.add_argument("--article-id", type=int, action="append", default=[], help="指定文章 id，可重复")
@@ -98,9 +193,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--llm-sample", type=int, default=3, help="最多抽验几篇（默认 3）")
     parser.add_argument("--strict", action="store_true", help="有警告也返回 1")
+    parser.add_argument(
+        "--omissions",
+        action="store_true",
+        help="段内漏句抽查：按回执逐段问模型译文漏了什么（调站内 DeepSeek，花钱；不跑硬指标，不拦入库）",
+    )
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
+    if args.omissions:
+        return _omissions(args, settings)
     if args.llm:
         try:
             ensure_llm(settings)
