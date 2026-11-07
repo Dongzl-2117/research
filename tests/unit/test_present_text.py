@@ -508,6 +508,55 @@ def test_rejoin_keeps_lone_numbers_that_are_not_split_years():
     assert rejoin_broken_paragraphs(fenced) == fenced
     untouched = "第一段说完了。\n\n第二段另起，不该并进去。\n"
     assert rejoin_broken_paragraphs(untouched) == untouched
+    # 中文里的半角逗号照样接。
+    mixed = "能高频消费可乐的人是越来越多的\n, 另一点厉害的洞察是“可乐=快乐”。\n"
+    assert rejoin_broken_paragraphs(mixed) == "能高频消费可乐的人是越来越多的,另一点厉害的洞察是“可乐=快乐”。\n"
+
+
+# Stratechery 2026 年网页导出的形状（合成）：一个文本节点一行，链接字单独一行，后面的标点和下文另起一行。
+_LONG_TAIL = " ".join(
+    f"Sentence {word} keeps the paragraph going with enough words to push the group past the split threshold."
+    for word in ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+)
+_WEB_EXPORT_EN = (
+    "Platforms win when they own the default, and that has been true for every era of computing.\n"
+    "I have pointed to this chart\n"
+    "before\n"
+    ", mostly to note how few people read the footnote under it.\n"
+    "The deal closed in\n"
+    "March\n"
+    f". After that, the regulators moved on. {_LONG_TAIL}\n"
+    "Read the earlier piece in\n"
+    "the archive\n"
+    ".\n"
+    "“\n"
+    "Quoted words stay where the export put them.”\n"
+)
+
+
+def test_rejoin_leaves_english_lines_alone():
+    """英文的行不接：接过去丢掉标点后的空格（「before,mostly」「March.After」）。"""
+    assert rejoin_broken_paragraphs(_WEB_EXPORT_EN) == _WEB_EXPORT_EN
+    html = str(render_body(_WEB_EXPORT_EN, {}))
+    assert "before,mostly" not in html and "March.After" not in html
+
+
+def test_english_web_export_keeps_the_segments_older_translations_used():
+    """22245：接了行，长段按句切时「March.After」少一刀，11-04 以前按原样译的稿子就比原文多段，对照页退成两栏。"""
+    from researchlib.render import canonical_body_html
+    from researchlib.translate.display import article_pairs
+    from researchlib.translate.segments import iter_segments
+
+    original = canonical_body_html(_WEB_EXPORT_EN, "Synthetic export", {}, None)
+    leaves = [leaf.html for leaf in iter_segments(original)]
+    assert len(leaves) == 15
+    # 对照页里这一句照样连成一句，标点后面有空格。
+    assert leaves[1].startswith("<p>I have pointed to this chart before, mostly")
+    assert leaves[2] == "<p>The deal closed in March.</p>"
+    translated = "".join(f"<p>第{name}句的译文。</p>" for name in "甲乙丙丁戊己庚辛壬癸子丑寅卯辰")
+    page = article_pairs(original, translated)
+    assert "对不上" not in page.notice
+    assert page.pairs and all(pair.en and pair.zh for pair in page.pairs)
 
 
 def test_reply_chain_expands_earlier_speech_first():
