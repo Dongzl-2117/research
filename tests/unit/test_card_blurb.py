@@ -151,3 +151,20 @@ def test_api_opening_cuts_at_a_sentence_end():
     body = "前一句很短。" + "这一句很长没有句号" * 40
     text = opening_excerpt(body, limit=100)
     assert len(text) == 100 and text.endswith("…")
+
+
+def test_old_stratechery_search_text_does_not_open_with_the_hidden_feed_address():
+    """#157 以前入库的 Stratechery 网页导出，检索文字里还有归档头的订阅地址。遮住以后那一截是占位，
+    线上 22209、22178 的卡片和 /api/v1/articles 摘录曾以「[个人订阅地址已隐藏]」开头。地址是假的。"""
+    for header in (
+        "source: member-rss\nrsslink: https://stratechery.example/feed/?key=example-secret\n\n",
+        "source: member-rss\nrss_link: https://stratechery.com/member-rss/example-secret/\n\n",
+        # 去 Markdown 时归档头和导语粘成一行的。
+        "source: member-rss rsslink: https://stratechery.com/member-rss/example-secret/ ",
+    ):
+        body = "Widget TV\n" + header + "The new device is official, and the market for it is bigger than it looks."
+        for text in (argumentative_excerpt(body, title="Widget TV"), opening_excerpt(body, title="Widget TV")):
+            assert text == "The new device is official, and the market for it is bigger than it looks."
+    # 只有归档头、没有正文：给空串，不拿占位当摘录。
+    only = "Widget TV\nrsslink: https://stratechery.example/feed/?key=example-secret\n"
+    assert argumentative_excerpt(only, title="Widget TV") == "" and opening_excerpt(only, title="Widget TV") == ""
