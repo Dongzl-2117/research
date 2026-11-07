@@ -59,12 +59,20 @@ class MemoryConn:
 
 
 def translate(body, outputs, tmp_path, *, mutate=None):
+    """模型替身按段 id 回 outputs 里那一段：整批、拆开后的半批和单段补译都拿到同一份。"""
     conn = MemoryConn(body)
+    assigned: dict[str, str] = {}
+    pending = iter(outputs)
 
     def fake(**kwargs):
         user = kwargs["user"]
         values = ["合成标题"] if user["segments"] == ["Synthetic audit"] else outputs
         if "segment_ids" in user:
+            if user["segment_ids"] != ["title"]:
+                for identity in user["segment_ids"]:
+                    if identity not in assigned:
+                        assigned[identity] = next(pending)
+                values = [assigned[identity] for identity in user["segment_ids"]]
             values = [{"id": identity, "source_hash": source_hash, "html": text}
                       for identity, source_hash, text in zip(user["segment_ids"], user["source_hashes"], values,
                                                              strict=True)]

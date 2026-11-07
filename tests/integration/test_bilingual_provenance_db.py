@@ -68,6 +68,41 @@ def test_real_write_jsonb_page_and_qa_use_the_same_mapping(conn, settings, monke
         assert "is-quoted" in quoted and 'class="quoted"' not in quoted
 
 
+REVIEW_SQL = """
+SELECT t.article_id, jsonb_array_length(t.provenance->'number_review') AS n
+FROM article_translations t
+WHERE jsonb_array_length(coalesce(t.provenance->'number_review', '[]'::jsonb)) > 0
+ORDER BY n DESC, t.article_id
+"""
+
+
+def test_unverified_numbers_are_stored_listed_and_still_paired_on_the_page(conn, settings, monkeypatch):
+    """规则认不出「20世纪90年代」：照样入库、出队列，回执和质检列出这一段，页面仍逐段对照。"""
+    english = "In the 1990s, Microsoft dominated the personal computer."
+    article_id = article(conn, settings, f"<p>{english}</p><p>Second paragraph 20 dollars.</p>")
+
+    def decade(**kwargs):
+        result = model(**kwargs)
+        for item in result.data["t"]:
+            item["html"] = item["html"].replace(english, "20世纪90年代，微软主导了个人电脑。")
+        return result
+
+    monkeypatch.setattr(service, "chat_json", decade)
+    result = service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    assert result.status == "translated" and result.review == 1
+    row = snapshot(conn, article_id)
+    assert row["complete"] and row["provenance"]["number_review"] == [0]
+    assert [item["article_id"] for item in conn.execute(REVIEW_SQL).fetchall()] == [article_id]
+    assert article_id not in service.list_pending_english(conn, limit=50)
+    report = qa.check_article(conn, settings, article_id)
+    assert report.correspondence == "mapped" and report.status == "warn"
+    assert [issue.code for issue in report.issues] == ["numbers-unverified"]
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article_id}").text
+        assert page.count('class="bilingual-pair"') == 2
+        assert "20世纪90年代" in page and "第二段20美元" in page
+
+
 def test_rejected_attempt_preserves_good_translation_and_search_chunks(conn, settings, monkeypatch):
     body = BODY + "<p>See inline <code>rate = 42</code>.</p>"
     article_id = article(conn, settings, body)

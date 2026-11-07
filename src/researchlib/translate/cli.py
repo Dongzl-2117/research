@@ -119,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"#{result.article_id} {result.status}"
                     + (f" segments={result.segments}" if result.segments else "")
+                    # 数字没能自动核对上、照样写入的段数。序号在回执的 number_review 里。
+                    + (f" number_review={result.review}" if result.review else "")
                     + (f" ({result.reason})" if result.reason else "")
                 )
             if not args.loop or args.article_id:

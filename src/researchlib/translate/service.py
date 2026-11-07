@@ -26,14 +26,24 @@ from researchlib.chunks import replace_translation_chunks
 from researchlib.render import canonical_body_html, render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
 from researchlib.translate.language import is_chinese
-from researchlib.translate.llm import GROK_INPUT_CHARS, LLMTransportError, chat_json, model_id, output_tokens
+from researchlib.translate.llm import (
+    GROK_INPUT_CHARS,
+    LLMTransportError,
+    XaiLoginRequiredError,
+    chat_json,
+    model_id,
+    output_tokens,
+)
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import (
     ALIGNMENT_VERSION,
     AlignmentError,
-    leaf_problem,
+    misplaced_slot,
+    numbers_agree,
+    numeric_anchors,
     receipt,
     source_manifest,
+    structure_problem,
 )
 from researchlib.translate.provenance import digest as segment_digest
 from researchlib.translate.segments import (
@@ -66,6 +76,8 @@ class TranslateResult:
     status: str  # translated | partial | skipped
     segments: int = 0
     reason: str | None = None
+    # 数字没能自动核对上、照样写入的段数（回执里的 number_review）。
+    review: int = 0
 
 
 class BatchTexts(list[str]):
@@ -255,35 +267,163 @@ def _translate_split(parts: list[str], context: dict, data_dir: Path) -> list[st
     return BatchTexts(left + right, (*getattr(left, "models", ()), *getattr(right, "models", ())))
 
 
+def _reply(parts: list[str], user: dict, data_dir: Path) -> tuple[list[str], Exception | None]:
+    """调一次模型。条数不对、id 或 source_hash 没有逐项回显时把错误交回去，由上一级重来或拆批。
+
+    #217 加逐段身份之后，条数不对在 ``_coerce_translations`` 里就抛了，原来的重试、拆批一次也没走到，
+    模型少回一段整篇就作废。
+    """
+    try:
+        texts = _translate_once(parts, user, data_dir)
+    except AlignmentError as exc:
+        if exc.code.startswith("response-"):
+            return [], exc
+        raise
+    if len(texts) != len(parts):
+        return texts, RuntimeError("translation alignment: count")
+    return texts, None
+
+
+def _repair_note(parts: list[str], texts: list[str], mismatch: Exception) -> str:
+    if isinstance(mismatch, AlignmentError):
+        return (
+            f"上一次 t 没有和 segments 逐项对上（{mismatch.code}）。必须正好 {len(parts)} 项，"
+            "按顺序原样带回每段的 id 和 source_hash。按 segments 下标一一对应重译，只输出 JSON。"
+        )
+    return f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。按 segments 下标一一对应重译，只输出 JSON。"
+
+
 def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[str]:
-    """译一批段。返回值和 parts 等长；对不齐或有空白段就抛错，不把错位数组交出去。"""
+    """译一批段。返回值和 parts 等长；对不齐或有空白段就抛错，不把错位数组交出去。
+
+    少段、多段或身份没对上：先按原批重试一次；仍不对就对半拆开再译，直到一段一批。
+    """
     if not parts:
         return []
     # 上一级的 repair 只针对那一批的条数，不能带进更小的一批。
     context = {key: value for key, value in context.items() if key != "repair"}
     user = {**context, "segments": parts}
-    texts = _translate_once(parts, user, data_dir)
-    problem = translation_problem(parts, texts)
-    if problem == "count":
-        # 少段 / 多段先按原批重试一次，要求条数正好。
-        texts = _translate_once(
-            parts,
-            {
-                **user,
-                "repair": (
-                    f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。"
-                    "按 segments 下标一一对应重译，只输出 JSON。"
-                ),
-            },
-            data_dir,
-        )
-        problem = translation_problem(parts, texts)
-    if problem == "count" and len(parts) > 1:
-        logger.info("译文条数对不齐（segments=%s t=%s），对半拆开重试", len(parts), len(texts))
+    texts, mismatch = _reply(parts, user, data_dir)
+    if mismatch:
+        texts, mismatch = _reply(parts, {**user, "repair": _repair_note(parts, texts, mismatch)}, data_dir)
+    if mismatch and len(parts) > 1:
+        logger.info("译文和这一批对不齐（segments=%s：%s），对半拆开重试", len(parts), mismatch)
         return _translate_split(parts, context, data_dir)
+    if mismatch:
+        raise mismatch
+    problem = translation_problem(parts, texts)
     if problem:
         raise RuntimeError(f"translation alignment: {problem}")
     return texts
+
+
+_NUMBER_REPAIR = (
+    "这几段上一次的译文里，数字、日期、金额或百分数没能和原文逐一对上。重译这几段："
+    "原文里的每个数都要写出来，数值和单位不变，不漏写，也不要把别段的数字写进来。"
+)
+
+
+def _restore_batch(
+    texts: list[str], shields: list, sources: list[str], offset: int,
+) -> tuple[list[str], list[int]]:
+    """把一批译文还原成带链接、图片的 HTML。
+
+    链接、图片、代码、占位符不对就抛错（整批重来）。数字对不上的段只记下标，
+    除非它的数字正好是同一批另一段原文的，那是串段，也抛错。
+    """
+    restored: list[str] = []
+    flagged: list[int] = []
+    for index, (text, item, source) in enumerate(zip(texts, shields, sources, strict=True)):
+        value = unshield(text, item)
+        if value is None:
+            raise AlignmentError("unshield")
+        problem = structure_problem(source, value)
+        if problem:
+            raise AlignmentError(f"slot-{offset + index}-{problem}")
+        if not numbers_agree(source, value):
+            flagged.append(index)
+        restored.append(value)
+    wrong = misplaced_slot(sources, restored, flagged)
+    if wrong is not None:
+        raise AlignmentError(f"slot-{offset + wrong}-numbers-misplaced")
+    return restored, flagged
+
+
+def _repair_numbers(
+    parts: list[str], context: dict, shields: list, sources: list[str],
+    restored: list[str], flagged: list[int], data_dir: Path,
+) -> tuple[list[str], list[int], tuple[str, ...]]:
+    """数字对不上的几段单独再译一次。
+
+    重译过了数字核对才换上；还对不上、结构坏了或者请求失败，都留着原来那份，下标仍记着。
+    这一步只是补救，不会让整篇失败。
+    """
+    hints = []
+    for number, index in enumerate(flagged, 1):
+        anchors = numeric_anchors(sources[index])
+        if anchors:
+            hints.append(f"第{number}段原文的数字：{'、'.join(anchors)}")
+    subset = [parts[index] for index in flagged]
+    user = {key: value for key, value in context.items() if key not in {"segment_ids", "source_hashes", "repair"}}
+    if "segment_ids" in context:
+        user["segment_ids"] = [context["segment_ids"][index] for index in flagged]
+        user["source_hashes"] = [context["source_hashes"][index] for index in flagged]
+    user["segments"] = subset
+    user["repair"] = _NUMBER_REPAIR + ("；".join(hints) + "。" if hints else "")
+    try:
+        texts = _translate_once(subset, user, data_dir)
+    except Exception as exc:  # noqa: BLE001 — 补救失败就用原来那份，不让整篇作废
+        logger.info("数字没对上的 %s 段重译没成（%s），保留原译文", len(flagged), exc)
+        return restored, flagged, ()
+    if translation_problem(subset, texts):
+        return restored, flagged, ()
+    fixed = list(restored)
+    still: list[int] = []
+    for index, text in zip(flagged, texts, strict=True):
+        value = unshield(text, shields[index])
+        if (value is not None and structure_problem(sources[index], value) is None
+                and numbers_agree(sources[index], value)):
+            fixed[index] = value
+        else:
+            still.append(index)
+    used = tuple(getattr(texts, "models", ())) if len(still) < len(flagged) else ()
+    return fixed, still, used
+
+
+def _exhausted(error: Exception) -> bool:
+    """条数或身份对不上的错误从 _translate_batch 出来时，已经重来过、拆到一段一批了。"""
+    if isinstance(error, AlignmentError):
+        return error.code.startswith("response-")
+    return str(error) == "translation alignment: count"
+
+
+def _settle_batch(
+    parts: list[str], context: dict, shields: list, sources: list[str], offset: int, data_dir: Path,
+) -> tuple[list[str], list[int], set[str]]:
+    """译一批、还原、核对。结构不对或串段时整批再译一次，仍不对就抛错。
+
+    返回还原后的译文、数字仍没对上的下标和实际用到的模型。
+    """
+    error: Exception | None = None
+    for _attempt in range(2):
+        try:
+            got = _translate_batch(parts, context, data_dir)
+            restored, flagged = _restore_batch(got, shields, sources, offset)
+        except (LLMTransportError, XaiLoginRequiredError):
+            # 同一次请求已经按 RETRY_DELAYS 重试过。再开一批会把失败时的花费乘二。
+            raise
+        except Exception as exc:  # noqa: BLE001 — 内容对不齐时整批再试一次
+            if _exhausted(exc):
+                # 已经重来并拆到一段一批还对不上，整批再走一遍只会把花费翻倍。
+                raise
+            error = exc
+            continue
+        models = set(getattr(got, "models", ()))
+        if flagged:
+            restored, flagged, more = _repair_numbers(parts, context, shields, sources, restored, flagged, data_dir)
+            models.update(more)
+        return restored, flagged, models
+    raise error if error is not None else AlignmentError("batch")
 
 
 
@@ -355,28 +495,30 @@ def _translate_title(title: str, data_dir: Path) -> str:
     """标题单独译一次，给检索和列表用。模型没译好返回空串，由 complete 规则判为未完成。
 
     连接错误在 chat_json 里已经按预算重试过。这里再吞掉会记成对齐拒绝，两次之后这篇文章就不再译。
+    数字没对上时再要一次；两次都没对上就用第一次的，标题不再因为数字写法让整篇作废。
     """
     title = (title or "").strip()
     if not title or is_chinese(title):
         return ""
-    last_exc: Exception | None = None
+    source = escape(title)
+    fallback = ""
     for _attempt in range(2):
         try:
-            texts = _translate_batch([escape(title)], {
-                "segment_ids": ["title"], "source_hashes": [segment_digest(escape(title))],
+            texts = _translate_batch([source], {
+                "segment_ids": ["title"], "source_hashes": [segment_digest(source)],
             }, data_dir)
-        except LLMTransportError:
+        except (LLMTransportError, XaiLoginRequiredError):
             raise
-        except Exception as exc:  # noqa: BLE001 — 标题失败要重试一次再放弃
-            last_exc = exc
+        except Exception:  # noqa: BLE001 — 标题失败要重试一次再放弃
             continue
         plain = re.sub(r"<[^>]+>", "", texts[0] if texts else "")
         got = html_lib.unescape(re.sub(r"\s+", " ", plain)).strip()[:300]
-        if got and leaf_problem(escape(title), got) is None:
+        if not got or structure_problem(source, got):
+            continue
+        if numbers_agree(source, got):
             return got
-    if last_exc is not None:
-        return ""
-    return ""
+        fallback = fallback or got
+    return fallback
 
 
 def reuse_duplicate_sources(sources: list[str], translations: list[str | None]) -> list[str | None]:
@@ -446,23 +588,20 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             "segment_ids": [manifest["segments"][targets[offset + i][0]]["id"] for i in range(len(chunk))],
             "source_hashes": [manifest["segments"][targets[offset + i][0]]["source_hash"] for i in range(len(chunk))],
         }
-        try:
-            got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
-        except LLMTransportError:
-            # 同一次请求已经按 RETRY_DELAYS 重试过。再开一批会把失败时的花费乘二。
-            raise
-        except Exception:
-            # 条数或内容对不齐时再试一次。
-            got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
-        for i, text in enumerate(got):
-            restored = unshield(text, shielded[offset + i])
-            if restored is None:
-                raise AlignmentError("unshield")
-            problem = leaf_problem(targets[offset + i][1], restored)
-            if problem:
-                raise AlignmentError(f"slot-{offset + i}-{problem}")
-            translations[offset + i] = restored
-        models.update(getattr(got, "models", ()))
+        slots = range(offset, offset + len(chunk))
+        # 一段数字没对上不再让整篇作废：补译一次，还不行就照样写入，回执里记进 number_review。
+        # 链接、图片、代码、占位符不对，或者数字串到同一批别的段，仍整批再译一次，再不行整篇不入库。
+        restored, _flagged, used = _settle_batch(
+            chunk,
+            {k: v for k, v in batch_ctx.items() if v},
+            [shielded[i] for i in slots],
+            [targets[i][1] for i in slots],
+            offset,
+            data_dir,
+        )
+        for i, text in zip(slots, restored, strict=True):
+            translations[i] = text
+        models.update(used)
         offset += len(chunk)
 
     # 按叶子段原位写回。blockquote / 列表 / 表格的外壳留着，只换里面的那一段。
@@ -527,10 +666,14 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     # 译文切块进检索：中文问题也能找到英文文章，引用落到对照页那一段。
     replace_translation_chunks(conn, article_id)
     conn.commit()
+    review = len(provenance.get("number_review") or [])
+    if review:
+        logger.info("#%s 有 %s 段数字没能自动核对上，照样写入，回执 number_review 里有序号", article_id, review)
     return TranslateResult(
         article_id,
         "translated" if complete else "partial",
         segments=done,
+        review=review,
     )
 
 

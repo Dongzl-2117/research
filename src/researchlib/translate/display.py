@@ -743,7 +743,12 @@ def article_pairs(
             counts = (len(left), len(right))
             if len(left) != len(right):
                 result = _separate(original, translated, "译文段落与原文对不上，以下分别展示完整原文和译文。")
-            elif positional_numbers_conflict([a.html for a in left], [b.html for b in right]):
+            # 有回执（mapped）的译文，每段的身份和资源写入时已经逐段核过，数字串段也在写入时拦了。
+            # 这条按字面数字猜位置，只给没有回执的旧稿用：中文常把「in 2015」挪到「增长10%」前面，
+            # 拿来查新译文，一段语序调整就会让整页退成两栏。
+            elif state.status != "mapped" and positional_numbers_conflict(
+                [a.html for a in left], [b.html for b in right],
+            ):
                 result = _separate(
                     original, translated, "段落数字锚点不一致，无法确认对应关系，以下保留完整原文和译文。",
                 )
