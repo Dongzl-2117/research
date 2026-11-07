@@ -266,17 +266,54 @@ def test_waits_for_translate_or_ocr_in_the_app_container(world: World):
     world.ci_says("completed", "success")
     shipped = world.head()
     sha = world.commit("第二版")
-    for name in ("research-translate", "research-ocr"):
-        result = world.deploy(DOCKER_TOP=f"root 12 1 0 Oct29 ? 00:00:03 {name} --limit 10")
-        assert result.returncode == 0, result.stderr
-        assert world.called() == ["docker compose top app"]
-        assert world.head() == shipped and world.status() is None
-        assert f"{name} 还在跑" in result.stdout
-    # 容器里只有 web：探测过了照常上线。
+    waiting = world.mini / "data" / "status" / ".deploy-waiting"
+    result = world.deploy(DOCKER_TOP="root 12 1 0 Oct29 ? 00:00:03 research-ocr --limit 10")
+    assert result.returncode == 0, result.stderr
+    # research-ocr 会自己跑完：不查 CI，也不请它停。
+    assert world.called() == ["docker compose top app"] and not waiting.exists()
+    assert world.head() == shipped and world.status() is None
+    assert "research-ocr 还在跑" in result.stdout
+    result = world.deploy(DOCKER_TOP="root 12 1 0 Oct29 ? 00:00:03 research-translate --loop --limit 5")
+    assert result.returncode == 0, result.stderr
+    assert world.called() == ["docker compose top app", "curl ci"]
+    assert world.head() == shipped and world.status() is None
+    # --loop 不会自己跑完：CI 过了的提交在等，写下来请它译完手上这篇就停。
+    assert "research-translate 还在跑，已请它译完手上这篇就停" in result.stdout
+    assert waiting.read_text(encoding="utf-8").strip() == sha
+    # 容器里只有 web（它停了）：探测过了照常上线，上线后不再请以后开的译制停。
     result = world.deploy(DOCKER_TOP="root 7 1 0 Oct29 ? 00:01:00 python -m uvicorn researchlib.web:app")
     assert result.returncode == 0, result.stderr
     assert world.head() == sha and world.status()["ok"] is True
     assert world.called()[0] == "docker compose top app"
+    assert not waiting.exists()
+
+
+def test_translate_is_not_asked_to_stop_for_a_commit_that_will_not_ship(world: World):
+    world.ci_says("in_progress")
+    world.commit("第二版")
+    waiting = world.mini / "data" / "status" / ".deploy-waiting"
+    top = "root 12 1 0 Oct29 ? 00:00:03 research-translate --loop"
+    for state in (("in_progress", None), ("completed", "failure")):
+        world.ci_says(*state)
+        result = world.deploy(DOCKER_TOP=top)
+        assert result.returncode == 0, result.stderr
+        assert not waiting.exists() and "跑完再上线" in result.stdout
+    # CI 过了才请它停。
+    world.ci_says("completed", "success")
+    assert world.deploy(DOCKER_TOP=top).returncode == 0
+    assert waiting.exists()
+
+
+def test_a_failed_release_stops_asking_translate_to_make_way(world: World):
+    world.ci_says("completed", "success")
+    first = world.head()
+    sha = world.commit("起不来的一版")
+    waiting = world.mini / "data" / "status" / ".deploy-waiting"
+    assert world.deploy(DOCKER_TOP="root 12 1 0 Oct29 ? 00:00:03 research-translate --loop").returncode == 0
+    assert waiting.exists()
+    result = world.deploy(BROKEN=sha, DEPLOY_WAIT="0")
+    assert result.returncode != 0
+    assert world.head() == first and not waiting.exists()
 
 
 def test_waiting_three_hours_behind_a_long_job_is_reported(world: World):
@@ -307,11 +344,11 @@ def test_fresh_merges_do_not_hide_a_long_wait(world: World):
     assert world.head() == shipped
     status = world.status()
     assert status["ok"] is False and f"main 现在是 {sha[:7]}" in status["message"]
-    # 刚合并、前面没有积压：照常安静地等。
+    # 刚合并、前面没有积压：照常安静地等（请译制停下，不记失败）。
     world.deploy()
     world.commit("又一个")
     result = world.deploy(DOCKER_TOP=top)
-    assert result.returncode == 0 and "还在跑，跑完再上线" in result.stdout
+    assert result.returncode == 0 and "research-translate 还在跑" in result.stdout
     assert world.status()["ok"] is True
 
 

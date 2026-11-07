@@ -55,7 +55,7 @@ docker compose exec app research-translate --source stratechery --limit 5 --loop
 
 DeepSeek 译制走流式。思考模式要是一次把整段响应读完，连接会空等很久，TLS 在中途被拆掉（`UNEXPECTED_EOF_WHILE_READING`），这次已经开始计费，译文一个字都不会入库。`chat_json` 按行读，看到 `data: [DONE]` 才把拼接结果交给对齐；中途断开或流提前结束都丢掉半截，按 2、5、15、30 秒重发同一请求。超时不重试。模型、thinking、`reasoning_effort` 和输出预算不变，也不会改走 Grok。连接预算用完仍失败记 `request-failed`，不再把同一批立刻再打一遍。标题上的连接失败同样记请求失败，不记成对齐拒绝。
 
-跑的时候自动上线会等它跑完再重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`），这期间合并的改动要等这一批译完才上线。长时间的 `--loop` 放在 tmux 里跑，用完 Ctrl-C 停掉。
+跑的时候自动上线先不重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`）。它在等的提交 CI 过了，就写 `data/status/.deploy-waiting` 请译制让路：按队列译的（包括 `--loop` 和 `--recheck`）每译完一篇看一眼，在就停下，打印「自动上线在等 某提交：先停在这里」，下一轮自动上线（10 分钟内）就上了。手上那篇照常译完入库，不会白花钱。上线后要接着译就再开一次，新版本的规则这时才生效；在等上线时新开的会直接停下。点名的 `--article-id` 不让路，译完才上线。长时间的 `--loop` 放在 tmux 里跑。
 
 Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`），流式每一行的空闲上限也是这一段。
 
