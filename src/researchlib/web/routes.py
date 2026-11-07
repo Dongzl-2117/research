@@ -87,6 +87,7 @@ from researchlib.web.present import (
 )
 from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
+from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.wechat_dialogue import canonical_host, present_stored_ocr, relabel_host
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import (
@@ -777,9 +778,12 @@ def _article_view(request: Request, article_id: int, mode: str):
             # 不然换下来的半句或日期会在正文顶上变成一个大标题。
             shown_md = strip_duplicate_title(shown_md, original_title)
         # 单看原文时（没有译文，或点了「原文」）：导出时写了两遍的引文、列表项收成一份（nested_copies），
-        # Stratechery 每日更新开头结尾的套话不显示（housekeeping）。对照按位置配，译文是照着整篇原文译的，原文不收。
+        # Stratechery 每日更新开头结尾的套话不显示（housekeeping），2026 网页导出一个文本节点一行的拼回段落
+        # （web_export）。对照按位置配，译文是照着整篇原文译的，原文不收、不拼。
         if mode == "original" or not zh_blob:
             shown_md = strip_housekeeping(fold_nested_copies(shown_md))
+            if is_web_export(article["body_md"] or ""):
+                shown_md = join_web_export_lines(shown_md)
     fmt = (article["raw_meta"] or {}).get("format")
     owners = source_owners(source)
 

@@ -73,6 +73,8 @@ Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`
 
 每日更新照邮件导出，开头的「Listen to this post:」「Good morning,」「On to the Update:」和结尾的播客提示、转发须知（「intended for a single recipient」「order multiple subscriptions for your team」）、「Thanks for being a subscriber, and have a great day!」几乎每篇都有。检索文字和段落块不收这几句，单看原文时也不显示（`researchlib/housekeeping.py`）；「Good morning,」和「On to the Update:」之间作者写的话（更正、回应读者、播客预告）留着。邮件导出的标题行下面常常不空行就跟着「**Listen to this post:**」，标题行单独算一段；2026 年网页导出（`- source: member-rss`）整篇一行一段、中间没有空行，开头的几句按行认，结尾从最后一行往前找最长的一截套话。中英对照和只看中文照旧：已有译文里这几句也译了，对照按位置配，原文这边少几段就和译文错开。以后译的也照旧整篇送。
 
+2026 年网页导出一个文本节点一行：链接字单独一行，后面的「, mostly …」「. After that …」另起一行，小标题也只是单独一行，阅读页上一句话常被拆成三四行。单看原文时（文章页没有译文、点了「原文」，以及 `/api/v1/articles/{id}` 和 `.md`、MCP 的 `get_article`）按行拼回段落（`researchlib/web_export.py`）：句读开头的贴上去，没说完的半句接下一行，访谈的「JD:」和后面那句同一段，小标题单独一段。线上 32 篇试过，3926 行收成 2235 段。中英对照、只看中文和译制读的 `canonical_body_html` 不拼：已有译文是照没拼的原文切段译的，拼了段数就变，对照页整页分开（见 [bilingual-mapping-2026-11-02.md](bilingual-mapping-2026-11-02.md)）。库里的 `body_md`、检索文字和段落块不改。
+
 ## 何时开跑翻译
 
 | 状态 | 动作 |
