@@ -69,6 +69,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - **#56 合进 main 后撤回了**（撤回提交 58483db）。它是 Codex 做的星球账户资格和引用边界，分支 `codex/wechat-color-ci-savings-20261022`。重新合之前：按它分支上 `docs/availability-gate-2026-10-23.md` 的计划定向回填账户 ID、评论和图片文字；`TRUSTED_OWNERS` 里加上乘风破浪的星主账户，否则这个来源整个不显示；它把迁移从网页启动挪到了 `research-maintain`，`scripts/deploy.sh` 要先跑这一步再重启；和启动时按 `poster_names` 重算星主标记（`posters.refresh_poster_roles`）的做法冲突，要选一种。
 - 孤独进化体以前从 AIHOT 来，10-30 起改由 `scripts/crawl-gudujinhuati.sh` 每天抓（`research-crawl-wechat`，极致了查列表 + 公众号原文页）。
 - 停更的来源没有抓取：黑黑无常（一次性导入的雪球存档）、Stratechery（在另一台机器「盒子」上手动抓再导入）、乘风破浪（没有抓取脚本）。接不接、用什么账号由 Zhilin 定。
+- Stratechery 归档只记日期，钟点由夜间任务按官网 WordPress 接口补（`research-stratechery-times`），重新导入同一份归档不会退回零点。见 [docs/ingest.md](docs/ingest.md)「Stratechery 的发布时刻」。
 - 黑黑无常的短帖没有标题，导入时拿正文第一段当了标题，库里 39 篇有 24 篇长过 40 字。页面和接口显示时收成第一句（#180），检索和问库喂给模型的还是整段。
 - 段永平博客 10-30 下线（#144）：配置项、导入命令和只为它写的标记都删了，库里的文章、提及、观点、摘要留着。要不要删库里的行由 Zhilin 定，删的话另开 PR 写清表和行数。
 - 10-27 开的 #81（观点积压先排持仓和中文）还开着、落后 main，接着做先基于 main 重做；同一批的 #78、#101、#102 11-01 已合，#73、#76、#77 关了没合（起不来就退回、迁移前备份由 #102 做了，见上面「正式环境」）。#140 删了 `jobs/` 和批量任务的 HTTP 接口，#76（只许本机调用这些接口）因此作废；#144 删了 `empty_answer.py`，`visible_sql`、`HIDDEN`、`SHORT_POST` 挪到 `researchlib.visibility`，隐藏标记只认 `hidden`，`suppressed`、`source_paused` 不再认。

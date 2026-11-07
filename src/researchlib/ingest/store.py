@@ -22,7 +22,7 @@ from researchlib.mentions import (
 )
 from researchlib.revisions import article_text, held_before, judge_replacement, save_revision, split_comments
 from researchlib.sources import Source
-from researchlib.textutil import content_hash
+from researchlib.textutil import SHANGHAI, content_hash
 from researchlib.visibility import HIDDEN, SHORT_POST
 from researchlib.zsxq_title import repairs_source, title_needs_repair
 
@@ -170,6 +170,24 @@ def _keeps_repaired_title(source: Source, existing, doc: ParsedDoc) -> bool:
     return article_text(existing["body_md"]) == article_text(doc.body_md)
 
 
+def _keep_filled_clock(existing, doc: ParsedDoc) -> None:
+    """补过钟点的篇（research-stratechery-times）重新导入，归档还是只给同一个日历日时，留着库里的时刻。
+
+    不留的话，同一份归档每导一次，全部篇的钟点退回零点，哈希跟着变一遍，夜里再补回来。
+    归档换了日期，或者自己就带钟点，照归档的来。
+    """
+    if existing is None or doc.published_at is None or existing["published_at"] is None:
+        return
+    old = existing["raw_meta"] or {}
+    day = old.get("calendar_day")
+    if not day or old.get("time_known") is not True or doc.raw_meta.get("time_known"):
+        return
+    if doc.published_at.astimezone(SHANGHAI).date().isoformat() != day:
+        return
+    doc.published_at = existing["published_at"]
+    doc.raw_meta.update({key: old[key] for key in ("date_source", "time_known", "calendar_day") if key in old})
+
+
 def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: CompanyMatcher):
     profile = profile_for(conn, source.id)
     existing = conn.execute(
@@ -182,6 +200,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     ).fetchone()
     if existing is not None and _keeps_repaired_title(source, existing, doc):
         doc.title = existing["title"]
+    _keep_filled_clock(existing, doc)
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
     poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
