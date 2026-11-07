@@ -265,6 +265,8 @@ def _same_amount(left: str, right: str) -> bool:
 
 
 def _compatible(left: Fact, right: Fact, *, bare_quarter: bool = True) -> bool:
+    if left.kind == "clock" and right.kind == "clock" and _clocks_match(left.key, right.key):
+        return True
     if left.kind == right.kind and left.key == right.key:
         return True
     kinds = {left.kind, right.kind}
@@ -759,14 +761,47 @@ def _on_percent_span(match: re.Match[str]) -> list[Fact] | None:
     return [Fact("pct", _qty_key(left)), Fact("pct", _qty_key(right))]
 
 
+def _meridiem(raw: str | None) -> str:
+    """显式上午/下午写进钟点。没写的留空，只和上午相容，不和下午相容。"""
+    if not raw:
+        return ""
+    text = re.sub(r"[\s.]", "", raw).lower()
+    if text in {"am", "凌晨", "清晨", "早上", "上午"}:
+        return "am"
+    if text in {"pm", "下午", "晚上", "傍晚", "中午"}:
+        return "pm"
+    return ""
+
+
 def _on_clock(match: re.Match[str]) -> Fact | None:
     hour, minute = int(match.group("h")), int(match.group("mi"))
-    if not (0 <= hour <= 24 and 0 <= minute <= 59):
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
-    return Fact("clock", f"{hour}:{minute:02d}")
+    mark = _meridiem(match.groupdict().get("pre")) or _meridiem(match.groupdict().get("ampm"))
+    key = f"{hour}:{minute:02d}"
+    if mark:
+        key = f"{key}{mark}"
+    return Fact("clock", key)
 
 
-def _duration_key(raw: str) -> str | None:
+def _clocks_match(left: str, right: str) -> bool:
+    def split(key: str) -> tuple[str, str]:
+        for mark in ("am", "pm"):
+            if key.endswith(mark):
+                return key[: -len(mark)], mark
+        return key, ""
+
+    time_left, mark_left = split(left)
+    time_right, mark_right = split(right)
+    if time_left != time_right:
+        return False
+    if mark_left == mark_right:
+        return True
+    # 12:15AM 可以写成凌晨 12:15，也可以不写上下午；写明下午则不是同一个钟点。
+    return {mark_left, mark_right} == {"", "am"}
+
+
+def _duration_count(raw: str) -> str | None:
     if raw.isdigit():
         return str(int(raw))
     if raw == "两":
@@ -780,21 +815,46 @@ def _duration_key(raw: str) -> str | None:
     return str(value)
 
 
+def _duration_unit(raw: str) -> str | None:
+    text = raw.lower()
+    if text.startswith("week") or text == "周":
+        return "week"
+    if text.startswith("month") or text in {"月", "个月"} or text == "mo":
+        return "month"
+    if text.startswith("day") or text == "天":
+        return "day"
+    if text.startswith("hour") or text == "小时":
+        return "hour"
+    return None
+
+
 def _on_duration(match: re.Match[str]) -> Fact | None:
-    key = _duration_key(match.group("n"))
-    if key is None:
+    count = _duration_count(match.group("n")) if "n" in match.groupdict() else "2"
+    unit = _duration_unit(match.group("u"))
+    if count is None or unit is None:
         return None
-    return Fact("duration", key)
+    return Fact("duration", f"{unit}:{count}")
 
 
-def _on_couple(_match: re.Match[str]) -> Fact:
-    return Fact("duration", "2")
+_RATIO_NOISE = re.compile(
+    r"\d|%|％|[万亿]|个月|小时|点|分|"
+    r"\b(?:weeks?|months?|days?|hours?|couple|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"million|billion|thousand)\b",
+    re.I,
+)
 
 
 def _on_per(match: re.Match[str]) -> Fact | None:
-    """``$0.80 for every $1`` 和 ``每1美元……0.80美元`` 是同一个比例，谁写在前面都行。"""
+    """``$0.80 for every $1`` 和 ``每1美元……0.80美元`` 是同一个比例，谁写在前面都行。
+
+    两端之间如果还有别的数字或一段时间，不把它们吞进这个比例。
+    """
     part, unit = _decimal(match.group("a")), _decimal(match.group("b"))
     if part is None or unit is None:
+        return None
+    spans = sorted((match.start(name), match.end(name)) for name in ("a", "b"))
+    interior = match.string[match.start():spans[0][0]] + match.string[spans[0][1]:spans[1][0]]
+    if _RATIO_NOISE.search(interior):
         return None
     return Fact("ratio", f"{_qty_key(part)}/{_qty_key(unit)}")
 
@@ -1064,27 +1124,33 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
         re.I,
     ), _on_spelled_scale),
     (re.compile(
-        r"\b(?P<h>\d{1,2})\s*[:：]\s*(?P<mi>\d{2})\s*(?:AM|PM|a\.m\.|p\.m\.)?\b",
+        r"(?:(?P<pre>凌晨|清晨|早上|上午|下午|晚上|傍晚|中午)\s*)?"
+        r"(?<!\d)(?P<h>\d{1,2})\s*[:：]\s*(?P<mi>\d{2})(?!\d)"
+        r"\s*(?P<ampm>a\.?\s*m\.?|p\.?\s*m\.?)?",
         re.I,
     ), _on_clock),
-    (re.compile(r"(?P<h>\d{1,2})\s*点\s*(?P<mi>\d{1,2})\s*分"), _on_clock),
     (re.compile(
-        r"\b(?:a\s+)?couple\s+of\s+(?:weeks?|months?|days?|hours?)\b",
+        r"(?:(?P<pre>凌晨|清晨|早上|上午|下午|晚上|傍晚|中午)\s*)?"
+        r"(?<!\d)(?P<h>\d{1,2})\s*点\s*(?P<mi>\d{1,2})\s*分",
+    ), _on_clock),
+    (re.compile(
+        r"\b(?:a\s+)?couple\s+of\s+(?P<u>weeks?|months?|days?|hours?)\b",
         re.I,
-    ), _on_couple),
+    ), _on_duration),
     (re.compile(
         rf"\b(?:first|last|next|past)?\s*(?P<n>{_ONES}|ten|eleven|twelve|\d{{1,2}})\s+"
-        rf"(?:weeks?|months?|days?|hours?)\b",
+        rf"(?P<u>weeks?|months?|days?|hours?)\b",
         re.I,
     ), _on_duration),
+    (re.compile(r"\b(?P<n>\d{1,2})(?P<u>mo)\b", re.I), _on_duration),
     (re.compile(
-        r"(?:头|前|近|过去)(?P<n>[一二三四五六七八九十两]|\d{1,2})\s*个?\s*月",
+        r"(?:头|前|近|过去)(?P<n>[一二三四五六七八九十两]|\d{1,2})\s*个?\s*(?P<u>月)",
     ), _on_duration),
     (re.compile(
-        r"(?<![0-9零〇一二三四五六七八九两这那每某])(?P<n>[一二三四五六七八九十两])\s*个\s*月",
+        r"(?<![0-9零〇一二三四五六七八九两这那每某])(?P<n>[一二三四五六七八九十两]|\d{1,2})\s*个\s*(?P<u>月)",
     ), _on_duration),
     (re.compile(
-        r"(?<![0-9零〇一二三四五六七八九两这那每某])(?P<n>[一二三四五六七八九十两])\s*(?:周|小时)",
+        r"(?<![0-9零〇一二三四五六七八九两这那每某])(?P<n>[一二三四五六七八九十两]|\d{1,2})\s*(?P<u>周|小时)",
     ), _on_duration),
     (re.compile(
         rf"\$\s*(?P<a>{_AMOUNT})\b(?:(?!\$).){{0,80}}?\bfor every\s+\$\s*(?P<b>{_AMOUNT})\b",

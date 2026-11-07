@@ -119,6 +119,14 @@ def _problem(source: str, target: str) -> str | None:
     ("Growth was between 10 and 15 percent.", "增长在10%到15%之间。"),
     ("One billion PCs were already in use.", "已经有十亿台电脑在使用。"),
     ("A million users joined.", "百万用户加入了。"),
+    ("It took seven months.", "花了七个月。"),
+    ("It took seven months.", "花了7个月。"),
+    ("It took two weeks.", "花了两周。"),
+    ("It took two weeks.", "花了2周。"),
+    ("The clocks hit 12:15AM.", "凌晨12:15。"),
+    ("The clocks hit 12:15AM.", "时钟是12:15。"),
+    ("The clocks hit 12:15PM.", "下午12点15分。"),
+    ("The 24mo total was still due.", "24个月的合计还没到。"),
     ("That was in November, 2014, and again in November, 2014.", "那是在2014年11月，后来又是2014年11月。"),
     ("Rules changed as of August, 2005.", "规则在2005年8月变了。"),
     ("Press enter. (Try twice)", "按回车。（试两次）"),
@@ -485,6 +493,13 @@ _LIVE_FALSE_REJECTS = [
 ]
 
 
+def test_impossible_clock_is_not_a_time_of_day():
+    from researchlib.translate.numbers import _extract
+
+    facts = _extract("<p>The clock hit 24:59 and also 25:00.</p>")
+    assert not any(fact.kind == "clock" for fact in facts)
+
+
 @pytest.mark.parametrize(("article_id", "source", "target"), _LIVE_FALSE_REJECTS)
 def test_live_false_rejects_now_match(article_id, source, target):
     assert same_numeric_facts(source, target) is True, article_id
@@ -495,6 +510,12 @@ def test_live_false_rejects_now_match(article_id, source, target):
     ("The deal was $1.85 billion.", "交易是1.85亿美元。"),
     ("Consider the two bugs this week.", "想想本周的三个漏洞。"),
     ("The clocks hit 12:15AM.", "时钟走到了0:15。"),
+    ("The clocks hit 12:15AM.", "时钟走到了12:15PM。"),
+    ("The clocks hit 12:15AM.", "下午12:15。"),
+    ("It took seven months.", "花了七周。"),
+    ("It took two weeks.", "花了两小时。"),
+    ("It took seven months.", "花了3个月。"),
+    ("Made $0.80 after 7 months for every $1.", "每1美元对应0.80美元。"),
     ("More than 9 million households.", "多出9万户。"),
     ("More than 900 million households.", "多出900万户。"),
     ("$0.80 for every $1.", "每0.80美元对应1美元。"),
