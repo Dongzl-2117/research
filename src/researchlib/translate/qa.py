@@ -51,6 +51,7 @@ from researchlib.translate.pair import (
     visible_text,
 )
 from researchlib.translate.provenance import unverified_numbers
+from researchlib.translate.remote_media import bilingual_sources
 from researchlib.translate.segments import iter_segments
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import shorten_long_title
@@ -396,27 +397,30 @@ def load_article_texts(conn, settings: Settings, article_id: int) -> ArticleText
     )
     display_title = shorten_long_title(article["title"] or "", article.get("body_text") or "")
     images = conn.execute(
-        "SELECT original_ref, storage_path FROM article_images WHERE article_id = %s",
+        "SELECT original_ref, storage_path, remote FROM article_images WHERE article_id = %s",
         (article_id,),
     ).fetchall()
-    mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article.get("raw_meta") or {}).get("format")
     parent = str((article.get("raw_meta") or {}).get("parent") or "")
     ocr = {
         row["content_hash"]: row["text"] or ""
         for row in conn.execute(_OCR_SQL, (article_id,)).fetchall()
     }
-    canonical = canonical_body_html(shown_md, display_title, mapping, fmt,
-                                    owners=source_owners(source) if source else ())
-    en_html = finish_html(canonical, link_index, parent)
-    zh_html = finish_html(sanitize_html(zh_blob), link_index, parent)
+    owners = source_owners(source) if source else ()
+    # 和文章页同一套：下载来的外链图不算进回执，译文里的占位换成图再配对。
+    _shown, pairing = bilingual_sources(
+        lambda mapping: canonical_body_html(shown_md, display_title, mapping, fmt, owners=owners),
+        images, zh_blob, translation.get("provenance"),
+    )
+    en_html = finish_html(pairing.original, link_index, parent)
+    zh_html = finish_html(sanitize_html(pairing.translated), link_index, parent)
     return ArticleTexts(
         article_id=int(article["id"]),
         source_id=str(article["source_id"]),
         title=str(article["title"] or ""),
         en_html=en_html,
         zh_html=zh_html,
-        provenance=translation.get("provenance"), canonical_source=canonical, canonical_target=zh_blob,
+        provenance=translation.get("provenance"), canonical_source=pairing.check, canonical_target=zh_blob,
         ocr_texts=ocr, host=source.author if source else None,
     )
 

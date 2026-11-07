@@ -10,6 +10,7 @@ from researchlib.config import Settings
 from researchlib.db import connect
 from researchlib.translate.display import article_pairs
 from researchlib.translate.provenance import AlignmentError, digest, reconstruction, source_manifest, verify
+from researchlib.translate.remote_media import pair_sources
 from researchlib.translate.service import _render_original
 
 
@@ -71,6 +72,9 @@ def main(argv: list[str] | None = None) -> int:
         plan = []
         for row in rows:
             source, _raw_hash = _render_original(conn, row, settings.data_dir)
+            with_images, _raw_hash = _render_original(conn, row, settings.data_dir, remote=True)
+            # 和文章页同一套：下载来的外链图不算进回执，图先下好才译的旧稿按带图的那一份核验。
+            source = pair_sources(with_images, source, row["translated_html"], row["provenance"]).check
             item = classify(source, row["translated_html"], row["provenance"])
             item.update(articleId=int(row["id"]), source=row["source_id"],
                         expectedArticleHash=row["content_hash"],
