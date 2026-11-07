@@ -44,9 +44,10 @@ def status_path(data_dir: Path, task: str) -> Path:
     return Path(data_dir) / STATUS_DIR / f"{task}.json"
 
 
-# scripts/deploy.sh 被容器里的 research-translate 挡住、要上线的提交 CI 又过了时，每一轮写一次这个文件
-# （内容是在等的提交）。research-translate 每译完一篇看一眼，在就停下让它上线。--loop 自己不会跑完，
-# 以前一开就把之后合并的全挡在外面。上线时删掉；自动上线不跑了，文件半小时没人重写就不算数。
+# scripts/deploy.sh 被容器里的 research-translate 或 research-ocr 挡住、要上线的提交 CI 又过了时，每一轮写一次
+# 这个文件（内容是在等的提交）。research-translate 每译完一篇、research-ocr 每认完一张看一眼，在就停下让它上线。
+# --loop 和全库重认自己不会很快跑完，以前一开就把之后合并的全挡在外面。上线时删掉；自动上线不跑了，
+# 文件半小时没人重写就不算数。
 DEPLOY_WAITING = ".deploy-waiting"
 DEPLOY_WAITING_FRESH_S = 30 * 60
 

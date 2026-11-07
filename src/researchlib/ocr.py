@@ -15,6 +15,10 @@ app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、�
 下次不带 ``--redo`` 也会重试，不写进脏字。JSON 连着两次读不出来记 ``:invalid``，
 不自动重试（重试又要花钱），``--redo --article`` 点名重认。
 
+每行记着按第几版识图说明认的（image_texts.prompt_version）。不点名文章的 ``--redo`` 只重认版本比
+VISION_PROMPT_VERSION 旧的图，停了再开从没认完的接着认；``--limit 0`` 只报还剩多少张。
+自动上线在等时（status/.deploy-waiting），不点名文章的识图认完手上这张就停，下一次接着认。
+
     docker compose exec -T app research-ocr --limit 50
 
 夜间任务设 NIGHTLY_OCR=1 时，在 app 容器里走识图补一批。
@@ -128,6 +132,9 @@ blocks 按阅读顺序排，每块是下面一种：
 {"type": "message", "speaker": "", "self": true, "text": "先看现金流", \
 "quote": {"speaker": "王小明", "self": false, "text": "毛利率35%，比去年高"}}]}
 """
+# 上面这份说明的版本，写进 image_texts.prompt_version。改了说明、要让以前认过的图按新说明重认时加一：
+# 不点名文章的 --redo 只重认版本比这个旧的图。措辞小改、不值得花钱重认的不加。
+VISION_PROMPT_VERSION = 1
 
 
 class OcrUnavailable(Exception):
@@ -480,13 +487,8 @@ def _fatal_ocr(exc: Exception) -> bool:
     return "接口返回 401" in text or "接口返回 403" in text
 
 
-def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[int] | None = None):
-    """还没识别过的本地图片，按引用它的文章从新到旧。重复文章里的图不算。
-
-    redo 时连 image_texts 里已有的哈希也再认一遍。article_ids 只认这几篇挂着的图。
-    engine 以 :error 结尾的行不算认完，不带 redo 也会重试；:skipped、:invalid 和空正文的成功行不重试。
-    不点名文章时，只挂在知识星球读者帖、「图片」评论壳、停用来源下的图不认：网站上不展示，认了白花钱。
-    """
+def _pending_where(*, redo: bool, article_ids: list[int] | None) -> tuple[list[str], list]:
+    """要认的图的筛选条件（article_images i JOIN articles a 上）。见 ``pending_images``。"""
     where = ["a.duplicate_of IS NULL"]
     params: list = []
     if article_ids:
@@ -500,6 +502,25 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
             "NOT EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash"
             " AND right(t.engine, 6) <> ':error')"
         )
+    elif not article_ids:
+        # 全库重认只认按旧说明认的。以前每次都从最新的图从头认，停了再开就把刚认过的再付一次钱。
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash"
+            " AND right(t.engine, 6) <> ':error' AND t.prompt_version >= %s)"
+        )
+        params.append(VISION_PROMPT_VERSION)
+    return where, params
+
+
+def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[int] | None = None):
+    """还没识别过的本地图片，按引用它的文章从新到旧。重复文章里的图不算。
+
+    redo 时连 image_texts 里已有的哈希也再认一遍：点名文章（article_ids）的全部重认；不点名时只认
+    按旧说明认的（prompt_version 比 VISION_PROMPT_VERSION 旧或为空），按现在的说明认过的不再认。
+    engine 以 :error 结尾的行不算认完，不带 redo 也会重试；:skipped、:invalid 和空正文的成功行不重试。
+    不点名文章时，只挂在知识星球读者帖、「图片」评论壳、停用来源下的图不认：网站上不展示，认了白花钱。
+    """
+    where, params = _pending_where(redo=redo, article_ids=article_ids)
     params.append(limit)
     return conn.execute(
         f"""
@@ -513,6 +534,26 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
         """,
         tuple(params),
     ).fetchall()
+
+
+def redo_remaining(conn) -> dict:
+    """不点名文章的 --redo 还要认多少张图，其中多少张以前认出过字（没认出字的多半是照片和装饰图）。"""
+    where, params = _pending_where(redo=True, article_ids=None)
+    row = conn.execute(
+        f"""
+        SELECT count(*) AS images, count(*) FILTER (WHERE had_text) AS with_text
+        FROM (
+            SELECT i.content_hash, bool_or(coalesce(btrim(t.text), '') <> '') AS had_text
+            FROM article_images i
+            JOIN articles a ON a.id = i.article_id
+            LEFT JOIN image_texts t ON t.content_hash = i.content_hash
+            WHERE {" AND ".join(where)}
+            GROUP BY i.content_hash
+        ) pending
+        """,
+        tuple(params),
+    ).fetchone()
+    return {"images": int(row["images"] or 0), "with_text": int(row["with_text"] or 0)}
 
 
 def useful_image_text(text: str) -> bool:
@@ -734,7 +775,11 @@ def run_ocr(
     engine 是写进 image_texts 的名字，不给就用默认的 deepseek-flash-vision。
     recognize 交回 ``Recognition``；交回字符串的当旧格式（测试和以前的引擎这样写）。
     报告里 structured 是按结构交回的张数，plain 是交回自由文字的，tokens 是接口报的用量合计。
+    不点名文章时，自动上线在等（``health.deploy_waiting``）就认完手上这张停下，deploy_waiting 记它等的提交：
+    以前长跑的识图会把之后的合并一直挡在外面。停下的从没认完的接着认，不白花钱。
     """
+    from researchlib.health import deploy_waiting
+
     engine = engine or vision_engine_id()
     report = {
         "images": 0,
@@ -748,6 +793,7 @@ def run_ocr(
         "tokens": {},
         "metered": 0,
         "last_error": None,
+        "deploy_waiting": "",
         "followups": {"digest": [], "zsxq_title": []},
         "ocr_changed": [],
     }
@@ -756,6 +802,10 @@ def run_ocr(
         for row in pending_images(conn, limit, redo=redo, article_ids=article_ids):
             if deadline is not None and time.monotonic() > deadline:
                 break
+            if not article_ids:
+                report["deploy_waiting"] = deploy_waiting(data_dir)
+                if report["deploy_waiting"]:
+                    break
             path = Path(data_dir) / "images" / row["storage_path"]
             if not path.is_file():
                 report["missing"] += 1
@@ -796,10 +846,11 @@ def run_ocr(
             text = result.text or ""
             conn.execute(
                 """
-                INSERT INTO image_texts (content_hash, engine, text, units, usage) VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO image_texts (content_hash, engine, text, units, usage, prompt_version)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (content_hash) DO UPDATE
                     SET engine = EXCLUDED.engine, text = EXCLUDED.text, units = EXCLUDED.units,
-                        usage = EXCLUDED.usage, created_at = now()
+                        usage = EXCLUDED.usage, prompt_version = EXCLUDED.prompt_version, created_at = now()
                 """,
                 (
                     row["content_hash"],
@@ -807,6 +858,7 @@ def run_ocr(
                     text,
                     Jsonb(result.units) if result.units is not None else None,
                     Jsonb(result.usage) if result.usage else None,
+                    VISION_PROMPT_VERSION,
                 ),
             )
             report["images"] += 1
@@ -866,10 +918,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
     parser.add_argument("--limit", type=int, default=500, help="这次最多识别多少张图")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
-    parser.add_argument("--redo", action="store_true", help="连已经识别过的图也再认一遍（重跑存量）")
+    parser.add_argument(
+        "--redo",
+        action="store_true",
+        help="连已经识别过的图也再认一遍：点名文章的全部重认；不点名时只认按旧说明认的，停了再开接着认",
+    )
     parser.add_argument("--article", action="append", type=int, default=[], help="只认这篇文章里的图，可重复")
     # 只剩 vision。留着这个参数，以前写了 --engine vision 的命令（scripts/nightly.sh）照样能跑。
     parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 deepseek-flash 识图")
+    parser.add_argument(
+        "--compare",
+        type=int,
+        default=0,
+        metavar="N",
+        help="挑 N 张按旧说明认过的图用现在的说明重认，不写库，原图和新旧结果打成一个包（data/ocr-compare/）",
+    )
     args = parser.parse_args(argv)
     from researchlib.config import Settings
     from researchlib.db import prepare
@@ -881,6 +944,8 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
     conn = prepare(settings)
+    if args.compare > 0:
+        return _compare(conn, settings, recognize, args.compare)
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
         report = run_ocr(
@@ -898,10 +963,15 @@ def main(argv: list[str] | None = None) -> int:
         n_title = len(follow.get("zsxq_title") or [])
         if n_digest or n_title:
             print(f"短正文图片文字变了：摘要重排 {n_digest} 篇，标题重排 {n_title} 篇")
-            from researchlib.followups import drain_ocr_followups
+            if report["deploy_waiting"]:
+                # 让路就要快：排上的留在队里，夜间摘要先补它们。
+                print("自动上线在等，先不重写，留在队里")
+            else:
+                from researchlib.followups import drain_ocr_followups
 
-            drained = drain_ocr_followups(conn, settings, follow)
-            print(f"已重写摘要 {drained['digest']} 篇，标题 {drained['titles']} 篇")
+                drained = drain_ocr_followups(conn, settings, follow)
+                print(f"已重写摘要 {drained['digest']} 篇，标题 {drained['titles']} 篇")
+        remaining = redo_remaining(conn) if args.redo and not args.article else None
     finally:
         conn.close()
     print(
@@ -911,6 +981,37 @@ def main(argv: list[str] | None = None) -> int:
     )
     for line in describe_report(report):
         print(line)
+    if remaining is not None:
+        print(f"按旧说明认的图还剩 {remaining['images']} 张，其中以前认出过字的 {remaining['with_text']} 张")
+    if report["deploy_waiting"]:
+        print(
+            f"自动上线在等 {report['deploy_waiting'][:7]}：先停在这里，"
+            "/health 报出新提交后再跑一次，从没认完的接着认"
+        )
+    return 0
+
+
+def _compare(conn, settings, recognize, size: int) -> int:
+    """--compare：新旧识图对比包，见 ``researchlib.ocr_compare``。不写库。"""
+    from researchlib.ocr_compare import run_compare
+
+    workers = max(1, int(settings.llm_concurrency or 1))
+    try:
+        report = run_compare(conn, settings.data_dir, recognize, size, workers=workers)
+    finally:
+        conn.close()
+    bundle = Path(report["bundle"])
+    print(
+        f"对比包：{bundle}（仓库目录下的 data/{bundle.parent.name}/{bundle.name}）。{report['images']} 张图："
+        f"按结构交回 {report['structured']} 张，自由文字 {report['plain']} 张，失败或读不出来 {report['failed']} 张"
+    )
+    tokens = report["tokens"]
+    if report["images"]:
+        print(
+            f"用量：输入 {tokens.get('prompt', 0)} token，输出 {tokens.get('completion', 0)} token"
+            f"（其中思考 {tokens.get('reasoning', 0)}）；平均每张 {report['seconds'] / report['images']:.0f} 秒，"
+            f"{workers} 张一起认"
+        )
     return 0
 
 
