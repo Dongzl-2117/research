@@ -411,6 +411,19 @@ def test_exact_duration_is_not_downgraded_to_approximate():
     assert found.status == "contradict"
 
 
+def test_hyphenated_duration_quote_is_equivalent():
+    source = "<p>Only a 24-hour day is available.</p>"
+    target = "<p>可用的只有一天24小时。</p>"
+    found = apply_report(source, target, _equivalent(source, target, [{
+        "source": "a 24-hour day",
+        "target": "一天24小时",
+        "object_source": "day",
+        "object_target": "一天",
+        "same": True,
+    }]))
+    assert found.status == "accept"
+
+
 def test_single_number_object_and_direction_are_not_cleared_by_the_parser(tmp_path, monkeypatch):
     samples = [
         ("<p>Revenue was $10.</p>", "<p>成本是10美元。</p>",

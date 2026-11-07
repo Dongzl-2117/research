@@ -293,7 +293,10 @@ def _span_conflict(source_quote: str, target_quote: str) -> str | None:
     left = [key for _kind, key in _hard_keys(source_quote, kinds)]
     right = [key for _kind, key in _hard_keys(target_quote, kinds)]
     if left and right and not _related(left, right):
-        return "conflict"
+        # 解析器可能把 24-hour 读成 literal:24、把 24小时 读成 duration:hour:24。
+        # 键不同但数字锚点相同，仍是同一处事实；完全无关的引用通常连数字都不重合。
+        if not (set(numeric_anchors(source_quote)) & set(numeric_anchors(target_quote))):
+            return "conflict"
     return None
 
 
