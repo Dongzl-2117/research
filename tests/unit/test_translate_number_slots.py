@@ -213,9 +213,12 @@ def test_archive_patterns_pass_the_slot_number_check(source, target):
     ("On startup, click on Other.", "第五步：启动时点击“其他”。"),
 ])
 def test_changed_amounts_dates_and_versions_still_fail_the_slot(source, target):
+    """规则仍判不等；回执照签，这一段记进 number_review 待核，不让整篇作废。"""
     assert _problem(source, target) == "numbers"
-    with pytest.raises(pr.AlignmentError, match="numbers"):
-        pr.receipt(pr.source_manifest(P(source)), P(target))
+    proof = pr.receipt(pr.source_manifest(P(source)), P(target))
+    assert proof["number_review"] == [0]
+    assert pr.unverified_numbers(proof) == [0]
+    assert pr.verify(P(source), P(target), proof).status == "mapped"
 
 
 def test_footnote_marker_can_change_wording_without_dropping_the_link_or_a_figure():

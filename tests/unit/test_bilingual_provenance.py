@@ -28,15 +28,29 @@ def test_compatibility_reuse_can_only_fill_an_exact_empty_source_occurrence():
     assert reuse_duplicate_sources([A, A, A], [ZA, None, ZA2]) == [ZA, ZA, ZA2]
 
 
-@pytest.mark.parametrize("mutation", [
+_MISIDENTIFIED = [
     lambda rows: list(reversed(rows)),
     lambda rows: [{**rows[0], "id": "unknown"}, *rows[1:]],
     lambda rows: [rows[0], rows[0], rows[2]],
     lambda rows: rows[:-1],
     lambda rows: [{**rows[0], "source_hash": "wrong"}, *rows[1:]],
     lambda rows: [item["html"] for item in rows],
-])
-def test_unkeyed_swapped_missing_repeated_and_wrong_ids_are_rejected(tmp_path, mutation):
+]
+
+
+@pytest.mark.parametrize("mutation", _MISIDENTIFIED)
+def test_misidentified_batch_is_split_and_never_written_out_of_place(tmp_path, mutation):
+    """整批回错身份：先原批重来一次，再对半拆开译。错的那份不入库，每段拿到自己的译文。"""
+    conn = translate(A + B + C, [ZA, ZB, ZC], tmp_path,
+                     mutate=lambda rows: mutation(rows) if len(rows) == 3 else rows)
+    stored = conn.writes[0]
+    body = stored[3]
+    assert body.index("10美元") < body.index("20美元") < body.index("30美元")
+    assert pr.verify(A + B + C, body, stored[7].obj).status == "mapped"
+
+
+@pytest.mark.parametrize("mutation", [_MISIDENTIFIED[index] for index in (1, 3, 4, 5)])
+def test_identity_errors_that_persist_down_to_one_segment_still_reject(tmp_path, mutation):
     with pytest.raises(pr.AlignmentError, match="response-"):
         translate(A + B + C, [ZA, ZB, ZC], tmp_path, mutate=mutation)
 

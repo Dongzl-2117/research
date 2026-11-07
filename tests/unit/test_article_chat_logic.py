@@ -15,10 +15,13 @@ def test_reading_column_stays_680_and_chat_collapses_before_it_would_overflow():
     assert "translateY(110%)" in css
     assert "@media (min-width: 1320px)" in css
     assert "minmax(0, var(--reading-column)) 8px minmax(260px, 1fr)" in css
-    # 外扩阴影会盖住 8px 分割条，字又贴着栏边。白边改留在栏内，图仍铺满 680。
+    # 外扩阴影会盖住 8px 分割条，字又贴着栏边。白边改留在栏内，宽图仍铺满 680。
     assert "box-shadow: 0 0 0 16px" not in css
     assert "padding-left: 20px" in css and "padding-right: 20px" in css
-    assert "margin-left: -20px" in css and "width: calc(100% + 40px)" in css
+    # 图按原尺寸、最多 680：不定死宽度，否则 48px 的小图标也放大成 680 宽。
+    image_rule = css.split(".shell:has(.reader-grid) .reader-grid .prose img {", 1)[1].split("}", 1)[0]
+    assert "max-width: calc(100% + 40px)" in image_rule and "translateX(-50%)" in image_rule
+    assert not any(line.strip().startswith("width:") for line in image_rule.splitlines())
     wide = css.split("@media (min-width: 1320px)", 1)[1]
     assert "padding: 0 0 4px 8px" not in css
     assert "padding: 12px 20px 16px 24px" in wide

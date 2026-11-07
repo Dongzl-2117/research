@@ -1,12 +1,15 @@
 """隔离核验。不写库，不部署，不依赖测试文件。
 
 样本在同目录 semantic_samples.json。没有 DEEPSEEK_API_KEY 时退出，不算实跑。
-有 key 时只调独立核验。单条网络失败记为未测并继续。完整回执写入 semantic-sample.json。
+有 key 时只调独立核验。每例开始和结束都落盘、刷屏，单条网络失败记为未测并继续。
+完整回执逐例写进 semantic-sample.jsonl，并在每例结束后原子更新 semantic-sample.json。
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -15,12 +18,22 @@ from researchlib.translate.harness import evidence_id, verify_facts
 from researchlib.translate.llm import LLMTransportError
 
 HERE = Path(__file__).resolve().parent
+_FIELDS = ("id", "expect", "status", "reason", "sent_evidence_id", "evidence_id")
 
 
 def _network(exc: Exception) -> bool:
     if isinstance(exc, (LLMTransportError, TimeoutError, ConnectionError, OSError)):
         return True
-    return type(exc).__name__ in {"URLError", "HTTPError", "IncompleteRead", "RemoteDisconnected"}
+    if type(exc).__name__ in {"URLError", "HTTPError", "IncompleteRead", "RemoteDisconnected"}:
+        return True
+    # DeepSeek 的 500/502/503 是服务端临时错误，不能算核验结论。
+    return re.search(r"\bHTTP 5\d\d\b", str(exc)) is not None
+
+
+def _write_json(path: Path, rows: list[dict]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _run_one(item: dict, data_dir: Path) -> dict:
@@ -28,7 +41,7 @@ def _run_one(item: dict, data_dir: Path) -> dict:
     sent = evidence_id(source, target)
     try:
         found, raw = verify_facts(source, target, data_dir)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — 单条失败不拖垮其余样本
         return {
             "id": item["id"],
             "expect": item["expect"],
@@ -63,13 +76,27 @@ def main() -> int:
         return 2
     data_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/translate-semantic-sample")
     data_dir.mkdir(parents=True, exist_ok=True)
-    rows = [_run_one(item, data_dir) for item in samples]
+    progress = data_dir / "semantic-sample.jsonl"
     out = data_dir / "semantic-sample.json"
-    out.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    progress.write_text("", encoding="utf-8")
+    rows: list[dict] = []
+    for number, item in enumerate(samples, 1):
+        start = {"event": "start", "number": number, "total": len(samples), "id": item["id"],
+                 "expect": item["expect"]}
+        with progress.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(start, ensure_ascii=False) + "\n")
+            handle.flush()
+        print(json.dumps(start, ensure_ascii=False), flush=True)
+        row = _run_one(item, data_dir)
+        rows.append(row)
+        brief = {key: row[key] for key in _FIELDS}
+        end = {"event": "end", **brief}
+        with progress.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.flush()
+        _write_json(out, rows)
+        print(json.dumps(end, ensure_ascii=False), flush=True)
     print(out)
-    for row in rows:
-        brief = {key: row[key] for key in ("id", "expect", "status", "reason", "sent_evidence_id", "evidence_id")}
-        print(json.dumps(brief, ensure_ascii=False))
     if any(row["status"] not in {row["expect"], "untested"} for row in rows):
         return 1
     if any(row["status"] == "untested" for row in rows):

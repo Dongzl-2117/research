@@ -25,16 +25,29 @@ from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import canonical_body_html, render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
-from researchlib.translate.harness import fact_brief, note_reject, settle_numbers, settle_unshield
+from researchlib.translate.harness import (
+    fact_brief,
+    has_hard_fact,
+    note_reject,
+    settle_numbers,
+)
 from researchlib.translate.language import is_chinese
-from researchlib.translate.llm import GROK_INPUT_CHARS, LLMTransportError, chat_json, model_id, output_tokens
+from researchlib.translate.llm import (
+    GROK_INPUT_CHARS,
+    LLMTransportError,
+    XaiLoginRequiredError,
+    chat_json,
+    model_id,
+    output_tokens,
+)
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import (
     ALIGNMENT_VERSION,
     AlignmentError,
-    leaf_problem,
+    numbers_agree,
     receipt,
     source_manifest,
+    structure_problem,
 )
 from researchlib.translate.provenance import digest as segment_digest
 from researchlib.translate.segments import (
@@ -46,6 +59,7 @@ from researchlib.translate.segments import (
     splice_segments,
     top_level_blocks,
     translatable_blocks,
+    unshield,
 )
 from researchlib.visibility import visible_sql
 
@@ -66,6 +80,8 @@ class TranslateResult:
     status: str  # translated | partial | skipped
     segments: int = 0
     reason: str | None = None
+    # 数字没能自动核对上、照样写入的段数（回执里的 number_review）。
+    review: int = 0
 
 
 class BatchTexts(list[str]):
@@ -255,35 +271,110 @@ def _translate_split(parts: list[str], context: dict, data_dir: Path) -> list[st
     return BatchTexts(left + right, (*getattr(left, "models", ()), *getattr(right, "models", ())))
 
 
+def _reply(parts: list[str], user: dict, data_dir: Path) -> tuple[list[str], Exception | None]:
+    """调一次模型。条数不对、id 或 source_hash 没有逐项回显时把错误交回去，由上一级重来或拆批。
+
+    #217 加逐段身份之后，条数不对在 ``_coerce_translations`` 里就抛了，原来的重试、拆批一次也没走到，
+    模型少回一段整篇就作废。
+    """
+    try:
+        texts = _translate_once(parts, user, data_dir)
+    except AlignmentError as exc:
+        if exc.code.startswith("response-"):
+            return [], exc
+        raise
+    if len(texts) != len(parts):
+        return texts, RuntimeError("translation alignment: count")
+    return texts, None
+
+
+def _repair_note(parts: list[str], texts: list[str], mismatch: Exception) -> str:
+    if isinstance(mismatch, AlignmentError):
+        return (
+            f"上一次 t 没有和 segments 逐项对上（{mismatch.code}）。必须正好 {len(parts)} 项，"
+            "按顺序原样带回每段的 id 和 source_hash。按 segments 下标一一对应重译，只输出 JSON。"
+        )
+    return f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。按 segments 下标一一对应重译，只输出 JSON。"
+
+
 def _translate_batch(parts: list[str], context: dict, data_dir: Path) -> list[str]:
-    """译一批段。返回值和 parts 等长；对不齐或有空白段就抛错，不把错位数组交出去。"""
+    """译一批段。返回值和 parts 等长；对不齐或有空白段就抛错，不把错位数组交出去。
+
+    少段、多段或身份没对上：先按原批重试一次；仍不对就对半拆开再译，直到一段一批。
+    """
     if not parts:
         return []
     # 上一级的 repair 只针对那一批的条数，不能带进更小的一批。
     context = {key: value for key, value in context.items() if key != "repair"}
     user = {**context, "segments": parts}
-    texts = _translate_once(parts, user, data_dir)
-    problem = translation_problem(parts, texts)
-    if problem == "count":
-        # 少段 / 多段先按原批重试一次，要求条数正好。
-        texts = _translate_once(
-            parts,
-            {
-                **user,
-                "repair": (
-                    f"上一次 t 长度是 {len(texts)}，必须正好 {len(parts)}。"
-                    "按 segments 下标一一对应重译，只输出 JSON。"
-                ),
-            },
-            data_dir,
-        )
-        problem = translation_problem(parts, texts)
-    if problem == "count" and len(parts) > 1:
-        logger.info("译文条数对不齐（segments=%s t=%s），对半拆开重试", len(parts), len(texts))
+    texts, mismatch = _reply(parts, user, data_dir)
+    if mismatch:
+        texts, mismatch = _reply(parts, {**user, "repair": _repair_note(parts, texts, mismatch)}, data_dir)
+    if mismatch and len(parts) > 1:
+        logger.info("译文和这一批对不齐（segments=%s：%s），对半拆开重试", len(parts), mismatch)
         return _translate_split(parts, context, data_dir)
+    if mismatch:
+        raise mismatch
+    problem = translation_problem(parts, texts)
     if problem:
         raise RuntimeError(f"translation alignment: {problem}")
     return texts
+
+
+def _restore_batch(
+    texts: list[str], shields: list, sources: list[str], offset: int,
+) -> tuple[list[str], list[int]]:
+    """把一批译文还原成带链接、图片的 HTML。
+
+    链接、图片、代码、占位符不对就抛错（整批重来）。数字对不上的段只记下标，
+    交给独立核验；解析器不单独决定收不收。
+    """
+    restored: list[str] = []
+    flagged: list[int] = []
+    for index, (text, item, source) in enumerate(zip(texts, shields, sources, strict=True)):
+        value = unshield(text, item)
+        if value is None:
+            raise AlignmentError("unshield")
+        problem = structure_problem(source, value)
+        if problem:
+            raise AlignmentError(f"slot-{offset + index}-{problem}")
+        if not numbers_agree(source, value):
+            flagged.append(index)
+        restored.append(value)
+    return restored, flagged
+
+
+def _exhausted(error: Exception) -> bool:
+    """条数或身份对不上的错误从 _translate_batch 出来时，已经重来过、拆到一段一批了。"""
+    if isinstance(error, AlignmentError):
+        return error.code.startswith("response-")
+    return str(error) == "translation alignment: count"
+
+
+def _settle_batch(
+    parts: list[str], context: dict, shields: list, sources: list[str], offset: int, data_dir: Path,
+) -> tuple[list[str], list[int], set[str]]:
+    """译一批、还原、核对。结构不对时整批再译一次，仍不对就抛错。
+
+    返回还原后的译文、解析器认为数字没对上的下标（只作线索）和实际用到的模型。
+    数字收不收由 ``settle_numbers`` 的独立核验决定，解析器不单独否决。
+    """
+    error: Exception | None = None
+    for _attempt in range(2):
+        try:
+            got = _translate_batch(parts, context, data_dir)
+            restored, flagged = _restore_batch(got, shields, sources, offset)
+        except (LLMTransportError, XaiLoginRequiredError):
+            # 同一次请求已经按 RETRY_DELAYS 重试过。再开一批会把失败时的花费乘二。
+            raise
+        except Exception as exc:  # noqa: BLE001 — 内容对不齐时整批再试一次
+            if _exhausted(exc):
+                # 已经重来并拆到一段一批还对不上，整批再走一遍只会把花费翻倍。
+                raise
+            error = exc
+            continue
+        return restored, flagged, set(getattr(got, "models", ()))
+    raise error if error is not None else AlignmentError("batch")
 
 
 
@@ -355,28 +446,30 @@ def _translate_title(title: str, data_dir: Path) -> str:
     """标题单独译一次，给检索和列表用。模型没译好返回空串，由 complete 规则判为未完成。
 
     连接错误在 chat_json 里已经按预算重试过。这里再吞掉会记成对齐拒绝，两次之后这篇文章就不再译。
+    数字没对上时再要一次；两次都没对上就用第一次的，标题不再因为数字写法让整篇作废。
     """
     title = (title or "").strip()
     if not title or is_chinese(title):
         return ""
-    last_exc: Exception | None = None
+    source = escape(title)
+    fallback = ""
     for _attempt in range(2):
         try:
-            texts = _translate_batch([escape(title)], {
-                "segment_ids": ["title"], "source_hashes": [segment_digest(escape(title))],
+            texts = _translate_batch([source], {
+                "segment_ids": ["title"], "source_hashes": [segment_digest(source)],
             }, data_dir)
-        except LLMTransportError:
+        except (LLMTransportError, XaiLoginRequiredError):
             raise
-        except Exception as exc:  # noqa: BLE001 — 标题失败要重试一次再放弃
-            last_exc = exc
+        except Exception:  # noqa: BLE001 — 标题失败要重试一次再放弃
             continue
         plain = re.sub(r"<[^>]+>", "", texts[0] if texts else "")
         got = html_lib.unescape(re.sub(r"\s+", " ", plain)).strip()[:300]
-        if got and leaf_problem(escape(title), got) is None:
+        if not got or structure_problem(source, got):
+            continue
+        if numbers_agree(source, got):
             return got
-    if last_exc is not None:
-        return ""
-    return ""
+        fallback = fallback or got
+    return fallback
 
 
 def reuse_duplicate_sources(sources: list[str], translations: list[str | None]) -> list[str | None]:
@@ -433,6 +526,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
 
     translations: list[str | None] = [None] * len(parts)
     models: set[str] = set()
+    review_slots: set[int] = set()
     chunks = _batch_chunks(parts)
     offset = 0
     for chunk in chunks:
@@ -446,67 +540,46 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             "segment_ids": [manifest["segments"][targets[offset + i][0]]["id"] for i in range(len(chunk))],
             "source_hashes": [manifest["segments"][targets[offset + i][0]]["source_hash"] for i in range(len(chunk))],
         }
-        try:
-            got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
-        except LLMTransportError:
-            # 同一次请求已经按 RETRY_DELAYS 重试过。再开一批会把失败时的花费乘二。
-            raise
-        except Exception:
-            # 条数或内容对不齐时再试一次。
-            got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
-        for i, text in enumerate(got):
-            slot = offset + i
-            source_html = targets[slot][1]
-            segment = manifest["segments"][targets[slot][0]]
-            restored, unshield_stages = settle_unshield(
-                shielded[slot].html, text, shielded[slot], data_dir,
-                segment_id=segment["id"], source_hash=segment["source_hash"],
-            )
-            if restored is None:
-                note_reject(
-                    data_dir,
-                    article_id=article_id,
-                    slot=f"slot-{slot}-unshield",
-                    kind="unshield",
-                    source=shielded[slot].html,
-                    draft=unshield_stages[-1]["output"],
-                    stages=unshield_stages,
+        slots = range(offset, offset + len(chunk))
+        # 译一批、还原。链接、图片、代码、占位符不对就整批再译一次，再不行整篇不入库。
+        # 数字是否保真由 settle_numbers 独立核验：确认冲突的不入库；模型看不出、
+        # 修一次仍不确定的段照样写入，序号记进回执 number_review。
+        restored, _flagged, used = _settle_batch(
+            chunk,
+            {k: v for k, v in batch_ctx.items() if v},
+            [shielded[i] for i in slots],
+            [targets[i][1] for i in slots],
+            offset,
+            data_dir,
+        )
+        for i, text in zip(slots, restored, strict=True):
+            source_html = targets[i][1]
+            segment = manifest["segments"][targets[i][0]]
+            if has_hard_fact(source_html) or has_hard_fact(text):
+                text, numbers, number_stages = settle_numbers(
+                    source_html, text, data_dir,
+                    segment_id=segment["id"], source_hash=segment["source_hash"],
                 )
-                raise AlignmentError("unshield")
-            structure = leaf_problem(source_html, restored)
-            if structure not in {None, "numbers"}:
-                note_reject(
-                    data_dir,
-                    article_id=article_id,
-                    slot=f"slot-{slot}-{structure}",
-                    kind=structure,
-                    source=source_html,
-                    draft=restored,
-                    stages=[{
-                        "step": "structure", "input": source_html, "output": restored, "reason": structure,
-                    }],
-                )
-                raise AlignmentError(f"slot-{slot}-{structure}")
-            restored, numbers, number_stages = settle_numbers(
-                source_html, restored, data_dir,
-                segment_id=segment["id"], source_hash=segment["source_hash"],
-            )
-            if numbers:
-                note_reject(
-                    data_dir,
-                    article_id=article_id,
-                    slot=f"slot-{slot}-{numbers}",
-                    kind=numbers,
-                    source=source_html,
-                    draft=number_stages[-1]["output"],
-                    stages=number_stages,
-                )
-                raise AlignmentError(
-                    f"slot-{slot}-{numbers}",
-                    fact_brief(source_html, number_stages[-1]["output"]),
-                )
-            translations[slot] = restored
-        models.update(getattr(got, "models", ()))
+                if numbers is None:
+                    review_slots.discard(segment["ordinal"])
+                elif numbers == "numbers-uncertain":
+                    review_slots.add(segment["ordinal"])
+                else:
+                    note_reject(
+                        data_dir,
+                        article_id=article_id,
+                        slot=f"slot-{i}-{numbers}",
+                        kind=numbers,
+                        source=source_html,
+                        draft=number_stages[-1]["output"],
+                        stages=number_stages,
+                    )
+                    raise AlignmentError(
+                        f"slot-{i}-{numbers}",
+                        fact_brief(source_html, number_stages[-1]["output"]),
+                    )
+            translations[i] = text
+        models.update(used)
         offset += len(chunk)
 
     # 按叶子段原位写回。blockquote / 列表 / 表格的外壳留着，只换里面的那一段。
@@ -537,7 +610,9 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     complete = done == len(targets) and (bool(title_zh) if needs_title_zh else True)
     if not complete:
         raise AlignmentError("incomplete")
-    provenance = receipt(manifest, zh_html, model=", ".join(sorted(models)) or model_id())
+    provenance = receipt(
+        manifest, zh_html, model=", ".join(sorted(models)) or model_id(), review=sorted(review_slots),
+    )
     # 模型请求期间可有新的导入；锁住文章后重新核对，不能把旧输入的结果盖到新原稿上。
     current = conn.execute(
         "SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash"
@@ -571,10 +646,14 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
     # 译文切块进检索：中文问题也能找到英文文章，引用落到对照页那一段。
     replace_translation_chunks(conn, article_id)
     conn.commit()
+    review = len(provenance.get("number_review") or [])
+    if review:
+        logger.info("#%s 有 %s 段数字没能自动核对上，照样写入，回执 number_review 里有序号", article_id, review)
     return TranslateResult(
         article_id,
         "translated" if complete else "partial",
         segments=done,
+        review=review,
     )
 
 

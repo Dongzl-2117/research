@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
-from researchlib.translate.numbers import digits_hide_scale_change, same_numeric_facts
+from researchlib.translate.numbers import digits_hide_scale_change, has_hard_facts, same_numeric_facts
 from researchlib.translate.segments import iter_segments, splice_segments, split_sentence_paragraphs, top_level_blocks
 
 SCHEMA_VERSION = 1
@@ -26,11 +26,11 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # 周、月、天、小时分开记，可以挪到金额前面；比例两端之间不能再夹别的数字。
 # 6：a week、糟糕的一周、过去一周、week-old、各一周和 8 天是同一段时间；
 # couple/few/几周可以写成两周，写明 two 不能收成几。每月、每年的标价不是「每 X 美元就有 Y 美元」。
-# 7：曾用数字多重集合放行。只出现在未合并的隔离试跑里，正式环境没有跑过。
+# 7：数字对不上的段不再让整篇作废：同一批里这几段补译一次，还对不上就照样写入，记进回执的 number_review。
 # 8：有硬事实就独立核验，单笔数字也不跳过。一条引用只盖住一笔事实。
 # 对象可以在引用外面，但要是同一句里的连续原文；空对象不行。same 必须是明确的
-# true 或 false。钟点、日期、月份、财季、百分数、年份和金额都不丢。
-# 没通过只修一次再核验。修复回执要带回 id 和 source_hash。
+# true 或 false。核验确认冲突的段不入库；模型看不出、修一次仍不确定的段照样写入，
+# 序号进 number_review。核验过了的段不再按规则重算待核。
 ALIGNMENT_VERSION = 8
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
@@ -130,8 +130,11 @@ def _resource_hrefs(facts: Resources) -> list[str]:
     return [href for href in facts.links if href]
 
 
-def leaf_problem(source: str, target: str) -> str | None:
-    """数字按事实原序保留；资源逐段、带重数比较，不能拿别处的资源抵消。"""
+def structure_problem(source: str, target: str) -> str | None:
+    """链接、图片、代码和占位符逐段、带重数比较，不能拿别处的资源抵消。
+
+    这几样少一个，这段就没法原位写回，译文整批重来。
+    """
     before, after = Resources(source), Resources(target)
     if _resource_hrefs(before) != _resource_hrefs(after):
         return "links"
@@ -139,15 +142,53 @@ def leaf_problem(source: str, target: str) -> str | None:
         return "media"
     if before.codes != after.codes:
         return "code"
-    # 字符级相同通常直接过，避免把版本号约成小数。两边数字串一样但数量级不同
-    # （10 billion 写成 10亿）仍然是另一个数。数字串不同才走日期、单位和财季的等值。
-    if numeric_anchors(source) == numeric_anchors(target):
-        if digits_hide_scale_change(source, target):
-            return "numbers"
-    elif not same_numeric_facts(source, target):
-        return "numbers"
     if re.search(r"⟦\d+⟧", target):
         return "placeholder"
+    return None
+
+
+def numbers_agree(source: str, target: str) -> bool:
+    """数字按事实原序保留。
+
+    字符级相同通常直接过，避免把版本号约成小数。两边数字串一样但数量级不同
+    （10 billion 写成 10亿）仍然是另一个数。数字串不同才走日期、单位和财季的等值。
+    """
+    if numeric_anchors(source) == numeric_anchors(target):
+        return not digits_hide_scale_change(source, target)
+    return same_numeric_facts(source, target)
+
+
+def leaf_problem(source: str, target: str) -> str | None:
+    """结构和数字一起核对。
+
+    译制写入不再因为一段数字对不上整篇作废（见 ``receipt`` 和 ``misplaced_slot``）。
+    旧粗段按句展开（``anchored_legacy_reflow``）没有回执，只能拿数字确认对应，仍用这一条。
+    """
+    problem = structure_problem(source, target)
+    if problem:
+        return problem
+    return None if numbers_agree(source, target) else "numbers"
+
+
+def misplaced_slot(sources: Sequence[str], targets: Sequence[str], flagged: Sequence[int]) -> int | None:
+    """数字没对上的一段，若和同一批另一段原文的数字正好一致，就是串段，不是译法不同。
+
+    返回第一个串段的下标，没有返回 None。另一段原文没有必须对上的数字时不拿来比，
+    免得「都没有数字」互相对上。
+    """
+    from collections import Counter
+
+    if not flagged:
+        return None
+    hard = [has_hard_facts(source) for source in sources]
+    for index in flagged:
+        own = Counter(numeric_anchors(sources[index]))
+        if own and own == Counter(numeric_anchors(targets[index])):
+            # 数字还是这一段自己的，只是换了先后（「在20个国家有1000名员工」）。
+            continue
+        for other, source in enumerate(sources):
+            if other != index and hard[other] and numbers_agree(source, targets[index]):
+                return index
     return None
 
 
@@ -192,21 +233,52 @@ def _skeleton(value: str) -> str:
     }))
 
 
-def receipt(manifest: dict, translated: str, *, model: str = "") -> dict:
-    """只有每个槽位、资源和完整外壳都通过，才签发可持久化回执。"""
+def receipt(
+    manifest: dict,
+    translated: str,
+    *,
+    model: str = "",
+    review: Sequence[int] | None = None,
+) -> dict:
+    """每个槽位的资源和完整外壳都通过，才签发可持久化回执。
+
+    ``review`` 由独立核验给出：模型看不出、修一次仍不确定的槽位序号。传 None 时
+    退回按现在的数字规则重算，只给旧调用和测试用。``verify`` 不比较 ``number_review``：
+    数字规则以后再改，已经入库的回执不会因此变成不兼容、整页退成两栏。
+    """
     targets = iter_segments(translated)
     if len(targets) != len(manifest["segments"]):
         raise AlignmentError("receipt-count")
     if _skeleton(manifest["source_snapshot"]) != _skeleton(translated):
         raise AlignmentError("receipt-skeleton")
+    wanted = None if review is None else {int(item) for item in review}
     entries = []
+    unverified = []
     for source, target in zip(manifest["segments"], targets, strict=True):
-        problem = leaf_problem(source["source"], target.html)
+        problem = structure_problem(source["source"], target.html)
         if problem:
             raise AlignmentError(f"slot-{source['ordinal']}-{problem}")
+        if wanted is not None:
+            if int(source["ordinal"]) in wanted:
+                unverified.append(source["ordinal"])
+        elif not numbers_agree(source["source"], target.html):
+            unverified.append(source["ordinal"])
         entries.append({**source, "target": target.html, "target_hash": digest(canonical_html(target.html))})
     return {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
-            "semantic_status": "not-reviewed"}
+            "semantic_status": "not-reviewed", "number_review": unverified}
+
+
+def unverified_numbers(provenance: dict | None) -> list[int]:
+    """回执里独立核验没给出结论的槽位序号。没有回执的旧稿返回空。"""
+    if not isinstance(provenance, dict):
+        return []
+    found = []
+    for item in provenance.get("number_review") or []:
+        try:
+            found.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(found))
 
 
 @dataclass(frozen=True)

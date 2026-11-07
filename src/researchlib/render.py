@@ -529,17 +529,49 @@ def _cjk(text: str) -> str:
     return "".join(ch for ch in text if "\u4e00" <= ch <= "\u9fff")
 
 
+def _phrase_index(texts: list[str]) -> dict[str, list[tuple[int, int]]]:
+    """每个 ``_PHRASE`` 字的片段出现在第几段的第几个字。一页的段落建一次，每张图都拿来查。"""
+    index: dict[str, list[tuple[int, int]]] = {}
+    for number, text in enumerate(texts):
+        for start in range(len(text) - _PHRASE + 1):
+            index.setdefault(text[start : start + _PHRASE], []).append((number, start))
+    return index
+
+
+def _phrase_scores(ocr: str, texts: list[str], index: dict[str, list[tuple[int, int]]]) -> list[int]:
+    """识图的汉字和每一段汉字最长的一段重合，最多算到 24 字，短于 ``_PHRASE`` 记 0。
+
+    index 是 ``_phrase_index(texts)``。长过 ``_PHRASE`` 的重合一定从两边都有的某个片段开始，所以只从这些片段
+    往后接着比。以前对每一段都从 24 字到 5 字逐个长度把识图文字切一遍再查，阅读页每次打开都现算：
+    30 张图、100 段的公众号文章要算 3 秒左右，60 张图要 12 秒。
+    """
+    scores = [0] * len(texts)
+    if len(ocr) < _PHRASE:
+        return scores
+    caps = [min(24, len(ocr), len(text)) for text in texts]
+    for at in range(len(ocr) - _PHRASE + 1):
+        for number, start in index.get(ocr[at : at + _PHRASE], ()):
+            text = texts[number]
+            cap = caps[number]
+            if scores[number] >= cap or (at and start and ocr[at - 1] == text[start - 1]):
+                # 已经到顶；或者往前还接得上，这里是前一处那段重合的后半截，前一处已经比过，只会更长。
+                continue
+            size = _PHRASE
+            while (
+                size < cap
+                and at + size < len(ocr)
+                and start + size < len(text)
+                and ocr[at + size] == text[start + size]
+            ):
+                size += 1
+            if size > scores[number]:
+                scores[number] = size
+    return scores
+
+
 def _phrase_overlap(left: str, right: str) -> int:
-    """两边汉字里最长的一段重合。短于 ``_PHRASE`` 记 0。"""
-    if len(left) < _PHRASE or len(right) < _PHRASE:
-        return 0
-    cap = min(24, len(left), len(right))
-    for size in range(cap, _PHRASE - 1, -1):
-        grams = {left[index : index + size] for index in range(len(left) - size + 1)}
-        for index in range(len(right) - size + 1):
-            if right[index : index + size] in grams:
-                return size
-    return 0
+    """两边汉字里最长的一段重合，最多算到 24 字。短于 ``_PHRASE`` 记 0。"""
+    return _phrase_scores(left, [right], _phrase_index([right]))[0]
 
 
 def _table_score(ocr: str, paragraph: str) -> int:
@@ -570,9 +602,17 @@ def _table_score(ocr: str, paragraph: str) -> int:
     return len(values & seen_values) * 10 + len(years & seen_years)
 
 
-def _best_paragraph(ocr: str, paragraphs: list[str]) -> int | None:
-    cjk_ocr = _cjk(ocr)
-    phrases = [_phrase_overlap(cjk_ocr, _cjk(paragraph)) for paragraph in paragraphs]
+def _best_paragraph(
+    ocr: str,
+    paragraphs: list[str],
+    cjk_paragraphs: list[str] | None = None,
+    index: dict[str, list[tuple[int, int]]] | None = None,
+) -> int | None:
+    if cjk_paragraphs is None:
+        cjk_paragraphs = [_cjk(paragraph) for paragraph in paragraphs]
+    if index is None:
+        index = _phrase_index(cjk_paragraphs)
+    phrases = _phrase_scores(_cjk(ocr), cjk_paragraphs, index)
     if phrases and max(phrases) >= _PHRASE:
         best = max(phrases)
         winners = [index for index, score in enumerate(phrases) if score == best]
@@ -600,6 +640,8 @@ def _relocate_images(html: str, texts: dict[str, str]) -> str:
     if not paragraphs:
         return html
     plain = [item[2] for item in paragraphs]
+    cjk_plain = [_cjk(text) for text in plain]
+    index = _phrase_index(cjk_plain)
     moves: list[tuple[int, int, str, int]] = []
     for image in _IMG_TAG.finditer(html):
         if comments_at != -1 and image.start() >= comments_at:
@@ -610,7 +652,7 @@ def _relocate_images(html: str, texts: dict[str, str]) -> str:
         ocr = (texts.get(found.group(1)) or "").strip()
         if len(_cjk(ocr)) < _PHRASE and len(_YEAR_VALUE.findall(ocr)) < 5:
             continue
-        target = _best_paragraph(ocr, plain)
+        target = _best_paragraph(ocr, plain, cjk_plain, index)
         if target is None:
             continue
         containing = next(

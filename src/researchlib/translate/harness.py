@@ -19,7 +19,7 @@ from pathlib import Path
 from researchlib.translate.llm import LLMTransportError, output_tokens
 from researchlib.translate.numbers import _clocks_match, _extract, _extract_located, _text
 from researchlib.translate.prompts import SYSTEM_BODY
-from researchlib.translate.provenance import leaf_problem, numeric_anchors
+from researchlib.translate.provenance import leaf_problem, numeric_anchors, structure_problem
 from researchlib.translate.segments import Shielded, unshield
 
 logger = logging.getLogger("researchlib.translate")
@@ -45,7 +45,7 @@ _VERIFY_SYSTEM = (
     '"relation":"比例、起止、时间或空","same":true}]}\n'
     "equivalent 时 same 必须是 true，conflict 时 same 必须是 false。对象字段不能空。\n"
     "object_source / object_target 可以不在数字片段里面，但要是该侧同一句里的连续原文，不要改写成解释。\n"
-    "一条 claim 只许盖住一笔事实，不能用整段话盖住多笔。每一笔数字、时间、百分数、年份都要单独一条。\n"
+    "一条 claim 只许盖住一笔事实，不能用整段话盖住多笔。每条带数字的句子至少要有一条 claim。\n"
     "数字写法和中文语序可以不同。单位、数量级、钟点上下午、日期、月份、财季、对象或方向不同就是 conflict。\n"
     "看不出就 uncertain。"
 )
@@ -365,8 +365,53 @@ def _object_ok(html: str, quote: str, word: object) -> bool:
     return False
 
 
+_SENTENCE_END = re.compile(r"(?<!\d)\.(?!\d)|[。！!？?\n]")
+_FOOTNOTE = re.compile(r"\u0001\d+\u0001")
+
+
+def _sentences(text: str) -> list[tuple[int, int]]:
+    spans = []
+    start = 0
+    for match in _SENTENCE_END.finditer(text):
+        spans.append((start, match.end()))
+        start = match.end()
+    if start < len(text):
+        spans.append((start, len(text)))
+    return spans
+
+
+def _uncovered_digit_sentences(text: str, quotes: list[str]) -> list[str]:
+    """每条带阿拉伯数字的句子，至少要有一条引用落在里面。
+
+    只用来提示模型漏看了哪一句，不比较解析出来的键，也不要求逐笔相等。
+    脚注圈号里的数字不算正文。
+    """
+    text = _FOOTNOTE.sub(lambda match: " " * len(match.group(0)), text)
+    located: list[tuple[int, int]] = []
+    for quote in quotes:
+        folded = _fold(quote)
+        if not folded:
+            continue
+        at = text.find(folded)
+        while at >= 0:
+            located.append((at, at + len(folded)))
+            at = text.find(folded, at + 1)
+    missing = []
+    for start, end in _sentences(text):
+        sentence = text[start:end]
+        if not re.search(r"\d", sentence):
+            continue
+        if not any(quote_start < end and quote_end > start for quote_start, quote_end in located):
+            missing.append(sentence.strip()[:40])
+    return missing
+
+
 def apply_report(source: str, target: str, data: object) -> Judgment:
-    """核验结论必须带回 evidence_id 和能对上原文的片段。没有依据就不能通过。"""
+    """核验结论必须带回 evidence_id 和能对上原文的片段。没有依据就不能通过。
+
+    解析器只提供线索：它抽出的事实用来发现同一段引用里的矛盾，并要求每条带数字的
+    句子都被看过；不要求引用逐笔盖住解析器的键，也不拿键序列相等当通过条件。
+    """
     if not isinstance(data, dict) or data.get("evidence_id") != evidence_id(source, target):
         return Judgment("uncertain", "evidence-id")
     verdict = data.get("verdict")
@@ -378,7 +423,7 @@ def apply_report(source: str, target: str, data: object) -> Judgment:
     if not claims:
         return Judgment("uncertain", "evidence-missing")
     source_quotes: list[str] = []
-    target_quotes: list[str] = []
+    pairs: list[tuple[str, str, bool]] = []
     for claim in claims:
         if not isinstance(claim, dict):
             return Judgment("uncertain", "evidence-missing")
@@ -393,21 +438,21 @@ def apply_report(source: str, target: str, data: object) -> Judgment:
             return Judgment("uncertain", "evidence-missing")
         if not _object_ok(target, target_quote, claim.get("object_target")):
             return Judgment("uncertain", "evidence-missing")
-        if verdict == "equivalent" and claim.get("same") is not True:
-            return Judgment("uncertain", "evidence-missing")
-        if verdict == "conflict" and claim.get("same") is not False:
+        same = claim.get("same")
+        if same is not True and same is not False:
             return Judgment("uncertain", "evidence-missing")
         clash = _span_conflict(source_quote, target_quote)
-        if clash and verdict == "equivalent":
+        if clash and same:
             return Judgment("contradict", clash)
         source_quotes.append(source_quote)
-        target_quotes.append(target_quote)
+        pairs.append((source_quote, target_quote, same))
     source_text, source_spans = _fact_spans(source)
     target_text, target_spans = _fact_spans(target)
     used_source: set[int] = set()
     used_target: set[int] = set()
-    bound = False
-    for source_quote, target_quote in zip(source_quotes, target_quotes, strict=True):
+    bound_true = False
+    bound_false = False
+    for source_quote, target_quote, same in pairs:
         source_bind, source_ids = _bind_quote(source_text, source_spans, source_quote, used_source)
         target_bind, target_ids = _bind_quote(target_text, target_spans, target_quote, used_target)
         if "miss" in {source_bind, target_bind}:
@@ -418,17 +463,25 @@ def apply_report(source: str, target: str, data: object) -> Judgment:
             continue
         used_source.update(source_ids)
         used_target.update(target_ids)
-        bound = True
+        if same:
+            bound_true = True
+        else:
+            bound_false = True
     if verdict == "conflict":
-        if not bound:
+        if not bound_false:
             return Judgment("uncertain", "evidence-broad")
         return Judgment("contradict", "conflict")
-    if not bound or used_source != set(range(len(source_spans))) or used_target != set(range(len(target_spans))):
+    if not all(same for _source, _target, same in pairs):
+        return Judgment("uncertain", "evidence-missing")
+    if not bound_true:
+        return Judgment("uncertain", "evidence-missing")
+    missing = _uncovered_digit_sentences(source_text, source_quotes)
+    if missing:
         return Judgment("uncertain", "evidence-incomplete")
     return Judgment("accept", "equivalent")
 
 
-def _has_hard_fact(html: str) -> bool:
+def has_hard_fact(html: str) -> bool:
     return any(fact.hard for fact in _extract(_fold(html)))
 
 
@@ -473,7 +526,7 @@ def settle_numbers(
     source_hash: str | None = None,
 ) -> tuple[str, str | None, list[dict]]:
     """有硬事实就独立核验，单笔数字也不跳过。没有硬事实才直接留下。没通过只修一次再核验。"""
-    if not _has_hard_fact(source) and not _has_hard_fact(draft):
+    if not has_hard_fact(source) and not has_hard_fact(draft):
         return draft, None, [{
             "step": "check", "input": source, "output": draft,
             "status": "accept", "reason": "no-number",
@@ -493,13 +546,30 @@ def settle_numbers(
             source, draft, data_dir, segment_id=segment_id, source_hash=source_hash,
         )
     except LLMTransportError:
-        raise
+        stages.append({
+            "step": "repair", "input": source, "output": draft,
+            "status": "untested", "reason": "request-failed",
+        })
+        if first.status == "uncertain":
+            return draft, _code("uncertain"), stages
+        return draft, _code(first.reason), stages
     if identity:
         stages.append({
             "step": "repair", "input": source, "output": draft,
             "rejected": rejected, "status": "discarded", "reason": identity,
         })
-        return draft, _code("uncertain"), stages
+        if first.status == "uncertain":
+            return draft, _code("uncertain"), stages
+        return draft, _code(first.reason), stages
+    broken = structure_problem(source, revised)
+    if broken:
+        stages.append({
+            "step": "repair", "input": source, "output": revised,
+            "status": "discarded", "reason": broken,
+        })
+        if first.status == "uncertain":
+            return draft, _code("uncertain"), stages
+        return draft, _code(first.reason), stages
     try:
         second, raw_second = verify_facts(source, revised, data_dir)
     except LLMTransportError:

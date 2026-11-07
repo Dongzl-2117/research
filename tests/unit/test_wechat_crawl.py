@@ -137,6 +137,14 @@ def test_wechat_html_rejoins_leading_punctuation_and_split_year():
     )
 
 
+def test_wechat_html_keeps_lone_section_numbers():
+    """小节号「01」单独一段，入库时照原样留着；原文页 HTML 不存，这里删了就找不回来。"""
+    markdown, _ = dajiala_markdown(
+        "<p>引子说完了。</p><section><span>01</span></section><section><strong>先说生意模式</strong></section>"
+    )
+    assert markdown == "引子说完了。\n\n01\n\n**先说生意模式**"
+
+
 def test_bold_split_across_paragraphs_is_dropped_not_left_dangling():
     markdown, _ = dajiala_markdown("<strong><p>一</p><p>二</p></strong><p>链接<a href='https://a.example/x'>原文</a></p>")
     assert markdown == "一\n\n二\n\n链接[原文](https://a.example/x)"

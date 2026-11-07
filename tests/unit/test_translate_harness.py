@@ -583,7 +583,13 @@ def test_a_rejected_article_does_not_store_a_translation(tmp_path):
         calls.append(user)
         if user.get("verify"):
             return ChatJsonResult(
-                data={"evidence_id": user["evidence_id"], "verdict": "uncertain", "claims": []},
+                data={
+                    "evidence_id": user["evidence_id"], "verdict": "conflict",
+                    "claims": [{
+                        "source": "10 dollars", "target": "20美元",
+                        "object_source": "Acme", "object_target": "甲公司", "same": False,
+                    }],
+                },
                 model="synthetic-model",
                 usage=None,
                 latency_ms=0,
