@@ -138,6 +138,23 @@ def _problem(source: str, target: str) -> str | None:
     ("The spin-out was a few years ago and the premium was 46%.", "分拆是两三年前的事，溢价是46%。"),
     ("That was the critical point a decade ago.", "那是十年前的关键节点。"),
     ("GitHub mattered a century ago in this note.", "在这篇笔记里，GitHub 是一百年前的事。"),
+    ("It arrived a week later.", "一周后到了。"),
+    ("Apple’s bad week started on Tuesday.", "苹果糟糕的一周从周二开始。"),
+    ("Coverage intensified over the past week.", "过去一周报道明显加密。"),
+    ("That was week-old news.", "那是一周前的新闻。"),
+    ("The outage hit this week.", "故障发生在本周。"),
+    ("I set aside eight personal days.", "我留了8天个人假。"),
+    ("The trip takes twelve days.", "这趟要十二天。"),
+    ("The trip takes 2 weeks.", "这趟要两周。"),
+    ("It paused for one week in August and one week in December.", "它在8月和12月各停一周。"),
+    ("A couple of weeks later the note resurfaced.", "几周后这篇笔记又冒出来了。"),
+    ("Sign-ups in the weeks prior still count.", "前几周的注册仍然算数。"),
+    ("Subscribers receive a full first month.", "订阅用户能获得完整的一个月。"),
+    ("I charge $10/month or $100/year.", "我收费是每月 10 美元或每年 100 美元。"),
+    ("The service is about $100/month and the content is about $60/subscriber.",
+     "这项服务平均每月约100美元，内容成本约为每位订户60美元。"),
+    ("Turner made $0.80 for every $1.", "特纳每获得1美元，就能获得约0.80美元。"),
+    ("Week of March 25-29, 2013", "2013年3月25日至29日这一周"),
 ])
 def test_archive_patterns_pass_the_slot_number_check(source, target):
     assert _problem(source, target) is None
@@ -493,6 +510,123 @@ _LIVE_FALSE_REJECTS = [
 ]
 
 
+# 版本 5 实跑的八段。前两篇在版本 4 能过，版本 5 把「一周 / 8天」和每月标价判错。
+_V6_REGRESSIONS = [
+    (
+        21926,
+        "<p>Start with Kalanick and Uber: TIME’s summary of the situation is certainly not wrong — "
+        "it was the publication of the Holder Report, from an investigation initiated by Fowler’s post, "
+        "that led to Kalanick first taking a leave of absence and then, a week later, resigning under "
+        "pressure.</p>",
+        "<p>先从卡兰尼克和Uber说起：《时代》对局面的概括肯定没错——"
+        "正是福勒的文章启动调查后出炉的霍尔德报告一经发布，"
+        "卡兰尼克便先开始休假，随后又在一周后迫于压力辞职。</p>",
+    ),
+    (
+        21926,
+        "<p>The intervening four months, though, were filled with a whole host of additional "
+        "controversies.</p>",
+        "<p>不过，中间这四个月里还充斥着许多其他争议。</p>",
+    ),
+    (
+        22082,
+        "<p>Stratechery does not publish on most U.S. and Taiwanese public holidays, and for one week "
+        "in August and one week in December. In addition, I have allocated myself up to eight personal "
+        "days off. I will also take up to eight days of vacation.</p>",
+        "<p>Stratechery 在大部分公共假日不发布文章，并在8月和12月各停更一周。"
+        "此外，我给自己预留了最多8天个人假。我还会休最多8天假。</p>",
+    ),
+    (
+        22082,
+        "<p>Stratechery will be off for two weeks over Christmas. Subscribers who sign-up in the weeks "
+        "prior to my vacation will receive a full first month.</p>",
+        "<p>Stratechery 将停更两周。在我休假前几周注册的用户，能获得完整的一个月。</p>",
+    ),
+    (
+        22082,
+        "<p>This story is actually a couple of weeks old.</p>",
+        "<p>这篇报道其实是几周前发布的。</p>",
+    ),
+    (
+        22082,
+        "<p>Keep in mind that a month ago the company disclosed a 12% stake.</p>",
+        "<p>别忘了，一个月前公司披露了12%的股份。</p>",
+    ),
+    (
+        21998,
+        "<p>There was an interesting aside about Apple’s bad week that I wrote about yesterday. "
+        "It turns out that a user posted the bug back on November 13.</p>",
+        "<p>昨天我写到苹果的糟糕一周，有个有意思的插曲。原来有用户在11月13日把这个漏洞发了出来。</p>",
+    ),
+    (
+        22065,
+        "<h4>Apple’s Bad Week</h4>",
+        "<h4>苹果糟糕的一周</h4>",
+    ),
+    (
+        21985,
+        "<p>Long-time readers know I have wrestled with this topic for years, intensely so over the "
+        "past week.</p>",
+        "<p>长期读者知道我为这个题目纠结了多年，过去一周尤其如此。</p>",
+    ),
+    (
+        21934,
+        "<p>Meredith had no interest in weekly publications: week-old news used to frame what was "
+        "reported in daily newspapers. Weekly magazines have no more role.</p>",
+        "<p>梅雷迪思对周刊没有兴趣：一周前的新闻曾是给日报提供背景的框架。周刊已经没有这种角色了。</p>",
+    ),
+    (
+        21911,
+        "<p>That $0.30 matters; I charge $10/month or $100/year — that suggests that I earn $20 less "
+        "from annual subscribers.</p>",
+        "<p>这 0.30 美元很重要；我收费是每月 10 美元或每年 100 美元——"
+        "这似乎意味着我从年费订阅者身上少赚 20 美元。</p>",
+    ),
+    (
+        22054,
+        "<p>The average subscriber pays around $100/month, while the content costs around "
+        "$60/subscriber. The margin is lower for the $35/month service, which implies a profit of "
+        "$40/month.</p>",
+        "<p>平均每月支付约100美元，而内容成本约为每位订户60美元。"
+        "35美元/月的服务利润更低，这意味着每月利润约40美元。</p>",
+    ),
+]
+
+
+@pytest.mark.parametrize(("article_id", "source", "target"), _V6_REGRESSIONS)
+def test_v6_live_regressions_match(article_id, source, target):
+    assert same_numeric_facts(source, target) is True, article_id
+    assert pr.leaf_problem(source, target) is None
+
+
+def test_duration_units_and_per_period_prices_keep_their_facts():
+    from researchlib.translate.numbers import _extract
+
+    def keys(text: str) -> list[tuple[str, str]]:
+        return [(fact.kind, fact.key) for fact in _extract(f"<p>{text}</p>")]
+
+    assert ("duration", "week:1") in keys("a week later")
+    assert ("duration", "week:1") in keys("一周后")
+    assert ("duration", "week:1") in keys("Apple’s Bad Week")
+    assert ("duration", "day:8") in keys("eight personal days")
+    assert ("duration", "day:8") in keys("8天")
+    assert ("duration", "day:12") in keys("十二天")
+    assert ("duration", "week:~2") in keys("a couple of weeks")
+    assert ("duration", "week:~2") in keys("几周")
+    assert ("duration", "week:2") in keys("two weeks")
+    assert ("duration", "week:some") in keys("the weeks prior")
+    assert ("duration", "week:some") in keys("前几周")
+    assert keys("8月和12月各停更一周").count(("duration", "week:1")) == 2
+    prices = keys("我收费是每月 10 美元或每年 100 美元")
+    assert ("ratio", "100/10") not in prices
+    assert ("qty", "10") in prices and ("qty", "100") in prices
+    subscriber = keys("平均每月支付约100美元，而内容成本约为每位订户60美元")
+    assert all(kind != "ratio" for kind, _key in subscriber)
+    assert ("qty", "100") in subscriber and ("qty", "60") in subscriber
+    assert ("ratio", "0.8/1") in keys("每获得1美元订阅收入，就能获得约0.80美元")
+    assert ("ratio", "0.8/1") in keys("$0.80 for every $1")
+
+
 def test_impossible_clock_is_not_a_time_of_day():
     from researchlib.translate.numbers import _extract
 
@@ -519,6 +653,15 @@ def test_live_false_rejects_now_match(article_id, source, target):
     ("More than 9 million households.", "多出9万户。"),
     ("More than 900 million households.", "多出900万户。"),
     ("$0.80 for every $1.", "每0.80美元对应1美元。"),
+    ("It took two weeks.", "花了几周。"),
+    ("It arrived a week later.", "两周后到了。"),
+    ("I set aside eight personal days.", "我留了8小时。"),
+    ("It took seven months.", "花了7天。"),
+    ("Sign-ups in the weeks prior still count.", "两周内的注册才算数。"),
+    ("It paused for one week in August and one week in December.", "它在8月停了一周。"),
+    ("I charge $10/month or $100/year.", "我收费是每月10美元。"),
+    ("The service is about $100/month and the content is about $60/subscriber.",
+     "这项服务平均每月约100美元。"),
 ])
 def test_scale_digit_and_clock_changes_still_fail(source, target):
     assert same_numeric_facts(P(source), P(target)) is False

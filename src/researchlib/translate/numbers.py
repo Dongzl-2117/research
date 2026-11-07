@@ -267,6 +267,8 @@ def _same_amount(left: str, right: str) -> bool:
 def _compatible(left: Fact, right: Fact, *, bare_quarter: bool = True) -> bool:
     if left.kind == "clock" and right.kind == "clock" and _clocks_match(left.key, right.key):
         return True
+    if left.kind == "duration" and right.kind == "duration" and _durations_match(left.key, right.key):
+        return True
     if left.kind == right.kind and left.key == right.key:
         return True
     kinds = {left.kind, right.kind}
@@ -801,60 +803,231 @@ def _clocks_match(left: str, right: str) -> bool:
     return {mark_left, mark_right} == {"", "am"}
 
 
+_DURATION_UNIT = {
+    "week": "week", "weeks": "week", "周": "week", "星期": "week",
+    "month": "month", "months": "month", "mo": "month", "月": "month", "个月": "month",
+    "day": "day", "days": "day", "天": "day",
+    "hour": "hour", "hours": "hour", "小时": "hour",
+}
+_DURATION_TEMPORAL = {
+    "past", "last", "next", "coming", "previous", "following", "prior", "same",
+}
+_DURATION_DET = _DURATION_TEMPORAL | {"this", "that", "the", "every", "each"}
+# a/an 后面只允许这些修饰，避免把 have a great day 收成一天。
+_A_MOD_OK = {
+    "full", "single", "whole", "entire", "extra", "consecutive", "straight", "solid",
+    "additional", "further", "other", "first", "second", "third", "fourth", "fifth",
+    "sixth", "seventh", "eighth", "ninth", "tenth", "last", "next", "past",
+}
+# couple / few / 几 是大约两个，不是写死的 two。
+_APPROX_TWO = {"couple", "few", "几"}
+_DURATION_SKIP = {
+    "of", "and", "or", "to", "in", "on", "for", "per", "than", "from", "with", "by", "at",
+    "into", "over", "under", "about", "around", "million", "billion", "thousand", "hundred",
+    "trillion",
+}
+
+
 def _duration_count(raw: str) -> str | None:
-    if raw.isdigit():
-        return str(int(raw))
-    if raw == "两":
+    text = raw.strip().lower()
+    if text in _APPROX_TWO:
+        return "~2"
+    if text in {"a", "an"}:
+        return "1"
+    if text.isdigit():
+        return str(int(text))
+    if text == "两":
         return "2"
-    spelled = _SPELLED.get(raw.lower())
+    spelled = _SPELLED.get(text)
     if spelled is not None:
         return str(spelled)
-    value = _cn_token(raw)
+    value = _cn_token(text)
     if value is None:
         return None
     return str(value)
 
 
 def _duration_unit(raw: str) -> str | None:
-    text = raw.lower()
-    if text.startswith("week") or text == "周":
-        return "week"
-    if text.startswith("month") or text in {"月", "个月"} or text == "mo":
-        return "month"
-    if text.startswith("day") or text == "天":
-        return "day"
-    if text.startswith("hour") or text == "小时":
-        return "hour"
-    return None
+    return _DURATION_UNIT.get(raw.lower(), _DURATION_UNIT.get(raw))
 
 
-def _on_duration(match: re.Match[str]) -> Fact | None:
-    count = _duration_count(match.group("n")) if "n" in match.groupdict() else "2"
-    unit = _duration_unit(match.group("u"))
-    if count is None or unit is None:
+def _duration_fact(unit_raw: str, count: str) -> Fact | None:
+    unit = _duration_unit(unit_raw)
+    if unit is None:
         return None
     return Fact("duration", f"{unit}:{count}")
 
 
+def _durations_match(source: str, target: str) -> bool:
+    """同一单位、同一个数。原文的 couple/few/几 可以写成两；原文写明 two 不能收成几。"""
+    if source == target:
+        return True
+    return source.endswith("~2") and target == source.replace("~2", "2")
+
+
+def _rate_not_duration(text: str, start: int, end: int) -> bool:
+    """贴着标价的「每周 / $10 a week / $10/week」是计价周期，不是要另算的一段时间。"""
+    before = text[max(0, start - 24):start]
+    after = text[end:end + 24]
+    money_before = re.search(
+        r"(?:[$€£¥]\s*\d[\d,.]*|\d[\d,.]*\s*(?:美元|美分|dollars?|cents?))\s*$",
+        before,
+        re.I,
+    )
+    if money_before:
+        return True
+    # once a week / per week 和「每周」一样，是重复节奏，不是单独的一周。
+    if re.search(r"\b(?:per|once|every|each)[\s-]+$", before, re.I):
+        return True
+    if re.search(r"[/／]\s*$", before):
+        return True
+    money_after = re.search(r"\d", after) and re.search(r"美元|美分|[$€£¥]|dollars?|cents?", after, re.I)
+    if text[start:start + 1] == "每" and money_after:
+        return True
+    if money_after and re.search(r"\b(?:per|once|every|each)\b", before[-16:] + text[start:end], re.I):
+        return True
+    return False
+
+
+def _each_copies(text: str, start: int) -> int:
+    """「8月和12月各停更一周」是两段一周，不是把其中一周写丢了。"""
+    head = text[max(0, start - 8):start]
+    marker = re.search(r"各[^0-9０-９]{0,6}$", head)
+    if marker is None:
+        return 1
+    cut = start - len(head) + marker.start()
+    clause = re.split(r"[，。；;！？!?\n]", text[max(0, cut - 80):cut])[-1]
+    parts = [part.strip() for part in re.split(r"和|与|及|、|\band\b", clause, flags=re.I) if part.strip()]
+    if len(parts) >= 2:
+        return len(parts)
+    return 1
+
+
+def _emit_duration(text: str, start: int, end: int, unit_raw: str, count: str) -> Fact | list[Fact] | None:
+    if _rate_not_duration(text, start, end):
+        return None
+    fact = _duration_fact(unit_raw, count)
+    if fact is None:
+        return None
+    copies = _each_copies(text, start)
+    if copies == 1:
+        return fact
+    return [fact] * copies
+
+
+def _on_en_duration(match: re.Match[str]) -> Fact | list[Fact] | None:
+    """数词和单位中间可以有形容词。单数 week/day 没有数词时就是 1。``weeks prior`` 没有确定个数。"""
+    groups = match.groupdict()
+    unit = groups.get("u") or ""
+    raw_n = groups.get("n")
+    mods = [word.lower() for word in (groups.get("m1"), groups.get("m2")) if word]
+    if any(word in _DURATION_SKIP for word in mods):
+        if not any(word in _APPROX_TWO for word in mods):
+            return None
+    # 「two bugs this week」里的 this week 是另一段，不能把 bugs this 当成修饰语。
+    if raw_n and any(word in _DURATION_DET for word in mods):
+        return None
+    if (raw_n or "").lower() in {"a", "an"} and any(
+        word not in _A_MOD_OK and word not in _APPROX_TWO and word not in _DURATION_SKIP
+        for word in mods
+    ):
+        return None
+    if any(word in _APPROX_TWO for word in mods) or (raw_n or "").lower() in _APPROX_TWO:
+        count = "~2"
+    elif groups.get("vague"):
+        count = "some"
+    elif raw_n:
+        count = _duration_count(raw_n)
+        if count is None:
+            return None
+    else:
+        det = (groups.get("det") or "").lower()
+        # 形容词模式和限定词模式会撞上同一段。限定词留给带 det 的那条。
+        if not det and mods and (
+            mods[0] in _DURATION_DET or mods[0] in {"every", "each", "per", "once"}
+            or _duration_count(mods[0]) is not None
+        ):
+            return None
+        if det == "the" and mods and mods[0] not in _DURATION_TEMPORAL:
+            return None
+        if det == "the" and not mods and not unit.lower().startswith("week"):
+            return None
+        if not det and not groups.get("owner") and not groups.get("old"):
+            if unit.lower() != "week":
+                return None
+        count = "1"
+    if count is None:
+        return None
+    return _emit_duration(match.string, match.start(), match.end(), unit, count)
+
+
+def _on_zh_duration(match: re.Match[str]) -> Fact | list[Fact] | None:
+    groups = match.groupdict()
+    pre = groups.get("pre") or ""
+    raw_n = groups.get("n")
+    unit = groups.get("u") or ""
+    if not raw_n and not pre:
+        return None
+    # 「每周 / 每天」对 once a week、weekly，不单算成 1。有数字的「每两周」仍是两周。
+    if pre == "每" and not raw_n:
+        return None
+    if raw_n == "一" and unit in {"天", "日"} and match.string[max(0, match.start() - 1):match.start()] == "的":
+        return None
+    # 前几周、近几个月是没写死个数的一段时间；单独的几周仍是 couple/few。
+    if pre in {"前", "近"} and raw_n == "几":
+        count = "some"
+    elif raw_n:
+        count = _duration_count(raw_n)
+    else:
+        count = "1"
+    if count is None:
+        return None
+    return _emit_duration(match.string, match.start(), match.end(), unit, count)
+
+
+def _on_duration(match: re.Match[str]) -> Fact | None:
+    raw_n = match.group("n") if "n" in match.groupdict() else None
+    count = _duration_count(raw_n) if raw_n else "2"
+    if count is None:
+        return None
+    return _duration_fact(match.group("u"), count)
+
+
+_RATIO_LINK = re.compile(
+    r"对应|相当于|就能|就有|就会|就可以|获得|带来|换成|换得|换来|得到",
+)
 _RATIO_NOISE = re.compile(
-    r"\d|%|％|[万亿]|个月|小时|点|分|"
-    r"\b(?:weeks?|months?|days?|hours?|couple|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"\d|%|％|每位|订户|每月|每年|每周|每天|每个月|小时|个月|"
+    r"\b(?:weeks?|months?|days?|hours?|couple|few|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"million|billion|thousand)\b",
     re.I,
 )
 
 
-def _on_per(match: re.Match[str]) -> Fact | None:
-    """``$0.80 for every $1`` 和 ``每1美元……0.80美元`` 是同一个比例，谁写在前面都行。
+def _ratio_gap_is_clean(gap: str) -> bool:
+    """比例两端之间只能是「就有 / 对应」这种关系，不能再夹价格、时段或另一个数。"""
+    if _RATIO_NOISE.search(gap):
+        return False
+    if _RATIO_LINK.search(gap):
+        return True
+    return re.fullmatch(r"[\s…\.，、]{0,8}", gap or "") is not None
 
-    两端之间如果还有别的数字或一段时间，不把它们吞进这个比例。
+
+def _on_per(match: re.Match[str]) -> Fact | None:
+    """``$0.80 for every $1`` 和 ``每获得1美元……0.80美元`` 是同一个比例。
+
+    ``每月 10 美元或每年 100 美元``、``每月 100 美元……每位订户 60 美元`` 是两笔标价，不是比例。
     """
     part, unit = _decimal(match.group("a")), _decimal(match.group("b"))
     if part is None or unit is None:
         return None
     spans = sorted((match.start(name), match.end(name)) for name in ("a", "b"))
+    gap = match.group("gap") if "gap" in match.groupdict() and match.group("gap") is not None else ""
     interior = match.string[match.start():spans[0][0]] + match.string[spans[0][1]:spans[1][0]]
     if _RATIO_NOISE.search(interior):
+        return None
+    # 英文这条正则本身就要求 for every。中文必须是「对应 / 获得 / 就有」，或者只隔着省略号。
+    if re.search(r"[\u4e00-\u9fff]", match.group(0)) and not _ratio_gap_is_clean(gap):
         return None
     return Fact("ratio", f"{_qty_key(part)}/{_qty_key(unit)}")
 
@@ -1134,31 +1307,51 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
         r"(?<!\d)(?P<h>\d{1,2})\s*点\s*(?P<mi>\d{1,2})\s*分",
     ), _on_clock),
     (re.compile(
-        r"\b(?:a\s+)?couple\s+of\s+(?P<u>weeks?|months?|days?|hours?)\b",
+        rf"\b(?:(?P<n>{_TENS}-(?:{_ONES})|{_TENS}|{_ONES}|ten|eleven|twelve|a|an|\d{{1,3}})-)?"
+        rf"(?P<u>week|month|day|hour)-(?P<old>old)\b",
         re.I,
-    ), _on_duration),
+    ), _on_en_duration),
     (re.compile(
-        rf"\b(?:first|last|next|past)?\s*(?P<n>{_ONES}|ten|eleven|twelve|\d{{1,2}})\s+"
+        r"\b(?:the\s+)?(?P<u>weeks|days|months|hours)\s+(?P<vague>prior|before|earlier)\b",
+        re.I,
+    ), _on_en_duration),
+    (re.compile(
+        r"\b(?P<vague>recent)\s+(?P<u>weeks|days|months|hours)\b",
+        re.I,
+    ), _on_en_duration),
+    (re.compile(r"\b(?P<u>week)\s+of\b", re.I), _on_en_duration),
+    (re.compile(
+        rf"\b(?:(?P<pre>first|last|next|past|previous|coming|following)\s+)?"
+        rf"(?P<n>{_TENS}-(?:{_ONES})|{_TENS}|{_ONES}|ten|eleven|twelve|a|an|few|couple|\d{{1,3}})"
+        rf"(?:\s+(?P<m1>[A-Za-z]+)(?:\s+(?P<m2>[A-Za-z]+))?)?\s+"
         rf"(?P<u>weeks?|months?|days?|hours?)\b",
         re.I,
-    ), _on_duration),
+    ), _on_en_duration),
+    (re.compile(
+        r"\b(?P<det>this|that|last|next|past|coming|previous|following|prior|same|the)"
+        r"(?:\s+(?P<m1>[A-Za-z]+))?\s+(?P<u>week|month|day|hour)\b",
+        re.I,
+    ), _on_en_duration),
+    (re.compile(
+        r"\b(?:(?P<owner>[A-Za-z]+['’]s)\s+)?(?P<m1>[A-Za-z]+)\s+(?P<u>week|month|day|hour)\b",
+        re.I,
+    ), _on_en_duration),
     (re.compile(r"\b(?P<n>\d{1,2})(?P<u>mo)\b", re.I), _on_duration),
     (re.compile(
-        r"(?:头|前|近|过去)(?P<n>[一二三四五六七八九十两]|\d{1,2})\s*个?\s*(?P<u>月)",
-    ), _on_duration),
+        r"(?<![0-9零〇一二三四五六七八九两])"
+        r"(?:(?<![以])(?P<pre>头|前|近|过去|这|那|本|上|下|每))?"
+        r"(?P<n>[一二三四五六七八九两]?十[一二三四五六七八九]?|[一二三四五六七八九两几]|\d{1,3})?"
+        r"个?(?P<u>星期|小时|个月|周|天)(?!刊|期|围|末|[一二三四五六日])",
+    ), _on_zh_duration),
+    (re.compile(r"(?<![个以])(?P<pre>本|这|上|下)(?P<u>月)(?!个)"), _on_zh_duration),
     (re.compile(
-        r"(?<![0-9零〇一二三四五六七八九两这那每某])(?P<n>[一二三四五六七八九十两]|\d{1,2})\s*个\s*(?P<u>月)",
-    ), _on_duration),
-    (re.compile(
-        r"(?<![0-9零〇一二三四五六七八九两这那每某])(?P<n>[一二三四五六七八九十两]|\d{1,2})\s*(?P<u>周|小时)",
-    ), _on_duration),
-    (re.compile(
-        rf"\$\s*(?P<a>{_AMOUNT})\b(?:(?!\$).){{0,80}}?\bfor every\s+\$\s*(?P<b>{_AMOUNT})\b",
+        rf"\$\s*(?P<a>{_AMOUNT})\b(?P<gap>(?:(?!\$).){{0,80}}?)\bfor every\s+\$\s*(?P<b>{_AMOUNT})\b",
         re.I,
     ), _on_per),
     (re.compile(
-        rf"每(?:获得|有)?[^。\n]{{0,16}}?(?P<b>{_AMOUNT})\s*美元"
-        rf"[^。\n]{{0,40}}?(?:约|大约)?\s*(?P<a>{_AMOUNT})\s*美元",
+        r"每(?!月|年|周|天|日|小|时|分|刻|位|户|个|名|人|次|股|份|家|篇|订|季)"
+        rf"(?:获得|有|收入|赚(?:到|得)?)?[^。\n]{{0,16}}?(?P<b>{_AMOUNT})\s*美元"
+        rf"(?P<gap>[^。\n]{{0,40}}?)(?:约|大约)?\s*(?P<a>{_AMOUNT})\s*美元",
     ), _on_per),
     (re.compile(
         rf"(?:(?P<sign>[-−负])\s*)?"
