@@ -1,9 +1,18 @@
+import random
 from html.parser import HTMLParser
 
 import pytest
 
 from researchlib.ocr import append_ocr, compose_ocr_text
-from researchlib.render import image_anchor, inline_image_ocr, render_body, sanitize_html, tidy_ocr_text
+from researchlib.render import (
+    _PHRASE,
+    _phrase_overlap,
+    image_anchor,
+    inline_image_ocr,
+    render_body,
+    sanitize_html,
+    tidy_ocr_text,
+)
 from researchlib.snippets import answer_html, highlight_snippet
 from researchlib.textutil import argumentative_excerpt, markdown_to_text
 from researchlib.wechat_dialogue import present_ocr_pieces
@@ -471,3 +480,59 @@ def test_misplaced_wechat_images_move_beside_the_matching_paragraph():
         "<p>我从来不看生成出来的短剧，塑料感太重。</p>"
     )
     assert inline_image_ocr(parked, {shot: shot_ocr}) == parked
+
+
+def test_image_relocation_overlap_matches_the_plain_definition():
+    """挪图比的是两边汉字最长的一段重合（5 到 24 字）。从共有片段往后接着比，结果要和逐个长度切片比一样。"""
+
+    def plain(left: str, right: str) -> int:
+        if len(left) < _PHRASE or len(right) < _PHRASE:
+            return 0
+        cap = min(24, len(left), len(right))
+        for size in range(cap, _PHRASE - 1, -1):
+            grams = {left[i : i + size] for i in range(len(left) - size + 1)}
+            if any(right[i : i + size] in grams for i in range(len(right) - size + 1)):
+                return size
+        return 0
+
+    rng = random.Random(7)
+    for _ in range(3000):
+        alphabet = "甲乙丙丁戊己"[: rng.randint(1, 6)]
+        left = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 50)))
+        right = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 50)))
+        if left and rng.random() < 0.3:
+            start = rng.randrange(len(left))
+            middle = len(right) // 2
+            right = right[:middle] + left[start : start + rng.randint(5, 30)] + right[middle:]
+        assert _phrase_overlap(left, right) == plain(left, right), (left, right)
+    # 群聊截图里一长串「哈」：只从接不上前一个字的地方往后比，不在同一段重合里反复比。
+    assert _phrase_overlap("哈" * 1500, ("哈" * 23 + "嘿") * 10) == 23
+
+
+def test_image_relocation_on_a_long_article_keeps_its_choices():
+    """图多、段多的公众号长文：每张图仍挪到汉字重合最长的那一段前面，对不上的不动。"""
+    rng = random.Random(3)
+    letters = [chr(code) for code in range(0x4E00, 0x4E00 + 2000)]
+
+    def words(size: int) -> str:
+        return "".join(rng.choice(letters) for _ in range(size))
+
+    paragraphs = [words(120) for _ in range(80)]
+    hashes = [f"{index:02x}" * 32 for index in range(40)]
+    texts = {}
+    body = []
+    for index, paragraph in enumerate(paragraphs):
+        if index < len(hashes):
+            image = hashes[index]
+            body.append(f'<p><img id="{image_anchor(image)}" src="/media/fangwei-mp/{image[:2]}/{image}.jpg"></p>')
+            # 偶数张图讲的是往后 10 段的那一段；奇数张图的字哪段都对不上。
+            texts[image] = paragraphs[index + 10][20:40] if index % 2 == 0 else words(300)
+        body.append(f"<p>{paragraph}</p>")
+    page = inline_image_ocr("".join(body), texts)
+    for index, image in enumerate(hashes):
+        at = page.index(f"{image}.jpg")
+        if index % 2 == 0:
+            target = page.index(paragraphs[index + 10])
+            assert at < target and not any(at < page.index(p) < target for p in paragraphs), index
+        else:
+            assert page.index(paragraphs[index - 1]) < at < page.index(paragraphs[index]), index
