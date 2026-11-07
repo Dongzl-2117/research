@@ -87,6 +87,22 @@ def test_pipeline_version_is_checked_even_if_text_is_unchanged(monkeypatch):
     assert pr.verify(A, ZA, proof).reason == "pipeline-version"
 
 
+def test_verify_does_not_recheck_numbers_it_does_not_compare(monkeypatch):
+    """文章页每次打开都 verify：数字只在写回执时核（number_review），verify 不比这一项，也就不重算。"""
+    proof = pr.receipt(pr.source_manifest(A + B), ZA + "<p>乙公司亏损了二十美元。</p>")
+    assert proof["number_review"] == [1]
+
+    def counted(*args, **kwargs):
+        raise AssertionError("verify 不该重核数字")
+
+    monkeypatch.setattr(pr, "numbers_agree", counted)
+    assert pr.verify(A + B, ZA + "<p>乙公司亏损了二十美元。</p>", proof).status == "mapped"
+    corrupt = deepcopy(proof)
+    corrupt["segments"].reverse()
+    assert pr.verify(A + B, ZA + "<p>乙公司亏损了二十美元。</p>", corrupt).reason == "target-receipt"
+    assert pr.verify(A + B, ZA + ZB, proof).reason == "target-receipt"
+
+
 def test_receipt_tampering_or_target_drift_cannot_be_read_as_mapped():
     proof = pr.receipt(pr.source_manifest(A + B), ZA + ZB)
     corrupt = deepcopy(proof)

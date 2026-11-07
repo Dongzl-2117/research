@@ -228,26 +228,30 @@ def _skeleton(value: str) -> str:
     }))
 
 
-def receipt(manifest: dict, translated: str, *, model: str = "") -> dict:
-    """每个槽位的资源和完整外壳都通过，才签发可持久化回执。
-
-    数字对不上的槽位照签，序号记进 ``number_review``。``verify`` 不比较这一项：
-    数字规则以后再改，已经入库的回执不会因此变成不兼容、整页退成两栏。
-    """
+def _signed_segments(manifest: dict, translated: str) -> list[dict]:
+    """槽位数、外壳和每个槽位的资源都对上了，返回回执里逐段的那一份；对不上抛 AlignmentError。"""
     targets = iter_segments(translated)
     if len(targets) != len(manifest["segments"]):
         raise AlignmentError("receipt-count")
     if _skeleton(manifest["source_snapshot"]) != _skeleton(translated):
         raise AlignmentError("receipt-skeleton")
     entries = []
-    review = []
     for source, target in zip(manifest["segments"], targets, strict=True):
         problem = structure_problem(source["source"], target.html)
         if problem:
             raise AlignmentError(f"slot-{source['ordinal']}-{problem}")
-        if not numbers_agree(source["source"], target.html):
-            review.append(source["ordinal"])
         entries.append({**source, "target": target.html, "target_hash": digest(canonical_html(target.html))})
+    return entries
+
+
+def receipt(manifest: dict, translated: str, *, model: str = "") -> dict:
+    """每个槽位的资源和完整外壳都通过，才签发可持久化回执。
+
+    数字对不上的槽位照签，序号记进 ``number_review``。``verify`` 不比较这一项：
+    数字规则以后再改，已经入库的回执不会因此变成不兼容、整页退成两栏。
+    """
+    entries = _signed_segments(manifest, translated)
+    review = [entry["ordinal"] for entry in entries if not numbers_agree(entry["source"], entry["target"])]
     return {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
             "semantic_status": "not-reviewed", "number_review": review}
 
@@ -283,9 +287,10 @@ def verify(source: str, translated: str, provenance: dict | None) -> MappingStat
         current = source_manifest(source)
         if current["source_fingerprint"] != provenance.get("source_fingerprint"):
             return MappingState("incompatible", "source-fingerprint")
-        expected = receipt(current, translated, model=provenance.get("model", ""))
-        if (expected["segments"] != provenance.get("segments")
-                or expected["target_hash"] != provenance.get("target_hash")):
+        # 只重签逐段那一份，不重核数字：number_review 本来就不比（见 receipt），文章页每次打开都走这里，
+        # 6 万字的 Stratechery 每段数字重核一遍要 0.46 秒，算完就扔。
+        if (_signed_segments(current, translated) != provenance.get("segments")
+                or digest(canonical_html(translated)) != provenance.get("target_hash")):
             return MappingState("incompatible", "target-receipt")
     except (AlignmentError, TypeError, KeyError, ValueError):
         return MappingState("incompatible", "invalid-receipt")
