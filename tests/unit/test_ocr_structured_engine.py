@@ -12,7 +12,7 @@ import pytest
 from researchlib import health
 from researchlib import llm as llm_module
 from researchlib.config import Settings
-from researchlib.ocr import Recognition, describe_report, run_ocr, vision_engine
+from researchlib.ocr import VISION_PROMPT_VERSION, Recognition, describe_report, run_ocr, vision_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 CHAT = {
@@ -154,6 +154,42 @@ def test_run_ocr_stores_units_usage_and_counts_formats(tmp_path, monkeypatch):
     assert "按结构交回 1 张" in lines[0] and "结构读不出来 1 张" in lines[0]
     assert "输入 22 token，输出 90 token（其中思考 15）" in lines[1]
     assert "平均每张输入 7、输出 30" in lines[1]
+
+
+def test_every_row_records_the_prompt_version(tmp_path, monkeypatch):
+    """全库 --redo 靠它认出哪些图已经按现在的说明认过，停了再开不再付一次钱。失败的也记，但照样会重试。"""
+
+    def flaky(path):
+        if path.name == "1.png":
+            raise RuntimeError("连不上")
+        return Recognition("王小明：毛利率：35%", {"v": 1, "kind": "chat", "blocks": []})
+
+    conn, report = _run(tmp_path, monkeypatch, flaky, count=2)
+    assert [write[5] for write in conn.writes] == [VISION_PROMPT_VERSION, VISION_PROMPT_VERSION]
+    assert conn.writes[1][1] == "deepseek-flash-vision:error" and report["failed"] == 1
+
+
+def test_run_ocr_makes_way_for_a_waiting_deploy(tmp_path, monkeypatch):
+    """自动上线在等（CI 过了的提交）：认完手上这张就停，以前全库重认会把之后的合并挡上好几天。"""
+    status = tmp_path / "status"
+    status.mkdir()
+    (status / ".deploy-waiting").write_text("65ffa02abcdef\n", encoding="utf-8")
+    calls = []
+
+    def recognize(_path):
+        calls.append(1)
+        return Recognition("字")
+
+    conn, report = _run(tmp_path, monkeypatch, recognize, count=3)
+    assert calls == [] and conn.writes == []
+    assert report["deploy_waiting"] == "65ffa02abcdef"
+    # 点名几篇的定点重认很快就完，不让路。
+    monkeypatch.setattr(
+        "researchlib.ocr.pending_images",
+        lambda *args, **kwargs: [{"content_hash": "00" * 32, "storage_path": "0.png"}],
+    )
+    pointed = run_ocr(_Conn(), tmp_path, 1, recognize, engine="deepseek-flash-vision", redo=True, article_ids=[7])
+    assert calls == [1] and pointed["deploy_waiting"] == ""
 
 
 def test_report_says_when_the_api_reported_no_usage():

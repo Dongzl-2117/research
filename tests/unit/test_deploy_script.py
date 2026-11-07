@@ -267,19 +267,18 @@ def test_waits_for_translate_or_ocr_in_the_app_container(world: World):
     shipped = world.head()
     sha = world.commit("第二版")
     waiting = world.mini / "data" / "status" / ".deploy-waiting"
-    result = world.deploy(DOCKER_TOP="root 12 1 0 Oct29 ? 00:00:03 research-ocr --limit 10")
-    assert result.returncode == 0, result.stderr
-    # research-ocr 会自己跑完：不查 CI，也不请它停。
-    assert world.called() == ["docker compose top app"] and not waiting.exists()
-    assert world.head() == shipped and world.status() is None
-    assert "research-ocr 还在跑" in result.stdout
-    result = world.deploy(DOCKER_TOP="root 12 1 0 Oct29 ? 00:00:03 research-translate --loop --limit 5")
-    assert result.returncode == 0, result.stderr
-    assert world.called() == ["docker compose top app", "curl ci"]
-    assert world.head() == shipped and world.status() is None
-    # --loop 不会自己跑完：CI 过了的提交在等，写下来请它译完手上这篇就停。
-    assert "research-translate 还在跑，已请它译完手上这篇就停" in result.stdout
-    assert waiting.read_text(encoding="utf-8").strip() == sha
+    # 全库重认和 --loop 都不会很快跑完：CI 过了的提交在等，写下来请它做完手上这一份就停。
+    # 以前识图不让路，2 万张的重认会把之后的合并挡上好几天。
+    for top, asked in (
+        ("research-ocr --redo --limit 2000 --max-minutes 0", "research-ocr 还在跑，已请它认完手上这张图就停"),
+        ("research-translate --loop --limit 5", "research-translate 还在跑，已请它译完手上这篇就停"),
+    ):
+        result = world.deploy(DOCKER_TOP=f"root 12 1 0 Oct29 ? 00:00:03 {top}")
+        assert result.returncode == 0, result.stderr
+        assert world.called() == ["docker compose top app", "curl ci"]
+        assert world.head() == shipped and world.status() is None
+        assert asked in result.stdout
+        assert waiting.read_text(encoding="utf-8").strip() == sha
     # 容器里只有 web（它停了）：探测过了照常上线，上线后不再请以后开的译制停。
     result = world.deploy(DOCKER_TOP="root 7 1 0 Oct29 ? 00:01:00 python -m uvicorn researchlib.web:app")
     assert result.returncode == 0, result.stderr
