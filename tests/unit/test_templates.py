@@ -303,6 +303,61 @@ def test_bilingual_template_hides_empty_english_on_leftover_zh():
     assert html.count("bilingual-pair") == 2
 
 
+def _pairs_page(pairs, **extra):
+    return _env().get_template("article.html").render(
+        title="Note",
+        canonical="https://investment.zldong.com/articles/1",
+        public_host="investment.zldong.com",
+        query="",
+        nav="archive",
+        sample_banner=False,
+        sources=[],
+        active_source="",
+        source=_Source(),
+        article={"id": 1, "title": "Note"},
+        iso="2026-01-01",
+        date="2026-01-01",
+        time="",
+        relative="",
+        title_zh="",
+        body_language="pairs",
+        has_translation=True,
+        translation_complete=True,
+        pairs=pairs,
+        body_html=None,
+        original_url="",
+        siblings=[],
+        quoted=None,
+        **extra,
+    )
+
+
+def test_bilingual_page_keeps_mapping_status_out_of_the_reader_text():
+    """「旧译文未记录源段映射」这类话是维护用的：页面上不显示，状态写在 data 属性里。"""
+    pairs = [{"en": "Hello", "zh": "你好", "anchor": "p-1"}]
+    for status in ("legacy", "legacy-anchors", "mapped"):
+        html = _pairs_page(pairs, pair_correspondence=status, pair_notice="")
+        assert f'class="bilingual" data-correspondence="{status}">' in html
+        assert "body-note" not in html
+        for jargon in ("源段映射", "按结构对照", "核验", "锚点", "粗段"):
+            assert jargon not in html
+
+
+def test_bilingual_page_tells_the_reader_how_to_read_two_full_texts():
+    """退成两份全文时只说怎么读；具体原因只进 data-note，不进正文。"""
+    reason = "分段无法保真，以下保留完整原文和译文。"
+    html = _pairs_page(
+        [{"en": "Hello world.", "zh": None, "anchor": None}, {"en": "", "zh": "你好，世界。", "anchor": None}],
+        pair_correspondence="unmapped",
+        pair_notice=reason,
+    )
+    note = '<p class="body-note">这篇译文和原文没法逐段对上，下面先放完整原文，再放完整译文。</p>'
+    assert html.count(note) == 1
+    assert html.count(reason) == 1
+    assert f'data-correspondence="unmapped" data-note="{reason}">' in html
+    assert html.index(note) < html.index("Hello world.") < html.index("你好，世界。")
+
+
 def test_day_template_lists_the_day_and_offers_to_ask():
     html = _env().get_template("day.html").render(
         title="10月19日",
