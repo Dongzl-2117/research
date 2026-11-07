@@ -1060,12 +1060,22 @@ tbody tr:hover td { background: var(--accent-softer); }
     padding-bottom: 56px;
   }
   /* 白边留在栏内。以前用 16px 外扩阴影，阴影盖住右侧分割条，字又贴着栏边，第一笔会被裁掉。
-     正文左右各让出 20px；图用负边距铺回整栏（仍是 680px），不缩进。 */
+     正文左右各让出 20px；比正文宽的图最多铺回整栏（680px），不缩进。 */
   .shell:has(.reader-grid) .reader-grid {
     padding-left: 20px;
     padding-right: 20px;
   }
-  .shell:has(.reader-grid) .reader-grid .prose :is(img, video) {
+  /* 图按原尺寸，只是上限放到整栏：小图标、小表格不放大成 680px 糊掉。
+     宽图比正文宽 40px，左右外边距用不了 auto，改用 left + translate 对着正文中线居中。 */
+  .shell:has(.reader-grid) .reader-grid .prose img {
+    position: relative;
+    left: 50%;
+    max-width: calc(100% + 40px);
+    margin-left: 0;
+    margin-right: 0;
+    transform: translateX(-50%);
+  }
+  .shell:has(.reader-grid) .reader-grid .prose video {
     width: calc(100% + 40px);
     max-width: none;
     margin-left: -20px;
