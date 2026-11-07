@@ -1018,6 +1018,27 @@ def _html_sentence_pieces(node: _El) -> list[str] | None:
     return pieces if len(pieces) >= 2 else None
 
 
+# materialize 逐项比对的资源：链接（含没有 href 的空锚点）、图片和视频、代码。
+_KEPT_TAG = re.compile(r"<(?:a|img|source|track|video|code)\b[^>]*>", re.I)
+
+
+def _split_keeps_content(node: _El, pieces: list[str]) -> bool:
+    """按句切开后，字和链接、图片、代码要和整段一样，不一样就整段留着不切。
+
+    两种会丢：句末紧跟的空锚点（Stratechery 访谈导出时目录锚点写成 ``[]()``）落在两句之间，
+    哪一句都不带它；句号落在链接文字里（「[J. Q.] Public」），一个链接被切成两个。
+    整篇因此过不了 materialize，译制一开始就拒收，以后也一直拒。能切开而不丢东西的段照旧切，
+    所以已经入库的回执都不受影响。旧稿候选重排（``split_sentence_paragraphs``）不走这里，照旧。
+    """
+    whole = _serialize(node.children)
+    joined = "".join(pieces)
+
+    def letters(value: str) -> str:
+        return re.sub(r"\s+", "", html_lib.unescape(re.sub(r"<[^>]+>", "", value)))
+
+    return letters(whole) == letters(joined) and _KEPT_TAG.findall(whole) == _KEPT_TAG.findall(joined)
+
+
 def _overflow_from_html(html: str) -> list[str] | None:
     parser = _FragmentParser()
     parser.feed(html or "")
@@ -1043,7 +1064,7 @@ def _overflow_pieces(node: _El) -> list[str] | None:
         if len(exploded) >= 2:
             return exploded
     sentences = _html_sentence_pieces(node)
-    if not sentences:
+    if not sentences or not _split_keeps_content(node, sentences):
         return None
     return [f"<p>{piece}</p>" for piece in sentences]
 
