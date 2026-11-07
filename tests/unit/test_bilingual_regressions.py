@@ -60,7 +60,7 @@ class MemoryConn:
 
 
 def verifier_double(user: dict) -> dict:
-    """测试替身：按硬事实的位置各交一条引用。整段一笔不算数。"""
+    """测试替身：按硬事实的位置各交一条引用；数字对不上就交冲突。"""
     from researchlib.translate.harness import _fold
     from researchlib.translate.numbers import _extract_located
 
@@ -81,8 +81,6 @@ def verifier_double(user: dict) -> dict:
                 return match.group(0)
         return text[:1] or "x"
 
-    source_text, source_spans = spans(user["source"])
-    target_text, target_spans = spans(user["target"])
     claims = []
     used = set()
     conflict = False

@@ -448,10 +448,15 @@ def apply_report(source: str, target: str, data: object) -> Judgment:
         pairs.append((source_quote, target_quote, same))
     source_text, source_spans = _fact_spans(source)
     target_text, target_spans = _fact_spans(target)
+    if verdict == "conflict":
+        # 冲突是拒收信号。引用已经逐条核对过能在两侧找到；模型把整句写成一条
+        # 也算数，不因为一句里有多笔数字就降成不确定。
+        if any(not same for _source, _target, same in pairs):
+            return Judgment("contradict", "conflict")
+        return Judgment("uncertain", "evidence-missing")
     used_source: set[int] = set()
     used_target: set[int] = set()
     bound_true = False
-    bound_false = False
     for source_quote, target_quote, same in pairs:
         source_bind, source_ids = _bind_quote(source_text, source_spans, source_quote, used_source)
         target_bind, target_ids = _bind_quote(target_text, target_spans, target_quote, used_target)
@@ -465,12 +470,6 @@ def apply_report(source: str, target: str, data: object) -> Judgment:
         used_target.update(target_ids)
         if same:
             bound_true = True
-        else:
-            bound_false = True
-    if verdict == "conflict":
-        if not bound_false:
-            return Judgment("uncertain", "evidence-broad")
-        return Judgment("contradict", "conflict")
     if not all(same for _source, _target, same in pairs):
         return Judgment("uncertain", "evidence-missing")
     if not bound_true:
