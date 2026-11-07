@@ -1,4 +1,4 @@
-"""出问题才提示：备份、试恢复、定时导入、夜间补齐、自动上线、后台重算和 LLM 调用的最近结果。
+"""出问题才提示：备份、试恢复、定时导入、夜间补齐、自动上线、后台重算、外链图片下载和 LLM 调用的最近结果。
 
 每个任务把结果写进 DATA_DIR/status/<任务>.json：宿主机上的脚本（备份、试恢复、定时抓取、夜间补齐、自动上线）
 在成功和失败时都写，进程里的后台重算和 LLM 调用由这里的函数写。notices() 只在出问题时
@@ -32,6 +32,8 @@ TASKS: dict[str, tuple[str, timedelta | None]] = {
     "crawl-gudujinhuati": ("孤独进化体抓取", timedelta(hours=50)),
     "nightly": ("夜间补齐", timedelta(hours=50)),
     "upkeep": ("后台重算", None),
+    # 新地址大半下不来才写成失败（remote_images.fetch_status），只看最近一次。
+    "fetch-images": ("外链图片下载", None),
     "deploy": ("自动上线", None),
 }
 # LLM 连续失败这么多次才提示；凭证不可用（拿不到 key 或登录失效）马上提示。

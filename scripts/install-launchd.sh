@@ -58,7 +58,7 @@ if [ "${1:-}" = "--uninstall" ]; then
   # 定时抓取、导入、夜间补齐和自动上线卸了，就不该再因为它们「太久没跑」或上次失败提示。备份的状态留着：没有备份本身就该提示。
   rm -f "$REPO/data/status/ingest-aihot.json" "$REPO/data/status/nightly.json" \
     "$REPO/data/status/crawl-fangwei-mp.json" "$REPO/data/status/crawl-fangwei-zsxq.json" \
-    "$REPO/data/status/crawl-gudujinhuati.json" \
+    "$REPO/data/status/crawl-gudujinhuati.json" "$REPO/data/status/fetch-images.json" \
     "$REPO/data/status/deploy.json" "$REPO/data/status/.deploy-last" "$REPO/data/status/.deploy-seen"
   exit 0
 fi
