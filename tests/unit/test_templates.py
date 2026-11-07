@@ -160,6 +160,50 @@ class _Source:
     timeline = True
 
 
+class _SameNameSource:
+    id = "chengfengpolang"
+    name = "乘风破浪"
+    author = "乘风破浪"
+    description = "星球归档"
+    timeline = True
+
+
+def _byline(source, **extra):
+    html = _env().get_template("article.html").render(
+        title="Note",
+        canonical="https://investment.zldong.com/articles/1",
+        public_host="investment.zldong.com",
+        query="",
+        nav="archive",
+        sample_banner=False,
+        sources=[],
+        active_source="",
+        source=source,
+        article={"id": 1, "title": "Note"},
+        iso="2026-01-01",
+        date="2026-01-01",
+        time="12:00",
+        body_language="original",
+        body_html="<p>正文</p>",
+        original_url="",
+        siblings=[],
+        **extra,
+    )
+    return html.split('class="byline"', 1)[1].split("</p>", 1)[0]
+
+
+def test_article_byline_names_a_one_person_source_once():
+    """来源名就是作者名（乘风破浪、孤独进化体、黑黑无常）时署名只写一次，和列表卡片一样。"""
+    same = _byline(_SameNameSource())
+    assert same.count("乘风破浪") == 1
+    assert 'href="/?source=chengfengpolang"' in same
+    assert same.count('aria-hidden="true">·</span>') == 2  # 名字 · 时间 · 问这篇
+    both = _byline(_Source())
+    assert "方伟公众号" in both and 'href="/authors/%E6%96%B9%E4%BC%9F"' in both
+    guest = _byline(_SameNameSource(), guest=True, poster_name="王小明")
+    assert "发帖人 王小明" in guest and "不是乘风破浪的原创" in guest
+
+
 def test_article_template_is_title_body_and_bilingual_tabs():
     html = _env().get_template("article.html").render(
         title="Note",
