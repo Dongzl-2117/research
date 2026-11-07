@@ -1,0 +1,57 @@
+"""样式和脚本带内容版本号：带当前版本号来取的一直缓存，没带或版本号对不上的照旧不缓存。"""
+
+import hashlib
+import os
+import re
+
+from fastapi.testclient import TestClient
+
+from researchlib.config import Settings
+from researchlib.web import assets
+from researchlib.web.app import create_app
+from researchlib.web.assets import IMMUTABLE, asset_url, asset_version
+from researchlib.web.routes import TEMPLATES
+
+
+def test_versioned_static_assets_are_cached_and_the_rest_are_not(tmp_path):
+    url = asset_url("site.css")
+    version = hashlib.sha256((assets.STATIC_DIR / "site.css").read_bytes()).hexdigest()[:12]
+    assert url == f"/static/site.css?v={version}"
+    client = TestClient(create_app(Settings.from_env({"DATA_DIR": str(tmp_path)})))
+
+    cached = client.get(url)
+    assert cached.status_code == 200
+    assert cached.headers["cache-control"] == IMMUTABLE
+    assert cached.headers["x-content-type-options"] == "nosniff"
+    again = client.get(url, headers={"If-None-Match": cached.headers["etag"]})
+    assert again.status_code == 304 and again.headers["cache-control"] == IMMUTABLE
+
+    for stale in ("/static/site.css", "/static/site.css?v=0123456789ab", f"/static/article.js?v={version}"):
+        response = client.get(stale)
+        assert response.status_code == 200, stale
+        assert response.headers["cache-control"] == "private, no-store", stale
+    assert client.get("/static/missing.css?v=0123456789ab").headers["cache-control"] == "private, no-store"
+
+
+def test_version_follows_the_file_and_stays_inside_static(tmp_path, monkeypatch):
+    monkeypatch.setattr(assets, "STATIC_DIR", tmp_path)
+    (tmp_path / "a.css").write_text("body{color:red}", encoding="utf-8")
+    before = asset_version("a.css")
+    (tmp_path / "a.css").write_text("body{color:blue}", encoding="utf-8")
+    os.utime(tmp_path / "a.css", ns=(1, 1))
+    after = asset_version("a.css")
+    assert before and after and before != after
+    assert asset_version("../a.css") == "" and asset_version("missing.css") == ""
+    assert asset_url("missing.css") == "/static/missing.css"
+
+
+def test_pages_link_styles_and_scripts_with_their_version():
+    page = TEMPLATES.env.get_template("404.html").render(
+        title="没有这一页", nav="", query="", public_host="investment.zldong.com",
+        canonical="https://investment.zldong.com/x", sample_banner=False, sources=[], active_source="",
+    )
+    assert re.search(r'href="/static/site\.css\?v=[0-9a-f]{12}"', page)
+    templates = assets.STATIC_DIR.parent / "templates"
+    for name in ("base.html", "article.html", "ask.html"):
+        text = (templates / name).read_text(encoding="utf-8")
+        assert not re.search(r'(?:href|src)="/static/', text), name

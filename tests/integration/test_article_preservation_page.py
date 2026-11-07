@@ -54,5 +54,5 @@ def test_article_bilingual_original_and_chinese_retain_nontranslatable_content(c
             for content in ("<table", "<td>2026</td>", "123.45%", "<pre", "return 42 &lt; 100",
                             f'src="{mapping[image.name]}"'):
                 assert content in page
-            assert 'src="/static/article.js"' in page
+            assert 'src="/static/article.js?v=' in page
     assert conn.execute("SELECT body_md FROM articles WHERE id = %s", (article["id"],)).fetchone()["body_md"] == body
