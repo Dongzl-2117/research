@@ -104,14 +104,18 @@ def test_unverified_numbers_are_stored_listed_and_still_paired_on_the_page(conn,
         assert "20世纪90年代" in page and "第二段20美元" in page
 
 
-def test_rejected_attempt_preserves_good_translation_and_search_chunks(conn, settings, monkeypatch):
+def test_failed_retranslation_preserves_good_translation_and_search_chunks(conn, settings, monkeypatch):
     body = BODY + "<p>See inline <code>rate = 42</code>.</p>"
     article_id = article(conn, settings, body)
     monkeypatch.setattr(service, "chat_json", model)
     service.translate_article(conn, article_id, data_dir=settings.data_dir)
     before = snapshot(conn, article_id)
-    chunks = conn.execute("SELECT body FROM article_chunks WHERE article_id=%s AND lang='zh' ORDER BY ord",
-                          (article_id,)).fetchall()
+
+    def zh_chunks():
+        return conn.execute("SELECT body FROM article_chunks WHERE article_id=%s AND lang='zh' ORDER BY ord",
+                            (article_id,)).fetchall()
+
+    chunks = zh_chunks()
 
     def missing(**kwargs):
         result = model(**kwargs)
@@ -120,16 +124,77 @@ def test_rejected_attempt_preserves_good_translation_and_search_chunks(conn, set
         return result
 
     monkeypatch.setattr(service, "chat_json", missing)
-    with pytest.raises(AlignmentError, match="unshield") as rejected:
-        service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    # 默认按段复用：原文没变，一段都不用重译，库也不写。
+    again = service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    assert again.reason == "unchanged" and again.reused == 3
+    # 整篇重译：前两段重译成功；第三段一直丢代码占位，退回已有的好译文。和库里一字不差，不写。
+    fresh = service.translate_article(conn, article_id, data_dir=settings.data_dir, reuse=False)
+    assert fresh.status == "translated" and fresh.reused == 1 and fresh.untranslated == 0
+    assert snapshot(conn, article_id) == before and zh_chunks() == chunks
+
+    def blank(**kwargs):
+        result = model(**kwargs)
+        for item in result.data["t"]:
+            item["html"] = ""
+        return result
+
+    monkeypatch.setattr(service, "chat_json", blank)
+    # 整篇重译一段新的都没译成：不写库，错交给 CLI 记下。
+    with pytest.raises(AlignmentError, match="empty") as rejected:
+        service.translate_article(conn, article_id, data_dir=settings.data_dir, reuse=False)
     conn.rollback()
     service.record_translation_failure(conn, article_id, rejected.value)
-    assert snapshot(conn, article_id) == before
-    assert conn.execute("SELECT body FROM article_chunks WHERE article_id=%s AND lang='zh' ORDER BY ord",
-                        (article_id,)).fetchall() == chunks
+    assert snapshot(conn, article_id) == before and zh_chunks() == chunks
     attempt = conn.execute("SELECT status,reason FROM translation_attempts WHERE article_id=%s",
                            (article_id,)).fetchone()
-    assert attempt == {"status": "rejected", "reason": "unshield"}
+    assert attempt == {"status": "rejected", "reason": "slot-0-empty"}
+
+
+def test_partial_translation_is_stored_queued_after_cooldown_and_finished_later(conn, settings, monkeypatch):
+    """一段一直对不上：别的段先入库（complete 为假），按拒绝记冷却；下次只补那一段。"""
+    article_id = article(conn, settings)
+
+    def second_breaks(**kwargs):
+        result = model(**kwargs)
+        for item in result.data["t"]:
+            if "第二段" in item["html"]:
+                item["source_hash"] = "wrong"
+        return result
+
+    monkeypatch.setattr(service, "chat_json", second_breaks)
+    first = service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    row = snapshot(conn, article_id)
+    assert first.status == "partial" and not row["complete"]
+    assert row["provenance"]["untranslated"] == [1]
+    assert "第一段10美元" in row["body_html"] and "Second paragraph 20 dollars." in row["body_html"]
+    attempt = conn.execute("SELECT status,reason FROM translation_attempts WHERE article_id=%s",
+                           (article_id,)).fetchone()
+    assert attempt == {"status": "rejected", "reason": "untranslated:response-source-hash"}
+    assert article_id not in service.list_pending_english(conn, source_id="stratechery", limit=100)
+    report = qa.check_article(conn, settings, article_id)
+    assert report.correspondence == "mapped" and "untranslated" in {issue.code for issue in report.issues}
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article_id}").text
+        assert page.count('class="bilingual-pair"') == 2 and "第一段10美元" in page
+
+    conn.execute("UPDATE translation_attempts SET created_at = now() - interval '13 hours' WHERE article_id=%s",
+                 (article_id,))
+    conn.commit()
+    assert article_id in service.list_pending_english(conn, source_id="stratechery", limit=100)
+    asked: list[list[str]] = []
+
+    def record(**kwargs):
+        if kwargs["user"]["segment_ids"] != ["title"]:
+            asked.append(kwargs["user"]["segments"])
+        return model(**kwargs)
+
+    monkeypatch.setattr(service, "chat_json", record)
+    second = service.translate_article(conn, article_id, data_dir=settings.data_dir)
+    row = snapshot(conn, article_id)
+    assert second.status == "translated" and second.reused == 1 and row["complete"]
+    assert asked == [["<p>Second paragraph 20 dollars.</p>"]]
+    assert "第二段20美元" in row["body_html"] and row["provenance"]["untranslated"] == []
+    assert article_id not in service.list_pending_english(conn, source_id="stratechery", limit=100)
 
 
 def test_cleaner_drift_is_visible_without_requeueing_old_complete_translation(conn, settings, monkeypatch):

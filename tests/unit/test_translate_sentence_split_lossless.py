@@ -1,4 +1,4 @@
-"""长段按句切开时不许丢掉或多出链接：会丢的那一段整段留着，整篇照常能译、能签回执。
+"""长段按句切开、按 ``<br>`` 行切开时不许丢掉或多出字和链接：会丢的那一块整块留着，整篇照常能译、能签回执。
 
 Stratechery 2026 网页导出的访谈在每节末尾留一个空锚点 ``[]()``（渲染成 ``<a href=""></a>``），
 紧贴在最后一句的句号后面；链接文字里有缩写名时句号落在链接里。以前这两种段一按句切，
@@ -12,6 +12,7 @@ import pytest
 from test_translate_number_review import run
 
 from researchlib.translate import provenance as pr
+from researchlib.translate import segments as seg
 from researchlib.translate.segments import iter_segments, split_sentence_paragraphs
 
 SENTENCES = [
@@ -86,3 +87,40 @@ def test_article_with_such_paragraphs_translates_and_gets_a_receipt(tmp_path):
     stored = conn.writes[0]
     assert "https://example.invalid/public" in stored[3]
     assert pr.verify(body, stored[3], stored[7].obj).status == "mapped"
+
+
+def _letters(value: str) -> str:
+    import html
+    import re
+
+    return re.sub(r"\s+", "", html.unescape(re.sub(r"<[^>]+>", "", value)))
+
+
+def test_br_line_split_that_would_lose_a_line_keeps_the_block_whole(monkeypatch):
+    """按 <br> 行切也过同一道检查：哪种切法少了一行，这一块就整块一段，materialize 照样过。"""
+    block = "<p>" + "<br>".join(SENTENCES[:4]) + "</p>"
+    assert len(iter_segments(block)) == 4
+    real = seg._pack_br_groups
+    monkeypatch.setattr(seg, "_pack_br_groups", lambda lines: real(lines)[:-1])
+    segments = iter_segments(block)
+    assert len(segments) == 1
+    assert _letters("".join(item.html for item in segments)) == _letters(block)
+    assert pr.materialize(block)
+
+
+def test_definition_line_split_that_would_lose_a_line_keeps_the_entry_whole(monkeypatch):
+    # dd 里够长（过 _DEF_BR_PLAIN）的 <br> 长文才走按行打包那条路。
+    entry = "<dl><dt>Notes</dt><dd>" + "<br>".join(SENTENCES * 3) + "</dd></dl>"
+    assert len(iter_segments(entry)) > 2
+    real = seg._pack_fragments
+    packed: list[int] = []
+
+    def lossy(items, size):
+        packed.append(len(items))
+        return real(items, size)[:-1]
+
+    monkeypatch.setattr(seg, "_pack_fragments", lossy)
+    segments = iter_segments(entry)
+    assert packed
+    assert _letters("".join(item.html for item in segments)) == _letters(entry)
+    assert pr.materialize(entry)

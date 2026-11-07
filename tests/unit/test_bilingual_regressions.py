@@ -38,11 +38,18 @@ class MemoryConn:
                         "body_md": body, "body_text": "English synthetic article.", "published_at": None,
                         "raw_meta": {"format": "markdown"}, "content_hash": "synthetic"}
         self.writes = []
+        self.attempts = []
+        # 库里已有的那份译文（content_hash、title_zh、provenance），给按段复用的测试用。
+        self.previous = None
         self.committed = False
 
     def execute(self, sql, params=None):
         if "INSERT INTO article_translations" in sql:
             self.writes.append(params)
+        elif "INSERT INTO translation_attempts" in sql:
+            self.attempts.append((params[1], params[2]))
+        elif "FROM article_translations WHERE article_id" in sql:
+            return Rows(self.previous)
         elif "FROM articles WHERE id" in sql:
             return Rows(self.article)
         elif "FROM sources" in sql:

@@ -37,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
         help="重译已经完成、但分段仍是旧粗粒度的篇（大块引用或段数远少于原文）",
     )
     parser.add_argument("--dry-run", action="store_true", help="和 --recheck 一起用：只打印篇目，不调模型")
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="整篇重译，不复用已有译文。默认原文没变的段直接用已有译文，只补没译出来和原文变了的段",
+    )
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
@@ -116,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
                 if number and make_way():
                     return 1 if failed else 0
                 try:
-                    result = translate_article(conn, article_id, data_dir=settings.data_dir)
+                    result = translate_article(conn, article_id, data_dir=settings.data_dir, reuse=not args.fresh)
                 except XaiLoginRequiredError as exc:
                     print(f"需要重新登录：{exc}", file=sys.stderr)
                     return 2
@@ -133,10 +138,15 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 if result.status in ("skipped", "partial"):
                     # 没有可译正文、或者有段没译出来：还在待译队列里，这一轮不再碰。
+                    # 没译完的已经存下，过了冷却再进队列，下次只补没译出来的段。
                     skipped.add(article_id)
                 print(
                     f"#{result.article_id} {result.status}"
                     + (f" segments={result.segments}" if result.segments else "")
+                    # 原文没变、直接用了已有译文的段数。
+                    + (f" reused={result.reused}" if result.reused else "")
+                    # 没译出来、先放英文的段数。序号在回执的 untranslated 里。
+                    + (f" untranslated={result.untranslated}" if result.untranslated else "")
                     # 数字没能自动核对上、照样写入的段数。序号在回执的 number_review 里。
                     + (f" number_review={result.review}" if result.review else "")
                     + (f" ({result.reason})" if result.reason else "")

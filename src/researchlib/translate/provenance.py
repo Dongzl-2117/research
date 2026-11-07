@@ -30,8 +30,12 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # 数字和同一批另一段原文正好一致（串段）仍整批重译。版本 6 及以前因数字被拒的文章重新进队列。
 # 8：长段按句切开会丢掉或多出链接（句末紧贴的空锚点、链接文字里的缩写名）时整段不切。
 # 这类文章以前在 materialize 就拒收（materialize-content），现在能译，重新进队列。
-ALIGNMENT_VERSION = 8
+# 9：一段出错不再让整篇作废。身份、链接、占位符一直对不上或串段的那几段先放英文，序号记进回执的
+# untranslated，别的段照常入库（complete 为假）；请求断线时已经译好的段也先存下。
+# 下次只补这几段：原文没变的段按原文身份（reuse_key）复用已有译文，不再重译。
+ALIGNMENT_VERSION = 9
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
+_SRC_PARA_ATTR = re.compile(r'\s+data-src-para="\d+"')
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
 
@@ -228,13 +232,21 @@ def _skeleton(value: str) -> str:
     }))
 
 
+def shape_problem(manifest: dict, translated: str) -> str | None:
+    """写回以后槽位数和外壳是不是还和原文一样。不一样返回 ``receipt-count`` 或 ``receipt-skeleton``。"""
+    if len(iter_segments(translated)) != len(manifest["segments"]):
+        return "receipt-count"
+    if _skeleton(manifest["source_snapshot"]) != _skeleton(translated):
+        return "receipt-skeleton"
+    return None
+
+
 def _signed_segments(manifest: dict, translated: str) -> list[dict]:
     """槽位数、外壳和每个槽位的资源都对上了，返回回执里逐段的那一份；对不上抛 AlignmentError。"""
+    problem = shape_problem(manifest, translated)
+    if problem:
+        raise AlignmentError(problem)
     targets = iter_segments(translated)
-    if len(targets) != len(manifest["segments"]):
-        raise AlignmentError("receipt-count")
-    if _skeleton(manifest["source_snapshot"]) != _skeleton(translated):
-        raise AlignmentError("receipt-skeleton")
     entries = []
     for source, target in zip(manifest["segments"], targets, strict=True):
         problem = structure_problem(source["source"], target.html)
@@ -244,26 +256,76 @@ def _signed_segments(manifest: dict, translated: str) -> list[dict]:
     return entries
 
 
-def receipt(manifest: dict, translated: str, *, model: str = "") -> dict:
+def receipt(manifest: dict, translated: str, *, model: str = "", untranslated: Sequence[int] = ()) -> dict:
     """每个槽位的资源和完整外壳都通过，才签发可持久化回执。
 
-    数字对不上的槽位照签，序号记进 ``number_review``。``verify`` 不比较这一项：
-    数字规则以后再改，已经入库的回执不会因此变成不兼容、整页退成两栏。
+    数字对不上的槽位照签，序号记进 ``number_review``。``untranslated`` 是这次没译出来、
+    先放英文的槽位序号（那一段的 target 就是原文）。``verify`` 两项都不比较：
+    数字规则以后再改、补译了哪几段，已经入库的回执都不会因此变成不兼容、整页退成两栏。
     """
     entries = _signed_segments(manifest, translated)
-    review = [entry["ordinal"] for entry in entries if not numbers_agree(entry["source"], entry["target"])]
+    gaps = sorted(set(untranslated))
+    review = [entry["ordinal"] for entry in entries
+              if entry["ordinal"] not in gaps and not numbers_agree(entry["source"], entry["target"])]
     return {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
-            "semantic_status": "not-reviewed", "number_review": review}
+            "semantic_status": "not-reviewed", "number_review": review, "untranslated": gaps}
+
+
+def untranslated_slots(provenance: dict | None) -> list[int]:
+    """回执里没译出来、先放英文的槽位序号。没有回执或旧回执返回空。"""
+    if not isinstance(provenance, dict):
+        return []
+    try:
+        return sorted({int(item) for item in provenance.get("untranslated") or []})
+    except (TypeError, ValueError):
+        return []
+
+
+def reuse_key(segment: str) -> str:
+    """一段原文的身份，按它复用已有译文。
+
+    和回执里的 ``source_hash`` 一样看整段 HTML（字、链接、图片、代码、标签），只是不看
+    ``data-src-para`` 的编号：编号从全文开头数，前面多切出或少切出一段，后面每段的编号都变，原文其实没变。
+    """
+    return digest(canonical_html(_SRC_PARA_ATTR.sub("", segment or "")))
+
+
+def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
+    """回执里能原样再用的译文段，按 ``reuse_key`` 分组，组里保持原文里的先后。
+
+    只收这一版流水线签的回执里、自己校验值对得上、资源和原文一致的段；没译出来先放英文的段
+    （``untranslated``）不收。没有回执的旧稿返回空，只能整篇重译。
+    """
+    if not isinstance(provenance, dict):
+        return {}
+    if provenance.get("schema") != SCHEMA_VERSION or provenance.get("pipeline") != PIPELINE:
+        return {}
+    skip = set(untranslated_slots(provenance))
+    found: dict[str, list[str]] = {}
+    for item in provenance.get("segments") or []:
+        try:
+            if int(item["ordinal"]) in skip:
+                continue
+            source, target = item["source"], item["target"]
+            if (digest(canonical_html(source)) != item["source_hash"]
+                    or digest(canonical_html(target)) != item["target_hash"]
+                    or structure_problem(source, target)):
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        found.setdefault(reuse_key(source), []).append(target)
+    return found
 
 
 def unverified_numbers(provenance: dict | None) -> list[int]:
-    """按现在的数字规则重算回执里数字没对上的槽位序号。没有回执的旧稿返回空。"""
+    """按现在的数字规则重算回执里数字没对上的槽位序号。没有回执的旧稿返回空。没译出来的段不算。"""
     if not isinstance(provenance, dict):
         return []
     found = []
+    gaps = set(untranslated_slots(provenance))
     for item in provenance.get("segments") or []:
         try:
-            if not numbers_agree(item["source"], item["target"]):
+            if int(item["ordinal"]) not in gaps and not numbers_agree(item["source"], item["target"]):
                 found.append(int(item["ordinal"]))
         except (KeyError, TypeError, ValueError):
             continue
