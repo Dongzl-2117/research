@@ -177,6 +177,9 @@ def _merge_meta(existing: dict, doc: ParsedDoc) -> dict:
         meta["create_time"] = create_time if isinstance(create_time, (str, int, float, bool)) else str(create_time)
     if doc.raw_meta.get("date_source"):
         meta["date_source"] = doc.raw_meta["date_source"]
+    if doc.raw_meta.get("calendar_day"):
+        # 归档原来只给的日历日。重新导入时 ingest.store 按它认出「还是同一天」，留着补上的钟点。
+        meta["calendar_day"] = str(doc.raw_meta["calendar_day"])
     topic_id = doc.raw_meta.get("topic_id")
     if topic_id not in (None, ""):
         meta["topic_id"] = topic_id if isinstance(topic_id, (str, int)) else str(topic_id)
@@ -262,11 +265,13 @@ def refresh_clocks(
     *,
     dry_run: bool = False,
     same_row: bool = False,
+    forget_index: bool = True,
 ) -> dict:
     """改 published_at 和 raw_meta.create_time，对齐哈希，再按新时间重走态度变化和同期。
 
     归档里的一篇按话题号对上库里同一话题的所有行。same_row 用于 docs_from_library 逐行生成的 docs：
     只改外部 id 相同的那一行，不把一行正文里的钟点连带写到同话题的别的行上。
+    forget_index 是给知识星球的：归档目录 INDEX.md 不是话题，顺手从库里去掉。别的来源传 False。
     """
     from researchlib.sources import enabled_sources, load_sources
 
@@ -293,7 +298,8 @@ def refresh_clocks(
         "dry_run": dry_run,
     }
     try:
-        stats["removed_index"] = forget_index_articles(conn, source.id)
+        if forget_index:
+            stats["removed_index"] = forget_index_articles(conn, source.id)
         stored = conn.execute(
             """
             SELECT id, title, body_md, published_at, content_hash, raw_meta, external_id

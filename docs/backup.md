@@ -41,6 +41,7 @@ BACKUP_DIR/
 
 | 步骤 | 命令 | 上限 |
 | --- | --- | --- |
+| Stratechery 发布时刻 | `research-stratechery-times`：归档只记了日期的篇按官网接口补上钟点，不调模型；都有了就不连官网（见 [ingest.md](ingest.md)「Stratechery 的发布时刻」） | 没有上限，只看还没钟点的 |
 | 外链图片 | `research-fetch-images` | `IMAGES_LIMIT`，默认 300 个地址 |
 | 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
 | 语义向量 | `research-embed`（没配 `EMBEDDING_BASE_URL` 时什么都不做） | `EMBED_LIMIT`，默认 50000 块 |

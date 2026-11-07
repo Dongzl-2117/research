@@ -241,6 +241,25 @@ Stratechery 设了 `min_chars: 5500`：正文（不含 YAML 头、去掉空白�
 docker compose exec app research-views --articles 203,227,473,537,606
 ```
 
+## Stratechery 的发布时刻
+
+归档只记了美国当地的日历日（`published: 2025-09-22`），入库是上海当天零点，`time_known` 是 false，卡片和文章页的钟点只能写「—」（2026-11-07 线上 2409 篇全是这样）。Stratechery 官网的 WordPress 接口 `stratechery.com/wp-json/wp/v2/posts` 公开每篇的发布时刻 `date_gmt`，`research-stratechery-times` 按它补：
+
+- 只取 slug、当地日期、发布时刻和标题，不取正文；每页 100 篇，只查还没钟点的那几段日子，第一次补全库约 30 页。
+- 按外部 id 里的 slug 对上官网那一篇，官网的当地日期也得和库里的日历日一样才写；外部 id 里没有 slug 的，用标题加日历日对，同一天同名的两篇（官网有 `-2`、`-free` 这种重发）分不出来就不写。
+- 写进 `published_at` 的是那个时刻，`raw_meta.time_known` 记 true，`date_source` 记 `wordpress`，原来的日历日记进 `raw_meta.calendar_day`。美国下午、晚上发的（线上约 9%）按上海时间是第二天，按天的页面上挪到第二天，和别的来源一样按上海日历。
+- 观点、摘要、译文的 `content_hash` 跟着对齐（`retime.refresh_clocks`），夜间任务不会当成正文变了重抽、重译；态度变化按新时刻重走一遍，不调模型。
+- 同一份只有日期的归档再导入时，`ingest.store._keep_filled_clock` 看到还是 `calendar_day` 那一天，留着库里的时刻；归档换了日期或者自己带钟点，照归档的来，夜里再按新日子补。
+
+夜间任务第一步就是它，新导入的第二天早上就有钟点。想马上补：
+
+```bash
+docker compose exec app research-stratechery-times --dry-run
+docker compose exec app research-stratechery-times
+```
+
+要退回零点：`raw_meta.calendar_day` 就是原来的日子。按它把 `published_at` 改回上海零点、去掉 `calendar_day`、`time_known` 记 false，再按原归档导入一次，观点、摘要、译文的哈希跟着对齐。
+
 ## 雪球「黑黑无常」
 
 来源 id 是 `heiheiwuchang`，显示名和作者都是「黑黑无常」，`kind: markdown`，`enabled: true`，`timeline: true`。走现成的 `research-ingest-markdown`，不另写解析器。
