@@ -127,7 +127,7 @@ def test_crawl_imports_new_posts_once(conn, settings, monkeypatch, capsys):
 
 def test_crawl_refuses_sources_without_ghid(settings, monkeypatch, capsys):
     _env(monkeypatch, settings)
-    assert wechat_crawl.main(["--source", "fangwei-mp"]) == 2
+    assert wechat_crawl.main(["--source", "stratechery"]) == 2
     assert "没写 ghid" in capsys.readouterr().err
     monkeypatch.delenv("DAJIALA_KEY")
     assert wechat_crawl.main(["--source", "gudujinhuati"]) == 2

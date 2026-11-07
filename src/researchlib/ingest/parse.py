@@ -24,6 +24,15 @@ _HTML_IMAGE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 _TOPIC_ID = re.compile(r"\d{5,}")
 # 星球归档头里的「- topic_id：`45548552554812148` · 原链接：…」。
 _HEADER_TOPIC_ID = re.compile(r"topic_id\s*[：:]\s*`?(\d{5,})`?")
+# 公众号归档头「- 图片位置：原文页」：正文从公众号原文页取，图就在原文的位置（researchlib.wechat_crawl）。
+_HEADER_IMAGES_FROM_PAGE = re.compile(r"(?m)^\s*[-*]\s*图片位置\s*[：:]\s*原文页\s*$")
+# 归档头只在正文开头这么多字以内。
+_HEADER_SPAN = 2000
+
+
+def images_from_page(body_md: str) -> bool:
+    """归档头写明图在公众号原文的位置。极致了按段估位置的正文没有这一行。"""
+    return bool(_HEADER_IMAGES_FROM_PAGE.search((body_md or "")[:_HEADER_SPAN]))
 
 
 _PATH_YEAR = re.compile(r"^(20\d{2})/")
@@ -513,6 +522,8 @@ def parse_markdown_files(
             "parent": parent,
             "filename": path.name,
         }
+        if images_from_page(full_md):
+            stored_meta["images"] = "page"
         if id_mode == "zsxq" and raw_meta.get("replies"):
             # 星主在评论里回答读者的话往往比正文更直接：接在正文后面，进检索和问库。
             section = comments_section(raw_meta["replies"], full_md)

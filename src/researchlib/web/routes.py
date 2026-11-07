@@ -738,7 +738,11 @@ def _article_view(request: Request, article_id: int, mode: str):
         if digest_due(article, digest) and not hidden:
             schedule_digests(settings, [(article_id, source.author)])
         # 只用来把估错位置的图挪回去；图本来就在原文位置的来源不挪。
-        ocr_texts = queries.image_ocr_texts(conn, article_id) if images_placed_by_estimate(source.kind) else {}
+        ocr_texts = (
+            queries.image_ocr_texts(conn, article_id)
+            if images_placed_by_estimate(source.kind, article["raw_meta"])
+            else {}
+        )
         quoted = None
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
@@ -962,7 +966,7 @@ def _tree_body(conn, article, source):
     shown_md = polish_display_text(clean_article(conn, article["id"], source_id, article["body_md"]))
     html = prepare_body_html(shown_md, polish_display_text(article["title"] or ""), mapping, fmt, link_index, parent)
     # 目录右侧也是阅读：留原图，不把识图文字换进去。飞书的图本来就在原文位置，不挪。
-    if not images_placed_by_estimate(source.kind):
+    if not images_placed_by_estimate(source.kind, article["raw_meta"]):
         return Markup(lazy_images(html))
     return Markup(lazy_images(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"]))))
 

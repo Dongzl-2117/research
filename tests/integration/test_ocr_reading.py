@@ -668,3 +668,45 @@ def test_only_estimated_wechat_images_move_beside_matching_paragraphs(conn, sett
     assert order(tree, feishu_digest) == ["intro", "image", "next", "later"]
     # 方伟公众号的图是极致了估的位置，照旧挪到对得上的那一段前面。
     assert order(pages["fangwei-mp"], stored["fangwei-mp"][1]) == ["intro", "next", "image", "later"]
+
+
+def test_wechat_archive_from_the_original_page_keeps_images_where_they_are(conn, settings, tmp_path):
+    """正文从公众号原文页取的方伟公众号归档（归档头「- 图片位置：原文页」）：图就在原文的位置，阅读页不按识图挪。
+    这一行和别的归档头一样不显示，不进正文文字。"""
+    from researchlib.ingest.parse import parse_archive
+
+    archive = tmp_path / "fangwei-mp"
+    (archive / "md" / "2026").mkdir(parents=True)
+    _png(archive / "md" / "2026" / "table.png", b"\x41" * 24)
+    sn = "d" * 32
+    (archive / "md" / "2026" / f"2026-11-07-{sn}.md").write_text(
+        "# 合成利润表\n\n- 作者：方伟\n- 时间：2026-11-07 09:00:00 (UTC+8)\n"
+        f"- sn：`{sn}`\n- 原链接：https://mp.weixin.qq.com/s?sn={sn}\n"
+        f"- 原始数据：[raw/articles/{sn}.json](../../raw/articles/{sn}.json)\n- 图片位置：原文页\n\n"
+        "先看2023年的利润表，下图是年报里的合并利润表：\n\n![](table.png)\n\n"
+        "收入增长主要来自海外市场，国内基本持平。\n\n"
+        "归属于母公司股东的净利润同比增长了二成，主要是费用率下降。\n",
+        encoding="utf-8",
+    )
+    docs, errors, files, images = parse_archive(archive, tmp_path / "work", id_mode="path")
+    assert errors == [] and docs[0].raw_meta["images"] == "page"
+    source = next(item for item in load_sources(settings.sources_path) if item.id == "fangwei-mp")
+    store_documents(conn, source=source, docs=docs, data_dir=settings.data_dir, archive_files=files,
+                    images_in_archive=images, errors=[])
+    row = conn.execute(
+        "SELECT id, body_text, raw_meta FROM articles WHERE source_id = 'fangwei-mp' AND external_id = %s",
+        (f"md/2026/2026-11-07-{sn}.md",),
+    ).fetchone()
+    assert row["raw_meta"]["images"] == "page" and "图片位置" not in row["body_text"]
+    digest = _remember(
+        conn, row["id"], "table.png",
+        "合并利润表\n项目 2023年 2022年\n营业总收入 1,234 1,100\n归属于母公司股东的净利润 300 250\n",
+    )
+    conn.commit()
+
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{row['id']}").text
+    marks = ("下图是年报里的合并利润表", f'<img id="{image_anchor(digest)}"', "收入增长主要来自海外市场",
+             "归属于母公司股东的净利润同比增长")
+    assert [page.index(mark) for mark in marks] == sorted(page.index(mark) for mark in marks)
+    assert "图片位置" not in page
