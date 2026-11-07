@@ -154,6 +154,23 @@ def _problem(source: str, target: str) -> str | None:
     ("The service is about $100/month and the content is about $60/subscriber.",
      "这项服务平均每月约100美元，内容成本约为每位订户60美元。"),
     ("Turner made $0.80 for every $1.", "特纳每获得1美元，就能获得约0.80美元。"),
+    ("The letter goes out every two weeks.", "这封信每两周发出一次。"),
+    ("The letter goes out every 2 weeks.", "这封信每两周发出一次。"),
+    ("Maintenance runs every two days.", "维护每两天做一次。"),
+    ("It costs $10 every two weeks.", "费用是每两周10美元。"),
+    ("The letter goes out every week.", "这封信每周发出一次。"),
+    ("One day everyone will use it.", "有一天每个人都会用它。"),
+    ("One day, the market will notice.", "总有一天市场会注意到。"),
+    ("The cloud business could one day help it generate $150 billion in revenue.",
+     "这项云业务有朝一日能帮助其创造1500亿美元的收入。"),
+    ("Nvidia believed the cloud business could one day help it generate $150 billion in revenue.",
+     "英伟达当时认为，这项云业务有朝一日能帮助其创造 1,500 亿美元的收入。"),
+    ("It is one day of football.", "这是一天的橄榄球。"),
+    ("The fix took one day.", "修复花了一天。"),
+    ("It arrived one day later.", "一天后到了。"),
+    ("Wait up to one day.", "最多等一天。"),
+    ("A day will come when this matters.", "总有一天这会变得重要。"),
+    ("A couple of weeks later the note resurfaced.", "几周后这篇笔记又冒出来了。"),
     ("Week of March 25-29, 2013", "2013年3月25日至29日这一周"),
 ])
 def test_archive_patterns_pass_the_slot_number_check(source, target):
@@ -444,7 +461,7 @@ _LIVE_FALSE_REJECTS = [
         "<p>苹果是容易处理的例子，我特意从它开始：一旦涉及辱骂和人身剥削，"
         "用“投资回报”这样的说法就麻烦得多。但这并不意味着"
         "相关高管没有做过这样的真实计算：就苹果而言，我想大多数人都会同意，"
-        "与其把钱投在论坛审核上、指望在帖子两周后被转到 "
+        "与其把钱投在论坛审核上、指望在帖子几周后被转到 "
         "Twitter 之前就发现它，不如用来加强最初漏掉这个漏洞的内部质量控制团队。</p>",
     ),
     (
@@ -611,8 +628,21 @@ def test_duration_units_and_per_period_prices_keep_their_facts():
     assert ("duration", "day:8") in keys("eight personal days")
     assert ("duration", "day:8") in keys("8天")
     assert ("duration", "day:12") in keys("十二天")
-    assert ("duration", "week:~2") in keys("a couple of weeks")
-    assert ("duration", "week:~2") in keys("几周")
+    assert ("duration", "week:~") in keys("a couple of weeks")
+    assert ("duration", "week:~") in keys("几周")
+    assert ("duration", "week:2") not in keys("a couple of weeks")
+    assert keys("every two weeks") == [("duration", "week:2")]
+    assert keys("每两周") == [("duration", "week:2")]
+    assert keys("every week") == []
+    assert keys("每周") == []
+    assert not any(kind == "duration" for kind, _key in keys("could one day help"))
+    assert not any(kind == "duration" for kind, _key in keys("有一天每个人都会"))
+    assert not any(kind == "duration" for kind, _key in keys("有朝一日"))
+    assert not any(kind == "duration" for kind, _key in keys("将来某天"))
+    assert ("duration", "day:1") in keys("one day later")
+    assert ("duration", "day:1") in keys("one day of football")
+    assert ("duration", "day:1") in keys("it took one day")
+    assert keys("the day of the report") == []
     assert ("duration", "week:2") in keys("two weeks")
     assert ("duration", "week:some") in keys("the weeks prior")
     assert ("duration", "week:some") in keys("前几周")
@@ -662,6 +692,14 @@ def test_live_false_rejects_now_match(article_id, source, target):
     ("I charge $10/month or $100/year.", "我收费是每月10美元。"),
     ("The service is about $100/month and the content is about $60/subscriber.",
      "这项服务平均每月约100美元。"),
+    ("The letter goes out every two weeks.", "这封信每3周发出一次。"),
+    ("The letter goes out every two weeks.", "这封信每两天发出一次。"),
+    ("The letter goes out every two days.", "这封信每两周发出一次。"),
+    ("It resurfaced a couple of weeks later.", "两周后又冒出来了。"),
+    ("It resurfaced a few weeks later.", "三周后又冒出来了。"),
+    ("One day everyone will use it.", "一天后每个人都会用它。"),
+    ("The fix took one day.", "有一天就修好了。"),
+    ("It is one day of football.", "这是将来某天的橄榄球。"),
 ])
 def test_scale_digit_and_clock_changes_still_fail(source, target):
     assert same_numeric_facts(P(source), P(target)) is False

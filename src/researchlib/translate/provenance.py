@@ -26,7 +26,9 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # 周、月、天、小时分开记，可以挪到金额前面；比例两端之间不能再夹别的数字。
 # 6：a week、糟糕的一周、过去一周、week-old、各一周和 8 天是同一段时间；
 # couple/few/几周可以写成两周，写明 two 不能收成几。每月、每年的标价不是「每 X 美元就有 Y 美元」。
-ALIGNMENT_VERSION = 6
+# 7：写明个数的 every two weeks 和每两周都是两周间隔；没写个数的每周仍不是硬事实。
+# one day it will、有一天、有朝一日不是量出来的一天。couple/few/几 不再等于确切的两。
+ALIGNMENT_VERSION = 7
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
