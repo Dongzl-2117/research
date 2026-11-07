@@ -8,6 +8,7 @@ import pytest
 from test_bilingual_regressions import MemoryConn, translate
 
 from researchlib.translate import provenance as pr
+from researchlib.translate.numbers import same_numeric_facts
 from researchlib.translate.segments import shield, unshield
 from researchlib.translate.service import (
     FAIL_RETRY_COOLDOWNS,
@@ -118,6 +119,14 @@ def _problem(source: str, target: str) -> str | None:
     ("Growth was between 10 and 15 percent.", "增长在10%到15%之间。"),
     ("One billion PCs were already in use.", "已经有十亿台电脑在使用。"),
     ("A million users joined.", "百万用户加入了。"),
+    ("It took seven months.", "花了七个月。"),
+    ("It took seven months.", "花了7个月。"),
+    ("It took two weeks.", "花了两周。"),
+    ("It took two weeks.", "花了2周。"),
+    ("The clocks hit 12:15AM.", "凌晨12:15。"),
+    ("The clocks hit 12:15AM.", "时钟是12:15。"),
+    ("The clocks hit 12:15PM.", "下午12点15分。"),
+    ("The 24mo total was still due.", "24个月的合计还没到。"),
     ("That was in November, 2014, and again in November, 2014.", "那是在2014年11月，后来又是2014年11月。"),
     ("Rules changed as of August, 2005.", "规则在2005年8月变了。"),
     ("Press enter. (Try twice)", "按回车。（试两次）"),
@@ -395,6 +404,124 @@ def test_placeholder_spellings_and_link_ids_still_roundtrip():
     assert restored is not None
     assert restored.index("example.invalid/one") < restored.index("example.invalid/two")
     assert unshield('<p><a id="L0">甲</a>。</p>', shielded) is None
+
+
+# 版本 4 实跑里被误拒的七段。中文保住了英文的数字，检查器当时判不等。
+_LIVE_FALSE_REJECTS = [
+    (
+        21911,
+        '<p data-src-para="2">That $0.30 is more important than it might seem; to use Stratechery as an example, '
+        "I charge $10/month or $100/year — that suggests that I earn $20 less from annual subscribers than I do "
+        "from monthly ones.</p>",
+        '<p data-src-para="2">这 0.30 美元比看起来更重要；以 Stratechery 为例，我收费 10 美元/月或 100 美元/年——'
+        "这似乎意味着，我从年费订阅者身上赚到的钱比月费订阅者少 20 美元。</p>",
+    ),
+    (
+        21998,
+        "<p>Apple is the easy one, and I started with them on purpose: using a term like “return on investment” "
+        "gets a whole lot more problematic when dealing with abuse and human exploitation. That doesn’t mean it "
+        "isn’t a real calculation made by relevant executives though: in the case of Apple, I think most people "
+        "would agree that whatever investment in forum moderation would be effective enough to catch this post "
+        "before it was surfaced on Twitter a couple of weeks later would be far better spent buttressing the "
+        "internal quality control teams that missed the bug in the first place.</p>",
+        "<p>苹果是容易处理的例子，我特意从它开始：一旦涉及辱骂和人身剥削，"
+        "用“投资回报”这样的说法就麻烦得多。但这并不意味着"
+        "相关高管没有做过这样的真实计算：就苹果而言，我想大多数人都会同意，"
+        "与其把钱投在论坛审核上、指望在帖子两周后被转到 "
+        "Twitter 之前就发现它，不如用来加强最初漏掉这个漏洞的内部质量控制团队。</p>",
+    ),
+    (
+        22065,
+        "<p>An iOS 11 bug started crashing some iPhones after the clocks hit 12:15AM [Saturday] morning. Apple has "
+        "had a history of strange time-related bugs affecting iOS multiple times over the years, but this particular "
+        "issue appears to be related to recurring notifications for apps like reminders. After issuing a final "
+        "developer beta of iOS 11.2 to developers last night, Apple decided to take the highly unusual step of "
+        "issuing iOS 11.2 to all iPhone owners to fix the crashing issues [on Saturday]…<br> iOS 11.2 also includes "
+        "a fix for a new autocorrect issue where the word “it” would be autocorrected to “I.T” automatically. Apple "
+        "fixed a similar autocorrect bug with iOS 11.1.1 after the operating system had been automatically changing "
+        "the letter “I” to “A [?]” for some users.</p>",
+        "<p>在[周六]凌晨 12:15 过后，一个 iOS 11 缺陷开始导致部分 iPhone 崩溃。"
+        "多年来，iOS 出现过多次与时间有关的古怪缺陷，"
+        "但这次的问题似乎与提醒事项等应用的重复通知有关。"
+        "昨晚向开发者推送 iOS 11.2 的最后一个开发者测试版后，苹果决定采取"
+        "极不寻常的做法，向所有 iPhone 用户推送 iOS 11.2，以修复[周六]的崩溃问题……<br> "
+        "iOS 11.2 还修复了一个新的自动更正问题："
+        "单词“it”会被自动更正为“I.T”。此前，该操作系统会在部分用户那里自动把字母“I”改成“A [?]”，"
+        "苹果已在 iOS 11.1.1 中修复了类似的自动更正缺陷。</p>",
+    ),
+    (
+        21985,
+        "<p>By year-end 2006, DSL subscribership was 65% higher – more than 9 million households – than it would have "
+        "been under the linear trend established under “open access” regulation.</p>",
+        "<p>到2006年底，DSL用户数比在“开放接入”监管下形成的线性趋势所应有的水平高出65%——即多出900多万户家庭。</p>",
+    ),
+    (
+        21934,
+        "<p>Meredith Corp., the owner of Better Homes &amp; Gardens and Allrecipes, has struck a deal to buy magazine "
+        "publisher Time Inc. for $1.85 billion in cash, a significant bet on the future of the magazine industry as "
+        "media companies try to find their footing in an increasingly digital world. Meredith, based in Des Moines, "
+        "Iowa, has agreed to pay $18.50 a share for Time, the fabled New York publisher of Fortune, People and Sports "
+        "Illustrated, the companies said. The boards of both companies have approved the transaction.<br> That is a "
+        "46% premium to Time’s closing price on Nov. 15, before reports of Meredith’s renewed interest in a deal with "
+        "financial backing from the billionaire Koch brothers. More recently, the stock closed Friday at $16.90. "
+        "Including the assumption of Time’s debt, the deal is valued at $2.8 billion.</p>",
+        "<p>拥有《美好家园》（Better Homes & Gardens）和 Allrecipes 的梅雷迪思公司已达成协议，"
+        "将以18.5亿美元现金收购杂志"
+        "出版商时代公司。在媒体公司努力于日益数字化的世界中站稳脚跟之际，这笔交易是对杂志行业未来的一次重大押注。两家公司"
+        "表示，总部位于艾奥瓦州得梅因的梅雷迪思已同意以每股18.50美元收购时代公司；时代公司是总部位于纽约、出版《财富》《人物》"
+        "和《体育画报》的传奇出版商。两家公司的董事会均已批准该交易。<br>这一价格较时代公司11月15日的收盘价溢价46%，当时尚未"
+        "有报道称梅雷迪思在亿万富翁科赫兄弟的财务支持下重新对交易产生兴趣。此后，该股在上周五收于16.90美元。计入承担时代公司"
+        "债务后，交易总价值为28亿美元。</p>",
+    ),
+    (
+        22054,
+        "<p>Last year Turner made about $0.80 in advertising revenue for every $1 in subscription revenue; applying "
+        "that ratio to our hypothetical market means a further $2.9 million in high margin advertising revenue per "
+        "month.</p>",
+        "<p>去年，特纳每获得1美元订阅收入，就能获得约0.80美元广告收入；把这个比例套用到我们假设的市场，意味着每月还能带来"
+        "290万美元的高利润率广告收入。</p>",
+    ),
+    (
+        21959,
+        "<p>According to a person familiar with Axios’s pitch to investors, "
+        "the company brought in more than $10 million "
+        "in revenue in its first seven months, mostly through short-form native advertising that appears in between "
+        "stories.</p>",
+        "<p>据一位了解 Axios 向投资者推介情况的人士称，公司在头七个月的收入超过1000万美元，"
+        "主要来自出现在报道之间的短篇原生广告。</p>",
+    ),
+]
+
+
+def test_impossible_clock_is_not_a_time_of_day():
+    from researchlib.translate.numbers import _extract
+
+    facts = _extract("<p>The clock hit 24:59 and also 25:00.</p>")
+    assert not any(fact.kind == "clock" for fact in facts)
+
+
+@pytest.mark.parametrize(("article_id", "source", "target"), _LIVE_FALSE_REJECTS)
+def test_live_false_rejects_now_match(article_id, source, target):
+    assert same_numeric_facts(source, target) is True, article_id
+    assert pr.leaf_problem(source, target) is None
+
+
+@pytest.mark.parametrize(("source", "target"), [
+    ("The deal was $1.85 billion.", "交易是1.85亿美元。"),
+    ("Consider the two bugs this week.", "想想本周的三个漏洞。"),
+    ("The clocks hit 12:15AM.", "时钟走到了0:15。"),
+    ("The clocks hit 12:15AM.", "时钟走到了12:15PM。"),
+    ("The clocks hit 12:15AM.", "下午12:15。"),
+    ("It took seven months.", "花了七周。"),
+    ("It took two weeks.", "花了两小时。"),
+    ("It took seven months.", "花了3个月。"),
+    ("Made $0.80 after 7 months for every $1.", "每1美元对应0.80美元。"),
+    ("More than 9 million households.", "多出9万户。"),
+    ("More than 900 million households.", "多出900万户。"),
+    ("$0.80 for every $1.", "每0.80美元对应1美元。"),
+])
+def test_scale_digit_and_clock_changes_still_fail(source, target):
+    assert same_numeric_facts(P(source), P(target)) is False
 
 
 def test_retry_budget_and_cooldown_match_the_queue_rules():
