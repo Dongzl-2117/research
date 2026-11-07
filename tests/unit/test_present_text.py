@@ -473,9 +473,12 @@ def test_rejoin_moves_leading_punctuation_and_splits_year_back():
     assert "<br" in html and "巧克力是会腻的" in html
 
 
-def test_rejoin_drops_orphan_page_digit_and_keeps_real_short_lines():
-    orphan = "才算非常便宜。\n\n12\n\n本来还想展开讲讲长江电力。\n"
-    assert rejoin_broken_paragraphs(orphan) == "才算非常便宜。\n\n本来还想展开讲讲长江电力。\n"
+def test_rejoin_keeps_lone_numbers_that_are_not_split_years():
+    # 公众号单独一段的小节号「01」「02」：拼不成年份就照原样留着，不当页码删。
+    sections = "引子说完了。\n\n01\n\n先说生意模式\n\n这一节说完了！\n\n02\n\n再说估值\n"
+    assert rejoin_broken_paragraphs(sections) == sections
+    lone = "才算非常便宜。\n\n12\n\n本来还想展开讲讲长江电力。\n"
+    assert rejoin_broken_paragraphs(lone) == lone
     kept = "答案是\n\n1\n\n就这样"
     assert rejoin_broken_paragraphs(kept) == kept
     # 下一段以数字开头、又拼不成年份：不动，免得把页码和「2026 年」粘成「22026 年」。
