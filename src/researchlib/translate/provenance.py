@@ -24,7 +24,9 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # 4：``November, 2014`` 就是 2014年11月；twice 是两次；原文没写个数时，多出来的「两种 / 第一步」可以不计入。
 # 5：金额尾零相同；900多万是 900 万；钟点带上午/下午，没写的只和上午相容；
 # 周、月、天、小时分开记，可以挪到金额前面；比例两端之间不能再夹别的数字。
-ALIGNMENT_VERSION = 5
+# 6：a week、糟糕的一周、过去一周、week-old、各一周和 8 天是同一段时间；
+# couple/few/几周可以写成两周，写明 two 不能收成几。每月、每年的标价不是「每 X 美元就有 Y 美元」。
+ALIGNMENT_VERSION = 6
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
