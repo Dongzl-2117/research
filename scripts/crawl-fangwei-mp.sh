@@ -5,13 +5,16 @@
 # 极致了 key 是仓库根 .env 的 DAJIALA_KEY，docker compose 透传进容器。
 # 11 月 7 日以前用的 data/inbox/fangwei-mp/dl.py（不在仓库里）取的是极致了按段估图位置的正文，现在不再调用；
 # 它写下的归档留在 data/inbox/fangwei-mp，research-crawl-wechat 每次照旧把整个目录重新导入。
+# 那些老文章的图，每次再按公众号原文页挪回原位几十篇（research-place-wechat-images，只下网页，不花钱）。
 #   scripts/crawl-fangwei-mp.sh
 #   MAX_NEW=10 scripts/crawl-fangwei-mp.sh
+#   PLACE_LIMIT=0 scripts/crawl-fangwei-mp.sh   # 这次不摆老文章的图
 set -Eeuo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 SOURCE=fangwei-mp
 MAX_NEW="${MAX_NEW:-5}"
+PLACE_LIMIT="${PLACE_LIMIT:-50}"
 TASK=crawl-fangwei-mp
 . "$REPO/scripts/status.sh"
 trap 'STATUS_FAILED_LINE=$LINENO; STATUS_FAILED_CMD=$BASH_COMMAND' ERR
@@ -23,6 +26,9 @@ compose() {
 
 echo "$(date '+%F %T') 开始方伟公众号抓取（这次最多 ${MAX_NEW} 篇新文章）"
 run_step "抓取并导入" compose_exec app research-crawl-wechat --source "$SOURCE" --max-new "$MAX_NEW"
+
+echo "$(date '+%F %T') 老文章的图按原文页摆（这次最多 ${PLACE_LIMIT} 篇）"
+run_step "老文章摆图" compose_exec app research-place-wechat-images --source "$SOURCE" --limit "$PLACE_LIMIT"
 
 echo "$(date '+%F %T') 下载外链图片"
 run_step "下载外链图片" compose_exec app research-fetch-images --limit 200

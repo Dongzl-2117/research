@@ -67,7 +67,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - 本次文章展示与引用修复的交接见 [docs/article-preservation-2026-11-01.md](docs/article-preservation-2026-11-01.md)：对照投影遗漏时保留完整区块，段数不齐时分开展示；旧订阅地址在输出前遮住；OCR 重切同步校验观点定位。没有执行历史清洗或重切，不要把代码修好当成旧库已修复。原有近重复规则若会吞掉独有文字、数字、资料链接或结构，展示完整性优先。
 
 - **#56 合进 main 后撤回了**（撤回提交 58483db）。它是 Codex 做的星球账户资格和引用边界，分支 `codex/wechat-color-ci-savings-20261022`。重新合之前：按它分支上 `docs/availability-gate-2026-10-23.md` 的计划定向回填账户 ID、评论和图片文字；`TRUSTED_OWNERS` 里加上乘风破浪的星主账户，否则这个来源整个不显示；它把迁移从网页启动挪到了 `research-maintain`，`scripts/deploy.sh` 要先跑这一步再重启；和启动时按 `poster_names` 重算星主标记（`posters.refresh_poster_roles`）的做法冲突，要选一种。
-- 孤独进化体以前从 AIHOT 来，10-30 起改由 `scripts/crawl-gudujinhuati.sh` 每天抓（`research-crawl-wechat`，极致了查列表 + 公众号原文页）。方伟公众号 11-07 起走同一条路（`scripts/crawl-fangwei-mp.sh`，`ghid` 在 `config/sources.yaml`），不再调用仓库外的 `data/inbox/fangwei-mp/dl.py`；它以前取的是极致了按段估图位置的正文，存量的图位置还要按原文页挪回去（识图结构改造的第 2 步）。
+- 孤独进化体以前从 AIHOT 来，10-30 起改由 `scripts/crawl-gudujinhuati.sh` 每天抓（`research-crawl-wechat`，极致了查列表 + 公众号原文页）。方伟公众号 11-07 起走同一条路（`scripts/crawl-fangwei-mp.sh`，`ghid` 在 `config/sources.yaml`），不再调用仓库外的 `data/inbox/fangwei-mp/dl.py`；它以前取的是极致了按段估图位置的正文，这些老文章的图由同一个脚本每次按原文页挪回原位 50 篇（`research-place-wechat-images`，见 [docs/ingest.md](docs/ingest.md)「方伟公众号老文章的图」）。`--dry-run --limit 0` 报的等着的篇数到 0 以后，看挪不了的有多少，再决定删不删按识图挪图（`render._relocate_images`）。
 - 停更的来源没有抓取：黑黑无常（一次性导入的雪球存档）、Stratechery（在另一台机器「盒子」上手动抓再导入）、乘风破浪（没有抓取脚本）。接不接、用什么账号由 Zhilin 定。
 - Stratechery 归档只记日期，钟点由夜间任务按官网 WordPress 接口补（`research-stratechery-times`），重新导入同一份归档不会退回零点。见 [docs/ingest.md](docs/ingest.md)「Stratechery 的发布时刻」。
 - 黑黑无常的短帖没有标题，导入时拿正文第一段当了标题，库里 39 篇有 24 篇长过 40 字。页面和接口显示时收成第一句（#180），检索和问库喂给模型的还是整段。

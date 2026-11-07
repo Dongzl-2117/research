@@ -124,6 +124,32 @@ def article_text(body_md: str) -> str:
     return _plain(strip_meta(body))
 
 
+_MD_IMAGE = r"!\[[^\]]*\]\([^)]*\)"
+_HTML_IMAGE = r"<img\b[^>]*>"
+# 单独成行的图（可以在引用里，一行几张也算）。researchlib.wechat_layout 只挪这样的行。
+IMAGE_LINE = re.compile(rf"^[ \t]*(?:>[ \t]*)*(?:(?:{_MD_IMAGE}|{_HTML_IMAGE})[ \t]*)+$", re.I)
+
+
+def _words_and_images(body_md: str) -> tuple[str, list[str]]:
+    lines = (body_md or "").split("\n")
+    images = [line.strip() for line in lines if IMAGE_LINE.match(line)]
+    words = "\n".join(line for line in lines if not IMAGE_LINE.match(line))
+    return article_text(words), images
+
+
+def images_moved_only(old_md: str, new_md: str) -> bool:
+    """两版只是单独成行的图挪了位置：字一样，图一样、先后也一样。
+
+    方伟公众号以前的正文图位置是估的，按原文页挪过以后就是这样（researchlib.wechat_layout）。
+    这不是作者改稿：不记旧版，观点、摘要的哈希跟过来。
+    """
+    if old_md == new_md:
+        return False
+    old_words, old_images = _words_and_images(old_md)
+    new_words, new_images = _words_and_images(new_md)
+    return bool(old_images) and old_words == new_words and old_images == new_images
+
+
 def _real_edits(previous: list[dict], current_md: str) -> list[dict]:
     """previous 从旧到新。和替换它的那一版正文一样的旧版不算：以前点赞、阅读数变了也记了一版。"""
     texts = [article_text(row["body_md"]) for row in previous] + [article_text(current_md)]

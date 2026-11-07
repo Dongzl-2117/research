@@ -100,11 +100,16 @@ def test_nightly_starts_app_before_ocr():
 
 
 def test_fangwei_mp_crawl_takes_bodies_from_the_original_page():
-    """方伟公众号和孤独进化体同一条路：research-crawl-wechat 从原文页取正文，不再跑仓库外的 dl.py。"""
+    """方伟公众号和孤独进化体同一条路：research-crawl-wechat 从原文页取正文，不再跑仓库外的 dl.py。
+    以前入库的老文章，每次再按原文页把图摆回原位一批。"""
     text = (ROOT / "scripts" / "crawl-fangwei-mp.sh").read_text(encoding="utf-8")
     assert 'research-crawl-wechat --source "$SOURCE"' in text and "SOURCE=fangwei-mp" in text
     assert "python3" not in text and 'dl.py"' not in text
-    assert text.index("research-crawl-wechat") < text.index("research-fetch-images") < text.index("research-digest")
+    steps = ("research-crawl-wechat", "research-place-wechat-images", "research-fetch-images", "research-digest")
+    order = [text.index(f"compose_exec app {name}") for name in steps]
+    assert order == sorted(order)
+    # 老文章的图每次按原文页摆一批，导入之后跑（导入整目录时库里摆好的留着）。
+    assert 'research-place-wechat-images --source "$SOURCE" --limit "$PLACE_LIMIT"' in text
 
 
 def test_nightly_reads_images_before_views_and_digests():
