@@ -127,6 +127,8 @@ docker compose exec app research-crawl-wechat --source gudujinhuati             
 以前从 AIHOT 导入的文章不带图，Markdown 里的 http 图片导入时也不下载，页面上原来只显示「外部图片已省略」；原文删了以后图床地址也可能失效，图表和截图就没了。`research-fetch-images` 把正文里的外链图片（Markdown 图片、`<img>` 的 `src` 和公众号懒加载的 `data-src`）下载下来，按内容哈希存进 `data/images/remote/`，文章页和备份都和归档里的图一样对待：
 
 - 只下 http(s)，只连公网地址：每次建连接时核对对方的 IP，内网、本机、Tailscale 这类地址一律断开，跳转和中途换了解析结果也一样；最多跳转 5 次。只收图片，单张不超过 15MB。不带 Referer（公众号图床对外链 Referer 返回占位图）。
+- WordPress 图片 CDN 上的图（`i0.wp.com/<原站>/<路径>`，Stratechery 的图都是这样）先下原站那一张（`https://<原站>/<路径>`，不带缩放参数），下不来再试 CDN，两边的原因都记进 `image_fetches.error`。Mac mini 上的代理把 i0.wp.com 解析成 198.18.x.x，上面那条检查不放行；CDN 对一部分 Stratechery 的图还回 404（2026-11-07 查库：约 900 个地址是前一种，约 635 个是后一种，一张都没下下来）。迁移 030 删掉了这些失败记录，从下一晚起重新排队。
+- 已经译过的英文文章，图下下来以后对照照常逐段：译文回执按不带下载图的原文核验，页面把译文里的占位换成图（见 [translate.md](translate.md)）。下下来的图和别的来源一样排进夜间识图（`NIGHTLY_OCR=1` 时每晚最多 400 张，按文章从新到旧）。
 - 每个地址的结果记在 `image_fetches`：别的文章引用同一张图直接复用，不再下载；失败的按次数隔 1、3、7、30 天再试。
 - 导入时同步归档图片只动归档来的那些，下载来的图不会因为正文改了、重新导入而被删掉。
 

@@ -5,6 +5,7 @@
 - 默认 **对照**：每段英文在上（小一号、次要色 `--ink-4`），中文在下
 - Tab：**对照 / 中文 / 原文**（`/articles/{id}`、`/zh`、`/original`）
 - 媒体与图片只在英文侧出现一次
+- 下载来的外链图（`article_images.remote`，见 [ingest.md](ingest.md)「外链图片」）不进译制原文和回执：译制时照没下载写成「[外部图片已省略]」，对照页也按这一份核验，显示时再把译文里的占位按顺序换成原文的图（`translate/remote_media.py`）。图在译完以后才下下来，对照照常逐段，不会退成两份全文；占位个数对不上（模型丢了句中的占位，或者正文 HTML 里的 `<img>` 没下载时不留占位）就不换，对照照旧显示占位，「原文」页仍有图
 - 默认 `deepseek-flash`：thinking 打开、`reasoning_effort=max`、上下文 1M token、输出至少 393216，不发 temperature。`RESEARCH_LLM_PROVIDER=grok` 时改用 `grok-4.7`、`reasoning_effort=xhigh`、上下文 50 万、输出至少 128000，不用 fast。常量在 `researchlib/deepseek.py` / `researchlib/grok.py`，问库、摘要、观点、论点、样卡走同一套
 
 不要站外译完再贴进库。译文表是 `article_translations`，按 `content_hash` 与原文对齐。

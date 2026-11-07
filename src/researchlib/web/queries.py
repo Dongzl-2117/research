@@ -241,9 +241,10 @@ def duplicate_groups(conn, source_ids: list[str], limit: int, offset: int, only:
 
 
 def article_images(conn, article_id: int):
+    """remote：research-fetch-images 下载来的外链图（对照核验不算它们，见 translate.remote_media）。"""
     return conn.execute(
         """
-        SELECT original_ref, storage_path
+        SELECT original_ref, storage_path, remote
         FROM article_images
         WHERE article_id = %s
         ORDER BY id

@@ -51,6 +51,7 @@ from researchlib.snippets import (
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
 from researchlib.translate.display import article_pairs
+from researchlib.translate.remote_media import bilingual_sources
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
@@ -778,14 +779,24 @@ def _article_view(request: Request, article_id: int, mode: str):
         # Stratechery 每日更新开头结尾的套话不显示（housekeeping）。对照按位置配，译文是照着整篇原文译的，原文不收。
         if mode == "original" or not zh_blob:
             shown_md = strip_housekeeping(fold_nested_copies(shown_md))
-    mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
-    # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
-    canonical_original = canonical_body_html(shown_md, display_title, mapping, fmt, owners=source_owners(source))
-    pair_original = finish_html(canonical_original, link_index, parent)
+    owners = source_owners(source)
+
+    def render_canonical(mapping: dict[str, str]) -> str:
+        # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
+        return canonical_body_html(shown_md, display_title, mapping, fmt, owners=owners)
+
+    # 下载来的外链图不算进译文回执：对照按不带这些图的原文核验，译文里的占位换成图再配对（remote_media）。
+    paired_view = bool(zh_blob) and mode != "original"
+    canonical_original, pairing = bilingual_sources(
+        render_canonical, images, zh_blob if paired_view else "", (translation or {}).get("provenance"),
+    )
+    display_original = finish_html(canonical_original, link_index, parent)
+    pair_original = (display_original if pairing.original == canonical_original
+                     else finish_html(pairing.original, link_index, parent))
     # 阅读页留原图。ocr_texts 不铺进正文；摘要、观点、问这篇和检索另读 image_texts。
     original_html = inline_image_ocr(
-        pair_original,
+        display_original,
         ocr_texts,
         host=source.author,
     )
@@ -798,7 +809,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         and translation.get("content_hash") == article.get("content_hash")
     )
     # 译文是模型写的 HTML，和原文一样过一遍白名单。
-    zh_html = finish_html(sanitize_html(translation["body_html"]), link_index, parent) if has_translation else None
+    zh_source = pairing.translated if paired_view else zh_blob
+    zh_html = finish_html(sanitize_html(zh_source), link_index, parent) if has_translation else None
     pair_translated = zh_html
     if zh_html:
         zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
@@ -815,7 +827,7 @@ def _article_view(request: Request, article_id: int, mode: str):
     paired = has_translation and zh_html and mode != "original"
     pair_display = article_pairs(
         pair_original, pair_translated, provenance=translation.get("provenance"),
-        canonical_source=canonical_original, canonical_target=translation["body_html"],
+        canonical_source=pairing.check, canonical_target=translation["body_html"],
         ocr_texts=ocr_texts, host=source.author,
     ) if paired else None
     raw_pairs = pair_display.pairs if pair_display else None
