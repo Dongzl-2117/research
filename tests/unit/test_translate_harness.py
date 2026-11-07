@@ -426,8 +426,8 @@ def test_single_number_object_and_direction_are_not_cleared_by_the_parser(tmp_pa
 def test_grounded_conflicts_block_time_scale_and_binding():
     samples = [
         ("<p>The call is at 12:15AM.</p>", "<p>电话在12:15PM。</p>",
-         [{"source": "12:15AM", "target": "12:15PM", "object_source": "AM", "object_target": "PM", "same": True}],
-         "equivalent"),
+         [{"source": "12:15AM", "target": "12:15PM", "object_source": "The call",
+           "object_target": "电话", "same": False}], "conflict"),
         ("<p>Shipped in November 2014.</p>", "<p>2014年12月发出。</p>",
          [{"source": "November 2014", "target": "2014年12月", "object_source": "November",
            "object_target": "12月", "same": False}], "conflict"),
@@ -453,6 +453,20 @@ def test_grounded_conflicts_block_time_scale_and_binding():
             "evidence_id": evidence_id(source, target), "verdict": verdict, "claims": claims,
         })
         assert found.status == "contradict", (source, found)
+    source = "<p>The call is at 12:15AM.</p>"
+    target = "<p>电话在12:15PM。</p>"
+    missing = apply_report(source, target, {
+        "evidence_id": evidence_id(source, target), "verdict": "conflict",
+        "claims": [{"source": "12:15AM", "target": "12:15PM", "object_source": "", "object_target": "电话",
+                    "same": False}],
+    })
+    assert missing.status == "uncertain"
+    omitted = apply_report(source, target, {
+        "evidence_id": evidence_id(source, target), "verdict": "equivalent",
+        "claims": [{"source": "12:15AM", "target": "12:15PM", "object_source": "The call",
+                    "object_target": "电话"}],
+    })
+    assert omitted.status == "uncertain"
 
 
 def test_repair_with_the_wrong_source_hash_is_discarded(tmp_path, monkeypatch):

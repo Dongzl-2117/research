@@ -43,8 +43,9 @@ _VERIFY_SYSTEM = (
     '"claims":[{"source":"只含一笔事实的英文片段","target":"只含一笔事实的中文片段",'
     '"value":"这个数或时间","object_source":"英文片段里的对象","object_target":"中文片段里的对象",'
     '"relation":"比例、起止、时间或空","same":true}]}\n'
-    "equivalent 时 same 必须是 true，conflict 时 same 必须是 false。对象字段不能空，而且必须出现在对应片段里。\n"
-    "一条 claim 只许盖住一笔事实，不能用整段话盖住多笔。每一笔事实都要有自己的 claim。\n"
+    "equivalent 时 same 必须是 true，conflict 时 same 必须是 false。对象字段不能空。\n"
+    "object_source / object_target 可以不在数字片段里面，但要是该侧同一句里的连续原文，不要改写成解释。\n"
+    "一条 claim 只许盖住一笔事实，不能用整段话盖住多笔。每一笔数字、时间、百分数、年份都要单独一条。\n"
     "数字写法和中文语序可以不同。单位、数量级、钟点上下午、日期、月份、财季、对象或方向不同就是 conflict。\n"
     "看不出就 uncertain。"
 )
@@ -294,11 +295,11 @@ def _fact_spans(html: str) -> tuple[str, list[tuple[int, int]]]:
     return text, spans
 
 
-def _bind_quote(text: str, spans: list[tuple[int, int]], quote: str, used: set[int]) -> tuple[str, int | None]:
-    """一条引用最多盖住一个还没用过的硬事实。整段盖住多笔事实不算数。"""
+def _bind_quote(text: str, spans: list[tuple[int, int]], quote: str, used: set[int]) -> tuple[str, list[int]]:
+    """一条引用盖住一笔还没用过的硬事实，或紧挨着的同一处写法。整段多笔不算。"""
     folded = _fold(quote)
     if not folded or folded not in text:
-        return "miss", None
+        return "miss", []
     search = 0
     saw_many = False
     while True:
@@ -308,14 +309,60 @@ def _bind_quote(text: str, spans: list[tuple[int, int]], quote: str, used: set[i
         end = start + len(folded)
         inside = [index for index, (fact_start, fact_end) in enumerate(spans)
                   if start <= fact_start and fact_end <= end and index not in used]
+        if len(inside) > 1 and _tight(spans, inside):
+            return "cluster", inside
         if len(inside) > 1:
             saw_many = True
         elif len(inside) == 1:
-            return "one", inside[0]
+            return "one", inside
         search = start + 1
     if saw_many:
-        return "many", None
-    return "none", None
+        return "many", []
+    return "none", []
+
+
+def _tight(spans: list[tuple[int, int]], indexes: list[int]) -> bool:
+    ordered = sorted(indexes, key=lambda index: spans[index][0])
+    for left, right in zip(ordered, ordered[1:], strict=False):
+        if spans[right][0] - spans[left][1] > 3:
+            return False
+    return True
+
+
+def _find_all(text: str, needle: str) -> list[int]:
+    found = []
+    start = 0
+    while True:
+        at = text.find(needle, start)
+        if at < 0:
+            return found
+        found.append(at)
+        start = at + 1
+
+
+def _object_ok(html: str, quote: str, word: object) -> bool:
+    """对象必须是非空字符串。出现在正文里时要和引用同一句，可以在引用外面。"""
+    if not isinstance(word, str) or not word.strip():
+        return False
+    if word.casefold() in quote.casefold():
+        return True
+    visible = _visible(html)
+    text = visible if word.casefold() in visible.casefold() else html
+    folded_text, folded_word = text.casefold(), word.casefold()
+    if folded_word not in folded_text:
+        return True
+    quote_key = quote if quote.casefold() in folded_text else _fold(quote)
+    folded_quote = quote_key.casefold()
+    if folded_quote not in folded_text:
+        return True
+    for quote_at in _find_all(folded_text, folded_quote):
+        for word_at in _find_all(folded_text, folded_word):
+            start = min(quote_at, word_at)
+            end = max(quote_at + len(folded_quote), word_at + len(folded_word))
+            window = folded_text[start:end]
+            if re.search(r"(?<!\d)\.(?!\d)|[。！!？?\n]", window) is None:
+                return True
+    return False
 
 
 def apply_report(source: str, target: str, data: object) -> Judgment:
@@ -342,13 +389,10 @@ def apply_report(source: str, target: str, data: object) -> Judgment:
             return Judgment("uncertain", "evidence-missing")
         if not _quoted(source, source_quote) or not _quoted(target, target_quote):
             return Judgment("uncertain", "evidence-missing")
-        for quote, name in (
-            (source_quote, "object_source"),
-            (target_quote, "object_target"),
-        ):
-            word = claim.get(name)
-            if not isinstance(word, str) or not word.strip() or word not in quote:
-                return Judgment("uncertain", "evidence-missing")
+        if not _object_ok(source, source_quote, claim.get("object_source")):
+            return Judgment("uncertain", "evidence-missing")
+        if not _object_ok(target, target_quote, claim.get("object_target")):
+            return Judgment("uncertain", "evidence-missing")
         if verdict == "equivalent" and claim.get("same") is not True:
             return Judgment("uncertain", "evidence-missing")
         if verdict == "conflict" and claim.get("same") is not False:
@@ -362,21 +406,24 @@ def apply_report(source: str, target: str, data: object) -> Judgment:
     target_text, target_spans = _fact_spans(target)
     used_source: set[int] = set()
     used_target: set[int] = set()
+    bound = False
     for source_quote, target_quote in zip(source_quotes, target_quotes, strict=True):
-        source_bind, source_index = _bind_quote(source_text, source_spans, source_quote, used_source)
-        target_bind, target_index = _bind_quote(target_text, target_spans, target_quote, used_target)
-        broad = "many" in {source_bind, target_bind}
-        if "miss" in {source_bind, target_bind} or broad:
-            return Judgment("uncertain", "evidence-broad" if broad else "evidence-missing")
-        if source_bind == "none" and target_bind == "none":
+        source_bind, source_ids = _bind_quote(source_text, source_spans, source_quote, used_source)
+        target_bind, target_ids = _bind_quote(target_text, target_spans, target_quote, used_target)
+        if "miss" in {source_bind, target_bind}:
             return Judgment("uncertain", "evidence-missing")
-        if source_bind == "one" and source_index is not None:
-            used_source.add(source_index)
-        if target_bind == "one" and target_index is not None:
-            used_target.add(target_index)
+        if "many" in {source_bind, target_bind}:
+            continue
+        if source_bind == "none" and target_bind == "none":
+            continue
+        used_source.update(source_ids)
+        used_target.update(target_ids)
+        bound = True
     if verdict == "conflict":
+        if not bound:
+            return Judgment("uncertain", "evidence-broad")
         return Judgment("contradict", "conflict")
-    if used_source != set(range(len(source_spans))) or used_target != set(range(len(target_spans))):
+    if not bound or used_source != set(range(len(source_spans))) or used_target != set(range(len(target_spans))):
         return Judgment("uncertain", "evidence-incomplete")
     return Judgment("accept", "equivalent")
 
