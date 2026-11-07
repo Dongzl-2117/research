@@ -10,6 +10,8 @@ DATA_DIR/images/remote/，在 article_images 里记一行（remote = true），�
   Mac mini 上的代理把 i0.wp.com 解析成 198.18.x.x，上面那条检查不放行；CDN 对一部分图还会回 404。
 - 不带 Referer（公众号图床对外链 Referer 返回占位图）。
 - 每个地址的结果记在 image_fetches：成功的别的文章引用同一张图直接复用；失败的按次数隔 1、3、7、30 天再试。
+- 每次跑完把新地址下不来的张数、原因类别和最多的域名写进 DATA_DIR/status/fetch-images.json，
+  新地址大半下不来时 research-status 会列出来，值班不用查库（见 fetch_status）。
 
     research-fetch-images --limit 300
 """
@@ -26,6 +28,7 @@ import socket
 import sys
 import urllib.error
 import urllib.request
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -88,6 +91,8 @@ def image_extension(data: bytes, content_type: str = "") -> str:
 
 
 _NOT_PUBLIC = "地址解析到内网或本机，不下载"
+# 解析不了（域名没了、这台机器的 DNS 坏了）和解析到内网（代理的 fake-ip）分开记：处理办法不一样。
+_NO_DNS = "域名解析不了"
 
 
 def blocked_address(value: str) -> bool:
@@ -102,10 +107,11 @@ def blocked_address(value: str) -> bool:
 
 
 def _public_host(host: str) -> bool:
+    """解析出来全是公网地址。解析不了抛 FetchError（「域名解析不了」）。"""
     try:
         infos = socket.getaddrinfo(host, None)
-    except OSError:
-        return False
+    except OSError as exc:
+        raise FetchError(f"{_NO_DNS}：{exc}") from exc
     return bool(infos) and not any(blocked_address(str(info[4][0])) for info in infos)
 
 
@@ -309,8 +315,15 @@ def fetch_pending(
     limit: int = 300,
     fetch: Callable[[str], tuple[bytes, str]] = download,
 ) -> dict:
-    """最多处理 limit 个还没挂上的地址。返回计数 {"downloaded", "reused", "failed", "skipped", "articles"}。"""
-    report = {"downloaded": 0, "reused": 0, "failed": 0, "skipped": 0, "articles": 0}
+    """最多处理 limit 个还没挂上的地址。返回计数 {"downloaded", "reused", "failed", "skipped", "articles"}。
+
+    另记第一次下的地址：new 个，其中下不来的按原因类别（kinds）和域名（hosts）计数，给 fetch_status 判断。
+    重试的地址以前就下不来，再失败是意料之中，只计 retried / retry_failed。
+    """
+    report = {
+        "downloaded": 0, "reused": 0, "failed": 0, "skipped": 0, "articles": 0,
+        "new": 0, "retried": 0, "retry_failed": 0, "kinds": Counter(), "hosts": Counter(),
+    }
     budget = limit
     after = None
     while budget > 0:
@@ -339,6 +352,8 @@ def fetch_pending(
                     report["skipped"] += 1
                     continue
                 budget -= 1
+                first = state is None
+                report["new" if first else "retried"] += 1
                 try:
                     data, content_type = fetch(url)
                     ext = image_extension(data, content_type)
@@ -348,6 +363,11 @@ def fetch_pending(
                 except FetchError as exc:
                     _record(conn, url, ok=False, error=str(exc))
                     report["failed"] += 1
+                    if first:
+                        report["kinds"][failure_kind(str(exc))] += 1
+                        report["hosts"][urlsplit(url).hostname or "?"] += 1
+                    else:
+                        report["retry_failed"] += 1
                     continue
                 _record(conn, url, ok=True, digest=digest, relative=relative)
                 touched |= _link(conn, row["id"], row["source_id"], url, relative, digest)
@@ -360,6 +380,85 @@ def fetch_pending(
             if budget <= 0:
                 break
     return report
+
+
+def failure_kind(error: str) -> str:
+    """image_fetches.error → 原因类别：HTTP 404、连不上、解析到内网、域名解析不了、不是图片……
+
+    WordPress 的图两边都试过（「原站：…；i0.wp.com：…」）：哪边回了 HTTP 状态码按哪边，服务器明确答复了；
+    两边都没有按原站。
+    """
+    text = (error or "").strip()
+    if text.startswith("原站："):
+        origin, _, cdn = text[len("原站：") :].partition("；")
+        kinds = [failure_kind(origin), failure_kind(cdn.partition("：")[2])]
+        return next((kind for kind in kinds if kind.startswith("HTTP ")), kinds[0])
+    status = re.match(r"HTTP (\d{3})", text)
+    if status:
+        return f"HTTP {status.group(1)}"
+    for prefix, kind in (
+        (_NOT_PUBLIC, "解析到内网"),
+        (_NO_DNS, _NO_DNS),
+        ("连不上", "连不上"),
+        ("不是图片", "不是图片"),
+        ("超过", "超过 15MB"),
+        ("不是 http(s)", "地址不对"),
+        ("跳转到了", "地址不对"),
+    ):
+        if text.startswith(prefix):
+            return kind
+    return "其他"
+
+
+# 第一次下的地址够这么多个，才按比例判断这次是不是出了问题；少于这个数、又有失败的，不改上一次的结论。
+STATUS_MIN_NEW = 5
+# 第一次下的地址里，下不来的超过一半，或者够这么多个，就在 research-status 里列出来。
+STATUS_MANY_FAILED = 20
+STATUS_TASK = "fetch-images"
+
+
+def fetch_status(report: dict) -> tuple[bool, str] | None:
+    """这次下载算不算出了问题：(没问题, 一句话)。没有可判断的返回 None，状态文件不动。
+
+    只看第一次下的地址：新文章的图大半下不来，多半是这台机器的网络、代理（fake-ip）、对方拦外链
+    或者地址规则变了，要有人看。重试的地址本来就下不来过，再失败不算。原因类别和最多的几个域名
+    写进这句话，值班看这句就知道是哪一类、哪个图床。原图已经删了（HTTP 404）也照样报：一下子很多
+    也可能是图床换了地址（#256 的 CDN 404）。
+    """
+    new = int(report.get("new") or 0)
+    kinds = Counter(report.get("kinds") or {})
+    failed = sum(kinds.values())
+    if new == 0 or (failed and new < STATUS_MIN_NEW):
+        return None
+    message = f"新地址 {new} 个，下下来 {new - failed} 个"
+    if failed:
+        message += "，下不来 " + "、".join(f"{kind} {count}" for kind, count in kinds.most_common())
+        hosts = Counter(report.get("hosts") or {}).most_common(3)
+        message += "（最多的是 " + "、".join(f"{host} {count}" for host, count in hosts) + "）"
+    if report.get("retried"):
+        message += f"；重试以前下不来的 {report['retried']} 个，又失败 {report.get('retry_failed', 0)} 个"
+    problem = failed * 2 > new or failed >= STATUS_MANY_FAILED
+    return not problem, message
+
+
+def record_fetch_status(data_dir: Path, report: dict) -> str:
+    """把 fetch_status 的结论写进 DATA_DIR/status/fetch-images.json，返回那句话（没有结论返回空串）。"""
+    from researchlib.health import write_status
+
+    verdict = fetch_status(report)
+    if verdict is None:
+        return ""
+    ok, message = verdict
+    write_status(
+        data_dir,
+        STATUS_TASK,
+        ok,
+        message,
+        new=int(report.get("new") or 0),
+        kinds=dict(report.get("kinds") or {}),
+        hosts=dict(Counter(report.get("hosts") or {}).most_common(10)),
+    )
+    return message
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -379,6 +478,9 @@ def main(argv: list[str] | None = None) -> int:
         f"下载 {report['downloaded']} 张，复用 {report['reused']} 张，失败 {report['failed']} 张，"
         f"等下次重试 {report['skipped']} 张，涉及 {report['articles']} 篇"
     )
+    summary = record_fetch_status(settings.data_dir, report)
+    if summary:
+        print(summary)
     return 0
 
 

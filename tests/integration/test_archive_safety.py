@@ -261,6 +261,32 @@ def test_external_images_are_downloaded_and_shown(conn, settings):
     assert again["failed"] == 0 and again["skipped"] == 1
 
 
+def test_fetch_report_counts_new_addresses_by_failure_kind(conn, settings):
+    """第一次下的地址按原因类别和域名计数，重试的另算：research-status 靠它判断要不要提示。"""
+    body = (
+        '<p>三张图</p><img src="https://example.com/ok.png">'
+        '<img src="https://example.com/gone.png"><img src="https://img.example.org/slow.png">'
+    )
+    _store(conn, settings, "gudujinhuati", [_doc("aihot:report", body, meta={"format": "html"})], origin="aihot")
+
+    def fetch(url):
+        if url.endswith("gone.png"):
+            raise FetchError("HTTP 404")
+        if url.endswith("slow.png"):
+            raise FetchError("连不上：timed out")
+        return PNG, "image/png"
+
+    report = fetch_pending(conn, settings.data_dir, 50, fetch=fetch)
+    assert (report["new"], report["downloaded"], report["failed"]) == (3, 1, 2)
+    assert dict(report["kinds"]) == {"HTTP 404": 1, "连不上": 1}
+    assert dict(report["hosts"]) == {"example.com": 1, "img.example.org": 1}
+    # 到了重试的时候再下：算重试，不算新地址。
+    conn.execute("UPDATE image_fetches SET fetched_at = now() - interval '2 days'")
+    again = fetch_pending(conn, settings.data_dir, 50, fetch=fetch)
+    assert (again["new"], again["retried"], again["retry_failed"]) == (0, 2, 2)
+    assert not again["kinds"]
+
+
 def test_wordpress_cdn_image_comes_from_the_origin_and_shows(conn, settings, monkeypatch):
     """正文里写的是 CDN 地址，下载走原站；记录和显示都还按正文里的地址对上。"""
     cdn = "https://i0.wp.com/stratechery.com/wp-content/uploads/2024/05/chart.png?resize=640%2C470&ssl=1"

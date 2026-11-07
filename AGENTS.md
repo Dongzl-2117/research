@@ -14,7 +14,7 @@
 - 线上在跑哪个提交看 `/health` 的 `commit`。自动上线要等它报出新提交才算成；起不来就退回上一个提交，只退代码，跑过的迁移不退。带新迁移的提交上线前自动备份一次。
 - 云端的 AI 连不上 Mac mini。只能在那边跑的命令（装定时任务、一次性的数据修复）写进 PR 描述的「上线后」一节，由 Zhilin 跑；平时合并就上线，不用他动手。
 - Mac mini 上的 `~/research` 只给自动上线用。在那台机器上干活的人和 AI 另外 clone 一份或者用 `git worktree`，不在 `~/research` 里切分支、改文件、提交；本机才要忽略的文件写进 `.git/info/exclude`。那份仓库不在 main、有本机改动或者有没推送的提交，自动上线都会停下，原因写在 `data/status/deploy.json`，处理办法见 [docs/deploy.md](docs/deploy.md)「更新」。
-- 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、孤独进化体抓取、自动上线）的结果写进 `data/status/<任务>.json`，供值班助手看：`docker compose exec app research-status` 把失败和太久没成功的逐条打出来，有就退出码 1。首页不再挂运维红条，见 [docs/backup.md](docs/backup.md)。
+- 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、孤独进化体抓取、自动上线、外链图片下载）的结果写进 `data/status/<任务>.json`，供值班助手看：`docker compose exec app research-status` 把失败和太久没成功的逐条打出来，有就退出码 1。首页不再挂运维红条，见 [docs/backup.md](docs/backup.md)。
 - 密钥在 Mac mini 的 `.env`。站内 LLM 默认 DeepSeek，见 [docs/llm.md](docs/llm.md)。
 
 ## 怎么协作
@@ -65,7 +65,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 
 ## 挂着的事（2026-10-31）
 
-- 识图交回结构（11-07）上线后：跑过一晚，按 [docs/ocr.md](docs/ocr.md)「识图交回结构」里的两条 SQL 看每张图实际用了多少 token、`:invalid` 有几张，算出按新格式重认旧图（约 2 万张）要花多少，由 Zhilin 定重不重认；旧图重认完再删冻结的旧规则。下图失败（`image_fetches`）还没进 `research-status`。
+- 识图交回结构（11-07）上线后：跑过一晚，按 [docs/ocr.md](docs/ocr.md)「识图交回结构」里的两条 SQL 看每张图实际用了多少 token、`:invalid` 有几张，算出按新格式重认旧图（约 2 万张）要花多少，由 Zhilin 定重不重认；旧图重认完再删冻结的旧规则。
 
 - 本次文章展示与引用修复的交接见 [docs/article-preservation-2026-11-01.md](docs/article-preservation-2026-11-01.md)：对照投影遗漏时保留完整区块，段数不齐时分开展示；旧订阅地址在输出前遮住；OCR 重切同步校验观点定位。没有执行历史清洗或重切，不要把代码修好当成旧库已修复。原有近重复规则若会吞掉独有文字、数字、资料链接或结构，展示完整性优先。
 
