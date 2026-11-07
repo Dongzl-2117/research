@@ -607,15 +607,25 @@ def present_stored_ocr(stored: str) -> str:
     return polish_display_text(collapse_short_spam(present_ocr_pieces(pieces or [text])))
 
 
-def speaker_note(text: str, host: str = HOST) -> str:
-    """摘要和观点的提示里补一句说话人，没有对话标记时不加。host 是这篇的作者（文字已经 relabel_host 过）。"""
+def speaker_note(
+    text: str, host: str = HOST, *, dialogue: bool | None = None, uncertain: bool | None = None
+) -> str:
+    """摘要和观点的提示里补一句说话人，没有对话标记时不加。host 是这篇的作者（文字已经 relabel_host 过）。
+
+    dialogue / uncertain 不给时从文字里判断（旧格式的识图）。识图交回结构的图说话人是模型标好的，
+    由 ``researchlib.ocr.ocr_speaker_note`` 直接给出，不再按冒号前的字猜。
+    """
     text = canonical_host(text, host)
-    if attribution_uncertain(text):
+    if uncertain is None:
+        uncertain = attribution_uncertain(text)
+    if uncertain:
         return (
             "截图中有缺少独立依据的冒号标签，已保留原识别文字，尚未确认其说话人边界。"
             "不要把这些标签自行当成新说话人，也不要把有歧义的发言归为作者的判断。"
         )
-    if not any(split_speaker(line, names=True) for line in (text or "").splitlines()):
+    if dialogue is None:
+        dialogue = any(split_speaker(line, names=True) for line in (text or "").splitlines())
+    if not dialogue:
         return ""
     name = (host or "").strip() or HOST
     if name == HOST:

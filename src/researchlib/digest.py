@@ -35,11 +35,11 @@ from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.followups import KIND_DIGEST, clear_followup
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
-from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr
+from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
-from researchlib.wechat_dialogue import relabel_host, speaker_note
+from researchlib.wechat_dialogue import relabel_host
 
 logger = logging.getLogger("researchlib.digest")
 
@@ -173,7 +173,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
     body = append_ocr(row["body_text"] or "", ocr_text)
     if ocr_text.strip():
         chunks = [*chunks, ("图片里的字", ocr_text)]
-        note = speaker_note(ocr_text, shown_author)
+        note = ocr_speaker_note(conn, row["id"], ocr_text, shown_author)
         header += (
             "\n（「图片里的字」是截图里识别出来的，和正文一样要读，不要只概括正文里那一句。"
             + (note if note else "")

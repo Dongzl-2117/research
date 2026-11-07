@@ -83,7 +83,8 @@ def source_owners(source) -> tuple[str, ...]:
     return tuple(name for name in (source.author, *source.poster_names) if name)
 
 
-def _is_owner(shown: str, owners: Sequence[str]) -> bool:
+def is_owner(shown: str, owners: Sequence[str]) -> bool:
+    """显示名 shown 是不是来源作者本人（owners 是 ``source_owners``）。评论区和识图排版共用这一个判断。"""
     from researchlib.author_voice import same_person
     from researchlib.wechat_dialogue import _compact_host, _is_host_line
 
@@ -101,11 +102,11 @@ def _host_comment(shown: str, owners: Sequence[str]) -> tuple[str, bool] | None:
     """
     reply = _REPLY.match(shown)
     if reply is None:
-        return (shown, False) if _is_owner(shown, owners) else None
+        return (shown, False) if is_owner(shown, owners) else None
     who = reply.group("who").strip()
-    if not _is_owner(who, owners):
+    if not is_owner(who, owners):
         return None
-    if _is_owner(display_author(reply.group("to")), owners):
+    if is_owner(display_author(reply.group("to")), owners):
         return shown, True
     return f"{who} {REPLY_TO_GUEST}", True
 

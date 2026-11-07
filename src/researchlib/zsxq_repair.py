@@ -27,7 +27,8 @@ from researchlib.duplicates import fingerprint, store_fingerprint
 from researchlib.followups import KIND_TITLE, clear_followup, queued_ids
 from researchlib.ingest.store import _body_text
 from researchlib.mentions import CompanyMatcher, load_company_rows, mentions_for_document, replace_mentions
-from researchlib.ocr import compose_ocr_text, hash_ocr
+from researchlib.ocr import article_owners, compose_ocr_text, hash_ocr
+from researchlib.ocr_units import ImageText
 from researchlib.retime import _realign
 from researchlib.textutil import SHANGHAI, content_hash
 from researchlib.visibility import is_hidden
@@ -107,10 +108,16 @@ def _rewrite_chunks(conn, article_id: int, title: str, body_md: str, profile, ha
         )
 
 
-def _cleaned_ocr(shot_parts: list[str], ocr_text: str) -> str | None:
-    """按现规则重写旁路。没有页脚、或重写后和库里一样，返回 None。"""
-    raw_blob = "\n".join(shot_parts)
-    if shot_parts and (_chrome_lines(raw_blob) or _chrome_lines(ocr_text)):
+def _cleaned_ocr(shot_parts: list[ImageText], ocr_text: str, owners: tuple[str, ...] = ()) -> str | None:
+    """按现规则重写旁路。没有页脚、或重写后和库里一样，返回 None。
+
+    有识图交回结构的图时，和 refresh_article_ocr 同一套排版（owners 是 ``article_owners``），不看页脚规则，
+    免得这里写的和打开文章时重写的不一样，ocr_hash 来回变。
+    """
+    raw_blob = "\n".join(part.text for part in shot_parts)
+    if any(part.units is not None for part in shot_parts):
+        new_ocr = compose_ocr_text(shot_parts, owners)
+    elif shot_parts and (_chrome_lines(raw_blob) or _chrome_lines(ocr_text)):
         new_ocr = compose_ocr_text(shot_parts)
     elif _chrome_lines(ocr_text):
         new_ocr = present_stored_ocr(ocr_text)
@@ -121,10 +128,15 @@ def _cleaned_ocr(shot_parts: list[str], ocr_text: str) -> str | None:
     return new_ocr
 
 
-def _image_pieces(conn, source_id: str) -> dict[int, list[str]]:
+def _structured_owners(conn, article_id: int, parts: list[ImageText]) -> tuple[str, ...]:
+    """有识图交回结构的图时，这篇作者本人的名字；全是旧格式的不用查。"""
+    return article_owners(conn, article_id) if any(part.units is not None for part in parts) else ()
+
+
+def _image_pieces(conn, source_id: str) -> dict[int, list[ImageText]]:
     rows = conn.execute(
         """
-        SELECT i.article_id, t.text
+        SELECT i.article_id, i.content_hash, t.text, t.units
         FROM article_images i
         JOIN image_texts t ON t.content_hash = i.content_hash
         JOIN articles a ON a.id = i.article_id
@@ -133,9 +145,11 @@ def _image_pieces(conn, source_id: str) -> dict[int, list[str]]:
         """,
         (source_id,),
     ).fetchall()
-    grouped: dict[int, list[str]] = {}
+    grouped: dict[int, list[ImageText]] = {}
     for row in rows:
-        grouped.setdefault(int(row["article_id"]), []).append(row["text"] or "")
+        grouped.setdefault(int(row["article_id"]), []).append(
+            ImageText(row["content_hash"], row["text"] or "", row["units"])
+        )
     return grouped
 
 
@@ -167,7 +181,8 @@ def rewash_source_ocr(conn, source_id: str) -> int:
     ).fetchall()
     changed = 0
     for row in rows:
-        new_ocr = _cleaned_ocr(pieces.get(int(row["id"])) or [], row["ocr_text"] or "")
+        parts = pieces.get(int(row["id"])) or []
+        new_ocr = _cleaned_ocr(parts, row["ocr_text"] or "", _structured_owners(conn, int(row["id"]), parts))
         if new_ocr is None:
             continue
         conn.execute(
@@ -291,7 +306,9 @@ def repair_zsxq(
         ocr_text = row["ocr_text"] or ""
         visible = not is_hidden(row["raw_meta"])
         shot_parts = pieces.get(article_id) or []
-        cleaned = _cleaned_ocr(shot_parts, ocr_text) if rewash else None
+        cleaned = (
+            _cleaned_ocr(shot_parts, ocr_text, _structured_owners(conn, article_id, shot_parts)) if rewash else None
+        )
         new_ocr = ocr_text if cleaned is None else cleaned
         if cleaned is not None:
             stats["ocr_rewash"] += 1
@@ -405,7 +422,7 @@ def spot_check(conn, article_ids: list[int], owners: dict[str, tuple[str, ...]] 
     found = {int(row["id"]): row for row in rows}
     image_rows = conn.execute(
         """
-        SELECT i.article_id, t.text
+        SELECT i.article_id, i.content_hash, t.text, t.units
         FROM article_images i
         JOIN image_texts t ON t.content_hash = i.content_hash
         WHERE i.article_id = ANY(%s)
@@ -413,9 +430,11 @@ def spot_check(conn, article_ids: list[int], owners: dict[str, tuple[str, ...]] 
         """,
         (list(article_ids),),
     ).fetchall()
-    pieces: dict[int, list[str]] = {}
+    pieces: dict[int, list[ImageText]] = {}
     for row in image_rows:
-        pieces.setdefault(int(row["article_id"]), []).append(row["text"] or "")
+        pieces.setdefault(int(row["article_id"]), []).append(
+            ImageText(row["content_hash"], row["text"] or "", row["units"])
+        )
     report = []
     for article_id in article_ids:
         row = found.get(article_id)
@@ -432,7 +451,12 @@ def spot_check(conn, article_ids: list[int], owners: dict[str, tuple[str, ...]] 
             guests = guest_comment_authors(row["body_md"] or "", mine) or []
             comment = "仍有别人的评论：" + "、".join(guests) if guests else "评论只剩作者"
         raw_parts = pieces.get(article_id) or []
-        presented = present_ocr_pieces(raw_parts) if raw_parts else present_stored_ocr(row["ocr_text"] or "")
+        if any(part.units is not None for part in raw_parts):
+            presented = compose_ocr_text(raw_parts, article_owners(conn, article_id))
+        elif raw_parts:
+            presented = present_ocr_pieces([part.text for part in raw_parts])
+        else:
+            presented = present_stored_ocr(row["ocr_text"] or "")
         report.append(
             {
                 "id": article_id,

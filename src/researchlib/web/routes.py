@@ -747,8 +747,13 @@ def _article_view(request: Request, article_id: int, mode: str):
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
-            if quoted is not None and (quoted.get("lang") or "") == "ocr":
-                # 检索块里别的来源已经换成作者名：换回「方伟：」再整理，整理完再换成作者名。
+            if (
+                quoted is not None
+                and (quoted.get("lang") or "") == "ocr"
+                and not queries.ocr_anchor_structured(conn, article_id, quoted.get("anchor") or "")
+            ):
+                # 旧格式识图的块：检索块里别的来源已经换成作者名，换回「方伟：」再整理，整理完再换成作者名。
+                # 识图交回结构的块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
                 presented = present_stored_ocr(canonical_host(quoted["body"], source.author))
                 cleaned = flow_ocr_quote_body(relabel_host(presented, source.author))
                 if cleaned.strip():
