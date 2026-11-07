@@ -25,7 +25,7 @@ from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import canonical_body_html, render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
-from researchlib.translate.harness import fact_brief, note_reject, semantic_ok, settle_numbers, settle_unshield
+from researchlib.translate.harness import fact_brief, note_reject, settle_numbers, settle_unshield
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import GROK_INPUT_CHARS, LLMTransportError, chat_json, model_id, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
@@ -457,7 +457,11 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
         for i, text in enumerate(got):
             slot = offset + i
             source_html = targets[slot][1]
-            restored = settle_unshield(shielded[slot].html, text, shielded[slot], data_dir)
+            segment = manifest["segments"][targets[slot][0]]
+            restored, unshield_stages = settle_unshield(
+                shielded[slot].html, text, shielded[slot], data_dir,
+                segment_id=segment["id"], source_hash=segment["source_hash"],
+            )
             if restored is None:
                 note_reject(
                     data_dir,
@@ -465,36 +469,42 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
                     slot=f"slot-{slot}-unshield",
                     kind="unshield",
                     source=shielded[slot].html,
-                    draft=text,
+                    draft=unshield_stages[-1]["output"],
+                    stages=unshield_stages,
                 )
                 raise AlignmentError("unshield")
-            if not semantic_ok(source_html, restored):
-                problem = leaf_problem(source_html, restored)
-                if problem in {None, "numbers"}:
-                    restored, numbers = settle_numbers(source_html, restored, data_dir)
-                    if numbers:
-                        note_reject(
-                            data_dir,
-                            article_id=article_id,
-                            slot=f"slot-{slot}-{numbers}",
-                            kind=numbers,
-                            source=source_html,
-                            draft=restored,
-                        )
-                        raise AlignmentError(
-                            f"slot-{slot}-{numbers}",
-                            fact_brief(source_html, restored),
-                        )
-                else:
-                    note_reject(
-                        data_dir,
-                        article_id=article_id,
-                        slot=f"slot-{slot}-{problem}",
-                        kind=problem,
-                        source=source_html,
-                        draft=restored,
-                    )
-                    raise AlignmentError(f"slot-{slot}-{problem}")
+            structure = leaf_problem(source_html, restored)
+            if structure not in {None, "numbers"}:
+                note_reject(
+                    data_dir,
+                    article_id=article_id,
+                    slot=f"slot-{slot}-{structure}",
+                    kind=structure,
+                    source=source_html,
+                    draft=restored,
+                    stages=[{
+                        "step": "structure", "input": source_html, "output": restored, "reason": structure,
+                    }],
+                )
+                raise AlignmentError(f"slot-{slot}-{structure}")
+            restored, numbers, number_stages = settle_numbers(
+                source_html, restored, data_dir,
+                segment_id=segment["id"], source_hash=segment["source_hash"],
+            )
+            if numbers:
+                note_reject(
+                    data_dir,
+                    article_id=article_id,
+                    slot=f"slot-{slot}-{numbers}",
+                    kind=numbers,
+                    source=source_html,
+                    draft=number_stages[-1]["output"],
+                    stages=number_stages,
+                )
+                raise AlignmentError(
+                    f"slot-{slot}-{numbers}",
+                    fact_brief(source_html, number_stages[-1]["output"]),
+                )
             translations[slot] = restored
         models.update(getattr(got, "models", ()))
         offset += len(chunk)

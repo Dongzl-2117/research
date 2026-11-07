@@ -64,10 +64,11 @@ def translate(body, outputs, tmp_path, *, mutate=None):
     def fake(**kwargs):
         user = kwargs["user"]
         values = ["合成标题"] if user["segments"] == ["Synthetic audit"] else outputs
-        if "segment_ids" in user:
+        identities = user.get("segment_ids")
+        hashes = user.get("source_hashes")
+        if identities and hashes and len(identities) == len(hashes) == len(values) == len(user["segments"]):
             values = [{"id": identity, "source_hash": source_hash, "html": text}
-                      for identity, source_hash, text in zip(user["segment_ids"], user["source_hashes"], values,
-                                                             strict=True)]
+                      for identity, source_hash, text in zip(identities, hashes, values, strict=True)]
             if mutate and user["segment_ids"] != ["title"]:
                 values = mutate(values)
         return ChatJsonResult(data={"t": values}, model="synthetic-model", usage=None, latency_ms=0)

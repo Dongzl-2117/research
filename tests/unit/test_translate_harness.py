@@ -167,7 +167,7 @@ _LIVE = [
         (*row, expected)
         for row, expected in zip(
             _LIVE,
-            ["doubt", "doubt", "conflict", "ok", "doubt"],
+            ["ok", "ok", "ok", "ok", "ok"],
             strict=True,
         )
     ],
@@ -251,7 +251,7 @@ def test_repair_is_kept_only_when_the_checker_passes(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
-    text, code = settle_numbers("<p>Profit was 10 dollars.</p>", "<p>利润为20美元。</p>", tmp_path)
+    text, code, _stages = settle_numbers("<p>Profit was 10 dollars.</p>", "<p>利润为20美元。</p>", tmp_path)
     assert code is None and "10美元" in text
 
 
@@ -265,8 +265,10 @@ def test_repeating_a_wrong_amount_is_still_rejected(tmp_path, monkeypatch):
             latency_ms=0,
         ),
     )
-    text, code = settle_numbers("<p>Profit was 10 dollars.</p>", "<p>利润为20美元。</p>", tmp_path)
+    text, code, stages = settle_numbers("<p>Profit was 10 dollars.</p>", "<p>利润为20美元。</p>", tmp_path)
     assert code == "numbers" and "20美元" in text
+    assert [item["step"] for item in stages] == ["generate", "repair"]
+    assert "20美元" in stages[-1]["output"]
 
 
 def test_same_numbers_on_swapped_objects_are_binding():
@@ -280,31 +282,14 @@ def test_same_numbers_on_swapped_objects_are_binding():
     ) == "binding"
 
 
-def test_bound_live_slot_is_kept_without_calling_the_model(tmp_path, monkeypatch):
+def test_saved_live_slots_are_kept_without_rewriting(tmp_path, monkeypatch):
     def boom(**_kwargs):
-        raise AssertionError("角色已经对上，不应该再叫模型")
+        raise AssertionError("证据已经一致，不应该再叫模型改写")
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", boom)
-    _article_id, source, target = _LIVE[3]
-    text, code = settle_numbers(source, target, tmp_path)
-    assert code is None and text == target
-
-
-def test_unresolved_live_slots_stay_rejected(tmp_path, monkeypatch):
-    def echo(**kwargs):
-        return ChatJsonResult(
-            data={"t": [kwargs["user"]["repair"].rsplit("译文:\n", 1)[-1]]},
-            model="synthetic-model",
-            usage=None,
-            latency_ms=0,
-        )
-
-    monkeypatch.setattr("researchlib.translate.service.chat_json", echo)
     for article_id, source, target in _LIVE:
-        if numeric_verdict(source, target) == "ok":
-            continue
-        text, code = settle_numbers(source, target, tmp_path)
-        assert code and text == target, article_id
+        text, code, stages = settle_numbers(source, target, tmp_path)
+        assert code is None and text == target and stages[0]["status"] == "accept", article_id
 
 
 def test_deepseek_request_drops_the_repair_temperature(monkeypatch):
@@ -326,8 +311,9 @@ def test_missing_placeholder_is_repaired_once(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
-    restored = settle_unshield(shielded.html, "<p>见图。</p>", shielded, tmp_path)
+    restored, stages = settle_unshield(shielded.html, "<p>见图。</p>", shielded, tmp_path)
     assert restored and "rate = 42" in restored and len(calls) == 1
+    assert stages[-1]["step"] == "repair" and stages[-1]["output"] == shielded.html
     assert "不要自己宣布通过" in calls[0]
 
 
@@ -345,8 +331,10 @@ def test_placeholder_still_missing_is_not_retried(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
-    assert settle_unshield(shielded.html, "<p>见图。</p>", shielded, tmp_path) is None
-    assert len(calls) == 1
+    restored, stages = settle_unshield(shielded.html, "<p>见图。</p>", shielded, tmp_path)
+    assert restored is None and len(calls) == 1
+    assert stages[-1]["output"] == "<p>见图。</p>"
+    assert stages[-1]["reason"] == "repair still did not restore"
 
 
 def test_a_rejected_article_does_not_store_a_translation(tmp_path):
@@ -377,4 +365,4 @@ def test_a_rejected_article_does_not_store_a_translation(tmp_path):
     assert "repair" in calls[1]
     saved = (tmp_path / "translate-rejects" / "990001.jsonl").read_text(encoding="utf-8")
     assert "10 dollars" in saved and "20美元" in saved
-    assert "DEEPSEEK" not in saved and "api_key" not in saved.lower()
+    assert '"step": "repair"' in saved and "DEEPSEEK" not in saved and "api_key" not in saved.lower()
