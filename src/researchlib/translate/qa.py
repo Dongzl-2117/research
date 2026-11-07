@@ -50,6 +50,7 @@ from researchlib.translate.pair import (
     redundant_pairs,
     visible_text,
 )
+from researchlib.translate.provenance import unverified_numbers
 from researchlib.translate.segments import iter_segments
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import shorten_long_title
@@ -249,6 +250,14 @@ def report_from_html(
     issues: list[CheckIssue] = []
     if displayed.correspondence.startswith("legacy"):
         issues.append(CheckIssue("alignment-unverified", "warn", 1, "旧译文缺少源段回执；结构相等不证明语义对应"))
+    if displayed.correspondence == "mapped":
+        # 写入时数字没对上、补译一次仍没对上而照样入库的段。按现在的规则重算，规则改了这里跟着变。
+        review = unverified_numbers(display_options.get("provenance"))
+        if review:
+            issues.append(CheckIssue(
+                "numbers-unverified", "warn", len(review),
+                f"数字没能自动核对上、照样写入的段，回执序号 {_preview(review)}；对照原文核一下",
+            ))
     # 不复用可译叶子：两边同漏一个数字/图片时，叶子数仍然相等。
     missing = protected_content_gaps(en_html, zh_html)
     if missing:

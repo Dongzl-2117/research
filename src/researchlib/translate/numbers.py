@@ -100,6 +100,11 @@ def same_numeric_facts(source: str, target: str) -> bool:
     return flipped is not None and _facts_align(source, flipped)
 
 
+def has_hard_facts(text: str) -> bool:
+    """有没有译文里必须对上的数字。英文数词、脚注号这类可以省的不算。"""
+    return any(fact.hard for fact in _extract(text))
+
+
 def _facts_align(source: str, target: str) -> bool:
     return _align(_extract(source), _extract(target))
 
