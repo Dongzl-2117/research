@@ -16,6 +16,8 @@
 # 重建失败的提交最多试 3 轮；建好了却起不来的不自动重试（每试一次线上要停好几分钟）。两种都等下一个提交或 FORCE=1。
 # CI 没过的提交每轮再查，CI 重跑通过了就上线。
 # 夜间补齐、定时抓取、备份，以及容器里的 research-translate / research-ocr 正在跑时先不重启：重建会把它们打断。
+# 挡着的是 research-translate、要上线的提交 CI 又过了，就写 data/status/.deploy-waiting 请它让路：它每译完一篇
+# 看一眼，在就停下（--loop 也停），下一轮上线。research-ocr 和定时任务都会自己跑完，不用让路。
 # 这样等着不记失败；最早一个没上线的合并等了 3 小时还被挡着，或者上一轮自动上线 2 小时还没跑完，才记成失败。
 # 定时任务的模板（deploy/launchd/、install-launchd.sh）改了，上线后按上次安装的设置重装一遍。
 #
@@ -42,6 +44,8 @@ export GIT_TERMINAL_PROMPT=0
 LAST="$STATUS_DIR/.deploy-last"
 SEEN="$STATUS_DIR/.deploy-seen"
 LOCK="$STATUS_DIR/.deploy.lock"
+# 请容器里的 research-translate 让路（src/researchlib/health.py 的 deploy_waiting 读它，半小时没重写就不算数）。
+WAITING="$STATUS_DIR/.deploy-waiting"
 locked=0
 LAST_ERR=""
 trap 'STATUS_FAILED_LINE=$LINENO; STATUS_FAILED_CMD=$BASH_COMMAND' ERR
@@ -115,6 +119,8 @@ go_back() {
   else
     status_fail "${reason}；${how}，应用还是没起来，线上停着：看 docker compose logs app"
   fi
+  # 容器换完了，这时再开的 research-translate 不会被打断，不用再请它停。
+  rm -f "$WAITING"
 }
 
 unreachable() {
@@ -222,6 +228,7 @@ deploy_main() {
   if [ "$last_sha" = "$target" ] && [ "${FORCE:-0}" != "1" ]; then
     if [ "$last_state" = "ok" ]; then
       touch "$SEEN"
+      rm -f "$WAITING"
       # 线上就是 main 上最新的提交，以前提示的「取不到 main」之类已经过去了。
       if grep -q '"ok":false' "$STATUS_DIR/${TASK}.json" 2> /dev/null; then
         status_ok "线上已经是 main 上最新的 ${short}"
@@ -265,6 +272,15 @@ deploy_main() {
       oldest="$(git -C "$REPO" log --format=%ct "HEAD..$target" | tail -n 1)"
       [ -n "$oldest" ] || oldest="$(git -C "$REPO" log -1 --format=%ct "$target")"
       age=$(($(date +%s) - oldest))
+      if [ "$busy" = "research-translate" ] && [ "$(ci_state "$target")" = "success" ]; then
+        # --loop 不会自己跑完：请它译完手上这篇就停。CI 没过的提交反正不上线，不让它白停。
+        printf '%s\n' "$target" > "$WAITING"
+        if [ "$age" -gt 10800 ]; then
+          status_fail "research-translate 还在跑，最早一个没上线的合并等了 3 小时（main 现在是 ${short}；已请它译完手上这篇就停，一直不停的话在 Mac mini 上 Ctrl-C 停掉，或者 FORCE=1 scripts/deploy.sh 打断它）"
+        fi
+        note "research-translate 还在跑，已请它译完手上这篇就停，之后上线 ${short}"
+        exit 0
+      fi
       if [ "$age" -gt 10800 ]; then
         status_fail "${busy} 还在跑，最早一个没上线的合并等了 3 小时（main 现在是 ${short}；等不及就 FORCE=1 scripts/deploy.sh，会打断它）"
       fi
@@ -327,6 +343,8 @@ deploy_main() {
     exit 1
   fi
 
+  # 新容器起来了：这之后开的 research-translate 跑的是新版本，不用再停。重建期间留着，免得刚开的那篇被打断。
+  rm -f "$WAITING"
   if ! git -C "$REPO" diff --quiet "$before" "$target" -- deploy/launchd scripts/install-launchd.sh; then
     run_step "重装定时任务" env DEPLOY_SELF=1 "$REPO/scripts/install-launchd.sh"
   fi

@@ -93,3 +93,39 @@ def test_feed_address_stays_out_of_every_output(conn, settings, monkeypatch, leg
         assert "example-secret" in conn.execute(
             "SELECT body FROM article_chunks WHERE article_id = %s ORDER BY ord LIMIT 1", (article_id,)
         ).fetchone()["body"]
+
+
+
+def test_old_search_text_does_not_put_the_hidden_address_first_on_cards(conn, settings, monkeypatch):
+    """#157 以前入库的旧检索文字还带着「rsslink: 订阅地址」：作者页卡片和接口列表的摘录不以占位开头。"""
+    monkeypatch.setattr("researchlib.web.routes.schedule_digests", lambda *_args, **_kwargs: None)
+    source = next(item for item in load_sources(settings.sources_path) if item.id == "stratechery")
+    # Stratechery 短于 min_chars 的不进列表：正文写长一点。
+    filler = "\n\n".join(f"Paragraph {n}: Widget Corp keeps adding services to the box." * 4 for n in range(40))
+    doc = ParsedDoc(
+        "2026/widget-tv",
+        "Widget TV",
+        datetime(2026, 10, 14, 8, 0, tzinfo=SHANGHAI),
+        BODY + "\n" + filler + "\n",
+        {"language": "en"},
+        [],
+    )
+    store_documents(
+        conn, source=source, docs=[doc], data_dir=settings.data_dir, archive_files=1, images_in_archive=0, errors=[]
+    )
+    conn.execute(
+        "UPDATE articles SET body_text = %s WHERE external_id = '2026/widget-tv'",
+        (
+            "Widget TV\nsource: member-rss\nrsslink: https://stratechery.example/feed/?key=example-secret\n\n"
+            "The new device is official, and the question is how big the market for it really is.\n\n" + filler,
+        ),
+    )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        listing = client.get("/api/v1/articles?source=stratechery").json()
+        author_page = client.get(f"/authors/{source.author}?source=stratechery").text
+    (item,) = listing["items"]
+    assert item["snippet"].startswith("The new device is official")
+    assert "个人订阅地址已隐藏" not in json.dumps(listing, ensure_ascii=False)
+    assert "The new device is official" in author_page
+    assert "个人订阅地址已隐藏" not in author_page and "example-secret" not in author_page

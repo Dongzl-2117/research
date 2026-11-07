@@ -38,7 +38,7 @@ from researchlib.nested_copies import fold_nested_copies
 from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.present_text import polish_display_text
-from researchlib.render import flow_ocr_quote_body, inline_image_ocr, sanitize_html
+from researchlib.render import flow_ocr_quote_body, images_placed_by_estimate, inline_image_ocr, sanitize_html
 from researchlib.retrieval import full_match_counts, search_articles
 from researchlib.snippets import (
     answer_html,
@@ -51,6 +51,7 @@ from researchlib.snippets import (
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
 from researchlib.translate.display import article_pairs
+from researchlib.translate.remote_media import bilingual_sources
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import filter_timeline, quote_repeats, same_period
@@ -727,7 +728,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         # 短文的图片文字变了也重写摘要。不进列表的不排进后台。
         if digest_due(article, digest) and not hidden:
             schedule_digests(settings, [(article_id, source.author)])
-        ocr_texts = queries.image_ocr_texts(conn, article_id)
+        # 只用来把估错位置的图挪回去；图本来就在原文位置的来源不挪。
+        ocr_texts = queries.image_ocr_texts(conn, article_id) if images_placed_by_estimate(source.kind) else {}
         quoted = None
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
@@ -778,14 +780,24 @@ def _article_view(request: Request, article_id: int, mode: str):
         # Stratechery 每日更新开头结尾的套话不显示（housekeeping）。对照按位置配，译文是照着整篇原文译的，原文不收。
         if mode == "original" or not zh_blob:
             shown_md = strip_housekeeping(fold_nested_copies(shown_md))
-    mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
-    # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
-    canonical_original = canonical_body_html(shown_md, display_title, mapping, fmt, owners=source_owners(source))
-    pair_original = finish_html(canonical_original, link_index, parent)
+    owners = source_owners(source)
+
+    def render_canonical(mapping: dict[str, str]) -> str:
+        # render_body 之后、stamp_paragraph_ids 之前改相对 .md 链接。prepare/finish 里就是这个顺序。
+        return canonical_body_html(shown_md, display_title, mapping, fmt, owners=owners)
+
+    # 下载来的外链图不算进译文回执：对照按不带这些图的原文核验，译文里的占位换成图再配对（remote_media）。
+    paired_view = bool(zh_blob) and mode != "original"
+    canonical_original, pairing = bilingual_sources(
+        render_canonical, images, zh_blob if paired_view else "", (translation or {}).get("provenance"),
+    )
+    display_original = finish_html(canonical_original, link_index, parent)
+    pair_original = (display_original if pairing.original == canonical_original
+                     else finish_html(pairing.original, link_index, parent))
     # 阅读页留原图。ocr_texts 不铺进正文；摘要、观点、问这篇和检索另读 image_texts。
     original_html = inline_image_ocr(
-        pair_original,
+        display_original,
         ocr_texts,
         host=source.author,
     )
@@ -798,7 +810,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         and translation.get("content_hash") == article.get("content_hash")
     )
     # 译文是模型写的 HTML，和原文一样过一遍白名单。
-    zh_html = finish_html(sanitize_html(translation["body_html"]), link_index, parent) if has_translation else None
+    zh_source = pairing.translated if paired_view else zh_blob
+    zh_html = finish_html(sanitize_html(zh_source), link_index, parent) if has_translation else None
     pair_translated = zh_html
     if zh_html:
         zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
@@ -815,7 +828,7 @@ def _article_view(request: Request, article_id: int, mode: str):
     paired = has_translation and zh_html and mode != "original"
     pair_display = article_pairs(
         pair_original, pair_translated, provenance=translation.get("provenance"),
-        canonical_source=canonical_original, canonical_target=translation["body_html"],
+        canonical_source=pairing.check, canonical_target=translation["body_html"],
         ocr_texts=ocr_texts, host=source.author,
     ) if paired else None
     raw_pairs = pair_display.pairs if pair_display else None
@@ -927,7 +940,8 @@ def article_page_original(request: Request, article_id: int):
     return _article_view(request, article_id, "original")
 
 
-def _tree_body(conn, article, source_id: str):
+def _tree_body(conn, article, source):
+    source_id = source.id
     images = queries.article_images(conn, article["id"])
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
     fmt = (article["raw_meta"] or {}).get("format")
@@ -935,7 +949,9 @@ def _tree_body(conn, article, source_id: str):
     link_index = load_md_index(conn, source_id) if ".md" in (article["body_md"] or "").lower() else None
     shown_md = polish_display_text(clean_article(conn, article["id"], source_id, article["body_md"]))
     html = prepare_body_html(shown_md, polish_display_text(article["title"] or ""), mapping, fmt, link_index, parent)
-    # 目录右侧也是阅读：留原图，不把识图文字换进去。
+    # 目录右侧也是阅读：留原图，不把识图文字换进去。飞书的图本来就在原文位置，不挪。
+    if not images_placed_by_estimate(source.kind):
+        return Markup(html)
     return Markup(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
 
@@ -960,7 +976,7 @@ def _source_tree(request: Request, source_id: str, article_id: int | None):
             article = queries.get_article(conn, current, [source_id])
             if article is None:
                 raise HTTPException(status_code=404)
-            body_html = _tree_body(conn, article, source_id)
+            body_html = _tree_body(conn, article, source)
         if root is not None:
             mark_open(root, current)
         for node in orphans:

@@ -14,6 +14,8 @@ _LABELLED_FEED = re.compile(
 _URL = re.compile(r"https?://[^\s<>\"'\])]+", re.I)
 _CREDENTIAL_KEYS = frozenset({"access_token", "token", "key", "auth", "secret", "signature", "password"})
 _HIDDEN = "[个人订阅地址已隐藏]"
+# 摘录（卡片、接口列表）用：遮住以后这一截没有内容，摘录里直接去掉，不拿占位当开头一句。
+HIDDEN_FEED_ADDRESS = _HIDDEN
 
 
 def _private_feed(url: str) -> bool:

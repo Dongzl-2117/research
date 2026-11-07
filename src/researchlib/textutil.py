@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from researchlib.output_safety import redact_subscription_links
+from researchlib.output_safety import HIDDEN_FEED_ADDRESS, redact_subscription_links
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
@@ -735,11 +735,14 @@ _AFTER_TITLE = re.compile(r"^(?:[\s，,。；;、！!？?…⋯]|\.(?![0-9A-Za-z
 
 def _lead_lines(text: str, title: str) -> list[str]:
     """正文开头的行：跳过 sn、点赞、钟点，以及公众号 / 知识星球开头的作者、时间、原链接、
-    来源、重复标题和只有 URL 的行。星球帖的评论区不算正文，读到「评论里的回复」就停。"""
+    来源、重复标题和只有 URL 的行。星球帖的评论区不算正文，读到「评论里的回复」就停。
+
+    Stratechery 网页导出的旧检索文字里还有归档头「rsslink: 个人订阅地址」（#157 以前入库、没跑 research-clean 的），
+    遮成占位以后整截去掉：线上 22209、22178 的卡片和接口摘录曾以「[个人订阅地址已隐藏]」开头。"""
     text = redact_subscription_links(text or "")
     kept: list[str] = []
     for raw_line in drop_export_stub(text or "").splitlines():
-        line = re.sub(r"\s+", " ", raw_line).strip()
+        line = re.sub(r"\s+", " ", raw_line.replace(HIDDEN_FEED_ADDRESS, " ")).strip()
         if _COMMENT_HEADER.match(line):
             break
         # 页面标题是第一句中间的一个分句（星球标题去掉了「IT之家 5 月 11 日消息，」这种电头）：从标题后面接着取，

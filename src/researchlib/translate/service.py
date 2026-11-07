@@ -191,10 +191,16 @@ def _cleaned_body(conn, article: dict) -> str:
     )
 
 
-def _render_original(conn, article: dict, data_dir: Path) -> tuple[str, str]:
-    """返回 (html, content_hash)。html 是清洗后的正文渲染出来的叶子来源。"""
+def _render_original(conn, article: dict, data_dir: Path, *, remote: bool = False) -> tuple[str, str]:
+    """返回 (html, content_hash)。html 是清洗后的正文渲染出来的叶子来源。
+
+    下载来的外链图（``remote``）不进译制原文，照没下载时写成占位：它们哪天下下来不一定，
+    算进回执的话，下下来以后已有的译文就对不上了。页面显示时再换成图（``remote_media``）。
+    ``remote=True`` 只给只读核对用：以前图先下好了才译的旧译文，回执是按带图的那一份签的。
+    """
     images = conn.execute(
-        "SELECT original_ref, storage_path FROM article_images WHERE article_id = %s",
+        "SELECT original_ref, storage_path FROM article_images WHERE article_id = %s"
+        + ("" if remote else " AND NOT remote"),
         (article["id"],),
     ).fetchall()
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}

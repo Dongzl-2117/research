@@ -157,3 +157,69 @@ def test_missing_key_stops_before_touching_the_database(conn, monkeypatch, capsy
     monkeypatch.setattr(cli, "prepare", lambda settings: pytest.fail("没有 key 不该连库"))
     assert cli.main([]) == 2
     assert "DEEPSEEK_API_KEY" in capsys.readouterr().err
+
+
+def _deploy_waits(data_dir, sha="b66bfe88885831a0", age_s=0):
+    """scripts/deploy.sh 请译制让路时写的文件；age_s 是多久以前写的。"""
+    import os
+    import time
+
+    path = data_dir / "status" / ".deploy-waiting"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(sha + "\n", encoding="utf-8")
+    when = time.time() - age_s
+    os.utime(path, (when, when))
+    return path
+
+
+def test_queue_run_stops_before_starting_when_a_release_is_waiting(conn, monkeypatch, tmp_path, capsys):
+    """--loop 自己不会跑完，以前开着就把之后的合并一直挡在外面：在等上线的话一篇都不开。"""
+    _deploy_waits(tmp_path)
+    monkeypatch.setattr(cli, "prepare", lambda settings: pytest.fail("在等上线就不连库、不跑迁移"))
+    monkeypatch.setattr(cli, "translate_article", lambda *args, **kwargs: pytest.fail("不该再调模型"))
+    assert cli.main(["--loop", "--limit", "5"]) == 0
+    assert "自动上线在等 b66bfe8" in capsys.readouterr().out
+
+
+def test_queue_run_finishes_the_article_in_hand_then_makes_way(conn, monkeypatch, tmp_path):
+    seen: list[int] = []
+
+    def translate(conn, article_id, *, data_dir):
+        seen.append(article_id)
+        # 译第一篇的时候自动上线来请它停。
+        _deploy_waits(tmp_path)
+        return TranslateResult(article_id, "translated", segments=2)
+
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, **kwargs: [61, 62, 63])
+    monkeypatch.setattr(cli, "translate_article", translate)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: pytest.fail("让路时不该睡下等"))
+    assert cli.main(["--loop", "--limit", "3"]) == 0
+    assert seen == [61]
+
+
+def test_idle_loop_makes_way_after_waking(conn, monkeypatch, tmp_path):
+    slept: list[float] = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        _deploy_waits(tmp_path)
+
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, **kwargs: [])
+    monkeypatch.setattr(cli, "translate_article", lambda *args, **kwargs: pytest.fail("队列是空的"))
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+    assert cli.main(["--loop", "--sleep", "30"]) == 0
+    assert slept == [30]
+
+
+def test_named_articles_and_stale_requests_are_translated_anyway(conn, monkeypatch, tmp_path):
+    seen: list[int] = []
+    monkeypatch.setattr(cli, "translate_article", _translate(seen))
+    # 点名的几篇译完再说。
+    _deploy_waits(tmp_path)
+    assert cli.main(["--article-id", "71", "--article-id", "72"]) == 0
+    assert seen == [71, 72]
+    # 半小时没人重写：自动上线已经不在等了（上线完、或者没在跑），照常译。
+    _deploy_waits(tmp_path, age_s=31 * 60)
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, **kwargs: [73])
+    assert cli.main(["--limit", "1"]) == 0
+    assert seen == [71, 72, 73]

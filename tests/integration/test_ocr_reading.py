@@ -625,3 +625,46 @@ def test_search_counts_a_post_whose_words_are_split_between_text_and_screenshot(
     assert "1 篇全部命中" in page
     assert '<span>全部来源</span><span class="num">1</span>' in page
     assert '<span>方伟知识星球</span><span class="num">1</span>' in page
+
+
+def test_only_estimated_wechat_images_move_beside_matching_paragraphs(conn, settings, tmp_path):
+    """按识图挪图只给极致了估位置的公众号正文用。飞书的表图跟在介绍它的那一段后面，
+    和下一节的一段同有一个更长的词也不挪；文章页和飞书目录右侧一样。"""
+    body = (
+        "## 一、利润表\n\n"
+        "先看2023年的利润表，下图是年报里的合并利润表：\n\n"
+        "![](table.png)\n\n"
+        "收入增长主要来自海外市场，国内基本持平。\n\n"
+        "## 二、怎么看利润\n\n"
+        "归属于母公司股东的净利润同比增长了二成，主要是费用率下降。\n"
+    )
+    shot = "合并利润表\n项目 2023年 2022年\n营业总收入 1,234 1,100\n归属于母公司股东的净利润 300 250\n"
+    stored = {}
+    for number, source_id in enumerate(("linwenfeng-feishu", "fangwei-mp")):
+        folder = tmp_path / source_id
+        folder.mkdir()
+        _png(folder / "table.png", bytes([0x30 + number]) * 24)
+        row = _store(conn, settings, source_id, f"synthetic-table-{source_id}", "合成利润表", body,
+                     [folder / "table.png"])
+        stored[source_id] = (row["id"], _remember(conn, row["id"], "table.png", shot))
+    feishu_id = stored["linwenfeng-feishu"][0]
+    conn.execute(
+        "INSERT INTO doc_tree (source_id, article_id, parent_id, ord) VALUES ('linwenfeng-feishu', %s, NULL, 0)",
+        (feishu_id,),
+    )
+    conn.commit()
+
+    def order(html: str, digest: str) -> list[str]:
+        marks = {"intro": "下图是年报里的合并利润表", "image": f'<img id="{image_anchor(digest)}"',
+                 "next": "收入增长主要来自海外市场", "later": "归属于母公司股东的净利润同比增长"}
+        return sorted(marks, key=lambda name: html.index(marks[name]))
+
+    with TestClient(create_app(settings)) as client:
+        pages = {source_id: client.get(f"/articles/{article_id}").text
+                 for source_id, (article_id, _digest) in stored.items()}
+        tree = client.get(f"/sources/linwenfeng-feishu/tree/{feishu_id}").text
+    feishu_digest = stored["linwenfeng-feishu"][1]
+    assert order(pages["linwenfeng-feishu"], feishu_digest) == ["intro", "image", "next", "later"]
+    assert order(tree, feishu_digest) == ["intro", "image", "next", "later"]
+    # 方伟公众号的图是极致了估的位置，照旧挪到对得上的那一段前面。
+    assert order(pages["fangwei-mp"], stored["fangwei-mp"][1]) == ["intro", "next", "image", "later"]

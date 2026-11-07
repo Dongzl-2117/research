@@ -1,7 +1,8 @@
 """批量 / 单篇站内翻译。默认 DeepSeek；Grok 需要先 research-xai-login login。
 
 在 Mac mini 上：docker compose exec app research-translate --source stratechery --limit 10。
-跑的时候自动上线会等它跑完再重建（scripts/deploy.sh）。
+跑的时候自动上线先不重建（scripts/deploy.sh）。它在等的提交 CI 过了，就写 status/.deploy-waiting：
+按队列译（包括 --loop）时每译完一篇看一眼，在就停下，让新版本上线，上线后再跑。点名的 --article-id 译完才停。
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import time
 
 from researchlib.config import Settings
 from researchlib.db import connect, prepare
+from researchlib.health import deploy_waiting
 from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider
 from researchlib.translate.service import (
     list_coarse_translations,
@@ -68,6 +70,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    def make_way() -> bool:
+        # 自动上线在等：按队列译的不再开新的一篇。旧容器里的进程译的是旧规则，--loop 又不会自己停，
+        # 不让路的话之后合并的改动（包括译制自己的修复）一直上不了线。点名的几篇译完再说。
+        if args.article_id:
+            return False
+        waiting = deploy_waiting(settings.data_dir)
+        if waiting:
+            print(f"自动上线在等 {waiting[:7]}：先停在这里，/health 报出新提交后再跑 research-translate")
+        return bool(waiting)
+
+    if make_way():
+        return 0
     conn = prepare(settings)
     # 本进程里失败或没译完的 id 先跳过。库里的 translation_attempts 另有冷却，
     # 进程重启也不会把刚拒绝的文章立刻拿回来。
@@ -75,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     failed = False
     try:
         while True:
+            if make_way():
+                return 1 if failed else 0
             if args.article_id:
                 ids = list(args.article_id)
             elif args.recheck:
@@ -96,7 +112,9 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 print("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
                 return 1 if failed else 0
-            for article_id in ids:
+            for number, article_id in enumerate(ids):
+                if number and make_way():
+                    return 1 if failed else 0
                 try:
                     result = translate_article(conn, article_id, data_dir=settings.data_dir)
                 except XaiLoginRequiredError as exc:

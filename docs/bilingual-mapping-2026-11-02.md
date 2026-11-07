@@ -26,7 +26,7 @@ ID／摘要回显能约束响应身份，数字／链接能发现一部分串段
 
 新回执含 schema、cleaner／segmenter／prompt 版本、canonical 源快照及摘要、逐段 ID／顺序／路径／源摘要／目标摘要和实际模型身份。相同文字的重复出现有不同 ID，不能相互抵消。快照会增加新译文的存储量；保留它是为了核验版本和无损恢复候选。
 
-`canonical_body_html` 是翻译、文章页和 QA 共用的渲染入口。页面段落号、站内链接装饰、OCR 文字在核验后处理。清洗／分段／提示约束有变化时维护者必须相应递增版本；即使漏递增，只要 canonical HTML 改变，输入指纹仍会发现不兼容。
+`canonical_body_html` 是翻译、文章页和 QA 共用的渲染入口。页面段落号、站内链接装饰、OCR 文字在核验后处理。2026-11-07 起下载来的外链图（`article_images.remote`）也不进译制原文和核验，页面把译文里的占位按顺序换成图（`translate/remote_media.py`，见 [translate.md](translate.md)）。清洗／分段／提示约束有变化时维护者必须相应递增版本；即使漏递增，只要 canonical HTML 改变，输入指纹仍会发现不兼容。
 
 | 页面状态 | 含义 | 展示／QA |
 | --- | --- | --- |

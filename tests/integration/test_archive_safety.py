@@ -1,18 +1,23 @@
 """保住全文：改稿存旧版，删稿、截短不覆盖；外链图片下载到本地；图片里的字进检索。"""
 
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from researchlib import remote_images
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.parse import comments_section
 from researchlib.ingest.store import store_documents
+from researchlib.migrate import MIGRATIONS, split_sql
 from researchlib.ocr import run_ocr
 from researchlib.remote_images import FetchError, fetch_pending
 from researchlib.retrieval import reset_stats_cache, search_articles
 from researchlib.revisions import save_revision
 from researchlib.sources import enabled_sources, load_sources
+from researchlib.translate import qa, service
+from researchlib.translate.llm import ChatJsonResult
 from researchlib.web.app import create_app
 from researchlib.web.queries import Scope
 
@@ -254,6 +259,132 @@ def test_external_images_are_downloaded_and_shown(conn, settings):
     assert fetch_pending(conn, settings.data_dir, 50, fetch=failing)["failed"] == 1
     again = fetch_pending(conn, settings.data_dir, 50, fetch=failing)
     assert again["failed"] == 0 and again["skipped"] == 1
+
+
+def test_wordpress_cdn_image_comes_from_the_origin_and_shows(conn, settings, monkeypatch):
+    """正文里写的是 CDN 地址，下载走原站；记录和显示都还按正文里的地址对上。"""
+    cdn = "https://i0.wp.com/stratechery.com/wp-content/uploads/2024/05/chart.png?resize=640%2C470&ssl=1"
+    _store(conn, settings, "gudujinhuati", [_doc("wp:1", LONG + f"\n\n![图]({cdn})")])
+    article = _article(conn, "wp:1")
+    calls = []
+
+    def origin_only(url):
+        calls.append(url)
+        if "i0.wp.com" in url:
+            raise FetchError("地址解析到内网或本机，不下载")
+        return PNG, "image/png"
+
+    monkeypatch.setattr(remote_images, "_download", origin_only)
+    report = fetch_pending(conn, settings.data_dir, 50)
+    assert report["downloaded"] == 1 and calls == ["https://stratechery.com/wp-content/uploads/2024/05/chart.png"]
+    row = conn.execute(
+        "SELECT original_ref, storage_path FROM article_images WHERE article_id = %s AND remote", (article["id"],)
+    ).fetchone()
+    assert row["original_ref"] == cdn
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article['id']}").text
+    assert f'src="/media/{row["storage_path"]}"' in page and "外部图片已省略" not in page
+
+
+def test_failed_wordpress_cdn_fetches_are_queued_again(conn):
+    """030：i0.wp.com 的失败记录删掉，下一晚就按「先下原站」重试；成功的和别的图床不动。"""
+    rows = [
+        ("https://i0.wp.com/stratechery.com/wp-content/uploads/a.png?ssl=1", False, "地址解析到内网或本机，不下载"),
+        ("https://i2.wp.com/stratechery.com/wp-content/uploads/b.png", False, "HTTP 404"),
+        ("https://i0.wp.com/stratechery.com/wp-content/uploads/c.png", True, ""),
+        ("https://mmbiz.qpic.cn/d.png", False, "HTTP 404"),
+    ]
+    for url, ok, error in rows:
+        conn.execute("INSERT INTO image_fetches (url, ok, error, attempts) VALUES (%s, %s, %s, 4)", (url, ok, error))
+    for _ in range(2):  # 再跑一遍结果一样
+        for statement in split_sql((MIGRATIONS / "030_retry_wordpress_cdn_images.sql").read_text(encoding="utf-8")):
+            conn.execute(statement)
+    left = {row["url"] for row in conn.execute("SELECT url FROM image_fetches").fetchall()}
+    assert left == {rows[2][0], rows[3][0]}
+
+
+def _echo_translation(**kwargs):
+    """译制替身：每段照原样回，只把几个英文词换成中文；回执要的 id 和摘要原样带回。"""
+    user = kwargs["user"]
+    if user.get("verify"):
+        source, target = user["source"], user["target"]
+        claims = [
+            {
+                "source": f"{number} dollars", "target": f"{number}美元",
+                "object_source": "paragraph", "object_target": "段", "same": True,
+            }
+            for number in ("10", "20", "30")
+            if f"{number} dollars" in source and f"{number}美元" in target
+        ]
+        return ChatJsonResult(
+            data={
+                "evidence_id": user["evidence_id"],
+                "verdict": "equivalent" if claims else "uncertain",
+                "claims": claims,
+            },
+            model="synthetic-model", usage=None, latency_ms=0,
+        )
+    values = []
+    for identity, source_hash, html in zip(user["segment_ids"], user["source_hashes"], user["segments"], strict=True):
+        for english, chinese in (("First paragraph", "第一段"), ("Second paragraph", "第二段"),
+                                 ("Third paragraph", "第三段"), (" dollars", "美元")):
+            html = html.replace(english, chinese)
+        values.append({"id": identity, "source_hash": source_hash, "html": html})
+    return ChatJsonResult(data={"t": values}, model="synthetic-model", usage=None, latency_ms=0)
+
+
+def _pairing_state(client, conn, settings, article_id):
+    page = client.get(f"/articles/{article_id}").text
+    zh = client.get(f"/articles/{article_id}/zh").text
+    report = qa.check_article(conn, settings, article_id)
+    return {
+        "pairs": page.count('class="bilingual-pair"'), "both_full_texts": "保留两份全文" in page,
+        "placeholders": page.count("外部图片已省略"), "images": page.count('src="/media/remote/'),
+        "zh_images": zh.count('src="/media/remote/'), "qa": (report.correspondence, report.status),
+    }
+
+
+def test_translated_article_still_pairs_after_its_images_are_downloaded(conn, settings, monkeypatch):
+    """Stratechery 的图大多是译完以后才下下来的。下下来以后回执照旧按占位那一份核验，对照仍逐段，
+    三张图换进对照和「中文」页；下下来以后重译，译制原文也不带这些图，以后再下图也不会对不上。"""
+    cdn = "https://i0.wp.com/stratechery.com/wp-content/uploads/2024/05/chart{}.png?resize=640%2C470&ssl=1"
+    body = "\n\n".join([
+        "First paragraph about ads, 10 dollars.",
+        f"![Revenue]({cdn.format(1)})",
+        "Second paragraph about subscriptions, 20 dollars.",
+        f"[![]({cdn.format(2)})]({cdn.format(2)})",
+        f"Third paragraph ![]({cdn.format(3)}) with a chart inside, 30 dollars.",
+    ])
+    source = next(s for s in load_sources(settings.sources_path) if s.id == "stratechery")
+    store_documents(conn, source=replace(source, min_chars=0), docs=[_doc(
+        "strat:images", body, title="Synthetic images", meta={"format": "markdown", "language": "en"},
+    )], data_dir=settings.data_dir, archive_files=1, images_in_archive=0, errors=[])
+    article_id = _article(conn, "strat:images")["id"]
+    monkeypatch.setattr(service, "chat_json", _echo_translation)
+    assert service.translate_article(conn, article_id, data_dir=settings.data_dir).status == "translated"
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        before = _pairing_state(client, conn, settings, article_id)
+    assert before["placeholders"] >= 3 and before["images"] == 0 and before["qa"] == ("mapped", "pass")
+
+    pictures = iter(PNG + bytes([n]) for n in range(10))
+    report = fetch_pending(conn, settings.data_dir, 50, fetch=lambda _url: (next(pictures), "image/png"))
+    assert report["downloaded"] == 3
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        after = _pairing_state(client, conn, settings, article_id)
+    assert after == {"pairs": after["pairs"], "both_full_texts": False, "placeholders": 0, "images": 3,
+                     "zh_images": 3, "qa": ("mapped", "pass")}
+    assert after["pairs"] >= 3
+
+    assert service.translate_article(conn, article_id, data_dir=settings.data_dir).status == "translated"
+    conn.commit()
+    snapshot = conn.execute(
+        "SELECT provenance->>'source_snapshot' AS html FROM article_translations WHERE article_id = %s", (article_id,)
+    ).fetchone()["html"]
+    assert "/media/remote/" not in snapshot and snapshot.count("外部图片已省略") == 3
+    with TestClient(create_app(settings)) as client:
+        assert _pairing_state(client, conn, settings, article_id) == after
 
 
 def test_text_in_images_is_searchable(conn, settings):

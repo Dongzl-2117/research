@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -39,6 +40,24 @@ LLM_FAILURES_TO_WARN = 3
 
 def status_path(data_dir: Path, task: str) -> Path:
     return Path(data_dir) / STATUS_DIR / f"{task}.json"
+
+
+# scripts/deploy.sh 被容器里的 research-translate 挡住、要上线的提交 CI 又过了时，每一轮写一次这个文件
+# （内容是在等的提交）。research-translate 每译完一篇看一眼，在就停下让它上线。--loop 自己不会跑完，
+# 以前一开就把之后合并的全挡在外面。上线时删掉；自动上线不跑了，文件半小时没人重写就不算数。
+DEPLOY_WAITING = ".deploy-waiting"
+DEPLOY_WAITING_FRESH_S = 30 * 60
+
+
+def deploy_waiting(data_dir: Path, now: float | None = None) -> str:
+    """自动上线在等的提交（scripts/deploy.sh 半小时内写过 status/.deploy-waiting）；没在等就返回空字符串。"""
+    path = Path(data_dir) / STATUS_DIR / DEPLOY_WAITING
+    try:
+        if (now if now is not None else time.time()) - path.stat().st_mtime > DEPLOY_WAITING_FRESH_S:
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace").strip() or "main"
+    except OSError:
+        return ""
 
 
 def read_status(data_dir: Path, task: str) -> dict | None:
