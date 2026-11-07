@@ -5,6 +5,7 @@ import urllib.request
 
 import pytest
 
+from researchlib import remote_images
 from researchlib.chunks import OCR_MIN_CHARS, ocr_chunks
 from researchlib.remote_images import (
     FetchError,
@@ -14,6 +15,7 @@ from researchlib.remote_images import (
     download,
     external_urls,
     image_extension,
+    photon_origin,
 )
 from researchlib.render import image_anchor, img_tag_url, normalize_image_url, render_body
 from researchlib.revisions import _real_edits, article_text, diff_blocks, judge_replacement, label
@@ -117,6 +119,38 @@ def test_downloads_only_reach_public_addresses():
     request = urllib.request.Request("https://mmbiz.qpic.cn/a.png")
     with pytest.raises(FetchError):
         _Redirects().redirect_request(request, None, 302, "Found", {}, "file:///etc/passwd")
+
+
+def test_wordpress_cdn_images_come_from_the_origin_first(monkeypatch):
+    """Stratechery 的图在 i0.wp.com 上。Mac mini 上它解析到代理的 198.18.x.x，CDN 对一部分图还回 404：
+    先下原站那一张（去掉缩放参数），下不来再试 CDN，两边的原因都记下。只连公网的检查照旧。"""
+    cdn = "https://i0.wp.com/stratechery.com/wp-content/uploads/2024/05/chart.png?resize=640%2C470&ssl=1"
+    origin = "https://stratechery.com/wp-content/uploads/2024/05/chart.png"
+    assert photon_origin(cdn) == origin
+    assert photon_origin("https://i3.wp.com/example.com/a/b.jpg") == "https://example.com/a/b.jpg"
+    for other in ("https://i0.wp.com/a.png", origin, "https://mmbiz.qpic.cn/a.png", "https://i9.wp.com/x.com/a.png"):
+        assert photon_origin(other) == "", other
+    calls: list[str] = []
+    broken: dict[str, str] = {}
+
+    def fake(url):
+        calls.append(url)
+        if url in broken:
+            raise FetchError(broken[url])
+        return b"\x89PNG\r\n\x1a\n", "image/png"
+
+    monkeypatch.setattr(remote_images, "_download", fake)
+    assert download(cdn)[1] == "image/png" and calls == [origin]
+    calls.clear()
+    broken[origin] = "HTTP 404"
+    assert download(cdn)[1] == "image/png" and calls == [origin, cdn]
+    broken[cdn] = "地址解析到内网或本机，不下载"
+    with pytest.raises(FetchError, match="^原站：HTTP 404；i0.wp.com：地址解析到内网或本机"):
+        download(cdn)
+    # 别的图床照旧只下一次。
+    calls.clear()
+    download("https://mmbiz.qpic.cn/a.png")
+    assert calls == ["https://mmbiz.qpic.cn/a.png"]
 
 
 def test_connection_to_a_private_peer_is_dropped():

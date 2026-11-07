@@ -6,6 +6,8 @@ DATA_DIR/images/remote/，在 article_images 里记一行（remote = true），�
 
 - 只下 http(s)，只连公网地址：每次建连接时核对对方的 IP，内网、本机、Tailscale 这类地址一律断开，
   跳转、域名解析结果中途变了也一样；不走代理，最多跳转 5 次。只收图片，单张不超过 15MB。
+- WordPress 图片 CDN（i0.wp.com/原站/路径，Stratechery 的图都是这样）先下原站那一张，下不来再试 CDN：
+  Mac mini 上的代理把 i0.wp.com 解析成 198.18.x.x，上面那条检查不放行；CDN 对一部分图还会回 404。
 - 不带 Referer（公众号图床对外链 Referer 返回占位图）。
 - 每个地址的结果记在 image_fetches：成功的别的文章引用同一张图直接复用；失败的按次数隔 1、3、7、30 天再试。
 
@@ -167,8 +169,39 @@ def _opener() -> urllib.request.OpenerDirector:
     return opener
 
 
+# WordPress 的图片 CDN（Photon）：i0.wp.com/<原站>/<路径>，原图就在 https://<原站>/<路径>。
+_PHOTON_HOST = re.compile(r"^i[0-3]\.wp\.com$", re.I)
+
+
+def photon_origin(url: str) -> str:
+    """i0.wp.com/stratechery.com/wp-content/… 的原站地址（去掉缩放参数）。不是这种地址返回空串。"""
+    parts = urlsplit(url)
+    if not _PHOTON_HOST.match(parts.hostname or ""):
+        return ""
+    host, _, rest = parts.path.lstrip("/").partition("/")
+    if "." not in host or not rest:
+        return ""
+    return f"https://{host}/{rest}"
+
+
 def download(url: str) -> tuple[bytes, str]:
-    """下载一张图，返回 (内容, Content-Type)。不是图片、太大、地址不对都抛 FetchError。"""
+    """下载一张图，返回 (内容, Content-Type)。不是图片、太大、地址不对都抛 FetchError。
+
+    WordPress 图片 CDN 上的图先下原站那一张，下不来再试 CDN，两边的原因都记下。
+    """
+    origin = photon_origin(url)
+    if not origin:
+        return _download(url)
+    try:
+        return _download(origin)
+    except FetchError as first:
+        try:
+            return _download(url)
+        except FetchError as second:
+            raise FetchError(f"原站：{first}；{urlsplit(url).hostname}：{second}") from second
+
+
+def _download(url: str) -> tuple[bytes, str]:
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise FetchError("不是 http(s) 地址")

@@ -5,9 +5,11 @@ from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from researchlib import remote_images
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.parse import comments_section
 from researchlib.ingest.store import store_documents
+from researchlib.migrate import MIGRATIONS, split_sql
 from researchlib.ocr import run_ocr
 from researchlib.remote_images import FetchError, fetch_pending
 from researchlib.retrieval import reset_stats_cache, search_articles
@@ -254,6 +256,48 @@ def test_external_images_are_downloaded_and_shown(conn, settings):
     assert fetch_pending(conn, settings.data_dir, 50, fetch=failing)["failed"] == 1
     again = fetch_pending(conn, settings.data_dir, 50, fetch=failing)
     assert again["failed"] == 0 and again["skipped"] == 1
+
+
+def test_wordpress_cdn_image_comes_from_the_origin_and_shows(conn, settings, monkeypatch):
+    """正文里写的是 CDN 地址，下载走原站；记录和显示都还按正文里的地址对上。"""
+    cdn = "https://i0.wp.com/stratechery.com/wp-content/uploads/2024/05/chart.png?resize=640%2C470&ssl=1"
+    _store(conn, settings, "gudujinhuati", [_doc("wp:1", LONG + f"\n\n![图]({cdn})")])
+    article = _article(conn, "wp:1")
+    calls = []
+
+    def origin_only(url):
+        calls.append(url)
+        if "i0.wp.com" in url:
+            raise FetchError("地址解析到内网或本机，不下载")
+        return PNG, "image/png"
+
+    monkeypatch.setattr(remote_images, "_download", origin_only)
+    report = fetch_pending(conn, settings.data_dir, 50)
+    assert report["downloaded"] == 1 and calls == ["https://stratechery.com/wp-content/uploads/2024/05/chart.png"]
+    row = conn.execute(
+        "SELECT original_ref, storage_path FROM article_images WHERE article_id = %s AND remote", (article["id"],)
+    ).fetchone()
+    assert row["original_ref"] == cdn
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/articles/{article['id']}").text
+    assert f'src="/media/{row["storage_path"]}"' in page and "外部图片已省略" not in page
+
+
+def test_failed_wordpress_cdn_fetches_are_queued_again(conn):
+    """030：i0.wp.com 的失败记录删掉，下一晚就按「先下原站」重试；成功的和别的图床不动。"""
+    rows = [
+        ("https://i0.wp.com/stratechery.com/wp-content/uploads/a.png?ssl=1", False, "地址解析到内网或本机，不下载"),
+        ("https://i2.wp.com/stratechery.com/wp-content/uploads/b.png", False, "HTTP 404"),
+        ("https://i0.wp.com/stratechery.com/wp-content/uploads/c.png", True, ""),
+        ("https://mmbiz.qpic.cn/d.png", False, "HTTP 404"),
+    ]
+    for url, ok, error in rows:
+        conn.execute("INSERT INTO image_fetches (url, ok, error, attempts) VALUES (%s, %s, %s, 4)", (url, ok, error))
+    for _ in range(2):  # 再跑一遍结果一样
+        for statement in split_sql((MIGRATIONS / "030_retry_wordpress_cdn_images.sql").read_text(encoding="utf-8")):
+            conn.execute(statement)
+    left = {row["url"] for row in conn.execute("SELECT url FROM image_fetches").fetchall()}
+    assert left == {rows[2][0], rows[3][0]}
 
 
 def test_text_in_images_is_searchable(conn, settings):
