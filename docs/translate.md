@@ -262,7 +262,7 @@ PYTHONPATH=src python scripts/repair_content_hash_tz.py --apply
 | 条数不对、id 或 `source_hash` 没逐项回显 | 先按原批重来一次，再对半拆开，直到一段一批 |
 | 标题的数字没对上 | 再要一次；两次都没对上，用第一次的 |
 
-`number_review` 是写入时按当时的规则算的。`verify` 不比较它：`numbers.py` 以后再改，已入库的回执不会变成不兼容。`research-bilingual-qa` 按现在的规则重算，列成告警 `numbers-unverified`（WARN，不算 FAIL）。
+`number_review` 是写入时按当时的规则算的。`verify` 不比较它：`numbers.py` 以后再改，已入库的回执不会变成不兼容。`verify`（文章页每次打开都走）也不重核数字，只重签逐段的原文、译文和外壳。`research-bilingual-qa` 按现在的规则重算，列成告警 `numbers-unverified`（WARN，不算 FAIL）。
 
 对照页：有回执（`mapped`）的译文不再按字面数字的位置猜错位。中文常把「in 2015」挪到「增长10%」前面，以前一段语序调整就让整页以「段落数字锚点不一致」退成两栏。没有回执的旧稿仍按这条把关。
 
