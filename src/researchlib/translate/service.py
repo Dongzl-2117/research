@@ -25,6 +25,7 @@ from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import canonical_body_html, render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
+from researchlib.translate.harness import fact_brief, settle_numbers
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import GROK_INPUT_CHARS, LLMTransportError, chat_json, model_id, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
@@ -459,6 +460,15 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             if restored is None:
                 raise AlignmentError("unshield")
             problem = leaf_problem(targets[offset + i][1], restored)
+            if problem == "numbers":
+                # 只修这一段，只修一次。通过仍由 leaf_problem 决定，不覆盖已入库的译文。
+                restored, numbers = settle_numbers(targets[offset + i][1], restored, data_dir)
+                if numbers:
+                    raise AlignmentError(
+                        f"slot-{offset + i}-{numbers}",
+                        fact_brief(targets[offset + i][1], restored),
+                    )
+                problem = None
             if problem:
                 raise AlignmentError(f"slot-{offset + i}-{problem}")
             translations[offset + i] = restored
