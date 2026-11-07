@@ -461,7 +461,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
                 raise AlignmentError("unshield")
             problem = leaf_problem(targets[offset + i][1], restored)
             if problem == "numbers":
-                # 只修这一段，只修一次。通过仍由 leaf_problem 决定，不覆盖已入库的译文。
+                # 数字事实一致就留下，不要求写法和顺序相同。不一致只修一次。
                 restored, numbers = settle_numbers(targets[offset + i][1], restored, data_dir)
                 if numbers:
                     raise AlignmentError(

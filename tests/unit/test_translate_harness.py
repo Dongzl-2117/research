@@ -9,7 +9,7 @@ from test_bilingual_regressions import MemoryConn
 from researchlib.translate import service
 from researchlib.translate.harness import numeric_verdict, settle_numbers
 from researchlib.translate.llm import ChatJsonResult
-from researchlib.translate.provenance import AlignmentError
+from researchlib.translate.provenance import AlignmentError, leaf_problem
 
 _LIVE = [
     (
@@ -166,12 +166,13 @@ _LIVE = [
         (*row, expected)
         for row, expected in zip(
             _LIVE,
-            ["doubt", "doubt", "conflict", "doubt", "doubt"],
+            ["ok", "ok", "ok", "ok", "ok"],
             strict=True,
         )
     ],
 )
-def test_live_v6_slots_are_not_auto_passed(article_id, source, target, verdict):
+def test_live_v6_slots_agree_even_though_the_old_checker_does_not(article_id, source, target, verdict):
+    assert leaf_problem(source, target) == "numbers"
     assert numeric_verdict(source, target) == verdict
     assert article_id
 
@@ -186,12 +187,32 @@ def test_live_v6_slots_are_not_auto_passed(article_id, source, target, verdict):
         (
             "<p>Profit was 10 dollars then 20 dollars.</p>",
             "<p>利润先是20美元，然后是10美元。</p>",
-            "doubt",
+            "ok",
         ),
     ],
 )
 def test_clear_number_errors_stay_conflicts(source, target, verdict):
     assert numeric_verdict(source, target) == verdict
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [
+        ("<p>less than 24 hours</p>", "<p>不到 24 天</p>"),
+        ("<p>from one to seven days</p>", "<p>1至8天</p>"),
+        ("<p>from one to seven days</p>", "<p>1至7周</p>"),
+        ("<p>$0.80 for every $1.</p>", "<p>每获得0.80美元，就产生约1美元。</p>"),
+        ("<p>$0.80 after 7 months for every $1.</p>", "<p>每获得1美元就产生0.80美元。</p>"),
+        (
+            "<p>Revenue went from $200 billion to $220 billion.</p>",
+            "<p>收入从2200亿美元降至2000亿美元。</p>",
+        ),
+        ("<p>800 data points on 100 million women.</p>", "<p>对8亿人掌握100个数据点。</p>"),
+        ("<p>in the late 90s</p>", "<p>20世纪80年代末</p>"),
+    ],
+)
+def test_bound_facts_do_not_collapse_to_a_number_set(source, target):
+    assert numeric_verdict(source, target) != "ok"
 
 
 def test_repair_is_kept_only_when_the_checker_passes(tmp_path, monkeypatch):
@@ -223,19 +244,14 @@ def test_repeating_a_wrong_amount_is_still_rejected(tmp_path, monkeypatch):
     assert code == "numbers" and "20美元" in text
 
 
-def test_unproven_live_slot_stays_doubt_when_the_draft_is_unchanged(tmp_path, monkeypatch):
-    _article_id, source, target = _LIVE[0]
-    monkeypatch.setattr(
-        "researchlib.translate.service.chat_json",
-        lambda **kwargs: ChatJsonResult(
-            data={"t": [target]},
-            model="synthetic-model",
-            usage=None,
-            latency_ms=0,
-        ),
-    )
-    text, code = settle_numbers(source, target, tmp_path)
-    assert code == "numbers-doubt" and text == target
+def test_live_slots_are_accepted_without_calling_the_model(tmp_path, monkeypatch):
+    def boom(**_kwargs):
+        raise AssertionError("数字已经一致，不应该再叫模型")
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", boom)
+    for article_id, source, target in _LIVE:
+        text, code = settle_numbers(source, target, tmp_path)
+        assert code is None and text == target, article_id
 
 
 def test_a_rejected_article_does_not_store_a_translation(tmp_path):
