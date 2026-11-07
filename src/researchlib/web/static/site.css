@@ -763,7 +763,7 @@ tbody tr:hover td { background: var(--accent-softer); }
    别动 .bilingual-en.prose p + p（译文仍用 0.8em）、.ocr-reading p + p（识图 1.4em）。 */
 .prose p + p { margin-top: 1.8em; }
 .prose p:empty { display: none; }
-.prose br + br { display: none; }
+/* 不要按 br + br 藏换行：兄弟选择器不看中间的文字，「第一行<br>第二行<br>第三行」从第三行起全粘成一段。 */
 .prose > * + * { margin-top: 1.4em; }
 .prose > * + h2 { margin-top: 2.4em; }
 .prose > * + h3 { margin-top: 2em; }

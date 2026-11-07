@@ -1,5 +1,6 @@
 """阅读页展示层：对话标签统一、明显错字、星球问答标题。"""
 
+import re
 from pathlib import Path
 
 from researchlib.boilerplate import clean_body, search_text
@@ -257,6 +258,20 @@ def test_reading_column_is_narrow_and_images_fit_it():
     english = css.split(".bilingual-en.prose {", 1)[1].split("}", 1)[0]
     assert "letter-spacing: 0" in english
     assert "line-height: 1.65" in english
+
+
+def test_single_newline_lines_stay_on_their_own_lines():
+    """单换行分开的几行（星球帖里的「1、」「2、」「3、」，Stratechery 网页导出的一行一段）各占一行。
+
+    以前有一条 ``.prose br + br { display: none; }`` 想收掉连着的空行，可兄弟选择器不看中间的文字：
+    「第一行<br>第二行<br>第三行」里第二个 <br> 也被藏掉，从第三行起全粘成一段。
+    """
+    html = render_body("今天聊三件事：\n1、拼多多。\n2、茅台。\n3、腾讯。\n", {})
+    assert html.count("<br") == 3
+    css = re.sub(r"/\*.*?\*/", "", _CSS.read_text(encoding="utf-8"), flags=re.S)
+    for selector, body in re.findall(r"([^{}]*)\{([^{}]*)\}", css):
+        if "display: none" in body:
+            assert not re.search(r"\bbr\s*[+~]\s*br\b", selector), selector
 
 
 def test_ocr_blocks_inherit_prose_font_without_grey_box():
