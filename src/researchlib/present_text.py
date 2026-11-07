@@ -243,6 +243,8 @@ def present_zsxq_qa(text: str) -> str:
 # 句读被切到下一段（或图后面那一行）的开头。开引号不算，那是下一段自己的。
 _LEAD_PUNCT = re.compile(r"^[，。、；：！？,.;:!?…]+")
 _ONLY_OPEN = re.compile(r"^[“\"「『‘]+$")
+# 汉字、中文标点和全角符号。两行都没有的是英文，回接不碰（见 rejoin_broken_paragraphs）。
+_CJK = re.compile(r"[　-〿㐀-鿿豈-﫿＀-￯]")
 _LONE_DIGITS = re.compile(r"^\d{1,3}$")
 _YEAR_LEAD = re.compile(r"^(\d+)\s*年")
 _IMAGE_LINE = re.compile(r"^!\[[^\]]*\]\([^)]*\)\s*$")
@@ -328,6 +330,11 @@ def rejoin_broken_paragraphs(text: str) -> str:
     一到三位数字，和下一段拼得成「1988 年」这种年份，就是被拆开的首位，拼回去；
     拼不成的照原样留着：公众号常把「01」「02」单独一段当小节号，删了就丢了字。
     标题、列表、代码块、表格不跨。再跑一遍不变。
+
+    只在中文里接。两行都没有汉字、中文标点的英文不动：Stratechery 2026 年的网页导出一个文本节点
+    一行，链接字后面的「, mostly …」「. After that …」各占一行。接过去会丢掉标点后的空格
+    （「before,mostly」），还改了段数：这页渲染也是译制的原文，11-04 以前的译文按没接的
+    段数译，接了以后对照页对不上、退成两栏（22245：原文 61 段、译文 81 段）。
     """
     raw = text or ""
     if not raw:
@@ -362,7 +369,7 @@ def rejoin_broken_paragraphs(text: str) -> str:
             continue
         if _ONLY_OPEN.fullmatch(stripped):
             nxt = _next_prose(lines, mask, index)
-            if nxt is not None:
+            if nxt is not None and _CJK.search(stripped + lines[nxt]):
                 lines[nxt] = stripped + lines[nxt].lstrip()
                 _delete_line(lines, mask, index)
                 dirty = True
@@ -375,9 +382,12 @@ def rejoin_broken_paragraphs(text: str) -> str:
             if earlier is None:
                 index += 1
                 continue
+            previous = lines[earlier].rstrip()
+            if not _CJK.search(stripped + previous):
+                index += 1
+                continue
             punct = lead.group(0)
             rest = stripped[len(punct) :].lstrip()
-            previous = lines[earlier].rstrip()
             if punct and previous.endswith(punct):
                 punct = ""
             if _only_blanks_between(lines, earlier, index):
