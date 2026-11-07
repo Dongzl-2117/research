@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block styles %}<link rel="stylesheet" href="/static/ask-chat.css">{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">{% endblock %}
 {% macro passage(item, result) %}
 {% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
 <li id="c-{{ item.n }}" tabindex="-1" class="{% if item.cited %}cited{% endif %}{% if flagged %} flagged{% endif %}">
@@ -101,5 +101,5 @@
     <p class="composer-footnote">回答依据检索到的资料生成，请结合引用核对。</p>
   </form>
 </section>
-<script src="/static/article-chat.js" defer></script>
+<script src="{{ asset('article-chat.js') }}" defer></script>
 {% endblock %}

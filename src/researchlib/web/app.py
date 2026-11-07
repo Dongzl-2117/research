@@ -22,6 +22,7 @@ from researchlib.duplicates import dedupe_if_needed
 from researchlib.health import read_status, write_status
 from researchlib.mentions import rebuild_if_stale
 from researchlib.web.api import api
+from researchlib.web.assets import IMMUTABLE, asset_version
 from researchlib.web.mcp import mcp
 from researchlib.web.routes import TEMPLATES, render_page, router
 
@@ -110,6 +111,12 @@ def create_app(settings: Settings | None = None, *, experiment_owner_verifier=No
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
         response.headers["Cache-Control"] = "private, no-store"
+        # 样式和脚本带着当前内容的版本号来取（模板里的 asset()），一直缓存；见 web/assets.py。
+        path = request.url.path
+        if path.startswith("/static/") and response.status_code in (200, 304):
+            wanted = request.query_params.get("v")
+            if wanted and wanted == asset_version(path[len("/static/"):]):
+                response.headers["Cache-Control"] = IMMUTABLE
         return response
 
     # 同时接管 HTTPException，否则 FastAPI 默认把 404 回成 {"detail": "Not Found"}，404 页面从来不出现。

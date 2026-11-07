@@ -2,6 +2,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from researchlib.web.assets import asset_url
 from researchlib.web.present import company_names, company_summary, recent_blurb
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -9,7 +10,9 @@ TEMPLATES = ROOT / "src" / "researchlib" / "web" / "templates"
 
 
 def _env():
-    return Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(["html"]))
+    env = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(["html"]))
+    env.globals["asset"] = asset_url  # 和 routes.TEMPLATES 一样
+    return env
 
 
 def test_home_recent_views_toggle_is_a_button():

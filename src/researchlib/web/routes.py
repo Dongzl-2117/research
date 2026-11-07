@@ -59,6 +59,7 @@ from researchlib.views import queue_for_company as queue_views
 from researchlib.views import timeline as view_timeline
 from researchlib.visibility import is_hidden
 from researchlib.web import queries
+from researchlib.web.assets import asset_url
 from researchlib.web.daybrief import compose_day_brief
 from researchlib.web.present import (
     FEED_ZONE,
@@ -103,6 +104,7 @@ logger = logging.getLogger("researchlib.web.routes")
 SEARCH_PAGE_SIZE = 20
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 TEMPLATES.env.filters["answer_html"] = answer_html
+TEMPLATES.env.globals["asset"] = asset_url
 TEMPLATES.env.filters["highlight_full"] = highlight_full
 TEMPLATES.env.filters["highlight_snippet"] = lambda text, terms, radius=110: highlight_snippet(
     text, "", radius=radius, terms=list(terms or [])
