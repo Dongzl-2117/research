@@ -25,7 +25,7 @@ from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import canonical_body_html, render_body
 from researchlib.textutil import content_hash, split_frontmatter, strip_duplicate_title
-from researchlib.translate.harness import fact_brief, settle_numbers
+from researchlib.translate.harness import fact_brief, note_reject, semantic_ok, settle_numbers, settle_unshield
 from researchlib.translate.language import is_chinese
 from researchlib.translate.llm import GROK_INPUT_CHARS, LLMTransportError, chat_json, model_id, output_tokens
 from researchlib.translate.prompts import SYSTEM_BODY
@@ -46,7 +46,6 @@ from researchlib.translate.segments import (
     splice_segments,
     top_level_blocks,
     translatable_blocks,
-    unshield,
 )
 from researchlib.visibility import visible_sql
 
@@ -456,22 +455,47 @@ def translate_article(conn, article_id: int, *, data_dir: Path) -> TranslateResu
             # 条数或内容对不齐时再试一次。
             got = _translate_batch(chunk, {k: v for k, v in batch_ctx.items() if v}, data_dir)
         for i, text in enumerate(got):
-            restored = unshield(text, shielded[offset + i])
+            slot = offset + i
+            source_html = targets[slot][1]
+            restored = settle_unshield(shielded[slot].html, text, shielded[slot], data_dir)
             if restored is None:
+                note_reject(
+                    data_dir,
+                    article_id=article_id,
+                    slot=f"slot-{slot}-unshield",
+                    kind="unshield",
+                    source=shielded[slot].html,
+                    draft=text,
+                )
                 raise AlignmentError("unshield")
-            problem = leaf_problem(targets[offset + i][1], restored)
-            if problem == "numbers":
-                # 数字事实一致就留下，不要求写法和顺序相同。不一致只修一次。
-                restored, numbers = settle_numbers(targets[offset + i][1], restored, data_dir)
-                if numbers:
-                    raise AlignmentError(
-                        f"slot-{offset + i}-{numbers}",
-                        fact_brief(targets[offset + i][1], restored),
+            if not semantic_ok(source_html, restored):
+                problem = leaf_problem(source_html, restored)
+                if problem in {None, "numbers"}:
+                    restored, numbers = settle_numbers(source_html, restored, data_dir)
+                    if numbers:
+                        note_reject(
+                            data_dir,
+                            article_id=article_id,
+                            slot=f"slot-{slot}-{numbers}",
+                            kind=numbers,
+                            source=source_html,
+                            draft=restored,
+                        )
+                        raise AlignmentError(
+                            f"slot-{slot}-{numbers}",
+                            fact_brief(source_html, restored),
+                        )
+                else:
+                    note_reject(
+                        data_dir,
+                        article_id=article_id,
+                        slot=f"slot-{slot}-{problem}",
+                        kind=problem,
+                        source=source_html,
+                        draft=restored,
                     )
-                problem = None
-            if problem:
-                raise AlignmentError(f"slot-{offset + i}-{problem}")
-            translations[offset + i] = restored
+                    raise AlignmentError(f"slot-{slot}-{problem}")
+            translations[slot] = restored
         models.update(getattr(got, "models", ()))
         offset += len(chunk)
 

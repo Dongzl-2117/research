@@ -7,9 +7,10 @@ import pytest
 from test_bilingual_regressions import MemoryConn
 
 from researchlib.translate import service
-from researchlib.translate.harness import numeric_verdict, settle_numbers
-from researchlib.translate.llm import ChatJsonResult
+from researchlib.translate.harness import numeric_verdict, settle_numbers, settle_unshield
+from researchlib.translate.llm import ChatJsonResult, _params
 from researchlib.translate.provenance import AlignmentError, leaf_problem
+from researchlib.translate.segments import shield
 
 _LIVE = [
     (
@@ -166,14 +167,15 @@ _LIVE = [
         (*row, expected)
         for row, expected in zip(
             _LIVE,
-            ["ok", "ok", "ok", "ok", "ok"],
+            ["doubt", "doubt", "conflict", "ok", "doubt"],
             strict=True,
         )
     ],
 )
-def test_live_v6_slots_agree_even_though_the_old_checker_does_not(article_id, source, target, verdict):
-    assert leaf_problem(source, target) == "numbers"
+def test_live_v6_slots_keep_their_saved_wording(article_id, source, target, verdict):
     assert numeric_verdict(source, target) == verdict
+    if verdict == "ok":
+        assert leaf_problem(source, target) == "numbers"
     assert article_id
 
 
@@ -187,7 +189,7 @@ def test_live_v6_slots_agree_even_though_the_old_checker_does_not(article_id, so
         (
             "<p>Profit was 10 dollars then 20 dollars.</p>",
             "<p>利润先是20美元，然后是10美元。</p>",
-            "ok",
+            "binding",
         ),
     ],
 )
@@ -208,11 +210,34 @@ def test_clear_number_errors_stay_conflicts(source, target, verdict):
             "<p>收入从2200亿美元降至2000亿美元。</p>",
         ),
         ("<p>800 data points on 100 million women.</p>", "<p>对8亿人掌握100个数据点。</p>"),
+        ("<p>800 data points on 100 million women.</p>", "<p>对800人掌握1亿个数据点。</p>"),
+        (
+            "<p>Revenue was 10 million and costs were 20 million.</p>",
+            "<p>收入2000万，成本1000万。</p>",
+        ),
         ("<p>in the late 90s</p>", "<p>20世纪80年代末</p>"),
     ],
 )
 def test_bound_facts_do_not_collapse_to_a_number_set(source, target):
     assert numeric_verdict(source, target) != "ok"
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [
+        ("<p>It took 60 days.</p>", "<p>花了60 天。</p>"),
+        ("<p>less than 24 hours</p>", "<p>不到 24 小时</p>"),
+        ("<p>800 data points on 100 million women.</p>", "<p>对1亿人掌握800个数据点。</p>"),
+        (
+            "<p>Revenue was 10 million and costs were 20 million.</p>",
+            "<p>收入1000万，成本2000万。</p>",
+        ),
+        ("<p>$10 per person or $20 per household.</p>", "<p>每位10美元或每户20美元。</p>"),
+        ("<p>$0.80 for every $1.</p>", "<p>每1美元就有0.80美元。</p>"),
+    ],
+)
+def test_same_binding_accepts_format_and_argument_order(source, target):
+    assert numeric_verdict(source, target) == "ok"
 
 
 def test_repair_is_kept_only_when_the_checker_passes(tmp_path, monkeypatch):
@@ -244,14 +269,84 @@ def test_repeating_a_wrong_amount_is_still_rejected(tmp_path, monkeypatch):
     assert code == "numbers" and "20美元" in text
 
 
-def test_live_slots_are_accepted_without_calling_the_model(tmp_path, monkeypatch):
+def test_same_numbers_on_swapped_objects_are_binding():
+    assert numeric_verdict(
+        "<p>Revenue was 10 million and costs were 20 million.</p>",
+        "<p>收入2000万，成本1000万。</p>",
+    ) == "binding"
+    assert numeric_verdict(
+        "<p>800 data points on 100 million women.</p>",
+        "<p>对800人掌握1亿个数据点。</p>",
+    ) == "binding"
+
+
+def test_bound_live_slot_is_kept_without_calling_the_model(tmp_path, monkeypatch):
     def boom(**_kwargs):
-        raise AssertionError("数字已经一致，不应该再叫模型")
+        raise AssertionError("角色已经对上，不应该再叫模型")
 
     monkeypatch.setattr("researchlib.translate.service.chat_json", boom)
+    _article_id, source, target = _LIVE[3]
+    text, code = settle_numbers(source, target, tmp_path)
+    assert code is None and text == target
+
+
+def test_unresolved_live_slots_stay_rejected(tmp_path, monkeypatch):
+    def echo(**kwargs):
+        return ChatJsonResult(
+            data={"t": [kwargs["user"]["repair"].rsplit("译文:\n", 1)[-1]]},
+            model="synthetic-model",
+            usage=None,
+            latency_ms=0,
+        )
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", echo)
     for article_id, source, target in _LIVE:
+        if numeric_verdict(source, target) == "ok":
+            continue
         text, code = settle_numbers(source, target, tmp_path)
-        assert code is None and text == target, article_id
+        assert code and text == target, article_id
+
+
+def test_deepseek_request_drops_the_repair_temperature(monkeypatch):
+    monkeypatch.delenv("RESEARCH_LLM_PROVIDER", raising=False)
+    assert "temperature" not in _params(0.3, 800)
+
+
+def test_missing_placeholder_is_repaired_once(tmp_path, monkeypatch):
+    shielded = shield("<p>See <code>rate = 42</code>.</p>")
+    calls = []
+
+    def fake(**kwargs):
+        calls.append(kwargs["user"]["repair"])
+        return ChatJsonResult(
+            data={"t": [shielded.html]},
+            model="synthetic-model",
+            usage=None,
+            latency_ms=0,
+        )
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    restored = settle_unshield(shielded.html, "<p>见图。</p>", shielded, tmp_path)
+    assert restored and "rate = 42" in restored and len(calls) == 1
+    assert "不要自己宣布通过" in calls[0]
+
+
+def test_placeholder_still_missing_is_not_retried(tmp_path, monkeypatch):
+    shielded = shield("<p>See <code>rate = 42</code>.</p>")
+    calls = []
+
+    def fake(**kwargs):
+        calls.append(1)
+        return ChatJsonResult(
+            data={"t": ["<p>见图。</p>"]},
+            model="synthetic-model",
+            usage=None,
+            latency_ms=0,
+        )
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    assert settle_unshield(shielded.html, "<p>见图。</p>", shielded, tmp_path) is None
+    assert len(calls) == 1
 
 
 def test_a_rejected_article_does_not_store_a_translation(tmp_path):
@@ -280,3 +375,6 @@ def test_a_rejected_article_does_not_store_a_translation(tmp_path):
     assert conn.writes == [] and conn.committed is False
     assert len(calls) == 2
     assert "repair" in calls[1]
+    saved = (tmp_path / "translate-rejects" / "990001.jsonl").read_text(encoding="utf-8")
+    assert "10 dollars" in saved and "20美元" in saved
+    assert "DEEPSEEK" not in saved and "api_key" not in saved.lower()

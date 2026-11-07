@@ -244,6 +244,8 @@ PYTHONPATH=src python scripts/repair_content_hash_tz.py --apply
 
 对齐拒绝会写入 `translation_attempts`（原文 hash 和检查版本）。同一 hash、同一版本下，12 小时内不再送模型；满 2 次后一直停，直到原文变了或 `ALIGNMENT_VERSION` 加一。请求失败只把间隔从 15 分钟拉到 12 小时，不设永久次数。本进程里失败过的 id 仍会先跳过。点名 `--article-id` 不受这条队列限制。
 
+数字没对上，或图片、代码占位和链接编号没还原，只把这一段再交回模型修一次。仍不通过就不入库。没入库的原文、译文和分类追加写在数据目录 `translate-rejects/<文章id>.jsonl`，里面没有密钥。库里的 `translation_attempts.reason` 仍然只记错误码。
+
 ## 2026-11-02：来源回执与旧稿核验
 
 当前修复及操作交接见 [双语映射说明](bilingual-mapping-2026-11-02.md)。上面的历史 PASS／段数记录是当时作者核对的结果，不代表当前旧库已经通过逐段语义验收。新稿须带有序源段身份和持久回执，数字及资源按槽核对；不再用近重复复用覆盖译文，也不删段凑数量。
