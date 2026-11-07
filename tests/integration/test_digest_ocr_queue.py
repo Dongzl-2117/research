@@ -38,6 +38,31 @@ def test_ocr_stale_short_digest_comes_before_a_newer_missing_one(conn):
     assert title_needs_ai(SHELL)
 
 
+def test_reformatted_image_text_waits_behind_newer_articles(conn):
+    """全库按新格式重认旧图：摘要当时已经读过图片里的字，只是字变了，按发布时间排，不插到新文章前面。"""
+    conn.execute(
+        """
+        INSERT INTO articles (
+          source_id, external_id, content_hash, title, published_at, body_md, body_text, ocr_hash, ocr_text
+        ) VALUES
+          ('fangwei-zsxq', 'missing-digest', 'm', '还没有摘要', '2026-10-29 12:00+08', %s, %s, '', ''),
+          ('fangwei-zsxq', 'reformatted', 'r', '旧截图帖', '2026-10-01 12:00+08', '图片', '图片', 'newhash', %s)
+        """,
+        (BODY, BODY, OCR),
+    )
+    old = conn.execute("SELECT id, content_hash FROM articles WHERE external_id = 'reformatted'").fetchone()
+    conn.execute(
+        """
+        INSERT INTO article_digests (article_id, content_hash, model, summary, prompt_version, head_only, ocr_hash)
+        VALUES (%s, %s, 'test', '方伟认为茅台利润还在涨。', %s, false, 'oldhash')
+        """,
+        (old["id"], old["content_hash"], digest_mod.PROMPT_VERSION),
+    )
+    conn.commit()
+    titles = [row["title"] for row in digest_mod.pending_articles(conn, ["fangwei-zsxq"], 10)]
+    assert titles == ["还没有摘要", "旧截图帖"]
+
+
 def test_ocr_hash_change_requeues_title_even_when_the_title_looks_done(conn):
     conn.execute(
         """

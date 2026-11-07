@@ -33,7 +33,9 @@ import logging
 import re
 import sys
 import time
+from collections import deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -757,6 +759,51 @@ def _touch_articles(conn, content_hash: str, text: str, touched: set[int], repor
             report["articles"] += 1
 
 
+def recognize_one(recognize, path: Path) -> tuple[Recognition | None, Exception | None, float]:
+    """在工作线程里认一张图：只调模型，不碰库。交回（结果，出的错，秒数），出错时结果为空。"""
+    started = time.monotonic()
+    try:
+        found = recognize(path)
+    except Exception as exc:  # 交给主线程判断：跳过、单张失败，还是整批停
+        return None, exc, time.monotonic() - started
+    result = found if isinstance(found, Recognition) else Recognition(found or "")
+    return result, None, time.monotonic() - started
+
+
+def _outcome(engine: str, path: Path, future, report: dict) -> tuple[str, Recognition]:
+    """一张图认完以后记成什么 engine、存什么字，顺带记报告里的计数。在主线程里跑；鉴权失败抛出去整批停。"""
+    if future is None:
+        return f"{engine}:skipped", Recognition("")
+    result, exc, _seconds = future.result()
+    if exc is not None:
+        if isinstance(exc, OcrImageSkipped):
+            logger.info("跳过图片 %s：%s", path, exc)
+            return f"{engine}:skipped", Recognition("")
+        if _fatal_ocr(exc):
+            raise exc
+        # 单张图坏了不拖垮整批
+        logger.warning("图片识别失败 %s：%s", path, exc)
+        report["failed"] += 1
+        report["last_error"] = str(exc)[:300]
+        return f"{engine}:error", Recognition("")
+    used = engine
+    if result.error:
+        logger.warning("图片识别结果读不出来 %s：%s", path, result.error)
+        used = f"{engine}:invalid"
+        report["invalid"] += 1
+        report["last_error"] = result.error[:300]
+        result = Recognition("", None, result.usage)
+    elif result.units is not None:
+        report["structured"] += 1
+    else:
+        report["plain"] += 1
+    if result.usage:
+        report["metered"] += 1
+        for name, value in result.usage.items():
+            report["tokens"][name] = report["tokens"].get(name, 0) + value
+    return used, result
+
+
 def run_ocr(
     conn,
     data_dir: Path,
@@ -767,6 +814,7 @@ def run_ocr(
     *,
     redo: bool = False,
     article_ids: list[int] | None = None,
+    workers: int = 1,
 ) -> dict:
     """识别一批图片，重切引用它们的文章的图片文字块。返回计数。
 
@@ -777,6 +825,9 @@ def run_ocr(
     报告里 structured 是按结构交回的张数，plain 是交回自由文字的，tokens 是接口报的用量合计。
     不点名文章时，自动上线在等（``health.deploy_waiting``）就认完手上这张停下，deploy_waiting 记它等的提交：
     以前长跑的识图会把之后的合并一直挡在外面。停下的从没认完的接着认，不白花钱。
+    workers 张图一起认（模型调用在工作线程里，写库都在这个线程里，按挑出来的先后写）。
+    全库重认（redo 且不点名文章）改了上千篇的图片文字：短帖的摘要和观点照常按发布时间排进夜间的队，
+    不记进 article_followups 插到新文章前面，也不在这里当场重写。
     """
     from researchlib.health import deploy_waiting
 
@@ -798,74 +849,64 @@ def run_ocr(
         "ocr_changed": [],
     }
     touched: set[int] = set()
+    rows = iter(pending_images(conn, limit, redo=redo, article_ids=article_ids))
+    width = max(1, int(workers or 1))
+
+    def stopping() -> bool:
+        if deadline is not None and time.monotonic() > deadline:
+            return True
+        if not article_ids:
+            report["deploy_waiting"] = deploy_waiting(data_dir)
+            return bool(report["deploy_waiting"])
+        return False
+
     try:
-        for row in pending_images(conn, limit, redo=redo, article_ids=article_ids):
-            if deadline is not None and time.monotonic() > deadline:
-                break
-            if not article_ids:
-                report["deploy_waiting"] = deploy_waiting(data_dir)
-                if report["deploy_waiting"]:
-                    break
-            path = Path(data_dir) / "images" / row["storage_path"]
-            if not path.is_file():
-                report["missing"] += 1
-                continue
-            used = engine
-            result = Recognition("")
-            if path.suffix.lower() not in OCR_EXTS:
-                used = f"{engine}:skipped"
-            else:
-                try:
-                    found = recognize(path)
-                    result = found if isinstance(found, Recognition) else Recognition(found or "")
-                except OcrImageSkipped as exc:
-                    logger.info("跳过图片 %s：%s", path, exc)
-                    used = f"{engine}:skipped"
-                except Exception as exc:  # 单张图坏了不拖垮整批；鉴权失败除外
-                    if _fatal_ocr(exc):
-                        raise
-                    logger.warning("图片识别失败 %s：%s", path, exc)
-                    used = f"{engine}:error"
-                    report["failed"] += 1
-                    report["last_error"] = str(exc)[:300]
-                else:
-                    if result.error:
-                        logger.warning("图片识别结果读不出来 %s：%s", path, result.error)
-                        used = f"{engine}:invalid"
-                        report["invalid"] += 1
-                        report["last_error"] = result.error[:300]
-                        result = Recognition("", None, result.usage)
-                    elif result.units is not None:
-                        report["structured"] += 1
+        with ThreadPoolExecutor(max_workers=width) as pool:
+            queue: deque = deque()
+
+            def fill() -> None:
+                # 同时在认的不超过 width 张。到点了或自动上线在等就不再开新的，已经在认的认完照写，钱不白花。
+                while len(queue) < width and not stopping():
+                    row = next(rows, None)
+                    if row is None:
+                        return
+                    path = Path(data_dir) / "images" / row["storage_path"]
+                    if not path.is_file():
+                        report["missing"] += 1
+                        continue
+                    if path.suffix.lower() not in OCR_EXTS:
+                        queue.append((row, path, None))
                     else:
-                        report["plain"] += 1
-                    if result.usage:
-                        report["metered"] += 1
-                        for name, value in result.usage.items():
-                            report["tokens"][name] = report["tokens"].get(name, 0) + value
-            text = result.text or ""
-            conn.execute(
-                """
-                INSERT INTO image_texts (content_hash, engine, text, units, usage, prompt_version)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (content_hash) DO UPDATE
-                    SET engine = EXCLUDED.engine, text = EXCLUDED.text, units = EXCLUDED.units,
-                        usage = EXCLUDED.usage, prompt_version = EXCLUDED.prompt_version, created_at = now()
-                """,
-                (
-                    row["content_hash"],
-                    used,
-                    text,
-                    Jsonb(result.units) if result.units is not None else None,
-                    Jsonb(result.usage) if result.usage else None,
-                    VISION_PROMPT_VERSION,
-                ),
-            )
-            report["images"] += 1
-            if text.strip():
-                report["with_text"] += 1
-            _touch_articles(conn, row["content_hash"], text, touched, report)
-            conn.commit()
+                        queue.append((row, path, pool.submit(recognize_one, recognize, path)))
+
+            fill()
+            while queue:
+                row, path, future = queue.popleft()
+                used, result = _outcome(engine, path, future, report)
+                text = result.text or ""
+                conn.execute(
+                    """
+                    INSERT INTO image_texts (content_hash, engine, text, units, usage, prompt_version)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (content_hash) DO UPDATE
+                        SET engine = EXCLUDED.engine, text = EXCLUDED.text, units = EXCLUDED.units,
+                            usage = EXCLUDED.usage, prompt_version = EXCLUDED.prompt_version, created_at = now()
+                    """,
+                    (
+                        row["content_hash"],
+                        used,
+                        text,
+                        Jsonb(result.units) if result.units is not None else None,
+                        Jsonb(result.usage) if result.usage else None,
+                        VISION_PROMPT_VERSION,
+                    ),
+                )
+                report["images"] += 1
+                if text.strip():
+                    report["with_text"] += 1
+                _touch_articles(conn, row["content_hash"], text, touched, report)
+                conn.commit()
+                fill()
     finally:
         changed: list[dict] = []
         for article_id in sorted(touched):
@@ -890,11 +931,12 @@ def run_ocr(
                 }
             )
         if changed:
+            report["ocr_changed"] = [int(row["id"]) for row in changed]
+        if changed and not (redo and not article_ids):
             try:
                 from researchlib.followups import note_ocr_changes
 
                 report["followups"] = note_ocr_changes(conn, changed)
-                report["ocr_changed"] = [int(row["id"]) for row in changed]
             except Exception:
                 logger.exception("识图后续没排上")
         if touched:
@@ -957,6 +999,7 @@ def main(argv: list[str] | None = None) -> int:
             deadline=deadline,
             redo=args.redo,
             article_ids=args.article or None,
+            workers=settings.llm_concurrency,
         )
         follow = report.get("followups") or {}
         n_digest = len(follow.get("digest") or [])
@@ -971,6 +1014,8 @@ def main(argv: list[str] | None = None) -> int:
 
                 drained = drain_ocr_followups(conn, settings, follow)
                 print(f"已重写摘要 {drained['digest']} 篇，标题 {drained['titles']} 篇")
+        if args.redo and not args.article and report["ocr_changed"]:
+            print(f"图片文字变了的 {len(report['ocr_changed'])} 篇：短帖的摘要和观点按发布时间排进夜间的队")
         remaining = redo_remaining(conn) if args.redo and not args.article else None
     finally:
         conn.close()

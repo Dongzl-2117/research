@@ -111,7 +111,7 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 | `XAI_BASE_URL` | `https://api.x.ai/v1` | 仅 Grok |
 | `LLM_LONG_TIMEOUT_MS` | `1500000` | 译制和问库共用的长超时，默认 25 分钟 |
 | `RESEARCH_LLM_TIMEOUT` | 不设 | 秒。比上面的长超时更短时会被抬到同一条，不能单独把问库调弱 |
-| `RESEARCH_LLM_CONCURRENCY` | `3` | 同一个进程里同时在跑的 LLM 请求上限，问库分批、摘要、观点、论点共用 |
+| `RESEARCH_LLM_CONCURRENCY` | `3` | 同一个进程里同时在跑的 LLM 请求上限，问库分批、摘要、观点、论点共用；`research-ocr` 按它几张图一起认 |
 
 429、5xx、连接被重置、流读到一半的 TLS EOF 按 2、5、15、30 秒退避重试（接口给了 `Retry-After` 就按它，最多等一分钟）。超时不重试：一次已经等了很久。译制和问库用同一组间隔。凭证不可用或连续失败 3 次，首页顶上提示一行，写明是 DeepSeek 还是 Grok（见 [backup.md](backup.md)「出问题才提示」）。
 

@@ -122,9 +122,14 @@ def enough_text_sql(alias: str = "a") -> str:
     )
 
 
-# 短正文、图片文字和摘要对不上。单独拿出来，是为了排在「还没有摘要」前面。
+# 短正文、图片文字和摘要对不上。
 _OCR_DIGEST_DUE = (
     "(a.ocr_hash <> '' AND d.ocr_hash IS DISTINCT FROM a.ocr_hash"
+    f" AND length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)})"
+)
+# 其中写摘要时还没有图片里的字的（多半是「没有可读文字，无法提炼」这类空壳，挂在卡片上）：识了图先重写。
+_OCR_FIRST_SEEN = (
+    "(d.article_id IS NOT NULL AND coalesce(d.ocr_hash, '') = '' AND a.ocr_hash <> ''"
     f" AND length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)})"
 )
 _FOLLOWUP_DIGEST = (
@@ -137,10 +142,12 @@ _STALE = (
 )
 # 入队的也算到期：哈希已经对齐、但标题曾被漏判时，仍要重写这一次。字太少的都不算到期。
 _DUE = f"(({_STALE} OR {_FOLLOWUP_DIGEST}) AND {enough_text_sql('a')})"
-# 刚识完图的短正文先写。否则缺摘要的积压（按 limit 截断）会把它们一直留在后面。
+# 入队的先写，再是写摘要时还没见过图片里的字的短正文：否则缺摘要的积压（按 limit 截断）会把它们一直留在后面。
+# 以前识过字、只是字变了的（全库按新格式重认一次改上千篇）和缺摘要、正文变了的放在一起按发布时间排，
+# 不插到新文章前面：新文章的摘要不会因为重认旧图等上几个星期。
 PENDING_ORDER = (
-    f"{_FOLLOWUP_DIGEST} DESC, {_OCR_DIGEST_DUE} DESC, "
-    "(d.article_id IS NULL OR d.content_hash <> a.content_hash) DESC, "
+    f"{_FOLLOWUP_DIGEST} DESC, {_OCR_FIRST_SEEN} DESC, "
+    f"(d.article_id IS NULL OR d.content_hash <> a.content_hash OR {_OCR_DIGEST_DUE}) DESC, "
     "a.published_at DESC NULLS LAST, a.id DESC"
 )
 
