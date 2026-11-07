@@ -1,9 +1,10 @@
-"""译制闭环：结构完整性和数字事实分开判。
+"""译制闭环：结构完整性和全部数字事实分开判。
 
 结构（占位、链接、图片、代码、条数）不对就只修这一段一次。
-数字先收成证据：时段、区间、年代、比例、金额。证据对得上就留下，不改写去迎合抽取格式。
-证据互相矛盾就拒绝。证据不够就标不确定，不把模型的一句「可以」当成通过。
-修一次之后用同一套证据再判。没入库的每一阶段输入、输出和原因都留下，不含密钥。
+数字先做写法折叠（数字和中文单位之间的空格），再交给原来的全量检查。
+钟点、日期、月份、财季、时段、比例、金额都参与，不能因为没单独收成证据就放过。
+检查通过才留下。没通过只修一次，再用同一条检查复核；模型不能自己宣布通过。
+没入库的每一阶段输入、输出和原因都留下，不含密钥。
 """
 
 from __future__ import annotations
@@ -11,22 +12,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from researchlib.translate.llm import LLMTransportError, output_tokens
-from researchlib.translate.numbers import (
-    _RATIO_NOISE,
-    _decimal,
-    _duration_count,
-    _duration_unit,
-    _extract,
-    _extract_located,
-    _qty_key,
-)
+from researchlib.translate.numbers import _extract
 from researchlib.translate.prompts import SYSTEM_BODY
-from researchlib.translate.provenance import numeric_anchors
+from researchlib.translate.provenance import leaf_problem, numeric_anchors
 from researchlib.translate.segments import Shielded, unshield
 
 logger = logging.getLogger("researchlib.translate")
@@ -42,25 +34,7 @@ _UNSHIELD_NOTE = (
     "只输出 JSON，t 里只能有这一段。"
 )
 _UNIT_GAP = re.compile(r"(?<=\d)\s+(?=个月|星期|小时|天|周)")
-_EN_RANGE = re.compile(
-    r"\b(?:from\s+)?(?P<a>[a-z]+|\d+)\s+(?:to|through)\s+(?P<b>[a-z]+|\d+)\s+"
-    r"(?P<u>weeks?|months?|days?|hours?)\b",
-    re.I,
-)
-_ZH_RANGE = re.compile(
-    r"(?P<a>\d+|[一二三四五六七八九十两]+)\s*(?:至|到)\s*"
-    r"(?P<b>\d+|[一二三四五六七八九十两]+)\s*(?P<u>天|周|小时|个月|星期)"
-)
-_EN_DECADE = re.compile(r"\b(?:late|early|mid|middle)\s+(?P<yy>\d{2})s\b", re.I)
-_ZH_DECADE = re.compile(r"(?P<c>[12]\d)\s*世纪\s*(?P<yy>\d{2})\s*年代")
-_ZH_RATIO = re.compile(
-    r"每(?!月|年|周|天|日|小|时|分|刻|位|户|个|名|人|次|股|份|家|篇|订|季)"
-    r"(?P<head>[^0-9。\n]{0,16}?)"
-    r"(?P<den>\d+(?:\.\d+)?)\s*美元"
-    r"(?P<gap>[^。\n]{0,40}?)"
-    r"(?:约|大约)?\s*(?P<num>\d+(?:\.\d+)?)\s*美元"
-)
-_AMOUNT_KINDS = {"qty", "literal"}
+_TRACKED = ("clock", "date", "month", "fiscal", "duration", "ratio")
 
 
 @dataclass
@@ -69,204 +43,42 @@ class Judgment:
     reason: str
 
 
-@dataclass
-class Evidence:
-    ranges: Counter = field(default_factory=Counter)
-    decades: Counter = field(default_factory=Counter)
-    ratios: Counter = field(default_factory=Counter)
-    durations: Counter = field(default_factory=Counter)
-    amounts: list = field(default_factory=list)
-    literals: list = field(default_factory=list)
-    soft: Counter = field(default_factory=Counter)
-
-
 def _fold(html: str) -> str:
     return _UNIT_GAP.sub("", html or "")
 
 
-def _money(raw: str) -> str | None:
-    amount = _decimal((raw or "").replace(",", ""))
-    if amount is None:
-        return None
-    return _qty_key(amount)
+def _keys(html: str, kind: str) -> list[str]:
+    return [fact.key for fact in _extract(html) if fact.hard and fact.kind == kind]
 
 
-def _decade_year(year_two: str, century: str | None = None) -> str:
-    yy = int(year_two)
-    if century is not None:
-        return str((int(century) - 1) * 100 + yy)
-    return str(1900 + yy if yy >= 30 else 2000 + yy)
-
-
-def _take(counter: Counter, key: str) -> None:
-    if counter[key] > 0:
-        counter[key] -= 1
-
-
-def _evidence(html: str) -> Evidence:
-    """把一段里的数字收成可对照的证据。写法不同，收成同一种对象。"""
-    bag = Evidence()
-    text, _located = _extract_located(html)
-    used: Counter[str] = Counter()
-    for pattern in (_EN_RANGE, _ZH_RANGE):
-        for match in pattern.finditer(text):
-            left, right = _duration_count(match.group("a")), _duration_count(match.group("b"))
-            unit = _duration_unit(match.group("u"))
-            if not left or not right or not unit or left in {"~2", "some"} or right in {"~2", "some"}:
-                continue
-            bag.ranges[(unit, frozenset((left, right)))] += 1
-            used[left] += 1
-            used[right] += 1
-    for match in _EN_DECADE.finditer(text):
-        bag.decades[_decade_year(match.group("yy"))] += 1
-        used[str(int(match.group("yy")))] += 1
-    for match in _ZH_DECADE.finditer(text):
-        bag.decades[_decade_year(match.group("yy"), match.group("c"))] += 1
-        used[str(int(match.group("c")))] += 1
-        used[str(int(match.group("yy")))] += 1
-    facts = _extract(html)
-    ratios = [tuple(fact.key.split("/")) for fact in facts if fact.kind == "ratio" and "/" in fact.key]
-    if not ratios:
-        for match in _ZH_RATIO.finditer(text):
-            if _RATIO_NOISE.search(match.group("head") + match.group("gap")):
-                continue
-            den, num = _money(match.group("den")), _money(match.group("num"))
-            if den and num:
-                ratios.append((num, den))
-                break
-    for num, den in ratios:
-        bag.ratios[(num, den)] += 1
-        used[num] += 1
-        used[den] += 1
-    range_units = {unit for (unit, _ends), count in bag.ranges.items() for _n in range(count)}
-    range_counts = Counter(end for (_unit, ends), count in bag.ranges.items() for end in ends for _n in range(count))
-    for fact in facts:
-        if fact.kind == "duration" and ":" in fact.key:
-            unit, count = fact.key.split(":", 1)
-            if count in {"~2", "some", "couple"}:
-                bag.durations[(unit, count)] += 1
-                continue
-            if unit in range_units and range_counts[count] > 0:
-                range_counts[count] -= 1
-                continue
-            bag.durations[(unit, count)] += 1
-            continue
-        if fact.kind in {"ratio", "month", "date", "fiscal", "clock"}:
-            continue
-        if used[fact.key] > 0 and fact.kind in {"qty", "literal", "soft", "pct", "year"}:
-            used[fact.key] -= 1
-            continue
-        if fact.kind == "qty" and fact.hard:
-            bag.amounts.append(fact.key)
-        elif fact.hard and fact.kind in {"literal", "pct", "year"}:
-            bag.literals.append(fact.key)
-        elif not fact.hard:
-            bag.soft[fact.key] += 1
-    return bag
-
-
-def _gap_breaks(text: str, start: int, end: int) -> bool:
-    if end < start:
-        start, end = end, start
-    return re.search(r"[.。!！?？;；\n]", text[start:end]) is not None
-
-
-def _roles(html: str) -> tuple[str, str] | None:
-    """一句里唯一的 on / 对 把两个数分成主题和对象。看不出就不猜。"""
-    text, chosen = _extract_located(html)
-    amounts = [item for item in chosen if item[0].hard and item[0].kind in _AMOUNT_KINDS]
-    ons = list(re.finditer(r"\bon\b", text, re.I))
-    duis = list(re.finditer(r"对(?=\s*\d)", text))
-    if len(ons) + len(duis) != 1:
-        return None
-
-    def nearest(edge: int, *, before: bool):
-        found = None
-        for fact, start, end in amounts:
-            if before:
-                if end > edge or _gap_breaks(text, end, edge):
-                    continue
-                if found is None or end > found[2]:
-                    found = (fact, start, end)
-            elif start >= edge and not _gap_breaks(text, edge, start) and (found is None or start < found[1]):
-                found = (fact, start, end)
-        return found
-
-    if ons:
-        theme, ground = nearest(ons[0].start(), before=True), nearest(ons[0].end(), before=False)
-        if theme is None or ground is None or theme[0].key == ground[0].key:
-            return None
-        return theme[0].key, ground[0].key
-    after = []
-    edge = duis[0].end()
-    for item in amounts:
-        if item[1] < edge or _gap_breaks(text, edge, item[1]):
-            continue
-        if after and _gap_breaks(text, after[-1][2], item[1]):
-            break
-        after.append(item)
-        if len(after) == 2:
-            break
-    if len(after) < 2 or after[0][0].key == after[1][0].key:
-        return None
-    return after[1][0].key, after[0][0].key
-
-
-def _literals_match(source: Evidence, target: Evidence) -> bool:
-    soft = source.soft.copy()
-    index = 0
-    for key in target.literals:
-        if index < len(source.literals) and source.literals[index] == key:
-            index += 1
-            continue
-        if soft[key] > 0:
-            soft[key] -= 1
-            continue
-        return False
-    return index == len(source.literals)
-
-
-def _durations_match(source: Evidence, target: Evidence) -> str | None:
-    missing = source.durations - target.durations
-    extra = target.durations - source.durations
-    if missing:
-        return "conflict"
-    spare = source.soft["1"]
-    known = {unit for unit, _count in source.durations}
-    for (unit, count), count_n in extra.items():
-        if count != "1" or unit not in known or spare < count_n:
+def _reason(source: str, target: str) -> str:
+    """检查没通过时给原因。每一类硬事实都看，不跳过钟点、日期、月份、财季。"""
+    for kind in _TRACKED:
+        if _keys(source, kind) != _keys(target, kind):
             return "conflict"
-        spare -= count_n
-    return None
+    source_qty, target_qty = _keys(source, "qty"), _keys(target, "qty")
+    if source_qty != target_qty:
+        if sorted(source_qty) == sorted(target_qty) and source_qty:
+            return "binding"
+        anchors = numeric_anchors(source)
+        if anchors and anchors == numeric_anchors(target) and (source_qty or target_qty):
+            return "scale"
+        return "conflict"
+    return "uncertain"
 
 
 def judge_numbers(source: str, target: str) -> Judgment:
-    """accept 证据一致；contradict 证据冲突；uncertain 证据不够，不能当成通过。"""
+    """通过只表示全量检查通过。没通过不会因为某一类事实没被收进证据就放过。"""
     source, target = _fold(source), _fold(target)
-    left, right = _roles(source), _roles(target)
-    if left and right and left != right:
-        return Judgment("contradict", "binding")
-    src, tgt = _evidence(source), _evidence(target)
-    if src.ranges != tgt.ranges or src.decades != tgt.decades:
+    problem = leaf_problem(source, target)
+    if problem is None:
+        return Judgment("accept", "ok")
+    if problem != "numbers":
         return Judgment("contradict", "conflict")
-    if src.ratios != tgt.ratios:
-        return Judgment("contradict", "binding")
-    duration = _durations_match(src, tgt)
-    if duration:
-        return Judgment("contradict", duration)
-    if src.amounts != tgt.amounts:
-        if sorted(src.amounts) == sorted(tgt.amounts) and src.amounts:
-            # 只有一侧标出了论证角色时，先后不同还不能断定对调了对象。
-            if bool(left) != bool(right):
-                return Judgment("uncertain", "uncertain")
-            return Judgment("contradict", "binding")
-        anchors = numeric_anchors(source)
-        if anchors and anchors == numeric_anchors(target):
-            return Judgment("contradict", "scale")
-        return Judgment("contradict", "conflict")
-    if not _literals_match(src, tgt):
-        return Judgment("contradict", "conflict")
-    return Judgment("accept", "ok")
+    reason = _reason(source, target)
+    if reason == "uncertain":
+        return Judgment("uncertain", "uncertain")
+    return Judgment("contradict", reason)
 
 
 def semantic_ok(source: str, target: str) -> bool:
@@ -325,14 +137,17 @@ def note_reject(
     logger.warning("译制未入库 article=%s slot=%s kind=%s", article_id, slot, kind)
 
 
-def _html_of(item: object, segment_id: str | None) -> str | None:
-    if isinstance(item, str) and item.strip():
-        return item
+def _bound_html(item: object, segment_id: str, source_hash: str) -> tuple[str | None, str]:
+    """带了段身份就必须回显同一个 id 和 source_hash。缺一不可，字符串不算。"""
     if not isinstance(item, dict) or not isinstance(item.get("html"), str) or not item["html"].strip():
-        return None
-    if segment_id and item.get("id") not in {None, segment_id}:
-        return None
-    return item["html"]
+        return None, "response-identity-missing"
+    if not isinstance(item.get("id"), str) or not item["id"]:
+        return None, "response-identity-missing"
+    if item["id"] != segment_id:
+        return None, "response-id-order"
+    if item.get("source_hash") != source_hash:
+        return None, "response-source-hash"
+    return item["html"], ""
 
 
 def repair_slot(
@@ -343,11 +158,11 @@ def repair_slot(
     note: str = _REPAIR_NOTE,
     segment_id: str | None = None,
     source_hash: str | None = None,
-) -> str:
-    """再要一稿。返回的不是通过证明；调用方还要再判一次。
+) -> tuple[str, str, str | None]:
+    """再要一稿。返回 (采用的译文, 身份错误码, 被丢掉的模型稿)。
 
-    和生成一样传 temperature 0.3。DeepSeek 思考模式的请求不带这个字段。
-    带了段身份时按正式契约回显，没有身份时仍接受字符串。
+    采用的译文还要再检查，不是通过证明。temperature 0.3 与生成相同；
+    DeepSeek 思考模式的请求不带这个字段。
     """
     user = {
         "segments": [source],
@@ -369,9 +184,17 @@ def repair_slot(
     )
     raw = result.data.get("t") if isinstance(result.data, dict) else None
     if not isinstance(raw, list) or len(raw) != 1:
-        return draft
-    html = _html_of(raw[0], segment_id)
-    return html or draft
+        return draft, "response-count", None
+    item = raw[0]
+    if segment_id and source_hash:
+        html, problem = _bound_html(item, segment_id, source_hash)
+        if problem:
+            seen = item.get("html") if isinstance(item, dict) else item if isinstance(item, str) else None
+            return draft, problem, seen if isinstance(seen, str) else None
+        return html or draft, "", None
+    if isinstance(item, str) and item.strip():
+        return item, "", None
+    return draft, "response-identity-missing", None
 
 
 def _code(reason: str) -> str:
@@ -401,7 +224,7 @@ def settle_numbers(
     if first.status == "accept":
         return draft, None, stages
     try:
-        revised = repair_slot(
+        revised, identity, rejected = repair_slot(
             source, draft, data_dir, segment_id=segment_id, source_hash=source_hash,
         )
     except LLMTransportError:
@@ -409,9 +232,10 @@ def settle_numbers(
     second = judge_numbers(source, revised)
     stages.append({
         "step": "repair", "input": source, "output": revised,
-        "status": second.status, "reason": second.reason,
+        "rejected": rejected, "status": second.status,
+        "reason": identity or second.reason,
     })
-    if second.status == "accept":
+    if not identity and second.status == "accept":
         return revised, None, stages
     reason = second.reason if second.status == "contradict" else "uncertain"
     return revised, _code(reason), stages
@@ -434,17 +258,24 @@ def settle_unshield(
         return restored, stages
     stages[-1]["reason"] = "placeholder or link id did not restore"
     try:
-        revised = repair_slot(
+        revised, identity, rejected = repair_slot(
             source, draft, data_dir, note=_UNSHIELD_NOTE,
             segment_id=segment_id, source_hash=source_hash,
         )
     except LLMTransportError:
         raise
-    restored = unshield(revised, shielded)
+    restored = None if identity else unshield(revised, shielded)
+    if identity:
+        reason = identity
+    elif restored is not None:
+        reason = "restored"
+    else:
+        reason = "repair still did not restore"
     stages.append({
         "step": "repair",
         "input": source,
         "output": revised,
-        "reason": "restored" if restored is not None else "repair still did not restore",
+        "rejected": rejected,
+        "reason": reason,
     })
     return restored, stages

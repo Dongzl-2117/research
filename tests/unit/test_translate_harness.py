@@ -167,15 +167,14 @@ _LIVE = [
         (*row, expected)
         for row, expected in zip(
             _LIVE,
-            ["ok", "ok", "ok", "ok", "ok"],
+            ["conflict", "conflict", "uncertain", "uncertain", "conflict"],
             strict=True,
         )
     ],
 )
 def test_live_v6_slots_keep_their_saved_wording(article_id, source, target, verdict):
+    assert leaf_problem(source, target) == "numbers"
     assert numeric_verdict(source, target) == verdict
-    if verdict == "ok":
-        assert leaf_problem(source, target) == "numbers"
     assert article_id
 
 
@@ -191,6 +190,9 @@ def test_live_v6_slots_keep_their_saved_wording(article_id, source, target, verd
             "<p>利润先是20美元，然后是10美元。</p>",
             "binding",
         ),
+        ("<p>The call is at 12:15AM.</p>", "<p>电话在12:15PM。</p>", "conflict"),
+        ("<p>Shipped in November 2014.</p>", "<p>2014年12月发出。</p>", "conflict"),
+        ("<p>Demand was fiscal Q4.</p>", "<p>需求是第3财季。</p>", "conflict"),
     ],
 )
 def test_clear_number_errors_stay_conflicts(source, target, verdict):
@@ -210,7 +212,6 @@ def test_clear_number_errors_stay_conflicts(source, target, verdict):
             "<p>收入从2200亿美元降至2000亿美元。</p>",
         ),
         ("<p>800 data points on 100 million women.</p>", "<p>对8亿人掌握100个数据点。</p>"),
-        ("<p>800 data points on 100 million women.</p>", "<p>对800人掌握1亿个数据点。</p>"),
         (
             "<p>Revenue was 10 million and costs were 20 million.</p>",
             "<p>收入2000万，成本1000万。</p>",
@@ -227,7 +228,9 @@ def test_bound_facts_do_not_collapse_to_a_number_set(source, target):
     [
         ("<p>It took 60 days.</p>", "<p>花了60 天。</p>"),
         ("<p>less than 24 hours</p>", "<p>不到 24 小时</p>"),
-        ("<p>800 data points on 100 million women.</p>", "<p>对1亿人掌握800个数据点。</p>"),
+        ("<p>The call is at 12:15AM.</p>", "<p>电话在凌晨12:15。</p>"),
+        ("<p>Shipped in November 2014.</p>", "<p>2014年11月发出。</p>"),
+        ("<p>Demand was fiscal Q4.</p>", "<p>需求是第4财季。</p>"),
         (
             "<p>Revenue was 10 million and costs were 20 million.</p>",
             "<p>收入1000万，成本2000万。</p>",
@@ -276,20 +279,61 @@ def test_same_numbers_on_swapped_objects_are_binding():
         "<p>Revenue was 10 million and costs were 20 million.</p>",
         "<p>收入2000万，成本1000万。</p>",
     ) == "binding"
-    assert numeric_verdict(
-        "<p>800 data points on 100 million women.</p>",
-        "<p>对800人掌握1亿个数据点。</p>",
-    ) == "binding"
 
 
-def test_saved_live_slots_are_kept_without_rewriting(tmp_path, monkeypatch):
-    def boom(**_kwargs):
-        raise AssertionError("证据已经一致，不应该再叫模型改写")
+def test_saved_live_slots_are_not_passed_by_an_echo(tmp_path, monkeypatch):
+    def echo(**kwargs):
+        draft = kwargs["user"]["repair"].rsplit("译文:\n", 1)[-1]
+        return ChatJsonResult(data={"t": [draft]}, model="synthetic-model", usage=None, latency_ms=0)
 
-    monkeypatch.setattr("researchlib.translate.service.chat_json", boom)
+    monkeypatch.setattr("researchlib.translate.service.chat_json", echo)
     for article_id, source, target in _LIVE:
         text, code, stages = settle_numbers(source, target, tmp_path)
-        assert code is None and text == target and stages[0]["status"] == "accept", article_id
+        assert code and text == target and stages[-1]["status"] != "accept", article_id
+
+
+def test_repair_with_the_wrong_source_hash_is_discarded(tmp_path, monkeypatch):
+    def fake(**kwargs):
+        return ChatJsonResult(
+            data={"t": [{
+                "id": kwargs["user"]["segment_ids"][0],
+                "source_hash": "not-the-source",
+                "html": "<p>利润为10美元。</p>",
+            }]},
+            model="synthetic-model",
+            usage=None,
+            latency_ms=0,
+        )
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    text, code, stages = settle_numbers(
+        "<p>Profit was 10 dollars.</p>",
+        "<p>利润为20美元。</p>",
+        tmp_path,
+        segment_id="seg-1",
+        source_hash="source-hash",
+    )
+    assert "20美元" in text and code
+    assert stages[-1]["reason"] == "response-source-hash"
+    assert stages[-1]["rejected"] == "<p>利润为10美元。</p>"
+
+    def missing_id(**kwargs):
+        return ChatJsonResult(
+            data={"t": [{"html": "<p>利润为10美元。</p>", "source_hash": "source-hash"}]},
+            model="synthetic-model",
+            usage=None,
+            latency_ms=0,
+        )
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", missing_id)
+    text, code, stages = settle_numbers(
+        "<p>Profit was 10 dollars.</p>",
+        "<p>利润为20美元。</p>",
+        tmp_path,
+        segment_id="seg-1",
+        source_hash="source-hash",
+    )
+    assert "20美元" in text and stages[-1]["reason"] == "response-identity-missing"
 
 
 def test_deepseek_request_drops_the_repair_temperature(monkeypatch):
