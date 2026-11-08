@@ -598,6 +598,13 @@ def test_from_inventory_needs_the_list_and_a_known_category(conn, monkeypatch, t
     path.write_text(json.dumps({"ids": {"stopped": [5]}, "display": {}, "coarse": []}), encoding="utf-8")
     assert cli.main(["--from-inventory", "stoped"]) == 2
     assert "没有「stoped」这一类" in capsys.readouterr().err
+    # 网站不显示的、只有图的不交给译制；分段粗的每次现查，用 --recheck。
+    assert cli.main(["--from-inventory", "site-hidden"]) == 2
+    assert "网站不显示" in capsys.readouterr().err
+    assert cli.main(["--from-inventory", "no-text"]) == 2
+    assert "只有图" in capsys.readouterr().err
+    assert cli.main(["--from-inventory", "coarse"]) == 2
+    assert "--recheck" in capsys.readouterr().err
     assert cli.main(["--from-inventory", "stopped", "--loop"]) == 2
     assert cli.main(["--from-inventory", "stopped", "--article-id", "5"]) == 2
 
@@ -616,7 +623,7 @@ def test_from_inventory_makes_way_for_a_release_like_the_queue(conn, monkeypatch
         _deploy_waits(tmp_path)
         return TranslateResult(article_id, "translated", segments=2)
 
-    monkeypatch.setattr(cli.inventory, "unfinished", lambda conn, ids: list(ids))
+    monkeypatch.setattr(cli.inventory, "unfinished", lambda conn, ids, data_dir: list(ids))
     monkeypatch.setattr(cli, "translate_article", translate)
     assert cli.main(["--from-inventory", "unmapped"]) == 0
     assert seen == [3]

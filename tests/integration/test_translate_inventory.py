@@ -14,13 +14,13 @@ BODY = "<p>First paragraph 10 dollars about {name}.</p><p>Second paragraph 20 do
 ZH = "<p>第一段10美元。</p><p>第二段20美元。</p>"
 
 
-def _article(conn, settings, external_id, *, language="en", body=BODY):
+def _article(conn, settings, external_id, *, language="en", body=BODY, title=None):
     # 正文各不相同：一样的正文会被认成同一篇的重复，只留主版本。
     source = next(s for s in load_sources(settings.sources_path) if s.id == "stratechery")
     source = replace(source, min_chars=0)
     store_documents(conn, source=source, docs=[ParsedDoc(
-        external_id, f"Synthetic {external_id}", datetime(2026, 1, 1, tzinfo=UTC), body.format(name=external_id),
-        {"format": "markdown", "language": language}, [],
+        external_id, title or f"Synthetic {external_id}", datetime(2026, 1, 1, tzinfo=UTC),
+        body.format(name=external_id), {"format": "markdown", "language": language}, [],
     )], data_dir=settings.data_dir, archive_files=1, images_in_archive=0, errors=[])
     conn.commit()
     return conn.execute("SELECT id FROM articles WHERE external_id = %s", (external_id,)).fetchone()["id"]
@@ -87,6 +87,10 @@ def test_inventory_sorts_every_english_article_and_writes_nothing(conn, settings
     assert report["lastReasons"] == {"untranslated:links": 1, "request-failed": 1}
     assert report["display"]["mapped"] == [done]
     assert report["display"]["legacy-structural"] == [legacy]
+    assert report["displayReasons"] == {"legacy-structural": {"missing-provenance": 1}}
+    assert report["stateSources"]["none"] == {"stratechery": 2}
+    assert report["stateChars"]["legacy"]["stratechery"] == report["displayChars"]["legacy-structural"] > 0
+    assert ids["no-text"] == [] and ids["site-hidden"] == []
     assert report["readOnly"] and report["modelCalls"] == 0
     assert dict(_counts(conn)) == before
 
@@ -94,14 +98,16 @@ def test_inventory_sorts_every_english_article_and_writes_nothing(conn, settings
     assert lines[0] == "英文文章 5 篇（stratechery 5）"
     assert "  从没译过 2" in lines
     assert "  这三类里：现在就能进队列 1，冷却中 1，同一版本拒满 2 次停住 1" in lines
-    assert lines[-1] == "已译完的 2 篇页面：结构对得上、没核验 1，逐段对上 1"
+    legacy_chars = report["displayChars"]["legacy-structural"]
+    assert lines[-1] == f"已译完的 2 篇页面：结构对得上、没核验 1（英文 {legacy_chars:,} 字符），逐段对上 1"
 
 
 def test_inventory_can_skip_rendering_pages(conn, settings, monkeypatch):
     legacy = _article(conn, settings, "legacy")
     _old_translation(conn, legacy)
     conn.commit()
-    monkeypatch.setattr(inventory, "_display_category", lambda *args: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(inventory, "_page", lambda *args: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(inventory, "_has_text", lambda *args: (_ for _ in ()).throw(AssertionError))
     report = inventory.collect(conn, settings, pages=False)
     assert report["ids"]["legacy"] == [legacy] and report["display"] == {}
 
@@ -131,10 +137,76 @@ def test_a_listed_category_is_translated_until_it_has_this_receipt(conn, setting
     monkeypatch.setattr(cli, "deepseek_api_key", lambda: "sk-test")
     assert cli.main(["--from-inventory", "legacy", "--workers", "2"]) == 0
     assert f"#{legacy} translated" in capsys.readouterr().out
-    assert inventory.unfinished(conn, [legacy, stopped]) == [stopped]
+    assert inventory.unfinished(conn, [legacy, stopped], settings.data_dir) == [stopped]
     assert cli.main(["--from-inventory", "legacy"]) == 0
-    assert "legacy 这一类都已经译完、有这一版回执了。" in capsys.readouterr().out
+    assert "legacy 这一类都已经译完、有这一版回执、对照页逐段对得上了。" in capsys.readouterr().out
     # 拒满两次停住的，队列不会再拿；点这一类就照译。
     assert cli.main(["--from-inventory", "stopped"]) == 0
     assert f"#{stopped} translated" in capsys.readouterr().out
-    assert inventory.unfinished(conn, [legacy, stopped]) == []
+    assert inventory.unfinished(conn, [legacy, stopped], settings.data_dir) == []
+
+
+def test_a_stale_receipt_is_resigned_without_asking_the_model(conn, settings, monkeypatch):
+    """清洗规则改过、原文指纹变了：页面分开展示，这一版回执也照样再译；没变的段全复用，只重签回执。"""
+    article = _article(conn, settings, "resign")
+    monkeypatch.setattr(service, "chat_json", _model)
+    assert service.translate_article(conn, article, data_dir=settings.data_dir).status == "translated"
+    conn.execute(
+        "UPDATE article_translations SET provenance = jsonb_set(provenance, '{source_fingerprint}', '\"stale\"')"
+        " WHERE article_id = %s",
+        (article,),
+    )
+    conn.commit()
+    report = inventory.collect(conn, settings)
+    assert report["ids"]["receipt"] == [article] and report["display"] == {"unmapped": [article]}
+    assert report["displayReasons"] == {"unmapped": {"source-fingerprint": 1}}
+    assert "  分开展示的原因：原文清洗规则改过、回执过期 1" in inventory.summary(report)
+    # 待译队列看不出来（原文 hash 没变、complete），盘点清单里的这一类才能补上。
+    assert article not in service.list_pending_english(conn, limit=10)
+    assert inventory.unfinished(conn, [article], settings.data_dir) == [article]
+
+    monkeypatch.setattr(service, "chat_json", lambda **kwargs: (_ for _ in ()).throw(AssertionError("不该调模型")))
+    result = service.translate_article(conn, article, data_dir=settings.data_dir)
+    assert result.status == "translated" and result.reused == result.segments
+    assert inventory._page(conn, article, settings.data_dir)[0] == "mapped"
+    assert inventory.unfinished(conn, [article], settings.data_dir) == []
+    # 再跑一遍，回执也一样了，就不再写。
+    written = conn.execute("SELECT updated_at FROM article_translations WHERE article_id = %s", (article,)).fetchone()
+    assert service.translate_article(conn, article, data_dir=settings.data_dir).status == "translated"
+    again = conn.execute("SELECT updated_at FROM article_translations WHERE article_id = %s", (article,)).fetchone()
+    assert again == written
+
+
+def test_posts_the_site_hides_and_image_only_posts_are_counted_apart(conn, settings):
+    """网友帖、「图片」评论壳网站不显示，不进队列、单列；只有图的帖子译制会跳过，单列、不交给 --from-inventory。"""
+    guest = _article(conn, settings, "guest")
+    # 导入时按来源的作者名单标发帖人；这里直接标成网友帖。
+    conn.execute(
+        "UPDATE articles SET raw_meta = raw_meta || '{\"poster_role\": \"guest\"}'::jsonb WHERE id = %s", (guest,),
+    )
+    shell = _article(conn, settings, "shell", title="「图片」 评论（3）")
+    image = _article(conn, settings, "image", body="![](https://example.com/{name}.png)")
+    fresh = _article(conn, settings, "fresh")
+    conn.commit()
+
+    pending = service.list_pending_english(conn, limit=10)
+    assert guest not in pending and shell not in pending and fresh in pending
+
+    report = inventory.collect(conn, settings)
+    ids = report["ids"]
+    assert sorted(ids["site-hidden"]) == sorted([guest, shell])
+    assert sorted(ids["none"]) == sorted([image, fresh]) and ids["no-text"] == [image]
+    lines = inventory.summary(report)
+    assert "  网站不显示的网友帖、「图片」评论壳 2 篇（stratechery 2），不算进下面各类，也不译" in lines
+    assert "  这三类里只有图、没有要译的字的 1 篇：译制直接跳过，不调模型" in lines
+
+    import json
+
+    import pytest
+
+    path = inventory.inventory_path(settings.data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report), encoding="utf-8")
+    assert inventory.listed(settings.data_dir, "none")[0] == [fresh]
+    with pytest.raises(LookupError, match="网站不显示"):
+        inventory.listed(settings.data_dir, "site-hidden")

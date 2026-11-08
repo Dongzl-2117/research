@@ -3,7 +3,8 @@
 在 Mac mini 上：docker compose exec app research-translate --source stratechery --limit 10。
 ``--workers N`` 几篇同时译：每篇里的各批照旧一批接一批（每批要带上前面译好的中文），篇和篇之间互不等。
 ``--from-inventory 类别`` 译盘点清单（research-translate-inventory）里那一类的篇，比如分开展示的旧稿 unmapped、
-拒满两次停住的 stopped；已经有这一版回执、译完的跳过，中途停下再跑同一条命令接着译剩下的。
+拒满两次停住的 stopped；已经译完、有这一版回执、对照页逐段对得上的跳过，中途停下再跑同一条命令接着译剩下的。
+回执过期（清洗规则改过）的再译时没变的段照旧复用，原文一个字没变就不调模型，只重签回执。
 每篇开译前占一把 Postgres advisory lock，同一进程的几个 worker、同时开着的几个 research-translate
 都不会同时译同一篇；点名的那篇正被别处译着，就等它译完再接着补。
 每篇译完印出这一篇的请求次数、输入（其中缓存命中）、输出（其中思考）token 和用时；调过模型的话，
@@ -212,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         "--from-inventory",
         default="",
         metavar="类别",
-        help="译盘点清单里这一类的篇（unmapped、stopped、legacy、coarse……）。已经有这一版回执、译完的跳过",
+        help="译盘点清单里这一类的篇（unmapped、stopped、legacy……）。"
+        "已经译完、有这一版回执、对照页逐段对得上的跳过",
     )
     parser.add_argument(
         "--fresh",
@@ -271,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         _say(
             f"盘点清单（{generated or '时间不详'}）里 {args.from_inventory} 共 {len(listed)} 篇，"
-            "已经有这一版回执、译完的跳过"
+            "已经译完、有这一版回执、对照页逐段对得上的跳过"
         )
     limit = max(args.limit if args.limit is not None else (len(listed) if args.from_inventory else 5), 1)
     # 几个 worker 共用的东西都在 guard 底下改。
@@ -422,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                 rows = list_coarse_translations(conn, limit=limit + len(tried), source_id=args.source or None)
                 ids = [int(row["id"]) for row in rows]
             elif args.from_inventory:
-                ids = inventory.unfinished(conn, listed)
+                ids = inventory.unfinished(conn, listed, settings.data_dir)
             else:
                 ids = list_pending_english(conn, limit=limit + len(tried), source_id=args.source or None)
             # 只读的查询，别让事务在空队列睡觉时一直开着。
@@ -521,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         drain(take_queued, run)
         if not tried and not made_way.is_set():
             if args.from_inventory:
-                _say(f"{args.from_inventory} 这一类都已经译完、有这一版回执了。")
+                _say(f"{args.from_inventory} 这一类都已经译完、有这一版回执、对照页逐段对得上了。")
             else:
                 _say("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
         return 1 if failed else 0
