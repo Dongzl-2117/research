@@ -65,7 +65,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 
 ## 挂着的事（2026-10-31）
 
-- 识图交回结构（11-07）已上线（65ffa02）。旧图约 1.1 万张要不要按新格式重认、用什么思考强度，等 Zhilin 定：11-08 按 6 张实测，`max` 强度每张输出约 1.16 万 token、80 到 90 秒，全认约 80 美元、单线程约 11 天，见 [docs/ocr.md](docs/ocr.md)「全库重认」。Zhilin 11-08 定了保持 `max`、同意全部重认，开全量前先用 `research-ocr --compare 30` 拿 30 张旧图做新旧对比（不写库），他看了对比再开。全库 `--redo` 只认按旧说明认的图，停了再开接着认，自动上线在等时认完手上这张就停。旧图重认完再删冻结的旧规则。
+- 识图交回结构（11-07）已上线（65ffa02）。旧图约 1.1 万张，Zhilin 11-08 定了保持 `max` 强度、全部重认，开全量前先看新旧对比。11-08 第一次 `research-ocr --compare 30`：新办法好 22 张、差不多 5 张、旧的好 3 张（说话人新的全对，旧的 10 张记错），但新的看不清时会编、看得清时会改作者的字、丢帖子日期，拼接有一处重复；第 2 版说明（`VISION_PROMPT_VERSION` = 2）和拼接按这些改了。上线后请 Zhilin 再跑同一批对比（只挑以前自由文字认的图，样本不变），核过再开全量：`docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=8 app research-ocr --redo --limit 12000 --max-minutes 600`，夜间价约 57 美元、8 张一起认约 20 小时，第 1 版认的图一起重认。全库 `--redo` 停了再开接着认，自动上线在等时认完手上这几张就停。旧图重认完再删冻结的旧规则。见 [docs/ocr.md](docs/ocr.md)「全库重认」。
 
 - 本次文章展示与引用修复的交接见 [docs/article-preservation-2026-11-01.md](docs/article-preservation-2026-11-01.md)：对照投影遗漏时保留完整区块，段数不齐时分开展示；旧订阅地址在输出前遮住；OCR 重切同步校验观点定位。没有执行历史清洗或重切，不要把代码修好当成旧库已修复。原有近重复规则若会吞掉独有文字、数字、资料链接或结构，展示完整性优先。
 

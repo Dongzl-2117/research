@@ -1,7 +1,10 @@
-"""新旧识图对比：挑一批按旧说明认过的图，用现在的说明重认，不写库，原图和新旧结果打成一个包。
+"""新旧识图对比：挑一批按以前的说明认过的图，用现在的说明重认，不写库，原图和新旧结果打成一个包。
 
 11-08 Zhilin 同意按新格式重认约 1.1 万张旧图，随即问「新办法真的更好吗」。线上只有 6 张新格式的样本，
 只说明格式能交、读得出来，没和旧结果逐张比过。这个包给人逐张看图比：说话人、引用、截断、漏字错字。
+
+「以前的说明」是交回结构以前的自由文字（image_texts.prompt_version 为空）。说明改了版本以后，
+上一版结构认的图全库重认时也要认，但不进样本：改说明前后各跑一次，两个包是同一批图，能逐张对照。
 
     docker compose exec -T app research-ocr --compare 30
 
@@ -46,7 +49,7 @@ def _md5(value: object) -> str:
 
 
 def old_images(conn) -> list[dict]:
-    """全库重认要认、以前认出过字的图（和 ``pending_images(redo=True)`` 同一个筛选），带旧结果。"""
+    """全库重认要认的图（和 ``pending_images(redo=True)`` 同一个筛选）里，按以前的说明认出过字的，带旧结果。"""
     where, params = _pending_where(redo=True, article_ids=None)
     return conn.execute(
         f"""
@@ -62,7 +65,7 @@ def old_images(conn) -> list[dict]:
                (SELECT count(*) FROM regexp_matches(t.text, %s, 'g')) AS dialogue_lines
         FROM candidates c
         JOIN image_texts t ON t.content_hash = c.content_hash
-        WHERE btrim(t.text) <> ''
+        WHERE btrim(t.text) <> '' AND t.prompt_version IS NULL
         """,
         (*params, DIALOGUE_LINE),
     ).fetchall()

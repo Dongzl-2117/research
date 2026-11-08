@@ -213,6 +213,76 @@ def test_message_split_across_two_shots_is_spliced():
     assert [block["text"] for block in lower] == ["同意"]
 
 
+def test_garbled_top_cut_message_is_skipped_when_the_rest_lines_up():
+    """后一张第一条被标题栏挡住半行、认乱了，和前一张里完整的那条对不上：跳过它，后面几条对得上就是接着截的。
+
+    以前对不上就整张照留，重合的几条在旁路里多写一遍（11-08 对比里一篇群聊重复了 4 条）。
+    """
+    first = _units(
+        _msg("毛利率35%，比去年高，主要靠提价", "王小明"),
+        _msg("先看现金流", me=True),
+        _msg("经营现金流连续三年为正", me=True),
+    )
+    second = _units(
+        _msg("比云年髙，主要靠提介", cut="top"),
+        _msg("先看现金流", me=True),
+        _msg("经营现金流连续三年为正", me=True),
+        _msg("那估值呢", "李四"),
+    )
+    upper, lower = stitch([first, second])
+    assert [block["text"] for block in upper] == [
+        "毛利率35%，比去年高，主要靠提价",
+        "先看现金流",
+        "经营现金流连续三年为正",
+    ]
+    assert [block["text"] for block in lower] == ["那估值呢"]
+
+
+def test_garbled_bottom_cut_message_gives_way_to_the_complete_one_when_the_rest_lines_up():
+    first = _units(
+        _msg("今年收入增长两成，主要靠新店", "王小明"),
+        _msg("利润呢", me=True),
+        _msg("利润增速慢于收八，因为原料涨价", "李四", cut="bottom"),
+    )
+    second = _units(
+        _msg("今年收入增长两成，主要靠新店", "王小明"),
+        _msg("利润呢", me=True),
+        _msg("利润增速慢于收入，因为原材料涨价，毛利率掉了三个点", "李四"),
+        _msg("那就等明年", me=True),
+    )
+    upper, lower = stitch([first, second])
+    assert [block["text"] for block in upper] == ["今年收入增长两成，主要靠新店", "利润呢"]
+    assert [block["text"] for block in lower] == ["利润增速慢于收入，因为原材料涨价，毛利率掉了三个点", "那就等明年"]
+
+
+def test_garbled_cut_message_from_someone_else_is_kept():
+    """跳过的那条得和前一张里紧挨着的那条是同一个人说的；不是就照旧都留着，宁可重复，不丢字。"""
+    first = _units(_msg("毛利率35%，比去年高，主要靠提价", "王小明"), _msg("先看现金流，再看负债", me=True))
+    second = _units(_msg("比云年髙，主要靠提介", "李四", cut="top"), _msg("先看现金流，再看负债", me=True))
+    _upper, lower = stitch([first, second])
+    assert [block["text"] for block in lower] == ["比云年髙，主要靠提介", "先看现金流，再看负债"]
+
+
+def test_marks_are_kept_and_written_after_the_block():
+    """截图后有人另外圈出、划线标出的字：一处一项存在 marks，排版时写在那一块后面一行。"""
+    units = _units(
+        _msg("股东会上问了股价不理想怎么办", "王小明"),
+        {"type": "text", "text": "管理层回答：先做好业务", "marks": ["  先做好业务 ", "", "先做好业务", 3]},
+        {"type": "table", "rows": [["公司", "市盈率"], ["甲", "16倍"]], "marks": "16倍"},
+        {"type": "text", "text": "没有标注", "marks": {"text": "不是列表"}},
+    )
+    assert units["blocks"][1]["marks"] == ["先做好业务", "3"]
+    assert units["blocks"][2]["marks"] == ["16倍"]
+    assert "marks" not in units["blocks"][3]
+    marked = _units(_msg("股价不理想，如何提振股价", "王小明"))
+    marked["blocks"][0]["marks"] = ["股价不理想", "如何提振股价"]
+    assert format_units(marked) == "王小明：股价不理想，如何提振股价\n（图上标出：股价不理想；如何提振股价）"
+    assert format_units(units).endswith(
+        "管理层回答：先做好业务\n（图上标出：先做好业务；3）\n\n"
+        "公司 | 市盈率\n甲 | 16倍\n（图上标出：16倍）\n\n没有标注"
+    )
+
+
 def test_short_coincidence_is_not_an_overlap():
     """只重合一句「好的」不算接着截：两张图里各自的「好的」都留着。"""
     first = _units(_msg("看完了", "王小明"), _msg("好的", me=True))

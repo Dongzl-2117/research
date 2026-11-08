@@ -60,22 +60,24 @@ def test_bulk_redo_skips_images_already_read_with_the_current_prompt(conn, setti
     invalid = _image(conn, "old", "d", data_dir)  # 现在的说明认了，结构读不出来
     never = _image(conn, "old", "e", data_dir)  # 从没认过
     blank = _image(conn, "old", "f", data_dir)  # 以前的说明认的，没认出字
+    older = _image(conn, "old", "g", data_dir)  # 上一版说明认的结构（说明改了版本，要按新说明重认）
     _text(conn, old_chat, "deepseek-flash-vision", "王小明：毛利率：35%", None)
     _text(conn, current, "deepseek-flash-vision", "王小明：毛利率：35%", VISION_PROMPT_VERSION, CHAT)
     _text(conn, failed, "deepseek-flash-vision:error", "", VISION_PROMPT_VERSION)
     _text(conn, invalid, "deepseek-flash-vision:invalid", "", VISION_PROMPT_VERSION)
     _text(conn, blank, "deepseek-flash-vision", "", None)
+    _text(conn, older, "deepseek-flash-vision", "王小明：毛利率：35%", VISION_PROMPT_VERSION - 1, CHAT)
     conn.commit()
 
     def picked(**kwargs) -> list[str]:
         return [row["content_hash"] for row in pending_images(conn, 10, **kwargs)]
 
     bulk = picked(redo=True)
-    assert set(bulk) == {old_chat, failed, never, blank}
+    assert set(bulk) == {old_chat, failed, never, blank, older}
     assert bulk[0] == old_chat  # 新文章的图先认
-    assert redo_remaining(conn) == {"images": 4, "with_text": 1}
+    assert redo_remaining(conn) == {"images": 5, "with_text": 2}
     # 点名的照旧全部重认（:invalid 靠它点名重认）；不带 --redo 只认没认过的和失败的。
-    assert set(picked(redo=True, article_ids=[ids["old"]])) == {failed, invalid, never, blank}
+    assert set(picked(redo=True, article_ids=[ids["old"]])) == {failed, invalid, never, blank, older}
     assert set(picked()) == {failed, never}
 
     # 认一张就停，再开从没认完的接着认。
@@ -89,8 +91,8 @@ def test_bulk_redo_skips_images_already_read_with_the_current_prompt(conn, setti
     assert report["images"] == 1 and seen == ["a.png"]
     row = conn.execute("SELECT prompt_version, usage FROM image_texts WHERE content_hash = %s", (old_chat,)).fetchone()
     assert row["prompt_version"] == VISION_PROMPT_VERSION and row["usage"] == {"prompt": 10, "completion": 20}
-    assert set(picked(redo=True)) == {failed, never, blank}
-    assert redo_remaining(conn) == {"images": 3, "with_text": 0}
+    assert set(picked(redo=True)) == {failed, never, blank, older}
+    assert redo_remaining(conn) == {"images": 4, "with_text": 1}
 
 
 def test_migration_marks_rows_written_since_structured_reading(conn):
