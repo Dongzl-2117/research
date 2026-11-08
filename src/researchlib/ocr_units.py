@@ -9,7 +9,7 @@
        {"type": "message", "speaker": "王小明", "self": false, "text": "毛利率：35%，比去年高", "cut": "top"},
        {"type": "message", "speaker": "", "self": true, "text": "先看现金流",
         "quote": {"speaker": "王小明", "self": false, "text": "毛利率：35%，比去年高"}},
-       {"type": "text", "text": "……"},
+       {"type": "text", "text": "……", "marks": ["……"]},
        {"type": "table", "rows": [["公司", "市盈率"], ["甲", "16倍"]]}]}
 
 这里不认 App、不列界面字，只做三件事：
@@ -19,7 +19,9 @@
   （``zsxq_comments.is_owner``，评论区同一个判断），写成方伟，和旧格式同一个写法，别的来源照旧由
   ``relabel_host`` 换成作者名；看不到名字的写网友。被引用的那条写在引用它的那条前面。表格一行一行写。
 - 拼接：连着截的几张，后一张开头和前一张结尾重合的那几条只留一份；被上下边缘截掉一部分的那条，
-  换成另一张里完整的。比的是模型交回的一条条消息和段落，不按版式猜。
+  换成另一张里完整的。被截的那条认乱了、对不上时跳过它，看后面几条对不对得上。
+  比的是模型交回的一条条消息和段落，不按版式猜。
+- 标注：截图后有人另外圈出、框出、划线标出的字（``marks``），排在那一块后面，写成「（图上标出：…）」。
 
 结果存在 ``image_texts.units``。units 为空的是旧格式，仍由 ``wechat_dialogue`` 的旧规则整理；
 那套规则冻结，只管还没重识的旧图，不再往里加。遇到新版式改 ``VISION_PROMPT`` 里的通用说明。
@@ -131,6 +133,20 @@ def _cut(value) -> str:
     return _CUTS.get(str(value or "").strip().lower(), "")
 
 
+def _marks(value) -> list[str]:
+    """截图后有人另外圈出、框出、划线标出的几处字，一处一项，去掉空的和重复的。"""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    found: list[str] = []
+    for item in value:
+        mark = re.sub(r"\s+", " ", _text(item)).strip()
+        if mark and mark not in found:
+            found.append(mark)
+    return found
+
+
 def _spoken(value) -> str:
     """一条消息写成一段：消息里的空行收成换行，后面按空行分段时不会把一条拆成两个人说的。"""
     return _PARAGRAPH_BREAK.sub("\n", _text(value))
@@ -153,6 +169,7 @@ def _block(item) -> dict | None:
     if not isinstance(item, dict):
         return None
     kind = str(item.get("type") or "").strip().lower()
+    marks = _marks(item.get("marks"))
     if kind == "table":
         rows = [
             [_cell(cell) for cell in row]
@@ -160,7 +177,9 @@ def _block(item) -> dict | None:
             if isinstance(row, list)
         ]
         rows = [row for row in rows if any(row)]
-        return {"type": "table", "rows": rows} if rows else None
+        if not rows:
+            return None
+        return {"type": "table", "rows": rows, "marks": marks} if marks else {"type": "table", "rows": rows}
     cut = _cut(item.get("cut"))
     if kind == _SPOKEN:
         text = _spoken(item.get("text"))
@@ -178,6 +197,8 @@ def _block(item) -> dict | None:
         block = {"type": "text", "text": text}
     if cut:
         block["cut"] = cut
+    if marks:
+        block["marks"] = marks
     return block
 
 
@@ -259,8 +280,8 @@ def _splice(head: str, tail: str) -> str:
     return ""
 
 
-def _join(upper: list[dict], lower: list[dict]) -> list[dict]:
-    """后一张去掉和前一张结尾重合的几块。前一张里被截的那块换成后一张里完整的（就地改 upper）。"""
+def _overlap(upper: list[dict], lower: list[dict]) -> int:
+    """后一张开头有几块和前一张结尾重合：同一个人说的同样几条，加起来至少 MIN_OVERLAP_CHARS 个字。不重合是 0。"""
     for size in range(min(len(upper), len(lower)), 0, -1):
         pairs = list(zip(upper[len(upper) - size :], lower[:size], strict=True))
         if not all(
@@ -273,12 +294,31 @@ def _join(upper: list[dict], lower: list[dict]) -> list[dict]:
             for index, (above, below) in enumerate(pairs)
         ):
             continue
-        if sum(max(len(_norm(_body(above))), len(_norm(_body(below)))) for above, below in pairs) < MIN_OVERLAP_CHARS:
-            continue
-        above, below = pairs[-1]
-        if above.get("cut") == "bottom" and below.get("cut") != "top":
-            upper[-1] = below
-        return lower[size:]
+        if sum(max(len(_norm(_body(above))), len(_norm(_body(below)))) for above, below in pairs) >= MIN_OVERLAP_CHARS:
+            return size
+    return 0
+
+
+def _after_overlap(upper: list[dict], lower: list[dict], size: int) -> list[dict]:
+    """后一张去掉开头重合的 size 块。前一张最后一块被下边缘截过、后一张里是完整的，换成完整的（就地改 upper）。"""
+    above, below = upper[-1], lower[size - 1]
+    if above.get("cut") == "bottom" and below.get("cut") != "top":
+        upper[-1] = below
+    return lower[size:]
+
+
+def _same_kind(left: dict, right: dict) -> bool:
+    """同一类块；消息还得是同一个人说的。"""
+    if left.get("type") != right.get("type"):
+        return False
+    return left.get("type") != _SPOKEN or _same_speaker(left, right)
+
+
+def _join(upper: list[dict], lower: list[dict]) -> list[dict]:
+    """后一张去掉和前一张结尾重合的几块。前一张里被截的那块换成后一张里完整的（就地改 upper）。"""
+    size = _overlap(upper, lower)
+    if size:
+        return _after_overlap(upper, lower, size)
     above, below = upper[-1], lower[0]
     if (
         above.get("cut") == "bottom"
@@ -290,6 +330,18 @@ def _join(upper: list[dict], lower: list[dict]) -> list[dict]:
         if whole:
             upper[-1] = {**{key: value for key, value in above.items() if key != "cut"}, "text": whole}
             return lower[1:]
+    # 挨着边缘、只露出一部分的那块常常认乱（被标题栏挡住半行，认出来是另一句话），和另一张里完整的那条对不上，
+    # 后面重合的几条就多写一遍。跳过它再比：后面几块对得上，它就是另一张里紧挨着那条的残片，
+    # 同一个人说的才算，去掉残片，留完整的。对不上就照旧都留着：宁可重复，不丢字。
+    if below.get("cut") == "top" and len(lower) > 1:
+        size = _overlap(upper, lower[1:])
+        if size and len(upper) > size and _same_kind(upper[-size - 1], below):
+            return _after_overlap(upper, lower[1:], size)
+    if above.get("cut") == "bottom" and len(upper) > 1:
+        size = _overlap(upper[:-1], lower)
+        if size and len(lower) > size and _same_kind(above, lower[size]):
+            upper.pop()
+            return lower[size:]
     return lower
 
 
@@ -325,20 +377,22 @@ def paragraphs(
     """一张图的块排成段：[(说话人, [一行一行的字])]，没有说话人的段落和表格说话人是空串。
 
     同一个人连着说的并成一段，网友每次开口各自一段（看不到名字的不一定是同一个人）。
+    有人另外标出的字（marks）写在那一块后面一行：「（图上标出：…）」。
     written：前面已经写过的消息（就地更新）。引用的那条前面写过，就不再写一遍。owners 见 ``speaker_label``。
     """
     written = set() if written is None else written
     entries: list[tuple[str, str]] = []
     for block in blocks:
+        note = f"（图上标出：{'；'.join(block['marks'])}）" if block.get("marks") else ""
         if block.get("type") != _SPOKEN:
-            entries.append(("", _body(block)))
+            entries.append(("", "\n".join(part for part in (_body(block), note) if part)))
             continue
         quote = block.get("quote")
         if quote and _norm(quote["text"]) not in written:
             entries.append((speaker_label(quote, owners), quote["text"]))
             written.add(_norm(quote["text"]))
         if block.get("text"):
-            entries.append((speaker_label(block, owners), block["text"]))
+            entries.append((speaker_label(block, owners), "\n".join(part for part in (block["text"], note) if part)))
             written.add(_norm(block["text"]))
     grouped: list[tuple[str, list[str]]] = []
     for label, text in entries:

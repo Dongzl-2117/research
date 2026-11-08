@@ -5,8 +5,9 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from psycopg.types.json import Jsonb
 
-from researchlib.ocr import Recognition, refresh_article_ocr
+from researchlib.ocr import VISION_PROMPT_VERSION, Recognition, pending_images, refresh_article_ocr
 from researchlib.ocr_compare import pick_sample, run_compare
 from researchlib.ocr_units import format_units, normalize_units
 
@@ -67,6 +68,28 @@ def test_sample_takes_whole_chat_sequences_then_single_dialogue_then_random(conn
     assert strata["d"] == ("random", ids["chart"])
     # 同一个库每次抽到同一批。
     assert [row["content_hash"] for row in pick_sample(conn, 6)] == [row["content_hash"] for row in sample]
+
+
+def test_sample_stays_the_same_batch_after_the_prompt_changes(conn, settings):
+    """说明改了版本以后，上一版结构认的图全库重认也要认，但不进对比样本：改说明前后两个包是同一批旧图。"""
+    _setup(conn, Path(settings.data_dir))
+    before = [row["content_hash"] for row in pick_sample(conn, 6)]
+    structured = "e" * 64
+    conn.execute(
+        """
+        INSERT INTO article_images (article_id, source_id, original_ref, storage_path, content_hash)
+        SELECT id, source_id, 'e.png', 'x/e.png', %s FROM articles WHERE external_id = 'single'
+        """,
+        (structured,),
+    )
+    conn.execute(
+        "INSERT INTO image_texts (content_hash, engine, text, units, prompt_version)"
+        " VALUES (%s, 'deepseek-flash-vision', %s, %s, %s)",
+        (structured, format_units(CHAT_NEW), Jsonb(CHAT_NEW), VISION_PROMPT_VERSION - 1),
+    )
+    conn.commit()
+    assert structured in {row["content_hash"] for row in pending_images(conn, 10, redo=True)}
+    assert [row["content_hash"] for row in pick_sample(conn, 6)] == before
 
 
 def test_compare_writes_a_bundle_and_leaves_the_library_alone(conn, settings):

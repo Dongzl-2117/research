@@ -41,6 +41,7 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
 
     以前这里对着几十个按案例写的短语（雪球加群卡、领教工坊、墓地……），每来一种版式就补一条。
     现在不认 App：遇到新版式改通用说明，不往提示词里加案例。
+    第 2 版（11-08 拿 30 张旧图对比后）补的也是通用说明：看得清的照抄、看不清的写 ? 不编、帖子的发布日期、后画的标注。
     """
     for phrase in (
         "只输出一个 JSON 对象",
@@ -60,12 +61,20 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
         "读者转述这张图时会不会说这句话",
         "被回复的那条更早",
         "只写看得到的字，不要补全",
+        "一个也认不全的，这条不写",
         "看不清的字写 ?",
         "不要用图里别处出现过的词补",
+        "也不要拿你自己知道的说法",
+        "宁可多写几个 ?",
+        "作者的错别字、重复的字、不通顺的句子、少见的名字和拼写都照抄",
+        "帖子、推文、文章署的发布日期",
+        '"marks"',
         "图上没标的数不要估",
         "blocks 写 []",
     ):
         assert phrase in VISION_PROMPT, phrase
+    # 11-08 对比里模型拿这句当按意思改字的许可（作者笔误「大吵预期」被改成「大超预期」），换成只在笔画模糊时挑。
+    assert "上下文只容得下一个词时，写那个词" not in VISION_PROMPT
     for case_rule in ("雪球专属交流群", "领教工坊", "墓地", "方伟：", "网友：", "十年知己"):
         assert case_rule not in VISION_PROMPT, case_rule
 
