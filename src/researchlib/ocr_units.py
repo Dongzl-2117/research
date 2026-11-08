@@ -17,11 +17,13 @@
 - 校验：不是 JSON 的回答返回 None，调用方按旧格式存；像 JSON 却读不出来的抛 ``UnitsError``。
 - 排版：一条消息写成「说话人：正文」。截图的人自己发的（聊天里靠右的气泡），和显示名是这个来源作者本人账号的
   （``zsxq_comments.is_owner``，评论区同一个判断），写成方伟，和旧格式同一个写法，别的来源照旧由
-  ``relabel_host`` 换成作者名；看不到名字的写网友。被引用的那条写在引用它的那条前面。表格一行一行写。
+  ``relabel_host`` 换成作者名；看不到名字的写网友。被引用的那条写在引用它的那条前面，前面写过的
+  （引用框截成前半句的也算）不再写。表格一行一行写。
 - 拼接：连着截的几张，后一张开头和前一张结尾重合的那几条只留一份；被上下边缘截掉一部分的那条，
   换成另一张里完整的。被截的那条认乱了、对不上时跳过它，看后面几条对不对得上。
   比的是模型交回的一条条消息和段落，不按版式猜。
-- 标注：截图后有人另外圈出、框出、划线标出的字（``marks``），排在那一块后面，写成「（图上标出：…）」。
+- 标注：截图后有人另外圈出、框出、划线标出的字（``marks``），排在那一块后面，写成「（图上标出：…）」；
+  标出的就是整块时不再抄一遍，写「（图上标出这段）」。
 
 结果存在 ``image_texts.units``。units 为空的是旧格式，仍由 ``wechat_dialogue`` 的旧规则整理；
 那套规则冻结，只管还没重识的旧图，不再往里加。遇到新版式改 ``VISION_PROMPT`` 里的通用说明。
@@ -371,24 +373,44 @@ def stitch(units_list: list[dict | None]) -> list[list[dict] | None]:
     return result
 
 
+def _written_before(text: str, written: set[str]) -> bool:
+    """引用的那条前面写过。引用框常把原话截成前半句加省略号，前半句是前面某条的开头也算写过。"""
+    key = _norm(text)
+    if key in written:
+        return True
+    return len(key) >= MIN_OVERLAP_CHARS and any(_head_of(done, key) for done in written)
+
+
+def _marks_note(block: dict) -> str:
+    """标出的字写成一行。标出的是整块就不再抄一遍：「（图上标出这段）」，消息写「这条」。"""
+    marks = block.get("marks") or []
+    if not marks:
+        return ""
+    whole = _norm(_body(block))
+    if whole and (whole == _norm("".join(marks)) or any(_norm(mark) == whole for mark in marks)):
+        return "（图上标出这条）" if block.get("type") == _SPOKEN else "（图上标出这段）"
+    return f"（图上标出：{'；'.join(marks)}）"
+
+
 def paragraphs(
     blocks: list[dict], written: set[str] | None = None, owners: tuple[str, ...] = ()
 ) -> list[tuple[str, list[str]]]:
     """一张图的块排成段：[(说话人, [一行一行的字])]，没有说话人的段落和表格说话人是空串。
 
     同一个人连着说的并成一段，网友每次开口各自一段（看不到名字的不一定是同一个人）。
-    有人另外标出的字（marks）写在那一块后面一行：「（图上标出：…）」。
-    written：前面已经写过的消息（就地更新）。引用的那条前面写过，就不再写一遍。owners 见 ``speaker_label``。
+    有人另外标出的字（marks）写在那一块后面一行：「（图上标出：…）」，标出的是整块时写「（图上标出这段）」。
+    written：前面已经写过的消息（就地更新）。引用的那条前面写过（截成前半句的也算），就不再写一遍。
+    owners 见 ``speaker_label``。
     """
     written = set() if written is None else written
     entries: list[tuple[str, str]] = []
     for block in blocks:
-        note = f"（图上标出：{'；'.join(block['marks'])}）" if block.get("marks") else ""
+        note = _marks_note(block)
         if block.get("type") != _SPOKEN:
             entries.append(("", "\n".join(part for part in (_body(block), note) if part)))
             continue
         quote = block.get("quote")
-        if quote and _norm(quote["text"]) not in written:
+        if quote and not _written_before(quote["text"], written):
             entries.append((speaker_label(quote, owners), quote["text"]))
             written.add(_norm(quote["text"]))
         if block.get("text"):
