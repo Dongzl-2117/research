@@ -7,7 +7,10 @@
 
 在 Mac mini 上（只读，几分钟）：
 
-    cd ~/research && docker compose exec -T app python -m researchlib.translate.inventory
+    cd ~/research && docker compose exec -T app research-translate-inventory
+
+清单里某一类可以直接交给译制：``research-translate --from-inventory unmapped --workers 4``
+（已经有这一版回执、译完的跳过，见 ``unfinished``）。
 
 还没上线时，可以把某个提交里的这个文件直接喂给容器里的 python：
 
@@ -24,6 +27,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from researchlib.config import Settings
 from researchlib.db import connect
@@ -244,6 +248,62 @@ def summary(report: dict) -> list[str]:
     return lines
 
 
+def inventory_path(data_dir) -> Path:
+    return Path(data_dir) / "status" / "translate-inventory.json"
+
+
+def listed(data_dir, key: str) -> tuple[list[int], str]:
+    """清单里某一类的 id（按清单里的先后，新的在前）和清单是什么时候盘的。
+
+    key 是 ``ids`` 里的一类（stopped、legacy、partial……）、页面的一类（unmapped、legacy-structural……）
+    或者 coarse。没有清单、没有这一类时抛 LookupError，说明该怎么办。
+    """
+    path = inventory_path(data_dir)
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise LookupError(f"还没有盘点清单 {path}：先跑 research-translate-inventory") from None
+    ids = report.get("ids") or {}
+    display = report.get("display") or {}
+    if key == "coarse":
+        found = [row["id"] for row in report.get("coarse") or []]
+    elif key in ids:
+        found = ids[key]
+    elif key in DISPLAY_NAMES or key in display:
+        found = display.get(key) or []
+    else:
+        known = "、".join(sorted({*ids, *DISPLAY_NAMES, *display, "coarse"}))
+        raise LookupError(f"盘点清单里没有「{key}」这一类，有：{known}")
+    return [int(article_id) for article_id in found], str(report.get("generatedAt") or "")
+
+
+def unfinished(conn, ids: list[int]) -> list[int]:
+    """这几篇里还要译的，按原来的先后：库里还在、还没有「这一版回执、译完、原文没改过」的译文。
+
+    点名重译旧稿、停住的篇时用：译完一篇它就不在这里了，中途停下再跑同一条命令接着译剩下的。
+    """
+    if not ids:
+        return []
+    rows = conn.execute(
+        """
+        SELECT a.id,
+               coalesce(t.complete AND t.content_hash = a.content_hash, false) AS current,
+               coalesce(t.provenance->>'schema', '') AS receipt_schema,
+               t.provenance->'pipeline' AS pipeline
+        FROM articles a
+        LEFT JOIN article_translations t ON t.article_id = a.id
+        WHERE a.id = ANY(%s)
+        """,
+        (list(ids),),
+    ).fetchall()
+    left = {
+        int(row["id"])
+        for row in rows
+        if not (row["current"] and row["receipt_schema"] == str(SCHEMA_VERSION) and row["pipeline"] == PIPELINE)
+    }
+    return [article_id for article_id in ids if article_id in left]
+
+
 def main() -> int:
     settings = Settings.from_env()
     conn = connect(settings)
@@ -255,7 +315,7 @@ def main() -> int:
         conn.close()
     for line in summary(report):
         print(line)
-    path = settings.data_dir / "status" / "translate-inventory.json"
+    path = inventory_path(settings.data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(f"清单写在 {path}，共用了 {time.monotonic() - started:.0f} 秒")

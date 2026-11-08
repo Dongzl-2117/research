@@ -731,3 +731,51 @@ def test_only_failures_that_waiting_can_fix_count_as_transient():
         None,
     ):
         assert not transient_failure(lasting)
+
+
+def test_translate_usage_is_metered_per_thread_including_unusable_answers(tmp_path, monkeypatch):
+    """research-translate 每篇的用量：同一线程里每次收到完整回答都记，回答用不了的也记；别的线程的不混进来。"""
+    import threading
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    answers = {
+        "good": {"choices": [{"message": {"content": '{"t": ["好"]}'}}], "model": "deepseek-flash",
+                 "usage": {"prompt_tokens": 100, "prompt_cache_hit_tokens": 40, "completion_tokens": 30,
+                           "completion_tokens_details": {"reasoning_tokens": 20}}},
+        "broken": {"choices": [{"message": {"content": "不是 JSON"}}], "model": "deepseek-flash",
+                   "usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+        "silent": {"choices": [{"message": {"content": '{"t": []}'}}], "model": "deepseek-flash"},
+    }
+
+    def fake_urlopen(req, timeout=None):
+        return _Response(answers[json.loads(req.data.decode())["messages"][1]["content"]])
+
+    monkeypatch.setattr(translate_llm.urllib.request, "urlopen", fake_urlopen)
+
+    def ask(name):
+        return translate_llm.chat_json(system="s", user=name, purpose="t", subject="b", data_dir=tmp_path)
+
+    totals = {}
+
+    def article(name, asks):
+        with translate_llm.metered() as usage:
+            for item in asks:
+                try:
+                    ask(item)
+                except ValueError:
+                    pass
+        totals[name] = usage.as_dict()
+
+    with translate_llm.metered() as outer:
+        article("a", ["good", "broken", "silent"])
+    other = threading.Thread(target=article, args=("b", ["good"]))
+    other.start()
+    other.join()
+    assert totals["a"] == {"requests": 3, "prompt": 107, "cacheHit": 40, "completion": 33, "reasoning": 20}
+    # 没报用量的那次（silent）照算请求，说出来，不当成零花费。
+    assert outer.unreported == 1 and outer.describe().endswith("其中 1 次接口没报用量、没算进去")
+    # 套着用时外面那份也记；别的线程那篇只记在它自己那份里。
+    assert outer.as_dict() == totals["a"]
+    assert totals["b"] == {"requests": 1, "prompt": 100, "cacheHit": 40, "completion": 30, "reasoning": 20}
+    # 不在记账时照常调用，不记。
+    assert ask("good").usage["prompt_tokens"] == 100

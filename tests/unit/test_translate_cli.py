@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from types import SimpleNamespace
 
@@ -11,14 +12,33 @@ from researchlib.translate import cli
 from researchlib.translate.service import TranslateResult
 
 
+class _Rows:
+    def __init__(self, row=None):
+        self.row = row
+
+    def fetchone(self):
+        return self.row
+
+
 class FakeConn:
-    def __init__(self):
+    """记下执行过的语句。占锁的语句交回「占到了」；held 是几条连接共用的「库里的锁」。"""
+
+    def __init__(self, held=None):
         self.rolled_back = 0
         self.closed = False
         self.statements = []
+        self.held = held if held is not None else {}
 
     def execute(self, sql, params=None):
         self.statements.append(sql)
+        if "pg_try_advisory_lock" in sql:
+            owner = self.held.setdefault(params[1], self)
+            return _Rows({"locked": owner is self})
+        if "pg_advisory_unlock" in sql:
+            if self.held.get(params[1]) is self:
+                del self.held[params[1]]
+            return _Rows({"pg_advisory_unlock": True})
+        return _Rows()
 
     def commit(self):
         pass
@@ -193,8 +213,11 @@ def test_queue_run_stops_before_starting_when_a_release_is_waiting(conn, monkeyp
     _deploy_waits(tmp_path)
     monkeypatch.setattr(cli, "prepare", lambda settings: pytest.fail("在等上线就不连库、不跑迁移"))
     monkeypatch.setattr(cli, "translate_article", lambda *args, **kwargs: pytest.fail("不该再调模型"))
-    assert cli.main(["--loop", "--limit", "5"]) == 0
-    assert "自动上线在等 b66bfe8" in capsys.readouterr().out
+    assert cli.main(["--loop", "--limit", "5", "--workers", "4"]) == 0
+    assert (
+        "自动上线在等 b66bfe8：不再开新的一篇，手上的译完就退；"
+        "/health 报出新提交后再跑 research-translate --loop --limit 5 --workers 4"
+    ) in capsys.readouterr().out
 
 
 def test_queue_run_finishes_the_article_in_hand_then_makes_way(conn, monkeypatch, tmp_path):
@@ -402,17 +425,198 @@ def test_a_release_waiting_during_the_pause_stops_the_retry(conn, monkeypatch, t
 
 
 def test_retries_and_splits_are_printed_with_the_time(conn, monkeypatch, capsys):
-    """以前这些只写 INFO 日志、命令行看不到：断了几次、每次连了多久、隔多久重发都不知道。"""
+    """以前这些只写 INFO 日志、命令行看不到：断了几次、每次连了多久、隔多久重发都不知道。
+
+    几篇同时译时每行前面带上是哪一篇；本来就以文章号开头的行不重复加。
+    """
     import logging
 
     def translate(conn, article_id, *, data_dir, reuse=True):
         log = logging.getLogger("researchlib.translate")
         log.info("译制请求连了 %.0f 秒断开（ssl eof），2 秒后第 2 次发同一请求", 312)
+        log.info("#%s 第 %s/%s 批请求失败（%s），已译的段先存下", article_id, 3, 5, "ssl eof")
         return TranslateResult(article_id, "translated", segments=2)
 
     monkeypatch.setattr(cli, "translate_article", translate)
     assert cli.main(["--article-id", "97"]) == 0
     err = capsys.readouterr().err
-    assert re.search(r"^\d\d:\d\d:\d\d 译制请求连了 312 秒断开（ssl eof），2 秒后第 2 次发同一请求$", err, re.M)
+    assert re.search(r"^\d\d:\d\d:\d\d #97 译制请求连了 312 秒断开（ssl eof），2 秒后第 2 次发同一请求$", err, re.M)
+    assert re.search(r"^\d\d:\d\d:\d\d #97 第 3/5 批请求失败（ssl eof），已译的段先存下$", err, re.M)
     # 命令跑完就撤掉，不留在进程里。
     assert not logging.getLogger("researchlib.translate").handlers
+
+
+@pytest.fixture
+def pool(conn, monkeypatch):
+    """几个 worker 各开一条连接；held 是它们和「别的进程」共用的库里的锁。"""
+    opened: list[FakeConn] = [conn]
+
+    def open_more(settings):
+        extra = FakeConn(conn.held)
+        opened.append(extra)
+        return extra
+
+    monkeypatch.setattr(cli, "connect", open_more)
+    return opened
+
+
+def test_workers_translate_different_articles_at_the_same_time(pool, monkeypatch):
+    """--workers 3：三篇同时在译（前三篇互相等齐才往下走，串着译会超时），每篇只译一次，每个 worker 一条连接。"""
+    import threading
+
+    seen: list[int] = []
+    together = threading.Barrier(3, timeout=5)
+    lock = threading.Lock()
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        with lock:
+            seen.append(article_id)
+            first_three = len(seen) <= 3
+        if first_three:
+            together.wait()
+        return TranslateResult(article_id, "translated", segments=2)
+
+    queue = [1, 2, 3, 4, 5, 6, 7]
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: queue[:limit])
+    monkeypatch.setattr(cli, "translate_article", translate)
+    assert cli.main(["--limit", "6", "--workers", "3"]) == 0
+    assert sorted(seen) == [1, 2, 3, 4, 5, 6]
+    assert len(pool) == 3 and all(item.closed for item in pool)
+    # 每篇译完都把锁放了。
+    assert pool[0].held == {}
+
+
+def test_an_article_another_process_is_translating_is_left_to_it(pool, monkeypatch, capsys):
+    """另一个 research-translate 正在译 11：按队列译的跳过它译下一篇；点名的等它放锁再接着补。"""
+    other = FakeConn(pool[0].held)
+    pool[0].held[11] = other
+    seen: list[int] = []
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [11, 12])
+    monkeypatch.setattr(cli, "translate_article", _translate(seen))
+    assert cli.main(["--limit", "2"]) == 0
+    assert seen == [12]
+
+    waited: list[str] = []
+
+    def execute(sql, params=None, *, original=pool[0].execute):
+        if "pg_advisory_lock(" in sql:
+            # 另一个进程译完放锁，这边接着占住。
+            waited.append(sql)
+            pool[0].held[params[1]] = pool[0]
+        return original(sql, params)
+
+    monkeypatch.setattr(pool[0], "execute", execute)
+    assert cli.main(["--article-id", "11"]) == 0
+    assert seen == [12, 11] and len(waited) == 1
+    assert "#11 别处正在译这一篇，等它译完再接着补" in capsys.readouterr().out
+    assert pool[0].held == {}
+
+
+def test_a_login_error_in_a_worker_stops_the_run_and_is_reported(pool, monkeypatch, capsys):
+    """worker 里抛出来的（要重新登录这类）不吞掉：不再拿新的一篇，主线程照样报出来、退出码 2。"""
+    seen: list[int] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        seen.append(article_id)
+        if article_id == 1:
+            raise cli.XaiLoginRequiredError("refresh token 失效")
+        return TranslateResult(article_id, "translated", segments=2)
+
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [1, 2, 3, 4][:limit])
+    monkeypatch.setattr(cli, "translate_article", translate)
+    assert cli.main(["--limit", "4"]) == 2
+    assert seen == [1]
+    assert "需要重新登录：refresh token 失效" in capsys.readouterr().err
+
+
+def test_workers_out_of_range_are_refused(conn, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "prepare", lambda settings: pytest.fail("参数不对不连库"))
+    assert cli.main(["--workers", "0"]) == 2
+    assert cli.main(["--workers", str(cli.MAX_WORKERS + 1)]) == 2
+    assert "--workers 要在 1 到" in capsys.readouterr().err
+
+
+def test_each_article_prints_what_it_cost_and_the_run_prints_a_total(conn, monkeypatch, capsys):
+    """每篇印出这一篇的请求次数和 token、用时；调过模型的话最后印一行合计。回答用不了的那次也算钱。"""
+    from contextlib import nullcontext
+
+    from researchlib import llm as llm_module
+    from researchlib.translate import llm as translate_llm
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    answers = {
+        "good": {"choices": [{"message": {"content": '{"t": ["好"]}'}}], "model": "deepseek-flash",
+                 "usage": {"prompt_tokens": 1000, "prompt_cache_hit_tokens": 600, "completion_tokens": 300,
+                           "completion_tokens_details": {"reasoning_tokens": 200}}},
+        "broken": {"choices": [{"message": {"content": "不是 JSON"}}], "model": "deepseek-flash",
+                   "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+    }
+    monkeypatch.setattr(translate_llm.urllib.request, "urlopen", lambda req, timeout=None: nullcontext(req))
+    monkeypatch.setattr(
+        llm_module, "read_chat_completion",
+        lambda req, *, stream: answers[json.loads(req.data)["messages"][1]["content"]],
+    )
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        ask = {21: ["good", "good"], 22: ["good", "broken"]}[article_id]
+        for name in ask:
+            try:
+                translate_llm.chat_json(system="s", user=name, purpose="t", subject="b", data_dir=data_dir)
+            except ValueError:
+                pass
+        if article_id == 22:
+            raise RuntimeError("对齐失败")
+        return TranslateResult(article_id, "translated", segments=2)
+
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [21, 22])
+    monkeypatch.setattr(cli, "translate_article", translate)
+    assert cli.main(["--limit", "2"]) == 1
+    captured = capsys.readouterr()
+    assert re.search(
+        r"^#21 translated segments=2 · 请求 2 次，输入 2,000 token（缓存命中 1,200），"
+        r"输出 600 token（思考 400），用时 \d+ 秒$", captured.out, re.M,
+    )
+    assert re.search(
+        r"^#22 failed: 对齐失败 · 请求 2 次，输入 1,010 token（缓存命中 600），"
+        r"输出 305 token（思考 200），用时 \d+ 秒$",
+        captured.err, re.M,
+    )
+    assert re.search(
+        r"^这一轮 \d+ 秒：译完 1 篇，出错 1 篇；请求 4 次，输入 3,010 token（缓存命中 1,800），"
+        r"输出 905 token（思考 600）$", captured.out, re.M,
+    )
+
+
+def test_from_inventory_needs_the_list_and_a_known_category(conn, monkeypatch, tmp_path, capsys):
+    import json
+
+    monkeypatch.setattr(cli, "prepare", lambda settings: pytest.fail("清单不对不连库"))
+    assert cli.main(["--from-inventory", "unmapped"]) == 2
+    assert "先跑 research-translate-inventory" in capsys.readouterr().err
+    path = tmp_path / "status" / "translate-inventory.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"ids": {"stopped": [5]}, "display": {}, "coarse": []}), encoding="utf-8")
+    assert cli.main(["--from-inventory", "stoped"]) == 2
+    assert "没有「stoped」这一类" in capsys.readouterr().err
+    assert cli.main(["--from-inventory", "stopped", "--loop"]) == 2
+    assert cli.main(["--from-inventory", "stopped", "--article-id", "5"]) == 2
+
+
+def test_from_inventory_makes_way_for_a_release_like_the_queue(conn, monkeypatch, tmp_path):
+    """一类可能有几百篇：和按队列译一样，每译完一篇看一眼自动上线在不在等。"""
+    import json
+
+    path = tmp_path / "status" / "translate-inventory.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"ids": {}, "display": {"unmapped": [3, 2, 1]}, "coarse": []}), encoding="utf-8")
+    seen: list[int] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        seen.append(article_id)
+        _deploy_waits(tmp_path)
+        return TranslateResult(article_id, "translated", segments=2)
+
+    monkeypatch.setattr(cli.inventory, "unfinished", lambda conn, ids: list(ids))
+    monkeypatch.setattr(cli, "translate_article", translate)
+    assert cli.main(["--from-inventory", "unmapped"]) == 0
+    assert seen == [3]

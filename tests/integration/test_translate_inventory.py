@@ -104,3 +104,37 @@ def test_inventory_can_skip_rendering_pages(conn, settings, monkeypatch):
     monkeypatch.setattr(inventory, "_display_category", lambda *args: (_ for _ in ()).throw(AssertionError))
     report = inventory.collect(conn, settings, pages=False)
     assert report["ids"]["legacy"] == [legacy] and report["display"] == {}
+
+
+def test_a_listed_category_is_translated_until_it_has_this_receipt(conn, settings, monkeypatch, capsys):
+    """--from-inventory：清单里那一类的篇照译（停住的不看冷却），译完有了这一版回执的再跑就跳过。"""
+    import json
+
+    from researchlib.translate import cli
+
+    legacy = _article(conn, settings, "legacy")
+    _old_translation(conn, legacy)
+    stopped = _article(conn, settings, "stopped")
+    _old_translation(conn, stopped, complete=False)
+    _attempt(conn, stopped, "rejected", "untranslated:links")
+    _attempt(conn, stopped, "rejected", "untranslated:links")
+    conn.commit()
+    report = inventory.collect(conn, settings)
+    path = inventory.inventory_path(settings.data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report), encoding="utf-8")
+    assert inventory.listed(settings.data_dir, "unmapped") == ([], report["generatedAt"])
+
+    monkeypatch.setattr(service, "chat_json", _model)
+    monkeypatch.setattr(cli.Settings, "from_env", staticmethod(lambda: settings))
+    monkeypatch.setattr(cli, "llm_provider", lambda: "deepseek")
+    monkeypatch.setattr(cli, "deepseek_api_key", lambda: "sk-test")
+    assert cli.main(["--from-inventory", "legacy", "--workers", "2"]) == 0
+    assert f"#{legacy} translated" in capsys.readouterr().out
+    assert inventory.unfinished(conn, [legacy, stopped]) == [stopped]
+    assert cli.main(["--from-inventory", "legacy"]) == 0
+    assert "legacy 这一类都已经译完、有这一版回执了。" in capsys.readouterr().out
+    # 拒满两次停住的，队列不会再拿；点这一类就照译。
+    assert cli.main(["--from-inventory", "stopped"]) == 0
+    assert f"#{stopped} translated" in capsys.readouterr().out
+    assert inventory.unfinished(conn, [legacy, stopped]) == []

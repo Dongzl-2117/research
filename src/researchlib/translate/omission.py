@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from researchlib.translate.llm import LLMConfigError, LLMHTTPError, LLMTransportError, chat_json
+from researchlib.translate.llm import LLMConfigError, LLMHTTPError, LLMTransportError, Usage, chat_json
 from researchlib.translate.provenance import untranslated_slots
 from researchlib.translate.xai_oauth import XaiLoginRequiredError
 
@@ -55,39 +55,6 @@ class Pair:
     ordinal: int
     en: str
     zh: str
-
-
-@dataclass
-class Usage:
-    """模型用量，按 DeepSeek 返回的 usage 累加。没有就是 0。"""
-
-    prompt: int = 0
-    cache_hit: int = 0
-    completion: int = 0
-    reasoning: int = 0
-    requests: int = 0
-
-    def add(self, usage: dict | None) -> None:
-        self.requests += 1
-        if not isinstance(usage, dict):
-            return
-        self.prompt += int(usage.get("prompt_tokens") or 0)
-        self.cache_hit += int(usage.get("prompt_cache_hit_tokens") or 0)
-        self.completion += int(usage.get("completion_tokens") or 0)
-        details = usage.get("completion_tokens_details")
-        if isinstance(details, dict):
-            self.reasoning += int(details.get("reasoning_tokens") or 0)
-
-    def merge(self, other: Usage) -> None:
-        self.prompt += other.prompt
-        self.cache_hit += other.cache_hit
-        self.completion += other.completion
-        self.reasoning += other.reasoning
-        self.requests += other.requests
-
-    def as_dict(self) -> dict[str, int]:
-        return {"requests": self.requests, "prompt": self.prompt, "cacheHit": self.cache_hit,
-                "completion": self.completion, "reasoning": self.reasoning}
 
 
 @dataclass
