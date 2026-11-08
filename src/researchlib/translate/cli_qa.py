@@ -93,6 +93,8 @@ def _omission_lines(result: omission.ArticleOmissions, pairs: dict[int, omission
         lines.extend(f"  [{ordinal}] 漏：{quote}" for quote in quotes)
         zh = pairs[ordinal].zh if ordinal in pairs else ""
         lines.append(f"       中文：{zh[:160]}{'…' if len(zh) > 160 else ''}")
+    lines.extend(f"  摘句在原文里找不到、丢掉：{quote}" for quote in result.dropped)
+    lines.extend(f"  这一批没核：{reason}" for reason in result.failures)
     return lines
 
 

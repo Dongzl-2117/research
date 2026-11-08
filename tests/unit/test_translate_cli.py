@@ -69,6 +69,19 @@ def test_translates_the_pending_queue_once(conn, monkeypatch):
     assert seen == [21, 22] and conn.closed
 
 
+def test_a_request_failure_prints_what_failed(conn, monkeypatch, capsys):
+    """partial 且 request-failed 时把那一次的报错印出来，分得清断线、限流还是欠费。"""
+
+    def fake(conn, article_id, *, data_dir, reuse=True):
+        return TranslateResult(article_id, "partial", segments=36, reason="request-failed", untranslated=184,
+                               error="连不上 DeepSeek 接口：timed out")
+
+    monkeypatch.setattr(cli, "translate_article", fake)
+    assert cli.main(["--article-id", "41"]) == 0
+    out = capsys.readouterr().out
+    assert "#41 partial segments=36 untranslated=184 (request-failed) 连不上 DeepSeek 接口：timed out" in out
+
+
 def test_a_failed_article_does_not_stop_the_rest(conn, monkeypatch, capsys):
     seen: list[int] = []
     monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [31, 32])

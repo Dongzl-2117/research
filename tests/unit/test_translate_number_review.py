@@ -155,6 +155,51 @@ def test_misplaced_slot_needs_another_source_with_hard_numbers():
     assert pr.misplaced_slot(swapped_sources, swapped, [0, 1]) == 0
 
 
+@pytest.mark.parametrize(
+    ("neighbor", "own", "target"),
+    [
+        # 两段都写着 January 2007；the next day 写成「第二天」规则认不出，但数字没有一个是别段的。
+        ("<p><strong>So this was January 2007.</strong></p>",
+         "<p>Yeah, January 2007, it came out, and the next day I ran into the office.</p>",
+         "<p>是的，2007年1月它发布了，第二天我跑进了办公室。</p>"),
+        # 数写成了汉字，译文里一个阿拉伯数字都没有；邻段唯一的数夹在 F1 里，也是「没有数字」。
+        ("<p>That is why every team in F1 wants a driver like that.</p>",
+         "<p>I gave it a thousand percent and won the Formula 1 World Championship.</p>",
+         "<p>我付出了一千倍的努力，赢得了一级方程式世界冠军。</p>"),
+    ],
+    ids=["shared-date", "numbers-in-words"],
+)
+def test_a_neighbor_without_numbers_of_its_own_is_no_evidence_of_misplacement(neighbor, own, target):
+    """11-07 重译 23 篇时，两篇各有一段这样被判成串段、先放了英文（22254、22183）。"""
+    assert not pr.numbers_agree(own, target)
+    assert pr.misplaced_slot([neighbor, own], ["", target], [1]) is None
+
+
+def test_a_shared_date_is_written_for_review_instead_of_left_in_english(tmp_path):
+    question = "<p><strong>So this was January 2007.</strong></p>"
+    answer_en = "<p>Yeah, January 2007, it came out, and the next day I ran into the office.</p>"
+    wording = {"So this": "<p><strong>所以那是2007年1月。</strong></p>",
+               "Yeah": "<p>是的，2007年1月它发布了，第二天我跑进了办公室。</p>"}
+
+    conn, result, calls = run(question + answer_en,
+                              lambda segs, _repair: [next(v for k, v in wording.items() if k in s) for s in segs],
+                              tmp_path)
+    proof = conn.writes[0][7].obj
+    assert result.status == "translated" and result.untranslated == 0
+    assert proof["untranslated"] == [] and proof["number_review"] == [1]
+    assert "第二天我跑进了办公室" in conn.writes[0][3]
+    # 整批问一次，数字没对上的那一段同一批补问一次；不拆批、不单独重问。
+    assert [len(segs) for segs, _repair in calls] == [2, 1]
+
+
+def test_a_neighbor_number_this_slot_lacks_is_still_misplacement():
+    # 邻段和这一段都有 January 2007，但只有邻段有 200 万：译文带着 200 万，就是邻段的译文。
+    own = "<p>In January 2007 the phone came out.</p>"
+    neighbor = "<p>By January 2007 it had sold 2 million units.</p>"
+    target = "<p>到2007年1月，它已经卖出200万部。</p>"
+    assert pr.misplaced_slot([own, neighbor], [target, ""], [0]) == 0
+
+
 def test_own_numbers_in_another_order_are_not_misplaced_even_if_a_neighbor_matches():
     # 下一段原文正好是「20 ... 1,000」的先后，但第 0 段的译文用的还是自己的那两个数。
     sources = [STAFF, "<p>Retail now spans 20 regions and 1,000 outlets across the continent.</p>"]

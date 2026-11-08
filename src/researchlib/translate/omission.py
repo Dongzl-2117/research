@@ -96,11 +96,14 @@ class ArticleOmissions:
     pairs: int = 0
     # 每段（回执序号）模型说漏掉、并且能在原文里找到的英文。
     findings: dict[int, list[str]] = field(default_factory=dict)
-    # 模型摘的原文在这一段里找不到，丢掉了。
+    # 模型摘的原文在这一段里找不到，丢掉了。dropped 是丢掉的摘句本身，报告里看得出是改写还是编的。
     unverified: int = 0
+    dropped: list[str] = field(default_factory=list)
     # 回答收不成 JSON、被接口按内容拒（HTTP 400）的批。这几批没核，不算进漏句率的分母。
+    # failures 是每一批的报错，分得清是内容被拒还是回答坏了。
     failed_batches: int = 0
     failed_pairs: int = 0
+    failures: list[str] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     skipped: str = ""
 
@@ -114,7 +117,8 @@ class ArticleOmissions:
             items.append(item)
         return {"articleId": self.article_id, "pairs": self.pairs, "checked": self.checked,
                 "flagged": len(self.findings), "findings": items, "unverified": self.unverified,
-                "failedBatches": self.failed_batches, "usage": self.usage.as_dict(), "skipped": self.skipped}
+                "dropped": self.dropped, "failedBatches": self.failed_batches, "failures": self.failures,
+                "usage": self.usage.as_dict(), "skipped": self.skipped}
 
     @property
     def checked(self) -> int:
@@ -160,10 +164,10 @@ def _quote_in(quote: str, en: str) -> bool:
     return len(needle) >= 3 and needle in _norm(en)
 
 
-def parse_findings(data: Any, batch: list[Pair]) -> tuple[dict[int, list[str]], int]:
-    """模型回答 → {回执序号: [漏掉的英文]}，以及找不到出处、丢掉的摘句条数。"""
+def parse_findings(data: Any, batch: list[Pair]) -> tuple[dict[int, list[str]], list[str]]:
+    """模型回答 → {回执序号: [漏掉的英文]}，以及找不到出处、丢掉的摘句。"""
     found: dict[int, list[str]] = {}
-    unverified = 0
+    dropped: list[str] = []
     rows = data.get("t") if isinstance(data, dict) else None
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
@@ -177,13 +181,13 @@ def parse_findings(data: Any, batch: list[Pair]) -> tuple[dict[int, list[str]], 
             if not isinstance(quote, str) or not quote.strip():
                 continue
             if not _quote_in(quote, pair.en):
-                unverified += 1
+                dropped.append(quote.strip()[:QUOTE_CHARS])
                 continue
             kept = found.setdefault(pair.ordinal, [])
             text = quote.strip()[:QUOTE_CHARS]
             if text not in kept:
                 kept.append(text)
-    return found, unverified
+    return found, dropped
 
 
 def service_failure(error: BaseException) -> bool:
@@ -211,10 +215,12 @@ def review_pairs(article_id: int, pairs: list[Pair], *, data_dir: Path | None = 
                 raise
             result.failed_batches += 1
             result.failed_pairs += len(batch)
+            result.failures.append(str(exc)[:QUOTE_CHARS])
             continue
         result.usage.add(reply.usage)
-        found, unverified = parse_findings(reply.data, batch)
-        result.unverified += unverified
+        found, dropped = parse_findings(reply.data, batch)
+        result.unverified += len(dropped)
+        result.dropped.extend(dropped)
         for ordinal, quotes in found.items():
             result.findings.setdefault(ordinal, []).extend(quotes)
     return result

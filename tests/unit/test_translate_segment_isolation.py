@@ -137,6 +137,7 @@ def test_a_dropped_connection_keeps_the_batches_already_paid_for(tmp_path, monke
     conn, result, _calls = run(A + B + C, answer, tmp_path, calls=calls)
     stored = conn.writes[0]
     assert result.status == "partial" and result.reason == "request-failed"
+    assert result.error == "连不上 DeepSeek 接口：ssl eof"
     assert stored[7].obj["untranslated"] == [2] and "Gamma held 30 dollars" in stored[3]
     assert "10美元" in stored[3] and "20美元" in stored[3]
     # 断线后不再开新的一批，标题也不问了；冷却按请求失败算。

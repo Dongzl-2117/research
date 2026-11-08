@@ -150,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
                     # 数字没能自动核对上、照样写入的段数。序号在回执的 number_review 里。
                     + (f" number_review={result.review}" if result.review else "")
                     + (f" ({result.reason})" if result.reason else "")
+                    # 请求失败时那一次的报错（断线、限流、欠费），点名再跑这篇会接着译。
+                    + (f" {result.error}" if result.error else "")
                 )
             if not args.loop or args.article_id:
                 return 1 if failed else 0

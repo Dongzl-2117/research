@@ -48,16 +48,16 @@ def test_only_quotes_found_in_the_english_count():
         {"i": True, "missing": ["Acme earned"]},  # 布尔不是下标
         {"i": 0, "missing": "Acme earned"},  # 不是数组
     ]}
-    found, unverified = omission.parse_findings(data, batch)
+    found, dropped = omission.parse_findings(data, batch)
     assert found == {1: ["after a different customer group reduced demand",
                          "After a different customer group reduced demand."]}
-    assert unverified == 1
+    assert dropped == ["made-up words"]
     # 弯引号、破折号和大小写不影响找出处。
     curly = [omission.Pair(4, "It’s the “best” plan — for now.", "这是目前最好的计划。")]
     assert omission.parse_findings({"t": [{"i": 0, "missing": ['it\'s the "best" plan - for now']}]}, curly) == (
-        {4: ['it\'s the "best" plan - for now']}, 0)
-    assert omission.parse_findings({"t": []}, batch) == ({}, 0)
-    assert omission.parse_findings("not a dict", batch) == ({}, 0)
+        {4: ['it\'s the "best" plan - for now']}, [])
+    assert omission.parse_findings({"t": []}, batch) == ({}, [])
+    assert omission.parse_findings("not a dict", batch) == ({}, [])
 
 
 def test_review_counts_usage_and_skips_unusable_batches(monkeypatch):
@@ -77,6 +77,7 @@ def test_review_counts_usage_and_skips_unusable_batches(monkeypatch):
     assert calls == [["Acme", "Beta"], ["Gamm", "Delt"]]
     assert result.findings == {1: ["Beta lost 20 dollars"]}
     assert result.failed_batches == 1 and result.pairs == 4 and result.checked == 2
+    assert result.failures == ["DeepSeek 返回非 JSON"]
     assert result.usage.as_dict() == {"requests": 1, "prompt": 1000, "cacheHit": 400, "completion": 300,
                                       "reasoning": 250}
 
@@ -98,6 +99,7 @@ def test_a_refused_batch_is_skipped_not_fatal(monkeypatch):
     monkeypatch.setattr(omission, "chat_json", fake)
     result = omission.review_pairs(7, omission.receipt_pairs(_receipt()))
     assert result.failed_batches == 1 and result.checked == 0 and result.findings == {}
+    assert result.failures == ["Content Exists Risk"]
 
 
 class FakeConn:
@@ -143,7 +145,29 @@ def test_cli_json_report(omission_cli, capsys, tmp_path):
     assert payload["summary"]["flagged"] == 1 and payload["summary"]["pairs"] == 3
     assert payload["articles"][0]["findings"][0] == {"ordinal": 2, "missing": ["regional logistics"],
                                                      "zh": "丙公司持有30美元现金，计划投资区域物流设施。"}
+    assert payload["articles"][0]["dropped"] == [] and payload["articles"][0]["failures"] == []
     assert json.loads(path.read_text(encoding="utf-8")) == payload
+
+
+def test_cli_shows_dropped_quotes_and_why_a_batch_was_not_checked(omission_cli, monkeypatch, capsys):
+    replies = iter([
+        _reply([{"i": 0, "missing": ["a sentence the source never had"]}]),
+        LLMHTTPError(400, "DeepSeek HTTP 400: Content Exists Risk"),
+    ])
+
+    def fake(**_kwargs):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(omission, "chat_json", fake)
+    monkeypatch.setattr(omission, "batches", lambda items: [items[:1], items[1:]])
+    assert cli_qa.main(["--omissions", "--article-id", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "摘句在原文里找不到、丢掉：a sentence the source never had" in out
+    assert "这一批没核：DeepSeek HTTP 400: Content Exists Risk" in out
+    assert "模型摘的原文找不到、丢掉 1 条；1 批回答用不了、没核" in out
 
 
 def test_cli_stops_with_two_on_service_errors(omission_cli, monkeypatch, capsys):
