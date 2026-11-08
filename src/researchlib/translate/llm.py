@@ -3,7 +3,8 @@
 默认 DeepSeek：deepseek-flash + thinking + reasoning_effort=max + 输出至少 393216，
 上下文 1M，不发 temperature，鉴权用 DEEPSEEK_API_KEY 的 Bearer。请求走流式，
 按行读到 ``data: [DONE]`` 才采用；中途 TLS EOF 按与问库相同的间隔重试同一请求，
-半截内容不当译文。
+半截内容不当译文。重试完还连不上时，报错里写明同一请求试了几次、每次连了几秒，
+分得清网络一直不稳（每次几秒就断）和长请求被掐（每次都连了差不多一样久才断）。
 ``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth（grok-4.7 + xhigh + 至少 128000，不开 fast），不流式。
 模型、推理强度、输出地板和超时与问库、摘要共用 researchlib.deepseek / researchlib.grok。
 """
@@ -73,6 +74,29 @@ class LLMHTTPError(RuntimeError):
 
 class LLMConfigError(RuntimeError):
     """没配密钥这类本机配置问题，问哪一段都一样。"""
+
+
+def transient_failure(error: BaseException | None) -> bool:
+    """断线、超时、限流、5xx：服务那头一时的事，隔几分钟再问同一篇多半就成了。
+
+    欠费（402）、鉴权（401、403）、没配密钥、内容被拒（400）隔多久再问都一样，不算。
+    """
+    if isinstance(error, LLMTransportError):
+        return True
+    return isinstance(error, LLMHTTPError) and (error.status == 429 or error.status >= 500)
+
+
+# 量每一次请求连了多久。测试换成假钟。
+_clock = time.monotonic
+
+
+def _tries(spans: list[float], *, timed_out: bool, limit: float) -> str:
+    """同一请求试了几次、每次连了几秒才失败，写在连不上的报错前头（报错会被截短，放后面容易截掉）。"""
+    seconds = "、".join(f"{span:.0f}" for span in spans)
+    note = f"同一请求试了 {len(spans)} 次，各连了 {seconds} 秒" if len(spans) > 1 else f"连了 {seconds} 秒"
+    if timed_out:
+        note += f"，{limit:.0f} 秒没收到数据算超时，不再重发"
+    return note
 
 
 @dataclass
@@ -193,11 +217,15 @@ def chat_json(
     started = time.time()
     refreshed = False
     retries = 0
+    # 失败的每一次从发出到出错连了几秒。几秒就断是网络不稳；每次都连了差不多一样久才断，是长请求被掐。
+    spans: list[float] = []
     while True:
+        begun = _clock()
         try:
             response = post(bearer)
             break
         except urllib.error.HTTPError as exc:
+            spans.append(_clock() - begun)
             detail = exc.read().decode("utf-8", "replace")
             if provider == PROVIDER_GROK and not refreshed and is_stale_xai_access(exc.code, detail):
                 refreshed = True
@@ -205,19 +233,25 @@ def chat_json(
                 continue
             if exc.code in RETRY_STATUS and retries < len(RETRY_DELAYS):
                 delay = _http_retry_after(exc) or RETRY_DELAYS[retries]
-                logger.info("译制请求 HTTP %s，%.0f 秒后重试同一请求", exc.code, delay)
+                logger.info("译制请求 HTTP %s，%.0f 秒后第 %s 次发同一请求", exc.code, delay, len(spans) + 1)
                 time.sleep(delay)
                 retries += 1
                 continue
-            raise LLMHTTPError(exc.code, f"{label} HTTP {exc.code}: {detail[:500]}") from exc
+            tried = f"（同一请求试了 {len(spans)} 次）" if len(spans) > 1 else ""
+            raise LLMHTTPError(exc.code, f"{label} HTTP {exc.code}{tried}: {detail[:500]}") from exc
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"{label} 返回非 JSON") from exc
         except (urllib.error.URLError, IncompleteStream, OSError, http.client.HTTPException) as exc:
+            spans.append(_clock() - begun)
             # 超时表示这一次已经等满了长超时，不再重发。其余连接错误重试同一份 payload。
-            if _transport_timeout(exc) or retries >= len(RETRY_DELAYS):
-                raise LLMTransportError(f"连不上 {label} 接口：{exc}") from exc
+            timed_out = _transport_timeout(exc)
+            if timed_out or retries >= len(RETRY_DELAYS):
+                note = _tries(spans, timed_out=timed_out, limit=timeout)
+                raise LLMTransportError(f"连不上 {label} 接口（{note}）：{exc}") from exc
             delay = RETRY_DELAYS[retries]
-            logger.info("译制请求中断（%s），%.0f 秒后重试同一请求", exc, delay)
+            logger.info(
+                "译制请求连了 %.0f 秒断开（%s），%.0f 秒后第 %s 次发同一请求", spans[-1], exc, delay, len(spans) + 1
+            )
             time.sleep(delay)
             retries += 1
     choice = (response.get("choices") or [{}])[0]
@@ -260,4 +294,5 @@ __all__ = [
     "long_timeout_s",
     "model_id",
     "output_tokens",
+    "transient_failure",
 ]

@@ -35,6 +35,7 @@ from researchlib.translate.llm import (
     chat_json,
     model_id,
     output_tokens,
+    transient_failure,
 )
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import (
@@ -94,6 +95,8 @@ class TranslateResult:
     reused: int = 0
     # 请求失败（request-failed）时那一次的报错，命令行照印，不用再翻日志猜是断线、限流还是欠费。
     error: str = ""
+    # 被断线、超时、限流、5xx 打断没译完：隔几分钟再跑这篇多半能补上。点名补译时命令行据此自动再补一轮。
+    retry_later: bool = False
 
 
 class BatchTexts(list):
@@ -1015,6 +1018,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = Tr
         untranslated=len(gaps),
         reused=reused,
         error=str(service_error)[:300] if service_error is not None and not complete else "",
+        retry_later=not complete and transient_failure(service_error),
     )
 
 

@@ -57,7 +57,11 @@ docker compose exec app research-translate --source stratechery --limit 5 --loop
 
 DeepSeek 译制走流式。思考模式要是一次把整段响应读完，连接会空等很久，TLS 在中途被拆掉（`UNEXPECTED_EOF_WHILE_READING`），这次已经开始计费，译文一个字都不会入库。`chat_json` 按行读，看到 `data: [DONE]` 才把拼接结果交给对齐；中途断开或流提前结束都丢掉半截，按 2、5、15、30 秒重发同一请求。超时不重试。模型、thinking、`reasoning_effort` 和输出预算不变，也不会改走 Grok。连接预算用完仍失败记 `request-failed`，不再把同一批立刻再打一遍。这一篇前面已经译好的段先存下（`complete` 为假，打印 `partial … (request-failed)`），后面的批和标题不再问，下次只补没译的段。一段都没译出来时整篇不入库，和以前一样。标题上的连接失败同样记请求失败，不记成对齐拒绝。
 
-跑的时候自动上线先不重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`）。它在等的提交 CI 过了，就写 `data/status/.deploy-waiting` 请译制让路：按队列译的（包括 `--loop` 和 `--recheck`）每译完一篇看一眼，在就停下，打印「自动上线在等 某提交：先停在这里」，下一轮自动上线（10 分钟内）就上了。手上那篇照常译完入库，不会白花钱。上线后要接着译就再开一次，新版本的规则这时才生效；在等上线时新开的会直接停下。点名的 `--article-id` 不让路，译完才上线。长时间的 `--loop` 放在 tmux 里跑。
+重发同一请求、拆批、先放英文、某一批请求失败，命令行都带钟点（UTC）印在 stderr，例如 `05:12:03 译制请求连了 312 秒断开（SSE 中途断开：…），2 秒后第 2 次发同一请求`。以前这些只写 INFO 日志，命令行没配日志，一行也看不到（2026-11-08 22161、22254 断线时就不知道重发了几次）。重发完还连不上，报错前头写明同一请求试了几次、各连了几秒：`连不上 DeepSeek 接口（同一请求试了 5 次，各连了 312、298、305、290、301 秒）：SSE 中途断开：…`；超时是 `（连了 N 秒，1500 秒没收到数据算超时，不再重发）`。每次几秒、几十秒就断，是网络或接口一时不稳，过几分钟再译多半就好；每次都连了差不多一样久才断，多半是长请求被中途掐掉，再等也一样，那时再考虑把批拆小。
+
+点名的 `--article-id` 里被断线、超时、限流（429）、5xx 打断没译完的篇（打印 `partial … (request-failed)`，或者一段都没译出来、打印 `failed: 连不上…`），以及译的时候原文被别的任务改了的篇（`source-changed-during-request`，11-07 的 22173 撞上夜间补钟点），这一轮最后等 2 分钟自动再补一轮，还没补完再等 10 分钟补一轮（`NAMED_RETRY_PAUSES`），打印「#22161 被打断没译完，2 分钟后再补一轮」。已译的段都存着，再补只问没译出来的段；带 `--fresh` 的照样整篇重译。欠费（402）、鉴权、内容被拒（400）、对不齐这些等多久都一样，不等。补了两轮还没补完，打印「补了 2 轮，#… 还没译完：过一会儿再跑 research-translate --article-id …」，退出码 1。按队列译的不等：没译完的记了冷却（请求失败从 15 分钟起），过了冷却自己回到队列。
+
+跑的时候自动上线先不重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`）。它在等的提交 CI 过了，就写 `data/status/.deploy-waiting` 请译制让路：按队列译的（包括 `--loop` 和 `--recheck`）每译完一篇看一眼，在就停下，打印「自动上线在等 某提交：先停在这里」，下一轮自动上线（10 分钟内）就上了。手上那篇照常译完入库，不会白花钱。上线后要接着译就再开一次，新版本的规则这时才生效；在等上线时新开的会直接停下。点名的 `--article-id` 不让路，译完才上线；只有在等着自动再补的那十来分钟里，自动上线来请它停就不补了，打印上线后要再跑的命令。长时间的 `--loop` 放在 tmux 里跑。
 
 Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`），流式每一行的空闲上限也是这一段。
 
@@ -308,7 +312,7 @@ ORDER BY n DESC, t.article_id;
 | 条数不对、id 或 `source_hash` 没逐项回显、回答不是 JSON、这一批被接口拒（HTTP 400、413、422） | 原批重来一次，再对半拆开，直到一段一批；一段一批也重来过还不行，先放英文 | `response-*`、`http-400` 这类 |
 | 整篇写回后叶子数或外壳对不上（单看一段判断不了的，比如定义列表的打包） | 二分找出是哪几段，这几段先放英文，别的段照常签回执 | `receipt-shape` |
 | 数字按规则没对上 | 不变：同一批补译一次，仍不行照样写入，记进 `number_review` | |
-| 断线、超时、限流（429）、欠费（402）、5xx | 服务那头的事，换哪一段问都一样：后面的批和标题不再问，已经译好的段先存下，按请求失败记冷却。Grok 要重新登录时照旧直接退出（退出码 2），这一篇这次不入库。`partial … (request-failed)` 后面接着印那一次的报错（版本 10 起），分得清是断线、超时、限流还是欠费 | `request-failed` |
+| 断线、超时、限流（429）、欠费（402）、5xx | 服务那头的事，换哪一段问都一样：后面的批和标题不再问，已经译好的段先存下，按请求失败记冷却。Grok 要重新登录时照旧直接退出（退出码 2），这一篇这次不入库。`partial … (request-failed)` 后面接着印那一次的报错（版本 10 起），分得清是断线、超时、限流还是欠费，断线时还写着同一请求试了几次、各连了几秒。点名补译的，除了欠费和鉴权，这一轮最后隔 2、10 分钟各自动再补一轮（见上面「译制」一节） | `request-failed` |
 
 先放英文的段，序号（ordinal）记进回执 `provenance.untranslated`。回执照样逐段签名，英文那几段的 `target` 就是原文，`verify` 照样是 `mapped`；对照页照常逐段对照，那几段只有英文，正文上方一句「部分段落没有译文。」。这一篇 `complete` 为假，记一次 `translation_attempts`（`rejected`，原因 `untranslated:` 加上上表的原因，几种用逗号隔开；只缺标题时是 `untranslated:title-empty`），12 小时后再进待译队列。`research-translate` 打印 `#123 partial segments=… untranslated=N (links,shape)`，`research-bilingual-qa` 报 WARN `untranslated`。一段都没译出来时整篇不入库，错误交给 CLI 记冷却，和以前一样。
 

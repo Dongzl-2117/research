@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -253,3 +254,165 @@ def test_fresh_turns_off_reuse_and_partial_counts_are_printed(conn, monkeypatch,
     monkeypatch.setattr(cli, "translate_article", partial)
     assert cli.main(["--article-id", "8"]) == 0
     assert "#8 partial segments=5 reused=3 untranslated=2" in capsys.readouterr().out
+
+
+def _interrupted(article_id, untranslated=16):
+    return TranslateResult(
+        article_id, "partial", segments=200, reason="request-failed", untranslated=untranslated,
+        error="连不上 DeepSeek 接口（同一请求试了 5 次，各连了 300、300、300、300、300 秒）：ssl eof",
+        retry_later=True,
+    )
+
+
+def test_named_articles_cut_off_by_the_service_are_filled_in_after_a_pause(conn, monkeypatch, capsys):
+    """点名补译被断线打断的篇，最后等 2 分钟自动再补一轮；已译的段存着，再补只问没译出来的段。"""
+    seen: list[tuple[int, bool]] = []
+    slept: list[float] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        seen.append((article_id, reuse))
+        if article_id == 81 and len(seen) == 1:
+            return _interrupted(81)
+        return TranslateResult(article_id, "translated", segments=200, reused=184 if len(seen) > 2 else 0)
+
+    monkeypatch.setattr(cli, "translate_article", translate)
+    monkeypatch.setattr(cli.time, "sleep", slept.append)
+    assert cli.main(["--article-id", "81", "--article-id", "82"]) == 0
+    assert seen == [(81, True), (82, True), (81, True)]
+    assert sum(slept) == cli.NAMED_RETRY_PAUSES[0] and max(slept) <= cli.PAUSE_STEP
+    out = capsys.readouterr().out
+    assert "#81 partial segments=200 untranslated=16 (request-failed) 连不上 DeepSeek 接口（同一请求试了 5 次" in out
+    assert "#81 被打断没译完，2 分钟后再补一轮" in out
+    assert out.rstrip().endswith("#81 translated segments=200 reused=184")
+
+
+def test_named_articles_still_cut_off_after_two_rounds_print_the_command_to_rerun(conn, monkeypatch, capsys):
+    from researchlib.translate.llm import LLMTransportError
+
+    seen: list[int] = []
+    slept: list[float] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        seen.append(article_id)
+        if article_id == 91:
+            # 一段都没译出来时整篇抛错（这时库里什么也没写），一样再补。
+            raise LLMTransportError("连不上 DeepSeek 接口（连了 3 秒）：ssl eof")
+        return _interrupted(article_id, untranslated=1)
+
+    monkeypatch.setattr(cli, "translate_article", translate)
+    monkeypatch.setattr(cli.time, "sleep", slept.append)
+    assert cli.main(["--article-id", "91", "--article-id", "92", "--fresh"]) == 1
+    assert seen == [91, 92, 91, 92, 91, 92]
+    assert sum(slept) == sum(cli.NAMED_RETRY_PAUSES)
+    captured = capsys.readouterr()
+    assert captured.err.count("#91 failed: 连不上 DeepSeek 接口（连了 3 秒）：ssl eof") == 3
+    assert "#91 #92 被打断没译完，10 分钟后再补一轮" in captured.out
+    assert captured.out.rstrip().endswith(
+        "补了 2 轮，#91 #92 还没译完：过一会儿再跑 research-translate --article-id 91 --article-id 92 --fresh"
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        TranslateResult(1, "partial", segments=36, reason="request-failed", untranslated=184,
+                        error="DeepSeek HTTP 402: Insufficient Balance"),
+        TranslateResult(1, "partial", segments=3, reason="http-400", untranslated=1),
+        TranslateResult(1, "skipped", reason="no-body"),
+        "alignment",
+    ],
+    ids=["no-balance", "refused-segment", "skipped", "alignment"],
+)
+def test_named_articles_that_waiting_would_not_fix_are_not_retried(conn, monkeypatch, outcome):
+    """欠费、内容被拒、没正文、对不齐：隔多久再跑都一样，不等也不再花钱。"""
+    from dataclasses import replace
+
+    from researchlib.translate.provenance import AlignmentError
+
+    seen: list[int] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        seen.append(article_id)
+        if outcome == "alignment":
+            raise AlignmentError("slot-0-links")
+        return replace(outcome, article_id=article_id)
+
+    monkeypatch.setattr(cli, "translate_article", translate)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: pytest.fail("不该等着再补"))
+    assert cli.main(["--article-id", "5"]) == (1 if outcome == "alignment" else 0)
+    assert seen == [5]
+
+
+def test_an_article_edited_while_it_was_being_translated_is_retried(conn, monkeypatch, capsys):
+    """译的时候夜间补钟点改了原文（22173 那次）：等一会儿按新原文再译，不用再点名跑一次。"""
+    from researchlib.translate.provenance import AlignmentError
+
+    seen: list[int] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        seen.append(article_id)
+        if len(seen) == 1:
+            raise AlignmentError("source-changed-during-request")
+        return TranslateResult(article_id, "translated", segments=183)
+
+    monkeypatch.setattr(cli, "translate_article", translate)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    assert cli.main(["--article-id", "22"]) == 0
+    assert seen == [22, 22]
+    assert "#22 failed: translation alignment: source-changed-during-request" in capsys.readouterr().err
+
+
+def test_queue_runs_leave_cut_off_articles_to_the_cooldown(conn, monkeypatch):
+    """按队列译的不等着再补：没译完的记了冷却，过了冷却自己回到队列。"""
+    seen: list[int] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        seen.append(article_id)
+        return _interrupted(article_id)
+
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, **kwargs: [95])
+    monkeypatch.setattr(cli, "translate_article", translate)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: pytest.fail("按队列译的不该等着再补"))
+    assert cli.main(["--limit", "1"]) == 0
+    assert seen == [95]
+
+
+def test_a_release_waiting_during_the_pause_stops_the_retry(conn, monkeypatch, tmp_path, capsys):
+    """等着再补的时候自动上线来请它停：不补了，印出上线后要再跑的命令，别把上线挡十几分钟。"""
+    seen: list[int] = []
+    slept: list[float] = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) == 2:
+            _deploy_waits(tmp_path)
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        seen.append(article_id)
+        return _interrupted(article_id)
+
+    monkeypatch.setattr(cli, "translate_article", translate)
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+    assert cli.main(["--article-id", "96"]) == 1
+    assert seen == [96] and len(slept) == 2
+    assert (
+        "自动上线在等 b66bfe8：不等着补了，/health 报出新提交后再跑 research-translate --article-id 96"
+        in capsys.readouterr().out
+    )
+
+
+def test_retries_and_splits_are_printed_with_the_time(conn, monkeypatch, capsys):
+    """以前这些只写 INFO 日志、命令行看不到：断了几次、每次连了多久、隔多久重发都不知道。"""
+    import logging
+
+    def translate(conn, article_id, *, data_dir, reuse=True):
+        log = logging.getLogger("researchlib.translate")
+        log.info("译制请求连了 %.0f 秒断开（ssl eof），2 秒后第 2 次发同一请求", 312)
+        return TranslateResult(article_id, "translated", segments=2)
+
+    monkeypatch.setattr(cli, "translate_article", translate)
+    assert cli.main(["--article-id", "97"]) == 0
+    err = capsys.readouterr().err
+    assert re.search(r"^\d\d:\d\d:\d\d 译制请求连了 312 秒断开（ssl eof），2 秒后第 2 次发同一请求$", err, re.M)
+    # 命令跑完就撤掉，不留在进程里。
+    assert not logging.getLogger("researchlib.translate").handlers
