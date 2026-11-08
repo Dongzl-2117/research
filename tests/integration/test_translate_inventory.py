@@ -210,3 +210,36 @@ def test_posts_the_site_hides_and_image_only_posts_are_counted_apart(conn, setti
     assert inventory.listed(settings.data_dir, "none")[0] == [fresh]
     with pytest.raises(LookupError, match="网站不显示"):
         inventory.listed(settings.data_dir, "site-hidden")
+
+
+def test_the_omission_sample_reads_legacy_pages_from_the_inventory(conn, settings, monkeypatch, capsys):
+    """research-bilingual-qa --omissions --from-inventory legacy-structural：没回执的旧稿按页面上并排的段对核。"""
+    import json
+
+    from researchlib.translate import cli_qa, omission
+
+    legacy = _article(conn, settings, "legacy")
+    _old_translation(conn, legacy)
+    conn.commit()
+    report = inventory.collect(conn, settings)
+    path = inventory.inventory_path(settings.data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report), encoding="utf-8")
+    asked = []
+
+    def reviewer(**kwargs):
+        asked.extend((pair["en"], pair["zh"]) for pair in kwargs["user"]["pairs"])
+        return ChatJsonResult(data={"t": []}, model="synthetic-model", usage=None, latency_ms=0)
+
+    monkeypatch.setattr(omission, "chat_json", reviewer)
+    monkeypatch.setattr(cli_qa, "ensure_llm", lambda settings: None)
+    monkeypatch.setattr(cli_qa.Settings, "from_env", staticmethod(lambda: settings))
+    before = dict(_counts(conn))
+    assert cli_qa.main(["--omissions", "--from-inventory", "legacy-structural", "--limit", "50"]) == 0
+    out = capsys.readouterr().out
+    assert asked == [
+        ("First paragraph 10 dollars about legacy.", "第一段10美元。"),
+        ("Second paragraph 20 dollars.", "第二段20美元。"),
+    ]
+    assert f"#{legacy} pairs=2 flagged=0 按页面配对" in out
+    assert dict(_counts(conn)) == before

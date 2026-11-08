@@ -5,6 +5,7 @@
     docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sample 1
     docker compose exec app research-bilingual-qa --limit 50 --json --report /data/status/bilingual-qa.json
     docker compose exec app research-bilingual-qa --omissions --source stratechery --limit 50
+    docker compose exec app research-bilingual-qa --omissions --from-inventory legacy-structural --limit 50
 
 退出码：0 通过（或有警告但没加 --strict），1 有失败项（硬指标，或 --llm 时模型给 fail；
 加 --strict 时警告也算），2 参数、库或 LLM 凭证的问题。
@@ -22,7 +23,7 @@ from typing import Any
 from researchlib.config import Settings
 from researchlib.db import connect
 from researchlib.llm import LLMError, LLMUnavailable, ensure_llm
-from researchlib.translate import omission, qa
+from researchlib.translate import inventory, omission, qa
 
 DEFAULT_LIMIT = 20
 
@@ -80,10 +81,21 @@ def _print_report(report: qa.BilingualReport) -> None:
             print(f"    - [{issue.get('index')}] {issue.get('kind')}: {issue.get('note')}")
 
 
+def _spread(ids: list[int], limit: int) -> list[int]:
+    """从清单里均匀地挑 limit 篇。清单按发布时间新的在前，这样新旧都抽得到；同一份清单每次挑的都一样。"""
+    if limit >= len(ids):
+        return list(ids)
+    step = len(ids) / limit
+    return [ids[int(index * step)] for index in range(limit)]
+
+
 def _omission_lines(result: omission.ArticleOmissions, pairs: dict[int, omission.Pair]) -> list[str]:
+    extra = f" 只有英文 {result.english_only} 对" if result.english_only else ""
     if result.skipped:
-        return [f"#{result.article_id} 跳过：{result.skipped}"]
+        return [f"#{result.article_id} 跳过：{result.skipped}{extra}"]
     head = f"#{result.article_id} pairs={result.pairs} flagged={len(result.findings)}"
+    if result.basis == "page":
+        head += " 按页面配对" + extra
     if result.unverified:
         head += f" unverified={result.unverified}"
     if result.failed_batches:
@@ -99,7 +111,15 @@ def _omission_lines(result: omission.ArticleOmissions, pairs: dict[int, omission
 
 
 def _omissions(args: argparse.Namespace, settings: Settings) -> int:
-    """段内漏句抽查。只读：读回执、问模型、打印；不写库，不改回执。"""
+    """段内漏句抽查。只读：读回执（没回执的旧稿读页面）、问模型、打印；不写库，不改回执。"""
+    listed: list[int] = []
+    generated = ""
+    if args.from_inventory:
+        try:
+            listed, generated = inventory.listed(settings.data_dir, args.from_inventory)
+        except LookupError as exc:
+            print(exc, file=sys.stderr)
+            return 2
     try:
         ensure_llm(settings)
     except LLMUnavailable as exc:
@@ -113,13 +133,32 @@ def _omissions(args: argparse.Namespace, settings: Settings) -> int:
     try:
         if args.article_id:
             ids = list(dict.fromkeys(args.article_id))
+        elif args.from_inventory:
+            ids = _spread(listed, max(1, args.limit))
+            print(
+                f"盘点清单（{generated or '时间不详'}）里 {args.from_inventory} 共 {len(listed)} 篇，"
+                f"均匀抽 {len(ids)} 篇",
+                file=sys.stderr, flush=True,
+            )
         else:
             ids = qa.translated_article_ids(conn, limit=max(1, args.limit), source_id=args.source or None)
         for article_id in ids:
-            pairs = omission.receipt_pairs(omission.load_receipt(conn, article_id))
+            receipt = omission.load_receipt(conn, article_id)
+            pairs = omission.receipt_pairs(receipt)
+            basis, english_only = "receipt", 0
+            if not pairs and not (isinstance(receipt, dict) and receipt.get("segments")):
+                # 没回执的旧稿：按页面上并排显示的段对核。页面分开展示的没有段对，跳过。
+                basis = "page"
+                try:
+                    pairs, english_only = omission.page_pairs(qa.pairs_for_review(conn, settings, article_id))
+                except qa.QaError:
+                    pairs = []
             by_ordinal = {pair.ordinal: pair for pair in pairs}
             if not pairs:
-                result = omission.ArticleOmissions(article_id, skipped="没有回执（旧稿）或没有可核的段")
+                why = "没回执，页面也没有并排的段对" if basis == "page" else "回执里没有可核的段"
+                result = omission.ArticleOmissions(
+                    article_id, skipped=why, basis=basis, english_only=english_only,
+                )
             else:
                 try:
                     result = omission.review_pairs(article_id, pairs, data_dir=settings.data_dir)
@@ -127,6 +166,7 @@ def _omissions(args: argparse.Namespace, settings: Settings) -> int:
                     print(f"#{article_id} 抽查停下：{exc}", file=sys.stderr)
                     exit_code = 2
                     break
+                result.basis, result.english_only = basis, english_only
             results.append(result)
             details.append(result.as_dict(by_ordinal))
             usage.merge(result.usage)
@@ -147,6 +187,8 @@ def _omissions(args: argparse.Namespace, settings: Settings) -> int:
         "rate": round(flagged / checked, 4) if checked else 0.0,
         "unverified": sum(result.unverified for result in reviewed),
         "failedBatches": sum(result.failed_batches for result in reviewed),
+        "byPage": sum(result.basis == "page" for result in reviewed),
+        "englishOnly": sum(result.english_only for result in results),
         "usage": usage.as_dict(),
     }
     payload = {
@@ -165,6 +207,12 @@ def _omissions(args: argparse.Namespace, settings: Settings) -> int:
             + (f"；{summary['failedBatches']} 批回答用不了、没核" if summary["failedBatches"] else "")
             + (f"；{summary['skipped']} 篇跳过" if summary["skipped"] else "")
         )
+        if summary["byPage"] or summary["englishOnly"]:
+            print(
+                f"其中 {summary['byPage']} 篇没回执，按页面上并排的段对核"
+                + (f"；页面上只有英文、没有中文的 {summary['englishOnly']} 对（整段没译，没送模型）"
+                   if summary["englishOnly"] else "")
+            )
         print(
             f"用量：请求 {usage.requests} 次，输入 {usage.prompt:,} token（缓存命中 {usage.cache_hit:,}），"
             f"输出 {usage.completion:,} token（思考 {usage.reasoning:,}）"
@@ -200,9 +248,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="段内漏句抽查：按回执逐段问模型译文漏了什么（调站内 DeepSeek，花钱；不跑硬指标，不拦入库）",
     )
+    parser.add_argument(
+        "--from-inventory",
+        default="",
+        metavar="类别",
+        help="和 --omissions 一起用：从盘点清单（research-translate-inventory）的这一类里均匀抽 --limit 篇，"
+        "比如没回执的旧稿 legacy-structural",
+    )
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
+    if args.from_inventory and not args.omissions:
+        print("--from-inventory 只和 --omissions 一起用", file=sys.stderr)
+        return 2
+    if args.from_inventory and (args.article_id or args.source):
+        print("--from-inventory 不和 --article-id、--source 一起用", file=sys.stderr)
+        return 2
     if args.omissions:
         return _omissions(args, settings)
     if args.llm:

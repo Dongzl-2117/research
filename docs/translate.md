@@ -245,6 +245,7 @@ docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sam
 | `--strict` | 关 | 有警告也返回 1 |
 | `--llm`、`--llm-sample` | 关、3 | 对没有失败项的篇再跑 LLM 抽验，默认最多 3 篇 |
 | `--omissions` | 关 | 段内漏句抽查，不跑硬指标，见下面「段内漏句抽查」 |
+| `--from-inventory` | 空 | 和 `--omissions` 一起用：从盘点清单（`research-translate-inventory`）的这一类里均匀抽 `--limit` 篇，新旧都有 |
 
 退出码：0 通过（或有警告但没加 `--strict`），1 有失败项（硬指标，或 `--llm` 时模型给 `fail`；加 `--strict` 时警告也算），2 参数、库或 LLM 的问题。只读：连库走 `db.connect`，不跑迁移、不写表；`--report` 只写你给的那个文件。
 
@@ -263,9 +264,11 @@ docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sam
 ```bash
 docker compose exec app research-bilingual-qa --omissions --source stratechery --limit 50
 docker compose exec app research-bilingual-qa --omissions --article-id 22188 --json --report /data/status/omissions.json
+docker compose exec app research-bilingual-qa --omissions --from-inventory legacy-structural --limit 50   # 没回执的旧稿抽 50 篇
 ```
 
-- 段对来自回执 `provenance.segments`，和当时送去译的那一段一一对应，不受对照页并段、去重的影响。没有回执的旧稿跳过；先放英文的段（`untranslated`）不送。不点名时按译文更新时间取最近几篇，和别的模式一样。
+- 段对来自回执 `provenance.segments`，和当时送去译的那一段一一对应，不受对照页并段、去重的影响。先放英文的段（`untranslated`）不送。不点名时按译文更新时间取最近几篇，和别的模式一样。
+- 没有回执的旧稿（11-09 起）按页面上并排显示的段对核（`qa.pairs_for_review`，和对照页同一份），打印「按页面配对」。页面分开展示、没有段对的跳过；收起的重复、没有英文字母的对不送；只有英文、没有中文的对（整段没译）不送模型，单独计数（`englishOnly`）。页面配对要是错了位，会成片报漏：一篇报出一大串的，先看对照页是不是错位。要不要为补回执整篇重译旧稿，先用 `--from-inventory legacy-structural --limit 50` 量一下漏句率，和有回执的比。
 - 一批最多 12 对、8000 个英文字符。模型摘出来的原文要能在这一段英文里逐字找到（忽略大小写、弯引号、破折号和空白）才计入；找不到的丢掉，记条数（`unverified`），丢掉的摘句本身记在报告的 `dropped` 里、命令行也印出来，看得出是模型改写了原文还是编的。
 - 每篇打印 `pairs`、`flagged`，每处漏掉的英文和这一段中文的开头；最后两行是疑似漏句的段数和比例、模型用量（请求次数、输入和其中缓存命中、输出和其中思考 token），按当时的 DeepSeek 价目乘。
 - 只读：不写库，不改回执，不拦入库。结果是线索，措辞不同、几句并一句被当成漏的误报，要人看一眼。
