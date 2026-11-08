@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
-from researchlib.translate.numbers import digits_hide_scale_change, has_hard_facts, same_numeric_facts
+from researchlib.translate.numbers import digits_hide_scale_change, hard_fact_counts, same_numeric_facts
 from researchlib.translate.segments import iter_segments, splice_segments, split_sentence_paragraphs, top_level_blocks
 
 SCHEMA_VERSION = 1
@@ -33,7 +33,9 @@ PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt"
 # 9：一段出错不再让整篇作废。身份、链接、占位符一直对不上或串段的那几段先放英文，序号记进回执的
 # untranslated，别的段照常入库（complete 为假）；请求断线时已经译好的段也先存下。
 # 下次只补这几段：原文没变的段按原文身份（reuse_key）复用已有译文，不再重译。
-ALIGNMENT_VERSION = 9
+# 10：判串段时，另一段的数这一段原文里全都有（两段都写 January 2007、只有 F1 这种夹在词里的数）
+# 就不拿来比，免得把「一千」「第二天」这种译法判成串段、整段先放英文。因此先放英文的段重新进队列。
+ALIGNMENT_VERSION = 10
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _SRC_PARA_ATTR = re.compile(r'\s+data-src-para="\d+"')
 _TAG = re.compile(r"<[^>]*>")
@@ -173,20 +175,25 @@ def misplaced_slot(sources: Sequence[str], targets: Sequence[str], flagged: Sequ
     """数字没对上的一段，若和同一批另一段原文的数字正好一致，就是串段，不是译法不同。
 
     返回第一个串段的下标，没有返回 None。另一段原文没有必须对上的数字时不拿来比，
-    免得「都没有数字」互相对上。
+    免得「都没有数字」互相对上。另一段的数这一段原文里全都有时也不拿来比：两段都写着
+    January 2007，或者那一段只有 F1 这种夹在词里的数，译文对上它，同样可能只是这一段
+    把 the next day 写成「第二天」、把 a thousand 写成「一千」，数字分不出是不是串了段，
+    交给待核（number_review）。只有译文对上的那一段带着这一段没有的数，才算串段。
     """
     from collections import Counter
 
     if not flagged:
         return None
-    hard = [has_hard_facts(source) for source in sources]
+    hard = [hard_fact_counts(source) for source in sources]
     for index in flagged:
         own = Counter(numeric_anchors(sources[index]))
         if own and own == Counter(numeric_anchors(targets[index])):
             # 数字还是这一段自己的，只是换了先后（「在20个国家有1000名员工」）。
             continue
         for other, source in enumerate(sources):
-            if other != index and hard[other] and numbers_agree(source, targets[index]):
+            if other == index or not hard[other] or not (hard[other] - hard[index]):
+                continue
+            if numbers_agree(source, targets[index]):
                 return index
     return None
 

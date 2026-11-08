@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -103,6 +104,11 @@ def same_numeric_facts(source: str, target: str) -> bool:
 def has_hard_facts(text: str) -> bool:
     """有没有译文里必须对上的数字。英文数词、脚注号这类可以省的不算。"""
     return any(fact.hard for fact in _extract(text))
+
+
+def hard_fact_counts(text: str) -> Counter[tuple[str, str]]:
+    """必须对上的数字按（类别, 值）计数。两段原文比谁有对方没有的数时用，同一种语言才可比。"""
+    return Counter((fact.kind, fact.key) for fact in _extract(text) if fact.hard)
 
 
 def _facts_align(source: str, target: str) -> bool:

@@ -92,6 +92,8 @@ class TranslateResult:
     untranslated: int = 0
     # 原文没变、直接用了已有译文的段数。
     reused: int = 0
+    # 请求失败（request-failed）时那一次的报错，命令行照印，不用再翻日志猜是断线、限流还是欠费。
+    error: str = ""
 
 
 class BatchTexts(list):
@@ -1012,6 +1014,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = Tr
         review=review,
         untranslated=len(gaps),
         reused=reused,
+        error=str(service_error)[:300] if service_error is not None and not complete else "",
     )
 
 
