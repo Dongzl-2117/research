@@ -23,7 +23,9 @@
   换成另一张里完整的。被截的那条认乱了、对不上时跳过它，看后面几条对不对得上。
   比的是模型交回的一条条消息和段落，不按版式猜。
 - 标注：截图后有人另外圈出、框出、划线标出的字（``marks``），排在那一块后面，写成「（图上标出：…）」；
-  标出的就是整块时不再抄一遍，写「（图上标出这段）」。
+  标出的就是整块时不再抄一遍，写「（图上标出这段）」。字明显比正文小的块（``small``，聊天里转发的书页、
+  文章截图）后面写「（小字，可能认错）」：这种字模型常按意思补成通顺的话，又自己觉得看清了，
+  字小不小它判断得准，所以让它标字小，摘要和问库看到这行就不把这段当成原话。
 
 结果存在 ``image_texts.units``。units 为空的是旧格式，仍由 ``wechat_dialogue`` 的旧规则整理；
 那套规则冻结，只管还没重识的旧图，不再往里加。遇到新版式改 ``VISION_PROMPT`` 里的通用说明。
@@ -51,6 +53,8 @@ EDGE_SLACK = 2
 MIN_OVERLAP_CHARS = 8
 # 一条被上下两张各截了一半时，两半至少要重合这么多个字才接成一条。
 MIN_SPLICE_CHARS = 4
+# 字明显比正文小的块（small）后面多写的一行。
+SMALL_NOTE = "（小字，可能认错）"
 
 _FENCE = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\n?(?P<body>.*?)\n?```$", re.S)
 _NOT_WORD = re.compile(r"[\W_]+")
@@ -181,7 +185,12 @@ def _block(item) -> dict | None:
         rows = [row for row in rows if any(row)]
         if not rows:
             return None
-        return {"type": "table", "rows": rows, "marks": marks} if marks else {"type": "table", "rows": rows}
+        table: dict = {"type": "table", "rows": rows}
+        if marks:
+            table["marks"] = marks
+        if _flag(item.get("small")):
+            table["small"] = True
+        return table
     cut = _cut(item.get("cut"))
     if kind == _SPOKEN:
         text = _spoken(item.get("text"))
@@ -201,6 +210,8 @@ def _block(item) -> dict | None:
         block["cut"] = cut
     if marks:
         block["marks"] = marks
+    if _flag(item.get("small")):
+        block["small"] = True
     return block
 
 
@@ -392,12 +403,18 @@ def _marks_note(block: dict) -> str:
     return f"（图上标出：{'；'.join(marks)}）"
 
 
+def _notes(block: dict) -> str:
+    """写在一块后面的说明：小字一行，标注一行。"""
+    return "\n".join(part for part in (SMALL_NOTE if block.get("small") else "", _marks_note(block)) if part)
+
+
 def paragraphs(
     blocks: list[dict], written: set[str] | None = None, owners: tuple[str, ...] = ()
 ) -> list[tuple[str, list[str]]]:
     """一张图的块排成段：[(说话人, [一行一行的字])]，没有说话人的段落和表格说话人是空串。
 
     同一个人连着说的并成一段，网友每次开口各自一段（看不到名字的不一定是同一个人）。
+    字明显比正文小的块（small）后面写一行「（小字，可能认错）」。
     有人另外标出的字（marks）写在那一块后面一行：「（图上标出：…）」，标出的是整块时写「（图上标出这段）」。
     written：前面已经写过的消息（就地更新）。引用的那条前面写过（截成前半句的也算），就不再写一遍。
     owners 见 ``speaker_label``。
@@ -405,7 +422,7 @@ def paragraphs(
     written = set() if written is None else written
     entries: list[tuple[str, str]] = []
     for block in blocks:
-        note = _marks_note(block)
+        note = _notes(block)
         if block.get("type") != _SPOKEN:
             entries.append(("", "\n".join(part for part in (_body(block), note) if part)))
             continue

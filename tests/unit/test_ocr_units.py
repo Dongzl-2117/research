@@ -306,6 +306,27 @@ def test_marks_covering_the_whole_block_are_not_copied_again():
     )
 
 
+def test_small_text_is_flagged_after_the_block():
+    """字明显比正文小的块（聊天里转发的书页、论坛截图）后面写一行「（小字，可能认错）」，有标注时标注排在后面。"""
+    units = _units(
+        _msg("在招聘时，公司要求每个人都要参加培训", me=True),
+        _msg("谁写的", "王小明"),
+        {"type": "text", "text": "书页上的一段", "small": "true", "marks": ["书页上的一段"]},
+        {"type": "table", "rows": [["年份", "增速"], ["2001", "-41.7"]], "small": 1},
+        {"type": "text", "text": "正文", "small": False},
+    )
+    units["blocks"][0]["small"] = True
+    assert units["blocks"][2]["small"] is True and units["blocks"][3]["small"] is True
+    assert "small" not in units["blocks"][1] and "small" not in units["blocks"][4]
+    assert format_units(units) == (
+        "方伟：在招聘时，公司要求每个人都要参加培训\n（小字，可能认错）\n\n"
+        "王小明：谁写的\n\n"
+        "书页上的一段\n（小字，可能认错）\n（图上标出这段）\n\n"
+        "年份 | 增速\n2001 | -41.7\n（小字，可能认错）\n\n"
+        "正文"
+    )
+
+
 def test_quote_cut_short_with_an_ellipsis_is_not_written_again():
     """引用框常把原话截成前半句加省略号：前面已经有整句，就不再写这半句。原话不在图上、或者半句太短，照写。"""
     whole = "对，好东西便宜，在外面很难快速找到替代，别家的好东西不便宜，外面遍地都是替代"
