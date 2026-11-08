@@ -274,13 +274,49 @@ def test_marks_are_kept_and_written_after_the_block():
     assert units["blocks"][1]["marks"] == ["先做好业务", "3"]
     assert units["blocks"][2]["marks"] == ["16倍"]
     assert "marks" not in units["blocks"][3]
-    marked = _units(_msg("股价不理想，如何提振股价", "王小明"))
+    marked = _units(_msg("股东会上有人问：股价不理想，如何提振股价", "王小明"))
     marked["blocks"][0]["marks"] = ["股价不理想", "如何提振股价"]
-    assert format_units(marked) == "王小明：股价不理想，如何提振股价\n（图上标出：股价不理想；如何提振股价）"
+    assert format_units(marked) == (
+        "王小明：股东会上有人问：股价不理想，如何提振股价\n（图上标出：股价不理想；如何提振股价）"
+    )
     assert format_units(units).endswith(
         "管理层回答：先做好业务\n（图上标出：先做好业务；3）\n\n"
         "公司 | 市盈率\n甲 | 16倍\n（图上标出：16倍）\n\n没有标注"
     )
+
+
+def test_marks_covering_the_whole_block_are_not_copied_again():
+    """整段、整条都被圈出来时不再把这段抄一遍，只说这段在图上标出了。几处标注连起来正好是整块也算。"""
+    units = _units(
+        {"type": "text", "text": "·过去几年，公司股价表现不理想", "marks": ["过去几年，公司股价表现不理想"]},
+        _msg("你是没玩过这款相机，拼接要后期", "李四"),
+        {
+            "type": "text",
+            "text": "预计明天 15:00 送达\n门店 | 闪购: 10.00",
+            "marks": ["预计明天 15:00 送达", "门店 | 闪购: 10.00"],
+        },
+        {"type": "text", "text": "1.角色与场景\n2.充分的调研", "marks": ["2.充分的调研"]},
+    )
+    units["blocks"][1]["marks"] = ["你是没玩过这款相机，拼接要后期"]
+    assert format_units(units) == (
+        "·过去几年，公司股价表现不理想\n（图上标出这段）\n\n"
+        "李四：你是没玩过这款相机，拼接要后期\n（图上标出这条）\n\n"
+        "预计明天 15:00 送达\n门店 | 闪购: 10.00\n（图上标出这段）\n\n"
+        "1.角色与场景\n2.充分的调研\n（图上标出：2.充分的调研）"
+    )
+
+
+def test_quote_cut_short_with_an_ellipsis_is_not_written_again():
+    """引用框常把原话截成前半句加省略号：前面已经有整句，就不再写这半句。原话不在图上、或者半句太短，照写。"""
+    whole = "对，好东西便宜，在外面很难快速找到替代，别家的好东西不便宜，外面遍地都是替代"
+    cut = {"speaker": "李四", "self": False, "text": whole[:31] + "..."}
+    units = _units(_msg(whole, "李四"), _msg("合作是非常紧密的", me=True, quote=cut))
+    assert format_units(units) == f"李四：{whole}\n\n方伟：合作是非常紧密的"
+    alone = _units(_msg("合作是非常紧密的", me=True, quote=cut))
+    assert format_units(alone) == f"李四：{cut['text']}\n\n方伟：合作是非常紧密的"
+    short = {"speaker": "李四", "self": False, "text": "好的..."}
+    units = _units(_msg("好的明天见", "李四"), _msg("收到", me=True, quote=short))
+    assert format_units(units) == "李四：好的明天见\n好的...\n\n方伟：收到"
 
 
 def test_short_coincidence_is_not_an_overlap():
