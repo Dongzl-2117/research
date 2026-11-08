@@ -69,6 +69,9 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
         "作者的错别字、重复的字、不通顺的句子、少见的名字和拼写都照抄",
         "帖子、推文、文章署的发布日期",
         '"marks"',
+        "版面本来就有的下划线、虚线",
+        '"small": true',
+        "引用框归和它挨得最近、在同一侧对齐的那条消息",
         "图上没标的数不要估",
         "blocks 写 []",
     ):
