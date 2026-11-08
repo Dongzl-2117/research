@@ -621,3 +621,113 @@ def test_translate_timeout_is_not_retried(tmp_path, monkeypatch):
             timeout_s=12,
         )
     assert calls == [1]
+
+
+class _Clock:
+    """译制量每次连了多久用的假钟；fake urlopen 每被调一次往前拨一下。"""
+
+    def __init__(self, step: float):
+        self.now = 1000.0
+        self.step = step
+
+    def __call__(self) -> float:
+        return self.now
+
+    def tick(self) -> None:
+        self.now += self.step
+
+
+def _translate_call(tmp_path):
+    return translate_llm.chat_json(
+        system="sys",
+        user={"segments": ["hi"]},
+        purpose="translate_body",
+        subject="batch",
+        data_dir=tmp_path,
+        timeout_s=12,
+    )
+
+
+def test_translate_gives_up_saying_how_long_each_try_lasted(tmp_path, monkeypatch, caplog):
+    """每次都连了 5 分钟才断是长请求被掐，几秒就断是网络不稳；报错和重发的日志里都写着，不用再猜。"""
+    import logging
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    clock = _Clock(300)
+
+    def fake_urlopen(req, timeout=None):
+        clock.tick()
+        return _Scripted([_delta(reasoning="想了很久"), _ssl_eof()])
+
+    monkeypatch.setattr(translate_llm, "_clock", clock)
+    monkeypatch.setattr(translate_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(translate_llm.time, "sleep", lambda _seconds: None)
+    caplog.set_level(logging.INFO, logger="researchlib.translate")
+    with pytest.raises(LLMTransportError) as caught:
+        _translate_call(tmp_path)
+    assert str(caught.value).startswith(
+        "连不上 DeepSeek 接口（同一请求试了 5 次，各连了 300、300、300、300、300 秒）：SSE 中途断开："
+    )
+    assert "UNEXPECTED_EOF_WHILE_READING" in str(caught.value)
+    retries = [record.getMessage() for record in caplog.records]
+    assert len(retries) == len(RETRY_DELAYS)
+    assert retries[0].startswith("译制请求连了 300 秒断开（SSE 中途断开：")
+    assert retries[0].endswith("2 秒后第 2 次发同一请求")
+    assert retries[-1].endswith("30 秒后第 5 次发同一请求")
+
+
+def test_translate_timeout_says_it_waited_the_whole_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    clock = _Clock(12)
+
+    def fake_urlopen(req, timeout=None):
+        clock.tick()
+        raise urllib.error.URLError(TimeoutError("The read operation timed out"))
+
+    monkeypatch.setattr(translate_llm, "_clock", clock)
+    monkeypatch.setattr(translate_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(translate_llm.time, "sleep", lambda _seconds: pytest.fail("超时不重发"))
+    with pytest.raises(LLMTransportError) as caught:
+        _translate_call(tmp_path)
+    assert str(caught.value) == (
+        "连不上 DeepSeek 接口（连了 12 秒，12 秒没收到数据算超时，不再重发）："
+        "<urlopen error The read operation timed out>"
+    )
+
+
+def test_translate_http_error_after_retries_says_how_many_tries(tmp_path, monkeypatch):
+    import io
+
+    from researchlib.translate.llm import LLMHTTPError
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(1)
+        raise urllib.error.HTTPError(req.full_url, 503, "busy", None, io.BytesIO(b"server busy"))
+
+    monkeypatch.setattr(translate_llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(translate_llm.time, "sleep", lambda _seconds: None)
+    with pytest.raises(LLMHTTPError) as caught:
+        _translate_call(tmp_path)
+    assert len(calls) == len(RETRY_DELAYS) + 1
+    assert caught.value.status == 503
+    assert str(caught.value) == "DeepSeek HTTP 503（同一请求试了 5 次）: server busy"
+
+
+def test_only_failures_that_waiting_can_fix_count_as_transient():
+    from researchlib.translate.llm import LLMConfigError, LLMHTTPError, transient_failure
+
+    assert transient_failure(LLMTransportError("连不上 DeepSeek 接口：ssl eof"))
+    assert transient_failure(LLMHTTPError(429, "DeepSeek HTTP 429"))
+    assert transient_failure(LLMHTTPError(503, "DeepSeek HTTP 503"))
+    for lasting in (
+        LLMHTTPError(400, "DeepSeek HTTP 400: Content Exists Risk"),
+        LLMHTTPError(401, "DeepSeek HTTP 401"),
+        LLMHTTPError(402, "DeepSeek HTTP 402: Insufficient Balance"),
+        LLMConfigError("没有配置 DEEPSEEK_API_KEY"),
+        RuntimeError("DeepSeek 返回非 JSON"),
+        None,
+    ):
+        assert not transient_failure(lasting)

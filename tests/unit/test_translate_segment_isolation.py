@@ -138,11 +138,29 @@ def test_a_dropped_connection_keeps_the_batches_already_paid_for(tmp_path, monke
     stored = conn.writes[0]
     assert result.status == "partial" and result.reason == "request-failed"
     assert result.error == "连不上 DeepSeek 接口：ssl eof"
+    # 断线是一时的：点名补译时命令行等几分钟自动再补没译出来的段。
+    assert result.retry_later
     assert stored[7].obj["untranslated"] == [2] and "Gamma held 30 dollars" in stored[3]
     assert "10美元" in stored[3] and "20美元" in stored[3]
     # 断线后不再开新的一批，标题也不问了；冷却按请求失败算。
     assert [len(segs) for segs, _repair in calls] == [2, 1]
     assert stored[2] == "" and conn.attempts == [("failed", "request-failed")]
+
+
+def test_running_out_of_balance_halfway_is_not_worth_retrying_soon(tmp_path, monkeypatch):
+    """欠费隔几分钟再问也一样：已译的段照样存下，但不让命令行等着再补。"""
+    monkeypatch.setattr(service, "TRANSLATE_BATCH_MAX_SEGMENTS", 2)
+
+    def answer(segs, _repair):
+        if any("Gamma" in segment for segment in segs):
+            raise LLMHTTPError(402, "DeepSeek HTTP 402: Insufficient Balance")
+        return _answer(segs, _repair)
+
+    conn, result, _calls = run(A + B + C, answer, tmp_path)
+    assert result.status == "partial" and result.reason == "request-failed"
+    assert result.error == "DeepSeek HTTP 402: Insufficient Balance"
+    assert not result.retry_later
+    assert conn.attempts == [("failed", "request-failed")]
 
 
 def test_a_dead_service_on_the_first_batch_still_fails_the_article(tmp_path):
@@ -169,6 +187,7 @@ def test_a_refused_segment_is_isolated_and_the_rest_is_written(tmp_path):
     assert result.status == "partial" and conn.writes[0][7].obj["untranslated"] == [1]
     # 为什么先放英文，命令输出和尝试记录里都有，不用翻日志。
     assert result.reason == "http-400"
+    assert not result.retry_later
     assert conn.attempts == [("rejected", "untranslated:http-400")]
 
 
