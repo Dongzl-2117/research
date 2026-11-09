@@ -18,6 +18,9 @@ import re
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -105,6 +108,69 @@ class ChatJsonResult:
     model: str
     usage: dict[str, Any] | None
     latency_ms: int
+
+
+@dataclass
+class Usage:
+    """模型用量，按 DeepSeek 返回的 usage 累加。接口没报用量的那一次只计请求数。"""
+
+    prompt: int = 0
+    cache_hit: int = 0
+    completion: int = 0
+    reasoning: int = 0
+    requests: int = 0
+    # 收到了回答、但接口没报用量的次数。不为 0 时上面几个数偏少。
+    unreported: int = 0
+
+    def add(self, usage: dict | None) -> None:
+        self.requests += 1
+        if not isinstance(usage, dict):
+            self.unreported += 1
+            return
+        self.prompt += int(usage.get("prompt_tokens") or 0)
+        self.cache_hit += int(usage.get("prompt_cache_hit_tokens") or 0)
+        self.completion += int(usage.get("completion_tokens") or 0)
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict):
+            self.reasoning += int(details.get("reasoning_tokens") or 0)
+
+    def merge(self, other: Usage) -> None:
+        self.prompt += other.prompt
+        self.cache_hit += other.cache_hit
+        self.completion += other.completion
+        self.reasoning += other.reasoning
+        self.requests += other.requests
+        self.unreported += other.unreported
+
+    def as_dict(self) -> dict[str, int]:
+        return {"requests": self.requests, "prompt": self.prompt, "cacheHit": self.cache_hit,
+                "completion": self.completion, "reasoning": self.reasoning}
+
+    def describe(self) -> str:
+        return (
+            f"请求 {self.requests} 次，输入 {self.prompt:,} token（缓存命中 {self.cache_hit:,}），"
+            f"输出 {self.completion:,} token（思考 {self.reasoning:,}）"
+            + (f"，其中 {self.unreported} 次接口没报用量、没算进去" if self.unreported else "")
+        )
+
+
+# 正在记账的用量。chat_json 每收到一次完整的回答（回答本身用不用得上都算）就往这里每一份各记一笔。
+# 各线程各记各的：几篇同时译时，每篇只记自己那几次请求。
+_meters: ContextVar[tuple[Usage, ...]] = ContextVar("translate_usage", default=())
+
+
+@contextmanager
+def metered() -> Iterator[Usage]:
+    """这一段里（同一线程）chat_json 的用量记进交出去的 Usage。可以套着用，外面那份也照记。
+
+    断在半路、没收到完整回答的那一次不记：接口没报用量，也不知道算没算钱。
+    """
+    usage = Usage()
+    token = _meters.set((*_meters.get(), usage))
+    try:
+        yield usage
+    finally:
+        _meters.reset(token)
 
 
 def output_tokens(requested: int | None = None) -> int:
@@ -254,6 +320,9 @@ def chat_json(
             )
             time.sleep(delay)
             retries += 1
+    reported = response.get("usage") if isinstance(response.get("usage"), dict) else None
+    for meter in _meters.get():
+        meter.add(reported)
     choice = (response.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     # 思考过程在 reasoning_content，只取最终答案。
@@ -268,7 +337,7 @@ def chat_json(
     return ChatJsonResult(
         data=data,
         model=str(response.get("model") or params["model"]),
-        usage=response.get("usage") if isinstance(response.get("usage"), dict) else None,
+        usage=reported,
         latency_ms=int((time.time() - started) * 1000),
     )
 
@@ -287,11 +356,13 @@ __all__ = [
     "LLMConfigError",
     "LLMHTTPError",
     "LLMTransportError",
+    "Usage",
     "XaiLoginRequiredError",
     "chat_json",
     "extract_json",
     "grok_output_tokens",
     "long_timeout_s",
+    "metered",
     "model_id",
     "output_tokens",
     "transient_failure",
