@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
-  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf9f6">
-  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#13191c">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf5ee">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10161f">
   <title>{{ title }} · 投资研究库</title>
   <link rel="canonical" href="{{ canonical }}">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -46,7 +46,7 @@
   <a class="skip" href="#main">跳到正文</a>
   <div class="shell">
     <aside class="sidebar">
-      <a class="brand" href="/" aria-label="投资研究库 首页"><i aria-hidden="true"></i>投资研究库</a>
+      <a class="brand" href="/" aria-label="投资研究库 首页"><i aria-hidden="true">研</i>投资研究库</a>
       <nav aria-label="主导航">
         <div class="nav-label">内容</div>
         <div class="nav-group">
@@ -89,7 +89,7 @@
           {% endif %}
           {% if nav_item.href %}
           <a class="nav-link" href="{{ nav_item.href }}" {% if nav_item.current %}aria-current="page"{% endif %}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            <svg class="nav-dot" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/></svg>
             <span>{{ source.name }}</span>
           </a>
           {% endif %}
@@ -101,7 +101,7 @@
     </aside>
     <main id="main" tabindex="-1">
       <div class="mobile-bar">
-        <a class="brand" href="/" aria-label="投资研究库 首页"><i aria-hidden="true"></i>投资研究库</a>
+        <a class="brand" href="/" aria-label="投资研究库 首页"><i aria-hidden="true">研</i>投资研究库</a>
         {% include "_theme.html" %}
       </div>
       <div class="frame">
