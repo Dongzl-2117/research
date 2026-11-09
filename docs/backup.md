@@ -42,7 +42,7 @@ BACKUP_DIR/
 | 步骤 | 命令 | 上限 |
 | --- | --- | --- |
 | Stratechery 发布时刻 | `research-stratechery-times`：归档只记了日期的篇按官网接口补上钟点，不调模型；都有了就不连官网（见 [ingest.md](ingest.md)「Stratechery 的发布时刻」） | 没有上限，只看还没钟点的 |
-| 外链图片 | `research-fetch-images` | `IMAGES_LIMIT`，默认 300 个地址 |
+| 外链图片 | `research-fetch-images --exit-code`：第一次下的地址大半下不来时退出码 3，这一步记失败（见 [ingest.md](ingest.md)「外链图片」） | `IMAGES_LIMIT`，默认 300 个地址 |
 | 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
 | 语义向量 | `research-embed`（没配 `EMBEDDING_BASE_URL` 时什么都不做） | `EMBED_LIMIT`，默认 50000 块 |
 | 观点 | `research-views` | `VIEWS_LIMIT`，默认 60 篇 |
@@ -69,7 +69,7 @@ docker compose exec app research-status   # 没问题打「没有要处理的」
 | 试恢复 | 最近一次失败，或 40 天没成功 |
 | 方伟公众号抓取、方伟星球抓取 | 最近一次失败，或 30 小时没成功（装了才看） |
 | 孤独进化体抓取 | 最近一次失败，或 50 小时没成功（装了才看） |
-| 夜间补齐 | 有步骤失败，或 50 小时没成功（装了才看） |
+| 夜间补齐 | 有步骤失败（外链图片第一次下的地址大半下不来也算），或 50 小时没成功（装了才看） |
 | 自动上线 | 拉代码、重建失败，重启后应用没起来，CI 没过，仓库不在 main 或有没提交的改动，6 小时取不到 main、查不到 CI，新提交被正在跑的任务挡了 3 小时，或者上一轮 2 小时还没跑完（装了才看） |
 | 后台重算 | 应用启动后认重复、重算提及失败 |
 | 外链图片下载 | 最近一次 `research-fetch-images`（定时抓取和夜间补齐都跑）第一次下的地址里，下不来的超过一半或够 20 个；提示里带原因类别和最多的域名，见 [ingest.md](ingest.md)「外链图片」 |

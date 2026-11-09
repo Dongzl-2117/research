@@ -55,7 +55,9 @@ step() {
 
 # 归档只记了日期的 Stratechery 按官网接口补上钟点（不调模型；都有了就不连官网），新导入的第二天就有。
 step "Stratechery 发布时刻" compose_exec app research-stratechery-times
-step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMIT"
+# 新地址大半下不来（代理、图床出了问题）时 --exit-code 让它退出码 3，这一步记成失败，原因那句进 nightly.json。
+# 以前它总是退出码 0：11-09 夜里 300 个新地址一张没下下来，夜间补齐照样报成功。
+step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMIT" --exit-code
 # 以前识图排在最后：当天的截图帖先拿一行正文抽观点（白花一次），第二晚识了字才重抽；图片文字块也要等一晚才有向量。
 if [ "$NIGHTLY_OCR" = "1" ]; then
   step "图片文字" compose_exec app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"

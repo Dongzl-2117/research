@@ -6,14 +6,19 @@ DATA_DIR/images/remote/，在 article_images 里记一行（remote = true），�
 
 - 只下 http(s)，只连公网地址：每次建连接时核对对方的 IP，内网、本机、Tailscale 这类地址一律断开，
   跳转、域名解析结果中途变了也一样；不走代理，最多跳转 5 次。只收图片，单张不超过 15MB。
+- 代理的 fake-ip 只给几个固定的图床放行（PROXY_IMAGE_HOSTS）。Mac mini 上的代理开着 fake-ip，容器里
+  i0.wp.com、stratechery.com 都解析成 198.18.x.x，连上去由代理按域名转到真正的服务器。代理背后连的是哪里
+  这边看不到，正文里随便写的域名真正的地址可能在内网，所以别的域名解析成假地址照旧不下。
 - WordPress 图片 CDN（i0.wp.com/原站/路径，Stratechery 的图都是这样）先下原站那一张，下不来再试 CDN：
-  Mac mini 上的代理把 i0.wp.com 解析成 198.18.x.x，上面那条检查不放行；CDN 对一部分图还会回 404。
+  CDN 对一部分图会回 404。
 - 不带 Referer（公众号图床对外链 Referer 返回占位图）。
 - 每个地址的结果记在 image_fetches：成功的别的文章引用同一张图直接复用；失败的按次数隔 1、3、7、30 天再试。
 - 每次跑完把新地址下不来的张数、原因类别和最多的域名写进 DATA_DIR/status/fetch-images.json，
-  新地址大半下不来时 research-status 会列出来，值班不用查库（见 fetch_status）。
+  新地址大半下不来时 research-status 会列出来，值班不用查库（见 fetch_status）。夜间补齐带 --exit-code，
+  这时退出码 3，那一步记成失败。
 
     research-fetch-images --limit 300
+    research-fetch-images --limit 300 --exit-code
 """
 
 from __future__ import annotations
@@ -90,42 +95,77 @@ def image_extension(data: bytes, content_type: str = "") -> str:
     return ""
 
 
+# 解析不了（域名没了、这台机器的 DNS 坏了）、解析到代理的假地址（fake-ip）、解析到内网分开记：处理办法不一样。
+# 后两种在错误后面带上「（域名 → 地址）」，查库就知道是哪个域名、解析成了什么。
 _NOT_PUBLIC = "地址解析到内网或本机，不下载"
-# 解析不了（域名没了、这台机器的 DNS 坏了）和解析到内网（代理的 fake-ip）分开记：处理办法不一样。
+_FAKE_IP = "地址解析到代理的假地址，不下载"
 _NO_DNS = "域名解析不了"
 
+# Clash、Surge、sing-box 这类代理开 fake-ip 时用的段：RFC 2544 留给测试的 198.18.0.0/15，公网上不会出现。
+PROXY_FAKE_IPS = ipaddress.ip_network("198.18.0.0/15")
+# 解析成代理假地址也照样下的图床：都是固定的公网服务器，代理按域名连过去不会进内网。
+# 只写正文里真有的图床（Stratechery 原站和 WordPress 图片 CDN），不按后缀匹配。
+PROXY_IMAGE_HOSTS = frozenset(
+    {"stratechery.com", "www.stratechery.com", "i0.wp.com", "i1.wp.com", "i2.wp.com", "i3.wp.com"}
+)
 
-def blocked_address(value: str) -> bool:
-    """不是公网地址：内网、本机、链路本地、运营商级 NAT（Tailscale 的 100.64.0.0/10）、组播、保留段。"""
+
+def _ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     try:
         address = ipaddress.ip_address(value.split("%", 1)[0])
     except ValueError:
-        return True
+        return None
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
-    return not address.is_global or address.is_multicast
+        return address.ipv4_mapped
+    return address
 
 
-def _public_host(host: str) -> bool:
-    """解析出来全是公网地址。解析不了抛 FetchError（「域名解析不了」）。"""
+def blocked_address(value: str) -> bool:
+    """不是公网地址：内网、本机、链路本地、运营商级 NAT（Tailscale 的 100.64.0.0/10）、组播、保留段、代理假地址。"""
+    address = _ip(value)
+    return address is None or not address.is_global or address.is_multicast
+
+
+def proxy_fake_ip(value: str) -> bool:
+    """代理 fake-ip 段里的地址（198.18.0.0/15）。"""
+    address = _ip(value)
+    return address is not None and address in PROXY_FAKE_IPS
+
+
+def check_address(host: str, address: str) -> None:
+    """连 host 连到了 address：能连就返回，不能连抛 FetchError。
+
+    公网地址都能连；代理的假地址只有 PROXY_IMAGE_HOSTS 能连，真正的内网地址谁都不能连。
+    """
+    if not blocked_address(address):
+        return
+    if proxy_fake_ip(address):
+        if host.lower().rstrip(".") in PROXY_IMAGE_HOSTS:
+            return
+        raise FetchError(f"{_FAKE_IP}（{host} → {address}）")
+    raise FetchError(f"{_NOT_PUBLIC}（{host} → {address}）")
+
+
+def _check_host(host: str) -> None:
+    """解析出来的地址每个都能连（check_address）。解析不了抛「域名解析不了」。"""
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError as exc:
         raise FetchError(f"{_NO_DNS}：{exc}") from exc
-    return bool(infos) and not any(blocked_address(str(info[4][0])) for info in infos)
+    if not infos:
+        raise FetchError(f"{_NO_DNS}：没有地址")
+    for info in infos:
+        check_address(host, str(info[4][0]))
 
 
 def _checked_create_connection(address, *args, **kwargs):
-    """建好 TCP 连接后核对对方的 IP，不是公网就断开：跳转和中途换了解析结果都拦得住。"""
+    """建好 TCP 连接后核对对方的 IP，不能连就断开：跳转和中途换了解析结果都拦得住。"""
     sock = socket.create_connection(address, *args, **kwargs)
     try:
-        peer = sock.getpeername()[0]
-    except OSError:
+        check_address(str(address[0]), str(sock.getpeername()[0]))
+    except (OSError, FetchError):
         sock.close()
         raise
-    if blocked_address(str(peer)):
-        sock.close()
-        raise FetchError(_NOT_PUBLIC)
     return sock
 
 
@@ -211,8 +251,7 @@ def _download(url: str) -> tuple[bytes, str]:
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise FetchError("不是 http(s) 地址")
-    if not _public_host(parts.hostname):
-        raise FetchError(_NOT_PUBLIC)
+    _check_host(parts.hostname)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.5"})
     try:
         with _opener().open(request, timeout=TIMEOUT_S) as response:
@@ -383,7 +422,7 @@ def fetch_pending(
 
 
 def failure_kind(error: str) -> str:
-    """image_fetches.error → 原因类别：HTTP 404、连不上、解析到内网、域名解析不了、不是图片……
+    """image_fetches.error → 原因类别：HTTP 404、连不上、解析到代理假地址、解析到内网、域名解析不了、不是图片……
 
     WordPress 的图两边都试过（「原站：…；i0.wp.com：…」）：哪边回了 HTTP 状态码按哪边，服务器明确答复了；
     两边都没有按原站。
@@ -397,6 +436,7 @@ def failure_kind(error: str) -> str:
     if status:
         return f"HTTP {status.group(1)}"
     for prefix, kind in (
+        (_FAKE_IP, "解析到代理假地址"),
         (_NOT_PUBLIC, "解析到内网"),
         (_NO_DNS, _NO_DNS),
         ("连不上", "连不上"),
@@ -415,6 +455,8 @@ STATUS_MIN_NEW = 5
 # 第一次下的地址里，下不来的超过一半，或者够这么多个，就在 research-status 里列出来。
 STATUS_MANY_FAILED = 20
 STATUS_TASK = "fetch-images"
+# 带 --exit-code 时，新地址大半下不来（fetch_status 判的有问题）的退出码。0 是跑完了，1 是出错退出。
+EXIT_MOSTLY_FAILED = 3
 
 
 def fetch_status(report: dict) -> tuple[bool, str] | None:
@@ -441,13 +483,13 @@ def fetch_status(report: dict) -> tuple[bool, str] | None:
     return not problem, message
 
 
-def record_fetch_status(data_dir: Path, report: dict) -> str:
-    """把 fetch_status 的结论写进 DATA_DIR/status/fetch-images.json，返回那句话（没有结论返回空串）。"""
+def record_fetch_status(data_dir: Path, report: dict) -> tuple[bool, str] | None:
+    """把 fetch_status 的结论写进 DATA_DIR/status/fetch-images.json，返回这个结论（没有结论返回 None，文件不动）。"""
     from researchlib.health import write_status
 
     verdict = fetch_status(report)
     if verdict is None:
-        return ""
+        return None
     ok, message = verdict
     write_status(
         data_dir,
@@ -458,13 +500,40 @@ def record_fetch_status(data_dir: Path, report: dict) -> str:
         kinds=dict(report.get("kinds") or {}),
         hosts=dict(Counter(report.get("hosts") or {}).most_common(10)),
     )
-    return message
+    return verdict
+
+
+def finish(data_dir: Path, report: dict, *, exit_code: bool = False) -> int:
+    """记下结论、打出那句话，返回退出码。
+
+    带 exit_code 且新地址大半下不来时退出码 EXIT_MOSTLY_FAILED，那句话打在错误输出最后一行：
+    夜间补齐（scripts/nightly.sh）把这一步记成失败，原因就是这句。不带时照旧退出码 0。
+    """
+    verdict = record_fetch_status(data_dir, report)
+    if verdict is None:
+        return 0
+    ok, summary = verdict
+    if ok or not exit_code:
+        print(summary)
+        return 0
+    print(summary, file=sys.stderr)
+    return EXIT_MOSTLY_FAILED
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="把正文里的外链图片下载到本地（DATA_DIR/images/remote）")
+    parser.add_argument("--limit", type=int, default=300, help="这次最多下载多少个地址")
+    parser.add_argument(
+        "--exit-code",
+        action="store_true",
+        help=f"新地址大半下不来（research-status 会报的那种）时退出码 {EXIT_MOSTLY_FAILED}，原因打在错误输出最后一行",
+    )
+    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="把正文里的外链图片下载到本地（DATA_DIR/images/remote）")
-    parser.add_argument("--limit", type=int, default=300, help="这次最多下载多少个地址")
-    args = parser.parse_args(argv)
+    """退出码：0 跑完了（个别下不来也算）；带 --exit-code 时新地址大半下不来是 3。"""
+    args = build_parser().parse_args(argv)
     from researchlib.config import Settings
     from researchlib.db import prepare
 
@@ -478,10 +547,7 @@ def main(argv: list[str] | None = None) -> int:
         f"下载 {report['downloaded']} 张，复用 {report['reused']} 张，失败 {report['failed']} 张，"
         f"等下次重试 {report['skipped']} 张，涉及 {report['articles']} 篇"
     )
-    summary = record_fetch_status(settings.data_dir, report)
-    if summary:
-        print(summary)
-    return 0
+    return finish(settings.data_dir, report, exit_code=args.exit_code)
 
 
 if __name__ == "__main__":

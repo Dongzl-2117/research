@@ -329,6 +329,29 @@ def test_failed_wordpress_cdn_fetches_are_queued_again(conn):
     assert left == {rows[2][0], rows[3][0]}
 
 
+def test_images_blocked_by_the_proxy_fake_ip_are_queued_again(conn):
+    """033：Stratechery 原站和 WordPress CDN 被「只连公网」拦下（代理假地址）的失败记录删掉，下一次下载就重试；
+    别的原因的失败、成功的、别的图床不动。"""
+    rows = [
+        ("https://i0.wp.com/stratechery.com/wp-content/uploads/a.png?ssl=1", False,
+         "原站：地址解析到内网或本机，不下载；i0.wp.com：地址解析到内网或本机，不下载"),
+        ("https://i1.wp.com/stratechery.com/wp-content/uploads/b.png", False,
+         "原站：地址解析到内网或本机，不下载；i1.wp.com：HTTP 404"),
+        ("https://stratechery.com/wp-content/uploads/c.png", False, "地址解析到内网或本机，不下载"),
+        ("https://i0.wp.com/stratechery.com/wp-content/uploads/d.png", False, "原站：HTTP 404；i0.wp.com：HTTP 404"),
+        ("https://i0.wp.com/stratechery.com/wp-content/uploads/e.png", True, ""),
+        ("https://evil.example/f.png", False, "地址解析到内网或本机，不下载"),
+        ("https://mmbiz.qpic.cn/g.png", False, "HTTP 404"),
+    ]
+    for url, ok, error in rows:
+        conn.execute("INSERT INTO image_fetches (url, ok, error, attempts) VALUES (%s, %s, %s, 3)", (url, ok, error))
+    for _ in range(2):  # 再跑一遍结果一样
+        for statement in split_sql((MIGRATIONS / "033_retry_proxy_fake_ip_images.sql").read_text(encoding="utf-8")):
+            conn.execute(statement)
+    left = {row["url"] for row in conn.execute("SELECT url FROM image_fetches").fetchall()}
+    assert left == {url for url, _ok, _error in rows[3:]}
+
+
 def _echo_translation(**kwargs):
     """译制替身：每段照原样回，只把几个英文词换成中文；回执要的 id 和摘要原样带回。"""
     user = kwargs["user"]

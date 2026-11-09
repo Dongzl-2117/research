@@ -16,6 +16,7 @@
 - Mac mini 上的 `~/research` 只给自动上线用。在那台机器上干活的人和 AI 另外 clone 一份或者用 `git worktree`，不在 `~/research` 里切分支、改文件、提交；本机才要忽略的文件写进 `.git/info/exclude`。那份仓库不在 main、有本机改动或者有没推送的提交，自动上线都会停下，原因写在 `data/status/deploy.json`，处理办法见 [docs/deploy.md](docs/deploy.md)「更新」。
 - 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、孤独进化体抓取、自动上线、外链图片下载）的结果写进 `data/status/<任务>.json`，供值班助手看：`docker compose exec app research-status` 把失败和太久没成功的逐条打出来，有就退出码 1。首页不再挂运维红条，见 [docs/backup.md](docs/backup.md)。
 - 密钥在 Mac mini 的 `.env`。站内 LLM 默认 DeepSeek，见 [docs/llm.md](docs/llm.md)。
+- Mac mini 上的代理开着 fake-ip：容器里 `stratechery.com`、`i0.wp.com` 这类国外域名解析成 `198.18.x.x`，连上去由代理按域名转。外链图片的「只连公网」检查只给几个固定图床放行这一段（`remote_images.PROXY_IMAGE_HOSTS`），别的域名照旧拦；新的国外图床下不来时 `research-status` 报「解析到代理假地址」，见 [docs/ingest.md](docs/ingest.md)「外链图片」。
 
 ## 怎么协作
 
