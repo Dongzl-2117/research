@@ -36,7 +36,7 @@ def no_real_model_or_credentials(monkeypatch):
     monkeypatch.setattr(llm, "_oauth_token", lambda *args, **kwargs: "synthetic-oauth-only")
 
 
-def setup_site(tmp_path, *, models=False, provider="deepseek", private=False, daily=5):
+def setup_site(tmp_path, *, models=False, provider="deepseek-legacy", private=False, daily=5):
     snapshot = demo_snapshot()
     if private:
         snapshot = snapshot.model_copy(update={"material": "private_corpus"})
@@ -165,7 +165,7 @@ def test_csrf_binds_real_session_and_rejects_host_origin_and_credential_revocati
     assert len(store.history()) == 1
 
 
-@pytest.mark.parametrize('provider', ['deepseek', 'grok'])
+@pytest.mark.parametrize('provider', ['deepseek-legacy', 'grok'])
 def test_supported_site_model_only_after_confirmed_plan_and_two_bounded_requests(tmp_path, monkeypatch, provider):
     calls = []
     def fake_open(self, req, timeout=None):
@@ -370,7 +370,7 @@ def test_changed_site_model_plan_requires_new_comparison_before_model_call(tmp_p
     assert len(store.history()) == 2 and store.get(old_run["id"]) == old_run
 
 
-@pytest.mark.parametrize('provider', ['deepseek', 'grok'])
+@pytest.mark.parametrize('provider', ['deepseek-legacy', 'grok'])
 @pytest.mark.parametrize('revoke', ['source', 'session'])
 def test_revoked_while_waiting_for_model_slot_never_reads_credentials_or_posts(
     tmp_path, monkeypatch, provider, revoke,

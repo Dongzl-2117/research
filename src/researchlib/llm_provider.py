@@ -1,8 +1,12 @@
-"""站内 LLM 用哪一家：默认 DeepSeek，Grok 要显式打开。
+"""站内 LLM 用哪一家，由 ``RESEARCH_LLM_PROVIDER`` 切换。
 
-``RESEARCH_LLM_PROVIDER=deepseek|grok``，大小写和首尾空格都不计较。不设、或者填了不认识的值，
-一律按 deepseek——这是 owner 2026-10-22 定的默认，等他说换回 Grok 再改。
-Grok 走 xAI OAuth（research-xai-login），只是不再是默认。
+取值（大小写和两端空白不计）：
+
+- 不设、空、``grok``，以及不认识的值：Grok OAuth。这是默认。
+- ``deepseek``：DeepSeek。``deepseek-legacy`` 是同一个值的别名，以前的应急写法还能用。
+
+改这一行再重启进程就换提供方，不用改代码。调用失败时不会在两家之间自动切换：
+当前这家凭证不可用就直接报错。
 """
 
 from __future__ import annotations
@@ -10,15 +14,17 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-PROVIDER_DEEPSEEK = "deepseek"
 PROVIDER_GROK = "grok"
-DEFAULT_PROVIDER = PROVIDER_DEEPSEEK
-PROVIDERS = (PROVIDER_DEEPSEEK, PROVIDER_GROK)
+PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_DEEPSEEK_LEGACY = "deepseek-legacy"
+DEFAULT_PROVIDER = PROVIDER_GROK
+PROVIDERS = (PROVIDER_GROK, PROVIDER_DEEPSEEK)
 
 DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
 GROK_DEFAULT_BASE_URL = "https://api.x.ai/v1"
 
 _LABELS = {PROVIDER_DEEPSEEK: "DeepSeek", PROVIDER_GROK: "Grok"}
+_DEEPSEEK_VALUES = frozenset({PROVIDER_DEEPSEEK, PROVIDER_DEEPSEEK_LEGACY})
 
 
 def _env(environ: Mapping[str, str] | None) -> Mapping[str, str]:
@@ -26,9 +32,11 @@ def _env(environ: Mapping[str, str] | None) -> Mapping[str, str]:
 
 
 def llm_provider(environ: Mapping[str, str] | None = None) -> str:
-    """当前提供方。没设或填错都按 deepseek，Grok 只认明确的 grok。"""
+    """当前提供方。默认 grok；显式 ``deepseek``（或别名 ``deepseek-legacy``）才走 DeepSeek。"""
     raw = (_env(environ).get("RESEARCH_LLM_PROVIDER") or "").strip().lower()
-    return PROVIDER_GROK if raw == PROVIDER_GROK else PROVIDER_DEEPSEEK
+    if raw in _DEEPSEEK_VALUES:
+        return PROVIDER_DEEPSEEK
+    return PROVIDER_GROK
 
 
 def provider_label(provider: str) -> str:

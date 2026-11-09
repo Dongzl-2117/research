@@ -1,4 +1,4 @@
-"""批量 / 单篇站内翻译。默认 DeepSeek；Grok 需要先 research-xai-login login。
+"""批量 / 单篇站内翻译。默认 Grok OAuth；``RESEARCH_LLM_PROVIDER=deepseek`` 走 DeepSeek。
 
 在 Mac mini 上：docker compose exec app research-translate --source stratechery --limit 10。
 ``--workers N`` 几篇同时译：每篇里的各批照旧一批接一批（每批要带上前面译好的中文），篇和篇之间互不等。
@@ -190,7 +190,9 @@ def _open_worker(settings: Settings):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="用站内 LLM（默认 DeepSeek，可切 Grok OAuth）翻译英文文章")
+    parser = argparse.ArgumentParser(
+        description="用站内 LLM 翻译英文文章（默认 Grok；RESEARCH_LLM_PROVIDER=deepseek 走 DeepSeek）"
+    )
     parser.add_argument("--article-id", type=int, action="append", default=[], help="指定文章 id，可重复")
     parser.add_argument("--source", default="", help="只处理该来源 id")
     parser.add_argument(
@@ -231,6 +233,15 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.workers <= MAX_WORKERS:
         print(f"--workers 要在 1 到 {MAX_WORKERS} 之间", file=sys.stderr)
         return 2
+    # 几篇同时译不超过 RESEARCH_LLM_CONCURRENCY（默认 8，没有低硬顶）。
+    # 另外还有 MAX_WORKERS：每个 worker 占一条数据库连接，不能把连接数开过库的上限。
+    concurrency = int(getattr(settings, "llm_concurrency", MAX_WORKERS) or MAX_WORKERS)
+    if args.workers > concurrency:
+        print(
+            f"同时译 {concurrency} 篇：--workers {args.workers} 超过 RESEARCH_LLM_CONCURRENCY",
+            file=sys.stderr,
+        )
+        args.workers = concurrency
     if args.dry_run and not args.recheck:
         print("--dry-run 要和 --recheck 一起用", file=sys.stderr)
         return 2
@@ -259,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     elif not deepseek_api_key():
         print(
-            "没有配置 DEEPSEEK_API_KEY。把它写进 .env（或 compose），或设 RESEARCH_LLM_PROVIDER=grok。",
+            "没有配置 DEEPSEEK_API_KEY。把它写进 .env（或 compose）。"
+            "要改走 Grok，把 RESEARCH_LLM_PROVIDER 设成 grok 或删掉这一行再重启。",
             file=sys.stderr,
         )
         return 2

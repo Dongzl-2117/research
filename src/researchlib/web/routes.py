@@ -31,7 +31,7 @@ from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.housekeeping import strip_housekeeping
-from researchlib.llm import active_label, active_model_id, llm_configured
+from researchlib.llm import active_label, active_model_id, llm_configured, missing_credential_text
 from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.nested_copies import fold_nested_copies
@@ -1710,6 +1710,7 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
         "authors": list(_author_groups(sources)[1]),
         "llm_ready": llm_configured(request.app.state.settings),
         "llm_label": active_label(request.app.state.settings),
+        "credential_notice": missing_credential_text(request.app.state.settings),
         "model": active_model_id(request.app.state.settings),
         "history": queries.recent_answers(conn, 15),
     }
