@@ -1,4 +1,8 @@
-"""站内 LLM 默认 DeepSeek：deepseek-flash / thinking / max / 393216 起；Grok 保留为显式选项。"""
+"""DeepSeek 只作应急回退（``RESEARCH_LLM_PROVIDER=deepseek-legacy``）：deepseek-flash / thinking / max / 393216 起。
+
+2026-11-10 起站内默认是 Grok OAuth，这个文件里除默认值那两个测试外，其余都是按提供方测传输
+（SSE 重拼、断线重试、超时不重发），所以 fixture 显式把提供方设成 deepseek-legacy。
+"""
 
 import json
 import ssl
@@ -58,7 +62,8 @@ class _Response:
 
 @pytest.fixture(autouse=True)
 def _clean_env(tmp_path, monkeypatch):
-    monkeypatch.delenv("RESEARCH_LLM_PROVIDER", raising=False)
+    # 这个文件测 DeepSeek 那条分支的传输，显式设成应急回退值；默认提供方见下面两个测试。
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "deepseek-legacy")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
@@ -76,6 +81,8 @@ def _settings(tmp_path, **extra) -> Settings:
         {
             "DATABASE_URL": "postgresql://unused/research_test",
             "DATA_DIR": str(tmp_path),
+            # 这个文件按提供方测传输，显式走应急回退值；默认 Grok 的那组在 test_grok_strength.py。
+            "RESEARCH_LLM_PROVIDER": "deepseek-legacy",
             **extra,
         }
     )
@@ -100,21 +107,26 @@ def _write_oauth(path, access="oauth-access") -> None:
     )
 
 
-def test_provider_defaults_to_deepseek():
-    assert llm_provider({}) == "deepseek"
-    assert llm_provider({"RESEARCH_LLM_PROVIDER": ""}) == "deepseek"
-    assert llm_provider({"RESEARCH_LLM_PROVIDER": " DeepSeek "}) == "deepseek"
+def test_provider_defaults_to_grok():
+    """默认 Grok OAuth。以前 .env 里写的 deepseek、拼错的值、空值都按 grok，不会悄悄留在 DeepSeek 上。"""
+    assert llm_provider({}) == "grok"
+    assert llm_provider({"RESEARCH_LLM_PROVIDER": ""}) == "grok"
+    assert llm_provider({"RESEARCH_LLM_PROVIDER": " DeepSeek "}) == "grok"
     assert llm_provider({"RESEARCH_LLM_PROVIDER": "GROK"}) == "grok"
-    # 填了不认识的值也按默认来，不因为一个拼写错误把站点打挂。
-    assert llm_provider({"RESEARCH_LLM_PROVIDER": "xai"}) == "deepseek"
+    assert llm_provider({"RESEARCH_LLM_PROVIDER": "xai"}) == "grok"
+    # 只有显式写应急回退值才走 DeepSeek。
+    assert llm_provider({"RESEARCH_LLM_PROVIDER": "deepseek-legacy"}) == "deepseek"
 
 
-def test_settings_defaults_are_deepseek(tmp_path):
-    settings = _settings(tmp_path)
-    assert settings.llm_provider == "deepseek"
-    assert settings.llm_base_url == "https://api.deepseek.com"
-    assert active_label(settings) == "DeepSeek"
-    assert active_model_id(settings) == deepseek.DEEPSEEK_MODEL_ID == "deepseek-flash"
+def test_settings_defaults_are_grok_oauth(tmp_path):
+    # 不写提供方（_settings 里那个应急回退值要去掉），看真实默认。
+    settings = Settings.from_env(
+        {"DATABASE_URL": "postgresql://unused/research_test", "DATA_DIR": str(tmp_path)}
+    )
+    assert settings.llm_provider == "grok"
+    assert settings.llm_base_url == "https://api.x.ai/v1"
+    assert active_label(settings) == "Grok"
+    assert active_model_id(settings) == "grok-4.7"
     assert credential_kind(settings) == ""
     assert llm_configured(settings) is False
 
@@ -376,7 +388,8 @@ def test_grok_opt_in_still_uses_oauth(tmp_path, monkeypatch):
     assert seen["bearer"] == "oauth-access"
     payload = seen["payload"]
     assert payload["model"] == "grok-4.7"
-    assert payload["reasoning_effort"] == "xhigh"
+    assert payload["reasoning_effort"] == "high"
+    assert payload["fast"] is False
     assert payload["max_tokens"] == 128_000
     assert payload["temperature"] == 0.1
     assert "thinking" not in payload

@@ -1,8 +1,8 @@
 # 图片里的字（OCR）
 
-截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。现在把本地图片交给站内 deepseek-flash 识图（`llm.chat`，多模态 content），识别出的字切成段落块进检索。只有这一种识图；10-30 以前另有一条 RapidOCR 回退，已经删掉（见下面「以前的 RapidOCR 结果」）。
+截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。现在把本地图片交给站内 LLM 识图（2026-11-10 起是 Grok OAuth 的 `grok-4.7`，`llm.chat`，多模态 content），识别出的字切成段落块进检索。只有这一种识图；10-30 以前另有一条 RapidOCR 回退，已经删掉（见下面「以前的 RapidOCR 结果」）。
 
-- 按图片内容哈希只识别一次，结果存在 `image_texts`，`engine` 默认 `deepseek-flash-vision`。多篇引用同一张图不重复识别；识别不出字的也记一行，不反复去认。识图失败（无 key 在开工前退出；单张 HTTP 错）记 `engine` 以 `:error` 结尾、正文为空，下次不带 `--redo` 也会重试，不写进脏字。
+- 按图片内容哈希只识别一次，结果存在 `image_texts`，`engine` 跟着当前模型走，现在是 `grok-4.7-vision`（以前按 deepseek-flash 认的行原样留着）。多篇引用同一张图不重复识别；识别不出字的也记一行，不反复去认。识图失败（无 key 在开工前退出；单张 HTTP 错）记 `engine` 以 `:error` 结尾、正文为空，下次不带 `--redo` 也会重试，不写进脏字。
 - 11-07 起识图交回结构（谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断），后面只排版和拼接，见下面「识图交回结构」。这一节其余几条和「阅读页和模型各看什么」里按 App、按案例写的整理规则，只作用在以前识的图（`image_texts.units` 为空），已经冻结，不再往里加。
 - 以前的识图提示词要模型按气泡从上到下转写：绿色气泡写成「方伟：」，其他人写成「截图上的网名：」，看不清网名时才写「网友：」。这些旧结果整理时，输出若已经是「方伟：/网友：/昵称：」，旁路和检索仍再剥界面字，不把 UI 行标成说话人。阅读页不铺这些字。
 - 雪球 App 的加群卡（雪球专属交流群、加群交流、股民必入、与高手畅聊热点）、雪球财富陪伴官的邀请、影响力徽章（十年知己、十大影响力用户）、底栏「去基金首页 自选 我的」、风险提示「用户发表的所有文章仅代表个人观点…」，以及「N位达人赞过」「投诉」「屏蔽用户」「收藏」「收起」这类页脚整行删掉，句子里提到的不动。雪球/微博的 `//@` 回复链按时间从早到晚展开时，每一楼的网名照留，壳里拿不到名字才写「网友：」。评论区「只留方伟」的规则没改（`zsxq_comments` 和 poster_role=guest 隐藏读者帖都不动）。
@@ -27,7 +27,7 @@
 - **旧规则冻结**：`wechat_dialogue`、`vision_polish`、`normalize_vision_text` 只给 `units` 为空的旧识别用，不再往里加规则。库里的旧识别和旁路一字不改，不会因为这次改动排去重做摘要和观点。旧图（约 1.1 万张）Zhilin 11-08 定了按 `max` 强度全部重认，开全量前先看新旧对比（见下面「全库重认」）；旧图都重认完以后，再删这几套旧规则。
 - **还按旧规则过一遍的地方**：星球空壳标题的取材（`zsxq_display_title` 的 `ocr`）仍把旁路过一遍 `present_stored_ocr`，只影响列表上补出来的标题，对结构化的字几乎是原样。
 
-**用量**：识图请求带 `stream_options.include_usage`，接口报的 token 存在 `image_texts.usage`（`prompt` 输入、`completion` 输出、其中思考的 `reasoning`；读不出来再要的那次也算上）。`research-ocr` 结束时多打两行：按结构交回、交回自由文字、读不出来各几张；用量合计和每张平均。接口或转发不认这个参数（4xx）时去掉再发一次；去掉以后成了，这一次命令后面的请求都不再带，也就没有用量，报告写「接口这次没报用量，花费看 DeepSeek 账单」。跑过一晚以后按库里的记录算：
+**用量**：识图请求带 `stream_options.include_usage`，接口报的 token 存在 `image_texts.usage`（`prompt` 输入、`completion` 输出、其中思考的 `reasoning`；读不出来再要的那次也算上）。`research-ocr` 结束时多打两行：按结构交回、交回自由文字、读不出来各几张；用量合计和每张平均。接口或转发不认这个参数（4xx）时去掉再发一次；去掉以后成了，这一次命令后面的请求都不再带，也就没有用量，报告写「接口这次没报用量，花费看 xAI 账单」。跑过一晚以后按库里的记录算：
 
 ```bash
 docker compose exec -T db psql -U research -d research -c "
@@ -57,7 +57,7 @@ SELECT engine, count(*) FROM image_texts WHERE created_at > now() - interval '2 
 
 ## 站内识图
 
-`app` 容器就能跑。`research-ocr` 调用站内 `deepseek-flash`（和问库、摘要同一模型）。送识图前，超过约 210KB 的图用 Pillow 把长边缩到 1920 以内、转成 JPEG，压到 280KB 以内（`ocr.py` 的 `MAX_VISION_SEND_BYTES`、`VISION_MAX_SIDE`），避免 DeepSeek 转发链路掐断大 data-url；瞬时断连会重试最多 3 次。识图请求的 max_tokens 固定 65536（覆盖站点默认下限；8k/16k/32k 在 thinking 下会把正文挤空，text 侧另有空正文自动加额度重试），避免流式思考把容器 OOM。定点重认：
+`app` 容器就能跑。`research-ocr` 调用站内 LLM（Grok OAuth 的 `grok-4.7`，和问库、摘要同一模型）。送识图前，超过约 210KB 的图用 Pillow 把长边缩到 1920 以内、转成 JPEG，压到 280KB 以内（`ocr.py` 的 `MAX_VISION_SEND_BYTES`、`VISION_MAX_SIDE`），避免转发链路掐断大 data-url；瞬时断连会重试最多 3 次。识图请求的 max_tokens 固定 65536（覆盖站点默认下限；输出给不够时正文会被思考挤空，text 侧另有空正文自动加额度重试），避免长输出把容器撑爆。定点重认：
 
 ```bash
 docker compose exec -T app research-ocr --redo --limit 50 \
@@ -70,7 +70,7 @@ docker compose exec -T app research-ocr --redo --limit 50 \
 
 11-08 先按线上 6 张实测（`reasoning_effort=max`）估过一次，后来 30 张对比的实际用量更准：每张输入约 1.8k token、输出约 8.2k（97% 是思考），平均 52 秒、最长 155 秒，夜间价约 0.005 美元，工作日 9 到 12 点、14 到 18 点（北京时间）翻倍。剩下约 1.1 万张旧图全认，夜间价约 57 美元；短帖（正文不到 `SHORT_BODY_CHARS`）的图片文字一变，摘要和观点会跟着重做（另花钱），按发布时间排进夜间的队，不插到新文章前面。要不要认、用什么思考强度，由 Zhilin 定。Zhilin 11-08 定了保持 `max`、同意全部重认，但要先看新办法是不是真的比旧的好（见下面的对比命令）。
 
-几张一起认：`research-ocr` 同时在认的图数跟 `RESEARCH_LLM_CONCURRENCY`（默认 3，和问库、摘要、观点同一个上限）。模型调用在工作线程里，写库都在主线程里，认完一张写一张、马上补发一张；到点了或自动上线在等就不再发新的，已经发出去的认完照写。11-09 以前按挑出来的先后写，前面一张慢（思考长的要好几分钟）就把后面都挡住，已经认完的占着位子不补发：拿三次对比里每张的耗时模拟，20 张一起实际只有一半左右在认。全库重认时在这一条命令上调高，比如 `docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=40 app research-ocr --redo --limit 20000 --max-minutes <到早上 8:45 的分钟数>`；deepseek-flash 每个账号的并发上限是 2500，限流（429）、过载（503）时 `llm.chat` 自己等了再试。
+几张一起认：`research-ocr` 同时在认的图数跟 `RESEARCH_LLM_CONCURRENCY`（默认 8，硬顶 24，和问库、摘要、观点、译制同一个上限）。模型调用在工作线程里，写库都在主线程里，认完一张写一张、马上补发一张；到点了或自动上线在等就不再发新的，已经发出去的认完照写。11-09 以前按挑出来的先后写，前面一张慢（思考长的要好几分钟）就把后面都挡住，已经认完的占着位子不补发：拿三次对比里每张的耗时模拟，20 张一起实际只有一半左右在认。全库重认时在这一条命令上调档，但不要超过硬顶：`docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-ocr --redo --limit 20000 --max-minutes <到早上 8:45 的分钟数>`。11-09 以前 DeepSeek 开 40 路时容器被 OOM 杀过（EXIT=137），Grok 走一次读完的 JSON，单请求占用随输出长度涨；上多少档按 `docs/grok-concurrency-20261110.md` 的实测来，先 8 再 16、24。限流（429）、过载（5xx）时 `llm.chat` 按 `LLM_RETRY_DELAYS`（默认 2、5、15、30 秒）自己等了再试。
 
 对比命令：
 
@@ -134,4 +134,4 @@ NIGHTLY_OCR=1 BACKUP_DIR=… scripts/install-launchd.sh
 
 第一次可以先用 `research-ocr --article` 定点重认抽验锚点，不要无差别全库 vision。以后每晚只剩新导入的图。
 
-短正文的 `ocr_hash` 若在这一步变了，命令结束前会用同一套站内 deepseek-flash 重写最多 30 篇摘要，方伟星球的空壳标题也一起重写；不是全库，长文不重排。没写完的留在 `article_followups`，下次摘要优先拿。
+短正文的 `ocr_hash` 若在这一步变了，命令结束前会用同一套站内模型（Grok）重写最多 30 篇摘要，方伟星球的空壳标题也一起重写；不是全库，长文不重排。没写完的留在 `article_followups`，下次摘要优先拿。

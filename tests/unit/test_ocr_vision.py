@@ -82,8 +82,9 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
         assert case_rule not in VISION_PROMPT, case_rule
 
 
-def test_default_engine_id_is_deepseek_flash_vision():
-    assert vision_engine_id() == "deepseek-flash-vision"
+def test_default_engine_id_follows_the_current_model():
+    # 11-10 起识图走 Grok OAuth，新认的图记 grok-4.7-vision；老行照旧是 deepseek-flash-vision。
+    assert vision_engine_id() == "grok-4.7-vision"
 
 
 def test_vision_messages_are_text_plus_image_url():

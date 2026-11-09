@@ -26,7 +26,9 @@ CHAT = {
 
 @pytest.fixture(autouse=True)
 def _clean_env(tmp_path, monkeypatch):
-    monkeypatch.delenv("RESEARCH_LLM_PROVIDER", raising=False)
+    # 这个文件测的是识图 + chat 的传输细节（流式用量、stream_options 兼容），走明文 key 的那条分支；
+    # 默认的 Grok OAuth 路径在 tests/unit/test_grok_strength.py 和 tests/unit/test_grok_migration.py 里测。
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "deepseek-legacy")
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(tmp_path / "missing-oauth.json"))
     monkeypatch.setattr(llm_module, "_STREAM_USAGE", True)
@@ -361,7 +363,11 @@ def test_chat_reports_usage_from_every_paid_attempt(tmp_path, monkeypatch):
 
     monkeypatch.setattr(llm_module, "_post", fake_post)
     usage: dict = {}
-    settings = Settings.from_env({"DATABASE_URL": "postgresql://unused/research_test", "DATA_DIR": str(tmp_path)})
+    settings = Settings.from_env({
+        "DATABASE_URL": "postgresql://unused/research_test",
+        "DATA_DIR": str(tmp_path),
+        "RESEARCH_LLM_PROVIDER": "deepseek-legacy",
+    })
     text, _model = llm_module.chat(settings, [{"role": "user", "content": "hi"}], exact_max_tokens=512, usage=usage)
     assert text == "{}"
     assert usage == {"prompt": 200, "completion": 1412, "reasoning": 1212}
@@ -377,7 +383,11 @@ def test_chat_without_usage_sends_the_same_payload_as_before(tmp_path, monkeypat
         return {"choices": [{"message": {"content": "好"}}], "usage": {"prompt_tokens": 1}}
 
     monkeypatch.setattr(llm_module, "_post", fake_post)
-    settings = Settings.from_env({"DATABASE_URL": "postgresql://unused/research_test", "DATA_DIR": str(tmp_path)})
+    settings = Settings.from_env({
+        "DATABASE_URL": "postgresql://unused/research_test",
+        "DATA_DIR": str(tmp_path),
+        "RESEARCH_LLM_PROVIDER": "deepseek-legacy",
+    })
     llm_module.chat(settings, [{"role": "user", "content": "hi"}])
     assert "stream_options" not in payloads[0]
 
@@ -402,7 +412,11 @@ def test_chat_drops_stream_options_when_the_api_rejects_it(tmp_path, monkeypatch
 
     monkeypatch.setattr(llm_module, "_post", fake_post)
     usage: dict = {}
-    settings = Settings.from_env({"DATABASE_URL": "postgresql://unused/research_test", "DATA_DIR": str(tmp_path)})
+    settings = Settings.from_env({
+        "DATABASE_URL": "postgresql://unused/research_test",
+        "DATA_DIR": str(tmp_path),
+        "RESEARCH_LLM_PROVIDER": "deepseek-legacy",
+    })
     text, _model = llm_module.chat(settings, [{"role": "user", "content": "hi"}], usage=usage)
     assert text == "好"
     assert "stream_options" in payloads[0] and "stream_options" not in payloads[1]
@@ -421,7 +435,11 @@ def test_other_bad_request_is_resent_once_then_reported(tmp_path, monkeypatch):
         raise urllib.error.HTTPError("https://example.invalid", 400, "Bad Request", {}, body)
 
     monkeypatch.setattr(llm_module, "_post", fake_post)
-    settings = Settings.from_env({"DATABASE_URL": "postgresql://unused/research_test", "DATA_DIR": str(tmp_path)})
+    settings = Settings.from_env({
+        "DATABASE_URL": "postgresql://unused/research_test",
+        "DATA_DIR": str(tmp_path),
+        "RESEARCH_LLM_PROVIDER": "deepseek-legacy",
+    })
     with pytest.raises(llm_module.LLMError, match="image too large"):
         llm_module.chat(settings, [{"role": "user", "content": "hi"}], usage={})
     assert len(payloads) == 2

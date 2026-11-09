@@ -1,19 +1,19 @@
 """调用站内 LLM（OpenAI 兼容的 chat/completions）。
 
-提供方由 ``RESEARCH_LLM_PROVIDER`` 决定：默认 DeepSeek，用 ``DEEPSEEK_API_KEY`` 加 Bearer；
-``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth
+2026-11-10 起站内 LLM 全部走 Grok OAuth（``grok-4.7``，``reasoning_effort=high``，``fast=false``，
+50 万上下文），强度见 ``researchlib.grok``。鉴权是 xAI OAuth
 （``XAI_OAUTH_TOKEN_PATH``，compose 里是 ``/data/secrets/xai-oauth.json``，用 ``research-xai-login login`` 登录）。
-DeepSeek 缺 key 时直接报错，不会悄悄退回 Grok；Grok 路径照旧不读 ``XAI_API_KEY``。
+凭证不可用就直接报错，不退回 API key、也不换提供方硬撑。
 
-强度与译制共用：DeepSeek 见 ``researchlib.deepseek``（deepseek-flash、thinking 打开、
-reasoning_effort=max、输出不低于 393216、上下文 1M、不发 temperature），
-Grok 见 ``researchlib.grok``（grok-4.7、reasoning_effort=xhigh、输出不低于 128000、50 万上下文、不发 fast）。
+``RESEARCH_LLM_PROVIDER=deepseek-legacy`` 是应急回退的旧值，那时才用 ``DEEPSEEK_API_KEY``；
+正常部署不设。
 
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
-429、5xx 和连不上（含流读到一半的 TLS EOF）按 RETRY_DELAYS 退避重试；超时不重试。
-DeepSeek 打开流式，按行读 SSE。没看到 ``data: [DONE]`` 就丢掉已经拼上的半截，不当作成功。
-调用方传了 ``on_text`` 时，正文每多一截就把到目前为止的正文交给它（问库边写边显示用）；重发同一请求前先交一次空串。
-同一个进程里同时在跑的请求有上限（RESEARCH_LLM_CONCURRENCY，默认 3），问库分批、摘要、观点、论点共用。
+429、5xx 和连不上（含流读到一半的 TLS EOF）按退避间隔重试（默认 2、5、15、30 秒，可用
+``LLM_RETRY_DELAYS`` 改）；超时不重试。透传 ``on_text`` 时走流式 SSE（问库边写边显示），
+没看到 ``data: [DONE]`` 就丢掉已经拼上的半截，不当作成功。
+同一个进程里同时在跑的请求有上限（RESEARCH_LLM_CONCURRENCY，默认 8，硬顶 24），问库分批、摘要、观点、
+论点、识图、译制共用。
 每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时 research-status 会列出来。
 """
 
@@ -32,7 +32,7 @@ from collections.abc import Callable
 from researchlib.config import Settings
 from researchlib.deepseek import DEEPSEEK_MODEL_ID, deepseek_model
 from researchlib.deepseek import completion_params as deepseek_params
-from researchlib.grok import GROK_MODEL_ID
+from researchlib.grok import GROK_MODEL_ID, retry_delays
 from researchlib.grok import completion_params as grok_params
 from researchlib.health import record_llm
 from researchlib.llm_provider import (
@@ -49,9 +49,9 @@ from researchlib.translate.xai_oauth import (
 )
 
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
-# 依次等 2、5、15、30 秒。接口给了 Retry-After 就按它来，最多等一分钟。
-# 译制的 chat_json 用同一组间隔，改这里两边一起变。
-RETRY_DELAYS = (2.0, 5.0, 15.0, 30.0)
+# 退避间隔的默认值。改 LLM_RETRY_DELAYS（"4,8,20" 这样）就在这里换一组，译制的 chat_json 跟着一起变。
+# 接口给了 Retry-After 就按它来，最多等一分钟。
+RETRY_DELAYS = retry_delays({})
 RETRY_AFTER_CAP = 60.0
 # 思考模式把 max_tokens 花在 reasoning_content 上时，正文会是空的。
 # 这时把额度翻倍再要一次；封顶 131072，识图这类长输出也不至于把容器撑爆。
@@ -61,6 +61,29 @@ _slot_lock = threading.Lock()
 # 接口不认 stream_options（去掉以后同一请求就成了）时记下，这个进程里后面的请求不再带，免得每张图先白挨一次 4xx。
 _STREAM_USAGE = True
 _slots: dict[int, threading.BoundedSemaphore] = {}
+
+# 传输层计数：压测（research-grok-smoke --pressure）靠它看真实的重试次数和 429 次数。
+# 429 在最终成功的那一次之前也会发生，只数「最后失败的请求」会得出「零限流」的错结论，所以每次
+# HTTP 响应都记，重试另外单独记。只记数字和状态码，不记请求体、不记 token。
+_http_lock = threading.Lock()
+_http_stats: dict[str, int] = {}
+
+
+def reset_http_stats() -> None:
+    """清空传输层计数（压测每档开始前调一次）。"""
+    with _http_lock:
+        _http_stats.clear()
+
+
+def http_stats() -> dict[str, int]:
+    """到现在为止的传输层计数：attempts、responses、http_429、retries、http_5xx、errors、各状态码。"""
+    with _http_lock:
+        return dict(_http_stats)
+
+
+def _note_http(name: str, amount: int = 1) -> None:
+    with _http_lock:
+        _http_stats[name] = _http_stats.get(name, 0) + amount
 
 
 class LLMUnavailable(Exception):
@@ -142,7 +165,7 @@ def ensure_oauth(settings: Settings) -> None:
 
 
 def _slot(settings: Settings) -> threading.BoundedSemaphore:
-    limit = max(1, int(getattr(settings, "llm_concurrency", 3) or 3))
+    limit = max(1, int(getattr(settings, "llm_concurrency", 8) or 8))
     with _slot_lock:
         found = _slots.get(limit)
         if found is None:
@@ -280,14 +303,20 @@ def _post(settings: Settings, token: str, payload: dict, on_text: Callable[[str]
         },
         method="POST",
     )
-    stream = str(payload.get("model", "")).startswith("deepseek")
+    # 透传 on_text 时（问库边写边显示）走流式：Grok 的推理增量一直往连接上写，
+    # 中间设备不会把长时间没字节的连接拆掉。不传时仍一次读完的 JSON，识图、摘要、译制都走这条。
+    stream = on_text is not None or str(payload.get("model", "")).startswith("deepseek")
     if stream:
-        # 思考模式长时间不出字，中间设备会拆掉空闲连接。流式让推理增量一直往连接上写。
         request.data = json.dumps({**payload, "stream": True}, ensure_ascii=False).encode("utf-8")
         request.add_header("Accept", "text/event-stream")
     # 套接字超时是 settings.llm_timeout：连接和随后每一次读都用它，默认 25 分钟。
     with urllib.request.urlopen(request, timeout=settings.llm_timeout) as response:
         return read_chat_completion(response, stream=stream, on_text=on_text)
+
+
+def _delays() -> tuple[float, ...]:
+    """这一次调用用的退避间隔（秒）。LLM_RETRY_DELAYS 改过就按新的，填坏按默认。"""
+    return retry_delays()
 
 
 def _read_stream(lines) -> dict:
@@ -402,14 +431,14 @@ def chat(
 ) -> tuple[str, str]:
     """返回 (回答文本, 实际模型名)。
 
-    DeepSeek：deepseek-flash / thinking / reasoning_effort=max / 至少 393216，不发 temperature。
-    Grok：grok-4.7 / xhigh / 至少 128000，不发 fast。
+    Grok：grok-4.7 / reasoning_effort=high / fast=false / 至少 128000，50 万上下文。
     ``exact_max_tokens`` 会覆盖上面的下限（识图转写不需要几十万输出，否则容器 OOM）。
     ``usage``：传一个 dict 进来，返回时加上这次实际用掉的 token（prompt、completion、其中思考的 reasoning），
-    正文被思考挤空、加额度再要的那一次也算。接口没报用量就不加。DeepSeek 流式要请求里带
-    ``stream_options.include_usage`` 才报，只有传了 usage 的调用才带；接口不认这个字段就去掉再发一次，
+    正文被思考挤空、加额度再要的那一次也算。接口没报用量就不加。流式要请求里带
+    ``stream_options.include_usage`` 才报，只有传了 usage 的流式调用才带；接口不认这个字段就去掉再发一次，
     去掉以后成了，这个进程后面的请求就不再带。
-    ``on_text``：DeepSeek 流式时，正文每多一截就把到目前为止的正文交给它；重发前先交一次空串。返回值照旧以读完的为准。
+    ``on_text``：流式时，正文每多一截就把到目前为止的正文交给它（问库边写边显示）；重发前先交一次空串。
+    返回值照旧以读完的为准。
     ``slot``：调用方自己管并发时传进来的信号量（问库分批读资料），不占摘要、观点、识图共用的那份上限。
     """
     provider = _provider(settings)
@@ -421,8 +450,10 @@ def chat(
         payload = {**deepseek_params(max_tokens=max_tokens), "messages": messages}
     if exact_max_tokens is not None:
         payload["max_tokens"] = int(exact_max_tokens)
-    if usage is not None and _STREAM_USAGE and str(payload.get("model", "")).startswith("deepseek"):
+    streaming = on_text is not None or str(payload.get("model", "")).startswith("deepseek")
+    if usage is not None and _STREAM_USAGE and streaming:
         payload["stream_options"] = {"include_usage": True}
+    delays = _delays()
     try:
         token = _oauth_token(settings) if provider == PROVIDER_GROK else _deepseek_token()
     except LLMUnavailable as exc:
@@ -438,6 +469,7 @@ def chat(
             # 上一次读到一半断了或要重发：先把已经显示的半截收回。
             _notify(on_text, "")
         attempts += 1
+        _note_http("attempts")
         try:
             with slot or _slot(settings):
                 if on_text is None:
@@ -445,6 +477,13 @@ def chat(
                 else:
                     body = _post(settings, token, payload, on_text=on_text)
         except urllib.error.HTTPError as exc:
+            _note_http("responses")
+            _note_http(f"status_{exc.code}")
+            if exc.code == 429:
+                # 429 在最终成功的那一次之前也会发生：每一次都记，不只记最后失败的那次。
+                _note_http("http_429")
+            elif 500 <= exc.code < 600:
+                _note_http("http_5xx")
             detail = exc.read().decode("utf-8", "replace")[:300]
             if provider == PROVIDER_GROK and not refreshed and is_stale_xai_access(exc.code, detail):
                 # 过期的 access token 被报成 401/403：强制刷新一次再试，不算在重试次数里。
@@ -460,19 +499,25 @@ def chat(
                 payload.pop("stream_options")
                 dropped_stream_usage = True
                 continue
-            if exc.code in RETRY_STATUS and retries < len(RETRY_DELAYS):
-                time.sleep(_retry_after(exc) or RETRY_DELAYS[retries])
+            if exc.code in RETRY_STATUS and retries < len(delays):
+                _note_http("retries")
+                time.sleep(_retry_after(exc) or delays[retries])
                 retries += 1
                 continue
             raise _failed(settings, LLMError(f"{label} 接口返回 {exc.code}：{detail}"), provider=label) from exc
         except (urllib.error.URLError, OSError, http.client.HTTPException, TimeoutError) as exc:
-            if not _is_timeout(exc) and retries < len(RETRY_DELAYS):
-                time.sleep(RETRY_DELAYS[retries])
+            if not _is_timeout(exc) and retries < len(delays):
+                _note_http("retries")
+                _note_http("connect_errors")
+                time.sleep(delays[retries])
                 retries += 1
                 continue
+            _note_http("errors")
             raise _failed(settings, LLMError(f"连不上 {label} 接口：{exc}"), provider=label) from exc
         except json.JSONDecodeError as exc:
+            _note_http("errors")
             raise _failed(settings, LLMError(f"{label} 接口返回的不是 JSON"), provider=label) from exc
+        _note_http("responses")
         add_usage(usage, body.get("usage") if isinstance(body, dict) else None)
         try:
             text = _message_content(body, label)

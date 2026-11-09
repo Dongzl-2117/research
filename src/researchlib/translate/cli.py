@@ -231,6 +231,14 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.workers <= MAX_WORKERS:
         print(f"--workers 要在 1 到 {MAX_WORKERS} 之间", file=sys.stderr)
         return 2
+    # 几篇同时译也不超过 Grok 那份并发上限（RESEARCH_LLM_CONCURRENCY，默认 8，硬顶 24）。
+    concurrency = int(getattr(settings, "llm_concurrency", MAX_WORKERS) or MAX_WORKERS)
+    if args.workers > concurrency:
+        print(
+            f"同时译 {concurrency} 篇：--workers {args.workers} 超过 Grok 并发上限",
+            file=sys.stderr,
+        )
+        args.workers = concurrency
     if args.dry_run and not args.recheck:
         print("--dry-run 要和 --recheck 一起用", file=sys.stderr)
         return 2

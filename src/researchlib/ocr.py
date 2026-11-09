@@ -1,8 +1,8 @@
 """图片里的字进检索（OCR / 识图）。
 
-截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。默认把本地图片交给
-站内 deepseek-flash 识图（``llm.chat``，多模态 content），按内容哈希只认一次，结果存进
-image_texts（engine 如 ``deepseek-flash-vision``）。识别出的字够多的图，切成段落块进检索
+截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。把本地图片交给
+站内 LLM 识图（2026-11-10 起是 Grok OAuth 的 grok-4.7，``llm.chat``，多模态 content），
+按内容哈希只认一次，结果存进 image_texts（engine 如 ``grok-4.7-vision``）。识别出的字够多的图，切成段落块进检索
 （article_chunks.lang = 'ocr'，标题「图片里的字」，锚点指向文章页上那张图）。
 公司提及默认不看图片里的字，免得水印、表情包乱挂；正文短于 SHORT_BODY_CHARS 时例外，
 截图帖要挂上图里的公司才能抽分家观点。
@@ -165,10 +165,15 @@ class OcrImageSkipped(Exception):
 
 
 def vision_engine_id(settings=None) -> str:
-    """写入 image_texts.engine 的名字。默认模型是 deepseek-flash，即 deepseek-flash-vision。"""
-    from researchlib.deepseek import DEEPSEEK_MODEL_ID
+    """写入 image_texts.engine 的名字，跟着当前模型走：grok-4.7-vision。
 
-    model = DEEPSEEK_MODEL_ID
+    11-10 换成 Grok 以后新的识图记 ``grok-4.7-vision``；以前按 deepseek-flash 认的行原样留着，
+    重认只看 prompt_version（``pending_images``），换模型不会把按第 3 版说明认过的图再认一遍。
+    """
+    from researchlib.grok import GROK_MODEL_ID
+    from researchlib.llm_provider import PROVIDER_GROK, llm_provider
+
+    model = GROK_MODEL_ID if llm_provider() == PROVIDER_GROK else "deepseek-flash"
     if settings is not None:
         from researchlib.llm import active_model_id
 
@@ -429,7 +434,7 @@ def read_vision_reply(reply: str) -> tuple[str, dict | None]:
 def vision_engine(settings) -> Callable[[Path], Recognition]:
     """站内识图。失败抛给 run_ocr，记成 :error。
 
-    先压图再送 deepseek-flash，避免 en1 转发把大 data-url 掐断；瞬时网络错误最多再试两次。
+    先压图再送模型，避免转发链路把大 data-url 掐断；瞬时网络错误最多再试两次。
     回答像 JSON 却读不出来（多半是截断了），再要一次；还不行交回 error，run_ocr 记 :invalid。
     """
     import time
@@ -851,7 +856,7 @@ def run_ocr(
     结构读不出来记 ``{engine}:invalid``，不自动重试。
     redo 时这张图库里已经有字的，失败或结构读不出来都不写：旧字留着，版本不动，下次 --redo 接着认，
     报告里记 kept。以前写成空正文，重认一失败旧字就没了。
-    engine 是写进 image_texts 的名字，不给就用默认的 deepseek-flash-vision。
+    engine 是写进 image_texts 的名字，不给就按当前模型算（Grok 是 grok-4.7-vision）。
     recognize 交回 ``Recognition``；交回字符串的当旧格式（测试和以前的引擎这样写）。
     报告里 structured 是按结构交回的张数，plain 是交回自由文字的，tokens 是接口报的用量合计。
     不点名文章时，自动上线在等（``health.deploy_waiting``）就认完手上这张停下，deploy_waiting 记它等的提交：
@@ -1010,7 +1015,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--article", action="append", type=int, default=[], help="只认这篇文章里的图，可重复")
     # 只剩 vision。留着这个参数，以前写了 --engine vision 的命令（scripts/nightly.sh）照样能跑。
-    parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 deepseek-flash 识图")
+    parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 LLM 识图（grok-4.7）")
     parser.add_argument(
         "--compare",
         type=int,

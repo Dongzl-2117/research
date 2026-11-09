@@ -1,12 +1,12 @@
 # 站内译制（中英对照）
 
-英文原文入库后，由 **investment / research 站内** 调 LLM 翻译（默认 DeepSeek，可切 Grok OAuth），排版对齐 AIHOT 文章页：
+英文原文入库后，由 **investment / research 站内** 调 LLM 翻译（2026-11-10 起全走 Grok OAuth，`deepseek-legacy` 只是应急回退），排版对齐 AIHOT 文章页：
 
 - 默认 **对照**：每段英文在上（小一号、次要色 `--ink-4`），中文在下
 - Tab：**对照 / 中文 / 原文**（`/articles/{id}`、`/zh`、`/original`）
 - 媒体与图片只在英文侧出现一次
 - 下载来的外链图（`article_images.remote`，见 [ingest.md](ingest.md)「外链图片」）不进译制原文和回执：译制时照没下载写成「[外部图片已省略]」，对照页也按这一份核验，显示时再把译文里的占位按顺序换成原文的图（`translate/remote_media.py`）。图在译完以后才下下来，对照照常逐段，不会退成两份全文；占位个数对不上（模型丢了句中的占位，或者正文 HTML 里的 `<img>` 没下载时不留占位）就不换，对照照旧显示占位，「原文」页仍有图
-- 默认 `deepseek-flash`：thinking 打开、`reasoning_effort=max`、上下文 1M token、输出至少 393216，不发 temperature。`RESEARCH_LLM_PROVIDER=grok` 时改用 `grok-4.7`、`reasoning_effort=xhigh`、上下文 50 万、输出至少 128000，不用 fast。常量在 `researchlib/deepseek.py` / `researchlib/grok.py`，问库、摘要、观点、论点、样卡走同一套
+- 现在是 `grok-4.7`：`reasoning_effort=high`、`fast=false`、上下文 50 万 token、输出至少 128000。（`deepseek-legacy` 时才用 deepseek-flash：thinking、`reasoning_effort=max`、上下文 1M、输出至少 393216。）常量在 `researchlib/deepseek.py` / `researchlib/grok.py`，问库、摘要、观点、论点、样卡走同一套
 
 不要站外译完再贴进库。译文表是 `article_translations`，按 `content_hash` 与原文对齐。
 
@@ -21,7 +21,7 @@ Mac mini 上 `docker-compose.yml` 把 `./data` 挂到 `/data`，OAuth 在：
 
 几个进程用同一路径和同一 `.lock` 轮流刷新。refresh token 每次刷新都会换，不要复制一份到别处用。Hermes 的 `auth.json` 格式会被拒绝。
 
-问库、`research-digest` 和页面上缺摘要的卡片读的是同一份凭证：默认 DeepSeek 的 `DEEPSEEK_API_KEY`，Grok 路径是同一份 token。应用启动和部署不会自动跑全库。
+问库、`research-digest` 和页面上缺摘要的卡片读的是同一份凭证：Grok OAuth 的 `data/secrets/xai-oauth.json`。应用启动和部署不会自动跑全库。
 
 ## 登录（Mac mini）
 
@@ -74,7 +74,7 @@ DeepSeek 译制走流式。思考模式要是一次把整段响应读完，连�
 
 几篇同时译时，stderr 上每一行进度前面带着文章号：`05:12:03 #22161 译制请求连了 312 秒断开…`。每篇的结果行后面接着这一篇的用量和用时（下面的数字只是示意）：`#22161 translated segments=220 reused=204 · 请求 9 次，输入 52,331 token（缓存命中 31,872），输出 61,204 token（思考 50,112），用时 8 分 41 秒`。回答收到了但用不了（不是 JSON、条数不对）的那次也算，断在半路的那次接口没报用量，不算。调过模型的话，停下时再印一行这一轮的合计：`这一轮 2 小时 13 分：译完 37 篇，没译完 2 篇；请求 …`。全是复用、一次模型都没调的篇只印结果。
 
-先开 4 个：Mac mini 经 Colima 转发时并发的 TLS 连接多了出过 `DECRYPTION_FAILED`（问库 `ASK_MAP_WORKERS` 因此默认 2）。跑一阵 stderr 上没有成串的「连了几秒断开」再往上加。DeepSeek 自己的并发上限远高于这个数，和识图全量（`RESEARCH_LLM_CONCURRENCY`）同时跑时两边的请求加在一起算。
+先开 4 个：Mac mini 经 Colima 转发时并发的 TLS 连接多了出过 `DECRYPTION_FAILED`。跑一阵 stderr 上没有成串的「连了几秒断开」再往上加。`--workers` 会被 Grok 那份并发上限（`RESEARCH_LLM_CONCURRENCY`，默认 8，硬顶 24）夹住；和识图全量同时跑时两边的请求加在一起算。
 
 Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`），流式每一行的空闲上限也是这一段。
 
@@ -97,7 +97,7 @@ Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`
 
 | 状态 | 动作 |
 |---|---|
-| 译制管道已合入、LLM 凭证已配（DeepSeek key，或 Grok 已 login 且 `RESEARCH_LLM_PROVIDER=grok`） | 可对库内已有合格英文稿跑 `research-translate` |
+| 译制管道已合入、Grok OAuth 已登录（`research-xai-login status` 说已登录） | 可对库内已有合格英文稿跑 `research-translate` |
 | Stratechery 仍在抓 | **先不 ingest**；可用英文样例验对照页 |
 | 抓完并 ingest 后 | 跑 `research-translate --source stratechery`；积压多就加 `--loop` |
 
@@ -127,7 +127,7 @@ docker compose exec -T app research-translate-inventory
 
 ## 环境变量
 
-见 `.env.example`。默认 DeepSeek：`RESEARCH_LLM_PROVIDER=deepseek`、`DEEPSEEK_API_KEY`，可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`、`DEEPSEEK_REASONING_EFFORT`、`DEEPSEEK_MAX_TOKENS`。Grok 路径：`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`。两边共用 `LLM_LONG_TIMEOUT_MS`。
+见 `.env.example`。默认 Grok OAuth：`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`、`RESEARCH_LLM_CONCURRENCY`（默认 8，硬顶 24）、`LLM_RETRY_DELAYS`。应急回退 DeepSeek 才设 `RESEARCH_LLM_PROVIDER=deepseek-legacy` 和 `DEEPSEEK_API_KEY`。两边共用 `LLM_LONG_TIMEOUT_MS`。
 
 ## 译制输入：和文章页同一条清洗
 

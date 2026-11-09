@@ -6,8 +6,13 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from researchlib.grok import LONG_LLM_TIMEOUT_S, long_timeout_s
-from researchlib.llm_provider import llm_base_url, llm_provider
+from researchlib.grok import LONG_LLM_TIMEOUT_S, grok_concurrency, long_timeout_s
+from researchlib.llm_provider import (
+    GROK_DEFAULT_BASE_URL,
+    PROVIDER_GROK,
+    llm_base_url,
+    llm_provider,
+)
 
 LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 DEFAULT_PUBLIC_BASE_URL = "https://investment.zldong.com"
@@ -60,14 +65,14 @@ class Settings:
     display_timezone: str
     page_size: int = 20
     days_per_page: int = 14
-    # 问库、摘要、观点、论点、译制都走 OpenAI 兼容的 chat/completions。
-    # 默认 DeepSeek（DEEPSEEK_API_KEY）；RESEARCH_LLM_PROVIDER=grok 时走 xAI OAuth（research-xai-login）。
-    # 具体强度在 researchlib.deepseek / researchlib.grok，不读 API key 的字段不进 Settings。
-    llm_provider: str = "deepseek"
-    llm_base_url: str = "https://api.deepseek.com"
+    # 问库、摘要、观点、论点、译制、识图都走 OpenAI 兼容的 chat/completions。
+    # 默认 Grok OAuth（research-xai-login，data/secrets/xai-oauth.json）；见 researchlib/llm_provider.py。
+    # 具体强度在 researchlib.grok，不读 API key 的字段不进 Settings。
+    llm_provider: str = "grok"
+    llm_base_url: str = GROK_DEFAULT_BASE_URL
     llm_timeout: float = float(LONG_LLM_TIMEOUT_S)
-    # 同一个进程里同时在跑的 LLM 请求上限（问库分批、摘要、观点、论点加起来）。
-    llm_concurrency: int = 3
+    # 同一个进程里同时在跑的 LLM 请求上限（问库分批、摘要、观点、论点、识图、译制加起来）。
+    llm_concurrency: int = 8
     # 持仓和观察名单。没有这个文件就当没有持仓。
     portfolio_path: Path | None = None
     # 首页断更提示。只看最近几天确实在做定时抓取的来源，抓取停着、只手动导归档时不会假警报。
@@ -117,7 +122,11 @@ class Settings:
             llm_provider=provider,
             llm_base_url=llm_base_url(environ),
             llm_timeout=long_timeout_s(environ),
-            llm_concurrency=max(1, int(environ.get("RESEARCH_LLM_CONCURRENCY", "3") or "3")),
+            llm_concurrency=(
+                grok_concurrency(environ)
+                if provider == PROVIDER_GROK
+                else max(1, int(environ.get("RESEARCH_LLM_CONCURRENCY", "3") or "3"))
+            ),
             portfolio_path=(
                 Path(environ["PORTFOLIO_FILE"])
                 if environ.get("PORTFOLIO_FILE")

@@ -128,7 +128,13 @@ class Usage:
             self.unreported += 1
             return
         self.prompt += int(usage.get("prompt_tokens") or 0)
-        self.cache_hit += int(usage.get("prompt_cache_hit_tokens") or 0)
+        # DeepSeek 报 prompt_cache_hit_tokens，xAI 报 prompt_tokens_details.cached_tokens，两边都认。
+        cached = usage.get("prompt_cache_hit_tokens")
+        if cached is None:
+            details_in = usage.get("prompt_tokens_details")
+            if isinstance(details_in, dict):
+                cached = details_in.get("cached_tokens")
+        self.cache_hit += int(cached or 0)
         self.completion += int(usage.get("completion_tokens") or 0)
         details = usage.get("completion_tokens_details")
         if isinstance(details, dict):
@@ -238,7 +244,8 @@ def chat_json(
 ) -> ChatJsonResult:
     """POST {base}/chat/completions。强度按当前提供方，DeepSeek 默认 max / 393216 / thinking，并走流式。"""
     # llm 加载时会进 translate 包。顶上再导 researchlib.llm 会环，所以放在调用里。
-    from researchlib.llm import RETRY_DELAYS, RETRY_STATUS, IncompleteStream, read_chat_completion
+    from researchlib.grok import retry_delays as _retry_delays
+    from researchlib.llm import RETRY_STATUS, IncompleteStream, read_chat_completion
     from researchlib.llm import _is_timeout as _transport_timeout
     from researchlib.llm import _retry_after as _http_retry_after
 
@@ -283,6 +290,7 @@ def chat_json(
     started = time.time()
     refreshed = False
     retries = 0
+    delays = _retry_delays()
     # 失败的每一次从发出到出错连了几秒。几秒就断是网络不稳；每次都连了差不多一样久才断，是长请求被掐。
     spans: list[float] = []
     while True:
@@ -297,8 +305,8 @@ def chat_json(
                 refreshed = True
                 bearer = get_xai_access_token(data_dir, force=True, discard_access_token=bearer)
                 continue
-            if exc.code in RETRY_STATUS and retries < len(RETRY_DELAYS):
-                delay = _http_retry_after(exc) or RETRY_DELAYS[retries]
+            if exc.code in RETRY_STATUS and retries < len(delays):
+                delay = _http_retry_after(exc) or delays[retries]
                 logger.info("译制请求 HTTP %s，%.0f 秒后第 %s 次发同一请求", exc.code, delay, len(spans) + 1)
                 time.sleep(delay)
                 retries += 1
@@ -311,10 +319,10 @@ def chat_json(
             spans.append(_clock() - begun)
             # 超时表示这一次已经等满了长超时，不再重发。其余连接错误重试同一份 payload。
             timed_out = _transport_timeout(exc)
-            if timed_out or retries >= len(RETRY_DELAYS):
+            if timed_out or retries >= len(delays):
                 note = _tries(spans, timed_out=timed_out, limit=timeout)
                 raise LLMTransportError(f"连不上 {label} 接口（{note}）：{exc}") from exc
-            delay = RETRY_DELAYS[retries]
+            delay = delays[retries]
             logger.info(
                 "译制请求连了 %.0f 秒断开（%s），%.0f 秒后第 %s 次发同一请求", spans[-1], exc, delay, len(spans) + 1
             )
