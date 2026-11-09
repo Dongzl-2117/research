@@ -121,7 +121,7 @@ def test_reusable_targets_skip_english_gaps_tampered_targets_and_other_pipelines
 
     tampered = {**proof, "segments": [{**proof["segments"][0], "target": ZB}, *proof["segments"][1:]]}
     assert pr.reuse_key(A) not in pr.reusable_targets(tampered)
-    assert pr.reusable_targets({**proof, "pipeline": {**proof["pipeline"], "prompt": -1}}) == {}
+    assert pr.reusable_targets({**proof, "pipeline": {**proof["pipeline"], "segmenter": -1}}) == {}
     assert pr.reusable_targets({}) == {} and pr.reusable_targets(None) == {}
 
 

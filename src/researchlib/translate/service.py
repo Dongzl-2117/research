@@ -42,10 +42,12 @@ from researchlib.translate.llm import (
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import (
     ALIGNMENT_VERSION,
+    PROMPT_VERSION,
     AlignmentError,
     misplaced_slot,
     numbers_agree,
     numeric_anchors,
+    prompt_versions,
     receipt,
     reusable_targets,
     reuse_key,
@@ -795,6 +797,7 @@ def _breaking_slots(manifest: dict, html: str, kept: dict[int, str]) -> list[int
 
 def _sign(
     manifest: dict, html: str, replacements: dict[int, str], gaps: set[int], *, model: str,
+    prompts: list[int] | None = None,
 ) -> tuple[str, dict, set[int]]:
     """写回并签回执。返回 (译文 HTML, 回执, 写回后才露出问题、退回英文的叶子序号)。
 
@@ -808,7 +811,8 @@ def _sign(
         try:
             if leaf_count_problem(html, zh_html):
                 raise AlignmentError("receipt-count")
-            return zh_html, receipt(manifest, zh_html, model=model, untranslated=sorted(gaps | dropped)), dropped
+            proof = receipt(manifest, zh_html, model=model, untranslated=sorted(gaps | dropped), prompts=prompts or ())
+            return zh_html, proof, dropped
         except AlignmentError as exc:
             slot = re.fullmatch(r"slot-(\d+)-[\w-]+", exc.code)
             if slot and int(slot.group(1)) in kept:
@@ -833,7 +837,8 @@ def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = Tr
     一段出错不连累整篇：身份、链接、占位符一直对不上或者串段的那几段先放英文，序号记进回执的
     ``untranslated``，这篇记为没译完（complete 为假），过了冷却再进队列，下次只补这几段。
     请求断线、限流时已经译好的段先存下。``reuse`` 为真时，已有回执里原文没变的段直接用，不再花钱重译；
-    想整篇重来（换了模型或提示词）时传 False。
+    想整篇重来（换了模型，或者觉得译得不好）时传 False。上一份回执不是现在这一版提示词译的，
+    也按 False 走：整篇按现在的提示词重译，哪段重译失败才退回旧译文，免得一篇里新旧两种写法混着。
     """
     article = conn.execute(
         """
@@ -879,9 +884,11 @@ def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = Tr
         ]
 
     previous = _previous_translation(conn, article_id)
-    # 已有回执里原文没变的段。默认直接用，只译剩下的；--fresh 时整篇重译，哪段重译失败才退回用它，
-    # 重译不会让已有的好译文变差。
+    earlier_prompts = prompt_versions((previous or {}).get("provenance"))
+    # 已有回执里原文没变的段。默认直接用，只译剩下的；--fresh 或者上一份是旧提示词译的，整篇重译，
+    # 哪段重译失败才退回用它，重译不会让已有的好译文变差。
     known = _reuse(previous, slots.sources)
+    reuse = reuse and earlier_prompts == [PROMPT_VERSION]
     progress = _Progress(values=dict(known) if reuse else {})
     service_error: Exception | None = None
     batches = _pending_batches(slots, progress.values)
@@ -940,9 +947,13 @@ def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = Tr
     if reused:
         earlier = str(((previous or {}).get("provenance") or {}).get("model") or "")
         models.update(name.strip() for name in earlier.split(",") if name.strip())
+    # 回执记下这篇里的段用过哪几版提示词：这次新译的是现在这一版，复用或退回的旧段沿用上一份回执的。
+    prompts = {PROMPT_VERSION} if translated_now else set()
+    if reused:
+        prompts.update(earlier_prompts)
     zh_html, provenance, dropped = _sign(
         manifest, html, replacements, {ordinal_of[index] for index in gaps},
-        model=", ".join(sorted(models)) or model_id(),
+        model=", ".join(sorted(models)) or model_id(), prompts=sorted(prompts),
     )
     for index, ordinal in enumerate(ordinal_of):
         if ordinal in dropped:
