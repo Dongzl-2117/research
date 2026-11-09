@@ -8,7 +8,7 @@ from researchlib import embeddings
 from researchlib.ask import _batches, _material, _size, outline_note
 from researchlib.retrieval import (
     LEXICAL_WEIGHT,
-    SEMANTIC_RANKS,
+    SEMANTIC_BAND,
     FocusMatcher,
     Passage,
     Term,
@@ -17,6 +17,7 @@ from researchlib.retrieval import (
     article_caps,
     fuse_semantic,
     semantic_scores,
+    thin_text,
 )
 
 
@@ -24,18 +25,52 @@ def _p(article_id: int, ord_: int, score: float, *, coverage: float = 1.0, seman
     return Passage(article_id, ord_, "", "正文", "标题", "src", None, score=score, coverage=coverage, semantic=semantic)
 
 
-def test_semantic_scores_follow_rank_and_drop_far_matches():
+def test_semantic_scores_follow_similarity_and_drop_far_matches():
     sims = {(1, 0): 0.82, (2, 0): 0.80, (3, 0): 0.70, (4, 0): 0.55}
     scores = semantic_scores(sims)
+    # 以第二近的那块为满分线，比它还近的都是 1 分。
     assert scores[(1, 0)] == 1.0
-    assert scores[(1, 0)] > scores[(2, 0)] > scores[(3, 0)]
-    # 比最相近的那块差出 0.15 以上的不算语义相关。
-    assert (4, 0) not in scores
+    assert scores[(2, 0)] == pytest.approx(1.0)
+    assert scores[(2, 0)] > scores[(3, 0)]
+    assert scores[(3, 0)] == pytest.approx((0.70 - (0.80 - SEMANTIC_BAND)) / SEMANTIC_BAND)
+    # 比这条线差出 SEMANTIC_BAND 以上的不算语义相关：记 0 分（算过、不相关），不是没有。
+    assert scores[(4, 0)] == 0.0
 
 
-def test_semantic_scores_stop_after_rank_limit():
-    sims = {(i, 0): 0.9 - i * 0.0001 for i in range(SEMANTIC_RANKS + 10)}
-    assert len(semantic_scores(sims)) == SEMANTIC_RANKS
+def test_semantic_scores_do_not_stop_at_a_rank_limit():
+    # 以前按名次折算，第 60 名以后一律 0 分：库大了以后关键词召回到的段落几乎都没有语义分。
+    sims = {(i, 0): 0.9 - i * 0.0001 for i in range(300)}
+    scores = semantic_scores(sims)
+    assert len(scores) == 300
+    assert scores[(299, 0)] > 0.8
+
+
+def test_one_near_copy_of_the_question_does_not_flatten_the_rest():
+    # 以前只和最近的那一块比，差出 0.15 就是 0 分：一块几乎照抄问题的段落让别的段落全没了语义分。
+    sims = {(0, 0): 0.99, (1, 0): 0.72, (2, 0): 0.70, (3, 0): 0.69}
+    scores = semantic_scores(sims)
+    assert scores[(3, 0)] == pytest.approx(0.5)
+
+
+def test_when_only_one_block_is_close_the_far_ones_get_nothing():
+    # 范围很窄（一位作者、一篇文章）时第二近的那块可能离得很远，不能拿它当满分线，让远的都沾光。
+    scores = semantic_scores({(0, 0): 0.98, (1, 0): 0.04, (2, 0): 0.03})
+    assert scores[(0, 0)] == 1.0
+    assert scores[(1, 0)] == scores[(2, 0)] == 0.0
+
+
+def test_blocks_with_only_links_and_file_names_count_as_empty():
+    # 这样的块算出来的向量就是标题的向量，不能拿它算语义分。
+    assert thin_text({"heading": "", "body": "Z6ZJbq.webp BO6fbH.webp v2-981fc.jpg"})
+    assert thin_text({"heading": "", "body": "[](https://example.com/wp-content/uploads/2013/03/a.png)"})
+    assert thin_text({"heading": "", "body": "On to the update:"})
+    shots = "Screenshot 2024-06-17 at 16.18.55.png Screenshot 2024-06-17 at 16.50.58.png 0 image.png"
+    assert thin_text({"heading": "", "body": shots})
+    assert thin_text({"heading": "", "body": "截屏2025-06-08 19.36.10.png Screen Shot 2017-06-01 at 7.40.43 PM"})
+    # 章节标题是同一节各块共用的，正文只有文件名照样算没字。
+    assert thin_text({"heading": "规模效应被称为商业世界里的万有引力，" * 3, "body": "image.png"})
+    assert not thin_text({"heading": "", "body": "会员费是利润的大头"})
+    assert not thin_text({"heading": "", "body": "Costco makes its money from membership fees."})
 
 
 def test_fuse_without_semantic_only_applies_time_weight():
