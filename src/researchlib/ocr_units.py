@@ -22,8 +22,9 @@
 - 拼接：连着截的几张，后一张开头和前一张结尾重合的那几条只留一份；被上下边缘截掉一部分的那条，
   换成另一张里完整的。被截的那条认乱了、对不上时跳过它，看后面几条对不对得上。
   比的是模型交回的一条条消息和段落，不按版式猜。
-- 排版：拼接之后仍带着 ``cut`` 的块，不写模型交回的正文（只露出半截时它会补成整句），改写成
-  「被遮挡，无法辨认」，不安到说话人名下。邻图已经补全、``cut`` 被拿掉的那句照旧留下。
+- 排版：``cut`` 只表示这条在图外还有下文，看得见的字整段留下（和第 3 版一样）。
+  只有模型另标 ``illegible``（字被切到笔画中间、只露出半截）时，才不采用它补的那句，
+  改写成「被遮挡，无法辨认」，不安到说话人名下。旧行没有这个字段的，有 ``cut`` 也留字。
 - 标注：截图后有人另外圈出、框出、划线标出的字（``marks``），排在那一块后面，写成「（图上标出：…）」；
   标出的就是整块时不再抄一遍，写「（图上标出这段）」。字明显比正文小的块（``small``，聊天里转发的书页、
   文章截图）后面写「（小字，可能认错）」：这种字模型常按意思补成通顺的话，又自己觉得看清了，
@@ -57,10 +58,11 @@ MIN_OVERLAP_CHARS = 8
 MIN_SPLICE_CHARS = 4
 # 字明显比正文小的块（small）后面多写的一行。
 SMALL_NOTE = "（小字，可能认错）"
-# 仍标着截断、邻图也没补成完整一条的，不采用模型写的那句。只露出半截时模型会补成通顺的整句。
+# 字被切到笔画中间（illegible）时，不采用模型补的那句。cut 本身不触发这句：cut 只表示图外还有下文。
 CUT_UNREADABLE = {
     "bottom": "（末尾一条被遮挡，无法辨认）",
     "top": "（开头一条被遮挡，无法辨认）",
+    "": "（有一条字只露出半截，无法辨认）",
 }
 
 _FENCE = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\n?(?P<body>.*?)\n?```$", re.S)
@@ -142,6 +144,11 @@ def _flag(value) -> bool:
     return str(value or "").strip().lower() in _TRUE
 
 
+def _illegible(item: dict) -> bool:
+    """字被切到笔画中间。``partial_glyphs`` 是同一个意思的别名。没有这个字段就不是。"""
+    return _flag(item.get("illegible")) or _flag(item.get("partial_glyphs"))
+
+
 def _cut(value) -> str:
     return _CUTS.get(str(value or "").strip().lower(), "")
 
@@ -199,10 +206,11 @@ def _block(item) -> dict | None:
             table["small"] = True
         return table
     cut = _cut(item.get("cut"))
+    illegible = _illegible(item)
     if kind == _SPOKEN:
         text = _spoken(item.get("text"))
         quote = _quote(item.get("quote"))
-        if not text and not quote:
+        if not text and not quote and not illegible:
             return None
         block = {"type": _SPOKEN, "speaker": _name(item.get("speaker")), "self": _flag(item.get("self")), "text": text}
         if quote:
@@ -210,11 +218,13 @@ def _block(item) -> dict | None:
     else:
         # 认不出的类型有字就当成段落：宁可多留一段，不丢字。
         text = _text(item.get("text"))
-        if not text:
+        if not text and not illegible:
             return None
         block = {"type": "text", "text": text}
     if cut:
         block["cut"] = cut
+    if illegible:
+        block["illegible"] = True
     if marks:
         block["marks"] = marks
     if _flag(item.get("small")):
@@ -245,6 +255,9 @@ def _norm(text: str) -> str:
 
 
 def _body(block: dict) -> str:
+    # 笔画被切到中间时，模型补的那句不能拿去和邻图对同一条，否则会把编出来的字拼进去。
+    if block.get("illegible"):
+        return ""
     if block.get("type") == "table":
         return "\n".join(" | ".join(row) for row in block.get("rows") or [])
     return block.get("text") or ""
@@ -423,21 +436,22 @@ def paragraphs(
     同一个人连着说的并成一段，网友每次开口各自一段（看不到名字的不一定是同一个人）。
     字明显比正文小的块（small）后面写一行「（小字，可能认错）」。
     有人另外标出的字（marks）写在那一块后面一行：「（图上标出：…）」，标出的是整块时写「（图上标出这段）」。
+    cut 的字照写。illegible 的不写模型那句，改成「被遮挡，无法辨认」，不安到说话人名下。
     written：前面已经写过的消息（就地更新）。引用的那条前面写过（截成前半句的也算），就不再写一遍。
     owners 见 ``speaker_label``。
     """
     written = set() if written is None else written
     entries: list[tuple[str, str]] = []
     for block in blocks:
-        if block.get("cut") and block.get("type") != "table":
-            # 拼接时邻图已经把这条补全的，cut 会被拿掉，完整的那句照旧留下。
-            # 还带着 cut 的，是只露出半截、模型却可能补成整句的。不写那句，也不安到说话人名下。
+        if block.get("illegible") and block.get("type") != "table":
+            # 字只露出半截。cut 不走这里：cut 的字是看得清的，整段留下。
             if block.get("type") == _SPOKEN:
                 quote = block.get("quote")
                 if quote and not _written_before(quote["text"], written):
                     entries.append((speaker_label(quote, owners), quote["text"]))
                     written.add(_norm(quote["text"]))
-            entries.append(("", CUT_UNREADABLE.get(block["cut"], "（有一条被遮挡，无法辨认）")))
+            if block.get("text"):
+                entries.append(("", CUT_UNREADABLE.get(block.get("cut") or "", CUT_UNREADABLE[""])))
             continue
         note = _notes(block)
         if block.get("type") != _SPOKEN:
