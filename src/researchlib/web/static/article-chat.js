@@ -500,9 +500,27 @@
     if (following && turn.user) log.scrollTop += turn.user.getBoundingClientRect().top - log.getBoundingClientRect().top - 16;
   }
 
+  // 整合中：读到第几批写在状态行，已经写出来的半截回答先显示（stats.progress、answer，见 ask._Progress）。
+  function showRunning(turn, data) {
+    const stage = (data.stats && data.stats.progress) || {};
+    if (data.answer && data.answer !== turn.partial) {
+      turn.partial = data.answer;
+      renderData(turn, { ...data, checks: [], stats: {}, failed_batches: [], model: '' });
+    }
+    if (stage.stage === 'reading' && stage.total) {
+      progress(turn, `正在读资料（${stage.done || 0}/${stage.total} 批）`);
+    } else if (stage.stage === 'writing') {
+      progress(turn, data.answer ? '正在写回答' : '资料读完了，正在组织回答');
+    } else {
+      progress(turn, '已找到原文，正在由问库整合');
+    }
+    return Boolean(data.answer);
+  }
+
   function poll(turn, token) {
     let attempts = 0;
     let failures = 0;
+    let writing = false;
     const deadline = Date.now() + 30 * 60 * 1000;
     async function tick() {
       if (token !== session) return;
@@ -515,6 +533,7 @@
           accept(turn, data, token);
           return;
         }
+        writing = showRunning(turn, data);
         if (attempts >= maxPolls || Date.now() >= deadline) {
           pause(turn, '回答仍在整合，可稍后继续查看。');
           return;
@@ -531,7 +550,7 @@
           return;
         }
       }
-      later(tick, attempts < 8 ? 1500 : 4000);
+      later(tick, attempts < 8 ? 1500 : (writing ? 2000 : 4000));
     }
     later(tick, 800);
   }

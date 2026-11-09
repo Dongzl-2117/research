@@ -195,6 +195,8 @@ class Passage:
     # 交给模型时补上的前后文（同一篇相邻的块）。引用和链接仍落在这一块上。
     before: str = ""
     after: str = ""
+    # 问题点到的公司里，这段写到了哪几家（公司 id，按问题里的顺序）。只问几家公司时按它轮流取，见 select。
+    companies: list[int] = field(default_factory=list)
 
     @property
     def url(self) -> str:
@@ -1481,12 +1483,16 @@ def score_rows(
 
         # 公司：段落里确实谈到了这家公司才算；整篇深入谈的文章再加一点。
         anchor = 1.0
+        covered: list[int] = []
         if focus_ids:
-            hits = sum(company_hits.get(cid, 0) for cid in focus_ids)
-            if hits == 0 and row["ord"] == _ord_range(row['ord'])[0] and any(
-                title_companies.get(cid) for cid in focus_ids
-            ):
-                hits = 1
+            # 文章开头那块正文没再点名、标题点了的，也算写到了这家。
+            leading = row["ord"] == _ord_range(row["ord"])[0]
+            per_company = {
+                cid: company_hits.get(cid, 0) or (1 if leading and title_companies.get(cid) else 0)
+                for cid in focus_ids
+            }
+            covered = [cid for cid in focus_ids if per_company[cid]]
+            hits = sum(per_company.values())
             # 问题点了公司，这段没写到它、所在文章也不是专门谈它的（标题或全文深入）：按意思再像，
             # 谈的多半是别家的同类事，排在谈这家公司的段落后面。整篇谈它的文章里没再点名的段落不算。
             if hits == 0 and scope.company_id is None and not any(
@@ -1496,11 +1502,14 @@ def score_rows(
             if query.overview:
                 if hits == 0:
                     continue
-                best = min(
-                    (_DEPTH_RANK.get(depths.get((row["article_id"], cid), "passing"), 3) for cid in focus_ids),
-                    default=3,
+                # 每家各算各的：这段写到它几次（取对数），乘这篇谈它有多深。只点一家时和以前一样；
+                # 点了几家时，一段里顺带列了一串公司名的不会因为总次数多排到前面。
+                score = sum(
+                    math.log1p(count)
+                    * _OVERVIEW_DEPTH[_DEPTH_RANK.get(depths.get((row["article_id"], cid), "passing"), 3)]
+                    for cid, count in per_company.items()
+                    if count
                 )
-                score = math.log1p(hits) * (1.6, 1.4, 1.15, 0.5)[best]
                 coverage = 1.0
             elif hits == 0 and scope.company_id is not None:
                 score *= 0.3
@@ -1546,6 +1555,7 @@ def score_rows(
                 anchor=row.get("anchor") or "",
                 semantic=sem,
                 measured=measured,
+                companies=covered,
             )
         )
     return fuse_semantic(passages, multipliers)
@@ -1580,6 +1590,8 @@ def fuse_semantic(passages: list[Passage], multipliers: list[float]) -> list[Pas
 
 
 _DEPTH_RANK = {"title": 0, "whole": 1, "section": 2, "passing": 3}
+# 只问公司时，按这篇谈这家公司的深度（标题、全文、单节、一带而过）给的倍数。
+_OVERVIEW_DEPTH = (1.6, 1.4, 1.15, 0.5)
 
 
 def _passage_from_row(row: dict) -> Passage:
@@ -1597,6 +1609,29 @@ def _passage_from_row(row: dict) -> Passage:
 
 
 # —— 挑选 ——
+
+
+def _interleave(ranked: list[Passage], key, share=None) -> list[Passage]:
+    """按 key 分组，各组轮流取；组内保持原来的先后，组按各自最高分排。share(组名) 是这一组每轮取几段，默认 1。"""
+    buckets: dict[object, list[Passage]] = defaultdict(list)
+    for passage in ranked:
+        buckets[key(passage)].append(passage)
+    order = sorted(buckets, key=lambda name: max(p.score for p in buckets[name]), reverse=True)
+    queues = [(iter(buckets[name]), share(name) if share else 1) for name in order]
+    interleaved: list[Passage] = []
+    while queues:
+        alive = []
+        for queue, size in queues:
+            taken = 0
+            for passage in queue:
+                interleaved.append(passage)
+                taken += 1
+                if taken >= size:
+                    break
+            if taken >= size:
+                alive.append((queue, size))
+        queues = alive
+    return interleaved
 
 
 def _bucket_key(passage: Passage, query: Query, sources_by_id: dict) -> object:
@@ -1651,32 +1686,37 @@ def select(
     # 梳理类按年份摊开，「哪些作者」按作者摊开；问「最近」时不摊年份，免得把旧文章顶上来。
     spread = query.author_intent or ((query.overview or query.timeline) and not query.recent)
     if spread:
-        buckets: dict[object, list[Passage]] = defaultdict(list)
-        for passage in ranked:
-            buckets[_bucket_key(passage, query, sources_by_id or {})].append(passage)
-        order = sorted(buckets, key=lambda key: buckets[key][0].score, reverse=True)
-        interleaved: list[Passage] = []
-        while any(buckets[key] for key in order):
-            for key in order:
-                if buckets[key]:
-                    interleaved.append(buckets[key].pop(0))
-        ranked = interleaved
+        ranked = _interleave(ranked, lambda passage: _bucket_key(passage, query, sources_by_id or {}))
+    if query.overview and len(query.companies) >= 2:
+        # 只问几家公司（「美的和格力怎么比」）：同时写到几家的、只写到其中一家的轮流取，每一类里仍按年份摊开。
+        # 不然被写得最多的那家占满名额：本地副本上「腾讯和网易」交给问库的 240 段里网易只有 3 段。
+        # 写到几家的一轮取几段，每家露面的次数大致相同，同时谈到两家的比较段落占一半。
+        ranked = _interleave(
+            ranked, lambda passage: tuple(passage.companies), share=lambda covered: max(1, len(covered))
+        )
     picked: list[Passage] = []
     per: dict[int, int] = {}
     caps = article_caps(ranked, budget.per_article)
     seen_text: set[str] = set()
+    covered: set[int] = set()
     used = 0
     for passage in ranked:
         if per.get(passage.article_id, 0) >= caps.get(passage.article_id, budget.per_article):
             continue
         if picked and used + len(passage.body) > budget.chars:
             continue
-        # 同一段话出现在两篇里（整段引用、没认出来的转发）只给一次，不占两个名额。
+        # 同一段话出现在两篇里（整段引用、没认出来的转发、抄进几篇笔记的同一份资料）只给一次，不占两个名额。
+        # 只差开头结尾几个字的也算（Stratechery 几篇里重复的那段引文，后面跟着的链接字样不一样）：
+        # 这段八成的字已经在前面挑中的段落里，就不要了。
         key = _text_key(passage.body)
         if key and key in seen_text:
             continue
+        pieces = _shingles(key)
+        if len(pieces) >= 4 and len(pieces & covered) >= REPEAT_SHARE * len(pieces):
+            continue
         if key:
             seen_text.add(key)
+        covered |= pieces
         per[passage.article_id] = per.get(passage.article_id, 0) + 1
         used += len(passage.body)
         picked.append(passage)
@@ -1686,11 +1726,25 @@ def select(
 
 
 _TEXT_KEY = re.compile(r"[0-9A-Za-z一-鿿]+")
+# 一段的字有这么多已经在前面挑中的段落里，就算重复。本地副本上问库后台的 240 段里，一段整个包含在另一段里、
+# 或八成相同的约占 3%，「aggregation theory」占两成多。
+REPEAT_SHARE = 0.8
+# 按 50 个字一片比：同一段话（抄过去、转发、引文）连着几十个字都一样；只是用了几句相同的套话、
+# 前后顺序不同的两段，50 个字的片很少对得上，不算重复。切成 10 个字一片时，检索评测语料里用同一批句式拼成的
+# 相关段落被当成重复丢掉，召回率掉了一半以上。
+_SHINGLE = 50
 
 
 def _text_key(body: str) -> str:
     text = "".join(_TEXT_KEY.findall(body or "")).lower()
     return text if len(text) >= 30 else ""
+
+
+def _shingles(key: str) -> set[int]:
+    """归一后的正文按 _SHINGLE 个字一片切开，按内容留下约四分之一的片：两段里相同的地方留下的片也相同。"""
+    if not key:
+        return set()
+    return {value for value in (hash(key[i : i + _SHINGLE]) for i in range(len(key) - _SHINGLE + 1)) if not value % 4}
 
 
 def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
@@ -1983,13 +2037,13 @@ def rank_articles(scored: list[Passage], query: Query, company_rows: list[dict])
             and max(p.semantic for p in items) >= SEMANTIC_STRONG
         )
         # 同一篇里重复的段落只算一次、只摘一次：Stratechery 的引文在正文里又以普通段落出现一遍，
-        # 两块一字不差，页面上的两段片段就是同一段话。
-        shown = _distinct_passages(items, 3)
+        # 两块一字不差，页面上的两段片段就是同一段话。多留几段备选，见 _fresh_first。
+        shown = _distinct_passages(items, CARD_CHOICES)
         score = shown[0].score + 0.3 * sum(p.score for p in shown[1:3])
         first = shown[0]
         hits.append(
             ArticleHit(
-                article_id, title, first.source_id, first.published_at, score, full or by_meaning, shown[:2],
+                article_id, title, first.source_id, first.published_at, score, full or by_meaning, shown,
                 semantic=by_meaning,
             )
         )
@@ -1998,7 +2052,44 @@ def rank_articles(scored: list[Passage], query: Query, company_rows: list[dict])
     if partial_hits:
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
-    return full_hits + partial_hits
+    shown_keys: set[str] = set()
+    return _fresh_first(full_hits, shown_keys) + _fresh_first(partial_hits, shown_keys)
+
+
+# 每篇留几段备选：前面的卡片已经摘过的段落，后面的卡片换一段摘。卡片上最多摘两段。
+CARD_CHOICES = 6
+CARD_PASSAGES = 2
+
+
+def _fresh_first(hits: list[ArticleHit], shown_keys: set[str]) -> list[ArticleHit]:
+    """同一段话原样出现在好几篇里，结果页上只摘一次。
+
+    林文丰飞书里同一份资料抄进了几篇笔记，Stratechery 几篇文章里重复同一段引文：本地副本 20 万块正文里
+    有 1.8 万块和别的文章一字不差。以前搜「Costco 商业模式」，前三张卡片摘的是同一段话。
+    后面的卡片改摘这篇里别的、前面没摘过的段落；这篇命中的段落全是前面摘过的，卡片挪到这一档最后。
+    shown_keys 记着已经摘过的段落，跨档沿用。
+    """
+    fresh_hits: list[ArticleHit] = []
+    repeats: list[ArticleHit] = []
+    for hit in hits:
+        fresh: list[Passage] = []
+        keys: list[str] = []
+        for passage in hit.passages:
+            key = _text_key(passage.body)
+            if key and key in shown_keys:
+                continue
+            fresh.append(passage)
+            keys.append(key)
+            if len(fresh) >= CARD_PASSAGES:
+                break
+        if fresh:
+            hit.passages = fresh
+            fresh_hits.append(hit)
+            shown_keys.update(key for key in keys if key)
+        else:
+            hit.passages = hit.passages[:CARD_PASSAGES]
+            repeats.append(hit)
+    return fresh_hits + repeats
 
 
 def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0) -> SearchResult:

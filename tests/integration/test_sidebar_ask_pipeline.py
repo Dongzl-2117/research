@@ -131,6 +131,42 @@ def test_sidebar_error_retry_uses_original_answer_id_job_and_retained_scope(conn
     assert conn.execute('SELECT count(*) AS n FROM llm_answers').fetchone()['n'] == 1
 
 
+def test_running_answer_shows_partial_text_and_progress_then_clears_it_on_error(conn, settings, monkeypatch):
+    """整合中先把写出来的半截回答和进度写进库（status 仍是 running）；写完以正式回答为准，出错时清掉半截。"""
+    identity = _article(conn, 'progress')
+    monkeypatch.setattr(ask_module, 'PROGRESS_EVERY', 0)
+    monkeypatch.setattr(ask_module, 'llm_configured', lambda _settings: True)
+    snapshots = []
+    outcome = {'fail': False}
+
+    def fake_chat(_settings, messages, on_text=None, **_kwargs):
+        if messages[0]['content'] == ask_module.EXPAND_PROMPT:
+            return '{}', 'synthetic'
+        on_text('渠道优势')
+        snapshots.append(conn.execute(
+            'SELECT status, answer, stats FROM llm_answers ORDER BY id DESC LIMIT 1'
+        ).fetchone())
+        conn.commit()
+        if outcome['fail']:
+            raise LLMError('合成模型故障')
+        on_text('渠道优势来自订阅分发[1]。')
+        return '渠道优势来自订阅分发[1]。', 'synthetic'
+
+    monkeypatch.setattr(ask_module, 'chat', fake_chat)
+    params = {'article': identity, 'source': 'fangwei-mp'}
+    with TestClient(create_app(settings)) as client:
+        first = client.post('/api/v1/ask', json={'question': '渠道优势', **params}).json()
+        saved = client.get(f"/api/v1/answers/{first['id']}").json()
+        outcome['fail'] = True
+        second = client.post('/api/v1/ask', json={'question': '渠道优势在哪里', **params}).json()
+        broken = client.get(f"/api/v1/answers/{second['id']}").json()
+    assert [(row['status'], row['answer']) for row in snapshots] == [('running', '渠道优势')] * 2
+    assert all(row['stats'] == {'progress': {'stage': 'writing'}} for row in snapshots)
+    assert saved['status'] == 'done' and saved['answer'] == '渠道优势来自订阅分发[1]。'
+    assert 'progress' not in saved['stats'] and saved['stats']['write_s'] >= 0
+    assert broken['status'] == 'error' and broken['answer'] == '' and 'progress' not in broken['stats']
+
+
 def test_sidebar_long_summary_uses_original_deep_budget_and_batch_failure_report(conn, settings, monkeypatch):
     chunks = [(f'合成章节{index}：' + '订阅渠道优势与分发机制。' * 90) for index in range(80)]
     chunks[-1] += '合成文末唯一证据。'
