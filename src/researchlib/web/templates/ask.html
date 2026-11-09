@@ -35,7 +35,7 @@
       <a class="ask-new" href="/ask">新问题 <span aria-hidden="true">＋</span></a>
     </div>
   </header>
-  {% if not llm_ready %}<p class="chat-notice">没有可用的 {{ llm_label | default("LLM") }} 凭证，只列出相关原文。</p>{% endif %}
+  {% if not llm_ready %}<p class="chat-notice">{{ credential_notice | default("没有可用的 " ~ (llm_label | default("LLM")) ~ " 凭证") }}，只列出相关原文。</p>{% endif %}
   <p id="ask-mode" class="sr">每轮只提交当前问题，不沿用上文。作者、日期和指定资料范围会随本次提问提交。回答可通过引用回到原文核对。</p>
   <div class="chat-log" role="region" aria-label="提问与回答" tabindex="0">
     {% if not result %}

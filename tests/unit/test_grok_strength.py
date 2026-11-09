@@ -90,7 +90,7 @@ def test_shared_constants_are_the_translation_ones():
     from researchlib import deepseek
 
     assert translate_llm.GROK_MODEL_ID is GROK_MODEL_ID == "grok-4.7"
-    assert translate_llm.GROK_REASONING_EFFORT is GROK_REASONING_EFFORT == "xhigh"
+    assert translate_llm.GROK_REASONING_EFFORT is GROK_REASONING_EFFORT == "high"
     assert translate_llm.GROK_CONTEXT_TOKENS is GROK_CONTEXT_TOKENS == 500_000
     assert translate_llm.GROK_OUTPUT_FLOOR is GROK_OUTPUT_FLOOR == 128_000
     assert translate_llm.grok_output_tokens is grok_output_tokens
@@ -155,10 +155,11 @@ def test_chat_payload_matches_translation_strength(tmp_path, monkeypatch):
     payload = seen["payload"]
     assert seen["bearer"] == "oauth-access"
     assert payload["model"] == "grok-4.7"
-    assert payload["reasoning_effort"] == "xhigh"
+    assert payload["reasoning_effort"] == "high"
+    assert payload["fast"] is False
     assert payload["max_tokens"] >= 128_000
     assert payload["temperature"] == 0.1
-    assert "fast" not in payload
+    assert payload["model"] == "grok-4.7"
     assert "fast" not in payload["model"]
     for key in ("context_length", "context_window", "max_context_tokens", "max_input_tokens"):
         assert key not in payload
@@ -208,9 +209,10 @@ def test_chat_json_uses_the_same_strength(tmp_path, monkeypatch):
     assert captured["auth"] == "Bearer oauth-access"
     assert "should-not-be-used" not in captured["auth"]
     assert body["model"] == completion_params(temperature=0.3, max_tokens=800)["model"]
-    assert body["reasoning_effort"] == "xhigh"
+    assert body["reasoning_effort"] == "high"
+    assert body["fast"] is False
     assert body["max_tokens"] == grok.GROK_OUTPUT_FLOOR
     assert body["response_format"] == {"type": "json_object"}
     assert "stream" not in body
-    assert "fast" not in body
+    assert "fast" not in body["model"]
     assert captured["timeout"] == 12

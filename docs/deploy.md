@@ -115,7 +115,7 @@ GIT_SHA=$(git rev-parse HEAD) docker compose up -d --build
 scripts/install-launchd.sh   # 定时任务有变化时再跑一次；上次的设置记在 data/launchd.env
 ```
 
-图片文字（OCR）在 `app` 容器里调站内 deepseek-flash 识图，不用另外的镜像，见 [ocr.md](ocr.md)。
+图片文字（OCR）在 `app` 容器里调站内 LLM（默认 Grok OAuth 的 grok-4.7）识图，不用另外的镜像，见 [ocr.md](ocr.md)。
 
 ## 依赖锁死
 
@@ -130,7 +130,7 @@ scripts/lock.sh --upgrade                   # 全部升到最新
 
 改了 `pyproject.toml` 的依赖以后跑 `scripts/lock.sh`（已锁的版本不动，只补新加的）。本机没有 uv 时脚本在 Python 容器里跑。只用发布满两周的版本：刚发布的版本偶尔有问题、被撤回，甚至被人投毒，等两周再用；急着要某个新版本时加 `COOLDOWN_DAYS=0`。改完的锁文件和代码一起提交；CI 会检查锁文件和 `pyproject.toml` 对得上、按 arm64（Mac mini）下得到全部的包，再用锁文件跑测试、构建镜像。
 
-站内 LLM 默认 DeepSeek（`DEEPSEEK_API_KEY`，见 [llm.md](llm.md)）。Grok OAuth 是可选项：`RESEARCH_LLM_PROVIDER=grok` 时用本机 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`），登录用 `docker compose exec app research-xai-login login`。见 [translate.md](translate.md)。
+站内 LLM 默认 Grok OAuth（2026-11-10 起）：`data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`），登录用 `docker compose exec app research-xai-login login`，见 [llm.md](llm.md)。`RESEARCH_LLM_PROVIDER=deepseek` 切回 DeepSeek，改 `.env` 再重启即可。宿主机 `.env` 里如果还写着 `deepseek`，上线后仍走 DeepSeek，要切 Grok 就把这一行改成 `grok` 或删掉。核对：`docker compose exec app research-grok-smoke --check`。
 
 改完来源配置（`config/sources.yaml`）或持仓名单（`config/portfolio.yaml`）后刷新页面即可。导入命令每次都会重新读配置。
 

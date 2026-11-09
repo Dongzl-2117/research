@@ -543,6 +543,7 @@ def test_each_article_prints_what_it_cost_and_the_run_prints_a_total(conn, monke
     from researchlib import llm as llm_module
     from researchlib.translate import llm as translate_llm
 
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "deepseek-legacy")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
     answers = {
         "good": {"choices": [{"message": {"content": '{"t": ["好"]}'}}], "model": "deepseek-flash",
