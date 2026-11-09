@@ -30,7 +30,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.citecheck import check_answer
 from researchlib.config import Settings
-from researchlib.llm import LLMError, LLMUnavailable, active_label, chat, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured, missing_credential_text
 from researchlib.retrieval import ASPECTS_KEY, MAX_ASPECTS, Retrieval, analyze, cited_numbers, retrieve
 from researchlib.web.present import format_date
 from researchlib.web.queries import Scope
@@ -418,7 +418,7 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
         result["error"] = "范围内没有召回到任何段落。换个问法，或放宽作者、公司、日期范围。"
         return result
     if not llm_configured(settings):
-        result["error"] = f"没有可用的 {active_label(settings)} 凭证，只给出召回的原文段落。"
+        result["error"] = f"{missing_credential_text(settings)}，只给出召回的原文段落。"
         return result
     row = conn.execute(
         """

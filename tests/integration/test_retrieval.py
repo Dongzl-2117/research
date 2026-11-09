@@ -168,20 +168,31 @@ def test_mcp_round_trip(conn, settings):
 
 
 def test_ask_without_llm_returns_passages(conn, settings, monkeypatch):
+    """没凭证时只列原文。提示点名这次进程实际在用的提供方，两家各说各的。"""
+    from dataclasses import replace
+
+    from researchlib.llm import missing_credential_text
+
     _sample(conn, settings)
-    # 没有 DeepSeek key、也没有共用 OAuth：问库不整合，也不把 key 写进页面。
     # 别的测试可能已经加载了仓库 .env，这里显式清掉，免得读到本机真 key。
-    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "deepseek")
+    # 提供方记在启动时的 Settings 上：只改环境变量、不换这份设置，页面仍按原来那家说。
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("XAI_API_KEY", "should-not-enable-ask")
     monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(settings.data_dir / "missing-oauth.json"))
-    with TestClient(create_app(settings)) as client:
-        page = client.post("/ask", data={"q": "宁德时代的毛利率怎么样"})
-        assert page.status_code == 200
-        assert "没有可用的 DeepSeek 凭证" in page.text
-        assert "should-not-enable-ask" not in page.text
-        assert 'id="c-1"' in page.text
-    assert conn.execute("SELECT count(*) AS n FROM llm_answers").fetchone()["n"] == 0
+    for provider in ("grok", "deepseek"):
+        monkeypatch.setenv("RESEARCH_LLM_PROVIDER", provider)
+        running = replace(settings, llm_provider=provider)
+        notice = missing_credential_text(running)
+        with TestClient(create_app(running)) as client:
+            page = client.post("/ask", data={"q": "宁德时代的毛利率怎么样"})
+            assert page.status_code == 200
+            assert notice in page.text
+            assert notice.startswith("没有可用的 ")
+            other = "DeepSeek" if provider == "grok" else "Grok"
+            assert f"没有可用的 {other} 凭证" not in page.text
+            assert "should-not-enable-ask" not in page.text
+            assert 'id="c-1"' in page.text
+        assert conn.execute("SELECT count(*) AS n FROM llm_answers").fetchone()["n"] == 0
 
 
 def test_ask_with_llm_saves_answer_and_cites(conn, settings, monkeypatch):

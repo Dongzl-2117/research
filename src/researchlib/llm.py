@@ -132,6 +132,11 @@ def active_label(settings: Settings) -> str:
     return provider_label(_provider(settings))
 
 
+def missing_credential_text(settings: Settings) -> str:
+    """问库没有当前提供方的凭证时，给读者的那句开头。点名正在用的那一家。"""
+    return f"没有可用的 {active_label(settings)} 凭证"
+
+
 def active_model_id(settings: Settings) -> str:
     """当前提供方的模型名。页面展示用，配错时不让整页报错。"""
     if _provider(settings) == PROVIDER_GROK:

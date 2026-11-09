@@ -30,7 +30,14 @@ from researchlib.grok import (
     grok_concurrency_plan,
     retry_delays,
 )
-from researchlib.llm import LLMUnavailable, chat, credential_kind, http_stats, reset_http_stats
+from researchlib.llm import (
+    LLMUnavailable,
+    chat,
+    credential_kind,
+    http_stats,
+    missing_credential_text,
+    reset_http_stats,
+)
 from researchlib.llm_provider import llm_provider
 from researchlib.translate import llm as translate_llm
 
@@ -72,6 +79,13 @@ def _isolate(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     yield
     health.reset_llm_cache()
+
+
+def test_missing_credential_text_names_whichever_provider_is_running(tmp_path):
+    grok_settings = _settings(tmp_path)
+    deepseek_settings = _settings(tmp_path, RESEARCH_LLM_PROVIDER="deepseek")
+    assert missing_credential_text(grok_settings) == "没有可用的 Grok 凭证"
+    assert missing_credential_text(deepseek_settings) == "没有可用的 DeepSeek 凭证"
 
 
 def test_provider_switches_with_one_env_knob():
