@@ -1112,8 +1112,8 @@ def semantic_candidates(
     if embeddings.model_name() != model:
         return rows, {}
     company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
-    texts = [text for text in dict.fromkeys((aspects or [])[:MAX_ASPECTS]) if text and text != query.raw]
-    extra = [(text, embeddings.query_vector(text)) for text in texts]
+    aspect_texts = [text for text in dict.fromkeys((aspects or [])[:MAX_ASPECTS]) if text and text != query.raw]
+    extra = [(text, embeddings.query_vector(text)) for text in aspect_texts]
     try:
         with conn.transaction():
             sims = _vector_lookup(conn, kind, embeddings.literal(vector), scope, rows, pool, company_ids, model=model)
@@ -1134,9 +1134,9 @@ def semantic_candidates(
     # 正文几乎没字的块（只有链接、图片文件名），向量就是文章标题和章节标题的向量：标题和问题沾边，它就排在最前，
     # 还会把满分线抬高、把别的块都压下去，卡片和交给模型的原文却只有一串文件名。
     # 这样的块不算语义分（当没算过），关键词照常算。
-    texts = {**have, **fetched}
-    sims = {key: sim for key, sim in sims.items() if key in texts and not thin_text(texts[key])}
-    aspect_sims = [{key: sim for key, sim in found.items() if key in texts and not thin_text(texts[key])}
+    known = {**have, **fetched}
+    sims = {key: sim for key, sim in sims.items() if key in known and not thin_text(known[key])}
+    aspect_sims = [{key: sim for key, sim in found.items() if key in known and not thin_text(known[key])}
                    for found in aspect_sims]
     scores = semantic_scores(sims)
     for found in aspect_sims:
