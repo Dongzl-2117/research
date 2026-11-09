@@ -10,6 +10,10 @@
 - 和所引段落几乎没有一样的说法（引错了段）。
 
 只查带 [n] 的句子。查出来的是「需要回原文核对」，不一定是错。
+
+所引段落是没译的英文原文时，中文句子和它字对字比不了：不查「几乎没有一样的说法」，中文引语也不按原文找；
+数字照查，英文拼出来的数（forty-seven、two hundred）也算；换了单位的按数值比（4700 万 = 47 million，
+32 亿 = $3.2 billion）。引语和原文只差「的」「了」这类虚字的不算对不上。
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ _DATE_LIKE = re.compile(
     r"|(?<![\dA-Za-z])(?:FY|Q|H)\d{1,4}"
     r"|(?<!\d)\d{2,4}\s*(?:财年|年度|季度|Q[1-4])"
 )
-_NUMBER = re.compile(r"(?<![\d.])(\d+(?:[,，]\d{3})*(?:\.\d+)?)\s*(%|％|‰|倍|个百分点|bp)?")
+_NUMBER = re.compile(r"(?<![\d.])(\d+(?:[,，]\d{3})*(?:\.\d+)?)\s*(%|％|‰|倍|个百分点|bp|万亿|亿|万)?")
 _QUOTED = re.compile(r"「([^」]{4,})」|“([^”]{4,})”|\"([^\"]{4,})\"")
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _CJK_RUN = re.compile(r"[一-鿿]+")
@@ -41,6 +45,36 @@ _COMMON_BIGRAMS = frozenset(
     }
 )
 MAX_FLAGS = 20
+_CJK_CHAR = re.compile(r"[一-鿿]")
+_LATIN_CHAR = re.compile(r"[A-Za-z]")
+# 汉字占字母和汉字合计不到这个比例，算外文段落。
+FOREIGN_CJK_SHARE = 0.3
+# 引语里这些虚字多一个少一个不改意思，比对时去掉。
+_PARTICLES = str.maketrans("", "", "的了地得之着")
+_EN_SMALL = {
+    word: value
+    for value, word in enumerate(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"
+        " sixteen seventeen eighteen nineteen".split()
+    )
+}
+_EN_TENS = {
+    word: 10 * value
+    for value, word in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split())
+    if word != "_"
+}
+_EN_SCALES = {"hundred": 100, "thousand": 10**3, "million": 10**6, "billion": 10**9, "trillion": 10**12}
+_EN_WORD = "|".join(sorted([*_EN_SMALL, *_EN_TENS, *_EN_SCALES], key=len, reverse=True))
+_EN_NUMBER = re.compile(rf"\b(?:{_EN_WORD})(?:[\s-]+(?:and[\s-]+)?(?:{_EN_WORD}))*\b", re.IGNORECASE)
+# 带量级的数：中文的万、亿，英文的 thousand、million、billion 和 $47M、3.2bn 这种缩写。按数值比，不按字面。
+_CN_SCALES = {"万": 10**4, "亿": 10**8, "万亿": 10**12}
+_SCALE_WORDS = {"k": 10**3, "m": 10**6, "mn": 10**6, "b": 10**9, "bn": 10**9, **_EN_SCALES, **_CN_SCALES}
+_SCALED = re.compile(
+    r"(?<![\d.])(\d+(?:[,，]\d{3})*(?:\.\d+)?)"
+    r"(?:\s*(thousand|million|billion|trillion|万亿|亿|万)|(bn|mn|[kmb]))(?![A-Za-z])",
+    re.IGNORECASE,
+)
+_PLAIN_NUMBER = re.compile(r"(?<![\d.])\d+(?:\.\d+)?")
 
 
 def _plain(text: str) -> str:
@@ -49,6 +83,36 @@ def _plain(text: str) -> str:
 
 def _digits(text: str) -> str:
     return re.sub(r"[,，\s]", "", (text or "").translate(_FULLWIDTH))
+
+
+def _loose(text: str) -> str:
+    return _plain(text).translate(_PARTICLES)
+
+
+def _foreign(text: str) -> bool:
+    """主要是外文（多半是没译的英文原文）。"""
+    cjk = len(_CJK_CHAR.findall(text or ""))
+    latin = len(_LATIN_CHAR.findall(text or ""))
+    return latin > 0 and cjk < FOREIGN_CJK_SHARE * (cjk + latin)
+
+
+def _english_numbers(text: str) -> list[str]:
+    """英文里拼出来的数换成阿拉伯数字：forty-seven → 47，two hundred → 200，a/one million → 1000000。"""
+    found: list[str] = []
+    for match in _EN_NUMBER.finditer(text or ""):
+        total = current = 0
+        for word in re.split(r"[\s-]+", match.group(0).lower()):
+            if word in _EN_SMALL:
+                current += _EN_SMALL[word]
+            elif word in _EN_TENS:
+                current += _EN_TENS[word]
+            elif word == "hundred":
+                current = (current or 1) * 100
+            elif word in _EN_SCALES:
+                total += (current or 1) * _EN_SCALES[word]
+                current = 0
+        found.append(str(total + current))
+    return found
 
 
 def _bigrams(text: str) -> set[str]:
@@ -93,6 +157,30 @@ def _number_in(number: str, haystack: str) -> bool:
     return re.search(r"(?<![\d.])" + re.escape(core) + r"(?!\d)", haystack) is not None
 
 
+def _values(text: str, spelled: list[str]) -> list[float]:
+    """段落里出现的数的数值：带量级的乘上去，拼出来的英文数也算。"""
+    body = (text or "").translate(_FULLWIDTH)
+    found = [float(item) for item in _PLAIN_NUMBER.findall(re.sub(r"(?<=\d)[,，](?=\d)", "", body))]
+    found.extend(float(item) for item in spelled)
+    for match in _SCALED.finditer(body):
+        scale = _SCALE_WORDS[(match.group(2) or match.group(3)).lower()]
+        found.append(float(_digits(match.group(1))) * scale)
+    return found
+
+
+def _number_found(number: str, digits: str, values: list[float]) -> bool:
+    """带万、亿的数按数值比：「4700万」对得上 47 million，「3.2亿」对不上 $3.2 billion。其余照字面。"""
+    core = re.match(r"[\d.]+", number).group(0)
+    unit = number[len(core) :]
+    if unit not in _CN_SCALES:
+        return _number_in(number, digits)
+    wanted = float(core) * _CN_SCALES[unit]
+    if any(abs(value - wanted) <= 1e-6 * wanted for value in values):
+        return True
+    # 「4700多万」「3.2个亿」：数和量级之间夹了字，按字面对。
+    return re.search(r"(?<![\d.])" + re.escape(core) + r"[多余个]{0,2}" + re.escape(unit), digits) is not None
+
+
 def _iso(year: str, month: str, day: str) -> str:
     return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
 
@@ -111,15 +199,26 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
         f"\n{item.get('text') or ''}\n{item.get('after') or ''}"
         for item in cited
     )
-    digits = _digits(raw)
+    # 标题常是译好的中文，判断段落是不是外文只看章节和正文。
+    foreign = _foreign(
+        "\n".join(item.get(key) or "" for item in cited for key in ("heading", "before", "text", "after"))
+    )
+    spelled = _english_numbers(raw)
+    digits = _digits(raw) + " " + " ".join(spelled)
+    values = _values(raw, spelled)
     plain = _plain(raw)
+    loose = _loose(raw)
     for number in _numbers(text):
-        if not _number_in(number, digits):
+        if not _number_found(number, digits, values):
             problems.append(f"数字 {number} 不在所引段落里")
     for match in _QUOTED.finditer(text):
         quoted = next(group for group in match.groups() if group)
-        if _plain(quoted) and _plain(quoted) not in plain:
-            problems.append(f"引号里的「{quoted[:20]}」在所引段落里找不到")
+        if not _plain(quoted) or _plain(quoted) in plain or _loose(quoted) in loose:
+            continue
+        if foreign and not _foreign(quoted):
+            # 英文原话译成了中文再加引号：字对字比不了，不算对不上。
+            continue
+        problems.append(f"引号里的「{quoted[:20]}」在所引段落里找不到")
     cited_authors = {item.get("author") or "" for item in cited}
     named = [name for name in authors if name and name in text]
     for name in named:
@@ -138,7 +237,7 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     for name in named:
         stripped = stripped.replace(name, " ")
     claim_pairs = _bigrams(stripped)
-    if len(claim_pairs) >= 6 and not (claim_pairs & _bigrams(raw)):
+    if not foreign and len(claim_pairs) >= 6 and not (claim_pairs & _bigrams(raw)):
         problems.append("和所引段落几乎没有一样的说法")
     return problems
 

@@ -779,3 +779,64 @@ def test_translate_usage_is_metered_per_thread_including_unusable_answers(tmp_pa
     assert totals["b"] == {"requests": 1, "prompt": 100, "cacheHit": 40, "completion": 30, "reasoning": 20}
     # 不在记账时照常调用，不记。
     assert ask("good").usage["prompt_tokens"] == 100
+
+
+def test_on_text_sees_the_answer_grow_and_is_reset_before_a_retry(tmp_path, monkeypatch):
+    """问库边写边显示：正文每多一截交一次；读到一半断了，重发前先交空串，把半截收回。思考过程不交。"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    outcomes = [
+        _Scripted([_delta(reasoning="想一下"), _delta(content="半截"), _ssl_eof()]),
+        _Scripted(
+            [
+                _delta(reasoning="想一下", model="deepseek-flash"),
+                _delta(content="完整"),
+                _delta(content="回答"),
+                _delta(finish="stop"),
+                "data: [DONE]",
+            ]
+        ),
+    ]
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", lambda req, timeout=None: outcomes.pop(0))
+    monkeypatch.setattr(llm_module.time, "sleep", lambda _seconds: None)
+    seen: list[str] = []
+    text, model = chat(_settings(tmp_path), [{"role": "user", "content": "hi"}], on_text=seen.append)
+    assert (text, model) == ("完整回答", "deepseek-flash")
+    assert seen == ["半截", "", "完整", "完整回答"]
+
+
+def test_on_text_failures_do_not_break_the_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    monkeypatch.setattr(
+        llm_module.urllib.request, "urlopen", lambda req, timeout=None: _Scripted(_clean_sse("回答"))
+    )
+
+    def broken(_text):
+        raise RuntimeError("写库失败")
+
+    text, _model = chat(_settings(tmp_path), [{"role": "user", "content": "hi"}], on_text=broken)
+    assert text == "回答"
+
+
+def test_chat_holds_the_callers_slot_instead_of_the_shared_limit(tmp_path, monkeypatch):
+    """问库分批读资料用自己的并发上限：占着调用方给的那份，不占摘要、观点共用的那份。"""
+    import threading
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    settings = _settings(tmp_path)
+    own = threading.BoundedSemaphore(1)
+    shared = llm_module._slot(settings)
+    held = []
+
+    def fake_urlopen(req, timeout=None):
+        held.append(not own.acquire(blocking=False))
+        free = shared.acquire(blocking=False)
+        if free:
+            shared.release()
+        held.append(free)
+        return _Scripted(_clean_sse("摘录"))
+
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", fake_urlopen)
+    text, _model = chat(settings, [{"role": "user", "content": "hi"}], slot=own)
+    assert text == "摘录" and held == [True, True]
+    assert own.acquire(blocking=False)
+    own.release()

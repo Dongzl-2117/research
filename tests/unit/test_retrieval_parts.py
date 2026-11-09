@@ -43,12 +43,19 @@ def _query(**overrides) -> Query:
     return Query(**base)
 
 
+def _filler(article_id: int, ord_: int) -> str:
+    """每篇每段各不相同、也不循环的正文（重复的段落会被当成同一段话不给第二次）。"""
+    return f"第{article_id}篇第{ord_}段：" + "".join(
+        chr(0x4E00 + (article_id * 7919 + ord_ * 104729 + index * 2654435761) % 20000) for index in range(90)
+    )
+
+
 def _passage(article_id: int, ord_: int, score: float, year: int, *, coverage: float = 1.0, body: str | None = None):
     return Passage(
         article_id=article_id,
         ord=ord_,
         heading="",
-        body=body or f"第{article_id}篇第{ord_}段的正文。" * 10,
+        body=body or _filler(article_id, ord_),
         title=f"第{article_id}篇",
         source_id="fangwei-mp",
         published_at=datetime(year, 6, 1, tzinfo=SHANGHAI),
@@ -99,6 +106,42 @@ def test_select_gives_the_same_paragraph_once():
     assert [p.article_id for p in picked] == [1, 3]
 
 
+def test_select_skips_a_paragraph_mostly_repeated_from_an_earlier_pick():
+    """几篇里重复的同一段引文，后面跟着的链接字样不一样：只给一次。只重了一半的照常给。"""
+    quote = (
+        "互联网把分发成本降到零以后，谁掌握了用户的需求，谁就能反过来整合供给。聚合者先用更好的体验吸引用户，"
+        "用户越多，供应商越愿意按聚合者的规矩来，体验又更好，于是赢家通吃。这和过去控制分发渠道的逻辑正好相反，"
+        "以前是谁控制了稀缺的供给谁说了算，现在稀缺的是用户的注意力。"
+    )
+    other = "腾讯的广告加载率还在提升，视频号是新的广告库存，商家的投放在往这里挪，这一块的毛利率也比游戏高。" * 2
+    passages = [
+        _passage(1, 0, 9.0, 2024, body=quote + "见聚合理论原文链接"),
+        _passage(2, 0, 8.0, 2024, body=quote + "聚合理论 聚合理论"),
+        _passage(3, 0, 7.0, 2024, body=quote[: len(quote) // 2] + other),
+        _passage(4, 0, 6.0, 2024),
+    ]
+    picked = select(passages, _query(), BUDGETS["display"])
+    assert [p.article_id for p in picked] == [1, 3, 4]
+
+
+def test_search_cards_do_not_show_the_same_paragraph_twice():
+    """同一份资料抄进了几篇笔记：后面的卡片改摘这篇自己的段落；只有这段的卡片挪到这一档最后。"""
+    from researchlib.retrieval import rank_articles
+
+    shared = "同一份资料抄进了几篇笔记：开市客靠会员费赚钱，商品只加很少的价，周转快，供应商愿意给最低价。"
+    own = "第二篇自己的分析：会员续费率很高，所以敢把毛利压得很低，这是它和山姆不同的地方。"
+    scored = [
+        _passage(1, 0, 9.0, 2024, body=shared),
+        _passage(2, 0, 8.5, 2024, body=shared),
+        _passage(2, 1, 1.0, 2024, body=own),
+        _passage(3, 0, 8.0, 2024, body=shared),
+        _passage(4, 0, 5.0, 2024, body="第四篇只谈山姆：山姆的会员费更高，选品更偏中产家庭，开店也更慢。"),
+    ]
+    hits = rank_articles(scored, _query(), [])
+    assert [hit.article_id for hit in hits] == [1, 2, 4, 3]
+    assert [[p.ord for p in hit.passages] for hit in hits] == [[0], [1], [0], [0]]
+
+
 def test_select_drops_partial_matches_when_full_matches_are_plenty():
     full = [_passage(i, 0, 5.0, 2024) for i in range(1, 31)]
     partial = [_passage(100 + i, 0, 4.9, 2024, coverage=0.4) for i in range(10)]
@@ -120,6 +163,62 @@ def test_select_keeps_recent_order_when_question_says_recent():
     passages += [_passage(100 + y, 0, 1.0, y) for y in range(2019, 2025)]
     picked = select(passages, _query(overview=True, recent=True), Budget(8, 100000, 2))
     assert {p.published_at.year for p in picked} == {2025}
+
+
+def test_select_takes_turns_between_companies_for_company_only_questions():
+    """只问几家公司：同时写到几家的、只写到一家的轮流取，被写得多的那家不占满名额；同时写到两家的一轮取两段。"""
+
+    def tagged(article_id: int, score: float, companies: list[int]) -> Passage:
+        passage = _passage(article_id, 0, score, 2024)
+        passage.companies = companies
+        return passage
+
+    passages = [tagged(i, 10.0 - i * 0.01, [1]) for i in range(1, 30)]
+    passages += [tagged(100 + i, 6.0 - i * 0.01, [1, 6]) for i in range(10)]
+    passages += [tagged(200 + i, 2.0 - i * 0.01, [6]) for i in range(10)]
+    query = _query(overview=True, companies=[TENCENT, {"id": 6, "name_zh": "网易"}])
+    picked = select(passages, query, Budget(8, 100000, 2))
+    groups = [p.companies for p in picked]
+    assert groups.count([1]) == 2 and groups.count([6]) == 2 and groups.count([1, 6]) == 4
+    # 只点一家公司时照旧按分数。
+    single = select(passages, _query(overview=True, companies=[TENCENT]), Budget(8, 100000, 2))
+    assert all(p.companies == [1] for p in single)
+
+
+def test_overview_scores_each_named_company_on_its_own(monkeypatch):
+    import math
+
+    from researchlib import retrieval
+    from researchlib.retrieval import Term, score_rows
+    from researchlib.web.queries import Scope
+
+    class Conn:
+        def execute(self, *_args, **_kwargs):
+            return self
+
+        def fetchall(self):
+            return []
+
+    monkeypatch.setattr(retrieval, "_corpus_stats", lambda _conn: (3, 200))
+    netease = {"id": 6, "name_zh": "网易", "name_en": "NetEase", "ticker": "NTES", "aliases": []}
+    terms = [
+        Term("腾讯", "company", 0, forms=["腾讯"], weight=1.5, company_id=1, idf=1.0),
+        Term("网易", "company", 1, forms=["网易"], weight=1.5, company_id=6, idf=1.0),
+    ]
+    base = dict(heading="", title="合成", source_id="synthetic", published_at=None, lang="")
+    rows = [
+        dict(base, article_id=1, ord=1, body="腾讯的游戏。" * 10 + "顺带一句网易。"),
+        dict(base, article_id=2, ord=1, body="只谈网易：网易的自研能力。"),
+        dict(base, article_id=3, ord=1, body="和这两家都无关的段落。"),
+    ]
+    query = _query(terms=terms, companies=[TENCENT, netease], overview=True)
+    passages = score_rows(Conn(), query, rows, scope=Scope(source_ids=["synthetic"]), company_rows=[TENCENT, netease])
+    found = {p.article_id: p for p in passages}
+    assert set(found) == {1, 2}
+    assert found[1].companies == [1, 6] and found[2].companies == [6]
+    # 腾讯 10 次、网易 1 次各算各的（都只是一带而过，乘 0.5），不按合计 11 次算；一带而过的段落另打 0.7 折，和以前一样。
+    assert math.isclose(found[1].score, (math.log1p(10) + math.log1p(1)) * 0.5 * 0.7)
+    assert math.isclose(found[2].score, math.log1p(2) * 0.5 * 0.7)
 
 
 def test_small_corpus_does_not_trust_sampled_lexeme_frequency():
@@ -215,6 +314,93 @@ def test_synthesize_extracts_in_batches_then_merges(monkeypatch):
     assert "要点 [" in merged and "第 1 批摘录：\n无" not in merged
     assert "[120] 《第120篇》" in merged
     assert answer == "汇总 [41]"
+
+
+def test_synthesize_reads_all_batches_at_once_and_reports_progress(monkeypatch):
+    """各批同时读（不再两批一轮）；读完一批报一次进度，写回答时把写到目前的正文报出去，用时和用量记进 report。"""
+    import threading
+
+    monkeypatch.setattr(ask_module, "SINGLE_CALL_CHARS", 64000)
+    monkeypatch.setattr(ask_module, "BATCH_CHARS", 48000)
+    items = _items(240, 700)
+    total = len(ask_module._batches(items, ask_module.BATCH_CHARS))
+    assert 2 < total <= ask_module.MAP_WORKERS
+    # 每批都等到所有批都进来了才返回：要是一轮只读两批，这里会超时。
+    everyone = threading.Barrier(total, timeout=5)
+
+    def fake_chat(_settings, messages, usage=None, on_text=None, slot=None, **_kwargs):
+        if ask_module.MAP_PROMPT in messages[0]["content"]:
+            assert slot is ask_module._MAP_SLOT and on_text is None
+            everyone.wait()
+            usage["total_tokens"] = usage.get("total_tokens", 0) + 5
+            first = messages[1]["content"].split("资料：\n", 1)[1]
+            return f"要点 [{first.split(']', 1)[0].lstrip('[')}]", "deepseek-flash"
+        assert slot is None
+        on_text("汇总")
+        on_text("汇总 [1]")
+        usage["total_tokens"] = usage.get("total_tokens", 0) + 10
+        return "汇总 [1]", "deepseek-flash"
+
+    monkeypatch.setattr(ask_module, "chat", fake_chat)
+    events: list[dict] = []
+    report: dict = {}
+    answer, _model = synthesize(None, "问题", items, report, progress=events.append)
+    assert answer == "汇总 [1]"
+    reading = [event for event in events if event["stage"] == "reading"]
+    assert [event["done"] for event in reading] == list(range(total + 1))
+    assert all(event["total"] == total for event in reading)
+    assert events[len(reading):] == [
+        {"stage": "writing"},
+        {"stage": "writing", "text": "汇总"},
+        {"stage": "writing", "text": "汇总 [1]"},
+    ]
+    assert report["failed_batches"] == []
+    assert report["usage"] == {"total_tokens": 5 * total + 10}
+    assert report["read_s"] >= 0 and report["write_s"] >= 0
+
+
+def test_progress_writes_stage_changes_and_throttles_partial_answers(monkeypatch):
+    class Conn:
+        def __init__(self):
+            self.calls: list[tuple] = []
+            self.commits = 0
+            self.rollbacks = 0
+            self.fail = False
+
+        def execute(self, sql, params):
+            if self.fail:
+                raise RuntimeError("连接断了")
+            self.calls.append((sql, params))
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+
+    now = [100.0]
+    monkeypatch.setattr(ask_module.time, "monotonic", lambda: now[0])
+    conn = Conn()
+    tracker = ask_module._Progress(conn, 7)
+    tracker({"stage": "reading", "done": 0, "total": 3})
+    tracker({"stage": "reading", "done": 0, "total": 3})
+    tracker({"stage": "writing"})
+    tracker({"stage": "writing", "text": "第一"})
+    now[0] += ask_module.PROGRESS_EVERY
+    tracker({"stage": "writing", "text": "第一句"})
+    tracker({"stage": "writing", "text": ""})
+    written = [(params[0] if len(params) == 3 else None, params[-2].obj) for _sql, params in conn.calls]
+    assert written == [
+        (None, {"progress": {"stage": "reading", "done": 0, "total": 3}}),
+        (None, {"progress": {"stage": "writing"}}),
+        ("第一句", {"progress": {"stage": "writing"}}),
+        ("", {"progress": {"stage": "writing"}}),
+    ]
+    assert all(params[-1] == 7 and "status = 'running'" in sql for sql, params in conn.calls)
+    assert conn.commits == 4
+    conn.fail = True
+    tracker({"stage": "reading", "done": 1, "total": 3})
+    assert conn.rollbacks == 1
 
 
 def test_month_series_fills_gaps_and_marks_years():

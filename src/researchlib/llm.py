@@ -12,6 +12,7 @@ Grok 见 ``researchlib.grok``（grok-4.7、reasoning_effort=xhigh、输出不低
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
 429、5xx 和连不上（含流读到一半的 TLS EOF）按 RETRY_DELAYS 退避重试；超时不重试。
 DeepSeek 打开流式，按行读 SSE。没看到 ``data: [DONE]`` 就丢掉已经拼上的半截，不当作成功。
+调用方传了 ``on_text`` 时，正文每多一截就把到目前为止的正文交给它（问库边写边显示用）；重发同一请求前先交一次空串。
 同一个进程里同时在跑的请求有上限（RESEARCH_LLM_CONCURRENCY，默认 3），问库分批、摘要、观点、论点共用。
 每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时 research-status 会列出来。
 """
@@ -20,11 +21,13 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import os
 import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 
 from researchlib.config import Settings
 from researchlib.deepseek import DEEPSEEK_MODEL_ID, deepseek_model
@@ -196,7 +199,29 @@ def _sse_done(line: str) -> bool:
     return text[5:].strip() == "[DONE]"
 
 
-def read_chat_completion(response, *, stream: bool) -> dict:
+def _content_delta(line: str) -> str:
+    """一行 SSE 里新增的正文（不含思考过程）。不是数据行、解析不了都当没有。"""
+    text = line.strip()
+    if not text.startswith("data:"):
+        return ""
+    data = text[5:].strip()
+    if not data or data == "[DONE]":
+        return ""
+    try:
+        chunk = json.loads(data)
+    except ValueError:
+        return ""
+    if not isinstance(chunk, dict):
+        return ""
+    parts = []
+    for choice in chunk.get("choices") or []:
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+            parts.append(delta["content"])
+    return "".join(parts)
+
+
+def read_chat_completion(response, *, stream: bool, on_text: Callable[[str], None] | None = None) -> dict:
     """读完一次 chat/completions。
 
     流式时逐行读，看到 ``data: [DONE]`` 才把增量拼回 message。
@@ -204,10 +229,12 @@ def read_chat_completion(response, *, stream: bool) -> dict:
     对端若忽略 stream、回了一整段 JSON，仍按非流式解析。
     每一行的等待上限是 urlopen 的 timeout（思考模式默认 25 分钟）。
     不另设更短的空闲超时，避免把还在思考的连接当成断开再花一次。
+    on_text：正文每多一截，就把到目前为止的正文交给它，只用来提前显示；它出错不影响这次读取。
     """
     if not stream:
         return json.loads(_read_body(response))
     lines: list[str] = []
+    shown: list[str] = []
     try:
         for line in _iter_text_lines(response):
             if not lines and not line.strip():
@@ -215,6 +242,11 @@ def read_chat_completion(response, *, stream: bool) -> dict:
             if not lines and line.lstrip().startswith("{"):
                 return json.loads(line + _read_body(response))
             lines.append(line)
+            if on_text is not None:
+                piece = _content_delta(line)
+                if piece:
+                    shown.append(piece)
+                    _notify(on_text, "".join(shown))
             if _sse_done(line):
                 return _read_stream(lines)
     except IncompleteStream:
@@ -230,7 +262,14 @@ def read_chat_completion(response, *, stream: bool) -> dict:
     raise IncompleteStream("SSE 在 [DONE] 之前结束")
 
 
-def _post(settings: Settings, token: str, payload: dict) -> dict:
+def _notify(on_text: Callable[[str], None], text: str) -> None:
+    try:
+        on_text(text)
+    except Exception:  # noqa: BLE001 - 只是提前显示，显示失败不能打断这次请求
+        logging.getLogger(__name__).warning("提前显示正文失败", exc_info=True)
+
+
+def _post(settings: Settings, token: str, payload: dict, on_text: Callable[[str], None] | None = None) -> dict:
     request = urllib.request.Request(
         settings.llm_base_url + "/chat/completions",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -248,7 +287,7 @@ def _post(settings: Settings, token: str, payload: dict) -> dict:
         request.add_header("Accept", "text/event-stream")
     # 套接字超时是 settings.llm_timeout：连接和随后每一次读都用它，默认 25 分钟。
     with urllib.request.urlopen(request, timeout=settings.llm_timeout) as response:
-        return read_chat_completion(response, stream=stream)
+        return read_chat_completion(response, stream=stream, on_text=on_text)
 
 
 def _read_stream(lines) -> dict:
@@ -358,6 +397,8 @@ def chat(
     temperature: float = 0.2,
     exact_max_tokens: int | None = None,
     usage: dict | None = None,
+    on_text: Callable[[str], None] | None = None,
+    slot: threading.BoundedSemaphore | None = None,
 ) -> tuple[str, str]:
     """返回 (回答文本, 实际模型名)。
 
@@ -368,6 +409,8 @@ def chat(
     正文被思考挤空、加额度再要的那一次也算。接口没报用量就不加。DeepSeek 流式要请求里带
     ``stream_options.include_usage`` 才报，只有传了 usage 的调用才带；接口不认这个字段就去掉再发一次，
     去掉以后成了，这个进程后面的请求就不再带。
+    ``on_text``：DeepSeek 流式时，正文每多一截就把到目前为止的正文交给它；重发前先交一次空串。返回值照旧以读完的为准。
+    ``slot``：调用方自己管并发时传进来的信号量（问库分批读资料），不占摘要、观点、识图共用的那份上限。
     """
     provider = _provider(settings)
     label = provider_label(provider)
@@ -389,10 +432,18 @@ def chat(
     retries = 0
     budget_bumped = False
     dropped_stream_usage = False
+    attempts = 0
     while True:
+        if on_text is not None and attempts:
+            # 上一次读到一半断了或要重发：先把已经显示的半截收回。
+            _notify(on_text, "")
+        attempts += 1
         try:
-            with _slot(settings):
-                body = _post(settings, token, payload)
+            with slot or _slot(settings):
+                if on_text is None:
+                    body = _post(settings, token, payload)
+                else:
+                    body = _post(settings, token, payload, on_text=on_text)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
             if provider == PROVIDER_GROK and not refreshed and is_stale_xai_access(exc.code, detail):
