@@ -82,9 +82,12 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
         assert case_rule not in VISION_PROMPT, case_rule
 
 
-def test_default_engine_id_follows_the_current_model():
-    # 11-10 起识图走 Grok OAuth，新认的图记 grok-4.7-vision；老行照旧是 deepseek-flash-vision。
+def test_default_engine_id_follows_the_current_model(monkeypatch):
+    # 新认的图记当前模型。换提供方只改以后写入的 engine，不靠它决定要不要重认。
+    monkeypatch.delenv("RESEARCH_LLM_PROVIDER", raising=False)
     assert vision_engine_id() == "grok-4.7-vision"
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "deepseek")
+    assert vision_engine_id() == "deepseek-flash-vision"
 
 
 def test_vision_messages_are_text_plus_image_url():
@@ -126,9 +129,16 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
 
 
 def test_vision_without_key_stops_before_any_image(monkeypatch):
+    monkeypatch.delenv("RESEARCH_LLM_PROVIDER", raising=False)
     monkeypatch.setattr("researchlib.llm.llm_configured", lambda settings: False)
-    with pytest.raises(OcrUnavailable, match="DEEPSEEK_API_KEY"):
+    with pytest.raises(OcrUnavailable, match="Grok OAuth"):
         resolve_engine(object())
+
+    class _DeepSeek:
+        llm_provider = "deepseek"
+
+    with pytest.raises(OcrUnavailable, match="DEEPSEEK_API_KEY"):
+        resolve_engine(_DeepSeek())
 
 
 def test_http_error_is_explicit_empty_not_dirty_text(tmp_path, monkeypatch):

@@ -1,18 +1,18 @@
 # 站内译制（中英对照）
 
-英文原文入库后，由 **investment / research 站内** 调 LLM 翻译（2026-11-10 起全走 Grok OAuth，`deepseek-legacy` 只是应急回退），排版对齐 AIHOT 文章页：
+英文原文入库后，由 **investment / research 站内** 调 LLM 翻译（默认 Grok OAuth，`RESEARCH_LLM_PROVIDER=deepseek` 切回 DeepSeek），排版对齐 AIHOT 文章页：
 
 - 默认 **对照**：每段英文在上（小一号、次要色 `--ink-4`），中文在下
 - Tab：**对照 / 中文 / 原文**（`/articles/{id}`、`/zh`、`/original`）
 - 媒体与图片只在英文侧出现一次
 - 下载来的外链图（`article_images.remote`，见 [ingest.md](ingest.md)「外链图片」）不进译制原文和回执：译制时照没下载写成「[外部图片已省略]」，对照页也按这一份核验，显示时再把译文里的占位按顺序换成原文的图（`translate/remote_media.py`）。图在译完以后才下下来，对照照常逐段，不会退成两份全文；占位个数对不上（模型丢了句中的占位，或者正文 HTML 里的 `<img>` 没下载时不留占位）就不换，对照照旧显示占位，「原文」页仍有图
-- 现在是 `grok-4.7`：`reasoning_effort=high`、`fast=false`、上下文 50 万 token、输出至少 128000。（`deepseek-legacy` 时才用 deepseek-flash：thinking、`reasoning_effort=max`、上下文 1M、输出至少 393216。）常量在 `researchlib/deepseek.py` / `researchlib/grok.py`，问库、摘要、观点、论点、样卡走同一套
+- 默认 `grok-4.7`：`reasoning_effort=high`、`fast=false`、上下文 50 万 token、输出至少 128000。`RESEARCH_LLM_PROVIDER=deepseek` 时用 deepseek-flash：thinking、`reasoning_effort=max`、上下文 1M、输出至少 393216。常量在 `researchlib/deepseek.py` / `researchlib/grok.py`，问库、摘要、观点、论点、双语抽验、样卡走同一套。已经译完（`complete` 且原文 hash 没变）的不因为换提供方重译；没译完的接着补，回执里没变的段复用
 
 不要站外译完再贴进库。译文表是 `article_translations`，按 `content_hash` 与原文对齐。
 
 标题另译一次（存 `title_zh`），失败不影响正文。译文写入后切成中文段落块进检索（`article_chunks` 里 `lang = 'zh'`，带对照页锚点），用中文能搜到、问到英文文章，见 [retrieval.md](retrieval.md)。启动时会给有译文但还没有译文块的文章补切。同一篇的重复不译。
 
-## Grok 凭证（仅 `RESEARCH_LLM_PROVIDER=grok`）
+## Grok 凭证（默认；`RESEARCH_LLM_PROVIDER=deepseek` 时不用这份）
 
 Mac mini 上 `docker-compose.yml` 把 `./data` 挂到 `/data`，OAuth 在：
 
@@ -21,7 +21,7 @@ Mac mini 上 `docker-compose.yml` 把 `./data` 挂到 `/data`，OAuth 在：
 
 几个进程用同一路径和同一 `.lock` 轮流刷新。refresh token 每次刷新都会换，不要复制一份到别处用。Hermes 的 `auth.json` 格式会被拒绝。
 
-问库、`research-digest` 和页面上缺摘要的卡片读的是同一份凭证：Grok OAuth 的 `data/secrets/xai-oauth.json`。应用启动和部署不会自动跑全库。
+问库、`research-digest` 和页面上缺摘要的卡片读的是同一份提供方：默认是 Grok OAuth 的 `data/secrets/xai-oauth.json`。应用启动和部署不会自动跑全库。
 
 ## 登录（Mac mini）
 
@@ -60,7 +60,7 @@ docker compose exec app research-translate --from-inventory unmapped --workers 4
 
 同一轮里失败过、没有可译正文或者没译全的篇先跳过；`--loop` 时队列只剩它们就先睡，睡醒再给一次机会，不会一直重试同一篇。没配 LLM 凭证时直接退出（退出码 2），不连库。
 
-DeepSeek 译制走流式。思考模式要是一次把整段响应读完，连接会空等很久，TLS 在中途被拆掉（`UNEXPECTED_EOF_WHILE_READING`），这次已经开始计费，译文一个字都不会入库。`chat_json` 按行读，看到 `data: [DONE]` 才把拼接结果交给对齐；中途断开或流提前结束都丢掉半截，按 2、5、15、30 秒重发同一请求。超时不重试。模型、thinking、`reasoning_effort` 和输出预算不变，也不会改走 Grok。连接预算用完仍失败记 `request-failed`，不再把同一批立刻再打一遍。这一篇前面已经译好的段先存下（`complete` 为假，打印 `partial … (request-failed)`），后面的批和标题不再问，下次只补没译的段。一段都没译出来时整篇不入库，和以前一样。标题上的连接失败同样记请求失败，不记成对齐拒绝。
+`RESEARCH_LLM_PROVIDER=deepseek` 时译制走流式。思考模式要是一次把整段响应读完，连接会空等很久，TLS 在中途被拆掉（`UNEXPECTED_EOF_WHILE_READING`），这次已经开始计费，译文一个字都不会入库。`chat_json` 按行读，看到 `data: [DONE]` 才把拼接结果交给对齐；中途断开或流提前结束都丢掉半截，按 2、5、15、30 秒重发同一请求。超时不重试。模型、thinking、`reasoning_effort` 和输出预算不变，失败也不会改走另一家。Grok 译制不流式，一次读完 JSON。连接预算用完仍失败记 `request-failed`，不再把同一批立刻再打一遍。这一篇前面已经译好的段先存下（`complete` 为假，打印 `partial … (request-failed)`），后面的批和标题不再问，下次只补没译的段。一段都没译出来时整篇不入库，和以前一样。标题上的连接失败同样记请求失败，不记成对齐拒绝。
 
 重发同一请求、拆批、先放英文、某一批请求失败，命令行都带钟点（UTC）印在 stderr，例如 `05:12:03 译制请求连了 312 秒断开（SSE 中途断开：…），2 秒后第 2 次发同一请求`。以前这些只写 INFO 日志，命令行没配日志，一行也看不到（2026-11-08 22161、22254 断线时就不知道重发了几次）。重发完还连不上，报错前头写明同一请求试了几次、各连了几秒：`连不上 DeepSeek 接口（同一请求试了 5 次，各连了 312、298、305、290、301 秒）：SSE 中途断开：…`；超时是 `（连了 N 秒，1500 秒没收到数据算超时，不再重发）`。每次几秒、几十秒就断，是网络或接口一时不稳，过几分钟再译多半就好；每次都连了差不多一样久才断，多半是长请求被中途掐掉，再等也一样，那时再考虑把批拆小。
 
@@ -74,9 +74,9 @@ DeepSeek 译制走流式。思考模式要是一次把整段响应读完，连�
 
 几篇同时译时，stderr 上每一行进度前面带着文章号：`05:12:03 #22161 译制请求连了 312 秒断开…`。每篇的结果行后面接着这一篇的用量和用时（下面的数字只是示意）：`#22161 translated segments=220 reused=204 · 请求 9 次，输入 52,331 token（缓存命中 31,872），输出 61,204 token（思考 50,112），用时 8 分 41 秒`。回答收到了但用不了（不是 JSON、条数不对）的那次也算，断在半路的那次接口没报用量，不算。调过模型的话，停下时再印一行这一轮的合计：`这一轮 2 小时 13 分：译完 37 篇，没译完 2 篇；请求 …`。全是复用、一次模型都没调的篇只印结果。
 
-先开 4 个：Mac mini 经 Colima 转发时并发的 TLS 连接多了出过 `DECRYPTION_FAILED`。跑一阵 stderr 上没有成串的「连了几秒断开」再往上加。`--workers` 会被 Grok 那份并发上限（`RESEARCH_LLM_CONCURRENCY`，默认 8，硬顶 24）夹住；和识图全量同时跑时两边的请求加在一起算。
+先开 4 个：Mac mini 经 Colima 转发时并发的 TLS 连接多了出过 `DECRYPTION_FAILED`。跑一阵 stderr 上没有成串的「连了几秒断开」再往上加。`--workers` 会被 `RESEARCH_LLM_CONCURRENCY`（默认 8，没有低硬顶）夹住，同时不能超过 16（每个 worker 一条数据库连接）。和识图全量同时跑时两边的请求加在一起，打的是同一份账号额度。429 打 `rate-limit event=429`。
 
-Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`），流式每一行的空闲上限也是这一段。
+Grok 走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`）。DeepSeek 译制走流式，见上面「DeepSeek 译制走流式」。
 
 ## Stratechery
 
@@ -97,7 +97,7 @@ Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`
 
 | 状态 | 动作 |
 |---|---|
-| 译制管道已合入、Grok OAuth 已登录（`research-xai-login status` 说已登录） | 可对库内已有合格英文稿跑 `research-translate` |
+| 译制管道已合入、当前提供方凭证可用（Grok：`research-xai-login status` 说已登录；DeepSeek：配了 `DEEPSEEK_API_KEY`） | 可对库内已有合格英文稿跑 `research-translate` |
 | Stratechery 仍在抓 | **先不 ingest**；可用英文样例验对照页 |
 | 抓完并 ingest 后 | 跑 `research-translate --source stratechery`；积压多就加 `--loop` |
 
@@ -127,7 +127,7 @@ docker compose exec -T app research-translate-inventory
 
 ## 环境变量
 
-见 `.env.example`。默认 Grok OAuth：`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`、`RESEARCH_LLM_CONCURRENCY`（默认 8，硬顶 24）、`LLM_RETRY_DELAYS`。应急回退 DeepSeek 才设 `RESEARCH_LLM_PROVIDER=deepseek-legacy` 和 `DEEPSEEK_API_KEY`。两边共用 `LLM_LONG_TIMEOUT_MS`。
+见 `.env.example`。默认 Grok OAuth：`RESEARCH_LLM_PROVIDER=grok`（或不设）、`XAI_OAUTH_TOKEN_PATH`、`XAI_OAUTH_FILE_UID`、`XAI_OAUTH_FILE_GID`、`XAI_BASE_URL`、`XAI_MAX_TOKENS`、`RESEARCH_LLM_CONCURRENCY`（默认 8，没有低硬顶）、可选 `GROK_MAX_CONCURRENCY`、`LLM_RETRY_DELAYS`。切回 DeepSeek：`RESEARCH_LLM_PROVIDER=deepseek` 和 `DEEPSEEK_API_KEY`，改完重启。两边共用 `LLM_LONG_TIMEOUT_MS`。
 
 ## 译制输入：和文章页同一条清洗
 
@@ -252,7 +252,7 @@ docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sam
 
 ### LLM 抽验
 
-`--llm` 用站内默认模型（DeepSeek `deepseek-flash`、thinking、`reasoning_effort=max`，和译制、问库共用 `researchlib/deepseek.py` 的常量），判断抽样段落是否成对。每篇最多 12 对：先取硬指标点名的那几对，再按整篇的头、中、尾补；每段截到 1500 字并标 `truncated`，提示词里写明截断不算漏译、错位。提示词在 `researchlib/translate/qa.py` 的 `LLM_SYSTEM`，只判断 `misaligned` / `missing-zh` / `duplicate` / `other`，不改写译文。
+`--llm` 用当前提供方（默认 Grok `grok-4.7` / `reasoning_effort=high` / `fast=false`；`RESEARCH_LLM_PROVIDER=deepseek` 时是 deepseek-flash / thinking / `max`），和译制、问库走同一个 `llm.chat`，判断抽样段落是否成对。每篇最多 12 对：先取硬指标点名的那几对，再按整篇的头、中、尾补；每段截到 1500 字并标 `truncated`，提示词里写明截断不算漏译、错位。提示词在 `researchlib/translate/qa.py` 的 `LLM_SYSTEM`，只判断 `misaligned` / `missing-zh` / `duplicate` / `other`，不改写译文。
 
 模型返回 `verdict` / `score` / `issues` / `summary`，打印在报告里，`--json` 和 `--report` 也带上。`--llm` 默认跳过硬指标已经失败的篇，钱先花在看不出问题的篇上。模型给 `fail` 时整条命令退出 1；给 `warn` 只在 `--strict` 时退出 1。凭证不对、接口错、JSON 收不成结论都退出 2，硬指标的结果照常打印。整个命令不写库。
 

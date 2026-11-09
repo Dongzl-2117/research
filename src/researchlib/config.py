@@ -9,7 +9,6 @@ from pathlib import Path
 from researchlib.grok import LONG_LLM_TIMEOUT_S, grok_concurrency, long_timeout_s
 from researchlib.llm_provider import (
     GROK_DEFAULT_BASE_URL,
-    PROVIDER_GROK,
     llm_base_url,
     llm_provider,
 )
@@ -66,8 +65,8 @@ class Settings:
     page_size: int = 20
     days_per_page: int = 14
     # 问库、摘要、观点、论点、译制、识图都走 OpenAI 兼容的 chat/completions。
-    # 默认 Grok OAuth（research-xai-login，data/secrets/xai-oauth.json）；见 researchlib/llm_provider.py。
-    # 具体强度在 researchlib.grok，不读 API key 的字段不进 Settings。
+    # RESEARCH_LLM_PROVIDER=grok|deepseek，默认 grok。见 researchlib/llm_provider.py。
+    # Grok 强度在 researchlib.grok，DeepSeek 强度在 researchlib.deepseek。不读 API key 的字段不进 Settings。
     llm_provider: str = "grok"
     llm_base_url: str = GROK_DEFAULT_BASE_URL
     llm_timeout: float = float(LONG_LLM_TIMEOUT_S)
@@ -122,11 +121,7 @@ class Settings:
             llm_provider=provider,
             llm_base_url=llm_base_url(environ),
             llm_timeout=long_timeout_s(environ),
-            llm_concurrency=(
-                grok_concurrency(environ)
-                if provider == PROVIDER_GROK
-                else max(1, int(environ.get("RESEARCH_LLM_CONCURRENCY", "3") or "3"))
-            ),
+            llm_concurrency=grok_concurrency(environ),
             portfolio_path=(
                 Path(environ["PORTFOLIO_FILE"])
                 if environ.get("PORTFOLIO_FILE")

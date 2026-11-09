@@ -6,7 +6,7 @@
 #
 #   scripts/nightly.sh
 #   VIEWS_LIMIT=200 DIGEST_LIMIT=200 MINUTES=300 scripts/nightly.sh
-#   NIGHTLY_OCR=1 scripts/nightly.sh        # 在 app 容器里走站内 deepseek-flash 识图
+#   NIGHTLY_OCR=1 scripts/nightly.sh        # 在 app 容器里走站内 LLM 识图（默认 Grok）
 #   THESES_ENABLED=1 scripts/nightly.sh     # 夜间也补论点（默认关）
 set -Euo pipefail
 
@@ -20,7 +20,7 @@ NIGHTLY_OCR="${NIGHTLY_OCR:-0}"
 EMBED_LIMIT="${EMBED_LIMIT:-50000}"
 # 论点默认关。打开后补的是库里观点够数的公司，不限持仓。需要夜间跑时设 THESES_ENABLED=1。
 THESES_ENABLED="${THESES_ENABLED:-0}"
-# 观点和摘要各自最多跑这么多分钟（xhigh 推理一篇要一两分钟）。
+# 观点和摘要各自最多跑这么多分钟（Grok high 推理一篇要一两分钟）。
 MINUTES="${MINUTES:-150}"
 TASK=nightly
 . "$REPO/scripts/status.sh"

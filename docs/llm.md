@@ -48,18 +48,16 @@
 
 入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；日汇总页「问 AI：这一天的主要判断」；检索结果页「问 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：按作者列出这一天的文章，每篇一句摘要或正文里的一句实质内容。之前问过正好覆盖这一天、同一范围的问题，那条回答放在最上面；比范围时不算飞书文库这类不进按天的来源，问库页不分来源问的也认。没问过就给「问 AI」按钮，点了才调模型。打开这一页不调模型；缺摘要的卡片在后台补，不挡住这一页，也不跑全库。问库页「最近问过」里按日期问的，问题后面写着日期。
 
-## LLM 凭证（全部 Grok OAuth）
+## LLM 凭证（默认 Grok，可切 DeepSeek）
 
-2026-11-10 owner 授权：站内所有 LLM（译制、问库、摘要、观点、论点、识图、夜间任务）都用 Grok OAuth，模型 `grok-4.7`。不再默认 DeepSeek，也没有自动回退：Grok 凭证不可用就直接报错，页面退化成只给检索结果，命令行退出码 2。
+2026-11-10 起默认走 Grok OAuth，模型 `grok-4.7`。译制、问库（侧栏问库、问这篇）、摘要、观点、论点、识图、双语抽验、夜间任务都进同一组调用（`researchlib.llm.chat`，译制是 `translate/llm.py` 的 `chat_json`）。改 `RESEARCH_LLM_PROVIDER` 再重启就换提供方，不用改代码。当前这家凭证不可用就直接报错，不会自动改走另一家。页面退化成只给检索结果，命令行退出码 2。
 
-`RESEARCH_LLM_PROVIDER` 只剩两种取值：
-
-| 值 | 行为 |
+| `RESEARCH_LLM_PROVIDER` | 行为 |
 | --- | --- |
-| 不设、`grok`、其他任何值（包括以前 .env 里的 `deepseek`） | Grok OAuth |
-| `deepseek-legacy` | 应急回退，用 `DEEPSEEK_API_KEY` 走 DeepSeek；正常部署不设 |
+| 不设、空、`grok`，以及不认识的值 | Grok OAuth |
+| `deepseek` | DeepSeek，用 `DEEPSEEK_API_KEY`。`deepseek-legacy` 是同一个值的别名 |
 
-留 `deepseek` 也按 Grok 算，是故意的：宿主机 `.env` 里遗留的那一行不会把站点悄悄留在 DeepSeek 上。
+宿主机 `.env` 里如果还写着 `RESEARCH_LLM_PROVIDER=deepseek`，compose 会原样传进容器，上线后仍走 DeepSeek。要切到 Grok，把这一行改成 `grok` 或删掉（compose 默认 `grok`），再重启。
 
 ### Grok OAuth
 
@@ -88,16 +86,16 @@ xAI 把过期的 OAuth access token 报成 401/403；遇到这种 403 会强制�
 
 不传 `on_text` 的调用（识图、摘要、观点、译制）一次读完 JSON；传了 `on_text` 的（问库边写边显示）走流式 SSE，请求里带 `stream: true` 和 `stream_options.include_usage`，看到 `data: [DONE]` 才算成功，读到一半断了丢掉半截重发。最终答案在 `choices[0].message.content`；`reasoning_content` 里的思考过程不往页面上放。
 
-### DeepSeek（只在应急回退时）
+### DeepSeek（显式切换）
 
-设 `RESEARCH_LLM_PROVIDER=deepseek-legacy` 才用 `DEEPSEEK_API_KEY`。强度不变，仍在 `researchlib/deepseek.py`（deepseek-flash / thinking / `max` / 输出至少 393216 / 上下文 1M）。这是回退用，不是日常路径。
+设 `RESEARCH_LLM_PROVIDER=deepseek` 就用 `DEEPSEEK_API_KEY`。强度仍在 `researchlib/deepseek.py`（deepseek-flash / thinking / `max` / 输出至少 393216 / 上下文 1M）。问库、译制、识图、摘要、观点、论点、抽验走同一批入口，只是请求体换成 DeepSeek 的。改回 `grok` 或删掉这一行再重启，就回到 Grok。
 
 ### 变量
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RESEARCH_LLM_PROVIDER` | `grok` | 只有 `deepseek-legacy` 会改走 DeepSeek，其他值一律 Grok |
-| `DEEPSEEK_API_KEY` | 空 | 只在 `deepseek-legacy` 时用，缺了直接报错 |
+| `RESEARCH_LLM_PROVIDER` | `grok` | `grok` 或 `deepseek`。`deepseek-legacy` 等同 `deepseek`。不认识的值按 grok |
+| `DEEPSEEK_API_KEY` | 空 | `RESEARCH_LLM_PROVIDER=deepseek` 时必填，缺了直接报错 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 不另加 `/v1` |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | V4.1-Flash |
 | `DEEPSEEK_REASONING_EFFORT` | `max` | `low` / `high` / `max` |
@@ -108,11 +106,25 @@ xAI 把过期的 OAuth access token 报成 401/403；遇到这种 403 会强制�
 | `XAI_BASE_URL` | `https://api.x.ai/v1` | 仅 Grok |
 | `LLM_LONG_TIMEOUT_MS` | `1500000` | 译制和问库共用的长超时，默认 25 分钟 |
 | `RESEARCH_LLM_TIMEOUT` | 不设 | 秒。比上面的长超时更短时会被抬到同一条，不能单独把问库调弱 |
-| `RESEARCH_LLM_CONCURRENCY` | `8` | 同一个进程里同时在跑的 Grok 请求上限，硬顶 `24`。问库写回答、摘要、观点、论点、识图、译制共用；`research-ocr` 按它几张图一起认，`research-translate --workers` 超过它就按它算 |
+| `RESEARCH_LLM_CONCURRENCY` | `8` | 同一个进程里同时在跑的 LLM 请求数，没有低硬顶。问库写回答、摘要、观点、论点、识图按它限流；`research-ocr` 按它几张图一起认；`research-translate --workers` 超过它就按它算（另外每个 worker 占一条数据库连接，`--workers` 本身最多 16） |
+| `GROK_MAX_CONCURRENCY` | 不设 | 可选上限。设了才把上面那个数往下夹；不设就不夹 |
 | `LLM_RETRY_DELAYS` | 不设则 `2,5,15,30` | 429、5xx、连接被重置的退避间隔（秒，逗号分隔，最多 6 档）。接口给了 `Retry-After` 就按它来（最多一分钟） |
 | `ASK_MAP_WORKERS` | `6` | 问库分批读资料时几批同时读，这几路不占上面那份上限。以前经 mini 的 en1 转发时 4 路并发常断 TLS，默认 2 路；11-08 起识图在同一台机器上 20～40 路同时认没有失败，断线也会自己重发 |
 
-429、5xx、连接被重置、流读到一半的 TLS EOF 按 2、5、15、30 秒退避重试（`LLM_RETRY_DELAYS` 可改；接口给了 `Retry-After` 就按它，最多等一分钟）。超时不重试：一次已经等了很久。译制和问库用同一组间隔。凭证不可用或连续失败 3 次，首页顶上提示一行，写明是 DeepSeek 还是 Grok（见 [backup.md](backup.md)「出问题才提示」）。
+429、5xx、连接被重置、流读到一半的 TLS EOF 按 2、5、15、30 秒退避重试（`LLM_RETRY_DELAYS` 可改；接口给了 `Retry-After` 就按它，最多等一分钟）。每一次 429 打一行 `rate-limit event=429 provider=… caller=chat|translate attempt=… wait_s=… retry_after=0|1 exhausted=0|1`，重试后成功的也记。容器日志里数这一行就是 429 次数。超时不重试：一次已经等了很久。译制和问库用同一组间隔。凭证不可用或连续失败 3 次，首页顶上提示一行，写明是 DeepSeek 还是 Grok（见 [backup.md](backup.md)「出问题才提示」）。
+
+译制和识图打的是同一份账号额度。两个进程同时跑（一个 `research-translate`、一个 `research-ocr`）时，请求数是两边的 `RESEARCH_LLM_CONCURRENCY` 相加。要一起跑，把这个数设成你能接受的单进程上限，或错开跑。
+
+已经译完的文章（`article_translations.complete` 且 `content_hash` 对得上原文）不因为换了提供方重译。没译完的留在待译队列，下次接着补，回执里没变的段复用。识图全库 `--redo` 只认 `prompt_version` 比第 3 版旧的图，按第 3 版认过的不因为 engine 从 `deepseek-flash-vision` 改成 `grok-4.7-vision` 再付一次钱。
+
+上线后核对 Grok 这条路（不写库）：
+
+```bash
+docker compose exec app research-xai-login status
+docker compose exec app research-grok-smoke --check
+```
+
+`--check` 应打印 `provider` 为 `grok`、`model` 为 `grok-4.7`、`reasoning_effort` 为 `high`、`fast` 为 false，并有一条短回答。当前提供方不是 grok 时这条命令退出码 2。
 
 ## 摘要
 

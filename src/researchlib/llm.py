@@ -1,19 +1,17 @@
 """调用站内 LLM（OpenAI 兼容的 chat/completions）。
 
-2026-11-10 起站内 LLM 全部走 Grok OAuth（``grok-4.7``，``reasoning_effort=high``，``fast=false``，
-50 万上下文），强度见 ``researchlib.grok``。鉴权是 xAI OAuth
+提供方由 ``RESEARCH_LLM_PROVIDER`` 切换，默认 Grok OAuth（``grok-4.7``，``reasoning_effort=high``，
+``fast=false``，50 万上下文），强度见 ``researchlib.grok``。鉴权是 xAI OAuth
 （``XAI_OAUTH_TOKEN_PATH``，compose 里是 ``/data/secrets/xai-oauth.json``，用 ``research-xai-login login`` 登录）。
-凭证不可用就直接报错，不退回 API key、也不换提供方硬撑。
-
-``RESEARCH_LLM_PROVIDER=deepseek-legacy`` 是应急回退的旧值，那时才用 ``DEEPSEEK_API_KEY``；
-正常部署不设。
+``RESEARCH_LLM_PROVIDER=deepseek`` 走 DeepSeek（``DEEPSEEK_API_KEY``），强度见 ``researchlib.deepseek``。
+当前这家凭证不可用就直接报错，不换另一家硬撑。
 
 只用标准库发请求，HTTPS_PROXY 由 urllib 自己读取。
 429、5xx 和连不上（含流读到一半的 TLS EOF）按退避间隔重试（默认 2、5、15、30 秒，可用
-``LLM_RETRY_DELAYS`` 改）；超时不重试。透传 ``on_text`` 时走流式 SSE（问库边写边显示），
-没看到 ``data: [DONE]`` 就丢掉已经拼上的半截，不当作成功。
-同一个进程里同时在跑的请求有上限（RESEARCH_LLM_CONCURRENCY，默认 8，硬顶 24），问库分批、摘要、观点、
-论点、识图、译制共用。
+``LLM_RETRY_DELAYS`` 改）；超时不重试。每一次 429 打一行 ``rate-limit event=429``，方便数限流比例。
+透传 ``on_text`` 时走流式 SSE（问库边写边显示），没看到 ``data: [DONE]`` 就丢掉已经拼上的半截，不当作成功。
+同一个进程里同时在跑的请求有上限（``RESEARCH_LLM_CONCURRENCY``，默认 8，没有低硬顶），
+问库写回答、摘要、观点、论点、识图共用。译制按同一上限夹 ``--workers``。
 每次调用的最终结果记进 DATA_DIR/status/llm.json，连续失败或凭证不可用时 research-status 会列出来。
 """
 
@@ -86,6 +84,33 @@ def _note_http(name: str, amount: int = 1) -> None:
         _http_stats[name] = _http_stats.get(name, 0) + amount
 
 
+def note_rate_limit(
+    *,
+    provider: str,
+    caller: str,
+    attempt: int,
+    wait_s: float,
+    retry_after: bool,
+    exhausted: bool,
+    logger_name: str = "researchlib.llm",
+) -> None:
+    """记一次 429，并打一行固定格式的日志。
+
+    成功重试之前的 429 也记。按 ``rate-limit event=429`` 数行，就是这一进程的限流次数。
+    不记请求体、不记 token。
+    """
+    _note_http("http_429")
+    logging.getLogger(logger_name).warning(
+        "rate-limit event=429 provider=%s caller=%s attempt=%s wait_s=%.0f retry_after=%s exhausted=%s",
+        provider,
+        caller,
+        attempt,
+        wait_s,
+        int(retry_after),
+        int(exhausted),
+    )
+
+
 class LLMUnavailable(Exception):
     """没有可用的 LLM 凭证。页面退化为只给检索结果。"""
 
@@ -145,8 +170,8 @@ def _deepseek_token() -> str:
     if not key:
         raise LLMUnavailable(
             "没有配置 DEEPSEEK_API_KEY，DeepSeek 调不了。"
-            "把 key 写进 .env（docker compose 的 DEEPSEEK_API_KEY），"
-            "或者设 RESEARCH_LLM_PROVIDER=grok 用回 Grok OAuth。"
+            "把 key 写进 .env（docker compose 的 DEEPSEEK_API_KEY）。"
+            "要改走 Grok，把 RESEARCH_LLM_PROVIDER 设成 grok 或删掉这一行（默认 grok）再重启。"
         )
     return key
 
@@ -479,10 +504,7 @@ def chat(
         except urllib.error.HTTPError as exc:
             _note_http("responses")
             _note_http(f"status_{exc.code}")
-            if exc.code == 429:
-                # 429 在最终成功的那一次之前也会发生：每一次都记，不只记最后失败的那次。
-                _note_http("http_429")
-            elif 500 <= exc.code < 600:
+            if 500 <= exc.code < 600:
                 _note_http("http_5xx")
             detail = exc.read().decode("utf-8", "replace")[:300]
             if provider == PROVIDER_GROK and not refreshed and is_stale_xai_access(exc.code, detail):
@@ -499,7 +521,20 @@ def chat(
                 payload.pop("stream_options")
                 dropped_stream_usage = True
                 continue
-            if exc.code in RETRY_STATUS and retries < len(delays):
+            will_retry = exc.code in RETRY_STATUS and retries < len(delays)
+            if exc.code == 429:
+                # 429 在最终成功的那一次之前也会发生：每一次都记，不只记最后失败的那次。
+                hinted = _retry_after(exc)
+                wait = (hinted if hinted is not None else delays[retries]) if will_retry else 0.0
+                note_rate_limit(
+                    provider=label,
+                    caller="chat",
+                    attempt=retries + 1,
+                    wait_s=wait,
+                    retry_after=hinted is not None,
+                    exhausted=not will_retry,
+                )
+            if will_retry:
                 _note_http("retries")
                 time.sleep(_retry_after(exc) or delays[retries])
                 retries += 1

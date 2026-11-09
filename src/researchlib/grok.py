@@ -9,12 +9,10 @@
 - 上下文用模型自报的最大窗口 500000（``context_length``），请求里不另传更小的上限。
 - 输出预算不低于 128000。
 
-并发上限（``grok_concurrency``）是同一个进程里同时在跑的 Grok 请求数，问库、摘要、观点、论点、识图、
-译制共用一份。默认 8，硬顶由 ``GROK_MAX_CONCURRENCY`` 决定（不设时 24）：11-09 以前 DeepSeek 开 40 路时
-容器被 OOM 杀过（EXIT=137），Grok 走一次读完的 JSON，单请求占用随输出长度涨，档位越高越要先压测再往上调。
-硬顶可配只是为了「按实测调上去」：调之前先跑 ``research-grok-smoke --pressure``，把 asked（要的档位）和
-effective（实际同时在跑的请求数）分别记下来，也把容器内存峰值记下来。上限再多也不超过
-``GROK_CONCURRENCY_ABSOLUTE_LIMIT``，那是防手滑的保险，不是压测过的档位。
+并发上限（``grok_concurrency``）是同一个进程里同时在跑的 LLM 请求数。译制和识图打的是同一份
+账号额度，两边都读 ``RESEARCH_LLM_CONCURRENCY``（默认 8）。不设低硬顶：填 40 就是 40。
+想再封一层顶，显式设 ``GROK_MAX_CONCURRENCY``；不设就不夹。11-09 以前 DeepSeek 开 40 路时容器被
+OOM 杀过（EXIT=137），往上加之前先跑 ``research-grok-smoke --pressure``，看 429 日志和内存。
 """
 
 from __future__ import annotations
@@ -30,11 +28,9 @@ GROK_OUTPUT_FLOOR = 128_000
 GROK_INPUT_CHARS = 360_000
 LONG_LLM_TIMEOUT_S = 1_500  # 25 分钟，盖住 high 推理的长文
 
-# 同一个进程里同时在跑的 Grok 请求上限：默认值、硬顶的默认值、以及填什么都不越过的保险线。
-# 硬顶用 GROK_MAX_CONCURRENCY 改（压测过再往上调），RESEARCH_LLM_CONCURRENCY 在这个区间里取。
+# 同一个进程里同时在跑的 LLM 请求数。默认 8；RESEARCH_LLM_CONCURRENCY 直接生效，没有 24 这种低硬顶。
+# 只有显式设置的 GROK_MAX_CONCURRENCY 才会再往下夹。
 GROK_CONCURRENCY_DEFAULT = 8
-GROK_CONCURRENCY_CEILING = 24
-GROK_CONCURRENCY_ABSOLUTE_LIMIT = 64
 
 # 429 / 5xx / 连接被重置时的退避间隔（秒）。LLM_RETRY_DELAYS 可以改，最多 6 档，每档 0～600。
 RETRY_DELAYS_DEFAULT = (2.0, 5.0, 15.0, 30.0)
@@ -68,51 +64,57 @@ def grok_output_tokens(requested: int | None = None, environ: Mapping[str, str] 
     return max(chosen, requested or 0, GROK_OUTPUT_FLOOR)
 
 
-def grok_concurrency_ceiling(environ: Mapping[str, str] | None = None) -> int:
-    """并发硬顶：``GROK_MAX_CONCURRENCY``，不设时 24。
-
-    填坏按默认，填得比 ``GROK_CONCURRENCY_ABSOLUTE_LIMIT`` 大按保险线算。压测过哪一档就把硬顶调到哪一档，
-    不要只在命令上写一个更大的数——生产进程读的是这个值。
-    """
-    env = _env(environ)
-    raw = env.get("GROK_MAX_CONCURRENCY", "").strip()
+def _asked_concurrency(environ: Mapping[str, str] | None) -> int:
+    """``RESEARCH_LLM_CONCURRENCY``。空着或填坏用默认 8；0 和负数抬到 1。"""
+    raw = _env(environ).get("RESEARCH_LLM_CONCURRENCY", "").strip()
     try:
-        ceiling = int(raw) if raw else GROK_CONCURRENCY_CEILING
+        asked = int(raw) if raw else GROK_CONCURRENCY_DEFAULT
     except ValueError:
-        ceiling = GROK_CONCURRENCY_CEILING
-    return max(1, min(ceiling, GROK_CONCURRENCY_ABSOLUTE_LIMIT))
+        asked = GROK_CONCURRENCY_DEFAULT
+    return max(1, asked)
+
+
+def grok_concurrency_ceiling(environ: Mapping[str, str] | None = None) -> int | None:
+    """可选上限 ``GROK_MAX_CONCURRENCY``。不设、填坏、小于 1 都表示不设上限。"""
+    raw = _env(environ).get("GROK_MAX_CONCURRENCY", "").strip()
+    if not raw:
+        return None
+    try:
+        ceiling = int(raw)
+    except ValueError:
+        return None
+    if ceiling < 1:
+        return None
+    return ceiling
 
 
 def grok_concurrency(environ: Mapping[str, str] | None = None) -> int:
-    """同一个进程里同时在跑的 Grok 请求数：``RESEARCH_LLM_CONCURRENCY``，夹在 1 到硬顶之间。
+    """同一个进程里同时在跑的 LLM 请求数。
 
-    填得比硬顶还高时按硬顶算，不因为一个环境变量把容器撑爆。想看「要了多少、实际多少」用
-    ``grok_concurrency_plan``。
+    ``RESEARCH_LLM_CONCURRENCY`` 直接生效，没有默认的低硬顶。设了 ``GROK_MAX_CONCURRENCY``
+    才按它往下夹。译制、识图、问库、摘要、观点、论点都读这个数。
     """
+    asked = _asked_concurrency(environ)
     ceiling = grok_concurrency_ceiling(environ)
-    raw = _env(environ).get("RESEARCH_LLM_CONCURRENCY", "").strip()
-    try:
-        asked = int(raw) if raw else GROK_CONCURRENCY_DEFAULT
-    except ValueError:
-        asked = GROK_CONCURRENCY_DEFAULT
-    return max(1, min(asked, ceiling))
+    if ceiling is None:
+        return asked
+    return min(asked, ceiling)
 
 
 def grok_concurrency_plan(environ: Mapping[str, str] | None = None) -> dict:
-    """报给压测和状态页看的三个数：asked（环境变量要的）、ceiling（硬顶）、effective（实际生效的）。
+    """asked（环境变量要的）、ceiling（可选上限，不设是 None）、effective（实际生效的）。
 
-    effective 比 asked 小就是被硬顶夹住了，报告里要写明，不能拿夹过的档位冒充实测档位。
+    clamped 为真表示被 ``GROK_MAX_CONCURRENCY`` 夹住了，报告里要写明。
     """
+    asked = _asked_concurrency(environ)
     ceiling = grok_concurrency_ceiling(environ)
-    effective = grok_concurrency(environ)
-    raw = _env(environ).get("RESEARCH_LLM_CONCURRENCY", "").strip()
-    try:
-        asked = int(raw) if raw else GROK_CONCURRENCY_DEFAULT
-    except ValueError:
-        asked = GROK_CONCURRENCY_DEFAULT
-    if asked < 1:
-        asked = 1
-    return {"asked": asked, "ceiling": ceiling, "effective": effective, "clamped": asked > effective}
+    effective = asked if ceiling is None else min(asked, ceiling)
+    return {
+        "asked": asked,
+        "ceiling": ceiling,
+        "effective": effective,
+        "clamped": ceiling is not None and asked > effective,
+    }
 
 
 def retry_delays(environ: Mapping[str, str] | None = None) -> tuple[float, ...]:

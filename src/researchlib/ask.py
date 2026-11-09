@@ -9,7 +9,8 @@
    读到第几批、写出来的半截回答随时写进 llm_answers（stats.progress、answer），页面轮询时先显示。
 4. 写回 answer、citations、status=done。出错时 status=error、清掉半截回答，页面可以重新整合。
 
-没有可用的 LLM 凭证（默认 DeepSeek 的 key，或 Grok OAuth）时只给原文段落，不存记录，也不在两个提供方之间自动切换。
+没有可用的 LLM 凭证时只给原文段落，不存记录，也不在两个提供方之间自动切换。
+默认是 Grok OAuth；``RESEARCH_LLM_PROVIDER=deepseek`` 时要 DeepSeek 的 key。
 """
 
 from __future__ import annotations

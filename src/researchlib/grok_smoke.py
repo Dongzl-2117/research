@@ -3,10 +3,10 @@
 只做两件事，都不写库：
 
 1. ``--check``：发一次很短的真实请求，把接口回的 provider / model / reasoning_effort / fast / 上下文
-   和用量打出来。凭证不可用就退出码 2，不会退回 DeepSeek。
-2. ``--pressure 8,16,24``：按档位同时发小请求（每档 ``--rounds`` 轮），统计请求数、429 次数、
-   重试比例、平均耗时，并在本机读 ``memory_pressure``、``docker stats`` 的峰值内存。
-   限流或内存压力明显就停下，不往下一档走。
+   和用量打出来。凭证不可用就退出码 2，不会改走 DeepSeek。
+2. ``--pressure 8,16,24``：按档位同时发小请求（每档 ``--rounds`` 轮），统计请求数、429 次数
+   （含后来重试成功的）、平均耗时，并在本机读 ``memory_pressure``、``docker stats`` 的峰值内存。
+   限流明显就停下，不往下一档走。档位不另夹低硬顶。
 
 样例（在 Mac mini 上）：
 
@@ -32,12 +32,12 @@ from pathlib import Path
 
 from researchlib.config import Settings
 from researchlib.grok import (
-    GROK_CONCURRENCY_CEILING,
     GROK_CONTEXT_TOKENS,
     GROK_MODEL_ID,
     GROK_REASONING_EFFORT,
+    grok_concurrency_plan,
 )
-from researchlib.llm import LLMError, LLMUnavailable, chat, credential_kind
+from researchlib.llm import LLMError, LLMUnavailable, chat, credential_kind, http_stats, reset_http_stats
 from researchlib.llm_provider import llm_provider, provider_label
 
 PROMPT = "只回答两个字：收到"
@@ -53,7 +53,7 @@ def _provider_summary(settings: Settings) -> dict:
         "fast": False,
         "context_tokens": GROK_CONTEXT_TOKENS,
         "concurrency": settings.llm_concurrency,
-        "concurrency_ceiling": GROK_CONCURRENCY_CEILING,
+        "concurrency_plan": grok_concurrency_plan(),
         "credential": credential_kind(settings) or "missing",
     }
 
@@ -117,16 +117,16 @@ def _one_request(settings: Settings, slot) -> dict:
     return {"ok": ok, "seconds": time.monotonic() - started, "error": error}
 
 
-def _pressure(settings: Settings, ladder: list[int], rounds: int, *, above_ceiling: bool = False) -> int:
-    """逐档加并发。每档报请求数、失败（含 429）、平均耗时、内存。限流明显就停。
+def _pressure(settings: Settings, ladder: list[int], rounds: int) -> int:
+    """逐档加并发。每档报请求数、429 次数（含后来重试成功的）、平均耗时、内存。限流明显就停。
 
-    默认夹在硬顶 24 以内（生产的真实上限）。``above_ceiling`` 只给压测看清 32、48 档的表现用，
-    测出来的数不代表现在的生产配置。
+    档位按命令行来，不另夹一层低硬顶。每一档自己的信号量传给 ``chat``，用来测这一档，
+    不改生产进程的 ``RESEARCH_LLM_CONCURRENCY``。
     """
-    cap = 48 if above_ceiling else GROK_CONCURRENCY_CEILING
     rows = []
     for width in ladder:
-        width = max(1, min(width, cap))
+        width = max(1, width)
+        reset_http_stats()
         peak_mem: list[str] = []
         stop = threading.Event()
 
@@ -148,7 +148,8 @@ def _pressure(settings: Settings, ladder: list[int], rounds: int, *, above_ceili
         watcher.join(timeout=5)
         elapsed = time.monotonic() - started
         failures = [row for row in results if not row["ok"]]
-        rate_limited = sum(1 for row in failures if "429" in row["error"])
+        # 重试后成功的 429 也算。只数最后失败的请求会把限流看成 0。
+        rate_limited = int(http_stats().get("http_429", 0))
         row = {
             "concurrency": width,
             "requests": len(results),
@@ -212,17 +213,18 @@ def _image(settings: Settings, paths: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Grok OAuth 冒烟和并发压测（不写库）")
     parser.add_argument("--check", action="store_true", help="打提供方口径并真发一次短请求")
-    parser.add_argument("--pressure", default="", help="并发档位，逗号分隔，例如 8,16,24")
+    parser.add_argument("--pressure", default="", help="并发档位，逗号分隔，例如 8,16,24。不另夹低硬顶")
     parser.add_argument("--rounds", type=int, default=2, help="每档发几轮（每轮 concurrency 个请求）")
-    parser.add_argument(
-        "--above-ceiling",
-        action="store_true",
-        help=f"压测时越过硬顶 {GROK_CONCURRENCY_CEILING}，只为看 32、48 档的表现；生产不这么开",
-    )
     parser.add_argument("--image", action="append", default=[], help="识一张本地图，只打印不写库")
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
+    if llm_provider() != "grok":
+        print(
+            "research-grok-smoke 只核 Grok。当前 RESEARCH_LLM_PROVIDER 不是 grok。",
+            file=sys.stderr,
+        )
+        return 2
     if not args.check and args.pressure.strip() == "" and not args.image:
         print(json.dumps(_provider_summary(settings), ensure_ascii=False))
         return 0
@@ -234,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         if not ladder:
             print("--pressure 要写成 8,16,24", file=sys.stderr)
             return 2
-        status |= _pressure(settings, ladder, max(1, args.rounds), above_ceiling=args.above_ceiling)
+        status |= _pressure(settings, ladder, max(1, args.rounds))
     if args.image:
         status |= _image(settings, args.image)
     return status

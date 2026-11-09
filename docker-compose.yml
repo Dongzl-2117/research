@@ -1,8 +1,8 @@
 # 本机私人库。端口只发布到 127.0.0.1。不要改成 0.0.0.0。
 # 应用端口 8088，避开本机常见的 3000。
 #
-# 站内 LLM 默认 DeepSeek（deepseek-flash / thinking / reasoning_effort=max / 输出至少 393216 / 1M 上下文）。
-# Grok OAuth 保留为显式选项：RESEARCH_LLM_PROVIDER=grok，token 在 ./data/secrets/xai-oauth.json。
+# 站内 LLM 默认 Grok OAuth（grok-4.7 / reasoning_effort=high / fast=false / 50 万上下文）。
+# RESEARCH_LLM_PROVIDER=deepseek 切回 DeepSeek。token 在 ./data/secrets/xai-oauth.json。
 
 services:
   db:
@@ -57,10 +57,9 @@ services:
       SOURCES_FILE: /app/config/sources.yaml
       PORTFOLIO_FILE: /app/config/portfolio.yaml
       DISPLAY_TIMEZONE: Asia/Shanghai
-      # 站内 LLM 全部走 Grok OAuth（2026-11-10 owner 授权）：默认 grok，不再默认 DeepSeek。
-      # 宿主机 .env 里遗留的 RESEARCH_LLM_PROVIDER=deepseek 会被忽略（见 researchlib/llm_provider.py）。
+      # 默认 grok。宿主机 .env 写 RESEARCH_LLM_PROVIDER=deepseek 就走 DeepSeek，改完重启即可。
       RESEARCH_LLM_PROVIDER: ${RESEARCH_LLM_PROVIDER:-grok}
-      # 只在应急回退时用：设 RESEARCH_LLM_PROVIDER=deepseek-legacy 才会读这个 key。
+      # RESEARCH_LLM_PROVIDER=deepseek 时用这个 key。
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
@@ -77,9 +76,10 @@ services:
       # 问库、摘要、观点、论点、识图与译制共用 researchlib/grok.py 的强度：
       # grok-4.7 / reasoning_effort=high / fast=false / 输出至少 128000 / 上下文 500000。
       # 摘要不在启动时跑，部署也不会自动跑全库。
-      # 同一个进程里同时在跑的 Grok 请求上限：默认 8，硬顶 24（researchlib.grok.GROK_CONCURRENCY_CEILING）。
+      # 同一个进程里同时在跑的 LLM 请求数：默认 8，没有低硬顶。要封顶再设 GROK_MAX_CONCURRENCY。
       # 429/5xx 的退避间隔默认 2、5、15、30 秒，可用 LLM_RETRY_DELAYS="4,8,20" 改。
       RESEARCH_LLM_CONCURRENCY: ${RESEARCH_LLM_CONCURRENCY:-8}
+      GROK_MAX_CONCURRENCY: ${GROK_MAX_CONCURRENCY:-}
       LLM_RETRY_DELAYS: ${LLM_RETRY_DELAYS:-}
       # 首页断更提示：只看最近几天确实在定时导入的来源。不想要设 0。
       RESEARCH_STALE_BANNER: ${RESEARCH_STALE_BANNER:-1}

@@ -61,8 +61,10 @@ def test_bulk_redo_skips_images_already_read_with_the_current_prompt(conn, setti
     never = _image(conn, "old", "e", data_dir)  # 从没认过
     blank = _image(conn, "old", "f", data_dir)  # 以前的说明认的，没认出字
     older = _image(conn, "old", "g", data_dir)  # 上一版说明认的结构（说明改了版本，要按新说明重认）
+    grok_current = _image(conn, "old", "h", data_dir)  # 第 3 版、engine 已是 grok，不能因为换模型再认
     _text(conn, old_chat, "deepseek-flash-vision", "王小明：毛利率：35%", None)
     _text(conn, current, "deepseek-flash-vision", "王小明：毛利率：35%", VISION_PROMPT_VERSION, CHAT)
+    _text(conn, grok_current, "grok-4.7-vision", "王小明：毛利率：35%", VISION_PROMPT_VERSION, CHAT)
     _text(conn, failed, "deepseek-flash-vision:error", "", VISION_PROMPT_VERSION)
     _text(conn, invalid, "deepseek-flash-vision:invalid", "", VISION_PROMPT_VERSION)
     _text(conn, blank, "deepseek-flash-vision", "", None)
@@ -77,7 +79,9 @@ def test_bulk_redo_skips_images_already_read_with_the_current_prompt(conn, setti
     assert bulk[0] == old_chat  # 新文章的图先认
     assert redo_remaining(conn) == {"images": 5, "with_text": 2}
     # 点名的照旧全部重认（:invalid 靠它点名重认）；不带 --redo 只认没认过的和失败的。
-    assert set(picked(redo=True, article_ids=[ids["old"]])) == {failed, invalid, never, blank, older}
+    assert set(picked(redo=True, article_ids=[ids["old"]])) == {
+        failed, invalid, never, blank, older, grok_current,
+    }
     assert set(picked()) == {failed, never}
 
     # 认一张就停，再开从没认完的接着认。

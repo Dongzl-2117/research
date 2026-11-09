@@ -1,11 +1,10 @@
-"""站内调 LLM 做译制：默认 DeepSeek，Grok 作为显式选项。
+"""站内调 LLM 做译制。提供方跟 ``RESEARCH_LLM_PROVIDER`` 走，默认 Grok。
 
-默认 DeepSeek：deepseek-flash + thinking + reasoning_effort=max + 输出至少 393216，
-上下文 1M，不发 temperature，鉴权用 DEEPSEEK_API_KEY 的 Bearer。请求走流式，
-按行读到 ``data: [DONE]`` 才采用；中途 TLS EOF 按与问库相同的间隔重试同一请求，
-半截内容不当译文。重试完还连不上时，报错里写明同一请求试了几次、每次连了几秒，
-分得清网络一直不稳（每次几秒就断）和长请求被掐（每次都连了差不多一样久才断）。
-``RESEARCH_LLM_PROVIDER=grok`` 时走 xAI OAuth（grok-4.7 + xhigh + 至少 128000，不开 fast），不流式。
+Grok：grok-4.7、``reasoning_effort=high``、``fast=false``、输出至少 128000、上下文 50 万，不流式。
+DeepSeek（``RESEARCH_LLM_PROVIDER=deepseek``）：deepseek-flash + thinking + reasoning_effort=max
++ 输出至少 393216、上下文 1M，不发 temperature，请求走流式，按行读到 ``data: [DONE]`` 才采用。
+中途 TLS EOF 按与问库相同的间隔重试同一请求，半截内容不当译文。重试完还连不上时，报错里写明
+同一请求试了几次、每次连了几秒。429 打 ``rate-limit event=429``。
 模型、推理强度、输出地板和超时与问库、摘要共用 researchlib.deepseek / researchlib.grok。
 """
 
@@ -207,7 +206,8 @@ def _bearer(data_dir: Path | None) -> str:
     if not key:
         raise LLMConfigError(
             "没有配置 DEEPSEEK_API_KEY，DeepSeek 译不了。"
-            "把 key 写进 .env（compose 的 DEEPSEEK_API_KEY），或者设 RESEARCH_LLM_PROVIDER=grok 用回 Grok OAuth。"
+            "把 key 写进 .env（compose 的 DEEPSEEK_API_KEY）。"
+            "要改走 Grok，把 RESEARCH_LLM_PROVIDER 设成 grok 或删掉这一行（默认 grok）再重启。"
         )
     return key
 
@@ -245,7 +245,7 @@ def chat_json(
     """POST {base}/chat/completions。强度按当前提供方，DeepSeek 默认 max / 393216 / thinking，并走流式。"""
     # llm 加载时会进 translate 包。顶上再导 researchlib.llm 会环，所以放在调用里。
     from researchlib.grok import retry_delays as _retry_delays
-    from researchlib.llm import RETRY_STATUS, IncompleteStream, read_chat_completion
+    from researchlib.llm import RETRY_STATUS, IncompleteStream, note_rate_limit, read_chat_completion
     from researchlib.llm import _is_timeout as _transport_timeout
     from researchlib.llm import _retry_after as _http_retry_after
 
@@ -305,7 +305,20 @@ def chat_json(
                 refreshed = True
                 bearer = get_xai_access_token(data_dir, force=True, discard_access_token=bearer)
                 continue
-            if exc.code in RETRY_STATUS and retries < len(delays):
+            will_retry = exc.code in RETRY_STATUS and retries < len(delays)
+            if exc.code == 429:
+                hinted = _http_retry_after(exc)
+                delay = (hinted if hinted is not None else delays[retries]) if will_retry else 0.0
+                note_rate_limit(
+                    provider=label,
+                    caller="translate",
+                    attempt=len(spans),
+                    wait_s=delay,
+                    retry_after=hinted is not None,
+                    exhausted=not will_retry,
+                    logger_name="researchlib.translate",
+                )
+            if will_retry:
                 delay = _http_retry_after(exc) or delays[retries]
                 logger.info("译制请求 HTTP %s，%.0f 秒后第 %s 次发同一请求", exc.code, delay, len(spans) + 1)
                 time.sleep(delay)

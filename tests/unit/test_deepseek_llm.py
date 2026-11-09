@@ -1,6 +1,8 @@
-"""DeepSeek 只作应急回退（``RESEARCH_LLM_PROVIDER=deepseek-legacy``）：deepseek-flash / thinking / max / 393216 起。
+"""DeepSeek 分支（``RESEARCH_LLM_PROVIDER=deepseek``，别名 ``deepseek-legacy``）。
 
-2026-11-10 起站内默认是 Grok OAuth，这个文件里除默认值那两个测试外，其余都是按提供方测传输
+deepseek-flash / thinking / max / 输出至少 393216。
+
+默认提供方是 Grok。这个文件里除默认值那两个测试外，其余都是按提供方测传输
 （SSE 重拼、断线重试、超时不重发），所以 fixture 显式把提供方设成 deepseek-legacy。
 """
 
@@ -108,13 +110,13 @@ def _write_oauth(path, access="oauth-access") -> None:
 
 
 def test_provider_defaults_to_grok():
-    """默认 Grok OAuth。以前 .env 里写的 deepseek、拼错的值、空值都按 grok，不会悄悄留在 DeepSeek 上。"""
+    """默认 Grok。deepseek 和别名 deepseek-legacy 都切到 DeepSeek；空值和拼错的值仍是 grok。"""
     assert llm_provider({}) == "grok"
     assert llm_provider({"RESEARCH_LLM_PROVIDER": ""}) == "grok"
-    assert llm_provider({"RESEARCH_LLM_PROVIDER": " DeepSeek "}) == "grok"
+    assert llm_provider({"RESEARCH_LLM_PROVIDER": " DeepSeek "}) == "deepseek"
+    assert llm_provider({"RESEARCH_LLM_PROVIDER": "deepseek"}) == "deepseek"
     assert llm_provider({"RESEARCH_LLM_PROVIDER": "GROK"}) == "grok"
     assert llm_provider({"RESEARCH_LLM_PROVIDER": "xai"}) == "grok"
-    # 只有显式写应急回退值才走 DeepSeek。
     assert llm_provider({"RESEARCH_LLM_PROVIDER": "deepseek-legacy"}) == "deepseek"
 
 

@@ -339,7 +339,7 @@ def test_deadline_stops_new_images_but_writes_the_ones_already_paid_for(tmp_path
 
 def test_report_says_when_the_api_reported_no_usage():
     report = {"structured": 2, "plain": 0, "invalid": 0, "tokens": {}, "metered": 0}
-    assert describe_report(report)[-1] == "接口这次没报用量，花费看 DeepSeek 账单"
+    assert describe_report(report)[-1] == "接口这次没报用量，花费看提供方账单"
     assert describe_report({"structured": 0, "plain": 0, "invalid": 0}) == []
 
 

@@ -497,6 +497,11 @@ def resolve_engine(settings) -> tuple[str, Callable[[Path], Recognition]]:
     from researchlib.llm import llm_configured
 
     if not llm_configured(settings):
+        from researchlib.llm_provider import PROVIDER_GROK, llm_provider
+
+        provider = getattr(settings, "llm_provider", None) or llm_provider()
+        if provider == PROVIDER_GROK:
+            raise OcrUnavailable("还没登录 Grok OAuth，识图起不来。先运行 research-xai-login login。")
         raise OcrUnavailable("没有配置 DEEPSEEK_API_KEY，识图起不来。")
     return vision_engine_id(settings), vision_engine(settings)
 
@@ -1004,7 +1009,7 @@ def _ocr_snapshot(conn, article_id: int):
 
 
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了，2 识图起不来（没配 DEEPSEEK_API_KEY）。"""
+    """退出码：0 跑完了，2 识图起不来（Grok 没登录，或 DeepSeek 没配 key）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
     parser.add_argument("--limit", type=int, default=500, help="这次最多识别多少张图")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
@@ -1130,7 +1135,7 @@ def describe_report(report: dict) -> list[str]:
             f"平均每张输入 {round(prompt / metered)}、输出 {round(completion / metered)}"
         )
     elif answered:
-        lines.append("接口这次没报用量，花费看 DeepSeek 账单")
+        lines.append("接口这次没报用量，花费看提供方账单")
     if report.get("kept"):
         lines.append(f"重认没认成的 {report['kept']} 张留着旧字，版本没改，下次 --redo 接着认")
     return lines
