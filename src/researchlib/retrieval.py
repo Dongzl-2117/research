@@ -231,6 +231,8 @@ class ArticleHit:
     passages: list[Passage]
     # 正文没写全搜索词，靠语义检索排进「全部命中」的。
     semantic: bool = False
+    # 这篇没摘的备选段落（前面的卡片没摘过的），按分数排。页面上摘录一字不差时换用，见 _fresh_first。
+    spare: list[Passage] = field(default_factory=list)
 
 
 @dataclass
@@ -2068,24 +2070,18 @@ def _fresh_first(hits: list[ArticleHit], shown_keys: set[str]) -> list[ArticleHi
     有 1.8 万块和别的文章一字不差。以前搜「Costco 商业模式」，前三张卡片摘的是同一段话。
     后面的卡片改摘这篇里别的、前面没摘过的段落；这篇命中的段落全是前面摘过的，卡片挪到这一档最后。
     shown_keys 记着已经摘过的段落，跨档沿用。
+
+    这里只认整块一字不差的。两块不一样、页面上截出来的摘录却一样的（相邻两块重叠的那几句、同一段话前后
+    多了几个字），由页面按显示出来的字再比一次，换用 spare 里的段落。
     """
     fresh_hits: list[ArticleHit] = []
     repeats: list[ArticleHit] = []
     for hit in hits:
-        fresh: list[Passage] = []
-        keys: list[str] = []
-        for passage in hit.passages:
-            key = _text_key(passage.body)
-            if key and key in shown_keys:
-                continue
-            fresh.append(passage)
-            keys.append(key)
-            if len(fresh) >= CARD_PASSAGES:
-                break
+        fresh = [p for p in hit.passages if not ((key := _text_key(p.body)) and key in shown_keys)]
         if fresh:
-            hit.passages = fresh
+            hit.passages, hit.spare = fresh[:CARD_PASSAGES], fresh[CARD_PASSAGES:]
             fresh_hits.append(hit)
-            shown_keys.update(key for key in keys if key)
+            shown_keys.update(key for p in hit.passages if (key := _text_key(p.body)))
         else:
             hit.passages = hit.passages[:CARD_PASSAGES]
             repeats.append(hit)

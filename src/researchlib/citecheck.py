@@ -24,6 +24,13 @@ from collections.abc import Iterable
 _CLAIM = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]+)?(?:\s*\[\d{1,3}\])*")
 _REF = re.compile(r"\[(\d{1,3})\]")
 _FULL_DATE = re.compile(r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?")
+# 「2026-03-18/09-01」「2025-07-30、10-27」：同一年里的几个日期，后面的省了年份。补全了再核对，
+# 否则省掉年份的月和日被当成数字（「数字 09 不在所引段落里」）。后面跟着量级、单位的是数的范围，不算日期。
+_DATE_LIST = re.compile(
+    r"(?<!\d)(?P<year>\d{4})(?P<sep>[-.])\d{1,2}(?P=sep)\d{1,2}(?!\d)"
+    r"(?P<rest>(?:\s*[/、，,和及与]\s*(?:0?[1-9]|1[0-2])(?P=sep)(?:0?[1-9]|[12]\d|3[01])(?!\d|\s*[%％‰万亿倍元个]))+)"
+)
+_SHORT_DAY = re.compile(r"(?<![\d.-])(\d{1,2})([-.])(\d{1,2})(?![\d.])")
 _DATE_LIKE = re.compile(
     r"(?<!\d)\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?"
     r"|(?<!\d)\d{4}\s*年(?:\s*\d{1,2}\s*月)?(?:\s*\d{1,2}\s*日)?"
@@ -185,7 +192,19 @@ def _iso(year: str, month: str, day: str) -> str:
     return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
 
 
+def _expand_dates(text: str) -> str:
+    """「2026-03-18/09-01」补成「2026-03-18/2026-09-01」，后面省了年份的日期按前一个的年份补。"""
+
+    def full(match: re.Match) -> str:
+        year = match.group("year")
+        rest = _SHORT_DAY.sub(lambda day: f"{year}{day[2]}{day[1]}{day[2]}{day[3]}", match["rest"])
+        return match.group(0)[: match.start("rest") - match.start()] + rest
+
+    return _DATE_LIST.sub(full, text)
+
+
 def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iterable[str]) -> list[str]:
+    text = _expand_dates(text)
     problems: list[str] = []
     by_number = {int(item["n"]): item for item in citations if "n" in item}
     missing = [n for n in refs if n not in by_number]
