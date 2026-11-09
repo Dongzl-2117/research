@@ -55,7 +55,7 @@ docker compose exec app research-translate --from-inventory unmapped --workers 4
 | `--article-id` | 空 | 只译这几篇，可重复 |
 | `--fresh` | 关 | 整篇重译，不复用已有译文。默认原文没变的段直接用已有译文，只补没译出来和原文改过的段，见「一段出错不连累整篇」 |
 | `--workers` | 1 | 几篇同时译，1 到 16。每篇里的各批照旧一批接一批 |
-| `--from-inventory` | 空 | 译盘点清单里这一类的篇（`unmapped`、`stopped`、`legacy`……），见「全库盘点」 |
+| `--from-inventory` | 空 | 译盘点清单里这一类的篇（`unmapped`、`stopped`、`legacy`、`old-prompt`……），见「全库盘点」 |
 | `--recheck`、`--dry-run` | 关 | 见下面重译旧分段的那一节 |
 
 同一轮里失败过、没有可译正文或者没译全的篇先跳过；`--loop` 时队列只剩它们就先睡，睡醒再给一次机会，不会一直重试同一篇。没配 LLM 凭证时直接退出（退出码 2），不连库。
@@ -114,8 +114,9 @@ docker compose exec -T app research-translate-inventory
 | `none` 从没译过、`stale` 原文改过译文旧了、`partial` 没译完 | 待译队列里的。其中 `pending-now` 现在就能译、`cooldown` 在冷却（断线从 15 分钟起，没译完 12 小时） | `research-translate --loop --workers 4`，冷却的到点自己回到队列 |
 | `stopped` | 同一份原文、同一版检查下没译完两次，队列不再拿。最近一次的原因在 `lastReasons` | 先看原因；`research-translate --from-inventory stopped --workers 4`，只补没译出来的段 |
 | `receipt` | 这一版回执、译完 | 页面也逐段对上的不用动；回执过期、页面分开展示的在页面 `unmapped` 里 |
+| `old-prompt`（2026-11-09） | `receipt` 里一段也没用现在这一版提示词译过的（11-09 以前译的都是，见「提示词」），页面照常逐段对照。用现在这一版译过、个别段重译失败退回旧译文的不算，只在 `mixedPrompts` 里计数：再整篇重译多半还是那几段 | 要换成现在的写法：`research-translate --from-inventory old-prompt --workers 4`，旧提示词的段不复用，整篇重译，花钱，先算账；用这一版译过的跳过。没回执的旧稿按 `legacy` 同样跑 |
 | `old-receipt`、`legacy` | 旧版回执、没回执的旧稿（11 月以前译的） | 页面能逐段对上的可以不动。要补回执就点名整篇重译，花钱，先算账 |
-| 页面 `unmapped` | 已译完但对照页逐段对不上，只能先放完整原文、再放完整译文。原因 `missing-provenance` 是没回执的旧稿，只能整篇重译；`source-fingerprint` 是清洗规则改过、回执过期（比如 11-07 单换行粘成一段以后），再译时没变的段全复用，原文一个字没变就不调模型、只重签回执 | `research-translate --from-inventory unmapped --workers 4` |
+| 页面 `unmapped` | 已译完但对照页逐段对不上，只能先放完整原文、再放完整译文。原因 `missing-provenance` 是没回执的旧稿，只能整篇重译；`source-fingerprint` 是清洗规则改过、回执过期（比如 11-07 单换行粘成一段以后），现在这一版提示词译的再译时没变的段全复用，原文一个字没变就不调模型、只重签回执；旧提示词译的整篇按现在的提示词重译 | `research-translate --from-inventory unmapped --workers 4` |
 | 页面 `legacy-structural`、`lossless-candidate` | 旧稿结构对得上、逐段展示，没有回执核验 | 同上换类别，花钱，先算账 |
 | `coarse` | 分段比现在的规则粗（`--recheck` 会挑的，只看最新 2000 篇） | `research-translate --recheck --workers 4`（它每次现查，`--from-inventory` 不收这一类） |
 | `no-text` | 没译的里只有图、没有要译的字（星球的纯图片帖多半是这样） | 不用管：译制拿到直接跳过，不调模型；`--from-inventory` 的清单里去掉了 |
@@ -357,7 +358,7 @@ Zhilin 11-09：译文「不是特别易读」。在线上 66 篇 Stratechery 对
 提示词版本不进 `PIPELINE`，记在回执顶层的 `prompt_versions`（这篇里的段用过哪几版，复用过旧段的不止一版；11-09 以前的回执没有这一项，`provenance.prompt_versions` 从 `pipeline.prompt` 读出 2）。所以：
 
 - 换提示词那一刻，已经签过回执的对照页照常逐段对照（`verify` 只比清洗和切段，指纹按回执自己记的那份 `pipeline` 算）。
-- 第 2 版译的篇不会自己重译。要换成新写法，用 `--fresh` 重译（盘点里分出旧提示词的那一类以后可以按类跑）。
+- 第 2 版译的篇不会自己重译。要换成新写法，有回执的按盘点里的 `old-prompt` 一类跑 `research-translate --from-inventory old-prompt`，没回执的旧稿按 `legacy`；点名的几篇用 `--fresh`。
 - 旧提示词的篇因为别的原因再译（原文改了、回执过期重签、补没译出来的段），整篇按第 3 版重译，哪段重译失败才退回原来那段，免得同一篇里新旧两种写法混着。上一份回执就是第 3 版的，照旧只补没译出来和原文改过的段。
 
 再改写法规则时把 `PROMPT_VERSION` 加一，先用 `compare.py` 跑一遍对照（`now_para` 是上一版，`new_split` 是线上实际的切法），看破折号、句长和逐段读感再上线。

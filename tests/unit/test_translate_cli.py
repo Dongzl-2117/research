@@ -605,6 +605,9 @@ def test_from_inventory_needs_the_list_and_a_known_category(conn, monkeypatch, t
     assert "只有图" in capsys.readouterr().err
     assert cli.main(["--from-inventory", "coarse"]) == 2
     assert "--recheck" in capsys.readouterr().err
+    # 分出旧提示词那一类以前盘的清单里没有 old-prompt：重盘一遍。
+    assert cli.main(["--from-inventory", "old-prompt"]) == 2
+    assert "先重跑 research-translate-inventory" in capsys.readouterr().err
     assert cli.main(["--from-inventory", "stopped", "--loop"]) == 2
     assert cli.main(["--from-inventory", "stopped", "--article-id", "5"]) == 2
 
@@ -623,7 +626,7 @@ def test_from_inventory_makes_way_for_a_release_like_the_queue(conn, monkeypatch
         _deploy_waits(tmp_path)
         return TranslateResult(article_id, "translated", segments=2)
 
-    monkeypatch.setattr(cli.inventory, "unfinished", lambda conn, ids, data_dir: list(ids))
+    monkeypatch.setattr(cli.inventory, "unfinished", lambda conn, ids, data_dir, prompt=False: list(ids))
     monkeypatch.setattr(cli, "translate_article", translate)
     assert cli.main(["--from-inventory", "unmapped"]) == 0
     assert seen == [3]

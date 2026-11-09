@@ -4,7 +4,9 @@
 ``--workers N`` 几篇同时译：每篇里的各批照旧一批接一批（每批要带上前面译好的中文），篇和篇之间互不等。
 ``--from-inventory 类别`` 译盘点清单（research-translate-inventory）里那一类的篇，比如分开展示的旧稿 unmapped、
 拒满两次停住的 stopped；已经译完、有这一版回执、对照页逐段对得上的跳过，中途停下再跑同一条命令接着译剩下的。
-回执过期（清洗规则改过）的再译时没变的段照旧复用，原文一个字没变就不调模型，只重签回执。
+回执过期（清洗规则改过）的再译时，现在这一版提示词译的没变的段照旧复用，原文一个字没变就不调模型，只重签回执；
+旧提示词译的整篇按现在的提示词重译。
+``--from-inventory old-prompt`` 把旧提示词译的篇整篇按现在的提示词重译，已经用这一版译过的跳过。
 每篇开译前占一把 Postgres advisory lock，同一进程的几个 worker、同时开着的几个 research-translate
 都不会同时译同一篇；点名的那篇正被别处译着，就等它译完再接着补。
 每篇译完印出这一篇的请求次数、输入（其中缓存命中）、输出（其中思考）token 和用时；调过模型的话，
@@ -38,7 +40,7 @@ from researchlib.health import deploy_waiting
 from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider
 from researchlib.translate import inventory
 from researchlib.translate.llm import Usage, metered, transient_failure
-from researchlib.translate.provenance import AlignmentError
+from researchlib.translate.provenance import PROMPT_VERSION, AlignmentError
 from researchlib.translate.service import (
     TranslateResult,
     list_coarse_translations,
@@ -263,6 +265,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     named = list(dict.fromkeys(args.article_id))
+    # --from-inventory old-prompt：旧提示词译的篇本来都译完了，要按现在的提示词重译，用这一版译过的才算完。
+    rewrite = args.from_inventory == inventory.OLD_PROMPT
+    finished = (
+        f"已经用第 {PROMPT_VERSION} 版提示词译过" if rewrite
+        else "已经译完、有这一版回执、对照页逐段对得上"
+    )
     # 盘点清单里的这一类，按清单的先后（新的在前）。没清单、没这一类就别连库了。
     listed: list[int] = []
     if args.from_inventory:
@@ -272,8 +280,7 @@ def main(argv: list[str] | None = None) -> int:
             print(exc, file=sys.stderr)
             return 2
         _say(
-            f"盘点清单（{generated or '时间不详'}）里 {args.from_inventory} 共 {len(listed)} 篇，"
-            "已经译完、有这一版回执、对照页逐段对得上的跳过"
+            f"盘点清单（{generated or '时间不详'}）里 {args.from_inventory} 共 {len(listed)} 篇，{finished}的跳过"
         )
     limit = max(args.limit if args.limit is not None else (len(listed) if args.from_inventory else 5), 1)
     # 几个 worker 共用的东西都在 guard 底下改。
@@ -424,7 +431,7 @@ def main(argv: list[str] | None = None) -> int:
                 rows = list_coarse_translations(conn, limit=limit + len(tried), source_id=args.source or None)
                 ids = [int(row["id"]) for row in rows]
             elif args.from_inventory:
-                ids = inventory.unfinished(conn, listed, settings.data_dir)
+                ids = inventory.unfinished(conn, listed, settings.data_dir, prompt=rewrite)
             else:
                 ids = list_pending_english(conn, limit=limit + len(tried), source_id=args.source or None)
             # 只读的查询，别让事务在空队列睡觉时一直开着。
@@ -523,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         drain(take_queued, run)
         if not tried and not made_way.is_set():
             if args.from_inventory:
-                _say(f"{args.from_inventory} 这一类都已经译完、有这一版回执、对照页逐段对得上了。")
+                _say(f"{args.from_inventory} 这一类都{finished}了。")
             else:
                 _say("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
         return 1 if failed else 0
