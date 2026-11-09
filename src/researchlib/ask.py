@@ -10,12 +10,15 @@
 4. 写回 answer、citations、status=done。出错时 status=error、清掉半截回答，页面可以重新整合。
 
 没有可用的 LLM 凭证（默认 DeepSeek 的 key，或 Grok OAuth）时只给原文段落，不存记录，也不在两个提供方之间自动切换。
+全站最近 24 小时问满 ASK_DAILY_LIMIT 次、或同时在整合的满 ASK_RUNNING_LIMIT 个时，也只给原文段落，
+不存记录（见 over_quota）。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -94,6 +97,21 @@ _JSON = re.compile(r"\{.*\}", re.S)
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ask")
 _inline_lock = threading.Lock()
+
+
+def _env_count(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw.isdigit() else default
+
+
+# 问一次都开最深的思考（11-09 实测一次 0.14～0.29 美元），网站又不用登录，所以按全站限次数：
+# 最近 24 小时最多登记 ASK_DAILY_LIMIT 次（默认 30，0 不限；10-21 到 11-09 问得最多的一天 21 次，多半是调试时的重试），
+# 同时在整合的（含排队）最多 ASK_RUNNING_LIMIT 个（默认 4：后台两路在跑、两个在等；
+# 再往后排的要等十几分钟，等过 10 分钟还会被 expire_stale_answers 当成卡住）。
+DAILY_LIMIT = _env_count("ASK_DAILY_LIMIT", 30)
+RUNNING_LIMIT = _env_count("ASK_RUNNING_LIMIT", 4)
+# JSON 接口 wait=true 最多等这么久（秒）。Cloudflare 回源超过 100 秒就断开（524），调用方连回答编号都拿不到。
+WAIT_SECONDS = 80
 
 
 def is_preset(question: str) -> bool:
@@ -394,8 +412,42 @@ def _inline() -> bool:
     return "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("RESEARCH_ASK_INLINE") == "1"
 
 
+def _after(seconds) -> str:
+    seconds = max(60.0, float(seconds or 0))
+    if seconds < 3600:
+        return f"约 {math.ceil(seconds / 60)} 分钟后"
+    return f"约 {math.ceil(seconds / 3600)} 小时后"
+
+
+def over_quota(conn) -> str:
+    """全站问库的次数满了就返回给人看的原因（不带句号），没满返回空字符串。
+
+    先在调用方的事务里拿一把事务级的锁再数，数完紧接着登记：两个请求不会同时挤进最后一个名额。
+    锁在调用方提交或回滚时放开。
+    """
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext('llm_answers.quota'))")
+    row = conn.execute(
+        """
+        SELECT count(*) FILTER (WHERE created_at > now() - interval '24 hours') AS day,
+               count(*) FILTER (WHERE status = 'running') AS running,
+               extract(epoch FROM min(created_at) FILTER (WHERE created_at > now() - interval '24 hours')
+                                  + interval '24 hours' - now()) AS free_in
+        FROM llm_answers
+        """
+    ).fetchone()
+    if DAILY_LIMIT and row["day"] >= DAILY_LIMIT:
+        used = row["day"]
+        return f"最近 24 小时全站已经问了 {used} 次，到了每天 {DAILY_LIMIT} 次的上限，{_after(row['free_in'])}能再问"
+    if RUNNING_LIMIT and row["running"] >= RUNNING_LIMIT:
+        return f"已经有 {row['running']} 个问题在整合，等几分钟再问"
+    return ""
+
+
 def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run_inline: bool | None = None) -> dict:
-    """检索原文并登记一次整合。返回的 id 为 None 表示没交给模型（没配置或没召回到资料）。"""
+    """检索原文并登记一次整合。返回的 id 为 None 表示没交给模型（没配置、没召回到资料，或次数满了）。
+
+    次数满了时 limited 为真，error 里写着什么时候能再问，召回的原文照样返回。
+    """
     # 问题里的 NUL 字符存不进 Postgres（llm_answers.question），和检索那边一样换成空格。
     question = (question or "").replace("\x00", " ")
     preset = is_preset(question)
@@ -418,6 +470,12 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
         return result
     if not llm_configured(settings):
         result["error"] = f"没有可用的 {active_label(settings)} 凭证，只给出召回的原文段落。"
+        return result
+    reason = over_quota(conn)
+    if reason:
+        conn.commit()
+        result["error"] = f"{reason}。先给出召回的原文段落。"
+        result["limited"] = True
         return result
     row = conn.execute(
         """
@@ -593,6 +651,15 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
 
 
 def retry(conn, settings: Settings, answer_id: int, *, run_inline: bool | None = None) -> bool:
+    """出错的那次再整合一遍。次数满了不重跑，把原因写进 error，页面上照旧留着「重新整合」。"""
+    reason = over_quota(conn)
+    if reason:
+        conn.execute(
+            "UPDATE llm_answers SET error = %s, updated_at = now() WHERE id = %s AND status = 'error'",
+            (f"{reason}。到时候再点「重新整合」。", answer_id),
+        )
+        conn.commit()
+        return False
     row = conn.execute(
         "UPDATE llm_answers SET status = 'running', error = '', updated_at = now()"
         " WHERE id = %s AND status = 'error' RETURNING id",
@@ -621,14 +688,32 @@ def mark_interrupted(conn) -> int:
     return len(rows)
 
 
-def ask(conn, settings: Settings, question: str, scope: Scope, sources, *, save: bool = True) -> dict:
-    """同步版，给 JSON 接口和 MCP 用：检索、整合都跑完再返回。"""
-    result = start(conn, settings, question, scope, sources, run_inline=True)
+def ask(conn, settings: Settings, question: str, scope: Scope, sources, *, wait_s: float | None = None) -> dict:
+    """给 JSON 接口的 wait=true 用：登记后在后台整合，这里最多等 wait_s 秒（默认 WAIT_SECONDS）。
+
+    写完了带回答和核对；没写完照样返回 id，status 仍是 running，answer 是写到一半的，调用方接着轮询
+    /api/v1/answers/{id}。以前在请求里跑完整个整合（6 到 9 分钟），隔着 Cloudflare 一定断开，回答编号也丢了。
+    测试进程里整合直接跑完（见 _inline），这里读一次就是结果。
+    """
+    result = start(conn, settings, question, scope, sources)
     if result["id"] is None:
         return result
-    row = conn.execute(
-        "SELECT answer, citations, model, status, error, terms FROM llm_answers WHERE id = %s", (result["id"],)
-    ).fetchone()
+    deadline = time.monotonic() + (WAIT_SECONDS if wait_s is None else wait_s)
+    while True:
+        row = conn.execute(
+            "SELECT answer, citations, model, status, error, terms, stats FROM llm_answers WHERE id = %s",
+            (result["id"],),
+        ).fetchone()
+        # 等的时候不挂着事务；每次读都是另起的，看得到后台写进去的。
+        conn.commit()
+        if row is None or row["status"] != "running" or time.monotonic() >= deadline:
+            break
+        time.sleep(2)
+    if row is None:
+        return result
+    checks = []
+    if row["status"] == "done" and row["answer"]:
+        checks = check_answer(row["answer"], row["citations"] or [], {source.author for source in sources})
     result.update(
         {
             "answer": row["answer"],
@@ -637,7 +722,8 @@ def ask(conn, settings: Settings, question: str, scope: Scope, sources, *, save:
             "status": row["status"],
             "error": row["error"],
             "terms": row["terms"],
-            "checks": check_answer(row["answer"], row["citations"] or [], {source.author for source in sources}),
+            "stats": row["stats"] or {},
+            "checks": checks,
         }
     )
     return result
