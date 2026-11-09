@@ -124,6 +124,8 @@ def omission_cli(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_qa, "connect", lambda settings: conn)
     monkeypatch.setattr(cli_qa, "ensure_llm", lambda settings: None)
     monkeypatch.setattr(cli_qa.qa, "check_article", lambda *args: pytest.fail("漏句抽查不跑硬指标"))
+    # 没回执的旧稿按页面配对；这里的页面默认没有并排的段对。
+    monkeypatch.setattr(cli_qa.qa, "pairs_for_review", lambda conn, settings, article_id: [])
     monkeypatch.setattr(omission, "chat_json", lambda **kwargs: _reply([{"i": 2, "missing": ["regional logistics"]}]))
     return conn
 
@@ -132,7 +134,7 @@ def test_cli_prints_findings_rate_and_usage_without_writing(omission_cli, capsys
     assert cli_qa.main(["--omissions", "--article-id", "1", "--article-id", "2"]) == 0
     out = capsys.readouterr().out
     assert "#1 pairs=3 flagged=1" in out and "[2] 漏：regional logistics" in out and "中文：丙公司" in out
-    assert "#2 跳过：没有回执" in out
+    assert "#2 跳过：没回执，页面也没有并排的段对" in out
     assert "核对 1 篇 3 段：1 段疑似漏句（33.3%）；1 篇跳过" in out
     assert "输入 1,000 token（缓存命中 400），输出 300 token（思考 250）" in out
     assert all(sql.lstrip().upper().startswith("SELECT") for sql in omission_cli.sql)
@@ -186,3 +188,55 @@ def test_cli_needs_llm_credentials(omission_cli, monkeypatch, capsys):
     monkeypatch.setattr(cli_qa, "ensure_llm", missing)
     assert cli_qa.main(["--omissions", "--article-id", "1"]) == 2
     assert "LLM 不可用" in capsys.readouterr().err
+
+
+def test_a_legacy_page_is_checked_by_the_pairs_it_shows(omission_cli, monkeypatch, capsys):
+    """没回执的旧稿：按页面上并排的段对核。收起的重复、图不送；只有英文的对不送模型，只计个数。"""
+    shown = [
+        SimpleNamespace(en="<p>Alpha Corp sells chips.</p>", zh="<p>甲公司卖芯片。</p>", repeat_of=None),
+        SimpleNamespace(en="<p>Alpha Corp sells chips.</p>", zh="<p>甲公司卖芯片。</p>", repeat_of=0),
+        SimpleNamespace(
+            en="<p>Beta holds 30 dollars for regional logistics.</p>", zh="<p>乙持有30美元。</p>", repeat_of=None,
+        ),
+        SimpleNamespace(en="<p>A paragraph nobody translated.</p>", zh=None, repeat_of=None),
+        SimpleNamespace(en='<p><img src="x.png"></p>', zh='<p><img src="x.png"></p>', repeat_of=None),
+    ]
+    monkeypatch.setattr(cli_qa.qa, "pairs_for_review", lambda conn, settings, article_id: shown)
+    asked = []
+
+    def reviewer(**kwargs):
+        asked.append([pair["en"] for pair in kwargs["user"]["pairs"]])
+        return _reply([{"i": 1, "missing": ["regional logistics"]}])
+
+    monkeypatch.setattr(omission, "chat_json", reviewer)
+    assert cli_qa.main(["--omissions", "--article-id", "2"]) == 0
+    out = capsys.readouterr().out
+    assert asked == [["Alpha Corp sells chips.", "Beta holds 30 dollars for regional logistics."]]
+    assert "#2 pairs=2 flagged=1 按页面配对 只有英文 1 对" in out and "[2] 漏：regional logistics" in out
+    assert "其中 1 篇没回执，按页面上并排的段对核；页面上只有英文、没有中文的 1 对（整段没译，没送模型）" in out
+
+
+def test_spread_picks_evenly_and_keeps_the_order():
+    assert cli_qa._spread(list(range(10)), 3) == [0, 3, 6]
+    assert cli_qa._spread([5, 4], 3) == [5, 4]
+
+
+def test_cli_samples_a_category_from_the_inventory(omission_cli, monkeypatch, tmp_path, capsys):
+    path = tmp_path / "status" / "translate-inventory.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "generatedAt": "2026-11-09T01:00:00Z", "ids": {}, "display": {"legacy-structural": [1, 9, 8, 7]},
+    }), encoding="utf-8")
+    seen: list[int] = []
+    monkeypatch.setattr(
+        cli_qa.qa, "pairs_for_review", lambda conn, settings, article_id: seen.append(article_id) or [],
+    )
+    assert cli_qa.main(["--omissions", "--from-inventory", "legacy-structural", "--limit", "2"]) == 0
+    captured = capsys.readouterr()
+    assert "legacy-structural 共 4 篇，均匀抽 2 篇" in captured.err
+    # 1 有回执，照回执核；8 没回执、页面上没有并排的段对，跳过。
+    assert "#1 pairs=3 flagged=1" in captured.out and "#8 跳过" in captured.out and seen == [8]
+    assert cli_qa.main(["--from-inventory", "legacy-structural"]) == 2
+    assert "只和 --omissions 一起用" in capsys.readouterr().err
+    assert cli_qa.main(["--omissions", "--from-inventory", "nope"]) == 2
+    assert "没有「nope」这一类" in capsys.readouterr().err

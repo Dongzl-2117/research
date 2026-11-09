@@ -11,6 +11,7 @@ research-translate 走这里；不在站外译完再贴。
 from __future__ import annotations
 
 import html as html_lib
+import json
 import logging
 import re
 from collections.abc import Sequence
@@ -21,6 +22,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from researchlib.author_voice import not_comment_shell_sql, not_guest_sql
 from researchlib.boilerplate import clean_article
 from researchlib.chunks import replace_translation_chunks
 from researchlib.render import canonical_body_html, render_body
@@ -951,11 +953,13 @@ def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = Tr
     # 英文标题译空不算 complete（抽验 22195：segments 齐但 title_zh 空仍标 complete）
     complete = not gaps and (bool(title_zh) if needs_title_zh else True)
     # 和库里那份一字不差（都是复用的，或者重译出来一样）就不再写，检索块也不重切。
+    # 回执也要一样：清洗规则改过以后原文指纹变了，译文一个字没变也得重签，不然对照页一直按过期回执分开展示。
     unchanged = bool(previous) and (
         previous.get("content_hash") == digest
         and previous.get("body_html") == zh_html
         and str(previous.get("title_zh") or "") == title_zh
         and bool(previous.get("complete")) == complete
+        and previous.get("provenance") == json.loads(json.dumps(provenance))
     )
     if not unchanged:
         # 模型请求期间可有新的导入；锁住文章后重新核对，不能把旧输入的结果盖到新原稿上。
@@ -1096,14 +1100,21 @@ def list_coarse_translations(
 
 # 汉字以外的字符，和 is_chinese 一样只认 U+4E00 到 U+9FFF。
 HAN_OUTSIDE = "[^一-鿿]"
+# 网站显示的：不是网友帖，标题也不是「图片」评论壳（和首页、检索、API 的 site_visible_sql 一样，只是标题为空的照算）。
+# 网站不显示的不译：和摘要、观点、识图一样，译了也没人看得到。
+SITE_VISIBLE = f"({not_guest_sql('a')} AND coalesce({not_comment_shell_sql('a')}, true))"
 
 
 def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:
-    """尚无译文、或原文 hash 已变的英文文章。同一篇的重复只译主版本；隐藏的（短帖、每周汇总）不译。"""
+    """尚无译文、或原文 hash 已变的英文文章。同一篇的重复只译主版本；隐藏的（短帖、每周汇总）不译。
+
+    网站不显示的网友帖、「图片」评论壳也不译：和摘要、观点、识图一样，译了也没人看得到。
+    """
     params: list[object] = [HAN_OUTSIDE]
     where = [
         "a.duplicate_of IS NULL",
         visible_sql("a"),
+        SITE_VISIBLE,
         "NOT EXISTS ("
         " SELECT 1 FROM article_translations t"
         " WHERE t.article_id = a.id AND t.content_hash = a.content_hash AND t.complete"

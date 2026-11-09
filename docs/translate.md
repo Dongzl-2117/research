@@ -41,16 +41,21 @@ docker compose exec app research-xai-login status   # 应显示已登录，token
 docker compose exec app research-translate --source stratechery --limit 10   # 从待译队列取 10 篇，译完就退
 docker compose exec app research-translate --article-id 123                  # 点名，可重复
 docker compose exec app research-translate --source stratechery --limit 5 --loop --sleep 60   # 一直跑，队列空了睡 60 秒再扫
+docker compose exec app research-translate --loop --workers 4                 # 4 篇同时译，一直跑
+docker compose exec -T app research-translate-inventory                       # 只读盘点：各类各有多少篇，见「全库盘点」
+docker compose exec app research-translate --from-inventory unmapped --workers 4   # 译盘点清单里的一类
 ```
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--source` | 空 | 只译该来源 id；空表示所有来源，中文文章不进队列 |
-| `--limit` | 5 | 每轮从待译队列取几篇 |
+| `--limit` | 5 | 每轮从待译队列取几篇；`--from-inventory` 时默认整类 |
 | `--loop` | 关 | 队列空后休眠再扫，直到 Ctrl-C |
 | `--sleep` | 60 | `--loop` 空闲时休眠秒数，最少 5 |
 | `--article-id` | 空 | 只译这几篇，可重复 |
 | `--fresh` | 关 | 整篇重译，不复用已有译文。默认原文没变的段直接用已有译文，只补没译出来和原文改过的段，见「一段出错不连累整篇」 |
+| `--workers` | 1 | 几篇同时译，1 到 16。每篇里的各批照旧一批接一批 |
+| `--from-inventory` | 空 | 译盘点清单里这一类的篇（`unmapped`、`stopped`、`legacy`……），见「全库盘点」 |
 | `--recheck`、`--dry-run` | 关 | 见下面重译旧分段的那一节 |
 
 同一轮里失败过、没有可译正文或者没译全的篇先跳过；`--loop` 时队列只剩它们就先睡，睡醒再给一次机会，不会一直重试同一篇。没配 LLM 凭证时直接退出（退出码 2），不连库。
@@ -61,7 +66,15 @@ DeepSeek 译制走流式。思考模式要是一次把整段响应读完，连�
 
 点名的 `--article-id` 里被断线、超时、限流（429）、5xx 打断没译完的篇（打印 `partial … (request-failed)`，或者一段都没译出来、打印 `failed: 连不上…`），以及译的时候原文被别的任务改了的篇（`source-changed-during-request`，11-07 的 22173 撞上夜间补钟点），这一轮最后等 2 分钟自动再补一轮，还没补完再等 10 分钟补一轮（`NAMED_RETRY_PAUSES`），打印「#22161 被打断没译完，2 分钟后再补一轮」。已译的段都存着，再补只问没译出来的段；带 `--fresh` 的照样整篇重译。欠费（402）、鉴权、内容被拒（400）、对不齐这些等多久都一样，不等。补了两轮还没补完，打印「补了 2 轮，#… 还没译完：过一会儿再跑 research-translate --article-id …」，退出码 1。按队列译的不等：没译完的记了冷却（请求失败从 15 分钟起），过了冷却自己回到队列。
 
-跑的时候自动上线先不重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`）。它在等的提交 CI 过了，就写 `data/status/.deploy-waiting` 请译制让路：按队列译的（包括 `--loop` 和 `--recheck`）每译完一篇看一眼，在就停下，打印「自动上线在等 某提交：先停在这里」，下一轮自动上线（10 分钟内）就上了。手上那篇照常译完入库，不会白花钱。上线后要接着译就再开一次，新版本的规则这时才生效；在等上线时新开的会直接停下。点名的 `--article-id` 不让路，译完才上线；只有在等着自动再补的那十来分钟里，自动上线来请它停就不补了，打印上线后要再跑的命令。长时间的 `--loop` 放在 tmux 里跑。
+跑的时候自动上线先不重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`）。它在等的提交 CI 过了，就写 `data/status/.deploy-waiting` 请译制让路：按队列译的（包括 `--loop` 和 `--recheck`）每译完一篇看一眼，在就不再开新的一篇，手上的译完就退，打印「自动上线在等 某提交：不再开新的一篇，手上的译完就退；/health 报出新提交后再跑 research-translate …」（后面是原样的这条命令），下一轮自动上线（10 分钟内）就上了。手上那篇照常译完入库，不会白花钱。上线后要接着译就再开一次，新版本的规则这时才生效；在等上线时新开的会直接停下。点名的 `--article-id` 不让路，译完才上线；只有在等着自动再补的那十来分钟里，自动上线来请它停就不补了，打印上线后要再跑的命令。长时间的 `--loop` 放在 tmux 里跑。
+
+### 几篇同时译、每篇用了多少（2026-11-08）
+
+一篇里的各批一批接一批：每批带着前面译好的中文当上文，术语和指代才前后一致，所以一篇快不了。全库一千多篇只开一个进程要好几天，`--workers N` 让 N 篇同时译，每个 worker 一条数据库连接、同一时刻最多一个模型请求。每篇开译前占一把 Postgres 会话级 advisory lock（`hashtext('research-translate')` 和文章 id），译完放掉，进程没了自动放掉：同一进程的几个 worker、同时开着的几个 `research-translate`（比如一个 `--loop` 再加一个点名的）都不会同时译同一篇。按队列译的碰上别处正在译的就跳过，译下一篇；点名的等别处译完再接着补（打印「#… 别处正在译这一篇，等它译完再接着补」）。让路照旧：每个 worker 译完手上那篇看一眼自动上线在不在等，在就不再拿新的，几篇都译完进程才退。Ctrl-C 立刻退，正在译的几篇这次不存。
+
+几篇同时译时，stderr 上每一行进度前面带着文章号：`05:12:03 #22161 译制请求连了 312 秒断开…`。每篇的结果行后面接着这一篇的用量和用时（下面的数字只是示意）：`#22161 translated segments=220 reused=204 · 请求 9 次，输入 52,331 token（缓存命中 31,872），输出 61,204 token（思考 50,112），用时 8 分 41 秒`。回答收到了但用不了（不是 JSON、条数不对）的那次也算，断在半路的那次接口没报用量，不算。调过模型的话，停下时再印一行这一轮的合计：`这一轮 2 小时 13 分：译完 37 篇，没译完 2 篇；请求 …`。全是复用、一次模型都没调的篇只印结果。
+
+先开 4 个：Mac mini 经 Colima 转发时并发的 TLS 连接多了出过 `DECRYPTION_FAILED`（问库 `ASK_MAP_WORKERS` 因此默认 2）。跑一阵 stderr 上没有成串的「连了几秒断开」再往上加。DeepSeek 自己的并发上限远高于这个数，和识图全量（`RESEARCH_LLM_CONCURRENCY`）同时跑时两边的请求加在一起算。
 
 Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`），流式每一行的空闲上限也是这一段。
 
@@ -87,6 +100,29 @@ Grok（`RESEARCH_LLM_PROVIDER=grok`）走 `https://api.x.ai/v1/chat/completions`
 | 译制管道已合入、LLM 凭证已配（DeepSeek key，或 Grok 已 login 且 `RESEARCH_LLM_PROVIDER=grok`） | 可对库内已有合格英文稿跑 `research-translate` |
 | Stratechery 仍在抓 | **先不 ingest**；可用英文样例验对照页 |
 | 抓完并 ingest 后 | 跑 `research-translate --source stratechery`；积压多就加 `--loop` |
+
+## 全库盘点：research-translate-inventory（2026-11-08）
+
+只读，不调模型、不写库，几分钟。把英文文章（和待译队列同一条语言规则，重复和隐藏的不算）分成几类，打印各类篇数（按来源分）和英文字符数，id 清单写进 `data/status/translate-inventory.json`。网站不显示的网友帖、「图片」评论壳单列为 `site-hidden`，不算进各类，待译队列也不译（11-08 以前的队列会译它们）。已译完的逐篇渲染一遍页面，分成能不能逐段对照，对不上的打印原因（`displayReasons`）：
+
+```bash
+docker compose exec -T app research-translate-inventory
+```
+
+| 类别（清单里的键） | 是什么 | 怎么清 |
+|---|---|---|
+| `none` 从没译过、`stale` 原文改过译文旧了、`partial` 没译完 | 待译队列里的。其中 `pending-now` 现在就能译、`cooldown` 在冷却（断线从 15 分钟起，没译完 12 小时） | `research-translate --loop --workers 4`，冷却的到点自己回到队列 |
+| `stopped` | 同一份原文、同一版检查下没译完两次，队列不再拿。最近一次的原因在 `lastReasons` | 先看原因；`research-translate --from-inventory stopped --workers 4`，只补没译出来的段 |
+| `receipt` | 这一版回执、译完 | 页面也逐段对上的不用动；回执过期、页面分开展示的在页面 `unmapped` 里 |
+| `old-receipt`、`legacy` | 旧版回执、没回执的旧稿（11 月以前译的） | 页面能逐段对上的可以不动。要补回执就点名整篇重译，花钱，先算账 |
+| 页面 `unmapped` | 已译完但对照页逐段对不上，只能先放完整原文、再放完整译文。原因 `missing-provenance` 是没回执的旧稿，只能整篇重译；`source-fingerprint` 是清洗规则改过、回执过期（比如 11-07 单换行粘成一段以后），再译时没变的段全复用，原文一个字没变就不调模型、只重签回执 | `research-translate --from-inventory unmapped --workers 4` |
+| 页面 `legacy-structural`、`lossless-candidate` | 旧稿结构对得上、逐段展示，没有回执核验 | 同上换类别，花钱，先算账 |
+| `coarse` | 分段比现在的规则粗（`--recheck` 会挑的，只看最新 2000 篇） | `research-translate --recheck --workers 4`（它每次现查，`--from-inventory` 不收这一类） |
+| `no-text` | 没译的里只有图、没有要译的字（星球的纯图片帖多半是这样） | 不用管：译制拿到直接跳过，不调模型；`--from-inventory` 的清单里去掉了 |
+| `site-hidden` | 网站不显示的网友帖、「图片」评论壳 | 不译，`--from-inventory` 不收 |
+| 数字待核 | 回执 `number_review` 里的段 | 不用补，见「数字核对」 |
+
+`--from-inventory` 读的是上一次盘点的清单，按清单的先后（新的在前）译，已经译完、原文没改过、有这一版回执、对照页也逐段对得上的跳过（`inventory.unfinished`：有这一版回执的每篇渲染一遍页面看，零点几秒），所以中途停下（自动上线、Ctrl-C）再跑同一条命令就接着译剩下的。回执过期的篇原文 hash 没变、`complete` 为真，待译队列看不出来，只有盘点渲染页面才看得出：清洗规则改过以后盘点一次，再按 `unmapped` 补。它和按队列译一样给自动上线让路，不像点名的那样等着再补：没译完的照样记冷却，之后由 `--loop` 补齐。没回执的旧稿重译时没有旧译文可退，哪段这次没译出来，那段先放英文（以前是没核验过的中文），之后由队列补。
 
 ## 环境变量
 
@@ -209,6 +245,7 @@ docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sam
 | `--strict` | 关 | 有警告也返回 1 |
 | `--llm`、`--llm-sample` | 关、3 | 对没有失败项的篇再跑 LLM 抽验，默认最多 3 篇 |
 | `--omissions` | 关 | 段内漏句抽查，不跑硬指标，见下面「段内漏句抽查」 |
+| `--from-inventory` | 空 | 和 `--omissions` 一起用：从盘点清单（`research-translate-inventory`）的这一类里均匀抽 `--limit` 篇，新旧都有 |
 
 退出码：0 通过（或有警告但没加 `--strict`），1 有失败项（硬指标，或 `--llm` 时模型给 `fail`；加 `--strict` 时警告也算），2 参数、库或 LLM 的问题。只读：连库走 `db.connect`，不跑迁移、不写表；`--report` 只写你给的那个文件。
 
@@ -227,9 +264,11 @@ docker compose exec app research-bilingual-qa --article-id 21118 --llm --llm-sam
 ```bash
 docker compose exec app research-bilingual-qa --omissions --source stratechery --limit 50
 docker compose exec app research-bilingual-qa --omissions --article-id 22188 --json --report /data/status/omissions.json
+docker compose exec app research-bilingual-qa --omissions --from-inventory legacy-structural --limit 50   # 没回执的旧稿抽 50 篇
 ```
 
-- 段对来自回执 `provenance.segments`，和当时送去译的那一段一一对应，不受对照页并段、去重的影响。没有回执的旧稿跳过；先放英文的段（`untranslated`）不送。不点名时按译文更新时间取最近几篇，和别的模式一样。
+- 段对来自回执 `provenance.segments`，和当时送去译的那一段一一对应，不受对照页并段、去重的影响。先放英文的段（`untranslated`）不送。不点名时按译文更新时间取最近几篇，和别的模式一样。
+- 没有回执的旧稿（11-09 起）按页面上并排显示的段对核（`qa.pairs_for_review`，和对照页同一份），打印「按页面配对」。页面分开展示、没有段对的跳过；收起的重复、没有英文字母的对不送；只有英文、没有中文的对（整段没译）不送模型，单独计数（`englishOnly`）。页面配对要是错了位，会成片报漏：一篇报出一大串的，先看对照页是不是错位。要不要为补回执整篇重译旧稿，先用 `--from-inventory legacy-structural --limit 50` 量一下漏句率，和有回执的比。
 - 一批最多 12 对、8000 个英文字符。模型摘出来的原文要能在这一段英文里逐字找到（忽略大小写、弯引号、破折号和空白）才计入；找不到的丢掉，记条数（`unverified`），丢掉的摘句本身记在报告的 `dropped` 里、命令行也印出来，看得出是模型改写了原文还是编的。
 - 每篇打印 `pairs`、`flagged`，每处漏掉的英文和这一段中文的开头；最后两行是疑似漏句的段数和比例、模型用量（请求次数、输入和其中缓存命中、输出和其中思考 token），按当时的 DeepSeek 价目乘。
 - 只读：不写库，不改回执，不拦入库。结果是线索，措辞不同、几句并一句被当成漏的误报，要人看一眼。
@@ -316,7 +355,7 @@ ORDER BY n DESC, t.article_id;
 
 先放英文的段，序号（ordinal）记进回执 `provenance.untranslated`。回执照样逐段签名，英文那几段的 `target` 就是原文，`verify` 照样是 `mapped`；对照页照常逐段对照，那几段只有英文，正文上方一句「部分段落没有译文。」。这一篇 `complete` 为假，记一次 `translation_attempts`（`rejected`，原因 `untranslated:` 加上上表的原因，几种用逗号隔开；只缺标题时是 `untranslated:title-empty`），12 小时后再进待译队列。`research-translate` 打印 `#123 partial segments=… untranslated=N (links,shape)`，`research-bilingual-qa` 报 WARN `untranslated`。一段都没译出来时整篇不入库，错误交给 CLI 记冷却，和以前一样。
 
-下次译制只补没译出来的段。原文没变的段按原文身份复用已有回执里的译文，不再送模型：身份由 `provenance.py` 的 `reuse_key` 算，是整段 HTML（字、链接、图片、代码、标签）的摘要，只是不看 `data-src-para` 编号，前面多切或少切一段，后面的段仍认得出来。只复用这一版 `PIPELINE` 签的回执里、自己的校验值对得上、链接图片和原文一致的段；没译出来的段和没有回执的旧稿不复用，整篇照常译。原文改了一段，只重译那一段。标题在原文 hash 没变时也复用。复用完和库里一字不差就不写库，检索块也不重切（打印 `(unchanged)`）。
+下次译制只补没译出来的段。原文没变的段按原文身份复用已有回执里的译文，不再送模型：身份由 `provenance.py` 的 `reuse_key` 算，是整段 HTML（字、链接、图片、代码、标签）的摘要，只是不看 `data-src-para` 编号，前面多切或少切一段，后面的段仍认得出来。只复用这一版 `PIPELINE` 签的回执里、自己的校验值对得上、链接图片和原文一致的段；没译出来的段和没有回执的旧稿不复用，整篇照常译。原文改了一段，只重译那一段。标题在原文 hash 没变时也复用。复用完和库里一字不差、回执也一样就不写库，检索块也不重切（打印 `(unchanged)`）；译文没变但回执变了（清洗规则改过、原文指纹变了）照样写，重签回执。
 
 要换掉已经签过回执的译文（换了模型、提示词，或者觉得译得不好）加 `--fresh`：整篇重译，哪段重译失败就退回已有的那段译文，不会变成英文；一段新的都没译成时不写库，库里那份原样留着。
 

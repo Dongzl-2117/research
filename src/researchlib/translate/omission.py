@@ -3,7 +3,10 @@
     docker compose exec app research-bilingual-qa --omissions --source stratechery --limit 50
 
 段对按回执来（``provenance.segments`` 里每段的原文和译文），和模型当时译的那一段一一对应，
-不受对照页并段、去重的影响。没有回执的旧稿跳过。先放英文的段（``untranslated``）不送。
+不受对照页并段、去重的影响。先放英文的段（``untranslated``）不送。没有回执的旧稿按页面上并排显示的
+段对来（``page_pairs``），页面分开展示、没有段对的跳过；页面上只有英文、没有中文的对不送模型，只计个数。
+
+    docker compose exec app research-bilingual-qa --omissions --from-inventory legacy-structural --limit 50
 
 模型摘出来的「漏掉的原文」要能在这一段英文里逐字找到才算数，找不到的（模型自己编的、改写过的）丢掉，
 只计个数。结果只是线索：措辞不同、并句被当成漏的误报要人看一眼。这一步不拦入库，也不改回执。
@@ -17,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from researchlib.translate.llm import LLMConfigError, LLMHTTPError, LLMTransportError, chat_json
+from researchlib.translate.llm import LLMConfigError, LLMHTTPError, LLMTransportError, Usage, chat_json
 from researchlib.translate.provenance import untranslated_slots
 from researchlib.translate.xai_oauth import XaiLoginRequiredError
 
@@ -58,39 +61,6 @@ class Pair:
 
 
 @dataclass
-class Usage:
-    """模型用量，按 DeepSeek 返回的 usage 累加。没有就是 0。"""
-
-    prompt: int = 0
-    cache_hit: int = 0
-    completion: int = 0
-    reasoning: int = 0
-    requests: int = 0
-
-    def add(self, usage: dict | None) -> None:
-        self.requests += 1
-        if not isinstance(usage, dict):
-            return
-        self.prompt += int(usage.get("prompt_tokens") or 0)
-        self.cache_hit += int(usage.get("prompt_cache_hit_tokens") or 0)
-        self.completion += int(usage.get("completion_tokens") or 0)
-        details = usage.get("completion_tokens_details")
-        if isinstance(details, dict):
-            self.reasoning += int(details.get("reasoning_tokens") or 0)
-
-    def merge(self, other: Usage) -> None:
-        self.prompt += other.prompt
-        self.cache_hit += other.cache_hit
-        self.completion += other.completion
-        self.reasoning += other.reasoning
-        self.requests += other.requests
-
-    def as_dict(self) -> dict[str, int]:
-        return {"requests": self.requests, "prompt": self.prompt, "cacheHit": self.cache_hit,
-                "completion": self.completion, "reasoning": self.reasoning}
-
-
-@dataclass
 class ArticleOmissions:
     article_id: int
     pairs: int = 0
@@ -106,6 +76,10 @@ class ArticleOmissions:
     failures: list[str] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     skipped: str = ""
+    # 段对从哪来：receipt（回执）或 page（没回执的旧稿，页面上并排显示的对）。
+    basis: str = "receipt"
+    # 按页面配对时，只有英文、没有中文的对（整段没译）。不送模型。
+    english_only: int = 0
 
     def as_dict(self, pairs_by_ordinal: dict[int, Pair] | None = None) -> dict[str, Any]:
         items = []
@@ -118,7 +92,8 @@ class ArticleOmissions:
         return {"articleId": self.article_id, "pairs": self.pairs, "checked": self.checked,
                 "flagged": len(self.findings), "findings": items, "unverified": self.unverified,
                 "dropped": self.dropped, "failedBatches": self.failed_batches, "failures": self.failures,
-                "usage": self.usage.as_dict(), "skipped": self.skipped}
+                "usage": self.usage.as_dict(), "skipped": self.skipped, "basis": self.basis,
+                "englishOnly": self.english_only}
 
     @property
     def checked(self) -> int:
@@ -141,6 +116,25 @@ def receipt_pairs(provenance: dict | None) -> list[Pair]:
             continue
         pairs.append(Pair(ordinal, en, zh))
     return pairs
+
+
+def page_pairs(shown) -> tuple[list[Pair], int]:
+    """没有回执的旧稿：按页面上并排显示的段对来（``qa.pairs_for_review``），序号是页面上的第几对。
+
+    页面上收起的重复（``repeat_of``）和没有英文字母的对（图、代码、纯数字）不送。只有英文、没有中文的对
+    也不送，只计个数：整段没译，用不着模型看。返回 (段对, 只有英文的对数)。
+    """
+    pairs: list[Pair] = []
+    english_only = 0
+    for index, item in enumerate(shown or []):
+        en, zh = _text(item.en), _text(item.zh or "")
+        if getattr(item, "repeat_of", None) is not None or not _LETTER.search(en):
+            continue
+        if not zh:
+            english_only += 1
+            continue
+        pairs.append(Pair(index, en, zh))
+    return pairs, english_only
 
 
 def batches(pairs: list[Pair], *, max_pairs: int = MAX_PAIRS, max_chars: int = MAX_CHARS) -> list[list[Pair]]:
@@ -242,6 +236,7 @@ __all__ = [
     "Usage",
     "batches",
     "load_receipt",
+    "page_pairs",
     "parse_findings",
     "receipt_pairs",
     "review_pairs",
