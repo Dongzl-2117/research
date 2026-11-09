@@ -192,33 +192,121 @@ def test_run_ocr_makes_way_for_a_waiting_deploy(tmp_path, monkeypatch):
     assert calls == [1] and pointed["deploy_waiting"] == ""
 
 
-def test_several_images_are_read_at_once_and_written_in_order(tmp_path, monkeypatch):
-    """几张一起认：先认完的不先写，按挑出来的先后写（新文章的图在前）。"""
-    import itertools
-    import threading
-    import time as time_module
-
-    first_three = threading.Barrier(3)
-    calls = itertools.count()
-
-    def slow_first(path):
-        if next(calls) < 3:
-            first_three.wait(timeout=5)  # 三张同时在认才过得去，否则这张记失败
-        if path.name == "0.png":
-            time_module.sleep(0.1)
-        return Recognition(f"字{path.stem}")
-
+def _rows(tmp_path, monkeypatch, count):
     images = tmp_path / "images"
-    images.mkdir()
+    images.mkdir(exist_ok=True)
     rows = []
-    for index in range(5):
+    for index in range(count):
         (images / f"{index}.png").write_bytes(b"png")
         rows.append({"content_hash": f"{index:02d}" * 32, "storage_path": f"{index}.png"})
     monkeypatch.setattr("researchlib.ocr.pending_images", lambda *args, **kwargs: rows)
+    return rows
+
+
+def test_a_slow_image_does_not_hold_up_the_rest(tmp_path, monkeypatch):
+    """几张一起认：认完一张写一张、马上补发。以前按挑出来的先后写，第一张慢就把后面都挡住。"""
+    import threading
+
+    others_done = threading.Event()
+    finished: list[str] = []
+    lock = threading.Lock()
+
+    def recognize(path):
+        if path.name == "0.png":
+            # 只有两个位子：第一张还在认时，后面三张得一张接一张补发、认完，才等得到。
+            assert others_done.wait(timeout=5), "后面的图被第一张挡住了"
+        else:
+            with lock:
+                finished.append(path.name)
+                if len(finished) == 3:
+                    others_done.set()
+        return Recognition(f"字{path.stem}")
+
+    _rows(tmp_path, monkeypatch, 4)
     conn = _Conn()
-    report = run_ocr(conn, tmp_path, 5, slow_first, engine="deepseek-flash-vision", workers=3)
-    assert [write[2] for write in conn.writes] == ["字0", "字1", "字2", "字3", "字4"]
-    assert report["images"] == 5 and report["failed"] == 0
+    report = run_ocr(conn, tmp_path, 4, recognize, engine="deepseek-flash-vision", workers=2)
+    written = [write[2] for write in conn.writes]
+    # 第一张认完时第四张也刚认完，这两张谁先写都行；要紧的是前三张没等第一张。
+    assert written[:2] == ["字1", "字2"] and sorted(written[2:]) == ["字0", "字3"]
+    assert report["images"] == 4 and report["failed"] == 0
+
+
+def test_running_out_of_balance_stops_the_whole_batch(tmp_path, monkeypatch):
+    """余额不足（402）以后每张都会马上失败，接着认只会把剩下的图一张张记成失败。"""
+    from researchlib.llm import LLMError
+
+    calls = []
+
+    def recognize(path):
+        calls.append(path.name)
+        raise LLMError("DeepSeek 接口返回 402：Insufficient Balance")
+
+    _rows(tmp_path, monkeypatch, 3)
+    conn = _Conn()
+    with pytest.raises(LLMError, match="402"):
+        run_ocr(conn, tmp_path, 3, recognize, engine="deepseek-flash-vision")
+    assert calls == ["0.png"] and conn.writes == []
+
+
+class _ConnWithText(_Conn):
+    """image_texts 里这几张图已经有字。"""
+
+    def __init__(self, with_text):
+        super().__init__()
+        self.with_text = set(with_text)
+
+    def execute(self, sql, params=None):
+        flat = " ".join(sql.split())
+        if flat.startswith("SELECT 1 FROM image_texts") and params and params[0] in self.with_text:
+
+            class Hit:
+                def fetchone(self_inner):
+                    return {"?column?": 1}
+
+                def fetchall(self_inner):
+                    return [{"?column?": 1}]
+
+            return Hit()
+        return super().execute(sql, params)
+
+
+def test_failed_redo_keeps_the_text_already_there(tmp_path, monkeypatch):
+    """重认没成（失败、结构读不出来）不拿空正文盖掉库里的字，版本也不动，下次 --redo 接着认。"""
+    outcomes = {
+        "0.png": Recognition("", None, {"completion": 40}, "识图回的 JSON 读不出来"),  # 库里有字
+        "1.png": RuntimeError("连不上"),  # 库里没字
+        "2.png": Recognition("王小明：毛利率：35%", {"v": 1, "kind": "chat", "blocks": []}),  # 库里有字，认成了
+        "3.png": RuntimeError("连不上"),  # 库里有字
+    }
+
+    def recognize(path):
+        found = outcomes[path.name]
+        if isinstance(found, Exception):
+            raise found
+        return found
+
+    rows = _rows(tmp_path, monkeypatch, 4)
+    had_text = [rows[0]["content_hash"], rows[2]["content_hash"], rows[3]["content_hash"]]
+    conn = _ConnWithText(had_text)
+    report = run_ocr(conn, tmp_path, 4, recognize, engine="deepseek-flash-vision", redo=True)
+    assert [(write[0], write[1]) for write in conn.writes] == [
+        (rows[1]["content_hash"], "deepseek-flash-vision:error"),
+        (rows[2]["content_hash"], "deepseek-flash-vision"),
+    ]
+    assert (report["images"], report["kept"], report["failed"], report["invalid"]) == (4, 2, 2, 1)
+    assert "重认没认成的 2 张留着旧字" in describe_report(report)[-1]
+
+    # 不带 --redo 的照旧：失败记 :error、读不出来记 :invalid，下次按老规矩重试或点名重认。
+    _rows(tmp_path, monkeypatch, 4)
+    plain = _ConnWithText(had_text)
+    report = run_ocr(plain, tmp_path, 4, recognize, engine="deepseek-flash-vision")
+    assert [write[1] for write in plain.writes] == [
+        "deepseek-flash-vision:invalid",
+        "deepseek-flash-vision:error",
+        "deepseek-flash-vision",
+        "deepseek-flash-vision:error",
+    ]
+    assert report["kept"] == 0
 
 
 def test_deadline_stops_new_images_but_writes_the_ones_already_paid_for(tmp_path, monkeypatch):
@@ -244,7 +332,7 @@ def test_deadline_stops_new_images_but_writes_the_ones_already_paid_for(tmp_path
     monkeypatch.setattr("researchlib.ocr.pending_images", lambda *args, **kwargs: rows)
     conn = _Conn()
     report = run_ocr(conn, tmp_path, 6, recognize, engine="deepseek-flash-vision", deadline=50.0, workers=2)
-    assert report["images"] == 2 and [write[2] for write in conn.writes] == ["字0", "字1"]
+    assert report["images"] == 2 and sorted(write[2] for write in conn.writes) == ["字0", "字1"]
 
 
 def test_report_says_when_the_api_reported_no_usage():
