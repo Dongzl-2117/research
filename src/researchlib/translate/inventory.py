@@ -34,7 +34,7 @@ from pathlib import Path
 from researchlib.config import Settings
 from researchlib.db import connect
 from researchlib.translate.audit import classify
-from researchlib.translate.provenance import ALIGNMENT_VERSION, PIPELINE, SCHEMA_VERSION, source_manifest
+from researchlib.translate.provenance import ALIGNMENT_VERSION, SCHEMA_VERSION, pipeline_matches, source_manifest
 from researchlib.translate.remote_media import pair_sources
 from researchlib.translate.segments import translatable_blocks
 from researchlib.translate.service import (
@@ -192,7 +192,7 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
         elif row["translated"] and row["current"] and row["complete"]:
             if not row["receipt_schema"]:
                 state = "legacy"
-            elif row["receipt_schema"] == str(SCHEMA_VERSION) and row["pipeline"] == PIPELINE:
+            elif row["receipt_schema"] == str(SCHEMA_VERSION) and pipeline_matches(row["pipeline"]):
                 state = "receipt"
             else:
                 state = "old-receipt"
@@ -396,7 +396,8 @@ def unfinished(conn, ids: list[int], data_dir) -> list[int]:
     left = set()
     for row in rows:
         article_id = int(row["id"])
-        signed = row["current"] and row["receipt_schema"] == str(SCHEMA_VERSION) and row["pipeline"] == PIPELINE
+        signed = (row["current"] and row["receipt_schema"] == str(SCHEMA_VERSION)
+                  and pipeline_matches(row["pipeline"]))
         if not signed:
             left.add(article_id)
             continue

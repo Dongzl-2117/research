@@ -16,8 +16,13 @@ from researchlib.translate.segments import iter_segments, splice_segments, split
 SCHEMA_VERSION = 1
 CLEANER_VERSION = 1
 SEGMENTER_VERSION = 1
-PROMPT_VERSION = 2
-PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION, "prompt": PROMPT_VERSION}
+# 原文怎么清洗、怎么切段。回执上记的和这里不一样，回执就作废：页面分开展示，旧段也不复用。
+PIPELINE = {"cleaner": CLEANER_VERSION, "segmenter": SEGMENTER_VERSION}
+# 译制提示词第几版，记在回执的 prompt_versions 里，不进 PIPELINE：换提示词不改原文怎么切，
+# 已经签过的回执照样逐段对照。11-09 以前的回执把它写在 pipeline 里（"prompt": 2），比对时不看这一项。
+# 只有上一份回执是这一版提示词译的，再译时才直接复用没变的段（service.translate_article）。
+# 2：11-09 以前。3：讲中文怎么写（不夹破折号、长句拆短、习语按意思译、全文一种叫法），见 docs/translate.md「提示词」。
+PROMPT_VERSION = 3
 # 只给失败重试用，不写进回执。改数字或链接还原规则时加一，旧拒绝才会重新进队列。
 # 不要放进 PIPELINE：那会把已经核对过的译文整篇标成不兼容。
 # 3：下一季度不是 Q1；财季、中文数字、6/10、up from 和可移动的四位年份按同一事实放行。
@@ -215,7 +220,31 @@ def materialize(value: str) -> str:
     return result
 
 
-def source_manifest(source: str) -> dict:
+def pipeline_matches(recorded: object) -> bool:
+    """回执上记的清洗、切段版本和现在一样。11-09 以前的回执多记一项 prompt，不算在内。"""
+    if not isinstance(recorded, dict):
+        return False
+    return {key: value for key, value in recorded.items() if key != "prompt"} == PIPELINE
+
+
+def prompt_versions(provenance: dict | None) -> list[int]:
+    """回执里的段是按第几版提示词译的（复用过旧段的回执不止一版）。没有回执的旧稿返回空。"""
+    if not isinstance(provenance, dict):
+        return []
+    found = provenance.get("prompt_versions")
+    if found is None:
+        pipeline = provenance.get("pipeline")
+        legacy = pipeline.get("prompt") if isinstance(pipeline, dict) else None
+        found = [] if legacy is None else [legacy]
+    try:
+        return sorted({int(item) for item in found})
+    except (TypeError, ValueError):
+        return []
+
+
+def source_manifest(source: str, *, pipeline: dict | None = None) -> dict:
+    """``pipeline`` 只在核对旧回执时传：指纹按回执自己记的那份流水线算。"""
+    pipeline = dict(PIPELINE if pipeline is None else pipeline)
     source = canonical_html(materialize(source))
     entries = []
     for top, block in enumerate(top_level_blocks(source)):
@@ -227,8 +256,8 @@ def source_manifest(source: str) -> dict:
                 "source_hash": source_hash, "source": segment.html,
             })
     return {
-        "schema": SCHEMA_VERSION, "pipeline": dict(PIPELINE), "source_snapshot": source,
-        "source_fingerprint": digest({"pipeline": PIPELINE, "source": source, "segments": entries}),
+        "schema": SCHEMA_VERSION, "pipeline": pipeline, "source_snapshot": source,
+        "source_fingerprint": digest({"pipeline": pipeline, "source": source, "segments": entries}),
         "segments": entries,
     }
 
@@ -263,19 +292,24 @@ def _signed_segments(manifest: dict, translated: str) -> list[dict]:
     return entries
 
 
-def receipt(manifest: dict, translated: str, *, model: str = "", untranslated: Sequence[int] = ()) -> dict:
+def receipt(
+    manifest: dict, translated: str, *, model: str = "", untranslated: Sequence[int] = (),
+    prompts: Sequence[int] = (),
+) -> dict:
     """每个槽位的资源和完整外壳都通过，才签发可持久化回执。
 
     数字对不上的槽位照签，序号记进 ``number_review``。``untranslated`` 是这次没译出来、
-    先放英文的槽位序号（那一段的 target 就是原文）。``verify`` 两项都不比较：
-    数字规则以后再改、补译了哪几段，已经入库的回执都不会因此变成不兼容、整页退成两栏。
+    先放英文的槽位序号（那一段的 target 就是原文）。``prompts`` 是这篇里的段用过哪几版提示词，
+    不传就是现在这一版。``verify`` 这三项都不比较：数字规则以后再改、补译了哪几段、换了提示词，
+    已经入库的回执都不会因此变成不兼容、整页退成两栏。
     """
     entries = _signed_segments(manifest, translated)
     gaps = sorted(set(untranslated))
     review = [entry["ordinal"] for entry in entries
               if entry["ordinal"] not in gaps and not numbers_agree(entry["source"], entry["target"])]
     return {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
-            "semantic_status": "not-reviewed", "number_review": review, "untranslated": gaps}
+            "semantic_status": "not-reviewed", "number_review": review, "untranslated": gaps,
+            "prompt_versions": sorted({int(item) for item in prompts} or {PROMPT_VERSION})}
 
 
 def untranslated_slots(provenance: dict | None) -> list[int]:
@@ -300,12 +334,13 @@ def reuse_key(segment: str) -> str:
 def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
     """回执里能原样再用的译文段，按 ``reuse_key`` 分组，组里保持原文里的先后。
 
-    只收这一版流水线签的回执里、自己校验值对得上、资源和原文一致的段；没译出来先放英文的段
-    （``untranslated``）不收。没有回执的旧稿返回空，只能整篇重译。
+    只收这一版清洗、切段签的回执里、自己校验值对得上、资源和原文一致的段；没译出来先放英文的段
+    （``untranslated``）不收。没有回执的旧稿返回空，只能整篇重译。哪一版提示词译的不管：
+    直接用还是只在重译失败时退回用，由译制按 ``prompt_versions`` 决定。
     """
     if not isinstance(provenance, dict):
         return {}
-    if provenance.get("schema") != SCHEMA_VERSION or provenance.get("pipeline") != PIPELINE:
+    if provenance.get("schema") != SCHEMA_VERSION or not pipeline_matches(provenance.get("pipeline")):
         return {}
     skip = set(untranslated_slots(provenance))
     found: dict[str, list[str]] = {}
@@ -350,10 +385,11 @@ def verify(source: str, translated: str, provenance: dict | None) -> MappingStat
         return MappingState("legacy", "missing-provenance")
     if not isinstance(provenance, dict):
         return MappingState("incompatible", "invalid-receipt")
-    if provenance.get("schema") != SCHEMA_VERSION or provenance.get("pipeline") != PIPELINE:
+    if provenance.get("schema") != SCHEMA_VERSION or not pipeline_matches(provenance.get("pipeline")):
         return MappingState("incompatible", "pipeline-version")
     try:
-        current = source_manifest(source)
+        # 指纹按回执自己记的流水线算：11-09 以前签的回执，pipeline 里多一项 prompt。
+        current = source_manifest(source, pipeline=provenance["pipeline"])
         if current["source_fingerprint"] != provenance.get("source_fingerprint"):
             return MappingState("incompatible", "source-fingerprint")
         # 只重签逐段那一份，不重核数字：number_review 本来就不比（见 receipt），文章页每次打开都走这里，
