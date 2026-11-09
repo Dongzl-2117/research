@@ -95,6 +95,27 @@ def test_bulk_redo_skips_images_already_read_with_the_current_prompt(conn, setti
     assert redo_remaining(conn) == {"images": 4, "with_text": 1}
 
 
+def test_failed_redo_keeps_the_old_text_and_stays_pending(conn, settings):
+    """重认失败不拿空正文盖掉旧字；版本不动，下次 --redo 还会挑它。以前一失败旧字就没了。"""
+    _articles(conn)
+    data_dir = Path(settings.data_dir)
+    old_chat = _image(conn, "new", "a", data_dir)
+    _text(conn, old_chat, "deepseek-flash-vision", "王小明：毛利率：35%", None)
+    conn.commit()
+
+    def broken(_path: Path) -> Recognition:
+        raise RuntimeError("连不上")
+
+    report = run_ocr(conn, data_dir, 5, broken, engine="deepseek-flash-vision", redo=True)
+    assert (report["images"], report["failed"], report["kept"]) == (1, 1, 1)
+    row = conn.execute(
+        "SELECT engine, text, prompt_version FROM image_texts WHERE content_hash = %s", (old_chat,)
+    ).fetchone()
+    assert row["engine"] == "deepseek-flash-vision" and row["text"] == "王小明：毛利率：35%"
+    assert row["prompt_version"] is None
+    assert [found["content_hash"] for found in pending_images(conn, 10, redo=True)] == [old_chat]
+
+
 def test_migration_marks_rows_written_since_structured_reading(conn):
     """031 以后认的行（带结构、带用量、结构读不出来）算第 1 版；以前的留空，全库重认会认它们。重复跑不改填过的。"""
     _articles(conn)

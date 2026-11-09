@@ -13,7 +13,8 @@ units 为空的是以前的自由文字，仍由 wechat_dialogue 的旧规则整
 
 app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、正文为空，
 下次不带 ``--redo`` 也会重试，不写进脏字。JSON 连着两次读不出来记 ``:invalid``，
-不自动重试（重试又要花钱），``--redo --article`` 点名重认。
+不自动重试（重试又要花钱），``--redo --article`` 点名重认。重认（``--redo``）时这张图库里已经有字的，
+失败或读不出来都不写，旧字留着、版本不动，下次 ``--redo`` 接着认。余额不足（402）和没凭证一样整批停。
 
 每行记着按第几版识图说明认的（image_texts.prompt_version）。不点名文章的 ``--redo`` 只重认版本比
 VISION_PROMPT_VERSION 旧的图，停了再开从没认完的接着认；``--limit 0`` 只报还剩多少张。
@@ -29,13 +30,13 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import itertools
 import logging
 import re
 import sys
 import time
-from collections import deque
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -496,13 +497,25 @@ def resolve_engine(settings) -> tuple[str, Callable[[Path], Recognition]]:
 
 
 def _fatal_ocr(exc: Exception) -> bool:
-    """整批停：没凭证，或接口拒绝鉴权。单张 5xx 不算。"""
+    """整批停：没凭证，接口拒绝鉴权，或余额不足（402）。单张 5xx 不算。
+
+    余额用完以后每张都马上失败，接着认只会把剩下的图一张张记成失败。
+    """
     from researchlib.llm import LLMUnavailable
 
     if isinstance(exc, (OcrUnavailable, LLMUnavailable)):
         return True
     text = str(exc)
-    return "接口返回 401" in text or "接口返回 403" in text
+    return any(f"接口返回 {code}" in text for code in (401, 402, 403))
+
+
+def _has_text(conn, content_hash: str) -> bool:
+    """库里这张图已经有认出来的字。重认没成时留着它，不拿空正文盖掉。"""
+    row = conn.execute(
+        "SELECT 1 FROM image_texts WHERE content_hash = %s AND btrim(coalesce(text, '')) <> ''",
+        (content_hash,),
+    ).fetchone()
+    return row is not None
 
 
 def _pending_where(*, redo: bool, article_ids: list[int] | None) -> tuple[list[str], list]:
@@ -834,14 +847,18 @@ def run_ocr(
 ) -> dict:
     """识别一批图片，重切引用它们的文章的图片文字块。返回计数。
 
-    单张失败记 ``{engine}:error`` 和空正文，不写入脏字。没凭证或 401/403 整批停。
+    单张失败记 ``{engine}:error`` 和空正文，不写入脏字。没凭证、401/403 或余额不足（402）整批停。
     结构读不出来记 ``{engine}:invalid``，不自动重试。
+    redo 时这张图库里已经有字的，失败或结构读不出来都不写：旧字留着，版本不动，下次 --redo 接着认，
+    报告里记 kept。以前写成空正文，重认一失败旧字就没了。
     engine 是写进 image_texts 的名字，不给就用默认的 deepseek-flash-vision。
     recognize 交回 ``Recognition``；交回字符串的当旧格式（测试和以前的引擎这样写）。
     报告里 structured 是按结构交回的张数，plain 是交回自由文字的，tokens 是接口报的用量合计。
     不点名文章时，自动上线在等（``health.deploy_waiting``）就认完手上这张停下，deploy_waiting 记它等的提交：
     以前长跑的识图会把之后的合并一直挡在外面。停下的从没认完的接着认，不白花钱。
-    workers 张图一起认（模型调用在工作线程里，写库都在这个线程里，按挑出来的先后写）。
+    workers 张图一起认：模型调用在工作线程里，写库都在这个线程里，认完一张写一张、马上补发一张。
+    以前按挑出来的先后写，前面一张慢（思考长的要好几分钟）就把后面都挡住，认完的占着位子不补发，
+    20 张一起实际只有一半左右在认。
     全库重认（redo 且不点名文章）改了上千篇的图片文字：短帖的摘要和观点照常按发布时间排进夜间的队，
     不记进 article_followups 插到新文章前面，也不在这里当场重写。
     """
@@ -860,6 +877,7 @@ def run_ocr(
         "tokens": {},
         "metered": 0,
         "last_error": None,
+        "kept": 0,
         "deploy_waiting": "",
         "followups": {"digest": [], "zsxq_title": []},
         "ocr_changed": [],
@@ -876,13 +894,43 @@ def run_ocr(
             return bool(report["deploy_waiting"])
         return False
 
+    def write(row, path: Path, future) -> None:
+        used, result = _outcome(engine, path, future, report)
+        report["images"] += 1
+        text = result.text or ""
+        if redo and used.endswith((":error", ":invalid")) and _has_text(conn, row["content_hash"]):
+            report["kept"] += 1
+            return
+        conn.execute(
+            """
+            INSERT INTO image_texts (content_hash, engine, text, units, usage, prompt_version)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (content_hash) DO UPDATE
+                SET engine = EXCLUDED.engine, text = EXCLUDED.text, units = EXCLUDED.units,
+                    usage = EXCLUDED.usage, prompt_version = EXCLUDED.prompt_version, created_at = now()
+            """,
+            (
+                row["content_hash"],
+                used,
+                text,
+                Jsonb(result.units) if result.units is not None else None,
+                Jsonb(result.usage) if result.usage else None,
+                VISION_PROMPT_VERSION,
+            ),
+        )
+        if text.strip():
+            report["with_text"] += 1
+        _touch_articles(conn, row["content_hash"], text, touched, report)
+        conn.commit()
+
     try:
         with ThreadPoolExecutor(max_workers=width) as pool:
-            queue: deque = deque()
+            running: dict = {}  # 在认的：future -> (挑出来的序号, row, path)
+            order = itertools.count()
 
             def fill() -> None:
                 # 同时在认的不超过 width 张。到点了或自动上线在等就不再开新的，已经在认的认完照写，钱不白花。
-                while len(queue) < width and not stopping():
+                while len(running) < width and not stopping():
                     row = next(rows, None)
                     if row is None:
                         return
@@ -891,37 +939,16 @@ def run_ocr(
                         report["missing"] += 1
                         continue
                     if path.suffix.lower() not in OCR_EXTS:
-                        queue.append((row, path, None))
-                    else:
-                        queue.append((row, path, pool.submit(recognize_one, recognize, path)))
+                        write(row, path, None)
+                        continue
+                    running[pool.submit(recognize_one, recognize, path)] = (next(order), row, path)
 
             fill()
-            while queue:
-                row, path, future = queue.popleft()
-                used, result = _outcome(engine, path, future, report)
-                text = result.text or ""
-                conn.execute(
-                    """
-                    INSERT INTO image_texts (content_hash, engine, text, units, usage, prompt_version)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (content_hash) DO UPDATE
-                        SET engine = EXCLUDED.engine, text = EXCLUDED.text, units = EXCLUDED.units,
-                            usage = EXCLUDED.usage, prompt_version = EXCLUDED.prompt_version, created_at = now()
-                    """,
-                    (
-                        row["content_hash"],
-                        used,
-                        text,
-                        Jsonb(result.units) if result.units is not None else None,
-                        Jsonb(result.usage) if result.usage else None,
-                        VISION_PROMPT_VERSION,
-                    ),
-                )
-                report["images"] += 1
-                if text.strip():
-                    report["with_text"] += 1
-                _touch_articles(conn, row["content_hash"], text, touched, report)
-                conn.commit()
+            while running:
+                done, _pending = wait(running, return_when=FIRST_COMPLETED)
+                for future in sorted(done, key=lambda item: running[item][0]):
+                    _index, row, path = running.pop(future)
+                    write(row, path, future)
                 fill()
     finally:
         changed: list[dict] = []
@@ -1086,7 +1113,7 @@ def describe_report(report: dict) -> list[str]:
             f"交回自由文字 {report.get('plain', 0)} 张（按旧规则整理）"
         )
         if report.get("invalid"):
-            line += f"，结构读不出来 {report['invalid']} 张（记 :invalid，不自动重试；--redo --article 点名重认）"
+            line += f"，结构读不出来 {report['invalid']} 张（记成 :invalid 的不自动重试，--redo --article 点名重认）"
         lines.append(line)
     tokens = report.get("tokens") or {}
     metered = report.get("metered", 0)
@@ -1099,6 +1126,8 @@ def describe_report(report: dict) -> list[str]:
         )
     elif answered:
         lines.append("接口这次没报用量，花费看 DeepSeek 账单")
+    if report.get("kept"):
+        lines.append(f"重认没认成的 {report['kept']} 张留着旧字，版本没改，下次 --redo 接着认")
     return lines
 
 
