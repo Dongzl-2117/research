@@ -319,8 +319,13 @@ def test_normalize_strips_video_badges_and_ad_shell():
 
 
 def test_relayout_rewrites_stored_text_from_units_without_calling_the_model(monkeypatch):
-    """#297 把看得清的 cut 整段换成了占位句。units 还在，重排写回 text，不改版本、不调模型。"""
-    from researchlib.ocr import parse_written_at, relayout_stored
+    """#297 把看得清的 cut 整段换成了占位句。units 还在，重排写回 text，不改版本、不调模型。
+
+    ``--written-to 03:33:02`` 含这一整秒：03:33:02.350005 在里面，03:33:03 不在。
+    """
+    from datetime import timedelta
+
+    from researchlib.ocr import parse_written_at, relayout_stored, relayout_until
     from researchlib.ocr_units import format_units
 
     units = {
@@ -334,7 +339,16 @@ def test_relayout_rewrites_stored_text_from_units_without_calling_the_model(monk
             "cut": "bottom",
         }],
     }
-    stored = [{"content_hash": "ab" * 32, "text": "（末尾一条被遮挡，无法辨认）", "units": units}]
+    start = parse_written_at("2026-11-10 03:28:41")
+    end = parse_written_at("2026-11-10 03:33:02")
+    assert start.tzinfo is not None and start.utcoffset().total_seconds() == 8 * 3600
+    assert relayout_until(end) == end + timedelta(seconds=1)
+    last = end + timedelta(microseconds=350005)
+    stored = [
+        {"content_hash": "aa" * 32, "text": "旧", "units": units, "created_at": start - timedelta(microseconds=1)},
+        {"content_hash": "ab" * 32, "text": "（末尾一条被遮挡，无法辨认）", "units": units, "created_at": last},
+        {"content_hash": "ac" * 32, "text": "旧", "units": units, "created_at": end + timedelta(seconds=1)},
+    ]
 
     class _Rows:
         def __init__(self, rows):
@@ -347,10 +361,18 @@ def test_relayout_rewrites_stored_text_from_units_without_calling_the_model(monk
         def __init__(self):
             self.updates = []
             self.commits = 0
+            self.bounds = None
 
         def execute(self, sql, params=None):
             if "FROM image_texts" in sql:
-                return _Rows(stored)
+                assert "created_at < %s" in sql
+                _engine, begun, until = params
+                self.bounds = (begun, until)
+                picked = [
+                    row for row in stored
+                    if begun <= row["created_at"] < until
+                ]
+                return _Rows(picked)
             if sql.startswith("UPDATE image_texts"):
                 self.updates.append(params)
                 return _Rows([])
@@ -370,10 +392,8 @@ def test_relayout_rewrites_stored_text_from_units_without_calling_the_model(monk
     monkeypatch.setattr("researchlib.ocr.refresh_article_ocr", _refresh)
     monkeypatch.setattr("researchlib.chunks.replace_ocr_chunks", lambda conn, article_id: 1)
     conn = _Conn()
-    start = parse_written_at("2026-11-10 03:28:41")
-    end = parse_written_at("2026-11-10 03:33:02")
-    assert start.tzinfo is not None and start.utcoffset().total_seconds() == 8 * 3600
     report = relayout_stored(conn, engine="grok-4.7-vision", written_from=start, written_to=end)
+    assert conn.bounds == (start, end + timedelta(seconds=1))
     assert report == {"matched": 1, "changed": 1, "articles": 1, "dry_run": False}
     assert conn.updates == [(format_units(units), "ab" * 32)]
     assert "2016" in conn.updates[0][0]

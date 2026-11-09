@@ -1035,6 +1035,18 @@ def parse_written_at(value: str):
     return moment
 
 
+def relayout_until(written_to):
+    """上界变成不含的那一刻。写到秒就含这一整秒，03:33:02 含 03:33:02.350005，不含 03:33:03。
+
+    写到微秒就只含到那一微秒。
+    """
+    from datetime import timedelta
+
+    if written_to.microsecond == 0:
+        return written_to + timedelta(seconds=1)
+    return written_to + timedelta(microseconds=1)
+
+
 def relayout_stored(
     conn,
     *,
@@ -1046,6 +1058,7 @@ def relayout_stored(
     """按库里的 units 重排 ``image_texts.text`` 和引用这些图的文章旁路、检索块。不调模型。
 
     只动 ``engine`` 对得上、``created_at`` 落在这段里、并且有 units 的行。
+    上界写到秒时含这一整秒（``created_at < 下一秒``），不会把 03:33:02.350005 漏在 03:33:02 外面。
     ``prompt_version`` 和 ``created_at`` 不动，所以全库 ``--redo`` 不会把它们再认一遍。
     """
     from researchlib.chunks import replace_ocr_chunks
@@ -1056,10 +1069,10 @@ def relayout_stored(
         SELECT content_hash, text, units
         FROM image_texts
         WHERE engine = %s AND units IS NOT NULL
-          AND created_at >= %s AND created_at <= %s
+          AND created_at >= %s AND created_at < %s
         ORDER BY created_at, content_hash
         """,
-        (engine, written_from, written_to),
+        (engine, written_from, relayout_until(written_to)),
     ).fetchall()
     changed: list[str] = []
     for row in rows:
@@ -1118,7 +1131,11 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="只重排 created_at 不早于这时的行。没写时区按北京时间，例如 2026-11-10 03:28:41",
     )
-    parser.add_argument("--written-to", default="", help="只重排 created_at 不晚于这时的行，含这一秒")
+    parser.add_argument(
+        "--written-to",
+        default="",
+        help="只重排 created_at 不晚于这时的行。写到秒就含这一整秒，03:33:02 含 03:33:02.350005",
+    )
     parser.add_argument("--dry-run", action="store_true", help="和 --relayout 一起用：只报张数，不写库")
     args = parser.parse_args(argv)
     from researchlib.config import Settings
