@@ -1146,12 +1146,18 @@ def semantic_candidates(
     return _prefer_translation(rows, _phrases(query)), scores
 
 
-# 算「正文有没有字」时不算的：链接、图片和附件的文件名。
+# 算「正文有没有字」时不算的：链接、图片和附件的文件名，截图的默认名（飞书导出的「截屏2025-06-08 19.36.10.png」、
+# 「Screenshot 2024-06-17 at 16.18.55.png」，Stratechery 的「Screen Shot 2017-06-01 at 7.40.43 PM」）。
 _NOT_TEXT = re.compile(
-    r"https?://\S+|www\.\S+|[\w\-.%()（）]+\.(?:png|jpe?g|gif|webp|svg|bmp|heic|pdf|mp4|mov)\b", re.IGNORECASE
+    r"https?://\S+|www\.\S+"
+    r"|(?:Screen ?Shot|Screenshot|截屏|屏幕截图)\s*\d{4}-\d{1,2}-\d{1,2}(?:\s*at)?\s*\d{1,2}[.:]\d{2}[.:]\d{2}"
+    r"(?:\s*[AP]M)?(?:\s*\(\d+\))?(?:\.[A-Za-z]{3,4})?"
+    r"|[\w\-.%()（）]+\.(?:png|jpe?g|gif|webp|svg|bmp|heic|pdf|mp4|mov)\b",
+    re.IGNORECASE,
 )
-_TEXT_UNIT = re.compile(r"[一-鿿]|[A-Za-z]+|\d+")
-# 正文去掉链接和文件名以后不到这么多个字（汉字按字、英文按词）就算没字。
+# 汉字按字、英文按词数；数字和单个字母不算（截图名里的日期时刻、「0」这种残留）。
+_TEXT_UNIT = re.compile(r"[一-鿿]|[A-Za-z]{2,}")
+# 正文去掉上面这些以后不到这么多个字就算没字。
 THIN_TEXT_UNITS = 5
 
 

@@ -64,6 +64,9 @@ def test_blocks_with_only_links_and_file_names_count_as_empty():
     assert thin_text({"heading": "", "body": "Z6ZJbq.webp BO6fbH.webp v2-981fc.jpg"})
     assert thin_text({"heading": "", "body": "[](https://example.com/wp-content/uploads/2013/03/a.png)"})
     assert thin_text({"heading": "", "body": "On to the update:"})
+    shots = "Screenshot 2024-06-17 at 16.18.55.png Screenshot 2024-06-17 at 16.50.58.png 0 image.png"
+    assert thin_text({"heading": "", "body": shots})
+    assert thin_text({"heading": "", "body": "截屏2025-06-08 19.36.10.png Screen Shot 2017-06-01 at 7.40.43 PM"})
     # 章节标题是同一节各块共用的，正文只有文件名照样算没字。
     assert thin_text({"heading": "规模效应被称为商业世界里的万有引力，" * 3, "body": "image.png"})
     assert not thin_text({"heading": "", "body": "会员费是利润的大头"})
