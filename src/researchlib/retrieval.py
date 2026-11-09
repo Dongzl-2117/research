@@ -21,6 +21,7 @@ import json
 import math
 import re
 import time
+import zlib
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -1741,10 +1742,18 @@ def _text_key(body: str) -> str:
 
 
 def _shingles(key: str) -> set[int]:
-    """归一后的正文按 _SHINGLE 个字一片切开，按内容留下约四分之一的片：两段里相同的地方留下的片也相同。"""
+    """归一后的正文按 _SHINGLE 个字一片切开，按内容留下约四分之一的片：两段里相同的地方留下的片也相同。
+
+    用 crc32，不用内建 hash：后者每个进程盐不同，同一段话有时被当成重复、有时不被当成。
+    """
     if not key:
         return set()
-    return {value for value in (hash(key[i : i + _SHINGLE]) for i in range(len(key) - _SHINGLE + 1)) if not value % 4}
+    found: set[int] = set()
+    for index in range(len(key) - _SHINGLE + 1):
+        value = zlib.crc32(key[index : index + _SHINGLE].encode("utf-8")) & 0xFFFFFFFF
+        if value % 4 == 0:
+            found.add(value)
+    return found
 
 
 def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
