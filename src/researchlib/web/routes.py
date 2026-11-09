@@ -56,7 +56,7 @@ from researchlib.snippets import (
 )
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
-from researchlib.translate.display import article_pairs
+from researchlib.translate.display import article_pairs, join_split_paragraphs
 from researchlib.translate.remote_media import bilingual_sources
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
@@ -835,6 +835,9 @@ def _article_view(request: Request, article_id: int, mode: str):
     zh_html = finish_html(sanitize_html(zh_source), link_index, parent) if has_translation else None
     pair_translated = zh_html
     if zh_html:
+        # 「只看中文」整篇读：按句切开译的长段并回一段，不再一句一行。对照页要逐叶配对，用上面没并的那份，
+        # 在 article_pairs 里按原文分组另并。
+        zh_html = finish_html(sanitize_html(join_split_paragraphs(zh_source)), link_index, parent)
         zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""

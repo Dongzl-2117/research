@@ -495,8 +495,42 @@ def _unwrap_element(value: str) -> tuple[str, str, str] | None:
     return match.group(1), match.group(2).lower(), match.group(3).strip()
 
 
+# 中日韩文字、全角标点（。，、；：！？（）「」《》…… 这一类）。弯引号 “” ‘’ 英文里也用，不算。
+_CJK = re.compile(
+    r"[⺀-⿿　-〿぀-ヿ㄀-ㇿ㐀-䶿一-鿿"
+    r"豈-﫿︰-﹏＀-￯]"
+)
+
+
+def _visible_text(value: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", value or "")).strip()
+
+
+# 句末的后引号、后括号和句首的前引号、前括号不算数，看它里面那个字：「好。”」看「。」。
+_CLOSERS = "”’\"')]）」』》〉】"
+_OPENERS = "“‘\"'([（「『《〈【"
+
+
+def _glue(parts: Sequence[str]) -> str:
+    """几句拼成一段。挨着的两个字有一个是中文或全角标点就直接接上，英文句子之间补一个空格。
+
+    以前一律补空格，中文对照栏和「只看中文」里按句切开译的长段，句号后面都多一个空格（「。 但」）。
+    """
+    out = ""
+    tail = ""
+    for part in parts:
+        text = _visible_text(part)
+        if out:
+            joint = tail[-1:] + tail.rstrip(_CLOSERS)[-1:] + text[:1] + text.lstrip(_OPENERS)[:1]
+            out += "" if _CJK.search(joint) else " "
+        out += part
+        if text:
+            tail = text
+    return out
+
+
 def _join_html(parts: list[str]) -> str:
-    """把同一源段落拆开的叶子拼回去。外壳只留一份，句子之间补一个空格。"""
+    """把同一源段落拆开的叶子拼回去。外壳只留一份，句子之间按 ``_glue`` 接：中文直接接上，英文补一个空格。"""
     pieces = [part.strip() for part in parts if part and part.strip()]
     if not pieces:
         return ""
@@ -504,17 +538,38 @@ def _join_html(parts: list[str]) -> str:
         return _strip_src_para(pieces[0])
     opened = [_unwrap_element(part) for part in pieces]
     if any(item is None for item in opened):
-        return _strip_src_para(" ".join(pieces))
+        return _strip_src_para(_glue(pieces))
     tag = opened[0][1]
     if any(item[1] != tag for item in opened):
-        return _strip_src_para(" ".join(pieces))
+        return _strip_src_para(_glue(pieces))
     inners = [item[2] for item in opened]
     if all(_unwrap_element(inner) for inner in inners):
         inner = _join_html(inners)
     else:
-        inner = " ".join(inners)
+        inner = _glue(inners)
     opening = _strip_src_para(opened[0][0])
     return f"{opening}{inner}</{tag}>"
+
+
+# 按句切开的同一源段落：相邻、带同一个 data-src-para 的 <p>（中间只隔空白）。一句的内容不跨过 </p>，
+# 免得把中间夹着的别的段落也并进来。
+_SPLIT_PIECE = r'<p\b[^>]*\bdata-src-para="{group}"[^>]*>(?:(?!</p>).)*</p>'
+_SPLIT_RUN = re.compile(
+    _SPLIT_PIECE.format(group=r"(\d+)") + r"(?:\s*" + _SPLIT_PIECE.format(group=r"\1") + r")+",
+    re.I | re.S,
+)
+_SPLIT_ONE = re.compile(_SPLIT_PIECE.format(group=r"\d+"), re.I | re.S)
+
+
+def join_split_paragraphs(translated: str) -> str:
+    """整篇读的译文（「只看中文」）：按句切开译的同一源段落并回一段，句子之间按 ``_glue`` 接。
+
+    超过 900 字的多句段落译制时一句一个 ``<p data-src-para="N">``，存下来的译文也是这样，
+    「只看中文」以前一句一行。对照页在 ``article_pairs`` 里按原文叶子的分组另并，这里不管。
+    ``<br>`` 粘出来的长文没有这个标记，照旧按句留着。并完把 ``data-src-para`` 都去掉。
+    """
+    merged = _SPLIT_RUN.sub(lambda match: _join_html(_SPLIT_ONE.findall(match.group(0))), translated or "")
+    return _strip_src_para(merged)
 
 
 def _shown_plain(pairs: Sequence[BilingualPair], side: str) -> str:
@@ -823,6 +878,7 @@ __all__ = [
     "PairDisplay",
     "article_pairs",
     "content_gaps",
+    "join_split_paragraphs",
     "leaf_projection_gaps",
     "projection_gaps",
     "protected_content_gaps",
