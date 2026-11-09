@@ -1700,7 +1700,7 @@ def select(
     per: dict[int, int] = {}
     caps = article_caps(ranked, budget.per_article)
     seen_text: set[str] = set()
-    covered: set[int] = set()
+    covered: set[str] = set()
     used = 0
     for passage in ranked:
         if per.get(passage.article_id, 0) >= caps.get(passage.article_id, budget.per_article):
@@ -1742,11 +1742,15 @@ def _text_key(body: str) -> str:
     return text if len(text) >= 30 else ""
 
 
-def _shingles(key: str) -> set[int]:
-    """归一后的正文按 _SHINGLE 个字一片切开，按内容留下约四分之一的片：两段里相同的地方留下的片也相同。"""
+def _shingles(key: str) -> set[str]:
+    """归一后的正文按 _SHINGLE 个字一片切开，每个起点一片，全留。
+
+    以前按 hash 留四分之一的片：Python 的字符串 hash 每次启动都不一样，同一个问题重启前后交给模型的段落会不同；
+    短段落的片少，留下哪几片全凭运气，测试 400 个 PYTHONHASHSEED 里有 22 个对不上。全留就是准确的重合比例。
+    """
     if not key:
         return set()
-    return {value for value in (hash(key[i : i + _SHINGLE]) for i in range(len(key) - _SHINGLE + 1)) if not value % 4}
+    return {key[i : i + _SHINGLE] for i in range(len(key) - _SHINGLE + 1)}
 
 
 def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
