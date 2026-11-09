@@ -35,7 +35,7 @@
 - 整个来源先不展示：把 `config/sources.yaml` 里那一项的 `enabled` 改成 `false`。从配置里删掉的来源，启动时 `sync_sources` 也记成停用。停用的来源网站、接口、问库都不出现，导入会拒绝，摘要、观点、论点不再处理，库里的行留着。
 - 不跳过、不禁用测试来让 CI 变绿。
 - 阅读页（文章、对照、飞书目录右侧）保留原图，不把识图文字铺进正文。整理后的字只给摘要、观点、问这篇和检索（`present_ocr` / `articles.ocr_text` / `article_chunks.lang = ocr`）。见 [docs/ocr.md](docs/ocr.md)。
-- 识图 11-07 起交回结构（`image_texts.units`，`researchlib/ocr_units.py`）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，由看得见图的模型标好，后面只排版和拼接。`wechat_dialogue`、`vision_polish`、`normalize_vision_text` 冻结，只整理以前的自由文字。识图出错改 `VISION_PROMPT` 里的通用说明，不加按 App、按案例的规则。拼接之后仍标着截断（`cut`）的那条不采用模型补出来的整句，改写成「被遮挡，无法辨认」，不安到说话人名下；`VISION_PROMPT_VERSION` 仍是 3，按第 3 版认过的图不因此重认。见 [docs/ocr.md](docs/ocr.md)「识图交回结构」。
+- 识图 11-07 起交回结构（`image_texts.units`，`researchlib/ocr_units.py`）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，由看得见图的模型标好，后面只排版和拼接。`wechat_dialogue`、`vision_polish`、`normalize_vision_text` 冻结，只整理以前的自由文字。识图出错改 `VISION_PROMPT` 里的通用说明，不加按 App、按案例的规则。`cut` 只表示这条在图外还有下文，看得见的字整段留下；只有另标 `illegible`（笔画被切到中间）才不采用模型补的那句。`VISION_PROMPT_VERSION` 仍是 3，按第 3 版认过的图不因此重认。见 [docs/ocr.md](docs/ocr.md)「识图交回结构」。
 
 ## 本地测试
 

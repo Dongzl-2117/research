@@ -19,12 +19,22 @@ from researchlib.ocr_units import (
 )
 
 
-def _msg(text: str, speaker: str = "", *, me: bool = False, cut: str = "", quote: dict | None = None) -> dict:
+def _msg(
+    text: str,
+    speaker: str = "",
+    *,
+    me: bool = False,
+    cut: str = "",
+    quote: dict | None = None,
+    illegible: bool = False,
+) -> dict:
     block = {"type": "message", "speaker": speaker, "self": me, "text": text}
     if cut:
         block["cut"] = cut
     if quote:
         block["quote"] = quote
+    if illegible:
+        block["illegible"] = True
     return block
 
 
@@ -371,25 +381,74 @@ def test_a_shot_that_only_repeats_the_last_one_lets_the_next_compare_with_it():
     assert [block["text"] for block in last] == ["下周再聊"]
 
 
-def test_a_cut_off_line_is_not_written_as_a_completed_sentence():
-    """只露出半截的字，模型补成整句并标了 cut：排版不采用那句，也不安到说话人名下。"""
-    units = _units(_msg("去年年费2万块钱就是亏大了", cut="bottom"))
-    text = format_units(units)
-    assert "去年年费" not in text
-    assert "亏大了" not in text
-    assert "网友" not in text
-    assert "方伟" not in text
-    assert text == "（末尾一条被遮挡，无法辨认）"
-    top = format_units(_units(_msg("把看不全的开头补成了整句", "王小明", cut="top")))
-    assert "补成了整句" not in top
-    assert "王小明" not in top
-    assert top == "（开头一条被遮挡，无法辨认）"
+# 88898c：气泡延伸到图外，看得见的字是完整的。第 3 版和这次都留全文，不因为 cut 丢掉日期。
+NETFLIX_UNITS = {
+    "v": 1,
+    "kind": "chat",
+    "blocks": [
+        {
+            "type": "message",
+            "speaker": "豆包",
+            "self": False,
+            "text": (
+                "1 | Netflix 美国十年价格线 (对标【Standard无广告 | Premium】)\n"
+                "• 2016: Standard $9.99; Premium $11.99 (4K)\n"
+                "• 2017-10: Standard $10.99; Premium $13.99\n"
+                "• 2019-01: Standard $12.99; Premium $15.99\n"
+                "• 2020-10: Standard $13.99; Premium $17.99\n"
+                "• 2023-10: Standard $15.49; Premium $19.99 (新增广告档$6.99)\n"
+                "• 2025-01: Standard $17.99; Premium $24.99; 广告$7.99\n"
+                "• 2026-03: Standard $19.99; Premium $26.99; 广告$8.99\n"
+                "十年涨幅 (2016 Standard $9.99 → 2026 $19.99): +100%\n"
+                "Premium: $11.99 → $26.99, +125%, 大幅跑赢通胀 (40%)\n"
+                "2 | HBO (2016=HBO Now; 2020后=HBO Max / Max)\n"
+                "• 2016 (HBO Now, 唯一一档): $14.99/月 (无分层、无广告版)"
+            ),
+            "cut": "bottom",
+        }
+    ],
+}
 
 
-def test_a_visible_quote_on_a_cut_message_is_kept():
-    """被挡住的是这一条自己的字；引用框里看得到的原话仍写出来。"""
+def test_legible_cut_block_keeps_every_visible_line_and_date():
+    """cut 只表示图外还有下文。看得清的价格和日期整段留下，不换成「无法辨认」。"""
+    text = format_units(NETFLIX_UNITS)
+    assert "2016" in text and "2017-10" in text and "2019-01" in text and "2026-03" in text
+    assert "$9.99" in text and "$19.99" in text and "$14.99" in text
+    assert "豆包：" in text
+    assert "无法辨认" not in text
+    # 没有 illegible 字段的旧第 3 版行，排版和改之前一样。
+    assert format_units(normalize_units(NETFLIX_UNITS)) == text
+
+
+def test_clipped_glyphs_are_not_reconstructed_into_a_sentence():
+    """字只露出上半截、模型补成整句：必须另标 illegible，排版才丢掉那句。单靠 cut 不丢。"""
+    kept = format_units(_units(_msg("去年年费2万块钱就是亏大了", cut="bottom")))
+    assert "去年年费2万块钱就是亏大了" in kept
+    assert "无法辨认" not in kept
+    dropped = format_units(_units(_msg("去年年费2万块钱就是亏大了", cut="bottom", illegible=True)))
+    assert "去年年费" not in dropped
+    assert "亏大了" not in dropped
+    assert "网友" not in dropped
+    assert "方伟" not in dropped
+    assert dropped == "（末尾一条被遮挡，无法辨认）"
+    parsed = normalize_units({
+        "kind": "chat",
+        "blocks": [{
+            "type": "message",
+            "text": "补出来的一句",
+            "cut": "bottom",
+            "partial_glyphs": True,
+        }],
+    })
+    assert parsed["blocks"][0]["illegible"] is True
+    assert "补出来的一句" not in format_units(parsed)
+
+
+def test_a_visible_quote_on_an_illegible_message_is_kept():
+    """看不全的是这一条自己的字；引用框里看得到的原话仍写出来。"""
     quote = {"speaker": "王小明", "self": False, "text": "毛利率35%，比去年高"}
-    text = format_units(_units(_msg("去年年费2万块钱就是亏大了", cut="bottom", quote=quote)))
+    text = format_units(_units(_msg("去年年费2万块钱就是亏大了", cut="bottom", illegible=True, quote=quote)))
     assert text == "王小明：毛利率35%，比去年高\n\n（末尾一条被遮挡，无法辨认）"
     assert "亏大了" not in text
 
