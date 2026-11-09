@@ -371,6 +371,39 @@ def test_a_shot_that_only_repeats_the_last_one_lets_the_next_compare_with_it():
     assert [block["text"] for block in last] == ["下周再聊"]
 
 
+def test_a_cut_off_line_is_not_written_as_a_completed_sentence():
+    """只露出半截的字，模型补成整句并标了 cut：排版不采用那句，也不安到说话人名下。"""
+    units = _units(_msg("去年年费2万块钱就是亏大了", cut="bottom"))
+    text = format_units(units)
+    assert "去年年费" not in text
+    assert "亏大了" not in text
+    assert "网友" not in text
+    assert "方伟" not in text
+    assert text == "（末尾一条被遮挡，无法辨认）"
+    top = format_units(_units(_msg("把看不全的开头补成了整句", "王小明", cut="top")))
+    assert "补成了整句" not in top
+    assert "王小明" not in top
+    assert top == "（开头一条被遮挡，无法辨认）"
+
+
+def test_a_visible_quote_on_a_cut_message_is_kept():
+    """被挡住的是这一条自己的字；引用框里看得到的原话仍写出来。"""
+    quote = {"speaker": "王小明", "self": False, "text": "毛利率35%，比去年高"}
+    text = format_units(_units(_msg("去年年费2万块钱就是亏大了", cut="bottom", quote=quote)))
+    assert text == "王小明：毛利率35%，比去年高\n\n（末尾一条被遮挡，无法辨认）"
+    assert "亏大了" not in text
+
+
+def test_a_cut_line_completed_by_the_next_shot_keeps_that_sentence():
+    """邻图补全以后 cut 会拿掉，完整的那句留下，不再换成「无法辨认」。"""
+    first = _units(_msg("茅台批价这一周没动", "张三"), _msg("渠道仍在观", "李四", cut="bottom"))
+    second = _units(_msg("渠道仍在观望，短期不宜提价", "李四"), _msg("先看到这里", me=True))
+    upper, lower = stitch([first, second])
+    text = format_blocks(upper + lower)
+    assert "渠道仍在观望，短期不宜提价" in text
+    assert "无法辨认" not in text
+
+
 def test_paragraphs_share_written_quotes_across_shots():
     written: set[str] = set()
     first = paragraphs(_units(_msg("李录投资也很好啊", "李四"))["blocks"], written)

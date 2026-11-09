@@ -10,6 +10,7 @@ from researchlib.config import Settings
 from researchlib.llm import LLMError
 from researchlib.ocr import (
     VISION_PROMPT,
+    VISION_PROMPT_VERSION,
     OcrUnavailable,
     normalize_vision_text,
     prepare_vision_image,
@@ -62,6 +63,7 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
         "被回复的那条更早",
         "只写看得到的字，不要补全",
         "一个也认不全的，这条不写",
+        "不要写成一句通顺的话，这条直接不写",
         "看不清的字写 ?",
         "不要用图里别处出现过的词补",
         "也不要拿你自己知道的说法",
@@ -80,6 +82,8 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
     assert "上下文只容得下一个词时，写那个词" not in VISION_PROMPT
     for case_rule in ("雪球专属交流群", "领教工坊", "墓地", "方伟：", "网友：", "十年知己"):
         assert case_rule not in VISION_PROMPT, case_rule
+    # 补「不要补成通顺的话」不升版本：按第 3 版认过的图不因为这句再进重认队列。
+    assert VISION_PROMPT_VERSION == 3
 
 
 def test_default_engine_id_follows_the_current_model(monkeypatch):
