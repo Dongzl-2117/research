@@ -9,13 +9,16 @@ from researchlib import remote_images
 from researchlib.chunks import OCR_MIN_CHARS, ocr_chunks
 from researchlib.remote_images import (
     FetchError,
+    _check_host,
     _checked_create_connection,
     _Redirects,
     blocked_address,
+    check_address,
     download,
     external_urls,
     image_extension,
     photon_origin,
+    proxy_fake_ip,
 )
 from researchlib.render import image_anchor, img_tag_url, normalize_image_url, render_body
 from researchlib.revisions import _real_edits, article_text, diff_blocks, judge_replacement, label
@@ -122,8 +125,8 @@ def test_downloads_only_reach_public_addresses():
 
 
 def test_wordpress_cdn_images_come_from_the_origin_first(monkeypatch):
-    """Stratechery 的图在 i0.wp.com 上。Mac mini 上它解析到代理的 198.18.x.x，CDN 对一部分图还回 404：
-    先下原站那一张（去掉缩放参数），下不来再试 CDN，两边的原因都记下。只连公网的检查照旧。"""
+    """Stratechery 的图在 i0.wp.com 上，CDN 对一部分图回 404：先下原站那一张（去掉缩放参数），
+    下不来再试 CDN，两边的原因都记下。（两边在 Mac mini 上都解析到代理假地址，见下一条。）"""
     cdn = "https://i0.wp.com/stratechery.com/wp-content/uploads/2024/05/chart.png?resize=640%2C470&ssl=1"
     origin = "https://stratechery.com/wp-content/uploads/2024/05/chart.png"
     assert photon_origin(cdn) == origin
@@ -151,6 +154,110 @@ def test_wordpress_cdn_images_come_from_the_origin_first(monkeypatch):
     calls.clear()
     download("https://mmbiz.qpic.cn/a.png")
     assert calls == ["https://mmbiz.qpic.cn/a.png"]
+
+
+class _PeerSocket:
+    """只回对方地址的假连接，看它有没有被关掉。"""
+
+    def __init__(self, peer: str):
+        self.peer = peer
+        self.closed = False
+
+    def getpeername(self):
+        return (self.peer, 443)
+
+    def close(self):
+        self.closed = True
+
+
+def test_proxy_fake_ip_is_allowed_only_for_the_known_image_hosts(monkeypatch):
+    """Mac mini 上的代理开着 fake-ip：容器里 i0.wp.com、stratechery.com 都解析成 198.18.x.x，连上去由代理按域名转。
+    11-09 夜里 300 个新地址因此一张没下下来（先下原站也一样被拦）。这几个固定的图床放行假地址；
+    别的域名解析成假地址照旧不连：代理背后连到哪里这边看不到，那个域名真正的地址可能在内网。"""
+    assert proxy_fake_ip("198.18.0.7") and proxy_fake_ip("198.19.255.254") and proxy_fake_ip("::ffff:198.18.0.7")
+    for other in ("198.17.255.255", "198.20.0.1", "10.0.0.1", "1.1.1.1", "::1", "不是地址"):
+        assert not proxy_fake_ip(other), other
+    assert blocked_address("198.18.0.7")  # 假地址本身仍不算公网
+    for host in ("stratechery.com", "www.stratechery.com", "i0.wp.com", "I3.WP.COM", "stratechery.com."):
+        check_address(host, "198.18.0.7")
+    with pytest.raises(FetchError, match=r"^地址解析到代理的假地址，不下载（evil\.example → 198\.18\.0\.7）$"):
+        check_address("evil.example", "198.18.0.7")
+    # 只认整个域名，后缀、前缀像的都不算。
+    for host in ("stratechery.com.evil.example", "evilstratechery.com", "x.i0.wp.com", "i9.wp.com", "wp.com"):
+        with pytest.raises(FetchError, match="^地址解析到代理的假地址"):
+            check_address(host, "198.18.0.7")
+    # 放行的只是代理假地址那一段：这几个图床解析到真正的内网、本机照样不连。
+    for address in ("10.0.0.5", "127.0.0.1", "192.168.1.1", "100.101.102.103"):
+        with pytest.raises(FetchError, match=r"^地址解析到内网或本机，不下载（stratechery\.com → "):
+            check_address("stratechery.com", address)
+    check_address("example.com", "1.1.1.1")
+
+    # 下载前先解析一遍：每个地址都要能连。
+    answers = {
+        "stratechery.com": ["198.18.0.7"],
+        "i0.wp.com": ["198.18.0.8"],
+        "evil.example": ["198.18.0.9"],
+        "mixed.example": ["1.1.1.1", "10.0.0.1"],
+    }
+
+    def resolve(host, *_args, **_kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in answers[host]]
+
+    monkeypatch.setattr(remote_images.socket, "getaddrinfo", resolve)
+    _check_host("stratechery.com")
+    _check_host("i0.wp.com")
+    with pytest.raises(FetchError, match="^地址解析到代理的假地址"):
+        _check_host("evil.example")
+    with pytest.raises(FetchError, match=r"^地址解析到内网或本机，不下载（mixed\.example → 10\.0\.0\.1）$"):
+        _check_host("mixed.example")
+
+    # 建连接时再核一遍：跳转到别的域名、解析结果中途变了，连上的是假地址也断开。
+    opened: list[_PeerSocket] = []
+
+    def connect(_address, *_args, **_kwargs):
+        opened.append(_PeerSocket("198.18.0.7"))
+        return opened[-1]
+
+    monkeypatch.setattr(remote_images.socket, "create_connection", connect)
+    assert _checked_create_connection(("i0.wp.com", 443), 3) is opened[0] and not opened[0].closed
+    with pytest.raises(FetchError, match="^地址解析到代理的假地址"):
+        _checked_create_connection(("evil.example", 443), 3)
+    assert opened[1].closed
+
+
+def test_stratechery_image_downloads_through_the_proxy_fake_ip(monkeypatch):
+    """修之前：原站 stratechery.com 和 CDN i0.wp.com 都解析到 198.18.x.x，download 两边都拦下，一张都不连。"""
+    monkeypatch.setattr(
+        remote_images.socket, "getaddrinfo",
+        lambda host, *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.7", 0))],
+    )
+    opened: list[str] = []
+
+    class _Response:
+        headers = {"Content-Type": "image/png"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, _size):
+            return b"\x89PNG\r\n\x1a\n...."
+
+    class _Opener:
+        def open(self, request, timeout):
+            opened.append(request.full_url)
+            return _Response()
+
+    monkeypatch.setattr(remote_images, "_opener", _Opener)
+    cdn = "https://i0.wp.com/stratechery.com/wp-content/uploads/2024/05/chart.png?resize=640%2C470&ssl=1"
+    assert download(cdn)[1] == "image/png"
+    assert opened == ["https://stratechery.com/wp-content/uploads/2024/05/chart.png"]
+    # 正文里别的域名解析成假地址照旧不连。
+    with pytest.raises(FetchError, match=r"^地址解析到代理的假地址，不下载（img\.example\.org → 198\.18\.0\.7）$"):
+        download("https://img.example.org/a.png")
+    assert len(opened) == 1
 
 
 def test_connection_to_a_private_peer_is_dropped():

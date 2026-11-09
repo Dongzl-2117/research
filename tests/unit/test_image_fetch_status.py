@@ -9,7 +9,16 @@ import pytest
 
 from researchlib import remote_images
 from researchlib.health import notices, read_status
-from researchlib.remote_images import FetchError, download, failure_kind, fetch_status, record_fetch_status
+from researchlib.remote_images import (
+    EXIT_MOSTLY_FAILED,
+    FetchError,
+    build_parser,
+    download,
+    failure_kind,
+    fetch_status,
+    finish,
+    record_fetch_status,
+)
 
 
 def _report(new: int, kinds: dict | None = None, hosts: dict | None = None, retried: int = 0, retry_failed: int = 0):
@@ -37,6 +46,15 @@ def test_failure_kinds():
     assert failure_kind("原站：HTTP 404；i0.wp.com：地址解析到内网或本机，不下载") == "HTTP 404"
     assert failure_kind("原站：连不上：timed out；i0.wp.com：HTTP 404") == "HTTP 404"
     assert failure_kind("原站：连不上：timed out；i0.wp.com：地址解析到内网或本机，不下载") == "连不上"
+    # 代理的假地址和真正的内网分开；错误后面带着「（域名 → 地址）」也照样认。
+    assert failure_kind("地址解析到代理的假地址，不下载（evil.example → 198.18.0.9）") == "解析到代理假地址"
+    assert failure_kind("地址解析到内网或本机，不下载（evil.example → 10.0.0.5）") == "解析到内网"
+    assert failure_kind(
+        "原站：地址解析到代理的假地址，不下载（a.example → 198.18.0.3）；i0.wp.com：HTTP 404"
+    ) == "HTTP 404"
+    assert failure_kind(
+        "原站：地址解析到代理的假地址，不下载（a.example → 198.18.0.3）；i0.wp.com：连不上：timed out"
+    ) == "解析到代理假地址"
 
 
 def test_dns_failure_is_not_recorded_as_a_private_address(monkeypatch):
@@ -77,7 +95,8 @@ def test_too_few_new_addresses_leave_the_last_verdict():
 
 
 def test_status_file_and_the_research_status_line(tmp_path):
-    message = record_fetch_status(tmp_path, _report(10, {"连不上": 8}, {"example.com": 8}))
+    ok, message = record_fetch_status(tmp_path, _report(10, {"连不上": 8}, {"example.com": 8}))
+    assert not ok
     saved = read_status(tmp_path, "fetch-images")
     assert saved["ok"] is False and saved["new"] == 10
     assert saved["kinds"] == {"连不上": 8} and saved["hosts"] == {"example.com": 8}
@@ -85,8 +104,30 @@ def test_status_file_and_the_research_status_line(tmp_path):
     assert len(lines) == 1
     assert lines[0].startswith("外链图片下载失败（") and lines[0].endswith("：" + message)
     # 只有重试：状态文件不动，提示还在。
-    assert record_fetch_status(tmp_path, _report(0, retried=3, retry_failed=3)) == ""
+    assert record_fetch_status(tmp_path, _report(0, retried=3, retry_failed=3)) is None
     assert len(notices(tmp_path, "Asia/Shanghai")) == 1
     # 下一次新地址都下下来了：提示撤掉。
     record_fetch_status(tmp_path, _report(6))
     assert notices(tmp_path, "Asia/Shanghai") == []
+
+
+def test_nightly_step_fails_when_most_new_images_fail(tmp_path, capsys):
+    """11-09 夜里 300 个新地址一张没下下来，夜间补齐却报成功：以前不管下下来几张都是退出码 0。
+    夜间补齐带 --exit-code，新地址大半下不来时退出码 3，那句话在错误输出最后一行，nightly.sh 记进失败原因。"""
+    assert build_parser().parse_args(["--limit", "300", "--exit-code"]).exit_code
+    assert not build_parser().parse_args(["--limit", "200"]).exit_code
+    bad = _report(300, {"解析到代理假地址": 300}, {"i0.wp.com": 300})
+    assert finish(tmp_path, bad, exit_code=True) == EXIT_MOSTLY_FAILED == 3
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.strip().splitlines()[-1] == (
+        "新地址 300 个，下下来 0 个，下不来 解析到代理假地址 300（最多的是 i0.wp.com 300）"
+    )
+    assert read_status(tmp_path, "fetch-images")["ok"] is False
+    # 不带 --exit-code（定时抓取、手动跑）照旧退出码 0，那句话打在标准输出；状态文件照样写。
+    assert finish(tmp_path, bad) == 0
+    assert capsys.readouterr().out.startswith("新地址 300 个，下下来 0 个")
+    # 个别下不来、只有重试、第一次下的太少：都不算这一步失败。
+    assert finish(tmp_path, _report(50, {"HTTP 404": 3}, {"example.com": 3}), exit_code=True) == 0
+    assert finish(tmp_path, _report(0, retried=9, retry_failed=9), exit_code=True) == 0
+    assert finish(tmp_path, _report(3, {"连不上": 3}, {"example.com": 3}), exit_code=True) == 0

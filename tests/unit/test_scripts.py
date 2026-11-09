@@ -120,6 +120,17 @@ def test_nightly_reads_images_before_views_and_digests():
     assert order == sorted(order)
 
 
+def test_nightly_counts_mostly_failed_image_downloads_as_a_failed_step():
+    """11-09 夜里外链图片 300 个新地址一张没下下来，夜间补齐却报成功。夜间补齐带 --exit-code：新地址大半下不来时
+    research-fetch-images 退出码 3，step 记成失败。定时抓取不带：run_step 一失败就退出，下图有问题会连后面的摘要都不补，
+    那边的结论看 fetch-images.json（research-status 照样列出来）。"""
+    nightly = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
+    assert 'step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMIT" --exit-code' in nightly
+    for name in ("crawl-fangwei-mp.sh", "crawl-gudujinhuati.sh"):
+        script = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert "research-fetch-images --limit 200" in script and "--exit-code" not in script, name
+
+
 def test_nightly_theses_disabled_by_default():
     """论点夜间步骤默认关：没设 THESES_ENABLED=1 时不跑 research-theses。"""
     source = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
