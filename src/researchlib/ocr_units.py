@@ -22,6 +22,8 @@
 - 拼接：连着截的几张，后一张开头和前一张结尾重合的那几条只留一份；被上下边缘截掉一部分的那条，
   换成另一张里完整的。被截的那条认乱了、对不上时跳过它，看后面几条对不对得上。
   比的是模型交回的一条条消息和段落，不按版式猜。
+- 排版：拼接之后仍带着 ``cut`` 的块，不写模型交回的正文（只露出半截时它会补成整句），改写成
+  「被遮挡，无法辨认」，不安到说话人名下。邻图已经补全、``cut`` 被拿掉的那句照旧留下。
 - 标注：截图后有人另外圈出、框出、划线标出的字（``marks``），排在那一块后面，写成「（图上标出：…）」；
   标出的就是整块时不再抄一遍，写「（图上标出这段）」。字明显比正文小的块（``small``，聊天里转发的书页、
   文章截图）后面写「（小字，可能认错）」：这种字模型常按意思补成通顺的话，又自己觉得看清了，
@@ -55,6 +57,11 @@ MIN_OVERLAP_CHARS = 8
 MIN_SPLICE_CHARS = 4
 # 字明显比正文小的块（small）后面多写的一行。
 SMALL_NOTE = "（小字，可能认错）"
+# 仍标着截断、邻图也没补成完整一条的，不采用模型写的那句。只露出半截时模型会补成通顺的整句。
+CUT_UNREADABLE = {
+    "bottom": "（末尾一条被遮挡，无法辨认）",
+    "top": "（开头一条被遮挡，无法辨认）",
+}
 
 _FENCE = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\n?(?P<body>.*?)\n?```$", re.S)
 _NOT_WORD = re.compile(r"[\W_]+")
@@ -422,6 +429,16 @@ def paragraphs(
     written = set() if written is None else written
     entries: list[tuple[str, str]] = []
     for block in blocks:
+        if block.get("cut") and block.get("type") != "table":
+            # 拼接时邻图已经把这条补全的，cut 会被拿掉，完整的那句照旧留下。
+            # 还带着 cut 的，是只露出半截、模型却可能补成整句的。不写那句，也不安到说话人名下。
+            if block.get("type") == _SPOKEN:
+                quote = block.get("quote")
+                if quote and not _written_before(quote["text"], written):
+                    entries.append((speaker_label(quote, owners), quote["text"]))
+                    written.add(_norm(quote["text"]))
+            entries.append(("", CUT_UNREADABLE.get(block["cut"], "（有一条被遮挡，无法辨认）")))
+            continue
         note = _notes(block)
         if block.get("type") != _SPOKEN:
             entries.append(("", "\n".join(part for part in (_body(block), note) if part)))

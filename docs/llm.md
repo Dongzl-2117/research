@@ -126,6 +126,46 @@ docker compose exec app research-grok-smoke --check
 
 `--check` 应打印 `provider` 为 `grok`、`model` 为 `grok-4.7`、`reasoning_effort` 为 `high`、`fast` 为 false，并有一条短回答。当前提供方不是 grok 时这条命令退出码 2。
 
+### 在宿主机上核对问库真的召回到了、并且调了模型
+
+问库先检索。检索是空的就直接回「范围内没有召回到任何段落」，**不会调 Grok**。这和用哪家模型无关（#294 没改 `retrieval.py`）。页面、侧栏和下面这条接口是同一条路。应用已经在听 `127.0.0.1:8088` 时，在 Mac mini 上：
+
+```bash
+# 只问这篇。question 用页面上那句预设，article 是文章 id。
+curl -sS -X POST http://127.0.0.1:8088/api/v1/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"概括这篇文章的核心论点和作者给出的机制，提到了哪些公司，每条带出处。","article":"20544","wait":false}'
+
+# 侧栏问库，整个资料库。
+curl -sS -X POST http://127.0.0.1:8088/api/v1/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"方伟如何看海底捞的供应链、差异化与成本效率？","wait":false}'
+```
+
+返回里 `citations` 不是空数组，才说明召回到了。`id` 有数字就表示已经交给模型；再看状态：
+
+```bash
+curl -sS http://127.0.0.1:8088/api/v1/answers/这里换成返回的id
+```
+
+`status` 从 `running` 变成 `done`，`model` 里有 `grok-4.7`，才是 Grok 被调用了。`wait:true` 会在这一次请求里等完（一篇要几分钟）。
+
+只问这篇仍返回 0 段时，先看这篇文章为什么没进检索（隐藏、读者帖、评论壳，或段落块全是对不上原文的旧译文）。在库里：
+
+```bash
+docker compose exec -T db psql -U research -d research -c "
+SELECT a.id, a.source_id, a.title,
+       coalesce(a.raw_meta->>'hidden','') AS hidden,
+       coalesce(a.raw_meta->>'poster_role','') AS role,
+       count(c.*) FILTER (WHERE c.lang <> 'zh') AS original_chunks
+FROM articles a
+LEFT JOIN article_chunks c ON c.article_id = a.id
+WHERE a.id IN (20544, 23982)
+GROUP BY a.id;"
+```
+
+`original_chunks` 大于 0、`hidden` 和 `role` 都空、来源又是启用的，上面的 `curl` 就应该召回到段落。自己用 `python -c` 调 `retrieve` 时，范围里的 `source_ids` 必须是已启用来源（空列表会让任何文章都匹配不上），连接要用 `researchlib.db.prepare`（里面会设 zhparser）。不要用没设切词参数的裸连接，全文条件会对不上已经建好的索引，整库召回都是 0。
+
 ## 摘要
 
 摘要进 `article_digests`，和问库共用同一份 LLM 凭证。提示只要求导读，不写投资建议、该不该买、目标价或仓位。要点先写判断，再写作者给出的机制；数字只在支撑判断时引用；原文谈到风险、推翻条件或验证指标才写，没谈到就不写。提示词改了就把 `digest.PROMPT_VERSION` 加一，旧摘要照常显示，被看到或跑 `research-digest` 时按新版重写（没有摘要的排在只是版本旧了的前面）。
