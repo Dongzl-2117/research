@@ -1171,6 +1171,39 @@ def thin_text(row: dict) -> bool:
     return len(_TEXT_UNIT.findall(body)) < THIN_TEXT_UNITS
 
 
+# —— 段落本身的信息量 ——
+# 太短的段落写不下多少东西：一句话的帖子、只剩标题的块、聊天里的一句感叹。BM25 的长度归一本来就偏向短文本，
+# 短到只剩问题里那几个词的块，关键词分和语义分都接近满分：线上搜「网络效应」，前十张卡片有三张正文只有一行字
+# （「网络效应护城河」），盲评都是 0 分。正文不到这么多字的段落，分数乘 √(字数 / SUBSTANCE_UNITS)：
+# 100 字乘 0.71，25 字乘 0.35。24 个问题盲评的 509 段里（2 有料、1 一般、0 没料），不到 60 字的 19 段没有一段
+# 「有料」，平均 0.58 分；60～120 字的 30 段平均 1.40，120～200 字的 53 段 1.49，200 字以上的 407 段 1.69。
+SUBSTANCE_UNITS = 200
+# 英文一个词约合 1.6 个汉字：库里 Stratechery 的中英对照，37 篇译文汉字数和原文词数之比的中位数。
+EN_WORD_UNITS = 1.6
+# AI 研究报告导出的段落，句末带着一串「(12)」「(13)」引用编号，或者连写成「21212121」：多半是汇编来的定义和
+# 常识复述。盲评的 509 段里这样的 11 段，10 段是「一般」。三处以上引用编号、或两处连写编号的段落再乘这个数。
+CITED_SUMMARY = 0.8
+_EN_WORD = re.compile(r"[A-Za-z]{2,}")
+# 跟在句子后面的半角括号编号：「至关重要 (12)。」。全角的「（1）」是列点，表格里的「(245) |」是负数，都不算。
+_CITATION = re.compile(
+    r"(?<=[一-鿿。；，、”）A-Za-z0-9])\s?\(\d{1,3}(?:\s*[,，-]\s*\d{1,3})*\)(?=\s*(?:[。；，,.;：:\n]|$))"
+)
+_CITATION_RUN = re.compile(r"(?<!\d)(\d{2})\1{3,}(?!\d)")
+
+
+def substance(body: str) -> float:
+    """段落本身信息量的系数，约 0.13～1：太短的打折（SUBSTANCE_UNITS），像 AI 汇编报告的再打折（CITED_SUMMARY）。
+
+    只看正文，链接和文件名不算字，和 thin_text 一样不看章节标题。
+    """
+    text = _NOT_TEXT.sub(" ", body or "")
+    units = len(_CJK.findall(text)) + EN_WORD_UNITS * len(_EN_WORD.findall(text))
+    factor = min(1.0, max(units, THIN_TEXT_UNITS) / SUBSTANCE_UNITS) ** 0.5
+    if len(_CITATION.findall(text)) >= 3 or len(_CITATION_RUN.findall(text)) >= 2:
+        factor *= CITED_SUMMARY
+    return factor
+
+
 def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int],
                    *, model: str | None = None):
     model = embeddings.model_name() if model is None else model
@@ -1532,7 +1565,8 @@ def score_rows(
         sem = semantic.get(key, 0.0) if measured else 0.0
         if score <= 0 and sem <= 0:
             continue
-        mult = anchor
+        # 段落本身写了多少东西：关键词分和语义分都只管「谈没谈到」，一行字的帖子也能拿满分。
+        mult = anchor * substance(body)
         age = _age_days(row.get("published_at"), now=context.as_of)
         if query.recent and age is not None:
             mult *= 0.55 + 0.9 * math.exp(-age / 400)
