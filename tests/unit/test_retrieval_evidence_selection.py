@@ -51,7 +51,7 @@ def test_zero_df_keeps_the_content_question_and_invokes_semantic_recall(monkeypa
     row = dict(article_id=1, ord=0, body='合成语义证据', heading='', title='合成', source_id='synthetic',
                published_at=None)
 
-    def semantic(conn, got, scope, rows):
+    def semantic(conn, got, scope, rows, **_options):
         called.append(got)
         assert not got.overview and got.terms
         return [row], {(1, 0): 1.0}
@@ -68,7 +68,7 @@ def test_zero_df_without_vectors_returns_no_unrelated_overview(monkeypatch):
     monkeypatch.setattr(r, 'analyze', lambda *a, **k: query(terms=[term]))
     row = dict(article_id=1, ord=0, body='无关概览', heading='', title='合成', source_id='synthetic', published_at=None)
     monkeypatch.setattr(r, '_candidates', lambda c, got, *a, **k: [row] if got.overview else [])
-    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows: (rows, {}))
+    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows, **_options: (rows, {}))
     monkeypatch.setattr(r, '_corpus_stats', lambda c: (1, 100))
     found = r.retrieve(Conn(), 'unseen', Scope(source_ids=['synthetic'], company_id=1),
                        [SimpleNamespace(id='synthetic')])
@@ -91,7 +91,7 @@ def test_globally_known_content_without_scoped_evidence_stays_empty(monkeypatch,
     monkeypatch.setattr(r, 'load_company_rows', lambda c: [])
     monkeypatch.setattr(r, 'analyze', lambda *a, **k: q)
     monkeypatch.setattr(r, '_candidates', lambda c, got, *a, **k: [row] if got.overview else [])
-    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows: (rows, {}))
+    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows, **_options: (rows, {}))
     monkeypatch.setattr(r, '_corpus_stats', lambda c: (1, 100))
     found = r.retrieve(Conn(), 'known', scopes[restriction], [SimpleNamespace(id='synthetic')], purpose='display')
     assert found.passages == []

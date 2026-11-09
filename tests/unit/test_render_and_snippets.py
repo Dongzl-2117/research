@@ -26,6 +26,33 @@ def test_snippet_keeps_a_late_hit():
     assert "<mark>腾讯</mark>" in rendered
 
 
+def test_snippet_window_goes_where_the_rare_words_are():
+    # 开头的语录里有「商业」，后面整段在讲开市客：窗口放在开市客那里，不停在第一处碰到的常见词上。
+    body = (
+        "“投资要情绪稳定，在投资和商业决策中要理性。”——某位投资人。" + "闲话。" * 40
+        + "开市客是会员的采购代理人，开市客把毛利率压在 14% 以下，会员费才是利润。" + "后记。" * 30
+    )
+    terms = ["开市客", "Costco", "商业", "模式"]
+    groups = [(5.0, ["开市客", "Costco"]), (2.4, ["商业"]), (2.3, ["模式"])]
+    first_hit = str(highlight_snippet(body, "Costco 商业模式", terms=terms))
+    assert "<mark>商业</mark>决策" in first_hit and "开市客" not in first_hit
+    placed = str(highlight_snippet(body, "Costco 商业模式", terms=terms, groups=groups))
+    assert "<mark>开市客</mark>是会员的采购代理人" in placed
+    assert "决策" not in placed
+
+
+def test_snippet_window_prefers_more_of_the_question_then_the_earlier_place():
+    body = "模式。" + "甲" * 120 + "商业模式和开市客。" + "乙" * 120 + "开市客、开市客、开市客。"
+    groups = [(5.0, ["开市客"]), (2.4, ["商业"]), (2.3, ["模式"])]
+    placed = str(highlight_snippet(body, "", terms=["开市客", "商业", "模式"], groups=groups, radius=60))
+    # 三个词组都在的那处比只有公司名、但出现三次的那处好。
+    assert "<mark>商业模式</mark>和<mark>开市客</mark>" in placed
+    # 写到的词一样多时取靠前的，不挑把词重复了几遍的地方。
+    body = "护城河是企业抵御竞争、守住利润的结构性优势。" + "甲" * 120 + "护城河、护城河、护城河。"
+    placed = str(highlight_snippet(body, "", terms=["护城河"], groups=[(3.0, ["护城河"])], radius=60))
+    assert "抵御竞争" in placed and "护城河、" not in placed
+
+
 def test_snippet_escapes_and_marks():
     snippet = highlight_snippet("<script>alert(1)</script> 腾讯广告", "腾讯", radius=80)
     rendered = str(snippet)

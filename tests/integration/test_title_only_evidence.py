@@ -19,7 +19,7 @@ def test_exact_title_only_lexical_evidence_survives_without_vectors(conn, settin
     ).fetchone()['id']
     conn.execute('INSERT INTO article_chunks(article_id,ord,body) VALUES(%s,0,%s)', (identity, body))
     conn.commit()
-    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows: (rows, {}))
+    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows, **_options: (rows, {}))
     sources = enabled_sources(load_sources(settings.sources_path))
     scope = Scope(source_ids=['fangwei-mp'])
     assert all(term.df == 0 for term in r.analyze(conn, question, sources).content_terms)

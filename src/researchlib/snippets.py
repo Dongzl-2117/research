@@ -30,8 +30,50 @@ def _find(text: str, term: str) -> int:
     return text.find(term)
 
 
-def highlight_snippet(text: str, query: str, *, radius: int = 88, terms: list[str] | None = None) -> Markup:
-    """取第一处命中附近的一段并高亮。terms 给了就用它（检索实际用到的词，含公司别名和同义词）。"""
+def _find_all(text: str, term: str) -> list[int]:
+    haystack, needle = (text.casefold(), term.casefold()) if term.isascii() else (text, term)
+    found: list[int] = []
+    index = haystack.find(needle)
+    while index >= 0:
+        found.append(index)
+        index = haystack.find(needle, index + max(len(needle), 1))
+    return found
+
+
+def _best_hit(flat: str, groups: list[tuple[float, list[str]]], window: int) -> int | None:
+    """窗口放在哪个命中处：窗口里写到的词组按权重（少见程度）加起来最多的；一样多时取靠前的。
+
+    以前放在第一处命中：「Costco 商业模式」的摘录常常停在开头名人语录里的「商业」两个字上，
+    后面整段在讲 Costco 的会员和低毛利，卡片上却看不到。
+    一样多时不挑命中次数多的：那样常挑中「护城河、护城河、护城河」这种只重复词的地方，丢掉前面下定义的那句。
+    """
+    hits: list[tuple[int, int]] = []  # (位置, 第几个词组)
+    for number, (_weight, forms) in enumerate(groups):
+        for form in forms:
+            if form:
+                hits.extend((index, number) for index in _find_all(flat, form))
+    if not hits:
+        return None
+    hits.sort()
+    best: tuple[float, int] | None = None
+    for center, _number in hits:
+        start = max(0, center - window // 2)
+        inside = {number for index, number in hits if start <= index < start + window}
+        key = (sum(groups[number][0] for number in inside), -center)
+        if best is None or key > best:
+            best = key
+    return -best[1] if best else None
+
+
+def highlight_snippet(
+    text: str, query: str, *, radius: int = 88, terms: list[str] | None = None,
+    groups: list[tuple[float, list[str]]] | None = None,
+) -> Markup:
+    """取命中附近的一段并高亮。terms 给了就用它（检索实际用到的词，含公司别名和同义词）。
+
+    groups 是检索的词组和各自的权重（[(权重, [这组的各种写法])]）：给了就把窗口放在词组最集中、最少见的地方，
+    没给就放在第一处命中。
+    """
     # 先遮地址再截窗口；截掉协议或把凭据拆进 <mark> 后，输出边界就认不全了。
     flat = re.sub(r"\s+", " ", redact_subscription_links(text or "")).strip()
     if not flat:
@@ -42,8 +84,10 @@ def highlight_snippet(text: str, query: str, *, radius: int = 88, terms: list[st
         fragment = flat[: radius * 2]
         suffix = "…" if len(flat) > len(fragment) else ""
         return Markup(str(escape(fragment)) + suffix)
-    start_hit = min(positions)
     window = max(radius, 48)
+    start_hit = _best_hit(flat, groups, window) if groups else None
+    if start_hit is None:
+        start_hit = min(positions)
     start = max(0, start_hit - window // 2)
     end = min(len(flat), start + window)
     if end - start < window:

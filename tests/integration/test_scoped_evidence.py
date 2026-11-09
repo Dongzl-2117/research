@@ -35,7 +35,7 @@ def test_scoped_lexical_and_semantic_miss_returns_no_evidence(conn, settings, mo
         date_from=date(2026, 11, 4) if restriction != 'author' else None,
     )
     # 只替换向量服务；分析、词频、SQL 过滤、评分和问库均用真实实现。
-    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows: (rows, {}))
+    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows, **_options: (rows, {}))
     assert any(t.text == 'scopedneedle' and t.df > 0 for t in r.analyze(conn, question, sources).content_terms)
     found = r.retrieve(conn, question, scope, sources, purpose=purpose)
     assert found.passages == [] and not found.query.overview
@@ -55,7 +55,7 @@ def test_scoped_lexical_and_semantic_miss_returns_no_evidence(conn, settings, mo
 def test_explicit_day_overview_still_returns_that_days_article(conn, settings, monkeypatch):
     _corpus(conn)
     sources = enabled_sources(load_sources(settings.sources_path))
-    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows: (rows, {}))
+    monkeypatch.setattr(r, 'semantic_candidates', lambda c, q, s, rows, **_options: (rows, {}))
     found = r.retrieve(
         conn, '这一天大家都在聊什么',
         Scope(source_ids=[s.id for s in sources], date_from=date(2026, 11, 4), date_to=date(2026, 11, 4)),

@@ -159,6 +159,17 @@ class Query:
                     found.append(form)
         return found
 
+    def snippet_groups(self) -> list[tuple[float, list[str]]]:
+        """检索页摆摘录窗口用：每个词组一项，(权重, 各种写法)。权重和打分一样按少见程度，公司名比「商业」「模式」重。"""
+        groups: dict[int, tuple[float, list[str]]] = {}
+        for term in self.terms:
+            if term.group < 0:
+                continue
+            weight, forms = groups.get(term.group, (0.0, []))
+            forms = forms + [form for form in (term.forms or [term.text]) if form and form not in forms]
+            groups[term.group] = (max(weight, term.idf * term.weight), forms)
+        return list(groups.values())
+
 
 @dataclass
 class Passage:
@@ -175,10 +186,12 @@ class Passage:
     # 'zh' 是英文文章的中文译文块；anchor 是对照页上那一段的锚点。
     lang: str = ""
     anchor: str = ""
-    # 语义相近的程度（0～1，按向量排名折算）。0 表示没有向量或不在前列。
+    # 语义相近的程度（0～1，按和问题的相似度折算，见 semantic_scores）。0 表示没有向量或按意思不相关。
     semantic: float = 0.0
     # 正文里没写全搜索词、靠语义检索进来的段落。页面上标「语义相关」。
     semantic_hit: bool = False
+    # 这段有向量、算过和问题的相似度（semantic 为 0 表示按意思不相关，不是没算）。
+    measured: bool = False
     # 交给模型时补上的前后文（同一篇相邻的块）。引用和链接仍落在这一块上。
     before: str = ""
     after: str = ""
@@ -985,12 +998,23 @@ def _candidates(conn, query: Query, scope: Scope, limit: int = CANDIDATES, *, en
 # —— 语义召回 ——
 
 # 向量这一路取多少块。问到公司时，大部分名额给提到这家公司的文章，少数留给没点名但谈的是同一件事的。
+# 交给模型的份量更大时（问库后台 240 段），按份量放大，不然按意思相关、字面没写全的段落进不来。
 VECTOR_POOL = 120
 VECTOR_OPEN_POOL = 40
-# 按语义排名折算分数：第 1 名 1 分，往后线性递减，排到这么多名之后为 0。
-SEMANTIC_RANKS = 60
-# 和语义最相近的那块比，相似度差出这么多的不算语义相关。
-SEMANTIC_BAND = 0.15
+# 检索页列的是文章，一篇有一块对得上就够，向量这一路多取一些。
+SEARCH_VECTOR_POOL = 240
+# 语义分：问题和段落的余弦相似度，以第二近的那块为满分线（一块近乎照抄问题的段落不会把别的都压下去；
+# 但不低于最近那块减去带宽），差出 SEMANTIC_BAND 以内的线性给 1～0 分，再远的 0 分。
+# 不按名次截断：以前只有前 60 名有分，库到二十万块以后，关键词召回到的段落几乎全是 0 分，排序和摘录又退回只看字面。
+# 带宽是余弦的单位，跟着向量模型走。bge-m3 上实测（20 个问题、1100 多段，交叉编码器打相关分）：
+# 比第二近低 0.05 以内的段落 87% 相关，低 0.1～0.125 的 62%，低 0.175～0.2 的 40%，低 0.225 以上的不到 10%。
+SEMANTIC_BAND = 0.2
+# 问库时模型补的要点：放在 expansions 的这个键下；最多用几条，每条取多少块近邻，语义分打几折
+# （要点是模型的话，不如问题本身可靠）。
+ASPECTS_KEY = "__aspects__"
+MAX_ASPECTS = 4
+ASPECT_POOL = 60
+ASPECT_WEIGHT = 0.85
 
 
 # 先用 HNSW 索引取这么多倍的近邻，再按范围过滤；留下的不够数才逐块算距离。
@@ -1067,9 +1091,14 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
 
 
 def semantic_candidates(
-    conn, query: Query, scope: Scope, rows: list[dict], *, pool: int = VECTOR_POOL
+    conn, query: Query, scope: Scope, rows: list[dict], *, pool: int = VECTOR_POOL,
+    aspects: list[str] | None = None,
 ) -> tuple[list[dict], dict[tuple[int, int], float]]:
     """向量这一路：补上关键词没召回到的段落，再给全部候选算语义分。
+
+    aspects：问库时模型补的「要点」（一个好回答该覆盖的几个方面，各写成一句话）。每条要点自己算一次向量、
+    取一批近邻，语义分按要点各自折算后打 ASPECT_WEIGHT 折，和问题本身的取大。问题很短（「costco 商业模式」）
+    时，讲会员费、讲低毛利的段落离问题本身都不算最近，按要点找才进得来。
 
     没配向量服务、库里没有向量表、服务连不上时原样返回，语义分为空。
     """
@@ -1082,20 +1111,54 @@ def semantic_candidates(
         return rows, {}
     if embeddings.model_name() != model:
         return rows, {}
-    literal = embeddings.literal(vector)
     company_ids = [t.company_id for t in query.terms if t.kind == "company" and t.company_id is not None]
+    texts = [text for text in dict.fromkeys((aspects or [])[:MAX_ASPECTS]) if text and text != query.raw]
+    extra = [(text, embeddings.query_vector(text)) for text in texts]
     try:
         with conn.transaction():
-            sims = _vector_lookup(conn, kind, literal, scope, rows, pool, company_ids, model=model)
+            sims = _vector_lookup(conn, kind, embeddings.literal(vector), scope, rows, pool, company_ids, model=model)
+            aspect_sims = [
+                _vector_lookup(conn, kind, embeddings.literal(other), scope, rows, ASPECT_POOL, company_ids,
+                               model=model)
+                for _text, other in extra if other is not None
+            ]
     except Exception as exc:  # 向量这一路出错不能拖垮检索：退回只用关键词。
         embeddings.logger.warning("语义召回失败，只用关键词：%s", exc)
         return rows, {}
     if embeddings.model_name() != model:
         return rows, {}
-    have = {(row["article_id"], row["ord"]) for row in rows}
-    new_keys = [key for key in sims if key not in have]
-    rows = list(rows) + [dict(row) for row in _rows_for_keys(conn, new_keys)]
-    return _prefer_translation(rows, _phrases(query)), semantic_scores(sims)
+    have = {(row["article_id"], row["ord"]): row for row in rows}
+    found_keys = list(dict.fromkeys([*sims, *(key for found in aspect_sims for key in found)]))
+    fetched = {(row["article_id"], row["ord"]): dict(row)
+               for row in _rows_for_keys(conn, [key for key in found_keys if key not in have])}
+    # 正文几乎没字的块（只有链接、图片文件名），向量就是文章标题和章节标题的向量：标题和问题沾边，它就排在最前，
+    # 还会把满分线抬高、把别的块都压下去，卡片和交给模型的原文却只有一串文件名。
+    # 这样的块不算语义分（当没算过），关键词照常算。
+    texts = {**have, **fetched}
+    sims = {key: sim for key, sim in sims.items() if key in texts and not thin_text(texts[key])}
+    aspect_sims = [{key: sim for key, sim in found.items() if key in texts and not thin_text(texts[key])}
+                   for found in aspect_sims]
+    scores = semantic_scores(sims)
+    for found in aspect_sims:
+        for key, value in semantic_scores(found).items():
+            scores[key] = max(scores.get(key, 0.0), ASPECT_WEIGHT * value)
+    rows = list(rows) + [row for key, row in fetched.items() if scores.get(key, 0.0) > 0]
+    return _prefer_translation(rows, _phrases(query)), scores
+
+
+# 算「正文有没有字」时不算的：链接、图片和附件的文件名。
+_NOT_TEXT = re.compile(
+    r"https?://\S+|www\.\S+|[\w\-.%()（）]+\.(?:png|jpe?g|gif|webp|svg|bmp|heic|pdf|mp4|mov)\b", re.IGNORECASE
+)
+_TEXT_UNIT = re.compile(r"[一-鿿]|[A-Za-z]+|\d+")
+# 正文去掉链接和文件名以后不到这么多个字（汉字按字、英文按词）就算没字。
+THIN_TEXT_UNITS = 5
+
+
+def thin_text(row: dict) -> bool:
+    """只看正文：章节标题是同一节各块共用的，有的导出把一整段话放进了章节标题，正文只剩图片文件名。"""
+    body = _NOT_TEXT.sub(" ", row.get("body") or "")
+    return len(_TEXT_UNIT.findall(body)) < THIN_TEXT_UNITS
 
 
 def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int],
@@ -1125,17 +1188,17 @@ def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict]
 
 
 def semantic_scores(sims: dict[tuple[int, int], float]) -> dict[tuple[int, int], float]:
-    """相似度换成 0～1 的语义分。按排名折算，不直接用余弦值：不同模型的相似度尺度差很多。"""
+    """相似度换成 0～1 的语义分：和离问题第二近的那块比，差得越少分越高，差出 SEMANTIC_BAND 的为 0。
+
+    每块都按自己的相似度给分，不按名次截断；以最近的块为准，不看绝对值（不同问题、不同模型的尺度不一样）。
+    """
     if not sims:
         return {}
-    ranked = sorted(sims.items(), key=lambda item: item[1], reverse=True)
-    best = ranked[0][1]
-    scores: dict[tuple[int, int], float] = {}
-    for rank, (key, sim) in enumerate(ranked):
-        if rank >= SEMANTIC_RANKS or sim < best - SEMANTIC_BAND:
-            break
-        scores[key] = 1.0 - rank / SEMANTIC_RANKS
-    return scores
+    top = sorted(sims.values(), reverse=True)[:2]
+    # 满分线取第二近的那块，但不低于最近那块减去带宽：范围很窄、只有一块真正相近时，别的块不会跟着沾光。
+    floor = max(top[-1], top[0] - SEMANTIC_BAND) - SEMANTIC_BAND
+    # 差得太远的记 0 分（不是没有）：有向量、按意思不相关，挑选时据此把只沾了一两个词的段落筛掉。
+    return {key: max(0.0, min(1.0, (sim - floor) / SEMANTIC_BAND)) for key, sim in sims.items()}
 
 
 def _company_lookup(query: Query, company_id: int | None) -> dict:
@@ -1411,12 +1474,19 @@ def score_rows(
         score *= 0.1 + 0.9 * coverage**params.coverage_power
 
         # 公司：段落里确实谈到了这家公司才算；整篇深入谈的文章再加一点。
+        anchor = 1.0
         if focus_ids:
             hits = sum(company_hits.get(cid, 0) for cid in focus_ids)
             if hits == 0 and row["ord"] == _ord_range(row['ord'])[0] and any(
                 title_companies.get(cid) for cid in focus_ids
             ):
                 hits = 1
+            # 问题点了公司，这段没写到它、所在文章也不是专门谈它的（标题或全文深入）：按意思再像，
+            # 谈的多半是别家的同类事，排在谈这家公司的段落后面。整篇谈它的文章里没再点名的段落不算。
+            if hits == 0 and scope.company_id is None and not any(
+                depths.get((row["article_id"], cid)) in ("title", "whole") for cid in focus_ids
+            ):
+                anchor = UNANCHORED
             if query.overview:
                 if hits == 0:
                     continue
@@ -1440,10 +1510,12 @@ def score_rows(
             if any(name in text for name in deep_names.get(row["article_id"], ())):
                 score *= 1.8
             coverage = 1.0
-        sem = semantic.get((row["article_id"], row["ord"]), 0.0) if semantic and not query.overview else 0.0
+        key = (row["article_id"], row["ord"])
+        measured = bool(semantic) and not query.overview and key in semantic
+        sem = semantic.get(key, 0.0) if measured else 0.0
         if score <= 0 and sem <= 0:
             continue
-        mult = 1.0
+        mult = anchor
         age = _age_days(row.get("published_at"), now=context.as_of)
         if query.recent and age is not None:
             mult *= 0.55 + 0.9 * math.exp(-age / 400)
@@ -1467,15 +1539,20 @@ def score_rows(
                 lang=row.get("lang") or "",
                 anchor=row.get("anchor") or "",
                 semantic=sem,
+                measured=measured,
             )
         )
     return fuse_semantic(passages, multipliers)
 
 
-# 关键词分和语义分的融合权重。关键词仍是主干：搜的词原样出现的段落最可靠。
-LEXICAL_WEIGHT = 0.65
+# 关键词分和语义分的融合权重。同一批样本里，按融合分重排的 NDCG@15：只看关键词 0.85，权重 0.4～0.65 都在
+# 0.915～0.926 之间，0.8 掉到 0.90。评判用的交叉编码器本身偏字面（讲网络效应却没写这四个字的段落只给 0.2），
+# 取这一段里偏语义的一头。
+LEXICAL_WEIGHT = 0.5
 # 语义分到这个数，就当作「把问题谈到了」，挑选时不因为没写全搜索词被筛掉。
 SEMANTIC_STRONG = 0.6
+# 问题点了公司、这段和所在文章都没谈到它时，整段的分打这个折。
+UNANCHORED = 0.5
 
 
 def fuse_semantic(passages: list[Passage], multipliers: list[float]) -> list[Passage]:
@@ -1557,6 +1634,10 @@ def select(
     if not query.overview:
         floor = ranked[0].score * min_score_ratio
         ranked = [p for p in ranked if p.score >= floor]
+        # 按意思和问题不沾边（算过相似度、在带宽以外）、字面上也没写全的段落不要：多半只是碰上一两个常见词。
+        # 交给模型的资料少一批噪音，分批读的批数也少。没算到向量的段落不受影响。
+        if any(p.semantic > 0 for p in ranked):
+            ranked = [p for p in ranked if not (p.measured and p.semantic <= 0 and p.coverage < 0.99)]
         # 全部词组都命中的段落已经不少时，只命中一半以下的就不要了，免得用噪音填满名额。
         full = sum(1 for p in ranked if p.coverage >= 0.99)
         if full >= max(10, budget.passages // 4):
@@ -1646,7 +1727,10 @@ def retrieve(
     if limit:
         budget = Budget(limit, max(budget.chars, limit * 900), budget.per_article)
     company_rows = load_company_rows(conn)
-    query = analyze(conn, question, sources, company_rows=company_rows, expansions=expansions)
+    # 模型补的要点不是检索词，只拿来按意思找（见 semantic_candidates），不进 analyze。
+    aspects = [str(text) for text in (expansions or {}).get(ASPECTS_KEY) or [] if str(text).strip()]
+    words = {key: value for key, value in (expansions or {}).items() if key != ASPECTS_KEY} or None
+    query = analyze(conn, question, sources, company_rows=company_rows, expansions=words)
     # 明确的按日概览仍按日期取文章；内容词零命中不能据此改成概览。
     if (scope.date_from or scope.date_to) and re.fullmatch(
         r"(?:这一天|当天|这天)(?:大家)?(?:都)?在聊(?:什么|啥)[？?。!！\s]*", query.raw
@@ -1667,7 +1751,9 @@ def retrieve(
     effective = _scope_for_question(scope, query, sources)
     sources_by_id = {source.id: source for source in sources}
     if scope.article_id is not None:
-        return _retrieve_article(conn, query, effective, budget, purpose=purpose, semantic_ok=semantic_ok)
+        return _retrieve_article(
+            conn, query, effective, budget, purpose=purpose, semantic_ok=semantic_ok, aspects=aspects,
+        )
     if scope.tree_id is not None:
         # 一个目录下往往就几篇长文：每篇封顶放宽，不然最长那篇只能进两三段。
         budget = replace(budget, per_article=max(budget.per_article, TREE_PER_ARTICLE))
@@ -1681,7 +1767,9 @@ def retrieve(
         )]
     semantic: dict[tuple[int, int], float] = {}
     if semantic_ok and not query.overview:
-        rows, semantic = semantic_candidates(conn, query, effective, rows)
+        rows, semantic = semantic_candidates(
+            conn, query, effective, rows, pool=max(VECTOR_POOL, budget.passages), aspects=aspects,
+        )
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     picked = select(scored, query, budget, sources_by_id)
     # 具体内容在当前范围没有词汇或语义证据时，保持无证据。
@@ -1713,7 +1801,8 @@ ARTICLE_PICK_SHARE = 0.5
 
 
 def _retrieve_article(
-    conn, query: Query, scope: Scope, budget: Budget, *, purpose: str, semantic_ok: bool
+    conn, query: Query, scope: Scope, budget: Budget, *, purpose: str, semantic_ok: bool,
+    aspects: list[str] | None = None,
 ) -> Retrieval:
     """只问这一篇。短文整篇按原文顺序给；长文按问题在这篇里检索，命中的块连同前后文按原文顺序给，再附上章节目录。"""
     rows = _article_rows(conn, scope)
@@ -1754,7 +1843,9 @@ def _retrieve_article(
     candidates = _candidates(conn, query, scope, limit=2000, enough=2000)
     semantic: dict[tuple[int, int], float] = {}
     if semantic_ok:
-        candidates, semantic = semantic_candidates(conn, query, scope, candidates)
+        candidates, semantic = semantic_candidates(
+            conn, query, scope, candidates, pool=max(VECTOR_POOL, budget.passages), aspects=aspects,
+        )
     scored = score_rows(conn, query, candidates, scope=scope, semantic=semantic)
     chars = max(budget.chars, CHAR_BUDGET_ARTICLE)
     local = Budget(budget.passages, int(chars * ARTICLE_PICK_SHARE), budget.passages)
@@ -1916,7 +2007,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
     rows = _candidates(conn, query, effective, limit=2000, enough=2000)
     semantic: dict[tuple[int, int], float] = {}
     if query.content_terms:
-        rows, semantic = semantic_candidates(conn, query, effective, rows)
+        rows, semantic = semantic_candidates(conn, query, effective, rows, pool=SEARCH_VECTOR_POOL)
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     ordered = rank_articles(scored, query, company_rows)
     full_hits = [h for h in ordered if h.full]

@@ -1,10 +1,12 @@
 """检索和问库里不碰数据库的部分：公司计数、挑选、同义词解析、分批整合。"""
 
+import json
 from datetime import datetime
 
 from researchlib import ask as ask_module
 from researchlib.ask import parse_expansions, synthesize
 from researchlib.retrieval import (
+    ASPECTS_KEY,
     BUDGETS,
     EXACT_STATS_BELOW,
     Budget,
@@ -140,6 +142,21 @@ def test_parse_expansions_keeps_only_known_terms_and_short_words():
     assert found == {"护城河": ["壁垒", "竞争优势"], "__extra__": ["拼多多"]}
     assert parse_expansions("没有 JSON", ["护城河"]) == {}
     assert parse_expansions('{"同义": []}', ["护城河"]) == {}
+
+
+def test_parse_expansions_keeps_aspects_as_sentences_for_meaning_search():
+    text = json.dumps({
+        "同义": {"商业模式": ["盈利模式"]},
+        "要点": ["靠什么收入，收入里哪块最赚钱", "短", "靠什么收入，收入里哪块最赚钱", "成本和费用怎么控制",
+                 "凭什么比对手便宜", "第四条也收", "第五条不要了"],
+    }, ensure_ascii=False)
+    found = parse_expansions(text, ["商业模式"])
+    assert found["商业模式"] == ["盈利模式"]
+    # 去重、太短的不要、最多 4 条；要点不混进同义词。
+    assert found[ASPECTS_KEY] == [
+        "靠什么收入，收入里哪块最赚钱", "成本和费用怎么控制", "凭什么比对手便宜", "第四条也收",
+    ]
+    assert parse_expansions('{"要点": "不是列表"}', ["商业模式"]) == {}
 
 
 def _items(n: int, size: int) -> list[dict]:

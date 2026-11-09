@@ -228,6 +228,51 @@ def test_search_finds_articles_by_meaning_and_marks_them(conn, settings, fake_ve
     assert '<span>全部来源</span><span class="num">0</span>' in page
 
 
+def _costco_notes(conn, settings):
+    _store(
+        conn,
+        settings,
+        FANGWEI,
+        [
+            _doc("cost", "开市客笔记", "Costco 靠会员费赚钱，商品几乎不赚毛利，低价换来续费率。", month=1),
+            _doc("sam", "山姆笔记", "山姆会员店也靠会员费赚钱，低价，毛利很薄。", month=2),
+            _doc("store", "开市客新店", "Costco 在上海开了新店，门店外面排队很长，开业当天停车场满了。", month=3),
+            _doc("rain", "天气", "今天下雨，天气转凉。", month=4),
+        ],
+    )
+    assert embeddings.backfill(conn) == 4
+
+
+def test_named_company_keeps_its_own_meaning_matches_first_and_drops_the_unrelated(conn, settings, fake_vectors):
+    from researchlib.retrieval import retrieve
+
+    _costco_notes(conn, settings)
+    sources = _sources(settings)
+    found = retrieve(conn, "costco 会员费", Scope(source_ids=[s.id for s in sources]), sources, purpose="llm")
+    titles = [p.title for p in found.passages]
+    # 讲同一件事、但没提 Costco 的山姆排在后面；只提了 Costco、讲的是开新店的，按意思不沾边又没写全词，
+    # 不交给模型。以前它靠「Costco」一个词排进来，挤占资料名额。
+    assert titles == ["开市客笔记", "山姆笔记"]
+
+
+def test_aspects_from_the_model_bring_in_passages_far_from_the_short_question(conn, settings, fake_vectors):
+    from researchlib.retrieval import ASPECTS_KEY, retrieve
+
+    _costco_notes(conn, settings)
+    sources = _sources(settings)
+    scope = Scope(source_ids=[s.id for s in sources])
+    plain = retrieve(conn, "costco 会员费", scope, sources, purpose="llm")
+    assert "开市客新店" not in [p.title for p in plain.passages]
+    # 模型列的要点里有一条讲门店：按这条要点也找一遍，开新店那篇按意思进来了（打折后的语义分）。
+    widened = retrieve(
+        conn, "costco 会员费", scope, sources, purpose="llm", expansions={ASPECTS_KEY: ["门店开业排队的情况"]},
+    )
+    store = next(p for p in widened.passages if p.title == "开市客新店")
+    assert 0 < store.semantic <= 0.85
+    # 要点不当检索词：高亮和检索词里都没有它。
+    assert "门店开业排队的情况" not in widened.terms
+
+
 def test_semantic_channel_degrades_to_keywords_when_the_service_fails(conn, settings, fake_vectors):
     from researchlib.retrieval import retrieve
 

@@ -1202,6 +1202,8 @@ def search_page(request: Request):
         entity_companies = queries.matching_companies(conn, query) if query and page == 1 else []
         results = []
         terms = found.terms if found else []
+        # 摘录窗口放在问的词最集中、最少见的地方（公司名比「商业」重），不停在第一处碰到常见词的地方。
+        groups = found.query.snippet_groups() if found and found.query else None
         hits = found.hits if found else []
         # 检索卡片不带正文，星球标题是正文开头截下的半句（没有省略号）时认不出来。先按卡片、文章页那一套
         # 把标题补成整句，再标出命中的词。
@@ -1225,7 +1227,7 @@ def search_page(request: Request):
                     title=highlight_title(shown[hit.article_id], query, terms=terms),
                     extra={
                         "snippets": [
-                            highlight_snippet(polish_display_text(p.body), query, terms=terms)
+                            highlight_snippet(polish_display_text(p.body), query, terms=terms, groups=groups)
                             for p in hit.passages[:2]
                         ],
                         "heading": best.heading if best else "",
