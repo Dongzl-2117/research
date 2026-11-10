@@ -12,7 +12,7 @@ from researchlib.ingest.parse import comments_section
 from researchlib.ingest.store import store_documents
 from researchlib.migrate import MIGRATIONS, split_sql
 from researchlib.ocr import run_ocr
-from researchlib.remote_images import FetchError, fetch_pending
+from researchlib.remote_images import FetchError, dead_hosts, fetch_pending
 from researchlib.retrieval import reset_stats_cache, search_articles
 from researchlib.revisions import save_revision
 from researchlib.sources import enabled_sources, load_sources
@@ -350,6 +350,56 @@ def test_images_blocked_by_the_proxy_fake_ip_are_queued_again(conn):
             conn.execute(statement)
     left = {row["url"] for row in conn.execute("SELECT url FROM image_fetches").fetchall()}
     assert left == {url for url, _ok, _error in rows[3:]}
+
+
+def test_wechat_images_blocked_by_the_proxy_fake_ip_are_queued_again(conn):
+    """034：微信图床被「只连公网」拦下的失败记录删掉（11-09 以前记成「解析到内网或本机」，以后是「代理的假地址」），
+    下一次下载就重试；别的原因的失败、成功的、别的图床不动。"""
+    rows = [
+        ("https://mmbiz.qpic.cn/mmbiz_png/a/640?wx_fmt=png&from=appmsg", False,
+         "地址解析到代理的假地址，不下载（mmbiz.qpic.cn → 198.18.0.12）"),
+        ("https://mmbiz.qpic.cn/sz_mmbiz_jpg/b/640?wx_fmt=jpeg", False, "地址解析到内网或本机，不下载"),
+        ("https://mmbiz.qpic.cn/mmbiz_png/c/640", False, "HTTP 404"),
+        ("https://mmbiz.qpic.cn/mmbiz_jpg/d/640?wx_fmt=jpeg", True, ""),
+        ("https://img.example.org/e.png", False, "地址解析到代理的假地址，不下载（img.example.org → 198.18.0.9）"),
+        ("https://i0.wp.com/stratechery.com/wp-content/uploads/f.png", False,
+         "原站：地址解析到代理的假地址，不下载（stratechery.com → 198.18.0.7）；i0.wp.com：HTTP 404"),
+    ]
+    for url, ok, error in rows:
+        conn.execute("INSERT INTO image_fetches (url, ok, error, attempts) VALUES (%s, %s, %s, 2)", (url, ok, error))
+    for _ in range(2):  # 再跑一遍结果一样
+        for statement in split_sql((MIGRATIONS / "034_retry_wechat_fake_ip_images.sql").read_text(encoding="utf-8")):
+            conn.execute(statement)
+    left = {row["url"] for row in conn.execute("SELECT url FROM image_fetches").fetchall()}
+    assert left == {url for url, _ok, _error in rows[2:]}
+
+
+def test_dead_image_hosts_come_from_recent_fetches(conn):
+    """research-status 报「一张都没下下来的图床」：最近 3 天下过、一张没下下来、原因大半在这边的图床。
+    有一张下下来了、原因大半是原图没了（404）或域名没了、太久以前的、只有一两张的都不算。"""
+    def add(host, count, error, *, ok=False, days_ago=0):
+        for n in range(count):
+            conn.execute(
+                "INSERT INTO image_fetches (url, ok, error, fetched_at)"
+                " VALUES (%s, %s, %s, now() - make_interval(days => %s))",
+                (f"https://{host}/{error[:4]}-{days_ago}-{n}.png", ok, error, days_ago),
+            )
+
+    add("mmbiz.qpic.cn", 3, "地址解析到代理的假地址，不下载（mmbiz.qpic.cn → 198.18.0.12）")
+    add("mmbiz.qpic.cn", 1, "地址解析到内网或本机，不下载", days_ago=2)
+    add("mmbiz.qpic.cn", 1, "", ok=True, days_ago=8)  # 以前下下来过，这几天没有
+    add("i0.wp.com", 4, "原站：连不上：timed out；i0.wp.com：连不上：timed out")
+    add("i0.wp.com", 1, "", ok=True)  # 这几天有下下来的
+    add("old.example", 5, "HTTP 404")
+    add("old.example", 3, "连不上：timed out")  # 原因大半是原图没了
+    add("gone.example", 4, "域名解析不了：[Errno -2] Name or service not known")
+    add("stale.example", 4, "连不上：timed out", days_ago=5)
+    add("few.example", 2, "HTTP 403")
+    add("Shout.Example", 3, "HTTP 403")
+    assert dead_hosts(conn) == {
+        "mmbiz.qpic.cn": {"解析到代理假地址": 3, "解析到内网": 1},
+        "shout.example": {"HTTP 403": 3},
+    }
 
 
 def _echo_translation(**kwargs):
