@@ -1,10 +1,13 @@
 """译文易读性对照：挑真实原文段落，用几种译法各译一遍，不写库。
 
-在 Mac mini 上（应用容器里有 DeepSeek 的 key，云端没有）：
+在 Mac mini 上（应用容器里有 DeepSeek 的 key 和 Grok 的登录，云端都没有）：
 
     cd ~/research
     curl -fsSL https://raw.githubusercontent.com/Dongzl-2117/research/<提交>/tools/translate_compare/compare.py \\
       | docker compose exec -T app python - [heldout] > ~/translate-compare.json
+
+用哪家跟线上译制一样看 RESEARCH_LLM_PROVIDER（11-10 起默认 Grok）。要用 DeepSeek 跑，在 exec 后面加
+-e RESEARCH_LLM_PROVIDER=deepseek，只影响这一条命令。不带参数的 13 段只用 DeepSeek 跑。
 
 进度印在 stderr，结果 JSON 写到 stdout。只读库，不写 article_translations，不动回执和队列。
 
@@ -26,7 +29,11 @@ articleContext 里、一段一次请求：
 - polish：拿 v3 的译文再问一次，让模型当编辑对照原文审改（POLISH_SYSTEM）。看多花这一道值不值。
 线上旧译另从网站对照页取，这里只记库里那份的模型和提示词版本，确认还是旧稿。
 
-按官网价两组都不到 1 美元，夜间价时段再减半。8 个一起发，几分钟。
+DeepSeek 按官网价两组都不到 1 美元，夜间价时段再减半。Grok 走订阅不另算钱，但和识图、译制共用一份账号额度，
+碰上限流会自己等着重发，要慢一些。8 个一起发。
+
+11-10 第一次跑 heldout（DeepSeek）：盲评 v3 比线上旧译好 18 段、差不多 2 段；polish 比 v3 好 5 段、差不多 14 段、
+差 1 段，输出用量是 v3 的 2.5 倍。见 docs/translate.md「提示词」。
 """
 
 from __future__ import annotations
@@ -44,9 +51,9 @@ from difflib import SequenceMatcher
 
 from researchlib.config import Settings
 from researchlib.db import connect
-from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider
+from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider, provider_label
 from researchlib.translate import service
-from researchlib.translate.llm import chat_json, metered, output_tokens
+from researchlib.translate.llm import chat_json, metered, model_id, output_tokens
 from researchlib.translate.numbers import has_hard_facts, same_numeric_facts
 from researchlib.translate.prompts import SYSTEM_BODY
 from researchlib.translate.provenance import prompt_versions, source_manifest
@@ -369,28 +376,41 @@ def phase(jobs: list[dict], names: list[str], data_dir) -> None:
 
 
 def main() -> int:
-    if llm_provider() == PROVIDER_GROK or not deepseek_api_key():
-        say("要用 DeepSeek 跑：RESEARCH_LLM_PROVIDER 不能是 grok，DEEPSEEK_API_KEY 要配好")
-        return 2
     heldout = sys.argv[1:] == ["heldout"]
     if sys.argv[1:] and not heldout:
         say("参数只认 heldout（留出的 20 段）；不带参数是定第 3 版用的 13 段")
         return 2
     settings = Settings.from_env()
+    provider = llm_provider()
+    if provider == PROVIDER_GROK:
+        # 留出的 20 段两家都能跑：和线上译制一样跟 RESEARCH_LLM_PROVIDER 走。定第 3 版的 13 段当时只用 DeepSeek 比过。
+        if not heldout:
+            say("不带参数的 13 段只用 DeepSeek 跑（RESEARCH_LLM_PROVIDER=deepseek）；Grok 跑留出段加 heldout")
+            return 2
+        from researchlib.translate.xai_oauth import xai_oauth_status
+
+        if not xai_oauth_status(settings.data_dir).logged_in:
+            say("Grok OAuth 没登录：先 research-xai-login login")
+            return 2
+    elif not deepseek_api_key():
+        say("DEEPSEEK_API_KEY 没配好")
+        return 2
+    else:
+        os.environ["DEEPSEEK_MODEL"] = FLASH_MODEL
     with connect(settings) as conn:
         jobs = prepare(conn, settings, HELDOUT if heldout else PASSAGES)
     if not jobs:
         say("一段都没找到")
         return 1
     started = time.time()
-    os.environ["DEEPSEEK_MODEL"] = FLASH_MODEL
+    model = model_id()
     if heldout:
         # 审改要用 v3 的译文，两道分开跑。
-        say(f"留出的 {len(jobs)} 段，{FLASH_MODEL}：先 v3，再 polish")
+        say(f"留出的 {len(jobs)} 段，{provider_label(provider)} {model}：先 v3，再 polish")
         phase(jobs, ["v3"], settings.data_dir)
         phase(jobs, ["polish"], settings.data_dir)
     else:
-        say(f"{len(jobs)} 段，{FLASH_MODEL}：now_para、new_split、new_flash")
+        say(f"{len(jobs)} 段，{model}：now_para、new_split、new_flash")
         phase(jobs, ["now_para", "new_split", "new_flash"], settings.data_dir)
     totals: dict[str, dict[str, int]] = {}
     for job in jobs:
@@ -404,6 +424,8 @@ def main() -> int:
                 totals[name][key] += int(value)
     report = {
         "set": "heldout" if heldout else "tuning",
+        "provider": provider,
+        "model": model,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "prompt_polish_sha1": hashlib.sha1(POLISH_SYSTEM.encode("utf-8")).hexdigest()[:12],
         "prompt_new_sha1": hashlib.sha1(SYSTEM_BODY.encode("utf-8")).hexdigest()[:12],
