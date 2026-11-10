@@ -78,19 +78,19 @@ docker compose exec app research-translate --from-inventory unmapped --workers 4
 
 Grok 走 `https://api.x.ai/v1/chat/completions`，Bearer 为 OAuth access token；过期或 403 stale 时强制刷新再试。长调用默认 25 分钟（`LLM_LONG_TIMEOUT_MS`）。DeepSeek 译制走流式，见上面「DeepSeek 译制走流式」。
 
-### 一次送整篇：`--batch-segments 0`（2026-11-10 试用）
+### 一次送整篇：`--batch-segments 0`（2026-11-10 加，没试）
 
 11-10 起译制走 Grok（grok-4.7、`high`、不流式），一次请求要等模型想完、写完整批才返回，一次几分钟。一篇按 12 段一批、一批接一批，普通文章四五次请求，要二三十分钟；访谈要一两个小时。和识图同跑时两边抢同一份 Grok 限额，Zhilin 11-10 报的数是 3 小时 16 分译完约 21 篇。
 
 `--batch-segments N` 改一次请求最多送几段，默认 12。`0` 不按段数切，只按 24000 字一批：一般文章一次请求送整篇，访谈这种长文仍分几批。别的都不变：照旧按段编号交回（`id`、`source_hash` 逐项回显），逐段核数字、链接、图片和占位符，哪段不对只重译那一段；对不齐先原批重来一次，再对半拆开。一批就是整篇时不另带 `articleContext`（全文已经在 `segments` 里），拆成两半时两半照旧带上全文。让路以后印出的重跑命令带着这个参数。
 
-12 段的上限是给 DeepSeek Flash 定的，一批段数多了它会少回或多回一段。Grok 一次交回几十段对不对得上、整篇一次送快多少，要实测。先挑 20 篇还没译过的：
+12 段的上限是给 DeepSeek Flash 定的，一批段数多了它会少回或多回一段，DeepSeek 照旧用默认值。Grok 一次交回几十段对不对得上、整篇一次送快多少，要实测。11-10 Zhilin 选了剩下的全部走 DeepSeek（见「全部按第 3 版译」），这个参数没试。以后用 Grok 跑大批时，先挑 20 篇还没译过的：
 
 ```bash
 docker compose exec app research-translate --from-inventory none --limit 20 --workers 8 --batch-segments 0
 ```
 
-看三样：每篇结果行的请求次数、思考 token 和用时，和长短差不多、按 12 段一批译的篇比；stderr 上「对半拆开重试」和「先放英文」有几行；易读性那边抽看前后叫法和通顺。对得上、明显更快，剩下的补译和重译都加这个参数，默认值等试完再定改不改。
+看三样：每篇结果行的请求次数、思考 token 和用时，和长短差不多、按 12 段一批译的篇比；stderr 上「对半拆开重试」和「先放英文」有几行；对照页抽看前后叫法、通顺，长批末尾几段的中英字数比有没有比前面低。对得上、明显更快，再加这个参数跑剩下的。
 
 ## Stratechery
 
@@ -404,6 +404,28 @@ docker compose exec -T app python - heldout < tools/translate_compare/compare.py
 ```
 
 用哪家跟 `RESEARCH_LLM_PROVIDER` 走（默认 Grok）；要用 DeepSeek 在 `exec` 后面加 `-e RESEARCH_LLM_PROVIDER=deepseek`，只影响这一条命令。盲评时把输出里的 `live`、`v3`、`polish` 三份打乱再读，评完再对钥匙；先看了是哪份再评，会不自觉偏向新的。
+
+### 全部按第 3 版译：DeepSeek 这一轮（2026-11-10 起）
+
+要译的约 2300 篇：从没译过的约 600 篇（`none`），没译完和回执过期的（`partial`、`stale`），加上第 3 版以前译的约 1700 篇（`old-prompt`、旧流水线回执 `old-receipt`、没回执的 `legacy`）。`old-receipt` 不在 `old-prompt` 里，要单列一类跑。
+
+Zhilin 11-10 在卡片上选了这一批走 DeepSeek。当时的账：
+
+- DeepSeek：第 3 版在它上面验过（上一节）。16 篇同时译，估两三天；约 40 到 120 美元（按 11-09 的单件用量加上第 3 版多出的约 27% 输出，夜间价），北京时间工作日 9 到 12 点、14 到 18 点单价翻倍，全天跑大约再多三成。
+- Grok：订阅里出、不另花钱，但和识图全量重认抢同一份账号额度，3 小时 16 分只译了约 21 篇，照这个速度要两周左右；也没和 DeepSeek 拿同一批段比过好坏。
+
+只有这一轮的进程走 DeepSeek，识图、问库、摘要、观点照旧用 Grok（`.env` 不改）。Mac mini 上：
+
+```bash
+cd ~/research
+nohup bash -c 'docker compose exec -T app research-translate-inventory; for c in none partial stale old-prompt old-receipt legacy; do docker compose exec -T -e RESEARCH_LLM_PROVIDER=deepseek -e RESEARCH_LLM_CONCURRENCY=16 app research-translate --from-inventory $c --workers 16; done' < /dev/null >> ~/translate-deepseek.log 2>&1 &
+```
+
+- 先重新盘点，再一类接一类译；某一类是空的就直接到下一类。`old-prompt` 按第 3 版整篇重译，旧提示词的段不复用；`legacy`、`old-receipt` 没有这一版的回执，也是整篇译。
+- 合并上线时每个 worker 译完手上那篇就停，后面几类也立刻让路退出。`/health` 报出新提交后再跑同一条：重新盘点，译完的跳过，接着译。
+- DeepSeek 余额不够时请求被拒（402），这一轮停在那，充值后再跑同一条。
+- 进度看 `~/translate-deepseek.log`：每篇一行结果带用量和用时，每一类跑完一行合计；按合计的 token 和上面的单价算已经花了多少。
+- 同时开着别的 `research-translate`（比如照 `.env` 走 Grok 的 `--loop`）时，碰上同一篇按 advisory lock 各让一步，不会重译。
 
 ## 一段出错不连累整篇（2026-11-07，`ALIGNMENT_VERSION` 9）
 
