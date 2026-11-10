@@ -20,7 +20,7 @@ from researchlib.grok import GROK_EFFORTS, GROK_MODEL_ID
 from researchlib.llm_provider import PROVIDER_DEEPSEEK, PROVIDER_GROK, provider_base_url, provider_label
 
 EFFORTS = {PROVIDER_GROK: GROK_EFFORTS, PROVIDER_DEEPSEEK: DEEPSEEK_EFFORTS}
-# 问库默认用各家的最高档（Zhilin 11-09 定问库保持最深思考，不为提速降强度）。
+# 问库默认用各家的最高档（Zhilin 11-09 定问库保持最深思考，不为提速降强度；11-10 换 Grok 后在卡片上再确认 xhigh）。
 # 别的调用方不受影响：Grok 全站仍是 high，见 researchlib.grok。
 DEFAULT_EFFORT = {PROVIDER_GROK: "xhigh", PROVIDER_DEEPSEEK: "max"}
 EFFORT_LABELS = {"low": "低", "medium": "中", "high": "高", "xhigh": "最高", "max": "最高"}

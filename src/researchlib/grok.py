@@ -1,11 +1,13 @@
 """站内 Grok 的固定强度。译制、问库、摘要、观点、论点、识图共用这一组，避免两套参数以后漂移。
+问库的思考档位另算（默认 xhigh，每问一次可以换），见 ``researchlib.ask_model``。
 
 鉴权不在这里。调用方只拿 xAI OAuth access token（researchlib.translate.xai_oauth）。
 
 口径（2026-11-10 按 ``GET /v1/models/grok-4.7`` 核过）：
 
 - 模型固定 grok-4.7，不带 ``fast`` 后缀；请求里显式发 ``"fast": false``，不开快速档。
-- ``reasoning_effort=high``。xAI 报的能力是 ``low/medium/high/xhigh``，默认 high；owner 要 high，不是 xhigh。
+- ``reasoning_effort=high``。xAI 报的能力是 ``low/medium/high/xhigh``，默认 high；全站要 high，不是 xhigh。
+  问库例外：Zhilin 11-09 定问库保持最深思考，11-10 换 Grok 后在卡片上再确认问库默认 xhigh。
 - 上下文用模型自报的最大窗口 500000（``context_length``），请求里不另传更小的上限。
 - 输出预算不低于 128000。
 

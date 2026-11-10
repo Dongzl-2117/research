@@ -96,7 +96,7 @@ xAI 把过期的 OAuth access token 报成 401/403；遇到这种 403 会强制�
 
 问库（问库页、文章页右侧问库、`POST /api/v1/ask`、没脚本时的表单）在输入框里多一个菜单，每问一次可以选哪一家、哪一档思考（`researchlib/ask_model.py`）。译制、识图、摘要、观点、论点不走这里，照旧用上面两节的全站强度。
 
-- 不选就是默认：`RESEARCH_LLM_PROVIDER` 那一家，档位用 `ask_model.DEFAULT_EFFORT`（Grok `xhigh`、DeepSeek `max`，问库保持最深思考）。
+- 不选就是默认：`RESEARCH_LLM_PROVIDER` 那一家，档位用 `ask_model.DEFAULT_EFFORT`（Grok `xhigh`、DeepSeek `max`）。问库保持最深思考是 Zhilin 11-09 定的，11-10 换 Grok 后又在卡片上确认了 `xhigh`，别为提速降回 `high`。
 - 档位：Grok `low` / `medium` / `high` / `xhigh`（`grok.GROK_EFFORTS`，xAI 对 grok-4.7 报的全部档位），DeepSeek `low` / `high` / `max`。菜单上叫「低、中、高、最高」。
 - 选了哪家就用 `ask_model.apply` 换出一份 `Settings`（`llm_provider`、`llm_base_url`、`llm_effort`）往下传，扩词、分批读资料、写回答三处都用它；`llm.chat` 看到 `llm_effort` 才改请求里的 `reasoning_effort`，别的调用方不设这个字段。
 - 选择记在 `llm_answers.stats.llm`（`{"provider", "effort"}`），登记时就写，进度和出错都不盖掉它；「重新整合」沿用这一份。11-10 以前的回答没记，接口里 `llm` 是 `null`，页面上不写档位。
