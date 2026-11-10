@@ -20,7 +20,9 @@ DEEPSEEK_REASONING_EFFORT = "max"
 DEEPSEEK_CONTEXT_TOKENS = 1_048_576
 DEEPSEEK_OUTPUT_FLOOR = 393_216
 
-_ALLOWED_EFFORT = frozenset({"low", "high", "max"})
+# 问库按次选档时也按这个顺序列出来（researchlib.ask_model）。
+DEEPSEEK_EFFORTS = ("low", "high", "max")
+_ALLOWED_EFFORT = frozenset(DEEPSEEK_EFFORTS)
 
 # 这些字段会把强度或上下文从上面的口径拉开，请求里不能出现。
 _FORBIDDEN_FIELDS = frozenset(
@@ -75,12 +77,18 @@ def completion_params(
     *,
     max_tokens: int | None = None,
     environ: Mapping[str, str] | None = None,
+    effort: str | None = None,
 ) -> dict:
-    """chat/completions 里和强度有关的字段。不带 temperature，也不另传更小的上下文。"""
+    """chat/completions 里和强度有关的字段。不带 temperature，也不另传更小的上下文。
+
+    ``effort`` 只给问库按次选档用（``researchlib.ask_model``），不传就按 DEEPSEEK_REASONING_EFFORT（默认 max）。
+    """
+    if effort is not None and effort not in _ALLOWED_EFFORT:
+        raise RuntimeError(f"DeepSeek 没有这一档思考强度：{effort}")
     params = {
         "model": deepseek_model(environ),
         "max_tokens": deepseek_output_tokens(max_tokens, environ),
-        "reasoning_effort": deepseek_reasoning_effort(environ),
+        "reasoning_effort": effort or deepseek_reasoning_effort(environ),
         "thinking": {"type": "enabled"},
     }
     forbidden = _FORBIDDEN_FIELDS.intersection(params)

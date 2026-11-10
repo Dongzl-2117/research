@@ -92,6 +92,18 @@ xAI 把过期的 OAuth access token 报成 401/403；遇到这种 403 会强制�
 
 设 `RESEARCH_LLM_PROVIDER=deepseek` 就用 `DEEPSEEK_API_KEY`。强度仍在 `researchlib/deepseek.py`（deepseek-flash / thinking / `max` / 输出至少 393216 / 上下文 1M）。问库、译制、识图、摘要、观点、论点、抽验走同一批入口，只是请求体换成 DeepSeek 的。改回 `grok` 或删掉这一行再重启，就回到 Grok。
 
+### 问库按次选模型和思考强度
+
+问库（问库页、文章页右侧问库、`POST /api/v1/ask`、没脚本时的表单）在输入框里多一个菜单，每问一次可以选哪一家、哪一档思考（`researchlib/ask_model.py`）。译制、识图、摘要、观点、论点不走这里，照旧用上面两节的全站强度。
+
+- 不选就是默认：`RESEARCH_LLM_PROVIDER` 那一家，档位用 `ask_model.DEFAULT_EFFORT`（Grok `xhigh`、DeepSeek `max`，问库保持最深思考）。
+- 档位：Grok `low` / `medium` / `high` / `xhigh`（`grok.GROK_EFFORTS`，xAI 对 grok-4.7 报的全部档位），DeepSeek `low` / `high` / `max`。菜单上叫「低、中、高、最高」。
+- 选了哪家就用 `ask_model.apply` 换出一份 `Settings`（`llm_provider`、`llm_base_url`、`llm_effort`）往下传，扩词、分批读资料、写回答三处都用它；`llm.chat` 看到 `llm_effort` 才改请求里的 `reasoning_effort`，别的调用方不设这个字段。
+- 选择记在 `llm_answers.stats.llm`（`{"provider", "effort"}`），登记时就写，进度和出错都不盖掉它；「重新整合」沿用这一份。11-10 以前的回答没记，接口里 `llm` 是 `null`，页面上不写档位。
+- 没有凭证的那一家不在菜单里（默认那家总在）。请求里点名了没凭证的那家，照常报「没有可用的 X 凭证」，只给召回的原文，不自动换另一家。填了不认识的 `model` / `effort`，JSON 接口回 400；没脚本时的表单按这一家的默认档兜底（换了模型、档位还是上一家的）。
+- 浏览器里选过的记在本机（`localStorage` 的 `research-ask-model`），问库页和文章页共用；没选过就跟着页面上的默认走。
+- 费用：DeepSeek 按量计费，`max` 11-09 实测一次 0.14～0.29 美元；Grok OAuth 走订阅。全站每天 30 次的上限（`ASK_DAILY_LIMIT`）照样管着，最坏一天约 9 美元。两家共用同一个并发上限（`llm._slot`）。
+
 ### 变量
 
 | 变量 | 默认 | 说明 |
@@ -275,7 +287,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
 - `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`：原文里本地存了的图换成站内 `/media/…` 的完整地址（JSON 的 `body_markdown`、MCP 的 `get_article` 也一样），还没下载的外链图照原样留着；`.md` 最后附「图片里的字」一节，就是检索用的那份图片文字块。正文仍是归档原文，归档头照旧在，只有 Stratechery 网页导出归档头里的 `- rss_link:` 不给：那是导出脚本拉取用的个人订阅地址，文章页和检索文字从 #157 起就不要。
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
-- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认马上返回回答 id 和相关原文，后台整合，之后轮询下面这个接口。加 `"wait": true` 时最多等 80 秒（`ask.WAIT_SECONDS`）：写完了带回答和 `checks` 返回，没写完返回 `status: running` 和 id，照样接着轮询。以前 `wait` 在请求里跑完整个整合（全库的问题 6 到 9 分钟），隔着 Cloudflare 超过 100 秒就断开（524），回答编号也丢了。
+- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认马上返回回答 id 和相关原文，后台整合，之后轮询下面这个接口。可以加 `"model"`（`grok` 或 `deepseek`）和 `"effort"`（那一家的思考档），见上面「问库按次选模型和思考强度」。加 `"wait": true` 时最多等 80 秒（`ask.WAIT_SECONDS`）：写完了带回答和 `checks` 返回，没写完返回 `status: running` 和 id，照样接着轮询。以前 `wait` 在请求里跑完整个整合（全库的问题 6 到 9 分钟），隔着 Cloudflare 超过 100 秒就断开（524），回答编号也丢了。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；`running` 时 `answer` 是写到一半的回答（可能为空），`stats.progress` 是进度；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词，分批读和写回答各用了多久，token 用量）。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`、`get_answer`。`ask_library` 只登记、马上返回回答 id（同一个原因：等整合写完会被 Cloudflare 或客户端的超时断开），`get_answer` 取结果：写完前给写到一半的回答和进度，写完给回答、回答里引用到的段落（每段带站内链接，没引用的不带，免得 240 段塞满调用方的上下文）和 `checks`。`ask_library` 不标只读、不标可重复调（每次都登记一次、花一次钱）。

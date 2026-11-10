@@ -51,3 +51,27 @@ def test_reading_column_stays_680_and_chat_collapses_before_it_would_overflow():
     assert "Enter 发送" not in template
     assert 'aria-describedby="article-chat-mode"' in template
     assert "整个资料库 · 单轮" in template
+
+
+def test_chat_script_sends_model_and_effort_and_keeps_menu_popovers_closable():
+    js = (ROOT / "src/researchlib/web/static/article-chat.js").read_text(encoding="utf-8")
+    keys = js.split("for (const key of [", 1)[1].split("]", 1)[0]
+    assert "'model'" in keys and "'effort'" in keys
+    # 选过的模型和档位记在本机，问库页和阅读侧栏共用；读写都包在 try 里（无痕窗口里 localStorage 会抛错）。
+    assert "research-ask-model" in js and "localStorage.setItem(modelKey" in js
+    # 换一家时别家的档位关掉（disabled 的 fieldset 不随表单提交）。
+    assert "box.disabled = !active" in js
+    # 菜单开着时 Esc 只收起菜单，不连面板一起收起。
+    assert "details[data-popover][open]" in js and "}, true);" in js
+    # 可以问的题两个入口都认：委托在面板上，「新对话」以后放回去的问候也能点。
+    assert "event.target.closest('.ask-suggest a[data-question]')" in js
+    assert "welcomeCopy.cloneNode(true)" in js
+    css = (ROOT / "src/researchlib/web/static/ask-chat.css").read_text(encoding="utf-8")
+    # 范围下拉框透明地盖在标签上，字号 16px：iPhone 上点它不放大整页。
+    chip = css.split(".article-chat .chat-range-chip .chat-range {", 1)[1].split("}", 1)[0]
+    assert "opacity: 0" in chip and "font-size: 16px" in chip
+    # 模型浮层对齐输入框右边、不超过输入框宽：阅读页右栏 overflow: hidden，超出去会被切掉。
+    grid = css.split(".chat-composer-bar .ask-model .model-grid {", 1)[1].split("}", 1)[0]
+    assert "right: 0" in grid and "width: min(320px, 100%)" in grid
+    noscript = (ROOT / "src/researchlib/web/static/ask-chat-noscript.css").read_text(encoding="utf-8")
+    assert ".chat-range-text { display: none; }" in noscript

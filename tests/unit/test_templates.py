@@ -547,3 +547,76 @@ def test_day_template_lists_the_day_and_offers_to_ask():
     assert "13:29" in html
     assert "AI 整合" not in html
     assert 'href="/days/2024-10-20"' in html
+
+
+def _efforts(*pairs):
+    return [{"id": key, "label": label} for key, label in pairs]
+
+
+_GROK = {"id": "grok", "label": "Grok", "model": "grok-4.7", "default_effort": "xhigh",
+         "efforts": _efforts(("low", "低"), ("medium", "中"), ("high", "高"), ("xhigh", "最高"))}
+_DEEPSEEK = {"id": "deepseek", "label": "DeepSeek", "model": "deepseek-flash", "default_effort": "max",
+             "efforts": _efforts(("low", "低"), ("high", "高"), ("max", "最高"))}
+
+
+def _menu(*providers):
+    default = {"provider": "grok", "effort": "xhigh"}
+    return {"default": default, "default_label": "Grok · 最高", "providers": list(providers)}
+
+
+def test_article_chat_panel_greets_offers_questions_and_a_model_menu():
+    """文章右侧问库：还没问时问候加三道题（这篇问过的在前），点一下按「只问这篇」填进输入框；
+    输入框左下角范围，右下角模型和档位，非默认那家的档位关着（不随表单提交）。"""
+    from researchlib.web.routes import _chat_suggestions
+
+    suggestions = _chat_suggestions(["腾讯的广告怎么看", "长" * 61, "这篇的核心观点是什么？"])
+    assert [item["question"] for item in suggestions] == [
+        "腾讯的广告怎么看", "这篇的核心观点是什么？", "作者的判断依据有哪些？",
+    ]
+    assert [item["asked"] for item in suggestions] == [True, True, False]
+    html = _env().get_template("article.html").render(
+        title="Note", canonical="https://investment.zldong.com/articles/1", public_host="investment.zldong.com",
+        query="", nav="archive", sample_banner=False, sources=[], active_source="", source=_Source(),
+        article={"id": 1, "title": "Note"}, iso="2026-01-01", date="2026-01-01", time="12:00",
+        body_language="original", body_html="<p>正文</p>", original_url="", siblings=[],
+        ask_models=_menu(_GROK, _DEEPSEEK), chat_suggestions=suggestions,
+    )
+    panel = html.split('id="article-chat"', 1)[1].split("</aside>", 1)[0]
+    assert "<h3>想从资料里了解什么？</h3>" in panel
+    suggest = panel.split('<ul class="ask-suggest"', 1)[1].split("</ul>", 1)[0]
+    assert suggest.count("<li>") == 3 and suggest.count('<span class="sr">问过：</span>') == 2
+    assert 'data-question="腾讯的广告怎么看" data-scope="1"' in suggest
+    assert 'href="/ask?article=1&amp;q=%E8%85%BE' in suggest
+    # 「新对话」问过一题才出现；收起一直在。
+    assert 'data-chat-clear aria-label="新对话" title="新对话" hidden>' in panel
+    bar = panel.split('<div class="chat-composer-bar">', 1)[1].split("</form>", 1)[0]
+    send = bar.index('aria-label="发送问题"')
+    assert bar.index('class="chat-range-chip"') < bar.index('<details class="ask-model"') < send
+    assert '<span class="chat-range-text" aria-hidden="true">整个资料库</span>' in bar
+    assert '<span class="ask-model-label">Grok · 最高</span>' in bar
+    assert 'name="model" value="grok" data-label="Grok" checked>' in bar
+    assert 'name="model" value="deepseek" data-label="DeepSeek">' in bar
+    assert 'data-provider="grok" data-default-effort="xhigh">' in bar
+    assert 'data-provider="deepseek" data-default-effort="max" hidden disabled>' in bar
+    assert bar.count(" checked>") == 2 and 'value="xhigh" data-label="最高" checked>' in bar
+    assert "每次独立提问，不接上文。" in panel.split("</form>", 1)[0]
+
+
+def test_ask_page_model_menu_sits_by_the_send_button():
+    """问库页：模型菜单在发送键左边；只有一家能用时不列「模型」那一栏，用隐藏字段带上。没有菜单数据时整个不出现。"""
+    from researchlib.web.routes import TEMPLATES as routes_templates
+
+    context = dict(
+        title="问库", nav="ask", query="", public_host="investment.zldong.com",
+        canonical="https://investment.zldong.com/ask", sample_banner=False, sources=[], active_source="",
+        history=[], llm_ready=True, result=None, question="", authors=["方伟"],
+        filters={"author": "", "source": "", "from": "", "to": ""}, article=None, tree=None, company=None,
+    )
+    html = routes_templates.env.get_template("ask.html").render(**context, ask_models=_menu(_GROK))
+    bar = html.split('<div class="chat-composer-bar">', 1)[1].split("</form>", 1)[0]
+    send = bar.index('aria-label="发送问题"')
+    assert bar.index('class="chat-count"') < bar.index('<details class="ask-model"') < send
+    assert '<input type="hidden" name="model" value="grok" data-label="Grok">' in bar
+    assert "model-providers" not in bar and bar.count('name="effort"') == 4
+    bare = routes_templates.env.get_template("ask.html").render(**context)
+    assert "ask-model" not in bare

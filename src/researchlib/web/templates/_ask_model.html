@@ -1,0 +1,32 @@
+{# 问库输入框里的「模型和思考强度」菜单。问库页和文章页问库共用；选项来自 researchlib.ask_model.menu。
+   没脚本时也能选模型（思考按那一家的默认）；有脚本时换模型会换出那一家的档位，选择记在本机浏览器里。 #}
+{% macro model_menu(menu) %}
+{% if menu and menu.providers %}
+<details class="ask-model" data-popover data-default-provider="{{ menu.default.provider }}" data-default-effort="{{ menu.default.effort }}">
+  <summary title="模型和思考强度"><span class="sr">模型和思考强度：</span><span class="ask-model-label">{{ menu.default_label }}</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
+  <div class="model-grid">
+    {% if menu.providers | length > 1 %}
+    <fieldset class="model-providers">
+      <legend>模型</legend>
+      {% for provider in menu.providers %}
+      <label class="model-option"><input type="radio" name="model" value="{{ provider.id }}" data-label="{{ provider.label }}"{% if provider.id == menu.default.provider %} checked{% endif %}><span><b>{{ provider.label }}</b><small>{{ provider.model }}</small></span></label>
+      {% endfor %}
+    </fieldset>
+    {% else %}
+    <input type="hidden" name="model" value="{{ menu.providers[0].id }}" data-label="{{ menu.providers[0].label }}">
+    {% endif %}
+    {% for provider in menu.providers %}
+    <fieldset class="model-efforts" data-provider="{{ provider.id }}" data-default-effort="{{ provider.default_effort }}"{% if provider.id != menu.default.provider %} hidden disabled{% endif %}>
+      <legend>思考强度{% if menu.providers | length > 1 %}<span class="sr">（{{ provider.label }}）</span>{% endif %}</legend>
+      <div class="effort-row">
+        {% for effort in provider.efforts %}
+        <label><input type="radio" name="effort" value="{{ effort.id }}" data-label="{{ effort.label }}"{% if provider.id == menu.default.provider and effort.id == menu.default.effort %} checked{% endif %}><span>{{ effort.label }}</span></label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    {% endfor %}
+    <p class="model-note">默认 {{ menu.default_label }}。档位越高想得越深，回答也越慢。</p>
+  </div>
+</details>
+{% endif %}
+{% endmacro %}

@@ -20,6 +20,8 @@ from researchlib import embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
+from researchlib.ask_model import form_choice, recorded_choice
+from researchlib.ask_model import menu as ask_model_menu
 from researchlib.author_voice import hide_from_site
 from researchlib.boilerplate import clean_article
 from researchlib.citecheck import check_answer
@@ -765,6 +767,7 @@ def _article_view(request: Request, article_id: int, mode: str):
                 if cleaned.strip():
                     quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)
+        chat_asked = queries.recent_article_questions(conn, article_id, 3)
         translation = queries.get_translation(conn, article_id)
         elsewhere = [
             {"id": row["id"], "source": by_id[row["source_id"]].name}
@@ -951,6 +954,8 @@ def _article_view(request: Request, article_id: int, mode: str):
             "tree_back": f"/sources/{source.id}/tree/{article['id']}" if source.kind == "feishu" else "",
             "sources": sources,
             "sample_banner": banner,
+            "ask_models": ask_model_menu(settings),
+            "chat_suggestions": _chat_suggestions(chat_asked),
         },
     )
 
@@ -968,6 +973,21 @@ def article_page_zh(request: Request, article_id: int):
 @router.get("/articles/{article_id}/original")
 def article_page_original(request: Request, article_id: int):
     return _article_view(request, article_id, "original")
+
+
+# 文章页问库还没问时摆出来的几题：这篇以前「只问这篇」问过的在前，不够三题用通用的补上。都按「只问这篇」填进输入框。
+# 通用的几题要对哪篇都说得通：短帖、群聊截图、没提公司的文章也一样。
+CHAT_STARTERS = ("这篇的核心观点是什么？", "作者的判断依据有哪些？", "作者看好什么、担心什么？")
+
+
+def _chat_suggestions(asked: list[str]) -> list[dict]:
+    picked = [{"question": question, "asked": True} for question in asked if len(question) <= 60][:3]
+    for question in CHAT_STARTERS:
+        if len(picked) >= 3:
+            break
+        if all(item["question"] != question for item in picked):
+            picked.append({"question": question, "asked": False})
+    return picked
 
 
 def _reading_html(request: Request, html: str) -> Markup:
@@ -1753,6 +1773,7 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
         "credential_notice": missing_credential_text(request.app.state.settings),
         "model": active_model_id(request.app.state.settings),
         "history": queries.recent_answers(conn, 15),
+        "ask_models": ask_model_menu(request.app.state.settings),
     }
 
 
@@ -1779,12 +1800,15 @@ async def ask_submit(request: Request):
     question = str(form.get("q") or "").strip()[:500]
     keys = ("author", "source", "company", "from", "to", "article", "tree")
     params = {key: str(form.get(key) or "") for key in keys}
+    settings = request.app.state.settings
+    # 没脚本时表单照样带着菜单里的选项；对不上的值按默认，不让整页报错。
+    choice = form_choice(settings, form.get("model"), form.get("effort"))
     with database(request) as conn:
         sources = active_sources(request, conn)
         scope, info = resolve_scope(params, sources)
         if not question:
             return RedirectResponse("/ask?" + _query_string(**params), status_code=303)
-        result = start(conn, request.app.state.settings, question, scope, sources)
+        result = start(conn, settings, question, scope, sources, choice=choice)
         if result["id"] is not None:
             return RedirectResponse(f"/ask/{result['id']}", status_code=303)
         context = _ask_context(request, sources, info, conn)
@@ -1849,6 +1873,8 @@ def ask_answer(request: Request, answer_id: int):
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
         "failed_batches": list(((row.get("stats") or {}).get("failed_batches")) or []),
         "batches": int(((row.get("stats") or {}).get("batches")) or 0),
+        # 这次用的哪一档思考；以前的回答没记，不写。
+        "llm": recorded_choice(request.app.state.settings, row.get("stats")),
     }
     return render_page(
         request,

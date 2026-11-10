@@ -22,6 +22,8 @@ from collections.abc import Mapping
 
 GROK_MODEL_ID = "grok-4.7"
 GROK_REASONING_EFFORT = "high"
+# xAI 对 grok-4.7 报的全部档位（GET /v1/models/grok-4.7）。问库按次选档时只认这几个。
+GROK_EFFORTS = ("low", "medium", "high", "xhigh")
 GROK_FAST = False
 GROK_CONTEXT_TOKENS = 500_000
 GROK_OUTPUT_FLOOR = 128_000
@@ -162,14 +164,20 @@ def completion_params(
     temperature: float,
     max_tokens: int | None = None,
     environ: Mapping[str, str] | None = None,
+    effort: str | None = None,
 ) -> dict:
-    """chat/completions 里和强度有关的字段。显式 fast=false，不另传更小的上下文。"""
+    """chat/completions 里和强度有关的字段。显式 fast=false，不另传更小的上下文。
+
+    ``effort`` 只给问库按次选档用（``researchlib.ask_model``），不传就是全站的 ``GROK_REASONING_EFFORT``。
+    """
     if "fast" in GROK_MODEL_ID:
         raise RuntimeError(f"拒绝 fast 模型：{GROK_MODEL_ID}")
+    if effort is not None and effort not in GROK_EFFORTS:
+        raise RuntimeError(f"Grok 没有这一档思考强度：{effort}")
     params = {
         "model": GROK_MODEL_ID,
         "temperature": temperature,
-        "reasoning_effort": GROK_REASONING_EFFORT,
+        "reasoning_effort": effort or GROK_REASONING_EFFORT,
         "fast": GROK_FAST,
         "max_tokens": grok_output_tokens(max_tokens, environ),
     }
