@@ -767,7 +767,10 @@ def test_tag_spaces_do_not_keep_a_blank_normalized_services_duplicate():
     assert len(view.pairs) == 1
     assert 'href="https://www.macrumors.com/earnings"' in view.pairs[0].en
     assert _blank_long_groups([pair.en for pair in view.pairs]) == 0
-    assert "经常性收入客户" in (view.pairs[0].zh or "")
+    # 两份中文是同一句换了说法，留下的那份显示一次，另一份不再挂在后面（11-10 对照页同一句出现两遍）。
+    shown = view.pairs[0].zh or ""
+    assert "持续贡献经常性收入的客户" in shown
+    assert shown.count("战略很明确") == 1
 
 
 def test_services_and_health_blank_duplicates_drop_from_two_groups_to_zero():

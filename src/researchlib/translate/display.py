@@ -3,13 +3,15 @@
 新稿先核验 canonical 源文和持久回执；旧稿保留明确的不确定性。无法配对时保留两份全文。
 展示单元保留引用、列表和表格结构。有序投影通过之后，先把同一源段落里按句切开的叶子并回去，
 再隐藏长英文的重复、整句包含和近前缀；留下的那一对必须仍有这些文字、数字、链接和结构，锚点改挂过去。
-英文连空白都一样、中文却各有独有说法的不隐藏。只差空白的长英文收成一对，多出来的中文句子挂回去。
+英文连空白都一样、中文却各有独有说法的不隐藏。只差空白的长英文收成一对，收掉那份的中文只挂页面上还没说过的句子：
+同一句换了说法、或已由同一段英文的另几对显示的不再挂，带着别处没有的数字、英文词的照样挂。
 英文里的链接补到中文仍写着同一锚文本、但丢掉标签的位置，不另写括号域名。
 这一步不删入库的段，也不把整页退回两列。图片文字在配对后渲染，不参与模型源段身份。
 """
 
 from __future__ import annotations
 
+import difflib
 import html
 import re
 from collections.abc import Sequence
@@ -263,26 +265,119 @@ def _plain_words(value: str) -> set[str]:
 
 
 _ZH_SENTENCE = re.compile(r"(?<=[。！？])")
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+_LATIN_WORD = re.compile(r"[a-z][a-z0-9]+")
+_TAG = re.compile(r"<(/?)([a-z][a-z0-9]*)\b[^>]*>", re.I)
+_VOID = frozenset({"br", "img", "wbr"})
+_INLINE = frozenset({
+    "a", "abbr", "b", "cite", "code", "del", "em", "i", "ins", "kbd", "mark", "q", "s", "small", "span",
+    "strong", "sub", "sup", "u",
+})
+# 两份译文译的是同一段英文。换了说法的同一句，去掉标签和标点以后大半的字仍按顺序对得上：
+# 11-10 拿线上 4 篇里 23 处写两遍的真实译文试，按这条线一句都不再挂。反过来，28 篇对照页里
+# 没有重复的 3265 句拿同一对里别的句子（一句或相邻两句）去比，到七成的只有 4 句，其中 2 句本来就是重复。
+# 线再往下放，留下的那份正好漏译一句时，容易把同一段里只差几个字的另一句话当成说过。
+_SAID = 0.7
+# 短句和别处只差一两个字的多（「现在不一样了」），短过这个要整句出现过才算说过。
+_SAID_MIN = 10
 
 
-def _novel_zh(extra: str, host: str) -> str:
-    """host 里还没有的中文句子。整段只是另一种说法时，不要把已经有的句子再贴一遍。"""
+def _sentence_core(value: str) -> str:
+    return repeat_key(value)
+
+
+def _coverage(core: str, other: str) -> float:
+    """core 里有多少字按顺序在 other 里出现，只算连着两个字以上的。"""
+    if not core or not other:
+        return 0.0
+    if core in other:
+        return 1.0
+    matcher = difflib.SequenceMatcher(None, core, other, autojunk=False)
+    return sum(block.size for block in matcher.get_matching_blocks() if block.size >= 2) / len(core)
+
+
+class _Said:
+    """已经显示的中文。判断挂回去的一句是不是只换了说法：数字、英文词都出现过，字也大半对得上。"""
+
+    def __init__(self, shown: str):
+        visible = html.unescape(re.sub(r"<[^>]+>", " ", shown or "")).casefold()
+        self.core = _sentence_core(shown)
+        self.numbers = set(_NUMBER.findall(visible))
+        self.words = set(_LATIN_WORD.findall(visible))
+        cores = [_sentence_core(part) for part in _ZH_SENTENCE.split(shown or "")]
+        cores = [core for core in cores if core]
+        # 一句可能被另一份拆成两句译，所以也拿相邻两句连起来比。
+        self.windows = cores + [left + right for left, right in zip(cores, cores[1:], strict=False)]
+        self.bigrams = [{window[at:at + 2] for at in range(len(window) - 1)} for window in self.windows]
+
+    def __call__(self, sentence: str) -> bool:
+        core = _sentence_core(sentence)
+        if not core:
+            return True
+        if core in self.core:
+            return True
+        visible = html.unescape(re.sub(r"<[^>]+>", " ", sentence)).casefold()
+        if set(_NUMBER.findall(visible)) - self.numbers:
+            return False
+        for word in _LATIN_WORD.findall(visible):
+            if word not in self.words and (len(word) < 4 or word not in self.core):
+                return False
+        if len(core) < _SAID_MIN:
+            return False
+        # 对上的字最多是共有的两字组的两倍，先用它筛掉不可能到线的句子，省掉逐句细比。
+        need = _SAID * len(core) / 2
+        pairs = [core[at:at + 2] for at in range(len(core) - 1)]
+        for window, bigrams in zip(self.windows, self.bigrams, strict=True):
+            if sum(pair in bigrams for pair in pairs) < need:
+                continue
+            if _coverage(core, window) >= _SAID:
+                return True
+        return False
+
+
+def _inline_fragment(value: str) -> str:
+    """挑出来的几句要拼成一段：段落、列表这类外壳去掉，配不上对的行内标签也去掉，字都留着。"""
+    pieces: list[str] = []
+    opened: list[tuple[str, int]] = []
+    last = 0
+    for match in _TAG.finditer(value or ""):
+        pieces.append(value[last:match.start()])
+        last = match.end()
+        closing, name = match.group(1) == "/", match.group(2).lower()
+        if name in _VOID and not closing:
+            pieces.append(match.group(0))
+        elif name in _INLINE and not closing:
+            opened.append((name, len(pieces)))
+            pieces.append(match.group(0))
+        elif name in _INLINE and opened and opened[-1][0] == name:
+            opened.pop()
+            pieces.append(match.group(0))
+        else:
+            pieces.append("")
+    pieces.append((value or "")[last:])
+    for _name, slot in opened:
+        pieces[slot] = ""
+    return "".join(pieces).strip()
+
+
+def _novel_zh(extra: str, host: str, context: str = "") -> str:
+    """extra 里页面上还没说过的中文句子。
+
+    host 是挂上去的那一对的中文，context 是页面上同一段英文另外几对的中文。收掉的那份
+    和留下的译的是同一段英文，两份各自成句：同一句只差标签、标点或几个字时不再挂第二遍，
+    带着别处没有的数字、英文词，或者字对不上的句子才挂。
+    """
     if not extra or _plain_words(extra) <= _plain_words(host):
         return ""
-    parts = [part for part in _ZH_SENTENCE.split(extra) if _plain_words(part)]
-    if len(parts) <= 1:
-        return extra
-    host_words = _plain_words(host)
-    novel = [part for part in parts if not _plain_words(part) <= host_words]
+    parts = [part for part in _ZH_SENTENCE.split(extra) if _sentence_core(part)]
+    said = _Said((host or "") + (context or ""))
+    novel = [part for part in parts if not said(part)]
     if not novel:
         return ""
     if len(novel) == len(parts):
         return extra
-    body = "".join(novel).strip()
-    if re.search(r"<(?:p|li|blockquote|div|ul|ol|h[1-6])\b", body, re.I):
-        return body
-    cleaned = re.sub(r"</(?:p|li|ul|ol|blockquote|div|h[1-6])>", "", body, flags=re.I).strip()
-    return f"<p>{cleaned}</p>" if cleaned else ""
+    body = _glue([_inline_fragment(part) for part in novel])
+    return f"<p>{body}</p>" if body else ""
 
 
 def _hrefs(value: str) -> set[str]:
@@ -369,8 +464,7 @@ def _absorb_contained(
         extra = updated[index].zh or ""
         if extra and not _plain_words(extra) <= _plain_words(zh):
             extra = _drop_duplicate_cites(extra, zh)
-        if extra and not _plain_words(extra) <= _plain_words(zh):
-            zh += extra
+        zh += _novel_zh(extra, zh)
         updated[host] = replace(updated[host], en=grafted, zh=zh or None)
         drop.add(index)
     return updated, drop
@@ -440,7 +534,15 @@ def _hide_repeated_pairs(pairs: list[BilingualPair]) -> list[BilingualPair]:
         )
         if not same_passage:
             continue
-        extra = _novel_zh(_drop_duplicate_cites(extra, host_zh), host_zh)
+        # 导出里一条引文、一个列表项先写成一行，再分几段带格式写一遍：收掉的那一行
+        # 译的是好几对的英文，那几对已经显示的中文也算说过。
+        context = "".join(
+            updated[other].zh or ""
+            for other in range(len(updated))
+            if other not in drop and other != host and len(keys[other]) >= _SAID_MIN * 2
+            and (keys[other] in keys[index] or keys[index] in keys[other])
+        )
+        extra = _novel_zh(_drop_duplicate_cites(extra, host_zh), host_zh, context)
         if not extra:
             continue
         updated[host] = replace(updated[host], zh=host_zh + extra)
