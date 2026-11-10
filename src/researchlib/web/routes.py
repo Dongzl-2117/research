@@ -116,9 +116,13 @@ TEMPLATES.env.filters["highlight_full"] = highlight_full
 TEMPLATES.env.filters["highlight_snippet"] = lambda text, terms, radius=110: highlight_snippet(
     text, "", radius=radius, terms=list(terms or [])
 )
+# 「研」字印章，和页头的品牌一致。颜色是浅色主题的强调色 --accent。
+# 字放在西文基线 y=23 上：中文字体的字身框大多在基线下约 0.12em 到上约 0.88em，换字体也居中；
+# dominant-baseline="central" 按各字体的行高算中线，Noto 下偏低 2 个单位。
 FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-<rect width="32" height="32" rx="8" fill="#176b75"/>
-<circle cx="16" cy="16" r="5" fill="#faf9f6"/>
+<rect width="32" height="32" rx="8" fill="#284f88"/>
+<text x="16" y="23" fill="#fff" font-size="19" font-weight="600" text-anchor="middle"
+ font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, Noto Sans CJK SC, Noto Sans SC, sans-serif">研</text>
 </svg>"""
 
 
