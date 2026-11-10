@@ -49,8 +49,9 @@
   --ease: cubic-bezier(.25, 1, .5, 1);
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "HarmonyOS Sans SC", "Microsoft YaHei", "Noto Sans SC", "WenQuanYi Micro Hei", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  /* 标题用宋体（Zhilin 11-10 选的）：Mac 用宋体-简；这几种宋体都没有的设备按浏览器默认的衬线字体显示。 */
-  --font-serif: "Songti SC", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", STSong, serif;
+  /* 标题用宋体（Zhilin 11-10 选的）：Mac 用宋体-简。这几种宋体都没有的设备（iPhone、多数 Windows 和安卓）照旧用正文字体，
+     不退到浏览器默认的 serif：iPhone 的 Safari 把中文页面的 serif 当成只有西文的 Times，标题会变成中文苹方、数字和英文 Times 混排。 */
+  --font-serif: "Songti SC", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", STSong, var(--font-sans);
   --radius-mark: 5px;
   --radius-control: 8px;
   --radius-tile: 10px;
