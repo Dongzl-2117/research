@@ -15,7 +15,7 @@
 - 云端的 AI 连不上 Mac mini。只能在那边跑的命令（装定时任务、一次性的数据修复）写进 PR 描述的「上线后」一节，由 Zhilin 跑；平时合并就上线，不用他动手。
 - Mac mini 上的 `~/research` 只给自动上线用。在那台机器上干活的人和 AI 另外 clone 一份或者用 `git worktree`，不在 `~/research` 里切分支、改文件、提交；本机才要忽略的文件写进 `.git/info/exclude`。那份仓库不在 main、有本机改动或者有没推送的提交，自动上线都会停下，原因写在 `data/status/deploy.json`，处理办法见 [docs/deploy.md](docs/deploy.md)「更新」。
 - 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、孤独进化体抓取、自动上线、外链图片下载）的结果写进 `data/status/<任务>.json`，供值班助手看：`docker compose exec app research-status` 把失败和太久没成功的逐条打出来，有就退出码 1。首页不再挂运维红条，见 [docs/backup.md](docs/backup.md)。
-- 密钥在 Mac mini 的 `.env`。站内 LLM 默认 DeepSeek，见 [docs/llm.md](docs/llm.md)。
+- 密钥在 Mac mini 的 `.env`。站内 LLM 默认 Grok OAuth（grok-4.7 / `reasoning_effort=high` / `fast=false` / 50 万上下文），`RESEARCH_LLM_PROVIDER=deepseek` 切回 DeepSeek，改环境变量再重启即可。见 [docs/llm.md](docs/llm.md)。
 - Mac mini 上的代理开着 fake-ip：容器里 `stratechery.com`、`i0.wp.com` 这类国外域名解析成 `198.18.x.x`，连上去由代理按域名转。外链图片的「只连公网」检查只给几个固定图床放行这一段（`remote_images.PROXY_IMAGE_HOSTS`），别的域名照旧拦；新的国外图床下不来时 `research-status` 报「解析到代理假地址」，见 [docs/ingest.md](docs/ingest.md)「外链图片」。
 
 ## 怎么协作
@@ -35,7 +35,7 @@
 - 整个来源先不展示：把 `config/sources.yaml` 里那一项的 `enabled` 改成 `false`。从配置里删掉的来源，启动时 `sync_sources` 也记成停用。停用的来源网站、接口、问库都不出现，导入会拒绝，摘要、观点、论点不再处理，库里的行留着。
 - 不跳过、不禁用测试来让 CI 变绿。
 - 阅读页（文章、对照、飞书目录右侧）保留原图，不把识图文字铺进正文。整理后的字只给摘要、观点、问这篇和检索（`present_ocr` / `articles.ocr_text` / `article_chunks.lang = ocr`）。见 [docs/ocr.md](docs/ocr.md)。
-- 识图 11-07 起交回结构（`image_texts.units`，`researchlib/ocr_units.py`）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，由看得见图的模型标好，后面只排版和拼接。`wechat_dialogue`、`vision_polish`、`normalize_vision_text` 冻结，只整理以前的自由文字。识图出错改 `VISION_PROMPT` 里的通用说明，不加按 App、按案例的规则。见 [docs/ocr.md](docs/ocr.md)「识图交回结构」。
+- 识图 11-07 起交回结构（`image_texts.units`，`researchlib/ocr_units.py`）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，由看得见图的模型标好，后面只排版和拼接。`wechat_dialogue`、`vision_polish`、`normalize_vision_text` 冻结，只整理以前的自由文字。识图出错改 `VISION_PROMPT` 里的通用说明，不加按 App、按案例的规则。`cut` 只表示这条在图外还有下文，看得见的字整段留下；只有另标 `illegible`（笔画被切到中间）才不采用模型补的那句。`VISION_PROMPT_VERSION` 仍是 3，按第 3 版认过的图不因此重认。见 [docs/ocr.md](docs/ocr.md)「识图交回结构」。
 
 ## 本地测试
 
@@ -66,7 +66,8 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 
 ## 挂着的事（2026-10-31）
 
-- 识图全量重认在跑（第 3 版说明，`VISION_PROMPT_VERSION` = 3，81fa587）。Zhilin 11-08 定了保持 `max` 强度、全部重认。三次 `research-ocr --compare 30`（同一批 30 张）对旧结果：第 1 版新好 22、差不多 5、旧好 3；第 2 版 24、5、1；第 3 版 24、3、3（说话人 28/30：作者贴的一张截图和一张 AI 回答记成「网友」，没有把别人的话记到作者名下）。改作者的字、丢日期、编整句、拼接重复都修好了；剩约 6 像素的小字书页按意思改写（已标「小字，可能认错」）和每次不一样的一两个字。11-08 晚开跑，开跑时按旧说明认的图 16,092 张（以前估的 1.1 万只数了认过的图，没数从没认过的），20 张一起到 11-09 08:02 认了 4,462 张，08:45 自动停。慢在几张一起认时前面一张慢挡住后面，#286 改成认完一张写一张，同时重认失败留着旧字、余额不足（402）整批停。接着认：夜间价时段（工作日北京时间 18 点到次日 9 点、12 点到 14 点，周末全天）跑 `docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=40 app research-ocr --redo --limit 20000 --max-minutes <到 8:45 的分钟数>`，`--redo --limit 0` 看还剩多少，每张夜间价约 0.0074 美元。跑的时候别往 main 合并：自动上线在等时识图认完手上的就停，要手动重开。全部认完再删冻结的旧规则。见 [docs/ocr.md](docs/ocr.md)「全库重认」。
+- **11-10 站内 LLM 默认换成 Grok OAuth**：模型 `grok-4.7`、`reasoning_effort=high`（不是 xhigh）、`fast=false`、上下文 50 万、输出至少 128000。译制、问库（侧栏问库和问这篇）、摘要、观点、论点、识图、双语抽验、夜间任务走同一组调用（`llm.chat` / `translate.llm.chat_json`），提供方由 `RESEARCH_LLM_PROVIDER=grok|deepseek` 切换，默认 grok。`deepseek` 仍是完整的 DeepSeek 路径，改环境变量再重启即可，失败不在两家之间自动换。凭证是 `data/secrets/xai-oauth.json`（`research-xai-login login`）。并发 `RESEARCH_LLM_CONCURRENCY` 默认 8，没有低硬顶；要封顶再设 `GROK_MAX_CONCURRENCY`。429 打 `rate-limit event=429`。核对用 `research-grok-smoke --check`。见 [docs/llm.md](docs/llm.md)。
+- 识图全量重认在跑（第 3 版说明，`VISION_PROMPT_VERSION` = 3，81fa587）。Zhilin 11-08 定了保持 `max` 强度、全部重认。三次 `research-ocr --compare 30`（同一批 30 张）对旧结果：第 1 版新好 22、差不多 5、旧好 3；第 2 版 24、5、1；第 3 版 24、3、3（说话人 28/30：作者贴的一张截图和一张 AI 回答记成「网友」，没有把别人的话记到作者名下）。改作者的字、丢日期、编整句、拼接重复都修好了；剩约 6 像素的小字书页按意思改写（已标「小字，可能认错」）和每次不一样的一两个字。11-08 晚开跑，开跑时按旧说明认的图 16,092 张（以前估的 1.1 万只数了认过的图，没数从没认过的），20 张一起到 11-09 08:02 认了 4,462 张，08:45 自动停。慢在几张一起认时前面一张慢挡住后面，#286 改成认完一张写一张，同时重认失败留着旧字、余额不足（402）整批停。接着认（识图跟当前提供方走，默认 Grok）：`docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=8 app research-ocr --redo --limit 20000 --max-minutes <到早上 8:45 的分钟数>`。`--redo` 只认 `prompt_version` 比第 3 版旧的图和从没认过的，按第 3 版认过的（不管 engine 是 deepseek-flash 还是 grok-4.7）不会重认；`--redo --limit 0` 看还剩多少。并发没有 24 的低硬顶，但 11-09 DeepSeek 开 40 路时容器被 OOM 杀过（EXIT=137），往上加先看内存和 `rate-limit event=429`。跑的时候别往 main 合并：自动上线在等时识图认完手上的就停，要手动重开。全部认完再删冻结的旧规则。见 [docs/ocr.md](docs/ocr.md)「全库重认」。
 
 - 本次文章展示与引用修复的交接见 [docs/article-preservation-2026-11-01.md](docs/article-preservation-2026-11-01.md)：对照投影遗漏时保留完整区块，段数不齐时分开展示；旧订阅地址在输出前遮住；OCR 重切同步校验观点定位。没有执行历史清洗或重切，不要把代码修好当成旧库已修复。原有近重复规则若会吞掉独有文字、数字、资料链接或结构，展示完整性优先。
 

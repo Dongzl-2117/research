@@ -9,7 +9,8 @@
    读到第几批、写出来的半截回答随时写进 llm_answers（stats.progress、answer），页面轮询时先显示。
 4. 写回 answer、citations、status=done。出错时 status=error、清掉半截回答，页面可以重新整合。
 
-没有可用的 LLM 凭证（默认 DeepSeek 的 key，或 Grok OAuth）时只给原文段落，不存记录，也不在两个提供方之间自动切换。
+没有可用的 LLM 凭证时只给原文段落，不存记录，也不在两个提供方之间自动切换。
+默认是 Grok OAuth；``RESEARCH_LLM_PROVIDER=deepseek`` 时要 DeepSeek 的 key。
 全站最近 24 小时问满 ASK_DAILY_LIMIT 次、或同时在整合的满 ASK_RUNNING_LIMIT 个时，也只给原文段落，
 不存记录（见 over_quota）。
 """
@@ -32,7 +33,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.citecheck import check_answer
 from researchlib.config import Settings
-from researchlib.llm import LLMError, LLMUnavailable, active_label, chat, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured, missing_credential_text
 from researchlib.retrieval import ASPECTS_KEY, MAX_ASPECTS, Retrieval, analyze, cited_numbers, retrieve
 from researchlib.web.present import format_date
 from researchlib.web.queries import Scope
@@ -104,7 +105,8 @@ def _env_count(name: str, default: int) -> int:
     return int(raw) if raw.isdigit() else default
 
 
-# 问一次都开最深的思考（11-09 实测一次 0.14～0.29 美元），网站又不用登录，所以按全站限次数：
+# 问一次模型要跑几分钟（DeepSeek 最深思考 11-09 实测一次 0.14～0.29 美元；默认的 Grok OAuth 走订阅，额度没公布），
+# 网站又不用登录，所以按全站限次数：
 # 最近 24 小时最多登记 ASK_DAILY_LIMIT 次（默认 30，0 不限；10-21 到 11-09 问得最多的一天 21 次，多半是调试时的重试），
 # 同时在整合的（含排队）最多 ASK_RUNNING_LIMIT 个（默认 4：后台两路在跑、两个在等；
 # 再往后排的要等十几分钟，等过 10 分钟还会被 expire_stale_answers 当成卡住）。
@@ -469,7 +471,7 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
         result["error"] = "范围内没有召回到任何段落。换个问法，或放宽作者、公司、日期范围。"
         return result
     if not llm_configured(settings):
-        result["error"] = f"没有可用的 {active_label(settings)} 凭证，只给出召回的原文段落。"
+        result["error"] = f"{missing_credential_text(settings)}，只给出召回的原文段落。"
         return result
     reason = over_quota(conn)
     if reason:

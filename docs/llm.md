@@ -42,7 +42,7 @@
 
 整合中途就能看到进度：读到第几批记在 `llm_answers.stats.progress`（`{"stage": "reading", "done": 3, "total": 6}`，开始写回答时是 `{"stage": "writing"}`），模型写出来的半截回答随时写进 `answer`（最多每 1.5 秒写一次），`status` 仍是 `running`。回答页轮询时先显示半截回答，状态行写「正在读资料（3/6 批）」「正在写回答」。读到一半断线重发时，半截回答先清空再重新显示；整合出错时清掉半截回答，只留「重新整合」。写完以后 `stats` 另记 `read_s`（分批读资料用了多久）、`write_s`（写回答用了多久）和 `usage`（各次调用的 token 加起来，含思考；接口报了才有），用来看整合慢在哪一步。
 
-11-09 上线后（#292）问同一个问题「Costco 的商业模式是什么？」：总用时从 496 秒降到 409 秒。读资料 242 秒，6 批同时发出，各批在 75～250 秒之间读完，等最慢那一批；写回答 161 秒，其中约 145 秒模型在思考、还没写出字，半截回答只在最后约 20 秒出现。各次调用输出的 20 万 token 里 18 万是思考。剩下的慢主要来自每次调用都开最深的思考（`max`）。Zhilin 11-09 定了问库也保持 `max`（读资料、写回答都不降，和识图一样），别再为提速提降强度。
+11-09 上线后（#292）问同一个问题「Costco 的商业模式是什么？」：总用时从 496 秒降到 409 秒。读资料 242 秒，6 批同时发出，各批在 75～250 秒之间读完，等最慢那一批；写回答 161 秒，其中约 145 秒模型在思考、还没写出字，半截回答只在最后约 20 秒出现。各次调用输出的 20 万 token 里 18 万是思考。剩下的慢主要来自每次调用都开最深的思考（`max`）。Zhilin 11-09 定了问库也保持 `max`（读资料、写回答都不降，和识图一样），别再为提速提降强度。这是用 DeepSeek 时量的；11-10 起默认换成 Grok（`high`），见上面「LLM 凭证」。
 
 `[n]` 链到 `/articles/{id}?chunk={n}`：文章页直接滚到正文里的那几段，并把它们标出来。正文里对不上的（比如引用的是图片里的字），才在顶上单独摘出那一段。
 
@@ -50,61 +50,54 @@
 
 入口：侧栏「问库」；公司页「问 AI：库里怎么看」；作者页「问 AI：他近期的核心判断」；日汇总页「问 AI：这一天的主要判断」；检索结果页「问 AI」。时间轴上点某一天，进的是日汇总页（`/days/YYYY-MM-DD`，只含 `timeline: true` 的来源）：按作者列出这一天的文章，每篇一句摘要或正文里的一句实质内容。之前问过正好覆盖这一天、同一范围的问题，那条回答放在最上面；比范围时不算飞书文库这类不进按天的来源，问库页不分来源问的也认。没问过就给「问 AI」按钮，点了才调模型。打开这一页不调模型；缺摘要的卡片在后台补，不挡住这一页，也不跑全库。问库页「最近问过」里按日期问的，问题后面写着日期。
 
-## LLM 凭证（默认 DeepSeek，可选 Grok）
+## LLM 凭证（默认 Grok，可切 DeepSeek）
 
-`RESEARCH_LLM_PROVIDER` 决定用哪一家，不设就是 `deepseek`，填了不认识的值也按 `deepseek` 算。Grok 要显式设 `RESEARCH_LLM_PROVIDER=grok`。
+2026-11-10 起默认走 Grok OAuth，模型 `grok-4.7`。译制、问库（侧栏问库、问这篇）、摘要、观点、论点、识图、双语抽验、夜间任务都进同一组调用（`researchlib.llm.chat`，译制是 `translate/llm.py` 的 `chat_json`）。改 `RESEARCH_LLM_PROVIDER` 再重启就换提供方，不用改代码。当前这家凭证不可用就直接报错，不会自动改走另一家。页面退化成只给检索结果，命令行退出码 2。
 
-### DeepSeek（默认）
-
-译制、问库、摘要、观点、论点默认走 DeepSeek 官方 OpenAI 兼容接口，`DEEPSEEK_API_KEY` 放在 `.env`，compose 透传给容器。缺 key 时直接报错，不会悄悄退回 Grok。
-
-强度写在 `researchlib/deepseek.py`，译制（`translate/llm.py` 的 `chat_json`）和问库、摘要、观点、论点、样卡（`researchlib.llm.chat`）共用同一组常量：
-
-| 项 | 值 |
+| `RESEARCH_LLM_PROVIDER` | 行为 |
 | --- | --- |
-| 模型 | `deepseek-flash`（`DEEPSEEK_MODEL`）。默认 V4.1-Flash |
-| thinking | `{"type": "enabled"}`，默认打开 |
-| `reasoning_effort` | `max`（`DEEPSEEK_REASONING_EFFORT`，只认 `low` / `high` / `max`；`xhigh` 按 `high`） |
-| 输出预算 | 至少 `393216`（`DEEPSEEK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
-| 上下文 | `1000000` token（`DEEPSEEK_CONTEXT_TOKENS`） |
-| 不发的字段 | `temperature`、`presence_penalty`、`frequency_penalty`：思考模式下无效，请求里不带 |
+| 不设、空、`grok`，以及不认识的值 | Grok OAuth |
+| `deepseek` | DeepSeek，用 `DEEPSEEK_API_KEY`。`deepseek-legacy` 是同一个值的别名 |
 
-DeepSeek 的请求带 `stream: true`，按行读 SSE。思考要是不流式，响应头要等整段推理结束才到，连接上没有字节，中间设备会把 TLS 拆掉（`UNEXPECTED_EOF_WHILE_READING`）。服务端往往已经开始计费，客户端一个字都没拿到。看到 `data: [DONE]` 才把增量拼成回答；流提前结束或读到一半断开，丢掉半截，按下面的间隔重试同一请求。每一行的等待上限就是长超时（默认 25 分钟），不再另设更短的空闲超时。Grok 仍是一次读完的 JSON。
+宿主机 `.env` 里如果还写着 `RESEARCH_LLM_PROVIDER=deepseek`，compose 会原样传进容器，上线后仍走 DeepSeek。要切到 Grok，把这一行改成 `grok` 或删掉（compose 默认 `grok`），再重启。
 
-最终答案在 `choices[0].message.content`；`reasoning_content` 里的思考过程不往页面上放。
+### Grok OAuth
 
-### Grok OAuth（可选）
+译制、问库、摘要、观点、论点、识图、夜间任务都用 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`，`XAI_OAUTH_TOKEN_PATH` 可改）。文件权限 `0600`，容器里应用以 root 跑，能直接读；写回时属主按 `XAI_OAUTH_FILE_UID/GID`（compose 默认 0/0）。
 
-设 `RESEARCH_LLM_PROVIDER=grok` 才走这里。译制、问库、摘要使用 `data/secrets/xai-oauth.json`（容器内 `/data/secrets/xai-oauth.json`）。
-
-登录一次（device-code，在自己的浏览器里用有 Grok 订阅的账号授权），之后 access token 过期前自动刷新：
+登录一次（device-code，在自己的浏览器里用有 Grok 订阅的账号授权），之后 access token 过期前自动刷新；几个进程靠同目录的 `.lock` 轮流刷新同一份 refresh token，不要复制一份到别处用：
 
 ```bash
 docker compose exec app research-xai-login login
 docker compose exec app research-xai-login status
 ```
 
-`logout` 删掉 token 文件，之后要重新登录。Hermes 的 `auth.json` 格式会被拒绝，不会写进去；version 1 格式的凭据（以前和 AIHOT 共用的那种）可以读写。
+`logout` 删掉 token 文件，之后要重新登录。Hermes 的 `auth.json` 格式会被拒绝，不会写进去；version 1 格式的凭据（以前和 AIHOT 共用的那种）可以读写。这是照 AIHOT `providers/xai-oauth.ts` 移植的同一套应用 OAuth，不另接 API key、浏览器 cookie 或其他绕行。
 
-Grok 路径只认这一份 OAuth。文件不在、未登录或刷新失败时直接报错，不退回 `XAI_API_KEY`。环境里如果还留着 `XAI_API_KEY`，调用会说明这个变量不会被使用。
-
-强度写在 `researchlib/grok.py`，和 DeepSeek 一样由译制与问库、摘要、观点、论点、样卡共用：
+强度写在 `researchlib/grok.py`，译制与问库、摘要、观点、论点、识图、样卡共用：
 
 | 项 | 值 |
 | --- | --- |
-| 模型 | `grok-4.7`（`GROK_MODEL_ID`）。不读 `RESEARCH_LLM_MODEL`，请求里不发 `fast` |
-| `reasoning_effort` | `xhigh`（`GROK_REASONING_EFFORT`）。不读 `RESEARCH_LLM_REASONING` |
+| 模型 | `grok-4.7`（`GROK_MODEL_ID`）。不读 `RESEARCH_LLM_MODEL` |
+| `reasoning_effort` | `high`（`GROK_REASONING_EFFORT`）。不读 `RESEARCH_LLM_REASONING`；不是 `xhigh` |
+| `fast` | 显式发 `"fast": false`，不开快速档；模型名里也不带 fast |
 | 输出预算 | 至少 `128000`（`GROK_OUTPUT_FLOOR`）。推理和答案共用这笔预算 |
-| 上下文 | `500000` token（`GROK_CONTEXT_TOKENS`），用 grok-4.7 自带的窗口，不另传更小上限 |
+| 上下文 | `500000` token（`GROK_CONTEXT_TOKENS`）。`GET /v1/models/grok-4.7` 报的 `context_length` 就是这个数，请求里不另传更小上限 |
 
-xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷新一次再重试。没有订阅的 403 不触发刷新。
+xAI 把过期的 OAuth access token 报成 401/403；遇到这种 403 会强制刷新一次再重试。没有订阅的 403 不触发刷新。
+
+不传 `on_text` 的调用（识图、摘要、观点、译制）一次读完 JSON；传了 `on_text` 的（问库边写边显示）走流式 SSE，请求里带 `stream: true` 和 `stream_options.include_usage`，看到 `data: [DONE]` 才算成功，读到一半断了丢掉半截重发。最终答案在 `choices[0].message.content`；`reasoning_content` 里的思考过程不往页面上放。
+
+### DeepSeek（显式切换）
+
+设 `RESEARCH_LLM_PROVIDER=deepseek` 就用 `DEEPSEEK_API_KEY`。强度仍在 `researchlib/deepseek.py`（deepseek-flash / thinking / `max` / 输出至少 393216 / 上下文 1M）。问库、译制、识图、摘要、观点、论点、抽验走同一批入口，只是请求体换成 DeepSeek 的。改回 `grok` 或删掉这一行再重启，就回到 Grok。
 
 ### 变量
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RESEARCH_LLM_PROVIDER` | `deepseek` | `deepseek` / `grok` |
-| `DEEPSEEK_API_KEY` | 空 | DeepSeek 必填，缺了直接报错 |
+| `RESEARCH_LLM_PROVIDER` | `grok` | `grok` 或 `deepseek`。`deepseek-legacy` 等同 `deepseek`。不认识的值按 grok |
+| `DEEPSEEK_API_KEY` | 空 | `RESEARCH_LLM_PROVIDER=deepseek` 时必填，缺了直接报错 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 不另加 `/v1` |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | V4.1-Flash |
 | `DEEPSEEK_REASONING_EFFORT` | `max` | `low` / `high` / `max` |
@@ -115,12 +108,67 @@ xAI 把过期的 OAuth access token 报成 403；遇到这种 403 会强制刷�
 | `XAI_BASE_URL` | `https://api.x.ai/v1` | 仅 Grok |
 | `LLM_LONG_TIMEOUT_MS` | `1500000` | 译制和问库共用的长超时，默认 25 分钟 |
 | `RESEARCH_LLM_TIMEOUT` | 不设 | 秒。比上面的长超时更短时会被抬到同一条，不能单独把问库调弱 |
-| `RESEARCH_LLM_CONCURRENCY` | `3` | 同一个进程里同时在跑的 LLM 请求上限，问库写回答、摘要、观点、论点共用；`research-ocr` 按它几张图一起认 |
+| `RESEARCH_LLM_CONCURRENCY` | `8` | 同一个进程里同时在跑的 LLM 请求数，没有低硬顶。问库写回答、摘要、观点、论点、识图按它限流；`research-ocr` 按它几张图一起认；`research-translate --workers` 超过它就按它算（另外每个 worker 占一条数据库连接，`--workers` 本身最多 16） |
+| `GROK_MAX_CONCURRENCY` | 不设 | 可选上限。设了才把上面那个数往下夹；不设就不夹 |
+| `LLM_RETRY_DELAYS` | 不设则 `2,5,15,30` | 429、5xx、连接被重置的退避间隔（秒，逗号分隔，最多 6 档）。接口给了 `Retry-After` 就按它来（最多一分钟） |
 | `ASK_DAILY_LIMIT` | `30` | 全站最近 24 小时最多登记几次问库，0 不限。见上面「给 AI 的接口」 |
 | `ASK_RUNNING_LIMIT` | `4` | 全站同时在整合（含排队）的问库最多几个，0 不限 |
 | `ASK_MAP_WORKERS` | `6` | 问库分批读资料时几批同时读，这几路不占上面那份上限。以前经 mini 的 en1 转发时 4 路并发常断 TLS，默认 2 路；11-08 起识图在同一台机器上 20～40 路同时认没有失败，断线也会自己重发 |
 
-429、5xx、连接被重置、流读到一半的 TLS EOF 按 2、5、15、30 秒退避重试（接口给了 `Retry-After` 就按它，最多等一分钟）。超时不重试：一次已经等了很久。译制和问库用同一组间隔。凭证不可用或连续失败 3 次，首页顶上提示一行，写明是 DeepSeek 还是 Grok（见 [backup.md](backup.md)「出问题才提示」）。
+429、5xx、连接被重置、流读到一半的 TLS EOF 按 2、5、15、30 秒退避重试（`LLM_RETRY_DELAYS` 可改；接口给了 `Retry-After` 就按它，最多等一分钟）。每一次 429 打一行 `rate-limit event=429 provider=… caller=chat|translate attempt=… wait_s=… retry_after=0|1 exhausted=0|1`，重试后成功的也记。容器日志里数这一行就是 429 次数。超时不重试：一次已经等了很久。译制和问库用同一组间隔。凭证不可用或连续失败 3 次，首页顶上提示一行，写明是 DeepSeek 还是 Grok（见 [backup.md](backup.md)「出问题才提示」）。
+
+译制和识图打的是同一份账号额度。两个进程同时跑（一个 `research-translate`、一个 `research-ocr`）时，请求数是两边的 `RESEARCH_LLM_CONCURRENCY` 相加。要一起跑，把这个数设成你能接受的单进程上限，或错开跑。
+
+已经译完的文章（`article_translations.complete` 且 `content_hash` 对得上原文）不因为换了提供方重译。没译完的留在待译队列，下次接着补，回执里没变的段复用。识图全库 `--redo` 只认 `prompt_version` 比第 3 版旧的图，按第 3 版认过的不因为 engine 从 `deepseek-flash-vision` 改成 `grok-4.7-vision` 再付一次钱。
+
+上线后核对 Grok 这条路（不写库）：
+
+```bash
+docker compose exec app research-xai-login status
+docker compose exec app research-grok-smoke --check
+```
+
+`--check` 应打印 `provider` 为 `grok`、`model` 为 `grok-4.7`、`reasoning_effort` 为 `high`、`fast` 为 false，并有一条短回答。当前提供方不是 grok 时这条命令退出码 2。
+
+### 在宿主机上核对问库真的召回到了、并且调了模型
+
+问库先检索。检索是空的就直接回「范围内没有召回到任何段落」，**不会调 Grok**。这和用哪家模型无关（#294 没改 `retrieval.py`）。页面、侧栏和下面这条接口是同一条路。应用已经在听 `127.0.0.1:8088` 时，在 Mac mini 上：
+
+```bash
+# 只问这篇。question 用页面上那句预设，article 是文章 id。
+curl -sS -X POST http://127.0.0.1:8088/api/v1/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"概括这篇文章的核心论点和作者给出的机制，提到了哪些公司，每条带出处。","article":"20544","wait":false}'
+
+# 侧栏问库，整个资料库。
+curl -sS -X POST http://127.0.0.1:8088/api/v1/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"方伟如何看海底捞的供应链、差异化与成本效率？","wait":false}'
+```
+
+返回里 `citations` 不是空数组，才说明召回到了。`id` 有数字就表示已经交给模型；再看状态：
+
+```bash
+curl -sS http://127.0.0.1:8088/api/v1/answers/这里换成返回的id
+```
+
+`status` 从 `running` 变成 `done`，`model` 里有 `grok-4.7`，才是 Grok 被调用了。`wait:true` 会在这一次请求里等完（一篇要几分钟）。
+
+只问这篇仍返回 0 段时，先看这篇文章为什么没进检索（隐藏、读者帖、评论壳，或段落块全是对不上原文的旧译文）。在库里：
+
+```bash
+docker compose exec -T db psql -U research -d research -c "
+SELECT a.id, a.source_id, a.title,
+       coalesce(a.raw_meta->>'hidden','') AS hidden,
+       coalesce(a.raw_meta->>'poster_role','') AS role,
+       count(c.*) FILTER (WHERE c.lang <> 'zh') AS original_chunks
+FROM articles a
+LEFT JOIN article_chunks c ON c.article_id = a.id
+WHERE a.id IN (20544, 23982)
+GROUP BY a.id;"
+```
+
+`original_chunks` 大于 0、`hidden` 和 `role` 都空、来源又是启用的，上面的 `curl` 就应该召回到段落。自己用 `python -c` 调 `retrieve` 时，范围里的 `source_ids` 必须是已启用来源（空列表会让任何文章都匹配不上），连接要用 `researchlib.db.prepare`（里面会设 zhparser）。不要用没设切词参数的裸连接，全文条件会对不上已经建好的索引，整库召回都是 0。
 
 ## 摘要
 
@@ -221,7 +269,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 
 说明在 `/llms.txt`。JSON 和 MCP 挂在现有 FastAPI 进程上（容器内 8088，compose 只发布到 `127.0.0.1:8088`），不另开端口。网站不用登录，接口也一样，谁都能调。
 
-问库每问一次都开最深的思考（11-09 实测一次 0.14～0.29 美元），所以按全站限次数（#293）：最近 24 小时最多登记 `ASK_DAILY_LIMIT` 次（默认 30），同时在整合的（含排队）最多 `ASK_RUNNING_LIMIT` 个（默认 4：后台两路在跑、两个在等），0 是不限。满了不登记、不调模型，召回的原文照样给，`error` 里写着多久后能再问：网页上照常显示，JSON 接口回 429，MCP 回工具错误。出错后点「重新整合」也算在里面，满了就把原因写进那次的 `error`。10-21 到 11-09 问得最多的一天是 21 次（多半是调试时的重试），平时一天几次。按 IP 分开限要靠 Cloudflare 的限流规则，应用里没做。
+问库每问一次模型都要跑几分钟（用 DeepSeek 最深思考时 11-09 实测一次 0.14～0.29 美元；默认的 Grok OAuth 走订阅，不另收钱，但额度没公布），网站又不用登录，所以按全站限次数（#293）：最近 24 小时最多登记 `ASK_DAILY_LIMIT` 次（默认 30），同时在整合的（含排队）最多 `ASK_RUNNING_LIMIT` 个（默认 4：后台两路在跑、两个在等），0 是不限。满了不登记、不调模型，召回的原文照样给，`error` 里写着多久后能再问：网页上照常显示，JSON 接口回 429，MCP 回工具错误。出错后点「重新整合」也算在里面，满了就把原因写进那次的 `error`。10-21 到 11-09 问得最多的一天是 21 次（多半是调试时的重试），平时一天几次。按 IP 分开限要靠 Cloudflare 的限流规则，应用里没做。
 
 - `GET /api/v1/search?q=…`：文章级检索，和检索页同一套排序（全部词都命中的在前），带范围参数、`limit`（≤50）、`offset`，每条带最相关的一段和公司标签。`total` 是全部词都命中的篇数（标题、正文、译文、图片里的字都算；引号里的词要在某一段里原样出现，和结果列表同一条），`listed` 是其中按相关度翻得到的篇数，`semantic` 是词没写全、按意思排进前面的篇数，不算进 `total`。
 - `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
