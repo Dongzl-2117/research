@@ -66,7 +66,7 @@ def conn(monkeypatch, tmp_path):
 
 
 def _translate(seen, *, fail=(), status="translated", reuse_seen=None):
-    def fake(conn, article_id, *, data_dir, reuse=True):
+    def fake(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         if reuse_seen is not None:
             reuse_seen.append(reuse)
@@ -90,10 +90,31 @@ def test_translates_the_pending_queue_once(conn, monkeypatch):
     assert seen == [21, 22] and conn.closed
 
 
+def test_batch_segments_reach_the_translator_and_the_retry_hint(conn, monkeypatch):
+    got: list[int | None] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
+        got.append(batch_segments)
+        return TranslateResult(article_id, "translated", segments=2)
+
+    monkeypatch.setattr(cli, "translate_article", translate)
+    assert cli.main(["--article-id", "7", "--batch-segments", "0"]) == 0
+    assert cli.main(["--article-id", "8"]) == 0
+    assert got == [0, None]
+    assert cli._command([7], False, 0) == "research-translate --article-id 7 --batch-segments 0"
+    assert cli._command([7], True) == "research-translate --article-id 7 --fresh"
+
+
+def test_negative_batch_segments_are_refused(conn, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "translate_article", lambda *args, **kwargs: pytest.fail("不该调模型"))
+    assert cli.main(["--article-id", "7", "--batch-segments", "-1"]) == 2
+    assert "--batch-segments" in capsys.readouterr().err
+
+
 def test_a_request_failure_prints_what_failed(conn, monkeypatch, capsys):
     """partial 且 request-failed 时把那一次的报错印出来，分得清断线、限流还是欠费。"""
 
-    def fake(conn, article_id, *, data_dir, reuse=True):
+    def fake(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         return TranslateResult(article_id, "partial", segments=36, reason="request-failed", untranslated=184,
                                error="连不上 DeepSeek 接口：timed out")
 
@@ -223,7 +244,7 @@ def test_queue_run_stops_before_starting_when_a_release_is_waiting(conn, monkeyp
 def test_queue_run_finishes_the_article_in_hand_then_makes_way(conn, monkeypatch, tmp_path):
     seen: list[int] = []
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         # 译第一篇的时候自动上线来请它停。
         _deploy_waits(tmp_path)
@@ -271,7 +292,7 @@ def test_fresh_turns_off_reuse_and_partial_counts_are_printed(conn, monkeypatch,
     assert cli.main(["--article-id", "7", "--fresh"]) == 0
     assert reuse_seen == [True, False]
 
-    def partial(conn, article_id, *, data_dir, reuse=True):
+    def partial(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         return TranslateResult(article_id, "partial", segments=5, untranslated=2, reused=3)
 
     monkeypatch.setattr(cli, "translate_article", partial)
@@ -292,7 +313,7 @@ def test_named_articles_cut_off_by_the_service_are_filled_in_after_a_pause(conn,
     seen: list[tuple[int, bool]] = []
     slept: list[float] = []
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append((article_id, reuse))
         if article_id == 81 and len(seen) == 1:
             return _interrupted(81)
@@ -315,7 +336,7 @@ def test_named_articles_still_cut_off_after_two_rounds_print_the_command_to_reru
     seen: list[int] = []
     slept: list[float] = []
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         if article_id == 91:
             # 一段都没译出来时整篇抛错（这时库里什么也没写），一样再补。
@@ -354,7 +375,7 @@ def test_named_articles_that_waiting_would_not_fix_are_not_retried(conn, monkeyp
 
     seen: list[int] = []
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         if outcome == "alignment":
             raise AlignmentError("slot-0-links")
@@ -372,7 +393,7 @@ def test_an_article_edited_while_it_was_being_translated_is_retried(conn, monkey
 
     seen: list[int] = []
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         if len(seen) == 1:
             raise AlignmentError("source-changed-during-request")
@@ -389,7 +410,7 @@ def test_queue_runs_leave_cut_off_articles_to_the_cooldown(conn, monkeypatch):
     """按队列译的不等着再补：没译完的记了冷却，过了冷却自己回到队列。"""
     seen: list[int] = []
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         return _interrupted(article_id)
 
@@ -410,7 +431,7 @@ def test_a_release_waiting_during_the_pause_stops_the_retry(conn, monkeypatch, t
         if len(slept) == 2:
             _deploy_waits(tmp_path)
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         return _interrupted(article_id)
 
@@ -431,7 +452,7 @@ def test_retries_and_splits_are_printed_with_the_time(conn, monkeypatch, capsys)
     """
     import logging
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         log = logging.getLogger("researchlib.translate")
         log.info("译制请求连了 %.0f 秒断开（ssl eof），2 秒后第 2 次发同一请求", 312)
         log.info("#%s 第 %s/%s 批请求失败（%s），已译的段先存下", article_id, 3, 5, "ssl eof")
@@ -468,7 +489,7 @@ def test_workers_translate_different_articles_at_the_same_time(pool, monkeypatch
     together = threading.Barrier(3, timeout=5)
     lock = threading.Lock()
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         with lock:
             seen.append(article_id)
             first_three = len(seen) <= 3
@@ -516,7 +537,7 @@ def test_a_login_error_in_a_worker_stops_the_run_and_is_reported(pool, monkeypat
     """worker 里抛出来的（要重新登录这类）不吞掉：不再拿新的一篇，主线程照样报出来、退出码 2。"""
     seen: list[int] = []
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         if article_id == 1:
             raise cli.XaiLoginRequiredError("refresh token 失效")
@@ -558,7 +579,7 @@ def test_each_article_prints_what_it_cost_and_the_run_prints_a_total(conn, monke
         lambda req, *, stream: answers[json.loads(req.data)["messages"][1]["content"]],
     )
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         ask = {21: ["good", "good"], 22: ["good", "broken"]}[article_id]
         for name in ask:
             try:
@@ -622,7 +643,7 @@ def test_from_inventory_makes_way_for_a_release_like_the_queue(conn, monkeypatch
     path.write_text(json.dumps({"ids": {}, "display": {"unmapped": [3, 2, 1]}, "coarse": []}), encoding="utf-8")
     seen: list[int] = []
 
-    def translate(conn, article_id, *, data_dir, reuse=True):
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
         seen.append(article_id)
         _deploy_waits(tmp_path)
         return TranslateResult(article_id, "translated", segments=2)

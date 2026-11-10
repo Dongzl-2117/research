@@ -275,8 +275,71 @@ def test_overview_scores_each_named_company_on_its_own(monkeypatch):
     assert set(found) == {1, 2}
     assert found[1].companies == [1, 6] and found[2].companies == [6]
     # 腾讯 10 次、网易 1 次各算各的（都只是一带而过，乘 0.5），不按合计 11 次算；一带而过的段落另打 0.7 折，和以前一样。
-    assert math.isclose(found[1].score, (math.log1p(10) + math.log1p(1)) * 0.5 * 0.7)
-    assert math.isclose(found[2].score, math.log1p(2) * 0.5 * 0.7)
+    # 段落本身的信息量（这几段都很短）另乘 substance。
+    first, second = (retrieval.substance(row["body"]) for row in rows[:2])
+    assert math.isclose(found[1].score, (math.log1p(10) + math.log1p(1)) * 0.5 * 0.7 * first)
+    assert math.isclose(found[2].score, math.log1p(2) * 0.5 * 0.7 * second)
+
+
+def test_substance_discounts_short_and_ai_compiled_passages():
+    from researchlib.retrieval import CITED_SUMMARY, substance
+
+    paragraph = "网易的游戏靠自研，研发投入占收入的比例多年在两成以上，" * 10
+    assert substance(paragraph) == 1.0
+    # 一行字的帖子：字数开平方打折，越短折越多。
+    one_liner = "腾讯的广告确实顶，一是视频号，二是搜一搜，三是 AI 的赋能"
+    assert substance("网络效应护城河") < 0.2 < substance(one_liner) < 0.5
+    # 英文按词数折算，一个词约合 1.6 个汉字：150 个词不打折，30 个词打折。
+    assert substance("moat " * 150) == 1.0
+    assert 0.45 < substance("moat " * 30) < 0.5
+    # 链接、图片文件名、截图默认名不算字。
+    only_files = "image.png https://example.com/a.png 截屏2025-06-08 19.36.10.png"
+    assert substance(only_files) == substance("")
+    # 句末带三处以上 (12) 这种引用编号：AI 研究报告汇编的段落，再打折。
+    cited = "网络效应是指产品的价值随着用户数量的增加而增加 (12)。直接网络效应很重要 (13)。间接的也很重要 (14)。" * 7
+    assert substance(cited) == CITED_SUMMARY
+    assert substance("规模经济共享模型的最佳案例 21212121。会员费即利润 23232323。" * 12) == CITED_SUMMARY
+    # 全角的列点、表格里括起来的负数不是引用编号。
+    listed = "（1）产品是顾客需要的；（2）顾客认为没有相近替代品；（3）不受价格管制。" * 9
+    assert substance(listed) == 1.0
+    table = "| 购买设备 | (634) | (522) | 财产和设备采购总额 | (879) | (896) | 出售所得 | (9) | (19) |" * 4
+    assert substance(table) == substance(table.replace("(", "").replace(")", ""))
+
+
+def test_one_line_post_ranks_below_a_paragraph_that_says_something(monkeypatch):
+    from researchlib import retrieval
+    from researchlib.retrieval import Term, score_rows
+    from researchlib.web.queries import Scope
+
+    class Conn:
+        def execute(self, *_args, **_kwargs):
+            return self
+
+        def fetchall(self):
+            return []
+
+    monkeypatch.setattr(retrieval, "_corpus_stats", lambda _conn: (1000, 300))
+    terms = [Term("网络效应", "word", 0, forms=["网络效应"], idf=3.0)]
+    base = dict(heading="", source_id="synthetic", published_at=None, lang="")
+    rows = [
+        # 星球短帖：标题就是正文第一句，正文只有这一行。
+        dict(base, article_id=1, ord=0, title="网络效应护城河", body="网络效应护城河"),
+        dict(
+            base, article_id=2, ord=3, title="平台笔记",
+            body="打车的网络效应是城市级的：北京的司机接不了上海的单，每进一座城都要重新补贴两边；"
+            "外卖更窄，是商圈级的，在一个学校做到九成份额，对隔壁学校没有帮助。所以这两门生意的头部"
+            "很难像社交网络那样一家独大，后来者只要在几座城市集中投入，就能拿到局部的规模，"
+            "补贴战也因此一轮接一轮，利润率长期上不去。",
+        ),
+    ]
+    query = _query(raw="网络效应", terms=terms)
+    passages = score_rows(Conn(), query, rows, scope=Scope(source_ids=["synthetic"]))
+    ranked = sorted(passages, key=lambda p: p.score, reverse=True)
+    assert [p.article_id for p in ranked] == [2, 1]
+    # 不按段落长短打折时，一行字的帖子（词频按长度归一、标题又算一遍）排在前面。
+    monkeypatch.setattr(retrieval, "substance", lambda _body: 1.0)
+    unweighted = score_rows(Conn(), query, rows, scope=Scope(source_ids=["synthetic"]))
+    assert max(unweighted, key=lambda p: p.score).article_id == 1
 
 
 def test_small_corpus_does_not_trust_sampled_lexeme_frequency():

@@ -260,6 +260,19 @@ def test_reading_column_is_narrow_and_images_fit_it():
     assert "line-height: 1.65" in english
 
 
+def test_heading_serif_falls_back_to_the_body_font():
+    """标题的宋体在没装宋体的设备上退回正文字体，不退到浏览器默认的 serif。
+
+    iPhone 的 Safari 给中文页面的 serif 用 Times，Times 没有中文：标题里的中文落到苹方，
+    数字和英文却是 Times，一行里两种字体。
+    """
+    root = _CSS.read_text(encoding="utf-8").split(":root {", 1)[1].split("}", 1)[0]
+    stack = root.split("--font-serif:", 1)[1].split(";", 1)[0]
+    assert stack.split(",")[0].strip() == '"Songti SC"'
+    assert stack.split(",")[-1].strip() == "var(--font-sans)"
+    assert "serif" not in [name.strip() for name in stack.split(",")]
+
+
 def test_single_newline_lines_stay_on_their_own_lines():
     """单换行分开的几行（星球帖里的「1、」「2、」「3、」，Stratechery 网页导出的一行一段）各占一行。
 

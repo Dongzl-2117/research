@@ -42,6 +42,8 @@ from researchlib.translate import inventory
 from researchlib.translate.llm import Usage, metered, transient_failure
 from researchlib.translate.provenance import PROMPT_VERSION, AlignmentError
 from researchlib.translate.service import (
+    TRANSLATE_BATCH_MAX_CHARS,
+    TRANSLATE_BATCH_MAX_SEGMENTS,
     TranslateResult,
     list_coarse_translations,
     list_pending_english,
@@ -124,10 +126,10 @@ def _retry_later(error: BaseException) -> bool:
     return isinstance(error, AlignmentError) and error.code.endswith("source-changed-during-request")
 
 
-def _command(ids: list[int], fresh: bool) -> str:
+def _command(ids: list[int], fresh: bool, batch_segments: int | None = None) -> str:
     return "research-translate " + " ".join(f"--article-id {article_id}" for article_id in ids) + (
         " --fresh" if fresh else ""
-    )
+    ) + ("" if batch_segments is None else f" --batch-segments {batch_segments}")
 
 
 def _duration(seconds: float) -> str:
@@ -225,6 +227,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="整篇重译，不复用已有译文。默认原文没变的段直接用已有译文，只补没译出来和原文变了的段",
     )
+    parser.add_argument(
+        "--batch-segments",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"一次请求最多送几段，默认 {TRANSLATE_BATCH_MAX_SEGMENTS}。0 表示不按段数切、只按每批 "
+        f"{TRANSLATE_BATCH_MAX_CHARS} 字切，一般文章一次请求送整篇；照旧按段编号交回、逐段核对",
+    )
     args = parser.parse_args(argv)
     # 让路以后原样再跑这一条。
     again_command = " ".join(["research-translate", *map(shlex.quote, sys.argv[1:] if argv is None else argv)])
@@ -232,6 +242,9 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
     if not 1 <= args.workers <= MAX_WORKERS:
         print(f"--workers 要在 1 到 {MAX_WORKERS} 之间", file=sys.stderr)
+        return 2
+    if args.batch_segments is not None and args.batch_segments < 0:
+        print("--batch-segments 不能是负数（0 表示只按字数分批）", file=sys.stderr)
         return 2
     # 几篇同时译不超过 RESEARCH_LLM_CONCURRENCY（默认 8，没有低硬顶）。
     # 另外还有 MAX_WORKERS：每个 worker 占一条数据库连接，不能把连接数开过库的上限。
@@ -354,7 +367,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with metered() as usage:
                 try:
-                    result = translate_article(conn, article_id, data_dir=settings.data_dir, reuse=not args.fresh)
+                    result = translate_article(
+                        conn, article_id, data_dir=settings.data_dir, reuse=not args.fresh,
+                        batch_segments=args.batch_segments,
+                    )
                 except XaiLoginRequiredError:
                     conn.rollback()
                     raise
@@ -517,12 +533,14 @@ def main(argv: list[str] | None = None) -> int:
             _say(f"{listed} 被打断没译完，{seconds // 60} 分钟后再补一轮")
             waiting = pause(seconds)
             if waiting:
-                _say(f"自动上线在等 {waiting[:7]}：不等着补了，/health 报出新提交后再跑 {_command(again, args.fresh)}")
+                rerun = _command(again, args.fresh, args.batch_segments)
+                _say(f"自动上线在等 {waiting[:7]}：不等着补了，/health 报出新提交后再跑 {rerun}")
                 return 1
             again = run_named(again)
         if again:
             listed = " ".join(f"#{article_id}" for article_id in again)
-            _say(f"补了 {len(NAMED_RETRY_PAUSES)} 轮，{listed} 还没译完：过一会儿再跑 {_command(again, args.fresh)}")
+            rerun = _command(again, args.fresh, args.batch_segments)
+            _say(f"补了 {len(NAMED_RETRY_PAUSES)} 轮，{listed} 还没译完：过一会儿再跑 {rerun}")
             return 1
         return 1 if failed else 0
 
