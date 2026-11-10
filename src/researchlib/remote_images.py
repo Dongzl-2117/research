@@ -9,13 +9,14 @@ DATA_DIR/images/remote/，在 article_images 里记一行（remote = true），�
 - 代理的 fake-ip 只给几个固定的图床放行（PROXY_IMAGE_HOSTS）。Mac mini 上的代理开着 fake-ip，容器里
   i0.wp.com、stratechery.com 都解析成 198.18.x.x，连上去由代理按域名转到真正的服务器。代理背后连的是哪里
   这边看不到，正文里随便写的域名真正的地址可能在内网，所以别的域名解析成假地址照旧不下。
+  11-08 起微信图床 mmbiz.qpic.cn 也解析成假地址，新抓的公众号文章图全被拦，也放行了。
 - WordPress 图片 CDN（i0.wp.com/原站/路径，Stratechery 的图都是这样）先下原站那一张，下不来再试 CDN：
   CDN 对一部分图会回 404。
 - 不带 Referer（公众号图床对外链 Referer 返回占位图）。
 - 每个地址的结果记在 image_fetches：成功的别的文章引用同一张图直接复用；失败的按次数隔 1、3、7、30 天再试。
 - 每次跑完把新地址下不来的张数、原因类别和最多的域名写进 DATA_DIR/status/fetch-images.json，
-  新地址大半下不来时 research-status 会列出来，值班不用查库（见 fetch_status）。夜间补齐带 --exit-code，
-  这时退出码 3，那一步记成失败。
+  新地址大半下不来、或者某个图床的新地址一个都没下下来时 research-status 会列出来，值班不用查库
+  （见 fetch_status）。夜间补齐带 --exit-code，这时退出码 3，那一步记成失败。
 
     research-fetch-images --limit 300
     research-fetch-images --limit 300 --exit-code
@@ -104,9 +105,12 @@ _NO_DNS = "域名解析不了"
 # Clash、Surge、sing-box 这类代理开 fake-ip 时用的段：RFC 2544 留给测试的 198.18.0.0/15，公网上不会出现。
 PROXY_FAKE_IPS = ipaddress.ip_network("198.18.0.0/15")
 # 解析成代理假地址也照样下的图床：都是固定的公网服务器，代理按域名连过去不会进内网。
-# 只写正文里真有的图床（Stratechery 原站和 WordPress 图片 CDN），不按后缀匹配。
+# 只写正文里真有的图床（Stratechery 原站、WordPress 图片 CDN、微信公众号图床），不按后缀匹配。
 PROXY_IMAGE_HOSTS = frozenset(
-    {"stratechery.com", "www.stratechery.com", "i0.wp.com", "i1.wp.com", "i2.wp.com", "i3.wp.com"}
+    {
+        "stratechery.com", "www.stratechery.com", "i0.wp.com", "i1.wp.com", "i2.wp.com", "i3.wp.com",
+        "mmbiz.qpic.cn",
+    }
 )
 
 
@@ -458,19 +462,71 @@ STATUS_TASK = "fetch-images"
 # 带 --exit-code 时，新地址大半下不来（fetch_status 判的有问题）的退出码。0 是跑完了，1 是出错退出。
 EXIT_MOSTLY_FAILED = 3
 
+# 一个图床最近这几天下过的地址一张都没下下来（dead_hosts）：多半是这台机器连不上它（代理的 fake-ip、网络、
+# 对方拦外链），这个图床的新图全会显示成「外部图片已省略」。按一次跑的比例看不出来：11-08 起微信图床
+# 三天一张没下下来，每次只有几个，夹在几百张下下来的 Stratechery 图里，没人发现。
+DEAD_HOST_DAYS = 3
+# 这么多个地址都下不来才算整个图床下不来，一两张坏图不算。
+DEAD_HOST_MIN = 3
+# 原图删了（404、410）、域名没了：图床那边的事，这边修不了，不算图床下不来。
+GONE_KINDS = frozenset({"HTTP 404", "HTTP 410", _NO_DNS})
 
-def fetch_status(report: dict) -> tuple[bool, str] | None:
+
+def dead_hosts(conn, days: int = DEAD_HOST_DAYS) -> dict[str, Counter]:
+    """最近 days 天下过、一张都没下下来的图床：{域名: 原因类别计数}。
+
+    看 image_fetches 里每个地址最近一次的结果，第一次下的和重试的都算：一个图床整个下不来时，它的新图
+    抓下来那一次就失败、之后都在重试，只看哪一次跑的新地址，下一次就看不到了。这几天有一张下下来了就不算；
+    原因大半是原图没了、域名没了的也不算（Stratechery 的图补完以后只剩 404 的在重试，偶尔连不上几次不报）。
+    """
+    rows = conn.execute(
+        """
+        SELECT host, array_agg(error) AS errors
+        FROM (
+            SELECT lower(substring(url from '^[A-Za-z][A-Za-z0-9+.-]*://([^/:?#]+)')) AS host, ok, error
+            FROM image_fetches
+            WHERE fetched_at > now() - make_interval(days => %s)
+        ) recent
+        WHERE host IS NOT NULL
+        GROUP BY host
+        HAVING bool_and(NOT ok) AND count(*) >= %s
+        """,
+        (days, DEAD_HOST_MIN),
+    ).fetchall()
+    found: dict[str, Counter] = {}
+    for row in rows:
+        kinds = Counter(failure_kind(error) for error in row["errors"])
+        ours = sum(count for kind, count in kinds.items() if kind not in GONE_KINDS)
+        if ours >= DEAD_HOST_MIN and ours * 2 > sum(kinds.values()):
+            found[row["host"]] = kinds
+    return found
+
+
+def _dead_hosts_message(dead: dict) -> str:
+    parts = []
+    for host, kinds in sorted(dead.items(), key=lambda item: (-sum(item[1].values()), item[0])):
+        kinds = Counter(kinds)
+        detail = "、".join(f"{kind} {count}" for kind, count in kinds.most_common())
+        parts.append(f"{host} {sum(kinds.values())} 个（{detail}）")
+    return f"最近 {DEAD_HOST_DAYS} 天一张都没下下来的图床：" + "、".join(parts)
+
+
+def fetch_status(report: dict, dead: dict | None = None) -> tuple[bool, str] | None:
     """这次下载算不算出了问题：(没问题, 一句话)。没有可判断的返回 None，状态文件不动。
 
     只看第一次下的地址：新文章的图大半下不来，多半是这台机器的网络、代理（fake-ip）、对方拦外链
     或者地址规则变了，要有人看。重试的地址本来就下不来过，再失败不算。原因类别和最多的几个域名
     写进这句话，值班看这句就知道是哪一类、哪个图床。原图已经删了（HTTP 404）也照样报：一下子很多
     也可能是图床换了地址（#256 的 CDN 404）。
+
+    dead 是 dead_hosts 查出来的整个下不来的图床：有就算出了问题，哪怕这次新地址太少、或者都是重试。
     """
     new = int(report.get("new") or 0)
     kinds = Counter(report.get("kinds") or {})
     failed = sum(kinds.values())
     if new == 0 or (failed and new < STATUS_MIN_NEW):
+        if dead:
+            return False, _dead_hosts_message(dead)
         return None
     message = f"新地址 {new} 个，下下来 {new - failed} 个"
     if failed:
@@ -479,15 +535,17 @@ def fetch_status(report: dict) -> tuple[bool, str] | None:
         message += "（最多的是 " + "、".join(f"{host} {count}" for host, count in hosts) + "）"
     if report.get("retried"):
         message += f"；重试以前下不来的 {report['retried']} 个，又失败 {report.get('retry_failed', 0)} 个"
-    problem = failed * 2 > new or failed >= STATUS_MANY_FAILED
+    if dead:
+        message += "；" + _dead_hosts_message(dead)
+    problem = failed * 2 > new or failed >= STATUS_MANY_FAILED or bool(dead)
     return not problem, message
 
 
-def record_fetch_status(data_dir: Path, report: dict) -> tuple[bool, str] | None:
+def record_fetch_status(data_dir: Path, report: dict, dead: dict | None = None) -> tuple[bool, str] | None:
     """把 fetch_status 的结论写进 DATA_DIR/status/fetch-images.json，返回这个结论（没有结论返回 None，文件不动）。"""
     from researchlib.health import write_status
 
-    verdict = fetch_status(report)
+    verdict = fetch_status(report, dead)
     if verdict is None:
         return None
     ok, message = verdict
@@ -499,17 +557,19 @@ def record_fetch_status(data_dir: Path, report: dict) -> tuple[bool, str] | None
         new=int(report.get("new") or 0),
         kinds=dict(report.get("kinds") or {}),
         hosts=dict(Counter(report.get("hosts") or {}).most_common(10)),
+        dead_hosts={host: dict(kinds) for host, kinds in (dead or {}).items()},
     )
     return verdict
 
 
-def finish(data_dir: Path, report: dict, *, exit_code: bool = False) -> int:
+def finish(data_dir: Path, report: dict, *, exit_code: bool = False, dead: dict | None = None) -> int:
     """记下结论、打出那句话，返回退出码。
 
-    带 exit_code 且新地址大半下不来时退出码 EXIT_MOSTLY_FAILED，那句话打在错误输出最后一行：
-    夜间补齐（scripts/nightly.sh）把这一步记成失败，原因就是这句。不带时照旧退出码 0。
+    带 exit_code 且新地址大半下不来、或者有整个下不来的图床（dead）时退出码 EXIT_MOSTLY_FAILED，
+    那句话打在错误输出最后一行：夜间补齐（scripts/nightly.sh）把这一步记成失败，原因就是这句。
+    不带时照旧退出码 0。
     """
-    verdict = record_fetch_status(data_dir, report)
+    verdict = record_fetch_status(data_dir, report, dead)
     if verdict is None:
         return 0
     ok, summary = verdict
@@ -526,13 +586,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--exit-code",
         action="store_true",
-        help=f"新地址大半下不来（research-status 会报的那种）时退出码 {EXIT_MOSTLY_FAILED}，原因打在错误输出最后一行",
+        help=(
+            f"新地址大半下不来、或者有整个下不来的图床（research-status 会报的那种）时退出码 {EXIT_MOSTLY_FAILED}，"
+            "原因打在错误输出最后一行"
+        ),
     )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了（个别下不来也算）；带 --exit-code 时新地址大半下不来是 3。"""
+    """退出码：0 跑完了（个别下不来也算）；带 --exit-code 时新地址大半下不来、或者有整个下不来的图床是 3。"""
     args = build_parser().parse_args(argv)
     from researchlib.config import Settings
     from researchlib.db import prepare
@@ -541,13 +604,14 @@ def main(argv: list[str] | None = None) -> int:
     conn = prepare(settings)
     try:
         report = fetch_pending(conn, settings.data_dir, args.limit)
+        dead = dead_hosts(conn)
     finally:
         conn.close()
     print(
         f"下载 {report['downloaded']} 张，复用 {report['reused']} 张，失败 {report['failed']} 张，"
         f"等下次重试 {report['skipped']} 张，涉及 {report['articles']} 篇"
     )
-    return finish(settings.data_dir, report, exit_code=args.exit_code)
+    return finish(settings.data_dir, report, exit_code=args.exit_code, dead=dead)
 
 
 if __name__ == "__main__":
