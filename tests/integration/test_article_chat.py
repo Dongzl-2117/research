@@ -34,6 +34,11 @@ def test_sidebar_exposes_scope_and_single_turn_and_noscript_uses_original_ask(co
         assert 'chat-chip' not in page and 'chat-hint' not in page
         assert 'placeholder=' not in page.split('id="article-chat-q"', 1)[1].split('>', 1)[0]
         assert 'form class="chat-form" action="/ask" method="post"' in page
+        # 还没问时：问候和可以问的题；输入框里有模型和档位菜单（默认那家总在，档位按问库的默认选好）。
+        panel = page.split('id="article-chat"', 1)[1].split('</aside>', 1)[0]
+        assert '想从资料里了解什么？' in panel and f'data-scope="{identity}"' in panel
+        assert '<details class="ask-model" data-popover' in panel and 'name="effort"' in panel
+        assert 'value="xhigh" data-label="最高" checked' in panel
         assert 'type="hidden" name="article"' not in page
         broad = client.post('/ask', data={'q': '腾讯', 'article': ''})
         local = client.post('/ask', data={'q': '概括这篇', 'article': str(identity)})

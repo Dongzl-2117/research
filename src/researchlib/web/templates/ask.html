@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_ask_model.html" import model_menu %}
 {% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">{% endblock %}
 {% macro passage(item, result) %}
 {% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
@@ -75,7 +76,7 @@
           {% if result.missing %}<ul class="missing-list" aria-label="补上的文章">{% for item in result.missing %}<li><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.title }}</a></li>{% endfor %}</ul>{% endif %}
         </details>
         {% endif %}
-        {% if result.model or result.created %}<p class="answer-meta">{{ result.model }}{% if result.model and result.created %} · {% endif %}{{ result.created }}</p>{% endif %}
+        {% if result.model or result.created %}<p class="answer-meta">{{ ([result.model, ("思考" ~ result.llm.effort_label) if result.llm and result.model else "", result.created] | select | join(" · ")) }}</p>{% endif %}
         </div>
       </div>
       <div class="chat-recovery"></div>
@@ -99,7 +100,7 @@
             <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
           </div>
         </details>
-        <span class="chat-count" aria-hidden="true"></span><button type="submit" aria-label="发送问题" title="发送问题"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m-5 5 5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+        <span class="chat-count" aria-hidden="true"></span>{{ model_menu(ask_models) }}<button type="submit" aria-label="发送问题" title="发送问题"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m-5 5 5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
     </div>
     {% if not result and not article and not tree and not company and not filters.source %}
     {# 还没问时，输入框下面摆最近问过的几题（整个资料库、没限定日期和公司的），点一下填进输入框，不直接提交。 #}

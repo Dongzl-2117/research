@@ -151,16 +151,86 @@
 .answer-feedback > summary { min-height: 32px; padding-block: 6px; cursor: pointer; }
 .ask-workspace .missing-form { margin-top: 4px; padding-top: 0; border: 0; }
 .ask-workspace .retry-form button { min-height: 36px; padding: 6px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 13px; cursor: pointer; }
-.article-chat .chat-head { align-items: baseline; min-height: 44px; padding: 0 4px 8px; border-bottom: 1px solid var(--line-soft); }
-.article-chat .chat-head h2 { font-size: 15px; }
-.article-chat .chat-head-actions button { min-height: 36px; color: var(--ink-3); font-size: 12px; }
+/* 模型和思考强度（_ask_model.html）：输入框里发送键左边一枚不带框的小字，点开是浮层。
+   浮层对齐输入框右边、不超过输入框宽，阅读页右栏（overflow: hidden）和窄手机上都不会被切掉。 */
+.ask-workspace .chat-composer, .article-chat .chat-composer { position: relative; }
+.chat-composer-bar .ask-model { flex: none; margin: 0; color: var(--ink-3); font-size: 12.5px; }
+.chat-composer-bar .ask-model > summary { display: inline-flex; align-items: center; gap: 3px; min-height: 32px; padding: 0 7px 0 10px; border-radius: 10px; list-style: none; white-space: nowrap; cursor: pointer; }
+.chat-composer-bar .ask-model > summary::-webkit-details-marker { display: none; }
+.chat-composer-bar .ask-model > summary:hover,
+.chat-composer-bar .ask-model[open] > summary { background: var(--bg-sunk); color: var(--ink); }
+.chat-composer-bar .ask-model > summary svg { width: 13px; height: 13px; flex: none; transition: transform .2s var(--ease); }
+.chat-composer-bar .ask-model[open] > summary svg { transform: rotate(180deg); }
+.chat-composer-bar .ask-model .model-grid { position: absolute; z-index: 30; right: 0; bottom: calc(100% + 10px); display: grid; gap: 14px; width: min(320px, 100%); max-height: min(72dvh, 440px); margin: 0; padding: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 14px 44px color-mix(in srgb, var(--ink) 14%, transparent); color: var(--ink-2); text-align: left; }
+[data-theme="dark"] .chat-composer-bar .ask-model .model-grid { background: var(--raised); }
+.ask-workspace:has(.ask-welcome) .chat-composer-bar .ask-model .model-grid { top: calc(100% + 10px); bottom: auto; }
+.model-grid fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.model-grid legend { margin: 0 0 8px; padding: 0; color: var(--ink-4); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; }
+.model-providers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.model-option, .effort-row label { position: relative; display: block; min-width: 0; cursor: pointer; }
+/* 单选框本身看不见，留在原处给键盘和读屏用；点的是它后面那块。 */
+.model-option input, .effort-row input { position: absolute; top: 0; left: 0; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.model-option > span { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-height: 50px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 11px; }
+.model-option b { color: var(--ink); font-size: 13.5px; font-weight: 600; }
+.model-option small { overflow: hidden; color: var(--ink-4); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.model-option:hover > span { border-color: var(--line-strong); }
+.model-option input:checked + span { border-color: var(--accent); background: var(--accent-softer); box-shadow: inset 0 0 0 1px var(--accent); }
+.effort-row { display: grid; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 2px; padding: 3px; border-radius: 11px; background: var(--bg-sunk); }
+.effort-row span { display: flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 6px; border-radius: 8px; color: var(--ink-3); font-size: 13px; white-space: nowrap; }
+.effort-row label:hover span { color: var(--ink); }
+.effort-row input:checked + span { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+[data-theme="dark"] .effort-row input:checked + span { background: var(--bg-muted); }
+.model-option input:focus-visible + span, .effort-row input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+.model-note { margin: 0; color: var(--ink-4); font-size: 11.5px; line-height: 1.6; }
+/* 阅读页右侧问库：标题栏两枚图标键；还没问时问候和几道题放在中间；输入框左下角是范围，右下角是模型。 */
+.article-chat .chat-head { align-items: center; min-height: 40px; padding: 0 0 6px 4px; border-bottom: 0; }
+.article-chat .chat-head h2 { color: var(--ink-3); font-size: 14px; font-weight: 600; letter-spacing: .04em; line-height: 1.4; }
+.article-chat .chat-head-actions { align-items: center; gap: 2px; }
+.article-chat .chat-head-actions button { display: inline-grid; place-items: center; width: 34px; height: 34px; padding: 0; border-radius: 9px; color: var(--ink-3); line-height: 1; }
+.article-chat .chat-head-actions button:hover { background: var(--bg-sunk); color: var(--ink); }
+.article-chat .chat-head-actions svg { width: 18px; height: 18px; }
+/* 收起：窄屏的抽屉往下收，箭头朝下；1320 起是右栏，往右收。 */
+.article-chat .chat-head-actions .icon-side { display: none; }
 .article-chat .chat-log { gap: 20px; padding: 18px 6px 24px; scrollbar-width: thin; }
+.article-chat .chat-welcome { flex-direction: column; flex-wrap: nowrap; gap: 0; align-self: center; width: min(100%, 560px); margin: auto 0; padding: 8px 2px 16px; }
+.article-chat .chat-welcome .ask-seal { width: 34px; height: 34px; border-radius: 10px; font-size: 18px; }
+.article-chat .chat-welcome h3 { margin: 14px 0 0; color: var(--ink); font-family: var(--font-serif); font-size: 21px; font-weight: 600; letter-spacing: .02em; line-height: 1.4; }
+.article-chat .ask-suggest { flex-direction: column; flex-wrap: nowrap; align-self: stretch; gap: 6px; margin: 22px 0 0; text-align: left; }
+.article-chat .ask-suggest li { max-width: none; }
+.article-chat .ask-suggest a { display: flex; align-items: flex-start; gap: 9px; min-height: 0; padding: 9px 12px; border-radius: 12px; color: var(--ink-2); font-size: 13px; line-height: 1.6; }
+.article-chat .ask-suggest a span:not(.sr) { overflow: visible; white-space: normal; }
+.article-chat .ask-suggest svg { margin-top: 3px; }
 .article-chat .chat-bubble-user { max-width: 90%; padding: 10px 14px; border-radius: 18px 18px 4px 18px; background: var(--bg-muted); line-height: 1.7; }
 .article-chat .chat-bubble-user > p:last-child { white-space: pre-wrap; }
 .article-chat .chat-markdown { font-size: 15px; line-height: 1.85; }
 .article-chat .chat-form { padding-top: 8px; }
-.article-chat .chat-range { min-height: 32px; font-size: 12px; }
+.article-chat .chat-composer-bar { justify-content: flex-start; gap: 4px; padding: 2px 6px 6px 8px; }
+.article-chat .chat-composer-bar .ask-model { margin-left: auto; }
+/* 范围：一枚小圆角标签。看得见的是 .chat-range-text（脚本跟着下拉框改），下拉框透明地盖满整枚标签，点哪里都是点它；
+   它的字号留 16px，iPhone 上点下拉框才不会把整页放大。没脚本时 ask-chat-noscript.css 把下拉框露出来。 */
+.chat-range-chip { position: relative; display: inline-flex; flex: 0 1 auto; align-items: center; gap: 5px; min-width: 0; min-height: 32px; padding: 0 8px 0 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-3); font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.chat-range-chip:hover, .chat-range-chip:focus-within { background: var(--bg-sunk); color: var(--ink); }
+.chat-range-chip:has(select:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chat-range-chip > svg { width: 14px; height: 14px; flex: none; }
+.chat-range-chip > svg.chevron { width: 12px; height: 12px; }
+.chat-range-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.article-chat .chat-range-chip .chat-range { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; max-width: none; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 999px; opacity: 0; font-size: 16px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.article-chat .chat-form button[type="submit"] { width: 34px; height: 34px; border-radius: 11px; background: var(--accent); color: var(--accent-contrast); }
+.article-chat .chat-form button[type="submit"]:hover { background: var(--accent-ink); color: var(--accent-contrast); }
+.article-chat .chat-form button[type="submit"] svg { width: 18px; height: 18px; }
+.article-chat .chat-foot { margin: 8px 0 0; color: var(--ink-4); font-size: 11px; line-height: 1.5; text-align: center; }
+/* 阅读页抽屉里浮层往上开，高度让出标题栏和输入框，矮屏（手机横放）上在浮层里滚。 */
+.article-chat .chat-composer-bar .ask-model .model-grid { bottom: calc(100% + 8px); max-height: calc(min(78dvh, 640px) - 170px); }
 :is(.ask-workspace, .article-chat) [hidden] { display: none; }
+/* 宽屏右栏有一整屏高：浮层最多到标题栏下面。手机横放这类矮屏上省掉输入框下面那行说明。 */
+@media (min-width: 1320px) {
+  .article-chat .chat-composer-bar .ask-model .model-grid { max-height: calc(100dvh - 200px); }
+  .article-chat .chat-head-actions .icon-side { display: block; }
+  .article-chat .chat-head-actions .icon-down { display: none; }
+}
+@media (max-height: 520px) {
+  .article-chat .chat-foot { display: none; }
+}
 /* 600px 起导航在侧边，上下没有导航条；输入框让出手机底部的安全区。 */
 @media (min-width: 600px) {
   .shell:has(.ask-workspace) { --top-chrome: 0px; --bottom-chrome: 0px; }
@@ -179,7 +249,10 @@
   .chat-composer-bar .ask-filters > summary { min-height: 36px; }
   .ask-workspace .chat-form textarea, .article-chat .chat-form textarea { font-size: 16px; }
   .ask-workspace .chat-form button[type="submit"], .article-chat .chat-form button[type="submit"] { width: 44px; height: 44px; }
-  .article-chat .chat-head-actions button, .article-chat .chat-range { min-height: 44px; }
+  .article-chat .chat-head-actions button { width: 44px; height: 44px; }
+  .chat-range-chip, .chat-composer-bar .ask-model > summary { min-height: 36px; }
+  .article-chat .chat-form button[type="submit"] { border-radius: 13px; }
+  .effort-row span { min-height: 38px; }
   :is(.ask-workspace, .article-chat) .chat-recovery :is(a, button),
   .ask-workspace .passage-full summary, .ask-workspace .mark,
   .answer-feedback > summary { min-height: 44px; }

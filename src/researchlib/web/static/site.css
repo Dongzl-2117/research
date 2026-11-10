@@ -209,8 +209,6 @@ img { max-width: 100%; }
 .nav-link[aria-current="page"] svg { color: var(--accent); }
 [data-theme="dark"] .nav-link[aria-current="page"] { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); }
 /* 来源前面的小圆点：没选中时淡一些 */
-.nav-dot { opacity: .45; }
-.nav-link[aria-current="page"] .nav-dot { opacity: 1; }
 
 /* 品牌：「研」字印章加字标。苹方最粗是 600，写 700、900 在 Mac 上也只有这么粗。 */
 .brand {
@@ -856,8 +854,8 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose img, .prose video {
   display: block;
   width: auto;
-  /* 不比阅读栏更宽。限高只拦住特别长的拼接图：单屏聊天截图约 1080×2340，
-     在 680px 栏里高度约 1470，低于 1800px，于是按栏宽铺满，字能直接读。点开仍看大图。 */
+  /* 不比阅读栏更宽。竖长截图另按手机屏宽显示（下面 data-shape="tall"），不受这里的限高。
+     限高只兜住没读出尺寸的图（外链图还没下载、SVG），免得一张图占好几屏。点开仍看大图。 */
   max-width: 100%;
   height: auto;
   max-height: 1800px;
@@ -867,6 +865,10 @@ tbody tr:hover td { background: var(--accent-softer); }
   object-fit: contain;
 }
 .prose img { cursor: zoom-in; }
+/* 竖长截图（高至少是宽的 1.25 倍，服务端读文件头标 data-shape="tall"，见 image_size.py）按手机屏宽显示。
+   以前铺满 680px 的栏，手机截图里的字有正文两倍大；26em 约 440px，截图里的字和正文差不多大。
+   长截图也不再按 1800px 限高压窄（以前拼接长图被压到两三百像素宽，字看不清），照手机上那样往下滚着读。 */
+.prose img[data-shape="tall"] { max-width: min(100%, 26em); max-height: none; }
 .prose img + br { display: none; }
 .prose p > img:only-child { margin-block: .4em; }
 .img-zoom {
@@ -882,6 +884,9 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 .img-zoom[hidden] { display: none; }
 .img-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+/* 竖长截图点开：放宽到看得清字，往下滚着读。整张缩进一屏的话，长截图只剩一百多像素宽，比正文里还小。 */
+.img-zoom[data-shape="tall"]:not([hidden]) { display: block; overflow-y: auto; overscroll-behavior: contain; }
+.img-zoom[data-shape="tall"] img { display: block; width: min(100%, 760px); max-height: none; margin: 0 auto; }
 .prose figure { margin: 1.5em 0; }
 .prose figcaption { margin-top: .6em; color: var(--ink-4); font-size: 13px; text-align: center; }
 .prose code {
@@ -1109,14 +1114,17 @@ tbody tr:hover td { background: var(--accent-softer); }
     padding-bottom: 56px;
   }
   /* 白边留在栏内。以前用 16px 外扩阴影，阴影盖住右侧分割条，字又贴着栏边，第一笔会被裁掉。
-     正文左右各让出 20px；比正文宽的图最多铺回整栏（680px），不缩进。 */
-  .shell:has(.reader-grid) .reader-grid {
+     正文左右各让出 20px；比正文宽的图最多铺回整栏（680px），不缩进。
+     飞书目录右侧的正文（.doc-read）也是白底，同样留边，以前字贴着白底左缘。 */
+  .shell:has(.reader-grid) .reader-grid,
+  .shell:has(.doc-read) .doc-read {
     padding-left: 20px;
     padding-right: 20px;
   }
   /* 图按原尺寸，只是上限放到整栏：小图标、小表格不放大成 680px 糊掉。
      宽图比正文宽 40px，左右外边距用不了 auto，改用 left + translate 对着正文中线居中。 */
-  .shell:has(.reader-grid) .reader-grid .prose img {
+  .shell:has(.reader-grid) .reader-grid .prose img,
+  .shell:has(.doc-read) .doc-read .prose img {
     position: relative;
     left: 50%;
     max-width: calc(100% + 40px);
@@ -1124,7 +1132,10 @@ tbody tr:hover td { background: var(--accent-softer); }
     margin-right: 0;
     transform: translateX(-50%);
   }
-  .shell:has(.reader-grid) .reader-grid .prose video {
+  .shell:has(.reader-grid) .reader-grid .prose img[data-shape="tall"],
+  .shell:has(.doc-read) .doc-read .prose img[data-shape="tall"] { max-width: min(100%, 26em); }
+  .shell:has(.reader-grid) .reader-grid .prose video,
+  .shell:has(.doc-read) .doc-read .prose video {
     width: calc(100% + 40px);
     max-width: none;
     margin-left: -20px;
@@ -1178,7 +1189,6 @@ tbody tr:hover td { background: var(--accent-softer); }
   .sidebar .brand i { width: 32px; height: 32px; margin: 0; border-radius: 9px; font-size: 17px; }
   .sidebar nav { width: 100%; margin: 0; padding: 0; scrollbar-width: none; }
   .sidebar .nav-label,
-  .sidebar nav > .nav-group ~ .nav-group,
   .sidebar nav > a.nav-link { display: none; }
   .sidebar .nav-group { align-items: center; gap: 6px; }
   .sidebar .nav-link {
@@ -2325,6 +2335,8 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .doc-twist::before { content: "▶"; }
 .doc-nav details[open] > summary .doc-twist { display: inline-block; transform: rotate(90deg); }
 .doc-branch > a { flex: 1 1 auto; min-width: 0; width: auto; }
+/* 没有下级的条目让出箭头那一格（10px 箭头 + 4px 间距），和同一层带箭头的标题对齐，不再左右错开。 */
+.doc-nav a.doc-leaf { margin-left: 14px; }
 .doc-read { min-width: 0; max-width: var(--reading-column); font-size: var(--text-prose); }
 .doc-read .prose { max-width: none; }
 @media (max-width: 800px) {
