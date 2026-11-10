@@ -414,17 +414,23 @@ Zhilin 11-10 在卡片上选了这一批走 DeepSeek。当时的账：
 - DeepSeek：第 3 版在它上面验过（上一节）。16 篇同时译，估两三天；约 40 到 120 美元（按 11-09 的单件用量加上第 3 版多出的约 27% 输出，夜间价），北京时间工作日 9 到 12 点、14 到 18 点单价翻倍，全天跑大约再多三成。
 - Grok：订阅里出、不另花钱，但和识图全量重认抢同一份账号额度，3 小时 16 分只译了约 21 篇，照这个速度要两周左右；也没和 DeepSeek 拿同一批段比过好坏。
 
-只有这一轮的进程走 DeepSeek，识图、问库、摘要、观点照旧用 Grok（`.env` 不改）。Mac mini 上：
+当晚 Zhilin 又让整站都走 DeepSeek（`.env` 设 `RESEARCH_LLM_PROVIDER=deepseek`，见 [llm.md](llm.md)）。命令里的 `-e RESEARCH_LLM_PROVIDER=deepseek` 留着：以后 `.env` 换回 Grok，这一轮照旧走 DeepSeek。
+
+Mac mini 上（11-10 22:55 起用这一条，外面套了一层循环，合并上线以后自己接着译）：
 
 ```bash
 cd ~/research
-nohup bash -c 'docker compose exec -T app research-translate-inventory; for c in none partial stale old-prompt old-receipt legacy; do docker compose exec -T -e RESEARCH_LLM_PROVIDER=deepseek -e RESEARCH_LLM_CONCURRENCY=16 app research-translate --from-inventory $c --workers 16; done' < /dev/null >> ~/translate-deepseek.log 2>&1 &
+docker compose top app | grep research-translate   # 先确认什么都不打出来，没有旧的一轮在跑
+nohup bash -c 'while :; do docker compose exec -T app research-translate-inventory; for c in none partial stale old-prompt old-receipt legacy; do docker compose exec -T -e RESEARCH_LLM_PROVIDER=deepseek -e RESEARCH_LLM_CONCURRENCY=16 app research-translate --from-inventory $c --workers 16; done; w=data/status/.deploy-waiting; [ -n "$(find $w -mmin -30 2>/dev/null)" ] || break; while [ -n "$(find $w -mmin -30 2>/dev/null)" ]; do sleep 60; done; sleep 120; done' < /dev/null >> ~/translate-deepseek.log 2>&1 &
 ```
 
 - 先重新盘点，再一类接一类译；某一类是空的就直接到下一类。`old-prompt` 按第 3 版整篇重译，旧提示词的段不复用；`legacy`、`old-receipt` 没有这一版的回执，也是整篇译。
-- 合并上线时每个 worker 译完手上那篇就停，后面几类也立刻让路退出。`/health` 报出新提交后再跑同一条：重新盘点，译完的跳过，接着译。
+- 合并上线时每个 worker 译完手上那篇就停，后面几类也立刻让路退出。外层循环接着看 `data/status/.deploy-waiting`：半小时内写过（自动上线在等）就每分钟看一次，等 `scripts/deploy.sh` 在新容器起来后把它删掉，再过两分钟从盘点重来，译完的跳过。全部译完、或者停下时没有在等上线（比如 402），外层循环也退出，不会空转。
+- 以前给的不带循环的那条（`nohup bash -c 'docker compose exec -T app research-translate-inventory; for c in …; done'`）合并上线后不会自己接着译，`/health` 报出新提交后要手动再跑一次，改用上面这条。
+- 要停这一轮：Mac 上 `pkill -f deploy-waiting` 停外层循环，再 `docker compose restart app` 停容器里在译的（镜像里没有 `pkill`；手上那几篇白译，网站停几秒）。
 - DeepSeek 余额不够时请求被拒（402），这一轮停在那，充值后再跑同一条。
 - 进度看 `~/translate-deepseek.log`：每篇一行结果带用量和用时，每一类跑完一行合计；按合计的 token 和上面的单价算已经花了多少。
+- 不看日志也能从线上量速度：清单按发布时间新的在前，`none` 一类从新往旧译，Stratechery 文章页 `.bilingual` 的 `data-correspondence` 从没有变成 `mapped` 的地方就是前沿；隔 20 分钟数一次前沿附近新变的篇数。11-10 22:19 到 22:39 前沿在 2015 年 5 月，20 分钟 9 篇，每小时约 26 篇（16 路，一篇约 37 分钟），剩约 2100 篇要连续跑三天半左右。这 9 篇中英字数比 0.26、末尾不缩水、破折号共 2 个，205 段里 1 段先放英文。
 - 同时开着别的 `research-translate`（比如照 `.env` 走 Grok 的 `--loop`）时，碰上同一篇按 advisory lock 各让一步，不会重译。
 
 ## 一段出错不连累整篇（2026-11-07，`ALIGNMENT_VERSION` 9）
