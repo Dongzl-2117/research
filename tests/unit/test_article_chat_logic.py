@@ -30,6 +30,8 @@ def test_reading_column_stays_680_and_chat_collapses_before_it_would_overflow():
     assert ".is-chat-closed" in css
     assert 'html[data-article-chat="closed"]' in css
     assert "/api/v1/ask" in js
+    # 次数满了的 429 带着召回的原文和原因，按没登记的回答显示，不当成请求失败。
+    assert "response.status === 429" in js
     assert "research-article-chat" in js
     assert "research-article-chat-ratio" in js
     assert "pointerdown" in js and "dblclick" in js and "ArrowLeft" in js

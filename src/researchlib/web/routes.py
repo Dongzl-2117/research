@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import re
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -1165,6 +1166,39 @@ def duplicates_separate(request: Request, article_id: int):
 
 
 
+_SNIPPET_TEXT = re.compile(r"[0-9A-Za-z一-鿿]+")
+
+
+def _snippet_key(snippet) -> str:
+    """摘录去掉高亮和标点后的字，用来认页面上一字不差的两段摘录。不到 30 个字的不认。"""
+    text = "".join(_SNIPPET_TEXT.findall(re.sub(r"<[^>]+>", "", str(snippet)))).lower()
+    return text if len(text) >= 30 else ""
+
+
+def _card_snippets(hit, query: str, terms, groups, shown: set[str]):
+    """一张卡片上的摘录（最多两段）和卡片链接指向的那一段。
+
+    摘录是命中最集中处前后的一小段。相邻两块有几句重叠，命中常落在重叠处，同一篇的两段摘录就一字不差；
+    几篇文章里同一段话前后多了几个字，整块认不出重复，截出来的摘录却一样。按显示出来的字比：
+    这一页已经显示过的换这篇下一段备选（hit.spare），都显示过就照旧摘第一段。shown 记着这一页显示过的摘录。
+    """
+    picked = []
+    for passage in [*hit.passages, *hit.spare]:
+        snippet = highlight_snippet(polish_display_text(passage.body), query, terms=terms, groups=groups)
+        key = _snippet_key(snippet)
+        if key and key in shown:
+            continue
+        picked.append((passage, snippet))
+        if key:
+            shown.add(key)
+        if len(picked) >= 2:
+            break
+    if not picked and hit.passages:
+        first = hit.passages[0]
+        picked = [(first, highlight_snippet(polish_display_text(first.body), query, terms=terms, groups=groups))]
+    return [snippet for _, snippet in picked], (picked[0][0] if picked else None)
+
+
 @router.get("/search")
 def search_page(request: Request):
     settings = request.app.state.settings
@@ -1216,8 +1250,9 @@ def search_page(request: Request):
             by_id,
             settings.display_timezone,
         )
+        shown_snippets: set[str] = set()
         for hit in hits:
-            best = hit.passages[0] if hit.passages else None
+            snippets, best = _card_snippets(hit, query, terms, groups, shown_snippets)
             row = {"id": hit.article_id, "title": shown[hit.article_id], "published_at": hit.published_at}
             results.append(
                 _card(
@@ -1226,10 +1261,7 @@ def search_page(request: Request):
                     settings,
                     title=highlight_title(shown[hit.article_id], query, terms=terms),
                     extra={
-                        "snippets": [
-                            highlight_snippet(polish_display_text(p.body), query, terms=terms, groups=groups)
-                            for p in hit.passages[:2]
-                        ],
+                        "snippets": snippets,
                         "heading": best.heading if best else "",
                         "chunk": best.ord if best else None,
                         "anchor": best.anchor if best else "",

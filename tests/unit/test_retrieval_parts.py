@@ -1,6 +1,7 @@
 """检索和问库里不碰数据库的部分：公司计数、挑选、同义词解析、分批整合。"""
 
 import json
+import re
 from datetime import datetime
 
 from researchlib import ask as ask_module
@@ -140,6 +141,63 @@ def test_search_cards_do_not_show_the_same_paragraph_twice():
     hits = rank_articles(scored, _query(), [])
     assert [hit.article_id for hit in hits] == [1, 2, 4, 3]
     assert [[p.ord for p in hit.passages] for hit in hits] == [[0], [1], [0], [0]]
+
+
+def test_search_cards_keep_unused_paragraphs_as_spares():
+    """卡片摘两段；这篇没摘的、前面的卡片也没摘过的段落留作备选，页面上摘录重复时换用。"""
+    from researchlib.retrieval import rank_articles
+
+    shared = "同一份资料抄进了几篇笔记：开市客靠会员费赚钱，商品只加很少的价，周转快，供应商愿意给最低价。"
+    scored = [
+        _passage(1, 0, 20.0, 2024, body=shared),
+        _passage(2, 0, 8.5, 2024, body=shared),
+        *(_passage(2, ord_, 5.0 - ord_, 2024) for ord_ in range(1, 5)),
+    ]
+    hits = rank_articles(scored, _query(), [])
+    assert [hit.article_id for hit in hits] == [1, 2]
+    second = hits[1]
+    assert [p.ord for p in second.passages] == [1, 2]
+    assert [p.ord for p in second.spare] == [3, 4]
+
+
+# 相邻两块重叠的那几句：命中落在这里时，两块截出来的摘录一字不差。
+OVERLAP = (
+    "即便开发者真把价格定得过高，这本身也是转嫁损害的例子，所以消费者没有诉讼资格。原告的说法只在应用稀缺、"
+    "开发者拥有定价权的世界里才成立，那样消费者才会被迫承担苹果附加费用的全部；现实是应用已经便宜得不能再便宜，"
+    "直接受到伤害的是开发者，有资格起诉的也该是开发者。"
+)
+
+
+def test_card_snippets_replace_a_line_already_shown_on_the_page():
+    """按页面上显示出来的字比：同一张卡片的两段、前后两张卡片，摘录一字不差的换这篇下一段备选。"""
+    from researchlib.retrieval import ArticleHit
+    from researchlib.web.routes import _card_snippets
+
+    def card(article_id, passages, spare=()):
+        return ArticleHit(article_id, "标题", "stratechery", None, 1.0, True, list(passages), spare=list(spare))
+
+    def texts(snippets):
+        return [re.sub(r"<[^>]+>", "", str(s)) for s in snippets]
+
+    head = _passage(1, 0, 9.0, 2024, body="前面一块自己的话，讲诉讼的来龙去脉和最高法院的多数意见。" + OVERLAP)
+    tail = _passage(1, 1, 8.0, 2024, body=OVERLAP + "后面一块自己的话，讲开发者还能怎么办、国会会不会立新法。")
+    own = _passage(1, 2, 7.0, 2024, body="第三块：定价权要看过去十年的提价记录，提了价销量不掉才算真有。")
+    shown: set[str] = set()
+    snippets, best = _card_snippets(card(1, [head, tail], [own]), "苹果 定价权", ["定价权"], None, shown)
+    first, second = texts(snippets)
+    assert texts([_card_snippets(card(9, [tail]), "", ["定价权"], None, set())[0][0]]) == [first]
+    assert "提价记录" in second
+    assert best is head
+
+    quoted = _passage(2, 0, 6.0, 2024, body="摘自去年的文章：" + OVERLAP)
+    other = _passage(2, 1, 5.0, 2024, body="第二篇自己的话：应用商店的抽成和定价权是两回事，抽成高不等于开发者能涨价。")
+    snippets, best = _card_snippets(card(2, [quoted], [other]), "苹果 定价权", ["定价权"], None, shown)
+    assert len(snippets) == 1 and "抽成高不等于" in texts(snippets)[0]
+    assert best is other
+
+    only = _passage(3, 0, 4.0, 2024, body="第三篇照抄：" + OVERLAP)
+    snippets, best = _card_snippets(card(3, [only]), "苹果 定价权", ["定价权"], None, shown)
+    assert texts(snippets) == [first] and best is only
 
 
 def test_select_drops_partial_matches_when_full_matches_are_plenty():

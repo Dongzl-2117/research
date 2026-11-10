@@ -309,7 +309,9 @@
         invalid.status = response.status;
         throw invalid;
       }
-      if (!response.ok) {
+      // 全站问库次数满了（429）：error 里写着多久后能再问，召回的原文照样给，按没登记的回答显示。
+      const limited = response.status === 429 && data && typeof data === 'object' && !Array.isArray(data);
+      if (!response.ok && !limited) {
         const error = new Error(errorText(data, '暂时无法读取问库'));
         error.status = response.status;
         throw error;
