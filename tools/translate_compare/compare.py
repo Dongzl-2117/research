@@ -3,8 +3,11 @@
 在 Mac mini 上（应用容器里有 DeepSeek 的 key 和 Grok 的登录，云端都没有）：
 
     cd ~/research
-    curl -fsSL https://raw.githubusercontent.com/Dongzl-2117/research/<提交>/tools/translate_compare/compare.py \\
-      | docker compose exec -T app python - [heldout] > ~/translate-compare.json
+    docker compose exec -T app python - [heldout] < tools/translate_compare/compare.py > ~/translate-compare.json
+
+镜像里没有 tools/，所以从宿主机把脚本喂给容器里的 python。还没合进 main 的版本，把
+curl -fsSL https://raw.githubusercontent.com/Dongzl-2117/research/<提交>/tools/translate_compare/compare.py
+的输出接给同一条 docker compose exec。
 
 用哪家跟线上译制一样看 RESEARCH_LLM_PROVIDER（11-10 起默认 Grok）。要用 DeepSeek 跑，在 exec 后面加
 -e RESEARCH_LLM_PROVIDER=deepseek，只影响这一条命令。不带参数的 13 段只用 DeepSeek 跑。
