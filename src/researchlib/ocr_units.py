@@ -404,6 +404,91 @@ def stitch(units_list: list[dict | None]) -> list[list[dict] | None]:
     return result
 
 
+# join_tiles 里临时记在块上：这一块挨着整张图真正的上边或下边，模型标了 cut。接完以后只留这种 cut。
+_EDGE = "_edge"
+
+
+def _join_tables(upper: list[dict], lower: list[dict]) -> list[dict]:
+    """接缝把一张表切成两半：后一段开头和前一段结尾相同的几行只留一份，接成一张表（就地改 upper）。
+
+    重合的几行加起来至少 MIN_OVERLAP_CHARS 个字才接；对不上就两半都留着，宁可重复，不丢行。
+    """
+    if not upper or not lower:
+        return lower
+    above, below = upper[-1], lower[0]
+    if above.get("type") != "table" or below.get("type") != "table":
+        return lower
+    head, tail = above.get("rows") or [], below.get("rows") or []
+    keys_head = [_norm(" | ".join(row)) for row in head]
+    keys_tail = [_norm(" | ".join(row)) for row in tail]
+    for size in range(min(len(head), len(tail)), 0, -1):
+        if keys_head[len(head) - size :] != keys_tail[:size]:
+            continue
+        if sum(len(key) for key in keys_tail[:size]) < MIN_OVERLAP_CHARS:
+            break
+        table = {**above, "rows": head + tail[size:]}
+        marks = list(above.get("marks") or [])
+        marks += [mark for mark in below.get("marks") or [] if mark not in marks]
+        if marks:
+            table["marks"] = marks
+        if below.get("small"):
+            table["small"] = True
+        upper[-1] = table
+        return lower[1:]
+    return lower
+
+
+def join_tiles(parts: list[dict]) -> dict:
+    """一张长截图切成几段分别认（``researchlib.ocr.tile_spans``）以后，接回这一张图的 units。
+
+    相邻两段重叠的那一截两段里都有，接法和连着截的几张同一套（``_join``）：重合的几条只留一份，
+    被截的那条换成另一段里完整的，一条被两段各截一半的接成一条；表格被切开的，重合的几行只留一份。
+    接缝是我们切的，挨着接缝的那条（前一段最后一块、后一段第一块）不管模型标没标，都当成被截过：
+    切口落在行与行之间，模型看到的是完整的几行，常常不标 cut，其实那一段在接缝另一边接着写。
+    接完只留整张图上下边真截到的 cut（第一段第一块的 top、最后一段最后一块的 bottom），接缝处的都去掉。
+    接缝处模型标了 illegible 的那条（切口压着字，只露出半截笔画）直接去掉：两段重叠宽的 0.4 倍，
+    这一行在另一段里整行都看得见，不写「被遮挡，无法辨认」。整张图真正上下边的 illegible 照旧留着。
+    kind 取块最多的那一段的；tiles 记切了几段，``research-ocr --tall`` 靠它认出哪些长图已经切段认过。
+    """
+    result: list[list[dict]] = []
+    upper: list[dict] | None = None
+    last = len(parts) - 1
+    for index, units in enumerate(parts):
+        blocks = [dict(block) for block in (units or {}).get("blocks") or []]
+        while index > 0 and blocks and blocks[0].get("illegible"):
+            blocks.pop(0)
+        while index < last and blocks and blocks[-1].get("illegible"):
+            blocks.pop()
+        if not blocks:
+            result.append([])
+            upper = None
+            continue
+        if index == 0 and blocks[0].get("cut") == "top":
+            blocks[0][_EDGE] = "top"
+        if index == last and blocks[-1].get("cut") == "bottom":
+            blocks[-1][_EDGE] = "bottom"
+        if index > 0:
+            blocks[0]["cut"] = "top"
+        if upper:
+            upper[-1]["cut"] = "bottom"
+            blocks = _join_tables(upper, _join(upper, blocks))
+        result.append(blocks)
+        if blocks:
+            upper = blocks
+    joined = [block for blocks in result for block in blocks]
+    for block in joined:
+        edge = block.pop(_EDGE, "")
+        block.pop("cut", None)
+        if edge:
+            block["cut"] = edge
+    kinds = [
+        (len((units or {}).get("blocks") or []), -index, (units or {}).get("kind") or "other")
+        for index, units in enumerate(parts)
+    ]
+    kind = max(kinds)[2] if kinds else "other"
+    return {"v": UNITS_VERSION, "kind": kind if kind in KINDS else "other", "blocks": joined, "tiles": len(parts)}
+
+
 def _written_before(text: str, written: set[str]) -> bool:
     """引用的那条前面写过。引用框常把原话截成前半句加省略号，前半句是前面某条的开头也算写过。"""
     key = _norm(text)

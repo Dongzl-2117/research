@@ -19,7 +19,9 @@ MAX_CHARS = 800
 MAX_CHUNKS = 9000
 OLD_MAX_CHUNKS = 400
 _HEADING_LINE = re.compile(r"\A\s*#{1,6}\s+(\S.*?)\s*(?:\n|$)")
-_SENTENCE_END = re.compile(r"(?<=[。！？；!?;])|\n")
+# 长段在句号后面、换行后面切开。换行留在前一句末尾：以前按换行切会把换行吃掉，接回去时一张长表
+# 的几行粘成一行（「IP 拥有者11 | 哈利·波特」），英文的两行粘成一个词。
+_SENTENCE_END = re.compile(r"(?<=[。！？；!?;\n])")
 
 
 def _split_long(paragraph: str) -> list[str]:

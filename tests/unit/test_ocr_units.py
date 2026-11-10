@@ -12,6 +12,7 @@ from researchlib.ocr_units import (
     format_blocks,
     format_units,
     has_dialogue,
+    join_tiles,
     normalize_units,
     paragraphs,
     parse_reply,
@@ -471,3 +472,127 @@ def test_paragraphs_share_written_quotes_across_shots():
     assert first == [("李四", ["李录投资也很好啊"])]
     assert second == [("方伟", ["同意"])]
     assert format_blocks([], written) == ""
+
+
+def _para(text: str, *, cut: str = "") -> dict:
+    block = {"type": "text", "text": text}
+    if cut:
+        block["cut"] = cut
+    return block
+
+
+def test_tiles_of_one_long_shot_keep_one_copy_of_the_overlap():
+    """长截图切成的几段：重叠那一截里完整的几条两段都有，只留一份。"""
+    first = _units(_msg("瑞幸同店还有压力", "张三"), _msg("古茗店效还行", "李四"), _msg("先看批价", me=True))
+    second = _units(_msg("古茗店效还行", "李四"), _msg("先看批价", me=True), _msg("下周再聊", "张三"))
+    third = _units(_msg("下周再聊", "张三"), _msg("好的，周一见", me=True))
+    before = copy.deepcopy([first, second, third])
+    joined = join_tiles([first, second, third])
+    assert [block["text"] for block in joined["blocks"]] == [
+        "瑞幸同店还有压力",
+        "古茗店效还行",
+        "先看批价",
+        "下周再聊",
+        "好的，周一见",
+    ]
+    assert joined["tiles"] == 3 and joined["kind"] == "chat"
+    assert [first, second, third] == before
+
+
+def test_paragraph_running_across_a_seam_is_joined_even_without_cut_flags():
+    """切口落在行与行之间，模型看到的是完整的几行，没标 cut；接缝两边重合的几行照样接成一段。"""
+    first = _units(_para("一、收入"), _para("今年收入增长两成，主要靠新店。毛利率三十五，比去年高"), kind="text")
+    second = _units(_para("毛利率三十五，比去年高，主要靠提价。"), _para("二、现金流"), kind="text")
+    joined = join_tiles([first, second])
+    assert [block["text"] for block in joined["blocks"]] == [
+        "一、收入",
+        "今年收入增长两成，主要靠新店。毛利率三十五，比去年高，主要靠提价。",
+        "二、现金流",
+    ]
+    assert all("cut" not in block for block in joined["blocks"])
+
+
+def test_paragraph_cut_short_at_the_seam_gives_way_to_the_whole_one():
+    """前一段最后一条只露到接缝（没标 cut），后一段里是完整的：留完整的那条。"""
+    first = _units(_msg("茅台批价这一周没动", "张三"), _msg("渠道仍在观望，短期", "李四"))
+    second = _units(
+        _msg("茅台批价这一周没动", "张三"), _msg("渠道仍在观望，短期不宜提价", "李四"), _msg("先看到这里", me=True)
+    )
+    joined = join_tiles([first, second])
+    assert [block["text"] for block in joined["blocks"]] == [
+        "茅台批价这一周没动",
+        "渠道仍在观望，短期不宜提价",
+        "先看到这里",
+    ]
+
+
+def test_only_cuts_at_the_real_edges_of_the_shot_are_kept():
+    """接缝处的 cut 是我们切出来的，接完去掉；整张图顶上、底下真截到的留着，和下一张图拼接时要用。"""
+    first = _units(_msg("渠道仍在观望", "张三", cut="top"), _msg("先看批价", me=True, cut="bottom"))
+    second = _units(_msg("下周再聊", "张三", cut="top"), _msg("好的，周一", me=True, cut="bottom"))
+    blocks = join_tiles([first, second])["blocks"]
+    assert [(block["text"], block.get("cut", "")) for block in blocks] == [
+        ("渠道仍在观望", "top"),
+        ("先看批价", ""),
+        ("下周再聊", ""),
+        ("好的，周一", "bottom"),
+    ]
+
+
+def test_slivers_cut_by_a_seam_are_dropped_and_only_the_real_edge_says_unreadable():
+    """切口压着字时，接缝两边各有一条只露出半截笔画的（illegible）：另一段里那行整行都在，去掉它，
+    不写「被遮挡，无法辨认」。整张图顶上真截到的那条照旧写成被遮挡。"""
+    first = _units(
+        _msg("这周批价", "张三", cut="top", illegible=True),
+        _msg("瑞幸同店还有压力，门店太密", "张三"),
+        _msg("古茗店效还行，加盟商也在扩", "李四"),
+        _msg("先看批", "李四", cut="bottom", illegible=True),
+    )
+    second = _units(
+        _msg("瑞幸同店", "张三", cut="top", illegible=True),
+        _msg("古茗店效还行，加盟商也在扩", "李四"),
+        _msg("先看批价，下周再聊", "李四"),
+    )
+    joined = join_tiles([first, second])
+    assert [(block["text"], block.get("cut", ""), bool(block.get("illegible"))) for block in joined["blocks"]] == [
+        ("这周批价", "top", True),
+        ("瑞幸同店还有压力，门店太密", "", False),
+        ("古茗店效还行，加盟商也在扩", "", False),
+        ("先看批价，下周再聊", "", False),
+    ]
+    text = format_units(joined)
+    assert text.count("无法辨认") == 1 and "开头一条被遮挡" in text
+    assert "先看批价，下周再聊" in text and "瑞幸同店还有压力，门店太密" in text
+
+
+def test_a_table_split_by_a_seam_becomes_one_table():
+    head = {"type": "table", "rows": [["年份", "收入"], ["2023", "100亿"], ["2024", "120亿"]]}
+    tail = {"type": "table", "rows": [["2024", "120亿"], ["2025", "150亿"]], "marks": ["150亿"]}
+    joined = join_tiles([_units(head, kind="table"), _units(tail, kind="table")])
+    assert joined["blocks"] == [
+        {
+            "type": "table",
+            "rows": [["年份", "收入"], ["2023", "100亿"], ["2024", "120亿"], ["2025", "150亿"]],
+            "marks": ["150亿"],
+        }
+    ]
+
+
+def test_a_tile_without_text_breaks_the_join_and_nothing_is_lost():
+    """中间一段只有图（照片、图表没字），前后两段不挨着，各自的字都留着。"""
+    first = _units(_msg("先看这张图", "张三"))
+    photo = _units(kind="photo")
+    third = _units(_msg("先看这张图", "张三"), _msg("看完了", me=True))
+    joined = join_tiles([first, photo, third])
+    assert [block["text"] for block in joined["blocks"]] == ["先看这张图", "先看这张图", "看完了"]
+    assert joined["kind"] == "chat"
+
+
+def test_different_words_on_both_sides_of_a_seam_are_not_merged():
+    first = _units(_para("利润增速慢于收入，因为原材料涨价"), kind="text")
+    second = _units(_para("经营现金流连续三年为正"), kind="text")
+    joined = join_tiles([first, second])
+    assert [block["text"] for block in joined["blocks"]] == [
+        "利润增速慢于收入，因为原材料涨价",
+        "经营现金流连续三年为正",
+    ]
