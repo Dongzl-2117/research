@@ -256,3 +256,76 @@ def test_report_counts_long_shots_and_their_tiles():
         _outcome("deepseek-flash-vision", Path("x.png"), Done(result), report)
     assert (report["structured"], report["tiled"], report["tiles"]) == (2, 1, 4)
     assert "长截图 1 张切成 4 段认（每段的花费和一张普通截图差不多）" in describe_report(report)
+
+
+def test_rejoin_joins_stored_tiles_again_without_calling_the_model(monkeypatch):
+    """接法改了以后 research-ocr --rejoin：按库里存的每段结果重接，写回 units 和 text，重排引用它的文章。不调模型。"""
+    from researchlib.ocr import rejoin_stored
+    from researchlib.ocr_units import format_units, join_tiles
+
+    def fail_chat(*_args, **_kwargs):
+        raise AssertionError("重接不该调模型")
+
+    monkeypatch.setattr("researchlib.llm.chat", fail_chat)
+    first = {"v": 1, "kind": "text", "blocks": [{"type": "text", "text": "春季发布会\n软件与智能驾驶\n6月15日 16:30"}]}
+    second = {
+        "v": 1,
+        "kind": "text",
+        "blocks": [
+            {"type": "text", "text": "春季发布会\n软件与智能驾驶"},
+            {"type": "text", "text": "6月15日 16:30"},
+            {"type": "text", "text": "届时将公布全新的系统"},
+        ],
+    }
+    fresh = join_tiles([first, second])
+    # 以前的接法把海报写了两遍：存着的 blocks 是旧的，parts 是当时每段认出来的
+    stale = {**fresh, "blocks": [*first["blocks"], *second["blocks"]]}
+    stored = [
+        {"content_hash": "aa" * 32, "text": format_units(stale), "units": stale},
+        {"content_hash": "ab" * 32, "text": format_units(fresh), "units": fresh},
+    ]
+
+    class _Rows:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _Conn:
+        def __init__(self):
+            self.updates = []
+            self.commits = 0
+
+        def execute(self, sql, params=None):
+            if "FROM image_texts" in sql:
+                assert "units -> 'parts' IS NOT NULL" in sql
+                return _Rows(stored)
+            if sql.startswith("UPDATE image_texts"):
+                self.updates.append(params)
+                return _Rows([])
+            if "article_images" in sql:
+                assert params == (["aa" * 32],)
+                return _Rows([{"article_id": 7}])
+            raise AssertionError(sql)
+
+        def commit(self):
+            self.commits += 1
+
+    refreshed = []
+    monkeypatch.setattr("researchlib.ocr.refresh_article_ocr", lambda _conn, article_id: refreshed.append(article_id))
+    monkeypatch.setattr("researchlib.chunks.replace_ocr_chunks", lambda _conn, _article_id: 1)
+    conn = _Conn()
+    assert rejoin_stored(conn, dry_run=True) == {"matched": 2, "changed": 1, "articles": 0, "dry_run": True}
+    assert conn.updates == [] and conn.commits == 0
+    report = rejoin_stored(conn)
+    assert report == {"matched": 2, "changed": 1, "articles": 1, "dry_run": False}
+    [(units, text, digest)] = conn.updates
+    assert digest == "aa" * 32 and units.obj == fresh
+    assert text == format_units(fresh) and text.count("春季发布会") == 1
+    assert refreshed == [7] and conn.commits == 1
+
+
+def test_rejoin_is_not_mixed_with_recognising():
+    for extra in (["--tall"], ["--redo"], ["--article", "1"], ["--relayout"]):
+        assert main(["--rejoin", *extra]) == 2

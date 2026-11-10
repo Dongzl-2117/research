@@ -596,3 +596,146 @@ def test_different_words_on_both_sides_of_a_seam_are_not_merged():
         "利润增速慢于收入，因为原材料涨价",
         "经营现金流连续三年为正",
     ]
+
+
+def test_seam_compares_lines_when_the_two_tiles_split_the_same_lines_into_different_blocks():
+    """11-10 抽查：一段把海报的 4 行当一块，另一段分成 3 行加 1 行，按块比对不上，海报写了两遍。按行比只留一份。"""
+    poster = "春季发布会\n软件与智能驾驶\n给每辆车一个助手\n6月15日 16:30"
+    first = _units(_para("下周一会有一场发布会"), _para(poster), kind="text")
+    second = _units(
+        _para("春季发布会\n软件与智能驾驶\n给每辆车一个助手"),
+        _para("6月15日 16:30"),
+        _para("届时将公布全新的系统"),
+        kind="text",
+    )
+    joined = join_tiles([first, second])
+    assert [block["text"] for block in joined["blocks"]] == ["下周一会有一场发布会", poster, "届时将公布全新的系统"]
+
+
+def test_seam_does_not_care_how_each_tile_labelled_the_same_lines():
+    """同一截字，一段标成小助手的消息，另一段（看不到是谁的回答）标成段落：按块比类型不同对不上，按行比只留一份，
+    留前一段的写法（前一段看得到是谁说的）。"""
+    first = _units(
+        _msg("一、什么时候开始讲这件事", "小助手"),
+        _msg("一句话区分：二季度是初见成效，三季度是市场正式定价的节点。", "小助手"),
+        _msg("二、此后用户增长（口径：日活）", "小助手"),
+    )
+    second = _units(
+        _para("一句话区分：二季度是初见成效，三季度是市场正式定价的节点。"),
+        _para("二、此后用户增长（口径：日活）"),
+        _para("1. 二季度：全球 91.2M（+51%）"),
+        kind="text",
+    )
+    joined = join_tiles([first, second])
+    text = format_units(joined)
+    assert text.count("一句话区分") == 1 and text.count("二、此后用户增长") == 1
+    assert text == (
+        "小助手：一、什么时候开始讲这件事\n一句话区分：二季度是初见成效，三季度是市场正式定价的节点。\n"
+        "二、此后用户增长（口径：日活）\n\n1. 二季度：全球 91.2M（+51%）"
+    )
+
+
+def test_seam_skips_a_time_only_one_tile_wrote_and_keeps_the_reply_below_it():
+    """评论截图：前一段没写评论下面的时间，后一段写了；后一段又把引用框单独写成一条。几处零碎字和写法不同不妨碍
+    对上，重叠的那条评论只留一份；重叠以下的回复照旧留着。"""
+    said = "记住这个市值：300亿，过几年再回来看。"
+    first = _units(
+        _msg("可以看看自研游戏部分，再加上社区和现金", "王小明"),
+        _msg("现在不到200亿😂", "李四", quote={"speaker": "方伟", "self": False, "text": said}),
+        kind="post",
+    )
+    second = _units(
+        _para("2月25日 09:34"),
+        _msg(said, "方伟"),
+        _msg("现在不到 200亿🤣", "李四"),
+        _para("今天 13:38 广东"),
+        _msg(said, "方伟"),
+        kind="post",
+    )
+    text = format_units(join_tiles([first, second]))
+    assert text == (
+        "王小明：可以看看自研游戏部分，再加上社区和现金\n\n方伟：" + said + "\n\n李四：现在不到200亿😂"
+        "\n\n今天 13:38 广东\n\n方伟：" + said
+    )
+
+
+def test_a_message_running_across_a_seam_keeps_its_speaker():
+    """一条长消息跨过接缝：后一段从中间开始，看不到是谁说的。重叠以后的几行接回前一段那条，不写成网友。"""
+    first = _units(_msg("先说结论：今年利润会降\n原因是推广费用涨了三成\n新游戏还没开始贡献收入", "王小明"))
+    second = _units(
+        _msg("原因是推广费用涨了三成\n新游戏还没开始贡献收入\n明年上半年才会好转", ""),
+        _msg("同意，先看二季度", "李四"),
+    )
+    text = format_units(join_tiles([first, second]))
+    assert text == (
+        "王小明：先说结论：今年利润会降\n原因是推广费用涨了三成\n新游戏还没开始贡献收入\n明年上半年才会好转"
+        "\n\n李四：同意，先看二季度"
+    )
+
+
+def test_a_paragraph_across_a_seam_keeps_one_comma():
+    first = _units(_para("今年收入增长两成，主要靠新店。毛利率三十五，比去年高，"), kind="text")
+    second = _units(_para("毛利率三十五，比去年高，主要靠提价。"), _para("二、现金流"), kind="text")
+    joined = join_tiles([first, second])
+    assert [block["text"] for block in joined["blocks"]] == [
+        "今年收入增长两成，主要靠新店。毛利率三十五，比去年高，主要靠提价。",
+        "二、现金流",
+    ]
+
+
+def test_two_short_lines_right_at_the_seam_are_kept_once():
+    """重叠的只有两条短消息，字数不到 MIN_OVERLAP_CHARS，但前一段最后两行和后一段开头两行一行不差，算重叠。"""
+    first = _units(_msg("先看批价", "张三"), _msg("好的", "李四"), _msg("收到", "王小明"))
+    second = _units(_msg("好的", "李四"), _msg("收到", "王小明"), _msg("明天见", "张三"))
+    joined = join_tiles([first, second])
+    assert [block["text"] for block in joined["blocks"]] == ["先看批价", "好的", "收到", "明天见"]
+
+
+def test_rows_with_the_same_template_and_other_numbers_are_not_taken_for_the_overlap():
+    """重叠那一截没有字（空白、配图），两边挨着的是同一个格式、不同数字的两行：不算重叠，一行都不去。"""
+    first = _units(_para("1. 2024 Q1：营收2.43亿美元(+48%)"), _para("2. 2024 Q2：营收2.81亿美元(+54%)"), kind="text")
+    second = _units(_para("3. 2024 Q3：营收3.48亿美元(+68%)"), _para("4. 2024 Q4：营收4.27亿美元(+71%)"), kind="text")
+    joined = join_tiles([first, second])
+    assert [block["text"] for block in joined["blocks"]] == [
+        "1. 2024 Q1：营收2.43亿美元(+48%)",
+        "2. 2024 Q2：营收2.81亿美元(+54%)",
+        "3. 2024 Q3：营收3.48亿美元(+68%)",
+        "4. 2024 Q4：营收4.27亿美元(+71%)",
+    ]
+
+
+def test_a_long_line_only_the_lower_tile_read_is_never_dropped():
+    """重叠那一截里后一段多出一整句，前一段没有：不当成零碎字去掉。宁可后面那行重复，也不丢这句。"""
+    extra = "这一句只有后一段认出来了，前一段漏掉了，字数比时间、点赞数这类零碎字多得多"
+    first = _units(_para("一、收入增长两成，主要靠新店"), _para("二、毛利率三十五，比去年高"), kind="text")
+    second = _units(
+        _para("一、收入增长两成，主要靠新店"),
+        _para(extra),
+        _para("二、毛利率三十五，比去年高"),
+        _para("三、经营现金流连续三年为正"),
+        kind="text",
+    )
+    texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
+    assert texts.count("一、收入增长两成，主要靠新店") == 1
+    assert extra in texts and texts[-1] == "三、经营现金流连续三年为正"
+
+
+def test_join_keeps_what_each_tile_read_so_it_can_be_joined_again():
+    """每段认出来的结构原样存在 parts 里：接法改了按它重接（research-ocr --rejoin），结果和当时一样，不用再认。"""
+    first = _units(_msg("瑞幸同店还有压力", "张三"), _msg("古茗店效还行，加盟商也在扩", "李四"))
+    second = _units(_msg("古茗店效还行，加盟商也在扩", "李四"), _msg("先看批价", me=True))
+    joined = join_tiles([first, second])
+    assert joined["parts"] == [first, second]
+    assert join_tiles(joined["parts"]) == joined
+    assert json.loads(json.dumps(joined, ensure_ascii=False)) == joined
+
+
+def test_seam_matches_one_line_against_several_when_the_tiles_broke_lines_differently():
+    """同一块海报，一段一行一行写，另一段写成一行：接起来的字一样，算同一截。"""
+    poster = "春季发布会\n软件与智能驾驶\n给每辆车一个助手\n6月15日 16:30"
+    first = _units(_para("下周一会有一场发布会"), _para(poster), kind="text")
+    second = _units(
+        _para("春季发布会 软件与智能驾驶 给每辆车一个助手 6月15日 16:30"), _para("届时将公布全新的系统"), kind="text"
+    )
+    texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
+    assert texts == ["下周一会有一场发布会", poster, "届时将公布全新的系统"]

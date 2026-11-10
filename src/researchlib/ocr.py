@@ -11,7 +11,7 @@
 都由看得见图的模型标好，存进 image_texts.units，后面只排版和拼接，不再按规则猜。
 units 为空的是以前的自由文字，仍由 wechat_dialogue 的旧规则整理（冻结，不再往里加）。
 长截图（比手机一屏长得多的）切成几段有重叠的图分别认，再由 ``ocr_units.join_tiles`` 接回一张（见 ``tile_spans``）；
-``--tall`` 只重认切段以前整张认的长图。
+``--tall`` 只重认切段以前整张认的长图（和 11-10 晚以前切段认、没存每段结果的）。
 
 app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、正文为空，
 下次不带 ``--redo`` 也会重试，不写进脏字。JSON 连着两次读不出来记 ``:invalid``，
@@ -779,9 +779,10 @@ def redo_remaining(conn) -> dict:
 
 
 def _tall_candidates(conn) -> list:
-    """按现在的说明认过、没切段的图（``units`` 里没有 tiles），从新到旧。宽高要读文件才知道，由调用方筛。
+    """按现在的说明认过、没存每段结果的图（``units`` 里没有 parts），从新到旧。宽高要读文件才知道，由调用方筛。
 
-    按旧说明认的不在这里：全库重认（不点名文章的 --redo）认它们时，长图已经切段。
+    没有 parts 的长图是整张认的，或者 11-10 晚以前切段认的（那时接缝会把重叠的一截写两遍，也没存每段结果，
+    接法改了重接不了）。按旧说明认的不在这里：全库重认（不点名文章的 --redo）认它们时，长图已经切段。
     结果读不出来（:invalid）、失败（:error）的也算，切段以后常常就认得出来；:skipped（太大、不是图）的不算。
     """
     where = [
@@ -789,7 +790,7 @@ def _tall_candidates(conn) -> list:
         site_visible_sql("a"),
         "EXISTS (SELECT 1 FROM sources s WHERE s.id = a.source_id AND s.enabled)",
         "EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash"
-        " AND t.prompt_version >= %s AND right(t.engine, 8) <> ':skipped' AND t.units -> 'tiles' IS NULL)",
+        " AND t.prompt_version >= %s AND right(t.engine, 8) <> ':skipped' AND t.units -> 'parts' IS NULL)",
     ]
     return conn.execute(
         f"""
@@ -810,7 +811,8 @@ def _tall_size(data_dir: Path, row) -> tuple[int, int] | None:
 
 
 def pending_tall_images(conn, data_dir: Path, limit: int) -> list:
-    """以前整张认的长截图（``needs_tiles``），从新到旧，最多 limit 张。``research-ocr --tall`` 切段重认它们。
+    """还要切段重认的长截图（``needs_tiles``，见 ``_tall_candidates``），从新到旧，最多 limit 张。
+    ``research-ocr --tall`` 切段重认它们。
 
     长图切段以前，整张压到长边 VISION_MAX_SIDE，宽只剩几百像素，认出来的字错得多。
     库里不记图的宽高：挑出按现在的说明认过、没切段的图，逐张读文件头（几十字节）筛出长的。文件读不出来的不算。
@@ -1113,7 +1115,7 @@ def run_ocr(
     20 张一起实际只有一半左右在认。
     全库重认（redo 且不点名文章）改了上千篇的图片文字：短帖的摘要和观点照常按发布时间排进夜间的队，
     不记进 article_followups 插到新文章前面，也不在这里当场重写。
-    tall：只认以前整张认的长截图（``pending_tall_images``），切段重认；和 redo 一起用，失败留着旧字。
+    tall：只认还要切段重认的长截图（``pending_tall_images``）；和 redo 一起用，失败留着旧字。
     """
     from researchlib.health import deploy_waiting
 
@@ -1343,6 +1345,49 @@ def relayout_stored(
     return {"matched": len(rows), "changed": len(changed), "articles": len(articles), "dry_run": dry_run}
 
 
+def rejoin_stored(conn, *, dry_run: bool = False) -> dict:
+    """切段认的长截图按库里存的每段结果（``units.parts``）重新接一遍，重排 ``image_texts.text`` 和引用这些图的
+    文章旁路、检索块。不调模型。接缝的接法（``ocr_units.join_tiles``）改了以后跑。
+
+    ``engine``、``prompt_version``、``created_at`` 不动。11-10 以前切段认的图没存每段结果，不在这里面。
+    """
+    from researchlib.chunks import replace_ocr_chunks
+
+    rows = conn.execute(
+        """
+        SELECT content_hash, text, units
+        FROM image_texts
+        WHERE units -> 'parts' IS NOT NULL
+        ORDER BY created_at, content_hash
+        """
+    ).fetchall()
+    changed: list[str] = []
+    for row in rows:
+        units = join_tiles(row["units"]["parts"])
+        text = format_units(units)
+        if units == row["units"] and text == (row["text"] or ""):
+            continue
+        changed.append(row["content_hash"])
+        if dry_run:
+            continue
+        conn.execute(
+            "UPDATE image_texts SET units = %s, text = %s WHERE content_hash = %s",
+            (Jsonb(units), text, row["content_hash"]),
+        )
+    articles: list[int] = []
+    if changed and not dry_run:
+        found = conn.execute(
+            "SELECT DISTINCT article_id FROM article_images WHERE content_hash = ANY(%s) ORDER BY article_id",
+            (changed,),
+        ).fetchall()
+        articles = [int(item["article_id"]) for item in found]
+        for article_id in articles:
+            refresh_article_ocr(conn, article_id)
+            replace_ocr_chunks(conn, article_id)
+        conn.commit()
+    return {"matched": len(rows), "changed": len(changed), "articles": len(articles), "dry_run": dry_run}
+
+
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了，2 识图起不来（Grok 没登录，或 DeepSeek 没配 key）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
@@ -1357,7 +1402,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tall",
         action="store_true",
-        help="只重认以前整张认的长截图，切段认；失败留着旧字。--limit 0 只报还剩多少张、要切多少段",
+        help="只重认以前整张认的（和 11-10 晚以前切段认、没存每段结果的）长截图，切段认；失败留着旧字。"
+        "--limit 0 只报还剩多少张、要切多少段",
     )
     # 只剩 vision。留着这个参数，以前写了 --engine vision 的命令（scripts/nightly.sh）照样能跑。
     parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 LLM 识图（grok-4.7）")
@@ -1384,7 +1430,12 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="只重排 created_at 不晚于这时的行。写到秒就含这一整秒，03:33:02 含 03:33:02.350005",
     )
-    parser.add_argument("--dry-run", action="store_true", help="和 --relayout 一起用：只报张数，不写库")
+    parser.add_argument(
+        "--rejoin",
+        action="store_true",
+        help="切段认的长截图按库里存的每段结果重新接一遍，不调模型。接缝的接法改了以后跑",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="和 --relayout、--rejoin 一起用：只报张数，不写库")
     args = parser.parse_args(argv)
     if args.tall and (args.article or args.compare):
         parser.error("--tall 不和 --article、--compare 一起用：点名文章的 --redo --article 已经全部重认，长图自动切段")
@@ -1392,6 +1443,21 @@ def main(argv: list[str] | None = None) -> int:
     from researchlib.db import prepare
 
     settings = Settings.from_env()
+    if args.rejoin:
+        if args.relayout or args.redo or args.tall or args.compare or args.article:
+            print("--rejoin 不和 --relayout、--redo、--tall、--compare、--article 一起用", file=sys.stderr)
+            return 2
+        conn = prepare(settings)
+        try:
+            report = rejoin_stored(conn, dry_run=args.dry_run)
+        finally:
+            conn.close()
+        verb = "会重接" if args.dry_run else "重接了"
+        print(
+            f"{verb} {report['changed']} 张（存了每段结果的长截图 {report['matched']} 张），"
+            f"更新了 {report['articles']} 篇的图片文字。没有调模型。"
+        )
+        return 0
     if args.relayout:
         if args.redo or args.tall or args.compare or args.article:
             print("--relayout 不和 --redo、--tall、--compare、--article 一起用", file=sys.stderr)
@@ -1474,7 +1540,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"按旧说明认的图还剩 {remaining['images']} 张，其中以前认出过字的 {remaining['with_text']} 张")
     if tall_left is not None:
         print(
-            f"以前整张认的长截图还剩 {tall_left['images']} 张，切段要认 {tall_left['tiles']} 段"
+            f"还要切段重认的长截图还剩 {tall_left['images']} 张，切段要认 {tall_left['tiles']} 段"
             "（每段的花费和一张普通截图差不多）"
         )
         if report["touched"]:
