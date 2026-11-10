@@ -226,7 +226,8 @@ def test_plain_headings_and_fenced_qa_are_left_alone():
 
 
 def test_reading_column_is_narrow_and_images_fit_it():
-    """文章栏接近公众号宽度。图不超出这一栏，单屏截图按栏宽铺开，不被 480px 压小。"""
+    """文章栏接近公众号宽度。图不超出这一栏；竖长截图按手机屏宽（26em，约 440px）显示，
+    不再铺满 680px（字有正文两倍大），也不回到以前按 480px 限高压成两百来像素宽。"""
     css = _CSS.read_text(encoding="utf-8")
     assert "--reading-column: 680px" in css
     column = css.split(".reader-grid {", 1)[1].split("}", 1)[0]
@@ -241,6 +242,10 @@ def test_reading_column_is_narrow_and_images_fit_it():
     assert "480px" not in images
     assert "max-height: 1800px" in images
     assert "cursor: zoom-in" in css.split(".prose img {", 1)[1].split("}", 1)[0]
+    tall = css.split('.prose img[data-shape="tall"] {', 1)[1].split("}", 1)[0]
+    assert "max-width: min(100%, 26em)" in tall and "max-height: none" in tall
+    wide_tall = css.split('.shell:has(.doc-read) .doc-read .prose img[data-shape="tall"] {', 1)[1].split("}", 1)[0]
+    assert "max-width: min(100%, 26em)" in wide_tall
     reading = css.split(".reader-grid .prose,\n.doc-read .prose {", 1)[1].split("}", 1)[0]
     assert "font-size: 17px" in reading
     assert "line-height: 1.65" in reading

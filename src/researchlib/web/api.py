@@ -21,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 
 from researchlib import theses as thesis_map
 from researchlib.ask import DAILY_LIMIT, RUNNING_LIMIT, WAIT_SECONDS, ask, start
+from researchlib.ask_model import parse_choice, recorded_choice
 from researchlib.author_voice import hide_from_site
 from researchlib.citecheck import check_answer
 from researchlib.housekeeping import strip_housekeeping
@@ -602,15 +603,20 @@ async def api_ask(request: Request):
     # 旧侧栏把 article 当优先上下文且允许跨库；不能把这个旧约定悄悄改成仅检索一篇。
     if body.get("chat") is True:
         raise HTTPException(status_code=400, detail="侧栏已改用问库，每轮独立提问。请刷新页面后选择资料范围。")
+    try:
+        # 这次用哪家、哪一档思考（输入框里的菜单）。不给就是默认，见 researchlib.ask_model。
+        choice = parse_choice(settings, body.get("model"), body.get("effort"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def _run():
         with database(request) as conn:
             sources = active_sources(request, conn)
             scope, _info = resolve_scope(params, sources)
             if wait:
-                return ask(conn, settings, question, scope, sources)
+                return ask(conn, settings, question, scope, sources, choice=choice)
             # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
-            return start(conn, settings, question, scope, sources)
+            return start(conn, settings, question, scope, sources, choice=choice)
 
     result = await run_in_threadpool(_run)
     # 全站问库次数满了：429，error 里写着什么时候能再问，召回的原文照样给。
@@ -622,6 +628,12 @@ async def api_ask(request: Request):
         },
         status_code=429 if result.get("limited") else 200,
     )
+
+
+def _llm_json(settings, stats) -> dict | None:
+    """这次用的哪家、哪一档思考。以前的回答没记，回 None。"""
+    choice = recorded_choice(settings, stats)
+    return choice.as_display() if choice else None
 
 
 def answer_payload(conn, request: Request, sources, answer_id: int) -> dict | None:
@@ -654,6 +666,8 @@ def answer_payload(conn, request: Request, sources, answer_id: int) -> dict | No
         "checks": checks,
         "terms": row["terms"],
         "stats": row["stats"] or {},
+        # 这次用的哪家、哪一档思考：以前的回答没记，是 null。
+        "llm": _llm_json(request.app.state.settings, row["stats"]),
         "model": row["model"],
         "created_at": row["created_at"].isoformat(),
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
@@ -704,7 +718,10 @@ def llms_txt(request: Request):
         f"- [检索段落]({base}/api/v1/search?q=腾讯游戏怎么看&level=chunk): 自然语言问题也能用。"
         "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms",
         f"- [问答]({base}/api/v1/ask): POST JSON "
-        "{question, author?, source?, company?, from?, to?, article?, wait?}，"
+        "{question, author?, source?, company?, from?, to?, article?, model?, effort?, wait?}，"
+        "model 是 grok 或 deepseek，effort 是那一家的思考档"
+        "（grok：low、medium、high、xhigh；deepseek：low、high、max），"
+        "不传按全站那一家的最高档，填错回 400；返回和 /api/v1/answers/{id} 里的 llm 写着这次用的哪家、哪一档。"
         "默认 wait=false：立刻返回 id 与召回段落，后台整合（全库的问题一般要 6 到 9 分钟），"
         "客户端隔半分钟左右轮询 /api/v1/answers/{id}，直到 status 不是 running；"
         f"wait=true 最多等 {WAIT_SECONDS} 秒，写完了带 answer / citations / checks 返回，"

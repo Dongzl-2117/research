@@ -473,11 +473,16 @@ def chat(
     """
     provider = _provider(settings)
     label = provider_label(provider)
+    # 问库按次选的档（researchlib.ask_model 换进 Settings）；别的调用方不设，各家用全站默认。
+    effort = getattr(settings, "llm_effort", "") or None
     if provider == PROVIDER_GROK:
-        payload = {**grok_params(temperature=temperature, max_tokens=max_tokens), "messages": messages}
+        payload = {
+            **grok_params(temperature=temperature, max_tokens=max_tokens, effort=effort),
+            "messages": messages,
+        }
     else:
         # 思考模式下 temperature 不起作用，DeepSeek 的请求里不带。
-        payload = {**deepseek_params(max_tokens=max_tokens), "messages": messages}
+        payload = {**deepseek_params(max_tokens=max_tokens, effort=effort), "messages": messages}
     if exact_max_tokens is not None:
         payload["max_tokens"] = int(exact_max_tokens)
     streaming = on_text is not None or str(payload.get("model", "")).startswith("deepseek")
