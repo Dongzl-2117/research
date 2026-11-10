@@ -22,6 +22,7 @@ from researchlib.translate.service import (
     _batch_chunks,
     _pending_batches,
     _render_original,
+    _Slots,
     _source_leaf_count,
     _translate_batch,
     _translate_title,
@@ -117,6 +118,58 @@ def test_chunk_segments_honors_max_segments():
 def test_translate_article_uses_capped_batches():
     assert "_pending_batches(" in inspect.getsource(translate_article)
     assert "_batch_chunks(" in inspect.getsource(_pending_batches)
+
+
+def test_batch_chunks_zero_cap_only_splits_by_characters():
+    """--batch-segments 0：不按段数切，只按字数，一般文章一次请求送整篇。"""
+    parts = [f"<p>{index}</p>" for index in range(TRANSLATE_BATCH_MAX_SEGMENTS * 3)]
+    assert _batch_chunks(parts, 0) == [parts]
+    assert _batch_chunks(parts, 5)[0] == parts[:5]
+    big = "a" * (TRANSLATE_BATCH_MAX_CHARS - 5)
+    assert _batch_chunks([big, "bbbbbbbbbb", "c"], 0) == [[big], ["bbbbbbbbbb", "c"]]
+
+
+def test_pending_batches_send_the_whole_article_when_uncapped():
+    count = TRANSLATE_BATCH_MAX_SEGMENTS * 2 + 6
+    parts = [f"<p>{index}</p>" for index in range(count)]
+    slots = _Slots(parts=parts, shields=[None] * count, sources=parts,
+                   ids=[f"s-{index}" for index in range(count)], hashes=[""] * count)
+    cap = TRANSLATE_BATCH_MAX_SEGMENTS
+    assert _pending_batches(slots, {}) == [list(range(cap)), list(range(cap, 2 * cap)), list(range(2 * cap, count))]
+    assert _pending_batches(slots, {}, 0) == [list(range(count))]
+    # 只补几段时，隔开的段照旧各自成批。
+    assert _pending_batches(slots, {3: "<p>旧</p>"}, 0) == [[0, 1, 2], list(range(4, count))]
+
+
+def test_whole_article_batch_does_not_send_the_article_twice(monkeypatch, tmp_path: Path):
+    """一批就是整篇时不另带 articleContext；对不齐拆成两半时，两半都带上全文。"""
+    seen: list[tuple[int, bool]] = []
+
+    def fake(**kwargs):
+        segments = kwargs["user"]["segments"]
+        seen.append((len(segments), "articleContext" in kwargs["user"]))
+        if len(segments) > 2:
+            return _result(["<p>合并掉了</p>"])
+        return _result([f"<p>译:{segment}</p>" for segment in segments])
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    parts = [f"<p>block-{index}</p>" for index in range(4)]
+    got = _translate_batch(parts, {"articleContext": "\n\n".join(parts)}, tmp_path)
+    assert seen == [(4, False), (4, False), (2, True), (2, True)]
+    assert got == [f"<p>译:{part}</p>" for part in parts]
+
+
+def test_part_of_the_article_keeps_the_article_context(monkeypatch, tmp_path: Path):
+    seen: list[bool] = []
+
+    def fake(**kwargs):
+        seen.append("articleContext" in kwargs["user"])
+        return _result([f"<p>译:{segment}</p>" for segment in kwargs["user"]["segments"]])
+
+    monkeypatch.setattr("researchlib.translate.service.chat_json", fake)
+    parts = [f"<p>block-{index}</p>" for index in range(4)]
+    _translate_batch(parts[:2], {"articleContext": "\n\n".join(parts)}, tmp_path)
+    assert seen == [True]
 
 
 def test_repair_fixes_count_without_splitting(monkeypatch, tmp_path: Path):

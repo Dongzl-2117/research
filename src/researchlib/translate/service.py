@@ -195,13 +195,14 @@ def translation_problem(sources: list[str], translations: list[str]) -> str | No
     return None
 
 
-def _batch_chunks(parts: list[str]) -> list[list[str]]:
-    """译制分批。段数和字符都封顶，避免一次要求模型对齐很长的数组。"""
-    return chunk_segments(
-        parts,
-        TRANSLATE_BATCH_MAX_CHARS,
-        max_segments=TRANSLATE_BATCH_MAX_SEGMENTS,
-    )
+def _batch_chunks(parts: list[str], max_segments: int | None = None) -> list[list[str]]:
+    """译制分批。段数和字符都封顶，避免一次要求模型对齐很长的数组。
+
+    ``max_segments`` 不给时一批最多 TRANSLATE_BATCH_MAX_SEGMENTS 段；给 0 就不按段数切，只按字数，
+    一般文章一次请求送整篇（``research-translate --batch-segments 0``）。
+    """
+    cap = TRANSLATE_BATCH_MAX_SEGMENTS if max_segments is None else (max_segments or None)
+    return chunk_segments(parts, TRANSLATE_BATCH_MAX_CHARS, max_segments=cap)
 
 
 def _cleaned_body(conn, article: dict) -> str:
@@ -376,6 +377,9 @@ def _translate_batch(parts: list[str], context: dict, data_dir: Path, *, repair:
     # 上一级的 repair 只针对那一批，不能带进更小的一批。
     context = {key: value for key, value in context.items() if key != "repair"}
     user = {**context, "segments": parts}
+    if user.get("articleContext") == "\n\n".join(parts):
+        # 这一批就是整篇：全文已经在 segments 里，不再另带一份。对不齐拆成两半时照旧带上，两半各自看得到全文。
+        del user["articleContext"]
     texts, mismatch = _reply(parts, {**user, "repair": repair} if repair else user, data_dir)
     if mismatch:
         texts, mismatch = _reply(parts, {**user, "repair": _repair_note(parts, texts, mismatch)}, data_dir)
@@ -732,10 +736,11 @@ def reuse_duplicate_sources(sources: list[str], translations: list[str | None]) 
     return aligned
 
 
-def _pending_batches(slots: _Slots, done: dict[int, str]) -> list[list[int]]:
+def _pending_batches(slots: _Slots, done: dict[int, str], max_segments: int | None = None) -> list[list[int]]:
     """还没有译文的段按原文顺序分批。连续的几段放一起，再按段数和字数封顶。
 
     第一次译整篇时就是全文按 _batch_chunks 切；只补几段时，隔开的段各自成批，上下文另带。
+    ``max_segments`` 见 ``_batch_chunks``。
     """
     runs: list[list[int]] = []
     for index in range(len(slots.parts)):
@@ -748,7 +753,7 @@ def _pending_batches(slots: _Slots, done: dict[int, str]) -> list[list[int]]:
     batches: list[list[int]] = []
     for run in runs:
         start = 0
-        for chunk in _batch_chunks([slots.parts[index] for index in run]):
+        for chunk in _batch_chunks([slots.parts[index] for index in run], max_segments):
             batches.append(run[start : start + len(chunk)])
             start += len(chunk)
     return batches
@@ -831,7 +836,9 @@ def _sign(
                 raise
 
 
-def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = True) -> TranslateResult:
+def translate_article(
+    conn, article_id: int, *, data_dir: Path, reuse: bool = True, batch_segments: int | None = None,
+) -> TranslateResult:
     """译一篇写进 article_translations。
 
     一段出错不连累整篇：身份、链接、占位符一直对不上或者串段的那几段先放英文，序号记进回执的
@@ -839,6 +846,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = Tr
     请求断线、限流时已经译好的段先存下。``reuse`` 为真时，已有回执里原文没变的段直接用，不再花钱重译；
     想整篇重来（换了模型，或者觉得译得不好）时传 False。上一份回执不是现在这一版提示词译的，
     也按 False 走：整篇按现在的提示词重译，哪段重译失败才退回旧译文，免得一篇里新旧两种写法混着。
+    ``batch_segments`` 是一次请求最多送几段，不给按 TRANSLATE_BATCH_MAX_SEGMENTS，0 只按字数切。
     """
     article = conn.execute(
         """
@@ -891,7 +899,7 @@ def translate_article(conn, article_id: int, *, data_dir: Path, reuse: bool = Tr
     reuse = reuse and earlier_prompts == [PROMPT_VERSION]
     progress = _Progress(values=dict(known) if reuse else {})
     service_error: Exception | None = None
-    batches = _pending_batches(slots, progress.values)
+    batches = _pending_batches(slots, progress.values, batch_segments)
     for number, indices in enumerate(batches):
         try:
             # 一段数字没对上：同一批补译一次，还不行照样写入，回执里记进 number_review。
