@@ -278,7 +278,7 @@ def test_retime_reorders_stance_and_same_period(conn, settings, tmp_path: Path):
     docs, errors, _files, _images = parse_archive(archive, tmp_path / "work", id_mode="zsxq")
     assert errors == []
     stats = refresh_clocks(conn, _source(settings, "fangwei-zsxq"), docs, settings)
-    assert stats["removed_index"] == 1
+    assert stats["removed_notes"] == 1
     assert stats["updated"] >= 2
     assert stats["views"] >= 2
     after = [item["article_id"] for item in timeline(conn, tencent, sources, settings) if item["changed"]]
@@ -373,7 +373,7 @@ def test_retime_matches_dated_external_id_to_topics_json(conn, settings, tmp_pat
     assert errors == []
     stats = refresh_clocks(conn, _source(settings, "fangwei-zsxq"), docs, settings)
     assert stats["updated"] == 2
-    assert stats["removed_index"] == 1
+    assert stats["removed_notes"] == 1
     dated = conn.execute(
         "SELECT external_id, published_at, raw_meta FROM articles WHERE external_id = %s",
         ("2024-11-28_888888",),

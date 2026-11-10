@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from researchlib.images import IMAGE_EXTS
 
 MD_EXTS = frozenset({".md", ".markdown"})
 _MAX_ENTRY_BYTES = 4 * 1024 * 1024 * 1024
+
+# 归档自己的说明文件：README 讲这份归档怎么来的，INDEX 是归档里文章的目录。
+# 公众号、星球、雪球、Stratechery 这类按篇的归档，一个文件就是平台上的一篇，不会叫这两个名字，
+# 叫这两个名字的是抓取脚本、导出工具写给人看的说明，不导入。
+ARCHIVE_NOTE_STEMS = frozenset({"readme", "index"})
+# 文档树（飞书）一层目录自己的那一页可能就叫 index.md：这类来源不按上面的名字筛。
+DOCUMENT_TREE_KINDS = frozenset({"feishu"})
+
+
+def is_archive_note(name: str) -> bool:
+    """README.md、INDEX.md（不分大小写，.markdown 也算，在哪一层都算）。"""
+    path = PurePosixPath(str(name).replace("\\", "/"))
+    return path.suffix.lower() in MD_EXTS and path.stem.lower() in ARCHIVE_NOTE_STEMS
+
+
+def archive_note_names() -> list[str]:
+    """说明文件的文件名（小写），库里按 raw_meta.filename 认。"""
+    return sorted(stem + ext for stem in ARCHIVE_NOTE_STEMS for ext in MD_EXTS)
 
 
 def _is_within(path: Path, root: Path) -> bool:

@@ -31,7 +31,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.config import Settings
 from researchlib.ingest.model import ParsedDoc
-from researchlib.ingest.store import forget_index_articles
+from researchlib.ingest.store import forget_archive_notes
 from researchlib.sources import Source
 from researchlib.textutil import (
     SHANGHAI,
@@ -265,13 +265,13 @@ def refresh_clocks(
     *,
     dry_run: bool = False,
     same_row: bool = False,
-    forget_index: bool = True,
+    forget_notes: bool = True,
 ) -> dict:
     """改 published_at 和 raw_meta.create_time，对齐哈希，再按新时间重走态度变化和同期。
 
     归档里的一篇按话题号对上库里同一话题的所有行。same_row 用于 docs_from_library 逐行生成的 docs：
     只改外部 id 相同的那一行，不把一行正文里的钟点连带写到同话题的别的行上。
-    forget_index 是给知识星球的：归档目录 INDEX.md 不是话题，顺手从库里去掉。别的来源传 False。
+    forget_notes 是给知识星球的：归档的 INDEX.md、README.md 不是话题，顺手从库里删掉。别的来源传 False。
     """
     from researchlib.sources import enabled_sources, load_sources
 
@@ -285,7 +285,7 @@ def refresh_clocks(
         "unchanged": 0,
         "skipped_no_clock": 0,
         "missing": 0,
-        "removed_index": 0,
+        "removed_notes": 0,
         "views": 0,
         "digests": 0,
         "translations": 0,
@@ -298,8 +298,8 @@ def refresh_clocks(
         "dry_run": dry_run,
     }
     try:
-        if forget_index:
-            stats["removed_index"] = forget_index_articles(conn, source.id)
+        if forget_notes:
+            stats["removed_notes"] = forget_archive_notes(conn, source.id)
         stored = conn.execute(
             """
             SELECT id, title, body_md, published_at, content_hash, raw_meta, external_id
@@ -388,7 +388,7 @@ def render_stats(stats: dict) -> str:
         f"时间未改: {stats['unchanged']}",
         f"没有真实钟点，保持原样: {stats['skipped_no_clock']}",
         f"库里没有这篇: {stats['missing']}",
-        f"去掉 INDEX: {stats['removed_index']}",
+        f"删掉说明文件: {stats['removed_notes']}",
         f"观点对齐: {stats['views']}",
         f"摘要对齐: {stats['digests']}",
         f"译文对齐: {stats['translations']}",
