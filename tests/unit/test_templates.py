@@ -153,8 +153,8 @@ def test_tablet_widths_get_a_side_rail_and_phones_keep_the_bottom_bar():
     assert ".article-chat { bottom: calc(54px + env(safe-area-inset-bottom)); }" in phone
     assert not any("54px" in block for block in rail + _media_blocks(css, "(max-width: 1023px)"))
     ask = (STATIC / "ask-chat.css").read_text(encoding="utf-8")
-    [ask_rail] = _media_blocks(ask, "(min-width: 600px) and (max-width: 1023px)")
-    assert ".shell:has(.ask-workspace) .frame { height: 100dvh; }" in ask_rail
+    [ask_wide] = _media_blocks(ask, "(min-width: 600px)")
+    assert ".shell:has(.ask-workspace) { --top-chrome: 0px; --bottom-chrome: 0px; }" in ask_wide
 
 
 def test_theme_thumb_position_comes_from_a_css_variable():
@@ -166,8 +166,8 @@ def test_theme_thumb_position_comes_from_a_css_variable():
     assert "transform: translateX(calc(var(--theme-index, 1) * 100%));" in thumb
 
 
-def test_search_template_keeps_author_count_markup():
-    html = _env().get_template("search.html").render(
+def _search_page(**extra):
+    context = dict(
         title="搜索 腾讯",
         canonical="https://investment.zldong.com/search?q=%E8%85%BE%E8%AE%AF",
         public_host="investment.zldong.com",
@@ -176,9 +176,9 @@ def test_search_template_keeps_author_count_markup():
         sample_banner=False,
         sources=[],
         active_source="",
-        author_counts=[{"name": "方伟", "count": 3}, {"name": "乘风破浪", "count": 0}],
         source_counts=[{"id": "fangwei-mp", "name": "方伟公众号", "count": 3}],
         results=[],
+        first_partial=None,
         total=0,
         total_all=3,
         filters={"author": "", "source": "", "company": None, "from": "", "to": ""},
@@ -191,14 +191,104 @@ def test_search_template_keeps_author_count_markup():
         pages=1,
         base_query="q=%E8%85%BE%E8%AE%AF",
         page_query="q=%E8%85%BE%E8%AE%AF",
+        clear_scope_query="q=%E8%85%BE%E8%AE%AF",
         ask_query="q=%E8%85%BE%E8%AE%AF",
     )
-    assert "方伟</span><strong>3</strong>" in html
-    assert "乘风破浪</span><strong>0</strong>" in html
+    context.update(extra)
+    return _env().get_template("search.html").render(**context)
+
+
+def test_search_template_without_hits():
+    html = _search_page()
     assert "investment.zldong.com" in html
     assert "research.zldong.com" not in html
     assert 'class="pills search-pills"' in html
     assert "没有找到" in html
+    # 没有结果时不摆「让 AI 读这些结果」；按作者数命中的那一行 11-10 改版去掉了，来源标签上有篇数。
+    assert "ask-card" not in html
+    assert "author-facets" not in html
+    assert '<span>作者、时间</span>' in html and "is-set" not in html
+
+
+def test_search_results_carry_the_date_in_the_meta_line_and_offer_the_ask_card():
+    """检索改版（Zhilin 11-10 选的）：搜索框是一个大圆角框，箭头收在框里；作者、时间收成框下的小标签，
+    选了范围就写出来；「问 AI」改成一张卡片；结果的日期并进作者那一行，不要左边的日期栏。"""
+    item = {
+        "id": 7, "title": "腾讯的广告", "author": "方伟", "show_author": True, "source": "方伟公众号",
+        "source_href": "/sources/fangwei-mp", "iso": "2026-11-01T08:00:00+08:00", "date": "2026-11-01",
+        "snippet": "腾讯广告收入增长",
+    }
+    html = _search_page(
+        results=[item],
+        total=1,
+        filters={"author": "方伟", "source": "", "company": None, "from": "2026-10-01", "to": ""},
+        has_filter=True,
+        clear_scope_query="q=%E8%85%BE%E8%AE%AF",
+        ask_query="q=%E8%85%BE%E8%AE%AF&author=%E6%96%B9%E4%BC%9F&from=2026-10-01",
+    )
+    box = html.split('<div class="search-box">', 1)[1].split('<details class="search-filters"', 1)[0]
+    assert 'id="q"' in box and 'type="submit" aria-label="搜索"' in box
+    assert '<summary class="is-set">' in html
+    assert "<span>方伟 · 2026-10-01 至 最近</span>" in html
+    assert '<a href="/search?q=%E8%85%BE%E8%AE%AF">清除</a>' in html
+    ask_href = "/ask?q=%E8%85%BE%E8%AE%AF&amp;author=%E6%96%B9%E4%BC%9F&amp;from=2026-10-01"
+    assert f'<a class="ask-card" href="{ask_href}">' in html
+    assert "用问库整理「腾讯」的观点" in html
+    assert '<ol class="slots flat results">' in html
+    assert "slot-time" not in html and "slot-rail" not in html
+    meta = html.split('<header class="item-meta">', 1)[1].split("</header>", 1)[0]
+    assert '<time class="item-date" datetime="2026-11-01T08:00:00+08:00">2026-11-01</time>' in meta
+
+
+def test_ask_page_suggests_recent_whole_library_questions():
+    """问库还没问时，输入框下面摆最近问过的三题，只挑问整个资料库、没限定日期的；点一下填进输入框，不直接提交。"""
+    from researchlib.web.routes import TEMPLATES as routes_templates
+
+    def row(n, question, status="done", **scope):
+        return {"id": n, "question": question, "status": status, "scope": scope}
+
+    history = [
+        row(1, "腾讯的广告怎么看"),
+        row(2, "只问这一篇", article_id=3),
+        row(3, "那一天说了什么", preset="day", date_from="2026-11-01", date_to="2026-11-01"),
+        row(4, "没整合完的问题", status="error"),
+        row(5, "腾讯的广告怎么看"),
+        row(6, "拼多多的利润率"),
+        row(7, "长" * 41),
+        row(8, "宁德时代的产能"),
+        row(9, "第四个就不摆了"),
+    ]
+    html = routes_templates.env.get_template("ask.html").render(
+        title="问库", nav="ask", query="", public_host="investment.zldong.com",
+        canonical="https://investment.zldong.com/ask", sample_banner=False, sources=[], active_source="",
+        history=history, llm_ready=True, result=None, question="", authors=["方伟"],
+        filters={"author": "", "source": "", "from": "", "to": ""}, article=None, tree=None, company=None,
+    )
+    suggest = html.split('<ul class="ask-suggest"', 1)[1].split("</ul>", 1)[0]
+    assert [line.split("</span>", 1)[0] for line in suggest.split("<span>")[1:]] == [
+        "腾讯的广告怎么看", "拼多多的利润率", "宁德时代的产能",
+    ]
+    assert 'data-question="拼多多的利润率"' in suggest
+    assert '<i class="ask-seal" aria-hidden="true">研</i>' in html
+    assert "整个资料库" in html.split('<span class="ask-scope">', 1)[1].split("</span>", 1)[0]
+    # 范围收进输入框左下角，浮层点外面或按 Esc 关上（base.html 里统一处理 data-popover）。
+    bar = html.split('<div class="chat-composer-bar">', 1)[1]
+    assert bar.index('<details class="ask-filters" data-popover>') < bar.index('aria-label="发送问题"')
+    assert "details[data-popover]" in html
+
+
+def test_ask_page_scrolls_as_a_whole_page():
+    """问库整页滚动：不再把框锁成一屏高、回答在中间的小窗里滚（手机横屏上以前只剩三四行）。
+    输入框贴在窗口底部，离底部是底部导航条的高度；流式回答跟着整页往下走。"""
+    ask = (STATIC / "ask-chat.css").read_text(encoding="utf-8")
+    frame = ask.split(".shell:has(.ask-workspace) .frame {", 1)[1].split("}", 1)[0]
+    assert "height" not in frame.replace("max-width", "")
+    log = ask.split(".ask-workspace > .chat-log {", 1)[1].split("}", 1)[0]
+    assert "overflow" not in log
+    form = ask.split(".ask-workspace .chat-form {", 1)[1].split("}", 1)[0]
+    assert "position: sticky" in form and "bottom: var(--bottom-chrome)" in form
+    js = (STATIC / "article-chat.js").read_text(encoding="utf-8")
+    assert "window.scrollTo" in js
 
 
 class _Source:

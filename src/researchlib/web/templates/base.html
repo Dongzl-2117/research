@@ -190,6 +190,20 @@
         event.preventDefault();
         field.focus();
       });
+      // 浮层式的 <details data-popover>（问库的资料范围和最近问过、检索的作者和时间）：点外面或按 Esc 收起。
+      document.addEventListener("click", function (event) {
+        document.querySelectorAll("details[data-popover][open]").forEach(function (box) {
+          if (!box.contains(event.target)) box.open = false;
+        });
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key !== "Escape") return;
+        document.querySelectorAll("details[data-popover][open]").forEach(function (box) {
+          var inside = box.contains(document.activeElement);
+          box.open = false;
+          if (inside) box.querySelector("summary").focus();
+        });
+      });
       var recentKey = "research-recent-views";
       var recentButton = document.querySelector(".recent-views-toggle");
       if (recentButton) {

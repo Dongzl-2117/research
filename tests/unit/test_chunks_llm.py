@@ -101,7 +101,7 @@ def test_cited_numbers_ignore_out_of_range():
 def test_answer_html_escapes_and_links_citations():
     html = str(answer_html("看好 <script>x</script> [1]"))
     assert "<script>" not in html
-    assert '<a class="cite" href="#c-1">[1]</a>' in html
+    assert '<a class="cite" href="#c-1"><span class="cite-mark">[</span>1<span class="cite-mark">]</span></a>' in html
 
 
 def test_mention_snippet_takes_the_sentence():

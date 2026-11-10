@@ -112,7 +112,8 @@ def test_search_ranks_title_above_body_and_matches_author(conn, settings):
         assert "冷门词" in body.text
         author = client.get("/search", params={"q": "方伟"})
         assert "冷门词" in author.text
-        assert "方伟</span><strong>" in author.text
+        # 搜作者名时「直达」里有这位作者（按作者数命中的那一行 11-10 改版去掉了）。
+        assert 'href="/authors/%E6%96%B9%E4%BC%9F">作者 · 方伟</a>' in author.text
         missing = client.get("/search", params={"q": "绝无此词xyz"})
         assert "没有找到" in missing.text
         assert "换个词" not in missing.text
