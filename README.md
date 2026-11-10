@@ -11,7 +11,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-浏览器只通过本机 `http://127.0.0.1:8088` 访问。公网入口是 Cloudflare Tunnel 转到这个地址，前面再加 Cloudflare Access。应用自己不提供登录。部署步骤见 [docs/deploy.md](docs/deploy.md)。合并进 main、CI 通过的改动由 Mac mini 上的定时任务自己上线，见同一页「更新」。
+浏览器只通过本机 `http://127.0.0.1:8088` 访问。公网入口是 Cloudflare Tunnel 转到这个地址，不用登录就能看（应用自己也不提供登录）；问库要花模型的钱，按全站限次数，见 [docs/llm.md](docs/llm.md)「给 AI 的接口」。部署步骤见 [docs/deploy.md](docs/deploy.md)。合并进 main、CI 通过的改动由 Mac mini 上的定时任务自己上线，见同一页「更新」。
 
 ## 页面
 
@@ -24,7 +24,7 @@ docker compose up -d --build
 - 文章：标题、时间和正文。从问库、观点的出处点进来，直接滚到被引用的那几段并标出来。底部「同期别人怎么看」列出别的作者前后 30 天对同一家持仓公司的判断。作者改过或删过的稿，署名行标出来，点进去看各版改了什么。英文稿可站内译成中英对照（见 [docs/translate.md](docs/translate.md)）。图片从本机磁盘读，外链图片也下载到本地。Markdown / JSON 仍在 `/api/v1`
 - 重复文章：认出来的同一篇，每组留下哪份、藏起哪几份、重合多少，认错了点一下拆开
 
-给 AI 用的 JSON 接口、MCP 和 `/llms.txt`，以及默认 DeepSeek、可选的 Grok 登录，见 [docs/llm.md](docs/llm.md)。
+给 AI 用的 JSON 接口、MCP 和 `/llms.txt`，以及默认 Grok、可切回的 DeepSeek，见 [docs/llm.md](docs/llm.md)。
 
 ## 来源
 

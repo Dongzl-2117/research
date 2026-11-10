@@ -1,6 +1,6 @@
 """把一篇英文文章译成中文 HTML，写入 article_translations。
 
-流程对齐 AIHOT editorial/translate.ts：渲染原文 → 抽段 → shield → 站内模型（默认 DeepSeek）按段翻译 → 回填 → 入库。
+流程对齐 AIHOT editorial/translate.ts：渲染原文 → 抽段 → shield → 站内模型（默认 Grok）按段翻译 → 回填 → 入库。
 research-translate 走这里；不在站外译完再贴。
 
 译制读的正文和文章页显示的是同一份：都先过 ``boilerplate.clean_article``。归档头
@@ -1117,9 +1117,11 @@ SITE_VISIBLE = f"({not_guest_sql('a')} AND coalesce({not_comment_shell_sql('a')}
 
 
 def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:
-    """尚无译文、或原文 hash 已变的英文文章。同一篇的重复只译主版本；隐藏的（短帖、每周汇总）不译。
+    """尚无译文、或原文 hash 已变、或没译完的英文文章。同一篇的重复只译主版本；隐藏的（短帖、每周汇总）不译。
 
     网站不显示的网友帖、「图片」评论壳也不译：和摘要、观点、识图一样，译了也没人看得到。
+    已经译完（``complete`` 且 ``content_hash`` 对得上）的不进队列。换 LLM 提供方不会把这些篇重译；
+    没译完的下次接着补，复用回执里没变的段。
     """
     params: list[object] = [HAN_OUTSIDE]
     where = [

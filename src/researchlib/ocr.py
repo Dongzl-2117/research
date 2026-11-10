@@ -1,8 +1,8 @@
 """图片里的字进检索（OCR / 识图）。
 
-截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。默认把本地图片交给
-站内 deepseek-flash 识图（``llm.chat``，多模态 content），按内容哈希只认一次，结果存进
-image_texts（engine 如 ``deepseek-flash-vision``）。识别出的字够多的图，切成段落块进检索
+截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。把本地图片交给
+站内 LLM 识图（2026-11-10 起是 Grok OAuth 的 grok-4.7，``llm.chat``，多模态 content），
+按内容哈希只认一次，结果存进 image_texts（engine 如 ``grok-4.7-vision``）。识别出的字够多的图，切成段落块进检索
 （article_chunks.lang = 'ocr'，标题「图片里的字」，锚点指向文章页上那张图）。
 公司提及默认不看图片里的字，免得水印、表情包乱挂；正文短于 SHORT_BODY_CHARS 时例外，
 截图帖要挂上图里的公司才能抽分家观点。
@@ -113,8 +113,10 @@ blocks 按阅读顺序排，每块是下面一种：
 引用框、灰色卡片、「回复@某某：」后面的原话都算。\
 引用框归和它挨得最近、在同一侧对齐的那条消息：在那个气泡里面，或者紧贴在它的上面或下面。\
 不要只因为引用框排在某条消息上面，就当成是那条消息引用的。
-  被图片上下边缘截掉一部分（或被顶上的标题栏、底下的输入框挡住一部分）的那条加 "cut": "top" 或 "bottom"，\
-只写看得到的字，不要补全，也不要照上下文猜成一句话；整条的字都只露出半截、一个也认不全的，这条不写。
+  被图片上下边缘截掉一部分（这条在图外面还有没截进来的字，看得见的字是完整的）加 "cut": "top" 或 "bottom"。\
+cut 只表示这句话在图外还有下文：看得见的字整段照抄，只写看得到的字，不要补全，也不要因为标了 cut 就删掉。\
+字本身被切到笔画中间、只看得到上半截或下半截、一个也认不全的，加 "illegible": true，text 写空串，这条不写进正文；\
+不要把看不全的笔画补成一句通顺的话。看得清的整行即使这条在图外还有下文，也不要标 illegible。
   消息里嵌着的截图、表格、文章卡片，把里面的字写进 text，表格一行写一行。
 - 段落：{"type": "text", "text": "…"}。成段的文字一段一块，标题、正文段落、图注各自成块。\
 被图片边缘截断的段落同样加 "cut"。
@@ -153,6 +155,9 @@ blocks 按阅读顺序排，每块是下面一种：
 # 帖子的发布日期要写，后画的圈和划线标出的字写进 marks。
 # 3：11-08 第二次对比以后改的：引用框归挨得最近、同一侧对齐的那条消息；字明显比正文小的块标 small；
 # 版面本来就有的下划线、虚线不算后画的标注。
+# 11-10 一度把所有 cut 都换成「无法辨认」，把延伸到图外、字却看得清的整段丢掉了。
+# 改回：cut 留字；只有 illegible（笔画被切到中间）才不采用模型补的那句。
+# 版本仍是 3：按第 3 版认过的图（包括没有 illegible 字段的旧行）不再重认，排版也和改之前一样留字。
 VISION_PROMPT_VERSION = 3
 
 
@@ -165,10 +170,15 @@ class OcrImageSkipped(Exception):
 
 
 def vision_engine_id(settings=None) -> str:
-    """写入 image_texts.engine 的名字。默认模型是 deepseek-flash，即 deepseek-flash-vision。"""
-    from researchlib.deepseek import DEEPSEEK_MODEL_ID
+    """写入 image_texts.engine 的名字，跟着当前模型走：grok-4.7-vision。
 
-    model = DEEPSEEK_MODEL_ID
+    11-10 换成 Grok 以后新的识图记 ``grok-4.7-vision``；以前按 deepseek-flash 认的行原样留着，
+    重认只看 prompt_version（``pending_images``），换模型不会把按第 3 版说明认过的图再认一遍。
+    """
+    from researchlib.grok import GROK_MODEL_ID
+    from researchlib.llm_provider import PROVIDER_GROK, llm_provider
+
+    model = GROK_MODEL_ID if llm_provider() == PROVIDER_GROK else "deepseek-flash"
     if settings is not None:
         from researchlib.llm import active_model_id
 
@@ -429,7 +439,7 @@ def read_vision_reply(reply: str) -> tuple[str, dict | None]:
 def vision_engine(settings) -> Callable[[Path], Recognition]:
     """站内识图。失败抛给 run_ocr，记成 :error。
 
-    先压图再送 deepseek-flash，避免 en1 转发把大 data-url 掐断；瞬时网络错误最多再试两次。
+    先压图再送模型，避免转发链路把大 data-url 掐断；瞬时网络错误最多再试两次。
     回答像 JSON 却读不出来（多半是截断了），再要一次；还不行交回 error，run_ocr 记 :invalid。
     """
     import time
@@ -492,6 +502,11 @@ def resolve_engine(settings) -> tuple[str, Callable[[Path], Recognition]]:
     from researchlib.llm import llm_configured
 
     if not llm_configured(settings):
+        from researchlib.llm_provider import PROVIDER_GROK, llm_provider
+
+        provider = getattr(settings, "llm_provider", None) or llm_provider()
+        if provider == PROVIDER_GROK:
+            raise OcrUnavailable("还没登录 Grok OAuth，识图起不来。先运行 research-xai-login login。")
         raise OcrUnavailable("没有配置 DEEPSEEK_API_KEY，识图起不来。")
     return vision_engine_id(settings), vision_engine(settings)
 
@@ -851,7 +866,7 @@ def run_ocr(
     结构读不出来记 ``{engine}:invalid``，不自动重试。
     redo 时这张图库里已经有字的，失败或结构读不出来都不写：旧字留着，版本不动，下次 --redo 接着认，
     报告里记 kept。以前写成空正文，重认一失败旧字就没了。
-    engine 是写进 image_texts 的名字，不给就用默认的 deepseek-flash-vision。
+    engine 是写进 image_texts 的名字，不给就按当前模型算（Grok 是 grok-4.7-vision）。
     recognize 交回 ``Recognition``；交回字符串的当旧格式（测试和以前的引擎这样写）。
     报告里 structured 是按结构交回的张数，plain 是交回自由文字的，tokens 是接口报的用量合计。
     不点名文章时，自动上线在等（``health.deploy_waiting``）就认完手上这张停下，deploy_waiting 记它等的提交：
@@ -998,8 +1013,95 @@ def _ocr_snapshot(conn, article_id: int):
     ).fetchone()
 
 
+def parse_written_at(value: str):
+    """``--written-from`` / ``--written-to``。没带时区按北京时间（HKT 同一时刻）。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    text = (value or "").strip()
+    if not text:
+        raise ValueError("时间是空的")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        if "T" in text or "+" in text[1:] or text.count("-") > 2:
+            moment = datetime.fromisoformat(text)
+        else:
+            moment = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError as exc:
+        raise ValueError(f"时间认不出来：{value}") from exc
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    return moment
+
+
+def relayout_until(written_to):
+    """上界变成不含的那一刻。写到秒就含这一整秒，03:33:02 含 03:33:02.350005，不含 03:33:03。
+
+    写到微秒就只含到那一微秒。
+    """
+    from datetime import timedelta
+
+    if written_to.microsecond == 0:
+        return written_to + timedelta(seconds=1)
+    return written_to + timedelta(microseconds=1)
+
+
+def relayout_stored(
+    conn,
+    *,
+    engine: str,
+    written_from,
+    written_to,
+    dry_run: bool = False,
+) -> dict:
+    """按库里的 units 重排 ``image_texts.text`` 和引用这些图的文章旁路、检索块。不调模型。
+
+    只动 ``engine`` 对得上、``created_at`` 落在这段里、并且有 units 的行。
+    上界写到秒时含这一整秒（``created_at < 下一秒``），不会把 03:33:02.350005 漏在 03:33:02 外面。
+    ``prompt_version`` 和 ``created_at`` 不动，所以全库 ``--redo`` 不会把它们再认一遍。
+    """
+    from researchlib.chunks import replace_ocr_chunks
+    from researchlib.ocr_units import format_units
+
+    rows = conn.execute(
+        """
+        SELECT content_hash, text, units
+        FROM image_texts
+        WHERE engine = %s AND units IS NOT NULL
+          AND created_at >= %s AND created_at < %s
+        ORDER BY created_at, content_hash
+        """,
+        (engine, written_from, relayout_until(written_to)),
+    ).fetchall()
+    changed: list[str] = []
+    for row in rows:
+        text = format_units(row["units"])
+        if text == (row["text"] or ""):
+            continue
+        changed.append(row["content_hash"])
+        if dry_run:
+            continue
+        conn.execute(
+            "UPDATE image_texts SET text = %s WHERE content_hash = %s",
+            (text, row["content_hash"]),
+        )
+    articles: list[int] = []
+    if changed and not dry_run:
+        found = conn.execute(
+            "SELECT DISTINCT article_id FROM article_images WHERE content_hash = ANY(%s) ORDER BY article_id",
+            (changed,),
+        ).fetchall()
+        articles = [int(item["article_id"]) for item in found]
+        for article_id in articles:
+            refresh_article_ocr(conn, article_id)
+            replace_ocr_chunks(conn, article_id)
+        conn.commit()
+    return {"matched": len(rows), "changed": len(changed), "articles": len(articles), "dry_run": dry_run}
+
+
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了，2 识图起不来（没配 DEEPSEEK_API_KEY）。"""
+    """退出码：0 跑完了，2 识图起不来（Grok 没登录，或 DeepSeek 没配 key）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
     parser.add_argument("--limit", type=int, default=500, help="这次最多识别多少张图")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
@@ -1010,7 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--article", action="append", type=int, default=[], help="只认这篇文章里的图，可重复")
     # 只剩 vision。留着这个参数，以前写了 --engine vision 的命令（scripts/nightly.sh）照样能跑。
-    parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 deepseek-flash 识图")
+    parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 LLM 识图（grok-4.7）")
     parser.add_argument(
         "--compare",
         type=int,
@@ -1018,11 +1120,58 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
         help="挑 N 张按旧说明认过的图用现在的说明重认，不写库，原图和新旧结果打成一个包（data/ocr-compare/）",
     )
+    parser.add_argument(
+        "--relayout",
+        action="store_true",
+        help="按库里的 units 重排文字，不调模型。要和 --relayout-engine、--written-from、--written-to 一起用",
+    )
+    parser.add_argument("--relayout-engine", default="", help="只重排 image_texts.engine 等于这个的行")
+    parser.add_argument(
+        "--written-from",
+        default="",
+        help="只重排 created_at 不早于这时的行。没写时区按北京时间，例如 2026-11-10 03:28:41",
+    )
+    parser.add_argument(
+        "--written-to",
+        default="",
+        help="只重排 created_at 不晚于这时的行。写到秒就含这一整秒，03:33:02 含 03:33:02.350005",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="和 --relayout 一起用：只报张数，不写库")
     args = parser.parse_args(argv)
     from researchlib.config import Settings
     from researchlib.db import prepare
 
     settings = Settings.from_env()
+    if args.relayout:
+        if args.redo or args.compare or args.article:
+            print("--relayout 不和 --redo、--compare、--article 一起用", file=sys.stderr)
+            return 2
+        if not args.relayout_engine or not args.written_from or not args.written_to:
+            print("要写 --relayout-engine、--written-from、--written-to", file=sys.stderr)
+            return 2
+        try:
+            written_from = parse_written_at(args.written_from)
+            written_to = parse_written_at(args.written_to)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        conn = prepare(settings)
+        try:
+            report = relayout_stored(
+                conn,
+                engine=args.relayout_engine,
+                written_from=written_from,
+                written_to=written_to,
+                dry_run=args.dry_run,
+            )
+        finally:
+            conn.close()
+        verb = "会重排" if args.dry_run else "重排了"
+        print(
+            f"{verb} {report['changed']} 张（范围内 {report['matched']} 张有结构），"
+            f"更新了 {report['articles']} 篇的图片文字。没有调模型。"
+        )
+        return 0
     try:
         engine_name, recognize = resolve_engine(settings)
     except OcrUnavailable as exc:
@@ -1125,7 +1274,7 @@ def describe_report(report: dict) -> list[str]:
             f"平均每张输入 {round(prompt / metered)}、输出 {round(completion / metered)}"
         )
     elif answered:
-        lines.append("接口这次没报用量，花费看 DeepSeek 账单")
+        lines.append("接口这次没报用量，花费看提供方账单")
     if report.get("kept"):
         lines.append(f"重认没认成的 {report['kept']} 张留着旧字，版本没改，下次 --redo 接着认")
     return lines

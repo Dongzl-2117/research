@@ -55,6 +55,7 @@ research-ocr = "researchlib.ocr:main"
 research-clean = "researchlib.boilerplate:main"
 research-embed = "researchlib.embeddings:main"
 research-status = "researchlib.health:main"
+research-grok-smoke = "researchlib.grok_smoke:main"
 
 [build-system]
 requires = ["setuptools>=68"]

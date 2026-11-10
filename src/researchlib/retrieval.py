@@ -231,6 +231,8 @@ class ArticleHit:
     passages: list[Passage]
     # 正文没写全搜索词，靠语义检索排进「全部命中」的。
     semantic: bool = False
+    # 这篇没摘的备选段落（前面的卡片没摘过的），按分数排。页面上摘录一字不差时换用，见 _fresh_first。
+    spare: list[Passage] = field(default_factory=list)
 
 
 @dataclass
@@ -1698,7 +1700,7 @@ def select(
     per: dict[int, int] = {}
     caps = article_caps(ranked, budget.per_article)
     seen_text: set[str] = set()
-    covered: set[int] = set()
+    covered: set[str] = set()
     used = 0
     for passage in ranked:
         if per.get(passage.article_id, 0) >= caps.get(passage.article_id, budget.per_article):
@@ -1740,11 +1742,15 @@ def _text_key(body: str) -> str:
     return text if len(text) >= 30 else ""
 
 
-def _shingles(key: str) -> set[int]:
-    """归一后的正文按 _SHINGLE 个字一片切开，按内容留下约四分之一的片：两段里相同的地方留下的片也相同。"""
+def _shingles(key: str) -> set[str]:
+    """归一后的正文按 _SHINGLE 个字一片切开，每个起点一片，全留。
+
+    以前按 hash 留四分之一的片：Python 的字符串 hash 每次启动都不一样，同一个问题重启前后交给模型的段落会不同；
+    短段落的片少，留下哪几片全凭运气，测试 400 个 PYTHONHASHSEED 里有 22 个对不上。全留就是准确的重合比例。
+    """
     if not key:
         return set()
-    return {value for value in (hash(key[i : i + _SHINGLE]) for i in range(len(key) - _SHINGLE + 1)) if not value % 4}
+    return {key[i : i + _SHINGLE] for i in range(len(key) - _SHINGLE + 1)}
 
 
 def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
@@ -2068,24 +2074,18 @@ def _fresh_first(hits: list[ArticleHit], shown_keys: set[str]) -> list[ArticleHi
     有 1.8 万块和别的文章一字不差。以前搜「Costco 商业模式」，前三张卡片摘的是同一段话。
     后面的卡片改摘这篇里别的、前面没摘过的段落；这篇命中的段落全是前面摘过的，卡片挪到这一档最后。
     shown_keys 记着已经摘过的段落，跨档沿用。
+
+    这里只认整块一字不差的。两块不一样、页面上截出来的摘录却一样的（相邻两块重叠的那几句、同一段话前后
+    多了几个字），由页面按显示出来的字再比一次，换用 spare 里的段落。
     """
     fresh_hits: list[ArticleHit] = []
     repeats: list[ArticleHit] = []
     for hit in hits:
-        fresh: list[Passage] = []
-        keys: list[str] = []
-        for passage in hit.passages:
-            key = _text_key(passage.body)
-            if key and key in shown_keys:
-                continue
-            fresh.append(passage)
-            keys.append(key)
-            if len(fresh) >= CARD_PASSAGES:
-                break
+        fresh = [p for p in hit.passages if not ((key := _text_key(p.body)) and key in shown_keys)]
         if fresh:
-            hit.passages = fresh
+            hit.passages, hit.spare = fresh[:CARD_PASSAGES], fresh[CARD_PASSAGES:]
             fresh_hits.append(hit)
-            shown_keys.update(key for key in keys if key)
+            shown_keys.update(key for p in hit.passages if (key := _text_key(p.body)))
         else:
             hit.passages = hit.passages[:CARD_PASSAGES]
             repeats.append(hit)
