@@ -1,4 +1,6 @@
-/* 视觉 token 与 aihot.zldong.com 的浅色 / 深色主题一致。 */
+/* 配色「黛蓝」（11-10 起）：暖白纸面、墨色字、深蓝强调；深色是海军蓝底。
+   强调色只给当前位置和主要按钮。看好、看空、两面用的绿红黄（--ok、--hot、--amber）和强调色分开，
+   页面上最醒目的颜色留给它们。改值先算对比度：小字在 --bg、--surface、--bg-sunk 上都要 4.5:1 以上。 */
 
 :root {
   color-scheme: light;
@@ -6,27 +8,25 @@
   --page-max-reading: max(1100px, calc(200dvh - 236px));
   /* 文章阅读栏，对齐微信公众号正文宽度（约 677px），落在 640–720 之间。 */
   --reading-column: 680px;
-  --bg: #faf9f6;
-  --bg-sunk: #f3f3ef;
-  --bg-muted: #e9ede9;
-  --surface: #fff;
-  --surface-2: #fdfdfb;
-  --raised: #fff;
-  --sidebar: #fdfdfb;
-  --field: #eef1ed;
-  --ink: #202a30;
-  --ink-2: #303c42;
-  --ink-3: #59656b;
-  --ink-4: #657176;
-  --line: #dfe4e1;
-  --line-strong: #d1d9d5;
-  --line-soft: #e9ede9;
-  --accent: #176b75;
-  --accent-ink: #145f68;
-  --accent-soft: #176b7514;
-  --accent-softer: #176b750d;
+  --bg: #faf5ee;
+  --bg-sunk: #f5efe6;
+  --bg-muted: #ebe5dc;
+  --surface: #fffdf8;
+  --raised: #fffdf8;
+  --sidebar: #f6f2ec;
+  --field: #f2ece2;
+  --ink: #221d18;
+  --ink-2: #3a342f;
+  --ink-3: #605955;
+  --ink-4: #726c68;
+  --line: #e5dfd5;
+  --line-strong: #d8d2c7;
+  --line-soft: #ede7dd;
+  --accent: #284f88;
+  --accent-ink: #1d4176;
+  --accent-soft: #284f881f;
+  --accent-softer: #284f880f;
   --accent-contrast: #fff;
-  --note: #526f72;
   --hot: #b3402a;
   --amber: #b8873a;
   --amber-ink: #7c5a24;
@@ -34,19 +34,23 @@
   --ok: #2f7d5c;
   --ok-soft: #2f7d5c1a;
   --ok-ink: #2a6e51;
-  --shadow-card: 0 1px 2px #202a3006;
-  --shadow-card-hover: 0 3px 12px #202a300e;
-  --shadow-thumb: 0 1px 2px #1c27331a, 0 1px 1px #1c27330a;
-  --prose-ink: #26323a;
-  /* 正文外链（.prose a）用的蓝，和 teal 的强调色分开：读正文时一眼能认出可点。
-     浅色底 #faf9f6 上对比度 5.9:1，点过的链接用偏紫的一档区分。 */
-  --link: #1a5fb4;
-  --link-visited: #6b3fa0;
-  --code-bg: #f6f7f4;
-  --selection: #176b7529;
+  --shadow-card: 0 1px 2px #221d1806;
+  --shadow-card-hover: 0 3px 12px #221d180f;
+  --shadow-thumb: 0 1px 2px #221d181a, 0 1px 1px #221d180a;
+  --prose-ink: #2b2521;
+  /* 正文外链（.prose a）用的蓝，比强调色亮一档，另有下划线，读正文时一眼能认出可点。
+     --surface #fffdf8 上对比度 7.4:1，点过的链接用偏紫的一档区分。 */
+  --link: #21539c;
+  --link-visited: #5f3b84;
+  --code-bg: #f7f3eb;
+  --selection: #284f882e;
+  /* 检索命中的高亮 */
+  --mark: #284f882e;
   --ease: cubic-bezier(.25, 1, .5, 1);
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "HarmonyOS Sans SC", "Microsoft YaHei", "Noto Sans SC", "WenQuanYi Micro Hei", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  /* 标题用宋体（Zhilin 11-10 选的）：Mac 用宋体-简；这几种宋体都没有的设备按浏览器默认的衬线字体显示。 */
+  --font-serif: "Songti SC", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", STSong, serif;
   --radius-mark: 5px;
   --radius-control: 8px;
   --radius-tile: 10px;
@@ -65,27 +69,25 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #13191c;
-  --bg-sunk: #182024;
-  --bg-muted: #202a2f;
-  --surface: #1a2226;
-  --surface-2: #1d272b;
-  --raised: #202a2f;
-  --sidebar: #161e21;
+  --bg: #10161f;
+  --bg-sunk: #151b24;
+  --bg-muted: #202630;
+  --surface: #181e27;
+  --raised: #1f252e;
+  --sidebar: #131922;
   --field: #ffffff0f;
-  --ink: #e7eceb;
-  --ink-2: #d2dada;
-  --ink-3: #a5b0b3;
-  --ink-4: #89979d;
+  --ink: #e5eaf0;
+  --ink-2: #ccd1d9;
+  --ink-3: #a9aeb7;
+  --ink-4: #8c939c;
   --line: #ffffff14;
-  --line-strong: #ffffff1f;
-  --line-soft: #ffffff0f;
-  --accent: #12ccd8;
-  --accent-ink: #2ce2e8;
-  --accent-soft: #12ccd81f;
-  --accent-softer: #12ccd80f;
-  --accent-contrast: #000;
-  --note: #8fb8a8;
+  --line-strong: #ffffff21;
+  --line-soft: #ffffff0d;
+  --accent: #88b4ed;
+  --accent-ink: #a1c7f8;
+  --accent-soft: #88b4ed1f;
+  --accent-softer: #88b4ed0f;
+  --accent-contrast: #0d1624;
   --hot: #d86a52;
   --amber: #d3b26a;
   --amber-ink: #d3b26a;
@@ -96,12 +98,13 @@
   --shadow-card: none;
   --shadow-card-hover: none;
   --shadow-thumb: 0 1px 2px #00000073;
-  --prose-ink: #d7dfdf;
-  /* 深色底上提亮：--bg #13191c 上对比度 8.6:1。 */
-  --link: #7db8ff;
-  --link-visited: #c9a3ff;
-  --code-bg: #10151c;
-  --selection: #12ccd838;
+  --prose-ink: #d3d8de;
+  /* 深色底上提亮：--surface #181e27 上对比度 8.7:1。 */
+  --link: #8bbff6;
+  --link-visited: #c8ace9;
+  --code-bg: #0c121a;
+  --selection: #88b4ed2e;
+  --mark: #88b4ed2e;
 }
 
 * { box-sizing: border-box; }
@@ -177,13 +180,14 @@ img { max-width: 100%; }
   padding: 14px 10px 4px;
   color: var(--ink-4);
   font-size: 11px;
+  letter-spacing: .08em;
 }
 .nav-group { display: flex; flex-direction: column; gap: 4px; }
 .nav-link {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 40px;
+  height: 38px;
   padding: 0 10px;
   border-radius: var(--radius-control);
   color: var(--ink-3);
@@ -194,14 +198,20 @@ img { max-width: 100%; }
 .nav-link svg { width: 17px; height: 17px; flex: none; }
 .nav-link span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-link:hover { background: var(--bg-sunk); color: var(--ink); }
+/* 选中项用纸面白底加一道细描边，强调色只落在图标上。 */
 .nav-link[aria-current="page"] {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line), 0 1px 2px color-mix(in srgb, var(--ink) 6%, transparent);
   color: var(--ink);
   font-weight: 600;
 }
 .nav-link[aria-current="page"] svg { color: var(--accent); }
-[data-theme="dark"] .nav-link[aria-current="page"] { background: var(--accent-soft); }
+[data-theme="dark"] .nav-link[aria-current="page"] { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); }
+/* 来源前面的小圆点：没选中时淡一些 */
+.nav-dot { opacity: .45; }
+.nav-link[aria-current="page"] .nav-dot { opacity: 1; }
 
+/* 品牌：「研」字印章加字标。苹方最粗是 600，写 700、900 在 Mac 上也只有这么粗。 */
 .brand {
   display: flex;
   align-items: center;
@@ -209,18 +219,31 @@ img { max-width: 100%; }
   margin: 0 0 16px;
   padding: 0 4px;
   color: var(--ink);
-  font-size: 20px;
-  font-weight: 900;
-  letter-spacing: -0.03em;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: .04em;
   line-height: 1;
   white-space: nowrap;
 }
 .brand i {
-  width: 0.42em;
-  height: 0.42em;
-  margin-right: 0.3em;
-  border-radius: 999px;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 10px;
+  border-radius: 7px;
   background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 15px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1;
+}
+/* 标题用宋体：品牌、页面标题、卡片标题、日期栏、公司和作者名、论点和观点判断。文章页标题在 .reader h1 里设。 */
+.brand, .page-head h1, .company-title h1, .item-title, .daybar h2, .holding-head h2, .author-card h2, .thesis-title, .view-judgment {
+  font-family: var(--font-serif);
 }
 
 .theme {
@@ -278,7 +301,7 @@ main {
   justify-content: space-between;
   height: 56px;
 }
-.mobile-bar .brand { height: auto; margin: 0; font-size: 20px; }
+.mobile-bar .brand { height: auto; margin: 0; font-size: 18px; }
 .mobile-bar .theme { width: 118px; margin: 0; flex: none; }
 .tabbar {
   position: fixed;
@@ -318,9 +341,10 @@ main {
 .page-head h1 {
   margin: 8px 0 0;
   color: var(--ink);
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 600;
-  line-height: 1.3;
+  letter-spacing: .02em;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 .lede, .quiet, .aliases, .count, .filter-note {
@@ -478,7 +502,7 @@ main {
   margin: 0;
   color: var(--ink);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .daybar-desktop { display: none; }
 .slots { margin: 0; padding: 0; list-style: none; }
@@ -516,7 +540,7 @@ main {
   margin: 8px 0 0;
   color: var(--ink);
   font-size: 17px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.55;
 }
 .item-title a::after { content: ""; position: absolute; inset: 0; }
@@ -534,7 +558,7 @@ main {
 mark {
   padding: 0 .12em;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: var(--mark);
   color: inherit;
 }
 
@@ -620,6 +644,7 @@ mark {
 .reader h1 {
   margin: 2px 0 0;
   color: var(--ink);
+  font-family: var(--font-serif);
   font-size: 22px;
   font-weight: 600;
   letter-spacing: 0;
@@ -716,7 +741,8 @@ tbody tr:hover td { background: var(--accent-softer); }
   text-align: center;
 }
 .empty-state h1 { margin: 8px 0 0; color: var(--ink); font-size: 20px; font-weight: 700; }
-.empty-state .brand { justify-content: center; height: auto; margin: 0 0 8px; font-size: 28px; }
+.empty-state .brand { justify-content: center; height: auto; margin: 0 0 8px; }
+.empty-state .brand i { width: 44px; height: 44px; margin: 0; border-radius: 12px; font-size: 24px; }
 .btn {
   display: inline-flex;
   align-items: center;
@@ -949,7 +975,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   }
   .daybar-desktop h2 {
     justify-self: end;
-    font-size: 18px;
+    font-size: 19px;
     font-weight: 600;
     line-height: 24px;
     white-space: nowrap;
@@ -973,7 +999,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   .slots { padding-top: 4px; }
   .slot {
     grid-template-columns: 64px 22px minmax(0, 1fr);
-    padding: 0 0 12px;
+    padding: 0 0 6px;
     border-bottom: 0;
   }
   .slot-time {
@@ -988,10 +1014,10 @@ tbody tr:hover td { background: var(--accent-softer); }
   .slot-line {
     position: absolute;
     top: 29px;
-    bottom: -41px;
+    bottom: -35px;
     left: 10.5px;
     width: 1px;
-    background: var(--line-strong);
+    background: var(--line);
   }
   .slot:last-child .slot-line { display: none; }
   .slot-dot {
@@ -1001,25 +1027,24 @@ tbody tr:hover td { background: var(--accent-softer); }
     width: 7px;
     height: 7px;
     border-radius: 999px;
-    background: var(--accent);
+    background: var(--line-strong);
     box-shadow: 0 0 0 4px var(--bg);
-    transition: transform .3s;
+    transition: transform .3s, background-color .2s;
   }
-  .slot:hover .slot-dot { transform: scale(1.15); }
+  .slot:hover .slot-dot { background: var(--accent); transform: scale(1.15); }
+  /* 一页三十条，不再每条一个框：平时透明，鼠标停在哪条，哪条才浮起来。 */
   .item-card {
     padding: 15px 18px 14px;
-    border: 1px solid var(--line);
+    border: 1px solid transparent;
     border-radius: var(--radius-card);
-    background: var(--surface);
-    box-shadow: var(--shadow-card);
-    transition: box-shadow .2s var(--ease), border-color .2s, transform .2s var(--ease);
+    background: transparent;
+    transition: background-color .2s, border-color .2s, box-shadow .2s var(--ease);
   }
   .item-card:hover {
-    border-color: var(--line-strong);
+    border-color: var(--line);
+    background: var(--surface);
     box-shadow: var(--shadow-card-hover);
-    transform: translateY(-1px);
   }
-  .item-title { font-weight: 650; }
   .item-excerpt { margin-top: 8px; font-size: var(--text-excerpt-lg); -webkit-line-clamp: 3; }
   .flat .item-card { margin-top: 0; }
   .reader-grid { grid-template-columns: minmax(0, 1fr); gap: 40px; align-items: start; }
@@ -1042,6 +1067,7 @@ tbody tr:hover td { background: var(--accent-softer); }
     color: var(--ink-3);
     font-size: 16px;
   }
+  .shell:has(.reader) .brand i { width: 22px; height: 22px; margin-right: 8px; border-radius: 6px; font-size: 13px; }
   .shell:has(.reader) .nav-label { padding-top: 10px; }
   .shell:has(.reader) .nav-link {
     height: 34px;
@@ -1205,15 +1231,16 @@ tbody tr:hover td { background: var(--accent-softer); }
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+/* 「摘要」「总结」：描边小字，一页几十个时不铺成一片黄。 */
 .ai-badge {
   display: inline-block;
   margin-right: 6px;
-  padding: 0 6px;
+  padding: 0 5px;
   border-radius: var(--radius-mark);
-  background: var(--amber-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 55%, transparent);
   color: var(--amber-ink);
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 18px;
   vertical-align: 1px;
 }
@@ -1256,10 +1283,22 @@ tbody tr:hover td { background: var(--accent-softer); }
 .day-section a:hover { color: var(--accent); }
 .day-section p { margin: 4px 0 0; color: var(--ink-3); font-size: var(--text-excerpt); line-height: 1.7; }
 .head-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
-.date-jump { display: flex; align-items: center; gap: 6px; color: var(--ink-4); font-size: 13px; }
-.date-jump input { height: 30px; font-size: 13px; }
-.date-jump button { height: 30px; padding: 0 10px; font-size: 13px; }
-.date-jump input, .filter-grid input, .filter-grid select {
+.date-jump { display: flex; align-items: center; color: var(--ink-4); font-size: 13px; }
+.date-jump label { margin-right: 8px; }
+/* 日期跳转是次要控件：输入框和「去」拼成一个中性的分段控件，强调色留给主要按钮。 */
+.date-jump input, .date-jump button {
+  height: 34px;
+  border: 0;
+  background: var(--bg-sunk);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+}
+.date-jump input { padding: 0 8px 0 14px; border-radius: 999px 0 0 999px; }
+.date-jump button { padding: 0 14px 0 12px; border-radius: 0 999px 999px 0; font-weight: 500; }
+.date-jump button:hover { background: var(--bg-muted); color: var(--ink); }
+.filter-grid input, .filter-grid select {
   height: 32px;
   padding: 0 8px;
   border: 0;
@@ -1268,7 +1307,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   color: var(--ink);
   font: inherit;
 }
-.date-jump button, .ask-form button {
+.ask-form button {
   height: 32px;
   padding: 0 12px;
   border: 0;
@@ -1304,7 +1343,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 /* 作者页 */
 .author-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin: 16px 0; padding: 0; list-style: none; }
 .author-card { padding: 20px; }
-.author-card h2 { margin: 0; font-size: 18px; }
+.author-card h2 { margin: 0; font-size: 18px; font-weight: 600; }
 .author-card h2 a:hover { color: var(--accent); }
 .author-card p { margin: 6px 0 0; font-size: 13.5px; }
 .author-stats { display: flex; gap: 8px; color: var(--ink-3); }
@@ -1400,11 +1439,11 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 .holding-card.role-holding { border-top: 3px solid var(--accent); }
 .holding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.holding-head h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.holding-head h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0; }
 .holding-head h2 a:hover { color: var(--accent); }
 .holding-ticker { margin-left: auto; color: var(--ink-4); font-size: 12.5px; }
 .holding-stats { margin: 0; color: var(--ink-3); font-size: 13.5px; }
-.holding-stats strong { color: var(--ink); font-size: 22px; font-weight: 700; margin-right: 2px; }
+.holding-stats strong { color: var(--ink); font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin-right: 2px; }
 .holding-spark { margin: 0; }
 .spark { display: block; width: 100%; height: 40px; }
 .spark .bar-deep { fill: var(--accent); }
@@ -1465,7 +1504,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 .company-name { grid-area: name; min-width: 0; color: var(--ink); font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .company-ticker { grid-area: ticker; color: var(--ink-4); font-size: 12px; }
 .company-bar { grid-area: bar; height: 4px; border-radius: 999px; background: var(--bg-sunk); overflow: hidden; }
-.company-bar span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: var(--accent); }
+.company-bar span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: color-mix(in srgb, var(--accent) 85%, transparent); }
 .company-deep { grid-area: deep; justify-self: end; color: var(--ink-4); font-size: 12.5px; }
 .company-deep strong { color: var(--ink); font-size: 14px; font-weight: 650; }
 .company-total { grid-area: total; justify-self: end; color: var(--ink-4); font-size: 12px; }
@@ -1474,7 +1513,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 /* 公司页 */
 .company-hero { margin-top: 4px; }
 .company-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.company-title h1 { margin: 0; color: var(--ink); font-size: 28px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; }
+.company-title h1 { margin: 0; color: var(--ink); font-size: 30px; font-weight: 600; letter-spacing: .02em; line-height: 1.25; }
 .company-title .role-badge { height: 22px; font-size: 12px; }
 .company-hero .head-actions { margin-bottom: 4px; }
 .stat-strip {
@@ -1492,16 +1531,16 @@ tbody tr:hover td { background: var(--accent-softer); }
 .stat-strip div:nth-child(-n + 2) { border-bottom: 1px solid var(--line-soft); }
 .stat-strip dt { color: var(--ink-4); font-size: 12px; }
 .stat-strip dd { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
-.stat-strip dd strong { color: var(--ink); font-size: 20px; font-weight: 700; }
+.stat-strip dd strong { color: var(--ink); font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
 .stat-strip dd .quiet { font-size: 12px; }
 .chart-wrap figcaption { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; }
 .legend { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-4); font-size: 12px; font-weight: 400; }
 .legend i { display: inline-block; width: 10px; height: 10px; margin-left: 6px; border-radius: 2px; }
 .legend .key-deep { background: var(--accent); }
-.legend .key-passing { background: color-mix(in srgb, var(--ink-4) 38%, transparent); }
+.legend .key-passing { background: color-mix(in srgb, var(--accent) 26%, transparent); }
 .company-chart .bar-deep { fill: var(--accent); }
-.company-chart .bar-passing { fill: color-mix(in srgb, var(--ink-4) 38%, transparent); }
-.company-chart .bar-empty { fill: var(--line-strong); }
+.company-chart .bar-passing { fill: color-mix(in srgb, var(--accent) 26%, transparent); }
+.company-chart .bar-empty { fill: var(--line); }
 .company-chart .axis { stroke: var(--line); }
 .chart-box { position: relative; }
 .chart .company-chart, .company-chart { display: block; width: 100%; height: 140px; }
@@ -1526,7 +1565,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 .who-row.is-current { background: var(--accent-softer); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
 .who-name { grid-area: name; overflow: hidden; color: var(--ink); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .who-bar { grid-area: bar; height: 6px; border-radius: 999px; background: var(--bg-sunk); overflow: hidden; }
-.who-bar span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: var(--accent); }
+.who-bar span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: color-mix(in srgb, var(--accent) 85%, transparent); }
 .who-count { grid-area: count; color: var(--ink-4); font-size: 12.5px; white-space: nowrap; }
 .who-count strong { color: var(--ink); font-size: 13.5px; font-weight: 650; }
 .who-last { display: none; }
@@ -2057,13 +2096,38 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 /* 首页「最近观点」：展开后每家一行标题，下面是导读 */
 .holdings-now li.recent-item { display: block; padding: 6px 0; }
 .holdings-row .holdings-when { font-size: 12.5px; }
+/* 宽屏两栏：时间线在左，「最近观点」挪到右栏、跟着滚动，首页内容最宽 1280px，
+   摘录一行不再拉到一两百字。窄于 1280px 仍是上下排。
+   右栏占三行（时间线、分页、篇数），dense 让左栏这三样从它旁边排起。 */
+@media (min-width: 1280px) {
+  .frame:has(> .holdings-now) {
+    max-width: 1280px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+    grid-auto-flow: row dense;
+    column-gap: 36px;
+    align-items: start;
+  }
+  .frame:has(> .holdings-now) > * { grid-column: 1 / -1; }
+  .frame:has(> .holdings-now) > :is(.feed, .empty, .pager, .count) { grid-column: 1; }
+  .frame:has(> .holdings-now) > .holdings-now {
+    position: sticky;
+    top: 20px;
+    grid-column: 2;
+    grid-row: span 3;
+    margin: 0;
+    padding: 16px 18px 6px;
+  }
+  .frame:has(> .holdings-now) > .page-tools { margin-bottom: 12px; }
+  .frame:has(> .holdings-now) .recent-item-line { flex-wrap: wrap; gap: 2px 8px; }
+  .frame:has(> .holdings-now) .recent-item-summary { color: var(--ink-3); font-size: 13.5px; }
+}
 
 /* 文章页顶部总结：留着，但别用青绿条去跟正文抢。 */
 .article-digest {
   margin: 0 0 1.35rem;
-  padding: .7rem .95rem;
-  border-left: 2px solid var(--line-strong);
-  border-radius: 8px;
+  padding: 14px 16px;
+  border-radius: var(--radius-card);
   background: var(--bg-sunk);
   color: var(--ink-2);
   font-size: 15px;
@@ -2076,7 +2140,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .view-business { font-size: .85em; padding: 0 .4em; border: 1px solid currentColor; border-radius: 4px; opacity: .75; }
 
 .bilingual-repeat { margin-block: .7rem; }
-.bilingual-repeat > summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+.bilingual-repeat > summary { cursor: pointer; color: var(--ink-4); font-size: .9rem; }
 .tx-list-continuation::marker { content: ''; }
 
 /* 阅读页右侧对话。窄屏是底部抽屉，不把阅读栏挤出横向滚动。
