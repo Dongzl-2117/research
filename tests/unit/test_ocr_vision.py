@@ -10,6 +10,7 @@ from researchlib.config import Settings
 from researchlib.llm import LLMError
 from researchlib.ocr import (
     VISION_PROMPT,
+    VISION_PROMPT_VERSION,
     OcrUnavailable,
     normalize_vision_text,
     prepare_vision_image,
@@ -61,7 +62,10 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
         "读者转述这张图时会不会说这句话",
         "被回复的那条更早",
         "只写看得到的字，不要补全",
-        "一个也认不全的，这条不写",
+        "一个也认不全的",
+        "illegible",
+        "不要因为标了 cut 就删掉",
+        "不要把看不全的笔画补成一句通顺的话",
         "看不清的字写 ?",
         "不要用图里别处出现过的词补",
         "也不要拿你自己知道的说法",
@@ -80,6 +84,8 @@ def test_vision_prompt_asks_for_structure_not_app_rules():
     assert "上下文只容得下一个词时，写那个词" not in VISION_PROMPT
     for case_rule in ("雪球专属交流群", "领教工坊", "墓地", "方伟：", "网友：", "十年知己"):
         assert case_rule not in VISION_PROMPT, case_rule
+    # 分清 cut 和 illegible 不升版本：按第 3 版认过的图不因此再进重认队列。
+    assert VISION_PROMPT_VERSION == 3
 
 
 def test_default_engine_id_follows_the_current_model(monkeypatch):
@@ -310,3 +316,93 @@ def test_normalize_strips_video_badges_and_ad_shell():
     assert "补偿同等配置新车" in poster
     assert "双重保障" not in poster
     assert not any(line.strip() == "理想" for line in poster.splitlines())
+
+
+def test_relayout_rewrites_stored_text_from_units_without_calling_the_model(monkeypatch):
+    """#297 把看得清的 cut 整段换成了占位句。units 还在，重排写回 text，不改版本、不调模型。
+
+    ``--written-to 03:33:02`` 含这一整秒：03:33:02.350005 在里面，03:33:03 不在。
+    """
+    from datetime import timedelta
+
+    from researchlib.ocr import parse_written_at, relayout_stored, relayout_until
+    from researchlib.ocr_units import format_units
+
+    units = {
+        "v": 1,
+        "kind": "chat",
+        "blocks": [{
+            "type": "message",
+            "speaker": "豆包",
+            "self": False,
+            "text": "2016: Standard $9.99",
+            "cut": "bottom",
+        }],
+    }
+    start = parse_written_at("2026-11-10 03:28:41")
+    end = parse_written_at("2026-11-10 03:33:02")
+    assert start.tzinfo is not None and start.utcoffset().total_seconds() == 8 * 3600
+    assert relayout_until(end) == end + timedelta(seconds=1)
+    last = end + timedelta(microseconds=350005)
+    stored = [
+        {"content_hash": "aa" * 32, "text": "旧", "units": units, "created_at": start - timedelta(microseconds=1)},
+        {"content_hash": "ab" * 32, "text": "（末尾一条被遮挡，无法辨认）", "units": units, "created_at": last},
+        {"content_hash": "ac" * 32, "text": "旧", "units": units, "created_at": end + timedelta(seconds=1)},
+    ]
+
+    class _Rows:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _Conn:
+        def __init__(self):
+            self.updates = []
+            self.commits = 0
+            self.bounds = None
+
+        def execute(self, sql, params=None):
+            if "FROM image_texts" in sql:
+                assert "created_at < %s" in sql
+                _engine, begun, until = params
+                self.bounds = (begun, until)
+                picked = [
+                    row for row in stored
+                    if begun <= row["created_at"] < until
+                ]
+                return _Rows(picked)
+            if sql.startswith("UPDATE image_texts"):
+                self.updates.append(params)
+                return _Rows([])
+            if "article_images" in sql:
+                return _Rows([{"article_id": 7}])
+            raise AssertionError(sql)
+
+        def commit(self):
+            self.commits += 1
+
+    refreshed = []
+
+    def _refresh(_conn, article_id):
+        refreshed.append(article_id)
+        return "h"
+
+    monkeypatch.setattr("researchlib.ocr.refresh_article_ocr", _refresh)
+    monkeypatch.setattr("researchlib.chunks.replace_ocr_chunks", lambda conn, article_id: 1)
+    conn = _Conn()
+    report = relayout_stored(conn, engine="grok-4.7-vision", written_from=start, written_to=end)
+    assert conn.bounds == (start, end + timedelta(seconds=1))
+    assert report == {"matched": 1, "changed": 1, "articles": 1, "dry_run": False}
+    assert conn.updates == [(format_units(units), "ab" * 32)]
+    assert "2016" in conn.updates[0][0]
+    assert "无法辨认" not in conn.updates[0][0]
+    assert refreshed == [7] and conn.commits == 1
+    assert ocr_main_refuses_relayout_without_a_window()
+
+
+def ocr_main_refuses_relayout_without_a_window() -> bool:
+    from researchlib.ocr import main
+
+    return main(["--relayout"]) == 2

@@ -20,12 +20,22 @@ from researchlib.ocr_units import (
 )
 
 
-def _msg(text: str, speaker: str = "", *, me: bool = False, cut: str = "", quote: dict | None = None) -> dict:
+def _msg(
+    text: str,
+    speaker: str = "",
+    *,
+    me: bool = False,
+    cut: str = "",
+    quote: dict | None = None,
+    illegible: bool = False,
+) -> dict:
     block = {"type": "message", "speaker": speaker, "self": me, "text": text}
     if cut:
         block["cut"] = cut
     if quote:
         block["quote"] = quote
+    if illegible:
+        block["illegible"] = True
     return block
 
 
@@ -372,6 +382,88 @@ def test_a_shot_that_only_repeats_the_last_one_lets_the_next_compare_with_it():
     assert [block["text"] for block in last] == ["下周再聊"]
 
 
+# 88898c：气泡延伸到图外，看得见的字是完整的。第 3 版和这次都留全文，不因为 cut 丢掉日期。
+NETFLIX_UNITS = {
+    "v": 1,
+    "kind": "chat",
+    "blocks": [
+        {
+            "type": "message",
+            "speaker": "豆包",
+            "self": False,
+            "text": (
+                "1 | Netflix 美国十年价格线 (对标【Standard无广告 | Premium】)\n"
+                "• 2016: Standard $9.99; Premium $11.99 (4K)\n"
+                "• 2017-10: Standard $10.99; Premium $13.99\n"
+                "• 2019-01: Standard $12.99; Premium $15.99\n"
+                "• 2020-10: Standard $13.99; Premium $17.99\n"
+                "• 2023-10: Standard $15.49; Premium $19.99 (新增广告档$6.99)\n"
+                "• 2025-01: Standard $17.99; Premium $24.99; 广告$7.99\n"
+                "• 2026-03: Standard $19.99; Premium $26.99; 广告$8.99\n"
+                "十年涨幅 (2016 Standard $9.99 → 2026 $19.99): +100%\n"
+                "Premium: $11.99 → $26.99, +125%, 大幅跑赢通胀 (40%)\n"
+                "2 | HBO (2016=HBO Now; 2020后=HBO Max / Max)\n"
+                "• 2016 (HBO Now, 唯一一档): $14.99/月 (无分层、无广告版)"
+            ),
+            "cut": "bottom",
+        }
+    ],
+}
+
+
+def test_legible_cut_block_keeps_every_visible_line_and_date():
+    """cut 只表示图外还有下文。看得清的价格和日期整段留下，不换成「无法辨认」。"""
+    text = format_units(NETFLIX_UNITS)
+    assert "2016" in text and "2017-10" in text and "2019-01" in text and "2026-03" in text
+    assert "$9.99" in text and "$19.99" in text and "$14.99" in text
+    assert "豆包：" in text
+    assert "无法辨认" not in text
+    # 没有 illegible 字段的旧第 3 版行，排版和改之前一样。
+    assert format_units(normalize_units(NETFLIX_UNITS)) == text
+
+
+def test_clipped_glyphs_are_not_reconstructed_into_a_sentence():
+    """字只露出上半截、模型补成整句：必须另标 illegible，排版才丢掉那句。单靠 cut 不丢。"""
+    kept = format_units(_units(_msg("去年年费2万块钱就是亏大了", cut="bottom")))
+    assert "去年年费2万块钱就是亏大了" in kept
+    assert "无法辨认" not in kept
+    dropped = format_units(_units(_msg("去年年费2万块钱就是亏大了", cut="bottom", illegible=True)))
+    assert "去年年费" not in dropped
+    assert "亏大了" not in dropped
+    assert "网友" not in dropped
+    assert "方伟" not in dropped
+    assert dropped == "（末尾一条被遮挡，无法辨认）"
+    parsed = normalize_units({
+        "kind": "chat",
+        "blocks": [{
+            "type": "message",
+            "text": "补出来的一句",
+            "cut": "bottom",
+            "partial_glyphs": True,
+        }],
+    })
+    assert parsed["blocks"][0]["illegible"] is True
+    assert "补出来的一句" not in format_units(parsed)
+
+
+def test_a_visible_quote_on_an_illegible_message_is_kept():
+    """看不全的是这一条自己的字；引用框里看得到的原话仍写出来。"""
+    quote = {"speaker": "王小明", "self": False, "text": "毛利率35%，比去年高"}
+    text = format_units(_units(_msg("去年年费2万块钱就是亏大了", cut="bottom", illegible=True, quote=quote)))
+    assert text == "王小明：毛利率35%，比去年高\n\n（末尾一条被遮挡，无法辨认）"
+    assert "亏大了" not in text
+
+
+def test_a_cut_line_completed_by_the_next_shot_keeps_that_sentence():
+    """邻图补全以后 cut 会拿掉，完整的那句留下，不再换成「无法辨认」。"""
+    first = _units(_msg("茅台批价这一周没动", "张三"), _msg("渠道仍在观", "李四", cut="bottom"))
+    second = _units(_msg("渠道仍在观望，短期不宜提价", "李四"), _msg("先看到这里", me=True))
+    upper, lower = stitch([first, second])
+    text = format_blocks(upper + lower)
+    assert "渠道仍在观望，短期不宜提价" in text
+    assert "无法辨认" not in text
+
+
 def test_paragraphs_share_written_quotes_across_shots():
     written: set[str] = set()
     first = paragraphs(_units(_msg("李录投资也很好啊", "李四"))["blocks"], written)
@@ -445,6 +537,32 @@ def test_only_cuts_at_the_real_edges_of_the_shot_are_kept():
         ("下周再聊", ""),
         ("好的，周一", "bottom"),
     ]
+
+
+def test_slivers_cut_by_a_seam_are_dropped_and_only_the_real_edge_says_unreadable():
+    """切口压着字时，接缝两边各有一条只露出半截笔画的（illegible）：另一段里那行整行都在，去掉它，
+    不写「被遮挡，无法辨认」。整张图顶上真截到的那条照旧写成被遮挡。"""
+    first = _units(
+        _msg("这周批价", "张三", cut="top", illegible=True),
+        _msg("瑞幸同店还有压力，门店太密", "张三"),
+        _msg("古茗店效还行，加盟商也在扩", "李四"),
+        _msg("先看批", "李四", cut="bottom", illegible=True),
+    )
+    second = _units(
+        _msg("瑞幸同店", "张三", cut="top", illegible=True),
+        _msg("古茗店效还行，加盟商也在扩", "李四"),
+        _msg("先看批价，下周再聊", "李四"),
+    )
+    joined = join_tiles([first, second])
+    assert [(block["text"], block.get("cut", ""), bool(block.get("illegible"))) for block in joined["blocks"]] == [
+        ("这周批价", "top", True),
+        ("瑞幸同店还有压力，门店太密", "", False),
+        ("古茗店效还行，加盟商也在扩", "", False),
+        ("先看批价，下周再聊", "", False),
+    ]
+    text = format_units(joined)
+    assert text.count("无法辨认") == 1 and "开头一条被遮挡" in text
+    assert "先看批价，下周再聊" in text and "瑞幸同店还有压力，门店太密" in text
 
 
 def test_a_table_split_by_a_seam_becomes_one_table():

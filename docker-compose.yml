@@ -81,6 +81,9 @@ services:
       RESEARCH_LLM_CONCURRENCY: ${RESEARCH_LLM_CONCURRENCY:-8}
       GROK_MAX_CONCURRENCY: ${GROK_MAX_CONCURRENCY:-}
       LLM_RETRY_DELAYS: ${LLM_RETRY_DELAYS:-}
+      # 问库按全站限次数（网站不用登录）：最近 24 小时最多几次、同时整合（含排队）最多几个，0 不限。见 docs/llm.md。
+      ASK_DAILY_LIMIT: ${ASK_DAILY_LIMIT:-30}
+      ASK_RUNNING_LIMIT: ${ASK_RUNNING_LIMIT:-4}
       # 首页断更提示：只看最近几天确实在定时导入的来源。不想要设 0。
       RESEARCH_STALE_BANNER: ${RESEARCH_STALE_BANNER:-1}
       # 语义检索的向量服务（OpenAI 兼容 /embeddings）。推荐 macOS 本机的 Ollama + bge-m3，走 GPU。

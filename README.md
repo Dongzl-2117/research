@@ -11,7 +11,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-浏览器只通过本机 `http://127.0.0.1:8088` 访问。公网入口是 Cloudflare Tunnel 转到这个地址，前面再加 Cloudflare Access。应用自己不提供登录。部署步骤见 [docs/deploy.md](docs/deploy.md)。合并进 main、CI 通过的改动由 Mac mini 上的定时任务自己上线，见同一页「更新」。
+浏览器只通过本机 `http://127.0.0.1:8088` 访问。公网入口是 Cloudflare Tunnel 转到这个地址，不用登录就能看（应用自己也不提供登录）；问库要花模型的钱，按全站限次数，见 [docs/llm.md](docs/llm.md)「给 AI 的接口」。部署步骤见 [docs/deploy.md](docs/deploy.md)。合并进 main、CI 通过的改动由 Mac mini 上的定时任务自己上线，见同一页「更新」。
 
 ## 页面
 

@@ -132,3 +132,18 @@ def test_numbers_with_a_different_scale_are_compared_by_value():
     # 中文段落里数和量级之间夹了字，照字面也算对上。
     chinese = [{**CITATIONS[0], "text": "视频号去年带来 4700多万 的广告收入，今年预计 3.2个亿。"}]
     assert check_answer("广告收入 4700 万，今年 3.2 亿[1]。", chinese, AUTHORS) == []
+
+
+def test_dates_listed_without_repeating_the_year_are_checked_as_dates():
+    """「2026-03-18/09-01」是同一年的两个日期：后一个补上年份按日期核对，月和日不当成数字。"""
+    citations = [
+        {"n": 1, "title": "开市客", "text": "它的模式是结构性的低成本。", "author": "方伟", "date": "2026-03-18"},
+        {"n": 2, "title": "开市客", "text": "结构性的低成本，不靠差异化。", "author": "方伟", "date": "2026-09-01"},
+    ]
+    assert check_answer("方伟在 2026-03-18/09-01 都把它归为结构性的低成本[1][2]。", citations, AUTHORS) == []
+    assert check_answer("方伟在 2026-03-18、09-01 都这么说[1][2]。", citations, AUTHORS) == []
+    flags = check_answer("方伟在 2026-03-18/09-02 都把它归为结构性的低成本[1][2]。", citations, AUTHORS)
+    assert flags[0]["problems"] == ["日期 2026-09-02 和所引段落对不上"]
+    # 后面跟着量级、单位的是数的范围，照旧按数字查。
+    flags = check_answer("方伟在 2026-03-18/10-20 亿元之间都这么说[1][2]。", citations, AUTHORS)
+    assert "数字 10 不在所引段落里" in flags[0]["problems"]
