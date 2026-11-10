@@ -120,6 +120,52 @@ def test_sidebar_sources_are_one_list():
     assert "M6 5.5h4.5" not in group
 
 
+STATIC = ROOT / "src" / "researchlib" / "web" / "static"
+
+
+def _media_blocks(css, query):
+    """按出现顺序取出每个 ``@media <query> {`` 块的内容，按花括号配对。"""
+    head = "@media " + query + " {"
+    blocks, pos = [], css.find(head)
+    while pos >= 0:
+        start = i = pos + len(head)
+        depth = 1
+        while depth:
+            depth += {"{": 1, "}": -1}.get(css[i], 0)
+            i += 1
+        blocks.append(css[start:i - 1])
+        pos = css.find(head, i)
+    return blocks
+
+
+def test_tablet_widths_get_a_side_rail_and_phones_keep_the_bottom_bar():
+    """600 到 1023px（手机横屏、折叠屏展开、iPad 竖屏）导航在左边的图标栏，不再顶栏加底部栏。
+
+    Zhilin 11-10 用折叠屏横屏看，网页宽约 954，以前到 1024 才有侧栏，上下两条占掉四分之一的高度。
+    600 以下照旧底部栏；只有底部栏在的宽度，「问这篇」的面板和按钮才让到它上面。
+    """
+    css = (STATIC / "site.css").read_text(encoding="utf-8")
+    rail = _media_blocks(css, "(min-width: 600px) and (max-width: 1023px)")
+    assert ".mobile-bar, .tabbar { display: none; }" in rail[0]
+    assert "display: flex" in rail[0].split("  .sidebar {", 1)[1].split("}", 1)[0]
+    assert "translateY(calc(var(--theme-index, 1) * 100%))" in rail[0]
+    [phone] = _media_blocks(css, "(max-width: 599px)")
+    assert ".article-chat { bottom: calc(54px + env(safe-area-inset-bottom)); }" in phone
+    assert not any("54px" in block for block in rail + _media_blocks(css, "(max-width: 1023px)"))
+    ask = (STATIC / "ask-chat.css").read_text(encoding="utf-8")
+    [ask_rail] = _media_blocks(ask, "(min-width: 600px) and (max-width: 1023px)")
+    assert ".shell:has(.ask-workspace) .frame { height: 100dvh; }" in ask_rail
+
+
+def test_theme_thumb_position_comes_from_a_css_variable():
+    """脚本只写第几个选项（--theme-index），滑块横着走还是竖着走由样式表定：图标栏里开关是竖的。"""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    assert 'thumb.style.setProperty("--theme-index", String(index))' in base
+    assert "translateX(" not in base
+    thumb = (STATIC / "site.css").read_text(encoding="utf-8").split(".theme-thumb {", 1)[1].split("}", 1)[0]
+    assert "transform: translateX(calc(var(--theme-index, 1) * 100%));" in thumb
+
+
 def test_search_template_keeps_author_count_markup():
     html = _env().get_template("search.html").render(
         title="搜索 腾讯",
