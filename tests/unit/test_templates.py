@@ -95,29 +95,33 @@ class _NavSource:
         self.kind = kind
 
 
-def test_sidebar_sources_are_one_list():
-    html = _env().get_template("base.html").render(
-        title="按天",
-        canonical="https://investment.zldong.com/",
-        public_host="investment.zldong.com",
-        query="",
-        nav="archive",
-        sample_banner=False,
-        active_source="fangwei-mp",
-        sources=[
-            _NavSource("fangwei-mp", "方伟公众号", True),
-            _NavSource("linwenfeng-feishu", "林文丰飞书", False, "feishu"),
-        ],
-    )
-    body = html.split("<main", 1)[0]
-    group = body.split('<div class="nav-label">来源</div>', 1)[1].split("</nav>", 1)[0]
-    assert body.count(">来源<") == 1
-    assert ">文库<" not in body
-    assert 'href="/?source=fangwei-mp"' in group
-    assert 'href="/sources/linwenfeng-feishu/tree"' in group
-    assert group.count("nav-link") == 2
-    assert group.count('r="3.2"') == 2
-    assert "M6 5.5h4.5" not in group
+def test_sidebar_has_no_source_list():
+    """来源和作者重合（7 个来源对应 6 个作者），侧栏不再单列来源。方伟两个来源在作者页切换，
+    林文丰的飞书目录从作者页进，所以目录页亮「作者」，按来源筛的按天页亮「按天」。"""
+    sources = [
+        _NavSource("fangwei-mp", "方伟公众号", True),
+        _NavSource("linwenfeng-feishu", "林文丰飞书", False, "feishu"),
+    ]
+
+    def sidebar(nav, active_source=""):
+        html = _env().get_template("base.html").render(
+            title="按天",
+            canonical="https://investment.zldong.com/",
+            public_host="investment.zldong.com",
+            query="",
+            nav=nav,
+            sample_banner=False,
+            active_source=active_source,
+            sources=sources,
+        )
+        return html.split("<main", 1)[0]
+
+    body = sidebar("archive", "fangwei-mp")
+    assert ">来源<" not in body and ">内容<" not in body
+    assert "/?source=" not in body and "/tree" not in body
+    assert 'href="/" aria-current="page"' in body
+    tree = sidebar("tree", "linwenfeng-feishu")
+    assert 'href="/authors" aria-current="page"' in tree
 
 
 STATIC = ROOT / "src" / "researchlib" / "web" / "static"

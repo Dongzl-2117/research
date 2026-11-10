@@ -32,6 +32,7 @@ from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.housekeeping import strip_housekeeping
+from researchlib.image_size import size_images
 from researchlib.llm import active_label, active_model_id, llm_configured, missing_credential_text
 from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
@@ -875,8 +876,8 @@ def _article_view(request: Request, article_id: int, mode: str):
             raw_pairs = marked
         pairs = [
             {
-                "en": Markup(lazy_images(p.en)),
-                "zh": Markup(lazy_images(p.zh)) if p.zh else None,
+                "en": _reading_html(request, p.en),
+                "zh": _reading_html(request, p.zh) if p.zh else None,
                 "anchor": p.anchor,
                 "repeat_of": p.repeat_of,
             }
@@ -895,9 +896,9 @@ def _article_view(request: Request, article_id: int, mode: str):
     if body_language == "pairs":
         body_html = None
     elif body_language == "zh":
-        body_html = Markup(lazy_images(zh_html)) if zh_html else None
+        body_html = _reading_html(request, zh_html) if zh_html else None
     else:
-        body_html = Markup(lazy_images(original_html))
+        body_html = _reading_html(request, original_html)
     # 高亮的段落这一页上看得见才算：只看中文时，原文里标的那段不显示。
     if quoted_marked and body_language != "pairs":
         quoted_marked = (body_language == "zh") == (quoted_lang == "zh")
@@ -969,7 +970,12 @@ def article_page_original(request: Request, article_id: int):
     return _article_view(request, article_id, "original")
 
 
-def _tree_body(conn, article, source):
+def _reading_html(request: Request, html: str) -> Markup:
+    """阅读页正文交给模板前的最后一步：图滚到附近才下，补上宽高，竖长截图按手机屏宽显示。"""
+    return Markup(size_images(lazy_images(html), request.app.state.settings.data_dir / "images"))
+
+
+def _tree_body(request: Request, conn, article, source):
     source_id = source.id
     images = queries.article_images(conn, article["id"])
     mapping = {row["original_ref"]: f"/media/{row['storage_path']}" for row in images}
@@ -980,8 +986,8 @@ def _tree_body(conn, article, source):
     html = prepare_body_html(shown_md, polish_display_text(article["title"] or ""), mapping, fmt, link_index, parent)
     # 目录右侧也是阅读：留原图，不把识图文字换进去。飞书的图本来就在原文位置，不挪。
     if not images_placed_by_estimate(source.kind, article["raw_meta"]):
-        return Markup(lazy_images(html))
-    return Markup(lazy_images(inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"]))))
+        return _reading_html(request, html)
+    return _reading_html(request, inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
 
 def _source_tree(request: Request, source_id: str, article_id: int | None):
@@ -1005,7 +1011,7 @@ def _source_tree(request: Request, source_id: str, article_id: int | None):
             article = queries.get_article(conn, current, [source_id])
             if article is None:
                 raise HTTPException(status_code=404)
-            body_html = _tree_body(conn, article, source)
+            body_html = _tree_body(request, conn, article, source)
         if root is not None:
             mark_open(root, current)
         for node in orphans:
