@@ -3,3 +3,6 @@
 .read-with-chat .article-chat { display: flex; position: static; width: 100%; height: auto; max-height: none; margin-top: 24px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); transform: none; visibility: visible; box-shadow: none; }
 .chat-toggle, .chat-split, .chat-backdrop, .chat-head-actions { display: none !important; }
 .article-chat .chat-log { display: none; }
+/* 范围下拉框平时透明地盖在小标签上、由脚本改标签上的字；没脚本时直接露出下拉框。 */
+.article-chat .chat-range-chip .chat-range { position: static; width: auto; height: auto; min-height: 30px; padding: 0 6px 0 2px; opacity: 1; font-size: inherit; }
+.chat-range-text { display: none; }

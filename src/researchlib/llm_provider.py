@@ -47,7 +47,13 @@ def provider_label(provider: str) -> str:
 def llm_base_url(environ: Mapping[str, str] | None = None) -> str:
     """OpenAI 兼容的 base URL，不带 /chat/completions。"""
     env = _env(environ)
-    if llm_provider(env) == PROVIDER_GROK:
+    return provider_base_url(llm_provider(env), env)
+
+
+def provider_base_url(provider: str, environ: Mapping[str, str] | None = None) -> str:
+    """指定那一家的 base URL。问库按次换提供方时用（researchlib.ask_model），不看 RESEARCH_LLM_PROVIDER。"""
+    env = _env(environ)
+    if provider == PROVIDER_GROK:
         return (env.get("XAI_BASE_URL", "").strip() or GROK_DEFAULT_BASE_URL).rstrip("/")
     return (env.get("DEEPSEEK_BASE_URL", "").strip() or DEEPSEEK_DEFAULT_BASE_URL).rstrip("/")
 

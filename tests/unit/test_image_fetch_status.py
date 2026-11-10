@@ -87,6 +87,41 @@ def test_many_failures_are_a_problem_even_when_most_images_came_down():
     assert not ok
 
 
+def test_a_whole_image_host_failing_is_reported_even_among_many_downloads(tmp_path, capsys):
+    """11-08 起微信图床的图一张都没下下来：每次只有 3 到 5 个新地址，夹在几百个下下来的 Stratechery 地址里，
+    按比例算没问题，三天没人发现。整个下不来的图床（dead_hosts 从 image_fetches 查）单独列出来，算出了问题；
+    之后只下了 Stratechery、或者只有重试的那几次也照样报，提示不会被撤掉。"""
+    report = _report(200, {"解析到代理假地址": 4}, {"mmbiz.qpic.cn": 4})
+    assert fetch_status(report)[0]  # 以前：算没问题
+    dead = {"mmbiz.qpic.cn": Counter({"解析到代理假地址": 12})}
+    ok, message = fetch_status(report, dead)
+    assert not ok
+    assert message == (
+        "新地址 200 个，下下来 196 个，下不来 解析到代理假地址 4（最多的是 mmbiz.qpic.cn 4）"
+        "；最近 3 天一张都没下下来的图床：mmbiz.qpic.cn 12 个（解析到代理假地址 12）"
+    )
+    assert fetch_status(_report(300), dead)[0] is False
+    assert fetch_status(_report(0, retried=5, retry_failed=5), dead) == (
+        False, "最近 3 天一张都没下下来的图床：mmbiz.qpic.cn 12 个（解析到代理假地址 12）"
+    )
+    assert fetch_status(_report(3, {"连不上": 3}, {"example.com": 3}), dead)[0] is False
+    # 几个图床都下不来：多的在前。
+    two = {"a.example": Counter({"连不上": 3}), "mmbiz.qpic.cn": Counter({"解析到代理假地址": 10, "HTTP 403": 2})}
+    assert fetch_status(_report(0), two)[1] == (
+        "最近 3 天一张都没下下来的图床：mmbiz.qpic.cn 12 个（解析到代理假地址 10、HTTP 403 2）"
+        "、a.example 3 个（连不上 3）"
+    )
+
+    # 夜间补齐带 --exit-code：这一步记成失败；状态文件里记着是哪个图床。
+    assert finish(tmp_path, _report(300), exit_code=True, dead=dead) == EXIT_MOSTLY_FAILED
+    assert capsys.readouterr().err.strip().endswith("mmbiz.qpic.cn 12 个（解析到代理假地址 12）")
+    saved = read_status(tmp_path, "fetch-images")
+    assert saved["ok"] is False and saved["dead_hosts"] == {"mmbiz.qpic.cn": {"解析到代理假地址": 12}}
+    # 图床好了（dead_hosts 查不出来）：下一次有新地址都下下来就撤掉提示。
+    assert finish(tmp_path, _report(300), exit_code=True, dead={}) == 0
+    assert notices(tmp_path, "Asia/Shanghai") == []
+
+
 def test_too_few_new_addresses_leave_the_last_verdict():
     assert fetch_status(_report(0, retried=10, retry_failed=10)) is None
     assert fetch_status(_report(3, {"连不上": 3}, {"example.com": 3})) is None

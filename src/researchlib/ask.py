@@ -31,6 +31,8 @@ from datetime import date
 
 from psycopg.types.json import Jsonb
 
+from researchlib.ask_model import AskModel, default_choice, stored_choice
+from researchlib.ask_model import apply as apply_model
 from researchlib.citecheck import check_answer
 from researchlib.config import Settings
 from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured, missing_credential_text
@@ -445,11 +447,23 @@ def over_quota(conn) -> str:
     return ""
 
 
-def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run_inline: bool | None = None) -> dict:
+def start(
+    conn,
+    settings: Settings,
+    question: str,
+    scope: Scope,
+    sources,
+    *,
+    run_inline: bool | None = None,
+    choice: AskModel | None = None,
+) -> dict:
     """检索原文并登记一次整合。返回的 id 为 None 表示没交给模型（没配置、没召回到资料，或次数满了）。
 
     次数满了时 limited 为真，error 里写着什么时候能再问，召回的原文照样返回。
+    ``choice`` 是这次选的模型和思考强度（``researchlib.ask_model``），不传按默认；记进 stats.llm。
     """
+    choice = choice or default_choice(settings)
+    chosen = apply_model(settings, choice)
     # 问题里的 NUL 字符存不进 Postgres（llm_answers.question），和检索那边一样换成空格。
     question = (question or "").replace("\x00", " ")
     preset = is_preset(question)
@@ -466,12 +480,13 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
         "citations": passages,
         "terms": found.terms,
         "detected": _detected(found),
+        "llm": choice.as_display(),
     }
     if not passages:
         result["error"] = "范围内没有召回到任何段落。换个问法，或放宽作者、公司、日期范围。"
         return result
-    if not llm_configured(settings):
-        result["error"] = f"{missing_credential_text(settings)}，只给出召回的原文段落。"
+    if not llm_configured(chosen):
+        result["error"] = f"{missing_credential_text(chosen)}，只给出召回的原文段落。"
         return result
     reason = over_quota(conn)
     if reason:
@@ -481,11 +496,11 @@ def start(conn, settings: Settings, question: str, scope: Scope, sources, *, run
         return result
     row = conn.execute(
         """
-        INSERT INTO llm_answers (question, scope, answer, citations, model, status, terms)
-        VALUES (%s, %s, '', %s, '', 'running', %s)
+        INSERT INTO llm_answers (question, scope, answer, citations, model, status, terms, stats)
+        VALUES (%s, %s, '', %s, '', 'running', %s, %s)
         RETURNING id
         """,
-        (question, Jsonb(result["scope"]), Jsonb(passages), Jsonb(found.terms)),
+        (question, Jsonb(result["scope"]), Jsonb(passages), Jsonb(found.terms), Jsonb({"llm": choice.as_json()})),
     ).fetchone()
     conn.commit()
     result["id"] = row["id"]
@@ -531,13 +546,14 @@ class _Progress:
         try:
             if text is None:
                 self.conn.execute(
-                    "UPDATE llm_answers SET stats = %s, updated_at = now() WHERE id = %s AND status = 'running'",
+                    "UPDATE llm_answers SET stats = coalesce(stats, '{}'::jsonb) || %s, updated_at = now()"
+                    " WHERE id = %s AND status = 'running'",
                     (Jsonb({"progress": self.state}), self.answer_id),
                 )
             else:
                 self.conn.execute(
-                    "UPDATE llm_answers SET answer = %s, stats = %s, updated_at = now()"
-                    " WHERE id = %s AND status = 'running'",
+                    "UPDATE llm_answers SET answer = %s, stats = coalesce(stats, '{}'::jsonb) || %s,"
+                    " updated_at = now() WHERE id = %s AND status = 'running'",
                     (text, Jsonb({"progress": self.state}), self.answer_id),
                 )
             self.conn.commit()
@@ -556,9 +572,12 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         conn = connect(settings)
         ensure_search_session(conn)
     try:
-        row = conn.execute("SELECT question, scope FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()
+        row = conn.execute("SELECT question, scope, stats FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()
         if row is None:
             return
+        # 登记时选的模型和强度（重新整合也沿用这一份）：扩词、分批读资料、写回答都用它。
+        choice = stored_choice(settings, row["stats"])
+        settings = apply_model(settings, choice)
         question = row["question"]
         stored = row["scope"] or {}
         preset = bool(stored.get("preset"))
@@ -620,6 +639,7 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
             "batches": 1 if chars <= SINGLE_CALL_CHARS else len(_batches(passages, BATCH_CHARS)),
             "failed_batches": synth_report.get("failed_batches", []),
             "expansions": expansions,
+            "llm": choice.as_json(),
         }
         # 分批读资料、写回答各用了多久，各次调用的 token（含思考）加起来：看整合慢在哪一步。
         for key in ("read_s", "write_s", "usage"):
@@ -690,14 +710,23 @@ def mark_interrupted(conn) -> int:
     return len(rows)
 
 
-def ask(conn, settings: Settings, question: str, scope: Scope, sources, *, wait_s: float | None = None) -> dict:
+def ask(
+    conn,
+    settings: Settings,
+    question: str,
+    scope: Scope,
+    sources,
+    *,
+    wait_s: float | None = None,
+    choice: AskModel | None = None,
+) -> dict:
     """给 JSON 接口的 wait=true 用：登记后在后台整合，这里最多等 wait_s 秒（默认 WAIT_SECONDS）。
 
     写完了带回答和核对；没写完照样返回 id，status 仍是 running，answer 是写到一半的，调用方接着轮询
     /api/v1/answers/{id}。以前在请求里跑完整个整合（6 到 9 分钟），隔着 Cloudflare 一定断开，回答编号也丢了。
     测试进程里整合直接跑完（见 _inline），这里读一次就是结果。
     """
-    result = start(conn, settings, question, scope, sources)
+    result = start(conn, settings, question, scope, sources, choice=choice)
     if result["id"] is None:
         return result
     deadline = time.monotonic() + (WAIT_SECONDS if wait_s is None else wait_s)

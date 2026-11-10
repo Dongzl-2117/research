@@ -742,6 +742,22 @@ def title_rows(conn, article_ids: list[int]):
     ).fetchall()
 
 
+def recent_article_questions(conn, article_id: int, limit: int = 3) -> list[str]:
+    """「只问这篇」问过的问题，最近问的在前，同一个问题只列一次。文章页问库空白时摆出来，点了填进输入框。"""
+    rows = conn.execute(
+        """
+        SELECT question
+        FROM llm_answers
+        WHERE scope->>'article_id' = %s AND status <> 'error' AND coalesce(scope->>'chat', '') <> 'true'
+        GROUP BY question
+        ORDER BY max(created_at) DESC
+        LIMIT %s
+        """,
+        (str(article_id), limit),
+    ).fetchall()
+    return [row["question"] for row in rows]
+
+
 def recent_answers(conn, limit: int = 20):
     """最近问过的问题。同一个问题、同一个范围问了好几遍的只列一次，按最后一次问的时间排；
     其中有整合完的就链到最近整合完的那次，不链到重启时中断的那几次。
