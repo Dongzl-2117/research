@@ -79,9 +79,11 @@ def test_sample_library_pages(conn, settings, monkeypatch):
         search = client.get("/search", params={"q": "腾讯"})
         assert search.status_code == 200
         assert "<mark>腾讯</mark>" in search.text
-        assert "方伟</span><strong>3</strong>" in search.text
-        assert "乘风破浪</span><strong>0</strong>" in search.text
         assert 'class="pills search-pills"' in search.text
+        # 11-10 改版：按作者数命中的那一行去掉了（来源标签上有篇数），「问 AI」改成一张卡片，日期并进作者那一行。
+        assert "author-facets" not in search.text
+        assert '<a class="ask-card" href="/ask?q=%E8%85%BE%E8%AE%AF">' in search.text
+        assert '<ol class="slots flat results">' in search.text and 'class="item-date"' in search.text
         by_author = client.get("/search", params={"q": "方伟"})
         assert "晚间短记" in by_author.text
         assert "亚马逊云和广告" not in by_author.text

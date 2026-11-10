@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_ask_model.html" import model_menu %}
 {% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">{% endblock %}
 {% macro passage(item, result) %}
 {% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
@@ -22,8 +23,8 @@
     <div class="ask-heading"><h1>问库</h1><span>每次独立提问</span></div>
     <div class="ask-head-actions">
       {% if history %}
-      <details class="ask-history">
-        <summary>最近问过</summary>
+      <details class="ask-history" data-popover>
+        <summary><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4.3l2.8 1.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>最近问过</span></summary>
         <nav aria-label="最近问过"><ul>
           {% for row in history %}{% set since, until = row.scope.date_from, row.scope.date_to %}
           <li><a href="/ask/{{ row.id }}"{% if result and row.id == result.id %} aria-current="page"{% endif %}>{{ row.question }}
@@ -32,14 +33,14 @@
         </ul></nav>
       </details>
       {% endif %}
-      <a class="ask-new" href="/ask">新问题 <span aria-hidden="true">＋</span></a>
+      <a class="ask-new" href="/ask"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>新问题</span></a>
     </div>
   </header>
   {% if not llm_ready %}<p class="chat-notice">{{ credential_notice | default("没有可用的 " ~ (llm_label | default("LLM")) ~ " 凭证") }}，只列出相关原文。</p>{% endif %}
   <p id="ask-mode" class="sr">每轮只提交当前问题，不沿用上文。作者、日期和指定资料范围会随本次提问提交。回答可通过引用回到原文核对。</p>
   <div class="chat-log" role="region" aria-label="提问与回答" tabindex="0">
     {% if not result %}
-    <div class="ask-welcome"><svg class="ask-symbol" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 6.5h18v15H14l-7 5v-5zM12 12h8m-8 5h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><h2>想从资料里了解什么？</h2><p>从一个问题开始，沿着引用读回原文。</p></div>
+    <div class="ask-welcome"><i class="ask-seal" aria-hidden="true">研</i><h2>想从资料里了解什么？</h2><p>从一个问题开始，沿着引用读回原文。</p></div>
     {% else %}
     <div class="chat-bubble chat-bubble-user"><p>{{ result.question }}</p></div>
     <section class="answer chat-bubble chat-bubble-assistant" aria-label="回答" data-answer-id="{{ result.id or '' }}" data-answer-status="{{ result.status }}"{% if result.status == "running" %} data-poll="/api/v1/answers/{{ result.id }}"{% endif %}>
@@ -54,7 +55,7 @@
         {% if result.checks %}
         <section class="checks chat-warnings" aria-label="没核对上的句子">
           <h3>需要回原文核对 <span class="num">{{ result.checks | length }}</span></h3>
-          <ul>{% for flag in result.checks %}<li><p class="check-sentence">{{ flag.sentence }}{% for n in flag.refs %} <a class="cite" href="#c-{{ n }}">[{{ n }}]</a>{% endfor %}</p><p class="check-problems">{{ flag.problems | join("；") }}</p></li>{% endfor %}</ul>
+          <ul>{% for flag in result.checks %}<li><p class="check-sentence">{{ flag.sentence }}{% for n in flag.refs %} <a class="cite" href="#c-{{ n }}"><span class="cite-mark">[</span>{{ n }}<span class="cite-mark">]</span></a>{% endfor %}</p><p class="check-problems">{{ flag.problems | join("；") }}</p></li>{% endfor %}</ul>
         </section>
         {% endif %}
         {% set cited = result.citations | selectattr("cited") | list %}
@@ -65,6 +66,7 @@
         {% elif result.citations %}
         <section class="answer-sources" aria-label="相关原文"><h3>相关原文 <span class="num">{{ result.citations | length }}</span></h3><ol class="citations plain">{% for item in result.citations %}{{ passage(item, result) }}{% endfor %}</ol></section>
         {% endif %}
+        <div class="answer-tail">
         {% if result.id %}
         <details class="answer-feedback"{% if result.feedback_error or result.missing %} open{% endif %}><summary>补充遗漏的文章</summary>
           <form id="missing" class="missing-form" action="/ask/{{ result.id }}/feedback" method="post">
@@ -74,7 +76,8 @@
           {% if result.missing %}<ul class="missing-list" aria-label="补上的文章">{% for item in result.missing %}<li><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.title }}</a></li>{% endfor %}</ul>{% endif %}
         </details>
         {% endif %}
-        {% if result.model or result.created %}<p class="answer-meta">{{ result.model }}{% if result.model and result.created %} · {% endif %}{{ result.created }}</p>{% endif %}
+        {% if result.model or result.created %}<p class="answer-meta">{{ ([result.model, ("思考" ~ result.llm.effort_label) if result.llm and result.model else "", result.created] | select | join(" · ")) }}</p>{% endif %}
+        </div>
       </div>
       <div class="chat-recovery"></div>
     </section>
@@ -85,20 +88,33 @@
     {% if company %}<input type="hidden" name="company" value="{{ company.id }}">{% endif %}
     <input type="hidden" name="article" value="{{ article.id if article else '' }}">
     {% if tree %}<input type="hidden" name="tree" value="{{ tree.id }}">{% endif %}
-    <details class="ask-filters"{% if filters.author or filters.from or filters.to %} open{% endif %}>
-      <summary>资料范围 <span>{% if article %}只用这篇：{{ article.title }}{% elif tree %}只用这个目录：{{ tree.title }}{% elif company %}提到 {{ company.name_zh }} 的文章{% elif filters.source %}指定来源{% else %}整个资料库{% endif %}{% if filters.author %} · {{ filters.author }}{% endif %}{% if filters.from or filters.to %} · {{ filters.from or '最早' }} 至 {{ filters.to or '最近' }}{% endif %}</span></summary>
-      <div class="filter-grid">
-        <label>作者 <select name="author"><option value="">全部作者</option>{% for name in authors %}<option value="{{ name }}"{% if filters.author == name %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
-        <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>
-        <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
-      </div>
-    </details>
     <div class="chat-composer">
       <label class="sr" for="ask-q">问题</label>
-      <textarea id="ask-q" name="q" rows="2" maxlength="500" aria-describedby="ask-mode" enterkeyhint="send" placeholder="向资料库提问…" required>{% if not result %}{{ question }}{% endif %}</textarea>
-      <div class="chat-composer-bar"><span class="composer-hint">每次独立提问</span><span class="chat-count" aria-hidden="true"></span><button type="submit" aria-label="发送问题" title="发送问题"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m-5 5 5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+      <textarea id="ask-q" name="q" rows="1" maxlength="500" aria-describedby="ask-mode" enterkeyhint="send" placeholder="问问资料库…" required>{% if not result %}{{ question }}{% endif %}</textarea>
+      <div class="chat-composer-bar">
+        <details class="ask-filters" data-popover>
+          <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 4.2-8 4.2-8-4.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4 12.2 8 4.2 8-4.2M4 16l8 4.2 8-4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span class="sr">资料范围：</span><span class="ask-scope">{% if article %}只用这篇：{{ article.title }}{% elif tree %}只用这个目录：{{ tree.title }}{% elif company %}提到 {{ company.name_zh }} 的文章{% elif filters.source %}指定来源{% else %}整个资料库{% endif %}{% if filters.author %} · {{ filters.author }}{% endif %}{% if filters.from or filters.to %} · {{ filters.from or '最早' }} 至 {{ filters.to or '最近' }}{% endif %}</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
+          <div class="filter-grid">
+            <label>作者 <select name="author"><option value="">全部作者</option>{% for name in authors %}<option value="{{ name }}"{% if filters.author == name %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+            <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>
+            <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
+          </div>
+        </details>
+        <span class="chat-count" aria-hidden="true"></span>{{ model_menu(ask_models) }}<button type="submit" aria-label="发送问题" title="发送问题"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m-5 5 5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
     </div>
-    <p class="composer-footnote">回答依据检索到的资料生成，请结合引用核对。</p>
+    {% if not result and not article and not tree and not company and not filters.source %}
+    {# 还没问时，输入框下面摆最近问过的几题（整个资料库、没限定日期和公司的），点一下填进输入框，不直接提交。 #}
+    {% set picked = namespace(questions=[]) %}
+    {% for row in history %}{% set scope = row.scope or {} %}
+    {% if picked.questions | length < 3 and row.status != "error" and not (scope.preset or scope.article_id or scope.tree_id or scope.company_id or scope.date_from or scope.date_to) and row.question | length <= 40 and row.question not in picked.questions %}{% set picked.questions = picked.questions + [row.question] %}{% endif %}
+    {% endfor %}
+    {% if picked.questions %}
+    <ul class="ask-suggest" aria-label="最近问过的问题">
+      {% for item in picked.questions %}<li><a href="/ask?q={{ item | urlencode }}" data-question="{{ item }}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4.3l2.8 1.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>{{ item }}</span></a></li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% endif %}
+    <p class="composer-footnote">每次独立提问。回答依据检索到的资料生成，请结合引用核对。</p>
   </form>
 </section>
 <script src="{{ asset('article-chat.js') }}" defer></script>

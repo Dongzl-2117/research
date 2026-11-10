@@ -10,6 +10,8 @@
 识图交回结构（JSON，见 ``researchlib.ocr_units``）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，
 都由看得见图的模型标好，存进 image_texts.units，后面只排版和拼接，不再按规则猜。
 units 为空的是以前的自由文字，仍由 wechat_dialogue 的旧规则整理（冻结，不再往里加）。
+长截图（比手机一屏长得多的）切成几段有重叠的图分别认，再由 ``ocr_units.join_tiles`` 接回一张（见 ``tile_spans``）；
+``--tall`` 只重认切段以前整张认的长图（和 11-10 晚以前切段认、没存每段结果的）。
 
 app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、正文为空，
 下次不带 ``--redo`` 也会重试，不写进脏字。JSON 连着两次读不出来记 ``:invalid``，
@@ -32,6 +34,7 @@ import base64
 import hashlib
 import itertools
 import logging
+import math
 import re
 import sys
 import time
@@ -45,11 +48,13 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import site_visible_sql
 from researchlib.chunks import replace_ocr_chunks
 from researchlib.ocr_units import (
+    UNITS_VERSION,
     ImageText,
     UnitsError,
     format_blocks,
     format_units,
     has_dialogue,
+    join_tiles,
     parse_reply,
     stitch,
 )
@@ -78,6 +83,21 @@ VISION_MAX_SIDE = 1920
 VISION_JPEG_QUALITY = 85
 VISION_TRANSIENT_TRIES = 3
 VISION_MAX_TOKENS = 65536  # 全量 VISION_PROMPT+thinking 下 8k/16k 会把正文挤空，32k 仍偶发；64k 配合 llm 的空正文重试
+# 长截图（一屏屏往下截、拼成的一张）整张送去认，长边压到 VISION_MAX_SIDE 以后宽只剩几百像素，字小到认错、改了意思
+# （11-09 抽查：1080×7237 的图送出去宽 286，错 6 处）。DeepSeek 那边每张图也只看约 1300×1300 像素的量，送原图一样缩。
+# 比 VISION_MAX_SIDE 高、又高过宽的 VISION_TALL_RATIO 倍的，切成几段分别认（见 tile_spans）：每段高不超过宽的
+# VISION_TILE_RATIO 倍，和手机一屏差不多，压完的字和普通截图一样大；相邻两段重叠宽的 VISION_TILE_OVERLAP 倍，
+# 认完由 ocr_units.join_tiles 接回一张。手机一屏的高宽比约 2.2，这个比例以下的都不切。
+VISION_TALL_RATIO = 3
+VISION_TILE_RATIO = 2
+VISION_TILE_OVERLAP = 0.4
+# 一张图最多切这么多段（高是宽的 20 倍左右）。再长的每段跟着变高，一张图花的钱有个头。
+VISION_MAX_TILES = 12
+# --tall 结尾列出这次重认的长图挂在哪几篇上，最多列这么多篇。
+TALL_SHOW_ARTICLES = 30
+# 找切口时，一行的「花」（``_row_noise``）不超过附近最空那行加这么多，就算空白。JPEG 的底色上有一两个灰度的噪点，
+# 压着字的行一般在 10 以上。
+VISION_QUIET_SLACK = 2.0
 # 检索块要 20 个字；交给观点和摘要的旁路、以及阅读页放宽，短截图也能进正文。
 READING_MIN_CHARS = 8
 # 正文短于这个字数时，图片文字和上次抽摘要、观点时不一致就要重抽。长文不因为后补一张图整篇重来。
@@ -206,9 +226,7 @@ def prepare_vision_image(image_bytes: bytes, mime: str) -> tuple[bytes, str]:
         if len(image_bytes) <= int(MAX_VISION_SEND_BYTES * 0.75):
             return image_bytes, mime
     try:
-        from io import BytesIO
-
-        from PIL import Image
+        import PIL  # noqa: F401
     except ImportError as exc:
         if len(image_bytes) > MAX_VISION_SEND_BYTES:
             raise OcrImageSkipped(
@@ -216,15 +234,31 @@ def prepare_vision_image(image_bytes: bytes, mime: str) -> tuple[bytes, str]:
             ) from exc
         return image_bytes, mime
 
+    return _shrink_to_jpeg(_open_rgb(image_bytes)), "image/jpeg"
+
+
+def _open_rgb(image_bytes: bytes):
+    """解码成 RGB 的 Pillow 图。打不开的当跳过。"""
+    from io import BytesIO
+
+    from PIL import Image
+
     try:
         image = Image.open(BytesIO(image_bytes))
         image.load()
     except Exception as exc:  # noqa: BLE001 — 坏图当跳过
         raise OcrImageSkipped(f"图片打不开：{exc}") from exc
-    if image.mode not in ("RGB", "L"):
+    if image.mode != "RGB":
         image = image.convert("RGB")
-    elif image.mode == "L":
-        image = image.convert("RGB")
+    return image
+
+
+def _shrink_to_jpeg(image) -> bytes:
+    """长边缩到 VISION_MAX_SIDE 以内，存成 JPEG；还超过 MAX_VISION_SEND_BYTES 就再缩、降质量，最多 8 次。"""
+    from io import BytesIO
+
+    from PIL import Image
+
     width, height = image.size
     longest = max(width, height) or 1
     scale = min(1.0, VISION_MAX_SIDE / longest)
@@ -234,22 +268,143 @@ def prepare_vision_image(image_bytes: bytes, mime: str) -> tuple[bytes, str]:
             Image.Resampling.LANCZOS,
         )
     quality = VISION_JPEG_QUALITY
-    out = b""
     for _ in range(8):
         buf = BytesIO()
         image.save(buf, format="JPEG", quality=quality, optimize=True)
         out = buf.getvalue()
         if len(out) <= MAX_VISION_SEND_BYTES:
-            return out, "image/jpeg"
+            return out
         width, height = image.size
         image = image.resize(
             (max(1, int(width * 0.85)), max(1, int(height * 0.85))),
             Image.Resampling.LANCZOS,
         )
         quality = max(40, quality - 5)
-    if len(out) > MAX_VISION_SEND_BYTES:
-        raise OcrImageSkipped(f"压缩后仍超过 {MAX_VISION_SEND_BYTES} 字节，识图跳过")
-    return out, "image/jpeg"
+    raise OcrImageSkipped(f"压缩后仍超过 {MAX_VISION_SEND_BYTES} 字节，识图跳过")
+
+
+def needs_tiles(width: int, height: int) -> bool:
+    """长截图：比 VISION_MAX_SIDE 高，又高过宽的 VISION_TALL_RATIO 倍。整张压完字太小，要切段认。"""
+    return height > VISION_MAX_SIDE and height > VISION_TALL_RATIO * width
+
+
+def tile_count(width: int, height: int) -> int:
+    """要切成几段：每段不高过宽的 VISION_TILE_RATIO 倍，最多 VISION_MAX_TILES 段。不用切的是 1。"""
+    if not needs_tiles(width, height):
+        return 1
+    overlap = VISION_TILE_OVERLAP * width
+    tile = VISION_TILE_RATIO * width
+    return min(VISION_MAX_TILES, max(2, math.ceil((height - overlap) / (tile - overlap))))
+
+
+def tile_spans(
+    width: int, height: int, noise: Callable[[int, int], list[float]] | None = None
+) -> list[tuple[int, int]]:
+    """长截图切成的几段，从上往下每段的 (上边, 下边)。不用切的是 [(0, height)]。
+
+    先按段数等分：相邻两段重叠宽的 VISION_TILE_OVERLAP 倍。每个切口再挪到附近（重叠的四分之一以内）
+    最空的一条横带正中：一连串够空的行算一条横带，挑最宽的，一样宽挑离原位近的。行与行、两条消息之间的空白
+    都是这样的横带，切在那里，挨着切口的字是整行的；两条切口各挪不出四分之一，两段至少还重叠一半。
+    noise(上, 下) 交回这几行各自有多「花」（``_row_noise``）；不给就不挪，只算位置。
+    """
+    count = tile_count(width, height)
+    if count == 1:
+        return [(0, height)]
+    overlap = VISION_TILE_OVERLAP * width
+    step = (height - overlap) / count
+    reach = overlap / 4
+
+    def cut(centre: float) -> int:
+        if noise is None:
+            return round(centre)
+        return _quiet_row(noise, centre, reach, height)
+
+    spans = []
+    top = 0
+    for index in range(1, count):
+        start = index * step  # 下一段的上边；这一段的下边在 start + overlap
+        spans.append((top, cut(start + overlap)))
+        top = cut(start)
+    spans.append((top, height))
+    return spans
+
+
+def _quiet_row(noise: Callable[[int, int], list[float]], centre: float, reach: float, height: int) -> int:
+    """centre 上下 reach 行以内最空的一条横带的正中那一行。"""
+    low = max(1, int(centre - reach))
+    high = min(height - 1, int(centre + reach) + 1)
+    if high <= low:
+        return min(max(1, round(centre)), height - 1)
+    scores = noise(low, high)
+    floor = min(scores)
+    best_key: tuple[int, float] | None = None
+    best = round(centre)
+    start: int | None = None
+    for offset, score in enumerate([*scores, math.inf]):
+        if score <= floor + VISION_QUIET_SLACK:
+            if start is None:
+                start = offset
+            continue
+        if start is not None:
+            middle = low + (start + offset - 1) // 2
+            key = (offset - start, -abs(middle - centre))
+            if best_key is None or key > best_key:
+                best_key, best = key, middle
+            start = None
+    return best
+
+
+def _row_noise(image) -> Callable[[int, int], list[float]]:
+    """每一行左右相邻两个像素灰度差的平均：整行是底色是 0，穿过气泡、深色配图的空白只有几条边，
+    压着字的行笔画多，大得多。
+
+    不用整行的标准差：深色配图左右是白边，图里没字的那几行标准差也很大，切口就挑不到图里的空白。
+    """
+    from PIL import Image, ImageChops
+
+    gray = image.convert("L")
+    width = gray.width
+
+    def noise(top: int, bottom: int) -> list[float]:
+        if width < 2:
+            return [0.0] * (bottom - top)
+        band = gray.crop((0, top, width, bottom))
+        steps = ImageChops.difference(band.crop((1, 0, width, band.height)), band.crop((0, 0, width - 1, band.height)))
+        means = steps.convert("F").resize((1, band.height), Image.Resampling.BOX)
+        return [float(means.getpixel((0, row))) for row in range(band.height)]
+
+    return noise
+
+
+def image_size(path: Path) -> tuple[int, int] | None:
+    """图的宽高，只读文件头。读不出来是 None。"""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return image.size
+    except Exception:  # noqa: BLE001 — 坏图、没装 Pillow 都当不知道
+        return None
+
+
+def prepare_vision_images(image_bytes: bytes, mime: str) -> list[tuple[bytes, str]]:
+    """送识图的图 [(bytes, mime)]：普通的图一张（``prepare_vision_image``），长截图按 ``tile_spans`` 切成几段各自压。"""
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(image_bytes)) as probe:
+            width, height = probe.size
+    except Exception:  # noqa: BLE001 — 读不出宽高的照旧整张送，坏图由 prepare_vision_image 记跳过
+        return [prepare_vision_image(image_bytes, mime)]
+    if not needs_tiles(width, height):
+        return [prepare_vision_image(image_bytes, mime)]
+    image = _open_rgb(image_bytes)
+    return [
+        (_shrink_to_jpeg(image.crop((0, top, image.width, bottom))), "image/jpeg")
+        for top, bottom in tile_spans(image.width, image.height, _row_noise(image))
+    ]
 
 
 def vision_messages(image_bytes: bytes, mime: str) -> list[dict]:
@@ -473,25 +628,46 @@ def vision_engine(settings) -> Callable[[Path], Recognition]:
         assert last_exc is not None
         raise last_exc
 
+    def read(path: Path, payload: bytes, mime: str, usage: dict) -> tuple[str, dict | None] | str:
+        """认一张（或长图的一段）：交回 (字, units)；读不出来交回出错的原因。"""
+        messages = vision_messages(payload, mime)
+        problem = ""
+        for _attempt in range(1 + VISION_UNITS_RETRIES):
+            try:
+                return read_vision_reply(ask(messages, usage))
+            except UnitsError as exc:
+                problem = str(exc)
+                logger.info("识图结构读不出来 %s：%s", path, exc)
+        return problem or "识图结构读不出来"
+
     def recognize(path: Path) -> Recognition:
         raw = path.read_bytes()
         if len(raw) > MAX_VISION_BYTES:
             raise OcrImageSkipped(f"超过 {MAX_VISION_BYTES} 字节，识图跳过")
-        payload, mime = prepare_vision_image(raw, image_mime(path))
-        messages = vision_messages(payload, mime)
+        pieces = prepare_vision_images(raw, image_mime(path))
+        if len(pieces) > 1:
+            logger.info("长截图切成 %d 段认 %s", len(pieces), path)
         usage: dict = {}
-        problem = ""
-        for _attempt in range(1 + VISION_UNITS_RETRIES):
-            try:
-                text, units = read_vision_reply(ask(messages, usage))
-            except UnitsError as exc:
-                problem = str(exc)
-                logger.info("识图结构读不出来 %s：%s", path, exc)
-                continue
+        found: list[tuple[str, dict | None]] = []
+        for payload, mime in pieces:
+            # 一段出错或读不出来，整张都不算认成：只写一部分的字比旧字还糟，重认时旧字留着。
+            result = read(path, payload, mime, usage)
+            if isinstance(result, str):
+                return Recognition("", None, usage, result)
+            found.append(result)
+        if len(found) == 1:
+            text, units = found[0]
             return Recognition(text, units, usage)
-        return Recognition("", None, usage, problem)
+        units = join_tiles([units if units is not None else _plain_units(text) for text, units in found])
+        return Recognition(format_units(units), units, usage)
 
     return recognize
+
+
+def _plain_units(text: str) -> dict:
+    """长图里没按结构交的一段（自由文字）：整段当一块段落接上，不丢字。"""
+    blocks = [{"type": "text", "text": text.strip()}] if text.strip() else []
+    return {"v": UNITS_VERSION, "kind": "other", "blocks": blocks}
 
 
 def resolve_engine(settings) -> tuple[str, Callable[[Path], Recognition]]:
@@ -600,6 +776,65 @@ def redo_remaining(conn) -> dict:
         tuple(params),
     ).fetchone()
     return {"images": int(row["images"] or 0), "with_text": int(row["with_text"] or 0)}
+
+
+def _tall_candidates(conn) -> list:
+    """按现在的说明认过、没存每段结果的图（``units`` 里没有 parts），从新到旧。宽高要读文件才知道，由调用方筛。
+
+    没有 parts 的长图是整张认的，或者 11-10 晚以前切段认的（那时接缝会把重叠的一截写两遍，也没存每段结果，
+    接法改了重接不了）。按旧说明认的不在这里：全库重认（不点名文章的 --redo）认它们时，长图已经切段。
+    结果读不出来（:invalid）、失败（:error）的也算，切段以后常常就认得出来；:skipped（太大、不是图）的不算。
+    """
+    where = [
+        "a.duplicate_of IS NULL",
+        site_visible_sql("a"),
+        "EXISTS (SELECT 1 FROM sources s WHERE s.id = a.source_id AND s.enabled)",
+        "EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash"
+        " AND t.prompt_version >= %s AND right(t.engine, 8) <> ':skipped' AND t.units -> 'parts' IS NULL)",
+    ]
+    return conn.execute(
+        f"""
+        SELECT i.content_hash, min(i.storage_path) AS storage_path
+        FROM article_images i
+        JOIN articles a ON a.id = i.article_id
+        WHERE {" AND ".join(where)}
+        GROUP BY i.content_hash
+        ORDER BY max(a.published_at) DESC NULLS LAST
+        """,
+        (VISION_PROMPT_VERSION,),
+    ).fetchall()
+
+
+def _tall_size(data_dir: Path, row) -> tuple[int, int] | None:
+    size = image_size(Path(data_dir) / "images" / row["storage_path"])
+    return size if size and needs_tiles(*size) else None
+
+
+def pending_tall_images(conn, data_dir: Path, limit: int) -> list:
+    """还要切段重认的长截图（``needs_tiles``，见 ``_tall_candidates``），从新到旧，最多 limit 张。
+    ``research-ocr --tall`` 切段重认它们。
+
+    长图切段以前，整张压到长边 VISION_MAX_SIDE，宽只剩几百像素，认出来的字错得多。
+    库里不记图的宽高：挑出按现在的说明认过、没切段的图，逐张读文件头（几十字节）筛出长的。文件读不出来的不算。
+    """
+    found = []
+    for row in _tall_candidates(conn):
+        if len(found) >= limit:
+            break
+        if _tall_size(data_dir, row):
+            found.append(row)
+    return found
+
+
+def tall_remaining(conn, data_dir: Path) -> dict:
+    """--tall 还要认多少张长图、切成多少段（每段的花费和一张普通截图差不多）。"""
+    images = tiles = 0
+    for row in _tall_candidates(conn):
+        size = _tall_size(data_dir, row)
+        if size:
+            images += 1
+            tiles += tile_count(*size)
+    return {"images": images, "tiles": tiles}
 
 
 def useful_image_text(text: str) -> bool:
@@ -839,6 +1074,9 @@ def _outcome(engine: str, path: Path, future, report: dict) -> tuple[str, Recogn
         result = Recognition("", None, result.usage)
     elif result.units is not None:
         report["structured"] += 1
+        if result.units.get("tiles"):
+            report["tiled"] = report.get("tiled", 0) + 1
+            report["tiles"] = report.get("tiles", 0) + int(result.units["tiles"])
     else:
         report["plain"] += 1
     if result.usage:
@@ -859,6 +1097,7 @@ def run_ocr(
     redo: bool = False,
     article_ids: list[int] | None = None,
     workers: int = 1,
+    tall: bool = False,
 ) -> dict:
     """识别一批图片，重切引用它们的文章的图片文字块。返回计数。
 
@@ -876,6 +1115,7 @@ def run_ocr(
     20 张一起实际只有一半左右在认。
     全库重认（redo 且不点名文章）改了上千篇的图片文字：短帖的摘要和观点照常按发布时间排进夜间的队，
     不记进 article_followups 插到新文章前面，也不在这里当场重写。
+    tall：只认还要切段重认的长截图（``pending_tall_images``）；和 redo 一起用，失败留着旧字。
     """
     from researchlib.health import deploy_waiting
 
@@ -896,9 +1136,13 @@ def run_ocr(
         "deploy_waiting": "",
         "followups": {"digest": [], "zsxq_title": []},
         "ocr_changed": [],
+        "touched": [],
     }
     touched: set[int] = set()
-    rows = iter(pending_images(conn, limit, redo=redo, article_ids=article_ids))
+    if tall:
+        rows = iter(pending_tall_images(conn, data_dir, limit))
+    else:
+        rows = iter(pending_images(conn, limit, redo=redo, article_ids=article_ids))
     width = max(1, int(workers or 1))
 
     def stopping() -> bool:
@@ -988,6 +1232,7 @@ def run_ocr(
                     "new_hash": new_hash,
                 }
             )
+        report["touched"] = [int(article_id) for article_id in sorted(touched)]
         if changed:
             report["ocr_changed"] = [int(row["id"]) for row in changed]
         if changed and not (redo and not article_ids):
@@ -1100,6 +1345,49 @@ def relayout_stored(
     return {"matched": len(rows), "changed": len(changed), "articles": len(articles), "dry_run": dry_run}
 
 
+def rejoin_stored(conn, *, dry_run: bool = False) -> dict:
+    """切段认的长截图按库里存的每段结果（``units.parts``）重新接一遍，重排 ``image_texts.text`` 和引用这些图的
+    文章旁路、检索块。不调模型。接缝的接法（``ocr_units.join_tiles``）改了以后跑。
+
+    ``engine``、``prompt_version``、``created_at`` 不动。11-10 以前切段认的图没存每段结果，不在这里面。
+    """
+    from researchlib.chunks import replace_ocr_chunks
+
+    rows = conn.execute(
+        """
+        SELECT content_hash, text, units
+        FROM image_texts
+        WHERE units -> 'parts' IS NOT NULL
+        ORDER BY created_at, content_hash
+        """
+    ).fetchall()
+    changed: list[str] = []
+    for row in rows:
+        units = join_tiles(row["units"]["parts"])
+        text = format_units(units)
+        if units == row["units"] and text == (row["text"] or ""):
+            continue
+        changed.append(row["content_hash"])
+        if dry_run:
+            continue
+        conn.execute(
+            "UPDATE image_texts SET units = %s, text = %s WHERE content_hash = %s",
+            (Jsonb(units), text, row["content_hash"]),
+        )
+    articles: list[int] = []
+    if changed and not dry_run:
+        found = conn.execute(
+            "SELECT DISTINCT article_id FROM article_images WHERE content_hash = ANY(%s) ORDER BY article_id",
+            (changed,),
+        ).fetchall()
+        articles = [int(item["article_id"]) for item in found]
+        for article_id in articles:
+            refresh_article_ocr(conn, article_id)
+            replace_ocr_chunks(conn, article_id)
+        conn.commit()
+    return {"matched": len(rows), "changed": len(changed), "articles": len(articles), "dry_run": dry_run}
+
+
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了，2 识图起不来（Grok 没登录，或 DeepSeek 没配 key）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
@@ -1111,6 +1399,12 @@ def main(argv: list[str] | None = None) -> int:
         help="连已经识别过的图也再认一遍：点名文章的全部重认；不点名时只认按旧说明认的，停了再开接着认",
     )
     parser.add_argument("--article", action="append", type=int, default=[], help="只认这篇文章里的图，可重复")
+    parser.add_argument(
+        "--tall",
+        action="store_true",
+        help="只重认以前整张认的（和 11-10 晚以前切段认、没存每段结果的）长截图，切段认；失败留着旧字。"
+        "--limit 0 只报还剩多少张、要切多少段",
+    )
     # 只剩 vision。留着这个参数，以前写了 --engine vision 的命令（scripts/nightly.sh）照样能跑。
     parser.add_argument("--engine", choices=["vision"], default="vision", help="站内 LLM 识图（grok-4.7）")
     parser.add_argument(
@@ -1136,15 +1430,37 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="只重排 created_at 不晚于这时的行。写到秒就含这一整秒，03:33:02 含 03:33:02.350005",
     )
-    parser.add_argument("--dry-run", action="store_true", help="和 --relayout 一起用：只报张数，不写库")
+    parser.add_argument(
+        "--rejoin",
+        action="store_true",
+        help="切段认的长截图按库里存的每段结果重新接一遍，不调模型。接缝的接法改了以后跑",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="和 --relayout、--rejoin 一起用：只报张数，不写库")
     args = parser.parse_args(argv)
+    if args.tall and (args.article or args.compare):
+        parser.error("--tall 不和 --article、--compare 一起用：点名文章的 --redo --article 已经全部重认，长图自动切段")
     from researchlib.config import Settings
     from researchlib.db import prepare
 
     settings = Settings.from_env()
+    if args.rejoin:
+        if args.relayout or args.redo or args.tall or args.compare or args.article:
+            print("--rejoin 不和 --relayout、--redo、--tall、--compare、--article 一起用", file=sys.stderr)
+            return 2
+        conn = prepare(settings)
+        try:
+            report = rejoin_stored(conn, dry_run=args.dry_run)
+        finally:
+            conn.close()
+        verb = "会重接" if args.dry_run else "重接了"
+        print(
+            f"{verb} {report['changed']} 张（存了每段结果的长截图 {report['matched']} 张），"
+            f"更新了 {report['articles']} 篇的图片文字。没有调模型。"
+        )
+        return 0
     if args.relayout:
-        if args.redo or args.compare or args.article:
-            print("--relayout 不和 --redo、--compare、--article 一起用", file=sys.stderr)
+        if args.redo or args.tall or args.compare or args.article:
+            print("--relayout 不和 --redo、--tall、--compare、--article 一起用", file=sys.stderr)
             return 2
         if not args.relayout_engine or not args.written_from or not args.written_to:
             print("要写 --relayout-engine、--written-from、--written-to", file=sys.stderr)
@@ -1189,9 +1505,10 @@ def main(argv: list[str] | None = None) -> int:
             recognize,
             engine=engine_name,
             deadline=deadline,
-            redo=args.redo,
+            redo=args.redo or args.tall,
             article_ids=args.article or None,
             workers=settings.llm_concurrency,
+            tall=args.tall,
         )
         follow = report.get("followups") or {}
         n_digest = len(follow.get("digest") or [])
@@ -1206,9 +1523,10 @@ def main(argv: list[str] | None = None) -> int:
 
                 drained = drain_ocr_followups(conn, settings, follow)
                 print(f"已重写摘要 {drained['digest']} 篇，标题 {drained['titles']} 篇")
-        if args.redo and not args.article and report["ocr_changed"]:
+        if (args.redo or args.tall) and not args.article and report["ocr_changed"]:
             print(f"图片文字变了的 {len(report['ocr_changed'])} 篇：短帖的摘要和观点按发布时间排进夜间的队")
-        remaining = redo_remaining(conn) if args.redo and not args.article else None
+        remaining = redo_remaining(conn) if args.redo and not args.article and not args.tall else None
+        tall_left = tall_remaining(conn, settings.data_dir) if args.tall else None
     finally:
         conn.close()
     print(
@@ -1220,6 +1538,16 @@ def main(argv: list[str] | None = None) -> int:
         print(line)
     if remaining is not None:
         print(f"按旧说明认的图还剩 {remaining['images']} 张，其中以前认出过字的 {remaining['with_text']} 张")
+    if tall_left is not None:
+        print(
+            f"还要切段重认的长截图还剩 {tall_left['images']} 张，切段要认 {tall_left['tiles']} 段"
+            "（每段的花费和一张普通截图差不多）"
+        )
+        if report["touched"]:
+            # 对着原图核接缝时要知道去看哪几篇：/api/v1/articles/{id} 里 lang=ocr 的块。
+            shown = "、".join(str(article_id) for article_id in report["touched"][:TALL_SHOW_ARTICLES])
+            more = f" 等 {len(report['touched'])} 篇" if len(report["touched"]) > TALL_SHOW_ARTICLES else ""
+            print(f"这次切段重认的长图在这几篇：{shown}{more}")
     if report["deploy_waiting"]:
         print(
             f"自动上线在等 {report['deploy_waiting'][:7]}：先停在这里，"
@@ -1264,6 +1592,8 @@ def describe_report(report: dict) -> list[str]:
         if report.get("invalid"):
             line += f"，结构读不出来 {report['invalid']} 张（记成 :invalid 的不自动重试，--redo --article 点名重认）"
         lines.append(line)
+    if report.get("tiled"):
+        lines.append(f"长截图 {report['tiled']} 张切成 {report['tiles']} 段认（每段的花费和一张普通截图差不多）")
     tokens = report.get("tokens") or {}
     metered = report.get("metered", 0)
     if metered:

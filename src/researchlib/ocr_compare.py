@@ -31,7 +31,7 @@ from researchlib.ocr import (
     article_owners,
     compose_ocr_text,
     image_mime,
-    prepare_vision_image,
+    prepare_vision_images,
     recognize_one,
 )
 from researchlib.ocr_units import ImageText
@@ -160,15 +160,20 @@ def run_compare(conn, data_dir: Path, recognize, size: int, *, workers: int = 3)
         if article_id not in articles:
             articles[article_id] = _article(conn, article_id)
             owners[article_id] = article_owners(conn, article_id)
-        payload, mime = prepare_vision_image(path.read_bytes(), image_mime(path))
-        name = f"{row['content_hash'][:12]}{_EXT.get(mime, path.suffix.lower())}"
-        (out / "images" / name).write_bytes(payload)
+        # 模型看到的图：长截图是切开的几段，一段一个文件。
+        pieces = prepare_vision_images(path.read_bytes(), image_mime(path))
+        names = []
+        for number, (payload, mime) in enumerate(pieces, 1):
+            suffix = f"-{number}" if len(pieces) > 1 else ""
+            name = f"{row['content_hash'][:12]}{suffix}{_EXT.get(mime, path.suffix.lower())}"
+            (out / "images" / name).write_bytes(payload)
+            names.append(f"images/{name}")
         old = ImageText(row["content_hash"], row["text"] or "", None)
         entry = {
             "n": index,
             "stratum": row["stratum"],
             "content_hash": row["content_hash"],
-            "image": f"images/{name}",
+            "image": names[0],
             "article_id": article_id,
             "article_ids": [int(value) for value in row["article_ids"]],
             "old": {
@@ -197,6 +202,8 @@ def run_compare(conn, data_dir: Path, recognize, size: int, *, workers: int = 3)
             )
             if not error and result.text:
                 new_units[row["content_hash"]] = ImageText(row["content_hash"], result.text, result.units)
+        if len(names) > 1:
+            entry["tiles"] = names
         entries.append(entry)
 
     # 连着截的那几篇：整篇的旁路正文（摘要、观点、检索读的）新旧各一份，看拼接和截断。
@@ -262,7 +269,7 @@ def render_markdown(report: dict) -> str:
             f"## {entry['n']}. {entry['stratum']} · 文章 {entry['article_id']}「{article.get('title', '')}」"
             f"（{article.get('source_id', '')}，{article.get('published_at', '')[:10]}）",
             "",
-            f"![]({entry['image']})",
+            *(f"![]({image})" for image in entry.get("tiles") or [entry["image"]]),
             "",
             f"旧（{entry['old']['engine']}，{entry['old']['created_at'][:10]} 认的），整理后：",
             _block(entry["old"]["presented"]),

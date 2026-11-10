@@ -1,20 +1,21 @@
 {% extends "base.html" %}
 {% from "_feed.html" import card_list, pager %}
 {% block body %}
-<header class="page-head">
-  <h1>检索</h1>
-</header>
+<h1 class="sr">检索</h1>
 <form class="search-bar" action="/search" method="get" role="search">
   {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
   {% if filters.company %}<input type="hidden" name="company" value="{{ filters.company }}">{% endif %}
-  <div class="field">
-    <label class="sr" for="q">搜索标题、作者或正文</label>
-    <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-    <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、作者或正文" maxlength="120" autocomplete="off" enterkeyhint="search">
+  <div class="search-box">
+    <div class="field">
+      <label class="sr" for="q">搜索标题、作者或正文</label>
+      <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16 16.5 19.5 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <input id="q" type="search" name="q" value="{{ query }}" placeholder="搜索标题、作者或正文" maxlength="120" autocomplete="off" enterkeyhint="search">
+    </div>
+    <button type="submit" aria-label="搜索" title="搜索"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   </div>
-  <button type="submit">搜索</button>
-  <details class="search-filters" {% if has_filter %}open{% endif %}>
-    <summary>范围</summary>
+  {% set scope_label = [filters.author, ((filters.from or "最早") ~ " 至 " ~ (filters.to or "最近")) if (filters.from or filters.to) else ""] | select | join(" · ") %}
+  <details class="search-filters" data-popover>
+    <summary{% if scope_label %} class="is-set"{% endif %}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="15" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="9" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg><span class="sr">范围：</span><span>{{ scope_label or "作者、时间" }}</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
     <div class="filter-grid">
       <label>作者
         <select name="author">
@@ -24,6 +25,7 @@
       </label>
       <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>
       <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
+      <p class="filter-actions">{% if scope_label %}<a href="/search?{{ clear_scope_query }}">清除</a>{% endif %}<button type="submit">按这个范围搜</button></p>
     </div>
   </details>
 </form>
@@ -37,6 +39,9 @@
   {% for name in entity_authors %}<a class="tag" href="/authors/{{ name | urlencode }}">作者 · {{ name }}</a>{% endfor %}
 </p>
 {% endif %}
+{% if results %}
+<a class="ask-card" href="/ask?{{ ask_query }}"><span class="ask-card-ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H10l-4 3.5v-3.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 10.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span><span><b>让 AI 读这些结果来回答</b><small>用问库整理「{{ query }}」的观点，每句带出处</small></span><span class="go"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
+{% endif %}
 <div class="facets">
   <nav class="pills search-pills" aria-label="来源">
     <a href="/search?{{ base_query }}" {% if not active_source %}aria-current="page"{% endif %}><span>全部来源</span><span class="num">{{ total_all }}</span></a>
@@ -44,21 +49,15 @@
     <a href="/search?{{ base_query }}&amp;source={{ item.id }}" {% if active_source == item.id %}aria-current="page"{% endif %}><span>{{ item.name }}</span><span class="num">{{ item.count }}</span></a>
     {% endif %}{% endfor %}
   </nav>
-  <ul class="stat-list author-facets" aria-label="各作者命中">
-    {% for item in author_counts %}
-    <li><span>{{ item.name }}</span><strong>{{ item.count }}</strong></li>
-    {% endfor %}
-  </ul>
 </div>
 {% if semantic_note %}<p class="filter-note semantic-note">{{ semantic_note }}</p>{% endif %}
 {% if results %}
-<p class="filter-note"><a class="btn ask-btn" href="/ask?{{ ask_query }}">问 AI</a></p>
 {% if first_partial is none %}
-{{ card_list(results) }}
+{{ card_list(results, meta_date=true) }}
 {% else %}
-{% if first_partial > 0 %}{{ card_list(results[:first_partial]) }}{% endif %}
+{% if first_partial > 0 %}{{ card_list(results[:first_partial], meta_date=true) }}{% endif %}
 <p class="partial-note">部分命中</p>
-{{ card_list(results[first_partial:]) }}
+{{ card_list(results[first_partial:], meta_date=true) }}
 {% endif %}
 {{ pager(page, pages, "/search?" ~ page_query ~ "&page=" ~ (page - 1), "/search?" ~ page_query ~ "&page=" ~ (page + 1)) }}
 <p class="count num">{{ total }} 篇全部命中{% if listed is defined and listed < total %}，按相关度能翻到前 {{ listed }} 篇，其余的加来源或时间范围再搜{% endif %}{% if semantic_total %} · {{ semantic_total }} 篇语义相关{% endif %}{% if partial_total %} · {{ partial_total }} 篇部分命中{% endif %}</p>

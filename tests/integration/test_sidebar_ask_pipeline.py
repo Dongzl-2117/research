@@ -161,10 +161,68 @@ def test_running_answer_shows_partial_text_and_progress_then_clears_it_on_error(
         second = client.post('/api/v1/ask', json={'question': '渠道优势在哪里', **params}).json()
         broken = client.get(f"/api/v1/answers/{second['id']}").json()
     assert [(row['status'], row['answer']) for row in snapshots] == [('running', '渠道优势')] * 2
-    assert all(row['stats'] == {'progress': {'stage': 'writing'}} for row in snapshots)
+    # 进度并进 stats，不盖掉登记时记下的模型和档位（重新整合要用）。
+    chosen = {'provider': settings.llm_provider, 'effort': ask_module.default_choice(settings).effort}
+    assert all(row['stats'] == {'llm': chosen, 'progress': {'stage': 'writing'}} for row in snapshots)
     assert saved['status'] == 'done' and saved['answer'] == '渠道优势来自订阅分发[1]。'
     assert 'progress' not in saved['stats'] and saved['stats']['write_s'] >= 0
     assert broken['status'] == 'error' and broken['answer'] == '' and 'progress' not in broken['stats']
+    assert broken['stats']['llm'] == chosen and saved['stats']['llm'] == chosen
+
+
+def test_chosen_model_reaches_every_call_and_survives_retry(conn, settings, monkeypatch):
+    """输入框里选的模型和档位：扩词、写回答都用它；记进 stats.llm，出错后「重新整合」还是这一份，不悄悄换回默认。"""
+    identity = _article(conn, 'chosen')
+    monkeypatch.setattr(ask_module, 'llm_configured', lambda _settings: True)
+    used = []
+    outcome = {'fail': True}
+
+    def fake_chat(chat_settings, messages, **_kwargs):
+        used.append((chat_settings.llm_provider, chat_settings.llm_effort))
+        if messages[0]['content'] == ask_module.EXPAND_PROMPT:
+            return '{}', 'synthetic'
+        if outcome['fail']:
+            raise LLMError('合成模型故障')
+        return '渠道优势来自订阅分发[1]。', 'deepseek-flash'
+
+    monkeypatch.setattr(ask_module, 'chat', fake_chat)
+    with TestClient(create_app(settings)) as client:
+        first = client.post('/api/v1/ask', json={
+            'question': '渠道优势', 'article': identity, 'source': 'fangwei-mp', 'model': 'deepseek', 'effort': 'high',
+        }).json()
+        failed = client.get(f"/api/v1/answers/{first['id']}").json()
+        outcome['fail'] = False
+        retried = client.post(f"/ask/{first['id']}/retry", follow_redirects=False)
+        done = client.get(f"/api/v1/answers/{first['id']}").json()
+        page = client.get(f"/ask/{first['id']}").text
+    assert first['llm'] == {'provider': 'deepseek', 'effort': 'high', 'label': 'DeepSeek · 高', 'effort_label': '高'}
+    assert failed['status'] == 'error' and failed['llm'] == first['llm']
+    assert retried.status_code == 303
+    assert done['status'] == 'done' and done['llm'] == first['llm']
+    assert done['stats']['llm'] == {'provider': 'deepseek', 'effort': 'high'}
+    assert len(used) >= 3 and set(used) == {('deepseek', 'high')}
+    assert 'deepseek-flash · 思考高 · ' in page
+
+
+def test_form_post_without_script_and_old_answers(conn, settings, model):
+    """没脚本时换了模型、档位还是上一家的：按这一家的默认档。以前的回答没记档位，接口给 null，页面不写「思考」。"""
+    identity = _article(conn, 'form')
+    old = conn.execute(
+        "INSERT INTO llm_answers (question, scope, answer, citations, model, status, terms, stats)"
+        " VALUES ('旧问题', '{}', '旧回答', '[]', 'grok-4.7', 'done', '[]', '{}') RETURNING id"
+    ).fetchone()['id']
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        form = {'q': '渠道优势', 'article': str(identity), 'model': 'deepseek', 'effort': 'xhigh'}
+        posted = client.post('/ask', data=form)
+        before = client.get(f'/api/v1/answers/{old}').json()
+        page = client.get(f'/ask/{old}').text
+    assert posted.status_code == 200
+    row = conn.execute("SELECT stats FROM llm_answers WHERE question = '渠道优势'").fetchone()
+    assert row['stats']['llm'] == {'provider': 'deepseek', 'effort': 'max'}
+    assert before['llm'] is None
+    meta = page.split('class="answer-meta">', 1)[1].split('</p>', 1)[0]
+    assert meta.startswith('grok-4.7 · ') and '思考' not in meta
 
 
 def test_sidebar_long_summary_uses_original_deep_budget_and_batch_failure_report(conn, settings, monkeypatch):

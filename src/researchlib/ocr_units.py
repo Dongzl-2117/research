@@ -22,6 +22,8 @@
 - 拼接：连着截的几张，后一张开头和前一张结尾重合的那几条只留一份；被上下边缘截掉一部分的那条，
   换成另一张里完整的。被截的那条认乱了、对不上时跳过它，看后面几条对不对得上。
   比的是模型交回的一条条消息和段落，不按版式猜。
+  长截图切成的几段（``join_tiles``）知道一定有一截重叠，接缝不按块比，一行行比字（``_seam``）：
+  同一截像素，模型在两段里常常分块分得不一样、标的类型不一样，只有一段写了时间这类零碎字。
 - 排版：``cut`` 只表示这条在图外还有下文，看得见的字整段留下（和第 3 版一样）。
   只有模型另标 ``illegible``（字被切到笔画中间、只露出半截）时，才不采用它补的那句，
   改写成「被遮挡，无法辨认」，不安到说话人名下。旧行没有这个字段的，有 ``cut`` 也留字。
@@ -56,6 +58,11 @@ EDGE_SLACK = 2
 MIN_OVERLAP_CHARS = 8
 # 一条被上下两张各截了一半时，两半至少要重合这么多个字才接成一条。
 MIN_SPLICE_CHARS = 4
+# 长截图的接缝（join_tiles）按行比字（见 ``_seam``）。重叠那一截里只有一段写了的零碎字（时间、地点、点赞数），
+# 每处不超过这么多个字，仍算两段对上了；只在一段里的字多过这些，就不当重叠、两边都留着。
+SEAM_SLACK = 20
+# 接缝处前一段往回、后一段往后各看这么多行。重叠那一截是宽的 0.4 倍，十来行。
+SEAM_LINES = 40
 # 字明显比正文小的块（small）后面多写的一行。
 SMALL_NOTE = "（小字，可能认错）"
 # 字被切到笔画中间（illegible）时，不采用模型补的那句。cut 本身不触发这句：cut 只表示图外还有下文。
@@ -402,6 +409,357 @@ def stitch(units_list: list[dict | None]) -> list[list[dict] | None]:
         if blocks:
             upper = blocks
     return result
+
+
+# join_tiles 里临时记在块上：这一块挨着整张图真正的上边或下边，模型标了 cut。接完以后只留这种 cut。
+_EDGE = "_edge"
+
+
+@dataclass(frozen=True)
+class _Line:
+    """接缝处拿来比的一行：第几块、哪个字段（quote 引用框、text 自己的字、rows 表格）的第几行。"""
+
+    block: int
+    field: str
+    index: int
+    raw: str
+    key: str
+
+
+@dataclass(frozen=True)
+class _Match:
+    """前一段的几行（upper，含两头）和后一段的几行（lower）是同一截字。
+
+    how：same 字一样（一行对一行，或一边的一行是另一边接起来的几行）；tail 后一段第一行是前一段那行的后半截；
+    head 前一段最后一行只到接缝，是后一段那行的前半截；splice 一行跨过整个重叠，两段各有一半，中间重合。
+    weight 是对上的字数。
+    """
+
+    upper: tuple[int, int]
+    lower: tuple[int, int]
+    weight: int
+    how: str
+
+
+def _fields(block: dict) -> list[tuple[str, list[str]]]:
+    """一块按阅读顺序拆成几行：引用框的字（排版时写在前面）、自己的字、表格一行行。
+
+    字只露出半截的（illegible）不拿它自己那句来比：那句是模型补的。
+    """
+    if block.get("type") == "table":
+        return [("rows", [" | ".join(row) for row in block.get("rows") or []])]
+    fields: list[tuple[str, list[str]]] = []
+    quote = block.get("quote")
+    if quote and quote.get("text"):
+        fields.append(("quote", quote["text"].split("\n")))
+    if block.get("text") and not block.get("illegible"):
+        fields.append(("text", block["text"].split("\n")))
+    return fields
+
+
+def _lines(blocks: list[dict]) -> list[_Line]:
+    return [
+        _Line(number, field, index, raw, key)
+        for number, block in enumerate(blocks)
+        for field, rows in _fields(block)
+        for index, raw in enumerate(rows)
+        if (key := _norm(raw))
+    ]
+
+
+def _key_overlap(head: str, tail: str) -> int:
+    """head 的结尾和 tail 的开头重合几个字（比两边都短，至少 MIN_SPLICE_CHARS），不重合是 0。"""
+    for size in range(min(len(head), len(tail)) - 1, MIN_SPLICE_CHARS - 1, -1):
+        if head.endswith(tail[:size]):
+            return size
+    return 0
+
+
+def _grouped(key: str, lines: list[_Line], start: int) -> int:
+    """lines 从 start 起的几行接起来正好是 key（两段换行换得不一样）：交回最后那行的位置，接不出来是 -1。"""
+    joined = ""
+    for index in range(start, len(lines)):
+        joined += lines[index].key
+        if joined == key:
+            return index
+        if not key.startswith(joined):
+            return -1
+    return -1
+
+
+def _seam_matches(up: list[_Line], low: list[_Line]) -> list[_Match]:
+    """接缝两边对得上的几行：字一样的，或者一边的一行是另一边几行接起来的（两段换行换得不一样）。
+    截一半的只看挨着接缝的那一行：前一段最后一行、后一段第一行，表格行不算。"""
+    found: list[_Match] = []
+    last = len(up) - 1
+    for i, above in enumerate(up):
+        for j, below in enumerate(low):
+            if above.key == below.key:
+                found.append(_Match((i, i), (j, j), len(above.key), "same"))
+                continue
+            end = _grouped(above.key, low, j)
+            if end > j:
+                found.append(_Match((i, i), (j, end), len(above.key), "same"))
+            end = _grouped(below.key, up, i)
+            if end > i:
+                found.append(_Match((i, end), (j, j), len(below.key), "same"))
+            if "rows" in (above.field, below.field):
+                continue
+            if j == 0 and len(below.key) >= MIN_SPLICE_CHARS and _tail_of(above.key, below.key):
+                found.append(_Match((i, i), (0, 0), len(below.key), "tail"))
+            elif i == last and len(above.key) >= MIN_SPLICE_CHARS and _head_of(below.key, above.key):
+                found.append(_Match((i, i), (j, j), len(above.key), "head"))
+            elif i == last and j == 0 and (overlap := _key_overlap(above.key, below.key)):
+                found.append(_Match((i, i), (0, 0), overlap, "splice"))
+    return found
+
+
+def _seam_chain(up: list[_Line], low: list[_Line], upper: list[dict], lower: list[dict]) -> list[_Match]:
+    """两段重叠的那一截：前一段结尾的几行和后一段开头的几行一行行对上。对不上返回空列表。
+
+    中间可以有只在一段里的行（一段写了时间、点赞数，另一段没写；或者两段认得不一样），每处不超过 SEAM_SLACK 个字：
+    后一段第一处对上的行前面、前一段最后一处对上的行后面、两处对上的行之间都这样算。
+    这样的对法里挑对上的字最多、夹着的零碎字最少的。对上的字少于 MIN_OVERLAP_CHARS 的，只认两种：
+    前一段最后几行和后一段开头几行一行不差地挨着对上两行以上；或者只对上一行，那一行在两段里是同一类块、同一个人说的。
+    """
+    if not up or not low:
+        return []
+    matches = sorted(_seam_matches(up, low), key=lambda match: (match.upper[1], match.lower[1]))
+    before_up = [0]
+    for line in up:
+        before_up.append(before_up[-1] + len(line.key))
+    before_low = [0]
+    for line in low:
+        before_low.append(before_low[-1] + len(line.key))
+    # 每一种对法记 (得分, 对上的字数, 上一处对上的是哪个)。得分 = 对上的字 - 夹着的零碎字。
+    best: list[tuple[int, int, int | None] | None] = []
+    for number, match in enumerate(matches):
+        (i0, _i1), (j0, _j1) = match.upper, match.lower
+        options: list[tuple[int, int, int | None]] = []
+        if before_low[j0] <= SEAM_SLACK:
+            options.append((match.weight - before_low[j0], match.weight, None))
+        for previous in range(number):
+            found = best[previous]
+            earlier = matches[previous]
+            if found is None or earlier.upper[1] >= i0 or earlier.lower[1] >= j0:
+                continue
+            gap_low = before_low[j0] - before_low[earlier.lower[1] + 1]
+            if gap_low > SEAM_SLACK:
+                continue
+            gap_up = before_up[i0] - before_up[earlier.upper[1] + 1]
+            options.append((found[0] + match.weight - gap_low - gap_up, found[1] + match.weight, previous))
+        best.append(max(options, key=lambda option: option[:2]) if options else None)
+    picked: tuple[tuple[int, int, int], list[_Match]] | None = None
+    for number, found in enumerate(best):
+        if found is None:
+            continue
+        trail = before_up[len(up)] - before_up[matches[number].upper[1] + 1]
+        if trail > SEAM_SLACK:
+            continue
+        chain: list[_Match] = []
+        step: int | None = number
+        while step is not None:
+            chain.append(matches[step])
+            step = best[step][2]  # type: ignore[index]
+        chain.reverse()
+        if not _seam_chain_ok(chain, found[1], trail, up, low, upper, lower):
+            continue
+        key = (found[0] - trail, found[1], -matches[number].lower[1])
+        if picked is None or key > picked[0]:
+            picked = (key, chain)
+    return picked[1] if picked else []
+
+
+def _seam_chain_ok(
+    chain: list[_Match],
+    weight: int,
+    trail: int,
+    up: list[_Line],
+    low: list[_Line],
+    upper: list[dict],
+    lower: list[dict],
+) -> bool:
+    """对上的字够多就算；少于 MIN_OVERLAP_CHARS 的要求见 ``_seam_chain``。"""
+    if weight >= MIN_OVERLAP_CHARS:
+        return True
+    if trail or chain[0].lower[0] != 0:
+        return False
+    if any(
+        later.upper[0] != earlier.upper[1] + 1 or later.lower[0] != earlier.lower[1] + 1
+        for earlier, later in zip(chain, chain[1:], strict=False)
+    ):
+        return False
+    if len(chain) > 1:
+        return True
+    only = chain[0]
+    return weight >= MIN_SPLICE_CHARS and _same_kind(upper[up[only.upper[0]].block], lower[low[only.lower[0]].block])
+
+
+def _raw_after(raw: str, size: int) -> int:
+    """raw 里比到第 size 个字（按 ``_norm`` 数）之后的位置。"""
+    count = 0
+    for index, char in enumerate(raw):
+        if count >= size:
+            return index
+        count += len(_norm(char))
+    return len(raw)
+
+
+def _splice_raw(head: str, tail: str, size: int) -> str:
+    """一行跨过接缝：前一段的字接上后一段重合部分之后的字。重合处的标点留前一段的。"""
+    rest = tail[_raw_after(tail, size) :]
+    if head and not _norm(head[-1]):
+        rest = rest.lstrip()
+        while rest and not _norm(rest[0]):
+            rest = rest[1:]
+    return head + rest
+
+
+def _with_line(block: dict, field: str, index: int, raw: str) -> dict:
+    """换掉一块里的一行，不改传进来的块。"""
+    if field == "quote":
+        rows = block["quote"]["text"].split("\n")
+        rows[index] = raw
+        return {**block, "quote": {**block["quote"], "text": "\n".join(rows)}}
+    rows = block["text"].split("\n")
+    rows[index] = raw
+    return {**block, "text": "\n".join(rows)}
+
+
+def _rest_of(block: dict, field: str, index: int) -> dict | None:
+    """一块在 (field, index) 那一行以后剩下的部分，连同块上的标注；什么都不剩是 None。"""
+    rest = {key: value for key, value in block.items() if key not in ("text", "quote", "rows")}
+    if field == "rows":
+        rows = (block.get("rows") or [])[index + 1 :]
+        return {**rest, "rows": rows} if rows else None
+    quote = block.get("quote")
+    if field == "quote" and quote:
+        lines = quote["text"].split("\n")[index + 1 :]
+        if any(line.strip() for line in lines):
+            rest["quote"] = {**quote, "text": "\n".join(lines).strip()}
+        text = block.get("text") or ""
+    else:
+        text = "\n".join((block.get("text") or "").split("\n")[index + 1 :]).strip()
+    if block.get("type") == _SPOKEN:
+        if not text and "quote" not in rest:
+            return None
+        rest["text"] = text
+        return rest
+    return {**rest, "text": text} if text else None
+
+
+def _merged_marks(upper: dict, lower: dict) -> list[str]:
+    marks = list(upper.get("marks") or [])
+    return marks + [mark for mark in lower.get("marks") or [] if mark not in marks]
+
+
+def _continue_block(block: dict, rest: dict) -> dict | None:
+    """后一段一块在重叠以后还有字，前一段最后一块正好是它重叠前的部分：接到前一段那块后面。
+
+    表格接表格的行，消息接同一个人的消息（后一段看不到名字的也算），段落接段落；说话人按前一段的
+    （前一段看得到这条从哪开始）。接不上（类型不同、说话人不同、剩下的还带着引用框）返回 None，另起一块。
+    """
+    table = block.get("type") == "table"
+    if not _same_kind(block, rest) or "quote" in rest:
+        return None
+    if table:
+        joined = {**block, "rows": [*(block.get("rows") or []), *rest["rows"]]}
+    else:
+        joined = {**block, "text": "\n".join(part for part in (block.get("text") or "", rest["text"]) if part)}
+    marks = _merged_marks(block, rest)
+    if marks:
+        joined["marks"] = marks
+    if rest.get("small"):
+        joined["small"] = True
+    if rest.get(_EDGE):
+        joined[_EDGE] = rest[_EDGE]
+    return joined
+
+
+def _seam(upper: list[dict], lower: list[dict]) -> list[dict]:
+    """长截图相邻两段在重叠处只留一份（就地改 upper），交回后一段剩下的块。
+
+    两段看到的是同一截像素，可模型在两段里常常分块分得不一样（一段把海报 4 行当一块，另一段分成 3 行加 1 行）、
+    标的类型不一样（一段标成消息，另一段标成段落）、零碎字只有一段写了（时间、点赞数），按块比就对不上，
+    重叠那一截写两遍。所以这里不看块怎么分、标的什么，一行行比字（``_seam_chain``）。
+    对上的那一截留前一段的写法（前一段看得到每条从哪开始、是谁说的），后一段对上以前的行都去掉；
+    前一段最后一行只到接缝的，换成后一段里完整的那行；一行跨过整个重叠的，两半接成一行。
+    后一段最后对上的那块在重叠以后还有字、前一段最后一块正好是它的前面部分，接到前一段那块后面，
+    说话人跟着前一段（后一段从中间开始，常看不到这条是谁说的）。对不上就都留着：宁可重复，不丢字。
+    """
+    up = _lines(upper)[-SEAM_LINES:]
+    low = _lines(lower)[:SEAM_LINES]
+    chain = _seam_chain(up, low, upper, lower)
+    if not chain:
+        return lower
+    last = chain[-1]
+    above, below = up[last.upper[1]], low[last.lower[1]]
+    if last.how in ("head", "splice"):
+        whole = below.raw if last.how == "head" else _splice_raw(above.raw, below.raw, last.weight)
+        upper[above.block] = _with_line(upper[above.block], above.field, above.index, whole)
+    kept = lower[below.block + 1 :]
+    rest = _rest_of(lower[below.block], below.field, below.index)
+    if rest is None:
+        return kept
+    if above.block == len(upper) - 1 and last.upper[1] == len(up) - 1:
+        joined = _continue_block(upper[-1], rest)
+        if joined is not None:
+            upper[-1] = joined
+            return kept
+    return [rest, *kept]
+
+
+def join_tiles(parts: list[dict]) -> dict:
+    """一张长截图切成几段分别认（``researchlib.ocr.tile_spans``）以后，接回这一张图的 units。
+
+    相邻两段重叠的那一截两段里都有，按行比字只留一份（``_seam``）：不看两段把字分成几块、标成什么，
+    挨着接缝只露一半的那行换成另一段里完整的，跨过接缝的一段接成一段，表格切开的接成一张表。
+    接缝处模型标了 illegible 的那条（切口压着字，只露出半截笔画）直接去掉：两段重叠宽的 0.4 倍，
+    这一行在另一段里整行都看得见，不写「被遮挡，无法辨认」。整张图真正上下边的 illegible 照旧留着。
+    接完只留整张图上下边真截到的 cut（第一段第一块的 top、最后一段最后一块的 bottom），接缝处的都去掉。
+    kind 取块最多的那一段的；tiles 记切了几段；parts 原样存每段认出来的结构：接法再改，
+    ``research-ocr --rejoin`` 按它重接，不用再花钱认；``research-ocr --tall`` 也靠它认出哪些长图已经切段认过。
+    """
+    result: list[list[dict]] = []
+    upper: list[dict] | None = None
+    last = len(parts) - 1
+    for index, units in enumerate(parts):
+        blocks = [dict(block) for block in (units or {}).get("blocks") or []]
+        while index > 0 and blocks and blocks[0].get("illegible"):
+            blocks.pop(0)
+        while index < last and blocks and blocks[-1].get("illegible"):
+            blocks.pop()
+        if not blocks:
+            result.append([])
+            upper = None
+            continue
+        if index == 0 and blocks[0].get("cut") == "top":
+            blocks[0][_EDGE] = "top"
+        if index == last and blocks[-1].get("cut") == "bottom":
+            blocks[-1][_EDGE] = "bottom"
+        if upper:
+            blocks = _seam(upper, blocks)
+        result.append(blocks)
+        if blocks:
+            upper = blocks
+    joined = [block for blocks in result for block in blocks]
+    for block in joined:
+        edge = block.pop(_EDGE, "")
+        block.pop("cut", None)
+        if edge:
+            block["cut"] = edge
+    kinds = [
+        (len((units or {}).get("blocks") or []), -index, (units or {}).get("kind") or "other")
+        for index, units in enumerate(parts)
+    ]
+    kind = max(kinds)[2] if kinds else "other"
+    return {
+        "v": UNITS_VERSION,
+        "kind": kind if kind in KINDS else "other",
+        "blocks": joined,
+        "tiles": len(parts),
+        "parts": [units or {} for units in parts],
+    }
 
 
 def _written_before(text: str, written: set[str]) -> bool:

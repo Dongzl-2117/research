@@ -217,7 +217,10 @@ _CITE = re.compile(r"\[(\d+)\]")
 
 
 class _AnswerCitations(HTMLParser):
-    """只改正文文字；代码、链接及标签属性里的 [n] 保持原样。"""
+    """只改正文文字；代码、链接及标签属性里的 [n] 保持原样。
+
+    方括号包在 cite-mark 里：页面上只显示小圆角数字，复制出来、读屏读到的仍是「[n]」。
+    """
 
     def __init__(self, citations: list[dict] | None) -> None:
         super().__init__(convert_charrefs=False)
@@ -239,7 +242,8 @@ class _AnswerCitations(HTMLParser):
         if not self.excluded:
             data = _CITE.sub(
                 lambda match: (
-                    f'<a class="cite" href="#c-{match[1]}">[{match[1]}]</a>'
+                    f'<a class="cite" href="#c-{match[1]}">'
+                    f'<span class="cite-mark">[</span>{match[1]}<span class="cite-mark">]</span></a>'
                     if self.known is None or match[1] in self.known else match[0]
                 ), data,
             )

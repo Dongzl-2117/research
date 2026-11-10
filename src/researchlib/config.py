@@ -69,6 +69,9 @@ class Settings:
     # Grok 强度在 researchlib.grok，DeepSeek 强度在 researchlib.deepseek。不读 API key 的字段不进 Settings。
     llm_provider: str = "grok"
     llm_base_url: str = GROK_DEFAULT_BASE_URL
+    # 思考强度。空着就是这一家的全站默认（researchlib.grok / researchlib.deepseek）；
+    # 只有问库按次选档时由 researchlib.ask_model 换成一份带档位的 Settings 往下传。
+    llm_effort: str = ""
     llm_timeout: float = float(LONG_LLM_TIMEOUT_S)
     # 同一个进程里同时在跑的 LLM 请求上限（问库分批、摘要、观点、论点、识图、译制加起来）。
     llm_concurrency: int = 8

@@ -1,7 +1,9 @@
-{% macro card(item, show_date=false, short_date=false) %}
+{% macro card(item, show_date=false, short_date=false, meta_date=false) %}
 <li class="slot">
+  {% if not meta_date %}
   <time class="slot-time" datetime="{{ item.iso }}">{% if show_date %}{% if item.iso %}{{ item.date[5:] if short_date else item.date[2:] }}{% else %}—{% endif %}{% else %}{{ item.time or "—" }}{% endif %}</time>
   <span class="slot-rail" aria-hidden="true"><span class="slot-line"></span><span class="slot-dot"></span></span>
+  {% endif %}
   <article class="item-card">
     <header class="item-meta">
       {% if item.guest %}<span>{{ item.author }}</span><span class="quiet">读者帖</span>{% else %}<a href="/authors/{{ item.author | urlencode }}">{{ item.author }}</a>{% endif %}
@@ -9,6 +11,7 @@
       {% if item.depth_label %}<span class="depth depth-{{ item.depth }}">{{ item.depth_label }}</span>{% endif %}
       {% if item.hits %}<span class="num">{{ item.hits }} 次</span>{% endif %}
       {% if item.semantic %}<span class="depth depth-semantic" title="正文没写全搜索词，按意思找到的">语义相关</span>{% endif %}
+      {% if meta_date %}<span aria-hidden="true">·</span>{% if item.iso %}<time class="item-date" datetime="{{ item.iso }}">{{ item.date }}</time>{% else %}<span class="item-date">日期不详</span>{% endif %}{% endif %}
     </header>
     <h3 class="item-title"><a href="/articles/{{ item.id }}{% if item.chunk is not none and item.chunk is defined %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.title }}</a></h3>
     {% if item.heading %}<p class="item-heading">§ {{ item.heading }}</p>{% endif %}
@@ -54,9 +57,10 @@
 </div>
 {% endmacro %}
 
-{% macro card_list(items, short_date=false) %}
-<ol class="slots flat{% if short_date %} short{% endif %}">
-  {% for item in items %}{{ card(item, true, short_date) }}{% endfor %}
+{# meta_date：日期并进作者那一行，不要左边的日期栏（检索结果用）。 #}
+{% macro card_list(items, short_date=false, meta_date=false) %}
+<ol class="slots flat{% if short_date %} short{% endif %}{% if meta_date %} results{% endif %}">
+  {% for item in items %}{{ card(item, true, short_date, meta_date) }}{% endfor %}
 </ol>
 {% endmacro %}
 

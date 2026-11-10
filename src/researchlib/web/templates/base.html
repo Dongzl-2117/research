@@ -48,13 +48,12 @@
     <aside class="sidebar">
       <a class="brand" href="/" aria-label="投资研究库 首页"><i aria-hidden="true">研</i>投资研究库</a>
       <nav aria-label="主导航">
-        <div class="nav-label">内容</div>
         <div class="nav-group">
-          <a class="nav-link" href="/" {% if nav == "archive" and not active_source %}aria-current="page"{% endif %}>
+          <a class="nav-link" href="/" {% if nav == "archive" %}aria-current="page"{% endif %}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h9.5L19 9v10.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 4.8V9h4.2M8 13h8M8 16.5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
             <span>按天</span>
           </a>
-          <a class="nav-link" href="/authors" {% if nav == "authors" %}aria-current="page"{% endif %}>
+          <a class="nav-link" href="/authors" {% if nav in ("authors", "tree") %}aria-current="page"{% endif %}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6.2 19.2c.8-2.6 2.8-4 5.8-4s5 1.4 5.8 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
             <span>作者</span>
           </a>
@@ -74,27 +73,6 @@
         {% if experiment_admin_url %}
         <div class="nav-label">管理</div>
         <a class="nav-link" href="{{ experiment_admin_url }}">算法实验室</a>
-        {% endif %}
-        {% if sources %}
-        <div class="nav-label">来源</div>
-        <div class="nav-group">
-          {% for source in sources %}
-          {% set nav_item = namespace(href="", current=false) %}
-          {% if source.timeline %}
-          {% set nav_item.href = "/?source=" ~ source.id %}
-          {% set nav_item.current = nav == "archive" and active_source == source.id %}
-          {% elif source.kind == "feishu" %}
-          {% set nav_item.href = "/sources/" ~ source.id ~ "/tree" %}
-          {% set nav_item.current = nav == "tree" and active_source == source.id %}
-          {% endif %}
-          {% if nav_item.href %}
-          <a class="nav-link" href="{{ nav_item.href }}" {% if nav_item.current %}aria-current="page"{% endif %}>
-            <svg class="nav-dot" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/></svg>
-            <span>{{ source.name }}</span>
-          </a>
-          {% endif %}
-          {% endfor %}
-        </div>
         {% endif %}
       </nav>
       {% include "_theme.html" %}
@@ -118,7 +96,7 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h9.5L19 9v10.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 4.8V9h4.2M8 13h8M8 16.5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
       <span>按天</span>
     </a>
-    <a href="/authors" {% if nav == "authors" %}aria-current="page"{% endif %}>
+    <a href="/authors" {% if nav in ("authors", "tree") %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6.2 19.2c.8-2.6 2.8-4 5.8-4s5 1.4 5.8 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
       <span>作者</span>
     </a>
@@ -158,7 +136,7 @@
         });
         var index = mode === "dark" ? 0 : mode === "system" ? 1 : 2;
         document.querySelectorAll("[data-theme-thumb]").forEach(function (thumb) {
-          thumb.style.transform = "translateX(" + (index * 100) + "%)";
+          thumb.style.setProperty("--theme-index", String(index));
         });
       }
       function save(mode) {
@@ -190,6 +168,20 @@
         event.preventDefault();
         field.focus();
       });
+      // 浮层式的 <details data-popover>（问库的资料范围和最近问过、检索的作者和时间）：点外面或按 Esc 收起。
+      document.addEventListener("click", function (event) {
+        document.querySelectorAll("details[data-popover][open]").forEach(function (box) {
+          if (!box.contains(event.target)) box.open = false;
+        });
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key !== "Escape") return;
+        document.querySelectorAll("details[data-popover][open]").forEach(function (box) {
+          var inside = box.contains(document.activeElement);
+          box.open = false;
+          if (inside) box.querySelector("summary").focus();
+        });
+      });
       var recentKey = "research-recent-views";
       var recentButton = document.querySelector(".recent-views-toggle");
       if (recentButton) {
@@ -217,6 +209,9 @@
           var img = event.target.closest(".prose img");
           if (img && !img.closest("a") && !img.closest(".img-zoom")) {
             zoomImg.src = img.currentSrc || img.src;
+            if (img.getAttribute("data-shape") === "tall") zoom.setAttribute("data-shape", "tall");
+            else zoom.removeAttribute("data-shape");
+            zoom.scrollTop = 0;
             zoom.hidden = false;
             return;
           }

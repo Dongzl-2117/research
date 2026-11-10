@@ -95,33 +95,83 @@ class _NavSource:
         self.kind = kind
 
 
-def test_sidebar_sources_are_one_list():
-    html = _env().get_template("base.html").render(
-        title="按天",
-        canonical="https://investment.zldong.com/",
-        public_host="investment.zldong.com",
-        query="",
-        nav="archive",
-        sample_banner=False,
-        active_source="fangwei-mp",
-        sources=[
-            _NavSource("fangwei-mp", "方伟公众号", True),
-            _NavSource("linwenfeng-feishu", "林文丰飞书", False, "feishu"),
-        ],
-    )
-    body = html.split("<main", 1)[0]
-    group = body.split('<div class="nav-label">来源</div>', 1)[1].split("</nav>", 1)[0]
-    assert body.count(">来源<") == 1
-    assert ">文库<" not in body
-    assert 'href="/?source=fangwei-mp"' in group
-    assert 'href="/sources/linwenfeng-feishu/tree"' in group
-    assert group.count("nav-link") == 2
-    assert group.count('r="3.2"') == 2
-    assert "M6 5.5h4.5" not in group
+def test_sidebar_has_no_source_list():
+    """来源和作者重合（7 个来源对应 6 个作者），侧栏不再单列来源。方伟两个来源在作者页切换，
+    林文丰的飞书目录从作者页进，所以目录页亮「作者」，按来源筛的按天页亮「按天」。"""
+    sources = [
+        _NavSource("fangwei-mp", "方伟公众号", True),
+        _NavSource("linwenfeng-feishu", "林文丰飞书", False, "feishu"),
+    ]
+
+    def sidebar(nav, active_source=""):
+        html = _env().get_template("base.html").render(
+            title="按天",
+            canonical="https://investment.zldong.com/",
+            public_host="investment.zldong.com",
+            query="",
+            nav=nav,
+            sample_banner=False,
+            active_source=active_source,
+            sources=sources,
+        )
+        return html.split("<main", 1)[0]
+
+    body = sidebar("archive", "fangwei-mp")
+    assert ">来源<" not in body and ">内容<" not in body
+    assert "/?source=" not in body and "/tree" not in body
+    assert 'href="/" aria-current="page"' in body
+    tree = sidebar("tree", "linwenfeng-feishu")
+    assert 'href="/authors" aria-current="page"' in tree
 
 
-def test_search_template_keeps_author_count_markup():
-    html = _env().get_template("search.html").render(
+STATIC = ROOT / "src" / "researchlib" / "web" / "static"
+
+
+def _media_blocks(css, query):
+    """按出现顺序取出每个 ``@media <query> {`` 块的内容，按花括号配对。"""
+    head = "@media " + query + " {"
+    blocks, pos = [], css.find(head)
+    while pos >= 0:
+        start = i = pos + len(head)
+        depth = 1
+        while depth:
+            depth += {"{": 1, "}": -1}.get(css[i], 0)
+            i += 1
+        blocks.append(css[start:i - 1])
+        pos = css.find(head, i)
+    return blocks
+
+
+def test_tablet_widths_get_a_side_rail_and_phones_keep_the_bottom_bar():
+    """600 到 1023px（手机横屏、折叠屏展开、iPad 竖屏）导航在左边的图标栏，不再顶栏加底部栏。
+
+    Zhilin 11-10 用折叠屏横屏看，网页宽约 954，以前到 1024 才有侧栏，上下两条占掉四分之一的高度。
+    600 以下照旧底部栏；只有底部栏在的宽度，「问这篇」的面板和按钮才让到它上面。
+    """
+    css = (STATIC / "site.css").read_text(encoding="utf-8")
+    rail = _media_blocks(css, "(min-width: 600px) and (max-width: 1023px)")
+    assert ".mobile-bar, .tabbar { display: none; }" in rail[0]
+    assert "display: flex" in rail[0].split("  .sidebar {", 1)[1].split("}", 1)[0]
+    assert "translateY(calc(var(--theme-index, 1) * 100%))" in rail[0]
+    [phone] = _media_blocks(css, "(max-width: 599px)")
+    assert ".article-chat { bottom: calc(54px + env(safe-area-inset-bottom)); }" in phone
+    assert not any("54px" in block for block in rail + _media_blocks(css, "(max-width: 1023px)"))
+    ask = (STATIC / "ask-chat.css").read_text(encoding="utf-8")
+    [ask_wide] = _media_blocks(ask, "(min-width: 600px)")
+    assert ".shell:has(.ask-workspace) { --top-chrome: 0px; --bottom-chrome: 0px; }" in ask_wide
+
+
+def test_theme_thumb_position_comes_from_a_css_variable():
+    """脚本只写第几个选项（--theme-index），滑块横着走还是竖着走由样式表定：图标栏里开关是竖的。"""
+    base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    assert 'thumb.style.setProperty("--theme-index", String(index))' in base
+    assert "translateX(" not in base
+    thumb = (STATIC / "site.css").read_text(encoding="utf-8").split(".theme-thumb {", 1)[1].split("}", 1)[0]
+    assert "transform: translateX(calc(var(--theme-index, 1) * 100%));" in thumb
+
+
+def _search_page(**extra):
+    context = dict(
         title="搜索 腾讯",
         canonical="https://investment.zldong.com/search?q=%E8%85%BE%E8%AE%AF",
         public_host="investment.zldong.com",
@@ -130,9 +180,9 @@ def test_search_template_keeps_author_count_markup():
         sample_banner=False,
         sources=[],
         active_source="",
-        author_counts=[{"name": "方伟", "count": 3}, {"name": "乘风破浪", "count": 0}],
         source_counts=[{"id": "fangwei-mp", "name": "方伟公众号", "count": 3}],
         results=[],
+        first_partial=None,
         total=0,
         total_all=3,
         filters={"author": "", "source": "", "company": None, "from": "", "to": ""},
@@ -145,14 +195,104 @@ def test_search_template_keeps_author_count_markup():
         pages=1,
         base_query="q=%E8%85%BE%E8%AE%AF",
         page_query="q=%E8%85%BE%E8%AE%AF",
+        clear_scope_query="q=%E8%85%BE%E8%AE%AF",
         ask_query="q=%E8%85%BE%E8%AE%AF",
     )
-    assert "方伟</span><strong>3</strong>" in html
-    assert "乘风破浪</span><strong>0</strong>" in html
+    context.update(extra)
+    return _env().get_template("search.html").render(**context)
+
+
+def test_search_template_without_hits():
+    html = _search_page()
     assert "investment.zldong.com" in html
     assert "research.zldong.com" not in html
     assert 'class="pills search-pills"' in html
     assert "没有找到" in html
+    # 没有结果时不摆「让 AI 读这些结果」；按作者数命中的那一行 11-10 改版去掉了，来源标签上有篇数。
+    assert "ask-card" not in html
+    assert "author-facets" not in html
+    assert '<span>作者、时间</span>' in html and "is-set" not in html
+
+
+def test_search_results_carry_the_date_in_the_meta_line_and_offer_the_ask_card():
+    """检索改版（Zhilin 11-10 选的）：搜索框是一个大圆角框，箭头收在框里；作者、时间收成框下的小标签，
+    选了范围就写出来；「问 AI」改成一张卡片；结果的日期并进作者那一行，不要左边的日期栏。"""
+    item = {
+        "id": 7, "title": "腾讯的广告", "author": "方伟", "show_author": True, "source": "方伟公众号",
+        "source_href": "/sources/fangwei-mp", "iso": "2026-11-01T08:00:00+08:00", "date": "2026-11-01",
+        "snippet": "腾讯广告收入增长",
+    }
+    html = _search_page(
+        results=[item],
+        total=1,
+        filters={"author": "方伟", "source": "", "company": None, "from": "2026-10-01", "to": ""},
+        has_filter=True,
+        clear_scope_query="q=%E8%85%BE%E8%AE%AF",
+        ask_query="q=%E8%85%BE%E8%AE%AF&author=%E6%96%B9%E4%BC%9F&from=2026-10-01",
+    )
+    box = html.split('<div class="search-box">', 1)[1].split('<details class="search-filters"', 1)[0]
+    assert 'id="q"' in box and 'type="submit" aria-label="搜索"' in box
+    assert '<summary class="is-set">' in html
+    assert "<span>方伟 · 2026-10-01 至 最近</span>" in html
+    assert '<a href="/search?q=%E8%85%BE%E8%AE%AF">清除</a>' in html
+    ask_href = "/ask?q=%E8%85%BE%E8%AE%AF&amp;author=%E6%96%B9%E4%BC%9F&amp;from=2026-10-01"
+    assert f'<a class="ask-card" href="{ask_href}">' in html
+    assert "用问库整理「腾讯」的观点" in html
+    assert '<ol class="slots flat results">' in html
+    assert "slot-time" not in html and "slot-rail" not in html
+    meta = html.split('<header class="item-meta">', 1)[1].split("</header>", 1)[0]
+    assert '<time class="item-date" datetime="2026-11-01T08:00:00+08:00">2026-11-01</time>' in meta
+
+
+def test_ask_page_suggests_recent_whole_library_questions():
+    """问库还没问时，输入框下面摆最近问过的三题，只挑问整个资料库、没限定日期的；点一下填进输入框，不直接提交。"""
+    from researchlib.web.routes import TEMPLATES as routes_templates
+
+    def row(n, question, status="done", **scope):
+        return {"id": n, "question": question, "status": status, "scope": scope}
+
+    history = [
+        row(1, "腾讯的广告怎么看"),
+        row(2, "只问这一篇", article_id=3),
+        row(3, "那一天说了什么", preset="day", date_from="2026-11-01", date_to="2026-11-01"),
+        row(4, "没整合完的问题", status="error"),
+        row(5, "腾讯的广告怎么看"),
+        row(6, "拼多多的利润率"),
+        row(7, "长" * 41),
+        row(8, "宁德时代的产能"),
+        row(9, "第四个就不摆了"),
+    ]
+    html = routes_templates.env.get_template("ask.html").render(
+        title="问库", nav="ask", query="", public_host="investment.zldong.com",
+        canonical="https://investment.zldong.com/ask", sample_banner=False, sources=[], active_source="",
+        history=history, llm_ready=True, result=None, question="", authors=["方伟"],
+        filters={"author": "", "source": "", "from": "", "to": ""}, article=None, tree=None, company=None,
+    )
+    suggest = html.split('<ul class="ask-suggest"', 1)[1].split("</ul>", 1)[0]
+    assert [line.split("</span>", 1)[0] for line in suggest.split("<span>")[1:]] == [
+        "腾讯的广告怎么看", "拼多多的利润率", "宁德时代的产能",
+    ]
+    assert 'data-question="拼多多的利润率"' in suggest
+    assert '<i class="ask-seal" aria-hidden="true">研</i>' in html
+    assert "整个资料库" in html.split('<span class="ask-scope">', 1)[1].split("</span>", 1)[0]
+    # 范围收进输入框左下角，浮层点外面或按 Esc 关上（base.html 里统一处理 data-popover）。
+    bar = html.split('<div class="chat-composer-bar">', 1)[1]
+    assert bar.index('<details class="ask-filters" data-popover>') < bar.index('aria-label="发送问题"')
+    assert "details[data-popover]" in html
+
+
+def test_ask_page_scrolls_as_a_whole_page():
+    """问库整页滚动：不再把框锁成一屏高、回答在中间的小窗里滚（手机横屏上以前只剩三四行）。
+    输入框贴在窗口底部，离底部是底部导航条的高度；流式回答跟着整页往下走。"""
+    ask = (STATIC / "ask-chat.css").read_text(encoding="utf-8")
+    frame = ask.split(".shell:has(.ask-workspace) .frame {", 1)[1].split("}", 1)[0]
+    assert "height" not in frame.replace("max-width", "")
+    log = ask.split(".ask-workspace > .chat-log {", 1)[1].split("}", 1)[0]
+    assert "overflow" not in log
+    form = ask.split(".ask-workspace .chat-form {", 1)[1].split("}", 1)[0]
+    assert "position: sticky" in form and "bottom: var(--bottom-chrome)" in form
+    js = (STATIC / "article-chat.js").read_text(encoding="utf-8")
+    assert "window.scrollTo" in js
 
 
 class _Source:
@@ -407,3 +547,76 @@ def test_day_template_lists_the_day_and_offers_to_ask():
     assert "13:29" in html
     assert "AI 整合" not in html
     assert 'href="/days/2024-10-20"' in html
+
+
+def _efforts(*pairs):
+    return [{"id": key, "label": label} for key, label in pairs]
+
+
+_GROK = {"id": "grok", "label": "Grok", "model": "grok-4.7", "default_effort": "xhigh",
+         "efforts": _efforts(("low", "低"), ("medium", "中"), ("high", "高"), ("xhigh", "最高"))}
+_DEEPSEEK = {"id": "deepseek", "label": "DeepSeek", "model": "deepseek-flash", "default_effort": "max",
+             "efforts": _efforts(("low", "低"), ("high", "高"), ("max", "最高"))}
+
+
+def _menu(*providers):
+    default = {"provider": "grok", "effort": "xhigh"}
+    return {"default": default, "default_label": "Grok · 最高", "providers": list(providers)}
+
+
+def test_article_chat_panel_greets_offers_questions_and_a_model_menu():
+    """文章右侧问库：还没问时问候加三道题（这篇问过的在前），点一下按「只问这篇」填进输入框；
+    输入框左下角范围，右下角模型和档位，非默认那家的档位关着（不随表单提交）。"""
+    from researchlib.web.routes import _chat_suggestions
+
+    suggestions = _chat_suggestions(["腾讯的广告怎么看", "长" * 61, "这篇的核心观点是什么？"])
+    assert [item["question"] for item in suggestions] == [
+        "腾讯的广告怎么看", "这篇的核心观点是什么？", "作者的判断依据有哪些？",
+    ]
+    assert [item["asked"] for item in suggestions] == [True, True, False]
+    html = _env().get_template("article.html").render(
+        title="Note", canonical="https://investment.zldong.com/articles/1", public_host="investment.zldong.com",
+        query="", nav="archive", sample_banner=False, sources=[], active_source="", source=_Source(),
+        article={"id": 1, "title": "Note"}, iso="2026-01-01", date="2026-01-01", time="12:00",
+        body_language="original", body_html="<p>正文</p>", original_url="", siblings=[],
+        ask_models=_menu(_GROK, _DEEPSEEK), chat_suggestions=suggestions,
+    )
+    panel = html.split('id="article-chat"', 1)[1].split("</aside>", 1)[0]
+    assert "<h3>想从资料里了解什么？</h3>" in panel
+    suggest = panel.split('<ul class="ask-suggest"', 1)[1].split("</ul>", 1)[0]
+    assert suggest.count("<li>") == 3 and suggest.count('<span class="sr">问过：</span>') == 2
+    assert 'data-question="腾讯的广告怎么看" data-scope="1"' in suggest
+    assert 'href="/ask?article=1&amp;q=%E8%85%BE' in suggest
+    # 「新对话」问过一题才出现；收起一直在。
+    assert 'data-chat-clear aria-label="新对话" title="新对话" hidden>' in panel
+    bar = panel.split('<div class="chat-composer-bar">', 1)[1].split("</form>", 1)[0]
+    send = bar.index('aria-label="发送问题"')
+    assert bar.index('class="chat-range-chip"') < bar.index('<details class="ask-model"') < send
+    assert '<span class="chat-range-text" aria-hidden="true">整个资料库</span>' in bar
+    assert '<span class="ask-model-label">Grok · 最高</span>' in bar
+    assert 'name="model" value="grok" data-label="Grok" checked>' in bar
+    assert 'name="model" value="deepseek" data-label="DeepSeek">' in bar
+    assert 'data-provider="grok" data-default-effort="xhigh">' in bar
+    assert 'data-provider="deepseek" data-default-effort="max" hidden disabled>' in bar
+    assert bar.count(" checked>") == 2 and 'value="xhigh" data-label="最高" checked>' in bar
+    assert "每次独立提问，不接上文。" in panel.split("</form>", 1)[0]
+
+
+def test_ask_page_model_menu_sits_by_the_send_button():
+    """问库页：模型菜单在发送键左边；只有一家能用时不列「模型」那一栏，用隐藏字段带上。没有菜单数据时整个不出现。"""
+    from researchlib.web.routes import TEMPLATES as routes_templates
+
+    context = dict(
+        title="问库", nav="ask", query="", public_host="investment.zldong.com",
+        canonical="https://investment.zldong.com/ask", sample_banner=False, sources=[], active_source="",
+        history=[], llm_ready=True, result=None, question="", authors=["方伟"],
+        filters={"author": "", "source": "", "from": "", "to": ""}, article=None, tree=None, company=None,
+    )
+    html = routes_templates.env.get_template("ask.html").render(**context, ask_models=_menu(_GROK))
+    bar = html.split('<div class="chat-composer-bar">', 1)[1].split("</form>", 1)[0]
+    send = bar.index('aria-label="发送问题"')
+    assert bar.index('class="chat-count"') < bar.index('<details class="ask-model"') < send
+    assert '<input type="hidden" name="model" value="grok" data-label="Grok">' in bar
+    assert "model-providers" not in bar and bar.count('name="effort"') == 4
+    bare = routes_templates.env.get_template("ask.html").render(**context)
+    assert "ask-model" not in bare

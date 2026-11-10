@@ -209,8 +209,6 @@ img { max-width: 100%; }
 .nav-link[aria-current="page"] svg { color: var(--accent); }
 [data-theme="dark"] .nav-link[aria-current="page"] { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); }
 /* 来源前面的小圆点：没选中时淡一些 */
-.nav-dot { opacity: .45; }
-.nav-link[aria-current="page"] .nav-dot { opacity: 1; }
 
 /* 品牌：「研」字印章加字标。苹方最粗是 600，写 700、900 在 Mac 上也只有这么粗。 */
 .brand {
@@ -268,6 +266,8 @@ img { max-width: 100%; }
   border-radius: 999px;
   background: var(--surface);
   box-shadow: var(--shadow-card);
+  /* 第几个选项由页面脚本写进 --theme-index（深色 0、跟随系统 1、浅色 2）；没跑脚本时停在默认选中的「跟随系统」。 */
+  transform: translateX(calc(var(--theme-index, 1) * 100%));
   transition: transform .2s var(--ease);
 }
 .theme button {
@@ -423,7 +423,7 @@ main {
   transform: translateY(-50%);
   pointer-events: none;
 }
-.search-track input, .search-bar input {
+.search-track input, .search-box input {
   width: 100%;
   border: 0;
   border-radius: 999px;
@@ -439,9 +439,9 @@ main {
   font-size: 14px;
 }
 [data-theme="dark"] .search-track input { background: color-mix(in srgb, var(--bg-muted) 60%, transparent); }
-.search-track input::placeholder, .search-bar input::placeholder { color: var(--ink-4); }
+.search-track input::placeholder, .search-box input::placeholder { color: var(--ink-4); }
 .search-track input:hover { box-shadow: inset 0 0 0 1px var(--line-strong); }
-.search-track input:focus, .search-bar input:focus {
+.search-track input:focus {
   background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft);
 }
@@ -465,28 +465,48 @@ main {
 .filter-track { width: min(360px, 100%); margin: 16px 0 8px; }
 .filter-track input { padding-right: 16px; }
 
-.search-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
-.search-bar .field { position: relative; min-width: 0; flex: 1; }
-.search-bar .search-ico { width: 17px; height: 17px; }
-.search-bar input {
-  height: 44px;
-  padding: 0 16px 0 40px;
+/* 检索页：一个大圆角框，箭头收在框里；作者、时间收成框下的小标签，点开是浮层。 */
+.frame:has(> .search-bar) { max-width: 880px; }
+.search-bar { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 18px; }
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
   border: 1px solid var(--line-strong);
+  border-radius: 20px;
   background: var(--surface);
-  font-size: 15px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent), 0 8px 28px color-mix(in srgb, var(--ink) 7%, transparent);
+  transition: border-color .15s, box-shadow .15s;
 }
-.search-bar button {
+[data-theme="dark"] .search-box { background: var(--raised); }
+.search-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line-strong));
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 8px 28px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.search-box .field { position: relative; min-width: 0; flex: 1; }
+.search-box .search-ico { left: 14px; width: 19px; height: 19px; }
+.search-box input {
   height: 44px;
-  padding: 0 20px;
+  padding: 0 8px 0 44px;
+  background: transparent;
+  font-size: 17px;
+}
+.search-box button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: 14px;
   background: var(--accent);
   color: var(--accent-contrast);
-  font-size: 14.5px;
-  font-weight: 600;
 }
-.search-bar button:hover { background: var(--accent-ink); }
-.search-bar button:active { transform: scale(.98); }
+.search-box button:hover { background: var(--accent-ink); }
+.search-box button:active { transform: scale(.96); }
+.search-box button svg { width: 20px; height: 20px; }
 
 .day { margin-top: 4px; }
 .day + .day { margin-top: 20px; }
@@ -834,8 +854,8 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose img, .prose video {
   display: block;
   width: auto;
-  /* 不比阅读栏更宽。限高只拦住特别长的拼接图：单屏聊天截图约 1080×2340，
-     在 680px 栏里高度约 1470，低于 1800px，于是按栏宽铺满，字能直接读。点开仍看大图。 */
+  /* 不比阅读栏更宽。竖长截图另按手机屏宽显示（下面 data-shape="tall"），不受这里的限高。
+     限高只兜住没读出尺寸的图（外链图还没下载、SVG），免得一张图占好几屏。点开仍看大图。 */
   max-width: 100%;
   height: auto;
   max-height: 1800px;
@@ -845,6 +865,10 @@ tbody tr:hover td { background: var(--accent-softer); }
   object-fit: contain;
 }
 .prose img { cursor: zoom-in; }
+/* 竖长截图（高至少是宽的 1.25 倍，服务端读文件头标 data-shape="tall"，见 image_size.py）按手机屏宽显示。
+   以前铺满 680px 的栏，手机截图里的字有正文两倍大；26em 约 440px，截图里的字和正文差不多大。
+   长截图也不再按 1800px 限高压窄（以前拼接长图被压到两三百像素宽，字看不清），照手机上那样往下滚着读。 */
+.prose img[data-shape="tall"] { max-width: min(100%, 26em); max-height: none; }
 .prose img + br { display: none; }
 .prose p > img:only-child { margin-block: .4em; }
 .img-zoom {
@@ -860,6 +884,9 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 .img-zoom[hidden] { display: none; }
 .img-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+/* 竖长截图点开：放宽到看得清字，往下滚着读。整张缩进一屏的话，长截图只剩一百多像素宽，比正文里还小。 */
+.img-zoom[data-shape="tall"]:not([hidden]) { display: block; overflow-y: auto; overscroll-behavior: contain; }
+.img-zoom[data-shape="tall"] img { display: block; width: min(100%, 760px); max-height: none; margin: 0 auto; }
 .prose figure { margin: 1.5em 0; }
 .prose figcaption { margin-top: .6em; color: var(--ink-4); font-size: 13px; text-align: center; }
 .prose code {
@@ -1087,14 +1114,17 @@ tbody tr:hover td { background: var(--accent-softer); }
     padding-bottom: 56px;
   }
   /* 白边留在栏内。以前用 16px 外扩阴影，阴影盖住右侧分割条，字又贴着栏边，第一笔会被裁掉。
-     正文左右各让出 20px；比正文宽的图最多铺回整栏（680px），不缩进。 */
-  .shell:has(.reader-grid) .reader-grid {
+     正文左右各让出 20px；比正文宽的图最多铺回整栏（680px），不缩进。
+     飞书目录右侧的正文（.doc-read）也是白底，同样留边，以前字贴着白底左缘。 */
+  .shell:has(.reader-grid) .reader-grid,
+  .shell:has(.doc-read) .doc-read {
     padding-left: 20px;
     padding-right: 20px;
   }
   /* 图按原尺寸，只是上限放到整栏：小图标、小表格不放大成 680px 糊掉。
      宽图比正文宽 40px，左右外边距用不了 auto，改用 left + translate 对着正文中线居中。 */
-  .shell:has(.reader-grid) .reader-grid .prose img {
+  .shell:has(.reader-grid) .reader-grid .prose img,
+  .shell:has(.doc-read) .doc-read .prose img {
     position: relative;
     left: 50%;
     max-width: calc(100% + 40px);
@@ -1102,7 +1132,10 @@ tbody tr:hover td { background: var(--accent-softer); }
     margin-right: 0;
     transform: translateX(-50%);
   }
-  .shell:has(.reader-grid) .reader-grid .prose video {
+  .shell:has(.reader-grid) .reader-grid .prose img[data-shape="tall"],
+  .shell:has(.doc-read) .doc-read .prose img[data-shape="tall"] { max-width: min(100%, 26em); }
+  .shell:has(.reader-grid) .reader-grid .prose video,
+  .shell:has(.doc-read) .doc-read .prose video {
     width: calc(100% + 40px);
     max-width: none;
     margin-left: -20px;
@@ -1126,6 +1159,98 @@ tbody tr:hover td { background: var(--accent-softer); }
   }
   .page-tools { flex-direction: column; align-items: stretch; }
   .search-track, .filter-track { width: 100%; }
+}
+/* 600 到 1023px（手机横屏、折叠屏展开、iPad 竖屏）：顶栏和底部栏换成左边一条带字的图标栏（Zhilin 11-10 选的）。
+   横屏本来就矮，两条导航占掉四分之一的高度；侧边一条只占不到十分之一的宽度。
+   600 以下（手机竖屏）照旧顶栏加底部栏，单手拿时拇指够得着；1024 起照旧完整侧栏。
+   图标栏只放五个入口和深浅色开关，来源在「按天」顶上那排标签里有。 */
+@media (min-width: 600px) and (max-width: 1023px) {
+  .mobile-bar, .tabbar { display: none; }
+  main {
+    padding-top: 18px;
+    padding-right: max(16px, env(safe-area-inset-right));
+    padding-bottom: calc(40px + env(safe-area-inset-bottom));
+  }
+  .sidebar {
+    display: flex;
+    align-items: center;
+    width: calc(76px + env(safe-area-inset-left));
+    padding: 14px 6px calc(14px + env(safe-area-inset-bottom)) calc(6px + env(safe-area-inset-left));
+  }
+  .sidebar .brand {
+    justify-content: center;
+    width: 100%;
+    height: 44px;
+    margin: 0 0 14px;
+    padding: 0;
+    font-size: 0;
+    letter-spacing: 0;
+  }
+  .sidebar .brand i { width: 32px; height: 32px; margin: 0; border-radius: 9px; font-size: 17px; }
+  .sidebar nav { width: 100%; margin: 0; padding: 0; scrollbar-width: none; }
+  .sidebar .nav-label,
+  .sidebar nav > a.nav-link { display: none; }
+  .sidebar .nav-group { align-items: center; gap: 6px; }
+  .sidebar .nav-link {
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    width: 64px;
+    height: auto;
+    padding: 2px 0 4px;
+    border-radius: 12px;
+    font-size: 11.5px;
+    letter-spacing: .04em;
+  }
+  .sidebar .nav-link:focus-visible { outline-offset: -2px; }
+  .sidebar .nav-link span { overflow: visible; }
+  /* 图标底下垫一块胶囊，选中的那块用强调色，字在胶囊下面。 */
+  .sidebar .nav-link svg {
+    box-sizing: content-box;
+    width: 22px;
+    height: 22px;
+    padding: 5px 16px;
+    border-radius: 999px;
+    transition: background-color .15s, color .15s;
+  }
+  .sidebar .nav-link:hover,
+  .sidebar .nav-link[aria-current="page"] { background: transparent; box-shadow: none; }
+  .sidebar .nav-link:hover svg { background: var(--bg-muted); }
+  .sidebar .nav-link[aria-current="page"] svg { background: var(--accent-soft); color: var(--accent); }
+  /* 深浅色开关竖着放，滑块跟着 --theme-index 上下走。 */
+  .sidebar .theme {
+    flex: none;
+    grid-template-columns: 1fr;
+    grid-auto-rows: 28px;
+    width: 34px;
+    height: auto;
+    margin: 8px 0 0;
+  }
+  .sidebar .theme-thumb {
+    right: 3px;
+    bottom: auto;
+    width: auto;
+    height: 28px;
+    transform: translateY(calc(var(--theme-index, 1) * 100%));
+  }
+}
+/* 手机横屏只有 400 来高：字收起来只留图标，品牌印章也收掉（「按天」就是首页），五个入口和开关放得下。 */
+@media (min-width: 600px) and (max-width: 1023px) and (max-height: 520px) {
+  .sidebar { padding-top: 10px; }
+  .sidebar .brand { display: none; }
+  .sidebar .nav-group { gap: 4px; }
+  .sidebar .nav-link { width: 48px; height: 44px; padding: 0; gap: 0; }
+  .sidebar .nav-link span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+  .sidebar .nav-link svg { padding: 8px; border-radius: 10px; }
+  .sidebar .theme { grid-auto-rows: 26px; }
+  .sidebar .theme-thumb { height: 26px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .theme-thumb, .chevron, .item-card, .slot-dot { transition: none; }
@@ -1330,16 +1455,139 @@ tbody tr:hover td { background: var(--accent-softer); }
 .head-actions .quiet:hover { color: var(--accent); }
 .page-head + .pills { margin-top: 4px; }
 .head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 14px 0 16px; font-size: 13px; }
-.search-filters { width: 100%; color: var(--ink-3); font-size: 13px; }
-.search-filters summary { cursor: pointer; }
 .filter-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .filter-grid label { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 13px; }
-.entity-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 14px 0 0; color: var(--ink-4); font-size: 13px; }
-.facets { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 16px 0 8px; }
+/* 检索的作者、时间：框下一枚小标签，选了范围就换成强调色并写出范围；点开是浮层。 */
+.search-filters { position: relative; justify-self: start; max-width: 100%; color: var(--ink-3); font-size: 13px; }
+.search-filters > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0 10px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: nowrap;
+  list-style: none;
+  cursor: pointer;
+}
+.search-filters > summary::-webkit-details-marker { display: none; }
+.search-filters > summary:hover, .search-filters[open] > summary { background: var(--surface); color: var(--ink); }
+.search-filters > summary.is-set { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-softer); color: var(--accent-ink); }
+.search-filters > summary > span:not(.sr) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.search-filters > summary svg { width: 14px; height: 14px; flex: none; }
+.search-filters .filter-grid {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 12px;
+  width: min(380px, calc(100vw - 40px));
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 14px 44px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+[data-theme="dark"] .search-filters .filter-grid { background: var(--raised); }
+.search-filters .filter-grid label { flex-direction: column; align-items: stretch; gap: 4px; }
+.search-filters .filter-grid label:first-child { grid-column: 1 / -1; }
+.search-filters .filter-grid :is(input, select) { min-width: 0; max-width: 100%; min-height: 36px; }
+.filter-actions { display: flex; grid-column: 1 / -1; align-items: center; justify-content: flex-end; gap: 14px; margin: 4px 0 0; }
+.filter-actions a { color: var(--ink-3); }
+.filter-actions a:hover { color: var(--accent); }
+.filter-actions button {
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-weight: 600;
+}
+.filter-actions button:hover { background: var(--accent-ink); }
+@media (pointer: coarse) {
+  /* iOS 上输入框的字小于 16px，点进去整页会放大；手指点的地方也要够大。 */
+  .search-filters .filter-grid :is(input, select) { min-height: 44px; font-size: 16px; }
+  .search-filters > summary, .filter-actions button { min-height: 40px; }
+}
+/* 直达：公司和作者各一张小卡片 */
+.entity-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 18px 0 0; color: var(--ink-4); font-size: 13px; }
+.entity-row .tag {
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px 0 10px;
+  border-color: var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+[data-theme="dark"] .entity-row .tag { background: var(--raised); }
+.entity-row .tag:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent-ink); }
+.entity-row .tag .ticker { color: var(--ink-4); font-weight: 500; }
+.entity-row .tag::after { content: "›"; color: var(--ink-4); font-weight: 400; }
+/* 让问库读这些结果：一张卡片，跟在直达后面 */
+.ask-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--ink);
+  transition: border-color .15s, box-shadow .15s;
+}
+[data-theme="dark"] .ask-card { background: var(--raised); }
+.ask-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: var(--shadow-card-hover); }
+.ask-card-ico {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.ask-card svg { width: 18px; height: 18px; }
+.ask-card > span:nth-child(2) { flex: 1; min-width: 0; }
+.ask-card b { display: block; font-size: 14.5px; font-weight: 600; }
+.ask-card small { display: block; margin-top: 1px; overflow: hidden; color: var(--ink-3); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.ask-card .go { flex: none; color: var(--accent-ink); }
+.facets { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 18px 0 4px; }
 .facets .pills.search-pills { width: auto; max-width: 100%; margin: 0; }
-.stat-list.author-facets { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-4); font-size: 12.5px; }
-.stat-list.author-facets li { display: flex; gap: 4px; padding: 0; border: 0; }
-.stat-list.author-facets strong { color: var(--ink-2); font-weight: 600; }
+/* 检索结果：日期并进作者那一行，不要左边的日期栏；整条可点，鼠标停上去浮出底色。 */
+.slots.flat.results .slot { display: block; padding: 0; border-bottom: 1px solid var(--line-soft); }
+.slots.flat.results .slot:last-child { border-bottom: 0; }
+.slots.flat.results .item-card {
+  margin: 0 -14px;
+  padding: 18px 14px 16px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  box-shadow: none;
+  transition: background-color .15s;
+}
+.slots.flat.results .item-card:hover { border: 0; background: var(--surface); box-shadow: none; }
+[data-theme="dark"] .slots.flat.results .item-card:hover { background: var(--raised); }
+.slots.flat.results .item-date { color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.slots.flat.results .item-title { margin-top: 6px; font-size: 18px; line-height: 1.5; }
+.slots.flat.results .item-hit {
+  margin-top: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+  color: var(--ink-3);
+  font-size: 13.5px;
+}
 
 /* 作者页 */
 .author-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin: 16px 0; padding: 0; list-style: none; }
@@ -2087,6 +2335,8 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .doc-twist::before { content: "▶"; }
 .doc-nav details[open] > summary .doc-twist { display: inline-block; transform: rotate(90deg); }
 .doc-branch > a { flex: 1 1 auto; min-width: 0; width: auto; }
+/* 没有下级的条目让出箭头那一格（10px 箭头 + 4px 间距），和同一层带箭头的标题对齐，不再左右错开。 */
+.doc-nav a.doc-leaf { margin-left: 14px; }
 .doc-read { min-width: 0; max-width: var(--reading-column); font-size: var(--text-prose); }
 .doc-read .prose { max-width: none; }
 @media (max-width: 800px) {
@@ -2427,9 +2677,16 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   background: rgb(0 0 0 / .28);
 }
 @media (max-width: 1023px) {
-  .article-chat { bottom: calc(54px + env(safe-area-inset-bottom)); }
   .article-chat .chat-form textarea { font-size: 16px; }
+}
+/* 600 以下有底部栏，「问这篇」的面板和按钮让到它上面；600 到 1023 是左边的图标栏，贴底，只让出手机底部的安全区。 */
+@media (max-width: 599px) {
+  .article-chat { bottom: calc(54px + env(safe-area-inset-bottom)); }
   .chat-toggle { bottom: calc(70px + env(safe-area-inset-bottom)); }
+}
+@media (min-width: 600px) and (max-width: 1023px) {
+  .article-chat { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .chat-toggle { bottom: calc(20px + env(safe-area-inset-bottom)); }
 }
 @media (min-width: 1320px) {
   .shell:has(.read-with-chat) main { padding-right: 8px; padding-left: 12px; }

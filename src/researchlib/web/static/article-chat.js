@@ -1,6 +1,7 @@
 // 完整问库和阅读侧栏共用提问、恢复和展示逻辑；每轮独立提交。
-// 清空只清界面，不取消后台任务，也不删除问库记录。
+// 「新对话」只清界面，不取消后台任务，也不删除问库记录。
 // 宽屏是否收起记在 localStorage（research-article-chat）。窄屏抽屉仍每次从关上开始。
+// 输入框里选的模型和思考强度记在 localStorage（research-ask-model），问库页和阅读侧栏共用；没选过就是页面上的默认。
 (() => {
   const fullPage = !!document.getElementById('ask-chat');
   const panel = document.getElementById(fullPage ? 'ask-chat' : 'article-chat');
@@ -14,6 +15,12 @@
   const log = panel.querySelector('.chat-log');
   const scopeSelect = form && form.querySelector('[name="article"]');
   if (!form || !input || !submit || !log || !scopeSelect) return;
+  const clearButton = panel.querySelector('[data-chat-clear]');
+  const rangeText = form.querySelector('.chat-range-text');
+  const modelMenu = form.querySelector('.ask-model');
+  const modelKey = 'research-ask-model';
+  // 阅读侧栏「新对话」以后把问候和可以问的题放回去。
+  const welcomeCopy = !fullPage && log.querySelector('.ask-welcome') ? log.querySelector('.ask-welcome').cloneNode(true) : null;
 
   const wideQuery = window.matchMedia('(min-width: 1320px)');
   const storageKey = 'research-article-chat';
@@ -231,8 +238,39 @@
     turn.status.textContent = message + '…';
   }
 
+  // 问库页整页滚动（.chat-log 不自己滚，输入框贴在窗口底部）；阅读侧栏照旧在面板里滚。
   function scrollLog() {
-    log.scrollTop = log.scrollHeight;
+    if (fullPage) window.scrollTo(0, document.documentElement.scrollHeight);
+    else log.scrollTop = log.scrollHeight;
+  }
+
+  function nearEnd() {
+    if (!fullPage) return log.scrollHeight - log.scrollTop - log.clientHeight < 96;
+    return document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 160;
+  }
+
+  // 问库页：新问题挪到标题栏下面，回答从它下面往下写（和 Claude 一样）。页面没那么长时挪不上去，
+  // 所以先给这一轮的回答留出一屏的高度；上一轮留的高度收回，免得回答短时下面空一大块。
+  function reserve(turn) {
+    if (!fullPage) return;
+    log.querySelectorAll('.chat-bubble-assistant').forEach((node) => { node.style.minHeight = ''; });
+    const head = panel.querySelector('.ask-head');
+    const formBox = form.getBoundingClientRect();
+    const covered = Math.max(0, window.innerHeight - formBox.top);
+    const room = window.innerHeight - (head ? head.offsetHeight : 0) - covered
+      - turn.user.offsetHeight - (parseFloat(getComputedStyle(log).rowGap) || 0) - 16;
+    turn.bubble.style.minHeight = `${Math.max(0, Math.round(room))}px`;
+  }
+
+  // 把这一轮的提问挪到看得见的最上面；问库页扣掉粘在顶上的标题栏。
+  function bringToTop(node) {
+    if (!fullPage) {
+      log.scrollTop += node.getBoundingClientRect().top - log.getBoundingClientRect().top - 16;
+      return;
+    }
+    // 标题栏粘在窗口顶上：按它的高度扣，不按它眼下的位置（手机上它下面还有一条顶栏，滚上去就没了）。
+    const head = panel.querySelector('.ask-head');
+    window.scrollBy(0, node.getBoundingClientRect().top - (head ? head.offsetHeight : 0) - 16);
   }
 
   function escapeHtml(text) {
@@ -255,7 +293,7 @@
         const escaped = escapeHtml(line).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         return escaped.replace(/\[(\d+)\]/g, (match, num) => {
           const href = byN[Number(num)] && safeArticleUrl(byN[Number(num)].url);
-          return href ? `<a class="cite" href="${escapeHtml(href)}">[${num}]</a>` : match;
+          return href ? `<a class="cite" href="${escapeHtml(href)}"><span class="cite-mark">[</span>${num}<span class="cite-mark">]</span></a>` : match;
         });
       });
       return `<p>${lines.join('<br>')}</p>`;
@@ -324,6 +362,9 @@
   function createTurn(question, article) {
     const welcome = log.querySelector('.ask-welcome');
     if (welcome) welcome.remove();
+    const suggest = panel.querySelector('.ask-suggest');
+    if (suggest) suggest.remove();
+    if (clearButton) clearButton.hidden = false;
     const user = document.createElement('div');
     user.className = 'chat-bubble chat-bubble-user';
     const label = document.createElement('p');
@@ -344,7 +385,7 @@
     links.className = 'chat-recovery';
     bubble.append(status, content, links);
     log.appendChild(bubble);
-    return { question, article, status, content, links, user, id: null };
+    return { question, article, status, content, links, user, bubble, id: null };
   }
 
   function action(turn, label, kind) {
@@ -361,6 +402,8 @@
         ['author', 'source', 'company', 'from', 'to', 'article', 'tree'].forEach((key) => {
           if (form.elements.namedItem(key)) form.elements.namedItem(key).value = (turn.params || {})[key] || '';
         });
+        pickModel((turn.params || {}).model, (turn.params || {}).effort);
+        syncRange();
         updateScope();
         fitInput(); input.focus();
       } else {
@@ -461,7 +504,8 @@
     if (data.model) {
       const meta = document.createElement('p');
       meta.className = 'answer-meta';
-      meta.textContent = data.model;
+      const effort = data.llm && typeof data.llm.effort_label === 'string' ? data.llm.effort_label : '';
+      meta.textContent = effort ? `${data.model} · 思考${effort}` : data.model;
       turn.content.appendChild(meta);
     }
   }
@@ -482,7 +526,7 @@
       window.location.reload();
       return;
     }
-    const following = log.scrollHeight - log.scrollTop - log.clientHeight < 96;
+    const following = nearEnd();
     renderData(turn, data);
     recovery(turn);
     if (data.status === 'done' && data.answer) {
@@ -499,7 +543,7 @@
     } else {
       pause(turn, '回答状态异常，可打开完整回答查看。');
     }
-    if (following && turn.user) log.scrollTop += turn.user.getBoundingClientRect().top - log.getBoundingClientRect().top - 16;
+    if (following && turn.user) bringToTop(turn.user);
   }
 
   // 整合中：读到第几批写在状态行，已经写出来的半截回答先显示（stats.progress、answer，见 ask._Progress）。
@@ -579,6 +623,8 @@
 
   function resetLog() {
     log.replaceChildren();
+    if (welcomeCopy) log.appendChild(welcomeCopy.cloneNode(true));
+    if (clearButton) clearButton.hidden = true;
   }
 
   if (!fullPage) {
@@ -595,14 +641,16 @@
     resetLog();
     input.focus();
   });
+  // 捕获阶段先看：输入框里的菜单开着时，这一下 Esc 只收起菜单（base.html 管），不收起整个面板。
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (panel.querySelector('details[data-popover][open]')) return;
     if (isWide()) {
       if (!stage.classList.contains('is-chat-closed')) setOpen(false, true);
       return;
     }
     if (panel.classList.contains('is-open')) setOpen(false, true);
-  });
+  }, true);
   if (wideQuery.addEventListener) wideQuery.addEventListener('change', syncLayout);
   else if (wideQuery.addListener) wideQuery.addListener(syncLayout);
   }
@@ -615,7 +663,7 @@
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   });
 
-  const scopeSummary = form.querySelector('.ask-filters summary span');
+  const scopeSummary = form.querySelector('.ask-scope');
   const baseScope = scopeSummary ? scopeSummary.textContent.split(' · ')[0] : '';
   function scopeText() {
     const values = new FormData(form);
@@ -625,6 +673,77 @@
   }
   function updateScope() { if (scopeSummary) scopeSummary.textContent = scopeText(); }
   form.addEventListener('change', updateScope);
+
+  // 阅读侧栏的范围：标签上的字跟着下拉框，只取「 · 单轮」前面那段（问库页的范围是隐藏字段，没有标签）。
+  function syncRange() {
+    if (scopeSelect.tagName !== 'SELECT') return;
+    const option = scopeSelect.options[scopeSelect.selectedIndex];
+    if (rangeText && option) rangeText.textContent = option.textContent.split(' · ')[0];
+  }
+  scopeSelect.addEventListener('change', syncRange);
+
+  // 模型和思考强度：只有选中那一家的档位可选（别家的 fieldset 关掉，不随表单提交）。
+  // 换一家时先找同一档，再找叫法相同的（Grok 的 xhigh 和 DeepSeek 的 max 都叫「最高」），都没有就用那一家的默认。
+  function chosenProvider() {
+    return form.querySelector('input[name="model"]:checked') || form.querySelector('input[type="hidden"][name="model"]');
+  }
+  function syncModel(wanted) {
+    const provider = modelMenu && chosenProvider();
+    if (!provider) return;
+    const checked = form.querySelector('input[name="effort"]:checked');
+    const want = wanted || (checked ? { id: checked.value, label: checked.dataset.label } : {});
+    let picked = null;
+    modelMenu.querySelectorAll('fieldset.model-efforts').forEach((box) => {
+      const active = box.dataset.provider === provider.value;
+      box.hidden = !active;
+      box.disabled = !active;
+      if (!active) return;
+      const options = Array.from(box.querySelectorAll('input[name="effort"]'));
+      picked = options.find((item) => item.value === want.id)
+        || options.find((item) => want.label && item.dataset.label === want.label)
+        || options.find((item) => item.value === box.dataset.defaultEffort) || options[0] || null;
+    });
+    if (picked) picked.checked = true;
+    const label = modelMenu.querySelector('.ask-model-label');
+    if (label && picked) label.textContent = `${provider.dataset.label} · ${picked.dataset.label}`;
+  }
+  function pickModel(provider, effort) {
+    if (!modelMenu || !provider) return false;
+    const match = Array.from(form.querySelectorAll('input[name="model"]')).find((item) => item.value === provider);
+    if (!match) return false;
+    if (match.type === 'radio') match.checked = true;
+    syncModel({ id: String(effort || '') });
+    return true;
+  }
+  if (modelMenu) {
+    modelMenu.addEventListener('change', (event) => {
+      if (!event.target.matches('input[name="model"], input[name="effort"]')) return;
+      syncModel();
+      const provider = chosenProvider();
+      const effort = form.querySelector('input[name="effort"]:checked');
+      if (!provider || !effort) return;
+      try { localStorage.setItem(modelKey, JSON.stringify({ provider: provider.value, effort: effort.value })); } catch (e) {}
+    });
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(modelKey) || 'null'); } catch (e) {}
+    if (!(saved && typeof saved.provider === 'string' && pickModel(saved.provider, saved.effort))) syncModel();
+  }
+
+  // 可以问的题（问库页是最近问过的，阅读侧栏是这篇问过的和几道起头的题）：点一下填进输入框，自己看过、改过再发。
+  // 没脚本时链接带着 q 打开问库，也是填好不发。阅读侧栏的题带着 data-scope，填进去时范围换成「只问这篇」。
+  panel.addEventListener('click', (event) => {
+    const link = event.target.closest('.ask-suggest a[data-question]');
+    if (!link) return;
+    event.preventDefault();
+    input.value = link.dataset.question;
+    const scope = link.dataset.scope;
+    if (scope && scopeSelect.tagName === 'SELECT' && Array.from(scopeSelect.options).some((option) => option.value === scope)) {
+      scopeSelect.value = scope;
+      syncRange();
+    }
+    fitInput();
+    input.focus();
+  });
   input.addEventListener('input', fitInput);
   input.addEventListener('compositionstart', () => { composing = true; });
   input.addEventListener('compositionend', () => { composing = false; });
@@ -645,13 +764,14 @@
     const article = scopeSelect.value;
     const turn = createTurn(question, article);
     turn.params = {};
-    for (const key of ['author', 'source', 'company', 'from', 'to', 'article', 'tree']) {
+    for (const key of ['author', 'source', 'company', 'from', 'to', 'article', 'tree', 'model', 'effort']) {
       const value = new FormData(form).get(key);
       if (value) turn.params[key] = String(value);
     }
     progress(turn, article ? '正在这篇文章里检索' : '正在资料库里检索');
     input.value = '';
-    fitInput(); scrollLog();
+    fitInput();
+    if (fullPage) { reserve(turn); bringToTop(turn.user); } else scrollLog();
     try {
       const data = await jsonRequest('/api/v1/ask', {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -675,13 +795,6 @@
       recovery(turn);
       poll(turn, session);
     }
-    const history = panel.querySelector('.ask-history');
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && history && history.open) {
-        history.open = false;
-        history.querySelector('summary').focus();
-      }
-    });
     log.addEventListener('click', (event) => {
       const cite = event.target.closest('a.cite[href^="#c-"]');
       if (!cite) return;
@@ -692,5 +805,6 @@
       target.focus({preventScroll: true});
     });
   }
+  syncRange();
   fitInput();
 })();

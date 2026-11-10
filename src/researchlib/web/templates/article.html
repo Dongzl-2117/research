@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_ask_model.html" import model_menu %}
 {% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}"><noscript><link rel="stylesheet" href="{{ asset('ask-chat-noscript.css') }}"></noscript>{% endblock %}
 {% block body %}
 <div class="read-with-chat">
@@ -102,27 +103,41 @@
   <header class="chat-head">
     <h2>问库</h2>
     <div class="chat-head-actions">
-      <button type="button" data-chat-clear aria-label="清空" title="清空">清空</button>
-      <button type="button" data-chat-close aria-label="收起" title="收起">收起</button>
+      <button type="button" data-chat-clear aria-label="新对话" title="新对话" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 5.5H7A1.5 1.5 0 0 0 5.5 7v10A1.5 1.5 0 0 0 7 18.5h10a1.5 1.5 0 0 0 1.5-1.5v-5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m16.4 4.6 3 3-6.6 6.6-3.6.6.6-3.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>
+      <button type="button" data-chat-close aria-label="收起" title="收起"><svg class="icon-down" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><svg class="icon-side" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="5" width="15" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M14.5 5v14M9 10l2 2-2 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </div>
   </header>
   <p id="article-chat-mode" class="sr">每轮独立提问，不沿用上文。范围由下方选择；默认检索整个资料库。</p>
-  <div class="chat-log" role="region" aria-label="提问与回答" tabindex="0"></div>
+  <div class="chat-log" role="region" aria-label="提问与回答" tabindex="0">
+    {# 还没问时：问候（和问库页同一句）和几道可以问的题（这篇以前问过的在前），点一下按「只问这篇」填进输入框，不直接发。
+       不写怎么用的说明（#237）；范围看输入框左下角那枚标签。 #}
+    <div class="ask-welcome chat-welcome">
+      <i class="ask-seal" aria-hidden="true">研</i>
+      <h3>想从资料里了解什么？</h3>
+      {% if chat_suggestions %}
+      <ul class="ask-suggest" aria-label="可以这样问">
+        {% for item in chat_suggestions %}<li><a href="/ask?article={{ article.id }}&amp;q={{ item.question | urlencode }}" data-question="{{ item.question }}" data-scope="{{ article.id }}">{% if item.asked %}<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4.3l2.8 1.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sr">问过：</span>{% else %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5v3M12 16.5v3M4.5 12h3M16.5 12h3M7.2 7.2l1.9 1.9M14.9 14.9l1.9 1.9M7.2 16.8l1.9-1.9M14.9 9.1l1.9-1.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>{% endif %}<span>{{ item.question }}</span></a></li>{% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+  </div>
   <form class="chat-form" action="/ask" method="post">
     <div class="chat-composer">
       <label class="sr" for="article-chat-q">问题</label>
-      <textarea id="article-chat-q" name="q" aria-describedby="article-chat-mode" rows="2" maxlength="500" enterkeyhint="send" required></textarea>
+      <textarea id="article-chat-q" name="q" aria-describedby="article-chat-mode" rows="1" maxlength="500" enterkeyhint="send" required></textarea>
       <div class="chat-composer-bar">
-        <label class="sr" for="article-chat-scope">问库范围</label>
-        <select id="article-chat-scope" class="chat-range" name="article" aria-label="问库范围" aria-describedby="article-chat-mode">
-          <option value="">整个资料库 · 单轮</option>
-          <option value="{{ article.id }}">只问这篇 · 单轮</option>
-        </select>
+        <label class="chat-range-chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 4.2-8 4.2-8-4.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4 12.2 8 4.2 8-4.2M4 16l8 4.2 8-4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span class="chat-range-text" aria-hidden="true">整个资料库</span>
+          <select id="article-chat-scope" class="chat-range" name="article" aria-label="问库范围" aria-describedby="article-chat-mode">
+            <option value="">整个资料库 · 单轮</option>
+            <option value="{{ article.id }}">只问这篇 · 单轮</option>
+          </select><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></label>
+        {{ model_menu(ask_models) }}
         <button type="submit" aria-label="发送问题" title="发送问题">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V7.5M7.8 11.2 12 7l4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
       </div>
     </div>
+    <p class="chat-foot">每次独立提问，不接上文。回答请对照引用核对。</p>
   </form>
   <noscript><p class="chat-empty">没有脚本时，发送会打开问库，按所选范围提问。</p></noscript>
 </aside>

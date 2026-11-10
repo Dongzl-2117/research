@@ -1,15 +1,20 @@
 /* 问库的两个入口共用阅读和输入样式，文章正文继续使用原来的阅读规则。 */
-.shell:has(.ask-workspace) main { padding-bottom: 0; }
-.shell:has(.ask-workspace) .frame { display: flex; flex-direction: column; height: calc(100dvh - 56px - 64px - env(safe-area-inset-bottom)); max-width: 960px; }
-.ask-workspace { display: flex; flex: 1; flex-direction: column; width: 100%; min-height: 0; margin-inline: auto; }
-.ask-head { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; min-height: 60px; border-bottom: 1px solid var(--line-soft); }
+/* 问库页（Zhilin 11-10 选的改版，参照 Claude）：整页滚动，回答用上整屏；输入框是主角，贴在窗口底部，范围和发送都在框里。
+   以前把高度锁在一屏里、回答在中间的小窗里滚，手机横屏上只剩三四行。
+   --top-chrome、--bottom-chrome 是上下导航条占的高度：600 以下有顶栏和底部栏，600 起导航在侧边，都是 0。 */
+.shell:has(.ask-workspace) { --top-chrome: 56px; --bottom-chrome: calc(54px + env(safe-area-inset-bottom)); }
+.shell:has(.ask-workspace) main { padding-bottom: var(--bottom-chrome); }
+.shell:has(.ask-workspace) .frame { display: block; max-width: 820px; }
+.ask-workspace { display: flex; flex-direction: column; width: 100%; min-height: calc(100dvh - var(--top-chrome) - var(--bottom-chrome)); margin-inline: auto; }
+.ask-head { position: sticky; top: 0; z-index: 25; display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px; background: linear-gradient(var(--bg) 72%, transparent); }
 .ask-heading { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-.ask-heading h1 { margin: 0; color: var(--ink); font-size: 19px; font-weight: 650; letter-spacing: -.03em; }
-.ask-heading > span { color: var(--ink-4); font-size: 12px; white-space: nowrap; }
-.ask-head-actions { display: flex; align-items: center; gap: 14px; }
-.ask-new, .ask-history > summary { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; color: var(--ink-3); font-size: 13px; cursor: pointer; white-space: nowrap; }
-.ask-new:hover, .ask-history > summary:hover { color: var(--ink); }
-.ask-new > span { font-size: 19px; }
+.ask-heading h1 { margin: 0; color: var(--ink-3); font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: .04em; }
+.ask-heading > span { display: none; }
+.ask-head-actions { display: flex; align-items: center; gap: 8px; }
+.ask-new, .ask-history > summary { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink-2); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.ask-new:hover, .ask-history > summary:hover { border-color: var(--line-strong); color: var(--ink); }
+.ask-new svg, .ask-history > summary svg { width: 15px; height: 15px; flex: none; }
+.ask-workspace:has(.ask-welcome) .ask-new { display: none; }
 .ask-history { position: relative; }
 .ask-history > summary { list-style: none; }
 .ask-history > summary::-webkit-details-marker { display: none; }
@@ -20,13 +25,15 @@
 .ask-history li a:hover, .ask-history a[aria-current] { background: var(--bg-sunk); }
 .ask-history li span { display: block; margin-top: 4px; color: var(--ink-4); font-size: 11px; }
 .ask-history li span span { display: inline; margin: 0; color: inherit; font: inherit; }
-.ask-workspace > .chat-log { display: flex; flex: 1 1 auto; flex-direction: column; gap: 28px; min-height: 0; width: 100%; max-width: 800px; margin-inline: auto; padding: 32px 20px; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scroll-padding: 24px; }
-.ask-welcome { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; min-height: 180px; padding-bottom: 24px; text-align: center; }
-.ask-symbol { width: 34px; height: 34px; margin-bottom: 18px; color: var(--accent); }
-.ask-welcome h2 { margin: 0; color: var(--ink); font-size: clamp(21px, 2.2vw, 29px); font-weight: 600; letter-spacing: -.03em; }
-.ask-welcome p { margin: 12px 0 0; color: var(--ink-4); font-size: 14px; line-height: 1.7; }
+.ask-workspace > .chat-log { display: flex; flex: 1 0 auto; flex-direction: column; gap: 28px; width: 100%; max-width: 760px; margin-inline: auto; padding: 12px 0 32px; }
+.ask-workspace:has(.ask-welcome) > .chat-log { flex: 0 0 auto; margin-top: auto; padding: 0 0 26px; }
+.ask-workspace:has(.ask-welcome) > .chat-form { margin-bottom: auto; }
+.ask-welcome { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px 14px; text-align: center; }
+.ask-seal { display: inline-grid; flex: none; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--accent); color: var(--accent-contrast); font-family: var(--font-serif); font-size: 20px; font-style: normal; font-weight: 600; line-height: 1; }
+.ask-welcome h2 { margin: 0; color: var(--ink); font-family: var(--font-serif); font-size: clamp(24px, 3.6vw, 32px); font-weight: 600; letter-spacing: .02em; line-height: 1.3; text-wrap: balance; }
+.ask-welcome p { flex-basis: 100%; margin: 0; color: var(--ink-3); font-size: 14.5px; line-height: 1.7; }
 .ask-workspace .chat-bubble { min-width: 0; margin: 0; color: var(--ink); overflow-wrap: anywhere; }
-.ask-workspace .chat-bubble-user { align-self: flex-end; width: fit-content; max-width: 85%; padding: 12px 18px; border-radius: 20px 20px 5px 20px; background: var(--bg-muted); font-size: 15px; line-height: 1.7; }
+.ask-workspace .chat-bubble-user { align-self: flex-end; width: fit-content; max-width: 85%; padding: 11px 17px; border-radius: 20px; background: var(--bg-muted); font-size: 15.5px; line-height: 1.7; }
 .ask-workspace .chat-bubble-user p { margin: 0; white-space: pre-wrap; }
 .ask-workspace .chat-bubble-assistant { align-self: stretch; width: 100%; }
 :is(.ask-workspace, .article-chat) .chat-scope { margin: 0 0 4px; color: var(--ink-3); font-size: 11px; line-height: 1.6; }
@@ -47,8 +54,14 @@
 :is(.ask-workspace, .article-chat) .chat-markdown table { display: block; width: max-content; max-width: 100%; border-collapse: collapse; overflow-x: auto; font-size: 13px; line-height: 1.7; }
 :is(.ask-workspace, .article-chat) .chat-markdown :is(th, td) { min-width: 6em; padding: 9px 12px; border: 1px solid var(--line); text-align: left; }
 :is(.ask-workspace, .article-chat) .chat-markdown th { background: var(--bg-sunk); }
-:is(.ask-workspace, .article-chat) .chat-markdown a.cite { display: inline; margin-inline: 2px; padding: 1px 5px; border-radius: 4px; background: var(--accent-softer); color: var(--accent-ink); font-size: 11px; font-weight: 600; line-height: 1.5; vertical-align: 2px; text-decoration: none; white-space: nowrap; }
-:is(.ask-workspace, .article-chat) .chat-markdown a.cite:hover { background: var(--accent-soft); text-decoration: underline; }
+/* 引用是小圆角数字。方括号包在 cite-mark 里，收成透明的 1px 再用负边距抵掉，复制出来、读屏读到的仍是「[n]」。
+   都要是行内的：换成 flex 或绝对定位，复制出来是「[ 换行 1 换行 ]」；收成 0 宽，复制时整个丢掉，成了「12」。 */
+:is(.ask-workspace, .article-chat) a.cite .cite-mark { display: inline-block; width: 1px; margin-left: -1px; overflow: hidden; color: transparent; vertical-align: top; }
+:is(.ask-workspace, .article-chat) .chat-markdown a.cite,
+.ask-workspace .check-sentence a.cite { display: inline-block; box-sizing: border-box; min-width: 18px; height: 18px; margin: 0 1px; padding: 0 5px; border-radius: 999px; background: var(--bg-muted); color: var(--ink-3); font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; vertical-align: 2px; text-decoration: none; white-space: nowrap; }
+:is(.ask-workspace, .article-chat) .chat-markdown a.cite:hover,
+.ask-workspace .check-sentence a.cite:hover { background: var(--accent); color: var(--accent-contrast); text-decoration: none; }
+.ask-workspace .chat-markdown { color: var(--prose-ink); font-size: 16.5px; line-height: 1.8; }
 :is(.ask-workspace, .article-chat) .chat-error,
 :is(.ask-workspace, .article-chat) .chat-warning,
 :is(.ask-workspace, .article-chat) .chat-warnings { margin: 14px 0; padding: 12px 14px; border-radius: 9px; background: var(--amber-soft); color: var(--amber-ink); font-size: 13px; line-height: 1.75; overflow-wrap: anywhere; }
@@ -69,73 +82,179 @@
 :is(.ask-workspace, .article-chat) .chat-recovery :is(a, button):hover { color: var(--accent-ink); text-decoration: underline; }
 :is(.ask-workspace, .article-chat) .chat-recovery button:disabled { opacity: .5; cursor: wait; }
 :is(.ask-workspace, .article-chat) .answer-meta { margin: 16px 0 0; color: var(--ink-4); font-size: 11px; line-height: 1.6; }
-.ask-workspace .chat-form { display: block; flex: none; width: 100%; max-width: 800px; margin: 0 auto; padding: 0 20px 12px; }
-.ask-filters { margin-bottom: 10px; color: var(--ink-3); font-size: 12px; }
-.ask-filters summary { min-height: 32px; max-width: 100%; padding-block: 6px; cursor: pointer; overflow-wrap: anywhere; }
-.ask-filters summary span { margin-left: 8px; color: var(--ink-4); }
-.ask-filters .filter-grid { gap: 8px 14px; margin: 6px 0 14px; }
+.ask-workspace .chat-form { position: sticky; bottom: var(--bottom-chrome); z-index: 20; display: block; flex: none; width: 100%; max-width: 760px; margin: 0 auto; padding: 22px 0 12px; background: linear-gradient(transparent, var(--bg) 22px); }
+.ask-workspace:has(.ask-welcome) .chat-form { position: static; padding-top: 0; background: none; }
+/* 资料范围：框左下角一枚小标签，点开是浮层（还没问时往下开，有对话时往上开） */
+.chat-composer-bar .ask-filters { position: relative; min-width: 0; margin: 0; color: var(--ink-3); font-size: 12.5px; }
+.chat-composer-bar .ask-filters > summary { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 32px; padding: 0 10px 0 9px; border: 1px solid var(--line); border-radius: 999px; list-style: none; white-space: nowrap; cursor: pointer; }
+.chat-composer-bar .ask-filters > summary::-webkit-details-marker { display: none; }
+.chat-composer-bar .ask-filters > summary:hover,
+.chat-composer-bar .ask-filters[open] > summary { background: var(--bg-sunk); color: var(--ink); }
+.chat-composer-bar .ask-filters > summary svg { width: 14px; height: 14px; flex: none; }
+.ask-scope { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chat-composer-bar .ask-filters .filter-grid { position: absolute; bottom: calc(100% + 12px); left: -2px; z-index: 30; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; width: min(380px, calc(100vw - 56px)); margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 14px 44px color-mix(in srgb, var(--ink) 14%, transparent); }
+.chat-composer-bar .ask-filters .filter-grid label:first-child { grid-column: 1 / -1; }
+.ask-workspace:has(.ask-welcome) .chat-composer-bar .ask-filters .filter-grid { top: calc(100% + 12px); bottom: auto; }
 .ask-filters :is(select, input) { min-width: 0; max-width: 100%; min-height: 36px; }
 .ask-workspace .chat-composer, .article-chat .chat-composer { padding: 4px; border: 1px solid var(--line-strong); border-radius: 20px; background: var(--surface); box-shadow: 0 2px 8px color-mix(in srgb, var(--ink) 3%, transparent); }
 .ask-workspace .chat-composer:focus-within, .article-chat .chat-composer:focus-within { border-color: var(--ink-4); box-shadow: 0 0 0 2px var(--accent-softer); }
+.ask-workspace .chat-composer { padding: 0; border-radius: 22px; box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent), 0 8px 28px color-mix(in srgb, var(--ink) 7%, transparent); }
+[data-theme="dark"] .ask-workspace .chat-composer { background: var(--raised); }
+.ask-workspace .chat-composer:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong)); box-shadow: 0 0 0 3px var(--accent-softer), 0 8px 28px color-mix(in srgb, var(--ink) 7%, transparent); }
 .ask-workspace .chat-form textarea, .article-chat .chat-form textarea { display: block; width: 100%; min-height: 52px; max-height: 140px; padding: 12px 14px 4px; border: 0; border-radius: 16px; background: transparent; color: var(--ink); font: inherit; font-size: 15px; line-height: 1.6; resize: none; box-shadow: none; }
+.ask-workspace .chat-form textarea { min-height: 30px; padding: 15px 18px 2px; font-size: 16px; }
 .ask-workspace .chat-form textarea:focus { outline: 0; box-shadow: none; }
 .ask-workspace .chat-form textarea::placeholder { color: var(--ink-4); }
 .ask-workspace .chat-composer-bar, .article-chat .chat-composer-bar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; padding: 4px 6px 6px 14px; }
-.composer-hint { margin-right: auto; color: var(--ink-4); font-size: 11px; }
-.chat-count { color: var(--ink-4); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ask-workspace .chat-composer-bar { gap: 8px; padding: 6px 8px 8px 10px; }
+.chat-count { margin-left: auto; color: var(--ink-4); font-size: 11px; font-variant-numeric: tabular-nums; }
 .ask-workspace .chat-form button[type="submit"], .article-chat .chat-form button[type="submit"] { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: var(--ink); color: var(--bg); cursor: pointer; }
 .ask-workspace .chat-form button[type="submit"]:hover, .article-chat .chat-form button[type="submit"]:hover { background: var(--ink-2); color: var(--bg); }
 .ask-workspace .chat-form button[type="submit"]:disabled, .article-chat .chat-form button[type="submit"]:disabled { opacity: .4; cursor: wait; }
 .ask-workspace .chat-form button[type="submit"] svg, .article-chat .chat-form button[type="submit"] svg { width: 19px; height: 19px; }
-.composer-footnote { margin: 9px 0 0; color: var(--ink-4); font-size: 11px; line-height: 1.6; text-align: center; }
-.chat-notice { flex: none; margin: 12px 20px 0; padding: 8px 12px; border-radius: 8px; background: var(--bg-sunk); color: var(--ink-3); font-size: 13px; line-height: 1.6; }
-.ask-workspace .answer-sources { margin-top: 24px; }
-.ask-workspace .answer-sources h3 { margin: 0 0 10px; color: var(--ink-3); font-size: 12px; font-weight: 500; }
+.ask-workspace .chat-form button[type="submit"] { border-radius: 12px; background: var(--accent); color: var(--accent-contrast); }
+.ask-workspace .chat-form button[type="submit"]:hover { background: var(--accent-ink); color: var(--accent-contrast); }
+.composer-footnote { margin: 8px 0 0; color: var(--ink-4); font-size: 11.5px; line-height: 1.6; text-align: center; }
+.chat-notice { flex: none; margin: 4px 0 0; padding: 8px 12px; border-radius: 8px; background: var(--bg-sunk); color: var(--ink-3); font-size: 13px; line-height: 1.6; }
+/* 最近问过的几题：点一下填进输入框 */
+.ask-suggest { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 18px 0 0; padding: 0; list-style: none; }
+.ask-suggest li { min-width: 0; max-width: 100%; }
+.ask-suggest a { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-height: 34px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-3); font-size: 13px; }
+.ask-suggest a:hover { border-color: var(--line-strong); background: var(--surface); color: var(--ink); }
+.ask-suggest span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-suggest svg { width: 14px; height: 14px; flex: none; color: var(--ink-4); }
+.ask-workspace .answer-sources { margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--line-soft); }
+.ask-workspace .answer-sources h3 { margin: 0 0 12px; color: var(--ink-2); font-size: 13.5px; font-weight: 600; }
 .ask-workspace .answer-sources h3 span { margin-left: 4px; }
-.ask-workspace .citations { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.ask-workspace .citations > li { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; opacity: 1; }
+.ask-workspace .citations { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ask-workspace .citations > li { min-width: 0; padding: 12px 14px 10px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--surface); opacity: 1; transition: border-color .15s, box-shadow .15s; }
+[data-theme="dark"] .ask-workspace .citations > li { background: var(--raised); }
+.ask-workspace .citations > li:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); }
 .ask-workspace .citations li:target { border-color: var(--accent); background: var(--accent-softer); }
-.ask-workspace .citations .item-meta { display: flex; align-items: baseline; gap: 6px; margin: 0; color: var(--ink-2); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
-.source-number { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding-inline: 4px; border-radius: 5px; background: var(--bg-sunk); color: var(--ink-3); font-size: 11px; }
+.ask-workspace .citations .item-meta { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; margin: 0; color: var(--ink-2); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ask-workspace .citations .item-meta a { display: -webkit-box; min-width: 0; overflow: hidden; color: var(--ink); font-weight: 600; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.source-number { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding-inline: 5px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); font-size: 11px; font-weight: 600; }
 .source-byline { margin: 5px 0 4px; color: var(--ink-4); font-size: 11px; line-height: 1.6; }
-.ask-workspace .passage-foot { margin-top: 6px; gap: 6px; }
+.ask-workspace .passage-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
 .ask-workspace .passage-full summary { padding-block: 4px; font-size: 12px; }
 .ask-workspace .mark-form { margin-top: 2px; }
-.ask-workspace .mark { min-height: 28px; border-color: transparent; font-size: 11px; }
-.ask-workspace .answer-feedback { margin-top: 18px; color: var(--ink-4); font-size: 12px; }
+.ask-workspace .mark { min-height: 28px; border-color: transparent; color: var(--ink-4); font-size: 11px; }
+.ask-workspace .more-passages { margin-top: 16px; }
+/* 回答末尾一排：补充遗漏的文章（小圆角按钮），右边是模型和时间 */
+.ask-workspace .answer-tail { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 22px; }
+.ask-workspace .answer-tail .answer-meta { margin: 0 0 0 auto; }
+.ask-workspace .answer-feedback { color: var(--ink-4); font-size: 12px; }
+.ask-workspace .answer-feedback[open] { flex-basis: 100%; }
+.ask-workspace .answer-feedback > summary { display: inline-flex; align-items: center; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-3); list-style: none; }
+.ask-workspace .answer-feedback > summary::-webkit-details-marker { display: none; }
+.ask-workspace .answer-feedback > summary:hover { border-color: var(--line-strong); color: var(--ink); }
 .answer-feedback > summary { min-height: 32px; padding-block: 6px; cursor: pointer; }
 .ask-workspace .missing-form { margin-top: 4px; padding-top: 0; border: 0; }
 .ask-workspace .retry-form button { min-height: 36px; padding: 6px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 13px; cursor: pointer; }
-.article-chat .chat-head { align-items: baseline; min-height: 44px; padding: 0 4px 8px; border-bottom: 1px solid var(--line-soft); }
-.article-chat .chat-head h2 { font-size: 15px; }
-.article-chat .chat-head-actions button { min-height: 36px; color: var(--ink-3); font-size: 12px; }
+/* 模型和思考强度（_ask_model.html）：输入框里发送键左边一枚不带框的小字，点开是浮层。
+   浮层对齐输入框右边、不超过输入框宽，阅读页右栏（overflow: hidden）和窄手机上都不会被切掉。 */
+.ask-workspace .chat-composer, .article-chat .chat-composer { position: relative; }
+.chat-composer-bar .ask-model { flex: none; margin: 0; color: var(--ink-3); font-size: 12.5px; }
+.chat-composer-bar .ask-model > summary { display: inline-flex; align-items: center; gap: 3px; min-height: 32px; padding: 0 7px 0 10px; border-radius: 10px; list-style: none; white-space: nowrap; cursor: pointer; }
+.chat-composer-bar .ask-model > summary::-webkit-details-marker { display: none; }
+.chat-composer-bar .ask-model > summary:hover,
+.chat-composer-bar .ask-model[open] > summary { background: var(--bg-sunk); color: var(--ink); }
+.chat-composer-bar .ask-model > summary svg { width: 13px; height: 13px; flex: none; transition: transform .2s var(--ease); }
+.chat-composer-bar .ask-model[open] > summary svg { transform: rotate(180deg); }
+.chat-composer-bar .ask-model .model-grid { position: absolute; z-index: 30; right: 0; bottom: calc(100% + 10px); display: grid; gap: 14px; width: min(320px, 100%); max-height: min(72dvh, 440px); margin: 0; padding: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 14px 44px color-mix(in srgb, var(--ink) 14%, transparent); color: var(--ink-2); text-align: left; }
+[data-theme="dark"] .chat-composer-bar .ask-model .model-grid { background: var(--raised); }
+.ask-workspace:has(.ask-welcome) .chat-composer-bar .ask-model .model-grid { top: calc(100% + 10px); bottom: auto; }
+.model-grid fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.model-grid legend { margin: 0 0 8px; padding: 0; color: var(--ink-4); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; }
+.model-providers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.model-option, .effort-row label { position: relative; display: block; min-width: 0; cursor: pointer; }
+/* 单选框本身看不见，留在原处给键盘和读屏用；点的是它后面那块。 */
+.model-option input, .effort-row input { position: absolute; top: 0; left: 0; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.model-option > span { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-height: 50px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 11px; }
+.model-option b { color: var(--ink); font-size: 13.5px; font-weight: 600; }
+.model-option small { overflow: hidden; color: var(--ink-4); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.model-option:hover > span { border-color: var(--line-strong); }
+.model-option input:checked + span { border-color: var(--accent); background: var(--accent-softer); box-shadow: inset 0 0 0 1px var(--accent); }
+.effort-row { display: grid; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 2px; padding: 3px; border-radius: 11px; background: var(--bg-sunk); }
+.effort-row span { display: flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 6px; border-radius: 8px; color: var(--ink-3); font-size: 13px; white-space: nowrap; }
+.effort-row label:hover span { color: var(--ink); }
+.effort-row input:checked + span { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+[data-theme="dark"] .effort-row input:checked + span { background: var(--bg-muted); }
+.model-option input:focus-visible + span, .effort-row input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+.model-note { margin: 0; color: var(--ink-4); font-size: 11.5px; line-height: 1.6; }
+/* 阅读页右侧问库：标题栏两枚图标键；还没问时问候和几道题放在中间；输入框左下角是范围，右下角是模型。 */
+.article-chat .chat-head { align-items: center; min-height: 40px; padding: 0 0 6px 4px; border-bottom: 0; }
+.article-chat .chat-head h2 { color: var(--ink-3); font-size: 14px; font-weight: 600; letter-spacing: .04em; line-height: 1.4; }
+.article-chat .chat-head-actions { align-items: center; gap: 2px; }
+.article-chat .chat-head-actions button { display: inline-grid; place-items: center; width: 34px; height: 34px; padding: 0; border-radius: 9px; color: var(--ink-3); line-height: 1; }
+.article-chat .chat-head-actions button:hover { background: var(--bg-sunk); color: var(--ink); }
+.article-chat .chat-head-actions svg { width: 18px; height: 18px; }
+/* 收起：窄屏的抽屉往下收，箭头朝下；1320 起是右栏，往右收。 */
+.article-chat .chat-head-actions .icon-side { display: none; }
 .article-chat .chat-log { gap: 20px; padding: 18px 6px 24px; scrollbar-width: thin; }
+.article-chat .chat-welcome { flex-direction: column; flex-wrap: nowrap; gap: 0; align-self: center; width: min(100%, 560px); margin: auto 0; padding: 8px 2px 16px; }
+.article-chat .chat-welcome .ask-seal { width: 34px; height: 34px; border-radius: 10px; font-size: 18px; }
+.article-chat .chat-welcome h3 { margin: 14px 0 0; color: var(--ink); font-family: var(--font-serif); font-size: 21px; font-weight: 600; letter-spacing: .02em; line-height: 1.4; }
+.article-chat .ask-suggest { flex-direction: column; flex-wrap: nowrap; align-self: stretch; gap: 6px; margin: 22px 0 0; text-align: left; }
+.article-chat .ask-suggest li { max-width: none; }
+.article-chat .ask-suggest a { display: flex; align-items: flex-start; gap: 9px; min-height: 0; padding: 9px 12px; border-radius: 12px; color: var(--ink-2); font-size: 13px; line-height: 1.6; }
+.article-chat .ask-suggest a span:not(.sr) { overflow: visible; white-space: normal; }
+.article-chat .ask-suggest svg { margin-top: 3px; }
 .article-chat .chat-bubble-user { max-width: 90%; padding: 10px 14px; border-radius: 18px 18px 4px 18px; background: var(--bg-muted); line-height: 1.7; }
 .article-chat .chat-bubble-user > p:last-child { white-space: pre-wrap; }
 .article-chat .chat-markdown { font-size: 15px; line-height: 1.85; }
 .article-chat .chat-form { padding-top: 8px; }
-.article-chat .chat-range { min-height: 32px; font-size: 12px; }
+.article-chat .chat-composer-bar { justify-content: flex-start; gap: 4px; padding: 2px 6px 6px 8px; }
+.article-chat .chat-composer-bar .ask-model { margin-left: auto; }
+/* 范围：一枚小圆角标签。看得见的是 .chat-range-text（脚本跟着下拉框改），下拉框透明地盖满整枚标签，点哪里都是点它；
+   它的字号留 16px，iPhone 上点下拉框才不会把整页放大。没脚本时 ask-chat-noscript.css 把下拉框露出来。 */
+.chat-range-chip { position: relative; display: inline-flex; flex: 0 1 auto; align-items: center; gap: 5px; min-width: 0; min-height: 32px; padding: 0 8px 0 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-3); font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.chat-range-chip:hover, .chat-range-chip:focus-within { background: var(--bg-sunk); color: var(--ink); }
+.chat-range-chip:has(select:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chat-range-chip > svg { width: 14px; height: 14px; flex: none; }
+.chat-range-chip > svg.chevron { width: 12px; height: 12px; }
+.chat-range-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.article-chat .chat-range-chip .chat-range { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; max-width: none; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 999px; opacity: 0; font-size: 16px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.article-chat .chat-form button[type="submit"] { width: 34px; height: 34px; border-radius: 11px; background: var(--accent); color: var(--accent-contrast); }
+.article-chat .chat-form button[type="submit"]:hover { background: var(--accent-ink); color: var(--accent-contrast); }
+.article-chat .chat-form button[type="submit"] svg { width: 18px; height: 18px; }
+.article-chat .chat-foot { margin: 8px 0 0; color: var(--ink-4); font-size: 11px; line-height: 1.5; text-align: center; }
+/* 阅读页抽屉里浮层往上开，高度让出标题栏和输入框，矮屏（手机横放）上在浮层里滚。 */
+.article-chat .chat-composer-bar .ask-model .model-grid { bottom: calc(100% + 8px); max-height: calc(min(78dvh, 640px) - 170px); }
 :is(.ask-workspace, .article-chat) [hidden] { display: none; }
-@media (min-width: 1024px) {
-  .shell:has(.ask-workspace) main { padding-top: 0; }
-  .shell:has(.ask-workspace) .frame { height: 100dvh; }
-  .ask-head { min-height: 76px; padding-inline: 20px; }
-  .ask-workspace .chat-form { padding-bottom: 20px; }
+/* 宽屏右栏有一整屏高：浮层最多到标题栏下面。手机横放这类矮屏上省掉输入框下面那行说明。 */
+@media (min-width: 1320px) {
+  .article-chat .chat-composer-bar .ask-model .model-grid { max-height: calc(100dvh - 200px); }
+  .article-chat .chat-head-actions .icon-side { display: block; }
+  .article-chat .chat-head-actions .icon-down { display: none; }
 }
-@media (max-width: 600px) {
-  .ask-heading > span { display: none; }
-  .ask-head-actions { gap: 12px; }
-  .ask-workspace > .chat-log { gap: 24px; padding: 24px 0; }
-  .ask-workspace .chat-form { padding: 0 0 8px; }
-  .ask-workspace .chat-bubble-user { max-width: 92%; padding: 10px 14px; }
-  .ask-workspace .citations { grid-template-columns: minmax(0, 1fr); }
+@media (max-height: 520px) {
+  .article-chat .chat-foot { display: none; }
+}
+/* 600px 起导航在侧边，上下没有导航条；输入框让出手机底部的安全区。 */
+@media (min-width: 600px) {
+  .shell:has(.ask-workspace) { --top-chrome: 0px; --bottom-chrome: 0px; }
+  .shell:has(.ask-workspace) main { padding-top: 0; }
+  .ask-workspace .chat-form { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+}
+@media (pointer: coarse) {
+  /* iOS 上输入框的字小于 16px，点进去整页会放大（折叠屏、iPad 也是），所以按触屏判断，不按宽度。 */
   .ask-filters :is(input, select) { font-size: 16px; min-height: 44px; }
-  .ask-filters .filter-grid { gap: 8px; }
+}
+@media (max-width: 599px) {
+  .ask-workspace > .chat-log { gap: 24px; padding: 8px 0 24px; }
+  .ask-workspace .chat-form { padding-bottom: 8px; }
+  .ask-workspace .chat-bubble-user { max-width: 92%; padding: 10px 15px; }
+  .ask-workspace .citations { grid-template-columns: minmax(0, 1fr); }
+  .chat-composer-bar .ask-filters > summary { min-height: 36px; }
   .ask-workspace .chat-form textarea, .article-chat .chat-form textarea { font-size: 16px; }
   .ask-workspace .chat-form button[type="submit"], .article-chat .chat-form button[type="submit"] { width: 44px; height: 44px; }
-  .article-chat .chat-head-actions button, .article-chat .chat-range { min-height: 44px; }
+  .article-chat .chat-head-actions button { width: 44px; height: 44px; }
+  .chat-range-chip, .chat-composer-bar .ask-model > summary { min-height: 36px; }
+  .article-chat .chat-form button[type="submit"] { border-radius: 13px; }
+  .effort-row span { min-height: 38px; }
   :is(.ask-workspace, .article-chat) .chat-recovery :is(a, button),
   .ask-workspace .passage-full summary, .ask-workspace .mark,
-  .ask-workspace .ask-filters > summary, .answer-feedback > summary { min-height: 44px; }
-  .composer-footnote { font-size: 10px; }
+  .answer-feedback > summary { min-height: 44px; }
+  .composer-footnote { font-size: 11px; }
 }

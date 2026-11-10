@@ -268,6 +268,7 @@ def _answer_for_tool(payload: dict, base: str) -> dict:
             if item.get("article_id") is not None
         ],
         "checks": payload["checks"],
+        "llm": payload.get("llm") or {},
     }
     if status == "running":
         result["progress"] = (payload["stats"] or {}).get("progress") or {}

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from researchlib.chunks import MAX_CHARS, make_chunks
+from researchlib.chunks import MAX_CHARS, make_chunks, make_chunks_from_html, ocr_chunks
 from researchlib.digest import parse_digest
 from researchlib.llm import LLMError
 from researchlib.mentions import CompanyMatcher
@@ -19,6 +19,30 @@ def test_chunks_follow_sections_and_stay_bounded():
     assert {heading for heading, _ in chunks[1:-1]} == {"第一节"}
     assert chunks[-1] == ("第二节", "短的一节。")
     assert all(len(text) <= MAX_CHARS for _, text in chunks)
+
+
+def test_a_long_table_from_an_image_keeps_one_row_per_line_across_chunks():
+    """识图交回的一张表长过一块时，切开以后每块里仍是一行一条记录。
+
+    以前长段按换行切开时把换行吃掉了，接回去几行粘成一行（「收入11 | 某公司」），数字挨着上一行的字，
+    问库读到的像是上一行的数。
+    """
+    rows = [["排名", "公司", "收入"]] + [
+        [str(index), f"某公司{index}", "约 310 亿：" + " ".join(["票房 -91.91 亿"] * 6)] for index in range(1, 16)
+    ]
+    units = {"v": 1, "kind": "table", "blocks": [{"type": "table", "rows": rows}]}
+    chunks = ocr_chunks([("a" * 64, "", units)])
+    assert len(chunks) > 1
+    assert all(len(text) <= MAX_CHARS for _anchor, text in chunks)
+    assert [line for _anchor, text in chunks for line in text.split("\n")] == [" | ".join(row) for row in rows]
+
+
+def test_long_translated_lines_split_at_line_breaks_stay_separate_words():
+    """译文里用 <br> 隔开的长段切块时，行和行之间留着换行，英文的两行不会粘成一个词。"""
+    lines = [f"Line {index} ends here" + " word" * 30 for index in range(12)]
+    chunks = make_chunks_from_html("<p>" + "<br>".join(lines) + "</p>")
+    assert len(chunks) > 1
+    assert [line for _heading, text, _anchor in chunks for line in text.split("\n")] == lines
 
 
 def test_chunks_strip_frontmatter_and_empty_body():
@@ -77,7 +101,7 @@ def test_cited_numbers_ignore_out_of_range():
 def test_answer_html_escapes_and_links_citations():
     html = str(answer_html("看好 <script>x</script> [1]"))
     assert "<script>" not in html
-    assert '<a class="cite" href="#c-1">[1]</a>' in html
+    assert '<a class="cite" href="#c-1"><span class="cite-mark">[</span>1<span class="cite-mark">]</span></a>' in html
 
 
 def test_mention_snippet_takes_the_sentence():

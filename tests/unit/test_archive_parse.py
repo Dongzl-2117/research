@@ -3,7 +3,8 @@ import zipfile
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from researchlib.ingest.parse import is_index_markdown, parse_archive, select_raw_json
+from researchlib.ingest.archive import is_archive_note
+from researchlib.ingest.parse import parse_archive, select_raw_json
 from researchlib.ingest.wechat import main as wechat_main
 from researchlib.ingest.zsxq import main as zsxq_main
 from researchlib.sources import load_sources
@@ -172,12 +173,62 @@ def test_feishu_nested_ids(tmp_path: Path):
     (note / "子文档").mkdir(parents=True)
     (note / "index.md").write_text("# 总览\n\n父文档。\n", encoding="utf-8")
     (note / "子文档" / "a.md").write_text("# 子篇\n\n子文档。\n", encoding="utf-8")
-    docs, errors, files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="path")
+    # 文档树里 index.md 是「笔记」这一层自己的那一页，飞书导入不按说明文件筛。
+    docs, errors, files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="path", skip_notes=False)
     assert errors == []
     assert files == 2
     by_id = {doc.external_id: doc for doc in docs}
     assert "笔记/index.md" in by_id
     assert by_id["笔记/子文档/a.md"].raw_meta["parent"] == "笔记/子文档"
+
+
+def test_archive_notes_are_not_articles(tmp_path: Path):
+    """归档自己的 README、INDEX 不是文章：方伟公众号归档根上的两份说明以前被当成文章导进去了。"""
+    (tmp_path / "md" / "2026").mkdir(parents=True)
+    (tmp_path / "raw" / "articles").mkdir(parents=True)
+    (tmp_path / "README.md").write_text(
+        "# 某公众号完整存档\n\n| 项目 | 值 |\n|---|---|\n| 已抓正文 | 2 |\n\n## 如何生成 / 更新\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "INDEX.md").write_text(
+        "# 存档索引\n\n| 日期 | 标题 |\n| --- | --- |\n| 2026-10-17 | [腾讯](md/2026/2026-10-17-a.md) |\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "md" / "Index.markdown").write_text("目录\n", encoding="utf-8")
+    (tmp_path / "md" / "2026" / "2026-10-17-a.md").write_text(
+        "# 腾讯\n\n- 作者：方伟看十年\n- 时间：2026-10-17 07:00:00 (UTC+8)\n\n正文提到腾讯。\n",
+        encoding="utf-8",
+    )
+    # 文件名里带 readme、index 的普通文章照收：只认整个名字。
+    (tmp_path / "md" / "2026" / "2026-10-18-readme-index.md").write_text(
+        "# 读书笔记\n\n- 时间：2026-10-18 07:00:00 (UTC+8)\n\n正文。\n",
+        encoding="utf-8",
+    )
+    docs, errors, files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="path")
+    assert errors == []
+    assert files == 2
+    # 外部 id 照旧是相对归档根的路径，不因为根上少了两个文件就变。
+    assert sorted(doc.external_id for doc in docs) == [
+        "md/2026/2026-10-17-a.md",
+        "md/2026/2026-10-18-readme-index.md",
+    ]
+    # 星球导出 md/ 里的 INDEX.md、README.md 也一样。
+    zsxq = tmp_path / "zsxq"
+    (zsxq / "md").mkdir(parents=True)
+    (zsxq / "md" / "888888.md").write_text("- 时间：2024-11-28 10:40:22\n\n正文。\n", encoding="utf-8")
+    (zsxq / "md" / "INDEX.md").write_text("# 话题索引（按时间倒序）\n\n- [正文](888888.md)\n", encoding="utf-8")
+    (zsxq / "md" / "readme.md").write_text("导出说明\n", encoding="utf-8")
+    docs, errors, files, _images = parse_archive(zsxq, tmp_path / "work-zsxq", id_mode="zsxq")
+    assert errors == []
+    assert files == 1
+    assert [doc.external_id for doc in docs] == ["888888"]
+
+
+def test_archive_note_names():
+    for name in ("README.md", "readme.markdown", "INDEX.md", "md/INDEX.md", "笔记\\index.md"):
+        assert is_archive_note(name), name
+    for name in ("README.txt", "index.html", "2026-10-18-readme.md", "_index.md", "主页-Jason 林文丰.md", "INDEX"):
+        assert not is_archive_note(name), name
 
 
 def _shanghai(value):
@@ -282,7 +333,7 @@ def test_zsxq_topics_json_wins_over_raw_root_files(tmp_path: Path):
     docs, errors, _files, _images = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq")
     assert errors == []
     assert [doc.external_id for doc in docs] == ["888888"]
-    assert is_index_markdown(tmp_path / "md" / "INDEX.md")
+    assert is_archive_note("INDEX.md")
     local = _shanghai(docs[0].published_at)
     assert (local.year, local.month, local.day, local.hour, local.minute, local.second) == (2024, 11, 28, 10, 40, 22)
     assert docs[0].raw_meta["date_source"] == "meta"
