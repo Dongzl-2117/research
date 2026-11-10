@@ -225,6 +225,48 @@ def test_proxy_fake_ip_is_allowed_only_for_the_known_image_hosts(monkeypatch):
     assert opened[1].closed
 
 
+def test_wechat_image_cdn_downloads_through_the_proxy_fake_ip(monkeypatch):
+    """11-08 起新抓的公众号文章，图在微信图床 mmbiz.qpic.cn，Mac mini 上也解析成 198.18.x.x，一张都没下下来，
+    文章页全是「外部图片已省略」。微信图床也放行假地址：只认这一个域名，长得像的照旧不连，解析到真正的内网照旧不连。
+    请求不带 Referer：微信图床对外站的 Referer 回占位图。"""
+    check_address("mmbiz.qpic.cn", "198.18.0.12")
+    check_address("MMBIZ.QPIC.CN.", "198.18.0.12")
+    for host in ("qpic.cn", "x.mmbiz.qpic.cn", "mmbiz.qpic.cn.evil.example", "evilmmbiz.qpic.cn"):
+        with pytest.raises(FetchError, match="^地址解析到代理的假地址"):
+            check_address(host, "198.18.0.12")
+    with pytest.raises(FetchError, match=r"^地址解析到内网或本机，不下载（mmbiz\.qpic\.cn → 10\.0\.0\.5）$"):
+        check_address("mmbiz.qpic.cn", "10.0.0.5")
+
+    monkeypatch.setattr(
+        remote_images.socket, "getaddrinfo",
+        lambda host, *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.12", 0))],
+    )
+    sent: list[tuple[str, dict]] = []
+
+    class _Response:
+        headers = {"Content-Type": "image/png"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, _size):
+            return b"\x89PNG\r\n\x1a\n...."
+
+    class _Opener:
+        def open(self, request, timeout):
+            sent.append((request.full_url, dict(request.header_items())))
+            return _Response()
+
+    monkeypatch.setattr(remote_images, "_opener", _Opener)
+    url = "https://mmbiz.qpic.cn/mmbiz_png/AbCdEf/640?wx_fmt=png&from=appmsg"
+    assert download(url)[1] == "image/png"
+    assert [address for address, _headers in sent] == [url]
+    assert not any(name.lower() == "referer" for name in sent[0][1])
+
+
 def test_stratechery_image_downloads_through_the_proxy_fake_ip(monkeypatch):
     """修之前：原站 stratechery.com 和 CDN i0.wp.com 都解析到 198.18.x.x，download 两边都拦下，一张都不连。"""
     monkeypatch.setattr(

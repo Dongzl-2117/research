@@ -219,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         posts = [post for first, last in day_ranges(days) for post in fetch_posts(first, last)]
         docs, missing = clock_docs(rows, posts)
         stats = refresh_clocks(
-            conn, source, docs, settings, dry_run=args.dry_run, same_row=True, forget_index=False
+            conn, source, docs, settings, dry_run=args.dry_run, same_row=True, forget_notes=False
         )
     except Exception:
         conn.rollback()

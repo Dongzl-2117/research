@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from researchlib.ingest.archive import ImageIndex, iter_files, materialize
+from researchlib.ingest.archive import ImageIndex, is_archive_note, iter_files, materialize
 from researchlib.ingest.model import ParsedDoc
 from researchlib.render import image_destination
 from researchlib.textutil import (
@@ -379,11 +379,6 @@ def load_raw_index(raw_files: list[Path]) -> dict[str, dict]:
     return index
 
 
-def is_index_markdown(path: Path) -> bool:
-    """知识星球导出的 INDEX.md 是目录，不是一条话题。"""
-    return path.stem.lower() == "index" and path.suffix.lower() in {".md", ".markdown"}
-
-
 def select_raw_json(paths: list[Path]) -> list[Path]:
     """话题 JSON。raw/topics/*.json 也要，不能只因为 raw/ 根上有 group.json、state.json 就停住。
 
@@ -586,9 +581,18 @@ def _owning_root(path: Path, roots: list[Path]) -> Path | None:
 
 
 def parse_archive(
-    input_path: Path, work: Path, *, id_mode: str, owners: tuple[str, ...] = ()
+    input_path: Path,
+    work: Path,
+    *,
+    id_mode: str,
+    owners: tuple[str, ...] = (),
+    skip_notes: bool = True,
 ) -> tuple[list[ParsedDoc], list[str], int, int]:
-    """owners：星球评论区只留这些名字（zsxq_comments.source_owners）。不给时按方伟。"""
+    """owners：星球评论区只留这些名字（zsxq_comments.source_owners）。不给时按方伟。
+
+    skip_notes：归档的 README、INDEX 不是文章，不导入（archive.is_archive_note）。
+    飞书这类文档树传 False：一层目录自己的那一页可能就叫 index.md。
+    """
     roots = materialize(input_path, work)
     markdown, images, raw_json = iter_files(roots)
     if id_mode == "zsxq":
@@ -603,10 +607,11 @@ def parse_archive(
                 )
             if chosen:
                 markdown = chosen
-        markdown = [path for path in markdown if not is_index_markdown(path)]
         raw_index = load_raw_index(select_raw_json(raw_json))
     else:
         raw_index = {}
+    if skip_notes:
+        markdown = [path for path in markdown if not is_archive_note(path.name)]
     index = ImageIndex(images, roots)
     docs, errors = parse_markdown_files(
         markdown,

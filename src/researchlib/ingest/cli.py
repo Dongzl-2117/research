@@ -9,6 +9,7 @@ from pathlib import Path
 
 from researchlib.config import Settings
 from researchlib.db import prepare
+from researchlib.ingest.archive import DOCUMENT_TREE_KINDS
 from researchlib.ingest.parse import parse_archive
 from researchlib.ingest.store import store_documents
 from researchlib.sources import SourceRejected, load_sources, require_source
@@ -47,7 +48,11 @@ def run_markdown_ingest(
         with tempfile.TemporaryDirectory(prefix="research-ingest-") as tmp:
             owners = source_owners(source) if id_mode == "zsxq" else ()
             docs, errors, archive_files, image_count = parse_archive(
-                args.input, Path(tmp), id_mode=id_mode, owners=owners
+                args.input,
+                Path(tmp),
+                id_mode=id_mode,
+                owners=owners,
+                skip_notes=kind not in DOCUMENT_TREE_KINDS,
             )
             report = store_documents(
                 conn,

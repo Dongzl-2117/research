@@ -12,6 +12,7 @@ from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
 from researchlib.images import sync_article_images
+from researchlib.ingest.archive import ARCHIVE_NOTE_STEMS, DOCUMENT_TREE_KINDS, archive_note_names
 from researchlib.ingest.model import IngestReport, ParsedDoc
 from researchlib.mentions import (
     CompanyMatcher,
@@ -63,9 +64,9 @@ def store_documents(
         errors=list(errors),
         rejected=rejected,
     )
-    if source.kind == "zsxq":
-        report.removed_index = forget_index_articles(conn, source.id)
-        if report.removed_index:
+    if source.kind not in DOCUMENT_TREE_KINDS:
+        report.removed_notes = forget_archive_notes(conn, source.id)
+        if report.removed_notes:
             conn.commit()
     matcher = CompanyMatcher(load_company_rows(conn))
     for doc in docs:
@@ -101,23 +102,27 @@ def store_documents(
 
 
 IMPORT_KEY = "import:"
-_INDEX_NAMES = frozenset({"index.md", "index.markdown"})
-_INDEX_IDS = frozenset({"index", "index.md", "index.markdown", "md/index.md"})
 
 
-def forget_index_articles(conn, source_id: str) -> int:
-    """INDEX.md 是归档目录，不是一条话题。从库里去掉，避免假日期进按天。"""
+def forget_archive_notes(conn, source_id: str) -> int:
+    """归档的 README、INDEX 不是文章（archive.is_archive_note）。以前导进来的从库里删掉。
+
+    块、向量、提及、摘要、观点的外键都是 ON DELETE CASCADE，跟着删。飞书这类文档树不调：
+    那里 index.md 可能是一层目录自己的那一页。认文件名（raw_meta.filename），没记文件名的认外部 id
+    的最后一段：路径导入的是相对路径（README.md、md/INDEX.md），星球的是去掉扩展名的文件名（INDEX）。
+    """
+    names = archive_note_names()
     rows = conn.execute(
         """
         DELETE FROM articles
         WHERE source_id = %s
           AND (
-            lower(coalesce(raw_meta->>'filename', '')) = ANY(%s)
-            OR lower(external_id) = ANY(%s)
+            lower(regexp_replace(coalesce(raw_meta->>'filename', ''), '^.*/', '')) = ANY(%s)
+            OR lower(regexp_replace(external_id, '^.*/', '')) = ANY(%s)
           )
         RETURNING id
         """,
-        (source_id, list(_INDEX_NAMES), list(_INDEX_IDS)),
+        (source_id, names, names + sorted(ARCHIVE_NOTE_STEMS)),
     ).fetchall()
     return len(rows)
 
