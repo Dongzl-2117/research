@@ -116,6 +116,12 @@
 .article-chat .chat-form { padding-top: 8px; }
 .article-chat .chat-range { min-height: 32px; font-size: 12px; }
 :is(.ask-workspace, .article-chat) [hidden] { display: none; }
+/* 600 到 1023px 导航在左边的图标栏里，上下没有导航条，问库占满整屏高；输入框让出手机底部的安全区。 */
+@media (min-width: 600px) and (max-width: 1023px) {
+  .shell:has(.ask-workspace) main { padding-top: 0; }
+  .shell:has(.ask-workspace) .frame { height: 100dvh; }
+  .ask-workspace .chat-form { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+}
 @media (min-width: 1024px) {
   .shell:has(.ask-workspace) main { padding-top: 0; }
   .shell:has(.ask-workspace) .frame { height: 100dvh; }

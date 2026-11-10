@@ -158,7 +158,7 @@
         });
         var index = mode === "dark" ? 0 : mode === "system" ? 1 : 2;
         document.querySelectorAll("[data-theme-thumb]").forEach(function (thumb) {
-          thumb.style.transform = "translateX(" + (index * 100) + "%)";
+          thumb.style.setProperty("--theme-index", String(index));
         });
       }
       function save(mode) {
