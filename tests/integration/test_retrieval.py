@@ -7,6 +7,9 @@ from researchlib import ask as ask_module
 from researchlib.seed import load_sample
 from researchlib.web.app import create_app
 
+# 引用的方括号留在看不见的 span 里：页面上是小圆角数字，复制出来和读屏照旧是 [1]。
+CITE_ONE = '<a class="cite" href="#c-1"><span class="cite-mark">[</span>1<span class="cite-mark">]</span></a>'
+
 
 def _sample(conn, settings):
     os.environ["ALLOW_SAMPLE_SEED"] = "1"
@@ -211,7 +214,7 @@ def test_ask_with_llm_saves_answer_and_cites(conn, settings, monkeypatch):
         assert posted.status_code == 303
         location = posted.headers["location"]
         answer = client.get(location)
-        assert '<a class="cite" href="#c-1">[1]</a>' in answer.text
+        assert CITE_ONE in answer.text
         assert 'class="cited"' in answer.text
         answer_id = int(location.rsplit("/", 1)[-1])
         data = client.get(f"/api/v1/answers/{answer_id}").json()
@@ -397,7 +400,7 @@ def test_ask_runs_in_background_and_page_waits(conn, settings, monkeypatch):
             time.sleep(0.1)
         done = client.get(f"/ask/{answer_id}")
         assert "正在整合" not in done.text
-        assert '<a class="cite" href="#c-1">[1]</a>' in done.text
+        assert CITE_ONE in done.text
         assert client.get(f"/api/v1/answers/{answer_id}").json()["status"] == "done"
 
 
@@ -443,7 +446,7 @@ def test_ask_history_lists_a_repeated_question_once(conn, settings):
     conn.commit()
     with TestClient(create_app(settings)) as client:
         page = client.get("/ask").text
-    history = page[page.index("最近问过") :]
+    history = page.split('<nav aria-label="最近问过">', 1)[1].split("</nav>", 1)[0]
     # 整个库里问的那组按最后一次问的时间排在最前，链到整合完的那次；只用一篇的另列一条，标出来。
     assert history.count("方伟怎么看茅台") == 2
     assert history.index(f'href="/ask/{ids[1]}"') < history.index(f'href="/ask/{ids[4]}"')
@@ -451,6 +454,10 @@ def test_ask_history_lists_a_repeated_question_once(conn, settings):
     assert "只用一篇" in history
     for skipped in (ids[0], ids[2], ids[5]):
         assert f'href="/ask/{skipped}"' not in history
+    # 输入框下面的建议题只挑问整个库的，同一题只摆一次；只用一篇的那条不摆。
+    suggest = page.split('<ul class="ask-suggest"', 1)[1].split("</ul>", 1)[0]
+    assert suggest.count('data-question="方伟怎么看茅台"') == 1
+    assert 'data-question="泡泡玛特的底线利润"' in suggest
 
 
 def test_companies_page_pins_holdings_and_company_page_defaults_to_deep(conn, settings):

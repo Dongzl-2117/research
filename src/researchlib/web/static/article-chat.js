@@ -231,8 +231,39 @@
     turn.status.textContent = message + '…';
   }
 
+  // 问库页整页滚动（.chat-log 不自己滚，输入框贴在窗口底部）；阅读侧栏照旧在面板里滚。
   function scrollLog() {
-    log.scrollTop = log.scrollHeight;
+    if (fullPage) window.scrollTo(0, document.documentElement.scrollHeight);
+    else log.scrollTop = log.scrollHeight;
+  }
+
+  function nearEnd() {
+    if (!fullPage) return log.scrollHeight - log.scrollTop - log.clientHeight < 96;
+    return document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 160;
+  }
+
+  // 问库页：新问题挪到标题栏下面，回答从它下面往下写（和 Claude 一样）。页面没那么长时挪不上去，
+  // 所以先给这一轮的回答留出一屏的高度；上一轮留的高度收回，免得回答短时下面空一大块。
+  function reserve(turn) {
+    if (!fullPage) return;
+    log.querySelectorAll('.chat-bubble-assistant').forEach((node) => { node.style.minHeight = ''; });
+    const head = panel.querySelector('.ask-head');
+    const formBox = form.getBoundingClientRect();
+    const covered = Math.max(0, window.innerHeight - formBox.top);
+    const room = window.innerHeight - (head ? head.offsetHeight : 0) - covered
+      - turn.user.offsetHeight - (parseFloat(getComputedStyle(log).rowGap) || 0) - 16;
+    turn.bubble.style.minHeight = `${Math.max(0, Math.round(room))}px`;
+  }
+
+  // 把这一轮的提问挪到看得见的最上面；问库页扣掉粘在顶上的标题栏。
+  function bringToTop(node) {
+    if (!fullPage) {
+      log.scrollTop += node.getBoundingClientRect().top - log.getBoundingClientRect().top - 16;
+      return;
+    }
+    // 标题栏粘在窗口顶上：按它的高度扣，不按它眼下的位置（手机上它下面还有一条顶栏，滚上去就没了）。
+    const head = panel.querySelector('.ask-head');
+    window.scrollBy(0, node.getBoundingClientRect().top - (head ? head.offsetHeight : 0) - 16);
   }
 
   function escapeHtml(text) {
@@ -255,7 +286,7 @@
         const escaped = escapeHtml(line).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         return escaped.replace(/\[(\d+)\]/g, (match, num) => {
           const href = byN[Number(num)] && safeArticleUrl(byN[Number(num)].url);
-          return href ? `<a class="cite" href="${escapeHtml(href)}">[${num}]</a>` : match;
+          return href ? `<a class="cite" href="${escapeHtml(href)}"><span class="cite-mark">[</span>${num}<span class="cite-mark">]</span></a>` : match;
         });
       });
       return `<p>${lines.join('<br>')}</p>`;
@@ -324,6 +355,8 @@
   function createTurn(question, article) {
     const welcome = log.querySelector('.ask-welcome');
     if (welcome) welcome.remove();
+    const suggest = panel.querySelector('.ask-suggest');
+    if (suggest) suggest.remove();
     const user = document.createElement('div');
     user.className = 'chat-bubble chat-bubble-user';
     const label = document.createElement('p');
@@ -344,7 +377,7 @@
     links.className = 'chat-recovery';
     bubble.append(status, content, links);
     log.appendChild(bubble);
-    return { question, article, status, content, links, user, id: null };
+    return { question, article, status, content, links, user, bubble, id: null };
   }
 
   function action(turn, label, kind) {
@@ -482,7 +515,7 @@
       window.location.reload();
       return;
     }
-    const following = log.scrollHeight - log.scrollTop - log.clientHeight < 96;
+    const following = nearEnd();
     renderData(turn, data);
     recovery(turn);
     if (data.status === 'done' && data.answer) {
@@ -499,7 +532,7 @@
     } else {
       pause(turn, '回答状态异常，可打开完整回答查看。');
     }
-    if (following && turn.user) log.scrollTop += turn.user.getBoundingClientRect().top - log.getBoundingClientRect().top - 16;
+    if (following && turn.user) bringToTop(turn.user);
   }
 
   // 整合中：读到第几批写在状态行，已经写出来的半截回答先显示（stats.progress、answer，见 ask._Progress）。
@@ -615,7 +648,7 @@
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   });
 
-  const scopeSummary = form.querySelector('.ask-filters summary span');
+  const scopeSummary = form.querySelector('.ask-scope');
   const baseScope = scopeSummary ? scopeSummary.textContent.split(' · ')[0] : '';
   function scopeText() {
     const values = new FormData(form);
@@ -651,7 +684,8 @@
     }
     progress(turn, article ? '正在这篇文章里检索' : '正在资料库里检索');
     input.value = '';
-    fitInput(); scrollLog();
+    fitInput();
+    if (fullPage) { reserve(turn); bringToTop(turn.user); } else scrollLog();
     try {
       const data = await jsonRequest('/api/v1/ask', {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -675,12 +709,14 @@
       recovery(turn);
       poll(turn, session);
     }
-    const history = panel.querySelector('.ask-history');
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && history && history.open) {
-        history.open = false;
-        history.querySelector('summary').focus();
-      }
+    // 最近问过的几题：点一下填进输入框，自己看过、改过再发（没脚本时链接带着 q 打开问库，也是填好不发）。
+    panel.querySelectorAll('.ask-suggest a[data-question]').forEach((link) => {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        input.value = link.dataset.question;
+        fitInput();
+        input.focus();
+      });
     });
     log.addEventListener('click', (event) => {
       const cite = event.target.closest('a.cite[href^="#c-"]');

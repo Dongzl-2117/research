@@ -1282,15 +1282,12 @@ def search_page(request: Request):
     semantic_total = found.semantic if found else 0
     listed = available - (found.partial if found else 0) - semantic_total
     page, pages, _offset = page_window(available, page, SEARCH_PAGE_SIZE)
-    author_counts: dict[str, int] = {}
     source_counts = []
     facet_ids = set(facet_scope.source_ids)
     for source in sources:
         if source.id not in facet_ids:
             continue
-        number = count_map.get(source.id, 0)
-        source_counts.append({"id": source.id, "name": source.name, "count": number})
-        author_counts[source.author] = author_counts.get(source.author, 0) + number
+        source_counts.append({"id": source.id, "name": source.name, "count": count_map.get(source.id, 0)})
     _order, grouped = _author_groups(sources)
     entity_authors = [name for name in grouped if query and (name == query or (len(query) >= 2 and query in name))]
     base = {
@@ -1310,7 +1307,6 @@ def search_page(request: Request):
             "query": query,
             "sources": sources,
             "source_counts": source_counts,
-            "author_counts": [{"name": name, "count": count} for name, count in author_counts.items()],
             "authors": list(grouped),
             "active_source": info["source"],
             "filters": info,
@@ -1331,6 +1327,8 @@ def search_page(request: Request):
             "pages": pages,
             "base_query": _query_string(**base),
             "page_query": _query_string(**base, source=info["source"]),
+            # 范围浮层里的「清除」：去掉作者和时间，留下搜索词、来源和公司。
+            "clear_scope_query": _query_string(q=query, source=info["source"], company=info["company"] or ""),
             "ask_query": _query_string(
                 q=query, author=info["author"], source=info["source"], company=info["company"] or "",
                 **{"from": info["from"], "to": info["to"]},

@@ -425,7 +425,7 @@ main {
   transform: translateY(-50%);
   pointer-events: none;
 }
-.search-track input, .search-bar input {
+.search-track input, .search-box input {
   width: 100%;
   border: 0;
   border-radius: 999px;
@@ -441,9 +441,9 @@ main {
   font-size: 14px;
 }
 [data-theme="dark"] .search-track input { background: color-mix(in srgb, var(--bg-muted) 60%, transparent); }
-.search-track input::placeholder, .search-bar input::placeholder { color: var(--ink-4); }
+.search-track input::placeholder, .search-box input::placeholder { color: var(--ink-4); }
 .search-track input:hover { box-shadow: inset 0 0 0 1px var(--line-strong); }
-.search-track input:focus, .search-bar input:focus {
+.search-track input:focus {
   background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft);
 }
@@ -467,28 +467,48 @@ main {
 .filter-track { width: min(360px, 100%); margin: 16px 0 8px; }
 .filter-track input { padding-right: 16px; }
 
-.search-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
-.search-bar .field { position: relative; min-width: 0; flex: 1; }
-.search-bar .search-ico { width: 17px; height: 17px; }
-.search-bar input {
-  height: 44px;
-  padding: 0 16px 0 40px;
+/* 检索页：一个大圆角框，箭头收在框里；作者、时间收成框下的小标签，点开是浮层。 */
+.frame:has(> .search-bar) { max-width: 880px; }
+.search-bar { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 18px; }
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
   border: 1px solid var(--line-strong);
+  border-radius: 20px;
   background: var(--surface);
-  font-size: 15px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent), 0 8px 28px color-mix(in srgb, var(--ink) 7%, transparent);
+  transition: border-color .15s, box-shadow .15s;
 }
-.search-bar button {
+[data-theme="dark"] .search-box { background: var(--raised); }
+.search-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line-strong));
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 8px 28px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.search-box .field { position: relative; min-width: 0; flex: 1; }
+.search-box .search-ico { left: 14px; width: 19px; height: 19px; }
+.search-box input {
   height: 44px;
-  padding: 0 20px;
+  padding: 0 8px 0 44px;
+  background: transparent;
+  font-size: 17px;
+}
+.search-box button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: 14px;
   background: var(--accent);
   color: var(--accent-contrast);
-  font-size: 14.5px;
-  font-weight: 600;
 }
-.search-bar button:hover { background: var(--accent-ink); }
-.search-bar button:active { transform: scale(.98); }
+.search-box button:hover { background: var(--accent-ink); }
+.search-box button:active { transform: scale(.96); }
+.search-box button svg { width: 20px; height: 20px; }
 
 .day { margin-top: 4px; }
 .day + .day { margin-top: 20px; }
@@ -1425,16 +1445,139 @@ tbody tr:hover td { background: var(--accent-softer); }
 .head-actions .quiet:hover { color: var(--accent); }
 .page-head + .pills { margin-top: 4px; }
 .head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 14px 0 16px; font-size: 13px; }
-.search-filters { width: 100%; color: var(--ink-3); font-size: 13px; }
-.search-filters summary { cursor: pointer; }
 .filter-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .filter-grid label { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 13px; }
-.entity-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 14px 0 0; color: var(--ink-4); font-size: 13px; }
-.facets { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 16px 0 8px; }
+/* 检索的作者、时间：框下一枚小标签，选了范围就换成强调色并写出范围；点开是浮层。 */
+.search-filters { position: relative; justify-self: start; max-width: 100%; color: var(--ink-3); font-size: 13px; }
+.search-filters > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0 10px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: nowrap;
+  list-style: none;
+  cursor: pointer;
+}
+.search-filters > summary::-webkit-details-marker { display: none; }
+.search-filters > summary:hover, .search-filters[open] > summary { background: var(--surface); color: var(--ink); }
+.search-filters > summary.is-set { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-softer); color: var(--accent-ink); }
+.search-filters > summary > span:not(.sr) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.search-filters > summary svg { width: 14px; height: 14px; flex: none; }
+.search-filters .filter-grid {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 12px;
+  width: min(380px, calc(100vw - 40px));
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 14px 44px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+[data-theme="dark"] .search-filters .filter-grid { background: var(--raised); }
+.search-filters .filter-grid label { flex-direction: column; align-items: stretch; gap: 4px; }
+.search-filters .filter-grid label:first-child { grid-column: 1 / -1; }
+.search-filters .filter-grid :is(input, select) { min-width: 0; max-width: 100%; min-height: 36px; }
+.filter-actions { display: flex; grid-column: 1 / -1; align-items: center; justify-content: flex-end; gap: 14px; margin: 4px 0 0; }
+.filter-actions a { color: var(--ink-3); }
+.filter-actions a:hover { color: var(--accent); }
+.filter-actions button {
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-weight: 600;
+}
+.filter-actions button:hover { background: var(--accent-ink); }
+@media (pointer: coarse) {
+  /* iOS 上输入框的字小于 16px，点进去整页会放大；手指点的地方也要够大。 */
+  .search-filters .filter-grid :is(input, select) { min-height: 44px; font-size: 16px; }
+  .search-filters > summary, .filter-actions button { min-height: 40px; }
+}
+/* 直达：公司和作者各一张小卡片 */
+.entity-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 18px 0 0; color: var(--ink-4); font-size: 13px; }
+.entity-row .tag {
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px 0 10px;
+  border-color: var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+[data-theme="dark"] .entity-row .tag { background: var(--raised); }
+.entity-row .tag:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent-ink); }
+.entity-row .tag .ticker { color: var(--ink-4); font-weight: 500; }
+.entity-row .tag::after { content: "›"; color: var(--ink-4); font-weight: 400; }
+/* 让问库读这些结果：一张卡片，跟在直达后面 */
+.ask-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--ink);
+  transition: border-color .15s, box-shadow .15s;
+}
+[data-theme="dark"] .ask-card { background: var(--raised); }
+.ask-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: var(--shadow-card-hover); }
+.ask-card-ico {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.ask-card svg { width: 18px; height: 18px; }
+.ask-card > span:nth-child(2) { flex: 1; min-width: 0; }
+.ask-card b { display: block; font-size: 14.5px; font-weight: 600; }
+.ask-card small { display: block; margin-top: 1px; overflow: hidden; color: var(--ink-3); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.ask-card .go { flex: none; color: var(--accent-ink); }
+.facets { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 18px 0 4px; }
 .facets .pills.search-pills { width: auto; max-width: 100%; margin: 0; }
-.stat-list.author-facets { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-4); font-size: 12.5px; }
-.stat-list.author-facets li { display: flex; gap: 4px; padding: 0; border: 0; }
-.stat-list.author-facets strong { color: var(--ink-2); font-weight: 600; }
+/* 检索结果：日期并进作者那一行，不要左边的日期栏；整条可点，鼠标停上去浮出底色。 */
+.slots.flat.results .slot { display: block; padding: 0; border-bottom: 1px solid var(--line-soft); }
+.slots.flat.results .slot:last-child { border-bottom: 0; }
+.slots.flat.results .item-card {
+  margin: 0 -14px;
+  padding: 18px 14px 16px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  box-shadow: none;
+  transition: background-color .15s;
+}
+.slots.flat.results .item-card:hover { border: 0; background: var(--surface); box-shadow: none; }
+[data-theme="dark"] .slots.flat.results .item-card:hover { background: var(--raised); }
+.slots.flat.results .item-date { color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.slots.flat.results .item-title { margin-top: 6px; font-size: 18px; line-height: 1.5; }
+.slots.flat.results .item-hit {
+  margin-top: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+  color: var(--ink-3);
+  font-size: 13.5px;
+}
 
 /* 作者页 */
 .author-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin: 16px 0; padding: 0; list-style: none; }
