@@ -49,6 +49,8 @@
   --ease: cubic-bezier(.25, 1, .5, 1);
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "HarmonyOS Sans SC", "Microsoft YaHei", "Noto Sans SC", "WenQuanYi Micro Hei", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  /* 标题用宋体（Zhilin 11-10 选的）：Mac 用宋体-简；这几种宋体都没有的设备按浏览器默认的衬线字体显示。 */
+  --font-serif: "Songti SC", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", STSong, serif;
   --radius-mark: 5px;
   --radius-control: 8px;
   --radius-tile: 10px;
@@ -238,6 +240,10 @@ img { max-width: 100%; }
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1;
+}
+/* 标题用宋体：品牌、页面标题、卡片标题、日期栏、公司和作者名、论点和观点判断。文章页标题在 .reader h1 里设。 */
+.brand, .page-head h1, .company-title h1, .item-title, .daybar h2, .holding-head h2, .author-card h2, .thesis-title, .view-judgment {
+  font-family: var(--font-serif);
 }
 
 .theme {
@@ -533,7 +539,7 @@ main {
 .item-title {
   margin: 8px 0 0;
   color: var(--ink);
-  font-size: 16.5px;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1.55;
 }
@@ -638,6 +644,7 @@ mark {
 .reader h1 {
   margin: 2px 0 0;
   color: var(--ink);
+  font-family: var(--font-serif);
   font-size: 22px;
   font-weight: 600;
   letter-spacing: 0;
