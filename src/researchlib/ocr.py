@@ -93,6 +93,8 @@ VISION_TILE_RATIO = 2
 VISION_TILE_OVERLAP = 0.4
 # 一张图最多切这么多段（高是宽的 20 倍左右）。再长的每段跟着变高，一张图花的钱有个头。
 VISION_MAX_TILES = 12
+# --tall 结尾列出这次重认的长图挂在哪几篇上，最多列这么多篇。
+TALL_SHOW_ARTICLES = 30
 # 找切口时，一行的「花」（``_row_noise``）不超过附近最空那行加这么多，就算空白。JPEG 的底色上有一两个灰度的噪点，
 # 压着字的行一般在 10 以上。
 VISION_QUIET_SLACK = 2.0
@@ -1132,6 +1134,7 @@ def run_ocr(
         "deploy_waiting": "",
         "followups": {"digest": [], "zsxq_title": []},
         "ocr_changed": [],
+        "touched": [],
     }
     touched: set[int] = set()
     if tall:
@@ -1227,6 +1230,7 @@ def run_ocr(
                     "new_hash": new_hash,
                 }
             )
+        report["touched"] = [int(article_id) for article_id in sorted(touched)]
         if changed:
             report["ocr_changed"] = [int(row["id"]) for row in changed]
         if changed and not (redo and not article_ids):
@@ -1473,6 +1477,11 @@ def main(argv: list[str] | None = None) -> int:
             f"以前整张认的长截图还剩 {tall_left['images']} 张，切段要认 {tall_left['tiles']} 段"
             "（每段的花费和一张普通截图差不多）"
         )
+        if report["touched"]:
+            # 对着原图核接缝时要知道去看哪几篇：/api/v1/articles/{id} 里 lang=ocr 的块。
+            shown = "、".join(str(article_id) for article_id in report["touched"][:TALL_SHOW_ARTICLES])
+            more = f" 等 {len(report['touched'])} 篇" if len(report["touched"]) > TALL_SHOW_ARTICLES else ""
+            print(f"这次切段重认的长图在这几篇：{shown}{more}")
     if report["deploy_waiting"]:
         print(
             f"自动上线在等 {report['deploy_waiting'][:7]}：先停在这里，"

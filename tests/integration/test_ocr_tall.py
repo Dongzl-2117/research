@@ -90,6 +90,9 @@ def test_tall_redo_picks_only_long_shots_read_whole_with_the_current_prompt(conn
 
     report = run_ocr(conn, data_dir, 1, recognize, engine="deepseek-flash-vision", redo=True, tall=True)
     assert report["images"] == 1 and seen == ["a.png"]
+    # 结尾列出这次重认的长图挂在哪几篇上，拿去对原图核接缝。
+    newest = conn.execute("SELECT id FROM articles WHERE external_id = 'new'").fetchone()["id"]
+    assert report["touched"] == [newest]
     row = conn.execute(
         "SELECT text, units, prompt_version FROM image_texts WHERE content_hash = %s", (whole,)
     ).fetchone()
