@@ -270,7 +270,7 @@ docker compose exec app research-views --ocr-changed --limit 2000
 
 估算（没实测过思考用量，跑完前 100 篇按合计校准）：抽样每个来源 24 篇量长度，Stratechery 平均 1.7 万字符、切 1.9 块，林文丰飞书平均 5 万字符、切 2.6 块，方伟公众号 6,700 字一块，星球短帖约 1,000 字一块，合计约 6,900 次调用、输入约 2,500 万 token；每次思考加回答按 4,000 到 10,000 token 算（识图一张实测 10,764），非高峰价 20 到 50 美元，高峰价翻倍。一次调用按 2 分钟算，一篇一篇要连跑约 10 天，16 路约 14 小时。
 
-Mac mini 上（等 Zhilin 同意费用以后跑；外面一层循环是为了合并上线把容器换掉以后自己接着整理）：
+Mac mini 上（Zhilin 11-11 在卡片上选了全部补完；外面一层循环是为了合并上线把容器换掉以后自己接着整理）：
 
 ```bash
 cd ~/research
@@ -293,7 +293,7 @@ step research-views --limit 6000
 ' < /dev/null >> ~/views-backlog.log 2>&1 &
 ```
 
-最后一行是积压（约 4,200 篇，20 到 50 美元），Zhilin 没同意以前去掉这一行再跑，同意以后单跑上面那一条。要停：`pkill -f 'ocr-changed|research-views --limit'`，再 `docker compose restart app`。
+最后一行是积压（约 4,200 篇，20 到 50 美元，Zhilin 11-11 选了全部补完）；只跑积压用上面那一条。要停：`pkill -f 'ocr-changed|research-views --limit'`，再 `docker compose restart app`。
 
 `--gap` 的范围：`article_mentions` 里深度不是「一带而过」、又没有一条 about 为真且判断非空的观点。去重后的主版本（有别的稿 `duplicate_of` 指向它）即使提及只是一带而过也补抽，例如 3851 并入 11299 之后要抽 11299。网友帖不抽。已经记成 about=false（论证不在这家公司）的不反复问。
 
