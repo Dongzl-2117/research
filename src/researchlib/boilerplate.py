@@ -12,6 +12,8 @@
 2. 模板句：同一来源里在很多篇（至少 max(5, 2%) 篇）都出现的整行。文末从第一行模板句起，
    后面几乎全是模板句、引流关键词或几个字的碎行时，整段切掉（招募被拆成一行几个字的也切得到）。
    36 字以上、只是顺带提到引流词的句子（「前段时间被一家企业白嫖了两次」）算正文，不算引流。
+   「几乎全是」的容差（尾巴里正文不超过 160 字）只给推销块里换了数字、换了措辞的条目：切口和第一处号召之间
+   36 字以上的整段正文留下，切口挪到它后面（老文章的入群码插进了最后几段正文中间，见 _after_last_text）。
    正文中间的模板句只在带引流关键词时去掉；飞书那类重复的小标题不带关键词，留着。
 3. 广告图：同一来源里至少 5 篇都出现的同一张图（按内容哈希），而且不是成批一起出现
    （飞书父文档会带上子文档的整批插图，那是正文）。二维码、优惠券海报、「长按关注」都是这种。
@@ -23,7 +25,9 @@
    - 推销段落：写成带句号的长句也认，看信号组合，不看具体措辞：找作者、请读者加入、谢绝白嫖这几类里至少一类，
      再加上入群、扫码、点赞关注、优惠这些里任意一类（is_promo_paragraph）。正文中间不按这个删。
    - 号召写成小标题、后面再没有 Markdown 小标题、而且后面还有别的号召的，从它起到文末都切，
-     「【会员权益】1）……」这种长条目一起去掉。
+     「【会员权益】1）……」这种长条目一起去掉。小标题也可以是「关于付费星球」这种单独成行、带推销词的短行，
+     这时后面那段里要有冲着读者说的话（欢迎感兴趣的同学加入、加我微信），光是分析知识星球的不算。
+   - 文首号召：标题下面、正文第一行之前的号召行和推销段落（「tips：致读者朋友……设为星标⭐️」）也去掉。
    - 号召前面的碎句，连起来带推销信号才一起切；连起来是一句正文的留下。切口那一行开头不带推销信号的整句留下。
    - 句子里括号中的微信号（「（微信交流：abc123）」）拿掉，句子留下。
    - 全篇没有一行实质文字的帖，号召后面不是二维码的图留下（那张截图就是正文）。
@@ -96,11 +100,14 @@ _PROMO_KINDS = {
         r"点个?(?:赞|在看)|点.{0,2}在看|星标|置顶|关注(?:公众号|本号|我们|我(?!们))|加(?:个)?关注|"
         r"朋友圈(?:分享|里分享)|赞赏|打赏|转发(?:给|到)"
     ),
+    # 「打个广告」是作者自己说在打广告；不带「个」的「在电视上打广告」多是叙述，不算。
     "sale": re.compile(
-        r"优惠券|新人立减|立减\s*\d|免费赠送|直接购买|限时优惠|早鸟|名额有限|\d+\s*元\s*/\s*年|无理由退款"
+        r"优惠券|新人立减|立减\s*\d|免费赠送|直接购买|限时优惠|早鸟|名额有限|\d+\s*元\s*/\s*年|无理由退款|打个小?广告"
     ),
     "invite": re.compile(
-        r"欢迎(?:感兴趣的|大家|你|各位)?.{0,6}(?:加入|关注|订阅|私信)|感兴趣的(?:朋友|同学|读者)可以(?:加|私信|联系|扫码)|"
+        r"欢迎(?:感兴趣的|大家|你|各位)?.{0,6}(?:加入|关注|订阅|私信)|"
+        r"感兴趣的(?:朋友|同学|读者)[，,\s]{0,2}(?:也|还|都)?可以(?:加|私信|联系|扫码|到|来)|"
+        r"(?:可以|欢迎)(?:在|到|来)(?:我的)?(?:知识)?星球(?:里|内|上)?(?:发帖|提问|交流|玩)|"
         r"适合.{0,40}的朋友加入|你也可以选择(?:直接)?(?:私信|购买|加)|新用户加入|致读者"
     ),
 }
@@ -339,6 +346,46 @@ def _template_line(line: str, profile: Profile, hashes: dict[str, str]) -> bool:
     return len(norm) >= MIN_LINE and profile.common(norm)
 
 
+class _Judge:
+    """切尾时对一行的几种判断，按行缓存（一篇里同一行常要判好几次）。"""
+
+    def __init__(self, profile: Profile, hashes: dict[str, str]):
+        self.profile = profile
+        self.hashes = hashes
+        self._template: dict[str, bool] = {}
+        self._signal: dict[str, bool] = {}
+        self._substantial: dict[str, bool] = {}
+
+    def template(self, line: str) -> bool:
+        if line not in self._template:
+            self._template[line] = _template_line(line, self.profile, self.hashes)
+        return self._template[line]
+
+    def signal(self, line: str) -> bool:
+        """号召行、二维码图、推销段落，或带引流词的模板句。"""
+        if line not in self._signal:
+            self._signal[line] = bool(
+                is_cta_line(line)
+                or _qr_only(line)
+                or is_promo_paragraph(line)
+                or (self.template(line) and PROMO.search(line))
+            )
+        return self._signal[line]
+
+    def substantial(self, line: str) -> bool:
+        """实质正文：36 字以上、不是号召、不是推销段落、也不是模板句的一行。"""
+        if line not in self._substantial:
+            text = _plain(line)
+            self._substantial[line] = bool(
+                text
+                and not self.signal(line)
+                and not self.template(line)
+                and not _only_images(line.strip())
+                and len(normalize(text)) >= 36
+            )
+        return self._substantial[line]
+
+
 def cut_cta_tail(lines: list[str], profile: Profile = EMPTY, hashes: dict[str, str] | None = None) -> list[str]:
     """从最后一段实质正文之后，切掉号召、二维码、推销段落和夹在中间的碎句。
 
@@ -349,38 +396,8 @@ def cut_cta_tail(lines: list[str], profile: Profile = EMPTY, hashes: dict[str, s
     """
     if not lines:
         return lines
-    hashes = hashes or {}
-    templates: dict[str, bool] = {}
-    signals: dict[str, bool] = {}
-    substantials: dict[str, bool] = {}
-
-    def template(line: str) -> bool:
-        if line not in templates:
-            templates[line] = _template_line(line, profile, hashes)
-        return templates[line]
-
-    def signal(line: str) -> bool:
-        if line not in signals:
-            signals[line] = bool(
-                is_cta_line(line)
-                or _qr_only(line)
-                or is_promo_paragraph(line)
-                or (template(line) and PROMO.search(line))
-            )
-        return signals[line]
-
-    def substantial(line: str) -> bool:
-        if line not in substantials:
-            text = _plain(line)
-            substantials[line] = bool(
-                text
-                and not signal(line)
-                and not template(line)
-                and not _only_images(line.strip())
-                and len(normalize(text)) >= 36
-            )
-        return substantials[line]
-
+    judge = _Judge(profile, hashes or {})
+    template, signal, substantial = judge.template, judge.signal, judge.substantial
     section = _pitch_section(lines, signal, substantial)
     last_substantial = -1
     for index, line in enumerate(lines[:section]):
@@ -396,6 +413,9 @@ def cut_cta_tail(lines: list[str], profile: Profile = EMPTY, hashes: dict[str, s
         if signal(line):
             signal_at = index
             break
+    # 推销段从「关于付费星球」这种本身不算号召的短行起，切口最晚从这一行开始。
+    if region_start <= section < len(lines) and (signal_at is None or region_start + signal_at > section):
+        signal_at = section - region_start
     if signal_at is None:
         return lines
     cursor = signal_at
@@ -458,19 +478,46 @@ def _pitch_section(lines: list[str], signal: Callable[[str], bool], substantial:
     seen_text = False
     for index, line in enumerate(lines):
         if seen_text and _is_title_line(line) and signal(line):
-            rest = lines[index + 1 :]
-            if not any(_HEADING.match(item) for item in rest):
-                pitch = sum(len(normalize(_plain(item))) for item in rest if item.strip() and signal(item))
-                other = sum(
-                    len(normalize(_plain(item)))
-                    for item in rest
-                    if item.strip() and not signal(item) and not _only_images(item.strip())
-                )
-                if pitch and other <= 2 * pitch:
-                    return index
+            if _pitch_rest(lines[index + 1 :], signal):
+                return index
+        elif seen_text and _promo_label(line) and _pitch_rest(lines[index + 1 :], signal, labelled=True):
+            return index
         if substantial(line):
             seen_text = True
     return len(lines)
+
+
+def _pitch_rest(rest: list[str], signal: Callable[[str], bool], *, labelled: bool = False) -> bool:
+    """小标题之后到文末是不是一整段推销（见 _pitch_section）。
+
+    labelled：小标题本身不是号召，只是「关于付费星球」这种带推销词的短行。这时段里要有冲着读者说的话
+    （欢迎加入、加我微信、私信我），带任何一类推销信号的行都算号召的字。
+    """
+    if any(_HEADING.match(item) for item in rest):
+        return False
+    pitch = other = 0
+    directed = False
+    for item in rest:
+        if not item.strip() or _only_images(item.strip()):
+            continue
+        size = len(normalize(_plain(item)))
+        kinds = promo_kinds(item) if labelled else set()
+        directed = directed or bool(kinds & _DIRECTED)
+        if signal(item) or kinds:
+            pitch += size
+        else:
+            other += size
+    if labelled and not directed:
+        return False
+    return bool(pitch) and other <= 2 * pitch
+
+
+def _promo_label(line: str) -> bool:
+    """「关于付费星球」这种单独成行、带推销词的短行：不到 12 个字，没有标点。"""
+    text = _plain(line).replace("**", "").strip()
+    if not text or _only_images(text) or re.search(r"[。！？!?，,；;：:、]", text):
+        return False
+    return len(normalize(text)) <= 12 and bool(promo_kinds(text))
 
 
 _DECORATED_TITLE = re.compile(r"^\s*(?:[—–-]+|【)\s*[^—–\-【】\n]{1,20}?\s*(?:[—–-]+|】)\s*$")
@@ -616,6 +663,23 @@ def drop_longform_scaffold(body: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join([*head, "", *rest]))
 
 
+def _drop_lead_cta(lines: list[str]) -> list[str]:
+    """文首号召：标题下面、正文第一行之前的号召行和推销段落去掉（「tips：致读者朋友……设为星标⭐️」）。
+
+    整篇都是号召的帖原样返回，留给文末的规则判断，不在这里删空。
+    """
+    for index, line in enumerate(lines):
+        if not line.strip() or _HEADING.match(line):
+            continue
+        if is_cta_line(line) or is_promo_paragraph(line):
+            continue
+        dropped = {i for i in range(index) if lines[i].strip() and not _HEADING.match(lines[i])}
+        if not dropped:
+            return lines
+        return [item for i, item in enumerate(lines) if i not in dropped]
+    return lines
+
+
 def _split_comments(lines: list[str]) -> int:
     for index, line in enumerate(lines):
         if COMMENTS.match(line):
@@ -689,7 +753,22 @@ def _tail_cut(lines: list[str], profile: Profile, hashes: dict[str, str]) -> int
             and _tail_has_hook(lines, profile, hashes, index)
         ):
             cut = index
-    return cut
+    return _after_last_text(lines, cut, _Judge(profile, hashes))
+
+
+def _after_last_text(lines: list[str], cut: int, judge: _Judge) -> int:
+    """统计切尾的切口和第一处号召之间还有实质正文时，切口挪到这段正文之后。
+
+    容差（尾巴里正文不超过 160 字）是给推销块里换了数字、换了措辞的条目留的，不是给推销前面的正文。
+    方伟公众号的老文章按段估过图的位置，文末的入群码、优惠券图有时插进了最后几段正文中间；常被引用的文章标题
+    （「抄底就是伟大公司遇到了可解决的问题」）也是模板句。统计切尾从这些行起切，后面一两段正文就跟着没了。
+    号召之后的条目（持仓、权益）照旧按容差切；夹在中间的模板图由 clean_body 单独去掉。
+    """
+    if cut >= len(lines):
+        return cut
+    end = next((index for index in range(cut, len(lines)) if judge.signal(lines[index])), len(lines))
+    last = max((index for index in range(cut, end) if judge.substantial(lines[index])), default=-1)
+    return last + 1 if last >= 0 else cut
 
 
 def clean_body(
@@ -708,6 +787,8 @@ def clean_body(
     lines = body.split("\n")
     split = _split_comments(lines)
     main, rest = lines[:split], lines[split:]
+    if drop_cta:
+        main = _drop_lead_cta(main)
     cut = _tail_cut(main, profile, hashes)
     main = main[:cut]
     if drop_cta:
