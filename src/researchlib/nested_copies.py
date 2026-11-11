@@ -26,6 +26,10 @@ Stratechery 的归档导出先把整条引文、整个列表项写成一行纯�
 没字的链接；只有「[…]」这种标点的段落也算）；夹在中间的跟着带格式那几段放回去，不算字。
 原文的引文、列表项里还套着引文、列表的，导出只写一遍，夹在带格式那几段中间（``nested``），
 按整块的字接，一起放回去。引文里套着的引文自己也写了两遍时，先收里面那条，外层下一轮才接得上。
+外层开头写着一句导语（列表项里的「某某解释说：」）、或者结尾写着署名（推文的「— 某某 (@handle) 日期」），
+带格式那份不再写这一截：后面几块接上外层中间连着的一截（至少 ``_MIN_INSIDE`` 个字），多出来的只有开头
+或者只有结尾，也收（``_inside_run``）。多出来的那截照纯文字留在外层里，带格式那几段接在它后面或者前面
+（``plain_ends`` 找切开的位置）。图的替代文字不算字：纯文字那份里没有。
 
 导出还常把同一张图连着写两遍（原文把图包在链接里时尤其多），页面上也只留一张
 （``drop_repeated_images``）。
@@ -41,7 +45,8 @@ from __future__ import annotations
 
 import html as html_lib
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import NamedTuple
 
 from researchlib.textutil import markdown_to_text
 
@@ -58,8 +63,12 @@ _NOT_PLAIN = re.compile(
 _NON_KEY = re.compile(r"[^0-9a-z一-鿿]+")
 # 外层去掉格式、标点和空白后短过这个就不认：「Yes.」这种短句碰巧和下一段一样，不当成导出的两份。
 _MIN_KEY = 8
-# 一条引文、一个列表项里最多认这么多段。
-_MAX_COPIES = 12
+# 一条引文、一个列表项里最多认这么多段。访谈记录这类长引文一条几十段（线上 22699 一条 40 多段），以前只认 12 段，
+# 整段记录在三种页面上都显示两遍。接得上要逐字相等，段数多了也不会认错，只是多比几段。
+_MAX_COPIES = 400
+# 外层开头、结尾多出来、导出没再写带格式那份的字（导语、推文署名）：中间接上的那一截至少这么多字才认，
+# 一句话以上。短了容易碰上正文自己把引文里的半句话又写一遍。
+_MIN_INSIDE = 30
 _CONTAINERS = frozenset({"quote", "item"})
 # 只有图、或者只剩一个没字的链接的块：导出写带格式那几段时夹在中间，纯文字那份里没有它们。
 _IMAGE_MD = re.compile(r"!\[[^\]\n]*\]\([^)\n]*\)")
@@ -69,7 +78,8 @@ _INDENT = "    "
 
 
 def _key(md: str) -> str:
-    text = html_lib.unescape(markdown_to_text(md)).casefold()
+    # 图的替代文字不算字：纯文字那份里没有，页面上（translate/display.py 的 repeat_key）也不算。
+    text = html_lib.unescape(markdown_to_text(_IMAGE_MD.sub(" ", md))).casefold()
     return _NON_KEY.sub("", text)
 
 
@@ -199,23 +209,36 @@ def _as_item(marker: str, paragraphs: list[list[str]]) -> list[str]:
 _NESTED = frozenset({"quote", "item", "nested"})
 
 
-def _copies_after(
+class CopyRun(NamedTuple):
+    """``copy_runs`` 认出的一处：外层那几块、后面带格式那几块的下标，外层开头、结尾没有副本的字数。"""
+
+    outers: list[int]
+    copies: list[int]
+    lead: int = 0
+    trail: int = 0
+
+
+def _piece(kinds: Sequence[str], keys: Sequence[str], whole: Sequence[str], number: int) -> str:
+    kind = kinds[number]
+    return keys[number] if kind == "plain" else whole[number] if kind in _NESTED else ""
+
+
+def _chain(
     kinds: Sequence[str], keys: Sequence[str], whole: Sequence[str], last: int, target: str,
-) -> list[int]:
-    """外层（到 ``last`` 为止）后面接起来正好等于 ``target`` 的那几块；接不上就是空的。"""
+) -> tuple[list[int], int]:
+    """外层（到 ``last`` 为止）后面接得上 ``target`` 开头的那几块：(这几块, 接上了几个字)。"""
     joined = ""
     copies: list[int] = []
     # 图先记着，后面还有接得上的段落才算进副本。
     images: list[int] = []
     texts = 0
     for following in range(last + 1, len(kinds)):
-        kind = kinds[following]
-        if kind == "media":
+        if kinds[following] == "media":
             if len(images) >= _MAX_COPIES:
                 break
             images.append(following)
             continue
-        piece = keys[following] if kind == "plain" else whole[following] if kind in _NESTED else ""
+        piece = _piece(kinds, keys, whole, following)
         if not piece or not target.startswith(joined + piece) or texts >= _MAX_COPIES:
             break
         joined += piece
@@ -224,14 +247,50 @@ def _copies_after(
         copies.append(following)
         texts += 1
         if joined == target:
-            return copies
-    return []
+            break
+    return copies, len(joined)
+
+
+def _copies_after(
+    kinds: Sequence[str], keys: Sequence[str], whole: Sequence[str], last: int, target: str,
+) -> list[int]:
+    """外层（到 ``last`` 为止）后面接起来正好等于 ``target`` 的那几块；接不上就是空的。"""
+    copies, length = _chain(kinds, keys, whole, last, target)
+    return copies if copies and length == len(target) else []
+
+
+def _inside_run(kinds: Sequence[str], keys: Sequence[str], whole: Sequence[str], index: int) -> CopyRun | None:
+    """外层开头多一截导语、或者结尾多一截署名，只有中间那截后面有带格式的副本。
+
+    原文的列表项里直接写着一句导语（「某某解释说：」），下面套着引文；推文的引文里正文是一段，
+    署名（「— 某某 (@handle) 日期」）直接写在引文里。导出把整条写成一行纯文字，带格式那份只写里面的段落，
+    导语、署名不再写。后面紧跟着的几块要正好接成外层中间连着的一截（至少 ``_MIN_INSIDE`` 个字），
+    开头或者结尾多出来的字只能有一头：两头都多的是正文把引文中间一句又写了一遍，不收。
+    """
+    first = next((number for number in range(index + 1, len(kinds)) if kinds[number] != "media"), None)
+    piece = _piece(kinds, keys, whole, first) if first is not None else ""
+    target = keys[index]
+    if not piece or len(target) <= _MIN_INSIDE:
+        return None
+    start = target.find(piece)
+    while start >= 0:
+        copies, length = _chain(kinds, keys, whole, index, target[start:])
+        rest = len(target) - start - length
+        after = next((number for number in range(copies[-1] + 1, len(kinds)) if kinds[number] != "media"), None) \
+            if copies else None
+        # 署名正好是下一块的开头：那是嵌套列表的项和正文后面的项并在了一个列表里（只看中文页先拆开列表再认），
+        # 不是署名。
+        spilled = bool(rest) and after is not None and _piece(kinds, keys, whole, after).startswith(target[-rest:])
+        if copies and length >= _MIN_INSIDE and (start == 0) != (rest == 0) and not spilled:
+            return CopyRun([index], copies, start, rest)
+        start = target.find(piece, start + 1)
+    return None
 
 
 def copy_runs(
     kinds: Sequence[str], keys: Sequence[str], whole: Sequence[str] | None = None, *, quote_parts: bool = False,
-) -> list[tuple[list[int], list[int]]]:
-    """一串块里认导出写的两份：[(外层那几块的下标, 后面带格式那几块的下标)]。
+) -> list[CopyRun]:
+    """一串块里认导出写的两份：[CopyRun(外层那几块的下标, 后面带格式那几块的下标, 导语字数, 署名字数)]。
 
     ``kinds`` 是每块的种类：``"quote"``、``"item"`` 能当外层（引文、列表项），``"plain"`` 是普通段落，
     ``"media"`` 是没有字的块（图、「[…]」），``"nested"`` 是别的引文、列表（不能当外层），别的都不算。
@@ -241,21 +300,22 @@ def copy_runs(
     段。带格式那几块是普通段落，或者引文里套着的引文、列表（按整块的字算）；夹在中间（或者第一段前面）的图
     算进副本，不占字，最后一段后面的图不算。带格式那几块里的引文、列表自己也写了两遍（后面跟着它自己的
     副本）时，这一轮先收里面那条，外层等下一轮。``quote_parts``：对照页上好几段的引文一段一对，连着的几对
-    引文合起来当一个外层（先试最长的）。原文页（这里的 markdown）、对照页和只看中文页
-    （translate/display.py）都按这一条认。
+    引文合起来当一个外层（先试最长的）。一块的外层正好接不上时，再看开头的导语、结尾的署名（``_inside_run``）：
+    ``lead``、``trail`` 是外层的字里开头、结尾没有副本的字数，这些字收的时候留在外层里。原文页（这里的
+    markdown）、对照页和只看中文页（translate/display.py）都按这一条认。
     """
     whole = keys if whole is None else whole
     found = {
         index: run for index in range(len(kinds))
         if (run := _run_at(kinds, keys, whole, index, quote_parts=quote_parts))
     }
-    runs: list[tuple[list[int], list[int]]] = []
+    runs: list[CopyRun] = []
     index = 0
     while index < len(kinds):
         run = found.get(index)
-        if run and not any(number in found for number in run[1]):
+        if run and not any(number in found for number in run.copies):
             runs.append(run)
-            index = run[1][-1] + 1
+            index = run.copies[-1] + 1
         else:
             index += 1
     return runs
@@ -263,7 +323,7 @@ def copy_runs(
 
 def _run_at(
     kinds: Sequence[str], keys: Sequence[str], whole: Sequence[str], index: int, *, quote_parts: bool,
-) -> tuple[list[int], list[int]] | None:
+) -> CopyRun | None:
     if kinds[index] not in _CONTAINERS:
         return None
     last = index
@@ -274,8 +334,50 @@ def _run_at(
         target = "".join(keys[number] for number in range(index, end + 1))
         copies = _copies_after(kinds, keys, whole, end, target) if len(target) >= _MIN_KEY else []
         if copies:
-            return list(range(index, end + 1)), copies
-    return None
+            return CopyRun(list(range(index, end + 1)), copies)
+    return _inside_run(kinds, keys, whole, index)
+
+
+_SPACE = re.compile(r"\s+")
+
+
+def plain_ends(
+    text: str, target: str, lead: int, trail: int, key: Callable[[str], str], cuts: Sequence[int] | None = None,
+) -> tuple[int, int] | None:
+    """外层那份纯文字按 ``CopyRun`` 的导语、署名切开：返回 (导语在哪儿结束, 署名从哪儿开始)，没有的那头是 0、
+    ``len(text)``。
+
+    在空白处切（``cuts`` 给了就只在这些位置切）。导语取最长的：末尾的冒号、破折号跟着导语；署名取最长的：
+    开头的破折号跟着署名。切出来的两头和中间那截各自去掉格式后要正好是 ``target`` 的三段，不然是 None。
+    """
+    points = list(cuts) if cuts is not None else [match.start() for match in _SPACE.finditer(text)]
+    middle = target[lead:len(target) - trail]
+    head_at, tail_at = 0, len(text)
+    if lead:
+        found = None
+        for point in points:
+            got = key(text[:point])
+            if got == target[:lead]:
+                found = point
+            elif len(got) > lead:
+                break
+        if found is None:
+            return None
+        head_at = found
+    if trail:
+        found = None
+        for point in reversed(points):
+            got = key(text[point:])
+            if got == target[len(target) - trail:]:
+                found = point
+            elif len(got) > trail:
+                break
+        if found is None or found < head_at:
+            return None
+        tail_at = found
+    if key(text[head_at:tail_at]) != middle:
+        return None
+    return head_at, tail_at
 
 
 # 整块的字：去掉每行开头的引文「>」和列表标记（有序列表的序号不算字，页面上的纯文字那份里也没有）。
@@ -319,15 +421,21 @@ def _fold_once(lines: list[str], done: set[int]) -> tuple[list[str], set[int]] |
         keys.append(key)
         whole.append(_whole_key(block) if kind else "")
     edits: list[tuple[int, int, list[str]]] = []
-    for containers, copies in copy_runs(kinds, keys, whole):
-        index = containers[0]
+    for run in copy_runs(kinds, keys, whole):
+        index = run.outers[0]
         container = found[index]
         if container is None:
             continue
-        kind, offset, marker, _text = container
-        paragraphs = [lines[blocks[number][0] : blocks[number][1]] for number in copies]
+        kind, offset, marker, text = container
+        paragraphs = [lines[blocks[number][0] : blocks[number][1]] for number in run.copies]
+        if run.lead or run.trail:
+            cut = plain_ends(text, keys[index], run.lead, run.trail, _key)
+            if cut is None:
+                continue
+            head, tail = text[:cut[0]].strip(), text[cut[1]:].strip()
+            paragraphs = [*([head.split("\n")] if head else []), *paragraphs, *([tail.split("\n")] if tail else [])]
         rebuilt = _as_quote(paragraphs) if kind == "quote" else _as_item(marker, paragraphs)
-        edits.append((blocks[index][0] + offset, blocks[copies[-1]][1], rebuilt))
+        edits.append((blocks[index][0] + offset, blocks[run.copies[-1]][1], rebuilt))
     if not edits:
         return None
     out: list[str] = []
