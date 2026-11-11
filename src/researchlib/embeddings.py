@@ -9,6 +9,10 @@
 表要等数据库装了 pgvector 才建（``ensure_schema``，启动时和 research-embed 都会调），
 没装、没配向量服务、服务连不上时，检索照旧只走关键词，不报错。
 
+改段落块的地方（原文、译文、图片文字重切，清洗，导入）写完块以后在同一个事务里调 ``sync_article``：
+新段落的向量和新段落一起提交，检索看到的要么是旧段落和旧向量，要么是新段落和新向量。
+research-embed 只补服务连不上时漏下的。
+
     docker compose exec app research-embed            # 补算缺的和改过的块
     docker compose exec app research-embed --limit 2000
 """
@@ -16,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import contextvars
 import hashlib
 import http.client
 import json
@@ -26,7 +31,8 @@ import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from researchlib.chunks import current_chunk_sql
 
@@ -46,6 +52,9 @@ BATCH = 32
 QUERY_CACHE = 256
 # 检索页提示「向量还没算完」用的块数，几分钟数一次就够。
 COVERAGE_TTL_S = 600.0
+# 改段落时当场算向量（sync_article）。服务算不出来以后，这么多秒内别的文章不再试：
+# 一批几千篇的任务不必每篇各等一次超时，缺的留给 research-embed。
+SYNC_RETRY_AFTER_S = 60.0
 
 Embedder = Callable[[list[str]], list[list[float]]]
 
@@ -61,6 +70,9 @@ class _State:
         self.cold_embedder: Embedder | None = None
         self.model = ""
         self.down_until = 0.0
+        # 改段落时算向量（sync_article）失败以后，到这个时刻之前不再试。和查询向量的 down_until 分开：
+        # 批量任务算不出来，不该让网站的检索也停一分钟。
+        self.sync_down_until = 0.0
         # 上一次查询向量成功的时刻，和上一次是不是失败了。
         self.last_ok = float("-inf")
         self.failed = False
@@ -125,6 +137,7 @@ def configure(settings) -> None:
 def _reset() -> None:
     _state.cache.clear()
     _state.down_until = 0.0
+    _state.sync_down_until = 0.0
     _state.last_ok = float("-inf")
     _state.failed = False
     _state.coverage.clear()
@@ -287,8 +300,19 @@ def text_hash(title: str, heading: str, body: str) -> str:
     return hashlib.md5("\n".join([title or "", heading or "", body or ""]).encode()).hexdigest()
 
 
-def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = None) -> list[dict]:
-    """缺向量或字改过的块，新的在前。skip 是这一轮算不出向量、跳过的块。"""
+def _pending(
+    conn,
+    limit: int | None,
+    model: str,
+    skip: list[tuple[int, int]] | None = None,
+    *,
+    article_id: int | None = None,
+    ords: tuple[int, int] | None = None,
+) -> list[dict]:
+    """缺向量或字改过的块，新的在前。skip 是这一轮算不出向量、跳过的块。
+
+    article_id 给了只看这一篇，ords（含头不含尾）给了只看这一段块号；limit 为 None 不限。
+    """
     skipped = ""
     params: list = [model]
     if skip:
@@ -297,6 +321,13 @@ def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = 
             " WHERE s.article_id = c.article_id AND s.ord = c.ord)"
         )
         params += [[key[0] for key in skip], [key[1] for key in skip]]
+    one = ""
+    if article_id is not None:
+        one = "AND c.article_id = %s"
+        params.append(article_id)
+    if ords is not None:
+        one += " AND c.ord >= %s AND c.ord < %s"
+        params += [ords[0], ords[1]]
     return conn.execute(
         f"""
         SELECT c.article_id, c.ord, a.title, c.heading, c.body, md5({_SOURCE_TEXT}) AS hash
@@ -305,12 +336,65 @@ def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = 
         LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
         WHERE a.duplicate_of IS NULL AND {current_chunk_sql()}
           AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %s)
-          {skipped}
+          {skipped} {one}
         ORDER BY a.published_at DESC NULLS LAST, c.article_id, c.ord
         LIMIT %s
         """,
         (*params, limit),
     ).fetchall()
+
+
+def _reuse_vectors(
+    conn, model: str, article_id: int | None = None, ords: tuple[int, int] | None = None,
+) -> int:
+    """缺向量或字改过的块，同一篇里已经有同样的字（标题、章节标题、正文都一样）的向量，就照抄过来，不重算。
+
+    块号是按位置编的：前面删掉一块、或者整理规则只动了一两段，后面的块原样往前挪，旧向量还在、只是挂在别的块号上。
+    要在删掉「没有对应块的向量」之前做，挪走的那几块的向量还在那些块号上。article_id 为 None 时整库做一遍；
+    ords（含头不含尾）给了只补这一段块号的。
+    """
+    one = "AND c.article_id = %(article)s" if article_id is not None else ""
+    if ords is not None:
+        one += " AND c.ord >= %(lo)s AND c.ord < %(hi)s"
+    cursor = conn.execute(
+        f"""
+        INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
+        SELECT w.article_id, w.ord, %(model)s, w.hash, h.embedding
+        FROM (
+          SELECT c.article_id, c.ord, md5({_SOURCE_TEXT}) AS hash
+          FROM article_chunks c
+          JOIN articles a ON a.id = c.article_id
+          LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
+          WHERE a.duplicate_of IS NULL AND {current_chunk_sql()} {one}
+            AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %(model)s)
+        ) w
+        JOIN LATERAL (
+          SELECT o.embedding FROM chunk_embeddings o
+          WHERE o.article_id = w.article_id AND o.model = %(model)s AND o.text_hash = w.hash
+          LIMIT 1
+        ) h ON true
+        ON CONFLICT (article_id, ord) DO UPDATE
+        SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash, embedding = EXCLUDED.embedding, updated_at = now()
+        """,
+        {"model": model, "article": article_id, "lo": ords[0] if ords else None, "hi": ords[1] if ords else None},
+    )
+    return cursor.rowcount or 0
+
+
+def _store_vectors(conn, kind: str, model: str, pairs: list[tuple[dict, list[float]]]) -> None:
+    if not pairs:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(
+            f"""
+            INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
+            VALUES (%s, %s, %s, %s, %s::{kind})
+            ON CONFLICT (article_id, ord) DO UPDATE
+            SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash,
+                embedding = EXCLUDED.embedding, updated_at = now()
+            """,
+            [(r["article_id"], r["ord"], model, r["hash"], literal(v)) for r, v in pairs],
+        )
 
 
 def _source_text(row: dict) -> str:
@@ -364,6 +448,7 @@ def backfill(
     if kind is None:
         raise EmbeddingError("数据库里没有 chunk_embeddings：先给 Postgres 装 pgvector（重建 db 镜像）")
     model = model_name() or "unknown"
+    _reuse_vectors(conn, model)
     conn.execute(
         """
         DELETE FROM chunk_embeddings e
@@ -380,17 +465,7 @@ def backfill(
             break
         pairs = _embed_rows(rows, bad)
         if pairs:
-            with conn.cursor() as cur:
-                cur.executemany(
-                    f"""
-                    INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
-                    VALUES (%s, %s, %s, %s, %s::{kind})
-                    ON CONFLICT (article_id, ord) DO UPDATE
-                    SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash,
-                        embedding = EXCLUDED.embedding, updated_at = now()
-                    """,
-                    [(r["article_id"], r["ord"], model, r["hash"], literal(v)) for r, v in pairs],
-                )
+            _store_vectors(conn, kind, model, pairs)
             conn.commit()
         done += len(pairs)
         if progress:
@@ -398,6 +473,79 @@ def backfill(
     if skipped is not None:
         skipped.extend(bad)
     _state.coverage.clear()
+    return done
+
+
+# 清洗、重切这类随时能重跑的命令在 all_or_nothing() 里跑：向量算不出来就往外报错，不留下有字没向量的段落。
+_ALL_OR_NOTHING: contextvars.ContextVar[bool] = contextvars.ContextVar("embeddings_all_or_nothing", default=False)
+
+
+@contextmanager
+def all_or_nothing() -> Iterator[None]:
+    """这里面改段落时，向量服务算不出来就往外报 EmbeddingError，调用方回滚这一批、停下。
+
+    给 research-clean、research-rebuild-chunks 用：它们只按现有的字重算，不花模型钱，服务好了再跑一遍，
+    从还没改的那篇接着来。译制、识图、导入不包这一层：结果花过模型钱，照常存下，缺的向量留给 research-embed。
+    只管当前线程（ContextVar），网站后台线程里的重切不受影响。
+    """
+    token = _ALL_OR_NOTHING.set(True)
+    try:
+        yield
+    finally:
+        _ALL_OR_NOTHING.reset(token)
+
+
+def sync_article(conn, article_id: int, ords: tuple[int, int] | None = None) -> int:
+    """这篇的段落刚改过（重切、清洗、换了译文或图片文字、改了标题），在提交之前调：给它的段落配齐向量。
+
+    以前改段落和算向量是两步：段落先换上，向量等 research-embed（夜里、或者手动跑）再算。中间这段时间，
+    改过的段落只能按字面找到，融合分只剩关键词那一半，整批往下掉：11-11 research-clean 改了约 6000 篇以后，
+    检索页报「向量还没算完（219443/236724 块）」；全库重译时每译完一篇，它的中文段落也要等到夜里。
+
+    现在：字没变的块（块号挪了也认）照抄这篇已有的向量；其余的当场算；没有对应块的向量删掉。都在调用方的事务里，
+    别的连接在提交之前看到的是旧段落和旧向量，提交以后是新段落和新向量，中间没有有字没向量的段落。
+    返回当场算的块数。
+
+    ords（含头不含尾）：只管这一段块号。原文、译文、图片文字的块号各占一段（0 起、10000 起、20000 起，见 chunks）。
+    只重切了译文块就只配译文块的向量：清洗原文和重译同一篇的两个任务同时跑时，各改各的向量行，不互相等锁。
+    标题改了（向量的输入带标题）不给 ords，整篇一起配。
+
+    没配向量服务、库里没有向量表时什么都不做。服务算不出来：在 all_or_nothing() 里往外报错；不在的话记一条日志，
+    没算的留给 research-embed，SYNC_RETRY_AFTER_S 秒内别的文章也不再试。服务好好的、只是某一块的字让它报错的，
+    跳过那一块（research-embed 也会跳过它），不算算不出来。
+    """
+    if _state.embedder is None:
+        return 0
+    kind = column_type(conn)
+    if kind is None:
+        return 0
+    model = model_name() or "unknown"
+    _reuse_vectors(conn, model, article_id, ords)
+    lo, hi = ords if ords is not None else (None, None)
+    conn.execute(
+        "DELETE FROM chunk_embeddings e WHERE e.article_id = %(article)s"
+        " AND (%(lo)s::int IS NULL OR (e.ord >= %(lo)s AND e.ord < %(hi)s))"
+        " AND NOT EXISTS (SELECT 1 FROM article_chunks c WHERE c.article_id = e.article_id AND c.ord = e.ord)",
+        {"article": article_id, "lo": lo, "hi": hi},
+    )
+    rows = _pending(conn, None, model, article_id=article_id, ords=ords)
+    if not rows:
+        return 0
+    strict = _ALL_OR_NOTHING.get()
+    if not strict and time.monotonic() < _state.sync_down_until:
+        return 0
+    done = 0
+    bad: list[tuple[int, int]] = []
+    try:
+        for start in range(0, len(rows), BATCH):
+            pairs = _embed_rows(rows[start : start + BATCH], bad)
+            _store_vectors(conn, kind, model, pairs)
+            done += len(pairs)
+    except EmbeddingError as exc:
+        if strict:
+            raise
+        _state.sync_down_until = time.monotonic() + SYNC_RETRY_AFTER_S
+        logger.warning("第 %s 篇还有 %s 块没算上向量，留给 research-embed：%s", article_id, len(rows) - done, exc)
     return done
 
 

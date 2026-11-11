@@ -120,26 +120,33 @@ def make_chunks(title: str, body_md: str) -> list[tuple[str, str]]:
 
 
 def replace_chunks(conn, article_id: int, title: str, body_md: str) -> int:
-    """原文的块。译文的块（lang = 'zh'）不动，译文重写时另行重切。切之前先去掉归档头和引流尾巴。"""
+    """原文的块。译文的块（lang = 'zh'）不动，译文重写时另行重切。切之前先去掉归档头和引流尾巴。
+
+    新块的向量在同一个事务里配齐（embeddings.sync_article），和新块一起提交。
+    """
     from researchlib.boilerplate import clean_article
+    from researchlib.embeddings import sync_article
 
     row = conn.execute("SELECT source_id FROM articles WHERE id = %s", (article_id,)).fetchone()
     if row is not None:
         body_md = clean_article(conn, article_id, row["source_id"], body_md)
     chunks = make_chunks(title, body_md)
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = ''", (article_id,))
-    if not chunks:
-        return 0
-    with conn.cursor() as cur:
-        cur.executemany(
-            "INSERT INTO article_chunks (article_id, ord, heading, body) VALUES (%s, %s, %s, %s)",
-            [(article_id, index, heading, text) for index, (heading, text) in enumerate(chunks)],
-        )
+    if chunks:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO article_chunks (article_id, ord, heading, body) VALUES (%s, %s, %s, %s)",
+                [(article_id, index, heading, text) for index, (heading, text) in enumerate(chunks)],
+            )
+    sync_article(conn, article_id, (0, TRANSLATION_ORD_BASE))
     return len(chunks)
 
 
 # 译文的块和原文的块放在同一张表里，块号从这里起，和原文的块号（最多 MAX_CHUNKS）不会撞。
 TRANSLATION_ORD_BASE = 10000
+# 整库重切每切这么多篇提交一次。重切的块当场算向量，一篇要一两秒：一个事务包住几千篇，锁要拿几个小时，
+# 中途向量服务停了也会整批退回。每篇自己的块和向量是一起换的，分批提交不会露出半篇。
+COMMIT_EVERY = 50
 
 
 def current_chunk_sql(chunk: str = 'c', article: str = 'a') -> str:
@@ -203,25 +210,26 @@ def make_chunks_from_html(body_html: str) -> list[tuple[str, str, str]]:
 
 
 def replace_translation_chunks(conn, article_id: int) -> int:
-    """按这篇的中文译文重切译文块。没有译文就只删旧的。"""
+    """按这篇的中文译文重切译文块。没有译文就只删旧的。新块的向量在同一个事务里配齐。"""
+    from researchlib.embeddings import sync_article
+
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = 'zh'", (article_id,))
     row = conn.execute(
         "SELECT body_html FROM article_translations WHERE article_id = %s AND lang = 'zh'", (article_id,)
     ).fetchone()
-    if row is None or not (row["body_html"] or "").strip():
-        return 0
-    chunks = make_chunks_from_html(row["body_html"])
-    if not chunks:
-        return 0
-    with conn.cursor() as cur:
-        cur.executemany(
-            "INSERT INTO article_chunks (article_id, ord, heading, body, lang, anchor)"
-            " VALUES (%s, %s, %s, %s, 'zh', %s)",
-            [
-                (article_id, TRANSLATION_ORD_BASE + index, heading, text, anchor)
-                for index, (heading, text, anchor) in enumerate(chunks)
-            ],
-        )
+    html_body = (row["body_html"] or "") if row is not None else ""
+    chunks = make_chunks_from_html(html_body) if html_body.strip() else []
+    if chunks:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO article_chunks (article_id, ord, heading, body, lang, anchor)"
+                " VALUES (%s, %s, %s, %s, 'zh', %s)",
+                [
+                    (article_id, TRANSLATION_ORD_BASE + index, heading, text, anchor)
+                    for index, (heading, text, anchor) in enumerate(chunks)
+                ],
+            )
+    sync_article(conn, article_id, (TRANSLATION_ORD_BASE, OCR_ORD_BASE))
     return len(chunks)
 
 
@@ -438,6 +446,10 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
             "UPDATE company_views SET chunk_ord = %s WHERE article_id = %s AND company_id = %s",
             (ordinal, article_id, reference["company_id"]),
         )
+    # 新块的向量在同一个事务里配齐，和新块一起提交。
+    from researchlib.embeddings import sync_article
+
+    sync_article(conn, article_id, (OCR_ORD_BASE, OCR_ORD_BASE + MAX_CHUNKS))
     return len(chunks)
 
 
@@ -454,9 +466,11 @@ def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
             f" OR (SELECT count(*) FROM article_chunks c WHERE c.article_id = a.id AND c.lang = '') = {OLD_MAX_CHUNKS})"
         )
     ids = [row["id"] for row in conn.execute(f"SELECT a.id FROM articles a {where} ORDER BY a.id").fetchall()]
-    for article_id in ids:
+    for done, article_id in enumerate(ids, 1):
         row = conn.execute("SELECT title, body_md FROM articles WHERE id = %s", (article_id,)).fetchone()
         replace_chunks(conn, article_id, row["title"], row["body_md"])
+        if done % COMMIT_EVERY == 0:
+            conn.commit()
     translated_where = "WHERE a.duplicate_of IS NULL AND t.body_html <> ''"
     if not rebuild:
         translated_where += (
@@ -472,8 +486,10 @@ def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
             """
         ).fetchall()
     ]
-    for article_id in translated:
+    for done, article_id in enumerate(translated, 1):
         replace_translation_chunks(conn, article_id)
+        if done % COMMIT_EVERY == 0:
+            conn.commit()
     conn.commit()
     return len(ids)
 
@@ -524,6 +540,8 @@ def rebuild_ocr_chunks(conn, *, sources: list[str] | None = None, dry_run: bool 
         changed += 1
         if not dry_run:
             replace_ocr_chunks(conn, article_id)
+            if changed % COMMIT_EVERY == 0:
+                conn.commit()
     if not dry_run:
         conn.commit()
     return len(ids), changed
@@ -534,6 +552,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from researchlib.config import Settings
     from researchlib.db import prepare
+    from researchlib.embeddings import EmbeddingError, all_or_nothing
 
     parser = argparse.ArgumentParser(description="重切全部文章的段落块，连同图片文字块")
     parser.add_argument("--ocr", action="store_true", help="只重切图片文字块（整理规则或说话人的名字改了以后用）")
@@ -544,8 +563,17 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--source 只能和 --ocr 一起用")
     conn = prepare(Settings.from_env())
     try:
-        count = 0 if (args.ocr or args.dry_run) else backfill_missing_chunks(conn, rebuild=True)
-        scanned, changed = rebuild_ocr_chunks(conn, sources=args.source or None, dry_run=args.dry_run)
+        # 重切的块当场算向量，和新块一起提交；算不出来就停下，不留下只能按字面找到的段落。
+        with all_or_nothing():
+            count = 0 if (args.ocr or args.dry_run) else backfill_missing_chunks(conn, rebuild=True)
+            scanned, changed = rebuild_ocr_chunks(conn, sources=args.source or None, dry_run=args.dry_run)
+    except EmbeddingError as exc:
+        conn.rollback()
+        print(
+            f"向量服务算不出来，停在这里：{exc}\n已经提交的块和向量都换好了，没提交的还是旧的。开着向量服务再跑一遍。",
+            file=sys.stderr,
+        )
+        return 1
     finally:
         conn.close()
     if count:

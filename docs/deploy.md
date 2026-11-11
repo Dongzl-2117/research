@@ -44,10 +44,12 @@ ollama pull bge-m3
 
 ```bash
 docker compose up -d --build        # db 镜像这次会装上 pgvector，启动时建向量表
-docker compose exec app research-embed   # 第一次全库回填，之后夜间补齐每晚补新的
+docker compose exec app research-embed   # 第一次全库回填。之后改段落时当场算，夜间补齐只补漏下的
 ```
 
 不配 `EMBEDDING_BASE_URL` 时一切照旧，只用关键词检索。原理和参数见 [retrieval.md](retrieval.md)「语义检索」。
+
+改段落的任务（导入、译制、识图、`research-clean`、`research-rebuild-chunks`）写完新段落就当场算它们的向量，和新段落一起提交，所以 Ollama 要一直开着。没开时 `research-clean`、`research-rebuild-chunks` 直接停下、不改库；导入、译制、识图照常存，缺的向量夜里补。见 [retrieval.md](retrieval.md)「改段落时连向量一起换」。
 
 看有没有用上：检索页搜一个带具体词的问题（比如「costco 商业模式」），语义这一路没用上或向量没算完时，结果上方有一句说明。`research-embed` 跑完会打印「库里 x/y 块有向量」，算不了而跳过的块列在最后。查询向量连不上时 app 日志里有「语义检索暂停」。
 

@@ -44,7 +44,7 @@ BACKUP_DIR/
 | Stratechery 发布时刻 | `research-stratechery-times`：归档只记了日期的篇按官网接口补上钟点，不调模型；都有了就不连官网（见 [ingest.md](ingest.md)「Stratechery 的发布时刻」） | 没有上限，只看还没钟点的 |
 | 外链图片 | `research-fetch-images --exit-code`：第一次下的地址大半下不来时退出码 3，这一步记失败（见 [ingest.md](ingest.md)「外链图片」） | `IMAGES_LIMIT`，默认 300 个地址 |
 | 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |
-| 语义向量 | `research-embed`（没配 `EMBEDDING_BASE_URL` 时什么都不做） | `EMBED_LIMIT`，默认 50000 块 |
+| 语义向量 | `research-embed`（没配 `EMBEDDING_BASE_URL` 时什么都不做）：改段落时向量当场算，这一步只补服务连不上时漏下的 | `EMBED_LIMIT`，默认 50000 块 |
 | 观点 | `research-views` | `VIEWS_LIMIT`，默认 60 篇 |
 | 摘要 | `research-digest` | `DIGEST_LIMIT`，默认 80 篇 |
 | 论点 | `research-theses`（`THESES_ENABLED=1` 才跑，默认关） | 观点够数的公司，不限持仓 |
