@@ -155,3 +155,25 @@ def test_time_limit_stops_opening_new_articles(conn, settings, monkeypatch):
     monkeypatch.setattr(views_mod, "chat", _no_view)
     report = views_mod.run_batch(settings, jobs, authors, workers=2, deadline=0.0)
     assert report["timed_out"] and report["done"] == 0
+
+
+def test_command_prints_totals_and_exits_2_when_the_batch_is_stopped(conn, settings, monkeypatch, capsys):
+    jobs, _authors, _wanted = _jobs(conn, settings)
+    monkeypatch.setattr(views_mod.Settings, "from_env", staticmethod(lambda: settings))
+    monkeypatch.setattr(views_mod, "ensure_oauth", lambda _settings: None)
+
+    def broke(_settings, _messages, **_kwargs):
+        raise LLMError("DeepSeek 接口返回 402：Insufficient Balance")
+
+    monkeypatch.setattr(views_mod, "chat", broke)
+    assert views_mod.main(["--workers", "2", "--limit", "50"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out.splitlines()[-1].startswith(f"待整理 {len(jobs)} 篇，整理 0 篇，失败 0 篇")
+    assert "整批停下：DeepSeek 接口返回 402" in captured.err
+
+    monkeypatch.setattr(views_mod, "chat", _no_view)
+    assert views_mod.main(["--workers", "2", "--limit", "50"]) == 0
+    total = capsys.readouterr().out.splitlines()[-1]
+    assert total.startswith(
+        f"待整理 {len(jobs)} 篇，整理 {len(jobs)} 篇，失败 0 篇 · 合计进 {1000 * len(jobs):,} 出 {400 * len(jobs):,}"
+    )

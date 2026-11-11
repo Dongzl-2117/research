@@ -35,20 +35,17 @@ import re
 import sys
 import threading
 import time
-from datetime import UTC, datetime
 
 from psycopg.types.json import Jsonb
 
+from researchlib import llm_batch
 from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_sql
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
-from researchlib.deepseek import deepseek_peak_until
 from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
-from researchlib.llm_provider import PROVIDER_DEEPSEEK, llm_provider
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
-from researchlib.textutil import SHANGHAI
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import relabel_host
@@ -96,12 +93,8 @@ _JSON = re.compile(r"\{.*\}", re.S)
 QUEUE_PER_VIEW = 20
 _MAX_QUEUED = 60
 _COOLDOWN_S = 120.0
-# 批量整理最多几篇同时来。每个 worker 占一条数据库连接，同一时刻最多发一个模型请求。
-MAX_WORKERS = 32
 # 每篇的锁是 (hashtext(LOCK_NAME), 文章 id) 这把会话级 advisory lock：整理完放掉，进程没了自动放掉。
 LOCK_NAME = "research-views"
-# DeepSeek 高峰价时段里，等着的 worker 隔这么久（秒）看一眼过没过高峰。
-PEAK_CHECK_S = 60.0
 
 
 def _items(value, limit: int = 5, size: int = 160) -> list[str]:
@@ -907,49 +900,11 @@ def queue_for_company(conn, settings: Settings, company_id: int, sources_by_id: 
 
 def _claim(conn, article_id: int) -> bool:
     """占这一篇的锁。占不到是别的 worker、别的进程正在整理它。"""
-    row = conn.execute(
-        "SELECT pg_try_advisory_lock(hashtext(%s), %s) AS locked", (LOCK_NAME, int(article_id))
-    ).fetchone()
-    conn.commit()
-    return bool(row["locked"])
+    return llm_batch.claim(conn, LOCK_NAME, article_id)
 
 
 def _release(conn, article_id: int) -> None:
-    # 整理到一半出错时事务是坏的，先回滚才放得掉锁。成功的那次已经提交过，回滚不丢东西。
-    conn.rollback()
-    conn.execute("SELECT pg_advisory_unlock(hashtext(%s), %s)", (LOCK_NAME, int(article_id)))
-    conn.commit()
-
-
-def _fatal(exc: Exception) -> bool:
-    """整批停：没凭证，接口拒绝鉴权，或余额不足（402）。单篇 5xx、读不出 JSON 不算。
-
-    余额用完以后每篇都马上失败，接着跑只会把剩下的一篇篇记成失败、各自冷却好几天。
-    """
-    if isinstance(exc, LLMUnavailable):
-        return True
-    text = str(exc)
-    return any(f"接口返回 {code}" in text for code in (401, 402, 403))
-
-
-def _duration(seconds: float) -> str:
-    seconds = int(round(seconds))
-    hours, rest = divmod(seconds, 3600)
-    minutes, secs = divmod(rest, 60)
-    if hours:
-        return f"{hours} 小时 {minutes} 分"
-    if minutes:
-        return f"{minutes} 分 {secs} 秒"
-    return f"{secs} 秒"
-
-
-def spent(usage: dict, seconds: float) -> str:
-    """用量和用时，接在结果那一行后面。接口没报用量就只印用时。"""
-    took = f"用时 {_duration(seconds)}"
-    if not usage.get("prompt") and not usage.get("completion"):
-        return took
-    thinking = f"（其中思考 {usage['reasoning']:,}）" if usage.get("reasoning") else ""
-    return f"进 {usage.get('prompt', 0):,} 出 {usage.get('completion', 0):,}{thinking} token，{took}"
+    llm_batch.release(conn, LOCK_NAME, article_id)
 
 
 _ARTICLE_SQL = "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s"
@@ -969,143 +924,39 @@ def run_batch(
 ) -> dict:
     """把 jobs 里的文章整理完。jobs：[{"id", "title", "source_id", "companies"}]，正文到整理时再取。
 
-    workers 篇同时整理，每个 worker 一条自己的数据库连接。每篇先占锁（``_claim``），占不到就跳过。
+    几篇同时整理、每篇占锁、用量、避开高峰价、整批停都在 ``llm_batch.run``，摘要用的是同一套。
     named：点名的文章（--gap、--articles），整理 job 里写的那几家公司；不点名时一篇里还没整理的公司一次问完，
-    查出来已经没有要整理的（别的进程刚整理完）也跳过。
-    off_peak：DeepSeek 高峰价时段不开新的一篇，等高峰过了接着整理；手上的那篇照常整理完。
-    deadline：``time.monotonic()`` 到了这个数就不再开新的一篇。
-    交回 {"done", "failed", "skipped", "usage", "fatal", "timed_out", "seconds"}；fatal 不为空是整批停下的原因。
+    查出来已经没有要整理的（别的进程刚整理完）就跳过。
     """
-    from researchlib.db import connect
 
-    guard = threading.Lock()
-    printing = threading.Lock()
-    queue = iter(jobs)
-    report: dict = {"done": 0, "failed": 0, "skipped": 0, "usage": {}, "fatal": "", "timed_out": False}
-    stop = threading.Event()
-    peak: dict = {"until": None}
-    crashed: list[BaseException] = []
-    clock = now or (lambda: datetime.now(UTC))
-    started = time.monotonic()
-
-    def say(text: str, *, err: bool = False) -> None:
-        with printing:
-            print(text, file=sys.stderr if err else sys.stdout, flush=True)
-
-    def bump(name: str) -> None:
-        with guard:
-            report[name] += 1
-
-    def wait_peak() -> bool:
-        if not off_peak:
-            return False
-        moment = clock()
-        until = deepseek_peak_until(moment)
-        with guard:
-            before, peak["until"] = peak["until"], until
-        if until is None:
-            if before is not None:
-                say("过了 DeepSeek 高峰价时段，接着整理")
-            return False
-        if until != before:
-            say(
-                "DeepSeek 高峰价时段（北京时间工作日 9 到 12 点、14 到 18 点，单价翻倍）：不开新的一篇，"
-                f"北京时间 {until.astimezone(SHANGHAI):%H:%M} 以后接着整理。高峰也要整理就去掉 --off-peak"
-            )
-        sleep(max(1.0, min(PEAK_CHECK_S, (until - moment).total_seconds())))
-        return True
-
-    def one(conn, job: dict) -> None:
+    def handle(conn, job: dict, usage: dict) -> str | None:
         article_id = int(job["id"])
-        if not _claim(conn, article_id):
-            bump("skipped")
-            return
-        try:
-            row = conn.execute(_ARTICLE_SQL, (article_id,)).fetchone()
-            if named:
-                companies = conn.execute(
-                    "SELECT id, name_zh FROM companies WHERE id = ANY(%s) ORDER BY id", (list(job["companies"]),)
-                ).fetchall()
-            else:
-                # 一篇里深入谈到的公司一次问完，不限持仓。--company 只决定先排哪些文章。
-                companies = pending_companies(conn, article_id)
-            if row is None or not companies:
-                bump("skipped")
-                return
-            usage: dict = {}
-            begun = time.monotonic()
-            try:
-                written = extract_article(
-                    conn, settings, row, authors.get(row["source_id"], ""), companies, usage=usage
-                )
-            except (LLMUnavailable, LLMError) as exc:
-                conn.rollback()
-                if _fatal(exc):
-                    with guard:
-                        report["fatal"] = report["fatal"] or str(exc)
-                    stop.set()
-                    return
-                note_failure(conn, "views", article_id, exc)
-                bump("failed")
-                say(f"{article_id} {row['title']}: {exc}", err=True)
-                return
-            with guard:
-                report["done"] += 1
-                for name, value in usage.items():
-                    report["usage"][name] = report["usage"].get(name, 0) + value
-            title = " ".join(str(row["title"] or "").split())
-            say(
-                f"{article_id} {title[:40]}：{len(companies)} 家公司，下了判断 {written} 家 · "
-                f"{spent(usage, time.monotonic() - begun)}"
-            )
-        finally:
-            _release(conn, article_id)
+        row = conn.execute(_ARTICLE_SQL, (article_id,)).fetchone()
+        if named:
+            companies = conn.execute(
+                "SELECT id, name_zh FROM companies WHERE id = ANY(%s) ORDER BY id", (list(job["companies"]),)
+            ).fetchall()
+        else:
+            # 一篇里深入谈到的公司一次问完，不限持仓。--company 只决定先排哪些文章。
+            companies = pending_companies(conn, article_id)
+        if row is None or not companies:
+            return None
+        written = extract_article(conn, settings, row, authors.get(row["source_id"], ""), companies, usage=usage)
+        return f"{len(companies)} 家公司，下了判断 {written} 家"
 
-    def work() -> None:
-        conn = None
-        try:
-            conn = connect(settings)
-            while not stop.is_set():
-                if deadline is not None and time.monotonic() > deadline:
-                    with guard:
-                        report["timed_out"] = True
-                    return
-                if wait_peak():
-                    continue
-                with guard:
-                    job = next(queue, None)
-                if job is None:
-                    return
-                one(conn, job)
-        except BaseException as exc:  # noqa: BLE001 - 线程里的异常带回主线程再抛，别的 worker 一起停
-            crashed.append(exc)
-            stop.set()
-        finally:
-            if conn is not None:
-                conn.close()
-
-    count = max(1, min(int(workers), len(jobs) or 1))
-    if count == 1:
-        work()
-    else:
-        threads = [
-            threading.Thread(target=work, name=f"views-{index + 1}", daemon=True) for index in range(count)
-        ]
-        for thread in threads:
-            thread.start()
-        try:
-            for thread in threads:
-                thread.join()
-        except KeyboardInterrupt:
-            # 第一次 Ctrl-C：不开新的一篇，手上的整理完再退，已经花掉的推理不白花。再按一次立刻退。
-            stop.set()
-            say("收到停止：手上的几篇整理完就退，再按一次 Ctrl-C 立刻退", err=True)
-            for thread in threads:
-                thread.join()
-    if crashed:
-        raise crashed[0]
-    report["seconds"] = time.monotonic() - started
-    return report
+    return llm_batch.run(
+        settings,
+        jobs,
+        handle,
+        kind="views",
+        lock_name=LOCK_NAME,
+        verb="整理",
+        workers=workers,
+        deadline=deadline,
+        off_peak=off_peak,
+        now=now,
+        sleep=sleep,
+    )
 
 
 def _id_list(text: str) -> list[int]:
@@ -1237,22 +1088,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只重抽图片里的字变了的文章（已有观点，抽的时候的图片文字和现在的不一样）。识图重认以后跑，夜间任务不要加",
     )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help=f"几篇同时整理（1 到 {MAX_WORKERS}，默认 1）。超过 RESEARCH_LLM_CONCURRENCY 的部分不起作用",
-    )
-    parser.add_argument(
-        "--off-peak",
-        action="store_true",
-        help="走 DeepSeek 时避开高峰价时段（北京时间工作日 9 到 12 点、14 到 18 点）：高峰不开新的一篇，过了接着整理",
-    )
+    llm_batch.add_arguments(parser, "整理")
     args = parser.parse_args(argv)
     if args.ocr_changed and (args.gap or args.articles):
         raise SystemExit("--ocr-changed 不和 --gap、--articles 一起用")
-    if not 1 <= args.workers <= MAX_WORKERS:
-        raise SystemExit(f"--workers 要在 1 到 {MAX_WORKERS} 之间")
+    llm_batch.check_arguments(args)
     from researchlib.db import prepare
     from researchlib.sources import enabled_sources, load_sources
 
@@ -1269,15 +1109,7 @@ def main(argv: list[str] | None = None) -> int:
         if unknown:
             raise SystemExit(f"{'、'.join(unknown)} 不是已启用的来源")
         authors = {item: authors[item] for item in args.source}
-    concurrency = max(1, int(getattr(settings, "llm_concurrency", 8) or 8))
-    if args.workers > concurrency:
-        print(
-            f"同时整理 {concurrency} 篇：--workers {args.workers} 超过 RESEARCH_LLM_CONCURRENCY，"
-            f"要开满就在命令前加 -e RESEARCH_LLM_CONCURRENCY={args.workers}",
-            file=sys.stderr,
-        )
-        args.workers = concurrency
-    off_peak = args.off_peak and (getattr(settings, "llm_provider", "") or llm_provider()) == PROVIDER_DEEPSEEK
+    workers, off_peak = llm_batch.resolve(settings, args, "整理")
     conn = prepare(settings)
     jobs: list[dict] = []
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
@@ -1328,16 +1160,15 @@ def main(argv: list[str] | None = None) -> int:
         jobs,
         authors,
         named=bool(args.gap or args.articles),
-        workers=args.workers,
+        workers=workers,
         deadline=deadline,
         off_peak=off_peak,
     )
     if report["timed_out"]:
         print("到了时间上限，先停在这里", file=sys.stderr)
-    skipped = f"，跳过 {report['skipped']} 篇（别处正在整理或已经整理过）" if report["skipped"] else ""
     print(
-        f"待整理 {len(jobs)} 篇，整理 {report['done']} 篇，失败 {report['failed']} 篇{skipped} · "
-        f"合计{spent(report['usage'], report['seconds'])}"
+        f"待整理 {len(jobs)} 篇，整理 {report['done']} 篇，失败 {report['failed']} 篇"
+        + llm_batch.tail(report, "整理")
     )
     if report["fatal"]:
         print(f"整批停下：{report['fatal']}", file=sys.stderr)
