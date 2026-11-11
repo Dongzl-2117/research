@@ -4,6 +4,7 @@ from html.parser import HTMLParser
 import pytest
 
 from researchlib.ocr import append_ocr, compose_ocr_text
+from researchlib.ocr_units import ImageText, normalize_units
 from researchlib.render import (
     _PHRASE,
     _phrase_overlap,
@@ -12,11 +13,9 @@ from researchlib.render import (
     lazy_images,
     render_body,
     sanitize_html,
-    tidy_ocr_text,
 )
 from researchlib.snippets import answer_html, highlight_snippet
 from researchlib.textutil import argumentative_excerpt, markdown_to_text
-from researchlib.wechat_dialogue import present_ocr_pieces
 
 
 def test_snippet_keeps_a_late_hit():
@@ -260,6 +259,17 @@ CHAT = (
     "微信\n20:41\n张三\n瑞幸和古茗都算头部，但瑞幸同店还有压力\n"
     "李四\n古茗店效还行，瑞幸的折扣不能再深了\n张三\n先看到这里，不展开了\n"
 )
+# 同一张截图，识图交回的结构：谁说的由看得见图的模型标好，界面字不在里面。
+CHAT_UNITS = normalize_units(
+    {
+        "kind": "chat",
+        "blocks": [
+            {"type": "message", "speaker": "张三", "text": "瑞幸和古茗都算头部，但瑞幸同店还有压力"},
+            {"type": "message", "speaker": "李四", "text": "古茗店效还行，瑞幸的折扣不能再深了"},
+            {"type": "message", "speaker": "张三", "text": "先看到这里，不展开了"},
+        ],
+    }
+)
 
 
 def test_ask_prompt_includes_an_ocr_chunk_beside_the_body():
@@ -267,7 +277,7 @@ def test_ask_prompt_includes_an_ocr_chunk_beside_the_body():
     from researchlib.ask import build_messages
 
     body = "瑞幸古茗是比较头部的。"
-    ocr = present_ocr_pieces([CHAT])
+    ocr = compose_ocr_text([ImageText("ab" * 32, CHAT, CHAT_UNITS)])
     passages = [
         {
             "n": 1,
@@ -339,7 +349,7 @@ def test_chat_screenshot_stays_an_image_and_models_still_read_the_ocr():
     assert '<span class="who">' not in page
     assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" not in page
     assert "古茗店效还行" not in page
-    presented = present_ocr_pieces([CHAT])
+    presented = compose_ocr_text([ImageText(digest, CHAT, CHAT_UNITS)])
     model = append_ocr("瑞幸古茗是比较头部的。", presented)
     assert "【图片里的字】" in model
     assert model.index("瑞幸古茗是比较头部的") < model.index("【图片里的字】")
@@ -347,7 +357,6 @@ def test_chat_screenshot_stays_an_image_and_models_still_read_the_ocr():
     assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in model
     assert "古茗店效还行" in model
     assert "方伟：" not in presented
-    assert "微信" not in presented.splitlines() and "20:41" not in presented
 
 
 def test_short_or_empty_ocr_keeps_the_image():
@@ -417,15 +426,8 @@ def test_ocr_markup_is_not_inserted_into_reading_html():
     assert "FY2023" in model and "9.08%" in model and "SG&A" in model
 
 
-def test_chrome_cleanup_does_not_eat_the_message():
-    cleaned = tidy_ocr_text(CHAT)
-    assert "微信" not in cleaned.splitlines()
-    assert "瑞幸和古茗都算头部，但瑞幸同店还有压力" in cleaned
-    assert tidy_ocr_text("微信\n20:41\n昨天") == "微信\n20:41\n昨天"
-
-
 def test_24008_screenshots_stay_images_while_models_read_the_transcript():
-    """24008：公众号两张截图在阅读页仍是图。方洪波折行和雪球时间顺序只进模型输入。"""
+    """24008：公众号两张截图在阅读页仍是图，字只进模型输入。没有结构的旧识图照认出来的样子交，不接折行、不排先后。"""
     fang = "ab" * 32
     nest = "cd" * 32
     fang_text = (
@@ -456,9 +458,7 @@ def test_24008_screenshots_stay_images_while_models_read_the_transcript():
     assert "ocr-link" not in page and "ocr-reading" not in page
     assert "企业家精神" not in page and "莫尼什" not in page and "李录投资" not in page
     model = append_ocr("见图。", compose_ocr_text([fang_text, nest_text]))
-    assert "企业家精神是敢于在最顺的时候对自己动刀子" in model
-    assert "刀子光做家电" not in model
-    assert model.index("莫尼什：") < model.index("大道会不会考虑") < model.index("李录投资也很好")
+    assert model == append_ocr("见图。", fang_text.strip() + "\n\n" + nest_text.strip())
 
 
 def test_misplaced_wechat_images_move_beside_the_matching_paragraph():

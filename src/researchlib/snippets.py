@@ -183,10 +183,7 @@ def mention_spans(matcher, title: str, body_text: str, ocr_text: str = "") -> tu
     spans = matcher.document(title, body).spans(body)
     if spans or not (ocr_text or "").strip():
         return body, spans
-    from researchlib.wechat_dialogue import present_stored_ocr
-
-    ocr = present_stored_ocr(ocr_text)
-    return ocr, matcher.document(title, body, ocr).spans(ocr)
+    return ocr_text, matcher.document(title, body, ocr_text).spans(ocr_text)
 
 
 def mention_snippet(text: str, spans: list[tuple[int, int, int]], *, radius: int = 70) -> Markup:

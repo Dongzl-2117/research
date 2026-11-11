@@ -1,6 +1,6 @@
 """识图的结构化结果：模型按 JSON 交回图里有什么，这里只校验、排版，把连着截的几张拼起来。
 
-以前识图交回一段自由文字，后面由 ``wechat_dialogue`` 用几十条正则去猜：哪行是谁说的、哪行是界面、
+以前识图交回一段自由文字，后面用几百行按 App、按案例写的正则去猜：哪行是谁说的、哪行是界面、
 哪几句和上一张截图重复。这些在图上一眼可见，写成文字以后就丢了，所以每来一种新版式就要补一条规则。
 现在由看得见图的模型直接交结构（提示词是 ``researchlib.ocr.VISION_PROMPT``）::
 
@@ -14,7 +14,8 @@
 
 这里不认 App、不列界面字，只做三件事：
 
-- 校验：不是 JSON 的回答返回 None，调用方按旧格式存；像 JSON 却读不出来的抛 ``UnitsError``。
+- 校验：像 JSON 却读不出来的抛 ``UnitsError``。模型没按格式交的一段自由文字，和全量重认以前存的旧识图
+  （units 为空），都按空行当成几段文字（``plain_units``），不猜说话人、不剥界面字，字照原样留着。
 - 排版：一条消息写成「说话人：正文」。截图的人自己发的（聊天里靠右的气泡），和显示名是这个来源作者本人账号的
   （``zsxq_comments.is_owner``，评论区同一个判断），写成方伟，和旧格式同一个写法，别的来源照旧由
   ``relabel_host`` 换成作者名；看不到名字的写网友。被引用的那条写在引用它的那条前面，前面写过的
@@ -32,8 +33,8 @@
   文章截图）后面写「（小字，可能认错）」：这种字模型常按意思补成通顺的话，又自己觉得看清了，
   字小不小它判断得准，所以让它标字小，摘要和问库看到这行就不把这段当成原话。
 
-结果存在 ``image_texts.units``。units 为空的是旧格式，仍由 ``wechat_dialogue`` 的旧规则整理；
-那套规则冻结，只管还没重识的旧图，不再往里加。遇到新版式改 ``VISION_PROMPT`` 里的通用说明。
+结果存在 ``image_texts.units``。以前整理自由文字的那套规则删了，遇到新版式改 ``VISION_PROMPT`` 里的通用说明，
+不在这里按 App、按案例补规则。
 """
 
 from __future__ import annotations
@@ -92,17 +93,35 @@ class UnitsError(ValueError):
 
 @dataclass(frozen=True)
 class ImageText:
-    """一张图的识别结果。units 为空是旧格式（只有 text）。"""
+    """一张图的识别结果。units 为空的是全量重认以前存的旧识图（只有 text），排版时当成几段文字（``structure_of``）。"""
 
     digest: str
     text: str
     units: dict | None = None
 
 
+def plain_units(text: str) -> dict:
+    """没有结构的字当成几段文字：按空行分段，不猜谁说的、哪行是界面，字照原样留着。
+
+    模型偶尔不按格式交回一段自由文字（这次的钱不白花），全量重认以前存的旧识图 units 也是空的。
+    """
+    raw = (text or "").strip()
+    fenced = _FENCE.match(raw)
+    if fenced:
+        raw = fenced.group("body")
+    blocks = [{"type": "text", "text": part} for part in _PARAGRAPH_BREAK.split(raw)]
+    return normalize_units({"kind": "other", "blocks": blocks})
+
+
+def structure_of(record: ImageText) -> dict:
+    """排版、拼接、切块用的结构：有 units 用 units，旧识图当成几段文字。"""
+    return record.units if record.units is not None else plain_units(record.text)
+
+
 def parse_reply(raw: str) -> dict | None:
     """模型的回答 → 规整过的 units。
 
-    回答里没有 ``"blocks"`` 也没有 ``"kind"``：模型没按格式交，返回 None，调用方当旧格式的文字存。
+    回答里没有 ``"blocks"`` 也没有 ``"kind"``：模型没按格式交，返回 None，调用方按几段文字存（``plain_units``）。
     有这两个字段却读不出来（多半是截断了）：抛 ``UnitsError``，调用方记失败，不把半截 JSON 当字存。
     """
     text = (raw or "").strip()

@@ -9,7 +9,8 @@
 
 识图交回结构（JSON，见 ``researchlib.ocr_units``）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，
 都由看得见图的模型标好，存进 image_texts.units，后面只排版和拼接，不再按规则猜。
-units 为空的是以前的自由文字，仍由 wechat_dialogue 的旧规则整理（冻结，不再往里加）。
+模型偶尔交回的一段自由文字、全量重认以前存的旧识图（units 为空），都按空行当成几段文字（``ocr_units.plain_units``），
+不再按 App、按案例的规则猜说话人、剥界面字（那套规则删了）。
 长截图（比手机一屏长得多的）切成几段有重叠的图分别认，再由 ``ocr_units.join_tiles`` 接回一张（见 ``tile_spans``）；
 ``--tall`` 只重认切段以前整张认的长图（和 11-10 晚以前切段认、没存每段结果的）。
 
@@ -48,7 +49,6 @@ from psycopg.types.json import Jsonb
 from researchlib.author_voice import site_visible_sql
 from researchlib.chunks import replace_ocr_chunks
 from researchlib.ocr_units import (
-    UNITS_VERSION,
     ImageText,
     UnitsError,
     format_blocks,
@@ -56,20 +56,11 @@ from researchlib.ocr_units import (
     has_dialogue,
     join_tiles,
     parse_reply,
+    plain_units,
     stitch,
+    structure_of,
 )
-from researchlib.present_text import merge_wrapped_utterances, order_nested_replies
-from researchlib.textutil import collapse_short_spam, fix_obvious_typos
-from researchlib.vision_polish import repair_vision_misreads
-from researchlib.wechat_dialogue import (
-    attribution_uncertain,
-    drop_broadcast_chrome,
-    present_ocr_pieces,
-    present_stored_ocr,
-    speaker_note,
-    speaker_prefix,
-    split_speaker,
-)
+from researchlib.wechat_dialogue import HOST
 
 logger = logging.getLogger("researchlib.ocr")
 
@@ -421,152 +412,9 @@ def vision_messages(image_bytes: bytes, mime: str) -> list[dict]:
     ]
 
 
-_COUPON_MARK = re.compile(r"扫码领取优惠券|立减金|仅限前\s*\d+\s*名")
-_YEAR_TYPO = (
-    (re.compile(r"一\?会"), "一年后会"),
-    (re.compile(r"一\?后"), "一年后"),
-)
-# 杂志/品牌封面壳（整行丢掉）
-_BRAND_MASTHEAD = re.compile(
-    r"^(?:"
-    r"领教工坊"
-    r"|INSIDE\s+THE\s+BEST"
-    r"|COLMO"
-    r")$",
-    re.I,
-)
-_SOURCE_MASTHEAD = re.compile(
-    r"^来源\s*[:：]\s*(?:思想[?？×xX]?岭南|领教工坊)\b"
-)
-_SHORT_REPEAT_TOKEN = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,12}$")
-
-
-def _collapse_repeated_short_phrases(line: str) -> str:
-    """「深刻反省，深刻反省，…」压成一次；跨逗号/顿号的短词连刷。"""
-    raw = (line or "").rstrip()
-    if not raw:
-        return ""
-    prefix = speaker_prefix(raw)
-    if prefix:
-        raw = raw[len(prefix) :]
-    parts = re.split(r"[，,、；;]+", raw)
-    tokens = [p.strip() for p in parts if p.strip()]
-    if len(tokens) >= 3 and all(_SHORT_REPEAT_TOKEN.fullmatch(t) for t in tokens):
-        if len(set(tokens)) == 1:
-            return f"{prefix}{tokens[0]}".strip()
-        kept: list[str] = []
-        for token in tokens:
-            if kept and kept[-1] == token:
-                continue
-            kept.append(token)
-        if len(kept) < len(tokens):
-            return f"{prefix}{'，'.join(kept)}".strip()
-    return f"{prefix}{raw}".strip() if prefix else line.rstrip()
-
-
-def _body_of(line: str) -> str:
-    """去掉行首说话人（方伟、网友或截图网名）后剩下的字。"""
-    speaker = split_speaker(line, names=True)
-    return speaker[1] if speaker else (line or "").strip()
-
-
-def _is_brand_chrome_line(line: str) -> bool:
-    body = _body_of(line)
-    if not body:
-        return False
-    if _BRAND_MASTHEAD.fullmatch(body):
-        return True
-    if _SOURCE_MASTHEAD.match(body):
-        return True
-    return False
-
-
-def normalize_vision_text(text: str) -> str:
-    """去掉模型偶尔套上的代码围栏；半截尾巴里乱编的公司名留给 prompt 约束，这里只做轻清理。
-
-    说话人和界面字留给 wechat_dialogue。推广卡、一年后误写成一?、品牌刊头、短句刷屏在这里先收掉。
-    只把半句折行接上，模型用空行分开的段保留。雪球嵌套回复改成从早到晚。识图滑字仍交给 vision_polish。
-    """
-    raw = (text or "").strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-    for pat, repl in _YEAR_TYPO:
-        raw = pat.sub(repl, raw)
-    # 整张都是优惠券推广卡，或模型写了「按规则不输出」说明句：直接丢掉。
-    if re.search(r"按规则整段不输出|优惠券推广卡", raw):
-        return ""
-    coupon_hits = _COUPON_MARK.findall(raw)
-    if coupon_hits and len(re.findall(r"[一-鿿]", raw)) <= 80:
-        if re.search(r"扫码领取优惠券|立减金", raw):
-            return ""
-    # 模型偶发把截断气泡收成「某某公司?」或用上文公司名补半截尾巴。
-    lines = []
-    for line in raw.splitlines():
-        s = line.strip()
-        if re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{2,8}\?", s) and ("方伟" not in s and "网友" not in s):
-            if "：" not in s and ":" not in s:
-                continue
-        # 单行优惠券话术（含已标方伟的）丢掉
-        body = _body_of(s)
-        if _COUPON_MARK.search(body) and len(body) <= 40:
-            continue
-        if re.search(r"按规则整段不输出|优惠券推广卡", body):
-            continue
-        # 视频号/雪球壳轻清理（wechat_dialogue 还会再剥一轮）
-        if re.fullmatch(r"(?:[\u4e00-\u9fffA-Za-z0-9_\-]{2,20}\s+)?已关注", body):
-            continue
-        if re.search(r"欢迎关注\s*@?\S{0,40}\s*视频号|点击\s*#\S{1,40}\s*查看更多|作者提示\s*[:：]\s*内容为转载", body):
-            continue
-        if re.fullmatch(r"(?:发讨论|查看对话)[>〉›]?", body):
-            continue
-        if re.fullmatch(r"\d{1,6}(?:\s+\d{1,6}){1,4}", body):
-            continue
-        if _is_brand_chrome_line(line):
-            continue
-        collapsed = _collapse_repeated_short_phrases(line.rstrip())
-        if not collapsed:
-            continue
-        lines.append(collapsed)
-    # 去掉账号栏后只剩优惠券日期/名额的尾巴
-    kept = []
-    for line in lines:
-        s = line.strip()
-        body = _body_of(s)
-        if re.fullmatch(r"仅限前\s*\d+\s*名", body):
-            continue
-        if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}\s*\d{1,2}:\d{2}\s*至\s*\d{4}/\d{1,2}/\d{1,2}\s*\d{1,2}:\d{2}", body):
-            continue
-        if re.fullmatch(r"\d+\s*元立减金。?", body):
-            continue
-        if re.fullmatch(r"方伟看十年|看十年", body):
-            continue
-        kept.append(line)
-    lines = kept
-    # 连续相同短行（跨行刷「深刻反省」）只留一行
-    deduped: list[str] = []
-    for line in lines:
-        body = _body_of(line)
-        prev = _body_of(deduped[-1]) if deduped else None
-        if deduped and body and body == prev and _SHORT_REPEAT_TOKEN.fullmatch(body):
-            continue
-        deduped.append(line)
-    lines = drop_broadcast_chrome(deduped)
-    if lines:
-        last = lines[-1].strip()
-        # 「方伟：名创优品… / 名创优品业务…」——半截尾巴常见编造
-        if re.search(r"名创优品", last) and re.search(r"[…\.．?？]+$", last):
-            if last.startswith("方伟：") or last.startswith("方伟:"):
-                lines[-1] = "方伟：…"
-            elif "：" not in last and ":" not in last:
-                lines.pop()
-    text = order_nested_replies(merge_wrapped_utterances("\n".join(lines).strip()))
-    return repair_vision_misreads(fix_obvious_typos(collapse_short_spam(text)))
-
-
 @dataclass
 class Recognition:
-    """一张图识出来的东西。units 为空是模型没按结构交（旧格式的文字），error 非空是结构读不出来。"""
+    """一张图识出来的东西。认成了 units 就有（模型没按结构交的自由文字也当成几段文字），error 非空是结构读不出来。"""
 
     text: str
     units: dict | None = None
@@ -578,16 +426,16 @@ class Recognition:
 VISION_UNITS_RETRIES = 1
 
 
-def read_vision_reply(reply: str) -> tuple[str, dict | None]:
+def read_vision_reply(reply: str) -> tuple[str, dict]:
     """模型的回答 → (存进 image_texts.text 的字, units)。
 
     按结构交的：字由 units 排出来（读旧列的地方照样能用），units 存原样结构。
-    没按结构交的（自由文字）：照旧经 normalize_vision_text 轻清理，units 为空，后面走旧规则。
+    没按结构交的（自由文字）：按空行当成几段文字（``plain_units``），字照原样留着，不按规则猜说话人、剥界面字。
     像 JSON 却读不出来的抛 UnitsError。
     """
     units = parse_reply(reply)
     if units is None:
-        return normalize_vision_text(reply), None
+        units = plain_units(reply)
     return format_units(units), units
 
 
@@ -628,7 +476,7 @@ def vision_engine(settings) -> Callable[[Path], Recognition]:
         assert last_exc is not None
         raise last_exc
 
-    def read(path: Path, payload: bytes, mime: str, usage: dict) -> tuple[str, dict | None] | str:
+    def read(path: Path, payload: bytes, mime: str, usage: dict) -> tuple[str, dict] | str:
         """认一张（或长图的一段）：交回 (字, units)；读不出来交回出错的原因。"""
         messages = vision_messages(payload, mime)
         problem = ""
@@ -648,7 +496,7 @@ def vision_engine(settings) -> Callable[[Path], Recognition]:
         if len(pieces) > 1:
             logger.info("长截图切成 %d 段认 %s", len(pieces), path)
         usage: dict = {}
-        found: list[tuple[str, dict | None]] = []
+        found: list[tuple[str, dict]] = []
         for payload, mime in pieces:
             # 一段出错或读不出来，整张都不算认成：只写一部分的字比旧字还糟，重认时旧字留着。
             result = read(path, payload, mime, usage)
@@ -658,16 +506,10 @@ def vision_engine(settings) -> Callable[[Path], Recognition]:
         if len(found) == 1:
             text, units = found[0]
             return Recognition(text, units, usage)
-        units = join_tiles([units if units is not None else _plain_units(text) for text, units in found])
+        units = join_tiles([units for _text, units in found])
         return Recognition(format_units(units), units, usage)
 
     return recognize
-
-
-def _plain_units(text: str) -> dict:
-    """长图里没按结构交的一段（自由文字）：整段当一块段落接上，不丢字。"""
-    blocks = [{"type": "text", "text": text.strip()}] if text.strip() else []
-    return {"v": UNITS_VERSION, "kind": "other", "blocks": blocks}
 
 
 def resolve_engine(settings) -> tuple[str, Callable[[Path], Recognition]]:
@@ -849,34 +691,19 @@ def useful_image_text(text: str) -> bool:
 def compose_ocr_text(pieces: list, owners: tuple[str, ...] = ()) -> str:
     """按图片顺序拼成观点和摘要能读的旁路正文。
 
-    pieces 是每张图的识别结果：字符串（旧格式），或 ``ImageText``（带 units 的是结构化的）。
-    owners 是这篇来源作者本人的名字（``article_owners``）：结构化的图里显示名是这些账号的，写成作者。
+    pieces 是每张图的识别结果：字符串（没有结构的字），或 ``ImageText``。
+    owners 是这篇来源作者本人的名字（``article_owners``）：图里显示名是这些账号的，写成作者。
     太短的（水印、表情）丢掉。这份字给摘要、观点、问库和检索；阅读页不铺进正文，只留原图。
-
-    全是旧格式时和以前一字不差：微信群聊截图整理成「方伟：」「网友：」，表格和长文保持原文，
-    识图若已经带说话人仍再剥界面字（wechat_dialogue，冻结）。
-    有结构化的图时，结构化的那几张只排版、按首尾重合拼接（``ocr_units``），不再过旧规则；
-    夹在中间的旧格式图仍按旧规则整理，前后顺序不变。
+    每张图只排版、按首尾重合拼接（``ocr_units``）；没有结构的（units 为空的旧识图）当成几段文字照原样排。
     """
     records = [piece if isinstance(piece, ImageText) else ImageText("", piece or "", None) for piece in pieces]
-    if not any(record.units is not None for record in records):
-        useful = [text for text in ((record.text or "").strip() for record in records) if useful_image_text(text)]
-        if not useful:
-            return ""
-        return present_ocr_pieces(useful)
-    return "\n\n".join(
-        text for _record, text in _structured_pieces(records, legacy_runs=True, owners=owners) if text
-    )
+    return "\n\n".join(text for _record, text in _image_pieces(records, owners) if text)
 
 
-def _structured_pieces(
-    records: list[ImageText], *, legacy_runs: bool, owners: tuple[str, ...] = ()
-) -> list[tuple[ImageText, str]]:
-    """有结构化图的一篇：[(那张图, 整理好的字)]。同一张图出现两次只算第一次。
+def _image_pieces(records: list[ImageText], owners: tuple[str, ...] = ()) -> list[tuple[ImageText, str]]:
+    """一篇的图：[(那张图, 排好的字)]。同一张图出现两次只算第一次。
 
-    结构化的图按首尾重合拼接后排版，引用的那条前面写过就不再写。
-    legacy_runs：连着的几张旧格式图一起交给旧规则（拼旁路正文时，旧规则要把连着的群聊合成一块），
-    这一串的字挂在第一张上；为 False 时一张一张整理（检索块一张图一块）。两种都共用一份「写过的句子」去重。
+    挨着的两张按首尾重合拼接后排版，引用的那条前面写过就不再写。字太少的那张是空串。
     """
     seen_digests: set[str] = set()
     ordered: list[ImageText] = []
@@ -886,30 +713,11 @@ def _structured_pieces(
         if record.digest:
             seen_digests.add(record.digest)
         ordered.append(record)
-    stitched = stitch([record.units for record in ordered])
     found: list[tuple[ImageText, str]] = []
     written: set[str] = set()
-    seen: list[str] = []
-    run: list[ImageText] = []
-
-    def flush() -> None:
-        if not run:
-            return
-        useful = [record.text.strip() for record in run if useful_image_text(record.text or "")]
-        text = present_ocr_pieces(useful, seen).strip() if useful else ""
-        found.append((run[0], text))
-        run.clear()
-
-    for record, blocks in zip(ordered, stitched, strict=True):
-        if blocks is None:
-            run.append(record)
-            if not legacy_runs:
-                flush()
-            continue
-        flush()
-        text = format_blocks(blocks, written, owners)
+    for record, blocks in zip(ordered, stitch([structure_of(record) for record in ordered]), strict=True):
+        text = format_blocks(blocks or [], written, owners)
         found.append((record, text if useful_image_text(text) else ""))
-    flush()
     return found
 
 
@@ -984,15 +792,12 @@ def refresh_article_ocr(conn, article_id: int) -> str:
 
 
 def article_ocr(conn, article_id: int) -> tuple[str, str]:
-    """摘要和观点读的图片文字。
+    """摘要和观点读的图片文字：(articles.ocr_text, ocr_hash)。
 
-    这篇还挂着 image_texts 时，先按当前规则从原始识别重写 articles.ocr_text。
-    阅读页本来就现解析 image_texts；观点如果只重跑库里已经写成「方伟：」的旁路，
-    账号栏已经被拿掉，引用回复分不回来。没有图时，仍把库里的旁路再整理一次。
-    有结构化的图时，重写出来的就是定稿：说话人是识图标好的，不再拿旧规则过一遍。
+    这篇还挂着 image_texts 时，先按现在的排版从识别结果重写 articles.ocr_text，重写出来的就是定稿。
+    没有图的照库里的原样交。
     """
-    images = article_image_texts(conn, article_id)
-    if images:
+    if article_image_texts(conn, article_id):
         refresh_article_ocr(conn, article_id)
     row = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
@@ -1000,33 +805,33 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
     ).fetchone()
     if row is None:
         return "", ""
-    if any(image.units is not None for image in images):
-        return row["ocr_text"] or "", row["ocr_hash"] or ""
-    cleaned = present_stored_ocr(row["ocr_text"] or "")
-    digest = hash_ocr(cleaned)
-    if cleaned != (row["ocr_text"] or "") or digest != (row["ocr_hash"] or ""):
-        conn.execute(
-            "UPDATE articles SET ocr_text = %s, ocr_hash = %s WHERE id = %s",
-            (cleaned, digest, article_id),
+    return row["ocr_text"] or "", row["ocr_hash"] or ""
+
+
+def speaker_note(host: str = HOST) -> str:
+    """图片里有对话时，摘要和观点的提示里补的那句说话人说明。host 是这篇的作者（文字已经 relabel_host 过）。"""
+    name = (host or "").strip() or HOST
+    if name == HOST:
+        return (
+            "截图里的对话已整理成「说话人：正文」：绿气泡是星主方伟，其余说话人写的是截图上的网名。"
+            "方伟是星主，别人的话不要写成方伟的判断。"
         )
-    return cleaned, digest
+    return (
+        f"截图里的对话已整理成「说话人：正文」：绿气泡是这篇的作者{name}，其余说话人写的是截图上的网名。"
+        f"{name}是发这篇的作者，别人的话不要写成{name}的判断。"
+    )
 
 
 def ocr_speaker_note(conn, article_id: int, text: str, host: str) -> str:
     """摘要和观点提示里那句说话人说明（``speaker_note``）。text 是已经换成作者名的图片文字。
 
-    全是旧格式的图：照旧从文字里判断有没有对话、冒号前的名字拿不拿得准。
-    有结构化的图：对话是识图标好的，有消息就算有对话；只有旧格式的那几张还按旧规则看边界拿不拿得准。
+    谁说的话是识图标好的：有一张图里有消息就加这句，没有就不加。没有结构的字（旧识图）不按冒号前的字猜。
     """
-    images = article_image_texts(conn, article_id)
-    if not any(image.units is not None for image in images):
-        return speaker_note(text, host)
-    legacy = [image.text for image in images if image.units is None]
-    dialogue = any(has_dialogue(image.units) for image in images) or any(
-        split_speaker(line, names=True) for piece in legacy for line in piece.splitlines()
-    )
-    uncertain = any(attribution_uncertain(piece) for piece in legacy)
-    return speaker_note(text, host, dialogue=dialogue, uncertain=uncertain)
+    if not (text or "").strip():
+        return ""
+    if not any(has_dialogue(image.units) for image in article_image_texts(conn, article_id)):
+        return ""
+    return speaker_note(host)
 
 
 def _touch_articles(conn, content_hash: str, text: str, touched: set[int], report: dict) -> None:

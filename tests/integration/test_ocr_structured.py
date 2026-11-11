@@ -1,6 +1,6 @@
-"""识图交回结构以后：旁路正文、检索块、摘要观点的提示、引用条都按模型标好的说话人走，不再过旧规则。
+"""识图交回结构以后：旁路正文、检索块、摘要观点的提示、引用条都按模型标好的说话人走。
 
-旧格式（units 为空）的图照旧由 wechat_dialogue 整理，见 test_ocr_reading.py。
+全量重认以前存的旧识图（units 为空）当成几段文字照原样排，不按冒号前的字猜谁说的，见 test_ocr_reading.py。
 """
 
 from datetime import datetime
@@ -19,7 +19,6 @@ from researchlib.ocr_units import format_units, normalize_units
 from researchlib.render import image_anchor
 from researchlib.sources import load_sources
 from researchlib.web.app import create_app
-from researchlib.wechat_dialogue import attribution_uncertain
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -35,7 +34,7 @@ def _units(*blocks: dict, kind: str = "chat") -> dict:
     return normalize_units({"kind": kind, "blocks": list(blocks)})
 
 
-# 冒号前是少见的网名、正文里也有冒号：旧规则会把它当成「说话人边界未核实」。结构里说话人是识图标好的。
+# 冒号前是少见的网名、正文里也有冒号。说话人是识图标好的，不按冒号前的字猜。
 CHAT = _units(
     _msg("毛利率：35%，比去年高", "王小明"),
     _msg("先看现金流，负债率也要看", me=True),
@@ -102,8 +101,6 @@ def test_structured_chat_reaches_text_chunks_and_prompts_as_the_model_labelled_i
     )
     saved = conn.execute("SELECT ocr_text, ocr_hash FROM articles WHERE id = %s", (article["id"],)).fetchone()
     assert saved["ocr_text"] == expected
-    # 旧规则会把这段判成「说话人边界未核实」；结构化的图不按冒号猜，检索块和提示都不带这个警示。
-    assert attribution_uncertain(expected)
     chunk = conn.execute(
         "SELECT ord, heading, body, anchor FROM article_chunks WHERE article_id = %s AND lang = 'ocr'",
         (article["id"],),
@@ -116,10 +113,10 @@ def test_structured_chat_reaches_text_chunks_and_prompts_as_the_model_labelled_i
         ),
         "anchor": image_anchor(digest),
     }
-    # 摘要和观点读到的就是这一份，不再拿旧规则过一遍（旧规则会给方伟那段补句号）。
+    # 摘要和观点读到的就是这一份。
     assert article_ocr(conn, article["id"]) == (expected, saved["ocr_hash"])
     note = ocr_speaker_note(conn, article["id"], expected, "方伟")
-    assert "截图里的对话已整理成「说话人：正文」" in note and "尚未确认" not in note
+    assert "截图里的对话已整理成「说话人：正文」" in note
     # 维护命令按同一套重切，结果一样，不算变了。
     assert rebuild_ocr_chunks(conn, dry_run=True)[1] == 0
 
@@ -152,7 +149,6 @@ def test_other_sources_name_their_author_in_chunks_and_digest(conn, settings, tm
     digest_mod.digest_article(conn, settings, article, "乘风破浪")
     assert "乘风破浪：先看现金流，负债率也要看" in seen[0]
     assert "绿气泡是这篇的作者乘风破浪" in seen[0]
-    assert "尚未确认其说话人边界" not in seen[0]
 
 
 def test_author_account_in_a_post_screenshot_is_the_author(conn, settings, tmp_path):
@@ -235,7 +231,8 @@ def test_legacy_and_structured_images_keep_their_order(conn, settings, tmp_path)
     refresh_article_ocr(conn, article["id"])
     conn.commit()
     text = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (article["id"],)).fetchone()["ocr_text"]
-    assert text.index("渠道库存偏高") < text.index("王小明：毛利率：35%，比去年高")
+    # 旧图照存的样子排在前面，新图按结构排在后面。
+    assert text.startswith("方伟：旧图里的判断是渠道库存偏高\n网友：那就再等等吧\n\n王小明：毛利率：35%，比去年高")
     assert text.endswith("股海老船长2号：注意：明天出财报，等数据再说")
 
 

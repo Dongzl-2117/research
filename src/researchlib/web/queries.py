@@ -287,23 +287,6 @@ def image_ocr_texts(conn, article_id: int) -> dict[str, str]:
     return {row["content_hash"]: row["text"] or "" for row in rows}
 
 
-def ocr_anchor_structured(conn, article_id: int, anchor: str) -> bool:
-    """检索块指着的那张图（锚点 img-<内容哈希前 12 位>）是不是识图交回结构的。"""
-    if not anchor.startswith("img-"):
-        return False
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM article_images i
-        JOIN image_texts t ON t.content_hash = i.content_hash
-        WHERE i.article_id = %s AND left(i.content_hash, 12) = %s AND t.units IS NOT NULL
-        LIMIT 1
-        """,
-        (article_id, anchor[len("img-") :]),
-    ).fetchone()
-    return row is not None
-
-
 def sibling_articles(conn, source_id: str, article_id: int, parent: str):
     if parent is None:
         return []

@@ -6,10 +6,7 @@ from pathlib import Path
 from researchlib.boilerplate import clean_body, search_text
 from researchlib.mdlinks import prepare_body_html
 from researchlib.present_text import (
-    expand_reply_chain_line,
-    merge_wrapped_utterances,
     normalize_dialogue_labels,
-    order_nested_replies,
     plain_qa_markdown,
     polish_display_text,
     present_article_text,
@@ -342,128 +339,6 @@ def test_prose_links_use_blue_but_ocr_reading_keeps_text_color():
     assert "var(--accent)" not in original_hover
 
 
-# 文章 24008 方洪波视频截图：模型按画面折行，一句拆成多行。
-_FANG_LINES = """方洪波：
-企业家精神是敢于在最顺的时候
-对自己动刀子
-光做家电
-没有未来
-我们光做家电没有未来
-that just making home appliances offered no future.
-转型本质就是转人，在企业最顺的时候对自己动刀子 (1/3)
-"""
-
-# 文章 24008 雪球截图：上面是较晚的回复，下面卡片是更早的引语。昵称已收成网友。
-_XUEQIU_VISUAL = (
-    "网友：李录投资也很好，我们投资的基本理念其实非常接近，能力圈可能有点不同而已。"
-    "目前我不会考虑和任何人做任何节目的。\n"
-    "网友：大道会不会考虑和李录做一期对谈节目？\n"
-    "网友：莫尼什：我是苹果用户。段永平拥有OPPO和vivo，也有一个很大的股票投资组合。"
-    "他最大的持仓是苹果，直接竞争对手。他是我的朋友。你知道他怎么跟我说的吗？他…\n"
-)
-
-
-def test_merge_wrapped_quote_into_paragraphs():
-    """只接半句折行。模型分成多行的标题、字幕不收成一整段。"""
-    out = merge_wrapped_utterances(_FANG_LINES)
-    assert "企业家精神是敢于在最顺的时候对自己动刀子" in out
-    assert "时候\n对自己" not in out
-    assert "光做家电\n没有未来" in out
-    assert "我们光做家电没有未来\nthat just making" in out
-    assert "对自己动刀子\n\n光做" not in out
-    assert "刀子光做家电" not in out
-    assert "future.\n转型本质" in out
-    assert out.index("企业家精神") < out.index("光做家电") < out.index("转型本质")
-    assert merge_wrapped_utterances(out) == out.strip()
-
-
-def test_merge_keeps_blank_lines_the_model_wrote():
-    """识图用空行分的段原样留下，一段里的两句也不拆开。"""
-    written = (
-        "方洪波：企业家精神是敢于在最顺的时候对自己动刀子\n\n"
-        "光做家电没有未来\n\n"
-        "我们光做家电没有未来。that just making home appliances offered no future.\n\n"
-        "转型本质就是转人，在企业最顺的时候对自己动刀子 (1/3)"
-    )
-    assert merge_wrapped_utterances(written) == written
-    one_line = "第一句完了。第二句也在这段里。"
-    assert merge_wrapped_utterances(one_line) == one_line
-
-
-def test_merge_leaves_dialogue_lines_and_long_notes():
-    dialogue = "方伟：第一句还在观察同店。\n网友：第二句先不提价。"
-    assert merge_wrapped_utterances(dialogue) == dialogue
-    headlines = "浙江绍兴会稽山 首度超越古越龙山\n2026年上半年营业收入达8.53亿元\n江浙沪的销售额高达70%以上"
-    merged = merge_wrapped_utterances(headlines)
-    assert "古越龙山2026" not in merged
-    assert "亿元江浙沪" not in merged
-    assert "8.53亿" in merged
-
-
-# 文章截图按屏幕宽度一行一行抄下来：行行差不多一样宽，断在词中间（文章 10503 是这样）。
-_SCREEN_WRAPPED = """很多人把开店当成增长，其实新店要先分清楚哪些是
-资产（asset），哪些只是费用（cost）：房租、
-人工和装修摊销加起来，单店每月至少要卖两万杯才
-能打平，而同店销量已经连续三个季度下滑，新店又
-在分流老店的客人，所以扩张越快利润越薄。
-二、怎么看估值
-按明年的利润算市盈率不到十五倍，看起来很便宜，
-但如果同店继续下滑，利润预测本身就要往下调，便
-宜只是表面上的。"""
-
-
-def test_merge_rejoins_lines_wrapped_at_screen_width():
-    """排满的行接成整段，小标题不粘进正文；全角括号贴着汉字，不空格。再跑一遍不变。"""
-    out = merge_wrapped_utterances(_SCREEN_WRAPPED)
-    assert out.splitlines() == [
-        "很多人把开店当成增长，其实新店要先分清楚哪些是资产（asset），哪些只是费用（cost）："
-        "房租、人工和装修摊销加起来，单店每月至少要卖两万杯才能打平，"
-        "而同店销量已经连续三个季度下滑，新店又在分流老店的客人，所以扩张越快利润越薄。",
-        "二、怎么看估值",
-        "按明年的利润算市盈率不到十五倍，看起来很便宜，但如果同店继续下滑，利润预测本身就要往下调，"
-        "便宜只是表面上的。",
-    ]
-    assert merge_wrapped_utterances(out) == out
-
-
-def test_merge_keeps_slides_and_list_items_apart():
-    """一行一条的幻灯片要点（没有逗号句号）不接；编号的条目不粘到上一行，条目自己的折行照接。"""
-    slides = (
-        "毛利率提升至百分之六十二点五创历史新高\n"
-        "经营利润率提升至百分之三十一同比增加五个点\n"
-        "自由现金流达到四百亿元同比增长百分之四十\n"
-        "回购和分红合计三百亿元占自由现金流七成"
-    )
-    assert merge_wrapped_utterances(slides) == slides
-    items = (
-        "我喜欢的公司往往必须同时具备几个特点：\n"
-        "1、竞争优势巨大（我的要求是必须远胜于行业第二\n"
-        "名）且有清晰壁垒；\n"
-        "2、管理层诚信、有长期主义，不会为了短期的数字\n"
-        "去损害长期的竞争力；\n"
-        "3、估值合理，最好是在市场悲观的时候买到，这样\n"
-        "安全边际才足够。"
-    )
-    assert merge_wrapped_utterances(items).splitlines() == [
-        "我喜欢的公司往往必须同时具备几个特点：",
-        "1、竞争优势巨大（我的要求是必须远胜于行业第二名）且有清晰壁垒；",
-        "2、管理层诚信、有长期主义，不会为了短期的数字去损害长期的竞争力；",
-        "3、估值合理，最好是在市场悲观的时候买到，这样安全边际才足够。",
-    ]
-    table = "项目 2024 2025 2026\n营业收入 1200 1500 1800\n经营利润 300 420 560\n净利润 280 390 520"
-    assert merge_wrapped_utterances(table) == table
-
-
-def test_xueqiu_visual_order_becomes_chronological():
-    out = order_nested_replies(_XUEQIU_VISUAL)
-    assert out.index("莫尼什：") < out.index("大道会不会考虑") < out.index("李录投资也很好")
-    assert order_nested_replies(out) == out
-    plain = "网友：先看基本面，别急着动手。\n网友：你确定吗？\n网友：我再想想，明天再说。"
-    assert order_nested_replies(plain) == plain
-    mixed = "网友：大道会不会考虑？\n方伟：先不谈。\n网友：莫尼什：我是苹果用户，这段引用要很长才像卡片。"
-    assert order_nested_replies(mixed) == mixed
-
-
 # 文章 24040 的形状：图后面硬换行把逗号留在下一行，页码「1」是「1988 年」被拆开的首位。
 _BROKEN_24040 = """吃的量就跟自己掏钱买的时候差不多了
 
@@ -575,21 +450,3 @@ def test_english_web_export_keeps_the_segments_older_translations_used():
     page = article_pairs(original, translated)
     assert "对不上" not in page.notice
     assert page.pairs and all(pair.en and pair.zh for pair in page.pairs)
-
-
-def test_reply_chain_expands_earlier_speech_first():
-    line = (
-        "回复@王小明: 李录投资也很好，目前我不会考虑和任何人做任何节目的。"
-        "//@王小明:回复@李四:大道会不会考虑和李录做一期对谈节目？"
-    )
-    expanded = expand_reply_chain_line(line)
-    # //@ 后面是一楼，网名照留；最前面那条回复没写自己的网名，仍是「网友：」。
-    assert expanded == [
-        "王小明：大道会不会考虑和李录做一期对谈节目？",
-        "网友：李录投资也很好，目前我不会考虑和任何人做任何节目的。",
-    ]
-    with_card = line + "\n网友：莫尼什：我是苹果用户。段永平拥有OPPO和vivo，持仓很大。"
-    ordered = order_nested_replies(with_card)
-    assert ordered.index("莫尼什：") < ordered.index("大道会不会") < ordered.index("李录投资也很好")
-    assert "回复@" not in ordered and "//@" not in ordered
-    assert order_nested_replies(ordered) == ordered

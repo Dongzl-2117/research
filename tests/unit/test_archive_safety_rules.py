@@ -7,6 +7,7 @@ import pytest
 
 from researchlib import remote_images
 from researchlib.chunks import OCR_MIN_CHARS, ocr_chunks
+from researchlib.ocr_units import normalize_units
 from researchlib.remote_images import (
     FetchError,
     _check_host,
@@ -22,7 +23,6 @@ from researchlib.remote_images import (
 )
 from researchlib.render import image_anchor, img_tag_url, normalize_image_url, render_body
 from researchlib.revisions import _real_edits, article_text, diff_blocks, judge_replacement, label
-from researchlib.wechat_dialogue import SIDE_SELF, present_ocr_pieces
 
 LONG = "腾讯的广告加载率还在提升，视频号是新的广告库存。" * 30
 
@@ -322,12 +322,7 @@ def test_image_extension_sniffs_content():
     assert image_extension(b"????", "image/jpeg") == ".jpg"
 
 
-def test_stored_side_marker_and_chunks():
-    # 以前 RapidOCR 认的图，库里靠右的绿气泡行前面有侧标记：整理时认成方伟，左侧昵称照写。
-    stored = f"王小明\n古茗店效还行，折扣不能再深了\n{SIDE_SELF}同店还有压力"
-    dialogue = present_ocr_pieces([stored])
-    assert "王小明：古茗店效还行，折扣不能再深了" in dialogue
-    assert "方伟：同店还有压力" in dialogue
+def test_ocr_chunks_count_each_image_once_and_skip_decorations():
     digest = "cd" * 32
     chunks = ocr_chunks([(digest, "拼多多二季度营收同比增长\n广告收入 1234 亿元"), (digest, "重复的图不算第二次"),
                          ("ef" * 32, "装饰")])
@@ -336,33 +331,42 @@ def test_stored_side_marker_and_chunks():
     assert ocr_chunks([("aa" * 32, "字" * (OCR_MIN_CHARS - 1))]) == []
 
 
+def _chat(*messages: tuple[str, bool, str]) -> dict:
+    return normalize_units(
+        {
+            "kind": "chat",
+            "blocks": [
+                {"type": "message", "speaker": speaker, "self": own, "text": text} for speaker, own, text in messages
+            ],
+        }
+    )
+
+
 def test_ocr_chunks_skip_sentences_an_earlier_screenshot_already_had():
-    """长群聊分几张截，后一张开头和上一张结尾重叠：重叠的整句只进前一张的块，和文章页一样。
+    """长群聊分几张截，后一张开头和上一张结尾重叠：重叠的那几条只进前一张的块，和文章页一样。
     「同意」这种短回复不算重叠，后面的图里照留。"""
-    first = (
-        "张三：瑞幸和古茗都算头部，但瑞幸同店还有压力，开店速度也慢下来了\n"
-        "王五：同意\n"
-        "方伟：美团守住了，内部也认为外卖这事基本缓过来了\n"
+    first = _chat(
+        ("张三", False, "瑞幸和古茗都算头部，但瑞幸同店还有压力，开店速度也慢下来了"),
+        ("王五", False, "同意"),
+        ("", True, "美团守住了，内部也认为外卖这事基本缓过来了"),
     )
-    second = (
-        "方伟：美团守住了，内部也认为外卖这事基本缓过来了\n"
-        "李四：阿里四处开火，到处花钱，淘天的数据差的话股价会掉不少\n"
-        "王五：同意\n"
+    second = _chat(
+        ("", True, "美团守住了，内部也认为外卖这事基本缓过来了"),
+        ("李四", False, "阿里四处开火，到处花钱，淘天的数据差的话股价会掉不少"),
+        ("王五", False, "同意"),
     )
-    chunks = ocr_chunks([("aa" * 32, first), ("bb" * 32, second)])
+    chunks = ocr_chunks([("aa" * 32, "", first), ("bb" * 32, "", second)])
     assert [anchor for anchor, _text in chunks] == [image_anchor("aa" * 32), image_anchor("bb" * 32)]
     assert "外卖这事基本缓过来了" in chunks[0][1]
     assert "外卖这事基本缓过来了" not in chunks[1][1]
     assert "阿里四处开火" in chunks[1][1] and "王五：同意" in chunks[1][1]
-    # 整张都是前面写过的句子，剩下的不够切块。
-    assert len(ocr_chunks([("aa" * 32, first), ("cc" * 32, first)])) == 1
+    # 整张都是前面写过的几条，没有要切的。
+    assert len(ocr_chunks([("aa" * 32, "", first), ("cc" * 32, "", first)])) == 1
 
 
-def test_ocr_chunks_drop_hold_to_text():
+def test_ocr_chunks_keep_text_without_structure_as_it_is():
+    """全量重认以前的旧识图只有一段自由文字：照原样切块，不猜哪行是界面、谁说的。"""
     digest = "ab" * 32
-    raw = "方伟\n一年的底线能不能稳定赚100亿，先把下限想清楚再谈扩张\n可按住转文字\n回到引用位置\n"
+    raw = "王小明\n一年的底线能不能稳定赚100亿，先把下限想清楚再谈扩张\n可按住转文字\n"
     chunks = ocr_chunks([(digest, raw)])
-    assert chunks
-    assert "可按住转文字" not in chunks[0][1]
-    assert "回到引用位置" not in chunks[0][1]
-    assert "100亿" in chunks[0][1]
+    assert chunks == [(image_anchor(digest), raw.strip())]

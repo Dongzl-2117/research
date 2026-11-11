@@ -242,27 +242,13 @@ _OBVIOUS_TYPOS: tuple[tuple[re.Pattern[str], str], ...] = (
 def fix_obvious_typos(text: str) -> str:
     """改正文和标题里一眼能看出的错字（如「很新都东西」→「很新的东西」）。
 
-    库内原文不改。present_text.polish_display_text 与识图 normalize 共用此表，避免两套替换打架。
+    库内原文不改。展示层 present_text.polish_display_text 用这张表。
     """
     out = text or ""
     if not out:
         return out
     for pat, repl in _OBVIOUS_TYPOS:
         out = pat.sub(repl, out)
-    return out
-
-
-def collapse_short_spam(text: str, phrases: tuple[str, ...] = ("深刻反省",)) -> str:
-    """同一短句夹空白/标点刷屏时压成一次；允许词内被软换行打断（OCR 常见）。"""
-    out = text or ""
-    if not out:
-        return out
-    for phrase in phrases:
-        if not phrase or len(phrase) < 2:
-            continue
-        inner = r"\s*".join(map(re.escape, phrase))
-        pat = re.compile(rf"(?:{inner})(?:[\s，,、；;]*(?:{inner})){{2,}}")
-        out = pat.sub(phrase, out)
     return out
 
 

@@ -15,7 +15,6 @@ from researchlib.ingest.parse import author_replies, comments_section, parse_arc
 from researchlib.render import image_anchor, inline_image_ocr, render_body
 from researchlib.revisions import split_comments
 from researchlib.translate.pair import stamp_paragraph_ids
-from researchlib.wechat_dialogue import present_ocr_pieces
 from researchlib.zsxq_comments import display_author
 
 OWNER = {"user_id": 1001, "name": "方伟"}
@@ -302,7 +301,7 @@ def _page_14879(image_joiner: str) -> str:
 
 
 def test_14879_shots_stay_images_and_comments_share_the_column():
-    """截图留在原处。评论接在后面只留方伟，标题前没有空 <br>。识图对话只给模型。"""
+    """截图留在原处，识图的字不进阅读页。评论接在后面只留方伟，标题前没有空 <br>。"""
     page = _page_14879("\n\n")
     assert "ocr-reading" not in page and "ocr-link" not in page and "ocr-shot" not in page
     assert "国产agents" not in page
@@ -319,8 +318,6 @@ def test_14879_shots_stay_images_and_comments_share_the_column():
     assert "**" not in section and "\u3000" not in section
     # 最后一张图到评论标题之间，不留导出时垫的空 <br>。
     assert "<br" not in page[last_image : page.index("zsxq-comments")]
-    stored = present_ocr_pieces(_shots_14879())
-    assert "产agents" in stored and "方伟：" in stored
     css = (Path(__file__).resolve().parents[2] / "src/researchlib/web/static/site.css").read_text()
     assert ".reader-grid .prose { max-width: none; }" in css
     assert "--reading-column: 680px" in css
