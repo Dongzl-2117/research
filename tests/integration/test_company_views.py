@@ -1,4 +1,4 @@
-"""公司页的观点时间线：抽作者判断，风险等只在原文谈到时才有，原句逐字核对，态度变了标出来。"""
+"""公司页的判断：抽作者判断，风险等只在原文谈到时才有，原句逐字核对；页面分概览、判断、文章三页。"""
 
 import json
 import os
@@ -91,18 +91,41 @@ def test_timeline_on_company_page(conn, settings, monkeypatch):
     assert saved[0]["quote"] and saved[0]["chunk_ord"] is not None
     assert saved[1]["quote"] == "" and saved[1]["stance"] == "negative"
     with TestClient(create_app(settings)) as client:
-        page = client.get(f"/companies/{company['id']}").text
+        base = f"/companies/{company['id']}"
+        # 概览：这位作者现在怎么看，最近的判断不用翻页就在。三页的标签上写着判断有几条。
+        overview = client.get(base).text
+        assert "现在怎么看" in overview and "腾讯的广告还有提价空间" in overview
+        assert 'id="views"' not in overview and 'class="company-articles"' not in overview
+        assert f'href="{base}?tab=views"' in overview and f'href="{base}?tab=articles"' in overview
+        # 判断一页：一条一行，点开有理由和推翻条件，「原文」落到那一段。
+        page = client.get(base, params={"tab": "views"}).text
         assert 'id="views"' in page and "腾讯的广告还有提价空间" in page
         assert "推翻条件" in page and "广告加载率见顶" in page
-        assert "看好 → 看淡" in page
         assert f'href="/articles/{ads["id"]}?chunk={saved[0]["chunk_ord"]}"' in page
-        risk = client.get(f"/companies/{company['id']}", params={"views": "risk"}).text
-        section = risk.split('id="views"', 1)[1].split('class="company-articles"', 1)[0]
+        # 11-11 改版去掉了每条上的「看好 → 看淡」和「风险与反方」筛选；旧链接照样开到判断这一页，只是不再筛。
+        assert "看好 → 看淡" not in page
+        risk = client.get(base, params={"views": "risk"}).text
+        assert 'id="views"' in risk and "腾讯视频号和腾讯金融科技各写一层" in risk
+        # 按态度筛：只看看淡的那条。
+        negative = client.get(base, params={"tab": "views", "stance": "negative"}).text
+        section = negative.split('id="views"', 1)[1]
         assert "视频号时长停止增长" in section and "腾讯视频号和腾讯金融科技各写一层" not in section
-        # 不在持仓里、但示例库深入谈到的公司也会整理观点。
+        # 只带作者的旧链接也到判断这一页；文章一页还是原来那些。
+        assert 'id="views"' in client.get(base, params={"author": "方伟"}).text
+        articles = client.get(base, params={"tab": "articles"}).text
+        assert 'class="company-articles"' in articles and "谁在谈" in articles and 'id="views"' not in articles
+        # 接口上的「风险与反方」筛选还在。
+        data = client.get(f"/api/v1/companies/{company['id']}/views", params={"views": "risk"}).json()
+        assert [item["stance"] for item in data["views"]] == ["negative"]
+        # 公司列表：这家有几条判断、最近一条是什么。
+        listing = client.get("/companies").text
+        row = listing.split(f'href="{base}"', 1)[1].split("</li>", 1)[0]
+        assert "腾讯的广告还有提价空间" in row and 'class="stance-chart"' in row
+        # 不在持仓里、但示例库深入谈到的公司也会整理观点。还没整理出来的只有文章这一页，写明还差几篇。
         meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
         meituan_page = client.get(f"/companies/{meituan}").text
-        assert 'id="views"' in meituan_page and "没提炼成观点" in meituan_page
+        assert 'class="company-articles"' in meituan_page and "没整理出判断" in meituan_page
+        assert 'class="tabs"' not in meituan_page
 
 
 def test_pending_articles_cover_all_tracked_companies_once(conn, settings):

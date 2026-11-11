@@ -656,6 +656,36 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
     return items
 
 
+def list_marks(conn, source_ids: list[str]) -> list[dict]:
+    """公司列表用：每条上了页面的判断属于哪家公司、什么态度、哪天发的。
+
+    和公司页的时间线（timeline）同一套可见规则。每家公司最新的那条（newest）另带判断句，别的行判断句留空，
+    免得每开一次列表都把几千条判断的全文过一遍。按公司、再按新到旧排，没有日期的排在最后。
+    """
+    if not source_ids:
+        return []
+    return conn.execute(
+        f"""
+        SELECT company_id, stance, published_at, source_id, article_id, newest,
+               CASE WHEN newest THEN judgment ELSE '' END AS judgment
+        FROM (
+          SELECT v.company_id, v.stance, v.judgment, a.published_at, a.source_id, a.id AS article_id,
+                 row_number() OVER (
+                   PARTITION BY v.company_id ORDER BY a.published_at DESC NULLS LAST, a.id DESC
+                 ) = 1 AS newest
+          FROM company_views v
+          JOIN articles a ON a.id = v.article_id
+          WHERE {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
+            AND {_SHOWN} AND {visible_sql("a")}
+        ) ranked
+        ORDER BY company_id, published_at DESC NULLS LAST, article_id DESC
+        """,
+        (source_ids,),
+    ).fetchall()
+
+
+# 接口 /api/v1/companies/{id}/views 的两个筛选。公司页 11-11 改版后不再放这两个按钮：
+# 六成判断都算「风险与反方」，「态度变化」常把说两件事的相邻判断标成变了。
 FILTERS = {"risk": "风险与反方", "change": "态度变化"}
 
 

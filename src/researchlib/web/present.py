@@ -375,19 +375,6 @@ def company_summary(digest: dict | None, names: list[str]) -> str:
     return summary if summary and mentions_company(summary, names) else ""
 
 
-def recent_blurb(view: dict | None, digest: dict | None, names: list[str]) -> str:
-    """最近观点展开后的一段话。用库里已有、谈到这家公司的导读，没有再用这条观点的判断。
-
-    不在请求里调模型。没有可用文字就返回空串，调用方不要画一个空展开。
-    """
-    summary = company_summary(digest, names)
-    if summary:
-        return summary
-    if not view:
-        return ""
-    return str(view.get("judgment") or "").strip()
-
-
 # 断更提示只看最近这几天确实做过定时导入的来源：定时抓取脚本（crawl-*.sh，origin=crawl）。
 # 只手动导归档的来源，或定时任务没装的时候，「很久没有新文章」是常态，提示了也是假警报。
 # 以前从 AIHOT 导入的记作 aihot；AIHOT 下线以后没有新的，不再看。

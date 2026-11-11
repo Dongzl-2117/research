@@ -553,10 +553,10 @@ def test_home_recent_views_include_non_holdings(conn, settings):
     meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/companies/{meituan}").text
-    assert 'id="views"' in page and "美团的判断" in page
+    # 公司页的概览直接列这位作者最近的判断；改版前那行「最近」（展开是导读）去掉了。
+    assert "现在怎么看" in page and "美团的判断" in page
     assert "role-badge" not in page
-    assert 'class="recent-lead"' in page
-    assert "导读：美团的商家广告还在变贵。" in page
+    assert 'class="recent-lead"' not in page
 
 
 def test_recent_views_skip_a_digest_about_another_company(conn, settings):
@@ -594,8 +594,8 @@ def test_recent_views_skip_a_digest_about_another_company(conn, settings):
     section = home.split('aria-label="最近观点"', 1)[1].split('class="feed"', 1)[0]
     assert "美团" in section
     assert "拼多多的佣金率" not in section and 'class="recent-item-summary"' not in section
-    lead = page.split('class="recent-lead"', 1)[1][:600]
-    assert "外卖的补贴还要打很久" in lead and "拼多多的佣金率" not in lead
+    # 公司页写的是对这家公司的判断，不拿讲别家的导读来充数。
+    assert "外卖的补贴还要打很久" in page and "拼多多的佣金率" not in page
 
 
 def test_feishu_callout_marker_stays_out_of_cards_and_pages(conn, settings):
