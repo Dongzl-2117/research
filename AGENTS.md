@@ -34,6 +34,7 @@
 - 不在启动或上线时跑 `research-views`、`research-digest`、`research-theses` 这类花 LLM 钱的批量任务。夜间任务每晚有上限。要一次跑一大批，先在 PR 里写出篇数和大概费用，等 Zhilin 同意。这类任务（译制、摘要、观点、论点、识图）只有命令行入口 `docker compose exec app research-*`，网页和 API 触发它们的接口 #140 删了。
 - 整个来源先不展示：把 `config/sources.yaml` 里那一项的 `enabled` 改成 `false`。从配置里删掉的来源，启动时 `sync_sources` 也记成停用。停用的来源网站、接口、问库都不出现，导入会拒绝，摘要、观点、论点不再处理，库里的行留着。
 - 改段落块（原文、译文、图片文字重切，清洗）的代码写完块以后，提交之前调 `embeddings.sync_article`，新段落和它的向量一起提交，别把向量留给 research-embed：中间那段时间改过的段落只能按字面找到，排序整批往下掉（11-11 research-clean 以后检索页报「向量还没算完」）。见 [docs/retrieval.md](docs/retrieval.md)「改段落时连向量一起换」。
+- 改检索、问库的 SQL，先在一万篇以上的库上看 `EXPLAIN ANALYZE`（本地副本的搭法见 [docs/retrieval.md](docs/retrieval.md)「检索页提速（2026-11-11）」，副本里要另加几千篇隐藏文章，不然计划和线上不一样）。已知的坑：jsonb 表达式的条件要有统计（迁移 036）；按（文章, 块号）取行写成 `CROSS JOIN LATERAL (… OFFSET 0)`，写成普通连接常被估错，一篇几百块逐行比；核向量新鲜度的 md5 别放在要扫几万块的条件里；只有 `LIMIT` 没有 `ORDER BY` 的子查询，取到哪些行看计划。应用的数据库连接关了 JIT、顺序扫描每次从表头开始（`db.CONNECT_OPTIONS`），比改前改后的结果时两边都要这样连。
 - 不跳过、不禁用测试来让 CI 变绿。
 - 阅读页（文章、对照、飞书目录右侧）保留原图，不把识图文字铺进正文。整理后的字只给摘要、观点、问这篇和检索（`present_ocr` / `articles.ocr_text` / `article_chunks.lang = ocr`）。见 [docs/ocr.md](docs/ocr.md)。
 - 识图 11-07 起交回结构（`image_texts.units`，`researchlib/ocr_units.py`）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，由看得见图的模型标好，后面只排版和拼接。`wechat_dialogue`、`vision_polish`、`normalize_vision_text` 冻结，只整理以前的自由文字。识图出错改 `VISION_PROMPT` 里的通用说明，不加按 App、按案例的规则。`cut` 只表示这条在图外还有下文，看得见的字整段留下；只有另标 `illegible`（笔画被切到中间）才不采用模型补的那句。`VISION_PROMPT_VERSION` 仍是 3，按第 3 版认过的图不因此重认。见 [docs/ocr.md](docs/ocr.md)「识图交回结构」。

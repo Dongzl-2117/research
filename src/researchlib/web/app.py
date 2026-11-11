@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from researchlib import embeddings
 from researchlib.ask import mark_interrupted
 from researchlib.chunks import relabel_ocr_chunks_if_needed
 from researchlib.config import Settings, assert_bind_allowed
@@ -47,7 +49,19 @@ async def lifespan(app: FastAPI):
         threading.Thread(
             target=_background_upkeep, args=(app.state.settings,), name="library-upkeep", daemon=True
         ).start()
+        threading.Thread(target=_keep_embedder_warm, name="embedding-keep-warm", daemon=True).start()
     yield
+
+
+def _keep_embedder_warm() -> None:
+    """本机 Ollama 闲置 5 分钟就卸下向量模型，之后的第一次搜索要等它重新加载几秒。启动时先算一次（上线后的
+    第一次搜索也不用等），之后每分钟看一次，隔一阵子没用过就算一个很短的向量。云端的向量服务不做（见 keep_warm）。"""
+    while True:
+        try:
+            embeddings.keep_warm()
+        except Exception:  # 保温出错不影响网站
+            logger.exception("向量服务保温出错")
+        time.sleep(60)
 
 
 def _background_upkeep(settings: Settings) -> None:
@@ -105,7 +119,10 @@ def create_app(settings: Settings | None = None, *, experiment_owner_verifier=No
 
     @app.middleware("http")
     async def privacy_headers(request: Request, call_next):
+        started = time.perf_counter()
         response = await call_next(request)
+        # 服务器上花了多久（不含网络）。浏览器开发者工具和 curl 都看得到，和总耗时一比就知道慢在哪一头。
+        response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - started) * 1000:.1f}"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["X-Frame-Options"] = "DENY"

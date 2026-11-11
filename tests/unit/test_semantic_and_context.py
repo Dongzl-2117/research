@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from researchlib import embeddings
@@ -71,6 +73,31 @@ def test_blocks_with_only_links_and_file_names_count_as_empty():
     assert thin_text({"heading": "规模效应被称为商业世界里的万有引力，" * 3, "body": "image.png"})
     assert not thin_text({"heading": "", "body": "会员费是利润的大头"})
     assert not thin_text({"heading": "", "body": "Costco makes its money from membership fees."})
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "会员费是利润的大头，低价换来续费率。",
+        "见 https://example.com/a.png 和 www.example.com/b",
+        "HTTPS://EXAMPLE.COM/A 大写的链接",
+        "截屏2025-06-08 19.36.10.png 后面的字",
+        "屏幕截图 2024-01-02 10.11.12 后面的字",
+        "Screen Shot 2017-06-01 at 7.40.43 PM (2).PNG",
+        "SCREENSHOT 2024-06-17 AT 16.18.55.JPEG",
+        "图在这里 image.Png、v2-981fc.JPG、附件.PDF、录屏.Mp4",
+        # 忽略大小写时和 ASCII 字母算同一个、转小写后却不是 ASCII 的字母：长 s 写的截图名、开尔文符号。
+        "ſcreenshot 2024-06-17 at 16.18.55.png",
+        "ſcreen Shot 2017-06-01 at 7.40.43 PM",
+        "无点的 ı 和带点的 İ，开尔文符号 K",
+        "",
+    ],
+)
+def test_skipping_the_link_pattern_never_changes_the_text(body):
+    from researchlib.retrieval import _NOT_TEXT, _drop_not_text
+
+    # 没有那几种字样时不跑正则，得到的字必须和跑了一模一样，否则段落的分数会变。
+    assert _drop_not_text(body) == _NOT_TEXT.sub(" ", body)
 
 
 def test_fuse_without_semantic_only_applies_time_weight():
@@ -186,6 +213,87 @@ def test_after_a_failure_queries_pause_and_do_not_wait_long_again(query_embedder
     embeddings._state.down_until = 0.0
     assert embeddings.query_vector("会员费") is not None
     assert not embeddings.paused()
+
+
+def test_prefetched_query_vector_is_computed_once_and_waited_for(query_embedders):
+    used, _state = query_embedders
+    started, release = threading.Event(), threading.Event()
+
+    def slow(texts):
+        started.set()
+        release.wait(5)
+        used.append("slow")
+        return [[1.0] + [0.0] * (embeddings.DIM - 1) for _ in texts]
+
+    embeddings._state.query_embedder = embeddings._state.cold_embedder = slow
+    # 检索一开始就在后台算问题的向量；同一个问题再预取一次不另算。
+    embeddings.prefetch_query_vector("costco 商业模式")
+    embeddings.prefetch_query_vector("costco 商业模式")
+    assert started.wait(5)
+    got: dict = {}
+    waiter = threading.Thread(target=lambda: got.setdefault("vector", embeddings.query_vector("costco 商业模式")))
+    waiter.start()
+    waiter.join(0.2)
+    # 用到时后台那一次还没算完：等它，不再另算一次。
+    assert waiter.is_alive()
+    release.set()
+    waiter.join(5)
+    assert got["vector"] is not None
+    assert used == ["slow"]
+    # 算完记进缓存，再问直接用。
+    assert embeddings.query_vector("costco 商业模式") == got["vector"]
+    assert used == ["slow"]
+
+
+def test_prefetch_failure_pauses_like_a_direct_call(query_embedders):
+    used, state = query_embedders
+    state["fail"] = True
+    embeddings.prefetch_query_vector("costco 商业模式")
+    assert embeddings.query_vector("costco 商业模式") is None
+    assert embeddings.paused()
+    assert used == ["cold"]
+    # 暂停期间预取也不去连。
+    embeddings.prefetch_query_vector("会员费")
+    assert embeddings.query_vector("会员费") is None
+    assert used == ["cold"]
+
+
+def test_keep_warm_only_pings_a_local_service_that_has_been_idle(query_embedders):
+    used, state = query_embedders
+    # 云端的服务不保温：模型不会被卸下，每次调用还要花钱。
+    assert not embeddings.keep_warm()
+    assert used == []
+    embeddings._state.local = True
+    # 进程刚起来还没算过：先算一次，上线后的第一次搜索不用等模型加载。
+    assert embeddings.keep_warm()
+    assert used == ["cold"]
+    # 刚算过就不算；保温算过，模型在，搜索用短超时。
+    assert not embeddings.keep_warm()
+    assert embeddings.query_vector("costco 商业模式") is not None
+    assert used == ["cold", "warm"]
+    embeddings._state.last_ok -= embeddings.KEEP_WARM_S
+    assert embeddings.keep_warm()
+    assert used[-1] == "cold"
+    # 保温没成不暂停检索的语义这一路，下次搜索照常试。
+    embeddings._state.last_ok -= embeddings.KEEP_WARM_S
+    state["fail"] = True
+    assert not embeddings.keep_warm()
+    assert not embeddings.paused()
+
+
+@pytest.mark.parametrize(
+    ("base", "local"),
+    [
+        ("http://host.docker.internal:11434/v1", True),
+        ("http://127.0.0.1:11434/v1", True),
+        ("http://localhost:8080/v1", True),
+        ("http://mac-mini.local:9000/v1", True),
+        ("https://api.example.com/v1", False),
+        ("https://embeddings.example.org:443/v1", False),
+    ],
+)
+def test_only_services_on_this_machine_count_as_local(base, local):
+    assert embeddings._is_local(base) is local
 
 
 # —— 检索页：标题算不算写到了问的公司和词 ——

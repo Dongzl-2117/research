@@ -53,13 +53,23 @@ docker compose exec app research-embed   # 第一次全库回填。之后改段�
 
 看有没有用上：检索页搜一个带具体词的问题（比如「costco 商业模式」），语义这一路没用上或向量没算完时，结果上方有一句说明。`research-embed` 跑完会打印「库里 x/y 块有向量」，算不了而跳过的块列在最后。查询向量连不上时 app 日志里有「语义检索暂停」。
 
-Ollama 闲置 5 分钟就卸下模型，之后的第一次搜索要等它重新加载（几秒，查询向量这时最多等 15 秒）。想让模型常驻（bge-m3 占一两 GB 内存）：
+Ollama 闲置 5 分钟就卸下模型，之后的第一次搜索要等它重新加载（几秒，查询向量这时最多等 15 秒）。网站进程自己给它保温（2026-11-11 起）：启动时算一次向量，之后每分钟看一次，隔 200 秒没算过就算一个两个字的向量（`embeddings.keep_warm`），模型一直不卸下。只对本机的服务做（地址是 `host.docker.internal`、`localhost`、`*.local` 或端口 11434），换成云端 API 不做，那边每次调用都花钱。保温连不上只在日志里记一次「向量服务保温没成」，连上了记「向量服务保温恢复」。也可以让 Ollama 自己常驻（bge-m3 占一两 GB 内存）：
 
 ```bash
 launchctl setenv OLLAMA_KEEP_ALIVE -1
 brew services restart ollama
 ollama ps        # 搜一次之后，UNTIL 一列是 Forever 就是常驻了
 ```
+
+## 一次搜索慢在哪
+
+每个响应都带 `Server-Timing: app;dur=毫秒数`，是请求在服务器上花的时间，不含网络。浏览器开发者工具 Network 里点开请求的 Timing 能看到；命令行和总耗时一起看：
+
+```bash
+curl -s -o /dev/null -D - -w 'total %{time_total}s\n' 'https://investment.zldong.com/search?q=costco+%E5%95%86%E4%B8%9A%E6%A8%A1%E5%BC%8F' | grep -iE 'server-timing|total'
+```
+
+总耗时减去 `dur` 就是路上的时间（Cloudflare Tunnel 到 Mac mini 再回来）。检索在服务器上花多少、改过哪些，见 [retrieval.md](retrieval.md)「检索页提速（2026-11-11）」。
 
 ## 更新
 
