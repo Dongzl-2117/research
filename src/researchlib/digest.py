@@ -152,7 +152,13 @@ PENDING_ORDER = (
 )
 
 
-def pending_articles(conn, source_ids: list[str], limit: int):
+def pending_articles(conn, source_ids: list[str], limit: int, *, ocr_changed: bool = False):
+    """该写（或重写）摘要的文章，按 PENDING_ORDER 排。
+
+    ocr_changed：只要已经有摘要、写摘要时的图片文字和现在的不一样的短正文（``_OCR_DIGEST_DUE``）。
+    全库重认改了上千篇的图片文字，夜间按发布时间和缺摘要的老文章一起排，要几个月才轮到；识图重认以后点名一次补完。
+    """
+    only = f" AND d.article_id IS NOT NULL AND {_OCR_DIGEST_DUE}" if ocr_changed else ""
     return conn.execute(
         f"""
         SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
@@ -160,7 +166,7 @@ def pending_articles(conn, source_ids: list[str], limit: int):
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
           AND {visible_sql("a")} AND {site_visible_sql("a")}
-          AND {_DUE} AND {cooling_sql('digest', 'a.id')}
+          AND {_DUE} AND {cooling_sql('digest', 'a.id')}{only}
         ORDER BY {PENDING_ORDER}
         LIMIT %s
         """,
@@ -347,6 +353,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--source", default="")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停（夜间任务用），0 表示不限")
+    parser.add_argument(
+        "--ocr-changed",
+        action="store_true",
+        help="只重写图片里的字变了的短帖（已有摘要，写摘要时的图片文字和现在的不一样）。识图重认以后跑，夜间任务不要加",
+    )
     args = parser.parse_args(argv)
     from researchlib.db import prepare
 
@@ -366,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     done = failed = 0
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
-        rows = pending_articles(conn, list(authors), args.limit)
+        rows = pending_articles(conn, list(authors), args.limit, ocr_changed=args.ocr_changed)
         for row in rows:
             if deadline is not None and time.monotonic() > deadline:
                 print("到了时间上限，先停在这里", file=sys.stderr)

@@ -150,3 +150,39 @@ def test_only_flips_between_bullish_and_bearish_count_as_changes(conn, settings)
     changed = [(item["title"], item["previous_label"], item["stance_label"]) for item in items if item["changed"]]
     assert changed == [("腾讯第 5 篇", "看好", "看淡")]
     assert [item["title"] for item in views_mod.filter_timeline(items, "change")] == ["腾讯第 5 篇"]
+
+
+def test_ocr_changed_picks_only_views_drawn_from_other_image_text(conn, settings):
+    """research-views --ocr-changed：只挑已经抽过观点、抽的时候的图片字和现在不一样的文章。
+    还没抽过的、图片字没变的不挑。挑中的这篇照常把该整理的公司一次问完。"""
+    company = _tencent(conn)
+    sources = [source.id for source in load_sources(settings.sources_path) if source.enabled]
+    ids = {}
+    for external_id, ocr_hash in (("reread", "newhash"), ("never", "h1"), ("same", "samehash")):
+        ids[external_id] = conn.execute(
+            """
+            INSERT INTO articles (
+              source_id, external_id, content_hash, title, published_at, body_md, body_text, ocr_hash, ocr_text
+            ) VALUES ('fangwei-zsxq', %s, %s, %s, '2026-10-01 12:00+08', '图片', '图片', %s, '腾讯视频号的广告还能涨价')
+            RETURNING id
+            """,
+            (external_id, f"hash-{external_id}", f"腾讯截图 {external_id}", ocr_hash),
+        ).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO article_mentions (article_id, company_id, depth, hit_count) VALUES (%s, %s, 'passing', 1)",
+            (ids[external_id], company["id"]),
+        )
+    for external_id, ocr_hash in (("reread", "oldhash"), ("same", "samehash")):
+        conn.execute(
+            """
+            INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance, ocr_hash)
+            VALUES (%s, %s, %s, %s, '视频号广告还有提价空间', 'positive', %s)
+            """,
+            (ids[external_id], company["id"], f"hash-{external_id}", views_mod.PROMPT_VERSION, ocr_hash),
+        )
+    conn.commit()
+    queued = {row["id"] for row in views_mod.pending_articles(conn, [company["id"]], sources, 50)}
+    assert queued == {ids["reread"], ids["never"]}
+    picked = views_mod.pending_articles(conn, [company["id"]], sources, 50, ocr_changed=True)
+    assert [row["id"] for row in picked] == [ids["reread"]]
+    assert [item["id"] for item in views_mod.pending_companies(conn, ids["reread"])] == [company["id"]]

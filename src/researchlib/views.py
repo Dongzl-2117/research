@@ -259,13 +259,16 @@ _STALE = (
 )
 
 
-def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit: int):
+def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit: int, *, ocr_changed: bool = False):
     """还没整理过（或正文、提示词、图片文字变了，或当时只读了开头）的文章。
 
     深入提及在前。正文很短且图片里有字的，一带而过也算：判断可能在截图里。
+    ocr_changed：只要已经抽过观点、抽的时候的图片文字和现在的不一样的（``_OCR_STALE``）。识图重认以后点名一次补完，
+    不跟着夜间按发布时间排几个月。挑中的文章照常一次问完这篇里该整理的公司（``pending_companies``）。
     """
     if not company_ids or not source_ids:
         return []
+    only = f" AND v.article_id IS NOT NULL AND {_OCR_STALE}" if ocr_changed else ""
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,
@@ -275,7 +278,7 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
         WHERE m.company_id = ANY(%s) AND {_VIEW_DEPTH}
           AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
-          AND {_STALE} AND {cooling_sql('views', 'a.id')}
+          AND {_STALE} AND {cooling_sql('views', 'a.id')}{only}
         GROUP BY a.id
         ORDER BY bool_or(m.depth <> 'passing') DESC, a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
@@ -970,7 +973,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="先删掉判断或态度为空白的观点再重抽（确认抽漏了才用；夜间任务不要加）",
     )
+    parser.add_argument(
+        "--ocr-changed",
+        action="store_true",
+        help="只重抽图片里的字变了的文章（已有观点，抽的时候的图片文字和现在的不一样）。识图重认以后跑，夜间任务不要加",
+    )
     args = parser.parse_args(argv)
+    if args.ocr_changed and (args.gap or args.articles):
+        raise SystemExit("--ocr-changed 不和 --gap、--articles 一起用")
     from researchlib.db import prepare
     from researchlib.sources import enabled_sources, load_sources
 
@@ -1019,7 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.articles:
             rows = articles_for_ids(conn, wanted, list(authors), chosen, args.limit)
         else:
-            rows = pending_articles(conn, wanted, list(authors), args.limit)
+            rows = pending_articles(conn, wanted, list(authors), args.limit, ocr_changed=args.ocr_changed)
         for row in rows:
             if deadline is not None and time.monotonic() > deadline:
                 print("到了时间上限，先停在这里", file=sys.stderr)
