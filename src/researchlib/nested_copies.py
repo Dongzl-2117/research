@@ -22,16 +22,18 @@ Stratechery 的归档导出先把整条引文、整个列表项写成一行纯�
 后面的一到几段普通段落：去掉格式、标点和空白后接起来正好等于外层那份，就把它们
 放回引文、列表项里（带着链接和加粗），纯文字那份不再显示。差一个字都不动。
 
-只在单看原文时用：文章页没有译文、或者点了「原文」，以及 /api/v1/articles/{id}.md。
-中英对照按位置配对，译文是照着带重复的原文译的，原文收掉一份就和译文错开，所以对照
-照旧，长的重复段由对照页自己收（translate/pair.py）。译制、检索和问库读的也是原样，
-检索按段去重（retrieval 的 _distinct_passages）。库里的 body_md 不改。
+这里收 markdown，只在单看原文时用：文章页没有译文、或者点了「原文」，以及
+/api/v1/articles/{id}.md。译文是照着带重复的原文译的，原文先收掉一份就和译文错开，
+所以中英对照和只看中文在按位置配好以后，用同一条规则（``copy_runs``）在页面上收
+（translate/display.py 的 ``_fold_copy_pairs``、``fold_translated_copies``）。
+译制、检索和问库读的是原样，检索按段去重（retrieval 的 _distinct_passages）。库里的 body_md 不改。
 """
 
 from __future__ import annotations
 
 import html as html_lib
 import re
+from collections.abc import Sequence
 
 from researchlib.textutil import markdown_to_text
 
@@ -50,6 +52,7 @@ _NON_KEY = re.compile(r"[^0-9a-z一-鿿]+")
 _MIN_KEY = 8
 # 一条引文、一个列表项里最多认这么多段。
 _MAX_COPIES = 12
+_CONTAINERS = frozenset({"quote", "item"})
 # 列表项里第二段起要缩进四格才还在这一项里（Python-Markdown 的规矩）。
 _INDENT = "    "
 
@@ -136,42 +139,60 @@ def _as_item(marker: str, paragraphs: list[list[str]]) -> list[str]:
     return out
 
 
+def copy_runs(kinds: Sequence[str], keys: Sequence[str]) -> list[tuple[int, list[int]]]:
+    """一串块里认导出写的两份：[(外层那块的下标, 后面带格式那几段的下标)]。
+
+    ``kinds`` 是每块的种类：``"quote"``、``"item"`` 能当外层（引文、列表项），``"plain"`` 是普通段落，
+    别的都不算。``keys`` 是去掉格式、标点和空白后的文字。外层短过 ``_MIN_KEY`` 不认；紧跟着的普通段落
+    接起来正好等于外层才算，差一个字都不动，最多认 ``_MAX_COPIES`` 段。原文页（这里的 markdown）、
+    对照页和只看中文页（translate/display.py）都按这一条认。
+    """
+    runs: list[tuple[int, list[int]]] = []
+    index = 0
+    while index < len(kinds):
+        target = keys[index] if kinds[index] in _CONTAINERS else ""
+        if len(target) < _MIN_KEY:
+            index += 1
+            continue
+        joined = ""
+        copies: list[int] = []
+        for following in range(index + 1, min(len(kinds), index + 1 + _MAX_COPIES)):
+            piece = keys[following]
+            if kinds[following] != "plain" or not piece or not target.startswith(joined + piece):
+                break
+            joined += piece
+            copies.append(following)
+            if joined == target:
+                break
+        if copies and joined == target:
+            runs.append((index, copies))
+            index = copies[-1] + 1
+        else:
+            index += 1
+    return runs
+
+
 def fold_nested_copies(md: str) -> str:
     """把紧跟在引文、列表项后面、和它一字不差的带格式副本放回去，纯文字那份不再显示。没有就原样返回。"""
     if not md or ("\n" not in md):
         return md or ""
     lines = md.split("\n")
     blocks = markdown_blocks(lines)
+    found = [None if code else _container(lines[start:end]) for start, end, code in blocks]
+    kinds = [
+        item[0] if item else ("plain" if not code and _plain(lines[start:end]) else "")
+        for item, (start, end, code) in zip(found, blocks, strict=True)
+    ]
+    keys = [
+        _key(item[3] if item else "\n".join(lines[start:end])) if kind else ""
+        for item, kind, (start, end, _code) in zip(found, kinds, blocks, strict=True)
+    ]
     edits: list[tuple[int, int, list[str]]] = []
-    index = 0
-    while index < len(blocks):
-        start, end, code = blocks[index]
-        found = None if code else _container(lines[start:end])
-        target = _key(found[3]) if found else ""
-        if found is None or len(target) < _MIN_KEY:
-            index += 1
-            continue
-        kind, offset, marker, _text = found
-        joined = ""
-        copies: list[int] = []
-        for following in range(index + 1, min(len(blocks), index + 1 + _MAX_COPIES)):
-            copy_start, copy_end, copy_code = blocks[following]
-            if copy_code or not _plain(lines[copy_start:copy_end]):
-                break
-            piece = _key("\n".join(lines[copy_start:copy_end]))
-            if not piece or not target.startswith(joined + piece):
-                break
-            joined += piece
-            copies.append(following)
-            if joined == target:
-                break
-        if not copies or joined != target:
-            index += 1
-            continue
+    for index, copies in copy_runs(kinds, keys):
+        kind, offset, marker, _text = found[index]
         paragraphs = [lines[blocks[number][0] : blocks[number][1]] for number in copies]
         rebuilt = _as_quote(paragraphs) if kind == "quote" else _as_item(marker, paragraphs)
-        edits.append((start + offset, blocks[copies[-1]][1], rebuilt))
-        index = copies[-1] + 1
+        edits.append((blocks[index][0] + offset, blocks[copies[-1]][1], rebuilt))
     if not edits:
         return md
     out: list[str] = []

@@ -1,5 +1,6 @@
-"""Stratechery 导出的引文、列表项写了两遍：单看原文的页面和 .md 接口收成一份，中英对照照旧。"""
+"""Stratechery 导出的引文、列表项写了两遍：单看原文、.md 接口、中英对照和只看中文都收成一份。"""
 
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -86,7 +87,7 @@ def test_original_only_page_and_markdown_show_each_quote_once(conn, settings):
     assert stored.count(QUOTE) == 2
 
 
-def test_bilingual_pairs_keep_the_export_as_is(conn, settings):
+def test_bilingual_and_chinese_pages_show_each_quote_once(conn, settings):
     article_id = _store(conn, settings)
     content_hash = conn.execute("SELECT content_hash FROM articles WHERE id = %s", (article_id,)).fetchone()[
         "content_hash"
@@ -101,13 +102,21 @@ def test_bilingual_pairs_keep_the_export_as_is(conn, settings):
     conn.commit()
     with TestClient(create_app(settings)) as client:
         pairs = client.get(f"/articles/{article_id}").text
+        chinese = client.get(f"/articles/{article_id}/zh").text
         original = client.get(f"/articles/{article_id}/original").text
-    # 后一份有前一份没有的资料链接，不能只因文字近重复就把链接一起删掉。
-    # 列表外壳和那份带链接的正文均保留，短引文的两份也仍在。
-    assert pairs.count('class="prose bilingual-en with-toolbar"') == 6
-    assert "<ul>" in pairs and 'href="https://example.com/ads"' in pairs
-    assert pairs.count(QUOTE) == 2
-    assert "先说一下这些数字。" in pairs
+    # 对照页和原文页同一条规则：纯文字那一对不再显示，留带链接、加粗的那份，套回引文、列表项里。
+    assert pairs.count('class="prose bilingual-en with-toolbar"') == 4
+    assert pairs.count(QUOTE) == 1 and pairs.count(ITEM) == 1
+    assert pairs.count("先说一下这些数字。") == 1 and pairs.count("第一点是广告业务") == 1
+    assert f"<blockquote><p>{QUOTE}</p></blockquote>" in pairs
+    assert "<ul><li><p><strong>Search:</strong> The first point is about the" in pairs
+    assert 'about the <a href="https://example.com/ads">ads business</a>' in pairs
+    assert "<ul><li><p><strong>搜索：</strong>第一点是广告业务" in pairs
+    # 只看中文：一样收成一份，段落号还在。
+    prose = _prose(chinese)
+    assert prose.count("先说一下这些数字。") == 1 and prose.count("第一点是广告业务") == 1
+    assert "<blockquote" in prose and "<strong>搜索：</strong>第一点是广告业务" in prose
+    assert {f'id="p-{number}"' for number in range(1, 7)} <= set(re.findall(r'id="p-\d+"', prose))
     # 点「原文」只看英文：收成一份。
     assert _prose(original).count(QUOTE) == 1
     assert _prose(original).count(ITEM) == 1

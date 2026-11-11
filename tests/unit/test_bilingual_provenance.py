@@ -8,7 +8,7 @@ from test_bilingual_regressions import ZA, ZA2, ZB, ZC, A, B, C, translate
 from researchlib.render import render_body
 from researchlib.translate import provenance as pr
 from researchlib.translate.audit import classify
-from researchlib.translate.display import article_pairs
+from researchlib.translate.display import article_pairs, content_gaps
 from researchlib.translate.pair import stamp_paragraph_ids
 from researchlib.translate.qa import report_from_html
 from researchlib.translate.segments import iter_segments, splice_segments
@@ -143,8 +143,12 @@ def test_nested_export_quotes_lists_and_footnotes_keep_all_source_occurrences(md
     proof = pr.receipt(manifest, target)
     view = article_pairs(source, target, provenance=proof)
     assert view.correspondence == "mapped" and not view.notice
+    # 回执里两份各是一段，入库的译文也两份都在。
     assert len(proof["segments"]) == len(iter_segments(source)) == 2
-    assert len(view.pairs) == 2
+    # 页面上和原文页一样收成一份（nested_copies）：留带格式的那份，原文的词、链接和外壳一样不少。
+    assert len(view.pairs) == 1
+    assert content_gaps(source, view.pairs[0].en) == 0
+    assert view.pairs[0].en.startswith(("<blockquote>", "<ul><li><p>"))
 
 
 def test_large_br_container_is_finely_mapped_and_keeps_resources():

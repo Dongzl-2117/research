@@ -4,6 +4,7 @@ Stratechery 的归档导出先把整条引文、整个列表项写成一行纯�
 （见 ``researchlib.nested_copies``）。两份各自译，同一句英文常译成只差几个字的两句。
 对照页收掉一份以后，以前按「整句一字不差」判断哪些中文是新的，换了说法的同一句、
 后面几段已经单独显示的译文，都被挂到留下的那一对后面，读者看到同一句中文两遍。
+现在收掉的是纯文字那份（``test_bilingual_nested_copies``），它的中文只挂页面上还没说过的句子。
 """
 
 from researchlib.render import render_body
@@ -72,7 +73,9 @@ def test_list_item_line_copy_does_not_repeat_chinese_of_the_formatted_paragraphs
     assert shown.count("对手的云确实也运行旧产品线") == 1
     assert shown.count("大多数人原") == 1
     first = next(pair for pair in view.pairs if "The keynote opened" in pair.en)
-    assert first.zh == _T1
+    # 留下的是带链接的那份，套回列表项里。
+    assert first.en.startswith("<ul><li><p>") and 'href="https://example.invalid/demo"' in first.en
+    assert first.zh == f"<ul><li>{_T1}</li></ul>"
 
 
 def test_sentence_missing_from_the_kept_translation_is_still_shown():
@@ -81,13 +84,15 @@ def test_sentence_missing_from_the_kept_translation_is_still_shown():
     view = _list_item_copy(first_zh=_T1.replace(missing, ""))
     assert view.correspondence == "mapped" and not view.notice
     first = next(pair for pair in view.pairs if "The keynote opened" in pair.en)
+    # 漏的是第一段里的一句：接在第一段的译文后面，不堆到第二段后面。
     assert missing in (first.zh or "")
-    assert first.zh.endswith(f"<p>{missing}</p>")
+    assert first.zh.endswith(f"<p>{missing}</p></li></ul>")
     assert _shown_zh(view).count("更广泛地说") == 1
+    assert _shown_zh(view).count(missing) == 1
 
 
 def _quote_copy(line_zh: str, first_zh: str, second_zh: str):
-    """引文先写成一行，再分两段写一遍（没有链接）。留下整行那份，带格式的两段并进去。"""
+    """引文先写成一行，再分两段写一遍（没有链接）。整行那份收掉，两段套回引文里。"""
     q1 = (
         "Analysts expected the subscription business to slow down after the price change in the spring, but the "
         "numbers told a different story. Retention held steady across every region, and churn among new users fell "
@@ -127,15 +132,18 @@ def test_quote_line_copy_does_not_append_reworded_paragraphs():
     shown = _shown_zh(view)
     assert shown.count("分析师原以为") == 1
     assert shown.count("悬而未决的问题") == 1
+    assert [pair.zh for pair in view.pairs[:2]] == [f"<blockquote>{quoted}</blockquote>" for quoted in (_Q1, _Q2)]
 
 
 def test_reworded_copy_with_a_new_number_or_name_is_still_shown():
     """字大半对得上，但带着别处没有的数字或英文名：可能是留下的那份漏了，照样挂。"""
-    view = _quote_copy(_Q_LINE, _Q1.replace("连续第三个季度", "连续3个季度"), _Q2)
+    view = _quote_copy(_Q_LINE.replace("连续第三个季度", "连续3个季度"), _Q1, _Q2)
     assert "连续3个季度" in _shown_zh(view) and "连续第三个季度" in _shown_zh(view)
-    renamed = _Q2.replace("归功于套餐", "归功于Plus套餐")
-    view = _quote_copy(_Q_LINE, _Q1, renamed)
+    # 挂在它那一段（第一段）的译文后面。
+    assert "连续3个季度" in (view.pairs[0].zh or "")
+    view = _quote_copy(_Q_LINE.replace("归功于套餐", "归功于Plus套餐"), _Q1, _Q2)
     assert "归功于Plus套餐" in _shown_zh(view)
+    assert "归功于Plus套餐" in (view.pairs[1].zh or "")
 
 
 def test_partial_novel_text_is_one_balanced_paragraph():
