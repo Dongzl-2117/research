@@ -313,3 +313,98 @@ def test_the_omission_sample_reads_legacy_pages_from_the_inventory(conn, setting
     ]
     assert f"#{legacy} pairs=2 flagged=0 按页面配对" in out
     assert dict(_counts(conn)) == before
+
+
+ECHO_BODY = (
+    "The company rebuilt its app first because loyalty starts with the booking flow every {name} customer sees.\n\n"
+    "It then fixed the operating data so that every delay could be traced back to a single cause in the plan.\n\n"
+    "Only after that did it change how the managers talked about blame in their weekly meetings with the crews.\n\n"
+    "The result was a culture that cared about fixing problems rather than finding someone to take the fall."
+)
+ECHO_ZH = {
+    "The company rebuilt": "这家公司先重做了 App，因为忠诚度从每位顾客都会看到的订票流程开始。",
+    "It then fixed": "接着它理顺了运营数据，每次延误都能追到计划里的一个原因。",
+    "Only after that": "在那之后，它才改了经理们每周和机组开会时谈责任的方式。",
+    "The result was": "结果形成了一种重在解决问题、不找人背锅的文化。",
+}
+
+
+def _echo_model(merge):
+    """``merge`` 为真时串段：第二段的中文写进第一段，第二段原样交回英文。"""
+
+    def model(**kwargs):
+        user = kwargs["user"]
+        values = []
+        for identity, source_hash, html in zip(user["segment_ids"], user["source_hashes"], user["segments"],
+                                               strict=True):
+            if user["segment_ids"] == ["title"]:
+                values.append({"id": identity, "source_hash": source_hash, "html": "合成标题"})
+                continue
+            key = next(key for key in ECHO_ZH if key in html)
+            text = f"<p>{ECHO_ZH[key]}</p>"
+            if merge and key == "The company rebuilt":
+                text = f"<p>{ECHO_ZH[key]}{ECHO_ZH['It then fixed']}</p>"
+            elif merge and key == "It then fixed":
+                text = html
+            values.append({"id": identity, "source_hash": source_hash, "html": text})
+        return ChatJsonResult(data={"t": values}, model="synthetic-model", usage=None, latency_ms=0)
+
+    return model
+
+
+def test_segments_handed_back_in_english_are_listed_and_retranslated_with_their_neighbours(
+    conn, settings, monkeypatch, capsys,
+):
+    """已译完、页面也对得上，只是有段交回的还是英文：盘点单列 echo；按这一类再译只补那一段和前后段。"""
+    import json
+
+    from researchlib.translate import cli
+
+    article = _article(conn, settings, "echo", body=ECHO_BODY)
+    # 以前的核对不拦交回英文的段，这样存下来的译文：第二段只有英文，它的中文写在第一段里。
+    monkeypatch.setattr(service, "untranslated_english", lambda *args: False)
+    monkeypatch.setattr(service, "chat_json", _echo_model(merge=True))
+    assert service.translate_article(conn, article, data_dir=settings.data_dir).status == "translated"
+    monkeypatch.undo()
+    conn.commit()
+
+    report = inventory.collect(conn, settings)
+    assert report["display"]["mapped"] == [article]
+    assert report["ids"]["echo"] == [article] and report["echoSegments"] == 1
+    assert (
+        "  交回英文、其实没译的段 1 段，涉及 1 篇：research-translate --from-inventory echo 只重译这几段和前后各一段"
+        in inventory.summary(report)
+    )
+    # 别的类照旧算它译完了；点 echo 才算没译完。
+    assert inventory.unfinished(conn, [article], settings.data_dir) == []
+    assert inventory.unfinished(conn, [article], settings.data_dir, echo=True) == [article]
+    path = inventory.inventory_path(settings.data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    asked: list[list[str]] = []
+    honest = _echo_model(merge=False)
+
+    def model(**kwargs):
+        if kwargs["user"]["segment_ids"] != ["title"]:
+            asked.append([next(key for key in ECHO_ZH if key in html) for html in kwargs["user"]["segments"]])
+        return honest(**kwargs)
+
+    monkeypatch.setattr(service, "chat_json", model)
+    monkeypatch.setattr(cli.Settings, "from_env", staticmethod(lambda: settings))
+    monkeypatch.setattr(cli, "llm_provider", lambda: "deepseek")
+    monkeypatch.setattr(cli, "deepseek_api_key", lambda: "sk-test")
+    assert cli.main(["--from-inventory", "echo"]) == 0
+    assert f"#{article} translated" in capsys.readouterr().out
+    # 只问了交回英文的第二段和前后两段，第四段照旧复用。
+    assert asked == [["The company rebuilt", "It then fixed", "Only after that"]]
+    stored = conn.execute(
+        "SELECT body_html FROM article_translations WHERE article_id = %s", (article,)
+    ).fetchone()["body_html"]
+    assert "It then fixed" not in stored and stored.count("接着它理顺了运营数据") == 1
+    assert inventory.unfinished(conn, [article], settings.data_dir, echo=True) == []
+    assert cli.main(["--from-inventory", "echo"]) == 0
+    assert "echo 这一类都已经没有交回英文的段了。" in capsys.readouterr().out
+    after = inventory.collect(conn, settings)
+    assert after["ids"]["echo"] == [] and after["echoSegments"] == 0
+    assert "  交回英文、其实没译的段 0 段，涉及 0 篇" in inventory.summary(after)

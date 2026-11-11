@@ -153,6 +153,34 @@ def structure_problem(source: str, target: str) -> str | None:
     return None
 
 
+# 成句英文里常见的小写虚词。人名列表、书名、产品名凑不够这么多。
+_FUNCTION_WORDS = frozenset(
+    "the a an of to and or but in on at by for from with as that this these those it its is are was were be been"
+    " has have had not which who what when while if than so we you they he she our their his her my your will"
+    " would can could should".split()
+)
+_ENGLISH_WORD = re.compile(r"[A-Za-z][A-Za-z'’]*")
+_HAN = re.compile(r"[㐀-鿿豈-﫿]")
+
+
+def untranslated_english(source: str, target: str) -> bool:
+    """这一段交回来的还是英文，其实没译。
+
+    原文得是成句的英文：至少 12 个英文词，其中至少 3 个是小写的虚词（the、of、which……）。
+    人名列表、书名、产品名凑不够，模型原样留着不算没译。译文里英文字母还有原文的一半以上、
+    汉字不到原文字母数的 5%，就是把英文交了回来；只把「MA：」换成「马克：」、后面整段照抄英文的也算。
+    译得太短（漏了内容）不归这里管。
+    11-11 全库抽查：模型把下一段的中文一起写进这一段，下一段原样交回英文，以前的核对都放行了。
+    """
+    words = _ENGLISH_WORD.findall(" ".join(Resources(source).text))
+    if len(words) < 12 or sum(word in _FUNCTION_WORDS for word in words) < 3:
+        return False
+    letters = sum(len(word) for word in words)
+    shown = " ".join(Resources(target).text)
+    kept = sum(len(word) for word in _ENGLISH_WORD.findall(shown))
+    return kept >= letters * 0.5 and len(_HAN.findall(shown)) < letters * 0.05
+
+
 def numbers_agree(source: str, target: str) -> bool:
     """数字按事实原序保留。
 
@@ -335,18 +363,29 @@ def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
     """回执里能原样再用的译文段，按 ``reuse_key`` 分组，组里保持原文里的先后。
 
     只收这一版清洗、切段签的回执里、自己校验值对得上、资源和原文一致的段；没译出来先放英文的段
-    （``untranslated``）不收。没有回执的旧稿返回空，只能整篇重译。哪一版提示词译的不管：
-    直接用还是只在重译失败时退回用，由译制按 ``prompt_versions`` 决定。
+    （``untranslated``）不收，交回英文、其实没译的段和它前后各一段也不收。没有回执的旧稿返回空，
+    只能整篇重译。哪一版提示词译的不管：直接用还是只在重译失败时退回用，由译制按 ``prompt_versions`` 决定。
     """
     if not isinstance(provenance, dict):
         return {}
     if provenance.get("schema") != SCHEMA_VERSION or not pipeline_matches(provenance.get("pipeline")):
         return {}
     skip = set(untranslated_slots(provenance))
-    found: dict[str, list[str]] = {}
-    for item in provenance.get("segments") or []:
+    entries = provenance.get("segments") or []
+    # 交回英文、其实没译的段（echoed_slots）多半是旁边一段把它的中文一起写了：这一段和前后各一段都不复用，
+    # 再译时三段一起重译，中文不会一句写两遍。
+    echoed = set(echoed_slots(provenance))
+    near: set[int] = set()
+    for position, item in enumerate(entries):
         try:
-            if int(item["ordinal"]) in skip:
+            if int(item["ordinal"]) in echoed:
+                near.update((position - 1, position, position + 1))
+        except (KeyError, TypeError, ValueError):
+            continue
+    found: dict[str, list[str]] = {}
+    for position, item in enumerate(entries):
+        try:
+            if int(item["ordinal"]) in skip or position in near:
                 continue
             source, target = item["source"], item["target"]
             if (digest(canonical_html(source)) != item["source_hash"]
@@ -356,6 +395,22 @@ def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
         except (KeyError, TypeError, ValueError):
             continue
         found.setdefault(reuse_key(source), []).append(target)
+    return found
+
+
+def echoed_slots(provenance: dict | None) -> list[int]:
+    """回执里交回英文、其实没译的槽位序号（``untranslated_english``）。先放英文的段（untranslated）本来就记着，不算。"""
+    if not isinstance(provenance, dict):
+        return []
+    gaps = set(untranslated_slots(provenance))
+    found = []
+    for item in provenance.get("segments") or []:
+        try:
+            ordinal = int(item["ordinal"])
+            if ordinal not in gaps and untranslated_english(item["source"], item["target"]):
+                found.append(ordinal)
+        except (KeyError, TypeError, ValueError):
+            continue
     return found
 
 
