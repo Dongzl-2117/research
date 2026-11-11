@@ -8,8 +8,7 @@
   加 `--ai-titles` 时优先用站内 deepseek-flash 起题（含错字抛光），
   失败再退回确定性首句。写不出来的日期兜底不入库。
 - 评论：`## 评论（N）` 只留来源作者（来源配置的 author 和 poster_names）。解析不了的不动，在报告里单列。
-- 图片文字（只有方伟星球）：星球和公众号里带留言区、划线、赞赏、「（作者）」的，按当前呈现规则重写旁路。
-  粘在一行的「分享21 推荐0 划线人数0」「赞赏￥0」「3条留言V 写留言」也算。不重新识图。
+- 图片文字（只有方伟星球和方伟公众号）：按现在的排版从识图结果重写旁路（和打开文章时重写的同一套），不重新识图。
 
 改标题或评论会改 `content_hash`，同时把观点、摘要、译文的哈希对齐，避免夜间任务把这几千篇再抽一遍。
 """
@@ -32,15 +31,6 @@ from researchlib.ocr_units import ImageText
 from researchlib.retime import _realign
 from researchlib.textutil import SHANGHAI, content_hash
 from researchlib.visibility import is_hidden
-from researchlib.wechat_dialogue import (
-    _is_author_badge,
-    _is_comment_head,
-    _is_soft_footer,
-    _is_strong_footer,
-    _labeled_guest_header,
-    present_ocr_pieces,
-    present_stored_ocr,
-)
 from researchlib.zsxq_comments import (
     comment_list_authors,
     drop_guest_comments_text,
@@ -63,24 +53,6 @@ _HOST_CHROME = re.compile(
 )
 
 
-def _chrome_lines(text: str) -> bool:
-    """整行是留言区、划线、赞赏、分享或「（作者）」。句子里带「赞赏」两个字不算。"""
-    for line in (text or "").splitlines():
-        if not line.strip():
-            continue
-        if (
-            _is_strong_footer(line)
-            or _is_comment_head(line)
-            or _is_author_badge(line)
-            or _is_soft_footer(line)
-            or _labeled_guest_header(line)
-        ):
-            return True
-        if "（作者）" in line or "(作者)" in line:
-            return True
-    return False
-
-
 def _day(value) -> str:
     if value is None:
         return ""
@@ -88,8 +60,8 @@ def _day(value) -> str:
 
 
 def _chrome_under_host(text: str) -> bool:
-    presented = present_stored_ocr(text or "")
-    for block in presented.split("\n\n"):
+    """抽检：图片文字里方伟说的那段带着留言区、划线、赞赏这类页脚字。"""
+    for block in (text or "").split("\n\n"):
         if block.startswith("方伟：") and _HOST_CHROME.search(block):
             return True
     return False
@@ -112,20 +84,14 @@ def _rewrite_chunks(conn, article_id: int, title: str, body_md: str, profile, ha
 
 
 def _cleaned_ocr(shot_parts: list[ImageText], ocr_text: str, owners: tuple[str, ...] = ()) -> str | None:
-    """按现规则重写旁路。没有页脚、或重写后和库里一样，返回 None。
+    """按现在的排版重写旁路。没有图、或重写后和库里一样，返回 None。
 
-    有识图交回结构的图时，和 refresh_article_ocr 同一套排版（owners 是 ``article_owners``），不看页脚规则，
-    免得这里写的和打开文章时重写的不一样，ocr_hash 来回变。
+    和 refresh_article_ocr 同一套排版（owners 是 ``article_owners``），免得这里写的和打开文章时重写的不一样，
+    ocr_hash 来回变。
     """
-    raw_blob = "\n".join(part.text for part in shot_parts)
-    if any(part.units is not None for part in shot_parts):
-        new_ocr = compose_ocr_text(shot_parts, owners)
-    elif shot_parts and (_chrome_lines(raw_blob) or _chrome_lines(ocr_text)):
-        new_ocr = compose_ocr_text(shot_parts)
-    elif _chrome_lines(ocr_text):
-        new_ocr = present_stored_ocr(ocr_text)
-    else:
+    if not shot_parts:
         return None
+    new_ocr = compose_ocr_text(shot_parts, owners)
     if new_ocr == (ocr_text or ""):
         return None
     return new_ocr
@@ -319,7 +285,7 @@ def repair_zsxq(
         new_title = title
         if title_needs_repair(title, row["body_text"] or ""):
             summary = summaries.get(article_id, "")
-            ocr_shown = present_stored_ocr(new_ocr)
+            ocr_shown = new_ocr
             when = _day(row["published_at"])
             # 读者的评论不拿来起题，flash 也不看：只有图的帖以前拿读者那句评论当了标题（23834）。
             body_for_title = drop_guest_comments_text(row["body_text"] or body_md, owners)
@@ -454,12 +420,11 @@ def spot_check(conn, article_ids: list[int], owners: dict[str, tuple[str, ...]] 
             guests = guest_comment_authors(row["body_md"] or "", mine) or []
             comment = "仍有别人的评论：" + "、".join(guests) if guests else "评论只剩作者"
         raw_parts = pieces.get(article_id) or []
-        if any(part.units is not None for part in raw_parts):
-            presented = compose_ocr_text(raw_parts, article_owners(conn, article_id))
-        elif raw_parts:
-            presented = present_ocr_pieces([part.text for part in raw_parts])
-        else:
-            presented = present_stored_ocr(row["ocr_text"] or "")
+        presented = (
+            compose_ocr_text(raw_parts, _structured_owners(conn, article_id, raw_parts))
+            if raw_parts
+            else row["ocr_text"] or ""
+        )
         report.append(
             {
                 "id": article_id,

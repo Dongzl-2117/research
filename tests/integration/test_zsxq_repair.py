@@ -1,11 +1,13 @@
-"""星球存量：截断标题回写、别人的评论清掉、方伟星球的留言区 OCR 重洗。"""
+"""星球存量：截断标题回写、别人的评论清掉、方伟星球的图片文字按现在的排版重写。"""
 
 from datetime import datetime
 
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
+from researchlib.ocr_units import format_units, normalize_units
 from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI, content_hash
 from researchlib.web.app import create_app
@@ -25,6 +27,7 @@ COMMENTS = """正文一句，讲的是渠道库存。
 - **方伟Rey**（2026-10-21 11:50）
   切换成本还在。
 """
+# 库里旧的旁路：以前认的自由文字，留言区、划线、赞赏这些页脚都在。
 SHOT = """方伟
 茅台批价这一周没动，渠道仍在观望。
 李四留言
@@ -33,6 +36,16 @@ SHOT = """方伟
 划线人数 18
 赞赏
 """
+# 同一张图重认交回的结构：页脚是界面，不写；说话人是识图标的。
+SHOT_UNITS = normalize_units(
+    {
+        "kind": "post",
+        "blocks": [
+            {"type": "message", "self": True, "text": "茅台批价这一周没动，渠道仍在观望。"},
+            {"type": "message", "speaker": "李四", "text": "渠道库存还是偏高。"},
+        ],
+    }
+)
 
 
 def _source(settings):
@@ -64,8 +77,8 @@ def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, s
     assert "陈小东" in comments["body_md"]
     image_hash = "ab" * 32
     conn.execute(
-        "INSERT INTO image_texts (content_hash, engine, text) VALUES (%s, 'test', %s)",
-        (image_hash, SHOT),
+        "INSERT INTO image_texts (content_hash, engine, text, units) VALUES (%s, 'test', %s, %s)",
+        (image_hash, format_units(SHOT_UNITS), Jsonb(SHOT_UNITS)),
     )
     conn.execute(
         """
@@ -113,8 +126,7 @@ def test_repair_rewrites_title_comments_and_ocr_without_restamping_views(conn, s
     assert "陈小东" not in cleaned["body_md"]
     assert "方伟Rey" in cleaned["body_md"] and "切换成本还在" in cleaned["body_md"]
     ocr = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (ocr_row["id"],)).fetchone()
-    assert ocr["ocr_text"].startswith("方伟：")
-    assert "李四" not in ocr["ocr_text"] and "条留言" not in ocr["ocr_text"] and "赞赏" not in ocr["ocr_text"]
+    assert ocr["ocr_text"] == "方伟：茅台批价这一周没动，渠道仍在观望。\n\n李四：渠道库存还是偏高。"
     spots = {item["id"]: item for item in stats["spots"]}
     assert spots[cut["id"]]["title_truncated"] is False
     assert spots[comments["id"]]["comment"] == "评论只剩作者"

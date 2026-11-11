@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html as html_lib
 import re
-import unicodedata
 from collections.abc import Sequence
 from html.parser import HTMLParser
 from urllib.parse import unquote
@@ -13,10 +12,9 @@ import markdown
 from markupsafe import Markup
 
 from researchlib.article_layout import mark_unavailable_tables, readable_headings
-from researchlib.ocr import useful_image_text
 from researchlib.present_text import polish_display_text, present_article_text
 from researchlib.textutil import escape_times, strip_alert_markers
-from researchlib.wechat_dialogue import HOST, speaker_prefix, split_speaker
+from researchlib.wechat_dialogue import HOST, split_speaker
 from researchlib.zsxq_comments import assemble_reader_comments
 
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -291,220 +289,6 @@ def _anchor_images(html: str) -> str:
     return _LOCAL_IMG.sub(lambda m: f'<img id="{image_anchor(m.group(3))}"{m.group(1)}src="{m.group(2)}"', html)
 
 
-# 单独成行的界面字：状态栏时间、电量、「微信」。整行对上才拿掉，消息正文里出现这些词留着。
-_CHROME_LINE = re.compile(
-    r"^(?:"
-    r"\d{1,2}:\d{2}(?::\d{2})?"
-    r"|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?"
-    r"|星期[一二三四五六日天]"
-    r"|昨天|今天|前天"
-    r"|微信|WeChat"
-    r"|返回|发送"
-    r"|按住\s*说话"
-    r"|以下是新消息"
-    r"|未成年人请勿饮酒|请勿酒驾|酒后请勿驾车|过量饮酒有害健康|理性饮酒"
-    r"|直播中|正在直播"
-    r"|(?:主播|嘉宾|主持人|出镜记者)\s*[\u4e00-\u9fff]{2,3}"
-    r"|\d{1,3}\s?%"
-    r"|[45]G|LTE|Wi-?Fi|VPN"
-    r")$",
-    re.I,
-)
-def tidy_ocr_text(text: str) -> str:
-    """阅读页上的轻量整理：拿掉单独成行的界面字，保留换行。
-
-    整理完不够读就退回原文，不编对话、不补字。
-    """
-    raw = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not raw:
-        return ""
-    kept: list[str] = []
-    blank = False
-    for line in raw.split("\n"):
-        stripped = line.strip()
-        if not stripped:
-            if kept and not blank:
-                kept.append("")
-                blank = True
-            continue
-        blank = False
-        if _CHROME_LINE.match(stripped):
-            continue
-        kept.append(stripped)
-    cleaned = "\n".join(kept).strip()
-    if useful_image_text(cleaned):
-        return cleaned
-    return raw
-
-
-def _cite(info: dict, inner: str, *, with_id: bool, extra_class: str = "") -> str:
-    """对话 HTML 里把这段字链到原图。阅读页不走这里，锚点在 ``<img>`` 上。"""
-    href = html_lib.escape(info["src"], quote=True)
-    id_attr = f' id="{html_lib.escape(info["anchor"], quote=True)}"' if with_id else ""
-    class_attr = f"ocr-link {extra_class}" if extra_class else "ocr-link"
-    return f'<a class="{class_attr}"{id_attr} href="{href}" target="_blank" rel="noopener">{inner}</a>'
-
-
-# 微信气泡一行大约 15 个汉字。顶到边的是折行，短行多半是这句说完了。
-_OCR_WRAP_WIDTH = 14.5
-_OCR_SENTENCE_END = re.compile(r"(?:[。！？!?…]|\.\.\.)$")
-_CJK_CHAR = re.compile(r"[一-鿿]")
-
-
-def _visual_width(text: str) -> float:
-    """汉字算 1，英文和数字算半个，用来看这一行有没有顶到气泡边缘。"""
-    return sum(1.0 if unicodedata.east_asian_width(char) in {"W", "F"} else 0.5 for char in text)
-
-
-def _flow_ocr_lines(text: str, *, bubbles: bool = False) -> str:
-    """把截图硬换行收成段。``国\n产agents`` 接成「国产agents」，说话人仍按块分开。
-
-    满行直接接上，避免半个词换行。短行后面留一个空格，两句没有句号时不粘成一个词。
-    上一行已经收了句，下一行另起一段，避免星球长聊糊成一大段。
-    旁路正文仍保留原来的换行。阅读页不把识图铺进正文，这里只服务引用条。
-    bubbles：识图一条气泡写一行，每行已是整条消息，不是屏宽折行。不按满行、汉字相接首尾粘上，
-    两条之间空一格，逗号顿号后面不空（24020 以前粘成「构建菜鸟驿站菜鸟是靠揽件」）。
-    """
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if not lines:
-        return ""
-    previous = lines[0]
-    merged = previous
-    for line in lines[1:]:
-        if _OCR_SENTENCE_END.search(previous):
-            merged += "\n\n" + line
-        elif bubbles:
-            merged += ("" if previous[-1] in "，、；：" else " ") + line
-        elif _visual_width(previous) >= _OCR_WRAP_WIDTH:
-            merged += line
-        elif previous and line and _CJK_CHAR.search(previous[-1]) and _CJK_CHAR.search(line[0]):
-            # 汉字之间本来就没有空格；折行接上时也不要塞（「世/界」「奥/乐齐」）。
-            merged += line
-        else:
-            merged += " " + line
-        previous = line
-    return merged
-
-
-
-
-def flow_ocr_quote_body(text: str) -> str:
-    """引用旁路里的 OCR：按说话人块收折行，与阅读气泡同一套规则。"""
-    parts: list[str] = []
-    for block in (text or "").split("\n\n"):
-        block = block.strip("\n")
-        if not block.strip():
-            continue
-        prefix = speaker_prefix(block, names=True)
-        if prefix:
-            label = (split_speaker(block, names=True) or ("", ""))[0]
-            flowed = _flow_ocr_lines(block[len(prefix) :].lstrip("\n"))
-            parts.append(f"{label}：{flowed}")
-        else:
-            parts.append(_flow_ocr_lines(block))
-    return "\n\n".join(parts)
-
-
-def _dialogue_html(text: str, link: dict | None = None, *, bubbles: bool = False, host: str = HOST) -> str:
-    """把整理后的对话排成 HTML。阅读页不调用。host 是绿气泡显示成谁。"""
-    text = polish_display_text(text or "")
-    parts: list[str] = []
-    first = True
-    for block in text.split("\n\n"):
-        block = block.strip("\n")
-        if not block.strip():
-            continue
-        prefix = speaker_prefix(block, names=True)
-        if prefix:
-            label = (split_speaker(block, names=True) or ("", ""))[0]
-            flowed = _flow_ocr_lines(block[len(prefix) :].lstrip("\n"), bubbles=bubbles)
-            paragraphs = [p for p in flowed.split("\n\n") if p.strip()]
-            shown = html_lib.escape((host or HOST) if label == HOST else label)
-            for index, para in enumerate(paragraphs or [""]):
-                body = html_lib.escape(para)
-                inner = f'<span class="who">{shown}：</span>{body}' if index == 0 else body
-                if link:
-                    inner = _cite(link, inner, with_id=first)
-                    first = False
-                parts.append(f"<p>{inner}</p>")
-        else:
-            inner = html_lib.escape(_flow_ocr_lines(block, bubbles=bubbles))
-            if link:
-                inner = _cite(link, inner, with_id=first)
-                first = False
-            parts.append(f"<p>{inner}</p>")
-    return "".join(parts)
-
-
-
-def _hoist_figures_out_of_paragraphs(html: str) -> str:
-    """正文半句里嵌的 <figure> 拎到段外，避免「原图 / 表」插进引语中间。
-
-    ``<p>前<figure/>后</p>`` → ``<p>前</p><figure/><p>后</p>``；空段丢掉。
-    figure 内可能还有 ``<p class="ocr-links">``，按嵌套深度找闭合标签。
-    """
-    if not html or "<figure" not in html.lower():
-        return html
-
-    def next_figure(source: str, pos: int) -> tuple[int, int] | None:
-        open_match = re.search(r"<figure\b[^>]*>", source[pos:], flags=re.I)
-        if open_match is None:
-            return None
-        start = pos + open_match.start()
-        cursor = pos + open_match.end()
-        depth = 1
-        while depth and cursor < len(source):
-            token = re.search(r"</?figure\b[^>]*>", source[cursor:], flags=re.I)
-            if token is None:
-                return None
-            raw = token.group(0)
-            cursor = cursor + token.end()
-            depth += -1 if raw.lower().startswith("</") else 1
-        return None if depth else (start, cursor)
-
-    out: list[str] = []
-    pos = 0
-    while True:
-        span = next_figure(html, pos)
-        if span is None:
-            out.append(html[pos:])
-            break
-        start, end = span
-        before = html[pos:start]
-        figure = html[start:end]
-        # Is this figure inside an open <p>? Look at unclosed <p> in `before`.
-        opens = list(re.finditer(r"<p\b[^>]*>", before, flags=re.I))
-        closes = list(re.finditer(r"</p>", before, flags=re.I))
-        inside = bool(opens) and (not closes or opens[-1].start() > closes[-1].start())
-        if not inside:
-            out.append(before)
-            out.append(figure)
-            pos = end
-            continue
-        open_match = opens[-1]
-        head = before[: open_match.start()]
-        open_tag = open_match.group(0)
-        pre = before[open_match.end() :]
-        # after figure: consume through the closing </p> of this paragraph
-        close = re.search(r"</p>", html[end:], flags=re.I)
-        if close is None:
-            out.append(before)
-            out.append(figure)
-            pos = end
-            continue
-        tail = html[end : end + close.start()]
-        pos = end + close.end()
-        out.append(head)
-        if pre.strip():
-            out.append(f"{open_tag}{pre}</p>")
-        out.append(figure)
-        if tail.strip():
-            out.append(f"{open_tag}{tail}</p>")
-    cleaned = "".join(out)
-    cleaned = re.sub(r"<p\b[^>]*>\s*</p>", "", cleaned, flags=re.I)
-    return cleaned
-
-
 # 识图只用来判断这张图该挨着哪一段，字本身不进阅读页。
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
 _P_BLOCK = re.compile(r"<p\b[^>]*>.*?</p>", re.I | re.S)
@@ -732,7 +516,7 @@ def inline_image_ocr(html: str, texts: dict[str, str] | None = None, *, host: st
     """阅读页保留原图，不把识图文字铺进版面。
 
     ``texts`` 是 content_hash → image_texts.text，``host`` 是这篇作者。字只进摘要、观点、问这篇和检索
-    （``present_ocr_pieces`` / ``append_ocr`` / ``ocr_chunks``）。点开图片仍走原来的 ``<img>``
+    （``compose_ocr_text`` / ``append_ocr`` / ``ocr_chunks``）。点开图片仍走原来的 ``<img>``
     （锚点 ``img-`` 还在图上，检索「看这张图」跳到这张图）。
 
     极致了按段估的图片会整组堆在开头、插进无关的引文里。这里只用识图里的字判断该挨着哪一段，
@@ -763,8 +547,6 @@ def lazy_images(html: str) -> str:
         return f'{head} loading="lazy" decoding="async"{closing}'
 
     return _IMG_TAG.sub(add, html or "")
-
-
 
 
 _BODY_WHO = re.compile(

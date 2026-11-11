@@ -236,67 +236,48 @@ def replace_translation_chunks(conn, article_id: int) -> int:
 # 图片里的字（OCR）的块：lang = 'ocr'，块号从这里起，anchor 是文章页上那张图的 id。
 OCR_ORD_BASE = 20000
 OCR_HEADING = "图片里的字"
-OCR_UNCERTAIN_HEADING = "图片里的字（说话人边界未核实）"
 # 识别出的有效字（汉字、字母、数字）少于这个数的图不进检索：多半是装饰图、表情包或水印。
 OCR_MIN_CHARS = 20
-# 跨图去重只看去掉标点后至少这么多字的句子（和 wechat_dialogue._same_sentence 认「几乎整句」的下限一样）。
-OCR_DEDUPE_CHARS = 8
 _MEANINGFUL = re.compile(r"[0-9A-Za-z一-鿿]")
 
 
 def ocr_chunks(texts: list, *, host: str = "", owners: tuple[str, ...] = ()) -> list[tuple[str, str]]:
     """[(图片内容哈希, 识别出的字[, units])] → [(图片锚点, 块正文)]，同一张图只算一次。
 
-    旧格式（没有 units）先按微信对话规则整理（去可按住转文字等界面字、标方伟/网友），再切块进检索，
-    与 articles.ocr_text 同一套 present。整理完没剩下可读的字就不进检索。
-    阅读页不展示这些字。长群聊分几张截，后一张开头常和上一张结尾重叠：前面的图写过的句子不再进后面的块，
-    以前接口「图片里的字」、检索片段和抽观点的输入里这几句各出现两遍。
-    识图交回结构的图（有 units）不过旧规则：按首尾重合拼接后排版（``ocr_units``），
-    切块时每块开头那段话都带着说话人，一段话被切到下一块也补上说话人。
+    和 articles.ocr_text 同一套排版（``ocr_units``）：挨着的两张按首尾重合拼接，长群聊分几张截，
+    后一张开头和上一张结尾重叠的那几条只进前一张的块。切块时每块开头那段话都带着说话人，
+    一段话被切到下一块也补上说话人。没有结构的字（units 为空的旧识图）当成几段文字照原样切。
+    阅读页不展示这些字。
     host 是这篇的作者：别的来源的截图里，绿气泡写成作者名，不写成方伟（问库和检索读的就是这里）。
-    owners 是作者本人在各平台的名字（``ocr.article_owners``）：结构化的图里显示名是这些账号的也写成作者。
+    owners 是作者本人在各平台的名字（``ocr.article_owners``）：图里显示名是这些账号的也写成作者。
     """
-    from researchlib.ocr_units import ImageText
-
-    records = [
-        item if isinstance(item, ImageText) else ImageText(item[0], item[1] or "", item[2] if len(item) > 2 else None)
-        for item in texts
-    ]
-    if not any(record.units is not None for record in records):
-        return _legacy_ocr_chunks([(record.digest, record.text) for record in records], host=host)
-    return _structured_ocr_chunks(records, host=host, owners=owners)
-
-
-def _legacy_ocr_chunks(texts: list[tuple[str, str]], *, host: str = "") -> list[tuple[str, str]]:
+    from researchlib.ocr_units import ImageText, paragraphs, stitch, structure_of
     from researchlib.render import image_anchor
+    from researchlib.wechat_dialogue import relabel_host
 
-    found: list[tuple[str, str]] = []
+    ordered: list[ImageText] = []
     seen: set[str] = set()
-    written: list[str] = []
-    for digest, text in texts:
-        if digest in seen:
+    for item in texts:
+        if isinstance(item, ImageText):
+            record = item
+        else:
+            record = ImageText(item[0], item[1] or "", item[2] if len(item) > 2 else None)
+        if record.digest in seen:
             continue
-        seen.add(digest)
-        for piece in _legacy_image_chunks(text, written, host):
-            found.append((image_anchor(digest), piece))
+        seen.add(record.digest)
+        ordered.append(record)
+    found: list[tuple[str, str]] = []
+    quoted: set[str] = set()
+    for record, blocks in zip(ordered, stitch([structure_of(record) for record in ordered]), strict=True):
+        grouped = paragraphs(blocks or [], quoted, owners)
+        plain = "\n".join(line for _label, texts in grouped for line in texts)
+        if len(_MEANINGFUL.findall(plain)) < OCR_MIN_CHARS:
+            continue
+        for piece in _merge_short_tail(_pack_spoken(grouped)):
+            found.append((image_anchor(record.digest), relabel_host(piece, host)))
             if len(found) >= MAX_CHUNKS:
                 return found
     return found
-
-
-def _legacy_image_chunks(text: str, written: list[str], host: str) -> list[str]:
-    """旧格式的一张图：按旧规则整理后切块。written 跨图累计（就地更新）。"""
-    from researchlib.wechat_dialogue import present_ocr_pieces, relabel_host
-
-    if len(_MEANINGFUL.findall(text or "")) < OCR_MIN_CHARS:
-        return []
-    cleaned = relabel_host(present_ocr_pieces([text or ""], written), host)
-    # 只拿整句去重：「同意」这种短回复、RapidOCR 单独认成一行的网名，后面的图里照留。
-    written[:] = [norm for norm in written if len(norm) >= OCR_DEDUPE_CHARS]
-    if len(_MEANINGFUL.findall(cleaned)) < OCR_MIN_CHARS:
-        return []
-    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-    return _merge_short_tail(_pack(lines))
 
 
 def _merge_short_tail(packed: list[str]) -> list[str]:
@@ -305,38 +286,6 @@ def _merge_short_tail(packed: list[str]) -> list[str]:
         packed[-2] = packed[-2].rstrip() + "\n" + packed[-1]
         packed = packed[:-1]
     return packed
-
-
-def _structured_ocr_chunks(records: list, *, host: str = "", owners: tuple[str, ...] = ()) -> list[tuple[str, str]]:
-    """有结构化图的一篇：结构化的图排版后切块，夹着的旧格式图照旧整理。"""
-    from researchlib.ocr_units import paragraphs, stitch
-    from researchlib.render import image_anchor
-    from researchlib.wechat_dialogue import relabel_host
-
-    ordered = []
-    seen: set[str] = set()
-    for record in records:
-        if record.digest in seen:
-            continue
-        seen.add(record.digest)
-        ordered.append(record)
-    found: list[tuple[str, str]] = []
-    written: list[str] = []
-    quoted: set[str] = set()
-    for record, blocks in zip(ordered, stitch([record.units for record in ordered]), strict=True):
-        if blocks is None:
-            pieces = _legacy_image_chunks(record.text, written, host)
-        else:
-            grouped = paragraphs(blocks, quoted, owners)
-            plain = "\n".join(line for _label, texts in grouped for line in texts)
-            if len(_MEANINGFUL.findall(plain)) < OCR_MIN_CHARS:
-                continue
-            pieces = [relabel_host(piece, host) for piece in _merge_short_tail(_pack_spoken(grouped))]
-        for piece in pieces:
-            found.append((image_anchor(record.digest), piece))
-            if len(found) >= MAX_CHUNKS:
-                return found
-    return found
 
 
 def _pack_spoken(grouped: list[tuple[str, list[str]]]) -> list[str]:
@@ -385,21 +334,6 @@ def _article_ocr_chunks(conn, article_id: int, host: str = "") -> list[tuple[str
     return ocr_chunks(texts, host=host, owners=owners)
 
 
-def _uncertain_ocr_anchors(conn, article_id: int) -> set[str]:
-    """按整张图判定，不能因切块后缺少前面的昵称依据而改变置信状态。
-
-    识图交回结构的图说话人是模型标好的，不按冒号前的字猜，不算拿不准。
-    """
-    from researchlib.render import image_anchor
-    from researchlib.wechat_dialogue import attribution_uncertain
-
-    rows = conn.execute(
-        'SELECT i.content_hash,t.text FROM article_images i JOIN image_texts t ON t.content_hash=i.content_hash'
-        ' WHERE i.article_id=%s AND t.units IS NULL', (article_id,),
-    ).fetchall()
-    return {image_anchor(row['content_hash']) for row in rows if attribution_uncertain(row['text'])}
-
-
 def replace_ocr_chunks(conn, article_id: int) -> int:
     """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
     from researchlib.claims import plain_cite
@@ -422,14 +356,12 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
         else []
     )
     if chunks:
-        uncertain_anchors = _uncertain_ocr_anchors(conn, article_id)
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO article_chunks (article_id, ord, heading, body, lang, anchor)"
                 " VALUES (%s, %s, %s, %s, 'ocr', %s)",
                 [
-                    (article_id, OCR_ORD_BASE + index,
-                     OCR_UNCERTAIN_HEADING if anchor in uncertain_anchors else OCR_HEADING, text, anchor)
+                    (article_id, OCR_ORD_BASE + index, OCR_HEADING, text, anchor)
                     for index, (anchor, text) in enumerate(chunks)
                 ],
             )
@@ -530,11 +462,7 @@ def rebuild_ocr_chunks(conn, *, sources: list[str] | None = None, dry_run: bool 
             "SELECT s.author FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = %s", (article_id,)
         ).fetchone()
         host = (author["author"] if author else "") or ""
-        uncertain_anchors = _uncertain_ocr_anchors(conn, article_id)
-        expected = [
-            (anchor, OCR_UNCERTAIN_HEADING if anchor in uncertain_anchors else OCR_HEADING, text)
-            for anchor, text in _article_ocr_chunks(conn, article_id, host=host)
-        ]
+        expected = [(anchor, OCR_HEADING, text) for anchor, text in _article_ocr_chunks(conn, article_id, host=host)]
         if expected == current:
             continue
         changed += 1

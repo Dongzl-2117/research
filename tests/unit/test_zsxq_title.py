@@ -57,6 +57,19 @@ def test_image_post_uses_ocr_before_a_date_fallback():
     assert "读者帖" not in title
 
 
+def test_image_post_title_stops_at_the_end_of_a_message():
+    """图片里的字一条消息一段（段间空一行）。段尾没有句号也不把下一个人说的话接进标题。"""
+    ocr = "王小明：茅台批价这一周没动，渠道仍在观望\n\n方伟：短期不宜提价，先看中秋备货"
+    title = zsxq_display_title("（见图）", body="（见图）\n", ocr=ocr, when="2024-10-19")
+    assert "方伟" not in title and "短期不宜提价" not in title
+    # 说话人是群友的昵称，不进标题。
+    assert title == "茅台批价这一周没动，渠道仍在观望"
+    # 句号在引号里面的算收了句，不再补一个。
+    quoted = "王小明：他说「批价这一周没动，渠道仍在观望。」\n\n方伟：短期不宜提价"
+    title = zsxq_display_title("（见图）", body="（见图）\n", ocr=quoted, when="2024-10-19")
+    assert "。」。" not in title and "短期不宜提价" not in title
+
+
 def test_thin_post_falls_back_to_date_and_snippet():
     title = zsxq_display_title("", body="正文。\n", when="2024-11-28")
     assert title == "2024-11-28 正文"

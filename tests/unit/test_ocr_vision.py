@@ -1,4 +1,4 @@
-"""识图组包、失败不回退、文字清理。不连库、不调真 DeepSeek。"""
+"""识图组包、失败不回退、没按结构交的字怎么存。不连库、不调真 DeepSeek。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from researchlib.ocr import (
     VISION_PROMPT,
     VISION_PROMPT_VERSION,
     OcrUnavailable,
-    normalize_vision_text,
     prepare_vision_image,
     resolve_engine,
     run_ocr,
@@ -20,6 +19,7 @@ from researchlib.ocr import (
     vision_engine_id,
     vision_messages,
 )
+from researchlib.ocr_units import has_dialogue, plain_units
 
 ROOT = Path(__file__).resolve().parents[2]
 SECRET = "sk-ocr-vision-must-not-leak"
@@ -117,18 +117,12 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
 
     monkeypatch.setattr("researchlib.llm.chat", fake_chat)
     found = vision_engine(_settings(tmp_path))(image)
-    # 模型没按结构交（自由文字）：照旧轻清理，units 为空，后面走旧规则。
+    # 模型没按结构交（自由文字）：去掉代码块围栏，字照原样当成一段文字存，不按冒号前的字猜谁说的。
     assert found.text == "方伟：底线\n网友：非共识"
-    assert found.units is None
+    assert found.units == plain_units("方伟：底线\n网友：非共识")
+    assert not has_dialogue(found.units)
     assert seen.get("kwargs", {}).get("exact_max_tokens") == 65536
     assert seen["kwargs"].get("usage") == {}
-    assert normalize_vision_text("```text\n方伟：底线\n```") == "方伟：底线"
-    assert (
-        normalize_vision_text("方伟：就是去年上头买拉布布的人撤走了不少\n方伟：名创优品业务…")
-        == "方伟：就是去年上头买拉布布的人撤走了不少\n方伟：…"
-    )
-    assert "名创优品" not in normalize_vision_text("方伟：就是去年上头买拉布布的人撤走了不少\n名创优品?")
-    assert "各种" in normalize_vision_text("方伟：…各种 IP 业务…") or True
     content = seen["messages"][0]["content"]
     assert content[0]["type"] == "text"
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
@@ -231,91 +225,6 @@ def test_vision_recognize_compresses_before_chat(tmp_path, monkeypatch):
     assert "方伟" in text
     assert seen["mime"] == "image/jpeg"
     assert seen["bytes"] <= 280_000
-
-
-def test_normalize_drops_coupon_and_fixes_year():
-    assert normalize_vision_text(
-        "方伟：扫码领取优惠券\n仅限前 1000 名\n2026/06/15 12:00 至 2027/06/01 12:00\n66 元立减金。"
-    ) == ""
-    assert "一年后会" in normalize_vision_text("因为今天的钱可以拿去存款、买国债或投资，一?会变得更多。")
-    assert "一?" not in normalize_vision_text("一?后的100元更不值钱")
-    assert normalize_vision_text("（此截图为知识星球优惠券推广卡，按规则整段不输出。）") == ""
-
-
-def test_normalize_strips_video_xueqiu_chrome_and_reply_at():
-    assert normalize_vision_text("领教工坊 已关注") == ""
-    assert normalize_vision_text("点击 #领教工坊 查看更多") == ""
-    assert "视频号" not in normalize_vision_text(
-        "更多组织管理与领导力洞见，欢迎关注 @领教工坊 视频号"
-    )
-    assert normalize_vision_text("发讨论") == ""
-    assert normalize_vision_text("756  1555  827") == ""
-    out = normalize_vision_text(
-        "网友：回复@甲:李录投资也很好啊。//@乙:回复@丙:网友会不会是卖完了再吹？"
-    )
-    # //@ 后面那一楼的网名留着；最新一条没有自己的网名，仍是「网友：」。
-    assert out == "乙：网友会不会是卖完了再吹？\n网友：李录投资也很好啊。"
-    assert out.index("会不会是卖完了再吹") < out.index("李录投资也很好")
-    assert "//@" not in out
-    assert "回复@" not in out
-
-def test_normalize_strips_brand_masthead_and_collapses_spam():
-    raw = """方洪波：
-企业家精神是敢于在最顺的时候对自己动刀子
-领教工坊
-INSIDE THE BEST
-来源：思想?岭南 | 对话方洪波：企业发展如何穿越周期、基业长青？
-光做家电没有未来
-COLMO
-我们光做家电没有未来
-"""
-    out = normalize_vision_text(raw)
-    assert "领教工坊" not in out
-    assert "INSIDE THE BEST" not in out.upper().replace("  ", " ")
-    assert "COLMO" not in out
-    assert "来源" not in out
-    assert "光做家电没有未来" in out
-    assert "企业家精神" in out
-    assert "思想×岭南" not in out  # 整行刊源已剥，不必保留
-
-    spam = "清仓格力\n深刻反省，深刻反省，深刻反省，深刻反省，深刻反省，深刻反省，深刻反省"
-    collapsed = normalize_vision_text(spam)
-    assert collapsed.count("深刻反省") == 1
-    soft = "深刻反省，深刻\n反省，深刻反省，深刻反省"
-    assert normalize_vision_text(soft).count("深刻反省") == 1
-
-
-def test_normalize_fixes_obvious_typos():
-    assert "很新的东西" in normalize_vision_text("网友：AI算力是一个很新都东西")
-    assert "很新都东西" not in normalize_vision_text("网友：AI算力是一个很新都东西")
-
-
-def test_normalize_strips_video_badges_and_ad_shell():
-    """24010 / 23173：角标和广告壳在识图后处理就丢掉，不靠语病表。"""
-    video = normalize_vision_text(
-        "“黄酒一哥” 易主！\n"
-        "2026年上半年营业收入达8.53亿元\n"
-        "未成年人请勿饮酒\n"
-        "主播 浩嘉\n"
-        "会稽山超越古越龙山\n"
-        "新经济观察"
-    )
-    assert "8.53亿" in video
-    assert "会稽山超越古越龙山" in video
-    assert "未成年人" not in video
-    assert "主播" not in video
-    assert "新经济观察" not in video
-    assert normalize_vision_text("主播 浩嘉") == ""
-    assert normalize_vision_text("未成年人请勿饮酒") == ""
-
-    poster = normalize_vision_text(
-        "理想\n连山电池保障计划\n双重保障，终身守护。\n补偿同等配置新车\n"
-        "适用条件:\n责任免除见官方条款。终身保障。"
-    )
-    assert "连山电池保障计划" in poster
-    assert "补偿同等配置新车" in poster
-    assert "双重保障" not in poster
-    assert not any(line.strip() == "理想" for line in poster.splitlines())
 
 
 def test_relayout_rewrites_stored_text_from_units_without_calling_the_model(monkeypatch):

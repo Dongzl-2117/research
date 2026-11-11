@@ -1,6 +1,7 @@
-"""阅读页留原图；摘要和观点的输入仍然读到截图里整理后的字。
+"""阅读页留原图；摘要和观点的输入仍然读到截图里的字。
 
 样例按 14886 的形状：正文一句，判断在群聊截图里。公司提及表仍不看图片。
+识图交回结构的，说话人是模型标好的；全量重认以前存的旧识图（units 为空）照认出来的样子交，不按冒号前的字猜谁说的。
 """
 
 from datetime import datetime
@@ -9,20 +10,21 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from researchlib import ask as ask_mod
 from researchlib import digest as digest_mod
 from researchlib import views as views_mod
-from researchlib.chunks import OCR_HEADING, OCR_UNCERTAIN_HEADING, rebuild_ocr_chunks, replace_ocr_chunks
+from researchlib.chunks import OCR_HEADING, replace_ocr_chunks
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
-from researchlib.ocr import append_ocr, refresh_article_ocr
+from researchlib.ocr import ocr_speaker_note, refresh_article_ocr
+from researchlib.ocr_units import format_units, normalize_units
 from researchlib.render import image_anchor
 from researchlib.retrieval import retrieve
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.app import create_app
 from researchlib.web.queries import Scope
-from researchlib.wechat_dialogue import attribution_uncertain, parse_shot, speaker_note
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 CHAT = (
@@ -61,22 +63,37 @@ def _store(conn, settings, source_id: str, external_id: str, title: str, body: s
     ).fetchone()
 
 
-def _remember(conn, article_id: int, ref: str, text: str) -> str:
+def _remember(conn, article_id: int, ref: str, text: str, units: dict | None = None) -> str:
+    """存一张图的识别结果。给了 units 是识图交回的结构，字由它排出来；没给的是全量重认以前的旧识图。"""
     row = conn.execute(
         "SELECT content_hash FROM article_images WHERE article_id = %s AND original_ref = %s",
         (article_id, ref),
     ).fetchone()
     conn.execute(
         """
-        INSERT INTO image_texts (content_hash, engine, text) VALUES (%s, 'test', %s)
-        ON CONFLICT (content_hash) DO UPDATE SET text = EXCLUDED.text
+        INSERT INTO image_texts (content_hash, engine, text, units) VALUES (%s, 'test', %s, %s)
+        ON CONFLICT (content_hash) DO UPDATE SET text = EXCLUDED.text, units = EXCLUDED.units
         """,
-        (row["content_hash"], text),
+        (row["content_hash"], format_units(units) if units else text, Jsonb(units) if units else None),
     )
     return row["content_hash"]
 
 
-def test_financial_labels_keep_attribution_in_model_text_and_ocr_chunks(conn, settings, tmp_path):
+def _chat(*messages: tuple[str, str]) -> dict:
+    """群聊截图的结构：(说话人, 正文)，说话人写「我」的是截图的人自己（靠右的绿气泡）。"""
+    return normalize_units(
+        {
+            "kind": "chat",
+            "blocks": [
+                {"type": "message", "speaker": "" if who == "我" else who, "self": who == "我", "text": text}
+                for who, text in messages
+            ],
+        }
+    )
+
+
+def test_text_without_structure_reaches_models_as_recognized(conn, settings, tmp_path, monkeypatch):
+    """旧识图只有一段自由文字：旁路、检索块、摘要的输入都照认出来的样子，不拆说话人，也不补说话人说明。"""
     image = tmp_path / "metrics.png"
     _png(image, b"\x19" * 24)
     article = _store(
@@ -85,123 +102,79 @@ def test_financial_labels_keep_attribution_in_model_text_and_ocr_chunks(conn, se
     )
     raw = (
         "方伟：先看经营情况 营收：增长百分之二十 净利润：增长百分之十 假设：需求不变 "
-        "净资产：123.45亿元 净资产收益率：10.5% 资本开支：-2.5亿元 "
-        "营业成本：7.25亿元 研发费用：0.25亿元 净利润率：9.75% "
-        "阿明🇫🇷：继续核对现金流 方伟：再看下一季度"
+        "净资产：123.45亿元 净资产收益率：10.5% 资本开支：-2.5亿元\n"
+        "云间拾光客：继续核对现金流 方伟：再看下一季度"
     )
     digest = _remember(conn, article["id"], "metrics.png", raw)
     refresh_article_ocr(conn, article["id"])
-    assert replace_ocr_chunks(conn, article["id"]) >= 1
+    assert replace_ocr_chunks(conn, article["id"]) == 1
     conn.commit()
-    saved = conn.execute('SELECT ocr_text FROM articles WHERE id=%s', (article['id'],)).fetchone()['ocr_text']
-    chunks = conn.execute(
-        "SELECT body,anchor FROM article_chunks WHERE article_id=%s AND lang='ocr' ORDER BY ord",
-        (article['id'],),
-    ).fetchall()
-    for text in [saved, '\n'.join(chunk['body'] for chunk in chunks)]:
-        assert [turn.speaker for turn in parse_shot(text).turns] == ['方伟', '阿明🇫🇷', '方伟']
-        assert '营收：增长百分之二十 净利润：增长百分之十 假设：需求不变' in text
-        assert '净资产：123.45亿元 净资产收益率：10.5% 资本开支：-2.5亿元' in text
-        assert '营业成本：7.25亿元 研发费用：0.25亿元 净利润率：9.75%' in text
-    assert saved in append_ocr('正文。', saved)
-    assert all(chunk['anchor'] == image_anchor(digest) for chunk in chunks)
-    assert conn.execute('SELECT text FROM image_texts WHERE content_hash=%s', (digest,)).fetchone()['text'] == raw
+    saved = conn.execute("SELECT ocr_text FROM articles WHERE id=%s", (article["id"],)).fetchone()["ocr_text"]
+    assert saved == raw
+    chunk = conn.execute(
+        "SELECT heading,body,anchor FROM article_chunks WHERE article_id=%s AND lang='ocr'", (article["id"],),
+    ).fetchone()
+    assert chunk == {"heading": OCR_HEADING, "body": raw, "anchor": image_anchor(digest)}
+    assert ocr_speaker_note(conn, article["id"], saved, "方伟") == ""
+    seen = []
+
+    def fake_chat(_settings, messages, **_kwargs):
+        seen.append(messages[1]["content"])
+        return '{"summary":"合成导读","points":[],"tags":[]}', "synthetic"
+
+    monkeypatch.setattr(digest_mod, "chat", fake_chat)
+    row = conn.execute(
+        "SELECT id,title,body_text,content_hash,published_at,source_id,ocr_hash FROM articles WHERE id=%s",
+        (article["id"],),
+    ).fetchone()
+    digest_mod.digest_article(conn, settings, row, "方伟")
+    assert seen and raw in seen[0] and "别人的话不要写成" not in seen[0]
+    assert conn.execute("SELECT text FROM image_texts WHERE content_hash=%s", (digest,)).fetchone()["text"] == raw
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{article['id']}").text
-    prose = page.split('class="prose"', 1)[1].split('</article>', 1)[0]
+    prose = page.split('class="prose"', 1)[1].split("</article>", 1)[0]
     assert f'<img id="{image_anchor(digest)}"' in prose
-    assert 'ocr-reading' not in prose and '增长百分之二十' not in prose
+    assert "ocr-reading" not in prose and "增长百分之二十" not in prose
 
 
-def test_uncertain_inline_labels_keep_raw_text_and_reach_models_as_uncertain(conn, settings, tmp_path):
-    image = tmp_path / 'uncertain.png'
-    _png(image, b'\x29' * 24)
+@pytest.mark.parametrize("label", ["Alice", "NewRatio", "Al", "O'Brien", "云间拾光客"])
+def test_model_labelled_speakers_reach_chunks_and_prompts_as_labelled(conn, settings, tmp_path, monkeypatch, label):
+    """说话人是识图看着图标的：少见的网名、像指标的英文名都照标的写，不再按冒号前的字形猜。"""
+    image = tmp_path / "latin.png"
+    _png(image, b"\x39" * 24)
     article = _store(
-        conn, settings, 'fangwei-zsxq', 'synthetic-uncertain-labels', '合成待核验讨论',
-        '本篇保留待核验的识别文字。\n\n![](uncertain.png)\n', [image],
+        conn, settings, "fangwei-zsxq", "synthetic-latin-label", "合成英文昵称边界",
+        "本篇记录不同人的判断。\n\n![](latin.png)\n", [image],
     )
-    raw = '方伟：先留原句 待核验项：逐个检查 云间拾光客：我也想核对 方伟：等下一份报表'
-    digest = _remember(conn, article['id'], 'uncertain.png', raw)
-    refresh_article_ocr(conn, article['id'])
-    replace_ocr_chunks(conn, article['id'])
+    other = f"{label}：我认为可以提价，营收：增长百分之十。"
+    units = _chat(("我", "我的判断是先观察，暂时不下结论。"), (label, "我认为可以提价，营收：增长百分之十。"))
+    _remember(conn, article["id"], "latin.png", "", units)
+    refresh_article_ocr(conn, article["id"])
+    replace_ocr_chunks(conn, article["id"])
     conn.commit()
-    saved = conn.execute('SELECT ocr_text FROM articles WHERE id=%s', (article['id'],)).fetchone()['ocr_text']
-    assert saved == raw
-    assert '尚未确认其说话人边界' in speaker_note(saved)
+    saved = conn.execute("SELECT ocr_text FROM articles WHERE id=%s", (article["id"],)).fetchone()["ocr_text"]
+    assert saved == f"方伟：我的判断是先观察，暂时不下结论。\n\n{other}"
     chunk = conn.execute(
-        "SELECT heading,body,anchor FROM article_chunks WHERE article_id=%s AND lang='ocr'", (article['id'],),
+        "SELECT body,heading FROM article_chunks WHERE article_id=%s AND lang='ocr'", (article["id"],),
     ).fetchone()
-    assert chunk == {'heading': OCR_UNCERTAIN_HEADING, 'body': raw, 'anchor': image_anchor(digest)}
+    assert chunk == {"heading": OCR_HEADING, "body": f"方伟：我的判断是先观察，暂时不下结论。\n{other}"}
     sources = enabled_sources(load_sources(settings.sources_path))
-    found = retrieve(conn, '概括这篇', Scope(source_ids=['fangwei-zsxq'], article_id=article['id']), sources)
-    material = ask_mod._material(ask_mod._passages(found, sources, settings))
-    assert OCR_UNCERTAIN_HEADING in material and raw in material
-    # 只缺警示标题也应被维护命令识别；dry-run 仍不写，正文与原始识别均不改。
-    conn.execute("UPDATE article_chunks SET heading=%s WHERE article_id=%s AND lang='ocr'",
-                 (OCR_HEADING, article['id']))
-    conn.commit()
-    assert rebuild_ocr_chunks(conn, dry_run=True)[1] == 1
-    assert rebuild_ocr_chunks(conn)[1] == 1
-    assert rebuild_ocr_chunks(conn)[1] == 0
-    assert conn.execute('SELECT text FROM image_texts WHERE content_hash=%s', (digest,)).fetchone()['text'] == raw
-
-
-@pytest.mark.parametrize('label,speech,uncertain', [
-    ('Alice', '我认为可以提价。', False),
-    ('NewRatio', '123.45%', True),
-    ('Al', '我认为可以提价。', True),
-    ("O'Brien", '我认为可以提价。', True),
-    ('ResearchNicknameBeyondTwentyCharacters', '我认为可以提价。', True),
-])
-def test_latin_boundary_is_preserved_in_chunks_and_actual_model_prompts(
-    conn, settings, tmp_path, monkeypatch, label, speech, uncertain,
-):
-    image = tmp_path / 'latin.png'
-    _png(image, b'\x39' * 24)
-    article = _store(
-        conn, settings, 'fangwei-zsxq', 'synthetic-latin-label', '合成英文昵称边界',
-        '本篇记录不同人的判断。\n\n![](latin.png)\n', [image],
-    )
-    other = f'{label}：{speech}'
-    raw = f'方伟：我的判断是先观察，暂时不下结论。\n{other}'
-    digest = _remember(conn, article['id'], 'latin.png', raw)
-    refresh_article_ocr(conn, article['id'])
-    replace_ocr_chunks(conn, article['id'])
-    conn.commit()
-    saved = conn.execute('SELECT ocr_text FROM articles WHERE id=%s', (article['id'],)).fetchone()['ocr_text']
-    chunk = conn.execute(
-        "SELECT body,heading FROM article_chunks WHERE article_id=%s AND lang='ocr'", (article['id'],),
-    ).fetchone()
-    assert other in saved and other in chunk['body']
-    assert attribution_uncertain(saved) == uncertain
-    if uncertain:
-        assert saved == raw and chunk['heading'] == OCR_UNCERTAIN_HEADING
-        assert parse_shot(saved).turns == []
-    else:
-        assert chunk['heading'] == OCR_HEADING
-        assert [turn.speaker for turn in parse_shot(chunk['body']).turns] == ['方伟', 'Alice']
-        assert parse_shot(chunk['body']).turns[0].lines == ['我的判断是先观察，暂时不下结论。']
-    sources = enabled_sources(load_sources(settings.sources_path))
-    found = retrieve(conn, '概括这篇', Scope(source_ids=['fangwei-zsxq'], article_id=article['id']), sources)
-    prompt = ask_mod._material(ask_mod._passages(found, sources, settings))
-    assert other in prompt
-    assert (OCR_UNCERTAIN_HEADING in prompt) == uncertain
+    found = retrieve(conn, "概括这篇", Scope(source_ids=["fangwei-zsxq"], article_id=article["id"]), sources)
+    assert other in ask_mod._material(ask_mod._passages(found, sources, settings))
     # 摘要真实入口使用替身，只检查实际送出的资料与说话人说明，不请求任何模型。
     seen = []
 
     def fake_chat(_settings, messages, **_kwargs):
-        seen.append(messages[1]['content'])
-        return '{"summary":"合成导读","points":[],"tags":[]}', 'synthetic'
+        seen.append(messages[1]["content"])
+        return '{"summary":"合成导读","points":[],"tags":[]}', "synthetic"
 
-    monkeypatch.setattr(digest_mod, 'chat', fake_chat)
+    monkeypatch.setattr(digest_mod, "chat", fake_chat)
     row = conn.execute(
-        'SELECT id,title,body_text,content_hash,published_at,source_id,ocr_hash FROM articles WHERE id=%s',
-        (article['id'],),
+        "SELECT id,title,body_text,content_hash,published_at,source_id,ocr_hash FROM articles WHERE id=%s",
+        (article["id"],),
     ).fetchone()
-    digest_mod.digest_article(conn, settings, row, '方伟')
-    assert seen and other in seen[0]
-    assert ('尚未确认其说话人边界' in seen[0]) == uncertain
-    assert conn.execute('SELECT text FROM image_texts WHERE content_hash=%s', (digest,)).fetchone()['text'] == raw
+    digest_mod.digest_article(conn, settings, row, "方伟")
+    assert seen and other in seen[0] and "别人的话不要写成方伟的判断" in seen[0]
 
 
 def test_reader_shows_chat_text_and_collapses_the_screenshot(conn, settings, tmp_path):
@@ -358,40 +331,21 @@ def test_long_article_passing_mention_is_not_queued_for_a_screenshot(conn, setti
     assert row["id"] not in {item["id"] for item in views_mod.gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
 
 
-# 14886：两张重叠的群截图。界面字和别人的名字去掉，方伟 / 网友分块，重复句只留一次。
-_SHOT_A = """9:41
-100%
-5G
-微信
-瑞幸古茗交流群(86)
-方伟Rey
-瑞幸和古茗都算头部，但瑞幸同店还有压力
-王小明
-古茗店效还行，瑞幸的折扣不能再深了
-设为群待办
-¥9.9
-小程序
-瑞幸咖啡
-李小红
-先看到这里，不展开了
-"""
-_SHOT_B = """20:41
-微信
-87%
-瑞幸古茗交流群(86)
-王小明
-古茗店效还行，瑞幸的折扣不能再深了
-设为群待办
-李小红
-先看到这里，不展开了
-方伟
-同店压力还在，折扣不能再深
-Rey
-会员那边先不动
-"""
+# 14886：两张重叠的群截图，识图交回的结构。后一张开头两条和前一张结尾重合。昵称和对话都是编的。
+_SHOT_A = _chat(
+    ("我", "瑞幸和古茗都算头部，但瑞幸同店还有压力"),
+    ("王小明", "古茗店效还行，瑞幸的折扣不能再深了"),
+    ("李小红", "先看到这里，不展开了"),
+)
+_SHOT_B = _chat(
+    ("王小明", "古茗店效还行，瑞幸的折扣不能再深了"),
+    ("李小红", "先看到这里，不展开了"),
+    ("我", "同店压力还在，折扣不能再深"),
+    ("我", "会员那边先不动"),
+)
 
 
-def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, tmp_path, monkeypatch):
+def test_screenshot_dialogue_is_what_the_digest_and_views_read(conn, settings, tmp_path, monkeypatch):
     first = tmp_path / "a.png"
     second = tmp_path / "b.png"
     _png(first, b"\x11" * 24)
@@ -405,24 +359,23 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
         "瑞幸古茗是比较头部的。\n\n![](a.png)\n\n![](b.png)\n",
         [first, second],
     )
-    first_hash = _remember(conn, row["id"], "a.png", _SHOT_A)
-    second_hash = _remember(conn, row["id"], "b.png", _SHOT_B)
+    first_hash = _remember(conn, row["id"], "a.png", "", _SHOT_A)
+    second_hash = _remember(conn, row["id"], "b.png", "", _SHOT_B)
     refresh_article_ocr(conn, row["id"])
     conn.commit()
     saved = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()["ocr_text"]
     assert saved.startswith("方伟：瑞幸和古茗都算头部")
     assert "王小明：古茗店效还行" in saved
     assert saved.count("古茗店效还行，瑞幸的折扣不能再深了") == 1
-    # 网名照截图留着；界面字和商品卡仍要删。
-    assert "李小红：先看到这里" in saved and "设为群待办" not in saved
-    assert "小程序" not in saved and "交流群" not in saved and "¥" not in saved
+    assert "李小红：先看到这里" in saved
+    assert saved.endswith("方伟：同店压力还在，折扣不能再深\n会员那边先不动")
 
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{row['id']}").text
     prose = page.split('class="prose"', 1)[1].split("</article>", 1)[0]
     assert "瑞幸古茗是比较头部的" in prose
     assert "方伟：" not in prose and "王小明：" not in prose
-    assert "古茗店效还行" not in prose and "设为群待办" not in prose
+    assert "古茗店效还行" not in prose
     assert "ocr-link" not in prose and "ocr-reading" not in prose
     assert f'<img id="{image_anchor(first_hash)}"' in prose
     assert f'<img id="{image_anchor(second_hash)}"' in prose
@@ -443,7 +396,6 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     assert "方伟：瑞幸和古茗都算头部" in seen[0]
     assert "王小明：古茗店效还行" in seen[0]
     assert "别人的话不要写成方伟的判断" in seen[0]
-    assert "设为群待办" not in seen[0] and "小程序" not in seen[0]
 
     prompts = []
 
@@ -462,30 +414,27 @@ def test_wechat_dialogue_is_what_the_reader_and_digest_consume(conn, settings, t
     assert "王小明：" in prompts[0]
     assert "别人的话不要写成方伟的判断" in prompts[0]
     assert "不要因为来自截图就当成没下判断" in prompts[0]
-    assert "设为群待办" not in prompts[0]
 
 
-# 文章 8881 的真实识别。旧旁路曾把栏上的「不太看好」整段收成方伟。
-_PDD_QUOTE = """拼多多，我是始终不太看好。属于
-假本分。个人一家之言仅供参.
-方伟看十年作者
-零售的本分是帮消费者省钱，
-管理层的本分是integrity，世
-界范围内在零售行业，做得比
-它好的，其实只有Costco，奥
-乐齐，利德。
-50年下来，沃尔玛的毛利率从
-20%提升到了24%，费用率从
-16%提升到了20%，只有
-Costco50年不变，费用率纹丝
-不动，那就是9%，这是零售
-领域最强大的公司。
-方伟看十年
-什么才叫做“拥有一家公司”的感觉？"""
+# 文章 8881 的形状：方伟引用一位网友的帖子回复。识图把被引用的那条标在 quote 里，不是方伟说的。
+_PDD_QUOTE = normalize_units(
+    {
+        "kind": "post",
+        "blocks": [
+            {
+                "type": "message",
+                "self": True,
+                "text": "零售的本分是帮消费者省钱，管理层的本分是integrity，世界范围内在零售行业，"
+                "做得比它好的，其实只有Costco，奥乐齐，利德。",
+                "quote": {"speaker": "", "text": "拼多多，我是始终不太看好。属于假本分。个人一家之言仅供参."},
+            }
+        ],
+    }
+)
 
 
 def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, monkeypatch):
-    """观点重抽从 image_texts 重写旁路。库里已经写成「方伟：不太看好」也不会再喂给模型。"""
+    """观点重抽从 image_texts 重写旁路。库里旧的那份写成了「方伟：不太看好」，也不会再喂给模型。"""
     image = tmp_path / "pdd.png"
     _png(image, b"\x29" * 24)
     row = _store(
@@ -497,7 +446,7 @@ def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, mon
         "（见图）\n\n![](pdd.png)\n",
         [image],
     )
-    _remember(conn, row["id"], "pdd.png", _PDD_QUOTE)
+    _remember(conn, row["id"], "pdd.png", "", _PDD_QUOTE)
     conn.execute(
         "UPDATE articles SET ocr_text = %s, ocr_hash = %s WHERE id = %s",
         (
@@ -531,7 +480,6 @@ def test_baked_quote_reply_is_resplit_before_views(conn, settings, tmp_path, mon
     guest, host = ocr.split("方伟：", 1)
     assert "网友：" in guest and "不太看好" in guest
     assert "零售的本分" in host and "不太看好" not in host
-    assert "方伟看十年" not in prompt and "什么才叫做" not in prompt
     assert "别人的话不要写成方伟的判断" in prompt
     saved = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (row["id"],)).fetchone()["ocr_text"]
     assert saved.startswith("网友：拼多多，我是始终不太看好")

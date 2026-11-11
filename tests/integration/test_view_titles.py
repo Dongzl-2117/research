@@ -12,7 +12,8 @@ from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI
 from researchlib.web.app import create_app
 
-OCR = "张三：美团外卖守住了\n方伟：拼多多今年的利润会比市场想的高"
+# 旁路里的图片文字：一条消息一段，段与段之间空一行。段尾没有句号也是一句，不和下一个人的话粘成标题。
+OCR = "方伟：拼多多今年的利润会比市场想的高\n\n张三：美团外卖守住了"
 SAID = "拼多多今年的利润会比市场想的高"
 
 

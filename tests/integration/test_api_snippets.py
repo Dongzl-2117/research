@@ -18,7 +18,8 @@ NEWS = (
     + "拼多多的百亿补贴还在继续，对白酒价格的压力不小。后面再说别的。\n"
 )
 SHOT = "美团"
-OCR = "张三：美团外卖守住了\n方伟：拼多多今年的利润会比市场想的高"
+# 旁路里的图片文字：一条消息一段，段与段之间空一行（ocr.compose_ocr_text 的写法）。
+OCR = "张三：美团外卖守住了\n\n方伟：拼多多今年的利润会比市场想的高"
 
 
 def _store(conn, settings, external_id, title, body, hour):
@@ -56,6 +57,6 @@ def test_list_opening_and_company_mention_sentence(conn, settings):
     contexts = {item["id"]: item["snippet"] for item in data["items"]}
     # 提及原句从句首取，不从半句开始。
     assert contexts[news] == "拼多多的百亿补贴还在继续，对白酒价格的压力不小。"
-    assert contexts[shot] == "方伟：拼多多今年的利润会比市场想的高。"
+    assert contexts[shot] == "方伟：拼多多今年的利润会比市场想的高"
     assert "<mark>拼多多</mark>的百亿补贴还在继续，对白酒价格的压力不小。" in page
-    assert "方伟：<mark>拼多多</mark>今年的利润会比市场想的高。" in page
+    assert "方伟：<mark>拼多多</mark>今年的利润会比市场想的高" in page

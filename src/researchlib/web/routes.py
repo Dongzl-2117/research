@@ -43,7 +43,6 @@ from researchlib.ocr import refresh_article_ocr
 from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.present_text import polish_display_text
 from researchlib.render import (
-    flow_ocr_quote_body,
     images_placed_by_estimate,
     inline_image_ocr,
     lazy_images,
@@ -98,7 +97,6 @@ from researchlib.web.present import (
 from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
-from researchlib.wechat_dialogue import canonical_host, present_stored_ocr, relabel_host
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import (
     TITLE_LIMIT,
@@ -314,7 +312,7 @@ def _repair_zsxq_titles(conn, cards: list[dict]) -> None:
             str(card.get("plain_title") or ""),
             body=card.get("body_text") or extra.get("body_text") or "",
             summary=card.get("summary") or "",
-            ocr=present_stored_ocr(extra.get("ocr_text") or ""),
+            ocr=extra.get("ocr_text") or "",
             when=card.get("date") or "",
             owners=card.get("owners") or (),
         )
@@ -362,7 +360,7 @@ def display_titles(conn, rows, by_id: dict, zone: str) -> dict[int, str]:
             titles[row["id"]],
             body=extra.get("body_text") or "",
             summary=(digests.get(row["id"]) or {}).get("summary") or "",
-            ocr=present_stored_ocr(extra.get("ocr_text") or ""),
+            ocr=extra.get("ocr_text") or "",
             when=format_date(row["published_at"], zone),
             owners=source_owners(by_id[row["source_id"]]),
         )
@@ -753,18 +751,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         quoted = None
         if chunk_arg is not None and chunk_arg.isdigit():
             wanted = int(chunk_arg)
+            # 图片文字块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
-            if (
-                quoted is not None
-                and (quoted.get("lang") or "") == "ocr"
-                and not queries.ocr_anchor_structured(conn, article_id, quoted.get("anchor") or "")
-            ):
-                # 旧格式识图的块：检索块里别的来源已经换成作者名，换回「方伟：」再整理，整理完再换成作者名。
-                # 识图交回结构的块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
-                presented = present_stored_ocr(canonical_host(quoted["body"], source.author))
-                cleaned = flow_ocr_quote_body(relabel_host(presented, source.author))
-                if cleaned.strip():
-                    quoted = {**quoted, "body": cleaned}
         banner = queries.sample_state(conn, ids)
         chat_asked = queries.recent_article_questions(conn, article_id, 3)
         translation = queries.get_translation(conn, article_id)
@@ -792,7 +780,7 @@ def _article_view(request: Request, article_id: int, mode: str):
                 display_title or "",
                 body=article.get("body_text") or material.get("body_text") or "",
                 summary=(digest or {}).get("summary") or "",
-                ocr=present_stored_ocr(material.get("ocr_text") or ""),
+                ocr=material.get("ocr_text") or "",
                 when=format_date(article["published_at"], settings.display_timezone),
                 owners=source_owners(source),
             )

@@ -12,6 +12,8 @@
 - 转发新闻的帖子，第一句开头的电头和出处（「IT之家 5 月 11 日消息，」「据彭博社报道，」「Tech 星球报道称，」）
   同样去掉：卡片上有日期，出处在正文里。不去掉的话句子太长收在逗号处，标题只剩电头。
 - 图片里的字只在标题是「图片」、空标题，或去掉省略号后没有可用原句时才用，不用无关的配售截图。
+  图片里的字一段一段排好，段与段之间空一行（一条消息一段），段尾没收句的当句号：两个人说的话不粘成一句当标题。
+  消息前面的说话人（多是群友的昵称）不进标题。
 - 还不够，就用日期加几个字。
 - 标题不能空着，不能以「…」或「...」开头或结尾，也不用「无标题」「图片」这类占位（带引号、书名号同样算）。
   「下图」「如下：」这种引出图片的垫话也算占位。整行只是占位的（导出的标题行「「图片」」）不拿来抽句子，
@@ -57,6 +59,7 @@ from researchlib.textutil import (
     fix_obvious_typos,
     lonely_marks,
 )
+from researchlib.wechat_dialogue import split_speaker
 from researchlib.zsxq_comments import drop_guest_comments_text
 
 FANGWEI_ZSXQ = "fangwei-zsxq"
@@ -157,6 +160,8 @@ _DATE_FALLBACK = re.compile(r"^(?:\d{4}-\d{2}-\d{2}\s+)?短帖$")
 # 以前入库补标题时读到了归档头那几行，标题成了「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。
 _ARCHIVE_META = re.compile(r"(?:^|\s)-\s*(?:作者|时间|类型|topic_id)\s*[：:]")
 _SENTENCE_STOP = "。！？!?；;"
+_PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n+")
+_PARAGRAPH_CLOSERS = "」』”’）)】》\"'"
 # 全角标点自带空白，跨行接回时后面不再加空格。
 _FULLWIDTH_END = re.compile(r"[，。、：；！？）」』》】]$")
 _SPACES = re.compile(r"\s+")
@@ -592,6 +597,7 @@ def zsxq_display_title(
         return polish_title_typos(stem)
     for sentence in _candidates(summary):
         return polish_title_typos(sentence)
+    ocr = _closed_paragraphs(ocr)
     if _ocr_allowed(stored):
         anchors = _topic_anchors(stored)
         for sentence in _candidates(ocr):
@@ -678,6 +684,26 @@ def _drop_placeholder_lines(text: str) -> str:
     """整行只是「「图片」」「下图」这种占位的不拿来抽句子：导出的标题行会和下一句粘成「「图片」 补充一句……」。"""
     lines = (text or "").splitlines()
     return "\n".join(line for line in lines if not _placeholder(_HEADING.sub("", line)))
+
+
+def _closed_paragraphs(text: str) -> str:
+    """图片里的字（``ocr.compose_ocr_text``）段与段之间空一行，一条消息、一段字各是一段。段尾没收句的补个句号，
+    抽句子时就停在段尾，不把下一个人说的话接上来。句号在引号、括号里面的（「……。」）算收了句。
+
+    一条消息写成「说话人：正文」，标题只用正文：说话人多是截图里群友的昵称，和「方伟：」「网友：」一样不进标题。
+    """
+    parts = [_speech(part.strip()) for part in _PARAGRAPH_BREAK.split(text or "") if part.strip()]
+    return "\n\n".join(part if _closed(part) else part + "。" for part in parts if part)
+
+
+def _speech(paragraph: str) -> str:
+    split = split_speaker(paragraph, names=True)
+    return split[1].strip() if split else paragraph
+
+
+def _closed(paragraph: str) -> bool:
+    inner = paragraph.rstrip(_PARAGRAPH_CLOSERS)
+    return bool(inner) and inner[-1] in _SENTENCE_STOP + "…"
 
 
 def _candidates(text: str) -> list[str]:
