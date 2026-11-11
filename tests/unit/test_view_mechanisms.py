@@ -188,3 +188,35 @@ def test_coerce_view_keeps_real_judgment():
     assert got["about"] is True
     assert got["judgment"] == "顺丰份额稳定"
     assert got["mechanism"] == "时效"
+
+
+def test_batch_line_reports_tokens_and_time():
+    from researchlib.views import spent
+
+    assert spent({"prompt": 3210, "completion": 6540, "reasoning": 6120}, 42.4) == (
+        "进 3,210 出 6,540（其中思考 6,120） token，用时 42 秒"
+    )
+    # 接口没报用量时只印用时。
+    assert spent({}, 3725) == "用时 1 小时 2 分"
+
+
+def test_batch_stops_on_credentials_and_balance_but_not_on_one_bad_article():
+    from researchlib.llm import LLMError, LLMUnavailable
+    from researchlib.views import _fatal
+
+    assert _fatal(LLMUnavailable("没有配置 DEEPSEEK_API_KEY"))
+    assert _fatal(LLMError("DeepSeek 接口返回 402：Insufficient Balance"))
+    assert _fatal(LLMError("DeepSeek 接口返回 401：invalid key"))
+    assert not _fatal(LLMError("DeepSeek 接口返回 500：upstream"))
+    assert not _fatal(LLMError("模型没有按格式回答"))
+
+
+def test_views_command_rejects_worker_counts_out_of_range():
+    import pytest
+
+    from researchlib.views import MAX_WORKERS, main
+
+    for count in ("0", str(MAX_WORKERS + 1)):
+        with pytest.raises(SystemExit) as stopped:
+            main(["--workers", count])
+        assert "--workers" in str(stopped.value)
