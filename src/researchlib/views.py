@@ -11,6 +11,11 @@
     research-views                      # 全部被深入谈到的公司，默认最多 100 篇
     research-views --company 泡泡玛特 --limit 300
     research-views --source fangwei-mp --limit 100
+    research-views --limit 6000 --workers 16 --off-peak   # 一次补完积压：16 篇同时整理，避开 DeepSeek 高峰价
+
+``--workers N`` 几篇同时整理，每个 worker 一条自己的数据库连接；每篇先占一把 Postgres advisory lock，
+同一进程的几个 worker、同时开着的几个 research-views、网页后台那条队列都不会整理同一篇。
+每篇印一行用量和用时，最后印合计，拿它算实际花了多少钱。余额不足（402）、鉴权被拒整批停，不把剩下的一篇篇记成失败。
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
 图片里有可读的字时，交给模型的正文会接上「图片里的字」，和正文一视同仁。正文很短、判断写在截图里的，
@@ -33,6 +38,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
+from researchlib import llm_batch
 from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_sql
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
@@ -87,6 +93,8 @@ _JSON = re.compile(r"\{.*\}", re.S)
 QUEUE_PER_VIEW = 20
 _MAX_QUEUED = 60
 _COOLDOWN_S = 120.0
+# 每篇的锁是 (hashtext(LOCK_NAME), 文章 id) 这把会话级 advisory lock：整理完放掉，进程没了自动放掉。
+LOCK_NAME = "research-views"
 
 
 def _items(value, limit: int = 5, size: int = 160) -> list[str]:
@@ -474,8 +482,13 @@ def coerce_view_for_store(view: dict | None) -> dict:
     }
 
 
-def extract_article(conn, settings: Settings, row, author: str, companies: list[dict]) -> int:
-    """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。"""
+def extract_article(
+    conn, settings: Settings, row, author: str, companies: list[dict], *, usage: dict | None = None
+) -> int:
+    """抽一篇文章里作者对这几家公司的判断，写进 company_views。返回下了判断的公司数。
+
+    usage：传一个 dict 进来，这一篇各次调用实际用掉的 token 加在里面（见 ``llm.chat``）。
+    """
     if not companies:
         return 0
     if hide_from_site(raw_meta_of(conn, row), row["title"]):
@@ -515,6 +528,7 @@ def extract_article(conn, settings: Settings, row, author: str, companies: list[
                     {"role": "user", "content": note + "\n\n正文：\n" + window},
                 ],
                 temperature=0.1,
+                usage=usage,
             )
             for company_id, view in parse_views(text, names).items():
                 parsed[company_id].append(view)
@@ -833,11 +847,15 @@ def _worker() -> None:
                     """,
                     (article_id,),
                 ).fetchone()
-                if row is not None:
-                    companies = conn.execute(
-                        "SELECT id, name_zh FROM companies WHERE id = ANY(%s)", (list(company_ids),)
-                    ).fetchall()
-                    extract_article(conn, settings, row, author, companies)
+                # 批量命令正在整理这一篇就不重复问模型；它整理完，这篇也不再是待整理的。
+                if row is not None and _claim(conn, article_id):
+                    try:
+                        companies = conn.execute(
+                            "SELECT id, name_zh FROM companies WHERE id = ANY(%s)", (list(company_ids),)
+                        ).fetchall()
+                        extract_article(conn, settings, row, author, companies)
+                    finally:
+                        _release(conn, article_id)
             except LLMUnavailable as exc:
                 logger.warning("观点整理暂停：%s", exc)
                 with _lock:
@@ -878,6 +896,67 @@ def queue_for_company(conn, settings: Settings, company_id: int, sources_by_id: 
         companies = [item["id"] for item in pending_companies(conn, row["id"])] or [company_id]
         jobs.append((row["id"], source.author if source else "", tuple(companies)))
     return schedule_views(settings, jobs)
+
+
+def _claim(conn, article_id: int) -> bool:
+    """占这一篇的锁。占不到是别的 worker、别的进程正在整理它。"""
+    return llm_batch.claim(conn, LOCK_NAME, article_id)
+
+
+def _release(conn, article_id: int) -> None:
+    llm_batch.release(conn, LOCK_NAME, article_id)
+
+
+_ARTICLE_SQL = "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s"
+
+
+def run_batch(
+    settings: Settings,
+    jobs: list[dict],
+    authors: dict[str, str],
+    *,
+    named: bool = False,
+    workers: int = 1,
+    deadline: float | None = None,
+    off_peak: bool = False,
+    now=None,
+    sleep=time.sleep,
+) -> dict:
+    """把 jobs 里的文章整理完。jobs：[{"id", "title", "source_id", "companies"}]，正文到整理时再取。
+
+    几篇同时整理、每篇占锁、用量、避开高峰价、整批停都在 ``llm_batch.run``，摘要用的是同一套。
+    named：点名的文章（--gap、--articles），整理 job 里写的那几家公司；不点名时一篇里还没整理的公司一次问完，
+    查出来已经没有要整理的（别的进程刚整理完）就跳过。
+    """
+
+    def handle(conn, job: dict, usage: dict) -> str | None:
+        article_id = int(job["id"])
+        row = conn.execute(_ARTICLE_SQL, (article_id,)).fetchone()
+        if named:
+            companies = conn.execute(
+                "SELECT id, name_zh FROM companies WHERE id = ANY(%s) ORDER BY id", (list(job["companies"]),)
+            ).fetchall()
+        else:
+            # 一篇里深入谈到的公司一次问完，不限持仓。--company 只决定先排哪些文章。
+            companies = pending_companies(conn, article_id)
+        if row is None or not companies:
+            return None
+        written = extract_article(conn, settings, row, authors.get(row["source_id"], ""), companies, usage=usage)
+        return f"{len(companies)} 家公司，下了判断 {written} 家"
+
+    return llm_batch.run(
+        settings,
+        jobs,
+        handle,
+        kind="views",
+        lock_name=LOCK_NAME,
+        verb="整理",
+        workers=workers,
+        deadline=deadline,
+        off_peak=off_peak,
+        now=now,
+        sleep=sleep,
+    )
 
 
 def _id_list(text: str) -> list[int]:
@@ -986,7 +1065,8 @@ def articles_for_ids(conn, company_ids: list[int], source_ids: list[str], articl
 
 
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 LLM 凭证。"""
+    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 整批停下了：没有可用的 LLM 凭证、
+    接口拒绝鉴权或余额不足（402）。"""
     parser = argparse.ArgumentParser(description="给被深入谈到的公司整理观点时间线（不限持仓和观察名单）")
     parser.add_argument("--company", action="append", default=[], help="只整理这家公司（中文名），可重复")
     parser.add_argument("--source", action="append", default=[], help="只整理这个来源 id，可重复")
@@ -1008,9 +1088,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只重抽图片里的字变了的文章（已有观点，抽的时候的图片文字和现在的不一样）。识图重认以后跑，夜间任务不要加",
     )
+    llm_batch.add_arguments(parser, "整理")
     args = parser.parse_args(argv)
     if args.ocr_changed and (args.gap or args.articles):
         raise SystemExit("--ocr-changed 不和 --gap、--articles 一起用")
+    llm_batch.check_arguments(args)
     from researchlib.db import prepare
     from researchlib.sources import enabled_sources, load_sources
 
@@ -1027,9 +1109,9 @@ def main(argv: list[str] | None = None) -> int:
         if unknown:
             raise SystemExit(f"{'、'.join(unknown)} 不是已启用的来源")
         authors = {item: authors[item] for item in args.source}
+    workers, off_peak = llm_batch.resolve(settings, args, "整理")
     conn = prepare(settings)
-    done = failed = 0
-    rows: list = []
+    jobs: list[dict] = []
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
         if args.company:
@@ -1060,32 +1142,37 @@ def main(argv: list[str] | None = None) -> int:
             rows = articles_for_ids(conn, wanted, list(authors), chosen, args.limit)
         else:
             rows = pending_articles(conn, wanted, list(authors), args.limit, ocr_changed=args.ocr_changed)
-        for row in rows:
-            if deadline is not None and time.monotonic() > deadline:
-                print("到了时间上限，先停在这里", file=sys.stderr)
-                break
-            if args.gap or args.articles:
-                companies = conn.execute(
-                    "SELECT id, name_zh FROM companies WHERE id = ANY(%s) ORDER BY id",
-                    (list(row["companies"]),),
-                ).fetchall()
-            else:
-                # 一篇里深入谈到的公司一次问完，不限持仓。--company 只决定先排哪些文章。
-                companies = pending_companies(conn, row["id"])
-            try:
-                extract_article(conn, settings, row, authors.get(row["source_id"], ""), companies)
-                done += 1
-            except LLMUnavailable as exc:
-                print(exc, file=sys.stderr)
-                return 2
-            except LLMError as exc:
-                conn.rollback()
-                note_failure(conn, "views", row["id"], exc)
-                failed += 1
-                print(f"{row['id']} {row['title']}: {exc}", file=sys.stderr)
+        # 正文到整理时再取：几千篇的正文不一直占着内存，取到的也是那一刻的正文。
+        jobs = [
+            {
+                "id": int(row["id"]),
+                "title": row["title"],
+                "source_id": row["source_id"],
+                "companies": list(row["companies"]),
+            }
+            for row in rows
+        ]
+        del rows
     finally:
         conn.close()
-    print(f"待整理 {len(rows)} 篇，整理 {done} 篇，失败 {failed} 篇")
+    report = run_batch(
+        settings,
+        jobs,
+        authors,
+        named=bool(args.gap or args.articles),
+        workers=workers,
+        deadline=deadline,
+        off_peak=off_peak,
+    )
+    if report["timed_out"]:
+        print("到了时间上限，先停在这里", file=sys.stderr)
+    print(
+        f"待整理 {len(jobs)} 篇，整理 {report['done']} 篇，失败 {report['failed']} 篇"
+        + llm_batch.tail(report, "整理")
+    )
+    if report["fatal"]:
+        print(f"整批停下：{report['fatal']}", file=sys.stderr)
+        return 2
     return 0
 
 

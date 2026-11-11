@@ -14,6 +14,11 @@
 
     research-digest --limit 50
     research-digest --source fangwei-mp --limit 200
+    research-digest --ocr-changed --limit 2000 --workers 16 --off-peak   # 一次补一大批，避开 DeepSeek 高峰价
+
+``--workers N`` 几篇同时写，和 research-views 是同一套（``llm_batch.py``）：每篇先占一把 Postgres advisory lock，
+同一进程的几个 worker、同时开着的几个 research-digest、网页后台那条队列都不会写同一篇；每篇印一行用量和用时，
+最后印合计；余额不足（402）、鉴权被拒整批停，不把剩下的一篇篇记成失败。
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import time
 
 from psycopg.types.json import Jsonb
 
+from researchlib import llm_batch
 from researchlib.author_voice import display_author, raw_meta_of, site_visible_sql
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
@@ -60,6 +66,8 @@ PROMPT = """读下面这篇投资研究文章，只输出一个 JSON 对象，�
 _JSON = re.compile(r"\{.*\}", re.S)
 _MAX_QUEUED = 40
 _COOLDOWN_S = 120.0
+# 每篇的锁是 (hashtext(LOCK_NAME), 文章 id) 这把会话级 advisory lock：写完放掉，进程没了自动放掉。
+LOCK_NAME = "research-digest"
 _lock = threading.Lock()
 _order: list[int] = []
 _authors: dict[int, str] = {}
@@ -174,7 +182,8 @@ def pending_articles(conn, source_ids: list[str], limit: int, *, ocr_changed: bo
     ).fetchall()
 
 
-def digest_article(conn, settings: Settings, row, author: str) -> dict:
+def digest_article(conn, settings: Settings, row, author: str, *, usage: dict | None = None) -> dict:
+    """写这一篇的摘要。usage：传一个 dict 进来，这次调用实际用掉的 token 加在里面（见 ``llm.chat``）。"""
     meta = raw_meta_of(conn, row)
     shown_author, _owns = display_author(author, meta)
     when = format_date(row["published_at"], settings.display_timezone)
@@ -204,6 +213,7 @@ def digest_article(conn, settings: Settings, row, author: str) -> dict:
             {"role": "user", "content": header + "\n\n正文：\n" + body},
         ],
         temperature=0.1,
+        usage=usage,
     )
     data = parse_digest(text)
     conn.execute(
@@ -315,7 +325,12 @@ def _digest_worker() -> None:
                 if conn is None:
                     conn = connect(settings)
                     ensure_search_session(conn)
-                ensure_digests(conn, settings, [article_id], {article_id: author})
+                # 批量命令正在写这一篇就不重复问模型；它写完，这篇也不再缺摘要。
+                if llm_batch.claim(conn, LOCK_NAME, article_id):
+                    try:
+                        ensure_digests(conn, settings, [article_id], {article_id: author})
+                    finally:
+                        llm_batch.release(conn, LOCK_NAME, article_id)
             except LLMUnavailable as exc:
                 logger.warning("摘要暂停：%s", exc)
                 with _lock:
@@ -347,8 +362,49 @@ def _digest_worker() -> None:
             conn.close()
 
 
+def run_batch(
+    settings: Settings,
+    jobs: list[dict],
+    authors: dict[str, str],
+    *,
+    workers: int = 1,
+    deadline: float | None = None,
+    off_peak: bool = False,
+    now=None,
+    sleep=time.sleep,
+) -> dict:
+    """把 jobs 里的文章写上摘要。jobs：[{"id", "title"}]，正文到写的时候再取。
+
+    几篇同时写、每篇占锁、用量、避开高峰价、整批停都在 ``llm_batch.run``。占到锁以后再查一遍这篇还该不该写：
+    别的进程、网页后台刚写完的跳过，不重复问模型。
+    """
+
+    def handle(conn, job: dict, usage: dict) -> str | None:
+        rows = rows_needing_digest(conn, [int(job["id"])])
+        if not rows:
+            return None
+        row = rows[0]
+        data = digest_article(conn, settings, row, authors.get(row["source_id"], ""), usage=usage)
+        return f"摘要 {len(data['summary'])} 字，要点 {len(data['points'])} 条"
+
+    return llm_batch.run(
+        settings,
+        jobs,
+        handle,
+        kind="digest",
+        lock_name=LOCK_NAME,
+        verb="写",
+        workers=workers,
+        deadline=deadline,
+        off_peak=off_peak,
+        now=now,
+        sleep=sleep,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
-    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 没有可用的 LLM 凭证。"""
+    """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 整批停下了：没有可用的 LLM 凭证、
+    接口拒绝鉴权或余额不足（402）。"""
     parser = argparse.ArgumentParser(description="给还没有摘要的文章生成 LLM 摘要")
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--source", default="")
@@ -358,7 +414,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只重写图片里的字变了的短帖（已有摘要，写摘要时的图片文字和现在的不一样）。识图重认以后跑，夜间任务不要加",
     )
+    llm_batch.add_arguments(parser, "写")
     args = parser.parse_args(argv)
+    llm_batch.check_arguments(args)
     from researchlib.db import prepare
 
     settings = Settings.from_env()
@@ -373,29 +431,26 @@ def main(argv: list[str] | None = None) -> int:
         if not sources:
             raise SystemExit(f"{args.source} 不是已启用来源")
     authors = {source.id: source.author for source in sources}
+    workers, off_peak = llm_batch.resolve(settings, args, "写")
     conn = prepare(settings)
-    done = failed = 0
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
         rows = pending_articles(conn, list(authors), args.limit, ocr_changed=args.ocr_changed)
-        for row in rows:
-            if deadline is not None and time.monotonic() > deadline:
-                print("到了时间上限，先停在这里", file=sys.stderr)
-                break
-            try:
-                digest_article(conn, settings, row, authors[row["source_id"]])
-                done += 1
-            except LLMUnavailable as exc:
-                print(exc, file=sys.stderr)
-                return 2
-            except LLMError as exc:
-                conn.rollback()
-                note_failure(conn, "digest", row["id"], exc)
-                failed += 1
-                print(f"{row['id']} {row['title']}: {exc}", file=sys.stderr)
+        # 正文到写的时候再取：几千篇的正文不一直占着内存，取到的也是那一刻的正文。
+        jobs = [{"id": int(row["id"]), "title": row["title"]} for row in rows]
+        del rows
     finally:
         conn.close()
-    print(f"待处理 {len(rows)} 篇，写入 {done} 篇，失败 {failed} 篇")
+    report = run_batch(settings, jobs, authors, workers=workers, deadline=deadline, off_peak=off_peak)
+    if report["timed_out"]:
+        print("到了时间上限，先停在这里", file=sys.stderr)
+    print(
+        f"待处理 {len(jobs)} 篇，写入 {report['done']} 篇，失败 {report['failed']} 篇"
+        + llm_batch.tail(report, "写")
+    )
+    if report["fatal"]:
+        print(f"整批停下：{report['fatal']}", file=sys.stderr)
+        return 2
     return 0
 
 

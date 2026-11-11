@@ -200,7 +200,11 @@ docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
 # 识图重认以后：只重写已有摘要、写摘要时的图片字和现在不一样的短帖。夜间任务不要加
 docker compose exec app research-digest --ocr-changed --limit 2000
+# 一次补一大批：16 篇同时写，避开 DeepSeek 高峰价（先报篇数和费用，等 Zhilin 同意）
+docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-digest --ocr-changed --limit 2000 --workers 16 --off-peak
 ```
+
+`--workers N`、`--off-peak` 和 `research-views` 是同一套（`researchlib/llm_batch.py`，见下面「一次补完积压」）：每篇先占一把 advisory lock（`digest.LOCK_NAME`），同一进程的几个 worker、同时开着的几个 `research-digest`（包括夜间和抓取脚本里那几个）、网页后台那条队列都不会写同一篇；每篇印一行「摘要 86 字，要点 4 条 · 进 … 出 … token，用时 …」，最后一行带合计；余额不足（402）、鉴权被拒整批停、退出码 2。不加这两个参数时和以前一样一篇一篇写。
 
 只处理没有摘要、正文改过、提示词版本旧了、或当时只读了长文开头的文章，从新到旧。卡片优先显示摘要和最多两条要点。JSON 接口的 `summary` / `digest` 字段也有。文章页本身只放标题和正文。摘要只作导读，以原文为准。
 
@@ -215,7 +219,7 @@ docker compose exec app research-digest --ocr-changed --limit 2000
 
 ### 失败了怎么办
 
-摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2。不会在两个提供方之间自动切换。
+摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-views`、`research-digest` 遇到余额不足、鉴权被拒也整批停、退出码 2，见「一次补完积压」）。不会在两个提供方之间自动切换。
 
 ## 观点时间线
 
@@ -235,7 +239,7 @@ docker compose exec app research-digest --ocr-changed --limit 2000
 - 「风险与反方」（有风险或推翻条件、或态度是看淡、两面）和「态度变化」（同一位作者从看好变成看淡、或反过来；中性、两面不算信号）两个筛选 11-11 起页面上不放了，接口还认（`views=risk`、`views=change`）：全站六成判断都算「风险与反方」，筛不出东西；「态度变化」比的是同一位作者相邻两条判断，两条常常说的是两件事。
 - 一篇文章里深入谈到的几家公司一次整理，不为每家公司各问一次模型。按正文 `content_hash` 和 `views.PROMPT_VERSION` 缓存，正文或提示词变了才重抽。
 
-两条写入路径，和摘要一样：打开公司页时，这家公司最近还没整理的文章在后台排队（一次最多 20 篇），页面上写「还有 N 篇在整理」；夜间任务每晚补一批；也可以手动批量补：
+两条写入路径，和摘要一样：打开公司页时，这家公司最近还没整理的文章在后台排队（一次最多 20 篇），页面上写「还有 N 篇在整理」；夜间任务每晚补一批；也可以手动批量补（积压多时几篇同时整理，见下面「一次补完积压」）：
 
 ```bash
 docker compose exec app research-views                       # 全部被深入谈到的公司，最多 100 篇
@@ -248,6 +252,48 @@ docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516
 # 识图重认以后：只重抽已有观点、抽的时候的图片字和现在不一样的。不和 --gap、--articles 一起用；夜间任务不要加
 docker compose exec app research-views --ocr-changed --limit 2000
 ```
+
+### 一次补完积压（2026-11-11）
+
+夜间任务每晚最多整理 60 篇（`VIEWS_LIMIT`），按发布时间从新往旧；打开公司页一次给这家公司排 20 篇，后台一篇一篇整理。11-11 从线上接口数：深入谈到公司的文章 5,517 篇，一条判断都没有的 4,411 篇。2025-12 以后发布的每月只有一到两成没有判断，是整理过、文章里没下判断的；更早的七八成没有判断，是还没轮到。还没整理的约 4,200 篇：Stratechery 约 1,880、方伟星球约 1,500、方伟公众号约 480、林文丰飞书约 460（没有日期，排在最后）、乘风破浪约 170。照每晚 60 篇要两个半月，谷歌这类靠 Stratechery 旧文的公司排在后半段。
+
+`research-views --workers N` 几篇同时整理（跑法在 `researchlib/llm_batch.py`，`research-digest` 用的是同一套，只是锁名和失败类别不同）：每个 worker 一条数据库连接，每篇先占一把 Postgres advisory lock（`views.LOCK_NAME`），同一进程的几个 worker、同时开着的几个 `research-views`（包括夜间那一个）、网页后台那条队列都不会整理同一篇，占不到锁的那篇跳过。`--workers` 超过 `RESEARCH_LLM_CONCURRENCY`（默认 8）的部分不起作用，命令会说一声，要开满在命令前加 `-e RESEARCH_LLM_CONCURRENCY=16`。`--off-peak`：走 DeepSeek 时北京时间工作日 9 到 12 点、14 到 18 点不开新的一篇，过了接着整理，手上的那篇照常整理完。
+
+每篇印一行，最后印合计，拿合计的 token 算实际花的钱（DeepSeek 非高峰价每百万 token 进 0.15、出 0.60 美元，思考算在出里）：
+
+```
+24046 搜索收入 = 总查询量 × 有商业价值的查询占比：2 家公司，下了判断 1 家 · 进 3,210 出 6,540（其中思考 6,120） token，用时 42 秒
+待整理 4200 篇，整理 4188 篇，失败 12 篇 · 合计进 … 出 …（其中思考 …） token，用时 13 小时 20 分
+```
+
+余额不足（402）、鉴权被拒（401、403）、没有凭证时整批停，退出码 2，不把剩下的一篇篇记成失败（记了要各自冷却好几天）；充值后再跑同一条，整理过的不会重来。单篇 5xx、模型没按格式回答照旧只记这一篇，隔几天再试。Ctrl-C 一次是手上的几篇整理完就退，再按一次立刻退。
+
+估算（没实测过思考用量，跑完前 100 篇按合计校准）：抽样每个来源 24 篇量长度，Stratechery 平均 1.7 万字符、切 1.9 块，林文丰飞书平均 5 万字符、切 2.6 块，方伟公众号 6,700 字一块，星球短帖约 1,000 字一块，合计约 6,900 次调用、输入约 2,500 万 token；每次思考加回答按 4,000 到 10,000 token 算（识图一张实测 10,764），非高峰价 20 到 50 美元，高峰价翻倍。一次调用按 2 分钟算，一篇一篇要连跑约 10 天，16 路约 14 小时。
+
+Mac mini 上（Zhilin 11-11 在卡片上选了全部补完；外面一层循环是为了合并上线把容器换掉以后自己接着整理）：
+
+```bash
+cd ~/research
+nohup bash -c 'until docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-views --limit 6000 --workers 16 --off-peak; do [ $? -eq 2 ] && break; sleep 300; done' < /dev/null >> ~/views-backlog.log 2>&1 &
+```
+
+- 进度看 `~/views-backlog.log`。跑完（退出码 0）或者整批停下（退出码 2）循环就退出；容器被换掉、命令被打断时隔 5 分钟重开，整理过的跳过。自动上线不等它（`scripts/deploy.sh` 只等译制和识图）：上线时手上那几篇白问一次，每篇约一美分。
+- 只想补近两年的：把 `--limit 6000` 换成 `--limit 1900`。队列按发布时间从新往旧排，前 1,900 篇大约到 2024 年 12 月。
+- 要停：Mac 上 `pkill -f 'research-views --limit'` 停外层循环和它开的 docker 客户端，再 `docker compose restart app` 停容器里在整理的（网站停几秒）。
+
+识图补完（`--tall`、`--rejoin`、`research-rebuild-chunks --ocr`，见 [ocr.md](ocr.md)）以后图片字变了的短帖也要重写摘要、重抽判断（11-11 数：摘要 462 篇、判断 448 篇，约 5 到 10 美元，Zhilin 已经同意）。和积压串成一条，一步跑完（或整批停下）才跑下一步，每一步各自在容器被换掉以后重开：
+
+```bash
+cd ~/research
+nohup bash -c '
+step() { until docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app "$@" --workers 16 --off-peak; do [ $? -eq 2 ] && exit 2; sleep 300; done; }
+step research-views --ocr-changed --limit 2000
+step research-digest --ocr-changed --limit 2000
+step research-views --limit 6000
+' < /dev/null >> ~/views-backlog.log 2>&1 &
+```
+
+最后一行是积压（约 4,200 篇，20 到 50 美元，Zhilin 11-11 选了全部补完）；只跑积压用上面那一条。要停：`pkill -f 'ocr-changed|research-views --limit'`，再 `docker compose restart app`。
 
 `--gap` 的范围：`article_mentions` 里深度不是「一带而过」、又没有一条 about 为真且判断非空的观点。去重后的主版本（有别的稿 `duplicate_of` 指向它）即使提及只是一带而过也补抽，例如 3851 并入 11299 之后要抽 11299。网友帖不抽。已经记成 about=false（论证不在这家公司）的不反复问。
 

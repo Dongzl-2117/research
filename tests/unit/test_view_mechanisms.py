@@ -188,3 +188,15 @@ def test_coerce_view_keeps_real_judgment():
     assert got["about"] is True
     assert got["judgment"] == "顺丰份额稳定"
     assert got["mechanism"] == "时效"
+
+
+def test_views_command_rejects_worker_counts_out_of_range():
+    import pytest
+
+    from researchlib.llm_batch import MAX_WORKERS
+    from researchlib.views import main
+
+    for count in ("0", str(MAX_WORKERS + 1)):
+        with pytest.raises(SystemExit) as stopped:
+            main(["--workers", count])
+        assert "--workers" in str(stopped.value)
