@@ -405,8 +405,8 @@ def _novel_per_copy(extra: str, shown: Sequence[str]) -> list[str]:
     """收掉的纯文字那份里页面上还没说过的中文，按句挂到带格式那几段后面，每段一份。
 
     只是数字、英文名不一样的那句挂到字对得上的那一段；哪段都对不上的（留下的那份漏译了）挂在前一句
-    所在的那一段后面，前面没有说过的句子就挂第一段。漏译的是第一段里的一句，就接在第一段的译文后面，
-    不全堆到最后一段。挂上去的是一个段落，原来的列表、引文外壳不带过来。
+    所在的那一段后面，前面没有说过的句子就挂第一段有字的那段。漏译的是第一段里的一句，就接在第一段的译文
+    后面，不全堆到最后一段。挂上去的是一个段落，原来的列表、引文外壳不带过来；只有图的那几段不挂。
     """
     result = [""] * len(shown)
     if not _novel_zh(extra, "".join(shown)):
@@ -414,7 +414,7 @@ def _novel_per_copy(extra: str, shown: Sequence[str]) -> list[str]:
     whole = _Said("".join(shown))
     owners = [_Said(item) for item in shown]
     groups: list[list[str]] = [[] for _ in shown]
-    current = 0
+    current = next((number for number, item in enumerate(shown) if repeat_key(item)), 0)
     for part in _ZH_SENTENCE.split(extra):
         if not _sentence_core(part):
             continue
@@ -941,18 +941,25 @@ def _nested_block(node: _El) -> bool:
 
 
 def _copy_shape(node: _El | _Tx) -> tuple[str, _El | None]:
-    """一个块在导出的两份里能当什么：外层（"quote" 引文、"item" 列表的最后一项）、"plain"（普通段落），或都不是。
+    """一个块在导出的两份里能当什么：外层（"quote" 引文、"item" 列表的最后一项）、"plain"（普通段落）、
+    "media"（没有字的段落：只有图，或者「[…]」这种只有标点的，夹在带格式那几段中间，不占字），或都不是。
 
-    第二项是外层那份的文字所在的节点（引文里那一段、那个列表项），或者那个段落本身。
+    第二项是外层那份的文字所在的节点（一段的引文是里面那一段，好几段的是整条引文；那个列表项），
+    或者那个段落本身。
     """
     if not isinstance(node, _El):
         return "", None
     if node.name == "p":
-        return "plain", node
+        return ("plain" if repeat_key(_outer(node)) else "media"), node
     if node.name == "blockquote":
         inner = _filled(node.children)
-        if len(inner) == 1 and isinstance(inner[0], _El) and inner[0].name == "p" and not _nested_block(inner[0]):
-            return "quote", inner[0]
+        if (
+            inner
+            and all(isinstance(child, _El) and child.name == "p" and not _nested_block(child) for child in inner)
+            and repeat_key(_outer(node))
+        ):
+            # 好几段的引文，纯文字那份也分段：整条引文算一个外层，和原文页的 markdown 整块认一样。
+            return "quote", inner[0] if len(inner) == 1 else node
         return "", None
     if node.name not in {"ul", "ol"}:
         return "", None
@@ -960,15 +967,31 @@ def _copy_shape(node: _El | _Tx) -> tuple[str, _El | None]:
     if not items or any(child.name != "li" for child in items) or "tx-list-continuation" in items[-1].start:
         return "", None
     inner = _filled(items[-1].children)
-    if len(inner) == 1 and isinstance(inner[0], _El) and inner[0].name == "p":
-        content = inner[0]
+    if inner and all(isinstance(child, _El) and child.name == "p" for child in inner):
+        # 这一项是一段或几段（按 <br>、按句落成了几段）：里面不能再套别的块。
+        nested = any(_nested_block(child) for child in inner)
     else:
-        content = items[-1]
-    return ("", None) if _nested_block(content) else ("item", items[-1])
+        nested = _nested_block(items[-1])
+    return ("", None) if nested else ("item", items[-1])
 
 
 def _copy_key(kind: str, node: _El | None) -> str:
     return repeat_key(_outer(node)) if kind and node is not None else ""
+
+
+def _copy_unit(node: _El | _Tx) -> tuple[str, _El | None, str, str]:
+    """一个块交给 ``copy_runs`` 的样子：(种类, 外层文字所在的节点, 外层的字, 整块的字)。
+
+    ``_copy_shape`` 认不了的别的引文、列表算 "nested"：不能当外层，可以是外层后面带格式那几块里的一块
+    （原文的引文、列表项里套着引文、列表，导出只写一遍）。
+    """
+    if not isinstance(node, _El):
+        return "", None, "", ""
+    kind, content = _copy_shape(node)
+    whole = repeat_key(_outer(node))
+    if not kind and node.name in {"blockquote", "ul", "ol"} and whole:
+        kind = "nested"
+    return kind, content, _copy_key(kind, content), whole
 
 
 def _resources(value: str) -> set[str]:
@@ -984,15 +1007,24 @@ def _id_spans(ids: Sequence[str], present: str) -> str:
     return "".join(spans)
 
 
-def _pair_shape(en: str) -> tuple[str, _El | None, str]:
-    """对照的一对按原文那一侧认：(种类, 顶层节点, 去掉格式后的文字)。列表外壳里只能有这一项。"""
+def _pair_shape(en: str) -> tuple[str, _El | None, str, str]:
+    """对照的一对按原文那一侧认：(种类, 顶层节点, 外层的字, 整块的字)。当外层的列表外壳里只能有这一项。
+
+    只有图的段落挂在下一段上配成一对（「图、图、一段话」）：都是段落时算一段普通段落，图不占字。
+    """
     top = _filled(_fragment(en).children)
-    if len(top) != 1 or not isinstance(top[0], _El):
-        return "", None, ""
-    kind, content = _copy_shape(top[0])
+    if not top or any(not isinstance(node, _El) for node in top):
+        return "", None, "", ""
+    if len(top) > 1:
+        shapes = [_copy_shape(node) for node in top]
+        if any(kind not in {"plain", "media"} for kind, _content in shapes):
+            return "", None, "", ""
+        key = "".join(_copy_key(kind, content) for kind, content in shapes if kind == "plain")
+        return ("plain" if key else "media"), None, key, key
+    kind, _content, key, whole = _copy_unit(top[0])
     if kind == "item" and len([child for child in _filled(top[0].children) if isinstance(child, _El)]) != 1:
-        return "", None, ""
-    return kind, top[0], _copy_key(kind, content)
+        kind, key = "nested", ""
+    return kind, top[0], key, whole
 
 
 def _copy_shell(top: _El, kind: str) -> tuple[str, str, str]:
@@ -1016,48 +1048,87 @@ def _fold_copy_pairs(pairs: list[BilingualPair]) -> list[BilingualPair]:
     带格式的几对套回引文、列表项的外壳，纯文字那份的段落号留成空锚点。它的中文里页面上还没说过的句子
     挂到字对得上的那一对（``_novel_per_copy``）。它的词、链接、图片要都还在带格式的那几对里，不然不动；
     对不上的重复照旧交给 ``_hide_repeated_pairs``。
+
+    引文里套着的引文自己也写了两遍时，外层要等里面那条收好才接得上：和原文页一样最多收三轮。
     """
+    done: set[int] = set()
+    for _round in range(3):
+        folded = _fold_copy_pairs_once(pairs, done)
+        if folded is None:
+            break
+        pairs, done = folded
+    return pairs
+
+
+def _fold_copy_pairs_once(
+    pairs: list[BilingualPair], done: set[int],
+) -> tuple[list[BilingualPair], set[int]] | None:
+    """收一轮：(收过的对, 套回外壳的那几对的新位置)；没收就是 None。``done`` 是前几轮套回外壳的：
+    只能当别的外层带格式那几对里的一对，不再当外层。"""
     from dataclasses import replace
 
     shapes = [_pair_shape(pair.en or "") for pair in pairs]
-    runs = copy_runs([kind for kind, _top, _key in shapes], [key for _kind, _top, key in shapes])
+    kinds = [
+        "nested" if number in done and shape[0] in {"quote", "item"} else shape[0]
+        for number, shape in enumerate(shapes)
+    ]
+    # 好几段的引文在对照页上一段一对、各套一层引文外壳：连着的几对引文合起来当一个外层认（quote_parts）。
+    found = copy_runs(kinds, [shape[2] for shape in shapes], [shape[3] for shape in shapes], quote_parts=True)
+    placed: set[int] = set()
     updated = list(pairs)
     drop: set[int] = set()
-    for index, copies in runs:
-        outer = pairs[index]
+    for outer_numbers, copies in found:
+        outer_en = "".join(pairs[number].en or "" for number in outer_numbers)
+        outer_zh = "".join(pairs[number].zh or "" for number in outer_numbers)
         shown = [pairs[number] for number in copies]
         shown_en = "".join(pair.en or "" for pair in shown)
         shown_zh = "".join(pair.zh if pair.zh is not None else (pair.en or "") for pair in shown)
         if not (
-            _plain_words(outer.en) <= _plain_words(shown_en)
-            and _resources(outer.en) <= _resources(shown_en)
-            and _resources(outer.zh or "") <= _resources(shown_en + shown_zh)
+            _plain_words(outer_en) <= _plain_words(shown_en)
+            and _resources(outer_en) <= _resources(shown_en)
+            and _resources(outer_zh) <= _resources(shown_en + shown_zh)
         ):
             continue
-        kind, top, _key = shapes[index]
+        kind, top, _key, _whole = shapes[outer_numbers[0]]
         first, more, close = _copy_shell(top, kind)
         extras = _novel_per_copy(
-            _drop_duplicate_cites(outer.zh or "", shown_zh),
+            _drop_duplicate_cites(outer_zh, shown_zh),
             [pair.zh if pair.zh is not None else (pair.en or "") for pair in shown],
         )
+        outer_ids = [ident for number in outer_numbers for ident in _element_ids(pairs[number])]
         for position, number in enumerate(copies):
             pair = pairs[number]
             opening = first if position == 0 else more
             zh = (pair.zh or "") + extras[position]
             en = f"{opening}{pair.en}{close}"
             if position == 0:
-                en = _id_spans(_element_ids(outer), pair.en + (pair.zh or "") + (pair.anchor or "")) + en
+                en = _id_spans(outer_ids, pair.en + (pair.zh or "") + (pair.anchor or "")) + en
             updated[number] = replace(pair, en=en, zh=f"{opening}{zh}{close}" if zh else None)
-        drop.add(index)
+        drop.update(outer_numbers)
+        placed.update(copies)
     if not drop:
-        return pairs
+        return None
     kept = [number for number in range(len(updated)) if number not in drop]
     new_index = {old: new for new, old in enumerate(kept)}
-    return [
+    folded = [
         replace(updated[old], repeat_of=new_index.get(updated[old].repeat_of))
         if updated[old].repeat_of is not None else updated[old]
         for old in kept
     ]
+    return folded, {new_index[old] for old in placed | done if old in new_index}
+
+
+def _same_copy_kind(en: _El | _Tx, zh: _El | _Tx) -> bool:
+    """只看中文页按位置收副本：译文里同一位置也得是同一种。普通段落对普通段落，没字的段落（图、「[…]」）
+    对没字的段落，套着的引文、列表对同一种有字的块。"""
+    kind = _copy_unit(en)[0]
+    if not isinstance(en, _El) or not isinstance(zh, _El):
+        return False
+    if kind == "plain":
+        return _copy_shape(zh)[0] == "plain"
+    if kind == "media":
+        return zh.name == "p" and not repeat_key(_outer(zh))
+    return kind in {"quote", "item", "nested"} and zh.name == en.name and bool(repeat_key(_outer(zh)))
 
 
 def _blocks(nodes: Sequence[_El | _Tx]) -> list[_El | _Tx]:
@@ -1083,61 +1154,270 @@ def fold_translated_copies(source: str, translated: str) -> str:
     在原文上按原文页同一条规则认（``nested_copies.copy_runs``）。译文和原文的顶层块一一对得上
     （块数、标签都一样）才按位置收：纯文字那份的中文不再显示，带格式那几段的中文套回引文、列表项里，
     纯文字那份里页面上还没说过的句子挂在字对得上的那一段后面。段落 id 都留着；哪里对不上，那一处原样留着。
-    原文有 ``<br>`` 拆开、按句切开的段时，按译制时的切法（materialize 再并句）比。
+    原文按译制时的切法（materialize 再并句）落成节点比一次：引文里按行、按句切开译的段，译文里是几个
+    ``<p>``，原文这样比才对得上；再拿原样的原文比一次（切法改过以前的旧稿是这样译的），哪次收得多用哪次。
+    引文里套着的引文自己也写了两遍时，原文和译文一起收，和原文页一样最多三轮。
     """
     from researchlib.translate.provenance import AlignmentError, materialize
 
     if not translated or ("<blockquote" not in translated and "<li" not in translated):
         return translated
-    root = _fragment(translated)
-    zh_blocks = _blocks(root.children)
-    found = None
-    for attempt in range(2):
-        if attempt:
-            try:
-                source = join_split_paragraphs(materialize(source))
-            except AlignmentError:
-                return translated
-        en_blocks = _blocks(_fragment(source).children)
-        shapes = [_copy_shape(node) for node in en_blocks]
-        runs = copy_runs([kind for kind, _node in shapes], [_copy_key(kind, node) for kind, node in shapes])
-        if not runs:
-            return translated
-        if _same_skeleton(en_blocks, zh_blocks):
-            found = (en_blocks, runs)
-            break
-    if found is None:
+    blocks = _blocks(_fragment(source).children)
+    if not _source_copy_runs(blocks, set()) and not _merged_quote_cuts(blocks):
         return translated
-    en_blocks, runs = found
-    rebuilt: dict[int, str] = {}
-    for index, copies in runs:
-        holder = zh_blocks[index]
+    candidates = []
+    try:
+        candidates.append(join_split_paragraphs(materialize(source)))
+    except AlignmentError:
+        pass
+    candidates.append(source)
+    zh_blocks = _blocks(_fragment(translated).children)
+    best, most = translated, 0
+    for candidate in candidates:
+        en_root = _fragment(candidate)
+        if not _same_skeleton(_blocks(en_root.children), zh_blocks):
+            continue
+        zh_root = _fragment(translated)
+        cuts = _merged_quote_cuts(_blocks(en_root.children))
+        if cuts:
+            en_root, zh_root = _cut_merged_quotes(en_root, zh_root, cuts)
+        result, count = _fold_translated_rounds(en_root, zh_root, translated)
+        if count > most:
+            best, most = result, count
+    return best
+
+
+def _merged_quote_cuts(blocks: Sequence[_El | _Tx]) -> dict[int, int]:
+    """Python-Markdown 把紧挨着的两条引文并成一条（中间的空行不算断开）。原文的引文里一开头就套着引文时，
+    导出的纯文字那份和带格式那几块的第一块（那条套着的引文）就这样并在一起，按顶层块认不出来。
+    返回 {第几块: 从第几段拆开}：拆成两条以后能多认出一处的才拆。"""
+    units = [_copy_unit(node) for node in blocks]
+    kinds = [unit[0] for unit in units]
+    keys = [unit[2] for unit in units]
+    whole = [unit[3] for unit in units]
+    base = len(copy_runs(kinds, keys, whole))
+    cuts: dict[int, int] = {}
+    for index, node in enumerate(blocks):
+        if kinds[index] != "quote" or not isinstance(node, _El):
+            continue
+        parts = _filled(node.children)
+        for cut in range(1, len(parts)):
+            first, second = repeat_key(_serialize(parts[:cut])), repeat_key(_serialize(parts[cut:]))
+            trial = (
+                [*kinds[:index], "quote", "quote", *kinds[index + 1:]],
+                [*keys[:index], first, second, *keys[index + 1:]],
+                [*whole[:index], first, second, *whole[index + 1:]],
+            )
+            if len(copy_runs(*trial)) > base:
+                cuts[index] = cut
+                break
+    return cuts
+
+
+def _cut_merged_quotes(en_root: _El, zh_root: _El, cuts: dict[int, int]) -> tuple[_El, _El]:
+    """按 ``_merged_quote_cuts`` 把并在一起的引文拆回两条；译文里同一条引文段数不一样的不拆。"""
+    en_blocks = _blocks(en_root.children)
+    zh_blocks = _blocks(zh_root.children)
+    en_cut: dict[int, int] = {}
+    zh_cut: dict[int, int] = {}
+    for index, cut in cuts.items():
+        en, zh = en_blocks[index], zh_blocks[index]
+        if not isinstance(en, _El) or not isinstance(zh, _El) or zh.name != "blockquote":
+            continue
+        en_parts, zh_parts = _filled(en.children), _filled(zh.children)
+        if len(zh_parts) != len(en_parts):
+            continue
+        en_cut[id(en)] = en.children.index(en_parts[cut])
+        zh_cut[id(zh)] = zh.children.index(zh_parts[cut])
+
+    def rebuild(root: _El, at: dict[int, int]) -> _El:
+        out = []
+        for node in root.children:
+            if isinstance(node, _El) and id(node) in at:
+                split = at[id(node)]
+                out.append(
+                    f"{node.start}{_serialize(node.children[:split])}</{node.name}>"
+                    f"<{node.name}>{_serialize(node.children[split:])}</{node.name}>"
+                )
+            else:
+                out.append(_serialize([node]))
+        return _fragment("".join(out))
+
+    if not en_cut or len(en_cut) != len(zh_cut):
+        return en_root, zh_root
+    return rebuild(en_root, en_cut), rebuild(zh_root, zh_cut)
+
+
+def _fold_translated_rounds(en_root: _El, zh_root: _El, translated: str) -> tuple[str, int]:
+    """最多收三轮：(收过的译文, 一共收了几处)。"""
+    result = translated
+    done: set[int] = set()
+    count = 0
+    for _round in range(3):
+        folded = _fold_translated_once(en_root, zh_root, done)
+        if folded is None:
+            break
+        en_html, result, done, folds = folded
+        count += folds
+        en_root, zh_root = _fragment(en_html), _fragment(result)
+        if not _same_skeleton(_blocks(en_root.children), _blocks(zh_root.children)):
+            break
+    return result, count
+
+
+def _source_copy_runs(blocks: Sequence[_El | _Tx], done: set[int]) -> list[tuple[list[int], list[int]]]:
+    """原文的顶层块交给 ``copy_runs``。``done`` 是前几轮放回去的外层：只能当别的外层带格式那几块里的一块。"""
+    units = [_copy_unit(node) for node in blocks]
+    kinds = [
+        "nested" if number in done and unit[0] in {"quote", "item"} else unit[0] for number, unit in enumerate(units)
+    ]
+    return copy_runs(kinds, [unit[2] for unit in units], [unit[3] for unit in units])
+
+
+def _put_back(holder: _El, content: _El, kind: str, body: str) -> str:
+    """带格式那几段放回外层：好几段的引文整个换掉，一段的引文换掉里面那段，列表项换掉这一项的内容。"""
+    if content is holder:
+        return f"{holder.start}{body}</{holder.name}>"
+    middle = body if kind == "quote" else f"{content.start}{body}</li>"
+    at = holder.children.index(content)
+    return (
+        f"{holder.start}{_serialize(holder.children[:at])}{middle}"
+        f"{_serialize(holder.children[at + 1:])}</{holder.name}>"
+    )
+
+
+def _fold_translated_once(
+    en_root: _El, zh_root: _El, done: set[int],
+) -> tuple[str, str, set[int], int] | None:
+    """收一轮：返回 (收过的原文, 收过的译文, 放回去的外层在新的顶层块里排第几, 这一轮收了几处)。原文也收，
+    下一轮还按位置对得上；这一轮没收就是 None。"""
+    en_blocks = _blocks(en_root.children)
+    zh_blocks = _blocks(zh_root.children)
+    en_rebuilt: dict[int, str] = {}
+    zh_rebuilt: dict[int, str] = {}
+    placed = set(done)
+    removed_numbers: set[int] = set()
+    for containers, copies in _source_copy_runs(en_blocks, done):
+        index = containers[0]
+        holder, en_holder = zh_blocks[index], en_blocks[index]
         kind, content = _copy_shape(holder)
+        en_kind, en_content = _copy_shape(en_holder)
         if (
-            kind != _copy_shape(en_blocks[index])[0] or content is None
-            or any(_copy_shape(zh_blocks[number])[0] != "plain" for number in copies)
-            or len(_filled(holder.children)) != len(_filled(en_blocks[index].children))
+            kind != en_kind or content is None or en_content is None
+            or not isinstance(holder, _El) or not isinstance(en_holder, _El)
+            or (content is holder) != (en_content is en_holder)
+            or any(not _same_copy_kind(en_blocks[number], zh_blocks[number]) for number in copies)
+            or len(_filled(holder.children)) != len(_filled(en_holder.children))
         ):
             continue
         pieces = [_outer(zh_blocks[number]) for number in copies]
         shown = "".join(pieces)
-        removed = _outer(content)
+        whole = content is holder
+        removed = _serialize(_filled(holder.children)) if whole else _outer(content)
         if not _resources(removed) <= _resources(shown):
             continue
         extras = _novel_per_copy(_drop_duplicate_cites(removed, shown), pieces)
-        spans = _id_spans(re.findall(r"""\bid=["']([^"']+)["']""", removed), shown)
+        ids_from = _serialize(holder.children) if whole else removed
+        spans = _id_spans(re.findall(r"""\bid=["']([^"']+)["']""", ids_from), shown)
         body = spans + "".join(piece + more for piece, more in zip(pieces, extras, strict=True))
-        middle = body if kind == "quote" else f"{content.start}{body}</li>"
-        at = holder.children.index(content)
-        rebuilt[id(holder)] = (
-            f"{holder.start}{_serialize(holder.children[:at])}{middle}"
-            f"{_serialize(holder.children[at + 1:])}</{holder.name}>"
+        zh_rebuilt[id(holder)] = _put_back(holder, content, kind, body)
+        en_rebuilt[id(en_holder)] = _put_back(
+            en_holder, en_content, kind, "".join(_outer(en_blocks[number]) for number in copies),
         )
         for number in copies:
-            rebuilt[id(zh_blocks[number])] = ""
-    if not rebuilt:
-        return translated
-    return "".join(rebuilt[id(node)] if id(node) in rebuilt else _serialize([node]) for node in root.children)
+            zh_rebuilt[id(zh_blocks[number])] = ""
+            en_rebuilt[id(en_blocks[number])] = ""
+        placed.add(index)
+        removed_numbers.update(copies)
+    if not zh_rebuilt:
+        return None
+
+    def rebuild(root: _El, rebuilt: dict[int, str]) -> str:
+        return "".join(rebuilt[id(node)] if id(node) in rebuilt else _serialize([node]) for node in root.children)
+
+    kept = [number for number in range(len(en_blocks)) if number not in removed_numbers]
+    new_index = {old: new for new, old in enumerate(kept)}
+    return (
+        rebuild(en_root, en_rebuilt), rebuild(zh_root, zh_rebuilt),
+        {new_index[number] for number in placed if number in new_index}, len(placed - done),
+    )
+
+
+# 连着两遍的同一张图也往引文、列表里看（副本收回引文以后，夹在里面的图在那里连着）。
+_IMAGE_PARENTS = frozenset({"blockquote", "ul", "ol", "li"})
+
+
+def _image_srcs(node: _El | _Tx) -> tuple[str, ...]:
+    if not isinstance(node, _El) or _copy_shape(node)[0] != "media":
+        return ()
+    return tuple(html.unescape(src) for src in _IMG_SRC.findall(_outer(node)))
+
+
+def _repeated_image_paths(parent: _El, path: tuple[int, ...] = ()) -> list[tuple[int, ...]]:
+    """只有图的段落和紧挨着的上一块是同几张图（地址一样）：后面那份的位置（逐层第几块）。"""
+    found: list[tuple[int, ...]] = []
+    previous: tuple[str, ...] = ()
+    for number, node in enumerate(_blocks(parent.children)):
+        srcs = _image_srcs(node)
+        if srcs and srcs == previous:
+            found.append((*path, number))
+            continue
+        previous = srcs
+        if isinstance(node, _El) and node.name in _IMAGE_PARENTS:
+            found.extend(_repeated_image_paths(node, (*path, number)))
+    return found
+
+
+def _node_at(root: _El, path: Sequence[int]) -> _El | None:
+    node: _El | _Tx = root
+    for number in path:
+        children = _blocks(node.children) if isinstance(node, _El) else []
+        if number >= len(children):
+            return None
+        node = children[number]
+    return node if isinstance(node, _El) else None
+
+
+def _without(root: _El, nodes: Sequence[_El]) -> str:
+    """去掉这几个节点；它们身上别处没有的 id 换成空 span 留在原处，链到那里的锚点照样跳得到。"""
+    for node in nodes:
+        node.replacement = ""
+    present = _serialize(root.children)
+    for node in nodes:
+        node.replacement = _id_spans(re.findall(r"""\bid=["']([^"']+)["']""", node.start), present)
+    return _serialize(root.children)
+
+
+def drop_repeated_images(value: str) -> str:
+    """导出把同一张图连着写了两遍：只看中文页上只留一张。原文页在 markdown 里收（nested_copies），对照页按对收。"""
+    if not value or value.count("<img") < 2:
+        return value
+    root = _fragment(value)
+    paths = _repeated_image_paths(root)
+    if not paths:
+        return value
+    return _without(root, [node for node in (_node_at(root, path) for path in paths) if node is not None])
+
+
+def _drop_pair_repeated_images(pair: BilingualPair) -> BilingualPair:
+    """对照页的一对里同一张图连着两遍：英文那侧去掉后一份，中文那侧同一位置是空段落或图的也去掉。"""
+    from dataclasses import replace
+
+    if (pair.en or "").count("<img") < 2:
+        return pair
+    en_root = _fragment(pair.en)
+    paths = _repeated_image_paths(en_root)
+    if not paths:
+        return pair
+    en = _without(en_root, [node for node in (_node_at(en_root, path) for path in paths) if node is not None])
+    if not pair.zh:
+        return replace(pair, en=en)
+    zh_root = _fragment(pair.zh)
+    blank = [
+        node for node in (_node_at(zh_root, path) for path in paths)
+        if node is not None and node.name == "p" and not repeat_key(_outer(node))
+    ]
+    return replace(pair, en=en, zh=_without(zh_root, blank) if blank else pair.zh)
 
 
 def article_pairs(
@@ -1239,8 +1519,9 @@ def article_pairs(
             # 只要求并段前后页面上的文字、链接和图片不变。
             if _coalesce_preserves(result.pairs, coalesced):
                 result = replace(result, pairs=coalesced)
-        # 导出写了两遍的引文、列表项、脚注先按原文页同一条规则收成一份，剩下的长重复再交给 _hide_repeated_pairs。
-        result = replace(result, pairs=_fold_copy_pairs(result.pairs))
+        # 导出写了两遍的引文、列表项、脚注先按原文页同一条规则收成一份，连着两遍的同一张图只留一张，
+        # 剩下的长重复再交给 _hide_repeated_pairs。
+        result = replace(result, pairs=[_drop_pair_repeated_images(pair) for pair in _fold_copy_pairs(result.pairs)])
         result = replace(result, pairs=_hide_repeated_pairs(result.pairs))
         result = replace(result, pairs=_restore_pair_links(result.pairs))
     if result.notice:
@@ -1263,6 +1544,7 @@ __all__ = [
     "PairDisplay",
     "article_pairs",
     "content_gaps",
+    "drop_repeated_images",
     "fold_translated_copies",
     "join_split_paragraphs",
     "leaf_projection_gaps",
