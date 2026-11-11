@@ -63,6 +63,12 @@ MIN_SPLICE_CHARS = 4
 SEAM_SLACK = 20
 # 接缝处前一段往回、后一段往后各看这么多行。重叠那一截是宽的 0.4 倍，十来行。
 SEAM_LINES = 40
+# 重叠那一截两段各认一遍，同一行常有一两个字认得不一样（11-11 抽查：一段「估值杀降」，另一段「估值杀跌」）。
+# 一行每 NEAR_PER 个字容一个字认差（增、删、换都算一个），最多 NEAR_EDITS 个；不到 NEAR_PER 个字的要一字不差。
+# 数字（含「一二三」这类）认得不一样不容：「第一季度」和「第二季度」、「23%」和「28%」是两行。
+# 这样对上的行，同一截里还要有一行一字不差地对上才算（``_seam_chain_ok``）：宁可重复，不丢字。
+NEAR_PER = 15
+NEAR_EDITS = 2
 # 字明显比正文小的块（small）后面多写的一行。
 SMALL_NOTE = "（小字，可能认错）"
 # 字被切到笔画中间（illegible）时，不采用模型补的那句。cut 本身不触发这句：cut 只表示图外还有下文。
@@ -432,13 +438,14 @@ class _Match:
 
     how：same 字一样（一行对一行，或一边的一行是另一边接起来的几行）；tail 后一段第一行是前一段那行的后半截；
     head 前一段最后一行只到接缝，是后一段那行的前半截；splice 一行跨过整个重叠，两段各有一半，中间重合。
-    weight 是对上的字数。
+    weight 是对上的字数。near：两边认差了一两个字（``NEAR_PER``），不是一字不差。
     """
 
     upper: tuple[int, int]
     lower: tuple[int, int]
     weight: int
     how: str
+    near: bool = False
 
 
 def _fields(block: dict) -> list[tuple[str, list[str]]]:
@@ -475,6 +482,56 @@ def _key_overlap(head: str, tail: str) -> int:
     return 0
 
 
+def _edits(short: str, long: str, budget: int, *, prefix: bool = False) -> int:
+    """short 改成 long（prefix 时改成 long 的某个开头）最少改几个字；超过 budget 交回 budget + 1。
+
+    增、删、换一个字各算 1。数字（``str.isnumeric``，含「一二三」）对不上算超出：认差的是数字就不当同一行。
+    只算对角线两边各 budget 宽的一条带，一超出就停，所以两行字不一样时很快就停。
+    """
+    over = budget + 1
+    if prefix:
+        long = long[: len(short) + budget]
+    size, width = len(short), len(long)
+    if width < size - budget or (not prefix and width > size + budget):
+        return over
+
+    def step(char: str) -> int:
+        return over if char.isnumeric() else 1
+
+    row = [over] * (width + 1)
+    row[0] = 0
+    for j in range(1, min(width, budget) + 1):
+        row[j] = min(over, row[j - 1] + step(long[j - 1]))
+    for i in range(1, size + 1):
+        low, high = max(0, i - budget), min(width, i + budget)
+        new = [over] * (width + 1)
+        if low == 0:
+            new[0] = min(over, row[0] + step(short[i - 1]))
+        for j in range(max(1, low), high + 1):
+            left, right = short[i - 1], long[j - 1]
+            if left == right:
+                cost = row[j - 1]
+            else:
+                cost = row[j - 1] + (over if left.isnumeric() or right.isnumeric() else 1)
+            new[j] = min(over, cost, row[j] + step(left), new[j - 1] + step(right))
+        if min(new[low : high + 1]) >= over:
+            return over
+        row = new
+    if prefix:
+        return min(row[max(0, size - budget) : width + 1])
+    return row[width]
+
+
+def _near(budget_of: str, short: str, long: str, *, prefix: bool = False) -> int:
+    """short 和 long（prefix 时是 long 的开头）是同一行、认差了几个字：交回差几个，算不上交回 -1。
+    能容几个按 budget_of 的字数算（见 ``NEAR_PER``）。"""
+    budget = min(NEAR_EDITS, len(budget_of) // NEAR_PER)
+    if not budget:
+        return -1
+    edits = _edits(short, long, budget, prefix=prefix)
+    return edits if edits <= budget else -1
+
+
 def _grouped(key: str, lines: list[_Line], start: int) -> int:
     """lines 从 start 起的几行接起来正好是 key（两段换行换得不一样）：交回最后那行的位置，接不出来是 -1。"""
     joined = ""
@@ -489,7 +546,8 @@ def _grouped(key: str, lines: list[_Line], start: int) -> int:
 
 def _seam_matches(up: list[_Line], low: list[_Line]) -> list[_Match]:
     """接缝两边对得上的几行：字一样的，或者一边的一行是另一边几行接起来的（两段换行换得不一样）。
-    截一半的只看挨着接缝的那一行：前一段最后一行、后一段第一行，表格行不算。"""
+    截一半的只看挨着接缝的那一行：前一段最后一行、后一段第一行，表格行不算。
+    一字不差对不上的，再看是不是同一行（或截一半的那行）认差了一两个字（``NEAR_PER``），表格行不算。"""
     found: list[_Match] = []
     last = len(up) - 1
     for i, above in enumerate(up):
@@ -511,6 +569,13 @@ def _seam_matches(up: list[_Line], low: list[_Line]) -> list[_Match]:
                 found.append(_Match((i, i), (j, j), len(above.key), "head"))
             elif i == last and j == 0 and (overlap := _key_overlap(above.key, below.key)):
                 found.append(_Match((i, i), (0, 0), overlap, "splice"))
+            elif (edits := _near(min(above.key, below.key, key=len), above.key, below.key)) >= 0:
+                weight = min(len(above.key), len(below.key)) - edits
+                found.append(_Match((i, i), (j, j), weight, "same", near=True))
+            elif j == 0 and (edits := _near(below.key, below.key[::-1], above.key[::-1], prefix=True)) >= 0:
+                found.append(_Match((i, i), (0, 0), len(below.key) - edits, "tail", near=True))
+            elif i == last and (edits := _near(above.key, above.key, below.key, prefix=True)) >= 0:
+                found.append(_Match((i, i), (j, j), len(above.key) - edits, "head", near=True))
     return found
 
 
@@ -579,7 +644,10 @@ def _seam_chain_ok(
     upper: list[dict],
     lower: list[dict],
 ) -> bool:
-    """对上的字够多就算；少于 MIN_OVERLAP_CHARS 的要求见 ``_seam_chain``。"""
+    """对上的字够多就算；少于 MIN_OVERLAP_CHARS 的要求见 ``_seam_chain``。
+    只有认差了字才对上的（``_Match.near``）不算：同一截里至少要有一行一字不差。"""
+    if all(match.near for match in chain):
+        return False
     if weight >= MIN_OVERLAP_CHARS:
         return True
     if trail or chain[0].lower[0] != 0:

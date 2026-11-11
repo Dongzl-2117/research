@@ -739,3 +739,71 @@ def test_seam_matches_one_line_against_several_when_the_tiles_broke_lines_differ
     )
     texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
     assert texts == ["下周一会有一场发布会", poster, "届时将公布全新的系统"]
+
+
+def test_seam_takes_a_line_one_tile_misread_by_a_word_as_the_same_line():
+    """11-11 抽查：重叠那一截两段各认一遍，后一段从一段话中间那行开始，又把这段的一个字认差了（「杀降」认成「杀跌」）。
+    以前一字不差才算同一行，后一段开头这行对不上、又长过零碎字，整道接缝没接上，两行写了两遍。
+    认差一两个字也算同一行，留前一段的写法。"""
+    turn = (
+        "年中以后的拐点：市场开始给搜索流量被分走的风险定价，几次财报虽然收入、海外用户还在增长，"
+        "但导流下滑的指引一出，多次单日大跌（一次财报后单日跌约23%），估值杀降；"
+    )
+    after = "下半年到明年：业绩依然高增，但估值反复承压，变成“增长很好，但流量底座有隐忧”的矛盾标的。"
+    first = _units(_para("三、股价表现"), _para(turn), _para(after), kind="text")
+    second = _units(
+        _para("户还在增长，但导流下滑的指引一出，多次单日大跌（一次财报后单日跌约23%），估值杀跌；"),
+        _para(after),
+        _para("四、一句话小结"),
+        kind="text",
+    )
+    texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
+    assert texts == ["三、股价表现", turn, after, "四、一句话小结"]
+
+
+def test_seam_takes_two_whole_lines_read_a_word_apart_as_the_same_lines():
+    """同一行两段都整行认了，一段漏了一个字、另一段换了一个字：算同一行，只留前一段的。"""
+    said = "我一直觉得他们的网络效应和产品粘性就是不够，打造了一个很棒的产品"
+    first = _units(_msg("先看这一段", "王小明"), _msg(said, "王小明"), _msg("同意，护城河不够深", "李四"))
+    second = _units(
+        _msg("我一直觉得他们的网络效应和产品粘性就是不够，打造了一个很好的产品", "王小明"),
+        _msg("同意，护城河不够深", "李四"),
+        _msg("下周再看数据", "张三"),
+    )
+    texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
+    assert texts == ["先看这一段", said, "同意，护城河不够深", "下周再看数据"]
+
+
+def test_seam_replaces_a_line_cut_at_the_seam_and_misread_with_the_whole_one():
+    """前一段最后一行只露到接缝，中间还认差了一个字；后一段里是完整的那行：换成完整的，后面接着写。"""
+    first = _units(
+        _para("一、渠道"),
+        _para("批价这一周没有动，经销商在等"),
+        _para("渠道还在观望，短期内厂家不会捉价，经销商的库存还要再消"),
+        kind="text",
+    )
+    whole = "渠道还在观望，短期内厂家不会提价，经销商的库存还要再消化两个月"
+    second = _units(_para("批价这一周没有动，经销商在等"), _para(whole), _para("二、价格"), kind="text")
+    texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
+    assert texts == ["一、渠道", "批价这一周没有动，经销商在等", whole, "二、价格"]
+
+
+def test_a_misread_number_is_never_taken_for_the_same_line():
+    """认差字只容文字，不容数字（含「一二三」）：「第一季度」和「第二季度」差一个字也是两行。
+    后一段开头这行对不上，后面那行就算一字不差也接不上，宁可那行写两遍，也不把「第二季度」那行去掉。"""
+    one = "财报发布以后，第一季度盘后大涨约两成，次日继续上涨，市场开始重新定价"
+    two = "财报发布以后，第二季度盘后大涨约两成，次日继续上涨，市场开始重新定价"
+    first = _units(_para("三、股价表现"), _para(one), _para("四、小结"), kind="text")
+    second = _units(_para(two), _para("四、小结"), _para("短期兑现"), kind="text")
+    texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
+    assert texts == ["三、股价表现", one, "四、小结", two, "四、小结", "短期兑现"]
+
+
+def test_lines_a_few_words_apart_are_not_an_overlap_on_their_own():
+    """挨着接缝的两行只差两个字（「买入」和「卖出」），同一截里没有一行一字不差：不算重叠，两行都留着。"""
+    bought = "我今天把这只股票全部买入了，仓位到三成左右，接下来一个月都不再操作"
+    sold = "我今天把这只股票全部卖出了，仓位到三成左右，接下来一个月都不再操作"
+    first = _units(_msg("先说今天的操作", "王小明"), _msg(bought, "王小明"))
+    second = _units(_msg(sold, "王小明"), _msg("明白，等你消息", "李四"))
+    texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
+    assert texts == ["先说今天的操作", bought, sold, "明白，等你消息"]

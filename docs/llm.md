@@ -198,6 +198,8 @@ GROUP BY a.id;"
 ```bash
 docker compose exec app research-digest --limit 50
 docker compose exec app research-digest --source fangwei-mp --limit 200
+# 识图重认以后：只重写已有摘要、写摘要时的图片字和现在不一样的短帖。夜间任务不要加
+docker compose exec app research-digest --ocr-changed --limit 2000
 ```
 
 只处理没有摘要、正文改过、提示词版本旧了、或当时只读了长文开头的文章，从新到旧。卡片优先显示摘要和最多两条要点。JSON 接口的 `summary` / `digest` 字段也有。文章页本身只放标题和正文。摘要只作导读，以原文为准。
@@ -235,6 +237,8 @@ docker compose exec app research-views --company 贵州茅台 --refresh-blank
 docker compose exec app research-views --gap --company 贵州茅台 --company 泡泡玛特 --limit 800
 docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
 docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
+# 识图重认以后：只重抽已有观点、抽的时候的图片字和现在不一样的。不和 --gap、--articles 一起用；夜间任务不要加
+docker compose exec app research-views --ocr-changed --limit 2000
 ```
 
 `--gap` 的范围：`article_mentions` 里深度不是「一带而过」、又没有一条 about 为真且判断非空的观点。去重后的主版本（有别的稿 `duplicate_of` 指向它）即使提及只是一带而过也补抽，例如 3851 并入 11299 之后要抽 11299。网友帖不抽。已经记成 about=false（论证不在这家公司）的不反复问。
