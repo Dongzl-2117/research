@@ -25,7 +25,9 @@ import hashlib
 import http.client
 import json
 import logging
+import os
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -40,6 +42,11 @@ import psycopg
 from psycopg.rows import dict_row
 
 from researchlib.chunks import current_chunk_sql
+
+try:
+    import fcntl
+except ImportError:  # 不是 POSIX：成批算向量只在本进程里排队
+    fcntl = None
 
 logger = logging.getLogger("researchlib.embeddings")
 
@@ -57,6 +64,11 @@ COLD_QUERY_TIMEOUT_S = 15.0
 # 隔一阵子后的第一次搜索不用再等几秒加载。要比 Ollama 的 5 分钟短。
 KEEP_WARM_S = 200.0
 BATCH = 32
+# 成批算向量（改段落时当场算、research-embed 补算）一次只送这么多块，而且全机同一时刻只有一批在向量服务那里
+# （_bulk_turn）。检索的问题向量用同一个 Ollama，不排这个队，Ollama 按先来后到算，问题向量最多等手上这一小批。
+# 以前一批 32 块、谁算完谁送：11-11 晚 16 篇同时译制，问题向量排在几批后面，线上新问题偶尔多等一到三秒；
+# 等过 QUERY_TIMEOUT_S，检索就停一分钟只按字面找。
+BULK_BATCH = 8
 QUERY_CACHE = 256
 # 检索页提示「向量还没算完」用的块数，几分钟数一次就够。
 COVERAGE_TTL_S = 600.0
@@ -91,6 +103,8 @@ class _State:
         self.local = False
         # 保温没成时只在日志里记第一次，Ollama 停着时不至于每分钟一行。
         self.warm_failing = False
+        # 成批算向量的跨进程锁用不上时（锁文件打不开），日志只记一次。
+        self.bulk_lock_warned = False
         self.schema: dict[str, str | None] = {}
         self.coverage: dict[str, tuple[tuple[int, int], float]] = {}
         # 正在后台重数块数的库（_refresh_coverage），一个库同时只数一遍。
@@ -202,6 +216,43 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     if _state.embedder is None:
         raise EmbeddingError("没有配置向量服务（EMBEDDING_BASE_URL）")
     return _state.embedder(texts)
+
+
+# 成批算向量排的队（_bulk_turn）：本进程的线程先排 _BULK_THREADS，再和别的进程抢这个文件锁。网站、译制、识图、
+# research-embed 都在同一个 app 容器里跑（docker compose exec），共用容器的临时目录。进程退出时锁自己放开。
+_BULK_LOCK_PATH = os.path.join(tempfile.gettempdir(), "researchlib-embedding-bulk.lock")
+_BULK_THREADS = threading.Lock()
+
+
+@contextmanager
+def _bulk_turn() -> Iterator[None]:
+    """轮到这一份去算向量：同一台机器上同一时刻只有一份成批的在向量服务那里。问题向量（query_vector）不排这个队。
+
+    锁文件打不开、加不上锁时只在本进程里排队，照常算，不因为排队的事让改段落的任务出错。
+    """
+    with _BULK_THREADS:
+        fd = None
+        if fcntl is not None:
+            try:
+                fd = os.open(_BULK_LOCK_PATH, os.O_RDONLY | os.O_CREAT, 0o644)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError as exc:
+                if fd is not None:
+                    os.close(fd)
+                    fd = None
+                if not _state.bulk_lock_warned:
+                    _state.bulk_lock_warned = True
+                    logger.warning("成批算向量只在本进程里排队（锁文件 %s 用不上：%s）", _BULK_LOCK_PATH, exc)
+        try:
+            yield
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+
+def _bulk_embed(texts: list[str]) -> list[list[float]]:
+    with _bulk_turn():
+        return embed_texts(texts)
 
 
 def prefetch_query_vector(text: str) -> None:
@@ -514,24 +565,32 @@ def fresh_embedding_sql(embedding: str = 'e', chunk: str = 'c', article: str = '
 
 
 def _embed_rows(rows: list[dict], bad: list[tuple[int, int]]) -> list[tuple[dict, list[float]]]:
-    """一批块的向量。整批报错时先试一下服务本身：服务正常，就是某几块的字让它报错，逐块算、坏的记进 bad
+    """一批块的向量。按 BULK_BATCH 块一份送去算，每份排一次队（_bulk_turn），两份之间检索的问题向量插得进来。"""
+    pairs: list[tuple[dict, list[float]]] = []
+    for start in range(0, len(rows), BULK_BATCH):
+        pairs.extend(_embed_part(rows[start : start + BULK_BATCH], bad))
+    return pairs
+
+
+def _embed_part(rows: list[dict], bad: list[tuple[int, int]]) -> list[tuple[dict, list[float]]]:
+    """一份块的向量。整份报错时先试一下服务本身：服务正常，就是某几块的字让它报错，逐块算、坏的记进 bad
     跳过；服务也不正常（停了、连不上）才往外报错。
 
     以前整批报错就退出，下一轮还是从同一批开始（按时间排在最前），一块坏数据能让后面的块永远算不到。
     """
     texts = [_source_text(row) for row in rows]
     try:
-        return list(zip(rows, embed_texts(texts), strict=True))
+        return list(zip(rows, _bulk_embed(texts), strict=True))
     except EmbeddingError as exc:
         error = exc
     try:
-        embed_texts(["向量服务检查"])
+        _bulk_embed(["向量服务检查"])
     except EmbeddingError:
         raise error from None
     pairs: list[tuple[dict, list[float]]] = []
     for row, text in zip(rows, texts, strict=True):
         try:
-            pairs.append((row, embed_texts([text])[0]))
+            pairs.append((row, _bulk_embed([text])[0]))
         except EmbeddingError as exc:
             logger.warning("第 %s 篇第 %s 块算不出向量，跳过：%s", row["article_id"], row["ord"], exc)
             bad.append((row["article_id"], row["ord"]))
