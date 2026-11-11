@@ -2,20 +2,24 @@
 
 新稿先核验 canonical 源文和持久回执；旧稿保留明确的不确定性。无法配对时保留两份全文。
 展示单元保留引用、列表和表格结构。有序投影通过之后，先把同一源段落里按句切开的叶子并回去，
+导出写两遍的引文、列表项、脚注按原文页同一条规则收成一份（留带格式的那份），
 再隐藏长英文的重复、整句包含和近前缀；留下的那一对必须仍有这些文字、数字、链接和结构，锚点改挂过去。
-英文连空白都一样、中文却各有独有说法的不隐藏。只差空白的长英文收成一对，多出来的中文句子挂回去。
+英文连空白都一样、中文却各有独有说法的不隐藏。只差空白的长英文收成一对，收掉那份的中文只挂页面上还没说过的句子：
+同一句换了说法、或已由同一段英文的另几对显示的不再挂，带着别处没有的数字、英文词的照样挂。
 英文里的链接补到中文仍写着同一锚文本、但丢掉标签的位置，不另写括号域名。
 这一步不删入库的段，也不把整页退回两列。图片文字在配对后渲染，不参与模型源段身份。
 """
 
 from __future__ import annotations
 
+import difflib
 import html
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from researchlib.nested_copies import copy_runs
 from researchlib.translate.pair import (
     BilingualPair,
     _leaf_key,
@@ -24,7 +28,17 @@ from researchlib.translate.pair import (
     redundant_pairs,
     visible_text,
 )
-from researchlib.translate.segments import iter_segments, repeat_key, same_repeat, top_level_blocks
+from researchlib.translate.segments import (
+    _El,
+    _FragmentParser,
+    _outer,
+    _serialize,
+    _Tx,
+    iter_segments,
+    repeat_key,
+    same_repeat,
+    top_level_blocks,
+)
 
 _STRUCTURE = frozenset({"table", "thead", "tbody", "tr", "td", "th", "ul", "ol", "dl", "dt", "dd", "pre", "code"})
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
@@ -263,26 +277,158 @@ def _plain_words(value: str) -> set[str]:
 
 
 _ZH_SENTENCE = re.compile(r"(?<=[。！？])")
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+_LATIN_WORD = re.compile(r"[a-z][a-z0-9]+")
+_TAG = re.compile(r"<(/?)([a-z][a-z0-9]*)\b[^>]*>", re.I)
+_VOID = frozenset({"br", "img", "wbr"})
+_INLINE = frozenset({
+    "a", "abbr", "b", "cite", "code", "del", "em", "i", "ins", "kbd", "mark", "q", "s", "small", "span",
+    "strong", "sub", "sup", "u",
+})
+# 两份译文译的是同一段英文。换了说法的同一句，去掉标签和标点以后大半的字仍按顺序对得上：
+# 11-10 拿线上 4 篇里 23 处写两遍的真实译文试，按这条线一句都不再挂。反过来，28 篇对照页里
+# 没有重复的 3265 句拿同一对里别的句子（一句或相邻两句）去比，到七成的只有 4 句，其中 2 句本来就是重复。
+# 线再往下放，留下的那份正好漏译一句时，容易把同一段里只差几个字的另一句话当成说过。
+_SAID = 0.7
+# 短句和别处只差一两个字的多（「现在不一样了」），短过这个要整句出现过才算说过。
+_SAID_MIN = 10
 
 
-def _novel_zh(extra: str, host: str) -> str:
-    """host 里还没有的中文句子。整段只是另一种说法时，不要把已经有的句子再贴一遍。"""
+def _sentence_core(value: str) -> str:
+    return repeat_key(value)
+
+
+def _coverage(core: str, other: str) -> float:
+    """core 里有多少字按顺序在 other 里出现，只算连着两个字以上的。"""
+    if not core or not other:
+        return 0.0
+    if core in other:
+        return 1.0
+    matcher = difflib.SequenceMatcher(None, core, other, autojunk=False)
+    return sum(block.size for block in matcher.get_matching_blocks() if block.size >= 2) / len(core)
+
+
+class _Said:
+    """已经显示的中文。判断挂回去的一句是不是只换了说法：数字、英文词都出现过，字也大半对得上。"""
+
+    def __init__(self, shown: str):
+        visible = html.unescape(re.sub(r"<[^>]+>", " ", shown or "")).casefold()
+        self.core = _sentence_core(shown)
+        self.numbers = set(_NUMBER.findall(visible))
+        self.words = set(_LATIN_WORD.findall(visible))
+        cores = [_sentence_core(part) for part in _ZH_SENTENCE.split(shown or "")]
+        cores = [core for core in cores if core]
+        # 一句可能被另一份拆成两句译，所以也拿相邻两句连起来比。
+        self.windows = cores + [left + right for left, right in zip(cores, cores[1:], strict=False)]
+        self.bigrams = [{window[at:at + 2] for at in range(len(window) - 1)} for window in self.windows]
+
+    def __call__(self, sentence: str) -> bool:
+        core = _sentence_core(sentence)
+        if not core:
+            return True
+        if core in self.core:
+            return True
+        visible = html.unescape(re.sub(r"<[^>]+>", " ", sentence)).casefold()
+        if set(_NUMBER.findall(visible)) - self.numbers:
+            return False
+        for word in _LATIN_WORD.findall(visible):
+            if word not in self.words and (len(word) < 4 or word not in self.core):
+                return False
+        if len(core) < _SAID_MIN:
+            return False
+        # 对上的字最多是共有的两字组的两倍，先用它筛掉不可能到线的句子，省掉逐句细比。
+        need = _SAID * len(core) / 2
+        pairs = [core[at:at + 2] for at in range(len(core) - 1)]
+        for window, bigrams in zip(self.windows, self.bigrams, strict=True):
+            if sum(pair in bigrams for pair in pairs) < need:
+                continue
+            if _coverage(core, window) >= _SAID:
+                return True
+        return False
+
+    def closeness(self, sentence: str) -> float:
+        """不看数字和英文词，这一句的字最多有几成按顺序对得上这里的一句（或相邻两句）。"""
+        core = _sentence_core(sentence)
+        if not core:
+            return 0.0
+        if core in self.core:
+            return 1.0
+        return max((_coverage(core, window) for window in self.windows), default=0.0)
+
+
+def _inline_fragment(value: str) -> str:
+    """挑出来的几句要拼成一段：段落、列表这类外壳去掉，配不上对的行内标签也去掉，字都留着。"""
+    pieces: list[str] = []
+    opened: list[tuple[str, int]] = []
+    last = 0
+    for match in _TAG.finditer(value or ""):
+        pieces.append(value[last:match.start()])
+        last = match.end()
+        closing, name = match.group(1) == "/", match.group(2).lower()
+        if name in _VOID and not closing:
+            pieces.append(match.group(0))
+        elif name in _INLINE and not closing:
+            opened.append((name, len(pieces)))
+            pieces.append(match.group(0))
+        elif name in _INLINE and opened and opened[-1][0] == name:
+            opened.pop()
+            pieces.append(match.group(0))
+        else:
+            pieces.append("")
+    pieces.append((value or "")[last:])
+    for _name, slot in opened:
+        pieces[slot] = ""
+    return "".join(pieces).strip()
+
+
+def _novel_zh(extra: str, host: str, context: str = "") -> str:
+    """extra 里页面上还没说过的中文句子。
+
+    host 是挂上去的那一对的中文，context 是页面上同一段英文另外几对的中文。收掉的那份
+    和留下的译的是同一段英文，两份各自成句：同一句只差标签、标点或几个字时不再挂第二遍，
+    带着别处没有的数字、英文词，或者字对不上的句子才挂。
+    """
     if not extra or _plain_words(extra) <= _plain_words(host):
         return ""
-    parts = [part for part in _ZH_SENTENCE.split(extra) if _plain_words(part)]
-    if len(parts) <= 1:
-        return extra
-    host_words = _plain_words(host)
-    novel = [part for part in parts if not _plain_words(part) <= host_words]
+    parts = [part for part in _ZH_SENTENCE.split(extra) if _sentence_core(part)]
+    said = _Said((host or "") + (context or ""))
+    novel = [part for part in parts if not said(part)]
     if not novel:
         return ""
     if len(novel) == len(parts):
         return extra
-    body = "".join(novel).strip()
-    if re.search(r"<(?:p|li|blockquote|div|ul|ol|h[1-6])\b", body, re.I):
-        return body
-    cleaned = re.sub(r"</(?:p|li|ul|ol|blockquote|div|h[1-6])>", "", body, flags=re.I).strip()
-    return f"<p>{cleaned}</p>" if cleaned else ""
+    body = _glue([_inline_fragment(part) for part in novel])
+    return f"<p>{body}</p>" if body else ""
+
+
+def _novel_per_copy(extra: str, shown: Sequence[str]) -> list[str]:
+    """收掉的纯文字那份里页面上还没说过的中文，按句挂到带格式那几段后面，每段一份。
+
+    只是数字、英文名不一样的那句挂到字对得上的那一段；哪段都对不上的（留下的那份漏译了）挂在前一句
+    所在的那一段后面，前面没有说过的句子就挂第一段。漏译的是第一段里的一句，就接在第一段的译文后面，
+    不全堆到最后一段。挂上去的是一个段落，原来的列表、引文外壳不带过来。
+    """
+    result = [""] * len(shown)
+    if not _novel_zh(extra, "".join(shown)):
+        return result
+    whole = _Said("".join(shown))
+    owners = [_Said(item) for item in shown]
+    groups: list[list[str]] = [[] for _ in shown]
+    current = 0
+    for part in _ZH_SENTENCE.split(extra):
+        if not _sentence_core(part):
+            continue
+        if not whole(part):
+            scores = [said.closeness(part) for said in owners]
+            best = max(range(len(owners)), key=scores.__getitem__)
+            current = best if scores[best] >= _SAID else current
+            groups[current].append(part)
+            continue
+        current = next((number for number, said in enumerate(owners) if said(part)), current)
+    for number, group in enumerate(groups):
+        body = _glue([_inline_fragment(part) for part in group])
+        result[number] = f"<p>{body}</p>" if body else ""
+    return result
 
 
 def _hrefs(value: str) -> set[str]:
@@ -369,8 +515,7 @@ def _absorb_contained(
         extra = updated[index].zh or ""
         if extra and not _plain_words(extra) <= _plain_words(zh):
             extra = _drop_duplicate_cites(extra, zh)
-        if extra and not _plain_words(extra) <= _plain_words(zh):
-            zh += extra
+        zh += _novel_zh(extra, zh)
         updated[host] = replace(updated[host], en=grafted, zh=zh or None)
         drop.add(index)
     return updated, drop
@@ -440,7 +585,15 @@ def _hide_repeated_pairs(pairs: list[BilingualPair]) -> list[BilingualPair]:
         )
         if not same_passage:
             continue
-        extra = _novel_zh(_drop_duplicate_cites(extra, host_zh), host_zh)
+        # 导出里一条引文、一个列表项先写成一行，再分几段带格式写一遍：收掉的那一行
+        # 译的是好几对的英文，那几对已经显示的中文也算说过。
+        context = "".join(
+            updated[other].zh or ""
+            for other in range(len(updated))
+            if other not in drop and other != host and len(keys[other]) >= _SAID_MIN * 2
+            and (keys[other] in keys[index] or keys[index] in keys[other])
+        )
+        extra = _novel_zh(_drop_duplicate_cites(extra, host_zh), host_zh, context)
         if not extra:
             continue
         updated[host] = replace(updated[host], zh=host_zh + extra)
@@ -757,6 +910,236 @@ def _drop_duplicate_cites(extra: str, host: str) -> str:
     return _CITE.sub(repl, extra or "")
 
 
+# 导出里写了两遍的引文、列表项、脚注（researchlib.nested_copies）：外层那份里套着这些块的不认。
+_COPY_NESTED = frozenset({
+    "blockquote", "ul", "ol", "dl", "li", "p", "pre", "table", "div", "figure", "hr", "section", "details",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+})
+_ID_ATTR = re.compile(r"""\s+id=["'][^"']*["']""", re.I)
+
+
+def _fragment(value: str) -> _El:
+    parser = _FragmentParser()
+    parser.feed(value or "")
+    parser.close()
+    return parser.root
+
+
+def _filled(nodes: Sequence[_El | _Tx]) -> list[_El | _Tx]:
+    """去掉空白文字和段落锚点（空的 para-anchor span）以后的节点。"""
+    return [
+        node for node in nodes
+        if not (isinstance(node, _Tx) and not node.data.strip())
+        and not (isinstance(node, _El) and node.name == "span" and "para-anchor" in node.start and not node.children)
+    ]
+
+
+def _nested_block(node: _El) -> bool:
+    return any(
+        isinstance(child, _El) and (child.name in _COPY_NESTED or _nested_block(child)) for child in node.children
+    )
+
+
+def _copy_shape(node: _El | _Tx) -> tuple[str, _El | None]:
+    """一个块在导出的两份里能当什么：外层（"quote" 引文、"item" 列表的最后一项）、"plain"（普通段落），或都不是。
+
+    第二项是外层那份的文字所在的节点（引文里那一段、那个列表项），或者那个段落本身。
+    """
+    if not isinstance(node, _El):
+        return "", None
+    if node.name == "p":
+        return "plain", node
+    if node.name == "blockquote":
+        inner = _filled(node.children)
+        if len(inner) == 1 and isinstance(inner[0], _El) and inner[0].name == "p" and not _nested_block(inner[0]):
+            return "quote", inner[0]
+        return "", None
+    if node.name not in {"ul", "ol"}:
+        return "", None
+    items = [child for child in _filled(node.children) if isinstance(child, _El)]
+    if not items or any(child.name != "li" for child in items) or "tx-list-continuation" in items[-1].start:
+        return "", None
+    inner = _filled(items[-1].children)
+    if len(inner) == 1 and isinstance(inner[0], _El) and inner[0].name == "p":
+        content = inner[0]
+    else:
+        content = items[-1]
+    return ("", None) if _nested_block(content) else ("item", items[-1])
+
+
+def _copy_key(kind: str, node: _El | None) -> str:
+    return repeat_key(_outer(node)) if kind and node is not None else ""
+
+
+def _resources(value: str) -> set[str]:
+    return _hrefs(value) | {html.unescape(src) for src in _IMG_SRC.findall(value or "")}
+
+
+def _id_spans(ids: Sequence[str], present: str) -> str:
+    """收掉那份上的 id 换成空的 span 留在页面上，链接到这些位置的锚点照样跳得到。"""
+    spans = []
+    for ident in dict.fromkeys(ids):
+        if f'id="{ident}"' not in present and f"id='{ident}'" not in present:
+            spans.append(f'<span id="{html.escape(ident, quote=True)}" class="para-anchor"></span>')
+    return "".join(spans)
+
+
+def _pair_shape(en: str) -> tuple[str, _El | None, str]:
+    """对照的一对按原文那一侧认：(种类, 顶层节点, 去掉格式后的文字)。列表外壳里只能有这一项。"""
+    top = _filled(_fragment(en).children)
+    if len(top) != 1 or not isinstance(top[0], _El):
+        return "", None, ""
+    kind, content = _copy_shape(top[0])
+    if kind == "item" and len([child for child in _filled(top[0].children) if isinstance(child, _El)]) != 1:
+        return "", None, ""
+    return kind, top[0], _copy_key(kind, content)
+
+
+def _copy_shell(top: _El, kind: str) -> tuple[str, str, str]:
+    """把带格式那几段套回去的外壳：(第一段的开头, 后面几段的开头, 结尾)。id 不带，另放空 span。"""
+    outer = _ID_ATTR.sub("", top.start)
+    if kind == "quote":
+        return outer, outer, "</blockquote>"
+    item = _ID_ATTR.sub("", [child for child in _filled(top.children) if isinstance(child, _El)][-1].start)
+    # 和 layout.units 拆开的多段列表项一样：第二段起是同一项的续段，不再画列表符号。
+    if re.search(r"""\bclass=["']""", item):
+        more = re.sub(r"""(\bclass=["'])([^"']*)""", r"\1\2 tx-list-continuation", item, count=1)
+    else:
+        more = item[:-1] + ' class="tx-list-continuation">'
+    return outer + item, outer + more, f"</li></{top.name}>"
+
+
+def _fold_copy_pairs(pairs: list[BilingualPair]) -> list[BilingualPair]:
+    """导出里写了两遍的引文、列表项、脚注：按原文页同一条规则（``nested_copies.copy_runs``）收成一份。
+
+    外层那份是一行纯文字，后面紧跟着的几段带着链接、加粗；去掉格式后正好相等时，纯文字那一对不再显示，
+    带格式的几对套回引文、列表项的外壳，纯文字那份的段落号留成空锚点。它的中文里页面上还没说过的句子
+    挂到字对得上的那一对（``_novel_per_copy``）。它的词、链接、图片要都还在带格式的那几对里，不然不动；
+    对不上的重复照旧交给 ``_hide_repeated_pairs``。
+    """
+    from dataclasses import replace
+
+    shapes = [_pair_shape(pair.en or "") for pair in pairs]
+    runs = copy_runs([kind for kind, _top, _key in shapes], [key for _kind, _top, key in shapes])
+    updated = list(pairs)
+    drop: set[int] = set()
+    for index, copies in runs:
+        outer = pairs[index]
+        shown = [pairs[number] for number in copies]
+        shown_en = "".join(pair.en or "" for pair in shown)
+        shown_zh = "".join(pair.zh if pair.zh is not None else (pair.en or "") for pair in shown)
+        if not (
+            _plain_words(outer.en) <= _plain_words(shown_en)
+            and _resources(outer.en) <= _resources(shown_en)
+            and _resources(outer.zh or "") <= _resources(shown_en + shown_zh)
+        ):
+            continue
+        kind, top, _key = shapes[index]
+        first, more, close = _copy_shell(top, kind)
+        extras = _novel_per_copy(
+            _drop_duplicate_cites(outer.zh or "", shown_zh),
+            [pair.zh if pair.zh is not None else (pair.en or "") for pair in shown],
+        )
+        for position, number in enumerate(copies):
+            pair = pairs[number]
+            opening = first if position == 0 else more
+            zh = (pair.zh or "") + extras[position]
+            en = f"{opening}{pair.en}{close}"
+            if position == 0:
+                en = _id_spans(_element_ids(outer), pair.en + (pair.zh or "") + (pair.anchor or "")) + en
+            updated[number] = replace(pair, en=en, zh=f"{opening}{zh}{close}" if zh else None)
+        drop.add(index)
+    if not drop:
+        return pairs
+    kept = [number for number in range(len(updated)) if number not in drop]
+    new_index = {old: new for new, old in enumerate(kept)}
+    return [
+        replace(updated[old], repeat_of=new_index.get(updated[old].repeat_of))
+        if updated[old].repeat_of is not None else updated[old]
+        for old in kept
+    ]
+
+
+def _blocks(nodes: Sequence[_El | _Tx]) -> list[_El | _Tx]:
+    return [node for node in nodes if not (isinstance(node, _Tx) and not node.data.strip())]
+
+
+def _block_name(node: _El | _Tx) -> str:
+    # 超过 180 字的标题显示时改回段落（article_layout.readable_headings），英文长、中文短时两边不一样。
+    if not isinstance(node, _El):
+        return "#text"
+    return "p" if re.fullmatch(r"h[1-6]", node.name) else node.name
+
+
+def _same_skeleton(left: Sequence[_El | _Tx], right: Sequence[_El | _Tx]) -> bool:
+    return len(left) == len(right) and all(
+        _block_name(a) == _block_name(b) for a, b in zip(left, right, strict=True)
+    )
+
+
+def fold_translated_copies(source: str, translated: str) -> str:
+    """只看中文页：原文里写了两遍的引文、列表项、脚注，中文也收成一份。
+
+    在原文上按原文页同一条规则认（``nested_copies.copy_runs``）。译文和原文的顶层块一一对得上
+    （块数、标签都一样）才按位置收：纯文字那份的中文不再显示，带格式那几段的中文套回引文、列表项里，
+    纯文字那份里页面上还没说过的句子挂在字对得上的那一段后面。段落 id 都留着；哪里对不上，那一处原样留着。
+    原文有 ``<br>`` 拆开、按句切开的段时，按译制时的切法（materialize 再并句）比。
+    """
+    from researchlib.translate.provenance import AlignmentError, materialize
+
+    if not translated or ("<blockquote" not in translated and "<li" not in translated):
+        return translated
+    root = _fragment(translated)
+    zh_blocks = _blocks(root.children)
+    found = None
+    for attempt in range(2):
+        if attempt:
+            try:
+                source = join_split_paragraphs(materialize(source))
+            except AlignmentError:
+                return translated
+        en_blocks = _blocks(_fragment(source).children)
+        shapes = [_copy_shape(node) for node in en_blocks]
+        runs = copy_runs([kind for kind, _node in shapes], [_copy_key(kind, node) for kind, node in shapes])
+        if not runs:
+            return translated
+        if _same_skeleton(en_blocks, zh_blocks):
+            found = (en_blocks, runs)
+            break
+    if found is None:
+        return translated
+    en_blocks, runs = found
+    rebuilt: dict[int, str] = {}
+    for index, copies in runs:
+        holder = zh_blocks[index]
+        kind, content = _copy_shape(holder)
+        if (
+            kind != _copy_shape(en_blocks[index])[0] or content is None
+            or any(_copy_shape(zh_blocks[number])[0] != "plain" for number in copies)
+            or len(_filled(holder.children)) != len(_filled(en_blocks[index].children))
+        ):
+            continue
+        pieces = [_outer(zh_blocks[number]) for number in copies]
+        shown = "".join(pieces)
+        removed = _outer(content)
+        if not _resources(removed) <= _resources(shown):
+            continue
+        extras = _novel_per_copy(_drop_duplicate_cites(removed, shown), pieces)
+        spans = _id_spans(re.findall(r"""\bid=["']([^"']+)["']""", removed), shown)
+        body = spans + "".join(piece + more for piece, more in zip(pieces, extras, strict=True))
+        middle = body if kind == "quote" else f"{content.start}{body}</li>"
+        at = holder.children.index(content)
+        rebuilt[id(holder)] = (
+            f"{holder.start}{_serialize(holder.children[:at])}{middle}"
+            f"{_serialize(holder.children[at + 1:])}</{holder.name}>"
+        )
+        for number in copies:
+            rebuilt[id(zh_blocks[number])] = ""
+    if not rebuilt:
+        return translated
+    return "".join(rebuilt[id(node)] if id(node) in rebuilt else _serialize([node]) for node in root.children)
+
+
 def article_pairs(
     original: str, translated: str, *, provenance: dict | None = None,
     canonical_source: str | None = None, canonical_target: str | None = None,
@@ -856,6 +1239,8 @@ def article_pairs(
             # 只要求并段前后页面上的文字、链接和图片不变。
             if _coalesce_preserves(result.pairs, coalesced):
                 result = replace(result, pairs=coalesced)
+        # 导出写了两遍的引文、列表项、脚注先按原文页同一条规则收成一份，剩下的长重复再交给 _hide_repeated_pairs。
+        result = replace(result, pairs=_fold_copy_pairs(result.pairs))
         result = replace(result, pairs=_hide_repeated_pairs(result.pairs))
         result = replace(result, pairs=_restore_pair_links(result.pairs))
     if result.notice:
@@ -878,6 +1263,7 @@ __all__ = [
     "PairDisplay",
     "article_pairs",
     "content_gaps",
+    "fold_translated_copies",
     "join_split_paragraphs",
     "leaf_projection_gaps",
     "projection_gaps",
