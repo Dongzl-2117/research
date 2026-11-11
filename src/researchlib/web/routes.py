@@ -59,7 +59,12 @@ from researchlib.snippets import (
 )
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
-from researchlib.translate.display import article_pairs, fold_translated_copies, join_split_paragraphs
+from researchlib.translate.display import (
+    article_pairs,
+    drop_repeated_images,
+    fold_translated_copies,
+    join_split_paragraphs,
+)
 from researchlib.translate.remote_media import bilingual_sources
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import list_marks as view_marks
@@ -836,7 +841,8 @@ def _article_view(request: Request, article_id: int, mode: str):
         zh_html = finish_html(sanitize_html(join_split_paragraphs(zh_source)), link_index, parent)
         if mode == "zh":
             # 导出写了两遍的引文、列表项、脚注：和原文页、对照页一样收成一份。在原文上认，再按位置收中文。
-            zh_html = fold_translated_copies(pair_original, zh_html)
+            # 连着写两遍的同一张图只留一张。
+            zh_html = drop_repeated_images(fold_translated_copies(pair_original, zh_html))
         zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""
