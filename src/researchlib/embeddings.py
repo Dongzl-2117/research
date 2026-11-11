@@ -9,6 +9,10 @@
 表要等数据库装了 pgvector 才建（``ensure_schema``，启动时和 research-embed 都会调），
 没装、没配向量服务、服务连不上时，检索照旧只走关键词，不报错。
 
+改段落块的地方（原文、译文、图片文字重切，清洗，导入）写完块以后在同一个事务里调 ``sync_article``：
+新段落的向量和新段落一起提交，检索看到的要么是旧段落和旧向量，要么是新段落和新向量。
+research-embed 只补服务连不上时漏下的。
+
     docker compose exec app research-embed            # 补算缺的和改过的块
     docker compose exec app research-embed --limit 2000
 """
@@ -16,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import contextvars
 import hashlib
 import http.client
 import json
@@ -26,7 +31,13 @@ import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
+from urllib.parse import urlsplit
+
+import psycopg
+from psycopg.rows import dict_row
 
 from researchlib.chunks import current_chunk_sql
 
@@ -42,10 +53,16 @@ RETRY_AFTER_S = 60.0
 # 所以冷的时候放宽到 COLD_QUERY_TIMEOUT_S；刚失败过就不放宽，服务真卡住时每次搜索最多多等 4 秒。
 WARM_FOR_S = 240.0
 COLD_QUERY_TIMEOUT_S = 15.0
+# 网站进程隔这么久没算过向量，就给本机 Ollama 算一个很短的向量（keep_warm），模型一直不卸下，
+# 隔一阵子后的第一次搜索不用再等几秒加载。要比 Ollama 的 5 分钟短。
+KEEP_WARM_S = 200.0
 BATCH = 32
 QUERY_CACHE = 256
 # 检索页提示「向量还没算完」用的块数，几分钟数一次就够。
 COVERAGE_TTL_S = 600.0
+# 改段落时当场算向量（sync_article）。服务算不出来以后，这么多秒内别的文章不再试：
+# 一批几千篇的任务不必每篇各等一次超时，缺的留给 research-embed。
+SYNC_RETRY_AFTER_S = 60.0
 
 Embedder = Callable[[list[str]], list[list[float]]]
 
@@ -61,18 +78,31 @@ class _State:
         self.cold_embedder: Embedder | None = None
         self.model = ""
         self.down_until = 0.0
+        # 改段落时算向量（sync_article）失败以后，到这个时刻之前不再试。和查询向量的 down_until 分开：
+        # 批量任务算不出来，不该让网站的检索也停一分钟。
+        self.sync_down_until = 0.0
         # 上一次查询向量成功的时刻，和上一次是不是失败了。
         self.last_ok = float("-inf")
         self.failed = False
         self.cache: OrderedDict[str, list[float]] = OrderedDict()
+        # 正在后台算的问题向量（prefetch_query_vector），同一个问题不算两遍。
+        self.inflight: dict[str, Future] = {}
+        # 向量服务是不是本机的（Ollama）：只给本机的服务保温（keep_warm），云端 API 每次调用都花钱。
+        self.local = False
+        # 保温没成时只在日志里记第一次，Ollama 停着时不至于每分钟一行。
+        self.warm_failing = False
         self.schema: dict[str, str | None] = {}
         self.coverage: dict[str, tuple[tuple[int, int], float]] = {}
+        # 正在后台重数块数的库（_refresh_coverage），一个库同时只数一遍。
+        self.counting: set[str] = set()
         # use_embedder 换上的函数不被 configure 覆盖（测试里每开一条连接都会 configure 一次）。
         self.pinned = False
         self.lock = threading.Lock()
 
 
 _state = _State()
+# 后台算问题向量的线程（prefetch_query_vector）。问库时问题和几条要点一起算。
+_PREFETCH = ThreadPoolExecutor(max_workers=4, thread_name_prefix="query-vector")
 
 
 def _http_embedder(base_url: str, model: str, api_key: str, timeout: float) -> Embedder:
@@ -119,15 +149,34 @@ def configure(settings) -> None:
         _state.query_embedder = _http_embedder(base, model, key, min(timeout, QUERY_TIMEOUT_S))
         _state.cold_embedder = _http_embedder(base, model, key, min(timeout, COLD_QUERY_TIMEOUT_S))
         _state.model = f"{base}|{model}"
+        _state.local = _is_local(base)
         _reset()
+
+
+def _is_local(base_url: str) -> bool:
+    """本机或同一台机器上的服务（Ollama）。Mac mini 上容器经 host.docker.internal 调本机的 Ollama。"""
+    try:
+        parts = urlsplit(base_url)
+        host = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        return False
+    return (
+        host in {"localhost", "127.0.0.1", "::1", "host.docker.internal", "ollama"}
+        or host.endswith(".local")
+        or port == 11434
+    )
 
 
 def _reset() -> None:
     _state.cache.clear()
     _state.down_until = 0.0
+    _state.sync_down_until = 0.0
     _state.last_ok = float("-inf")
     _state.failed = False
     _state.coverage.clear()
+    _state.inflight.clear()
+    _state.warm_failing = False
 
 
 def use_embedder(embedder: Embedder | None, model: str = "test") -> None:
@@ -136,6 +185,7 @@ def use_embedder(embedder: Embedder | None, model: str = "test") -> None:
         _state.embedder = _state.query_embedder = _state.cold_embedder = embedder
         _state.pinned = embedder is not None
         _state.model = model if embedder else ""
+        _state.local = False
         _reset()
         _state.schema.clear()
 
@@ -154,11 +204,48 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return _state.embedder(texts)
 
 
+def prefetch_query_vector(text: str) -> None:
+    """在后台先算问题的向量。检索一开始就调，向量服务那一趟和关键词召回的几条 SQL 同时进行；
+    用到时 query_vector 等它算完，不再另算一次。结果和不预取时一样。"""
+    text = (text or "").strip()[:2000]
+    if not text or _state.query_embedder is None:
+        return
+    with _state.lock:
+        if text in _state.cache or text in _state.inflight or time.monotonic() < _state.down_until:
+            return
+        future: Future = Future()
+        _state.inflight[text] = future
+
+    def run() -> None:
+        try:
+            future.set_result(_compute_query_vector(text))
+        except BaseException as exc:  # 照原样交给等着的 query_vector 去报
+            future.set_exception(exc)
+        finally:
+            with _state.lock:
+                if _state.inflight.get(text) is future:
+                    del _state.inflight[text]
+
+    _PREFETCH.submit(run)
+
+
 def query_vector(text: str) -> list[float] | None:
     """问题的向量。服务没配或刚失败过返回 None，调用方退回只用关键词。"""
     text = (text or "").strip()[:2000]
     if not text or _state.query_embedder is None:
         return None
+    with _state.lock:
+        cached = _state.cache.get(text)
+        if cached is not None:
+            _state.cache.move_to_end(text)
+            return cached
+        pending = _state.inflight.get(text)
+    if pending is not None:
+        return pending.result()
+    return _compute_query_vector(text)
+
+
+def _compute_query_vector(text: str) -> list[float] | None:
     with _state.lock:
         cached = _state.cache.get(text)
         if cached is not None:
@@ -194,6 +281,33 @@ def query_vector(text: str) -> list[float] | None:
 def paused() -> bool:
     """查询向量刚失败过，这一阵子检索只按字面找。"""
     return time.monotonic() < _state.down_until
+
+
+def keep_warm() -> bool:
+    """本机 Ollama 闲置 5 分钟就卸下模型，之后的第一次搜索要等它重新加载（几秒）。网站进程隔 KEEP_WARM_S
+    没算过向量，就算一个很短的向量，让模型一直在。只给本机的服务做（云端 API 每次调用都花钱）。算了返回 True。
+
+    用宽松超时（模型这时可能正在加载），失败也不暂停检索的语义这一路：只是保温没成，下一次搜索照常试。
+    """
+    with _state.lock:
+        embedder = _state.cold_embedder
+        if embedder is None or not _state.local or time.monotonic() - _state.last_ok < KEEP_WARM_S:
+            return False
+        identity = (_state.model, _state.query_embedder, _state.cold_embedder)
+    try:
+        embedder(["保温"])
+    except EmbeddingError as exc:
+        if not _state.warm_failing:
+            logger.warning("向量服务保温没成（之后再失败不再记）：%s", exc)
+        _state.warm_failing = True
+        return False
+    with _state.lock:
+        if identity == (_state.model, _state.query_embedder, _state.cold_embedder):
+            _state.last_ok = time.monotonic()
+    if _state.warm_failing:
+        logger.info("向量服务保温恢复")
+    _state.warm_failing = False
+    return True
 
 
 def literal(vector: list[float]) -> str:
@@ -287,8 +401,19 @@ def text_hash(title: str, heading: str, body: str) -> str:
     return hashlib.md5("\n".join([title or "", heading or "", body or ""]).encode()).hexdigest()
 
 
-def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = None) -> list[dict]:
-    """缺向量或字改过的块，新的在前。skip 是这一轮算不出向量、跳过的块。"""
+def _pending(
+    conn,
+    limit: int | None,
+    model: str,
+    skip: list[tuple[int, int]] | None = None,
+    *,
+    article_id: int | None = None,
+    ords: tuple[int, int] | None = None,
+) -> list[dict]:
+    """缺向量或字改过的块，新的在前。skip 是这一轮算不出向量、跳过的块。
+
+    article_id 给了只看这一篇，ords（含头不含尾）给了只看这一段块号；limit 为 None 不限。
+    """
     skipped = ""
     params: list = [model]
     if skip:
@@ -297,6 +422,13 @@ def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = 
             " WHERE s.article_id = c.article_id AND s.ord = c.ord)"
         )
         params += [[key[0] for key in skip], [key[1] for key in skip]]
+    one = ""
+    if article_id is not None:
+        one = "AND c.article_id = %s"
+        params.append(article_id)
+    if ords is not None:
+        one += " AND c.ord >= %s AND c.ord < %s"
+        params += [ords[0], ords[1]]
     return conn.execute(
         f"""
         SELECT c.article_id, c.ord, a.title, c.heading, c.body, md5({_SOURCE_TEXT}) AS hash
@@ -305,12 +437,65 @@ def _pending(conn, limit: int, model: str, skip: list[tuple[int, int]] | None = 
         LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
         WHERE a.duplicate_of IS NULL AND {current_chunk_sql()}
           AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %s)
-          {skipped}
+          {skipped} {one}
         ORDER BY a.published_at DESC NULLS LAST, c.article_id, c.ord
         LIMIT %s
         """,
         (*params, limit),
     ).fetchall()
+
+
+def _reuse_vectors(
+    conn, model: str, article_id: int | None = None, ords: tuple[int, int] | None = None,
+) -> int:
+    """缺向量或字改过的块，同一篇里已经有同样的字（标题、章节标题、正文都一样）的向量，就照抄过来，不重算。
+
+    块号是按位置编的：前面删掉一块、或者整理规则只动了一两段，后面的块原样往前挪，旧向量还在、只是挂在别的块号上。
+    要在删掉「没有对应块的向量」之前做，挪走的那几块的向量还在那些块号上。article_id 为 None 时整库做一遍；
+    ords（含头不含尾）给了只补这一段块号的。
+    """
+    one = "AND c.article_id = %(article)s" if article_id is not None else ""
+    if ords is not None:
+        one += " AND c.ord >= %(lo)s AND c.ord < %(hi)s"
+    cursor = conn.execute(
+        f"""
+        INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
+        SELECT w.article_id, w.ord, %(model)s, w.hash, h.embedding
+        FROM (
+          SELECT c.article_id, c.ord, md5({_SOURCE_TEXT}) AS hash
+          FROM article_chunks c
+          JOIN articles a ON a.id = c.article_id
+          LEFT JOIN chunk_embeddings e ON e.article_id = c.article_id AND e.ord = c.ord
+          WHERE a.duplicate_of IS NULL AND {current_chunk_sql()} {one}
+            AND (e.article_id IS NULL OR e.text_hash <> md5({_SOURCE_TEXT}) OR e.model <> %(model)s)
+        ) w
+        JOIN LATERAL (
+          SELECT o.embedding FROM chunk_embeddings o
+          WHERE o.article_id = w.article_id AND o.model = %(model)s AND o.text_hash = w.hash
+          LIMIT 1
+        ) h ON true
+        ON CONFLICT (article_id, ord) DO UPDATE
+        SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash, embedding = EXCLUDED.embedding, updated_at = now()
+        """,
+        {"model": model, "article": article_id, "lo": ords[0] if ords else None, "hi": ords[1] if ords else None},
+    )
+    return cursor.rowcount or 0
+
+
+def _store_vectors(conn, kind: str, model: str, pairs: list[tuple[dict, list[float]]]) -> None:
+    if not pairs:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(
+            f"""
+            INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
+            VALUES (%s, %s, %s, %s, %s::{kind})
+            ON CONFLICT (article_id, ord) DO UPDATE
+            SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash,
+                embedding = EXCLUDED.embedding, updated_at = now()
+            """,
+            [(r["article_id"], r["ord"], model, r["hash"], literal(v)) for r, v in pairs],
+        )
 
 
 def _source_text(row: dict) -> str:
@@ -319,8 +504,13 @@ def _source_text(row: dict) -> str:
 
 def current_embedding_sql(embedding: str = 'e', chunk: str = 'c', article: str = 'a') -> str:
     return (f"{embedding}.model=%(embedding_model)s"
-            f" AND {embedding}.text_hash=md5(concat_ws(E'\\n',{article}.title,{chunk}.heading,{chunk}.body))"
+            f" AND {fresh_embedding_sql(embedding, chunk, article)}"
             f" AND {current_chunk_sql(chunk, article)}")
+
+
+def fresh_embedding_sql(embedding: str = 'e', chunk: str = 'c', article: str = 'a') -> str:
+    """向量是按这块现在的字算的。要把这块的字整个读出来算一遍 md5，几万块时是查询里最贵的一步。"""
+    return f"{embedding}.text_hash=md5(concat_ws(E'\\n',{article}.title,{chunk}.heading,{chunk}.body))"
 
 
 def _embed_rows(rows: list[dict], bad: list[tuple[int, int]]) -> list[tuple[dict, list[float]]]:
@@ -364,6 +554,7 @@ def backfill(
     if kind is None:
         raise EmbeddingError("数据库里没有 chunk_embeddings：先给 Postgres 装 pgvector（重建 db 镜像）")
     model = model_name() or "unknown"
+    _reuse_vectors(conn, model)
     conn.execute(
         """
         DELETE FROM chunk_embeddings e
@@ -380,17 +571,7 @@ def backfill(
             break
         pairs = _embed_rows(rows, bad)
         if pairs:
-            with conn.cursor() as cur:
-                cur.executemany(
-                    f"""
-                    INSERT INTO chunk_embeddings (article_id, ord, model, text_hash, embedding)
-                    VALUES (%s, %s, %s, %s, %s::{kind})
-                    ON CONFLICT (article_id, ord) DO UPDATE
-                    SET model = EXCLUDED.model, text_hash = EXCLUDED.text_hash,
-                        embedding = EXCLUDED.embedding, updated_at = now()
-                    """,
-                    [(r["article_id"], r["ord"], model, r["hash"], literal(v)) for r, v in pairs],
-                )
+            _store_vectors(conn, kind, model, pairs)
             conn.commit()
         done += len(pairs)
         if progress:
@@ -398,6 +579,79 @@ def backfill(
     if skipped is not None:
         skipped.extend(bad)
     _state.coverage.clear()
+    return done
+
+
+# 清洗、重切这类随时能重跑的命令在 all_or_nothing() 里跑：向量算不出来就往外报错，不留下有字没向量的段落。
+_ALL_OR_NOTHING: contextvars.ContextVar[bool] = contextvars.ContextVar("embeddings_all_or_nothing", default=False)
+
+
+@contextmanager
+def all_or_nothing() -> Iterator[None]:
+    """这里面改段落时，向量服务算不出来就往外报 EmbeddingError，调用方回滚这一批、停下。
+
+    给 research-clean、research-rebuild-chunks 用：它们只按现有的字重算，不花模型钱，服务好了再跑一遍，
+    从还没改的那篇接着来。译制、识图、导入不包这一层：结果花过模型钱，照常存下，缺的向量留给 research-embed。
+    只管当前线程（ContextVar），网站后台线程里的重切不受影响。
+    """
+    token = _ALL_OR_NOTHING.set(True)
+    try:
+        yield
+    finally:
+        _ALL_OR_NOTHING.reset(token)
+
+
+def sync_article(conn, article_id: int, ords: tuple[int, int] | None = None) -> int:
+    """这篇的段落刚改过（重切、清洗、换了译文或图片文字、改了标题），在提交之前调：给它的段落配齐向量。
+
+    以前改段落和算向量是两步：段落先换上，向量等 research-embed（夜里、或者手动跑）再算。中间这段时间，
+    改过的段落只能按字面找到，融合分只剩关键词那一半，整批往下掉：11-11 research-clean 改了约 6000 篇以后，
+    检索页报「向量还没算完（219443/236724 块）」；全库重译时每译完一篇，它的中文段落也要等到夜里。
+
+    现在：字没变的块（块号挪了也认）照抄这篇已有的向量；其余的当场算；没有对应块的向量删掉。都在调用方的事务里，
+    别的连接在提交之前看到的是旧段落和旧向量，提交以后是新段落和新向量，中间没有有字没向量的段落。
+    返回当场算的块数。
+
+    ords（含头不含尾）：只管这一段块号。原文、译文、图片文字的块号各占一段（0 起、10000 起、20000 起，见 chunks）。
+    只重切了译文块就只配译文块的向量：清洗原文和重译同一篇的两个任务同时跑时，各改各的向量行，不互相等锁。
+    标题改了（向量的输入带标题）不给 ords，整篇一起配。
+
+    没配向量服务、库里没有向量表时什么都不做。服务算不出来：在 all_or_nothing() 里往外报错；不在的话记一条日志，
+    没算的留给 research-embed，SYNC_RETRY_AFTER_S 秒内别的文章也不再试。服务好好的、只是某一块的字让它报错的，
+    跳过那一块（research-embed 也会跳过它），不算算不出来。
+    """
+    if _state.embedder is None:
+        return 0
+    kind = column_type(conn)
+    if kind is None:
+        return 0
+    model = model_name() or "unknown"
+    _reuse_vectors(conn, model, article_id, ords)
+    lo, hi = ords if ords is not None else (None, None)
+    conn.execute(
+        "DELETE FROM chunk_embeddings e WHERE e.article_id = %(article)s"
+        " AND (%(lo)s::int IS NULL OR (e.ord >= %(lo)s AND e.ord < %(hi)s))"
+        " AND NOT EXISTS (SELECT 1 FROM article_chunks c WHERE c.article_id = e.article_id AND c.ord = e.ord)",
+        {"article": article_id, "lo": lo, "hi": hi},
+    )
+    rows = _pending(conn, None, model, article_id=article_id, ords=ords)
+    if not rows:
+        return 0
+    strict = _ALL_OR_NOTHING.get()
+    if not strict and time.monotonic() < _state.sync_down_until:
+        return 0
+    done = 0
+    bad: list[tuple[int, int]] = []
+    try:
+        for start in range(0, len(rows), BATCH):
+            pairs = _embed_rows(rows[start : start + BATCH], bad)
+            _store_vectors(conn, kind, model, pairs)
+            done += len(pairs)
+    except EmbeddingError as exc:
+        if strict:
+            raise
+        _state.sync_down_until = time.monotonic() + SYNC_RETRY_AFTER_S
+        logger.warning("第 %s 篇还有 %s 块没算上向量，留给 research-embed：%s", article_id, len(rows) - done, exc)
     return done
 
 
@@ -418,14 +672,42 @@ def coverage(conn) -> tuple[int, int]:
 
 
 def _cached_coverage(conn) -> tuple[int, int]:
+    """检索页那句提示用的块数。数一遍要把全库每块的字过一遍 md5（二十多万块要一两秒），以前过期了就在
+    这次搜索里当场重数：隔十分钟以上才搜一次的话，次次都要多等这一两秒。现在过期了先用上次的数，
+    另开一条连接在后台重数；只有这个进程第一次用（还没有数）时才当场数。"""
     key = conn.info.dbname
     now = time.monotonic()
     hit = _state.coverage.get(key)
-    if hit and now - hit[1] < COVERAGE_TTL_S:
-        return hit[0]
-    value = coverage(conn)
-    _state.coverage[key] = (value, now)
-    return value
+    if hit is None:
+        value = coverage(conn)
+        _state.coverage[key] = (value, now)
+        return value
+    if now - hit[1] >= COVERAGE_TTL_S:
+        _refresh_coverage(conn, key, hit)
+    return hit[0]
+
+
+def _refresh_coverage(conn, key: str, stale: tuple[tuple[int, int], float]) -> None:
+    with _state.lock:
+        if _state.coverage.get(key) is not stale or key in _state.counting:
+            return
+        _state.counting.add(key)
+    dsn, password = conn.info.dsn, conn.info.password
+
+    def run() -> None:
+        try:
+            with psycopg.connect(dsn, password=password, row_factory=dict_row) as other:
+                value = coverage(other)
+            with _state.lock:
+                if _state.coverage.get(key) is stale:
+                    _state.coverage[key] = (value, time.monotonic())
+        except Exception as exc:  # 数不出来就下次再数，不影响检索
+            logger.info("后台重数向量块数没成：%s", exc)
+        finally:
+            with _state.lock:
+                _state.counting.discard(key)
+
+    threading.Thread(target=run, name="embedding-coverage", daemon=True).start()
 
 
 def status_note(conn) -> str:

@@ -55,3 +55,11 @@ def test_pages_link_styles_and_scripts_with_their_version():
     for name in ("base.html", "article.html", "ask.html"):
         text = (templates / name).read_text(encoding="utf-8")
         assert not re.search(r'(?:href|src)="/static/', text), name
+
+
+def test_every_response_says_how_long_the_server_took(tmp_path):
+    # 浏览器开发者工具和 curl 都看得到这一项，和总耗时一比就知道慢在服务器上还是路上。
+    client = TestClient(create_app(Settings.from_env({"DATA_DIR": str(tmp_path)})))
+    for path in (asset_url("site.css"), "/static/missing.css"):
+        timing = client.get(path).headers["server-timing"]
+        assert re.fullmatch(r"app;dur=\d+\.\d", timing), (path, timing)

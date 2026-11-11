@@ -1255,7 +1255,10 @@ def search_page(request: Request):
             found = search_articles(
                 conn, query, scope, sources, limit=SEARCH_PAGE_SIZE, offset=(page - 1) * SEARCH_PAGE_SIZE
             )
-            if found.query and found.query.terms:
+            if found.query and found.query.terms and found.scope == facet_scope:
+                # 没选来源时分面的范围就是检索数过的范围，同一条计数不再查第二遍。
+                count_map = dict(found.counts)
+            elif found.query and found.query.terms:
                 count_map = full_match_counts(conn, found.query, facet_scope)
                 # 所选来源的数用检索时补过的（列表里排到、文章级索引数不到的也算），和上面的总数一致。
                 for source_id, number in found.counts.items():

@@ -210,10 +210,10 @@ def test_search_finds_articles_by_meaning_and_marks_them(conn, settings, fake_ve
             _doc("rain", "天气", "今天下雨，天气转凉。", month=3),
         ],
     )
-    assert embeddings.backfill(conn) == 3
+    # 入库时段落和向量一起写进去，不用等 research-embed，马上能按意思找。
     have, total = embeddings.coverage(conn)
     assert have == total == 3
-    # 字改了才重算：再跑一遍什么都不做。
+    # 字改了才重算：research-embed 什么都不做。
     assert embeddings.backfill(conn) == 0
     with TestClient(create_app(settings)) as client:
         page = client.get("/search", params={"q": "costco 商业模式"}).text
@@ -240,7 +240,7 @@ def _costco_notes(conn, settings):
             _doc("rain", "天气", "今天下雨，天气转凉。", month=4),
         ],
     )
-    assert embeddings.backfill(conn) == 4
+    assert embeddings.coverage(conn) == (4, 4)
 
 
 def test_named_company_keeps_its_own_meaning_matches_first_and_drops_the_unrelated(conn, settings, fake_vectors):
@@ -357,7 +357,7 @@ def test_vector_recall_filters_after_the_index_and_falls_back_when_too_few_left(
             _doc("docs/天气__w.md", "天气", "今天下雨，天气转凉。", feishu=True),
         ],
     )
-    assert embeddings.backfill(conn) == 10
+    assert embeddings.coverage(conn) == (10, 10)
     titles = {row["id"]: row["title"] for row in conn.execute("SELECT id, title FROM articles").fetchall()}
     kind = embeddings.column_type(conn)
     vector = embeddings.literal(_fake_embed(["商业模式"])[0])

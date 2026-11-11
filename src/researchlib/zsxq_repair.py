@@ -96,16 +96,19 @@ def _chrome_under_host(text: str) -> bool:
 
 
 def _rewrite_chunks(conn, article_id: int, title: str, body_md: str, profile, hashes) -> None:
+    from researchlib.embeddings import sync_article
+
     cleaned = clean_markdown(body_md, profile, hashes)
     chunks = make_chunks(title, cleaned)
     conn.execute("DELETE FROM article_chunks WHERE article_id = %s AND lang = ''", (article_id,))
-    if not chunks:
-        return
-    with conn.cursor() as cur:
-        cur.executemany(
-            "INSERT INTO article_chunks (article_id, ord, heading, body) VALUES (%s, %s, %s, %s)",
-            [(article_id, index, heading, text) for index, (heading, text) in enumerate(chunks)],
-        )
+    if chunks:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO article_chunks (article_id, ord, heading, body) VALUES (%s, %s, %s, %s)",
+                [(article_id, index, heading, text) for index, (heading, text) in enumerate(chunks)],
+            )
+    # 标题改了，译文块和图片文字块的向量也对不上了（向量的输入带标题）：整篇一起配齐，和新块一起提交。
+    sync_article(conn, article_id)
 
 
 def _cleaned_ocr(shot_parts: list[ImageText], ocr_text: str, owners: tuple[str, ...] = ()) -> str | None:

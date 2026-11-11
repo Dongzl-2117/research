@@ -320,16 +320,17 @@ def sibling_articles(conn, source_id: str, article_id: int, parent: str):
 
 
 def sample_state(conn, source_ids: list[str]) -> bool:
+    """库里有文章，而且全是示例文章。每一页都要问一次：以前把这些来源的文章全数一遍（一万多篇近十毫秒），
+    现在找到一篇不是示例的就停。"""
     row = conn.execute(
         """
-        SELECT count(*) AS n,
-               count(*) FILTER (WHERE raw_meta->>'sample' = 'true') AS samples
-        FROM articles
-        WHERE source_id = ANY(%s)
+        SELECT EXISTS (SELECT 1 FROM articles WHERE source_id = ANY(%(ids)s)) AS any_article,
+               EXISTS (SELECT 1 FROM articles WHERE source_id = ANY(%(ids)s)
+                       AND (raw_meta->>'sample') IS DISTINCT FROM 'true') AS real_article
         """,
-        (source_ids,),
+        {"ids": source_ids},
     ).fetchone()
-    return int(row["n"]) > 0 and int(row["n"]) == int(row["samples"])
+    return bool(row["any_article"]) and not row["real_article"]
 
 
 def scoped_articles(conn, scope: Scope, limit: int, offset: int = 0):

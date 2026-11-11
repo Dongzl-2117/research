@@ -939,7 +939,7 @@ def search_text(cleaned: str, title: str) -> str:
 
 def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> dict:
     """按当前规则重算 body_text 和原文段落块。body_md 不动。返回各来源改动篇数。"""
-    from researchlib.chunks import replace_chunks
+    from researchlib.chunks import COMMIT_EVERY, replace_chunks
 
     where = "WHERE duplicate_of IS NULL"
     params: list = []
@@ -951,7 +951,7 @@ def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> 
     ).fetchall()
     changed: Counter[str] = Counter()
     seen: Counter[str] = Counter()
-    for index, row in enumerate(rows, 1):
+    for row in rows:
         seen[row["source_id"]] += 1
         cleaned = clean_article(conn, row["id"], row["source_id"], row["body_md"])
         text = search_text(cleaned, row["title"])
@@ -962,7 +962,9 @@ def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> 
             continue
         conn.execute("UPDATE articles SET body_text = %s WHERE id = %s", (text, row["id"]))
         replace_chunks(conn, row["id"], row["title"], row["body_md"])
-        if index % 200 == 0:
+        # 段落的向量在 replace_chunks 里当场算，一篇一两秒：按改了的篇数分批提交，一批的锁不拿太久，
+        # 向量服务中途停了也只退回这一批。
+        if sum(changed.values()) % COMMIT_EVERY == 0:
             conn.commit()
     if not dry_run:
         conn.commit()
@@ -972,9 +974,11 @@ def rewash(conn, source_ids: list[str] | None = None, dry_run: bool = False) -> 
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import json
+    import sys
 
     from researchlib.config import Settings
     from researchlib.db import prepare
+    from researchlib.embeddings import EmbeddingError, all_or_nothing
 
     parser = argparse.ArgumentParser(description="按清洗规则重算全库文章的检索文字和段落块（body_md 不动）")
     parser.add_argument("--source", action="append", help="只洗这个来源，可重复")
@@ -982,7 +986,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     conn = prepare(Settings.from_env())
     try:
-        report = rewash(conn, args.source, args.dry_run)
+        # 改了字的段落当场算向量，和新字一起提交；算不出来就停下，不留下只能按字面找到的段落。
+        with all_or_nothing():
+            report = rewash(conn, args.source, args.dry_run)
+    except EmbeddingError as exc:
+        conn.rollback()
+        print(
+            f"向量服务算不出来，停在这里：{exc}\n已经提交的那些篇字和向量都换好了，没提交的还是旧的。"
+            "开着向量服务再跑一遍，从还没改的那篇接着来。",
+            file=sys.stderr,
+        )
+        return 1
     finally:
         conn.close()
     print(json.dumps(report, ensure_ascii=False))

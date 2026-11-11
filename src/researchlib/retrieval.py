@@ -245,6 +245,7 @@ class SearchResult:
     counts: dict[str, int]  # 按来源分的全部命中篇数
     available: int = 0  # 能翻到的篇数（全部命中排在前，部分命中在后）
     semantic: int = 0  # 词没写全、按意思排进前面那一档的篇数（标「语义相关」），不算进 total
+    scope: Scope | None = None  # counts 是在这个范围里数的（问题里点了作者时比页面选的窄）
 
 
 _QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』')
@@ -1040,11 +1041,11 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
                  model: str | None = None):
     """范围内和问题最相近的块。
 
-    范围条件不能和按距离排序写进同一条查询：文章表的「可见」条件是 jsonb 表达式，没有统计信息，规划器按默认
-    选择率估成只剩 1 篇，于是逐篇连接、把范围内全部向量的距离算一遍再排序，不走 HNSW 索引，全库 10 万块要
-    0.5 秒，库越大越慢；把近邻写成子查询再连接也不行，规划器会对每篇文章重跑一遍子查询。所以分两步：先只在
-    向量表上按索引取一批近邻，再查这些文章在不在范围里。过滤后不够数（范围很窄：某位作者、某段日期、提到某家
-    公司的文章）再逐块算，窄范围逐块算本来就快。只问一篇或一个目录时直接逐块算。
+    范围条件不和按距离排序写进同一条查询：HNSW 索引是近似的，带着范围条件走索引会漏；不走索引又要把范围内
+    全部向量的距离算一遍，全库 10 万块要 0.5 秒，库越大越慢。（以前文章表的「可见」条件没有统计信息，规划器
+    估成只剩 1 篇，总是选后一种；迁移 036 补上了。）所以分两步：先只在向量表上按索引取一批近邻，再查这些文章
+    在不在范围里。过滤后不够数（范围很窄：某位作者、某段日期、提到某家公司的文章）再逐块精确算，见下面的写法。
+    只问一篇或一个目录时直接逐块算。
     """
     where, params = _vector_filter(scope, company_ids)
     params['embedding_model'] = embeddings.model_name() if model is None else model
@@ -1064,12 +1065,9 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
         allowed = {
             (row['article_id'], row['ord']): row['text_hash']
             for row in conn.execute(
-                f"SELECT e.article_id,e.ord,e.text_hash"
+                f"SELECT x.article_id, x.ord, x.text_hash"
                 " FROM unnest(%(ann_ids)s::bigint[],%(ann_ords)s::int[]) AS k(article_id,ord)"
-                " JOIN article_chunks c ON c.article_id=k.article_id AND c.ord=k.ord"
-                " JOIN articles a ON a.id=c.article_id"
-                " JOIN chunk_embeddings e ON e.article_id=c.article_id AND e.ord=c.ord"
-                f" WHERE {where} AND {embeddings.current_embedding_sql()}",
+                f" CROSS JOIN LATERAL ({_one_embedding_sql('e.text_hash', where)}) x",
                 {**params, 'ann_ids': [row['article_id'] for row in near], 'ann_ords': [row['ord'] for row in near]},
             ).fetchall()
         }
@@ -1078,20 +1076,43 @@ def _vector_keys(conn, kind: str, vector: str, scope: Scope, limit: int, *, comp
                       key=lambda row: -float(row['sim']))
         if len(kept) >= limit:
             return {(row["article_id"], row["ord"]): float(row["sim"]) for row in kept[:limit]}
-    params.update({"qv": vector, "vec_limit": limit})
-    rows = conn.execute(
-        f"""
-        SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
-        FROM chunk_embeddings e
-        JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord
-        JOIN articles a ON a.id = e.article_id
-        WHERE {where} AND {embeddings.current_embedding_sql()}
-        ORDER BY e.embedding <=> %(qv)s::{kind}
-        LIMIT %(vec_limit)s
-        """,
-        params,
-    ).fetchall()
-    return {(row["article_id"], row["ord"]): float(row["sim"]) for row in rows}
+    params["qv"] = vector
+    # 逐块算距离时，向量是不是这块现在的字（md5）只核排在前面的：以前写在条件里，范围内每一块都要读出整段字
+    # 算一遍 md5，提到 Costco 的文章有五万块时这一步要六七百毫秒，算距离本身只要五六十毫秒。先按距离取两倍，
+    # 核过的够数就停，不够再多取。取到的和每块都核一遍一样：核不过的块本来就不要，排序不变。
+    # 先挑出范围内的文章，再逐篇按索引取它们的向量（LATERAL 加 OFFSET 0，规划器不能改连接顺序）。不这样写，
+    # 规划器把向量表和段落块表按两列连接估成实际的五倍多，常常整张向量表扫一遍、每块回段落块表查一次：
+    # 一个来源几百篇时要六百毫秒，逐篇取二十毫秒。排序的是子查询算出的距离，也用不上 HNSW 索引（近似的，
+    # 加上范围条件会漏），这一步要的是范围内精确的最近。
+    fetch = max(2 * limit, 64)
+    while True:
+        rows = conn.execute(
+            f"""
+            SELECT k.article_id, k.ord, 1 - k.dist AS sim, {embeddings.fresh_embedding_sql('k')} AS fresh
+            FROM (
+                SELECT x.article_id, x.ord, x.text_hash, x.dist
+                FROM articles a
+                CROSS JOIN LATERAL (
+                    SELECT e.article_id, e.ord, e.text_hash, e.embedding <=> %(qv)s::{kind} AS dist
+                    FROM chunk_embeddings e
+                    JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord
+                    WHERE e.article_id = a.id AND e.model=%(embedding_model)s AND {current_chunk_sql()}
+                    OFFSET 0
+                ) x
+                WHERE {where}
+                ORDER BY x.dist
+                LIMIT %(vec_fetch)s
+            ) k
+            JOIN article_chunks c ON c.article_id=k.article_id AND c.ord=k.ord
+            JOIN articles a ON a.id = k.article_id
+            ORDER BY k.dist
+            """,
+            {**params, "vec_fetch": fetch},
+        ).fetchall()
+        fresh = [row for row in rows if row["fresh"]]
+        if len(fresh) >= limit or len(rows) < fetch:
+            return {(row["article_id"], row["ord"]): float(row["sim"]) for row in fresh[:limit]}
+        fetch *= 4
 
 
 def semantic_candidates(
@@ -1159,6 +1180,25 @@ _NOT_TEXT = re.compile(
     r"|[\w\-.%()（）]+\.(?:png|jpe?g|gif|webp|svg|bmp|heic|pdf|mp4|mov)\b",
     re.IGNORECASE,
 )
+# _NOT_TEXT 能命中的，正文里一定有下面这些字样之一（转小写后比）。大部分段落一个都没有，就不跑那条正则：
+# 它在 Python 里每段要几十微秒，检索一次要对几千个候选段落各算一遍。
+_NOT_TEXT_MARKERS = (
+    "http", "www.", "screen", "截屏", "屏幕截图",
+    ".png", ".jp", ".gif", ".webp", ".svg", ".bmp", ".heic", ".pdf", ".mp4", ".mov",
+)
+# 忽略大小写时和 ASCII 字母算同一个、转小写后却不是 ASCII 的几个字母（长 s、无点 i、带点 I、开尔文符号）。
+# 正文里有它们时照旧跑正则，结果和不加这一步完全一样。
+_CASEFOLD_ODD = ("ſ", "ı", "İ", "K")
+
+
+def _drop_not_text(body: str) -> str:
+    """等于 _NOT_TEXT.sub(" ", body)，只是没有那些字样时直接返回原文。"""
+    lowered = body.lower()
+    if any(marker in lowered for marker in _NOT_TEXT_MARKERS) or any(odd in body for odd in _CASEFOLD_ODD):
+        return _NOT_TEXT.sub(" ", body)
+    return body
+
+
 # 汉字按字、英文按词数；数字和单个字母不算（截图名里的日期时刻、「0」这种残留）。
 _TEXT_UNIT = re.compile(r"[一-鿿]|[A-Za-z]{2,}")
 # 正文去掉上面这些以后不到这么多个字就算没字。
@@ -1167,8 +1207,17 @@ THIN_TEXT_UNITS = 5
 
 def thin_text(row: dict) -> bool:
     """只看正文：章节标题是同一节各块共用的，有的导出把一整段话放进了章节标题，正文只剩图片文件名。"""
-    body = _NOT_TEXT.sub(" ", row.get("body") or "")
-    return len(_TEXT_UNIT.findall(body)) < THIN_TEXT_UNITS
+    return _body_features(row.get("body") or "")[1]
+
+
+def _thin(text: str) -> bool:
+    """去掉链接和文件名以后的正文不到 THIN_TEXT_UNITS 个字。数到够数就停，不用把整段数完。"""
+    count = 0
+    for _ in _TEXT_UNIT.finditer(text):
+        count += 1
+        if count >= THIN_TEXT_UNITS:
+            return False
+    return True
 
 
 # —— 段落本身的信息量 ——
@@ -1189,6 +1238,8 @@ _CITATION = re.compile(
     r"(?<=[一-鿿。；，、”）A-Za-z0-9])\s?\(\d{1,3}(?:\s*[,，-]\s*\d{1,3})*\)(?=\s*(?:[。；，,.;：:\n]|$))"
 )
 _CITATION_RUN = re.compile(r"(?<!\d)(\d{2})\1{3,}(?!\d)")
+# 连写编号至少八位数字连着：没有八位连着的数字就不用跑带回溯引用的 _CITATION_RUN。
+_EIGHT_DIGITS = re.compile(r"\d{8}")
 
 
 def substance(body: str) -> float:
@@ -1196,12 +1247,42 @@ def substance(body: str) -> float:
 
     只看正文，链接和文件名不算字，和 thin_text 一样不看章节标题。
     """
-    text = _NOT_TEXT.sub(" ", body or "")
-    units = len(_CJK.findall(text)) + EN_WORD_UNITS * len(_EN_WORD.findall(text))
-    factor = min(1.0, max(units, THIN_TEXT_UNITS) / SUBSTANCE_UNITS) ** 0.5
-    if len(_CITATION.findall(text)) >= 3 or len(_CITATION_RUN.findall(text)) >= 2:
+    return _body_features(body or "")[0]
+
+
+def _substance(text: str) -> float:
+    cjk = len(_CJK.findall(text))
+    if cjk >= SUBSTANCE_UNITS:
+        # 汉字已经够数，系数就是 1，英文词不用再数。
+        factor = 1.0
+    else:
+        units = cjk + EN_WORD_UNITS * len(_EN_WORD.findall(text))
+        factor = min(1.0, max(units, THIN_TEXT_UNITS) / SUBSTANCE_UNITS) ** 0.5
+    # 两种编号都要半角括号或八位连着的数字，没有就不用跑那两条慢正则。
+    if ("(" in text and len(_CITATION.findall(text)) >= 3) or (
+        _EIGHT_DIGITS.search(text) is not None and len(_CITATION_RUN.findall(text)) >= 2
+    ):
         factor *= CITED_SUMMARY
     return factor
+
+
+# 一段正文的（信息量系数，是不是没字）只跟正文有关。检索一次要给几千个候选段落各算一遍，以前每段一百多微秒，
+# 几千段就是半秒多，常常是整次检索里最慢的一步。同一段正文算过就记下来，下次检索直接用。
+# 键是正文连同长度算出的 hash，不存正文本身，全库二十多万段也只占几十 MB；超过上限整个清空重来。
+_FEATURES: dict[int, tuple[float, bool]] = {}
+FEATURES_LIMIT = 400_000
+
+
+def _body_features(body: str) -> tuple[float, bool]:
+    key = hash((len(body), body))
+    found = _FEATURES.get(key)
+    if found is None:
+        text = _drop_not_text(body)
+        found = (_substance(text), _thin(text))
+        if len(_FEATURES) >= FEATURES_LIMIT:
+            _FEATURES.clear()
+        _FEATURES[key] = found
+    return found
 
 
 def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict], pool: int, company_ids: list[int],
@@ -1216,18 +1297,31 @@ def _vector_lookup(conn, kind: str, literal: str, scope: Scope, rows: list[dict]
     if missing:
         for row in conn.execute(
             f"""
-            SELECT e.article_id, e.ord, 1 - (e.embedding <=> %(qv)s::{kind}) AS sim
+            SELECT x.article_id, x.ord, x.sim
             FROM unnest(%(ids)s::bigint[], %(ords)s::int[]) AS k(article_id, ord)
-            JOIN chunk_embeddings e ON e.article_id = k.article_id AND e.ord = k.ord
-            JOIN article_chunks c ON c.article_id=e.article_id AND c.ord=e.ord
-            JOIN articles a ON a.id=c.article_id
-            WHERE {embeddings.current_embedding_sql()}
+            CROSS JOIN LATERAL ({_one_embedding_sql(f"1 - (e.embedding <=> %(qv)s::{kind}) AS sim")}) x
             """,
             {'qv': literal, 'ids': [key[0] for key in missing], 'ords': [key[1] for key in missing],
              'embedding_model': model},
         ).fetchall():
             sims[(row["article_id"], row["ord"])] = float(row["sim"])
     return sims
+
+
+def _one_embedding_sql(columns: str, extra: str = "") -> str:
+    """外层 unnest 出来的一个（文章, 块号）k 对应的向量行：这块是现行的，向量按现在的字算（current_embedding_sql），
+    再加 extra（检索范围）。放进 CROSS JOIN LATERAL，加 OFFSET 0 不让规划器拆开重排，每个键都按主键直接找到那一行。
+    写成普通连接时，规划器常常只拿文章号去查向量表的主键、再逐行比块号：长文一篇几百块，两三千个候选要翻
+    一百多万行，四五百毫秒。"""
+    return (
+        f"SELECT e.article_id, e.ord, {columns}"
+        " FROM chunk_embeddings e"
+        " JOIN article_chunks c ON c.article_id = e.article_id AND c.ord = e.ord"
+        " JOIN articles a ON a.id = e.article_id"
+        f" WHERE e.article_id = k.article_id AND e.ord = k.ord AND {embeddings.current_embedding_sql()}"
+        f"{' AND ' + extra if extra else ''}"
+        " OFFSET 0"
+    )
 
 
 def semantic_scores(sims: dict[tuple[int, int], float]) -> dict[tuple[int, int], float]:
@@ -1858,6 +1952,10 @@ def retrieve(
         # 一个目录下往往就几篇长文：每篇封顶放宽，不然最长那篇只能进两三段。
         budget = replace(budget, per_article=max(budget.per_article, TREE_PER_ARTICLE))
     per_channel = min(CANDIDATES, max(400, budget.passages * 8))
+    if semantic_ok and not query.overview and embeddings.ready(conn):
+        # 问题（和要点）的向量在后台先算，和下面关键词召回的几条 SQL 同时进行。
+        for text in [query.raw, *aspects[:MAX_ASPECTS]]:
+            embeddings.prefetch_query_vector(text)
     rows = _candidates(conn, query, effective, limit=per_channel, enough=budget.passages * 6)
     if semantic_only:
         # 正文块词频不包含文章标题；只保留实际命中内容词的标题证据，不保留公司概览。
@@ -2135,6 +2233,9 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         if query.authors:
             return _author_listing(conn, query, effective, limit, offset)
         return SearchResult(0, 0, [], [], query, {})
+    if query.content_terms and embeddings.ready(conn):
+        # 问题的向量在后台先算，和下面关键词召回的几条 SQL 同时进行。
+        embeddings.prefetch_query_vector(query.raw)
     rows = _candidates(conn, query, effective, limit=2000, enough=2000)
     semantic: dict[tuple[int, int], float] = {}
     if query.content_terms:
@@ -2165,6 +2266,7 @@ def search_articles(conn, text: str, scope: Scope, sources, *, limit: int = 20, 
         counts=counts,
         available=len(ordered),
         semantic=by_meaning,
+        scope=effective,
     )
 
 
