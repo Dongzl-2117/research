@@ -1,5 +1,6 @@
 """旧档案上 slot-*-numbers / unshield 的等值与拒绝。合成句子，不收真实文章。"""
 
+import threading
 from datetime import UTC, datetime, timedelta
 from html import escape
 from unittest.mock import patch
@@ -359,6 +360,39 @@ def test_sentence_split_ids_do_not_change_the_source_fingerprint():
     second = pr.source_manifest(html)
     assert first["source_fingerprint"] == second["source_fingerprint"]
     assert "data-src-para" in first["source_snapshot"]
+
+
+def test_sentence_split_ids_do_not_depend_on_other_threads(monkeypatch):
+    """别的线程同时在切段，这一篇的编号和指纹也不变。
+
+    网页在一个进程里同时渲染好几页，译制 --workers 16 也是一个进程 16 个线程。以前编号记在模块全局变量上，
+    别的线程在这一篇切到一半时清零、加一，这一篇后面的 data-src-para 就跟着变：对照页随机退成两栏，
+    译制写入前的复核报 canonical-source-changed-during-request。
+    """
+    from researchlib.translate import segments
+
+    sentence = "The sample desk kept shipping notes while the market stayed open. "
+    html = "".join(f"<p>{sentence * 20}Revenue was ${amount} million in the quarter.</p>" for amount in (10, 20, 30))
+    other = f"<p>{sentence * 30}Margins were 40% for the year.</p>"
+    expected = pr.source_manifest(html)
+    cut = segments._overflow_pieces
+    interleaved = []
+
+    def cut_while_another_thread_cuts(node):
+        pieces = cut(node)
+        # 这一篇第一段刚切开、还没领编号时，另一个线程把另一篇从头切一遍。
+        if pieces and threading.current_thread() is threading.main_thread() and not interleaved:
+            interleaved.append(True)
+            worker = threading.Thread(target=segments.iter_segments, args=(other,))
+            worker.start()
+            worker.join()
+        return pieces
+
+    monkeypatch.setattr(segments, "_overflow_pieces", cut_while_another_thread_cuts)
+    got = pr.source_manifest(html)
+    assert interleaved
+    assert got["source_snapshot"] == expected["source_snapshot"]
+    assert got["source_fingerprint"] == expected["source_fingerprint"]
 
 
 def test_long_article_is_not_rejected_as_canonical_source_changed(tmp_path):

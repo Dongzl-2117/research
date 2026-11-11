@@ -35,6 +35,7 @@ from __future__ import annotations
 import difflib
 import html as html_lib
 import re
+import threading
 from dataclasses import dataclass
 from html import escape
 from html.parser import HTMLParser
@@ -1082,14 +1083,17 @@ def _keep_paragraph_id(node: _El) -> None:
     node.replacement = opening + node.replacement[match.end():]
 
 
-_SRC_PARA_SEQ = 0
+# 编号记在各线程自己的槽里。网页在一个进程里同时渲染好几页（FastAPI 的同步路由在线程池里跑），
+# 译制 --workers 16 也是一个进程 16 个线程。以前记在模块全局变量上，别的线程切到一半清零、加一，
+# 这一篇后面的 data-src-para 就跟着变，指纹和回执对不上：对照页随机退成两栏，译制写入前的复核报
+# canonical-source-changed-during-request，整篇白译。
+_SRC_PARA = threading.local()
 
 
 def _alloc_src_para() -> str:
     """同一次按句切开的叶子共用一个编号，展示时再并回原来的段落。"""
-    global _SRC_PARA_SEQ
-    _SRC_PARA_SEQ += 1
-    return str(_SRC_PARA_SEQ)
+    _SRC_PARA.seq = getattr(_SRC_PARA, "seq", 0) + 1
+    return str(_SRC_PARA.seq)
 
 
 def _mark_src_para(piece: str, group: str) -> str:
@@ -1272,9 +1276,8 @@ def _parse_and_walk(
 ) -> tuple[list[Segment], str]:
     # 编号按这一次解析从 1 起算。用进程全局累加的话，同一篇长文在译前、译后各
     # materialize 一次，data-src-para 就会不同，回执指纹对不上，整篇被记成
-    # canonical-source-changed，模型已经译完的字也入库不了。
-    global _SRC_PARA_SEQ
-    _SRC_PARA_SEQ = 0
+    # canonical-source-changed，模型已经译完的字也入库不了。别的线程同时在切也一样，见 _SRC_PARA。
+    _SRC_PARA.seq = 0
     parser = _FragmentParser()
     parser.feed(html or "")
     parser.close()
