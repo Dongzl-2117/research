@@ -57,6 +57,7 @@ docker compose exec app research-translate --from-inventory unmapped --workers 4
 | `--workers` | 1 | 几篇同时译，1 到 16。每篇里的各批照旧一批接一批 |
 | `--from-inventory` | 空 | 译盘点清单里这一类的篇（`unmapped`、`stopped`、`legacy`、`old-prompt`……），见「全库盘点」 |
 | `--recheck`、`--dry-run` | 关 | 见下面重译旧分段的那一节 |
+| `--anytime` | 关 | 走 DeepSeek 时高峰价时段也开新的一篇。默认按队列、按清单译时避开高峰，见下面「避开 DeepSeek 高峰价时段」 |
 
 同一轮里失败过、没有可译正文或者没译全的篇先跳过；`--loop` 时队列只剩它们就先睡，睡醒再给一次机会，不会一直重试同一篇。没配 LLM 凭证时直接退出（退出码 2），不连库。
 
@@ -67,6 +68,8 @@ docker compose exec app research-translate --from-inventory unmapped --workers 4
 点名的 `--article-id` 里被断线、超时、限流（429）、5xx 打断没译完的篇（打印 `partial … (request-failed)`，或者一段都没译出来、打印 `failed: 连不上…`），以及译的时候原文被别的任务改了的篇（`source-changed-during-request`，11-07 的 22173 撞上夜间补钟点），这一轮最后等 2 分钟自动再补一轮，还没补完再等 10 分钟补一轮（`NAMED_RETRY_PAUSES`），打印「#22161 被打断没译完，2 分钟后再补一轮」。已译的段都存着，再补只问没译出来的段；带 `--fresh` 的照样整篇重译。欠费（402）、鉴权、内容被拒（400）、对不齐这些等多久都一样，不等。补了两轮还没补完，打印「补了 2 轮，#… 还没译完：过一会儿再跑 research-translate --article-id …」，退出码 1。按队列译的不等：没译完的记了冷却（请求失败从 15 分钟起），过了冷却自己回到队列。
 
 跑的时候自动上线先不重建（`scripts/deploy.sh` 看 `docker compose top app` 里有没有 `research-translate`）。它在等的提交 CI 过了，就写 `data/status/.deploy-waiting` 请译制让路：按队列译的（包括 `--loop` 和 `--recheck`）每译完一篇看一眼，在就不再开新的一篇，手上的译完就退，打印「自动上线在等 某提交：不再开新的一篇，手上的译完就退；/health 报出新提交后再跑 research-translate …」（后面是原样的这条命令），下一轮自动上线（10 分钟内）就上了。手上那篇照常译完入库，不会白花钱。上线后要接着译就再开一次，新版本的规则这时才生效；在等上线时新开的会直接停下。点名的 `--article-id` 不让路，译完才上线；只有在等着自动再补的那十来分钟里，自动上线来请它停就不补了，打印上线后要再跑的命令。长时间的 `--loop` 放在 tmux 里跑。
+
+**避开 DeepSeek 高峰价时段**（2026-11-11 加）。DeepSeek 周一到周五北京时间 9 到 12 点、14 到 18 点（UTC 1 到 4 点、6 到 10 点）按高峰价收，别的时段（含周末和国内法定节假日全天）是高峰价的一半（[官方价目](https://api-docs.deepseek.com/quick_start/pricing)，常量 `deepseek.DEEPSEEK_PEAK_HOURS_UTC`）。走 DeepSeek 时，按队列、按清单译的（包括 `--loop`、`--recheck`、`--from-inventory`）到了高峰就不再开新的一篇，手上的译完，打印「DeepSeek 高峰价时段（…）：不开新的一篇，手上的译完；北京时间 12:00 以后接着译」；每分钟看一眼，过了高峰打印「过了 DeepSeek 高峰价时段，接着译」，接着拿下一篇。进程一直不退，外面套的循环不用管；等着的时候自动上线来请它让路，一分钟内照样退出。这一轮的合计行带上「（其中高峰价时段停了 X）」，拿合计算速度时减掉这一段。节假日没认，照样当高峰停。点名的 `--article-id` 照译；高峰也要译，加 `--anytime`。走 Grok 的（订阅里出，不分时段）不看这个。
 
 ### 几篇同时译、每篇用了多少（2026-11-08）
 
@@ -414,17 +417,25 @@ Zhilin 11-10 在卡片上选了这一批走 DeepSeek。当时的账：
 - DeepSeek：第 3 版在它上面验过（上一节）。16 篇同时译，估两三天；约 40 到 120 美元（按 11-09 的单件用量加上第 3 版多出的约 27% 输出，夜间价），北京时间工作日 9 到 12 点、14 到 18 点单价翻倍，全天跑大约再多三成。
 - Grok：订阅里出、不另花钱，但和识图全量重认抢同一份账号额度，3 小时 16 分只译了约 21 篇，照这个速度要两周左右；也没和 DeepSeek 拿同一批段比过好坏。
 
-只有这一轮的进程走 DeepSeek，识图、问库、摘要、观点照旧用 Grok（`.env` 不改）。Mac mini 上：
+当晚 Zhilin 又让整站都走 DeepSeek（`.env` 设 `RESEARCH_LLM_PROVIDER=deepseek`，见 [llm.md](llm.md)）。命令里的 `-e RESEARCH_LLM_PROVIDER=deepseek` 留着：以后 `.env` 换回 Grok，这一轮照旧走 DeepSeek。
+
+Mac mini 上（11-10 22:55 起用这一条，外面套了一层循环，合并上线以后自己接着译）：
 
 ```bash
 cd ~/research
-nohup bash -c 'docker compose exec -T app research-translate-inventory; for c in none partial stale old-prompt old-receipt legacy; do docker compose exec -T -e RESEARCH_LLM_PROVIDER=deepseek -e RESEARCH_LLM_CONCURRENCY=16 app research-translate --from-inventory $c --workers 16; done' < /dev/null >> ~/translate-deepseek.log 2>&1 &
+docker compose top app | grep research-translate   # 先确认什么都不打出来，没有旧的一轮在跑
+nohup bash -c 'while :; do docker compose exec -T app research-translate-inventory; for c in none partial stale old-prompt old-receipt legacy unmapped; do docker compose exec -T -e RESEARCH_LLM_PROVIDER=deepseek -e RESEARCH_LLM_CONCURRENCY=16 app research-translate --from-inventory $c --workers 16; done; w=data/status/.deploy-waiting; [ -n "$(find $w -mmin -30 2>/dev/null)" ] || break; while [ -n "$(find $w -mmin -30 2>/dev/null)" ]; do sleep 60; done; sleep 120; done' < /dev/null >> ~/translate-deepseek.log 2>&1 &
 ```
 
 - 先重新盘点，再一类接一类译；某一类是空的就直接到下一类。`old-prompt` 按第 3 版整篇重译，旧提示词的段不复用；`legacy`、`old-receipt` 没有这一版的回执，也是整篇译。
-- 合并上线时每个 worker 译完手上那篇就停，后面几类也立刻让路退出。`/health` 报出新提交后再跑同一条：重新盘点，译完的跳过，接着译。
+- 最后一类 `unmapped` 是对照页分开展示的篇。其中清洗规则改过、回执过期的（11-11 盘点 40 篇，`receipt` 状态、页面对不上）不在前面几类里，再译时没变的段全复用，基本只重签回执；没回执的旧稿在 `legacy` 那一类已经重译过，到这里会跳过。11-11 10:04 开的那一轮命令里还没有这一类，前面几类都跑完后单独跑一次 `research-translate --from-inventory unmapped --workers 16`。
+- 合并上线时每个 worker 译完手上那篇就停，后面几类也立刻让路退出。外层循环接着看 `data/status/.deploy-waiting`：半小时内写过（自动上线在等）就每分钟看一次，等 `scripts/deploy.sh` 在新容器起来后把它删掉，再过两分钟从盘点重来，译完的跳过。全部译完、或者停下时没有在等上线（比如 402），外层循环也退出，不会空转。
+- 以前给的不带循环的那条（`nohup bash -c 'docker compose exec -T app research-translate-inventory; for c in …; done'`）合并上线后不会自己接着译，`/health` 报出新提交后要手动再跑一次，改用上面这条。
+- 要停这一轮：Mac 上 `pkill -f deploy-waiting` 停外层循环，再 `docker compose restart app` 停容器里在译的（镜像里没有 `pkill`；手上那几篇白译，网站停几秒）。
 - DeepSeek 余额不够时请求被拒（402），这一轮停在那，充值后再跑同一条。
 - 进度看 `~/translate-deepseek.log`：每篇一行结果带用量和用时，每一类跑完一行合计；按合计的 token 和上面的单价算已经花了多少。
+- 不看日志也能从线上量速度：清单按发布时间新的在前，`none` 一类从新往旧译，Stratechery 文章页 `.bilingual` 的 `data-correspondence` 从没有变成 `mapped` 的地方就是前沿；隔一段时间数一次前沿附近新变的篇数。两次量的差得很远：11-10 夜里 22:19 到 22:39 前沿在 2015 年 5 月，20 分钟 9 篇（共 12.3 万英文字符），每小时约 36 万字符；11-11 白天 10:08 盘点完到 10:41，`none` 一类 285 篇 Stratechery 只剩 2 篇没译，半小时两三百万字符，快了十几倍，同样 16 路。为什么夜里慢要看日志里每一类合计的用时（`grep 这一轮 ~/translate-deepseek.log`）。11-11 盘点要译的英文共约 4800 万字符（没译过的 438 万、`old-prompt` 713 万、`legacy` 3648 万，没回执的旧稿平均一篇 2.5 万字符），按白天的速度一天以内，按夜里的速度要五天半左右。白天新译的抽 16 篇：中英字数比 0.27、末尾不缩水、破折号共 6 个，318 个长段里 1 段先放英文；夜里那 9 篇是 0.26、破折号 2 个、205 段 1 段先放英文。
+- 11-11 起（合并上线以后）这一轮按上面「避开 DeepSeek 高峰价时段」在工作日 9 到 12 点、14 到 18 点停着：白天快，不停的话剩下的大半按高峰价译，比全按夜间价多花约 20 到 70 美元（按 11-09 的单件用量算）。缺中文的篇 11-11 上午基本补齐了，剩下的是把已有的旧中文换成第 3 版，晚几天换完影响不大。命令不用改，上线后循环从盘点重开就带上；要高峰也译，命令里 `--workers 16` 后面加 `--anytime`。
 - 同时开着别的 `research-translate`（比如照 `.env` 走 Grok 的 `--loop`）时，碰上同一篇按 advisory lock 各让一步，不会重译。
 
 ## 一段出错不连累整篇（2026-11-07，`ALIGNMENT_VERSION` 9）

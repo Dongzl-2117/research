@@ -652,3 +652,93 @@ def test_from_inventory_makes_way_for_a_release_like_the_queue(conn, monkeypatch
     monkeypatch.setattr(cli, "translate_article", translate)
     assert cli.main(["--from-inventory", "unmapped"]) == 0
     assert seen == [3]
+
+
+def _clock(monkeypatch, *moments):
+    """research-translate 看到的钟点依次是这几个（UTC），用完了停在最后一个；高峰时段按真的价目算。"""
+    from datetime import UTC, datetime
+
+    from researchlib import deepseek
+
+    left = [datetime(*moment, tzinfo=UTC) for moment in moments]
+
+    def now():
+        return left.pop(0) if len(left) > 1 else left[0]
+
+    monkeypatch.setattr(cli, "_utcnow", now)
+    monkeypatch.setattr(cli, "deepseek_peak_until", deepseek.deepseek_peak_until)
+
+
+def test_a_queue_run_waits_out_the_deepseek_peak(conn, monkeypatch, capsys):
+    """高峰价时段按队列译不开新的一篇：每分钟看一眼，过了高峰接着译；提示各印一次，合计里记下停了多久。"""
+    from researchlib.translate import llm as translate_llm
+
+    seen: list[int] = []
+    slept: list[float] = []
+
+    def translate(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
+        seen.append(article_id)
+        for meter in translate_llm._meters.get():
+            meter.add({"prompt_tokens": 100, "completion_tokens": 10})
+        return TranslateResult(article_id, "translated", segments=2)
+
+    # 周三北京时间 11:58，高峰到 12:00；两分零五秒后过了高峰。
+    _clock(monkeypatch, (2026, 11, 11, 3, 58), (2026, 11, 11, 3, 59, 30), (2026, 11, 11, 4, 0, 5))
+    monkeypatch.setattr(cli.time, "sleep", slept.append)
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [61, 62])
+    monkeypatch.setattr(cli, "translate_article", translate)
+    assert cli.main(["--limit", "2"]) == 0
+    assert seen == [61, 62] and slept == [60, 30]
+    out = capsys.readouterr().out
+    assert out.count("不开新的一篇") == 1 and "北京时间 12:00 以后接着译" in out
+    assert out.count("过了 DeepSeek 高峰价时段，接着译") == 1
+    assert re.search(r"^这一轮 \d+ 秒（其中高峰价时段停了 2 分 5 秒）：译完 2 篇；", out, re.M)
+
+
+def test_anytime_named_and_grok_runs_do_not_wait_for_the_peak(conn, monkeypatch):
+    """--anytime、点名的几篇、走 Grok 的不看高峰。"""
+    seen: list[int] = []
+    _clock(monkeypatch, (2026, 11, 11, 7, 0))
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: pytest.fail("不该等高峰"))
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [71])
+    monkeypatch.setattr(cli, "translate_article", _translate(seen))
+    assert cli.main(["--limit", "1", "--anytime"]) == 0
+    assert cli.main(["--article-id", "72"]) == 0
+    monkeypatch.setattr(cli, "llm_provider", lambda: "grok")
+    monkeypatch.setattr(cli, "xai_oauth_status", lambda data_dir: SimpleNamespace(logged_in=True))
+    assert cli.main(["--limit", "1"]) == 0
+    assert seen == [71, 72, 71]
+
+
+def test_waiting_for_the_peak_still_makes_way_for_a_release(conn, monkeypatch, tmp_path, capsys):
+    """高峰里等着的时候自动上线来请它让路：不等了，一篇不译就退，不挡上线。"""
+    slept: list[float] = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        _deploy_waits(tmp_path)
+
+    _clock(monkeypatch, (2026, 11, 11, 7, 0))
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [81])
+    monkeypatch.setattr(cli, "translate_article", lambda *args, **kwargs: pytest.fail("让路了还在译"))
+    assert cli.main(["--loop"]) == 0
+    assert slept == [60]
+    assert "自动上线在等" in capsys.readouterr().out
+
+
+
+def test_a_run_with_nothing_left_to_take_does_not_wait_for_the_peak(conn, monkeypatch):
+    """这一轮该拿的都拿过了，高峰到了也直接收工，不在高峰里干等着再退。"""
+    seen: list[int] = []
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: pytest.fail("没有要拿的了，不该等高峰"))
+    monkeypatch.setattr(cli, "translate_article", _translate(seen))
+    # 北京时间 8:59:30 还不是高峰，译完那篇已经是 9:00:30。拿够了 --limit 篇：
+    _clock(monkeypatch, (2026, 11, 11, 0, 59, 30), (2026, 11, 11, 1, 0, 30))
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [91, 92])
+    assert cli.main(["--limit", "1"]) == 0
+    # 查出来的都分完了：
+    _clock(monkeypatch, (2026, 11, 11, 0, 59, 30), (2026, 11, 11, 1, 0, 30))
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [93])
+    assert cli.main(["--limit", "5"]) == 0
+    assert seen == [91, 93]

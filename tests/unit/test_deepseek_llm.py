@@ -855,3 +855,33 @@ def test_chat_holds_the_callers_slot_instead_of_the_shared_limit(tmp_path, monke
     assert text == "摘录" and held == [True, True]
     assert own.acquire(blocking=False)
     own.release()
+
+
+@pytest.mark.parametrize(
+    ("utc", "until"),
+    [
+        # 2026-11-11 是周三。UTC 1 到 4 点、6 到 10 点（北京时间 9 到 12 点、14 到 18 点）是高峰。
+        ((2026, 11, 11, 0, 59), None),
+        ((2026, 11, 11, 1, 0), (2026, 11, 11, 4, 0)),
+        ((2026, 11, 11, 3, 59), (2026, 11, 11, 4, 0)),
+        ((2026, 11, 11, 4, 0), None),
+        ((2026, 11, 11, 5, 30), None),
+        ((2026, 11, 11, 6, 0), (2026, 11, 11, 10, 0)),
+        ((2026, 11, 11, 9, 59), (2026, 11, 11, 10, 0)),
+        ((2026, 11, 11, 10, 0), None),
+        ((2026, 11, 13, 7, 0), (2026, 11, 13, 10, 0)),
+        # 周六、周日全天不是高峰。
+        ((2026, 11, 14, 2, 0), None),
+        ((2026, 11, 15, 7, 0), None),
+    ],
+)
+def test_deepseek_peak_hours_follow_the_price_list(utc, until):
+    from datetime import UTC, datetime, timedelta, timezone
+
+    now = datetime(*utc, tzinfo=UTC)
+    expected = datetime(*until, tzinfo=UTC) if until else None
+    assert deepseek.deepseek_peak_until(now) == expected
+    # 换成北京时间传进来也一样。
+    beijing = now.astimezone(timezone(timedelta(hours=8)))
+    assert deepseek.deepseek_peak_until(beijing) == expected
+

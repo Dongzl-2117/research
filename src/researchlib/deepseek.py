@@ -5,12 +5,15 @@
 frequency_penalty 不起作用，请求里一律不发，也不发 fast。
 
 鉴权不在这里，由 researchlib.llm / researchlib.translate.llm 按 DEEPSEEK_API_KEY 加 Bearer。
+
+高峰价时段（``deepseek_peak_until``）单价翻倍，按队列、按清单的批量译制默认避开（research-translate）。
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from datetime import UTC, datetime
 
 from researchlib.llm_provider import DEEPSEEK_DEFAULT_BASE_URL
 
@@ -23,6 +26,11 @@ DEEPSEEK_OUTPUT_FLOOR = 393_216
 # 问库按次选档时也按这个顺序列出来（researchlib.ask_model）。
 DEEPSEEK_EFFORTS = ("low", "high", "max")
 _ALLOWED_EFFORT = frozenset(DEEPSEEK_EFFORTS)
+
+# 官方价目（api-docs.deepseek.com/quick_start/pricing，11-11 核过）：周一到周五 UTC 1 到 4 点、6 到 10 点
+# 是高峰价，也就是北京时间 9 到 12 点、14 到 18 点；别的时段（含周末和国内法定节假日全天）按高峰价的一半收。
+# 节假日这里不认，照样当高峰。
+DEEPSEEK_PEAK_HOURS_UTC = ((1, 4), (6, 10))
 
 # 这些字段会把强度或上下文从上面的口径拉开，请求里不能出现。
 _FORBIDDEN_FIELDS = frozenset(
@@ -95,3 +103,14 @@ def completion_params(
     if forbidden:
         raise RuntimeError(f"DeepSeek 请求不能带 {', '.join(sorted(forbidden))}")
     return params
+
+
+def deepseek_peak_until(now: datetime) -> datetime | None:
+    """now（要带时区）落在 DeepSeek 高峰价时段里，就交回这一段结束的时刻（UTC）；不在就交回 None。"""
+    moment = now.astimezone(UTC)
+    if moment.weekday() >= 5:
+        return None
+    for start, end in DEEPSEEK_PEAK_HOURS_UTC:
+        if start <= moment.hour < end:
+            return moment.replace(hour=end, minute=0, second=0, microsecond=0)
+    return None
