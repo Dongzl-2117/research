@@ -38,7 +38,7 @@ docker compose exec -T app research-ocr --relayout \
 先看 `--dry-run` 报的张数。正式跑只改 `image_texts.text`，并重写引用这些图的文章旁路和检索块；`prompt_version`、`created_at` 不动，不调模型。短正文下次打开、或夜间补摘要时，会按改回来的图片文字重写导读。
 - **排版只认结构**：旁路 `articles.ocr_text`、检索块、摘要和观点的输入、检索引用条，都按排好的字走。提示里那句说话人说明（「截图里的对话已整理成说话人：正文」）只在这篇有一张图里有消息时加（`ocr.ocr_speaker_note`）。全量重认以前存的旧识图（`units` 为空）当成几段文字（`ocr_units.plain_units`：按空行分段，字照原样），不按冒号前的字猜谁说的，也不剥界面字。
 - **模型没按格式交**（回了自由文字）：字照原样存，`units` 存成几段文字（`plain_units`），这次的钱不白花；以后 `--redo`、`--tall` 不会因为它没有结构再挑它。**回了 JSON 却读不出来**（多半是输出被截断）：同一张图再要一次，还不行记 `engine` 以 `:invalid` 结尾、正文为空，夜里不自动重试（重试又要花钱），要重认用 `--redo --article` 点名。
-- **旧规则删了**（11-11）：交回结构以前那套从自由文字里猜说话人、剥界面字、补句号、接折行、改错字的规则（`wechat_dialogue` 的大部分、`vision_polish`、`normalize_vision_text`、阅读页对话排版、检索块的「说话人边界未核实」标题）删了，代码净删约 3000 行、测试约 2200 行。`wechat_dialogue` 只留行首说话人（`split_speaker`，正文和评论里「昵称：」加粗用）和 `relabel_host`。删之前全库按第 3 版说明重认完（11-10），长截图 `--tall` 补认完；用得着这些规则的旧识图只剩零星几张，照认出来的字排。库里存的识别原文一字不改。核对还剩多少（只读）：
+- **旧规则删了**（#316）：交回结构以前那套从自由文字里猜说话人、剥界面字、补句号、接折行、改错字的规则（`wechat_dialogue` 的大部分、`vision_polish`、`normalize_vision_text`、阅读页对话排版、检索块的「说话人边界未核实」标题）删了，代码净删约 3000 行、测试约 2200 行。`wechat_dialogue` 只留行首说话人（`split_speaker`，正文和评论里「昵称：」加粗用）和 `relabel_host`。删之前全库按第 3 版说明重认完（11-10），长截图 `--tall` 补认完；用得着这些规则的旧识图只剩零星几张，照认出来的字排。库里存的识别原文一字不改。核对还剩多少（只读）：
 
 ```bash
 docker compose exec -T db psql -U research -d research -c "
