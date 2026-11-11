@@ -16,6 +16,10 @@
 按队列译（包括 --loop）时每个 worker 译完手上那篇看一眼，在就停下，让新版本上线，上线后再跑。
 点名的 --article-id 译完才停。
 
+走 DeepSeek 时，高峰价时段（北京时间工作日 9 到 12 点、14 到 18 点，单价翻倍）按队列、按清单译的不开新的一篇：
+手上的译完，每分钟看一眼，过了高峰接着译，进程不退；等的时候自动上线来请它让路，照样退。
+点名的 --article-id 照译；--anytime 高峰也开新篇。
+
 点名的几篇被断线、超时、限流、5xx 打断（或者译的时候原文被别的任务改了）没译完的，
 最后等 2 分钟再补一轮，还不行等 10 分钟再补一轮；已译的段都存着，再补只问没译出来的段。
 等的时候自动上线来请它停，就不补了，印出上线后要再跑的命令。
@@ -33,11 +37,14 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from contextvars import ContextVar
+from datetime import UTC, datetime
 
 from researchlib.config import Settings
 from researchlib.db import connect, ensure_search_session, prepare
+from researchlib.deepseek import deepseek_peak_until
 from researchlib.health import deploy_waiting
-from researchlib.llm_provider import PROVIDER_GROK, deepseek_api_key, llm_provider
+from researchlib.llm_provider import PROVIDER_DEEPSEEK, PROVIDER_GROK, deepseek_api_key, llm_provider
+from researchlib.textutil import SHANGHAI
 from researchlib.translate import inventory
 from researchlib.translate.llm import Usage, metered, transient_failure
 from researchlib.translate.provenance import PROMPT_VERSION, AlignmentError
@@ -57,6 +64,8 @@ from researchlib.translate.xai_oauth import XaiLoginRequiredError, xai_oauth_sta
 NAMED_RETRY_PAUSES = (120, 600)
 # 等的时候每隔这么久看一眼自动上线在不在等，在等就不补了，免得把上线挡十几分钟。
 PAUSE_STEP = 15
+# DeepSeek 高峰价时段里，等着的 worker 隔这么久（秒）看一眼：过没过高峰、自动上线在不在等。
+PEAK_CHECK_S = 60
 # 最多几篇同时译。每个 worker 占一条数据库连接，同一时刻最多发一个模型请求。
 MAX_WORKERS = 16
 # 每篇的锁是 (hashtext(LOCK_NAME), 文章 id) 这把会话级 advisory lock：译完放掉，进程没了自动放掉。
@@ -65,6 +74,10 @@ LOCK_NAME = "research-translate"
 _PRINT = threading.Lock()
 # 这个线程正在译的文章。几篇同时译时，译制日志的每一行前面带上它，分得清是哪一篇的。
 _translating: ContextVar[int | None] = ContextVar("translating", default=None)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 def _say(text: str, *, err: bool = False) -> None:
@@ -235,6 +248,12 @@ def main(argv: list[str] | None = None) -> int:
         help=f"一次请求最多送几段，默认 {TRANSLATE_BATCH_MAX_SEGMENTS}。0 表示不按段数切、只按每批 "
         f"{TRANSLATE_BATCH_MAX_CHARS} 字切，一般文章一次请求送整篇；照旧按段编号交回、逐段核对",
     )
+    parser.add_argument(
+        "--anytime",
+        action="store_true",
+        help="走 DeepSeek 时高峰价时段（北京时间工作日 9 到 12 点、14 到 18 点，单价翻倍）也开新的一篇。"
+        "默认按队列、按清单译时这几段不开新篇，手上的译完，过了高峰接着译；点名的 --article-id 不受影响",
+    )
     args = parser.parse_args(argv)
     # 让路以后原样再跑这一条。
     again_command = " ".join(["research-translate", *map(shlex.quote, sys.argv[1:] if argv is None else argv)])
@@ -290,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     named = list(dict.fromkeys(args.article_id))
+    # DeepSeek 高峰价时段单价翻倍：按队列、按清单译的一大批默认避开，点名的几篇照译。
+    avoid_peak = not named and not args.anytime and llm_provider() == PROVIDER_DEEPSEEK
     # --from-inventory old-prompt：旧提示词译的篇本来都译完了，要按现在的提示词重译，用这一版译过的才算完。
     rewrite = args.from_inventory == inventory.OLD_PROMPT
     finished = (
@@ -323,6 +344,8 @@ def main(argv: list[str] | None = None) -> int:
     tally: Counter[str] = Counter()
     total = Usage()
     started = time.monotonic()
+    # 高峰价时段：正在等的这一段几点结束（None 是没在等）、从几点开始等的、前面几段一共等了几秒。
+    peak: dict = {"until": None, "since": None, "paused": 0.0}
 
     def make_way() -> bool:
         # 自动上线在等：按队列译的不再开新的一篇。旧容器里的进程译的是旧规则，--loop 又不会自己停，
@@ -340,6 +363,31 @@ def main(argv: list[str] | None = None) -> int:
                     f"/health 报出新提交后再跑 {again_command}"
                 )
         return bool(waiting)
+
+    def wait_peak() -> bool:
+        """DeepSeek 高峰价时段不开新的一篇：睡一会儿交回 True，调用方再看一遍要不要让路；不在高峰交回 False。"""
+        if not avoid_peak:
+            return False
+        now = _utcnow()
+        until = deepseek_peak_until(now)
+        with guard:
+            before = peak["until"]
+            peak["until"] = until
+            if until is not None and before is None:
+                peak["since"] = now
+            elif until is None and before is not None:
+                peak["paused"] += (now - peak["since"]).total_seconds()
+        if until is None:
+            if before is not None:
+                _say("过了 DeepSeek 高峰价时段，接着译")
+            return False
+        if until != before:
+            _say(
+                "DeepSeek 高峰价时段（北京时间工作日 9 到 12 点、14 到 18 点，单价翻倍）：不开新的一篇，手上的译完；"
+                f"北京时间 {until.astimezone(SHANGHAI):%H:%M} 以后接着译。高峰也要译，加 --anytime 再跑"
+            )
+        time.sleep(max(1.0, min(PEAK_CHECK_S, (until - now).total_seconds())))
+        return True
 
     if make_way():
         return 0
@@ -473,6 +521,12 @@ def main(argv: list[str] | None = None) -> int:
                 stop.set()
                 return None
             with guard:
+                # 这一轮该拿的都拿过了就收工，不用等高峰过去。
+                if not args.loop and (len(tried) >= limit or (flags["queried"] and not queued)):
+                    return None
+            if wait_peak():
+                continue
+            with guard:
                 if not args.loop and len(tried) >= limit:
                     return None
                 article_id = claim(conn)
@@ -550,7 +604,12 @@ def main(argv: list[str] | None = None) -> int:
             return
         names = {"translated": "译完", "partial": "没译完", "failed": "出错", "skipped": "跳过"}
         counts = "，".join(f"{names.get(status, status)} {n} 篇" for status, n in tally.most_common())
-        _say(f"这一轮 {_duration(time.monotonic() - started)}：{counts}；{total.describe()}")
+        paused = peak["paused"]
+        if peak["until"] is not None:
+            paused += (_utcnow() - peak["since"]).total_seconds()
+        # 用时把高峰里等着的也算进去了，拿合计算速度时减掉这一段。
+        held = f"（其中高峰价时段停了 {_duration(paused)}）" if paused >= 60 else ""
+        _say(f"这一轮 {_duration(time.monotonic() - started)}{held}：{counts}；{total.describe()}")
 
     undo_progress = _show_progress()
     interrupted = False
