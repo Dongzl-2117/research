@@ -13,6 +13,15 @@ def _database_name(url: str) -> str:
     return url.rsplit("/", 1)[-1].split("?", 1)[0]
 
 
+@pytest.fixture(autouse=True)
+def _never_deepseek_peak(monkeypatch):
+    """research-translate 按队列、按清单译时看真钟点避开 DeepSeek 高峰价时段。测试一律当作不在高峰，
+    不然白天跑 CI 会一直等；要测高峰的用例自己再换掉 cli.deepseek_peak_until。"""
+    from researchlib.translate import cli
+
+    monkeypatch.setattr(cli, "deepseek_peak_until", lambda now: None)
+
+
 @pytest.fixture(scope="session")
 def database_url() -> str:
     url = os.environ.get(

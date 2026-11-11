@@ -443,3 +443,116 @@ def test_html_article_drops_pitch_paragraphs():
     assert "渠道优势" in out and "竞争格局" in out
     for word in ("会员群", "abc_123", "白嫖"):
         assert word not in out
+
+
+# —— 统计切尾不吞正文、写法特殊的推销、文首号召（2026-11-11）——
+
+
+def test_template_tail_keeps_text_between_misplaced_promo_images():
+    # 老文章按段估过图的位置，文末的入群码、优惠券图插进了最后两段正文中间。统计切尾从这张图起切的话，
+    # 容差会把后面两段正文一起切掉；号召之前的整段正文要留下，夹在中间的模板图照样去掉。
+    promo = [
+        "— 扫码下方微信加入微信会员群 —",
+        "我们只在能力圈范围内讨论企业的商业模式、企业文化和战略方向",
+        "【我的持仓】",
+        "腾讯：买入后一直拿着，内在价值预估还有空间，仓位过半",
+        "美团：继续跌就继续加，内在价值预估还有空间",
+        "*仅供参考，不构成任何投资建议",
+        "有问题咨询可以在星球里发帖提问，只回答付费会员的问题",
+        "备注：群会员",
+    ]
+    body = "\n\n".join(
+        [
+            "# t",
+            "巴菲特一直偏爱低杠杆、低市盈率、高分红的公司，这一点几十年都没有变过。" * 4,
+            "![](group.jpg)",
+            "一个人能跑赢六十年的周期，我实在想不到任何理由不去学习研究他，反而去学各种奇技淫巧。",
+            "![](coupon.jpg)",
+            "选股标准一篇文章讲不完，这次主要讲高分红，我也懒得再写一遍了，直接贴知识星球昨晚的问答吧：",
+        ]
+        + promo
+    )
+    profile = _profile(promo, {"h-group", "h-coupon"})
+    out = clean_body(body, profile, {"group.jpg": "h-group", "coupon.jpg": "h-coupon"})
+    assert "跑赢六十年的周期" in out and "直接贴知识星球昨晚的问答" in out
+    for word in ("group.jpg", "coupon.jpg", "会员群", "能力圈", "持仓", "仅供参考"):
+        assert word not in out
+
+
+def test_pitch_under_a_plain_label_is_cut_to_the_end():
+    body = "\n\n".join(
+        [
+            "# t",
+            "电商项目能不能做，先看品类有没有局部优势，再看市场还有多少增量空间。" * 3,
+            "以上就是我判断一个电商项目能不能做的思路，希望对你有用，晚安～",
+            "关于付费星球",
+            "长文表达比较消耗心力，日常我更偏爱在知识星球输出，每天能稳定输出十多条。",
+            "我分享的内容以产品设计、商业创业居多，更合适理性客观的同学，欢迎感兴趣的同学加入，交个朋友。",
+            "关于产品导师服务",
+            "我有信心在产品、在创业上帮助进取欲望强的同学少走弯路，加速成长，也想把自己打造成一款产品。",
+            "（2）商业咨询服务以问题为核心，方式则以微信与语音为主，你有问题，我引导你去解决。",
+            "（3）按半年期付费，满意就续费，不满意就相忘于江湖；半年期4500，一年期8800；",
+        ]
+    )
+    out = clean_body(body)
+    assert "局部优势" in out and "晚安" in out
+    for word in ("付费星球", "导师服务", "欢迎感兴趣", "半年期"):
+        assert word not in out
+
+
+def test_plain_label_followed_by_analysis_is_kept():
+    # 「关于知识星球」后面是分析、没有一句冲着读者说的话，不当推销。
+    body = "\n\n".join(
+        [
+            "# t",
+            "内容付费平台要解决的是创作者的流量来源问题，平台本身并不分配流量。" * 3,
+            "关于知识星球",
+            "知识星球是内耗型的产品，不是分享型的，一个星主没有其他流量来源的话，社群最终会走向死寂。",
+            "知识星球的抽成是 20%，比别家都高，但工具更完整，更适合已经有一批忠实读者、需要收费工具的作者。",
+        ]
+    )
+    out = clean_body(body)
+    assert "关于知识星球" in out and "最终会走向死寂" in out and "抽成是 20%" in out
+
+
+def test_invitations_to_the_authors_community_at_the_end_are_cut():
+    text = "新功能上线后，应该第一时间与目标用户取得联系，听取他们的感受，再看数据。" * 3
+    closing = "以上就是我做产品的十条原则，希望对你有用哈。"
+    out = clean_body("\n\n".join(["# t", text, closing, "对产品感兴趣的同学，还可以到我的星球玩哈："]))
+    assert "希望对你有用哈" in out and "我的星球" not in out
+    out = clean_body(
+        "\n\n".join(["# t", text, "——交流社群——", "有问题交流可以在星球里发帖提问，只讨论价值，不讨论价格。"])
+    )
+    assert "取得联系" in out and "交流社群" not in out and "星球里发帖" not in out
+
+
+def test_reader_tips_under_the_title_are_dropped():
+    tips = (
+        "tips：致读者朋友，由于微信的推送规则，即使你关注了我，可能也常常收不到推送，"
+        "可以点击名片，设为星标⭐️，文章每天才会自动推送的。"
+    )
+    body = "\n\n".join(
+        [
+            "# t",
+            tips,
+            "“最好的生意，是那种能在很长时期内，以非常高的回报率投入大量增量资本的生意。”",
+            "苹果的商业模式是躺赚的，硬件、服务和生态互相加强。" * 3,
+        ]
+    )
+    out = clean_body(body)
+    assert out.startswith("# t") and "最好的生意" in out and "躺赚" in out
+    assert "致读者朋友" not in out and "星标" not in out
+
+
+def test_self_declared_ad_with_a_handle_is_cut_but_talk_about_ads_is_kept():
+    body = "\n\n".join(
+        [
+            "# t",
+            "片仔癀跌了那么多，市盈率居然还有 44 倍，投资一看模式，二看团队，三看价格。" * 2,
+            "最后打个广告，最近在调研一家商业地产公司，期待这个行业的资深人士与我沟通联系，"
+            "我的微信是 abc_123，备注：商业地产。",
+        ]
+    )
+    out = clean_body(body)
+    assert "片仔癀" in out and "打个广告" not in out and "abc_123" not in out
+    assert not is_promo_paragraph("平台内的业务导流，要比在其他地方打广告便宜 70%，而且自带信任。")

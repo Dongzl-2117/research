@@ -173,3 +173,34 @@ def test_post_with_almost_no_text_waits_for_the_image_text(conn):
     pending = [row["id"] for row in digest_mod.pending_articles(conn, ["fangwei-zsxq"], 10)]
     assert pending[0] == article_id
     assert article_id in digests_for(conn, [article_id])
+
+
+def test_ocr_changed_picks_only_digests_written_on_other_image_text(conn):
+    """research-digest --ocr-changed：只挑已经有摘要、写摘要时的图片字和现在不一样的短帖。
+    缺摘要的（有没有图片字都算）和图片字没变的不挑：它们照旧跟着夜间按发布时间排。"""
+    conn.execute(
+        """
+        INSERT INTO articles (
+          source_id, external_id, content_hash, title, published_at, body_md, body_text, ocr_hash, ocr_text
+        ) VALUES
+          ('fangwei-zsxq', 'missing-digest', 'm', '还没有摘要', '2026-10-29 12:00+08', %(body)s, %(body)s, '', ''),
+          ('fangwei-zsxq', 'never-digested', 'n', '有图没摘要', '2026-10-28 12:00+08', '图片', '图片', 'h1', %(ocr)s),
+          ('fangwei-zsxq', 'reread', 'r', '图片字变了', '2026-10-01 12:00+08', '图片', '图片', 'newhash', %(ocr)s),
+          ('fangwei-zsxq', 'same', 's', '图片字没变', '2026-10-02 12:00+08', '图片', '图片', 'samehash', %(ocr)s)
+        """,
+        {"body": BODY, "ocr": OCR},
+    )
+    for external_id, ocr_hash in (("reread", "oldhash"), ("same", "samehash")):
+        row = conn.execute("SELECT id, content_hash FROM articles WHERE external_id = %s", (external_id,)).fetchone()
+        conn.execute(
+            """
+            INSERT INTO article_digests (article_id, content_hash, model, summary, prompt_version, head_only, ocr_hash)
+            VALUES (%s, %s, 'test', '方伟认为茅台利润还在涨。', %s, false, %s)
+            """,
+            (row["id"], row["content_hash"], digest_mod.PROMPT_VERSION, ocr_hash),
+        )
+    conn.commit()
+    queued = {row["title"] for row in digest_mod.pending_articles(conn, ["fangwei-zsxq"], 10)}
+    assert queued == {"还没有摘要", "有图没摘要", "图片字变了"}
+    picked = digest_mod.pending_articles(conn, ["fangwei-zsxq"], 10, ocr_changed=True)
+    assert [row["title"] for row in picked] == ["图片字变了"]
