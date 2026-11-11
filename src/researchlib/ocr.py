@@ -20,7 +20,8 @@ app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、�
 失败或读不出来都不写，旧字留着、版本不动，下次 ``--redo`` 接着认。余额不足（402）和没凭证一样整批停。
 
 每行记着按第几版识图说明认的（image_texts.prompt_version）。不点名文章的 ``--redo`` 只重认版本比
-VISION_PROMPT_VERSION 旧的图，停了再开从没认完的接着认；``--limit 0`` 只报还剩多少张。
+VISION_PROMPT_VERSION 旧的图，和按现在的说明认了却没存结构的（#316 以前模型交回自由文字时 units 存空），
+停了再开从没认完的接着认；``--limit 0`` 只报还剩多少张。
 自动上线在等时（status/.deploy-waiting），不点名文章的识图认完手上这张就停，下一次接着认。
 
     docker compose exec -T app research-ocr --limit 50
@@ -568,9 +569,12 @@ def _pending_where(*, redo: bool, article_ids: list[int] | None) -> tuple[list[s
         )
     elif not article_ids:
         # 全库重认只认按旧说明认的。以前每次都从最新的图从头认，停了再开就把刚认过的再付一次钱。
+        # 按现在的说明认了、却没存结构的也认：#316 以前模型交回自由文字时 units 存空，整理它的规则删了，
+        # 不重认就只能照原样排。#316 以后交回自由文字的存成几段文字（plain_units），不会再挑；没认出字的不挑。
         where.append(
             "NOT EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash"
-            " AND right(t.engine, 6) <> ':error' AND t.prompt_version >= %s)"
+            " AND right(t.engine, 6) <> ':error' AND t.prompt_version >= %s"
+            " AND (t.units IS NOT NULL OR btrim(coalesce(t.text, '')) = ''))"
         )
         params.append(VISION_PROMPT_VERSION)
     return where, params
@@ -580,7 +584,8 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
     """还没识别过的本地图片，按引用它的文章从新到旧。重复文章里的图不算。
 
     redo 时连 image_texts 里已有的哈希也再认一遍：点名文章（article_ids）的全部重认；不点名时只认
-    按旧说明认的（prompt_version 比 VISION_PROMPT_VERSION 旧或为空），按现在的说明认过的不再认。
+    按旧说明认的（prompt_version 比 VISION_PROMPT_VERSION 旧或为空），和按现在的说明认了却没存结构、有字的
+    （#316 以前交回自由文字的），按现在的说明认过、存了结构的不再认。
     engine 以 :error 结尾的行不算认完，不带 redo 也会重试；:skipped、:invalid 和空正文的成功行不重试。
     不点名文章时，只挂在知识星球读者帖、「图片」评论壳、停用来源下的图不认：网站上不展示，认了白花钱。
     """
@@ -1342,7 +1347,10 @@ def main(argv: list[str] | None = None) -> int:
     for line in describe_report(report):
         print(line)
     if remaining is not None:
-        print(f"按旧说明认的图还剩 {remaining['images']} 张，其中以前认出过字的 {remaining['with_text']} 张")
+        print(
+            f"按旧说明认的、和认了没存结构的图还剩 {remaining['images']} 张，"
+            f"其中以前认出过字的 {remaining['with_text']} 张"
+        )
     if tall_left is not None:
         print(
             f"还要切段重认的长截图还剩 {tall_left['images']} 张，切段要认 {tall_left['tiles']} 段"

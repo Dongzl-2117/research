@@ -3,7 +3,7 @@
 截图里的财报表格、聊天记录、标注过的图表，检索和问库原来完全看不到。现在把本地图片交给站内 LLM 识图（默认是 Grok OAuth 的 `grok-4.7`，`RESEARCH_LLM_PROVIDER=deepseek` 时是 deepseek-flash；都走 `llm.chat`，多模态 content），识别出的字切成段落块进检索。只有这一种识图；10-30 以前另有一条 RapidOCR 回退，已经删掉（见下面「以前的 RapidOCR 结果」）。
 
 - 按图片内容哈希只识别一次，结果存在 `image_texts`，`engine` 跟着当前模型走，Grok 是 `grok-4.7-vision`，DeepSeek 是 `deepseek-flash-vision`（以前认的行原样留着）。多篇引用同一张图不重复识别；识别不出字的也记一行，不反复去认。识图失败（没凭证在开工前退出；单张 HTTP 错）记 `engine` 以 `:error` 结尾、正文为空，下次不带 `--redo` 也会重试，不写进脏字。全库 `--redo` 只看 `prompt_version`，不看 engine：按第 3 版说明认过的图换模型也不会再认一遍。
-- 11-07 起识图交回结构（谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断），后面只排版和拼接，见下面「识图交回结构」。以前按冒号、App 名和案例一条条猜说话人、剥界面字的整理规则，全库按第 3 版说明重认完以后，11-11 删了（见「识图交回结构」的「旧规则删了」）。
+- 11-07 起识图交回结构（谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断），后面只排版和拼接，见下面「识图交回结构」。以前按冒号、App 名和案例一条条猜说话人、剥界面字的整理规则，全库按第 3 版说明重认完以后，#316 删了（见「识图交回结构」的「旧规则删了」）。
 - 识别出的汉字、字母、数字够 20 个的图才切检索块：`article_chunks.lang = 'ocr'`，块号从 20000 起，标题「图片里的字」，锚点是 `img-<哈希前 12 位>`。检索块和旁路是同一套排版。长群聊分几张截时，后一张开头和上一张结尾重合的几条只进前一张的块，和旁路一样（见下面「连着截的几张」）；「同意」这种短回复不算重合。检索和问库走这些块，不另建索引。块只在识图、导入时切：排版改了以后，已经切好的块不会自己变，要跑 `research-rebuild-chunks --ocr` 按现在的排版重切（先加 `--dry-run` 看多少篇会变）。它只读 `image_texts`，不识图、不调模型，也不改旁路 `articles.ocr_text`，免得短帖被排去重做摘要和观点；改过的块由夜间 `research-embed` 重算向量。
 - 阅读、摘要、观点放宽到 8 个字。空白、水印、几个字的装饰不算。刚过线的拿不准，算有用，不能漏。不按「是不是微信、是不是表格」分：有可读的字就用。
 - 公司提及不看图片里的字，免得水印、表情包里的字乱记。这条不变。
@@ -38,20 +38,15 @@ docker compose exec -T app research-ocr --relayout \
 先看 `--dry-run` 报的张数。正式跑只改 `image_texts.text`，并重写引用这些图的文章旁路和检索块；`prompt_version`、`created_at` 不动，不调模型。短正文下次打开、或夜间补摘要时，会按改回来的图片文字重写导读。
 - **排版只认结构**：旁路 `articles.ocr_text`、检索块、摘要和观点的输入、检索引用条，都按排好的字走。提示里那句说话人说明（「截图里的对话已整理成说话人：正文」）只在这篇有一张图里有消息时加（`ocr.ocr_speaker_note`）。全量重认以前存的旧识图（`units` 为空）当成几段文字（`ocr_units.plain_units`：按空行分段，字照原样），不按冒号前的字猜谁说的，也不剥界面字。
 - **模型没按格式交**（回了自由文字）：字照原样存，`units` 存成几段文字（`plain_units`），这次的钱不白花；以后 `--redo`、`--tall` 不会因为它没有结构再挑它。**回了 JSON 却读不出来**（多半是输出被截断）：同一张图再要一次，还不行记 `engine` 以 `:invalid` 结尾、正文为空，夜里不自动重试（重试又要花钱），要重认用 `--redo --article` 点名。
-- **旧规则删了**（#316）：交回结构以前那套从自由文字里猜说话人、剥界面字、补句号、接折行、改错字的规则（`wechat_dialogue` 的大部分、`vision_polish`、`normalize_vision_text`、阅读页对话排版、检索块的「说话人边界未核实」标题）删了，代码净删约 3000 行、测试约 2200 行。`wechat_dialogue` 只留行首说话人（`split_speaker`，正文和评论里「昵称：」加粗用）和 `relabel_host`。删之前全库按第 3 版说明重认完（11-10），长截图 `--tall` 补认完；用得着这些规则的旧识图只剩零星几张，照认出来的字排。库里存的识别原文一字不改。核对还剩多少（只读）：
+- **旧规则删了**（#316）：交回结构以前那套从自由文字里猜说话人、剥界面字、补句号、接折行、改错字的规则（`wechat_dialogue` 的大部分、`vision_polish`、`normalize_vision_text`、阅读页对话排版、检索块的「说话人边界未核实」标题）删了，代码净删约 3000 行、测试约 2200 行。`wechat_dialogue` 只留行首说话人（`split_speaker`，正文和评论里「昵称：」加粗用）和 `relabel_host`。库里存的识别原文一字不改。
+  删之前全库按第 3 版说明重认完（11-10，报的按旧说明认的图剩 0 张），长截图 `--tall` 补认完。照这个数，还没有结构（`units` 为空）、又认出了字的图只剩两类：一类只挂在网站不显示的文章下（知识星球读者帖、「图片」评论壳、停用的来源），全库重认按设计不认它们，旧字留着，网站、检索、问库、摘要观点都不用；另一类是按第 3 版说明认了、模型却交回自由文字的，#316 起全库 `--redo` 也挑它们重认一次（见下面「全库重认」）。11-11 线上数过两类合计 218 张、135 篇（数法没去掉第一类）。上线后先数第二类、再认完：
 
 ```bash
-docker compose exec -T db psql -U research -d research -c "
-SELECT count(DISTINCT i.content_hash) AS images, count(DISTINCT i.article_id) AS articles
-FROM article_images i
-JOIN articles a ON a.id = i.article_id
-JOIN image_texts t ON t.content_hash = i.content_hash
-WHERE t.units IS NULL
-  AND length(regexp_replace(t.text, '[^0-9A-Za-z一-鿿]', '', 'g')) >= 8
-  AND a.duplicate_of IS NULL AND coalesce(a.raw_meta->>'hidden', '') = ''"
+docker compose exec -T app research-ocr --redo --limit 0
+docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-ocr --redo --limit 300
 ```
 
-  这几篇的旁路打开文章、写摘要观点时按新排版重写，`ocr_hash` 跟着变，短帖会排去重做摘要和观点。
+  认完以前这些图照认出来的字按段排；认完的图写回时旁路和检索块跟着重写，`ocr_hash` 变，短帖会排去重做摘要和观点（用 `research-digest --ocr-changed`、`research-views --ocr-changed` 一次补完）。
 - 星球空壳标题从图片里的字取句子时（`zsxq_display_title` 的 `ocr`），一段（一条消息）当一句，段尾没收句的不和下一个人说的话粘成一句。
 
 **用量**：识图请求带 `stream_options.include_usage`，接口报的 token 存在 `image_texts.usage`（`prompt` 输入、`completion` 输出、其中思考的 `reasoning`；读不出来再要的那次也算上）。`research-ocr` 结束时多打两行：按结构交回、交回自由文字、读不出来各几张；用量合计和每张平均。接口或转发不认这个参数（4xx）时去掉再发一次；去掉以后成了，这一次命令后面的请求都不再带，也就没有用量，报告写「接口这次没报用量，花费看提供方账单」。跑过一晚以后按库里的记录算：
@@ -124,7 +119,7 @@ docker compose exec -T app research-digest --ocr-changed --limit 2000
 docker compose exec -T app research-views --ocr-changed --limit 2000
 ```
 
-**全库重认**（不点名文章的 `--redo`）：每行记着按第几版识图说明认的（`image_texts.prompt_version`；现在是 `ocr.VISION_PROMPT_VERSION` = 3；迁移 032 把识图交回结构以后认的行记成 1，以前的留空；第 2 版是 11-08 第一次新旧对比以后改的说明，第 3 版是第二次对比以后改的，第 1、2 版认的图全库重认时也按第 3 版重认）。全库重认只认版本比现在旧的图，按文章从新到旧；停了再开从没认完的接着认，认过的不再付一次钱。以前它每次都从最新的图从头认，11-08 线上重开一轮 2 万张的重认，停下再开就会把刚认过的再认一遍。点名的 `--redo --article` 照旧全部重认。`--redo --limit 0` 不认图，只打出还剩多少张、其中以前认出过字的多少张。改了 `VISION_PROMPT`、要让旧图按新说明重认时，把 `VISION_PROMPT_VERSION` 加一；措辞小改不值得花钱重认的不加。
+**全库重认**（不点名文章的 `--redo`）：每行记着按第几版识图说明认的（`image_texts.prompt_version`；现在是 `ocr.VISION_PROMPT_VERSION` = 3；迁移 032 把识图交回结构以后认的行记成 1，以前的留空；第 2 版是 11-08 第一次新旧对比以后改的说明，第 3 版是第二次对比以后改的，第 1、2 版认的图全库重认时也按第 3 版重认）。全库重认只认版本比现在旧的图，和按现在的说明认了、模型却交回自由文字没存结构的图（#316 以前这种 `units` 存空；#316 起存成几段文字，不会再挑；没认出字的不挑），按文章从新到旧；停了再开从没认完的接着认，认过的不再付一次钱。以前它每次都从最新的图从头认，11-08 线上重开一轮 2 万张的重认，停下再开就会把刚认过的再认一遍。点名的 `--redo --article` 照旧全部重认。`--redo --limit 0` 不认图，只打出还剩多少张、其中以前认出过字的多少张。改了 `VISION_PROMPT`、要让旧图按新说明重认时，把 `VISION_PROMPT_VERSION` 加一；措辞小改不值得花钱重认的不加。
 
 11-08 先按线上 6 张实测（`reasoning_effort=max`）估过一次，后来 30 张对比的实际用量更准：每张输入约 1.8k token、输出约 8.2k（97% 是思考），平均 52 秒、最长 155 秒，夜间价约 0.005 美元，工作日 9 到 12 点、14 到 18 点（北京时间）翻倍。剩下约 1.1 万张旧图全认，夜间价约 57 美元；短帖（正文不到 `SHORT_BODY_CHARS`）的图片文字一变，摘要和观点会跟着重做（另花钱），按发布时间排进夜间的队，不插到新文章前面。要不要认、用什么思考强度，由 Zhilin 定。Zhilin 11-08 定了保持 `max`、同意全部重认，但要先看新办法是不是真的比旧的好（见下面的对比命令）。
 
