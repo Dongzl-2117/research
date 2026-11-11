@@ -94,16 +94,23 @@ def test_theses_views_home_and_same_period(conn, settings, monkeypatch):
     assert theses_mod.build(conn, settings, company, sources_by_id) == 1
     assert not theses_mod.needs_build(conn, company["id"], sources_by_id, settings)
     with TestClient(create_app(settings)) as client:
+        # 概览：各位作者现在怎么看在前，主要论点在后；只有一篇的论点不出现。
         page = client.get(f"/companies/{company['id']}").text
         assert 'id="theses"' in page and "视频号广告库存" in page and "加载率还能抬" in page
-        assert "游戏版号恢复" not in page.split('id="views"', 1)[0]
-        assert page.index('id="theses"') < page.index('id="views"')
-        only = client.get(f"/companies/{company['id']}", params={"views": "t1"}).text
-        section = only.split('id="views"', 1)[1].split('class="company-articles"', 1)[0]
+        assert "游戏版号恢复" not in page.split('id="theses"', 1)[1]
+        assert page.index("现在怎么看") < page.index('id="theses"')
+        # 论点点开的出处写文章标题，不写编号；链到只看这条论点的判断。
+        assert f'href="/companies/{company["id"]}?tab=views&amp;thesis=t1"' in page
+        only = client.get(f"/companies/{company['id']}", params={"tab": "views", "thesis": "t1"}).text
+        section = only.split('id="views"', 1)[1]
         assert "mp/t1 的判断" in section and "cf/t2 的判断" in section and "zx/t4 的判断" not in section
-        # 全部时间线仍能看到没进论点的那篇。
-        everything = page.split('id="views"', 1)[1].split('class="company-articles"', 1)[0]
-        assert "zx/t4 的判断" in everything
+        assert "只看论点「视频号广告库存」下的判断" in section
+        # 改版前论点的链接是 ?views=t1，照样能开。
+        legacy = client.get(f"/companies/{company['id']}", params={"views": "t1"}).text
+        assert "只看论点「视频号广告库存」下的判断" in legacy and "zx/t4 的判断" not in legacy.split('id="views"', 1)[1]
+        # 判断一页不筛时仍能看到没进论点的那篇。
+        everything = client.get(f"/companies/{company['id']}", params={"tab": "views"}).text
+        assert "zx/t4 的判断" in everything.split('id="views"', 1)[1]
         # 首页最近观点：按观点时间排，不写「持仓近况」。
         home = client.get("/").text
         assert "最近观点" in home and "持仓近况" not in home

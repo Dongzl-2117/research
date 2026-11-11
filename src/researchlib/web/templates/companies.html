@@ -25,20 +25,35 @@
     </p>
   </div>
   {% if others %}
-  <ol class="company-rows">
-    {% for row in others %}
-    <li data-name="{{ row.filter }}">
-      <a class="company-row" href="/companies/{{ row.id }}">
-        <span class="company-name">{{ row.name }}</span>
-        <span class="company-ticker ticker">{{ row.ticker }}</span>
-        <span class="company-bar" aria-hidden="true"><span style="width: {{ row.bar }}%"></span></span>
-        <span class="company-deep"><strong class="num">{{ row.deep }}</strong> 深入</span>
-        <span class="company-total num">{{ row.mentions }} 提及</span>
-        <span class="company-last">{% if row.last %}<time class="num" datetime="{{ row.last_iso }}">{{ row.last }}</time>{% endif %}</span>
-      </a>
-    </li>
-    {% endfor %}
-  </ol>
+  <div class="co-table">
+    <div class="co-head" aria-hidden="true">
+      <span class="co-name">公司</span>
+      <span class="co-chart">近一年</span>
+      <span class="co-num"><i class="sw sw-positive"></i>看好</span>
+      <span class="co-num"><i class="sw sw-mixed"></i>两面</span>
+      <span class="co-num"><i class="sw sw-negative"></i>看淡</span>
+      <span class="co-latest">最近一条判断</span>
+      <span class="co-when">日期</span>
+    </div>
+    <ol class="co-rows">
+      {% for row in others %}
+      <li data-name="{{ row.filter }}">
+        <a class="co-row" href="/companies/{{ row.id }}">
+          <span class="co-name"><b>{{ row.name }}</b><span class="ticker">{{ row.ticker }}</span></span>
+          {% if row.views %}
+          <span class="co-chart">{{ row.chart | safe }}</span>
+          {% for part in row.tally %}<span class="co-num num{% if not part.count %} is-zero{% endif %}"><span class="co-num-label"><i class="sw sw-{{ part.key }}"></i>{{ part.short }}</span>{{ part.count }}</span>{% endfor %}
+          <span class="co-latest">{% if row.latest %}<span class="co-who">{{ row.latest.author }}</span>{{ row.latest.judgment }}{% endif %}</span>
+          {% else %}
+          <span class="co-none">还没有整理出判断，深入谈到它的文章 <span class="num">{{ row.deep }}</span> 篇</span>
+          {% endif %}
+          <span class="co-when">{% if row.last %}<time class="num" datetime="{{ row.last_iso }}">{{ row.last }}</time>{% endif %}</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+  <p class="stance-key co-key">小图是近一年每个月的判断，向上是看好，向下是看淡，中间灰色是两面或中性。</p>
   {% else %}
   <p class="empty">这一类还没有被提到的公司。</p>
   {% endif %}

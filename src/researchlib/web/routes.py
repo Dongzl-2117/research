@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
-from researchlib import embeddings
+from researchlib import company_brief, embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
@@ -62,10 +62,10 @@ from researchlib.sources import enabled_sources, load_sources, sync_sources, tim
 from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
 from researchlib.translate.display import article_pairs, fold_translated_copies, join_split_paragraphs
 from researchlib.translate.remote_media import bilingual_sources
-from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import count_pending as count_view_pending
-from researchlib.views import filter_timeline, quote_repeats, same_period
+from researchlib.views import list_marks as view_marks
 from researchlib.views import queue_for_company as queue_views
+from researchlib.views import quote_repeats, same_period
 from researchlib.views import timeline as view_timeline
 from researchlib.visibility import is_hidden
 from researchlib.web import queries
@@ -90,7 +90,6 @@ from researchlib.web.present import (
     order_cards,
     page_window,
     plan_feed_page,
-    recent_blurb,
     relative_label,
     resolve_feed_instant,
     stale_sources,
@@ -1367,22 +1366,34 @@ def search_page(request: Request):
     )
 
 
-COMPANY_SORTS = {"deep": "深入篇数", "recent": "最近提及", "mentions": "全部提及"}
+COMPANY_SORTS = {"judged": "最近判断", "views": "判断最多", "deep": "文章最多"}
 
 
 @router.get("/companies")
 def companies_page(request: Request):
+    """公司列表：每家最近有什么判断、近一年偏多还是偏空。默认按最近一条判断排，还没有判断的排在后面。"""
     settings = request.app.state.settings
+    zone = settings.display_timezone
     show_all = request.query_params.get("all") == "1"
-    sort = request.query_params.get("sort") or "deep"
+    sort = request.query_params.get("sort") or "judged"
     if sort not in COMPANY_SORTS:
-        sort = "deep"
+        sort = "judged"
     market = request.query_params.get("market") or ""
     with database(request) as conn:
         sources = active_sources(request, conn)
         ids = [source.id for source in sources]
+        by_id = _source_map(sources)
         rows = queries.list_companies(conn, ids)
+        judged = view_marks(conn, ids)
         banner = queries.sample_state(conn, ids)
+    newest = {row["company_id"]: row for row in judged if row["newest"]}
+    marks = company_brief.index_marks(
+        [
+            {"company_id": row["company_id"], "stance": row["stance"], "date": format_date(row["published_at"], zone)}
+            for row in judged
+        ],
+        current_month(zone),
+    )
     others = []
     hidden = 0
     markets: dict[str, int] = {}
@@ -1398,29 +1409,44 @@ def companies_page(request: Request):
             aliases.append(row["name_en"])
         if row["ticker"]:
             aliases.append(row["ticker"])
+        mark = marks.get(row["id"])
+        top = newest.get(row["id"])
+        source = by_id.get(top["source_id"]) if top else None
+        # 日期一栏：有判断的写最近一条判断哪天发的，还没有判断的写最近一次提到它是哪天。
+        when = top["published_at"] if top else row["last_at"]
         others.append(
             {
                 "id": row["id"],
                 "name": row["name_zh"],
                 "ticker": row["ticker"] or "未上市",
-                "market": market_label(row["market"]),
                 "mentions": row["mentions"],
                 "deep": row["deep"],
-                "last": format_date(row["last_at"], settings.display_timezone) if row["last_at"] else "",
-                "last_iso": format_iso(row["last_at"], settings.display_timezone) if row["last_at"] else "",
-                "last_at": row["last_at"],
+                "views": mark["count"] if mark else 0,
+                "chart": mark["chart"] if mark else "",
+                "tally": mark["tally"] if mark else [],
+                "latest": {"author": source.author if source else "", "judgment": top["judgment"]} if top else None,
+                "judged_at": top["published_at"] if top else None,
+                "last": format_date(when, zone) if when else "",
+                "last_iso": format_iso(when, zone) if when else "",
                 "filter": " ".join([row["name_zh"], row["name_en"] or "", row["ticker"] or "", *aliases]),
             }
         )
-    if sort == "recent":
-        others.sort(key=lambda item: (item["last_at"] is not None, item["last_at"]), reverse=True)
-    elif sort == "mentions":
-        others.sort(key=lambda item: (-item["mentions"], -item["deep"], item["name"]))
+    others.sort(key=lambda item: item["name"])
+    if sort == "views":
+        others.sort(key=lambda item: (-item["views"], -item["deep"]))
+    elif sort == "deep":
+        others.sort(key=lambda item: (-item["deep"], -item["mentions"]))
     else:
-        others.sort(key=lambda item: (-item["deep"], -item["mentions"], item["name"]))
-    peak = max([item["deep"] for item in others] + [1])
-    for item in others:
-        item["bar"] = round(item["deep"] / peak * 100)
+        others.sort(
+            key=lambda item: (
+                bool(item["views"]),
+                item["judged_at"] is not None,
+                item["judged_at"].timestamp() if item["judged_at"] else 0,
+                item["deep"],
+                item["mentions"],
+            ),
+            reverse=True,
+        )
     market_order = ["HK", "US", "A", "PRIVATE"]
     market_tabs = [
         {"key": key, "label": market_label(key), "count": markets[key]} for key in market_order if key in markets
@@ -1439,26 +1465,41 @@ def companies_page(request: Request):
             "market": market,
             "market_tabs": market_tabs,
             "others_total": sum(markets.values()),
-            "list_query": _query_string(all="1" if show_all else "", sort=sort if sort != "deep" else ""),
+            "list_query": _query_string(all="1" if show_all else "", sort=sort if sort != "judged" else ""),
             "sources": sources,
             "sample_banner": banner,
         },
     )
 
 
+def _company_tab(params, has_views: bool) -> str:
+    """公司页开哪一页。一条判断都没有的公司只有文章。
+
+    没写 tab 的旧链接按带的参数认：筛判断的（views、thesis、stance、vpage）去「判断」，筛文章的（depth、page）
+    去「文章」，只带作者的去「判断」看这位作者怎么说，什么都不带是概览。
+    """
+    if not has_views:
+        return "articles"
+    tab = params.get("tab") or ""
+    if tab in company_brief.TABS:
+        return tab
+    if any(params.get(key) for key in ("views", "thesis", "stance", "vpage")):
+        return "views"
+    if any(params.get(key) for key in ("depth", "page")):
+        return "articles"
+    return "views" if (params.get("author") or "").strip() else "overview"
+
+
 @router.get("/companies/{company_id}")
 def company_page(request: Request, company_id: int):
-    """一家公司：谁在什么时候深入谈它、原文怎么说。默认只看深入提及，一带而过的点一下再看。"""
+    """一家公司。有判断的分三页：概览（各位作者现在怎么看、主要论点）、判断（一条一行）、文章（谁在什么时候谈它）。
+
+    每一页只取自己要的数。判断和论点都是库里现成的，这一页不调模型；缺的在后台排队，不挡页面。
+    """
     settings = request.app.state.settings
-    depth_arg = request.query_params.get("depth") or ""
-    if depth_arg in DEPTHS:
-        depth_filter = depth_arg
-    elif depth_arg == "all":
-        depth_filter = None
-    else:
-        depth_arg = "deep"
-        depth_filter = "deep"
-    author = (request.query_params.get("author") or "").strip()
+    zone = settings.display_timezone
+    params = request.query_params
+    author = (params.get("author") or "").strip()
     with database(request) as conn:
         sources = active_sources(request, conn)
         all_ids = [source.id for source in sources]
@@ -1469,44 +1510,65 @@ def company_page(request: Request, company_id: int):
         _order, grouped = _author_groups(sources)
         if author and author not in grouped:
             raise HTTPException(status_code=404)
-        ids = [item.id for item in grouped[author]] if author else all_ids
-        source_stats = list(queries.company_source_stats(conn, company_id, all_ids))
-        depths = {row["depth"]: int(row["n"]) for row in queries.company_depth_counts(conn, company_id, ids)}
-        months = list(queries.company_month_depths(conn, company_id, ids))
-        total = queries.count_company_articles(conn, company_id, ids, depth_filter)
-        page, pages, offset = page_window(total, _page_arg(request), settings.page_size)
-        articles = queries.company_articles(conn, company_id, ids, depth_filter, settings.page_size, offset)
         banner = queries.sample_state(conn, all_ids)
-        views_block = _company_views(request, conn, company, by_id, author)
-        matcher = CompanyMatcher([company])
-        rows = _decorate(
-            conn,
-            [
-                _card(
-                    row,
-                    by_id[row["source_id"]],
-                    settings,
-                    extra={
-                        "depth": row["depth"],
-                        "depth_label": DEPTH_LABELS[row["depth"]],
-                        "hits": row["hit_count"],
-                        "snippet": mention_snippet(
-                            *mention_spans(matcher, row["title"], row["body_text"], row["ocr_text"])
-                        ),
-                    },
-                )
-                for row in articles
-            ],
-            settings,
+        who = _company_authors(queries.company_source_stats(conn, company_id, all_ids), by_id, settings)
+        items = retitle_views(conn, view_timeline(conn, company_id, by_id, settings), by_id, zone)
+        # 「还有几篇没整理」：判断和文章两页按当前筛的作者算，概览按全部；排队总是按全部来源。
+        pending_all = count_view_pending(conn, company_id, all_ids)
+        pending = (
+            count_view_pending(conn, company_id, [item.id for item in grouped[author]]) if author else pending_all
         )
-    for card in rows:
-        card["tags"] = [tag for tag in card["tags"] if tag["id"] != company_id]
-    by_year: list[dict] = []
-    for card in rows:
-        year = card["day"][:4] if card.get("day") and card["day"][:1].isdigit() else "日期不详"
-        if not by_year or by_year[-1]["year"] != year:
-            by_year.append({"year": year, "items": []})
-        by_year[-1]["items"].append(card)
+        if pending_all:
+            queue_views(conn, settings, company_id, by_id)
+        # 论点：判断归成的几条。缺了或过期了在后台重算，不挡页面。
+        theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
+        if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
+            thesis_map.schedule(settings, company, by_id)
+        tab = _company_tab(params, bool(items))
+        context = {
+            "nav": "companies",
+            "title": company["name_zh"],
+            "company": company,
+            "market": market_label(company["market"]),
+            "tab": tab,
+            "tabs": company_brief.tabs(company_id, len(items), who["deep_total"]),
+            "active_author": author,
+            "views_pending": pending,
+            "sources": sources,
+            "sample_banner": banner,
+        }
+        if tab == "articles":
+            context.update(who)
+            context.update(_company_articles(request, conn, company, by_id, grouped, author))
+        elif tab == "views":
+            key = params.get("thesis") or ""
+            legacy = params.get("views") or ""
+            if not key and legacy[:1] == "t":
+                # 改版前论点的链接是 ?views=t1。
+                key = legacy
+            thesis = next((item for item in theses if item["key"] == key), None)
+            raw_page = params.get("vpage", "1")
+            block = company_brief.judgments(
+                thesis_map.mask_unrelated_quotes(items, thesis),
+                theses,
+                company_id,
+                author=author,
+                stance=params.get("stance") or "",
+                thesis_key=key,
+                page=int(raw_page) if raw_page.isdigit() else 1,
+            )
+            company_brief.decorate_views(block["items"], quote_repeats)
+            block.update(pending=pending, pending_author=author)
+            context["views"] = block
+        else:
+            company_brief.decorate_views(items, quote_repeats)
+            context.update(company_brief.overview(items, theses, company_id, current_month(zone)))
+            context["views_pending"] = pending_all
+    return render_page(request, "company.html", context)
+
+
+def _company_authors(source_stats, by_id: dict, settings) -> dict:
+    """「谁在谈」：每位作者深入谈过几篇、一共提到几篇、最近一次深入是哪天。分页标签上的文章数也从这里来。"""
     authors: dict[str, dict] = {}
     for row in source_stats:
         source = by_id.get(row["source_id"])
@@ -1522,129 +1584,79 @@ def company_page(request: Request, company_id: int):
     for item in author_rows:
         item["bar"] = round(item["deep"] / peak * 100)
         item["last_label"] = format_date(item["last"], settings.display_timezone) if item["last"] else ""
-    deep_total = sum(item["deep"] for item in author_rows)
-    all_total = sum(item["total"] for item in author_rows)
-    last_deep = max((item["last"] for item in author_rows if item["last"]), default=None)
-    series = month_series(months, last=current_month(settings.display_timezone)) if months else []
-    filter_query = _query_string(author=author, depth=depth_arg if depth_arg != "deep" else "")
-    return render_page(
-        request,
-        "company.html",
-        {
-            "nav": "companies",
-            "title": company["name_zh"],
-            "company": company,
-            "market": market_label(company["market"]),
-            "chips": depth_chips(depths),
-            "deep_count": sum(count for key, count in depths.items() if key != "passing"),
-            "all_count": sum(depths.values()),
-            "chart": Markup(company_chart(series)),
-            "chart_ticks": chart_ticks(series),
-            "first_month": series[0]["ym"] if series else "",
-            "active_depth": depth_arg,
-            "active_author": author,
-            "author_rows": author_rows,
-            "deep_total": deep_total,
-            "all_total": all_total,
-            "author_total": len([item for item in author_rows if item["total"]]),
-            "last_deep": format_date(last_deep, settings.display_timezone) if last_deep else "",
-            "last_deep_relative": relative_label(last_deep, settings.display_timezone) if last_deep else "",
-            "filter_query": filter_query,
-            "by_year": by_year,
-            "page": page,
-            "pages": pages,
-            "total": total,
-            "views": views_block,
-            "sources": sources,
-            "sample_banner": banner,
-        },
-    )
-
-
-VIEWS_PAGE_SIZE = 20
-
-
-def _recent_lead(conn, items: list[dict], settings, names: list[str]) -> dict | None:
-    """公司页「最近」一行。展开是谈到这家公司的导读；没有就用这条判断，避免空展开。"""
-    if not items:
-        return None
-    latest = items[0]
-    digest = queries.digests_for(conn, [latest["article_id"]]).get(latest["article_id"])
-    text = recent_blurb(latest, digest, names)
-    if not text:
-        return None
-    published = latest.get("published_at")
     return {
-        "article_id": latest["article_id"],
-        "title": latest["title"],
-        "author": latest["author"],
-        "date": latest["date"],
-        "relative": relative_label(published, settings.display_timezone) if published else "",
-        "stance": latest.get("stance") or "",
-        "stance_label": latest.get("stance_label") or "",
-        "chunk": latest.get("chunk"),
-        "summary": text,
+        "author_rows": author_rows,
+        "deep_total": sum(item["deep"] for item in author_rows),
+        "all_total": sum(item["total"] for item in author_rows),
     }
 
 
-def _company_views(request: Request, conn, company, by_id: dict, author: str) -> dict | None:
-    """任何公司的观点时间线。缺的在后台排队，不挡住页面。不按持仓过滤。"""
+def _company_articles(request: Request, conn, company, by_id: dict, grouped: dict, author: str) -> dict:
+    """「文章」一页：按月提及图、按提及深度筛过的文章。默认只看深入提及，一带而过的点一下再看。"""
     settings = request.app.state.settings
-    kind = request.query_params.get("views") or ""
     company_id = int(company["id"])
-    items = retitle_views(conn, view_timeline(conn, company_id, by_id, settings), by_id, settings.display_timezone)
-    # 「还有几篇没整理」按当前筛的作者算；排队仍然按全部来源。
-    scope_ids = [sid for sid, source in by_id.items() if not author or source.author == author]
-    pending = count_view_pending(conn, company_id, scope_ids)
-    if count_view_pending(conn, company_id, list(by_id)) if author else pending:
-        queue_views(conn, settings, company_id, by_id)
-    # 论点地图：观点归成的几条论点。缺了或过期了在后台重算，不挡页面。
-    theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
-    if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
-        thesis_map.schedule(settings, company, by_id)
-    thesis = next((item for item in theses if item["key"] == kind), None)
-    if kind not in VIEW_FILTERS and thesis is None:
-        kind = ""
-    scoped = filter_timeline(items, "", author)
-    chosen = thesis_map.mask_unrelated_quotes(
-        filter_timeline(items, kind, author, thesis["articles"] if thesis else None),
-        thesis,
-    )
-    raw_page = request.query_params.get("vpage", "1")
-    page, pages, offset = page_window(len(chosen), int(raw_page) if raw_page.isdigit() else 1, VIEWS_PAGE_SIZE)
-    base = _query_string(author=author, depth=request.query_params.get("depth") or "")
-    filters = [
-        {"key": "", "label": "全部", "count": len(scoped)},
-        *[
-            {"key": key, "label": label, "count": len(filter_timeline(items, key, author))}
-            for key, label in VIEW_FILTERS.items()
+    depth_arg = request.query_params.get("depth") or ""
+    if depth_arg in DEPTHS:
+        depth_filter = depth_arg
+    elif depth_arg == "all":
+        depth_filter = None
+    else:
+        depth_arg = "deep"
+        depth_filter = "deep"
+    ids = [item.id for item in grouped[author]] if author else list(by_id)
+    depths = {row["depth"]: int(row["n"]) for row in queries.company_depth_counts(conn, company_id, ids)}
+    months = list(queries.company_month_depths(conn, company_id, ids))
+    total = queries.count_company_articles(conn, company_id, ids, depth_filter)
+    page, pages, offset = page_window(total, _page_arg(request), settings.page_size)
+    articles = queries.company_articles(conn, company_id, ids, depth_filter, settings.page_size, offset)
+    matcher = CompanyMatcher([company])
+    rows = _decorate(
+        conn,
+        [
+            _card(
+                row,
+                by_id[row["source_id"]],
+                settings,
+                extra={
+                    "depth": row["depth"],
+                    "depth_label": DEPTH_LABELS[row["depth"]],
+                    "hits": row["hit_count"],
+                    "snippet": mention_snippet(
+                        *mention_spans(matcher, row["title"], row["body_text"], row["ocr_text"])
+                    ),
+                },
+            )
+            for row in articles
         ],
-    ]
-    if thesis is not None:
-        filters.append({"key": thesis["key"], "label": thesis["title"], "count": len(chosen)})
-    shown = chosen[offset : offset + VIEWS_PAGE_SIZE]
-    for item in shown:
-        # 摘句和判断说的是同一件事就不再重复显示。
-        item["quote_repeats"] = quote_repeats(item.get("quote") or "", item.get("judgment") or "")
+        settings,
+    )
+    by_year: list[dict] = []
+    for card in rows:
+        card["tags"] = [tag for tag in card["tags"] if tag["id"] != company_id]
+        year = card["day"][:4] if card.get("day") and card["day"][:1].isdigit() else "日期不详"
+        if not by_year or by_year[-1]["year"] != year:
+            by_year.append({"year": year, "items": []})
+        by_year[-1]["items"].append(card)
+    series = month_series(months, last=current_month(settings.display_timezone)) if months else []
     return {
-        "items": shown,
-        "kind": kind,
-        "filters": filters,
-        "theses": theses,
-        "pending": pending,
-        "pending_author": author,
+        "chips": depth_chips(depths),
+        "deep_count": sum(count for key, count in depths.items() if key != "passing"),
+        "all_count": sum(depths.values()),
+        "chart": Markup(company_chart(series)),
+        "chart_ticks": chart_ticks(series),
+        "active_depth": depth_arg,
+        "filter_query": _query_string(author=author, depth=depth_arg if depth_arg != "deep" else ""),
+        "by_year": by_year,
         "page": page,
         "pages": pages,
-        "base": base,
-        # 跟当前筛选走。筛到某一条论点时，不要把没进这组的判断露在展开行里。
-        "lead": _recent_lead(conn, chosen, settings, company_names(company)),
+        "total": total,
     }
 
 
 def _day_back(info: dict, company) -> str:
     if company:
-        query = _query_string(author=info["author"])
-        return f"/companies/{company['id']}" + (f"?{query}" if query else "")
+        # 带公司的按天页是从公司的文章那一页来的，回到那一页。
+        return company_brief.company_href(company["id"], "articles", author=info["author"])
     if info["author"]:
         query = _query_string(source=info["source"])
         base = "/authors/" + quote(info["author"])

@@ -83,7 +83,7 @@ def test_company_page_shows_mention_context_and_author_filter(conn, settings):
         assert "亚马逊云和广告" not in scoped.text
         assert client.get(f"/companies/{company_id}", params={"author": "没有这人"}).status_code == 404
         listing = client.get("/companies")
-        assert "最近提及" in listing.text
+        assert "<strong>最近判断</strong>" in listing.text and "文章最多" in listing.text
         assert "显示没被提到的" in listing.text
 
 
@@ -469,12 +469,14 @@ def test_companies_page_pins_holdings_and_company_page_defaults_to_deep(conn, se
         assert "role-badge" not in listing
         assert "宁德时代" in listing
         assert "腾讯" in listing
-        recent = client.get("/companies", params={"sort": "recent"}).text
-        assert "<strong>最近提及</strong>" in recent
+        deep = client.get("/companies", params={"sort": "deep"}).text
+        assert "<strong>文章最多</strong>" in deep
+        # 改版前的排序名不认了，退回默认。
+        assert "<strong>最近判断</strong>" in client.get("/companies", params={"sort": "recent"}).text
         hk = client.get("/companies", params={"market": "US"}).text
         assert "宁德时代" not in hk.split('class="company-list"', 1)[1]
         page = client.get(f"/companies/{tencent}").text
-        assert "深入谈到" in page and "谁在谈" in page
+        assert "按月提及的文章" in page and "谁在谈" in page
         assert "role-badge" not in page
         assert "role-holding" not in page
         # 默认只列深入提及；「全部」里才有一带而过的那篇。

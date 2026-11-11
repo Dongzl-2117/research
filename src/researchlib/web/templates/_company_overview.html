@@ -1,0 +1,107 @@
+{# 公司页「概览」：各位作者现在怎么看（态度图 + 最近几条判断），再是主要论点。只排已有的观点，不调模型。 #}
+<section class="brief-block" aria-labelledby="brief-h">
+  <div class="block-head">
+    <h2 id="brief-h">现在怎么看</h2>
+    <p class="block-note">整理出 <span class="num">{{ brief.total }}</span> 条判断{% if views_pending %}，还有 <span class="num">{{ views_pending }}</span> 篇文章没整理{% endif %}</p>
+  </div>
+  {% if brief.charted %}
+  <p class="stance-key">
+    <span><i class="sw sw-positive"></i>看好</span>
+    <span><i class="sw sw-mixed"></i>两面或中性</span>
+    <span><i class="sw sw-negative"></i>看淡</span>
+    <span class="stance-key-how">每根柱是一个月的判断，向上是看好，向下是看淡</span>
+  </p>
+  {% endif %}
+  <div class="brief-grid{% if brief.main | length == 1 %} is-solo{% endif %}">
+    {% for author in brief.main %}
+    <article class="brief">
+      <header class="brief-head">
+        <h3><a href="{{ author.href }}">{{ author.name }}</a></h3>
+        <p class="brief-span"><span class="num">{{ author.count }}</span> 条{% if author.first %} · <span class="num">{{ author.first[:7] }}</span>{% if author.last[:7] != author.first[:7] %} 至 <span class="num">{{ author.last[:7] }}</span>{% endif %}{% else %} · 日期不详{% endif %}</p>
+      </header>
+      <figure class="stance-fig">
+        {% if author.chart %}
+        <div class="stance-plot">
+          {{ author.chart | safe }}
+          <div class="stance-ticks" aria-hidden="true">{% for tick in brief.ticks %}<span style="left: {{ tick.left }}%">{{ tick.label }}</span>{% endfor %}</div>
+        </div>
+        {% endif %}
+        <figcaption class="stance-tally">
+          {% for part in author.tally %}<span><i class="sw sw-{{ part.key }}"></i>{{ part.label }} <b class="num">{{ part.count }}</b></span>{% endfor %}
+        </figcaption>
+      </figure>
+      <ol class="brief-latest">
+        {% for item in author.latest %}
+        <li>
+          <a href="{{ item.href }}">
+            <span class="brief-when"><time class="num">{{ item.date }}</time>{% if item.stance_label %}<span class="stance stance-{{ item.stance }}">{{ item.stance_label }}</span>{% endif %}</span>
+            <span class="brief-text">{{ item.judgment }}</span>
+          </a>
+        </li>
+        {% endfor %}
+      </ol>
+      {% if author.count > author.latest | length %}<p class="brief-more"><a href="{{ author.href }}">看全部 {{ author.count }} 条</a></p>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% if brief.minor %}
+  <ul class="brief-minor" aria-label="其他作者">
+    {% for author in brief.minor %}
+    <li>
+      <a href="{{ author.href }}">
+        <span class="brief-minor-name">{{ author.name }}</span>
+        <span class="brief-minor-tally"><span class="num">{{ author.count }}</span> 条{% for part in author.tally %} · {{ part.label }} <span class="num">{{ part.count }}</span>{% endfor %}</span>
+        <span class="brief-minor-text">{{ author.latest[0].judgment }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% if theses %}
+<section class="argue-block" id="theses" aria-labelledby="argue-h">
+  <div class="block-head">
+    <h2 id="argue-h">主要论点</h2>
+    <p class="block-note">讲同一件事的判断归成一条，点开看理由和出处</p>
+  </div>
+  <ol class="argue-list">
+    {% for thesis in theses %}
+    <li class="argue">
+      <details>
+        <summary>
+          <span class="argue-title">{{ thesis.title }}</span>
+          {% if thesis.judgment %}<span class="argue-judgment">{{ thesis.judgment }}</span>{% endif %}
+          {% if thesis.disagreement %}<span class="argue-split"><b>分歧</b>{{ thesis.disagreement }}</span>{% endif %}
+          <span class="argue-who">
+            {% if thesis["against"].count or thesis["mixed"].count %}
+            {% for side, word in [("for", "认同"), ("against", "不认同"), ("mixed", "两面")] %}
+            {% if thesis[side].count %}<span class="argue-side argue-{{ side }}"><b>{{ word }}</b>{% for name, count in thesis[side].authors %}{{ name }}{% if count > 1 %} <span class="num">{{ count }}</span>{% endif %}{{ "、" if not loop.last }}{% endfor %}</span>{% endif %}
+            {% endfor %}
+            {% else %}
+            <span class="argue-side">{% for name, count in thesis["for"].authors %}{{ name }} <span class="num">{{ count }}</span> 篇{{ "、" if not loop.last }}{% endfor %}</span>
+            {% endif %}
+            {% if thesis.latest %}<span class="num">最近 {{ thesis.latest }}</span>{% endif %}
+            {% if thesis.shifted %}<span class="argue-shift">{{ thesis.shifted | join("、") }}前后说法不一</span>{% endif %}
+          </span>
+        </summary>
+        <div class="argue-more">
+          {% if thesis.mechanism %}<p><b>理由</b>{{ thesis.mechanism }}</p>{% endif %}
+          {% if thesis.changes %}<p><b>变化</b>{{ thesis.changes }}</p>{% endif %}
+          {% if thesis.evidence %}
+          <p class="argue-label"><b>原话</b></p>
+          <ul class="argue-evidence">{% for line in thesis.evidence %}<li>{{ line.text }}{% if line.source %}<span class="argue-from">{{ line.source }}</span>{% endif %}</li>{% endfor %}</ul>
+          {% endif %}
+          {% if thesis.sources %}
+          <p class="argue-label"><b>出处</b></p>
+          <ul class="argue-sources">
+            {% for src in thesis.sources %}<li><a href="/articles/{{ src.article_id }}">{{ src.title or src.article_id }}</a><span class="quiet">{{ src.author }}{% if src.date %} · <span class="num">{{ src.date }}</span>{% endif %}</span></li>{% endfor %}
+          </ul>
+          {% endif %}
+          <p class="argue-go"><a href="{{ thesis.href }}">只看这条论点下的 {{ thesis.articles | length }} 条判断</a></p>
+        </div>
+      </details>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}

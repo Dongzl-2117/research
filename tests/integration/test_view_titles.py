@@ -39,9 +39,9 @@ def test_view_titles_match_the_card_for_a_screenshot_post(conn, settings):
     with TestClient(create_app(settings)) as client:
         card = client.get(f"/api/v1/articles/{row['id']}").json()["title"]
         views = client.get(f"/api/v1/companies/{company}/views").json()["views"]
-        page = client.get(f"/companies/{company}").text
+        page = client.get(f"/companies/{company}", params={"tab": "views"}).text
     assert card == SAID
     assert [(item["article_id"], item["title"]) for item in views] == [(row["id"], SAID)]
     section = page.split('id="views"', 1)[1]
-    assert f'>{SAID}</a>' in section
+    assert f'<span class="jrow-src">{SAID}</span>' in section
     assert "2026-10-30 短帖" not in section
