@@ -19,7 +19,7 @@ from researchlib import embeddings
 from researchlib.ask import mark_interrupted
 from researchlib.chunks import relabel_ocr_chunks_if_needed
 from researchlib.config import Settings, assert_bind_allowed
-from researchlib.db import prepare
+from researchlib.db import connect, prepare
 from researchlib.duplicates import dedupe_if_needed
 from researchlib.health import read_status, write_status
 from researchlib.mentions import rebuild_if_stale
@@ -49,18 +49,27 @@ async def lifespan(app: FastAPI):
         threading.Thread(
             target=_background_upkeep, args=(app.state.settings,), name="library-upkeep", daemon=True
         ).start()
-        threading.Thread(target=_keep_embedder_warm, name="embedding-keep-warm", daemon=True).start()
+        threading.Thread(
+            target=_embedding_upkeep, args=(app.state.settings,), name="embedding-upkeep", daemon=True
+        ).start()
     yield
 
 
-def _keep_embedder_warm() -> None:
-    """本机 Ollama 闲置 5 分钟就卸下向量模型，之后的第一次搜索要等它重新加载几秒。启动时先算一次（上线后的
-    第一次搜索也不用等），之后每分钟看一次，隔一阵子没用过就算一个很短的向量。云端的向量服务不做（见 keep_warm）。"""
+def _embedding_upkeep(settings: Settings) -> None:
+    """启动时做一次，之后每分钟看一次，两件事：
+    - 本机 Ollama 闲置 5 分钟就卸下向量模型，之后的第一次搜索要等它重新加载几秒。隔一阵子没用过就算一个很短的
+      向量（上线后的第一次搜索也不用等）。云端的向量服务不做（见 keep_warm）。
+    - 检索页「向量还没算完」那句的块数隔五分钟重数一遍，好久没人搜以后第一个人看到的也是新数（见 keep_coverage_fresh）。
+    """
     while True:
         try:
             embeddings.keep_warm()
         except Exception:  # 保温出错不影响网站
             logger.exception("向量服务保温出错")
+        try:
+            embeddings.keep_coverage_fresh(lambda: connect(settings))
+        except Exception as exc:  # 数不出来就过几分钟再数，搜索时也会重数，不影响检索
+            logger.info("定时重数向量块数没成：%s", exc)
         time.sleep(60)
 
 

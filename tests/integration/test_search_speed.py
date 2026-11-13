@@ -133,6 +133,42 @@ def test_stale_vector_count_is_shown_while_recounted_in_background(conn, setting
         embeddings.use_embedder(None)
 
 
+def test_vector_count_is_kept_fresh_without_anyone_searching(conn, settings):
+    # 11-13：两天没人搜，第一次搜索报的还是两天前的「向量还没算完（218554/236318 块）」，缺口其实早补完了。
+    # 网站每分钟调一次 keep_coverage_fresh：隔五分钟重数一遍，不等有人来搜。
+    if embeddings.column_type(conn) is None:
+        pytest.skip("测试库没有 pgvector")
+    opened: list[int] = []
+
+    def open_conn():
+        opened.append(1)
+        return connect(settings)
+
+    embeddings.use_embedder(lambda texts: [[1.0] + [0.0] * (embeddings.DIM - 1) for _ in texts])
+    try:
+        _store(conn, settings, FANGWEI, [_doc("fee", "开市客笔记", "Costco 靠会员费赚钱，商品几乎不赚毛利。")])
+        actual = embeddings.coverage(conn)
+        assert actual[0] == actual[1] > 0
+        key = conn.info.dbname
+        two_days_ago = time.monotonic() - 2 * 86400
+        embeddings._state.coverage[key] = ((0, actual[1] * 2), two_days_ago)
+        assert embeddings.keep_coverage_fresh(open_conn)
+        assert embeddings._state.coverage[key][0] == actual
+        # 接着来的第一次搜索就是新数，不报没算完。
+        assert embeddings.status_note(conn) == ""
+        # 刚数过：下一分钟不再数，连接也不开。
+        assert not embeddings.keep_coverage_fresh(open_conn)
+        assert opened == [1]
+        embeddings._state.coverage_counted -= embeddings.COVERAGE_TTL_S / 2
+        assert embeddings.keep_coverage_fresh(open_conn)
+        assert opened == [1, 1]
+    finally:
+        embeddings.use_embedder(None)
+    # 没开语义检索：不数。
+    assert not embeddings.keep_coverage_fresh(open_conn)
+    assert opened == [1, 1]
+
+
 def test_sample_banner_needs_every_article_to_be_a_sample(conn):
     from researchlib.web.queries import sample_state
 
