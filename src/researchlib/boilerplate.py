@@ -17,6 +17,9 @@
    正文中间的模板句只在带引流关键词时去掉；飞书那类重复的小标题不带关键词，留着。
 3. 广告图：同一来源里至少 5 篇都出现的同一张图（按内容哈希），而且不是成批一起出现
    （飞书父文档会带上子文档的整批插图，那是正文）。二维码、优惠券海报、「长按关注」都是这种。
+   模板图是一段时间里几乎篇篇都贴的：从它第一次到最后一次出现，这一来源那段时间的文章至少两成带着它。
+   作者隔几个月、几年才重用一次的示意图（Stratechery 的 Smiling Curve、Aggregation Theory）不到这个比例，
+   留着（见 _occasional）。
 4. 文末号召：就算这句话没有在很多篇里重复，只要落在正文后面，并且是招募、二维码、
    长按关注、加微信这类号召，显示时整段拿掉。文件名或替代文字像二维码的图也拿掉。
    飞书笔记不走这一条，只去归档头。
@@ -133,6 +136,8 @@ MIN_LINE = 4  # 归一化后短于这个的行算碎行，不参与统计
 MIN_DF = 5
 DF_SHARE = 0.02
 IMAGE_MIN_DF = 5
+QR_ALT_MAX = 40  # 替代文字长过这个就是说明句，不按里面提到二维码判
+IMAGE_COVERAGE = 0.2  # 第一次到最后一次出现之间，带着这张图的篇数不到这个比例，算作者重用的示意图
 IMAGE_BATCH = 3  # 同一批文章里一起出现的图达到这么多张，算正文插图（飞书父子文档）
 TAIL_RATIO = 0.25  # 切掉的尾巴里，正文字数不超过模板字数的这个比例
 TAIL_GOOD_MAX = 160
@@ -176,8 +181,12 @@ def _html_attr(tag: str, name: str) -> str:
 
 
 def looks_like_qr(ref: str, alt: str = "") -> bool:
-    """文件名或替代文字像公众号二维码。正文里讨论「二维码支付」不算。"""
-    if _QR_NAME.search(alt or ""):
+    """文件名或替代文字像公众号二维码。正文里讨论「二维码支付」不算。
+
+    替代文字只看短的（标签）：一整句说明里提到 QR code 的是讲产品的截图（Stratechery 21655 那张
+    「配对时扫 Mac 上的 QR code」），不是引流码。
+    """
+    if len(alt or "") <= QR_ALT_MAX and _QR_NAME.search(alt or ""):
         return True
     name = (ref or "").split("?")[0].split("#")[0].rsplit("/", 1)[-1]
     return bool(name and _QR_NAME.search(name))
@@ -872,7 +881,36 @@ def build_profile(conn, source_id: str) -> Profile:
     ).fetchall()
     batches = Counter(tuple(row["ids"]) for row in image_rows)
     images = {row["content_hash"] for row in image_rows if batches[tuple(row["ids"])] < IMAGE_BATCH}
-    return Profile(common, images)
+    return Profile(common, images - _occasional(conn, source_id, images))
+
+
+def _occasional(conn, source_id: str, images: set[str]) -> set[str]:
+    """重复图里作者隔一阵才用一次的那些（示意图），不是一段时间里篇篇都贴的模板图。
+
+    看这张图第一次和最后一次出现之间，这一来源发的文章里有几成带着它。模板图（二维码、优惠券、星标指引）
+    是那段时间里几乎每篇都贴：11-11 线上方伟公众号 18 张，最低 0.30，多数 0.9 以上；孤独进化体的公众号码
+    0.80。Thompson 的示意图十几篇隔几年才重用一次，25 张最高 0.04。按时间看，和图落在正文哪个位置无关：
+    公众号老文章按段估过图的位置，广告图常在正文中间。没有发布时间的图照旧按模板图算。
+    """
+    rows = conn.execute(
+        """
+        WITH spans AS (
+          SELECT i.content_hash, count(DISTINCT a.id) AS n,
+                 min(a.published_at) AS first_at, max(a.published_at) AS last_at
+          FROM article_images i JOIN articles a ON a.id = i.article_id
+          WHERE i.source_id = %s AND i.content_hash = ANY(%s)
+            AND a.duplicate_of IS NULL AND a.published_at IS NOT NULL
+          GROUP BY i.content_hash
+        )
+        SELECT s.content_hash, s.n,
+               (SELECT count(*) FROM articles a
+                WHERE a.source_id = %s AND a.duplicate_of IS NULL
+                  AND a.published_at BETWEEN s.first_at AND s.last_at) AS span
+        FROM spans s
+        """,
+        (source_id, sorted(images), source_id),
+    ).fetchall()
+    return {row["content_hash"] for row in rows if row["n"] < IMAGE_COVERAGE * max(int(row["span"]), 1)}
 
 
 def profile_for(conn, source_id: str) -> Profile:
