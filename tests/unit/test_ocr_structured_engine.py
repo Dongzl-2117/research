@@ -154,6 +154,8 @@ def test_run_ocr_stores_units_usage_and_counts_formats(tmp_path, monkeypatch):
     assert report["metered"] == 3
     lines = describe_report(report)
     assert "按结构交回 1 张" in lines[0] and "结构读不出来 1 张" in lines[0]
+    # #316 删了整理自由文字的旧规则，交回自由文字的按空行分段照原样排，日志别再写「按旧规则整理」。
+    assert "交回自由文字 2 张（按空行分段，照原样排）" in lines[0]
     assert "输入 22 token，输出 90 token（其中思考 15）" in lines[1]
     assert "平均每张输入 7、输出 30" in lines[1]
 
