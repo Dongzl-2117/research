@@ -301,7 +301,7 @@ step research-views --limit 6000
 
 最后一行是积压（约 4,200 篇，20 到 50 美元，Zhilin 11-11 选了全部补完）；只跑积压用上面那一条。要停：`pkill -f 'ocr-changed|research-views --limit'`，再 `docker compose restart app`。
 
-长文读全（迁移 037）上线以后，旧读法丢了段落的判断重抽一遍，属于「全部补完」的一部分。先报篇数，再跑：
+长文读全（迁移 037）上线以后，旧读法丢了段落的判断要重抽一遍。这是另一批花钱的调用：先跑第一条报篇数和要问几次（不调模型），把篇数和估的费用告诉 Zhilin，他同意了再跑第二条：
 
 ```bash
 docker compose exec -T app research-views --truncated --limit 0
