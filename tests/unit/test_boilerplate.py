@@ -4,6 +4,7 @@ from researchlib.boilerplate import (
     clean_html_document,
     is_cta_line,
     is_promo_paragraph,
+    looks_like_qr,
     normalize,
     strip_meta,
 )
@@ -556,3 +557,11 @@ def test_self_declared_ad_with_a_handle_is_cut_but_talk_about_ads_is_kept():
     out = clean_body(body)
     assert "片仔癀" in out and "打个广告" not in out and "abc_123" not in out
     assert not is_promo_paragraph("平台内的业务导流，要比在其他地方打广告便宜 70%，而且自带信任。")
+
+
+def test_long_alt_mentioning_qr_code_is_a_caption_not_a_promo_code():
+    # 说明句里提到 QR code 的截图是正文（Stratechery 讲产品配对流程），短标签「二维码」才是引流码。
+    caption = "When you launch the Mac App, it prompts you to login on your phone (pairing is done with a QR code)"
+    assert not looks_like_qr("https://example.com/login.png", caption)
+    assert looks_like_qr("https://example.com/a.png", "二维码")
+    assert looks_like_qr("images/qrcode.jpg")

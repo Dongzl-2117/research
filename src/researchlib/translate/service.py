@@ -44,6 +44,7 @@ from researchlib.translate.provenance import (
     ALIGNMENT_VERSION,
     PROMPT_VERSION,
     AlignmentError,
+    copied_targets,
     misplaced_slot,
     numbers_agree,
     numeric_anchors,
@@ -54,6 +55,7 @@ from researchlib.translate.provenance import (
     shape_problem,
     source_manifest,
     structure_problem,
+    untranslated_english,
 )
 from researchlib.translate.provenance import digest as segment_digest
 from researchlib.translate.segments import (
@@ -410,6 +412,7 @@ _SLOT_NOTES = {
     "numbers-misplaced": "上一次这一段的译文里写的是别的段的数字。只译这一段，"
     "原文里的数字都要写出来，不要写别段的内容。",
     "shape": "上一次这一段的译文会被拆成好几段（多了换行或段落标签）。译成一段，不要加 <br> 或新的段落标签。",
+    "english": "上一次这一段交回的是英文原文，没有译。把这一段译成中文；只译这一段，前后段的内容不要写进来。",
 }
 
 
@@ -485,6 +488,7 @@ def _restore_slot(slots: _Slots, index: int, text: str) -> tuple[str | None, str
 def _accept(slots: _Slots, indices: list[int], texts: BatchTexts) -> tuple[dict[int, str], set[int], dict[int, str]]:
     """一次回答里逐段还原、核对。返回 (能用的段, 其中数字没对上的段, 不能用的段和原因)。
 
+    交回来的还是英文的段（``untranslated_english``）记成 ``english``，不算译好。
     一段不能用不连累别的段。身份没对上的段（None）原因带 ``response-`` 或 ``http-`` 前缀，
     它已经单独问过两次，不再单独重译。
     """
@@ -499,6 +503,9 @@ def _accept(slots: _Slots, indices: list[int], texts: BatchTexts) -> tuple[dict[
         value, problem = _restore_slot(slots, index, text)
         if problem:
             bad[index] = problem
+            continue
+        if untranslated_english(slots.sources[index], value):
+            bad[index] = "english"
             continue
         good[index] = value
         if not numbers_agree(slots.sources[index], value):
@@ -548,14 +555,28 @@ def _retry_slot(
 def _settle_part(
     slots: _Slots, indices: list[int], base: dict, data_dir: Path, progress: _Progress, neighbors: list[int],
 ) -> None:
-    """问一次、逐段收下能用的；不能用的段单独重译。串段时这次回答整批不信，拆成两半重问。"""
+    """问一次、逐段收下能用的；不能用的段单独重译。
+
+    串段、有段交回英文、有两段英文不同中文一样时，这次回答整批不信，拆成两半重问。
+    """
     texts = _ask(slots, indices, _window(slots, progress, indices, base), data_dir)
     progress.models.update(getattr(texts, "models", ()))
     good, flagged, bad = _accept(slots, indices, texts)
     wrong = _misplaced(slots, neighbors, good, flagged)
-    if wrong is not None and len(indices) > 1:
+    english = [index for index, problem in bad.items() if problem == "english"]
+    kept = [index for index in indices if index in good]
+    copies = [kept[position] for position in copied_targets(
+        [slots.sources[index] for index in kept], [good[index] for index in kept])]
+    if (wrong is not None or english or copies) and len(indices) > 1:
         # 数字串到别的段，说明这次回答里段和段可能整体错开了，数字没毛病的段也不能信。
-        logger.info("第 %s 段写的是同一批别的段的数字，这 %s 段拆成两半重译", wrong, len(indices))
+        # 一段交回英文也是这样：多半是旁边那段把它的中文一起写了，那一段看着没毛病，其实多了一段话。
+        # 两段英文不同、中文一样：一段的中文没了，后面几段各拿了下一段的中文，从哪一段开始错开看不出来。
+        if wrong is not None:
+            logger.info("第 %s 段写的是同一批别的段的数字，这 %s 段拆成两半重译", wrong, len(indices))
+        elif english:
+            logger.info("第 %s 段交回的是英文，这 %s 段拆成两半重译", english[0], len(indices))
+        else:
+            logger.info("第 %s 段和同一批别的段英文不同、中文一样，这 %s 段拆成两半重译", copies[0], len(indices))
         mid = len(indices) // 2
         _settle_part(slots, indices[:mid], base, data_dir, progress, neighbors)
         _settle_part(slots, indices[mid:], base, data_dir, progress, neighbors)
@@ -602,7 +623,8 @@ def _repair_numbers(slots: _Slots, flagged: list[int], base: dict, data_dir: Pat
     for index, text in zip(flagged, texts, strict=True):
         value = unshield(text, slots.shields[index])
         if (value is not None and structure_problem(slots.sources[index], value) is None
-                and numbers_agree(slots.sources[index], value)):
+                and numbers_agree(slots.sources[index], value)
+                and not untranslated_english(slots.sources[index], value)):
             progress.values[index] = value
             progress.flagged.discard(index)
             fixed = True
