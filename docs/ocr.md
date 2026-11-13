@@ -47,6 +47,7 @@ docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-ocr --redo --
 ```
 
   认完以前这些图照认出来的字按段排；认完的图写回时旁路和检索块跟着重写，`ocr_hash` 变，短帖会排去重做摘要和观点（用 `research-digest --ocr-changed`、`research-views --ocr-changed` 一次补完）。
+  11-12 线上跑完：认了 362 张（有字 319 张），失败 0，还剩 0；336 篇的图片文字重写，其中字变了的 179 篇。
 - 星球空壳标题从图片里的字取句子时（`zsxq_display_title` 的 `ocr`），一段（一条消息）当一句，段尾没收句的不和下一个人说的话粘成一句。
 
 **用量**：识图请求带 `stream_options.include_usage`，接口报的 token 存在 `image_texts.usage`（`prompt` 输入、`completion` 输出、其中思考的 `reasoning`；读不出来再要的那次也算上）。`research-ocr` 结束时多打两行：按结构交回、交回自由文字、读不出来各几张；用量合计和每张平均。接口或转发不认这个参数（4xx）时去掉再发一次；去掉以后成了，这一次命令后面的请求都不再带，也就没有用量，报告写「接口这次没报用量，花费看提供方账单」。跑过一晚以后按库里的记录算：
@@ -112,7 +113,7 @@ docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-ocr --tall --
 
 挑按现在的说明（`VISION_PROMPT_VERSION`）认过、`units` 里没有 `parts` 的图（结构读不出来的、失败的也算，切段以后常常认得出来；记了跳过的不算），逐张读文件头筛出长的，按文章从新到旧。按旧说明认的不在这里，全库重认（`--redo`）认它们时已经切段。和 `--redo` 一样，失败留着旧字；短帖的摘要和观点按发布时间排进夜间的队，不当场重写。一张长图的几段在同一个位子上一段接一段认，同时在认的图数照旧跟 `RESEARCH_LLM_CONCURRENCY`，并发往上加的顾虑见下面「几张一起认」。要花钱（或占额度）：先用 `--limit 0` 报张数和段数，等 Zhilin 同意再跑。
 
-长图补认完以后：接法改过就先 `--rejoin`，再 `research-rebuild-chunks --ocr` 按现在的规则重切图片文字块。图片字变了的短帖，摘要和观点夜间按发布时间和缺摘要的老文章一起排，要几个月才轮到；要一次补完用 `--ocr-changed`，只挑已经写过摘要、抽过观点，当时的图片字和现在不一样的（要花钱，先报篇数和费用）：
+长图补认完以后：接法改过就先 `--rejoin`，再 `research-rebuild-chunks --ocr` 按现在的规则重切图片文字块（11-13 线上按 11-11 的接法重接、重切过一遍）。图片字变了的短帖，摘要和观点夜间按发布时间和缺摘要的老文章一起排，要几个月才轮到；要一次补完用 `--ocr-changed`，只挑已经写过摘要、抽过观点，当时的图片字和现在不一样的（要花钱，先报篇数和费用）：
 
 ```bash
 docker compose exec -T app research-digest --ocr-changed --limit 2000
