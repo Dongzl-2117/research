@@ -13,7 +13,7 @@ from researchlib import health, theses
 from researchlib import llm as llm_module
 from researchlib.chunks import make_chunks
 from researchlib.config import Settings
-from researchlib.excerpt import GAP, digest_input, views_input
+from researchlib.excerpt import GAP, VIEWS_LIMIT, digest_input, old_reader_dropped, view_windows
 from researchlib.llm import LLMError, chat
 from researchlib.render import render_body
 from researchlib.translate.pair import stamp_paragraph_ids
@@ -77,13 +77,69 @@ def test_digest_input_keeps_opening_ending_and_section_heads():
     assert (short, cut) == ("短文。", False)
 
 
-def test_views_input_follows_the_companies():
+def test_views_follow_the_companies():
     chunks = [("", f"第 {index} 块讲别的。" + "字" * 600) for index in range(120)]
     chunks[90] = ("", "第 90 块：拼多多的 Temu 在美国被加了关税，半托管模式毛利被压。")
     body = "\n".join(text for _heading, text in chunks)
-    text, reduced = views_input(body, chunks, ["拼多多", "PDD", "Temu"], limit=20000)
-    assert reduced and "第 90 块：拼多多" in text and "第 91 块" in text
+    text = "".join(view_windows(body, chunks, ["拼多多", "PDD", "Temu"]))
+    assert "第 90 块：拼多多" in text and "第 91 块" in text
     assert "第 0 块" in text and "第 119 块" in text and "第 50 块" not in text
+    assert not old_reader_dropped(body, chunks, ["拼多多", "PDD", "Temu"])
+
+
+def _marked(count: int, size: int, company: str = "腾讯") -> list[tuple[str, str]]:
+    return [(f"第{index // 10}节", f"〔{index}〕{company}" + "字" * size) for index in range(count)]
+
+
+def test_long_article_is_read_to_the_end():
+    """7 万字以上、通篇都在谈这家公司：以前装满 6 块 12000 字就停，后三分之一连同结论不读。"""
+    chunks = _marked(110, 990)
+    chunks[-1] = ("结论", "〔109〕结论：腾讯的广告还有空间，这是全文最后的判断。")
+    body = "\n".join(text for _heading, text in chunks)
+    assert len(body) > 100000 and old_reader_dropped(body, chunks, ["腾讯"])
+    windows = view_windows(body, chunks, ["腾讯"])
+    text = "".join(windows)
+    assert all(f"〔{index}〕" in text for index in range(110)) and "全文最后的判断" in text
+    # 块数还是 6 块上下：每块放大，不超过一次能读的量。
+    assert len(windows) <= 7 and all(len(window) <= VIEWS_LIMIT for window in windows)
+
+
+def test_very_long_article_gets_more_windows_instead_of_losing_paragraphs():
+    chunks = _marked(260, 990)
+    body = "\n".join(text for _heading, text in chunks)
+    windows = view_windows(body, chunks, ["腾讯"])
+    text = "".join(windows)
+    assert all(f"〔{index}〕" in text for index in range(260))
+    assert len(windows) > 6 and all(len(window) <= VIEWS_LIMIT for window in windows)
+
+
+def test_one_huge_block_is_split_not_replaced():
+    """整篇的图片文字常是一块好几万字：以前超过 30000 字的这一块被换成按公司重选的片段，图里的字没读到。"""
+    chunks = [("", "开头。"), ("", "腾讯的广告。" + "字" * 3000)]
+    ocr = "".join(f"〔图{index}〕" + "字" * 500 + "\n" for index in range(100))
+    chunks.append(("图片里的字", ocr))
+    body = "\n".join(text for _heading, text in chunks)
+    assert old_reader_dropped(body, chunks, ["腾讯"])
+    windows = view_windows(body, chunks, ["腾讯"])
+    text = "".join(windows)
+    assert all(f"〔图{index}〕" in text for index in range(100))
+    assert all(len(window) <= VIEWS_LIMIT for window in windows)
+
+
+def test_text_without_blocks_is_split_whole():
+    body = "\n".join(f"〔{index}〕" + "字" * 990 for index in range(100))
+    assert old_reader_dropped(body, [], ["腾讯"])
+    text = "".join(view_windows(body, [], ["腾讯"]))
+    assert all(f"〔{index}〕" in text for index in range(100))
+
+
+def test_long_article_that_mentions_the_company_a_few_times_was_read_in_full_before():
+    """选中的段落装得进 6 块的，旧读法也读全了，旧判断不用重抽。"""
+    chunks = _marked(60, 990, company="别家") + [("", f"〔腾讯{index}〕腾讯" + "字" * 990) for index in range(20)]
+    body = "\n".join(text for _heading, text in chunks)
+    assert len(body) > 75000 and not old_reader_dropped(body, chunks, ["腾讯"])
+    text = "".join(view_windows(body, chunks, ["腾讯"]))
+    assert all(f"〔腾讯{index}〕" in text for index in range(20)) and "〔30〕" not in text
 
 
 def _write_oauth(path, access="oauth-access") -> None:

@@ -404,7 +404,7 @@ def run_batch(
 
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 整批停下了：没有可用的 LLM 凭证、
-    接口拒绝鉴权或余额不足（402）。"""
+    接口拒绝鉴权或余额不足（402）；3 连着几篇限流、5xx、断网，暂停了，这几篇没记失败，过几分钟再跑同一条。"""
     parser = argparse.ArgumentParser(description="给还没有摘要的文章生成 LLM 摘要")
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--source", default="")
@@ -448,10 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         f"待处理 {len(jobs)} 篇，写入 {report['done']} 篇，失败 {report['failed']} 篇"
         + llm_batch.tail(report, "写")
     )
-    if report["fatal"]:
-        print(f"整批停下：{report['fatal']}", file=sys.stderr)
-        return 2
-    return 0
+    return llm_batch.exit_code(report, "写")
 
 
 if __name__ == "__main__":

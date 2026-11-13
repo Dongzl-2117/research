@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from researchlib import digest as digest_mod
 from researchlib import theses as theses_mod
 from researchlib import views as views_mod
+from researchlib.excerpt import VIEWS_LIMIT
 from researchlib.failures import clear_failure, note_failure
 from researchlib.health import write_status
 from researchlib.ingest.model import ParsedDoc
@@ -185,7 +186,9 @@ def test_long_articles_feed_the_ending_and_the_company_paragraphs(conn, settings
     monkeypatch.setattr(views_mod, "chat", lambda _s, messages, **_k: (prompts.append(messages[1]["content"]) or (
         '{"腾讯": {"judgment": "广告还有空间", "stance": "正面"}}', "grok-test")))
     views_mod.extract_article(conn, settings, row, "方伟", [_tencent(conn)])
-    assert "全文最后的判断" in prompts[0] and len(prompts[0]) < views_mod.BODY_LIMIT + 2000
+    assert "全文最后的判断" in prompts[0] and len(prompts[0]) < VIEWS_LIMIT + 2000
+    saved = conn.execute("SELECT reader FROM company_views WHERE article_id = %s", (row["id"],)).fetchone()
+    assert saved["reader"] == views_mod.READER
     # 以前只读了开头的，标成 head_only，重新排队。
     conn.execute("UPDATE article_digests SET head_only = true WHERE article_id = %s", (row["id"],))
     conn.commit()
