@@ -44,6 +44,7 @@ from researchlib.translate.provenance import (
     ALIGNMENT_VERSION,
     PROMPT_VERSION,
     AlignmentError,
+    copied_targets,
     misplaced_slot,
     numbers_agree,
     numeric_anchors,
@@ -554,19 +555,28 @@ def _retry_slot(
 def _settle_part(
     slots: _Slots, indices: list[int], base: dict, data_dir: Path, progress: _Progress, neighbors: list[int],
 ) -> None:
-    """问一次、逐段收下能用的；不能用的段单独重译。串段、有段交回英文时这次回答整批不信，拆成两半重问。"""
+    """问一次、逐段收下能用的；不能用的段单独重译。
+
+    串段、有段交回英文、有两段英文不同中文一样时，这次回答整批不信，拆成两半重问。
+    """
     texts = _ask(slots, indices, _window(slots, progress, indices, base), data_dir)
     progress.models.update(getattr(texts, "models", ()))
     good, flagged, bad = _accept(slots, indices, texts)
     wrong = _misplaced(slots, neighbors, good, flagged)
     english = [index for index, problem in bad.items() if problem == "english"]
-    if (wrong is not None or english) and len(indices) > 1:
+    kept = [index for index in indices if index in good]
+    copies = [kept[position] for position in copied_targets(
+        [slots.sources[index] for index in kept], [good[index] for index in kept])]
+    if (wrong is not None or english or copies) and len(indices) > 1:
         # 数字串到别的段，说明这次回答里段和段可能整体错开了，数字没毛病的段也不能信。
         # 一段交回英文也是这样：多半是旁边那段把它的中文一起写了，那一段看着没毛病，其实多了一段话。
+        # 两段英文不同、中文一样：一段的中文没了，后面几段各拿了下一段的中文，从哪一段开始错开看不出来。
         if wrong is not None:
             logger.info("第 %s 段写的是同一批别的段的数字，这 %s 段拆成两半重译", wrong, len(indices))
-        else:
+        elif english:
             logger.info("第 %s 段交回的是英文，这 %s 段拆成两半重译", english[0], len(indices))
+        else:
+            logger.info("第 %s 段和同一批别的段英文不同、中文一样，这 %s 段拆成两半重译", copies[0], len(indices))
         mid = len(indices) // 2
         _settle_part(slots, indices[:mid], base, data_dir, progress, neighbors)
         _settle_part(slots, indices[mid:], base, data_dir, progress, neighbors)

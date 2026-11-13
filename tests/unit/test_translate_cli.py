@@ -648,7 +648,8 @@ def test_from_inventory_makes_way_for_a_release_like_the_queue(conn, monkeypatch
         _deploy_waits(tmp_path)
         return TranslateResult(article_id, "translated", segments=2)
 
-    monkeypatch.setattr(cli.inventory, "unfinished", lambda conn, ids, data_dir, prompt=False, echo=False: list(ids))
+    monkeypatch.setattr(cli.inventory, "unfinished",
+                        lambda conn, ids, data_dir, prompt=False, misplaced=False: list(ids))
     monkeypatch.setattr(cli, "translate_article", translate)
     assert cli.main(["--from-inventory", "unmapped"]) == 0
     assert seen == [3]

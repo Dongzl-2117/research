@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 
 from researchlib.translate.numbers import digits_hide_scale_change, hard_fact_counts, same_numeric_facts
-from researchlib.translate.segments import iter_segments, splice_segments, split_sentence_paragraphs, top_level_blocks
+from researchlib.translate.segments import (
+    _LATIN,
+    iter_segments,
+    splice_segments,
+    split_sentence_paragraphs,
+    top_level_blocks,
+)
 
 SCHEMA_VERSION = 1
 CLEANER_VERSION = 1
@@ -179,6 +185,50 @@ def untranslated_english(source: str, target: str) -> bool:
     shown = " ".join(Resources(target).text)
     kept = sum(len(word) for word in _ENGLISH_WORD.findall(shown))
     return kept >= letters * 0.5 and len(_HAN.findall(shown)) < letters * 0.05
+
+
+# 一次请求最多送几段（service.TRANSLATE_BATCH_MAX_SEGMENTS）。译文整体错开只会发生在同一次回答里，
+# 比两段中文、圈出要重译的范围都按这个跨度。
+COPY_SPAN = 12
+
+
+def _bare(value: str) -> str:
+    """一段显示出来的字，去掉标签、标点和空白，不分大小写。比两段是不是同一段话用。"""
+    return re.sub(r"[\W_]+", "", html.unescape(_TAG.sub("", value or ""))).casefold()
+
+
+def copied_targets(sources: Sequence[str], targets: Sequence[str], *, span: int = COPY_SPAN) -> list[int]:
+    """相隔不到 ``span`` 段的两段，英文不同、中文却一字不差：返回这几段的位置。
+
+    模型偶尔把一次回答里的译文整体错开一格：一段的中文没了，后面几段各拿了下一段的中文，
+    到某一段又对上，它和前一段写成了同一段话（11-11 21938 引的 Andreessen 那几句）。
+    数字、结构、交回英文的核对都看不出来，只剩「英文不同、中文一样」这个迹象。整段比，去掉标签、标点和空白，
+    不分大小写；中文不到 8 个汉字的（「是的。」这类）、一段英文包含另一段的（同一段话又引一遍，前面多了说话人；
+    目录里的小标题和正文里大小写、连字符不同的同一个小标题）不算。
+    """
+    bare_sources = [_bare(item) for item in sources]
+    bare_targets = [_bare(item) for item in targets]
+    found: set[int] = set()
+    for first, target in enumerate(bare_targets):
+        if len(_HAN.findall(target)) < 8:
+            continue
+        for second in range(first + 1, min(len(bare_targets), first + span)):
+            if bare_targets[second] != target:
+                continue
+            one, other = bare_sources[first], bare_sources[second]
+            if one in other or other in one:
+                continue
+            found.update((first, second))
+    return sorted(found)
+
+
+def _to_translate(item: object) -> bool:
+    """回执里这一段是不是要译的段：原文去掉标签后有拉丁字母，和 segments.translatable_blocks 同一条。
+    分批、相邻都只数这些段，原文就是中文、不用译的段不算。"""
+    if not isinstance(item, dict):
+        return False
+    source, target = item.get("source"), item.get("target")
+    return isinstance(source, str) and isinstance(target, str) and bool(_LATIN.search(_TAG.sub("", source)))
 
 
 def numbers_agree(source: str, target: str) -> bool:
@@ -363,7 +413,8 @@ def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
     """回执里能原样再用的译文段，按 ``reuse_key`` 分组，组里保持原文里的先后。
 
     只收这一版清洗、切段签的回执里、自己校验值对得上、资源和原文一致的段；没译出来先放英文的段
-    （``untranslated``）不收，交回英文、其实没译的段和它前后各一段也不收。没有回执的旧稿返回空，
+    （``untranslated``）不收，串段的那一片也不收：交回英文、其实没译的段和它前后各一段，
+    相近两段英文不同、中文一样的段和它前后各 ``COPY_SPAN - 1`` 段（都只数要译的段）。没有回执的旧稿返回空，
     只能整篇重译。哪一版提示词译的不管：直接用还是只在重译失败时退回用，由译制按 ``prompt_versions`` 决定。
     """
     if not isinstance(provenance, dict):
@@ -373,15 +424,21 @@ def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
     skip = set(untranslated_slots(provenance))
     entries = provenance.get("segments") or []
     # 交回英文、其实没译的段（echoed_slots）多半是旁边一段把它的中文一起写了：这一段和前后各一段都不复用，
-    # 再译时三段一起重译，中文不会一句写两遍。
+    # 再译时三段一起重译，中文不会一句写两遍。英文不同、中文一样的段（copied_slots）是同一次回答里的译文
+    # 整体错开了，从哪一段开始错看不出来：一次回答最多 COPY_SPAN 段，它前后各 COPY_SPAN - 1 段都不复用。
+    # 相邻按要译的段数，原文就是中文、不用译的段不算。
     echoed = set(echoed_slots(provenance))
+    copied = set(copied_slots(provenance))
+    order = [position for position, item in enumerate(entries) if _to_translate(item)]
     near: set[int] = set()
-    for position, item in enumerate(entries):
+    for rank, position in enumerate(order):
         try:
-            if int(item["ordinal"]) in echoed:
-                near.update((position - 1, position, position + 1))
+            ordinal = int(entries[position]["ordinal"])
         except (KeyError, TypeError, ValueError):
             continue
+        radius = COPY_SPAN - 1 if ordinal in copied else 1 if ordinal in echoed else 0
+        if radius:
+            near.update(order[max(0, rank - radius) : rank + radius + 1])
     found: dict[str, list[str]] = {}
     for position, item in enumerate(entries):
         try:
@@ -409,6 +466,20 @@ def echoed_slots(provenance: dict | None) -> list[int]:
             ordinal = int(item["ordinal"])
             if ordinal not in gaps and untranslated_english(item["source"], item["target"]):
                 found.append(ordinal)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return found
+
+
+def copied_slots(provenance: dict | None) -> list[int]:
+    """回执里相隔不到 COPY_SPAN 段（只数要译的段）、英文不同中文却一字不差的槽位序号（``copied_targets``）。"""
+    if not isinstance(provenance, dict):
+        return []
+    entries = [item for item in provenance.get("segments") or [] if _to_translate(item)]
+    found = []
+    for position in copied_targets([item["source"] for item in entries], [item["target"] for item in entries]):
+        try:
+            found.append(int(entries[position]["ordinal"]))
         except (KeyError, TypeError, ValueError):
             continue
     return found
