@@ -129,6 +129,11 @@ def test_leaves_everything_else_alone():
         "- Parent item with a nested list\n  - child entry\n\nParent item with a nested list child entry",
         # 只有一行。
         "> A single quoted line without any copy.",
+        # 引文中间一句正文又写了一遍（开头、结尾都多出字）：不是导出的两份。
+        "> Opening words of the quote come first. The middle sentence is repeated on purpose by the author. "
+        "Closing words.\n\nThe middle sentence is repeated on purpose by the author.",
+        # 结尾接上的那截太短：正文碰巧把列表项最后半句又写了一遍。
+        "- A longer list item that keeps going for quite a while here. Short end here.\n\nShort end here.",
         "",
     ]
     for md in cases:
@@ -372,3 +377,102 @@ def test_a_quote_written_twice_at_the_end_of_another_quote_keeps_its_formatted_c
         "\n"
         "My own commentary follows."
     )
+
+
+def test_item_lead_in_stays_and_the_nested_quote_goes_back_in():
+    """原文的列表项先是一句导语，下面套着引文。导出把整项（导语连着引文）写成一行纯文字，带格式的那份
+    只写了引文，导语不再写。收的时候导语留在列表项里，引文套回这一项下面。"""
+    md = (
+        "A few additional points worth noting:\n\n"
+        "- Video is not a separate unit; it is a setting you bid on. The chief explains: "
+        "Video does displace other posts in the feed. Video is just a format that is bid into the auction.\n\n"
+        "> Video does displace other posts in the [feed](https://example.com/feed). "
+        "Video is just a format that is bid into the auction.\n\n"
+        "My own commentary follows."
+    )
+    folded = fold_nested_copies(md)
+    assert folded == (
+        "A few additional points worth noting:\n\n"
+        "- Video is not a separate unit; it is a setting you bid on. The chief explains:\n\n"
+        "    > Video does displace other posts in the [feed](https://example.com/feed). "
+        "Video is just a format that is bid into the auction.\n\n"
+        "My own commentary follows."
+    )
+    html = _html(folded)
+    assert html.count("Video does displace") == 1
+    item = html.split("<li>", 1)[1].split("</li>", 1)[0]
+    assert "<p>Video is not a separate unit; it is a setting you bid on. The chief explains:</p>" in item
+    assert "<blockquote>" in item and 'href="https://example.com/feed"' in item
+    assert "My own commentary follows." not in item
+
+
+def test_item_lead_in_with_paragraphs_and_an_image_after_it():
+    """导语后面带格式的是几段普通段落，第一段里还夹着图（图的替代文字纯文字那份里没有，不算字）。"""
+    md = (
+        "- This slide was amusing with regards to who it did not include: The music service has not said "
+        "whether it plans to use the new feature. Here is more evidence that the two companies are friends.\n\n"
+        f"![The list of music services]({_IMG}) The music service has not said whether it plans to use the "
+        "new feature.\n\n"
+        "Here is more evidence that the two [companies](https://example.com/c) are friends.\n\n"
+        "Next paragraph of the article."
+    )
+    folded = fold_nested_copies(md)
+    assert folded.count("has not said whether") == 1 and folded.count("more evidence") == 1
+    assert folded.startswith("- This slide was amusing with regards to who it did not include:\n\n    ![")
+    assert "\n\n    Here is more evidence that the two [companies]" in folded
+    html = str(render_body(folded, {_IMG: _IMG}, None))
+    item = html.split("<li>", 1)[1].split("</li>", 1)[0]
+    assert item.count("<p>") == 3 and "<img" in item
+
+
+def test_tweet_signature_stays_after_the_formatted_text():
+    """推文：引文里正文一段，署名直接写在引文里。导出带格式的那份只写了正文，署名留在引文末尾。"""
+    md = (
+        "Here is what one investor wrote:\n\n"
+        "> This has been the story of every company that has gone there. Why does nobody learn it?\n"
+        "> https://t.co/abc123\n"
+        "> — 王小明 (@wangxm)\n"
+        "> May 21, 2025\n\n"
+        "This has been the story of every company that has gone there. Why does nobody learn it? "
+        "[https://t.co/abc123](https://t.co/abc123)\n\n"
+        "What I believe he means is something else."
+    )
+    assert fold_nested_copies(md) == (
+        "Here is what one investor wrote:\n\n"
+        "> This has been the story of every company that has gone there. Why does nobody learn it? "
+        "[https://t.co/abc123](https://t.co/abc123)\n"
+        ">\n"
+        "> — 王小明 (@wangxm)\n"
+        "> May 21, 2025\n\n"
+        "What I believe he means is something else."
+    )
+
+
+def test_nested_list_written_flat_goes_back_under_its_item():
+    """原文的列表项下面挂着嵌套列表：纯文字那份把嵌套列表的字连在这一项后面，带格式的那几项顶格写，
+    和后面正文自己的项挨着。"""
+    md = (
+        "- There will be three tiers of games on the service: All games go to subscribers of the new package. "
+        "A smaller number of games go to the cheaper plan.\n\n"
+        "- All games go to subscribers of the new package.\n\n"
+        "- A smaller number of games go to the cheaper plan.\n\n"
+        "- The league keeps the right to sell local rights to others."
+    )
+    assert fold_nested_copies(md) == (
+        "- There will be three tiers of games on the service:\n\n"
+        "    - All games go to subscribers of the new package.\n\n"
+        "    - A smaller number of games go to the cheaper plan.\n\n"
+        "- The league keeps the right to sell local rights to others."
+    )
+
+
+def test_long_interview_quote_with_many_paragraphs_folds():
+    """访谈记录这类长引文一条几十段（线上 22699 一条 40 多段）：以前一条只认 12 段，整段记录显示两遍。"""
+    lines = [f"Speaker {number}: This is paragraph number {number} of a long interview transcript."
+             for number in range(30)]
+    copies = [f"**Speaker {number}:** This is paragraph number {number} of a long interview transcript."
+              for number in range(30)]
+    md = "> " + "\n>\n> ".join(lines) + "\n\n" + "\n\n".join(copies) + "\n\nMy own commentary follows."
+    folded = fold_nested_copies(md)
+    assert folded.count("paragraph number 29 ") == 1 and folded.count("**Speaker") == 30
+    assert folded.startswith("> **Speaker 0:**") and folded.endswith("\n\nMy own commentary follows.")

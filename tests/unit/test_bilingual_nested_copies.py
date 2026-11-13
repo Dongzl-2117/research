@@ -456,3 +456,210 @@ def test_a_quote_merged_with_its_nested_copy_shows_once_on_every_page():
     quote = folded.split('<blockquote id="p-2">', 1)[1].rsplit("</blockquote>", 1)[0]
     assert re.search(r"<blockquote><p>最让人意外的是价格。</p>\s*</blockquote>", quote) and "<em>便宜</em>" in quote
     assert _ids(folded) == _ids(zh)
+
+
+# 写两遍的引文：纯文字那份按行切开译，每行都译对了；带格式那几段的译文挪了一格（漏了第一个列表项，
+# 后面的各往前挪一格，最后一个列表项是下一段的译文）。线上 21938 是这样。
+_MD_SLIPPED = (
+    "Opening words of the article body here.\n\n"
+    "> First ask what matters most: the team, the product, or the market?\n"
+    "> When a great team meets a lousy market, market wins.\n"
+    "> When a lousy team meets a great market, market wins.\n"
+    "> When a great team meets a great market, something special happens.\n"
+    "> You can still ruin a great market, but a great market usually means success.\n\n"
+    "First ask what matters most: the team, the product, or the *market*?\n\n"
+    "- When a great team meets a lousy market, market wins.\n\n"
+    "- When a lousy team meets a great market, market wins.\n\n"
+    "- When a great team meets a great market, something special happens.\n\n"
+    "You can still ruin a great market, but a great market usually means [success](https://example.invalid/s).\n\n"
+    "Closing words after the quote end here.\n"
+)
+_ZH_RIGHT = {
+    0: "<p>正文开头的几句话。</p>",
+    1: "<p>先问什么最重要：团队、产品，还是市场？</p>",
+    2: "<p>优秀的团队遇上糟糕的市场，市场赢。</p>",
+    3: "<p>平庸的团队遇上巨大的市场，市场赢。</p>",
+    4: "<p>优秀的团队遇上巨大的市场，就会有特别的事情发生。</p>",
+    5: "<p>巨大的市场你照样可能搞砸，但巨大的市场通常意味着成功。</p>",
+    6: "<p>先问什么最重要：团队、产品，还是<em>市场</em>？</p>",
+    7: "<p>优秀的团队遇上糟糕的市场，市场赢。</p>",
+    8: "<p>平庸的团队遇上巨大的市场，市场赢。</p>",
+    9: "<p>优秀的团队遇上巨大的市场，就会有特别的事情发生。</p>",
+    10: '<p>巨大的市场你照样可能搞砸，但巨大的市场通常意味着<a href="https://example.invalid/s">成功</a>。</p>',
+    11: "<p>引文后面收尾的几句话。</p>",
+}
+_ZH_SLIPPED = {**_ZH_RIGHT, 7: _ZH_RIGHT[8], 8: _ZH_RIGHT[9], 9: _ZH_RIGHT[5]}
+
+
+def test_copies_translated_one_slot_off_keep_the_plain_copy():
+    """带格式那几段的中文挪了一格：英文不同的两段中文一字不差。纯文字那份的中文才是对的，收掉它
+    「优秀的团队遇上糟糕的市场」这句就没了，这一处不收。"""
+    source, zh, view = _render(_MD_SLIPPED, _ZH_SLIPPED)
+    assert view.correspondence == "mapped" and not view.notice
+    assert "优秀的团队遇上糟糕的市场" in "".join(pair.zh or "" for pair in view.pairs)
+    assert "优秀的团队遇上糟糕的市场" in fold_translated_copies(source, zh)
+    # 译对了的同一篇照常收成一份。
+    source, zh, view = _render(_MD_SLIPPED, _ZH_RIGHT)
+    assert "".join(pair.zh or "" for pair in view.pairs).count("优秀的团队遇上糟糕的市场") == 1
+    folded = fold_translated_copies(source, zh)
+    assert folded.count("优秀的团队遇上糟糕的市场") == 1 and folded.count("先问什么最重要") == 1
+
+
+# 列表项先是一句导语、下面套着引文；推文的署名直接写在引文里。导出带格式的那份只写了引文、推文正文，
+# 导语、署名只在纯文字那份里（线上 21735、21273 这样）。
+_MD_LEAD = (
+    "Opening words of the article body here.\n\n"
+    "- Video is not a separate unit; it is a setting you bid on. The chief explains: "
+    "Video does displace other posts in the feed. Video is just a format that is bid into the auction.\n\n"
+    "> Video does displace other posts in the [feed](https://example.invalid/feed). "
+    "Video is just a format that is bid into the auction.\n\n"
+    "- The second point is short and has no copy at all.\n\n"
+    "> This has been the story of every company that has gone there. Why does nobody learn it?\n"
+    "> https://t.co/abc123\n"
+    "> — 王小明 (@wangxm)\n"
+    "> May 21, 2025\n\n"
+    "This has been the story of every company that has gone there. Why does nobody learn it? "
+    "[https://t.co/abc123](https://t.co/abc123)\n\n"
+    "Closing words of the article body.\n"
+)
+_ZH_LEAD = {
+    0: "<p>正文开头的几句话。</p>",
+    1: "<li>视频不是一种单独的广告单元，只是出价时的一个设置。负责人解释说：视频确实会挤掉信息流里的其他帖子。"
+       "视频只是一种参与竞价的格式。</li>",
+    2: '<p>视频确实会挤掉<a href="https://example.invalid/feed">信息流</a>里的其他帖子。视频只是参与竞价的一种格式。</p>',
+    3: "<li>第二点很短，没有副本。</li>",
+    4: "<p>去那里的每一家公司都是这个故事。怎么就没人吸取教训？ https://t.co/abc123 — 王小明 (@wangxm) "
+       "2025年5月21日</p>",
+    5: '<p>去那里的每一家公司都是这个故事。怎么就没人吸取教训？ <a href="https://t.co/abc123">https://t.co/abc123</a></p>',
+    6: "<p>正文最后几句。</p>",
+}
+
+
+def test_lead_in_and_tweet_signature_stay_on_the_bilingual_page():
+    source, _zh, view = _render(_MD_LEAD, _ZH_LEAD)
+    assert view.correspondence == "mapped" and not view.notice
+    en = "".join(pair.en for pair in view.pairs)
+    zh = "".join(pair.zh or "" for pair in view.pairs)
+    for text in ("Video does displace", "The chief explains", "story of every company", "王小明 (@wangxm)"):
+        assert en.count(text) == 1, text
+    for text in ("视频确实会挤掉", "负责人解释说", "每一家公司", "2025年5月21日"):
+        assert zh.count(text) == 1, text
+    item, _second, tweet = view.pairs[1:4]
+    # 导语留在列表项里，带格式的引文套回这一项下面；推文的署名留在引文末尾。
+    assert "<ul><li><p>Video is not a separate unit; it is a setting you bid on. The chief explains:</p><blockquote>" \
+        in item.en
+    lead = "<p>视频不是一种单独的广告单元，只是出价时的一个设置。负责人解释说：</p>"
+    assert item.zh.startswith(f"<ul><li>{lead}<blockquote>")
+    assert '<a href="https://example.invalid/feed">信息流</a>' in item.zh
+    assert tweet.en.endswith("<p>— 王小明 (@wangxm) May 21, 2025</p></blockquote>")
+    assert tweet.zh.endswith("<p>— 王小明 (@wangxm) 2025年5月21日</p></blockquote>")
+    assert content_gaps(source, en) == 0
+    assert _ids(source) <= _ids(en + zh) | {pair.anchor for pair in view.pairs}
+
+
+def test_lead_in_and_tweet_signature_stay_on_the_chinese_page():
+    source, zh, _view = _render(_MD_LEAD, _ZH_LEAD)
+    folded = fold_translated_copies(source, zh)
+    for text in ("视频确实会挤掉", "负责人解释说", "每一家公司", "2025年5月21日"):
+        assert folded.count(text) == 1, text
+    assert '<li><p>视频不是一种单独的广告单元，只是出价时的一个设置。负责人解释说：</p><blockquote id="p-3">' in folded
+    signature = "<p>— 王小明 (@wangxm) 2025年5月21日</p>"
+    assert re.search(r'<blockquote id="p-5">\s*<p id="p-6">去那里的每一家公司.*?</p>' + re.escape(signature), folded)
+    assert _ids(folded) == _ids(zh)
+
+
+def test_lead_in_translated_into_the_first_quoted_sentence_is_kept():
+    """译文把导语末尾（「他解释说」）和引文第一句译成了一句：这一句整句留在导语里，多显示一遍，不收掉导语的字。"""
+    zh = dict(_ZH_LEAD)
+    zh[1] = "<li>视频不是一种单独的广告单元，只是出价时的一个设置。他解释说视频确实会挤掉信息流里的其他帖子。" \
+        "视频只是一种参与竞价的格式。</li>"
+    source, joined, view = _render(_MD_LEAD, zh)
+    folded = fold_translated_copies(source, joined)
+    kept = "视频不是一种单独的广告单元，只是出价时的一个设置。他解释说视频确实会挤掉信息流里的其他帖子。"
+    assert f"<li><p>{kept}</p>" in folded
+    assert folded.count("视频只是") == 1
+    assert "他解释说" in "".join(pair.zh or "" for pair in view.pairs)
+
+
+# 原文的列表项下面挂着嵌套列表：纯文字那份所在的项、带格式的一段，带格式的嵌套项顶格写，
+# 和后面正文自己的项被 Python-Markdown 并在一个列表里（线上 21068）。
+_MD_TIERS = (
+    "Opening words of the article body here.\n\n"
+    "- The deal has three parts worth knowing about.\n\n"
+    "- There will be three tiers of games on the service: All games go to subscribers of the new package. "
+    "A smaller number of games go to the cheaper plan. An even smaller number of games will be free.\n\n"
+    "There will be three tiers of games on the service:\n\n"
+    "- All games go to subscribers of the new package.\n\n"
+    "- A smaller number of games go to the cheaper plan.\n\n"
+    "- An even smaller number of games will be free.\n\n"
+    "- The league keeps the right to sell local rights to others.\n\n"
+    "Closing words of the article body.\n"
+)
+_ZH_TIERS = {
+    0: "<p>正文开头的几句话。</p>",
+    1: "<p>这笔交易有三点值得知道。</p>",
+    2: "<p>服务上的比赛分三档：所有比赛都给新套餐的订阅用户。少一些的比赛给便宜的那档。更少的比赛免费。</p>",
+    3: "<p>服务上的比赛分三档：</p>",
+    4: "<p>所有比赛都给新套餐的订阅用户。</p>",
+    5: "<p>少一些的比赛给便宜的那档。</p>",
+    6: "<p>更少的比赛免费。</p>",
+    7: "<p>联赛保留把地方转播权卖给别人的权利。</p>",
+    8: "<p>正文最后几句。</p>",
+}
+
+
+def test_nested_items_merged_into_the_next_list_show_once_on_every_page():
+    source, zh, view = _render(_MD_TIERS, _ZH_TIERS)
+    assert view.correspondence == "mapped" and not view.notice
+    shown = "".join(pair.zh or "" for pair in view.pairs)
+    folded = fold_translated_copies(source, zh)
+    for text in ("所有比赛", "少一些的比赛", "更少的比赛", "联赛保留"):
+        assert shown.count(text) == 1 and folded.count(text) == 1, text
+    # 嵌套的三项放回那一项下面，正文自己的那一项还在外面。
+    item = folded.split("<p id=\"p-3\">服务上的比赛分三档：</p>", 1)[1].split("</li>\n</ul>", 1)[0]
+    assert '<ul id="p-4">' in item and "更少的比赛免费" in item and "联赛保留" not in item
+    assert "联赛保留" in folded.split("</li>\n</ul>", 1)[1]
+    assert _ids(folded) == _ids(zh)
+
+
+# 引文纯文字那份里有一行以「: 」开头，Markdown 把它认成了定义列表（线上 22726）。
+_MD_DL = (
+    "Opening words of the article body here.\n\n"
+    "> It is important to define what a subscription means before anything else.\n"
+    "> Each of those words matters:\n"
+    "> Paying\n"
+    "> : A subscription is an ongoing commitment to the work. Regular delivery: readers get it directly.\n\n"
+    "It is important to define what a subscription means before anything else.\n\n"
+    "Each of those words matters:\n\n"
+    "- Paying: A subscription is an ongoing commitment to the [work](https://example.invalid/w).\n\n"
+    "- Regular delivery: readers get it directly.\n\n"
+    "Closing words of the article body.\n"
+)
+_ZH_DL = {
+    0: "<p>正文开头的几句话。</p>",
+    1: "<dt>在说别的之前，先要界定订阅是什么意思。</dt>",
+    2: "<dt>每个词都有分量：</dt>",
+    3: "<dt>付费</dt>",
+    4: "<dd>订阅是对这份工作的持续承诺。定期送达：读者直接收到。</dd>",
+    5: "<p>在说别的之前，先要界定订阅是什么意思。</p>",
+    6: "<p>每个词都有分量：</p>",
+    7: '<p>付费：订阅是对这份<a href="https://example.invalid/w">工作</a>的持续承诺。</p>',
+    8: "<p>定期送达：读者直接收到。</p>",
+    9: "<p>正文最后几句。</p>",
+}
+
+
+def test_plain_quote_read_as_a_definition_list_still_folds():
+    source, zh, view = _render(_MD_DL, _ZH_DL)
+    assert '<blockquote id="p-2">\n<dl>' in source
+    assert view.correspondence == "mapped" and not view.notice
+    en = "".join(pair.en for pair in view.pairs)
+    shown = "".join(pair.zh or "" for pair in view.pairs)
+    folded = fold_translated_copies(source, zh)
+    for text in ("先要界定订阅", "每个词都有分量", "持续承诺", "读者直接收到"):
+        assert shown.count(text) == 1 and folded.count(text) == 1, text
+    assert "<dl>" not in folded and "<dl>" not in en
+    assert re.search(r'<blockquote id="p-2"><p id="p-3">在说别的之前.*<ul id="p-5">.*</ul></blockquote>', folded, re.S)
+    # 少的只有认错的定义列表外壳，字和链接都在。
+    assert content_gaps(re.sub(r"</?(?:dl|dt|dd)>", "", source), en) == 0
+    assert _ids(folded) == _ids(zh)
