@@ -113,7 +113,7 @@ docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-ocr --tall --
 
 挑按现在的说明（`VISION_PROMPT_VERSION`）认过、`units` 里没有 `parts` 的图（结构读不出来的、失败的也算，切段以后常常认得出来；记了跳过的不算），逐张读文件头筛出长的，按文章从新到旧。按旧说明认的不在这里，全库重认（`--redo`）认它们时已经切段。和 `--redo` 一样，失败留着旧字；短帖的摘要和观点按发布时间排进夜间的队，不当场重写。一张长图的几段在同一个位子上一段接一段认，同时在认的图数照旧跟 `RESEARCH_LLM_CONCURRENCY`，并发往上加的顾虑见下面「几张一起认」。要花钱（或占额度）：先用 `--limit 0` 报张数和段数，等 Zhilin 同意再跑。
 
-长图补认完以后：接法改过就先 `--rejoin`，再 `research-rebuild-chunks --ocr` 按现在的规则重切图片文字块（11-13 线上按 11-11 的接法重接、重切过一遍）。图片字变了的短帖，摘要和观点夜间按发布时间和缺摘要的老文章一起排，要几个月才轮到；要一次补完用 `--ocr-changed`，只挑已经写过摘要、抽过观点，当时的图片字和现在不一样的（要花钱，先报篇数和费用）：
+长图补认完以后：接法改过就先 `--rejoin`，再 `research-rebuild-chunks --ocr` 按现在的规则重切图片文字块（11-13 线上按 11-11 的接法重接了 1 张，重切了 308 篇）。图片字变了的短帖，摘要和观点夜间按发布时间和缺摘要的老文章一起排，要几个月才轮到；要一次补完用 `--ocr-changed`，只挑已经写过摘要、抽过观点，当时的图片字和现在不一样的（要花钱，先报篇数和费用）：
 
 ```bash
 docker compose exec -T app research-digest --ocr-changed --limit 2000
