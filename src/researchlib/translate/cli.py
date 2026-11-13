@@ -233,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         metavar="类别",
         help="译盘点清单里这一类的篇（unmapped、stopped、legacy……）。"
-        "已经译完、有这一版回执、对照页逐段对得上的跳过",
+        "已经译完、有这一版回执、对照页逐段对得上的跳过；misplaced 只补串段（交回英文、相近两段中文一样）附近的段",
     )
     parser.add_argument(
         "--fresh",
@@ -313,8 +313,11 @@ def main(argv: list[str] | None = None) -> int:
     avoid_peak = not named and not args.anytime and llm_provider() == PROVIDER_DEEPSEEK
     # --from-inventory old-prompt：旧提示词译的篇本来都译完了，要按现在的提示词重译，用这一版译过的才算完。
     rewrite = args.from_inventory == inventory.OLD_PROMPT
+    # --from-inventory misplaced：已经译完、页面也对得上，只是有串段（交回英文、相近两段中文一样）。只补那一片。
+    misplaced = args.from_inventory == inventory.MISPLACED
     finished = (
         f"已经用第 {PROMPT_VERSION} 版提示词译过" if rewrite
+        else "已经没有串段" if misplaced
         else "已经译完、有这一版回执、对照页逐段对得上"
     )
     # 盘点清单里的这一类，按清单的先后（新的在前）。没清单、没这一类就别连库了。
@@ -507,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
                 rows = list_coarse_translations(conn, limit=limit + len(tried), source_id=args.source or None)
                 ids = [int(row["id"]) for row in rows]
             elif args.from_inventory:
-                ids = inventory.unfinished(conn, listed, settings.data_dir, prompt=rewrite)
+                ids = inventory.unfinished(conn, listed, settings.data_dir, prompt=rewrite, misplaced=misplaced)
             else:
                 ids = list_pending_english(conn, limit=limit + len(tried), source_id=args.source or None)
             # 只读的查询，别让事务在空队列睡觉时一直开着。

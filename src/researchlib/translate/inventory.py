@@ -4,7 +4,7 @@
 这一版回执里还没用现在这一版提示词译过的（old-prompt）；
 没译完的里现在就能进队列的、冷却中的、同一版本拒满两次停住的、只有图没有要译的字的；
 已译完的页面能不能逐段对照（和 research-bilingual-audit 同一套判断）、对不上是什么原因；
-分段粗、``--recheck`` 会挑的；数字待核多少段。各类按来源分篇数、数英文字符，估费用用。
+分段粗、``--recheck`` 会挑的；数字待核多少段；串段的篇（misplaced）。各类按来源分篇数、数英文字符，估费用用。
 网站不显示的网友帖、「图片」评论壳单列，不算进上面各类：待译队列也不译它们。
 各类的 id 清单写进 DATA_DIR/status/translate-inventory.json，后面点名补译用。
 
@@ -15,6 +15,7 @@
 清单里某一类可以直接交给译制：``research-translate --from-inventory unmapped --workers 4``
 （已经译完、有这一版回执、对照页逐段对得上的跳过，见 ``unfinished``）。
 ``--from-inventory old-prompt`` 把旧提示词译的篇按现在的提示词整篇重译，用这一版译过的跳过。
+``--from-inventory misplaced`` 只重译串段的那一片，别的段照旧复用（provenance.reusable_targets）。
 
 还没上线时，可以把某个提交里的这个文件直接喂给容器里的 python（容器里的代码要有它 import 的名字）：
 
@@ -40,6 +41,8 @@ from researchlib.translate.provenance import (
     ALIGNMENT_VERSION,
     PROMPT_VERSION,
     SCHEMA_VERSION,
+    copied_slots,
+    echoed_slots,
     pipeline_matches,
     prompt_versions,
     source_manifest,
@@ -106,6 +109,11 @@ NOT_DONE = ("none", "partial", "stale")
 # 待译队列不会拿它们（译完了），--from-inventory 别的类也把它们算译完。用这一版译过、个别段重译失败
 # 退回旧译文的（prompt_versions 不止一版）不算：再整篇重译一遍多半还是那几段，钱白花。
 OLD_PROMPT = "old-prompt"
+# 已译完、页面照样逐段对得上的篇里有串段（一段的中文写进了别的段）：
+# 有段交回的还是英文（provenance.echoed_slots），多半是模型把它的中文一起写进了前一段，那一对只有英文；
+# 或者相近两段英文不同、中文一字不差（provenance.copied_slots），同一次回答里的译文整体错开了一格。
+# 按这一类再译只补那一片（provenance.reusable_targets）。
+MISPLACED = "misplaced"
 DISPLAY_NAMES = {
     "mapped": "逐段对上",
     "lossless-candidate": "能从回执恢复",
@@ -133,20 +141,23 @@ def _versions(row) -> list[int]:
     return prompt_versions({"pipeline": row["pipeline"], "prompt_versions": row["prompt_versions"]})
 
 
-def _page(conn, article_id: int, data_dir) -> tuple[str, str]:
-    """和 research-bilingual-audit 一样分类：(mapped / lossless-candidate / legacy-structural / unmapped, 原因)。"""
+def _page(conn, article_id: int, data_dir) -> tuple[str, str, int, int]:
+    """和 research-bilingual-audit 一样分类：(mapped / lossless-candidate / legacy-structural / unmapped, 原因,
+    回执里交回英文的段数, 回执里和相近一段英文不同、中文一样的段数)。"""
     row = conn.execute(
         "SELECT a.*, t.body_html AS translated_html, coalesce(to_jsonb(t)->'provenance', '{}'::jsonb) AS provenance"
         " FROM articles a JOIN article_translations t ON t.article_id = a.id WHERE a.id = %s",
         (article_id,),
     ).fetchone()
     if row is None:
-        return "missing", ""
+        return "missing", "", 0, 0
     source, _raw_hash = _render_original(conn, row, data_dir)
     with_images, _raw_hash = _render_original(conn, row, data_dir, remote=True)
     source = pair_sources(with_images, source, row["translated_html"], row["provenance"]).check
     found = classify(source, row["translated_html"], row["provenance"])
-    return found["category"], str(found.get("reason") or "")
+    provenance = row["provenance"]
+    return (found["category"], str(found.get("reason") or ""),
+            len(echoed_slots(provenance)), len(copied_slots(provenance)))
 
 
 def _has_text(conn, article_id: int, data_dir) -> bool:
@@ -188,9 +199,8 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
     finally:
         conn.rollback()
 
-    ids: dict[str, list[int]] = {
-        key: [] for key in (*STATES, OLD_PROMPT, "pending-now", "cooldown", "stopped", "no-text", *NOT_FOR_TRANSLATION)
-    }
+    categories = (*STATES, OLD_PROMPT, MISPLACED, "pending-now", "cooldown", "stopped", "no-text", *NOT_FOR_TRANSLATION)
+    ids: dict[str, list[int]] = {key: [] for key in categories}
     sources: Counter[str] = Counter()
     # 每一类按来源的篇数和英文字符数，网站不显示的也在里面（site-hidden）。
     state_sources: dict[str, Counter[str]] = {}
@@ -252,6 +262,7 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
     display: dict[str, list[int]] = {}
     display_reasons: dict[str, Counter[str]] = {}
     display_chars: Counter[str] = Counter()
+    echo_segments = copied_segments = 0
     if pages:
         waiting = [article_id for state in NOT_DONE for article_id in ids[state]]
         for article_id, has in _each(
@@ -263,8 +274,14 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
         for article_id, found in _each(
             conn, finished, "页面", lambda article_id: _page(conn, article_id, settings.data_dir), progress,
         ).items():
-            category, reason = found if isinstance(found, tuple) else (f"error:{type(found).__name__}", "")
+            category, reason, echoes, copies = (
+                found if isinstance(found, tuple) else (f"error:{type(found).__name__}", "", 0, 0)
+            )
             display.setdefault(category, []).append(article_id)
+            if echoes or copies:
+                ids[MISPLACED].append(article_id)
+                echo_segments += echoes
+                copied_segments += copies
             display_chars[category] += chars_of.get(article_id, 0)
             if reason:
                 display_reasons.setdefault(category, Counter())[reason] += 1
@@ -285,6 +302,8 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
         "display": display,
         "displayReasons": {category: dict(found) for category, found in display_reasons.items()},
         "displayChars": dict(display_chars),
+        "echoSegments": echo_segments if pages else None,
+        "copiedSegments": copied_segments if pages else None,
         "coarse": coarse,
         "review": review,
         "readOnly": True,
@@ -363,6 +382,13 @@ def summary(report: dict) -> list[str]:
             + "，".join(f"{reason} {n}" for reason, n in Counter(report["lastReasons"]).most_common(8))
         )
     lines.append(f"  分段粗、--recheck 会挑的 {len(report['coarse'])} 篇（只看最新的 {COARSE_SCAN_CAP} 篇已译完的）")
+    if report.get("echoSegments") is not None:
+        echoes, copies = report["echoSegments"], report.get("copiedSegments") or 0
+        line = (f"  串段（一段的中文写进了别的段）{count.get(MISPLACED, 0)} 篇：交回英文的段 {echoes} 段，"
+                f"相近两段英文不同、中文一字不差的 {copies} 段")
+        if echoes or copies:
+            line += "。research-translate --from-inventory misplaced 只重译这几处附近的段"
+        lines.append(line)
     if report["display"]:
         display_chars = report.get("displayChars") or {}
         parts = []
@@ -411,6 +437,7 @@ def listed(data_dir, key: str) -> tuple[list[int], str]:
         hint = {
             "coarse": "；分段粗的用 research-translate --recheck",
             OLD_PROMPT: "；这份清单是分出这一类以前盘的，先重跑 research-translate-inventory",
+            MISPLACED: "；这份清单是分出这一类以前盘的，先重跑 research-translate-inventory",
         }.get(key, "")
         raise LookupError(f"盘点清单里没有「{key}」这一类，有：{known}{hint}")
     skip = {int(article_id) for article_id in ids.get("no-text") or []}
@@ -418,7 +445,7 @@ def listed(data_dir, key: str) -> tuple[list[int], str]:
     return [article_id for article_id in found if article_id not in skip], str(report.get("generatedAt") or "")
 
 
-def unfinished(conn, ids: list[int], data_dir, *, prompt: bool = False) -> list[int]:
+def unfinished(conn, ids: list[int], data_dir, *, prompt: bool = False, misplaced: bool = False) -> list[int]:
     """这几篇里还要译的，按原来的先后：库里还在、还没有「译完、原文没改过、这一版回执、对照页逐段对得上」。
 
     点名重译旧稿、停住的、页面分开展示的篇时用：译完一篇它就不在这里了，中途停下再跑同一条命令接着译剩下的。
@@ -427,6 +454,7 @@ def unfinished(conn, ids: list[int], data_dir, *, prompt: bool = False) -> list[
     旧提示词译的整篇按现在的提示词重译（service.translate_article）。
     ``prompt`` 为真时（``--from-inventory old-prompt``），回执里一段也没用现在这一版提示词译过的也算没译完，
     译制会整篇按现在的提示词重译；用这一版译过、个别段退回旧译文的不再重译。
+    ``misplaced`` 为真时（``--from-inventory misplaced``），回执里还有串段的也算没译完；再译时只补那一片。
     """
     if not ids:
         return []
@@ -452,10 +480,10 @@ def unfinished(conn, ids: list[int], data_dir, *, prompt: bool = False) -> list[
             left.add(article_id)
             continue
         try:
-            category, _reason = _page(conn, article_id, data_dir)
+            category, _reason, echoes, copies = _page(conn, article_id, data_dir)
         except Exception:  # 页面渲染不了的交给译制，出错会记下来
-            category = "error"
-        if category != "mapped":
+            category, echoes, copies = "error", 0, 0
+        if category != "mapped" or (misplaced and (echoes or copies)):
             left.add(article_id)
     return [article_id for article_id in ids if article_id in left]
 

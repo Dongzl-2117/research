@@ -70,7 +70,8 @@ BATCH = 32
 # 等过 QUERY_TIMEOUT_S，检索就停一分钟只按字面找。
 BULK_BATCH = 8
 QUERY_CACHE = 256
-# 检索页提示「向量还没算完」用的块数，几分钟数一次就够。
+# 检索页提示「向量还没算完」用的块数，几分钟数一次就够。网站进程每 COVERAGE_TTL_S 的一半在后台重数一遍
+# （keep_coverage_fresh），检索页拿到的数总在这么多秒以内。
 COVERAGE_TTL_S = 600.0
 # 改段落时当场算向量（sync_article）。服务算不出来以后，这么多秒内别的文章不再试：
 # 一批几千篇的任务不必每篇各等一次超时，缺的留给 research-embed。
@@ -109,6 +110,8 @@ class _State:
         self.coverage: dict[str, tuple[tuple[int, int], float]] = {}
         # 正在后台重数块数的库（_refresh_coverage），一个库同时只数一遍。
         self.counting: set[str] = set()
+        # 网站进程上一次定时重数块数的时刻（keep_coverage_fresh）。
+        self.coverage_counted = float("-inf")
         # use_embedder 换上的函数不被 configure 覆盖（测试里每开一条连接都会 configure 一次）。
         self.pinned = False
         self.lock = threading.Lock()
@@ -189,6 +192,7 @@ def _reset() -> None:
     _state.last_ok = float("-inf")
     _state.failed = False
     _state.coverage.clear()
+    _state.coverage_counted = float("-inf")
     _state.inflight.clear()
     _state.warm_failing = False
 
@@ -733,7 +737,8 @@ def coverage(conn) -> tuple[int, int]:
 def _cached_coverage(conn) -> tuple[int, int]:
     """检索页那句提示用的块数。数一遍要把全库每块的字过一遍 md5（二十多万块要一两秒），以前过期了就在
     这次搜索里当场重数：隔十分钟以上才搜一次的话，次次都要多等这一两秒。现在过期了先用上次的数，
-    另开一条连接在后台重数；只有这个进程第一次用（还没有数）时才当场数。"""
+    另开一条连接在后台重数；只有这个进程第一次用（还没有数）时才当场数。网站进程还定时重数
+    （keep_coverage_fresh），平时走不到过期这一步。"""
     key = conn.info.dbname
     now = time.monotonic()
     hit = _state.coverage.get(key)
@@ -767,6 +772,24 @@ def _refresh_coverage(conn, key: str, stale: tuple[tuple[int, int], float]) -> N
                 _state.counting.discard(key)
 
     threading.Thread(target=run, name="embedding-coverage", daemon=True).start()
+
+
+def keep_coverage_fresh(open_conn: Callable[[], psycopg.Connection]) -> bool:
+    """网站每分钟调一次：离上次定时重数过了 COVERAGE_TTL_S 的一半，就开一条连接把块数重数一遍，检索页拿到的数
+    总在十分钟以内。只靠搜索时重数（_cached_coverage）不够：那一次先给上次的数，好久没人搜以后第一个人看到的
+    是很久以前的数。11-13 两天没人搜，第一次搜索报「向量还没算完（218554/236318 块）」，其实缺口早补完了，
+    第二次搜索才没有这句。没开语义检索不数。数了返回 True；数的时候出错往外报，下一次照旧隔这么久再数。"""
+    with _state.lock:
+        now = time.monotonic()
+        if _state.embedder is None or now - _state.coverage_counted < COVERAGE_TTL_S / 2:
+            return False
+        _state.coverage_counted = now
+    with open_conn() as conn:
+        value = coverage(conn)
+        key = conn.info.dbname
+    with _state.lock:
+        _state.coverage[key] = (value, time.monotonic())
+    return True
 
 
 def status_note(conn) -> str:

@@ -313,3 +313,143 @@ def test_the_omission_sample_reads_legacy_pages_from_the_inventory(conn, setting
     ]
     assert f"#{legacy} pairs=2 flagged=0 按页面配对" in out
     assert dict(_counts(conn)) == before
+
+
+ECHO_BODY = (
+    "The company rebuilt its app first because loyalty starts with the booking flow every {name} customer sees.\n\n"
+    "It then fixed the operating data so that every delay could be traced back to a single cause in the plan.\n\n"
+    "Only after that did it change how the managers talked about blame in their weekly meetings with the crews.\n\n"
+    "The result was a culture that cared about fixing problems rather than finding someone to take the fall."
+)
+ECHO_ZH = {
+    "The company rebuilt": "这家公司先重做了 App，因为忠诚度从每位顾客都会看到的订票流程开始。",
+    "It then fixed": "接着它理顺了运营数据，每次延误都能追到计划里的一个原因。",
+    "Only after that": "在那之后，它才改了经理们每周和机组开会时谈责任的方式。",
+    "The result was": "结果形成了一种重在解决问题、不找人背锅的文化。",
+}
+
+
+COPY_BODY = (
+    "When a great team meets a lousy market, the market wins and the team goes home for {name} good.\n\n"
+    "When a lousy team meets a great market, the market still wins and the team gets carried along.\n\n"
+    "When a great team meets a great market, something special happens and everyone can see it.\n\n"
+    "You can obviously screw up a great market, but a good market will usually lift a decent team."
+)
+COPY_ZH = {
+    "When a great team meets a lousy": "当优秀的团队遇上糟糕的市场，市场赢，团队只能回家。",
+    "When a lousy team": "当平庸的团队遇上巨大的市场，还是市场赢，团队被市场带着走。",
+    "When a great team meets a great": "当优秀的团队遇上巨大的市场，就会有特别的事情发生，谁都看得见。",
+    "You can obviously": "巨大的市场当然也可能被搞砸，但好市场通常会把一支还行的团队托起来。",
+}
+ORDER = list(COPY_ZH)
+
+
+def _key(html):
+    return next(key for key in (*ECHO_ZH, *COPY_ZH) if key in html)
+
+
+def _misplacing_model(*, misplace):
+    """``misplace`` 为真时两种串段都出：
+
+    - 交回英文：第二段的中文写进第一段，第二段原样交回英文。
+    - 错开一格：第一段的中文没了，后面每段拿下一段的中文，最后一段和前一段写成一样。
+    """
+
+    def model(**kwargs):
+        user = kwargs["user"]
+        values = []
+        for identity, source_hash, html in zip(user["segment_ids"], user["source_hashes"], user["segments"],
+                                               strict=True):
+            if user["segment_ids"] == ["title"]:
+                values.append({"id": identity, "source_hash": source_hash, "html": "合成标题"})
+                continue
+            key = _key(html)
+            zh = ECHO_ZH.get(key) or COPY_ZH[key]
+            text = f"<p>{zh}</p>"
+            if misplace and key == "The company rebuilt":
+                text = f"<p>{zh}{ECHO_ZH['It then fixed']}</p>"
+            elif misplace and key == "It then fixed":
+                text = html
+            elif misplace and key in COPY_ZH:
+                text = f"<p>{COPY_ZH[ORDER[min(ORDER.index(key) + 1, len(ORDER) - 1)]]}</p>"
+            values.append({"id": identity, "source_hash": source_hash, "html": text})
+        return ChatJsonResult(data={"t": values}, model="synthetic-model", usage=None, latency_ms=0)
+
+    return model
+
+
+def test_misplaced_segments_are_listed_and_only_their_stretch_is_retranslated(
+    conn, settings, monkeypatch, capsys,
+):
+    """已译完、页面也对得上，只是有串段：盘点单列 misplaced；按这一类再译只补串段附近的段。
+
+    一篇有段交回英文（中文写进了前一段），一篇译文整体错开一格（最后两段中文一样）。
+    """
+    import json
+
+    from researchlib.translate import cli
+
+    echo = _article(conn, settings, "echo", body=ECHO_BODY)
+    shifted = _article(conn, settings, "shifted", body=COPY_BODY)
+    # 以前的核对不拦这两种：这样存下来的译文页面照样逐段对得上。只撤这几处替换：monkeypatch.undo()
+    # 会连 conftest 里「不在高峰价时段」那处一起撤掉，北京时间白天跑，后面按清单译就一直等高峰过去。
+    with monkeypatch.context() as early:
+        early.setattr(service, "untranslated_english", lambda *args: False)
+        early.setattr(service, "copied_targets", lambda *args, **kwargs: [])
+        early.setattr(service, "chat_json", _misplacing_model(misplace=True))
+        for article in (echo, shifted):
+            assert service.translate_article(conn, article, data_dir=settings.data_dir).status == "translated"
+    conn.commit()
+
+    report = inventory.collect(conn, settings)
+    assert sorted(report["display"]["mapped"]) == sorted([echo, shifted])
+    assert sorted(report["ids"]["misplaced"]) == sorted([echo, shifted])
+    assert report["echoSegments"] == 1 and report["copiedSegments"] == 2
+    assert (
+        "  串段（一段的中文写进了别的段）2 篇：交回英文的段 1 段，相近两段英文不同、中文一字不差的 2 段。"
+        "research-translate --from-inventory misplaced 只重译这几处附近的段"
+        in inventory.summary(report)
+    )
+    # 别的类照旧算它们译完了；点 misplaced 才算没译完。
+    assert inventory.unfinished(conn, [echo, shifted], settings.data_dir) == []
+    assert inventory.unfinished(conn, [echo, shifted], settings.data_dir, misplaced=True) == [echo, shifted]
+    path = inventory.inventory_path(settings.data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    asked: list[list[str]] = []
+    honest = _misplacing_model(misplace=False)
+
+    def model(**kwargs):
+        if kwargs["user"]["segment_ids"] != ["title"]:
+            asked.append([_key(html) for html in kwargs["user"]["segments"]])
+        return honest(**kwargs)
+
+    monkeypatch.setattr(service, "chat_json", model)
+    monkeypatch.setattr(cli.Settings, "from_env", staticmethod(lambda: settings))
+    monkeypatch.setattr(cli, "llm_provider", lambda: "deepseek")
+    monkeypatch.setattr(cli, "deepseek_api_key", lambda: "sk-test")
+    assert cli.main(["--from-inventory", "misplaced"]) == 0
+    out = capsys.readouterr().out
+    assert f"#{echo} translated" in out and f"#{shifted} translated" in out
+    # 交回英文的：只问那一段和前后两段，第四段照旧复用。错开一格的：从哪段开始错看不出来，四段都在范围里。
+    assert sorted(asked) == sorted([
+        ["The company rebuilt", "It then fixed", "Only after that"],
+        ORDER,
+    ])
+    stored = {
+        row["article_id"]: row["body_html"] for row in conn.execute(
+            "SELECT article_id, body_html FROM article_translations WHERE article_id = ANY(%s)",
+            ([echo, shifted],),
+        ).fetchall()
+    }
+    assert "It then fixed" not in stored[echo] and stored[echo].count("接着它理顺了运营数据") == 1
+    assert all(stored[shifted].count(zh) == 1 for zh in COPY_ZH.values())
+    assert inventory.unfinished(conn, [echo, shifted], settings.data_dir, misplaced=True) == []
+    assert cli.main(["--from-inventory", "misplaced"]) == 0
+    assert "misplaced 这一类都已经没有串段了。" in capsys.readouterr().out
+    after = inventory.collect(conn, settings)
+    assert after["ids"]["misplaced"] == [] and after["echoSegments"] == 0 and after["copiedSegments"] == 0
+    assert "  串段（一段的中文写进了别的段）0 篇：交回英文的段 0 段，相近两段英文不同、中文一字不差的 0 段" in (
+        inventory.summary(after)
+    )
