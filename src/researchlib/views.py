@@ -21,7 +21,9 @@
 图片里有可读的字时，交给模型的正文会接上「图片里的字」，和正文一视同仁。正文很短、判断写在截图里的，
 一带而过的提及也抽；短正文的公司提及会并上图片字（与 OCR_CARRIES 同门槛），长文提及仍只看正文。
 长文不因为后补一张图就整篇重抽。
-长文只给提到这几家公司的段落加开头结尾（见 excerpt.py）；以前只读了开头 30000 字的，标成 head_only 重抽。
+长文只给提到这几家公司的段落加开头结尾，切成几块分别问，选中的都读到（见 excerpt.py）；以前只读了开头
+30000 字的，标成 head_only 重抽；11-14 以前装满 6 块就不再读的，用 ``--truncated`` 找出来重抽。
+网站上不显示的（读者帖、评论壳、按字数门槛隐藏的短帖）不排队、不抽。
 失败的记下来，隔几天再试。判断或态度为空白的行不进时间线；确认抽漏了再用 `--refresh-blank` 删掉重抽。
 """
 
@@ -42,11 +44,11 @@ from researchlib import llm_batch
 from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_sql
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
-from researchlib.excerpt import VIEW_WINDOW, VIEWS_LIMIT, original_chunks, view_windows, views_input
+from researchlib.excerpt import VIEW_WINDOW, old_reader_dropped, original_chunks, view_windows
 from researchlib.failures import clear_failure, cooling_sql, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
-from researchlib.visibility import visible_sql
+from researchlib.visibility import is_hidden, visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import relabel_host
 from researchlib.zsxq_comments import source_owners
@@ -55,9 +57,12 @@ from researchlib.zsxq_title import repairs_source, shorten_long_title, title_nee
 logger = logging.getLogger("researchlib.views")
 
 PROMPT_VERSION = 2
-BODY_LIMIT = VIEWS_LIMIT
-# 网站上不展示的（读者帖、「图片」评论壳）不抽观点，也不进观点时间线：公司页上的观点链不过去。
-_SHOWN = site_visible_sql("a")
+# 读法的版本，记进 company_views.reader。2：长文选中的段落全部读到（11-14 起）；1：最多 6 块，多出来的丢了。
+# 改读法不改提示词时加一，旧行由 --truncated 找出真丢了段落的重抽，不整库重抽。
+READER = 2
+# 网站上不展示的不抽观点，也不进观点时间线：公司页上的观点链不过去。读者帖、「图片」评论壳，
+# 还有按来源字数门槛隐藏的短帖（raw_meta.hidden：Stratechery 游客版只有半截的每日更新、每周汇总）。
+_SHOWN = f"{site_visible_sql('a')} AND {visible_sql('a')}"
 PROMPT = """你在帮一位价值投资者整理研究库。读下面这篇文章（含「图片里的字」），摘出作者对指定公司的判断。
 只输出一个 JSON 对象，不要输出别的文字。每家指定的公司都要有一个键，没有下判断就写 null：
 {"公司名": {"about": true, "judgment": "…", "mechanism": "…", "stance": "正面",
@@ -438,19 +443,21 @@ def _merge_views(parts: list[dict | None]) -> dict | None:
     return primary
 
 
-def _reading_windows(body: str, chunks: list[tuple[str, str]], aliases: list[str]) -> list[str]:
-    """短文整篇；超长先切块。切完仍超上限的一块，再按公司段落收一次。"""
-    if len(body) <= VIEW_WINDOW:
-        return [body] if body.strip() else []
-    windows = view_windows(body, chunks, aliases, VIEW_WINDOW)
-    packed: list[str] = []
-    for window in windows:
-        if len(window) <= BODY_LIMIT:
-            packed.append(window)
-            continue
-        shorter, _reduced = views_input(window, chunks, aliases, BODY_LIMIT)
-        packed.append(shorter)
-    return packed or [body[:BODY_LIMIT]]
+def _reading_text(
+    conn, row, author: str, ocr: tuple[str, str] | None = None
+) -> tuple[str, list[tuple[str, str]], str, str]:
+    """交给模型的正文和段落块：图片里的字接在正文后面，也算一块。交回 (正文, 段落块, 图片文字, 图片文字哈希)。
+
+    ocr：(图片文字, 哈希)。不给就按现在的识图结果重排一遍再取（``article_ocr``，可能改写 articles.ocr_text）。
+    """
+    chunks = original_chunks(conn, row["id"])
+    ocr_text, ocr_digest = ocr if ocr is not None else article_ocr(conn, row["id"])
+    # 截图里的绿气泡是这篇的作者：别的来源不写成方伟。哈希仍按库里的文字算。
+    ocr_text = relabel_host(ocr_text, author)
+    body = append_ocr(row["body_text"] or "", ocr_text)
+    if ocr_text.strip():
+        chunks = [*chunks, ("图片里的字", ocr_text)]
+    return body, chunks, ocr_text, ocr_digest
 
 
 def coerce_view_for_store(view: dict | None) -> dict:
@@ -482,6 +489,12 @@ def coerce_view_for_store(view: dict | None) -> dict:
     }
 
 
+def shown_on_site(conn, row) -> bool:
+    """网站上展示这篇才抽观点，和 ``_SHOWN`` 同一个口径。"""
+    meta = raw_meta_of(conn, row)
+    return not hide_from_site(meta, row["title"]) and not is_hidden(meta)
+
+
 def extract_article(
     conn, settings: Settings, row, author: str, companies: list[dict], *, usage: dict | None = None
 ) -> int:
@@ -491,18 +504,13 @@ def extract_article(
     """
     if not companies:
         return 0
-    if hide_from_site(raw_meta_of(conn, row), row["title"]):
+    if not shown_on_site(conn, row):
         return 0
     names = {company["name_zh"]: int(company["id"]) for company in companies}
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
-    chunks = original_chunks(conn, row["id"])
-    ocr_text, ocr_digest = article_ocr(conn, row["id"])
-    # 截图里的绿气泡是这篇的作者：别的来源不写成方伟。哈希仍按库里的文字算。
-    ocr_text = relabel_host(ocr_text, author)
-    body = append_ocr(row["body_text"] or "", ocr_text)
+    body, chunks, ocr_text, ocr_digest = _reading_text(conn, row, author)
     if ocr_text.strip():
-        chunks = [*chunks, ("图片里的字", ocr_text)]
         note = ocr_speaker_note(conn, row["id"], ocr_text, author)
         header += (
             "\n（「图片里的字」是截图里识别出来的，和正文一样算原文。"
@@ -512,7 +520,7 @@ def extract_article(
         )
     model = ""
     aliases = _company_aliases(conn, list(names.values()))
-    windows = _reading_windows(body, chunks, aliases)
+    windows = view_windows(body, chunks, aliases, VIEW_WINDOW)
     if not windows:
         found = {company_id: None for company_id in names.values()}
     else:
@@ -546,9 +554,9 @@ def extract_article(
             """
             INSERT INTO company_views (
               article_id, company_id, content_hash, prompt_version, model, judgment, mechanism, stance,
-              risks, falsifiers, metrics, quote, chunk_ord, head_only, about, ocr_hash, angles
+              risks, falsifiers, metrics, quote, chunk_ord, head_only, about, ocr_hash, angles, reader
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false, %s, %s, %s, %s)
             ON CONFLICT (article_id, company_id) DO UPDATE SET
               content_hash = EXCLUDED.content_hash,
               prompt_version = EXCLUDED.prompt_version,
@@ -565,6 +573,7 @@ def extract_article(
               about = EXCLUDED.about,
               ocr_hash = EXCLUDED.ocr_hash,
               angles = EXCLUDED.angles,
+              reader = EXCLUDED.reader,
               created_at = now()
             """,
             (
@@ -584,6 +593,7 @@ def extract_article(
                 about,
                 ocr_digest,
                 Jsonb(view.get("angles") or []),
+                READER,
             ),
         )
         written += 1 if judgment and about else 0
@@ -616,7 +626,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-          AND {_SHOWN} AND {visible_sql("a")}
+          AND {_SHOWN}
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
@@ -690,7 +700,7 @@ def list_marks(conn, source_ids: list[str]) -> list[dict]:
           FROM company_views v
           JOIN articles a ON a.id = v.article_id
           WHERE {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
-            AND {_SHOWN} AND {visible_sql("a")}
+            AND {_SHOWN}
         ) ranked
         ORDER BY company_id, published_at DESC NULLS LAST, article_id DESC
         """,
@@ -939,7 +949,8 @@ def run_batch(
         else:
             # 一篇里深入谈到的公司一次问完，不限持仓。--company 只决定先排哪些文章。
             companies = pending_companies(conn, article_id)
-        if row is None or not companies:
+        # 排队以后才被隐藏的（改了来源的字数门槛、标成读者帖）不问模型，算跳过。
+        if row is None or not companies or not shown_on_site(conn, row):
             return None
         written = extract_article(conn, settings, row, authors.get(row["source_id"], ""), companies, usage=usage)
         return f"{len(companies)} 家公司，下了判断 {written} 家"
@@ -978,7 +989,7 @@ def _canonical_ids(conn, article_ids: list[int], source_ids: list[str]) -> list[
     found: list[int] = []
     allowed = set(source_ids)
     for row in rows:
-        if row["source_id"] not in allowed or hide_from_site(row["raw_meta"], row["title"]):
+        if row["source_id"] not in allowed or not shown_on_site(conn, row):
             continue
         canonical = int(row["duplicate_of"] or row["id"])
         if canonical not in found:
@@ -1064,9 +1075,94 @@ def articles_for_ids(conn, company_ids: list[int], source_ids: list[str], articl
     ).fetchall()
 
 
+def truncated_articles(conn, authors: dict[str, str]) -> list[dict]:
+    """旧读法整理过、当时丢了段落的文章（``excerpt.old_reader_dropped``），和当时整理的那几家公司。
+
+    只看 reader 比现在旧、正文加图片字超过 24000 字的（更短的旧读法也读全了），再逐篇按旧读法算一遍。
+    图片文字用库里存的那份，不重排、不改库。交回 [{"id", "title", "source_id", "companies", "chars", "calls"}]，
+    新的在前；calls 是按现在的读法要问模型几次。
+    """
+    if not authors:
+        return []
+    candidates = conn.execute(
+        f"""
+        SELECT a.id, array_agg(v.company_id ORDER BY v.company_id) AS companies
+        FROM company_views v
+        JOIN articles a ON a.id = v.article_id
+        WHERE v.reader < %s AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
+          AND length(coalesce(a.body_text, '')) + length(coalesce(a.ocr_text, '')) > %s
+        GROUP BY a.id
+        ORDER BY a.published_at DESC NULLS LAST, a.id DESC
+        """,
+        (READER, list(authors), 2 * VIEW_WINDOW),
+    ).fetchall()
+    found: list[dict] = []
+    for candidate in candidates:
+        # 正文一篇篇取：几千篇长文的正文不一起占着内存。
+        row = conn.execute(
+            "SELECT id, title, source_id, body_text, ocr_text, ocr_hash FROM articles WHERE id = %s",
+            (candidate["id"],),
+        ).fetchone()
+        row = {**row, "companies": candidate["companies"]}
+        stored = (row["ocr_text"] or "", row["ocr_hash"] or "")
+        body, chunks, _ocr, _digest = _reading_text(conn, row, authors.get(row["source_id"], ""), stored)
+        aliases = _company_aliases(conn, list(row["companies"]))
+        if not old_reader_dropped(body, chunks, aliases):
+            continue
+        found.append(
+            {
+                "id": int(row["id"]),
+                "title": row["title"],
+                "source_id": row["source_id"],
+                "companies": list(row["companies"]),
+                "chars": len(body),
+                "calls": len(view_windows(body, chunks, aliases, VIEW_WINDOW)),
+            }
+        )
+    return found
+
+
+def _queued_jobs(conn, args: argparse.Namespace, authors: dict[str, str]) -> list[dict]:
+    """按命令行挑出这次要整理的文章：--company、--gap、--articles、--ocr-changed，或者全部待整理的。"""
+    if args.company:
+        found = conn.execute("SELECT id, name_zh FROM companies WHERE name_zh = ANY(%s)", (args.company,)).fetchall()
+        known = {row["name_zh"]: row for row in found}
+        unknown = [name for name in args.company if name not in known]
+        if unknown:
+            raise SystemExit(f"{'、'.join(unknown)} 不在公司表里")
+        wanted = [int(known[name]["id"]) for name in args.company]
+    elif args.gap or args.articles:
+        wanted = [int(row["id"]) for row in conn.execute("SELECT id FROM companies").fetchall()]
+    else:
+        wanted = [int(row["id"]) for row in view_companies(conn, list(authors))]
+    if not wanted:
+        raise SystemExit("没有被深入谈到的公司")
+    if args.refresh_blank:
+        print(f"删掉空白观点 {delete_blank_views(conn, wanted)} 条")
+    chosen = _canonical_ids(conn, _id_list(args.articles), list(authors))
+    if args.articles and not chosen:
+        raise SystemExit("这些文章 id 里没有可抽的主版本（网站上不显示的和库外 id 已跳过）")
+    if args.gap:
+        rows = gap_articles(conn, wanted, list(authors), args.limit, chosen or None)
+    elif args.articles:
+        rows = articles_for_ids(conn, wanted, list(authors), chosen, args.limit)
+    else:
+        rows = pending_articles(conn, wanted, list(authors), args.limit, ocr_changed=args.ocr_changed)
+    # 正文到整理时再取：几千篇的正文不一直占着内存，取到的也是那一刻的正文。
+    return [
+        {
+            "id": int(row["id"]),
+            "title": row["title"],
+            "source_id": row["source_id"],
+            "companies": list(row["companies"]),
+        }
+        for row in rows
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 整批停下了：没有可用的 LLM 凭证、
-    接口拒绝鉴权或余额不足（402）。"""
+    接口拒绝鉴权或余额不足（402）；3 连着几篇限流、5xx、断网，暂停了，这几篇没记失败，过几分钟再跑同一条。"""
     parser = argparse.ArgumentParser(description="给被深入谈到的公司整理观点时间线（不限持仓和观察名单）")
     parser.add_argument("--company", action="append", default=[], help="只整理这家公司（中文名），可重复")
     parser.add_argument("--source", action="append", default=[], help="只整理这个来源 id，可重复")
@@ -1088,10 +1184,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只重抽图片里的字变了的文章（已有观点，抽的时候的图片文字和现在的不一样）。识图重认以后跑，夜间任务不要加",
     )
+    parser.add_argument(
+        "--truncated",
+        action="store_true",
+        help=(
+            "重抽 11-14 以前长文只读了一部分的判断（旧读法装满 6 块就不再读，常常丢了结尾）。"
+            "--limit 0 只报篇数、字数和要问几次，不调模型。夜间任务不要加"
+        ),
+    )
     llm_batch.add_arguments(parser, "整理")
     args = parser.parse_args(argv)
     if args.ocr_changed and (args.gap or args.articles):
         raise SystemExit("--ocr-changed 不和 --gap、--articles 一起用")
+    if args.truncated and (args.gap or args.articles or args.ocr_changed or args.company or args.refresh_blank):
+        raise SystemExit("--truncated 只和 --source、--limit、--workers、--off-peak 一起用")
     llm_batch.check_arguments(args)
     from researchlib.db import prepare
     from researchlib.sources import enabled_sources, load_sources
@@ -1114,52 +1220,27 @@ def main(argv: list[str] | None = None) -> int:
     jobs: list[dict] = []
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
     try:
-        if args.company:
-            known = {
-                row["name_zh"]: row
-                for row in conn.execute(
-                    "SELECT id, name_zh FROM companies WHERE name_zh = ANY(%s)", (args.company,)
-                ).fetchall()
-            }
-            unknown = [name for name in args.company if name not in known]
-            if unknown:
-                raise SystemExit(f"{'、'.join(unknown)} 不在公司表里")
-            wanted = [int(known[name]["id"]) for name in args.company]
-        elif args.gap or args.articles:
-            wanted = [int(row["id"]) for row in conn.execute("SELECT id FROM companies").fetchall()]
+        if args.truncated:
+            found = truncated_articles(conn, authors)
+            print(
+                f"旧读法丢了段落的 {len(found)} 篇，正文加图片字共 {sum(item['chars'] for item in found):,} 字，"
+                f"按现在的读法要问 {sum(item['calls'] for item in found)} 次"
+            )
+            if args.limit <= 0:
+                for item in found:
+                    title = " ".join(str(item["title"] or "").split())[:40]
+                    print(f"{item['id']} {title}：{item['chars']:,} 字，问 {item['calls']} 次")
+                return 0
+            jobs = found[: args.limit]
         else:
-            wanted = [int(row["id"]) for row in view_companies(conn, list(authors))]
-        if not wanted:
-            raise SystemExit("没有被深入谈到的公司")
-        if args.refresh_blank:
-            print(f"删掉空白观点 {delete_blank_views(conn, wanted)} 条")
-        chosen = _canonical_ids(conn, _id_list(args.articles), list(authors))
-        if args.articles and not chosen:
-            raise SystemExit("这些文章 id 里没有可抽的主版本（网友帖和库外 id 已跳过）")
-        if args.gap:
-            rows = gap_articles(conn, wanted, list(authors), args.limit, chosen or None)
-        elif args.articles:
-            rows = articles_for_ids(conn, wanted, list(authors), chosen, args.limit)
-        else:
-            rows = pending_articles(conn, wanted, list(authors), args.limit, ocr_changed=args.ocr_changed)
-        # 正文到整理时再取：几千篇的正文不一直占着内存，取到的也是那一刻的正文。
-        jobs = [
-            {
-                "id": int(row["id"]),
-                "title": row["title"],
-                "source_id": row["source_id"],
-                "companies": list(row["companies"]),
-            }
-            for row in rows
-        ]
-        del rows
+            jobs = _queued_jobs(conn, args, authors)
     finally:
         conn.close()
     report = run_batch(
         settings,
         jobs,
         authors,
-        named=bool(args.gap or args.articles),
+        named=bool(args.gap or args.articles or args.truncated),
         workers=workers,
         deadline=deadline,
         off_peak=off_peak,
@@ -1170,10 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
         f"待整理 {len(jobs)} 篇，整理 {report['done']} 篇，失败 {report['failed']} 篇"
         + llm_batch.tail(report, "整理")
     )
-    if report["fatal"]:
-        print(f"整批停下：{report['fatal']}", file=sys.stderr)
-        return 2
-    return 0
+    return llm_batch.exit_code(report, "整理")
 
 
 if __name__ == "__main__":

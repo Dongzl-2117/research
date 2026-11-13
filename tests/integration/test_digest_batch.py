@@ -131,3 +131,21 @@ def test_command_prints_totals_and_exits_2_when_the_batch_is_stopped(conn, setti
     assert total.startswith(
         f"待处理 {len(jobs)} 篇，写入 {len(jobs)} 篇，失败 0 篇 · 合计进 {2000 * len(jobs):,} 出 {500 * len(jobs):,}"
     )
+
+
+def test_command_exits_3_and_marks_nothing_failed_when_the_api_keeps_rate_limiting(
+    conn, settings, monkeypatch, capsys
+):
+    jobs, authors = _jobs(conn, settings)
+    monkeypatch.setattr(digest_mod.Settings, "from_env", staticmethod(lambda: settings))
+    monkeypatch.setattr(digest_mod, "ensure_oauth", lambda _settings: None)
+
+    def limited(_settings, _messages, **_kwargs):
+        raise LLMError("DeepSeek 接口返回 429：rate limited")
+
+    monkeypatch.setattr(digest_mod, "chat", limited)
+    assert digest_mod.main(["--workers", "2"]) == 3
+    assert "暂停：连着 3 篇接口不通" in capsys.readouterr().err
+    conn.commit()
+    assert conn.execute("SELECT count(*) AS n FROM llm_failures WHERE kind = 'digest'").fetchone()["n"] == 0
+    assert {job["id"] for job in jobs} <= _pending(conn, authors)

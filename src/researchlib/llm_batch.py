@@ -8,6 +8,8 @@ research-views、research-digest 用。命令自己查出要处理的文章，�
   同一进程的几个 worker、同时开着的几个命令、网页后台那条队列都不会处理同一篇。
 - 每篇印一行用量和用时，最后的合计由命令自己印（``tail``），拿它算实际花了多少钱。
 - 没凭证、接口拒绝鉴权、余额不足（402）整批停，不把剩下的一篇篇记成失败。单篇别的错只记这一篇，隔几天再试。
+- 限流、5xx、断网、超时（``transient``）先不记：连着 ``PAUSE_AFTER`` 篇都这样就整批暂停，这几篇不记失败，
+  命令退出码 3，外面的循环过几分钟再跑同一条。中间有一篇成功了，说明接口是通的，前面那几篇才照常记失败。
 - 一次批量的进度都在 ``run`` 的局部变量里，不放模块全局变量。
 - ``verb`` 是印给人看的动词（观点是「整理」、摘要是「写」），只影响提示的字。
 """
@@ -32,6 +34,11 @@ from researchlib.textutil import SHANGHAI
 MAX_WORKERS = 32
 # DeepSeek 高峰价时段里，等着的 worker 隔这么久（秒）看一眼过没过高峰。
 PEAK_CHECK_S = 60.0
+# 连着这么多篇都是限流、5xx、断网、超时，就整批暂停（llm.chat 每篇已经隔 2、5、15、30 秒重试过）。
+PAUSE_AFTER = 3
+# 整批暂停时命令的退出码：外面的循环过几分钟再跑同一条，整理过的不会重来。
+EXIT_PAUSED = 3
+_TRANSIENT_STATUS = (429, 500, 502, 503, 504)
 
 
 def claim(conn, lock_name: str, item_id: int) -> bool:
@@ -61,6 +68,17 @@ def fatal(exc: Exception) -> bool:
     return any(f"接口返回 {code}" in text for code in (401, 402, 403))
 
 
+def transient(exc: Exception) -> bool:
+    """接口一时不通：限流、5xx、连不上、读超时、回答读到一半断了。和这一篇的内容无关，过一会儿再试多半就好。
+
+    ``llm.chat`` 的报错：「… 接口返回 429：…」「连不上 … 接口：…」（断线、超时、流式回答中途断开都是这一句）。
+    """
+    if isinstance(exc, LLMUnavailable):
+        return False
+    text = str(exc)
+    return text.startswith("连不上 ") or any(f"接口返回 {code}" in text for code in _TRANSIENT_STATUS)
+
+
 def _duration(seconds: float) -> str:
     seconds = int(round(seconds))
     hours, rest = divmod(seconds, 3600)
@@ -85,6 +103,22 @@ def tail(report: dict, verb: str = "处理") -> str:
     """合计那一行的后半句：跳过了几篇、一共用了多少 token、多久。"""
     skipped = f"，跳过 {report['skipped']} 篇（别处正在{verb}或已经{verb}过）" if report["skipped"] else ""
     return f"{skipped} · 合计{spent(report['usage'], report['seconds'])}"
+
+
+def exit_code(report: dict, verb: str = "处理") -> int:
+    """命令的退出码，顺带印出为什么停：0 跑完了（个别文章失败也算），2 整批停下（没凭证、鉴权被拒、余额不足），
+    3 连着几篇接口不通、暂停了（外面的循环过几分钟再跑同一条）。"""
+    if report["fatal"]:
+        print(f"整批停下：{report['fatal']}", file=sys.stderr)
+        return 2
+    if report.get("paused"):
+        print(
+            f"暂停：连着 {PAUSE_AFTER} 篇接口不通（{report['paused']}），这几篇没记失败。"
+            f"过几分钟再跑同一条，{verb}过的不会重来",
+            file=sys.stderr,
+        )
+        return EXIT_PAUSED
+    return 0
 
 
 def add_arguments(parser: argparse.ArgumentParser, verb: str = "处理") -> None:
@@ -143,14 +177,18 @@ def run(
     kind：失败记进 llm_failures 的那一类（views、digest）。
     off_peak：DeepSeek 高峰价时段不开新的一篇，等高峰过了接着跑；手上的那篇照常处理完。
     deadline：``time.monotonic()`` 到了这个数就不再开新的一篇。
-    交回 {"done", "failed", "skipped", "usage", "fatal", "timed_out", "seconds"}；fatal 不为空是整批停下的原因。
+    交回 {"done", "failed", "skipped", "usage", "fatal", "paused", "timed_out", "seconds"}；
+    fatal 不为空是整批停下的原因（命令退出码 2），paused 不为空是连着几篇接口不通、整批暂停（退出码 3）。
+    failed 只算记进 llm_failures 的；接口不通、还没轮到记的几篇不算，下次照常排队。
     """
     from researchlib.db import connect, ensure_search_session
 
     guard = threading.Lock()
     printing = threading.Lock()
     queue = iter(jobs)
-    report: dict = {"done": 0, "failed": 0, "skipped": 0, "usage": {}, "fatal": "", "timed_out": False}
+    report: dict = {"done": 0, "failed": 0, "skipped": 0, "usage": {}, "fatal": "", "paused": "", "timed_out": False}
+    # 接口不通、还没记失败的几篇：(文章 id, 错误)。连着 PAUSE_AFTER 篇就暂停；中间有一篇成功就把它们记成失败。
+    held: list[tuple[int, Exception]] = []
     stop = threading.Event()
     peak: dict = {"until": None}
     crashed: list[BaseException] = []
@@ -164,6 +202,28 @@ def run(
     def bump(name: str) -> None:
         with guard:
             report[name] += 1
+
+    def settle(conn) -> None:
+        """接口是通的（这一篇有了结果）：前面接口不通的那几篇是它们自己的事，照常记失败。"""
+        with guard:
+            if report["paused"]:
+                return
+            pending, held[:] = list(held), []
+        for item_id, exc in pending:
+            note_failure(conn, kind, item_id, exc)
+            bump("failed")
+
+    def hold(item_id: int, exc: Exception) -> None:
+        """接口不通：先不记。连着 PAUSE_AFTER 篇都这样就整批暂停，这几篇一篇都不记。"""
+        with guard:
+            if report["paused"]:
+                return
+            held.append((item_id, exc))
+            if len(held) < PAUSE_AFTER:
+                return
+            report["paused"] = str(exc)
+            held.clear()
+        stop.set()
 
     def wait_peak() -> bool:
         if not off_peak:
@@ -202,13 +262,18 @@ def run(
                         report["fatal"] = report["fatal"] or str(exc)
                     stop.set()
                     return
+                say(f"{item_id} {title}: {exc}", err=True)
+                if transient(exc):
+                    hold(item_id, exc)
+                    return
+                settle(conn)
                 note_failure(conn, kind, item_id, exc)
                 bump("failed")
-                say(f"{item_id} {title}: {exc}", err=True)
                 return
             if line is None:
                 bump("skipped")
                 return
+            settle(conn)
             with guard:
                 report["done"] += 1
                 for name, value in usage.items():

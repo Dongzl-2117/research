@@ -213,13 +213,13 @@ docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-digest --ocr-
 以前摘要只给模型正文前 1.2 万字、观点只给前 3 万字，长文的结论和估值常在后半段，后半段才谈到的公司会被记成「没下判断」。现在（`src/researchlib/excerpt.py`）：
 
 - 摘要：全文不超过 6.4 万字（和问库一次读的量一样）就给全文；更长的取开头（四成）、结尾（两成）和每一节的第一块，剩下的名额从中间均匀补，按原文顺序拼起来，跳过的地方用省略号隔开，并告诉模型这是删节过的。
-- 观点：全文不超过 3 万字就给全文；更长的只给提到这几家公司的段落（和它后面一段），加上开头两段和最后一段。
+- 观点：全文不超过 1.2 万字就给全文；更长的只给提到这几家公司的段落（和它后面一段），加上开头两段和最后一段，按原文顺序切成几块分别问，再合成一条。选中的段落都读到（11-14 起）：平常一块 1.2 万字、最多 6 块，装不下就把每块放大（最大 3 万字），再装不下就多切几块；比一块还长的一段（整篇的图片文字常这样）按长度切开。以前装满 6 块就不再读，7 万字上下、通篇谈这家公司的长文后三分之一连同结论都没读，行里却和读全了的一样；一块里只有一段、超过 3 万字的，这一段被换成按公司重选的片段。`company_views.reader` 记是哪一版读法（迁移 037，旧行是 1、现在是 2），旧读法真丢了段落的用 `research-views --truncated` 重抽，见「一次补完积压」。
 
 以前只读了开头写出来的摘要和观点（迁移时按正文长度标出 `head_only`）照常显示，被看到时、夜间任务里按新的读法重写。
 
 ### 失败了怎么办
 
-摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-views`、`research-digest` 遇到余额不足、鉴权被拒也整批停、退出码 2，见「一次补完积压」）。不会在两个提供方之间自动切换。
+摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间打开页面不再排队，免得接口抽风的那几篇每次被打开都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-views`、`research-digest` 遇到余额不足、鉴权被拒也整批停、退出码 2；连着几篇限流、5xx、断网就暂停、退出码 3，这几篇不记失败，见「一次补完积压」）。不会在两个提供方之间自动切换。
 
 ## 观点时间线
 
@@ -251,7 +251,11 @@ docker compose exec app research-views --gap --source fangwei-zsxq --limit 400
 docker compose exec app research-views --articles 1408,1324,8636,350,11583,13516,2052,11299
 # 识图重认以后：只重抽已有观点、抽的时候的图片字和现在不一样的。不和 --gap、--articles 一起用；夜间任务不要加
 docker compose exec app research-views --ocr-changed --limit 2000
+# 11-14 以前长文只读了一部分的判断重抽（旧读法装满 6 块就不再读）。--limit 0 只报篇数、字数和要问几次，不调模型
+docker compose exec app research-views --truncated --limit 0
 ```
+
+网站上不显示的文章不排队、不整理：星球读者帖、「图片」评论壳，还有按来源字数门槛隐藏的短帖（`raw_meta.hidden`，Stratechery 游客版只有半截的每日更新、「This Week in Stratechery」）。时间线本来就不收它们，以前却照样排进队列花钱，公司页「还有 N 篇没整理」也算着它们（11-13 全栈审核查出来的）。排进队列以后才被隐藏的，轮到它时跳过、不问模型；`--articles` 点名的也跳过。
 
 ### 一次补完积压（2026-11-11）
 
@@ -266,7 +270,9 @@ docker compose exec app research-views --ocr-changed --limit 2000
 待整理 4200 篇，整理 4188 篇，失败 12 篇 · 合计进 … 出 …（其中思考 …） token，用时 13 小时 20 分
 ```
 
-余额不足（402）、鉴权被拒（401、403）、没有凭证时整批停，退出码 2，不把剩下的一篇篇记成失败（记了要各自冷却好几天）；充值后再跑同一条，整理过的不会重来。单篇 5xx、模型没按格式回答照旧只记这一篇，隔几天再试。Ctrl-C 一次是手上的几篇整理完就退，再按一次立刻退。
+余额不足（402）、鉴权被拒（401、403）、没有凭证时整批停，退出码 2，不把剩下的一篇篇记成失败（记了要各自冷却好几天）；充值后再跑同一条，整理过的不会重来。模型没按格式回答这类单篇的错照旧只记这一篇，隔几天再试。
+
+限流（429）、5xx、连不上、超时（`llm.chat` 每篇已经隔 2、5、15、30 秒重试过还不行，`llm_batch.transient`）先不记：连着 3 篇（`llm_batch.PAUSE_AFTER`，几个 worker 合起来按完成的先后算）都这样就整批暂停、退出码 3，这几篇一篇都不记失败；中间有一篇有了结果（成功，或者模型答了但答得不对），说明接口是通的，前面那几篇才照常记失败。以前断网、限流时队列被逐篇记成失败、各自冷却几天，退出码还是 0，外面的循环当成跑完了就此结束（11-13 全栈审核查出来的）。暂停以后外面的循环过 5 分钟再跑同一条。夜间任务里这一步记成失败，`research-status` 报出来。Ctrl-C 一次是手上的几篇整理完就退，再按一次立刻退。
 
 估算（没实测过思考用量，跑完前 100 篇按合计校准）：抽样每个来源 24 篇量长度，Stratechery 平均 1.7 万字符、切 1.9 块，林文丰飞书平均 5 万字符、切 2.6 块，方伟公众号 6,700 字一块，星球短帖约 1,000 字一块，合计约 6,900 次调用、输入约 2,500 万 token；每次思考加回答按 4,000 到 10,000 token 算（识图一张实测 10,764），非高峰价 20 到 50 美元，高峰价翻倍。一次调用按 2 分钟算，一篇一篇要连跑约 10 天，16 路约 14 小时。
 
@@ -277,7 +283,7 @@ cd ~/research
 nohup bash -c 'until docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-views --limit 6000 --workers 16 --off-peak; do [ $? -eq 2 ] && break; sleep 300; done' < /dev/null >> ~/views-backlog.log 2>&1 &
 ```
 
-- 进度看 `~/views-backlog.log`。跑完（退出码 0）或者整批停下（退出码 2）循环就退出；容器被换掉、命令被打断时隔 5 分钟重开，整理过的跳过。自动上线不等它（`scripts/deploy.sh` 只等译制和识图）：上线时手上那几篇白问一次，每篇约一美分。
+- 进度看 `~/views-backlog.log`。跑完（退出码 0）或者整批停下（退出码 2）循环就退出；容器被换掉、命令被打断、接口连着不通暂停（退出码 3）时隔 5 分钟重开，整理过的跳过。自动上线不等它（`scripts/deploy.sh` 只等译制和识图）：上线时手上那几篇白问一次，每篇约一美分。
 - 只想补近两年的：把 `--limit 6000` 换成 `--limit 1900`。队列按发布时间从新往旧排，前 1,900 篇大约到 2024 年 12 月。
 - 要停：Mac 上 `pkill -f 'research-views --limit'` 停外层循环和它开的 docker 客户端，再 `docker compose restart app` 停容器里在整理的（网站停几秒）。
 
@@ -294,6 +300,15 @@ step research-views --limit 6000
 ```
 
 最后一行是积压（约 4,200 篇，20 到 50 美元，Zhilin 11-11 选了全部补完）；只跑积压用上面那一条。要停：`pkill -f 'ocr-changed|research-views --limit'`，再 `docker compose restart app`。
+
+长文读全（迁移 037）上线以后，旧读法丢了段落的判断重抽一遍，属于「全部补完」的一部分。先报篇数，再跑：
+
+```bash
+docker compose exec -T app research-views --truncated --limit 0
+nohup bash -c 'until docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-views --truncated --limit 2000 --workers 16 --off-peak; do [ $? -eq 2 ] && break; sleep 300; done' < /dev/null >> ~/views-backlog.log 2>&1 &
+```
+
+`--truncated` 只看旧读法（`reader` 比 `views.READER` 小）写的、正文加图片字超过 2.4 万字的文章，逐篇按旧读法算一遍（`excerpt.old_reader_dropped`，和旧代码逐字对过 3000 组随机长文，一组不差），真丢了段落的才重抽，整理当时那几家公司，写回去 `reader` 是 2，再跑一遍不会重来。`--limit 0` 列出每篇的编号、字数和按现在的读法要问几次；不和 `--gap`、`--articles`、`--ocr-changed`、`--company`、`--refresh-blank` 一起用。
 
 `--gap` 的范围：`article_mentions` 里深度不是「一带而过」、又没有一条 about 为真且判断非空的观点。去重后的主版本（有别的稿 `duplicate_of` 指向它）即使提及只是一带而过也补抽，例如 3851 并入 11299 之后要抽 11299。网友帖不抽。已经记成 about=false（论证不在这家公司）的不反复问。
 
