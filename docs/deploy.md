@@ -28,7 +28,7 @@ docker compose up -d --build
 
 备份、试恢复、夜间补齐、定时抓取和自动上线用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题写进 `data/status/`，首页不挂红条。
 
-不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面时只给当前卡片里缺的排队，其余由夜间任务每晚补一批，见 [llm.md](llm.md)。
+不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面也不排队（11-14 删了网页触发的三条队列），缺的由抓取脚本、夜间任务每晚补一批和手动批量补，见 [llm.md](llm.md)。
 
 ## 语义检索（可选）
 
