@@ -29,7 +29,15 @@ from datetime import UTC, datetime, timedelta
 from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import site_visible_sql
-from researchlib.claims import claim_side, is_hedge, looks_like_list, quote_ok, same_repost
+from researchlib.claims import (
+    REPOST_LEAST,
+    claim_side,
+    is_hedge,
+    looks_like_list,
+    quote_ok,
+    repost_key,
+    same_key,
+)
 from researchlib.config import Settings
 from researchlib.failures import clear_failure, note_failure
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
@@ -285,20 +293,54 @@ def _merge_overlapping(items: list[dict]) -> list[dict]:
 
 
 def _collapse_reposts(views: list[dict]) -> list[dict]:
-    """同一篇转贴只留一条。有原句的优先，否则留文章 id 较小的那份。"""
+    """同一篇转贴只留一条。有原句的优先，否则留文章 id 较小的那份。
+
+    规则是：每条观点和已经留下的逐条比（claims.same_repost），并到最前面对得上的那一条。公司页和判断
+    接口每次打开都对整条时间线算一遍，真的逐条比是条数的平方：11-14 积压补完后苹果 1,218 条，要比
+    74 万对、每对重新规范化四段字，一次请求要等十几到二十几秒。这里结果一条不差，只是不逐条比：
+    一边包含另一边时，短的那段开头的 least 个字一定连着出现在长的那段里。所以给留下的每段字记两张表，
+    inside（它里面每个位置开头的 least 个字）和 heads（它自己开头的 least 个字）；新来的一条只查
+    「谁里面有我的开头」「我里面有谁的开头」，查到的再按 same_key 核一遍。花的时间随总字数涨。
+    """
     kept: list[dict] = []
+    keys: list[tuple[str, str]] = []
+    # 判断、原句各一张；值是留下的第几条。
+    inside: tuple[dict[str, list[int]], dict[str, list[int]]] = ({}, {})
+    heads: tuple[dict[str, list[int]], dict[str, list[int]]] = ({}, {})
+
+    def rank(item: dict) -> tuple[int, int]:
+        return (1 if quote_ok(str(item.get("quote") or "")) else 0, -int(item["article_id"]))
+
+    def remember(index: int, key: tuple[str, str]) -> None:
+        for text, least, grams, starts in zip(key, REPOST_LEAST, inside, heads, strict=True):
+            if len(text) < least:
+                continue
+            starts.setdefault(text[:least], []).append(index)
+            for at in range(len(text) - least + 1):
+                grams.setdefault(text[at : at + least], []).append(index)
+
+    def first_twin(key: tuple[str, str]) -> int | None:
+        found: set[int] = set()
+        for text, least, grams, starts in zip(key, REPOST_LEAST, inside, heads, strict=True):
+            if len(text) < least:
+                continue
+            found.update(grams.get(text[:least], ()))
+            for at in range(len(text) - least + 1):
+                found.update(starts.get(text[at : at + least], ()))
+        # 被换掉的那一条（下面 kept[twin] = view）旧的字还留在表里，所以查到的都按现在留着的字再核。
+        return min((index for index in found if same_key(keys[index], key)), default=None)
+
     for view in views:
-        twin = next((index for index, prev in enumerate(kept) if same_repost(prev, view)), None)
+        key = repost_key(view)
+        twin = first_twin(key)
         if twin is None:
+            remember(len(kept), key)
             kept.append(view)
-            continue
-        current = kept[twin]
-
-        def rank(item: dict) -> tuple[int, int]:
-            return (1 if quote_ok(str(item.get("quote") or "")) else 0, -int(item["article_id"]))
-
-        if rank(view) > rank(current):
+            keys.append(key)
+        elif rank(view) > rank(kept[twin]):
             kept[twin] = view
+            keys[twin] = key
+            remember(twin, key)
     return kept
 
 
