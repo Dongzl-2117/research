@@ -602,3 +602,4 @@ def test_only_wechat_bodies_with_estimated_positions_get_their_images_moved():
     assert not images_placed_by_estimate("wechat_mp", {"images": "page"})
     assert not images_placed_by_estimate("feishu")
     assert not images_placed_by_estimate("markdown", {})
+
