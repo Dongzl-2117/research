@@ -5,19 +5,19 @@
 只有「这是好文章」一句的帖，模型只能写「正文只有一句，无法归纳」；带图的等识图写上字以后再写。
 短正文的图片文字刚写上时，会先写进 article_followups，排在缺摘要的积压前面，避免被饿死。
 知识星球的读者帖网站上哪儿都不展示，不排队写摘要。
-卡片和 JSON 接口优先展示摘要；旧摘要照常显示，同时排进后台重写。失败的记下来，隔几天再试。
+卡片和 JSON 接口优先展示摘要；旧摘要照常显示，等下一次批量重写。失败的记下来，隔几天再试。
 
-两条写入路径，同一张表、同一套提示、同一份 Grok 登录：
-
-- 打开按天、作者、公司或检索时，当前卡片里缺摘要的文章在后台排队，不挡住页面，也不扫全库。
-- 手动 CLI 仍可补一批。应用启动和部署不会跑全库。
+只有命令行这一条写入路径：抓取脚本抓完补这一来源的、夜间任务每晚补一批（scripts/nightly.sh，默认 80 篇）、
+手动补一批。网页不触发：11-14 以前打开首页、作者、按天、检索、公司、文章页会把卡片里缺摘要的排进后台线程，
+公开页面谁都能开、没有每天的上限、也不避开高峰价，提示词版本一改全库就会在没人同意时被补完，删了。
+应用启动和部署不会跑。
 
     research-digest --limit 50
     research-digest --source fangwei-mp --limit 200
     research-digest --ocr-changed --limit 2000 --workers 16 --off-peak   # 一次补一大批，避开 DeepSeek 高峰价
 
 ``--workers N`` 几篇同时写，和 research-views 是同一套（``llm_batch.py``）：每篇先占一把 Postgres advisory lock，
-同一进程的几个 worker、同时开着的几个 research-digest、网页后台那条队列都不会写同一篇；每篇印一行用量和用时，
+同一进程的几个 worker、同时开着的几个 research-digest 都不会写同一篇；每篇印一行用量和用时，
 最后印合计；余额不足（402）、鉴权被拒整批停，不把剩下的一篇篇记成失败。
 """
 
@@ -25,11 +25,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
-import os
 import re
 import sys
-import threading
 import time
 
 from psycopg.types.json import Jsonb
@@ -38,20 +35,18 @@ from researchlib import llm_batch
 from researchlib.author_voice import display_author, raw_meta_of, site_visible_sql
 from researchlib.config import Settings
 from researchlib.excerpt import DIGEST_LIMIT, digest_input, original_chunks
-from researchlib.failures import clear_failure, cooling_sql, note_failure
+from researchlib.failures import clear_failure, cooling_sql
 from researchlib.followups import KIND_DIGEST, clear_followup
-from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import relabel_host
 
-logger = logging.getLogger("researchlib.digest")
-
 # 一次交给模型的正文上限（字），和问库一次读的量一样。更长的取开头、结尾和各节开头，见 excerpt.py。
 BODY_LIMIT = DIGEST_LIMIT
-# 提示词改了就把版本加一。旧摘要照常显示，被看到或跑 research-digest 时按新版重写。
+# 提示词改了就把版本加一。旧摘要照常显示，夜间任务或手动跑 research-digest 时按新版重写。
 PROMPT_VERSION = 2
 PROMPT = """读下面这篇投资研究文章，只输出一个 JSON 对象，不要输出别的文字：
 {"summary": "不超过 120 字的导读：作者在这篇里的核心判断是什么、凭什么这么判断，不写空话",
@@ -64,17 +59,8 @@ PROMPT = """读下面这篇投资研究文章，只输出一个 JSON 对象，�
 只依据原文，原文没有的不要写。开头的 sn、点赞、评论、时间戳不要写进摘要。
 不要给出投资建议，不要写该不该买、目标价或仓位。这是导读，不是建议。"""
 _JSON = re.compile(r"\{.*\}", re.S)
-_MAX_QUEUED = 40
-_COOLDOWN_S = 120.0
 # 每篇的锁是 (hashtext(LOCK_NAME), 文章 id) 这把会话级 advisory lock：写完放掉，进程没了自动放掉。
 LOCK_NAME = "research-digest"
-_lock = threading.Lock()
-_order: list[int] = []
-_authors: dict[int, str] = {}
-_inflight: set[int] = set()
-_settings_holder: list[Settings] = []
-_running = False
-_cooldown_until = 0.0
 
 
 def parse_digest(text: str) -> dict:
@@ -91,28 +77,6 @@ def parse_digest(text: str) -> dict:
     points = [str(item).strip() for item in (data.get("points") or []) if str(item).strip()][:6]
     tags = [str(item).strip() for item in (data.get("tags") or []) if str(item).strip()][:8]
     return {"summary": summary[:400], "points": points, "tags": tags}
-
-
-def needs_rewrite(digest: dict | None) -> bool:
-    """页面上已有的摘要要不要在后台重写：提示词版本旧了，或者当时只读了长文的开头。"""
-    if digest is None:
-        return True
-    return (digest.get("prompt_version") or 1) < PROMPT_VERSION or bool(digest.get("head_only"))
-
-
-def digest_due(article, digest: dict | None) -> bool:
-    """打开这一篇时要不要重写摘要。不扫全库。
-
-    正文很短、图片文字和上次抽的时候不一致，也重写这一篇：截图里的字要进导读。
-    """
-    if needs_rewrite(digest):
-        return True
-    if article is None:
-        return False
-    ocr_hash = article["ocr_hash"] or ""
-    if not ocr_hash or len(article["body_text"] or "") >= SHORT_BODY_CHARS:
-        return False
-    return ((digest or {}).get("ocr_hash") or "") != ocr_hash
 
 
 # 正文加图片里的字，汉字、字母、数字不到这么多个就不写摘要。星球上只有「这是好文章」「下图」一句、
@@ -265,103 +229,6 @@ def rows_needing_digest(conn, article_ids: list[int]):
     ).fetchall()
 
 
-def ensure_digests(conn, settings: Settings, article_ids: list[int], authors: dict[int, str]) -> int:
-    """给这几篇里缺摘要的文章现写。失败时把异常抛回调用方。"""
-    done = 0
-    for row in rows_needing_digest(conn, article_ids):
-        digest_article(conn, settings, row, authors.get(row["id"], ""))
-        done += 1
-    return done
-
-
-def schedule_digests(settings: Settings, jobs: list[tuple[int, str]], *, spawn: bool | None = None) -> int:
-    """把当前卡片里缺摘要的文章排进后台。不扫全库，也不挡住这次页面。
-
-    返回新入队的篇数。测试进程里默认直接返回，避免连上 Grok 或另开数据库连接。
-    """
-    global _running
-    if not jobs or not llm_configured(settings):
-        return 0
-    if spawn is None:
-        spawn = "PYTEST_CURRENT_TEST" not in os.environ
-    if not spawn:
-        return 0
-    start = False
-    added = 0
-    with _lock:
-        if time.monotonic() < _cooldown_until:
-            return 0
-        _settings_holder[:] = [settings]
-        for article_id, author in jobs:
-            if article_id in _authors or article_id in _inflight or len(_order) >= _MAX_QUEUED:
-                continue
-            _authors[article_id] = author or ""
-            _order.append(article_id)
-            added += 1
-        if added and not _running:
-            _running = True
-            start = True
-    if start:
-        threading.Thread(target=_digest_worker, name="article-digests", daemon=True).start()
-    return added
-
-
-def _digest_worker() -> None:
-    global _running, _cooldown_until
-    from researchlib.db import connect, ensure_search_session
-
-    conn = None
-    try:
-        while True:
-            with _lock:
-                if not _order or not _settings_holder or time.monotonic() < _cooldown_until:
-                    _running = False
-                    return
-                settings = _settings_holder[0]
-                article_id = _order.pop(0)
-                author = _authors.pop(article_id, "")
-                _inflight.add(article_id)
-            try:
-                if conn is None:
-                    conn = connect(settings)
-                    ensure_search_session(conn)
-                # 批量命令正在写这一篇就不重复问模型；它写完，这篇也不再缺摘要。
-                if llm_batch.claim(conn, LOCK_NAME, article_id):
-                    try:
-                        ensure_digests(conn, settings, [article_id], {article_id: author})
-                    finally:
-                        llm_batch.release(conn, LOCK_NAME, article_id)
-            except LLMUnavailable as exc:
-                logger.warning("摘要暂停：%s", exc)
-                with _lock:
-                    _cooldown_until = time.monotonic() + _COOLDOWN_S
-                    _order.clear()
-                    _authors.clear()
-                    _inflight.discard(article_id)
-                    _running = False
-                return
-            except LLMError as exc:
-                logger.warning("摘要失败 %s：%s", article_id, exc)
-                if conn is not None:
-                    conn.rollback()
-                    note_failure(conn, "digest", article_id, exc)
-            except Exception:
-                logger.exception("摘要失败 %s", article_id)
-                if conn is not None:
-                    conn.rollback()
-                else:
-                    with _lock:
-                        _inflight.discard(article_id)
-                        _running = False
-                    return
-            finally:
-                with _lock:
-                    _inflight.discard(article_id)
-    finally:
-        if conn is not None:
-            conn.close()
-
-
 def run_batch(
     settings: Settings,
     jobs: list[dict],
@@ -404,7 +271,7 @@ def run_batch(
 
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了（个别文章失败也算，失败的记下来隔几天再试），2 整批停下了：没有可用的 LLM 凭证、
-    接口拒绝鉴权或余额不足（402）。"""
+    接口拒绝鉴权或余额不足（402）；3 连着几篇限流、5xx、断网，暂停了，这几篇没记失败，过几分钟再跑同一条。"""
     parser = argparse.ArgumentParser(description="给还没有摘要的文章生成 LLM 摘要")
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--source", default="")
@@ -448,10 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         f"待处理 {len(jobs)} 篇，写入 {report['done']} 篇，失败 {report['failed']} 篇"
         + llm_batch.tail(report, "写")
     )
-    if report["fatal"]:
-        print(f"整批停下：{report['fatal']}", file=sys.stderr)
-        return 2
-    return 0
+    return llm_batch.exit_code(report, "写")
 
 
 if __name__ == "__main__":

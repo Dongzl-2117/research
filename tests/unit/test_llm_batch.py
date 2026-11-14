@@ -32,6 +32,29 @@ def test_batch_stops_on_credentials_and_balance_but_not_on_one_bad_article():
     assert not llm_batch.fatal(LLMError("模型没有按格式回答"))
 
 
+def test_rate_limits_server_errors_and_dropped_connections_pause_instead_of_failing_articles():
+    for text in (
+        "DeepSeek 接口返回 429：rate limited",
+        "Grok 接口返回 503：overloaded",
+        "连不上 DeepSeek 接口：timed out",
+        "连不上 Grok 接口：stream ended before [DONE]",
+    ):
+        assert llm_batch.transient(LLMError(text)) and not llm_batch.fatal(LLMError(text))
+    for text in ("DeepSeek 接口返回 400：bad request", "DeepSeek 接口返回 402：no balance", "模型没有按格式回答"):
+        assert not llm_batch.transient(LLMError(text))
+    assert not llm_batch.transient(LLMUnavailable("没有配置 DEEPSEEK_API_KEY"))
+
+
+def test_exit_code_says_why_the_batch_stopped(capsys):
+    done = {"fatal": "", "paused": ""}
+    assert llm_batch.exit_code(done, "写") == 0
+    assert llm_batch.exit_code({**done, "fatal": "DeepSeek 接口返回 402"}, "写") == 2
+    paused = {**done, "paused": "连不上 DeepSeek 接口：timed out"}
+    assert llm_batch.exit_code(paused, "写") == llm_batch.EXIT_PAUSED == 3
+    err = capsys.readouterr().err
+    assert "整批停下：DeepSeek 接口返回 402" in err and "写过的不会重来" in err
+
+
 def _args(*argv: str) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     llm_batch.add_arguments(parser, "写")

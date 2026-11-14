@@ -6,6 +6,7 @@ import re
 import threading
 from datetime import UTC, datetime
 
+from researchlib import llm_batch
 from researchlib import views as views_mod
 from researchlib.llm import LLMError
 from researchlib.seed import load_sample
@@ -86,8 +87,8 @@ def test_article_locked_by_another_process_is_skipped(conn, settings, monkeypatc
     assert _pending(conn, wanted, authors) & {job["id"] for job in jobs} == {busy}
     # 锁放掉以后，这一篇照常整理，整理完自己的锁也放掉了。
     assert views_mod.run_batch(settings, [jobs[0]], authors)["done"] == 1
-    assert views_mod._claim(conn, busy)
-    views_mod._release(conn, busy)
+    assert llm_batch.claim(conn, views_mod.LOCK_NAME, busy)
+    llm_batch.release(conn, views_mod.LOCK_NAME, busy)
 
 
 def test_out_of_balance_stops_the_batch_without_marking_articles_failed(conn, settings, monkeypatch):
@@ -177,3 +178,79 @@ def test_command_prints_totals_and_exits_2_when_the_batch_is_stopped(conn, setti
     assert total.startswith(
         f"待整理 {len(jobs)} 篇，整理 {len(jobs)} 篇，失败 0 篇 · 合计进 {1000 * len(jobs):,} 出 {400 * len(jobs):,}"
     )
+
+
+def _views_failures(conn) -> list[int]:
+    conn.commit()
+    return [row["item_id"] for row in conn.execute("SELECT item_id FROM llm_failures WHERE kind = 'views'").fetchall()]
+
+
+def test_outage_pauses_the_batch_without_marking_articles_failed(conn, settings, monkeypatch, capsys):
+    """断网、限流连着好几篇：整批暂停、退出码 3，一篇都不记失败，外面的循环过几分钟再跑。"""
+    jobs, authors, wanted = _jobs(conn, settings)
+    asked: list[str] = []
+
+    def down(_settings, messages, **_kwargs):
+        asked.append(messages[1]["content"])
+        raise LLMError("连不上 DeepSeek 接口：timed out")
+
+    monkeypatch.setattr(views_mod, "chat", down)
+    monkeypatch.setattr(views_mod.llm_batch, "PAUSE_AFTER", 2)
+    report = views_mod.run_batch(settings, jobs, authors)
+    assert "连不上" in report["paused"] and report["done"] == 0 and report["failed"] == 0
+    # 一个 worker 时问到第 PAUSE_AFTER 篇就停，后面的没开。
+    assert len(asked) == 2 < len(jobs)
+    assert _views_failures(conn) == []
+    assert {job["id"] for job in jobs} <= _pending(conn, wanted, authors)
+
+    monkeypatch.setattr(views_mod.Settings, "from_env", staticmethod(lambda: settings))
+    monkeypatch.setattr(views_mod, "ensure_oauth", lambda _settings: None)
+    capsys.readouterr()
+    assert views_mod.main(["--workers", "2", "--limit", "50"]) == views_mod.llm_batch.EXIT_PAUSED
+    assert "暂停：连着 2 篇接口不通" in capsys.readouterr().err
+    assert _views_failures(conn) == []
+
+
+def test_lone_rate_limit_is_recorded_only_when_the_api_answers_afterwards(conn, settings, monkeypatch):
+    """一篇 429、后面的照常答了：这篇是它自己的事，记失败。最后一篇 429、后面没有了：不知道接口通不通，不记。"""
+    jobs, authors, _wanted = _jobs(conn, settings)
+    limited = {jobs[0]["title"], jobs[-1]["title"]}
+
+    def reply(_settings, messages, **kwargs):
+        if any(f"标题：{title}\n" in messages[1]["content"] for title in limited):
+            raise LLMError("DeepSeek 接口返回 429：rate limited")
+        return _no_view(_settings, messages, **kwargs)
+
+    monkeypatch.setattr(views_mod, "chat", reply)
+    report = views_mod.run_batch(settings, jobs, authors)
+    assert report["failed"] == 1 and report["done"] == len(jobs) - 2 and not report["paused"]
+    assert _views_failures(conn) == [jobs[0]["id"]]
+
+
+def test_hidden_short_posts_are_not_queued_or_extracted(conn, settings, monkeypatch):
+    """按来源字数门槛隐藏的短帖（Stratechery 游客版的半截每日更新、每周汇总）网站上不显示，不花钱整理。"""
+    jobs, authors, wanted = _jobs(conn, settings)
+    hidden = jobs[0]["id"]
+    company = int(jobs[0]["companies"][0])
+    before = views_mod.count_pending(conn, company, list(authors))
+    conn.execute(
+        "UPDATE articles SET raw_meta = coalesce(raw_meta, '{}'::jsonb) || %s::jsonb WHERE id = %s",
+        ('{"hidden": "short_post"}', hidden),
+    )
+    conn.commit()
+    assert hidden not in _pending(conn, wanted, authors)
+    # 公司页「还有 N 篇没整理」也不算它。
+    assert views_mod.count_pending(conn, company, list(authors)) == before - 1
+    assert views_mod._canonical_ids(conn, [hidden], list(authors)) == []
+    # 排进队列以后才隐藏的：轮到它时跳过，不问模型。
+    asked: list[str] = []
+
+    def reply(_settings, messages, **kwargs):
+        asked.append(re.search(r"标题：(.*)", messages[1]["content"]).group(1))
+        return _no_view(_settings, messages, **kwargs)
+
+    monkeypatch.setattr(views_mod, "chat", reply)
+    report = views_mod.run_batch(settings, jobs, authors)
+    assert report["skipped"] == 1 and report["done"] == len(jobs) - 1
+    assert jobs[0]["title"] not in asked
+    assert conn.execute("SELECT count(*) AS n FROM company_views WHERE article_id = %s", (hidden,)).fetchone()["n"] == 0

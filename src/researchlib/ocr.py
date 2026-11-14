@@ -1400,7 +1400,7 @@ def describe_report(report: dict) -> list[str]:
     if answered:
         line = (
             f"其中按结构交回 {report.get('structured', 0)} 张，"
-            f"交回自由文字 {report.get('plain', 0)} 张（按旧规则整理）"
+            f"交回自由文字 {report.get('plain', 0)} 张（按空行分段，照原样排）"
         )
         if report.get("invalid"):
             line += f"，结构读不出来 {report['invalid']} 张（记成 :invalid 的不自动重试，--redo --article 点名重认）"

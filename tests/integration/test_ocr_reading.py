@@ -287,8 +287,7 @@ def test_short_screenshot_post_is_read_by_views_and_digest(conn, settings, tmp_p
         "SELECT id, title, body_text, content_hash, published_at, source_id, ocr_hash FROM articles WHERE id = %s",
         (row["id"],),
     ).fetchone()
-    stored = {"prompt_version": digest_mod.PROMPT_VERSION, "head_only": False, "ocr_hash": ""}
-    assert digest_mod.digest_due(digest_row, stored)
+    assert [item["id"] for item in digest_mod.rows_needing_digest(conn, [row["id"]])] == [row["id"]]
 
     seen = []
 
