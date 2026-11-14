@@ -26,8 +26,6 @@ from researchlib.author_voice import hide_from_site
 from researchlib.boilerplate import clean_article
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
-from researchlib.digest import digest_due, schedule_digests
-from researchlib.digest import needs_rewrite as digest_needs_rewrite
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
@@ -69,7 +67,6 @@ from researchlib.translate.display import (
 from researchlib.translate.remote_media import bilingual_sources
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import list_marks as view_marks
-from researchlib.views import queue_for_company as queue_views
 from researchlib.views import quote_repeats, same_period
 from researchlib.views import timeline as view_timeline
 from researchlib.visibility import is_hidden
@@ -400,35 +397,32 @@ def cited_titles(conn, citations: list[dict], sources, zone: str) -> list[dict]:
     ]
 
 
-def _decorate(conn, cards: list[dict], settings) -> list[dict]:
-    """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
+def _decorate(conn, cards: list[dict]) -> list[dict]:
+    """给卡片挂上公司标签和库里现成的 LLM 摘要。
+
+    缺摘要的卡片照常显示正文摘录，等抓取脚本和夜间任务补（research-digest）。页面不调模型、不排队：
+    11-14 以前这里把缺摘要和要重写的排进后台线程，公开页面谁都能开，没有每天的上限。
+    """
     ids = [card["id"] for card in cards]
     tags = queries.article_tags(conn, ids, per_article=12)
     digests = queries.digests_for(conn, ids)
-    pending: list[tuple[int, str]] = []
     for card in cards:
         card["tags"] = _visible_tags(card, tags.get(card["id"], []))
         digest = digests.get(card["id"])
         if digest and not card.get("summary"):
+            # 旧版提示词写的、或当时只读了长文开头的摘要也照常显示，批量任务会重写。
             card["summary"] = digest["summary"]
             card["points"] = _digest_points(digest)
-            if digest_needs_rewrite(digest):
-                # 旧版提示词写的、或当时只读了长文开头的摘要先照常显示，后台重写。
-                pending.append((card["id"], card.get("author") or ""))
-        elif not card.get("summary"):
-            pending.append((card["id"], card.get("author") or ""))
     _repair_zsxq_titles(conn, cards)
     for card in cards:
         card.pop("body_text", None)
         card.pop("owners", None)
-    if pending:
-        schedule_digests(settings, pending)
     return cards
 
 
 def _feed_days(conn, rows, by_id, settings):
     cards = [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows]
-    return group_days(order_cards(_decorate(conn, cards, settings)))
+    return group_days(order_cards(_decorate(conn, cards)))
 
 
 def _query_string(**params) -> str:
@@ -736,16 +730,13 @@ def _article_view(request: Request, article_id: int, mode: str):
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
         if article["duplicate_of"] is None:
-            # 这一篇的图片文字若还是原始识别行，先整理再决定要不要重写摘要。不扫别的文章。
+            # 这一篇的图片文字若还是原始识别行，先整理（不调模型）。不扫别的文章。
             new_hash = refresh_article_ocr(conn, article_id)
             if new_hash != (article.get("ocr_hash") or ""):
                 article = {**article, "ocr_hash": new_hash}
         digest = queries.digests_for(conn, [article_id]).get(article_id)
         hidden = is_hidden(article["raw_meta"])
         hidden_reason = str((article["raw_meta"] or {}).get("hidden") or "")
-        # 短文的图片文字变了也重写摘要。不进列表的不排进后台。
-        if digest_due(article, digest) and not hidden:
-            schedule_digests(settings, [(article_id, source.author)])
         # 只用来把估错位置的图挪回去；图本来就在原文位置的来源不挪。
         ocr_texts = (
             queries.image_ocr_texts(conn, article_id)
@@ -1299,7 +1290,7 @@ def search_page(request: Request):
                     },
                 )
             )
-        results = _decorate(conn, results, settings)
+        results = _decorate(conn, results)
     total_all = sum(count_map.values())
     total = found.total if found else 0
     available = found.available if found else 0
@@ -1491,7 +1482,7 @@ def _company_tab(params, has_views: bool) -> str:
 def company_page(request: Request, company_id: int):
     """一家公司。有判断的分三页：概览（各位作者现在怎么看、主要论点）、判断（一条一行）、文章（谁在什么时候谈它）。
 
-    每一页只取自己要的数。判断和论点都是库里现成的，这一页不调模型；缺的在后台排队，不挡页面。
+    每一页只取自己要的数。判断和论点都是库里现成的，这一页不调模型、也不排队；缺的等夜间任务和手动批量补。
     """
     settings = request.app.state.settings
     zone = settings.display_timezone
@@ -1510,17 +1501,13 @@ def company_page(request: Request, company_id: int):
         banner = queries.sample_state(conn, all_ids)
         who = _company_authors(queries.company_source_stats(conn, company_id, all_ids), by_id, settings)
         items = retitle_views(conn, view_timeline(conn, company_id, by_id, settings), by_id, zone)
-        # 「还有几篇没整理」：判断和文章两页按当前筛的作者算，概览按全部；排队总是按全部来源。
+        # 「还有几篇没整理」：判断和文章两页按当前筛的作者算，概览按全部。只数，不排队：夜间任务每晚补一批。
         pending_all = count_view_pending(conn, company_id, all_ids)
         pending = (
             count_view_pending(conn, company_id, [item.id for item in grouped[author]]) if author else pending_all
         )
-        if pending_all:
-            queue_views(conn, settings, company_id, by_id)
-        # 论点：判断归成的几条。缺了或过期了在后台重算，不挡页面。
+        # 论点：判断归成的几条，库里现成的。缺了或过期了等 research-theses 重算。
         theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
-        if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
-            thesis_map.schedule(settings, company, by_id)
         tab = _company_tab(params, bool(items))
         context = {
             "nav": "companies",
@@ -1625,7 +1612,6 @@ def _company_articles(request: Request, conn, company, by_id: dict, grouped: dic
             )
             for row in articles
         ],
-        settings,
     )
     by_year: list[dict] = []
     for card in rows:
@@ -1691,7 +1677,6 @@ def day_page(request: Request, day: str):
             _decorate(
                 conn,
                 [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows],
-                settings,
             )
         )
         previous, following = queries.neighbor_days(conn, scope, found)
