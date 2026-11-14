@@ -45,6 +45,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import psycopg
 from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import site_visible_sql
@@ -59,6 +60,7 @@ from researchlib.ocr_units import (
     parse_reply,
     plain_units,
     stitch,
+    strip_control,
     structure_of,
 )
 from researchlib.wechat_dialogue import HOST
@@ -966,10 +968,27 @@ def run_ocr(
     def write(row, path: Path, future) -> None:
         used, result = _outcome(engine, path, future, report)
         report["images"] += 1
-        text = result.text or ""
+        # 模型交回的字里偶尔有 NUL，写不进 text 列（审核 C4）。units 在 ocr_units 里已经去过。
+        text = strip_control(result.text or "")
         if redo and used.endswith((":error", ":invalid")) and _has_text(conn, row["content_hash"]):
             report["kept"] += 1
             return
+        try:
+            _store(row, used, text, result)
+        except psycopg.DataError as exc:
+            # 还有写不进库的字：这一张记成读不出来，接着认下一张，别让整批中断、手上认完的几张白花钱。
+            conn.rollback()
+            logger.warning("图片识别结果写不进库 %s：%s", path, exc)
+            report["invalid"] += 1
+            report["last_error"] = f"写不进库：{exc}"[:300]
+            used, text, result = f"{engine}:invalid", "", Recognition("", None, result.usage)
+            _store(row, used, text, result)
+        if text.strip():
+            report["with_text"] += 1
+        _touch_articles(conn, row["content_hash"], text, touched, report)
+        conn.commit()
+
+    def _store(row, used: str, text: str, result) -> None:
         conn.execute(
             """
             INSERT INTO image_texts (content_hash, engine, text, units, usage, prompt_version)
@@ -987,10 +1006,6 @@ def run_ocr(
                 VISION_PROMPT_VERSION,
             ),
         )
-        if text.strip():
-            report["with_text"] += 1
-        _touch_articles(conn, row["content_hash"], text, touched, report)
-        conn.commit()
 
     try:
         with ThreadPoolExecutor(max_workers=width) as pool:

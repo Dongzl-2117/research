@@ -88,7 +88,7 @@ def parse_posts(data: object) -> list[Post]:
         sn = str(item.get("sn") or "").strip().lower() or _sn_of(url)
         try:
             post_time = int(item.get("post_time") or 0)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             post_time = 0
         posts.append(Post(url=url, title=title, post_time=post_time, sn=sn, raw=item))
     posts.sort(key=lambda post: post.post_time, reverse=True)
@@ -232,7 +232,11 @@ def archived_sns(inbox: Path) -> set[str]:
 
 
 def published(post: Post) -> datetime | None:
-    return datetime.fromtimestamp(post.post_time, UTC).astimezone(SHANGHAI) if post.post_time > 0 else None
+    """极致了给的时间戳坏了（特别大、不是数）当没给，不让整次抓取崩掉（审核 I5）。"""
+    try:
+        return datetime.fromtimestamp(post.post_time, UTC).astimezone(SHANGHAI) if post.post_time > 0 else None
+    except (ArithmeticError, OSError, TypeError, ValueError):
+        return None
 
 
 # 归档头里这一行说明图就在公众号原文的位置，阅读页不用再按识图去挪（researchlib.render.images_placed_by_estimate）。

@@ -166,21 +166,45 @@ def _record_attempt(conn, article_id: int, status: str, reason: str, content_has
     )
 
 
+def _failure_kind(error: Exception) -> tuple[str, str]:
+    """（status, reason）。断线、HTTP、配置这类请求那头的错记 failed，按次数拉长间隔、不设上限，宕机结束后还能回来。
+
+    对齐不过记 rejected。别的异常（代码在某篇上确定性地出错，比如几千位的数字串让 int() 抛 ValueError）
+    也记 rejected、原因写异常类型：同一版本拒满两次就停住，不再每 12 小时整篇重译、重付钱，
+    日志里也不再看着像网络问题（审核 T9）。
+    """
+    if isinstance(error, AlignmentError):
+        return "rejected", error.code
+    if _service_failure(error) or isinstance(error, (LLMHTTPError, OSError)) or _raised_in_request(error):
+        return "failed", "request-failed"
+    return "rejected", f"error:{type(error).__name__}"
+
+
+# 请求那一层（发请求、读回答）的文件。从这里抛出的「返回非 JSON」这类错多半是服务、代理一时的事，按请求失败记。
+_REQUEST_LAYER = ("researchlib/translate/llm.py", "researchlib/llm.py", "researchlib/translate/xai_oauth.py")
+
+
+def _raised_in_request(error: BaseException) -> bool:
+    frame = error.__traceback__
+    last = None
+    while frame is not None:
+        last = frame
+        frame = frame.tb_next
+    if last is None:
+        return False
+    return last.tb_frame.f_code.co_filename.replace("\\", "/").endswith(_REQUEST_LAYER)
+
+
 def record_translation_failure(conn, article_id: int, error: Exception) -> None:
     """由 CLI 在回滚后记录失败，不改译文或检索块；不保存正文或响应。"""
-    rejected = isinstance(error, AlignmentError)
+    status, reason = _failure_kind(error)
     content_hash = None
     row = conn.execute("SELECT content_hash FROM articles WHERE id = %s", (article_id,))
     if row is not None:
         fetched = row.fetchone()
         if fetched:
             content_hash = fetched["content_hash"]
-    _record_attempt(
-        conn, article_id,
-        "rejected" if rejected else "failed",
-        error.code if rejected else "request-failed",
-        content_hash,
-    )
+    _record_attempt(conn, article_id, status, reason, content_hash)
     conn.commit()
 
 

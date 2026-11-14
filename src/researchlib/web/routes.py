@@ -98,7 +98,7 @@ from researchlib.web.present import (
     weekday_label,
 )
 from researchlib.web.quoting import mark_quoted
-from researchlib.web.scoping import parse_day, resolve_scope
+from researchlib.web.scoping import parse_day, parse_int, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import (
@@ -429,12 +429,18 @@ def _query_string(**params) -> str:
     return urlencode({key: value for key, value in params.items() if value not in (None, "", 0)})
 
 
+# 页码封顶：再往后都是空页。以前不封顶，「page=10^23」在只按作者列文章的检索里让 OFFSET 越界，回 500（审核 B4）。
+MAX_PAGE = 10_000
+
+
 def _page_arg(request: Request) -> int:
-    raw = request.query_params.get("page", "1")
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return 1
+    return _page_number(request.query_params.get("page"))
+
+
+def _page_number(raw: str | None) -> int:
+    """页码：取不到（空、不是整数、「²」这类 isdigit 为真 int 却认不了的字）当第 1 页，封顶 MAX_PAGE。"""
+    number = parse_int(raw)
+    return 1 if number is None else min(MAX_PAGE, max(1, number))
 
 
 def _load_feed(conn, source_ids: list[str], settings, page: int, *, owner_only: bool = False):
@@ -744,8 +750,8 @@ def _article_view(request: Request, article_id: int, mode: str):
             else {}
         )
         quoted = None
-        if chunk_arg is not None and chunk_arg.isdigit():
-            wanted = int(chunk_arg)
+        wanted = parse_int(chunk_arg) if chunk_arg is not None else None
+        if wanted is not None and wanted >= 0:
             # 图片文字块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
         banner = queries.sample_state(conn, ids)
@@ -1111,7 +1117,7 @@ def duplicates_page(request: Request):
     """认出来的重复：主版本和指向它的几份，重合比例，认错了点「不是同一篇」。"""
     settings = request.app.state.settings
     raw_article = request.query_params.get("article") or ""
-    only = int(raw_article) if raw_article.isdigit() else None
+    only = parse_int(raw_article)
     with database(request) as conn:
         sources = active_sources(request, conn)
         ids = [source.id for source in sources]
@@ -1539,7 +1545,7 @@ def company_page(request: Request, company_id: int):
                 author=author,
                 stance=params.get("stance") or "",
                 thesis_key=key,
-                page=int(raw_page) if raw_page.isdigit() else 1,
+                page=_page_number(raw_page),
             )
             company_brief.decorate_views(block["items"], quote_repeats)
             block.update(pending=pending, pending_author=author)
@@ -1902,9 +1908,10 @@ async def ask_feedback(request: Request, answer_id: int):
             raise HTTPException(status_code=404)
         if label == "irrelevant":
             try:
-                article_id = int(str(form.get("article") or ""))
-                chunk_raw = str(form.get("chunk") or "")
-                chunk = int(chunk_raw) if chunk_raw.isdigit() else None
+                article_id = parse_int(str(form.get("article") or ""))
+                if article_id is None:
+                    raise ValueError("缺少文章")
+                chunk = parse_int(str(form.get("chunk") or ""))
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="缺少文章") from exc
             toggle_irrelevant(conn, answer_id, article_id, chunk)

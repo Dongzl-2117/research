@@ -52,6 +52,9 @@ from collections.abc import Sequence
 
 from researchlib.boilerplate import strip_meta
 from researchlib.textutil import (
+    _EDGE_ELLIPSIS,
+    _TRAILING_ELLIPSIS,
+    ELLIPSIS_RUN,
     MARK_PAIRS,
     argumentative_excerpt,
     balance_marks,
@@ -65,9 +68,8 @@ from researchlib.zsxq_comments import drop_guest_comments_text
 FANGWEI_ZSXQ = "fangwei-zsxq"
 TITLE_LIMIT = 40
 
-_ELLIPSIS_END = re.compile(
-    r"(?:(?:…+|⋯+|‥+|\.{3,}|。{2,}|．{3,})[\s）)】\]」』\"'“”‘’》>]*)+$"
-)
+# 写法和原因见 textutil.ELLIPSIS_RUN（占有量词，不回溯，审核 I1）。
+_ELLIPSIS_END = re.compile(_TRAILING_ELLIPSIS)
 _HEADING = re.compile(r"^#{1,6}\s+", re.M)
 # 问答导出的小标题「提问（网友 → 方伟Rey）」「回答（方伟Rey）」：括号里是网友的昵称，不是帖子的话。
 # 抽句子时当成断句，不和上一行的「问：…」、下一行的提问拼成一句；已经拼进标题的要重取。
@@ -150,12 +152,9 @@ _SHUO_LEFTOVER = re.compile(r"^[明服法话是][：:]")
 _BREAKS = "，,；;、：:"
 # 省略号在开头、结尾或句子中间，都是截断，不是一句完整的话。
 _CUT = re.compile(r"…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}")
-_EDGE_CUT = re.compile(
-    r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+"
-    r"|(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
-)
+_EDGE_CUT = _EDGE_ELLIPSIS
 # 只认开头的省略号。正文同一行「前半...后半」要把后半接回去，不能整行跳过。
-_LEADING_CUT = re.compile(r"^(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})+")
+_LEADING_CUT = re.compile(r"^" + ELLIPSIS_RUN + "++")
 _DATE_FALLBACK = re.compile(r"^(?:\d{4}-\d{2}-\d{2}\s+)?短帖$")
 # 以前入库补标题时读到了归档头那几行，标题成了「「图片」 - 作者：方伟Rey - 时间：2026-10-19 18」。
 _ARCHIVE_META = re.compile(r"(?:^|\s)-\s*(?:作者|时间|类型|topic_id)\s*[：:]")
