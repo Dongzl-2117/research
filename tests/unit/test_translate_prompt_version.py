@@ -1,9 +1,11 @@
-"""换提示词不拆已经签好的回执：对照页照常逐段配对；旧提示词译的篇再译时整篇按新提示词译。
+"""换提示词不拆已经签好的回执：对照页照常逐段配对；旧提示词译的段再译时按新提示词译，逐段记版本。
 
 合成样本，不调真模型、不连库。
 """
 
 from __future__ import annotations
+
+from unittest.mock import patch
 
 from test_bilingual_regressions import ZA, ZB, ZC, A, B, C
 from test_translate_number_review import run, zh_for
@@ -69,13 +71,87 @@ def test_a_failed_segment_falls_back_to_the_old_prompt_and_says_so(tmp_path):
     conn.previous["provenance"] = _old_receipt(A + B + C, conn.previous["body_html"])
     conn, result, _calls = run(A + B + C, _answer, tmp_path, conn=conn, rows_hook=_beta_never_aligns)
     assert result.status == "translated" and result.reused == 1 and result.untranslated == 0
+    assert result.stale == 1
     stored = conn.writes[-1][7].obj
     assert stored["prompt_versions"] == [2, pr.PROMPT_VERSION]
-    # 混着旧段的那篇，下次再译还是整篇按新提示词来。
+    # 回执逐段记着：乙段还是旧版译的。下次再译只重译乙段，甲、丙已经是这一版，不再花钱（审核 T2）。
+    assert stored["segment_prompts"] == [pr.PROMPT_VERSION, 2, pr.PROMPT_VERSION]
+    assert pr.stale_prompt(stored)
     conn = _previous(conn)
     calls: list = []
-    conn, _again, _calls = run(A + B + C, _answer, tmp_path, conn=conn, calls=calls)
-    assert [segs for segs, _repair in calls][0] == [A, B, C]
+    conn, again, _calls = run(A + B + C, _answer, tmp_path, conn=conn, calls=calls)
+    assert [segs for segs, _repair in calls] == [[B]]
+    assert again.status == "translated" and again.reused == 2 and again.stale == 0
+    stored = conn.writes[-1][7].obj
+    assert stored["prompt_versions"] == [pr.PROMPT_VERSION] and not pr.stale_prompt(stored)
+    assert stored["segment_prompts"] == [pr.PROMPT_VERSION] * 3
+
+
+def test_a_mixed_receipt_without_per_segment_prompts_is_retranslated_whole(tmp_path):
+    """11-14 以前混着两版的回执没逐段记：分不清哪几段是旧的，整篇按新提示词重译一次。"""
+    conn, _first, _calls = run(A + B + C, _answer, tmp_path)
+    conn = _previous(conn)
+    mixed = dict(conn.previous["provenance"])
+    mixed.pop("segment_prompts", None)
+    mixed["prompt_versions"] = [2, pr.PROMPT_VERSION]
+    conn.previous["provenance"] = mixed
+    assert pr.stale_prompt(mixed)
+    calls: list = []
+    conn, result, _calls = run(A + B + C, _answer, tmp_path, conn=conn, calls=calls)
+    assert [segs for segs, _repair in calls] == [[A, B, C]]
+    assert result.status == "translated" and result.reused == 0
+
+
+def test_an_interrupted_rewrite_is_not_reported_as_done(tmp_path, monkeypatch):
+    """整篇按新提示词重译时第二批遇到 402：已译的段存下，没问到的段留旧译文，报出错误、记一次请求失败；
+    下次只重译还是旧版的段（审核 T2：以前写成「译完」、不报错、之后也不再补）。"""
+    from researchlib.translate import service
+    from researchlib.translate.llm import LLMHTTPError
+
+    conn, _first, _calls = run(A + B + C, _answer, tmp_path)
+    conn = _previous(conn)
+    conn.previous["provenance"] = _old_receipt(A + B + C, conn.previous["body_html"])
+    monkeypatch.setattr(service, "TRANSLATE_BATCH_MAX_SEGMENTS", 1)
+    asked: list = []
+
+    def broke(segs, _repair):
+        asked.append(list(segs))
+        if len(asked) > 1:
+            raise LLMHTTPError(402, "Insufficient Balance")
+        return [zh_for(segment) for segment in segs]
+
+    conn, result, _calls = run(A + B + C, broke, tmp_path, conn=conn)
+    assert result.status == "partial" and result.stale == 2 and result.retry_later is False
+    assert "Insufficient Balance" in result.error
+    assert conn.attempts and conn.attempts[-1] == ("failed", "request-failed")
+    stored = conn.writes[-1][7].obj
+    assert stored["segment_prompts"] == [pr.PROMPT_VERSION, 2, 2]
+    # 充值后再跑：只问乙、丙两段。
+    conn = _previous(conn)
+    calls: list = []
+    conn, again, _calls = run(A + B + C, _answer, tmp_path, conn=conn, calls=calls)
+    assert [segs for segs, _repair in calls] == [[B], [C]]
+    assert again.status == "translated" and conn.writes[-1][7].obj["segment_prompts"] == [pr.PROMPT_VERSION] * 3
+
+
+def test_offline_resign_never_asks_the_model(tmp_path):
+    """只重签（审核 T3）：段都能复用就重签；有一段要调模型就不写，交回 needs-model。"""
+    from researchlib.translate import service
+
+    conn, _first, _calls = run(A + B + C, _answer, tmp_path)
+    conn = _previous(conn)
+    conn.previous["provenance"] = _old_receipt(A + B + C, conn.previous["body_html"])
+    with patch.object(service, "chat_json", side_effect=AssertionError("no model")), \
+            patch.object(service, "replace_translation_chunks"):
+        result = service.translate_article(conn, 990001, data_dir=tmp_path, offline=True)
+        assert result.status == "translated" and result.reused == 3
+        # 原文多了一段：要调模型，不写。
+        conn2, _r, _c = run(A + B + C, _answer, tmp_path)
+        conn2 = _previous(conn2)
+        conn2.article["body_md"] = conn2.article["body_md"] + "\n\nA brand new paragraph about Delta Corp."
+        writes = len(conn2.writes)
+        skipped = service.translate_article(conn2, 990001, data_dir=tmp_path, offline=True)
+    assert skipped.status == "skipped" and skipped.reason == "needs-model" and len(conn2.writes) == writes
 
 
 def test_an_article_from_the_current_prompt_is_reused_without_asking(tmp_path):

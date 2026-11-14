@@ -220,15 +220,26 @@ def _zh_tokens(html: str) -> set[str]:
     return set(re.findall(r"\w+", text))
 
 
+_DIGITS = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _numbers(text: str) -> list[str]:
+    """一段英文里按先后出现的数（千分位去掉）。两段开头一样、只差结尾一个数的，不算同一段。"""
+    return [match.group().replace(",", "") for match in _DIGITS.finditer(text)]
+
+
 def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
     """页面上看起来重复的 pair：重复、整句包含、近前缀堆，不管删了会不会丢东西。
 
     后出现的那一对，以及被它对照上的先前那一对，都列出来。链接只在后一份上时，
     先前那份没有独有文字，可以改留带链接的后一份。
+    相近、近前缀两条要两段的数按先后一样：「10 billion to 12 billion」和「10 billion to 15 billion」
+    是两段话，以前后一段被收掉，它的中文挂到前一段后面（审核 T4）。
     """
     en_keys = [_leaf_key(pair.en or "") for pair in pairs]
     zh_keys = [_leaf_key(pair.zh or "") for pair in pairs]
     texts = [visible_text(pair.en or "") for pair in pairs]
+    numbers = [_numbers(text) for text in texts]
     redundant: set[int] = set()
     priors: dict[str, list[tuple[str, str, int]]] = {}
     for index, pair in enumerate(pairs):
@@ -238,6 +249,7 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
                 prior_index
                 for prior_en, prior_zh, prior_index in priors.get(bucket, ())
                 if same_repeat(prior_en, en_keys[index]) and _same_lineage(prior_zh, zh_keys[index])
+                and numbers[prior_index] == numbers[index]
             ]
             if matched:
                 redundant.add(index)
@@ -256,6 +268,8 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
             if (len(long) - len(short)) / len(long) > 0.12:
                 continue
             if _shared_prefix_len(short, long) < len(short) * 0.75:
+                continue
+            if numbers[index] != numbers[other]:
                 continue
             if not zh_keys[index] or (zh_keys[other] and _same_lineage(zh_keys[other], zh_keys[index])):
                 redundant.add(index)
