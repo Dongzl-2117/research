@@ -14,6 +14,7 @@ import html as html_lib
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -50,12 +51,13 @@ from researchlib.translate.provenance import (
     numeric_anchors,
     prompt_versions,
     receipt,
-    reusable_targets,
+    reusable_segments,
     reuse_key,
     shape_problem,
     source_manifest,
     structure_problem,
     untranslated_english,
+    untranslated_slots,
 )
 from researchlib.translate.provenance import digest as segment_digest
 from researchlib.translate.segments import (
@@ -103,6 +105,8 @@ class TranslateResult:
     error: str = ""
     # 被断线、超时、限流、5xx 打断没译完：隔几分钟再跑这篇多半能补上。点名补译时命令行据此自动再补一轮。
     retry_later: bool = False
+    # 要按现在的提示词重译、这次没换成（请求被打断，或重译没过核对）、先留着旧版译文的段数（审核 T2）。
+    stale: int = 0
 
 
 class BatchTexts(list):
@@ -164,6 +168,18 @@ def _record_attempt(conn, article_id: int, status: str, reason: str, content_has
         """,
         (article_id, status, reason, content_hash, ALIGNMENT_VERSION),
     )
+
+
+def _record_no_text(conn, article_id: int, content_hash: str | None) -> None:
+    """记下这一篇只有图、没有要译的字（同一份原文、同一版检查只记一次）。list_pending_english 不再拿它。"""
+    seen = conn.execute(
+        "SELECT 1 FROM translation_attempts WHERE article_id = %s AND status = 'no-text'"
+        " AND content_hash IS NOT DISTINCT FROM %s AND alignment_version = %s LIMIT 1",
+        (article_id, content_hash, ALIGNMENT_VERSION),
+    ).fetchone()
+    if seen is None:
+        _record_attempt(conn, article_id, "no-text", "no-text", content_hash)
+    conn.commit()
 
 
 def record_translation_failure(conn, article_id: int, error: Exception) -> None:
@@ -791,17 +807,33 @@ def _previous_translation(conn, article_id: int) -> dict | None:
     return found if isinstance(found, dict) else None
 
 
-def _reuse(previous: dict | None, sources: list[str]) -> dict[int, str]:
-    """已有回执里原文没变的段，直接拿来用。同一段原文出现几次，按先后一一对上，多出来的照常译。"""
-    known = reusable_targets((previous or {}).get("provenance"))
+def _reuse(previous: dict | None, sources: list[str]) -> dict[int, tuple[str, int | None]]:
+    """已有回执里原文没变的段：(译文, 第几版提示词译的)。同一段原文出现几次，按先后一一对上，多出来的照常译。"""
+    known = reusable_segments((previous or {}).get("provenance"))
     if not known:
         return {}
-    reused: dict[int, str] = {}
+    reused: dict[int, tuple[str, int | None]] = {}
     for index, source in enumerate(sources):
         options = known.get(reuse_key(source))
         if options:
             reused[index] = options.pop(0)
     return reused
+
+
+def _earlier_gaps(previous: dict | None) -> Counter[str]:
+    """上一份回执里先放英文的段（按原文身份数）。只重签、不调模型时，这几段照旧先放英文。"""
+    provenance = (previous or {}).get("provenance")
+    gaps = set(untranslated_slots(provenance))
+    found: Counter[str] = Counter()
+    if not gaps or not isinstance(provenance, dict):
+        return found
+    for item in provenance.get("segments") or []:
+        try:
+            if int(item["ordinal"]) in gaps:
+                found[reuse_key(item["source"])] += 1
+        except (KeyError, TypeError, ValueError):
+            continue
+    return found
 
 
 def _breaking_slots(manifest: dict, html: str, kept: dict[int, str]) -> list[int]:
@@ -824,7 +856,7 @@ def _breaking_slots(manifest: dict, html: str, kept: dict[int, str]) -> list[int
 
 def _sign(
     manifest: dict, html: str, replacements: dict[int, str], gaps: set[int], *, model: str,
-    prompts: list[int] | None = None,
+    prompts: list[int] | None = None, segment_prompts: dict[int, int | None] | None = None,
 ) -> tuple[str, dict, set[int]]:
     """写回并签回执。返回 (译文 HTML, 回执, 写回后才露出问题、退回英文的叶子序号)。
 
@@ -838,7 +870,8 @@ def _sign(
         try:
             if leaf_count_problem(html, zh_html):
                 raise AlignmentError("receipt-count")
-            proof = receipt(manifest, zh_html, model=model, untranslated=sorted(gaps | dropped), prompts=prompts or ())
+            proof = receipt(manifest, zh_html, model=model, untranslated=sorted(gaps | dropped), prompts=prompts or (),
+                            segment_prompts=segment_prompts)
             return zh_html, proof, dropped
         except AlignmentError as exc:
             slot = re.fullmatch(r"slot-(\d+)-[\w-]+", exc.code)
@@ -860,14 +893,19 @@ def _sign(
 
 def translate_article(
     conn, article_id: int, *, data_dir: Path, reuse: bool = True, batch_segments: int | None = None,
+    offline: bool = False,
 ) -> TranslateResult:
     """译一篇写进 article_translations。
 
     一段出错不连累整篇：身份、链接、占位符一直对不上或者串段的那几段先放英文，序号记进回执的
     ``untranslated``，这篇记为没译完（complete 为假），过了冷却再进队列，下次只补这几段。
-    请求断线、限流时已经译好的段先存下。``reuse`` 为真时，已有回执里原文没变的段直接用，不再花钱重译；
-    想整篇重来（换了模型，或者觉得译得不好）时传 False。上一份回执不是现在这一版提示词译的，
-    也按 False 走：整篇按现在的提示词重译，哪段重译失败才退回旧译文，免得一篇里新旧两种写法混着。
+    请求断线、限流时已经译好的段先存下。
+    ``reuse`` 为真时，已有回执里原文没变、用现在这一版提示词译的段直接用，不再花钱重译；
+    旧版提示词译的段按现在的提示词重译，哪段重译失败或请求被打断才退回旧译文，回执逐段记下是哪一版
+    （``segment_prompts``），下次只重译还是旧版的段。想整篇重来（换了模型，或者觉得译得不好）时传 False。
+    ``offline`` 为真时一次模型也不调，只重签：要译的段全部能从回执复用（旧版提示词的也照用）、标题也有，
+    才写回、重签回执；上一份就先放英文的段照旧先放英文。有一段、或标题要调模型，就不写，交回 skipped、
+    原因 needs-model（审核 T3：同来源的统计变了、回执过期时，夜间不花钱重签）。
     ``batch_segments`` 是一次请求最多送几段，不给按 TRANSLATE_BATCH_MAX_SEGMENTS，0 只按字数切。
     """
     article = conn.execute(
@@ -890,6 +928,9 @@ def translate_article(
     html = manifest["source_snapshot"]
     targets = translatable_blocks(html)
     if not targets:
+        # 只有图、没有要译的字：记一笔，待译队列不再把它排在最前面占名额（审核 T7）。原文改了再看。
+        if not offline:
+            _record_no_text(conn, article_id, article["content_hash"])
         return TranslateResult(article_id, "skipped", reason="no translatable text")
 
     shielded = [shield(block) for _idx, block in targets]
@@ -915,13 +956,41 @@ def translate_article(
 
     previous = _previous_translation(conn, article_id)
     earlier_prompts = prompt_versions((previous or {}).get("provenance"))
-    # 已有回执里原文没变的段。默认直接用，只译剩下的；--fresh 或者上一份是旧提示词译的，整篇重译，
-    # 哪段重译失败才退回用它，重译不会让已有的好译文变差。
+    # 已有回执里原文没变的段。默认直接用这一版提示词译的，只译剩下的和旧版译的；--fresh 整篇重译。
+    # 重译失败、请求被打断的段才退回用旧的，重译不会让已有的好译文变差。
     known = _reuse(previous, slots.sources)
-    reuse = reuse and earlier_prompts == [PROMPT_VERSION]
-    progress = _Progress(values=dict(known) if reuse else {})
+    if offline:
+        keep = {index: target for index, (target, _prompt) in known.items()}
+    elif reuse:
+        keep = {index: target for index, (target, prompt) in known.items() if prompt == PROMPT_VERSION}
+    else:
+        keep = {}
+    fallback = {index: target for index, (target, _prompt) in known.items() if index not in keep}
+    progress = _Progress(values=dict(keep))
+
+    title_zh = ""
+    en_title = (article["title"] or "").strip()
+    needs_title_zh = bool(en_title) and not is_chinese(en_title)
+    old_title = str((previous or {}).get("title_zh") or "") if (previous or {}).get("content_hash") == digest else ""
+
     service_error: Exception | None = None
     batches = _pending_batches(slots, progress.values, batch_segments)
+    if offline:
+        # 只重签：上一份就先放英文的段照旧放英文，别的段都得能复用，标题也得有。
+        allowed = _earlier_gaps(previous)
+        missing = 0
+        for index in range(len(slots.parts)):
+            if index in progress.values:
+                continue
+            key = reuse_key(slots.sources[index])
+            if allowed[key] > 0:
+                allowed[key] -= 1
+                progress.gaps[index] = "kept-english"
+            else:
+                missing += 1
+        if missing or (needs_title_zh and not old_title) or not progress.values:
+            return TranslateResult(article_id, "skipped", reason="needs-model", untranslated=missing)
+        batches = []
     for number, indices in enumerate(batches):
         try:
             # 一段数字没对上：同一批补译一次，还不行照样写入，回执里记进 number_review。
@@ -935,18 +1004,14 @@ def translate_article(
             logger.info("#%s 第 %s/%s 批请求失败（%s），已译的段先存下", article_id, number + 1, len(batches), exc)
             break
 
-    translated_now = set(progress.values) - set(known if reuse else ())
-    if not reuse:
-        for index, value in known.items():
-            progress.values.setdefault(index, value)
+    translated_now = set(progress.values) - set(keep)
+    # 要重译的旧段这次没换成（请求被打断、重译没过核对）：先留着旧译文，回执里记着它还是旧版。
+    stale_fill = {index: value for index, value in fallback.items() if index not in progress.values}
+    progress.values.update(stale_fill)
     reused = len(set(progress.values) - translated_now)
 
-    title_zh = ""
-    en_title = (article["title"] or "").strip()
-    needs_title_zh = bool(en_title) and not is_chinese(en_title)
-    old_title = str((previous or {}).get("title_zh") or "") if (previous or {}).get("content_hash") == digest else ""
     if needs_title_zh:
-        if reuse and old_title:
+        if (reuse or offline) and old_title:
             title_zh = old_title
         elif service_error is None:
             try:
@@ -959,8 +1024,8 @@ def translate_article(
 
     gaps = {index: progress.gaps.get(index, "request-failed" if service_error else "not-asked")
             for index in range(len(slots.parts)) if index not in progress.values}
-    # 一段都没译出来；或者整篇重译（--fresh）一段新的都没译成、全靠退回旧译文：不写库，把错交给 CLI 记冷却。
-    if not progress.values or (not reuse and not translated_now and (progress.gaps or service_error)):
+    # 一段都没译出来；或者要重译的段一段新的都没译成、全靠退回旧译文：不写库，把错交给 CLI 记冷却。
+    if not progress.values or (not translated_now and stale_fill and (progress.gaps or service_error)):
         if service_error is not None:
             raise service_error
         failures = progress.gaps or gaps
@@ -977,19 +1042,22 @@ def translate_article(
     if reused:
         earlier = str(((previous or {}).get("provenance") or {}).get("model") or "")
         models.update(name.strip() for name in earlier.split(",") if name.strip())
-    # 回执记下这篇里的段用过哪几版提示词：这次新译的是现在这一版，复用或退回的旧段沿用上一份回执的。
-    prompts = {PROMPT_VERSION} if translated_now else set()
-    if reused:
+    # 回执逐段记下是第几版提示词译的：这次新译的是现在这一版，复用或退回的旧段沿用上一份回执的。
+    # 上一份没逐段记、又混着几版的，那几段记 None，算旧版。
+    prompt_of = {index: PROMPT_VERSION if index in translated_now else known[index][1] for index in progress.values}
+    prompts = {value for value in prompt_of.values() if value is not None}
+    if any(value is None for value in prompt_of.values()):
         prompts.update(earlier_prompts)
     zh_html, provenance, dropped = _sign(
         manifest, html, replacements, {ordinal_of[index] for index in gaps},
         model=", ".join(sorted(models)) or model_id(), prompts=sorted(prompts),
+        segment_prompts={ordinal_of[index]: value for index, value in prompt_of.items()},
     )
     for index, ordinal in enumerate(ordinal_of):
         if ordinal in dropped:
             gaps[index] = "receipt-shape"
     done = len(slots.parts) - len(gaps)
-    zh_text = re.sub(r"<[^>]+>", " ", zh_html)
+    zh_text = html_lib.unescape(re.sub(r"<[^>]+>", " ", zh_html))
     zh_text = re.sub(r"\s+", " ", zh_text).strip()
     # 英文标题译空不算 complete（抽验 22195：segments 齐但 title_zh 空仍标 complete）
     complete = not gaps and (bool(title_zh) if needs_title_zh else True)
@@ -1038,7 +1106,13 @@ def translate_article(
     # 哪几类问题让段先放英文（links、shape、http-400…），只有标题没译出来时是 title-empty。
     # 打印出来、记进 translation_attempts.reason，以后按原因查，不必再翻日志。
     why = ",".join(sorted(set(gaps.values()))) if gaps else "title-empty"
-    if not complete:
+    stale = len(stale_fill)
+    # 整篇按现在的提示词重译被断线、欠费打断：已译的段存下了，没换成的段先留旧译文。这篇照样算译完（每段都有中文），
+    # 记一次请求失败、报出错误，下次再跑（点名或 --from-inventory old-prompt）只重译还是旧版的段（审核 T2）。
+    interrupted = service_error is not None and bool(stale)
+    if interrupted and complete:
+        _record_attempt(conn, article_id, "failed", "request-failed", article["content_hash"])
+    if not complete and not offline:
         # 没译完的也记一次尝试：断线按请求失败拉长间隔，别的按拒绝算（12 小时冷却、同一版本 2 次）。
         # 不记的话待译队列马上又把它拿回来。
         _record_attempt(
@@ -1054,16 +1128,24 @@ def translate_article(
     if gaps:
         logger.info("#%s 有 %s 段没译出来，先放英文，回执 untranslated 里有序号：%s",
                     article_id, len(gaps), sorted(set(gaps.values())))
+    if stale:
+        logger.info("#%s 有 %s 段这次没能按第 %s 版提示词重译，先留旧译文，回执 segment_prompts 里记着",
+                    article_id, stale, PROMPT_VERSION)
+    unfinished = not complete or interrupted
     return TranslateResult(
         article_id,
-        "translated" if complete else "partial",
+        "translated" if complete and not interrupted else "partial",
         segments=done,
-        reason=("request-failed" if service_error else why) if not complete else ("unchanged" if unchanged else None),
+        reason=(
+            ("request-failed" if service_error else why) if unfinished
+            else ("unchanged" if unchanged else "resigned" if offline else None)
+        ),
         review=review,
         untranslated=len(gaps),
         reused=reused,
-        error=str(service_error)[:300] if service_error is not None and not complete else "",
-        retry_later=not complete and transient_failure(service_error),
+        error=str(service_error)[:300] if service_error is not None and unfinished else "",
+        retry_later=unfinished and transient_failure(service_error),
+        stale=stale,
     )
 
 
@@ -1186,6 +1268,16 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
         WHERE rej.n >= %s OR rej.latest > now() - %s::interval
         )"""
     )
+    # 只有图、没有要译的字（译制渲染过、记了 no-text）的不再排进来。原文改了、检查版本变了再看一次。
+    where.append(
+        """NOT EXISTS (
+        SELECT 1 FROM translation_attempts
+        WHERE article_id = a.id
+          AND content_hash = a.content_hash
+          AND alignment_version = %s
+          AND status = 'no-text'
+        )"""
+    )
     where.append(
         f"""NOT EXISTS (
         SELECT 1 FROM (
@@ -1205,6 +1297,7 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
         ALIGNMENT_VERSION,
         REJECT_RETRY_BUDGET,
         _sql_interval(REJECT_RETRY_COOLDOWN),
+        ALIGNMENT_VERSION,
         ALIGNMENT_VERSION,
         *[_sql_interval(item) for item in FAIL_RETRY_COOLDOWNS],
     ])

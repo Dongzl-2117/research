@@ -66,7 +66,7 @@ def conn(monkeypatch, tmp_path):
 
 
 def _translate(seen, *, fail=(), status="translated", reuse_seen=None):
-    def fake(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
+    def fake(conn, article_id, *, data_dir, reuse=True, batch_segments=None, offline=False):
         seen.append(article_id)
         if reuse_seen is not None:
             reuse_seen.append(reuse)
@@ -170,6 +170,28 @@ def test_rejected_article_is_not_retried_after_another_sleep(conn, monkeypatch):
         cli.main(["--loop", "--limit", "1", "--sleep", "30"])
     assert seen == [51] and slept == [30, 30]
     assert sum("INSERT INTO translation_attempts" in sql for sql in conn.statements) == 1
+
+
+def test_loop_takes_an_article_again_after_a_while(conn, monkeypatch):
+    """--loop 里断线、欠费没译完的那篇，过了 RETAKE_AFTER_S 再拿（审核 T5：以前要重启进程才补）。
+    库里的冷却在替身里不存在，这里只看进程自己不再永远挡着它。"""
+    seen: list[int] = []
+    clock = [1000.0]
+    slept: list[float] = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += cli.RETAKE_AFTER_S if len(slept) == 1 else 1
+        if len(slept) == 2:
+            raise Slept
+
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, **kwargs: [51])
+    monkeypatch.setattr(cli, "translate_article", _translate(seen, status="partial"))
+    monkeypatch.setattr(cli.time, "sleep", sleep)
+    monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
+    with pytest.raises(Slept):
+        cli.main(["--loop", "--limit", "1", "--sleep", "30"])
+    assert seen == [51, 51]
 
 
 def test_recheck_dry_run_never_calls_database_prepare(conn, monkeypatch):

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from researchlib.htmlentities import repair_entities
 from researchlib.translate.numbers import digits_hide_scale_change, hard_fact_counts, same_numeric_facts
 from researchlib.translate.segments import (
     _LATIN,
@@ -17,6 +18,7 @@ from researchlib.translate.segments import (
     splice_segments,
     split_sentence_paragraphs,
     top_level_blocks,
+    unknown_elements,
 )
 
 SCHEMA_VERSION = 1
@@ -372,22 +374,31 @@ def _signed_segments(manifest: dict, translated: str) -> list[dict]:
 
 def receipt(
     manifest: dict, translated: str, *, model: str = "", untranslated: Sequence[int] = (),
-    prompts: Sequence[int] = (),
+    prompts: Sequence[int] = (), segment_prompts: dict[int, int | None] | None = None,
 ) -> dict:
     """每个槽位的资源和完整外壳都通过，才签发可持久化回执。
 
     数字对不上的槽位照签，序号记进 ``number_review``。``untranslated`` 是这次没译出来、
     先放英文的槽位序号（那一段的 target 就是原文）。``prompts`` 是这篇里的段用过哪几版提示词，
-    不传就是现在这一版。``verify`` 这三项都不比较：数字规则以后再改、补译了哪几段、换了提示词，
+    不传就是现在这一版。``segment_prompts`` 是每个槽位按第几版提示词译的（序号 → 版本，不知道的写 None），
+    记成和 ``segments`` 一样长的 ``segment_prompts``：整篇重译被打断时，下次只重译旧版的段（审核 T2）。
+    ``verify`` 这几项都不比较：数字规则以后再改、补译了哪几段、换了提示词，
     已经入库的回执都不会因此变成不兼容、整页退成两栏。
     """
     entries = _signed_segments(manifest, translated)
     gaps = sorted(set(untranslated))
     review = [entry["ordinal"] for entry in entries
               if entry["ordinal"] not in gaps and not numbers_agree(entry["source"], entry["target"])]
-    return {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
-            "semantic_status": "not-reviewed", "number_review": review, "untranslated": gaps,
-            "prompt_versions": sorted({int(item) for item in prompts} or {PROMPT_VERSION})}
+    signed = {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
+              "semantic_status": "not-reviewed", "number_review": review, "untranslated": gaps,
+              "prompt_versions": sorted({int(item) for item in prompts} or {PROMPT_VERSION})}
+    if segment_prompts is not None:
+        signed["segment_prompts"] = [
+            None if entry["ordinal"] in gaps or segment_prompts.get(entry["ordinal"]) is None
+            else int(segment_prompts[entry["ordinal"]])
+            for entry in entries
+        ]
+    return signed
 
 
 def untranslated_slots(provenance: dict | None) -> list[int]:
@@ -409,13 +420,47 @@ def reuse_key(segment: str) -> str:
     return digest(canonical_html(_SRC_PARA_ATTR.sub("", segment or "")))
 
 
+def segment_prompts(provenance: dict | None) -> dict[int, int | None]:
+    """回执里每个槽位按第几版提示词译的。回执逐段记了的照记的；没记、整篇只用过一版的就是那一版；
+    没记又混着几版的（11-14 以前整篇重译被打断、或个别段退回旧译文的）不知道，记 None。"""
+    if not isinstance(provenance, dict):
+        return {}
+    entries = provenance.get("segments") or []
+    found = provenance.get("segment_prompts")
+    versions = prompt_versions(provenance)
+    fallback = versions[0] if len(versions) == 1 else None
+    recorded = isinstance(found, list) and len(found) == len(entries)
+    result: dict[int, int | None] = {}
+    for position, item in enumerate(entries):
+        try:
+            ordinal = int(item["ordinal"])
+            value = found[position] if recorded else fallback
+            result[ordinal] = None if value is None else int(value)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return result
+
+
+def stale_prompt(provenance: dict | None) -> bool:
+    """回执里还有不是现在这一版提示词译的段（或者混着几版、分不清是哪几段）。没回执的旧稿不算，另归 legacy。"""
+    versions = prompt_versions(provenance)
+    return bool(versions) and versions != [PROMPT_VERSION]
+
+
 def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
+    """``reusable_segments`` 只要译文、不要提示词版本。"""
+    return {key: [target for target, _prompt in found] for key, found in reusable_segments(provenance).items()}
+
+
+def reusable_segments(provenance: dict | None) -> dict[str, list[tuple[str, int | None]]]:
     """回执里能原样再用的译文段，按 ``reuse_key`` 分组，组里保持原文里的先后。
 
     只收这一版清洗、切段签的回执里、自己校验值对得上、资源和原文一致的段；没译出来先放英文的段
     （``untranslated``）不收，串段的那一片也不收：交回英文、其实没译的段和它前后各一段，
     相近两段英文不同、中文一样的段和它前后各 ``COPY_SPAN - 1`` 段（都只数要译的段）。没有回执的旧稿返回空，
-    只能整篇重译。哪一版提示词译的不管：直接用还是只在重译失败时退回用，由译制按 ``prompt_versions`` 决定。
+    只能整篇重译。每段带上它是第几版提示词译的（``segment_prompts``）：直接用还是只在重译失败时退回用，由译制决定。
+    存下来的「&T;」这种认不得的实体（以前解析器补了分号，页面显示「AT&T;」）改回 ``&amp;T``；原文写着
+    ``&lt;…&gt;``、译文里却被当成标签吞掉一截字的段（多出原文没有的、不是 HTML 元素的标签）不收，要重译（审核 T1）。
     """
     if not isinstance(provenance, dict):
         return {}
@@ -439,19 +484,24 @@ def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
         radius = COPY_SPAN - 1 if ordinal in copied else 1 if ordinal in echoed else 0
         if radius:
             near.update(order[max(0, rank - radius) : rank + radius + 1])
-    found: dict[str, list[str]] = {}
+    prompts = segment_prompts(provenance)
+    found: dict[str, list[tuple[str, int | None]]] = {}
     for position, item in enumerate(entries):
         try:
-            if int(item["ordinal"]) in skip or position in near:
+            ordinal = int(item["ordinal"])
+            if ordinal in skip or position in near:
                 continue
             source, target = item["source"], item["target"]
             if (digest(canonical_html(source)) != item["source_hash"]
                     or digest(canonical_html(target)) != item["target_hash"]
-                    or structure_problem(source, target)):
+                    or structure_problem(source, target)
+                    or set(unknown_elements(target)) - set(unknown_elements(source))):
                 continue
         except (KeyError, TypeError, ValueError):
             continue
-        found.setdefault(reuse_key(source), []).append(target)
+        found.setdefault(reuse_key(source), []).append(
+            (repair_entities(target, source), prompts.get(ordinal))
+        )
     return found
 
 

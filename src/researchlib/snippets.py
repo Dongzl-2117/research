@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 
 from markupsafe import Markup, escape
 
+from researchlib.htmlentities import entity_ref
 from researchlib.output_safety import redact_subscription_links
 from researchlib.textutil import escape_times
 
@@ -247,7 +248,7 @@ class _AnswerCitations(HTMLParser):
         self.out.append(data)
 
     def handle_entityref(self, name):
-        self.out.append(f"&{name};")
+        self.out.append(entity_ref(name))
 
     def handle_charref(self, name):
         self.out.append(f"&#{name};")

@@ -5,8 +5,8 @@
 ``--from-inventory 类别`` 译盘点清单（research-translate-inventory）里那一类的篇，比如分开展示的旧稿 unmapped、
 拒满两次停住的 stopped；已经译完、有这一版回执、对照页逐段对得上的跳过，中途停下再跑同一条命令接着译剩下的。
 回执过期（清洗规则改过）的再译时，现在这一版提示词译的没变的段照旧复用，原文一个字没变就不调模型，只重签回执；
-旧提示词译的整篇按现在的提示词重译。
-``--from-inventory old-prompt`` 把旧提示词译的篇整篇按现在的提示词重译，已经用这一版译过的跳过。
+旧提示词译的段按现在的提示词重译（回执逐段记版本）。
+``--from-inventory old-prompt`` 把还有旧提示词译的段的篇按现在的提示词重译，只问旧段；段段都是这一版的跳过。
 每篇开译前占一把 Postgres advisory lock，同一进程的几个 worker、同时开着的几个 research-translate
 都不会同时译同一篇；点名的那篇正被别处译着，就等它译完再接着补。
 每篇译完印出这一篇的请求次数、输入（其中缓存命中）、输出（其中思考）token 和用时；调过模型的话，
@@ -60,12 +60,15 @@ from researchlib.translate.service import (
 from researchlib.translate.xai_oauth import XaiLoginRequiredError, xai_oauth_status
 
 # 点名补译时，被打断没译完的篇隔这么久再补一轮（秒），最多补这么多轮。
-# 按队列译的不用：没译完的记了冷却，过了冷却自己会回到队列。
+# 按队列译的不用：没译完的记了冷却，过了冷却自己会回到队列（--loop 里拿过的篇过了 RETAKE_AFTER_S 才再拿）。
 NAMED_RETRY_PAUSES = (120, 600)
 # 等的时候每隔这么久看一眼自动上线在不在等，在等就不补了，免得把上线挡十几分钟。
 PAUSE_STEP = 15
 # DeepSeek 高峰价时段里，等着的 worker 隔这么久（秒）看一眼：过没过高峰、自动上线在不在等。
 PEAK_CHECK_S = 60
+# --loop 里这一轮拿过的篇（断线、限流、欠费没译完的，译完后原文又改了的）过这么久（秒）才再拿。
+# 以前拿过就再也不拿，要等进程重启（审核 T5）。库里的冷却（最短 15 分钟）和每篇的锁另外挡着，不会马上重拿。
+RETAKE_AFTER_S = 15 * 60
 # 最多几篇同时译。每个 worker 占一条数据库连接，同一时刻最多发一个模型请求。
 MAX_WORKERS = 16
 # 每篇的锁是 (hashtext(LOCK_NAME), 文章 id) 这把会话级 advisory lock：译完放掉，进程没了自动放掉。
@@ -311,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     named = list(dict.fromkeys(args.article_id))
     # DeepSeek 高峰价时段单价翻倍：按队列、按清单译的一大批默认避开，点名的几篇照译。
     avoid_peak = not named and not args.anytime and llm_provider() == PROVIDER_DEEPSEEK
-    # --from-inventory old-prompt：旧提示词译的篇本来都译完了，要按现在的提示词重译，用这一版译过的才算完。
+    # --from-inventory old-prompt：旧提示词译的篇本来都译完了，要按现在的提示词重译，段段都是这一版的才算完。
     rewrite = args.from_inventory == inventory.OLD_PROMPT
     # --from-inventory misplaced：已经译完、页面也对得上，只是有串段（交回英文、相近两段中文一样）。只补那一片。
     misplaced = args.from_inventory == inventory.MISPLACED
@@ -336,9 +339,9 @@ def main(argv: list[str] | None = None) -> int:
     guard = threading.Lock()
     stop = threading.Event()
     made_way = threading.Event()
-    # 本进程这一轮已经拿过的篇（包括正在译的），按队列译时不再拿。库里的 translation_attempts 另有冷却，
-    # 进程重启也不会把刚拒绝的文章立刻拿回来。
-    tried: set[int] = set()
+    # 本进程这一轮已经拿过的篇（包括正在译的）和拿的时刻，按队列译时不再拿；--loop 时过了 RETAKE_AFTER_S 再拿。
+    # 库里的 translation_attempts 另有冷却，进程重启也不会把刚拒绝的文章立刻拿回来。
+    tried: dict[int, float] = {}
     # 出错、到最后也没补上的篇。点名补译时后面那一轮补上了就拿掉。
     failed: set[int] = set()
     # 按队列译时查出来、还没分出去的篇。
@@ -455,12 +458,14 @@ def main(argv: list[str] | None = None) -> int:
             + (f" untranslated={result.untranslated}" if result.untranslated else "")
             # 数字没能自动核对上、照样写入的段数。序号在回执的 number_review 里。
             + (f" number_review={result.review}" if result.review else "")
+            # 要按现在的提示词重译、这次没换成、先留旧译文的段数。再跑一遍只问这几段。
+            + (f" stale={result.stale}" if result.stale else "")
             + (f" ({result.reason})" if result.reason else "")
             # 请求失败时那一次的报错（断线、限流、欠费），点名再跑这篇会接着译。
             + (f" {result.error}" if result.error else "")
             + spent
         )
-        return result.status == "partial" and result.retry_later
+        return result.retry_later
 
     def drain(take: Callable[[object], int | None], work: Callable[[object, int], None]) -> None:
         """每条连接一个 worker：take 拿下一篇（已经占住锁），work 译它，译完放锁；take 交回 None 就停。
@@ -495,28 +500,35 @@ def main(argv: list[str] | None = None) -> int:
         if errors:
             raise errors[0]
 
+    def fresh(article_id: int) -> bool:
+        """这一篇这一轮还能拿：没拿过；--loop 时拿过但已经过了 RETAKE_AFTER_S。"""
+        taken = tried.get(article_id)
+        return taken is None or (args.loop and time.monotonic() - taken >= RETAKE_AFTER_S)
+
     def claim(conn) -> int | None:
         """队列里下一篇本进程这一轮没拿过、别处也没在译的，占住它。手上的分完了再查一次队列（--loop 时每次都查）。"""
         refilled = False
         while True:
             while queued:
                 article_id = queued.pop(0)
-                if article_id not in tried and _try_lock(conn, article_id):
-                    tried.add(article_id)
+                if fresh(article_id) and _try_lock(conn, article_id):
+                    tried[article_id] = time.monotonic()
                     return article_id
             if refilled or (flags["queried"] and not args.loop):
                 return None
+            # 这一轮拿过、还不能再拿的篇会占住查出来的名额，多查这么多篇。
+            skip = sum(1 for article_id in tried if not fresh(article_id))
             if args.recheck:
-                rows = list_coarse_translations(conn, limit=limit + len(tried), source_id=args.source or None)
+                rows = list_coarse_translations(conn, limit=limit + skip, source_id=args.source or None)
                 ids = [int(row["id"]) for row in rows]
             elif args.from_inventory:
-                ids = inventory.unfinished(conn, listed, settings.data_dir, prompt=rewrite, misplaced=misplaced)
+                ids = inventory.unfinished(conn, listed, settings, prompt=rewrite, misplaced=misplaced)
             else:
-                ids = list_pending_english(conn, limit=limit + len(tried), source_id=args.source or None)
+                ids = list_pending_english(conn, limit=limit + skip, source_id=args.source or None)
             # 只读的查询，别让事务在空队列睡觉时一直开着。
             conn.commit()
             flags["queried"] = refilled = True
-            queued.extend([article_id for article_id in ids if article_id not in tried][:limit])
+            queued.extend([article_id for article_id in ids if fresh(article_id)][:limit])
 
     def take_queued(conn) -> int | None:
         while not stop.is_set():

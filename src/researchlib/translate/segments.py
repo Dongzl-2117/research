@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from html import escape
 from html.parser import HTMLParser
 
+from researchlib.htmlentities import escape_stray_ampersands
+
 # AIHOT segmentsOf 的 BLOCK。h1 / h6 不在里面：不是叶子，只往下看子节点。
 _BLOCK = frozenset({
     "p", "h2", "h3", "h4", "h5", "li", "blockquote",
@@ -1541,9 +1543,62 @@ def _link_open(attrs: dict[str, str], inner: str) -> str:
     return "".join(parts)
 
 
+# HTML 里的元素名。译文里「<」后面跟的不是这些名字（price<cost、<sarcasm>），是文字里的小于号。
+_HTML_ELEMENTS = frozenset("""
+a abbr address area article aside audio b bdi bdo blockquote br button caption cite code col colgroup data
+dd del details dfn div dl dt em figcaption figure footer h1 h2 h3 h4 h5 h6 header hr i img ins kbd li main
+mark nav ol p picture pre q rp rt ruby s samp section small source span strong sub summary sup table tbody
+td tfoot th thead time tr track u ul var video wbr
+""".split())
+_ESCAPED_TAG = re.compile(r"&lt;(/?)([a-zA-Z][a-zA-Z0-9]*)((?:\s(?:(?!&[lg]t;)[^<>])*?)?)\s*(/?)&gt;")
+_LT = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*\b)?")
+_NUMERIC_REF = re.compile(r"&#(?:[xX]([0-9A-Fa-f]+)|([0-9]+));")
+_TOKEN_BRACKETS = frozenset("⟦⟧【】〔〕〖〗〈〉⟨⟩［］")
+_SOURCE_TAG = re.compile(r"<\s*/?\s*([a-zA-Z][a-zA-Z0-9]*)")
+
+
+def unknown_elements(value: str) -> list[str]:
+    """片段里不是 HTML 元素的开始标签名。以前「&lt;cost … margin&gt;」被还原成标签吞掉一截字，存下来就是这种。"""
+    return [name for name in (m.group(1).lower() for m in re.finditer(r"<([a-zA-Z][a-zA-Z0-9]*)", value or ""))
+            if name not in _HTML_ELEMENTS]
+
+
+def _unescape_markup(translated: str, source: str) -> str:
+    """模型交回的片段改成合法的 HTML，文字里的 &、< 不当成标记。
+
+    以前整段 ``html.unescape``：AT&amp;T 还原成 AT&T，再解析就成了「AT&T;」；原文写着的「&lt;cost&gt;」
+    被还原成标签，中间那截字整个丢了（审核 T1）。现在只还原这几样：模型转义了的、原文这一段里真有的标签
+    （原文自己没把它当文字写出来时），写成实体的占位括号。剩下文字里的裸 &、不是标签开头的 < 转义回去。
+    """
+    real = {m.group(1).lower() for m in _SOURCE_TAG.finditer(source)} | {"a"}
+    literal = {m.group(2).lower() for m in _ESCAPED_TAG.finditer(source)}
+
+    def tag(match: re.Match[str]) -> str:
+        name = match.group(2).lower()
+        if name not in real or name in literal:
+            return match.group(0)
+        return f"<{match.group(1)}{match.group(2)}{html_lib.unescape(match.group(3))}{match.group(4)}>"
+
+    def bracket(match: re.Match[str]) -> str:
+        char = html_lib.unescape(match.group(0))
+        return char if char in _TOKEN_BRACKETS else match.group(0)
+
+    value = _ESCAPED_TAG.sub(tag, translated or "")
+    value = _NUMERIC_REF.sub(bracket, value)
+
+    def lt(match: re.Match[str]) -> str:
+        name = (match.group(2) or "").lower()
+        if name in _HTML_ELEMENTS or value.startswith("<!--", match.start()):
+            return match.group(0)
+        return "&lt;" + match.group(0)[1:]
+
+    value = _LT.sub(lt, value)
+    return escape_stray_ampersands(value)
+
+
 def unshield(translated: str, shielded: Shielded) -> str | None:
-    # 模型有时把占位和标签转义后放进 JSON。先还原，再认括号。
-    translated = html_lib.unescape(translated or "")
+    # 模型有时把占位和标签转义后放进 JSON。只还原这几样，再认括号；文字里的 & 和 < 留成实体。
+    translated = _unescape_markup(translated, shielded.html)
     counts: dict[int, int] = {}
     for match in _TOKEN.finditer(translated):
         index = _token_index(match)
