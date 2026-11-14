@@ -35,6 +35,7 @@ from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.housekeeping import strip_housekeeping
 from researchlib.image_size import size_images
+from researchlib.ingest.archive import DOCUMENT_TREE_KINDS
 from researchlib.llm import active_label, active_model_id, llm_configured, missing_credential_text
 from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
@@ -732,8 +733,6 @@ def _article_view(request: Request, article_id: int, mode: str):
         article = queries.get_article(conn, article_id, ids)
         if article is None:
             raise HTTPException(status_code=404)
-        if hide_from_site(article.get("raw_meta"), article.get("title")):
-            raise HTTPException(status_code=404)
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
         if article["duplicate_of"] is None:
@@ -1011,9 +1010,12 @@ def _source_tree(request: Request, source_id: str, article_id: int | None):
     with database(request) as conn:
         sources = active_sources(request, conn)
         source = _source_map(sources).get(source_id)
-        if source is None:
+        # 只有按目录导入的来源（飞书）有目录页。别的来源走这里会绕开文章页的处理：
+        # 星球帖的评论区不按星主过滤，读者的评论和昵称会露出来。
+        if source is None or source.kind not in DOCUMENT_TREE_KINDS:
             raise HTTPException(status_code=404)
-        rows = load_tree_rows(conn, source_id)
+        # 目录里也不列网站不展示的那几篇（网友帖、「图片」评论壳），它们下面的子篇跟着不列。
+        rows = [row for row in load_tree_rows(conn, source_id) if not hide_from_site(row["raw_meta"], row["title"])]
         parents = {row["parent_id"] for row in rows if row["parent_id"] is not None}
         root, orphans = arrange_tree(rows)
         if source.kind == "feishu":
@@ -1069,8 +1071,6 @@ def article_revisions(request: Request, article_id: int):
         ids = [source.id for source in sources]
         article = queries.get_article(conn, article_id, ids)
         if article is None:
-            raise HTTPException(status_code=404)
-        if hide_from_site(article.get("raw_meta"), article.get("title")):
             raise HTTPException(status_code=404)
         rows = revision_log.versions(conn, article)
         banner = queries.sample_state(conn, ids)
