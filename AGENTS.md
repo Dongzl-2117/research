@@ -12,6 +12,7 @@
 
 - Mac mini 上用 docker compose 跑，应用只听 `127.0.0.1:8088`，公网经 Cloudflare Tunnel。网站不登录就能看，核对线上改动可以直接读页面和 `/api/v1/articles/{id}.md`。
 - 线上在跑哪个提交看 `/health` 的 `commit`。自动上线要等它报出新提交才算成；起不来就退回上一个提交，只退代码，跑过的迁移不退。带新迁移的提交上线前自动备份一次。
+- 两个 Dockerfile 的底座按 digest 钉住。以前只写标签，上游 11-12 重推 `postgres:16-bookworm` 以后的第一次上线，在 Mac mini 上重建数据库镜像花了 3 小时 20 分。升级底座、改 `docker/postgres/Dockerfile` 或 `requirements.lock` 的 PR，上线时 Mac mini 要从网上重拉、重装，可能要几个小时：PR 里写明，挑没有长任务的时候合，见 [docs/deploy.md](docs/deploy.md)「基础镜像」。
 - 云端的 AI 连不上 Mac mini。只能在那边跑的命令（装定时任务、一次性的数据修复）写进 PR 描述的「上线后」一节，由 Zhilin 跑；平时合并就上线，不用他动手。
 - Mac mini 上的 `~/research` 只给自动上线用。在那台机器上干活的人和 AI 另外 clone 一份或者用 `git worktree`，不在 `~/research` 里切分支、改文件、提交；本机才要忽略的文件写进 `.git/info/exclude`。那份仓库不在 main、有本机改动或者有没推送的提交，自动上线都会停下，原因写在 `data/status/deploy.json`，处理办法见 [docs/deploy.md](docs/deploy.md)「更新」。
 - 定时任务（备份、试恢复、夜间补齐、方伟公众号和星球抓取、孤独进化体抓取、自动上线、外链图片下载）的结果写进 `data/status/<任务>.json`，供值班助手看：`docker compose exec app research-status` 把失败和太久没成功的逐条打出来，有就退出码 1。首页不再挂运维红条，见 [docs/backup.md](docs/backup.md)。
