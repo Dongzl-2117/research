@@ -102,6 +102,11 @@ def _unique_ids(pairs: list[BilingualPair]) -> list[BilingualPair]:
     return [replace(p, en="".join(Clean(p.en).out)) for p in result]
 
 
+# 词：连着的字母、数字，下划线不算。导出的纯文字那份常把斜体写成「_ Protocol _」（线上 22699），
+# 下划线不是正文的字：带格式那份里没有它，收掉纯文字那份也没少什么。
+_WORD = re.compile(r"[^\W_]+")
+
+
 class _Facts(HTMLParser):
     def __init__(self, document: str):
         super().__init__()
@@ -123,7 +128,7 @@ class _Facts(HTMLParser):
             self.links.add(attrs["href"])
 
     def handle_data(self, data):
-        self.tokens.update(re.findall(r"\w+", data))
+        self.tokens.update(_WORD.findall(data))
 
 
 def content_gaps(source: str, displayed: str) -> int:
@@ -274,6 +279,11 @@ _IMG_SRC = re.compile(r"""<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 def _plain_words(value: str) -> set[str]:
     text = html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
     return set(re.findall(r"\w+", text))
+
+
+def _content_words(value: str) -> set[str]:
+    text = html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
+    return set(_WORD.findall(text))
 
 
 _ZH_SENTENCE = re.compile(r"(?<=[。！？])")
@@ -1131,15 +1141,17 @@ def _split_outer(
     wrong_inside = [weight - outside for weight, outside in zip(weights, wrong_outside, strict=True)]
     if not any(wrong_outside):
         return None
+    # 分错的字一样多时（中间只差没字的一截，比如「——」的前一个破折号），和英文一样导语、署名取最长的：
+    # 中间那截要收掉，没字的那截跟着收就少了一个破折号。
     if run.lead:
         head_end = min(
-            range(len(pieces) + 1), key=lambda at: (sum(wrong_outside[:at]) + sum(wrong_inside[at:]), at),
+            range(len(pieces) + 1), key=lambda at: (sum(wrong_outside[:at]) + sum(wrong_inside[at:]), -at),
         )
         tail_start = len(pieces)
     else:
         head_end = 0
         tail_start = min(
-            range(len(pieces) + 1), key=lambda at: (sum(wrong_inside[:at]) + sum(wrong_outside[at:]), -at),
+            range(len(pieces) + 1), key=lambda at: (sum(wrong_inside[:at]) + sum(wrong_outside[at:]), at),
         )
     # 中间那截挨着导语的一句，开头两个字要在带格式那几段的中文里：译文把导语末尾（「他解释说」）和引文第一句
     # 译成了一句时，这一句整句留在导语里，宁可多显示一遍，也不把导语的字收掉。署名那头同样看结尾两个字。
@@ -1281,7 +1293,7 @@ def _fold_copy_pairs_once(
             (en_head, outer_en, en_tail), (zh_head, outer_zh, zh_tail) = ends
             heads, tails = (_paragraph(en_head), _paragraph(zh_head)), (_paragraph(en_tail), _paragraph(zh_tail))
         if not (
-            _plain_words(outer_en) <= _plain_words(shown_en)
+            _content_words(outer_en) <= _content_words(shown_en)
             and _resources(outer_en) <= _resources(shown_en)
             and _resources(outer_zh) <= _resources(shown_en + shown_zh)
         ):
@@ -1396,30 +1408,42 @@ def fold_translated_copies(source: str, translated: str) -> str:
     return best
 
 
+def _cut_score(kinds: Sequence[str], keys: Sequence[str], whole: Sequence[str]) -> tuple[int, int]:
+    """拆并在一起的引文、列表时比哪一刀好：先比正好接上的处数，再比一共认出的处数。
+
+    外层只有中间一截接得上的那种（开头带导语、结尾带署名，``_inside_run``）在拆错的地方也凑得出来：
+    线上 21401 拆在纯文字那份的第一段后面，后面几段连同套着的那条，像一条「结尾带署名」的外层。
+    拆对的地方，纯文字那份和带格式那几块通常正好接上。"""
+    runs = copy_runs(kinds, keys, whole)
+    return sum(1 for run in runs if not run.lead and not run.trail), len(runs)
+
+
 def _merged_quote_cuts(blocks: Sequence[_El | _Tx]) -> dict[int, int]:
     """Python-Markdown 把紧挨着的两条引文并成一条（中间的空行不算断开）。原文的引文里一开头就套着引文时，
     导出的纯文字那份和带格式那几块的第一块（那条套着的引文）就这样并在一起，按顶层块认不出来。
-    返回 {第几块: 从第几段拆开}：拆成两条以后能多认出一处的才拆。"""
+    返回 {第几块: 从第几段拆开}：拆成两条以后能多认出一处的才拆，取最好的那一刀（``_cut_score``）。"""
     units = [_copy_unit(node) for node in blocks]
     kinds = [unit[0] for unit in units]
     keys = [unit[2] for unit in units]
     whole = [unit[3] for unit in units]
-    base = len(copy_runs(kinds, keys, whole))
+    base = _cut_score(kinds, keys, whole)
     cuts: dict[int, int] = {}
     for index, node in enumerate(blocks):
         if kinds[index] != "quote" or not isinstance(node, _El):
             continue
         parts = _filled(node.children)
+        best: tuple[tuple[int, int], int] | None = None
         for cut in range(1, len(parts)):
             first, second = repeat_key(_serialize(parts[:cut])), repeat_key(_serialize(parts[cut:]))
-            trial = (
+            score = _cut_score(
                 [*kinds[:index], "quote", "quote", *kinds[index + 1:]],
                 [*keys[:index], first, second, *keys[index + 1:]],
                 [*whole[:index], first, second, *whole[index + 1:]],
             )
-            if len(copy_runs(*trial)) > base:
-                cuts[index] = cut
-                break
+            if score > (base if best is None else best[0]):
+                best = (score, cut)
+        if best is not None:
+            cuts[index] = best[1]
     return cuts
 
 
@@ -1496,15 +1520,15 @@ def _merged_list_cuts(blocks: Sequence[_El | _Tx]) -> dict[int, int]:
                 _filled(_fragment(f"<ul>{_serialize(items[cut:])}</ul>").children)[0],
             ]
             split = [_copy_unit(part) for part in parts]
-            count = len(copy_runs(
+            score = _cut_score(
                 [*kinds[:index], *(unit[0] for unit in split), *kinds[index + 1:]],
                 [*keys[:index], *(unit[2] for unit in split), *keys[index + 1:]],
                 [*whole[:index], *(unit[3] for unit in split), *whole[index + 1:]],
-            ))
+            )
             if base is None:
-                base = len(copy_runs(kinds, keys, whole))
-            if count > (base if best is None else best[0]):
-                best = (count, cut)
+                base = _cut_score(kinds, keys, whole)
+            if score > (base if best is None else best[0]):
+                best = (score, cut)
         if best is not None:
             cuts[index] = best[1]
     return cuts

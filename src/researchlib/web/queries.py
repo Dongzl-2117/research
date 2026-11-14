@@ -169,7 +169,12 @@ def list_undated_articles(conn, source_ids: list[str], limit: int, offset: int, 
 
 
 def get_article(conn, article_id: int, source_ids: list[str]):
-    return conn.execute(
+    """网站和接口按编号取一篇。网友帖、「图片」评论壳（hide_from_site）当作没有这篇。
+
+    文章页、飞书目录、改动页、问库的「只问这篇」、接口和 MCP 都从这里取，判断放在这一处，
+    新加一个按编号打开文章的入口不会漏掉（以前目录页 /sources/…/tree/<id> 没查，网友帖能直接读到）。
+    """
+    row = conn.execute(
         """
         SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash,
                duplicate_of, ocr_hash
@@ -178,19 +183,23 @@ def get_article(conn, article_id: int, source_ids: list[str]):
         """,
         (article_id, source_ids),
     ).fetchone()
+    if row is None or hide_from_site(row["raw_meta"], row["title"]):
+        return None
+    return row
 
 
 def same_article_elsewhere(conn, article_id: int, duplicate_of: int | None, source_ids: list[str]):
     """同一篇的其他份：这篇是重复时给主版本，是主版本时给指向它的重复。"""
     if duplicate_of is not None:
         return conn.execute(
-            "SELECT id, source_id, true AS canonical FROM articles WHERE id = %s AND source_id = ANY(%s)",
+            f"SELECT id, source_id, true AS canonical FROM articles WHERE id = %s AND source_id = ANY(%s)"
+            f" AND {site_visible_sql('')}",
             (duplicate_of, source_ids),
         ).fetchall()
     return conn.execute(
-        """
+        f"""
         SELECT id, source_id, false AS canonical FROM articles
-        WHERE duplicate_of = %s AND source_id = ANY(%s)
+        WHERE duplicate_of = %s AND source_id = ANY(%s) AND {site_visible_sql("")}
         ORDER BY id
         """,
         (article_id, source_ids),

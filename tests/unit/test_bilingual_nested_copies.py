@@ -458,6 +458,48 @@ def test_a_quote_merged_with_its_nested_copy_shows_once_on_every_page():
     assert _ids(folded) == _ids(zh)
 
 
+# 同上，纯文字那份还分了好几段，后面跟着图（线上 21401）。拆在第一段后面时，后面几段连同套着的那条
+# 像一条「结尾带署名」的外层，也能凑出一处；拆在纯文字那份的最后一段后面，带格式那几块才正好接上。
+_MD_MERGED_PARAS = (
+    "Opening words of the article body here.\n\n"
+    "> The most surprising announcement of all were the prices, which stayed the same.\n>\n"
+    "> What this means is that in real terms the products actually got cheaper this year.\n>\n"
+    "> This does not fit the way the company has always been thought to set its prices.\n\n"
+    "> The most surprising announcement of all were the prices, which stayed the "
+    "[same](https://example.invalid/prices).\n\n"
+    "[](https://example.invalid/chart)\n\n"
+    f"![Prices over five years]({_CHART})\n\n"
+    "What this means is that in real terms the products actually got *cheaper* this year.\n\n"
+    "This does not fit the way the company has always been thought to set its "
+    "[prices](https://example.invalid/pricing).\n\n"
+    "Closing words of the article body.\n"
+)
+_ZH_MERGED_PARAS = {
+    0: "<p>正文开头的几句话。</p>",
+    1: "<p>最让人意外的是价格，价格一点没变。</p>",
+    2: "<p>这意味着按实际购买力算，这些产品今年其实更便宜了。</p>",
+    3: "<p>这和人们一直以为的这家公司的定价方式对不上。</p>",
+    4: '<p>最让人意外的是价格，价格一点<a href="https://example.invalid/prices">没变</a>。</p>',
+    5: "<p>这意味着按实际购买力算，这些产品今年其实更<em>便宜</em>了。</p>",
+    6: '<p>这和人们一直以为的这家公司的<a href="https://example.invalid/pricing">定价方式</a>对不上。</p>',
+    7: "<p>正文最后几句。</p>",
+}
+
+
+def test_a_quote_in_paragraphs_merged_with_its_nested_copy_shows_once_on_every_page():
+    source, zh, view = _render(_MD_MERGED_PARAS, _ZH_MERGED_PARAS, _IMAGES)
+    texts = ("最让人意外", "这意味着", "这和人们一直以为")
+    shown = "".join(pair.zh or "" for pair in view.pairs)
+    assert view.correspondence == "mapped" and all(shown.count(text) == 1 for text in texts)
+    folded = fold_translated_copies(source, zh)
+    assert all(folded.count(text) == 1 for text in texts)
+    # 留下带格式的那几块，套着的那条、图、加粗和链接都放回外层的引文里。
+    quote = folded.split('<blockquote id="p-2">', 1)[1].split("正文最后几句", 1)[0]
+    assert re.search(r'<blockquote><p>最让人意外.*没变</a>。</p>\s*</blockquote>', quote)
+    assert _CHART in quote and "<em>便宜</em>" in quote and "定价方式</a>" in quote
+    assert _ids(folded) == _ids(zh)
+
+
 # 写两遍的引文：纯文字那份按行切开译，每行都译对了；带格式那几段的译文挪了一格（漏了第一个列表项，
 # 后面的各往前挪一格，最后一个列表项是下一段的译文）。线上 21938 是这样。
 _MD_SLIPPED = (
@@ -579,6 +621,57 @@ def test_lead_in_translated_into_the_first_quoted_sentence_is_kept():
     assert f"<li><p>{kept}</p>" in folded
     assert folded.count("视频只是") == 1
     assert "他解释说" in "".join(pair.zh or "" for pair in view.pairs)
+
+
+# 纯文字那份把斜体写成「_ Example Weekly _」（线上 22699）：对照页以前把下划线也当词，认成纯文字那份多了词，
+# 不敢收。推文的署名是中文的「——」时，以前切署名会把前一个破折号跟着中间那截收掉。
+_MD_ODD_WORDS = (
+    "Opening words of the article body here.\n\n"
+    "> Several readers noted that the hearing was mostly theater. (“Basically a stage for politicians,” "
+    "in the words of _ Example Weekly _ ’s editor.) The rest of the day went the same way.\n\n"
+    "Several readers noted that the hearing was mostly theater. (“Basically a stage for politicians,” "
+    "[in the words of](https://example.invalid/editor)_[Example Weekly](https://example.invalid/editor)_"
+    "[’s editor](https://example.invalid/editor).) The rest of the day went the same way.\n\n"
+    "The second post is from a researcher:\n\n"
+    "> this is the wrong takeaway there is a real cost to research time and every hour spent tuning kernels "
+    "is an hour not spent elsewhere https://t.co/abc123 — Wang Xiaoming (@xiaoming) January 27, 2025\n\n"
+    "this is the wrong takeaway there is a real cost to research time and every hour spent tuning kernels "
+    "is an hour not spent elsewhere [https://t.co/abc123](https://t.co/abc123)\n\n"
+    "Closing words of the article body.\n"
+)
+_ZH_ODD_WORDS = {
+    0: "<p>正文开头的几句话。</p>",
+    1: "<p>几位读者指出，这场听证会基本是一场表演。（“基本上就是政客的舞台”，这话出自 Example Weekly 的编辑。）"
+       "这一天剩下的时间也是这样。</p>",
+    2: '<p>几位读者指出，这场听证会基本是一场表演。（“基本上就是政客的舞台”，<a href="https://example.invalid/editor">'
+       '这话出自</a><em><a href="https://example.invalid/editor">Example Weekly</a></em>'
+       '<a href="https://example.invalid/editor">的编辑</a>。）这一天剩下的时间也是这样。</p>',
+    3: "<p>第二条帖子来自一位研究者：</p>",
+    4: "<p>这是错误的结论。研究时间是有成本的，每花一小时调内核，就少一小时做别的事 https://t.co/abc123 "
+       "——王小明（@xiaoming）2025年1月27日</p>",
+    5: "<p>这是错误的结论。研究时间是有成本的，每花一小时调内核，就少一小时做别的事 "
+       '<a href="https://t.co/abc123">https://t.co/abc123</a></p>',
+    6: "<p>正文最后几句。</p>",
+}
+
+
+def test_copies_written_slightly_differently_still_show_once():
+    source, zh, view = _render(_MD_ODD_WORDS, _ZH_ODD_WORDS)
+    assert view.correspondence == "mapped" and len(view.pairs) == 5
+    en = "".join(pair.en for pair in view.pairs)
+    shown = "".join(pair.zh or "" for pair in view.pairs)
+    assert en.count("Several readers noted") == 1 and en.count("every hour spent tuning kernels") == 1
+    folded = fold_translated_copies(source, zh)
+    for page in (shown, folded):
+        for text in ("几位读者指出", "每花一小时调内核", "王小明"):
+            assert page.count(text) == 1, text
+        # 署名留在引文末尾，「——」两个破折号都在。
+        signature = "<p>——王小明（@xiaoming）2025年1月27日</p>"
+        assert re.search(r"每花一小时调内核.*?</a></p>\s*" + re.escape(signature) + r"\s*</blockquote>", page)
+    assert '<em><a href="https://example.invalid/editor">Example Weekly</a></em>' in shown
+    assert content_gaps(source, en) == 0
+    assert _ids(source) <= _ids(en + shown) | {pair.anchor for pair in view.pairs}
+    assert _ids(folded) == _ids(zh)
 
 
 # 原文的列表项下面挂着嵌套列表：纯文字那份所在的项、带格式的一段，带格式的嵌套项顶格写，

@@ -6,6 +6,7 @@ import re
 import threading
 from datetime import UTC, datetime
 
+from researchlib import llm_batch
 from researchlib import views as views_mod
 from researchlib.llm import LLMError
 from researchlib.seed import load_sample
@@ -86,8 +87,8 @@ def test_article_locked_by_another_process_is_skipped(conn, settings, monkeypatc
     assert _pending(conn, wanted, authors) & {job["id"] for job in jobs} == {busy}
     # 锁放掉以后，这一篇照常整理，整理完自己的锁也放掉了。
     assert views_mod.run_batch(settings, [jobs[0]], authors)["done"] == 1
-    assert views_mod._claim(conn, busy)
-    views_mod._release(conn, busy)
+    assert llm_batch.claim(conn, views_mod.LOCK_NAME, busy)
+    llm_batch.release(conn, views_mod.LOCK_NAME, busy)
 
 
 def test_out_of_balance_stops_the_batch_without_marking_articles_failed(conn, settings, monkeypatch):

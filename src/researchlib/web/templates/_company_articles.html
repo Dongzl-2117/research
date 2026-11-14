@@ -1,7 +1,7 @@
 {# 公司页「文章」：哪些文章谈到它。按月篇数、各位作者写了多少、按提及深度筛，再按年列出来。 #}
 {% from "_feed.html" import card_list, pager %}
 {% set here = "/companies/" ~ company.id ~ "?tab=articles" %}
-{% if views_pending and not tabs %}<p class="quiet views-pending">还有 <span class="num">{{ views_pending }}</span> 篇谈到{{ company.name_zh }}的文章没整理出判断，后台在陆续补。</p>{% endif %}
+{% if views_pending and not tabs %}<p class="quiet views-pending">还有 <span class="num">{{ views_pending }}</span> 篇谈到{{ company.name_zh }}的文章没整理出判断，夜间任务每晚补一批。</p>{% endif %}
 {% if chart %}
 <figure class="chart-wrap">
   <figcaption>
