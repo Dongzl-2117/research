@@ -1,17 +1,16 @@
 #!/bin/bash
 # 方伟知识星球增量抓取 + 入库。不启 AIHOT worker。
-# dl.py 把「自己所在的目录」当存档根目录，所以 dl.py 必须和数据放在一起；默认就是仓库里的
-# data/inbox/fangwei-zsxq（旧的 ~/zsxq/archive/fangwei-zsxq 在 aihot 清理后已不存在，
-# 只有显式给 ARCHIVE 指向别处时才用，那时才需要把结果同步回 inbox）。
-# 令牌在 ~/zsxq/zsxq.env（ZSXQ_ACCESS_TOKEN），不写入仓库。
+# 抓取脚本是仓库里的 scripts/zsxq/dl.py（11-14 以前只放在存档目录里，审核 O3）。数据写进 ZSXQ_ARCHIVE
+# 指的存档目录，默认就是 data/inbox/fangwei-zsxq；ARCHIVE 指向别处时再把结果同步回 inbox。
+# 令牌（ZSXQ_ACCESS_TOKEN）和星球 ID（ZSXQ_GROUP_ID）在 ~/zsxq/zsxq.env，不写入仓库。
 #   scripts/crawl-fangwei-zsxq.sh           # 抓取 + 入库 + 补摘要
-#   scripts/crawl-fangwei-zsxq.sh --check   # 只打印路径、确认找得到 dl.py，不抓取
+#   scripts/crawl-fangwei-zsxq.sh --check   # 只打印路径、确认找得到 dl.py 和星球 ID，不抓取
 set -Eeuo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 INBOX="$REPO/data/inbox/fangwei-zsxq"
 ARCHIVE="${ARCHIVE:-$INBOX}"
-DL="$ARCHIVE/dl.py"
+DL="${DL:-$REPO/scripts/zsxq/dl.py}"
 ZSXQ_ENV="${ZSXQ_ENV:-$HOME/zsxq/zsxq.env}"
 TASK=crawl-fangwei-zsxq
 . "$REPO/scripts/status.sh"
@@ -29,12 +28,18 @@ compose() {
   docker compose --project-directory "$REPO" -f "$REPO/docker-compose.yml" "$@"
 }
 
-# dl.py 和数据在同一目录（脚本启动不了就早点说清楚，别等 rsync 才发现没东西）。
+# 脚本启动不了就早点说清楚，别等 rsync 才发现没东西。
 if [ ! -f "$DL" ]; then
-  echo "找不到 dl.py：${DL}（dl.py 要和存档数据放在一起，默认 ${INBOX}/dl.py；用 ARCHIVE 可以换目录）" >&2
-  status_fail "找不到 dl.py：${DL}（dl.py 要和存档数据放在一起，默认 ${INBOX}/dl.py；用 ARCHIVE 可以换目录）"
+  echo "找不到 dl.py：${DL}（默认是仓库里的 scripts/zsxq/dl.py）" >&2
+  status_fail "找不到 dl.py：${DL}（默认是仓库里的 scripts/zsxq/dl.py）"
   exit 2
 fi
+
+# 星球 ID 不在仓库里：环境变量 ZSXQ_GROUP_ID，或 zsxq.env 里的 ZSXQ_GROUP_ID=...
+has_group_id() {
+  [ -n "${ZSXQ_GROUP_ID:-}" ] && return 0
+  [ -f "$ZSXQ_ENV" ] && grep -q '^ZSXQ_GROUP_ID=.' "$ZSXQ_ENV"
+}
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
   echo "REPO=$REPO"
@@ -45,6 +50,9 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
   if [ ! -f "$ZSXQ_ENV" ]; then
     echo "注意：没有 ${ZSXQ_ENV}，真正抓取时会失败" >&2
   fi
+  if ! has_group_id; then
+    echo "注意：${ZSXQ_ENV} 里没有 ZSXQ_GROUP_ID=...，真正抓取时会失败" >&2
+  fi
   echo "ok：找得到 dl.py"
   exit 0
 fi
@@ -54,9 +62,14 @@ if [ ! -f "$ZSXQ_ENV" ]; then
   status_fail "缺少 ${ZSXQ_ENV}（ZSXQ_ACCESS_TOKEN）"
   exit 2
 fi
+if ! has_group_id; then
+  echo "缺少星球 ID：在 ${ZSXQ_ENV} 里加一行 ZSXQ_GROUP_ID=...（方伟星球的 group_id）" >&2
+  status_fail "缺少星球 ID：在 ${ZSXQ_ENV} 里加一行 ZSXQ_GROUP_ID=...（方伟星球的 group_id）"
+  exit 2
+fi
 
 echo "$(date '+%F %T') 开始方伟星球增量抓取"
-run_step "增量抓取" env ZSXQ_ENV="$ZSXQ_ENV" python3 "$DL"
+run_step "增量抓取" env ZSXQ_ENV="$ZSXQ_ENV" ZSXQ_ARCHIVE="$ARCHIVE" python3 "$DL"
 
 # 存档在仓库 inbox 里时不用同步；ARCHIVE 指到别处才搬过来。
 if [ "$ARCHIVE" != "$INBOX" ]; then
@@ -67,7 +80,6 @@ if [ "$ARCHIVE" != "$INBOX" ]; then
   run_step "同步图片" rsync -a "$ARCHIVE/images/" "$INBOX/images/"
   cp -f "$ARCHIVE/README.md" "$INBOX/README.md" 2>/dev/null || true
   cp -f "$ARCHIVE/status.txt" "$INBOX/status.txt" 2>/dev/null || true
-  cp -f "$ARCHIVE/dl.py" "$INBOX/dl.py" 2>/dev/null || true
 fi
 
 echo "$(date '+%F %T') 导入 research 库"

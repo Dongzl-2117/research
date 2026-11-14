@@ -30,6 +30,9 @@ class Source:
     min_chars: int = 0
     # 星主在平台上的其他显示名（星球昵称）。发帖人是 author 或这些名字的算原创，不当网友帖。
     poster_names: tuple[str, ...] = ()
+    # 星主在平台上的账户 ID（知识星球的 user_id）。写了以后，带发帖人 ID 的帖子只按 ID 认星主，
+    # 昵称再像也不算；没有 ID 的旧帖才按昵称（author、poster_names 完全相等）认。
+    owner_ids: tuple[str, ...] = ()
     # 公众号原始 ID（gh_ 开头）。写了才能用 research-crawl-wechat 定时抓取。
     ghid: str = ""
 
@@ -68,6 +71,7 @@ def load_sources(path: Path) -> list[Source]:
                 timeline=_timeline_flag(item, kind, source_id),
                 min_chars=int(item.get("min_chars") or 0),
                 poster_names=_poster_names(item, source_id),
+                owner_ids=_owner_ids(item, source_id),
                 ghid=str(item.get("ghid") or "").strip(),
             )
         )
@@ -83,6 +87,18 @@ def _poster_names(item: dict, source_id: str) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ValueError(f"{source_id} 的 poster_names 必须是名字列表")
     return tuple(str(name).strip() for name in value if str(name).strip())
+
+
+def _owner_ids(item: dict, source_id: str) -> tuple[str, ...]:
+    """账户 ID 一律按字符串比：YAML 里写成数字也行，导入时 poster_id 存的是字符串。"""
+    value = item.get("owner_ids")
+    if value is None:
+        return ()
+    if isinstance(value, (str, int)) and not isinstance(value, bool):
+        value = [value]
+    if not isinstance(value, list) or any(isinstance(v, (bool, float, dict, list)) for v in value):
+        raise ValueError(f"{source_id} 的 owner_ids 必须是账户 ID 列表")
+    return tuple(str(v).strip() for v in value if str(v).strip())
 
 
 def _timeline_flag(item: dict, kind: str, source_id: str) -> bool:

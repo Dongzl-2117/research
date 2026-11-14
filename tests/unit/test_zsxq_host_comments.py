@@ -35,7 +35,11 @@ SAMPLE = """正文一句。
 def test_host_author_detection():
     assert is_host_comment_author("方伟")
     assert is_host_comment_author("**方伟Rey**")
-    assert is_host_comment_author("方伟-最近在杭州")
+    # 只有昵称时一字不差才算：读者改名「方伟-最近在杭州」「方伟（读者）」「方伟 Rey」都不是方伟（审核 I2）。
+    assert not is_host_comment_author("方伟-最近在杭州")
+    assert not is_host_comment_author("方伟（读者）")
+    assert not is_host_comment_author("方伟(假)")
+    assert not is_host_comment_author("方伟 Rey")
     assert not is_host_comment_author("陈小东")
     assert not is_host_comment_author("　　　　　　　")
     assert not is_host_comment_author("")
@@ -107,7 +111,9 @@ OTHER = """正文一句，讲关税。
 
 def test_other_source_keeps_its_own_host():
     assert OWNERS == ("乘风破浪", "赵六")
+    # 导出加在帖子作者后面的「（作者）」徽章不算名字；别的括注照样不认。
     assert is_host_comment_author("赵六（作者）", OWNERS)
+    assert not is_host_comment_author("赵六（小助手）", OWNERS)
     assert is_host_comment_author("乘风破浪", OWNERS)
     assert not is_host_comment_author("方伟Rey", OWNERS)
     assert not is_host_comment_author("李四", OWNERS)
@@ -122,8 +128,10 @@ def test_other_source_keeps_its_own_host():
     assert "李四" not in page and "方伟Rey" not in page
     # 不给作者名时和以前一样只认方伟。
     assert "赵六" not in str(render_body(OTHER, {}))
-    # 方伟星球给了作者名，「方伟-最近在杭州」这些显示名照样认。
-    assert is_host_comment_author("方伟-最近在杭州", ("方伟", "方伟Rey"))
+    # 方伟星球给了作者名：星主用过的昵称写进来源配置的 poster_names 才认，像他的不认。
+    assert is_host_comment_author("方伟Rey", ("方伟", "方伟Rey"))
+    assert not is_host_comment_author("方伟-最近在杭州", ("方伟", "方伟Rey"))
+    assert not is_host_comment_author("方伟（小助手）", ("方伟", "方伟Rey"))
 
 
 def test_zsxq_import_keeps_the_sources_own_host(tmp_path: Path):
@@ -179,12 +187,25 @@ def test_host_replies_in_threads_are_kept_without_reader_names():
 def test_fangwei_replies_keep_his_name_without_the_reader():
     md = (
         "正文。\n\n## 评论（2）\n\n- **王小明**（2026-10-21 11:42）\n  问。\n"
-        "  - **方伟-最近在杭州 回复 王小明**（2026-10-21 11:50）\n    切换成本还在。\n"
+        "  - **方伟Rey 回复 王小明**（2026-10-21 11:50）\n    切换成本还在。\n"
     )
     filtered = filter_host_comments_markdown(md)
-    assert "- **方伟-最近在杭州 回复网友**（2026-10-21 11:50）" in filtered and "切换成本还在" in filtered
+    assert "- **方伟Rey 回复网友**（2026-10-21 11:50）" in filtered and "切换成本还在" in filtered
     assert "王小明" not in filtered
     assert guest_comment_authors(md) == ["王小明", "王小明"]
+
+
+def test_reader_renamed_like_fangwei_is_not_kept_in_comments():
+    """读者把昵称改成「方伟（小助手）」，评论不再以星主身份留下，回复星主的也一样（审核 I2）。"""
+    md = (
+        "正文。\n\n## 评论（3）\n\n- **方伟（小助手）**（2026-10-21 11:42）\n  加我微信。\n"
+        "  - **方伟（小助手） 回复 方伟Rey**（2026-10-21 11:45）\n    私聊。\n"
+        "- **方伟Rey**（2026-10-21 11:50）\n  切换成本还在。\n"
+    )
+    filtered = filter_host_comments_markdown(md, ("方伟", "方伟Rey"))
+    assert "切换成本还在" in filtered
+    assert "加我微信" not in filtered and "私聊" not in filtered and "小助手" not in filtered
+    assert guest_comment_authors(md, ("方伟", "方伟Rey")) == ["方伟（小助手）", "方伟（小助手） 回复 方伟Rey"]
 
 
 def test_zsxq_import_keeps_host_replies_unless_the_topic_json_has_them(tmp_path: Path):

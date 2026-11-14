@@ -49,25 +49,70 @@ def test_long_text_is_split_before_extraction():
 
 def test_guest_post_is_not_the_star_owner():
     guest = assign_poster_role({"poster_name": "某读者", "poster_id": "9"}, "方伟")
-    owner = assign_poster_role({"poster_name": "方伟（星主）"}, "方伟")
+    owner = assign_poster_role({"poster_name": "方伟"}, "方伟")
     unknown = assign_poster_role({}, "方伟")
     assert is_guest(guest) and guest["poster_role"] == "guest"
     assert owner["poster_role"] == "owner" and not is_guest(owner)
     assert "poster_role" not in unknown
+    # 昵称一字不差才算：去括注、去空白以后像星主的都是读者（审核 I2）。
+    for name in ("方伟（星主）", "方伟（读者）", "方伟(假)", "方 伟", "方伟Rey", "方伟-最近在杭州"):
+        assert is_guest(assign_poster_role({"poster_name": name}, "方伟")), name
 
 
 def test_star_nickname_from_the_source_config_is_the_owner():
-    """方伟在星球里的显示名是「方伟Rey」：来源配置的 poster_names 里有它，就不是读者帖。"""
-    from researchlib.sources import load_sources
-
-    config = Path(__file__).resolve().parents[2] / "config" / "sources.yaml"
-    zsxq = next(source for source in load_sources(config) if source.id == "fangwei-zsxq")
+    """方伟在星球里的显示名是「方伟Rey」：来源配置的 poster_names 里有它，没有发帖人 ID 的旧帖就不是读者帖。"""
+    zsxq = _fangwei_zsxq()
     assert "方伟Rey" in zsxq.poster_names
     assert assign_poster_role({"poster_name": "方伟Rey"}, zsxq.author, zsxq.poster_names)["poster_role"] == "owner"
-    assert assign_poster_role({"poster_name": "方伟 Rey"}, zsxq.author, zsxq.poster_names)["poster_role"] == "owner"
+    assert is_guest(assign_poster_role({"poster_name": "方伟 Rey"}, zsxq.author, zsxq.poster_names))
     # 没配昵称时还是按名字认，读者照样是读者。
     assert is_guest(assign_poster_role({"poster_name": "方伟Rey"}, "方伟"))
     assert is_guest(assign_poster_role({"poster_name": "王小明"}, zsxq.author, zsxq.poster_names))
+
+
+def _fangwei_zsxq():
+    from researchlib.sources import load_sources
+
+    config = Path(__file__).resolve().parents[2] / "config" / "sources.yaml"
+    return next(source for source in load_sources(config) if source.id == "fangwei-zsxq")
+
+
+def test_star_account_id_decides_when_the_post_has_one():
+    """带发帖人 ID 的帖子只按星主的账户 ID 认：「方伟（小助手）」那个账号改成什么昵称都是读者（审核 I2）。"""
+    zsxq = _fangwei_zsxq()
+    assert zsxq.owner_ids == ("1825524112",)
+
+    def role(meta: dict) -> str:
+        return assign_poster_role(meta, zsxq.author, zsxq.poster_names, zsxq.owner_ids).get("poster_role", "")
+
+    assert role({"poster_name": "方伟Rey", "poster_id": "1825524112"}) == "owner"
+    # 星主改了昵称，ID 没变，照样是原创。
+    assert role({"poster_name": "方伟-最近在杭州", "poster_id": "1825524112"}) == "owner"
+    # 小助手的账号：昵称再像也是读者帖，改成和星主一字不差也一样。
+    assert role({"poster_name": "方伟（小助手）", "poster_id": "418551555845518"}) == "guest"
+    assert role({"poster_name": "方伟Rey", "poster_id": "418551555845518"}) == "guest"
+    assert role({"poster_name": "方伟", "poster_id": "418551555845518"}) == "guest"
+    # 没有 ID 的旧帖才看昵称，而且要一字不差。
+    assert role({"poster_name": "方伟Rey"}) == "owner"
+    assert role({"poster_name": "方伟（小助手）"}) == "guest"
+    assert role({"poster_name": "方伟（小助手）", "poster_id": ""}) == "guest"
+    # 名字和 ID 都没有的旧帖不猜，仍按星主处理。
+    assert role({}) == ""
+    # 没配 owner_ids 的来源（乘风破浪）带 ID 也只能看昵称。
+    other = assign_poster_role({"poster_name": "郑立涛", "poster_id": "77"}, "乘风破浪", ("郑立涛",))
+    assert other["poster_role"] == "owner"
+
+
+def test_owner_ids_in_the_config_are_strings():
+    from researchlib.sources import _owner_ids
+
+    assert _owner_ids({"owner_ids": [1825524112]}, "x") == ("1825524112",)
+    assert _owner_ids({"owner_ids": "1825524112"}, "x") == ("1825524112",)
+    assert _owner_ids({}, "x") == ()
+    import pytest
+
+    with pytest.raises(ValueError):
+        _owner_ids({"owner_ids": {"id": 1}}, "x")
 
 
 def test_list_mention_is_not_about_the_company():

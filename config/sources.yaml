@@ -14,13 +14,18 @@ sources:
     timeline: true
     # 公众号「方伟看十年」的原始 ID。scripts/crawl-fangwei-mp.sh 每天两次用它向极致了查新文章（research-crawl-wechat）。
     ghid: gh_00a6a367d877
+    # 方伟在星球的昵称。公众号里贴的星球截图，显示名是它的算方伟（识图排版只认一字不差的名字）。
+    poster_names: [方伟Rey]
     description: 方伟微信公众号历史归档（Markdown + 图片）。11 月 7 日起和孤独进化体一样定时抓取，正文从公众号原文页取（research-crawl-wechat）。
 
   - id: fangwei-zsxq
     name: 方伟知识星球
     author: 方伟
-    # 星球里星主的昵称。发帖人是这个名字的算方伟原创，不当读者帖。
+    # 星球里星主的昵称。没有发帖人 ID 的旧帖、评论区和截图里只看得到昵称，和这里（加上 author）完全相同才算方伟。
     poster_names: [方伟Rey]
+    # 星主「方伟Rey」的账户 user_id（星球「方伟看十年」group.json 的 owner）。带 ID 的帖子只按它认，
+    # 读者把昵称改成「方伟（某某）」或「方伟Rey」也不算原创。
+    owner_ids: ["1825524112"]
     kind: zsxq
     enabled: true
     timeline: true
@@ -30,6 +35,7 @@ sources:
     name: 乘风破浪
     author: 乘风破浪
     # 星球里星主的昵称：归档头的「作者」、评论里回答读者的都是这个名字。评论区只留他的。
+    # 没配 owner_ids（归档里找不到这个星球的 group.json），帖子、评论都按昵称完全相同认。
     poster_names: [郑立涛]
     kind: zsxq
     enabled: true
