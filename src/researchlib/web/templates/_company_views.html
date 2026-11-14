@@ -63,7 +63,7 @@
   {% endif %}
   <p class="count num">{{ views.total }} 条</p>
   {% else %}
-  <p class="empty">没有。</p>
+  <p class="empty">{% if views.pending %}这里还没有整理出的判断。{% else %}这个筛选下没有判断，换个作者或看法试试。{% endif %}</p>
   {% endif %}
 </section>
 <script>

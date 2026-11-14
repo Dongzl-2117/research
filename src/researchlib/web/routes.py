@@ -35,7 +35,7 @@ from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.housekeeping import strip_housekeeping
 from researchlib.image_size import size_images
-from researchlib.llm import active_label, active_model_id, llm_configured, missing_credential_text
+from researchlib.llm import active_model_id, llm_configured
 from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.nested_copies import fold_nested_copies
@@ -89,6 +89,7 @@ from researchlib.web.present import (
     format_date,
     format_iso,
     group_days,
+    is_english,
     market_label,
     month_series,
     order_cards,
@@ -118,6 +119,8 @@ TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "tem
 TEMPLATES.env.filters["answer_html"] = answer_html
 TEMPLATES.env.globals["asset"] = asset_url
 TEMPLATES.env.filters["highlight_full"] = highlight_full
+# 英文标题和英文原文标 lang="en"，读屏和浏览器的断字、翻译提示按英文处理（审核 F11）。
+TEMPLATES.env.tests["english"] = is_english
 TEMPLATES.env.filters["highlight_snippet"] = lambda text, terms, radius=110: highlight_snippet(
     text, "", radius=radius, terms=list(terms or [])
 )
@@ -1781,8 +1784,6 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
         "tree": tree,
         "authors": list(_author_groups(sources)[1]),
         "llm_ready": llm_configured(request.app.state.settings),
-        "llm_label": active_label(request.app.state.settings),
-        "credential_notice": missing_credential_text(request.app.state.settings),
         "model": active_model_id(request.app.state.settings),
         "history": queries.recent_answers(conn, 15),
         "ask_models": ask_model_menu(request.app.state.settings),
@@ -1805,7 +1806,7 @@ def ask_page(request: Request):
 
 @router.post("/ask")
 async def ask_submit(request: Request):
-    """先检索原文、登记整合，马上跳到回答页；模型在后台写，回答页自己刷新。"""
+    """先检索原文、登记整合，马上跳到回答页；模型在后台写，回答页由 article-chat.js 轮询刷新。"""
     if not _same_origin(request):
         raise HTTPException(status_code=403, detail="跨站请求被拒绝")
     form = await request.form()

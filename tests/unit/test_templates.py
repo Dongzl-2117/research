@@ -1,9 +1,10 @@
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 
 from researchlib.web.assets import asset_url
-from researchlib.web.present import company_names, company_summary
+from researchlib.web.present import company_names, company_summary, is_english
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "src" / "researchlib" / "web" / "templates"
@@ -12,6 +13,7 @@ TEMPLATES = ROOT / "src" / "researchlib" / "web" / "templates"
 def _env():
     env = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(["html"]))
     env.globals["asset"] = asset_url  # 和 routes.TEMPLATES 一样
+    env.tests["english"] = is_english
     return env
 
 
@@ -369,7 +371,7 @@ def test_article_template_is_title_body_and_bilingual_tabs():
     assert "你好" in html
     assert "被引用的段落" in html
     assert "Note" in html
-    assert html.index("<h1>") < html.index('class="byline"')
+    assert html.index("<h1") < html.index('class="byline"')
     assert "方伟" in html
     assert "打开原文" not in html
     assert "问 AI：这篇讲了什么" not in html
@@ -610,3 +612,36 @@ def test_ask_page_model_menu_sits_by_the_send_button():
     assert "model-providers" not in bar and bar.count('name="effort"') == 4
     bare = routes_templates.env.get_template("ask.html").render(**context)
     assert "ask-model" not in bare
+
+
+def test_english_titles_and_original_text_are_marked_lang_en():
+    # 审核 F11：读屏按页面的 zh-CN 用中文语音读整篇英文。英文标题、英文原文页的正文标 lang="en"。
+    assert is_english("Note") and is_english("The Aggregator's Dilemma")
+    assert not is_english("腾讯 2025 年报") and not is_english("") and not is_english("2026")
+    base = dict(
+        canonical="https://investment.zldong.com/articles/1", public_host="investment.zldong.com", query="",
+        nav="archive", sample_banner=False, sources=[], active_source="", source=_Source(),
+        iso="2026-01-01", date="2026-01-01", time="12:00", relative="昨天", title_zh="", pairs=[],
+        original_url="", siblings=[], quoted=None, translation_complete=True,
+    )
+    original = _env().get_template("article.html").render(
+        title="Note", article={"id": 1, "title": "Note"}, body_language="original", has_translation=True,
+        body_html=Markup("<p>Hello</p>"), **base,
+    )
+    assert '<h1 lang="en">Note</h1>' in original
+    assert '<div class="prose with-toolbar" lang="en"><p>Hello</p></div>' in original
+    chinese = _env().get_template("article.html").render(
+        title="腾讯", article={"id": 2, "title": "腾讯"}, body_language="original", has_translation=False,
+        body_html=Markup("<p>你好</p>"), **base,
+    )
+    assert "<h1>腾讯</h1>" in chinese and 'lang="en"' not in chinese
+
+
+def test_reader_pages_do_not_tell_readers_to_check_logs_or_run_commands():
+    # 审核 F9：页面上只放读者用得上的话，命令名、环境变量、「看日志」写进日志。
+    for name in ("tree.html", "home.html", "ask.html", "_company_views.html"):
+        text = (TEMPLATES / name).read_text(encoding="utf-8")
+        for phrase in ("research-", "日志", "凭证", "EMBEDDING_", "<p class=\"empty\">没有。</p>"):
+            assert phrase not in text, (name, phrase)
+    app = (ROOT / "src/researchlib/web/app.py").read_text(encoding="utf-8")
+    assert "请看服务日志" not in app

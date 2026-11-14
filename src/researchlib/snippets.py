@@ -111,15 +111,23 @@ def _mark(text: str, terms: list[str]) -> str:
     text = redact_subscription_links(text or "")
     if not text or not terms:
         return str(escape(text))
-    escaped = str(escape(text))
     safe_terms = sorted({term for term in terms if term}, key=len, reverse=True)
     alternatives = "|".join(re.escape(term) for term in safe_terms)
     if not alternatives:
-        return escaped
+        return str(escape(text))
     # 连在一起的几个词（「广告」「加载」）合成一处高亮，不拆成两块。
     pattern = f"(?:{alternatives})+"
     flags = re.IGNORECASE if any(term.isascii() for term in safe_terms) else 0
-    return re.sub(pattern, lambda match: f"<mark>{match.group(0)}</mark>", escaped, flags=flags)
+    # 先在原文上找命中，再一段段转义：以前先转义再找，搜 amp、lt、quot 会把「&amp;」拆开，
+    # 页面显示成「&<mark>amp</mark>;」；搜「AT&T」又因为原文已变成「AT&amp;T」而标不上（审核 R8）。
+    out: list[str] = []
+    last = 0
+    for match in re.finditer(pattern, text, flags=flags):
+        out.append(str(escape(text[last : match.start()])))
+        out.append(f"<mark>{escape(match.group(0))}</mark>")
+        last = match.end()
+    out.append(str(escape(text[last:])))
+    return "".join(out)
 
 
 # 提及原句的边界：中文句号、问号、叹号、分号和换行；英文的句点后面要跟着空白（「2.5 亿」「Amazon.com」不算）。

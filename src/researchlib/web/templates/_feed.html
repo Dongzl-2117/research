@@ -13,8 +13,8 @@
       {% if item.semantic %}<span class="depth depth-semantic" title="正文没写全搜索词，按意思找到的">语义相关</span>{% endif %}
       {% if meta_date %}<span aria-hidden="true">·</span>{% if item.iso %}<time class="item-date" datetime="{{ item.iso }}">{{ item.date }}</time>{% else %}<span class="item-date">日期不详</span>{% endif %}{% endif %}
     </header>
-    <h3 class="item-title"><a href="/articles/{{ item.id }}{% if item.chunk is not none and item.chunk is defined %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.title }}</a></h3>
-    {% if item.heading %}<p class="item-heading">§ {{ item.heading }}</p>{% endif %}
+    <h3 class="item-title"{% if item.title is english %} lang="en"{% endif %}><a href="/articles/{{ item.id }}{% if item.chunk is not none and item.chunk is defined %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.title }}</a></h3>
+    {% if item.heading %}<p class="item-heading" title="{{ item.heading }}">§ {{ item.heading }}</p>{% endif %}
     {% if item.summary %}
     <p class="item-excerpt item-summary"><span class="ai-badge" title="导读">摘要</span>{{ item.summary }}</p>
     {% if item.points %}<ul class="item-points">{% for point in item.points %}<li>{{ point }}</li>{% endfor %}</ul>{% endif %}

@@ -883,6 +883,7 @@ tbody tr:hover td { background: var(--accent-softer); }
   cursor: zoom-out;
 }
 .img-zoom[hidden] { display: none; }
+.img-zoom:focus { outline: none; }
 .img-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
 /* 竖长截图点开：放宽到看得清字，往下滚着读。整张缩进一屏的话，长截图只剩一百多像素宽，比正文里还小。 */
 .img-zoom[data-shape="tall"]:not([hidden]) { display: block; overflow-y: auto; overscroll-behavior: contain; }
@@ -1337,7 +1338,8 @@ tbody tr:hover td { background: var(--accent-softer); }
 .tag:hover { border-color: var(--accent); color: var(--accent); }
 .tag.depth-title { border-color: transparent; background: var(--accent-soft); color: var(--accent-ink); }
 .tag .num { color: var(--ink-4); }
-.item-heading { margin: 4px 0 0; color: var(--ink-4); font-size: 12.5px; }
+/* 小节名只占一行：有的文章拿「#」标了一整段话，切块时当成了小节名，卡片顶上铺满六行小字（审核 F15），全文放在 title 里。 */
+.item-heading { margin: 4px 0 0; overflow: hidden; color: var(--ink-4); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 .item-summary { -webkit-line-clamp: 3; }
 .item-points {
   margin: 6px 0 0;
@@ -2837,4 +2839,18 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 }
 @media (prefers-reduced-motion: reduce) {
   .argue summary::after { transition: none; }
+}
+
+/* 手指点的控件至少约 40px 高（审核 F7：手机上切对照和中文、翻前后一天、排序、判断旁的「原文」都只有 20 到 26px）。
+   只在触屏上放大；没有边框的文字链接只撑高点按区，看上去不变。会改数据的「不是同一篇」和上面的链接拉开距离。 */
+@media (pointer: coarse) {
+  .theme { height: 40px; }
+  .lang-tabs a { height: 36px; padding: 0 12px; }
+  .day-switch a, .sort-links a { display: inline-flex; align-items: center; min-height: 40px; }
+  .day-switch { margin-top: 6px; }
+  .tag { min-height: 34px; }
+  .jrow-open::after { content: ""; position: absolute; inset: -7px -4px; }
+  .recent-views-toggle { width: 40px; height: 40px; margin: -8px; }
+  .mark { height: auto; min-height: 40px; padding: 0 14px; }
+  .dup-separate { margin-top: 8px; }
 }

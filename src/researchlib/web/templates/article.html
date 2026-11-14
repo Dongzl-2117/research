@@ -11,7 +11,7 @@
         {% if tree_back %}返回目录{% else %}返回{% endif %}
       </a>
     </div>
-    <h1>{{ display_title or article.title }}</h1>
+    <h1{% if (display_title or article.title) is english %} lang="en"{% endif %}>{{ display_title or article.title }}</h1>
     {% if title_zh and body_language != 'original' %}
     <p class="title-zh">{{ title_zh }}</p>
     {% endif %}
@@ -75,7 +75,7 @@
       {% endfor %}
     </div>
     {% elif body_html %}
-    <div class="prose{% if has_translation %} with-toolbar{% endif %}">{{ body_html }}</div>
+    <div class="prose{% if has_translation %} with-toolbar{% endif %}"{% if has_translation and body_language == "original" %} lang="en"{% endif %}>{{ body_html }}</div>
     {% endif %}
     {% if same_period %}
     <section class="same-period" aria-label="同期别人怎么看">

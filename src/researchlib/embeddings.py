@@ -798,15 +798,19 @@ def status_note(conn) -> str:
     语义检索出了问题以前只在日志里，页面上看不出来，搜「costco 商业模式」找不到按意思相关的文章时，
     分不清是没配、没算向量、服务连不上，还是真的没有。
     """
+    # 页面上只说读者用得上的话（审核 F9：以前写着环境变量名和命令名）；为什么没用上记进日志。
     if not enabled():
-        return "没开语义检索（没配 EMBEDDING_BASE_URL），这次只按字面找。"
+        logger.warning("检索没用上语义：没配 EMBEDDING_BASE_URL")
+        return "这次只按字面找，按意思找的结果没加进来。"
     if column_type(conn) is None:
-        return "数据库没装 pgvector，语义检索没开，这次只按字面找。"
+        logger.warning("检索没用上语义：数据库没装 pgvector")
+        return "这次只按字面找，按意思找的结果没加进来。"
     if paused():
-        return "向量服务连不上，这次只按字面找，过一分钟再试。"
+        return "按意思找暂时连不上，这次只按字面找，过一分钟再试。"
     have, total = _cached_coverage(conn)
     if total and have == 0:
-        return "向量还一块都没算（research-embed），这次只按字面找。"
+        logger.warning("检索没用上语义：向量一块都没算，跑 research-embed")
+        return "按意思找还没准备好，这次只按字面找。"
     if total and have < total * 0.98:
         return f"向量还没算完（{have}/{total} 块），没算到的段落只能按字面找到。"
     return ""
