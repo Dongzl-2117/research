@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 
 from researchlib import embeddings
 from researchlib.ask import mark_interrupted
@@ -24,7 +25,7 @@ from researchlib.duplicates import dedupe_if_needed
 from researchlib.health import read_status, write_status
 from researchlib.mentions import rebuild_if_stale
 from researchlib.web.api import api
-from researchlib.web.assets import IMMUTABLE, asset_version
+from researchlib.web.assets import FAVICON_CACHE, IMMUTABLE, MEDIA_CACHE, asset_version, hashed_media
 from researchlib.web.mcp import mcp
 from researchlib.web.routes import TEMPLATES, render_page, router
 
@@ -118,6 +119,17 @@ def create_app(settings: Settings | None = None, *, experiment_owner_verifier=No
 
         attach_experiment_admin(app, app.state.settings, experiment_owner_verifier)
 
+    # 源站压缩：慢的是 Mac mini 经隧道到 Cloudflare 那一段（约每秒几十 KB），页面、样式、脚本、JSON 压到
+    # 四分之一到八分之一再传。图片本来就压过（Starlette 默认跳过 png、jpeg、gif、webp），下载的文件也不压。
+    # 加在下面两个中间件之前，在它们里面一层：Server-Timing 把压缩的时间也算进去。级别 6：9 多花一倍 CPU、
+    # 只再小几个百分点；大于 128KB 的在线程里压，不挡事件循环。站内没有边写边推的流式响应，问库靠轮询。
+    app.add_middleware(
+        GZipMiddleware,
+        minimum_size=1000,
+        compresslevel=6,
+        exclude_content_types=(*DEFAULT_EXCLUDED_CONTENT_TYPES, "application/octet-stream"),
+    )
+
     # 地址里的 %00 解出来是 NUL 字符：Postgres 的文字和文件路径都不收，查下去只会 500（/search?q=%00、/media/%00）。
     # 正常链接不会带它，当成没有这一页。写在 privacy_headers 前面，这样回的 404 也带那几个响应头。
     @app.middleware("http")
@@ -137,12 +149,19 @@ def create_app(settings: Settings | None = None, *, experiment_owner_verifier=No
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
         response.headers["Cache-Control"] = "private, no-store"
-        # 样式和脚本带着当前内容的版本号来取（模板里的 asset()），一直缓存；见 web/assets.py。
         path = request.url.path
-        if path.startswith("/static/") and response.status_code in (200, 304):
-            wanted = request.query_params.get("v")
-            if wanted and wanted == asset_version(path[len("/static/"):]):
-                response.headers["Cache-Control"] = IMMUTABLE
+        if response.status_code in (200, 304):
+            # 样式和脚本带着当前内容的版本号来取（模板里的 asset()），一直缓存；见 web/assets.py。
+            if path.startswith("/static/"):
+                wanted = request.query_params.get("v")
+                if wanted and wanted == asset_version(path[len("/static/"):]):
+                    response.headers["Cache-Control"] = IMMUTABLE
+            # 图片按内容哈希存，同一个地址内容不变：读者自己的浏览器缓存一年，不进 Cloudflare 的共享缓存，
+            # 可见性每次没缓存的请求照旧在源站核（Zhilin 11-14 同意，审核 O1）。
+            elif path.startswith("/media/") and hashed_media(path[len("/media/"):]):
+                response.headers["Cache-Control"] = MEDIA_CACHE
+            elif path == "/favicon.svg":
+                response.headers["Cache-Control"] = FAVICON_CACHE
         return response
 
     # 同时接管 HTTPException，否则 FastAPI 默认把 404 回成 {"detail": "Not Found"}，404 页面从来不出现。

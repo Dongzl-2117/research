@@ -14,7 +14,9 @@ from researchlib.ingest.store import store_documents
 from researchlib.sources import load_sources
 from researchlib.translate import service
 from researchlib.translate.llm import ChatJsonResult
+from researchlib.web import routes
 from researchlib.web.app import create_app
+from researchlib.web.render_cache import PAGES
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 PAD = (
@@ -70,9 +72,19 @@ def test_reading_page_joins_sentences_of_a_long_paragraph(conn, settings, monkey
     # 存下来的译文里，长段是一句一个 <p data-src-para>：这一篇确实按句切开译了。
     assert stored.count("data-src-para") == len(SENTENCES)
     joined = "".join(zh for _en, zh in SENTENCES)
+    paired_calls = []
+    real_pairs = routes.article_pairs
+    monkeypatch.setattr(routes, "article_pairs", lambda *a, **k: paired_calls.append(1) or real_pairs(*a, **k))
+    PAGES.clear()
     with TestClient(create_app(settings)) as client:
         reading = client.get(f"/articles/{article_id}/zh").text
+        # 只看中文页不显示对照，也不算（审核 T8）。
+        assert paired_calls == []
         paired = client.get(f"/articles/{article_id}").text
+        # 同一篇再开一次用缓存里的配对，页面一字不差。
+        assert client.get(f"/articles/{article_id}").text == paired
+        assert client.get(f"/articles/{article_id}/zh").text == reading
+    assert paired_calls == [1]
     # 「只看中文」：五句在同一个 <p> 里，句号后面没有空格；收尾那段单独一段。
     assert re.search(r"<p\b[^>]*>" + re.escape(joined) + "</p>", reading)
     assert re.search(r"<p\b[^>]*>" + re.escape(TAIL[1]) + "</p>", reading)
@@ -105,6 +117,8 @@ def test_pages_rendered_at_the_same_time_stay_paired(conn, settings, monkeypatch
     monkeypatch.setattr(service, "chat_json", _translate)
     assert service.translate_article(conn, article_id, data_dir=settings.data_dir).status == "translated"
     conn.commit()
+    # 不让缓存把同时渲染的那几页挡掉：每一页都真的切段、配对一遍。
+    monkeypatch.setattr(PAGES, "_max", 0)
     seen = []
     with TestClient(create_app(settings)) as client:
         def open_page():

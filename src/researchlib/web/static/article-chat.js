@@ -36,6 +36,7 @@
   const maxPolls = 300;
   const maxNetworkFailures = 3;
   const requestTimeout = 15000;
+  const pollTimeout = 60000;
   let modal = false;
   let previousOverflow = '';
   const inertNodes = new Map();
@@ -319,10 +320,11 @@
     timers.add(timer);
   }
 
-  async function fetchTimed(url, options = {}, read = async (response) => response) {
+  // timeout 包括读完响应体。轮询整合完的那一次要带回全部出处（全库问题一两百 KB），从 Mac mini 经隧道慢，单独放宽。
+  async function fetchTimed(url, options = {}, read = async (response) => response, timeout = requestTimeout) {
     const controller = new AbortController();
     controllers.add(controller);
-    const timer = window.setTimeout(() => controller.abort(), requestTimeout);
+    const timer = window.setTimeout(() => controller.abort(), timeout);
     try {
       const response = await fetch(url, { credentials: 'same-origin', ...options, signal: controller.signal });
       return await read(response);
@@ -339,7 +341,7 @@
     return fallback;
   }
 
-  async function jsonRequest(url, options) {
+  async function jsonRequest(url, options, timeout = requestTimeout) {
     return fetchTimed(url, options, async (response) => {
       let data;
       try { data = await response.json(); } catch (error) {
@@ -356,7 +358,7 @@
       }
       if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('问库响应格式不正确');
       return data;
-    });
+    }, timeout);
   }
 
   function createTurn(question, article) {
@@ -572,7 +574,8 @@
       if (token !== session) return;
       attempts += 1;
       try {
-        const data = await jsonRequest(`/api/v1/answers/${turn.id}`, { headers: { Accept: 'application/json' } });
+        // brief=1：整合中只回状态、进度、半截回答和出处编号，几 KB；整合完那一次带上出处原文（见 api.brief_payload）。
+        const data = await jsonRequest(`/api/v1/answers/${turn.id}?brief=1`, { headers: { Accept: 'application/json' } }, pollTimeout);
         if (token !== session) return;
         failures = 0;
         if (data.status !== 'running') {

@@ -241,7 +241,7 @@ img { max-width: 100%; }
   line-height: 1;
 }
 /* 标题用宋体：品牌、页面标题、卡片标题、日期栏、公司和作者名。文章页标题在 .reader h1 里设，公司页的小标题在各自的规则里设。 */
-.brand, .page-head h1, .company-title h1, .item-title, .daybar h2, .holding-head h2, .author-card h2 {
+.brand, .page-head h1, .company-title h1, .item-title, .daybar h2, .author-card h2 {
   font-family: var(--font-serif);
 }
 
@@ -600,29 +600,6 @@ mark {
 .panel p { margin: 0; font-size: 14px; line-height: 1.65; }
 .panel .quiet { margin-top: 6px; color: var(--ink-3); font-size: 13px; overflow-wrap: anywhere; }
 .panel a:hover { color: var(--accent); }
-.sibling-list { margin: 0; padding: 0; list-style: none; }
-.sibling-list li + li { margin-top: 8px; }
-.sibling-list a { color: var(--ink-2); font-size: 13.5px; line-height: 1.5; }
-.sibling-list a:hover { color: var(--accent); }
-
-.count-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-  margin: 16px 0;
-}
-.stat-list { margin: 0; padding: 0; list-style: none; }
-.stat-list li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line-soft);
-  font-size: 14px;
-}
-.stat-list li:last-child { border-bottom: 0; padding-bottom: 0; }
-.stat-list a[aria-current="page"] { color: var(--accent); font-weight: 600; }
-.stat-list strong { font-weight: 650; font-variant-numeric: tabular-nums; }
 
 .reader-grid {
   display: grid;
@@ -723,7 +700,6 @@ a.depth[aria-current="page"] { box-shadow: inset 0 0 0 1px var(--accent); color:
 
 .market { margin-top: 18px; }
 .market h2 { margin: 0 0 8px; color: var(--ink-3); font-size: 13px; font-weight: 600; }
-.table-card { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); text-align: left; }
 th { background: var(--bg-sunk); color: var(--ink-3); font-size: 12px; font-weight: 600; }
@@ -807,7 +783,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 .doc-read .prose:not(.bilingual-en) p + p { margin-top: 1.15em; }
 .prose p { margin: 0; }
 /* 问库、日汇总的段距仍按一段空白。阅读页用上面更紧的 1.15em。
-   别动 .bilingual-en.prose p + p（译文仍用 0.8em）、.ocr-reading p + p（识图 1.4em）。 */
+   别动 .bilingual-en.prose p + p（译文仍用 0.8em）。 */
 .prose p + p { margin-top: 1.8em; }
 .prose p:empty { display: none; }
 /* 不要按 br + br 藏换行：兄弟选择器不看中间的文字，「第一行<br>第二行<br>第三行」从第三行起全粘成一段。 */
@@ -825,9 +801,7 @@ tbody tr:hover td { background: var(--accent-softer); }
 .prose h4 { margin-top: 1.6em; }
 .prose :is(h2, h3, h4) + * { margin-top: .7em; }
 /* 正文里的外链回到蓝链：原文、译文、中文页凡 .prose 内的普通链接都用 --link，
-   点过的用 --link-visited。仍保留下划线，颜色之外还有一层可辨认的记号。
-   识图转写是例外（整段每个字都链到原图，铺成蓝色会糊成一片），
-   见后面 .prose .ocr-reading a：那里跟周围文字同色。导航、页眉、页脚不在 .prose 里。 */
+   点过的用 --link-visited。仍保留下划线，颜色之外还有一层可辨认的记号。导航、页眉、页脚不在 .prose 里。 */
 .prose a {
   color: var(--link);
   text-decoration: underline;
@@ -983,9 +957,6 @@ tbody tr:hover td { background: var(--accent-softer); }
   line-height: 1.6;
 }
 
-@media (min-width: 720px) {
-  .count-grid { grid-template-columns: 1fr 1.4fr; }
-}
 @media (min-width: 1024px) {
   .sidebar { display: flex; }
   .mobile-bar, .tabbar { display: none; }
@@ -1614,9 +1585,6 @@ tbody tr:hover td { background: var(--accent-softer); }
 .quoted p, .digest p { margin: 0; white-space: pre-line; }
 .digest ul { margin: 8px 0 0; padding-left: 20px; }
 .quoted-label { margin-bottom: 6px !important; color: var(--ink-4); font-size: 12.5px; }
-.mention-list { margin: 0; padding: 0; list-style: none; }
-.mention-list li { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 14px; }
-.mention-list .depth { padding: 0 6px; font-size: 11.5px; }
 
 /* 问库 */
 .ask-form { display: grid; gap: 10px; margin: 16px 0 24px; }
@@ -1633,7 +1601,6 @@ tbody tr:hover td { background: var(--accent-softer); }
   resize: vertical;
 }
 .ask-form button { justify-self: start; height: 36px; padding: 0 18px; }
-.ask-note { margin: 0; font-size: 12.5px; }
 .answer { margin-bottom: 28px; }
 .answer h2 { margin: 0 0 8px; font-size: 18px; }
 .answer h3 { margin: 24px 0 8px; font-size: 15px; }
@@ -1652,73 +1619,9 @@ tbody tr:hover td { background: var(--accent-softer); }
 .citations li:not(.cited) { opacity: .72; }
 .citations .item-excerpt { -webkit-line-clamp: 4; }
 
-/* 持仓和观察：公司列表置顶、公司页标记、首页近况 */
-.role-badge {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: var(--radius-mark);
-  font-size: 11.5px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-}
-.role-badge.role-holding { background: var(--accent); color: var(--accent-contrast); }
-.role-badge.role-watch { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent-ink); }
-
-.holding-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 18px 0 8px;
-  padding: 0;
-  list-style: none;
-}
-.holding-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  padding: 16px 18px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
-  background: var(--surface);
-  box-shadow: var(--shadow-card);
-}
-.holding-card.role-holding { border-top: 3px solid var(--accent); }
-.holding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.holding-head h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0; }
-.holding-head h2 a:hover { color: var(--accent); }
-.holding-ticker { margin-left: auto; color: var(--ink-4); font-size: 12.5px; }
-.holding-stats { margin: 0; color: var(--ink-3); font-size: 13.5px; }
-.holding-stats strong { color: var(--ink); font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin-right: 2px; }
-.holding-spark { margin: 0; }
 .spark { display: block; width: 100%; height: 40px; }
 .spark .bar-deep { fill: var(--accent); }
 .spark .bar-empty { fill: var(--line-strong); }
-.holding-spark figcaption {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 4px;
-  color: var(--ink-4);
-  font-size: 11px;
-}
-.holding-authors { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
-.holding-authors a {
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: var(--bg-sunk);
-  color: var(--ink-3);
-  font-size: 12px;
-  line-height: 20px;
-}
-.holding-authors a:hover { color: var(--accent); }
-.holding-authors .num { color: var(--ink-4); }
-.holding-latest { margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; overflow-wrap: anywhere; }
-.holding-latest a { font-weight: 600; }
-.holding-latest a:hover { color: var(--accent); }
-.holding-latest .quiet { font-size: 12.5px; }
 
 /* 其余公司：紧凑的行，手机上两行排，不用横向滚动 */
 .company-list { margin-top: 28px; }
@@ -1731,7 +1634,6 @@ tbody tr:hover td { background: var(--accent-softer); }
 .company-hero { margin-top: 4px; }
 .company-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .company-title h1 { margin: 0; color: var(--ink); font-size: 30px; font-weight: 600; letter-spacing: .02em; line-height: 1.25; }
-.company-title .role-badge { height: 22px; font-size: 12px; }
 .company-hero .head-actions { margin-bottom: 4px; }
 .chart-wrap figcaption { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; }
 .legend { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-4); font-size: 12px; font-weight: 400; }
@@ -1842,15 +1744,8 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 }
 .holdings-name { grid-area: name; color: var(--ink); font-size: 14.5px; font-weight: 650; }
 .holdings-name:hover { color: var(--accent); }
-.holdings-now .role-badge { grid-area: role; justify-self: start; }
 .holdings-recent { grid-area: recent; justify-self: end; color: var(--ink-2); font-size: 12.5px; }
-.holdings-latest { grid-area: latest; min-width: 0; overflow: hidden; color: var(--ink-3); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.holdings-latest a { color: var(--ink-2); }
-.holdings-latest a:hover { color: var(--accent); }
 
-/* 问库：相关原文、后台整合的状态 */
-.answer-status { display: flex; align-items: center; gap: 10px; margin: 8px 0 4px; padding: 10px 14px; border-radius: var(--radius-control); background: var(--accent-softer); color: var(--ink-2); font-size: 13.5px; line-height: 1.6; }
-.spinner { flex: none; width: 14px; height: 14px; border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent); border-radius: 999px; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .retry-form { margin: 8px 0 0; }
 .retry-form button { height: 32px; padding: 0 14px; border: 0; border-radius: var(--radius-control); background: var(--accent); color: var(--accent-contrast); }
@@ -1904,157 +1799,23 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .view-quote a { color: var(--ink-2); }
 .view-quote a:hover { color: var(--accent); }
 
-/* 首页持仓近况：最近一条判断 */
-.holdings-view .stance { vertical-align: 1px; }
-
 /* 文章页：引用的那一段、图片文字跳到的那一块 */
 .is-quoted { border-radius: 4px; background: var(--amber-soft); box-shadow: -10px 0 0 var(--amber-soft), 10px 0 0 var(--amber-soft); scroll-margin-top: 96px; }
-.prose img[id^="img-"], .prose .ocr-shot, .prose a.ocr-link { scroll-margin-top: 96px; }
-.prose img[id^="img-"]:target, .prose .ocr-shot:target, .prose a.ocr-link:target {
+.prose img[id^="img-"] { scroll-margin-top: 96px; }
+.prose img[id^="img-"]:target {
   outline: 3px solid var(--amber);
   outline-offset: 3px;
   border-radius: 4px;
 }
-/* 图转文字和正文同一套字：不另设 15px，也不铺灰底。
-   转写出来的字本身是链接（.prose a）。没有字的商品图、图表仍在下面用小一号的「原图 N」。 */
-.prose .ocr-reading {
-  margin: 0;
-  padding: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-/* 识图的例外：转写出来的每个字都链到原图（.ocr-link），整段铺蓝等于给这段刷底色，
-   所以这里跟周围文字同色，只留一道淡下划线；悬停把下划线描实。
-   下面的 a.ocr-table-link（整张表是链接）比这条更具体，仍不画下划线。 */
-.prose .ocr-reading a {
-  color: inherit;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, currentColor 42%, transparent);
-  text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
-}
-.prose .ocr-reading a:visited { color: inherit; }
-.prose .ocr-reading a:hover {
-  color: inherit;
-  text-decoration-color: currentColor;
-  text-decoration-thickness: 2px;
-}
-.prose .ocr-reading.ocr-chat {
-  display: block;
-  white-space: normal;
-}
-.prose .ocr-reading.ocr-chat p {
-  margin: 0;
-  padding: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  color: inherit;
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
-  white-space: normal;
-}
-.prose .ocr-reading.ocr-chat p + p { margin-top: 1.4em; }
-/* 对话体（图转文字、星球问答）与正文同一套段落。pre-wrap 会把已经收好的折行再画成窄列。 */
-.prose .ocr-reading.ocr-dialogue {
-  display: block;
-  width: 100%;
-  padding: 0;
-  background: transparent;
-  border-radius: 0;
-  color: inherit;
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
-  white-space: normal;
-}
-.prose .ocr-reading.ocr-dialogue p {
-  margin: 0;
-  color: inherit;
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
-  white-space: normal;
-}
-.prose .ocr-reading.ocr-dialogue p + p { margin-top: 1.4em; }
 /* .who 只标记说话人。字号、字重、行高、颜色跟所在段落走，不再做成小标题。 */
-.prose p > .who,
-.prose .ocr-reading .who {
+.prose p > .who {
   margin: 0;
   color: inherit;
   font-size: inherit;
   font-weight: inherit;
   line-height: inherit;
 }
-.prose .ocr-reading p {
-  margin: 0;
-  white-space: normal;
-}
-.prose .ocr-reading p + p { margin-top: 1.4em; }
-/* 识图里的数据表：表头和数据列对齐，不能一行一行排成段落。
-   整张表仍是到原图的链接（.ocr-link），所以链接在这里让位给表格：不画下划线，悬停只给一层浅底。 */
-.prose .ocr-reading a.ocr-table-link {
-  display: block;
-  overflow-x: auto;
-  margin: .35em 0 .1em;
-  border-radius: 4px;
-  color: inherit;
-  text-decoration: none;
-}
-.prose .ocr-reading a.ocr-table-link:hover {
-  outline: 1px solid var(--line-strong);
-  outline-offset: 2px;
-  text-decoration: none;
-}
-.prose .ocr-reading table.ocr-table {
-  display: table;
-  width: 100%;
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.6;
-  font-variant-numeric: tabular-nums;
-}
-.prose .ocr-reading table.ocr-table th,
-.prose .ocr-reading table.ocr-table td {
-  padding: .45em .7em;
-  white-space: nowrap;
-}
-.prose .ocr-reading table.ocr-table th[scope="row"] {
-  white-space: normal;
-  background: transparent;
-  text-align: left;
-}
-.prose .ocr-reading table.ocr-table td,
-.prose .ocr-reading table.ocr-table thead th { text-align: right; }
-.prose .ocr-reading table.ocr-table thead th:first-child { text-align: left; }
-.prose .ocr-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 8px 0 0;
-}
-.prose .ocr-links a {
-  color: var(--ink-3);
-  font-size: 13px;
-  line-height: 1.4;
-}
-.prose .ocr-links a:hover { color: var(--ink); }
-.prose .ocr-original { margin-top: 8px; }
-.prose .ocr-original summary {
-  cursor: pointer;
-  color: var(--ink-3);
-  font-size: 13px;
-  user-select: none;
-}
-.prose .ocr-original summary:hover { color: var(--accent); }
-.prose .ocr-original img { margin-top: 8px; }
+
 .revised { color: var(--hot); }
 .revised:hover { text-decoration: underline; }
 
@@ -2096,19 +1857,11 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .dup-separate { margin: 0 0 0 auto; }
 
 @media (max-width: 719px) {
-  /* 手机上持仓卡两列，只留名字、标记、篇数和月度条；作者和最近一篇在桌面宽度和首页「最近观点」里看。 */
-  .holding-card { gap: 6px; padding: 12px; }
-  .holding-head h2 { font-size: 17px; }
-  .holding-ticker, .holding-authors, .holding-latest, .holding-spark figcaption { display: none; }
-  .holding-stats { font-size: 12.5px; }
-  .holding-stats strong { font-size: 18px; }
-  .holding-stats .quiet { display: none; }
   .spark { height: 30px; }
   .slots.flat .slot { grid-template-columns: 74px minmax(0, 1fr); }
   .slots.flat.short .slot { grid-template-columns: 52px minmax(0, 1fr); }
 }
 @media (min-width: 720px) {
-  .holding-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .who-row { grid-template-columns: 7em minmax(80px, 1fr) 9em 6.5em; grid-template-areas: "name bar count last"; }
   .who-last { display: block; grid-area: last; justify-self: end; font-size: 12px; }
   .holdings-now li {
@@ -2118,12 +1871,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   }
 }
 @media (min-width: 1024px) {
-  .holding-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .holding-card.role-watch { grid-column: span 2; }
   .company-filter { width: 280px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .spinner { animation: none; }
 }
 
 /* 飞书相对链接对不上库里的文档 */
@@ -2413,21 +2161,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   text-decoration: none;
 }
 .article-chat a.cite:hover { color: var(--accent); }
-.article-chat .chat-sources { margin: 8px 0 0; padding: 0; list-style: none; }
-.article-chat .chat-sources li { min-width: 0; }
-.article-chat .chat-sources li + li { margin-top: 3px; }
-.article-chat .chat-sources a {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 12px;
-  line-height: 1.45;
-  text-decoration: none;
-  white-space: normal;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-.article-chat .chat-sources a:hover { color: var(--ink); text-decoration: underline; }
+
 .article-chat .chat-form {
   display: block;
   flex: none;
