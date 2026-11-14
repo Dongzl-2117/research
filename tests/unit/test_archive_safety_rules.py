@@ -252,8 +252,11 @@ def test_wechat_image_cdn_downloads_through_the_proxy_fake_ip(monkeypatch):
         def __exit__(self, *_exc):
             return False
 
+        def __init__(self):
+            self.body = [b"\x89PNG\r\n\x1a\n...."]
+
         def read(self, _size):
-            return b"\x89PNG\r\n\x1a\n...."
+            return self.body.pop() if self.body else b""
 
     class _Opener:
         def open(self, request, timeout):
@@ -284,8 +287,11 @@ def test_stratechery_image_downloads_through_the_proxy_fake_ip(monkeypatch):
         def __exit__(self, *_exc):
             return False
 
+        def __init__(self):
+            self.body = [b"\x89PNG\r\n\x1a\n...."]
+
         def read(self, _size):
-            return b"\x89PNG\r\n\x1a\n...."
+            return self.body.pop() if self.body else b""
 
     class _Opener:
         def open(self, request, timeout):

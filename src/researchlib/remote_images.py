@@ -32,6 +32,7 @@ import os
 import re
 import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -43,7 +44,13 @@ from researchlib.chunks import replace_ocr_chunks
 from researchlib.render import img_tag_url, normalize_image_url
 
 MAX_BYTES = 15 * 1024 * 1024
+# 每次收数据的超时。对方隔十几秒给一个字节时每次都不超时，所以另有一张图的总时限和一次运行的总时限。
 TIMEOUT_S = 20
+# 一张图从发请求到收完最多这么久（审核 C2：以前只有每次收数据的超时，对方慢慢滴，夜间任务就一直挂着）。
+DOWNLOAD_SECONDS = 60
+READ_CHUNK = 64 * 1024
+# 一次运行最多这么多分钟，到了就停，剩下的下次接着下。
+MAX_MINUTES = 30
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
     "Version/17.0 Safari/605.1.15"
@@ -91,9 +98,17 @@ def image_extension(data: bytes, content_type: str = "") -> str:
         return ".webp"
     subtype = (content_type or "").split(";", 1)[0].strip().lower()
     if subtype.startswith("image/"):
-        guess = subtype.split("/", 1)[1]
-        return {"jpeg": ".jpg", "svg+xml": ".svg"}.get(guess, "." + re.sub(r"[^a-z0-9]", "", guess) or ".img")
+        # 只认常见的图片类型做扩展名；对方回的类型名是什么都照拼，曾经能拼出几百个字的文件名，
+        # 存盘抛 File name too long，整次下图中断（审核 C1）。
+        return _CONTENT_TYPE_EXT.get(subtype.split("/", 1)[1], ".img")
     return ""
+
+
+_CONTENT_TYPE_EXT = {
+    "jpeg": ".jpg", "jpg": ".jpg", "pjpeg": ".jpg", "png": ".png", "apng": ".apng", "gif": ".gif",
+    "webp": ".webp", "bmp": ".bmp", "svg+xml": ".svg", "avif": ".avif", "heic": ".heic", "heif": ".heif",
+    "tiff": ".tiff", "x-icon": ".xicon", "vnd.microsoft.icon": ".vndmicrosofticon",
+}
 
 
 # 解析不了（域名没了、这台机器的 DNS 坏了）、解析到代理的假地址（fake-ip）、解析到内网分开记：处理办法不一样。
@@ -101,6 +116,7 @@ def image_extension(data: bytes, content_type: str = "") -> str:
 _NOT_PUBLIC = "地址解析到内网或本机，不下载"
 _FAKE_IP = "地址解析到代理的假地址，不下载"
 _NO_DNS = "域名解析不了"
+_BAD_URL = "地址不对"
 
 # Clash、Surge、sing-box 这类代理开 fake-ip 时用的段：RFC 2544 留给测试的 198.18.0.0/15，公网上不会出现。
 PROXY_FAKE_IPS = ipaddress.ip_network("198.18.0.0/15")
@@ -239,7 +255,10 @@ def download(url: str) -> tuple[bytes, str]:
 
     WordPress 图片 CDN 上的图先下原站那一张，下不来再试 CDN，两边的原因都记下。
     """
-    origin = photon_origin(url)
+    try:
+        origin = photon_origin(url)
+    except ValueError as exc:  # 「http://[::1/x.png」这类 urlsplit 就认不了的地址
+        raise FetchError(f"{_BAD_URL}：{exc}") from exc
     if not origin:
         return _download(url)
     try:
@@ -252,24 +271,51 @@ def download(url: str) -> tuple[bytes, str]:
 
 
 def _download(url: str) -> tuple[bytes, str]:
+    """下不来的原因一律转成 FetchError：别的异常会冒出 fetch_pending，这个地址记不进库，
+    以后每晚都停在同一篇（审核 C1：「http://[::1/x.png」「http://a..b/x.png」「:abc」端口）。"""
+    try:
+        return _download_checked(url)
+    except FetchError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise FetchError(f"HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise FetchError(f"连不上：{exc}") from exc
+    except (ValueError, http.client.HTTPException) as exc:
+        raise FetchError(f"{_BAD_URL}：{type(exc).__name__}: {exc}") from exc
+
+
+def _download_checked(url: str) -> tuple[bytes, str]:
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise FetchError("不是 http(s) 地址")
     _check_host(parts.hostname)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.5"})
-    try:
-        with _opener().open(request, timeout=TIMEOUT_S) as response:
-            content_type = response.headers.get("Content-Type", "")
-            data = response.read(MAX_BYTES + 1)
-    except urllib.error.HTTPError as exc:
-        raise FetchError(f"HTTP {exc.code}") from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise FetchError(f"连不上：{exc}") from exc
+    started = time.monotonic()
+    with _opener().open(request, timeout=TIMEOUT_S) as response:
+        content_type = response.headers.get("Content-Type", "")
+        data = _read_limited(response, started)
     if len(data) > MAX_BYTES:
         raise FetchError("超过 15MB")
     if not image_extension(data, content_type):
         raise FetchError(f"不是图片（{content_type or '没有 Content-Type'}）")
     return data, content_type
+
+
+def _read_limited(response, started: float) -> bytes:
+    """一块块读（read1 有多少给多少，不等凑满一块），超过 MAX_BYTES 就停，超过总时限抛 FetchError。"""
+    chunks: list[bytes] = []
+    total = 0
+    read = getattr(response, "read1", None) or response.read
+    while total <= MAX_BYTES:
+        if time.monotonic() - started > DOWNLOAD_SECONDS:
+            raise FetchError(f"下载超时（超过 {DOWNLOAD_SECONDS} 秒）")
+        chunk = read(READ_CHUNK)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
 
 
 def store_bytes(data_dir: Path, data: bytes, ext: str) -> tuple[str, str]:
@@ -357,15 +403,20 @@ def fetch_pending(
     data_dir: Path,
     limit: int = 300,
     fetch: Callable[[str], tuple[bytes, str]] = download,
+    max_minutes: float | None = MAX_MINUTES,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict:
     """最多处理 limit 个还没挂上的地址。返回计数 {"downloaded", "reused", "failed", "skipped", "articles"}。
 
     另记第一次下的地址：new 个，其中下不来的按原因类别（kinds）和域名（hosts）计数，给 fetch_status 判断。
     重试的地址以前就下不来，再失败是意料之中，只计 retried / retry_failed。
+    跑满 max_minutes 分钟就停（report["timed_out"] 为真），剩下的下次接着下。
     """
+    deadline = None if not max_minutes else clock() + max_minutes * 60
     report = {
         "downloaded": 0, "reused": 0, "failed": 0, "skipped": 0, "articles": 0,
         "new": 0, "retried": 0, "retry_failed": 0, "kinds": Counter(), "hosts": Counter(),
+        "timed_out": False,
     }
     budget = limit
     after = None
@@ -394,6 +445,10 @@ def fetch_pending(
                 if _cooling(state):
                     report["skipped"] += 1
                     continue
+                if deadline is not None and clock() > deadline:
+                    report["timed_out"] = True
+                    budget = 0
+                    break
                 budget -= 1
                 first = state is None
                 report["new" if first else "retried"] += 1
@@ -447,6 +502,9 @@ def failure_kind(error: str) -> str:
         ("不是图片", "不是图片"),
         ("超过", "超过 15MB"),
         ("不是 http(s)", "地址不对"),
+        (_BAD_URL, "地址不对"),
+        ("下载超时", "下载超时"),
+
         ("跳转到了", "地址不对"),
     ):
         if text.startswith(prefix):
@@ -584,6 +642,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="把正文里的外链图片下载到本地（DATA_DIR/images/remote）")
     parser.add_argument("--limit", type=int, default=300, help="这次最多下载多少个地址")
     parser.add_argument(
+        "--max-minutes",
+        type=float,
+        default=MAX_MINUTES,
+        help=f"最多跑多少分钟，到了就停、剩下的下次接着下（默认 {MAX_MINUTES}，0 不限）",
+    )
+    parser.add_argument(
         "--exit-code",
         action="store_true",
         help=(
@@ -603,13 +667,14 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
     conn = prepare(settings)
     try:
-        report = fetch_pending(conn, settings.data_dir, args.limit)
+        report = fetch_pending(conn, settings.data_dir, args.limit, max_minutes=args.max_minutes)
         dead = dead_hosts(conn)
     finally:
         conn.close()
     print(
         f"下载 {report['downloaded']} 张，复用 {report['reused']} 张，失败 {report['failed']} 张，"
         f"等下次重试 {report['skipped']} 张，涉及 {report['articles']} 篇"
+        + (f"；跑满 {args.max_minutes:g} 分钟先停，剩下的下次接着下" if report["timed_out"] else "")
     )
     return finish(settings.data_dir, report, exit_code=args.exit_code, dead=dead)
 

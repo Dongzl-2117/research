@@ -82,6 +82,14 @@ CUT_UNREADABLE = {
 _FENCE = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\n?(?P<body>.*?)\n?```$", re.S)
 _NOT_WORD = re.compile(r"[\W_]+")
 _BLANKS = re.compile(r"\n{3,}")
+# 控制字符（换行、制表符以外）和双向控制符。模型偶尔交回 NUL，写库时 psycopg 报
+# 「text fields cannot contain NUL」，识图整批中断（审核 C4）；别的控制字符在页面上也只是乱码。
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]")
+
+
+def strip_control(text: str) -> str:
+    """去掉控制字符和双向控制符，换行、回车、制表符留着。"""
+    return _CONTROL.sub("", text)
 _PARAGRAPH_BREAK = re.compile(r"\n\s*\n+")
 _TRUE = frozenset({"true", "1", "yes", "是"})
 _CUTS = {"top": "top", "bottom": "bottom", "上": "top", "下": "bottom"}
@@ -155,7 +163,7 @@ def _text(value) -> str:
         value = "\n".join(str(part) for part in value if part is not None)
     if value is None or isinstance(value, (dict, bool)):
         return ""
-    lines = [line.strip() for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    lines = [line.strip() for line in strip_control(str(value)).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     return _BLANKS.sub("\n\n", "\n".join(lines)).strip()
 
 
@@ -163,7 +171,7 @@ def _name(value) -> str:
     """照图上抄的显示名。冒号换成空格：后面一律按「说话人：正文」拆，名字里不能再有冒号。"""
     if not isinstance(value, str):
         return ""
-    name = re.sub(r"\s+", " ", value).strip().lstrip("@＠").strip()
+    name = re.sub(r"\s+", " ", strip_control(value)).strip().lstrip("@＠").strip()
     name = re.sub(r"[:：]+", " ", name).strip()
     if not name or len(name) > MAX_NAME or "\n" in name:
         return ""
