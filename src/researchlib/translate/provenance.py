@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import html
 import json
@@ -169,20 +170,30 @@ _ENGLISH_WORD = re.compile(r"[A-Za-z][A-Za-z'’]*")
 _HAN = re.compile(r"[㐀-鿿豈-﫿]")
 
 
+# 正文里照抄的网址（脚注里的出处、「Sources include: http://……」）。网址里的 the、of、and 拼不成句子。
+_URL = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)\S+")
+
+
+def _prose(value: str) -> str:
+    """一段显示出来的字，去掉照抄的网址。"""
+    return _URL.sub(" ", " ".join(Resources(value).text))
+
+
 def untranslated_english(source: str, target: str) -> bool:
     """这一段交回来的还是英文，其实没译。
 
     原文得是成句的英文：至少 12 个英文词，其中至少 3 个是小写的虚词（the、of、which……）。
     人名列表、书名、产品名凑不够，模型原样留着不算没译。译文里英文字母还有原文的一半以上、
     汉字不到原文字母数的 5%，就是把英文交了回来；只把「MA：」换成「马克：」、后面整段照抄英文的也算。
-    译得太短（漏了内容）不归这里管。
+    译得太短（漏了内容）不归这里管。网址不算词：脚注里一串出处网址，模型照原样留着也不算没译
+    （11-14 补串段时 22089 三条这样的脚注被当成交回英文，单独重译两次还是网址，先放了英文）。
     11-11 全库抽查：模型把下一段的中文一起写进这一段，下一段原样交回英文，以前的核对都放行了。
     """
-    words = _ENGLISH_WORD.findall(" ".join(Resources(source).text))
+    words = _ENGLISH_WORD.findall(_prose(source))
     if len(words) < 12 or sum(word in _FUNCTION_WORDS for word in words) < 3:
         return False
     letters = sum(len(word) for word in words)
-    shown = " ".join(Resources(target).text)
+    shown = _prose(target)
     kept = sum(len(word) for word in _ENGLISH_WORD.findall(shown))
     return kept >= letters * 0.5 and len(_HAN.findall(shown)) < letters * 0.05
 
@@ -190,6 +201,12 @@ def untranslated_english(source: str, target: str) -> bool:
 # 一次请求最多送几段（service.TRANSLATE_BATCH_MAX_SEGMENTS）。译文整体错开只会发生在同一次回答里，
 # 比两段中文、圈出要重译的范围都按这个跨度。
 COPY_SPAN = 12
+# 一段的中文整段写进了相近一段时，被包含的那段至少这么多汉字（一整句）才算。11-14 线上对照页里，
+# 小标题、术语、对话里重说一遍的短语最长 13 个汉字，多带了一段的导语最短 17 个。
+SWALLOWED_HAN = 16
+# 一段英文有这么多比例的词按顺序出现在另一段英文里，就当成同一段话：中文一样或包含都是对的。
+SAME_WORDS = 0.9
+_WORD = re.compile(r"[^\W_]+")
 
 
 def _bare(value: str) -> str:
@@ -197,28 +214,66 @@ def _bare(value: str) -> str:
     return re.sub(r"[\W_]+", "", html.unescape(_TAG.sub("", value or ""))).casefold()
 
 
-def copied_targets(sources: Sequence[str], targets: Sequence[str], *, span: int = COPY_SPAN) -> list[int]:
-    """相隔不到 ``span`` 段的两段，英文不同、中文却一字不差：返回这几段的位置。
+def _words(value: str) -> list[str]:
+    """一段显示出来的词，不分大小写。"""
+    return _WORD.findall(html.unescape(_TAG.sub(" ", value or "")).casefold())
 
-    模型偶尔把一次回答里的译文整体错开一格：一段的中文没了，后面几段各拿了下一段的中文，
-    到某一段又对上，它和前一段写成了同一段话（11-11 21938 引的 Andreessen 那几句）。
-    数字、结构、交回英文的核对都看不出来，只剩「英文不同、中文一样」这个迹象。整段比，去掉标签、标点和空白，
-    不分大小写；中文不到 8 个汉字的（「是的。」这类）、一段英文包含另一段的（同一段话又引一遍，前面多了说话人；
-    目录里的小标题和正文里大小写、连字符不同的同一个小标题）不算。
+
+def _within(short: list[str], long: list[str]) -> bool:
+    """``short`` 的词有 ``SAME_WORDS`` 以上按顺序出现在 ``long`` 里。"""
+    if not short:
+        return True
+    matcher = difflib.SequenceMatcher(None, short, long, autojunk=False)
+    return sum(block.size for block in matcher.get_matching_blocks()) >= len(short) * SAME_WORDS
+
+
+def copied_targets(sources: Sequence[str], targets: Sequence[str], *, span: int = COPY_SPAN) -> list[int]:
+    """相隔不到 ``span`` 段的两段，一段的中文整段又出现在另一段的中文里，英文却对不上：返回这几段的位置。
+
+    两种都是模型把一段的中文写到了别的段，数字、结构、交回英文的核对都看不出来：
+
+    - 整体错开一格：一段的中文没了，后面几段各拿了下一段的中文，到某一段又对上，它和前一段写成了
+      同一段话（11-11 21938 引的 Andreessen 那几句）。两段中文一字不差。
+    - 多带了一段：这一段的中文前面或后面多写了相邻一段的整段中文，相邻那段自己的中文也在
+      （11-14 线上对照页里十来篇：22537、22999 下一段的中文开头先写了一遍导语；22384 一段多写了后面那段，
+      后面几段跟着错开）。一段的中文是另一段中文的一部分。
+
+    整段比，去掉标签、标点和空白，不分大小写。两段中文一样时，不到 8 个汉字的（「是的。」这类）不算；
+    一段中文包含另一段时，被包含的那段要有 ``SWALLOWED_HAN`` 个汉字以上：小标题、术语、插话本来就常出现在
+    别的段里（「先有鸡还是先有蛋」「使用的目的和性质」「以苹果一贯的方式」）。
+    英文也对得上的不算：两段中文一样时，一段英文包含另一段（同一段话又引一遍、前面多了说话人；目录里的
+    小标题和正文里大小写、连字符不同的同一个小标题）；一段中文包含另一段时，长的那段英文也包含短的那段
+    （作者自己把前面那句又引了一遍）。包含不必一字不差：短的那段英文九成以上的词（``SAME_WORDS``）按顺序
+    出现在长的那段里就算，同一句话又引一遍时换了一个词（Such / The）、口语里重说一遍（love / like）、
+    多打了一个词，中文本来就该一样。错开一格的两段英文是不同的话，词对得上的不到两成；Andreessen 那几句
+    句式一样、只换了词，也只对上八成。
     """
     bare_sources = [_bare(item) for item in sources]
     bare_targets = [_bare(item) for item in targets]
+    words: dict[int, list[str]] = {}
+
+    def same(short: int, long: int) -> bool:
+        if bare_sources[short] in bare_sources[long]:
+            return True
+        for index in (short, long):
+            if index not in words:
+                words[index] = _words(sources[index])
+        return _within(words[short], words[long])
+
     found: set[int] = set()
-    for first, target in enumerate(bare_targets):
-        if len(_HAN.findall(target)) < 8:
+    for inner, target in enumerate(bare_targets):
+        han = len(_HAN.findall(target))
+        if han < 8:
             continue
-        for second in range(first + 1, min(len(bare_targets), first + span)):
-            if bare_targets[second] != target:
+        for outer in range(max(0, inner - span + 1), min(len(bare_targets), inner + span)):
+            other = bare_targets[outer]
+            if outer == inner or target not in other:
                 continue
-            one, other = bare_sources[first], bare_sources[second]
-            if one in other or other in one:
+            if target != other and han < SWALLOWED_HAN:
                 continue
-            found.update((first, second))
+            if same(inner, outer) or (target == other and same(outer, inner)):
+                continue
+            found.update((inner, outer))
     return sorted(found)
 
 

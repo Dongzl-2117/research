@@ -557,7 +557,7 @@ def _settle_part(
 ) -> None:
     """问一次、逐段收下能用的；不能用的段单独重译。
 
-    串段、有段交回英文、有两段英文不同中文一样时，这次回答整批不信，拆成两半重问。
+    串段、有段交回英文、有一段的中文又写进了相近一段（英文对不上）时，这次回答整批不信，拆成两半重问。
     """
     texts = _ask(slots, indices, _window(slots, progress, indices, base), data_dir)
     progress.models.update(getattr(texts, "models", ()))
@@ -570,13 +570,14 @@ def _settle_part(
     if (wrong is not None or english or copies) and len(indices) > 1:
         # 数字串到别的段，说明这次回答里段和段可能整体错开了，数字没毛病的段也不能信。
         # 一段交回英文也是这样：多半是旁边那段把它的中文一起写了，那一段看着没毛病，其实多了一段话。
-        # 两段英文不同、中文一样：一段的中文没了，后面几段各拿了下一段的中文，从哪一段开始错开看不出来。
+        # 一段的中文又写进了相近一段：整体错开一格（两段中文一样），或者一段多带了邻段的整段中文。
+        # 从哪一段开始错开看不出来。
         if wrong is not None:
             logger.info("第 %s 段写的是同一批别的段的数字，这 %s 段拆成两半重译", wrong, len(indices))
         elif english:
             logger.info("第 %s 段交回的是英文，这 %s 段拆成两半重译", english[0], len(indices))
         else:
-            logger.info("第 %s 段和同一批别的段英文不同、中文一样，这 %s 段拆成两半重译", copies[0], len(indices))
+            logger.info("第 %s 段的中文和同一批别的段重了（英文对不上），这 %s 段拆成两半重译", copies[0], len(indices))
         mid = len(indices) // 2
         _settle_part(slots, indices[:mid], base, data_dir, progress, neighbors)
         _settle_part(slots, indices[mid:], base, data_dir, progress, neighbors)

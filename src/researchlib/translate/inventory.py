@@ -111,7 +111,8 @@ NOT_DONE = ("none", "partial", "stale")
 OLD_PROMPT = "old-prompt"
 # 已译完、页面照样逐段对得上的篇里有串段（一段的中文写进了别的段）：
 # 有段交回的还是英文（provenance.echoed_slots），多半是模型把它的中文一起写进了前一段，那一对只有英文；
-# 或者相近两段英文不同、中文一字不差（provenance.copied_slots），同一次回答里的译文整体错开了一格。
+# 或者一段的中文又写进了相近一段、英文却对不上（provenance.copied_slots）：同一次回答里的译文整体错开了一格
+# （两段中文一字不差），或者一段多带了邻段的整段中文。
 # 按这一类再译只补那一片（provenance.reusable_targets）。
 MISPLACED = "misplaced"
 DISPLAY_NAMES = {
@@ -319,6 +320,14 @@ def _by_source(counts: dict | None) -> str:
     return "（" + "，".join(f"{name} {n:,}" for name, n in found.most_common()) + "）"
 
 
+def _few(found: list | None, limit: int = 10) -> str:
+    """篇数不多时把 id 也写出来：（20971、22089）。云端的 AI 连不上那台机器，只能照着摘要去线上核页面。"""
+    found = sorted(int(article_id) for article_id in found or [])
+    if not found or len(found) > limit:
+        return ""
+    return "（" + "、".join(map(str, found)) + "）"
+
+
 def summary(report: dict) -> list[str]:
     """给人看的几行。"""
     ids = report["ids"]
@@ -361,7 +370,9 @@ def summary(report: dict) -> list[str]:
         lines.append(
             f"  用第 {version} 版译过、个别段重译失败退回旧译文的 {report['mixedPrompts']} 篇，不算 old-prompt"
         )
-    lines.append(f"  没译完（partial）{count['partial']}，先放英文的段共 {report['gapSegments']} 段")
+    lines.append(
+        f"  没译完（partial）{count['partial']}{_few(ids['partial'])}，先放英文的段共 {report['gapSegments']} 段"
+    )
     lines.append(f"  原文改过、译文旧了 {count['stale']}")
     lines.append(f"  从没译过 {count['none']}{_by_source(by_state.get('none'))}")
     lines.append(
@@ -384,8 +395,8 @@ def summary(report: dict) -> list[str]:
     lines.append(f"  分段粗、--recheck 会挑的 {len(report['coarse'])} 篇（只看最新的 {COARSE_SCAN_CAP} 篇已译完的）")
     if report.get("echoSegments") is not None:
         echoes, copies = report["echoSegments"], report.get("copiedSegments") or 0
-        line = (f"  串段（一段的中文写进了别的段）{count.get(MISPLACED, 0)} 篇：交回英文的段 {echoes} 段，"
-                f"相近两段英文不同、中文一字不差的 {copies} 段")
+        line = (f"  串段（一段的中文写进了别的段）{count.get(MISPLACED, 0)} 篇{_few(ids.get(MISPLACED))}："
+                f"交回英文的段 {echoes} 段，中文和相近一段重了（英文对不上）的 {copies} 段")
         if echoes or copies:
             line += "。research-translate --from-inventory misplaced 只重译这几处附近的段"
         lines.append(line)
