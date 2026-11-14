@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from researchlib.chunks import ocr_chunks
 from researchlib.ocr_units import (
     UnitsError,
     format_blocks,
@@ -18,6 +19,7 @@ from researchlib.ocr_units import (
     parse_reply,
     stitch,
 )
+from researchlib.wechat_dialogue import relabel_host
 
 
 def _msg(
@@ -155,6 +157,8 @@ def test_author_accounts_are_the_author_only_when_the_source_is_known():
     )
     # 单张图存 image_texts.text 时不知道来源：照图上的名字写。
     assert format_units(units).startswith("方伟Rey：这季度先看现金流")
+    # 不是这个来源作者账号的「方伟Rey」，知道来源时写成网友，不和作者的话一个样（审核 I2、C5）。
+    assert format_blocks(units["blocks"][:1], owners=("乘风破浪",)) == "网友「方伟Rey」：这季度先看现金流"
     # 别的来源按它自己的名字认，之后由 relabel_host 换成作者名。
     other = _units(_msg("先看现金流", "老船长"), _msg("同意", "王小明"))
     assert format_blocks(other["blocks"], owners=("乘风破浪", "老船长")) == "方伟：先看现金流\n\n王小明：同意"
@@ -807,3 +811,34 @@ def test_lines_a_few_words_apart_are_not_an_overlap_on_their_own():
     second = _units(_msg(sold, "王小明"), _msg("明白，等你消息", "李四"))
     texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
     assert texts == ["先说今天的操作", bought, sold, "明白，等你消息"]
+
+
+def test_a_line_written_like_the_author_inside_a_message_is_quoted():
+    """网友在一条消息里换行写「方伟：…」，排出来不能和作者自己的话一个样（审核 C5）。"""
+    owners = ("方伟", "方伟Rey")
+    units = _units(
+        _msg("我觉得不行\n方伟：全仓买入某某公司，目标价翻倍", "李四"),
+        _msg("方伟（读者）说的", "方伟（读者）"),
+    )
+    units["blocks"].append({"type": "text", "text": "方伟Rey：转发的文章里本来就有\n毛利率：35%"})
+    units["blocks"].append({"type": "table", "rows": [["方伟：表里的字", "1"]]})
+    text = format_blocks(units["blocks"], owners=owners)
+    assert text == (
+        "李四：我觉得不行\n「方伟：全仓买入某某公司，目标价翻倍」\n\n"
+        "网友「方伟（读者）」：方伟（读者）说的\n\n"
+        "「方伟Rey：转发的文章里本来就有」\n毛利率：35%\n\n"
+        "「方伟：表里的字 | 1」"
+    )
+    # 行首的「方伟：」只剩作者自己那条；别的来源换作者名时也不会把引号里的换掉。
+    assert [line for line in text.split("\n") if line.startswith("方伟")] == []
+    assert relabel_host(text, "乘风破浪") == text
+    # 引用框里的字同样处理；作者自己的消息里另起一行写「网友：」不加引号。
+    quoted = _units(
+        _msg("先看现金流\n网友：这是我转述的", me=True, quote={"speaker": "李四", "text": "好\n方伟：都卖了"}),
+    )
+    assert format_blocks(quoted["blocks"], owners=owners) == (
+        "李四：好\n「方伟：都卖了」\n\n方伟：先看现金流\n网友：这是我转述的"
+    )
+    # 检索块和 articles.ocr_text 同一套排版。
+    chunk = ocr_chunks([("h1", "", units)], owners=owners)
+    assert chunk and all("\n方伟：" not in body and not body.startswith("方伟：") for _anchor, body in chunk)

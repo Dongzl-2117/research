@@ -66,26 +66,34 @@ def site_visible_sql(alias: str = "a") -> str:
     return f"{not_guest_sql(alias)} AND {not_comment_shell_sql(alias)}"
 
 
-def _norm_name(name: str) -> str:
-    text = re.sub(r"[（(].*?[）)]", "", name or "")
-    return re.sub(r"\s+", "", text).strip()
-
-
 def same_person(poster: str, star: str) -> bool:
-    left, right = _norm_name(poster), _norm_name(star)
+    """昵称是不是这个人：去掉首尾空白后一字不差。
+
+    以前去掉括号里的字和空白再比，读者改名「方伟（读者）」「方伟 Rey」就成了星主（审核 I2）。
+    星主自己用过的别的昵称写进来源配置的 poster_names，别靠放宽比较来认。
+    """
+    left, right = (poster or "").strip(), (star or "").strip()
     return bool(left) and left == right
 
 
-def assign_poster_role(meta: dict, star_name: str, aliases: tuple[str, ...] = ()) -> dict:
-    """就地写上 poster_role。没有发帖人名字时不猜，旧帖仍按星主处理。
+def assign_poster_role(
+    meta: dict, star_name: str, aliases: tuple[str, ...] = (), owner_ids: tuple[str, ...] = ()
+) -> dict:
+    """就地写上 poster_role。没有发帖人名字和 ID 时不猜，旧帖仍按星主处理。
 
-    aliases 是星主在平台上的其他显示名（来源配置里的 poster_names），比如星球昵称「方伟Rey」。
+    owner_ids 是星主的账户 ID（来源配置的 owner_ids）。配了它、这篇又带 poster_id 时只按 ID 认：
+    昵称谁都能改，ID 改不了。没有 ID 的旧帖才看昵称：和作者名或 aliases（来源配置的 poster_names，
+    比如星球昵称「方伟Rey」）一字不差才算星主。
     """
     name = str(meta.get("poster_name") or "").strip()
-    if not name:
+    poster_id = str(meta.get("poster_id") or "").strip()
+    if owner_ids and poster_id:
+        owner = poster_id in {str(item).strip() for item in owner_ids}
+    elif name:
+        owner = any(same_person(name, star) for star in (star_name, *aliases))
+    else:
         meta.pop(POSTER_ROLE, None)
         return meta
-    owner = any(same_person(name, star) for star in (star_name, *aliases))
     meta[POSTER_ROLE] = ROLE_OWNER if owner else ROLE_GUEST
     return meta
 

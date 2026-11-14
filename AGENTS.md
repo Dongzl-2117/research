@@ -38,6 +38,7 @@
 - 改段落块（原文、译文、图片文字重切，清洗）的代码写完块以后，提交之前调 `embeddings.sync_article`，新段落和它的向量一起提交，别把向量留给 research-embed：中间那段时间改过的段落只能按字面找到，排序整批往下掉（11-11 research-clean 以后检索页报「向量还没算完」）。见 [docs/retrieval.md](docs/retrieval.md)「改段落时连向量一起换」。
 - 改检索、问库的 SQL，先在一万篇以上的库上看 `EXPLAIN ANALYZE`（本地副本的搭法见 [docs/retrieval.md](docs/retrieval.md)「检索页提速（2026-11-11）」，副本里要另加几千篇隐藏文章，不然计划和线上不一样）。已知的坑：jsonb 表达式的条件要有统计（迁移 036）；按（文章, 块号）取行写成 `CROSS JOIN LATERAL (… OFFSET 0)`，写成普通连接常被估错，一篇几百块逐行比；核向量新鲜度的 md5 别放在要扫几万块的条件里；只有 `LIMIT` 没有 `ORDER BY` 的子查询，取到哪些行看计划。应用的数据库连接关了 JIT、顺序扫描每次从表头开始（`db.CONNECT_OPTIONS`），比改前改后的结果时两边都要这样连。
 - 不跳过、不禁用测试来让 CI 变绿。
+- 认星主（11-14，审核 I2、C5）：知识星球带发帖人 ID 的帖子只按来源配置的 `owner_ids` 认；没有 ID 的旧帖、评论区和截图只有昵称，和 `author`、`poster_names` 一字不差才算，不去括注、空白，不认「方伟-某某」。星主用过的别的昵称加进 `poster_names`，别放宽比较。识图排出来的字里行首的「方伟：」只能是结构标的作者本人：图里另起一行写着作者名加冒号的整行加「」，像作者的网名写成「网友「…」」（`ocr_units._quote_labels`、`speaker_label`）。
 - 阅读页（文章、对照、飞书目录右侧）保留原图，不把识图文字铺进正文。整理后的字只给摘要、观点、问这篇和检索（`ocr.compose_ocr_text` / `articles.ocr_text` / `article_chunks.lang = ocr`）。见 [docs/ocr.md](docs/ocr.md)。
 - 识图 11-07 起交回结构（`image_texts.units`，`researchlib/ocr_units.py`）：谁说的、是不是截图主人、引用的哪条、哪条被图片边缘截断，由看得见图的模型标好，后面只排版和拼接。以前从自由文字里猜说话人、剥界面字、接折行的旧规则（`vision_polish`、`normalize_vision_text`、`wechat_dialogue` 的大部分）#316 删了，没有结构的旧识图和模型没按格式交回的字按空行分段、照原样排（`ocr_units.plain_units`），不再猜。识图出错改 `VISION_PROMPT` 里的通用说明，不加按 App、按案例的规则。`cut` 只表示这条在图外还有下文，看得见的字整段留下；只有另标 `illegible`（笔画被切到中间）才不采用模型补的那句。`VISION_PROMPT_VERSION` 仍是 3，按第 3 版认过的图不因此重认。见 [docs/ocr.md](docs/ocr.md)「识图交回结构」。
 
@@ -76,6 +77,7 @@ python tools/retrieval_eval/evaluate.py --check tools/retrieval_eval/baseline.js
 - 本次文章展示与引用修复的交接见 [docs/article-preservation-2026-11-01.md](docs/article-preservation-2026-11-01.md)：对照投影遗漏时保留完整区块，段数不齐时分开展示；旧订阅地址在输出前遮住；OCR 重切同步校验观点定位。没有执行历史清洗或重切，不要把代码修好当成旧库已修复。原有近重复规则若会吞掉独有文字、数字、资料链接或结构，展示完整性优先。
 
 - **#56 合进 main 后撤回了**（撤回提交 58483db）。它是 Codex 做的星球账户资格和引用边界，分支 `codex/wechat-color-ci-savings-20261022`。重新合之前：按它分支上 `docs/availability-gate-2026-10-23.md` 的计划定向回填账户 ID、评论和图片文字；`TRUSTED_OWNERS` 里加上乘风破浪的星主账户，否则这个来源整个不显示；它把迁移从网页启动挪到了 `research-maintain`，`scripts/deploy.sh` 要先跑这一步再重启；和启动时按 `poster_names` 重算星主标记（`posters.refresh_poster_roles`）的做法冲突，要选一种。
+- 方伟星球的抓取脚本 11-14 收进仓库（`scripts/zsxq/dl.py`，审核 O3），星球 ID 在 Mac mini 的 `~/zsxq/zsxq.env`（`ZSXQ_GROUP_ID`），不进仓库；`data/inbox/fangwei-zsxq/dl.py` 那份旧的不再调用。`data/inbox` 仍不在备份里（O3 后半没做）。
 - 孤独进化体以前从 AIHOT 来，10-30 起改由 `scripts/crawl-gudujinhuati.sh` 每天抓（`research-crawl-wechat`，极致了查列表 + 公众号原文页）。方伟公众号 11-07 起走同一条路（`scripts/crawl-fangwei-mp.sh`，`ghid` 在 `config/sources.yaml`），不再调用仓库外的 `data/inbox/fangwei-mp/dl.py`；它以前取的是极致了按段估图位置的正文，这些老文章的图由同一个脚本每次按原文页挪回原位 50 篇（`research-place-wechat-images`，见 [docs/ingest.md](docs/ingest.md)「方伟公众号老文章的图」）。`--dry-run --limit 0` 报的等着的篇数到 0 以后，看挪不了的有多少，再决定删不删按识图挪图（`render._relocate_images`）。
 - 停更的来源没有抓取：黑黑无常（一次性导入的雪球存档）、Stratechery（在另一台机器「盒子」上手动抓再导入）、乘风破浪（没有抓取脚本）。接不接、用什么账号由 Zhilin 定。
 - Stratechery 归档只记日期，钟点由夜间任务按官网 WordPress 接口补（`research-stratechery-times`），重新导入同一份归档不会退回零点。见 [docs/ingest.md](docs/ingest.md)「Stratechery 的发布时刻」。

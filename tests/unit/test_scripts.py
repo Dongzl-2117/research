@@ -140,3 +140,32 @@ def test_nightly_theses_disabled_by_default():
     # 默认关时 status_ok 不硬编码带「论点」。
     assert 'status_ok "外链图片、观点、摘要、论点' not in source
 
+
+
+def test_zsxq_crawler_lives_in_the_repo_without_the_group_id(tmp_path):
+    """星球抓取脚本收进仓库（审核 O3）：数据写进 ZSXQ_ARCHIVE 指的目录，不写进仓库；星球 ID 不写死。"""
+    import subprocess
+    import sys
+
+    dl = ROOT / "scripts" / "zsxq" / "dl.py"
+    assert dl.stat().st_mode & 0o111
+    text = dl.read_text(encoding="utf-8")
+    assert "ZSXQ_ACCESS_TOKEN=" in text and "read_token" in text
+    assert not re.search(r"\d{12,}", text), "星球 ID、账户 ID 不写进公开仓库"
+    crawl = (ROOT / "scripts" / "crawl-fangwei-zsxq.sh").read_text(encoding="utf-8")
+    assert 'DL="${DL:-$REPO/scripts/zsxq/dl.py}"' in crawl
+    assert 'ZSXQ_ARCHIVE="$ARCHIVE" python3 "$DL"' in crawl
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "ZSXQ_ENV": str(tmp_path / "none.env")}
+    # 不给存档目录不跑。
+    done = subprocess.run([sys.executable, str(dl)], env=env, capture_output=True, text=True, cwd=tmp_path)
+    assert done.returncode == 2 and "ZSXQ_ARCHIVE" in done.stderr
+    # 给了目录、没有星球 ID 也不跑，什么都不写。
+    archive = tmp_path / "archive"
+    env["ZSXQ_ARCHIVE"] = str(archive)
+    done = subprocess.run([sys.executable, str(dl)], env=env, capture_output=True, text=True, cwd=tmp_path)
+    assert done.returncode == 2 and "ZSXQ_GROUP_ID" in done.stderr and not archive.exists()
+    # 只渲染时不需要星球 ID：在存档目录里写 md/ 和 README，仓库里不多文件。
+    done = subprocess.run([sys.executable, str(dl), "--render"], env=env, capture_output=True, text=True, cwd=tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert (archive / "md" / "INDEX.md").exists() and (archive / "README.md").exists()
+    assert not (ROOT / "scripts" / "zsxq" / "raw").exists()

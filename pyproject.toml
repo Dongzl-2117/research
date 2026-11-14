@@ -86,3 +86,5 @@ select = ["E", "F", "I", "UP", "B"]
 "src/researchlib/translate/prompts.py" = ["E501"]
 "src/researchlib/translate/xai_oauth.py" = ["E501"]
 "tools/translate_compare/compare.py" = ["E501"]
+# 星球抓取脚本 11-14 原样收进仓库（审核 O3），只给 macOS 自带的 python3 跑，不按仓库的写法改。
+"scripts/zsxq/dl.py" = ["E501", "UP031", "E741", "B904"]
