@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextvars
 import hashlib
 import itertools
 import logging
@@ -68,6 +69,10 @@ logger = logging.getLogger("researchlib.ocr")
 OCR_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
 # 识图请求体太大时跳过，不反复打接口。手机截图远小于这个。
 MAX_VISION_BYTES = 10 * 1024 * 1024
+# 宽乘高超过这个数的图不认，记 :skipped（C9）：1.7 亿像素的纯色 PNG 不到 10MB，MAX_VISION_BYTES 拦不住，
+# 解码成 RGB 约 500MB，再转一份灰度，8 路同时认就是几个 GB，和网站同一个容器，会被一起 OOM 杀掉。
+# 长截图最长约 2 万像素高，1440 宽也才 3000 万，够用。
+MAX_VISION_PIXELS = 40_000_000
 # 经 mini 上 DeepSeek en1 转发时，过大的 data-url 会在 TLS 中途被掐断。
 # 压到这个字节数以下再 base64，payload 大约 150KB 内，和问库分批上限同一量级。
 MAX_VISION_SEND_BYTES = 280_000
@@ -181,6 +186,19 @@ class OcrImageSkipped(Exception):
     """这张图不再试（太大）。run_ocr 记 :skipped，不占重试。"""
 
 
+class OcrPastDeadline(Exception):
+    """长截图认到一半过了 --max-minutes 的时限：放弃这张，不写库，下次接着认。"""
+
+
+# 这一张图要在什么时候前认完（time.monotonic()）。run_ocr 在工作线程里设，长截图每认一段前看一眼。
+_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar("ocr_deadline", default=None)
+
+
+def _check_pixels(width: int, height: int) -> None:
+    if width * height > MAX_VISION_PIXELS:
+        raise OcrImageSkipped(f"图太大（{width}×{height}，超过 {MAX_VISION_PIXELS // 1_000_000} 百万像素），识图跳过")
+
+
 def vision_engine_id(settings=None) -> str:
     """写入 image_texts.engine 的名字，跟着当前模型走：grok-4.7-vision。
 
@@ -237,6 +255,11 @@ def _open_rgb(image_bytes: bytes):
 
     try:
         image = Image.open(BytesIO(image_bytes))
+    except Exception as exc:  # noqa: BLE001 — 坏图当跳过
+        raise OcrImageSkipped(f"图片打不开：{exc}") from exc
+    # 先看文件头里的宽高再解码：超大的图解码就要几百 MB。
+    _check_pixels(*image.size)
+    try:
         image.load()
     except Exception as exc:  # noqa: BLE001 — 坏图当跳过
         raise OcrImageSkipped(f"图片打不开：{exc}") from exc
@@ -390,6 +413,7 @@ def prepare_vision_images(image_bytes: bytes, mime: str) -> list[tuple[bytes, st
             width, height = probe.size
     except Exception:  # noqa: BLE001 — 读不出宽高的照旧整张送，坏图由 prepare_vision_image 记跳过
         return [prepare_vision_image(image_bytes, mime)]
+    _check_pixels(width, height)
     if not needs_tiles(width, height):
         return [prepare_vision_image(image_bytes, mime)]
     image = _open_rgb(image_bytes)
@@ -498,7 +522,11 @@ def vision_engine(settings) -> Callable[[Path], Recognition]:
             logger.info("长截图切成 %d 段认 %s", len(pieces), path)
         usage: dict = {}
         found: list[tuple[str, dict]] = []
-        for payload, mime in pieces:
+        for index, (payload, mime) in enumerate(pieces):
+            # 长截图一段段依次认，一张最多 12 段、每段还有重试：过了时限就放弃这张，不写库，下次接着认。
+            deadline = _DEADLINE.get()
+            if index and deadline is not None and time.monotonic() > deadline:
+                raise OcrPastDeadline(f"认到第 {index + 1}/{len(pieces)} 段时过了时限")
             # 一段出错或读不出来，整张都不算认成：只写一部分的字比旧字还糟，重认时旧字留着。
             result = read(path, payload, mime, usage)
             if isinstance(result, str):
@@ -848,13 +876,21 @@ def _touch_articles(conn, content_hash: str, text: str, touched: set[int], repor
             report["articles"] += 1
 
 
-def recognize_one(recognize, path: Path) -> tuple[Recognition | None, Exception | None, float]:
-    """在工作线程里认一张图：只调模型，不碰库。交回（结果，出的错，秒数），出错时结果为空。"""
+def recognize_one(
+    recognize, path: Path, deadline: float | None = None
+) -> tuple[Recognition | None, Exception | None, float]:
+    """在工作线程里认一张图：只调模型，不碰库。交回（结果，出的错，秒数），出错时结果为空。
+
+    deadline：长截图每认一段前看一眼，过了就放弃这张（OcrPastDeadline）。
+    """
     started = time.monotonic()
+    token = _DEADLINE.set(deadline)
     try:
         found = recognize(path)
     except Exception as exc:  # 交给主线程判断：跳过、单张失败，还是整批停
         return None, exc, time.monotonic() - started
+    finally:
+        _DEADLINE.reset(token)
     result = found if isinstance(found, Recognition) else Recognition(found or "")
     return result, None, time.monotonic() - started
 
@@ -964,6 +1000,11 @@ def run_ocr(
         return False
 
     def write(row, path: Path, future) -> None:
+        if future is not None and isinstance(future.result()[1], OcrPastDeadline):
+            # 过了时限没认完的长截图：不写库，下次从它接着认。
+            report["deferred"] = report.get("deferred", 0) + 1
+            logger.info("过了时限，留到下次认 %s", path)
+            return
         used, result = _outcome(engine, path, future, report)
         report["images"] += 1
         text = result.text or ""
@@ -1010,7 +1051,7 @@ def run_ocr(
                     if path.suffix.lower() not in OCR_EXTS:
                         write(row, path, None)
                         continue
-                    running[pool.submit(recognize_one, recognize, path)] = (next(order), row, path)
+                    running[pool.submit(recognize_one, recognize, path, deadline)] = (next(order), row, path)
 
             fill()
             while running:
@@ -1420,6 +1461,8 @@ def describe_report(report: dict) -> list[str]:
         lines.append("接口这次没报用量，花费看提供方账单")
     if report.get("kept"):
         lines.append(f"重认没认成的 {report['kept']} 张留着旧字，版本没改，下次 --redo 接着认")
+    if report.get("deferred"):
+        lines.append(f"长截图认到一半过了时限的 {report['deferred']} 张没写库，下次接着认")
     return lines
 
 
