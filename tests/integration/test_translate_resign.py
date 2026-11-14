@@ -103,3 +103,11 @@ def test_image_only_posts_stop_taking_queue_slots(conn, settings, monkeypatch):
     n = conn.execute("SELECT count(*) AS n FROM translation_attempts WHERE article_id = %s AND status = 'no-text'",
                      (only_images,)).fetchone()["n"]
     assert n == 1
+
+
+def test_boilerplate_image_comparison_runs_read_only(conn, settings):
+    """审核 C7 的只读对照在真库上跑得通：没有重复图时什么都不列。"""
+    from researchlib.boilerplate_images import compare
+
+    _article(conn, settings, "plain")
+    assert compare(conn, "stratechery") == []
