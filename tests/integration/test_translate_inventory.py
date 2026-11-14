@@ -97,6 +97,8 @@ def test_inventory_sorts_every_english_article_and_writes_nothing(conn, settings
     lines = inventory.summary(report)
     assert lines[0] == "英文文章 5 篇（stratechery 5）"
     assert "  从没译过 2" in lines
+    # 篇数不多时连 id 一起写，云端照着摘要就能去线上核。
+    assert f"  没译完（partial）1（{stopped}），先放英文的段共 {report['gapSegments']} 段" in lines
     assert "  这三类里：现在就能进队列 1，冷却中 1，同一版本拒满 2 次停住 1" in lines
     legacy_chars = report["displayChars"]["legacy-structural"]
     assert lines[-1] == f"已译完的 2 篇页面：结构对得上、没核验 1（英文 {legacy_chars:,} 字符），逐段对上 1"
@@ -406,7 +408,8 @@ def test_misplaced_segments_are_listed_and_only_their_stretch_is_retranslated(
     assert sorted(report["ids"]["misplaced"]) == sorted([echo, shifted])
     assert report["echoSegments"] == 1 and report["copiedSegments"] == 2
     assert (
-        "  串段（一段的中文写进了别的段）2 篇：交回英文的段 1 段，相近两段英文不同、中文一字不差的 2 段。"
+        f"  串段（一段的中文写进了别的段）2 篇（{min(echo, shifted)}、{max(echo, shifted)}）："
+        "交回英文的段 1 段，中文和相近一段重了（英文对不上）的 2 段。"
         "research-translate --from-inventory misplaced 只重译这几处附近的段"
         in inventory.summary(report)
     )
@@ -450,6 +453,6 @@ def test_misplaced_segments_are_listed_and_only_their_stretch_is_retranslated(
     assert "misplaced 这一类都已经没有串段了。" in capsys.readouterr().out
     after = inventory.collect(conn, settings)
     assert after["ids"]["misplaced"] == [] and after["echoSegments"] == 0 and after["copiedSegments"] == 0
-    assert "  串段（一段的中文写进了别的段）0 篇：交回英文的段 0 段，相近两段英文不同、中文一字不差的 0 段" in (
+    assert "  串段（一段的中文写进了别的段）0 篇：交回英文的段 0 段，中文和相近一段重了（英文对不上）的 0 段" in (
         inventory.summary(after)
     )
