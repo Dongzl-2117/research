@@ -146,6 +146,21 @@ scripts/lock.sh --upgrade                   # 全部升到最新
 
 改完来源配置（`config/sources.yaml`）或持仓名单（`config/portfolio.yaml`）后刷新页面即可。导入命令每次都会重新读配置。
 
+## 基础镜像
+
+两个 Dockerfile 的底座按 digest 钉住：`Dockerfile` 钉 `python:3.12-slim-bookworm`，`docker/postgres/Dockerfile` 钉 `postgres:16-bookworm`。只写标签时，上游一重推这个标签（Debian 安全更新、Postgres 小版本，几周一次），之后的第一次自动上线就拉新底座，后面各层全部重建。2026-11-13 就是这样：上游 11-12 推了 PostgreSQL 16.16，19:36 开始的那轮上线在 Mac mini 上拉底座 73 分钟、`apt-get` 110 分钟，22:56 才换上，而那一轮合进去的改动一行没碰镜像。钉住以后，只有改了 digest 的提交才重建。
+
+升级单开一个 PR。查上游现在的 digest 和推送时间（多架构的总清单，arm64、amd64 都认；不用装 Docker）：
+
+```bash
+curl -s https://hub.docker.com/v2/repositories/library/postgres/tags/16-bookworm \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["digest"], d["last_updated"])'
+curl -s https://hub.docker.com/v2/repositories/library/python/tags/3.12-slim-bookworm \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["digest"], d["last_updated"])'
+```
+
+把 `FROM` 里 `@sha256:` 后面换成新的。PR 描述写明上线要在 Mac mini 上重建哪个镜像、大概多久（数据库镜像三个多小时；应用镜像要重装 `requirements.lock` 里的全部包），挑没有长任务的时候合：重建期间旧容器照常服务，建完换容器会打断容器里正在跑的命令。数据库镜像换了，`db` 容器重建、库重启一次，数据在卷里不动；只在 16 这个大版本里升，换大版本要另做数据迁移。
+
 ## Cloudflare Tunnel
 
 Access 和隧道都在应用外面做。应用里没有登录，也没有可以绕过的口令。

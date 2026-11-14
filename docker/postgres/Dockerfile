@@ -1,6 +1,9 @@
 # 官方 Postgres 16 上编译 SCWS + zhparser。同一份 Dockerfile 在 arm64（Mac mini）和 amd64 上本地编译。
 # pgvector（语义检索的向量）直接装官方镜像自带的 PGDG 源里的包，不编译。
-FROM postgres:16-bookworm
+# 底座按 digest 钉住（多架构总清单，arm64、amd64 都认），现在是上游 2026-11-12 推的 PostgreSQL 16.16。
+# 只写标签时上游一重推，下一次自动上线就拉新底座、下面几层全部重建，Mac mini 上要三个多小时。
+# 升级单开 PR，见 docs/deploy.md「基础镜像」。
+FROM postgres:16-bookworm@sha256:a49f7438ba03589f9b1ca062f2da82e899b48ea1dc50d2449fa09a70be83ebca
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-16-pgvector \
