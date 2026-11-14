@@ -31,7 +31,7 @@ from researchlib.nested_copies import fold_nested_copies
 from researchlib.output_safety import redact_output, redact_subscription_links
 from researchlib.present_text import plain_qa_markdown, polish_display_text
 from researchlib.render import link_local_images
-from researchlib.retrieval import retrieve, search_articles
+from researchlib.retrieval import cited_numbers, retrieve, search_articles
 from researchlib.snippets import answer_html, mention_sentence, mention_spans
 from researchlib.textutil import opening_excerpt, strip_duplicate_title
 from researchlib.views import FILTERS as VIEW_FILTERS
@@ -674,13 +674,32 @@ def answer_payload(conn, request: Request, sources, answer_id: int) -> dict | No
     }
 
 
+def brief_payload(payload: dict) -> dict:
+    """页面轮询用的轻量版（``?brief=1``）。全库问题的出处有两三百条，全量一次近 500KB，从 Mac mini 经隧道
+    要传二十秒上下，超过脚本的等待时间，进度和半截回答都显示不出来（审核 F1）。
+
+    出处里的 ``before``、``after`` 页面不用，一律不带。整合中只给半截回答里已经引到的那几段（编号、链接、标题、
+    原文），够把 [n] 换成文章链接、列出引用来源；没引到的两三百段等整合完（done、error）那一次再带，
+    页面不用再取一次全量。
+    """
+    items = payload.get("citations") or []
+    if payload.get("status") == "running":
+        # 整合中的出处还没有 cited 标记（写完才标），按半截回答里写到的 [n] 认。
+        cited = set(cited_numbers(payload.get("answer") or "", len(items)))
+        items = [item for item in items if item.get("n") in cited]
+    citations = [{key: value for key, value in item.items() if key not in {"before", "after"}} for item in items]
+    return {**payload, "citations": citations}
+
+
 @api.get("/api/v1/answers/{answer_id}")
-def api_answer(request: Request, answer_id: int):
+def api_answer(request: Request, answer_id: int, brief: int = 0):
     with database(request) as conn:
         sources = active_sources(request, conn)
         payload = answer_payload(conn, request, sources, answer_id)
     if payload is None:
         raise HTTPException(status_code=404)
+    if brief:
+        payload = brief_payload(payload)
     return _json({**payload, "_trust": TRUST})
 
 

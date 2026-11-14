@@ -100,6 +100,7 @@ from researchlib.web.present import (
     weekday_label,
 )
 from researchlib.web.quoting import mark_quoted
+from researchlib.web.render_cache import PAGES
 from researchlib.web.scoping import parse_day, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.zsxq_comments import source_owners
@@ -842,7 +843,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         if mode == "zh":
             # 导出写了两遍的引文、列表项、脚注：和原文页、对照页一样收成一份。在原文上认，再按位置收中文。
             # 连着写两遍的同一张图只留一张。
-            zh_html = drop_repeated_images(fold_translated_copies(pair_original, zh_html))
+            zh_html = PAGES.call("zh-copies", _fold_zh_copies, pair_original, zh_html)
         zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""
@@ -853,9 +854,11 @@ def _article_view(request: Request, article_id: int, mode: str):
     elif quoted is not None and quoted_lang == "zh" and zh_html:
         zh_html, quoted_marked = mark_quoted(zh_html, quoted["body"])
         pair_translated, _marked = mark_quoted(pair_translated, quoted["body"])
-    # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。
-    paired = has_translation and zh_html and mode != "original"
-    pair_display = article_pairs(
+    # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。只看中文页有中文时也不显示对照，不算。
+    paired = has_translation and zh_html and mode not in {"original", "zh"}
+    # 同样的输入同样的结果，按输入的哈希缓存（render_cache）。
+    pair_display = PAGES.call(
+        "pairs", article_pairs,
         pair_original, pair_translated, provenance=translation.get("provenance"),
         canonical_source=pairing.check, canonical_target=translation["body_html"],
         ocr_texts=ocr_texts, host=source.author,
@@ -954,6 +957,10 @@ def _article_view(request: Request, article_id: int, mode: str):
             "chat_suggestions": _chat_suggestions(chat_asked),
         },
     )
+
+
+def _fold_zh_copies(pair_original: str, zh_html: str) -> str:
+    return drop_repeated_images(fold_translated_copies(pair_original, zh_html))
 
 
 @router.get("/articles/{article_id}")
