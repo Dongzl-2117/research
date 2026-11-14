@@ -163,3 +163,95 @@ def test_stale_access_detection() -> None:
     assert is_stale_xai_access(401, "")
     assert is_stale_xai_access(403, "OAuth2 access token could not be validated")
     assert not is_stale_xai_access(403, "subscription required")
+
+
+def _expired_token(path: Path, refresh: str = "r-old") -> None:
+    _write_secret(
+        path,
+        {
+            "version": 1,
+            "access_token": "a-old",
+            "refresh_token": refresh,
+            "token_type": "Bearer",
+            "expires_at": 1,
+            "obtained_at": "1970-01-01T00:00:00Z",
+            "needs_login": False,
+            "last_error": None,
+        },
+    )
+
+
+def test_two_processes_refreshing_at_once_use_one_refresh_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """刷新慢（auth.x.ai 慢一次）时，后到的等锁，拿前一个换好的凭证；不再拿同一个 refresh token 再换一次，
+    收到「已用过」把刚换好的凭证清成需要重新登录。"""
+    import threading
+
+    from researchlib.translate import xai_oauth
+
+    monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(tmp_path / "xai-oauth.json"))
+    path = xai_token_path(tmp_path)
+    _expired_token(path)
+    used: list[str] = []
+
+    def slow_refresh(state):
+        used.append(state["refresh_token"])
+        if state["refresh_token"] != "r-old":
+            raise AssertionError("不该再刷新")
+        time.sleep(0.3)
+        return {
+            "version": 1,
+            "access_token": "a-new",
+            "refresh_token": "r-new",
+            "token_type": "Bearer",
+            "expires_at": time.time() * 1000 + 3_600_000,
+            "obtained_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "needs_login": False,
+            "last_error": None,
+        }
+
+    monkeypatch.setattr(xai_oauth, "_refresh", slow_refresh)
+    got: list[str] = []
+    threads = [threading.Thread(target=lambda: got.append(get_xai_access_token(tmp_path))) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert got == ["a-new"] * 3
+    assert used == ["r-old"]
+    assert json.loads(path.read_text())["needs_login"] is False
+
+
+def test_refresh_token_already_used_falls_back_to_what_another_process_wrote(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from researchlib.translate import xai_oauth
+
+    monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(tmp_path / "xai-oauth.json"))
+    path = xai_token_path(tmp_path)
+    _expired_token(path)
+
+    def used_elsewhere(state):
+        # 锁外的另一个进程（另一个容器）抢先换好了，写进了文件。
+        fresh = dict(state, access_token="a-other", refresh_token="r-other", expires_at=time.time() * 1000 + 3_600_000)
+        _write_secret(path, fresh)
+        raise XaiLoginRequiredError("xAI OAuth 需要重新登录：HTTP 400 invalid_grant: refresh token already been used")
+
+    monkeypatch.setattr(xai_oauth, "_refresh", used_elsewhere)
+    assert get_xai_access_token(tmp_path) == "a-other"
+    assert json.loads(path.read_text())["needs_login"] is False
+
+
+def test_refresh_that_cannot_connect_is_retryable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from researchlib.translate import xai_oauth
+
+    monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(tmp_path / "xai-oauth.json"))
+    path = xai_token_path(tmp_path)
+    _expired_token(path)
+
+    def down(state):
+        raise OSError("连不上")
+
+    monkeypatch.setattr(xai_oauth, "_refresh", down)
+    with pytest.raises(xai_oauth.XaiRefreshUnavailable):
+        get_xai_access_token(tmp_path)
+    assert json.loads(path.read_text())["needs_login"] is False

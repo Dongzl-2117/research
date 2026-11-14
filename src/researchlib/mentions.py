@@ -22,7 +22,7 @@ DEPTH_PASSING = "passing"
 DEPTHS = (DEPTH_TITLE, DEPTH_WHOLE, DEPTH_SECTION, DEPTH_PASSING)
 
 # 判断深度的规则改了就加一：应用启动时发现和上次重算时不一样，在后台把全部提及重算一遍。
-MENTION_RULES_VERSION = "2"
+MENTION_RULES_VERSION = "3"
 
 # 无结构正文里，达到这个次数视为整篇都在谈。
 UNSTRUCTURED_WHOLE_HITS = 3
@@ -62,6 +62,13 @@ CASE_SENSITIVE_LATIN = frozenset(
         "COST",
         "Apple",
         "APPLE",
+        # 小写的 intel（情报）、alphabet（字母表）、amazon（雨林、河）、tesla（磁感应强度单位）、lilly（人名）
+        # 不是公司（审核 V7）。
+        "Intel",
+        "Alphabet",
+        "Amazon",
+        "Tesla",
+        "Lilly",
     }
 )
 

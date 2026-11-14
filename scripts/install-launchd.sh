@@ -6,6 +6,7 @@
 #   每 10 分钟自动上线（main 上 CI 通过的新提交拉下来重建，见 scripts/deploy.sh；装好时先跑一次）。
 #   以前装过的 AIHOT 增量导入（ingest-aihot，AIHOT 已下线，代码已删）重装时卸掉。
 #   不想要夜间补齐时设 INSTALL_NIGHTLY=0；不想要定时抓取时设 INSTALL_CRAWL=0；不想自动上线时设 INSTALL_DEPLOY=0。
+#   设成 0 重装时，已经装好的那几个任务一起卸掉（连状态文件），不只是不再装。
 #
 #   BACKUP_DIR=~/research-backups scripts/install-launchd.sh
 #
@@ -99,13 +100,29 @@ if [ -f "$old" ]; then
   echo "已卸掉旧的 com.zldong.research.ingest-aihot（AIHOT 已下线）"
 fi
 rm -f "$REPO/data/status/ingest-aihot.json"
-if [ "$INSTALL_DEPLOY" != "1" ]; then
-  old="$AGENTS/com.zldong.research.deploy.plist"
-  if [ -f "$old" ]; then
-    launchctl bootout "$DOMAIN" "$old" 2>/dev/null || true
-    rm -f "$old" "$REPO/data/status/deploy.json" "$REPO/data/status/.deploy-last" "$REPO/data/status/.deploy-seen"
-    echo "已卸掉 com.zldong.research.deploy（不自动上线了）"
+# drop 任务 说明 [状态文件...]：这个任务以前装过、这次不装了，卸掉，状态文件也删（不再报它太久没跑）。
+drop() {
+  local name="$1" why="$2" plist="$AGENTS/com.zldong.research.$1.plist"
+  shift 2
+  if [ -f "$plist" ]; then
+    launchctl bootout "$DOMAIN" "$plist" 2>/dev/null || true
+    rm -f "$plist"
+    for file in "$@"; do
+      rm -f "$REPO/data/status/$file"
+    done
+    echo "已卸掉 com.zldong.research.${name}（${why}）"
   fi
+}
+if [ "$INSTALL_DEPLOY" != "1" ]; then
+  drop deploy "不自动上线了" deploy.json .deploy-last .deploy-seen
+fi
+if [ "$INSTALL_NIGHTLY" != "1" ]; then
+  drop nightly "不要夜间补齐了" nightly.json fetch-images.json
+fi
+if [ "$INSTALL_CRAWL" != "1" ]; then
+  for name in crawl-fangwei-mp crawl-fangwei-zsxq crawl-gudujinhuati; do
+    drop "$name" "不要定时抓取了" "${name}.json"
+  done
 fi
 mkdir -p "$(dirname "$SETTINGS")"
 {

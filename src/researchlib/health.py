@@ -125,6 +125,9 @@ def notices(data_dir: Path, zone_name: str, now: datetime | None = None) -> list
     for task, (label, max_age) in TASKS.items():
         data = read_status(data_dir, task)
         if data is None:
+            # 文件在、却读不出来（写坏了的 JSON）：以前当成没有这个任务，这条失败就不报了。
+            if status_path(data_dir, task).exists():
+                found.append(f"{label}的状态文件读不出来（{status_path(data_dir, task).name}），看日志")
             continue
         at = parse_time(data.get("at"))
         message = str(data.get("message") or "").strip()
@@ -176,14 +179,17 @@ def record_llm(
     unavailable: bool = False,
     provider: str = "",
 ) -> None:
-    """每次 LLM 调用的最终结果。成功且之前也正常时什么都不写；失败才累计次数。"""
+    """每次 LLM 调用的最终结果。成功且之前也正常时什么都不写；失败才累计次数。
+
+    以文件为准：网页进程和命令行进程各自记，以前按进程缓存，命令行把文件写成失败后网页进程缓存里还是正常，
+    之后每次成功都不写，research-status 一直报失败；反过来也会多报连续失败的次数。
+    状态文件只有几百字节，每次调用（几秒到几分钟）读一次不算什么。读不出来时用这个进程上次记的。
+    """
     if data_dir is None:
         return
     key = str(data_dir)
     with _llm_lock:
-        previous = _llm_cache.get(key)
-        if previous is None:
-            previous = read_status(data_dir, "llm") or {"ok": True}
+        previous = read_status(data_dir, "llm") or _llm_cache.get(key) or {"ok": True}
         if ok:
             if previous.get("ok", True):
                 _llm_cache[key] = previous

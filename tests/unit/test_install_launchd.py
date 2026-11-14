@@ -87,3 +87,22 @@ def test_turning_deploy_off_sticks(tmp_path: Path):
     assert not mac.agent("deploy").exists() and not (status / "deploy.json").exists()
     assert mac.install().returncode == 0
     assert not mac.agent("deploy").exists()
+
+
+def test_turning_nightly_and_crawl_off_uninstalls_them(tmp_path: Path):
+    """INSTALL_NIGHTLY=0、INSTALL_CRAWL=0 重装：已经装好的夜间补齐和抓取一起卸掉，不只是不再装。"""
+    mac = Mac(tmp_path)
+    assert mac.install(BACKUP_DIR=str(tmp_path / "backups")).returncode == 0
+    status = mac.repo / "data" / "status"
+    status.mkdir(parents=True, exist_ok=True)
+    for name in ("nightly", "crawl-fangwei-mp", "crawl-gudujinhuati", "backup"):
+        (status / f"{name}.json").write_text("{}", encoding="utf-8")
+    assert mac.agent("nightly").exists() and mac.agent("crawl-fangwei-zsxq").exists()
+    assert mac.install(INSTALL_NIGHTLY="0", INSTALL_CRAWL="0").returncode == 0
+    calls = mac.called()
+    assert "launchctl bootout com.zldong.research.nightly.plist" in calls
+    assert "launchctl bootout com.zldong.research.crawl-fangwei-zsxq.plist" in calls
+    for name in ("nightly", "crawl-fangwei-mp", "crawl-fangwei-zsxq", "crawl-gudujinhuati"):
+        assert not mac.agent(name).exists()
+    assert not (status / "nightly.json").exists() and not (status / "crawl-gudujinhuati.json").exists()
+    assert (status / "backup.json").exists() and mac.agent("backup").exists()

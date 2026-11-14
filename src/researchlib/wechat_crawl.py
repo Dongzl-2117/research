@@ -8,8 +8,10 @@
 - 极致了按次收费：查一次最新文章列表约 0.14 元（--dry-run 也要查），取一篇正文约 0.03 元。
   正文先从原文页取（不花钱，图片位置也是对的），原文页取不到（要验证、图文消息之类）才用极致了的正文。
   极致了的正文按段估图的位置（第 N 张图放在第 N 段后面），归档头不写「图片位置：原文页」。
-- 库里已有的（按 sn，或同一天同标题）跳过，一次最多取 --max-new 篇新文章。原文已删除、因违规不能看的，
-  记一份原始数据就不再取。
+- 库里已有的按 sn 跳过；同一天同标题只拿库里查不到 sn 的老文章兜底（作者同一天发两篇同名的，两篇都取）。
+  列表是空的、或者每一项都缺地址和标题，记失败（多半是账号被封、接口格式改了或 ghid 写错），不当成「没有新文章」。
+- 原文页只取 https://mp.weixin.qq.com/ 的地址，跳转到别的域名也不跟。
+- 一次最多取 --max-new 篇新文章。原文已删除、因违规不能看的，记一份原始数据就不再取。
 - 列表里有比库里最新一篇还早的文章，却一篇都对不上库里的：多半是 ghid 写成了别的号，这次一篇都不取。
 - 归档写在 DATA_DIR/inbox/<来源>/：md/<年>/<日期>-<sn>.md、raw/articles/<sn>.json，格式和以前导入的公众号归档一样
   （正文开头「- 作者：」「- 时间：」「- sn：」「- 原链接：」，正文从原文页取的再加一行「- 图片位置：原文页」）。
@@ -170,13 +172,34 @@ class Dajiala:
         return self._call("article_detail", request)
 
 
+PAGE_PREFIX = "https://mp.weixin.qq.com/"
+
+
+def page_allowed(url: str) -> bool:
+    """只取公众号原文页：列表地址来自第三方接口，不能让它把抓取指到内网或别的站。"""
+    parts = urlsplit(url or "")
+    return parts.scheme == "https" and parts.hostname == "mp.weixin.qq.com" and url.startswith(PAGE_PREFIX)
+
+
+class _PageRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not page_allowed(newurl):
+            raise ValueError(f"原文页跳到了别的域名：{urlsplit(newurl).hostname or newurl[:60]}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_page_opener = urllib.request.build_opener(_PageRedirects)
+
+
 def fetch_page(url: str) -> str:
-    """公众号原文页。连不上抛 OSError。"""
+    """公众号原文页。连不上抛 OSError，地址不是公众号原文页抛 ValueError。"""
+    if not page_allowed(url):
+        raise ValueError("不是公众号原文页的地址")
     request = urllib.request.Request(
         url,
         headers={"User-Agent": USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9"},
     )
-    with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+    with _page_opener.open(request, timeout=TIMEOUT_S) as response:
         return response.read(MAX_PAGE_BYTES).decode("utf-8", errors="replace")
 
 
@@ -189,7 +212,10 @@ def _day(moment: datetime | None) -> str:
 
 
 def known_articles(conn, source_id: str) -> tuple[set[str], set[tuple[str, str]]]:
-    """库里这个来源已有的文章：sn（正文开头的归档头或原链接里），和（标题, 日期）。"""
+    """库里这个来源已有的文章：sn（正文开头的归档头或原链接里），和查不到 sn 的老文章的（标题, 日期）。
+
+    同一天同标题只给没有 sn 的老文章兜底：作者同一天发两篇同名文章（长文和短图文版）时 sn 不同，两篇都要取。
+    """
     rows = conn.execute(
         """
         SELECT title, published_at, left(body_md, 4000) AS head, raw_meta::text AS meta
@@ -200,8 +226,11 @@ def known_articles(conn, source_id: str) -> tuple[set[str], set[tuple[str, str]]
     sns: set[str] = set()
     titles: set[tuple[str, str]] = set()
     for row in rows:
-        sns.update(_SN.findall(f"{row['head'] or ''}\n{row['meta'] or ''}"))
-        titles.add((_title_key(row["title"]), _day(row["published_at"])))
+        found = _SN.findall(f"{row['head'] or ''}\n{row['meta'] or ''}")
+        if found:
+            sns.update(found)
+        else:
+            titles.add((_title_key(row["title"]), _day(row["published_at"])))
     return sns, titles
 
 
@@ -343,6 +372,13 @@ def crawl(
     posts, meta = client.history(ghid)
     report.remain = meta.get("remain_money")
     report.listed = len(posts)
+    if not posts:
+        report.failed.append(
+            f"极致了列表里一篇能用的都没有（ghid {ghid}）：账号被封、接口格式改了或 ghid 写错，"
+            "不当成没有新文章"
+        )
+        report.cost = client.cost
+        return report
     sns, titles = known_articles(conn, source.id)
     sns |= archived_sns(inbox)
     fresh: list[Post] = []

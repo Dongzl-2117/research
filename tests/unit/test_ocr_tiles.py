@@ -329,3 +329,38 @@ def test_rejoin_joins_stored_tiles_again_without_calling_the_model(monkeypatch):
 def test_rejoin_is_not_mixed_with_recognising():
     for extra in (["--tall"], ["--redo"], ["--article", "1"], ["--relayout"]):
         assert main(["--rejoin", *extra]) == 2
+
+
+def test_a_long_shot_past_the_deadline_is_given_up_between_tiles(tmp_path, monkeypatch):
+    """--max-minutes 到点以后，手上那张长截图认完这一段就放弃，不再认后面的段，也不交回一部分。"""
+    import time
+
+    from researchlib.ocr import OcrPastDeadline, recognize_one
+
+    path = tmp_path / "long.png"
+    path.write_bytes(_png(_article_shot(1080, 4000)))
+    calls = []
+
+    def fake_chat(settings, messages, **kwargs):
+        calls.append(1)
+        return _reply(_msg("毛利率35%，比去年高")), "deepseek-flash"
+
+    monkeypatch.setattr("researchlib.llm.chat", fake_chat)
+    recognize = vision_engine(_settings(tmp_path))
+    result, exc, _seconds = recognize_one(recognize, path, time.monotonic() - 1)
+    assert result is None and isinstance(exc, OcrPastDeadline)
+    assert len(calls) == 1
+    # 没有时限照常认完。
+    calls.clear()
+    result, exc, _seconds = recognize_one(recognize, path)
+    assert exc is None and len(calls) == 3
+
+
+def test_huge_images_are_skipped_before_decoding(monkeypatch):
+    from researchlib import ocr
+    from researchlib.ocr import OcrImageSkipped
+
+    monkeypatch.setattr(ocr, "MAX_VISION_PIXELS", 1000)
+    with pytest.raises(OcrImageSkipped):
+        prepare_vision_images(_png(Image.new("RGB", (100, 100), "white")), "image/png")
+    assert prepare_vision_images(_png(Image.new("RGB", (20, 20), "white")), "image/png")

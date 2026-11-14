@@ -51,7 +51,7 @@ pytest tests/unit
 DATABASE_URL="$RESEARCH_TEST_DATABASE_URL" pytest tests/integration
 ```
 
-集成测试要带 zhparser 和 pgvector 的 Postgres：`docker compose up -d db` 后建 `research_test` 库。连不上库时集成测试全部跳过，跳过不等于通过。以 root 跑时 `tests/unit/test_xai_oauth_owner.py::test_desired_owner_from_existing_file` 必定失败（它查文件属主），和改动无关。
+集成测试要带 zhparser 和 pgvector 的 Postgres：`docker compose up -d db` 后建 `research_test` 库。连不上库时集成测试全部跳过，跳过不等于通过；CI 设了 `REQUIRE_TEST_DB=1`，连不上就算失败。以 root 跑时 `tests/unit/test_xai_oauth_owner.py::test_desired_owner_from_existing_file` 必定失败（它查文件属主），和改动无关。
 
 没有 Docker（比如云端容器）时，本机装 Postgres 16 再编扩展：
 

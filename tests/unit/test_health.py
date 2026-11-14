@@ -157,3 +157,24 @@ def test_status_command_prints_notices(tmp_path, monkeypatch, capsys):
     _write(tmp_path, "backup", ok=False, at="2026-10-20T03:17:00Z", message="导出数据库失败（退出码 1）")
     assert health.main([]) == 1
     assert capsys.readouterr().out.startswith("备份失败（10-20 11:17）：导出数据库失败")
+
+
+def test_llm_status_follows_the_file_written_by_another_process(tmp_path):
+    """命令行进程把状态写成失败、网页进程缓存里还是正常：网页这边下一次成功要把文件改回正常。"""
+    health.reset_llm_cache()
+    health.record_llm(tmp_path, ok=True, provider="DeepSeek")  # 网页进程：缓存里是正常
+    health.write_status(tmp_path, "llm", False, "DeepSeek 接口返回 503", failures=5, since="2026-11-14T00:00:00Z")
+    health.record_llm(tmp_path, ok=True, provider="DeepSeek")
+    assert health.read_status(tmp_path, "llm")["ok"] is True
+    # 反过来：别的进程已经恢复正常，这边的失败从 1 数起，不接着旧的次数。
+    health.write_status(tmp_path, "llm", False, "busy", failures=4, since="2026-11-14T00:00:00Z")
+    health.record_llm(tmp_path, ok=True, provider="DeepSeek")
+    health.record_llm(tmp_path, ok=False, error="busy", provider="DeepSeek")
+    assert health.read_status(tmp_path, "llm")["failures"] == 1
+
+
+def test_a_status_file_that_cannot_be_read_is_reported(tmp_path):
+    health.status_path(tmp_path, "backup").parent.mkdir(parents=True, exist_ok=True)
+    health.status_path(tmp_path, "backup").write_text('{"task":"backup","ok":false,"message":"坏\x1b', encoding="utf-8")
+    found = health.notices(tmp_path, "Asia/Shanghai")
+    assert any("状态文件读不出来" in item for item in found)

@@ -240,3 +240,38 @@ def test_title_change_refreshes_vectors_of_the_whole_article(conn, settings, ser
     conn.commit()
     assert len(service.texts) == 2 and all(text.startswith("新标题\n") for text in service.texts)
     assert embeddings.coverage(conn) == (2, 2)
+
+
+def test_new_title_on_reimport_refreshes_translation_vectors_too(conn, settings, service):
+    """重新导入只改了标题、译文沿用：向量的输入带标题，译文块的向量当场一起换，不等夜里。"""
+    body = "\n\n".join(_paragraph(i) for i in range(2))
+    article_id = _store(conn, settings, body)
+    digest = conn.execute("SELECT content_hash FROM articles WHERE id = %s", (article_id,)).fetchone()["content_hash"]
+    zh = "<p>会员费和周转决定回报。</p><p>规模带来议价。</p>"
+    conn.execute(
+        "INSERT INTO article_translations"
+        " (article_id, content_hash, title_zh, body_html, body_text, complete, segments)"
+        " VALUES (%s, %s, '零售研究', %s, %s, true, 2)",
+        (article_id, digest, zh, zh),
+    )
+    replace_translation_chunks(conn, article_id)
+    conn.commit()
+    have, total = embeddings.coverage(conn)
+    assert have == total and total > 2
+    _store(conn, settings, body, title="零售研究（修订）")
+    assert embeddings.coverage(conn) == (total, total)
+
+
+def test_clean_command_stops_when_the_vector_service_is_not_configured(conn, settings, service):
+    """库里有向量、这次却没配向量服务：清洗、重切和服务停了一样停下，不提交没向量的段落。"""
+    article_id = _store(conn, settings, "\n\n".join(_paragraph(i) for i in range(2)))
+    old = _bodies(conn, article_id)
+    embeddings.use_embedder(None)
+    with embeddings.all_or_nothing(), pytest.raises(embeddings.EmbeddingError):
+        replace_chunks(conn, article_id, "零售研究", _paragraph(0).replace("第0条", "改过"))
+    conn.rollback()
+    assert _bodies(conn, article_id) == old
+    # 不在 all_or_nothing 里（译制、识图、导入）照常存。
+    replace_chunks(conn, article_id, "零售研究", _paragraph(0).replace("第0条", "改过"))
+    conn.commit()
+    assert "改过" in _bodies(conn, article_id)[0]

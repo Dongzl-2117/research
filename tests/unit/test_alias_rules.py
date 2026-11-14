@@ -109,3 +109,55 @@ def test_rules_change_the_fingerprint():
     _found, _names, companies = ruled()
     bare = [{**row, "alias_rules": {}} for row in companies]
     assert companies_fingerprint(companies) != companies_fingerprint(bare)
+
+
+def test_short_chinese_names_inside_other_words_are_not_companies():
+    """审核 V7：用真实种子跑出来的误伤。每条都配一条照算的正例。"""
+    found, names, _ = ruled()
+
+    def hits(text):
+        counts = found.count(text)
+        return {name for name, company_id in names.items() if counts.get(company_id)}
+
+    not_companies = {
+        "美联储担心高通胀，高通量测序，提高通过率，步步高通过直采": "高通",
+        "化工行业、军工行业、轻工行业的员工行为": "工商银行",
+        "其中芯片占一半，集中芯片采购": "中芯国际",
+        "南京东路和北京东五环": "京东",
+        "北京东方雨虹的防水材料": "京东方",
+        "一个完美团队": "美团",
+        "青海光伏和南海光缆": "海光信息",
+        "其中免费的部分": "中国中免",
+        "每年用几百度电": "百度",
+        "中国石油需求还在涨": "中国石油",
+        "中国银行体系的坏账": "中国银行",
+        "细分众多的赛道": "分众传媒",
+        "要招行业人才": "招商银行",
+        "完成了精神华丽转身": "中国神华",
+        "Nikola Tesla 的线圈": "特斯拉",
+        "JD Vance 的演讲": "京东",
+        "the intel says amazon rainforest and the alphabet": "英特尔",
+    }
+    for text, company in not_companies.items():
+        assert company not in hits(text), (text, company)
+    assert not hits("the intel says amazon rainforest and the alphabet") & {"英特尔", "亚马逊", "谷歌"}
+    companies = {
+        "高通的骁龙芯片，下调高通评级": "高通",
+        "工行业绩好于预期，工商银行分红": "工商银行",
+        "其中芯国际的产能": "中芯国际",
+        "京东的物流，北京京东总部": "京东",
+        "北京京东方的面板": "京东方",
+        "美团外卖": "美团",
+        "海光信息的服务器芯片": "海光信息",
+        "中免的免税店": "中国中免",
+        "上百度搜一下，百度的广告": "百度",
+        "中国石油的分红": "中国石油",
+        "中国银行的存款": "中国银行",
+        "分众的电梯广告": "分众传媒",
+        "招行业绩和招行业务": "招商银行",
+        "神华的煤炭": "中国神华",
+        "Tesla 的销量": "特斯拉",
+        "Intel 的制程": "英特尔",
+    }
+    for text, company in companies.items():
+        assert company in hits(text), (text, company)

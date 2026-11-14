@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 
@@ -385,6 +386,30 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
     return len(chunks)
 
 
+SETTLED_CHUNKING_KEY = "chunks:settled"
+
+
+def _settled_chunking(conn) -> dict[str, str]:
+    row = conn.execute("SELECT value FROM app_state WHERE key = %s", (SETTLED_CHUNKING_KEY,)).fetchone()
+    if row is None:
+        return {}
+    try:
+        value = json.loads(row["value"])
+    except ValueError:
+        return {}
+    return {str(key): str(item) for key, item in value.items()} if isinstance(value, dict) else {}
+
+
+def _save_settled_chunking(conn, settled: dict[str, str]) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_state (key, value, updated_at) VALUES (%s, %s, now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        """,
+        (SETTLED_CHUNKING_KEY, json.dumps(settled, sort_keys=True)),
+    )
+
+
 def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
     """给还没有块的文章切块，给有译文但还没有译文块的文章补切译文块。rebuild=True 时全部重切。
 
@@ -397,12 +422,25 @@ def backfill_missing_chunks(conn, *, rebuild: bool = False) -> int:
             " AND (NOT EXISTS (SELECT 1 FROM article_chunks c WHERE c.article_id = a.id AND c.lang = '')"
             f" OR (SELECT count(*) FROM article_chunks c WHERE c.article_id = a.id AND c.lang = '') = {OLD_MAX_CHUNKS})"
         )
-    ids = [row["id"] for row in conn.execute(f"SELECT a.id FROM articles a {where} ORDER BY a.id").fetchall()]
+    rows = conn.execute(f"SELECT a.id, a.content_hash FROM articles a {where} ORDER BY a.id").fetchall()
+    # 切不出块的（只有图的帖子）和切完还是正好 400 块的，以前每次启动、每条 research-* 命令都重切一遍。
+    # 记下切过时的正文哈希，正文没变就不再切；rebuild 照切。
+    settled = {} if rebuild else _settled_chunking(conn)
+    ids = [row["id"] for row in rows if settled.get(str(row["id"])) != row["content_hash"]]
+    hashes = {row["id"]: row["content_hash"] for row in rows}
+    changed = False
     for done, article_id in enumerate(ids, 1):
         row = conn.execute("SELECT title, body_md FROM articles WHERE id = %s", (article_id,)).fetchone()
-        replace_chunks(conn, article_id, row["title"], row["body_md"])
+        made = replace_chunks(conn, article_id, row["title"], row["body_md"])
+        if made in (0, OLD_MAX_CHUNKS):
+            settled[str(article_id)] = hashes[article_id]
+            changed = True
         if done % COMMIT_EVERY == 0:
+            if changed:
+                _save_settled_chunking(conn, settled)
             conn.commit()
+    if changed:
+        _save_settled_chunking(conn, settled)
     translated_where = "WHERE a.duplicate_of IS NULL AND t.body_html <> ''"
     if not rebuild:
         translated_where += (

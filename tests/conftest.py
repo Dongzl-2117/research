@@ -28,14 +28,17 @@ def database_url() -> str:
         "DATABASE_URL",
         "postgresql://research:research@127.0.0.1:5432/research_test",
     )
+    # CI 设 REQUIRE_TEST_DB=1：连不上库就算失败。以前一律跳过，库那一步出点偏差（改了口令、库名），
+    # 几百条集成测试全跳过，Tests 照样是绿的，合并的改动自动上线。
+    give_up = pytest.fail if os.environ.get("REQUIRE_TEST_DB") == "1" else pytest.skip
     name = _database_name(url)
     if name != "research_test" and os.environ.get("ALLOW_TEST_DB") != "1":
-        pytest.skip(f"拒绝在数据库 {name} 上跑测试")
+        give_up(f"拒绝在数据库 {name} 上跑测试")
     try:
         conn = psycopg.connect(url, connect_timeout=3)
         conn.close()
     except Exception as exc:
-        pytest.skip(f"Postgres 不可用：{exc}")
+        give_up(f"Postgres 不可用：{exc}")
     return url
 
 

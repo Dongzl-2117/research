@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
+import io
 import ipaddress
 import os
 import re
@@ -83,17 +84,49 @@ def external_urls(body: str) -> list[str]:
     return found
 
 
+# 下下来的图宽乘高的上限（C9）：1.7 亿像素的纯色 PNG 不到 10MB，解码成 RGB 要 500MB，识图 8 路同时认能把容器撑爆。
+MAX_PIXELS = 40_000_000
+_PIL_FORMATS = {"PNG": ".png", "JPEG": ".jpg", "GIF": ".gif", "BMP": ".bmp", "WEBP": ".webp", "TIFF": ".tif",
+                "ICO": ".ico", "AVIF": ".avif", "HEIF": ".heic"}
+_SVG_HEAD = re.compile(rb"^\s*(?:<\?xml[^>]*>\s*)?(?:<!--.*?-->\s*)*(?:<!DOCTYPE svg[^>]*>\s*)?<svg[\s>]", re.S | re.I)
+
+
+def _pixels(data: bytes) -> tuple[str, int] | None:
+    """(格式, 宽乘高)；Pillow 认不出、宽高读不出来回 None。只读文件头，不解码。"""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as image:
+            width, height = image.size
+            kind = image.format or ""
+    except Exception:  # noqa: BLE001 — 坏图、截断的图、认不出的格式都当不是图
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return kind, width * height
+
+
 def image_extension(data: bytes, content_type: str = "") -> str:
+    """按文件内容认图，返回扩展名；不是图、读不出宽高、大过 MAX_PIXELS 的回 ""。
+
+    不按 Content-Type 推：图床回的错误页、占位页常打着 image/*，以前被存成 .html、记成下好了，永不重试。
+    开头碰巧是「BM」的文字也不算 BMP：Pillow 要读得出宽高。SVG 认文件开头的 <svg（/media 按沙箱回）。
+    """
+    del content_type  # 只看内容；参数留着给调用方
+    if _SVG_HEAD.match(data[:4096]):
+        return ".svg"
+    found = _pixels(data)
+    if found is None:
+        return ""
+    kind, pixels = found
+    if pixels > MAX_PIXELS:
+        return ""
     for magic, ext in _SNIFF:
         if data.startswith(magic):
             return ext
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
-    subtype = (content_type or "").split(";", 1)[0].strip().lower()
-    if subtype.startswith("image/"):
-        guess = subtype.split("/", 1)[1]
-        return {"jpeg": ".jpg", "svg+xml": ".svg"}.get(guess, "." + re.sub(r"[^a-z0-9]", "", guess) or ".img")
-    return ""
+    return _PIL_FORMATS.get(kind, "")
 
 
 # 解析不了（域名没了、这台机器的 DNS 坏了）、解析到代理的假地址（fake-ip）、解析到内网分开记：处理办法不一样。
@@ -114,13 +147,21 @@ PROXY_IMAGE_HOSTS = frozenset(
 )
 
 
+# 内嵌 IPv4 的 IPv6 段：NAT64（64:ff9b::/96）、旧的 IPv4 兼容地址（::/96）。网关会把它们转到内嵌的 IPv4 上，
+# 按内嵌的那个判。
+_EMBEDDED_V4 = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("::/96"))
+
+
 def _ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     try:
         address = ipaddress.ip_address(value.split("%", 1)[0])
     except ValueError:
         return None
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        return address.ipv4_mapped
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return address.ipv4_mapped
+        if any(address in network for network in _EMBEDDED_V4) and int(address) > 1:
+            return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
     return address
 
 
@@ -268,6 +309,9 @@ def _download(url: str) -> tuple[bytes, str]:
     if len(data) > MAX_BYTES:
         raise FetchError("超过 15MB")
     if not image_extension(data, content_type):
+        found = _pixels(data)
+        if found is not None and found[1] > MAX_PIXELS:
+            raise FetchError(f"图太大（{found[1] // 1_000_000} 百万像素，上限 {MAX_PIXELS // 1_000_000}）")
         raise FetchError(f"不是图片（{content_type or '没有 Content-Type'}）")
     return data, content_type
 

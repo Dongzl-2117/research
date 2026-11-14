@@ -344,6 +344,11 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         mention_body = body_for_mentions(doc.body_md, body_text=body_text, ocr_text=ocr_text)
         replace_mentions(conn, article_id, mentions_for_document(matcher, doc.title, mention_body))
         replace_chunks(conn, article_id, doc.title, doc.body_md)
+        if existing is not None and (existing["title"] or "") != (doc.title or ""):
+            # 向量的输入带标题：标题改了，沿用的译文块、图片文字块的向量也过期了，整篇一起配，不等夜里补。
+            from researchlib.embeddings import sync_article
+
+            sync_article(conn, article_id)
     stored, linked, missing = sync_article_images(
         conn,
         article_id=article_id,
