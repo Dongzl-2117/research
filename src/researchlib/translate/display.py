@@ -1396,30 +1396,42 @@ def fold_translated_copies(source: str, translated: str) -> str:
     return best
 
 
+def _cut_score(kinds: Sequence[str], keys: Sequence[str], whole: Sequence[str]) -> tuple[int, int]:
+    """拆并在一起的引文、列表时比哪一刀好：先比正好接上的处数，再比一共认出的处数。
+
+    外层只有中间一截接得上的那种（开头带导语、结尾带署名，``_inside_run``）在拆错的地方也凑得出来：
+    线上 21401 拆在纯文字那份的第一段后面，后面几段连同套着的那条，像一条「结尾带署名」的外层。
+    拆对的地方，纯文字那份和带格式那几块通常正好接上。"""
+    runs = copy_runs(kinds, keys, whole)
+    return sum(1 for run in runs if not run.lead and not run.trail), len(runs)
+
+
 def _merged_quote_cuts(blocks: Sequence[_El | _Tx]) -> dict[int, int]:
     """Python-Markdown 把紧挨着的两条引文并成一条（中间的空行不算断开）。原文的引文里一开头就套着引文时，
     导出的纯文字那份和带格式那几块的第一块（那条套着的引文）就这样并在一起，按顶层块认不出来。
-    返回 {第几块: 从第几段拆开}：拆成两条以后能多认出一处的才拆。"""
+    返回 {第几块: 从第几段拆开}：拆成两条以后能多认出一处的才拆，取最好的那一刀（``_cut_score``）。"""
     units = [_copy_unit(node) for node in blocks]
     kinds = [unit[0] for unit in units]
     keys = [unit[2] for unit in units]
     whole = [unit[3] for unit in units]
-    base = len(copy_runs(kinds, keys, whole))
+    base = _cut_score(kinds, keys, whole)
     cuts: dict[int, int] = {}
     for index, node in enumerate(blocks):
         if kinds[index] != "quote" or not isinstance(node, _El):
             continue
         parts = _filled(node.children)
+        best: tuple[tuple[int, int], int] | None = None
         for cut in range(1, len(parts)):
             first, second = repeat_key(_serialize(parts[:cut])), repeat_key(_serialize(parts[cut:]))
-            trial = (
+            score = _cut_score(
                 [*kinds[:index], "quote", "quote", *kinds[index + 1:]],
                 [*keys[:index], first, second, *keys[index + 1:]],
                 [*whole[:index], first, second, *whole[index + 1:]],
             )
-            if len(copy_runs(*trial)) > base:
-                cuts[index] = cut
-                break
+            if score > (base if best is None else best[0]):
+                best = (score, cut)
+        if best is not None:
+            cuts[index] = best[1]
     return cuts
 
 
@@ -1496,15 +1508,15 @@ def _merged_list_cuts(blocks: Sequence[_El | _Tx]) -> dict[int, int]:
                 _filled(_fragment(f"<ul>{_serialize(items[cut:])}</ul>").children)[0],
             ]
             split = [_copy_unit(part) for part in parts]
-            count = len(copy_runs(
+            score = _cut_score(
                 [*kinds[:index], *(unit[0] for unit in split), *kinds[index + 1:]],
                 [*keys[:index], *(unit[2] for unit in split), *keys[index + 1:]],
                 [*whole[:index], *(unit[3] for unit in split), *whole[index + 1:]],
-            ))
+            )
             if base is None:
-                base = len(copy_runs(kinds, keys, whole))
-            if count > (base if best is None else best[0]):
-                best = (count, cut)
+                base = _cut_score(kinds, keys, whole)
+            if score > (base if best is None else best[0]):
+                best = (score, cut)
         if best is not None:
             cuts[index] = best[1]
     return cuts

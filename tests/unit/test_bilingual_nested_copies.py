@@ -458,6 +458,48 @@ def test_a_quote_merged_with_its_nested_copy_shows_once_on_every_page():
     assert _ids(folded) == _ids(zh)
 
 
+# 同上，纯文字那份还分了好几段，后面跟着图（线上 21401）。拆在第一段后面时，后面几段连同套着的那条
+# 像一条「结尾带署名」的外层，也能凑出一处；拆在纯文字那份的最后一段后面，带格式那几块才正好接上。
+_MD_MERGED_PARAS = (
+    "Opening words of the article body here.\n\n"
+    "> The most surprising announcement of all were the prices, which stayed the same.\n>\n"
+    "> What this means is that in real terms the products actually got cheaper this year.\n>\n"
+    "> This does not fit the way the company has always been thought to set its prices.\n\n"
+    "> The most surprising announcement of all were the prices, which stayed the "
+    "[same](https://example.invalid/prices).\n\n"
+    "[](https://example.invalid/chart)\n\n"
+    f"![Prices over five years]({_CHART})\n\n"
+    "What this means is that in real terms the products actually got *cheaper* this year.\n\n"
+    "This does not fit the way the company has always been thought to set its "
+    "[prices](https://example.invalid/pricing).\n\n"
+    "Closing words of the article body.\n"
+)
+_ZH_MERGED_PARAS = {
+    0: "<p>正文开头的几句话。</p>",
+    1: "<p>最让人意外的是价格，价格一点没变。</p>",
+    2: "<p>这意味着按实际购买力算，这些产品今年其实更便宜了。</p>",
+    3: "<p>这和人们一直以为的这家公司的定价方式对不上。</p>",
+    4: '<p>最让人意外的是价格，价格一点<a href="https://example.invalid/prices">没变</a>。</p>',
+    5: "<p>这意味着按实际购买力算，这些产品今年其实更<em>便宜</em>了。</p>",
+    6: '<p>这和人们一直以为的这家公司的<a href="https://example.invalid/pricing">定价方式</a>对不上。</p>',
+    7: "<p>正文最后几句。</p>",
+}
+
+
+def test_a_quote_in_paragraphs_merged_with_its_nested_copy_shows_once_on_every_page():
+    source, zh, view = _render(_MD_MERGED_PARAS, _ZH_MERGED_PARAS, _IMAGES)
+    texts = ("最让人意外", "这意味着", "这和人们一直以为")
+    shown = "".join(pair.zh or "" for pair in view.pairs)
+    assert view.correspondence == "mapped" and all(shown.count(text) == 1 for text in texts)
+    folded = fold_translated_copies(source, zh)
+    assert all(folded.count(text) == 1 for text in texts)
+    # 留下带格式的那几块，套着的那条、图、加粗和链接都放回外层的引文里。
+    quote = folded.split('<blockquote id="p-2">', 1)[1].split("正文最后几句", 1)[0]
+    assert re.search(r'<blockquote><p>最让人意外.*没变</a>。</p>\s*</blockquote>', quote)
+    assert _CHART in quote and "<em>便宜</em>" in quote and "定价方式</a>" in quote
+    assert _ids(folded) == _ids(zh)
+
+
 # 写两遍的引文：纯文字那份按行切开译，每行都译对了；带格式那几段的译文挪了一格（漏了第一个列表项，
 # 后面的各往前挪一格，最后一个列表项是下一段的译文）。线上 21938 是这样。
 _MD_SLIPPED = (
