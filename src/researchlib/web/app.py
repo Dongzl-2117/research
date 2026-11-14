@@ -135,6 +135,10 @@ def create_app(settings: Settings | None = None, *, experiment_owner_verifier=No
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["X-Frame-Options"] = "DENY"
+        # 网页上的图只从本站来（外部图片不外链）。正文过滤漏了的写法，浏览器这一层也不加载。
+        is_page = "text/html" in response.headers.get("content-type", "")
+        if is_page and "content-security-policy" not in response.headers:
+            response.headers["Content-Security-Policy"] = "img-src 'self' data:"
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
         response.headers["Cache-Control"] = "private, no-store"
         # 样式和脚本带着当前内容的版本号来取（模板里的 asset()），一直缓存；见 web/assets.py。

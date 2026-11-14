@@ -489,3 +489,16 @@ def test_text_in_images_is_searchable(conn, settings):
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{article['id']}", params={"chunk": chunk["ord"]}).text
         assert "图片里的字" in page and f'id="{chunk["anchor"]}"' in page
+
+
+def test_pages_only_load_images_from_this_site(conn, settings):
+    """正文过滤漏掉的外部图片写法，浏览器这一层也不加载：网页带 img-src 'self'。"""
+    from fastapi.testclient import TestClient
+
+    from researchlib.web.app import create_app
+
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/")
+        api = client.get("/api/v1/sources")
+    assert page.headers["content-security-policy"] == "img-src 'self' data:"
+    assert "content-security-policy" not in api.headers

@@ -592,3 +592,14 @@ def test_only_wechat_bodies_with_estimated_positions_get_their_images_moved():
     assert not images_placed_by_estimate("feishu")
     assert not images_placed_by_estimate("markdown", {})
 
+
+
+def test_reference_image_with_a_tab_entity_cannot_point_off_site():
+    """引用式图片地址写成「/ + 制表符或换行实体 + /外部主机」：浏览器删掉制表符就成了 //外部主机，不能留下。"""
+    from researchlib.render import render_body
+
+    for entity in ("&#9;", "&Tab;", "&#10;", "&NewLine;", "&#x09;"):
+        body = f"正文\n\n![图][x]\n\n[x]: /{entity}/evil.example/p.png\n"
+        assert "evil.example" not in str(render_body(body, {}))
+    kept = str(render_body("![图](abc.png)", {"abc.png": "/media/abc.png"}))
+    assert 'src="/media/abc.png"' in kept

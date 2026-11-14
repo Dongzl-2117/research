@@ -106,9 +106,18 @@ def _safe_link(value: str) -> bool:
     return scheme is None or scheme.group(1).lower() in _LINK_SCHEMES
 
 
+_URL_CONTROL = re.compile(r"[\x00-\x20\x7f]")
+
+
 def _local_path(value: str) -> bool:
-    """外部图片不外链：图片只认站内路径（rewrite_*_images 已经换成 /media/...）。"""
+    """外部图片不外链：图片只认站内路径（rewrite_*_images 已经换成 /media/...）。
+
+    浏览器解析地址时先删掉中间的制表符、换行：「/&#9;/外部主机/图」到浏览器里是「//外部主机/图」。
+    这里的值已经解开了字符实体，中间带空白或控制字符的一律不认。
+    """
     path = value.strip()
+    if _URL_CONTROL.search(path):
+        return False
     return path.startswith("/") and not path.startswith("//") and "\\" not in path
 
 
