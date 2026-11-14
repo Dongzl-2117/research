@@ -238,6 +238,24 @@ def drop_guest_comments_text(text: str, owners: Sequence[str] = ()) -> str:
     return "\n".join(out)
 
 
+_CHUNK_COMMENT_HEADING = re.compile(r"^\s*(?:评论\s*[（(]\s*\d+\s*[)）]|评论里的回复)\s*$")
+
+
+def guest_comment_chunk(chunk, guests: Sequence[str]) -> bool:
+    """原文块（article_chunks 一行）里有读者的评论：章节是「评论（N）」「评论里的回复」，或者正文写着 guests 里的名字。
+
+    块是入库时按库里的正文切的。还没跑 research-repair-zsxq 的旧帖，正文页、接口的 body_markdown 现滤，
+    块里却还是读者的评论和昵称；按编号给块的地方（接口的 chunks、文章页的 ?chunk=）用它挡掉。
+    guests 是 guest_comment_authors 的结果，为空时什么都不挡。译文块、图片文字块不是从评论区切的，不挡。
+    """
+    if not guests or chunk["lang"]:
+        return False
+    if _CHUNK_COMMENT_HEADING.match(chunk["heading"] or ""):
+        return True
+    body = chunk["body"] or ""
+    return any(name and name in body for name in guests)
+
+
 def filter_host_comments_markdown(md: str, owners: Sequence[str] = (), *, replies: bool = True) -> str:
     """正文里的「评论（N）」只留来源作者（owners 不给时按方伟）。一条都不剩就整节去掉。inbox 原文不改。
 

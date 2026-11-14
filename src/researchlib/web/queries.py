@@ -725,6 +725,21 @@ def expire_stale_answers(conn) -> int:
     return len(rows)
 
 
+def visible_article_ids(conn, article_ids, source_ids: list[str]) -> set[int]:
+    """这几篇里网站现在还展示的：来源启用、不是网友帖或「图片」评论壳。和 get_article 一个口径。
+
+    问库回答、补的「漏了的文章」存的是当时的编号和原文，之后文章可能被隐藏、来源可能停用，展示前用它再筛一遍。
+    """
+    ids = sorted({int(item) for item in article_ids if item is not None})
+    if not ids or not source_ids:
+        return set()
+    rows = conn.execute(
+        f"SELECT id FROM articles WHERE id = ANY(%s) AND source_id = ANY(%s) AND {site_visible_sql('')}",
+        (ids, list(source_ids)),
+    ).fetchall()
+    return {row["id"] for row in rows}
+
+
 def title_rows(conn, article_ids: list[int]):
     """按现在的库取这几篇的标题，给 display_titles 用。"""
     if not article_ids:

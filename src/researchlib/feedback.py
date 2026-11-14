@@ -88,15 +88,28 @@ def toggle_irrelevant(conn, answer_id: int, article_id: int, chunk_ord: int | No
     return True
 
 
-def add_missing(conn, answer_id: int, ref: str, note: str = "") -> int:
-    """补一篇「漏了」的文章。返回文章 id；认不出或库里没有时抛 ValueError。"""
+def add_missing(conn, answer_id: int, ref: str, note: str = "", source_ids: list[str] | None = None) -> int:
+    """补一篇「漏了」的文章。返回文章 id；认不出或库里没有时抛 ValueError。
+
+    source_ids 给了（网页上都给，是启用的来源）就按文章页同一个口径认「库里有没有」：来源停用的、
+    网友帖、「图片」评论壳都当没有。以前只要 articles 里有这一行就收下，回答页再按编号把标题显示出来，
+    隐藏文章的标题能按编号一篇篇探出来。
+    """
+    from researchlib.author_voice import site_visible_sql
+
     answer = _answer(conn, answer_id)
     if answer is None:
         raise LookupError("没有这条回答")
     article_id, chunk = parse_article_ref(ref)
     if article_id is None:
         raise ValueError("贴文章链接或编号，例如 /articles/123")
-    exists = conn.execute("SELECT 1 FROM articles WHERE id = %s", (article_id,)).fetchone()
+    if source_ids is None:
+        exists = conn.execute("SELECT 1 FROM articles WHERE id = %s", (article_id,)).fetchone()
+    else:
+        exists = conn.execute(
+            f"SELECT 1 FROM articles WHERE id = %s AND source_id = ANY(%s) AND {site_visible_sql('')}",
+            (article_id, list(source_ids)),
+        ).fetchone()
     if exists is None:
         raise ValueError(f"库里没有文章 {article_id}")
     conn.execute(
