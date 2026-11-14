@@ -13,7 +13,7 @@ docker compose up -d --build
 
 应用监听容器内的 `8088`，compose 只把宿主机的 **127.0.0.1:8088** 转进去。不要改成 `0.0.0.0`。数据库端口同样只绑定 `127.0.0.1:5432`。
 
-应用启动时会自己做迁移（按文件名顺序，到 `023_drop_demo_article.sql`）、同步 `config/sources.yaml`（星主的星球昵称 `poster_names` 改了，按新名单重算已入库帖子的原创标记）、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。以前每篇最多切 400 块，正好切满 400 块的长文启动时重切一遍，后面的内容才进检索。上次没写完的问库整合标成中断，回答页可以重新整合。
+应用启动时会自己做迁移（`src/researchlib/migrations/` 下按文件名顺序，几个进程同时启动时用数据库锁排队，只跑一遍）、同步 `config/sources.yaml`（星主的星球昵称 `poster_names` 改了，按新名单重算已入库帖子的原创标记）、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。以前每篇最多切 400 块，正好切满 400 块的长文启动时重切一遍，后面的内容才进检索。上次没写完的问库整合标成中断，回答页可以重新整合。
 
 `019` 只建飞书目录表。部署后若林文丰已经在库里，跑一次 `research-doc-tree --source linwenfeng-feishu`（不访问飞书）。方伟星球若要改成真实 `create_time`，跑 `research-retime`（见 [ingest.md](ingest.md)），它会按新的 `published_at` 重排观点时间线和「同期别人怎么看」。这两条都不要在部署时自动跑。
 
@@ -148,7 +148,7 @@ scripts/lock.sh --upgrade                   # 全部升到最新
 
 ## Cloudflare Tunnel
 
-Access 和隧道都在应用外面做。应用里没有登录，也没有可以绕过的口令。
+隧道在应用外面做。应用里没有登录，也没有可以绕过的口令；网站不登录就能看，是站长定的（没有加 Cloudflare Access）。
 
 `cloudflared` 指向本机回环地址：
 
@@ -159,7 +159,7 @@ ingress:
   - service: http_status:404
 ```
 
-在 Cloudflare Zero Trust 里给 `investment.zldong.com` 加 Access 策略，只放自己的身份。不要把源站端口暴露到公网。
+不要把源站端口暴露到公网。以后要只给自己看，在 Cloudflare Zero Trust 里给 `investment.zldong.com` 加 Access 策略。
 
 ## 磁盘
 

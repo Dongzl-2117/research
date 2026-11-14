@@ -171,3 +171,10 @@ def test_llm_status_follows_the_file_written_by_another_process(tmp_path):
     health.record_llm(tmp_path, ok=True, provider="DeepSeek")
     health.record_llm(tmp_path, ok=False, error="busy", provider="DeepSeek")
     assert health.read_status(tmp_path, "llm")["failures"] == 1
+
+
+def test_a_status_file_that_cannot_be_read_is_reported(tmp_path):
+    health.status_path(tmp_path, "backup").parent.mkdir(parents=True, exist_ok=True)
+    health.status_path(tmp_path, "backup").write_text('{"task":"backup","ok":false,"message":"坏\x1b', encoding="utf-8")
+    found = health.notices(tmp_path, "Asia/Shanghai")
+    assert any("状态文件读不出来" in item for item in found)

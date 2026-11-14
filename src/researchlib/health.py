@@ -125,6 +125,9 @@ def notices(data_dir: Path, zone_name: str, now: datetime | None = None) -> list
     for task, (label, max_age) in TASKS.items():
         data = read_status(data_dir, task)
         if data is None:
+            # 文件在、却读不出来（写坏了的 JSON）：以前当成没有这个任务，这条失败就不报了。
+            if status_path(data_dir, task).exists():
+                found.append(f"{label}的状态文件读不出来（{status_path(data_dir, task).name}），看日志")
             continue
         at = parse_time(data.get("at"))
         message = str(data.get("message") or "").strip()

@@ -2,7 +2,7 @@
 # 夜间补齐：Stratechery 发布时刻、外链图片、观点、摘要、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
 # 观点和摘要还有时间上限，跑不完的下一晚接着补。白天和部署时都不跑。
 # 识图紧跟在外链图片后面：当天的截图帖先识出字，向量、观点、摘要第一遍就读得到。
-# 某一步失败不影响后面的步骤；结果写进 data/status/nightly.json，有步骤失败或两天没跑成时 health.notices 会列出来。
+# 某一步失败不影响后面的步骤；结果写进 data/status/nightly.json，有步骤失败或两天没跑成时 docker compose exec app research-status 会报出来。
 #
 #   scripts/nightly.sh
 #   VIEWS_LIMIT=200 DIGEST_LIMIT=200 MINUTES=300 scripts/nightly.sh

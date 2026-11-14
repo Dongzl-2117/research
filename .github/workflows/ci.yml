@@ -27,10 +27,11 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v6
+      # 第三方 action 按提交号钉住：Tests 绿了就自动上线，标签被改指向别的提交也不跟着变。升级时一起换注释里的版本。
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       # PR 用 API 比较整个 PR；main push 用 git 比较本次 push 的所有提交。定时和手动触发不比，评测照跑。
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
@@ -61,7 +62,7 @@ jobs:
               - 'requirements-dev.lock'
               - '.github/workflows/ci.yml'
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
           cache: pip
@@ -101,6 +102,8 @@ jobs:
       - name: Integration tests
         env:
           DATABASE_URL: postgresql://research:research@127.0.0.1:5432/research_test
+          # 连不上测试库就失败，不让几百条集成测试全跳过、Tests 照样绿（tests/conftest.py）。
+          REQUIRE_TEST_DB: "1"
         run: python tools/ci/annotate.py "集成测试" -- pytest tests/integration
 
       # 1500 篇的评测语料（固定随机种子），和 tools/retrieval_eval/baseline.json 比：准确率、召回率不许退步。

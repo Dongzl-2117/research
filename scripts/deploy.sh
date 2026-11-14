@@ -134,12 +134,20 @@ unreachable() {
   exit 0
 }
 
+started_at() {
+  # 进程的启动时刻，比对锁是不是这个进程拿的：Mac mini 重启后同一个 pid 可能被别的常驻进程占了。
+  ps -o lstart= -p "$1" 2> /dev/null | tr -s ' ' || true
+}
+
 take_lock() {
   mkdir -p "$STATUS_DIR"
   if ! mkdir "$LOCK" 2> /dev/null; then
-    local holder
+    local holder since
     holder="$(cat "$LOCK/pid" 2> /dev/null || true)"
-    if [ -n "$holder" ] && kill -0 "$holder" 2> /dev/null; then
+    since="$(cat "$LOCK/started" 2> /dev/null || true)"
+    # 进程还在、启动时刻也对得上（以前的锁没记启动时刻，只看进程在不在）才算上一轮还在跑。
+    if [ -n "$holder" ] && kill -0 "$holder" 2> /dev/null \
+      && { [ ! -f "$LOCK/started" ] || [ "$since" = "$(started_at "$holder")" ]; }; then
       # 卡住的那一轮会挡住后面每一轮。跑了 2 小时还没完就记下来，不然只看得到「新提交一直没上线」。
       if [ -n "$(find "$LOCK/pid" -mmin +120 2> /dev/null || true)" ]; then
         status_fail "上一轮自动上线（进程 ${holder}）跑了两个多小时还没完，这之后合并的都没上线：看 ~/Library/Logs/research/deploy.log"
@@ -152,6 +160,7 @@ take_lock() {
   fi
   locked=1
   echo "$$" > "$LOCK/pid"
+  started_at "$$" > "$LOCK/started"
 }
 
 busy_job() {
@@ -327,11 +336,13 @@ deploy_main() {
     fi
   fi
   note "上线 ${short}（现在是 ${before:0:7}，第 ${tries} 次）"
-  echo "$target $tries" > "$LAST"
+  # 迁移前备份放在记尝试次数之前：备份盘暂时不在（休眠、没挂上）时不算这个提交试过，盘回来接着上线，
+  # 以前连着 3 轮备份失败，这个提交就不再自动上线。
   if [ -n "$backup_dir" ]; then
     note "${short} 带新的数据库迁移，先备份到 ${backup_dir}"
     run_step "迁移前备份" env BACKUP_DIR="$backup_dir" "$REPO/scripts/backup.sh"
   fi
+  echo "$target $tries" > "$LAST"
   run_step "拉代码" git -C "$REPO" merge --ff-only --quiet "origin/$BRANCH"
 
   export GIT_SHA="$target"
