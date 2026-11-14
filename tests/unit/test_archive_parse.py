@@ -421,3 +421,22 @@ def test_wechat_literal_backslash_n_becomes_paragraphs(tmp_path: Path):
     assert "Platinum\n\nAMD 也一样。\n能做的就是耐心等。" in text
     assert 'printf("%d\\n", total);' in text
     assert text.count("\\n") == 1
+
+
+def test_body_time_reads_the_written_time_zone():
+    from researchlib.textutil import _body_time_raw, parse_datetime
+
+    def when(line):
+        raw = _body_time_raw(f"# 标题\n\n- 时间：{line}\n\n正文")
+        return parse_datetime(raw) if raw else None
+
+    shanghai = when("2026-09-27 14:41 (UTC+8)")
+    assert shanghai.isoformat() == "2026-09-27T14:41:00+08:00"
+    assert when("2026-09-27 14:41 UTC+8") == shanghai
+    assert when("2026-09-27 14:41（北京时间）") == shanghai
+    assert when("2026-09-27 14:41") == shanghai
+    assert when("2026-09-27 06:41 (UTC)") == shanghai
+    assert when("2026-09-27 01:41 GMT-5") == shanghai
+    # 认不出的时区：只留日期，当没有钟点，不按上海时间读错。
+    unknown = _body_time_raw("# 标题\n\n- 时间：2026-09-27 14:41 (PST)\n")
+    assert unknown == "2026-09-27"
