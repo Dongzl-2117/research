@@ -100,7 +100,7 @@ from researchlib.web.present import (
 from researchlib.web.quoting import mark_quoted
 from researchlib.web.scoping import parse_day, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
-from researchlib.zsxq_comments import source_owners
+from researchlib.zsxq_comments import guest_comment_authors, guest_comment_chunk, source_owners
 from researchlib.zsxq_title import (
     TITLE_LIMIT,
     repairs_source,
@@ -383,6 +383,56 @@ def retitle_views(conn, items: list[dict], by_id: dict, zone: str) -> list[dict]
     for item in items:
         item["title"] = titles.get(item["article_id"]) or item["title"]
     return items
+
+
+WITHHELD_TITLE = "这条出处已不展示"
+WITHHELD_NOTE = (
+    "这条回答引用的原文现在已不在网站上展示（文章隐藏了，或来源停用了），回答和出处都收起来了。"
+    "要看现在的结果，请重新问一次。"
+)
+
+
+def withhold_citations(conn, citations: list[dict], sources) -> tuple[list[dict], int]:
+    """问库存下的是提问当时的段落全文。之后文章被隐藏（网友帖、「图片」评论壳）或来源停用，
+    这里把那几条的标题、正文、链接都去掉，只留编号，和文章页、检索一个口径（queries.visible_article_ids）。
+
+    返回 (处理后的出处, 回答里引用了的、被收起的条数)。条数不为 0 时，回答正文多半转述了收起的原文，调用方整条收起。
+    """
+    ids = [item.get("article_id") for item in citations if item.get("article_id") is not None]
+    if not ids:
+        return citations, 0
+    visible = queries.visible_article_ids(conn, ids, [source.id for source in sources])
+    kept: list[dict] = []
+    cited = 0
+    for item in citations:
+        article_id = item.get("article_id")
+        if article_id is None or int(article_id) in visible:
+            kept.append(item)
+            continue
+        cited += 1 if item.get("cited") else 0
+        kept.append(
+            {
+                "n": item.get("n"),
+                "cited": item.get("cited", False),
+                "withheld": True,
+                "article_id": None,
+                "ord": None,
+                "title": WITHHELD_TITLE,
+                "heading": "",
+                "text": "",
+                "before": "",
+                "after": "",
+                "source_id": "",
+                "source": "",
+                "author": "",
+                "date": "",
+                "url": "",
+                "lang": "",
+                "matched": [],
+                "semantic": False,
+            }
+        )
+    return kept, cited
 
 
 def cited_titles(conn, citations: list[dict], sources, zone: str) -> list[dict]:
@@ -748,6 +798,11 @@ def _article_view(request: Request, article_id: int, mode: str):
             wanted = int(chunk_arg)
             # 图片文字块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
+            # 还没清的旧帖，评论那几块里有读者的评论和昵称，正文页的评论区不显示它们，这里也不引。
+            if quoted is not None and guest_comment_chunk(
+                quoted, guest_comment_authors(article["body_md"] or "", source_owners(source)) or []
+            ):
+                quoted = None
         banner = queries.sample_state(conn, ids)
         chat_asked = queries.recent_article_questions(conn, article_id, 3)
         translation = queries.get_translation(conn, article_id)
@@ -1682,6 +1737,8 @@ def day_page(request: Request, day: str):
         previous, following = queries.neighbor_days(conn, scope, found)
         elsewhere = tuple(source.id for source in sources if not source.timeline)
         saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id, elsewhere)
+        # 后来被隐藏或来源停用的原文不再展示；这天的汇总引用了它们就整条不放（R6）。
+        withheld = withhold_citations(conn, saved["citations"] or [], sources)[1] if saved else 0
         company = queries.get_company(conn, info["company"]) if info["company"] else None
         banner = queries.sample_state(conn, [source.id for source in sources])
     brief = compose_day_brief(cards)
@@ -1696,7 +1753,7 @@ def day_page(request: Request, day: str):
     ask_href = f"/ask?preset=day&from={key}&to={key}" + (f"&{scope_query}" if scope_query else "")
 
     answer = None
-    if saved:
+    if saved and not withheld:
         # 按钮问的是一段给模型的指令，标题换成它问的事；出处只列回答里引了的。
         answer = {
             "id": saved["id"],
@@ -1852,19 +1909,27 @@ def ask_answer(request: Request, answer_id: int):
         labels = feedback_marks(conn, answer_id)
         citations = row["citations"] or []
         zone = request.app.state.settings.display_timezone
+        # 后来被隐藏的文章、停用来源的原文不再展示；引用了它们的回答整条收起（R6）。
+        citations, withheld = withhold_citations(conn, citations, sources)
         shown = cited_titles(conn, citations, sources, zone)
-        missing = cited_titles(conn, labels["missing"], sources, zone)
+        # 补的「漏了的文章」只列现在还展示的，不按编号把隐藏文章的标题显示出来（B3）。
+        visible_missing = queries.visible_article_ids(
+            conn, [item["article_id"] for item in labels["missing"]], [source.id for source in sources]
+        )
+        missing = cited_titles(
+            conn, [item for item in labels["missing"] if item["article_id"] in visible_missing], sources, zone
+        )
     result = {
         "id": row["id"],
         "question": row["question"],
-        "answer": row["answer"],
-        "error": row["error"],
+        "answer": None if withheld else row["answer"],
+        "error": WITHHELD_NOTE if withheld else row["error"],
         "status": row["status"],
         "model": row["model"],
         "citations": shown,
         "terms": row["terms"] or [],
         "created": format_date(row["created_at"], zone),
-        "checks": _safe_checks(row, citations, sources),
+        "checks": [] if withheld else _safe_checks(row, citations, sources),
         "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
         "missing": missing,
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
@@ -1912,7 +1977,13 @@ async def ask_feedback(request: Request, answer_id: int):
             return RedirectResponse(f"/ask/{answer_id}" + (f"#c-{anchor}" if anchor.isdigit() else ""), status_code=303)
         if label == "missing":
             try:
-                add_missing(conn, answer_id, str(form.get("ref") or ""), str(form.get("note") or ""))
+                add_missing(
+                    conn,
+                    answer_id,
+                    str(form.get("ref") or ""),
+                    str(form.get("note") or ""),
+                    source_ids=[source.id for source in active_sources(request, conn)],
+                )
             except ValueError as exc:
                 code = "absent" if str(exc).startswith("库里没有") else "ref"
                 return RedirectResponse(f"/ask/{answer_id}?feedback_error={code}#missing", status_code=303)

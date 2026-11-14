@@ -2,6 +2,11 @@
 {% from "_ask_model.html" import model_menu %}
 {% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">{% endblock %}
 {% macro passage(item, result) %}
+{% if item.withheld %}
+<li id="c-{{ item.n }}" tabindex="-1" class="withheld{% if item.cited %} cited{% endif %}">
+  <p class="item-meta"><span class="source-number">{{ item.n }}</span> <span class="quiet">{{ item.title }}</span></p>
+</li>
+{% else %}
 {% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
 <li id="c-{{ item.n }}" tabindex="-1" class="{% if item.cited %}cited{% endif %}{% if flagged %} flagged{% endif %}">
   <p class="item-meta"><span class="source-number">{{ item.n }}</span> <a href="{{ item.url }}">{{ item.title }}</a></p>
@@ -16,6 +21,7 @@
     {% endif %}
   </div>
 </li>
+{% endif %}
 {% endmacro %}
 {% block body %}
 <section id="ask-chat" class="ask-workspace" aria-label="问库">
