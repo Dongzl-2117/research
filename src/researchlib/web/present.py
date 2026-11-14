@@ -430,3 +430,11 @@ def stale_sources(
     if watched >= 2 and len(found) == watched:
         return [{"all": True, "count": watched, "idle_days": min(item["idle_days"] for item in found)}]
     return found
+
+
+def is_english(text) -> bool:
+    """标题或正文是英文：有英文字母，汉字又不到英文字母的一半（和译制判断语言的 is_chinese 同一口径）。"""
+    from researchlib.translate.language import is_chinese
+
+    text = str(text or "")
+    return any(ch.isascii() and ch.isalpha() for ch in text) and not is_chinese(text)

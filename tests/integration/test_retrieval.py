@@ -171,7 +171,7 @@ def test_mcp_round_trip(conn, settings):
 
 
 def test_ask_without_llm_returns_passages(conn, settings, monkeypatch):
-    """没凭证时只列原文。提示点名这次进程实际在用的提供方，两家各说各的。"""
+    """没凭证时只列原文。页面上不说凭证，缺哪家记进日志。"""
     from dataclasses import replace
 
     from researchlib.llm import missing_credential_text
@@ -189,10 +189,10 @@ def test_ask_without_llm_returns_passages(conn, settings, monkeypatch):
         with TestClient(create_app(running)) as client:
             page = client.post("/ask", data={"q": "宁德时代的毛利率怎么样"})
             assert page.status_code == 200
-            assert notice in page.text
+            # 页面上只说读者用得上的话，缺哪家的凭证只进日志（审核 F9）。
             assert notice.startswith("没有可用的 ")
-            other = "DeepSeek" if provider == "grok" else "Grok"
-            assert f"没有可用的 {other} 凭证" not in page.text
+            assert "这会儿问不了 AI" in page.text
+            assert "凭证" not in page.text
             assert "should-not-enable-ask" not in page.text
             assert 'id="c-1"' in page.text
         assert conn.execute("SELECT count(*) AS n FROM llm_answers").fetchone()["n"] == 0
@@ -390,7 +390,9 @@ def test_ask_runs_in_background_and_page_waits(conn, settings, monkeypatch):
         assert answer_id and started["citations"]
         waiting = client.get(f"/ask/{answer_id}")
         assert "正在整合" in waiting.text
-        assert f'data-poll="/api/v1/answers/{answer_id}"' in waiting.text
+        assert 'data-answer-status="running"' in waiting.text
+        assert f'<a class="chat-open-answer" href="/ask/{answer_id}">刷新页面看进度</a>' in waiting.text
+        assert '<meta http-equiv="refresh" content="8">' in waiting.text
         assert "相关原文" in waiting.text
         assert client.get(f"/api/v1/answers/{answer_id}").json()["status"] == "running"
         release.set()

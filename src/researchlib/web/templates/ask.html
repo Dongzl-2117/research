@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% from "_ask_model.html" import model_menu %}
-{% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">{% if result and result.status == "running" and result.id %}<noscript><meta http-equiv="refresh" content="8"></noscript>{% endif %}{% endblock %}
 {% macro passage(item, result) %}
 {% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
 <li id="c-{{ item.n }}" tabindex="-1" class="{% if item.cited %}cited{% endif %}{% if flagged %} flagged{% endif %}">
   <p class="item-meta"><span class="source-number">{{ item.n }}</span> <a href="{{ item.url }}">{{ item.title }}</a></p>
-  <p class="source-byline">{{ item.author }} · {{ item.date }}{% if item.heading %} · {{ item.heading }}{% endif %}</p>
+  <p class="source-byline">{{ item.author }} · {{ item.date }}{% if item.heading %} · {{ item.heading | truncate(40, true, "…", 0) }}{% endif %}</p>
   <div class="passage-foot">
     <details class="passage-full"><summary>查看原文</summary><p>{{ item.text | highlight_full(result.terms) }}</p></details>
     {% if result.id %}
@@ -36,14 +36,14 @@
       <a class="ask-new" href="/ask"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>新问题</span></a>
     </div>
   </header>
-  {% if not llm_ready %}<p class="chat-notice">{{ credential_notice | default("没有可用的 " ~ (llm_label | default("LLM")) ~ " 凭证") }}，只列出相关原文。</p>{% endif %}
+  {% if not llm_ready %}<p class="chat-notice">这会儿问不了 AI，只列出相关原文。</p>{% endif %}
   <p id="ask-mode" class="sr">每轮只提交当前问题，不沿用上文。作者、日期和指定资料范围会随本次提问提交。回答可通过引用回到原文核对。</p>
   <div class="chat-log" role="region" aria-label="提问与回答" tabindex="0">
     {% if not result %}
     <div class="ask-welcome"><i class="ask-seal" aria-hidden="true">研</i><h2>想从资料里了解什么？</h2><p>从一个问题开始，沿着引用读回原文。</p></div>
     {% else %}
     <div class="chat-bubble chat-bubble-user"><p>{{ result.question }}</p></div>
-    <section class="answer chat-bubble chat-bubble-assistant" aria-label="回答" data-answer-id="{{ result.id or '' }}" data-answer-status="{{ result.status }}"{% if result.status == "running" %} data-poll="/api/v1/answers/{{ result.id }}"{% endif %}>
+    <section class="answer chat-bubble chat-bubble-assistant" aria-label="回答" data-answer-id="{{ result.id or '' }}" data-answer-status="{{ result.status }}">
       <p class="chat-status{% if result.status != 'running' %} sr{% endif %}" role="status">{% if result.status == "running" %}正在整合回答…{% endif %}</p>
       <div class="chat-content">
         {% if result.error %}
@@ -79,7 +79,8 @@
         {% if result.model or result.created %}<p class="answer-meta">{{ ([result.model, ("思考" ~ result.llm.effort_label) if result.llm and result.model else "", result.created] | select | join(" · ")) }}</p>{% endif %}
         </div>
       </div>
-      <div class="chat-recovery"></div>
+      {# 整合中的回答靠 article-chat.js 轮询刷新；脚本没加载到（链路慢时会有）时读者至少有个能点的刷新，脚本跑起来会换掉这里。没开脚本时 head 里每 8 秒自己刷新（审核 F8）。 #}
+      <div class="chat-recovery">{% if result.status == "running" and result.id %}<a class="chat-open-answer" href="/ask/{{ result.id }}">刷新页面看进度</a>{% endif %}</div>
     </section>
     {% endif %}
   </div>
