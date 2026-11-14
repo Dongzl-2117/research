@@ -32,9 +32,7 @@ Widget Corp says the device will ship next month at a price that undercuts every
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_feed_address_stays_out_of_every_output(conn, settings, monkeypatch, legacy):
-    # 只验读取，不让文章 GET 排摘要任务。
-    monkeypatch.setattr("researchlib.web.routes.schedule_digests", lambda *_args, **_kwargs: None)
+def test_feed_address_stays_out_of_every_output(conn, settings, legacy):
     source = next(item for item in load_sources(settings.sources_path) if item.id == "stratechery")
     doc = ParsedDoc(
         "2026/widget-tv", "Widget TV", datetime(2026, 10, 14, 8, 0, tzinfo=SHANGHAI), BODY, {"language": "en"}, []
@@ -96,9 +94,8 @@ def test_feed_address_stays_out_of_every_output(conn, settings, monkeypatch, leg
 
 
 
-def test_old_search_text_does_not_put_the_hidden_address_first_on_cards(conn, settings, monkeypatch):
+def test_old_search_text_does_not_put_the_hidden_address_first_on_cards(conn, settings):
     """#157 以前入库的旧检索文字还带着「rsslink: 订阅地址」：作者页卡片和接口列表的摘录不以占位开头。"""
-    monkeypatch.setattr("researchlib.web.routes.schedule_digests", lambda *_args, **_kwargs: None)
     source = next(item for item in load_sources(settings.sources_path) if item.id == "stratechery")
     # Stratechery 短于 min_chars 的不进列表：正文写长一点。
     filler = "\n\n".join(f"Paragraph {n}: Widget Corp keeps adding services to the box." * 4 for n in range(40))

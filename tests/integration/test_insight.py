@@ -2,12 +2,15 @@
 长文的输入；失败记次数；出问题才提示；引用落到正文那一段。"""
 
 import json
+import threading
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
 from researchlib import digest as digest_mod
+from researchlib import llm as llm_mod
 from researchlib import theses as theses_mod
 from researchlib import views as views_mod
 from researchlib.excerpt import VIEWS_LIMIT
@@ -15,6 +18,7 @@ from researchlib.failures import clear_failure, note_failure
 from researchlib.health import write_status
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
+from researchlib.llm import llm_configured
 from researchlib.sources import enabled_sources, load_sources
 from researchlib.web.app import create_app
 
@@ -236,25 +240,86 @@ def test_quoted_chunk_lands_on_its_paragraph(conn, settings):
         assert "is-quoted" not in plain and "scrollIntoView" not in plain
 
 
-def test_company_page_does_not_auto_schedule_theses_by_default(conn, settings, monkeypatch):
-    """默认 RESEARCH_THESES_AUTO=0：公司页不后台排队补论点。打开开关才 schedule。"""
-    assert settings.theses_auto_enabled is False
+def test_opening_pages_never_starts_paid_work(conn, settings, monkeypatch):
+    """网页不触发花钱的任务（11-14 删了摘要、判断、论点三条网页队列）。
+
+    模型配好了，库里摘要、判断、论点都有欠的，把读者能开的页面和接口开一遍：
+    不调模型，不起研究库自己的后台线程，三张表和失败记录一行不多。欠的只由命令行补。
+    """
     _store_all(conn, settings)
-    company = _tencent(conn)
-    calls = []
-    monkeypatch.setattr(theses_mod, "needs_build", lambda *a, **k: True)
-    monkeypatch.setattr(theses_mod, "schedule", lambda *a, **k: calls.append(True) or True)
-    monkeypatch.setattr(theses_mod, "stored", lambda *a, **k: None)
-    monkeypatch.setattr(theses_mod, "present", lambda *a, **k: [])
+    company = _views(conn, settings, monkeypatch)
+    sources = {source.id: source for source in load_sources(settings.sources_path)}
+    late = ParsedDoc(
+        external_id="mp/t5",
+        title="腾讯笔记 mp/t5",
+        published_at=datetime(2026, 9, 25, 9, 0, tzinfo=SHANGHAI),
+        body_md="腾讯的云业务开始赚钱了，腾讯的广告还在涨，腾讯的回购也没有停。",
+        raw_meta={},
+        image_refs=[],
+    )
+    store_documents(conn, source=sources["fangwei-mp"], docs=[late], data_dir=settings.data_dir,
+                    archive_files=1, images_in_archive=0, errors=[])
+    sources_by_id = {source.id: source for source in enabled_sources(sources.values())}
+    article_ids = [row["id"] for row in conn.execute("SELECT id FROM articles ORDER BY id").fetchall()]
+    late_id = _row(conn, "mp/t5")["id"]
+    assert len(digest_mod.rows_needing_digest(conn, article_ids)) == len(article_ids)
+    assert views_mod.count_pending(conn, company["id"], list(sources_by_id)) == 1
+    assert theses_mod.needs_build(conn, company["id"], sources_by_id, settings)
 
-    with TestClient(create_app(settings)) as client:
-        assert client.get(f"/companies/{company['id']}").status_code == 200
-    assert calls == []
+    def counts():
+        return conn.execute(
+            """
+            SELECT (SELECT count(*) FROM article_digests) AS digests,
+                   (SELECT count(*) FROM company_views) AS views,
+                   (SELECT count(*) FROM company_theses) AS theses,
+                   (SELECT count(*) FROM llm_failures) AS failures
+            """
+        ).fetchone()
 
-    from dataclasses import replace
+    before = counts()
+    conn.commit()
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    live = replace(settings, llm_provider="deepseek")
+    assert llm_configured(live)
+    asked = []
 
-    enabled = replace(settings, theses_auto_enabled=True)
-    with TestClient(create_app(enabled)) as client:
-        assert client.get(f"/companies/{company['id']}").status_code == 200
-    assert calls == [True]
+    def refuse(*_args, **_kwargs):
+        asked.append(True)
+        raise AssertionError("打开网页不该调模型")
 
+    for module in (digest_mod, views_mod, theses_mod, llm_mod):
+        monkeypatch.setattr(module, "chat", refuse)
+    started = []
+    real_start = threading.Thread.start
+
+    def start(thread):
+        target = getattr(thread, "_target", None)
+        started.append((thread.name, getattr(target, "__module__", "") or ""))
+        real_start(thread)
+
+    pages = [
+        "/",
+        "/days/2026-09-25",
+        "/authors/方伟",
+        "/search?q=腾讯",
+        f"/articles/{late_id}",
+        "/companies",
+        f"/companies/{company['id']}",
+        f"/companies/{company['id']}?tab=views",
+        f"/companies/{company['id']}?tab=articles",
+        "/api/v1/articles",
+        f"/api/v1/articles/{late_id}",
+        f"/api/v1/companies/{company['id']}",
+        f"/api/v1/companies/{company['id']}/views",
+        "/api/v1/days/2026-09-25",
+    ]
+    with TestClient(create_app(live)) as client:
+        # 以前三条队列在测试进程里只排队、不起线程。应用启动已经过了（启动时那两个维护线程按这个标记跳过），
+        # 这里去掉标记，后面的请求照正式环境那样跑。
+        monkeypatch.delenv("PYTEST_CURRENT_TEST")
+        monkeypatch.setattr(threading.Thread, "start", start)
+        for path in pages:
+            assert client.get(path).status_code == 200, path
+    assert asked == []
+    assert [item for item in started if item[1].startswith("researchlib")] == []
+    assert counts() == before
