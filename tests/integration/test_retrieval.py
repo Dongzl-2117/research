@@ -171,7 +171,7 @@ def test_mcp_round_trip(conn, settings):
 
 
 def test_ask_without_llm_returns_passages(conn, settings, monkeypatch):
-    """没凭证时只列原文。提示点名这次进程实际在用的提供方，两家各说各的。"""
+    """没凭证时只列原文。页面上不说凭证，缺哪家记进日志。"""
     from dataclasses import replace
 
     from researchlib.llm import missing_credential_text

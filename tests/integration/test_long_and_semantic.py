@@ -450,6 +450,6 @@ def test_search_page_says_when_meaning_search_is_not_in_use(conn, settings):
             embeddings.backfill(conn)
             assert "semantic-note" not in page()
             embeddings._state.down_until = time.monotonic() + 60
-            assert "向量服务连不上" in page()
+            assert "按意思找暂时连不上" in page()
     finally:
         embeddings.use_embedder(None)
