@@ -102,6 +102,11 @@ def _unique_ids(pairs: list[BilingualPair]) -> list[BilingualPair]:
     return [replace(p, en="".join(Clean(p.en).out)) for p in result]
 
 
+# 词：连着的字母、数字，下划线不算。导出的纯文字那份常把斜体写成「_ Protocol _」（线上 22699），
+# 下划线不是正文的字：带格式那份里没有它，收掉纯文字那份也没少什么。
+_WORD = re.compile(r"[^\W_]+")
+
+
 class _Facts(HTMLParser):
     def __init__(self, document: str):
         super().__init__()
@@ -123,7 +128,7 @@ class _Facts(HTMLParser):
             self.links.add(attrs["href"])
 
     def handle_data(self, data):
-        self.tokens.update(re.findall(r"\w+", data))
+        self.tokens.update(_WORD.findall(data))
 
 
 def content_gaps(source: str, displayed: str) -> int:
@@ -274,6 +279,11 @@ _IMG_SRC = re.compile(r"""<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 def _plain_words(value: str) -> set[str]:
     text = html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
     return set(re.findall(r"\w+", text))
+
+
+def _content_words(value: str) -> set[str]:
+    text = html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
+    return set(_WORD.findall(text))
 
 
 _ZH_SENTENCE = re.compile(r"(?<=[。！？])")
@@ -1131,15 +1141,17 @@ def _split_outer(
     wrong_inside = [weight - outside for weight, outside in zip(weights, wrong_outside, strict=True)]
     if not any(wrong_outside):
         return None
+    # 分错的字一样多时（中间只差没字的一截，比如「——」的前一个破折号），和英文一样导语、署名取最长的：
+    # 中间那截要收掉，没字的那截跟着收就少了一个破折号。
     if run.lead:
         head_end = min(
-            range(len(pieces) + 1), key=lambda at: (sum(wrong_outside[:at]) + sum(wrong_inside[at:]), at),
+            range(len(pieces) + 1), key=lambda at: (sum(wrong_outside[:at]) + sum(wrong_inside[at:]), -at),
         )
         tail_start = len(pieces)
     else:
         head_end = 0
         tail_start = min(
-            range(len(pieces) + 1), key=lambda at: (sum(wrong_inside[:at]) + sum(wrong_outside[at:]), -at),
+            range(len(pieces) + 1), key=lambda at: (sum(wrong_inside[:at]) + sum(wrong_outside[at:]), at),
         )
     # 中间那截挨着导语的一句，开头两个字要在带格式那几段的中文里：译文把导语末尾（「他解释说」）和引文第一句
     # 译成了一句时，这一句整句留在导语里，宁可多显示一遍，也不把导语的字收掉。署名那头同样看结尾两个字。
@@ -1281,7 +1293,7 @@ def _fold_copy_pairs_once(
             (en_head, outer_en, en_tail), (zh_head, outer_zh, zh_tail) = ends
             heads, tails = (_paragraph(en_head), _paragraph(zh_head)), (_paragraph(en_tail), _paragraph(zh_tail))
         if not (
-            _plain_words(outer_en) <= _plain_words(shown_en)
+            _content_words(outer_en) <= _content_words(shown_en)
             and _resources(outer_en) <= _resources(shown_en)
             and _resources(outer_zh) <= _resources(shown_en + shown_zh)
         ):

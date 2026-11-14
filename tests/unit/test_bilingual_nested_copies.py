@@ -623,6 +623,57 @@ def test_lead_in_translated_into_the_first_quoted_sentence_is_kept():
     assert "他解释说" in "".join(pair.zh or "" for pair in view.pairs)
 
 
+# 纯文字那份把斜体写成「_ Example Weekly _」（线上 22699）：对照页以前把下划线也当词，认成纯文字那份多了词，
+# 不敢收。推文的署名是中文的「——」时，以前切署名会把前一个破折号跟着中间那截收掉。
+_MD_ODD_WORDS = (
+    "Opening words of the article body here.\n\n"
+    "> Several readers noted that the hearing was mostly theater. (“Basically a stage for politicians,” "
+    "in the words of _ Example Weekly _ ’s editor.) The rest of the day went the same way.\n\n"
+    "Several readers noted that the hearing was mostly theater. (“Basically a stage for politicians,” "
+    "[in the words of](https://example.invalid/editor)_[Example Weekly](https://example.invalid/editor)_"
+    "[’s editor](https://example.invalid/editor).) The rest of the day went the same way.\n\n"
+    "The second post is from a researcher:\n\n"
+    "> this is the wrong takeaway there is a real cost to research time and every hour spent tuning kernels "
+    "is an hour not spent elsewhere https://t.co/abc123 — Wang Xiaoming (@xiaoming) January 27, 2025\n\n"
+    "this is the wrong takeaway there is a real cost to research time and every hour spent tuning kernels "
+    "is an hour not spent elsewhere [https://t.co/abc123](https://t.co/abc123)\n\n"
+    "Closing words of the article body.\n"
+)
+_ZH_ODD_WORDS = {
+    0: "<p>正文开头的几句话。</p>",
+    1: "<p>几位读者指出，这场听证会基本是一场表演。（“基本上就是政客的舞台”，这话出自 Example Weekly 的编辑。）"
+       "这一天剩下的时间也是这样。</p>",
+    2: '<p>几位读者指出，这场听证会基本是一场表演。（“基本上就是政客的舞台”，<a href="https://example.invalid/editor">'
+       '这话出自</a><em><a href="https://example.invalid/editor">Example Weekly</a></em>'
+       '<a href="https://example.invalid/editor">的编辑</a>。）这一天剩下的时间也是这样。</p>',
+    3: "<p>第二条帖子来自一位研究者：</p>",
+    4: "<p>这是错误的结论。研究时间是有成本的，每花一小时调内核，就少一小时做别的事 https://t.co/abc123 "
+       "——王小明（@xiaoming）2025年1月27日</p>",
+    5: "<p>这是错误的结论。研究时间是有成本的，每花一小时调内核，就少一小时做别的事 "
+       '<a href="https://t.co/abc123">https://t.co/abc123</a></p>',
+    6: "<p>正文最后几句。</p>",
+}
+
+
+def test_copies_written_slightly_differently_still_show_once():
+    source, zh, view = _render(_MD_ODD_WORDS, _ZH_ODD_WORDS)
+    assert view.correspondence == "mapped" and len(view.pairs) == 5
+    en = "".join(pair.en for pair in view.pairs)
+    shown = "".join(pair.zh or "" for pair in view.pairs)
+    assert en.count("Several readers noted") == 1 and en.count("every hour spent tuning kernels") == 1
+    folded = fold_translated_copies(source, zh)
+    for page in (shown, folded):
+        for text in ("几位读者指出", "每花一小时调内核", "王小明"):
+            assert page.count(text) == 1, text
+        # 署名留在引文末尾，「——」两个破折号都在。
+        signature = "<p>——王小明（@xiaoming）2025年1月27日</p>"
+        assert re.search(r"每花一小时调内核.*?</a></p>\s*" + re.escape(signature) + r"\s*</blockquote>", page)
+    assert '<em><a href="https://example.invalid/editor">Example Weekly</a></em>' in shown
+    assert content_gaps(source, en) == 0
+    assert _ids(source) <= _ids(en + shown) | {pair.anchor for pair in view.pairs}
+    assert _ids(folded) == _ids(zh)
+
+
 # 原文的列表项下面挂着嵌套列表：纯文字那份所在的项、带格式的一段，带格式的嵌套项顶格写，
 # 和后面正文自己的项被 Python-Markdown 并在一个列表里（线上 21068）。
 _MD_TIERS = (
