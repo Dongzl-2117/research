@@ -7,8 +7,8 @@
 - 只有一篇、又没有对立面的论点丢掉。一篇多主题的文章可以进多条论点，同一条判断不会塞进每一条。
 - 判断或态度为空白的观点不进输入。覆盖不到的观点仍留在公司页「全部」时间线。
 - 一家公司一次调用。观点集合有变化才重算，一天最多一次；按 views_hash 和提示词版本缓存。
-- 打开公司页时，只有 RESEARCH_THESES_AUTO=1 才把缺的或过期的排进后台（默认关）。
-  夜间 THESES_ENABLED 同样默认关。打开后不限持仓。启动和部署不跑。
+- 只有命令行这一条路：手动跑，或者夜间任务设了 THESES_ENABLED=1（默认关）。不限持仓。网页不触发
+  （11-14 以前有个 RESEARCH_THESES_AUTO 开关让公司页把缺的排进后台，删了）。启动和部署不跑。
 
     research-theses                    # 观点够数的公司，过期的才算
     research-theses --company 贵州茅台 --company 泡泡玛特 --force
@@ -19,11 +19,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import logging
-import os
 import re
 import sys
-import threading
 from datetime import UTC, datetime, timedelta
 
 from psycopg.types.json import Jsonb
@@ -40,10 +37,8 @@ from researchlib.claims import (
 )
 from researchlib.config import Settings
 from researchlib.failures import clear_failure, note_failure
-from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.web.present import format_date
-
-logger = logging.getLogger("researchlib.theses")
 
 PROMPT_VERSION = 3
 MIN_VIEWS = 4
@@ -658,69 +653,6 @@ def mask_unrelated_quotes(items: list[dict], thesis: dict | None) -> list[dict]:
         else:
             masked.append(item)
     return masked
-
-
-# —— 后台排队：打开公司页时，这家公司的论点缺了或过期了才排 ——
-
-_lock = threading.Lock()
-_queue: list[tuple[Settings, dict, dict]] = []
-_inflight: set[int] = set()
-_running = False
-
-
-def schedule(settings: Settings, company: dict, sources_by_id: dict, *, spawn: bool | None = None) -> bool:
-    global _running
-    if not llm_configured(settings):
-        return False
-    if spawn is None:
-        spawn = "PYTEST_CURRENT_TEST" not in os.environ
-    if not spawn:
-        return False
-    start = False
-    with _lock:
-        company_id = int(company["id"])
-        if company_id in _inflight or any(int(item[1]["id"]) == company_id for item in _queue):
-            return False
-        _queue.append((settings, dict(company), dict(sources_by_id)))
-        if not _running:
-            _running = True
-            start = True
-    if start:
-        threading.Thread(target=_worker, name="company-theses", daemon=True).start()
-    return True
-
-
-def _worker() -> None:
-    global _running
-    from researchlib.db import connect
-
-    while True:
-        with _lock:
-            if not _queue:
-                _running = False
-                return
-            settings, company, sources_by_id = _queue.pop(0)
-            _inflight.add(int(company["id"]))
-        conn = None
-        try:
-            conn = connect(settings)
-            build(conn, settings, company, sources_by_id)
-        except LLMUnavailable as exc:
-            logger.warning("论点整理暂停：%s", exc)
-            with _lock:
-                _queue.clear()
-        except LLMError as exc:
-            logger.warning("论点整理失败 %s：%s", company.get("name_zh"), exc)
-            if conn is not None:
-                conn.rollback()
-                note_failure(conn, "theses", int(company["id"]), exc)
-        except Exception:
-            logger.exception("论点整理失败 %s", company.get("name_zh"))
-        finally:
-            if conn is not None:
-                conn.close()
-            with _lock:
-                _inflight.discard(int(company["id"]))
 
 
 def cooling(conn, company_id: int) -> bool:

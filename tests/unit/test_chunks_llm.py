@@ -67,26 +67,6 @@ def test_digest_prompt_is_a_guide_not_advice():
     assert "AI 整合" not in PROMPT
 
 
-def test_schedule_does_not_queue_during_pytest(monkeypatch, tmp_path):
-    from researchlib import digest as digest_mod
-    from researchlib.config import Settings
-
-    settings = Settings(
-        database_url="postgresql://research:research@127.0.0.1:5432/research_test",
-        data_dir=tmp_path,
-        public_base_url="https://investment.zldong.com",
-        bind_host="127.0.0.1",
-        bind_port=8088,
-        allow_nonlocal_bind=False,
-        sources_path=tmp_path / "sources.yaml",
-        display_timezone="Asia/Shanghai",
-    )
-    monkeypatch.setattr(digest_mod, "llm_configured", lambda _settings: True)
-    before = list(digest_mod._order)
-    assert digest_mod.schedule_digests(settings, [(987654, "方伟")]) == 0
-    assert digest_mod._order == before
-
-
 def test_parse_digest_takes_json_inside_prose():
     data = parse_digest('好的：\n{"summary": "看好", "points": ["一", ""], "tags": ["白酒"]}')
     assert data == {"summary": "看好", "points": ["一"], "tags": ["白酒"]}
