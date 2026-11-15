@@ -118,6 +118,26 @@ def test_media_source_is_checked_on_each_request_and_shared_image_survives(conn,
         assert conn.execute("SELECT count(*) AS n FROM article_images").fetchone()["n"] == 3
 
 
+def test_hashed_media_is_cached_by_the_browser_only(conn, settings, tmp_path):
+    # 按内容哈希命名的图同一个地址永远同一张：读者浏览器缓存一年（private，Cloudflare 不存，审核 O1）。
+    # 看不到的照旧 404、不缓存；不是哈希名字的照旧不缓存。
+    settings, _ = setup_sources(conn, settings, tmp_path)
+    shown = article(conn, "audit-a", "看得到")
+    hidden = article(conn, "audit-a", "网友帖", meta={"poster_role": "guest"})
+    digest = "ab" + "0" * 62
+    shown_path, hidden_path = f"remote/ab/{digest}.png", f"audit-a/cd/{'cd' + '1' * 62}.png"
+    for aid, path in ((shown, shown_path), (hidden, hidden_path)):
+        image_file(settings, path, b"\x89PNG\r\n\x1a\n")
+        link_image(conn, aid, "audit-a", path)
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/media/" + shown_path)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
+        assert "content-encoding" not in response.headers
+        denied = client.get("/media/" + hidden_path)
+        assert denied.status_code == 404 and denied.headers["cache-control"] == "private, no-store"
+
+
 @pytest.mark.parametrize("title,meta,visible", [
     ("网友帖", {"poster_role": "guest"}, False),
     ("「图片」 评论（2）", {"poster_role": "owner"}, False),

@@ -542,3 +542,29 @@ def test_no_release_with_migrations_until_a_backup_is_made(world: World):
     # 备份成了再上线。
     assert world.deploy().returncode == 0
     assert world.head() != good and world.status()["ok"] is True
+
+
+def test_failed_backups_do_not_use_up_the_tries(world: World):
+    """备份盘暂时不在：连着几轮备份失败也不算这个提交试过，盘回来照常上线（以前 3 轮以后就不再自动上线）。"""
+    world.ci_says("completed", "success")
+    world.deploy()
+    good = world.head()
+    world.save_settings(world.tmp / "backups")
+    world.commit("删一列", path="src/researchlib/migrations/025_drop_column.sql")
+    for _ in range(4):
+        assert world.deploy(BACKUP_FAILS="1").returncode != 0
+        assert world.head() == good
+    assert world.deploy().returncode == 0
+    assert world.head() != good and world.status()["ok"] is True
+
+
+def test_a_lock_left_by_a_process_that_is_gone_is_taken_over(world: World):
+    """Mac mini 中途重启后，锁里记的 pid 被别的常驻进程占了：启动时刻对不上，算旧锁，这轮照常跑。"""
+    world.ci_says("completed", "success")
+    world.commit("第二版")
+    lock = world.mini / "data" / "status" / ".deploy.lock"
+    _write(lock / "pid", f"{os.getpid()}\n")
+    _write(lock / "started", "Thu Jan  1 00:00:00 1970\n")
+    result = world.deploy()
+    assert "上一轮还在跑" not in result.stdout
+    assert world.status()["ok"] is True

@@ -171,7 +171,7 @@ def test_mcp_round_trip(conn, settings):
 
 
 def test_ask_without_llm_returns_passages(conn, settings, monkeypatch):
-    """没凭证时只列原文。提示点名这次进程实际在用的提供方，两家各说各的。"""
+    """没凭证时只列原文。页面上不说凭证，缺哪家记进日志。"""
     from dataclasses import replace
 
     from researchlib.llm import missing_credential_text
@@ -189,10 +189,10 @@ def test_ask_without_llm_returns_passages(conn, settings, monkeypatch):
         with TestClient(create_app(running)) as client:
             page = client.post("/ask", data={"q": "宁德时代的毛利率怎么样"})
             assert page.status_code == 200
-            assert notice in page.text
+            # 页面上只说读者用得上的话，缺哪家的凭证只进日志（审核 F9）。
             assert notice.startswith("没有可用的 ")
-            other = "DeepSeek" if provider == "grok" else "Grok"
-            assert f"没有可用的 {other} 凭证" not in page.text
+            assert "这会儿问不了 AI" in page.text
+            assert "凭证" not in page.text
             assert "should-not-enable-ask" not in page.text
             assert 'id="c-1"' in page.text
         assert conn.execute("SELECT count(*) AS n FROM llm_answers").fetchone()["n"] == 0
@@ -330,6 +330,27 @@ def test_excluded_word_is_counted_the_way_it_is_listed(conn, settings):
     assert "2 篇全部命中" in page and "其余的加来源" not in page
     assert plain["total"] == 3
 
+def test_company_only_with_excluded_word_counts_like_the_list(conn, settings):
+    """只点公司加排除词（「腾讯 -游戏」）：篇数也看排除词。引号包着的排除词（-"游戏"）是排除，不是必须包含。"""
+    _store(
+        conn,
+        settings,
+        [
+            ("game", "游戏笔记", 1, "腾讯的游戏收入还在涨。"),
+            ("ads", "广告笔记", 2, "腾讯的广告加载率还低。"),
+            ("both", "两样都有", 3, "腾讯的游戏和广告都在涨。"),
+        ],
+    )
+    with TestClient(create_app(settings)) as client:
+        found = client.get("/api/v1/search", params={"q": "腾讯 -游戏"}).json()
+        quoted = client.get("/api/v1/search", params={"q": '腾讯 -"游戏"'}).json()
+        plain = client.get("/api/v1/search", params={"q": "腾讯"}).json()
+    assert [item["id"] for item in found["items"]] == [2]
+    assert found["total"] == 1
+    assert [item["id"] for item in quoted["items"]] == [2] and quoted["total"] == 1
+    assert plain["total"] == 3
+
+
 def test_search_snippets_skip_a_repeated_paragraph(conn, settings):
     from researchlib.retrieval import reset_stats_cache, search_articles
     from researchlib.sources import enabled_sources, load_sources
@@ -390,7 +411,9 @@ def test_ask_runs_in_background_and_page_waits(conn, settings, monkeypatch):
         assert answer_id and started["citations"]
         waiting = client.get(f"/ask/{answer_id}")
         assert "正在整合" in waiting.text
-        assert f'data-poll="/api/v1/answers/{answer_id}"' in waiting.text
+        assert 'data-answer-status="running"' in waiting.text
+        assert f'<a class="chat-open-answer" href="/ask/{answer_id}">刷新页面看进度</a>' in waiting.text
+        assert '<meta http-equiv="refresh" content="8">' in waiting.text
         assert "相关原文" in waiting.text
         assert client.get(f"/api/v1/answers/{answer_id}").json()["status"] == "running"
         release.set()
@@ -528,3 +551,21 @@ def test_day_summary_question_falls_back_to_the_days_articles(conn, settings):
         found = retrieve(conn, question, scope, sources, purpose="llm")
         assert found.passages, question
         assert all(p.published_at is not None for p in found.passages)
+
+
+def test_minus_only_excludes_a_word_right_after_a_space(conn):
+    from researchlib.retrieval import analyze
+
+    def parsed(text):
+        query = analyze(conn, text, [], company_rows=[])
+        return query.excludes, [t.text for t in query.terms if t.kind == "phrase"]
+
+    assert parsed('腾讯 -"小程序"') == (["小程序"], [])
+    assert parsed("腾讯 -「小程序」 \"视频号\"") == (["小程序"], ["视频号"])
+    assert parsed("腾讯 -小程序")[0] == ["小程序"]
+    assert parsed("对比:\n-腾讯\n-阿里")[0] == []
+    assert parsed("-腾讯\n-阿里")[0] == []
+    assert parsed("利润 -30% 为什么")[0] == []
+    assert parsed("A -> B")[0] == []
+    assert parsed("腾讯 -- 游戏")[0] == []
+    assert parsed("腾讯 -Tencent")[0] == ["Tencent"]

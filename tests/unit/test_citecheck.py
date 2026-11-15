@@ -147,3 +147,19 @@ def test_dates_listed_without_repeating_the_year_are_checked_as_dates():
     # 后面跟着量级、单位的是数的范围，照旧按数字查。
     flags = check_answer("方伟在 2026-03-18/10-20 亿元之间都这么说[1][2]。", citations, AUTHORS)
     assert "数字 10 不在所引段落里" in flags[0]["problems"]
+
+
+def test_list_numbers_months_and_split_numbers_are_not_false_alarms():
+    """分点序号、只写月份、两位年份不当数字核；原文里用换行隔开的两个数不粘在一起。"""
+    body = "腾讯游戏收入增长很快，去年收入 100\n2024 年继续增长"
+    cited = [{"n": 3, "author": "方伟", "date": "2024-12-05", "text": body}]
+    assert check_answer("10. 方伟认为腾讯游戏收入增长很快[3]", cited, ["方伟"]) == []
+    assert check_answer("（12）方伟认为腾讯游戏收入增长很快[3]", cited, ["方伟"]) == []
+    assert check_answer("方伟在12月认为腾讯游戏收入增长很快[3]", cited, ["方伟"]) == []
+    assert check_answer("方伟在24年认为腾讯游戏收入增长很快[3]", cited, ["方伟"]) == []
+    assert check_answer("腾讯游戏去年收入为100[3]", cited, ["方伟"]) == []
+    # 真的对不上照样报。
+    flags = check_answer("腾讯游戏去年收入为120[3]", cited, ["方伟"])
+    assert flags and "数字 120 不在所引段落里" in flags[0]["problems"]
+    flags = check_answer("10. 腾讯游戏去年收入为1002024[3]", cited, ["方伟"])
+    assert flags and "1002024" in flags[0]["problems"][0]

@@ -164,10 +164,16 @@ def test_other_exceptions_from_the_opener_become_fetch_errors(public_dns, monkey
 
 
 def test_odd_content_type_does_not_make_a_long_file_name():
-    assert remote_images.image_extension(b"????", "image/" + "x" * 300) == ".img"
-    assert remote_images.image_extension(b"????", "image/jpeg") == ".jpg"
-    assert remote_images.image_extension(b"????", "image/svg+xml; charset=utf-8") == ".svg"
-    assert remote_images.image_extension(b"????", "image/webp") == ".webp"
+    # 扩展名只按文件内容从固定的表里出（#338），对方回什么类型名都不进文件名。
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(buffer, "PNG")
+    assert remote_images.image_extension(buffer.getvalue(), "image/" + "x" * 300) == ".png"
+    assert remote_images.image_extension(b"????", "image/" + "x" * 300) == ""
+    assert remote_images.image_extension(b"????", "image/jpeg") == ""
 
 
 def test_trickling_server_hits_the_total_deadline(monkeypatch):
