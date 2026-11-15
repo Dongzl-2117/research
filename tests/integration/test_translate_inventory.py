@@ -178,9 +178,9 @@ def test_a_stale_receipt_is_resigned_without_asking_the_model(conn, settings, mo
 
 
 def test_receipts_from_an_older_prompt_are_listed_apart_and_rewritten(conn, settings, monkeypatch, capsys):
-    """旧提示词译的有回执的篇：页面照常逐段对上，盘点单列 old-prompt；按这一类整篇重译，译过的再跑就跳过。
+    """旧提示词译的有回执的篇：页面照常逐段对上，盘点单列 old-prompt；按这一类重译，译过的再跑就跳过。
 
-    用现在这一版译过、个别段重译失败退回旧译文的（prompt_versions 不止一版）不算，再跑也不重译。
+    混着几版、又没逐段记版本的（11-14 以前整篇重译被打断，审核 T2）也算 old-prompt，整篇重译一次。
     """
     import json
 
@@ -201,7 +201,8 @@ def test_receipts_from_an_older_prompt_are_listed_apart_and_rewritten(conn, sett
         assert service.translate_article(conn, article, data_dir=settings.data_dir).status == "translated"
     for article, versions in ((older, [PROMPT_VERSION - 1]), (mixed, [PROMPT_VERSION - 1, PROMPT_VERSION])):
         conn.execute(
-            "UPDATE article_translations SET provenance = jsonb_set(provenance, '{prompt_versions}', %s::jsonb)"
+            "UPDATE article_translations"
+            " SET provenance = jsonb_set(provenance - 'segment_prompts', '{prompt_versions}', %s::jsonb)"
             " WHERE article_id = %s",
             (json.dumps(versions), article),
         )
@@ -209,19 +210,20 @@ def test_receipts_from_an_older_prompt_are_listed_apart_and_rewritten(conn, sett
 
     report = inventory.collect(conn, settings)
     ids = report["ids"]
-    assert ids["receipt"] == [newer, mixed, older] and ids["old-prompt"] == [older]
+    assert ids["receipt"] == [newer, mixed, older] and ids["old-prompt"] == [mixed, older]
     assert sorted(report["display"]["mapped"]) == sorted([older, mixed, newer])
     assert report["mixedPrompts"] == 1
     old_chars = report["stateChars"]["old-prompt"]["stratechery"]
     lines = inventory.summary(report)
     assert (
-        f"  其中第 {PROMPT_VERSION} 版提示词以前译的：有回执的 1（old-prompt，英文 {old_chars:,} 字符），"
+        f"  其中第 {PROMPT_VERSION} 版提示词以前译的：有回执的 2（old-prompt，英文 {old_chars:,} 字符），"
         "没回执的旧稿 0（legacy，英文 0 字符）；要换成现在的写法，research-translate --from-inventory 这两类"
     ) in lines
-    assert f"  用第 {PROMPT_VERSION} 版译过、个别段重译失败退回旧译文的 1 篇，不算 old-prompt" in lines
+    assert (f"  其中用第 {PROMPT_VERSION} 版译过一部分、还有段是旧版的 1 篇（整篇重译被打断，"
+            "或个别段重译没过核对），算在 old-prompt 里") in lines
     # 别的类照旧把它算译完；点 old-prompt 才算没译完。
     assert inventory.unfinished(conn, [newer, mixed, older], settings.data_dir) == []
-    assert inventory.unfinished(conn, [newer, mixed, older], settings.data_dir, prompt=True) == [older]
+    assert inventory.unfinished(conn, [newer, mixed, older], settings.data_dir, prompt=True) == [mixed, older]
 
     path = inventory.inventory_path(settings.data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,15 +234,15 @@ def test_receipts_from_an_older_prompt_are_listed_apart_and_rewritten(conn, sett
     calls.clear()
     assert cli.main(["--from-inventory", "old-prompt"]) == 0
     out = capsys.readouterr().out
-    assert f"里 old-prompt 共 1 篇，已经用第 {PROMPT_VERSION} 版提示词译过的跳过" in out
-    assert f"#{older} translated" in out
+    assert f"里 old-prompt 共 2 篇，已经用第 {PROMPT_VERSION} 版提示词译过的跳过" in out
+    assert f"#{older} translated" in out and f"#{mixed} translated" in out
     # 旧提示词的段不复用，整篇送模型重译；回执记成这一版。
     assert calls and sum(len(batch) for batch in calls) >= 2
     receipt = conn.execute(
         "SELECT provenance->'prompt_versions' AS versions FROM article_translations WHERE article_id = %s", (older,),
     ).fetchone()
     assert receipt["versions"] == [PROMPT_VERSION]
-    assert inventory.unfinished(conn, [older], settings.data_dir, prompt=True) == []
+    assert inventory.unfinished(conn, [mixed, older], settings.data_dir, prompt=True) == []
     calls.clear()
     assert cli.main(["--from-inventory", "old-prompt"]) == 0
     assert f"old-prompt 这一类都已经用第 {PROMPT_VERSION} 版提示词译过了。" in capsys.readouterr().out

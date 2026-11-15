@@ -92,8 +92,11 @@
 .chat-composer-bar .ask-filters[open] > summary { background: var(--bg-sunk); color: var(--ink); }
 .chat-composer-bar .ask-filters > summary svg { width: 14px; height: 14px; flex: none; }
 .ask-scope { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.chat-composer-bar .ask-filters .filter-grid { position: absolute; bottom: calc(100% + 12px); left: -2px; z-index: 30; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; width: min(380px, calc(100vw - 56px)); margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 14px 44px color-mix(in srgb, var(--ink) 14%, transparent); }
+.chat-composer-bar .ask-filters .filter-grid { position: absolute; bottom: calc(100% + 12px); left: -2px; z-index: 30; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 12px; width: min(380px, calc(100vw - 56px)); margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 14px 44px color-mix(in srgb, var(--ink) 14%, transparent); }
 .chat-composer-bar .ask-filters .filter-grid label:first-child { grid-column: 1 / -1; }
+/* 手机上日期框按自身宽度会把右边那格撑出屏幕（审核 F4）：标签竖排、框占满格子，和检索页的同类浮层一样。 */
+.chat-composer-bar .ask-filters .filter-grid label { flex-direction: column; align-items: stretch; gap: 4px; min-width: 0; }
+.chat-composer-bar .ask-filters .filter-grid :is(input, select) { width: 100%; }
 .ask-workspace:has(.ask-welcome) .chat-composer-bar .ask-filters .filter-grid { top: calc(100% + 12px); bottom: auto; }
 .ask-filters :is(select, input) { min-width: 0; max-width: 100%; min-height: 36px; }
 .ask-workspace .chat-composer, .article-chat .chat-composer { padding: 4px; border: 1px solid var(--line-strong); border-radius: 20px; background: var(--surface); box-shadow: 0 2px 8px color-mix(in srgb, var(--ink) 3%, transparent); }
@@ -243,6 +246,9 @@
 }
 @media (max-width: 599px) {
   .ask-workspace > .chat-log { gap: 24px; padding: 8px 0 24px; }
+  /* 「新问题」按钮把「最近问过」的锚点往左挤，靠右展开的浮层左边伸出屏幕（审核 F5）：手机上改以整组按钮的右边为准，浮层落在屏幕里。 */
+  .ask-head-actions { position: relative; }
+  .ask-history { position: static; }
   .ask-workspace .chat-form { padding-bottom: 8px; }
   .ask-workspace .chat-bubble-user { max-width: 92%; padding: 10px 15px; }
   .ask-workspace .citations { grid-template-columns: minmax(0, 1fr); }

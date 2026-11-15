@@ -842,3 +842,18 @@ def test_a_line_written_like_the_author_inside_a_message_is_quoted():
     # 检索块和 articles.ocr_text 同一套排版。
     chunk = ocr_chunks([("h1", "", units)], owners=owners)
     assert chunk and all("\n方伟：" not in body and not body.startswith("方伟：") for _anchor, body in chunk)
+
+
+def test_a_repeated_line_near_the_seam_is_not_taken_for_the_overlap():
+    """重叠那一截没认出字（图、空白），接缝附近又有一样的一句：两头各差一点都放过的话，中间几行被吞掉。"""
+    first = _units(_para("一季度收入一百亿"), _para("二季度收入一百二十亿"), _para("三季度收入一百三十亿"), kind="text")
+    second = _units(_para("合计"), _para("一季度收入一百亿"), _para("四季度收入一百五十亿"), kind="text")
+    joined = join_tiles([first, second])
+    assert [block["text"] for block in joined["blocks"]] == [
+        "一季度收入一百亿",
+        "二季度收入一百二十亿",
+        "三季度收入一百三十亿",
+        "合计",
+        "一季度收入一百亿",
+        "四季度收入一百五十亿",
+    ]

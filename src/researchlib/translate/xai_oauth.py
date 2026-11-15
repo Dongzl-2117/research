@@ -25,8 +25,8 @@ XAI_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 XAI_INFERENCE_BASE_URL = "https://api.x.ai/v1"
 
 AUTH_TIMEOUT_S = 15
-LOCK_STALE_S = 20
-LOCK_WAIT_S = 30
+# 等锁最多这么久：锁里的刷新是一次 GET 加一次 POST，各 AUTH_TIMEOUT_S 秒，要留够。
+LOCK_WAIT_S = 90
 DEFAULT_SKEW_S = 60
 TERMINAL_REFRESH = frozenset(
     {"invalid_grant", "invalid_token", "invalid_client", "unauthorized_client", "access_denied"}
@@ -35,6 +35,10 @@ TERMINAL_REFRESH = frozenset(
 
 class XaiLoginRequiredError(RuntimeError):
     pass
+
+
+class XaiRefreshUnavailable(RuntimeError):
+    """等锁超时、刷新请求连不上或 5xx：凭证本身没坏，过一会儿再试就好。调用方按可重试的错处理。"""
 
 
 @dataclass
@@ -182,42 +186,52 @@ def _assert_own(token_path: Path) -> None:
 
 
 class _FileLock:
+    """几个进程（网站、译制、识图、夜间任务）共用一个 token 文件：刷新时只能有一个在换 refresh token。
+
+    用 flock：进程退出锁自动放掉，不按修改时间猜锁过没过期。以前按 mtime 20 秒算过期、持锁期间不续期，
+    锁里的刷新最长 30 秒：auth.x.ai 慢一次，两个进程拿同一个 refresh token 去换，后到的收到「已用过」，
+    把刚换好的凭证清成「需要重新登录」；退出时还无条件删锁文件，删掉的是后来者的锁。
+    锁文件留着不删。
+    """
+
     def __init__(self, token_path: Path) -> None:
         self.lock_path = Path(str(token_path) + ".lock")
         self._token_path = token_path
+        self._fd: int | None = None
 
     def __enter__(self) -> None:
+        import fcntl
+
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        # 和 token 文件同一个属主，别的用户跑的进程也打得开。
+        owner = _desired_owner(self._token_path)
+        if owner is not None:
+            try:
+                os.fchown(fd, owner[0], owner[1])
+            except OSError:
+                pass
         started = time.time()
         while True:
             try:
-                fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                try:
-                    os.write(fd, str(os.getpid()).encode())
-                finally:
-                    os.close(fd)
-                # Same owner as the token file, so another process can remove a stale lock.
-                owner = _desired_owner(self._token_path)
-                if owner is not None:
-                    try:
-                        os.chown(self.lock_path, owner[0], owner[1])
-                    except OSError:
-                        pass
-                return
-            except FileExistsError:
-                try:
-                    age = time.time() - self.lock_path.stat().st_mtime
-                    if age > LOCK_STALE_S:
-                        self.lock_path.unlink(missing_ok=True)
-                        continue
-                except OSError:
-                    continue
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
                 if time.time() - started > LOCK_WAIT_S:
-                    raise RuntimeError("xAI OAuth 文件锁超时") from None
-                time.sleep(0.015)
+                    os.close(fd)
+                    raise XaiRefreshUnavailable("xAI OAuth 文件锁等超时（别的进程在刷新）") from None
+                time.sleep(0.05)
+        self._fd = fd
 
     def __exit__(self, *exc: object) -> None:
-        self.lock_path.unlink(missing_ok=True)
+        import fcntl
+
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self._fd)
+                self._fd = None
 
 
 def _post_form(url: str, fields: dict[str, str]) -> tuple[int, Any]:
@@ -235,8 +249,8 @@ def _post_form(url: str, fields: dict[str, str]) -> tuple[int, Any]:
     except urllib.error.HTTPError as exc:
         text = exc.read().decode("utf-8", errors="replace")
         status = exc.code
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"xAI OAuth 请求失败：{exc}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise XaiRefreshUnavailable(f"xAI OAuth 请求失败：{exc}") from exc
     try:
         payload = json.loads(text) if text else None
     except json.JSONDecodeError:
@@ -515,7 +529,7 @@ def _refresh(state: dict[str, Any]) -> dict[str, Any]:
         desc = _string_field(payload, "error_description") or ""
         if code in TERMINAL_REFRESH or status == 401 or re_revoked(desc):
             raise XaiLoginRequiredError(f"xAI OAuth 需要重新登录：{message}")
-        raise RuntimeError(f"xAI OAuth 刷新失败：{message}")
+        raise XaiRefreshUnavailable(f"xAI OAuth 刷新失败：{message}")
     next_tokens = _tokens_from(payload, state["refresh_token"], time.time() * 1000)
     if not next_tokens:
         raise RuntimeError("xAI OAuth 刷新响应缺少 access_token")
@@ -557,12 +571,25 @@ def get_xai_access_token(
             _write_secret(token_path, nxt)
             return nxt["access_token"]
         except XaiLoginRequiredError as exc:
+            # 「refresh token 已用过」时先看文件：别的进程（锁外手动跑的登录、另一个容器）已经换好了，
+            # 文件里的 refresh token 不是手上这个，就用文件里的，不把刚换好的凭证清成「需要重新登录」。
+            again = _parse_stored(_read_json(token_path))
+            if (
+                isinstance(again, dict)
+                and not again.get("needs_login")
+                and again.get("refresh_token")
+                and again.get("refresh_token") != state["refresh_token"]
+                and again.get("access_token")
+            ):
+                return again["access_token"]
             _mark_needs_login(token_path, str(exc))
             raise
-        except Exception:
+        except Exception as exc:
             if state["access_token"] and state["expires_at"] > now:
                 return state["access_token"]
-            raise
+            if isinstance(exc, XaiRefreshUnavailable):
+                raise
+            raise XaiRefreshUnavailable(f"xAI OAuth 刷新失败：{exc}") from exc
 
 
 def is_stale_xai_access(status: int, body: str) -> bool:

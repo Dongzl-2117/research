@@ -301,6 +301,34 @@ def test_articles_cut_at_the_old_400_chunk_cap_are_rechunked(conn, settings):
     assert count["n"] > 400
 
 
+def test_articles_that_chunk_to_nothing_are_not_rechunked_on_every_start(conn, settings, monkeypatch):
+    """只有图的帖子切不出块：以前每次 prepare 都重切一遍。正文没变就不再切，正文改了照切。"""
+    from researchlib import chunks as chunks_module
+    from researchlib.chunks import backfill_missing_chunks
+
+    _store(conn, settings, FANGWEI, [_doc("pic", "只有图", "![](https://example.com/a.png)")])
+    article_id = conn.execute("SELECT id FROM articles").fetchone()["id"]
+    assert conn.execute("SELECT count(*) AS n FROM article_chunks WHERE article_id = %s", (article_id,)).fetchone()[
+        "n"
+    ] == 0
+    calls = []
+    real = chunks_module.replace_chunks
+
+    def counted(conn_, article, title, body):
+        calls.append(article)
+        return real(conn_, article, title, body)
+
+    monkeypatch.setattr(chunks_module, "replace_chunks", counted)
+    backfill_missing_chunks(conn)
+    backfill_missing_chunks(conn)
+    assert calls == [article_id]
+    conn.execute("UPDATE articles SET content_hash = 'changed' WHERE id = %s", (article_id,))
+    backfill_missing_chunks(conn)
+    assert calls == [article_id, article_id]
+    backfill_missing_chunks(conn, rebuild=True)
+    assert calls.count(article_id) == 3
+
+
 def test_medium_article_reaches_the_model_whole(conn, settings, monkeypatch):
     from researchlib.retrieval import DISPLAY_ARTICLE_CHUNKS, retrieve
 
@@ -432,7 +460,7 @@ def test_search_page_says_when_meaning_search_is_not_in_use(conn, settings):
     )
     embeddings.use_embedder(None)
     with TestClient(create_app(settings)) as client:
-        assert "没开语义检索" in client.get("/search", params={"q": "costco 商业模式"}).text
+        assert "这次只按字面找，按意思找的结果没加进来" in client.get("/search", params={"q": "costco 商业模式"}).text
         # 只搜公司名不走语义这一路，不提。
         assert "semantic-note" not in client.get("/search", params={"q": "costco"}).text
     if embeddings.column_type(conn) is None:
@@ -444,12 +472,12 @@ def test_search_page_says_when_meaning_search_is_not_in_use(conn, settings):
             def page() -> str:
                 return client.get("/search", params={"q": "costco 商业模式"}).text
 
-            assert "向量还一块都没算" in page()
+            assert "按意思找还没准备好" in page()
             embeddings.backfill(conn, limit=1)
             assert "向量还没算完（1/3 块）" in page()
             embeddings.backfill(conn)
             assert "semantic-note" not in page()
             embeddings._state.down_until = time.monotonic() + 60
-            assert "向量服务连不上" in page()
+            assert "按意思找暂时连不上" in page()
     finally:
         embeddings.use_embedder(None)

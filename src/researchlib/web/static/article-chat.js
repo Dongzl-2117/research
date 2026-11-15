@@ -36,6 +36,7 @@
   const maxPolls = 300;
   const maxNetworkFailures = 3;
   const requestTimeout = 15000;
+  const pollTimeout = 60000;
   let modal = false;
   let previousOverflow = '';
   const inertNodes = new Map();
@@ -319,10 +320,11 @@
     timers.add(timer);
   }
 
-  async function fetchTimed(url, options = {}, read = async (response) => response) {
+  // timeout 包括读完响应体。轮询整合完的那一次要带回全部出处（全库问题一两百 KB），从 Mac mini 经隧道慢，单独放宽。
+  async function fetchTimed(url, options = {}, read = async (response) => response, timeout = requestTimeout) {
     const controller = new AbortController();
     controllers.add(controller);
-    const timer = window.setTimeout(() => controller.abort(), requestTimeout);
+    const timer = window.setTimeout(() => controller.abort(), timeout);
     try {
       const response = await fetch(url, { credentials: 'same-origin', ...options, signal: controller.signal });
       return await read(response);
@@ -339,7 +341,7 @@
     return fallback;
   }
 
-  async function jsonRequest(url, options) {
+  async function jsonRequest(url, options, timeout = requestTimeout) {
     return fetchTimed(url, options, async (response) => {
       let data;
       try { data = await response.json(); } catch (error) {
@@ -356,7 +358,7 @@
       }
       if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('问库响应格式不正确');
       return data;
-    });
+    }, timeout);
   }
 
   function createTurn(question, article) {
@@ -413,6 +415,14 @@
     turn.links.appendChild(button);
   }
 
+  // 文章页侧栏的对话只在内存里：引用、来源、检索原文在本页跳走，回来侧栏就空了（审核 F6）。
+  // 侧栏里的链接一律开新标签；问库整页的回答有自己的地址，照常本页打开。
+  function newTab(link) {
+    if (fullPage) return;
+    link.target = '_blank';
+    link.rel = 'noopener';
+  }
+
   function recovery(turn, kind) {
     turn.links.replaceChildren();
     const link = document.createElement('a');
@@ -441,6 +451,7 @@
         if (url) link.href = url;
         else link.replaceWith(document.createTextNode(link.textContent));
       });
+      body.querySelectorAll('a[href]').forEach(newTab);
       turn.content.appendChild(body);
     }
     const missed = (data.stats && data.stats.failed_batches) || data.failed_batches || [];
@@ -477,6 +488,7 @@
           const entry = document.createElement('li');
           const link = document.createElement('a');
           link.href = safeArticleUrl(item.url);
+          newTab(link);
           link.textContent = `[${item.n}] ${item.title || '文章'}`;
           entry.appendChild(link); sources.appendChild(entry);
         });
@@ -491,7 +503,7 @@
         const entry = document.createElement('li');
         const url = safeArticleUrl(item.url);
         const title = document.createElement(url ? 'a' : 'span');
-        if (url) title.href = url;
+        if (url) { title.href = url; newTab(title); }
         title.textContent = `[${item.n}] ${item.title || '文章'}`;
         const text = document.createElement('p');
         text.textContent = item.text || '';
@@ -572,7 +584,8 @@
       if (token !== session) return;
       attempts += 1;
       try {
-        const data = await jsonRequest(`/api/v1/answers/${turn.id}`, { headers: { Accept: 'application/json' } });
+        // brief=1：整合中只回状态、进度、半截回答和出处编号，几 KB；整合完那一次带上出处原文（见 api.brief_payload）。
+        const data = await jsonRequest(`/api/v1/answers/${turn.id}?brief=1`, { headers: { Accept: 'application/json' } }, pollTimeout);
         if (token !== session) return;
         failures = 0;
         if (data.status !== 'running') {
@@ -642,11 +655,15 @@
     input.focus();
   });
   // 捕获阶段先看：输入框里的菜单开着时，这一下 Esc 只收起菜单（base.html 管），不收起整个面板。
+  // 输入法组字时的 Esc 只是取消候选词；图片放大层开着时 Esc 只关放大层（base.html 管）。
+  // 宽屏上侧栏和正文并排，只有焦点在侧栏里才收起，而且不记住：下次打开文章照旧展开，只有点「收起」才记（审核 F3）。
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
     if (panel.querySelector('details[data-popover][open]')) return;
+    const zoom = document.getElementById('img-zoom');
+    if (zoom && !zoom.hidden) return;
     if (isWide()) {
-      if (!stage.classList.contains('is-chat-closed')) setOpen(false, true);
+      if (!stage.classList.contains('is-chat-closed') && panel.contains(document.activeElement)) setOpen(false, false);
       return;
     }
     if (panel.classList.contains('is-open')) setOpen(false, true);

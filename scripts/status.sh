@@ -1,5 +1,5 @@
 # 定时脚本共用（用 . 引入，不单独跑）：把这次的结果写进 data/status/<任务>.json。
-# 出问题（失败了，或者太久没成功）时 health.notices 列出来，值班助手跑 docker compose exec app research-status 看；
+# 出问题（失败了，或者太久没成功）时值班助手跑 docker compose exec app research-status 看得到；
 # 首页不显示（见 src/researchlib/health.py）。
 #
 #   TASK=backup
@@ -26,7 +26,8 @@ status_json_escape() {
   s="${s//$'\n'/ }"
   s="${s//$'\r'/ }"
   s="${s//$'\t'/ }"
-  printf '%s' "$s"
+  # 其余控制字符（终端转义码这类）删掉：写进去 JSON 就坏了，health.read_status 读不出来，这条失败就不报了。
+  printf '%s' "$s" | LC_ALL=C tr -d '\000-\037\177'
 }
 
 status_write() {

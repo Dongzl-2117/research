@@ -41,6 +41,7 @@ from researchlib.llm_provider import (
 )
 from researchlib.translate.xai_oauth import (
     XaiLoginRequiredError,
+    XaiRefreshUnavailable,
     get_xai_access_token,
     is_stale_xai_access,
     xai_oauth_status,
@@ -168,6 +169,9 @@ def _oauth_token(settings: Settings, *, force: bool = False, discard: str | None
     except XaiLoginRequiredError as exc:
         extra = " 环境变量 XAI_API_KEY 不会被使用。" if os.environ.get("XAI_API_KEY", "").strip() else ""
         raise LLMUnavailable(f"{exc}{extra}") from exc
+    except XaiRefreshUnavailable as exc:
+        # 等锁超时、刷新连不上：凭证没坏，按可重试的接口错误处理，批量命令不整批退出。
+        raise LLMError(str(exc)) from exc
 
 
 def _deepseek_token() -> str:

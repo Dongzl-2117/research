@@ -1,7 +1,7 @@
 """中英对照盘点：英文文章各在哪一步。只读，不调模型、不写库。
 
 分成：从没译过、没译完、原文改过译文旧了、已译完（这一版回执 / 旧版回执 / 没回执的旧稿）；
-这一版回执里还没用现在这一版提示词译过的（old-prompt）；
+这一版回执里还有不是现在这一版提示词译的段的（old-prompt）；
 没译完的里现在就能进队列的、冷却中的、同一版本拒满两次停住的、只有图没有要译的字的；
 已译完的页面能不能逐段对照（和 research-bilingual-audit 同一套判断）、对不上是什么原因；
 分段粗、``--recheck`` 会挑的；数字待核多少段；串段的篇（misplaced）。各类按来源分篇数、数英文字符，估费用用。
@@ -14,7 +14,8 @@
 
 清单里某一类可以直接交给译制：``research-translate --from-inventory unmapped --workers 4``
 （已经译完、有这一版回执、对照页逐段对得上的跳过，见 ``unfinished``）。
-``--from-inventory old-prompt`` 把旧提示词译的篇按现在的提示词整篇重译，用这一版译过的跳过。
+``--from-inventory old-prompt`` 把还有旧提示词译的段的篇按现在的提示词重译：回执逐段记了版本的只重译旧段，
+没逐段记的（11-14 以前签的）整篇重译一次；段段都是这一版的跳过。
 ``--from-inventory misplaced`` 只重译串段的那一片，别的段照旧复用（provenance.reusable_targets）。
 
 还没上线时，可以把某个提交里的这个文件直接喂给容器里的 python（容器里的代码要有它 import 的名字）：
@@ -70,6 +71,7 @@ ENGLISH_SQL = f"""
            coalesce(t.provenance->>'schema', '') AS receipt_schema,
            t.provenance->'pipeline' AS pipeline,
            t.provenance->'prompt_versions' AS prompt_versions,
+           coalesce(a.body_md, '') ~* '(^|\n) {0,3}######[ \t]|<h6[ >]' AS h6,
            CASE WHEN jsonb_typeof(t.provenance->'number_review') = 'array'
                 THEN jsonb_array_length(t.provenance->'number_review') ELSE 0 END AS review,
            CASE WHEN jsonb_typeof(t.provenance->'untranslated') = 'array'
@@ -105,9 +107,9 @@ ATTEMPTS_SQL = """
 
 STATES = ("none", "partial", "stale", "receipt", "old-receipt", "legacy")
 NOT_DONE = ("none", "partial", "stale")
-# 这一版回执里，还没有一段是用现在这一版提示词译的（11-09 以前译的都是）。按这一类重译才换成现在的写法：
-# 待译队列不会拿它们（译完了），--from-inventory 别的类也把它们算译完。用这一版译过、个别段重译失败
-# 退回旧译文的（prompt_versions 不止一版）不算：再整篇重译一遍多半还是那几段，钱白花。
+# 这一版回执里还有段不是现在这一版提示词译的（整篇是旧版的，或者混着几版）。按这一类重译才换成现在的写法：
+# 待译队列不会拿它们（译完了），--from-inventory 别的类也把它们算译完。混着几版的以前不算（以为是个别段重译失败），
+# 其实整篇重译被欠费、断线打断时也是这样，后面几批全是旧译文（审核 T2）。回执逐段记了版本以后，再译只问旧段。
 OLD_PROMPT = "old-prompt"
 # 已译完、页面照样逐段对得上的篇里有串段（一段的中文写进了别的段）：
 # 有段交回的还是英文（provenance.echoed_slots），多半是模型把它的中文一起写进了前一段，那一对只有英文；
@@ -127,6 +129,7 @@ REASON_NAMES = {
     "target-receipt": "译文和回执对不上",
     "pipeline-version": "回执是旧版流水线签的",
     "invalid-receipt": "回执读不了",
+    "display-notice": "回执对得上、文章页仍分开展示",
 }
 # 清单里有、但不交给译制的几类。
 NOT_FOR_TRANSLATION = {
@@ -141,9 +144,15 @@ def _versions(row) -> list[int]:
     return prompt_versions({"pipeline": row["pipeline"], "prompt_versions": row["prompt_versions"]})
 
 
-def _page(conn, article_id: int, data_dir) -> tuple[str, str, int, int]:
+def _page(conn, article_id: int, where) -> tuple[str, str, int, int]:
     """和 research-bilingual-audit 一样分类：(mapped / lossless-candidate / legacy-structural / unmapped, 原因,
-    回执里交回英文的段数, 回执里和相近一段英文不同、中文一样的段数)。"""
+    回执里交回英文的段数, 回执里和相近一段英文不同、中文一样的段数)。
+
+    ``where`` 是 Settings 时，回执对得上的再按文章页那条路（清洗、换图、白名单、盖段落号）拼一遍、配一遍对：
+    页面在核验回执以后还有几处会整页退成两份全文，只看回执会把这种篇算成逐段对上（审核 T10）。
+    只给 data_dir 时只看回执。
+    """
+    data_dir = getattr(where, "data_dir", where)
     row = conn.execute(
         "SELECT a.*, t.body_html AS translated_html, coalesce(to_jsonb(t)->'provenance', '{}'::jsonb) AS provenance"
         " FROM articles a JOIN article_translations t ON t.article_id = a.id WHERE a.id = %s",
@@ -156,8 +165,15 @@ def _page(conn, article_id: int, data_dir) -> tuple[str, str, int, int]:
     source = pair_sources(with_images, source, row["translated_html"], row["provenance"]).check
     found = classify(source, row["translated_html"], row["provenance"])
     provenance = row["provenance"]
-    return (found["category"], str(found.get("reason") or ""),
-            len(echoed_slots(provenance)), len(copied_slots(provenance)))
+    category, reason = found["category"], str(found.get("reason") or "")
+    if category == "mapped" and hasattr(where, "sources_path"):
+        from researchlib.translate.display import article_pairs
+        from researchlib.translate.qa import _display_options, load_article_texts
+
+        texts = load_article_texts(conn, where, article_id)
+        if texts is not None and article_pairs(texts.en_html, texts.zh_html, **_display_options(texts)).notice:
+            category, reason = "unmapped", "display-notice"
+    return category, reason, len(echoed_slots(provenance)), len(copied_slots(provenance))
 
 
 def _has_text(conn, article_id: int, data_dir) -> bool:
@@ -207,7 +223,7 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
     state_chars: dict[str, Counter[str]] = {}
     chars_of: dict[int, int] = {}
     review: dict[int, int] = {}
-    review_segments = receipt_segments = gap_segments = mixed_prompts = 0
+    review_segments = receipt_segments = gap_segments = mixed_prompts = h6_articles = 0
     last_reasons: Counter[str] = Counter()
     for row in rows:
         article_id = int(row["id"])
@@ -226,6 +242,7 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
             else:
                 state = "old-receipt"
             receipt_segments += int(row["receipt_segments"] or 0)
+            h6_articles += bool(row["h6"])
             if row["review"]:
                 review_segments += int(row["review"])
                 review[article_id] = int(row["review"])
@@ -239,9 +256,9 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
         keys = [state]
         if state == "receipt":
             versions = _versions(row)
-            if PROMPT_VERSION not in versions:
+            if versions != [PROMPT_VERSION]:
                 keys.append(OLD_PROMPT)
-            elif len(versions) > 1:
+            if PROMPT_VERSION in versions and len(versions) > 1:
                 mixed_prompts += 1
         for key in keys:
             ids[key].append(article_id)
@@ -272,7 +289,7 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
                 ids["no-text"].append(article_id)
         finished = ids["receipt"] + ids["old-receipt"] + ids["legacy"]
         for article_id, found in _each(
-            conn, finished, "页面", lambda article_id: _page(conn, article_id, settings.data_dir), progress,
+            conn, finished, "页面", lambda article_id: _page(conn, article_id, settings), progress,
         ).items():
             category, reason, echoes, copies = (
                 found if isinstance(found, tuple) else (f"error:{type(found).__name__}", "", 0, 0)
@@ -297,6 +314,7 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
         "gapSegments": gap_segments,
         "promptVersion": PROMPT_VERSION,
         "mixedPrompts": mixed_prompts,
+        "h6Articles": h6_articles,
         "lastReasons": dict(last_reasons),
         "ids": ids,
         "display": display,
@@ -359,7 +377,12 @@ def summary(report: dict) -> list[str]:
         )
     if report.get("mixedPrompts"):
         lines.append(
-            f"  用第 {version} 版译过、个别段重译失败退回旧译文的 {report['mixedPrompts']} 篇，不算 old-prompt"
+            f"  其中用第 {version} 版译过一部分、还有段是旧版的 {report['mixedPrompts']} 篇（整篇重译被打断，"
+            "或个别段重译没过核对），算在 old-prompt 里"
+        )
+    if report.get("h6Articles"):
+        lines.append(
+            f"  原文带六级标题（######）的 {report['h6Articles']} 篇：六级标题不送译，页面上是英文（审核 T11）"
         )
     lines.append(f"  没译完（partial）{count['partial']}，先放英文的段共 {report['gapSegments']} 段")
     lines.append(f"  原文改过、译文旧了 {count['stale']}")
@@ -445,15 +468,15 @@ def listed(data_dir, key: str) -> tuple[list[int], str]:
     return [article_id for article_id in found if article_id not in skip], str(report.get("generatedAt") or "")
 
 
-def unfinished(conn, ids: list[int], data_dir, *, prompt: bool = False, misplaced: bool = False) -> list[int]:
+def unfinished(conn, ids: list[int], where, *, prompt: bool = False, misplaced: bool = False) -> list[int]:
     """这几篇里还要译的，按原来的先后：库里还在、还没有「译完、原文没改过、这一版回执、对照页逐段对得上」。
 
     点名重译旧稿、停住的、页面分开展示的篇时用：译完一篇它就不在这里了，中途停下再跑同一条命令接着译剩下的。
     已经有这一版回执的，还要渲染一遍页面看对不对得上：清洗规则改过以后原文指纹变了，回执就过期了，
     页面分开展示。现在这一版提示词译的再译一遍时没变的段照旧复用，原文一个字没变就一次模型也不调，只重签回执；
-    旧提示词译的整篇按现在的提示词重译（service.translate_article）。
-    ``prompt`` 为真时（``--from-inventory old-prompt``），回执里一段也没用现在这一版提示词译过的也算没译完，
-    译制会整篇按现在的提示词重译；用这一版译过、个别段退回旧译文的不再重译。
+    旧提示词译的段按现在的提示词重译（service.translate_article）。
+    ``prompt`` 为真时（``--from-inventory old-prompt``），回执里还有段不是现在这一版提示词译的也算没译完，
+    译制只重译那几段（回执没逐段记版本的整篇重译一次）。
     ``misplaced`` 为真时（``--from-inventory misplaced``），回执里还有串段的也算没译完；再译时只补那一片。
     """
     if not ids:
@@ -476,11 +499,11 @@ def unfinished(conn, ids: list[int], data_dir, *, prompt: bool = False, misplace
         article_id = int(row["id"])
         signed = (row["current"] and row["receipt_schema"] == str(SCHEMA_VERSION)
                   and pipeline_matches(row["pipeline"]))
-        if not signed or (prompt and PROMPT_VERSION not in _versions(row)):
+        if not signed or (prompt and _versions(row) != [PROMPT_VERSION]):
             left.add(article_id)
             continue
         try:
-            category, _reason, echoes, copies = _page(conn, article_id, data_dir)
+            category, _reason, echoes, copies = _page(conn, article_id, where)
         except Exception:  # 页面渲染不了的交给译制，出错会记下来
             category, echoes, copies = "error", 0, 0
         if category != "mapped" or (misplaced and (echoes or copies)):

@@ -486,7 +486,9 @@ def start(
         result["error"] = "范围内没有召回到任何段落。换个问法，或放宽作者、公司、日期范围。"
         return result
     if not llm_configured(chosen):
-        result["error"] = f"{missing_credential_text(chosen)}，只给出召回的原文段落。"
+        # 页面上只说读者用得上的话（审核 F9）；缺哪家的凭证记进日志。
+        logger.warning("问库没有可用的模型：%s", missing_credential_text(chosen))
+        result["error"] = "这会儿问不了 AI，只给出找到的原文段落。"
         return result
     reason = over_quota(conn)
     if reason:
