@@ -48,7 +48,8 @@ _FENCE_OPEN = re.compile(r"^[ \t]{0,3}(```+|~~~+)")
 _TRAILING_HASHES = re.compile(r"\s+#+\s*$")
 _MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-_ELLIPSIS_TAIL = re.compile(r"(?:…+|⋯+|‥+|\.{2,}|。{2,}|．{2,})+$")
+# 占有量词，不回溯（审核 I1：以前「…」×24 加几个字 3.5 秒）。每种只从一串的第一个字起试。
+_ELLIPSIS_TAIL = re.compile(r"(?:(?<!…)…++|(?<!⋯)⋯++|(?<!‥)‥++|(?<!\.)\.{2,}+|(?<!。)。{2,}+|(?<!．)．{2,}+)++$")
 _DANGLING_OPEN = re.compile(r"[（(\[【「『]+$")
 # 短过这个的前缀不当成「问：」截断标题，免得误删真的小标题。整句相同仍删。
 _DUP_PREFIX = 4

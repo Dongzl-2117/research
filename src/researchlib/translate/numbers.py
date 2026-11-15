@@ -213,7 +213,8 @@ def _align(source: list[Fact], target: list[Fact]) -> bool:
     # 还是把 two 改成了三。
     small = {
         fact.key for fact in source
-        if fact.key.isdigit() and 1 <= int(fact.key) <= 9
+        # 先看位数再 int()：几千位的数字串 int() 会抛 ValueError（超过 4300 位），整篇记成请求失败（审核 T9）。
+        if fact.key.isdigit() and len(fact.key.lstrip("0")) <= 1 and 1 <= int(fact.key) <= 9
     }
     limits = tuple(len(buckets[kind]) for kind in _ORDERED_KINDS)
     start = (0, 0, (0,) * len(_ORDERED_KINDS), 0)
