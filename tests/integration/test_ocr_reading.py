@@ -93,7 +93,11 @@ def _chat(*messages: tuple[str, str]) -> dict:
 
 
 def test_text_without_structure_reaches_models_as_recognized(conn, settings, tmp_path, monkeypatch):
-    """旧识图只有一段自由文字：旁路、检索块、摘要的输入都照认出来的样子，不拆说话人，也不补说话人说明。"""
+    """旧识图只有一段自由文字：旁路、检索块、摘要的输入都照认出来的样子，不拆说话人，也不补说话人说明。
+
+    只有一处例外：行首写着「方伟：」的整行加「」。自由文字里的这个冒号没经过识图结构核对，
+    不能和结构标好的作者的话一个样（审核 C5）；字一个不少。
+    """
     image = tmp_path / "metrics.png"
     _png(image, b"\x19" * 24)
     article = _store(
@@ -110,11 +114,12 @@ def test_text_without_structure_reaches_models_as_recognized(conn, settings, tmp
     assert replace_ocr_chunks(conn, article["id"]) == 1
     conn.commit()
     saved = conn.execute("SELECT ocr_text FROM articles WHERE id=%s", (article["id"],)).fetchone()["ocr_text"]
-    assert saved == raw
+    first, second = raw.split("\n")
+    assert saved == f"「{first}」\n{second}"
     chunk = conn.execute(
         "SELECT heading,body,anchor FROM article_chunks WHERE article_id=%s AND lang='ocr'", (article["id"],),
     ).fetchone()
-    assert chunk == {"heading": OCR_HEADING, "body": raw, "anchor": image_anchor(digest)}
+    assert chunk == {"heading": OCR_HEADING, "body": saved, "anchor": image_anchor(digest)}
     assert ocr_speaker_note(conn, article["id"], saved, "方伟") == ""
     seen = []
 
@@ -128,7 +133,7 @@ def test_text_without_structure_reaches_models_as_recognized(conn, settings, tmp
         (article["id"],),
     ).fetchone()
     digest_mod.digest_article(conn, settings, row, "方伟")
-    assert seen and raw in seen[0] and "别人的话不要写成" not in seen[0]
+    assert seen and saved in seen[0] and "别人的话不要写成" not in seen[0]
     assert conn.execute("SELECT text FROM image_texts WHERE content_hash=%s", (digest,)).fetchone()["text"] == raw
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{article['id']}").text

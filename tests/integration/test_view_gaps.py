@@ -90,7 +90,7 @@ def test_comment_shell_views_are_neither_queued_nor_shown(conn, settings):
     from researchlib.theses import companies_with_views, views_for
     from researchlib.views import pending_articles, timeline
 
-    meta = {"poster_name": "方伟Rey", "poster_id": "1001"}
+    meta = {"poster_name": "方伟Rey", "poster_id": "1825524112"}
     owner = _store(
         conn, settings, "fangwei-zsxq", "owner-moutai", "茅台批价",
         "贵州茅台的批价这一周没动，渠道仍在观望；茅台的提价空间要看飞天的动销。\n", meta,
@@ -123,7 +123,7 @@ def test_comment_shell_views_are_neither_queued_nor_shown(conn, settings):
 def test_star_nickname_posts_count_as_the_owners(conn, settings):
     """方伟在星球的显示名是「方伟Rey」。10 月 20 日以后按话题 JSON 导入的帖都被标成了读者帖，再导入一遍就改回来。"""
     body = "美亚光电的设备不错，贵州茅台的批价这一周没动，渠道仍在观望。\n"
-    meta = {"poster_name": "方伟Rey", "poster_id": "1001"}
+    meta = {"poster_name": "方伟Rey", "poster_id": "1825524112"}
     row = _store(conn, settings, "fangwei-zsxq", "rey-post", "茅台批价", body, meta)
     role = "SELECT raw_meta->>'poster_role' AS role FROM articles WHERE id = %s"
     assert conn.execute(role, (row["id"],)).fetchone()["role"] == "owner"
@@ -209,6 +209,54 @@ def test_new_star_nickname_relabels_stored_posts_at_startup(conn, settings, tmp_
     assert conn.execute(role, (guest["id"],)).fetchone()["role"] == "guest"
     assert rey["id"] in {item["id"] for item in gap_articles(conn, [company], ["fangwei-zsxq"], 20)}
     assert refresh_poster_roles(conn, [source]) == {}
+
+
+def test_star_account_id_relabels_lookalike_posts_at_startup(conn, settings):
+    """配了星主的账户 ID：启动时带 ID 的帖只按 ID 重算。昵称像星主的小助手账号变成网友帖、观点删掉；
+    星主换了昵称的帖、没有 ID 而昵称一字不差的旧帖仍是原创（审核 I2）。"""
+    from dataclasses import replace
+
+    from researchlib.posters import refresh_poster_roles
+
+    source = next(item for item in load_sources(settings.sources_path) if item.id == "fangwei-zsxq")
+    assert source.owner_ids == ("1825524112",)
+    rows = {
+        "helper": _store(conn, settings, "fangwei-zsxq", "helper", "通知", "贵州茅台的群明天开。\n",
+                         {"poster_name": "方伟（小助手）", "poster_id": "418551555845518"}),
+        "renamed": _store(conn, settings, "fangwei-zsxq", "renamed", "批价", "贵州茅台的批价没动。\n",
+                          {"poster_name": "方伟-最近在杭州", "poster_id": "1825524112"}),
+        "old": _store(conn, settings, "fangwei-zsxq", "old", "旧帖", "贵州茅台渠道在观望。\n",
+                      {"poster_name": "方伟Rey"}),
+        "paren": _store(conn, settings, "fangwei-zsxq", "paren", "旧帖二", "贵州茅台我不碰。\n",
+                        {"poster_name": "方伟（读者）"}),
+    }
+    # 改之前的样子：按旧规则（去括注）算出来的标记，小助手的帖挂着一条观点。
+    for key in ("helper", "paren"):
+        conn.execute(
+            "UPDATE articles SET raw_meta = raw_meta || '{\"poster_role\": \"owner\"}'::jsonb WHERE id = %s",
+            (rows[key]["id"],),
+        )
+    company = conn.execute("SELECT id FROM companies WHERE name_zh = '贵州茅台'").fetchone()["id"]
+    conn.execute(
+        """
+        INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance, about)
+        VALUES (%s, %s, %s, %s, '小助手说开群', '', true)
+        """,
+        (rows["helper"]["id"], company, rows["helper"]["content_hash"], PROMPT_VERSION),
+    )
+    conn.execute("DELETE FROM app_state WHERE key LIKE 'poster_names:%'")
+    conn.commit()
+    changed = refresh_poster_roles(conn, [source])
+    conn.commit()
+    role = "SELECT raw_meta->>'poster_role' AS role FROM articles WHERE id = %s"
+    found = {key: conn.execute(role, (row["id"],)).fetchone()["role"] for key, row in rows.items()}
+    assert found == {"helper": "guest", "renamed": "owner", "old": "owner", "paren": "guest"}
+    assert changed == {"fangwei-zsxq": 2}
+    views = "SELECT count(*) AS n FROM company_views WHERE article_id = %s"
+    assert conn.execute(views, (rows["helper"]["id"],)).fetchone()["n"] == 0
+    # 名单没变不再重算；去掉 owner_ids 也会重算一遍（带 ID 的帖退回按昵称认）。
+    assert refresh_poster_roles(conn, [source]) == {}
+    assert refresh_poster_roles(conn, [replace(source, owner_ids=())]) == {"fangwei-zsxq": 1}
 
 
 def test_demo_article_migration_only_removes_the_demo(conn, settings):

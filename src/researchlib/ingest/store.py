@@ -220,7 +220,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     _keep_filled_clock(existing, doc)
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
+    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names, source.owner_ids)
     meta = apply_length_floor(source, doc.body_md, poster)
     keep = False
     article_changed = True
@@ -321,10 +321,10 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         status = "unchanged"
         # 正文没变也要补上发帖人：历史归档重导一遍就能把网友帖从星主名下摘掉。
         if doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id"):
-            merged = assign_poster_role(dict(existing["raw_meta"] or {}), source.author, source.poster_names)
+            merged = dict(existing["raw_meta"] or {})
             merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
             merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
-            assign_poster_role(merged, source.author, source.poster_names)
+            assign_poster_role(merged, source.author, source.poster_names, source.owner_ids)
             if merged != dict(existing["raw_meta"] or {}):
                 conn.execute(
                     "UPDATE articles SET raw_meta = %s WHERE id = %s",
