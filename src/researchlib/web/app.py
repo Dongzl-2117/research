@@ -174,7 +174,7 @@ def create_app(settings: Settings | None = None, *, experiment_owner_verifier=No
                 "sample_banner": False,
                 "sources": [],
                 "active_source": "",
-                "message": "页面出错，请看服务日志。",
+                "message": "页面出错了，过一会儿再试。",
             },
             status_code=500,
         )

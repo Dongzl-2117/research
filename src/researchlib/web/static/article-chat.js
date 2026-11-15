@@ -413,6 +413,14 @@
     turn.links.appendChild(button);
   }
 
+  // 文章页侧栏的对话只在内存里：引用、来源、检索原文在本页跳走，回来侧栏就空了（审核 F6）。
+  // 侧栏里的链接一律开新标签；问库整页的回答有自己的地址，照常本页打开。
+  function newTab(link) {
+    if (fullPage) return;
+    link.target = '_blank';
+    link.rel = 'noopener';
+  }
+
   function recovery(turn, kind) {
     turn.links.replaceChildren();
     const link = document.createElement('a');
@@ -441,6 +449,7 @@
         if (url) link.href = url;
         else link.replaceWith(document.createTextNode(link.textContent));
       });
+      body.querySelectorAll('a[href]').forEach(newTab);
       turn.content.appendChild(body);
     }
     const missed = (data.stats && data.stats.failed_batches) || data.failed_batches || [];
@@ -477,6 +486,7 @@
           const entry = document.createElement('li');
           const link = document.createElement('a');
           link.href = safeArticleUrl(item.url);
+          newTab(link);
           link.textContent = `[${item.n}] ${item.title || '文章'}`;
           entry.appendChild(link); sources.appendChild(entry);
         });
@@ -491,7 +501,7 @@
         const entry = document.createElement('li');
         const url = safeArticleUrl(item.url);
         const title = document.createElement(url ? 'a' : 'span');
-        if (url) title.href = url;
+        if (url) { title.href = url; newTab(title); }
         title.textContent = `[${item.n}] ${item.title || '文章'}`;
         const text = document.createElement('p');
         text.textContent = item.text || '';
@@ -642,11 +652,15 @@
     input.focus();
   });
   // 捕获阶段先看：输入框里的菜单开着时，这一下 Esc 只收起菜单（base.html 管），不收起整个面板。
+  // 输入法组字时的 Esc 只是取消候选词；图片放大层开着时 Esc 只关放大层（base.html 管）。
+  // 宽屏上侧栏和正文并排，只有焦点在侧栏里才收起，而且不记住：下次打开文章照旧展开，只有点「收起」才记（审核 F3）。
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
     if (panel.querySelector('details[data-popover][open]')) return;
+    const zoom = document.getElementById('img-zoom');
+    if (zoom && !zoom.hidden) return;
     if (isWide()) {
-      if (!stage.classList.contains('is-chat-closed')) setOpen(false, true);
+      if (!stage.classList.contains('is-chat-closed') && panel.contains(document.activeElement)) setOpen(false, false);
       return;
     }
     if (panel.classList.contains('is-open')) setOpen(false, true);

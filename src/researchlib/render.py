@@ -286,7 +286,17 @@ def image_anchor(content_hash: str) -> str:
 
 
 def _anchor_images(html: str) -> str:
-    return _LOCAL_IMG.sub(lambda m: f'<img id="{image_anchor(m.group(3))}"{m.group(1)}src="{m.group(2)}"', html)
+    """同一张图在一篇里出现几次时只给第一次挂 id：id 重复时 #img-… 只能跳到第一处，页面也不合法（审核 F16）。"""
+    seen: set[str] = set()
+
+    def anchor(match: re.Match[str]) -> str:
+        name = image_anchor(match.group(3))
+        if name in seen:
+            return match.group(0)
+        seen.add(name)
+        return f'<img id="{name}"{match.group(1)}src="{match.group(2)}"'
+
+    return _LOCAL_IMG.sub(anchor, html)
 
 
 # 识图只用来判断这张图该挨着哪一段，字本身不进阅读页。
