@@ -646,6 +646,10 @@ def _seam_chain(up: list[_Line], low: list[_Line], upper: list[dict], lower: lis
             chain.append(matches[step])
             step = best[step][2]  # type: ignore[index]
         chain.reverse()
+        # 前一段对上以后还剩的字和后一段对上以前的字合起来也不超过 SEAM_SLACK：两头各差一点都放过的话，
+        # 重叠那一截没认出字（图、空白）时，会拿接缝附近重复的一句（表格里一样的行、合计行）当接缝，中间几行被吞掉。
+        if trail + before_low[chain[0].lower[0]] > SEAM_SLACK:
+            continue
         if not _seam_chain_ok(chain, found[1], trail, up, low, upper, lower):
             continue
         key = (found[0] - trail, found[1], -matches[number].lower[1])

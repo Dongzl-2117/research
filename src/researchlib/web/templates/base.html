@@ -113,7 +113,7 @@
       <span>问库</span>
     </a>
   </nav>
-  <div class="img-zoom" id="img-zoom" hidden><img alt=""></div>
+  <div class="img-zoom" id="img-zoom" role="dialog" aria-modal="true" aria-label="放大的图片，按 Esc 或点一下关闭" tabindex="-1" hidden><img alt=""></div>
   <script>
     (function () {
       var key = "research-theme";
@@ -129,8 +129,16 @@
         if (mode === "dark" || mode === "light") return mode;
         return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
       }
+      // 浏览器顶栏的颜色跟站内选的外观走（审核 F13）：head 里两条 theme-color 按系统深浅写死，
+      // 没有脚本时照系统；有脚本就都改成当前页面的底色。
+      function paintBar() {
+        var color = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+        if (!color) return;
+        document.querySelectorAll('meta[name="theme-color"]').forEach(function (meta) { meta.setAttribute("content", color); });
+      }
       function paint(mode) {
         document.documentElement.setAttribute("data-theme", resolved(mode));
+        paintBar();
         document.querySelectorAll("[data-theme-option]").forEach(function (button) {
           button.setAttribute("aria-checked", button.getAttribute("data-theme-option") === mode ? "true" : "false");
         });
@@ -202,23 +210,52 @@
           paintRecent(collapse);
         });
       }
+      // 正文图片点一下放大。键盘也能用（审核 F12）：图片可以 Tab 到，Enter 或空格放大；
+      // 放大层是对话框，开着时焦点留在里面，Esc 或点一下关掉，焦点回到原图。
       var zoom = document.getElementById("img-zoom");
       if (zoom) {
         var zoomImg = zoom.querySelector("img");
+        var opener = null;
+        function zoomable(node) {
+          var img = node && node.closest ? node.closest(".prose img") : null;
+          return img && !img.closest("a") && !img.closest(".img-zoom") ? img : null;
+        }
+        function openZoom(img) {
+          zoomImg.src = img.currentSrc || img.src;
+          zoomImg.alt = img.alt || "";
+          if (img.getAttribute("data-shape") === "tall") zoom.setAttribute("data-shape", "tall");
+          else zoom.removeAttribute("data-shape");
+          zoom.scrollTop = 0;
+          zoom.hidden = false;
+          opener = img;
+          zoom.focus();
+        }
+        function closeZoom() {
+          if (zoom.hidden) return;
+          zoom.hidden = true;
+          if (opener && opener.isConnected) opener.focus();
+          opener = null;
+        }
+        document.querySelectorAll(".prose img").forEach(function (img) {
+          if (!zoomable(img)) return;
+          img.tabIndex = 0;
+          img.setAttribute("role", "button");
+          img.setAttribute("aria-label", img.alt ? "放大图片：" + img.alt : "放大图片");
+        });
         document.addEventListener("click", function (event) {
-          var img = event.target.closest(".prose img");
-          if (img && !img.closest("a") && !img.closest(".img-zoom")) {
-            zoomImg.src = img.currentSrc || img.src;
-            if (img.getAttribute("data-shape") === "tall") zoom.setAttribute("data-shape", "tall");
-            else zoom.removeAttribute("data-shape");
-            zoom.scrollTop = 0;
-            zoom.hidden = false;
-            return;
-          }
-          if (event.target.closest("#img-zoom")) zoom.hidden = true;
+          var img = zoomable(event.target);
+          if (img) { openZoom(img); return; }
+          if (event.target.closest("#img-zoom")) closeZoom();
         });
         document.addEventListener("keydown", function (event) {
-          if (event.key === "Escape") zoom.hidden = true;
+          if (!zoom.hidden) {
+            if (event.key === "Escape" || event.key === "Enter") { event.preventDefault(); closeZoom(); }
+            else if (event.key === "Tab") event.preventDefault();
+            return;
+          }
+          if (event.key !== "Enter" && event.key !== " ") return;
+          var img = zoomable(event.target);
+          if (img && event.target === img) { event.preventDefault(); openZoom(img); }
         });
       }
       document.querySelectorAll(".day-toggle").forEach(function (button) {

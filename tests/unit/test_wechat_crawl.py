@@ -338,3 +338,42 @@ def test_dajiala_request_and_errors_never_show_the_key(monkeypatch):
         client.article("https://mp.weixin.qq.com/s?sn=" + SN_NEW)
     assert "余额不足" in str(caught.value) and "SECRET-KEY" not in str(caught.value)
     assert "mode=1" in seen[1].full_url
+
+
+def test_same_title_same_day_with_a_different_sn_is_still_fetched(tmp_path):
+    """作者同一天发两篇同名文章（sn 不同）：库里那篇有 sn，第二篇照样取；标题加日期只给没 sn 的老文章兜底。"""
+    when = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)
+    client = FakeClient([_post(SN_NEW, "同名文章", when)])
+    conn = FakeConn([_known(sn=SN_OLD, title="同名文章", when=when)])
+    report = crawl(conn, SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=lambda url: PAGE)
+    assert report.known == 0 and len(report.written) == 1
+
+
+def test_empty_or_unusable_list_is_a_failure_not_no_news(tmp_path):
+    for data in ([], [{"url": "", "title": ""}], [{"foo": 1}]):
+        client = FakeClient(data)
+        report = crawl(FakeConn([]), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=lambda url: PAGE)
+        assert report.listed == 0
+        assert report.failed and "一篇能用的都没有" in report.failed[0]
+        assert "失败: 1" in report.render()
+
+
+def test_fetch_page_only_goes_to_wechat_article_pages(monkeypatch):
+    from researchlib import wechat_crawl
+
+    assert wechat_crawl.page_allowed("https://mp.weixin.qq.com/s?__biz=1&sn=" + SN_NEW)
+    for url in (
+        "https://127.0.0.1/s",
+        "http://mp.weixin.qq.com/s",
+        "https://mp.weixin.qq.com.evil.example/s",
+        "https://evil.example/https://mp.weixin.qq.com/",
+        "file:///etc/passwd",
+    ):
+        assert not wechat_crawl.page_allowed(url)
+        with pytest.raises(ValueError):
+            wechat_crawl.fetch_page(url)
+    handler = wechat_crawl._PageRedirects()
+    request = urllib.request.Request("https://mp.weixin.qq.com/s?x=1")
+    with pytest.raises(ValueError):
+        handler.redirect_request(request, None, 302, "Found", {}, "http://10.0.0.1/admin")
+    assert handler.redirect_request(request, None, 302, "Found", {}, "https://mp.weixin.qq.com/s?y=2") is not None

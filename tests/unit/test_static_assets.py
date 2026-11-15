@@ -63,3 +63,33 @@ def test_every_response_says_how_long_the_server_took(tmp_path):
     for path in (asset_url("site.css"), "/static/missing.css"):
         timing = client.get(path).headers["server-timing"]
         assert re.fullmatch(r"app;dur=\d+\.\d", timing), (path, timing)
+
+
+def test_pages_and_assets_are_compressed_but_images_are_not(tmp_path):
+    # 慢在 Mac mini 经隧道到 Cloudflare 那一段，传压缩后的字节（审核 O1）。
+    client = TestClient(create_app(Settings.from_env({"DATA_DIR": str(tmp_path)})))
+    plain = client.get(asset_url("site.css"), headers={"Accept-Encoding": "identity"})
+    packed = client.get(asset_url("site.css"), headers={"Accept-Encoding": "gzip"})
+    assert "content-encoding" not in plain.headers
+    assert packed.headers["content-encoding"] == "gzip"
+    assert packed.content == plain.content  # httpx 自己解压
+    assert packed.num_bytes_downloaded < len(plain.content) / 3
+    assert packed.headers["cache-control"] == IMMUTABLE and packed.headers["server-timing"]
+    # 小于 1000 字节的不压。
+    assert "content-encoding" not in client.get("/robots.txt", headers={"Accept-Encoding": "gzip"}).headers
+
+
+def test_favicon_is_cached_for_a_day(tmp_path):
+    client = TestClient(create_app(Settings.from_env({"DATA_DIR": str(tmp_path)})))
+    response = client.get("/favicon.svg")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=86400"
+
+
+def test_only_content_hashed_media_names_count_as_immutable():
+    digest = "0123456789abcdef" * 4
+    assert assets.hashed_media(f"remote/01/{digest}.png")
+    assert assets.hashed_media(f"fangwei-mp/01/{digest}.jpeg")
+    for name in ("audit-a/a.png", f"remote/01/{digest}", f"remote/01/{digest[:-1]}.png",
+                 f"remote/01/{digest.upper()}.png", f"remote/01/{digest}.png/x", ""):
+        assert not assets.hashed_media(name), name

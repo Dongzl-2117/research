@@ -105,7 +105,10 @@ def _line(view: dict) -> str:
 def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司下了判断的观点，新的在前，带作者。判断或态度为空白的不算。"""
     from researchlib.views import REAL_VIEW_SQL
+    from researchlib.visibility import visible_sql
 
+    # 和公司页的时间线（views.timeline）一个口径：网友帖、评论壳、标了 hidden 的短帖都不进论点的输入和哈希，
+    # 不然输入里有、展示时引用被滤掉，论点的引用变少甚至整条丢掉（审核 V11）。
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.quote, v.content_hash,
@@ -113,7 +116,7 @@ def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) ->
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s)
-          AND a.duplicate_of IS NULL AND {site_visible_sql("a")}
+          AND a.duplicate_of IS NULL AND {site_visible_sql("a")} AND {visible_sql("a")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (company_id, list(sources_by_id)),
@@ -673,7 +676,9 @@ def needs_build(conn, company_id: int, sources_by_id: dict, settings: Settings) 
 
 
 def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) -> list[dict]:
-    """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。"""
+    """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。条件和 views_for 一致。"""
+    from researchlib.visibility import visible_sql
+
     if not source_ids:
         return []
     return conn.execute(
@@ -683,7 +688,7 @@ def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) 
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
-          AND {site_visible_sql("a")}
+          AND {site_visible_sql("a")} AND {visible_sql("a")}
         GROUP BY c.id, c.name_zh
         HAVING count(*) >= %s
         ORDER BY c.name_zh, c.id

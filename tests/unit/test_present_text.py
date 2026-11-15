@@ -289,22 +289,8 @@ def test_single_newline_lines_stay_on_their_own_lines():
             assert not re.search(r"\bbr\s*[+~]\s*br\b", selector), selector
 
 
-def test_ocr_blocks_inherit_prose_font_without_grey_box():
-    css = _CSS.read_text(encoding="utf-8")
-    rules = css.split(".prose .ocr-reading {", 1)[1].split(".prose .ocr-links {", 1)[0]
-    assert "font-size: 15px" not in rules
-    assert "var(--bg-sunk)" not in rules
-    assert "background: var(--surface)" not in rules
-    assert "font-size: inherit" in rules
-    assert "font-weight: inherit" in rules
-    assert "line-height: inherit" in rules
-    assert "color: inherit" in rules
-    links = css.split(".prose .ocr-links a {", 1)[1].split("}", 1)[0]
-    assert "font-size: 13px" in links
-
-
-def test_prose_links_use_blue_but_ocr_reading_keeps_text_color():
-    """正文外链回到蓝链；识图转写整段都是链接，仍跟周围文字同色。"""
+def test_prose_links_use_blue():
+    """正文外链回到蓝链。识图转写不再铺进阅读页（docs/ocr.md），它那套同色链接的样式 11-14 删了（审核 F10）。"""
     css = _CSS.read_text(encoding="utf-8")
     root = css.split(":root {", 1)[1].split("}", 1)[0]
     dark = css.split('[data-theme="dark"] {', 1)[1].split("}", 1)[0]
@@ -320,23 +306,6 @@ def test_prose_links_use_blue_but_ocr_reading_keeps_text_color():
     assert "color: var(--link-visited)" in visited
     assert "var(--accent)" not in hover
     assert "currentColor" in hover
-    # 识图转写的字本身是链到原图的链接：不刷蓝，靠淡下划线辨认。
-    ocr = css.split(".prose .ocr-reading a {", 1)[1].split("}", 1)[0]
-    assert "color: inherit" in ocr
-    assert "text-decoration: underline" in ocr
-    ocr_visited = css.split(".prose .ocr-reading a:visited {", 1)[1].split("}", 1)[0]
-    assert "color: inherit" in ocr_visited
-    ocr_hover = css.split(".prose .ocr-reading a:hover {", 1)[1].split("}", 1)[0]
-    assert "color: inherit" in ocr_hover
-    # 表格整张也是链接：比上面那条更具体，仍不画下划线。
-    table = css.split(".prose .ocr-reading a.ocr-table-link {", 1)[1].split("}", 1)[0]
-    assert "color: inherit" in table
-    assert "text-decoration: none" in table
-    # 「原图 N」仍是小一号的控件，不跟正文句子抢颜色。
-    original = css.split(".prose .ocr-links a {", 1)[1].split("}", 1)[0]
-    assert "var(--ink-3)" in original
-    original_hover = css.split(".prose .ocr-links a:hover {", 1)[1].split("}", 1)[0]
-    assert "var(--accent)" not in original_hover
 
 
 # 文章 24040 的形状：图后面硬换行把逗号留在下一行，页码「1」是「1988 年」被拆开的首位。

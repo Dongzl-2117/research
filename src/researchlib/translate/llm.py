@@ -51,6 +51,7 @@ from researchlib.llm_provider import (
 )
 from researchlib.translate.xai_oauth import (
     XaiLoginRequiredError,
+    XaiRefreshUnavailable,
     get_xai_access_token,
     is_stale_xai_access,
 )
@@ -201,7 +202,11 @@ def _params(temperature: float, max_tokens: int | None) -> dict:
 
 def _bearer(data_dir: Path | None) -> str:
     if llm_provider() == PROVIDER_GROK:
-        return get_xai_access_token(data_dir)
+        try:
+            return get_xai_access_token(data_dir)
+        except XaiRefreshUnavailable as exc:
+            # 等锁超时、刷新连不上：和断线一样按可重试的连接错误记，不当成这一篇译坏了。
+            raise LLMTransportError(str(exc)) from exc
     key = deepseek_api_key()
     if not key:
         raise LLMConfigError(
@@ -303,7 +308,10 @@ def chat_json(
             detail = exc.read().decode("utf-8", "replace")
             if provider == PROVIDER_GROK and not refreshed and is_stale_xai_access(exc.code, detail):
                 refreshed = True
-                bearer = get_xai_access_token(data_dir, force=True, discard_access_token=bearer)
+                try:
+                    bearer = get_xai_access_token(data_dir, force=True, discard_access_token=bearer)
+                except XaiRefreshUnavailable as refresh_exc:
+                    raise LLMTransportError(str(refresh_exc)) from refresh_exc
                 continue
             will_retry = exc.code in RETRY_STATUS and retries < len(delays)
             if exc.code == 429:

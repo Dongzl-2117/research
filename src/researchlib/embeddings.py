@@ -664,6 +664,12 @@ def all_or_nothing() -> Iterator[None]:
         _ALL_OR_NOTHING.reset(token)
 
 
+def _has_vectors(conn) -> bool:
+    if column_type(conn) is None:
+        return False
+    return conn.execute("SELECT EXISTS (SELECT 1 FROM chunk_embeddings) AS any").fetchone()["any"]
+
+
 def sync_article(conn, article_id: int, ords: tuple[int, int] | None = None) -> int:
     """这篇的段落刚改过（重切、清洗、换了译文或图片文字、改了标题），在提交之前调：给它的段落配齐向量。
 
@@ -684,6 +690,11 @@ def sync_article(conn, article_id: int, ords: tuple[int, int] | None = None) -> 
     跳过那一块（research-embed 也会跳过它），不算算不出来。
     """
     if _state.embedder is None:
+        if _ALL_OR_NOTHING.get() and _has_vectors(conn):
+            # 在 research-clean、research-rebuild-chunks 里，库里明明有向量，却没配向量服务（EMBEDDING_BASE_URL 漏配、
+            # 在别的 shell 里跑）：也算算不出来，停下，免得块照常提交、一个向量都没有，也没人知道。
+            # 从没用过向量的库（只走关键词检索）不受影响。
+            raise EmbeddingError("库里有向量，这次却没配向量服务（EMBEDDING_BASE_URL）：这一批不提交，配好再跑")
         return 0
     kind = column_type(conn)
     if kind is None:
@@ -798,15 +809,19 @@ def status_note(conn) -> str:
     语义检索出了问题以前只在日志里，页面上看不出来，搜「costco 商业模式」找不到按意思相关的文章时，
     分不清是没配、没算向量、服务连不上，还是真的没有。
     """
+    # 页面上只说读者用得上的话（审核 F9：以前写着环境变量名和命令名）；为什么没用上记进日志。
     if not enabled():
-        return "没开语义检索（没配 EMBEDDING_BASE_URL），这次只按字面找。"
+        logger.warning("检索没用上语义：没配 EMBEDDING_BASE_URL")
+        return "这次只按字面找，按意思找的结果没加进来。"
     if column_type(conn) is None:
-        return "数据库没装 pgvector，语义检索没开，这次只按字面找。"
+        logger.warning("检索没用上语义：数据库没装 pgvector")
+        return "这次只按字面找，按意思找的结果没加进来。"
     if paused():
-        return "向量服务连不上，这次只按字面找，过一分钟再试。"
+        return "按意思找暂时连不上，这次只按字面找，过一分钟再试。"
     have, total = _cached_coverage(conn)
     if total and have == 0:
-        return "向量还一块都没算（research-embed），这次只按字面找。"
+        logger.warning("检索没用上语义：向量一块都没算，跑 research-embed")
+        return "按意思找还没准备好，这次只按字面找。"
     if total and have < total * 0.98:
         return f"向量还没算完（{have}/{total} 块），没算到的段落只能按字面找到。"
     return ""

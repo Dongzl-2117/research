@@ -13,7 +13,7 @@ docker compose up -d --build
 
 应用监听容器内的 `8088`，compose 只把宿主机的 **127.0.0.1:8088** 转进去。不要改成 `0.0.0.0`。数据库端口同样只绑定 `127.0.0.1:5432`。
 
-应用启动时会自己做迁移（按文件名顺序，到 `023_drop_demo_article.sql`）、同步 `config/sources.yaml`（星主的星球昵称 `poster_names` 改了，按新名单重算已入库帖子的原创标记）、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。以前每篇最多切 400 块，正好切满 400 块的长文启动时重切一遍，后面的内容才进检索。上次没写完的问库整合标成中断，回答页可以重新整合。
+应用启动时会自己做迁移（`src/researchlib/migrations/` 下按文件名顺序，几个进程同时启动时用数据库锁排队，只跑一遍）、同步 `config/sources.yaml`（星主的星球昵称 `poster_names` 改了，按新名单重算已入库帖子的原创标记）、写入公司种子，并给还没有段落块的文章（和有译文但还没有译文块的文章）补切。以前每篇最多切 400 块，正好切满 400 块的长文启动时重切一遍，后面的内容才进检索。上次没写完的问库整合标成中断，回答页可以重新整合。
 
 `019` 只建飞书目录表。部署后若林文丰已经在库里，跑一次 `research-doc-tree --source linwenfeng-feishu`（不访问飞书）。方伟星球若要改成真实 `create_time`，跑 `research-retime`（见 [ingest.md](ingest.md)），它会按新的 `published_at` 重排观点时间线和「同期别人怎么看」。这两条都不要在部署时自动跑。
 
@@ -28,7 +28,7 @@ docker compose up -d --build
 
 备份、试恢复、夜间补齐、定时抓取和自动上线用 launchd 跑，见 [backup.md](backup.md)。这几个任务出了问题写进 `data/status/`，首页不挂红条。
 
-不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面时只给当前卡片里缺的排队，其余由夜间任务每晚补一批，见 [llm.md](llm.md)。
+不会在启动或部署时跑 `research-digest`、`research-views`、`research-theses`。打开页面也不排队（11-14 删了网页触发的三条队列），缺的由抓取脚本、夜间任务每晚补一批和手动批量补，见 [llm.md](llm.md)。
 
 ## 语义检索（可选）
 
@@ -70,6 +70,18 @@ curl -s -o /dev/null -D - -w 'total %{time_total}s\n' 'https://investment.zldong
 ```
 
 总耗时减去 `dur` 就是路上的时间（Cloudflare Tunnel 到 Mac mini 再回来）。检索在服务器上花多少、改过哪些，见 [retrieval.md](retrieval.md)「检索页提速（2026-11-11）」。
+
+## 页面传得慢（2026-11-14）
+
+11-13 审核从云端量过：服务器上只花零点几秒的页面，读者要等 5 到 15 秒，一张 475KB 的截图 24 秒。慢在 Mac mini 经隧道到 Cloudflare 那一段（约每秒 25 到 30KB，另有每个请求 0.8 到 2 秒的固定延迟），读者那头不慢：同一时间 Cloudflare 边缘缓存命中的 `site.css` 0.16 秒。代码里做了三件事（审核 O1、F1、F14）：
+
+- **源站压缩**：`web/app.py` 加了 `GZipMiddleware`（1000 字节以上，级别 6；图片和下载文件不压）。页面、样式、脚本、JSON 压到四分之一上下再走隧道：文章页 230KB→66KB，首页 104KB→23KB，`site.css` 97KB→23KB，一条全库问库回答 463KB→135KB。
+- **图片让浏览器缓存**：`/media` 下按内容哈希命名的图（`<来源或 remote>/<前两位>/<sha256>.<扩展名>`）回 `private, max-age=31536000, immutable`，读者第二次打开不用再等；`private` 不进 Cloudflare 的共享缓存，没缓存的请求照旧在源站核可见性。代价是读者看过的图留在他自己的浏览器里，文章后来隐藏了他那份缓存还在（Zhilin 11-14 同意）。不是哈希名字的、404 的照旧 `no-store`。站标 `/favicon.svg` 缓存一天。
+- **问库轮询轻量版**：`/api/v1/answers/{id}?brief=1` 整合中只带半截回答已经引到的那几段出处，整合完再带全部出处，`before`、`after` 一律不带；页面轮询用它，超时 60 秒（以前每次传全量近 500KB，超过脚本 15 秒的等待，进度和结果都显示不出来）。
+
+上线后核对：`curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip' https://investment.zldong.com/ | grep -i content-encoding` 有 `gzip` 或 `zstd`；图片地址回 `cache-control: private, max-age=31536000, immutable`。
+
+压缩只是少传字节，每秒二三十 KB 和每个请求一两秒的固定延迟本身不正常，Zhilin 的上行有几百 Mbps。还慢的话在 Mac mini 上看 `cloudflared` 是不是被本机代理接走了（推断，没核过）：代理开着 fake-ip 时，`dig +short region1.v2.argotunnel.com` 得到 `198.18.x.x` 就是隧道连接走了代理、绕了一圈出去；给 `argotunnel.com`、`cftunnel.com` 加直连规则，再重启 `cloudflared`，用上面「一次搜索慢在哪」那条命令前后各量一次。
 
 ## 更新
 
@@ -148,7 +160,7 @@ scripts/lock.sh --upgrade                   # 全部升到最新
 
 ## Cloudflare Tunnel
 
-Access 和隧道都在应用外面做。应用里没有登录，也没有可以绕过的口令。
+隧道在应用外面做。应用里没有登录，也没有可以绕过的口令；网站不登录就能看，是站长定的（没有加 Cloudflare Access）。
 
 `cloudflared` 指向本机回环地址：
 
@@ -159,7 +171,7 @@ ingress:
   - service: http_status:404
 ```
 
-在 Cloudflare Zero Trust 里给 `investment.zldong.com` 加 Access 策略，只放自己的身份。不要把源站端口暴露到公网。
+不要把源站端口暴露到公网。以后要只给自己看，在 Cloudflare Zero Trust 里给 `investment.zldong.com` 加 Access 策略。
 
 ## 磁盘
 
