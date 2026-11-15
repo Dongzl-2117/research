@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from researchlib.htmlentities import entity_ref
 from researchlib.nested_copies import CopyRun, copy_runs, plain_ends
 from researchlib.translate.pair import (
     BilingualPair,
@@ -92,7 +93,7 @@ def _unique_ids(pairs: list[BilingualPair]) -> list[BilingualPair]:
             self.out.append(data)
 
         def handle_entityref(self, name):
-            self.out.append(f"&{name};")
+            self.out.append(entity_ref(name))
 
         def handle_charref(self, name):
             self.out.append(f"&#{name};")

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 夜间补齐：Stratechery 发布时刻、外链图片、观点、摘要、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
+# 夜间补齐：Stratechery 发布时刻、外链图片、中英对照重签、观点、摘要、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
 # 观点和摘要还有时间上限，跑不完的下一晚接着补。白天和部署时都不跑。
 # 识图紧跟在外链图片后面：当天的截图帖先识出字，向量、观点、摘要第一遍就读得到。
 # 某一步失败不影响后面的步骤；结果写进 data/status/nightly.json，有步骤失败或两天没跑成时 health.notices 会列出来。
@@ -62,6 +62,9 @@ step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMI
 if [ "$NIGHTLY_OCR" = "1" ]; then
   step "图片文字" compose_exec app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
 fi
+# 中英对照回执：同一来源的统计（重复的图、文末模板行）变了，旧文章的对照页会悄悄退成两份全文。
+# 不调模型重签；要调模型才补得上的篇写进 status/translate-resign.json，research-status 会报。
+step "中英对照重签" compose_exec app research-translate-resign
 step "语义向量" compose_exec app research-embed --limit "$EMBED_LIMIT"
 step "观点" compose_exec app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES"
 step "摘要" compose_exec app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
@@ -75,6 +78,6 @@ if [ -n "$failed" ]; then
 fi
 parts="Stratechery 发布时刻、外链图片"
 [ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
-parts="${parts}、语义向量、观点、摘要"
+parts="${parts}、中英对照重签、语义向量、观点、摘要"
 [ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
 status_ok "$parts"

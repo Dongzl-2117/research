@@ -35,6 +35,8 @@ TASKS: dict[str, tuple[str, timedelta | None]] = {
     # 新地址大半下不来才写成失败（remote_images.fetch_status），只看最近一次。
     "fetch-images": ("外链图片下载", None),
     "deploy": ("自动上线", None),
+    # 夜间补齐里不调模型重签对照回执（research-translate-resign）。有要调模型才补得上的篇时记成失败，只看最近一次。
+    "translate-resign": ("中英对照重签", None),
 }
 # LLM 连续失败这么多次才提示；凭证不可用（拿不到 key 或登录失效）马上提示。
 LLM_FAILURES_TO_WARN = 3
