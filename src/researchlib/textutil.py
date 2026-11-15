@@ -453,8 +453,47 @@ def _markup_raw(text: str) -> str | None:
 
 # 知识星球 Markdown 常在开头写「- 时间：2024-11-28 10:40:22」。只认前几行的列表项，避免正文里的「时间」被当成发布时间。
 _BODY_TIME = re.compile(r"(?m)^[ \t]*[-*][ \t]+时间[ \t]*[:：][ \t]*([^\n]{4,60})")
-# 星球导出写成「2026-09-27 14:41 (UTC+8)」，括注是半角的。去掉括注，按上海时间读，和括注说的一致。
-_TIME_NOTE = re.compile(r"[（(]")
+# 星球导出写成「2026-09-27 14:41 (UTC+8)」，括注是半角的。括注或末尾写的时区（UTC±N、GMT±N、UTC、GMT、北京时间）
+# 换成偏移再读；不写时区的按上海时间读；写了认不出的时区，只留日期、当没有钟点，免得按上海时间读错几个小时。
+_TIME_ZONE = re.compile(
+    r"^(?P<when>.*?\d)\s*(?:[（(]\s*(?P<paren>[^）)]*)[）)]|(?P<bare>(?:UTC|GMT)\s*(?:[+-]\s*\d{1,2}(?::?\d{2})?)?|北京时间))\s*$",
+    re.IGNORECASE,
+)
+_ZONE_OFFSET = re.compile(r"^(?:UTC|GMT)\s*(?:(?P<sign>[+-])\s*(?P<h>\d{1,2})(?::?(?P<m>\d{2}))?)?$", re.IGNORECASE)
+_DAY_PART = re.compile(r"^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?")
+
+
+def _zone_offset(zone: str) -> str | None:
+    """「UTC+8」→「+08:00」，「UTC」→「+00:00」，「北京时间」→「+08:00」；认不出返回 None。"""
+    zone = zone.strip()
+    if zone in ("北京时间", "上海时间"):
+        return "+08:00"
+    match = _ZONE_OFFSET.match(zone)
+    if not match:
+        return None
+    hours, minutes = int(match.group("h") or 0), int(match.group("m") or 0)
+    if hours > 14 or minutes > 59:
+        return None
+    return f"{match.group('sign') or '+'}{hours:02d}:{minutes:02d}"
+
+
+def _with_zone(raw: str) -> str:
+    match = _TIME_ZONE.match(raw)
+    if not match:
+        return raw
+    when = match.group("when").strip()
+    offset = _zone_offset(match.group("paren") if match.group("paren") is not None else match.group("bare"))
+    if offset is None:
+        day = _DAY_PART.match(when)
+        return day.group(0) if day else when
+    if not _CLOCK_IN_TEXT.search(when):
+        return when
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?", when):
+        return f"{when}{offset}"
+    parsed = parse_datetime(when)
+    if parsed is None:
+        return when
+    return parsed.replace(tzinfo=None).isoformat(sep=" ") + offset
 
 
 def _body_time_raw(text: str) -> str | None:
@@ -462,7 +501,7 @@ def _body_time_raw(text: str) -> str | None:
     match = _BODY_TIME.search(head)
     if not match:
         return None
-    raw = _TIME_NOTE.split(match.group(1).strip(), maxsplit=1)[0].strip()
+    raw = _with_zone(match.group(1).strip())
     if parse_datetime(raw):
         return raw
     return None

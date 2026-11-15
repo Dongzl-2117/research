@@ -664,6 +664,12 @@ def all_or_nothing() -> Iterator[None]:
         _ALL_OR_NOTHING.reset(token)
 
 
+def _has_vectors(conn) -> bool:
+    if column_type(conn) is None:
+        return False
+    return conn.execute("SELECT EXISTS (SELECT 1 FROM chunk_embeddings) AS any").fetchone()["any"]
+
+
 def sync_article(conn, article_id: int, ords: tuple[int, int] | None = None) -> int:
     """这篇的段落刚改过（重切、清洗、换了译文或图片文字、改了标题），在提交之前调：给它的段落配齐向量。
 
@@ -684,6 +690,11 @@ def sync_article(conn, article_id: int, ords: tuple[int, int] | None = None) -> 
     跳过那一块（research-embed 也会跳过它），不算算不出来。
     """
     if _state.embedder is None:
+        if _ALL_OR_NOTHING.get() and _has_vectors(conn):
+            # 在 research-clean、research-rebuild-chunks 里，库里明明有向量，却没配向量服务（EMBEDDING_BASE_URL 漏配、
+            # 在别的 shell 里跑）：也算算不出来，停下，免得块照常提交、一个向量都没有，也没人知道。
+            # 从没用过向量的库（只走关键词检索）不受影响。
+            raise EmbeddingError("库里有向量，这次却没配向量服务（EMBEDDING_BASE_URL）：这一批不提交，配好再跑")
         return 0
     kind = column_type(conn)
     if kind is None:

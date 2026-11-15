@@ -27,6 +27,16 @@ from researchlib.revisions import _real_edits, article_text, diff_blocks, judge_
 LONG = "腾讯的广告加载率还在提升，视频号是新的广告库存。" * 30
 
 
+def _png(fmt: str = "PNG", size: tuple[int, int] = (2, 2)) -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", size, (200, 30, 30)).save(out, fmt)
+    return out.getvalue()
+
+
 def test_deleted_notice_and_heavy_shrink_are_held():
     assert judge_replacement(LONG, "该内容已被发布者删除") == "deleted"
     assert judge_replacement(LONG, "此内容因违规无法查看\n\n点击查看更多") == "deleted"
@@ -140,7 +150,7 @@ def test_wordpress_cdn_images_come_from_the_origin_first(monkeypatch):
         calls.append(url)
         if url in broken:
             raise FetchError(broken[url])
-        return b"\x89PNG\r\n\x1a\n", "image/png"
+        return _png(), "image/png"
 
     monkeypatch.setattr(remote_images, "_download", fake)
     assert download(cdn)[1] == "image/png" and calls == [origin]
@@ -253,7 +263,7 @@ def test_wechat_image_cdn_downloads_through_the_proxy_fake_ip(monkeypatch):
             return False
 
         def read(self, _size):
-            return b"\x89PNG\r\n\x1a\n...."
+            return _png()
 
     class _Opener:
         def open(self, request, timeout):
@@ -285,7 +295,7 @@ def test_stratechery_image_downloads_through_the_proxy_fake_ip(monkeypatch):
             return False
 
         def read(self, _size):
-            return b"\x89PNG\r\n\x1a\n...."
+            return _png()
 
     class _Opener:
         def open(self, request, timeout):
@@ -315,11 +325,35 @@ def test_connection_to_a_private_peer_is_dropped():
 
 
 def test_image_extension_sniffs_content():
-    assert image_extension(b"\x89PNG\r\n\x1a\n....") == ".png"
-    assert image_extension(b"\xff\xd8\xff\xe0....") == ".jpg"
-    assert image_extension(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == ".webp"
+    assert image_extension(_png()) == ".png"
+    assert image_extension(_png("JPEG")) == ".jpg"
+    assert image_extension(_png("WEBP")) == ".webp"
+    assert image_extension(_png("BMP")) == ".bmp"
+    assert image_extension(b'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"></svg>') == ".svg"
     assert image_extension(b"<html>", "text/html") == ""
-    assert image_extension(b"????", "image/jpeg") == ".jpg"
+    # 只看内容，不按 Content-Type 推：打着 image/* 的错误页、开头碰巧是 BM 的文字都不算图。
+    assert image_extension(b"????", "image/jpeg") == ""
+    assert image_extension(b"<html>not found</html>", "image/html") == ""
+    assert image_extension(b"x", "image/") == ""
+    assert image_extension(b"BMxxxx not a bmp", "text/html") == ""
+    assert image_extension(b"\x89PNG\r\n\x1a\n....") == ""
+
+
+def test_huge_images_are_not_downloaded(monkeypatch):
+    from researchlib import remote_images
+
+    monkeypatch.setattr(remote_images, "MAX_PIXELS", 50)
+    assert image_extension(_png(size=(8, 8))) == ""
+    assert image_extension(_png(size=(5, 5))) == ".png"
+
+
+def test_addresses_with_an_embedded_private_ipv4_are_blocked():
+    from researchlib.remote_images import blocked_address
+
+    for address in ("64:ff9b::7f00:1", "64:ff9b::a00:1", "::7f00:1", "::ffff:10.0.0.1", "::1", "::"):
+        assert blocked_address(address), address
+    assert not blocked_address("64:ff9b::808:808")
+    assert not blocked_address("8.8.8.8")
 
 
 def test_ocr_chunks_count_each_image_once_and_skip_decorations():

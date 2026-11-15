@@ -35,9 +35,14 @@ _DATE_LIKE = re.compile(
     r"(?<!\d)\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?"
     r"|(?<!\d)\d{4}\s*年(?:\s*\d{1,2}\s*月)?(?:\s*\d{1,2}\s*日)?"
     r"|(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日"
+    # 只写月份（「12月」）、两位年份（「24年」）：和所引段落的发布日期一起看，不当数字核。「24年代」不算。
+    r"|(?<![\d.])(?:1[0-2]|0?[1-9])\s*月(?!\d)"
+    r"|(?<![\d.])\d{2}\s*年(?![代\d])"
     r"|(?<![\dA-Za-z])(?:FY|Q|H)\d{1,4}"
     r"|(?<!\d)\d{2,4}\s*(?:财年|年度|季度|Q[1-4])"
 )
+# 回答分点写的序号（「10. 」「3、」「(2) 」）不是要核的数。
+_LIST_MARK = re.compile(r"(?m)^\s*(?:[-*+]\s*)?(?:\d{1,3}[.、)）](?!\d)|[(（]\d{1,3}[)）])\s*")
 _NUMBER = re.compile(r"(?<![\d.])(\d+(?:[,，]\d{3})*(?:\.\d+)?)\s*(%|％|‰|倍|个百分点|bp|万亿|亿|万)?")
 _QUOTED = re.compile(r"「([^」]{4,})」|“([^”]{4,})”|\"([^\"]{4,})\"")
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
@@ -89,7 +94,9 @@ def _plain(text: str) -> str:
 
 
 def _digits(text: str) -> str:
-    return re.sub(r"[,，\s]", "", (text or "").translate(_FULLWIDTH))
+    """数字之间的千分位逗号去掉；空白收成一个空格，不删：「收入 100\n2024 年」删了空白就粘成 1002024。"""
+    text = re.sub(r"(?<=\d)[,，](?=\d)", "", (text or "").translate(_FULLWIDTH))
+    return re.sub(r"\s+", " ", text)
 
 
 def _loose(text: str) -> str:
@@ -144,7 +151,7 @@ def split_claims(answer: str) -> list[tuple[str, list[int]]]:
 
 
 def _numbers(text: str) -> list[str]:
-    body = _REF.sub(" ", text)
+    body = _LIST_MARK.sub(" ", _REF.sub(" ", text))
     body = _DATE_LIKE.sub(" ", body)
     found: list[str] = []
     for match in _NUMBER.finditer(body.translate(_FULLWIDTH)):
@@ -214,7 +221,7 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     if not cited:
         return problems
     raw = "\n".join(
-        f"{item.get('title') or ''}\n{item.get('heading') or ''}\n{item.get('before') or ''}"
+        f"{item.get('date') or ''}\n{item.get('title') or ''}\n{item.get('heading') or ''}\n{item.get('before') or ''}"
         f"\n{item.get('text') or ''}\n{item.get('after') or ''}"
         for item in cited
     )
