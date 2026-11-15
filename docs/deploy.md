@@ -71,6 +71,18 @@ curl -s -o /dev/null -D - -w 'total %{time_total}s\n' 'https://investment.zldong
 
 总耗时减去 `dur` 就是路上的时间（Cloudflare Tunnel 到 Mac mini 再回来）。检索在服务器上花多少、改过哪些，见 [retrieval.md](retrieval.md)「检索页提速（2026-11-11）」。
 
+## 页面传得慢（2026-11-14）
+
+11-13 审核从云端量过：服务器上只花零点几秒的页面，读者要等 5 到 15 秒，一张 475KB 的截图 24 秒。慢在 Mac mini 经隧道到 Cloudflare 那一段（约每秒 25 到 30KB，另有每个请求 0.8 到 2 秒的固定延迟），读者那头不慢：同一时间 Cloudflare 边缘缓存命中的 `site.css` 0.16 秒。代码里做了三件事（审核 O1、F1、F14）：
+
+- **源站压缩**：`web/app.py` 加了 `GZipMiddleware`（1000 字节以上，级别 6；图片和下载文件不压）。页面、样式、脚本、JSON 压到四分之一上下再走隧道：文章页 230KB→66KB，首页 104KB→23KB，`site.css` 97KB→23KB，一条全库问库回答 463KB→135KB。
+- **图片让浏览器缓存**：`/media` 下按内容哈希命名的图（`<来源或 remote>/<前两位>/<sha256>.<扩展名>`）回 `private, max-age=31536000, immutable`，读者第二次打开不用再等；`private` 不进 Cloudflare 的共享缓存，没缓存的请求照旧在源站核可见性。代价是读者看过的图留在他自己的浏览器里，文章后来隐藏了他那份缓存还在（Zhilin 11-14 同意）。不是哈希名字的、404 的照旧 `no-store`。站标 `/favicon.svg` 缓存一天。
+- **问库轮询轻量版**：`/api/v1/answers/{id}?brief=1` 整合中只带半截回答已经引到的那几段出处，整合完再带全部出处，`before`、`after` 一律不带；页面轮询用它，超时 60 秒（以前每次传全量近 500KB，超过脚本 15 秒的等待，进度和结果都显示不出来）。
+
+上线后核对：`curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip' https://investment.zldong.com/ | grep -i content-encoding` 有 `gzip` 或 `zstd`；图片地址回 `cache-control: private, max-age=31536000, immutable`。
+
+压缩只是少传字节，每秒二三十 KB 和每个请求一两秒的固定延迟本身不正常，Zhilin 的上行有几百 Mbps。还慢的话在 Mac mini 上看 `cloudflared` 是不是被本机代理接走了（推断，没核过）：代理开着 fake-ip 时，`dig +short region1.v2.argotunnel.com` 得到 `198.18.x.x` 就是隧道连接走了代理、绕了一圈出去；给 `argotunnel.com`、`cftunnel.com` 加直连规则，再重启 `cloudflared`，用上面「一次搜索慢在哪」那条命令前后各量一次。
+
 ## 更新
 
 合并进 main 的改动自己上线。Mac mini 上的定时任务 `com.zldong.research.deploy` 每 10 分钟看一次 main：有新提交，而且这个提交在 GitHub 上的 CI（Tests）通过了，就拉代码、`docker compose up -d --build`（镜像带上这次的提交号），等 `/health` 报出这个提交算上线（`scripts/deploy.sh`）。一般合并后 10 到 20 分钟上线。迁移和后台重算在应用启动时自己做；定时任务的模板改了，按上次安装的设置重装。上线成功后删掉换下来的旧镜像，只删 Dockerfile 打了 `com.zldong.research` 标签的，Mac mini 上别的项目的不碰。
