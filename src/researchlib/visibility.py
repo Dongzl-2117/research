@@ -2,6 +2,16 @@
 
 现在只有 short_post：正文短于来源 min_chars 的帖子入库时标上。正文留着，直接打开还能看；
 首页按天、作者时间线、检索和公司页不收。清掉这个键即恢复。
+
+网站上「不展示」的条件分三层，新写查询时三层都要想到（以前只看这里的 visible_sql，漏了另外两层）：
+
+1. 来源停用：``source_id = ANY(启用的来源)``（网页里是 ``active_sources``）。停用的来源哪里都不出现。
+2. 网友帖、「图片」评论壳：``author_voice.site_visible_sql`` / ``author_voice.hide_from_site``。
+   哪里都不出现，按编号直接打开也是 404（``web.queries.get_article`` 统一挡）。
+3. 短帖：这里的 ``visible_sql`` / ``is_hidden``。列表、检索、公司页、判断和论点不收，按编号直接打开还能看。
+
+按编号取一篇给读者看的地方用 ``web.queries.get_article``；一批编号要知道哪些还能展示（问库存下的出处、
+补的「漏了的文章」）用 ``web.queries.visible_article_ids``，它管 1 和 2，不管 3（短帖能直接打开，引用它没问题）。
 """
 from __future__ import annotations
 

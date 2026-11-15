@@ -39,6 +39,7 @@ from researchlib.views import timeline as view_timeline
 from researchlib.web import queries
 from researchlib.web.present import format_iso, market_label
 from researchlib.web.routes import (
+    WITHHELD_NOTE,
     _author_groups,
     _same_origin,
     active_portfolio,
@@ -47,10 +48,16 @@ from researchlib.web.routes import (
     database,
     display_titles,
     retitle_views,
+    withhold_citations,
 )
 from researchlib.web.scoping import BIGINT_MAX, parse_int, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
-from researchlib.zsxq_comments import filter_host_comments_markdown, guest_comment_authors, source_owners
+from researchlib.zsxq_comments import (
+    filter_host_comments_markdown,
+    guest_comment_authors,
+    guest_comment_chunk,
+    source_owners,
+)
 
 api = APIRouter()
 logger = logging.getLogger("researchlib.web.api")
@@ -249,7 +256,8 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     body_md = row["body_md"] or ""
     owners = source_owners(source)
     # 和文章页一样，评论区只留来源作者：库里还没清的旧帖（乘风破浪）不把读者的评论吐出去。
-    if guest_comment_authors(body_md, owners):
+    guests = guest_comment_authors(body_md, owners)
+    if guests:
         body_md = filter_host_comments_markdown(body_md, owners)
     # 问答帖：提问网友的昵称在归档头的「作者」和「提问（网友 → 方伟Rey）」里，阅读页、检索都不露，这里也去掉。
     body_md = plain_qa_markdown(body_md)
@@ -304,6 +312,9 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
         "chunks": [
             {"chunk": c["ord"], "heading": c["heading"], "text": c["body"], "lang": c["lang"] or None}
             for c in queries.article_chunks(conn, article_id)
+            # 块是入库时按库里的正文切的：还没跑 research-repair-zsxq 的旧帖，「评论（N）」那几块里有读者的评论和昵称。
+            # body_markdown 上面滤过了，块也不给（B5）。
+            if not guest_comment_chunk(c, guests or [])
         ],
         "body_markdown": body_md,
         "links": _article_links(_base(request), article_id),
@@ -640,11 +651,14 @@ def answer_payload(conn, request: Request, sources, answer_id: int) -> dict | No
     row = queries.get_answer(conn, answer_id)
     if row is None:
         return None
-    citations = cited_titles(conn, row["citations"] or [], sources, request.app.state.settings.display_timezone)
+    # 和回答页一样：后来被隐藏的文章、停用来源的原文去掉；回答引用了它们就整条收起，error 里写为什么。
+    stored, withheld = withhold_citations(conn, row["citations"] or [], sources)
+    citations = cited_titles(conn, stored, sources, request.app.state.settings.display_timezone)
+    answer = None if withheld else row["answer"]
     checks = []
-    if row["status"] == "done" and row["answer"]:
+    if row["status"] == "done" and answer:
         try:
-            checks = check_answer(row["answer"], row["citations"] or [], {source.author for source in sources})
+            checks = check_answer(answer, stored, {source.author for source in sources})
         except Exception:
             # 核对规则炸了也不能让整条 GET 500；回答正文照常返回。
             logger.exception("问库引用核对失败 answer_id=%s", answer_id)
@@ -654,9 +668,9 @@ def answer_payload(conn, request: Request, sources, answer_id: int) -> dict | No
         "question": row["question"],
         "scope": row["scope"],
         "status": row["status"],
-        "error": row["error"] or None,
-        "answer": row["answer"],
-        "answer_html": str(answer_html(row["answer"] or "", citations)),
+        "error": (WITHHELD_NOTE if withheld else row["error"]) or None,
+        "answer": answer,
+        "answer_html": str(answer_html(answer or "", citations)),
         # 标题和卡片一样按现在的库算；checks 照旧按写回答时的快照核对。
         "citations": citations,
         # 没核对上的句子：数字、引号、作者、日期和所引段落对不上，或几乎没有一样的说法。
