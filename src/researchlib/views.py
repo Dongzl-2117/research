@@ -22,13 +22,14 @@
 长文只给提到这几家公司的段落加开头结尾，切成几块分别问，选中的都读到（见 excerpt.py）；以前只读了开头
 30000 字的，标成 head_only 重抽；11-14 以前装满 6 块就不再读的，用 ``--truncated`` 找出来重抽。
 网站上不显示的（读者帖、评论壳、按字数门槛隐藏的短帖）不排队、不抽。
-失败的记下来，隔几天再试。判断或态度为空白的行不进时间线；确认抽漏了再用 `--refresh-blank` 删掉重抽。
+失败的记下来，隔几天再试。判断或态度为空白的行不进时间线；确认抽漏了再用 `--company 某公司 --refresh-blank` 删掉重抽。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sys
 import time
@@ -43,6 +44,7 @@ from researchlib.excerpt import VIEW_WINDOW, old_reader_dropped, original_chunks
 from researchlib.failures import clear_failure, cooling_sql
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
+from researchlib.textutil import drop_nul
 from researchlib.visibility import is_hidden, visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import relabel_host
@@ -90,6 +92,7 @@ _BLANK_VIEW_SQL = "(btrim(judgment) = '' OR stance = '' OR judgment !~ '[[:alnum
 _JSON = re.compile(r"\{.*\}", re.S)
 # 每篇的锁是 (hashtext(LOCK_NAME), 文章 id) 这把会话级 advisory lock：整理完放掉，进程没了自动放掉。
 LOCK_NAME = "research-views"
+logger = logging.getLogger(__name__)
 
 
 def _items(value, limit: int = 5, size: int = 160) -> list[str]:
@@ -128,8 +131,79 @@ def _angles(value) -> list[dict]:
     return found[:4]
 
 
-def parse_views(text: str, names: dict[str, int]) -> dict[int, dict | None]:
-    """模型回的 JSON → {公司 id: 观点或 None}。没回到的公司当作没下判断。"""
+_BRACKETED = re.compile(r"[（(]([^（）()]*)[）)]")
+
+
+def _company_key(name: str) -> str:
+    """比公司名用：去掉空白、不分大小写。"""
+    return "".join(str(name or "").split()).casefold()
+
+
+def _key_candidates(key: str) -> list[str]:
+    """模型回的键可能带着括注（「谷歌（Google）」）：整个、去掉括注的、括号里的都试。"""
+    text = str(key or "")
+    found = [_company_key(text), _company_key(_BRACKETED.sub("", text))]
+    found.extend(_company_key(inner) for inner in _BRACKETED.findall(text))
+    return [item for item in dict.fromkeys(found) if item]
+
+
+def _company_lookup(names: dict[str, int], aliases: dict[int, list[str]] | None) -> dict[str, int | None]:
+    """归一后的名字 → 公司 id。指定的中文名优先；别名撞到两家的记 None，不认。"""
+    lookup: dict[str, int | None] = {}
+    primary: set[str] = set()
+    for name, company_id in names.items():
+        for candidate in _key_candidates(name):
+            lookup.setdefault(candidate, company_id)
+            primary.add(candidate)
+    for company_id, names_of in (aliases or {}).items():
+        for alias in names_of:
+            for candidate in _key_candidates(alias):
+                if candidate in primary:
+                    continue
+                lookup[candidate] = company_id if lookup.get(candidate, company_id) == company_id else None
+    return lookup
+
+
+def _match_company(key: str, lookup: dict[str, int | None], names: dict[str, int]) -> int | None:
+    for candidate in _key_candidates(key):
+        if candidate in lookup:
+            return lookup[candidate]
+    # 「Meta Platforms」对「Meta」：只有一家公司的名字是它的开头（或反过来）才认。
+    whole = _company_key(_BRACKETED.sub("", str(key or "")))
+    if len(whole) < 2:
+        return None
+    hits = {
+        company_id
+        for name, company_id in names.items()
+        if len(_company_key(name)) >= 2
+        and (whole.startswith(_company_key(name)) or _company_key(name).startswith(whole))
+    }
+    return hits.pop() if len(hits) == 1 else None
+
+
+_NOT_ABOUT = {
+    "about": False,
+    "judgment": "",
+    "mechanism": "",
+    "stance": "",
+    "risks": [],
+    "falsifiers": [],
+    "metrics": [],
+    "quote": "",
+    "angles": [],
+}
+
+
+def parse_views(
+    text: str, names: dict[str, int], aliases: dict[int, list[str]] | None = None, *, strict: bool = False
+) -> dict[int, dict | None]:
+    """模型回的 JSON → {公司 id: 观点或 None}。没回到的公司当作没下判断。
+
+    模型回的键和指定的名字差一点（带括注、英文名、多了空格）按别名归一再认（审核 V8）。
+    strict 时，有判断的键对不上任何一家、又有指定的公司没回到就抛 LLMError：这一篇记失败、过几天再问一次，
+    别把付了钱的判断直接记成「论证不在这家公司」。整理时只在这篇第一次这样时 strict（``extract_article``），
+    再问还对不上就照常记，不为一篇每周付一次钱。
+    """
     match = _JSON.search(text or "")
     if not match:
         raise LLMError("观点返回里没有 JSON")
@@ -139,39 +213,29 @@ def parse_views(text: str, names: dict[str, int]) -> dict[int, dict | None]:
         raise LLMError(f"观点 JSON 解析失败：{exc}") from exc
     if not isinstance(data, dict):
         raise LLMError("观点 JSON 顶层不是对象")
+    data = drop_nul(data)
+    lookup = _company_lookup(names, aliases)
     found: dict[int, dict | None] = {company_id: None for company_id in names.values()}
+    stray: list[str] = []
     for key, value in data.items():
-        company_id = names.get(str(key).strip())
-        if company_id is None or value is None or not isinstance(value, dict):
+        company_id = _match_company(str(key), lookup, names)
+        if company_id is None:
+            if isinstance(value, dict) and _as_about(value) and str(value.get("judgment") or "").strip():
+                stray.append(str(key).strip()[:40])
+            continue
+        if value is None or not isinstance(value, dict):
+            continue
+        if found[company_id] is not None and found[company_id].get("about"):
+            # 同一家回了两个键（「谷歌」和「Google」）：留第一条有判断的。
             continue
         if not _as_about(value):
-            found[company_id] = {
-                "about": False,
-                "judgment": "",
-                "mechanism": "",
-                "stance": "",
-                "risks": [],
-                "falsifiers": [],
-                "metrics": [],
-                "quote": "",
-                "angles": [],
-            }
+            found[company_id] = dict(_NOT_ABOUT)
             continue
         judgment = str(value.get("judgment") or "").strip()
         if not judgment:
             continue
         if looks_like_list(judgment, str(key).strip()):
-            found[company_id] = {
-                "about": False,
-                "judgment": "",
-                "mechanism": "",
-                "stance": "",
-                "risks": [],
-                "falsifiers": [],
-                "metrics": [],
-                "quote": "",
-                "angles": [],
-            }
+            found[company_id] = dict(_NOT_ABOUT)
             continue
         found[company_id] = {
             "about": True,
@@ -184,6 +248,11 @@ def parse_views(text: str, names: dict[str, int]) -> dict[int, dict | None]:
             "quote": str(value.get("quote") or "").strip()[:160],
             "angles": _angles(value),
         }
+    if stray:
+        logger.warning("观点返回的公司名对不上指定的公司：%s", "、".join(stray))
+    if strict and stray and any(view is None for view in found.values()):
+        missing = "、".join(name for name, company_id in names.items() if found[company_id] is None)
+        raise LLMError(f"观点返回的公司名对不上：回了「{'」「'.join(stray)}」，没回「{missing}」")
     return found
 
 
@@ -229,19 +298,22 @@ def tracked_companies(conn, names) -> list[dict]:
     return sorted(rows, key=lambda row: order.get(row["name_zh"], 99))
 
 
-def delete_blank_views(conn, company_ids: list[int] | None = None) -> int:
+def delete_blank_views(conn, company_ids: list[int] | None = None, *, not_about: bool = False) -> int:
     """删掉判断或态度为空白的观点，好让下一轮重新抽。
 
     空白行本来用来记住「这篇没下判断」，避免反复问模型。确认是抽漏了才删。
     company_ids 为 None 时删全部公司的空白行。
+    not_about：连「论证不在这家公司」（about = false）的行一起删。迁移 024 以后模型没回到、回的公司名对不上的
+    都记成这一种，只删 about 为真的空白行删不到它们（审核 V8）。命令行 ``--refresh-blank`` 用，只许点名公司。
     """
     if company_ids is not None and not company_ids:
         return 0
+    where = f"(({_BLANK_VIEW_SQL}) OR NOT about)" if not_about else f"({_BLANK_VIEW_SQL})"
     if company_ids is None:
-        cur = conn.execute(f"DELETE FROM company_views WHERE {_BLANK_VIEW_SQL}")
+        cur = conn.execute(f"DELETE FROM company_views WHERE {where}")
     else:
         cur = conn.execute(
-            f"DELETE FROM company_views WHERE company_id = ANY(%s) AND ({_BLANK_VIEW_SQL})",
+            f"DELETE FROM company_views WHERE company_id = ANY(%s) AND {where}",
             (list(company_ids),),
         )
     deleted = cur.rowcount
@@ -379,13 +451,20 @@ def count_pending(conn, company_id: int, source_ids: list[str]) -> int:
     return int(row["n"])
 
 
-def _company_aliases(conn, company_ids: list[int]) -> list[str]:
-    found: list[str] = []
+def _company_names(conn, company_ids: list[int]) -> dict[int, list[str]]:
+    """每家公司的中文名、英文名、代码和别名。"""
+    found: dict[int, list[str]] = {}
     for row in conn.execute(
-        "SELECT name_zh, name_en, ticker, aliases FROM companies WHERE id = ANY(%s)", (company_ids,)
+        "SELECT id, name_zh, name_en, ticker, aliases FROM companies WHERE id = ANY(%s)", (company_ids,)
     ).fetchall():
-        found.extend(item for item in [row["name_zh"], row["name_en"], row["ticker"], *(row["aliases"] or [])] if item)
+        found[int(row["id"])] = [
+            item for item in [row["name_zh"], row["name_en"], row["ticker"], *(row["aliases"] or [])] if item
+        ]
     return found
+
+
+def _company_aliases(conn, company_ids: list[int]) -> list[str]:
+    return [name for names in _company_names(conn, company_ids).values() for name in names]
 
 
 def _merge_views(parts: list[dict | None]) -> dict | None:
@@ -500,6 +579,9 @@ def extract_article(
     when = format_date(row["published_at"], settings.display_timezone)
     header = f"指定的公司：{'、'.join(names)}\n标题：{row['title']}\n作者：{author}\n日期：{when}"
     body, chunks, ocr_text, ocr_digest = _reading_text(conn, row, author)
+    # 按现在的排版重写图片文字（article_ocr 可能改 articles 这一行、重挂提及）先提交，再去等模型：
+    # 不然这一行的锁要占到模型答完，几分钟里打开这篇的网页都卡着（审核 V10）。
+    conn.commit()
     if ocr_text.strip():
         note = ocr_speaker_note(conn, row["id"], ocr_text, author)
         header += (
@@ -509,7 +591,12 @@ def extract_article(
             + "）"
         )
     model = ""
-    aliases = _company_aliases(conn, list(names.values()))
+    known = _company_names(conn, list(names.values()))
+    # 回的公司名对不上时这一篇先记失败再问一次（parse_views 的 strict）；已经失败过的照常记，免得反复付钱。
+    retried = conn.execute(
+        "SELECT 1 FROM llm_failures WHERE kind = 'views' AND item_id = %s", (int(row["id"]),)
+    ).fetchone()
+    aliases = [name for names_of in known.values() for name in names_of]
     windows = view_windows(body, chunks, aliases, VIEW_WINDOW)
     if not windows:
         found = {company_id: None for company_id in names.values()}
@@ -528,7 +615,7 @@ def extract_article(
                 temperature=0.1,
                 usage=usage,
             )
-            for company_id, view in parse_views(text, names).items():
+            for company_id, view in parse_views(text, names, known, strict=retried is None).items():
                 parsed[company_id].append(view)
         found = {company_id: _merge_views(parts) for company_id, parts in parsed.items()}
     written = 0
@@ -1001,7 +1088,7 @@ def _queued_jobs(conn, args: argparse.Namespace, authors: dict[str, str]) -> lis
     if not wanted:
         raise SystemExit("没有被深入谈到的公司")
     if args.refresh_blank:
-        print(f"删掉空白观点 {delete_blank_views(conn, wanted)} 条")
+        print(f"删掉空白观点和「论证不在这家公司」的缓存 {delete_blank_views(conn, wanted, not_about=True)} 条")
     chosen = _canonical_ids(conn, _id_list(args.articles), list(authors))
     if args.articles and not chosen:
         raise SystemExit("这些文章 id 里没有可抽的主版本（网站上不显示的和库外 id 已跳过）")
@@ -1040,7 +1127,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--refresh-blank",
         action="store_true",
-        help="先删掉判断或态度为空白的观点再重抽（确认抽漏了才用；夜间任务不要加）",
+        help=(
+            "先删掉这几家公司判断或态度为空白、和记成「论证不在这家公司」的缓存再重抽"
+            "（要和 --company 一起用；确认抽漏了才用，会重新付钱；夜间任务不要加）"
+        ),
     )
     parser.add_argument(
         "--ocr-changed",
@@ -1061,6 +1151,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--ocr-changed 不和 --gap、--articles 一起用")
     if args.truncated and (args.gap or args.articles or args.ocr_changed or args.company or args.refresh_blank):
         raise SystemExit("--truncated 只和 --source、--limit、--workers、--off-peak 一起用")
+    if args.refresh_blank and not args.company:
+        raise SystemExit(
+            "--refresh-blank 要和 --company 一起用：不点名会把全库「没下判断」的缓存删掉，夜间一篇篇重新付钱"
+        )
     llm_batch.check_arguments(args)
     from researchlib.db import prepare
     from researchlib.sources import enabled_sources, load_sources

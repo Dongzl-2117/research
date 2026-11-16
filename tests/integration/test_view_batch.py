@@ -254,3 +254,64 @@ def test_hidden_short_posts_are_not_queued_or_extracted(conn, settings, monkeypa
     assert report["skipped"] == 1 and report["done"] == len(jobs) - 1
     assert jobs[0]["title"] not in asked
     assert conn.execute("SELECT count(*) AS n FROM company_views WHERE article_id = %s", (hidden,)).fetchone()["n"] == 0
+
+
+def test_non_llm_error_in_one_article_is_recorded_and_its_usage_counted(conn, settings, monkeypatch, capsys):
+    """模型答了、写库时抛出的不是 LLMError（字段类型不对、NUL 写不进库）：这一篇记失败，接着整理别的，
+    用量照样进合计（审核 V9、R7）。以前异常冒出整批、不记失败，外面的循环每 5 分钟拿同一篇再付一次钱。"""
+    jobs, authors, _wanted = _jobs(conn, settings)
+    bad_title = jobs[1]["title"]
+    real = views_mod.extract_article
+
+    def extract(conn_, settings_, row, author, companies, *, usage=None):
+        if row["title"] == bad_title:
+            for name, value in (("prompt", 1000), ("completion", 400)):
+                usage[name] = usage.get(name, 0) + value
+            raise TypeError("'int' object is not iterable")
+        return real(conn_, settings_, row, author, companies, usage=usage)
+
+    monkeypatch.setattr(views_mod, "chat", _no_view)
+    monkeypatch.setattr(views_mod, "extract_article", extract)
+    report = views_mod.run_batch(settings, jobs, authors, workers=2)
+    assert report["failed"] == 1 and report["done"] == len(jobs) - 1 and not report["fatal"]
+    assert report["usage"]["prompt"] == 1000 * len(jobs)
+    conn.commit()
+    failed = conn.execute("SELECT item_id, last_error FROM llm_failures WHERE kind = 'views'").fetchall()
+    assert [row["item_id"] for row in failed] == [jobs[1]["id"]]
+    assert "TypeError" in failed[0]["last_error"]
+    err = capsys.readouterr().err
+    assert "处理出错 TypeError" in err and "已用 进 1,000 出 400 token" in err
+
+
+def test_failed_articles_usage_goes_into_the_total(conn, settings, monkeypatch):
+    jobs, authors, _wanted = _jobs(conn, settings)
+
+    def unreadable(_settings, _messages, *, usage=None, **_kwargs):
+        usage["prompt"] = usage.get("prompt", 0) + 700
+        usage["completion"] = usage.get("completion", 0) + 300
+        return "没有 JSON", "deepseek-test"
+
+    monkeypatch.setattr(views_mod, "chat", unreadable)
+    report = views_mod.run_batch(settings, jobs, authors)
+    assert report["failed"] == len(jobs) and report["done"] == 0
+    assert report["usage"] == {"prompt": 700 * len(jobs), "completion": 300 * len(jobs)}
+
+
+def test_unmatched_company_name_fails_once_then_is_recorded(conn, settings, monkeypatch):
+    """模型回的公司名对不上、指定的公司又没回到：第一次记失败、过几天再问；再问还对不上就照常记，
+    不为一篇每周付一次钱（审核 V8）。"""
+    jobs, authors, _wanted = _jobs(conn, settings)
+    job = jobs[0]
+
+    def stray(_settings, messages, *, usage=None, **_kwargs):
+        return json.dumps({"某家没指定的公司": {"judgment": "还在涨", "stance": "正面"}}, ensure_ascii=False), "x"
+
+    monkeypatch.setattr(views_mod, "chat", stray)
+    first = views_mod.run_batch(settings, [job], authors, named=True)
+    assert first["failed"] == 1 and first["done"] == 0
+    conn.commit()
+    assert conn.execute(
+        "SELECT count(*) AS n FROM company_views WHERE article_id = %s", (job["id"],)
+    ).fetchone()["n"] == 0
+    again = views_mod.run_batch(settings, [job], authors, named=True)
+    assert again["failed"] == 0 and again["done"] == 1

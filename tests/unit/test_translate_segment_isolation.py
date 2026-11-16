@@ -148,7 +148,10 @@ def test_a_dropped_connection_keeps_the_batches_already_paid_for(tmp_path, monke
 
 
 def test_running_out_of_balance_halfway_is_not_worth_retrying_soon(tmp_path, monkeypatch):
-    """欠费隔几分钟再问也一样：已译的段照样存下，但不让命令行等着再补。"""
+    """欠费隔几分钟再问也一样：已译的段照样存下，但不让命令行等着再补。
+
+    欠费不是这一篇的事：不记尝试、不进冷却，命令行整批停（stop_batch），充值后再跑同一条接着译（审核 T6）。
+    """
     monkeypatch.setattr(service, "TRANSLATE_BATCH_MAX_SEGMENTS", 2)
 
     def answer(segs, _repair):
@@ -159,8 +162,8 @@ def test_running_out_of_balance_halfway_is_not_worth_retrying_soon(tmp_path, mon
     conn, result, _calls = run(A + B + C, answer, tmp_path)
     assert result.status == "partial" and result.reason == "request-failed"
     assert result.error == "DeepSeek HTTP 402: Insufficient Balance"
-    assert not result.retry_later
-    assert conn.attempts == [("failed", "request-failed")]
+    assert not result.retry_later and result.stop_batch
+    assert conn.attempts == []
 
 
 def test_a_dead_service_on_the_first_batch_still_fails_the_article(tmp_path):

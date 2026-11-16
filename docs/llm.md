@@ -225,7 +225,7 @@ docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-digest --ocr-
 
 ### 失败了怎么办
 
-摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间批量任务跳过它，免得接口抽风的那几篇每晚都重新花一次推理。写成功就清掉。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-views`、`research-digest` 遇到余额不足、鉴权被拒也整批停、退出码 2；连着几篇限流、5xx、断网就暂停、退出码 3，这几篇不记失败，见「一次补完积压」）。不会在两个提供方之间自动切换。
+摘要、观点、论点的调用失败了记进 `llm_failures`：失败 n 次就隔 n 天再试（最多一周），期间批量任务跳过它，免得接口抽风的那几篇每晚都重新花一次推理。写成功就清掉。模型答了、写库或读回答时出别的错（字段类型不对、NUL 写不进库）也只记这一篇、接着做下一篇，数据库连接断了才整批停；失败那几篇已经花掉的用量照样进合计，接口没报用量的篇数在合计行里单说（审核 V9、R7、V12）。整理一篇时按现在的排版重写图片文字以后先提交，再去等模型，不让这篇的行锁占到模型答完（审核 V10）。批量命令（`research-digest`、`research-views`、`research-theses`）个别失败照常跑完，退出码 0；没有可用的 LLM 凭证时退出码 2（`research-views`、`research-digest` 遇到余额不足、鉴权被拒也整批停、退出码 2；连着几篇限流、5xx、断网就暂停、退出码 3，这几篇不记失败，见「一次补完积压」）。不会在两个提供方之间自动切换。
 
 ## 观点时间线
 
@@ -241,7 +241,7 @@ docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app research-digest --ocr-
 
 - 每条：作者的判断、作者给出的机制、态度（看好 / 看淡 / 两面 / 中性）。风险、推翻条件、要盯的验证指标只在原文谈到时才有，没谈到就空着。
 - 原句逐字核对过（只比汉字、字母、数字）才显示，并链到它所在的段落；对不上就不显示，免得把模型的转述当成原话。
-- 判断或态度为空白的行不进时间线，也不进论点。那是「没下判断」的缓存，避免反复问模型。确认是抽漏了，用 `--refresh-blank` 删掉再抽；夜间任务不要加这个参数。
+- 判断或态度为空白的行不进时间线，也不进论点。那是「没下判断」的缓存，避免反复问模型。确认是抽漏了，用 `--company 某公司 --refresh-blank` 删掉这家公司的空白行和「论证不在这家公司」（`about` 为假）的缓存再抽，要和 `--company` 一起用，会重新付钱；夜间任务不要加这个参数。模型回的公司名和指定的差一点（带括注、写英文名、多了空格）按公司表的英文名、代码、别名归一再认；有判断的键对不上任何一家、又有指定的公司没回到时，这一篇记失败、隔几天再问，不记成「论证不在这家公司」（审核 V8，以前这种都永久记成 `about` 为假）。
 - 「风险与反方」（有风险或推翻条件、或态度是看淡、两面）和「态度变化」（同一位作者从看好变成看淡、或反过来；中性、两面不算信号）两个筛选 11-11 起页面上不放了，接口还认（`views=risk`、`views=change`）：全站六成判断都算「风险与反方」，筛不出东西；「态度变化」比的是同一位作者相邻两条判断，两条常常说的是两件事。
 - 一篇文章里深入谈到的几家公司一次整理，不为每家公司各问一次模型。按正文 `content_hash` 和 `views.PROMPT_VERSION` 缓存，正文或提示词变了才重抽。
 
@@ -367,7 +367,7 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
 - `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`：原文里本地存了的图换成站内 `/media/…` 的完整地址（JSON 的 `body_markdown`、MCP 的 `get_article` 也一样），还没下载的外链图照原样留着；`.md` 最后附「图片里的字」一节，就是检索用的那份图片文字块。正文仍是归档原文，归档头照旧在，只有 Stratechery 网页导出归档头里的 `- rss_link:` 不给：那是导出脚本拉取用的个人订阅地址，文章页和检索文字从 #157 起就不要。
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
-- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认马上返回回答 id 和相关原文，后台整合，之后轮询下面这个接口。可以加 `"model"`（`grok` 或 `deepseek`）和 `"effort"`（那一家的思考档），见上面「问库按次选模型和思考强度」。加 `"wait": true` 时最多等 80 秒（`ask.WAIT_SECONDS`）：写完了带回答和 `checks` 返回，没写完返回 `status: running` 和 id，照样接着轮询。以前 `wait` 在请求里跑完整个整合（全库的问题 6 到 9 分钟），隔着 Cloudflare 超过 100 秒就断开（524），回答编号也丢了。
+- `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认马上返回回答 id 和相关原文，后台整合，之后轮询下面这个接口。可以加 `"model"`（`grok` 或 `deepseek`）和 `"effort"`（那一家的思考档），见上面「问库按次选模型和思考强度」。页面提交时带一个自己起的 `"request_id"`（8 到 64 位字母、数字、横线），没等到回应就带着同一个再发一次：一天里同一个编号已经登记过的，不再检索、登记、整合，直接返回那一条的现状（审核 F2，以前网页 15 秒没回就让读者再问一次，同一问题整合两遍）。排着队的整合不会被当成卡住；已经被标成出错的轮到时不再跑，点「重新整合」时它还排着队就不再交一份（审核 R3）。加 `"wait": true` 时最多等 80 秒（`ask.WAIT_SECONDS`）：写完了带回答和 `checks` 返回，没写完返回 `status: running` 和 id，照样接着轮询。以前 `wait` 在请求里跑完整个整合（全库的问题 6 到 9 分钟），隔着 Cloudflare 超过 100 秒就断开（524），回答编号也丢了。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；`running` 时 `answer` 是写到一半的回答（可能为空），`stats.progress` 是进度；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词，分批读和写回答各用了多久，token 用量）。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
 - `POST /api/mcp`：MCP（Streamable HTTP，无状态，JSON 响应）。工具：`search_library`、`get_article`、`list_companies`、`get_company`、`get_company_views`、`list_authors`、`get_day`、`ask_library`、`get_answer`。`ask_library` 只登记、马上返回回答 id（同一个原因：等整合写完会被 Cloudflare 或客户端的超时断开），`get_answer` 取结果：写完前给写到一半的回答和进度，写完给回答、回答里引用到的段落（每段带站内链接，没引用的不带，免得 240 段塞满调用方的上下文）和 `checks`。`ask_library` 不标只读、不标可重复调（每次都登记一次、花一次钱）。

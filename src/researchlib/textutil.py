@@ -93,6 +93,17 @@ _MARKUP_DATES = (
 _CLOCK_IN_TEXT = re.compile(r"(?:T|\s|日)(?:[01]?\d|2[0-3])[:：][0-5]\d")
 
 
+def drop_nul(value):
+    """模型交回的 JSON 里的 NUL 字符（``\\u0000``）去掉：Postgres 的 text、jsonb 都存不进（审核 V9）。"""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [drop_nul(item) for item in value]
+    if isinstance(value, dict):
+        return {drop_nul(key) if isinstance(key, str) else key: drop_nul(item) for key, item in value.items()}
+    return value
+
+
 def split_frontmatter(text: str) -> tuple[dict, str]:
     match = _FRONTMATTER.match(text)
     if not match:

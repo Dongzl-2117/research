@@ -37,6 +37,8 @@
   const maxNetworkFailures = 3;
   const requestTimeout = 15000;
   const pollTimeout = 60000;
+  // 提交问题要先检索、登记才回，查询向量冷启动时会超过 15 秒（审核 F2）：单独放宽。
+  const submitTimeout = 60000;
   let modal = false;
   let previousOverflow = '';
   const inertNodes = new Map();
@@ -339,6 +341,14 @@
     if (typeof error === 'string') return error;
     if (error && typeof error.message === 'string') return error.message;
     return fallback;
+  }
+
+  function newRequestId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   }
 
   async function jsonRequest(url, options, timeout = requestTimeout) {
@@ -789,11 +799,21 @@
     input.value = '';
     fitInput();
     if (fullPage) { reserve(turn); bringToTop(turn.user); } else scrollLog();
+    // 这次提问的编号：没等到回应时带着同一个编号再发一次，服务端认出已经登记的那一条，接着轮询它，
+    // 不会同一问题整合两遍、花两份钱（审核 F2）。
+    const requestId = newRequestId();
+    const send = () => jsonRequest('/api/v1/ask', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ question, ...turn.params, wait: false, request_id: requestId }),
+    }, submitTimeout);
     try {
-      const data = await jsonRequest('/api/v1/ask', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ question, ...turn.params, wait: false }),
-      });
+      let data;
+      try {
+        data = await send();
+      } catch (error) {
+        if (error.status || token !== session) throw error;
+        data = await send();
+      }
       accept(turn, data, token);
     } catch (error) {
       if (token !== session) return;

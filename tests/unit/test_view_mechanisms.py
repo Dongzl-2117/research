@@ -339,3 +339,51 @@ def test_views_command_rejects_worker_counts_out_of_range():
         with pytest.raises(SystemExit) as stopped:
             main(["--workers", count])
         assert "--workers" in str(stopped.value)
+
+
+def test_company_keys_with_brackets_english_names_and_spaces_are_matched():
+    """模型回的键和指定的名字差一点：带括注、写英文名、多了空格，都认到那家公司（审核 V8）。"""
+    text = (
+        '{"谷歌（Google）": {"judgment": "搜索广告还在涨", "stance": "正面"},'
+        ' "Meta Platforms": {"judgment": "开支太大", "stance": "负面"},'
+        ' " 腾讯 ": {"judgment": "游戏回暖", "stance": "正面"}}'
+    )
+    found = parse_views(text, {"谷歌": 1, "Meta": 2, "腾讯": 3}, {1: ["谷歌", "Google", "GOOGL"], 2: ["Meta"]})
+    assert found[1]["judgment"] == "搜索广告还在涨"
+    assert found[2]["judgment"] == "开支太大"
+    assert found[3]["judgment"] == "游戏回暖"
+    # 只给英文名也认（公司表里的英文名、代码、别名）。
+    found = parse_views('{"Alphabet": {"judgment": "云在追", "stance": "正面"}}', {"谷歌": 1}, {1: ["Alphabet"]})
+    assert found[1]["about"] is True
+
+
+def test_unmatched_company_key_with_a_judgment_fails_instead_of_recording_not_about():
+    """有判断的键对不上任何一家、又有指定的公司没回到：这一篇记失败、过几天再问，别永久记成「论证不在这家公司」。"""
+    import pytest
+
+    from researchlib.llm import LLMError
+
+    stray = '{"字节跳动": {"judgment": "抖音电商还在涨", "stance": "正面"}}'
+    with pytest.raises(LLMError, match="公司名对不上"):
+        parse_views(stray, {"腾讯": 3}, strict=True)
+    # 这篇已经为此失败过一次：照常记，不再为它反复付钱。
+    assert parse_views(stray, {"腾讯": 3}) == {3: None}
+    # 指定的都回到了，多回一家不相干的不算错。
+    found = parse_views(
+        '{"腾讯": {"judgment": "游戏回暖", "stance": "正面"}, "网易": {"judgment": "也回暖", "stance": "正面"}}',
+        {"腾讯": 3},
+        strict=True,
+    )
+    assert found[3]["judgment"] == "游戏回暖"
+    # 回 null 照旧是没下判断。
+    assert parse_views('{"腾讯": null}', {"腾讯": 3}, strict=True) == {3: None}
+
+
+def test_nul_characters_are_dropped_from_views_and_digests():
+    from researchlib.digest import parse_digest
+
+    found = parse_views('{"腾讯": {"judgment": "游戏\\u0000回暖", "stance": "正面"}}', {"腾讯": 3})
+    assert found[3]["judgment"] == "游戏回暖"
+    data = parse_digest('{"summary": "好\\u0000", "points": "一条要点", "tags": 3}')
+    # 要点、标签不是列表：当没有，不拆成一字一条，也不抛 TypeError（审核 V9）。
+    assert data == {"summary": "好", "points": [], "tags": []}

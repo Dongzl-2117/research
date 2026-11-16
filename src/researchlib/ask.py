@@ -100,6 +100,12 @@ _JSON = re.compile(r"\{.*\}", re.S)
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ask")
 _inline_lock = threading.Lock()
+# 这个进程里排着队或正在整合的回答 id（审核 R3）：同一个 id 不交给后台两次，排队的也不会被 expire_stale_answers
+# 当成卡住。这是进程级的调度表（和 _executor 一样），不是某一次请求的中间结果。
+_active: set[int] = set()
+_active_lock = threading.Lock()
+# 页面提交问题时带的 request_id（审核 F2）：网页超时后重发同一个，按它认出已经登记过的，不再整合第二遍。
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 
 def _env_count(name: str, default: int) -> int:
@@ -111,7 +117,7 @@ def _env_count(name: str, default: int) -> int:
 # 网站又不用登录，所以按全站限次数：
 # 最近 24 小时最多登记 ASK_DAILY_LIMIT 次（默认 30，0 不限；10-21 到 11-09 问得最多的一天 21 次，多半是调试时的重试），
 # 同时在整合的（含排队）最多 ASK_RUNNING_LIMIT 个（默认 4：后台两路在跑、两个在等；
-# 再往后排的要等十几分钟，等过 10 分钟还会被 expire_stale_answers 当成卡住）。
+# 再往后排的要等十几分钟；排着队的不会被 expire_stale_answers 当成卡住，见 _active）。
 DAILY_LIMIT = _env_count("ASK_DAILY_LIMIT", 30)
 RUNNING_LIMIT = _env_count("ASK_RUNNING_LIMIT", 4)
 # JSON 接口 wait=true 最多等这么久（秒）。Cloudflare 回源超过 100 秒就断开（524），调用方连回答编号都拿不到。
@@ -447,6 +453,54 @@ def over_quota(conn) -> str:
     return ""
 
 
+def active_ids() -> list[int]:
+    """这个进程里排着队或正在整合的回答 id。"""
+    with _active_lock:
+        return sorted(_active)
+
+
+def _dispatch(settings: Settings, answer_id: int) -> bool:
+    """交给后台整合。这个 id 已经排着队或在整合就不再交，交回 False。"""
+    with _active_lock:
+        if answer_id in _active:
+            return False
+        _active.add(answer_id)
+    try:
+        _executor.submit(_run_tracked, settings, answer_id)
+    except BaseException:
+        with _active_lock:
+            _active.discard(answer_id)
+        raise
+    return True
+
+
+def _run_tracked(settings: Settings, answer_id: int, **kwargs) -> None:
+    """后台线程里整合一条，做完（成功、出错都算）从 _active 里拿掉。kwargs 原样交给 run_job。"""
+    try:
+        run_job(settings, answer_id, **kwargs)
+    finally:
+        with _active_lock:
+            _active.discard(answer_id)
+
+
+def clean_request_id(value) -> str:
+    """页面带来的 request_id：只认 8 到 64 位的字母、数字、横线、下划线，别的当没带。"""
+    text = str(value or "").strip()
+    return text if _REQUEST_ID.match(text) else ""
+
+
+def registered(conn, request_id: str) -> int | None:
+    """同一个 request_id 一天里已经登记过的回答 id（页面超时后重发同一个问题）。"""
+    if not request_id:
+        return None
+    row = conn.execute(
+        "SELECT id FROM llm_answers WHERE stats ->> 'request_id' = %s AND created_at > now() - interval '1 day'"
+        " ORDER BY id LIMIT 1",
+        (request_id,),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def start(
     conn,
     settings: Settings,
@@ -456,12 +510,20 @@ def start(
     *,
     run_inline: bool | None = None,
     choice: AskModel | None = None,
+    request_id: str = "",
 ) -> dict:
     """检索原文并登记一次整合。返回的 id 为 None 表示没交给模型（没配置、没召回到资料，或次数满了）。
 
     次数满了时 limited 为真，error 里写着什么时候能再问，召回的原文照样返回。
     ``choice`` 是这次选的模型和思考强度（``researchlib.ask_model``），不传按默认；记进 stats.llm。
+    ``request_id`` 是页面给这一次提问起的编号：同一个编号已经登记过就不再登记，交回 {"id": 那一条, "duplicate": True}，
+    调用方按 id 取现状（审核 F2：网页等 15 秒没回就让读者再问一次，同一问题整合两遍、花两份钱）。
     """
+    request_id = clean_request_id(request_id)
+    existing = registered(conn, request_id)
+    if existing is not None:
+        conn.commit()
+        return {"id": existing, "duplicate": True}
     choice = choice or default_choice(settings)
     chosen = apply_model(settings, choice)
     # 问题里的 NUL 字符存不进 Postgres（llm_answers.question），和检索那边一样换成空格。
@@ -491,18 +553,26 @@ def start(
         result["error"] = "这会儿问不了 AI，只给出找到的原文段落。"
         return result
     reason = over_quota(conn)
+    # 拿着名额锁再查一次：同一个 request_id 的两个请求同时到，第二个在这里认出第一个刚登记的。
+    existing = registered(conn, request_id)
+    if existing is not None:
+        conn.commit()
+        return {"id": existing, "duplicate": True}
     if reason:
         conn.commit()
         result["error"] = f"{reason}。先给出召回的原文段落。"
         result["limited"] = True
         return result
+    stats: dict = {"llm": choice.as_json()}
+    if request_id:
+        stats["request_id"] = request_id
     row = conn.execute(
         """
         INSERT INTO llm_answers (question, scope, answer, citations, model, status, terms, stats)
         VALUES (%s, %s, '', %s, '', 'running', %s, %s)
         RETURNING id
         """,
-        (question, Jsonb(result["scope"]), Jsonb(passages), Jsonb(found.terms), Jsonb({"llm": choice.as_json()})),
+        (question, Jsonb(result["scope"]), Jsonb(passages), Jsonb(found.terms), Jsonb(stats)),
     ).fetchone()
     conn.commit()
     result["id"] = row["id"]
@@ -512,7 +582,7 @@ def start(
         with _inline_lock:
             run_job(settings, row["id"], conn=conn)
     else:
-        _executor.submit(run_job, settings, row["id"])
+        _dispatch(settings, row["id"])
     return result
 
 
@@ -574,7 +644,14 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         conn = connect(settings)
         ensure_search_session(conn)
     try:
-        row = conn.execute("SELECT question, scope, stats FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()
+        # 认领：还是 running 才整合（审核 R3）。排队时被标成出错（expire_stale_answers、服务重启）的不再跑，
+        # 免得读者点了「重新整合」以后同一条跑两遍、两份半截回答交替写同一行。
+        row = conn.execute(
+            "UPDATE llm_answers SET updated_at = now() WHERE id = %s AND status = 'running'"
+            " RETURNING question, scope, stats",
+            (answer_id,),
+        ).fetchone()
+        conn.commit()
         if row is None:
             return
         # 登记时选的模型和强度（重新整合也沿用这一份）：扩词、分批读资料、写回答都用它。
@@ -643,6 +720,9 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
             "expansions": expansions,
             "llm": choice.as_json(),
         }
+        # 页面提交时带的编号留着：写完以后再收到同一个编号的重发，照样认出是这一条。
+        if (row["stats"] or {}).get("request_id"):
+            stats["request_id"] = row["stats"]["request_id"]
         # 分批读资料、写回答各用了多久，各次调用的 token（含思考）加起来：看整合慢在哪一步。
         for key in ("read_s", "write_s", "usage"):
             if key in synth_report:
@@ -697,7 +777,8 @@ def retry(conn, settings: Settings, answer_id: int, *, run_inline: bool | None =
         with _inline_lock:
             run_job(settings, answer_id, conn=conn)
     else:
-        _executor.submit(run_job, settings, answer_id)
+        # 还排着队或在整合（以前被当成卡住、标成出错的那种）：状态已经改回 running，它跑完照常写回，不再交一份。
+        _dispatch(settings, answer_id)
     return True
 
 

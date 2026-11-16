@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from researchlib import theses as thesis_map
-from researchlib.ask import DAILY_LIMIT, RUNNING_LIMIT, WAIT_SECONDS, ask, start
+from researchlib.ask import DAILY_LIMIT, RUNNING_LIMIT, WAIT_SECONDS, ask, clean_request_id, registered, start
 from researchlib.ask_model import parse_choice, recorded_choice
 from researchlib.citecheck import check_answer
 from researchlib.housekeeping import strip_housekeeping
@@ -617,16 +617,33 @@ async def api_ask(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # 页面给这一次提问起的编号（审核 F2）：网页没等到回应、重发同一个时，按它认出已经登记的那一条，不再整合第二遍。
+    request_id = clean_request_id(body.get("request_id"))
+
     def _run():
         with database(request) as conn:
             sources = active_sources(request, conn)
+            if request_id and not wait:
+                # 重发的先认，连检索都不用再做一遍。
+                existing = registered(conn, request_id)
+                conn.commit()
+                if existing is not None:
+                    return {"duplicate": answer_payload(conn, request, sources, existing)}
             scope, _info = resolve_scope(params, sources)
             if wait:
                 return ask(conn, settings, question, scope, sources, choice=choice)
             # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
-            return start(conn, settings, question, scope, sources, choice=choice)
+            extra = {"request_id": request_id} if request_id else {}
+            found = start(conn, settings, question, scope, sources, choice=choice, **extra)
+            if found.get("duplicate"):
+                return {"duplicate": answer_payload(conn, request, sources, int(found["id"]))}
+            return found
 
     result = await run_in_threadpool(_run)
+    if "duplicate" in result:
+        if result["duplicate"] is None:
+            raise HTTPException(status_code=404, detail="没有这次问库")
+        return _json({**result["duplicate"], "_trust": TRUST})
     # 全站问库次数满了：429，error 里写着什么时候能再问，召回的原文照样给。
     return _json(
         {

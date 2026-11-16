@@ -22,6 +22,9 @@ def test_total_line_mentions_skipped_articles_only_when_there_are_some():
     assert llm_batch.tail(report, "写") == " · 合计进 2,000 出 800 token，用时 1 分 5 秒"
     report["skipped"] = 3
     assert llm_batch.tail(report, "写").startswith("，跳过 3 篇（别处正在写或已经写过） · 合计")
+    # 接口没报用量的几篇不在合计里，要说出来（审核 V12）。
+    report["unmetered"] = 2
+    assert llm_batch.tail(report, "写").endswith("（其中 2 篇接口没报用量，不在合计里，实际费用以后台账单为准）")
 
 
 def test_batch_stops_on_credentials_and_balance_but_not_on_one_bad_article():
