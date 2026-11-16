@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from researchlib.retrieval import Passage, _gap_keys, _one_language, build_fragments, cap_per_article
+from researchlib.retrieval import Passage, _gap_keys, _one_language, build_fragments, cap_per_article, seeded_only
 
 WHEN = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -52,3 +52,14 @@ def test_cap_per_article_counts_the_rest():
     ones = [f for f in listed if f.article_id == 1]
     assert len(ones) == 3 and ones[-1].more == 2 and ones[0].more == 0
     assert any(f.article_id == 2 for f in listed)
+
+
+def test_neighbours_outside_the_seeds_never_stand_alone():
+    """种子旁边补进来的块只能接在种子上；没接上（换了章节）的不单独列。"""
+    seed = _p(1, 10, 9.0)
+    joined = _p(1, 11, 6.0)
+    stray = _p(1, 9, 8.0, heading="上一章")
+    fragments = build_fragments([seed, joined, stray])
+    assert len(fragments) == 2
+    kept = seeded_only(fragments, {(1, 10)})
+    assert [(f.first, f.last) for f in kept] == [(10, 11)]
