@@ -52,12 +52,14 @@ def _get(url: str):
 
 
 def fetch(base: str, out: Path) -> None:
-    """文章级前 50（检索页卡片的摘录段）和段落级前 50（问库、外部调用方拿到的）。"""
+    """文章级前 50（检索页卡片的摘录段）、段落级前 50（问库、外部调用方拿到的）和片段级前 50（检索页默认，
+    level=passage；按峰值块号记分，和段落级的分数共用）。线上还没有片段级的版本，这一项留空。"""
     result = {}
     for query in _queries():
         encoded = urllib.parse.quote(query)
         articles = _get(f"{base}/api/v1/search?limit=50&q={encoded}") or {}
         chunks = _get(f"{base}/api/v1/search?level=chunk&limit=50&q={encoded}") or {}
+        fragments = _get(f"{base}/api/v1/search?level=passage&limit=50&q={encoded}") or {}
         result[query] = {
             "articles": [
                 {"id": item["id"], "chunk": item.get("chunk"), "title": item.get("title"),
@@ -69,8 +71,15 @@ def fetch(base: str, out: Path) -> None:
                  "score": p.get("score")}
                 for p in chunks.get("passages", [])
             ],
+            "fragments": [
+                {"article_id": p["article_id"], "chunk": p["chunk"], "from": p.get("from"), "to": p.get("to"),
+                 "title": p.get("title"), "text": p.get("text")}
+                for p in fragments.get("passages", [])
+                if p.get("from") is not None
+            ],
         }
-        print(query, len(result[query]["articles"]), len(result[query]["chunks"]), file=sys.stderr, flush=True)
+        counts = [len(result[query][kind]) for kind in ("articles", "chunks", "fragments")]
+        print(query, *counts, file=sys.stderr, flush=True)
     out.write_text(json.dumps(result, ensure_ascii=False))
 
 
@@ -78,12 +87,13 @@ def _labels() -> dict[str, int]:
     return json.loads(LABELS.read_text()) if LABELS.exists() else {}
 
 
-def _items(result: dict) -> tuple[list[tuple[int, int, str]], list[tuple[int, int, str]]]:
+def _items(result: dict) -> tuple[list[tuple[int, int, str]], ...]:
     articles = [
         (a["id"], a["chunk"], a.get("snippet") or "") for a in result.get("articles", []) if a.get("chunk") is not None
     ]
     chunks = [(p["article_id"], p["chunk"], p.get("text") or "") for p in result.get("chunks", [])]
-    return articles, chunks
+    fragments = [(p["article_id"], p["chunk"], p.get("text") or "") for p in result.get("fragments", [])]
+    return articles, chunks, fragments
 
 
 def pool(paths: list[Path], prefix: Path) -> None:
@@ -95,8 +105,8 @@ def pool(paths: list[Path], prefix: Path) -> None:
         for query in _queries():
             if query not in data:
                 continue
-            articles, chunks = _items(data[query])
-            for article_id, ord_, body in articles[:TOP] + chunks[:TOP]:
+            articles, chunks, fragments = _items(data[query])
+            for article_id, ord_, body in articles[:TOP] + chunks[:TOP] + fragments[:TOP]:
                 key = f"{query}|{article_id}|{ord_}"
                 if key not in labels:
                     entries.setdefault(query, {})[key] = body
@@ -164,7 +174,7 @@ def metrics(path: Path) -> None:
     data = json.loads(path.read_text())
     labels = _labels()
     for split in ("tune", "hold"):
-        for name, index in (("文章级", 0), ("段落级", 1)):
+        for name, index in (("文章级", 0), ("段落级", 1), ("片段级", 2)):
             rows = [view(q, _items(data[q])[index], labels) for q in QUERIES[split] if q in data]
             if not rows:
                 continue
