@@ -98,15 +98,16 @@ def test_rate_limits_do_not_count_and_success_clears_the_count(conn, settings):
     assert row["engine"] == "vision" and row["failures"] == 0 and row["failed_at"] is None
 
 
-def test_empty_reply_is_invalid_right_away(conn, settings):
+def test_empty_reply_counts_as_one_failure(conn, settings):
+    """交回空正文同一张图不一定每次都空（思考用光额度、接口一时出毛病），和别的失败一样算一次，到上限才 :invalid。"""
     image = _image(conn, settings, "c")
 
     def empty(_path):
         raise LLMError("DeepSeek 接口返回的正文为空")
 
     report = run_ocr(conn, Path(settings.data_dir), 10, empty, engine="vision")
-    assert _row(conn, image)["engine"] == "vision:invalid" and report["invalid"] == 1
-    assert image not in _pending(conn)
+    row = _row(conn, image)
+    assert row["engine"] == "vision:error" and row["failures"] == 1 and report["failed"] == 1
 
 
 def test_deeply_nested_reply_counts_as_unreadable_structure():

@@ -16,7 +16,7 @@
 
 app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、正文为空，
 下次不带 ``--redo`` 也会重试，不写进脏字；按失败次数隔开（1 次隔 20 小时、2 次隔 3 天），第 3 次记 ``:invalid``，
-限流、5xx、断网不算次数，模型交回空正文直接记 ``:invalid``
+限流、5xx、断网不算次数
 （审核 C3，``image_texts.failures``、``failed_at``）。JSON 连着两次读不出来记 ``:invalid``，
 不自动重试（重试又要花钱），``--redo --article`` 点名重认。重认（``--redo``）时这张图库里已经有字的，
 失败或读不出来都不写，旧字留着、版本不动，下次 ``--redo`` 接着认。余额不足（402）和没凭证一样整批停。
@@ -965,22 +965,16 @@ def _outcome(engine: str, path: Path, future, report: dict) -> tuple[str, Recogn
 def _error_outcome(conn, engine: str, content_hash: str, exc: Exception | None, report: dict) -> tuple[str, int, bool]:
     """一张图认失败了：交回（记成什么 engine，失败次数，这次算不算一次失败）。审核 C3。
 
-    - 模型把思考额度用光、交回空正文：换一晚还是这样，直接记 :invalid，不再自动重认。
     - 限流、5xx、断网、超时：和这张图无关，不算次数，下一次照常认。
     - 别的失败算一次，过冷却再认（``_ERROR_COOLING``）；第 OCR_ERROR_LIMIT 次记 :invalid。
     """
     from researchlib.llm_batch import transient
 
-    detail = str(exc or "")
     row = conn.execute(
         "SELECT failures FROM image_texts WHERE content_hash = %s AND right(engine, 6) = ':error'",
         (content_hash,),
     ).fetchone()
     before = int(row["failures"] or 0) if row else 0
-    if "正文为空" in detail:
-        report["failed"] -= 1
-        report["invalid"] += 1
-        return f"{engine}:invalid", before + 1, True
     if exc is not None and transient(exc):
         return f"{engine}:error", before, False
     failures = before + 1
