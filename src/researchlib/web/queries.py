@@ -439,6 +439,13 @@ def article_chunks(conn, article_id: int):
     ).fetchall()
 
 
+def original_chunk_count(conn, article_id: int) -> int:
+    row = conn.execute(
+        "SELECT count(*)::int AS n FROM article_chunks WHERE article_id = %s AND ord < 10000", (article_id,),
+    ).fetchone()
+    return row["n"] if row else 0
+
+
 def source_stats(conn, source_ids: list[str]) -> dict[str, dict]:
     if not source_ids:
         return {}

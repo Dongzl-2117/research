@@ -1272,6 +1272,25 @@ tbody tr:hover td { background: var(--accent-softer); }
   font-size: 13px;
 }
 .prose.with-toolbar { margin-top: 16px; border-top: 0; padding-top: 0; }
+/* 超长文节选页：章节路径、第几节、上一节下一节、目录。 */
+.excerpt-nav { margin: 24px 0 0; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--ink-3); }
+.excerpt-nav + .prose { margin-top: 12px; border-top: 0; padding-top: 0; }
+.excerpt-path { margin: 0; color: var(--ink-2); overflow-wrap: anywhere; }
+.excerpt-path a { color: inherit; }
+.excerpt-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0 0; font-size: 13px; color: var(--ink-3); }
+.excerpt-meta a { color: var(--accent-ink); }
+.excerpt-foot { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--line); }
+.excerpt-find { margin: 8px 0 0; }
+.excerpt-find label { display: flex; align-items: center; gap: 8px; }
+.excerpt-find input[type="search"] { flex: 1; min-width: 0; max-width: 280px; height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-control); background: var(--field); color: var(--ink); font: inherit; font-size: 14px; }
+.excerpt-toc { margin-top: 8px; }
+.excerpt-toc summary { cursor: pointer; color: var(--ink-3); }
+.excerpt-toc ol { list-style: none; margin: 8px 0 0; padding: 0; max-height: 60vh; overflow-y: auto; }
+.excerpt-toc li { padding: 2px 0; overflow-wrap: anywhere; }
+.excerpt-toc li.toc-l2 { padding-left: 12px; } .excerpt-toc li.toc-l3 { padding-left: 24px; }
+.excerpt-toc li.toc-l4, .excerpt-toc li.toc-l5, .excerpt-toc li.toc-l6 { padding-left: 36px; }
+.excerpt-toc a { color: var(--ink-2); }
+.excerpt-toc a[aria-current="true"] { color: var(--accent-ink); font-weight: 600; }
 .bilingual { margin-top: 16px; }
 .bilingual-pair + .bilingual-pair { margin-top: 1.6em; }
 .bilingual-en.prose {
