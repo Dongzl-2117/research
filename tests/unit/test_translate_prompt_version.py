@@ -103,8 +103,8 @@ def test_a_mixed_receipt_without_per_segment_prompts_is_retranslated_whole(tmp_p
 
 
 def test_an_interrupted_rewrite_is_not_reported_as_done(tmp_path, monkeypatch):
-    """整篇按新提示词重译时第二批遇到 402：已译的段存下，没问到的段留旧译文，报出错误、记一次请求失败；
-    下次只重译还是旧版的段（审核 T2：以前写成「译完」、不报错、之后也不再补）。"""
+    """整篇按新提示词重译时第二批遇到 402：已译的段存下，没问到的段留旧译文，报出错误、整批停；
+    下次只重译还是旧版的段（审核 T2：以前写成「译完」、不报错、之后也不再补）。欠费不记尝试（审核 T6）。"""
     from researchlib.translate import service
     from researchlib.translate.llm import LLMHTTPError
 
@@ -123,7 +123,7 @@ def test_an_interrupted_rewrite_is_not_reported_as_done(tmp_path, monkeypatch):
     conn, result, _calls = run(A + B + C, broke, tmp_path, conn=conn)
     assert result.status == "partial" and result.stale == 2 and result.retry_later is False
     assert "Insufficient Balance" in result.error
-    assert conn.attempts and conn.attempts[-1] == ("failed", "request-failed")
+    assert result.stop_batch and not conn.attempts
     stored = conn.writes[-1][7].obj
     assert stored["segment_prompts"] == [pr.PROMPT_VERSION, 2, 2]
     # 充值后再跑：只问乙、丙两段。

@@ -322,6 +322,53 @@ def test_fresh_turns_off_reuse_and_partial_counts_are_printed(conn, monkeypatch,
     assert "#8 partial segments=5 reused=3 untranslated=2" in capsys.readouterr().out
 
 
+def test_out_of_balance_stops_the_queue_without_recording_failures(conn, monkeypatch, capsys):
+    """欠费（402）、鉴权被拒、没配密钥：剩下的篇问了也一样，整批停，这一篇不记失败（审核 T6）。"""
+    from researchlib.translate.llm import LLMConfigError, LLMHTTPError
+
+    seen: list[int] = []
+    recorded: list[int] = []
+
+    def broke(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
+        seen.append(article_id)
+        raise LLMHTTPError(402, "DeepSeek 接口返回 402：Insufficient Balance")
+
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [51, 52, 53])
+    monkeypatch.setattr(cli, "translate_article", broke)
+    monkeypatch.setattr(cli, "record_translation_failure", lambda conn, article_id, exc: recorded.append(article_id))
+    assert cli.main(["--limit", "3"]) == 2
+    assert seen == [51] and recorded == []
+    err = capsys.readouterr().err
+    assert "整批停下：余额不足或密钥不对" in err and "402" in err
+
+    # 已经译好一部分段、存下来以后才碰上欠费的那篇：照样停。
+    seen.clear()
+
+    def partly(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
+        seen.append(article_id)
+        return TranslateResult(article_id, "partial", segments=12, reason="request-failed", untranslated=30,
+                               error="DeepSeek 接口返回 402：Insufficient Balance", stop_batch=True)
+
+    monkeypatch.setattr(cli, "translate_article", partly)
+    assert cli.main(["--limit", "3"]) == 2
+    assert seen == [51]
+
+    def unconfigured(conn, article_id, *, data_dir, reuse=True, batch_segments=None):
+        raise LLMConfigError("没有配置 DEEPSEEK_API_KEY")
+
+    monkeypatch.setattr(cli, "translate_article", unconfigured)
+    assert cli.main(["--article-id", "61", "--article-id", "62"]) == 2
+
+
+def test_account_failures_are_told_apart_from_content_and_outage_errors():
+    from researchlib.translate.llm import LLMConfigError, LLMHTTPError, LLMTransportError, account_failure
+
+    assert account_failure(LLMHTTPError(402, "x")) and account_failure(LLMHTTPError(401, "x"))
+    assert account_failure(LLMHTTPError(403, "x")) and account_failure(LLMConfigError("x"))
+    assert not account_failure(LLMHTTPError(400, "x")) and not account_failure(LLMHTTPError(429, "x"))
+    assert not account_failure(LLMTransportError("x")) and not account_failure(None)
+
+
 def _interrupted(article_id, untranslated=16):
     return TranslateResult(
         article_id, "partial", segments=200, reason="request-failed", untranslated=untranslated,

@@ -32,6 +32,7 @@ def _clean_env(tmp_path, monkeypatch):
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.setenv("XAI_OAUTH_TOKEN_PATH", str(tmp_path / "missing-oauth.json"))
     monkeypatch.setattr(llm_module, "_STREAM_USAGE", True)
+    monkeypatch.setattr(llm_module, "_stream_misses", 0)
     health.reset_llm_cache()
     yield
     health.reset_llm_cache()
@@ -401,14 +402,15 @@ def test_chat_without_usage_sends_the_same_payload_as_before(tmp_path, monkeypat
 def test_chat_drops_stream_options_when_the_api_rejects_it(tmp_path, monkeypatch, code, message):
     """接口或转发不认这个字段时说法不一：4xx 都去掉它再发一次，识图照常，只是没有用量。
 
-    去掉以后成了，说明就是这个字段的事：后面的请求不再带，免得每张图先白挨一次 4xx。
+    去掉以后成了，说明就是这个字段的事。连着 STREAM_USAGE_MISSES 次这样，后面的请求才不再带，免得每张图先白挨
+    一次 4xx；一次偶然的 4xx 不让整个进程从此不报用量（审核 V12）。
     """
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
     payloads = []
 
     def fake_post(_settings, _token, payload):
         payloads.append(dict(payload))
-        if len(payloads) == 1:
+        if "stream_options" in payload:
             raise urllib.error.HTTPError("https://example.invalid", code, "Rejected", {}, io.BytesIO(message))
         return {"choices": [{"message": {"content": "好"}}]}
 
@@ -423,8 +425,37 @@ def test_chat_drops_stream_options_when_the_api_rejects_it(tmp_path, monkeypatch
     assert text == "好"
     assert "stream_options" in payloads[0] and "stream_options" not in payloads[1]
     assert usage == {}
+    # 一次还不算：下一次照样先带着要用量。
+    assert llm_module._STREAM_USAGE is True
+    for _ in range(llm_module.STREAM_USAGE_MISSES - 1):
+        llm_module.chat(settings, [{"role": "user", "content": "再来"}], usage=usage)
+    assert len(payloads) == 2 * llm_module.STREAM_USAGE_MISSES
+    assert llm_module._STREAM_USAGE is False
     llm_module.chat(settings, [{"role": "user", "content": "再来"}], usage=usage)
-    assert len(payloads) == 3 and "stream_options" not in payloads[2]
+    assert len(payloads) == 2 * llm_module.STREAM_USAGE_MISSES + 1 and "stream_options" not in payloads[-1]
+
+
+def test_one_accepted_stream_usage_resets_the_misses(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-real")
+    calls = {"n": 0}
+
+    def fake_post(_settings, _token, payload):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            body = io.BytesIO(b'{"error": {"message": "stream_options not supported"}}')
+            raise urllib.error.HTTPError("https://example.invalid", 400, "Bad Request", {}, body)
+        return {"choices": [{"message": {"content": "好"}}], "usage": {"prompt_tokens": 3, "completion_tokens": 4}}
+
+    monkeypatch.setattr(llm_module, "_post", fake_post)
+    settings = Settings.from_env({
+        "DATABASE_URL": "postgresql://unused/research_test",
+        "DATA_DIR": str(tmp_path),
+        "RESEARCH_LLM_PROVIDER": "deepseek-legacy",
+    })
+    llm_module.chat(settings, [{"role": "user", "content": "hi"}], usage={})
+    assert llm_module._stream_misses == 1
+    llm_module.chat(settings, [{"role": "user", "content": "hi"}], usage={})
+    assert llm_module._stream_misses == 0 and llm_module._STREAM_USAGE is True
 
 
 def test_other_bad_request_is_resent_once_then_reported(tmp_path, monkeypatch):

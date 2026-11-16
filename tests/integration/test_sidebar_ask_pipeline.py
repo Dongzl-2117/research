@@ -277,7 +277,7 @@ def test_sidebar_async_submission_uses_original_job_executor(conn, settings, mon
 
     def assert_submission(identity):
         args, kwargs = submitted[-1]
-        assert args[0] is ask_module.run_job and args[-1] == identity
+        assert args[0] is ask_module._run_tracked and args[-1] == identity
         # 主线尚无令牌列时 JSON 读取为 NULL；#224 的异步领取必须传入刚存储的同一令牌。
         token = conn.execute(
             "SELECT to_jsonb(a)->>'run_token' AS token FROM llm_answers a WHERE id=%s", (identity,),
@@ -290,6 +290,7 @@ def test_sidebar_async_submission_uses_original_job_executor(conn, settings, mon
 
     monkeypatch.setattr(ask_module, '_inline', lambda: False)
     monkeypatch.setattr(ask_module._executor, 'submit', capture)
+    monkeypatch.setattr(ask_module, '_active', set())
     with TestClient(create_app(settings)) as client:
         first = client.post('/api/v1/ask', json={'question': '渠道优势', 'source': 'fangwei-mp'}).json()
         assert first['status'] == 'running' and first['citations']
@@ -297,8 +298,69 @@ def test_sidebar_async_submission_uses_original_job_executor(conn, settings, mon
         first_token = assert_submission(first['id'])
         conn.execute("UPDATE llm_answers SET status='error' WHERE id=%s", (first['id'],))
         conn.commit()
+        # 还排在后台队列里（替身没跑它）：点「重新整合」把状态改回 running，不再交第二份（审核 R3）。
+        retried = client.post(f"/ask/{first['id']}/retry", follow_redirects=False)
+        assert retried.status_code == 303 and len(submitted) == 1
+        # 那一份做完了再出错、再点：才交一份新的。
+        ask_module._active.discard(first['id'])
+        conn.execute("UPDATE llm_answers SET status='error' WHERE id=%s", (first['id'],))
+        conn.commit()
         retried = client.post(f"/ask/{first['id']}/retry", follow_redirects=False)
         assert retried.status_code == 303 and len(submitted) == 2
         retry_token = assert_submission(first['id'])
         if first_token:
             assert retry_token and retry_token != first_token
+
+
+def test_queued_answer_is_not_expired_and_an_expired_one_does_not_run(conn, settings, monkeypatch, model):
+    """排着队的不会被当成卡住；已经被标成出错的轮到时不再整合（审核 R3）。"""
+    from researchlib.web.queries import expire_stale_answers
+
+    _article(conn, 'queued')
+    submitted = []
+    monkeypatch.setattr(ask_module, '_inline', lambda: False)
+    monkeypatch.setattr(ask_module._executor, 'submit', lambda *args, **kwargs: submitted.append(args))
+    monkeypatch.setattr(ask_module, '_active', set())
+    with TestClient(create_app(settings)) as client:
+        first = client.post('/api/v1/ask', json={'question': '渠道优势', 'source': 'fangwei-mp'}).json()
+    conn.execute("UPDATE llm_answers SET updated_at = now() - interval '1 hour' WHERE id=%s", (first['id'],))
+    conn.commit()
+    assert expire_stale_answers(conn) == 0
+    assert conn.execute("SELECT status FROM llm_answers WHERE id=%s", (first['id'],)).fetchone()['status'] == 'running'
+    # 不在这个进程的队列里（比如别的进程登记的、进程重启前的）：照旧标成出错。
+    ask_module._active.discard(first['id'])
+    assert expire_stale_answers(conn) == 1
+    conn.commit()
+    before = len(model)
+    ask_module._run_tracked(settings, first['id'])
+    row = conn.execute("SELECT status, answer FROM llm_answers WHERE id=%s", (first['id'],)).fetchone()
+    assert row['status'] == 'error' and row['answer'] == '' and len(model) == before
+
+
+def test_resubmitted_question_with_the_same_request_id_is_not_synthesized_twice(conn, settings, monkeypatch, model):
+    """页面没等到回应、带着同一个 request_id 重发：认出已经登记的那一条，不再登记、不再整合（审核 F2）。"""
+    _article(conn, 'resend')
+    submitted = []
+    monkeypatch.setattr(ask_module, '_inline', lambda: False)
+    monkeypatch.setattr(ask_module._executor, 'submit', lambda *args, **kwargs: submitted.append(args))
+    monkeypatch.setattr(ask_module, '_active', set())
+    body = {'question': '渠道优势', 'source': 'fangwei-mp', 'request_id': 'a1b2c3d4-e5f6-7788'}
+    with TestClient(create_app(settings)) as client:
+        first = client.post('/api/v1/ask', json=body).json()
+        again = client.post('/api/v1/ask', json=body).json()
+        other = client.post('/api/v1/ask', json={**body, 'request_id': 'ffffeeee-0000-1111'}).json()
+        bad = client.post('/api/v1/ask', json={**body, 'request_id': 'x'}).json()
+    assert again['id'] == first['id'] and again['status'] == 'running'
+    assert other['id'] != first['id'] and bad['id'] not in (first['id'], other['id'])
+    assert len(submitted) == 3
+    count = conn.execute(
+        "SELECT count(*) AS n FROM llm_answers WHERE stats ->> 'request_id' = %s", (body['request_id'],)
+    ).fetchone()['n']
+    assert count == 1
+    # 写完以后再重发，照样认得（编号留在 stats 里）。
+    ask_module._active.discard(first['id'])
+    ask_module._run_tracked(settings, first['id'])
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        late = client.post('/api/v1/ask', json=body).json()
+    assert late['id'] == first['id'] and late['status'] == 'done'

@@ -15,7 +15,9 @@
 ``--tall`` 只重认切段以前整张认的长图（和 11-10 晚以前切段认、没存每段结果的）。
 
 app 容器就能跑。单张识图失败记 ``engine`` 以 ``:error`` 结尾、正文为空，
-下次不带 ``--redo`` 也会重试，不写进脏字。JSON 连着两次读不出来记 ``:invalid``，
+下次不带 ``--redo`` 也会重试，不写进脏字；按失败次数隔开（1 次隔 20 小时、2 次隔 3 天），第 3 次记 ``:invalid``，
+限流、5xx、断网不算次数，模型交回空正文直接记 ``:invalid``
+（审核 C3，``image_texts.failures``、``failed_at``）。JSON 连着两次读不出来记 ``:invalid``，
 不自动重试（重试又要花钱），``--redo --article`` 点名重认。重认（``--redo``）时这张图库里已经有字的，
 失败或读不出来都不写，旧字留着、版本不动，下次 ``--redo`` 接着认。余额不足（402）和没凭证一样整批停。
 
@@ -458,12 +460,18 @@ def read_vision_reply(reply: str) -> tuple[str, dict]:
 
     按结构交的：字由 units 排出来（读旧列的地方照样能用），units 存原样结构。
     没按结构交的（自由文字）：按空行当成几段文字（``plain_units``），字照原样留着，不按规则猜说话人、剥界面字。
-    像 JSON 却读不出来的抛 UnitsError。
+    像 JSON 却读不出来的抛 UnitsError。嵌套极深的 JSON（RecursionError）、字段类型不对（TypeError、ValueError）
+    也算读不出来（审核 C3），以前它们记成 :error、每晚重认。
     """
-    units = parse_reply(reply)
-    if units is None:
-        units = plain_units(reply)
-    return format_units(units), units
+    try:
+        units = parse_reply(reply)
+        if units is None:
+            units = plain_units(reply)
+        return format_units(units), units
+    except UnitsError:
+        raise
+    except (RecursionError, TypeError, ValueError, AttributeError) as exc:
+        raise UnitsError(f"识图结构读不出来：{type(exc).__name__}") from exc
 
 
 def vision_engine(settings) -> Callable[[Path], Recognition]:
@@ -582,6 +590,16 @@ def _has_text(conn, content_hash: str) -> bool:
     return row is not None
 
 
+# 识图失败（:error）几次以后不再自动重认（审核 C3）：第 OCR_ERROR_LIMIT 次失败记成 :invalid，
+# 只能 --redo --article 点名。
+# 限流、5xx、断网这类和图无关的失败不算次数（隔一晚照常重认）。
+OCR_ERROR_LIMIT = 3
+# 失败过的图隔多久再认：失败 1 次隔 20 小时（夜间任务每晚一次，下一晚就到），2 次隔 3 天。
+_ERROR_COOLING = (
+    "t.failed_at > now() - CASE WHEN t.failures >= 2 THEN interval '3 days' ELSE interval '20 hours' END"
+)
+
+
 def _pending_where(*, redo: bool, article_ids: list[int] | None) -> tuple[list[str], list]:
     """要认的图的筛选条件（article_images i JOIN articles a 上）。见 ``pending_images``。"""
     where = ["a.duplicate_of IS NULL"]
@@ -593,9 +611,10 @@ def _pending_where(*, redo: bool, article_ids: list[int] | None) -> tuple[list[s
         where.append(site_visible_sql("a"))
         where.append("EXISTS (SELECT 1 FROM sources s WHERE s.id = a.source_id AND s.enabled)")
     if not redo:
+        # 认过的不再认；失败（:error）的过了冷却再认（_ERROR_COOLING），以前每晚都认、没有上限。
         where.append(
             "NOT EXISTS (SELECT 1 FROM image_texts t WHERE t.content_hash = i.content_hash"
-            " AND right(t.engine, 6) <> ':error')"
+            f" AND (right(t.engine, 6) <> ':error' OR {_ERROR_COOLING}))"
         )
     elif not article_ids:
         # 全库重认只认按旧说明认的。以前每次都从最新的图从头认，停了再开就把刚认过的再付一次钱。
@@ -616,7 +635,8 @@ def pending_images(conn, limit: int, *, redo: bool = False, article_ids: list[in
     redo 时连 image_texts 里已有的哈希也再认一遍：点名文章（article_ids）的全部重认；不点名时只认
     按旧说明认的（prompt_version 比 VISION_PROMPT_VERSION 旧或为空），和按现在的说明认了却没存结构、有字的
     （#316 以前交回自由文字的），按现在的说明认过、存了结构的不再认。
-    engine 以 :error 结尾的行不算认完，不带 redo 也会重试；:skipped、:invalid 和空正文的成功行不重试。
+    engine 以 :error 结尾的行不算认完，不带 redo 也会重试，但按失败次数隔开（失败 1 次隔 20 小时、2 次隔 3 天，
+    第 3 次记 :invalid）；:skipped、:invalid 和空正文的成功行不重试。
     不点名文章时，只挂在知识星球读者帖、「图片」评论壳、停用来源下的图不认：网站上不展示，认了白花钱。
     """
     where, params = _pending_where(redo=redo, article_ids=article_ids)
@@ -942,6 +962,36 @@ def _outcome(engine: str, path: Path, future, report: dict) -> tuple[str, Recogn
     return used, result
 
 
+def _error_outcome(conn, engine: str, content_hash: str, exc: Exception | None, report: dict) -> tuple[str, int, bool]:
+    """一张图认失败了：交回（记成什么 engine，失败次数，这次算不算一次失败）。审核 C3。
+
+    - 模型把思考额度用光、交回空正文：换一晚还是这样，直接记 :invalid，不再自动重认。
+    - 限流、5xx、断网、超时：和这张图无关，不算次数，下一次照常认。
+    - 别的失败算一次，过冷却再认（``_ERROR_COOLING``）；第 OCR_ERROR_LIMIT 次记 :invalid。
+    """
+    from researchlib.llm_batch import transient
+
+    detail = str(exc or "")
+    row = conn.execute(
+        "SELECT failures FROM image_texts WHERE content_hash = %s AND right(engine, 6) = ':error'",
+        (content_hash,),
+    ).fetchone()
+    before = int(row["failures"] or 0) if row else 0
+    if "正文为空" in detail:
+        report["failed"] -= 1
+        report["invalid"] += 1
+        return f"{engine}:invalid", before + 1, True
+    if exc is not None and transient(exc):
+        return f"{engine}:error", before, False
+    failures = before + 1
+    if failures >= OCR_ERROR_LIMIT:
+        logger.warning("图片 %s 已经失败 %d 次，记成 :invalid，不再自动重认", content_hash, failures)
+        report["failed"] -= 1
+        report["invalid"] += 1
+        return f"{engine}:invalid", failures, True
+    return f"{engine}:error", failures, True
+
+
 def run_ocr(
     conn,
     data_dir: Path,
@@ -1022,8 +1072,11 @@ def run_ocr(
         if redo and used.endswith((":error", ":invalid")) and _has_text(conn, row["content_hash"]):
             report["kept"] += 1
             return
+        failures, failed = 0, False
+        if used.endswith(":error"):
+            used, failures, failed = _error_outcome(conn, engine, row["content_hash"], future.result()[1], report)
         try:
-            _store(row, used, text, result)
+            _store(row, used, text, result, failures, failed)
         except psycopg.DataError as exc:
             # 还有写不进库的字：这一张记成读不出来，接着认下一张，别让整批中断、手上认完的几张白花钱。
             conn.rollback()
@@ -1037,14 +1090,16 @@ def run_ocr(
         _touch_articles(conn, row["content_hash"], text, touched, report)
         conn.commit()
 
-    def _store(row, used: str, text: str, result) -> None:
+    def _store(row, used: str, text: str, result, failures: int = 0, failed: bool = False) -> None:
+        # failures、failed_at 只给 :error 的行用（_error_outcome），别的结果清零。
         conn.execute(
             """
-            INSERT INTO image_texts (content_hash, engine, text, units, usage, prompt_version)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO image_texts (content_hash, engine, text, units, usage, prompt_version, failures, failed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN now() END)
             ON CONFLICT (content_hash) DO UPDATE
                 SET engine = EXCLUDED.engine, text = EXCLUDED.text, units = EXCLUDED.units,
-                    usage = EXCLUDED.usage, prompt_version = EXCLUDED.prompt_version, created_at = now()
+                    usage = EXCLUDED.usage, prompt_version = EXCLUDED.prompt_version, created_at = now(),
+                    failures = EXCLUDED.failures, failed_at = EXCLUDED.failed_at
             """,
             (
                 row["content_hash"],
@@ -1053,6 +1108,8 @@ def run_ocr(
                 Jsonb(result.units) if result.units is not None else None,
                 Jsonb(result.usage) if result.usage else None,
                 VISION_PROMPT_VERSION,
+                failures,
+                failed,
             ),
         )
 

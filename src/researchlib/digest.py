@@ -40,6 +40,7 @@ from researchlib.followups import KIND_DIGEST, clear_followup
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
 from researchlib.sources import enabled_sources, load_sources
+from researchlib.textutil import drop_nul
 from researchlib.visibility import visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import relabel_host
@@ -71,12 +72,21 @@ def parse_digest(text: str) -> dict:
         data = json.loads(match.group(0))
     except json.JSONDecodeError as exc:
         raise LLMError(f"摘要 JSON 解析失败：{exc}") from exc
+    if not isinstance(data, dict):
+        raise LLMError("摘要 JSON 顶层不是对象")
+    data = drop_nul(data)
     summary = str(data.get("summary") or "").strip()
     if not summary:
         raise LLMError("摘要为空")
-    points = [str(item).strip() for item in (data.get("points") or []) if str(item).strip()][:6]
-    tags = [str(item).strip() for item in (data.get("tags") or []) if str(item).strip()][:8]
-    return {"summary": summary[:400], "points": points, "tags": tags}
+    return {"summary": summary[:400], "points": _texts(data.get("points"), 6), "tags": _texts(data.get("tags"), 8)}
+
+
+def _texts(value, limit: int) -> list[str]:
+    """要点、标签：模型交回的不是列表（一个字符串、一个数）就当没有，别拆成一字一条（审核 V9）。"""
+    if not isinstance(value, list):
+        return []
+    found = [str(item).strip() for item in value if isinstance(item, str | int | float) and str(item).strip()]
+    return found[:limit]
 
 
 # 正文加图片里的字，汉字、字母、数字不到这么多个就不写摘要。星球上只有「这是好文章」「下图」一句、
@@ -154,6 +164,9 @@ def digest_article(conn, settings: Settings, row, author: str, *, usage: dict | 
     header = f"标题：{row['title']}\n作者：{shown_author}\n日期：{when}"
     chunks = original_chunks(conn, row["id"])
     ocr_text, ocr_digest = article_ocr(conn, row["id"])
+    # 按现在的排版重写图片文字（article_ocr 可能改 articles 这一行、重挂提及）先提交，再去等模型：
+    # 不然这一行的锁要占到模型答完，几分钟里打开这篇的网页都卡着（审核 V10）。
+    conn.commit()
     # 截图里的绿气泡是发这篇的人：别的来源、星球读者帖都不写成方伟。
     ocr_text = relabel_host(ocr_text, shown_author)
     body = append_ocr(row["body_text"] or "", ocr_text)

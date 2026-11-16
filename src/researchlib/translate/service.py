@@ -35,6 +35,7 @@ from researchlib.translate.llm import (
     LLMHTTPError,
     LLMTransportError,
     XaiLoginRequiredError,
+    account_failure,
     chat_json,
     model_id,
     output_tokens,
@@ -103,6 +104,8 @@ class TranslateResult:
     reused: int = 0
     # 请求失败（request-failed）时那一次的报错，命令行照印，不用再翻日志猜是断线、限流还是欠费。
     error: str = ""
+    # 欠费、鉴权被拒、没配密钥打断的：换哪一篇都一样，按队列、按清单译时整批停（审核 T6）。
+    stop_batch: bool = False
     # 被断线、超时、限流、5xx 打断没译完：隔几分钟再跑这篇多半能补上。点名补译时命令行据此自动再补一轮。
     retry_later: bool = False
     # 要按现在的提示词重译、这次没换成（请求被打断，或重译没过核对）、先留着旧版译文的段数（审核 T2）。
@@ -1135,9 +1138,11 @@ def translate_article(
     # 整篇按现在的提示词重译被断线、欠费打断：已译的段存下了，没换成的段先留旧译文。这篇照样算译完（每段都有中文），
     # 记一次请求失败、报出错误，下次再跑（点名或 --from-inventory old-prompt）只重译还是旧版的段（审核 T2）。
     interrupted = service_error is not None and bool(stale)
-    if interrupted and complete:
+    # 欠费、鉴权被拒、没配密钥：不是这一篇的事，不记尝试、不进冷却，充值或配好密钥后再跑同一条接着译（审核 T6）。
+    account = account_failure(service_error)
+    if interrupted and complete and not account:
         _record_attempt(conn, article_id, "failed", "request-failed", article["content_hash"])
-    if not complete and not offline:
+    if not complete and not offline and not account:
         # 没译完的也记一次尝试：断线按请求失败拉长间隔，别的按拒绝算（12 小时冷却、同一版本 2 次）。
         # 不记的话待译队列马上又把它拿回来。
         _record_attempt(
@@ -1171,6 +1176,7 @@ def translate_article(
         error=str(service_error)[:300] if service_error is not None and unfinished else "",
         retry_later=unfinished and transient_failure(service_error),
         stale=stale,
+        stop_batch=unfinished and account,
     )
 
 
