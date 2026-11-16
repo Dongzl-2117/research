@@ -261,6 +261,9 @@ def copied_targets(sources: Sequence[str], targets: Sequence[str], *, span: int 
     出现在长的那段里就算，同一句话又引一遍时换了一个词（Such / The）、口语里重说一遍（love / like）、
     多打了一个词，中文本来就该一样。错开一格的两段英文是不同的话，词对得上的不到两成；Andreessen 那几句
     句式一样、只换了词，也只对上八成。
+    原文本来就写着这段中文的也不算：中文文章里先引一句英文、下一段作者自己写了中文译文（8505 引的名言，
+    下一段是「中文：“Unlearning（破除旧学）并非遗忘……”」），那一段照原文交回，自然包含上一段译出来的中文。
+    一段的中文包含另一段时看长的那段原文；两段中文一样时看哪一段原文都行。
     """
     bare_sources = [_bare(item) for item in sources]
     bare_targets = [_bare(item) for item in targets]
@@ -284,6 +287,8 @@ def copied_targets(sources: Sequence[str], targets: Sequence[str], *, span: int 
             if outer == inner or target not in other:
                 continue
             if target != other and han < SWALLOWED_HAN:
+                continue
+            if target in bare_sources[outer] or (target == other and target in bare_sources[inner]):
                 continue
             if same(inner, outer) or (target == other and same(outer, inner)):
                 continue
