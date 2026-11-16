@@ -76,7 +76,7 @@ def test_sample_library_pages(conn, settings, monkeypatch):
         assert linwenfeng.status_code == 200
         assert "这位作者还没有文章" in linwenfeng.text
 
-        search = client.get("/search", params={"q": "腾讯"})
+        search = client.get("/search", params={"q": "腾讯", "view": "article"})
         assert search.status_code == 200
         assert "<mark>腾讯</mark>" in search.text
         assert 'class="pills search-pills"' in search.text

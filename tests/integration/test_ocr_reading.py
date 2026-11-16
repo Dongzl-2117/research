@@ -546,7 +546,7 @@ def test_search_counts_articles_whose_words_are_only_in_screenshots(conn, settin
     conn.commit()
 
     with TestClient(create_app(settings)) as client:
-        page = client.get("/search", params={"q": "独有词条丁戊己"}).text
+        page = client.get("/search", params={"q": "独有词条丁戊己", "view": "article"}).text
         api = client.get("/api/v1/search", params={"q": "独有词条丁戊己"}).json()
     assert page.count('href="/articles/') >= 2
     assert '<span>全部来源</span><span class="num">2</span>' in page
@@ -572,7 +572,7 @@ def test_search_counts_a_post_whose_words_are_split_between_text_and_screenshot(
     conn.commit()
 
     with TestClient(create_app(settings)) as client:
-        page = client.get("/search", params={"q": "冷链仓配 送货上门"}).text
+        page = client.get("/search", params={"q": "冷链仓配 送货上门", "view": "article"}).text
     assert f'href="/articles/{shot["id"]}?' in page
     assert "1 篇全部命中" in page
     assert '<span>全部来源</span><span class="num">1</span>' in page

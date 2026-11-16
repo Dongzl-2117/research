@@ -167,7 +167,7 @@ def test_other_zsxq_sources_keep_their_own_host_comments(conn, settings):
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{article_id}").text
         api_md = client.get(f"/api/v1/articles/{article_id}.md").text
-        assert f"/articles/{article_id}" in client.get("/search", params={"q": "灯笼订单"}).text
+        assert f"/articles/{article_id}" in client.get("/search", params={"q": "灯笼订单", "view": "article"}).text
     for shown in (page, api_md):
         assert "这次降税对小家电最直接" in shown
         assert "节庆装饰的单子三季度才放量" in shown and "乘风破浪 回复网友" in shown

@@ -30,7 +30,7 @@ from researchlib.nested_copies import fold_nested_copies
 from researchlib.output_safety import redact_output, redact_subscription_links
 from researchlib.present_text import plain_qa_markdown, polish_display_text
 from researchlib.render import link_local_images
-from researchlib.retrieval import cited_numbers, retrieve, search_articles
+from researchlib.retrieval import cited_numbers, retrieve, search_articles, search_fragments
 from researchlib.snippets import answer_html, mention_sentence, mention_spans
 from researchlib.textutil import opening_excerpt, strip_duplicate_title
 from researchlib.views import FILTERS as VIEW_FILTERS
@@ -183,6 +183,48 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
             "passages": passages,
             "_trust": TRUST,
         }
+    if level == "passage":
+        found = search_fragments(conn, query, scope, sources, limit=limit, offset=offset,
+                                 by_position=params.get("sort") == "position")
+        titles = display_titles(
+            conn,
+            [{"id": f.article_id, "source_id": f.source_id, "title": f.title, "published_at": f.published_at}
+             for f in found.fragments],
+            by_id,
+            settings.display_timezone,
+        )
+        fragments = [
+            {
+                "article_id": f.article_id,
+                "title": titles[f.article_id],
+                "heading": f.heading,
+                "chunk": f.peak.ord,
+                "from": f.first,
+                "to": f.last,
+                "text": redact_subscription_links(f.text),
+                "lang": f.lang or None,
+                "score": round(f.score, 3),
+                "semantic": f.semantic_hit,
+                "more": f.more,
+                "author": by_id[f.source_id].author,
+                "source": {"id": f.source_id, "name": by_id[f.source_id].name},
+                "published_at": format_iso(f.published_at, settings.display_timezone) or None,
+                "url": _base(request) + f.url,
+            }
+            for f in found.fragments
+        ]
+        next_offset = offset + limit if offset + limit < found.total else None
+        return {
+            "query": query,
+            "level": "passage",
+            "scope": info,
+            "total": found.total,
+            "articles": found.articles,
+            "terms": found.terms,
+            "passages": fragments,
+            "next_offset": next_offset,
+            "_trust": TRUST,
+        }
     if query:
         result = search_articles(conn, query, scope, sources, limit=limit, offset=offset)
         total = result.total
@@ -226,10 +268,10 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
 def api_search(request: Request):
     query = (request.query_params.get("q") or "").strip()[:200]
     level = request.query_params.get("level") or "article"
-    if level not in {"article", "chunk"}:
-        raise HTTPException(status_code=400, detail="level 只能是 article 或 chunk")
-    if level == "chunk" and not query:
-        raise HTTPException(status_code=400, detail="level=chunk 需要 q")
+    if level not in {"article", "chunk", "passage"}:
+        raise HTTPException(status_code=400, detail="level 只能是 article、chunk 或 passage")
+    if level in {"chunk", "passage"} and not query:
+        raise HTTPException(status_code=400, detail=f"level={level} 需要 q")
     limit, offset = _limit(request)
     with database(request) as conn:
         sources = active_sources(request, conn)
@@ -764,6 +806,8 @@ def llms_txt(request: Request):
         "范围参数 author、source、company（公司 id）、from、to（YYYY-MM-DD，上海日历）；limit≤50、offset 翻页",
         f"- [检索段落]({base}/api/v1/search?q=腾讯游戏怎么看&level=chunk): 自然语言问题也能用。"
         "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms",
+        f"- [检索片段]({base}/api/v1/search?q=腾讯游戏怎么看&level=passage): 检索页的结果，一篇里相邻相关的段落"
+        "拼成一段，带起止块号（from、to）和直达链接 url；加 article=文章id 只在这一篇里找，sort=position 按原文顺序",
         f"- [问答]({base}/api/v1/ask): POST JSON "
         "{question, author?, source?, company?, from?, to?, article?, model?, effort?, wait?}，"
         "model 是 grok 或 deepseek，effort 是那一家的思考档"
