@@ -98,6 +98,9 @@ class ScoreContext:
     depths: list[dict]
     deep_names: dict[int, list[str]]
     as_of: datetime | None = None
+    # 每篇原文有几块（块号 0 起连续，按最大块号算）。标题的说明力随文章变长递减，见 title_reach。
+    # 离线实验冻结的旧上下文没有它，当作短文、不打折。
+    sizes: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1528,7 +1531,38 @@ def score_context(conn, query: Query, rows: list[dict], scope: Scope, company_ro
             " WHERE article_id = ANY(%s) AND company_id = ANY(%s)",
             (sorted({row["article_id"] for row in rows}), focus_ids),
         ).fetchall()
-    return ScoreContext(avgdl, companies, depths, deep_names)
+    sizes: dict[int, int] = {}
+    if rows and TITLE_REACH_CHUNKS:
+        # 一篇一次索引探查（主键上的最大块号），不数几千块的长文。
+        sizes = {
+            item["article_id"]: item["n"]
+            for item in conn.execute(
+                """
+                SELECT k.article_id, m.top + 1 AS n
+                FROM unnest(%s::bigint[]) AS k(article_id)
+                CROSS JOIN LATERAL (
+                  SELECT max(c.ord) AS top FROM article_chunks c
+                  WHERE c.article_id = k.article_id AND c.ord < %s OFFSET 0
+                ) m
+                WHERE m.top IS NOT NULL
+                """,
+                (sorted({row["article_id"] for row in rows}), TRANSLATION_ORD_BASE),
+            ).fetchall()
+        }
+    return ScoreContext(avgdl, companies, depths, deep_names, sizes=sizes)
+
+
+# 规则 2（设计 3.7）：标题写到的词算进每一段，是因为短文的标题说的就是每一段在讲什么；几十万字的汇编，
+# 标题只是个文件名。12 块（约 6,000 字）以内照旧，再长按 12 / 块数递减。0 关掉这条。
+TITLE_REACH_CHUNKS = 12
+
+
+def title_reach(context: ScoreContext, article_id: int) -> float:
+    """这篇的标题对每一段还有几成说明力（0～1）。"""
+    size = context.sizes.get(article_id, 0)
+    if not TITLE_REACH_CHUNKS or size <= TITLE_REACH_CHUNKS:
+        return 1.0
+    return TITLE_REACH_CHUNKS / size
 
 
 def score_rows(
@@ -1584,6 +1618,7 @@ def score_rows(
         title = row.get("title") or ""
         title_lowered = title.lower()
         title_companies = matcher.count(title) if matcher is not None and title else {}
+        reach = title_reach(context, row["article_id"])
         for company_id in guarded:
             if (row["article_id"], company_id) not in depths:
                 company_hits.pop(company_id, None)
@@ -1608,12 +1643,12 @@ def score_rows(
                         found_forms.append(form)
                     title_tf += counter(title, title_lowered) if title else 0
             # 标题写到的词，算进这篇每一段的上下文：标题是「腾讯专文」，正文不必句句写腾讯。
-            effective_tf = tf + params.title_tf * min(title_tf, 2)
+            effective_tf = tf + reach * params.title_tf * min(title_tf, 2)
             if effective_tf <= 0:
                 continue
             score += term.weight * term.idf * effective_tf * (params.k1 + 1) / (effective_tf + norm)
             if title_tf:
-                score += params.title_bonus * term.idf * term.weight
+                score += reach * params.title_bonus * term.idf * term.weight
             if term.group >= 0:
                 if tf > 0:
                     matched_groups.add(term.group)
@@ -2419,7 +2454,8 @@ def cited_numbers(answer: str, count: int) -> list[int]:
 # —— 按片段列（检索页默认）————————————————————————————————————————————————
 # 检索结果的单位从文章改成片段：同一篇里相邻、都相关、同一个章节标题下的一串块。读者要的是专门讲这件事的
 # 那部分内容，点了直接到那里（设计见 docs/retrieval.md「检索按片段列」）。打分和段落接口同一套（score_rows），
-# 片段的分先用峰值块的分，排序和 level=chunk 一致；「连着讲的加分」等排序规则另行盲评再上。
+# 片段的分就用峰值块的分，排序和 level=chunk 一致。「连着讲的加分」盲评过、留出题变差，没上（docs/retrieval.md
+# 「检索排序规则的盲评（2026-11-16）」）。
 
 FRAGMENT_SEEDS = 150  # 最多拿这么多块当种子拼片段
 FRAGMENT_MAX_BLOCKS = 6
