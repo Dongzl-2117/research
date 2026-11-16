@@ -75,7 +75,37 @@
       {% endfor %}
     </div>
     {% elif body_html %}
+    {% if excerpt %}
+    {# 超长文的节选页：只显示这一节。章节路径、第几节、上一节下一节、目录、看全文。 #}
+    <nav class="excerpt-nav" aria-label="节选">
+      <p class="excerpt-path">{% for item in excerpt.path %}{% if not loop.first %}<span aria-hidden="true"> › </span>{% endif %}<a href="{{ excerpt.base }}?section={{ item.index }}">{{ item.title }}</a>{% endfor %}</p>
+      <p class="excerpt-meta">
+        <span>节选 · 第 {{ excerpt.number }} / {{ excerpt.total }} 节</span>
+        {% if excerpt.prev %}<a href="{{ excerpt.prev }}">上一节</a>{% endif %}
+        {% if excerpt.next %}<a href="{{ excerpt.next }}">下一节</a>{% endif %}
+        <a href="{{ excerpt.full }}">看全文</a>
+      </p>
+      <form class="excerpt-find" action="/search" method="get" role="search">
+        <input type="hidden" name="article" value="{{ article.id }}">
+        <label>在本文里找 <input type="search" name="q"></label>
+      </form>
+      {% if excerpt.whole %}<p class="body-note">这一节很长，只显示相关部分前后。<a href="{{ excerpt.whole }}">显示整节</a></p>{% endif %}
+      {% if excerpt.toc %}
+      <details class="excerpt-toc">
+        <summary>目录（{{ excerpt.toc | length }} 个标题）</summary>
+        <ol>{% for item in excerpt.toc %}<li class="toc-l{{ item.level }}"><a href="{{ excerpt.base }}?section={{ item.index }}"{% if item.current %} aria-current="true"{% endif %}>{{ item.title }}</a></li>{% endfor %}</ol>
+      </details>
+      {% endif %}
+    </nav>
+    {% endif %}
     <div class="prose{% if has_translation %} with-toolbar{% endif %}"{% if has_translation and body_language == "original" %} lang="en"{% endif %}>{{ body_html }}</div>
+    {% endif %}
+    {% if excerpt and (excerpt.prev or excerpt.next) %}
+    <p class="excerpt-meta excerpt-foot">
+      {% if excerpt.prev %}<a href="{{ excerpt.prev }}">上一节</a>{% endif %}
+      {% if excerpt.next %}<a href="{{ excerpt.next }}">下一节</a>{% endif %}
+      <a href="{{ excerpt.full }}">看全文</a>
+    </p>
     {% endif %}
     {% if same_period %}
     <section class="same-period" aria-label="同期别人怎么看">
