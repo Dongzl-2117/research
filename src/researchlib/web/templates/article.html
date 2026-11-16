@@ -47,9 +47,9 @@
     {% if has_translation %}
     <div class="body-toolbar">
       <nav class="lang-tabs" aria-label="正文语言">
-        <a href="/articles/{{ article.id }}" {% if body_language == 'pairs' %}aria-current="page"{% endif %}>对照</a>
-        <a href="/articles/{{ article.id }}/zh" {% if body_language == 'zh' %}aria-current="page"{% endif %}>中文</a>
-        <a href="/articles/{{ article.id }}/original" {% if body_language == 'original' %}aria-current="page"{% endif %}>原文</a>
+        <a href="/articles/{{ article.id }}{{ quoted_query }}" {% if body_language == 'pairs' %}aria-current="page"{% endif %}>对照</a>
+        <a href="/articles/{{ article.id }}/zh{{ quoted_query }}" {% if body_language == 'zh' %}aria-current="page"{% endif %}>中文</a>
+        <a href="/articles/{{ article.id }}/original{{ quoted_query }}" {% if body_language == 'original' %}aria-current="page"{% endif %}>原文</a>
       </nav>
     </div>
     {% if not translation_complete and body_language != 'original' %}
