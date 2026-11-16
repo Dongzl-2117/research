@@ -857,3 +857,35 @@ def test_a_repeated_line_near_the_seam_is_not_taken_for_the_overlap():
         "一季度收入一百亿",
         "四季度收入一百五十亿",
     ]
+
+
+def test_a_real_overlap_of_several_lines_is_joined_even_with_scraps_on_both_sides():
+    """按顺序对上好几行的是真重叠：一段多认出一处标注、另一段多出半截行，两头各剩的零碎字合起来过了 SEAM_SLACK，
+    照样只留一份。11-15 按合起来算时，一张搜索结果页的长截图把整截重叠写了两遍。"""
+    lines = [
+        "第一名是性价比最高的住处，免费无线网络，点开看价格",
+        "离海湾小岛最近的酒店有哪些？",
+        "城里最好的度假村有哪些？",
+        "离大桥最近的酒店有哪些？",
+    ]
+    first = _units(
+        _para("十大酒店排行（起价 62 美元）"), *map(_para, lines), _para("更多结果"), _para("自然搜索结果"), kind="text"
+    )
+    second = _units(_para("页面右侧的橙色标注文字"), *map(_para, lines), _para("酒店网站的十大酒店"), kind="text")
+    texts = [block["text"] for block in join_tiles([first, second])["blocks"]]
+    assert texts == ["十大酒店排行（起价 62 美元）", *lines, "更多结果", "自然搜索结果", "酒店网站的十大酒店"]
+
+
+def test_table_rows_missing_the_merged_cell_in_one_tile_do_not_double_the_overlap():
+    """表格的合并单元格只在一段里看得到：另一段同样的几行第一格是空的，对不上，算成那一段的零碎字。
+    后面几行一字不差对上了，就是真重叠，不把整截表格写两遍（11-15 一张小程序类目表多出 10 行）。"""
+    travel = ["火车", "公交", "长途客运", "停车", "代驾", "租车"]
+    housing = [["房地产", name, "无"] for name in ("物业管理", "房地产开发经营", "房地产", "装修/建材")]
+    services = ["票务", "生活缴费", "家政"]
+    upper = [["出行与交通", name, "无"] for name in travel] + housing + [["", name, "无"] for name in services]
+    lower = [["", name, "无"] for name in travel] + housing + [["生活服务", name, "无"] for name in [*services, "丽人"]]
+    joined = join_tiles(
+        [_units({"type": "table", "rows": upper}, kind="table"), _units({"type": "table", "rows": lower}, kind="table")]
+    )
+    rows = [row for block in joined["blocks"] for row in block["rows"]]
+    assert rows == upper + [["生活服务", name, "无"] for name in [*services, "丽人"]]
