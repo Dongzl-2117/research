@@ -132,6 +132,23 @@ def test_a_neighbours_whole_chinese_written_into_a_segment_counts_too():
         [lead, lead[:-4] + body_zh[3:]]) == [0, 1]
 
 
+def test_chinese_the_original_already_wrote_is_not_copied():
+    """中文文章先引一句英文、下一段作者自己写了中文译文（线上 8505 引的名言）：那一段原文里本来就有
+    上一段译出来的中文，照原文交回自然包含它，不是串段。"""
+    quote = "<p>\"Unlearning is not about forgetting. It is about the ability to choose another mental model.\"</p>"
+    quote_zh = "<p>“破除旧学并非遗忘，而是选择另一种思维模型的能力。”</p>"
+    own = "<p>中文：“Unlearning（破除旧学）并非遗忘，而是选择另一种思维模型的能力。”</p>"
+    assert pr.copied_targets([quote, own], [quote_zh, own]) == []
+    assert pr.copied_targets([own, quote], [own, quote_zh]) == []
+    # 译出来的中文和作者写的那段一字不差，也是原文本来就有的。
+    same_zh = "<p>Unlearning（破除旧学）并非遗忘，而是选择另一种思维模型的能力。</p>"
+    assert pr.copied_targets([quote, same_zh], [same_zh, same_zh]) == []
+    assert pr.copied_targets([same_zh, quote], [same_zh, same_zh]) == []
+    # 原文里没有这段中文、是模型多写进去的，照样算：中文那段后面多带了下一段英文的整段中文。
+    note = "<p>这句话常被引用，说的是适应变化（adaptation）比积累知识更难。</p>"
+    assert pr.copied_targets([note, quote], [note[:-4] + quote_zh[3:], quote_zh]) == [0, 1]
+
+
 def test_a_batch_where_one_segment_swallowed_its_neighbour_is_asked_again_in_halves(tmp_path):
     def answer(segs, _repair):
         # 四段一起送来时第一段把第二段的中文也写了；分开送就各译各的。
