@@ -67,6 +67,9 @@ def test_real_write_jsonb_page_and_qa_use_the_same_mapping(conn, settings, monke
                              (article_id,)).fetchone()["ord"]
         quoted = client.get(f"/articles/{article_id}?chunk={chunk}").text
         assert "is-quoted" in quoted and 'class="quoted"' not in quoted
+        # 切到只看中文、原文时带着落点。
+        assert f'href="/articles/{article_id}/zh?chunk={chunk}"' in quoted
+        assert f'href="/articles/{article_id}/original?chunk={chunk}"' in quoted
 
 
 REVIEW_SQL = """

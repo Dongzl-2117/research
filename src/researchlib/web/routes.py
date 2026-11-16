@@ -98,7 +98,7 @@ from researchlib.web.present import (
     stale_sources,
     weekday_label,
 )
-from researchlib.web.quoting import mark_quoted
+from researchlib.web.quoting import mark_quoted_parts, occurrence_of
 from researchlib.web.render_cache import PAGES
 from researchlib.web.scoping import parse_day, parse_int, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
@@ -776,6 +776,44 @@ def _has_tree(conn, source_id: str) -> bool:
     return row is not None
 
 
+QUOTED_SPAN = 6  # ?chunk=A&to=B 一次最多标几块（检索的一个片段）
+
+
+def _quoted_query(quoted, request: Request) -> str:
+    if quoted is None:
+        return ""
+    query = f"?chunk={quoted['ord']}"
+    upto = parse_int(request.query_params.get("to"))
+    if upto is not None and quoted["ord"] < upto < quoted["ord"] + QUOTED_SPAN:
+        query += f"&to={upto}"
+    return query
+
+
+def _quoted_range(rows, wanted: int, upto: int | None, guests: list[str]):
+    """?chunk=A&to=B：A 到 B 这几块（同一语言、连着的块号），连同各自在同文字块里是第几处。
+
+    返回 (顶上引用框用的那一块, [(块的字, 第几处)])。B 省略或不对就只有 A 一块。
+    读者评论那几块不引（正文页的评论区不显示它们）。
+    """
+    rows = list(rows)
+    first = next((row for row in rows if row["ord"] == wanted), None)
+    if first is None or guest_comment_chunk(first, guests):
+        return None, []
+    lang = first.get("lang") or ""
+    same = [row for row in rows if (row.get("lang") or "") == lang]
+    last = upto if upto is not None and wanted <= upto < wanted + QUOTED_SPAN else wanted
+    picked = [row for row in same if wanted <= row["ord"] <= last and not guest_comment_chunk(row, guests)]
+    bodies = [row["body"] or "" for row in same]
+    targets = []
+    for row in picked:
+        index = next(i for i, other in enumerate(same) if other["ord"] == row["ord"])
+        targets.append((row["body"] or "", lambda index=index: occurrence_of(bodies, index)))
+    quoted = dict(first)
+    if len(picked) > 1:
+        quoted["body"] = "\n".join(row["body"] or "" for row in picked)
+    return quoted, targets
+
+
 def _article_view(request: Request, article_id: int, mode: str):
     """mode: auto | zh | pairs | original。auto 有对照则对照，否则单语。"""
     settings = request.app.state.settings
@@ -804,15 +842,16 @@ def _article_view(request: Request, article_id: int, mode: str):
             else {}
         )
         quoted = None
+        quoted_targets: list[tuple[str, object]] = []
         wanted = parse_int(chunk_arg) if chunk_arg is not None else None
         if wanted is not None and wanted >= 0:
             # 图片文字块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
-            quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
             # 还没清的旧帖，评论那几块里有读者的评论和昵称，正文页的评论区不显示它们，这里也不引。
-            if quoted is not None and guest_comment_chunk(
-                quoted, guest_comment_authors(article["body_md"] or "", source_owners(source)) or []
-            ):
-                quoted = None
+            guests = guest_comment_authors(article["body_md"] or "", source_owners(source)) or []
+            quoted, quoted_targets = _quoted_range(
+                queries.article_chunks(conn, article_id), wanted,
+                parse_int(request.query_params.get("to")), guests,
+            )
         banner = queries.sample_state(conn, ids)
         chat_asked = queries.recent_article_questions(conn, article_id, 3)
         translation = queries.get_translation(conn, article_id)
@@ -902,12 +941,6 @@ def _article_view(request: Request, article_id: int, mode: str):
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""
     quoted_marked = False
-    if quoted is not None and quoted_lang == "":
-        original_html, quoted_marked = mark_quoted(original_html, quoted["body"])
-        pair_original, _marked = mark_quoted(pair_original, quoted["body"])
-    elif quoted is not None and quoted_lang == "zh" and zh_html:
-        zh_html, quoted_marked = mark_quoted(zh_html, quoted["body"])
-        pair_translated, _marked = mark_quoted(pair_translated, quoted["body"])
     # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。只看中文页有中文时也不显示对照，不算。
     paired = has_translation and zh_html and mode not in {"original", "zh"}
     # 同样的输入同样的结果，按输入的哈希缓存（render_cache）。
@@ -923,13 +956,14 @@ def _article_view(request: Request, article_id: int, mode: str):
         if quoted is not None and quoted_lang in {"", "zh"}:
             from dataclasses import replace
 
-            marked = []
-            for pair in raw_pairs:
-                side = "en" if quoted_lang == "" else "zh"
-                value, found = mark_quoted(getattr(pair, side) or "", quoted["body"])
-                quoted_marked = quoted_marked or found
-                marked.append(replace(pair, **{side: value}) if found else pair)
-            raw_pairs = marked
+            # 各对的这一侧连起来当一整页找：一块常跨好几对。
+            side = "en" if quoted_lang == "" else "zh"
+            sides = [getattr(pair, side) or "" for pair in raw_pairs]
+            marked_sides, quoted_marked = mark_quoted_parts(sides, quoted_targets)
+            raw_pairs = [
+                replace(pair, **{side: value}) if value != before else pair
+                for pair, value, before in zip(raw_pairs, marked_sides, sides, strict=True)
+            ]
         pairs = [
             {
                 "en": _reading_html(request, p.en),
@@ -939,6 +973,12 @@ def _article_view(request: Request, article_id: int, mode: str):
             }
             for p in raw_pairs
         ]
+
+    # 没有对照时标单语正文。有对照就只标对照（上面），几百万字的页面不多拆一遍。
+    if not pairs and quoted is not None and quoted_lang == "" and not (mode == "zh" and zh_html):
+        (original_html,), quoted_marked = mark_quoted_parts([original_html], quoted_targets)
+    elif not pairs and quoted is not None and quoted_lang == "zh" and zh_html and mode != "original":
+        (zh_html,), quoted_marked = mark_quoted_parts([zh_html], quoted_targets)
 
     if mode == "original":
         body_language = "original"
@@ -996,6 +1036,8 @@ def _article_view(request: Request, article_id: int, mode: str):
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
             "quoted_marked": quoted_marked,
+            # 切换对照、中文、原文时带着落点，不然切过去就回到页面顶上。
+            "quoted_query": _quoted_query(quoted, request),
             # 点进文章先看总结：有摘要就放在正文前面。
             "digest_summary": (digest or {}).get("summary") or "",
             "digest_points": _digest_points(digest, limit=6) if digest else [],
