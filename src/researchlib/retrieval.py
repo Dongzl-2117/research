@@ -2609,6 +2609,12 @@ def _distinct_fragments(fragments: list[Fragment]) -> list[Fragment]:
     return kept
 
 
+def seeded_only(fragments: list[Fragment], seed_keys: set[tuple[int, int]]) -> list[Fragment]:
+    """只留峰值块是种子的片段。种子旁边补进来、没接上任何种子的块不单独列出，
+    不然总数、篇数会把前 150 块以外恰好挨着种子的块算进去，别的前 150 块以外的又不算，口径不一。"""
+    return [f for f in fragments if (f.article_id, f.peak.ord) in seed_keys]
+
+
 def cap_per_article(fragments: list[Fragment], per_article: int = FRAGMENT_PER_ARTICLE) -> list[Fragment]:
     """每篇最多 per_article 个片段，各自按分数排位；多出来的数记在它在列表里的最后一个片段上。"""
     listed: list[Fragment] = []
@@ -2643,14 +2649,14 @@ def search_fragments(
     scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
     kept = _one_language(filter_passages(scored, query))
     seeds = kept[:FRAGMENT_SEEDS] if effective.article_id is None else kept
+    seed_keys = {(p.article_id, p.ord) for p in seeds}
     if len(kept) > len(seeds):
-        # 种子以外的块只用来接在种子旁边，不单独成片段。
-        seed_keys = {(p.article_id, p.ord) for p in seeds}
+        # 种子以外的块只用来接在种子旁边，不单独成片段（拼完只留峰值是种子的，见 seeded_only）。
         near = {(p.article_id, p.ord + d) for p in seeds for d in (-2, -1, 1, 2)}
         seeds = seeds + [p for p in kept[len(seeds):] if (p.article_id, p.ord) in near and
                          (p.article_id, p.ord) not in seed_keys]
     gaps = {(row["article_id"], row["ord"]): row for row in _rows_for_keys(conn, _gap_keys(seeds))}
-    fragments = _distinct_fragments(build_fragments(seeds, gaps))
+    fragments = _distinct_fragments(seeded_only(build_fragments(seeds, gaps), seed_keys))
     counts = full_match_counts(conn, query, effective)
     if effective.article_id is not None:
         listed = sorted(fragments, key=lambda f: f.first) if by_position else fragments
