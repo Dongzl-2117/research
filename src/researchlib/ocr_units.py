@@ -692,9 +692,12 @@ def _seam_chain(up: list[_Line], low: list[_Line], upper: list[dict], lower: lis
             chain.append(matches[step])
             step = best[step][2]  # type: ignore[index]
         chain.reverse()
-        # 前一段对上以后还剩的字和后一段对上以前的字合起来也不超过 SEAM_SLACK：两头各差一点都放过的话，
+        # 只对上一句时，前一段对上以后还剩的字和后一段对上以前的字合起来也不超过 SEAM_SLACK：两头各差一点都放过的话，
         # 重叠那一截没认出字（图、空白）时，会拿接缝附近重复的一句（表格里一样的行、合计行）当接缝，中间几行被吞掉。
-        if trail + before_low[chain[0].lower[0]] > SEAM_SLACK:
+        # 按顺序对上两句以上的是真重叠，两头各剩的零碎字（只有一段认出的标注、半截的行、少了合并单元格的表格行）
+        # 照旧各自不超过 SEAM_SLACK 就放过：11-15 按合起来算重接时，线上两张长截图（表格、搜索结果页）
+        # 都把整截重叠写了两遍，没有一张找回丢的字。
+        if len(chain) == 1 and trail + before_low[chain[0].lower[0]] > SEAM_SLACK:
             continue
         if not _seam_chain_ok(chain, found[1], trail, up, low, upper, lower):
             continue

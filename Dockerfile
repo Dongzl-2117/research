@@ -1,4 +1,6 @@
-FROM python:3.12-slim-bookworm AS app
+# 底座按 digest 钉住，道理同 docker/postgres/Dockerfile：上游重推标签以后，下一次上线会重拉底座、
+# 重装 requirements.lock 里的全部包。升级单开 PR，见 docs/deploy.md「基础镜像」。
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
