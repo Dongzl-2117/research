@@ -57,6 +57,8 @@ def test_fragments_link_to_the_passage_and_expand(conn, settings, tmp_path):
         assert "<mark>资本配置</mark>的三种做法</a></h3>" in page
         assert f"/articles/{long_id}?chunk=" in page and "&amp;to=" in page
         assert "连着 " in page and "<details" in page
+        # 点进文章再回来：检索页记下地址、滚动和展开的片段，文章页据此放「返回检索结果」。
+        assert 'src="/static/search.js?v=' in page
         # 一篇最多三条，其余收进「这篇还有 N 处」，链到只在这篇里找。
         assert page.count(f'href="/articles/{long_id}?chunk=') <= 3
         assert "这篇还有 1 处" in page and f"article={long_id}" in page
