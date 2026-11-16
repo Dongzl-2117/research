@@ -52,6 +52,10 @@ PROMPT_VERSION = 3
 ALIGNMENT_VERSION = 10
 _PARA_ID = re.compile(r'\s+id="p-\d+"')
 _SRC_PARA_ATTR = re.compile(r'\s+data-src-para="\d+"')
+# 空元素的两种写法：回执里存的原文写「<br />」，译制切出来的段写「<br>」。不认成一样，带换行的段永远复用不上。
+_VOID_CLOSE = re.compile(
+    r"<(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)\b([^<>]*?)\s*/>", re.IGNORECASE
+)
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
 
@@ -471,8 +475,10 @@ def reuse_key(segment: str) -> str:
 
     和回执里的 ``source_hash`` 一样看整段 HTML（字、链接、图片、代码、标签），只是不看
     ``data-src-para`` 的编号：编号从全文开头数，前面多切出或少切出一段，后面每段的编号都变，原文其实没变。
+    空元素写成 ``<br />`` 还是 ``<br>`` 也不看：回执里的原文是 ``<br />``，``translatable_blocks`` 切出来的是 ``<br>``，
+    带换行的段字一个没变也认不出来，每次再译都重问模型，只重签时被当成要调模型（线上 22277 因此一直留着「AT&T;」）。
     """
-    return digest(canonical_html(_SRC_PARA_ATTR.sub("", segment or "")))
+    return digest(canonical_html(_VOID_CLOSE.sub(r"<\1\2>", _SRC_PARA_ATTR.sub("", segment or ""))))
 
 
 def segment_prompts(provenance: dict | None) -> dict[int, int | None]:
