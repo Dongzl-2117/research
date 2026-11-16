@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
@@ -166,6 +166,15 @@ def _limits(args: dict) -> tuple[int, int]:
     return limit, offset
 
 
+def _id(args: dict) -> int:
+    """工具参数里的编号。不是整数（含 Infinity、NaN、1.5）抛 ValueError；超出 bigint 当 0（查不到）。"""
+    value = args.get("id") or 0
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError("id 要是整数")
+    number = int(value)  # Infinity 抛 OverflowError，NaN 抛 ValueError
+    return number if -BIGINT_MAX <= number <= BIGINT_MAX else 0
+
+
 def _scope_params(args: dict) -> dict:
     return {key: str(args.get(key) or "") for key in ("author", "source", "company", "from", "to", "article")}
 
@@ -183,7 +192,7 @@ def run_tool(request: Request, name: str, args: dict):
             limit, offset = _limits(args)
             return search_payload(conn, request, _scope_params(args), sources, query, level, limit, offset)
         if name == "get_article":
-            payload = article_payload(conn, request, sources, int(args.get("id") or 0))
+            payload = article_payload(conn, request, sources, _id(args))
             if payload is None:
                 raise ToolError("没有这篇文章")
             return payload
@@ -192,7 +201,7 @@ def run_tool(request: Request, name: str, args: dict):
         if name == "get_company":
             limit, offset = _limits(args)
             depth = args.get("depth") or None
-            payload = company_payload(conn, request, sources, int(args.get("id") or 0), limit, offset, depth)
+            payload = company_payload(conn, request, sources, _id(args), limit, offset, depth)
             if payload is None:
                 raise ToolError("没有这家公司")
             return payload
@@ -200,7 +209,7 @@ def run_tool(request: Request, name: str, args: dict):
             limit, offset = _limits(args)
             kind = str(args.get("views") or "")
             author = str(args.get("author") or "").strip()
-            payload = views_payload(conn, request, sources, int(args.get("id") or 0), kind, author, limit, offset)
+            payload = views_payload(conn, request, sources, _id(args), kind, author, limit, offset)
             if payload is None:
                 raise ToolError("没有这家公司")
             return payload
@@ -231,7 +240,7 @@ def run_tool(request: Request, name: str, args: dict):
                 "next": f"整合在后台跑，隔半分钟左右调 get_answer(id={result['id']})，status 不是 running 时就是结果。",
             }
         if name == "get_answer":
-            payload = answer_payload(conn, request, sources, int(args.get("id") or 0))
+            payload = answer_payload(conn, request, sources, _id(args))
             if payload is None:
                 raise ToolError("没有这次问答")
             return _answer_for_tool(payload, _base(request))
@@ -328,8 +337,12 @@ def handle_message(request: Request, message: dict) -> dict | None:
             payload = run_tool(request, str(name), args)
         except ToolError as exc:
             return _tool_error(msg_id, str(exc))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             return _tool_error(msg_id, "参数不对")
+        except HTTPException as exc:
+            # 作者、来源、公司不存在时 resolve_scope 抛 404。以前穿出去整个请求回 500，
+            # 批量请求里别的调用的结果一起丢（审核 B8）。
+            return _tool_error(msg_id, str(exc.detail) if exc.status_code != 404 else "作者、来源或公司不存在")
         return {"jsonrpc": "2.0", "id": msg_id, "result": _result(payload)}
     return _rpc_error(msg_id, -32601, f"不支持的方法 {method}")
 

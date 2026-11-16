@@ -249,7 +249,11 @@ class SearchResult:
 
 
 _QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』')
-_EXCLUDE = re.compile(r"(?:^|\s)[-－]([^\s]+)")
+# 排除词：空格（或单行问题的开头）后面紧跟减号，减号后面紧跟汉字或字母。「利润 -30%」「A -> B」「-- 游戏」不算，
+# 多行问题里行首的「-腾讯」是列表符，也不算。引号包着的 -"词组" 先认（_QUOTED_EXCLUDE），整个词组当排除词。
+_EXCLUDE = re.compile(r"(?:^|(?<=[ \t\u3000]))[-－](?=[A-Za-z\u3400-\u9fff])([^\s]+)")
+_EXCLUDE_LINES = re.compile(r"(?<=[ \t\u3000])[-－](?=[A-Za-z\u3400-\u9fff])([^\s]+)")
+_QUOTED_EXCLUDE = re.compile(r'(?:^|(?<=\s))[-－](?:"([^"]+)"|“([^”]+)”|「([^」]+)」|『([^』]+)』)')
 _YEAR = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 _LATIN_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9.+\-]*$")
 _CJK = re.compile(r"[㐀-鿿]")
@@ -291,6 +295,16 @@ _df_cache: dict[str, tuple[int, float]] = {}
 _common_cache: dict[str, tuple[dict[str, int], float]] = {}
 # 写法 → 交给全文索引的 tsquery 文本（去掉了切词补出来的子词）。分词参数固定，进程里缓存着就行。
 _tsq_cache: dict[str, str] = {}
+# 上面两个按查询词增长：网站公开、进程不重启就一直涨。超过这么多条整个清空再攒（重算一个词几毫秒）。
+CACHE_MAX_ENTRIES = 20000
+
+
+def _cache_put(cache: dict, key, value) -> None:
+    if key not in cache and len(cache) >= CACHE_MAX_ENTRIES:
+        cache.clear()
+    cache[key] = value
+
+
 # 块数在这以下时精确统计（几十毫秒）；更大的库用表的估计行数加抽样的平均长度，不再全表扫一遍。
 EXACT_STATS_BELOW = 50000
 STATS_SAMPLE_ROWS = 20000
@@ -455,7 +469,7 @@ def _document_frequency(conn, term: Term, total: int) -> int:
             common = _common_lexemes(conn)
             if lexeme in common:
                 found = min(max(total, 1), common[lexeme])
-                _df_cache[key] = (found, now)
+                _cache_put(_df_cache, key, (found, now))
                 return found
     params: dict = {}
     tsq = _form_tsquery_sql(term.forms, params, "df")
@@ -467,7 +481,7 @@ def _document_frequency(conn, term: Term, total: int) -> int:
         params,
     ).fetchone()
     found = int(row["n"])
-    _df_cache[key] = (found, now)
+    _cache_put(_df_cache, key, (found, now))
     return found
 
 
@@ -484,10 +498,10 @@ def _usable_forms(conn, forms: list[str]) -> list[str]:
             "SELECT numnode(q) AS n, q::text AS t FROM phraseto_tsquery('chinese', %s) AS q", (form,)
         ).fetchone()
         if int(row["n"] or 0) > 0:
-            _tsq_cache[form] = reduce_phrase(row["t"])
+            _cache_put(_tsq_cache, form, reduce_phrase(row["t"]))
             usable.append(form)
         else:
-            _tsq_cache[form] = ""
+            _cache_put(_tsq_cache, form, "")
     return usable
 
 
@@ -574,14 +588,23 @@ def analyze(
     # 地址栏里的 %00 会变成 NUL 字符，Postgres 的文字不收，切词那一步就报错（检索页、问库都走这里）。
     raw = (question or "").replace("\x00", " ").strip()[:500]
     text = raw
+    excludes: list[str] = []
+    for match in _QUOTED_EXCLUDE.finditer(text):
+        phrase = next(group for group in match.groups() if group).strip()
+        if phrase and phrase not in excludes:
+            excludes.append(phrase)
+    text = _QUOTED_EXCLUDE.sub(" ", text)
     phrases: list[str] = []
     for match in _QUOTE.finditer(text):
         phrase = next(group for group in match.groups() if group)
         if phrase.strip() and phrase.strip() not in phrases:
             phrases.append(phrase.strip())
     text = _QUOTE.sub(" ", text)
-    excludes = [match.group(1) for match in _EXCLUDE.finditer(text) if match.group(1)]
-    text = _EXCLUDE.sub(" ", text)
+    exclude_pattern = _EXCLUDE_LINES if "\n" in raw else _EXCLUDE
+    for match in exclude_pattern.finditer(text):
+        if match.group(1) and match.group(1) not in excludes:
+            excludes.append(match.group(1))
+    text = exclude_pattern.sub(" ", text)
     years = sorted({int(year) for year in _YEAR.findall(text)})
 
     rows = company_rows if company_rows is not None else load_company_rows(conn)
@@ -2315,27 +2338,40 @@ def full_match_counts(conn, query: Query, scope: Scope) -> dict[str, int]:
     # 排除词也和结果列表同一条（score_rows 里写着排除词的段落不要）：每个词组都要在一块不含排除词的块里命中，
     # 或者写在标题里。以前不看排除词，线上「小程序 -广告」写着 569 篇全部命中，列表只有 504 篇，
     # 另外 65 篇写到小程序的每一块都写着广告，加来源、时间范围也翻不到。
-    if query.excludes and word_groups.terms:
+    # 只点了公司（「腾讯 -游戏」）也一样：公司按别名算命中，每家公司要在一块不含排除词的块里写到，或者写在标题里。
+    if query.excludes and query.terms:
         chunk_text = "coalesce(xc.heading, '') || chr(10) || xc.body"
         clean = " AND ".join(
             f"NOT ({_literal_sql(word, chunk_text, params, f'cnt_exclude_{index}')})"
             for index, word in enumerate(query.excludes)
         )
         by_group: dict[int, list[str]] = defaultdict(list)
-        for term in word_groups.terms:
+        company_groups: set[int] = set()
+        for term in query.terms:
             if term.group >= 0:
                 by_group[term.group].extend(form for form in term.forms if form)
+                if term.kind == "company":
+                    company_groups.add(term.group)
         for group, forms in sorted(by_group.items()):
             if not forms:
                 continue
-            words = _form_tsquery_sql(forms, params, f"cnt_clean_{group}")
+            if group in company_groups:
+                # 公司别名按字面找（和段落里数公司同一个口径），切词不一定切得出短别名。
+                # 这一篇已由 article_mentions 筛过，只在它自己的块里找。
+                written = " OR ".join(
+                    _literal_sql(form, chunk_text, params, f"cnt_clean_{group}_{index}")
+                    for index, form in enumerate(forms)
+                )
+                words_match = f"({written})"
+            else:
+                words_match = f"xc.search_tsv @@ {_form_tsquery_sql(forms, params, f'cnt_clean_{group}')}"
             titled = " OR ".join(
                 _literal_sql(form, "coalesce(a.title, '')", params, f"cnt_title_{group}_{index}")
                 for index, form in enumerate(forms)
             )
             conditions.append(
                 f"({titled} OR EXISTS (SELECT 1 FROM article_chunks xc WHERE xc.article_id = a.id"
-                f" AND xc.search_tsv @@ {words} AND {clean}))"
+                f" AND {words_match} AND {clean}))"
             )
     if not tsq and not company_ids:
         return {}

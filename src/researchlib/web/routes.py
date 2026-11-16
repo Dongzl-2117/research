@@ -26,8 +26,6 @@ from researchlib.author_voice import hide_from_site
 from researchlib.boilerplate import clean_article
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
-from researchlib.digest import digest_due, schedule_digests
-from researchlib.digest import needs_rewrite as digest_needs_rewrite
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
@@ -35,7 +33,8 @@ from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.housekeeping import strip_housekeeping
 from researchlib.image_size import size_images
-from researchlib.llm import active_label, active_model_id, llm_configured, missing_credential_text
+from researchlib.ingest.archive import DOCUMENT_TREE_KINDS
+from researchlib.llm import active_model_id, llm_configured
 from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.nested_copies import fold_nested_copies
@@ -68,7 +67,6 @@ from researchlib.translate.display import (
 from researchlib.translate.remote_media import bilingual_sources
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import list_marks as view_marks
-from researchlib.views import queue_for_company as queue_views
 from researchlib.views import quote_repeats, same_period
 from researchlib.views import timeline as view_timeline
 from researchlib.visibility import is_hidden
@@ -89,6 +87,7 @@ from researchlib.web.present import (
     format_date,
     format_iso,
     group_days,
+    is_english,
     market_label,
     month_series,
     order_cards,
@@ -100,9 +99,10 @@ from researchlib.web.present import (
     weekday_label,
 )
 from researchlib.web.quoting import mark_quoted
-from researchlib.web.scoping import parse_day, resolve_scope
+from researchlib.web.render_cache import PAGES
+from researchlib.web.scoping import parse_day, parse_int, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
-from researchlib.zsxq_comments import source_owners
+from researchlib.zsxq_comments import guest_comment_authors, guest_comment_chunk, source_owners
 from researchlib.zsxq_title import (
     TITLE_LIMIT,
     repairs_source,
@@ -118,6 +118,8 @@ TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "tem
 TEMPLATES.env.filters["answer_html"] = answer_html
 TEMPLATES.env.globals["asset"] = asset_url
 TEMPLATES.env.filters["highlight_full"] = highlight_full
+# 英文标题和英文原文标 lang="en"，读屏和浏览器的断字、翻译提示按英文处理（审核 F11）。
+TEMPLATES.env.tests["english"] = is_english
 TEMPLATES.env.filters["highlight_snippet"] = lambda text, terms, radius=110: highlight_snippet(
     text, "", radius=radius, terms=list(terms or [])
 )
@@ -387,6 +389,56 @@ def retitle_views(conn, items: list[dict], by_id: dict, zone: str) -> list[dict]
     return items
 
 
+WITHHELD_TITLE = "这条出处已不展示"
+WITHHELD_NOTE = (
+    "这条回答引用的原文现在已不在网站上展示（文章隐藏了，或来源停用了），回答和出处都收起来了。"
+    "要看现在的结果，请重新问一次。"
+)
+
+
+def withhold_citations(conn, citations: list[dict], sources) -> tuple[list[dict], int]:
+    """问库存下的是提问当时的段落全文。之后文章被隐藏（网友帖、「图片」评论壳）或来源停用，
+    这里把那几条的标题、正文、链接都去掉，只留编号，和文章页、检索一个口径（queries.visible_article_ids）。
+
+    返回 (处理后的出处, 回答里引用了的、被收起的条数)。条数不为 0 时，回答正文多半转述了收起的原文，调用方整条收起。
+    """
+    ids = [item.get("article_id") for item in citations if item.get("article_id") is not None]
+    if not ids:
+        return citations, 0
+    visible = queries.visible_article_ids(conn, ids, [source.id for source in sources])
+    kept: list[dict] = []
+    cited = 0
+    for item in citations:
+        article_id = item.get("article_id")
+        if article_id is None or int(article_id) in visible:
+            kept.append(item)
+            continue
+        cited += 1 if item.get("cited") else 0
+        kept.append(
+            {
+                "n": item.get("n"),
+                "cited": item.get("cited", False),
+                "withheld": True,
+                "article_id": None,
+                "ord": None,
+                "title": WITHHELD_TITLE,
+                "heading": "",
+                "text": "",
+                "before": "",
+                "after": "",
+                "source_id": "",
+                "source": "",
+                "author": "",
+                "date": "",
+                "url": "",
+                "lang": "",
+                "matched": [],
+                "semantic": False,
+            }
+        )
+    return kept, cited
+
+
 def cited_titles(conn, citations: list[dict], sources, zone: str) -> list[dict]:
     """问库出处里的标题是写回答时存下的快照（星球的「泡泡玛特：」、正文开头截下的半句），
     换成按现在的库算的、和卡片一样的标题再显示。核对引用照旧用快照，那是模型当时读到的。"""
@@ -399,47 +451,50 @@ def cited_titles(conn, citations: list[dict], sources, zone: str) -> list[dict]:
     ]
 
 
-def _decorate(conn, cards: list[dict], settings) -> list[dict]:
-    """给卡片挂上公司标签和 LLM 摘要。缺摘要的排进后台，不在这次请求里等模型。"""
+def _decorate(conn, cards: list[dict]) -> list[dict]:
+    """给卡片挂上公司标签和库里现成的 LLM 摘要。
+
+    缺摘要的卡片照常显示正文摘录，等抓取脚本和夜间任务补（research-digest）。页面不调模型、不排队：
+    11-14 以前这里把缺摘要和要重写的排进后台线程，公开页面谁都能开，没有每天的上限。
+    """
     ids = [card["id"] for card in cards]
     tags = queries.article_tags(conn, ids, per_article=12)
     digests = queries.digests_for(conn, ids)
-    pending: list[tuple[int, str]] = []
     for card in cards:
         card["tags"] = _visible_tags(card, tags.get(card["id"], []))
         digest = digests.get(card["id"])
         if digest and not card.get("summary"):
+            # 旧版提示词写的、或当时只读了长文开头的摘要也照常显示，批量任务会重写。
             card["summary"] = digest["summary"]
             card["points"] = _digest_points(digest)
-            if digest_needs_rewrite(digest):
-                # 旧版提示词写的、或当时只读了长文开头的摘要先照常显示，后台重写。
-                pending.append((card["id"], card.get("author") or ""))
-        elif not card.get("summary"):
-            pending.append((card["id"], card.get("author") or ""))
     _repair_zsxq_titles(conn, cards)
     for card in cards:
         card.pop("body_text", None)
         card.pop("owners", None)
-    if pending:
-        schedule_digests(settings, pending)
     return cards
 
 
 def _feed_days(conn, rows, by_id, settings):
     cards = [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows]
-    return group_days(order_cards(_decorate(conn, cards, settings)))
+    return group_days(order_cards(_decorate(conn, cards)))
 
 
 def _query_string(**params) -> str:
     return urlencode({key: value for key, value in params.items() if value not in (None, "", 0)})
 
 
+# 页码封顶：再往后都是空页。以前不封顶，「page=10^23」在只按作者列文章的检索里让 OFFSET 越界，回 500（审核 B4）。
+MAX_PAGE = 10_000
+
+
 def _page_arg(request: Request) -> int:
-    raw = request.query_params.get("page", "1")
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return 1
+    return _page_number(request.query_params.get("page"))
+
+
+def _page_number(raw: str | None) -> int:
+    """页码：取不到（空、不是整数、「²」这类 isdigit 为真 int 却认不了的字）当第 1 页，封顶 MAX_PAGE。"""
+    number = parse_int(raw)
+    return 1 if number is None else min(MAX_PAGE, max(1, number))
 
 
 def _load_feed(conn, source_ids: list[str], settings, page: int, *, owner_only: bool = False):
@@ -732,21 +787,16 @@ def _article_view(request: Request, article_id: int, mode: str):
         article = queries.get_article(conn, article_id, ids)
         if article is None:
             raise HTTPException(status_code=404)
-        if hide_from_site(article.get("raw_meta"), article.get("title")):
-            raise HTTPException(status_code=404)
         images = queries.article_images(conn, article_id)
         source = by_id[article["source_id"]]
         if article["duplicate_of"] is None:
-            # 这一篇的图片文字若还是原始识别行，先整理再决定要不要重写摘要。不扫别的文章。
+            # 这一篇的图片文字若还是原始识别行，先整理（不调模型）。不扫别的文章。
             new_hash = refresh_article_ocr(conn, article_id)
             if new_hash != (article.get("ocr_hash") or ""):
                 article = {**article, "ocr_hash": new_hash}
         digest = queries.digests_for(conn, [article_id]).get(article_id)
         hidden = is_hidden(article["raw_meta"])
         hidden_reason = str((article["raw_meta"] or {}).get("hidden") or "")
-        # 短文的图片文字变了也重写摘要。不进列表的不排进后台。
-        if digest_due(article, digest) and not hidden:
-            schedule_digests(settings, [(article_id, source.author)])
         # 只用来把估错位置的图挪回去；图本来就在原文位置的来源不挪。
         ocr_texts = (
             queries.image_ocr_texts(conn, article_id)
@@ -754,10 +804,15 @@ def _article_view(request: Request, article_id: int, mode: str):
             else {}
         )
         quoted = None
-        if chunk_arg is not None and chunk_arg.isdigit():
-            wanted = int(chunk_arg)
+        wanted = parse_int(chunk_arg) if chunk_arg is not None else None
+        if wanted is not None and wanted >= 0:
             # 图片文字块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
             quoted = next((row for row in queries.article_chunks(conn, article_id) if row["ord"] == wanted), None)
+            # 还没清的旧帖，评论那几块里有读者的评论和昵称，正文页的评论区不显示它们，这里也不引。
+            if quoted is not None and guest_comment_chunk(
+                quoted, guest_comment_authors(article["body_md"] or "", source_owners(source)) or []
+            ):
+                quoted = None
         banner = queries.sample_state(conn, ids)
         chat_asked = queries.recent_article_questions(conn, article_id, 3)
         translation = queries.get_translation(conn, article_id)
@@ -842,7 +897,7 @@ def _article_view(request: Request, article_id: int, mode: str):
         if mode == "zh":
             # 导出写了两遍的引文、列表项、脚注：和原文页、对照页一样收成一份。在原文上认，再按位置收中文。
             # 连着写两遍的同一张图只留一张。
-            zh_html = drop_repeated_images(fold_translated_copies(pair_original, zh_html))
+            zh_html = PAGES.call("zh-copies", _fold_zh_copies, pair_original, zh_html)
         zh_html = inline_image_ocr(zh_html, ocr_texts, host=source.author)
     # 引用的那一块：在正文里找到它覆盖的段落，高亮并滚过去；找不到才用顶上的框。
     quoted_lang = (quoted or {}).get("lang") or ""
@@ -853,9 +908,11 @@ def _article_view(request: Request, article_id: int, mode: str):
     elif quoted is not None and quoted_lang == "zh" and zh_html:
         zh_html, quoted_marked = mark_quoted(zh_html, quoted["body"])
         pair_translated, _marked = mark_quoted(pair_translated, quoted["body"])
-    # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。
-    paired = has_translation and zh_html and mode != "original"
-    pair_display = article_pairs(
+    # 点了「原文」时原文已经收过重复（上面），和译文配不上，也用不着对照。只看中文页有中文时也不显示对照，不算。
+    paired = has_translation and zh_html and mode not in {"original", "zh"}
+    # 同样的输入同样的结果，按输入的哈希缓存（render_cache）。
+    pair_display = PAGES.call(
+        "pairs", article_pairs,
         pair_original, pair_translated, provenance=translation.get("provenance"),
         canonical_source=pairing.check, canonical_target=translation["body_html"],
         ocr_texts=ocr_texts, host=source.author,
@@ -956,6 +1013,10 @@ def _article_view(request: Request, article_id: int, mode: str):
     )
 
 
+def _fold_zh_copies(pair_original: str, zh_html: str) -> str:
+    return drop_repeated_images(fold_translated_copies(pair_original, zh_html))
+
+
 @router.get("/articles/{article_id}")
 def article_page(request: Request, article_id: int):
     return _article_view(request, article_id, "auto")
@@ -1011,9 +1072,12 @@ def _source_tree(request: Request, source_id: str, article_id: int | None):
     with database(request) as conn:
         sources = active_sources(request, conn)
         source = _source_map(sources).get(source_id)
-        if source is None:
+        # 只有按目录导入的来源（飞书）有目录页。别的来源走这里会绕开文章页的处理：
+        # 星球帖的评论区不按星主过滤，读者的评论和昵称会露出来。
+        if source is None or source.kind not in DOCUMENT_TREE_KINDS:
             raise HTTPException(status_code=404)
-        rows = load_tree_rows(conn, source_id)
+        # 目录里也不列网站不展示的那几篇（网友帖、「图片」评论壳），它们下面的子篇跟着不列。
+        rows = [row for row in load_tree_rows(conn, source_id) if not hide_from_site(row["raw_meta"], row["title"])]
         parents = {row["parent_id"] for row in rows if row["parent_id"] is not None}
         root, orphans = arrange_tree(rows)
         if source.kind == "feishu":
@@ -1070,8 +1134,6 @@ def article_revisions(request: Request, article_id: int):
         article = queries.get_article(conn, article_id, ids)
         if article is None:
             raise HTTPException(status_code=404)
-        if hide_from_site(article.get("raw_meta"), article.get("title")):
-            raise HTTPException(status_code=404)
         rows = revision_log.versions(conn, article)
         banner = queries.sample_state(conn, ids)
     current = rows[0]
@@ -1120,7 +1182,7 @@ def duplicates_page(request: Request):
     """认出来的重复：主版本和指向它的几份，重合比例，认错了点「不是同一篇」。"""
     settings = request.app.state.settings
     raw_article = request.query_params.get("article") or ""
-    only = int(raw_article) if raw_article.isdigit() else None
+    only = parse_int(raw_article)
     with database(request) as conn:
         sources = active_sources(request, conn)
         ids = [source.id for source in sources]
@@ -1299,7 +1361,7 @@ def search_page(request: Request):
                     },
                 )
             )
-        results = _decorate(conn, results, settings)
+        results = _decorate(conn, results)
     total_all = sum(count_map.values())
     total = found.total if found else 0
     available = found.available if found else 0
@@ -1491,7 +1553,7 @@ def _company_tab(params, has_views: bool) -> str:
 def company_page(request: Request, company_id: int):
     """一家公司。有判断的分三页：概览（各位作者现在怎么看、主要论点）、判断（一条一行）、文章（谁在什么时候谈它）。
 
-    每一页只取自己要的数。判断和论点都是库里现成的，这一页不调模型；缺的在后台排队，不挡页面。
+    每一页只取自己要的数。判断和论点都是库里现成的，这一页不调模型、也不排队；缺的等夜间任务和手动批量补。
     """
     settings = request.app.state.settings
     zone = settings.display_timezone
@@ -1510,17 +1572,13 @@ def company_page(request: Request, company_id: int):
         banner = queries.sample_state(conn, all_ids)
         who = _company_authors(queries.company_source_stats(conn, company_id, all_ids), by_id, settings)
         items = retitle_views(conn, view_timeline(conn, company_id, by_id, settings), by_id, zone)
-        # 「还有几篇没整理」：判断和文章两页按当前筛的作者算，概览按全部；排队总是按全部来源。
+        # 「还有几篇没整理」：判断和文章两页按当前筛的作者算，概览按全部。只数，不排队：夜间任务每晚补一批。
         pending_all = count_view_pending(conn, company_id, all_ids)
         pending = (
             count_view_pending(conn, company_id, [item.id for item in grouped[author]]) if author else pending_all
         )
-        if pending_all:
-            queue_views(conn, settings, company_id, by_id)
-        # 论点：判断归成的几条。缺了或过期了在后台重算，不挡页面。
+        # 论点：判断归成的几条，库里现成的。缺了或过期了等 research-theses 重算。
         theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
-        if settings.theses_auto_enabled and thesis_map.needs_build(conn, company_id, by_id, settings):
-            thesis_map.schedule(settings, company, by_id)
         tab = _company_tab(params, bool(items))
         context = {
             "nav": "companies",
@@ -1552,7 +1610,7 @@ def company_page(request: Request, company_id: int):
                 author=author,
                 stance=params.get("stance") or "",
                 thesis_key=key,
-                page=int(raw_page) if raw_page.isdigit() else 1,
+                page=_page_number(raw_page),
             )
             company_brief.decorate_views(block["items"], quote_repeats)
             block.update(pending=pending, pending_author=author)
@@ -1625,7 +1683,6 @@ def _company_articles(request: Request, conn, company, by_id: dict, grouped: dic
             )
             for row in articles
         ],
-        settings,
     )
     by_year: list[dict] = []
     for card in rows:
@@ -1691,12 +1748,13 @@ def day_page(request: Request, day: str):
             _decorate(
                 conn,
                 [_card(row, by_id[row["source_id"]], settings, zone=FEED_ZONE) for row in rows],
-                settings,
             )
         )
         previous, following = queries.neighbor_days(conn, scope, found)
         elsewhere = tuple(source.id for source in sources if not source.timeline)
         saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id, elsewhere)
+        # 后来被隐藏或来源停用的原文不再展示；这天的汇总引用了它们就整条不放（R6）。
+        withheld = withhold_citations(conn, saved["citations"] or [], sources)[1] if saved else 0
         company = queries.get_company(conn, info["company"]) if info["company"] else None
         banner = queries.sample_state(conn, [source.id for source in sources])
     brief = compose_day_brief(cards)
@@ -1711,7 +1769,7 @@ def day_page(request: Request, day: str):
     ask_href = f"/ask?preset=day&from={key}&to={key}" + (f"&{scope_query}" if scope_query else "")
 
     answer = None
-    if saved:
+    if saved and not withheld:
         # 按钮问的是一段给模型的指令，标题换成它问的事；出处只列回答里引了的。
         answer = {
             "id": saved["id"],
@@ -1781,8 +1839,6 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
         "tree": tree,
         "authors": list(_author_groups(sources)[1]),
         "llm_ready": llm_configured(request.app.state.settings),
-        "llm_label": active_label(request.app.state.settings),
-        "credential_notice": missing_credential_text(request.app.state.settings),
         "model": active_model_id(request.app.state.settings),
         "history": queries.recent_answers(conn, 15),
         "ask_models": ask_model_menu(request.app.state.settings),
@@ -1805,7 +1861,7 @@ def ask_page(request: Request):
 
 @router.post("/ask")
 async def ask_submit(request: Request):
-    """先检索原文、登记整合，马上跳到回答页；模型在后台写，回答页自己刷新。"""
+    """先检索原文、登记整合，马上跳到回答页；模型在后台写，回答页由 article-chat.js 轮询刷新。"""
     if not _same_origin(request):
         raise HTTPException(status_code=403, detail="跨站请求被拒绝")
     form = await request.form()
@@ -1867,19 +1923,27 @@ def ask_answer(request: Request, answer_id: int):
         labels = feedback_marks(conn, answer_id)
         citations = row["citations"] or []
         zone = request.app.state.settings.display_timezone
+        # 后来被隐藏的文章、停用来源的原文不再展示；引用了它们的回答整条收起（R6）。
+        citations, withheld = withhold_citations(conn, citations, sources)
         shown = cited_titles(conn, citations, sources, zone)
-        missing = cited_titles(conn, labels["missing"], sources, zone)
+        # 补的「漏了的文章」只列现在还展示的，不按编号把隐藏文章的标题显示出来（B3）。
+        visible_missing = queries.visible_article_ids(
+            conn, [item["article_id"] for item in labels["missing"]], [source.id for source in sources]
+        )
+        missing = cited_titles(
+            conn, [item for item in labels["missing"] if item["article_id"] in visible_missing], sources, zone
+        )
     result = {
         "id": row["id"],
         "question": row["question"],
-        "answer": row["answer"],
-        "error": row["error"],
+        "answer": None if withheld else row["answer"],
+        "error": WITHHELD_NOTE if withheld else row["error"],
         "status": row["status"],
         "model": row["model"],
         "citations": shown,
         "terms": row["terms"] or [],
         "created": format_date(row["created_at"], zone),
-        "checks": _safe_checks(row, citations, sources),
+        "checks": [] if withheld else _safe_checks(row, citations, sources),
         "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
         "missing": missing,
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
@@ -1917,9 +1981,10 @@ async def ask_feedback(request: Request, answer_id: int):
             raise HTTPException(status_code=404)
         if label == "irrelevant":
             try:
-                article_id = int(str(form.get("article") or ""))
-                chunk_raw = str(form.get("chunk") or "")
-                chunk = int(chunk_raw) if chunk_raw.isdigit() else None
+                article_id = parse_int(str(form.get("article") or ""))
+                if article_id is None:
+                    raise ValueError("缺少文章")
+                chunk = parse_int(str(form.get("chunk") or ""))
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="缺少文章") from exc
             toggle_irrelevant(conn, answer_id, article_id, chunk)
@@ -1927,7 +1992,13 @@ async def ask_feedback(request: Request, answer_id: int):
             return RedirectResponse(f"/ask/{answer_id}" + (f"#c-{anchor}" if anchor.isdigit() else ""), status_code=303)
         if label == "missing":
             try:
-                add_missing(conn, answer_id, str(form.get("ref") or ""), str(form.get("note") or ""))
+                add_missing(
+                    conn,
+                    answer_id,
+                    str(form.get("ref") or ""),
+                    str(form.get("note") or ""),
+                    source_ids=[source.id for source in active_sources(request, conn)],
+                )
             except ValueError as exc:
                 code = "absent" if str(exc).startswith("库里没有") else "ref"
                 return RedirectResponse(f"/ask/{answer_id}?feedback_error={code}#missing", status_code=303)

@@ -230,3 +230,143 @@ def test_jump_skips_days_that_only_have_a_comment_shell(conn, settings):
         jumped = client.get("/", params={"date": "2026-10-26"}, follow_redirects=False)
         assert jumped.status_code == 303
         assert jumped.headers["location"] == "/#d-2026-10-25"
+
+
+def _store_docs(conn, settings, source_id, docs):
+    store_documents(
+        conn,
+        source=_source(settings, source_id),
+        docs=docs,
+        data_dir=settings.data_dir,
+        archive_files=len(docs),
+        images_in_archive=0,
+        errors=[],
+    )
+
+
+def _id(conn, external_id):
+    return conn.execute("SELECT id FROM articles WHERE external_id = %s", (external_id,)).fetchone()["id"]
+
+
+def test_every_entry_by_article_id_hides_guest_posts(conn, settings):
+    """按编号打开一篇的入口都和文章页一样：目录页、改动页、问库「只问这篇」、认错重复、接口、MCP。
+
+    以前文章页 404，换成 /sources/<来源>/tree/<编号> 就能读到网友帖的标题和正文。
+    """
+    when = datetime(2026, 10, 27, 16, 52, tzinfo=SHANGHAI)
+    _store_docs(
+        conn,
+        settings,
+        "fangwei-zsxq",
+        [
+            ParsedDoc(
+                external_id="guest-tree",
+                title="网友问的一句腰斩",
+                published_at=when,
+                body_md="网友问的一句腰斩，正文不该在网站上出现。\n",
+                raw_meta={
+                    "format": "markdown",
+                    "filename": "guest-tree.md",
+                    "poster_name": "王小明",
+                    "poster_role": "guest",
+                    "topic_id": "guest-tree",
+                },
+                image_refs=[],
+            ),
+            ParsedDoc(
+                external_id="owner-tree",
+                title="星主的长判断",
+                published_at=when.replace(hour=18),
+                body_md="这是星主自己的长文判断，多写一点免得被当成空壳。\n",
+                raw_meta={
+                    "format": "markdown",
+                    "filename": "owner-tree.md",
+                    "poster_name": "方伟Rey",
+                    "poster_role": "owner",
+                    "topic_id": "owner-tree",
+                },
+                image_refs=[],
+            ),
+        ],
+    )
+    guest_id = _id(conn, "guest-tree")
+    owner_id = _id(conn, "owner-tree")
+
+    with TestClient(create_app(settings)) as client:
+        # 星球不是按目录导入的来源，没有目录页：网友帖、星主帖都 404（星主帖走这里会绕开评论区只留星主的过滤）。
+        for path in (
+            "/sources/fangwei-zsxq/tree",
+            f"/sources/fangwei-zsxq/tree/{guest_id}",
+            f"/sources/fangwei-zsxq/tree/{owner_id}",
+        ):
+            page = client.get(path)
+            assert page.status_code == 404, path
+            assert "网友问的一句腰斩" not in page.text
+
+        assert client.get(f"/articles/{guest_id}/revisions").status_code == 404
+        assert client.get(f"/articles/{guest_id}/zh").status_code == 404
+        assert client.get(f"/articles/{guest_id}/original").status_code == 404
+        assert client.post(f"/duplicates/{guest_id}/separate", follow_redirects=False).status_code == 404
+
+        # 问库「只问这篇」：页面不报出网友帖的标题。
+        ask = client.get("/ask", params={"article": str(guest_id)})
+        assert ask.status_code == 200
+        assert "网友问的一句腰斩" not in ask.text
+        assert "星主的长判断" in client.get("/ask", params={"article": str(owner_id)}).text
+
+        call = client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": "get_article", "arguments": {"id": guest_id}}},
+        ).json()
+        assert "网友问的一句腰斩" not in str(call)
+        assert call["result"]["isError"] is True
+
+        assert client.get(f"/articles/{owner_id}").status_code == 200
+        assert client.get(f"/articles/{owner_id}/revisions").status_code == 200
+
+
+def test_feishu_tree_leaves_out_hidden_pages(conn, settings):
+    """飞书目录照常能看；万一某页带着网友帖或评论壳的标记（发帖人不是作者），目录里不列，直接打开也 404。"""
+    from researchlib.doctree import ROOT_TITLE, build_doc_tree
+
+    def doc(name, title, body, extra=None):
+        return ParsedDoc(
+            external_id=f"docs/{name}",
+            title=title,
+            published_at=None,
+            body_md=body,
+            raw_meta={"format": "markdown", "parent": "docs", "filename": name, **(extra or {})},
+            image_refs=[],
+        )
+
+    _store_docs(
+        conn,
+        settings,
+        "linwenfeng-feishu",
+        [
+            doc("主页__root.md", ROOT_TITLE, "[拼多多](拼多多投资研究__a.md)\n"),
+            doc(
+                "拼多多投资研究__a.md",
+                "拼多多投资研究",
+                "拼多多的总纲。\n\n[物流](物流__c.md)\n\n[读者问答](读者问答__d.md)\n",
+            ),
+            doc("物流__c.md", "物流", "全托管和物流的确定性。\n"),
+            doc("读者问答__d.md", "读者问答", "读者自己写的一段，不该在网站上出现。\n", {"poster_name": "王小明"}),
+        ],
+    )
+    build_doc_tree(conn, "linwenfeng-feishu")
+    root = _id(conn, "docs/拼多多投资研究__a.md")
+    leaf = _id(conn, "docs/物流__c.md")
+    hidden = _id(conn, "docs/读者问答__d.md")
+
+    with TestClient(create_app(settings)) as client:
+        tree = client.get("/sources/linwenfeng-feishu/tree")
+        assert tree.status_code == 200
+        assert f"/sources/linwenfeng-feishu/tree/{leaf}" in tree.text
+        assert f"/sources/linwenfeng-feishu/tree/{hidden}\"" not in tree.text
+        assert client.get(f"/sources/linwenfeng-feishu/tree/{root}").status_code == 200
+        assert client.get(f"/sources/linwenfeng-feishu/tree/{leaf}").status_code == 200
+        gone = client.get(f"/sources/linwenfeng-feishu/tree/{hidden}")
+        assert gone.status_code == 404
+        assert "不该在网站上出现" not in gone.text

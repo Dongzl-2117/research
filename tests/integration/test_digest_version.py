@@ -1,4 +1,4 @@
-"""摘要提示词换了版本：旧摘要照常显示，被看到或跑 research-digest 时按新版重写。"""
+"""摘要提示词换了版本：旧摘要照常显示，跑 research-digest 时按新版重写；打开网页不重写。"""
 
 import os
 
@@ -24,12 +24,9 @@ def test_old_digests_still_show_and_get_rewritten(conn, settings, monkeypatch):
         (row["id"], row["content_hash"], Jsonb(["旧要点"])),
     )
     conn.commit()
-    queued = []
-    monkeypatch.setattr("researchlib.web.routes.schedule_digests", lambda _settings, jobs: queued.extend(jobs))
     with TestClient(create_app(settings)) as client:
         home = client.get("/").text
         assert "旧版导读：腾讯广告" in home
-    assert row["id"] in [article_id for article_id, _author in queued]
     assert [item["id"] for item in digest_mod.rows_needing_digest(conn, [row["id"]])] == [row["id"]]
     pending = digest_mod.pending_articles(conn, [row["source_id"]], 50)
     # 没有摘要的排在只是版本旧了的前面。

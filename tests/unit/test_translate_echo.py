@@ -50,6 +50,35 @@ def test_only_whole_english_sentences_handed_back_count_as_untranslated():
     assert not pr.untranslated_english(title, title)
 
 
+def test_footnotes_that_are_lists_of_source_urls_may_stay_as_they_are():
+    # 脚注里一串出处网址：网址里的 the、of、and 不算词，模型照原样留着（或只译了前面几个字）都不算没译。
+    graph = (
+        "<li>Graph compiled from http://www.example.com/2004/10/12/the_share_of_the_market/, "
+        "http://news.example.org/archive/2005/how-the-player-took-the-lead-in-the-us.htm, "
+        "http://www.example.net/apps/news?pid=archive&amp;refer=us&amp;sid=a1, "
+        "http://example.com/new_players_and_an _upgrade_for_the_phone_users.htm "
+        '<a href="#rf16-40">↩</a></li>'
+    )
+    assert not pr.untranslated_english(graph, graph)
+    assert not pr.untranslated_english(graph, graph.replace("Graph compiled from", "图表数据来自"))
+    cite = (
+        "<li>Doe, Jane, A Brief History of the Player, Example Weekly, "
+        "http://www.example.com/index.php/articles/comments/instant-expert-a-brief-history-of-the-player/ "
+        '<a href="#rf24-40">↩</a></li>'
+    )
+    assert not pr.untranslated_english(cite, cite)
+    sources = (
+        "<li>Sources include: http://www.example.com/reviews_the_phone_vs_the_other_one.html "
+        "http://blog.example.org/2007/07/25/the-phone-v-the-other-side-by-side-two-week-comparison/ "
+        "https://www.example.net/blogs-op-ed/the-wire/five-reasons-to-wait-on-the-bold.htm</li>"
+    )
+    assert not pr.untranslated_english(sources, sources)
+    # 成句的英文里夹着网址，照原样交回仍是没译。
+    with_url = S2[:-5] + " (see http://www.example.com/the-report-of-the-year).</p>"
+    assert pr.untranslated_english(with_url, with_url)
+    assert not pr.untranslated_english(with_url, Z2)
+
+
 def test_a_segment_handed_back_in_english_makes_the_batch_be_asked_again_in_halves(tmp_path):
     conn, result, calls = run(S1 + S2 + S3, _merging, tmp_path)
     stored = conn.writes[-1]

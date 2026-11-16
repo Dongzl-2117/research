@@ -17,7 +17,10 @@ services:
       - -c
       - shared_buffers=256MB
       - -c
-      - max_connections=30
+      # 网页每个请求（每张图、每次 /health）开一条，批量命令每个 worker 常驻一条（--workers 16 就是 17 条），
+      # 夜间任务、抓取、问库后台再各占几条。30 条时补积压加上一篇十几张图的文章就可能撞上限，新连接被拒、页面 500
+      # （审核 O2）。一条空闲连接几 MB，100 条对这台机器不算什么。改这一行，上线时 db 容器重建一次（几秒）。
+      - max_connections=100
       - -c
       - work_mem=8MB
       - -c

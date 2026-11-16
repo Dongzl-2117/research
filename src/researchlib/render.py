@@ -106,9 +106,18 @@ def _safe_link(value: str) -> bool:
     return scheme is None or scheme.group(1).lower() in _LINK_SCHEMES
 
 
+_URL_CONTROL = re.compile(r"[\x00-\x20\x7f]")
+
+
 def _local_path(value: str) -> bool:
-    """外部图片不外链：图片只认站内路径（rewrite_*_images 已经换成 /media/...）。"""
+    """外部图片不外链：图片只认站内路径（rewrite_*_images 已经换成 /media/...）。
+
+    浏览器解析地址时先删掉中间的制表符、换行：「/&#9;/外部主机/图」到浏览器里是「//外部主机/图」。
+    这里的值已经解开了字符实体，中间带空白或控制字符的一律不认。
+    """
     path = value.strip()
+    if _URL_CONTROL.search(path):
+        return False
     return path.startswith("/") and not path.startswith("//") and "\\" not in path
 
 
@@ -286,7 +295,17 @@ def image_anchor(content_hash: str) -> str:
 
 
 def _anchor_images(html: str) -> str:
-    return _LOCAL_IMG.sub(lambda m: f'<img id="{image_anchor(m.group(3))}"{m.group(1)}src="{m.group(2)}"', html)
+    """同一张图在一篇里出现几次时只给第一次挂 id：id 重复时 #img-… 只能跳到第一处，页面也不合法（审核 F16）。"""
+    seen: set[str] = set()
+
+    def anchor(match: re.Match[str]) -> str:
+        name = image_anchor(match.group(3))
+        if name in seen:
+            return match.group(0)
+        seen.add(name)
+        return f'<img id="{name}"{match.group(1)}src="{match.group(2)}"'
+
+    return _LOCAL_IMG.sub(anchor, html)
 
 
 # 识图只用来判断这张图该挨着哪一段，字本身不进阅读页。

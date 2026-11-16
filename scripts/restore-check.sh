@@ -1,7 +1,7 @@
 #!/bin/bash
 # 每月试恢复一次：把最新一份导出恢复到临时库 research_restore_check，核对篇数，然后删掉临时库。
 # 只是演练，不碰正式库。恢复不出来、或者篇数对不上，退出码非 0，日志里写原因。
-# 结果写进 data/status/restore-check.json，失败或四十天没成功时 health.notices 会列出来。
+# 结果写进 data/status/restore-check.json，失败或四十天没成功时 docker compose exec app research-status 会报出来。
 #
 #   BACKUP_DIR=/Volumes/备份盘/research scripts/restore-check.sh
 set -Eeuo pipefail
@@ -50,7 +50,15 @@ run_step "恢复 $(basename "$latest")" compose exec -T db pg_restore -U researc
   --exit-on-error < "$latest"
 
 restored="$(compose exec -T db psql -U research -d "$CHECK_DB" -Atc 'SELECT count(*) FROM articles' | tr -d '[:space:]')"
-expected="$(cat "$latest.articles" 2>/dev/null || echo 0)"
+# 导出时记下的篇数（backup.sh 写的 .articles）。没有这个文件就核不了篇数，不能当成通过（以前按 0 篇比，恒过）。
+expected="$(tr -d '[:space:]' < "$latest.articles" 2>/dev/null || true)"
+case "$expected" in
+  '' | *[!0-9]*)
+    log "试恢复失败：${latest}.articles 不在或不是数字，核不了篇数（恢复出 ${restored} 篇）"
+    status_fail "$(basename "$latest") 旁边没有篇数记录（.articles），核不了篇数"
+    exit 1
+    ;;
+esac
 if [ "$restored" -lt "$expected" ]; then
   log "试恢复失败：${latest} 恢复出 ${restored} 篇，导出时有 ${expected} 篇"
   status_fail "$(basename "$latest") 恢复出 ${restored} 篇，导出时有 ${expected} 篇"

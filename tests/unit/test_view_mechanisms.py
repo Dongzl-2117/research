@@ -1,10 +1,11 @@
 """OCR 旁路、引用规范化、补抽缺口的纯逻辑、星球发帖人、论点的边和重叠。"""
 
+import random
 from pathlib import Path
 
+from researchlib import theses as theses_mod
 from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.claims import claim_side, looks_like_list, plain_cite, quote_ok, same_repost
-from researchlib.digest import PROMPT_VERSION, digest_due
 from researchlib.excerpt import view_windows
 from researchlib.ocr import append_ocr, compose_ocr_text
 from researchlib.theses import parse_theses
@@ -17,16 +18,6 @@ class _Conn:
 
     def fetchall(self):
         return [{"ord": 3, "body": "现阶段不宜提价，批价已经很高。"}]
-
-
-def test_short_article_digest_is_due_when_ocr_arrives():
-    current = {"prompt_version": PROMPT_VERSION, "head_only": False, "ocr_hash": ""}
-    short = {"ocr_hash": "abc", "body_text": "瑞幸古茗是比较头部的。"}
-    assert digest_due(short, current)
-    assert digest_due(short, None)
-    assert not digest_due(short, {**current, "ocr_hash": "abc"})
-    assert not digest_due({"ocr_hash": "abc", "body_text": "字" * 400}, current)
-    assert not digest_due({"ocr_hash": "", "body_text": "只有一句。"}, current)
 
 
 def test_ocr_text_is_appended_for_views_and_digest():
@@ -58,25 +49,70 @@ def test_long_text_is_split_before_extraction():
 
 def test_guest_post_is_not_the_star_owner():
     guest = assign_poster_role({"poster_name": "某读者", "poster_id": "9"}, "方伟")
-    owner = assign_poster_role({"poster_name": "方伟（星主）"}, "方伟")
+    owner = assign_poster_role({"poster_name": "方伟"}, "方伟")
     unknown = assign_poster_role({}, "方伟")
     assert is_guest(guest) and guest["poster_role"] == "guest"
     assert owner["poster_role"] == "owner" and not is_guest(owner)
     assert "poster_role" not in unknown
+    # 昵称一字不差才算：去括注、去空白以后像星主的都是读者（审核 I2）。
+    for name in ("方伟（星主）", "方伟（读者）", "方伟(假)", "方 伟", "方伟Rey", "方伟-最近在杭州"):
+        assert is_guest(assign_poster_role({"poster_name": name}, "方伟")), name
 
 
 def test_star_nickname_from_the_source_config_is_the_owner():
-    """方伟在星球里的显示名是「方伟Rey」：来源配置的 poster_names 里有它，就不是读者帖。"""
-    from researchlib.sources import load_sources
-
-    config = Path(__file__).resolve().parents[2] / "config" / "sources.yaml"
-    zsxq = next(source for source in load_sources(config) if source.id == "fangwei-zsxq")
+    """方伟在星球里的显示名是「方伟Rey」：来源配置的 poster_names 里有它，没有发帖人 ID 的旧帖就不是读者帖。"""
+    zsxq = _fangwei_zsxq()
     assert "方伟Rey" in zsxq.poster_names
     assert assign_poster_role({"poster_name": "方伟Rey"}, zsxq.author, zsxq.poster_names)["poster_role"] == "owner"
-    assert assign_poster_role({"poster_name": "方伟 Rey"}, zsxq.author, zsxq.poster_names)["poster_role"] == "owner"
+    assert is_guest(assign_poster_role({"poster_name": "方伟 Rey"}, zsxq.author, zsxq.poster_names))
     # 没配昵称时还是按名字认，读者照样是读者。
     assert is_guest(assign_poster_role({"poster_name": "方伟Rey"}, "方伟"))
     assert is_guest(assign_poster_role({"poster_name": "王小明"}, zsxq.author, zsxq.poster_names))
+
+
+def _fangwei_zsxq():
+    from researchlib.sources import load_sources
+
+    config = Path(__file__).resolve().parents[2] / "config" / "sources.yaml"
+    return next(source for source in load_sources(config) if source.id == "fangwei-zsxq")
+
+
+def test_star_account_id_decides_when_the_post_has_one():
+    """带发帖人 ID 的帖子只按星主的账户 ID 认：「方伟（小助手）」那个账号改成什么昵称都是读者（审核 I2）。"""
+    zsxq = _fangwei_zsxq()
+    assert zsxq.owner_ids == ("1825524112",)
+
+    def role(meta: dict) -> str:
+        return assign_poster_role(meta, zsxq.author, zsxq.poster_names, zsxq.owner_ids).get("poster_role", "")
+
+    assert role({"poster_name": "方伟Rey", "poster_id": "1825524112"}) == "owner"
+    # 星主改了昵称，ID 没变，照样是原创。
+    assert role({"poster_name": "方伟-最近在杭州", "poster_id": "1825524112"}) == "owner"
+    # 小助手的账号：昵称再像也是读者帖，改成和星主一字不差也一样。
+    assert role({"poster_name": "方伟（小助手）", "poster_id": "418551555845518"}) == "guest"
+    assert role({"poster_name": "方伟Rey", "poster_id": "418551555845518"}) == "guest"
+    assert role({"poster_name": "方伟", "poster_id": "418551555845518"}) == "guest"
+    # 没有 ID 的旧帖才看昵称，而且要一字不差。
+    assert role({"poster_name": "方伟Rey"}) == "owner"
+    assert role({"poster_name": "方伟（小助手）"}) == "guest"
+    assert role({"poster_name": "方伟（小助手）", "poster_id": ""}) == "guest"
+    # 名字和 ID 都没有的旧帖不猜，仍按星主处理。
+    assert role({}) == ""
+    # 没配 owner_ids 的来源（乘风破浪）带 ID 也只能看昵称。
+    other = assign_poster_role({"poster_name": "郑立涛", "poster_id": "77"}, "乘风破浪", ("郑立涛",))
+    assert other["poster_role"] == "owner"
+
+
+def test_owner_ids_in_the_config_are_strings():
+    from researchlib.sources import _owner_ids
+
+    assert _owner_ids({"owner_ids": [1825524112]}, "x") == ("1825524112",)
+    assert _owner_ids({"owner_ids": "1825524112"}, "x") == ("1825524112",)
+    assert _owner_ids({}, "x") == ()
+    import pytest
+
+    with pytest.raises(ValueError):
+        _owner_ids({"owner_ids": {"id": 1}}, "x")
 
 
 def test_list_mention_is_not_about_the_company():
@@ -160,6 +196,109 @@ def test_reposts_count_once_and_overlapping_theses_merge():
     assert 498 not in parsed[0]["sources"]
     assert 7457 in parsed[0]["sources"]
     assert 3 in parsed[0]["against"]
+
+
+def _collapse_one_by_one(views: list[dict]) -> tuple[list[dict], int]:
+    """转贴只留一条的规则本身：每条和已经留下的逐条比，并到最前面对得上的那条。另报后来的顶掉先留下的几次。"""
+
+    def rank(item: dict) -> tuple[int, int]:
+        return (1 if quote_ok(str(item.get("quote") or "")) else 0, -int(item["article_id"]))
+
+    kept: list[dict] = []
+    swapped = 0
+    for view in views:
+        twin = next((index for index, prev in enumerate(kept) if same_repost(prev, view)), None)
+        if twin is None:
+            kept.append(view)
+        elif rank(view) > rank(kept[twin]):
+            kept[twin] = view
+            swapped += 1
+    return kept, swapped
+
+
+def _repost_cases(rng: random.Random, count: int) -> list[dict]:
+    """互相包含、只差标点和全角、太短不算数、没有原句的都有；字表小，碰巧包含的也多。"""
+    letters = "腾讯广告加载率视频号电商增长利润回购拼多多补贴"
+    seen: list[str] = []
+
+    def piece() -> str:
+        roll = rng.random()
+        if seen and roll < 0.35:
+            base = rng.choice(seen)
+            kind = rng.random()
+            if kind < 0.3:
+                return base
+            if kind < 0.6:
+                start = rng.randint(0, max(0, len(base) - 1))
+                return base[start : rng.randint(start, len(base))]
+            return rng.choice(letters) * rng.randint(0, 3) + base + "。" + rng.choice(letters) * rng.randint(0, 3)
+        if roll < 0.45:
+            return rng.choice(["", " ", "图片", "\n\n", "A B"])
+        text = "".join(rng.choice(letters) for _ in range(rng.randint(1, 30)))
+        if rng.random() < 0.3:
+            text = text[: len(text) // 2] + "， " + text[len(text) // 2 :] + "１２％"
+        return text
+
+    views = []
+    for _ in range(count):
+        judgment, quote = piece(), piece()
+        seen.extend([judgment, quote])
+        if rng.random() < 0.05:
+            quote = None
+        views.append({"article_id": rng.randint(1, count * 2), "judgment": judgment, "quote": quote})
+    return views
+
+
+def test_collapse_reposts_gives_the_same_result_as_comparing_one_by_one():
+    rng = random.Random(20261114)
+    merged = replaced = 0
+    for _ in range(300):
+        views = _repost_cases(rng, rng.randint(0, 30))
+        want, swapped = _collapse_one_by_one(views)
+        got = theses_mod._collapse_reposts(views)
+        assert [id(view) for view in got] == [id(view) for view in want]
+        merged += len(views) - len(want)
+        replaced += swapped
+    # 这批样本里并掉的、后来的顶掉先留下的都要有，不然这条测试什么也没比。
+    assert merged > 500 and replaced > 50
+
+
+def test_collapse_reposts_compares_against_the_view_that_is_kept_now():
+    """先留下的一条被转贴顶掉以后，后面的观点和现在留着的这条比，不和被顶掉的那条比。"""
+    first = {"article_id": 10, "judgment": "腾讯视频号的广告加载率还很低有提升空间",
+             "quote": "视频号广告加载率不到抖音的三分之一"}
+    repost = {"article_id": 5, "judgment": "微信支付的费率这两年守住了没有再降",
+              "quote": "方伟：视频号广告加载率不到抖音的三分之一，这是原话"}
+    like_first = {"article_id": 20, "judgment": "我也认为腾讯视频号的广告加载率还很低有提升空间，别的不说",
+                  "quote": "游戏版号恢复常态化发放"}
+    like_repost = {"article_id": 30, "judgment": "一句话：微信支付的费率这两年守住了没有再降",
+                   "quote": "小程序的交易额还在涨"}
+    assert same_repost(first, repost) and same_repost(first, like_first)
+    assert not same_repost(repost, like_first) and same_repost(repost, like_repost)
+    views = [first, repost, like_first, like_repost]
+    assert theses_mod._collapse_reposts(views) == [repost, like_first]
+    assert _collapse_one_by_one(views) == ([repost, like_first], 1)
+
+
+def test_collapse_reposts_does_not_compare_every_pair(monkeypatch):
+    """一家公司上千条判断时逐条比是几十万对，公司页每次打开都要等十几秒；现在只核查得到的那几条。"""
+    rng = random.Random(7)
+    letters = [chr(code) for code in range(0x4E00, 0x4E00 + 1500)]
+
+    def sentence(low: int, high: int) -> str:
+        return "".join(rng.choice(letters) for _ in range(rng.randint(low, high)))
+
+    views = [
+        {"article_id": index + 1, "judgment": sentence(30, 90), "quote": sentence(20, 120)} for index in range(1500)
+    ]
+    views.append({"article_id": 9001, "judgment": "又一遍：" + views[40]["judgment"], "quote": ""})
+    views.append({"article_id": 9002, "judgment": sentence(30, 90), "quote": views[700]["quote"][3:40]})
+    compared = []
+    real = theses_mod.same_key
+    monkeypatch.setattr(theses_mod, "same_key", lambda left, right: compared.append(1) or real(left, right))
+    kept = theses_mod._collapse_reposts(views)
+    assert len(kept) == 1500 and views[40] in kept and views[700] in kept
+    assert 2 <= len(compared) < 20
 
 
 def test_coerce_view_none_is_not_about():

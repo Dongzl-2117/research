@@ -43,6 +43,6 @@ def test_sidebar_exposes_scope_and_single_turn_and_noscript_uses_original_ask(co
         broad = client.post('/ask', data={'q': '腾讯', 'article': ''})
         local = client.post('/ask', data={'q': '概括这篇', 'article': str(identity)})
         assert broad.status_code == local.status_code == 200
-        assert '只给出召回的原文段落' in broad.text
-        assert '只给出召回的原文段落' in local.text
+        assert '只给出找到的原文段落' in broad.text
+        assert '只给出找到的原文段落' in local.text
         assert '年初备忘' in local.text

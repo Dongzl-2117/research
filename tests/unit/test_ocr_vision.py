@@ -118,7 +118,8 @@ def test_vision_recognize_posts_multimodal_messages(tmp_path, monkeypatch):
     monkeypatch.setattr("researchlib.llm.chat", fake_chat)
     found = vision_engine(_settings(tmp_path))(image)
     # 模型没按结构交（自由文字）：去掉代码块围栏，字照原样当成一段文字存，不按冒号前的字猜谁说的。
-    assert found.text == "方伟：底线\n网友：非共识"
+    # 行首的「方伟：」不是识图结构标的说话人，排版时加引号，不当成作者的话（审核 C5）。
+    assert found.text == "「方伟：底线」\n网友：非共识"
     assert found.units == plain_units("方伟：底线\n网友：非共识")
     assert not has_dialogue(found.units)
     assert seen.get("kwargs", {}).get("exact_max_tokens") == 65536

@@ -3,10 +3,8 @@
 不按持仓或观察名单过滤。每条：作者的判断、背后的机制、态度；风险、推翻条件、要盯的验证指标
 只在原文谈到时才有，没谈到就空着，不硬凑。原句逐字核对过才留，核对不上就不显示。
 
-两条写入路径，和摘要一样：
-
-- 打开公司页时，这家公司还没整理的文章在后台排队，不挡住页面。
-- 手动 CLI 批量补（夜间任务也是这个范围）：
+只有命令行这一条写入路径，和摘要一样：夜间任务每晚补一批（scripts/nightly.sh，默认 60 篇），手动批量补。
+网页不触发：11-14 以前打开公司页会给这家公司排 20 篇进后台线程，公开页面谁都能开、没有每天的上限，删了。
 
     research-views                      # 全部被深入谈到的公司，默认最多 100 篇
     research-views --company 泡泡玛特 --limit 300
@@ -14,7 +12,7 @@
     research-views --limit 6000 --workers 16 --off-peak   # 一次补完积压：16 篇同时整理，避开 DeepSeek 高峰价
 
 ``--workers N`` 几篇同时整理，每个 worker 一条自己的数据库连接；每篇先占一把 Postgres advisory lock，
-同一进程的几个 worker、同时开着的几个 research-views、网页后台那条队列都不会整理同一篇。
+同一进程的几个 worker、同时开着的几个 research-views 都不会整理同一篇。
 每篇印一行用量和用时，最后印合计，拿它算实际花了多少钱。余额不足（402）、鉴权被拒整批停，不把剩下的一篇篇记成失败。
 
 应用启动和部署不会跑。按正文的 content_hash 和提示词版本缓存，正文或提示词变了才重抽。
@@ -31,11 +29,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
-import os
 import re
 import sys
-import threading
 import time
 
 from psycopg.types.json import Jsonb
@@ -45,16 +40,14 @@ from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_s
 from researchlib.claims import looks_like_list, plain_cite, quote_ok
 from researchlib.config import Settings
 from researchlib.excerpt import VIEW_WINDOW, old_reader_dropped, original_chunks, view_windows
-from researchlib.failures import clear_failure, cooling_sql, note_failure
-from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.failures import clear_failure, cooling_sql
+from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
 from researchlib.visibility import is_hidden, visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import relabel_host
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import repairs_source, shorten_long_title, title_needs_repair, zsxq_display_title
-
-logger = logging.getLogger("researchlib.views")
 
 PROMPT_VERSION = 2
 # 读法的版本，记进 company_views.reader。2：长文选中的段落全部读到（11-14 起）；1：最多 6 块，多出来的丢了。
@@ -95,9 +88,6 @@ REAL_VIEW_SQL = (
 # about = false 是「论证不在这家公司」的缓存，空白重抽不要把它清掉。
 _BLANK_VIEW_SQL = "(btrim(judgment) = '' OR stance = '' OR judgment !~ '[[:alnum:]一-鿿]') AND about"
 _JSON = re.compile(r"\{.*\}", re.S)
-QUEUE_PER_VIEW = 20
-_MAX_QUEUED = 60
-_COOLDOWN_S = 120.0
 # 每篇的锁是 (hashtext(LOCK_NAME), 文章 id) 这把会话级 advisory lock：整理完放掉，进程没了自动放掉。
 LOCK_NAME = "research-views"
 
@@ -788,133 +778,6 @@ def same_period(
         if len(found) >= limit:
             break
     return found
-
-
-# —— 后台排队：打开公司页时只给这家公司缺的排，不扫全库 ——
-
-_lock = threading.Lock()
-_order: list[int] = []
-_jobs: dict[int, tuple[str, tuple[int, ...]]] = {}
-_inflight: set[int] = set()
-_settings_holder: list[Settings] = []
-_running = False
-_cooldown_until = 0.0
-
-
-def schedule_views(
-    settings: Settings, jobs: list[tuple[int, str, tuple[int, ...]]], *, spawn: bool | None = None
-) -> int:
-    """jobs：[(文章 id, 作者, 要整理的公司 id)]。返回新入队的篇数。测试进程里默认不排。"""
-    global _running
-    if not jobs or not llm_configured(settings):
-        return 0
-    if spawn is None:
-        spawn = "PYTEST_CURRENT_TEST" not in os.environ
-    if not spawn:
-        return 0
-    start = False
-    added = 0
-    with _lock:
-        if time.monotonic() < _cooldown_until:
-            return 0
-        _settings_holder[:] = [settings]
-        for article_id, author, company_ids in jobs:
-            if article_id in _jobs or article_id in _inflight or len(_order) >= _MAX_QUEUED:
-                continue
-            _jobs[article_id] = (author or "", tuple(company_ids))
-            _order.append(article_id)
-            added += 1
-        if added and not _running:
-            _running = True
-            start = True
-    if start:
-        threading.Thread(target=_worker, name="company-views", daemon=True).start()
-    return added
-
-
-def _worker() -> None:
-    global _running, _cooldown_until
-    from researchlib.db import connect
-
-    conn = None
-    try:
-        while True:
-            with _lock:
-                if not _order or not _settings_holder or time.monotonic() < _cooldown_until:
-                    _running = False
-                    return
-                settings = _settings_holder[0]
-                article_id = _order.pop(0)
-                author, company_ids = _jobs.pop(article_id, ("", ()))
-                _inflight.add(article_id)
-            try:
-                if conn is None:
-                    conn = connect(settings)
-                row = conn.execute(
-                    """
-                    SELECT id, title, body_text, content_hash, published_at, source_id
-                    FROM articles WHERE id = %s
-                    """,
-                    (article_id,),
-                ).fetchone()
-                # 批量命令正在整理这一篇就不重复问模型；它整理完，这篇也不再是待整理的。
-                if row is not None and _claim(conn, article_id):
-                    try:
-                        companies = conn.execute(
-                            "SELECT id, name_zh FROM companies WHERE id = ANY(%s)", (list(company_ids),)
-                        ).fetchall()
-                        extract_article(conn, settings, row, author, companies)
-                    finally:
-                        _release(conn, article_id)
-            except LLMUnavailable as exc:
-                logger.warning("观点整理暂停：%s", exc)
-                with _lock:
-                    _cooldown_until = time.monotonic() + _COOLDOWN_S
-                    _order.clear()
-                    _jobs.clear()
-                    _inflight.discard(article_id)
-                    _running = False
-                return
-            except LLMError as exc:
-                logger.warning("观点整理失败 %s：%s", article_id, exc)
-                if conn is not None:
-                    conn.rollback()
-                    note_failure(conn, "views", article_id, exc)
-            except Exception:
-                logger.exception("观点整理失败 %s", article_id)
-                if conn is not None:
-                    conn.rollback()
-            finally:
-                with _lock:
-                    _inflight.discard(article_id)
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-def queue_for_company(conn, settings: Settings, company_id: int, sources_by_id: dict) -> int:
-    """公司页打开时调用：这家公司最近没整理的文章排进后台，一次最多 QUEUE_PER_VIEW 篇。
-
-    同一篇里深入谈到的其他公司一并整理，不限持仓。
-    """
-    if not llm_configured(settings):
-        return 0
-    rows = pending_articles(conn, [company_id], list(sources_by_id), QUEUE_PER_VIEW)
-    jobs = []
-    for row in rows:
-        source = sources_by_id.get(row["source_id"])
-        companies = [item["id"] for item in pending_companies(conn, row["id"])] or [company_id]
-        jobs.append((row["id"], source.author if source else "", tuple(companies)))
-    return schedule_views(settings, jobs)
-
-
-def _claim(conn, article_id: int) -> bool:
-    """占这一篇的锁。占不到是别的 worker、别的进程正在整理它。"""
-    return llm_batch.claim(conn, LOCK_NAME, article_id)
-
-
-def _release(conn, article_id: int) -> None:
-    llm_batch.release(conn, LOCK_NAME, article_id)
 
 
 _ARTICLE_SQL = "SELECT id, title, body_text, content_hash, published_at, source_id FROM articles WHERE id = %s"

@@ -36,7 +36,6 @@ def test_day_page_shows_the_answer_asked_from_its_button(conn, settings, monkeyp
     _store(conn, settings, "linwenfeng-feishu", "vault", "飞书库备忘录", "只在文库里出现的句子甲乙丙。\n")
     monkeypatch.setattr(ask_module, "chat", lambda _s, _messages, **_k: ("方伟看好腾讯的广告[1]。", "deepseek-test"))
     monkeypatch.setattr(ask_module, "llm_configured", lambda _settings: True)
-    monkeypatch.setattr("researchlib.web.routes.schedule_digests", lambda _settings, _jobs: 0)
     with TestClient(create_app(settings)) as client:
         day = client.get(f"/days/{DAY}").text
         assert f'href="/ask?preset=day&amp;from={DAY}&amp;to={DAY}"' in day

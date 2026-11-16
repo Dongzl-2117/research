@@ -4,7 +4,7 @@ from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
-from researchlib.digest import ensure_digests
+from researchlib.digest import digest_article, rows_needing_digest
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.sources import load_sources
@@ -68,13 +68,6 @@ def test_timeline_feed_hides_feishu_and_cards_use_digest(conn, settings, monkeyp
         images_in_archive=0,
         errors=[],
     )
-    seen: list[list[tuple[int, str]]] = []
-
-    def fake_schedule(_settings, jobs):
-        seen.append(list(jobs))
-        return 0
-
-    monkeypatch.setattr("researchlib.web.routes.schedule_digests", fake_schedule)
     app = create_app(settings)
     with TestClient(app) as client:
         home = client.get("/")
@@ -108,7 +101,6 @@ def test_timeline_feed_hides_feishu_and_cards_use_digest(conn, settings, monkeyp
         assert client.get("/days/2024-10-19", params={"author": "林文丰"}).status_code == 404
 
         article_id = conn.execute("SELECT id FROM articles WHERE external_id = 'card-meta'").fetchone()["id"]
-        assert any(job[0] == article_id for batch in seen for job in batch)
 
         def fake_chat(_settings, messages, **_kwargs):
             assert "不要给出投资建议" in messages[0]["content"]
@@ -118,8 +110,9 @@ def test_timeline_feed_hides_feishu_and_cards_use_digest(conn, settings, monkeyp
             )
 
         monkeypatch.setattr("researchlib.digest.chat", fake_chat)
-        written = ensure_digests(conn, settings, [article_id], {article_id: "方伟"})
-        assert written == 1
+        due = rows_needing_digest(conn, [article_id])
+        assert [row["id"] for row in due] == [article_id]
+        digest_article(conn, settings, due[0], "方伟")
 
         again = client.get("/")
         assert "导读写的是加载率，不是元数据。" in again.text

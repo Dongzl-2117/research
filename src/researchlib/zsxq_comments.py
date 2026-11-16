@@ -83,17 +83,26 @@ def source_owners(source) -> tuple[str, ...]:
     return tuple(name for name in (source.author, *source.poster_names) if name)
 
 
+# owners 不给时按方伟认：作者名加星球昵称，和 config/sources.yaml 里 fangwei-zsxq 的写法一样。
+DEFAULT_OWNERS = ("方伟", "方伟Rey")
+# 导出在帖子作者的评论后面加的身份徽章「乘风破浪（作者）」。只去掉这一个词，别的括注不去。
+_AUTHOR_BADGE = re.compile(r"\s*[（(]作者[）)]$")
+
+
 def is_owner(shown: str, owners: Sequence[str]) -> bool:
-    """显示名 shown 是不是来源作者本人（owners 是 ``source_owners``）。评论区和识图排版共用这一个判断。"""
+    """显示名 shown 是不是来源作者本人（owners 是 ``source_owners``）。评论区和识图排版共用这一个判断。
+
+    评论区和截图里只有昵称、没有账户 ID，只能比名字：和 owners 里某一个一字不差才算
+    （导出加在帖子作者名后面的「（作者）」不算名字）。
+    以前「方伟-最近在杭州」「方伟（任意括注）」也算，读者改个昵称就能以星主身份留在评论区（审核 I2）。
+    星主用过的别的昵称写进来源配置的 poster_names。
+    """
     from researchlib.author_voice import same_person
-    from researchlib.wechat_dialogue import _compact_host, _is_host_line
 
     if not shown or shown == ANONYMOUS:
         return False
-    # 方伟的显示名花样多（方伟Rey、方伟-最近在杭州），沿用对话整理那一套。
-    if (not owners or "方伟" in owners) and _is_host_line(_compact_host(shown)):
-        return True
-    return any(same_person(shown, owner) for owner in owners)
+    name = _AUTHOR_BADGE.sub("", shown.strip())
+    return any(same_person(name, owner) for owner in (owners or DEFAULT_OWNERS))
 
 
 def _host_comment(shown: str, owners: Sequence[str]) -> tuple[str, bool] | None:
@@ -236,6 +245,24 @@ def drop_guest_comments_text(text: str, owners: Sequence[str] = ()) -> str:
             out.extend(kept)
         index = end
     return "\n".join(out)
+
+
+_CHUNK_COMMENT_HEADING = re.compile(r"^\s*(?:评论\s*[（(]\s*\d+\s*[)）]|评论里的回复)\s*$")
+
+
+def guest_comment_chunk(chunk, guests: Sequence[str]) -> bool:
+    """原文块（article_chunks 一行）里有读者的评论：章节是「评论（N）」「评论里的回复」，或者正文写着 guests 里的名字。
+
+    块是入库时按库里的正文切的。还没跑 research-repair-zsxq 的旧帖，正文页、接口的 body_markdown 现滤，
+    块里却还是读者的评论和昵称；按编号给块的地方（接口的 chunks、文章页的 ?chunk=）用它挡掉。
+    guests 是 guest_comment_authors 的结果，为空时什么都不挡。译文块、图片文字块不是从评论区切的，不挡。
+    """
+    if not guests or chunk["lang"]:
+        return False
+    if _CHUNK_COMMENT_HEADING.match(chunk["heading"] or ""):
+        return True
+    body = chunk["body"] or ""
+    return any(name and name in body for name in guests)
 
 
 def filter_host_comments_markdown(md: str, owners: Sequence[str] = (), *, replies: bool = True) -> str:

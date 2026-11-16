@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -439,130 +440,160 @@ def parse_markdown_files(
     text_root = common_root(files)
     for path in files:
         try:
-            original = unescape_literal_breaks(read_text_file_safe(path))
-        except OSError as exc:
-            errors.append(f"{path}: {exc}")
+            doc = _parse_one_file(
+                path,
+                roots=roots,
+                images=images,
+                id_mode=id_mode,
+                raw_index=raw_index,
+                owners=owners,
+                text_root=text_root,
+                errors=errors,
+            )
+        except Exception as exc:  # noqa: BLE001 坏的一篇只记一条，别的照常导入（审核 I5）
+            errors.append(f"{path}: 解析出错，跳过这一篇（{type(exc).__name__}: {exc}）")
             continue
-        frontmatter, body = split_frontmatter(original)
-        body = normalize_newlines(body)
-        raw_meta = _match_raw(path, raw_index or {})
-        title = derive_title(frontmatter, body, path.name, raw_meta.get("title"))
-        if id_mode == "zsxq":
-            # 导出标题是空的、被省略号截断，或只是正文开头的十几个字时，能从正文收成一句就写入。
-            # 兜底标题留到页面上现算。
-            replacement = stored_zsxq_title(title, body, owners=owners)
-            if replacement:
-                title = replacement
-        if id_mode == "path":
-            root = _owning_root(path, roots) or text_root
-            external_id = _frontmatter_id(frontmatter) or relative_id(path, root)
-            parent = str(Path(external_id).parent.as_posix())
-            if parent == ".":
-                parent = ""
-        elif id_mode == "zsxq":
-            external_id = str(raw_meta.get("topic_id") or _frontmatter_id(frontmatter) or path.stem)
+        if doc is not None:
+            docs.append(doc)
+    _dedupe_ids(docs, errors)
+    return docs, errors
+
+
+def _parse_one_file(
+    path: Path,
+    *,
+    roots: list[Path],
+    images: ImageIndex,
+    id_mode: str,
+    raw_index: dict[str, dict] | None,
+    owners: tuple[str, ...],
+    text_root: Path,
+    errors: list[str],
+) -> ParsedDoc | None:
+    try:
+        original = unescape_literal_breaks(read_text_file_safe(path))
+    except OSError as exc:
+        errors.append(f"{path}: {exc}")
+        return None
+    frontmatter, body = split_frontmatter(original)
+    body = normalize_newlines(body)
+    raw_meta = _match_raw(path, raw_index or {})
+    title = derive_title(frontmatter, body, path.name, raw_meta.get("title"))
+    if id_mode == "zsxq":
+        # 导出标题是空的、被省略号截断，或只是正文开头的十几个字时，能从正文收成一句就写入。
+        # 兜底标题留到页面上现算。
+        replacement = stored_zsxq_title(title, body, owners=owners)
+        if replacement:
+            title = replacement
+    if id_mode == "path":
+        root = _owning_root(path, roots) or text_root
+        external_id = _frontmatter_id(frontmatter) or relative_id(path, root)
+        parent = str(Path(external_id).parent.as_posix())
+        if parent == ".":
             parent = ""
-        else:
-            external_id = _frontmatter_id(frontmatter) or relative_id(path, text_root)
-            parent = str(Path(external_id).parent.as_posix())
-            if parent == ".":
-                parent = ""
+    elif id_mode == "zsxq":
+        external_id = str(raw_meta.get("topic_id") or _frontmatter_id(frontmatter) or path.stem)
+        parent = ""
+    else:
+        external_id = _frontmatter_id(frontmatter) or relative_id(path, text_root)
+        parent = str(Path(external_id).parent.as_posix())
+        if parent == ".":
+            parent = ""
+    published, date_source, time_known = resolve_published_at(
+        frontmatter=frontmatter,
+        hints=raw_meta,
+        filename=path.name,
+        text=original,
+    )
+    path_year_mismatch = False
+    path_year = archive_path_year(external_id) if id_mode == "path" else None
+    if (
+        path_year is not None
+        and published is not None
+        and date_source == "frontmatter"
+        and published.astimezone(SHANGHAI).year != path_year
+    ):
+        # Crawl often stamps the fetch day into frontmatter while the file
+        # still lives under the real archive year (e.g. 2025/slug.md with
+        # date: 2026-10-21). Drop those dates so we do not pile wrong days
+        # on the author page; repair_stratechery_dates can fill from WP.
+        path_year_mismatch = True
         published, date_source, time_known = resolve_published_at(
-            frontmatter=frontmatter,
+            frontmatter=_scrub_frontmatter_dates(frontmatter),
             hints=raw_meta,
             filename=path.name,
             text=original,
         )
-        path_year_mismatch = False
-        path_year = archive_path_year(external_id) if id_mode == "path" else None
-        if (
-            path_year is not None
-            and published is not None
-            and date_source == "frontmatter"
-            and published.astimezone(SHANGHAI).year != path_year
-        ):
-            # Crawl often stamps the fetch day into frontmatter while the file
-            # still lives under the real archive year (e.g. 2025/slug.md with
-            # date: 2026-10-21). Drop those dates so we do not pile wrong days
-            # on the author page; repair_stratechery_dates can fill from WP.
-            path_year_mismatch = True
-            published, date_source, time_known = resolve_published_at(
-                frontmatter=_scrub_frontmatter_dates(frontmatter),
-                hints=raw_meta,
-                filename=path.name,
-                text=original,
-            )
-            if date_source == "frontmatter":
-                published, date_source, time_known = None, "", False
-        refs: list[tuple[str, Path | None]] = []
-        seen_refs: set[str] = set()
-        for ref in image_refs_in(original):
-            dest = image_destination(ref)
-            if not dest or dest.startswith(("http://", "https://", "//", "data:")):
-                continue
-            if dest in seen_refs:
-                continue
-            seen_refs.add(dest)
-            refs.append((dest, images.resolve(ref, path)))
-        full_md = normalize_newlines(original)
-        if id_mode == "zsxq":
-            # 评论区只留来源作者（owners，不给时按方伟）；其他人的仍在 inbox / raw，可逆。
-            # 有话题 JSON 时，星主在楼中楼里的回复连同读者那句接进下面的「评论里的回复」，列表里不重复；
-            # 没有 JSON（乘风破浪的归档）就留在列表里。
-            from researchlib.zsxq_comments import filter_host_comments_markdown
+        if date_source == "frontmatter":
+            published, date_source, time_known = None, "", False
+    refs: list[tuple[str, Path | None]] = []
+    seen_refs: set[str] = set()
+    for ref in image_refs_in(original):
+        dest = image_destination(ref)
+        if not dest or dest.startswith(("http://", "https://", "//", "data:")):
+            continue
+        if dest in seen_refs:
+            continue
+        seen_refs.add(dest)
+        refs.append((dest, images.resolve(ref, path)))
+    full_md = normalize_newlines(original)
+    if id_mode == "zsxq":
+        # 评论区只留来源作者（owners，不给时按方伟）；其他人的仍在 inbox / raw，可逆。
+        # 有话题 JSON 时，星主在楼中楼里的回复连同读者那句接进下面的「评论里的回复」，列表里不重复；
+        # 没有 JSON（乘风破浪的归档）就留在列表里。
+        from researchlib.zsxq_comments import filter_host_comments_markdown
 
-            full_md = filter_host_comments_markdown(full_md, owners, replies="replies" not in raw_meta)
-        stored_meta: dict = {
-            "format": "markdown",
-            "parent": parent,
-            "filename": path.name,
-        }
-        if images_from_page(full_md):
-            stored_meta["images"] = "page"
-        if id_mode == "zsxq" and raw_meta.get("replies"):
-            # 星主在评论里回答读者的话往往比正文更直接：接在正文后面，进检索和问库。
-            section = comments_section(raw_meta["replies"], full_md)
-            if section:
-                full_md = full_md.rstrip("\n") + "\n" + section
-                stored_meta["comment_replies"] = (
-                    section.count("方伟：")
-                    + section.count("作者答：")
-                    + section.count("作者补充：")
-                )
-        topic_id = raw_meta.get("topic_id") or (header_topic_id(body) if id_mode == "zsxq" else None)
-        if topic_id:
-            # 去重按「同一来源、同一话题号」认同一篇。没读到 raw/ 时从归档头里取。
-            stored_meta["topic_id"] = topic_id
-        poster_name = str(raw_meta.get("poster_name") or "").strip()
-        if poster_name:
-            stored_meta["poster_name"] = poster_name
-        poster_id = str(raw_meta.get("poster_id") or "").strip()
-        if poster_id:
-            stored_meta["poster_id"] = poster_id
-        create_time = raw_meta.get("create_time")
-        if create_time not in (None, ""):
-            if isinstance(create_time, (str, int, float, bool)):
-                stored_meta["create_time"] = create_time
-            else:
-                stored_meta["create_time"] = str(create_time)
-        if date_source:
-            stored_meta["date_source"] = date_source
-        stored_meta["time_known"] = time_known
-        if path_year_mismatch:
-            stored_meta["path_year_mismatch"] = True
-            stored_meta["path_year"] = path_year
-        docs.append(
-            ParsedDoc(
-                external_id=external_id[:500],
-                title=title,
-                published_at=published,
-                body_md=full_md,
-                raw_meta=stored_meta,
-                image_refs=refs,
+        full_md = filter_host_comments_markdown(full_md, owners, replies="replies" not in raw_meta)
+    stored_meta: dict = {
+        "format": "markdown",
+        "parent": parent,
+        "filename": path.name,
+    }
+    if images_from_page(full_md):
+        stored_meta["images"] = "page"
+    if id_mode == "zsxq" and raw_meta.get("replies"):
+        # 星主在评论里回答读者的话往往比正文更直接：接在正文后面，进检索和问库。
+        section = comments_section(raw_meta["replies"], full_md)
+        if section:
+            full_md = full_md.rstrip("\n") + "\n" + section
+            stored_meta["comment_replies"] = (
+                section.count("方伟：")
+                + section.count("作者答：")
+                + section.count("作者补充：")
             )
-        )
-    _dedupe_ids(docs, errors)
-    return docs, errors
+    topic_id = raw_meta.get("topic_id") or (header_topic_id(body) if id_mode == "zsxq" else None)
+    if topic_id:
+        # 去重按「同一来源、同一话题号」认同一篇。没读到 raw/ 时从归档头里取。
+        stored_meta["topic_id"] = topic_id
+    poster_name = str(raw_meta.get("poster_name") or "").strip()
+    if poster_name:
+        stored_meta["poster_name"] = poster_name
+    poster_id = str(raw_meta.get("poster_id") or "").strip()
+    if poster_id:
+        stored_meta["poster_id"] = poster_id
+    create_time = raw_meta.get("create_time")
+    if create_time not in (None, ""):
+        if isinstance(create_time, float) and not math.isfinite(create_time):
+            # NaN、Infinity 写不进 jsonb，存成字面（审核 I5）。
+            stored_meta["create_time"] = str(create_time)
+        elif isinstance(create_time, (str, int, float, bool)):
+            stored_meta["create_time"] = create_time
+        else:
+            stored_meta["create_time"] = str(create_time)
+    if date_source:
+        stored_meta["date_source"] = date_source
+    stored_meta["time_known"] = time_known
+    if path_year_mismatch:
+        stored_meta["path_year_mismatch"] = True
+        stored_meta["path_year"] = path_year
+    return ParsedDoc(
+        external_id=external_id[:500],
+        title=title,
+        published_at=published,
+        body_md=full_md,
+        raw_meta=stored_meta,
+        image_refs=refs,
+    )
 
 
 def _owning_root(path: Path, roots: list[Path]) -> Path | None:

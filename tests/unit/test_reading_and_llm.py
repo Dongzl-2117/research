@@ -389,7 +389,8 @@ def test_theses_refresh_at_most_daily_when_views_change():
     assert theses.views_hash(first) != theses.views_hash([_view(1, "a", "", 1, judgment="改了")])
 
 
-def test_theses_auto_disabled_by_default():
+def test_settings_have_no_switch_for_theses_from_the_web():
+    """公司页自动补论点的开关 11-14 删了：环境里还留着 RESEARCH_THESES_AUTO=1 也不认，不会报错。"""
     from researchlib.config import Settings
 
     settings = Settings.from_env(
@@ -400,16 +401,7 @@ def test_theses_auto_disabled_by_default():
             "SOURCES_FILE": "config/sources.yaml",
             "BIND_HOST": "127.0.0.1",
             "BIND_PORT": "8088",
+            "RESEARCH_THESES_AUTO": "1",
         }
     )
-    assert settings.theses_auto_enabled is False
-    assert Settings.from_env({**{
-            "DATABASE_URL": "postgresql://research:research@127.0.0.1:5432/research_test",
-            "DATA_DIR": "/tmp/research-test-data",
-            "PUBLIC_BASE_URL": "https://investment.zldong.com",
-            "SOURCES_FILE": "config/sources.yaml",
-            "BIND_HOST": "127.0.0.1",
-            "BIND_PORT": "8088",
-            "RESEARCH_THESES_AUTO": "1",
-        }}).theses_auto_enabled is True
-
+    assert not hasattr(settings, "theses_auto_enabled")

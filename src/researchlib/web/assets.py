@@ -9,11 +9,24 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from functools import lru_cache
 from pathlib import Path
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 IMMUTABLE = "public, max-age=31536000, immutable"
+# /media 的图片：只许读者自己的浏览器缓存（private），Cloudflare 不存。见 hashed_media。
+MEDIA_CACHE = "private, max-age=31536000, immutable"
+# 站标一天取一次就够；改了图标最多一天后换上。
+FAVICON_CACHE = "public, max-age=86400"
+_HASHED_NAME = re.compile(r"[0-9a-f]{64}\.[A-Za-z0-9]{1,8}")
+
+
+def hashed_media(storage_path: str) -> bool:
+    """/media 下的地址是不是按内容哈希命名的（images.store_image_file、remote_images.store_bytes：
+    ``<来源或 remote>/<前两位>/<sha256>.<扩展名>``）。是的话同一个地址永远是同一张图，可以长期缓存；
+    不是这种名字的照旧不缓存。"""
+    return bool(_HASHED_NAME.fullmatch(storage_path.rsplit("/", 1)[-1]))
 
 
 @lru_cache(maxsize=64)

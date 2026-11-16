@@ -220,7 +220,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     _keep_filled_clock(existing, doc)
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names)
+    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names, source.owner_ids)
     meta = apply_length_floor(source, doc.body_md, poster)
     keep = False
     article_changed = True
@@ -321,10 +321,10 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         status = "unchanged"
         # 正文没变也要补上发帖人：历史归档重导一遍就能把网友帖从星主名下摘掉。
         if doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id"):
-            merged = assign_poster_role(dict(existing["raw_meta"] or {}), source.author, source.poster_names)
+            merged = dict(existing["raw_meta"] or {})
             merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
             merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
-            assign_poster_role(merged, source.author, source.poster_names)
+            assign_poster_role(merged, source.author, source.poster_names, source.owner_ids)
             if merged != dict(existing["raw_meta"] or {}):
                 conn.execute(
                     "UPDATE articles SET raw_meta = %s WHERE id = %s",
@@ -344,6 +344,11 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         mention_body = body_for_mentions(doc.body_md, body_text=body_text, ocr_text=ocr_text)
         replace_mentions(conn, article_id, mentions_for_document(matcher, doc.title, mention_body))
         replace_chunks(conn, article_id, doc.title, doc.body_md)
+        if existing is not None and (existing["title"] or "") != (doc.title or ""):
+            # 向量的输入带标题：标题改了，沿用的译文块、图片文字块的向量也过期了，整篇一起配，不等夜里补。
+            from researchlib.embeddings import sync_article
+
+            sync_article(conn, article_id)
     stored, linked, missing = sync_article_images(
         conn,
         article_id=article_id,

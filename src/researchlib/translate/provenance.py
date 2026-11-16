@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import html
 import json
@@ -10,6 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from researchlib.htmlentities import repair_entities
 from researchlib.translate.numbers import digits_hide_scale_change, hard_fact_counts, same_numeric_facts
 from researchlib.translate.segments import (
     _LATIN,
@@ -17,6 +19,7 @@ from researchlib.translate.segments import (
     splice_segments,
     split_sentence_paragraphs,
     top_level_blocks,
+    unknown_elements,
 )
 
 SCHEMA_VERSION = 1
@@ -169,20 +172,30 @@ _ENGLISH_WORD = re.compile(r"[A-Za-z][A-Za-z'’]*")
 _HAN = re.compile(r"[㐀-鿿豈-﫿]")
 
 
+# 正文里照抄的网址（脚注里的出处、「Sources include: http://……」）。网址里的 the、of、and 拼不成句子。
+_URL = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)\S+")
+
+
+def _prose(value: str) -> str:
+    """一段显示出来的字，去掉照抄的网址。"""
+    return _URL.sub(" ", " ".join(Resources(value).text))
+
+
 def untranslated_english(source: str, target: str) -> bool:
     """这一段交回来的还是英文，其实没译。
 
     原文得是成句的英文：至少 12 个英文词，其中至少 3 个是小写的虚词（the、of、which……）。
     人名列表、书名、产品名凑不够，模型原样留着不算没译。译文里英文字母还有原文的一半以上、
     汉字不到原文字母数的 5%，就是把英文交了回来；只把「MA：」换成「马克：」、后面整段照抄英文的也算。
-    译得太短（漏了内容）不归这里管。
+    译得太短（漏了内容）不归这里管。网址不算词：脚注里一串出处网址，模型照原样留着也不算没译
+    （11-14 补串段时 22089 三条这样的脚注被当成交回英文，单独重译两次还是网址，先放了英文）。
     11-11 全库抽查：模型把下一段的中文一起写进这一段，下一段原样交回英文，以前的核对都放行了。
     """
-    words = _ENGLISH_WORD.findall(" ".join(Resources(source).text))
+    words = _ENGLISH_WORD.findall(_prose(source))
     if len(words) < 12 or sum(word in _FUNCTION_WORDS for word in words) < 3:
         return False
     letters = sum(len(word) for word in words)
-    shown = " ".join(Resources(target).text)
+    shown = _prose(target)
     kept = sum(len(word) for word in _ENGLISH_WORD.findall(shown))
     return kept >= letters * 0.5 and len(_HAN.findall(shown)) < letters * 0.05
 
@@ -190,6 +203,12 @@ def untranslated_english(source: str, target: str) -> bool:
 # 一次请求最多送几段（service.TRANSLATE_BATCH_MAX_SEGMENTS）。译文整体错开只会发生在同一次回答里，
 # 比两段中文、圈出要重译的范围都按这个跨度。
 COPY_SPAN = 12
+# 一段的中文整段写进了相近一段时，被包含的那段至少这么多汉字（一整句）才算。11-14 线上对照页里，
+# 小标题、术语、对话里重说一遍的短语最长 13 个汉字，多带了一段的导语最短 17 个。
+SWALLOWED_HAN = 16
+# 一段英文有这么多比例的词按顺序出现在另一段英文里，就当成同一段话：中文一样或包含都是对的。
+SAME_WORDS = 0.9
+_WORD = re.compile(r"[^\W_]+")
 
 
 def _bare(value: str) -> str:
@@ -197,28 +216,66 @@ def _bare(value: str) -> str:
     return re.sub(r"[\W_]+", "", html.unescape(_TAG.sub("", value or ""))).casefold()
 
 
-def copied_targets(sources: Sequence[str], targets: Sequence[str], *, span: int = COPY_SPAN) -> list[int]:
-    """相隔不到 ``span`` 段的两段，英文不同、中文却一字不差：返回这几段的位置。
+def _words(value: str) -> list[str]:
+    """一段显示出来的词，不分大小写。"""
+    return _WORD.findall(html.unescape(_TAG.sub(" ", value or "")).casefold())
 
-    模型偶尔把一次回答里的译文整体错开一格：一段的中文没了，后面几段各拿了下一段的中文，
-    到某一段又对上，它和前一段写成了同一段话（11-11 21938 引的 Andreessen 那几句）。
-    数字、结构、交回英文的核对都看不出来，只剩「英文不同、中文一样」这个迹象。整段比，去掉标签、标点和空白，
-    不分大小写；中文不到 8 个汉字的（「是的。」这类）、一段英文包含另一段的（同一段话又引一遍，前面多了说话人；
-    目录里的小标题和正文里大小写、连字符不同的同一个小标题）不算。
+
+def _within(short: list[str], long: list[str]) -> bool:
+    """``short`` 的词有 ``SAME_WORDS`` 以上按顺序出现在 ``long`` 里。"""
+    if not short:
+        return True
+    matcher = difflib.SequenceMatcher(None, short, long, autojunk=False)
+    return sum(block.size for block in matcher.get_matching_blocks()) >= len(short) * SAME_WORDS
+
+
+def copied_targets(sources: Sequence[str], targets: Sequence[str], *, span: int = COPY_SPAN) -> list[int]:
+    """相隔不到 ``span`` 段的两段，一段的中文整段又出现在另一段的中文里，英文却对不上：返回这几段的位置。
+
+    两种都是模型把一段的中文写到了别的段，数字、结构、交回英文的核对都看不出来：
+
+    - 整体错开一格：一段的中文没了，后面几段各拿了下一段的中文，到某一段又对上，它和前一段写成了
+      同一段话（11-11 21938 引的 Andreessen 那几句）。两段中文一字不差。
+    - 多带了一段：这一段的中文前面或后面多写了相邻一段的整段中文，相邻那段自己的中文也在
+      （11-14 线上对照页里十来篇：22537、22999 下一段的中文开头先写了一遍导语；22384 一段多写了后面那段，
+      后面几段跟着错开）。一段的中文是另一段中文的一部分。
+
+    整段比，去掉标签、标点和空白，不分大小写。两段中文一样时，不到 8 个汉字的（「是的。」这类）不算；
+    一段中文包含另一段时，被包含的那段要有 ``SWALLOWED_HAN`` 个汉字以上：小标题、术语、插话本来就常出现在
+    别的段里（「先有鸡还是先有蛋」「使用的目的和性质」「以苹果一贯的方式」）。
+    英文也对得上的不算：两段中文一样时，一段英文包含另一段（同一段话又引一遍、前面多了说话人；目录里的
+    小标题和正文里大小写、连字符不同的同一个小标题）；一段中文包含另一段时，长的那段英文也包含短的那段
+    （作者自己把前面那句又引了一遍）。包含不必一字不差：短的那段英文九成以上的词（``SAME_WORDS``）按顺序
+    出现在长的那段里就算，同一句话又引一遍时换了一个词（Such / The）、口语里重说一遍（love / like）、
+    多打了一个词，中文本来就该一样。错开一格的两段英文是不同的话，词对得上的不到两成；Andreessen 那几句
+    句式一样、只换了词，也只对上八成。
     """
     bare_sources = [_bare(item) for item in sources]
     bare_targets = [_bare(item) for item in targets]
+    words: dict[int, list[str]] = {}
+
+    def same(short: int, long: int) -> bool:
+        if bare_sources[short] in bare_sources[long]:
+            return True
+        for index in (short, long):
+            if index not in words:
+                words[index] = _words(sources[index])
+        return _within(words[short], words[long])
+
     found: set[int] = set()
-    for first, target in enumerate(bare_targets):
-        if len(_HAN.findall(target)) < 8:
+    for inner, target in enumerate(bare_targets):
+        han = len(_HAN.findall(target))
+        if han < 8:
             continue
-        for second in range(first + 1, min(len(bare_targets), first + span)):
-            if bare_targets[second] != target:
+        for outer in range(max(0, inner - span + 1), min(len(bare_targets), inner + span)):
+            other = bare_targets[outer]
+            if outer == inner or target not in other:
                 continue
-            one, other = bare_sources[first], bare_sources[second]
-            if one in other or other in one:
+            if target != other and han < SWALLOWED_HAN:
                 continue
-            found.update((first, second))
+            if same(inner, outer) or (target == other and same(outer, inner)):
+                continue
+            found.update((inner, outer))
     return sorted(found)
 
 
@@ -372,22 +429,31 @@ def _signed_segments(manifest: dict, translated: str) -> list[dict]:
 
 def receipt(
     manifest: dict, translated: str, *, model: str = "", untranslated: Sequence[int] = (),
-    prompts: Sequence[int] = (),
+    prompts: Sequence[int] = (), segment_prompts: dict[int, int | None] | None = None,
 ) -> dict:
     """每个槽位的资源和完整外壳都通过，才签发可持久化回执。
 
     数字对不上的槽位照签，序号记进 ``number_review``。``untranslated`` 是这次没译出来、
     先放英文的槽位序号（那一段的 target 就是原文）。``prompts`` 是这篇里的段用过哪几版提示词，
-    不传就是现在这一版。``verify`` 这三项都不比较：数字规则以后再改、补译了哪几段、换了提示词，
+    不传就是现在这一版。``segment_prompts`` 是每个槽位按第几版提示词译的（序号 → 版本，不知道的写 None），
+    记成和 ``segments`` 一样长的 ``segment_prompts``：整篇重译被打断时，下次只重译旧版的段（审核 T2）。
+    ``verify`` 这几项都不比较：数字规则以后再改、补译了哪几段、换了提示词，
     已经入库的回执都不会因此变成不兼容、整页退成两栏。
     """
     entries = _signed_segments(manifest, translated)
     gaps = sorted(set(untranslated))
     review = [entry["ordinal"] for entry in entries
               if entry["ordinal"] not in gaps and not numbers_agree(entry["source"], entry["target"])]
-    return {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
-            "semantic_status": "not-reviewed", "number_review": review, "untranslated": gaps,
-            "prompt_versions": sorted({int(item) for item in prompts} or {PROMPT_VERSION})}
+    signed = {**manifest, "segments": entries, "target_hash": digest(canonical_html(translated)), "model": model,
+              "semantic_status": "not-reviewed", "number_review": review, "untranslated": gaps,
+              "prompt_versions": sorted({int(item) for item in prompts} or {PROMPT_VERSION})}
+    if segment_prompts is not None:
+        signed["segment_prompts"] = [
+            None if entry["ordinal"] in gaps or segment_prompts.get(entry["ordinal"]) is None
+            else int(segment_prompts[entry["ordinal"]])
+            for entry in entries
+        ]
+    return signed
 
 
 def untranslated_slots(provenance: dict | None) -> list[int]:
@@ -409,13 +475,47 @@ def reuse_key(segment: str) -> str:
     return digest(canonical_html(_SRC_PARA_ATTR.sub("", segment or "")))
 
 
+def segment_prompts(provenance: dict | None) -> dict[int, int | None]:
+    """回执里每个槽位按第几版提示词译的。回执逐段记了的照记的；没记、整篇只用过一版的就是那一版；
+    没记又混着几版的（11-14 以前整篇重译被打断、或个别段退回旧译文的）不知道，记 None。"""
+    if not isinstance(provenance, dict):
+        return {}
+    entries = provenance.get("segments") or []
+    found = provenance.get("segment_prompts")
+    versions = prompt_versions(provenance)
+    fallback = versions[0] if len(versions) == 1 else None
+    recorded = isinstance(found, list) and len(found) == len(entries)
+    result: dict[int, int | None] = {}
+    for position, item in enumerate(entries):
+        try:
+            ordinal = int(item["ordinal"])
+            value = found[position] if recorded else fallback
+            result[ordinal] = None if value is None else int(value)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return result
+
+
+def stale_prompt(provenance: dict | None) -> bool:
+    """回执里还有不是现在这一版提示词译的段（或者混着几版、分不清是哪几段）。没回执的旧稿不算，另归 legacy。"""
+    versions = prompt_versions(provenance)
+    return bool(versions) and versions != [PROMPT_VERSION]
+
+
 def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
+    """``reusable_segments`` 只要译文、不要提示词版本。"""
+    return {key: [target for target, _prompt in found] for key, found in reusable_segments(provenance).items()}
+
+
+def reusable_segments(provenance: dict | None) -> dict[str, list[tuple[str, int | None]]]:
     """回执里能原样再用的译文段，按 ``reuse_key`` 分组，组里保持原文里的先后。
 
     只收这一版清洗、切段签的回执里、自己校验值对得上、资源和原文一致的段；没译出来先放英文的段
     （``untranslated``）不收，串段的那一片也不收：交回英文、其实没译的段和它前后各一段，
     相近两段英文不同、中文一样的段和它前后各 ``COPY_SPAN - 1`` 段（都只数要译的段）。没有回执的旧稿返回空，
-    只能整篇重译。哪一版提示词译的不管：直接用还是只在重译失败时退回用，由译制按 ``prompt_versions`` 决定。
+    只能整篇重译。每段带上它是第几版提示词译的（``segment_prompts``）：直接用还是只在重译失败时退回用，由译制决定。
+    存下来的「&T;」这种认不得的实体（以前解析器补了分号，页面显示「AT&T;」）改回 ``&amp;T``；原文写着
+    ``&lt;…&gt;``、译文里却被当成标签吞掉一截字的段（多出原文没有的、不是 HTML 元素的标签）不收，要重译（审核 T1）。
     """
     if not isinstance(provenance, dict):
         return {}
@@ -439,19 +539,24 @@ def reusable_targets(provenance: dict | None) -> dict[str, list[str]]:
         radius = COPY_SPAN - 1 if ordinal in copied else 1 if ordinal in echoed else 0
         if radius:
             near.update(order[max(0, rank - radius) : rank + radius + 1])
-    found: dict[str, list[str]] = {}
+    prompts = segment_prompts(provenance)
+    found: dict[str, list[tuple[str, int | None]]] = {}
     for position, item in enumerate(entries):
         try:
-            if int(item["ordinal"]) in skip or position in near:
+            ordinal = int(item["ordinal"])
+            if ordinal in skip or position in near:
                 continue
             source, target = item["source"], item["target"]
             if (digest(canonical_html(source)) != item["source_hash"]
                     or digest(canonical_html(target)) != item["target_hash"]
-                    or structure_problem(source, target)):
+                    or structure_problem(source, target)
+                    or set(unknown_elements(target)) - set(unknown_elements(source))):
                 continue
         except (KeyError, TypeError, ValueError):
             continue
-        found.setdefault(reuse_key(source), []).append(target)
+        found.setdefault(reuse_key(source), []).append(
+            (repair_entities(target, source), prompts.get(ordinal))
+        )
     return found
 
 

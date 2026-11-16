@@ -27,11 +27,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
+import io
 import ipaddress
 import os
 import re
 import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -43,7 +45,13 @@ from researchlib.chunks import replace_ocr_chunks
 from researchlib.render import img_tag_url, normalize_image_url
 
 MAX_BYTES = 15 * 1024 * 1024
+# 每次收数据的超时。对方隔十几秒给一个字节时每次都不超时，所以另有一张图的总时限和一次运行的总时限。
 TIMEOUT_S = 20
+# 一张图从发请求到收完最多这么久（审核 C2：以前只有每次收数据的超时，对方慢慢滴，夜间任务就一直挂着）。
+DOWNLOAD_SECONDS = 60
+READ_CHUNK = 64 * 1024
+# 一次运行最多这么多分钟，到了就停，剩下的下次接着下。
+MAX_MINUTES = 30
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
     "Version/17.0 Safari/605.1.15"
@@ -83,17 +91,49 @@ def external_urls(body: str) -> list[str]:
     return found
 
 
+# 下下来的图宽乘高的上限（C9）：1.7 亿像素的纯色 PNG 不到 10MB，解码成 RGB 要 500MB，识图 8 路同时认能把容器撑爆。
+MAX_PIXELS = 40_000_000
+_PIL_FORMATS = {"PNG": ".png", "JPEG": ".jpg", "GIF": ".gif", "BMP": ".bmp", "WEBP": ".webp", "TIFF": ".tif",
+                "ICO": ".ico", "AVIF": ".avif", "HEIF": ".heic"}
+_SVG_HEAD = re.compile(rb"^\s*(?:<\?xml[^>]*>\s*)?(?:<!--.*?-->\s*)*(?:<!DOCTYPE svg[^>]*>\s*)?<svg[\s>]", re.S | re.I)
+
+
+def _pixels(data: bytes) -> tuple[str, int] | None:
+    """(格式, 宽乘高)；Pillow 认不出、宽高读不出来回 None。只读文件头，不解码。"""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as image:
+            width, height = image.size
+            kind = image.format or ""
+    except Exception:  # noqa: BLE001 — 坏图、截断的图、认不出的格式都当不是图
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return kind, width * height
+
+
 def image_extension(data: bytes, content_type: str = "") -> str:
+    """按文件内容认图，返回扩展名；不是图、读不出宽高、大过 MAX_PIXELS 的回 ""。
+
+    不按 Content-Type 推：图床回的错误页、占位页常打着 image/*，以前被存成 .html、记成下好了，永不重试。
+    开头碰巧是「BM」的文字也不算 BMP：Pillow 要读得出宽高。SVG 认文件开头的 <svg（/media 按沙箱回）。
+    """
+    del content_type  # 只看内容；参数留着给调用方
+    if _SVG_HEAD.match(data[:4096]):
+        return ".svg"
+    found = _pixels(data)
+    if found is None:
+        return ""
+    kind, pixels = found
+    if pixels > MAX_PIXELS:
+        return ""
     for magic, ext in _SNIFF:
         if data.startswith(magic):
             return ext
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
-    subtype = (content_type or "").split(";", 1)[0].strip().lower()
-    if subtype.startswith("image/"):
-        guess = subtype.split("/", 1)[1]
-        return {"jpeg": ".jpg", "svg+xml": ".svg"}.get(guess, "." + re.sub(r"[^a-z0-9]", "", guess) or ".img")
-    return ""
+    return _PIL_FORMATS.get(kind, "")
 
 
 # 解析不了（域名没了、这台机器的 DNS 坏了）、解析到代理的假地址（fake-ip）、解析到内网分开记：处理办法不一样。
@@ -101,6 +141,7 @@ def image_extension(data: bytes, content_type: str = "") -> str:
 _NOT_PUBLIC = "地址解析到内网或本机，不下载"
 _FAKE_IP = "地址解析到代理的假地址，不下载"
 _NO_DNS = "域名解析不了"
+_BAD_URL = "地址不对"
 
 # Clash、Surge、sing-box 这类代理开 fake-ip 时用的段：RFC 2544 留给测试的 198.18.0.0/15，公网上不会出现。
 PROXY_FAKE_IPS = ipaddress.ip_network("198.18.0.0/15")
@@ -114,13 +155,21 @@ PROXY_IMAGE_HOSTS = frozenset(
 )
 
 
+# 内嵌 IPv4 的 IPv6 段：NAT64（64:ff9b::/96）、旧的 IPv4 兼容地址（::/96）。网关会把它们转到内嵌的 IPv4 上，
+# 按内嵌的那个判。
+_EMBEDDED_V4 = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("::/96"))
+
+
 def _ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     try:
         address = ipaddress.ip_address(value.split("%", 1)[0])
     except ValueError:
         return None
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        return address.ipv4_mapped
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return address.ipv4_mapped
+        if any(address in network for network in _EMBEDDED_V4) and int(address) > 1:
+            return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
     return address
 
 
@@ -239,7 +288,10 @@ def download(url: str) -> tuple[bytes, str]:
 
     WordPress 图片 CDN 上的图先下原站那一张，下不来再试 CDN，两边的原因都记下。
     """
-    origin = photon_origin(url)
+    try:
+        origin = photon_origin(url)
+    except ValueError as exc:  # 「http://[::1/x.png」这类 urlsplit 就认不了的地址
+        raise FetchError(f"{_BAD_URL}：{exc}") from exc
     if not origin:
         return _download(url)
     try:
@@ -252,24 +304,54 @@ def download(url: str) -> tuple[bytes, str]:
 
 
 def _download(url: str) -> tuple[bytes, str]:
+    """下不来的原因一律转成 FetchError：别的异常会冒出 fetch_pending，这个地址记不进库，
+    以后每晚都停在同一篇（审核 C1：「http://[::1/x.png」「http://a..b/x.png」「:abc」端口）。"""
+    try:
+        return _download_checked(url)
+    except FetchError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise FetchError(f"HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise FetchError(f"连不上：{exc}") from exc
+    except (ValueError, http.client.HTTPException) as exc:
+        raise FetchError(f"{_BAD_URL}：{type(exc).__name__}: {exc}") from exc
+
+
+def _download_checked(url: str) -> tuple[bytes, str]:
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise FetchError("不是 http(s) 地址")
     _check_host(parts.hostname)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.5"})
-    try:
-        with _opener().open(request, timeout=TIMEOUT_S) as response:
-            content_type = response.headers.get("Content-Type", "")
-            data = response.read(MAX_BYTES + 1)
-    except urllib.error.HTTPError as exc:
-        raise FetchError(f"HTTP {exc.code}") from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise FetchError(f"连不上：{exc}") from exc
+    started = time.monotonic()
+    with _opener().open(request, timeout=TIMEOUT_S) as response:
+        content_type = response.headers.get("Content-Type", "")
+        data = _read_limited(response, started)
     if len(data) > MAX_BYTES:
         raise FetchError("超过 15MB")
     if not image_extension(data, content_type):
+        found = _pixels(data)
+        if found is not None and found[1] > MAX_PIXELS:
+            raise FetchError(f"图太大（{found[1] // 1_000_000} 百万像素，上限 {MAX_PIXELS // 1_000_000}）")
         raise FetchError(f"不是图片（{content_type or '没有 Content-Type'}）")
     return data, content_type
+
+
+def _read_limited(response, started: float) -> bytes:
+    """一块块读（read1 有多少给多少，不等凑满一块），超过 MAX_BYTES 就停，超过总时限抛 FetchError。"""
+    chunks: list[bytes] = []
+    total = 0
+    read = getattr(response, "read1", None) or response.read
+    while total <= MAX_BYTES:
+        if time.monotonic() - started > DOWNLOAD_SECONDS:
+            raise FetchError(f"下载超时（超过 {DOWNLOAD_SECONDS} 秒）")
+        chunk = read(READ_CHUNK)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
 
 
 def store_bytes(data_dir: Path, data: bytes, ext: str) -> tuple[str, str]:
@@ -357,15 +439,20 @@ def fetch_pending(
     data_dir: Path,
     limit: int = 300,
     fetch: Callable[[str], tuple[bytes, str]] = download,
+    max_minutes: float | None = MAX_MINUTES,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict:
     """最多处理 limit 个还没挂上的地址。返回计数 {"downloaded", "reused", "failed", "skipped", "articles"}。
 
     另记第一次下的地址：new 个，其中下不来的按原因类别（kinds）和域名（hosts）计数，给 fetch_status 判断。
     重试的地址以前就下不来，再失败是意料之中，只计 retried / retry_failed。
+    跑满 max_minutes 分钟就停（report["timed_out"] 为真），剩下的下次接着下。
     """
+    deadline = None if not max_minutes else clock() + max_minutes * 60
     report = {
         "downloaded": 0, "reused": 0, "failed": 0, "skipped": 0, "articles": 0,
         "new": 0, "retried": 0, "retry_failed": 0, "kinds": Counter(), "hosts": Counter(),
+        "timed_out": False,
     }
     budget = limit
     after = None
@@ -394,6 +481,10 @@ def fetch_pending(
                 if _cooling(state):
                     report["skipped"] += 1
                     continue
+                if deadline is not None and clock() > deadline:
+                    report["timed_out"] = True
+                    budget = 0
+                    break
                 budget -= 1
                 first = state is None
                 report["new" if first else "retried"] += 1
@@ -447,6 +538,9 @@ def failure_kind(error: str) -> str:
         ("不是图片", "不是图片"),
         ("超过", "超过 15MB"),
         ("不是 http(s)", "地址不对"),
+        (_BAD_URL, "地址不对"),
+        ("下载超时", "下载超时"),
+
         ("跳转到了", "地址不对"),
     ):
         if text.startswith(prefix):
@@ -584,6 +678,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="把正文里的外链图片下载到本地（DATA_DIR/images/remote）")
     parser.add_argument("--limit", type=int, default=300, help="这次最多下载多少个地址")
     parser.add_argument(
+        "--max-minutes",
+        type=float,
+        default=MAX_MINUTES,
+        help=f"最多跑多少分钟，到了就停、剩下的下次接着下（默认 {MAX_MINUTES}，0 不限）",
+    )
+    parser.add_argument(
         "--exit-code",
         action="store_true",
         help=(
@@ -603,13 +703,14 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
     conn = prepare(settings)
     try:
-        report = fetch_pending(conn, settings.data_dir, args.limit)
+        report = fetch_pending(conn, settings.data_dir, args.limit, max_minutes=args.max_minutes)
         dead = dead_hosts(conn)
     finally:
         conn.close()
     print(
         f"下载 {report['downloaded']} 张，复用 {report['reused']} 张，失败 {report['failed']} 张，"
         f"等下次重试 {report['skipped']} 张，涉及 {report['articles']} 篇"
+        + (f"；跑满 {args.max_minutes:g} 分钟先停，剩下的下次接着下" if report["timed_out"] else "")
     )
     return finish(settings.data_dir, report, exit_code=args.exit_code, dead=dead)
 

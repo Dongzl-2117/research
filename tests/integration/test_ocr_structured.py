@@ -231,8 +231,8 @@ def test_legacy_and_structured_images_keep_their_order(conn, settings, tmp_path)
     refresh_article_ocr(conn, article["id"])
     conn.commit()
     text = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (article["id"],)).fetchone()["ocr_text"]
-    # 旧图照存的样子排在前面，新图按结构排在后面。
-    assert text.startswith("方伟：旧图里的判断是渠道库存偏高\n网友：那就再等等吧\n\n王小明：毛利率：35%，比去年高")
+    # 旧图照存的样子排在前面（行首「方伟：」没经过结构核对，整行加引号），新图按结构排在后面。
+    assert text.startswith("「方伟：旧图里的判断是渠道库存偏高」\n网友：那就再等等吧\n\n王小明：毛利率：35%，比去年高")
     assert text.endswith("股海老船长2号：注意：明天出财报，等数据再说")
 
 

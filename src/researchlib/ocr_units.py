@@ -44,7 +44,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from researchlib.wechat_dialogue import GUEST, HOST
+from researchlib.wechat_dialogue import GUEST, HOST, split_speaker
 from researchlib.zsxq_comments import is_owner
 
 UNITS_VERSION = 1
@@ -82,6 +82,14 @@ CUT_UNREADABLE = {
 _FENCE = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\n?(?P<body>.*?)\n?```$", re.S)
 _NOT_WORD = re.compile(r"[\W_]+")
 _BLANKS = re.compile(r"\n{3,}")
+# 控制字符（换行、制表符以外）和双向控制符。模型偶尔交回 NUL，写库时 psycopg 报
+# 「text fields cannot contain NUL」，识图整批中断（审核 C4）；别的控制字符在页面上也只是乱码。
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]")
+
+
+def strip_control(text: str) -> str:
+    """去掉控制字符和双向控制符，换行、回车、制表符留着。"""
+    return _CONTROL.sub("", text)
 _PARAGRAPH_BREAK = re.compile(r"\n\s*\n+")
 _TRUE = frozenset({"true", "1", "yes", "是"})
 _CUTS = {"top": "top", "bottom": "bottom", "上": "top", "下": "bottom"}
@@ -155,7 +163,7 @@ def _text(value) -> str:
         value = "\n".join(str(part) for part in value if part is not None)
     if value is None or isinstance(value, (dict, bool)):
         return ""
-    lines = [line.strip() for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    lines = [line.strip() for line in strip_control(str(value)).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     return _BLANKS.sub("\n\n", "\n".join(lines)).strip()
 
 
@@ -163,7 +171,7 @@ def _name(value) -> str:
     """照图上抄的显示名。冒号换成空格：后面一律按「说话人：正文」拆，名字里不能再有冒号。"""
     if not isinstance(value, str):
         return ""
-    name = re.sub(r"\s+", " ", value).strip().lstrip("@＠").strip()
+    name = re.sub(r"\s+", " ", strip_control(value)).strip().lstrip("@＠").strip()
     name = re.sub(r"[:：]+", " ", name).strip()
     if not name or len(name) > MAX_NAME or "\n" in name:
         return ""
@@ -267,14 +275,52 @@ def _block(item) -> dict | None:
 def speaker_label(block: dict, owners: tuple[str, ...] = ()) -> str:
     """消息块写在冒号前面的名字。看不到名字是网友。
 
-    截图的人自己发的（self），和显示名是来源作者本人账号的（owners 是 ``source_owners``：author 加 poster_names），
-    写成方伟，再由 relabel_host 换成这篇的作者。owners 为空时只认 self（单张图存 image_texts.text 时不知道来源）。
-    帖子、评论里标着「作者」「楼主」的是那个帖子的作者，常常是别人，所以识图只把靠右的气泡标成 self。
+    截图的人自己发的（self），和显示名是来源作者本人账号的（owners 是 ``source_owners``：author 加 poster_names，
+    一字不差才算），写成方伟，再由 relabel_host 换成这篇的作者。owners 为空时只认 self（单张图存
+    image_texts.text 时不知道来源）。帖子、评论里标着「作者」「楼主」的是那个帖子的作者，常常是别人，
+    所以识图只把靠右的气泡标成 self。
+    知道来源时，别人的网名看着像作者（「方伟（读者）」，或「方伟Rey」却不是这篇来源的作者账号）写成
+    「网友「方伟（读者）」」，不让它排出来和作者的话一个样（审核 I2、C5）。不知道来源时照抄网名。
     """
     speaker = block.get("speaker") or ""
     if block.get("self") or (owners and speaker and is_owner(speaker, owners)):
         return HOST
+    if owners and speaker and _host_like(speaker, owners):
+        return f"{GUEST}「{speaker}」"
     return speaker or GUEST
+
+
+# 行首「名字：」。和 wechat_dialogue 拆说话人的写法一样：名字里没有空白和句读。
+_LINE_LABEL = re.compile(r"^(?P<label>[^\s：:，。！？!?、；/\\「」]{1,20})\s*[:：]")
+
+
+def _host_like(label: str, owners: tuple[str, ...] = ()) -> bool:
+    """名字排出来会被当成作者：方伟、方伟的各种显示名（方伟Rey、方伟（某某）），或这篇来源作者本人的名字。"""
+    label = (label or "").strip()
+    if not label:
+        return False
+    if label == HOST or label in owners:
+        return True
+    found = split_speaker(f"{label}：")
+    return found is not None and found[0] == HOST
+
+
+def _reads_as_label(line: str, owners: tuple[str, ...] = ()) -> bool:
+    """这一行开头像排版加的作者说话人（见 ``_host_like``）。「网友：」不管：把作者的话看成网友的，不会冒充作者。"""
+    match = _LINE_LABEL.match(line.lstrip())
+    return match is not None and _host_like(match.group("label"), owners)
+
+
+def _quote_labels(text: str, owners: tuple[str, ...] = ()) -> str:
+    """图里的字自己另起一行写着「方伟：…」这类作者名的，整行加引号。
+
+    排版出来的文字里，行首的「方伟：」只能是这里按识图结构加的说话人（relabel_host 换作者名、摘要和观点的
+    提示都认它）。网友在一条消息里换行打「方伟：全仓买入」、转发的文章里本来就有的「方伟：」，
+    不加引号就和作者自己的话分不开（审核 C5）。加了引号字一个不少，只是不再像说话人。
+    """
+    if not text:
+        return text
+    return "\n".join(f"「{line}」" if _reads_as_label(line, owners) else line for line in text.split("\n"))
 
 
 def has_dialogue(units: dict | None) -> bool:
@@ -646,6 +692,10 @@ def _seam_chain(up: list[_Line], low: list[_Line], upper: list[dict], lower: lis
             chain.append(matches[step])
             step = best[step][2]  # type: ignore[index]
         chain.reverse()
+        # 前一段对上以后还剩的字和后一段对上以前的字合起来也不超过 SEAM_SLACK：两头各差一点都放过的话，
+        # 重叠那一截没认出字（图、空白）时，会拿接缝附近重复的一句（表格里一样的行、合计行）当接缝，中间几行被吞掉。
+        if trail + before_low[chain[0].lower[0]] > SEAM_SLACK:
+            continue
         if not _seam_chain_ok(chain, found[1], trail, up, low, upper, lower):
             continue
         key = (found[0] - trail, found[1], -matches[number].lower[1])
@@ -893,21 +943,22 @@ def paragraphs(
             if block.get("type") == _SPOKEN:
                 quote = block.get("quote")
                 if quote and not _written_before(quote["text"], written):
-                    entries.append((speaker_label(quote, owners), quote["text"]))
+                    entries.append((speaker_label(quote, owners), _quote_labels(quote["text"], owners)))
                     written.add(_norm(quote["text"]))
             if block.get("text"):
                 entries.append(("", CUT_UNREADABLE.get(block.get("cut") or "", CUT_UNREADABLE[""])))
             continue
         note = _notes(block)
         if block.get("type") != _SPOKEN:
-            entries.append(("", "\n".join(part for part in (_body(block), note) if part)))
+            entries.append(("", "\n".join(part for part in (_quote_labels(_body(block), owners), note) if part)))
             continue
         quote = block.get("quote")
         if quote and not _written_before(quote["text"], written):
-            entries.append((speaker_label(quote, owners), quote["text"]))
+            entries.append((speaker_label(quote, owners), _quote_labels(quote["text"], owners)))
             written.add(_norm(quote["text"]))
         if block.get("text"):
-            entries.append((speaker_label(block, owners), "\n".join(part for part in (block["text"], note) if part)))
+            spoken = _quote_labels(block["text"], owners)
+            entries.append((speaker_label(block, owners), "\n".join(part for part in (spoken, note) if part)))
             written.add(_norm(block["text"]))
     grouped: list[tuple[str, list[str]]] = []
     for label, text in entries:

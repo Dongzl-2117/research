@@ -7,8 +7,8 @@
 - 只有一篇、又没有对立面的论点丢掉。一篇多主题的文章可以进多条论点，同一条判断不会塞进每一条。
 - 判断或态度为空白的观点不进输入。覆盖不到的观点仍留在公司页「全部」时间线。
 - 一家公司一次调用。观点集合有变化才重算，一天最多一次；按 views_hash 和提示词版本缓存。
-- 打开公司页时，只有 RESEARCH_THESES_AUTO=1 才把缺的或过期的排进后台（默认关）。
-  夜间 THESES_ENABLED 同样默认关。打开后不限持仓。启动和部署不跑。
+- 只有命令行这一条路：手动跑，或者夜间任务设了 THESES_ENABLED=1（默认关）。不限持仓。网页不触发
+  （11-14 以前有个 RESEARCH_THESES_AUTO 开关让公司页把缺的排进后台，删了）。启动和部署不跑。
 
     research-theses                    # 观点够数的公司，过期的才算
     research-theses --company 贵州茅台 --company 泡泡玛特 --force
@@ -19,23 +19,26 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import logging
-import os
 import re
 import sys
-import threading
 from datetime import UTC, datetime, timedelta
 
 from psycopg.types.json import Jsonb
 
 from researchlib.author_voice import site_visible_sql
-from researchlib.claims import claim_side, is_hedge, looks_like_list, quote_ok, same_repost
+from researchlib.claims import (
+    REPOST_LEAST,
+    claim_side,
+    is_hedge,
+    looks_like_list,
+    quote_ok,
+    repost_key,
+    same_key,
+)
 from researchlib.config import Settings
 from researchlib.failures import clear_failure, note_failure
-from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth, llm_configured
+from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.web.present import format_date
-
-logger = logging.getLogger("researchlib.theses")
 
 PROMPT_VERSION = 3
 MIN_VIEWS = 4
@@ -102,7 +105,10 @@ def _line(view: dict) -> str:
 def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司下了判断的观点，新的在前，带作者。判断或态度为空白的不算。"""
     from researchlib.views import REAL_VIEW_SQL
+    from researchlib.visibility import visible_sql
 
+    # 和公司页的时间线（views.timeline）一个口径：网友帖、评论壳、标了 hidden 的短帖都不进论点的输入和哈希，
+    # 不然输入里有、展示时引用被滤掉，论点的引用变少甚至整条丢掉（审核 V11）。
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.quote, v.content_hash,
@@ -110,7 +116,7 @@ def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) ->
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s)
-          AND a.duplicate_of IS NULL AND {site_visible_sql("a")}
+          AND a.duplicate_of IS NULL AND {site_visible_sql("a")} AND {visible_sql("a")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (company_id, list(sources_by_id)),
@@ -285,20 +291,54 @@ def _merge_overlapping(items: list[dict]) -> list[dict]:
 
 
 def _collapse_reposts(views: list[dict]) -> list[dict]:
-    """同一篇转贴只留一条。有原句的优先，否则留文章 id 较小的那份。"""
+    """同一篇转贴只留一条。有原句的优先，否则留文章 id 较小的那份。
+
+    规则是：每条观点和已经留下的逐条比（claims.same_repost），并到最前面对得上的那一条。公司页和判断
+    接口每次打开都对整条时间线算一遍，真的逐条比是条数的平方：11-14 积压补完后苹果 1,218 条，要比
+    74 万对、每对重新规范化四段字，一次请求要等十几到二十几秒。这里结果一条不差，只是不逐条比：
+    一边包含另一边时，短的那段开头的 least 个字一定连着出现在长的那段里。所以给留下的每段字记两张表，
+    inside（它里面每个位置开头的 least 个字）和 heads（它自己开头的 least 个字）；新来的一条只查
+    「谁里面有我的开头」「我里面有谁的开头」，查到的再按 same_key 核一遍。花的时间随总字数涨。
+    """
     kept: list[dict] = []
+    keys: list[tuple[str, str]] = []
+    # 判断、原句各一张；值是留下的第几条。
+    inside: tuple[dict[str, list[int]], dict[str, list[int]]] = ({}, {})
+    heads: tuple[dict[str, list[int]], dict[str, list[int]]] = ({}, {})
+
+    def rank(item: dict) -> tuple[int, int]:
+        return (1 if quote_ok(str(item.get("quote") or "")) else 0, -int(item["article_id"]))
+
+    def remember(index: int, key: tuple[str, str]) -> None:
+        for text, least, grams, starts in zip(key, REPOST_LEAST, inside, heads, strict=True):
+            if len(text) < least:
+                continue
+            starts.setdefault(text[:least], []).append(index)
+            for at in range(len(text) - least + 1):
+                grams.setdefault(text[at : at + least], []).append(index)
+
+    def first_twin(key: tuple[str, str]) -> int | None:
+        found: set[int] = set()
+        for text, least, grams, starts in zip(key, REPOST_LEAST, inside, heads, strict=True):
+            if len(text) < least:
+                continue
+            found.update(grams.get(text[:least], ()))
+            for at in range(len(text) - least + 1):
+                found.update(starts.get(text[at : at + least], ()))
+        # 被换掉的那一条（下面 kept[twin] = view）旧的字还留在表里，所以查到的都按现在留着的字再核。
+        return min((index for index in found if same_key(keys[index], key)), default=None)
+
     for view in views:
-        twin = next((index for index, prev in enumerate(kept) if same_repost(prev, view)), None)
+        key = repost_key(view)
+        twin = first_twin(key)
         if twin is None:
+            remember(len(kept), key)
             kept.append(view)
-            continue
-        current = kept[twin]
-
-        def rank(item: dict) -> tuple[int, int]:
-            return (1 if quote_ok(str(item.get("quote") or "")) else 0, -int(item["article_id"]))
-
-        if rank(view) > rank(current):
+            keys.append(key)
+        elif rank(view) > rank(kept[twin]):
             kept[twin] = view
+            keys[twin] = key
+            remember(twin, key)
     return kept
 
 
@@ -618,69 +658,6 @@ def mask_unrelated_quotes(items: list[dict], thesis: dict | None) -> list[dict]:
     return masked
 
 
-# —— 后台排队：打开公司页时，这家公司的论点缺了或过期了才排 ——
-
-_lock = threading.Lock()
-_queue: list[tuple[Settings, dict, dict]] = []
-_inflight: set[int] = set()
-_running = False
-
-
-def schedule(settings: Settings, company: dict, sources_by_id: dict, *, spawn: bool | None = None) -> bool:
-    global _running
-    if not llm_configured(settings):
-        return False
-    if spawn is None:
-        spawn = "PYTEST_CURRENT_TEST" not in os.environ
-    if not spawn:
-        return False
-    start = False
-    with _lock:
-        company_id = int(company["id"])
-        if company_id in _inflight or any(int(item[1]["id"]) == company_id for item in _queue):
-            return False
-        _queue.append((settings, dict(company), dict(sources_by_id)))
-        if not _running:
-            _running = True
-            start = True
-    if start:
-        threading.Thread(target=_worker, name="company-theses", daemon=True).start()
-    return True
-
-
-def _worker() -> None:
-    global _running
-    from researchlib.db import connect
-
-    while True:
-        with _lock:
-            if not _queue:
-                _running = False
-                return
-            settings, company, sources_by_id = _queue.pop(0)
-            _inflight.add(int(company["id"]))
-        conn = None
-        try:
-            conn = connect(settings)
-            build(conn, settings, company, sources_by_id)
-        except LLMUnavailable as exc:
-            logger.warning("论点整理暂停：%s", exc)
-            with _lock:
-                _queue.clear()
-        except LLMError as exc:
-            logger.warning("论点整理失败 %s：%s", company.get("name_zh"), exc)
-            if conn is not None:
-                conn.rollback()
-                note_failure(conn, "theses", int(company["id"]), exc)
-        except Exception:
-            logger.exception("论点整理失败 %s", company.get("name_zh"))
-        finally:
-            if conn is not None:
-                conn.close()
-            with _lock:
-                _inflight.discard(int(company["id"]))
-
-
 def cooling(conn, company_id: int) -> bool:
     row = conn.execute(
         "SELECT 1 FROM llm_failures WHERE kind = 'theses' AND item_id = %s"
@@ -699,7 +676,9 @@ def needs_build(conn, company_id: int, sources_by_id: dict, settings: Settings) 
 
 
 def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) -> list[dict]:
-    """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。"""
+    """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。条件和 views_for 一致。"""
+    from researchlib.visibility import visible_sql
+
     if not source_ids:
         return []
     return conn.execute(
@@ -709,7 +688,7 @@ def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) 
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
-          AND {site_visible_sql("a")}
+          AND {site_visible_sql("a")} AND {visible_sql("a")}
         GROUP BY c.id, c.name_zh
         HAVING count(*) >= %s
         ORDER BY c.name_zh, c.id

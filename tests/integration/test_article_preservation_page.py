@@ -14,8 +14,7 @@ from researchlib.translate.segments import splice_segments, translatable_blocks
 from researchlib.web.app import create_app
 
 
-def test_article_bilingual_original_and_chinese_retain_nontranslatable_content(conn, settings, tmp_path, monkeypatch):
-    monkeypatch.setattr("researchlib.web.routes.schedule_digests", lambda *_args, **_kwargs: None)
+def test_article_bilingual_original_and_chinese_retain_nontranslatable_content(conn, settings, tmp_path):
     source = next(item for item in load_sources(settings.sources_path) if item.id == "stratechery")
     image = tmp_path / "synthetic.png"
     Image.new("RGB", (32, 32), "white").save(image)

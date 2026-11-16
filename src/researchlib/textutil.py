@@ -136,8 +136,13 @@ def first_heading(md: str) -> str | None:
 
 
 # 开头或结尾的省略号。中间的「他说……然后停了」不是截断标题。
-_TRAILING_ELLIPSIS = r"(?:(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,})[\s）)】\]」』\"'“”‘’》>]*)+$"
-_EDGE_ELLIPSIS = re.compile(r"^(?:\s*(?:…+|⋯+|‥+|\.{3,}|．{3,}|。{2,}))+|" + _TRAILING_ELLIPSIS)
+# 量词都写成占有的（++、*+）：以前加号套加号，省略号串后面再跟几个字就指数回溯，
+# 「…」×24 加一句话要 3.6 秒、×40 以小时计，一篇帖子能卡住导入和网页线程（审核 I1）。
+# 每一节是同一个字连成的一串，后面跟的收尾符号里没有省略号，贪心吃满和回溯找到的结果一样。
+# 每种省略号只从一串的第一个字起试（前面的反向断言），整串都在开头试过，中间起再试结果相同。
+ELLIPSIS_RUN = r"(?:(?<!…)…++|(?<!⋯)⋯++|(?<!‥)‥++|(?<!\.)\.{3,}+|(?<!．)．{3,}+|(?<!。)。{2,}+)"
+_TRAILING_ELLIPSIS = ELLIPSIS_RUN.join(["(?:", r"[\s）)】\]」』\"'“”‘’》>]*+)++$"])
+_EDGE_ELLIPSIS = re.compile(r"^(?:\s*+" + ELLIPSIS_RUN + ")++|" + _TRAILING_ELLIPSIS)
 _STUB_END = re.compile(_TRAILING_ELLIPSIS)
 
 
@@ -152,6 +157,9 @@ def drop_export_stub(text: str) -> str:
     if len(filled) < 2:
         return text
     first = lines[filled[0]].strip()
+    if len(first) > 500:
+        # 截的标题只有十几个字。很长的第一行不是它，也不让省略号正则在一整段上逐字试。
+        return text
     stem = _STUB_END.sub("", first)
     if stem == first:
         return text
@@ -350,6 +358,20 @@ def _flexible_date(text: str) -> datetime | None:
 
 
 def parse_datetime(value) -> datetime | None:
+    """认不出、或者值本身坏了（NaN、超出范围的时间戳、bool）都返回 None，不抛错。
+
+    以前归档里一个 `"create_time": NaN` 或 `date: 99999999999999999999` 让整次导入中止，
+    同一来源好的帖子一篇都进不了库（审核 I5）。
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        return _parse_datetime(value)
+    except (ArithmeticError, OSError, TypeError, ValueError):
+        return None
+
+
+def _parse_datetime(value) -> datetime | None:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
@@ -453,8 +475,47 @@ def _markup_raw(text: str) -> str | None:
 
 # 知识星球 Markdown 常在开头写「- 时间：2024-11-28 10:40:22」。只认前几行的列表项，避免正文里的「时间」被当成发布时间。
 _BODY_TIME = re.compile(r"(?m)^[ \t]*[-*][ \t]+时间[ \t]*[:：][ \t]*([^\n]{4,60})")
-# 星球导出写成「2026-09-27 14:41 (UTC+8)」，括注是半角的。去掉括注，按上海时间读，和括注说的一致。
-_TIME_NOTE = re.compile(r"[（(]")
+# 星球导出写成「2026-09-27 14:41 (UTC+8)」，括注是半角的。括注或末尾写的时区（UTC±N、GMT±N、UTC、GMT、北京时间）
+# 换成偏移再读；不写时区的按上海时间读；写了认不出的时区，只留日期、当没有钟点，免得按上海时间读错几个小时。
+_TIME_ZONE = re.compile(
+    r"^(?P<when>.*?\d)\s*(?:[（(]\s*(?P<paren>[^）)]*)[）)]|(?P<bare>(?:UTC|GMT)\s*(?:[+-]\s*\d{1,2}(?::?\d{2})?)?|北京时间))\s*$",
+    re.IGNORECASE,
+)
+_ZONE_OFFSET = re.compile(r"^(?:UTC|GMT)\s*(?:(?P<sign>[+-])\s*(?P<h>\d{1,2})(?::?(?P<m>\d{2}))?)?$", re.IGNORECASE)
+_DAY_PART = re.compile(r"^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?")
+
+
+def _zone_offset(zone: str) -> str | None:
+    """「UTC+8」→「+08:00」，「UTC」→「+00:00」，「北京时间」→「+08:00」；认不出返回 None。"""
+    zone = zone.strip()
+    if zone in ("北京时间", "上海时间"):
+        return "+08:00"
+    match = _ZONE_OFFSET.match(zone)
+    if not match:
+        return None
+    hours, minutes = int(match.group("h") or 0), int(match.group("m") or 0)
+    if hours > 14 or minutes > 59:
+        return None
+    return f"{match.group('sign') or '+'}{hours:02d}:{minutes:02d}"
+
+
+def _with_zone(raw: str) -> str:
+    match = _TIME_ZONE.match(raw)
+    if not match:
+        return raw
+    when = match.group("when").strip()
+    offset = _zone_offset(match.group("paren") if match.group("paren") is not None else match.group("bare"))
+    if offset is None:
+        day = _DAY_PART.match(when)
+        return day.group(0) if day else when
+    if not _CLOCK_IN_TEXT.search(when):
+        return when
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?", when):
+        return f"{when}{offset}"
+    parsed = parse_datetime(when)
+    if parsed is None:
+        return when
+    return parsed.replace(tzinfo=None).isoformat(sep=" ") + offset
 
 
 def _body_time_raw(text: str) -> str | None:
@@ -462,7 +523,7 @@ def _body_time_raw(text: str) -> str | None:
     match = _BODY_TIME.search(head)
     if not match:
         return None
-    raw = _TIME_NOTE.split(match.group(1).strip(), maxsplit=1)[0].strip()
+    raw = _with_zone(match.group(1).strip())
     if parse_datetime(raw):
         return raw
     return None

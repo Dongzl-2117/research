@@ -170,7 +170,7 @@ def build_doc_tree(conn, source_id: str, root_title: str = ROOT_TITLE) -> dict:
 def load_tree_rows(conn, source_id: str) -> list[dict]:
     return conn.execute(
         """
-        SELECT t.article_id, t.parent_id, t.ord, t.orphan, a.title
+        SELECT t.article_id, t.parent_id, t.ord, t.orphan, a.title, a.raw_meta
         FROM doc_tree t
         JOIN articles a ON a.id = t.article_id
         WHERE t.source_id = %s

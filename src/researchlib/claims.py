@@ -146,18 +146,23 @@ def claim_side(thesis_text: str, view_text: str) -> str:
     return "unclear"
 
 
+# 转贴比的两段字各要多少字才算数：判断 12 字、原句 8 字。再短的常常只是碰巧一样。
+REPOST_LEAST = (12, 8)
+
+
+def repost_key(view: dict) -> tuple[str, str]:
+    """一条观点拿去认转贴的两段字：规范化之后的判断和原句。一条只算一次，和很多条比时不用重算。"""
+    return plain_cite(str(view.get("judgment") or "")), plain_cite(str(view.get("quote") or ""))
+
+
+def same_key(left: tuple[str, str], right: tuple[str, str]) -> bool:
+    """两条观点的 repost_key 是不是同一篇转贴：判断或原句，两边都够长、一边包含另一边。"""
+    for mine, theirs, least in zip(left, right, REPOST_LEAST, strict=True):
+        if len(mine) >= least and len(theirs) >= least and (mine in theirs or theirs in mine):
+            return True
+    return False
+
+
 def same_repost(left: dict, right: dict) -> bool:
     """公众号和星球转贴：判断或原句规范化之后互相包含，就当作同一篇，不要两边都计。"""
-    left_judgment = plain_cite(str(left.get("judgment") or ""))
-    right_judgment = plain_cite(str(right.get("judgment") or ""))
-    if len(left_judgment) >= 12 and len(right_judgment) >= 12 and (
-        left_judgment in right_judgment or right_judgment in left_judgment
-    ):
-        return True
-    left_quote = plain_cite(str(left.get("quote") or ""))
-    right_quote = plain_cite(str(right.get("quote") or ""))
-    return bool(
-        len(left_quote) >= 8
-        and len(right_quote) >= 8
-        and (left_quote in right_quote or right_quote in left_quote)
-    )
+    return same_key(repost_key(left), repost_key(right))

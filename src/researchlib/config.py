@@ -80,9 +80,6 @@ class Settings:
     # 首页断更提示。只看最近几天确实在做定时抓取的来源，抓取停着、只手动导归档时不会假警报。
     # 不想要时设 RESEARCH_STALE_BANNER=0。
     stale_banner_enabled: bool = True
-    # 打开公司页时是否在后台自动补论点。默认关。打开后也不限持仓：观点够数的公司都会排。
-    # 需要时设 RESEARCH_THESES_AUTO=1。夜间补齐另有 THESES_ENABLED，同样默认关。
-    theses_auto_enabled: bool = False
     # 语义检索用的向量服务：OpenAI 兼容的 /embeddings（Mac mini 上默认是本机 Ollama 的 bge-m3）。
     # 不配 EMBEDDING_BASE_URL 就不做语义检索，检索照旧只走关键词。
     embedding_base_url: str = ""
@@ -131,7 +128,6 @@ class Settings:
                 else _existing_or_repo("config/portfolio.yaml")
             ),
             stale_banner_enabled=environ.get("RESEARCH_STALE_BANNER", "1").strip() != "0",
-            theses_auto_enabled=environ.get("RESEARCH_THESES_AUTO", "0").strip() == "1",
             embedding_base_url=environ.get("EMBEDDING_BASE_URL", "").strip().rstrip("/"),
             embedding_model=environ.get("EMBEDDING_MODEL", "").strip() or "bge-m3",
             embedding_api_key=environ.get("EMBEDDING_API_KEY", "").strip(),
