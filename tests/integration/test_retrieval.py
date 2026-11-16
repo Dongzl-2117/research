@@ -267,17 +267,17 @@ def test_search_matches_words_not_one_long_phrase(conn, settings):
     )
     with TestClient(create_app(settings)) as client:
         # 以前整句当成连续短语，「腾讯广告加载率」搜不到「腾讯的广告加载率」。文章 id 依次是 1、2、3。
-        ad = client.get("/search", params={"q": "腾讯广告加载率"}).text
+        ad = client.get("/search", params={"q": "腾讯广告加载率", "view": "article"}).text
         assert 'href="/articles/1' in ad
         assert "<mark>广告</mark>笔记" in ad
         # 只命中「广告」的那篇排在「部分命中」之后。
         assert ad.find('href="/articles/1') < ad.find("部分命中</p>") < ad.find('href="/articles/3')
         assert "1 篇全部命中" in ad
-        price = client.get("/search", params={"q": "苹果定价权"}).text
+        price = client.get("/search", params={"q": "苹果定价权", "view": "article"}).text
         assert 'href="/articles/2' in price
-        excluded = client.get("/search", params={"q": "广告 -腾讯"}).text
+        excluded = client.get("/search", params={"q": "广告 -腾讯", "view": "article"}).text
         assert 'href="/articles/3' in excluded and 'href="/articles/1' not in excluded
-        quoted = client.get("/search", params={"q": '"高端手机"'}).text
+        quoted = client.get("/search", params={"q": '"高端手机"', "view": "article"}).text
         assert 'href="/articles/2' in quoted and 'href="/articles/1' not in quoted
         chunk = client.get("/api/v1/search", params={"q": "腾讯广告加载率", "level": "chunk"}).json()
         assert chunk["passages"][0]["title"] == "广告笔记"
@@ -297,7 +297,7 @@ def test_quoted_phrase_is_counted_the_way_it_is_listed(conn, settings):
         ],
     )
     with TestClient(create_app(settings)) as client:
-        page = client.get("/search", params={"q": '"小程序://"'}).text
+        page = client.get("/search", params={"q": '"小程序://"', "view": "article"}).text
         quoted = client.get("/api/v1/search", params={"q": '"小程序://"'}).json()
         plain = client.get("/api/v1/search", params={"q": "小程序"}).json()
     assert "1 篇全部命中" in page and "其余的加来源" not in page
@@ -322,7 +322,7 @@ def test_excluded_word_is_counted_the_way_it_is_listed(conn, settings):
     chunks = conn.execute("SELECT body FROM article_chunks WHERE article_id = 3 AND lang = '' ORDER BY ord").fetchall()
     assert len(chunks) == 2 and "广告" not in chunks[0]["body"]
     with TestClient(create_app(settings)) as client:
-        page = client.get("/search", params={"q": "小程序 -广告"}).text
+        page = client.get("/search", params={"q": "小程序 -广告", "view": "article"}).text
         found = client.get("/api/v1/search", params={"q": "小程序 -广告"}).json()
         plain = client.get("/api/v1/search", params={"q": "小程序"}).json()
     assert sorted(item["id"] for item in found["items"]) == [1, 3]

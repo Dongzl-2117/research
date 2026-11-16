@@ -7,6 +7,7 @@ import mimetypes
 import os
 import re
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -40,6 +41,7 @@ from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index,
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.nested_copies import fold_nested_copies
 from researchlib.ocr import refresh_article_ocr
+from researchlib.output_safety import redact_subscription_links
 from researchlib.portfolio import Portfolio, load_portfolio
 from researchlib.present_text import polish_display_text
 from researchlib.render import (
@@ -48,7 +50,7 @@ from researchlib.render import (
     lazy_images,
     sanitize_html,
 )
-from researchlib.retrieval import full_match_counts, search_articles
+from researchlib.retrieval import full_match_counts, search_articles, search_fragments
 from researchlib.snippets import (
     answer_html,
     highlight_full,
@@ -1426,6 +1428,17 @@ def search_page(request: Request):
         found = None
         count_map: dict[str, int] = {}
         semantic_note = ""
+        # 检索页默认按片段列（专门讲这件事的那一段，点了直达）；view=article 是原来的一篇一张卡片。
+        view = "article" if request.query_params.get("view") == "article" else "passage"
+        by_position = request.query_params.get("sort") != "score"
+        if query and view == "passage":
+            fragment_page = _fragment_page(
+                request, conn, query, scope, facet_scope, info, sources, by_id, banner, company,
+                has_filter, page, by_position,
+            )
+            # 只写了作者名、没有要找的词时照旧按文章列（这位作者的文章）。
+            if fragment_page is not None:
+                return fragment_page
         if query:
             found = search_articles(
                 conn, query, scope, sources, limit=SEARCH_PAGE_SIZE, offset=(page - 1) * SEARCH_PAGE_SIZE
@@ -1502,6 +1515,8 @@ def search_page(request: Request):
         "company": info["company"] or "",
         "from": info["from"],
         "to": info["to"],
+        "article": request.query_params.get("article") or "",
+        "view": "article",
     }
     first_partial = next((index for index, item in enumerate(results) if item.get("partial")), None)
     return render_page(
@@ -1533,6 +1548,8 @@ def search_page(request: Request):
             "pages": pages,
             "base_query": _query_string(**base),
             "page_query": _query_string(**base, source=info["source"]),
+            "view": "article",
+            "view_query": _query_string(**{**base, "view": ""}, source=info["source"]),
             # 范围浮层里的「清除」：去掉作者和时间，留下搜索词、来源和公司。
             "clear_scope_query": _query_string(q=query, source=info["source"], company=info["company"] or ""),
             "ask_query": _query_string(
@@ -1542,6 +1559,141 @@ def search_page(request: Request):
             "sample_banner": banner,
         },
     )
+
+
+FRAGMENT_SNIPPET = 220  # 片段摘录的字数（3 到 4 行），上线后看手机上一屏几条再调
+
+
+def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_id, banner, company, has_filter,
+                   page, by_position):
+    """检索页按片段列：每条是一篇里专门讲这件事的一段，标题是章节名，摘录约 220 字，可当场展开整段。"""
+    settings = request.app.state.settings
+    found = search_fragments(
+        conn, query, scope, sources, limit=SEARCH_PAGE_SIZE, offset=(page - 1) * SEARCH_PAGE_SIZE,
+        by_position=by_position,
+    )
+    if not (found.query and found.query.terms):
+        return None
+    count_map: dict[str, int] = {}
+    if found.query and found.query.terms:
+        count_map = dict(found.counts) if found.scope == facet_scope else full_match_counts(
+            conn, found.query, facet_scope)
+    semantic_note = embeddings.status_note(conn) if found.query and found.query.content_terms else ""
+    terms = found.terms
+    groups = found.query.snippet_groups() if found.query else None
+    fragments = _drop_guest_blocks(conn, found.fragments, by_id)
+    shown = display_titles(
+        conn,
+        [{"id": f.article_id, "source_id": f.source_id, "title": f.title, "published_at": f.published_at}
+         for f in fragments],
+        by_id, settings.display_timezone,
+    )
+    results = []
+    for fragment in fragments:
+        source = by_id[fragment.source_id]
+        text = polish_display_text(redact_subscription_links(fragment.text))
+        has_term = any(term and term.lower() in text.lower() for term in terms)
+        snippet = highlight_snippet(
+            text if has_term else polish_display_text(redact_subscription_links(fragment.peak.body or "")),
+            query, radius=FRAGMENT_SNIPPET, terms=terms, groups=groups,
+        )
+        heading = polish_display_text(fragment.heading or "")
+        article_title = shown[fragment.article_id]
+        row = {"id": fragment.article_id, "title": article_title, "published_at": fragment.published_at}
+        card = _card(row, source, settings, title=highlight_title(heading or article_title, query, terms=terms))
+        card.update({
+            "url": fragment.url,
+            "article_title": article_title if heading else "",
+            "snippet": snippet,
+            "paragraphs": [highlight_full(line, terms) for line in text.split("\n") if line.strip()],
+            "chars": fragment.chars,
+            "blocks": len(fragment.blocks),
+            "semantic": fragment.semantic_hit and not has_term,
+            "more": fragment.more,
+            "more_url": "/search?" + _query_string(q=query, article=str(fragment.article_id)),
+        })
+        results.append(card)
+    total_all = sum(count_map.values())
+    page, pages, _offset = page_window(found.total, page, SEARCH_PAGE_SIZE)
+    facet_ids = set(facet_scope.source_ids)
+    source_counts = [
+        {"id": source.id, "name": source.name, "count": count_map.get(source.id, 0)}
+        for source in sources if source.id in facet_ids
+    ]
+    _order, grouped = _author_groups(sources)
+    entity_authors = [name for name in grouped if name == query or (len(query) >= 2 and query in name)]
+    article_scope = scope.article_id
+    base = {
+        "q": query, "author": info["author"], "company": info["company"] or "",
+        "from": info["from"], "to": info["to"], "article": str(article_scope) if article_scope else "",
+    }
+    scoped_title = ""
+    if article_scope is not None:
+        row = queries.get_article(conn, article_scope, [source.id for source in sources])
+        scoped_title = polish_display_text((row or {}).get("title") or "")
+    return render_page(
+        request,
+        "search.html",
+        {
+            "nav": "search",
+            "title": f"搜索 {query}",
+            "query": query,
+            "view": "passage",
+            "sources": sources,
+            "source_counts": source_counts,
+            "authors": list(grouped),
+            "active_source": info["source"],
+            "filters": info,
+            "has_filter": has_filter,
+            "company": company,
+            "entity_companies": queries.matching_companies(conn, query) if page == 1 and not article_scope else [],
+            "entity_authors": entity_authors if not article_scope else [],
+            "fragments": results,
+            "results": results,
+            "fragment_total": found.total,
+            "fragment_articles": found.articles,
+            "article_scope": article_scope,
+            "scoped_title": scoped_title,
+            "by_position": by_position,
+            "semantic_note": semantic_note,
+            "search_terms": terms,
+            "total_all": total_all,
+            "page": page,
+            "pages": pages,
+            "base_query": _query_string(**base),
+            "page_query": _query_string(**base, source=info["source"], sort="" if by_position else "score"),
+            "view_query": _query_string(**base, source=info["source"], view="article"),
+            "sort_query": _query_string(**base, source=info["source"], sort="score" if by_position else ""),
+            "clear_scope_query": _query_string(q=query, source=info["source"], company=info["company"] or ""),
+            "ask_query": _query_string(
+                q=query, author=info["author"], source=info["source"], company=info["company"] or "",
+                **{"from": info["from"], "to": info["to"]},
+            ),
+            "sample_banner": banner,
+        },
+    )
+
+
+def _drop_guest_blocks(conn, fragments, by_id):
+    """还没清评论的旧星球帖：读者评论那几块不进片段（文章页和接口也不给），整段都是评论的片段不列。"""
+    ids = sorted({f.article_id for f in fragments if by_id[f.source_id].kind == "zsxq"})
+    if not ids:
+        return fragments
+    bodies = {row["id"]: row["body_md"] or "" for row in conn.execute(
+        "SELECT id, body_md FROM articles WHERE id = ANY(%s)", (ids,)).fetchall()}
+    kept = []
+    for fragment in fragments:
+        if fragment.article_id in bodies:
+            guests = guest_comment_authors(bodies[fragment.article_id], source_owners(by_id[fragment.source_id])) or []
+            blocks = [b for b in fragment.blocks if not guest_comment_chunk(
+                {"lang": b.lang, "heading": b.heading, "body": b.body}, guests)]
+            if not blocks:
+                continue
+            if len(blocks) != len(fragment.blocks):
+                peak = fragment.peak if fragment.peak in blocks else blocks[0]
+                fragment = replace(fragment, blocks=blocks, peak=peak)
+        kept.append(fragment)
+    return kept
 
 
 COMPANY_SORTS = {"judged": "最近判断", "views": "判断最多", "deep": "文章最多"}

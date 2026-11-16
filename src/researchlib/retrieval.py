@@ -2414,3 +2414,257 @@ def cited_numbers(answer: str, count: int) -> list[int]:
         if 1 <= number <= count and number not in found:
             found.append(number)
     return found
+
+
+# —— 按片段列（检索页默认）————————————————————————————————————————————————
+# 检索结果的单位从文章改成片段：同一篇里相邻、都相关、同一个章节标题下的一串块。读者要的是专门讲这件事的
+# 那部分内容，点了直接到那里（设计见 docs/retrieval.md「检索按片段列」）。打分和段落接口同一套（score_rows），
+# 片段的分先用峰值块的分，排序和 level=chunk 一致；「连着讲的加分」等排序规则另行盲评再上。
+
+FRAGMENT_SEEDS = 150  # 最多拿这么多块当种子拼片段
+FRAGMENT_MAX_BLOCKS = 6
+FRAGMENT_KEEP = 0.5  # 相邻的块不低于这一串峰值的这么多，才并进来
+FRAGMENT_PER_ARTICLE = 3  # 一篇在列表里最多几个片段，其余收进「这篇还有 N 处」
+
+
+@dataclass
+class Fragment:
+    article_id: int
+    title: str
+    source_id: str
+    published_at: object
+    heading: str
+    lang: str
+    peak: Passage
+    blocks: list[Passage]  # 按块号顺序；中间夹着的弱块（不在候选里）也在，score 为 0
+    score: float
+    semantic_hit: bool
+    more: int = 0  # 这篇还有几处（只在它在列表里的最后一个片段上给）
+
+    @property
+    def first(self) -> int:
+        return self.blocks[0].ord
+
+    @property
+    def last(self) -> int:
+        return self.blocks[-1].ord
+
+    @property
+    def chars(self) -> int:
+        return sum(len(block.body or "") for block in self.blocks)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(block.body or "" for block in self.blocks)
+
+    @property
+    def url(self) -> str:
+        link = f"/articles/{self.article_id}?chunk={self.first}"
+        if self.last != self.first:
+            link += f"&to={self.last}"
+        anchor = self.blocks[0].anchor
+        return link + (f"#{anchor}" if anchor else "")
+
+
+@dataclass
+class FragmentResult:
+    fragments: list[Fragment]  # 这一页
+    total: int  # 列表里一共几个片段（每篇封顶以后）
+    articles: int  # 来自几篇
+    terms: list[str]
+    query: Query | None
+    counts: dict[str, int]  # 按来源分的全部命中篇数（来源分面照旧按文章数）
+    scope: Scope | None = None
+    article_total: int = 0  # 只在一篇里找时：这篇里一共几处
+
+
+def _lang_group(ord_: int) -> int:
+    return _ord_range(ord_)[0]
+
+
+def filter_passages(scored: list[Passage], query: Query) -> list[Passage]:
+    """和 select 同一套门槛：低于榜首 12% 的不要；算过相似度、意思不沾边、字面又没写全的不要；
+    全词命中的够多时只命中一半以下的不要。"""
+    ranked = sorted(scored, key=lambda p: p.score, reverse=True)
+    if not ranked or query.overview:
+        return ranked
+    floor = ranked[0].score * 0.12
+    ranked = [p for p in ranked if p.score >= floor]
+    if any(p.semantic > 0 for p in ranked):
+        ranked = [p for p in ranked if not (p.measured and p.semantic <= 0 and p.coverage < 0.99)]
+    full = sum(1 for p in ranked if p.coverage >= 0.99)
+    if full >= 10:
+        ranked = [p for p in ranked if p.coverage >= 0.5]
+    return ranked
+
+
+def _one_language(passages: list[Passage]) -> list[Passage]:
+    """一篇只用一种语言的片段：英文文章原文块和译文块都召回时，取这篇得分最高那一块的语言。图片文字块另算。"""
+    best: dict[int, int] = {}
+    for passage in sorted(passages, key=lambda p: p.score, reverse=True):
+        group = _lang_group(passage.ord)
+        if group == OCR_ORD_BASE:
+            continue
+        best.setdefault(passage.article_id, group)
+    return [
+        p for p in passages
+        if _lang_group(p.ord) == OCR_ORD_BASE or best.get(p.article_id, _lang_group(p.ord)) == _lang_group(p.ord)
+    ]
+
+
+def build_fragments(passages: list[Passage], gap_rows: dict[tuple[int, int], dict] | None = None) -> list[Fragment]:
+    """把同一篇里相邻、都相关、同一个章节标题下的块拼成片段，按峰值分排。
+
+    从分最高的块起，往两边接：下一块在候选里、同一语言段、同一章节标题、分数不低于峰值一半就接上；
+    隔一块（那块不在候选里或分低）再接一块也行，中间那块的字一并放进片段（gap_rows 给它的正文）。最多 6 块。
+    """
+    gap_rows = gap_rows or {}
+    by_article: dict[int, dict[int, Passage]] = defaultdict(dict)
+    for passage in passages:
+        by_article[passage.article_id][passage.ord] = passage
+    used: set[tuple[int, int]] = set()
+    fragments: list[Fragment] = []
+    for peak in sorted(passages, key=lambda p: p.score, reverse=True):
+        if (peak.article_id, peak.ord) in used:
+            continue
+        blocks = by_article[peak.article_id]
+        group = _lang_group(peak.ord)
+        keep = peak.score * FRAGMENT_KEEP
+
+        def fits(ord_: int, peak=peak, blocks=blocks, group=group, keep=keep) -> bool:
+            other = blocks.get(ord_)
+            # 图片文字块一张图一块，不和别的图拼。
+            return (other is not None and group != OCR_ORD_BASE and (peak.article_id, ord_) not in used
+                    and _lang_group(ord_) == group
+                    and other.heading == peak.heading and other.score >= keep)
+
+        def filler(ord_: int, peak=peak, group=group) -> Passage | None:
+            if _lang_group(ord_) != group or (peak.article_id, ord_) in used:
+                return None
+            row = gap_rows.get((peak.article_id, ord_))
+            if row is None or (row.get("heading") or "") != (peak.heading or ""):
+                return None
+            filled = _passage_from_row(row)
+            filled.score = 0.0
+            return filled
+
+        run: dict[int, Passage] = {peak.ord: peak}
+        for step in (1, -1):
+            edge = peak.ord
+            while len(run) < FRAGMENT_MAX_BLOCKS:
+                nxt = edge + step
+                if fits(nxt):
+                    run[nxt] = blocks[nxt]
+                    edge = nxt
+                    continue
+                skip = nxt + step
+                if len(run) + 2 <= FRAGMENT_MAX_BLOCKS and fits(skip):
+                    middle = blocks.get(nxt)
+                    if (middle is None or middle.heading != peak.heading or (peak.article_id, nxt) in used
+                            or _lang_group(nxt) != group):
+                        middle = filler(nxt)
+                    if middle is not None:
+                        run[nxt] = middle
+                        run[skip] = blocks[skip]
+                        edge = skip
+                        continue
+                break
+        ordered = [run[key] for key in sorted(run)]
+        used.update((peak.article_id, block.ord) for block in ordered)
+        fragments.append(Fragment(
+            peak.article_id, peak.title, peak.source_id, peak.published_at, peak.heading or "", peak.lang, peak,
+            ordered, peak.score, bool(peak.semantic_hit),
+        ))
+    return fragments
+
+
+def _gap_keys(passages: list[Passage]) -> list[tuple[int, int]]:
+    """候选里隔一块的两块之间那一块（同一篇、同一语言段）：拼片段时要它的正文。"""
+    have = {(p.article_id, p.ord) for p in passages}
+    keys = set()
+    for article_id, ord_ in have:
+        middle = ord_ + 1
+        if (article_id, ord_ + 2) in have and (article_id, middle) not in have and \
+                _lang_group(middle) == _lang_group(ord_):
+            keys.add((article_id, middle))
+    return sorted(keys)
+
+
+def _distinct_fragments(fragments: list[Fragment]) -> list[Fragment]:
+    """同一段话在几篇里（抄进几篇笔记的同一份资料、引文）只列一次：和前面列过的八成以上重合就不要。"""
+    kept: list[Fragment] = []
+    seen: set[str] = set()
+    covered: set[str] = set()
+    for fragment in fragments:
+        key = _text_key(fragment.text)
+        if key and key in seen:
+            continue
+        pieces = _shingles(key)
+        if len(pieces) >= 4 and len(pieces & covered) >= REPEAT_SHARE * len(pieces):
+            continue
+        if key:
+            seen.add(key)
+        covered |= pieces
+        kept.append(fragment)
+    return kept
+
+
+def cap_per_article(fragments: list[Fragment], per_article: int = FRAGMENT_PER_ARTICLE) -> list[Fragment]:
+    """每篇最多 per_article 个片段，各自按分数排位；多出来的数记在它在列表里的最后一个片段上。"""
+    listed: list[Fragment] = []
+    shown: dict[int, list[Fragment]] = defaultdict(list)
+    extra: dict[int, int] = defaultdict(int)
+    for fragment in fragments:
+        if len(shown[fragment.article_id]) < per_article:
+            shown[fragment.article_id].append(fragment)
+            listed.append(fragment)
+        else:
+            extra[fragment.article_id] += 1
+    for article_id, more in extra.items():
+        shown[article_id][-1].more = more
+    return listed
+
+
+def search_fragments(
+    conn, text: str, scope: Scope, sources, *, limit: int = 20, offset: int = 0, by_position: bool = False,
+) -> FragmentResult:
+    """检索页默认：按片段列。只在一篇里找（scope.article_id）时不封顶，by_position 按原文顺序排。"""
+    company_rows = load_company_rows(conn)
+    query = analyze(conn, text, sources, company_rows=company_rows)
+    effective = _scope_for_question(scope, query, sources)
+    if not query.terms:
+        return FragmentResult([], 0, 0, [], query, {}, effective)
+    if query.content_terms and embeddings.ready(conn):
+        embeddings.prefetch_query_vector(query.raw)
+    rows = _candidates(conn, query, effective, limit=2000, enough=2000)
+    semantic: dict[tuple[int, int], float] = {}
+    if query.content_terms:
+        rows, semantic = semantic_candidates(conn, query, effective, rows, pool=SEARCH_VECTOR_POOL)
+    scored = score_rows(conn, query, rows, scope=effective, company_rows=company_rows, semantic=semantic)
+    kept = _one_language(filter_passages(scored, query))
+    seeds = kept[:FRAGMENT_SEEDS] if effective.article_id is None else kept
+    if len(kept) > len(seeds):
+        # 种子以外的块只用来接在种子旁边，不单独成片段。
+        seed_keys = {(p.article_id, p.ord) for p in seeds}
+        near = {(p.article_id, p.ord + d) for p in seeds for d in (-2, -1, 1, 2)}
+        seeds = seeds + [p for p in kept[len(seeds):] if (p.article_id, p.ord) in near and
+                         (p.article_id, p.ord) not in seed_keys]
+    gaps = {(row["article_id"], row["ord"]): row for row in _rows_for_keys(conn, _gap_keys(seeds))}
+    fragments = _distinct_fragments(build_fragments(seeds, gaps))
+    counts = full_match_counts(conn, query, effective)
+    if effective.article_id is not None:
+        listed = sorted(fragments, key=lambda f: f.first) if by_position else fragments
+        article_total = len(listed)
+    else:
+        listed = cap_per_article(fragments)
+        article_total = 0
+    return FragmentResult(
+        fragments=listed[offset : offset + limit],
+        total=len(listed),
+        articles=len({f.article_id for f in listed}),
+        terms=query.highlight_terms(),
+        query=query,
+        counts=counts,
+        scope=effective,
+        article_total=article_total,
+    )

@@ -148,13 +148,13 @@ def test_search_says_how_many_matches_paging_reaches(conn, settings, monkeypatch
 
     monkeypatch.setattr(retrieval, "_candidates", one_passage)
     with TestClient(create_app(settings)) as client:
-        page = client.get("/search", params={"q": "独有词条甲乙丙"})
+        page = client.get("/search", params={"q": "独有词条甲乙丙", "view": "article"})
         assert "3 篇全部命中，按相关度能翻到前 1 篇" in page.text
         api = client.get("/api/v1/search", params={"q": "独有词条甲乙丙"}).json()
         assert api["total"] == 3 and api["listed"] == 1 and api["next_offset"] is None
     monkeypatch.undo()
     with TestClient(create_app(settings)) as client:
-        assert "按相关度能翻到" not in client.get("/search", params={"q": "独有词条甲乙丙"}).text
+        assert "按相关度能翻到" not in client.get("/search", params={"q": "独有词条甲乙丙", "view": "article"}).text
 
 
 def test_backfill_fills_null_dates_from_stored_text(conn, settings):

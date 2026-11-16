@@ -216,7 +216,7 @@ def test_search_finds_articles_by_meaning_and_marks_them(conn, settings, fake_ve
     # 字改了才重算：research-embed 什么都不做。
     assert embeddings.backfill(conn) == 0
     with TestClient(create_app(settings)) as client:
-        page = client.get("/search", params={"q": "costco 商业模式"}).text
+        page = client.get("/search", params={"q": "costco 商业模式", "view": "article"}).text
     model = page.find('href="/articles/1')
     store = page.find('href="/articles/2')
     # 「开市客笔记」一个「商业模式」都没写，按意思排到前面，并标出来。
