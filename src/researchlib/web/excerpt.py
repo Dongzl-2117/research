@@ -28,7 +28,8 @@ MAX_SECTION_CHARS = 20000
 AROUND = 4000
 _PROBE = 16
 _MAX_HITS = 64  # 一根探针在全文里出现超过这么多处就不用它
-_HEADING = re.compile(r"(#{1,6})[ \t]+(\S.*?)[ \t#]*$")
+# 标题的尾巴（空白、闭合的 #）用 rstrip 去，不写进正则：「(\S.*?)[ \t#]*$」遇到一长串空白后面还有字是平方级。
+_HEADING = re.compile(r"(#{1,6})[ \t]+(\S.*)$")
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 
 
@@ -44,7 +45,7 @@ class Section:
 @dataclass(frozen=True)
 class Outline:
     sections: tuple[Section, ...]
-    texts: tuple[str, ...]  # 每节归一后的文字，定位用
+    sizes: tuple[int, ...]  # 每节归一后的字数
     offsets: tuple[int, ...]  # 每节文字在 joined 里从哪起
     joined: str
 
@@ -66,7 +67,8 @@ def split_sections(md: str) -> list[Section]:
         elif not fence:
             match = _HEADING.match(stripped)
             if match:
-                heads.append((position, len(match.group(1)), markdown_to_text(match.group(2)).strip()))
+                title = match.group(2).rstrip(" \t#") or match.group(2)
+                heads.append((position, len(match.group(1)), markdown_to_text(title).strip()))
         position += len(line)
     sections: list[Section] = []
     starts = ([(0, 0, "")] if not heads or heads[0][0] > 0 else []) + heads
@@ -89,7 +91,7 @@ def build_outline(md: str) -> Outline:
     for text in texts:
         offsets.append(position)
         position += len(text)
-    return Outline(tuple(sections), texts, tuple(offsets), "".join(texts))
+    return Outline(tuple(sections), tuple(len(text) for text in texts), tuple(offsets), "".join(texts))
 
 
 def locate(outline: Outline, chunk_text: str, heading: str = "") -> int | None:
@@ -194,10 +196,10 @@ def window(md: str, outline: Outline, first: int, last: int, chunk_text: str = "
     last = max(first, min(last, first + MAX_SECTIONS - 1))
     sections = outline.sections
     while (last + 1 < len(sections) and last - first + 1 < MAX_SECTIONS
-           and sum(len(outline.texts[k]) for k in range(first, last + 1)) < MIN_WINDOW_CHARS):
+           and sum(outline.sizes[k] for k in range(first, last + 1)) < MIN_WINDOW_CHARS):
         last += 1
     text = md[sections[first].start:sections[last].end]
-    if first == last and len(outline.texts[first]) > MAX_SECTION_CHARS and chunk_text:
+    if first == last and outline.sizes[first] > MAX_SECTION_CHARS and chunk_text:
         trimmed, cut = _trim(text, chunk_text)
         return Window(trimmed, first, last, cut)
     return Window(text, first, last, False)

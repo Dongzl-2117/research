@@ -47,3 +47,13 @@ def test_window_pads_short_sections_and_trims_huge_ones():
     view = window(long, outline, 0, 0, target)
     assert view.trimmed and "第 120 段" in view.md and "第 5 段。" not in view.md
     assert view.md.startswith("## 很长的一节") and len(view.md) < 12000
+
+
+def test_heading_with_long_whitespace_is_linear():
+    import time
+
+    md = "# x" + " " * 100000 + "y\n\n正文。\n\n## 第一章 话题 ##\n\n### C#\n\n# 标题   \n"
+    started = time.perf_counter()
+    sections = split_sections(md)
+    assert time.perf_counter() - started < 0.5
+    assert [s.title for s in sections][1:] == ["第一章 话题", "C", "标题"]
