@@ -581,3 +581,27 @@ def test_phrase_drops_the_sub_words_zhparser_adds():
     assert reduce_phrase("'a' & 'b'") == "'a' & 'b'"
     assert single_lexeme("'渠道' <-> '库存'") is None
     assert reduce_phrase("") == ""
+
+
+def test_title_counts_less_for_every_passage_of_a_long_compilation():
+    """标题写到的词算进每一段：短文照旧；几十块的汇编标题只是个文件名，按 12 / 块数打折（设计 3.7 规则 2）。"""
+    from datetime import UTC, datetime
+
+    from researchlib.retrieval import TITLE_REACH_CHUNKS, ScoreContext, Term, score_rows, title_reach
+    from researchlib.web.queries import Scope
+
+    context = ScoreContext(
+        200, [], [], {}, as_of=datetime(2026, 1, 1, tzinfo=UTC), sizes={1: 4, 2: TITLE_REACH_CHUNKS * 4},
+    )
+    assert title_reach(context, 1) == 1.0
+    assert title_reach(context, 2) == 0.25
+    assert title_reach(context, 3) == 1.0  # 没量到块数的（旧快照）当作短文
+    terms = [Term("定价权", "content", 0, forms=["定价权"], weight=1.0, idf=1.0)]
+    body = "提价以后销量没有掉，毛利率连着几年往上走，说明顾客不在乎这点差价。" * 6
+    base = dict(heading="", source_id="synthetic", published_at=None, lang="", body=body, ord=3)
+    rows = [dict(base, article_id=1, title="定价权笔记"), dict(base, article_id=2, title="定价权资料汇编")]
+    found = {
+        p.article_id: p.score
+        for p in score_rows(None, _query(terms=terms), rows, scope=Scope(source_ids=["synthetic"]), context=context)
+    }
+    assert found[1] > found[2] > 0

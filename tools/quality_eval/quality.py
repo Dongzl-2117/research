@@ -29,6 +29,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LABELS = HERE / "labels.json"
+# 第二套分：片段是不是专门讲这个问题（2 专门讲，1 讲到，0 只是提到）。和信息质量分开记，同一个键。
+FOCUS = HERE / "focus.json"
 QUERIES = json.loads((HERE / "queries.json").read_text())
 TOP = 10
 
@@ -83,8 +85,8 @@ def fetch(base: str, out: Path) -> None:
     out.write_text(json.dumps(result, ensure_ascii=False))
 
 
-def _labels() -> dict[str, int]:
-    return json.loads(LABELS.read_text()) if LABELS.exists() else {}
+def _labels(path: Path = LABELS) -> dict[str, int]:
+    return json.loads(path.read_text()) if path.exists() else {}
 
 
 def _items(result: dict) -> tuple[list[tuple[int, int, str]], ...]:
@@ -129,15 +131,15 @@ def pool(paths: list[Path], prefix: Path) -> None:
     print(len(keymap), "段待打分 →", f"{prefix}_blind.txt")
 
 
-def label(prefix: Path, grades: str) -> None:
+def label(prefix: Path, grades: str, path: Path = LABELS) -> None:
     keymap = json.loads(Path(f"{prefix}_keys.json").read_text())
-    labels = _labels()
+    labels = _labels(path)
     for item in grades.split():
         code, grade = item.split(":")
         if grade not in {"0", "1", "2"}:
             raise SystemExit(f"分数只能是 0、1、2：{item}")
         labels[keymap[code]] = int(grade)
-    LABELS.write_text(json.dumps(dict(sorted(labels.items())), ensure_ascii=False, indent=0) + "\n")
+    path.write_text(json.dumps(dict(sorted(labels.items())), ensure_ascii=False, indent=0) + "\n")
     print(len(grades.split()), "段记分；共", len(labels))
 
 
@@ -180,6 +182,15 @@ def metrics(path: Path) -> None:
                 continue
             summary = {k: sum(r[k] for r in rows) / len(rows) for k in rows[0]}
             print(f"{split:4} {name} " + " ".join(f"{k}={v:.3f}" for k, v in summary.items()))
+        focus = _labels(FOCUS)
+        rows = [view(q, _items(data[q])[2], focus) for q in QUERIES[split] if q in data]
+        if focus and rows and any(_items(data[q])[2] for q in QUERIES[split] if q in data):
+            twos = [
+                sum(1 for a, o, _ in _items(data[q])[2][:TOP] if focus.get(f"{q}|{a}|{o}") == 2) / TOP
+                for q in QUERIES[split] if q in data
+            ]
+            print(f"{split:4} 片段专门讲 ndcg={sum(r['ndcg'] for r in rows) / len(rows):.3f} "
+                  f"专门讲占比={sum(twos) / len(twos):.3f} 没打分={sum(r['unlabelled'] for r in rows) / len(rows):.3f}")
 
 
 def main() -> int:
@@ -193,6 +204,7 @@ def main() -> int:
     label_parser = sub.add_parser("label")
     label_parser.add_argument("prefix")
     label_parser.add_argument("grades", help="'编号:分数 编号:分数 ...'")
+    label_parser.add_argument("--focus", action="store_true", help="记到 focus.json：是不是专门讲这个问题")
     sub.add_parser("metrics").add_argument("name")
     args = parser.parse_args()
     folder = Path(args.dir)
@@ -203,7 +215,7 @@ def main() -> int:
         names = args.names if len(args.names) > 1 else args.names * 2
         pool([folder / f"{name}.json" for name in names[:-1]], folder / names[-1])
     elif args.command == "label":
-        label(folder / args.prefix, args.grades)
+        label(folder / args.prefix, args.grades, FOCUS if args.focus else LABELS)
     else:
         metrics(folder / f"{args.name}.json")
     return 0
