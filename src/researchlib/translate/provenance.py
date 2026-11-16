@@ -50,8 +50,20 @@ PROMPT_VERSION = 3
 # 10：判串段时，另一段的数这一段原文里全都有（两段都写 January 2007、只有 F1 这种夹在词里的数）
 # 就不拿来比，免得把「一千」「第二天」这种译法判成串段、整段先放英文。因此先放英文的段重新进队列。
 ALIGNMENT_VERSION = 10
-_PARA_ID = re.compile(r'\s+id="p-\d+"')
-_SRC_PARA_ATTR = re.compile(r'\s+data-src-para="\d+"')
+# 只从一串空白的开头试：从中间每个位置都试一遍，一长串空白就是平方级。
+_PARA_ID = re.compile(r'(?<!\s)\s++id="p-\d+"')
+_SRC_PARA_ATTR = re.compile(r'(?<!\s)\s++data-src-para="\d+"')
+# 空元素的两种写法：回执里存的原文写「<br />」，译制切出来的段写「<br>」。不认成一样，带换行的段永远复用不上。
+# 只用一个量词，末尾的空白和斜杠在替换函数里去掉：一长串空白也是线性的。
+_VOID_TAG = re.compile(r"<(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)\b([^<>]*+)>", re.IGNORECASE)
+
+
+def _void_open(match: re.Match[str]) -> str:
+    rest = match.group(2)
+    if rest.endswith("/"):
+        rest = rest[:-1].rstrip()
+    return f"<{match.group(1)}{rest}>"
+
 _TAG = re.compile(r"<[^>]*>")
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-−+]?\d[\d,]*(?:\.\d+)?(?:%|％)?")
 
@@ -471,8 +483,10 @@ def reuse_key(segment: str) -> str:
 
     和回执里的 ``source_hash`` 一样看整段 HTML（字、链接、图片、代码、标签），只是不看
     ``data-src-para`` 的编号：编号从全文开头数，前面多切出或少切出一段，后面每段的编号都变，原文其实没变。
+    空元素写成 ``<br />`` 还是 ``<br>`` 也不看：回执里的原文是 ``<br />``，``translatable_blocks`` 切出来的是 ``<br>``，
+    带换行的段字一个没变也认不出来，每次再译都重问模型，只重签时被当成要调模型（线上 22277 因此一直留着「AT&T;」）。
     """
-    return digest(canonical_html(_SRC_PARA_ATTR.sub("", segment or "")))
+    return digest(canonical_html(_VOID_TAG.sub(_void_open, _SRC_PARA_ATTR.sub("", segment or ""))))
 
 
 def segment_prompts(provenance: dict | None) -> dict[int, int | None]:
