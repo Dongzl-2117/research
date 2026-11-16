@@ -7,7 +7,9 @@ research-views、research-digest 用。命令自己查出要处理的文章，�
 - 每篇先占一把 Postgres advisory lock：(hashtext(锁名), 文章 id)，会话级，处理完放掉，进程没了自动放掉。
   同一进程的几个 worker、同时开着的几个命令、网页后台那条队列都不会处理同一篇。
 - 每篇印一行用量和用时，最后的合计由命令自己印（``tail``），拿它算实际花了多少钱。
-- 没凭证、接口拒绝鉴权、余额不足（402）整批停，不把剩下的一篇篇记成失败。单篇别的错只记这一篇，隔几天再试。
+- 没凭证、接口拒绝鉴权、余额不足（402）整批停，不把剩下的一篇篇记成失败。单篇别的错只记这一篇，隔几天再试；
+  写库、读回答时抛出的别的异常（不是 LLMError）也只记这一篇，数据库连接断了才整批停。
+- 失败那几篇已经花掉的用量照样并进合计。
 - 限流、5xx、断网、超时（``transient``）先不记：连着 ``PAUSE_AFTER`` 篇都这样就整批暂停，这几篇不记失败，
   命令退出码 3，外面的循环过几分钟再跑同一条。中间有一篇成功了，说明接口是通的，前面那几篇才照常记失败。
 - 一次批量的进度都在 ``run`` 的局部变量里，不放模块全局变量。
@@ -17,11 +19,14 @@ research-views、research-digest 用。命令自己查出要处理的文章，�
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+
+import psycopg
 
 from researchlib.config import Settings
 from researchlib.deepseek import deepseek_peak_until
@@ -39,6 +44,7 @@ PAUSE_AFTER = 3
 # 整批暂停时命令的退出码：外面的循环过几分钟再跑同一条，整理过的不会重来。
 EXIT_PAUSED = 3
 _TRANSIENT_STATUS = (429, 500, 502, 503, 504)
+logger = logging.getLogger(__name__)
 
 
 def claim(conn, lock_name: str, item_id: int) -> bool:
@@ -79,6 +85,20 @@ def transient(exc: Exception) -> bool:
     return text.startswith("连不上 ") or any(f"接口返回 {code}" in text for code in _TRANSIENT_STATUS)
 
 
+def _connection_lost(conn, exc: BaseException) -> bool:
+    """数据库连接断了：这条连接上做不了别的，整批停，别把剩下的一篇篇记成失败。"""
+    if getattr(conn, "closed", False) or getattr(conn, "broken", False):
+        return True
+    return isinstance(exc, psycopg.OperationalError | psycopg.InterfaceError)
+
+
+def _paid(usage: dict) -> str:
+    """失败那一篇已经花掉的 token，接在报错后面。"""
+    if not usage.get("prompt") and not usage.get("completion"):
+        return ""
+    return f"（已用 进 {usage.get('prompt', 0):,} 出 {usage.get('completion', 0):,} token）"
+
+
 def _duration(seconds: float) -> str:
     seconds = int(round(seconds))
     hours, rest = divmod(seconds, 3600)
@@ -102,7 +122,10 @@ def spent(usage: dict, seconds: float) -> str:
 def tail(report: dict, verb: str = "处理") -> str:
     """合计那一行的后半句：跳过了几篇、一共用了多少 token、多久。"""
     skipped = f"，跳过 {report['skipped']} 篇（别处正在{verb}或已经{verb}过）" if report["skipped"] else ""
-    return f"{skipped} · 合计{spent(report['usage'], report['seconds'])}"
+    # 接口偶尔不报用量（去掉 stream_options 重发的那几次）：这几篇不在合计里，实际费用以后台账单为准（审核 V12）。
+    blind = report.get("unmetered") or 0
+    unmetered = f"（其中 {blind} 篇接口没报用量，不在合计里，实际费用以后台账单为准）" if blind else ""
+    return f"{skipped} · 合计{spent(report['usage'], report['seconds'])}{unmetered}"
 
 
 def exit_code(report: dict, verb: str = "处理") -> int:
@@ -186,7 +209,16 @@ def run(
     guard = threading.Lock()
     printing = threading.Lock()
     queue = iter(jobs)
-    report: dict = {"done": 0, "failed": 0, "skipped": 0, "usage": {}, "fatal": "", "paused": "", "timed_out": False}
+    report: dict = {
+        "done": 0,
+        "failed": 0,
+        "skipped": 0,
+        "unmetered": 0,
+        "usage": {},
+        "fatal": "",
+        "paused": "",
+        "timed_out": False,
+    }
     # 接口不通、还没记失败的几篇：(文章 id, 错误)。连着 PAUSE_AFTER 篇就暂停；中间有一篇成功就把它们记成失败。
     held: list[tuple[int, Exception]] = []
     stop = threading.Event()
@@ -250,8 +282,8 @@ def run(
         if not claim(conn, lock_name, item_id):
             bump("skipped")
             return
+        usage: dict = {}
         try:
-            usage: dict = {}
             begun = time.monotonic()
             try:
                 line = handle(conn, job, usage)
@@ -262,12 +294,24 @@ def run(
                         report["fatal"] = report["fatal"] or str(exc)
                     stop.set()
                     return
-                say(f"{item_id} {title}: {exc}", err=True)
+                say(f"{item_id} {title}: {exc}{_paid(usage)}", err=True)
                 if transient(exc):
                     hold(item_id, exc)
                     return
                 settle(conn)
                 note_failure(conn, kind, item_id, exc)
+                bump("failed")
+                return
+            except Exception as exc:  # noqa: BLE001 - 一篇的坏数据不能让整批退出（审核 V9）
+                if _connection_lost(conn, exc):
+                    raise
+                conn.rollback()
+                # 模型答了、写库或读回答时出的错（字段类型不对、NUL 字符写不进库）：这一篇记失败、隔几天再试，
+                # 接着做下一篇。以前异常冒出整批，下次循环又从这一篇开始，每 5 分钟付一次钱。
+                logger.warning("%s %s 处理出错", kind, item_id, exc_info=True)
+                say(f"{item_id} {title}: 处理出错 {type(exc).__name__}: {exc}{_paid(usage)}", err=True)
+                settle(conn)
+                note_failure(conn, kind, item_id, f"{type(exc).__name__}: {exc}")
                 bump("failed")
                 return
             if line is None:
@@ -276,10 +320,14 @@ def run(
             settle(conn)
             with guard:
                 report["done"] += 1
-                for name, value in usage.items():
-                    report["usage"][name] = report["usage"].get(name, 0) + value
+                if not usage.get("prompt") and not usage.get("completion"):
+                    report["unmetered"] += 1
             say(f"{item_id} {title[:40]}：{line} · {spent(usage, time.monotonic() - begun)}")
         finally:
+            # 失败的那几篇模型也答过、也收了钱：用量照样并进合计（审核 R7），合计才对得上账单。
+            with guard:
+                for name, value in usage.items():
+                    report["usage"][name] = report["usage"].get(name, 0) + value
             release(conn, lock_name, item_id)
 
     def work() -> None:

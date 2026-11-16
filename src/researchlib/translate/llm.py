@@ -89,6 +89,17 @@ def transient_failure(error: BaseException | None) -> bool:
     return isinstance(error, LLMHTTPError) and (error.status == 429 or error.status >= 500)
 
 
+def account_failure(error: BaseException | None) -> bool:
+    """欠费（402）、鉴权被拒（401、403）、没配密钥：换哪一篇问都一样，按队列、按清单译时整批停（审核 T6）。
+
+    和 ``llm_batch.fatal`` 是同一个口径（那边认 llm.chat 的报错），这边认译制自己的异常类型。
+    要重新登录（``XaiLoginRequiredError``）另有处理，不在这里。
+    """
+    if isinstance(error, LLMConfigError):
+        return True
+    return isinstance(error, LLMHTTPError) and error.status in (401, 402, 403)
+
+
 # 量每一次请求连了多久。测试换成假钟。
 _clock = time.monotonic
 
@@ -387,6 +398,7 @@ __all__ = [
     "LLMTransportError",
     "Usage",
     "XaiLoginRequiredError",
+    "account_failure",
     "chat_json",
     "extract_json",
     "grok_output_tokens",

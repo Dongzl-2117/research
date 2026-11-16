@@ -57,8 +57,13 @@ RETRY_AFTER_CAP = 60.0
 EMPTY_CONTENT_MAX_TOKENS = 131_072
 
 _slot_lock = threading.Lock()
-# 接口不认 stream_options（去掉以后同一请求就成了）时记下，这个进程里后面的请求不再带，免得每张图先白挨一次 4xx。
+# 接口不认 stream_options（去掉以后同一请求就成了）连着 STREAM_USAGE_MISSES 次，这个进程里后面的请求才不再带，
+# 免得每张图先白挨一次 4xx。以前碰上一次就关，一次偶然的 400 让同一进程后面的请求都不报用量，
+# 批量的合计偏低（审核 V12）。
+# 带着它成功一次就清零。这是整个进程对接口的认识，不是某一次调用的中间结果。
+STREAM_USAGE_MISSES = 3
 _STREAM_USAGE = True
+_stream_misses = 0
 _slots: dict[int, threading.BoundedSemaphore] = {}
 
 # 传输层计数：压测（research-grok-smoke --pressure）靠它看真实的重试次数和 429 次数。
@@ -583,11 +588,26 @@ def chat(
         break
     if dropped_stream_usage:
         _forget_stream_usage()
+    elif "stream_options" in payload:
+        _stream_usage_ok()
     record_llm(settings.data_dir, ok=True, provider=label)
     return text, str(body.get("model") or payload["model"])
 
 
 def _forget_stream_usage() -> None:
-    """接口不认 stream_options：这个进程后面的请求不再带，识图报告会写「接口这次没报用量」。"""
-    global _STREAM_USAGE
-    _STREAM_USAGE = False
+    """接口不认 stream_options：连着 STREAM_USAGE_MISSES 次，这个进程后面的请求不再带。
+
+    识图报告会写「接口这次没报用量」。
+    """
+    global _STREAM_USAGE, _stream_misses
+    with _slot_lock:
+        _stream_misses += 1
+        if _stream_misses >= STREAM_USAGE_MISSES:
+            _STREAM_USAGE = False
+
+
+def _stream_usage_ok() -> None:
+    global _stream_misses
+    if _stream_misses:
+        with _slot_lock:
+            _stream_misses = 0

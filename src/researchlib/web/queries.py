@@ -439,6 +439,13 @@ def article_chunks(conn, article_id: int):
     ).fetchall()
 
 
+def original_chunk_count(conn, article_id: int) -> int:
+    row = conn.execute(
+        "SELECT count(*)::int AS n FROM article_chunks WHERE article_id = %s AND ord < 10000", (article_id,),
+    ).fetchone()
+    return row["n"] if row else 0
+
+
 def source_stats(conn, source_ids: list[str]) -> dict[str, dict]:
     if not source_ids:
         return {}
@@ -710,15 +717,22 @@ def company_author_counts(conn, company_id: int, source_ids: list[str]):
 
 
 def expire_stale_answers(conn) -> int:
-    """问库整合超过 ASK_RUNNING_TIMEOUT_S（默认 600 秒）还在 running：标成出错，页面出「重新整合」。"""
+    """问库整合超过 ASK_RUNNING_TIMEOUT_S（默认 600 秒）还在 running：标成出错，页面出「重新整合」。
+
+    这个进程里还排着队或正在整合的不算（``ask.active_ids``，审核 R3）：它们自己会写回结果或错误。
+    以前排队的也被标成出错，轮到时照样跑完，读者照提示点了「重新整合」就跑两遍。
+    """
     import os
+
+    from researchlib.ask import active_ids
 
     raw = os.environ.get("ASK_RUNNING_TIMEOUT_S", "").strip()
     cap = int(raw) if raw.isdigit() and int(raw) > 0 else 600
     rows = conn.execute(
         "UPDATE llm_answers SET status = 'error', error = %s, updated_at = now()"
-        " WHERE status = 'running' AND updated_at < now() - make_interval(secs => %s) RETURNING id",
-        (f"整合超过 {cap // 60} 分钟没完成，已停止等待。可以重新整合。", cap),
+        " WHERE status = 'running' AND updated_at < now() - make_interval(secs => %s)"
+        " AND NOT (id = ANY(%s)) RETURNING id",
+        (f"整合超过 {cap // 60} 分钟没完成，已停止等待。可以重新整合。", cap, active_ids()),
     ).fetchall()
     if rows:
         conn.commit()

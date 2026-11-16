@@ -46,7 +46,7 @@ from researchlib.health import deploy_waiting
 from researchlib.llm_provider import PROVIDER_DEEPSEEK, PROVIDER_GROK, deepseek_api_key, llm_provider
 from researchlib.textutil import SHANGHAI
 from researchlib.translate import inventory
-from researchlib.translate.llm import Usage, metered, transient_failure
+from researchlib.translate.llm import Usage, account_failure, metered, transient_failure
 from researchlib.translate.provenance import PROMPT_VERSION, AlignmentError
 from researchlib.translate.service import (
     TRANSLATE_BATCH_MAX_CHARS,
@@ -133,6 +133,10 @@ def _show_progress():
         log.setLevel(level)
 
     return undo
+
+
+class AccountStop(RuntimeError):
+    """欠费、鉴权被拒、没配密钥：剩下的篇问了也一样，整批停（审核 T6）。"""
 
 
 def _retry_later(error: BaseException) -> bool:
@@ -431,11 +435,19 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:  # noqa: BLE001 — 一篇出错不停，记下接着译别的
                     conn.rollback()
                     error = exc
+                    if account_failure(exc):
+                        # 欠费、鉴权被拒、没配密钥：不是这一篇的事，不记失败、不进冷却，整批停（审核 T6）。
+                        raise AccountStop(str(exc)[:300]) from exc
                     try:
                         record_translation_failure(conn, article_id, exc)
                     except Exception:  # noqa: BLE001
                         conn.rollback()
                         _say(f"#{article_id} 失败回执未能保存", err=True)
+        except AccountStop:
+            with guard:
+                total.merge(usage)
+            _say(f"#{article_id} 没译：{error}", err=True)
+            raise
         finally:
             _translating.reset(token)
         spent = _spent(usage, time.monotonic() - begun)
@@ -465,6 +477,8 @@ def main(argv: list[str] | None = None) -> int:
             + (f" {result.error}" if result.error else "")
             + spent
         )
+        if result.stop_batch:
+            raise AccountStop(result.error or "余额不足或密钥不对")
         return result.retry_later
 
     def drain(take: Callable[[object], int | None], work: Callable[[object, int], None]) -> None:
@@ -640,6 +654,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if failed else 0
     except XaiLoginRequiredError as exc:
         print(f"需要重新登录：{exc}", file=sys.stderr)
+        return 2
+    except AccountStop as exc:
+        # 手上别的几篇已经译完或存下了已译的段；剩下的没发请求、没记失败。
+        print(f"整批停下：余额不足或密钥不对（{exc}）。充值或配好密钥后再跑同一条，已译的段不会重译", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         # 手上的几篇还在别的线程里等模型回答，进程一退就断了：这几篇这次不存，下次重新译。

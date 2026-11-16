@@ -23,7 +23,8 @@ from researchlib.ask import PRESETS, retry, start
 from researchlib.ask_model import form_choice, recorded_choice
 from researchlib.ask_model import menu as ask_model_menu
 from researchlib.author_voice import hide_from_site
-from researchlib.boilerplate import clean_article
+from researchlib.boilerplate import EMPTY as EMPTY_PROFILE
+from researchlib.boilerplate import LIBRARY_KINDS, clean_article, clean_markdown, image_hashes
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
@@ -73,6 +74,9 @@ from researchlib.visibility import is_hidden
 from researchlib.web import queries
 from researchlib.web.assets import asset_url
 from researchlib.web.daybrief import compose_day_brief
+from researchlib.web.excerpt import EXCERPT_MIN_CHUNKS, build_outline, locate
+from researchlib.web.excerpt import path as excerpt_path
+from researchlib.web.excerpt import window as excerpt_window
 from researchlib.web.present import (
     FEED_ZONE,
     chart_ticks,
@@ -779,11 +783,59 @@ def _has_tree(conn, source_id: str) -> bool:
 QUOTED_SPAN = 6  # ?chunk=A&to=B 一次最多标几块（检索的一个片段）
 
 
-def _quoted_query(quoted, request: Request) -> str:
+def _clean_library(body_md: str, hashes: list[tuple[str, str]]) -> str:
+    return clean_markdown(body_md, EMPTY_PROFILE, dict(hashes), drop_cta=False)
+
+
+def _excerpt(article_id: int, shown_md: str, quoted, targets, section: int | None) -> dict | None:
+    """节选页要渲染的那一段，连同页面上的章节导航。定位不到就返回 None，照旧整页。"""
+    outline = PAGES.call("outline", build_outline, shown_md)
+    sections = outline.sections
+    if not sections:
+        return None
+    chunk_text = ""
+    if quoted is not None:
+        bodies = [text for text, _occurrence in targets] or [quoted["body"]]
+        first = locate(outline, bodies[0], quoted.get("heading") or "")
+        if first is None:
+            return None
+        last = locate(outline, bodies[-1], "") if len(bodies) > 1 else first
+        if last is None or last < first:
+            last = first
+        chunk_text = bodies[0]
+    elif section is not None and 0 <= section < len(sections):
+        first = last = section
+    else:
+        return None
+    view = excerpt_window(shown_md, outline, first, last, chunk_text)
+    base = f"/articles/{article_id}"
+    toc = [
+        {"index": index, "level": item.level, "title": item.title, "current": view.first <= index <= view.last}
+        for index, item in enumerate(sections) if item.title
+    ]
+    full = base + (_quoted_query(quoted, None) if quoted is not None else "")
+    return {
+        "md": view.md,
+        "path": [{"index": index, "title": title} for index, title in excerpt_path(outline, view.first)],
+        "number": view.first + 1,
+        "total": len(sections),
+        "prev": f"{base}?section={view.first - 1}" if view.first > 0 else "",
+        "next": f"{base}?section={view.last + 1}" if view.last + 1 < len(sections) else "",
+        "full": full + ("&" if "?" in full else "?") + "full=1",
+        "whole": f"{base}?section={view.first}" if view.trimmed else "",
+        "toc": toc if len(toc) > 1 else [],
+        "base": base,
+    }
+
+
+def _quoted_query(quoted, request: Request | None) -> str:
     if quoted is None:
         return ""
     query = f"?chunk={quoted['ord']}"
-    upto = parse_int(request.query_params.get("to"))
+    if request is None:
+        upto = quoted.get("to")
+    else:
+        upto = parse_int(request.query_params.get("to"))
     if upto is not None and quoted["ord"] < upto < quoted["ord"] + QUOTED_SPAN:
         query += f"&to={upto}"
     return query
@@ -811,6 +863,7 @@ def _quoted_range(rows, wanted: int, upto: int | None, guests: list[str]):
     quoted = dict(first)
     if len(picked) > 1:
         quoted["body"] = "\n".join(row["body"] or "" for row in picked)
+        quoted["to"] = picked[-1]["ord"]
     return quoted, targets
 
 
@@ -843,15 +896,20 @@ def _article_view(request: Request, article_id: int, mode: str):
         )
         quoted = None
         quoted_targets: list[tuple[str, object]] = []
+        original_chunks = 0
+        section_arg = parse_int(request.query_params.get("section"))
         wanted = parse_int(chunk_arg) if chunk_arg is not None else None
         if wanted is not None and wanted >= 0:
             # 图片文字块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
             # 还没清的旧帖，评论那几块里有读者的评论和昵称，正文页的评论区不显示它们，这里也不引。
             guests = guest_comment_authors(article["body_md"] or "", source_owners(source)) or []
+            chunk_rows = queries.article_chunks(conn, article_id)
+            original_chunks = sum(1 for row in chunk_rows if not (row.get("lang") or ""))
             quoted, quoted_targets = _quoted_range(
-                queries.article_chunks(conn, article_id), wanted,
-                parse_int(request.query_params.get("to")), guests,
+                chunk_rows, wanted, parse_int(request.query_params.get("to")), guests,
             )
+        elif section_arg is not None:
+            original_chunks = queries.original_chunk_count(conn, article_id)
         banner = queries.sample_state(conn, ids)
         chat_asked = queries.recent_article_questions(conn, article_id, 3)
         translation = queries.get_translation(conn, article_id)
@@ -869,7 +927,15 @@ def _article_view(request: Request, article_id: int, mode: str):
             link_index = load_md_index(conn, article["source_id"])
         # 正文显示前去掉归档头、引流尾巴、二维码和文末招募。库里的 body_md 不改。HTML 同样洗。
         # 明显错字在 render_body→present_article_text 再洗一遍（幂等）；此处提前洗是为了标题和 strip 标题一致。
-        shown_md = polish_display_text(clean_article(conn, article_id, article["source_id"], article["body_md"]))
+        if original_chunks > EXCERPT_MIN_CHUNKS and source.kind in LIBRARY_KINDS:
+            # 超长的资料：清洗结果按正文和图片哈希缓存，节选页才快得起来（几百万字洗一遍要 0.2 到 0.4 秒）。
+            # 资料库来源不按来源学模板（profile 是空的），清洗只看这两样输入。
+            shown_md = polish_display_text(PAGES.call(
+                "clean-library", _clean_library, article["body_md"] or "",
+                sorted(image_hashes(conn, article_id).items()),
+            ))
+        else:
+            shown_md = polish_display_text(clean_article(conn, article_id, article["source_id"], article["body_md"]))
         display_title = shorten_long_title(article["title"] or "", article.get("body_text") or "")
         if repairs_source(source.id, source.kind) and title_needs_repair(
             display_title or "", article.get("body_text") or ""
@@ -892,6 +958,16 @@ def _article_view(request: Request, article_id: int, mode: str):
         # 单看原文时（没有译文，或点了「原文」）：导出时写了两遍的引文、列表项收成一份（nested_copies），
         # Stratechery 每日更新开头结尾的套话不显示（housekeeping），2026 网页导出一个文本节点一行的拼回段落
         # （web_export）。对照按位置配，译文是照着整篇原文译的，原文不收、不拼。
+        # 超长文带着 ?chunk= 或 ?section= 打开：只渲染那一节（节选页）。下面收副本、拼行只做这一段，
+        # 几百万字的全文收一遍副本要一秒多。
+        excerpt_view = None
+        if (not zh_blob and (article["raw_meta"] or {}).get("format") != "html"
+                and request.query_params.get("full") is None
+                and original_chunks > EXCERPT_MIN_CHUNKS
+                and (not (quoted or {}).get("lang") if quoted is not None else section_arg is not None)):
+            excerpt_view = _excerpt(article_id, shown_md, quoted, quoted_targets, section_arg)
+            if excerpt_view is not None:
+                shown_md = excerpt_view.pop("md")
         if mode == "original" or not zh_blob:
             shown_md = strip_housekeeping(fold_nested_copies(shown_md))
             if is_web_export(article["body_md"] or ""):
@@ -1036,6 +1112,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
             "quoted_marked": quoted_marked,
+            "excerpt": excerpt_view,
             # 切换对照、中文、原文时带着落点，不然切过去就回到页面顶上。
             "quoted_query": _quoted_query(quoted, request),
             # 点进文章先看总结：有摘要就放在正文前面。
