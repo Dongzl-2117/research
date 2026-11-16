@@ -53,3 +53,36 @@
   openBilingualReference();
   window.addEventListener('hashchange', openBilingualReference);
 }());
+
+// 从检索结果点进来的：顶上加「返回检索结果」，回到原来那页结果（search.js 记的地址，同一个标签页、同一篇里有效，
+// 在这篇里翻节、看全文都还在）。长文里翻几节以后浏览器后退只是退回上一节，以前回不到结果页。
+(function () {
+  var saved;
+  try { saved = JSON.parse(sessionStorage.getItem('research-search-return') || 'null'); } catch (_) { return; }
+  var match = location.pathname.match(/^\/articles\/(\d+)/);
+  if (!saved || !match || saved.article !== match[1] || typeof saved.url !== 'string') return;
+  if (saved.url.indexOf('/search?') !== 0) return;
+  var top = document.querySelector('.reader-top');
+  if (!top) return;
+  var link = document.createElement('a');
+  link.className = 'back back-search';
+  link.href = saved.url;
+  var ns = 'http://www.w3.org/2000/svg';
+  var icon = document.createElementNS(ns, 'svg');
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('aria-hidden', 'true');
+  var path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', 'M14.5 6.5 8.5 12l6 5.5');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', 'currentColor');
+  path.setAttribute('stroke-width', '1.8');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  icon.append(path);
+  link.append(icon, document.createTextNode('返回检索结果'));
+  if (saved.query) link.title = '回到「' + saved.query + '」的结果';
+  link.addEventListener('click', function () {
+    try { sessionStorage.setItem('research-search-returning', JSON.stringify(saved.url)); } catch (_) { /* 照常跳转 */ }
+  });
+  top.prepend(link);
+}());

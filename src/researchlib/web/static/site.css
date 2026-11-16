@@ -628,6 +628,9 @@ mark {
 }
 .back svg { width: 16px; height: 16px; }
 .back:hover { color: var(--ink); }
+/* 从检索结果点进来时，「返回检索结果」排在原来的「返回／返回目录」前面（article.js）。 */
+.reader-top .back-search { color: var(--accent, var(--ink)); }
+.back-search + .back { margin-left: 8px; }
 .byline {
   display: flex;
   flex-wrap: wrap;
