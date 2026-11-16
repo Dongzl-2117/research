@@ -79,3 +79,18 @@ def test_pages_show_old_rows_without_the_extra_semicolon():
 def test_entity_helpers():
     assert entity_ref("amp") == "&amp;" and entity_ref("nbsp") == "&nbsp;" and entity_ref("T") == "&amp;T"
     assert escape_stray_ampersands("AT&T &amp; &#39; &T;") == "AT&amp;T &amp; &#39; &amp;T"
+
+
+def test_reuse_key_ignores_self_closing_void_tags_and_stays_linear():
+    import time
+
+    from researchlib.translate.provenance import reuse_key
+
+    assert reuse_key("<p>a<br /> b</p>") == reuse_key("<p>a<br> b</p>") == reuse_key("<p>a<br/> b</p>")
+    assert reuse_key('<p><img src="x" alt="y"/></p>') == reuse_key('<p><img src="x" alt="y"></p>')
+    assert reuse_key('<p><a href="/x/">a</a></p>') != reuse_key('<p><a href="/x">a</a></p>')
+    assert reuse_key('<p data-src-para="3">a</p>') == reuse_key('<p data-src-para="9">a</p>')
+    started = time.monotonic()
+    reuse_key("<br" + " " * 100_000)
+    reuse_key("<p" + " " * 100_000 + "x")
+    assert time.monotonic() - started < 1

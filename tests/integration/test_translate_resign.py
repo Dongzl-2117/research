@@ -64,6 +64,26 @@ def test_resign_repairs_stored_entities_without_the_model(conn, settings, monkey
     assert again["resigned"] == [] and again["needs-model"] == []
 
 
+def test_resign_reuses_segments_whose_receipt_wrote_br_self_closing(conn, settings, monkeypatch):
+    """线上 22277：回执里的原文写着「<br />」，译制切出来的段是「<br>」，字一个没变。
+    以前按段认不出这几段，只重签时当成要调模型，「AT&T;」一直修不掉。"""
+    body = ("<p>First paragraph 10 dollars about {name} and AT&amp;T.<br />Second line of it.</p>"
+            "<p>Second paragraph 20 dollars.</p>")
+    article = _article(conn, settings, "brk", body=body)
+    monkeypatch.setattr(service, "chat_json", _model)
+    assert service.translate_article(conn, article, data_dir=settings.data_dir).status == "translated"
+    _break_entities(conn, settings, article)
+    proof = conn.execute("SELECT provenance FROM article_translations WHERE article_id = %s",
+                         (article,)).fetchone()["provenance"]
+    assert any("<br />" in item["source"] for item in proof["segments"])
+    monkeypatch.setattr(service, "chat_json", _no_model)
+    found = resign.run(conn, settings, ids=[article], say=lambda _text: None)
+    assert found["resigned"] == [article] and found["needs-model"] == []
+    stored = conn.execute("SELECT body_html FROM article_translations WHERE article_id = %s",
+                          (article,)).fetchone()["body_html"]
+    assert "&T;" not in stored and "AT&amp;T" in stored
+
+
 def test_resign_lists_articles_that_need_the_model_and_status_reports_them(conn, settings, monkeypatch):
     article = _article(conn, settings, "changed")
     monkeypatch.setattr(service, "chat_json", _model)
