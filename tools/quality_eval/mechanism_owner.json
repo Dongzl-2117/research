@@ -1,0 +1,173 @@
+{
+ "about": "Zhilin 2026-11-17 亲手判的 28 段（从 mechanism.json 的 7 道题里挑，偏向难判的）：2 讲生意本身、排前面，1 讲到一点、居中，0 没讲、往后。他的判法是标准本身，research-mechanism --calibrate 先看和这份的一致率。",
+ "items": [
+  {
+   "query": "Netflix 竞争优势",
+   "article_id": 23077,
+   "ord": 10004,
+   "label": 2
+  },
+  {
+   "query": "美团 外卖 竞争",
+   "article_id": 1313,
+   "ord": 171,
+   "label": 2
+  },
+  {
+   "query": "拼多多 护城河",
+   "article_id": 8751,
+   "ord": 628,
+   "label": 1
+  },
+  {
+   "query": "Costco 商业模式",
+   "article_id": 1308,
+   "ord": 436,
+   "label": 2
+  },
+  {
+   "query": "Costco 商业模式",
+   "article_id": 8276,
+   "ord": 168,
+   "label": 2
+  },
+  {
+   "query": "Netflix 竞争优势",
+   "article_id": 21905,
+   "ord": 10003,
+   "label": 0
+  },
+  {
+   "query": "Costco 商业模式",
+   "article_id": 8532,
+   "ord": 5,
+   "label": 1
+  },
+  {
+   "query": "美团 外卖 竞争",
+   "article_id": 215,
+   "ord": 2,
+   "label": 2
+  },
+  {
+   "query": "苹果 服务收入",
+   "article_id": 1312,
+   "ord": 1,
+   "label": 2
+  },
+  {
+   "query": "腾讯 广告",
+   "article_id": 8373,
+   "ord": 10031,
+   "label": 2
+  },
+  {
+   "query": "腾讯 广告",
+   "article_id": 226,
+   "ord": 20000,
+   "label": 0
+  },
+  {
+   "query": "腾讯 广告",
+   "article_id": 119,
+   "ord": 1,
+   "label": 2
+  },
+  {
+   "query": "茅台 渠道库存",
+   "article_id": 8411,
+   "ord": 4,
+   "label": 1
+  },
+  {
+   "query": "Costco 商业模式",
+   "article_id": 8515,
+   "ord": 10,
+   "label": 1
+  },
+  {
+   "query": "茅台 渠道库存",
+   "article_id": 1329,
+   "ord": 22,
+   "label": 1
+  },
+  {
+   "query": "拼多多 护城河",
+   "article_id": 1297,
+   "ord": 10,
+   "label": 2
+  },
+  {
+   "query": "拼多多 护城河",
+   "article_id": 8751,
+   "ord": 468,
+   "label": 1
+  },
+  {
+   "query": "苹果 服务收入",
+   "article_id": 21118,
+   "ord": 10110,
+   "label": 2
+  },
+  {
+   "query": "Netflix 竞争优势",
+   "article_id": 22281,
+   "ord": 10012,
+   "label": 1
+  },
+  {
+   "query": "苹果 服务收入",
+   "article_id": 22045,
+   "ord": 10002,
+   "label": 0
+  },
+  {
+   "query": "拼多多 护城河",
+   "article_id": 1404,
+   "ord": 4,
+   "label": 2
+  },
+  {
+   "query": "茅台 渠道库存",
+   "article_id": 8411,
+   "ord": 0,
+   "label": 0
+  },
+  {
+   "query": "美团 外卖 竞争",
+   "article_id": 9397,
+   "ord": 20000,
+   "label": 0
+  },
+  {
+   "query": "腾讯 广告",
+   "article_id": 14731,
+   "ord": 20006,
+   "label": 1
+  },
+  {
+   "query": "苹果 服务收入",
+   "article_id": 21968,
+   "ord": 10007,
+   "label": 0
+  },
+  {
+   "query": "Netflix 竞争优势",
+   "article_id": 1323,
+   "ord": 20426,
+   "label": 2
+  },
+  {
+   "query": "茅台 渠道库存",
+   "article_id": 23900,
+   "ord": 1,
+   "label": 1
+  },
+  {
+   "query": "美团 外卖 竞争",
+   "article_id": 1308,
+   "ord": 1937,
+   "label": 2
+  }
+ ]
+}

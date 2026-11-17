@@ -486,7 +486,7 @@ Zhilin 要的好结果：问「Costco商业模式」，排前面的段落要讲 
 命令（`researchlib/mechanism.py`，走 `llm_batch`，和 views、digest 一样有锁、`--workers`、`--off-peak`、`--max-minutes`、每篇和合计用量）：
 
 - `research-mechanism --limit 0`：只报还要打的篇数、块数、字数，不调模型。
-- `research-mechanism --calibrate tools/quality_eval/mechanism.json --effort low`：只给那 338 段打分，不写库，打印和人判的一致率（完全一致、判 2 的准确率和召回、加权 kappa、混淆表）和每万字用量，用来挑思考强度、估全库费用。
+- `research-mechanism --calibrate tools/quality_eval/mechanism_owner.json --effort low`：只给 Zhilin 11-17 亲手判的 28 段打分（`mechanism.json` 是 AI 按早先更严的线判的 338 段，只作参考：和 Zhilin 同判的 28 段只有 15 段一致，不一样的 13 段里 9 段他判得更高，讲商业模式结构、竞争格局、对比表的段落他都算排前面），不写库，打印和人判的一致率（完全一致、判 2 的准确率和召回、加权 kappa、混淆表）和每万字用量，用来挑思考强度、估全库费用。
 - `research-mechanism --limit N`：按发布时间从新往旧，每篇只打没打过、改过的块，按 1.2 万字一批问（一块最多算 3000 字）。
 
 现在的状态：表是空的，没有回填，夜间任务没接，检索也还没用这个分。下一步：先跑校准（不到 1 美元）、报全库费用，Zhilin 同意了再全库打；打完再开 PR 把分数接进排序（没分的块不升不降），并把新文章接进夜间任务。都要花钱，按「规矩」先报篇数和费用。

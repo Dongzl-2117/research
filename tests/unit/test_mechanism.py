@@ -79,3 +79,10 @@ def test_calibration_sample_is_well_formed():
     assert len(sample) >= 300
     assert {item["label"] for item in sample} == {0, 1, 2}
     assert len({item["query"] for item in sample}) >= 7
+
+
+def test_owner_sample_is_well_formed():
+    sample = mechanism.load_sample("tools/quality_eval/mechanism_owner.json")
+    assert len(sample) == 28
+    assert {item["label"] for item in sample} == {0, 1, 2}
+    assert len({(item["article_id"], item["ord"]) for item in sample}) == 28
