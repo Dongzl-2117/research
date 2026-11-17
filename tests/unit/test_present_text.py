@@ -12,6 +12,7 @@ from researchlib.present_text import (
     present_article_text,
     present_zsxq_qa,
     rejoin_broken_paragraphs,
+    rejoin_chunk_lines,
 )
 from researchlib.render import render_body
 
@@ -419,3 +420,61 @@ def test_english_web_export_keeps_the_segments_older_translations_used():
     page = article_pairs(original, translated)
     assert "对不上" not in page.notice
     assert page.pairs and all(pair.en and pair.zh for pair in page.pairs)
+
+
+# 公众号老文章的形状（文章 90）：一句话里的书名号链接和加粗各占一段，中间还夹着按段估的图。
+_SPLIT_SENTENCE = """——某作者
+
+在文章《
+
+![](a.jpg)
+
+小米强是因为人强，苹果强是因为模式强
+
+》与《
+
+小米是想用 Costco 的模式做消费电子
+
+》聊过小米，
+
+他的愿景是
+
+要用 Costco 的模式去做消费电子行业
+
+，但消费电子不同于生鲜日用百货。
+
+换句话说，
+
+茅台的商业模式足够强。
+
+“老话说得好，就是这样。
+”
+"""
+
+
+def test_rejoin_split_sentence_pieces():
+    out = rejoin_broken_paragraphs(_SPLIT_SENTENCE)
+    assert out == rejoin_broken_paragraphs(out)
+    # 书名号隔着图也接（一句话中间没有放图的位置），图挪到接好的这一段后面；逗号隔着图不接。
+    joined = "在文章《小米强是因为人强，苹果强是因为模式强》与《小米是想用 Costco 的模式做消费电子》聊过小米，"
+    assert joined + "\n\n![](a.jpg)\n\n他的愿景是" in out
+    assert "去做消费电子行业，但消费电子不同于生鲜日用百货。" in out
+    assert "换句话说，茅台的商业模式足够强。" in out
+    assert "“老话说得好，就是这样。”" in out
+    html = str(render_body(out, {"a.jpg": "/media/x/ab/" + "ab" * 32 + ".jpg"}))
+    assert "<p>》" not in html and "《</p>" not in html
+
+
+def test_rejoin_split_sentence_leaves_other_people_items_and_soft_breaks():
+    # 说话人、编号开头的是下一条；同一段里的单个换行是作者自己断的；英文不碰。
+    chat = "网友：建议用一下汽水音乐，\n我刚用没几天，感觉超棒。\n\n网友：你好，\n\n方伟：好的。\n"
+    assert rejoin_broken_paragraphs(chat) == chat
+    items = "3、竞品像挤牙膏，\n\n4、2021 年 10 月立项。\n\n第一，\n\n第二，先说生意。\n"
+    assert rejoin_broken_paragraphs(items) == items
+    english = "He said,\n\nthat it works (\n\nmostly).\n"
+    assert rejoin_broken_paragraphs(english) == english
+
+
+def test_rejoin_chunk_lines_joins_search_fragment_lines():
+    text = "在文章《\n小米强是因为人强\n》聊过小米，\n他的愿景是\n要做消费电子行业\n，但不同。"
+    assert rejoin_chunk_lines(text) == ["在文章《小米强是因为人强》聊过小米，他的愿景是", "要做消费电子行业，但不同。"]

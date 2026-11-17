@@ -43,7 +43,7 @@ from researchlib.nested_copies import fold_nested_copies
 from researchlib.ocr import refresh_article_ocr
 from researchlib.output_safety import redact_subscription_links
 from researchlib.portfolio import Portfolio, load_portfolio
-from researchlib.present_text import polish_display_text
+from researchlib.present_text import polish_display_text, rejoin_chunk_lines
 from researchlib.render import (
     images_placed_by_estimate,
     inline_image_ocr,
@@ -1591,7 +1591,8 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
     results = []
     for fragment in fragments:
         source = by_id[fragment.source_id]
-        text = polish_display_text(redact_subscription_links(fragment.text))
+        # 公众号老文章一句话常被切成几段（链接、加粗各占一段），按阅读页同一套规则接回去再显示。
+        text = "\n".join(rejoin_chunk_lines(polish_display_text(redact_subscription_links(fragment.text))))
         has_term = any(term and term.lower() in text.lower() for term in terms)
         snippet = highlight_snippet(
             text if has_term else polish_display_text(redact_subscription_links(fragment.peak.body or "")),
@@ -1605,7 +1606,7 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
             "url": fragment.url,
             "article_title": article_title if heading else "",
             "snippet": snippet,
-            "paragraphs": [highlight_full(line, terms) for line in text.split("\n") if line.strip()],
+            "paragraphs": [highlight_full(line, terms) for line in text.split("\n")],
             "chars": fragment.chars,
             "blocks": len(fragment.blocks),
             "semantic": fragment.semantic_hit and not has_term,

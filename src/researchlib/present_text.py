@@ -397,12 +397,98 @@ def rejoin_broken_paragraphs(text: str) -> str:
             dirty = True
             continue
         index += 1
+    if _rejoin_split_sentences(lines, mask):
+        dirty = True
     if not dirty:
         return raw
     return "\n".join(lines)
+
+
+# 公众号老文章（11 月 7 日以前经极致了导入的方伟公众号）把一句话里的链接、加粗切成了几段：
+# 「在文章《」「标题」「》与《」「标题」「》聊过」。一行以没闭上的书名号、括号结尾，或者以闭括号、
+# 没配对的闭引号开头，就不是一段的头尾；一段以逗号结尾，句子也没说完。这三种接回上下文。
+# 2026-11-17 量过：那批老文章 297 篇里 293 篇有，11 月 7 日以后按原文页抓的几乎没有。
+_OPENERS = "《「『【〈（"
+_CLOSERS = {"》": "《", "」": "「", "』": "『", "】": "【", "〉": "〈", "）": "（", "”": "“", "’": "‘"}
+_HAN = re.compile(r"[㐀-鿿]")
+# 「网友：」「方伟：」这样的说话人开头是另一个人的话，「4、」「（2）」「第三，」开头是下一条，都不接。
+_SPEAKER_LEAD = re.compile(r"^[^\s：:，。]{1,12}[：:]")
+_ITEM_LEAD = re.compile(r"^(?:\d+\s*[、.．)）]|[（(]\d+[）)]|第[一二三四五六七八九十\d]+[，、：:])")
+
+
+def _unpaired_closer(line: str) -> bool:
+    first = line[0]
+    opener = _CLOSERS.get(first)
+    if opener is None:
+        return False
+    if first not in "”’":
+        # 》」』】〉）不会是一段的第一个字。
+        return True
+    # 弯引号常被写反（”…“），只认这一行里闭的比开的多。
+    return line.count(first) > line.count(opener)
+
+
+def _dangling_opener(line: str) -> bool:
+    last = line[-1]
+    if last not in _OPENERS:
+        return False
+    closer = next(close for close, open_ in _CLOSERS.items() if open_ == last)
+    return line.count(last) > line.count(closer)
+
+
+def _glue(left: str, right: str) -> str:
+    if left and right and left[-1].isascii() and left[-1].isalnum() and right[0].isascii() and right[0].isalnum():
+        return left + " " + right
+    return left + right
+
+
+def _rejoin_split_sentences(lines: list[str], mask: list[bool]) -> bool:
+    """把一句话里被切成几段的部分接回一段（见上面的说明）。只接中文；两段之间只能隔空行或图，
+    隔着图的，图留在接好的这一段后面（一句话中间本来就没有放图的位置）。改了返回 True。"""
+    changed = False
+    index = 0
+    while index < len(lines):
+        if not _is_prose_line(lines[index], mask[index]):
+            index += 1
+            continue
+        current = lines[index].strip()
+        nxt = _next_prose(lines, mask, index)
+        if nxt is None:
+            index += 1
+            continue
+        following = lines[nxt].strip()
+        if not _HAN.search(current + following):
+            index += 1
+            continue
+        if _ITEM_LEAD.match(following):
+            index += 1
+            continue
+        join = (
+            _dangling_opener(current)
+            or _unpaired_closer(following)
+            # 逗号结尾只接只隔了空行的下一段：同一段里的单个换行（星球帖子里常见）是作者自己断的行；
+            # 隔着图的照 rejoin_broken_paragraphs 的老规矩，字留在图后面。
+            or (current.endswith("，") and not _SPEAKER_LEAD.match(following)
+                and nxt > index + 1 and _only_blanks_between(lines, index, nxt))
+        )
+        if not join:
+            index += 1
+            continue
+        indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+        lines[index] = indent + _glue(current, following)
+        _delete_line(lines, mask, nxt)
+        changed = True
+    return changed
 
 
 def present_article_text(text: str) -> str:
     """正文进阅读页前：问答标题收成对话，旧标签统一，改错字，再接上被切开的句读。"""
     text = present_zsxq_qa(text or "")
     return rejoin_broken_paragraphs(polish_display_text(normalize_dialogue_labels(text)))
+
+
+def rejoin_chunk_lines(text: str) -> list[str]:
+    """段落块的正文（一行一段）→ 接好的段落，给检索页的片段用。块里每个换行都是原文的段落边界。"""
+    lines = [line.strip() for line in (text or "").split("\n") if line.strip()]
+    joined = rejoin_broken_paragraphs("\n\n".join(lines))
+    return [line.strip() for line in joined.split("\n") if line.strip()]
