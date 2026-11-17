@@ -1,4 +1,4 @@
-"""摘要、观点、论点调用失败的记次数：失败几次就隔几天再试（最多一周）。
+"""摘要、观点、论点、检索块打分（mechanism）调用失败的记次数：失败几次就隔几天再试（最多一周）。
 
 不记的话，同一篇每次被打开都会重新排队、重新花一次推理；接口抽风的那几篇会反复失败。
 成功写入时清掉记录。
@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-KINDS = ("digest", "views", "theses")
+KINDS = ("digest", "views", "theses", "mechanism")
 MAX_DAYS = 7
 
 
