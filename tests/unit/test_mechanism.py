@@ -86,3 +86,12 @@ def test_owner_sample_is_well_formed():
     assert len(sample) == 28
     assert {item["label"] for item in sample} == {0, 1, 2}
     assert len({(item["article_id"], item["ord"]) for item in sample}) == 28
+
+
+def test_sample_can_come_from_stdin(monkeypatch):
+    import io
+    import json
+
+    data = {"items": [{"query": "题", "article_id": 1, "ord": 2, "label": 1}]}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
+    assert mechanism.load_sample("-") == [{"query": "题", "article_id": 1, "ord": 2, "label": 1}]
