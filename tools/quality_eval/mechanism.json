@@ -1,0 +1,2033 @@
+{
+"about": "「讲没讲机制和原因」人工判分（2026-11-17）：7 道题在线上 level=passage 前 50 的块。2 主体在讲机制和原因，1 讲到一些，0 没讲（只是提到、只说谁学谁、格言、新闻数字、股价持仓）。research-mechanism --calibrate 用它核对模型打分。",
+"items": [
+{
+"query": "Costco 商业模式",
+"article_id": 1297,
+"ord": 278,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 1297,
+"ord": 277,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 1308,
+"ord": 2455,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 1406,
+"ord": 2,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 1308,
+"ord": 2410,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 1297,
+"ord": 288,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8799,
+"ord": 1601,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8398,
+"ord": 8,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 1308,
+"ord": 436,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 1334,
+"ord": 557,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8591,
+"ord": 29,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8799,
+"ord": 1607,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 323,
+"ord": 0,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 10708,
+"ord": 20001,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8532,
+"ord": 5,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8799,
+"ord": 264,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8276,
+"ord": 168,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 76,
+"ord": 4,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 95,
+"ord": 2,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 323,
+"ord": 4,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8339,
+"ord": 3,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8584,
+"ord": 59,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 528,
+"ord": 4,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8515,
+"ord": 10,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 23735,
+"ord": 20000,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8575,
+"ord": 10,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8516,
+"ord": 4,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8532,
+"ord": 4,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8532,
+"ord": 17,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8725,
+"ord": 61,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 20436,
+"ord": 0,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8276,
+"ord": 337,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 90,
+"ord": 0,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 1334,
+"ord": 241,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 744,
+"ord": 20001,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 175,
+"ord": 3,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 14876,
+"ord": 20003,
+"label": 0
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8398,
+"ord": 10,
+"label": 1
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8703,
+"ord": 5,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 8369,
+"ord": 20,
+"label": 2
+},
+{
+"query": "Costco 商业模式",
+"article_id": 5441,
+"ord": 0,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 8790,
+"ord": 7,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 9870,
+"ord": 20001,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 20365,
+"ord": 13,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 11935,
+"ord": 1,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 95,
+"ord": 5,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 11935,
+"ord": 0,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 8766,
+"ord": 17,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 107,
+"ord": 2,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 568,
+"ord": 20002,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 20436,
+"ord": 0,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 13249,
+"ord": 0,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 322,
+"ord": 0,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 353,
+"ord": 0,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 23946,
+"ord": 20000,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1009,
+"ord": 1,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 499,
+"ord": 6,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 8463,
+"ord": 11,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 368,
+"ord": 6,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1297,
+"ord": 739,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 353,
+"ord": 6,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1009,
+"ord": 0,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 75,
+"ord": 1,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1297,
+"ord": 501,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 8534,
+"ord": 16,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 125,
+"ord": 2,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1404,
+"ord": 4,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 8751,
+"ord": 628,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1308,
+"ord": 691,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 23814,
+"ord": 1,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1311,
+"ord": 72,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 215,
+"ord": 3,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1297,
+"ord": 10,
+"label": 2
+},
+{
+"query": "拼多多 护城河",
+"article_id": 314,
+"ord": 4,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 8751,
+"ord": 468,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1308,
+"ord": 896,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 364,
+"ord": 0,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1308,
+"ord": 888,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 1183,
+"ord": 20000,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 8751,
+"ord": 661,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 9870,
+"ord": 20002,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 20385,
+"ord": 0,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 9870,
+"ord": 20000,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 702,
+"ord": 6,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 291,
+"ord": 3,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 328,
+"ord": 0,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 246,
+"ord": 3,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 207,
+"ord": 2,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 8547,
+"ord": 36,
+"label": 1
+},
+{
+"query": "拼多多 护城河",
+"article_id": 12310,
+"ord": 0,
+"label": 0
+},
+{
+"query": "拼多多 护城河",
+"article_id": 503,
+"ord": 0,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21118,
+"ord": 10110,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21380,
+"ord": 10003,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22397,
+"ord": 10007,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21118,
+"ord": 10095,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 1327,
+"ord": 728,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21118,
+"ord": 10032,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21906,
+"ord": 10007,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 23092,
+"ord": 10007,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21085,
+"ord": 10010,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21499,
+"ord": 10007,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22821,
+"ord": 10008,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22404,
+"ord": 10004,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21035,
+"ord": 10010,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22802,
+"ord": 10010,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22353,
+"ord": 10006,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22842,
+"ord": 10008,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 23107,
+"ord": 10005,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21531,
+"ord": 10009,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 1327,
+"ord": 278,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21371,
+"ord": 10006,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22632,
+"ord": 10006,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 1327,
+"ord": 136,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22295,
+"ord": 10005,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22404,
+"ord": 10010,
+"label": 2
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22916,
+"ord": 10001,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22057,
+"ord": 10001,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22632,
+"ord": 10001,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 8272,
+"ord": 1,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21085,
+"ord": 10012,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22052,
+"ord": 10009,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21062,
+"ord": 10004,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 23073,
+"ord": 10005,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22407,
+"ord": 10006,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22156,
+"ord": 10006,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22867,
+"ord": 10002,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22795,
+"ord": 10007,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21968,
+"ord": 10007,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22780,
+"ord": 10004,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22916,
+"ord": 10007,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21510,
+"ord": 10002,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 1312,
+"ord": 1,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 23060,
+"ord": 10003,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21492,
+"ord": 10008,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21919,
+"ord": 10003,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 23115,
+"ord": 10002,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22045,
+"ord": 10002,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 1319,
+"ord": 963,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 21085,
+"ord": 10004,
+"label": 1
+},
+{
+"query": "苹果 服务收入",
+"article_id": 1312,
+"ord": 125,
+"label": 0
+},
+{
+"query": "苹果 服务收入",
+"article_id": 22957,
+"ord": 10004,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 14804,
+"ord": 20001,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 1323,
+"ord": 509,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21905,
+"ord": 10003,
+"label": 0
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22310,
+"ord": 10002,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 1323,
+"ord": 522,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 1323,
+"ord": 20426,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21984,
+"ord": 10007,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 562,
+"ord": 20002,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21065,
+"ord": 10011,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21542,
+"ord": 10003,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 20953,
+"ord": 10003,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21110,
+"ord": 10010,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21947,
+"ord": 34,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22722,
+"ord": 10007,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21259,
+"ord": 10007,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22336,
+"ord": 24,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22281,
+"ord": 10012,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 23162,
+"ord": 10006,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21553,
+"ord": 24,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22465,
+"ord": 10006,
+"label": 0
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 23077,
+"ord": 10004,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21558,
+"ord": 10002,
+"label": 0
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21577,
+"ord": 10012,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21969,
+"ord": 10005,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 8534,
+"ord": 391,
+"label": 0
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21110,
+"ord": 10008,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21453,
+"ord": 10005,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21422,
+"ord": 10025,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21065,
+"ord": 10008,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21018,
+"ord": 10006,
+"label": 0
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21994,
+"ord": 10003,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21579,
+"ord": 10008,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21198,
+"ord": 15,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21740,
+"ord": 30,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22979,
+"ord": 17,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 23068,
+"ord": 10005,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21241,
+"ord": 24,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22072,
+"ord": 10006,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22708,
+"ord": 10008,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22366,
+"ord": 19,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22069,
+"ord": 10002,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22844,
+"ord": 10004,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 20654,
+"ord": 10007,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21058,
+"ord": 28,
+"label": 0
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 22099,
+"ord": 10022,
+"label": 2
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21455,
+"ord": 10030,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21014,
+"ord": 8,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21356,
+"ord": 10005,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21740,
+"ord": 25,
+"label": 1
+},
+{
+"query": "Netflix 竞争优势",
+"article_id": 21905,
+"ord": 10012,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 1313,
+"ord": 171,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 126,
+"ord": 3,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 8751,
+"ord": 1565,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 273,
+"ord": 5,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 11695,
+"ord": 20001,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 368,
+"ord": 4,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 515,
+"ord": 1,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 250,
+"ord": 4,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 1308,
+"ord": 1937,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 11695,
+"ord": 0,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 258,
+"ord": 4,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 279,
+"ord": 2,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 11210,
+"ord": 0,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 12997,
+"ord": 0,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 8330,
+"ord": 37,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 14734,
+"ord": 20000,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 250,
+"ord": 1,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 171,
+"ord": 1,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 14877,
+"ord": 20000,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 14734,
+"ord": 20002,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 225,
+"ord": 0,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 613,
+"ord": 5,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 188,
+"ord": 3,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 294,
+"ord": 1,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 390,
+"ord": 3,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 215,
+"ord": 2,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 276,
+"ord": 0,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 1334,
+"ord": 531,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 8751,
+"ord": 1575,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 14877,
+"ord": 20005,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 9397,
+"ord": 20000,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 256,
+"ord": 1,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 1308,
+"ord": 1929,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 9015,
+"ord": 0,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 199,
+"ord": 0,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 342,
+"ord": 1,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 106,
+"ord": 0,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 219,
+"ord": 4,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 613,
+"ord": 20002,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 178,
+"ord": 2,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 20384,
+"ord": 0,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 659,
+"ord": 20005,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 215,
+"ord": 0,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 335,
+"ord": 2,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 1308,
+"ord": 1933,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 11227,
+"ord": 0,
+"label": 2
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 331,
+"ord": 4,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 11027,
+"ord": 0,
+"label": 1
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 9247,
+"ord": 20003,
+"label": 0
+},
+{
+"query": "美团 外卖 竞争",
+"article_id": 9015,
+"ord": 2,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 660,
+"ord": 3,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 1326,
+"ord": 422,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 612,
+"ord": 6,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 1326,
+"ord": 104,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 1326,
+"ord": 119,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 8550,
+"ord": 4,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 583,
+"ord": 0,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 1324,
+"ord": 20,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 1324,
+"ord": 108,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 1324,
+"ord": 81,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 23471,
+"ord": 20003,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 23900,
+"ord": 1,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 648,
+"ord": 2,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 583,
+"ord": 20001,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 583,
+"ord": 20002,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 8411,
+"ord": 4,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 14878,
+"ord": 0,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 650,
+"ord": 11,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 24065,
+"ord": 20003,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 9118,
+"ord": 0,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 600,
+"ord": 7,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 8751,
+"ord": 1047,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 8751,
+"ord": 663,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 14875,
+"ord": 20000,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 8751,
+"ord": 930,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 23239,
+"ord": 0,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 14841,
+"ord": 20003,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 8790,
+"ord": 20001,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 23663,
+"ord": 20004,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 11299,
+"ord": 1,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 10208,
+"ord": 20000,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 8411,
+"ord": 0,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 23682,
+"ord": 20002,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 23579,
+"ord": 20004,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 605,
+"ord": 7,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 147,
+"ord": 6,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 1320,
+"ord": 1187,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 593,
+"ord": 2,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 23439,
+"ord": 20001,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 24065,
+"ord": 20001,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 641,
+"ord": 8,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 14761,
+"ord": 20001,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 13237,
+"ord": 2,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 1329,
+"ord": 22,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 23900,
+"ord": 20000,
+"label": 2
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 660,
+"ord": 2,
+"label": 1
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 8704,
+"ord": 61,
+"label": 0
+},
+{
+"query": "茅台 渠道库存",
+"article_id": 13516,
+"ord": 1,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 11797,
+"ord": 20000,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 12994,
+"ord": 0,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 1311,
+"ord": 347,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 1313,
+"ord": 2184,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 1313,
+"ord": 2670,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 1311,
+"ord": 331,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 1311,
+"ord": 328,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 92,
+"ord": 5,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 21819,
+"ord": 10007,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 1313,
+"ord": 2143,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 14731,
+"ord": 20003,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 14731,
+"ord": 20006,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 8497,
+"ord": 5,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 255,
+"ord": 2,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 22808,
+"ord": 10003,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 226,
+"ord": 3,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 658,
+"ord": 20003,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 14731,
+"ord": 20007,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 658,
+"ord": 10,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 485,
+"ord": 3,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 590,
+"ord": 5,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 9093,
+"ord": 20001,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 119,
+"ord": 1,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 208,
+"ord": 2,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 92,
+"ord": 0,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 473,
+"ord": 8,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 8373,
+"ord": 10031,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 9093,
+"ord": 20003,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 286,
+"ord": 1,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 561,
+"ord": 4,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 20907,
+"ord": 10003,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 22000,
+"ord": 10003,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 473,
+"ord": 20004,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 282,
+"ord": 4,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 658,
+"ord": 4,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 473,
+"ord": 0,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 11797,
+"ord": 20001,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 23197,
+"ord": 20000,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 22000,
+"ord": 10005,
+"label": 2
+},
+{
+"query": "腾讯 广告",
+"article_id": 590,
+"ord": 8,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 9093,
+"ord": 20002,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 509,
+"ord": 7,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 509,
+"ord": 2,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 22903,
+"ord": 10011,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 449,
+"ord": 3,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 226,
+"ord": 20000,
+"label": 0
+},
+{
+"query": "腾讯 广告",
+"article_id": 22903,
+"ord": 10002,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 14765,
+"ord": 20002,
+"label": 1
+},
+{
+"query": "腾讯 广告",
+"article_id": 237,
+"ord": 6,
+"label": 1
+}
+]
+}
