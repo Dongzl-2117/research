@@ -14,8 +14,10 @@ from researchlib.retrieval import (
     FocusMatcher,
     Passage,
     Query,
+    _trie_regex,
     _whitespace_pieces,
     cited_numbers,
+    focus_share_factor,
     select,
     use_sampled_lexeme_df,
 )
@@ -75,6 +77,33 @@ def test_focus_matcher_follows_alias_rules():
     assert counts[2] == 1
     # Meta 按词边界，Metaverse 不算；Facebook 不分大小写。
     assert counts[3] == 2
+
+
+def test_trie_regex_takes_longest_like_sorted_alternation():
+    words = {"腾讯", "腾讯控股", "腾", "苹果公司", "苹果"}
+    pattern = re.compile(_trie_regex(words))
+    assert pattern.findall("腾讯控股、腾讯、腾飞、苹果公司和苹果") == ["腾讯控股", "腾讯", "腾", "苹果公司", "苹果"]
+
+
+def test_focus_matcher_ignores_case_for_long_english_names():
+    matcher = FocusMatcher([TENCENT, META])
+    assert matcher.count("TENCENT 和 tencent，FACEBOOK、Facebook。") == {1: 2, 3: 2}
+
+
+def test_focus_share_factor_demotes_passages_about_other_companies():
+    # 问的是 41（Costco），这段写了 3 次 Costco、4 次小米、2 次茅台、1 次苹果：主角是别家。
+    counts = {41: 3, 7: 4, 49: 2, 25: 1}
+    low = focus_share_factor(3, counts, [41], deep=False)
+    assert 0.4 < low < 1
+    # 只写它、或者它占一半以上：不动。
+    assert focus_share_factor(3, {41: 3}, [41], deep=False) == 1.0
+    assert focus_share_factor(5, {41: 5, 7: 5}, [41], deep=False) == 1.0
+    # 标题写着它的文章不算。
+    assert focus_share_factor(3, counts, [41], deep=True) == 1.0
+    # 问了两家时两家都算主角。
+    assert focus_share_factor(7, {41: 3, 7: 4, 49: 2}, [41, 7], deep=False) == 1.0
+    # 越边缘打得越狠，最低到下限。
+    assert focus_share_factor(1, {41: 1, 7: 20}, [41], deep=False) < low
 
 
 def test_whitespace_pieces_mark_or_groups():

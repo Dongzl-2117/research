@@ -1374,6 +1374,27 @@ def _company_lookup(query: Query, company_id: int | None) -> dict:
 # —— 打分 ——
 
 
+def _trie_regex(words: set[str]) -> str:
+    """一组字面量 → 等价的正则：同一位置先试长的（和按长度排序的多选一样取最长）。"""
+    root: dict = {}
+    for word in words:
+        node = root
+        for char in word:
+            node = node.setdefault(char, {})
+        node[""] = True
+
+    def build(node: dict) -> str:
+        branches = [re.escape(char) + build(child) for char, child in sorted(node.items()) if char]
+        if not branches:
+            return ""
+        body = branches[0] if len(branches) == 1 and "" not in node else "(?:" + "|".join(branches) + ")"
+        if "" in node:
+            body = "(?:" + body + ")?" if len(branches) == 1 else body + "?"
+        return body
+
+    return build(root)
+
+
 class FocusMatcher:
     """只数问到的那几家公司。打分要对几千个候选段落计数，逐字走自动机太慢，这里用预编译正则。
 
@@ -1402,23 +1423,33 @@ class FocusMatcher:
                 else:
                     sensitive.append(text)
                     self._lookup[text] = int(company["id"])
+        # 写成字典树形状的正则（同一个开头的名字收成一支）：几百个名字逐个试太慢，数全部公司时一段要几百微秒。
         self._patterns: list[tuple[re.Pattern[str], bool]] = []
+        self._fallback: re.Pattern[str] | None = None
         if chinese:
-            ordered = sorted(set(chinese), key=len, reverse=True)
-            self._patterns.append((re.compile("|".join(re.escape(t) for t in ordered)), False))
+            self._patterns.append((re.compile(_trie_regex(set(chinese))), False))
         for items, casefold in ((folded, True), (sensitive, False)):
             if items:
-                ordered = sorted(set(items), key=len, reverse=True)
-                body = "|".join(re.escape(t) for t in ordered)
-                flags = re.IGNORECASE if casefold else 0
-                pattern = re.compile(r"(?<![A-Za-z0-9])(?:" + body + r")(?![A-Za-z0-9])", flags)
+                # 不分大小写的名字按小写比（正文先转小写），比 IGNORECASE 快得多。
+                words = {t.lower() for t in items} if casefold else set(items)
+                pattern = re.compile(r"(?<![A-Za-z0-9])" + _trie_regex(words) + r"(?![A-Za-z0-9])")
                 self._patterns.append((pattern, casefold))
+                if casefold:
+                    ordered = sorted(set(items), key=len, reverse=True)
+                    body = "|".join(re.escape(t) for t in ordered)
+                    self._fallback = re.compile(r"(?<![A-Za-z0-9])(?:" + body + r")(?![A-Za-z0-9])", re.IGNORECASE)
 
     def count(self, text: str) -> dict[int, int]:
         counts: dict[int, int] = {}
         ranges: dict[int, list[tuple[int, int]]] = {}
+        lowered = text.lower()
+        same_length = len(lowered) == len(text)
         for pattern, casefold in self._patterns:
-            for match in pattern.finditer(text):
+            haystack = lowered if casefold and same_length else text
+            if casefold and not same_length and self._fallback is not None:
+                # 极少数字转小写会变长（İ），位置对不上：这一段退回逐个按不分大小写比。
+                pattern = self._fallback
+            for match in pattern.finditer(haystack):
                 token = match.group(0)
                 company_id = self._lookup.get(token.casefold() if casefold else token)
                 if company_id is None:
@@ -1565,6 +1596,27 @@ def title_reach(context: ScoreContext, article_id: int) -> float:
     return TITLE_REACH_CHUNKS / size
 
 
+# 问题点了公司时，这段写到的公司里问到的那几家占多少（按次数）。占一半以上是在讲它；占得少，多半是在讲
+# 别家、顺带提到它（「商业模式比人强」讲小米和茅台，提了三次 Costco）。标题写着它的文章不算：那种文章
+# 正文常不再点名（「腾讯投资研究」里的一节只写产品名）。通篇深入（whole）不能当豁免：一篇写到九家公司，
+# 九家都可能记成 whole（文章 90）。系数从 FOCUS_SHARE_FLOOR（一次都没占）线性升到 1（占到 FOCUS_SHARE）。1 关掉这条。
+FOCUS_SHARE = 0.5
+FOCUS_SHARE_FLOOR = 0.4
+
+
+def focus_share_factor(focus_hits: int, all_counts: dict[int, int], focus_ids: list[int], deep: bool) -> float:
+    if deep or FOCUS_SHARE_FLOOR >= 1:
+        return 1.0
+    others = sum(count for cid, count in all_counts.items() if cid not in focus_ids)
+    total = focus_hits + others
+    if total <= 0:
+        return 1.0
+    share = focus_hits / total
+    if share >= FOCUS_SHARE:
+        return 1.0
+    return FOCUS_SHARE_FLOOR + (1 - FOCUS_SHARE_FLOOR) * share / FOCUS_SHARE
+
+
 def score_rows(
     conn,
     query: Query,
@@ -1586,6 +1638,11 @@ def score_rows(
     focus_rows = [row for row in context.company_rows if int(row["id"]) in focus_ids]
     matcher = cached_matcher("focus", focus_rows) if focus_ids else None
     guarded = {int(row["id"]) for row in focus_rows if company_rules(row).get("needs")}
+    # 数这段里写到的所有公司，看问到的那家是不是主角（focus_share_factor）。
+    others_matcher = (
+        cached_matcher("focus", context.company_rows)
+        if focus_ids and not query.overview and FOCUS_SHARE_FLOOR < 1 else None
+    )
     deep_names = context.deep_names
     counters = {
         id(term): [(form, _form_counter(form)) for form in term.forms if form]
@@ -1706,6 +1763,10 @@ def score_rows(
                     default=3,
                 )
                 score *= (1.15, 1.1, 1.05, 0.7)[best]
+                anchor *= focus_share_factor(
+                    sum(per_company.values()), others_matcher.count(text) if others_matcher else {}, focus_ids,
+                    any(depths.get((row["article_id"], cid)) == "title" for cid in focus_ids),
+                )
         elif query.overview:
             # 只有作者或日期范围：开头那块最能代表全文；谈到具体公司的段落比套话更有信息量。
             score = 1.0 / (1 + row['ord'] - _ord_range(row['ord'])[0])
