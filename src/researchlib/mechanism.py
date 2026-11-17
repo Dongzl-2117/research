@@ -13,8 +13,8 @@ Zhilin 的标准是「不讲业务的都往后，只有真正讲机制的（少 
 用法（花模型钱，先报数、等 Zhilin 同意再跑；网页、启动、上线都不会跑它）：
 
     research-mechanism --limit 0                       # 只报还要打几篇、几块、多少字，不调模型
-    research-mechanism --calibrate tools/quality_eval/mechanism.json --effort low
-                                                       # 打人工判过的那几百段、和人工比，不写库
+    docker compose exec -T app research-mechanism --calibrate - --effort low < tools/quality_eval/mechanism_owner.json
+                                                       # 打人工判过的段、和人工比，不写库
     research-mechanism --limit 2000 --workers 16 --off-peak
 
 一篇一个任务（每篇占一把锁），这篇里要打的块按 ``BATCH_CHARS`` 分几次问。块改过（标题加正文的 md5 变了）、
@@ -233,8 +233,12 @@ def run_batch(settings: Settings, jobs: list[dict], **kwargs) -> dict:
 
 def load_sample(path: str) -> list[dict]:
     """人工判分：[{"query", "article_id", "ord", "label"}]，见 tools/quality_eval/mechanism.json。"""
-    with open(path, encoding="utf-8") as handle:
-        data = json.load(handle)
+    if path == "-":
+        # 容器镜像里没有 tools/，从宿主机用 < 喂进来：--calibrate - < tools/quality_eval/…json
+        data = json.load(sys.stdin)
+    else:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
     items = data.get("items") if isinstance(data, dict) else data
     return [
         {"query": str(item.get("query") or ""), "article_id": int(item["article_id"]), "ord": int(item["ord"]),
@@ -337,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="思考强度（DeepSeek：low、high、max）。不设按全站默认；打分用不着最深的思考，先用 --calibrate 比",
     )
-    parser.add_argument("--calibrate", default="", help="人工判分文件：只打这些块、和人工比，不写库")
+    parser.add_argument("--calibrate", default="", help="人工判分文件，- 从标准输入读：只打这些块、和人工比，不写库")
     llm_batch.add_arguments(parser, "打分")
     args = parser.parse_args(argv)
     llm_batch.check_arguments(args)
