@@ -10,7 +10,8 @@
   <div id="journal-controls" hidden>
     <div class="journal-tools">
       <button id="new-note" type="button" class="btn">新建判断</button>
-      <label>回看截至 <input type="datetime-local" id="as-of" step="1"></label>
+      <label>时区 <select id="journal-zone"><option value="local" id="journal-local-zone">本地时间</option><option value="utc">UTC</option></select></label>
+      <label>回看截至 <input type="datetime-local" id="as-of" step="0.001"></label>
       <button id="return-now" type="button" hidden>返回当前</button>
       <details><summary>备份与恢复</summary>
         <p>JSON 备份包含全部手记、自选和修订记录。恢复时合并记录；同一版本发生冲突会保留当前资料并提示。</p>
@@ -38,7 +39,7 @@
           <label>报告期 <input name="period" maxlength="100" placeholder="例如：2026 Q3"></label>
           <label>预期值或区间 <input name="expected" maxlength="250"></label>
           <label>实际值 <input name="actual" maxlength="250"></label>
-          <label>公告发布时间（本地时间）<input type="datetime-local" name="published" step="1"></label>
+          <label>公告发布时间（所选时区）<input type="datetime-local" name="published" step="0.001"></label>
         </div>
         <label>一手披露链接 <input name="filing" type="url" maxlength="4000" placeholder="https://…"></label>
         </fieldset>

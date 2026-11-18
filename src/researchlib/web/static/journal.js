@@ -41,7 +41,35 @@
     return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' +
       pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
   }
-  function displayed(at) { return localStamp(new Date(at)).replace('T', ' '); }
+  function wallTime(at) {
+    const date = new Date(at);
+    if ($('journal-zone').value === 'utc') return date.toISOString().slice(0, -1);
+    return localStamp(date) + '.' + String(date.getMilliseconds()).padStart(3, '0');
+  }
+  function displayed(at) {
+    const date = new Date(at);
+    const mins = $('journal-zone').value === 'utc' ? 0 : -date.getTimezoneOffset();
+    const offset = String(Math.floor(Math.abs(mins) / 60)).padStart(2, '0') + ':' +
+      String(Math.abs(mins) % 60).padStart(2, '0');
+    return wallTime(at).replace('T', ' ').replace(/\.000$/, '') + ' UTC' + (mins < 0 ? '−' : '+') + offset;
+  }
+  function readWall(input) {
+    if (!input.value) return '';
+    if ($('journal-zone').value === 'utc') return new Date(input.value + 'Z').toISOString();
+    const date = new Date(input.value);
+    const offset = date.getTimezoneOffset();
+    const wall = input.valueAsNumber;
+    if (date.getTime() - offset * 60000 !== wall) {
+      throw new Error('夏令时切换时不存在这个本地时间，请核对原始时刻。');
+    }
+    // 重复的本地时刻有两个 UTC 值，用次日的偏移判断，包括半小时回拨地区。
+    const tomorrow = new Date(date.getTime() + 86400000);
+    const diff = tomorrow.getTimezoneOffset() - offset;
+    if (diff > 0 && new Date(date.getTime() + diff * 60000).getTimezoneOffset() === offset + diff) {
+      throw new Error('夏令时切换时这个本地时刻出现两次，请切换到 UTC 后输入。');
+    }
+    return date.toISOString();
+  }
   function appendPair(dl, label, value) {
     if (!value) return;
     const dd = node('dd');
@@ -89,7 +117,7 @@
     return cutoff ? row.revisions.filter(v => v.at <= cutoff) : row.revisions;
   }
   function paint() {
-    const today = cutoff ? localStamp(new Date(cutoff)).slice(0, 10) : localStamp(new Date()).slice(0, 10);
+    const today = wallTime(cutoff || Date.now()).slice(0, 10);
     const notes = $('notes'), due = $('due-list'), watches = $('watches'), names = $('company-names');
     watches.replaceChildren(); due.replaceChildren(); notes.replaceChildren(); names.replaceChildren();
     const current = records.map(row => ({row, versions: asOf(row)})).filter(item => item.versions.length);
@@ -127,25 +155,43 @@
     if (cutoff) return;
     const last = record?.revisions.at(-1);
     const v = last?.value || preset;
-    editing = {id: record?.id || 'note:' + crypto.randomUUID(), head: last?.at || '', company: v.company || '', companyId: v.companyId || ''};
+    editing = {id: record?.id || 'note:' + crypto.randomUUID(), head: last?.at || '', initial: v,
+      hasInheritedFigures: Boolean(last && (v.actual || v.expected))};
     form.reset();
     for (const field of Object.keys(store.fields)) {
       const input = form.elements.namedItem(field);
-      if (input) input.value = field === 'published' && v[field] ? localStamp(new Date(v[field])) : (v[field] || '');
+      if (input) input.value = field === 'published' && v[field] ? wallTime(v[field]) : (v[field] || '');
     }
+    editing.publishedInput = form.elements.published.value;
     if (last) form.elements.change.value = '';
     $('editor-title').textContent = last ? '记录新判断' : '新建判断';
     $('editor').hidden = false;
     form.elements[last ? 'hypothesis' : 'company'].focus();
   }
   function closeEditor() { editing = null; form.reset(); $('editor').hidden = true; }
+  function detachFigures() {
+    if (!editing?.hasInheritedFigures) return;
+    const keys = ['company', 'metric', 'unit', 'period'];
+    const initial = editing.initial, inputs = form.elements;
+    if (keys.every(key => inputs[key].value.trim() === initial[key])) return;
+    editing.hasInheritedFigures = false;
+    for (const key of ['expected', 'actual', 'filing']) {
+      if (inputs[key].value === initial[key]) inputs[key].value = '';
+    }
+    if (inputs.published.value === editing.publishedInput) inputs.published.value = '';
+    say('公司、指标、单位或报告期已更改。上一版的预期和实绩保留在历史中，请填写当前口径的数值。');
+  }
   async function saveNote() {
     if (!editing || cutoff) return;
+    detachFigures();
     const value = Object.fromEntries(new FormData(form));
     value.company = value.company.trim();
     const watch = records.find(row => row.id === store.watchId(value.company))?.revisions.at(-1)?.value;
-    value.companyId = value.company === editing.company ? editing.companyId : (watch?.companyId || '');
-    if (value.published) value.published = new Date(value.published).toISOString();
+    value.companyId = value.company === editing.initial.company ? (editing.initial.companyId || '') : (watch?.companyId || '');
+    if (value.published) {
+      value.published = value.published === editing.publishedInput && editing.initial.published
+        ? editing.initial.published : readWall(form.elements.published);
+    }
     await store.save(db, editing.id, 'note', editing.head, value);
     closeEditor(); await afterChange('已保存此版本。');
   }
@@ -158,12 +204,17 @@
     watchForm.reset(); await afterChange(active ? '已加入自选。' : '已移出自选。');
   }
   function historyTime() {
-    const value = $('as-of').value;
-    if (value && new Date(value).getTime() > Date.now()) {
-      $('as-of').value = cutoff ? localStamp(new Date(cutoff)) : '';
+    let next;
+    try { next = readWall($('as-of')); }
+    catch (error) {
+      $('as-of').value = cutoff ? wallTime(cutoff) : '';
+      return say(error.message, true);
+    }
+    if (next && new Date(next).getTime() > Date.now()) {
+      $('as-of').value = cutoff ? wallTime(cutoff) : '';
       return say('请选择当前或更早的时间。', true);
     }
-    cutoff = value ? new Date(value).toISOString() : '';
+    cutoff = next;
     closeEditor(); paint();
     say(cutoff ? '只读回看，以此时已经记录的版本为准。' : '');
   }
@@ -183,6 +234,22 @@
       $('new-note').onclick = () => edit(null, {company, companyId});
       $('cancel-note').onclick = closeEditor;
       $('as-of').onchange = historyTime;
+      $('journal-local-zone').textContent = '本地（' + Intl.DateTimeFormat().resolvedOptions().timeZone + '）';
+      $('journal-zone').onchange = () => {
+        if (cutoff) $('as-of').value = wallTime(cutoff);
+        if (editing && form.elements.published.value) {
+          const oldInstant = editing.initial.published;
+          if (oldInstant && form.elements.published.value === editing.publishedInput) {
+            form.elements.published.value = wallTime(oldInstant);
+            editing.publishedInput = form.elements.published.value;
+          } else {
+            form.elements.published.value = '';
+            say('时区已更改，请按新时区填写公告时间。');
+          }
+        }
+        paint();
+      };
+      for (const key of ['company', 'metric', 'unit', 'period']) form.elements[key].onchange = detachFigures;
       $('return-now').onclick = () => { $('as-of').value = ''; historyTime(); };
       $('export').onclick = guarded(async () => download(await store.all(db)));
       $('import').onchange = guarded(async () => {

@@ -178,9 +178,77 @@ def run(browser, width):
     print(f"{width}px：入口、持久化、复核、时点、备份恢复、冲突和私密请求检查通过")
 
 
+def check_financial_revisions(browser):
+    ctx = browser.new_context(timezone_id="America/New_York")
+    client = TestClient(create_app())
+    ctx.route("**/*", lambda route: serve(route, client, []))
+    page = ctx.new_page()
+    page.clock.install(time=BASE)
+    page.goto(ORIGIN + "/journal")
+    page.get_by_text("备份与恢复", exact=True).click()
+    identity = "note:11111111-1111-4111-8111-111111111111"
+    accession = "0000987654-24-000001"
+    filing = "https://www.sec.gov/Archives/edgar/data/1234567/000098765424000001/" + accession + "-index.htm"
+    v = dict(company="示例", companyId="", hypothesis="订阅增长", falsifier="", review="", ref="", excerpt="",
+             metric="营收", unit="USD", period="2024 Q1", expected="125", actual="", published="", filing="", change="")
+    initial = {"at": "2024-04-01T00:00:00.000Z", "value": v}
+    announced = "2024-11-03T06:30:00.375Z"
+    result = {**v, "actual": "110", "published": announced, "filing": filing}
+    sec = dict(cik="0001234567", tag="us-gaap:Revenues", accession=accession, form="10-Q/A", filed="2024-11-03")
+    first = {"at": "2024-11-03T06:31:00.100Z", "value": result, "secFact": sec}
+
+    def import_tail(tail):
+        doc = {"format": "research-journal", "version": 1, "records": [
+            {"id": identity, "kind": "note", "revisions": [initial, tail]}]}
+        page.locator("#import").set_input_files({"name": "filing.json", "mimeType": "application/json",
+                                                 "buffer": json.dumps(doc).encode()})
+
+    def export_versions():
+        with page.expect_download() as download:
+            page.locator("#export").click()
+        return json.loads(download.value.path().read_bytes())["records"][0]["revisions"]
+
+    import_tail(first)
+    expect(page.locator("#journal-status")).to_contain_text("已合并 1 条")
+    replay = {**first, "at": "2024-11-03T07:00:00.000Z"}
+    import_tail(replay)
+    expect(page.locator("#journal-status")).to_contain_text("已合并 0 条")
+    assert export_versions()[-1] == first
+    import_tail({**replay, "value": {**result, "actual": "108"}})
+    expect(page.locator("#journal-status")).to_contain_text("冲突")
+    assert export_versions()[-1] == first
+    page.get_by_role("button", name="记录新判断").click()
+    page.locator('[name="change"]').fill("复核后维持假设")
+    page.get_by_role("button", name="保存此版本").click()
+    expect(page.locator("#journal-status")).to_contain_text("已保存")
+    assert export_versions()[-1]["value"]["published"] == announced
+    page.locator("#as-of").fill("2024-11-03T01:45")
+    expect(page.locator("#journal-status")).to_contain_text("出现两次")
+    page.locator("#journal-zone").select_option("utc")
+    page.locator("#as-of").fill("2024-11-03T06:31:00.099")
+    expect(page.locator("#notes")).not_to_contain_text("110")
+    page.locator("#as-of").fill("2024-11-03T06:31:00.1")
+    expect(page.locator("#notes")).to_contain_text("110")
+    page.get_by_role("button", name="返回当前").click()
+    page.get_by_role("button", name="记录新判断").click()
+    period = page.locator('[name="period"]')
+    period.fill("2024 Q2")
+    period.press("Tab")
+    for key in ("expected", "actual", "filing", "published"):
+        expect(page.locator(f'[name="{key}"]')).to_have_value("")
+    page.get_by_role("button", name="保存此版本").click()
+    expect(page.locator("#journal-status")).to_contain_text("已保存")
+    versions = export_versions()
+    assert versions[-1]["value"]["period"] == "2024 Q2" and versions[-1]["value"]["actual"] == ""
+    assert versions[-2]["value"]["actual"] == "110" and versions[-2]["value"]["period"] == "2024 Q1"
+    ctx.close()
+    print("多次生成的 SEC 补丁、恢复冲突、夏令时回拨、毫秒级回看和跨财期复核通过")
+
+
 if __name__ == "__main__":
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(executable_path=os.environ.get("JOURNAL_CHROMIUM"), headless=True)
         for width in (1440, 390):
             run(browser, width)
+        check_financial_revisions(browser)
         browser.close()

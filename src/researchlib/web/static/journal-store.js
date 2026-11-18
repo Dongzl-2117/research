@@ -58,7 +58,20 @@ window.ResearchJournal = (() => {
       previous = item.at;
       const value = values(record.kind, item.value, item.at);
       if (record.kind === 'watch') requireValue(record.id === watchId(value.company), '自选编号与名称不符。');
-      return {at: item.at, value};
+      const revision = {at: item.at, value};
+      if (item.secFact !== undefined) {
+        const source = item.secFact;
+        requireValue(record.kind === 'note' && source && typeof source.cik === 'string' && /^\d{10}$/.test(source.cik) &&
+          /^[\w.-]+:[\w.-]+$/.test(source.tag) && /^\d{10}-\d{2}-\d{6}$/.test(source.accession) &&
+          typeof source.form === 'string' && source.form.length > 0 && source.form.length <= 60 &&
+          typeof source.filed === 'string' && source.filed && validDay(source.filed), 'SEC 来源标识不完整。');
+        const filing = 'https://www.sec.gov/Archives/edgar/data/' + Number(source.cik) + '/' +
+          source.accession.replaceAll('-', '') + '/' + source.accession + '-index.htm';
+        requireValue(value.actual && value.filing === filing, 'SEC 申报链接与来源标识不符。');
+        revision.secFact = {cik: source.cik, tag: source.tag, accession: source.accession,
+          form: source.form, filed: source.filed};
+      }
+      return revision;
     });
     return {id: record.id, kind: record.kind, revisions};
   }
@@ -120,8 +133,13 @@ window.ResearchJournal = (() => {
           requireValue(row.kind === stored.kind, '备份与本机记录类型冲突。');
           const shared = Math.min(row.revisions.length, stored.revisions.length);
           for (let i = 0; i < shared; i++) {
-            requireValue(JSON.stringify(stored.revisions[i]) === JSON.stringify(row.revisions[i]),
-              '修订历史发生冲突，整份备份未导入。请分别保留两份备份。');
+            const local = stored.revisions[i], incoming = row.revisions[i];
+            if (JSON.stringify(local) === JSON.stringify(incoming)) continue;
+            // 同一份旧备份可重复生成同一申报补丁，两个生成时刻不同。保留本机首次入账时间。
+            const duplicateFiling = i === row.revisions.length - 1 && Boolean(local.secFact && incoming.secFact) &&
+              JSON.stringify(local.secFact) === JSON.stringify(incoming.secFact) &&
+              JSON.stringify(local.value) === JSON.stringify(incoming.value);
+            requireValue(duplicateFiling, '修订历史发生冲突，整份备份未导入。请分别保留两份备份。');
           }
           if (row.revisions.length <= stored.revisions.length) continue;
         }
