@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="page-head">
+  <h1>历史时点</h1>
+  <p><a href="/articles/{{ article_id }}">阅读当前文章</a> · <a href="/articles/{{ article_id }}/history?as_of={{ evidence.as_of | urlencode }}">此时点的固定链接</a></p>
+  <form method="get"><label>查询时点（上海时间） <input type="datetime-local" step="0.001" name="as_of" value="{{ cutoff }}" required></label> <button type="submit">查看当时的版本</button></form>
+</header>
+<p>查询时点 {{ evidence.as_of }} · 首次入库记录 {{ evidence.first_seen_at }}</p>
+{% if evidence.status == 'verified' %}
+<article class="reader">
+  <h2>{{ evidence.title }}</h2>
+  <p>来源 {{ evidence.source.name }} · 来源发布日期 {{ evidence.published_at or '未知' }}</p>
+  <p>版本记录时间 {{ evidence.version_written_at }} · 已确认入库 {{ evidence.confirmed_at }}</p>
+  <div class="prose">{{ body_html }}</div>
+  {% if evidence.author_replies %}<section><h3>当时已有的作者回复</h3>{% for reply in evidence.author_replies %}<p><time>{{ reply.published_at }}</time> {{ reply.text }}</p>{% endfor %}</section>{% endif %}
+</article>
+{% elif evidence.status == 'not_yet_archived' %}<p>该时点早于本库首次入库记录。</p>
+{% elif evidence.status == 'unavailable' %}<p>此版本当前无法作为公开证据展示。</p>
+{% else %}<p>该时点缺少能确认当时版本的归档记录，无法提供时点证据。</p>{% endif %}
+{% endblock %}

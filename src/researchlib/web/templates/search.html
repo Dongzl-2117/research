@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_feed.html" import card_list, pager %}
+{% from "_feed.html" import card_list, history_link, pager %}
 {% block body %}
 <h1 class="sr">检索</h1>
 <form class="search-bar" action="/search" method="get" role="search">
@@ -31,6 +31,7 @@
     </div>
   </details>
 </form>
+{% if filters.to %}<p class="filter-note">按发表日筛选。正文可能在截止日后修订，星球回复也可能后来追加。{% if article_scope %}{{ history_link(article_scope, filters.to) }}{% else %}请在结果中核对当时版本。{% endif %}</p>{% endif %}
 {% if company %}
 <p class="filter-note">只看提到 <a href="/companies/{{ company.id }}">{{ company.name_zh }}</a> 的文章。<a href="/search?q={{ query | urlencode }}">去掉这个条件</a></p>
 {% endif %}
@@ -70,6 +71,7 @@
         {% if item.show_author %}<span aria-hidden="true">·</span><a class="quiet" href="{{ item.source_href }}">{{ item.source }}</a>{% endif %}
         {% if item.semantic %}<span class="depth depth-semantic" title="正文没写全搜索词，按意思找到的">语义相关</span>{% endif %}
         <span aria-hidden="true">·</span>{% if item.iso %}<time class="item-date" datetime="{{ item.iso }}">{{ item.date }}</time>{% else %}<span class="item-date">日期不详</span>{% endif %}
+        {% if filters.to %}{{ history_link(item.id, filters.to) }}{% endif %}
       </header>
       <h3 class="item-title"{% if item.title is english %} lang="en"{% endif %}><a href="{{ item.url }}">{{ item.title }}</a></h3>
       {% if item.article_title %}<p class="item-heading" title="{{ item.article_title }}">《{{ item.article_title }}》</p>{% endif %}
@@ -90,11 +92,11 @@
 {% elif results %}
 {% if view == "article" %}<p class="view-switch"><a href="/search?{{ view_query }}">按片段</a> · 按文章看</p>{% endif %}
 {% if first_partial is none %}
-{{ card_list(results, meta_date=true) }}
+{{ card_list(results, meta_date=true, through=filters.to) }}
 {% else %}
-{% if first_partial > 0 %}{{ card_list(results[:first_partial], meta_date=true) }}{% endif %}
+{% if first_partial > 0 %}{{ card_list(results[:first_partial], meta_date=true, through=filters.to) }}{% endif %}
 <p class="partial-note">部分命中</p>
-{{ card_list(results[first_partial:], meta_date=true) }}
+{{ card_list(results[first_partial:], meta_date=true, through=filters.to) }}
 {% endif %}
 {{ pager(page, pages, "/search?" ~ page_query ~ "&page=" ~ (page - 1), "/search?" ~ page_query ~ "&page=" ~ (page + 1)) }}
 <p class="count num">{{ total }} 篇全部命中{% if listed is defined and listed < total %}，按相关度能翻到前 {{ listed }} 篇，其余的加来源或时间范围再搜{% endif %}{% if semantic_total %} · {{ semantic_total }} 篇语义相关{% endif %}{% if partial_total %} · {{ partial_total }} 篇部分命中{% endif %}</p>

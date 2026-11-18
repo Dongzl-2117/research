@@ -518,6 +518,14 @@
         const text = document.createElement('p');
         text.textContent = item.text || '';
         entry.append(title, text);
+        const through = data.scope && data.scope.date_to || turn.params && turn.params.to;
+        if (url && Number.isSafeInteger(item.article_id) && /^\d{4}-\d{2}-\d{2}$/.test(through || '')) {
+          const history = document.createElement('a');
+          history.href = `/articles/${item.article_id}/history?through=${through}`;
+          history.textContent = '核对当时版本';
+          newTab(history);
+          entry.appendChild(history);
+        }
         list.appendChild(entry);
       });
       evidence.append(summary, list);
@@ -698,7 +706,11 @@
       values.get('from') || values.get('to') ? `${values.get('from') || '最早'} 至 ${values.get('to') || '最近'}` : '']
       .filter(Boolean).join(' · ');
   }
-  function updateScope() { if (scopeSummary) scopeSummary.textContent = scopeText(); }
+  function updateScope() {
+    if (scopeSummary) scopeSummary.textContent = scopeText();
+    const note = panel.querySelector('[data-cutoff-note]');
+    if (note) note.hidden = !new FormData(form).get('to');
+  }
   form.addEventListener('change', updateScope);
 
   // 阅读侧栏的范围：标签上的字跟着下拉框，只取「 · 单轮」前面那段（问库页的范围是隐藏字段，没有标签）。

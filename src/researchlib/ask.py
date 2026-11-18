@@ -33,7 +33,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.ask_model import AskModel, default_choice, stored_choice
 from researchlib.ask_model import apply as apply_model
-from researchlib.citecheck import check_answer
+from researchlib.citecheck import check_answer, citation_url
 from researchlib.config import Settings
 from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured, missing_credential_text
 from researchlib.retrieval import ASPECTS_KEY, MAX_ASPECTS, Retrieval, analyze, cited_numbers, retrieve
@@ -141,7 +141,7 @@ def _passage_dict(index: int, passage, sources_by_id: dict, zone: str) -> dict:
         "source": source.name if source else passage.source_id,
         "author": source.author if source else "",
         "date": format_date(passage.published_at, zone),
-        "url": passage.url,
+        "url": citation_url(passage.article_id, passage.ord, passage.body, passage.lang),
         "lang": passage.lang,
         "matched": list(passage.matched or []),
         # 同一篇里紧挨着的上下文，只交给模型读，不单独编号。

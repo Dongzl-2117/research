@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_feed.html" import history_link %}
 {% from "_ask_model.html" import model_menu %}
 {% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">{% if result and result.status == "running" and result.id %}<noscript><meta http-equiv="refresh" content="8"></noscript>{% endif %}{% endblock %}
 {% macro passage(item, result) %}
@@ -10,7 +11,7 @@
 {% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
 <li id="c-{{ item.n }}" tabindex="-1" class="{% if item.cited %}cited{% endif %}{% if flagged %} flagged{% endif %}">
   <p class="item-meta"><span class="source-number">{{ item.n }}</span> <a href="{{ item.url }}">{{ item.title }}</a></p>
-  <p class="source-byline">{{ item.author }} · {{ item.date }}{% if item.heading %} · {{ item.heading | truncate(40, true, "…", 0) }}{% endif %}</p>
+  <p class="source-byline">{{ item.author }} · {{ item.date }}{% if item.heading %} · {{ item.heading | truncate(40, true, "…", 0) }}{% endif %}{% if filters.to and item.article_id %} · {{ history_link(item.article_id, filters.to) }}{% endif %}</p>
   <div class="passage-foot">
     <details class="passage-full"><summary>查看原文</summary><p>{{ item.text | highlight_full(result.terms) }}</p></details>
     {% if result.id %}
@@ -43,6 +44,7 @@
     </div>
   </header>
   {% if not llm_ready %}<p class="chat-notice">这会儿问不了 AI，只列出相关原文。</p>{% endif %}
+  <p class="chat-notice" data-cutoff-note{% if not filters.to %} hidden{% endif %}>按发表日筛选。问库读取现有正文，可能含截止日后的修订和回复。历史复盘请逐篇核对当时版本。{% if filters.to and article %} {{ history_link(article.id, filters.to) }}{% endif %}</p>
   <p id="ask-mode" class="sr">每轮只提交当前问题，不沿用上文。作者、日期和指定资料范围会随本次提问提交。回答可通过引用回到原文核对。</p>
   <div class="chat-log" role="region" aria-label="提问与回答" tabindex="0">
     {% if not result %}
@@ -104,7 +106,7 @@
           <div class="filter-grid">
             <label>作者 <select name="author"><option value="">全部作者</option>{% for name in authors %}<option value="{{ name }}"{% if filters.author == name %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
             <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>
-            <label>到 <input type="date" name="to" value="{{ filters.to }}"></label>
+            <label>发表日到 <input type="date" name="to" value="{{ filters.to }}"></label>
           </div>
         </details>
         <span class="chat-count" aria-hidden="true"></span>{{ model_menu(ask_models) }}<button type="submit" aria-label="发送问题" title="发送问题"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 18V6m-5 5 5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>

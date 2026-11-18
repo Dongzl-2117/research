@@ -24,6 +24,7 @@
       <time datetime="{{ iso }}">{{ date }}{% if time %} {{ time }}{% endif %}</time>
       {% if relative %}<span aria-hidden="true">·</span><span>{{ relative }}</span>{% endif %}
       {% if elsewhere %}<span aria-hidden="true">·</span><span class="elsewhere">同一篇也在{% for item in elsewhere %} <a href="/articles/{{ item.id }}">{{ item.source }}</a>{% endfor %} <a class="quiet" href="/duplicates?article={{ article.duplicate_of or article.id }}">核对</a></span>{% endif %}
+      <span aria-hidden="true">·</span><a href="/articles/{{ article.id }}/history">历史时点</a>
       {% if revised %}<span aria-hidden="true">·</span><a class="revised" href="/articles/{{ article.id }}/revisions">{{ revised }}</a>{% endif %}
       <span aria-hidden="true">·</span><a href="/ask?article={{ article.id }}">问这篇</a>
     </p>
@@ -36,6 +37,7 @@
       {% if digest_points %}<ul class="article-digest-points">{% for point in digest_points %}<li>{{ point }}</li>{% endfor %}</ul>{% endif %}
     </section>
     {% endif %}
+    {% if evidence_changed %}<p class="body-note" role="status">无法核对这条引用与当前段落。请返回回答查看当时保存的摘录。下方展示当前文章。</p>{% endif %}
     {% if quoted and not quoted_marked %}
     <aside class="quoted" aria-label="引用的段落">
       {% if quoted.lang == "ocr" %}<p class="quoted-label">图片里的字 · <a href="#{{ quoted.anchor }}">看这张图</a></p>

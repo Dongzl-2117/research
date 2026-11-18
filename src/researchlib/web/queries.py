@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from researchlib.author_voice import hide_from_site, not_comment_shell_sql, site_visible_sql
+from researchlib.chunks import current_chunk_sql
 from researchlib.visibility import visible_sql
 
 
@@ -432,9 +433,12 @@ def digests_for(conn, article_ids: list[int]) -> dict[int, dict]:
     return {row["article_id"]: row for row in rows}
 
 
-def article_chunks(conn, article_id: int):
+def article_chunks(conn, article_id: int, *, current_only: bool = False):
+    freshness = f"AND {current_chunk_sql('c', 'a')}" if current_only else ""
     return conn.execute(
-        "SELECT ord, heading, body, lang, anchor FROM article_chunks WHERE article_id = %s ORDER BY ord",
+        f"""SELECT c.ord, c.heading, c.body, c.lang, c.anchor FROM article_chunks c
+            JOIN articles a ON a.id = c.article_id
+            WHERE c.article_id = %s {freshness} ORDER BY c.ord""",
         (article_id,),
     ).fetchall()
 

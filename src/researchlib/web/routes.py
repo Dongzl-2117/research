@@ -8,7 +8,7 @@ import os
 import re
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
-from researchlib import company_brief, embeddings
+from researchlib import article_history, company_brief, embeddings
 from researchlib import revisions as revision_log
 from researchlib import theses as thesis_map
 from researchlib.ask import PRESETS, retry, start
@@ -26,7 +26,7 @@ from researchlib.ask_model import menu as ask_model_menu
 from researchlib.author_voice import hide_from_site
 from researchlib.boilerplate import EMPTY as EMPTY_PROFILE
 from researchlib.boilerplate import LIBRARY_KINDS, clean_article, clean_markdown, image_hashes
-from researchlib.citecheck import check_answer
+from researchlib.citecheck import check_answer, citation_url, passage_fingerprint
 from researchlib.db import connect, ensure_search_session
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
@@ -48,6 +48,7 @@ from researchlib.render import (
     images_placed_by_estimate,
     inline_image_ocr,
     lazy_images,
+    render_body,
     sanitize_html,
 )
 from researchlib.retrieval import full_match_counts, search_articles, search_fragments
@@ -60,7 +61,7 @@ from researchlib.snippets import (
     mention_spans,
 )
 from researchlib.sources import enabled_sources, load_sources, sync_sources, timeline_sources
-from researchlib.textutil import argumentative_excerpt, strip_duplicate_title
+from researchlib.textutil import SHANGHAI, argumentative_excerpt, strip_duplicate_title
 from researchlib.translate.display import (
     article_pairs,
     drop_repeated_images,
@@ -106,7 +107,7 @@ from researchlib.web.present import (
 )
 from researchlib.web.quoting import mark_quoted_parts, occurrence_of
 from researchlib.web.render_cache import PAGES
-from researchlib.web.scoping import parse_day, parse_int, resolve_scope
+from researchlib.web.scoping import parse_as_of, parse_day, parse_int, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.zsxq_comments import guest_comment_authors, guest_comment_chunk, source_owners
 from researchlib.zsxq_title import (
@@ -417,6 +418,9 @@ def withhold_citations(conn, citations: list[dict], sources) -> tuple[list[dict]
     for item in citations:
         article_id = item.get("article_id")
         if article_id is None or int(article_id) in visible:
+            if article_id is not None:
+                # 旧回答也有快照，显示时生成可验证链接，不改写已存回答。
+                item = {**item, "url": citation_url(article_id, item.get("ord"), item.get("text"), item.get("lang"))}
             kept.append(item)
             continue
         cited += 1 if item.get("cited") else 0
@@ -834,6 +838,8 @@ def _quoted_query(quoted, request: Request | None) -> str:
     if quoted is None:
         return ""
     query = f"?chunk={quoted['ord']}"
+    if quoted.get("evidence"):
+        return query + "&evidence=" + quoted["evidence"]
     if request is None:
         upto = quoted.get("to")
     else:
@@ -873,6 +879,8 @@ def _article_view(request: Request, article_id: int, mode: str):
     """mode: auto | zh | pairs | original。auto 有对照则对照，否则单语。"""
     settings = request.app.state.settings
     chunk_arg = request.query_params.get("chunk")
+    expected = request.query_params.get("evidence")
+    evidence_changed = expected is not None
     with database(request) as conn:
         sources = active_sources(request, conn)
         ids = [source.id for source in sources]
@@ -905,11 +913,17 @@ def _article_view(request: Request, article_id: int, mode: str):
             # 图片文字块切的时候就排好了（一行一条，说话人是识图标好的），原样显示。
             # 还没清的旧帖，评论那几块里有读者的评论和昵称，正文页的评论区不显示它们，这里也不引。
             guests = guest_comment_authors(article["body_md"] or "", source_owners(source)) or []
-            chunk_rows = queries.article_chunks(conn, article_id)
+            chunk_rows = queries.article_chunks(conn, article_id, current_only=expected is not None)
             original_chunks = sum(1 for row in chunk_rows if not (row.get("lang") or ""))
             quoted, quoted_targets = _quoted_range(
-                chunk_rows, wanted, parse_int(request.query_params.get("to")), guests,
+                chunk_rows, wanted, None if expected is not None else parse_int(request.query_params.get("to")), guests,
             )
+            if expected is not None:
+                if quoted and passage_fingerprint(quoted["body"], quoted["lang"]) == expected:
+                    evidence_changed = False
+                    quoted["evidence"] = expected
+                else:
+                    quoted, quoted_targets = None, []
         elif section_arg is not None:
             original_chunks = queries.original_chunk_count(conn, article_id)
         banner = queries.sample_state(conn, ids)
@@ -1114,6 +1128,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             "title_zh": (translation or {}).get("title_zh") or "",
             "quoted": quoted,
             "quoted_marked": quoted_marked,
+            "evidence_changed": evidence_changed,
             "excerpt": excerpt_view,
             # 切换对照、中文、原文时带着落点，不然切过去就回到页面顶上。
             "quoted_query": _quoted_query(quoted, request),
@@ -1243,6 +1258,34 @@ def source_tree(request: Request, source_id: str):
 @router.get("/sources/{source_id}/tree/{article_id}")
 def source_tree_article(request: Request, source_id: str, article_id: int):
     return _source_tree(request, source_id, article_id)
+
+
+def historical_article(conn, article_id, as_of, sources):
+    try:
+        evidence = article_history.snapshot(conn, article_id, parse_as_of(as_of), sources)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if evidence is None:
+        raise HTTPException(status_code=404)
+    return evidence
+
+
+@router.get("/articles/{article_id}/history")
+def article_history_page(request: Request, article_id: int):
+    as_of = request.query_params.get("as_of")
+    through = parse_day(request.query_params.get("through"))
+    if as_of is None and through is not None and through < datetime.now(SHANGHAI).date():
+        as_of = datetime.combine(through, time.max, SHANGHAI).isoformat()
+    with database(request) as conn:
+        sources = active_sources(request, conn)
+        evidence = historical_article(conn, article_id, as_of, sources)
+    local = datetime.fromisoformat(evidence["as_of"]).astimezone(SHANGHAI).replace(tzinfo=None)
+    return render_page(request, "history.html", {
+        "nav": "archive", "title": "历史时点", "evidence": evidence, "article_id": article_id,
+        "cutoff": local.isoformat(timespec="milliseconds"),
+        "body_html": render_body(evidence["body_markdown"], {}) if evidence["status"] == "verified" else "",
+        "sources": sources,
+    })
 
 
 @router.get("/articles/{article_id}/revisions")
@@ -2026,7 +2069,7 @@ def day_page(request: Request, day: str):
         elsewhere = tuple(source.id for source in sources if not source.timeline)
         saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id, elsewhere)
         # 后来被隐藏或来源停用的原文不再展示；这天的汇总引用了它们就整条不放（R6）。
-        withheld = withhold_citations(conn, saved["citations"] or [], sources)[1] if saved else 0
+        cited, withheld = withhold_citations(conn, saved["citations"] or [], sources) if saved else ([], 0)
         company = queries.get_company(conn, info["company"]) if info["company"] else None
         banner = queries.sample_state(conn, [source.id for source in sources])
     brief = compose_day_brief(cards)
@@ -2047,7 +2090,7 @@ def day_page(request: Request, day: str):
             "id": saved["id"],
             "question": "这一天的主要判断" if saved["question"] == PRESETS["day"] else saved["question"],
             "answer": saved["answer"],
-            "citations": [item for item in saved["citations"] or [] if item.get("cited")],
+            "citations": [item for item in cited if item.get("cited")],
             "model": saved["model"],
         }
     if company:

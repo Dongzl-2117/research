@@ -25,7 +25,7 @@ from researchlib.web.api import (
     search_payload,
     views_payload,
 )
-from researchlib.web.routes import _same_origin, active_sources, database
+from researchlib.web.routes import _same_origin, active_sources, database, historical_article
 from researchlib.web.scoping import BIGINT_MAX, resolve_scope
 
 mcp = APIRouter()
@@ -68,7 +68,10 @@ TOOLS = [
     {
         "name": "get_article",
         "description": "读一篇文章：元数据、公司提及、摘要、段落块和 Markdown 原文。",
-        "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]},
+        "inputSchema": {"type": "object", "properties": {
+            "id": {"type": "integer"},
+            "as_of": {"type": "string", "description": "历史归档时点，如 2026-11-18T09:30+08:00"},
+        }, "required": ["id"]},
     },
     {
         "name": "list_companies",
@@ -192,6 +195,8 @@ def run_tool(request: Request, name: str, args: dict):
             limit, offset = _limits(args)
             return search_payload(conn, request, _scope_params(args), sources, query, level, limit, offset)
         if name == "get_article":
+            if "as_of" in args:
+                return historical_article(conn, _id(args), str(args["as_of"]), sources)
             payload = article_payload(conn, request, sources, _id(args))
             if payload is None:
                 raise ToolError("没有这篇文章")
@@ -271,7 +276,7 @@ def _answer_for_tool(payload: dict, base: str) -> dict:
                 "source": item.get("source"),
                 "date": item.get("date"),
                 "text": item.get("text"),
-                "links": _article_links(base, item["article_id"], item.get("ord")),
+                "links": {**_article_links(base, item["article_id"]), "html": base + item["url"]},
             }
             for item in cited
             if item.get("article_id") is not None

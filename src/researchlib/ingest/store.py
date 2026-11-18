@@ -7,6 +7,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from researchlib.article_history import confirm_commits
 from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for, search_text
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
@@ -97,6 +98,7 @@ def store_documents(
         (source.id,),
     ).fetchone()
     report.db_rows = int(row["n"])
+    confirm_commits(conn)
     record_import(conn, source.id, report, origin)
     return report
 

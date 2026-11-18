@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
 
@@ -87,6 +88,17 @@ _SCALED = re.compile(
     re.IGNORECASE,
 )
 _PLAIN_NUMBER = re.compile(r"(?<![\d.])\d+(?:\.\d+)?")
+
+
+def passage_fingerprint(body: str, lang: str = "") -> str:
+    """段落编号可能重用；链接另带原来引用的全文及语言的指纹。"""
+    return hashlib.sha256(f"{lang or ''}\0{body}".encode()).hexdigest()
+
+
+def citation_url(article_id: int, ordinal: int | None, text: str, lang: str = "") -> str:
+    if ordinal is None or not text:
+        return f"/articles/{article_id}?evidence=unverified"
+    return f"/articles/{article_id}?chunk={ordinal}&evidence={passage_fingerprint(text, lang)}"
 
 
 def _plain(text: str) -> str:

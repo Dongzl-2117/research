@@ -1,4 +1,8 @@
-{% macro card(item, show_date=false, short_date=false, meta_date=false) %}
+{% macro history_link(id, through) -%}
+<a class="quiet" href="/articles/{{ id }}/history?through={{ through | urlencode }}">核对当时版本</a>
+{%- endmacro %}
+
+{% macro card(item, show_date=false, short_date=false, meta_date=false, through="") %}
 <li class="slot">
   {% if not meta_date %}
   <time class="slot-time" datetime="{{ item.iso }}">{% if show_date %}{% if item.iso %}{{ item.date[5:] if short_date else item.date[2:] }}{% else %}—{% endif %}{% else %}{{ item.time or "—" }}{% endif %}</time>
@@ -12,6 +16,7 @@
       {% if item.hits %}<span class="num">{{ item.hits }} 次</span>{% endif %}
       {% if item.semantic %}<span class="depth depth-semantic" title="正文没写全搜索词，按意思找到的">语义相关</span>{% endif %}
       {% if meta_date %}<span aria-hidden="true">·</span>{% if item.iso %}<time class="item-date" datetime="{{ item.iso }}">{{ item.date }}</time>{% else %}<span class="item-date">日期不详</span>{% endif %}{% endif %}
+      {% if through %}{{ history_link(item.id, through) }}{% endif %}
     </header>
     <h3 class="item-title"{% if item.title is english %} lang="en"{% endif %}><a href="/articles/{{ item.id }}{% if item.chunk is not none and item.chunk is defined %}?chunk={{ item.chunk }}{% if item.anchor %}#{{ item.anchor }}{% endif %}{% endif %}">{{ item.title }}</a></h3>
     {% if item.heading %}<p class="item-heading" title="{{ item.heading }}">§ {{ item.heading }}</p>{% endif %}
@@ -58,9 +63,9 @@
 {% endmacro %}
 
 {# meta_date：日期并进作者那一行，不要左边的日期栏（检索结果用）。 #}
-{% macro card_list(items, short_date=false, meta_date=false) %}
+{% macro card_list(items, short_date=false, meta_date=false, through="") %}
 <ol class="slots flat{% if short_date %} short{% endif %}{% if meta_date %} results{% endif %}">
-  {% for item in items %}{{ card(item, true, short_date, meta_date) }}{% endfor %}
+  {% for item in items %}{{ card(item, true, short_date, meta_date, through) }}{% endfor %}
 </ol>
 {% endmacro %}
 
