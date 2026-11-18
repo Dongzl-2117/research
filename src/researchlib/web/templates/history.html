@@ -3,7 +3,7 @@
 <header class="page-head">
   <h1>历史时点</h1>
   <p><a href="/articles/{{ article_id }}">阅读当前文章</a> · <a href="/articles/{{ article_id }}/history?as_of={{ evidence.as_of | urlencode }}">此时点的固定链接</a></p>
-  <form method="get"><label>查询时点（上海时间） <input type="datetime-local" step="0.001" name="as_of" value="{{ cutoff }}" required></label> <button type="submit">查看当时的版本</button></form>
+  <form method="get"><input type="hidden" name="original_as_of" value="{{ evidence.as_of }}"><label>查询时点（上海时间） <input type="datetime-local" step="0.001" name="as_of" value="{{ cutoff }}" required></label> <button type="submit">查看当时的版本</button></form>
 </header>
 <p>查询时点 {{ evidence.as_of }} · 首次入库记录 {{ evidence.first_seen_at }}</p>
 {% if evidence.status == 'verified' %}
