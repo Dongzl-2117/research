@@ -84,3 +84,29 @@ def test_retrieval_reads_fresh_scores_only(conn, settings):
     # 正文改过（指纹对不上）的当没打过。
     changed = dict(second, body=(second["body"] or "") + "补一句")
     assert retrieval.mechanism_scores(conn, [dict(first), changed]) == {(first["article_id"], first["ord"]): 2}
+
+
+def test_failed_article_keeps_scored_batches_and_is_reported_while_cooling(conn, settings, monkeypatch):
+    sources = _setup(conn, settings)
+    rows = mechanism.pending_articles(conn, sources, None)
+    conn.commit()
+    row = max(rows, key=lambda item: int(item["chunks"]))
+    assert int(row["chunks"]) >= 2
+    calls = {"n": 0}
+
+    def flaky(_settings, messages, *, usage=None, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _reply(_settings, messages, usage=usage)
+        return json.dumps({"scores": []}), "deepseek-test"  # 第二批起一段都不给
+
+    monkeypatch.setattr(mechanism, "chat", flaky)
+    monkeypatch.setattr(mechanism, "BATCH_CHARS", 1)  # 一块一批
+    report = mechanism.run_batch(settings, [{"id": int(row["id"]), "title": row["title"]}])
+    assert report["failed"] == 1
+    kept = conn.execute("SELECT count(*) AS n FROM chunk_mechanism WHERE article_id = %s", (row["id"],)).fetchone()["n"]
+    assert kept == 1
+    assert int(row["id"]) not in {int(r["id"]) for r in mechanism.pending_articles(conn, sources, None)}
+    cooled = mechanism.pending_articles(conn, sources, None, cooling=True)
+    assert [int(r["id"]) for r in cooled] == [int(row["id"])]
+    assert int(cooled[0]["chunks"]) == int(row["chunks"]) - 1
