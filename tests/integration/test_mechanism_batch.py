@@ -61,3 +61,26 @@ def test_english_original_chunks_skipped_when_translation_exists(conn, settings)
         c["ord"]: c for c in mechanism.stale_chunks(conn, article_id)
     }
     assert list(langs) == [row["o"] + 1000]
+
+
+def test_retrieval_reads_fresh_scores_only(conn, settings):
+    from researchlib import retrieval
+
+    _setup(conn, settings)
+    rows = conn.execute(
+        "SELECT article_id, ord, heading, body FROM article_chunks WHERE lang <> 'zh' ORDER BY article_id, ord LIMIT 2"
+    ).fetchall()
+    first, second = rows
+    for row, score in ((first, 2), (second, 0)):
+        conn.execute(
+            "INSERT INTO chunk_mechanism (article_id, ord, chunk_hash, score, prompt_version)"
+            " SELECT c.article_id, c.ord, " + mechanism.chunk_hash_sql("c") + ", %s, %s"
+            " FROM article_chunks c WHERE c.article_id = %s AND c.ord = %s",
+            (score, mechanism.PROMPT_VERSION, row["article_id"], row["ord"]),
+        )
+    conn.commit()
+    found = retrieval.mechanism_scores(conn, [dict(r) for r in rows])
+    assert found == {(first["article_id"], first["ord"]): 2, (second["article_id"], second["ord"]): 0}
+    # 正文改过（指纹对不上）的当没打过。
+    changed = dict(second, body=(second["body"] or "") + "补一句")
+    assert retrieval.mechanism_scores(conn, [dict(first), changed]) == {(first["article_id"], first["ord"]): 2}

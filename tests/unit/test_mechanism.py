@@ -101,3 +101,9 @@ def test_owner_holdout_does_not_overlap_tuning_sample():
     tune = {(i["article_id"], i["ord"]) for i in mechanism.load_sample("tools/quality_eval/mechanism_owner.json")}
     hold = mechanism.load_sample("tools/quality_eval/mechanism_owner_holdout.json")
     assert len(hold) == 20 and not tune & {(i["article_id"], i["ord"]) for i in hold}
+
+
+def test_retrieval_factor_is_off_until_tuned():
+    from researchlib import retrieval
+
+    assert set(retrieval.MECHANISM_FACTOR.values()) == {1.0}
