@@ -85,3 +85,11 @@ def test_body_time_line_with_half_width_zone_note():
     assert (local.day, local.hour, local.minute) == (27, 14, 41)
     full_width, _source, full_known = resolve_published_at(text="- 时间：2026-09-27 14:41（北京时间）\n")
     assert full_known is True and full_width.astimezone(SHANGHAI).hour == 14
+
+
+def test_compact_calendar_day_in_frontmatter_retains_date_precision():
+    for value in ("20261118", 20261118):
+        when, source, known = resolve_published_at(frontmatter={"date": value})
+        assert when.date().isoformat() == "2026-11-18"
+        assert (source, known) == ("frontmatter", False)
+    assert resolve_published_at(frontmatter={"date": "20260230"}) == (None, "", False)

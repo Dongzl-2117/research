@@ -20,7 +20,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import POSTER_ROLE, assign_poster_role, is_guest
+from researchlib.author_voice import POSTER_ROLE, archive_poster_fields, assign_poster_role, is_guest
 
 logger = logging.getLogger("researchlib.posters")
 # app_state 里记下每个星球来源上次按什么名单算的标记：poster_names:<来源>。
@@ -85,7 +85,7 @@ def backfill_posters(conn, source, docs: list) -> dict:
     """用归档里的话题 JSON 回填已入库文章的发帖人。返回计数。"""
     updated = guests = cleared = missing = 0
     for doc in docs:
-        incoming = assign_poster_role(dict(doc.raw_meta or {}), source.author, source.poster_names, source.owner_ids)
+        incoming = doc.raw_meta or {}
         name = str(incoming.get("poster_name") or "").strip()
         poster_id = str(incoming.get("poster_id") or "").strip()
         if not name and not poster_id:
@@ -97,6 +97,7 @@ def backfill_posters(conn, source, docs: list) -> dict:
             FROM articles
             WHERE source_id = %s
               AND (external_id = %s OR raw_meta->>'topic_id' = %s)
+            ORDER BY id FOR UPDATE
             """,
             (source.id, doc.external_id, topic_id),
         ).fetchall()
@@ -104,15 +105,11 @@ def backfill_posters(conn, source, docs: list) -> dict:
             missing += 1
             continue
         for row in rows:
-            meta = dict(row["raw_meta"] or {})
-            meta["poster_name"] = name
-            meta["poster_id"] = poster_id
-            assign_poster_role(meta, source.author, source.poster_names, source.owner_ids)
-            conn.execute(
-                "UPDATE articles SET raw_meta = %s WHERE id = %s",
-                (Jsonb(meta), row["id"]),
-            )
-            updated += 1
+            previous = row["raw_meta"] or {}
+            meta = {**previous, **archive_poster_fields(source, previous, incoming)}
+            if meta != previous:
+                conn.execute("UPDATE articles SET raw_meta = %s WHERE id = %s", (Jsonb(meta), row["id"]))
+                updated += 1
             if is_guest(meta):
                 guests += 1
                 cur = conn.execute("DELETE FROM company_views WHERE article_id = %s", (row["id"],))
@@ -143,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
     print(
-        f"回填 {stats['updated']} 篇，其中网友帖 {stats['guests']} 篇，"
+        f"更新署名 {stats['updated']} 篇，核对到网友帖 {stats['guests']} 篇，"
         f"从观点里拿掉 {stats['views_cleared']} 条，归档里对不上库的 {stats['missing']} 篇"
     )
     return 0

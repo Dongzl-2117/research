@@ -42,6 +42,13 @@
             {% if item.metrics %}<dt>要盯的指标</dt><dd><ul>{% for line in item.metrics %}<li>{{ line }}</li>{% endfor %}</ul></dd>{% endif %}
           </dl>
           {% endif %}
+          {% if item.angles %}
+          <dl class="jrow-extra"><dt>同篇其他判断</dt><dd><ul>
+            {% for angle in item.angles %}<li>{{ angle.judgment }}{% if angle.mechanism %} · {{ angle.mechanism }}{% endif %}
+              {% if angle.quote %}<blockquote>{{ angle.quote }}</blockquote>{% endif %}
+            </li>{% endfor %}
+          </ul></dd></dl>
+          {% endif %}
           {% if item.quote and not item.quote_repeats %}<blockquote class="view-quote"><a href="{{ item.href }}">{{ item.quote }}</a></blockquote>{% endif %}
         </div>
       </details>

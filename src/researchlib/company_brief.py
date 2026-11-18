@@ -252,7 +252,8 @@ def month_groups(items: list[dict]) -> list[dict]:
 def has_detail(item: dict) -> bool:
     """这条判断点开有没有东西看：理由、风险、推翻条件、验证指标、原句。都没有就不做成可展开的。"""
     return bool(
-        item.get("mechanism")
+        item.get("angles")
+        or item.get("mechanism")
         or item.get("risks")
         or item.get("falsifiers")
         or item.get("metrics")
@@ -364,7 +365,7 @@ def evidence_lines(lines: list[str], by_article: dict[int, dict]) -> list[dict]:
             continue
         shaped.append(
             {
-                "text": name_refs(body, by_article),
+                "text": body,
                 "source": Markup(_ref_link(view, bare=False)) if view else None,
             }
         )

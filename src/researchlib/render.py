@@ -97,6 +97,13 @@ def img_tag_url(tag: str) -> str:
     return ""
 
 
+def image_refs_in(text: str) -> list[str]:
+    """按原文顺序读取 Markdown 与 HTML 图片。懒加载图和阅读页共用取地址的规则。"""
+    refs = [(match.start(), match.group(2)) for match in _MD_IMAGE.finditer(text or "")]
+    refs.extend((match.start(), img_tag_url(match[0])) for match in _IMG_TAG.finditer(text or ""))
+    return [ref for _, ref in sorted(refs) if ref]
+
+
 def _attr_value(value: str) -> str:
     return html_lib.escape(value, quote=False).replace('"', "&quot;")
 

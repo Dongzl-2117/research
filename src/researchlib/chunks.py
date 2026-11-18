@@ -316,28 +316,16 @@ def _pack_spoken(grouped: list[tuple[str, list[str]]]) -> list[str]:
 
 def _article_ocr_chunks(conn, article_id: int, host: str = "") -> list[tuple[str, str]]:
     """这篇挂着的图片按现在的规则整理、切好的块。host 是这篇的作者，绿气泡写成他的名。"""
-    rows = conn.execute(
-        """
-        SELECT i.content_hash, t.text, t.units
-        FROM article_images i
-        JOIN image_texts t ON t.content_hash = i.content_hash
-        WHERE i.article_id = %s
-        ORDER BY i.id
-        """,
-        (article_id,),
-    ).fetchall()
-    owners: tuple[str, ...] = ()
-    if any(row["units"] is not None for row in rows):
-        from researchlib.ocr import article_owners
+    from researchlib.ocr import article_image_texts, article_owners
 
-        owners = article_owners(conn, article_id)
-    texts = [(row["content_hash"], row["text"], row["units"]) for row in rows]
-    return ocr_chunks(texts, host=host, owners=owners)
+    images = article_image_texts(conn, article_id)
+    owners = article_owners(conn, article_id) if any(image.units is not None for image in images) else ()
+    return ocr_chunks(images, host=host, owners=owners)
 
 
 def replace_ocr_chunks(conn, article_id: int) -> int:
     """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
-    from researchlib.claims import plain_cite
+    from researchlib.claims import source_quote
 
     # 块号会被复用。先记下观点的原图，再按原句匹配新块，不能让旧号悄悄指向邻图。
     references = conn.execute(
@@ -367,10 +355,10 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
                 ],
             )
     for reference in references:
-        wanted = plain_cite(reference["quote"] or "")
+        wanted = reference["quote"] or ""
         matches = [
             (index, anchor) for index, (anchor, text) in enumerate(chunks)
-            if wanted and wanted in plain_cite(text)
+            if source_quote(text, wanted)
         ]
         # 同一句仍在原图时优先原图；重叠句去重到前图后，只链到确实含原句的那一块。
         matches.sort(key=lambda item: item[1] != reference["anchor"])
