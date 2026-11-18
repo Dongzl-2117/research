@@ -12,9 +12,15 @@ BACKUP_DIR="${BACKUP_DIR:-}"
 KEEP_DAYS="${KEEP_DAYS:-30}"
 TASK=backup
 . "$REPO/scripts/status.sh"
-partial=""
+staging=""
 trap 'STATUS_FAILED_LINE=$LINENO; STATUS_FAILED_CMD=$BASH_COMMAND' ERR
-trap 'rc=$?; [ -n "$partial" ] && rm -f "$partial" "${partial}.count"; status_finish "$rc"' EXIT
+cleanup() {
+  if [ -n "$staging" ]; then
+    rm -f "$staging/archive" "$staging/articles" "$staging/has-images"
+    rmdir "$staging"
+  fi
+}
+trap 'rc=$?; cleanup; status_finish "$rc"' EXIT
 
 if [ -z "$BACKUP_DIR" ]; then
   echo "先设 BACKUP_DIR：另一块盘或云盘同步目录。" >&2
@@ -28,26 +34,40 @@ compose() {
 
 stamp="$(date +%Y%m%d-%H%M%S)"
 run_step "建备份目录" mkdir -p "$BACKUP_DIR/db" "$BACKUP_DIR/images"
-partial="$BACKUP_DIR/db/.research-$stamp.dump.partial"
-final="$BACKUP_DIR/db/research-$stamp.dump"
+staging="$(mktemp -d "$BACKUP_DIR/db/.research-${stamp}-v2-XXXXXX")"
+name="$(basename "$staging")"
+final="$BACKUP_DIR/db/${name#.}.dump"
 
-# 导出前记下篇数，每月试恢复时拿来核对。
-run_step "读篇数" compose exec -T db psql -U research -d research -Atc 'SELECT count(*) FROM articles' \
-  > "${partial}.count"
-articles="$(tr -d '[:space:]' < "${partial}.count")"
-run_step "导出数据库" compose exec -T db pg_dump -U research -d research --format=custom --compress=6 > "$partial"
-# 导出能被 pg_restore 读出目录，才算这份是完整的。
-run_step "核对导出" compose exec -T db pg_restore --list < "$partial" > /dev/null
-mv "$partial" "$final"
-rm -f "${partial}.count"
-partial=""
-echo "$articles" > "${final}.articles"
+dump_archive() {
+  # psql 持有只读事务直至子进程 pg_dump 结束。第一行是同一快照的篇数和图片引用标记，其余字节是原始 custom dump。
+  compose exec -T db psql -XqAt -v ON_ERROR_STOP=1 -U research -d research <<'SQL' | {
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;
+\copy (SELECT pg_export_snapshot(), count(*), EXISTS (SELECT 1 FROM article_images) FROM articles) TO PROGRAM 'read -r snap n images && printf "%s %s\n" "$n" "$images" && exec pg_dump -U research -d research --format=custom --compress=6 --snapshot="$snap"'
+COMMIT;
+SQL
+    IFS=" " read -r articles images || return 1
+    case "$images" in t | f) ;; *) return 1 ;; esac
+    case "$articles" in '' | *[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$articles" > "$staging/articles" && printf '%s\n' "$images" > "$staging/has-images" && cat > "$staging/archive"
+  }
+}
+
+run_step "导出数据库并记下快照篇数" dump_archive
+articles="$(cat "$staging/articles")"
+run_step "核对导出目录" compose exec -T db pg_restore --list < "$staging/archive" > /dev/null
 
 if [ -d "$REPO/data/images" ]; then
   # 图片按内容哈希存，同名就是同一张。只增不删，误删了也还在备份里。
   run_step "同步图片" rsync -a "$REPO/data/images/" "$BACKUP_DIR/images/"
+elif [ "$(cat "$staging/has-images")" = t ]; then
+  echo "导出中有图片引用，但找不到原图目录 $REPO/data/images。" >&2
+  status_fail "导出中有图片引用，找不到用于同步的原图目录"
+  exit 1
 fi
 
+# 恢复只会选中 .dump。图片同步及篇数记录就绪后才公布导出，正在运行或失败的备份不会盖过上一份。
+mv "$staging/articles" "${final}.articles"
+mv "$staging/archive" "$final"
 find "$BACKUP_DIR/db" -name 'research-*.dump*' -type f -mtime +"$KEEP_DAYS" -delete
 size="$(du -h "$final" | cut -f1)"
 echo "$(date '+%F %T') 备份完成：${final}，${size}，${articles} 篇" | tee -a "$BACKUP_DIR/backup.log"

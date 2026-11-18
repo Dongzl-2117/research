@@ -9,19 +9,18 @@ from pathlib import Path
 
 from researchlib.ingest.archive import ImageIndex, is_archive_note, iter_files, materialize
 from researchlib.ingest.model import ParsedDoc
-from researchlib.render import image_destination
+from researchlib.render import image_destination, image_refs_in
 from researchlib.textutil import (
     SHANGHAI,
     basename,
     derive_title,
     normalize_newlines,
+    parse_datetime,
     resolve_published_at,
     split_frontmatter,
 )
 from researchlib.zsxq_title import stored_zsxq_title
 
-_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-_HTML_IMAGE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 _TOPIC_ID = re.compile(r"\d{5,}")
 # 星球归档头里的「- topic_id：`45548552554812148` · 原链接：…」。
 _HEADER_TOPIC_ID = re.compile(r"topic_id\s*[：:]\s*`?(\d{5,})`?")
@@ -95,12 +94,6 @@ def unescape_literal_breaks(text: str) -> str:
             continue
         lines[index] = _LITERAL_BREAK.sub(lambda run: "\n" * run.group(0).count("\\n"), line)
     return "\n".join(lines)
-
-
-def image_refs_in(text: str) -> list[str]:
-    refs = [match.group(2) for match in _MD_IMAGE.finditer(text)]
-    refs.extend(match.group(1) for match in _HTML_IMAGE.finditer(text))
-    return refs
 
 
 def relative_id(path: Path, root: Path) -> str:
@@ -269,13 +262,13 @@ def _user(comment: dict, key: str) -> str | None:
     return None
 
 
-def author_replies(node: dict) -> list[tuple[str, str]]:
-    """作者本人在评论里的回复：[(被回复的那条读者评论, 作者的回复)]，没有被回复的那条就是空串。"""
+def author_reply_records(node: dict) -> list[dict]:
+    """按来源保留回复身份、发表时间和问答内容。没有发表时间时保留空值。"""
     owner = _owner_id(node)
     if owner is None:
         return []
     comments = _comments(node)
-    pairs: list[tuple[str, str]] = []
+    records: list[dict] = []
     for index, comment in enumerate(comments):
         if _user(comment, "owner") != owner:
             continue
@@ -289,11 +282,21 @@ def author_replies(node: dict) -> list[tuple[str, str]]:
                 if _user(earlier, "owner") == target:
                     question = zsxq_text(earlier.get("text"))
                     break
-        pairs.append((question, reply))
-    return pairs
+        moment = parse_datetime(_topic_time(comment))
+        records.append({
+            "reply_id": str(comment.get("comment_id") or "") or None,
+            "published_at": moment.isoformat() if moment else None,
+            "text": reply,
+            "question": question,
+        })
+    return records
 
 
-def comments_section(pairs: list[tuple[str, str]], body: str) -> str:
+def author_replies(node: dict) -> list[tuple[str, str]]:
+    return [(item["question"], item["text"]) for item in author_reply_records(node)]
+
+
+def comments_section(pairs: list[tuple[str, str]], body: str, author: str = "方伟") -> str:
     """接在正文后面的「评论里的回复」，标签与正文同一套「网友：」「方伟：」。
 
     正文里已经有的回复（导出时带上了评论）不重复。
@@ -308,7 +311,7 @@ def comments_section(pairs: list[tuple[str, str]], body: str) -> str:
         if question:
             lines.append(f"网友：{question}")
         # 全文一种对话体：星主答写成「方伟：」，读者问写成「网友：」。
-        lines.append(f"方伟：{reply}")
+        lines.append(f"{author}：{reply}")
     if not lines:
         return ""
     return COMMENTS_MARKER + "\n\n".join(lines) + "\n"
@@ -331,7 +334,7 @@ def extract_zsxq_topics(data: object) -> list[dict]:
                 "topic_id": topic_id,
                 "create_time": _topic_time(node),
                 "title": _topic_title(node),
-                "replies": author_replies(node),
+                "replies": author_reply_records(node),
                 **_poster(node),
             }
         )
@@ -553,11 +556,14 @@ def _parse_one_file(
         stored_meta["images"] = "page"
     if id_mode == "zsxq" and raw_meta.get("replies"):
         # 星主在评论里回答读者的话往往比正文更直接：接在正文后面，进检索和问库。
-        section = comments_section(raw_meta["replies"], full_md)
+        author = owners[0] if owners else "方伟"
+        records = raw_meta["replies"]
+        stored_meta["author_replies"] = records
+        section = comments_section([(item["question"], item["text"]) for item in records], full_md, author)
         if section:
             full_md = full_md.rstrip("\n") + "\n" + section
             stored_meta["comment_replies"] = (
-                section.count("方伟：")
+                section.count(f"{author}：")
                 + section.count("作者答：")
                 + section.count("作者补充：")
             )

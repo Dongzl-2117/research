@@ -251,7 +251,23 @@ def test_sidebar_long_summary_uses_original_deep_budget_and_batch_failure_report
         saved = client.get(f"/api/v1/answers/{first['id']}").json()
     assert saved['status'] == 'done' and len(saved['citations']) == 80
     assert saved['stats']['batches'] >= 2 and saved['stats']['failed_batches']
+    assert any('未读到' in issue for flag in saved['checks'] for issue in flag['problems'])
     assert seen_tail
+
+
+def test_long_article_specific_question_without_evidence_does_not_start_a_job(conn, settings, monkeypatch, model):
+    from researchlib import retrieval
+
+    _article(conn, 'elsewhere', chunks=['unrelatedticker 是另一篇年度披露的经营指标。'])
+    chunks = [f'经营要点 {n}。' + '渠道经营成本与门店管理。' * 90 for n in range(80)]
+    identity = _article(conn, 'long-scope', chunks=chunks)
+    assert sum(map(len, chunks)) > retrieval.CHAR_BUDGET_ARTICLE
+    monkeypatch.setattr(retrieval, 'semantic_candidates', lambda conn, query, scope, rows, **kw: (rows, {}))
+    with TestClient(create_app(settings)) as client:
+        result = client.post('/api/v1/ask', json={'question': 'unrelatedticker', 'article': identity}).json()
+    count = conn.execute('SELECT count(*) AS n FROM llm_answers').fetchone()['n']
+    assert (len(result['citations']), count, len(model)) == (0, 0, 0)
+    assert result['id'] is None and '没有召回到任何段落' in result['error']
 
 
 def test_sidebar_long_input_and_supplied_history_have_original_single_turn_semantics(conn, settings, model):
@@ -323,7 +339,10 @@ def test_queued_answer_is_not_expired_and_an_expired_one_does_not_run(conn, sett
     monkeypatch.setattr(ask_module, '_active', set())
     with TestClient(create_app(settings)) as client:
         first = client.post('/api/v1/ask', json={'question': '渠道优势', 'source': 'fangwei-mp'}).json()
-    conn.execute("UPDATE llm_answers SET updated_at = now() - interval '1 hour' WHERE id=%s", (first['id'],))
+    conn.execute(
+        "UPDATE llm_answers SET updated_at = now() - interval '1 hour', answer = '过期草稿[1]',"
+        " stats = stats || '{\"progress\":{\"stage\":\"writing\"}}'::jsonb WHERE id=%s", (first['id'],)
+    )
     conn.commit()
     assert expire_stale_answers(conn) == 0
     assert conn.execute("SELECT status FROM llm_answers WHERE id=%s", (first['id'],)).fetchone()['status'] == 'running'
@@ -335,6 +354,13 @@ def test_queued_answer_is_not_expired_and_an_expired_one_does_not_run(conn, sett
     ask_module._run_tracked(settings, first['id'])
     row = conn.execute("SELECT status, answer FROM llm_answers WHERE id=%s", (first['id'],)).fetchone()
     assert row['status'] == 'error' and row['answer'] == '' and len(model) == before
+    # 历史失败记录可能保留了半截回答，重新登记后，第一次轮询也不应读到旧正文。
+    conn.execute("UPDATE llm_answers SET answer='旧版残稿',"
+                 " stats = stats || '{\"progress\":{\"stage\":\"writing\"}}'::jsonb WHERE id=%s", (first['id'],))
+    conn.commit()
+    assert ask_module.retry(conn, settings, first['id'], run_inline=False)
+    row = conn.execute('SELECT answer, stats FROM llm_answers WHERE id=%s', (first['id'],)).fetchone()
+    assert row['answer'] == '' and 'progress' not in row['stats']
 
 
 def test_resubmitted_question_with_the_same_request_id_is_not_synthesized_twice(conn, settings, monkeypatch, model):

@@ -6,7 +6,8 @@
   {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
   {% if filters.company %}<input type="hidden" name="company" value="{{ filters.company }}">{% endif %}
   {% if article_scope %}<input type="hidden" name="article" value="{{ article_scope }}">{% endif %}
-  {% if view == "article" %}<input type="hidden" name="view" value="article">{% endif %}
+  {% if form_sort %}<input type="hidden" name="sort" value="{{ form_sort }}">{% endif %}
+  {% if form_view == "article" %}<input type="hidden" name="view" value="article">{% endif %}
   <div class="search-box">
     <div class="field">
       <label class="sr" for="q">搜索标题、作者或正文</label>
@@ -32,7 +33,7 @@
   </details>
 </form>
 {% if company %}
-<p class="filter-note">只看提到 <a href="/companies/{{ company.id }}">{{ company.name_zh }}</a> 的文章。<a href="/search?q={{ query | urlencode }}">去掉这个条件</a></p>
+<p class="filter-note">只看提到 <a href="/companies/{{ company.id }}">{{ company.name_zh }}</a> 的文章。<a href="/search?{{ clear_company_query }}">去掉这个条件</a></p>
 {% endif %}
 {% if query %}
 {% if entity_companies or entity_authors %}

@@ -12,6 +12,7 @@ import re
 POSTER_ROLE = "poster_role"
 ROLE_GUEST = "guest"
 ROLE_OWNER = "owner"
+POSTER_FIELDS = ("poster_id", "poster_name", POSTER_ROLE)
 
 
 def raw_meta_of(conn, row) -> dict:
@@ -96,6 +97,29 @@ def assign_poster_role(
         return meta
     meta[POSTER_ROLE] = ROLE_OWNER if owner else ROLE_GUEST
     return meta
+
+
+def archive_poster_fields(source, stored: dict, incoming: dict) -> dict:
+    """同一篇重放时按账户 ID 合并身份；仅昵称的旧档不能改写已有的账户署名。"""
+    old_id = str(stored.get("poster_id") or "").strip()
+    old_name = str(stored.get("poster_name") or "").strip()
+    new_id = str(incoming.get("poster_id") or "").strip()
+    new_name = str(incoming.get("poster_name") or "").strip()
+    if old_id and new_id != old_id:
+        # 来档没有 ID，或同一话题号出现两个不同的账户：保留原来的整份署名。
+        new_id, new_name = old_id, old_name
+    elif not new_id and old_name:
+        # 两份都只有昵称，旧档里不同的昵称不足以给同一篇换署名。
+        new_name = old_name
+    identity = {}
+    if new_id:
+        identity["poster_id"] = new_id
+    if new_name or old_name:
+        identity["poster_name"] = new_name or old_name
+    assign_poster_role(identity, source.author, source.poster_names, source.owner_ids)
+    if POSTER_ROLE not in identity and stored.get(POSTER_ROLE) in (ROLE_OWNER, ROLE_GUEST):
+        identity[POSTER_ROLE] = stored[POSTER_ROLE]
+    return identity
 
 
 def display_author(star_name: str, raw_meta: dict | None) -> tuple[str, bool]:

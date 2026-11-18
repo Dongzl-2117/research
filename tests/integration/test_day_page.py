@@ -1,8 +1,9 @@
 """日汇总页：没问过这一天的给「问 AI」按钮；从按钮问过以后，那条回答放在最上面。"""
 
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from researchlib import ask as ask_module
 from researchlib.ask import PRESETS
@@ -10,6 +11,7 @@ from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.sources import load_sources
 from researchlib.textutil import SHANGHAI
+from researchlib.web import queries
 from researchlib.web.app import create_app
 
 DAY = "2024-10-19"
@@ -58,3 +60,37 @@ def test_day_page_shows_the_answer_asked_from_its_button(conn, settings, monkeyp
 
         history = client.get("/ask").text
         assert f'<span class="quiet num">{DAY}</span>' in history
+
+
+def test_day_answer_matches_the_report_kind_and_scope_before_limiting(conn):
+    scope = {"date_from": DAY, "date_to": DAY, "source_ids": ["fangwei-mp", "linwenfeng-feishu"]}
+
+    def save(question, **extra):
+        return conn.execute(
+            "INSERT INTO llm_answers (question, scope, answer, status) VALUES (%s, %s, '摘要', 'done') RETURNING id",
+            (question, Jsonb({**scope, **extra})),
+        ).fetchone()["id"]
+
+    def lookup():
+        return queries.day_answer(
+            conn, date.fromisoformat(DAY), ["fangwei-mp"], None, ("linwenfeng-feishu",), question=PRESETS["day"]
+        )
+
+    save("这天谁提及了汇率？")
+    save(PRESETS["company"], preset=True)
+    assert lookup() is None
+
+    legacy = save(PRESETS["day"], preset=True)
+    for n in range(31):
+        save(f"专题问题 {n}")
+    save(PRESETS["day"], source_ids=["fangwei-mp", "chengfengpolang"])
+    save(PRESETS["day"], source_ids=["linwenfeng-feishu"])
+    save(PRESETS["day"], company_id=5)
+    save(PRESETS["day"], tree_id=6)
+    save(PRESETS["day"], article_id=7)
+    assert lookup()["id"] == legacy
+
+    # 提示词以后换了，只要生成时记的是日报，仍能认出这个版本。
+    marked = save("另一版日报提示词", preset_key="day")
+    save(PRESETS["day"], preset_key="author")
+    assert lookup()["id"] == marked

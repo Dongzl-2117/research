@@ -50,7 +50,7 @@ from researchlib.web.routes import (
     retitle_views,
     withhold_citations,
 )
-from researchlib.web.scoping import BIGINT_MAX, parse_int, resolve_scope
+from researchlib.web.scoping import BIGINT_MAX, parse_int, resolve_ask_scope, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.zsxq_comments import (
     filter_host_comments_markdown,
@@ -612,13 +612,36 @@ def api_company_views(request: Request, company_id: int):
     return _json(payload)
 
 
-def day_payload(conn, request: Request, sources, start: date, end: date) -> dict:
+DAY_PAGE_SIZE = 500
+
+
+def day_params(raw_day: str, params) -> tuple[date, int, int]:
+    try:
+        day = date.fromisoformat(raw_day)
+        if day.isoformat() != raw_day:
+            raise ValueError
+    except ValueError:
+        raise ValueError("日期需要是 YYYY-MM-DD 格式的有效日历日") from None
+    try:
+        limit = int(str(params.get("limit", DAY_PAGE_SIZE)))
+        offset = int(str(params.get("offset", 0)))
+    except (TypeError, ValueError):
+        raise ValueError("limit、offset 需要是整数") from None
+    if not 1 <= limit <= DAY_PAGE_SIZE or not 0 <= offset <= BIGINT_MAX:
+        raise ValueError(f"limit 需要在 1 到 {DAY_PAGE_SIZE} 之间，offset 需要是有效的非负偏移量")
+    return day, limit, offset
+
+
+def day_payload(conn, request: Request, sources, day: date, limit: int, offset: int) -> dict:
     by_id = {source.id: source for source in sources}
-    rows = queries.day_articles(conn, list(by_id), start, end)
+    rows, total = queries.day_article_page(conn, list(by_id), day, limit, offset)
     return {
-        "from": start.isoformat(),
-        "to": end.isoformat(),
-        "total": len(rows),
+        "from": day.isoformat(),
+        "to": day.isoformat(),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "next_offset": offset + len(rows) if offset + len(rows) < total else None,
         "items": _items(conn, rows, by_id, request),
         "_trust": TRUST,
     }
@@ -627,12 +650,12 @@ def day_payload(conn, request: Request, sources, start: date, end: date) -> dict
 @api.get("/api/v1/days/{day}")
 def api_day(request: Request, day: str):
     try:
-        start = date.fromisoformat(day)
+        date_key, limit, offset = day_params(day, request.query_params)
     except ValueError as exc:
-        raise HTTPException(status_code=404) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     with database(request) as conn:
         sources = active_sources(request, conn)
-        return _json(day_payload(conn, request, sources, start, start))
+        return _json(day_payload(conn, request, sources, date_key, limit, offset))
 
 
 @api.post("/api/v1/ask")
@@ -648,7 +671,8 @@ async def api_ask(request: Request):
     question = str(body.get("question") or "").strip()[:500]
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
-    params = {key: str(body.get(key) or "") for key in ("author", "source", "company", "from", "to", "article", "tree")}
+    keys = ("author", "source", "saved_sources", "company", "from", "to", "article", "tree")
+    params = {key: str(body.get(key) or "") for key in keys}
     # 默认不等：检索后立刻返回 id，后台整合。wait=true 在线程池里最多等 ask.WAIT_SECONDS 秒，没写完就返回 running，
     # 绝不能在 async 协程里同步干等，否则整站事件循环被堵死（health/其他页一起挂）。
     wait = body.get("wait", False) is True
@@ -674,7 +698,7 @@ async def api_ask(request: Request):
                 conn.commit()
                 if existing is not None:
                     return {"duplicate": answer_payload(conn, request, sources, existing)}
-            scope, _info = resolve_scope(params, sources)
+            scope, _info = resolve_ask_scope(params, sources)
             if wait:
                 return ask(conn, settings, question, scope, sources, choice=choice)
             # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
@@ -830,7 +854,8 @@ def llms_txt(request: Request):
         f"- [单篇 JSON]({base}/api/v1/articles/{{id}}): 元数据、公司提及深度、LLM 摘要、段落块、Markdown 原文",
         f"- [单篇 Markdown]({base}/api/v1/articles/{{id}}.md): 带 YAML frontmatter 的原文，"
         "图片和指向库里别篇的链接是站内完整地址，截图里识别出的字附在最后「图片里的字」一节",
-        f"- [某一天]({base}/api/v1/days/{{YYYY-MM-DD}}): 那一天的全部文章",
+        f"- [某一天]({base}/api/v1/days/{{YYYY-MM-DD}}): total 是上海日历日的可见总篇数。"
+        f"limit 默认及上限均为 {DAY_PAGE_SIZE}，把 next_offset 作为下一页的 offset，直到返回 null。",
         f"- [作者]({base}/api/v1/authors): 作者、来源、篇数、时间跨度、常谈公司。当前作者：{'、'.join(authors)}",
         f"- [公司]({base}/api/v1/companies): 有提及的公司（all=1 含未提及），篇数、深入篇数、最近提及",
         f"- [单家公司]({base}/api/v1/companies/{{id}}): 按时间倒序的提及文章，每篇带提及原句；depth 过滤",

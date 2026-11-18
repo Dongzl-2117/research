@@ -3,9 +3,12 @@
 模型用替身，不花钱。
 """
 
+import json
 import os
+import re
 import threading
 import time
+from html import unescape
 
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
@@ -71,6 +74,43 @@ def _until_done(read):
             return payload
         time.sleep(0.1)
     return payload
+
+
+def test_stream_freezes_actual_numbered_citations_before_first_answer_text(conn, settings, monkeypatch):
+    _sample(conn, settings)
+    monkeypatch.setattr(ask_module, "llm_configured", lambda _: True)
+    monkeypatch.setattr(ask_module, "expand_terms", lambda *_: {})
+    monkeypatch.setattr(ask_module, "_inline", lambda: True)
+    original = ask_module._passages
+    old_first = {}
+
+    def different_order(found, sources, settings, **kwargs):
+        items = original(found, sources, settings, **kwargs)
+        if "chronological" not in kwargs:
+            old_first.update(items[0])
+            return items
+        assert len(items) >= 2
+        items.sort(key=lambda item: item["article_id"] == old_first["article_id"] and item["ord"] == old_first["ord"])
+        for n, item in enumerate(items, 1):
+            item["n"] = n
+        items[0].update(before="模型实际读到的上文", after="模型实际读到的下文")
+        return items
+
+    def write(_settings, _question, passages, _report, _note, progress):
+        progress({"stage": "writing", "text": "第一段的证据[1]。"})
+        row = conn.execute("SELECT answer, citations FROM llm_answers WHERE status='running'").fetchone()
+        assert row["answer"] == "第一段的证据[1]。"
+        assert row["citations"][0] == passages[0]
+        assert (passages[0]["article_id"], passages[0]["ord"]) != (old_first["article_id"], old_first["ord"])
+        return row["answer"], "synthetic"
+
+    monkeypatch.setattr(ask_module, "_passages", different_order)
+    monkeypatch.setattr(ask_module, "synthesize", write)
+    with TestClient(create_app(settings)) as client:
+        answer_id = client.post("/api/v1/ask", json={"question": QUESTION}).json()["id"]
+        page = client.get(f"/ask/{answer_id}").text
+        assert "模型实际读到的上文" in page and "模型实际读到的下文" in page
+        assert client.get(f"/api/v1/answers/{answer_id}").json()["status"] == "done"
 
 
 def test_mcp_ask_returns_an_id_and_get_answer_reads_the_result(conn, settings, monkeypatch):
@@ -174,3 +214,32 @@ def test_llms_txt_says_no_login_and_how_to_wait(conn, settings):
     assert "Cloudflare Access" not in text and "不用登录" in text
     assert "get_answer" in text and "429" in text
     assert f"最近 24 小时最多 {ask_module.DAILY_LIMIT} 次" in text
+
+
+def test_history_keeps_actual_sources_in_the_form_and_json_submission(conn, settings):
+    from researchlib.sources import enabled_sources, load_sources
+
+    _sample(conn, settings)
+    sources = enabled_sources(load_sources(settings.sources_path))
+    source = sources[0]
+    other = next(item for item in sources if item.author != source.author)
+    saved_ids = [source.id, "retired-test-source"]
+    row = conn.execute(
+        "INSERT INTO llm_answers (question, scope, answer, model, status) VALUES (%s,%s,'','','done') RETURNING id",
+        ("范围核对", Jsonb({"source_ids": saved_ids})),
+    ).fetchone()
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        html = client.get(f"/ask/{row['id']}").text
+        assert f"这次提问的范围：{source.name}、retired-test-source（现已停用）" in html
+        assert f'<option value="{source.author}" selected' in html
+        snapshot = unescape(re.search(r'name="saved_sources" value="([^"]+)"', html)[1])
+        assert json.loads(snapshot) == saved_ids
+        response = client.post("/api/v1/ask", json={"question": "虚构资料标记", "saved_sources": snapshot})
+        assert response.status_code == 200
+        assert response.json()["scope"]["source_ids"] == [source.id]
+        search = client.get("/search", params={"q": "虚构资料标记", "source": source.id})
+        assert f'<option value="{other.author}"' not in search.text
+        incompatible = client.get("/search", params={"q": "虚构资料标记", "source": source.id, "author": other.author})
+        assert incompatible.status_code == 200 and "没有找到" in incompatible.text
+        assert client.get("/search", params={"q": "虚构资料标记", "source": "unknown-source"}).status_code == 404

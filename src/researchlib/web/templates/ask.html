@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% from "_ask_model.html" import model_menu %}
-{% block styles %}<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">{% if result and result.status == "running" and result.id %}<noscript><meta http-equiv="refresh" content="8"></noscript>{% endif %}{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ asset('ask-chat.css') }}">
+<noscript><link rel="stylesheet" href="{{ asset('ask-chat-noscript.css') }}"></noscript>
+{% if result and result.status == "running" and result.id %}<noscript><meta http-equiv="refresh" content="8"></noscript>{% endif %}{% endblock %}
 {% macro passage(item, result) %}
 {% if item.withheld %}
 <li id="c-{{ item.n }}" tabindex="-1" class="withheld{% if item.cited %} cited{% endif %}">
@@ -12,7 +15,11 @@
   <p class="item-meta"><span class="source-number">{{ item.n }}</span> <a href="{{ item.url }}">{{ item.title }}</a></p>
   <p class="source-byline">{{ item.author }} · {{ item.date }}{% if item.heading %} · {{ item.heading | truncate(40, true, "…", 0) }}{% endif %}</p>
   <div class="passage-foot">
-    <details class="passage-full"><summary>查看原文</summary><p>{{ item.text | highlight_full(result.terms) }}</p></details>
+    <details class="passage-full"><summary>查看原文</summary>
+      {% if item.before %}<p><strong>上文</strong> {{ item.before | highlight_full(result.terms) }}</p>{% endif %}
+      <p>{% if item.before or item.after %}<strong>命中段</strong> {% endif %}{{ item.text | highlight_full(result.terms) }}</p>
+      {% if item.after %}<p><strong>下文</strong> {{ item.after | highlight_full(result.terms) }}</p>{% endif %}
+    </details>
     {% if result.id %}
     <form class="mark-form" action="/ask/{{ result.id }}/feedback" method="post">
       <input type="hidden" name="label" value="irrelevant"><input type="hidden" name="article" value="{{ item.article_id }}"><input type="hidden" name="chunk" value="{{ item.ord }}"><input type="hidden" name="n" value="{{ item.n }}">
@@ -24,6 +31,17 @@
 {% endif %}
 {% endmacro %}
 {% block body %}
+{% set subject = "" %}
+{% if article or filters.article %}
+  {% set subject = "只用这篇：" ~ (article.title if article else "原文章已不可用") %}
+{% elif tree or filters.tree %}
+  {% set subject = "只用这个目录：" ~ (tree.title if tree else "原目录已不可用") %}
+{% elif company or filters.company %}
+  {% set subject = "提到 " ~ (company.name_zh if company else "原公司") ~ " 的文章" %}
+{% endif %}
+{% set base_scope = [subject, scope_source_label] | select | join("，") or "整个资料库" %}
+{% set interval = ((filters.from or "最早") ~ " 至 " ~ (filters.to or "最近")) if (filters.from or filters.to) else "" %}
+{% set initial_scope = [base_scope, filters.author, interval] | select | join(" · ") %}
 <section id="ask-chat" class="ask-workspace" aria-label="问库">
   <header class="ask-head">
     <div class="ask-heading"><h1>问库</h1><span>每次独立提问</span></div>
@@ -48,7 +66,7 @@
     {% if not result %}
     <div class="ask-welcome"><i class="ask-seal" aria-hidden="true">研</i><h2>想从资料里了解什么？</h2><p>从一个问题开始，沿着引用读回原文。</p></div>
     {% else %}
-    <div class="chat-bubble chat-bubble-user"><p>{{ result.question }}</p></div>
+    <div class="chat-bubble chat-bubble-user"><p class="chat-scope">这次提问的范围：{{ [subject, original_sources, interval] | select | join(" · ") if original_sources is defined else initial_scope }}</p><p>{{ result.question }}</p></div>
     <section class="answer chat-bubble chat-bubble-assistant" aria-label="回答" data-answer-id="{{ result.id or '' }}" data-answer-status="{{ result.status }}">
       <p class="chat-status{% if result.status != 'running' %} sr{% endif %}" role="status">{% if result.status == "running" %}正在整合回答…{% endif %}</p>
       <div class="chat-content">
@@ -90,17 +108,19 @@
     </section>
     {% endif %}
   </div>
-  <form class="ask-form chat-form" action="/ask" method="post">
+  <form class="ask-form chat-form" action="/ask" method="post" data-scope-base="{{ base_scope }}">
     {% if filters.source %}<input type="hidden" name="source" value="{{ filters.source }}">{% endif %}
-    {% if company %}<input type="hidden" name="company" value="{{ company.id }}">{% endif %}
-    <input type="hidden" name="article" value="{{ article.id if article else '' }}">
-    {% if tree %}<input type="hidden" name="tree" value="{{ tree.id }}">{% endif %}
+    {% if filters.saved_sources %}<input type="hidden" name="saved_sources" value="{{ filters.saved_sources }}">{% endif %}
+    {% if filters.company or company %}<input type="hidden" name="company" value="{{ filters.company or company.id }}">{% endif %}
+    <input type="hidden" name="article" value="{{ filters.article or (article.id if article else '') }}">
+    {% if filters.tree or tree %}<input type="hidden" name="tree" value="{{ filters.tree or tree.id }}">{% endif %}
+    <p id="ask-visibility" class="composer-visibility">公开问库：提交后，其他访客可在「最近问过」查看问题和回答。</p>
     <div class="chat-composer">
       <label class="sr" for="ask-q">问题</label>
-      <textarea id="ask-q" name="q" rows="1" maxlength="500" aria-describedby="ask-mode" enterkeyhint="send" placeholder="问问资料库…" required>{% if not result %}{{ question }}{% endif %}</textarea>
+      <textarea id="ask-q" name="q" rows="1" maxlength="500" aria-describedby="ask-mode ask-visibility" enterkeyhint="send" placeholder="问问资料库…" required>{% if not result %}{{ question }}{% endif %}</textarea>
       <div class="chat-composer-bar">
         <details class="ask-filters" data-popover>
-          <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 4.2-8 4.2-8-4.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4 12.2 8 4.2 8-4.2M4 16l8 4.2 8-4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span class="sr">资料范围：</span><span class="ask-scope">{% if article %}只用这篇：{{ article.title }}{% elif tree %}只用这个目录：{{ tree.title }}{% elif company %}提到 {{ company.name_zh }} 的文章{% elif filters.source %}指定来源{% else %}整个资料库{% endif %}{% if filters.author %} · {{ filters.author }}{% endif %}{% if filters.from or filters.to %} · {{ filters.from or '最早' }} 至 {{ filters.to or '最近' }}{% endif %}</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
+          <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 4.2-8 4.2-8-4.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4 12.2 8 4.2 8-4.2M4 16l8 4.2 8-4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span class="sr">资料范围：</span><span class="ask-scope">{{ initial_scope }}</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
           <div class="filter-grid">
             <label>作者 <select name="author"><option value="">全部作者</option>{% for name in authors %}<option value="{{ name }}"{% if filters.author == name %} selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
             <label>从 <input type="date" name="from" value="{{ filters.from }}"></label>

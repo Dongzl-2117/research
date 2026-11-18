@@ -1,5 +1,5 @@
 #!/bin/bash
-# 每月试恢复一次：把最新一份导出恢复到临时库 research_restore_check，核对篇数，然后删掉临时库。
+# 每月试恢复一次：把最新一份导出恢复到本次专用临时库，核对篇数，然后删掉临时库。
 # 只是演练，不碰正式库。恢复不出来、或者篇数对不上，退出码非 0，日志里写原因。
 # 结果写进 data/status/restore-check.json，失败或四十天没成功时 docker compose exec app research-status 会报出来。
 #
@@ -8,7 +8,7 @@ set -Eeuo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 BACKUP_DIR="${BACKUP_DIR:-}"
-CHECK_DB="research_restore_check"
+CHECK_DB="research_restore_check_$$"
 TASK=restore-check
 . "$REPO/scripts/status.sh"
 created=""
@@ -38,9 +38,8 @@ if [ -z "$latest" ]; then
   exit 1
 fi
 
-created=1
-cleanup
 run_step "建临时库" compose exec -T db createdb -U research "$CHECK_DB"
+created=1
 # 和正式库一样的分词设置，恢复时重算的全文索引才和正式库一致。
 for setting in punctuation_ignore seg_with_duality multi_short; do
   run_step "设分词参数" compose exec -T db psql -U research -d "$CHECK_DB" -qc \
@@ -59,10 +58,24 @@ case "$expected" in
     exit 1
     ;;
 esac
-if [ "$restored" -lt "$expected" ]; then
+# 旧导出的篇数在 pg_dump 之前另读，可以少于实际恢复数。v2 由同一个事务快照产生，必须相等。
+case "$(basename "$latest")" in
+  research-*-v2-*.dump) mismatch='-ne' ;;
+  *) mismatch='-lt' ;;
+esac
+if [ "$restored" "$mismatch" "$expected" ]; then
   log "试恢复失败：${latest} 恢复出 ${restored} 篇，导出时有 ${expected} 篇"
   status_fail "$(basename "$latest") 恢复出 ${restored} 篇，导出时有 ${expected} 篇"
   exit 1
 fi
+# 用恢复出来的引用核备份盘上的实际文件。每个内容路径只读一次，逐行传输。
+media_report="$(compose exec -T db psql -v ON_ERROR_STOP=1 -U research -d "$CHECK_DB" -Atc \
+  "SELECT json_build_array(storage_path, content_hash) FROM (SELECT DISTINCT storage_path, content_hash FROM article_images) m" \
+  | python3 "$REPO/scripts/verify_restore_images.py" "$BACKUP_DIR/images")" || {
+  log "试恢复失败：图片备份校验异常，详见错误输出"
+  status_fail "恢复库中引用的图片未通过备份校验"
+  exit 1
+}
+log "$media_report"
 log "试恢复通过：${latest} 恢复出 ${restored} 篇（导出时 ${expected} 篇）"
-status_ok "$(basename "$latest") 恢复出 ${restored} 篇"
+status_ok "$(basename "$latest") 恢复出 ${restored} 篇，${media_report}"

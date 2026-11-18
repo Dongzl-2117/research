@@ -42,7 +42,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from researchlib.chunks import replace_ocr_chunks
-from researchlib.render import img_tag_url, normalize_image_url
+from researchlib.render import image_refs_in, normalize_image_url
 
 MAX_BYTES = 15 * 1024 * 1024
 # 每次收数据的超时。对方隔十几秒给一个字节时每次都不超时，所以另有一张图的总时限和一次运行的总时限。
@@ -59,8 +59,6 @@ USER_AGENT = (
 # 第 n 次失败后隔多少天再试。
 RETRY_DAYS = (1, 3, 7, 30)
 
-_MD_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
-_IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
 # 先在库里粗筛有外链图的文章（Markdown 图片或 <img>），再逐篇精确抽地址。
 PREFILTER = r"(!\[[^]]*\]\((https?:)?//)|(<img[^>]+src=[\"']?(https?:)?//)"
 
@@ -79,16 +77,8 @@ class FetchError(Exception):
 
 def external_urls(body: str) -> list[str]:
     """正文里的外链图片地址，按出现顺序去重。"""
-    found: list[str] = []
-    for match in _MD_IMAGE.finditer(body or ""):
-        url = normalize_image_url(match.group(1))
-        if url and url not in found:
-            found.append(url)
-    for match in _IMG_TAG.finditer(body or ""):
-        url = normalize_image_url(img_tag_url(match.group(0)))
-        if url and url not in found:
-            found.append(url)
-    return found
+    urls = (normalize_image_url(ref) for ref in image_refs_in(body))
+    return list(dict.fromkeys(url for url in urls if url))
 
 
 # 下下来的图宽乘高的上限（C9）：1.7 亿像素的纯色 PNG 不到 10MB，解码成 RGB 要 500MB，识图 8 路同时认能把容器撑爆。

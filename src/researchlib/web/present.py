@@ -358,23 +358,6 @@ def sparkline(series: list[dict]) -> str:
     return "".join(parts)
 
 
-def company_names(company: dict) -> list[str]:
-    """认这家公司用的名字：中文名、英文名和别名，两个字以上才算。"""
-    names = [company.get("name_zh"), company.get("name_en"), *(company.get("aliases") or [])]
-    return [name.strip() for name in names if isinstance(name, str) and len(name.strip()) >= 2]
-
-
-def mentions_company(text: str, names: list[str]) -> bool:
-    lowered = (text or "").lower()
-    return any(name.lower() in lowered for name in names)
-
-
-def company_summary(digest: dict | None, names: list[str]) -> str:
-    """这篇的导读，要谈到这家公司才用。公司只是文中的例子时，导读讲的是别的事，放在这家公司下面会误导。"""
-    summary = str((digest or {}).get("summary") or "").strip()
-    return summary if summary and mentions_company(summary, names) else ""
-
-
 # 断更提示只看最近这几天确实做过定时导入的来源：定时抓取脚本（crawl-*.sh，origin=crawl）。
 # 只手动导归档的来源，或定时任务没装的时候，「很久没有新文章」是常态，提示了也是假警报。
 # 以前从 AIHOT 导入的记作 aihot；AIHOT 下线以后没有新的，不再看。

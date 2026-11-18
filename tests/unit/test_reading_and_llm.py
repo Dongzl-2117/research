@@ -238,6 +238,8 @@ def test_synthesize_keeps_going_when_one_batch_fails(monkeypatch):
     import researchlib.ask as _ask
     monkeypatch.setattr(_ask, "SINGLE_CALL_CHARS", 64000)
     monkeypatch.setattr(_ask, "BATCH_CHARS", 48000)
+    reduced = []
+
     def fake_chat(_settings, messages, **_kwargs):
         system = messages[0]["content"]
         if ask_module.MAP_PROMPT in system:
@@ -245,7 +247,8 @@ def test_synthesize_keeps_going_when_one_batch_fails(monkeypatch):
             number = int(first.split("]", 1)[0].lstrip("["))
             if number == 1:
                 raise LLMError("Grok 接口返回 503：busy")
-            return f"要点 [{number}]", "grok-test"
+            return f"串错批次的结论 [1]。本批的要点 [{number}]。", "grok-test"
+        reduced.append(messages[1]["content"])
         return "汇总 [41]", "grok-test"
 
     monkeypatch.setattr(ask_module, "chat", fake_chat)
@@ -257,6 +260,10 @@ def test_synthesize_keeps_going_when_one_batch_fails(monkeypatch):
     report: dict = {}
     answer, _model = ask_module.synthesize(None, "问题", items, report)
     assert answer == "汇总 [41]" and report["failed_batches"] == [1]
+    assert "第 2 批摘录" in reduced[0] and "第 1 批摘录" not in reduced[0]
+    assert "串错批次" not in reduced[0] and "本批的要点 [62]" in reduced[0]
+    assert report["unread_citations"] == list(range(1, 62))
+    assert "[1] 《第1篇》" not in reduced[0] and "[120] 《第120篇》" in reduced[0]
 
     def always_fail(_settings, messages, **_kwargs):
         raise LLMError("Grok 接口返回 503：busy")
