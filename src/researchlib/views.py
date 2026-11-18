@@ -46,6 +46,7 @@ from researchlib.failures import clear_failure, cooling_sql
 from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
 from researchlib.textutil import drop_nul
+from researchlib.view_freshness import CURRENT_INPUT_SQL, OCR_STALE_SQL
 from researchlib.visibility import is_hidden, visible_sql
 from researchlib.web.present import format_date
 from researchlib.wechat_dialogue import relabel_host
@@ -313,33 +314,29 @@ def delete_blank_views(conn, company_ids: list[int] | None = None, *, not_about:
     return deleted
 
 
-_OCR_STALE = (
-    "(v.ocr_hash IS DISTINCT FROM a.ocr_hash AND (v.ocr_hash <> ''"
-    f" OR (a.ocr_hash <> '' AND (btrim(v.judgment) = '' OR length(a.body_text) < {int(SHORT_BODY_CHARS)}))))"
-)
 # 正文很短、图片里有可用的字：判断多半在截图里。观点要抽，即使提及只是一带而过。
 _OCR_CARRIES = f"(a.ocr_hash <> '' AND length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)})"
 _VIEW_DEPTH = f"(m.depth <> 'passing' OR {_OCR_CARRIES})"
 _STALE = (
     "(v.article_id IS NULL OR v.content_hash <> a.content_hash OR v.prompt_version < %s"
-    f" OR v.head_only OR {_OCR_STALE})"
+    f" OR v.head_only OR {OCR_STALE_SQL})"
 )
 
 
 # 读取派生判断前按当前文章版本核对。旧提示词对同一版本的判断依然可读。
-CURRENT_VIEW_SQL = f"({REAL_VIEW_SQL} AND v.content_hash = a.content_hash AND NOT {_OCR_STALE})"
+CURRENT_VIEW_SQL = f"({REAL_VIEW_SQL} AND {CURRENT_INPUT_SQL})"
 
 
 def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit: int, *, ocr_changed: bool = False):
     """还没整理过（或正文、提示词、图片文字变了，或当时只读了开头）的文章。
 
     深入提及在前。正文很短且图片里有字的，一带而过也算：判断可能在截图里。
-    ocr_changed：只要已经抽过观点、抽的时候的图片文字和现在的不一样的（``_OCR_STALE``）。识图重认以后点名一次补完，
+    ocr_changed：只要已经抽过观点、抽的时候的图片文字和现在的不一样的（``OCR_STALE_SQL``）。识图重认以后点名一次补完，
     不跟着夜间按发布时间排几个月。挑中的文章照常一次问完这篇里该整理的公司（``pending_companies``）。
     """
     if not company_ids or not source_ids:
         return []
-    only = f" AND v.article_id IS NOT NULL AND {_OCR_STALE}" if ocr_changed else ""
+    only = f" AND v.article_id IS NOT NULL AND {OCR_STALE_SQL}" if ocr_changed else ""
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,
@@ -1037,7 +1034,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
             AND v.prompt_version >= %s
             AND v.content_hash = a.content_hash
             AND NOT v.head_only
-            AND NOT {_OCR_STALE}
+            AND NOT {OCR_STALE_SQL}
           )
           AND NOT (
             v.article_id IS NOT NULL AND v.about IS FALSE

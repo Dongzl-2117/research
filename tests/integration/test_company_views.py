@@ -257,7 +257,6 @@ def test_peer_author_survives_more_than_sixty_closer_same_author_articles(conn, 
 
 def test_changed_document_and_corrected_ocr_cannot_surface_as_current_company_views(conn, settings):
     from researchlib.theses import companies_with_views, views_for
-    from researchlib.web.queries import recent_viewed_companies
 
     company = _tencent(conn)["id"]
     sources = {s.id: s for s in load_sources(settings.sources_path) if s.enabled}
@@ -283,7 +282,11 @@ def test_changed_document_and_corrected_ocr_cannot_surface_as_current_company_vi
     assert len(views_mod.list_marks(conn, list(sources))) == len(views_for(conn, company, sources, settings)) == 1
     assert not companies_with_views(conn, list(sources), minimum=2)
     conn.execute("UPDATE articles SET content_hash='newer' WHERE external_id='current'")
-    assert not recent_viewed_companies(conn, list(sources))
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        home = client.get("/").text
+        assert all(judgment not in home for judgment in
+                   ("old-body-judgment", "old-ocr-judgment", "removed-ocr-judgment", "current-judgment"))
 
 
 def test_undated_or_simultaneous_opinions_cannot_establish_a_stance_reversal(conn, settings):

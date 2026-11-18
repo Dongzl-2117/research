@@ -1012,8 +1012,6 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
 
 def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list[dict]:
     """有作者判断的公司，按最近一条观点的发布时间从新到旧。不按持仓过滤。"""
-    from researchlib.views import CURRENT_VIEW_SQL
-
     if not source_ids or limit <= 0:
         return []
     return conn.execute(
@@ -1024,7 +1022,7 @@ def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list
           FROM company_views v
           JOIN articles a ON a.id = v.article_id
           JOIN companies c ON c.id = v.company_id
-          WHERE {CURRENT_VIEW_SQL} AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
+          WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
             AND {site_visible_sql("a")}
             AND {visible_sql("a")}
           ORDER BY c.id, a.published_at DESC NULLS LAST, a.id DESC
