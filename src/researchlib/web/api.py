@@ -356,7 +356,7 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
         ),
         "chunks": [
             {"chunk": c["ord"], "heading": c["heading"], "text": c["body"], "lang": c["lang"] or None}
-            for c in queries.article_chunks(conn, article_id)
+            for c in queries.article_chunks(conn, article_id, current_only=True)
             # 块是入库时按库里的正文切的：还没跑 research-repair-zsxq 的旧帖，「评论（N）」那几块里有读者的评论和昵称。
             # body_markdown 上面滤过了，块也不给（B5）。
             if not guest_comment_chunk(c, guests or [])
