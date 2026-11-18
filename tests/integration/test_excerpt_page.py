@@ -66,3 +66,29 @@ def test_long_article_opens_on_the_section(conn, settings, tmp_path):
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/articles/{short}?chunk={first}").text
         assert "节选 · 第" not in page and 'class="is-quoted"' in page
+
+
+def test_repeated_citation_opens_its_own_chapter(conn, settings, tmp_path):
+    settings, source = _setup(conn, settings, tmp_path)
+    repeated = "这一组公司的历史交易记录见年报附注，投资者应当核对收购时点以及出价。"
+    body = "\n\n".join((
+        _body(90), "## 甲公司研究", "### 收购记录", repeated,
+        "## 乙公司研究", "### 收购记录", repeated,
+        "## 丙公司研究", "### 收购记录", repeated,
+    ))
+    aid = _store(conn, settings, source, "repeated", body)
+    rows = conn.execute(
+        "SELECT ord FROM article_chunks WHERE article_id=%s AND heading='收购记录' ORDER BY ord",
+        (aid,),
+    ).fetchall()
+    assert len(rows) == 3
+    with TestClient(create_app(settings)) as client:
+        for row, parent in zip(rows, ("甲公司研究", "乙公司研究", "丙公司研究"), strict=True):
+            page = client.get(f"/articles/{aid}?chunk={row['ord']}").text
+            breadcrumb = page.split('<p class="excerpt-path">', 1)[1].split("</p>", 1)[0]
+            assert parent in breadcrumb
+            assert 'class="is-quoted"' in page
+            if parent == "乙公司研究":
+                # 第二章的节选还附带第三章的同一段话，高亮仍在第二章。
+                prose = page.split('<div class="prose"', 1)[1].split('</div>', 1)[0]
+                assert prose.index("is-quoted") < prose.index("丙公司研究")
