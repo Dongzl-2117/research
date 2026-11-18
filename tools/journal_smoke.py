@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi.testclient import TestClient
 from markupsafe import Markup
@@ -53,7 +54,9 @@ def run(browser, width):
     page.on("pageerror", lambda exc: errors.append(str(exc)))
     page.clock.install(time=BASE)
     page.set_default_timeout(4500)
-    page.goto(ORIGIN + "/journal")
+    page.goto(ORIGIN + "/companies/13")
+    nav = ".sidebar" if width >= 1024 else ".tabbar"
+    page.locator(nav).get_by_role("link", name="手记").click()
     expect(page.locator("#notes")).to_contain_text("还没有判断")
     expect(page.locator("#watches")).to_contain_text("暂无自选")
     expect(page.locator("#due-list")).to_contain_text("没有到期")
@@ -68,14 +71,24 @@ def run(browser, width):
     page.get_by_role("link", name="写公司手记").click()
     expect(page.locator('#note-form [name="company"]')).to_have_value("样本科技")
     page.goto(ORIGIN + "/articles/9?chunk=3")
-    page.get_by_role("link", name="记入手记").click()
+    excerpt_link = page.get_by_role("link", name="记入手记")
+    expect(excerpt_link).to_have_attribute("href", re.compile("excerpt="))
+    page.locator(".reader .is-quoted").evaluate("""e => {
+        const range = document.createRange();
+        range.setStart(e.firstChild, 0);
+        range.setEnd(e.firstChild, 6);
+        document.getSelection().removeAllRanges();
+        document.getSelection().addRange(range);
+    }""")
+    expect(excerpt_link).to_have_attribute("href", re.compile("excerpt=" + quote("软件订阅收入") + "$"))
+    excerpt_link.click()
     form = page.locator("#note-form")
 
     def field(key):
         return form.locator(f'[name="{key}"]')
 
     expect(field("ref")).to_have_value("/articles/9?chunk=3")
-    expect(field("excerpt")).to_have_value("软件订阅收入的数据。")
+    expect(field("excerpt")).to_have_value("软件订阅收入")
     field("company").fill("样本科技")
     field("hypothesis").fill("续费改善会提高净留存")
     field("falsifier").fill("续费率连续两季下降")
