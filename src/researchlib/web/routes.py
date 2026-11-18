@@ -1359,8 +1359,14 @@ def _search_scope_links(base: dict, source: str) -> dict:
     return {
         "clear_scope_query": _query_string(**{k: v for k, v in params.items() if k not in {"from", "to", "author"}}),
         "clear_company_query": _query_string(**{k: v for k, v in params.items() if k != "company"}),
-        "ask_query": _query_string(**{k: v for k, v in params.items() if k != "view"}),
+        "ask_query": _query_string(**{k: v for k, v in params.items() if k not in {"view", "sort"}}),
     }
+
+
+def _search_page_redirect(request, page: int):
+    """书签里的页码超出现在的结果时，重新取最后一页的内容。"""
+    query = request.url.include_query_params(page=page).query
+    return RedirectResponse(f"/search?{query}", status_code=303)
 
 
 @router.get("/search")
@@ -1455,7 +1461,9 @@ def search_page(request: Request):
     # 检索按相关度先取 2000 个段落再排，常见词全部命中的文章比这多，翻页翻不到的要说出来。
     semantic_total = found.semantic if found else 0
     listed = available - (found.partial if found else 0) - semantic_total
-    page, pages, _offset = page_window(available, page, SEARCH_PAGE_SIZE)
+    current_page, pages, _offset = page_window(available, page, SEARCH_PAGE_SIZE)
+    if current_page != page:
+        return _search_page_redirect(request, current_page)
     source_counts = []
     facet_ids = set(facet_scope.source_ids)
     for source in sources:
@@ -1472,6 +1480,7 @@ def search_page(request: Request):
         "to": info["to"],
         "article": request.query_params.get("article") or "",
         "view": "article",
+        "sort": "score" if scope.article_id and not by_position else "",
     }
     first_partial = next((index for index, item in enumerate(results) if item.get("partial")), None)
     return render_page(
@@ -1506,6 +1515,7 @@ def search_page(request: Request):
             "page_query": _query_string(**base, source=info["source"]),
             "view": "article",
             "form_view": view,
+            "form_sort": base["sort"],
             "view_query": _query_string(**{**base, "view": ""}, source=info["source"]),
             # 范围浮层里的「清除」：去掉作者和时间，留下搜索词、来源和公司。
             **_search_scope_links(base, info["source"]),
@@ -1541,6 +1551,12 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
          for f in fragments],
         by_id, settings.display_timezone,
     )
+    article_scope = scope.article_id
+    base = {
+        "q": query, "author": info["author"], "company": info["company"] or "",
+        "from": info["from"], "to": info["to"], "article": str(article_scope) if article_scope else "",
+        "sort": "score" if article_scope and not by_position else "",
+    }
     results = []
     for fragment in fragments:
         source = by_id[fragment.source_id]
@@ -1564,11 +1580,15 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
             "blocks": len(fragment.blocks),
             "semantic": fragment.semantic_hit and not has_term,
             "more": fragment.more,
-            "more_url": "/search?" + _query_string(q=query, article=str(fragment.article_id)),
+            "more_url": "/search?" + _query_string(
+                **{**base, "article": fragment.article_id}, source=info["source"]
+            ),
         })
         results.append(card)
     total_all = sum(count_map.values())
-    page, pages, _offset = page_window(found.total, page, SEARCH_PAGE_SIZE)
+    current_page, pages, _offset = page_window(found.total, page, SEARCH_PAGE_SIZE)
+    if current_page != page:
+        return _search_page_redirect(request, current_page)
     facet_ids = set(facet_scope.source_ids)
     source_counts = [
         {"id": source.id, "name": source.name, "count": count_map.get(source.id, 0)}
@@ -1576,11 +1596,6 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
     ]
     _order, grouped = _author_groups(sources)
     entity_authors = [name for name in grouped if name == query or (len(query) >= 2 and query in name)]
-    article_scope = scope.article_id
-    base = {
-        "q": query, "author": info["author"], "company": info["company"] or "",
-        "from": info["from"], "to": info["to"], "article": str(article_scope) if article_scope else "",
-    }
     scoped_title = ""
     if article_scope is not None:
         row = queries.get_article(conn, article_scope, [source.id for source in sources])
@@ -1615,9 +1630,10 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
             "page": page,
             "pages": pages,
             "base_query": _query_string(**base),
-            "page_query": _query_string(**base, source=info["source"], sort="" if by_position else "score"),
+            "page_query": _query_string(**base, source=info["source"]),
+            "form_sort": base["sort"],
             "view_query": _query_string(**base, source=info["source"], view="article"),
-            "sort_query": _query_string(**base, source=info["source"], sort="score" if by_position else ""),
+            "sort_query": _query_string(**{**base, "sort": "score" if by_position else ""}, source=info["source"]),
             **_search_scope_links(base, info["source"]),
             "sample_banner": banner,
         },

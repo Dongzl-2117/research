@@ -249,15 +249,18 @@
           if (img && event.target === img) { event.preventDefault(); openZoom(img); }
         });
       }
-      document.querySelectorAll(".day-toggle").forEach(function (button) {
-        button.addEventListener("click", function () {
-          var section = button.closest(".day");
-          var list = section.querySelector(".slots");
-          var open = button.getAttribute("aria-expanded") !== "false";
-          button.setAttribute("aria-expanded", open ? "false" : "true");
-          list.hidden = open;
-          var label = section.getAttribute("data-label") || "";
-          button.setAttribute("aria-label", (open ? "展开" : "收起") + label);
+      document.querySelectorAll(".day").forEach(function (section) {
+        var list = section.querySelector(".slots");
+        var buttons = section.querySelectorAll(".day-toggle");
+        buttons.forEach(function (button) {
+          button.hidden = false;
+          button.addEventListener("click", function () {
+            list.hidden = !list.hidden;
+            buttons.forEach(function (control) {
+              control.setAttribute("aria-expanded", String(!list.hidden));
+              control.setAttribute("aria-label", (list.hidden ? "展开" : "收起") + section.dataset.label);
+            });
+          });
         });
       });
     })();

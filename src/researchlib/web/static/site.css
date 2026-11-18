@@ -525,6 +525,22 @@ main {
   font-size: 14px;
   font-weight: 600;
 }
+.day-toggle {
+  display: grid;
+  place-items: center;
+  justify-self: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-4);
+}
+.day-toggle:hover { background: var(--bg-sunk); color: var(--ink); }
+.day-toggle .chevron { width: 14px; height: 14px; transition: transform .2s var(--ease); }
+.day-toggle[aria-expanded="false"] .chevron { transform: rotate(-90deg); }
+.daybar-mobile .day-toggle { margin-left: auto; width: 44px; height: 36px; }
 .daybar-desktop { display: none; }
 .slots { margin: 0; padding: 0; list-style: none; }
 .slot {
@@ -983,21 +999,7 @@ tbody tr:hover td { background: var(--accent-softer); }
     line-height: 24px;
     white-space: nowrap;
   }
-  .day-toggle {
-    display: grid;
-    place-items: center;
-    justify-self: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border: 0;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--ink-4);
-  }
-  .day-toggle:hover { background: var(--bg-sunk); color: var(--ink); }
   .chevron { width: 14px; height: 14px; transition: transform .2s var(--ease); }
-  .day-toggle[aria-expanded="false"] .chevron { transform: rotate(-90deg); }
   .daybar-desktop p { margin: 0; color: var(--ink-4); font-size: 13px; }
   .slots { padding-top: 4px; }
   .slot {

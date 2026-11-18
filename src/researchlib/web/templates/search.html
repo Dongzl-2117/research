@@ -6,6 +6,7 @@
   {% if active_source %}<input type="hidden" name="source" value="{{ active_source }}">{% endif %}
   {% if filters.company %}<input type="hidden" name="company" value="{{ filters.company }}">{% endif %}
   {% if article_scope %}<input type="hidden" name="article" value="{{ article_scope }}">{% endif %}
+  {% if form_sort %}<input type="hidden" name="sort" value="{{ form_sort }}">{% endif %}
   {% if form_view == "article" %}<input type="hidden" name="view" value="article">{% endif %}
   <div class="search-box">
     <div class="field">
