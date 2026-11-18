@@ -711,7 +711,13 @@
   function updateScope() {
     if (scopeSummary) scopeSummary.textContent = scopeText();
     const note = panel.querySelector('[data-cutoff-note]');
-    if (note) note.hidden = !new FormData(form).get('to');
+    if (note) {
+      const through = new FormData(form).get('to');
+      note.hidden = !through;
+      const article = scopeSelect.value;
+      const link = note.querySelector('a');
+      if (through && link && /^\d+$/.test(article)) link.href = `/articles/${article}/history?through=${through}`;
+    }
   }
   form.addEventListener('change', updateScope);
 
