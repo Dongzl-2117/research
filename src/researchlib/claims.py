@@ -62,7 +62,7 @@ def quote_ok(quote: str) -> bool:
 
 # 原话只允许排版差异。用于粗匹配的 plain_cite 会抹掉负号、小数点、币种和单位。
 _WIDTH = str.maketrans({**{c: c - 0xFEE0 for c in range(0xFF01, 0xFF5F)}, ord("−"): "-"})
-_NUM_PREFIX = "0123456789.,+-−$€£¥￥<>≤≥"
+_NUM_PREFIX = "0123456789+-−$€£¥￥<>≤≥"
 _NUM_SUFFIX = "0123456789%‰万亿千百倍元"
 
 
@@ -82,6 +82,19 @@ def _quote_key(text: str) -> tuple[str, list[int]]:
     return "".join(chars), offsets
 
 
+def _cuts_number_start(source: str, text: str, offsets: list[int], start: int) -> bool:
+    if not start or not text[start].isdigit():
+        return False
+    previous = text[start - 1]
+    if previous not in ".,":
+        return previous in _NUM_PREFIX
+    if start > 1 and text[start - 2].isdigit():
+        return True  # 1,234 和 1.234 都不能从 234 起引。
+    # 句号后的空格、换行在比对串里已被略去；原文紧挨数字的 .5 仍是小数。
+    gap = source[offsets[start - 1] + 1 : offsets[start]]
+    return previous == "." and not any(char.isspace() for char in gap)
+
+
 def source_quote(source: str, quote: str) -> str:
     """在原文定位，返回源字符区间。拒绝截掉数值的符号、精度或单位。"""
     if not source or not quote_ok(quote):
@@ -95,7 +108,7 @@ def source_quote(source: str, quote: str) -> str:
     start = text.find(key)
     while start >= 0:
         end = start + len(key)
-        bad_start = key[0].isdigit() and start > 0 and text[start - 1] in _NUM_PREFIX
+        bad_start = _cuts_number_start(source, text, offsets, start)
         bad_end = key[-1].isdigit() and end < len(text) and (
             text[end] in _NUM_SUFFIX or (text[end].isascii() and text[end].isalpha())
             or (text[end] in ".," and text[end + 1 : end + 2].isdigit())
