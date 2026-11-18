@@ -99,28 +99,32 @@ def _line(view: dict) -> str:
     quote = str(view.get("quote") or "").strip()
     if quote:
         text += f"（原句：{quote[:80]}）"
-    return text[:LINE_LIMIT]
+    more = [str(angle.get("judgment") or "")[:100] for angle in view.get("angles") or [] if angle.get("judgment")]
+    return text[:LINE_LIMIT] + ("（其他判断：" + "；".join(more) + "）" if more else "")
 
 
 def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司下了判断的观点，新的在前，带作者。判断或态度为空白的不算。"""
-    from researchlib.views import REAL_VIEW_SQL
+    from researchlib.views import REAL_VIEW_SQL, verify_stored_quotes
     from researchlib.visibility import visible_sql
 
     # 和公司页的时间线（views.timeline）一个口径：网友帖、评论壳、标了 hidden 的短帖都不进论点的输入和哈希，
     # 不然输入里有、展示时引用被滤掉，论点的引用变少甚至整条丢掉（审核 V11）。
     rows = conn.execute(
         f"""
-        SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.quote, v.content_hash,
+        SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers,
+               v.angles, v.quote, v.content_hash, v.chunk_ord, c.body AS chunk_body,
                a.published_at, a.source_id
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
+        LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s)
           AND a.duplicate_of IS NULL AND {site_visible_sql("a")} AND {visible_sql("a")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (company_id, list(sources_by_id)),
     ).fetchall()
+    verify_stored_quotes(conn, rows)
     found = []
     for row in rows:
         source = sources_by_id.get(row["source_id"])
@@ -154,6 +158,8 @@ def views_hash(used: list[dict]) -> str:
         digest.update(
             f"{view['article_id']}:{view['content_hash']}:{view['judgment']}:{view.get('stance') or ''}\n".encode()
         )
+        if view.get("angles"):
+            digest.update(json.dumps(view["angles"], sort_keys=True, ensure_ascii=False).encode())
     return digest.hexdigest()
 
 
@@ -372,21 +378,22 @@ def _model_sides(item: dict) -> dict[int, str]:
     return found
 
 
-def _evidence(raw, thesis_text: str, by_id: dict[int, dict], cited: list[int]) -> list[str]:
-    lines: list[str] = []
-    for item in raw if isinstance(raw, list) else []:
-        text = str(item).strip()
-        if not text:
-            continue
-        if match_score(thesis_text, text) >= 2 or any(
-            match_score(text, str(by_id[ref].get("judgment") or "")) >= 2 for ref in cited if ref in by_id
-        ):
-            lines.append(text[:180])
-    if not lines:
-        for ref in cited:
-            quote = str(by_id.get(ref, {}).get("quote") or "").strip()
-            if quote_ok(quote):
-                lines.append(quote[:180])
+def _matching_angle(view: dict, thesis_text: str, company: str) -> dict | None:
+    valid = [
+        item for item in (view, *(view.get("angles") or []))
+        if quote_ok(item.get("quote") or "") and not looks_like_list(item.get("judgment") or "", company)
+    ]
+    return max(valid, key=lambda item: match_score(thesis_text, item.get("judgment") or "", company), default=None)
+
+
+def _evidence(thesis_text: str, by_id: dict[int, dict], cited: list[int], company: str) -> list[str]:
+    """原话只从已核对过的作者引文取，模型提供的 evidence 不用作原话。"""
+    lines = []
+    for ref in cited:
+        angle = _matching_angle(by_id[ref], thesis_text, company) or {}
+        quote = str(angle.get("quote") or "").strip()
+        if quote_ok(quote) and match_score(thesis_text, quote) >= 2:
+            lines.append(f"v{ref}：{quote}")
     return lines[:6]
 
 
@@ -421,10 +428,11 @@ def validate_theses(raw: list, views: list[dict], company: str = "") -> list[dic
         hinted = _model_sides(item)
         for ref in _cited_ids(item):
             view = by_id.get(ref)
-            if view is None or not quote_ok(str(view.get("quote") or "")):
+            view = _matching_angle(view, thesis_text, company) if view else None
+            if view is None:
                 continue
             view_text = str(view.get("judgment") or "")
-            if looks_like_list(view_text, company):
+            if not view_text:
                 continue
             relation = claim_side(thesis_text, view_text)
             # 明确唱反调时，共用「提价」这类词就够，不必再把公司名写一遍。
@@ -456,7 +464,6 @@ def validate_theses(raw: list, views: list[dict], company: str = "") -> list[dic
             **buckets,
             "_scores": scores,
         }
-        entry["evidence"] = _evidence(item.get("evidence"), thesis_text, by_id, _cited_ids(item))
         if _worth(entry) and not _thin(entry, by_id):
             prepared.append(entry)
     prepared = _merge_overlapping(prepared)
@@ -476,7 +483,7 @@ def validate_theses(raw: list, views: list[dict], company: str = "") -> list[dic
                 "title": item["title"],
                 "judgment": item["judgment"],
                 "mechanism": item["mechanism"],
-                "evidence": _evidence(item.get("evidence"), f"{item['title']} {item['judgment']}", by_id, cited),
+                "evidence": _evidence(f"{item['title']} {item['judgment']} {item['mechanism']}", by_id, cited, company),
                 "changes": item.get("changes") or "",
                 "disagreement": item.get("disagreement") or "",
                 "for": item["for"],

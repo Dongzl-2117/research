@@ -328,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         f"待处理 {len(jobs)} 篇，写入 {report['done']} 篇，失败 {report['failed']} 篇"
         + llm_batch.tail(report, "写")
     )
-    return llm_batch.exit_code(report, "写")
+    return llm_batch.exit_code(report, "写", fail_empty=args.fail_empty)
 
 
 if __name__ == "__main__":

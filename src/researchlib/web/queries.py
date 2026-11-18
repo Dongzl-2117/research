@@ -652,55 +652,61 @@ def neighbor_days(conn, scope: Scope, day: date) -> tuple[date | None, date | No
     return previous["d"], following["d"]
 
 
-def day_answer(conn, day: date, source_ids: list[str], company_id: int | None, ignore: tuple[str, ...] = ()):
-    """已经问过的、正好覆盖这一天和同一范围的回答。没有就不现算。
+def day_answer(
+    conn, day: date, source_ids: list[str], company_id: int | None, ignore: tuple[str, ...] = (), *, question: str
+):
+    """取同一天、同一范围最新的正式日报。老回答没有预设名时按日报的完整问题辨认。
 
     ignore 是不进按天的来源（飞书文库）。问库页不分来源问的，范围里有它们，按天页的范围里没有，
     比来源时不算这一处差别。只问一篇、一个目录的不算这一天的总结。
     """
-    rows = conn.execute(
+    return conn.execute(
         """
         SELECT id, question, answer, citations, model, scope, created_at
         FROM llm_answers
-        WHERE scope->>'date_from' = %s AND scope->>'date_to' = %s AND status = 'done'
+        WHERE status = 'done'
+          AND scope->>'date_from' = %(day)s AND scope->>'date_to' = %(day)s
+          AND (scope->>'preset_key' = 'day' OR (scope->>'preset_key' IS NULL AND question = %(question)s))
+          AND scope->>'chat' IS DISTINCT FROM 'true'
+          AND scope->>'article_id' IS NULL AND scope->>'tree_id' IS NULL
+          AND scope->>'company_id' IS NOT DISTINCT FROM %(company)s::text
+          AND scope->'source_ids' @> %(required)s::jsonb
+          AND scope->'source_ids' <@ %(allowed)s::jsonb
         ORDER BY created_at DESC, id DESC
-        LIMIT 30
+        LIMIT 1
         """,
-        (day.isoformat(), day.isoformat()),
-    ).fetchall()
-    wanted = set(source_ids)
-    for row in rows:
-        scope = row["scope"] or {}
-        if scope.get("article_id") or scope.get("tree_id"):
-            continue
-        saved_company = scope.get("company_id")
-        if company_id is None and saved_company:
-            continue
-        if company_id is not None and saved_company != company_id:
-            continue
-        if set(scope.get("source_ids") or []) - set(ignore) != wanted:
-            continue
-        return row
-    return None
+        {
+            "day": day.isoformat(),
+            "question": question,
+            "company": company_id,
+            "required": json.dumps(source_ids),
+            "allowed": json.dumps([*source_ids, *ignore]),
+        },
+    ).fetchone()
 
 
-def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 500):
-    if not source_ids:
-        return []
-    return conn.execute(
+def day_article_page(conn, source_ids: list[str], day: date, limit: int, offset: int) -> tuple[list, int]:
+    """同一次数据库快照取可见文章总数和这一页。越过末页也返回完整计数。"""
+    where, params = scope_clause(Scope(source_ids=source_ids))
+    rows = conn.execute(
         f"""
-        SELECT id, source_id, title, published_at, left(body_text, 2000) AS body_text
-        FROM articles
-        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
-          AND published_at IS NOT NULL
-          AND (published_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN %s AND %s
-          AND {site_visible_sql("")}
-          AND {visible_sql()}
-        ORDER BY published_at DESC, id DESC
-        LIMIT %s
+        WITH visible AS MATERIALIZED (
+            SELECT a.id, a.published_at FROM articles a WHERE {where}
+              AND a.published_at >= (%(day)s::date::timestamp AT TIME ZONE 'Asia/Shanghai')
+              AND a.published_at < ((%(day)s::date + 1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+        ), page AS (
+            SELECT id FROM visible ORDER BY published_at DESC, id DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+        )
+        SELECT totals.total, a.id, a.source_id, a.title, a.published_at, left(a.body_text, 2000) AS body_text
+        FROM (SELECT count(*) AS total FROM visible) totals
+        LEFT JOIN page ON true
+        LEFT JOIN articles a ON a.id = page.id
+        ORDER BY a.published_at DESC, a.id DESC
         """,
-        (source_ids, date_from, date_to, limit),
+        {**params, "day": day, "limit": limit, "offset": offset},
     ).fetchall()
+    return [row for row in rows if row["id"] is not None], rows[0]["total"]
 
 
 def company_author_counts(conn, company_id: int, source_ids: list[str]):
@@ -729,7 +735,8 @@ def expire_stale_answers(conn) -> int:
     raw = os.environ.get("ASK_RUNNING_TIMEOUT_S", "").strip()
     cap = int(raw) if raw.isdigit() and int(raw) > 0 else 600
     rows = conn.execute(
-        "UPDATE llm_answers SET status = 'error', error = %s, updated_at = now()"
+        "UPDATE llm_answers SET status = 'error', error = %s, answer = '',"
+        " stats = coalesce(stats, '{}'::jsonb) - 'progress', updated_at = now()"
         " WHERE status = 'running' AND updated_at < now() - make_interval(secs => %s)"
         " AND NOT (id = ANY(%s)) RETURNING id",
         (f"整合超过 {cap // 60} 分钟没完成，已停止等待。可以重新整合。", cap, active_ids()),
@@ -1011,59 +1018,37 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
 
 
 def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list[dict]:
-    """有作者判断的公司，按最近一条观点的发布时间从新到旧。不按持仓过滤。"""
+    """先筛当前有效判断，再按公司选最近一条并限量；带上对应原文和近 30 天提及数。"""
+    from researchlib.view_freshness import CURRENT_INPUT_SQL
+    from researchlib.views import REAL_VIEW_SQL
+
     if not source_ids or limit <= 0:
         return []
     return conn.execute(
         f"""
-        SELECT id, name_zh, name_en, aliases, published_at
-        FROM (
-          SELECT DISTINCT ON (c.id) c.id, c.name_zh, c.name_en, c.aliases, a.published_at
-          FROM company_views v
-          JOIN articles a ON a.id = v.article_id
-          JOIN companies c ON c.id = v.company_id
-          WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
-            AND {site_visible_sql("a")}
-            AND {visible_sql("a")}
-          ORDER BY c.id, a.published_at DESC NULLS LAST, a.id DESC
-        ) recent
-        ORDER BY published_at DESC NULLS LAST, id DESC
-        LIMIT %s
+        WITH newest AS (
+          SELECT DISTINCT ON (v.company_id) v.company_id, v.article_id, a.published_at, a.source_id
+          FROM company_views v JOIN articles a ON a.id = v.article_id
+          WHERE {REAL_VIEW_SQL} AND {CURRENT_INPUT_SQL} AND a.source_id = ANY(%(sources)s)
+            AND a.duplicate_of IS NULL AND {site_visible_sql('a')} AND {visible_sql('a')}
+          ORDER BY v.company_id, a.published_at DESC NULLS LAST, v.article_id DESC
+        ), chosen AS (
+          SELECT * FROM newest ORDER BY published_at DESC NULLS LAST, company_id DESC LIMIT %(limit)s
+        )
+        SELECT n.*, n.company_id AS id, c.name_zh, c.name_en, c.aliases,
+               v.stance, v.judgment, v.quote, v.chunk_ord, b.body AS chunk_body,
+               (SELECT count(*) FROM article_mentions m JOIN articles a ON a.id = m.article_id
+                WHERE m.company_id = n.company_id AND m.depth <> 'passing'
+                  AND a.published_at BETWEEN now() - interval '30 days' AND now()
+                  AND a.source_id = ANY(%(sources)s) AND a.duplicate_of IS NULL
+                  AND {site_visible_sql('a')} AND {visible_sql('a')}) AS recent
+        FROM chosen n JOIN companies c ON c.id = n.company_id
+        JOIN company_views v ON v.company_id = n.company_id AND v.article_id = n.article_id
+        LEFT JOIN article_chunks b ON b.article_id = v.article_id AND b.ord = v.chunk_ord AND b.lang IN ('', 'ocr')
+        ORDER BY n.published_at DESC NULLS LAST, n.company_id DESC
         """,
-        (source_ids, limit),
+        {"sources": source_ids, "limit": limit},
     ).fetchall()
-
-
-def holdings_recent(conn, company_ids: list[int], source_ids: list[str], days: int = 30) -> dict[int, dict]:
-    """每家最近一篇深入谈到它的文章，和近 days 天里深入谈到它的篇数。"""
-    if not company_ids or not source_ids:
-        return {}
-    found: dict[int, dict] = {company_id: {"latest": None, "recent": 0} for company_id in company_ids}
-    for row in conn.execute(
-        f"""
-        SELECT DISTINCT ON (m.company_id) m.company_id, a.id, a.title, a.published_at, a.source_id, m.depth
-        FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
-        WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
-          AND m.depth <> 'passing' AND a.published_at IS NOT NULL
-        ORDER BY m.company_id, a.published_at DESC, a.id DESC
-        """,
-        (company_ids, source_ids),
-    ).fetchall():
-        found[row["company_id"]]["latest"] = row
-    for row in conn.execute(
-        f"""
-        SELECT m.company_id, count(*)::int AS n
-        FROM article_mentions m
-        JOIN articles a ON a.id = m.article_id AND {visible_sql("a")} AND {site_visible_sql("a")}
-        WHERE m.company_id = ANY(%s) AND a.source_id = ANY(%s)
-          AND m.depth <> 'passing' AND a.published_at >= now() - make_interval(days => %s)
-        GROUP BY m.company_id
-        """,
-        (company_ids, source_ids, days),
-    ).fetchall():
-        found[row["company_id"]]["recent"] = row["n"]
-    return found
 
 
 def companies_by_name(conn, names: list[str]) -> dict[str, dict]:

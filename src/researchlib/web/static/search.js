@@ -1,9 +1,8 @@
 // 从检索结果点进文章以后回得来（Zhilin 11-16：点进去就回不到全部结果）。
-// 点结果里的文章链接时，记下这页检索的地址、滚到哪、哪几条片段展开着（sessionStorage，只在这个标签页里）；
-// 文章页据此在顶上放「返回检索结果」（article.js），点它或浏览器后退回到这里时，把展开的片段和滚动位置还原。
+// 记下这页检索滚到哪、哪些片段展开着（sessionStorage，只在这个标签页里）；
+// 点文章的「返回检索结果」或浏览器后退回到这里时，把展开的片段和滚动位置还原。
 // 存不了（隐私模式、禁用存储）就什么都不做，浏览器后退照旧能用。
 (function () {
-  var RETURN = 'research-search-return';
   var RETURNING = 'research-search-returning';
   var here = location.pathname + location.search;
   var stateKey = 'research-search-state:' + here;
@@ -21,20 +20,18 @@
   function expandable() {
     return Array.prototype.slice.call(document.querySelectorAll('details.fragment-more'));
   }
+  function passageHref(item) {
+    return item.closest('.fragment')?.querySelector('.item-title a')?.getAttribute('href');
+  }
   function snapshot() {
-    var open = [];
-    expandable().forEach(function (item, index) { if (item.open) open.push(index); });
+    var open = expandable().filter(function (item) { return item.open; }).map(passageHref).filter(Boolean);
     save(stateKey, {y: window.scrollY, open: open, at: Date.now()});
   }
 
   document.addEventListener('click', function (event) {
     var link = event.target.closest ? event.target.closest('a[href^="/articles/"]') : null;
     if (!link) return;
-    var match = link.getAttribute('href').match(/^\/articles\/(\d+)/);
-    if (!match) return;
-    var box = document.querySelector('.search-bar input[name="q"]');
     snapshot();
-    save(RETURN, {url: here, article: match[1], query: box ? box.value : '', at: Date.now()});
   });
   window.addEventListener('pagehide', snapshot);
 
@@ -48,8 +45,9 @@
     if (!back && !returning) return;
     var saved = read(stateKey);
     if (!saved || Date.now() - saved.at > MAX_AGE) return;
-    var items = expandable();
-    (saved.open || []).forEach(function (index) { if (items[index]) items[index].open = true; });
+    // 新资料可能改变排序，按原文及片段锚点恢复，不能拿旧位置去展开另一条。
+    var open = new Set(saved.open || []);
+    expandable().forEach(function (item) { item.open = open.has(passageHref(item)); });
     if (saved.y) window.scrollTo(0, saved.y);
   });
 }());

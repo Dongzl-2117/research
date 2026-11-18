@@ -794,16 +794,25 @@ def append_ocr(body: str, ocr_text: str) -> str:
 
 def article_image_texts(conn, article_id: int) -> list[ImageText]:
     """这篇已识别的图，按在正文里的先后。"""
+    from researchlib.render import image_destination, image_refs_in, normalize_image_url
+
     rows = conn.execute(
         """
-        SELECT i.content_hash, t.text, t.units
-        FROM article_images i
-        JOIN image_texts t ON t.content_hash = i.content_hash
-        WHERE i.article_id = %s
-        ORDER BY i.id
+        SELECT i.original_ref, i.content_hash, t.text, t.units
+        FROM article_images i JOIN image_texts t ON t.content_hash = i.content_hash
+        WHERE i.article_id = %s ORDER BY i.id
         """,
         (article_id,),
     ).fetchall()
+    if len(rows) > 1:
+        article = conn.execute("SELECT body_md FROM articles WHERE id = %s", (article_id,)).fetchone()
+        if article is None:
+            return []
+        positions = {}
+        for index, ref in enumerate(image_refs_in(article["body_md"])):
+            positions.setdefault(normalize_image_url(ref) or image_destination(ref), index)
+        # 旧包有些图只挂在附件里。保留这些图，在正文里的图之后按既有顺序排列。
+        rows = sorted(rows, key=lambda row: positions.get(row["original_ref"], float("inf")))
     return [ImageText(row["content_hash"], row["text"] or "", row["units"]) for row in rows]
 
 
@@ -818,9 +827,10 @@ def article_owners(conn, article_id: int) -> tuple[str, ...]:
     return tuple(name for name in (row["author"], *(row["poster_names"] or ())) if name)
 
 
-def refresh_article_ocr(conn, article_id: int) -> str:
+def refresh_article_ocr(conn, article_id: int, *, images: list[ImageText] | None = None) -> str:
     """按这篇已识别的图重写 articles.ocr_text / ocr_hash。返回哈希。"""
-    images = article_image_texts(conn, article_id)
+    if images is None:
+        images = article_image_texts(conn, article_id)
     owners = article_owners(conn, article_id) if any(image.units is not None for image in images) else ()
     text = compose_ocr_text(images, owners)
     digest = hash_ocr(text)
@@ -852,8 +862,9 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
     这篇还挂着 image_texts 时，先按现在的排版从识别结果重写 articles.ocr_text，重写出来的就是定稿。
     没有图的照库里的原样交。
     """
-    if article_image_texts(conn, article_id):
-        refresh_article_ocr(conn, article_id)
+    images = article_image_texts(conn, article_id)
+    if images:
+        refresh_article_ocr(conn, article_id, images=images)
     row = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
         (article_id,),
@@ -1022,6 +1033,7 @@ def run_ocr(
     engine = engine or vision_engine_id()
     report = {
         "images": 0,
+        "recognized": 0,
         "with_text": 0,
         "failed": 0,
         "invalid": 0,
@@ -1083,6 +1095,8 @@ def run_ocr(
             report["with_text"] += 1
         _touch_articles(conn, row["content_hash"], text, touched, report)
         conn.commit()
+        if not used.endswith((":error", ":invalid", ":skipped")):
+            report["recognized"] += 1  # 正常识别的无字图片也算成功。
 
     def _store(row, used: str, text: str, result, failures: int = 0, failed: bool = False) -> None:
         # failures、failed_at 只给 :error 的行用（_error_outcome），别的结果清零。
@@ -1316,6 +1330,7 @@ def rejoin_stored(conn, *, dry_run: bool = False) -> dict:
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了，2 识图起不来（Grok 没登录，或 DeepSeek 没配 key）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
+    parser.add_argument("--fail-empty", action="store_true", help="有缺图或识别失败且这一批没有成功时返回 4")
     parser.add_argument("--limit", type=int, default=500, help="这次最多识别多少张图")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
     parser.add_argument(
@@ -1481,6 +1496,22 @@ def main(argv: list[str] | None = None) -> int:
             f"自动上线在等 {report['deploy_waiting'][:7]}：先停在这里，"
             "/health 报出新提交后再跑一次，从没认完的接着认"
         )
+    return night_exit_code(report) if args.fail_empty else 0
+
+
+def night_exit_code(report: dict) -> int:
+    print(
+        f"夜间统计 成功识别 {report['recognized']} 张，失败 {report['failed']} 张，"
+        f"无法解析 {report['invalid']} 张，文件缺失 {report['missing']} 张",
+        file=sys.stderr,
+    )
+    failures = report["failed"] + report["invalid"] + report["missing"]
+    if failures and not report["recognized"]:
+        print(
+            f"成功识别 0 张，失败 {report['failed']} 张，无法解析 {report['invalid']} 张，缺图 {report['missing']} 张",
+            file=sys.stderr,
+        )
+        return 4
     return 0
 
 

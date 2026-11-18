@@ -54,19 +54,47 @@
   window.addEventListener('hashchange', openBilingualReference);
 }());
 
-// 从检索结果点进来的：顶上加「返回检索结果」，回到原来那页结果（search.js 记的地址，同一个标签页、同一篇里有效，
-// 在这篇里翻节、看全文都还在）。长文里翻几节以后浏览器后退只是退回上一节，以前回不到结果页。
+// 回链属于这一次阅读。由检索页进来时取它的实际地址，翻节或切换语言时再传给同一篇的下一页。
 (function () {
-  var saved;
-  try { saved = JSON.parse(sessionStorage.getItem('research-search-return') || 'null'); } catch (_) { return; }
-  var match = location.pathname.match(/^\/articles\/(\d+)/);
-  if (!saved || !match || saved.article !== match[1] || typeof saved.url !== 'string') return;
-  if (saved.url.indexOf('/search?') !== 0) return;
-  var top = document.querySelector('.reader-top');
-  if (!top) return;
+  const readerPath = /^\/articles\/(\d+)(?:\/(?:zh|original))?$/;
+  const article = location.pathname.match(readerPath);
+  const top = document.querySelector('.reader-top');
+  if (!article || !top) return;
+
+  const previous = document.referrer ? new URL(document.referrer) : null;
+  const key = 'research-search-reader';
+  const here = location.pathname + location.search;
+  let recent;
+  try { recent = JSON.parse(sessionStorage.getItem(key)); } catch (_) { /* 浏览器允许不存储 */ }
+  let url = history.state && history.state.researchSearchUrl;
+  if (!url && previous && previous.origin === location.origin) {
+    const from = previous.pathname + previous.search;
+    if (previous.pathname === '/search' && previous.search) url = from;
+    else if (recent && recent.from === from && previous.pathname.match(readerPath)?.[1] === article[1]) url = recent.url;
+  }
+  const navigation = performance.getEntriesByType?.('navigation')[0];
+  if (!url && navigation?.type === 'reload' && recent && recent.from === here) url = recent.url;
+
+  if (typeof url !== 'string' || !url.startsWith('/search?')) url = null;
+  function markActiveReader() {
+    try {
+      if (url) sessionStorage.setItem(key, JSON.stringify({from: here, url}));
+      else sessionStorage.removeItem(key);
+    } catch (_) { /* 仍可从当前浏览历史项或检索页恢复 */ }
+  }
+  // 从作者或公司页打开同一篇，也要清掉前一轮阅读的来路；原页面从浏览器缓存恢复时则重新标记。
+  markActiveReader();
+  window.addEventListener('pageshow', markActiveReader);
+  if (!url) return;
+  function remember() {
+    try { history.replaceState({...history.state, researchSearchUrl: url}, ''); } catch (_) { /* 回链仍可用 */ }
+  }
+  remember();
+  window.addEventListener('hashchange', remember);
+
   var link = document.createElement('a');
   link.className = 'back back-search';
-  link.href = saved.url;
+  link.href = url;
   var ns = 'http://www.w3.org/2000/svg';
   var icon = document.createElementNS(ns, 'svg');
   icon.setAttribute('viewBox', '0 0 24 24');
@@ -80,9 +108,10 @@
   path.setAttribute('stroke-linejoin', 'round');
   icon.append(path);
   link.append(icon, document.createTextNode('返回检索结果'));
-  if (saved.query) link.title = '回到「' + saved.query + '」的结果';
+  const query = new URLSearchParams(url.slice(url.indexOf('?') + 1)).get('q');
+  if (query) link.title = '回到「' + query + '」的结果';
   link.addEventListener('click', function () {
-    try { sessionStorage.setItem('research-search-returning', JSON.stringify(saved.url)); } catch (_) { /* 照常跳转 */ }
+    try { sessionStorage.setItem('research-search-returning', JSON.stringify(url)); } catch (_) { /* 照常跳转 */ }
   });
   top.prepend(link);
 }());

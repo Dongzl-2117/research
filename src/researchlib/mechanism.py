@@ -3,7 +3,7 @@
 为什么要它（2026-11-17）：检索的字面分和意思分都量不出一段话讲没讲「为什么」。搜「Costco 商业模式」，
 排在前面的有一段只说某家公司在学 Costco、不说学了什么为什么学，还有一段是泛泛的投资格言。
 Zhilin 的标准是「不讲业务的都往后，只有真正讲机制的（少 SKU、低运营成本、仓储模式、大单品）才保留」。
-不花钱的办法试过：拿一句「讲业务机制」的描述比向量相似度，几乎等于瞎猜；拿 7 道题 338 段人工判分训练
+不花钱的办法试过：拿一句「讲业务机制」的描述比向量相似度，几乎等于瞎猜；拿 7 道题 338 段 AI 判分训练
 向量上的分类器，留出题准度（AUC）0.69，能用但不够。他定了一次性用模型给全库的块打分，搜索时边际成本为零，
 固定成本高一点可以接受。
 
@@ -13,8 +13,9 @@ Zhilin 的标准是「不讲业务的都往后，只有真正讲机制的（少 
 用法（花模型钱，先报数、等 Zhilin 同意再跑；网页、启动、上线都不会跑它）：
 
     research-mechanism --limit 0                       # 只报还要打几篇、几块、多少字，不调模型
-    docker compose exec -T app research-mechanism --calibrate - --effort low < tools/quality_eval/mechanism_owner.json
-                                                       # 打人工判过的段、和人工比，不写库
+    research-mechanism --review-sample tools/quality_eval/mechanism_owner.json > /私有目录/review.json
+                                                       # 在隔离副本导出待评正文，人工填写 label
+    docker compose exec -T app research-mechanism --calibrate - --effort low < /私有目录/review.json
     research-mechanism --limit 2000 --workers 16 --off-peak
 
 一篇一个任务（每篇占一把锁），这篇里要打的块按 ``BATCH_CHARS`` 分几次问。块改过（标题加正文的 md5 变了）、
@@ -251,17 +252,34 @@ def run_batch(settings: Settings, jobs: list[dict], **kwargs) -> dict:
 def load_sample(path: str) -> list[dict]:
     """人工判分：[{"query", "article_id", "ord", "label"}]，见 tools/quality_eval/mechanism.json。"""
     if path == "-":
-        # 容器镜像里没有 tools/，从宿主机用 < 喂进来：--calibrate - < tools/quality_eval/…json
+        # 容器镜像里没有 tools/，从宿主机用 < 喂进来：--calibrate - < 已判分的样本.json
         data = json.load(sys.stdin)
     else:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
     items = data.get("items") if isinstance(data, dict) else data
+    if any(type(item.get("label")) is not int or item["label"] not in (0, 1, 2) for item in items):
+        raise ValueError("先为每条待校准的正文填写人工 label（0、1 或 2）")
     return [
         {"query": str(item.get("query") or ""), "article_id": int(item["article_id"]), "ord": int(item["ord"]),
-         "label": int(item["label"])}
+         "label": int(item["label"]), **({"chunk_hash": item["chunk_hash"]} if item.get("chunk_hash") else {})}
         for item in items
     ]
+
+
+def review_sample(conn, path: str) -> dict:
+    """导出当前实际文本供重新盲评。不把旧分自动签给当前块；人工填入 label 后才可校准。"""
+    rows = []
+    for old in load_sample(path):
+        chunks = chunks_by_ord(conn, old["article_id"], [old["ord"]])
+        if not chunks:
+            print(f"块已不存在：{old['article_id']} / {old['ord']}", file=sys.stderr)
+            continue
+        chunk = chunks[0]
+        rows.append({"query": old["query"], "article_id": old["article_id"], "ord": old["ord"],
+                     "heading": chunk["heading"], "body": chunk["body"], "chunk_hash": chunk["chunk_hash"],
+                     "label": None})
+    return {"items": rows}
 
 
 def agreement(pairs: list[tuple[int, int]]) -> dict:
@@ -297,8 +315,15 @@ def calibrate(settings: Settings, path: str, workers: int, off_peak: bool) -> in
 
     sample = load_sample(path)
     by_article: dict[int, list[dict]] = {}
+    unsigned = sum(1 for item in sample if not item.get("chunk_hash"))
+    if unsigned:
+        print(f"{unsigned} 条未绑定正文，不计入一致率；用 --review-sample 导出后重新盲评。", file=sys.stderr)
     for item in sample:
+        if not item.get("chunk_hash"):
+            continue
         by_article.setdefault(item["article_id"], []).append(item)
+    if not by_article:
+        return 1
     conn = connect(settings)
     try:
         titles = {
@@ -307,18 +332,20 @@ def calibrate(settings: Settings, path: str, workers: int, off_peak: bool) -> in
         }
     finally:
         conn.close()
-    results: dict[tuple[int, int], int] = {}
+    results: dict[tuple[int, int, str], int] = {}
     chars = {"n": 0}
 
     def handle(conn, job: dict, usage: dict) -> str | None:
         article_id = int(job["id"])
-        chunks = chunks_by_ord(conn, article_id, [item["ord"] for item in by_article[article_id]])
+        expected = {(item["ord"], item["chunk_hash"]) for item in by_article[article_id]}
+        chunks = [chunk for chunk in chunks_by_ord(conn, article_id, [item["ord"] for item in by_article[article_id]])
+                  if (chunk["ord"], chunk["chunk_hash"]) in expected]
         conn.commit()
         if not chunks:
             return None
         scores, _model = score_chunks(settings, str(job.get("title") or ""), chunks, usage)
         for chunk, score in zip(chunks, scores, strict=True):
-            results[(article_id, int(chunk["ord"]))] = score
+            results[(article_id, int(chunk["ord"]), chunk["chunk_hash"])] = score
         chars["n"] += sum(min(len(chunk["body"] or ""), CHUNK_LIMIT) for chunk in chunks)
         return " ".join(str(score) for score in scores)
 
@@ -328,12 +355,12 @@ def calibrate(settings: Settings, path: str, workers: int, off_peak: bool) -> in
         workers=workers, off_peak=off_peak, record_failures=False,
     )
     pairs = [
-        (item["label"], results[(item["article_id"], item["ord"])])
+        (item["label"], results[key])
         for item in sample
-        if (item["article_id"], item["ord"]) in results
+        if (key := (item["article_id"], item["ord"], item.get("chunk_hash"))) in results
     ]
     stats = agreement(pairs)
-    print(f"人工判过 {len(sample)} 块，模型打了 {len(pairs)} 块（缺的是库里没有这一块了，或这一篇失败）")
+    print(f"人工判过 {len(sample)} 块，模型打了 {len(pairs)} 块（缺块、未绑定、正文变化或失败的均未计分）")
     print(json.dumps(stats, ensure_ascii=False))
     usage = report["usage"]
     if chars["n"] and (usage.get("prompt") or usage.get("completion")):
@@ -358,7 +385,9 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="思考强度（DeepSeek：low、high、max）。不设按全站默认；打分用不着最深的思考，先用 --calibrate 比",
     )
-    parser.add_argument("--calibrate", default="", help="人工判分文件，- 从标准输入读：只打这些块、和人工比，不写库")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--review-sample", help="把旧样本当前的原文、哈希、待填标签打印为 JSON，不调模型")
+    modes.add_argument("--calibrate", default="", help="人工判分文件，- 从标准输入读：只打这些块、和人工比，不写库")
     llm_batch.add_arguments(parser, "打分")
     args = parser.parse_args(argv)
     llm_batch.check_arguments(args)
@@ -375,6 +404,9 @@ def main(argv: list[str] | None = None) -> int:
     source_ids = [source.id for source in sources]
     conn = prepare(settings)
     try:
+        if args.review_sample:
+            print(json.dumps(review_sample(conn, args.review_sample), ensure_ascii=False, indent=2))
+            return 0
         if args.limit == 0 and not args.calibrate:
             rows = pending_articles(conn, source_ids, None)
             chunks = sum(int(row["chunks"]) for row in rows)

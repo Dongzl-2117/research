@@ -252,7 +252,8 @@ def month_groups(items: list[dict]) -> list[dict]:
 def has_detail(item: dict) -> bool:
     """这条判断点开有没有东西看：理由、风险、推翻条件、验证指标、原句。都没有就不做成可展开的。"""
     return bool(
-        item.get("mechanism")
+        item.get("angles")
+        or item.get("mechanism")
         or item.get("risks")
         or item.get("falsifiers")
         or item.get("metrics")
@@ -274,7 +275,7 @@ def index_marks(rows: list[dict], last: str, *, months: int = INDEX_MONTHS) -> d
         counts = stance_counts(own)
         found[company_id] = {
             "count": len(own),
-            "tally": stance_tally(counts),
+            "tally": [{"key": key, "label": label, "count": counts[key]} for key, label in STANCE_FILTERS],
             "chart": stance_chart(monthly(own, axis), height=26, slot=7, bar=5, label="近一年按月的判断"),
         }
     return found
@@ -364,7 +365,7 @@ def evidence_lines(lines: list[str], by_article: dict[int, dict]) -> list[dict]:
             continue
         shaped.append(
             {
-                "text": name_refs(body, by_article),
+                "text": body,
                 "source": Markup(_ref_link(view, bare=False)) if view else None,
             }
         )

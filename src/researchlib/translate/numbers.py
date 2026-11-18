@@ -67,7 +67,23 @@ _SCALE = (
 _ORDERED_KINDS = ("date", "pct", "fiscal", "range", "half", "year", "clock", "duration")
 _EN_SCALE = r"trillion|billion|million|thousand"
 # 中文「美元」后面经常还是汉字。\b 只认在词字符和非词字符之间，元和后面的字都算词字符，边界对不上。
-_CURRENCY = r"(?:dollars?|euros?|pounds?|yen)\b|美元|人民币|日元|欧元|英镑"
+_CURRENCY_NAMES = {
+    "USD": ("us$", "$", "usd", "dollar", "dollars", "美元", "美金"),
+    "EUR": ("€", "eur", "euro", "euros", "欧元"),
+    "GBP": ("£", "gbp", "pound", "pounds", "英镑"),
+    "JPY": ("jpy", "yen", "日元"),
+    "CNY": ("cny", "rmb", "yuan", "人民币", "元人民币"),
+    "HKD": ("hk$", "hkd", "港元", "港币"),
+    "CAD": ("ca$", "cad", "加元"),
+    "AUD": ("au$", "aud", "澳元"),
+}
+_CURRENCY_CODES = {alias: code for code, aliases in _CURRENCY_NAMES.items() for alias in aliases}
+_CURRENCY = (
+    r"(?:dollars?|euros?|pounds?|yen|yuan|USD|EUR|GBP|JPY|CNY|RMB|HKD|CAD|AUD)(?![a-zA-Z])"
+    r"|元人民币|人民币|美元|美金|日元|欧元|英镑|港元|港币|加元|澳元"
+)
+_CURRENCY_PREFIX = r"(?:US|HK|CA|AU)\$|[$€£¥￥]|(?:USD|EUR|GBP|CNY|RMB|JPY|HKD|CAD|AUD)(?=\s*\d)"
+_CURRENCY_AFTER = re.compile(rf"\s*(?P<currency>{_CURRENCY})", re.I)
 _RANGE_DASH = r"[-–—~至到]"
 
 
@@ -76,6 +92,7 @@ class Fact:
     kind: str
     key: str
     hard: bool = True
+    currency: str = ""
 
 
 def digits_hide_scale_change(source: str, target: str) -> bool:
@@ -277,6 +294,8 @@ def _same_amount(left: str, right: str) -> bool:
 
 
 def _compatible(left: Fact, right: Fact, *, bare_quarter: bool = True) -> bool:
+    if left.currency and right.currency and left.currency != right.currency:
+        return False
     if left.kind == "clock" and right.kind == "clock" and _clocks_match(left.key, right.key):
         return True
     if left.kind == "duration" and right.kind == "duration" and _durations_match(left.key, right.key):
@@ -722,6 +741,11 @@ def _signed(amount: Decimal, sign: str | None) -> Decimal:
     return amount
 
 
+def _following_currency(match: re.Match[str]) -> str:
+    unit = _CURRENCY_AFTER.match(match.string, match.end())
+    return _CURRENCY_CODES.get(unit["currency"].lower(), "") if unit else ""
+
+
 def _on_qty(match: re.Match[str]) -> Fact | None:
     raw = match.group("amount")
     prefix, scale, currency = match.group("prefix"), match.group("scale"), match.group("currency")
@@ -745,7 +769,8 @@ def _on_qty(match: re.Match[str]) -> Fact | None:
         amount = amount.scaleb(_SCALE_EXP[key])
     if sign in {"-", "−", "负"}:
         amount = _signed(amount, sign)
-    return Fact("qty", _qty_key(amount))
+    code = _CURRENCY_CODES.get((currency or prefix or "").lower(), "")
+    return Fact("qty", _qty_key(amount), currency=code)
 
 
 def _on_cn_compound(match: re.Match[str]) -> Fact | None:
@@ -756,7 +781,7 @@ def _on_cn_compound(match: re.Match[str]) -> Fact | None:
         return None
     total = head * Decimal(10) ** 8 + tail * Decimal(10) ** _SCALE_EXP[match.group("u")]
     total = _signed(total, match.group("sign"))
-    return Fact("qty", _qty_key(total))
+    return Fact("qty", _qty_key(total), currency=_following_currency(match))
 
 
 def _on_money_span(match: re.Match[str]) -> list[Fact] | None:
@@ -765,7 +790,7 @@ def _on_money_span(match: re.Match[str]) -> list[Fact] | None:
     if left is None or right is None or scale not in _SCALE_EXP:
         return None
     exp = _SCALE_EXP[scale]
-    return [Fact("qty", _qty_key(left.scaleb(exp))), Fact("qty", _qty_key(right.scaleb(exp)))]
+    return [Fact("qty", _qty_key(value.scaleb(exp)), currency="USD") for value in (left, right)]
 
 
 def _on_percent_span(match: re.Match[str]) -> list[Fact] | None:
@@ -1081,7 +1106,7 @@ def _on_spelled_scale(match: re.Match[str]) -> Fact | None:
             return None
         return Fact("pct", _qty_key(head))
     if scale:
-        return Fact("qty", _qty_key(head.scaleb(_SCALE_EXP[scale])))
+        return Fact("qty", _qty_key(head.scaleb(_SCALE_EXP[scale])), currency=_following_currency(match))
     if match.group("hundred"):
         return Fact("qty", _qty_key(head))
     return None
@@ -1111,7 +1136,7 @@ def _on_cn_scale(match: re.Match[str]) -> Fact | None:
     scale = match.group("scale")
     if head is None or scale not in _SCALE_EXP:
         return None
-    return Fact("qty", _qty_key(Decimal(head).scaleb(_SCALE_EXP[scale])))
+    return Fact("qty", _qty_key(Decimal(head).scaleb(_SCALE_EXP[scale])), currency=_following_currency(match))
 
 
 def _on_cn_pair(match: re.Match[str]) -> list[Fact] | None:
@@ -1367,7 +1392,7 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     ), _on_per),
     (re.compile(
         rf"(?:(?P<sign>[-−负])\s*)?"
-        rf"(?:(?P<prefix>[$€£¥￥]|(?:USD|EUR|GBP|CNY|RMB|JPY)(?=\s*\d))\s*)?"
+        rf"(?:(?P<prefix>{_CURRENCY_PREFIX})\s*)?"
         rf"(?P<amount>{_AMOUNT}|两)(?:\s*(?:多|余)?\s*(?P<scale>{_SCALE}))?(?:\s*(?P<currency>{_CURRENCY}))?",
         re.I,
     ), _on_qty),

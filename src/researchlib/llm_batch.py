@@ -128,9 +128,14 @@ def tail(report: dict, verb: str = "处理") -> str:
     return f"{skipped} · 合计{spent(report['usage'], report['seconds'])}{unmetered}"
 
 
-def exit_code(report: dict, verb: str = "处理") -> int:
+def exit_code(report: dict, verb: str = "处理", *, fail_empty: bool = False) -> int:
     """命令的退出码，顺带印出为什么停：0 跑完了（个别文章失败也算），2 整批停下（没凭证、鉴权被拒、余额不足），
     3 连着几篇接口不通、暂停了（外面的循环过几分钟再跑同一条）。"""
+    if fail_empty:
+        print(
+            f"夜间统计 写入 {report['done']} 篇，失败 {report['failed']} 篇，跳过 {report['skipped']} 篇",
+            file=sys.stderr,
+        )
     if report["fatal"]:
         print(f"整批停下：{report['fatal']}", file=sys.stderr)
         return 2
@@ -141,10 +146,14 @@ def exit_code(report: dict, verb: str = "处理") -> int:
             file=sys.stderr,
         )
         return EXIT_PAUSED
+    if fail_empty and report.get("failed") and not report.get("done"):
+        print(f"写入 0 篇，失败 {report['failed']} 篇，跳过 {report.get('skipped', 0)} 篇", file=sys.stderr)
+        return 4
     return 0
 
 
 def add_arguments(parser: argparse.ArgumentParser, verb: str = "处理") -> None:
+    parser.add_argument("--fail-empty", action="store_true", help="有失败且整批零写入时返回 4（夜间任务）")
     parser.add_argument(
         "--workers",
         type=int,

@@ -186,10 +186,13 @@ def test_index_marks_tabs_and_links():
         {"company_id": 2, "stance": "negative", "date": "日期不详"},
     ]
     marks = cb.index_marks(rows, "2026-11")
-    assert marks[1]["count"] == 2 and [part["count"] for part in marks[1]["tally"]] == [1, 1, 0]
+    assert marks[1]["count"] == 2
+    assert [(part["label"], part["count"]) for part in marks[1]["tally"]] == [
+        ("看好", 1), ("两面", 0), ("看淡", 0), ("中性", 1),
+    ]
     # 小图只画近一年：两年前那条和没日期的不进图，条数照算。
     assert marks[1]["chart"].count('class="bar-pos"') == 1 and 'class="bar-mid"' not in marks[1]["chart"]
-    assert [part["count"] for part in marks[2]["tally"]] == [0, 0, 1] and 'class="bar-neg"' not in marks[2]["chart"]
+    assert [part["count"] for part in marks[2]["tally"]] == [0, 0, 1, 0] and 'class="bar-neg"' not in marks[2]["chart"]
     # 一条判断都没有的公司不分页。
     assert cb.tabs(7, 0, 12) == []
     assert [(tab["key"], tab["count"], tab["href"]) for tab in cb.tabs(7, 3, 12)] == [

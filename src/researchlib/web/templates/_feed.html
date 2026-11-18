@@ -30,6 +30,12 @@
 </li>
 {% endmacro %}
 
+{% macro day_toggle(day) %}
+<button type="button" class="day-toggle" hidden aria-expanded="true" aria-controls="slots-{{ day.key }}" aria-label="收起{{ day.label }}">
+  <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5 12 15l6-5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+</button>
+{% endmacro %}
+
 {% macro day_feed(days, scope="", link_days=true) %}
 <div class="feed">
   {% for day in days %}
@@ -40,16 +46,15 @@
         {% if day.year %}<span>{{ day.year }}年</span>{% endif %}
         {% if day.weekday %}<span>{{ day.weekday }}</span>{% endif %}
         <span class="num">{{ day.count }} 条</span>
+        {{ day_toggle(day) }}
       </div>
       <div class="daybar-desktop">
         <h2>{% if day.year and link_days %}<a href="/days/{{ day.key }}{% if scope %}?{{ scope }}{% endif %}" title="看这一天的汇总">{{ day.label }}</a>{% else %}{{ day.label }}{% endif %}</h2>
-        <button type="button" class="day-toggle" aria-expanded="true" aria-label="收起{{ day.label }}">
-          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5 12 15l6-5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
+        {{ day_toggle(day) }}
         <p>{% if day.year %}{{ day.year }}年 · {% endif %}{% if day.weekday %}{{ day.weekday }} · {% endif %}<span class="num">{{ day.count }}</span> 条</p>
       </div>
     </div>
-    <ol class="slots">
+    <ol class="slots" id="slots-{{ day.key }}">
       {% for item in day["items"] %}{{ card(item) }}{% endfor %}
     </ol>
   </section>

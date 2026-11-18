@@ -46,6 +46,7 @@ def response() -> dict:
         "citations": [
             {"n": 1, "article_id": 9, "ord": 0, "title": "合成研究：订阅与续费", "author": "合成作者甲",
              "date": "2026-11-01", "heading": "续费", "text": "订阅续费率从80%提升到85%，带动收入增长。",
+             "before": "合成上文说明原始口径。", "after": "合成下文列出成本变化。",
              "url": "/articles/9?chunk=0", "cited": True},
             {"n": 2, "article_id": 10, "ord": 1, "title": "合成研究：渠道与成本", "author": "合成作者乙",
              "date": "2026-11-02", "heading": "渠道",
