@@ -547,8 +547,8 @@ def test_home_recent_views_include_non_holdings(conn, settings):
     assert "role-badge" not in home
     section = home.split('aria-label="最近观点"', 1)[1].split('class="feed"', 1)[0]
     assert section.find("美团") < section.find("腾讯")
-    assert 'class="recent-views-line"' in section
-    assert "导读：美团的商家广告还在变贵。" in section
+    assert "美团的判断" in section and "腾讯的判断" in section
+    assert "方伟 · 2024-06-01" in section and "导读：美团的商家广告还在变贵。" not in section
     assert 'class="recent-item-summary"' in section
     meituan = conn.execute("SELECT id FROM companies WHERE name_zh = '美团'").fetchone()["id"]
     with TestClient(create_app(settings)) as client:
@@ -560,7 +560,7 @@ def test_home_recent_views_include_non_holdings(conn, settings):
 
 
 def test_recent_views_skip_a_digest_about_another_company(conn, settings):
-    """美团只是文中的例子：这篇的导读讲拼多多，不放在美团下面，首页留空，公司页用这条判断。"""
+    """美团只是文中的例子：这篇的导读讲拼多多，首页和公司页都显示美团自己的判断。"""
     when = datetime(2024, 6, 1, 9, 0, tzinfo=SHANGHAI)
     _store(conn, settings, "fangwei-mp", [ParsedDoc("example", "拼多多的佣金", when, "拼多多和美团。\n", {}, [])])
     row = conn.execute("SELECT id, content_hash FROM articles WHERE external_id = 'example'").fetchone()
@@ -593,7 +593,7 @@ def test_recent_views_skip_a_digest_about_another_company(conn, settings):
         page = client.get(f"/companies/{meituan}").text
     section = home.split('aria-label="最近观点"', 1)[1].split('class="feed"', 1)[0]
     assert "美团" in section
-    assert "拼多多的佣金率" not in section and 'class="recent-item-summary"' not in section
+    assert "拼多多的佣金率" not in section and "外卖的补贴还要打很久" in section
     # 公司页写的是对这家公司的判断，不拿讲别家的导读来充数。
     assert "外卖的补贴还要打很久" in page and "拼多多的佣金率" not in page
 

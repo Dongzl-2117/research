@@ -757,6 +757,20 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
     return items
 
 
+def format_recent_company_views(rows: list[dict], sources_by_id: dict, settings: Settings) -> list[dict]:
+    """把首页最近判断的原文、作者和态度整理成卡片。"""
+    return [
+        {
+            "id": row["company_id"], "name": row["name_zh"], "recent": row["recent"],
+            "judgment": row["judgment"], "stance": row["stance"], "stance_label": STANCE_LABELS[row["stance"]],
+            "author": sources_by_id[row["source_id"]].author,
+            "date": format_date(row["published_at"], settings.display_timezone),
+            "article_id": row["article_id"], "chunk": _verified_chunk(row),
+        }
+        for row in rows
+    ]
+
+
 def list_marks(conn, source_ids: list[str]) -> list[dict]:
     """公司列表用：每条上了页面的判断属于哪家公司、什么态度、哪天发的。
 

@@ -23,11 +23,6 @@
         document.documentElement.setAttribute("data-theme", "light");
       }
       try {
-        if (localStorage.getItem("research-recent-views") === "collapsed") {
-          document.documentElement.setAttribute("data-recent-views", "collapsed");
-        }
-      } catch (e) {}
-      try {
         if (localStorage.getItem("research-article-chat") === "closed") {
           document.documentElement.setAttribute("data-article-chat", "closed");
         }
@@ -190,24 +185,20 @@
           if (inside) box.querySelector("summary").focus();
         });
       });
-      var recentKey = "research-recent-views";
-      var recentButton = document.querySelector(".recent-views-toggle");
-      if (recentButton) {
-        var recentList = document.getElementById("recent-views-list");
-        function recentCollapsed() {
-          try { return localStorage.getItem(recentKey) === "collapsed"; } catch (e) { return false; }
+      var recent = document.querySelector("details.holdings-now");
+      if (recent) {
+        // 窄屏的时间线在观点下方，首次收起；宽屏有独立侧栏，两种布局分别记住读者的选择。
+        var sidebar = window.matchMedia("(min-width: 1280px)");
+        function recentKey() { return sidebar.matches ? "research-recent-views" : "research-recent-views-narrow"; }
+        function restoreRecent() {
+          var saved = null;
+          try { saved = localStorage.getItem(recentKey()); } catch (e) {}
+          recent.open = saved === "open" || (saved !== "collapsed" && sidebar.matches);
         }
-        function paintRecent(isCollapsed) {
-          recentButton.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
-          recentButton.setAttribute("aria-label", isCollapsed ? "展开最近观点" : "收起最近观点");
-          if (recentList) recentList.hidden = isCollapsed;
-          document.documentElement.setAttribute("data-recent-views", isCollapsed ? "collapsed" : "open");
-        }
-        paintRecent(recentCollapsed());
-        recentButton.addEventListener("click", function () {
-          var collapse = recentButton.getAttribute("aria-expanded") !== "false";
-          try { localStorage.setItem(recentKey, collapse ? "collapsed" : "open"); } catch (e) {}
-          paintRecent(collapse);
+        restoreRecent();
+        sidebar.addEventListener("change", restoreRecent);
+        recent.addEventListener("toggle", function () {
+          try { localStorage.setItem(recentKey(), recent.open ? "open" : "collapsed"); } catch (e) {}
         });
       }
       // 正文图片点一下放大。键盘也能用（审核 F12）：图片可以 Tab 到，Enter 或空格放大；
@@ -258,15 +249,18 @@
           if (img && event.target === img) { event.preventDefault(); openZoom(img); }
         });
       }
-      document.querySelectorAll(".day-toggle").forEach(function (button) {
-        button.addEventListener("click", function () {
-          var section = button.closest(".day");
-          var list = section.querySelector(".slots");
-          var open = button.getAttribute("aria-expanded") !== "false";
-          button.setAttribute("aria-expanded", open ? "false" : "true");
-          list.hidden = open;
-          var label = section.getAttribute("data-label") || "";
-          button.setAttribute("aria-label", (open ? "展开" : "收起") + label);
+      document.querySelectorAll(".day").forEach(function (section) {
+        var list = section.querySelector(".slots");
+        var buttons = section.querySelectorAll(".day-toggle");
+        buttons.forEach(function (button) {
+          button.hidden = false;
+          button.addEventListener("click", function () {
+            list.hidden = !list.hidden;
+            buttons.forEach(function (control) {
+              control.setAttribute("aria-expanded", String(!list.hidden));
+              control.setAttribute("aria-label", (list.hidden ? "展开" : "收起") + section.dataset.label);
+            });
+          });
         });
       });
     })();

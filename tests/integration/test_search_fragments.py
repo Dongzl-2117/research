@@ -2,6 +2,9 @@
 
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
+from html import unescape
+from re import search
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
 from fastapi.testclient import TestClient
@@ -51,6 +54,9 @@ def test_fragments_link_to_the_passage_and_expand(conn, settings, tmp_path):
     long_id = _store(conn, settings, source, "long", "投资札记汇编", body)
     _store(conn, settings, source, "short", "短帖", "资本配置要看回报率，管理层别乱花钱。", day=2)
     with TestClient(create_app(settings)) as client:
+        empty = client.get("/search").text
+        assert 'name="view" value="article"' not in empty
+        assert 'name="view" value="article"' in client.get("/search?view=article").text
         page = client.get("/search", params={"q": "资本配置"}).text
         assert "处片段，来自" in page and "按文章看" in page
         # 章节名当标题，链接带起止块号，连着几块拼成一段。
@@ -66,6 +72,12 @@ def test_fragments_link_to_the_passage_and_expand(conn, settings, tmp_path):
         inside = client.get("/search", params={"q": "资本配置", "article": long_id}).text
         assert "只在《" in inside and "按原文顺序" in inside
         assert inside.count(f'href="/articles/{long_id}?chunk=') == 4
+        ask_link = unescape(search(r'<a class="ask-card" href="([^"]+)"', inside)[1])
+        assert parse_qs(urlsplit(ask_link).query) == {"q": ["资本配置"], "article": [str(long_id)]}
+        composer = client.get(ask_link).text
+        assert f'name="article" value="{long_id}"' in composer
+        assert "只用这篇：投资札记汇编" in composer
+        assert composer.index("公开问库：") < composer.index('id="ask-q"')
         order = [inside.find(name) for name in ("的三种做法第", "回购的时机", "并购的教训", "分红政策")]
         assert order == sorted(order) and min(order) > 0
         # 按文章看：原来的一篇一张卡片。
@@ -76,3 +88,51 @@ def test_fragments_link_to_the_passage_and_expand(conn, settings, tmp_path):
         first = next(p for p in api["passages"] if p["article_id"] == long_id)
         assert first["from"] <= first["chunk"] <= first["to"] and "chunk=" in first["url"]
         assert api["articles"] == 2
+
+
+def test_search_drilldown_keeps_date_source_author_and_selected_sort(conn, settings, tmp_path):
+    settings, source = _setup(conn, settings, tmp_path)
+    body = "\n\n".join(_section(f"章节{i}", i % 2 == 0) for i in range(8))
+    article = _store(conn, settings, source, "scoped", "多处证据", body)
+    filters = {"q": "资本配置", "from": "2026-01-01", "to": "2026-01-02",
+               "source": source.id, "author": source.author}
+
+    def linked_params(html, pattern):
+        url = unescape(search(pattern, html)[1])
+        return {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+
+    with TestClient(create_app(settings)) as client:
+        start = client.get("/search", params=filters).text
+        scoped = linked_params(start, r'class="fragment-rest"><a href="([^"]+)"')
+        assert scoped == {**filters, "article": str(article)}
+        inside = client.get("/search", params=scoped).text
+        scored = linked_params(inside, r'<a href="([^"]+)">按相关度</a>')
+        chosen = {**scoped, "sort": "score"}
+        assert scored == chosen
+        inside = client.get("/search", params=scored).text
+        assert 'name="sort" value="score"' in inside
+        assert linked_params(inside, r'<a class="ask-card" href="([^"]+)"') == scoped
+        cards = linked_params(inside, r'<a href="([^"]+)">按文章看</a>')
+        assert cards == {**chosen, "view": "article"}
+        article_view = client.get("/search", params=cards).text
+        assert linked_params(article_view, r'<a href="([^"]+)">按片段</a>') == chosen
+        assert linked_params(inside, r'<a href="([^"]+)">清除</a>') == {
+            "q": "资本配置", "source": source.id, "article": str(article), "sort": "score",
+        }
+
+
+def test_expired_search_page_returns_the_last_page_with_its_results(conn, settings, tmp_path, monkeypatch):
+    from researchlib.web import routes
+
+    settings, source = _setup(conn, settings, tmp_path)
+    for i in (1, 2):
+        _store(conn, settings, source, f"note-{i}", f"资本配置笔记{i}", f"资本配置和回购的不同方法{i}。", day=i)
+    monkeypatch.setattr(routes, "SEARCH_PAGE_SIZE", 1)
+    with TestClient(create_app(settings)) as client:
+        for view in ("passage", "article"):
+            params = {"q": "资本配置", "view": view, "source": source.id, "page": "9"}
+            page = client.get("/search", params=params)
+            assert [item.status_code for item in page.history] == [303]
+            assert dict(page.request.url.params) == {**params, "page": "2"}
+            assert 'class="here num">2<' in page.text and 'class="item-title"' in page.text
+            assert "没有找到" not in page.text

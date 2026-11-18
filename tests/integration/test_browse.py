@@ -71,6 +71,8 @@ def test_home_pages_by_shanghai_day(conn, settings):
         assert "没有日期" not in text
         assert "2024年" in text
         assert "星期三" in text
+        assert text.count('hidden aria-expanded="true" aria-controls="slots-2024-03-13"') == 2
+        assert 'class="slots" id="slots-2024-03-13"' in text
         second = client.get("/", params={"page": 2})
         assert "前一天" in second.text
         assert "23:00" in second.text

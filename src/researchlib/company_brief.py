@@ -274,7 +274,7 @@ def index_marks(rows: list[dict], last: str, *, months: int = INDEX_MONTHS) -> d
         counts = stance_counts(own)
         found[company_id] = {
             "count": len(own),
-            "tally": stance_tally(counts),
+            "tally": [{"key": key, "label": label, "count": counts[key]} for key, label in STANCE_FILTERS],
             "chart": stance_chart(monthly(own, axis), height=26, slot=7, bar=5, label="近一年按月的判断"),
         }
     return found

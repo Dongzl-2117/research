@@ -411,7 +411,7 @@
       if (kind === 'refill') {
         input.value = turn.question;
         scopeSelect.value = turn.article;
-        ['author', 'source', 'company', 'from', 'to', 'article', 'tree'].forEach((key) => {
+        ['author', 'source', 'saved_sources', 'company', 'from', 'to', 'article', 'tree'].forEach((key) => {
           if (form.elements.namedItem(key)) form.elements.namedItem(key).value = (turn.params || {})[key] || '';
         });
         pickModel((turn.params || {}).model, (turn.params || {}).effort);
@@ -691,7 +691,7 @@
   });
 
   const scopeSummary = form.querySelector('.ask-scope');
-  const baseScope = scopeSummary ? scopeSummary.textContent.split(' · ')[0] : '';
+  const baseScope = form.dataset.scopeBase || '';
   function scopeText() {
     const values = new FormData(form);
     return [baseScope, values.get('author'),
@@ -791,7 +791,7 @@
     const article = scopeSelect.value;
     const turn = createTurn(question, article);
     turn.params = {};
-    for (const key of ['author', 'source', 'company', 'from', 'to', 'article', 'tree', 'model', 'effort']) {
+    for (const key of ['author', 'source', 'saved_sources', 'company', 'from', 'to', 'article', 'tree', 'model', 'effort']) {
       const value = new FormData(form).get(key);
       if (value) turn.params[key] = String(value);
     }
