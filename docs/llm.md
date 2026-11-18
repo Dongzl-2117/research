@@ -331,6 +331,8 @@ nohup bash -c 'until docker compose exec -T -e RESEARCH_LLM_CONCURRENCY=16 app r
 
 问库、观点、摘要、论点都只用上面这一份 OAuth，强度与译制相同，不退回 API key。
 
+日期不详的判断留在时间线，不作态度变化的依据。同日有可靠钟点时可比较先后，只有日期或同一时刻有矛盾判断时不按文章编号推定先后。论点的支持、反对均按已有证据保留，标记作者前后说法不一须有能排出先后的两篇。
+
 应用启动和部署不会跑。方伟星球用 `research-retime` 把零点改成真实 `create_time` 之后，态度变化和「同期别人怎么看」会按新的 `published_at` 重算（见 [ingest.md](ingest.md)），不必为此再跑 `research-views`。JSON：`GET /api/v1/companies/{id}/views`（`views=risk`、`views=change`、`views=t1`、`author=`）。
 
 观点还用在两处：
