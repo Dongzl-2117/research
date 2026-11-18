@@ -174,3 +174,40 @@ def test_llms_txt_says_no_login_and_how_to_wait(conn, settings):
     assert "Cloudflare Access" not in text and "不用登录" in text
     assert "get_answer" in text and "429" in text
     assert f"最近 24 小时最多 {ask_module.DAILY_LIMIT} 次" in text
+
+
+def test_stream_freezes_actual_numbered_citations_before_first_answer_text(conn, settings, monkeypatch):
+    _sample(conn, settings)
+    monkeypatch.setattr(ask_module, "llm_configured", lambda _: True)
+    monkeypatch.setattr(ask_module, "expand_terms", lambda *_: {})
+    monkeypatch.setattr(ask_module, "_inline", lambda: True)
+    original = ask_module._passages
+    old_first = {}
+
+    def different_order(found, sources, settings, **kwargs):
+        items = original(found, sources, settings, **kwargs)
+        if "chronological" not in kwargs:
+            old_first.update(items[0])
+            return items
+        assert len(items) >= 2
+        items.sort(key=lambda item: item["article_id"] == old_first["article_id"] and item["ord"] == old_first["ord"])
+        for n, item in enumerate(items, 1):
+            item["n"] = n
+        items[0].update(before="模型实际读到的上文", after="模型实际读到的下文")
+        return items
+
+    def write(_settings, _question, passages, _report, _note, progress):
+        progress({"stage": "writing", "text": "第一段的证据[1]。"})
+        row = conn.execute("SELECT answer, citations FROM llm_answers WHERE status='running'").fetchone()
+        assert row["answer"] == "第一段的证据[1]。"
+        assert row["citations"][0] == passages[0]
+        assert (passages[0]["article_id"], passages[0]["ord"]) != (old_first["article_id"], old_first["ord"])
+        return row["answer"], "synthetic"
+
+    monkeypatch.setattr(ask_module, "_passages", different_order)
+    monkeypatch.setattr(ask_module, "synthesize", write)
+    with TestClient(create_app(settings)) as client:
+        answer_id = client.post("/api/v1/ask", json={"question": QUESTION}).json()["id"]
+        page = client.get(f"/ask/{answer_id}").text
+        assert "模型实际读到的上文" in page and "模型实际读到的下文" in page
+        assert client.get(f"/api/v1/answers/{answer_id}").json()["status"] == "done"

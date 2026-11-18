@@ -163,3 +163,24 @@ def test_list_numbers_months_and_split_numbers_are_not_false_alarms():
     assert flags and "数字 120 不在所引段落里" in flags[0]["problems"]
     flags = check_answer("10. 腾讯游戏去年收入为1002024[3]", cited, ["方伟"])
     assert flags and "1002024" in flags[0]["problems"][0]
+
+
+def test_financial_evidence_preserves_precision_units_and_direction():
+    cases = [
+        ("同比增长12%", "同比增长12倍"), ("毛利率为12%", "毛利率为12.5%"),
+        ("同比增长12%", "同比下降12%"), ("现金流为+12.5%", "现金流为−12.5%"),
+        ("毛利率提高12个百分点", "毛利率提高12%"), ("收入32亿美元", "收入32亿人民币"),
+    ]
+    for claim, source in cases:
+        assert check_answer(claim + "[1]。", [{"n": 1, "text": source}], []), (claim, source)
+    assert not check_answer("同比下降12%[1]。", [{"n": 1, "text": "同比为−12%"}], [])
+
+
+def test_uncited_statement_is_flagged_separately_from_headings_and_no_evidence():
+    flags = check_answer("## 交易情况\n资料不足。\n公司已经退市。", [], [])
+    assert [(flag["sentence"], flag["refs"]) for flag in flags] == [("公司已经退市。", [])]
+
+
+def test_basis_points_compare_as_points_and_currency_does_not_cross():
+    assert check_answer("毛利率提高0.25个百分点[1]。", [{"n": 1, "text": "毛利率提高25基点。"}], []) == []
+    assert check_answer("成本增加12元[1]。", [{"n": 1, "text": "成本增加12美元。"}], [])

@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 
 from researchlib import embeddings
 from researchlib.chunks import OCR_ORD_BASE, TRANSLATION_ORD_BASE, current_chunk_sql
+from researchlib.financial_evidence import numeric_signature
 from researchlib.mentions import (
     CompanyMatcher,
     company_rules,
@@ -916,17 +917,33 @@ def _company_rows(conn, company: dict, scope: Scope, per_year: int):
 
 
 def _leading_rows(conn, scope: Scope, limit: int):
-    """什么检索词都没有时（作者页预设、「汇总这一天」），取范围内各篇开头两块，新的在前。"""
+    """从最近的文章取首段、结尾及首个图片文字块；每路按 (article_id, ord) 主键定位。"""
     where, params = scope_clause(scope)
-    params["lead_limit"] = limit
-    params["zh_first"] = TRANSLATION_ORD_BASE
+    params.update(lead_limit=limit, zh_first=TRANSLATION_ORD_BASE, ocr_first=OCR_ORD_BASE)
+    # 各语言的最后一块按该篇主键倒序取一条，避免为了找文末扫描全范围内所有长文。
     return conn.execute(
         f"""
-        SELECT {_SELECT_COLUMNS}
-        FROM article_chunks c
-        JOIN articles a ON a.id = c.article_id
-        WHERE {where} AND {current_chunk_sql()}
-          AND (c.ord < 2 OR (c.ord >= %(zh_first)s AND c.ord < %(zh_first)s + 2))
+        SELECT {_SELECT_COLUMNS}, pick.weight AS overview_weight
+        FROM (
+            SELECT a.id, a.title, a.published_at, a.source_id, a.content_hash
+            FROM articles a
+            WHERE {where} AND EXISTS (SELECT 1 FROM article_chunks c WHERE c.article_id=a.id AND {current_chunk_sql()})
+            ORDER BY a.published_at DESC NULLS LAST, a.id DESC LIMIT %(lead_limit)s
+        ) a
+        CROSS JOIN LATERAL (
+            SELECT ord, max(weight) AS weight
+            FROM (
+                VALUES (0, 1.0), (1, 0.5), (%(zh_first)s::int, 1.0),
+                       (%(zh_first)s::int + 1, 0.5), (%(ocr_first)s::int, 1.0),
+                       ((SELECT z.ord FROM article_chunks z WHERE z.article_id=a.id AND z.ord < %(zh_first)s
+                           ORDER BY z.ord DESC LIMIT 1), 0.9),
+                       ((SELECT z.ord FROM article_chunks z WHERE z.article_id=a.id
+                           AND z.ord >= %(zh_first)s AND z.ord < %(ocr_first)s ORDER BY z.ord DESC LIMIT 1), 0.9)
+            ) positions(ord, weight)
+            WHERE ord IS NOT NULL GROUP BY ord
+        ) pick
+        JOIN article_chunks c ON c.article_id=a.id AND c.ord=pick.ord
+        WHERE {current_chunk_sql()}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC, c.ord
         LIMIT %(lead_limit)s
         """,
@@ -1769,7 +1786,7 @@ def score_rows(
                 )
         elif query.overview:
             # 只有作者或日期范围：开头那块最能代表全文；谈到具体公司的段落比套话更有信息量。
-            score = 1.0 / (1 + row['ord'] - _ord_range(row['ord'])[0])
+            score = float(row.get('overview_weight') or (1.0 / (1 + row['ord'] - _ord_range(row['ord'])[0])))
             if any(name in text for name in deep_names.get(row["article_id"], ())):
                 score *= 1.8
             coverage = 1.0
@@ -1946,8 +1963,7 @@ def select(
     picked: list[Passage] = []
     per: dict[int, int] = {}
     caps = article_caps(ranked, budget.per_article)
-    seen_text: set[str] = set()
-    covered: set[str] = set()
+    copies = _EvidenceCopies()
     used = 0
     for passage in ranked:
         if per.get(passage.article_id, 0) >= caps.get(passage.article_id, budget.per_article):
@@ -1957,15 +1973,8 @@ def select(
         # 同一段话出现在两篇里（整段引用、没认出来的转发、抄进几篇笔记的同一份资料）只给一次，不占两个名额。
         # 只差开头结尾几个字的也算（Stratechery 几篇里重复的那段引文，后面跟着的链接字样不一样）：
         # 这段八成的字已经在前面挑中的段落里，就不要了。
-        key = _text_key(passage.body)
-        if key and key in seen_text:
+        if copies.already_seen(passage.body):
             continue
-        pieces = _shingles(key)
-        if len(pieces) >= 4 and len(pieces & covered) >= REPEAT_SHARE * len(pieces):
-            continue
-        if key:
-            seen_text.add(key)
-        covered |= pieces
         per[passage.article_id] = per.get(passage.article_id, 0) + 1
         used += len(passage.body)
         picked.append(passage)
@@ -2000,17 +2009,42 @@ def _shingles(key: str) -> set[str]:
     return {key[i : i + _SHINGLE] for i in range(len(key) - _SHINGLE + 1)}
 
 
+class _EvidenceCopies:
+    """只与数字、单位及涨跌方向一致的证据去重；不同数据的相同模板不能互相盖掉。"""
+
+    def __init__(self):
+        self.keys: set[tuple] = set()
+        self.covered: dict[tuple, set[str]] = defaultdict(set)
+
+    def already_seen(self, body: str) -> bool:
+        key = _text_key(body)
+        if not key:
+            return False
+        facts = numeric_signature(body)
+        identity = (key, facts)
+        if identity in self.keys:
+            return True
+        pieces = _shingles(key)
+        covered = self.covered[facts]
+        if len(pieces) >= 4 and len(pieces & covered) >= REPEAT_SHARE * len(pieces):
+            return True
+        self.keys.add(identity)
+        covered.update(pieces)
+        return False
+
+
 def _distinct_passages(items: list[Passage], limit: int) -> list[Passage]:
     """按分数顺序取前几块，和已取的块一字不差、或整块包含在里面（反过来也算）的跳过。"""
     kept: list[Passage] = []
-    keys: list[str] = []
+    keys: list[tuple[str, tuple]] = []
     for passage in items:
         key = _text_key(passage.body)
-        if key and any(key in other or other in key for other in keys):
+        facts = numeric_signature(passage.body)
+        if key and any(facts == prior and (key in other or other in key) for other, prior in keys):
             continue
         kept.append(passage)
         if key:
-            keys.append(key)
+            keys.append((key, facts))
         if len(kept) >= limit:
             break
     return kept
@@ -2309,7 +2343,7 @@ def rank_articles(scored: list[Passage], query: Query, company_rows: list[dict])
     if partial_hits:
         best = partial_hits[0].score
         partial_hits = [h for h in partial_hits if h.score >= best * 0.2]
-    shown_keys: set[str] = set()
+    shown_keys: set[tuple] = set()
     return _fresh_first(full_hits, shown_keys) + _fresh_first(partial_hits, shown_keys)
 
 
@@ -2318,7 +2352,7 @@ CARD_CHOICES = 6
 CARD_PASSAGES = 2
 
 
-def _fresh_first(hits: list[ArticleHit], shown_keys: set[str]) -> list[ArticleHit]:
+def _fresh_first(hits: list[ArticleHit], shown_keys: set[tuple]) -> list[ArticleHit]:
     """同一段话原样出现在好几篇里，结果页上只摘一次。
 
     林文丰飞书里同一份资料抄进了几篇笔记，Stratechery 几篇文章里重复同一段引文：本地副本 20 万块正文里
@@ -2331,12 +2365,16 @@ def _fresh_first(hits: list[ArticleHit], shown_keys: set[str]) -> list[ArticleHi
     """
     fresh_hits: list[ArticleHit] = []
     repeats: list[ArticleHit] = []
+    def identity(passage: Passage):
+        key = _text_key(passage.body)
+        return (key, numeric_signature(passage.body)) if key else None
+
     for hit in hits:
-        fresh = [p for p in hit.passages if not ((key := _text_key(p.body)) and key in shown_keys)]
+        fresh = [p for p in hit.passages if identity(p) not in shown_keys]
         if fresh:
             hit.passages, hit.spare = fresh[:CARD_PASSAGES], fresh[CARD_PASSAGES:]
             fresh_hits.append(hit)
-            shown_keys.update(key for p in hit.passages if (key := _text_key(p.body)))
+            shown_keys.update(key for p in hit.passages if (key := identity(p)))
         else:
             hit.passages = hit.passages[:CARD_PASSAGES]
             repeats.append(hit)
@@ -2690,19 +2728,10 @@ def _gap_keys(passages: list[Passage]) -> list[tuple[int, int]]:
 def _distinct_fragments(fragments: list[Fragment]) -> list[Fragment]:
     """同一段话在几篇里（抄进几篇笔记的同一份资料、引文）只列一次：和前面列过的八成以上重合就不要。"""
     kept: list[Fragment] = []
-    seen: set[str] = set()
-    covered: set[str] = set()
+    copies = _EvidenceCopies()
     for fragment in fragments:
-        key = _text_key(fragment.text)
-        if key and key in seen:
-            continue
-        pieces = _shingles(key)
-        if len(pieces) >= 4 and len(pieces & covered) >= REPEAT_SHARE * len(pieces):
-            continue
-        if key:
-            seen.add(key)
-        covered |= pieces
-        kept.append(fragment)
+        if not copies.already_seen(fragment.text):
+            kept.append(fragment)
     return kept
 
 

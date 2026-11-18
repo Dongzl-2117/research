@@ -101,3 +101,20 @@ def test_owner_holdout_does_not_overlap_tuning_sample():
     tune = {(i["article_id"], i["ord"]) for i in mechanism.load_sample("tools/quality_eval/mechanism_owner.json")}
     hold = mechanism.load_sample("tools/quality_eval/mechanism_owner_holdout.json")
     assert len(hold) == 20 and not tune & {(i["article_id"], i["ord"]) for i in hold}
+
+
+def test_calibration_does_not_score_unsigned_archive(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("未绑定文本的旧标签不能触发模型")
+
+    monkeypatch.setattr(mechanism, "score_chunks", forbidden)
+    assert mechanism.calibrate(None, "tools/quality_eval/mechanism_owner.json", 1, False) == 1
+
+
+def test_review_exports_current_text_without_assigning_a_historical_grade(monkeypatch):
+    sample = [{"query": "现金流", "article_id": 1, "ord": 7, "label": 2}]
+    monkeypatch.setattr(mechanism, "load_sample", lambda path: sample)
+    monkeypatch.setattr(mechanism, "chunks_by_ord", lambda conn, aid, ords: [
+        {"heading": "第二版", "body": "更正后的财报", "chunk_hash": "new"}])
+    item = mechanism.review_sample(None, "-")["items"][0]
+    assert item["body"] == "更正后的财报" and item["chunk_hash"] == "new" and item["label"] is None

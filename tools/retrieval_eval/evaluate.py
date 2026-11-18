@@ -226,13 +226,13 @@ def compare(current: dict, baseline: dict) -> tuple[list[str], list[str]]:
     return worse, better
 
 
-def new_ask(conn, case: Case):
+def new_ask(conn, case: Case, purpose: str = "llm"):
     from researchlib.retrieval import retrieve
     from researchlib.web.queries import Scope
 
     scope = scope_for(conn, case, Scope)
     preset = case.question in (PRESET_COMPANY, PRESET_AUTHOR)
-    found = retrieve(conn, case.question, scope, SOURCES, purpose="llm", preset=preset)
+    found = retrieve(conn, case.question, scope, SOURCES, purpose=purpose, preset=preset)
     return [(p.article_id, p.ord) for p in found.passages]
 
 
@@ -249,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="检索评测")
     parser.add_argument("--check", type=Path, help="和这份基线比，有用例退步就返回 1")
     parser.add_argument("--json", type=Path, help="把这次的准确率、召回率写成基线")
+    parser.add_argument("--deep-json", type=Path, help="另存后台 deep 预算的召回结果，扩词关闭，不调问答模型")
     args = parser.parse_args(argv)
     conn = connect()
     truth_map = truth(conn)
@@ -258,6 +259,13 @@ def main(argv: list[str] | None = None) -> int:
     print_ask(ask)
     print_search(search)
     current = summarize(articles, ask, search)
+    if args.deep_json:
+        deep = measure_ask(lambda db, case: new_ask(db, case, purpose="deep"), conn, truth_map)
+        print("\n后台 deep 预算（无扩词）的独立召回报表")
+        print_ask(deep)
+        report = {"purpose": "deep", "expansions": False, "articles": articles,
+                  "ask": summarize(articles, deep, [])["ask"]}
+        args.deep_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     if args.json:
         args.json.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"\n基线写到 {args.json}")

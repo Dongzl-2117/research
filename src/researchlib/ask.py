@@ -695,6 +695,15 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
             )
             conn.commit()
             return
+        # 登记时的 40 段只是检索预览。第一段流式文字写入前，先按模型实际收到的顺序冻结编号。
+        frozen = conn.execute(
+            "UPDATE llm_answers SET citations = %s, terms = %s, answer = '', updated_at = now()"
+            " WHERE id = %s AND status = 'running'",
+            (Jsonb(passages), Jsonb(found.terms), answer_id),
+        )
+        conn.commit()
+        if frozen.rowcount != 1:
+            return
         synth_report: dict = {}
         note = outline_note(found.outline, found.outline_label)
         tracker = _Progress(conn, answer_id)

@@ -9,7 +9,7 @@
 - 句子写了具体日期，和所引段落的发布日期、正文都对不上；
 - 和所引段落几乎没有一样的说法（引错了段）。
 
-只查带 [n] 的句子。查出来的是「需要回原文核对」，不一定是错。
+没有出处的陈述句也会提示。查出来的是「需要回原文核对」，不一定是错。
 
 所引段落是没译的英文原文时，中文句子和它字对字比不了：不查「几乎没有一样的说法」，中文引语也不按原文找；
 数字照查，英文拼出来的数（forty-seven、two hundred）也算；换了单位的按数值比（4700 万 = 47 million，
@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+
+from researchlib.financial_evidence import Number, numbers
 
 _CLAIM = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]+)?(?:\s*\[\d{1,3}\])*")
 _REF = re.compile(r"\[(\d{1,3})\]")
@@ -43,7 +45,6 @@ _DATE_LIKE = re.compile(
 )
 # 回答分点写的序号（「10. 」「3、」「(2) 」）不是要核的数。
 _LIST_MARK = re.compile(r"(?m)^\s*(?:[-*+]\s*)?(?:\d{1,3}[.、)）](?!\d)|[(（]\d{1,3}[)）])\s*")
-_NUMBER = re.compile(r"(?<![\d.])(\d+(?:[,，]\d{3})*(?:\.\d+)?)\s*(%|％|‰|倍|个百分点|bp|万亿|亿|万)?")
 _QUOTED = re.compile(r"「([^」]{4,})」|“([^”]{4,})”|\"([^\"]{4,})\"")
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
 _CJK_RUN = re.compile(r"[一-鿿]+")
@@ -78,15 +79,6 @@ _EN_TENS = {
 _EN_SCALES = {"hundred": 100, "thousand": 10**3, "million": 10**6, "billion": 10**9, "trillion": 10**12}
 _EN_WORD = "|".join(sorted([*_EN_SMALL, *_EN_TENS, *_EN_SCALES], key=len, reverse=True))
 _EN_NUMBER = re.compile(rf"\b(?:{_EN_WORD})(?:[\s-]+(?:and[\s-]+)?(?:{_EN_WORD}))*\b", re.IGNORECASE)
-# 带量级的数：中文的万、亿，英文的 thousand、million、billion 和 $47M、3.2bn 这种缩写。按数值比，不按字面。
-_CN_SCALES = {"万": 10**4, "亿": 10**8, "万亿": 10**12}
-_SCALE_WORDS = {"k": 10**3, "m": 10**6, "mn": 10**6, "b": 10**9, "bn": 10**9, **_EN_SCALES, **_CN_SCALES}
-_SCALED = re.compile(
-    r"(?<![\d.])(\d+(?:[,，]\d{3})*(?:\.\d+)?)"
-    r"(?:\s*(thousand|million|billion|trillion|万亿|亿|万)|(bn|mn|[kmb]))(?![A-Za-z])",
-    re.IGNORECASE,
-)
-_PLAIN_NUMBER = re.compile(r"(?<![\d.])\d+(?:\.\d+)?")
 
 
 def _plain(text: str) -> str:
@@ -139,60 +131,54 @@ def _bigrams(text: str) -> set[str]:
     return found
 
 
-def split_claims(answer: str) -> list[tuple[str, list[int]]]:
+def split_claims(answer: str, *, include_uncited: bool = False) -> list[tuple[str, list[int]]]:
     """回答切成带出处的句子：[(句子, [n...])]。[n] 写在句号后面的也算这一句的。"""
     claims: list[tuple[str, list[int]]] = []
     for match in _CLAIM.finditer(answer or ""):
         text = match.group(0).strip()
         refs = [int(item) for item in _REF.findall(text)]
-        if refs:
+        statement = text.rstrip("* ").strip()
+        uncited = (
+            include_uncited and len(_plain(statement)) >= 4
+            and not statement.startswith(("#", "|", "`"))
+            and not statement.endswith(("？", "?", "：", ":"))
+            and statement.strip("。！! ") not in {"资料不足", "库里没有相关内容", "没有相关内容", "资料里没看到"}
+        )
+        if refs or uncited:
             claims.append((text, list(dict.fromkeys(refs))))
     return claims
 
 
-def _numbers(text: str) -> list[str]:
-    body = _LIST_MARK.sub(" ", _REF.sub(" ", text))
-    body = _DATE_LIKE.sub(" ", body)
-    found: list[str] = []
-    for match in _NUMBER.finditer(body.translate(_FULLWIDTH)):
-        raw, unit = match.group(1), match.group(2) or ""
-        number = _digits(raw)
-        if not unit and "." not in number and len(number) < 2:
-            continue
-        # 年份跳过：必须是纯四位整数。95.2 这类小数 len 也是 4，不能 int()。
-        if not unit and number.isdigit() and len(number) == 4 and 1990 <= int(number) <= 2039:
-            continue
-        found.append(number + unit)
-    return list(dict.fromkeys(found))
+def _claim_numbers(text: str):
+    body = _DATE_LIKE.sub(" ", _LIST_MARK.sub(" ", _REF.sub(" ", text)))
+    for number in numbers(body):
+        if number.label.isdigit():
+            if len(number.label) < 2 or 1990 <= number.value <= 2039:
+                continue
+        yield number
 
 
-def _number_in(number: str, haystack: str) -> bool:
-    core = re.match(r"[\d.]+", number).group(0)
-    return re.search(r"(?<![\d.])" + re.escape(core) + r"(?!\d)", haystack) is not None
+def _evidence_numbers(text: str) -> set[tuple]:
+    # 数位后面的 million 等留给量级解析；forty-seven million 等整体换算。
+    def expand(match):
+        token = match.group()
+        prefix = text[max(0, match.start() - 5):match.start()]
+        if token.lower() in _EN_SCALES and not re.search(r"\ba\s*$", prefix, re.I):
+            return token
+        return _english_numbers(token)[0]
+
+    return {(n.value, n.unit) for n in numbers(_EN_NUMBER.sub(expand, text))}
 
 
-def _values(text: str, spelled: list[str]) -> list[float]:
-    """段落里出现的数的数值：带量级的乘上去，拼出来的英文数也算。"""
-    body = (text or "").translate(_FULLWIDTH)
-    found = [float(item) for item in _PLAIN_NUMBER.findall(re.sub(r"(?<=\d)[,，](?=\d)", "", body))]
-    found.extend(float(item) for item in spelled)
-    for match in _SCALED.finditer(body):
-        scale = _SCALE_WORDS[(match.group(2) or match.group(3)).lower()]
-        found.append(float(_digits(match.group(1))) * scale)
-    return found
-
-
-def _number_found(number: str, digits: str, values: list[float]) -> bool:
-    """带万、亿的数按数值比：「4700万」对得上 47 million，「3.2亿」对不上 $3.2 billion。其余照字面。"""
-    core = re.match(r"[\d.]+", number).group(0)
-    unit = number[len(core) :]
-    if unit not in _CN_SCALES:
-        return _number_in(number, digits)
-    wanted = float(core) * _CN_SCALES[unit]
-    if any(abs(value - wanted) <= 1e-6 * wanted for value in values):
+def _supported(number: Number, evidence: set[tuple]) -> bool:
+    if (number.value, number.unit) in evidence:
         return True
-    # 「4700多万」「3.2个亿」：数和量级之间夹了字，按字面对。
-    return re.search(r"(?<![\d.])" + re.escape(core) + r"[多余个]{0,2}" + re.escape(unit), digits) is not None
+    # 仅允许常用的人民币/元两种写法，不把美元或港元当人民币。
+    if number.unit == "元":
+        return (number.value, "CNY") in evidence
+    if number.unit == "CNY":
+        return (number.value, "元") in evidence
+    return False
 
 
 def _iso(year: str, month: str, day: str) -> str:
@@ -212,6 +198,8 @@ def _expand_dates(text: str) -> str:
 
 def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iterable[str]) -> list[str]:
     text = _expand_dates(text)
+    if not refs:
+        return ["这句没有标注出处"]
     problems: list[str] = []
     by_number = {int(item["n"]): item for item in citations if "n" in item}
     missing = [n for n in refs if n not in by_number]
@@ -229,14 +217,13 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     foreign = _foreign(
         "\n".join(item.get(key) or "" for item in cited for key in ("heading", "before", "text", "after"))
     )
-    spelled = _english_numbers(raw)
-    digits = _digits(raw) + " " + " ".join(spelled)
-    values = _values(raw, spelled)
+    digits = _digits(raw)
+    evidence = _evidence_numbers(raw)
     plain = _plain(raw)
     loose = _loose(raw)
-    for number in _numbers(text):
-        if not _number_found(number, digits, values):
-            problems.append(f"数字 {number} 不在所引段落里")
+    for number in _claim_numbers(text):
+        if not _supported(number, evidence):
+            problems.append(f"数字 {number.label} 不在所引段落里")
     for match in _QUOTED.finditer(text):
         quoted = next(group for group in match.groups() if group)
         if not _plain(quoted) or _plain(quoted) in plain or _loose(quoted) in loose:
@@ -272,7 +259,7 @@ def check_answer(answer: str, citations: list[dict], authors: Iterable[str]) -> 
     """返回没核对上的句子：[{"sentence", "refs", "problems"}]。都对得上时是空列表。"""
     names = sorted({name for name in authors if name}, key=len, reverse=True)
     flags: list[dict] = []
-    for text, refs in split_claims(answer):
+    for text, refs in split_claims(answer, include_uncited=True):
         problems = check_claim(text, refs, citations or [], names)
         if problems:
             sentence = re.sub(r"^\s*(?:[-*+]|\d+[.、)])\s*", "", _REF.sub("", text)).strip(" #*")
