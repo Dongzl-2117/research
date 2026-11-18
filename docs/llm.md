@@ -366,7 +366,12 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 - `GET /api/v1/search?q=…`：文章级检索，和检索页同一套排序（全部词都命中的在前），带范围参数、`limit`（≤50）、`offset`，每条带最相关的一段和公司标签。`total` 是全部词都命中的篇数（标题、正文、译文、图片里的字都算；引号里的词要在某一段里原样出现，和结果列表同一条），`listed` 是其中按相关度翻得到的篇数，`semantic` 是词没写全、按意思排进前面的篇数，不算进 `total`。
 - `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
 - `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`：原文里本地存了的图换成站内 `/media/…` 的完整地址（JSON 的 `body_markdown`、MCP 的 `get_article` 也一样），还没下载的外链图照原样留着；`.md` 最后附「图片里的字」一节，就是检索用的那份图片文字块。正文仍是归档原文，归档头照旧在，只有 Stratechery 网页导出归档头里的 `- rss_link:` 不给：那是导出脚本拉取用的个人订阅地址，文章页和检索文字从 #157 起就不要。
-- `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`、`/api/v1/days/{YYYY-MM-DD}`
+- `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`
+- `GET /api/v1/days/{YYYY-MM-DD}` 和 MCP `get_day` 按上海日历日返回可见文章。
+  `total` 是当天总篇数，默认从 `offset=0` 开始，每页 `limit` 可取 1 到 500，默认 500。
+  取第二页时把上次的 `next_offset` 用作 `offset`，返回 `null` 时已经取完。
+  例如当天有 501 篇，第一页返回 500 篇和 `next_offset=500`，第二页返回最后 1 篇。
+  非法日期、页长或偏移在 REST 返回 HTTP 400，在 MCP 返回工具参数错误。
 - `POST /api/v1/ask`：`{"question": "...", "company": 1, "from": "2025-01-01"}`，默认马上返回回答 id 和相关原文，后台整合，之后轮询下面这个接口。可以加 `"model"`（`grok` 或 `deepseek`）和 `"effort"`（那一家的思考档），见上面「问库按次选模型和思考强度」。页面提交时带一个自己起的 `"request_id"`（8 到 64 位字母、数字、横线），没等到回应就带着同一个再发一次：一天里同一个编号已经登记过的，不再检索、登记、整合，直接返回那一条的现状（审核 F2，以前网页 15 秒没回就让读者再问一次，同一问题整合两遍）。排着队的整合不会被当成卡住；已经被标成出错的轮到时不再跑，点「重新整合」时它还排着队就不再交一份（审核 R3）。加 `"wait": true` 时最多等 80 秒（`ask.WAIT_SECONDS`）：写完了带回答和 `checks` 返回，没写完返回 `status: running` 和 id，照样接着轮询。以前 `wait` 在请求里跑完整个整合（全库的问题 6 到 9 分钟），隔着 Cloudflare 超过 100 秒就断开（524），回答编号也丢了。
 - `GET /api/v1/answers/{id}`：`status` 是 `running`、`done` 或 `error`，`error` 里是出错原因；`running` 时 `answer` 是写到一半的回答（可能为空），`stats.progress` 是进度；写完之后带 `checks`（没核对上的句子）和 `stats`（各步耗时、段数、批数、同义词，分批读和写回答各用了多久，token 用量）。
 - `GET /api/v1/companies/{id}/views`：公司的论点地图（`theses`）和观点时间线。不限持仓。
