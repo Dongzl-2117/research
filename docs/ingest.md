@@ -283,7 +283,7 @@ docker compose exec app research-crawl-stratechery --dry-run
 docker compose exec app research-crawl-stratechery
 ```
 
-RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。新文章的中英对照：夜间「Stratechery 译制」一步按待译队列译 `STRATECHERY_TRANSLATE_LIMIT` 篇（`scripts/nightly.sh` 里的默认值，0 是不译）。
+RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。新文章的中英对照：夜间「Stratechery 译制」一步按待译队列译 `STRATECHERY_TRANSLATE_LIMIT` 篇（`scripts/nightly.sh` 里默认 5，Zhilin 11-18 选的；0 是不译）。
 
 ## Stratechery 的发布时刻
 

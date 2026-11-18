@@ -61,9 +61,9 @@ if compose_exec app sh -c 'test -n "${STRATECHERY_RSS_URL:-}"' 2>/dev/null; then
 else
   echo "$(date '+%F %T') 跳过：Stratechery 抓取（.env 没设 STRATECHERY_RSS_URL）"
 fi
-# 新抓的 Stratechery 译成中英对照：按待译队列最多译 STRATECHERY_TRANSLATE_LIMIT 篇（调模型、花钱，默认 0 不译，
-# 默认值由 Zhilin 定，改这里）。凌晨不在 DeepSeek 高峰价时段。
-STRATECHERY_TRANSLATE_LIMIT="${STRATECHERY_TRANSLATE_LIMIT:-0}"
+# 新抓的 Stratechery 译成中英对照：按待译队列最多译 STRATECHERY_TRANSLATE_LIMIT 篇（调模型、花钱；Zhilin 11-18 选了每晚最多 5 篇，
+# 设 0 不译）。凌晨不在 DeepSeek 高峰价时段。Thompson 一周约 5 篇正文，补抓的一批几晚译完。
+STRATECHERY_TRANSLATE_LIMIT="${STRATECHERY_TRANSLATE_LIMIT:-5}"
 if [ "$STRATECHERY_TRANSLATE_LIMIT" -gt 0 ] 2>/dev/null; then
   step "Stratechery 译制" compose_exec app research-translate --source stratechery --limit "$STRATECHERY_TRANSLATE_LIMIT"
 fi
