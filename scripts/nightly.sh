@@ -62,10 +62,10 @@ else
   echo "$(date '+%F %T') 跳过：Stratechery 抓取（.env 没设 STRATECHERY_RSS_URL）"
 fi
 # 新抓的 Stratechery 译成中英对照：按待译队列最多译 STRATECHERY_TRANSLATE_LIMIT 篇（调模型、花钱；Zhilin 11-18：抓进来的都译，
-# 上限只防意外，和抓取每次最多 50 篇一样；设 0 不译）。凌晨不在 DeepSeek 高峰价时段。
+# 上限只防意外，和抓取每次最多 50 篇一样；设 0 不译）。凌晨不在 DeepSeek 高峰价时段；4 篇同时译，补抓那种一晚二十几篇也不拖住后面几步。
 STRATECHERY_TRANSLATE_LIMIT="${STRATECHERY_TRANSLATE_LIMIT:-50}"
 if [ "$STRATECHERY_TRANSLATE_LIMIT" -gt 0 ] 2>/dev/null; then
-  step "Stratechery 译制" compose_exec app research-translate --source stratechery --limit "$STRATECHERY_TRANSLATE_LIMIT"
+  step "Stratechery 译制" compose_exec app research-translate --source stratechery --limit "$STRATECHERY_TRANSLATE_LIMIT" --workers 4
 fi
 # 归档只记了日期的 Stratechery 按官网接口补上钟点（不调模型；都有了就不连官网），新导入的第二天就有。
 step "Stratechery 发布时刻" compose_exec app research-stratechery-times
