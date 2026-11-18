@@ -746,6 +746,11 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         (company_id, list(sources_by_id)),
     ).fetchall()
     verify_stored_quotes(conn, rows)
+    signals: dict[tuple, set[str]] = {}
+    for row in rows:
+        if row["published_at"] and row["stance"] in _CHANGE_SIGNALS:
+            author = sources_by_id[row["source_id"]].author
+            signals.setdefault((author, row["published_at"]), set()).add(row["stance"])
     last: dict[str, str] = {}
     items: list[dict] = []
     for row in rows:
@@ -755,7 +760,10 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         previous = last.get(author)
         # 只有看好和看淡互换才算态度变化。中性、两面不算信号：看好 → 两面 → 看好、看好 → 中性 → 看好
         # 都不算变了；看好 → 两面 → 看淡 算一次（从看好变成看淡）。两面常常只是这篇多写了几句风险。
-        signal = stance in _CHANGE_SIGNALS
+        group = signals.get((author, row["published_at"]), set())
+        if len(group) > 1:
+            last.pop(author, None)
+        signal = len(group) == 1 and stance in _CHANGE_SIGNALS
         changed = bool(signal and previous and previous != stance)
         if signal:
             last[author] = stance

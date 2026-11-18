@@ -284,3 +284,35 @@ def test_changed_document_and_corrected_ocr_cannot_surface_as_current_company_vi
     assert not companies_with_views(conn, list(sources), minimum=2)
     conn.execute("UPDATE articles SET content_hash='newer' WHERE external_id='current'")
     assert not recent_viewed_companies(conn, list(sources))
+
+
+def test_undated_or_simultaneous_opinions_cannot_establish_a_stance_reversal(conn, settings):
+    from researchlib.theses import present
+
+    company = _tencent(conn)["id"]
+    sources = {s.id: s for s in load_sources(settings.sources_path) if s.enabled}
+    refs = []
+    for key, date, stance, judgment in [
+        ("undated", None, "positive", "销量同比增长"),
+        ("same-1", "2025-01-10 08:00+08", "positive", "销量同比增长"),
+        ("same-2", "2025-01-10 08:00+08", "negative", "销量同比下降"),
+    ]:
+        aid = conn.execute(
+            """INSERT INTO articles (source_id,external_id,title,body_md,body_text,content_hash,published_at)
+               VALUES ('fangwei-mp',%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (key, key, judgment, judgment, key, date),
+        ).fetchone()["id"]
+        conn.execute(
+            """INSERT INTO company_views (article_id,company_id,content_hash,prompt_version,judgment,stance,quote)
+               VALUES (%s,%s,%s,2,%s,%s,%s)""", (aid, company, key, judgment, stance, judgment),
+        )
+        refs.append(aid)
+    thesis = {"theses": [{"title": "销量同比增长", "sources": [
+        {"id": f"v{aid}", "side": "oppose" if i == 2 else "support"} for i, aid in enumerate(refs)
+    ]}]}
+    for tied in (True, False):
+        if not tied:
+            conn.execute("UPDATE articles SET published_at='2025-01-11 08:00+08' WHERE id=%s", (refs[2],))
+        items = views_mod.timeline(conn, company, sources, settings)
+        assert [r["article_id"] for r in items if r["changed"]] == ([] if tied else [refs[2]])
+        assert present(thesis, items)[0]["shifted"] == ([] if tied else ["方伟"])

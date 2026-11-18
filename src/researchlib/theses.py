@@ -611,16 +611,16 @@ def present(row: dict | None, items: list[dict], company: str = "") -> list[dict
         ]
         # 同一位作者先支持后反对（或反过来）：态度变了。
         shifted = []
-        support_dates: dict[str, list] = {}
+        support_dates: dict[str, set] = {}
         for ref in thesis.get("for") or []:
-            if ref in by_article:
-                view = by_article[ref]
-                support_dates.setdefault(view["author"], []).append(view["date"])
+            view = by_article[ref]
+            if view.get("published_at") is not None:
+                support_dates.setdefault(view["author"], set()).add(view["published_at"])
         for ref in thesis.get("against") or []:
-            if ref in by_article:
-                view = by_article[ref]
-                if view["author"] in support_dates and view["author"] not in shifted:
-                    shifted.append(view["author"])
+            view = by_article[ref]
+            when, author = view.get("published_at"), view["author"]
+            if when is not None and author not in shifted and support_dates.get(author, set()) - {when}:
+                shifted.append(author)
         sources = [
             {
                 "article_id": ref,
