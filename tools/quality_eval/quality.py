@@ -36,7 +36,10 @@ TOP = 10
 
 
 def _queries() -> list[str]:
-    return QUERIES["tune"] + QUERIES["hold"]
+    queries = [query for group in QUERIES.values() for query in group]
+    if len(set(queries)) != len(queries):
+        raise ValueError("调参和留出集合必须按整题隔离")
+    return queries
 
 
 def _get(url: str):
@@ -55,7 +58,7 @@ def _get(url: str):
 
 def fetch(base: str, out: Path) -> None:
     """文章级前 50（检索页卡片的摘录段）、段落级前 50（问库、外部调用方拿到的）和片段级前 50（检索页默认，
-    level=passage；按峰值块号记分，和段落级的分数共用）。线上还没有片段级的版本，这一项留空。"""
+    level=passage；保留范围和待评文本）。线上还没有片段级的版本，这一项留空。"""
     result = {}
     for query in _queries():
         encoded = urllib.parse.quote(query)
@@ -89,29 +92,36 @@ def _labels(path: Path = LABELS) -> dict[str, int]:
     return json.loads(path.read_text()) if path.exists() else {}
 
 
-def _items(result: dict) -> tuple[list[tuple[int, int, str]], ...]:
-    articles = [
-        (a["id"], a["chunk"], a.get("snippet") or "") for a in result.get("articles", []) if a.get("chunk") is not None
-    ]
+def evidence_key(query: str, article_id: int, ord_: int, text: str, start=None, end=None) -> str:
+    normalized = " ".join(text.split())
+    digest = hashlib.sha256(normalized.encode()).hexdigest()
+    first, last = (ord_ if start is None else start), (ord_ if end is None else end)
+    return f"{query}|{article_id}|{ord_}|{first}-{last}|{digest}"
+
+
+def _items(result: dict):
+    articles = [(a["id"], a["chunk"], a.get("snippet") or "") for a in result.get("articles", [])
+                if a.get("chunk") is not None]
     chunks = [(p["article_id"], p["chunk"], p.get("text") or "") for p in result.get("chunks", [])]
-    fragments = [(p["article_id"], p["chunk"], p.get("text") or "") for p in result.get("fragments", [])]
+    fragments = [(p["article_id"], p["chunk"], p.get("text") or "", p.get("from"), p.get("to"))
+                 for p in result.get("fragments", [])]
     return articles, chunks, fragments
 
 
-def pool(paths: list[Path], prefix: Path) -> None:
-    """几份结果里前 TOP 条、还没打过分的段落，按问题分组、打乱，编号盲评。"""
-    labels = _labels()
+def pool(paths: list[Path], prefix: Path, labels_path: Path = LABELS) -> None:
+    """正文或片段范围变了必须重新盲评；旧的三段式坐标留着存档，不猜测当时所见文本。"""
+    labels = _labels(labels_path)
     entries: dict[str, dict[str, str]] = {}
     for path in paths:
         data = json.loads(path.read_text())
         for query in _queries():
             if query not in data:
                 continue
-            articles, chunks, fragments = _items(data[query])
-            for article_id, ord_, body in articles[:TOP] + chunks[:TOP] + fragments[:TOP]:
-                key = f"{query}|{article_id}|{ord_}"
-                if key not in labels:
-                    entries.setdefault(query, {})[key] = body
+            for group in _items(data[query]):
+                for item in group[:TOP]:
+                    key = evidence_key(query, *item)
+                    if key not in labels:
+                        entries.setdefault(query, {})[key] = item[2]
     rng = random.Random(7)
     lines, keymap = [], {}
     for query in _queries():
@@ -121,10 +131,10 @@ def pool(paths: list[Path], prefix: Path) -> None:
         rng.shuffle(items)
         lines.append(f"##### 问题：{query}")
         for key, body in items:
-            code = hashlib.md5(key.encode()).hexdigest()[:6]
+            code = hashlib.sha256(key.encode()).hexdigest()[:16]
             keymap[code] = key
             text = " ".join(body.split())
-            lines.append(f"[{code}] {text[:600]}{'…' if len(text) > 600 else ''}")
+            lines.append(f"[{code}] {text}")
         lines.append("")
     Path(f"{prefix}_blind.txt").write_text("\n".join(lines))
     Path(f"{prefix}_keys.json").write_text(json.dumps(keymap, ensure_ascii=False))
@@ -138,7 +148,10 @@ def label(prefix: Path, grades: str, path: Path = LABELS) -> None:
         code, grade = item.split(":")
         if grade not in {"0", "1", "2"}:
             raise SystemExit(f"分数只能是 0、1、2：{item}")
-        labels[keymap[code]] = int(grade)
+        key = keymap[code]
+        if not re.search(r"\|[0-9a-f]{64}$", key):
+            raise SystemExit("旧盲评单未绑定正文，请重新 pool 后判分")
+        labels[key] = int(grade)
     path.write_text(json.dumps(dict(sorted(labels.items())), ensure_ascii=False, indent=0) + "\n")
     print(len(grades.split()), "段记分；共", len(labels))
 
@@ -153,12 +166,13 @@ def _duplicate(a: str, b: str) -> bool:
     return bool(sa and sb) and len(sa & sb) / min(len(sa), len(sb)) >= 0.5
 
 
-def view(query: str, items: list[tuple[int, int, str]], labels: dict[str, int]) -> dict[str, float]:
+def view(query: str, items: list, labels: dict[str, int], pool_items=None) -> dict[str, float]:
     """前 TOP 条：平均分、NDCG（理想排序用这个问题打过分的全部段落）、0 分条数、不重复的 2 分条数、没打分的条数。"""
-    grades = [labels.get(f"{query}|{a}|{o}") for a, o, _ in items[:TOP]]
-    texts = [body for _, _, body in items[:TOP]]
+    grades = [labels.get(evidence_key(query, *item)) for item in items[:TOP]]
+    texts = [item[2] for item in items[:TOP]]
     known = [g for g in grades if g is not None]
-    ideal = sorted((g for k, g in labels.items() if k.startswith(query + "|")), reverse=True)[:TOP]
+    current_keys = {evidence_key(query, *item) for item in (items if pool_items is None else pool_items)}
+    ideal = sorted((labels[key] for key in current_keys if key in labels), reverse=True)[:TOP]
     dcg = sum((2**g - 1) / math.log2(i + 2) for i, g in enumerate(grades) if g is not None)
     idcg = sum((2**g - 1) / math.log2(i + 2) for i, g in enumerate(ideal))
     return {
@@ -175,18 +189,25 @@ def view(query: str, items: list[tuple[int, int, str]], labels: dict[str, int]) 
 def metrics(path: Path) -> None:
     data = json.loads(path.read_text())
     labels = _labels()
-    for split in ("tune", "hold"):
+    pools = {q: [item for group in _items(results) for item in group] for q, results in data.items()}
+    for split in QUERIES:
+        present = [q for q in QUERIES[split] if q in data]
+        print(f"{split} 已收集 {len(present)}/{len(QUERIES[split])} 道题；旧坐标标签不计入本次结果")
         for name, index in (("文章级", 0), ("段落级", 1), ("片段级", 2)):
-            rows = [view(q, _items(data[q])[index], labels) for q in QUERIES[split] if q in data]
+            rows = [view(q, _items(data[q])[index], labels, pools[q]) for q in QUERIES[split] if q in data]
             if not rows:
+                continue
+            judged = sum(sum(evidence_key(q, *x) in labels for x in _items(data[q])[index][:TOP]) for q in present)
+            if not judged:
+                print(f"{split:4} {name} 等待人工按此版正文判分")
                 continue
             summary = {k: sum(r[k] for r in rows) / len(rows) for k in rows[0]}
             print(f"{split:4} {name} " + " ".join(f"{k}={v:.3f}" for k, v in summary.items()))
         focus = _labels(FOCUS)
-        rows = [view(q, _items(data[q])[2], focus) for q in QUERIES[split] if q in data]
-        if focus and rows and any(_items(data[q])[2] for q in QUERIES[split] if q in data):
+        rows = [view(q, _items(data[q])[2], focus, pools[q]) for q in QUERIES[split] if q in data]
+        if rows and any(evidence_key(q, *x) in focus for q in present for x in _items(data[q])[2][:TOP]):
             twos = [
-                sum(1 for a, o, _ in _items(data[q])[2][:TOP] if focus.get(f"{q}|{a}|{o}") == 2) / TOP
+                sum(1 for item in _items(data[q])[2][:TOP] if focus.get(evidence_key(q, *item)) == 2) / TOP
                 for q in QUERIES[split] if q in data
             ]
             print(f"{split:4} 片段专门讲 ndcg={sum(r['ndcg'] for r in rows) / len(rows):.3f} "
@@ -201,6 +222,7 @@ def main() -> int:
     sub.add_parser("fetch").add_argument("name")
     pool_parser = sub.add_parser("pool")
     pool_parser.add_argument("names", nargs="+", help="几份结果的名字，最后一个是盲评单的前缀")
+    pool_parser.add_argument("--focus", action="store_true", help="准备专注度盲评单")
     label_parser = sub.add_parser("label")
     label_parser.add_argument("prefix")
     label_parser.add_argument("grades", help="'编号:分数 编号:分数 ...'")
@@ -213,7 +235,7 @@ def main() -> int:
         fetch(args.base.rstrip("/"), folder / f"{args.name}.json")
     elif args.command == "pool":
         names = args.names if len(args.names) > 1 else args.names * 2
-        pool([folder / f"{name}.json" for name in names[:-1]], folder / names[-1])
+        pool([folder / f"{name}.json" for name in names[:-1]], folder / names[-1], FOCUS if args.focus else LABELS)
     elif args.command == "label":
         label(folder / args.prefix, args.grades, FOCUS if args.focus else LABELS)
     else:

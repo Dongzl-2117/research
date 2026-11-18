@@ -634,3 +634,14 @@ def test_title_counts_less_for_every_passage_of_a_long_compilation():
         for p in score_rows(None, _query(terms=terms), rows, scope=Scope(source_ids=["synthetic"]), context=context)
     }
     assert found[1] > found[2] > 0
+
+
+def test_ask_and_search_fragments_keep_opposite_financial_facts():
+    from researchlib.retrieval import _distinct_fragments, build_fragments
+
+    # 近重复覆盖会跨过一整个数字。结论相反时两份都应保留，完全照录的第三份仍合并。
+    common = "其余经营项目的披露口径保持一致。" * 18
+    bodies = [common + "自由现金流同比为+12.5%。", common + "自由现金流同比为−12.5%。"]
+    rows = [_passage(i, 0, 3 / i, 2025, body=body) for i, body in enumerate([*bodies, bodies[0]], start=1)]
+    assert [p.article_id for p in select(rows, _query(), Budget(10, 50000, 3))] == [1, 2]
+    assert [f.article_id for f in _distinct_fragments(build_fragments(rows))] == [1, 2]

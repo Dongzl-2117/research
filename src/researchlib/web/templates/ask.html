@@ -15,7 +15,11 @@
   <p class="item-meta"><span class="source-number">{{ item.n }}</span> <a href="{{ item.url }}">{{ item.title }}</a></p>
   <p class="source-byline">{{ item.author }} · {{ item.date }}{% if item.heading %} · {{ item.heading | truncate(40, true, "…", 0) }}{% endif %}</p>
   <div class="passage-foot">
-    <details class="passage-full"><summary>查看原文</summary><p>{{ item.text | highlight_full(result.terms) }}</p></details>
+    <details class="passage-full"><summary>查看原文</summary>
+      {% if item.before %}<p><strong>上文</strong> {{ item.before | highlight_full(result.terms) }}</p>{% endif %}
+      <p>{% if item.before or item.after %}<strong>命中段</strong> {% endif %}{{ item.text | highlight_full(result.terms) }}</p>
+      {% if item.after %}<p><strong>下文</strong> {{ item.after | highlight_full(result.terms) }}</p>{% endif %}
+    </details>
     {% if result.id %}
     <form class="mark-form" action="/ask/{{ result.id }}/feedback" method="post">
       <input type="hidden" name="label" value="irrelevant"><input type="hidden" name="article" value="{{ item.article_id }}"><input type="hidden" name="chunk" value="{{ item.ord }}"><input type="hidden" name="n" value="{{ item.n }}">

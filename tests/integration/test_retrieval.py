@@ -569,3 +569,31 @@ def test_minus_only_excludes_a_word_right_after_a_space(conn):
     assert parsed("A -> B")[0] == []
     assert parsed("腾讯 -- 游戏")[0] == []
     assert parsed("腾讯 -Tencent")[0] == ["Tencent"]
+
+
+def test_day_and_author_overview_include_tail_and_image_evidence(conn, settings):
+    from researchlib.ask import PRESETS
+    from researchlib.retrieval import retrieve
+    from researchlib.sources import enabled_sources, load_sources
+    from researchlib.web.queries import Scope
+
+    _sample(conn, settings)
+    art = conn.execute(
+        "SELECT id, source_id, published_at FROM articles WHERE external_id='sample:battery-note'"
+    ).fetchone()
+    conn.execute("DELETE FROM article_chunks WHERE article_id=%s", (art["id"],))
+    for ord_, body, lang in [(0, "开头概况", ""), (1, "行业背景", ""), (2, "行业演进", ""),
+                             (30, "末尾列出了需求转弱的验证条件", ""), (20000, "图片披露的原始周度数据", "ocr")]:
+        conn.execute("INSERT INTO article_chunks (article_id, ord, body, lang) VALUES (%s,%s,%s,%s)",
+                     (art["id"], ord_, body * 12, lang))
+    sources = enabled_sources(load_sources(settings.sources_path))
+    for preset, scope in [
+        ("author", Scope(source_ids=[art["source_id"]])),
+        ("day", Scope(source_ids=[art["source_id"]], date_from=art["published_at"].date(),
+                      date_to=art["published_at"].date())),
+    ]:
+        found = retrieve(conn, PRESETS[preset], scope, sources, purpose="deep", preset=True)
+        ords = {p.ord for p in found.passages if p.article_id == art["id"]}
+        assert {30, 20000} <= ords or (
+            20000 in ords and any("末尾列出" in p.after for p in found.passages if p.article_id == art["id"])
+        ), ords

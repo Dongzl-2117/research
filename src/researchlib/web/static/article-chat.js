@@ -446,6 +446,18 @@
     if (kind === 'refill') action(turn, '回填问题', 'refill');
   }
 
+  function openCitationContext() {
+    if (!fullPage || !/^#c-\d+$/.test(location.hash)) return;
+    const citation = document.getElementById(location.hash.slice(1));
+    if (!citation) return;
+    const group = citation.closest('details');
+    if (group) group.open = true;
+    const context = citation.querySelector('details.passage-full');
+    if (context) context.open = true;
+  }
+  // 仅从侧栏新开链接时自动展开；完整页内点击编号保留焦点，由读者切换「查看原文」。
+  openCitationContext();
+
   function renderData(turn, data) {
     turn.content.replaceChildren();
     if (data.answer) {
@@ -518,6 +530,14 @@
         const text = document.createElement('p');
         text.textContent = item.text || '';
         entry.append(title, text);
+        if (turn.id && !item.withheld && url) {
+          const context = document.createElement('a');
+          context.href = `/ask/${turn.id}#c-${item.n}`;
+          context.textContent = '查看这次回答使用的上下文';
+          context.target = '_blank';
+          context.rel = 'noopener';
+          entry.appendChild(context);
+        }
         list.appendChild(entry);
       });
       evidence.append(summary, list);
@@ -571,7 +591,9 @@
   // 整合中：读到第几批写在状态行，已经写出来的半截回答先显示（stats.progress、answer，见 ask._Progress）。
   function showRunning(turn, data) {
     const stage = (data.stats && data.stats.progress) || {};
-    if (data.answer && data.answer !== turn.partial) {
+    // 提供方重试会先清空半截回答；轮询读到空正文时同步撤下旧的文字和引用。
+    const cleared = data.answer === '' && turn.content.querySelector('.chat-markdown');
+    if (cleared || (data.answer && data.answer !== turn.partial)) {
       turn.partial = data.answer;
       renderData(turn, { ...data, checks: [], stats: {}, failed_batches: [], model: '' });
     }

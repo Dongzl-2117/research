@@ -63,6 +63,10 @@ const {chromium} = require('playwright-core');
         if (state.mode === 'network') { await json({detail: '合成503'}, 503); return; }
         if (state.mode === 'missing') { await json({detail: '合成404'}, 404); return; }
         if (state.mode === 'error') { await json({...done, status: 'error', answer: '', answer_html: '', error: '合成整合失败'}); return; }
+        if (state.mode === 'stream') {
+          await json({...done, status: 'running', answer: '上一轮的半截数字', answer_html: '<p>上一轮的半截数字</p>'});
+          return;
+        }
         if (state.mode === 'hold') { await json({...done, status: 'running', answer: '', answer_html: ''}); return; }
         await json(done); return;
       }
@@ -150,6 +154,12 @@ const {chromium} = require('playwright-core');
       await fits(page);
       await page.setViewportSize({width:390,height:844}); await fits(page);
     });
+    await check('从侧栏按编号打开完整回答时展示模型读到的上下文', {file:'ask-answer.html#c-1'}, async ({page}) => {
+      const evidence = page.locator('#c-1 .passage-full');
+      assert.equal(await evidence.evaluate(node => node.open), true);
+      const text = await evidence.innerText();
+      assert(text.includes('80%') && text.includes('合成上文') && text.includes('合成下文'));
+    });
     await check('历史、引用和原文反馈可用键盘到达', {file:'ask-answer.html'}, async ({page}) => {
       await page.locator('.ask-history summary').focus(); await page.keyboard.press('Enter');
       assert(await page.locator('.ask-history nav').isVisible());
@@ -175,6 +185,17 @@ const {chromium} = require('playwright-core');
       await page.locator('.chat-form textarea').fill('长草稿'.repeat(140));
       await fits(page);
       assert((await page.locator('.chat-count').innerText()).includes('500'));
+    });
+    await check('模型重试时空正文撤下旧草稿，原任务随后完成', {mode:'stream'}, async ({page, state}) => {
+      await send(page);
+      const draft = page.getByText('上一轮的半截数字', {exact:true});
+      await draft.waitFor({state:'visible'});
+      state.mode = 'hold';
+      await draft.waitFor({state:'hidden'});
+      state.mode = 'done';
+      await finished(page);
+      assert.equal(state.posts.length, 1);
+      assert(await page.locator('.chat-markdown h2').first().isVisible());
     });
     await check('断网暂停后读取原ID，不重发提问', {mode:'network'}, async ({page, state}) => {
       await send(page); await finished(page);

@@ -248,6 +248,8 @@ def synthesize(
     {"stage": "writing"}（开始写回答），{"stage": "writing", "text"}（写到目前为止的回答）。
     report 另记 read_s（分批读资料）、write_s（写回答）和 usage（各次调用的 token 加起来，接口报了才有）。
     """
+    from researchlib.citecheck import split_claims
+
     prompt = system or SYSTEM_PROMPT
     total = sum(_size(item) for item in passages)
     usage: dict = {}
@@ -287,6 +289,13 @@ def synthesize(
         except LLMError as exc:
             logger.warning("分批摘录失败：%s", exc)
             return None, spent
+        if not text.strip():
+            return None, spent
+        # 摘录有时重新从 [1] 编号。跨批编号指向本批没有读到的原文，整句都不能交给汇总。
+        allowed = {item["n"] for item in batch}
+        claims = split_claims(text)
+        if any(not allowed.issuperset(refs) for _, refs in claims):
+            text = "\n".join(sentence for sentence, refs in claims if allowed.issuperset(refs))
         return text.strip(), spent
 
     reading = time.monotonic()
@@ -305,11 +314,14 @@ def synthesize(
     failed = [index for index, note in enumerate(notes, start=1) if note is None]
     if report is not None:
         report["failed_batches"] = failed
+        report["unread_citations"] = [item["n"] for index in failed for item in batches[index - 1]]
     if len(failed) == len(batches):
         raise LLMError(f"分 {len(batches)} 批读资料，每一批都失败了")
-    kept = [note for note in notes if note and note.strip("「」 \n") != "无"]
-    catalog = "\n".join(_material_head(item) for item in passages)
-    joined = "\n\n".join(f"第 {i} 批摘录：\n{note}" for i, note in enumerate(kept, start=1)) or "（各批都没有相关内容）"
+    kept = [f"第 {index} 批摘录：\n{excerpt}" for index, excerpt in enumerate(notes, start=1)
+            if excerpt and excerpt.strip("「」 \n") != "无"]
+    catalog = "\n".join(_material_head(item) for batch, excerpt in zip(batches, notes, strict=True)
+                        if excerpt is not None for item in batch)
+    joined = "\n\n".join(kept) or "（读完的批次没有可用摘录）"
     missing = ""
     if failed:
         numbers = "、".join(str(index) for index in failed)
@@ -698,6 +710,15 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
             )
             conn.commit()
             return
+        # 登记时的 40 段只是检索预览。第一段流式文字写入前，先按模型实际收到的顺序冻结编号。
+        frozen = conn.execute(
+            "UPDATE llm_answers SET citations = %s, terms = %s, answer = '', updated_at = now()"
+            " WHERE id = %s AND status = 'running'",
+            (Jsonb(passages), Jsonb(found.terms), answer_id),
+        )
+        conn.commit()
+        if frozen.rowcount != 1:
+            return
         synth_report: dict = {}
         note = outline_note(found.outline, found.outline_label)
         tracker = _Progress(conn, answer_id)
@@ -706,7 +727,10 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
             raise LLMError("模型返回了空回答")
         finished = time.monotonic()
         cited = set(cited_numbers(answer, len(passages)))
+        unread = set(synth_report.get("unread_citations", []))
         for item in passages:
+            if item["n"] in unread:
+                item["read_failed"] = True
             item["cited"] = item["n"] in cited
         chars = sum(_size(item) for item in passages)
         # 各步耗时、读了多少资料、模型给的同义词：research-eval-feedback 用来看真实效果。
@@ -768,7 +792,8 @@ def retry(conn, settings: Settings, answer_id: int, *, run_inline: bool | None =
         conn.commit()
         return False
     row = conn.execute(
-        "UPDATE llm_answers SET status = 'running', error = '', updated_at = now()"
+        "UPDATE llm_answers SET status = 'running', error = '', answer = '',"
+        " stats = coalesce(stats, '{}'::jsonb) - 'progress', updated_at = now()"
         " WHERE id = %s AND status = 'error' RETURNING id",
         (answer_id,),
     ).fetchone()
