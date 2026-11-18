@@ -1,0 +1,82 @@
+feature	input	expected	actual	status	evidence
+完整问库 / 桌面空态、完整Markdown、两次独立提问和刷新地址	本地 Chromium；合成文章及站内问答响应	桌面空态、完整Markdown、两次独立提问和刷新地址	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；桌面空态、完整Markdown、两次独立提问和刷新地址
+完整问库 / 范围快照保留作者日期来源公司文章目录，不传历史	本地 Chromium；合成文章及站内问答响应	范围快照保留作者日期来源公司文章目录，不传历史	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；范围快照保留作者日期来源公司文章目录，不传历史
+完整问库 / 示例库提示不挤走桌面和手机的输入区	本地 Chromium；合成文章及站内问答响应	示例库提示不挤走桌面和手机的输入区	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；示例库提示不挤走桌面和手机的输入区
+完整问库 / 从侧栏按编号打开完整回答时展示模型读到的上下文	本地 Chromium；合成文章及站内问答响应	从侧栏按编号打开完整回答时展示模型读到的上下文	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；从侧栏按编号打开完整回答时展示模型读到的上下文
+完整问库 / 历史、引用和原文反馈可用键盘到达	本地 Chromium；合成文章及站内问答响应	历史、引用和原文反馈可用键盘到达	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；历史、引用和原文反馈可用键盘到达
+完整问库 / 手机长回答、输入区、窄视口和软键盘空间	本地 Chromium；合成文章及站内问答响应	手机长回答、输入区、窄视口和软键盘空间	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；手机长回答、输入区、窄视口和软键盘空间
+完整问库 / 断网暂停后读取原ID，不重发提问	本地 Chromium；合成文章及站内问答响应	断网暂停后读取原ID，不重发提问	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；断网暂停后读取原ID，不重发提问
+完整问库 / 断线用相同提交编号确认，回填保留当时范围	本地 Chromium；合成文章及站内问答响应	断线用相同提交编号确认，回填保留当时范围	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；断线用相同提交编号确认，回填保留当时范围
+完整问库 / 全库问题回填时清掉之后选择的作者和日期	本地 Chromium；合成文章及站内问答响应	全库问题回填时清掉之后选择的作者和日期	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；全库问题回填时清掉之后选择的作者和日期
+完整问库 / 错误重试继续同一回答任务	本地 Chromium；合成文章及站内问答响应	错误重试继续同一回答任务	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；错误重试继续同一回答任务
+完整问库 / 打开整合中回答恢复轮询，保留新输入草稿	本地 Chromium；合成文章及站内问答响应	打开整合中回答恢复轮询，保留新输入草稿	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；打开整合中回答恢复轮询，保留新输入草稿
+完整问库 / 无脚本保留完整回答、引用和原生提问反馈	本地 Chromium；合成文章及站内问答响应	无脚本保留完整回答、引用和原生提问反馈	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；无脚本保留完整回答、引用和原生提问反馈
+完整问库 / 无脚本手机侧栏保留文末原生问库表单	本地 Chromium；合成文章及站内问答响应	无脚本手机侧栏保留文末原生问库表单	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；无脚本手机侧栏保留文末原生问库表单
+完整问库 / 深色主题与错误状态	本地 Chromium；合成文章及站内问答响应	深色主题与错误状态	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；深色主题与错误状态
+完整问库 / 侧栏显示欢迎语、公开范围提示与完整 Markdown	本地 Chromium；合成文章及站内问答响应	侧栏显示欢迎语、公开范围提示与完整 Markdown	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；侧栏显示欢迎语、公开范围提示与完整 Markdown
+完整问库 / 手机抽屉焦点循环、Escape返回入口和背景隔离	本地 Chromium；合成文章及站内问答响应	手机抽屉焦点循环、Escape返回入口和背景隔离	该操作的浏览器断言全部完成	通过	tools/ask_chat_smoke.cjs；手机抽屉焦点循环、Escape返回入口和背景隔离
+文章侧栏 / 原问库请求、显式范围、独立轮次及核对提示	本地 Chromium；合成文章及站内问答响应	原问库请求、显式范围、独立轮次及核对提示	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；原问库请求、显式范围、独立轮次及核对提示
+文章侧栏 / 输入法组合与Shift换行不误发送	本地 Chromium；合成文章及站内问答响应	输入法组合与Shift换行不误发送	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；输入法组合与Shift换行不误发送
+文章侧栏 / 没有模型仍展示原文和问库链接	本地 Chromium；合成文章及站内问答响应	没有模型仍展示原文和问库链接	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；没有模型仍展示原文和问库链接
+文章侧栏 / 有限恢复：network	本地 Chromium；合成文章及站内问答响应	有限恢复：network	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；有限恢复：network
+文章侧栏 / 有限恢复：server	本地 Chromium；合成文章及站内问答响应	有限恢复：server	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；有限恢复：server
+文章侧栏 / 有限恢复：invalid	本地 Chromium；合成文章及站内问答响应	有限恢复：invalid	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；有限恢复：invalid
+文章侧栏 / 有限恢复：body-timeout	本地 Chromium；合成文章及站内问答响应	有限恢复：body-timeout	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；有限恢复：body-timeout
+文章侧栏 / 404立即停止并保留回答ID	本地 Chromium；合成文章及站内问答响应	404立即停止并保留回答ID	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；404立即停止并保留回答ID
+文章侧栏 / 一直running有截止并可继续读取原ID	本地 Chromium；合成文章及站内问答响应	一直running有截止并可继续读取原ID	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；一直running有截止并可继续读取原ID
+文章侧栏 / 错误重试调用原动作和原ID	本地 Chromium；合成文章及站内问答响应	错误重试调用原动作和原ID	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；错误重试调用原动作和原ID
+文章侧栏 / 提交响应丢失时复用同一提交编号并提供恢复入口	本地 Chromium；合成文章及站内问答响应	提交响应丢失时复用同一提交编号并提供恢复入口	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；提交响应丢失时复用同一提交编号并提供恢复入口
+文章侧栏 / 主线宽栏、拖动和键盘调宽持久保存且不改变问库范围	本地 Chromium；合成文章及站内问答响应	主线宽栏、拖动和键盘调宽持久保存且不改变问库范围	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；主线宽栏、拖动和键盘调宽持久保存且不改变问库范围
+文章侧栏 / 分隔键盘首尾与步进的ARIA范围和实际宽度一致	本地 Chromium；合成文章及站内问答响应	分隔键盘首尾与步进的ARIA范围和实际宽度一致	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；分隔键盘首尾与步进的ARIA范围和实际宽度一致
+文章侧栏 / 保存42%且初始收起时重新展开即时同步ARIA	本地 Chromium；合成文章及站内问答响应	保存42%且初始收起时重新展开即时同步ARIA	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；保存42%且初始收起时重新展开即时同步ARIA
+文章侧栏 / 窗口变化及旧比例超出调节边界时ARIA仍如实包含实际宽度	本地 Chromium；合成文章及站内问答响应	窗口变化及旧比例超出调节边界时ARIA仍如实包含实际宽度	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；窗口变化及旧比例超出调节边界时ARIA仍如实包含实际宽度
+文章侧栏 / 清空丢弃迟到响应并保留原侧栏布局	本地 Chromium；合成文章及站内问答响应	清空丢弃迟到响应并保留原侧栏布局	该操作的浏览器断言全部完成	通过	tools/sidebar_ask_smoke.cjs；清空丢弃迟到响应并保留原侧栏布局
+文章 / 目录跳到对应节	1440px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · tocNavigation
+文章 / 对照失配仍显示全文	1440px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · misalignmentNotice
+文章 / 跳入重复段自动展开	1440px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · repeatPreservedAndHashExpanded
+文章 / 过期映射显示两份原译文	1440px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · incompatibleReceiptFallback
+文章 / 旧译锚点对应行数	1440px 合成双语文稿	25	25	通过	tools/article_layout_smoke.cjs · anchoredLegacyPairs
+文章 / 旧译保留出处标记	1440px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · anchoredLegacyProvenance
+文章 / 浏览器脚本错误数	1440px 合成双语文稿	0	0	通过	tools/article_layout_smoke.cjs · javascriptErrors
+双语排版 / 整页不横向溢出	1440px 宽表格夹具	documentWidth ≤ viewport	1440 / 1440	通过	tools/article_layout_smoke.cjs
+双语排版 / 宽表保留横向滚动	1440px 宽表格夹具	tableContent > tableWidth	1629 / 640	通过	tools/article_layout_smoke.cjs
+文章 / 目录跳到对应节	390px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · tocNavigation
+文章 / 对照失配仍显示全文	390px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · misalignmentNotice
+文章 / 跳入重复段自动展开	390px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · repeatPreservedAndHashExpanded
+文章 / 过期映射显示两份原译文	390px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · incompatibleReceiptFallback
+文章 / 旧译锚点对应行数	390px 合成双语文稿	25	25	通过	tools/article_layout_smoke.cjs · anchoredLegacyPairs
+文章 / 旧译保留出处标记	390px 合成双语文稿	True	True	通过	tools/article_layout_smoke.cjs · anchoredLegacyProvenance
+文章 / 浏览器脚本错误数	390px 合成双语文稿	0	0	通过	tools/article_layout_smoke.cjs · javascriptErrors
+双语排版 / 整页不横向溢出	390px 宽表格夹具	documentWidth ≤ viewport	390 / 390	通过	tools/article_layout_smoke.cjs
+双语排版 / 宽表保留横向滚动	390px 宽表格夹具	tableContent > tableWidth	1629 / 358	通过	tools/article_layout_smoke.cjs
+实验台（离线） / 三题双方案比较	本地合成环境与 Chromium，模型替身	三题双方案比较	相应操作与断言完成	通过	tools/experiments/browser_smoke.cjs
+实验台（离线） / 候选与基准参数隔离	本地合成环境与 Chromium，模型替身	候选与基准参数隔离	相应操作与断言完成	通过	tools/experiments/browser_smoke.cjs
+实验台（离线） / 评价连点 / 重评 / 撤销	本地合成环境与 Chromium，模型替身	评价连点 / 重评 / 撤销	相应操作与断言完成	通过	tools/experiments/browser_smoke.cjs
+实验台（离线） / 原文回看与刷新后恢复	本地合成环境与 Chromium，模型替身	原文回看与刷新后恢复	相应操作与断言完成	通过	tools/experiments/browser_smoke.cjs
+实验台（离线） / 键盘切标签	本地合成环境与 Chromium，模型替身	键盘切标签	相应操作与断言完成	通过	tools/experiments/browser_smoke.cjs
+实验台（离线） / 显式替身生成及回答评价	本地合成环境与 Chromium，模型替身	显式替身生成及回答评价	相应操作与断言完成	通过	tools/experiments/browser_smoke.cjs
+实验台（离线） / 导出	本地合成环境与 Chromium，模型替身	导出	相应操作与断言完成	通过	tools/experiments/browser_smoke.cjs
+实验台（离线） / 1440、1024、390px 布局	本地合成环境与 Chromium，模型替身	1440、1024、390px 布局	相应操作与断言完成	通过	tools/experiments/browser_smoke.cjs
+原文标注 / 来源原文回看	本地合成环境与 Chromium，模型替身	来源原文回看	相应操作与断言完成	通过	tools/relevance/browser_smoke.cjs
+原文标注 / 刷新恢复既有选择	本地合成环境与 Chromium，模型替身	刷新恢复既有选择	相应操作与断言完成	通过	tools/relevance/browser_smoke.cjs
+原文标注 / 连点保护	本地合成环境与 Chromium，模型替身	连点保护	相应操作与断言完成	通过	tools/relevance/browser_smoke.cjs
+原文标注 / 两者相当或均不相关	本地合成环境与 Chromium，模型替身	两者相当或均不相关	相应操作与断言完成	通过	tools/relevance/browser_smoke.cjs
+原文标注 / 改判与撤销最近修订	本地合成环境与 Chromium，模型替身	改判与撤销最近修订	相应操作与断言完成	通过	tools/relevance/browser_smoke.cjs
+原文标注 / 手机布局	本地合成环境与 Chromium，模型替身	手机布局	相应操作与断言完成	通过	tools/relevance/browser_smoke.cjs
+网站实验台 / 未配置所有者时无管理入口	本地合成环境与 Chromium，模型替身	未配置所有者时无管理入口	相应操作与断言完成	通过	tools/experiments/website_smoke.cjs
+网站实验台 / 模拟所有者访问挂载页	本地合成环境与 Chromium，模型替身	模拟所有者访问挂载页	相应操作与断言完成	通过	tools/experiments/website_smoke.cjs
+网站实验台 / 双方案比较不触发模型	本地合成环境与 Chromium，模型替身	双方案比较不触发模型	相应操作与断言完成	通过	tools/experiments/website_smoke.cjs
+网站实验台 / 费用/额度/预算展示	本地合成环境与 Chromium，模型替身	费用/额度/预算展示	相应操作与断言完成	通过	tools/experiments/website_smoke.cjs
+网站实验台 / 手动确认才发送	本地合成环境与 Chromium，模型替身	手动确认才发送	相应操作与断言完成	通过	tools/experiments/website_smoke.cjs
+网站实验台 / 单侧失败保留另一侧	本地合成环境与 Chromium，模型替身	单侧失败保留另一侧	相应操作与断言完成	通过	tools/experiments/website_smoke.cjs
+网站实验台 / 刷新不重发	本地合成环境与 Chromium，模型替身	刷新不重发	相应操作与断言完成	通过	tools/experiments/website_smoke.cjs
+网站实验台 / 390px 手机布局	本地合成环境与 Chromium，模型替身	390px 手机布局	相应操作与断言完成	通过	tools/experiments/website_smoke.cjs
+个人手记 / 文章节选	1440px 与 390px Chromium，合成公司和公告	划选后，手记填入所选原文并保存到原文章的段落链接	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py
+个人手记 / 公司自选	1440px 与 390px Chromium，合成公司和公告	从公司页建自选，打开后可回到同一公司	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py
+个人手记 / 复核日	1440px 与 390px Chromium，合成公司和公告	当日待复核可见，保存下一次复核日后从当前到期表移出	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py
+个人手记 / 历史回看	1440px 与 390px Chromium，合成公司和公告	回看前一天时不显示后来披露的实绩和调整后的判断	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py
+个人手记 / 披露时间	1440px 与 390px Chromium，合成公司和公告	记录时间早于披露时间时显示提示	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py
+个人手记 / 数据恢复	1440px 与 390px Chromium，合成公司和公告	全新浏览器导入备份后，找回自选、两版判断和原复核日	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py
+个人手记 / 重复与冲突导入	1440px 与 390px Chromium，合成公司和公告	相同备份不新增；有冲突时整次回滚	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py
+个人手记 / 多标签写入	1440px 与 390px Chromium，合成公司和公告	一个标签已存新判断，另一标签的旧版本受到阻止	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py
+个人手记 / 请求隐私	1440px 与 390px Chromium，合成公司和公告	页面请求均为 GET，没有传出假设内容	两个宽度均完成对应界面断言	通过	tools/journal_smoke.py

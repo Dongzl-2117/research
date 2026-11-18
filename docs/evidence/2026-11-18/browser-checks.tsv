@@ -1,0 +1,40 @@
+feature	input	expected	actual	status	evidence
+主题切换与持久化	点深色，刷新后读当前主题	刷新后仍为 dark，按钮选中	dark / true	通过	线上 Chromium 1440×900 / → /；.sidebar [data-theme-option=dark]
+键盘检索	正文按 /	焦点进入检索输入框	q	通过	线上 Chromium 1440×900 / → /；#q
+按天收起 / 展开	点首日折叠箭头两次	当天文章由隐藏变为可见	false → true	通过	线上 Chromium 1440×900 / → /；.day-toggle + .slots
+最近观点收起 / 展开	点最近观点箭头两次	折叠状态切换并恢复	true → false → true	通过	线上 Chromium 1440×900 / → /；.recent-views-toggle[aria-expanded]
+按天翻页	点下一页，再上一页	页码 1→2→1	2 → 1	通过	线上 Chromium 1440×900 / → /?page=1；.pager .here
+选择来源	点方伟公众号来源筛选	标题与来源标为方伟公众号	方伟公众号 / 方伟公众号 / /?source=fangwei-mp	通过	线上 Chromium 1440×900 /?page=1 → /?source=fangwei-mp；.page-tools nav [aria-current]
+日期跳转	输入 2026-10-01，点去	定位到所选来源当日或之前最近有资料的日标题	#d-2026-10-01 / 10月1日	通过	线上 Chromium 1440×900 /?source=fangwei-mp → /?source=fangwei-mp&page=4#d-2026-10-01；.date-jump input[type=date] → section.day[id]
+当日日报与相邻日期	点已定位的日期，再点前一天	日期路径变化并且仍为同一来源	/days/2026-10-01?source=fangwei-mp → /days/2026-09-30?source=fangwei-mp	通过	线上 Chromium 1440×900 /?source=fangwei-mp&page=4#d-2026-10-01 → /days/2026-09-30?source=fangwei-mp；.daybar-desktop h2 a → .day-switch a
+作者页来源及搜索	从作者页选择方伟，查看作者范围搜索输入	作者页标题、作者范围或筛选来源一致	方伟 / /authors/方伟 / 3 来源选项	通过	线上 Chromium 1440×900 /days/2026-09-30?source=fangwei-mp → /authors/方伟；.author-card h2 a → h1
+飞书文库目录	点林文丰，折叠、展开一个目录，再选择子节点	切换子节点且右栏标题与点选目录一致	苹果投资研究 / 苹果投资研究	通过	线上 Chromium 1440×900 /authors → /sources/linwenfeng-feishu/tree/1312；.doc-tree details > summary / .doc-leaf / .doc-read h1
+手机首页首篇可达	以 390×844 手机首次打开首页，记录首篇位置，再收起最近观点	首次不滚动可见首篇，收起后位置上移	1111 → 359，可见高度 844	发现问题	线上 Chromium 390×844 / → /；.day .item-card / browser-mobile-home.png
+手机底栏导航	依次触按公司、检索、作者、按天	每次切页均选中对应底栏	公司 → 检索 → 作者 → 按天	通过	线上 Chromium 390×844 / → /；.tabbar a[aria-current]
+双语阅读切换	从 Stratechery 首篇点中文、原文、对照	三种视图展示对应正文，恢复逐段对照	中文 1 → 原文 1 → 对照 680	通过	线上 Chromium 1440×900 /?source=stratechery → /articles/22209；.lang-tabs / .reader .prose
+桌面阅读侧栏	收起侧栏，再展开，切为只用本篇	可重新展开，范围与当前文章相同	true / 22209 / 22209 / 只问这篇	通过	线上 Chromium 1440×900 /articles/22209 → /articles/22209；[data-chat-close] / .chat-toggle / #article-chat-scope
+侧栏宽度键盘调整	聚焦分隔线，按右、左方向键	宽度变化并回到原值	45 → 43 → 45	通过	线上 Chromium 1440×900 /articles/22209 → /articles/22209；.chat-split[aria-valuenow]
+模型设置	展开模型菜单，切思考强度后点击外部	所选档位同步到菜单标签，外部点击收起	低 / DeepSeek · 低 / open=false	通过	线上 Chromium 1440×900 /articles/22209 → /articles/22209；.ask-model / .model-efforts
+手机阅读抽屉	点首篇，打开问库、选本篇、按关闭	打开时为对话框，本篇范围可选，关闭后焦点回到按钮	dialog / 只问这篇 / false / true	通过	线上 Chromium 390×844 / → /articles/24089；.chat-toggle / #article-chat / [data-chat-close]
+市场与排序	选港股，再点第二个排序方式	排序改变且保留港股市场	HK / HK / 判断最多	通过	线上 Chromium 1440×900 /companies → /companies?market=HK&sort=views；nav[aria-label=市场] / .sort-links
+首页搜索	输入“护城河”按回车	默认按片段展示	84 处片段，来自 67 篇 · 按片段 · 按文章看 / /search?q=护城河	通过	线上 Chromium 1440×900 / → /search?q=护城河；.search-track → .view-switch
+展开检索片段	展开首条片段，读正文后再收起	片段全文显示并可收起	295 字 / open=false	通过	线上 Chromium 1440×900 /search?q=护城河 → /search?q=护城河；details.fragment-more
+代码筛选公司	填 TSM，清空后再次填 TSM	清空恢复更多公司，再次输入能找到台积电	1 → 94 → 台积电 TSM	通过	线上 Chromium 1440×900 /companies → /companies；#company-filter / .co-row:visible
+公司列表两面计数	记台积电列表“两面”，点公司后选“判断”核对态度选项	同名“两面”在列表和详情数值一致	列表两面=53；详情两面=两面 46；详情中性=中性 7	发现问题	线上 Chromium 1440×900 /companies → /companies/32?tab=views；.co-row .co-num / .judge-tools [aria-label=态度]
+判断全部展开	点全部展开，再点全部收起	当前页每条有细节的判断展开，收起后为 0	40 / 40 / 0	通过	线上 Chromium 1440×900 /companies/32?tab=views → /companies/32?tab=views；.jrow details / [data-expand-all]
+检索分页	点下一页再返回上一页	片段结果页码从 2 回到 1	2 → 1	通过	线上 Chromium 1440×900 /search?q=护城河 → /search?q=护城河&page=1；.pager
+检索文章回跳	展开首条后进入文章，点返回检索结果	返回原查询，刚才的片段仍展开	/articles/13186?chunk=0 → /search?q=护城河&page=1 / open=true	通过	线上 Chromium 1440×900 /search?q=护城河&page=1 → /search?q=护城河&page=1；.item-title a → .back-search
+单条判断依据	展开第一条并跟随原文，再浏览器返回	可读理由或原句，原文打开，返回仍在判断页	/articles/24086?chunk=6 / 理由 芯片代工占客户成本结构足够低，客户以有钱人居多；一年600～640亿美元资本开支门槛高，阿斯麦EUV产能锁定，加上三十年工艺积累使学习曲线陡峭；客户赚得更多，所以容得下台积电。 要盯的指标 2026 Q2全球晶圆代工营收份额 / /companies/32?tab=views	通过	线上 Chromium 1440×900 /companies/32?tab=views → /companies/32?tab=views；.jrow summary / .jrow-open
+检索切换文章模式	点按文章看，再点按片段	返回到片段列表并保留原关键词	按片段 · 按文章看 → 84 处片段，来自 67 篇 · 按片段 · 按文章看	通过	线上 Chromium 1440×900 /search?q=护城河&page=1 → /search?q=护城河；.view-switch a
+同篇片段排序	打开文章 314 的护城河片段，再点按相关度	同一文章范围内切换排序	314 → 314 / score	通过	线上 Chromium 1440×900 /search?q=护城河&article=314 → /search?q=护城河&article=314&sort=score；.filter-note a → sort=score
+单篇检索带入问库	在只搜本篇时点击让 AI 读这些结果（不发送）	问库资料范围继续显示只用这篇	"原 article=314 → 整个资料库 / 输入 article="""" / /ask?q=护城河"	发现问题	线上 Chromium 1440×900 /search?q=护城河&article=314 → /ask?q=护城河；.ask-card → .ask-scope
+判断作者与态度交集	选择一个作者，再选看好	所有当前页作者和态度都匹配两个筛选	Ben Thompson / Ben Thompson / 看好 / 31	通过	线上 Chromium 1440×900 /companies/32?tab=views → /companies/32?tab=views&author=Ben+Thompson&stance=positive；.judge-tools nav / .jrow-author / .jrow .stance
+导航首搜与首页一致	在空检索页输入“护城河”按回车	与首页同样默认按片段	/search?view=article&q=护城河&author=&from=&to= / 按片段 · 按文章看	发现问题	线上 Chromium 1440×900 /search → /search?view=article&q=护城河&author=&from=&to=；.search-bar → .view-switch
+公司文章深度与作者	点文章，选一名作者，再看全部深度	保留作者筛选并显示全部档位	Ben Thompson / 全部 218 / /companies/32?tab=articles&author=Ben Thompson&depth=all	通过	线上 Chromium 1440×900 /companies/32?tab=views&author=Ben+Thompson&stance=positive → /companies/32?tab=articles&author=Ben Thompson&depth=all；.who-row / .company-articles [aria-current]
+正文图片放大	打开文章 24089 的首张正文图片，按 Escape 关闭	图片像素已加载，放大层呈现同一图，关闭后焦点回到原图	1080 / true / true / true / true	通过	线上 Chromium 1440×900 /articles/24089 → /articles/24089；.prose img[tabindex] / #img-zoom
+来源与作者空交集	先点方伟公众号，在作者菜单选 Ben Thompson，再点按这个范围搜	正常返回无匹配文章，仍可清除筛选	HTTP 404 / 这里没有内容 / /search?source=fangwei-mp&q=护城河&author=Ben+Thompson&from=&to=	发现问题	线上 Chromium 1440×900 /search?q=护城河 → /search?source=fangwei-mp&q=护城河&author=Ben+Thompson&from=&to=；.search-pills / .search-filters / HTTP document response
+公开问库输入前知情	聚焦问题框，检查输入前的可见说明；展开最近问过，从匿名会话读取已有记录数	输入前的界面说明提问和回答会保存且其他读者可见	具备公开说明=false / 每次独立提问。回答依据检索到的资料生成，请结合引用核对。 / 匿名最近记录 14 条	发现问题	线上 Chromium 1440×900 /ask → /ask；.ask-form textarea / .composer-footnote / .ask-history
+问库历史与新问题	点最近已完成的回答，再点新问题	打开已保存回答；新问题清空当前回答	回答 #32 / done / /ask / 答案数 0	通过	线上 Chromium 1440×900 /ask → /ask；.ask-history a / .answer / .ask-new
+问库建议题仅填入	点一个已有建议题，核对输入值与当前答案数	只填入本地输入框，未发送新问题	与建议相同=true / 16 字 / 答案数 0	通过	线上 Chromium 1440×900 /ask → /ask；.ask-suggest a / .ask-form textarea
+问库范围菜单	点资料范围，选择方伟及 2026-10-01 至 2026-10-02，按 Esc 再打开	菜单可关闭再打开，输入值保持	true / 方伟 / 2026-10-01 / 2026-10-02	通过	线上 Chromium 1440×900 /ask → /ask；.ask-filters
+问库引用回到原文	从最近已完成回答展开其引用片段，再点文章出处	引用片段可读，链接落到有引用的书库文章	/ask/32 / 533 字 / /articles/1406?chunk=2	通过	线上 Chromium 1440×900 /ask → /articles/1406?chunk=2；.ask-history / .citations .passage-full / .item-meta a

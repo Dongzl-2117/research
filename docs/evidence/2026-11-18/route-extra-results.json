@@ -1,0 +1,58 @@
+{
+  "assets": {
+    "/experiments/static/experiments.js": [
+      200,
+      "text/javascript; charset=utf-8",
+      19702
+    ],
+    "/experiments/static/experiments.css": [
+      200,
+      "text/css; charset=utf-8",
+      7481
+    ],
+    "/annotate/app.js": [
+      200,
+      "text/javascript; charset=utf-8",
+      4618
+    ]
+  },
+  "all": [
+    13,
+    95,
+    13
+  ],
+  "aliases": {
+    "无参数": "概览",
+    "views": "判断",
+    "thesis": "判断",
+    "stance": "判断",
+    "vpage": "判断",
+    "depth": "文章",
+    "page": "文章",
+    "author": "判断",
+    "无判断公司+views": "文章"
+  },
+  "tree": [
+    "13",
+    "只用这个目录：拼多多投资研究"
+  ],
+  "presets": {
+    "day": {
+      "scope": "整个资料库 · 2026-01-15 至 2026-01-15",
+      "questionChars": 35
+    },
+    "company": {
+      "scope": "提到 腾讯 的文章",
+      "questionChars": 50
+    },
+    "author": {
+      "scope": "整个资料库 · 方伟",
+      "questionChars": 43
+    },
+    "article": {
+      "scope": "只用这篇：腾讯：广告与视频号的两笔账（示例）",
+      "questionChars": 34
+    }
+  },
+  "articleScope": "只用这篇：腾讯：广告与视频号的两笔账（示例）"
+}

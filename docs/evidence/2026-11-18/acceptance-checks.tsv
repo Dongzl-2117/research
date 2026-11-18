@@ -1,0 +1,39 @@
+feature	input	expected	actual	status	evidence
+公司引文	-1.5% / 15%，美元 / 欧元	数字变动的模型引语无法作为原话	1 个匹配的实际测试节点通过	通过	tests/unit/test_company_evidence_review.py::test_source_quote_preserves_financial_values_and_returns_source_spelling
+公司论点	毛利率预期上升与下降，模拟补写“99%”	反方保留，捏造的原话被移除	1 个匹配的实际测试节点通过	通过	tests/unit/test_company_evidence_review.py::test_opposed_views_and_fabricated_evidence_do_not_change_into_consensus
+多观点阅读	同一稿内有第二角度；旧档含错引	页面保留第二角度并处理错引	1 个匹配的实际测试节点通过	通过	tests/integration/test_company_views.py::test_company_page_hides_wrong_financial_quote_and_reads_old_secondary_angles
+跨作者对照	61 篇更近的同作者判断，其后有另一作者	能显示后者	1 个匹配的实际测试节点通过	通过	tests/integration/test_company_views.py::test_peer_author_survives_more_than_sixty_closer_same_author_articles
+实体候选	公司别名、交易所代码及未经确认的候选	已收录代码正确归一，未审候选保持独立	1 个匹配的实际测试节点通过	通过	tests/unit/test_company_evidence_review.py::test_company_symbol_aliases_and_unreviewed_candidates_remain_separate
+重发去重	两稿财务数值冲突	两份文章均可保留	1 个匹配的实际测试节点通过	通过	tests/integration/test_duplicates.py::test_financially_conflicting_reposts_keep_both_versions
+机器译文	相同数额与不同货币；合理换算对照	币种冲突被发现，合理单位换算通过	1 个匹配的实际测试节点通过	通过	tests/unit/test_bilingual_number_variants.py::test_money_keeps_currency_with_its_amount
+来源中断恢复	有 raw 文件、无 Markdown 正文	下次抓取能恢复缺文	1 个匹配的实际测试节点通过	通过	tests/unit/test_wechat_crawl.py::test_crawl_recovers_body_missing_after_raw_record_was_written
+星球历史元数据	重复导入时有 / 无已知时间的回复	有据时间可补齐且不被后续缺值抹掉	1 个匹配的实际测试节点通过	通过	tests/integration/test_archive_safety.py::test_reimport_fills_missing_reply_timestamps_and_keeps_a_known_one
+多图 OCR	两图的正文顺序变化后重排	索引与 OCR 拼接跟随真实图序	1 个匹配的实际测试节点通过	通过	tests/integration/test_rebuild_ocr_chunks.py::test_ocr_prose_and_chunks_follow_document_order_after_image_reordering
+紧凑日期	紧凑公历日与普通格式	返回正确日期精度	1 个匹配的实际测试节点通过	通过	tests/unit/test_dates.py::test_compact_calendar_day_in_frontmatter_retains_date_precision
+引用绑定	流式生成前，预览与最终搜索顺序不同	输出首段之前固定最终证据顺序	1 个匹配的实际测试节点通过	通过	tests/integration/test_ask_outside.py::test_stream_freezes_actual_numbered_citations_before_first_answer_text
+英文资金数	-$3、HKD 7、跨币误引	符号与小额金额都参与证据核验	1 个匹配的实际测试节点通过	通过	tests/unit/test_citecheck.py::test_signed_amounts_and_single_digit_foreign_currency_are_evidence
+引用完整度	事实陈述没有引用；标题及资料不足作对照	可核实陈述单独提示	1 个匹配的实际测试节点通过	通过	tests/unit/test_citecheck.py::test_uncited_statement_is_flagged_separately_from_headings_and_no_evidence
+段落去重	其他措辞一致，财务事实相反	检索和问库仍保留两条	1 个匹配的实际测试节点通过	通过	tests/unit/test_retrieval_parts.py::test_ask_and_search_fragments_keep_opposite_financial_facts
+汇总取材	按日期及作者，关键证据只在长文尾或图里	有机会进入实际材料集合	1 个匹配的实际测试节点通过	通过	tests/integration/test_retrieval.py::test_day_and_author_overview_include_tail_and_image_evidence
+评测版本	相同段号改正文，或片段边界变化	旧评分进入待重标	1 个匹配的实际测试节点通过	通过	tests/unit/test_quality_eval_version.py::test_replaced_body_and_changed_range_require_relabelling
+留出新题	新增未标问题与已有调参数据比对	保持隔离，明确待人工标注	1 个匹配的实际测试节点通过	通过	tests/unit/test_quality_eval_version.py::test_new_questions_are_disjoint_and_pending_human_grades
+每日正式摘要	同日更晚有专项提问	正式日汇总不被专题替换	1 个匹配的实际测试节点通过	通过	tests/integration/test_day_page.py::test_day_answer_matches_the_report_kind_and_scope_before_limiting
+历史问库范围	保存有限来源后，重开历史及表单	来源在 HTML 及 JSON 提交均保留	1 个匹配的实际测试节点通过	通过	tests/integration/test_ask_outside.py::test_history_keeps_actual_sources_in_the_form_and_json_submission
+零成功的夜间任务	空队列、全跳过、失败及部分成功	退出状态与实际产出对应	4 个匹配的实际测试节点通过	通过	tests/unit/test_audit_ops.py::test_nightly_exit_distinguishes_empty_from_all_failed
+OCR 批次健康	缺文件、无效输出、正常无字图	分别计数，有失败且零成功才告警	4 个匹配的实际测试节点通过	通过	tests/unit/test_audit_ops.py::test_nightly_ocr_tracks_success_even_if_no_text
+备份盘原图	正确内容、修改字节、缺文件、路径异常	能发现误备份或缺图	1 个匹配的实际测试节点通过	通过	tests/unit/test_audit_ops.py::test_media_restoration_checks_actual_bytes_and_lists_failed_rows
+高数据量日历	同日 501 篇	REST、MCP 可拿齐；页面能访问最后一篇	1 个匹配的实际测试节点通过	通过	tests/integration/test_api_day_pagination.py::test_busy_day_can_be_read_to_the_last_article_via_rest_mcp_and_html
+日历边界	无效公历日或无效分页参数	以明确错误回应	1 个匹配的实际测试节点通过	通过	tests/integration/test_api_day_pagination.py::test_day_rejects_invalid_calendar_dates_and_page_parameters
+SEC 资料选择	同指标、不同季度、单位和口径	选取严格匹配的报告期、单位与概念	1 个匹配的实际测试节点通过	通过	tests/unit/test_sec_facts.py::test_separate_tag_unit_and_complete_period
+SEC 公告时点	多份申报及修订、截止日期	选择截止日前可知的数据并保留精度和出处	1 个匹配的实际测试节点通过	通过	tests/unit/test_sec_facts.py::test_cutoff_precision_revision_comparatives_and_url
+SEC 写入手记	同一手记补丁连续导入两次	保留原预期，重复不会重复写入	1 个匹配的实际测试节点通过	通过	tests/unit/test_sec_facts.py::test_journal_preserves_original_and_idempotent
+SEC 来源读取	合成限流、联系人、CIK 和同一响应	本地缓存与冷却符合协议	1 个匹配的实际测试节点通过	通过	tests/unit/test_sec_facts.py::test_download_rate_contact_cik_raw_bytes_cooldown
+本机个人手记	无应用数据库连接的公开页面	可打开手记入口；私有记录在用户端保存	1 个匹配的实际测试节点通过	通过	tests/unit/test_journal.py::test_journal_page_is_local_and_available_without_database
+星主和网友署名	同名网友、只有昵称的旧档、两个不一致的账号，重复导入	历史回填与相同、变化正文的重导按已有账户证据归属，保留正确的公司判断	27 个匹配的实际测试节点通过	通过	tests/integration/test_poster_archive_replay.py::test_partial_poster_replay
+单篇时点	旧标题及正文、归档后再修订	旧版本来源及其展示时间可复核	1 个匹配的实际测试节点通过	通过	tests/integration/test_article_history.py::test_history_uses_observed_versions_and_keeps_earlier_answers_reproducible
+历史回复	有日期、无日期及截止时间之后的回复	只显示可证明当时已归档且已发表的回复	1 个匹配的实际测试节点通过	通过	tests/integration/test_article_history.py::test_historical_replies_need_both_archive_and_reply_time
+历史引用	原段号被另一段复用	阅读旧引用不会高亮后来替换的段落	1 个匹配的实际测试节点通过	通过	tests/integration/test_article_history.py::test_saved_citation_never_marks_reused_chunk_number
+对外段落和译文	读取下一页、过期译文、错误时点	REST 与 MCP 段落偏移生效、译文新鲜且日期有效	1 个匹配的实际测试节点通过	通过	tests/integration/test_article_history.py::test_api_and_mcp_pagination_dates_and_stale_translations
+跨文章历史检索	前后两版用词不同、未来回复、无日期回复、翻页中新增文章	只从可证版本返回原句、时间、链接和覆盖情况，分页面维持编号上界	1 个匹配的实际测试节点通过	通过	tests/integration/test_history_search.py::test_readonly_cross_article_evidence_uses_verified_versions_and_reports_coverage
+来源可见范围	精选资料、日期不明、禁用来源和重发	按可见原创口径计算，各源展示最新发表日及日期缺失数	1 个匹配的实际测试节点通过	通过	tests/integration/test_source_coverage.py::test_counts_use_source_publication_time_and_visible_enabled_originals
+来源更新信号	抓取时间、有效日期历史长短不同	证据不足的来源不误显示逾期	1 个匹配的实际测试节点通过	通过	tests/integration/test_source_coverage.py::test_overdue_depends_on_observed_crawl_and_sufficient_dated_history
