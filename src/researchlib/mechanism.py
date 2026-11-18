@@ -79,11 +79,12 @@ _STALE_CHUNK = (
 )
 
 
-def pending_articles(conn, source_ids: list[str], limit: int | None):
+def pending_articles(conn, source_ids: list[str], limit: int | None, *, cooling: bool = False):
     """还有块没打分（或分数过期）的文章，新的在前。limit 为 None 时全要（报数用）。
 
-    交回每篇的 id、标题、要打的块数和字数。
+    交回每篇的 id、标题、要打的块数和字数。cooling 为真时反过来只要失败后还在冷却里的（报数用）。
     """
+    cool = cooling_sql(FAILURE_KIND, "a.id")
     limit_sql = "LIMIT %(limit)s" if limit is not None else ""
     rows = conn.execute(
         f"""
@@ -93,7 +94,7 @@ def pending_articles(conn, source_ids: list[str], limit: int | None):
         LEFT JOIN chunk_mechanism m ON m.article_id = c.article_id AND m.ord = c.ord
         WHERE a.source_id = ANY(%(sources)s) AND a.duplicate_of IS NULL
           AND {visible_sql("a")} AND {site_visible_sql("a")}
-          AND {cooling_sql(FAILURE_KIND, 'a.id')}
+          AND {f"NOT ({cool})" if cooling else cool}
           AND {_SCORED_CHUNK} AND {_STALE_CHUNK}
         GROUP BY a.id, a.title, a.published_at
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
@@ -412,6 +413,13 @@ def main(argv: list[str] | None = None) -> int:
             chunks = sum(int(row["chunks"]) for row in rows)
             chars = sum(int(row["chars"] or 0) for row in rows)
             print(f"还要打分 {len(rows)} 篇、{chunks} 块、正文约 {chars:,} 字（不算标题）")
+            # 11-18 全库打分报「还要打分 0 篇」时，林文丰飞书 24 篇长文（2 万块）都失败了、在冷却里，没算进上面这行。
+            cooled = pending_articles(conn, source_ids, None, cooling=True)
+            if cooled:
+                print(
+                    f"另有 {len(cooled)} 篇、{sum(int(row['chunks']) for row in cooled)} 块失败后在冷却里，"
+                    "到期后再打（失败 n 次冷却 n 天，最多 7 天）"
+                )
             return 0
         if not args.calibrate:
             rows = pending_articles(conn, source_ids, args.limit)

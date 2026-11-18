@@ -169,3 +169,9 @@ def test_zsxq_crawler_lives_in_the_repo_without_the_group_id(tmp_path):
     assert done.returncode == 0, done.stderr
     assert (archive / "md" / "INDEX.md").exists() and (archive / "README.md").exists()
     assert not (ROOT / "scripts" / "zsxq" / "raw").exists()
+
+
+def test_nightly_scores_new_passages_after_digests():
+    nightly = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
+    assert 'step "段落打分" compose_exec app research-mechanism --limit "$MECHANISM_LIMIT"' in nightly
+    assert nightly.index("app research-digest") < nightly.index("app research-mechanism")

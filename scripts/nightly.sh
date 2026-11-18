@@ -1,5 +1,5 @@
 #!/bin/bash
-# 夜间补齐：Stratechery 抓取、Stratechery 发布时刻、外链图片、中英对照重签、观点、摘要、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
+# 夜间补齐：Stratechery 抓取、Stratechery 发布时刻、外链图片、中英对照重签、观点、摘要、段落打分、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
 # 观点和摘要还有时间上限，跑不完的下一晚接着补。白天和部署时都不跑。
 # 识图紧跟在外链图片后面：当天的截图帖先识出字，向量、观点、摘要第一遍就读得到。
 # 某一步失败不影响后面的步骤；结果写进 data/status/nightly.json，有步骤失败或两天没跑成时 docker compose exec app research-status 会报出来。
@@ -20,6 +20,9 @@ NIGHTLY_OCR="${NIGHTLY_OCR:-0}"
 EMBED_LIMIT="${EMBED_LIMIT:-50000}"
 # 论点默认关。打开后补的是库里观点够数的公司，不限持仓。需要夜间跑时设 THESES_ENABLED=1。
 THESES_ENABLED="${THESES_ENABLED:-0}"
+# 段落讲没讲生意的分（检索排序用）：每晚最多打这么多篇。新文章一晚几十篇、几分钱；全库 11-18 打过一遍，
+# 失败冷却到期的长文也由这一步补，一篇几千块的飞书长文约 0.6 美元。设 0 不打。
+MECHANISM_LIMIT="${MECHANISM_LIMIT:-200}"
 # 观点和摘要各自最多跑这么多分钟（Grok high 推理一篇要一两分钟）。
 MINUTES="${MINUTES:-150}"
 TASK=nightly
@@ -85,6 +88,10 @@ step "中英对照重签" compose_exec app research-translate-resign
 step "语义向量" compose_exec app research-embed --limit "$EMBED_LIMIT"
 step "观点" compose_exec app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES" --fail-empty
 step "摘要" compose_exec app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES" --fail-empty
+# 打分放在摘要后面：前面几步的时间上限先用完，打分只问一档低思考，按块分批，一篇只问几次。
+if [ "$MECHANISM_LIMIT" -gt 0 ] 2>/dev/null; then
+  step "段落打分" compose_exec app research-mechanism --limit "$MECHANISM_LIMIT" --workers 4 --effort low --max-minutes "$MINUTES" --fail-empty
+fi
 if [ "$THESES_ENABLED" = "1" ]; then
   step "论点" compose_exec app research-theses
 fi
@@ -96,5 +103,6 @@ fi
 parts="Stratechery 抓取、Stratechery 发布时刻、外链图片"
 [ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
 parts="${parts}、中英对照重签、语义向量、观点、摘要"
+[ "$MECHANISM_LIMIT" -gt 0 ] 2>/dev/null && parts="${parts}、段落打分"
 [ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
 status_ok "${parts}${summaries}"
