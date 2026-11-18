@@ -84,3 +84,47 @@ def test_retrieval_reads_fresh_scores_only(conn, settings):
     # 正文改过（指纹对不上）的当没打过。
     changed = dict(second, body=(second["body"] or "") + "补一句")
     assert retrieval.mechanism_scores(conn, [dict(first), changed]) == {(first["article_id"], first["ord"]): 2}
+
+
+def test_limit_zero_counts_unscored_chunks_including_cooling(conn, settings, monkeypatch, capsys):
+    from researchlib.failures import note_failure
+
+    def article(title, bodies):
+        article_id = conn.execute(
+            "INSERT INTO articles (source_id, external_id, content_hash, title, body_md, body_text)"
+            " VALUES ('fangwei-mp', %s, %s, %s, '', '') RETURNING id",
+            (title, title, title),
+        ).fetchone()["id"]
+        for ord_, body in enumerate(bodies):
+            conn.execute(
+                "INSERT INTO article_chunks (article_id, ord, heading, body) VALUES (%s, %s, '', %s)",
+                (article_id, ord_, body),
+            )
+        return article_id
+
+    cooling = article("冷却", ["已经打完", "文" * (mechanism.CHUNK_LIMIT + 100), "四个汉字"])
+    ready = article("可处理", ["两个"])
+    scored = mechanism.stale_chunks(conn, cooling)[:1]
+    mechanism.save_scores(conn, cooling, scored, [2], "test")
+    note_failure(conn, mechanism.FAILURE_KIND, cooling, "打分缺段")
+    monkeypatch.setattr(mechanism.Settings, "from_env", lambda: settings)
+
+    def no_oauth(_settings):
+        raise AssertionError("盘点不应触发模型鉴权")
+
+    monkeypatch.setattr(mechanism, "ensure_oauth", no_oauth)
+    assert mechanism.main(["--limit", "0", "--source", "fangwei-mp"]) == 0
+    report = capsys.readouterr().out
+    assert "还要打分 2 篇、3 块" in report
+    assert f"{mechanism.CHUNK_LIMIT + 6:,} 字" in report
+    assert "当前可打 1 篇、1 块" in report
+    assert "冷却中 1 篇、2 块" in report
+    assert [row["id"] for row in mechanism.pending_articles(conn, ["fangwei-mp"], 10)] == [ready]
+
+    # 打完眼下可处理的文章后，盘点也能看见剩余的冷却项。
+    mechanism.save_scores(conn, ready, mechanism.stale_chunks(conn, ready), [2], "test")
+    conn.commit()
+    assert mechanism.main(["--limit", "0", "--source", "fangwei-mp"]) == 0
+    report = capsys.readouterr().out
+    assert "还要打分 1 篇、2 块" in report
+    assert "当前可打 0 篇、0 块，冷却中 1 篇、2 块" in report

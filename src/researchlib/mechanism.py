@@ -78,27 +78,31 @@ _STALE_CHUNK = (
 )
 
 
-def pending_articles(conn, source_ids: list[str], limit: int | None):
-    """还有块没打分（或分数过期）的文章，新的在前。limit 为 None 时全要（报数用）。
+def pending_articles(conn, source_ids: list[str], limit: int | None, *, inventory: bool = False):
+    """还有块没打分（或分数过期）的文章，新的在前。limit 为 None 时全要。
 
-    交回每篇的 id、标题、要打的块数和字数。
+    默认只取可处理的文章。盘点包含冷却中的文章，标记 cooling，字数按实际送模型的逐块上限算。
     """
     limit_sql = "LIMIT %(limit)s" if limit is not None else ""
+    available = cooling_sql(FAILURE_KIND, "a.id")
+    queue_filter = "" if inventory else f"AND {available}"
+    cooling_column = f", NOT ({available}) AS cooling" if inventory else ""
+    length_sql = "least(length(c.body), %(chunk_limit)s)" if inventory else "length(c.body)"
     rows = conn.execute(
         f"""
-        SELECT a.id, a.title, count(*) AS chunks, sum(length(c.body)) AS chars
+        SELECT a.id, a.title, count(*) AS chunks, sum({length_sql}) AS chars{cooling_column}
         FROM articles a
         JOIN article_chunks c ON c.article_id = a.id
         LEFT JOIN chunk_mechanism m ON m.article_id = c.article_id AND m.ord = c.ord
         WHERE a.source_id = ANY(%(sources)s) AND a.duplicate_of IS NULL
           AND {visible_sql("a")} AND {site_visible_sql("a")}
-          AND {cooling_sql(FAILURE_KIND, 'a.id')}
+          {queue_filter}
           AND {_SCORED_CHUNK} AND {_STALE_CHUNK}
         GROUP BY a.id, a.title, a.published_at
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         {limit_sql}
         """,
-        {"sources": source_ids, "version": PROMPT_VERSION, "limit": limit},
+        {"sources": source_ids, "version": PROMPT_VERSION, "limit": limit, "chunk_limit": CHUNK_LIMIT},
     ).fetchall()
     return rows
 
@@ -349,7 +353,7 @@ def calibrate(settings: Settings, path: str, workers: int, off_peak: bool) -> in
 def main(argv: list[str] | None = None) -> int:
     """退出码同 research-digest：0 跑完，2 整批停（没凭证、鉴权、余额），3 接口连着不通、暂停。"""
     parser = argparse.ArgumentParser(description="给检索块打「讲没讲机制和原因」的分（花模型钱）")
-    parser.add_argument("--limit", type=int, default=50, help="最多打几篇；0 只报还要打多少，不调模型")
+    parser.add_argument("--limit", type=int, default=50, help="最多打几篇；0 盘点全部待打分和其中冷却的数量，不调模型")
     parser.add_argument("--source", default="")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
     parser.add_argument(
@@ -376,10 +380,16 @@ def main(argv: list[str] | None = None) -> int:
     conn = prepare(settings)
     try:
         if args.limit == 0 and not args.calibrate:
-            rows = pending_articles(conn, source_ids, None)
+            rows = pending_articles(conn, source_ids, None, inventory=True)
             chunks = sum(int(row["chunks"]) for row in rows)
             chars = sum(int(row["chars"] or 0) for row in rows)
-            print(f"还要打分 {len(rows)} 篇、{chunks} 块、正文约 {chars:,} 字（不算标题）")
+            cooling = [row for row in rows if row["cooling"]]
+            cooling_chunks = sum(int(row["chunks"]) for row in cooling)
+            print(f"还要打分 {len(rows)} 篇、{chunks} 块、送模型的正文约 {chars:,} 字（不算标题）")
+            print(
+                f"当前可打 {len(rows) - len(cooling)} 篇、{chunks - cooling_chunks} 块，"
+                f"冷却中 {len(cooling)} 篇、{cooling_chunks} 块"
+            )
             return 0
         if not args.calibrate:
             rows = pending_articles(conn, source_ids, args.limit)

@@ -485,7 +485,7 @@ Zhilin 要的好结果：问「Costco商业模式」，排前面的段落要讲 
 
 命令（`researchlib/mechanism.py`，走 `llm_batch`，和 views、digest 一样有锁、`--workers`、`--off-peak`、`--max-minutes`、每篇和合计用量）：
 
-- `research-mechanism --limit 0`：只报还要打的篇数、块数、字数，不调模型。
+- `research-mechanism --limit 0` 统计所有待打分的文章和块，包括正式打分失败后处于冷却期的文章。它分别列出当前可打和冷却中的篇数、块数。估费可用总正文的字数乘以校准所得的每万字用量再除以一万。两边都按每块最多 3000 字计算，盘点不调用模型。
 - `docker compose exec -T app research-mechanism --calibrate - --effort low < tools/quality_eval/mechanism_owner.json`（镜像里没有 `tools/`，样本从宿主机用 `<` 喂进去）：只给 Zhilin 11-17 亲手判的 28 段打分（`mechanism.json` 是 AI 按早先更严的线判的 338 段，只作参考：和 Zhilin 同判的 28 段只有 15 段一致，不一样的 13 段里 9 段他判得更高，讲商业模式结构、竞争格局、对比表的段落他都算排前面），不写库，打印和人判的一致率（完全一致、判 2 的准确率和召回、加权 kappa、混淆表）和每万字用量，用来挑思考强度、估全库费用。
 - `research-mechanism --limit N`：按发布时间从新往旧，每篇只打没打过、改过的块，按 1.2 万字一批问（一块最多算 3000 字）。
 
