@@ -104,7 +104,7 @@ def main(argv=None):
     except ValueError as exc:
         parser.error(str(exc))
     except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn) as exc:
-        raise SystemExit("数据库缺少历史归档结构。请使用已应用迁移 041 的研究库。") from exc
+        raise SystemExit("数据库缺少历史归档结构。请使用已应用迁移 041、042 的研究库。") from exc
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
