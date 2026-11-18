@@ -184,3 +184,11 @@ def test_uncited_statement_is_flagged_separately_from_headings_and_no_evidence()
 def test_basis_points_compare_as_points_and_currency_does_not_cross():
     assert check_answer("毛利率提高0.25个百分点[1]。", [{"n": 1, "text": "毛利率提高25基点。"}], []) == []
     assert check_answer("成本增加12元[1]。", [{"n": 1, "text": "成本增加12美元。"}], [])
+
+
+def test_signed_amounts_and_single_digit_foreign_currency_are_evidence():
+    cited = [{"n": 1, "text": "Free cash flow was -$3, compared with HKD 7 in the previous release."}]
+    assert not check_answer("自由现金流为−3美元[1]。", cited, [])
+    assert not check_answer("上次披露的现金流为7港元[1]。", cited, [])
+    for wrong in ("$3", "€7", "7日元", "£7"):
+        assert check_answer(f"现金流为{wrong}[1]。", cited, [])
