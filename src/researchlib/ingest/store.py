@@ -7,7 +7,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from researchlib.author_voice import assign_poster_role, is_guest
+from researchlib.author_voice import POSTER_FIELDS, archive_poster_fields, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for, search_text
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
 from researchlib.duplicates import resolve_article
@@ -232,6 +232,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         SELECT id, content_hash, title, published_at, body_md, body_text, raw_meta
         FROM articles
         WHERE source_id = %s AND external_id = %s
+        FOR UPDATE
         """,
         (source.id, doc.external_id),
     ).fetchone()
@@ -240,8 +241,11 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     _keep_filled_clock(existing, doc)
     body_text = _body_text(doc.title, doc.body_md, profile)
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
-    poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names, source.owner_ids)
-    meta = apply_length_floor(source, doc.body_md, poster)
+    previous_meta = (existing["raw_meta"] or {}) if existing is not None else {}
+    poster = archive_poster_fields(source, previous_meta, doc.raw_meta)
+    meta = {k: v for k, v in doc.raw_meta.items() if k not in POSTER_FIELDS}
+    meta.update(poster)
+    meta = apply_length_floor(source, doc.body_md, meta)
     _keep_reply_times(existing, meta, doc.body_md)
     keep = False
     article_changed = True
@@ -346,9 +350,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         if has_poster or has_replies:
             merged = dict(existing["raw_meta"] or {})
             if has_poster:
-                merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
-                merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
-                assign_poster_role(merged, source.author, source.poster_names, source.owner_ids)
+                merged.update(poster)
             if has_replies:
                 merged["author_replies"] = meta["author_replies"]
             if merged != dict(existing["raw_meta"] or {}):
