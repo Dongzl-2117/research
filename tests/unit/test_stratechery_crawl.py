@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+from researchlib import stratechery_crawl as rss
 from researchlib.ingest.parse import parse_archive
 from researchlib.stratechery_crawl import (
     FeedError,
@@ -230,3 +232,61 @@ def test_dry_run_honours_same_write_capacity_as_real_run(tmp_path):
         report, paths = crawl(items, set(), inbox=tmp_path, author="Author", dry_run=dry, max_new=0)
         assert not paths and not report.written and len(report.failed) == 1
     assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(("body", "author", "known_short", "floor", "reads", "pending"), [
+    ("preview", "Author", True, 5500, 0, False),
+    ("界" * 2400, "Author", True, 5500, 1, False),
+    ("preview", "A" * 6000, True, 5500, 1, False),
+    ("preview", "Author", True, "file_bytes", 1, False),
+    ("完整段落" * 1400, "Author", True, "body_chars", 1, True),
+    ("preview", "Author", False, 5500, 1, True),
+], ids=["short-preview", "multibyte-preview", "long-header", "exact-file-size", "sufficient-body", "new-archive"])
+def test_pending_archives_only_skips_provably_short_previews(tmp_path, monkeypatch, body, author, known_short,
+                                                            floor, reads, pending):
+    item = _item(None)
+    path = rss.archive_path(tmp_path, item)
+    path.parent.mkdir()
+    text = archive_markdown(item, body, author)
+    path.write_text(text, encoding="utf-8")
+    if floor == "file_bytes":
+        floor = path.stat().st_size
+    elif floor == "body_chars":
+        floor = rss.body_chars(text)
+    ids = {item.external_id} if known_short else set()
+    read = Mock(wraps=rss.member_archive)
+    monkeypatch.setattr(rss, "member_archive", read)
+    problems = []
+    result = rss.pending_archives(tmp_path, ids, ids, [], floor, 1, problems)
+    assert result == ([path] if pending else []) and not problems
+    assert read.call_count == reads
+
+
+def test_pending_preview_disappears_after_directory_listing(tmp_path, monkeypatch):
+    item = _item(None)
+    path = rss.archive_path(tmp_path, item)
+    path.parent.mkdir()
+    path.write_text("preview")
+
+    def vanished(directory, pattern):
+        yield path
+        path.unlink()
+
+    monkeypatch.setattr(Path, "glob", vanished)
+    ids = {item.external_id}
+    problems = []
+    assert rss.pending_archives(tmp_path, ids, ids, [], 5500, 1, problems) == []
+    assert len(problems) == 1 and "FileNotFoundError" in problems[0]
+
+
+def test_unreadable_small_preview_reports_a_failed_read(tmp_path, monkeypatch):
+    item = _item(None)
+    path = rss.archive_path(tmp_path, item)
+    path.parent.mkdir()
+    path.write_text("preview")
+    monkeypatch.setattr(rss.os, "access", lambda path, mode: False)
+    monkeypatch.setattr(rss, "member_archive", Mock(side_effect=PermissionError))
+    ids = {item.external_id}
+    problems = []
+    assert rss.pending_archives(tmp_path, ids, ids, [], 5500, 1, problems) == []
+    assert len(problems) == 1 and "PermissionError" in problems[0]

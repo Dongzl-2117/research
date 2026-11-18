@@ -21,6 +21,7 @@ import argparse
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import urllib.error
@@ -352,6 +353,11 @@ def pending_archives(inbox: Path, known: set[str], short_ids: set[str], written:
         if not _ARTICLE_URL.fullmatch(url):
             continue
         try:
+            if key in short_ids:
+                info = path.stat()
+                # body_chars 只从 UTF-8 原文删字。已知短帖连文件字节数都不够，无法补成全文。
+                if stat.S_ISREG(info.st_mode) and info.st_size < min_chars and os.access(path, os.R_OK):
+                    continue
             text = member_archive(path, key)
         except (OSError, ValueError) as exc:
             problems.append(f"{key}：待导入归档读取失败（{type(exc).__name__}）")
