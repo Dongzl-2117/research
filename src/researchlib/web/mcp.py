@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -14,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from researchlib.ask import start
 from researchlib.web.api import (
+    DAY_PAGE_SIZE,
     _article_links,
     _base,
     answer_payload,
@@ -21,6 +21,7 @@ from researchlib.web.api import (
     authors_payload,
     companies_payload,
     company_payload,
+    day_params,
     day_payload,
     search_payload,
     views_payload,
@@ -115,10 +116,14 @@ TOOLS = [
     },
     {
         "name": "get_day",
-        "description": "某一天（上海日历）的全部文章。",
+        "description": "按上海日历日读取资料，total 是当天总篇数。还有下一页时用 next_offset 继续。",
         "inputSchema": {
             "type": "object",
-            "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}},
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": DAY_PAGE_SIZE, "default": DAY_PAGE_SIZE},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
             "required": ["date"],
         },
     },
@@ -217,10 +222,10 @@ def run_tool(request: Request, name: str, args: dict):
             return {"authors": authors_payload(conn, request, sources)}
         if name == "get_day":
             try:
-                day = date.fromisoformat(str(args.get("date") or ""))
+                day, limit, offset = day_params(str(args.get("date") or ""), args)
             except ValueError as exc:
-                raise ToolError("date 要是 YYYY-MM-DD") from exc
-            return day_payload(conn, request, sources, day, day)
+                raise ToolError(str(exc)) from exc
+            return day_payload(conn, request, sources, day, limit, offset)
         if name == "ask_library":
             question = str(args.get("question") or "").strip()[:500]
             if not question:

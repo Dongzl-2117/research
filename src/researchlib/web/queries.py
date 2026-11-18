@@ -684,23 +684,28 @@ def day_answer(conn, day: date, source_ids: list[str], company_id: int | None, i
     return None
 
 
-def day_articles(conn, source_ids: list[str], date_from, date_to, limit: int = 500):
-    if not source_ids:
-        return []
-    return conn.execute(
+def day_article_page(conn, source_ids: list[str], day: date, limit: int, offset: int) -> tuple[list, int]:
+    """同一次数据库快照取可见文章总数和这一页。越过末页也返回完整计数。"""
+    where, params = scope_clause(Scope(source_ids=source_ids))
+    rows = conn.execute(
         f"""
-        SELECT id, source_id, title, published_at, left(body_text, 2000) AS body_text
-        FROM articles
-        WHERE source_id = ANY(%s) AND duplicate_of IS NULL
-          AND published_at IS NOT NULL
-          AND (published_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN %s AND %s
-          AND {site_visible_sql("")}
-          AND {visible_sql()}
-        ORDER BY published_at DESC, id DESC
-        LIMIT %s
+        WITH visible AS MATERIALIZED (
+            SELECT a.id, a.published_at FROM articles a WHERE {where}
+              AND a.published_at >= (%(day)s::date::timestamp AT TIME ZONE 'Asia/Shanghai')
+              AND a.published_at < ((%(day)s::date + 1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+        ), page AS (
+            SELECT id FROM visible ORDER BY published_at DESC, id DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+        )
+        SELECT totals.total, a.id, a.source_id, a.title, a.published_at, left(a.body_text, 2000) AS body_text
+        FROM (SELECT count(*) AS total FROM visible) totals
+        LEFT JOIN page ON true
+        LEFT JOIN articles a ON a.id = page.id
+        ORDER BY a.published_at DESC, a.id DESC
         """,
-        (source_ids, date_from, date_to, limit),
+        {**params, "day": day, "limit": limit, "offset": offset},
     ).fetchall()
+    return [row for row in rows if row["id"] is not None], rows[0]["total"]
 
 
 def company_author_counts(conn, company_id: int, source_ids: list[str]):
