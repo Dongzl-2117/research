@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+from researchlib import stratechery_crawl as rss
 from researchlib.ingest.parse import parse_archive
 from researchlib.stratechery_crawl import (
     FeedError,
@@ -118,10 +120,10 @@ def _item(published, year="2026"):
     )
 
 
-def test_published_value_falls_back_to_eastern_day_across_new_year():
+def test_published_value_preserves_utc_across_new_year():
     assert published_value(_item(datetime(2026, 11, 3, 11, tzinfo=UTC))) == "2026-11-03T11:00:00+00:00"
-    # 上海已经是 2027 年、链接还是 2026：只写美东日历日
-    assert published_value(_item(datetime(2026, 12, 31, 18, tzinfo=UTC))) == "2026-12-31"
+    # 上海已经是 2027 年、链接还是 2026，保留 RSS 明确给出的钟点。
+    assert published_value(_item(datetime(2026, 12, 31, 18, tzinfo=UTC))) == "2026-12-31T18:00:00+00:00"
     assert published_value(_item(None)) == ""
 
 
@@ -176,3 +178,115 @@ def test_resolve_by_title_accepts_weekly_number_prefix():
     ]
     found, problems = resolve_by_title([item], get=_wp(posts))
     assert problems == [] and found[0].external_id == "2026/the-end-of-jensen"
+
+
+@pytest.mark.parametrize("link", ["https://stratechery.com/podcasts/market-note/", "/podcasts/market-note/"])
+def test_program_page_with_article_title_is_not_matched_to_an_article(link):
+    data = FEED.replace(b"<link>https://stratechery.com/</link>", f"<link>{link}</link>".encode())
+    _, skipped, unresolved = parse_feed(data)
+    assert unresolved == [] and skipped == 3
+
+
+def test_one_unusable_copy_does_not_hide_later_full_article(tmp_path):
+    short = _item(datetime(2026, 11, 3, 11, tzinfo=UTC))
+    short.html = "<!-- no article body -->"
+    full = _item(short.published)
+    full.html = "<p>The forecast is unchanged.</p>"
+    report, paths = crawl([short, full], set(), inbox=tmp_path, author="Author")
+    assert len(paths) == 1 and "forecast" in paths[0].read_text()
+
+
+def test_verified_rss_clock_round_trips_when_shanghai_has_already_crossed_new_year(tmp_path):
+    moment = datetime(2026, 12, 31, 18, tzinfo=UTC)
+    item = _item(moment)
+    report, _ = crawl([item], set(), inbox=tmp_path / "rss", author="Author")
+    assert not report.failed
+    docs, errors, *_ = parse_archive(tmp_path / "rss", tmp_path / "staging", id_mode="path")
+    assert not errors
+    assert docs[0].published_at == moment and docs[0].raw_meta["time_known"] is True
+
+
+def test_homepage_missing_clock_reports_article_and_keeps_resolving_other_entries():
+    items, _, unresolved = parse_feed(FEED)
+    item = _item(None)
+    item.title = "No clock"
+    unresolved.append(item)
+    found, issues = resolve_by_title(unresolved, get=_wp([]))
+    assert len(items) == 1 and found == []
+    assert any("No clock" in issue and "发布时间" in issue for issue in issues)
+    assert any("Google" in issue for issue in issues)
+
+
+def test_ambiguous_titles_and_exactly_one_day_apart_do_not_identify_original():
+    _, _, unresolved = parse_feed(FEED)
+    candidate = {"slug": "one", "date": "2026-11-02T06:00", "date_gmt": "2026-11-02T11:00:00",
+                 "title": {"rendered": unresolved[0].title}}
+    for entries in ([candidate, dict(candidate, slug="two")], [dict(candidate, date_gmt="2026-11-03T11:00:00")]):
+        found, problems = resolve_by_title(unresolved, get=_wp(entries))
+        assert not found and len(problems) == 1
+
+
+def test_dry_run_honours_same_write_capacity_as_real_run(tmp_path):
+    items, _, _ = parse_feed(FEED)
+    for dry in [True, False]:
+        report, paths = crawl(items, set(), inbox=tmp_path, author="Author", dry_run=dry, max_new=0)
+        assert not paths and not report.written and len(report.failed) == 1
+    assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(("body", "author", "known_short", "floor", "reads", "pending"), [
+    ("preview", "Author", True, 5500, 0, False),
+    ("界" * 2400, "Author", True, 5500, 1, False),
+    ("preview", "A" * 6000, True, 5500, 1, False),
+    ("preview", "Author", True, "file_bytes", 1, False),
+    ("完整段落" * 1400, "Author", True, "body_chars", 1, True),
+    ("preview", "Author", False, 5500, 1, True),
+], ids=["short-preview", "multibyte-preview", "long-header", "exact-file-size", "sufficient-body", "new-archive"])
+def test_pending_archives_only_skips_provably_short_previews(tmp_path, monkeypatch, body, author, known_short,
+                                                            floor, reads, pending):
+    item = _item(None)
+    path = rss.archive_path(tmp_path, item)
+    path.parent.mkdir()
+    text = archive_markdown(item, body, author)
+    path.write_text(text, encoding="utf-8")
+    if floor == "file_bytes":
+        floor = path.stat().st_size
+    elif floor == "body_chars":
+        floor = rss.body_chars(text)
+    ids = {item.external_id} if known_short else set()
+    read = Mock(wraps=rss.member_archive)
+    monkeypatch.setattr(rss, "member_archive", read)
+    problems = []
+    result = rss.pending_archives(tmp_path, ids, ids, [], floor, 1, problems)
+    assert result == ([path] if pending else []) and not problems
+    assert read.call_count == reads
+
+
+def test_pending_preview_disappears_after_directory_listing(tmp_path, monkeypatch):
+    item = _item(None)
+    path = rss.archive_path(tmp_path, item)
+    path.parent.mkdir()
+    path.write_text("preview")
+
+    def vanished(directory, pattern):
+        yield path
+        path.unlink()
+
+    monkeypatch.setattr(Path, "glob", vanished)
+    ids = {item.external_id}
+    problems = []
+    assert rss.pending_archives(tmp_path, ids, ids, [], 5500, 1, problems) == []
+    assert len(problems) == 1 and "FileNotFoundError" in problems[0]
+
+
+def test_unreadable_small_preview_reports_a_failed_read(tmp_path, monkeypatch):
+    item = _item(None)
+    path = rss.archive_path(tmp_path, item)
+    path.parent.mkdir()
+    path.write_text("preview")
+    monkeypatch.setattr(rss.os, "access", lambda path, mode: False)
+    monkeypatch.setattr(rss, "member_archive", Mock(side_effect=PermissionError))
+    ids = {item.external_id}
+    problems = []
+    assert rss.pending_archives(tmp_path, ids, ids, [], 5500, 1, problems) == []
+    assert len(problems) == 1 and "PermissionError" in problems[0]
