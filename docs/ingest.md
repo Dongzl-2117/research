@@ -268,6 +268,23 @@ Stratechery 设了 `min_chars: 5500`：正文（不含 YAML 头、去掉空白�
 docker compose exec app research-views --articles 203,227,473,537,606
 ```
 
+## Stratechery 每晚抓取
+
+11-18 以前 Stratechery 没有定时抓取，在另一台机器「盒子」上手动读会员 RSS、写成归档再导入（文章头里的 `- source: member-rss`），10-18 以后没人跑，线上停在 10-15。现在夜间任务（`scripts/nightly.sh`）第一步跑 `research-crawl-stratechery`：
+
+- 读 Mac mini 仓库根 `.env` 里的 `STRATECHERY_RSS_URL`（Stratechery Plus 账户页上的个人 RSS 地址，docker compose 透传进容器）。这是订阅凭证，命令不打印、报错里也不带。没设时夜间这一步跳过。
+- 只收 `https://stratechery.com/<年>/<slug>/` 的正文条目，`id` 写 `<年>/<slug>`，和盒子导入的那批 `external_id` 一致；库里已有的不再写。播客、站外链接跳过。
+- 新的写进 `data/inbox/stratechery/<年>/<slug>.md`，只把这次新写的几篇放进临时目录导入（`--origin crawl`），不重扫整个归档。`published`、`date` 写 RSS 给的 UTC 时刻，带钟点；跨年（上海已是下一年）时只写美东日历日，由下面的 `research-stratechery-times` 补钟点。
+- 正文是 RSS 的 `content:encoded`，按公众号那套 HTML 转换转成 Markdown（链接、加粗、标题、引用、列表、图片地址）。短于 5500 字符的（游客半截、每周汇总）照旧标 `short_post` 不显示。
+- 手动补抓、看哪些是新的：
+
+```bash
+docker compose exec app research-crawl-stratechery --dry-run
+docker compose exec app research-crawl-stratechery
+```
+
+RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。新文章的中英对照：夜间「Stratechery 译制」一步按待译队列译 `STRATECHERY_TRANSLATE_LIMIT` 篇（`scripts/nightly.sh` 里的默认值，0 是不译）。
+
 ## Stratechery 的发布时刻
 
 归档只记了美国当地的日历日（`published: 2025-09-22`），入库是上海当天零点，`time_known` 是 false，卡片和文章页的钟点只能写「—」（2026-11-07 线上 2409 篇全是这样）。Stratechery 官网的 WordPress 接口 `stratechery.com/wp-json/wp/v2/posts` 公开每篇的发布时刻 `date_gmt`，`research-stratechery-times` 按它补：

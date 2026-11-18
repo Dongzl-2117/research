@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -102,6 +103,8 @@ class ScoreContext:
     # 每篇原文有几块（块号 0 起连续，按最大块号算）。标题的说明力随文章变长递减，见 title_reach。
     # 离线实验冻结的旧上下文没有它，当作短文、不打折。
     sizes: dict[int, int] = field(default_factory=dict)
+    # 候选块讲没讲生意本身的分（chunk_mechanism，0、1、2），只收正文没改过、按现在的提示词打的。没打过的不在里面。
+    mechanism: dict[tuple[int, int], int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -201,6 +204,8 @@ class Passage:
     after: str = ""
     # 问题点到的公司里，这段写到了哪几家（公司 id，按问题里的顺序）。只问几家公司时按它轮流取，见 select。
     companies: list[int] = field(default_factory=list)
+    # 这段讲没讲生意本身（research-mechanism 打的 0、1、2）；没打过是 None。
+    mechanism: int | None = None
 
     @property
     def url(self) -> str:
@@ -1597,7 +1602,35 @@ def score_context(conn, query: Query, rows: list[dict], scope: Scope, company_ro
                 (sorted({row["article_id"] for row in rows}), TRANSLATION_ORD_BASE),
             ).fetchall()
         }
-    return ScoreContext(avgdl, companies, depths, deep_names, sizes=sizes)
+    mechanism = mechanism_scores(conn, rows) if rows and not query.overview else {}
+    return ScoreContext(avgdl, companies, depths, deep_names, sizes=sizes, mechanism=mechanism)
+
+
+def mechanism_scores(conn, rows: list[dict]) -> dict[tuple[int, int], int]:
+    """候选块在 chunk_mechanism 里的分。指纹在这里按候选的正文算（和 mechanism.chunk_hash_sql 同一个式子），
+    不在 SQL 里对几万块算 md5；对不上（打分以后重切过）或提示词版本旧的当没打过。"""
+    from researchlib.mechanism import PROMPT_VERSION
+
+    keys = sorted({(int(row["article_id"]), int(row["ord"])) for row in rows})
+    found = conn.execute(
+        """
+        SELECT m.article_id, m.ord, m.score, m.chunk_hash
+        FROM unnest(%s::bigint[], %s::integer[]) AS k(article_id, ord)
+        JOIN chunk_mechanism m ON m.article_id = k.article_id AND m.ord = k.ord
+        WHERE m.prompt_version = %s
+        """,
+        ([k[0] for k in keys], [k[1] for k in keys], PROMPT_VERSION),
+    ).fetchall()
+    stored = {(item["article_id"], item["ord"]): (item["score"], item["chunk_hash"]) for item in found}
+    out: dict[tuple[int, int], int] = {}
+    for row in rows:
+        key = (int(row["article_id"]), int(row["ord"]))
+        if key not in stored or key in out:
+            continue
+        text = (row.get("heading") or "") + "\n" + (row.get("body") or "")
+        if hashlib.md5(text.encode("utf-8")).hexdigest() == stored[key][1]:
+            out[key] = int(stored[key][0])
+    return out
 
 
 # 规则 2（设计 3.7）：标题写到的词算进每一段，是因为短文的标题说的就是每一段在讲什么；几十万字的汇编，
@@ -1791,12 +1824,15 @@ def score_rows(
                 score *= 1.8
             coverage = 1.0
         key = (row["article_id"], row["ord"])
+        mechanism = context.mechanism.get(key)
         measured = bool(semantic) and not query.overview and key in semantic
         sem = semantic.get(key, 0.0) if measured else 0.0
         if score <= 0 and sem <= 0:
             continue
         # 段落本身写了多少东西：关键词分和语义分都只管「谈没谈到」，一行字的帖子也能拿满分。
         mult = anchor * substance(body)
+        if not query.overview:
+            mult *= MECHANISM_FACTOR.get(mechanism, 1.0)
         age = _age_days(row.get("published_at"), now=context.as_of)
         if query.recent and age is not None:
             mult *= 0.55 + 0.9 * math.exp(-age / 400)
@@ -1822,9 +1858,15 @@ def score_rows(
                 semantic=sem,
                 measured=measured,
                 companies=covered,
+                mechanism=mechanism,
             )
         )
     return fuse_semantic(passages, multipliers)
+
+
+# 讲没讲生意本身（chunk_mechanism 的 0、1、2）乘到段落分上；没打过的块按 None。现在全是 1，只记录、不改排序：
+# 全库打完分以后，按线上候选模拟、出 A/B，Zhilin 选了再改。
+MECHANISM_FACTOR: dict[int | None, float] = {0: 1.0, 1: 1.0, 2: 1.0, None: 1.0}
 
 
 # 关键词分和语义分的融合权重。同一批样本里，按融合分重排的 NDCG@15：只看关键词 0.85，权重 0.4～0.65 都在

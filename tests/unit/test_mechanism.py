@@ -103,6 +103,11 @@ def test_owner_holdout_does_not_overlap_tuning_sample():
     assert len(hold) == 20 and not tune & {(i["article_id"], i["ord"]) for i in hold}
 
 
+def test_retrieval_factor_is_off_until_tuned():
+    from researchlib import retrieval
+
+    assert set(retrieval.MECHANISM_FACTOR.values()) == {1.0}
+
 def test_calibration_does_not_score_unsigned_archive(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("未绑定文本的旧标签不能触发模型")
