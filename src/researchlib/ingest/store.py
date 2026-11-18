@@ -7,7 +7,6 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from researchlib.article_history import confirm_commits
 from researchlib.author_voice import assign_poster_role, is_guest
 from researchlib.boilerplate import EMPTY, Profile, clean_markdown, image_hashes, profile_for, search_text
 from researchlib.chunks import replace_chunks, replace_ocr_chunks
@@ -57,6 +56,8 @@ def store_documents(
 
     首页断更提示只看 crawl。
     """
+    from researchlib.article_history import confirm_commits
+
     report = IngestReport(
         source_id=source.id,
         source_name=source.name,
