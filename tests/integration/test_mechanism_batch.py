@@ -2,6 +2,7 @@
 
 import json
 import os
+from unittest.mock import Mock
 
 from researchlib import mechanism
 from researchlib.seed import load_sample
@@ -20,6 +21,36 @@ def _reply(_settings, messages, *, usage=None, **_kwargs):
     if usage is not None:
         usage["prompt"] = usage.get("prompt", 0) + 1000
     return json.dumps({"scores": [{"id": i, "score": 2} for i in range(1, count + 1)]}), "deepseek-test"
+
+
+def test_failed_calibration_keeps_article_in_scoring_queue(conn, settings, monkeypatch, tmp_path, capsys):
+    sources = _setup(conn, settings)
+    article = mechanism.pending_articles(conn, sources, 1)[0]
+    article_id = article["id"]
+    ord_ = mechanism.stale_chunks(conn, article_id)[0]["ord"]
+    sample = tmp_path / "calibration.json"
+    sample.write_text(json.dumps([{"article_id": article_id, "ord": ord_, "label": 2}]))
+    conn.commit()
+    missing_score = Mock(return_value=('{"scores":[]}', "test-model"))
+    monkeypatch.setattr(mechanism, "chat", missing_score)
+    assert mechanism.calibrate(settings, str(sample), workers=1, off_peak=False) == 0
+    assert missing_score.call_count == 2
+    output = capsys.readouterr()
+    assert "模型打了 0 块" in output.out
+    assert "打分缺了第 1 段" in output.err
+    assert article_id in {row["id"] for row in mechanism.pending_articles(conn, sources, None)}
+    assert not conn.execute(
+        "SELECT 1 FROM llm_failures WHERE kind = 'mechanism' AND item_id = %s", (article_id,)
+    ).fetchone()
+
+    # 正式打分也连续漏段时，仍应计入冷却。
+    report = mechanism.run_batch(settings, [article])
+    assert report["failed"] == 1
+    assert mechanism.llm_batch.exit_code(report) == 0
+    assert conn.execute(
+        "SELECT failures FROM llm_failures WHERE kind = 'mechanism' AND item_id = %s", (article_id,)
+    ).fetchone()["failures"] == 1
+    assert article_id not in {row["id"] for row in mechanism.pending_articles(conn, sources, None)}
 
 
 def test_scores_pending_chunks_once_and_rescore_when_chunk_changes(conn, settings, monkeypatch):

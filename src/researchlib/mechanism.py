@@ -325,7 +325,7 @@ def calibrate(settings: Settings, path: str, workers: int, off_peak: bool) -> in
     jobs = [{"id": article_id, "title": titles[article_id]} for article_id in by_article if article_id in titles]
     report = llm_batch.run(
         settings, jobs, handle, kind=FAILURE_KIND, lock_name=LOCK_NAME + "-calibrate", verb="打分",
-        workers=workers, off_peak=off_peak,
+        workers=workers, off_peak=off_peak, record_failures=False,
     )
     pairs = [
         (item["label"], results[(item["article_id"], item["ord"])])
