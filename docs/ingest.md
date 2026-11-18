@@ -273,8 +273,8 @@ docker compose exec app research-views --articles 203,227,473,537,606
 11-18 以前 Stratechery 没有定时抓取，在另一台机器「盒子」上手动读会员 RSS、写成归档再导入（文章头里的 `- source: member-rss`），10-18 以后没人跑，线上停在 10-15。现在夜间任务（`scripts/nightly.sh`）第一步跑 `research-crawl-stratechery`：
 
 - 读 Mac mini 仓库根 `.env` 里的 `STRATECHERY_RSS_URL`（Stratechery Plus 账户页上的个人 RSS 地址，docker compose 透传进容器）。这是订阅凭证，命令不打印、报错里也不带。没设时夜间这一步跳过。
-- 只收 `https://stratechery.com/<年>/<slug>/` 的正文条目。11-18 实测个人 RSS 50 条里有 20 条正文齐全、`link` 却只写了首页 `https://stratechery.com/`（Daily Update、访谈、每周汇总都有），第一版把它们当成不是文章跳过了，漏了 11 篇；现在先看 `guid`，再按官网 WordPress 接口用标题和发布时刻（差不到一天、唯一一篇；每周汇总官网标题前面多「2026.46: 」也认）认回原文地址，认不出的这一晚记成失败。`id` 写 `<年>/<slug>`，和盒子导入的那批 `external_id` 一致；库里已有的不再写。播客、站外链接跳过。
-- 新的写进 `data/inbox/stratechery/<年>/<slug>.md`，只把这次新写的几篇放进临时目录导入（`--origin crawl`），不重扫整个归档。`published`、`date` 写 RSS 给的 UTC 时刻，带钟点；跨年（上海已是下一年）时只写美东日历日，由下面的 `research-stratechery-times` 补钟点。
+- 只收 `https://stratechery.com/<年>/<slug>/` 的正文条目。11-18 实测个人 RSS 50 条里有 20 条正文齐全、`link` 却只写了首页 `https://stratechery.com/`（Daily Update、访谈、每周汇总都有），第一版把它们当成不是文章跳过了，漏了 11 篇；现在先看 `guid`，再按官网 WordPress 接口用标题和发布时刻（差不到一天、唯一一篇；每周汇总官网标题前面多「2026.46: 」也认）认回原文地址，认不出的这一晚记成失败。`id` 写 `<年>/<slug>`，和盒子导入的那批 `external_id` 一致；库内已有全文时跳过，已归为 `short_post` 的游客预览取得达到门槛的正文时，更新同一篇并进入待译队列。只有首页或空链接可按标题回查，站内节目页、站外链接跳过。
+- 新的写进 `data/inbox/stratechery/<年>/<slug>.md`，导入这一批，同时可补交至多 `--max-new` 篇以前写盘但尚未入库的 RSS 归档。补交只看该来源目录、文章编号、规范原文链接及会员源标记，即使条目已滚出 RSS 也能找回。新归档的 `published`、`date` 保留 RSS 原始 UTC 时刻；上海已经跨年时，用官网所在地的年份核对原链接。
 - 正文是 RSS 的 `content:encoded`，按公众号那套 HTML 转换转成 Markdown（链接、加粗、标题、引用、列表、图片地址）。短于 5500 字符的（游客半截、每周汇总）照旧标 `short_post` 不显示。
 - 手动补抓、看哪些是新的：
 
@@ -283,7 +283,7 @@ docker compose exec app research-crawl-stratechery --dry-run
 docker compose exec app research-crawl-stratechery
 ```
 
-RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。新文章的中英对照：夜间「Stratechery 译制」一步按待译队列译 `STRATECHERY_TRANSLATE_LIMIT` 篇（Zhilin 11-18 定了抓进来的都译，`scripts/nightly.sh` 里默认 50 只防意外；0 是不译）。
+RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。新文章的中英对照：夜间「Stratechery 译制」一步按待译队列译 `STRATECHERY_TRANSLATE_LIMIT` 篇（Zhilin 11-18 定了抓进来的都译，`scripts/nightly.sh` 里默认 50 只防意外；0 是不译）。夜间传 `--fail-partial`，在部分段落只存下进度时记录本步骤失败，下一晚仍可续译。另一个进程正在译的篇不会占用本次篇数名额。
 
 ## Stratechery 的发布时刻
 

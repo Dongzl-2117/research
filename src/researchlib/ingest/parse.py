@@ -6,6 +6,7 @@ import json
 import math
 import re
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from researchlib.ingest.archive import ImageIndex, is_archive_note, iter_files, materialize
 from researchlib.ingest.model import ParsedDoc
@@ -512,6 +513,11 @@ def _parse_one_file(
         and published is not None
         and date_source == "frontmatter"
         and published.astimezone(SHANGHAI).year != path_year
+        and not (
+            time_known and frontmatter.get("clock_source") == "rss_pub_date"
+            and frontmatter.get("url") == f"https://stratechery.com/{external_id}/"
+            and published.astimezone(ZoneInfo("America/New_York")).year == path_year
+        )
     ):
         # Crawl often stamps the fetch day into frontmatter while the file
         # still lives under the real archive year (e.g. 2025/slug.md with
