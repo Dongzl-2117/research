@@ -64,5 +64,14 @@ if [ "$restored" -lt "$expected" ]; then
   status_fail "$(basename "$latest") 恢复出 ${restored} 篇，导出时有 ${expected} 篇"
   exit 1
 fi
+# 用恢复出来的引用核备份盘上的实际文件。每个内容路径只读一次，逐行传输。
+media_report="$(compose exec -T db psql -v ON_ERROR_STOP=1 -U research -d "$CHECK_DB" -Atc \
+  "SELECT json_build_array(storage_path, content_hash) FROM (SELECT DISTINCT storage_path, content_hash FROM article_images) m" \
+  | python3 "$REPO/scripts/verify_restore_images.py" "$BACKUP_DIR/images")" || {
+  log "试恢复失败：图片备份校验异常，详见错误输出"
+  status_fail "恢复库中引用的图片未通过备份校验"
+  exit 1
+}
+log "$media_report"
 log "试恢复通过：${latest} 恢复出 ${restored} 篇（导出时 ${expected} 篇）"
-status_ok "$(basename "$latest") 恢复出 ${restored} 篇"
+status_ok "$(basename "$latest") 恢复出 ${restored} 篇，${media_report}"
