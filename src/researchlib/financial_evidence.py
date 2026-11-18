@@ -31,9 +31,40 @@ _TOKEN = re.compile(
     re.I,
 )
 _DECLINE = re.compile(r"(?:下降|下滑|减少|下跌|降低|降幅|跌幅|fell(?: by)?|declined(?: by)?)\s*$", re.I)
-# OCR 与 Markdown 都用竖线分列。只在数值独占这个单元格时读作会计负数，避免把正文括注或脚注号改成负值。
-_CELL_OPEN = re.compile(r"(\||^)[^\S\r\n]*[(（][^\S\r\n]*\Z", re.M)
-_CELL_CLOSE = re.compile(r"[^\S\r\n]*[)）][^\S\r\n]*(?=(\||\r?\n|\Z))")
+# OCR 和 Markdown 都用竖线分列，附注号也常常写成 (17)。
+_NOTE_LABEL = re.compile(
+    r"(?:附注|附註|注释|註釋|脚注|腳註|注|註)(?:号|號|编号|編號)?"
+    r"|(?:foot)?notes?(?:\s+(?:no\.?|number|ref\.?))?", re.I,
+)
+_WRAPPED_CELL = re.compile(r"\s*[(（]\s*(\S(?:.*?\S)?)\s*[)）]\s*")
+
+
+def _accounting_cells(text: str) -> dict[int, int]:
+    """记录整格括号内容的位置；数字解析器还须恰好读完整格。注明是附注号的行、列除外。"""
+    cells = {}
+    if "|" not in text or ("(" not in text and "（" not in text):
+        return cells
+    note_columns: set[int] = set()
+    for row in re.finditer(r"^.*$", text, re.M):
+        columns = row[0].split("|")
+        if len(columns) == 1:
+            note_columns.clear()
+            continue
+        if not columns[-1].strip():
+            columns.pop()
+        names = [c.strip() for c in columns]
+        notes = {i for i, name in enumerate(names) if _NOTE_LABEL.fullmatch(name)}
+        if notes and not any(_WRAPPED_CELL.fullmatch(name) for name in names):
+            # 从右数，行首的可选装饰竖线不占数据列。
+            note_columns = {i - len(columns) for i in notes}
+        first = next((i for i, name in enumerate(names) if name), None)
+        start = row.start()
+        for i, column in enumerate(columns):
+            wrapped = _WRAPPED_CELL.fullmatch(column)
+            if wrapped and first not in notes and i - 1 not in notes and i - len(columns) not in note_columns:
+                cells[start + wrapped.start(1)] = start + wrapped.end(1)
+            start += len(column) + 1
+    return cells
 
 
 @dataclass(frozen=True)
@@ -45,7 +76,7 @@ class Number:
 
 def numbers(text: str) -> Iterator[Number]:
     text = (text or "").translate(_TRANSLATE)
-    previous_end = 0
+    accounting = _accounting_cells(text)
     for match in _TOKEN.finditer(text):
         literal = match["number"].replace(",", "")
         scale = (match["scale"] or "").lower()
@@ -59,15 +90,12 @@ def numbers(text: str) -> Iterator[Number]:
         elif unit == "‰":
             amount, unit = amount / 10, "%"
         label = (match["currency_sign"] or "") + (match["currency"] or "") + literal + scale + (match["unit"] or "")
-        closing = _CELL_CLOSE.match(text, match.end())
-        opening = closing and _CELL_OPEN.search(text, previous_end, match.start())
-        if opening and "|" in (opening[1], closing[1]):
+        if accounting.get(match.start()) == match.end():
             if not (match["currency_sign"] or literal.startswith(("+", "-"))):
                 amount = -amount
             label = f"({label})"
         elif amount > 0 and _DECLINE.search(text[max(0, match.start() - 16):match.start()]):
             amount = -amount
-        previous_end = match.end()
         yield Number(amount, unit, label)
 
 

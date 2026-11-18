@@ -179,6 +179,16 @@ def test_parenthesized_financial_cells_have_the_reported_sign():
     assert not check_answer("各项为−3.75、+2.25、−1.25，见附注17[1]。", edge, [])
 
 
+def test_note_numbers_in_tables_are_not_accounting_losses():
+    for note in ("附注", "Note", "脚注编号"):
+        cited = [{"n": 1, "text": note + " | (17)"}]
+        assert not check_answer("见附注17[1]。", cited, [])
+        assert check_answer("调整金额为−17[1]。", cited, [])
+    cited = [{"n": 1, "text": "| 项目 | Note | 2025年金额 |\n|---|---|---|\n| 摊销调整 | (17) | (782) |"}]
+    assert not check_answer("见附注17，当期摊销为−782[1]。", cited, [])
+    assert check_answer("见附注17，当期摊销为+782[1]。", cited, [])
+
+
 def test_financial_evidence_preserves_precision_units_and_direction():
     cases = [
         ("同比增长12%", "同比增长12倍"), ("毛利率为12%", "毛利率为12.5%"),
