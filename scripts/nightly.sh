@@ -1,5 +1,5 @@
 #!/bin/bash
-# 夜间补齐：Stratechery 发布时刻、外链图片、中英对照重签、观点、摘要、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
+# 夜间补齐：Stratechery 抓取、Stratechery 发布时刻、外链图片、中英对照重签、观点、摘要、论点各补一批，可选图片文字（OCR）。每一步有篇数上限，
 # 观点和摘要还有时间上限，跑不完的下一晚接着补。白天和部署时都不跑。
 # 识图紧跟在外链图片后面：当天的截图帖先识出字，向量、观点、摘要第一遍就读得到。
 # 某一步失败不影响后面的步骤；结果写进 data/status/nightly.json，有步骤失败或两天没跑成时 docker compose exec app research-status 会报出来。
@@ -53,6 +53,20 @@ step() {
   failed="${failed}${failed:+；}${name}（退出码 ${rc}${last:+：}${last}）"
 }
 
+# Stratechery 读订阅的个人 RSS（.env 的 STRATECHERY_RSS_URL），库里没有的写归档、导入。放在最前面：
+# 新文章当晚就有图、向量、观点和摘要。Thompson 北京时间傍晚发文，这一步凌晨跑，当天的都赶得上。
+# 没设地址时这一步跳过、不算失败（未配置）；设了却读不到（地址失效、订阅过期）记成失败，research-status 会报。
+if compose_exec app sh -c 'test -n "${STRATECHERY_RSS_URL:-}"' 2>/dev/null; then
+  step "Stratechery 抓取" compose_exec app research-crawl-stratechery
+else
+  echo "$(date '+%F %T') 跳过：Stratechery 抓取（.env 没设 STRATECHERY_RSS_URL）"
+fi
+# 新抓的 Stratechery 译成中英对照：按待译队列最多译 STRATECHERY_TRANSLATE_LIMIT 篇（调模型、花钱，默认 0 不译，
+# 默认值由 Zhilin 定，改这里）。凌晨不在 DeepSeek 高峰价时段。
+STRATECHERY_TRANSLATE_LIMIT="${STRATECHERY_TRANSLATE_LIMIT:-0}"
+if [ "$STRATECHERY_TRANSLATE_LIMIT" -gt 0 ] 2>/dev/null; then
+  step "Stratechery 译制" compose_exec app research-translate --source stratechery --limit "$STRATECHERY_TRANSLATE_LIMIT"
+fi
 # 归档只记了日期的 Stratechery 按官网接口补上钟点（不调模型；都有了就不连官网），新导入的第二天就有。
 step "Stratechery 发布时刻" compose_exec app research-stratechery-times
 # 新地址大半下不来（代理、图床出了问题）时 --exit-code 让它退出码 3，这一步记成失败，原因那句进 nightly.json。
@@ -76,7 +90,7 @@ if [ -n "$failed" ]; then
   status_fail "失败的步骤：${failed}"
   exit 1
 fi
-parts="Stratechery 发布时刻、外链图片"
+parts="Stratechery 抓取、Stratechery 发布时刻、外链图片"
 [ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
 parts="${parts}、中英对照重签、语义向量、观点、摘要"
 [ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
