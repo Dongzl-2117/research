@@ -20,7 +20,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from researchlib.excerpt import DIGEST_LIMIT, VIEW_WINDOW
+from researchlib.excerpt import DIGEST_LIMIT, window_size
 
 # docs/llm.md「一次补完积压」：非高峰每百万 token 进 0.15、出 0.60 美元，高峰翻倍。
 DEEPSEEK_INPUT_PER_MILLION = 0.15
@@ -91,7 +91,8 @@ def dollars(input_tokens: int, output_tokens: int, *, peak: bool = False) -> flo
 def _view_slices(chars: int) -> tuple[int, int]:
     """按整篇长度粗算判断要问几次、正文送多少字。实际只送提到公司的段落，通常更少。"""
     body = max(chars, 0)
-    return (body + VIEW_WINDOW - 1) // VIEW_WINDOW, body
+    size = window_size(body)
+    return (body + size - 1) // size, body
 
 
 def _digest_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate, int]:
@@ -131,18 +132,10 @@ def _views_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate
         calls += n_calls
         input_tokens += body + n_calls * prompt_chars
     if unknown:
-        note = (
-            "上沿：导入并算出公司提及之前，不知道有多少篇会抽。"
-            "这里按每篇都有待抽判断粗估。实际会整理深入提及，以及正文很短而图片有字的提及。"
-            f"长文只送提到公司的段落（一块约 {VIEW_WINDOW} 字），通常少于此数。"
-        )
+        note = "导入前按篇数上沿，假设每篇都有待抽判断。实际会整理深入提及，以及正文很短而图片有字的提及。"
     else:
-        note = (
-            f"只算库里还有判断待新写或重抽的篇（含短文图片里的提及）。按整篇长度每 {VIEW_WINDOW} 字 1 次，是上沿；"
-            "实际只送提到公司的段落。"
-        )
-    if not unknown and calls == 0:
-        return JobEstimate("判断", 0, 0, 0, 0, 0, note), False
+        note = "只算还有判断待新写或重抽的篇（含短文图片里的提及）。"
+    note += "按整篇字数和实际读法的窗口大小估次数。按换行切分、筛选并拼接命中段落时，次数会变。"
     return (
         JobEstimate(
             "判断",
@@ -228,7 +221,7 @@ def render_estimate(estimate: Estimate, *, provider_text: str) -> str:
         lines.append(f"另有 {estimate.short_skipped} 篇不足 {MIN_DIGEST_CHARS} 字，不写摘要")
     lines.append(_job_line(estimate.digest))
     if estimate.views is not None:
-        label = "判断（上沿）" if estimate.views_are_upper else "判断"
+        label = "判断（篇数上沿）" if estimate.views_are_upper else "判断"
         lines.append(_job_line(estimate.views).replace("判断:", f"{label}:", 1))
     if estimate.views is not None and not estimate.views_are_upper:
         both_low = dollars(
@@ -241,10 +234,10 @@ def render_estimate(estimate: Estimate, *, provider_text: str) -> str:
         )
         lines.append(
             f"摘要加判断（DeepSeek 非高峰）: {both_low:.2f} 到 {both_high:.2f} 美元。"
-            "判断按整篇切块，实际通常更少。"
+            "判断按整篇字数估算，实际取段会影响调用数和金额。"
         )
     else:
-        lines.append("合计只加了摘要。判断还是上沿，不要和摘要加在一起当成已经要付的钱。")
+        lines.append("合计只加了摘要。判断按篇数上沿粗估，不要和摘要加在一起当成已经要付的钱。")
     if estimate.images is None:
         lines.append("识图: 张数还不知道（要等正文抓下来并导入）。夜间默认关（NIGHTLY_OCR=0），打开才按张花钱。")
     else:

@@ -4,6 +4,8 @@ import inspect
 import json
 from pathlib import Path
 
+import pytest
+
 from researchlib import llm_cost
 from researchlib.excerpt import DIGEST_LIMIT, VIEW_WINDOW, VIEWS_LIMIT, view_windows
 from researchlib.llm_cost import (
@@ -133,8 +135,14 @@ def test_views_estimate_keeps_long_inputs_and_uses_article_slots_for_nights():
     specs = [ArticleSpec(chars=chars, deep_mentions=1)] * 2
     estimate = build_estimate(specs, digest_prompt_chars=10, views_prompt_chars=50)
     assert estimate.views.articles == 2
-    calls = 2 * ((chars + VIEW_WINDOW - 1) // VIEW_WINDOW)
-    assert estimate.views.calls == calls
-    assert estimate.views.input_tokens == 2 * chars + calls * 50
+    assert estimate.views.calls == 82
+    assert estimate.views.input_tokens == 2 * chars + 82 * 50
     text = render_estimate(estimate, provider_text="DeepSeek")
     assert "2 篇、每晚用满篇数额度约 1 晚" in text
+
+
+@pytest.mark.parametrize("chars", [1, VIEW_WINDOW + 1, 6 * VIEW_WINDOW, 6 * VIEW_WINDOW + 1, 6 * VIEWS_LIMIT + 1])
+def test_estimate_long_text_matches_reader_without_line_breaks_or_chunk_filter(chars):
+    calls, body = llm_cost._view_slices(chars)
+    assert calls == len(view_windows("字" * chars, [], []))
+    assert body == chars
