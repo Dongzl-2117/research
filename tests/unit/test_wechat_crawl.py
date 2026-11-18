@@ -606,6 +606,18 @@ def test_backfill_stops_at_since_and_can_continue_later(tmp_path):
     assert rest.complete and rest.listed == 5
 
 
+@pytest.mark.parametrize(("nickname", "accept"), [("方伟看十年", True), ("", True), ("中国新闻网", False)])
+def test_history_uses_the_configured_wechat_name_for_fangwei(tmp_path, nickname, accept):
+    sources = load_sources(Path(__file__).resolve().parents[2] / "config/sources.yaml")
+    source = require_source(sources, "fangwei-mp")
+    post = _post(SN_NEW, "方伟的一篇", datetime(2026, 11, 18, tzinfo=UTC))
+    client = PagingClient([([post], "", 1)], nickname=nickname)
+    report = crawl(BoomConn(), source, ghid=source.ghid, inbox=tmp_path, client=client,
+                   fetch=_boom_fetch, backfill=True, list_only=True)
+    assert report.listed == int(accept) and bool(report.failed) is not accept
+    assert (tmp_path / "raw" / "post-history.jsonl").exists() is accept
+
+
 def test_backfill_rejects_another_accounts_name_before_page_two(tmp_path):
     pages = [
         ([_post(SN_NEW, "别的号", datetime(2026, 10, 3, 1, 0, tzinfo=UTC))], "cursor-1", 0),

@@ -775,9 +775,10 @@ def list_history(
         after = float(getattr(client, "cost", before) or before)
         pages_this_run += 1
         nickname = str(meta.get("nickname") or "")
-        if nickname and _foreign_account(source.name, nickname) and not calls_before and pages_this_run == 1:
+        expected_name = source.wechat_nickname or source.name
+        if nickname and _foreign_account(expected_name, nickname) and not calls_before and pages_this_run == 1:
             report.failed.append(
-                f"极致了返回的公众号是「{nickname}」，配置里是「{source.name}」（ghid {ghid}）。"
+                f"极致了返回的公众号是「{nickname}」，配置里是「{expected_name}」（ghid {ghid}）。"
                 "多半不是这个号，这一页没有写入列表，也没有往下翻"
             )
             report.remain = meta.get("remain_money")
