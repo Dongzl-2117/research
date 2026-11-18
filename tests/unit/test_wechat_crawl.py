@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from researchlib import wechat_crawl
-from researchlib.sources import Source
+from researchlib.sources import Source, load_sources, require_source
 from researchlib.wechat_crawl import (
     Dajiala,
     DajialaError,
@@ -431,11 +431,15 @@ def test_daily_main_rejects_an_explicitly_different_account_before_fetch_or_impo
     import_archive.assert_not_called()
 
 
-@pytest.mark.parametrize("nickname", ["孤独进化体", "孤独 进化体", ""])
-def test_daily_matching_or_unreported_nickname_allows_body(tmp_path, nickname):
+@pytest.mark.parametrize(("source_id", "nickname"), [
+    ("latepost", "晚点LatePost"), ("latepost", ""), ("fangwei-mp", "方伟看十年"), ("gudujinhuati", "孤独 进化体"),
+])
+def test_daily_matching_or_unreported_nickname_allows_body(tmp_path, source_id, nickname):
+    sources = load_sources(Path(__file__).resolve().parents[2] / "config/sources.yaml")
+    source = require_source(sources, source_id)
     post = _post(SN_NEW, "新的一篇", datetime(2026, 11, 18, tzinfo=UTC))
     client = PagingClient([([post], "", 1)], nickname=nickname)
-    report = crawl(FakeConn([]), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=lambda url: PAGE)
+    report = crawl(FakeConn([]), source, ghid=source.ghid, inbox=tmp_path, client=client, fetch=lambda url: PAGE)
     assert len(report.written) == 1 and not report.failed
 
 
