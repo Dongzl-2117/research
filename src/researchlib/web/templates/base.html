@@ -69,6 +69,9 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H10l-4 3.5v-3.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 10.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
             <span>问库</span>
           </a>
+          <a class="nav-link" href="/journal" {% if nav == "journal" %}aria-current="page"{% endif %}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M6 4.5h12.5v15H6zM9 4.5v15M11.5 9h4M11.5 12h4"/></svg><span>手记</span>
+          </a>
         </div>
         {% if experiment_admin_url %}
         <div class="nav-label">管理</div>
@@ -111,6 +114,9 @@
     <a href="/ask" {% if nav == "ask" %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H10l-4 3.5v-3.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 10.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
       <span>问库</span>
+    </a>
+    <a href="/journal" {% if nav == "journal" %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M6 4.5h12.5v15H6zM9 4.5v15M11.5 9h4M11.5 12h4"/></svg><span>手记</span>
     </a>
   </nav>
   <div class="img-zoom" id="img-zoom" role="dialog" aria-modal="true" aria-label="放大的图片，按 Esc 或点一下关闭" tabindex="-1" hidden><img alt=""></div>

@@ -86,3 +86,20 @@
   });
   top.prepend(link);
 }());
+
+// 出处与选中文字只经过片段标识符，在本机手记中读取。
+(function () {
+  const link = document.getElementById('journal-article');
+  if (!link) return;
+  const ref = location.pathname + location.search + location.hash;
+  const quoted = document.querySelector('.is-quoted, .quoted > p:last-child')?.textContent.trim() || '';
+  function update(excerpt) {
+    link.hash = new URLSearchParams({ref, excerpt: excerpt.slice(0, 4000)}).toString();
+  }
+  update(quoted);
+  document.addEventListener('selectionchange', function () {
+    const selection = document.getSelection();
+    const anchor = selection?.anchorNode?.parentElement;
+    if (selection?.toString().trim() && anchor?.closest('.reader .prose')) update(selection.toString().trim());
+  });
+}());

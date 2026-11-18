@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block styles %}<link rel="stylesheet" href="{{ asset('journal.css') }}">{% endblock %}
+{% block body %}
+<section class="journal" aria-labelledby="journal-title">
+  <header class="page-head"><h1 id="journal-title">投研手记</h1>
+    <p class="quiet">保存在这台设备的浏览器里。换设备或清理浏览器前，请先导出备份。</p>
+  </header>
+  <noscript><p>启用 JavaScript 后可读写本机手记。</p></noscript>
+  <div id="journal-status" role="status" aria-live="polite"></div>
+  <div id="journal-controls" hidden>
+    <div class="journal-tools">
+      <button id="new-note" type="button" class="btn">新建判断</button>
+      <label>回看截至 <input type="datetime-local" id="as-of" step="1"></label>
+      <button id="return-now" type="button" hidden>返回当前</button>
+      <details><summary>备份与恢复</summary>
+        <p>JSON 备份包含全部手记、自选和修订记录。恢复时合并记录；同一版本发生冲突会保留当前资料并提示。</p>
+        <button type="button" id="export">导出 JSON</button>
+        <label>导入 JSON <input type="file" id="import" accept=".json,application/json"></label>
+      </details>
+    </div>
+    <section><h2>自选公司</h2><ul class="watch-list" id="watches"></ul>
+      <form id="watch-form"><label>公司名称 <input name="company" required maxlength="100"></label>
+        <button>加入自选</button></form>
+    </section>
+    <section id="editor" hidden><h2 id="editor-title">新建判断</h2>
+      <form id="note-form">
+        <div class="journal-fields">
+          <label>公司或研究主题 <input name="company" required maxlength="100" list="company-names"></label>
+          <label>下次复核日期 <input name="review" type="date"></label>
+        </div>
+        <label>我的假设 <textarea name="hypothesis" required maxlength="12000" rows="3"></textarea></label>
+        <label>什么证据会推翻它 <textarea name="falsifier" maxlength="12000" rows="2"></textarea></label>
+        <label>原文或段落链接 <input name="ref" maxlength="4000" placeholder="/articles/… 或 https://…"></label>
+        <label>原文摘录 <textarea name="excerpt" maxlength="4000" rows="2"></textarea></label>
+        <fieldset><legend>指标验证</legend><div class="journal-fields">
+          <label>指标 <input name="metric" maxlength="160" placeholder="例如：经营利润率"></label>
+          <label>单位 <input name="unit" maxlength="60" placeholder="例如：%"></label>
+          <label>报告期 <input name="period" maxlength="100" placeholder="例如：2026 Q3"></label>
+          <label>预期值或区间 <input name="expected" maxlength="250"></label>
+          <label>实际值 <input name="actual" maxlength="250"></label>
+          <label>公告发布时间（本地时间）<input type="datetime-local" name="published" step="1"></label>
+        </div>
+        <label>一手披露链接 <input name="filing" type="url" maxlength="4000" placeholder="https://…"></label>
+        </fieldset>
+        <label>此次判断怎样变化 <textarea name="change" maxlength="4000" rows="2"></textarea></label>
+        <div class="journal-actions"><button class="btn">保存此版本</button><button type="button" id="cancel-note">取消</button></div>
+      </form>
+    </section>
+    <datalist id="company-names"></datalist>
+    <section><h2>待复核</h2><ul id="due-list"></ul></section>
+    <section><h2>我的判断</h2><div id="notes"></div></section>
+  </div>
+</section>
+<script src="{{ asset('journal-store.js') }}" defer></script>
+<script src="{{ asset('journal.js') }}" defer></script>
+{% endblock %}

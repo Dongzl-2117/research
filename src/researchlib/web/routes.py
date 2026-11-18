@@ -1700,6 +1700,12 @@ def _drop_guest_blocks(conn, fragments, by_id):
 COMPANY_SORTS = {"judged": "最近判断", "views": "判断最多", "deep": "文章最多"}
 
 
+@router.get("/journal")
+def journal(request: Request):
+    """个人判断和备份只在读者的浏览器里处理，此页不读取或接收手记。"""
+    return render_page(request, "journal.html", {"title": "投研手记", "nav": "journal"})
+
+
 @router.get("/companies")
 def companies_page(request: Request):
     """公司列表：每家最近有什么判断、近一年偏多还是偏空。默认按最近一条判断排，还没有判断的排在后面。"""

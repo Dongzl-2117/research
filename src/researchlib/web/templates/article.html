@@ -25,6 +25,7 @@
       {% if relative %}<span aria-hidden="true">·</span><span>{{ relative }}</span>{% endif %}
       {% if elsewhere %}<span aria-hidden="true">·</span><span class="elsewhere">同一篇也在{% for item in elsewhere %} <a href="/articles/{{ item.id }}">{{ item.source }}</a>{% endfor %} <a class="quiet" href="/duplicates?article={{ article.duplicate_of or article.id }}">核对</a></span>{% endif %}
       {% if revised %}<span aria-hidden="true">·</span><a class="revised" href="/articles/{{ article.id }}/revisions">{{ revised }}</a>{% endif %}
+      <span aria-hidden="true">·</span><a id="journal-article" href="/journal#ref={{ ('/articles/' ~ article.id ~ (quoted_query or '')) | urlencode }}">记入手记</a>
       <span aria-hidden="true">·</span><a href="/ask?article={{ article.id }}">问这篇</a>
     </p>
     {% if hidden %}
