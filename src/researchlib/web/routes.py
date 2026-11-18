@@ -107,7 +107,7 @@ from researchlib.web.present import (
 )
 from researchlib.web.quoting import mark_quoted_parts, occurrence_of
 from researchlib.web.render_cache import PAGES
-from researchlib.web.scoping import parse_as_of, parse_day, parse_int, resolve_scope
+from researchlib.web.scoping import parse_day, parse_int, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.zsxq_comments import guest_comment_authors, guest_comment_chunk, source_owners
 from researchlib.zsxq_title import (
@@ -1262,7 +1262,7 @@ def source_tree_article(request: Request, source_id: str, article_id: int):
 
 def historical_article(conn, article_id, as_of, sources):
     try:
-        evidence = article_history.snapshot(conn, article_id, parse_as_of(as_of), sources)
+        evidence = article_history.snapshot(conn, article_id, article_history.parse_as_of(as_of), sources)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if evidence is None:

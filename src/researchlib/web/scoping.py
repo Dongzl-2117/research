@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 from fastapi import HTTPException
 
-from researchlib.textutil import SHANGHAI
 from researchlib.web.queries import Scope
 
 
@@ -21,20 +20,6 @@ def parse_day(value: str | None) -> date | None:
         return day
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="日期须为有效的 YYYY-MM-DD") from exc
-
-
-def parse_as_of(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-    text = value.strip()
-    # 网页表单提交上海本地时间；API 客户端也可以显式提供 UTC 偏移。
-    try:
-        if len(text) < 16 or text[10] != "T" or date.fromisoformat(text[:10]).isoformat() != text[:10]:
-            raise ValueError
-        instant = datetime.fromisoformat(text)
-        return instant if instant.tzinfo else instant.replace(tzinfo=SHANGHAI)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="时点须为 ISO 日期时间，例如 2026-11-18T09:30+08:00") from exc
 
 
 # 地址里的整数（编号、offset、页码）都进 SQL 当 bigint 用。超出范围的和不是数字的一样当没给，

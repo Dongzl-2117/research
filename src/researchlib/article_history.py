@@ -1,17 +1,31 @@
 """按归档时点读取单篇。旧格式的改稿表只保存不同内容，不能证明某一刻是哪一版。"""
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 
 from researchlib.author_voice import hide_from_site, site_visible_sql
 from researchlib.boilerplate import strip_meta
 from researchlib.output_safety import redact_subscription_links
 from researchlib.present_text import plain_qa_markdown
-from researchlib.textutil import split_frontmatter
+from researchlib.textutil import SHANGHAI, split_frontmatter
 from researchlib.visibility import is_hidden, visible_sql
 
 # 原始评论区即使格式破损也不能当主帖。历史模式只展示结构化且时间已经核实的作者回复。
 _COMMENT = re.compile(r"(?m)^[ \t]*(?:#{1,6}[ \t]*)?(?:评论里的回复|评论\s*[（(]\s*\d+\s*[)）])[ \t]*$")
+
+
+def parse_as_of(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    text = value.strip()
+    # 网页表单提交上海本地时间；API 客户端也可以显式提供 UTC 偏移。
+    try:
+        if len(text) < 16 or text[10] != "T" or date.fromisoformat(text[:10]).isoformat() != text[:10]:
+            raise ValueError
+        instant = datetime.fromisoformat(text)
+        return instant if instant.tzinfo else instant.replace(tzinfo=SHANGHAI)
+    except ValueError as exc:
+        raise ValueError("时点须为 ISO 日期时间，例如 2026-11-18T09:30+08:00") from exc
 
 
 def confirm_commits(conn) -> None:

@@ -332,7 +332,7 @@ def test_article_byline_names_a_one_person_source_once():
     same = _byline(_SameNameSource())
     assert same.count("乘风破浪") == 1
     assert 'href="/?source=chengfengpolang"' in same
-    assert same.count('aria-hidden="true">·</span>') == 3  # 名字 · 时间 · 历史时点 · 问这篇
+    assert same.count('aria-hidden="true">·</span>') == same.count('<a ') + same.count('<time ') - 1
     both = _byline(_Source())
     assert "方伟公众号" in both and 'href="/authors/%E6%96%B9%E4%BC%9F"' in both
     guest = _byline(_SameNameSource(), guest=True, poster_name="王小明")

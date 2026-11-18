@@ -514,19 +514,21 @@
         const url = safeArticleUrl(item.url);
         const title = document.createElement(url ? 'a' : 'span');
         if (url) { title.href = url; newTab(title); }
-        title.textContent = `[${item.n}] ${item.title || '文章'}`;
-        const text = document.createElement('p');
-        text.textContent = item.text || '';
-        entry.append(title, text);
+        let historyLink;
         const through = data.scope && data.scope.date_to || turn.params && turn.params.to;
         if (url && Number.isSafeInteger(item.article_id) && /^\d{4}-\d{2}-\d{2}$/.test(through || '')) {
           const history = document.createElement('a');
           history.href = `/articles/${item.article_id}/history?through=${through}`;
           history.textContent = '核对当时版本';
           newTab(history);
-          entry.appendChild(history);
+          historyLink = history;
         }
+        title.textContent = `[${item.n}] ${item.title || '文章'}`;
+        const text = document.createElement('p');
+        text.textContent = item.text || '';
+        entry.append(title, text);
         list.appendChild(entry);
+        if (historyLink) entry.appendChild(historyLink);
       });
       evidence.append(summary, list);
       turn.content.appendChild(evidence);
