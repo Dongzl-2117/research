@@ -48,6 +48,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
+from researchlib.financial_evidence import numeric_signature
 from researchlib.textutil import markdown_to_text
 
 _FENCE = re.compile(r"^[ \t]{0,3}(```+|~~~+)")
@@ -61,6 +62,43 @@ _NOT_PLAIN = re.compile(
     r"|^[ \t]{0,3}(?:(?:[-*_][ \t]*){3,}|=+)[ \t]*$"
 )
 _NON_KEY = re.compile(r"[^0-9a-z一-鿿]+")
+# 财务字面的一部分要留在它对应的位置。其余排版差异（如链接前后空白、句末逗号）可以忽略。
+_AMOUNT = (
+    r"(?:(?:[<>]=?|[≤≥])\s*)?(?:[+-]\s*)?(?:[$€£¥]\s*)?(?:[+-]\s*)?"
+    r"(?:[0-9]+(?:[.,:/][0-9]+)*|\.[0-9]+)(?:\s*[%‰])?"
+)
+_VALUE = rf"(?:\(\s*{_AMOUNT}\s*\)|{_AMOUNT})"
+_VALUE_RE = re.compile(_VALUE)
+_THOUSANDS = re.compile(r"(?<![0-9.,])[0-9]{1,3}(?:,[0-9]{3})+(?![0-9,])")
+_COPY_PART = re.compile(rf"(?P<value>{_VALUE})|[a-z一-鿿]+")
+_DIGIT = re.compile(r"[0-9０-９]")
+_NUMBER_WIDTH = str.maketrans("０１２３４５６７８９％＋－−．，＄￥（）", "0123456789%+--.,$¥()")
+
+
+def _value_key(value: str) -> str:
+    value = "".join(value.split())
+    if "," in value:
+        return _THOUSANDS.sub(lambda m: m[0].replace(",", ""), value)
+    return value
+
+
+def copy_text_key(text: str) -> str:
+    """展示副本的比较文字。保留数字的正负、币种、边界和计量符号。"""
+    text = text.casefold()
+    if not _DIGIT.search(text):
+        return _NON_KEY.sub("", text)
+    # 括住整个数值，避免把「5」误认作「5%」的前缀，也避免「1 23」与「12 3」拼成同一个数。
+    return "".join(
+        "[" + _value_key(match[0]) + "]" if match.lastgroup == "value" else match[0]
+        for match in _COPY_PART.finditer(text.translate(_NUMBER_WIDTH))
+    )
+
+
+def copy_number_literals(text: str) -> tuple[str, ...]:
+    """容许正文措辞近似时，仍逐个核对数字字面。"""
+    return tuple(_value_key(match) for match in _VALUE_RE.findall(text.translate(_NUMBER_WIDTH)))
+
+
 # 外层去掉格式、标点和空白后短过这个就不认：「Yes.」这种短句碰巧和下一段一样，不当成导出的两份。
 _MIN_KEY = 8
 # 一条引文、一个列表项里最多认这么多段。访谈记录这类长引文一条几十段（线上 22699 一条 40 多段），以前只认 12 段，
@@ -79,8 +117,8 @@ _INDENT = "    "
 
 def _key(md: str) -> str:
     # 图的替代文字不算字：纯文字那份里没有，页面上（translate/display.py 的 repeat_key）也不算。
-    text = html_lib.unescape(markdown_to_text(_IMAGE_MD.sub(" ", md))).casefold()
-    return _NON_KEY.sub("", text)
+    text = html_lib.unescape(markdown_to_text(_IMAGE_MD.sub(" ", md)))
+    return copy_text_key(text)
 
 
 def markdown_blocks(lines: list[str]) -> list[tuple[int, int, bool]]:
@@ -377,6 +415,11 @@ def plain_ends(
         tail_at = found
     if key(text[head_at:tail_at]) != middle:
         return None
+    # 导语、署名不能从完整金额中切走币种或数量级（例如把 12 million USD 的 USD 当成署名）。
+    if numeric_signature(text) != (
+        numeric_signature(text[:head_at]) + numeric_signature(text[head_at:tail_at]) + numeric_signature(text[tail_at:])
+    ):
+        return None
     return head_at, tail_at
 
 
@@ -419,7 +462,7 @@ def _fold_once(lines: list[str], done: set[int]) -> tuple[list[str], set[int]] |
             kind = "nested" if _QUOTE.match(block[0]) or _ANY_ITEM.match(block[0]) else ""
         kinds.append(kind)
         keys.append(key)
-        whole.append(_whole_key(block) if kind else "")
+        whole.append(_whole_key(block) if kind in _NESTED else "")
     edits: list[tuple[int, int, list[str]]] = []
     for run in copy_runs(kinds, keys, whole):
         index = run.outers[0]
