@@ -38,7 +38,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib import llm_batch
 from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_sql
-from researchlib.claims import looks_like_list, plain_cite, quote_ok
+from researchlib.claims import looks_like_list, plain_cite, quote_ok, source_quote
 from researchlib.config import Settings
 from researchlib.excerpt import VIEW_WINDOW, old_reader_dropped, original_chunks, view_windows
 from researchlib.failures import clear_failure, cooling_sql
@@ -272,8 +272,8 @@ def quote_repeats(quote: str, judgment: str, threshold: float = 0.5) -> bool:
 def locate_quote(conn, article_id: int, body_text: str, quote: str) -> tuple[str, int | None]:
     """原句逐字核对。换行、空白和全角先规范化。空引用拒收。对得上返回 (原句, 块号)。"""
     cleaned = " ".join((quote or "").split())
-    wanted = plain_cite(cleaned)
-    if not quote_ok(cleaned) or wanted not in plain_cite(body_text):
+    original = source_quote(body_text, cleaned)
+    if not original:
         return "", None
     for chunk in conn.execute(
         """
@@ -283,9 +283,10 @@ def locate_quote(conn, article_id: int, body_text: str, quote: str) -> tuple[str
         """,
         (article_id,),
     ).fetchall():
-        if wanted in plain_cite(chunk["body"]):
-            return cleaned, chunk["ord"]
-    return cleaned, None
+        matched = source_quote(chunk["body"], original)
+        if matched:
+            return matched, chunk["ord"]
+    return original, None
 
 
 def tracked_companies(conn, names) -> list[dict]:
@@ -627,6 +628,8 @@ def extract_article(
         quote, chunk = locate_quote(conn, row["id"], body, view.get("quote") or "")
         if not quote_ok(quote):
             quote, chunk = "", None
+        for angle in view.get("angles") or []:
+            angle["quote"] = source_quote(body, angle.get("quote") or "")
         conn.execute(
             """
             INSERT INTO company_views (
@@ -687,8 +690,47 @@ _CHANGE_SIGNALS = ("positive", "negative")
 
 def _verified_chunk(row: dict) -> int | None:
     """旧块已经重切过也要在读取时守住引用；无原句证据时只打开文章。"""
-    wanted = plain_cite(row.get("quote") or "")
-    return row.get("chunk_ord") if wanted and wanted in plain_cite(row.get("chunk_body") or "") else None
+    return row.get("chunk_ord") if source_quote(row.get("chunk_body") or "", row.get("quote") or "") else None
+
+
+def verify_stored_quotes(conn, rows: list[dict]) -> None:
+    """旧数据也从来源取字。错位的旧指针只撤销链接，查到别的原文块仍可展示原句。"""
+    pending: dict[int, list[tuple[dict, str]]] = {}
+    for row in rows:
+        for target in [row, *(row.get("angles") or [])]:
+            quote = target.get("quote") or ""
+            matched = source_quote(row.get("chunk_body") or "", quote)
+            target["quote"] = matched
+            if target is row:
+                row["verified_chunk"] = row.get("chunk_ord") if matched else None
+            if quote and not matched:
+                pending.setdefault(row["article_id"], []).append((target, quote))
+
+    def verify(article_id: int, source: str) -> None:
+        remaining = []
+        for target, quote in pending.get(article_id, []):
+            matched = source_quote(source, quote)
+            if matched:
+                target["quote"] = matched
+            else:
+                remaining.append((target, quote))
+        pending[article_id] = remaining
+
+    # 只核没在已连段落中找到的原句，按小批读取。大公司的时间线不一次载入所有文章和所有块。
+    ids = list(pending)
+    for offset in range(0, len(ids), 40):
+        group = ids[offset : offset + 40]
+        for article in conn.execute("SELECT id, body_text, ocr_text FROM articles WHERE id = ANY(%s)", (group,)):
+            verify(article["id"], article["body_text"] or "")
+            if pending[article["id"]] and article["ocr_text"]:
+                verify(article["id"], article["ocr_text"])
+        rest = [article_id for article_id in group if pending[article_id]]
+        if rest:
+            for part in conn.execute(
+                "SELECT article_id, body FROM article_chunks WHERE article_id = ANY(%s) AND lang IN ('', 'ocr')",
+                (rest,),
+            ):
+                verify(part["article_id"], part["body"])
 
 
 def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
@@ -696,7 +738,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.metrics,
-               v.quote, v.chunk_ord, c.anchor AS chunk_anchor, c.body AS chunk_body,
+               v.quote, v.angles, v.chunk_ord, c.anchor AS chunk_anchor, c.body AS chunk_body,
                a.title, a.published_at, a.source_id,
                left(a.body_text, 2000) AS body_text
         FROM company_views v
@@ -708,6 +750,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         """,
         (company_id, list(sources_by_id)),
     ).fetchall()
+    verify_stored_quotes(conn, rows)
     last: dict[str, str] = {}
     items: list[dict] = []
     for row in rows:
@@ -748,8 +791,9 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
                 "falsifiers": falsifiers,
                 "metrics": list(row["metrics"] or []),
                 "quote": row["quote"],
-                "chunk": _verified_chunk(row),
-                "anchor": (row["chunk_anchor"] or "") if _verified_chunk(row) is not None else "",
+                "angles": row.get("angles") or [],
+                "chunk": row["verified_chunk"],
+                "anchor": (row["chunk_anchor"] or "") if row["verified_chunk"] is not None else "",
                 "risky": bool(risks or falsifiers or stance in ("negative", "mixed")),
             }
         )
@@ -815,7 +859,16 @@ def same_period(
     if tracked_ids is not None and not tracked_ids:
         return []
     company_sql = "AND m.company_id = ANY(%(tracked)s)" if tracked_ids is not None else ""
-    params = {"id": article_id, "sources": list(sources_by_id), "days": days}
+    own = conn.execute("SELECT source_id FROM articles WHERE id = %s", (article_id,)).fetchone()
+    if not own or limit <= 0:
+        return []
+    own_source = sources_by_id.get(own["source_id"])
+    peer_sources = [
+        key for key, source in sources_by_id.items() if not own_source or source.author != own_source.author
+    ]
+    if not peer_sources:
+        return []
+    params = {"id": article_id, "sources": peer_sources, "days": days, "limit": limit}
     if tracked_ids is not None:
         params["tracked"] = tracked_ids
     rows = conn.execute(
@@ -834,20 +887,15 @@ def same_period(
           AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%(sources)s)
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
                                  AND me.published_at + make_interval(days => %(days)s)
-        ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id
-        LIMIT 60
+        ORDER BY abs(extract(epoch FROM a.published_at - me.published_at)), a.id, v.company_id
+        LIMIT %(limit)s
         """,
         params,
     ).fetchall()
-    own = conn.execute("SELECT source_id FROM articles WHERE id = %s", (article_id,)).fetchone()
-    own_source = sources_by_id.get(own["source_id"]) if own else None
-    own_author = own_source.author if own_source else None
     found: list[dict] = []
     for row in rows:
         source = sources_by_id.get(row["source_id"])
         author = source.author if source else row["source_id"]
-        if author == own_author:
-            continue
         found.append(
             {
                 "article_id": row["article_id"],
@@ -862,8 +910,6 @@ def same_period(
                 "title": row["title"],
             }
         )
-        if len(found) >= limit:
-            break
     return found
 
 

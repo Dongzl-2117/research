@@ -325,7 +325,7 @@ def _article_ocr_chunks(conn, article_id: int, host: str = "") -> list[tuple[str
 
 def replace_ocr_chunks(conn, article_id: int) -> int:
     """按这篇挂着的图片和已经识别出的字重切图片文字块。重复的那一份不切。"""
-    from researchlib.claims import plain_cite
+    from researchlib.claims import source_quote
 
     # 块号会被复用。先记下观点的原图，再按原句匹配新块，不能让旧号悄悄指向邻图。
     references = conn.execute(
@@ -355,10 +355,10 @@ def replace_ocr_chunks(conn, article_id: int) -> int:
                 ],
             )
     for reference in references:
-        wanted = plain_cite(reference["quote"] or "")
+        wanted = reference["quote"] or ""
         matches = [
             (index, anchor) for index, (anchor, text) in enumerate(chunks)
-            if wanted and wanted in plain_cite(text)
+            if source_quote(text, wanted)
         ]
         # 同一句仍在原图时优先原图；重叠句去重到前图后，只链到确实含原句的那一块。
         matches.sort(key=lambda item: item[1] != reference["anchor"])

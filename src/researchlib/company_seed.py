@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import NamedTuple
 
 
@@ -24,7 +25,12 @@ def _company(
     market: str,
     *aliases: str,
 ) -> CompanySeed:
-    return CompanySeed(ticker, name_zh, name_en, market, aliases)
+    variants = list(aliases)
+    for code in (ticker, *aliases):
+        if code and re.fullmatch(r"[0-9]{1,5}\.HK", code):
+            number = int(code[:-3])
+            variants.extend([f"{number}.HK", f"{number:04d}.HK", f"{number:05d}.HK"])
+    return CompanySeed(ticker, name_zh, name_en, market, tuple(dict.fromkeys(a for a in variants if a != ticker)))
 
 
 SEEDS: tuple[CompanySeed, ...] = (
@@ -50,6 +56,7 @@ SEEDS: tuple[CompanySeed, ...] = (
     _company("00388.HK", "香港交易所", "HKEX", "HK", "港交所"),
     _company("00941.HK", "中国移动", "China Mobile", "HK"),
     _company("02269.HK", "药明生物", "WuXi Biologics", "HK"),
+    _company("09926.HK", "康方生物", "Akeso", "HK", "Akeso Biopharma"),
     _company("01801.HK", "信达生物", "Innovent", "HK"),
     _company("09961.HK", "携程", "Trip.com", "HK", "携程集团", "TCOM"),
     _company("02423.HK", "贝壳", "Beike", "HK", "贝壳找房", "BEKE"),
@@ -58,7 +65,7 @@ SEEDS: tuple[CompanySeed, ...] = (
     _company("AAPL", "苹果", "Apple", "US", "苹果公司", "iPhone"),
     _company("AMZN", "亚马逊", "Amazon", "US"),
     _company("MSFT", "微软", "Microsoft", "US"),
-    _company("GOOGL", "谷歌", "Alphabet", "US", "Google"),
+    _company("GOOGL", "谷歌", "Alphabet", "US", "Google", "GOOG"),
     _company("META", "Meta", "Meta Platforms", "US", "Facebook", "脸书"),
     _company("NVDA", "英伟达", "NVIDIA", "US"),
     _company("TSLA", "特斯拉", "Tesla", "US"),

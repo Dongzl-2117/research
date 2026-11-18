@@ -209,3 +209,47 @@ def test_ocr_changed_picks_only_views_drawn_from_other_image_text(conn, settings
     picked = views_mod.pending_articles(conn, [company["id"]], sources, 50, ocr_changed=True)
     assert [row["id"] for row in picked] == [ids["reread"]]
     assert [item["id"] for item in views_mod.pending_companies(conn, ids["reread"])] == [company["id"]]
+
+
+def test_company_page_hides_wrong_financial_quote_and_reads_old_secondary_angles(conn, settings):
+    source = next(item for item in load_sources(settings.sources_path) if item.id == "fangwei-mp")
+    body = "腾讯的净利润同比变化-1.5%。腾讯的广告渠道库存明显下降。"
+    store_documents(conn, source=source,
+                    docs=[ParsedDoc("review-angles", "腾讯业务变化", datetime(2026, 1, 1, tzinfo=SHANGHAI),
+                                    body, {}, [])], data_dir=settings.data_dir, archive_files=1,
+                    images_in_archive=0, errors=[])
+    company = _tencent(conn)["id"]
+    row = _article(conn, "review-angles")
+    angles = [{"judgment": "广告库存改善", "quote": "腾讯的广告渠道库存明显下降。", "stance": "positive"},
+              {"judgment": "第三项仍待核实", "quote": "毛利率增加99%。", "stance": "neutral"}]
+    conn.execute(
+        "INSERT INTO company_views(article_id, company_id, content_hash, prompt_version, judgment, stance,"
+        " quote, chunk_ord, angles) VALUES (%s, %s, %s, 2, '本期净利发生变化', 'mixed', %s, 0, %s::jsonb)",
+        (row["id"], company, row["content_hash"], "腾讯的净利润同比变化15%。", json.dumps(angles)))
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        page = client.get(f"/companies/{company}", params={"tab": "views"}).text
+        assert "同篇其他判断" in page and "广告库存改善" in page
+        assert "同比变化15%" not in page and "毛利率增加99%" not in page
+        item = client.get(f"/api/v1/companies/{company}/views").json()["views"][0]
+        assert item["quote"] == "" and item["chunk"] is None
+        assert item["angles"][0]["quote"] == angles[0]["quote"] and item["angles"][1]["quote"] == ""
+
+
+def test_peer_author_survives_more_than_sixty_closer_same_author_articles(conn, settings):
+    sources = {source.id: source for source in load_sources(settings.sources_path)}
+    _sample(conn, settings)
+    company = _tencent(conn)["id"]
+    base = _article(conn, "sample:tencent-ads")
+    conn.execute("""
+        WITH added AS (
+            INSERT INTO articles (source_id, external_id, content_hash, title, published_at, body_md, body_text)
+            SELECT CASE WHEN i < 62 THEN 'fangwei-mp' ELSE 'gudujinhuati' END,
+                'peer-' || i, 'hash-' || i, '同公司归档 ' || i,
+                %s::timestamptz + i * interval '1 minute', '合成正文', '合成正文'
+            FROM generate_series(1,62) i RETURNING id, content_hash)
+        INSERT INTO company_views(article_id, company_id, content_hash, prompt_version, judgment, stance)
+        SELECT id, %s, content_hash, 2, '渠道需求放缓', 'negative' FROM added
+        """, (base["published_at"], company))
+    peers = views_mod.same_period(conn, base["id"], None, sources, settings, limit=1)
+    assert len(peers) == 1 and peers[0]["author"] == sources["gudujinhuati"].author
