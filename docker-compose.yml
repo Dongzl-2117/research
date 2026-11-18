@@ -68,7 +68,7 @@ services:
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
       DEEPSEEK_REASONING_EFFORT: ${DEEPSEEK_REASONING_EFFORT:-max}
       DEEPSEEK_MAX_TOKENS: ${DEEPSEEK_MAX_TOKENS:-393216}
-      # 公众号定时抓取（research-crawl-wechat）用的极致了 key，和宿主机上方伟公众号的抓取共用 .env 里同一行。
+      # 公众号定时抓取（research-crawl-wechat）用的极致了 key：方伟、孤独进化体、晚点LatePost 共用 .env 里同一行。
       DAJIALA_KEY: ${DAJIALA_KEY:-}
       # Stratechery 订阅自带的个人 RSS 全文地址（research-crawl-stratechery 用），是订阅凭证，只写在 .env。
       STRATECHERY_RSS_URL: ${STRATECHERY_RSS_URL:-}

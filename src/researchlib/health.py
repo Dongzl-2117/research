@@ -30,6 +30,8 @@ TASKS: dict[str, tuple[str, timedelta | None]] = {
     "crawl-fangwei-mp": ("方伟公众号抓取", timedelta(hours=30)),
     "crawl-fangwei-zsxq": ("方伟星球抓取", timedelta(hours=30)),
     "crawl-gudujinhuati": ("孤独进化体抓取", timedelta(hours=50)),
+    # 每天 08:30、20:30 各一次。隔了 30 小时还没成功，就是连续两次都没跑成。
+    "crawl-latepost": ("晚点LatePost抓取", timedelta(hours=30)),
     "nightly": ("夜间补齐", timedelta(hours=50)),
     "upkeep": ("后台重算", None),
     # 新地址大半下不来才写成失败（remote_images.fetch_status），只看最近一次。

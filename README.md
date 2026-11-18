@@ -28,11 +28,11 @@ docker compose up -d --build
 
 ## 来源
 
-白名单在 `config/sources.yaml`。现在启用方伟公众号、方伟知识星球、乘风破浪、林文丰飞书、孤独进化体、Stratechery、雪球「黑黑无常」。林文丰公众号停用，不入库。黑黑无常只导入已经抓下来的原创帖和长文，进首页按天。
+白名单在 `config/sources.yaml`。现在启用方伟公众号、方伟知识星球、乘风破浪、林文丰飞书、孤独进化体、晚点LatePost、Stratechery、雪球「黑黑无常」。林文丰公众号停用，不入库。黑黑无常只导入已经抓下来的原创帖和长文，进首页按天。
 
 持仓和观察名单在 `config/portfolio.yaml`，按公司表里的中文名写。页面上不展示这份名单，JSON 里的 `portfolio` 字段仍读它。观点、论点和首页「最近观点」不按它过滤。
 
-新文章靠 Mac mini 上的定时抓取进来：方伟公众号和方伟星球每天各抓两次，孤独进化体每天抓一次（`scripts/crawl-*.sh`，launchd 安装见 [docs/backup.md](docs/backup.md)）。乘风破浪、黑黑无常还没有定时抓取，要手动导入。AIHOT 已下线。
+新文章靠 Mac mini 上的定时抓取进来：方伟公众号、方伟星球和晚点LatePost 每天各抓两次，孤独进化体每天抓一次（`scripts/crawl-*.sh`，launchd 安装见 [docs/backup.md](docs/backup.md)）。晚点的定时任务只抓最新一页；历史回填要另跑，不随部署自动翻页，见 [docs/ingest.md](docs/ingest.md)「晚点LatePost」。乘风破浪、黑黑无常还没有定时抓取，要手动导入。AIHOT 已下线。
 
 导入命令、幂等规则、改稿删稿怎么处理、去重、外链图片和计数报告见 [docs/ingest.md](docs/ingest.md)。方伟星球补真实钟点、林文丰目录树也在那里。公司提及的判定和歧义别名的规则见 [docs/mentions.md](docs/mentions.md)。备份、试恢复、夜间补齐、定时增量导入和出问题时的提示见 [docs/backup.md](docs/backup.md)。图片里的字见 [docs/ocr.md](docs/ocr.md)。
 

@@ -104,6 +104,18 @@ def test_crawl_tasks_are_watched(tmp_path):
     assert any(text.startswith("方伟星球抓取已经 47 小时没成功了") for text in found)
 
 
+def test_latepost_crawl_goes_stale_after_thirty_hours(tmp_path):
+    """每天两次。30 小时没成功就是连续两次都没跑成；29 小时还在两次之间，不报。"""
+    assert health.TASKS["crawl-latepost"] == ("晚点LatePost抓取", timedelta(hours=30))
+    assert health.TASKS["crawl-fangwei-mp"][1] == timedelta(hours=30)
+    assert health.TASKS["crawl-gudujinhuati"][1] == timedelta(hours=50)
+    _write(tmp_path, "crawl-latepost", ok=True, at="2026-10-19T07:00:00Z")
+    assert health.notices(tmp_path, "Asia/Shanghai", now=NOW) == []
+    _write(tmp_path, "crawl-latepost", ok=True, at="2026-10-19T05:00:00Z")
+    found = health.notices(tmp_path, "Asia/Shanghai", now=NOW)
+    assert any(text.startswith("晚点LatePost抓取已经 31 小时没成功了") for text in found)
+
+
 def test_stale_banner_ignores_old_aihot_imports():
     """AIHOT 导入已删。库里以前记的 origin=aihot 不再当定时导入。"""
     every_three_days = [NOW - timedelta(days=20 + 3 * index) for index in range(15)]

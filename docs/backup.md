@@ -13,6 +13,7 @@
 | `scripts/crawl-fangwei-mp.sh` | 方伟公众号抓取：和孤独进化体同一条路，容器里的 `research-crawl-wechat` 查最新文章，正文从公众号原文页取，写进 `data/inbox/fangwei-mp` 并导入（`--origin crawl`）；再把以前入库的老文章按原文页摆图一批（`research-place-wechat-images`，`PLACE_LIMIT` 默认 50 篇，不花钱），下载外链图片、补摘要。11 月 7 日以前用仓库外的 `dl.py`（极致了按段估图位置的正文），它写下的归档照旧每次重新导入 |
 | `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（仓库里的 `scripts/zsxq/dl.py`，11-14 以前放在 `data/inbox/fangwei-zsxq/dl.py`、不在仓库里；数据写进 `data/inbox/fangwei-zsxq`；令牌 `ZSXQ_ACCESS_TOKEN` 和星球 ID `ZSXQ_GROUP_ID` 在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），再补摘要 |
 | `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，仓库根 `.env` 的 `DAJIALA_KEY`），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片、补摘要。见 [ingest.md](ingest.md)「公众号定时抓取」 |
+| `scripts/crawl-latepost.sh` | 晚点LatePost 抓取：同一条路，每天两次，只查最新一页（`MAX_NEW` 默认 10），写进 `data/inbox/latepost` 并导入；再下载外链图片、补最多 10 篇摘要（`DIGEST_LIMIT=0` 就跳过）。历史回填不在这个脚本里，见 [ingest.md](ingest.md)「晚点LatePost」 |
 | `scripts/nightly.sh` | 夜间补齐，见下面 |
 
 都通过 `docker compose exec` 在容器里跑，不需要在宿主机装 Postgres 客户端。
@@ -67,7 +68,7 @@ docker compose exec app research-status   # 没问题打「没有要处理的」
 | --- | --- |
 | 备份 | 最近一次失败，或 36 小时没成功 |
 | 试恢复 | 最近一次失败，或 40 天没成功 |
-| 方伟公众号抓取、方伟星球抓取 | 最近一次失败，或 30 小时没成功（装了才看） |
+| 方伟公众号抓取、方伟星球抓取、晚点LatePost抓取 | 最近一次失败，或 30 小时没成功（装了才看；晚点每天两次，30 小时就是连续两次都没跑成） |
 | 孤独进化体抓取 | 最近一次失败，或 50 小时没成功（装了才看） |
 | 夜间补齐 | 有步骤失败（外链图片第一次下的地址大半下不来也算），或 50 小时没成功（装了才看） |
 | 自动上线 | 拉代码、重建失败，重启后应用没起来，CI 没过，仓库不在 main 或有没提交的改动，6 小时取不到 main、查不到 CI，新提交被正在跑的任务挡了 3 小时，或者上一轮 2 小时还没跑完（装了才看） |
@@ -82,7 +83,7 @@ docker compose exec app research-status   # 没问题打「没有要处理的」
 ```bash
 cd ~/research
 BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；云盘目录另定
-# 默认装方伟公众号、方伟星球、孤独进化体的定时抓取；不要：INSTALL_CRAWL=0
+# 默认装方伟公众号、方伟星球、孤独进化体、晚点LatePost 的定时抓取；不要：INSTALL_CRAWL=0
 # 以前装过的每小时 AIHOT 增量导入（ingest-aihot，已删）会顺手卸掉
 # 不要夜间补齐：INSTALL_NIGHTLY=0；夜间也识别图片里的字（站内 vision，不走 ocr profile）：NIGHTLY_OCR=1
 # 不要自动上线：INSTALL_DEPLOY=0
@@ -98,6 +99,7 @@ BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；�
 | `com.zldong.research.backup` | 每晚 03:17 |
 | `com.zldong.research.restore-check` | 每月 1 号 04:23 |
 | `com.zldong.research.crawl-fangwei-mp` | 每天 08:10、20:10 |
+| `com.zldong.research.crawl-latepost` | 每天 08:30、20:30（香港时间） |
 | `com.zldong.research.crawl-fangwei-zsxq` | 每天 08:40、20:40 |
 | `com.zldong.research.crawl-gudujinhuati` | 每天 09:20 |
 | `com.zldong.research.deploy` | 每 10 分钟，装好时先跑一次（见 [deploy.md](deploy.md)「更新」） |

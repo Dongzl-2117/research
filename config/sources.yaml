@@ -52,6 +52,18 @@ sources:
     ghid: gh_1f869b9dc034
     description: 微信公众号「孤独进化体」全文归档。以前的文章是 Markdown 归档导入的；10 月 30 日起每天定时抓取（research-crawl-wechat）。
 
+  - id: latepost
+    name: 晚点LatePost
+    author: 晚点LatePost
+    kind: wechat_mp
+    enabled: true
+    timeline: true
+    # 公众号「晚点LatePost」的原始 ID（微信号 postlate，文章页 __biz 是 MzU3Mjk1OTQ0Ng==）。
+    # scripts/crawl-latepost.sh 每天 08:30、20:30 只查最新一页。历史回填要另加 --backfill / --list-only，
+    # 定时任务和部署都不带，不会自动翻页。
+    ghid: gh_44e9b2141610
+    description: 微信公众号「晚点LatePost」。每天两次增量抓取（research-crawl-wechat，只查最新一页）；历史文章用同一条命令的 --backfill 翻页，不随部署、不随定时任务跑。
+
   - id: linwenfeng-mp
     name: 林文丰公众号
     author: 林文丰
