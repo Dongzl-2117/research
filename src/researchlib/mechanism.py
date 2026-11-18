@@ -86,9 +86,11 @@ def pending_articles(conn, source_ids: list[str], limit: int | None, *, cooling:
     """
     cool = cooling_sql(FAILURE_KIND, "a.id")
     limit_sql = "LIMIT %(limit)s" if limit is not None else ""
+    # 盘点才估费，正式出队只沿用原来的正文计数。
+    model_chars = ", sum(least(length(c.body), %(chunk_limit)s)) AS model_chars" if limit is None else ""
     rows = conn.execute(
         f"""
-        SELECT a.id, a.title, count(*) AS chunks, sum(length(c.body)) AS chars
+        SELECT a.id, a.title, count(*) AS chunks, sum(length(c.body)) AS chars{model_chars}
         FROM articles a
         JOIN article_chunks c ON c.article_id = a.id
         LEFT JOIN chunk_mechanism m ON m.article_id = c.article_id AND m.ord = c.ord
@@ -100,7 +102,7 @@ def pending_articles(conn, source_ids: list[str], limit: int | None, *, cooling:
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         {limit_sql}
         """,
-        {"sources": source_ids, "version": PROMPT_VERSION, "limit": limit},
+        {"sources": source_ids, "version": PROMPT_VERSION, "limit": limit, "chunk_limit": CHUNK_LIMIT},
     ).fetchall()
     return rows
 
@@ -368,7 +370,7 @@ def calibrate(settings: Settings, path: str, workers: int, off_peak: bool) -> in
         per = 10000 / chars["n"]
         print(
             f"每万字正文：进 {usage.get('prompt', 0) * per:,.0f} 出 {usage.get('completion', 0) * per:,.0f}"
-            f"（其中思考 {usage.get('reasoning', 0) * per:,.0f}）token，拿它乘 --limit 0 报的字数推全库用量"
+            f"（其中思考 {usage.get('reasoning', 0) * per:,.0f}）token，乘 --limit 0 合计待送模型的字数再除以一万"
         )
     print("合计" + llm_batch.tail(report, "打分"))
     return llm_batch.exit_code(report, "打分")
@@ -415,11 +417,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"还要打分 {len(rows)} 篇、{chunks} 块、正文约 {chars:,} 字（不算标题）")
             # 11-18 全库打分报「还要打分 0 篇」时，林文丰飞书 24 篇长文（2 万块）都失败了、在冷却里，没算进上面这行。
             cooled = pending_articles(conn, source_ids, None, cooling=True)
+            cooled_chunks = sum(int(row["chunks"]) for row in cooled)
             if cooled:
                 print(
-                    f"另有 {len(cooled)} 篇、{sum(int(row['chunks']) for row in cooled)} 块失败后在冷却里，"
+                    f"另有 {len(cooled)} 篇、{cooled_chunks} 块失败后在冷却里，"
                     "到期后再打（失败 n 次冷却 n 天，最多 7 天）"
                 )
+            ready_chars = sum(int(row["model_chars"]) for row in rows)
+            cooled_chars = sum(int(row["model_chars"]) for row in cooled)
+            print(
+                f"合计待打 {len(rows) + len(cooled)} 篇、{chunks + cooled_chunks} 块，"
+                f"送模型的正文约 {ready_chars + cooled_chars:,} 字"
+                f"（当前可打 {ready_chars:,} 字，冷却中 {cooled_chars:,} 字）"
+            )
             return 0
         if not args.calibrate:
             rows = pending_articles(conn, source_ids, args.limit)
@@ -441,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"待打分 {len(jobs)} 篇，打完 {report['done']} 篇，失败 {report['failed']} 篇" + llm_batch.tail(report, "打分")
     )
-    return llm_batch.exit_code(report, "打分")
+    return llm_batch.exit_code(report, "打分", fail_empty=args.fail_empty)
 
 
 if __name__ == "__main__":
