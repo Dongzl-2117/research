@@ -11,6 +11,7 @@ from researchlib.stratechery_crawl import (
     crawl,
     parse_feed,
     published_value,
+    resolve_by_title,
 )
 
 FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -31,6 +32,12 @@ FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
   <content:encoded><![CDATA[<p>podcast</p>]]></content:encoded>
 </item>
 <item>
+  <title>Google Earnings, Facebook D&#233;j&#224; Vu, The Agent Play</title>
+  <link>https://stratechery.com/</link>
+  <pubDate>Mon, 02 Nov 2026 11:00:00 +0000</pubDate>
+  <content:encoded><![CDATA[<p>Google body</p>]]></content:encoded>
+</item>
+<item>
   <title>No body</title>
   <link>https://stratechery.com/2026/no-body/</link>
 </item>
@@ -38,10 +45,65 @@ FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
 
 
 def test_parse_feed_keeps_only_articles_with_body():
-    items, skipped = parse_feed(FEED)
+    items, skipped, unresolved = parse_feed(FEED)
     assert skipped == 2
     assert [item.external_id for item in items] == ["2026/apple-earnings-memory-problems"]
     assert items[0].published == datetime(2026, 11, 3, 11, tzinfo=UTC)
+    # 11-18 实测：一部分条目 link 只写了首页，留给官网接口认
+    assert [item.title for item in unresolved] == ["Google Earnings, Facebook Déjà Vu, The Agent Play"]
+
+
+def _wp(posts):
+    def get(url):
+        return posts, {"x-wp-totalpages": "1"}
+
+    return get
+
+
+def test_resolve_by_title_matches_title_and_time():
+    _, _, unresolved = parse_feed(FEED)
+    posts = [
+        {
+            "slug": "other",
+            "date": "2026-11-02T06:00:00",
+            "date_gmt": "2026-11-02T11:00:00",
+            "title": {"rendered": "Something Else"},
+        },
+        {
+            "slug": "google-earnings-facebook-deja-vu-the-agent-play",
+            "date": "2026-11-02T06:00:00",
+            "date_gmt": "2026-11-02T11:00:00",
+            "title": {"rendered": "Google Earnings, Facebook D&#233;j&#224; Vu, The Agent Play"},
+        },
+    ]
+    found, problems = resolve_by_title(unresolved, get=_wp(posts))
+    assert problems == []
+    assert [item.external_id for item in found] == ["2026/google-earnings-facebook-deja-vu-the-agent-play"]
+    assert found[0].url == "https://stratechery.com/2026/google-earnings-facebook-deja-vu-the-agent-play/"
+
+
+def test_resolve_by_title_reports_missing_and_far_dates():
+    _, _, unresolved = parse_feed(FEED)
+    far = [
+        {
+            "slug": "g",
+            "date": "2026-10-01T06:00:00",
+            "date_gmt": "2026-10-01T11:00:00",
+            "title": {"rendered": "Google Earnings, Facebook D&#233;j&#224; Vu, The Agent Play"},
+        }
+    ]
+    found, problems = resolve_by_title(unresolved, get=_wp(far))
+    assert found == [] and len(problems) == 1
+
+
+def test_resolve_by_title_survives_api_errors():
+    _, _, unresolved = parse_feed(FEED)
+
+    def broken(url):
+        raise OSError("down")
+
+    found, problems = resolve_by_title(unresolved, get=broken)
+    assert found == [] and "官网接口连不上" in problems[0]
 
 
 @pytest.mark.parametrize("data", [b"<html><body>login</body></html>", b"not xml <"])
@@ -64,7 +126,7 @@ def test_published_value_falls_back_to_eastern_day_across_new_year():
 
 
 def test_crawl_writes_new_and_archive_parses_back(tmp_path: Path):
-    items, _ = parse_feed(FEED)
+    items, _, _ = parse_feed(FEED)
     inbox = tmp_path / "inbox"
     report, written = crawl(items, {"2025/old"}, inbox=inbox, author="Ben Thompson")
     assert report.failed == [] and len(written) == 1
@@ -84,7 +146,7 @@ def test_crawl_writes_new_and_archive_parses_back(tmp_path: Path):
 
 
 def test_dry_run_writes_nothing(tmp_path: Path):
-    items, _ = parse_feed(FEED)
+    items, _, _ = parse_feed(FEED)
     report, written = crawl(items, set(), inbox=tmp_path, author="Ben Thompson", dry_run=True)
     assert written == [] and len(report.written) == 1 and not any(tmp_path.iterdir())
 
@@ -93,3 +155,24 @@ def test_archive_markdown_escapes_quotes():
     item = _item(datetime(2026, 11, 3, 11, tzinfo=UTC))
     item.title = 'Say "Hi"'
     assert 'title: "Say \\"Hi\\""' in archive_markdown(item, "body", "Ben Thompson")
+
+
+def test_resolve_by_title_accepts_weekly_number_prefix():
+    item = Item(
+        title="The End of Jensen",
+        url="",
+        year="",
+        slug="",
+        published=datetime(2026, 11, 13, 18, tzinfo=UTC),
+        html="<p>x</p>",
+    )
+    posts = [
+        {
+            "slug": "the-end-of-jensen",
+            "date": "2026-11-13T13:00:00",
+            "date_gmt": "2026-11-13T18:00:00",
+            "title": {"rendered": "2026.46: The End of Jensen"},
+        }
+    ]
+    found, problems = resolve_by_title([item], get=_wp(posts))
+    assert problems == [] and found[0].external_id == "2026/the-end-of-jensen"
