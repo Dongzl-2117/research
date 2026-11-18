@@ -721,3 +721,74 @@ def test_crawl_recovers_body_missing_after_raw_record_was_written(tmp_path):
     assert list(tmp_path.glob("md/*/*.md"))
     again = crawl(FakeConn([]), SOURCE, ghid="sample", inbox=tmp_path, client=client, dry_run=True)
     assert again.known == 1 and not again.new
+
+
+def _plant_archive(inbox, post, *, markdown=False, unavailable=""):
+    raw = inbox / "raw" / "articles" / f"{post.sn}.json"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"post": {"sn": post.sn}}
+    if unavailable:
+        payload["unavailable"] = unavailable
+    raw.write_text(json.dumps(payload), encoding="utf-8")
+    if markdown:
+        path = wechat_crawl.archive_path(inbox, post)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# 已有正文\n", encoding="utf-8")
+
+
+def test_backfill_and_daily_crawl_resume_the_same_interrupted_archive(tmp_path):
+    """只有 raw、没有正文、也不是已删除：写到一半，回填和日常抓取都再取。正文在，或已删除，两边都跳过。"""
+    partial = Post(
+        url=f"https://mp.weixin.qq.com/s?sn={SN_NEW}", title="写到一半", post_time=1760227200, sn=SN_NEW, raw={}
+    )
+    done = Post(
+        url=f"https://mp.weixin.qq.com/s?sn={SN_OLD}", title="已经写完", post_time=1756342800, sn=SN_OLD, raw={}
+    )
+    gone = Post(
+        url=f"https://mp.weixin.qq.com/s?sn={SN_SAME_TITLE}",
+        title="删掉了",
+        post_time=1756688400,
+        sn=SN_SAME_TITLE,
+        raw={},
+    )
+    listed = [
+        _post(post.sn, post.title, datetime.fromtimestamp(post.post_time, UTC))
+        for post in (partial, done, gone)
+    ]
+
+    def seed(inbox):
+        _plant_archive(inbox, partial)
+        _plant_archive(inbox, done, markdown=True)
+        _plant_archive(inbox, gone, unavailable="原文已删除")
+        assert wechat_crawl.archived_post(inbox, partial) is False
+        assert wechat_crawl.archived_post(inbox, done) is True
+        assert wechat_crawl.archived_post(inbox, gone) is True
+
+    def run(inbox, *, backfill):
+        fetched = []
+        client = (
+            PagingClient([(listed, "", 1)])
+            if backfill
+            else FakeClient(listed)
+        )
+        report = crawl(
+            FakeConn([]),
+            SOURCE,
+            ghid="gh_test",
+            inbox=inbox,
+            client=client,
+            fetch=lambda url: fetched.append(url) or PAGE,
+            backfill=backfill,
+        )
+        return report, fetched
+
+    daily_inbox, backfill_inbox = tmp_path / "daily", tmp_path / "backfill"
+    seed(daily_inbox)
+    seed(backfill_inbox)
+    daily, daily_fetched = run(daily_inbox, backfill=False)
+    backfill, backfill_fetched = run(backfill_inbox, backfill=True)
+    assert daily.known == backfill.known == 2
+    assert len(daily.written) == len(backfill.written) == 1
+    assert daily_fetched == backfill_fetched
+    assert len(daily_fetched) == 1 and SN_NEW in daily_fetched[0]
+    assert not daily.failed and not backfill.failed
