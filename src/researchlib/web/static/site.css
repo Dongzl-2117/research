@@ -1585,6 +1585,18 @@ tbody tr:hover td { background: var(--accent-softer); }
 }
 
 /* 作者页 */
+#source-coverage summary { cursor: pointer; font-weight: 600; }
+#source-coverage ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+  gap: 12px 24px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+#source-coverage li { padding-top: 8px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+#source-coverage li p { color: var(--ink-3); font-size: 13px; }
+#source-coverage li a { color: var(--accent); }
 .author-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin: 16px 0; padding: 0; list-style: none; }
 .author-card { padding: 20px; }
 .author-card h2 { margin: 0; font-size: 18px; font-weight: 600; }

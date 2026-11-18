@@ -45,6 +45,8 @@
 <a class="ask-card" href="/ask?{{ ask_query }}"><span class="ask-card-ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H10l-4 3.5v-3.5H5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 10.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span><span><b>让 AI 读这些结果来回答</b><small>用问库整理「{{ query }}」的观点，每句带出处</small></span><span class="go"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a>
 {% endif %}
 <div class="facets">
+  <p class="filter-note">来源数字按匹配的文章篇数统计。{% if view == "passage" %}片段列表按相关度选取候选，再合并相邻段落。{% endif %}
+    <a href="/authors#{{ 'coverage-' ~ active_source if active_source else 'source-coverage' }}">查看收录范围</a></p>
   <nav class="pills search-pills" aria-label="来源">
     <a href="/search?{{ base_query }}" {% if not active_source %}aria-current="page"{% endif %}><span>全部来源</span><span class="num">{{ total_all }}</span></a>
     {% for item in source_counts %}{% if item.count or active_source == item.id %}
@@ -59,8 +61,10 @@
   {% if by_position %}按原文顺序 · <a href="/search?{{ sort_query }}">按相关度</a>{% else %}<a href="/search?{{ sort_query }}">按原文顺序</a> · 按相关度{% endif %}
   · <a href="/search?q={{ query | urlencode }}">在全库找</a></p>
 {% endif %}
+{% if fragments or (total_all and not article_scope) %}
+<p class="view-switch">{% if not article_scope %}当前候选列表共 <span class="num">{{ fragment_total }}</span> 处片段，来自 <span class="num">{{ fragment_articles }}</span> 篇 · {% endif %}按片段 · <a href="/search?{{ view_query }}">按文章看</a></p>
+{% endif %}
 {% if fragments %}
-<p class="view-switch">{% if not article_scope %}<span class="num">{{ fragment_total }}</span> 处片段，来自 <span class="num">{{ fragment_articles }}</span> 篇 · {% endif %}按片段 · <a href="/search?{{ view_query }}">按文章看</a></p>
 <ol class="slots flat results fragments">
   {% for item in fragments %}
   <li class="slot">
@@ -85,7 +89,7 @@
 </ol>
 {{ pager(page, pages, "/search?" ~ page_query ~ "&page=" ~ (page - 1), "/search?" ~ page_query ~ "&page=" ~ (page + 1)) }}
 {% else %}
-<p class="empty">没有找到「{{ query }}」。</p>
+<p class="empty">{% if total_all %}这个范围内没有可展示的匹配片段。{% else %}没有找到「{{ query }}」。{% endif %}</p>
 {% endif %}
 {% elif results %}
 {% if view == "article" %}<p class="view-switch"><a href="/search?{{ view_query }}">按片段</a> · 按文章看</p>{% endif %}

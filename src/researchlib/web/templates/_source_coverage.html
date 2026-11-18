@@ -1,0 +1,15 @@
+{% if coverage %}
+<details class="card panel" id="source-coverage">
+  <summary>收录范围 · {{ coverage | length }} 个来源 · {{ coverage | sum(attribute="total") }} 篇可见文章 · {{ coverage | sum(attribute="undated") }} 篇日期不详</summary>
+  <p class="quiet">日期取自已收录文章的发表时间。上游是否仍在发布，未经核实。</p>
+  <ul>
+    {% for row in coverage %}
+    <li id="coverage-{{ row.id }}">
+      <b>{{ row.name }}</b>（{{ row.author }}） · {{ row.total }} 篇，含日期不详 {{ row.undated }} 篇
+      <p>最新有日期的文章：{% if row.latest_id %}<time datetime="{{ row.latest_date }}">{{ row.latest_date }}</time> · <a href="/articles/{{ row.latest_id }}">{{ row.latest_title }}</a>{% else %}未知{% endif %}</p>
+      <p>收录方式：{{ row.collection }}{% if row.overdue is not none %} · 本库已有 {{ row.overdue }} 天未收录更新日期的文章，已超过该来源的平常间隔{% endif %}</p>
+    </li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}

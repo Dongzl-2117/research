@@ -7,6 +7,7 @@
 
 sources:
   - id: fangwei-mp
+    collection: 定时采集
     name: 方伟公众号
     author: 方伟
     kind: wechat_mp
@@ -19,6 +20,7 @@ sources:
     description: 方伟微信公众号历史归档（Markdown + 图片）。11 月 7 日起和孤独进化体一样定时抓取，正文从公众号原文页取（research-crawl-wechat）。
 
   - id: fangwei-zsxq
+    collection: 定时采集
     name: 方伟知识星球
     author: 方伟
     # 星球里星主的昵称。没有发帖人 ID 的旧帖、评论区和截图里只看得到昵称，和这里（加上 author）完全相同才算方伟。
@@ -32,6 +34,7 @@ sources:
     description: 方伟知识星球归档（md/、images/、raw/）
 
   - id: chengfengpolang
+    collection: 手动导入归档
     name: 乘风破浪
     author: 乘风破浪
     # 星球里星主的昵称：归档头的「作者」、评论里回答读者的都是这个名字。评论区只留他的。
@@ -43,6 +46,7 @@ sources:
     description: 乘风破浪知识星球归档（md/、images/、raw/）
 
   - id: gudujinhuati
+    collection: 定时采集
     name: 孤独进化体
     author: 孤独进化体
     kind: markdown
@@ -61,6 +65,7 @@ sources:
     description: 不做。公众号不入库。
 
   - id: linwenfeng-feishu
+    collection: 手动导入文档归档
     name: 林文丰飞书
     author: 林文丰
     kind: feishu
@@ -69,6 +74,7 @@ sources:
     description: 飞书文档归档入库，保持启用。
 
   - id: stratechery
+    collection: 订阅全文源（配置后定时采集），也接受手动归档
     name: Stratechery
     author: Ben Thompson
     kind: markdown
@@ -80,6 +86,7 @@ sources:
     description: Ben Thompson / Stratechery 全文归档。Passport 全文、Daily≥5500 字门槛；游客半截和每周汇总标 hidden=short_post，不进列表、不译。入库后在 Mac mini 上跑 research-translate --source stratechery 译制（docs/translate.md）。
 
   - id: heiheiwuchang
+    collection: 历史存档，手动导入
     name: 黑黑无常
     author: 黑黑无常
     kind: markdown

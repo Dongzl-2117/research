@@ -35,6 +35,8 @@ class Source:
     owner_ids: tuple[str, ...] = ()
     # 公众号原始 ID（gh_ 开头）。写了才能用 research-crawl-wechat 定时抓取。
     ghid: str = ""
+    # 供读者判断覆盖范围；未配置时不推断作者是否仍在发布。
+    collection: str = ""
 
 
 def load_sources(path: Path) -> list[Source]:
@@ -73,6 +75,7 @@ def load_sources(path: Path) -> list[Source]:
                 poster_names=_poster_names(item, source_id),
                 owner_ids=_owner_ids(item, source_id),
                 ghid=str(item.get("ghid") or "").strip(),
+                collection=str(item.get("collection") or "").strip(),
             )
         )
     return sources

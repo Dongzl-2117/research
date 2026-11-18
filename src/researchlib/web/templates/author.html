@@ -12,6 +12,7 @@
   </div>
   {{ date_jump("/authors/" ~ (author_name | urlencode), active_source) }}
 </header>
+{% include "_source_coverage.html" %}
 <div class="page-tools">
   {% if author_sources|length > 1 %}
   <nav class="pills" aria-label="来源">

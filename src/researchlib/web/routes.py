@@ -656,6 +656,29 @@ def _jump_to_day(conn, source_ids: list[str], day, settings, path: str, *, owner
     return RedirectResponse(f"{path}{'?' + query if query else ''}#d-{found.isoformat()}", status_code=303)
 
 
+def _coverage_rows(conn, sources, stats, zone: str) -> list[dict]:
+    ids = [source.id for source in sources]
+    recent = queries.coverage_recent(conn, ids)
+    imports = queries.last_imports(conn, ids)
+    titles = display_titles(conn, [rows[0] for rows in recent.values()], _source_map(sources), zone)
+    result = []
+    for source in sources:
+        history = recent.get(source.id, [])
+        latest = history[0] if history else None
+        numbers = stats.get(source.id, {})
+        times = {source.id: [row["published_at"] for row in history]}
+        overdue = stale_sources([source], times, imports, zone)
+        result.append({
+            "id": source.id, "name": source.name, "author": source.author,
+            "total": numbers.get("n", 0), "undated": numbers.get("undated", 0),
+            "published_at": latest["published_at"] if latest else None,
+            "latest_date": format_date(latest["published_at"], zone) if latest else "",
+            "latest_id": latest["id"] if latest else None, "latest_title": titles[latest["id"]] if latest else "",
+            "collection": source.collection or "未知", "overdue": overdue[0]["idle_days"] if overdue else None,
+        })
+    return result
+
+
 @router.get("/authors")
 def authors_page(request: Request):
     settings = request.app.state.settings
@@ -663,7 +686,9 @@ def authors_page(request: Request):
         sources = active_sources(request, conn)
         ids = [source.id for source in sources]
         stats = queries.source_stats(conn, ids)
+        coverage = _coverage_rows(conn, sources, stats, settings.display_timezone)
         banner = queries.sample_state(conn, ids)
+        coverage_by_id = {row["id"]: row for row in coverage}
         _order, grouped = _author_groups(sources)
         authors = []
         for name, items in grouped.items():
@@ -671,7 +696,10 @@ def authors_page(request: Request):
             rows = [stats[item_id] for item_id in item_ids if item_id in stats]
             firsts = [row["first_at"] for row in rows if row["first_at"]]
             lasts = [row["last_at"] for row in rows if row["last_at"]]
-            latest = queries.latest_articles(conn, item_ids, 1)
+            latest = max(
+                (coverage_by_id[sid] for sid in item_ids if coverage_by_id[sid]["published_at"]),
+                key=lambda row: (row["published_at"], row["latest_id"]), default=None,
+            )
             authors.append(
                 {
                     "name": name,
@@ -679,14 +707,10 @@ def authors_page(request: Request):
                     "sources": [item.name for item in items],
                     "first": format_date(min(firsts), settings.display_timezone) if firsts else "",
                     "last": format_date(max(lasts), settings.display_timezone) if lasts else "",
-                    "latest": dict(latest[0]) if latest else None,
+                    "latest": latest,
                     "companies": queries.top_companies(conn, item_ids, 6),
                 }
             )
-        newest = [author["latest"] for author in authors if author["latest"]]
-        titles = display_titles(conn, newest, _source_map(sources), settings.display_timezone)
-        for row in newest:
-            row["title"] = titles[row["id"]]
     authors.sort(key=lambda item: (-item["articles"], item["name"]))
     return render_page(
         request,
@@ -694,6 +718,7 @@ def authors_page(request: Request):
         {
             "nav": "authors",
             "title": "作者",
+            "coverage": coverage,
             "authors": authors,
             "sources": sources,
             "sample_banner": banner,
@@ -730,7 +755,10 @@ def author_page(request: Request, author: str):
                 conn, scoped, jump, settings, f"/authors/{author}", owner_only=True, source=chosen or ""
             )
         counts, plan, rows = _load_feed(conn, scoped, settings, _page_arg(request), owner_only=True)
-        stats = queries.source_stats(conn, scoped)
+        coverage_sources = [by_id[chosen]] if chosen else author_sources
+        all_stats = queries.source_stats(conn, [source.id for source in coverage_sources])
+        coverage = _coverage_rows(conn, coverage_sources, all_stats, settings.display_timezone)
+        stats = {sid: all_stats[sid] for sid in scoped if sid in all_stats}
         companies = queries.top_companies(conn, scoped, 12)
         banner = queries.sample_state(conn, [source.id for source in sources])
         days = _feed_days(conn, rows, by_id, settings)
@@ -744,6 +772,7 @@ def author_page(request: Request, author: str):
             "nav": "authors",
             "title": author,
             "author_name": author,
+            "coverage": coverage,
             "author_sources": author_sources,
             "sources": sources,
             "active_source": chosen or "",
