@@ -245,8 +245,12 @@ def test_journal_checks_accession_period_and_no_prospective_actual(doc):
         backup["records"][0]["revisions"][0]["value"][key] = "其他"
         with pytest.raises(ValueError, match="不匹配"):
             patch(result, backup)
-    with pytest.raises(ValueError, match="已实现"):
-        patch({**result, "end": "2025-01-01"})
+    rows = doc["facts"]["us-gaap"]["Revenue"]["units"]["USD"]
+    rows.extend({**row, "end": "2024-12-31"} for row in rows[:1])
+    planned = lookup(doc, end="2024-12-31")
+    assert planned["status"] == "missing" and not planned["history"]
+    with pytest.raises(ValueError, match="唯一"):
+        patch(planned)
 
 
 @pytest.mark.parametrize("wrong", ["ABC", 0, "12345678901", True])

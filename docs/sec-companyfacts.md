@@ -12,7 +12,7 @@ PYTHONPATH=src python -m researchlib.sec_facts observe tests/fixtures/sec/compan
   --start 2024-01-01 --end 2024-03-31 --before 2024-05-01
 ```
 
-`--before` 是不包含当天的纽约日历日，上例只读 `filed < 2024-05-01` 的披露。报告期由事实自身的 `start` 和 `end` 确定。同一个季末可能同时存在本季和年初至今两个数。查资产等时点指标时省略 `--start`。数值是保留原始精度的字符串，缺失返回 `status: missing`。
+`--before` 是不包含当天的纽约日历日，上例只读 `filed < 2024-05-01` 的披露。只纳入申报日已结束的报告期，排除尚未实现的未来期间。报告期由事实自身的 `start` 和 `end` 确定。同一个季末可能同时存在本季和年初至今两个数。查资产等时点指标时省略 `--start`。数值是保留原始精度的字符串，缺失返回 `status: missing`。
 
 `history` 列出每次符合条件的申报，逐条给出表单类型、申报日、accession、数值和 SEC 申报索引，索引内可打开原始报表。同一 accession、同一期间的重复记录会合并，同一申报内数值矛盾会报错。原始值、修订表单及后续报表的同期比较值都可见，是否为重述要看原文。最大披露日有多份申报时返回 `ambiguous_same_day`，保留列表，`latest` 留空。
 

@@ -69,7 +69,7 @@ def observe(doc, tag, unit, start, end, before):
         if row.get("end") != end or row.get("start") != start:
             continue
         filed = day(row.get("filed"))
-        if filed >= cutoff:
+        if filed >= cutoff or filed < end_day:
             continue
         accn, form, value = row.get("accn"), row.get("form"), row.get("val")
         if not isinstance(accn, str) or not re.fullmatch(r"[0-9]{10}-[0-9]{2}-[0-9]{6}", accn):
@@ -118,8 +118,6 @@ def journal_patch(result, document, note_id, company, metric, accession, publish
     observation = result["latest"]
     if accession != observation["accession"]:
         raise ValueError("指定的 accession 与截止日前的最新披露不符。")
-    if result["end"] > observation["filed"]:
-        raise ValueError("报告期晚于披露日，不能以已实现的指标导入手记。")
     accepted = instant(published)
     if accepted > now or accepted.astimezone(EASTERN).date() != day(observation["filed"]):
         raise ValueError("接受时间须在披露当日（纽约时区）且已经发生，请核对申报索引。")
