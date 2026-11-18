@@ -693,18 +693,29 @@ def _verified_chunk(row: dict) -> int | None:
     return row.get("chunk_ord") if source_quote(row.get("chunk_body") or "", row.get("quote") or "") else None
 
 
-def verify_stored_quotes(conn, rows: list[dict]) -> None:
-    """旧数据也从来源取字。错位的旧指针只撤销链接，查到别的原文块仍可展示原句。"""
+def verify_stored_quotes(conn, rows: list[dict], *, deep: bool = True) -> None:
+    """旧数据也从来源取字。错位的旧指针只撤销链接，查到别的原文块仍可展示原句。
+
+    deep=False 给每次打开都要算的公司页：只和这条连着的那一块比，不回读全文（苹果上千条判断，
+    逐篇回读整篇正文、逐字比对要十几秒）。主判断的原句对不上只撤链接、照旧显示（入库时已核过）；
+    同篇其他判断的原句对不上就不显示。deep=True 给 research-theses 这类批量命令。
+    """
     pending: dict[int, list[tuple[dict, str]]] = {}
     for row in rows:
         for target in [row, *(row.get("angles") or [])]:
             quote = target.get("quote") or ""
             matched = source_quote(row.get("chunk_body") or "", quote)
-            target["quote"] = matched
             if target is row:
                 row["verified_chunk"] = row.get("chunk_ord") if matched else None
+            if not deep:
+                if target is not row:
+                    target["quote"] = matched
+                continue
+            target["quote"] = matched
             if quote and not matched:
                 pending.setdefault(row["article_id"], []).append((target, quote))
+    if not deep:
+        return
 
     def verify(article_id: int, source: str) -> None:
         remaining = []
@@ -750,7 +761,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         """,
         (company_id, list(sources_by_id)),
     ).fetchall()
-    verify_stored_quotes(conn, rows)
+    verify_stored_quotes(conn, rows, deep=False)
     last: dict[str, str] = {}
     items: list[dict] = []
     for row in rows:

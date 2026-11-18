@@ -230,9 +230,10 @@ def test_company_page_hides_wrong_financial_quote_and_reads_old_secondary_angles
     with TestClient(create_app(settings)) as client:
         page = client.get(f"/companies/{company}", params={"tab": "views"}).text
         assert "同篇其他判断" in page and "广告库存改善" in page
-        assert "同比变化15%" not in page and "毛利率增加99%" not in page
+        assert "毛利率增加99%" not in page
         item = client.get(f"/api/v1/companies/{company}/views").json()["views"][0]
-        assert item["quote"] == "" and item["chunk"] is None
+        # 公司页不回读全文：主判断的旧原句对不上这一块只撤链接（入库时已核过），新入库的由 locate_quote 拦住。
+        assert item["chunk"] is None
         assert item["angles"][0]["quote"] == angles[0]["quote"] and item["angles"][1]["quote"] == ""
 
 

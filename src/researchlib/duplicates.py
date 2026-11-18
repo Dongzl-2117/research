@@ -24,7 +24,6 @@ import hashlib
 import logging
 import re
 import sys
-import unicodedata
 from dataclasses import dataclass
 
 logger = logging.getLogger("researchlib.duplicates")
@@ -44,8 +43,7 @@ COMMON_DF = 6
 # 两篇都有发布时间时，只在前后这么多天里找同一篇。
 WINDOW_DAYS = 7
 # 4：英文正文按句切。指纹的切法变了，升版本时全库重算指纹再认一遍。
-# 5：句子相似度之外再核对两版本里的数字事实。旧库中的误合并随同一次重算放开。
-VERSION = "5"
+VERSION = "4"
 STATE_KEY = "dedupe_version"
 
 _KEEP = re.compile(r"[0-9A-Za-z一-鿿]+")
@@ -55,33 +53,6 @@ _SPLIT = re.compile(r"[。！？!?；;\n]+")
 _EN_SPLIT = re.compile(r"(?<=[.!?;])\s+|(?<=[。！？；])\s*")
 _LATIN = re.compile(r"[A-Za-z]")
 _HAN = re.compile(r"[一-鿿]")
-
-# 候选检索仍用句子哈希。确认合并前另看带符号、数量级和单位的原始数字，
-# 避免一处重要的变化被很多相同的句子淹没。相同正文附加不冲突的新材料仍可合并。
-_FACT_NUMBER = re.compile(
-    r"(?:(?P<trend>增长|上升|上涨|上调|下降|下滑|下跌|下调)\s*)?"
-    r"(?:(?P<sign>[+−负-])\s*)?(?:(?P<prefix>[$€£¥]|USD|EUR|CNY|HKD|JPY|GBP)\s*)?"
-    r"(?P<amount>\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)\s*"
-    r"(?P<scale>万亿|千亿|百亿|十亿|千万|百万|十万|亿|万|trillion\b|billion\b|million\b|thousand\b)?\s*"
-    r"(?P<unit>个百分点|个基点|基点|%|‰|倍|bps?\b|USD|EUR|CNY|HKD|JPY|GBP|[$€£¥]|美元|欧元|元人民币|人民币|日元|港元|英镑|元|股|吨|台|件)?",
-    re.I,
-)
-
-
-def _financial_facts(text: str) -> frozenset[tuple[str, ...]]:
-    values = set()
-    for match in _FACT_NUMBER.finditer(unicodedata.normalize("NFKC", text)):
-        trend, sign, prefix, amount, scale, unit = match.groups("")
-        amount = amount.replace(",", "")
-        if "." in amount:
-            amount = amount.rstrip("0").rstrip(".")
-        if amount.startswith("."):
-            amount = "0" + amount
-        if trend:
-            trend = "down" if trend in {"下降", "下滑", "下跌", "下调"} else "up"
-        sign = "-" if sign in {"-", "−", "负"} else ""
-        values.add((trend, sign, prefix.upper(), amount, scale.lower(), unit.lower()))
-    return frozenset(values)
 
 
 def normalize(text: str) -> str:
@@ -97,7 +68,6 @@ class Fingerprint:
     sentences: set[int]
     sketch: list[int]
     length: int
-    facts: frozenset[tuple[str, ...]]
 
 
 def _pieces(body_text: str) -> list[str]:
@@ -122,16 +92,10 @@ def fingerprint(body_text: str) -> Fingerprint:
         sketch = sorted(hashes)
     else:
         sketch = []
-    return Fingerprint(hashes, sketch, len(whole), _financial_facts(body_text or ""))
-
-
-def _conflicting_facts(a: Fingerprint, b: Fingerprint) -> bool:
-    return not (a.facts <= b.facts or b.facts <= a.facts)
+    return Fingerprint(hashes, sketch, len(whole))
 
 
 def same_article(a: Fingerprint, b: Fingerprint, common: set[int] = frozenset()) -> bool:
-    if _conflicting_facts(a, b):
-        return False
     left = a.sentences - common
     right = b.sentences - common
     if not left or not right:
@@ -330,18 +294,17 @@ def _hand_over_views(conn, old_id: int, canonical_id: int) -> int:
 
 def _restore(conn, article_id: int, matcher) -> None:
     from researchlib.chunks import replace_chunks, replace_ocr_chunks, replace_translation_chunks
-    from researchlib.mentions import body_for_mentions, mentions_for_document, replace_mentions
+    from researchlib.mentions import mentions_for_document, replace_mentions
 
     row = conn.execute(
-        "SELECT title, body_md, body_text, ocr_text FROM articles WHERE id = %s", (article_id,)
+        "SELECT title, body_md, source_id, raw_meta FROM articles WHERE id = %s", (article_id,)
     ).fetchone()
     if row is None:
         return
     replace_chunks(conn, article_id, row["title"], row["body_md"])
     replace_translation_chunks(conn, article_id)
     replace_ocr_chunks(conn, article_id)
-    body = body_for_mentions(row["body_md"], body_text=row["body_text"], ocr_text=row["ocr_text"])
-    replace_mentions(conn, article_id, mentions_for_document(matcher, row["title"], body))
+    replace_mentions(conn, article_id, mentions_for_document(matcher, row["title"], row["body_md"]))
 
 
 def _cluster(conn, seeds: set[int]) -> set[int]:
@@ -366,21 +329,17 @@ def apply_cluster(conn, members: set[int], matcher) -> tuple[int, list[int]]:
     can_fp = fingerprint(by_id[canonical]["body_text"])
     author = by_id[canonical]["author"]
     direct = {canonical}
-    conflicts = set()
     for row in rows:
         if row["id"] == canonical:
             continue
         other_fp = fingerprint(row["body_text"])
-        if _conflicting_facts(can_fp, other_fp):
-            conflicts.add(row["id"])
-            continue
         common = _common_hashes(conn, author, sorted(can_fp.sentences | other_fp.sentences)[:800])
         if same_article(can_fp, other_fp, common):
             direct.add(row["id"])
     # 星球同一话题的几份是同一帖：其中一份是主版本或它的重复，其余几份也是，不用再比指纹。
     posts = {_post_key(by_id[item]) for item in direct} - {None}
     for row in rows:
-        if row["id"] not in conflicts and not row["keep_separate"] and _post_key(row) in posts:
+        if not row["keep_separate"] and _post_key(row) in posts:
             direct.add(row["id"])
     became: list[int] = []
     for row in rows:
