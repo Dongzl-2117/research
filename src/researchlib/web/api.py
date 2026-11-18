@@ -164,6 +164,8 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "lang": p.lang or None,
                 "score": round(p.score, 3),
                 "matched": p.matched,
+                # 讲没讲生意本身：0 没讲、1 讲到一些、2 在讲；没打过分是 null。
+                "mechanism": p.mechanism,
                 "author": by_id[p.source_id].author,
                 "source": {"id": p.source_id, "name": by_id[p.source_id].name},
                 "published_at": format_iso(p.published_at, settings.display_timezone) or None,
@@ -205,6 +207,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "lang": f.lang or None,
                 "score": round(f.score, 3),
                 "semantic": f.semantic_hit,
+                "mechanism": f.peak.mechanism,
                 "more": f.more,
                 "author": by_id[f.source_id].author,
                 "source": {"id": f.source_id, "name": by_id[f.source_id].name},
