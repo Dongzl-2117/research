@@ -10,6 +10,7 @@
 | fangwei-zsxq | zsxq | `research-ingest-zsxq` |
 | chengfengpolang | zsxq | `research-ingest-zsxq` |
 | gudujinhuati | markdown | `research-ingest-markdown`；定时抓取 `research-crawl-wechat` |
+| latepost | wechat_mp | `research-ingest-wechat`；定时抓取 `research-crawl-wechat`（只查最新一页）。历史回填见下面「晚点LatePost」 |
 | linwenfeng-mp | wechat_mp | `research-ingest-wechat` |
 | linwenfeng-feishu | feishu | `research-ingest-feishu` |
 | heiheiwuchang | markdown | `research-ingest-markdown` |
@@ -119,7 +120,7 @@ docker compose exec app research-ingest-markdown \
 
 ## 公众号定时抓取
 
-`research-crawl-wechat` 抓配置里写了 `ghid`（公众号原始 ID，gh_ 开头）的公众号：孤独进化体（`scripts/crawl-gudujinhuati.sh`，每天 09:20）和方伟公众号（`scripts/crawl-fangwei-mp.sh`，每天 08:10、20:10；11 月 7 日起，以前用仓库外的 `dl.py` 取极致了按段估图位置的正文）。都由 launchd 定时跑，见 [backup.md](backup.md)：
+`research-crawl-wechat` 抓配置里写了 `ghid`（公众号原始 ID，gh_ 开头）的公众号：孤独进化体（`scripts/crawl-gudujinhuati.sh`，每天 09:20）、方伟公众号（`scripts/crawl-fangwei-mp.sh`，每天 08:10、20:10；11 月 7 日起，以前用仓库外的 `dl.py` 取极致了按段估图位置的正文）和晚点LatePost（`scripts/crawl-latepost.sh`，每天 08:30、20:30，只查最新一页）。都由 launchd 定时跑，见 [backup.md](backup.md)。不带 `--backfill` / `--list-only` 时只查最新一页，定时任务都是这样：
 
 ```bash
 docker compose exec app research-crawl-wechat --source gudujinhuati --dry-run   # 只看哪些是新的
@@ -131,7 +132,37 @@ docker compose exec app research-crawl-wechat --source gudujinhuati             
 - 库里已有的跳过：按正文开头归档头里的 sn、原链接里的 `sn=`，或同一天同标题。AIHOT 和以前的归档导进来的都认得出。
 - 新文章的正文先从公众号原文页（`#js_content`）取，不花钱，图片位置也是对的，归档头多写一行「- 图片位置：原文页」（导入时记成 `raw_meta.images = "page"`，阅读页不按识图挪图）；原文页要验证、图文消息这种没有正文的，再用极致了的正文（每篇约 0.03 元，图片位置是按段估的，不写这一行）。原文已删除、因违规不能看的只记一份原始数据，以后不再取。一次最多取 `--max-new` 篇（默认 5），其余留到下次。
 - 归档写在 `data/inbox/<来源>/`：`md/<年>/<日期>-<sn>.md` 开头是「- 作者：」「- 时间：…(UTC+8)」「- sn：」「- 原链接：」，和以前导入的公众号归档一样；`raw/articles/<sn>.json` 是极致了的列表项。写完按 `--origin crawl` 导入（外部 id 是归档里的相对路径），图片留图床地址，由脚本接着跑的 `research-fetch-images` 下载。
-- 列表查不到（key 不对、余额不足、限速）或者有文章正文两条路都取不到时退出码 1，`data/status/crawl-gudujinhuati.json`（方伟公众号是 `crawl-fangwei-mp.json`）记成失败。
+- 列表查不到（key 不对、余额不足、限速）或者有文章正文两条路都取不到时退出码 1，`data/status/crawl-gudujinhuati.json`（方伟公众号是 `crawl-fangwei-mp.json`，晚点是 `crawl-latepost.json`）记成失败。
+
+### 晚点LatePost
+
+公众号「晚点LatePost」（来源 id `latepost`，作者名同样是晚点LatePost）11-18 起启用，`ghid` 是 `gh_44e9b2141610`（微信号 postlate）。每天 08:30、20:30 的定时任务只抓最新一页，一次最多 10 篇新文章，抓完再给这一来源补最多 10 篇摘要。历史文章不随部署、不随这个定时任务翻页。
+
+历史列表用同一条命令显式翻页。极致了 `post_history` 首页不传 `offset`，下一页把上一页返回的 `offset` 原样送回去，`is_end` 为 1 就停。方伟以前仓库外的脚本就是这样翻到 81 页、821 篇。每成功一页就写进 `data/inbox/latepost/raw/post-history-state.json`，中断再跑从下一页接着查，已经记下的页不再扣费。列表正文写在同目录的 `post-history.jsonl`。纯视频、纯音乐、已删除或违规、还在审核的记下但不再取正文；纯图片和纯文字留下。
+
+查一页列表约 0.14 元，`--list-only` 和 `--dry-run` 也扣。按方伟那次大约每页 10 篇估，2000 到 3000 篇大约 28 到 42 元；如果一页只有几篇，会更贵。命令每页都打出这一页和累计的接口金额，以及按 0.14 元/次的估算。建议先翻 3 页看一页有几篇，再放完。
+
+```bash
+# (a) 只列清单、不取正文、不写库。3 页大约 0.42 元。
+docker compose exec app research-crawl-wechat --source latepost --list-only --max-pages 3
+# 确认篇数和公众号名之后再翻完。中断了再跑同一条，已记下的页不重查。
+docker compose exec app research-crawl-wechat --source latepost --list-only
+
+# (b) 按清单取正文，先不导入。列表已经翻完时不会再向极致了查列表。
+# 正文优先原文页（不花钱）；原文页取不到才用极致了正文，约 0.03 元/篇。
+# 归档在 data/inbox/latepost。这一步不调用模型，夜间任务也还看不见这些篇。
+docker compose exec app research-crawl-wechat --source latepost --backfill --no-import
+# 同意模型费用之后再导入。导入本身不调用模型；导入之后夜间任务才按上限开始写摘要、抽判断。
+docker compose exec app research-ingest-wechat --source latepost --input /data/inbox/latepost --origin crawl
+
+# (c) 模型费用。不调用模型。有正文之后用 --inbox 按文件字数；导入之后用 --source。
+docker compose exec app research-llm-estimate --listing /data/inbox/latepost/raw/post-history.jsonl --inbox /data/inbox/latepost
+docker compose exec app research-llm-estimate --source latepost
+```
+
+导入之后才会进夜间任务，而且有上限，不会一次跑完：摘要每晚最多 80 篇（`DIGEST_LIMIT`），判断每晚最多 60 篇（`VIEWS_LIMIT`，只抽深入提到公司的）。晚点的定时抓取每天两次再各写最多 10 篇摘要（`DIGEST_LIMIT=0` 就跳过），同一篇有锁，不会和夜间写两遍。论点夜间默认关，译制只做英文，段落机制分不在夜间任务里，识图要 `NIGHTLY_OCR=1` 才跑（默认关）。打开网页也不会排队。这些定时点都不在 DeepSeek 高峰价时段（北京时间工作日 9–12 点、14–18 点）。单价和算法见 [llm.md](llm.md)「回填要花多少模型钱」。
+
+外链图片仍是定时抓取每次最多 200 张、夜间最多 300 张，不在导入时一次下完。
 
 ### 方伟公众号老文章的图
 

@@ -23,12 +23,18 @@ def test_whitelist_shape():
         "fangwei-zsxq",
         "chengfengpolang",
         "gudujinhuati",
+        "latepost",
         "linwenfeng-feishu",
         "stratechery",
         "heiheiwuchang",
     ]
     gudu = next(source for source in sources if source.id == "gudujinhuati")
     assert gudu.kind == "markdown"
+    late = next(source for source in sources if source.id == "latepost")
+    assert late.kind == "wechat_mp"
+    assert late.enabled is True and late.timeline is True
+    assert late.name == "晚点LatePost" and late.author == "晚点LatePost"
+    assert late.ghid == "gh_44e9b2141610"
     feishu = next(source for source in sources if source.id == "linwenfeng-feishu")
     assert feishu.kind == "feishu"
     assert feishu.timeline is False
@@ -38,6 +44,7 @@ def test_whitelist_shape():
     assert timeline["fangwei-zsxq"] is True
     assert timeline["chengfengpolang"] is True
     assert timeline["gudujinhuati"] is True
+    assert timeline["latepost"] is True
     assert timeline["linwenfeng-mp"] is True
     assert timeline["stratechery"] is True
     assert timeline["heiheiwuchang"] is True

@@ -92,6 +92,7 @@ def test_nightly_starts_app_before_ocr():
     commands = {
         "crawl-fangwei-mp.sh": "compose_exec app research-crawl-wechat",
         "crawl-gudujinhuati.sh": "compose_exec app research-crawl-wechat",
+        "crawl-latepost.sh": "compose_exec app research-crawl-wechat",
         "crawl-fangwei-zsxq.sh": "compose_exec app research-ingest",
     }
     for name, command in commands.items():
@@ -126,9 +127,27 @@ def test_nightly_counts_mostly_failed_image_downloads_as_a_failed_step():
     那边的结论看 fetch-images.json（research-status 照样列出来）。"""
     nightly = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
     assert 'step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMIT" --exit-code' in nightly
-    for name in ("crawl-fangwei-mp.sh", "crawl-gudujinhuati.sh"):
+    for name in ("crawl-fangwei-mp.sh", "crawl-gudujinhuati.sh", "crawl-latepost.sh"):
         script = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert "research-fetch-images --limit 200" in script and "--exit-code" not in script, name
+
+
+def test_latepost_crawl_is_incremental_and_does_not_backfill():
+    """定时脚本只查最新一页。历史回填不在这里，部署和 launchd 都不会翻页。"""
+    text = (ROOT / "scripts" / "crawl-latepost.sh").read_text(encoding="utf-8")
+    assert "SOURCE=latepost" in text
+    assert 'MAX_NEW="${MAX_NEW:-10}"' in text
+    assert 'DIGEST_LIMIT="${DIGEST_LIMIT:-10}"' in text
+    assert '--max-new "$MAX_NEW"' in text
+    commands = "\n".join(line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
+    assert "--backfill" not in commands and "--list-only" not in commands
+    assert 'research-digest --source "$SOURCE" --limit "$DIGEST_LIMIT"' in text
+    plist = (ROOT / "deploy" / "launchd" / "com.zldong.research.crawl-latepost.plist").read_text(encoding="utf-8")
+    assert plist.count("<integer>30</integer>") == 2
+    assert "<integer>8</integer>" in plist and "<integer>20</integer>" in plist
+    assert "crawl-latepost.sh" in plist
+    assert "crawl-latepost" in (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert "crawl-latepost" in (ROOT / "scripts" / "install-launchd.sh").read_text(encoding="utf-8")
 
 
 def test_nightly_theses_disabled_by_default():

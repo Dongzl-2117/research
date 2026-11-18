@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from researchlib import wechat_crawl
 from researchlib.sources import Source
 from researchlib.wechat_crawl import (
     Dajiala,
@@ -356,6 +357,336 @@ def test_empty_or_unusable_list_is_a_failure_not_no_news(tmp_path):
         assert report.listed == 0
         assert report.failed and "一篇能用的都没有" in report.failed[0]
         assert "失败: 1" in report.render()
+
+
+class PagingClient:
+    """按调用顺序交回一页。多翻就抛，用来守住 is_end 和 max-pages。"""
+
+    def __init__(self, pages, nickname="孤独进化体"):
+        self.pages = pages
+        self.nickname = nickname
+        self.calls = []
+        self.cost = 0.0
+        self.article_calls = []
+
+    def history(self, ghid, offset=None):
+        self.calls.append(offset or "")
+        if len(self.calls) > len(self.pages):
+            raise AssertionError(f"多翻了一页: {self.calls}")
+        self.cost += 0.14
+        raw, nxt, end = self.pages[len(self.calls) - 1]
+        return parse_posts(raw), {
+            "offset": nxt,
+            "is_end": end,
+            "remain_money": 8.5,
+            "nickname": self.nickname,
+        }
+
+    def article(self, url):
+        self.article_calls.append(url)
+        self.cost += 0.03
+        return {"content": "<p>极致了正文</p>", "title": "t"}
+
+
+class BoomConn:
+    def execute(self, sql, params=None):
+        raise AssertionError(f"不该碰库: {sql}")
+
+
+def _boom_fetch(url):
+    raise AssertionError(f"不该取正文: {url}")
+
+
+def test_daily_crawl_does_not_page_or_write_backfill_state(tmp_path):
+    client = FakeClient([_post(SN_NEW, "新的一篇", datetime(2026, 10, 12, 1, 0, tzinfo=UTC))])
+    report = crawl(FakeConn([]), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=lambda url: PAGE)
+    assert client.history_calls == 1 and report.backfill is False
+    assert not (tmp_path / "raw" / "post-history-state.json").exists()
+    assert not (tmp_path / "raw" / "post-history.jsonl").exists()
+
+
+def test_backfill_pages_by_offset_resumes_and_stops_at_is_end(tmp_path):
+    sn_mid = "d" * 32
+    pages = [
+        ([_post(SN_NEW, "新", datetime(2026, 10, 3, 1, 0, tzinfo=UTC))], "cursor-1", 0),
+        ([_post(SN_OLD, "中", datetime(2026, 10, 2, 1, 0, tzinfo=UTC))], "cursor-2", 0),
+        ([_post(sn_mid, "旧", datetime(2026, 10, 1, 1, 0, tzinfo=UTC))], "", 1),
+    ]
+    client = PagingClient(pages)
+    first = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+        backfill=True, list_only=True, max_pages=1,
+    )
+    assert client.calls == [""]
+    assert first.list_calls == 1 and first.complete is False
+    assert "累计列表调用 1 次" in first.page_logs[0]
+    assert "估算 0.14 元" in first.page_logs[0]
+    state = json.loads((tmp_path / "raw" / "post-history-state.json").read_text(encoding="utf-8"))
+    assert state["next_offset"] == "cursor-1" and state["ghid"] == "gh_test"
+    assert "key" not in state and state["is_end"] is False
+
+    second = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+        backfill=True, list_only=True, max_pages=1,
+    )
+    assert client.calls == ["", "cursor-1"]
+    assert "估算 0.28 元" in second.page_logs[-1]
+    assert second.list_calls_total == 2
+
+    third = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+        backfill=True, list_only=True,
+    )
+    assert client.calls == ["", "cursor-1", "cursor-2"]
+    assert third.complete and third.listed == 3 and third.list_calls == 1
+    rendered = third.render()
+    assert "不写库" in rendered and "列表已经翻完" in rendered
+
+    fourth = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+        backfill=True, list_only=True,
+    )
+    assert client.calls == ["", "cursor-1", "cursor-2"]
+    assert fourth.list_calls == 0 and "不再向极致了查" in fourth.page_logs[0]
+
+
+def test_backfill_stops_when_the_cursor_does_not_move_and_does_not_pay_again(tmp_path):
+    pages = [([_post(SN_NEW, "新", datetime(2026, 10, 3, 1, 0, tzinfo=UTC))], "", 0)]
+    client = PagingClient(pages)
+    with pytest.raises(DajialaError, match="不会再自动扣费"):
+        crawl(
+            BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+            backfill=True, list_only=True,
+        )
+    assert client.calls == [""]
+    assert SN_NEW in (tmp_path / "raw" / "post-history.jsonl").read_text(encoding="utf-8")
+    with pytest.raises(DajialaError, match="不会再自动扣费"):
+        crawl(
+            BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+            backfill=True, list_only=True,
+        )
+    assert client.calls == [""]
+
+
+def test_backfill_dedups_and_skips_non_articles_without_touching_the_db(tmp_path):
+    video = _post(SN_NEW, "一条视频", datetime(2026, 10, 3, 1, 0, tzinfo=UTC))
+    video["item_show_type"] = 5
+    deleted = _post(SN_OLD, "已经删了", datetime(2026, 10, 2, 1, 0, tzinfo=UTC))
+    deleted["is_deleted"] = "1"
+    picture = _post(SN_SAME_TITLE, "一张图片", datetime(2026, 10, 2, 2, 0, tzinfo=UTC))
+    picture["item_show_type"] = 8
+    article = _post("d" * 32, "正文", datetime(2026, 10, 1, 1, 0, tzinfo=UTC))
+    repeated = _post("d" * 32, "正文", datetime(2026, 10, 1, 1, 0, tzinfo=UTC))
+    client = PagingClient([
+        ([video, deleted, picture], "cursor-1", 0),
+        ([repeated, article], "", 1),
+    ])
+    fetched = []
+
+    def fetch(url):
+        fetched.append(url)
+        return PAGE
+
+    report = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=fetch,
+        backfill=True, list_only=True,
+    )
+    assert fetched == [] and client.article_calls == []
+    assert report.listed == 4
+    assert report.skip_counts["纯视频或纯音乐"] == 1
+    assert report.skip_counts["已删除或违规"] == 1
+    listing = (tmp_path / "raw" / "post-history.jsonl").read_text(encoding="utf-8")
+    assert listing.count(f'"sn": "{"d" * 32}"') == 1
+
+    again = crawl(
+        FakeConn([]), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=fetch,
+        backfill=True, max_pages=0,
+    )
+    assert client.calls == ["", "cursor-1"]
+    assert len(fetched) == 2
+    assert all("sn=" in url for url in fetched)
+    assert {path.name for path in (tmp_path / "md").rglob("*.md")} == {
+        f"2026-10-02-{SN_SAME_TITLE}.md",
+        f"2026-10-01-{'d' * 32}.md",
+    }
+    assert again.known == 0 and len(again.written) == 2
+
+
+def test_backfill_skips_articles_already_in_the_library(tmp_path):
+    when = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)
+    client = PagingClient([([
+        _post(SN_NEW, "新的一篇", when),
+        _post(SN_OLD, "以前导入过", datetime(2026, 8, 28, 1, 0, tzinfo=UTC)),
+    ], "", 1)])
+    conn = FakeConn([_known(sn=SN_OLD, title="以前导入过", when=datetime(2026, 8, 28, 1, 0, tzinfo=UTC))])
+    fetched = []
+    report = crawl(
+        conn, SOURCE, ghid="gh_test", inbox=tmp_path, client=client,
+        fetch=lambda url: fetched.append(url) or PAGE, backfill=True,
+    )
+    assert len(fetched) == 1 and SN_NEW in fetched[0]
+    assert report.known == 1 and len(report.written) == 1
+    assert client.calls == [""]
+
+
+def test_backfill_stops_at_since_and_can_continue_later(tmp_path):
+    from datetime import date
+
+    pages = [
+        ([
+            _post(SN_NEW, "六月", datetime(2024, 6, 1, 1, 0, tzinfo=UTC)),
+            _post(SN_OLD, "一月中", datetime(2024, 1, 15, 1, 0, tzinfo=UTC)),
+        ], "cursor-1", 0),
+        ([
+            _post(SN_SAME_TITLE, "元旦", datetime(2024, 1, 1, 1, 0, tzinfo=UTC)),
+            _post("d" * 32, "上一年", datetime(2023, 12, 31, 1, 0, tzinfo=UTC)),
+        ], "cursor-2", 0),
+        ([_post("e" * 32, "更早", datetime(2023, 6, 1, 1, 0, tzinfo=UTC))], "", 1),
+    ]
+    client = PagingClient(pages)
+    report = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+        backfill=True, list_only=True, since=date(2024, 1, 1),
+    )
+    assert client.calls == ["", "cursor-1"]
+    assert report.complete is False and report.listed == 4
+    state = json.loads((tmp_path / "raw" / "post-history-state.json").read_text(encoding="utf-8"))
+    assert state["stopped_reason"] == "since" and state["next_offset"] == "cursor-2"
+
+    held = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+        backfill=True, list_only=True, since=date(2024, 6, 1),
+    )
+    assert client.calls == ["", "cursor-1"]
+    assert held.list_calls == 0
+
+    rest = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+        backfill=True, list_only=True,
+    )
+    assert client.calls == ["", "cursor-1", "cursor-2"]
+    assert rest.complete and rest.listed == 5
+
+
+def test_backfill_rejects_another_accounts_name_before_page_two(tmp_path):
+    pages = [
+        ([_post(SN_NEW, "别的号", datetime(2026, 10, 3, 1, 0, tzinfo=UTC))], "cursor-1", 0),
+        ([_post(SN_OLD, "下一页", datetime(2026, 10, 2, 1, 0, tzinfo=UTC))], "", 1),
+    ]
+    client = PagingClient(pages, nickname="中国新闻网")
+    report = crawl(
+        BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+        backfill=True, list_only=True,
+    )
+    assert client.calls == [""]
+    assert report.failed and "中国新闻网" in report.failed[0]
+    assert not (tmp_path / "raw" / "post-history.jsonl").exists()
+
+
+def test_backfill_does_not_keep_paging_a_wrong_ghid(tmp_path):
+    pages = [
+        ([
+            _post(SN_NEW, "别的号的新文章", datetime(2026, 10, 12, 1, 0, tzinfo=UTC)),
+            _post(SN_OLD, "别的号的旧文章", datetime(2026, 9, 1, 1, 0, tzinfo=UTC)),
+        ], "cursor-1", 0),
+        ([_post(SN_SAME_TITLE, "再往前", datetime(2026, 8, 1, 1, 0, tzinfo=UTC))], "", 1),
+    ]
+    client = PagingClient(pages)
+    conn = FakeConn([_known(sn="f" * 32, title="库里最新的一篇", when=datetime(2026, 10, 10, 1, 0, tzinfo=UTC))])
+    report = crawl(
+        conn, SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch, backfill=True,
+    )
+    assert client.calls == [""] and client.article_calls == []
+    assert report.written == [] and "一篇都不取" in report.failed[0]
+    assert not (tmp_path / "raw" / "post-history.jsonl").exists()
+
+
+def test_backfill_refuses_to_resume_a_different_ghid(tmp_path):
+    state = tmp_path / "raw" / "post-history-state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({"ghid": "gh_other", "blocked": "", "is_end": False}), encoding="utf-8")
+    client = PagingClient([([_post(SN_NEW, "新", datetime(2026, 10, 3, 1, 0, tzinfo=UTC))], "", 1)])
+    with pytest.raises(DajialaError, match="另一个号"):
+        crawl(
+            BoomConn(), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=_boom_fetch,
+            backfill=True, list_only=True,
+        )
+    assert client.calls == []
+
+
+def test_history_sends_offset_only_when_paging(monkeypatch):
+    seen = []
+
+    def fake_urlopen(request, timeout):
+        seen.append(json.loads(request.data))
+        body = {"code": 0, "data": [], "cost_money": 0.14, "remain_money": 1, "offset": "CURSOR", "is_end": 0}
+        if len(seen) == 2:
+            body["is_end"] = "1"
+            body["offset"] = ""
+        return _Response(json.dumps(body).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    client = Dajiala("SECRET-KEY", pause=0)
+    _posts, meta = client.history("gh_test")
+    assert "offset" not in seen[0]
+    assert seen[0]["key"] == "SECRET-KEY"
+    assert meta["is_end"] is False and meta["offset"] == "CURSOR"
+    _posts, meta = client.history("gh_test", "CURSOR")
+    assert seen[1]["offset"] == "CURSOR" and seen[1]["ghid"] == "gh_test"
+    assert meta["is_end"] is True
+    assert "SECRET-KEY" not in json.dumps({key: value for key, value in meta.items()})
+
+
+def test_list_only_main_does_not_open_the_database(monkeypatch, tmp_path, capsys):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOURCES_FILE", str(root / "config" / "sources.yaml"))
+    monkeypatch.setenv("DAJIALA_KEY", "test-key")
+    calls = []
+
+    class Client:
+        def __init__(self, key, base):
+            assert key == "test-key"
+            self.cost = 0.0
+
+        def history(self, ghid, offset=None):
+            assert ghid == "gh_44e9b2141610"
+            calls.append(offset or "")
+            self.cost += 0.14
+            return parse_posts([_post(SN_NEW, "晚点的一篇", datetime(2026, 10, 12, 1, 0, tzinfo=UTC))]), {
+                "offset": "",
+                "is_end": 1,
+                "remain_money": 3,
+                "nickname": "晚点LatePost",
+            }
+
+        def article(self, url):
+            raise AssertionError("不取正文")
+
+    monkeypatch.setattr(wechat_crawl, "Dajiala", Client)
+    monkeypatch.setattr(wechat_crawl, "fetch_page", _boom_fetch)
+    import researchlib.db as db
+
+    monkeypatch.setattr(db, "prepare", lambda settings: (_ for _ in ()).throw(AssertionError("不连库")))
+    assert wechat_crawl.main(["--source", "latepost", "--list-only"]) == 0
+    out = capsys.readouterr().out
+    assert "不写库" in out and "累计列表调用: 1 次" in out
+    listing = tmp_path / "inbox" / "latepost" / "raw" / "post-history.jsonl"
+    assert SN_NEW in listing.read_text(encoding="utf-8")
+    assert wechat_crawl.main(["--source", "latepost", "--list-only"]) == 0
+    assert calls == [""]
+
+
+def test_max_pages_without_backfill_is_refused(monkeypatch, tmp_path, capsys):
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOURCES_FILE", str(Path(__file__).resolve().parents[2] / "config" / "sources.yaml"))
+    monkeypatch.setenv("DAJIALA_KEY", "test-key")
+    assert wechat_crawl.main(["--source", "latepost", "--max-pages", "3"]) == 2
+    assert "只查最新一页" in capsys.readouterr().err
 
 
 def test_fetch_page_only_goes_to_wechat_article_pages(monkeypatch):
