@@ -212,7 +212,7 @@ def run_tool(request: Request, name: str, args: dict):
             return payload
         if name == "get_company_views":
             limit, offset = _limits(args)
-            kind = str(args.get("views") or "")
+            kind = args.get("views", "")
             author = str(args.get("author") or "").strip()
             payload = views_payload(conn, request, sources, _id(args), kind, author, limit, offset)
             if payload is None:

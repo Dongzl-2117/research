@@ -449,9 +449,9 @@ def judgments(
     page = min(max(1, page), pages)
     shown = chosen[(page - 1) * size : page * size]
     scope = None
-    if thesis is not None:
+    if thesis_key:
         clear = company_href(company_id, "views", author=author, stance=stance)
-        scope = {"key": thesis["key"], "title": thesis["title"], "clear": clear}
+        scope = {"key": thesis_key, "title": thesis["title"] if thesis else "", "clear": clear}
     return {
         "groups": month_groups(shown),
         "items": shown,
