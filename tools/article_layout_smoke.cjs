@@ -59,7 +59,7 @@ const {chromium} = require('playwright-core');
       const target = await link.getAttribute('href'); await link.click();
       assert.equal(new URL(page.url()).hash, target);
       await page.goto(origin + '/misaligned.html');
-      assert((await page.locator('.body-note').innerText()).includes('分别展示完整原文和译文'));
+      assert((await page.locator('.body-note').innerText()).includes('完整原文，再放完整译文'));
       assert.equal(await page.locator('.bilingual-en table').count(), 1);
       assert.equal(await page.locator('.bilingual-pair:has(.bilingual-en):has(.bilingual-zh)').count(), 0);
       await page.goto(origin + '/repeated.html');
@@ -72,18 +72,19 @@ const {chromium} = require('playwright-core');
       await page.screenshot({path: path.join(directory, `repeated-${width}.png`)});
       await page.goto(origin + '/repeated.html#%');
       await page.goto(origin + '/incompatible.html');
-      assert((await page.locator('.body-note').innerText()).includes('来源或处理版本'));
+      assert((await page.locator('.bilingual').getAttribute('data-note')).includes('来源或处理版本'));
+      assert((await page.locator('.body-note').innerText()).includes('完整原文，再放完整译文'));
       assert.equal(await page.locator('.bilingual-pair:has(.bilingual-en):has(.bilingual-zh)').count(), 0);
       await page.goto(origin + '/anchored.html');
       assert.equal(await page.locator('.bilingual-pair').count(), 25);
-      assert((await page.locator('.body-note').innerText()).includes('尚未人工核验'));
+      assert.equal(await page.locator('.bilingual').getAttribute('data-correspondence'), 'legacy-anchors');
       const lengths = await page.locator('.bilingual-en').allTextContents();
       assert(Math.max(...lengths.map(text => text.length)) < 2000);
       await page.screenshot({path: path.join(directory, `anchored-${width}.png`)});
       assert.equal(errors.length, 0, errors.join('\n'));
       results.push({width, ...metrics, tocNavigation: true, misalignmentNotice: true,
         repeatPreservedAndHashExpanded: true, incompatibleReceiptFallback: true,
-        anchoredLegacyPairs: 25, anchoredLegacyWarning: true, javascriptErrors: errors.length});
+        anchoredLegacyPairs: 25, anchoredLegacyProvenance: true, javascriptErrors: errors.length});
       await page.close();
     }
     console.log(JSON.stringify({directory, results}, null, 2));

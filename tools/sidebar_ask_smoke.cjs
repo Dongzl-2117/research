@@ -125,7 +125,7 @@ const {chromium} = require('playwright-core');
       assert.deepEqual(fixture.errors, []);
       results.push({name, passed: true});
     } catch (error) {
-      results.push({name, passed: false, error: error.message.split('\n')[0]});
+      results.push({name, passed: false, error: String(error.stack)});
     } finally { if (fixture) await fixture.page.close(); }
   }
 
@@ -150,7 +150,7 @@ const {chromium} = require('playwright-core');
       assert.equal(await page.locator('.chat-bubble-user').count(), 2);
       assert.equal(await page.locator('.chat-hint').count(), 0);
       assert.equal(await page.locator('#article-chat-q').getAttribute('placeholder'), null);
-      assert.equal(await page.locator('#article-chat-q').getAttribute('aria-describedby'), 'article-chat-mode');
+      assert((await page.locator('#article-chat-q').getAttribute('aria-describedby')).split(/\s+/).includes('article-chat-mode'));
       assert((await page.locator('#article-chat-mode').textContent()).includes('每轮独立提问'));
       assert(await page.locator('#article-chat-mode').evaluate(node => node.getBoundingClientRect().width <= 1));
       assert((await page.locator('#article-chat-scope option:checked').textContent()).includes('单轮'));
@@ -203,9 +203,11 @@ const {chromium} = require('playwright-core');
       assert.equal(state.retries, 1); assert.equal(state.posts.length, 1);
       assert((await page.locator('.chat-content').innerText()).includes('合成回答'));
     });
-    await check('提交结果未知时恢复入口且不自动重提', {mode: 'post-failure'}, async ({page, state}) => {
+    await check('提交响应丢失时复用同一提交编号并提供恢复入口', {mode: 'post-failure'}, async ({page, state}) => {
       await send(page); await enabled(page);
-      assert.equal(state.posts.length, 1);
+      assert.equal(state.posts.length, 2);
+      assert(state.posts[0].request_id);
+      assert.deepEqual(state.posts[1], state.posts[0]);
       assert.equal(await page.locator('.chat-open-answer').getAttribute('href'), '/ask');
     });
     await check('主线宽栏、拖动和键盘调宽持久保存且不改变问库范围', {}, async ({page, state}) => {
@@ -313,7 +315,8 @@ const {chromium} = require('playwright-core');
       await send(page); await page.locator('[data-chat-clear]').click();
       await page.waitForTimeout(350);
       assert.equal(await page.locator('.chat-content').count(), 0);
-      assert.equal(await page.locator('.chat-log').evaluate(node => node.childElementCount), 0);
+      assert.equal(await page.locator('.chat-log .chat-bubble-user, .chat-log .answer').count(), 0);
+      assert(await page.locator('.chat-log .chat-welcome').isVisible());
       await page.screenshot({path: path.join(directory, 'sidebar-wide.png'), animations: 'disabled'});
       await page.locator('[data-chat-close]').click();
       await page.reload();

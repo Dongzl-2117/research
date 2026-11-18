@@ -24,6 +24,7 @@ snapshot = demo_snapshot()
 (folder / "sources.yaml").write_text(yaml.safe_dump({"sources": [asdict(s) for s in snapshot.sources]}))
 Store.initialize(folder / "synthetic.sqlite3", snapshot.fingerprint)
 settings = Settings.from_env({
+    "RESEARCH_LLM_PROVIDER": "deepseek",
     "DATA_DIR": str(folder), "PUBLIC_BASE_URL": os.environ["EXPERIMENT_SYNTHETIC_ORIGIN"],
     "SOURCES_FILE": str(folder / "sources.yaml"), "RESEARCH_EXPERIMENTS_ENABLED": "1",
     "RESEARCH_EXPERIMENTS_SNAPSHOT": str(folder / "snapshot.json"),
