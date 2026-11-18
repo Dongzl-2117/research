@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from researchlib import views as views_mod
 from researchlib.ingest.model import ParsedDoc
@@ -173,6 +174,49 @@ def test_only_flips_between_bullish_and_bearish_count_as_changes(conn, settings)
     changed = [(item["title"], item["previous_label"], item["stance_label"]) for item in items if item["changed"]]
     assert changed == [("腾讯第 5 篇", "看好", "看淡")]
     assert [item["title"] for item in views_mod.filter_timeline(items, "change")] == ["腾讯第 5 篇"]
+
+
+def test_changes_require_ordered_publications(conn, settings):
+    company_id = _tencent(conn)["id"]
+    rows = [
+        # 入库先后不代表发表时间。无日期判断也不能作第一条有日期判断的前态。
+        ("unknown-up", None, "positive", False),
+        ("unknown-down", None, "negative", False),
+        ("first", "2025-06-01 10:00+08", "positive", True),
+        ("later", "2025-06-01 11:00+08", "negative", True),
+        # 同时刻互相矛盾，不能拿 id 排出先后，下一天也没有唯一的前态。
+        ("tie-up", "2025-06-02 10:00+08", "positive", True),
+        ("tie-down", "2025-06-02 10:00+08", "negative", True),
+        ("after-tie", "2025-06-03 00:00+08", "negative", False),
+        ("next-day", "2025-06-04 00:00+08", "positive", False),
+        # 同一天只有日期的一条与有钟点的一条，无法断定谁在先。
+        ("no-clock", "2025-06-05 00:00+08", "negative", False),
+        ("same-day", "2025-06-05 11:00+08", "positive", True),
+    ]
+    for key, published, stance, clock in rows:
+        article_id = conn.execute(
+            """INSERT INTO articles(source_id,external_id,title,body_text,body_md,content_hash,published_at,raw_meta)
+               VALUES('fangwei-mp',%s,%s,'样本正文','样本正文',%s,%s,%s) RETURNING id""",
+            (key, key, key, published, Jsonb({"time_known": clock})),
+        ).fetchone()["id"]
+        conn.execute(
+            """INSERT INTO company_views(article_id,company_id,content_hash,prompt_version,judgment,stance)
+               VALUES(%s,%s,%s,2,'对毛利的判断',%s)""", (article_id, company_id, key, stance),
+        )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        url = f"/api/v1/companies/{company_id}/views"
+        all_views = client.get(url).json()
+        assert all_views["total"] == len(rows)
+        changes = client.get(url, params={"views": "change"}).json()["views"]
+        assert [(v["title"], v["previous_label"]) for v in changes] == [
+            ("next-day", "看淡"), ("later", "看好"),
+        ]
+        tool = client.post("/api/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "get_company_views", "arguments": {"id": company_id, "views": "change"}},
+        }).json()["result"]["structuredContent"]
+        assert tool["total"] == 2 and tool["views"] == changes
 
 
 def test_ocr_changed_picks_only_views_drawn_from_other_image_text(conn, settings):
