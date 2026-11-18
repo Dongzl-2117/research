@@ -33,7 +33,7 @@ from psycopg.types.json import Jsonb
 
 from researchlib.ask_model import AskModel, default_choice, stored_choice
 from researchlib.ask_model import apply as apply_model
-from researchlib.citecheck import check_answer, split_claims
+from researchlib.citecheck import check_answer
 from researchlib.config import Settings
 from researchlib.llm import LLMError, LLMUnavailable, chat, llm_configured, missing_credential_text
 from researchlib.retrieval import ASPECTS_KEY, MAX_ASPECTS, Retrieval, analyze, cited_numbers, retrieve
@@ -248,6 +248,8 @@ def synthesize(
     {"stage": "writing"}（开始写回答），{"stage": "writing", "text"}（写到目前为止的回答）。
     report 另记 read_s（分批读资料）、write_s（写回答）和 usage（各次调用的 token 加起来，接口报了才有）。
     """
+    from researchlib.citecheck import split_claims
+
     prompt = system or SYSTEM_PROMPT
     total = sum(_size(item) for item in passages)
     usage: dict = {}
