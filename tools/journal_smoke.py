@@ -208,10 +208,17 @@ def check_financial_revisions(browser):
             page.locator("#export").click()
         return json.loads(download.value.path().read_bytes())["records"][0]["revisions"]
 
+    import_tail({key: val for key, val in first.items() if key != "secFact"})
+    expect(page.locator("#journal-status")).to_contain_text("已合并 1 条")
+    assert "secFact" not in export_versions()[-1]
     import_tail(first)
     expect(page.locator("#journal-status")).to_contain_text("已合并 1 条")
+    assert export_versions()[-1] == first
     replay = {**first, "at": "2024-11-03T07:00:00.000Z"}
     import_tail(replay)
+    expect(page.locator("#journal-status")).to_contain_text("已合并 0 条")
+    assert export_versions()[-1] == first
+    import_tail({key: val for key, val in first.items() if key != "secFact"})
     expect(page.locator("#journal-status")).to_contain_text("已合并 0 条")
     assert export_versions()[-1] == first
     import_tail({**replay, "value": {**result, "actual": "108"}})

@@ -132,16 +132,27 @@ window.ResearchJournal = (() => {
         if (stored) {
           requireValue(row.kind === stored.kind, '备份与本机记录类型冲突。');
           const shared = Math.min(row.revisions.length, stored.revisions.length);
+          let addedSource = false;
           for (let i = 0; i < shared; i++) {
             const local = stored.revisions[i], incoming = row.revisions[i];
             if (JSON.stringify(local) === JSON.stringify(incoming)) continue;
+            // 旧版 v1 导出会丢弃可选的 SEC 标识。时间和完整判断相同就保留已有标识。
+            const sameValue = JSON.stringify(local.value) === JSON.stringify(incoming.value);
+            if (local.at === incoming.at && sameValue && Boolean(local.secFact) !== Boolean(incoming.secFact)) {
+              if (local.secFact) incoming.secFact = local.secFact;
+              else { local.secFact = incoming.secFact; addedSource = true; }
+              continue;
+            }
             // 同一份旧备份可重复生成同一申报补丁，两个生成时刻不同。保留本机首次入账时间。
             const duplicateFiling = i === row.revisions.length - 1 && Boolean(local.secFact && incoming.secFact) &&
               JSON.stringify(local.secFact) === JSON.stringify(incoming.secFact) &&
-              JSON.stringify(local.value) === JSON.stringify(incoming.value);
+              sameValue;
             requireValue(duplicateFiling, '修订历史发生冲突，整份备份未导入。请分别保留两份备份。');
           }
-          if (row.revisions.length <= stored.revisions.length) continue;
+          if (row.revisions.length <= stored.revisions.length) {
+            if (addedSource) { store.put(stored); restored++; }
+            continue;
+          }
         }
         store.put(row);
         restored++;
