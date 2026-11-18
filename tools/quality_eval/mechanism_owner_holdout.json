@@ -1,0 +1,125 @@
+{
+ "about": "Zhilin 2026-11-18 判的第二批 20 段（考题，和 mechanism_owner.json 不重复，没参与改提示词）：2 排前面，1 居中，0 往后。",
+ "items": [
+  {
+   "query": "拼多多 护城河",
+   "article_id": 702,
+   "ord": 6,
+   "label": 2
+  },
+  {
+   "query": "茅台 渠道库存",
+   "article_id": 583,
+   "ord": 20001,
+   "label": 0
+  },
+  {
+   "query": "腾讯 广告",
+   "article_id": 255,
+   "ord": 2,
+   "label": 2
+  },
+  {
+   "query": "腾讯 广告",
+   "article_id": 485,
+   "ord": 3,
+   "label": 2
+  },
+  {
+   "query": "Netflix 竞争优势",
+   "article_id": 21110,
+   "ord": 10008,
+   "label": 2
+  },
+  {
+   "query": "美团 外卖 竞争",
+   "article_id": 14877,
+   "ord": 20000,
+   "label": 1
+  },
+  {
+   "query": "茅台 渠道库存",
+   "article_id": 8751,
+   "ord": 663,
+   "label": 0
+  },
+  {
+   "query": "Netflix 竞争优势",
+   "article_id": 8534,
+   "ord": 391,
+   "label": 0
+  },
+  {
+   "query": "苹果 服务收入",
+   "article_id": 21085,
+   "ord": 10010,
+   "label": 1
+  },
+  {
+   "query": "Costco 商业模式",
+   "article_id": 1334,
+   "ord": 241,
+   "label": 2
+  },
+  {
+   "query": "美团 外卖 竞争",
+   "article_id": 171,
+   "ord": 1,
+   "label": 2
+  },
+  {
+   "query": "美团 外卖 竞争",
+   "article_id": 258,
+   "ord": 4,
+   "label": 2
+  },
+  {
+   "query": "Netflix 竞争优势",
+   "article_id": 22310,
+   "ord": 10002,
+   "label": 2
+  },
+  {
+   "query": "Costco 商业模式",
+   "article_id": 8398,
+   "ord": 10,
+   "label": 1
+  },
+  {
+   "query": "Costco 商业模式",
+   "article_id": 323,
+   "ord": 4,
+   "label": 2
+  },
+  {
+   "query": "腾讯 广告",
+   "article_id": 226,
+   "ord": 3,
+   "label": 2
+  },
+  {
+   "query": "苹果 服务收入",
+   "article_id": 22916,
+   "ord": 10007,
+   "label": 1
+  },
+  {
+   "query": "拼多多 护城河",
+   "article_id": 291,
+   "ord": 3,
+   "label": 1
+  },
+  {
+   "query": "茅台 渠道库存",
+   "article_id": 1326,
+   "ord": 422,
+   "label": 1
+  },
+  {
+   "query": "苹果 服务收入",
+   "article_id": 22407,
+   "ord": 10006,
+   "label": 2
+  }
+ ]
+}
