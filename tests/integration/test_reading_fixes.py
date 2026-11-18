@@ -255,7 +255,8 @@ def test_retime_reorders_stance_and_same_period(conn, settings, tmp_path: Path):
     conn.commit()
     sources = {source.id: source for source in load_sources(settings.sources_path) if source.enabled}
     before = [item["article_id"] for item in timeline(conn, tencent, sources, settings) if item["changed"]]
-    assert before == [articles["222"]["id"]]
+    # 同一天且时刻未知的两篇不能用入库顺序推断作者改口。
+    assert before == []
 
     archive = tmp_path / "zsxq"
     (archive / "md").mkdir(parents=True)
