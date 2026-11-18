@@ -357,6 +357,16 @@ docker compose exec app research-theses --company 贵州茅台 --company 泡泡�
 
 JSON 和 MCP 的观点接口里都带 `theses`。
 
+## 跨文章历史证据检索
+
+本地命令按文章编号扫描，只在给定时点已确认的归档版本里查找一段连续的关键词。匹配范围为当时的标题、正文与有可靠日期的作者回复。每篇返回第一处匹配的原句、版本确认时间和可复核的固定链接。命令使用只读事务，无需模型。当前的下架和来源停用规则仍会收回资料，已彻底删除的文章不在可扫描库中。
+
+```sh
+research-history-search --query "现金流" --as-of 2026-11-18T18:00:00+08:00 --scan-limit 100 > evidence.json
+```
+
+每页输出 `coverage`，分列可核验、缺乏版本凭据、当时尚未入库、无法公开的文章。`insufficient_evidence` 表示本页没有可核验版本；有可核验版本、但未含搜索词时为 `no_match_in_verified`。单页最多扫描 250 篇。`next_after_id` 有值时，在相同查询参数上加 `--after-id` 和第一页的 `--through-id` 继续，直到游标为 null。每页结果只代表已扫描且有凭据的范围，当前词索引、向量、译文和生成过的判断都不参与。
+
 ## 给 AI 的接口
 
 文章页的「历史时点」、`GET /api/v1/articles/{id}?as_of=2026-11-18T09:30%2B08:00`、同一路径的 `.md` 和 MCP `get_article(id, as_of)` 读取指定时点已经确认的正文。网页表单按上海时间输入。JSON 区分来源公布时间 `published_at`、文章首次入库记录 `first_seen_at`、此版写入时间 `version_written_at` 和已确认可见时间 `confirmed_at`。`status=verified` 才附版本正文。迁移 041 给既有文章记录统一归档基线，之后修改时才保存旧正文。迁移前、导入尚未提交或尚未得到独立确认的时点可能缺乏凭据，此时 JSON 返回状态，Markdown 返回 404。星球另附已归档且自带可核实时间的作者回复；历史模式只提供已存正文，当前摘要、译文、图片识别和旧格式的无时间回复均不参与。
