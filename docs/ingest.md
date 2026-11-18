@@ -273,7 +273,7 @@ docker compose exec app research-views --articles 203,227,473,537,606
 11-18 以前 Stratechery 没有定时抓取，在另一台机器「盒子」上手动读会员 RSS、写成归档再导入（文章头里的 `- source: member-rss`），10-18 以后没人跑，线上停在 10-15。现在夜间任务（`scripts/nightly.sh`）第一步跑 `research-crawl-stratechery`：
 
 - 读 Mac mini 仓库根 `.env` 里的 `STRATECHERY_RSS_URL`（Stratechery Plus 账户页上的个人 RSS 地址，docker compose 透传进容器）。这是订阅凭证，命令不打印、报错里也不带。没设时夜间这一步跳过。
-- 只收 `https://stratechery.com/<年>/<slug>/` 的正文条目，`id` 写 `<年>/<slug>`，和盒子导入的那批 `external_id` 一致；库里已有的不再写。播客、站外链接跳过。
+- 只收 `https://stratechery.com/<年>/<slug>/` 的正文条目。11-18 实测个人 RSS 50 条里有 20 条正文齐全、`link` 却只写了首页 `https://stratechery.com/`（Daily Update、访谈、每周汇总都有），第一版把它们当成不是文章跳过了，漏了 11 篇；现在先看 `guid`，再按官网 WordPress 接口用标题和发布时刻（差不到一天、唯一一篇；每周汇总官网标题前面多「2026.46: 」也认）认回原文地址，认不出的这一晚记成失败。`id` 写 `<年>/<slug>`，和盒子导入的那批 `external_id` 一致；库里已有的不再写。播客、站外链接跳过。
 - 新的写进 `data/inbox/stratechery/<年>/<slug>.md`，只把这次新写的几篇放进临时目录导入（`--origin crawl`），不重扫整个归档。`published`、`date` 写 RSS 给的 UTC 时刻，带钟点；跨年（上海已是下一年）时只写美东日历日，由下面的 `research-stratechery-times` 补钟点。
 - 正文是 RSS 的 `content:encoded`，按公众号那套 HTML 转换转成 Markdown（链接、加粗、标题、引用、列表、图片地址）。短于 5500 字符的（游客半截、每周汇总）照旧标 `short_post` 不显示。
 - 手动补抓、看哪些是新的：

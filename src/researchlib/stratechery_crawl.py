@@ -29,7 +29,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from html import unescape as html_unescape
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from researchlib.textutil import SHANGHAI
@@ -41,6 +43,7 @@ EASTERN = ZoneInfo("America/New_York")
 CONTENT_NS = "{http://purl.org/rss/1.0/modules/content/}encoded"
 # 只收正文文章：https://stratechery.com/2026/some-slug/。播客、视频页、站外链接不收。
 _ARTICLE_URL = re.compile(r"^https?://(?:www\.)?stratechery\.com/(\d{4})/([a-z0-9][a-z0-9-]*)/?(?:[?#].*)?$", re.I)
+_WEEKLY_PREFIX = re.compile(r"^\s*\d{4}\.\d{1,2}:\s*")
 USER_AGENT = "research-archive/1.0 (+stratechery member feed)"
 
 
@@ -109,8 +112,13 @@ def _published(text: str | None) -> datetime | None:
     return moment.astimezone(UTC)
 
 
-def parse_feed(data: bytes) -> tuple[list[Item], int]:
-    """RSS → (正文文章, 跳过的条数)。整份不是 RSS 时抛 FeedError。"""
+def parse_feed(data: bytes) -> tuple[list[Item], int, list[Item]]:
+    """RSS → (正文文章, 跳过的条数, 认不出地址的正文)。整份不是 RSS 时抛 FeedError。
+
+    11-18 实测个人 RSS 50 条里有 20 条正文齐全、``link`` 却只写了首页 ``https://stratechery.com/``
+    （Daily Update、访谈、每周汇总都有）。先看 ``guid``；还认不出的放进第三项，由 ``resolve_by_title``
+    按官网接口用标题和发布时刻认回原文地址。
+    """
     try:
         root = ET.fromstring(data)
     except ET.ParseError as exc:
@@ -119,26 +127,93 @@ def parse_feed(data: bytes) -> tuple[list[Item], int]:
     if channel is None:
         raise FeedError("RSS 里没有 channel：可能被重定向到了登录页")
     items: list[Item] = []
+    unresolved: list[Item] = []
     skipped = 0
     for node in channel.findall("item"):
-        url = (node.findtext("link") or "").strip()
-        match = _ARTICLE_URL.match(url)
         html = node.findtext(CONTENT_NS) or ""
-        if not match or not html.strip():
+        title = (node.findtext("title") or "").strip()
+        if not html.strip():
             skipped += 1
             continue
-        items.append(
-            Item(
-                title=(node.findtext("title") or "").strip(),
-                url=url.split("#", 1)[0].split("?", 1)[0],
-                year=match.group(1),
-                slug=match.group(2).lower(),
-                published=_published(node.findtext("pubDate")),
-                html=html,
-                categories=[(c.text or "").strip() for c in node.findall("category") if (c.text or "").strip()],
-            )
+        match = None
+        for candidate in ((node.findtext("link") or "").strip(), (node.findtext("guid") or "").strip()):
+            match = _ARTICLE_URL.match(candidate)
+            if match:
+                break
+        item = Item(
+            title=title,
+            url=f"https://stratechery.com/{match.group(1)}/{match.group(2).lower()}/" if match else "",
+            year=match.group(1) if match else "",
+            slug=match.group(2).lower() if match else "",
+            published=_published(node.findtext("pubDate")),
+            html=html,
+            categories=[(c.text or "").strip() for c in node.findall("category") if (c.text or "").strip()],
         )
-    return items, skipped
+        if match:
+            items.append(item)
+        elif title and item.published is not None and _on_site(node.findtext("link") or ""):
+            unresolved.append(item)
+        else:
+            skipped += 1
+    return items, skipped, unresolved
+
+
+def _on_site(link: str) -> bool:
+    """链接只写了 Stratechery 首页（或干脆没写）的才去官网认；播客、站外链接照旧跳过。"""
+    host = urlsplit(link.strip()).netloc.lower()
+    return host in ("", "stratechery.com", "www.stratechery.com")
+
+
+def resolve_by_title(unresolved: list[Item], *, get=None) -> tuple[list[Item], list[str]]:
+    """按官网接口认回地址：标题（去掉实体、标点后）一样、发布时刻差不到一天的唯一一篇。
+
+    返回 (认出来的, 认不出的说明)。官网接口连不上时整批算认不出，下一晚再试。
+    """
+    if not unresolved:
+        return [], []
+    from researchlib.stratechery_times import fetch_posts, title_key
+
+    days = [item.published.astimezone(EASTERN).date() for item in unresolved if item.published]
+    kwargs = {"get": get} if get is not None else {}
+    try:
+        posts = fetch_posts(min(days), max(days), **kwargs)
+    except Exception as exc:  # noqa: BLE001 官网接口出错不连累认得出地址的那些
+        return [], [f"{item.title}：官网接口连不上，认不出地址（{type(exc).__name__}）" for item in unresolved]
+    resolved: list[Item] = []
+    problems: list[str] = []
+    for item in unresolved:
+        key = title_key(item.title)
+        found = []
+        for post in posts:
+            title = post.get("title")
+            title = title.get("rendered", "") if isinstance(title, dict) else str(title or "")
+            when = _published_gmt(post.get("date_gmt"))
+            # 每周汇总在官网叫「2026.46: The End of Jensen」，RSS 里只有冒号后面那半。
+            if (
+                key not in (title_key(title), title_key(_WEEKLY_PREFIX.sub("", html_unescape(title))))
+                or when is None
+                or abs(when - item.published).total_seconds() > 86400
+            ):
+                continue
+            slug = str(post.get("slug") or "").lower()
+            local = str(post.get("date") or "")
+            if re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug) and re.match(r"\d{4}-", local):
+                found.append((local[:4], slug))
+        if len(set(found)) != 1:
+            why = "官网上没找到同名同日的文章" if not found else "官网上同名同日的有好几篇"
+            problems.append(f"{item.title}：RSS 里没给原文地址，{why}")
+            continue
+        year, slug = found[0]
+        item.year, item.slug, item.url = year, slug, f"https://stratechery.com/{year}/{slug}/"
+        resolved.append(item)
+    return resolved, problems
+
+
+def _published_gmt(value) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value)).replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return None
 
 
 def known_ids(conn, source_id: str = SOURCE_ID) -> set[str]:
@@ -245,10 +320,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{ENV_URL} 要是 https 地址", file=sys.stderr)
         return 2
     try:
-        items, skipped = parse_feed(fetch_feed(url))
+        items, skipped, unresolved = parse_feed(fetch_feed(url))
     except FeedError as exc:
         print(f"抓取失败：{exc}", file=sys.stderr)
         return 1
+    found, problems = resolve_by_title(unresolved)
+    items += found
     if not items:
         print(f"抓取失败：RSS 里一篇正文文章都没有（{skipped} 条都不是）：订阅过期或地址换了", file=sys.stderr)
         return 1
@@ -262,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         items, known, inbox=inbox, author=source.author, dry_run=args.dry_run, max_new=max(args.max_new, 0)
     )
     report.skipped = skipped
+    report.failed += problems
     print(report.render())
     if args.dry_run or args.no_import or not written:
         return 1 if report.failed else 0
