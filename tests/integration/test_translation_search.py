@@ -127,6 +127,39 @@ def test_stale_translation_body_and_title_are_not_search_evidence(conn, settings
                         (article_id,)).fetchone()['n'] == 2
 
 
+def test_article_exports_only_translation_chunks_of_current_source(conn, settings):
+    article_id = _english(conn, settings)
+
+    def exported_chunks(client):
+        detail = client.get(f"/api/v1/articles/{article_id}").json()
+        tool = client.post("/api/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "get_article", "arguments": {"id": article_id}},
+        }).json()["result"]["structuredContent"]
+        assert detail["chunks"] == tool["chunks"]
+        return detail["chunks"]
+
+    with TestClient(create_app(settings)) as client:
+        assert [c["heading"] for c in exported_chunks(client) if c["lang"] == "zh"] == ["定价", "服务"]
+        # 经正常导入改稿。旧译仍可查阅，图片识别文字和新版原文都是这篇的独立阅读材料。
+        revised = ParsedDoc(
+            external_id="en:apple", title="Apple's pricing power",
+            published_at=datetime(2025, 5, 2, 8, 0, tzinfo=SHANGHAI),
+            body_md=ENGLISH.replace("demand holds up", "demand is falling"),
+            raw_meta={"language": "en"}, image_refs=[],
+        )
+        _store(conn, settings, "gudujinhuati", [revised])
+        conn.execute("INSERT INTO article_chunks(article_id,ord,heading,body,lang)"
+                     " VALUES(%s,20000,'图片文字','chart data','ocr')", (article_id,))
+        conn.commit()
+        chunks = exported_chunks(client)
+    assert any(c["lang"] is None and "demand is falling" in c["text"] for c in chunks)
+    assert any(c["lang"] == "ocr" and c["text"] == "chart data" for c in chunks)
+    assert all(c["lang"] != "zh" for c in chunks)
+    assert conn.execute("SELECT count(*) AS n FROM article_chunks WHERE article_id=%s AND lang='zh'",
+                        (article_id,)).fetchone()["n"] == 2
+
+
 def test_unquoted_original_and_ocr_hits_survive_same_article_translation(conn, settings, monkeypatch):
     article_id = _english(conn, settings)
     conn.execute("INSERT INTO article_chunks(article_id,ord,heading,body,lang,anchor)"
