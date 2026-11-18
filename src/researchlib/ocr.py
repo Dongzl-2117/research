@@ -1022,6 +1022,7 @@ def run_ocr(
     engine = engine or vision_engine_id()
     report = {
         "images": 0,
+        "recognized": 0,
         "with_text": 0,
         "failed": 0,
         "invalid": 0,
@@ -1083,6 +1084,8 @@ def run_ocr(
             report["with_text"] += 1
         _touch_articles(conn, row["content_hash"], text, touched, report)
         conn.commit()
+        if not used.endswith((":error", ":invalid", ":skipped")):
+            report["recognized"] += 1  # 正常识别的无字图片也算成功。
 
     def _store(row, used: str, text: str, result, failures: int = 0, failed: bool = False) -> None:
         # failures、failed_at 只给 :error 的行用（_error_outcome），别的结果清零。
@@ -1316,6 +1319,7 @@ def rejoin_stored(conn, *, dry_run: bool = False) -> dict:
 def main(argv: list[str] | None = None) -> int:
     """退出码：0 跑完了，2 识图起不来（Grok 没登录，或 DeepSeek 没配 key）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
+    parser.add_argument("--fail-empty", action="store_true", help="有缺图或识别失败且这一批没有成功时返回 4")
     parser.add_argument("--limit", type=int, default=500, help="这次最多识别多少张图")
     parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
     parser.add_argument(
@@ -1481,6 +1485,22 @@ def main(argv: list[str] | None = None) -> int:
             f"自动上线在等 {report['deploy_waiting'][:7]}：先停在这里，"
             "/health 报出新提交后再跑一次，从没认完的接着认"
         )
+    return night_exit_code(report) if args.fail_empty else 0
+
+
+def night_exit_code(report: dict) -> int:
+    print(
+        f"夜间统计 成功识别 {report['recognized']} 张，失败 {report['failed']} 张，"
+        f"无法解析 {report['invalid']} 张，文件缺失 {report['missing']} 张",
+        file=sys.stderr,
+    )
+    failures = report["failed"] + report["invalid"] + report["missing"]
+    if failures and not report["recognized"]:
+        print(
+            f"成功识别 0 张，失败 {report['failed']} 张，无法解析 {report['invalid']} 张，缺图 {report['missing']} 张",
+            file=sys.stderr,
+        )
+        return 4
     return 0
 
 

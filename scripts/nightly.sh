@@ -31,15 +31,18 @@ compose() {
 }
 
 failed=""
+summaries=""
 step() {
   # step 名字 命令…：跑一步，失败只记下来（带错误输出的最后一行），接着跑下一步。
   local name="$1"
   shift
-  local err rc last
+  local err rc last summary
   err="$(mktemp "${TMPDIR:-/tmp}/research-nightly.XXXXXX")"
   echo "$(date '+%F %T') 开始：${name}"
   if "$@" 2> "$err"; then
     cat "$err" >&2
+    summary="$(grep '^夜间统计 ' "$err" | tail -n 1 || true)"
+    [ -z "$summary" ] || summaries="${summaries}；${name}：${summary#夜间统计 }"
     rm -f "$err"
     echo "$(date '+%F %T') 完成：${name}"
     return 0
@@ -74,24 +77,24 @@ step "Stratechery 发布时刻" compose_exec app research-stratechery-times
 step "外链图片" compose_exec app research-fetch-images --limit "$IMAGES_LIMIT" --exit-code
 # 以前识图排在最后：当天的截图帖先拿一行正文抽观点（白花一次），第二晚识了字才重抽；图片文字块也要等一晚才有向量。
 if [ "$NIGHTLY_OCR" = "1" ]; then
-  step "图片文字" compose_exec app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES"
+  step "图片文字" compose_exec app research-ocr --engine vision --limit "$OCR_LIMIT" --max-minutes "$MINUTES" --fail-empty
 fi
 # 中英对照回执：同一来源的统计（重复的图、文末模板行）变了，旧文章的对照页会悄悄退成两份全文。
 # 不调模型重签；要调模型才补得上的篇写进 status/translate-resign.json，research-status 会报。
 step "中英对照重签" compose_exec app research-translate-resign
 step "语义向量" compose_exec app research-embed --limit "$EMBED_LIMIT"
-step "观点" compose_exec app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES"
-step "摘要" compose_exec app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES"
+step "观点" compose_exec app research-views --limit "$VIEWS_LIMIT" --max-minutes "$MINUTES" --fail-empty
+step "摘要" compose_exec app research-digest --limit "$DIGEST_LIMIT" --max-minutes "$MINUTES" --fail-empty
 if [ "$THESES_ENABLED" = "1" ]; then
   step "论点" compose_exec app research-theses
 fi
 
 if [ -n "$failed" ]; then
-  status_fail "失败的步骤：${failed}"
+  status_fail "失败的步骤：${failed}${summaries}"
   exit 1
 fi
 parts="Stratechery 抓取、Stratechery 发布时刻、外链图片"
 [ "$NIGHTLY_OCR" = "1" ] && parts="${parts}、图片文字"
 parts="${parts}、中英对照重签、语义向量、观点、摘要"
 [ "$THESES_ENABLED" = "1" ] && parts="${parts}、论点"
-status_ok "$parts"
+status_ok "${parts}${summaries}"
