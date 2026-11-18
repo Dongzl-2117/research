@@ -316,23 +316,11 @@ def _pack_spoken(grouped: list[tuple[str, list[str]]]) -> list[str]:
 
 def _article_ocr_chunks(conn, article_id: int, host: str = "") -> list[tuple[str, str]]:
     """这篇挂着的图片按现在的规则整理、切好的块。host 是这篇的作者，绿气泡写成他的名。"""
-    rows = conn.execute(
-        """
-        SELECT i.content_hash, t.text, t.units
-        FROM article_images i
-        JOIN image_texts t ON t.content_hash = i.content_hash
-        WHERE i.article_id = %s
-        ORDER BY i.id
-        """,
-        (article_id,),
-    ).fetchall()
-    owners: tuple[str, ...] = ()
-    if any(row["units"] is not None for row in rows):
-        from researchlib.ocr import article_owners
+    from researchlib.ocr import article_image_texts, article_owners
 
-        owners = article_owners(conn, article_id)
-    texts = [(row["content_hash"], row["text"], row["units"]) for row in rows]
-    return ocr_chunks(texts, host=host, owners=owners)
+    images = article_image_texts(conn, article_id)
+    owners = article_owners(conn, article_id) if any(image.units is not None for image in images) else ()
+    return ocr_chunks(images, host=host, owners=owners)
 
 
 def replace_ocr_chunks(conn, article_id: int) -> int:

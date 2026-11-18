@@ -49,7 +49,8 @@ PROMPT_VERSION = 3
 # 下次只补这几段：原文没变的段按原文身份（reuse_key）复用已有译文，不再重译。
 # 10：判串段时，另一段的数这一段原文里全都有（两段都写 January 2007、只有 F1 这种夹在词里的数）
 # 就不拿来比，免得把「一千」「第二天」这种译法判成串段、整段先放英文。因此先放英文的段重新进队列。
-ALIGNMENT_VERSION = 10
+# 11：金额换算保留明示币种。
+ALIGNMENT_VERSION = 11
 # 只从一串空白的开头试：从中间每个位置都试一遍，一长串空白就是平方级。
 _PARA_ID = re.compile(r'(?<!\s)\s++id="p-\d+"')
 _SRC_PARA_ATTR = re.compile(r'(?<!\s)\s++data-src-para="\d+"')

@@ -794,16 +794,25 @@ def append_ocr(body: str, ocr_text: str) -> str:
 
 def article_image_texts(conn, article_id: int) -> list[ImageText]:
     """这篇已识别的图，按在正文里的先后。"""
+    from researchlib.render import image_destination, image_refs_in, normalize_image_url
+
     rows = conn.execute(
         """
-        SELECT i.content_hash, t.text, t.units
-        FROM article_images i
-        JOIN image_texts t ON t.content_hash = i.content_hash
-        WHERE i.article_id = %s
-        ORDER BY i.id
+        SELECT i.original_ref, i.content_hash, t.text, t.units
+        FROM article_images i JOIN image_texts t ON t.content_hash = i.content_hash
+        WHERE i.article_id = %s ORDER BY i.id
         """,
         (article_id,),
     ).fetchall()
+    if len(rows) > 1:
+        article = conn.execute("SELECT body_md FROM articles WHERE id = %s", (article_id,)).fetchone()
+        if article is None:
+            return []
+        positions = {}
+        for index, ref in enumerate(image_refs_in(article["body_md"])):
+            positions.setdefault(normalize_image_url(ref) or image_destination(ref), index)
+        # 旧包有些图只挂在附件里。保留这些图，在正文里的图之后按既有顺序排列。
+        rows = sorted(rows, key=lambda row: positions.get(row["original_ref"], float("inf")))
     return [ImageText(row["content_hash"], row["text"] or "", row["units"]) for row in rows]
 
 
@@ -818,9 +827,10 @@ def article_owners(conn, article_id: int) -> tuple[str, ...]:
     return tuple(name for name in (row["author"], *(row["poster_names"] or ())) if name)
 
 
-def refresh_article_ocr(conn, article_id: int) -> str:
+def refresh_article_ocr(conn, article_id: int, *, images: list[ImageText] | None = None) -> str:
     """按这篇已识别的图重写 articles.ocr_text / ocr_hash。返回哈希。"""
-    images = article_image_texts(conn, article_id)
+    if images is None:
+        images = article_image_texts(conn, article_id)
     owners = article_owners(conn, article_id) if any(image.units is not None for image in images) else ()
     text = compose_ocr_text(images, owners)
     digest = hash_ocr(text)
@@ -852,8 +862,9 @@ def article_ocr(conn, article_id: int) -> tuple[str, str]:
     这篇还挂着 image_texts 时，先按现在的排版从识别结果重写 articles.ocr_text，重写出来的就是定稿。
     没有图的照库里的原样交。
     """
-    if article_image_texts(conn, article_id):
-        refresh_article_ocr(conn, article_id)
+    images = article_image_texts(conn, article_id)
+    if images:
+        refresh_article_ocr(conn, article_id, images=images)
     row = conn.execute(
         "SELECT ocr_text, ocr_hash FROM articles WHERE id = %s",
         (article_id,),

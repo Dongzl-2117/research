@@ -252,12 +252,19 @@ def wrong_account(posts: list[Post], known: int, newest: datetime | None) -> boo
     return any((published(post) or newest) < newest for post in posts)
 
 
-def archived_sns(inbox: Path) -> set[str]:
-    """归档目录里已经写过的（导入失败也算，导入那一步会再试）。"""
-    folder = inbox / "raw" / "articles"
-    if not folder.is_dir():
-        return set()
-    return {path.stem for path in folder.glob("*.json") if _HEX32.match(path.stem)}
+def archived_post(inbox: Path, post: Post) -> bool:
+    """只认有正文的完整归档，或有明确下架原因的终态。两次写文件之间中断可以续抓。"""
+    record = inbox / "raw" / "articles" / f"{post.sn}.json"
+    if not record.is_file():
+        return False
+    if archive_path(inbox, post).is_file():
+        return True
+    try:
+        data = json.loads(record.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return False
+    reason = data.get("unavailable") if isinstance(data, dict) else None
+    return isinstance(reason, str) and reason in GONE
 
 
 def published(post: Post) -> datetime | None:
@@ -384,13 +391,12 @@ def crawl(
         report.cost = client.cost
         return report
     sns, titles = known_articles(conn, source.id)
-    sns |= archived_sns(inbox)
     fresh: list[Post] = []
     for post in posts:
         if not _HEX32.match(post.sn):
             report.failed.append(f"{_label(post)}：列表里没有 sn，认不出是哪篇")
             continue
-        if post.sn in sns or (_title_key(post.title), _day(published(post))) in titles:
+        if post.sn in sns or archived_post(inbox, post) or (_title_key(post.title), _day(published(post))) in titles:
             report.known += 1
             continue
         fresh.append(post)

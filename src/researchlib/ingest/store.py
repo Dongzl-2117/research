@@ -200,6 +200,26 @@ def _keep_filled_clock(existing, doc: ParsedDoc) -> None:
     doc.raw_meta.update({key: old[key] for key in ("date_source", "time_known", "calendar_day") if key in old})
 
 
+def _keep_reply_times(existing, meta: dict, body: str) -> None:
+    """同一条原话再导时，较稀疏的导出不能冲掉前一份已经记录的发表时间。"""
+    if not existing:
+        return
+    old = (existing["raw_meta"] or {}).get("author_replies") or []
+    if not old:
+        return
+    replies = meta.get("author_replies")
+    if replies is None:
+        _, comments = split_comments(body)
+        if comments and comments == split_comments(existing["body_md"])[1]:
+            meta["author_replies"] = old
+        return
+    times = {(r["reply_id"], r["text"]): r["published_at"] for r in old if r.get("reply_id") and r.get("published_at")}
+    for reply in replies:
+        key = (reply.get("reply_id"), reply["text"])
+        if not reply.get("published_at") and key in times:
+            reply["published_at"] = times[key]
+
+
 def _images_from_page(meta) -> bool:
     """图的位置照公众号原文页（新抓的归档头「- 图片位置：原文页」，或按原文页挪过的老文章）。"""
     return (meta or {}).get("images") == "page"
@@ -222,6 +242,7 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     digest = content_hash(doc.title, doc.body_md, doc.published_at)
     poster = assign_poster_role(dict(doc.raw_meta), source.author, source.poster_names, source.owner_ids)
     meta = apply_length_floor(source, doc.body_md, poster)
+    _keep_reply_times(existing, meta, doc.body_md)
     keep = False
     article_changed = True
     same_words = False
@@ -320,11 +341,16 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
         article_id = existing["id"]
         status = "unchanged"
         # 正文没变也要补上发帖人：历史归档重导一遍就能把网友帖从星主名下摘掉。
-        if doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id"):
+        has_poster = doc.raw_meta.get("poster_name") or doc.raw_meta.get("poster_id")
+        has_replies = "author_replies" in meta and existing["content_hash"] == digest
+        if has_poster or has_replies:
             merged = dict(existing["raw_meta"] or {})
-            merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
-            merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
-            assign_poster_role(merged, source.author, source.poster_names, source.owner_ids)
+            if has_poster:
+                merged["poster_name"] = str(doc.raw_meta.get("poster_name") or "")
+                merged["poster_id"] = str(doc.raw_meta.get("poster_id") or "")
+                assign_poster_role(merged, source.author, source.poster_names, source.owner_ids)
+            if has_replies:
+                merged["author_replies"] = meta["author_replies"]
             if merged != dict(existing["raw_meta"] or {}):
                 conn.execute(
                     "UPDATE articles SET raw_meta = %s WHERE id = %s",
@@ -367,6 +393,11 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
     duplicate = None
     if status != "unchanged":
         # 图片可能换了：图片文字（OCR）的块跟着重切，识别结果按图片哈希缓存，不用重新识别。
+        from researchlib.ocr import article_image_texts, refresh_article_ocr
+
+        images = article_image_texts(conn, article_id)
+        if images:
+            refresh_article_ocr(conn, article_id, images=images)
         replace_ocr_chunks(conn, article_id)
         # 图片挂上之后再认重复：正文更长的优先，图片作次要依据。
         duplicate = resolve_article(conn, article_id, matcher)

@@ -432,3 +432,20 @@ def test_rebuild_after_a_version_bump_recomputes_every_fingerprint(conn, setting
     assert result["fingerprinted"] == 2 and result["duplicates"] == 1
     # 版本记上以后，再跑只补内容变了的。
     assert rebuild_duplicates(conn)["fingerprinted"] == 0
+
+
+def test_financially_conflicting_reposts_keep_both_versions(conn, settings):
+    shared = "产品渗透率提升带动经营效率改善。销售渠道成本变化值得长期关注。" * 3
+    conflicting = [
+        ("+12.5%", "-12.5%"), ("1.5%", "15%"), ("10万元", "10亿元"), ("增长12%", "下降12%"), ("12USD", "12EUR"),
+    ]
+    for offset, (first, second) in enumerate(conflicting):
+        # 造独立的来源相同、时间相近、其余各句都相同的候选。
+        body = f"在第{offset}轮跟踪中，最新报告中的具体数值为{{}}。" + shared
+        assert not same_article(fingerprint(body.format(first)), fingerprint(body.format(second)))
+        older, newer = f"financial-{offset}-a", f"financial-{offset}-b"
+        _store(conn, settings, "fangwei-mp", [_doc(older, "财务跟踪", body.format(first))])
+        _store(conn, settings, "fangwei-mp", [_doc(newer, "财务跟踪", body.format(second))])
+        for key in (older, newer):
+            article = _row(conn, key)
+            assert article["duplicate_of"] is None and _count(conn, "article_chunks", article["id"])
