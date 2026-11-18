@@ -112,9 +112,9 @@ const {chromium} = require('playwright-core');
     await page.locator('.chat-form button[type="submit"]').click();
   }
 
-  async function enabled(page) {
+  async function enabled(page, timeout = 3500) {
     await page.waitForFunction(() => !document.querySelector('.chat-form button[type="submit"]').disabled,
-      null, {timeout: 3500});
+      null, {timeout});
   }
 
   async function check(name, options, run) {
@@ -191,7 +191,8 @@ const {chromium} = require('playwright-core');
       assert.equal(await page.locator('.chat-open-answer').getAttribute('href'), '/ask/7');
     });
     await check('一直running有截止并可继续读取原ID', {mode: 'running'}, async ({page, state}) => {
-      await send(page); await enabled(page);
+      // 此场景会实际依次处理 300 个浏览器请求。保留次数上限，给共享 CI 留出调度时间。
+      await send(page); await enabled(page, 30000);
       assert(state.gets <= 300);
       assert.equal(await page.locator('.chat-resume').count(), 1);
       state.mode = 'done'; await page.locator('.chat-resume').click(); await enabled(page);
