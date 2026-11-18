@@ -165,6 +165,20 @@ def test_list_numbers_months_and_split_numbers_are_not_false_alarms():
     assert flags and "1002024" in flags[0]["problems"][0]
 
 
+def test_parenthesized_financial_cells_have_the_reported_sign():
+    # OCR 把表格按竖线分列；末列没有外侧竖线。带括号的金额与正文里的注释、附注号区别处理。
+    table = "摊销调整 | (5,867) | （.82） | ($782)\n其他 (3) | 167 | .02 | 0"
+    cited = [{"n": 1, "text": table}]
+    for correct, wrong in [("−5,867", "+5,867"), ("−0.82", "+0.82"), ("−782美元", "+782美元")]:
+        assert not check_answer(f"摊销调整为{correct}[1]。", cited, [])
+        assert check_answer(f"摊销调整为{wrong}[1]。", cited, [])
+    notes = [{"n": 1, "text": "当期利润（12万元）列在附注 (17)。脚注(19) | 备注文字"}]
+    assert not check_answer("利润为12万元，见附注17和19[1]。", notes, [])
+    assert check_answer("利润为−12万元[1]。", notes, [])
+    edge = [{"n": 1, "text": "(3.75) | (+2.25) | (-1.25)\n(17)"}]
+    assert not check_answer("各项为−3.75、+2.25、−1.25，见附注17[1]。", edge, [])
+
+
 def test_financial_evidence_preserves_precision_units_and_direction():
     cases = [
         ("同比增长12%", "同比增长12倍"), ("毛利率为12%", "毛利率为12.5%"),

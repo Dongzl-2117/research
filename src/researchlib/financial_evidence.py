@@ -31,6 +31,9 @@ _TOKEN = re.compile(
     re.I,
 )
 _DECLINE = re.compile(r"(?:下降|下滑|减少|下跌|降低|降幅|跌幅|fell(?: by)?|declined(?: by)?)\s*$", re.I)
+# OCR 与 Markdown 都用竖线分列。只在数值独占这个单元格时读作会计负数，避免把正文括注或脚注号改成负值。
+_CELL_OPEN = re.compile(r"(\||^)[^\S\r\n]*[(（][^\S\r\n]*\Z", re.M)
+_CELL_CLOSE = re.compile(r"[^\S\r\n]*[)）][^\S\r\n]*(?=(\||\r?\n|\Z))")
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class Number:
 
 def numbers(text: str) -> Iterator[Number]:
     text = (text or "").translate(_TRANSLATE)
+    previous_end = 0
     for match in _TOKEN.finditer(text):
         literal = match["number"].replace(",", "")
         scale = (match["scale"] or "").lower()
@@ -54,9 +58,16 @@ def numbers(text: str) -> Iterator[Number]:
             amount, unit = amount / 100, "个百分点"
         elif unit == "‰":
             amount, unit = amount / 10, "%"
-        if amount > 0 and _DECLINE.search(text[max(0, match.start() - 16):match.start()]):
-            amount = -amount
         label = (match["currency_sign"] or "") + (match["currency"] or "") + literal + scale + (match["unit"] or "")
+        closing = _CELL_CLOSE.match(text, match.end())
+        opening = closing and _CELL_OPEN.search(text, previous_end, match.start())
+        if opening and "|" in (opening[1], closing[1]):
+            if not (match["currency_sign"] or literal.startswith(("+", "-"))):
+                amount = -amount
+            label = f"({label})"
+        elif amount > 0 and _DECLINE.search(text[max(0, match.start() - 16):match.start()]):
+            amount = -amount
+        previous_end = match.end()
         yield Number(amount, unit, label)
 
 
