@@ -107,6 +107,11 @@ class World:
         bin_dir = tmp / "bin"
         _write(bin_dir / "docker", FAKE_DOCKER, 0o755)
         _write(bin_dir / "curl", FAKE_CURL, 0o755)
+        # 每台合成 Mac 只会看到自己启动的定时任务；其他工作树可能同时做相同的演练。
+        _write(bin_dir / "pgrep", """#!/bin/sh
+[ -n "${TEST_JOB_PID:-}" ] || exit 1
+ps -p "$TEST_JOB_PID" -o args= | grep -Eq -- "$2"
+""", 0o755)
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
         subprocess.run(["git", "init", "--quiet", "--bare", "-b", "main", str(self.origin)], check=True)
         _git(tmp, "clone", "--quiet", str(self.origin), str(self.work))
@@ -376,7 +381,7 @@ def test_waits_for_jobs_running_in_the_containers(world: World):
     _write(nightly, "while :; do sleep 1; done\n", 0o755)
     running = subprocess.Popen(["bash", str(nightly)])
     try:
-        assert world.deploy().returncode == 0
+        assert world.deploy(TEST_JOB_PID=str(running.pid)).returncode == 0
         assert world.called() == [] and world.status() is None
     finally:
         running.kill()
