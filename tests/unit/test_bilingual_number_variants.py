@@ -36,3 +36,14 @@ def test_true_repeats_are_still_folded():
     proof = pr.receipt(pr.source_manifest(source), translated)
     view = article_pairs(source, translated, provenance=proof)
     assert len(view.pairs) == 3
+
+
+def test_money_keeps_currency_with_its_amount():
+    from researchlib.translate.provenance import numbers_agree
+
+    assert numbers_agree("Revenue was $10 million.", "收入为1000万美元。")
+    assert not numbers_agree("Revenue was $10 million.", "收入为1000万欧元。")
+    assert not numbers_agree("Revenue was 10 million dollars.", "收入是1000万元人民币。")
+    assert not numbers_agree("€10 and $20", "10美元和20欧元")
+    assert numbers_agree("HK$200", "200港元")
+    assert not numbers_agree("HK$200", "200美元")

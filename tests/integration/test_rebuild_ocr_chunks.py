@@ -118,3 +118,36 @@ def test_rebuild_applies_the_current_layout_to_old_ocr_chunks(conn, settings, tm
     # 再跑一遍块没变，不动。
     assert rebuild_ocr_chunks(conn)[1] == 0
     assert _ocr_bodies(conn, article_id) == bodies
+
+
+def test_ocr_prose_and_chunks_follow_document_order_after_image_reordering(conn, settings, tmp_path):
+    from researchlib.chunks import replace_ocr_chunks
+    from researchlib.ocr import refresh_article_ocr
+    from researchlib.render import image_refs_in
+
+    first, second = tmp_path / "first.png", tmp_path / "second.png"
+    _png(first, b"first")
+    _png(second, b"second")
+    body = '<img src="first.png">\n\n![第二页](second.png)'
+    assert image_refs_in(body) == ["first.png", "second.png"]
+    source = next(item for item in load_sources(settings.sources_path) if item.id == "fangwei-mp")
+    doc = ParsedDoc("ocr-order", "财务资料", None, body, {}, [(second.name, second), (first.name, first)])
+    store_documents(conn, source=source, docs=[doc], data_dir=settings.data_dir,
+                    archive_files=1, images_in_archive=2, errors=[])
+    article = conn.execute("SELECT id FROM articles WHERE external_id = 'ocr-order'").fetchone()["id"]
+    rows = conn.execute("SELECT original_ref, content_hash FROM article_images WHERE article_id=%s", (article,))
+    for row in rows.fetchall():
+        words = {
+            first.name: "第一张图里的客户总数和商业模式变化，分析这项收入增长的来源。",
+            second.name: "第二张图里的季度费用和资本开支情况，记录不同类型支出的变化。",
+        }[row["original_ref"]]
+        conn.execute("INSERT INTO image_texts (content_hash, engine, text) VALUES (%s,'test',%s)",
+                     (row["content_hash"], words))
+    for layout, expected in [(body, "第一张图"), ("![](second.png)\n![](first.png)", "第二张图")]:
+        conn.execute("UPDATE articles SET body_md = %s WHERE id = %s", (layout, article))
+        refresh_article_ocr(conn, article)
+        replace_ocr_chunks(conn, article)
+        prose = conn.execute("SELECT ocr_text FROM articles WHERE id = %s", (article,)).fetchone()["ocr_text"]
+        chunks = _ocr_bodies(conn, article)
+        assert prose.startswith(expected)
+        assert len(chunks) == 2 and chunks[0].startswith(expected)

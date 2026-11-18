@@ -335,3 +335,23 @@ def test_breaks_between_screenshots_do_not_survive_in_front_of_comments():
     last_image = page.rindex("<img ")
     assert "<br" not in page[last_image : page.index("zsxq-comments")]
     assert 'class="zsxq-comment-author">方伟Rey<' in page
+
+
+def test_source_author_and_reply_time_survive_archive_import(tmp_path):
+    topic = _topic()
+    topic["show_comments"][1]["create_time"] = "2025-03-08T12:34:00+08:00"
+    topic["talk"]["owner"] = {"user_id": 1001, "name": "样例作者"}
+    (tmp_path / "md").mkdir()
+    (tmp_path / "md/777777.md").write_text("财季更新", encoding="utf-8")
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw/777777.json").write_text(json.dumps(topic), encoding="utf-8")
+    docs, errors, _, _ = parse_archive(tmp_path, tmp_path / "work", id_mode="zsxq", owners=("样例作者",))
+    assert not errors
+    doc = docs[0]
+    assert "样例作者：半托管" in doc.body_md and "方伟：" not in doc.body_md
+    first, second = doc.raw_meta["author_replies"]
+    assert first == {
+        "reply_id": "2", "published_at": "2025-03-08T12:34:00+08:00",
+        "question": "Temu 的关税影响有多大？", "text": "半托管的毛利会被吃掉一半。",
+    }
+    assert second["published_at"] is None and doc.raw_meta["comment_replies"] == 2

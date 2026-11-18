@@ -502,3 +502,18 @@ def test_pages_only_load_images_from_this_site(conn, settings):
         api = client.get("/api/v1/sources")
     assert page.headers["content-security-policy"] == "img-src 'self' data:"
     assert "content-security-policy" not in api.headers
+
+
+def test_reimport_fills_missing_reply_timestamps_and_keeps_a_known_one(conn, settings):
+    body = "原帖内容。" + comments_section([("", "根据后来发布的业绩公告修正判断。")], "")
+    doc = _doc("reply-time-1", body)
+    _store(conn, settings, "fangwei-zsxq", [doc])
+    record = {
+        "reply_id": "101", "text": "根据后来发布的业绩公告修正判断。", "question": "",
+        "published_at": "2026-11-10T11:30:00+08:00",
+    }
+    _store(conn, settings, "fangwei-zsxq", [replace(doc, raw_meta={"author_replies": [dict(record)]})])
+    sparse = replace(doc, raw_meta={"author_replies": [{**record, "published_at": None}]})
+    _store(conn, settings, "fangwei-zsxq", [sparse])
+    row = conn.execute("SELECT raw_meta FROM articles WHERE external_id = %s", (doc.external_id,)).fetchone()
+    assert row["raw_meta"]["author_replies"] == [record]

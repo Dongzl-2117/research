@@ -390,6 +390,9 @@ def _parse_datetime(value) -> datetime | None:
     if isinstance(value, date):
         return datetime(value.year, value.month, value.day, tzinfo=SHANGHAI)
     if isinstance(value, (int, float)) or (isinstance(value, str) and str(value).strip().isdigit()):
+        raw = str(value).strip()
+        if len(raw) == 8 and raw.isdecimal():
+            return _shanghai_clock(raw[:4], raw[4:6], raw[6:])
         number = int(value)
         if number > 10_000_000_000:
             number = number / 1000
