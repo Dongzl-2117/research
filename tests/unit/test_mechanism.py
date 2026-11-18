@@ -95,3 +95,9 @@ def test_sample_can_come_from_stdin(monkeypatch):
     data = {"items": [{"query": "题", "article_id": 1, "ord": 2, "label": 1}]}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
     assert mechanism.load_sample("-") == [{"query": "题", "article_id": 1, "ord": 2, "label": 1}]
+
+
+def test_owner_holdout_does_not_overlap_tuning_sample():
+    tune = {(i["article_id"], i["ord"]) for i in mechanism.load_sample("tools/quality_eval/mechanism_owner.json")}
+    hold = mechanism.load_sample("tools/quality_eval/mechanism_owner_holdout.json")
+    assert len(hold) == 20 and not tune & {(i["article_id"], i["ord"]) for i in hold}
