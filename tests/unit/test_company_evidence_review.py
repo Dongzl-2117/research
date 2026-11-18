@@ -72,3 +72,37 @@ def test_literal_version_identifier_in_original_quote_is_not_replaced_with_a_ref
 
     line, = evidence_lines(["v1：本季度 v12 版本的销售额。"], {1: {"article_id": 1, "author": "甲"}})
     assert line["text"] == "本季度 v12 版本的销售额。"
+
+
+def test_authors_quoting_the_same_disclosure_keep_independent_evidence():
+    from researchlib.claims import same_repost
+    from researchlib.theses import _collapse_reposts
+
+    quote = "本季度本公司正式披露产品出货情况。"
+    up = dict(article_id=1, author="甲", judgment="销量同比增长", quote=quote, stance="positive")
+    flat = dict(article_id=2, author="乙", judgment="销量同比持平", quote=quote, stance="neutral")
+    uncertain = dict(article_id=3, author="丙", judgment="销量同比下降仍不确定", quote=quote, stance="negative")
+    assert not same_repost(up, flat) and len(_collapse_reposts([up, flat, uncertain])) == 3
+    assert claim_side(up["judgment"], flat["judgment"]) == "oppose"
+    assert claim_side(up["judgment"], uncertain["judgment"]) == "unclear"
+    raw = [{"title": up["judgment"], "sources": [{"id": "v1", "side": "support"}, {"id": "v2", "side": "oppose"},
+                                                   {"id": "v3", "side": "oppose"}]}]
+    saved = validate_theses(raw, [up, flat, uncertain])[0]
+    assert saved["for"] == [1] and saved["against"] == [2]
+
+
+def test_conflicting_company_name_and_ticker_do_not_attribute_a_model_judgment():
+    import json
+
+    from researchlib.views import parse_views
+
+    def parse(key):
+        reply = json.dumps({key: dict(judgment="业务增长", stance="正面")}, ensure_ascii=False)
+        return parse_views(reply, {"中国平安": 1, "平安银行": 2},
+                           {1: ["平安", "601318.SH", "02318.HK"], 2: ["平安", "000001.SZ"]})
+
+    assert parse("中国平安（000001.SZ）") == {1: None, 2: None}
+    assert parse("平安") == {1: None, 2: None}
+    assert parse("中国平安信托") == {1: None, 2: None}
+    assert parse("平安（02318.HK）")[1]["judgment"] == "业务增长"
+    assert parse("平安银行（000001.SZ）")[2]["judgment"] == "业务增长"

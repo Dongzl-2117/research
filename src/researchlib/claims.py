@@ -189,6 +189,8 @@ def claim_side(thesis_text: str, view_text: str) -> str:
         return "unclear"
     left, right = _trend_facts(thesis), _trend_facts(view)
     if left and right:
+        if _HEDGE.search(view) or _HEDGE.search(thesis):
+            return "unclear"
         if len(left) == len(right) == 1:
             a, b = next(iter(left)), next(iter(right))
             if a[:-1] == b[:-1]:
@@ -247,4 +249,4 @@ def same_key(left: tuple[str, str], right: tuple[str, str]) -> bool:
 
 def same_repost(left: dict, right: dict) -> bool:
     """公众号和星球转贴：判断或原句规范化之后互相包含，就当作同一篇，不要两边都计。"""
-    return same_key(repost_key(left), repost_key(right))
+    return (left.get("author") or "") == (right.get("author") or "") and same_key(repost_key(left), repost_key(right))

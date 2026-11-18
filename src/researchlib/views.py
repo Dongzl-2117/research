@@ -39,6 +39,7 @@ from psycopg.types.json import Jsonb
 from researchlib import llm_batch
 from researchlib.author_voice import hide_from_site, raw_meta_of, site_visible_sql
 from researchlib.claims import looks_like_list, plain_cite, quote_ok, source_quote
+from researchlib.company_seed import SEEDS
 from researchlib.config import Settings
 from researchlib.excerpt import VIEW_WINDOW, old_reader_dropped, original_chunks, view_windows
 from researchlib.failures import clear_failure, cooling_sql
@@ -147,38 +148,28 @@ def _key_candidates(key: str) -> list[str]:
     return [item for item in dict.fromkeys(found) if item]
 
 
-def _company_lookup(names: dict[str, int], aliases: dict[int, list[str]] | None) -> dict[str, int | None]:
-    """归一后的名字 → 公司 id。指定的中文名优先；别名撞到两家的记 None，不认。"""
-    lookup: dict[str, int | None] = {}
-    primary: set[str] = set()
+def _company_lookup(names: dict[str, int], aliases: dict[int, list[str]] | None) -> dict[str, set[int]]:
+    """每个归一名称的全部可能归属；同简称遇到明确证券代码时可取交集。"""
+    lookup: dict[str, set[int]] = {}
     for name, company_id in names.items():
-        for candidate in _key_candidates(name):
-            lookup.setdefault(candidate, company_id)
-            primary.add(candidate)
+        lookup.setdefault(_company_key(name), set()).add(company_id)
+    # 简化调用也能识别种子公司的完整英文名，例如 Meta Platforms。
+    for seed in SEEDS:
+        if seed.name_zh in names and seed.name_en:
+            lookup.setdefault(_company_key(seed.name_en), set()).add(names[seed.name_zh])
     for company_id, names_of in (aliases or {}).items():
         for alias in names_of:
             for candidate in _key_candidates(alias):
-                if candidate in primary:
-                    continue
-                lookup[candidate] = company_id if lookup.get(candidate, company_id) == company_id else None
+                lookup.setdefault(candidate, set()).add(company_id)
     return lookup
 
 
-def _match_company(key: str, lookup: dict[str, int | None], names: dict[str, int]) -> int | None:
-    for candidate in _key_candidates(key):
-        if candidate in lookup:
-            return lookup[candidate]
-    # 「Meta Platforms」对「Meta」：只有一家公司的名字是它的开头（或反过来）才认。
-    whole = _company_key(_BRACKETED.sub("", str(key or "")))
-    if len(whole) < 2:
+def _match_company(key: str, lookup: dict[str, set[int]]) -> int | None:
+    known = [lookup[candidate] for candidate in _key_candidates(key) if candidate in lookup]
+    if not known:
         return None
-    hits = {
-        company_id
-        for name, company_id in names.items()
-        if len(_company_key(name)) >= 2
-        and (whole.startswith(_company_key(name)) or _company_key(name).startswith(whole))
-    }
-    return hits.pop() if len(hits) == 1 else None
+    owners = set.intersection(*known)
+    return next(iter(owners)) if len(owners) == 1 else None
 
 
 _NOT_ABOUT = {
@@ -218,7 +209,7 @@ def parse_views(
     found: dict[int, dict | None] = {company_id: None for company_id in names.values()}
     stray: list[str] = []
     for key, value in data.items():
-        company_id = _match_company(str(key), lookup, names)
+        company_id = _match_company(str(key), lookup)
         if company_id is None:
             if isinstance(value, dict) and _as_about(value) and str(value.get("judgment") or "").strip():
                 stray.append(str(key).strip()[:40])
@@ -323,8 +314,8 @@ def delete_blank_views(conn, company_ids: list[int] | None = None, *, not_about:
 
 
 _OCR_STALE = (
-    "(a.ocr_hash <> '' AND v.ocr_hash IS DISTINCT FROM a.ocr_hash"
-    f" AND (btrim(v.judgment) = '' OR length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)}))"
+    "(v.ocr_hash IS DISTINCT FROM a.ocr_hash AND (v.ocr_hash <> ''"
+    f" OR (a.ocr_hash <> '' AND (btrim(v.judgment) = '' OR length(a.body_text) < {int(SHORT_BODY_CHARS)}))))"
 )
 # 正文很短、图片里有可用的字：判断多半在截图里。观点要抽，即使提及只是一带而过。
 _OCR_CARRIES = f"(a.ocr_hash <> '' AND length(coalesce(a.body_text, '')) < {int(SHORT_BODY_CHARS)})"
@@ -333,6 +324,10 @@ _STALE = (
     "(v.article_id IS NULL OR v.content_hash <> a.content_hash OR v.prompt_version < %s"
     f" OR v.head_only OR {_OCR_STALE})"
 )
+
+
+# 读取派生判断前按当前文章版本核对。旧提示词对同一版本的判断依然可读。
+CURRENT_VIEW_SQL = f"({REAL_VIEW_SQL} AND v.content_hash = a.content_hash AND NOT {_OCR_STALE})"
 
 
 def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit: int, *, ocr_changed: bool = False):
@@ -744,7 +739,7 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
-        WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
+        WHERE v.company_id = %s AND {CURRENT_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
           AND {_SHOWN}
         ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
@@ -820,7 +815,7 @@ def list_marks(conn, source_ids: list[str]) -> list[dict]:
                  ) = 1 AS newest
           FROM company_views v
           JOIN articles a ON a.id = v.article_id
-          WHERE {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
+          WHERE {CURRENT_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
             AND {_SHOWN}
         ) ranked
         ORDER BY company_id, published_at DESC NULLS LAST, article_id DESC
@@ -878,12 +873,12 @@ def same_period(
                a.title, a.published_at, a.source_id
         FROM articles me
         JOIN article_mentions m ON m.article_id = me.id AND m.depth <> 'passing' {company_sql}
-        JOIN company_views v ON v.company_id = m.company_id AND {REAL_VIEW_SQL}
+        JOIN company_views v ON v.company_id = m.company_id
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
         LEFT JOIN article_chunks chunk ON chunk.article_id = v.article_id AND chunk.ord = v.chunk_ord
           AND chunk.lang IN ('', 'ocr')
-        WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id
+        WHERE me.id = %(id)s AND me.published_at IS NOT NULL AND a.id <> me.id AND {CURRENT_VIEW_SQL}
           AND a.duplicate_of IS NULL AND {_SHOWN} AND a.source_id = ANY(%(sources)s)
           AND a.published_at BETWEEN me.published_at - make_interval(days => %(days)s)
                                  AND me.published_at + make_interval(days => %(days)s)
@@ -1034,8 +1029,7 @@ def gap_articles(conn, company_ids: list[int], source_ids: list[str], limit: int
             AND v.prompt_version >= %s
             AND v.content_hash = a.content_hash
             AND NOT v.head_only
-            AND (a.ocr_hash = '' OR v.ocr_hash = a.ocr_hash
-                 OR length(coalesce(a.body_text, '')) >= {int(SHORT_BODY_CHARS)})
+            AND NOT {_OCR_STALE}
           )
           AND NOT (
             v.article_id IS NOT NULL AND v.about IS FALSE

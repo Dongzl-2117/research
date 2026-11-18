@@ -253,3 +253,34 @@ def test_peer_author_survives_more_than_sixty_closer_same_author_articles(conn, 
         """, (base["published_at"], company))
     peers = views_mod.same_period(conn, base["id"], None, sources, settings, limit=1)
     assert len(peers) == 1 and peers[0]["author"] == sources["gudujinhuati"].author
+
+
+def test_changed_document_and_corrected_ocr_cannot_surface_as_current_company_views(conn, settings):
+    from researchlib.theses import companies_with_views, views_for
+    from researchlib.web.queries import recent_viewed_companies
+
+    company = _tencent(conn)["id"]
+    sources = {s.id: s for s in load_sources(settings.sources_path) if s.enabled}
+    for key, current, derived, article_ocr, view_ocr in [
+        ("old-body", "h2", "h1", "", ""), ("old-ocr", "h1", "h1", "new", "old"),
+        ("removed-ocr", "h1", "h1", "", "old"), ("current", "now", "now", "", ""),
+    ]:
+        article_id = conn.execute(
+            """INSERT INTO articles(source_id,external_id,content_hash,title,body_md,body_text,published_at,ocr_hash)
+               VALUES ('fangwei-mp', %s, %s, %s, '腾讯', '腾讯', now(), %s) RETURNING id""",
+            (key, current, key, article_ocr),
+        ).fetchone()["id"]
+        conn.execute(
+            """INSERT INTO company_views(article_id,company_id,content_hash,prompt_version,judgment,stance,ocr_hash)
+               VALUES (%s,%s,%s,%s,%s,'positive',%s)""",
+            (article_id, company, derived, views_mod.PROMPT_VERSION, key + "-judgment", view_ocr),
+        )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        api = client.get(f"/api/v1/companies/{company}/views").json()["views"]
+        assert [r["judgment"] for r in api] == ["current-judgment"]
+        assert "old-body-judgment" not in client.get(f"/companies/{company}").text
+    assert len(views_mod.list_marks(conn, list(sources))) == len(views_for(conn, company, sources, settings)) == 1
+    assert not companies_with_views(conn, list(sources), minimum=2)
+    conn.execute("UPDATE articles SET content_hash='newer' WHERE external_id='current'")
+    assert not recent_viewed_companies(conn, list(sources))

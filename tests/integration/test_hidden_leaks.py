@@ -229,8 +229,8 @@ def test_thesis_input_leaves_out_short_posts(conn, settings):
     conn.execute(
         "INSERT INTO company_views"
         " (article_id, company_id, about, judgment, stance, content_hash, model, prompt_version)"
-        " VALUES (%s, %s, true, '坪效还在往上走', 'positive', 'h', 'test', 1)",
-        (owner_id, company),
+        " SELECT id, %s, true, '坪效还在往上走', 'positive', content_hash, 'test', 1 FROM articles WHERE id = %s",
+        (company, owner_id),
     )
     conn.commit()
     by_id = {source.id: source for source in load_sources(settings.sources_path)}

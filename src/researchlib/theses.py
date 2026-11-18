@@ -105,7 +105,7 @@ def _line(view: dict) -> str:
 
 def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司下了判断的观点，新的在前，带作者。判断或态度为空白的不算。"""
-    from researchlib.views import REAL_VIEW_SQL, verify_stored_quotes
+    from researchlib.views import CURRENT_VIEW_SQL, verify_stored_quotes
     from researchlib.visibility import visible_sql
 
     # 和公司页的时间线（views.timeline）一个口径：网友帖、评论壳、标了 hidden 的短帖都不进论点的输入和哈希，
@@ -118,7 +118,7 @@ def views_for(conn, company_id: int, sources_by_id: dict, settings: Settings) ->
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
-        WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s)
+        WHERE v.company_id = %s AND {CURRENT_VIEW_SQL} AND a.source_id = ANY(%s)
           AND a.duplicate_of IS NULL AND {site_visible_sql("a")} AND {visible_sql("a")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
@@ -323,7 +323,7 @@ def _collapse_reposts(views: list[dict]) -> list[dict]:
             for at in range(len(text) - least + 1):
                 grams.setdefault(text[at : at + least], []).append(index)
 
-    def first_twin(key: tuple[str, str]) -> int | None:
+    def first_twin(key: tuple[str, str], author: str) -> int | None:
         found: set[int] = set()
         for text, least, grams, starts in zip(key, REPOST_LEAST, inside, heads, strict=True):
             if len(text) < least:
@@ -332,11 +332,14 @@ def _collapse_reposts(views: list[dict]) -> list[dict]:
             for at in range(len(text) - least + 1):
                 found.update(starts.get(text[at : at + least], ()))
         # 被换掉的那一条（下面 kept[twin] = view）旧的字还留在表里，所以查到的都按现在留着的字再核。
-        return min((index for index in found if same_key(keys[index], key)), default=None)
+        return min(
+            (index for index in found if (kept[index].get("author") or "") == author and same_key(keys[index], key)),
+            default=None,
+        )
 
     for view in views:
         key = repost_key(view)
-        twin = first_twin(key)
+        twin = first_twin(key, view.get("author") or "")
         if twin is None:
             remember(len(kept), key)
             kept.append(view)
@@ -684,6 +687,7 @@ def needs_build(conn, company_id: int, sources_by_id: dict, settings: Settings) 
 
 def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) -> list[dict]:
     """下了判断的观点达到 minimum 条的公司。论点只给这些公司做，不限持仓。条件和 views_for 一致。"""
+    from researchlib.views import CURRENT_VIEW_SQL
     from researchlib.visibility import visible_sql
 
     if not source_ids:
@@ -694,7 +698,7 @@ def companies_with_views(conn, source_ids: list[str], minimum: int = MIN_VIEWS) 
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         JOIN companies c ON c.id = v.company_id
-        WHERE v.about AND v.judgment <> '' AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
+        WHERE {CURRENT_VIEW_SQL} AND a.duplicate_of IS NULL AND a.source_id = ANY(%s)
           AND {site_visible_sql("a")} AND {visible_sql("a")}
         GROUP BY c.id, c.name_zh
         HAVING count(*) >= %s
