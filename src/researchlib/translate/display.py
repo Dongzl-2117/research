@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from researchlib.financial_evidence import numeric_signature
 from researchlib.htmlentities import entity_ref
 from researchlib.nested_copies import CopyRun, copy_number_literals, copy_runs, plain_ends
 from researchlib.translate.pair import (
@@ -279,7 +280,12 @@ _IMG_SRC = re.compile(r"""<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 
 def _plain_words(value: str) -> set[str]:
     text = html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
-    return set(re.findall(r"\w+", text)) | {f"n:{value}" for value in copy_number_literals(text)}
+    words = set(re.findall(r"\w+", text))
+    literals = copy_number_literals(text)
+    if literals:
+        words.update(f"n:{value}" for value in literals)
+        words.update(f"v:{amount}:{unit}" for amount, unit in numeric_signature(text))
+    return words
 
 
 def _content_words(value: str) -> set[str]:
@@ -325,6 +331,7 @@ class _Said:
         visible = html.unescape(re.sub(r"<[^>]+>", " ", shown or "")).casefold()
         self.core = _sentence_core(shown)
         self.numbers = set(copy_number_literals(visible))
+        self.amounts = set(numeric_signature(visible)) if self.numbers else set()
         self.words = set(_LATIN_WORD.findall(visible))
         cores = [_sentence_core(part) for part in _ZH_SENTENCE.split(shown or "")]
         cores = [core for core in cores if core]
@@ -337,7 +344,8 @@ class _Said:
         if not core:
             return True
         visible = html.unescape(re.sub(r"<[^>]+>", " ", sentence)).casefold()
-        if set(copy_number_literals(visible)) - self.numbers:
+        literals = copy_number_literals(visible)
+        if literals and (set(literals) - self.numbers or set(numeric_signature(visible)) - self.amounts):
             return False
         if core in self.core:
             return True
@@ -398,7 +406,7 @@ def _novel_zh(extra: str, host: str, context: str = "") -> str:
     和留下的译的是同一段英文，两份各自成句：同一句只差标签、标点或几个字时不再挂第二遍，
     带着别处没有的数字、英文词，或者字对不上的句子才挂。
     """
-    if not extra or _plain_words(extra) <= _plain_words(host):
+    if not extra or extra == host or _plain_words(extra) <= _plain_words(host):
         return ""
     parts = [part for part in _ZH_SENTENCE.split(extra) if _sentence_core(part)]
     said = _Said((host or "") + (context or ""))

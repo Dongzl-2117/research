@@ -48,6 +48,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
+from researchlib.financial_evidence import numeric_signature
 from researchlib.textutil import markdown_to_text
 
 _FENCE = re.compile(r"^[ \t]{0,3}(```+|~~~+)")
@@ -413,6 +414,11 @@ def plain_ends(
             return None
         tail_at = found
     if key(text[head_at:tail_at]) != middle:
+        return None
+    # 导语、署名不能从完整金额中切走币种或数量级（例如把 12 million USD 的 USD 当成署名）。
+    if numeric_signature(text) != (
+        numeric_signature(text[:head_at]) + numeric_signature(text[head_at:tail_at]) + numeric_signature(text[tail_at:])
+    ):
         return None
     return head_at, tail_at
 

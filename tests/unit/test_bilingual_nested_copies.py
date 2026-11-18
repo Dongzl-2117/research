@@ -71,6 +71,8 @@ def _ids(value: str) -> set[str]:
 @pytest.mark.parametrize(("outer", "next_value"), [
     ("+12.5%", "−12.5%"), ("12.5%", "125%"), ("$125", "€125"), ("5%", "5"),
     ("($125)", "$125"), ("1 23", "12 3"), ("12,5", "125"),
+    ("USD 125", "HKD 125"), ("12 million", "12 billion"),
+    ("12 million USD", "12 million"), ("12 million", "12 million USD"),
 ])
 def test_financially_different_quote_and_following_paragraph_stay_in_each_reading_mode(outer, next_value):
     from researchlib.nested_copies import fold_nested_copies
@@ -101,6 +103,19 @@ def test_repeated_financial_quote_keeps_formatting_and_conflicting_translation()
     assert len(view.pairs) == 1 and "<strong>-12.5%</strong>" in view.pairs[0].en
     for shown in (view.pairs[0].zh, fold_translated_copies(source, translated)):
         assert "为+12.5%。" in shown and "为−12.5%。" in shown
+
+
+@pytest.mark.parametrize(("first", "later"), [
+    ("3.2 亿美元", "3.2 亿港元"), ("12 万", "12 亿"), ("12 万", "12 万亿"), ("USD 125", "HKD 125"),
+])
+def test_conflicting_translated_units_remain_visible_even_when_english_is_the_same(first, later):
+    line = "Management discussed revised revenue guidance over the course of this quarterly investor call."
+    md = f"> {line}\n\n{line}"
+    prefix = "参考本次电话会中的经营情况，管理层给出的收入指引为"
+    source, translated, view = _render(md, {0: f"<p>{prefix}{first}。</p>", 1: f"<p>{prefix}{later}。</p>"})
+    assert len(view.pairs) == 1
+    for shown in (view.pairs[0].zh, fold_translated_copies(source, translated)):
+        assert first in shown and later in shown
 
 
 def test_short_quote_items_and_footnotes_show_once_with_their_formatting():

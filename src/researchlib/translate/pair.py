@@ -13,6 +13,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from researchlib.financial_evidence import numeric_signature
 from researchlib.nested_copies import copy_number_literals
 from researchlib.translate.segments import (
     Segment,
@@ -232,7 +233,11 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
     en_keys = [_leaf_key(pair.en or "") for pair in pairs]
     zh_keys = [_leaf_key(pair.zh or "") for pair in pairs]
     texts = [visible_text(pair.en or "") for pair in pairs]
-    numbers = [copy_number_literals(text) for text in texts]
+    numbers = []
+    for text in texts:
+        literals = copy_number_literals(text)
+        numbers.append((literals, numeric_signature(text) if literals else ()))
+    amounts = [set(values) for _literals, values in numbers]
     redundant: set[int] = set()
     priors: dict[str, list[tuple[str, str, int]]] = {}
     for index, pair in enumerate(pairs):
@@ -255,7 +260,7 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
         for other, long in enumerate(texts):
             if other == index or len(long) <= len(short):
                 continue
-            if short in long and en_keys[index] in en_keys[other]:
+            if short in long and en_keys[index] in en_keys[other] and amounts[index] <= amounts[other]:
                 redundant.add(index)
                 break
             if (len(long) - len(short)) / len(long) > 0.12:
