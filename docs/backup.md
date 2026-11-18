@@ -8,8 +8,8 @@
 
 | 脚本 | 做什么 |
 | --- | --- |
-| `scripts/backup.sh` | `pg_dump` 导出一份（custom 格式），用 `pg_restore --list` 读一遍确认完整，再增量同步图片。导出保留 30 天（`KEEP_DAYS`）。导出前记下篇数，存在 `research-时间.dump.articles` 里。自动上线遇到带新迁移的提交，上线前也跑一次（见 [deploy.md](deploy.md)「更新」） |
-| `scripts/restore-check.sh` | 把最新一份导出恢复到临时库 `research_restore_check`，核对篇数不少于导出时，然后删掉临时库。不碰正式库 |
+| `scripts/backup.sh` | `pg_dump` 导出一份（custom 格式），用 `pg_restore --list` 读一遍确认完整，再增量同步图片。导出保留 30 天（`KEEP_DAYS`）。导出与篇数共享一个 PostgreSQL 快照，图片同步成功后公布带 v2 标记的导出与篇数文件。自动上线遇到带新迁移的提交，上线前也跑一次（见 [deploy.md](deploy.md)「更新」） |
+| `scripts/restore-check.sh` | 把最新一份导出恢复到本次专用临时库，v2 导出的恢复篇数必须与快照完全相等；旧档沿用原先的篇数下限。完成后清理临时库。不碰正式库 |
 | `scripts/crawl-fangwei-mp.sh` | 方伟公众号抓取：和孤独进化体同一条路，容器里的 `research-crawl-wechat` 查最新文章，正文从公众号原文页取，写进 `data/inbox/fangwei-mp` 并导入（`--origin crawl`）；再把以前入库的老文章按原文页摆图一批（`research-place-wechat-images`，`PLACE_LIMIT` 默认 50 篇，不花钱），下载外链图片、补摘要。11 月 7 日以前用仓库外的 `dl.py`（极致了按段估图位置的正文），它写下的归档照旧每次重新导入 |
 | `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（仓库里的 `scripts/zsxq/dl.py`，11-14 以前放在 `data/inbox/fangwei-zsxq/dl.py`、不在仓库里；数据写进 `data/inbox/fangwei-zsxq`；令牌 `ZSXQ_ACCESS_TOKEN` 和星球 ID `ZSXQ_GROUP_ID` 在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），再补摘要 |
 | `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，仓库根 `.env` 的 `DAJIALA_KEY`），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片、补摘要。见 [ingest.md](ingest.md)「公众号定时抓取」 |
