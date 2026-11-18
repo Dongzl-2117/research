@@ -184,18 +184,30 @@ def parse_scores(text: str, count: int) -> list[int]:
     return [scores[index] for index in range(1, count + 1)]
 
 
-def score_chunks(settings: Settings, title: str, chunks: list[dict], usage: dict) -> tuple[list[int], str]:
-    """给这些块打分（分批问），交回和 chunks 一一对应的分数和模型名。"""
+def score_chunks(
+    settings: Settings, title: str, chunks: list[dict], usage: dict, on_batch=None
+) -> tuple[list[int], str]:
+    """给这些块打分（分批问），交回和 chunks 一一对应的分数和模型名。
+
+    一批的回答缺段、读不出时这一批再问一次，还不行才抛错。``on_batch(batch, scores, model)`` 在每批打完后调，
+    让调用方当场存下：几千块的长文要问上百次，以前一批出错整篇白打（11-18 飞书文档 1319 打到第 21 段时丢了
+    已花的 56 万 token），下次也要从头再来。
+    """
     scores: list[int] = []
     model = ""
     for batch in batches(chunks):
-        text, model = chat(
-            settings,
-            [{"role": "system", "content": PROMPT}, {"role": "user", "content": render(title, batch)}],
-            temperature=0.0,
-            usage=usage,
-        )
-        scores.extend(parse_scores(text, len(batch)))
+        messages = [{"role": "system", "content": PROMPT}, {"role": "user", "content": render(title, batch)}]
+        for attempt in range(2):
+            text, model = chat(settings, messages, temperature=0.0, usage=usage)
+            try:
+                batch_scores = parse_scores(text, len(batch))
+                break
+            except LLMError:
+                if attempt:
+                    raise
+        if on_batch is not None:
+            on_batch(batch, batch_scores, model)
+        scores.extend(batch_scores)
     return scores, model
 
 
@@ -222,8 +234,12 @@ def run_batch(settings: Settings, jobs: list[dict], **kwargs) -> dict:
         conn.commit()
         if not chunks:
             return None
-        scores, model = score_chunks(settings, str(job.get("title") or ""), chunks, usage)
-        save_scores(conn, article_id, chunks, scores, model)
+        def keep(batch: list[dict], batch_scores: list[int], model: str) -> None:
+            # 每批当场存，出错时只丢这一批；下次 stale_chunks 只交回还没打的块。
+            save_scores(conn, article_id, batch, batch_scores, model)
+            conn.commit()
+
+        scores, _model = score_chunks(settings, str(job.get("title") or ""), chunks, usage, on_batch=keep)
         clear_failure(conn, FAILURE_KIND, article_id)
         conn.commit()
         counts = [scores.count(value) for value in (2, 1, 0)]
