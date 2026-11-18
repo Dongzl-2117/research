@@ -38,6 +38,7 @@ MIN_DIGEST_CHARS = 20
 # scripts/nightly.sh、scripts/crawl-latepost.sh 的默认上限。改了脚本要一起改。
 NIGHTLY_DIGEST_LIMIT = 80
 NIGHTLY_VIEWS_LIMIT = 60
+NIGHTLY_MECHANISM_LIMIT = 200
 CRAWL_DIGEST_LIMIT = 10
 CRAWL_RUNS_PER_DAY = 2
 # docs/ocr.md：一张图输出大约 10,764 token。图片本身的输入 token 这里不算。
@@ -49,7 +50,7 @@ class ArticleSpec:
     chars: int
     assumed: bool = False
     need_digest: bool = True
-    # None：还没导入，不知道有没有深入提及。0：没有。正数：深入提到的公司家数。
+    # None：还没导入，判断数量未知。入库后只数需要新写或重抽判断的公司。
     deep_mentions: int | None = None
     images: int | None = None
 
@@ -89,15 +90,8 @@ def dollars(input_tokens: int, output_tokens: int, *, peak: bool = False) -> flo
 
 def _view_slices(chars: int) -> tuple[int, int]:
     """按整篇长度粗算判断要问几次、正文送多少字。实际只送提到公司的段落，通常更少。"""
-    remaining = max(chars, 0)
-    calls = 0
-    body = 0
-    while remaining > 0 and calls < 40:
-        take = min(remaining, VIEW_WINDOW)
-        body += take
-        remaining -= take
-        calls += 1
-    return calls, body
+    body = max(chars, 0)
+    return (body + VIEW_WINDOW - 1) // VIEW_WINDOW, body
 
 
 def _digest_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate, int]:
@@ -105,10 +99,10 @@ def _digest_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimat
     input_tokens = 0
     short = 0
     for spec in specs:
-        if not spec.need_digest:
-            continue
         if spec.chars < MIN_DIGEST_CHARS and not spec.assumed:
             short += 1
+            continue
+        if not spec.need_digest:
             continue
         calls += 1
         input_tokens += min(spec.chars, DIGEST_LIMIT) + prompt_chars + HEADER_CHARS
@@ -128,15 +122,7 @@ def _views_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate
     articles = 0
     input_tokens = 0
     for spec in specs:
-        if spec.deep_mentions is None:
-            if not unknown:
-                continue
-            include = True
-        else:
-            include = spec.deep_mentions > 0
-            if unknown and not include:
-                continue
-        if not include:
+        if spec.deep_mentions == 0:
             continue
         n_calls, body = _view_slices(spec.chars)
         if n_calls == 0:
@@ -152,7 +138,7 @@ def _views_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate
         )
     else:
         note = (
-            f"只算库里已经有深入提及的篇。按整篇长度每 {VIEW_WINDOW} 字 1 次，是上沿；"
+            f"只算库里还有判断待新写或重抽的篇（含短文图片里的提及）。按整篇长度每 {VIEW_WINDOW} 字 1 次，是上沿；"
             "实际只送提到公司的段落。"
         )
     if not unknown and calls == 0:
@@ -270,11 +256,15 @@ def render_estimate(estimate: Estimate, *, provider_text: str) -> str:
         )
     lines.append("译制: 0 篇算进这次。只译英文（Stratechery）。中文公众号不进待译队列。")
     lines.append("论点: 按公司，不按篇。夜间默认关（THESES_ENABLED=0），导入不会跑 research-theses。")
-    lines.append("段落机制分: 不在夜间任务里，这次不算。要跑得另报费用。")
+    lines.append(
+        f"段落机制分: 夜间默认每晚最多 {NIGHTLY_MECHANISM_LIMIT} 篇（MECHANISM_LIMIT=0 跳过），"
+        "只打新增或已过期的段落，费用另计。导入后可用 research-mechanism --source 来源ID --limit 0"
+        " 免费清点，再结合相同模型的校准用量估费。"
+    )
     lines.append("问库: 只有读者提问才调，导入不会触发。")
     digest_nights = _nights(estimate.digest.calls, NIGHTLY_DIGEST_LIMIT)
-    view_calls = estimate.views.calls if estimate.views is not None else 0
-    view_nights = _nights(view_calls, NIGHTLY_VIEWS_LIMIT)
+    view_articles = estimate.views.articles if estimate.views is not None else 0
+    view_nights = _nights(view_articles, NIGHTLY_VIEWS_LIMIT)
     lines.append(
         "导入之后谁会接着花钱（导入这一步本身不调模型，网页打开也不会排队）："
     )
@@ -286,8 +276,8 @@ def render_estimate(estimate: Estimate, *, provider_text: str) -> str:
         f"{CRAWL_DIGEST_LIMIT * CRAWL_RUNS_PER_DAY} 篇，和夜间抢的是同一批最新的。"
     )
     lines.append(
-        f"- 判断：夜间 research-views 每晚最多 {NIGHTLY_VIEWS_LIMIT} 篇，只抽深入提到公司的。"
-        f"按上面的次数大约 {view_nights} 晚（上沿会更久，因为实际篇数通常更少）。"
+        f"- 判断：夜间 research-views 每晚最多 {NIGHTLY_VIEWS_LIMIT} 篇。"
+        f"按估算中的 {view_articles} 篇、每晚用满篇数额度约 {view_nights} 晚。耗时上限与其他来源的积压另计。"
     )
     lines.append(
         "- 这些定时点（夜间 00:37、抓取 08:30 和 20:30）都不在 DeepSeek 高峰价时段。"
@@ -391,12 +381,12 @@ def specs_from_rows(rows) -> list[ArticleSpec]:
 
 
 def load_db_rows(conn, *, source_id: str = "", article_ids: list[int] | None = None):
+    from researchlib import digest, views
     from researchlib.author_voice import site_visible_sql
-    from researchlib.digest import PROMPT_VERSION
     from researchlib.visibility import visible_sql
 
     where = ["a.duplicate_of IS NULL", visible_sql("a"), site_visible_sql("a")]
-    params: list = [PROMPT_VERSION]
+    params: list = [digest.PROMPT_VERSION, views.PROMPT_VERSION]
     if source_id:
         where.append("a.source_id = %s")
         params.append(source_id)
@@ -405,19 +395,14 @@ def load_db_rows(conn, *, source_id: str = "", article_ids: list[int] | None = N
         params.append(article_ids)
     return conn.execute(
         f"""
-        SELECT length(coalesce(a.body_text, '')) AS chars,
-               (d.article_id IS NULL OR d.content_hash IS DISTINCT FROM a.content_hash
-                    OR d.prompt_version < %s) AS need_digest,
-               coalesce(v.deep_n, 0) AS deep_n,
+        SELECT length(coalesce(a.body_text, '')) + length(coalesce(a.ocr_text, '')) AS chars,
+               {digest.DIGEST_DUE_SQL} AS need_digest,
+               (SELECT count(*) FROM article_mentions m
+                LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
+                WHERE m.article_id = a.id AND {views.PENDING_VIEW_SQL}) AS deep_n,
                coalesce(img.n, 0) AS images
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
-        LEFT JOIN (
-            SELECT article_id, count(*) AS deep_n
-            FROM article_mentions
-            WHERE depth <> 'passing'
-            GROUP BY article_id
-        ) v ON v.article_id = a.id
         LEFT JOIN (
             SELECT article_id, count(*) AS n
             FROM article_images

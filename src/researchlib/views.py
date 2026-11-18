@@ -333,6 +333,7 @@ _STALE = (
     "(v.article_id IS NULL OR v.content_hash <> a.content_hash OR v.prompt_version < %s"
     f" OR v.head_only OR {_OCR_STALE})"
 )
+PENDING_VIEW_SQL = f"{_VIEW_DEPTH} AND {_STALE}"
 
 
 def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit: int, *, ocr_changed: bool = False):
@@ -352,9 +353,9 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
-        WHERE m.company_id = ANY(%s) AND {_VIEW_DEPTH}
+        WHERE m.company_id = ANY(%s)
           AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
-          AND {_STALE} AND {cooling_sql('views', 'a.id')}{only}
+          AND {PENDING_VIEW_SQL} AND {cooling_sql('views', 'a.id')}{only}
         GROUP BY a.id
         ORDER BY bool_or(m.depth <> 'passing') DESC, a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
@@ -379,8 +380,7 @@ def pending_companies(conn, article_id: int, only_ids: list[int] | None = None) 
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
-        WHERE m.article_id = %s {clause} AND {_VIEW_DEPTH}
-          AND {_STALE}
+        WHERE m.article_id = %s {clause} AND {PENDING_VIEW_SQL}
         ORDER BY c.id
         """,
         tuple(params),

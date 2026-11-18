@@ -160,7 +160,7 @@ docker compose exec app research-llm-estimate --listing /data/inbox/latepost/raw
 docker compose exec app research-llm-estimate --source latepost
 ```
 
-导入之后才会进夜间任务，而且有上限，不会一次跑完：摘要每晚最多 80 篇（`DIGEST_LIMIT`），判断每晚最多 60 篇（`VIEWS_LIMIT`，只抽深入提到公司的）。晚点的定时抓取每天两次再各写最多 10 篇摘要（`DIGEST_LIMIT=0` 就跳过），同一篇有锁，不会和夜间写两遍。论点夜间默认关，译制只做英文，段落机制分不在夜间任务里，识图要 `NIGHTLY_OCR=1` 才跑（默认关）。打开网页也不会排队。这些定时点都不在 DeepSeek 高峰价时段（北京时间工作日 9–12 点、14–18 点）。单价和算法见 [llm.md](llm.md)「回填要花多少模型钱」。
+导入之后才会进夜间任务，而且有上限，不会一次跑完：摘要每晚最多 80 篇（`DIGEST_LIMIT`），判断每晚最多 60 篇（`VIEWS_LIMIT`，只抽深入提到公司的）。晚点的定时抓取每天两次再各写最多 10 篇摘要（`DIGEST_LIMIT=0` 就跳过），同一篇有锁，不会和夜间写两遍。论点夜间默认关，译制只做英文，段落机制分默认每晚最多 200 篇（`MECHANISM_LIMIT=0` 跳过），费用在摘要和判断以外另计，识图要 `NIGHTLY_OCR=1` 才跑（默认关）。打开网页也不会排队。这些定时点都不在 DeepSeek 高峰价时段（北京时间工作日 9–12 点、14–18 点）。单价和算法见 [llm.md](llm.md)「回填要花多少模型钱」。
 
 外链图片仍是定时抓取每次最多 200 张、夜间最多 300 张，不在导入时一次下完。
 
