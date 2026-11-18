@@ -757,6 +757,44 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
     return items
 
 
+def recent_company_views(conn, sources_by_id: dict, settings: Settings, limit: int = 8) -> list[dict]:
+    """首页每家公司最近一条可见判断，按文章发布日期排序，带上原文和近 30 天深入提及篇数。"""
+    if not sources_by_id or limit <= 0:
+        return []
+    rows = conn.execute(
+        f"""
+        WITH newest AS (
+          SELECT DISTINCT ON (v.company_id) v.company_id, v.article_id, a.published_at, a.source_id
+          FROM company_views v JOIN articles a ON a.id = v.article_id
+          WHERE {REAL_VIEW_SQL} AND a.source_id = ANY(%(sources)s) AND a.duplicate_of IS NULL AND {_SHOWN}
+          ORDER BY v.company_id, a.published_at DESC NULLS LAST, v.article_id DESC
+        ), chosen AS (
+          SELECT * FROM newest ORDER BY published_at DESC NULLS LAST, company_id DESC LIMIT %(limit)s
+        )
+        SELECT n.*, c.name_zh, v.stance, v.judgment, v.quote, v.chunk_ord, b.body AS chunk_body,
+               (SELECT count(*) FROM article_mentions m JOIN articles a ON a.id = m.article_id
+                WHERE m.company_id = n.company_id AND m.depth <> 'passing'
+                  AND a.published_at BETWEEN now() - interval '30 days' AND now()
+                  AND a.source_id = ANY(%(sources)s) AND a.duplicate_of IS NULL AND {_SHOWN}) AS recent
+        FROM chosen n JOIN companies c ON c.id = n.company_id
+        JOIN company_views v ON v.company_id = n.company_id AND v.article_id = n.article_id
+        LEFT JOIN article_chunks b ON b.article_id = v.article_id AND b.ord = v.chunk_ord AND b.lang IN ('', 'ocr')
+        ORDER BY n.published_at DESC NULLS LAST, n.company_id DESC
+        """,
+        {"sources": list(sources_by_id), "limit": limit},
+    ).fetchall()
+    return [
+        {
+            "id": row["company_id"], "name": row["name_zh"], "recent": row["recent"],
+            "judgment": row["judgment"], "stance": row["stance"], "stance_label": STANCE_LABELS[row["stance"]],
+            "author": sources_by_id[row["source_id"]].author,
+            "date": format_date(row["published_at"], settings.display_timezone),
+            "article_id": row["article_id"], "chunk": _verified_chunk(row),
+        }
+        for row in rows
+    ]
+
+
 def list_marks(conn, source_ids: list[str]) -> list[dict]:
     """公司列表用：每条上了页面的判断属于哪家公司、什么态度、哪天发的。
 

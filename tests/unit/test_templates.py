@@ -4,7 +4,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from researchlib.web.assets import asset_url
-from researchlib.web.present import company_names, company_summary, is_english
+from researchlib.web.present import is_english
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "src" / "researchlib" / "web" / "templates"
@@ -17,7 +17,7 @@ def _env():
     return env
 
 
-def test_home_recent_views_toggle_is_a_button():
+def test_home_recent_views_open_on_demand_with_attributed_judgment():
     html = _env().get_template("home.html").render(
         title="按天",
         canonical="https://investment.zldong.com/",
@@ -33,16 +33,9 @@ def test_home_recent_views_toggle_is_a_button():
                 "id": 1,
                 "name": "腾讯",
                 "recent": 5,
-                "latest": None,
-                "view": {
-                    "stance": "positive",
-                    "stance_label": "看好",
-                    "relative": "8 小时前",
-                    "date": "2024-10-19",
-                    "article_id": 9,
-                    "chunk": None,
-                },
-                "summary": "导读：视频号广告库存还能抬。",
+                "stance": "positive", "stance_label": "看好",
+                "author": "王小明", "date": "2024-10-19",
+                "article_id": 9, "chunk": 0, "judgment": "视频号广告库存还能抬。",
             }
         ],
         days=[],
@@ -54,29 +47,13 @@ def test_home_recent_views_toggle_is_a_button():
         dated_days=0,
         undated=0,
     )
-    assert 'aria-label="最近观点"' in html
-    assert 'class="recent-views-toggle"' in html
-    assert 'aria-expanded="true"' in html
-    assert 'aria-controls="recent-views-list"' in html
-    assert 'id="recent-views-list"' in html
-    assert 'href="/companies">最近观点</a>' in html
-    assert "research-recent-views" in html
-    assert "腾讯" in html
-    assert "看好" in html
-    assert 'class="recent-views-line"' in html
-    assert "导读：视频号广告库存还能抬。" in html
-    assert 'class="recent-item-summary"' in html
-
-
-def test_company_summary_skips_a_digest_about_another_company():
-    """公司只是文中的例子时，这篇的导读讲的是别的公司，不放在这家公司下面。"""
-    meituan = company_names({"name_zh": "美团", "name_en": "Meituan", "aliases": ["美团点评", "M"]})
-    assert meituan == ["美团", "Meituan", "美团点评"]
-    other = {"summary": "导读：拼多多的佣金率还在往下压。"}
-    assert company_summary(other, meituan) == ""
-    # 英文名、大小写不同也认。
-    assert company_summary({"summary": "MEITUAN 的配送成本又降了。"}, meituan) == "MEITUAN 的配送成本又降了。"
-    assert company_summary(None, meituan) == ""
+    assert '<details class="card holdings-now" aria-label="最近观点">' in html
+    assert '<summary class="recent-views-toggle">' in html
+    assert 'href="/companies">查看全部公司</a>' in html
+    assert "research-recent-views-narrow" in html
+    assert "腾讯" in html and "看好" in html and "近 30 天深入提及 5 篇" in html
+    assert "王小明 · 2024-10-19" in html
+    assert 'href="/articles/9?chunk=0">视频号广告库存还能抬。</a>' in html
 
 
 class _NavSource:

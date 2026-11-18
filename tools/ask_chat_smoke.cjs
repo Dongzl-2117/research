@@ -132,13 +132,16 @@ const {chromium} = require('playwright-core');
       await page.locator('[name="from"]').fill('2026-10-01');
       await page.locator('[name="to"]').fill('2026-11-01');
       await page.locator('.chat-form').evaluate(form => {
-        for (const [name, value] of Object.entries({source:'synthetic', company:'12', tree:'13'})) {
+        for (const [name, value] of Object.entries({source:'synthetic', saved_sources:'["synthetic"]', company:'12', tree:'13'})) {
           const input = document.createElement('input'); input.type = 'hidden'; input.name = name; input.value = value; form.append(input);
         }
         form.elements.article.value = '14';
       });
       await send(page); await finished(page);
-      assert.deepEqual(state.posts[0], {question:'合成问题', author:'合成作者甲', source:'synthetic', company:'12',
+      const {request_id, ...payload} = state.posts[0];
+      assert.match(request_id, /^[a-zA-Z0-9-]+$/);
+      assert.deepEqual(payload, {question:'合成问题', author:'合成作者甲', source:'synthetic',
+        saved_sources:'["synthetic"]', company:'12',
         from:'2026-10-01', to:'2026-11-01', article:'14', tree:'13', wait:false});
       assert((await page.locator('.chat-scope').innerText()).includes('2026-10-01'));
     });
@@ -181,16 +184,19 @@ const {chromium} = require('playwright-core');
       assert.equal(state.posts.length, 1);
       assert(await page.locator('.chat-markdown table').isVisible());
     });
-    await check('未知提交回填保留当时范围，不自动重提', {mode:'unknown'}, async ({page, state}) => {
+    await check('断线用相同提交编号确认，回填保留当时范围', {mode:'unknown'}, async ({page, state}) => {
       await page.locator('.ask-filters summary').click();
       await page.locator('[name="author"]').selectOption('合成作者甲');
       await send(page, '待恢复的问题'); await finished(page);
-      assert.equal(state.posts.length, 1);
+      assert.equal(state.posts.length, 2);
+      assert.deepEqual(state.posts[0], state.posts[1]);
+      if (!(await page.locator('.ask-filters').evaluate(node => node.open))) await page.locator('.ask-filters summary').click();
       await page.locator('[name="author"]').selectOption('合成作者乙');
       await page.locator('.chat-refill').click();
       assert.equal(await page.locator('[name="author"]').inputValue(), '合成作者甲');
       assert.equal(await page.locator('.chat-form textarea').inputValue(), '待恢复的问题');
-      assert.equal(state.posts.length, 1);
+      assert.equal(state.posts.length, 2);
+      assert.deepEqual(state.posts[0], state.posts[1]);
       await page.screenshot({path:path.join(directory, '04-unknown-submit.png')});
     });
     await check('全库问题回填时清掉之后选择的作者和日期', {mode:'unknown'}, async ({page, state}) => {
@@ -201,7 +207,8 @@ const {chromium} = require('playwright-core');
       await page.locator('.chat-refill').click();
       assert.equal(await page.locator('[name="author"]').inputValue(), '');
       assert.equal(await page.locator('[name="from"]').inputValue(), '');
-      assert.equal(state.posts.length, 1);
+      assert.equal(state.posts.length, 2);
+      assert.deepEqual(state.posts[0], state.posts[1]);
     });
     await check('错误重试继续同一回答任务', {mode:'error'}, async ({page, state}) => {
       await send(page); await finished(page);
@@ -222,6 +229,7 @@ const {chromium} = require('playwright-core');
       assert.equal(await page.locator('#c-1').count(), 1);
       await page.locator('.answer-feedback summary').click();
       assert(await page.locator('#missing-ref').isVisible());
+      await page.locator('.chat-form').scrollIntoViewIfNeeded();
       await fits(page);
     });
     await check('无脚本手机侧栏保留文末原生问库表单', {file:'complete.html', scripts:false, viewport:{width:390,height:844}}, async ({page}) => {
@@ -237,8 +245,10 @@ const {chromium} = require('playwright-core');
       assert.equal(await page.locator('.retry-form').getAttribute('action'), '/ask/7/retry');
       await page.screenshot({path:path.join(directory, '05-error-dark.png')});
     });
-    await check('侧栏同样显示完整Markdown并保留空白初始界面', {file:'complete.html'}, async ({page}) => {
-      assert.equal(await page.locator('.chat-log').innerText(), '');
+    await check('侧栏显示欢迎语、公开范围提示与完整 Markdown', {file:'complete.html'}, async ({page}) => {
+      assert(await page.locator('.chat-log .ask-welcome').isVisible());
+      assert(await page.locator('#article-ask-visibility').isVisible());
+      assert.equal(await page.locator('.chat-log .chat-bubble').count(), 0);
       await send(page); await finished(page);
       assert(await page.locator('.chat-markdown table').isVisible());
       assert.equal(await page.locator('.chat-markdown pre a').count(), 0);

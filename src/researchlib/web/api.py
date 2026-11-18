@@ -50,7 +50,7 @@ from researchlib.web.routes import (
     retitle_views,
     withhold_citations,
 )
-from researchlib.web.scoping import BIGINT_MAX, parse_int, resolve_scope
+from researchlib.web.scoping import BIGINT_MAX, parse_int, resolve_ask_scope, resolve_scope
 from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.zsxq_comments import (
     filter_host_comments_markdown,
@@ -645,7 +645,8 @@ async def api_ask(request: Request):
     question = str(body.get("question") or "").strip()[:500]
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
-    params = {key: str(body.get(key) or "") for key in ("author", "source", "company", "from", "to", "article", "tree")}
+    keys = ("author", "source", "saved_sources", "company", "from", "to", "article", "tree")
+    params = {key: str(body.get(key) or "") for key in keys}
     # 默认不等：检索后立刻返回 id，后台整合。wait=true 在线程池里最多等 ask.WAIT_SECONDS 秒，没写完就返回 running，
     # 绝不能在 async 协程里同步干等，否则整站事件循环被堵死（health/其他页一起挂）。
     wait = body.get("wait", False) is True
@@ -671,7 +672,7 @@ async def api_ask(request: Request):
                 conn.commit()
                 if existing is not None:
                     return {"duplicate": answer_payload(conn, request, sources, existing)}
-            scope, _info = resolve_scope(params, sources)
+            scope, _info = resolve_ask_scope(params, sources)
             if wait:
                 return ask(conn, settings, question, scope, sources, choice=choice)
             # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。

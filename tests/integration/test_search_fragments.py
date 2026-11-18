@@ -2,6 +2,9 @@
 
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
+from html import unescape
+from re import search
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
 from fastapi.testclient import TestClient
@@ -51,6 +54,9 @@ def test_fragments_link_to_the_passage_and_expand(conn, settings, tmp_path):
     long_id = _store(conn, settings, source, "long", "投资札记汇编", body)
     _store(conn, settings, source, "short", "短帖", "资本配置要看回报率，管理层别乱花钱。", day=2)
     with TestClient(create_app(settings)) as client:
+        empty = client.get("/search").text
+        assert 'name="view" value="article"' not in empty
+        assert 'name="view" value="article"' in client.get("/search?view=article").text
         page = client.get("/search", params={"q": "资本配置"}).text
         assert "处片段，来自" in page and "按文章看" in page
         # 章节名当标题，链接带起止块号，连着几块拼成一段。
@@ -66,6 +72,12 @@ def test_fragments_link_to_the_passage_and_expand(conn, settings, tmp_path):
         inside = client.get("/search", params={"q": "资本配置", "article": long_id}).text
         assert "只在《" in inside and "按原文顺序" in inside
         assert inside.count(f'href="/articles/{long_id}?chunk=') == 4
+        ask_link = unescape(search(r'<a class="ask-card" href="([^"]+)"', inside)[1])
+        assert parse_qs(urlsplit(ask_link).query) == {"q": ["资本配置"], "article": [str(long_id)]}
+        composer = client.get(ask_link).text
+        assert f'name="article" value="{long_id}"' in composer
+        assert "只用这篇：投资札记汇编" in composer
+        assert composer.index("公开问库：") < composer.index('id="ask-q"')
         order = [inside.find(name) for name in ("的三种做法第", "回购的时机", "并购的教训", "分红政策")]
         assert order == sorted(order) and min(order) > 0
         # 按文章看：原来的一篇一张卡片。

@@ -70,7 +70,7 @@ from researchlib.translate.display import (
 from researchlib.translate.remote_media import bilingual_sources
 from researchlib.views import count_pending as count_view_pending
 from researchlib.views import list_marks as view_marks
-from researchlib.views import quote_repeats, same_period
+from researchlib.views import quote_repeats, recent_company_views, same_period
 from researchlib.views import timeline as view_timeline
 from researchlib.visibility import is_hidden
 from researchlib.web import queries
@@ -83,8 +83,6 @@ from researchlib.web.present import (
     FEED_ZONE,
     chart_ticks,
     company_chart,
-    company_names,
-    company_summary,
     current_month,
     day_key,
     day_label,
@@ -106,7 +104,7 @@ from researchlib.web.present import (
 )
 from researchlib.web.quoting import mark_quoted_parts, occurrence_of
 from researchlib.web.render_cache import PAGES
-from researchlib.web.scoping import parse_day, parse_int, resolve_scope
+from researchlib.web.scoping import parse_day, parse_int, resolve_ask_scope, resolve_scope, saved_ask_filters
 from researchlib.web_export import is_web_export, join_web_export_lines
 from researchlib.zsxq_comments import guest_comment_authors, guest_comment_chunk, source_owners
 from researchlib.zsxq_title import (
@@ -180,19 +178,6 @@ def active_portfolio(request: Request) -> Portfolio:
         request.app.state.portfolio = load_portfolio(path)
         request.app.state.portfolio_mtime = mtime
     return request.app.state.portfolio
-
-
-def _latest_item(row, by_id, settings) -> dict | None:
-    if not row:
-        return None
-    source = by_id.get(row["source_id"])
-    return {
-        "id": row["id"],
-        "title": row["title"],
-        "date": format_date(row["published_at"], settings.display_timezone),
-        "relative": relative_label(row["published_at"], settings.display_timezone),
-        "author": source.author if source else "",
-    }
 
 
 def render_page(request: Request, name: str, context: dict, status_code: int = 200):
@@ -574,34 +559,8 @@ def home(request: Request):
                 settings.display_timezone,
             )
         holdings = []
-        # 首页顶部按最近一条观点排。展开用库里已有的导读，不在这次请求里调模型。
         if not chosen and plan["page"] == 1:
-            all_ids = [source.id for source in sources]
-            ranked = queries.recent_viewed_companies(conn, all_ids, limit=8)
-            recent = queries.holdings_recent(conn, [row["id"] for row in ranked], all_ids)
-            all_by_id = _source_map(sources)
-            for row in ranked:
-                info = recent.get(row["id"], {})
-                latest = _latest_item(info.get("latest"), all_by_id, settings)
-                view = _latest_view(conn, row["id"], all_by_id, settings, latest)
-                holdings.append(
-                    {
-                        "id": row["id"],
-                        "name": row["name_zh"],
-                        "recent": info.get("recent", 0),
-                        "latest": latest,
-                        "view": view,
-                        "summary": "",
-                    }
-                )
-            article_ids = [item["view"]["article_id"] for item in holdings if item.get("view")]
-            digests = queries.digests_for(conn, article_ids)
-            names = {row["id"]: company_names(row) for row in ranked}
-            for item in holdings:
-                view = item.get("view")
-                digest = digests.get(view["article_id"]) if view else None
-                # 首页只放已有、谈到这家公司的导读。没有就留一行态度和篇数，不把判断原文铺开。
-                item["summary"] = company_summary(digest, names[item["id"]])
+            holdings = recent_company_views(conn, _source_map(sources), settings)
     if chosen:
         heading = by_id[chosen].name
         empty = "这个来源还没有文章。"
@@ -629,20 +588,6 @@ def home(request: Request):
             "stale": stale,
         },
     )
-
-
-def _latest_view(conn, company_id: int, sources_by_id: dict, settings, latest: dict | None) -> dict | None:
-    """首页最近观点：最近一条判断和态度。比最近一篇深入文章旧的不用，那篇的观点还在整理。"""
-    items = view_timeline(conn, company_id, sources_by_id, settings)
-    if not items:
-        return None
-    view = items[0]
-    if latest is not None and latest.get("date") and view["date"] < latest["date"]:
-        return None
-    return {
-        **view,
-        "relative": relative_label(view["published_at"], settings.display_timezone) if view["published_at"] else "",
-    }
 
 
 def _jump_to_day(conn, source_ids: list[str], day, settings, path: str, *, owner_only: bool = False, **params):
@@ -1408,6 +1353,16 @@ def _card_snippets(hit, query: str, terms, groups, shown: set[str]):
     return [snippet for _, snippet in picked], (picked[0][0] if picked else None)
 
 
+def _search_scope_links(base: dict, source: str) -> dict:
+    """切范围只撤下点选的条件；问库沿用同一篇、作者、来源和时段。"""
+    params = {**base, "source": source}
+    return {
+        "clear_scope_query": _query_string(**{k: v for k, v in params.items() if k not in {"from", "to", "author"}}),
+        "clear_company_query": _query_string(**{k: v for k, v in params.items() if k != "company"}),
+        "ask_query": _query_string(**{k: v for k, v in params.items() if k != "view"}),
+    }
+
+
 @router.get("/search")
 def search_page(request: Request):
     settings = request.app.state.settings
@@ -1416,7 +1371,7 @@ def search_page(request: Request):
         sources = active_sources(request, conn)
         ids = [source.id for source in sources]
         by_id = _source_map(sources)
-        scope, info = resolve_scope(request.query_params, sources)
+        scope, info = resolve_scope(request.query_params, sources, empty_intersection=True)
         # 来源分面的计数不受当前所选来源影响，否则切到一个来源后别的来源都显示 0。
         facet_scope, _ = resolve_scope(request.query_params, sources, ignore_source=True)
         banner = queries.sample_state(conn, ids)
@@ -1528,11 +1483,12 @@ def search_page(request: Request):
             "query": query,
             "sources": sources,
             "source_counts": source_counts,
-            "authors": list(grouped),
+            "authors": [by_id[info["source"]].author] if info["source"] else list(grouped),
             "active_source": info["source"],
             "filters": info,
             "has_filter": has_filter,
             "company": company,
+            "article_scope": scope.article_id,
             "entity_companies": entity_companies,
             "entity_authors": entity_authors,
             "results": results,
@@ -1549,13 +1505,10 @@ def search_page(request: Request):
             "base_query": _query_string(**base),
             "page_query": _query_string(**base, source=info["source"]),
             "view": "article",
+            "form_view": view,
             "view_query": _query_string(**{**base, "view": ""}, source=info["source"]),
             # 范围浮层里的「清除」：去掉作者和时间，留下搜索词、来源和公司。
-            "clear_scope_query": _query_string(q=query, source=info["source"], company=info["company"] or ""),
-            "ask_query": _query_string(
-                q=query, author=info["author"], source=info["source"], company=info["company"] or "",
-                **{"from": info["from"], "to": info["to"]},
-            ),
+            **_search_scope_links(base, info["source"]),
             "sample_banner": banner,
         },
     )
@@ -1642,7 +1595,7 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
             "view": "passage",
             "sources": sources,
             "source_counts": source_counts,
-            "authors": list(grouped),
+            "authors": [by_id[info["source"]].author] if info["source"] else list(grouped),
             "active_source": info["source"],
             "filters": info,
             "has_filter": has_filter,
@@ -1665,11 +1618,7 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
             "page_query": _query_string(**base, source=info["source"], sort="" if by_position else "score"),
             "view_query": _query_string(**base, source=info["source"], view="article"),
             "sort_query": _query_string(**base, source=info["source"], sort="score" if by_position else ""),
-            "clear_scope_query": _query_string(q=query, source=info["source"], company=info["company"] or ""),
-            "ask_query": _query_string(
-                q=query, author=info["author"], source=info["source"], company=info["company"] or "",
-                **{"from": info["from"], "to": info["to"]},
-            ),
+            **_search_scope_links(base, info["source"]),
             "sample_banner": banner,
         },
     )
@@ -2024,7 +1973,7 @@ def day_page(request: Request, day: str):
         )
         previous, following = queries.neighbor_days(conn, scope, found)
         elsewhere = tuple(source.id for source in sources if not source.timeline)
-        saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id, elsewhere)
+        saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id, elsewhere, question=PRESETS["day"])
         # 后来被隐藏或来源停用的原文不再展示；这天的汇总引用了它们就整条不放（R6）。
         withheld = withhold_citations(conn, saved["citations"] or [], sources)[1] if saved else 0
         company = queries.get_company(conn, info["company"]) if info["company"] else None
@@ -2103,13 +2052,24 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
         tree = queries.get_article(conn, info["tree"], [source.id for source in sources])
     preset = request.query_params.get("preset") or ""
     question = request.query_params.get("q") or PRESETS.get(preset, "")
+    allowed = sources
+    if info.get("source"):
+        allowed = [source for source in sources if source.id == info["source"]]
+    elif "source_options" in info:
+        allowed = [source for source in sources if source.id in info["source_options"]]
+    source_label = ""
+    if not allowed:
+        source_label = "原范围的来源已停用"
+    elif len(allowed) != len(sources) or info.get("source"):
+        source_label = "、".join(source.name for source in allowed)
     return {
+        "scope_source_label": source_label,
         "question": question[:500],
         "filters": info,
         "company": company,
         "article": article,
         "tree": tree,
-        "authors": list(_author_groups(sources)[1]),
+        "authors": list(_author_groups(allowed)[1]),
         "llm_ready": llm_configured(request.app.state.settings),
         "model": active_model_id(request.app.state.settings),
         "history": queries.recent_answers(conn, 15),
@@ -2121,7 +2081,7 @@ def _ask_context(request: Request, sources, info: dict, conn) -> dict:
 def ask_page(request: Request):
     with database(request) as conn:
         sources = active_sources(request, conn)
-        _scope, info = resolve_scope(request.query_params, sources)
+        _scope, info = resolve_ask_scope(request.query_params, sources)
         context = _ask_context(request, sources, info, conn)
         banner = queries.sample_state(conn, [source.id for source in sources])
     return render_page(
@@ -2138,14 +2098,14 @@ async def ask_submit(request: Request):
         raise HTTPException(status_code=403, detail="跨站请求被拒绝")
     form = await request.form()
     question = str(form.get("q") or "").strip()[:500]
-    keys = ("author", "source", "company", "from", "to", "article", "tree")
+    keys = ("author", "source", "saved_sources", "company", "from", "to", "article", "tree")
     params = {key: str(form.get(key) or "") for key in keys}
     settings = request.app.state.settings
     # 没脚本时表单照样带着菜单里的选项；对不上的值按默认，不让整页报错。
     choice = form_choice(settings, form.get("model"), form.get("effort"))
     with database(request) as conn:
         sources = active_sources(request, conn)
-        scope, info = resolve_scope(params, sources)
+        scope, info = resolve_ask_scope(params, sources)
         if not question:
             return RedirectResponse("/ask?" + _query_string(**params), status_code=303)
         result = start(conn, settings, question, scope, sources, choice=choice)
@@ -2180,16 +2140,15 @@ def ask_answer(request: Request, answer_id: int):
         if row is None:
             raise HTTPException(status_code=404)
         scope = row["scope"] or {}
-        info = {
-            "author": "",
-            "source": "",
-            "company": scope.get("company_id"),
-            "from": scope.get("date_from") or "",
-            "to": scope.get("date_to") or "",
-            "article": scope.get("article_id"),
-            "tree": scope.get("tree_id"),
-        }
+        info = saved_ask_filters(scope, sources)
         context = _ask_context(request, sources, info, conn)
+        names = {source.id: source.name for source in sources}
+        recorded = scope.get("source_ids")
+        if recorded is None:
+            context["original_sources"] = "历史记录未保存来源"
+        else:
+            labels = [names.get(sid, f"{sid}（现已停用）") for sid in recorded]
+            context["original_sources"] = "、".join(labels) or "无来源"
         context["question"] = row["question"]
         banner = queries.sample_state(conn, [source.id for source in sources])
         labels = feedback_marks(conn, answer_id)

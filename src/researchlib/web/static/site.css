@@ -1700,43 +1700,14 @@ tbody tr:hover td { background: var(--accent-softer); }
 .company-articles .chips { margin: 0; }
 .company-articles .year-head { margin: 18px 0 2px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); color: var(--ink); font-size: 15px; font-weight: 700; }
 
-/* 首页：持仓近况 */
-.holdings-now { margin: 0 0 20px; padding: 14px 16px; }
-.holdings-now h2 { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; min-width: 0; margin: 0 0 8px; font-size: 14px; font-weight: 650; }
-.holdings-now h2 > a { flex: 0 0 auto; }
-.holdings-now h2 a:hover { color: var(--accent); }
-.recent-views-toggle {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ink-4);
-}
-.recent-views-toggle:hover { background: var(--bg-sunk); color: var(--ink); }
-.recent-views-toggle .chevron { width: 14px; height: 14px; transition: transform .2s var(--ease); }
-.recent-views-toggle[aria-expanded="false"] .chevron,
-html[data-recent-views="collapsed"] .recent-views-toggle .chevron { transform: rotate(-90deg); }
-html[data-recent-views="collapsed"] .holdings-now h2 { margin-bottom: 0; }
-html[data-recent-views="collapsed"] #recent-views-list { display: none; }
-.recent-views-line {
-  display: none;
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 13px;
-  font-weight: 450;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.recent-views-line a:hover { color: var(--accent); }
-html[data-recent-views="collapsed"] .recent-views-line { display: block; }
+/* 最近观点：窄屏默认收起，首屏先读按天时间线。原生控件无脚本时也可展开。 */
+.holdings-now { margin: 0 0 20px; padding: 8px 16px; }
+.recent-views-toggle { display: flex; align-items: center; gap: 8px; min-height: 36px; list-style: none; cursor: pointer; font-size: 14px; }
+.recent-views-toggle::-webkit-details-marker { display: none; }
+.recent-views-toggle .chevron { width: 14px; height: 14px; transform: rotate(-90deg); }
+.holdings-now[open] > .recent-views-toggle .chevron { transform: none; }
+.recent-views-toggle .quiet { margin-left: auto; font-size: 12px; }
+.holdings-now > a { display: inline-block; padding: 6px 0; font-size: 13px; }
 .recent-item-line {
   display: flex;
   flex-wrap: nowrap;
@@ -1745,15 +1716,12 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   min-width: 0;
 }
 .recent-item-line .holdings-name { flex: 0 1 auto; min-width: 0; }
-.recent-item-line .holdings-when { margin-left: auto; white-space: nowrap; }
 .recent-item-summary { margin: 2px 0 8px; color: var(--ink-2); font-size: 14.5px; line-height: 1.7; }
 .recent-item-summary a { color: var(--ink-2); }
 .recent-item-summary a:hover { color: var(--accent); }
 @media (max-width: 719px) {
   .recent-item-line { flex-wrap: wrap; }
-  .recent-item-line .holdings-when { margin-left: 0; }
 }
-.holdings-now h2 .quiet { font-size: 12px; font-weight: 400; }
 .holdings-now ul { margin: 0; padding: 0; list-style: none; }
 .holdings-now li {
   display: grid;
@@ -1985,9 +1953,9 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   .doc-nav { position: static; width: auto; max-height: 42vh; border-right: 0; border-bottom: 1px solid var(--line-soft); }
 }
 
-/* 首页「最近观点」：展开后每家一行标题，下面是导读 */
+/* 首页「最近观点」：展开后每家一行标题，下面是判断和出处 */
 .holdings-now li.recent-item { display: block; padding: 6px 0; }
-.holdings-row .holdings-when { font-size: 12.5px; }
+.holdings-row .holdings-when { margin: 0; font-size: 12.5px; }
 /* 宽屏两栏：时间线在左，「最近观点」挪到右栏、跟着滚动，首页内容最宽 1280px，
    摘录一行不再拉到一两百字。窄于 1280px 仍是上下排。
    右栏占三行（时间线、分页、篇数），dense 让左栏这三样从它旁边排起。 */
@@ -2549,19 +2517,21 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
 .co-head { display: none; }
 .co-rows { margin: 0; padding: 0; list-style: none; }
 .co-rows li + li { border-top: 1px solid var(--line-soft); }
-.co-row { display: grid; grid-template-columns: 84px auto auto auto minmax(0, 1fr); gap: 6px 12px; align-items: center; padding: 12px 14px; }
+.co-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; padding: 12px 14px; }
 .co-row:hover { background: var(--accent-softer); }
 .co-row:hover .co-name b { color: var(--accent); }
-.co-name { display: flex; grid-column: 1 / span 4; grid-row: 1; align-items: baseline; gap: 8px; min-width: 0; }
+.co-name { display: flex; grid-column: 1; grid-row: 1; align-items: baseline; gap: 8px; min-width: 0; }
 .co-name b { overflow: hidden; color: var(--ink); font-size: 15.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .co-name .ticker { flex: none; color: var(--ink-4); font-size: 11.5px; }
-.co-when { grid-column: 5; grid-row: 1; justify-self: end; color: var(--ink-4); font-size: 12.5px; white-space: nowrap; }
-.co-chart { grid-column: 1; grid-row: 2; }
+.co-when { grid-column: 2; grid-row: 1; justify-self: end; color: var(--ink-4); font-size: 12.5px; white-space: nowrap; }
+.co-chart { display: flex; align-items: center; gap: 6px; grid-column: 1 / -1; grid-row: 2; }
+.co-period { color: var(--ink-4); font-size: 12px; }
+.co-tally { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; grid-column: 1 / -1; grid-row: 3; }
 .co-chart .stance-chart { width: 84px; height: 26px; }
-.co-num { grid-row: 2; color: var(--ink); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.co-num { color: var(--ink); font-size: 13px; font-weight: 600; white-space: nowrap; }
 .co-num.is-zero { color: var(--ink-4); font-weight: 400; }
 .co-num-label { margin-right: 4px; color: var(--ink-4); font-size: 12px; font-weight: 400; }
-.co-latest { display: -webkit-box; grid-column: 1 / -1; grid-row: 3; overflow: hidden; color: var(--ink-2); font-size: 14px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.co-latest { display: -webkit-box; grid-column: 1 / -1; grid-row: 4; overflow: hidden; color: var(--ink-2); font-size: 14px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .co-who { margin-right: 8px; color: var(--ink-4); font-size: 12.5px; }
 .co-none { grid-column: 1 / -1; grid-row: 2; color: var(--ink-4); font-size: 13px; }
 .co-key { margin: 10px 2px 0; color: var(--ink-4); }
@@ -2580,18 +2550,18 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   .brief-grid.is-solo .brief-latest { grid-area: latest; border-top: 0; }
   .brief-grid.is-solo .brief-latest li:first-child a { padding-top: 0; }
   .brief-grid.is-solo .brief-more { grid-area: more; align-self: end; }
-  .co-head, .co-row { display: grid; grid-template-columns: minmax(0, 168px) 84px 54px 54px 54px minmax(0, 1fr) 96px; gap: 0 14px; align-items: center; padding: 0 16px; }
+  .co-head, .co-row { display: grid; grid-template-columns: minmax(80px, 1fr) 84px minmax(205px, 1.4fr) minmax(0, 2fr) 86px; gap: 0 14px; align-items: center; padding: 0 16px; }
   .co-head > *, .co-row > * { grid-column: auto; grid-row: auto; }
   .co-head { height: 36px; border-bottom: 1px solid var(--line); background: var(--bg-sunk); color: var(--ink-4); font-size: 12px; }
-  .co-head .co-num { color: var(--ink-4); font-size: 12px; font-weight: 400; }
+  .co-row .co-tally .co-period { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .co-chart .co-period { display: none; }
   .co-head .co-latest { display: block; color: var(--ink-4); font-size: 12px; }
   .co-head .co-when { font-size: 12px; }
   .co-row { min-height: 50px; padding-block: 7px; }
   .co-name { flex-direction: column; align-items: flex-start; gap: 0; }
   .co-num { justify-self: end; font-size: 14px; }
-  .co-num-label { display: none; }
   .co-latest { display: block; text-overflow: ellipsis; white-space: nowrap; }
-  .co-row .co-none { grid-column: 2 / span 5; }
+  .co-row .co-none { grid-column: 2 / span 3; }
 }
 @media (prefers-reduced-motion: reduce) {
   .argue summary::after { transition: none; }
@@ -2606,7 +2576,7 @@ html[data-recent-views="collapsed"] .recent-views-line { display: block; }
   .day-switch { margin-top: 6px; }
   .tag { min-height: 34px; }
   .jrow-open::after { content: ""; position: absolute; inset: -7px -4px; }
-  .recent-views-toggle { width: 40px; height: 40px; margin: -8px; }
+  .recent-views-toggle { min-height: 44px; }
   .mark { height: auto; min-height: 40px; padding: 0 14px; }
   .dup-separate { margin-top: 8px; }
 }

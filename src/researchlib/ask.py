@@ -531,10 +531,13 @@ def start(
     preset = is_preset(question)
     found = retrieve(conn, question, scope, sources, purpose="display", preset=preset)
     passages = _passages(found, sources, settings)
+    stored_scope = scope_json(found.scope, preset=preset)
+    if question == PRESETS["day"]:
+        stored_scope["preset_key"] = "day"
     result = {
         "id": None,
         "question": question,
-        "scope": scope_json(found.scope, preset=preset),
+        "scope": stored_scope,
         "answer": "",
         "error": "",
         "status": "",
