@@ -147,6 +147,12 @@ const {chromium} = require('playwright-core');
       await fits(page);
       await page.setViewportSize({width:390,height:844}); await fits(page);
     });
+    await check('从侧栏按编号打开完整回答时展示模型读到的上下文', {file:'ask-answer.html#c-1'}, async ({page}) => {
+      const evidence = page.locator('#c-1 .passage-full');
+      assert.equal(await evidence.evaluate(node => node.open), true);
+      const text = await evidence.innerText();
+      assert(text.includes('80%') && text.includes('合成上文') && text.includes('合成下文'));
+    });
     await check('历史、引用和原文反馈可用键盘到达', {file:'ask-answer.html'}, async ({page}) => {
       await page.locator('.ask-history summary').focus(); await page.keyboard.press('Enter');
       assert(await page.locator('.ask-history nav').isVisible());

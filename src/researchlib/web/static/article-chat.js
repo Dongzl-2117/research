@@ -455,8 +455,8 @@
     const context = citation.querySelector('details.passage-full');
     if (context) context.open = true;
   }
+  // 仅从侧栏新开链接时自动展开；完整页内点击编号保留焦点，由读者切换「查看原文」。
   openCitationContext();
-  window.addEventListener('hashchange', openCitationContext);
 
   function renderData(turn, data) {
     turn.content.replaceChildren();
