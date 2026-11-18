@@ -69,8 +69,8 @@ from researchlib.translate.display import (
 )
 from researchlib.translate.remote_media import bilingual_sources
 from researchlib.views import count_pending as count_view_pending
+from researchlib.views import format_recent_company_views, quote_repeats, same_period
 from researchlib.views import list_marks as view_marks
-from researchlib.views import quote_repeats, recent_company_views, same_period
 from researchlib.views import timeline as view_timeline
 from researchlib.visibility import is_hidden
 from researchlib.web import queries
@@ -560,7 +560,9 @@ def home(request: Request):
             )
         holdings = []
         if not chosen and plan["page"] == 1:
-            holdings = recent_company_views(conn, _source_map(sources), settings)
+            by_source = _source_map(sources)
+            rows = queries.recent_viewed_companies(conn, list(by_source))
+            holdings = format_recent_company_views(rows, by_source, settings)
     if chosen:
         heading = by_id[chosen].name
         empty = "这个来源还没有文章。"

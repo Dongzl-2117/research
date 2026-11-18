@@ -1011,6 +1011,40 @@ def company_cards(conn, company_ids: list[int], source_ids: list[str], months: i
     return cards
 
 
+def recent_viewed_companies(conn, source_ids: list[str], limit: int = 8) -> list[dict]:
+    """先筛当前有效判断，再按公司选最近一条并限量；带上对应原文和近 30 天提及数。"""
+    from researchlib.view_freshness import CURRENT_INPUT_SQL
+    from researchlib.views import REAL_VIEW_SQL
+
+    if not source_ids or limit <= 0:
+        return []
+    return conn.execute(
+        f"""
+        WITH newest AS (
+          SELECT DISTINCT ON (v.company_id) v.company_id, v.article_id, a.published_at, a.source_id
+          FROM company_views v JOIN articles a ON a.id = v.article_id
+          WHERE {REAL_VIEW_SQL} AND {CURRENT_INPUT_SQL} AND a.source_id = ANY(%(sources)s)
+            AND a.duplicate_of IS NULL AND {site_visible_sql('a')} AND {visible_sql('a')}
+          ORDER BY v.company_id, a.published_at DESC NULLS LAST, v.article_id DESC
+        ), chosen AS (
+          SELECT * FROM newest ORDER BY published_at DESC NULLS LAST, company_id DESC LIMIT %(limit)s
+        )
+        SELECT n.*, n.company_id AS id, c.name_zh, c.name_en, c.aliases,
+               v.stance, v.judgment, v.quote, v.chunk_ord, b.body AS chunk_body,
+               (SELECT count(*) FROM article_mentions m JOIN articles a ON a.id = m.article_id
+                WHERE m.company_id = n.company_id AND m.depth <> 'passing'
+                  AND a.published_at BETWEEN now() - interval '30 days' AND now()
+                  AND a.source_id = ANY(%(sources)s) AND a.duplicate_of IS NULL
+                  AND {site_visible_sql('a')} AND {visible_sql('a')}) AS recent
+        FROM chosen n JOIN companies c ON c.id = n.company_id
+        JOIN company_views v ON v.company_id = n.company_id AND v.article_id = n.article_id
+        LEFT JOIN article_chunks b ON b.article_id = v.article_id AND b.ord = v.chunk_ord AND b.lang IN ('', 'ocr')
+        ORDER BY n.published_at DESC NULLS LAST, n.company_id DESC
+        """,
+        {"sources": source_ids, "limit": limit},
+    ).fetchall()
+
+
 def companies_by_name(conn, names: list[str]) -> dict[str, dict]:
     if not names:
         return {}
