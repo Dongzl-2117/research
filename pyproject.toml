@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 research-web = "researchlib.web.app:main"
+research-sec-facts = "researchlib.sec_facts:main"
 research-ingest-wechat = "researchlib.ingest.wechat:main"
 research-ingest-zsxq = "researchlib.ingest.zsxq:main"
 research-ingest-feishu = "researchlib.ingest.feishu:main"

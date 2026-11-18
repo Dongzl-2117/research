@@ -38,6 +38,8 @@ docker compose up -d --build
 
 ## 数据
 
+用 SEC Company Facts 离线核对报告期、原报单位、申报日、原始值及修订，并将已核实的实绩带入手记。[命令与时间口径](docs/sec-companyfacts.md)
+
 Postgres 使用 zhparser 做中文全文检索。正文在库里，图片在 `data/images`。不要把 `.env`、归档压缩包或 `data/` 提交进仓库。
 
 正文另外切成段落块存在 `article_chunks`，检索片段和问答引用落在块上；英文文章的中文译文也切块进检索。同一篇从两条路导入的，只留一个主版本。语义检索用 pgvector（数据库镜像已装），向量存在 `chunk_embeddings`，配了 `EMBEDDING_BASE_URL` 才启用，见 [docs/retrieval.md](docs/retrieval.md)「语义检索」。
