@@ -1,0 +1,13 @@
+feature	input	expected	actual	status	evidence
+按天折叠跨视口	1440px 折起首日，缩到390px，点展开再回桌面	小屏能展开原日，回到桌面显示正确	线上和旧分支：列表隐藏、可见展开键 0；修后可见键 1、列表可见，桌面 aria-expanded=true	修后通过	线上同版 bc19480；生产只读 GET/本机视口操作。原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+无脚本时间线	390px 禁用 JavaScript 打开首页	文章可读，不显示无效折叠控件	修后首日正文可见、可见折叠键 0	通过	原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+范围带入同篇	选王小明、frag-a、1月1至2日，用无脚本网页点击“这篇还有”	同篇内保留实际选定的范围	旧 q/article，丢 4 个值；修后作者、来源、from、to 全保留，article=1	修后通过	原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+在原范围改变日期	单篇按相关度后改截止日，再提交范围	原排法和未改动筛选保留	线上 314 的 sort 消失并显示“按相关度”的切换链接；修后 1 号合成文保留 sort=score 和 1 月 1 日新截止日	修后通过	线上同版 bc19480；生产只读 GET/本机视口操作。原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+排序穿过两种视图	上述无脚本页面切到文章，再切回片段	返回原本按相关度排列的同篇片段	旧 sort 消失；修后 sort=score、article=1、author、source、from、to 保留	修后通过	原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+改变范围后再进问库	从刚更新日期的片段页点击“让 AI 读这些结果”，不发送	问库提交字段保留实际范围，排序只属检索	旧仅 q / to / article；修后 q、author、from、to、article、source，排序没有进入问库	修后通过	原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+过期页码	打开“护城河”片段第9页；合成库打开第9页	返回最后有效页和真实结果	线上共 84 处 / 5 页，第9页显示没有找到；本地修前第9页零结果，修后第1页4条。另有两页夹具同时核对文章与片段均转第2页	修后通过	线上同版 bc19480；生产只读 GET/本机视口操作。原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium；test_expired_search_page_returns_the_last_page_with_its_results
+新标签阅读	从检索结果以新标签打开同一篇	新标签具有正确的返回检索地址	旧两视口都缺回链；修后均返回带来源、排序及第2页的原查询	修后通过	tools/search_return_smoke.cjs；本机 Chromium，分别为 1440×844、390×844。原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+实际检索词	改输入但不提交，直接从现有结果点进文章	提示对应当前结果集的词	旧显示“尚未提交”；新显示已查询的“毛利”，链接与提示一致	修后通过	tools/search_return_smoke.cjs；本机 Chromium，分别为 1440×844、390×844。原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+换序后展开状态	展开段8，看文章后模拟更新排序，再回检索	重新打开原来的片段	旧打开段2；新打开段8	修后通过	tools/search_return_smoke.cjs；本机 Chromium，分别为 1440×844、390×844。原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+独立进入相同文章	从检索读过文章后再经作者页打开同篇、切中文	独立阅读不带上一轮检索的回链	旧原文和中文各有1个过期回链；新两处均为0	修后通过	tools/search_return_smoke.cjs；本机 Chromium，分别为 1440×844、390×844。原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
+切语言翻节和锚点刷新	检索第2页入文章，切语言、章节、锚点并刷新后返回	返回原有关键词、来源、排序及第2页	两种视口均通过，也核对了原生前进和后退到两段不同检索历史	通过	tools/search_return_smoke.cjs；本机 Chromium，分别为 1440×844、390×844。原 #362 75ebef58 与修复 568741c；独立本机 PostgreSQL 16 和 Chromium
