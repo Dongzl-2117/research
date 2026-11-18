@@ -1,7 +1,7 @@
 """检索结果的信息质量盲评：从线上接口拉结果，把没打过分的段落打乱、去掉作者标题名次出盲评单，记分，算指标。
 
 只读线上公开接口（不用登录、不调模型、不花钱），结果和盲评单写进 --dir（默认 data/quality-eval，不进仓库：
-里面是库里的原文）。分数记在本目录的 labels.json（只有「问题|文章|块号 → 分数」，不带原文），可以提交。
+里面是库里的原文）。分数记在本目录的 labels.json，键包含问题、文章、块号、范围和正文指纹，不带原文。
 
     python tools/quality_eval/quality.py fetch base            # 线上 24 个问题的结果 → data/quality-eval/base.json
     python tools/quality_eval/quality.py pool base             # 没打过分的段落 → base_blind.txt（打乱，编号）
@@ -182,6 +182,8 @@ def view(query: str, items: list, labels: dict[str, int], pool_items=None) -> di
         "fresh_twos": sum(
             1 for i, g in enumerate(grades) if g == 2 and not any(_duplicate(texts[i], texts[j]) for j in range(i))
         ),
+        "focus_at_10": sum(g == 2 for g in known) / TOP,
+        "judged": len(known),
         "unlabelled": sum(1 for g in grades if g is None),
     }
 
@@ -189,29 +191,34 @@ def view(query: str, items: list, labels: dict[str, int], pool_items=None) -> di
 def metrics(path: Path) -> None:
     data = json.loads(path.read_text())
     labels = _labels()
+    focus = _labels(FOCUS)
     pools = {q: [item for group in _items(results) for item in group] for q, results in data.items()}
     for split in QUERIES:
         present = [q for q in QUERIES[split] if q in data]
         print(f"{split} 已收集 {len(present)}/{len(QUERIES[split])} 道题；旧坐标标签不计入本次结果")
-        for name, index in (("文章级", 0), ("段落级", 1), ("片段级", 2)):
-            rows = [view(q, _items(data[q])[index], labels, pools[q]) for q in QUERIES[split] if q in data]
-            if not rows:
-                continue
-            judged = sum(sum(evidence_key(q, *x) in labels for x in _items(data[q])[index][:TOP]) for q in present)
+        if not present:
+            continue
+        for name, index, grades in (("文章级", 0, labels), ("段落级", 1, labels), ("片段级", 2, labels),
+                                    ("片段专门讲", 2, focus)):
+            rows = [view(q, _items(data[q])[index], grades, pools[q]) for q in present]
+            judged = [row for row in rows if row["judged"]]
+            marked = sum(row["judged"] for row in rows)
+            unmarked = sum(row["unlabelled"] for row in rows)
+            coverage = f"有评分 {len(judged)}/{len(rows)} 题，已判 {marked}/{marked + unmarked} 条"
+            empty = sum(not row["judged"] and not row["unlabelled"] for row in rows)
+            if empty:
+                coverage += f"，{empty} 题无结果"
             if not judged:
-                print(f"{split:4} {name} 等待人工按此版正文判分")
+                print(f"{split:4} {name} {coverage}" + ("，等待人工按此版正文判分" if unmarked else ""))
                 continue
-            summary = {k: sum(r[k] for r in rows) / len(rows) for k in rows[0]}
-            print(f"{split:4} {name} " + " ".join(f"{k}={v:.3f}" for k, v in summary.items()))
-        focus = _labels(FOCUS)
-        rows = [view(q, _items(data[q])[2], focus, pools[q]) for q in QUERIES[split] if q in data]
-        if rows and any(evidence_key(q, *x) in focus for q in present for x in _items(data[q])[2][:TOP]):
-            twos = [
-                sum(1 for item in _items(data[q])[2][:TOP] if focus.get(evidence_key(q, *item)) == 2) / TOP
-                for q in QUERIES[split] if q in data
-            ]
-            print(f"{split:4} 片段专门讲 ndcg={sum(r['ndcg'] for r in rows) / len(rows):.3f} "
-                  f"专门讲占比={sum(twos) / len(twos):.3f} 没打分={sum(r['unlabelled'] for r in rows) / len(rows):.3f}")
+            if name == "片段专门讲":
+                scores = (("ndcg", "ndcg"), ("专门讲占比", "focus_at_10"))
+                missing_label = "没打分"
+            else:
+                scores = ((key, key) for key in ("mean", "ndcg", "zeros", "fresh_twos"))
+                missing_label = "unlabelled"
+            summary = " ".join(f"{label}={sum(row[key] for row in judged) / len(judged):.3f}" for label, key in scores)
+            print(f"{split:4} {name} {summary} {missing_label}={unmarked / len(rows):.3f} {coverage}")
 
 
 def main() -> int:
