@@ -123,7 +123,7 @@ _STALE = (
     f" OR {_OCR_DIGEST_DUE})"
 )
 # 入队的也算到期：哈希已经对齐、但标题曾被漏判时，仍要重写这一次。字太少的都不算到期。
-_DUE = f"(({_STALE} OR {_FOLLOWUP_DIGEST}) AND {enough_text_sql('a')})"
+DIGEST_DUE_SQL = f"(({_STALE} OR {_FOLLOWUP_DIGEST}) AND {enough_text_sql('a')})"
 # 入队的先写，再是写摘要时还没见过图片里的字的短正文：否则缺摘要的积压（按 limit 截断）会把它们一直留在后面。
 # 以前识过字、只是字变了的（全库按新格式重认一次改上千篇）和缺摘要、正文变了的放在一起按发布时间排，
 # 不插到新文章前面：新文章的摘要不会因为重认旧图等上几个星期。
@@ -148,7 +148,7 @@ def pending_articles(conn, source_ids: list[str], limit: int, *, ocr_changed: bo
         LEFT JOIN article_digests d ON d.article_id = a.id
         WHERE a.source_id = ANY(%s) AND a.duplicate_of IS NULL
           AND {visible_sql("a")} AND {site_visible_sql("a")}
-          AND {_DUE} AND {cooling_sql('digest', 'a.id')}{only}
+          AND {DIGEST_DUE_SQL} AND {cooling_sql('digest', 'a.id')}{only}
         ORDER BY {PENDING_ORDER}
         LIMIT %s
         """,
@@ -235,7 +235,7 @@ def rows_needing_digest(conn, article_ids: list[int]):
         SELECT a.id, a.source_id, a.title, a.published_at, a.body_text, a.content_hash
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
-        WHERE a.id = ANY(%s) AND {_DUE} AND {cooling_sql('digest', 'a.id')}
+        WHERE a.id = ANY(%s) AND {DIGEST_DUE_SQL} AND {cooling_sql('digest', 'a.id')}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
         (article_ids, PROMPT_VERSION),
