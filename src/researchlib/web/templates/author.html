@@ -29,7 +29,7 @@
     <input id="q" type="search" name="q" placeholder="只搜{{ author_name }}的文章" maxlength="120" autocomplete="off" enterkeyhint="search">
     <kbd>/</kbd>
   </form>
-  <a class="btn ask-btn" href="/ask?preset=author&amp;author={{ author_name | urlencode }}">问 AI：他近期的核心判断</a>
+  <a class="btn ask-btn" href="/ask?preset=author&amp;author={{ author_name | urlencode }}{% if active_source %}&amp;source={{ active_source | urlencode }}{% endif %}">问 AI：他近期的核心判断</a>
 </div>
 {% if companies %}
 <section class="card panel">
