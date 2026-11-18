@@ -13,6 +13,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from researchlib.nested_copies import copy_number_literals
 from researchlib.translate.segments import (
     Segment,
     iter_segments,
@@ -220,14 +221,6 @@ def _zh_tokens(html: str) -> set[str]:
     return set(re.findall(r"\w+", text))
 
 
-_DIGITS = re.compile(r"\d+(?:[.,]\d+)*")
-
-
-def _numbers(text: str) -> list[str]:
-    """一段英文里按先后出现的数（千分位去掉）。两段开头一样、只差结尾一个数的，不算同一段。"""
-    return [match.group().replace(",", "") for match in _DIGITS.finditer(text)]
-
-
 def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
     """页面上看起来重复的 pair：重复、整句包含、近前缀堆，不管删了会不会丢东西。
 
@@ -239,7 +232,7 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
     en_keys = [_leaf_key(pair.en or "") for pair in pairs]
     zh_keys = [_leaf_key(pair.zh or "") for pair in pairs]
     texts = [visible_text(pair.en or "") for pair in pairs]
-    numbers = [_numbers(text) for text in texts]
+    numbers = [copy_number_literals(text) for text in texts]
     redundant: set[int] = set()
     priors: dict[str, list[tuple[str, str, int]]] = {}
     for index, pair in enumerate(pairs):
@@ -262,7 +255,7 @@ def _repeat_candidates(pairs: Sequence[BilingualPair]) -> list[int]:
         for other, long in enumerate(texts):
             if other == index or len(long) <= len(short):
                 continue
-            if short in long:
+            if short in long and en_keys[index] in en_keys[other]:
                 redundant.add(index)
                 break
             if (len(long) - len(short)) / len(long) > 0.12:

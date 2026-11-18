@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 
 from researchlib.htmlentities import entity_ref
-from researchlib.nested_copies import CopyRun, copy_runs, plain_ends
+from researchlib.nested_copies import CopyRun, copy_number_literals, copy_runs, plain_ends
 from researchlib.translate.pair import (
     BilingualPair,
     _leaf_key,
@@ -279,7 +279,7 @@ _IMG_SRC = re.compile(r"""<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 
 def _plain_words(value: str) -> set[str]:
     text = html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
-    return set(re.findall(r"\w+", text))
+    return set(re.findall(r"\w+", text)) | {f"n:{value}" for value in copy_number_literals(text)}
 
 
 def _content_words(value: str) -> set[str]:
@@ -288,7 +288,6 @@ def _content_words(value: str) -> set[str]:
 
 
 _ZH_SENTENCE = re.compile(r"(?<=[。！？])")
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 _LATIN_WORD = re.compile(r"[a-z][a-z0-9]+")
 _TAG = re.compile(r"<(/?)([a-z][a-z0-9]*)\b[^>]*>", re.I)
 _VOID = frozenset({"br", "img", "wbr"})
@@ -325,7 +324,7 @@ class _Said:
     def __init__(self, shown: str):
         visible = html.unescape(re.sub(r"<[^>]+>", " ", shown or "")).casefold()
         self.core = _sentence_core(shown)
-        self.numbers = set(_NUMBER.findall(visible))
+        self.numbers = set(copy_number_literals(visible))
         self.words = set(_LATIN_WORD.findall(visible))
         cores = [_sentence_core(part) for part in _ZH_SENTENCE.split(shown or "")]
         cores = [core for core in cores if core]
@@ -337,11 +336,11 @@ class _Said:
         core = _sentence_core(sentence)
         if not core:
             return True
+        visible = html.unescape(re.sub(r"<[^>]+>", " ", sentence)).casefold()
+        if set(copy_number_literals(visible)) - self.numbers:
+            return False
         if core in self.core:
             return True
-        visible = html.unescape(re.sub(r"<[^>]+>", " ", sentence)).casefold()
-        if set(_NUMBER.findall(visible)) - self.numbers:
-            return False
         for word in _LATIN_WORD.findall(visible):
             if word not in self.words and (len(word) < 4 or word not in self.core):
                 return False
@@ -503,7 +502,7 @@ def _absorb_contained(
         for other, key in enumerate(keys):
             if other == index or other in blocked or other in drop or len(key) <= len(keys[index]):
                 continue
-            contained = texts[index] in texts[other] and len(texts[other]) > len(texts[index])
+            contained = keys[index] in key and texts[index] in texts[other] and len(texts[other]) > len(texts[index])
             if not (key.startswith(keys[index]) or contained):
                 continue
             if not _plain_words(updated[index].en) <= _plain_words(updated[other].en):

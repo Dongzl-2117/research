@@ -41,6 +41,7 @@ from html import escape
 from html.parser import HTMLParser
 
 from researchlib.htmlentities import escape_stray_ampersands
+from researchlib.nested_copies import copy_text_key
 
 # AIHOT segmentsOf 的 BLOCK。h1 / h6 不在里面：不是叶子，只往下看子节点。
 _BLOCK = frozenset({
@@ -1363,8 +1364,7 @@ def repeat_key(html: str) -> str:
     列表项和紧跟着的同文 ``<p>``、域名两侧多出来的空格因此相同。短标题不要拿这个当重复。
     """
     text = html_lib.unescape(re.sub(r"<[^>]+>", "", html or ""))
-    text = re.sub(r"\s+", " ", text).strip().casefold()
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
+    return copy_text_key(text)
 
 
 def coarse_segment_reason(html: str, *, recorded_segments: int | None = None) -> str | None:
