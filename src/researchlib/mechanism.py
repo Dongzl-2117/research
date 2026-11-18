@@ -309,7 +309,7 @@ def agreement(pairs: list[tuple[int, int]]) -> dict:
     }
 
 
-def calibrate(settings: Settings, path: str, workers: int, off_peak: bool) -> int:
+def calibrate(settings: Settings, path: str, workers: int, off_peak: bool, *, deadline: float | None = None) -> int:
     """打人工判过的块、和人工比。不写库。打印对得上多少、用了多少 token（按它推全库费用）。"""
     from researchlib.db import connect
 
@@ -352,8 +352,10 @@ def calibrate(settings: Settings, path: str, workers: int, off_peak: bool) -> in
     jobs = [{"id": article_id, "title": titles[article_id]} for article_id in by_article if article_id in titles]
     report = llm_batch.run(
         settings, jobs, handle, kind=FAILURE_KIND, lock_name=LOCK_NAME + "-calibrate", verb="打分",
-        workers=workers, off_peak=off_peak, record_failures=False,
+        workers=workers, off_peak=off_peak, deadline=deadline, record_failures=False,
     )
+    if report["timed_out"]:
+        print("到了时间上限，结束本次校准", file=sys.stderr)
     pairs = [
         (item["label"], results[key])
         for item in sample
@@ -378,7 +380,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="给检索块打「讲没讲机制和原因」的分（花模型钱）")
     parser.add_argument("--limit", type=int, default=50, help="最多打几篇；0 只报还要打多少，不调模型")
     parser.add_argument("--source", default="")
-    parser.add_argument("--max-minutes", type=float, default=0, help="跑到这么多分钟就停，0 表示不限")
+    parser.add_argument(
+        "--max-minutes", type=float, default=0, help="打分和校准到时不再开始新文章，在途文章做完；0 表示不限",
+    )
     parser.add_argument(
         "--effort",
         choices=EFFORTS,
@@ -424,9 +428,9 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
     workers, off_peak = llm_batch.resolve(settings, args, "打分")
-    if args.calibrate:
-        return calibrate(settings, args.calibrate, workers, off_peak)
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes > 0 else None
+    if args.calibrate:
+        return calibrate(settings, args.calibrate, workers, off_peak, deadline=deadline)
     report = run_batch(settings, jobs, workers=workers, deadline=deadline, off_peak=off_peak)
     if report["timed_out"]:
         print("到了时间上限，先停在这里", file=sys.stderr)
