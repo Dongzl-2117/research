@@ -729,7 +729,8 @@ def expire_stale_answers(conn) -> int:
     raw = os.environ.get("ASK_RUNNING_TIMEOUT_S", "").strip()
     cap = int(raw) if raw.isdigit() and int(raw) > 0 else 600
     rows = conn.execute(
-        "UPDATE llm_answers SET status = 'error', error = %s, updated_at = now()"
+        "UPDATE llm_answers SET status = 'error', error = %s, answer = '',"
+        " stats = coalesce(stats, '{}'::jsonb) - 'progress', updated_at = now()"
         " WHERE status = 'running' AND updated_at < now() - make_interval(secs => %s)"
         " AND NOT (id = ANY(%s)) RETURNING id",
         (f"整合超过 {cap // 60} 分钟没完成，已停止等待。可以重新整合。", cap, active_ids()),

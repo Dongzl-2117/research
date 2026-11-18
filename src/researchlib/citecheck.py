@@ -205,7 +205,10 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     missing = [n for n in refs if n not in by_number]
     if missing:
         problems.append("引用了不存在的出处 " + "".join(f"[{n}]" for n in missing))
-    cited = [by_number[n] for n in refs if n in by_number]
+    unread = [n for n in refs if by_number.get(n, {}).get("read_failed")]
+    if unread:
+        problems.append("所引出处所在批次未读到 " + "".join(f"[{n}]" for n in unread))
+    cited = [by_number[n] for n in refs if n in by_number and n not in unread]
     if not cited:
         return problems
     raw = "\n".join(

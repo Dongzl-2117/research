@@ -2244,7 +2244,8 @@ def _retrieve_article(
     local = Budget(budget.passages, int(chars * ARTICLE_PICK_SHARE), budget.passages)
     picked = select(scored, query, local, {})
     if not picked:
-        return result(in_order(CHAR_BUDGET_ARTICLE, count), False)
+        # 具体问题没有定位到证据。把开头当成命中会向侧栏送出最多 40 段无关材料并启动整合。
+        return result([], False)
     if purpose in CONTEXT_PURPOSES:
         attach_context(conn, picked, chars - sum(len(p.body) for p in picked), span=2)
     picked.sort(key=lambda p: p.ord)

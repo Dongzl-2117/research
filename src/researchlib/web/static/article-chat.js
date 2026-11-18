@@ -591,7 +591,9 @@
   // 整合中：读到第几批写在状态行，已经写出来的半截回答先显示（stats.progress、answer，见 ask._Progress）。
   function showRunning(turn, data) {
     const stage = (data.stats && data.stats.progress) || {};
-    if (data.answer && data.answer !== turn.partial) {
+    // 提供方重试会先清空半截回答；轮询读到空正文时同步撤下旧的文字和引用。
+    const cleared = data.answer === '' && turn.content.querySelector('.chat-markdown');
+    if (cleared || (data.answer && data.answer !== turn.partial)) {
       turn.partial = data.answer;
       renderData(turn, { ...data, checks: [], stats: {}, failed_batches: [], model: '' });
     }
