@@ -4,6 +4,8 @@ import io
 import json
 import urllib.request
 from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -403,6 +405,38 @@ def test_daily_crawl_does_not_page_or_write_backfill_state(tmp_path):
     assert client.history_calls == 1 and report.backfill is False
     assert not (tmp_path / "raw" / "post-history-state.json").exists()
     assert not (tmp_path / "raw" / "post-history.jsonl").exists()
+
+
+def test_daily_main_rejects_an_explicitly_different_account_before_fetch_or_import(tmp_path, monkeypatch, capsys):
+    post = _post(SN_NEW, "另一公众号的文章", datetime(2026, 11, 18, tzinfo=UTC))
+    client = PagingClient([([post], "", 1)], nickname="中国新闻网")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOURCES_FILE", str(Path(__file__).resolve().parents[2] / "config/sources.yaml"))
+    monkeypatch.setenv("DAJIALA_KEY", "test-key")
+    monkeypatch.setattr(wechat_crawl, "Dajiala", lambda *args: client)
+    monkeypatch.setattr(wechat_crawl, "fetch_page", _boom_fetch)
+    monkeypatch.setattr("researchlib.db.prepare", lambda settings: Mock(spec=["close"]))
+    import_archive = Mock()
+    monkeypatch.setattr("researchlib.ingest.cli.run_markdown_ingest", import_archive)
+    inbox = tmp_path / "inbox" / "latepost"
+    inbox.mkdir(parents=True)
+    existing = inbox / "already-here.md"
+    existing.write_text("已有归档")
+
+    assert wechat_crawl.main(["--source", "latepost"]) == 1
+    err = capsys.readouterr().err
+    assert "中国新闻网" in err and "晚点LatePost" in err and "0.14 元" in err
+    assert client.calls == [""] and client.article_calls == []
+    assert list(inbox.rglob("*")) == [existing] and existing.read_text() == "已有归档"
+    import_archive.assert_not_called()
+
+
+@pytest.mark.parametrize("nickname", ["孤独进化体", "孤独 进化体", ""])
+def test_daily_matching_or_unreported_nickname_allows_body(tmp_path, nickname):
+    post = _post(SN_NEW, "新的一篇", datetime(2026, 11, 18, tzinfo=UTC))
+    client = PagingClient([([post], "", 1)], nickname=nickname)
+    report = crawl(FakeConn([]), SOURCE, ghid="gh_test", inbox=tmp_path, client=client, fetch=lambda url: PAGE)
+    assert len(report.written) == 1 and not report.failed
 
 
 def test_backfill_pages_by_offset_resumes_and_stops_at_is_end(tmp_path):

@@ -1031,6 +1031,11 @@ def crawl(
     if max_new is None:
         max_new = 5
     posts, meta = client.history(ghid)
+    nickname = meta.get("nickname") or ""
+    if _foreign_account(source.name, nickname):
+        raise DajialaError(
+            f"极致了返回的公众号是「{nickname}」，配置里是「{source.name}」（ghid {ghid}），停止本次抓取"
+        )
     report.remain = meta.get("remain_money")
     report.listed = len(posts)
     if not posts:
