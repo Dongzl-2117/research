@@ -50,6 +50,10 @@ def parse_document(raw, expected_cik):
     return doc
 
 
+def filing_url(issuer, accn):
+    return f"https://www.sec.gov/Archives/edgar/data/{int(issuer)}/{accn.replace('-', '')}/{accn}-index.htm"
+
+
 def observe(doc, tag, unit, start, end, before):
     end_day, cutoff = day(end), day(before)
     if start and day(start) > end_day:
@@ -76,7 +80,7 @@ def observe(doc, tag, unit, start, end, before):
             raise ValueError("命中记录缺少有效 accession。")
         if not isinstance(form, str) or not form or type(value) not in (int, Decimal) or not Decimal(value).is_finite():
             raise ValueError("命中记录的报表类型或数值无效。")
-        filing = f"https://www.sec.gov/Archives/edgar/data/{int(issuer)}/{accn.replace('-', '')}/{accn}-index.htm"
+        filing = filing_url(issuer, accn)
         if accn in observed:
             previous = observed[accn]
             if (previous["filed"], previous["form"], Decimal(previous["actual"])) != (filed.isoformat(), form, value):
@@ -112,7 +116,27 @@ def observe(doc, tag, unit, start, end, before):
     }
 
 
-def journal_patch(result, document, note_id, company, metric, accession, published, now):
+def prior_sec_mapping(revisions, company, metric):
+    """确认当前判断的来源身份，兼容只在变更说明写 CIK 和标签的旧版 v1 补丁。"""
+    for revision in reversed(revisions):
+        value = revision["value"]
+        if (value["company"], value["metric"]) != (company, metric):
+            continue
+        source = revision.get("secFact")
+        if source:
+            return source["cik"], source["tag"]
+        legacy = re.fullmatch(
+            r"按 SEC（CIK ([0-9]{10})）([\w.-]+:[\w.-]+) 核对实绩，表单 .+，accession ([0-9-]+)。",
+            value.get("change", ""),
+        )
+        if legacy:
+            issuer, tag, accn = legacy.groups()
+            if value["filing"] == filing_url(issuer, accn):
+                return issuer, tag
+    return None
+
+
+def journal_patch(result, document, note_id, company, metric, accession, published, now, previous_tag=None):
     if not result["latest"]:
         raise ValueError("当前条件没有唯一的最新可用披露。")
     observation = result["latest"]
@@ -139,11 +163,22 @@ def journal_patch(result, document, note_id, company, metric, accession, publish
     period = result["end"] if not result["start"] else f"{result['start']}/{result['end']}"
     if (value["company"], value["metric"], value["unit"], value["period"]) != (company, metric, result["unit"], period):
         raise ValueError(f"公司、指标、单位或期间不匹配，请检查选中的判断；期间应为 {period}。")
+    mapping = prior_sec_mapping(record["revisions"], company, metric)
+    if mapping:
+        old_issuer, old_tag = mapping
+        if old_issuer != result["cik"]:
+            raise ValueError("该判断以前使用另一发行主体 CIK，请另建对应公司的判断。")
+        if old_tag != result["tag"] and previous_tag != old_tag:
+            raise ValueError(f"该指标以前使用 {old_tag}。确认口径一致后才能用 --previous-tag 明确替换。")
+    if previous_tag and not mapping:
+        raise ValueError("判断没有可供替换的旧 SEC 标签。")
+    remapping = bool(mapping and mapping[1] != result["tag"])
     update = {"actual": observation["actual"], "published": stamp(accepted), "filing": observation["filing"]}
-    if any(value[key] != val for key, val in update.items()):
-        if value["filing"] == observation["filing"]:
+    changed = any(value[key] != val for key, val in update.items())
+    if changed or remapping:
+        if changed and value["filing"] == observation["filing"]:
             raise ValueError("已记录同一来源的不同实绩或发布时间，请先人工核对。")
-        if value["published"] and instant(value["published"]) >= accepted:
+        if changed and value["published"] and instant(value["published"]) >= accepted:
             raise ValueError("已记录同时或更晚的不同披露，不能覆盖。")
         at = stamp(now)
         if at <= previous["at"]:
@@ -152,7 +187,14 @@ def journal_patch(result, document, note_id, company, metric, accession, publish
             f"按 SEC（CIK {result['cik']}）{result['tag']} 核对实绩，"
             f"表单 {observation['form']}，accession {observation['accession']}。"
         )
-        revision = {"at": at, "value": {**value, **update, "change": change}}
+        marker = {
+            "cik": result["cik"],
+            "tag": result["tag"],
+            "accession": accession,
+            "form": observation["form"],
+            "filed": observation["filed"],
+        }
+        revision = {"at": at, "value": {**value, **update, "change": change}, "secFact": marker}
         record = {**record, "revisions": [*record["revisions"], revision]}
     return {"format": "research-journal", "version": 1, "records": [record]}
 
@@ -234,6 +276,7 @@ def main(argv=None):
         cmd.add_argument("--output", type=Path, help="保存到新文件，默认输出到终端")
         if name == "journal":
             cmd.add_argument("--backup", type=Path, required=True)
+            cmd.add_argument("--previous-tag", help="经人工核对口径一致，允许替换该指标的旧 XBRL 标签")
             for field in ("note-id", "company", "metric", "accession", "published-at"):
                 cmd.add_argument("--" + field, required=True)
     args = parser.parse_args(argv)
@@ -253,6 +296,7 @@ def main(argv=None):
                 args.accession,
                 args.published_at,
                 datetime.now(UTC),
+                previous_tag=args.previous_tag,
             )
         payload = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
         if args.output:

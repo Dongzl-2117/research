@@ -265,3 +265,42 @@ def test_output_exclusive_conflict_keeps_prior_bytes(tmp_path):
     with pytest.raises(FileExistsError):
         sec.save_new(output, b"replacement")
     assert list(tmp_path.iterdir()) == [output] and output.read_bytes() == b"original"
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["structured", "v1-change-text"])
+def test_restatement_verifies_issuer_and_tag_after_manual_revision(doc, legacy):
+    initial = patch(lookup(doc))
+    versions = initial["records"][0]["revisions"]
+    if legacy:
+        versions[1].pop("secFact")
+    retained = {**versions[1]["value"], "change": "看完说明，维持预期"}
+    versions.append({"at": sec.stamp(NOW + timedelta(hours=1)), "value": retained})
+    later = lookup(doc, "2024-05-21")
+    params = dict(published="2024-05-21T01:15:00Z", now=NOW + timedelta(days=1))
+    with pytest.raises(ValueError, match="CIK"):
+        patch({**later, "cik": "0007654321"}, initial, **params)
+    renamed = {**later, "tag": "us-gaap:SalesRevenueNet"}
+    with pytest.raises(ValueError, match="previous-tag"):
+        patch(renamed, initial, **params)
+    with pytest.raises(ValueError, match="previous-tag"):
+        patch(renamed, initial, previous_tag="us-gaap:Other", **params)
+    imported = patch(renamed, initial, previous_tag="us-gaap:Revenue", **params)
+    last = imported["records"][0]["revisions"][-1]
+    assert last["value"]["actual"] == "110" and last["value"]["published"] == "2024-05-21T01:15:00.000Z"
+    assert last["secFact"] == {
+        "cik": "0001234567",
+        "tag": "us-gaap:SalesRevenueNet",
+        "accession": "0000999999-24-000002",
+        "form": "10-Q/A",
+        "filed": "2024-05-20",
+    }
+    assert patch(renamed, imported, previous_tag="us-gaap:Revenue", **params) == imported
+
+
+def test_intentional_change_to_equal_tag_value_in_same_filing_is_recorded(doc):
+    original = lookup(doc)
+    initial = patch(original)
+    renamed = {**original, "tag": "us-gaap:SalesRevenueNet"}
+    out = patch(renamed, initial, previous_tag="us-gaap:Revenue", now=NOW + timedelta(hours=1))
+    assert len(out["records"][0]["revisions"]) == 3
+    assert out["records"][0]["revisions"][-1]["secFact"]["tag"] == renamed["tag"]
