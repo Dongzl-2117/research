@@ -710,14 +710,16 @@ def test_fetch_page_only_goes_to_wechat_article_pages(monkeypatch):
     assert handler.redirect_request(request, None, 302, "Found", {}, "https://mp.weixin.qq.com/s?y=2") is not None
 
 
-def test_crawl_recovers_body_missing_after_raw_record_was_written(tmp_path):
+@pytest.mark.parametrize("backfill", [False, True])
+def test_crawl_recovers_body_missing_after_raw_record_was_written(tmp_path, backfill):
     item = _post(SN_NEW, "原文恢复", datetime(2026, 10, 12, 1, 0, tzinfo=UTC))
     raw = tmp_path / "raw" / "articles" / f"{SN_NEW}.json"
     raw.parent.mkdir(parents=True)
     raw.write_text('{"body_from":"page"}', encoding="utf-8")
-    client = FakeClient([item])
-    actual = crawl(FakeConn([]), SOURCE, ghid="sample", inbox=tmp_path, client=client, fetch=lambda _: PAGE)
+    client = PagingClient([([item], "", 1)]) if backfill else FakeClient([item])
+    actual = crawl(FakeConn([]), SOURCE, ghid="sample", inbox=tmp_path, client=client,
+                   backfill=backfill, fetch=lambda _: PAGE)
     assert len(actual.written) == 1 and not actual.failed
     assert list(tmp_path.glob("md/*/*.md"))
-    again = crawl(FakeConn([]), SOURCE, ghid="sample", inbox=tmp_path, client=client, dry_run=True)
+    again = crawl(FakeConn([]), SOURCE, ghid="sample", inbox=tmp_path, client=client, backfill=backfill, dry_run=True)
     assert again.known == 1 and not again.new

@@ -940,7 +940,6 @@ def _take_listed(
     posts = [_post_from_record(row) for row in rows]
     posts.sort(key=lambda post: post.post_time, reverse=True)
     sns, titles = known_articles(conn, source.id)
-    sns |= archived_sns(inbox)
     for post in posts:
         reason = str(post.raw.get("skip") or "") if isinstance(post.raw, dict) else ""
         if not reason:
@@ -953,7 +952,7 @@ def _take_listed(
         if not _HEX32.match(post.sn):
             report.failed.append(f"{_label(post)}：列表里没有 sn，认不出是哪篇")
             continue
-        if post.sn in sns or (_title_key(post.title), _day(published(post))) in titles:
+        if post.sn in sns or archived_post(inbox, post) or (_title_key(post.title), _day(published(post))) in titles:
             report.known += 1
             continue
         if dry_run:
