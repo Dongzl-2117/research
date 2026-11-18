@@ -1273,9 +1273,22 @@ def historical_article(conn, article_id, as_of, sources):
 @router.get("/articles/{article_id}/history")
 def article_history_page(request: Request, article_id: int):
     as_of = request.query_params.get("as_of")
-    through = parse_day(request.query_params.get("through"))
-    if as_of is None and through is not None and through < datetime.now(SHANGHAI).date():
-        as_of = datetime.combine(through, time.max, SHANGHAI).isoformat()
+    if as_of is None:
+        through = parse_day(request.query_params.get("through"))
+        today = datetime.now(SHANGHAI).date()
+        if through is not None and through > today:
+            raise HTTPException(status_code=400, detail="历史时点不能晚于现在")
+        if through is not None and through < today:
+            as_of = datetime.combine(through, time.max, SHANGHAI).isoformat()
+    elif original := request.query_params.get("original_as_of"):
+        # datetime-local 最多回送毫秒。未改输入时沿用原始精度，用户改了时刻就用新值。
+        try:
+            precise = article_history.parse_as_of(original)
+            selected = article_history.parse_as_of(as_of)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if precise is not None and selected == precise.replace(microsecond=precise.microsecond // 1000 * 1000):
+            as_of = original
     with database(request) as conn:
         sources = active_sources(request, conn)
         evidence = historical_article(conn, article_id, as_of, sources)

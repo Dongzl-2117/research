@@ -47,7 +47,20 @@ def snapshot(conn, article_id, as_of, sources):
     now = conn.execute("SELECT clock_timestamp() AS t").fetchone()["t"]
     if as_of is not None and as_of > now:
         raise ValueError("历史时点不能晚于现在")
-    return read_version(conn, article_id, as_of or now, {s.id: s for s in sources})
+    by_id = {s.id: s for s in sources}
+    # 按这条 SQL 的 MVCC 快照记一次外部可见观察。另一个事务可能已经执行 UPDATE，却尚未提交。
+    conn.execute(
+        f"""
+        INSERT INTO article_evidence_observations AS o (article_id, written_at, observed_at)
+        SELECT a.id, a.evidence_written_at, statement_timestamp() FROM articles a
+        WHERE a.id = %s AND a.source_id = ANY(%s) AND {site_visible_sql("a")} AND {visible_sql("a")}
+          AND (a.evidence_xid IS NULL OR a.evidence_xid IS DISTINCT FROM pg_current_xact_id_if_assigned())
+        ON CONFLICT (article_id, written_at) DO UPDATE SET observed_at = EXCLUDED.observed_at
+        WHERE EXCLUDED.observed_at > o.observed_at
+        """,
+        (article_id, list(by_id)),
+    )
+    return read_version(conn, article_id, as_of or now, by_id)
 
 
 def read_version(conn, article_id, cutoff, by_id):
@@ -63,7 +76,11 @@ def read_version(conn, article_id, cutoff, by_id):
                        a.evidence_written_at AS written_at, a.evidence_xid AS xid
                 UNION ALL
                 SELECT source_id, title, published_at, body_md, raw_meta, written_at, written_xid
-                FROM article_evidence_history WHERE article_id = a.id AND replaced_at > %(at)s
+                FROM article_evidence_history h WHERE h.article_id = a.id
+                  AND (h.replaced_at > %(at)s OR EXISTS (
+                      SELECT 1 FROM article_evidence_observations o
+                      WHERE o.article_id = h.article_id AND o.written_at = h.written_at AND o.observed_at >= %(at)s
+                  ))
             ) v LEFT JOIN article_evidence_commits c ON c.xid = v.xid
             WHERE v.written_at <= %(at)s AND (v.xid IS NULL OR c.confirmed_at <= %(at)s)
             ORDER BY v.written_at DESC LIMIT 1
