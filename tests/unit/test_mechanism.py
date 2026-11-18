@@ -74,6 +74,30 @@ def test_score_chunks_asks_once_per_batch(monkeypatch):
     assert asked == [2, 2, 1] and scores == [1, 2, 1, 2, 1] and model == "m" and usage["prompt"] == 300
 
 
+def test_score_chunks_keeps_earlier_batches_and_retries_a_bad_one(monkeypatch):
+    calls = {"n": 0}
+
+    def reply(_settings, messages, *, usage=None, **_kwargs):
+        calls["n"] += 1
+        count = messages[1]["content"].count("【")
+        if calls["n"] in (2, 3, 4):  # 第二批连问两次缺段 → 抛错；第一批已经存下
+            return json.dumps({"scores": [{"id": 1, "score": 2}]}), "m"
+        return json.dumps({"scores": [{"id": i, "score": 2} for i in range(1, count + 1)]}), "m"
+
+    monkeypatch.setattr(mechanism, "chat", reply)
+    monkeypatch.setattr(mechanism, "BATCH_CHARS", 5000)
+    saved = []
+    chunks = [_chunk(i, "字" * 2500) for i in range(5)]
+    with pytest.raises(LLMError):
+        mechanism.score_chunks(None, "题", chunks, {}, on_batch=lambda b, s, m: saved.append([c["ord"] for c in b]))
+    assert saved == [[0, 1]] and calls["n"] == 3
+
+    calls["n"] = 3  # 下一次：第二批第一问缺段，再问一次就对
+    saved.clear()
+    scores, _ = mechanism.score_chunks(None, "题", chunks[2:], {}, on_batch=lambda b, s, m: saved.append(len(b)))
+    assert scores == [2, 2, 2] and saved == [2, 1]
+
+
 def test_calibration_sample_is_well_formed():
     sample = mechanism.load_sample("tools/quality_eval/mechanism.json")
     assert len(sample) >= 300
