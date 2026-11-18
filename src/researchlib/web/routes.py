@@ -76,7 +76,7 @@ from researchlib.visibility import is_hidden
 from researchlib.web import queries
 from researchlib.web.assets import asset_url
 from researchlib.web.daybrief import compose_day_brief
-from researchlib.web.excerpt import EXCERPT_MIN_CHUNKS, build_outline, locate
+from researchlib.web.excerpt import EXCERPT_MIN_CHUNKS, build_outline, local_occurrence, locate
 from researchlib.web.excerpt import path as excerpt_path
 from researchlib.web.excerpt import window as excerpt_window
 from researchlib.web.present import (
@@ -744,14 +744,14 @@ def _excerpt(article_id: int, shown_md: str, quoted, targets, section: int | Non
         return None
     chunk_text = ""
     if quoted is not None:
-        bodies = [text for text, _occurrence in targets] or [quoted["body"]]
-        first = locate(outline, bodies[0], quoted.get("heading") or "")
+        targets = targets or [(quoted["body"], None)]
+        chunk_text, occurrence = targets[0]
+        first = locate(outline, chunk_text, quoted.get("heading") or "", occurrence)
         if first is None:
             return None
-        last = locate(outline, bodies[-1], "") if len(bodies) > 1 else first
+        last = locate(outline, targets[-1][0], occurrence=targets[-1][1]) if len(targets) > 1 else first
         if last is None or last < first:
             last = first
-        chunk_text = bodies[0]
     elif section is not None and 0 <= section < len(sections):
         first = last = section
     else:
@@ -765,6 +765,11 @@ def _excerpt(article_id: int, shown_md: str, quoted, targets, section: int | Non
     full = base + (_quoted_query(quoted, None) if quoted is not None else "")
     return {
         "md": view.md,
+        # 节内也截短时，前面省略过几段未知；窗口里仍有多处候选则交回引用框。
+        "targets": [
+            (text, None if view.trimmed else local_occurrence(outline, view.first, text, occurrence))
+            for text, occurrence in targets
+        ],
         "path": [{"index": index, "title": title} for index, title in excerpt_path(outline, view.first)],
         "number": view.first + 1,
         "total": len(sections),
@@ -917,6 +922,7 @@ def _article_view(request: Request, article_id: int, mode: str):
             excerpt_view = _excerpt(article_id, shown_md, quoted, quoted_targets, section_arg)
             if excerpt_view is not None:
                 shown_md = excerpt_view.pop("md")
+                quoted_targets = excerpt_view.pop("targets")
         if mode == "original" or not zh_blob:
             shown_md = strip_housekeeping(fold_nested_copies(shown_md))
             if is_web_export(article["body_md"] or ""):

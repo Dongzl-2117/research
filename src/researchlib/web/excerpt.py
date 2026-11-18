@@ -16,7 +16,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 
 from researchlib.textutil import markdown_to_text
-from researchlib.web.quoting import _NOISE, _norm
+from researchlib.web.quoting import _NOISE, Occurrence, _norm
 
 # 原文块超过这么多（约 4 万字）的文章，带着 ?chunk= 打开时默认节选。
 EXCERPT_MIN_CHUNKS = 80
@@ -94,7 +94,7 @@ def build_outline(md: str) -> Outline:
     return Outline(tuple(sections), tuple(len(text) for text in texts), tuple(offsets), "".join(texts))
 
 
-def locate(outline: Outline, chunk_text: str, heading: str = "") -> int | None:
+def locate(outline: Outline, chunk_text: str, heading: str = "", occurrence: Occurrence = None) -> int | None:
     """这一块在第几节：块里几根探针在各节文字里的命中数，最多的那节。章节标题对得上的同票优先。"""
     target = _NOISE.sub("", _norm(chunk_text))
     if len(target) < 8 or not outline.sections:
@@ -123,7 +123,35 @@ def locate(outline: Outline, chunk_text: str, heading: str = "") -> int | None:
         return None
     leaders = [index for index, count in votes.items() if count >= best - 1e-9]
     titled = [index for index in leaders if heading and outline.sections[index].title == heading]
-    return min(titled or leaders)
+    candidates = titled or leaders
+    if len(candidates) == 1:
+        return candidates[0]
+    # 不同章节可能连标题和整块原文都一样。只在同票时按全文出现顺序核对，避免读者落在别章。
+    if occurrence is None:
+        return None
+    position = outline.joined.find(target)
+    if position < 0:
+        return None
+    nth = occurrence() if callable(occurrence) else occurrence
+    for _ in range(nth):
+        position = outline.joined.find(target, position + len(target))
+        if position < 0:
+            return None
+    section = bisect_right(outline.offsets, position) - 1
+    return section if section in candidates else None
+
+
+def local_occurrence(outline: Outline, first: int, chunk_text: str, occurrence: Occurrence) -> Occurrence:
+    """高亮要按节选内的次序选。只有节选里确实标出多处候选时才去数前文。"""
+    if occurrence is None or first == 0:
+        return occurrence
+
+    def count() -> int:
+        nth = occurrence() if callable(occurrence) else occurrence
+        target = _NOISE.sub("", _norm(chunk_text))
+        return nth - outline.joined.count(target, 0, outline.offsets[first]) if target else -1
+
+    return count
 
 
 def path(outline: Outline, index: int) -> list[tuple[int, str]]:
