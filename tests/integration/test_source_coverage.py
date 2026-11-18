@@ -82,3 +82,18 @@ def test_overdue_depends_on_observed_crawl_and_sufficient_dated_history(conn, se
     assert row["overdue"] == 15
     conn.execute("DELETE FROM articles WHERE external_id = 'gap-9'")
     assert _coverage_rows(conn, [source], stats, "UTC")[0]["overdue"] is None
+
+
+def test_future_publication_does_not_replace_the_latest_known_published_article(conn, settings):
+    conn.execute(
+        """INSERT INTO articles (source_id, external_id, content_hash, title, body_md, body_text, published_at)
+           VALUES ('fangwei-mp','done','done','已发表的季度复盘','','', '2024-03-31'),
+                  ('fangwei-mp','future','future','未来日期稿件','','', '2100-01-01')"""
+    )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        authors = client.get("/authors").text
+        shown = _row(authors, "fangwei-mp")
+        assert "已发表的季度复盘" in shown and "未来日期稿件" not in shown
+        assert "2 篇，含日期不详 0 篇" in shown and "1 篇标注了未来日期" in shown
+        assert "2100-01-01" not in authors

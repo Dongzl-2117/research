@@ -22,6 +22,7 @@
 <div class="doc-shell">
   <nav class="doc-nav" aria-label="文档目录">
     <p class="nav-label">{{ source.name }}</p>
+    <a href="/authors#coverage-{{ source.id }}">查看本来源的收录范围</a>
     {% if root %}
     <ol class="doc-tree">{{ branch(root, source.id) }}</ol>
     {% endif %}

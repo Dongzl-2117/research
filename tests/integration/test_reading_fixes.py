@@ -174,6 +174,7 @@ def test_feishu_tree_page_nests_first_referrer(conn, settings):
         assert opened.status_code == 200 and "渠道正文" in opened.text
         author = client.get("/authors/林文丰")
         assert f"/sources/{feishu}/tree" in author.text
+        assert f'href="/authors#coverage-{feishu}"' in author.text
         home = client.get("/")
         assert "孤立笔记" not in home.text and "零售研究" not in home.text
 

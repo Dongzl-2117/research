@@ -452,7 +452,9 @@ def source_stats(conn, source_ids: list[str]) -> dict[str, dict]:
     rows = conn.execute(
         f"""
         SELECT source_id, count(*)::int AS n, count(*) FILTER (WHERE published_at IS NULL)::int AS undated,
-               min(published_at) AS first_at, max(published_at) AS last_at
+               count(*) FILTER (WHERE published_at > now())::int AS future,
+               min(published_at) FILTER (WHERE published_at <= now()) AS first_at,
+               max(published_at) FILTER (WHERE published_at <= now()) AS last_at
         FROM articles
         WHERE source_id = ANY(%s) AND duplicate_of IS NULL
           AND {site_visible_sql("")}
@@ -474,7 +476,7 @@ def coverage_recent(conn, source_ids: list[str]) -> dict[str, list[dict]]:
         SELECT a.id, a.title, a.source_id, a.published_at FROM unnest(%s::text[]) AS sid(id)
         CROSS JOIN LATERAL (
             SELECT a.id, a.title, a.source_id, a.published_at FROM articles a
-            WHERE a.source_id = sid.id AND a.duplicate_of IS NULL AND a.published_at IS NOT NULL
+            WHERE a.source_id = sid.id AND a.duplicate_of IS NULL AND a.published_at <= now()
               AND {site_visible_sql("a")} AND {visible_sql("a")}
             ORDER BY a.published_at DESC NULLS LAST, a.id DESC LIMIT 31
         ) a ORDER BY a.source_id, a.published_at DESC, a.id DESC

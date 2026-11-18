@@ -670,7 +670,7 @@ def _coverage_rows(conn, sources, stats, zone: str) -> list[dict]:
         overdue = stale_sources([source], times, imports, zone)
         result.append({
             "id": source.id, "name": source.name, "author": source.author,
-            "total": numbers.get("n", 0), "undated": numbers.get("undated", 0),
+            "total": numbers.get("n", 0), "undated": numbers.get("undated", 0), "future": numbers.get("future", 0),
             "published_at": latest["published_at"] if latest else None,
             "latest_date": format_date(latest["published_at"], zone) if latest else "",
             "latest_id": latest["id"] if latest else None, "latest_title": titles[latest["id"]] if latest else "",
