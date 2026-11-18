@@ -33,6 +33,7 @@ from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
 from researchlib.feedback import add_missing, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
+from researchlib.financial_evidence import numeric_signature
 from researchlib.housekeeping import strip_housekeeping
 from researchlib.image_size import size_images
 from researchlib.ingest.archive import DOCUMENT_TREE_KINDS
@@ -1325,13 +1326,19 @@ def duplicates_separate(request: Request, article_id: int):
 _SNIPPET_TEXT = re.compile(r"[0-9A-Za-z一-鿿]+")
 
 
-def _snippet_key(snippet) -> str:
-    """摘录去掉高亮和标点后的字，用来认页面上一字不差的两段摘录。不到 30 个字的不认。"""
-    text = "".join(_SNIPPET_TEXT.findall(re.sub(r"<[^>]+>", "", str(snippet)))).lower()
-    return text if len(text) >= 30 else ""
+def _snippet_key(snippet: Markup) -> tuple | None:
+    """只比读者能看到的摘录；标点可以不同，数字的单位和正负仍须相符。"""
+    plain = snippet.striptags()
+    text = "".join(_SNIPPET_TEXT.findall(plain)).lower()
+    if len(text) < 30:
+        return None
+    # 摘录会把换行压成空格。仅在比对表格摘录时，把右括号后的空格也当成可能的行尾，
+    # 免得最后一列的 (5,867) 紧接下一行行名时又和 5,867 合并。引文核对仍读取原始行。
+    numeric_text = re.sub(r"(?<=[)）]) +", "\n", plain) if "|" in plain else plain
+    return text, numeric_signature(numeric_text)
 
 
-def _card_snippets(hit, query: str, terms, groups, shown: set[str]):
+def _card_snippets(hit, query: str, terms, groups, shown: set[tuple]):
     """一张卡片上的摘录（最多两段）和卡片链接指向的那一段。
 
     摘录是命中最集中处前后的一小段。相邻两块有几句重叠，命中常落在重叠处，同一篇的两段摘录就一字不差；
@@ -1436,7 +1443,7 @@ def search_page(request: Request):
             by_id,
             settings.display_timezone,
         )
-        shown_snippets: set[str] = set()
+        shown_snippets: set[tuple] = set()
         for hit in hits:
             snippets, best = _card_snippets(hit, query, terms, groups, shown_snippets)
             row = {"id": hit.article_id, "title": shown[hit.article_id], "published_at": hit.published_at}
