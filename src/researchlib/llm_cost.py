@@ -133,7 +133,7 @@ def _views_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate
     if unknown:
         note = (
             "上沿：导入并算出公司提及之前，不知道有多少篇会抽。"
-            "这里按列出的每一篇都深入提到公司。实际只抽深入提及，一带而过不抽；"
+            "这里按每篇都有待抽判断粗估。实际会整理深入提及，以及正文很短而图片有字的提及。"
             f"长文只送提到公司的段落（一块约 {VIEW_WINDOW} 字），通常少于此数。"
         )
     else:
