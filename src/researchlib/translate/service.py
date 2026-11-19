@@ -1259,7 +1259,9 @@ HAN_OUTSIDE = "[^一-鿿]"
 SITE_VISIBLE = f"({not_guest_sql('a')} AND coalesce({not_comment_shell_sql('a')}, true))"
 
 
-def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None) -> list[int]:
+def list_pending_english(
+    conn, *, limit: int = 20, source_id: str | None = None, article_ids: list[int] | None = None
+) -> list[int]:
     """尚无译文、或原文 hash 已变、或没译完的英文文章。同一篇的重复只译主版本；隐藏的（短帖、每周汇总）不译。
 
     网站不显示的网友帖、「图片」评论壳也不译：和摘要、观点、识图一样，译了也没人看得到。
@@ -1276,9 +1278,16 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
         " WHERE t.article_id = a.id AND t.content_hash = a.content_hash AND t.complete"
         ")",
     ]
+    # 这两条排在 WHERE 最前面，参数按同样的先后接在 HAN_OUTSIDE 后面。
+    head: list[str] = []
     if source_id:
-        where.insert(0, "a.source_id = %s")
+        head.append("a.source_id = %s")
         params.append(source_id)
+    if article_ids is not None:
+        # 只在这几篇里挑（research-process-new：刚抓进来的几篇）。
+        head.append("a.id = ANY(%s)")
+        params.append(list(article_ids))
+    where[:0] = head
     # 同一原文、同一检查版本下，对齐拒绝有冷却和次数；请求失败只拉长间隔。
     # 进程重启不会把刚拒绝的文章立刻拿回来。hash 或 ALIGNMENT_VERSION 变了，条件对不上，会再试。
     fail_case = ["CASE", "WHEN fail.n <= 1 THEN %s"]

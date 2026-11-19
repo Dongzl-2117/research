@@ -60,6 +60,7 @@ research-clean = "researchlib.boilerplate:main"
 research-boilerplate-images = "researchlib.boilerplate_images:main"
 research-embed = "researchlib.embeddings:main"
 research-mechanism = "researchlib.mechanism:main"
+research-process-new = "researchlib.fresh:main"
 research-status = "researchlib.health:main"
 research-grok-smoke = "researchlib.grok_smoke:main"
 

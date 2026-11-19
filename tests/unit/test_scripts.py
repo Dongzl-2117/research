@@ -106,8 +106,9 @@ def test_fangwei_mp_crawl_takes_bodies_from_the_original_page():
     text = (ROOT / "scripts" / "crawl-fangwei-mp.sh").read_text(encoding="utf-8")
     assert 'research-crawl-wechat --source "$SOURCE"' in text and "SOURCE=fangwei-mp" in text
     assert "python3" not in text and 'dl.py"' not in text
-    steps = ("research-crawl-wechat", "research-place-wechat-images", "research-fetch-images", "research-digest")
+    steps = ("research-crawl-wechat", "research-place-wechat-images", "research-fetch-images")
     order = [text.index(f"compose_exec app {name}") for name in steps]
+    order.append(text.index('process_new "$SOURCE" "$mark"'))
     assert order == sorted(order)
     # 老文章的图每次按原文页摆一批，导入之后跑（导入整目录时库里摆好的留着）。
     assert 'research-place-wechat-images --source "$SOURCE" --limit "$PLACE_LIMIT"' in text
@@ -137,17 +138,46 @@ def test_latepost_crawl_is_incremental_and_does_not_backfill():
     text = (ROOT / "scripts" / "crawl-latepost.sh").read_text(encoding="utf-8")
     assert "SOURCE=latepost" in text
     assert 'MAX_NEW="${MAX_NEW:-10}"' in text
-    assert 'DIGEST_LIMIT="${DIGEST_LIMIT:-10}"' in text
     assert '--max-new "$MAX_NEW"' in text
     commands = "\n".join(line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
     assert "--backfill" not in commands and "--list-only" not in commands
-    assert 'research-digest --source "$SOURCE" --limit "$DIGEST_LIMIT"' in text
+    # 只当场处理这次抓进来的，不按来源补积压（回填导入的几千篇由夜间按上限补）。
+    assert "research-digest" not in commands and 'process_new "$SOURCE" "$mark"' in commands
     plist = (ROOT / "deploy" / "launchd" / "com.zldong.research.crawl-latepost.plist").read_text(encoding="utf-8")
     assert plist.count("<integer>30</integer>") == 2
     assert "<integer>8</integer>" in plist and "<integer>20</integer>" in plist
     assert "crawl-latepost.sh" in plist
     assert "crawl-latepost" in (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "crawl-latepost" in (ROOT / "scripts" / "install-launchd.sh").read_text(encoding="utf-8")
+
+
+def test_crawls_process_new_articles_right_after_import():
+    """Zhilin 11-19：新抓的译制、判断、摘要、打分不等夜间、不等便宜时段。每个抓取脚本导入前记下最大的文章 id，
+    导入、下图以后对这次新进来的跑 research-process-new；只处理新的，不按来源补积压。"""
+    scripts = {
+        "crawl-fangwei-mp.sh": ("research-crawl-wechat", '"$SOURCE"'),
+        "crawl-gudujinhuati.sh": ("research-crawl-wechat", '"$SOURCE"'),
+        "crawl-latepost.sh": ("research-crawl-wechat", '"$SOURCE"'),
+        "crawl-fangwei-zsxq.sh": ("research-ingest-zsxq", "fangwei-zsxq"),
+    }
+    for name, (importer, source) in scripts.items():
+        text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        commands = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        mark = commands.index('mark="$(new_mark)"')
+        imported = commands.index(f"compose_exec app {importer}")
+        processed = commands.index(f"process_new {source} \"$mark\"")
+        assert mark < imported < processed, name
+        assert "research-digest" not in commands, name
+        if "research-fetch-images" in commands:
+            assert commands.index("research-fetch-images") < processed, name
+    nightly = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
+    crawl = nightly.index("compose_exec app research-crawl-stratechery")
+    fresh = nightly.index('process_new stratechery "$mark"')
+    assert nightly.index('mark="$(new_mark') < crawl < fresh < nightly.index("research-translate --source stratechery")
+    status = (ROOT / "scripts" / "status.sh").read_text(encoding="utf-8")
+    assert "research-process-new --last-id" in status and "--after-id" in status
+    # 不带 --off-peak：新文章不等便宜时段。
+    assert "--off-peak" not in status
 
 
 def test_nightly_theses_disabled_by_default():

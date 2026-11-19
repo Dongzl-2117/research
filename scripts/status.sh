@@ -106,3 +106,39 @@ status_finish() {
     rm -f "$marker"
   fi
 }
+
+# 新抓进来的文章当场处理完（识图、译制、判断、摘要、段落打分），不等夜间、不避开 DeepSeek 高峰价
+# （Zhilin 11-19：新抓的直接来，只有大面积的才等）。抓取前 new_mark 记下库里最大的文章 id，导入以后
+#   run_step "处理新文章" process_new 来源 "$mark"
+# 只处理这一来源 id 比它大的几篇，见 src/researchlib/fresh.py。调用方要先定义 compose。
+new_mark() {
+  compose_exec app research-process-new --last-id
+}
+
+new_ocr_enabled() {
+  # 识图跟着夜间任务的开关：环境变量 NIGHTLY_OCR，没设就读 install-launchd.sh 记下的 data/launchd.env，
+  # 再没有就看装好的夜间任务。夜间不识图的话抓取时也不识。
+  local value="${NIGHTLY_OCR:-}"
+  if [ -z "$value" ] && [ -f "$REPO/data/launchd.env" ]; then
+    value="$(sed -n "s/^SAVED_NIGHTLY_OCR=//p" "$REPO/data/launchd.env" | tail -n 1)"
+  fi
+  local plist="$HOME/Library/LaunchAgents/com.zldong.research.nightly.plist"
+  if [ -z "$value" ] && [ -f "$plist" ] && [ -x /usr/libexec/PlistBuddy ]; then
+    value="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:NIGHTLY_OCR" "$plist" 2>/dev/null || true)"
+  fi
+  [ "$value" = "1" ]
+}
+
+process_new() {
+  # process_new 来源 起点id：PROCESS_NEW=0 时跳过（只抓取导入，留给夜间）。
+  local source="$1" mark="$2"
+  if [ "${PROCESS_NEW:-1}" = "0" ]; then
+    echo "$(date '+%F %T') 跳过处理新文章（PROCESS_NEW=0），留给夜间"
+    return 0
+  fi
+  if new_ocr_enabled; then
+    compose_exec app research-process-new --source "$source" --after-id "$mark" --ocr
+  else
+    compose_exec app research-process-new --source "$source" --after-id "$mark"
+  fi
+}

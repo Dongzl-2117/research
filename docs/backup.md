@@ -10,10 +10,10 @@
 | --- | --- |
 | `scripts/backup.sh` | `pg_dump` 导出一份（custom 格式），用 `pg_restore --list` 读一遍确认完整，再增量同步图片。导出保留 30 天（`KEEP_DAYS`）。导出与篇数共享一个 PostgreSQL 快照，图片同步成功后公布带 v2 标记的导出与篇数文件。自动上线遇到带新迁移的提交，上线前也跑一次（见 [deploy.md](deploy.md)「更新」） |
 | `scripts/restore-check.sh` | 把最新一份导出恢复到本次专用临时库，v2 导出的恢复篇数必须与快照完全相等；旧档沿用原先的篇数下限。完成后清理临时库。不碰正式库 |
-| `scripts/crawl-fangwei-mp.sh` | 方伟公众号抓取：和孤独进化体同一条路，容器里的 `research-crawl-wechat` 查最新文章，正文从公众号原文页取，写进 `data/inbox/fangwei-mp` 并导入（`--origin crawl`）；再把以前入库的老文章按原文页摆图一批（`research-place-wechat-images`，`PLACE_LIMIT` 默认 50 篇，不花钱），下载外链图片、补摘要。11 月 7 日以前用仓库外的 `dl.py`（极致了按段估图位置的正文），它写下的归档照旧每次重新导入 |
-| `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（仓库里的 `scripts/zsxq/dl.py`，11-14 以前放在 `data/inbox/fangwei-zsxq/dl.py`、不在仓库里；数据写进 `data/inbox/fangwei-zsxq`；令牌 `ZSXQ_ACCESS_TOKEN` 和星球 ID `ZSXQ_GROUP_ID` 在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），再补摘要 |
-| `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，仓库根 `.env` 的 `DAJIALA_KEY`），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片、补摘要。见 [ingest.md](ingest.md)「公众号定时抓取」 |
-| `scripts/crawl-latepost.sh` | 晚点LatePost 抓取：同一条路，每天两次，只查最新一页（`MAX_NEW` 默认 10），写进 `data/inbox/latepost` 并导入；再下载外链图片、补最多 10 篇摘要（`DIGEST_LIMIT=0` 就跳过）。历史回填不在这个脚本里，见 [ingest.md](ingest.md)「晚点LatePost」 |
+| `scripts/crawl-fangwei-mp.sh` | 方伟公众号抓取：和孤独进化体同一条路，容器里的 `research-crawl-wechat` 查最新文章，正文从公众号原文页取，写进 `data/inbox/fangwei-mp` 并导入（`--origin crawl`）；再把以前入库的老文章按原文页摆图一批（`research-place-wechat-images`，`PLACE_LIMIT` 默认 50 篇，不花钱），下载外链图片，新文章当场识图、整理判断、写摘要、给段落打分（`research-process-new`，见 [ingest.md](ingest.md)「新抓进来的当场处理」）。11 月 7 日以前用仓库外的 `dl.py`（极致了按段估图位置的正文），它写下的归档照旧每次重新导入 |
+| `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（仓库里的 `scripts/zsxq/dl.py`，11-14 以前放在 `data/inbox/fangwei-zsxq/dl.py`、不在仓库里；数据写进 `data/inbox/fangwei-zsxq`；令牌 `ZSXQ_ACCESS_TOKEN` 和星球 ID `ZSXQ_GROUP_ID` 在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），新帖当场识图、整理判断、写摘要、给段落打分（`research-process-new`），再补标题 |
+| `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，仓库根 `.env` 的 `DAJIALA_KEY`），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片，新文章当场处理（`research-process-new`）。见 [ingest.md](ingest.md)「公众号定时抓取」「新抓进来的当场处理」 |
+| `scripts/crawl-latepost.sh` | 晚点LatePost 抓取：同一条路，每天两次，只查最新一页（`MAX_NEW` 默认 10），写进 `data/inbox/latepost` 并导入；再下载外链图片，这次新进来的当场处理（`research-process-new`，`PROCESS_NEW=0` 就跳过）。历史回填不在这个脚本里，见 [ingest.md](ingest.md)「晚点LatePost」 |
 | `scripts/nightly.sh` | 夜间补齐，见下面 |
 
 都通过 `docker compose exec` 在容器里跑，不需要在宿主机装 Postgres 客户端。
@@ -38,10 +38,13 @@ BACKUP_DIR/
 
 ## 夜间补齐
 
-摘要、观点平时只在页面被打开时给当前卡片排队，没人打开的文章一直缺着；外链图片、论点也一样。`scripts/nightly.sh` 每晚各补一批，每一步有篇数上限，跑不完的下一晚接着补：
+新抓进来的文章由抓取脚本当场处理（见 [ingest.md](ingest.md)「新抓进来的当场处理」）；没做完的、积压的、外链图片和论点由 `scripts/nightly.sh` 每晚各补一批，每一步有篇数上限，跑不完的下一晚接着补：
 
 | 步骤 | 命令 | 上限 |
 | --- | --- | --- |
+| Stratechery 抓取 | `research-crawl-stratechery`：读 `.env` 的 `STRATECHERY_RSS_URL`，没设就跳过（见 [ingest.md](ingest.md)「Stratechery 每晚抓取」） | 每次最多 50 篇 |
+| Stratechery 新文章 | `research-process-new --source stratechery`：这次新抓的当场译制、整理判断、写摘要、给段落打分，不占后面几步的上限 | 30 篇 |
+| Stratechery 译制 | `research-translate --source stratechery`：以前没译完、冷却到期的 | `STRATECHERY_TRANSLATE_LIMIT`，默认 50 篇 |
 | Stratechery 发布时刻 | `research-stratechery-times`：归档只记了日期的篇按官网接口补上钟点，不调模型；都有了就不连官网（见 [ingest.md](ingest.md)「Stratechery 的发布时刻」） | 没有上限，只看还没钟点的 |
 | 外链图片 | `research-fetch-images --exit-code`：第一次下的地址大半下不来时退出码 3，这一步记失败（见 [ingest.md](ingest.md)「外链图片」） | `IMAGES_LIMIT`，默认 300 个地址 |
 | 图片文字 | `research-ocr --engine vision`（`NIGHTLY_OCR=1` 时在 app 容器里走站内识图，见 [ocr.md](ocr.md)） | `OCR_LIMIT`，默认 400 张 |

@@ -35,11 +35,9 @@ ASSUMED_BODY_CHARS = 6700
 HEADER_CHARS = 80
 # 和 digest.MIN_DIGEST_CHARS 一样：再短就不写摘要。
 MIN_DIGEST_CHARS = 20
-# scripts/nightly.sh、scripts/crawl-latepost.sh 的默认上限。改了脚本要一起改。
+# scripts/nightly.sh 的默认上限。改了脚本要一起改。
 NIGHTLY_DIGEST_LIMIT = 80
 NIGHTLY_VIEWS_LIMIT = 60
-CRAWL_DIGEST_LIMIT = 10
-CRAWL_RUNS_PER_DAY = 2
 # docs/ocr.md：一张图输出大约 10,764 token。图片本身的输入 token 这里不算。
 OCR_OUTPUT_TOKENS = 10_764
 
@@ -279,19 +277,17 @@ def render_estimate(estimate: Estimate, *, provider_text: str) -> str:
         "导入之后谁会接着花钱（导入这一步本身不调模型，网页打开也不会排队）："
     )
     lines.append(
-        f"- 摘要：夜间 research-digest 每晚最多 {NIGHTLY_DIGEST_LIMIT} 篇；"
-        f"晚点定时抓取每天 {CRAWL_RUNS_PER_DAY} 次、各最多 {CRAWL_DIGEST_LIMIT} 篇"
-        f"（DIGEST_LIMIT，设 0 就跳过）。同一篇有锁，不会写两遍。"
-        f"只算夜间的话，上面这些摘要大约 {digest_nights} 晚；定时抓取每天最多再写 "
-        f"{CRAWL_DIGEST_LIMIT * CRAWL_RUNS_PER_DAY} 篇，和夜间抢的是同一批最新的。"
+        f"- 摘要：夜间 research-digest 每晚最多 {NIGHTLY_DIGEST_LIMIT} 篇，"
+        f"上面这些摘要大约 {digest_nights} 晚。定时抓取只当场处理它自己那次抓进来的新文章"
+        "（research-process-new），回填导入的不碰。同一篇有锁，不会写两遍。"
     )
     lines.append(
         f"- 判断：夜间 research-views 每晚最多 {NIGHTLY_VIEWS_LIMIT} 篇，只抽深入提到公司的。"
         f"按上面的次数大约 {view_nights} 晚（上沿会更久，因为实际篇数通常更少）。"
     )
     lines.append(
-        "- 这些定时点（夜间 00:37、抓取 08:30 和 20:30）都不在 DeepSeek 高峰价时段。"
-        "高峰是北京时间工作日 9–12 点、14–18 点。手动在高峰跑，金额按上面的高峰一档。"
+        "- 夜间任务 00:37 开始，不在 DeepSeek 高峰价时段（北京时间工作日 9–12 点、14–18 点）。"
+        "回填这种大面积的手动跑要加 --off-peak，在高峰跑金额按上面的高峰一档。"
     )
     lines.append(
         "- 外链图片由定时抓取每次最多 200 张、夜间最多 300 张接着下，不调用上面的模型。"

@@ -79,13 +79,17 @@ _STALE_CHUNK = (
 )
 
 
-def pending_articles(conn, source_ids: list[str], limit: int | None, *, cooling: bool = False):
+def pending_articles(
+    conn, source_ids: list[str], limit: int | None, *, cooling: bool = False, article_ids: list[int] | None = None
+):
     """还有块没打分（或分数过期）的文章，新的在前。limit 为 None 时全要（报数用）。
 
     交回每篇的 id、标题、要打的块数和字数。cooling 为真时反过来只要失败后还在冷却里的（报数用）。
+    article_ids：只在这几篇里挑（research-process-new：刚抓进来的几篇）。
     """
     cool = cooling_sql(FAILURE_KIND, "a.id")
     limit_sql = "LIMIT %(limit)s" if limit is not None else ""
+    only = " AND a.id = ANY(%(ids)s)" if article_ids is not None else ""
     rows = conn.execute(
         f"""
         SELECT a.id, a.title, count(*) AS chunks, sum(length(c.body)) AS chars
@@ -95,12 +99,12 @@ def pending_articles(conn, source_ids: list[str], limit: int | None, *, cooling:
         WHERE a.source_id = ANY(%(sources)s) AND a.duplicate_of IS NULL
           AND {visible_sql("a")} AND {site_visible_sql("a")}
           AND {f"NOT ({cool})" if cooling else cool}
-          AND {_SCORED_CHUNK} AND {_STALE_CHUNK}
+          AND {_SCORED_CHUNK} AND {_STALE_CHUNK}{only}
         GROUP BY a.id, a.title, a.published_at
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         {limit_sql}
         """,
-        {"sources": source_ids, "version": PROMPT_VERSION, "limit": limit},
+        {"sources": source_ids, "version": PROMPT_VERSION, "limit": limit, "ids": list(article_ids or [])},
     ).fetchall()
     return rows
 
