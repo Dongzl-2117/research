@@ -97,6 +97,68 @@ def test_only_articles_after_the_mark_are_processed_in_order(conn, settings, mon
     assert calls == [] and "没有新文章" in capsys.readouterr().out
 
 
+def test_translation_cooldown_defers_scoring_until_the_chinese_chunks_are_ready(conn, settings, monkeypatch):
+    from test_bilingual_provenance_db import model as translation_model
+
+    from researchlib.translate import service
+    from researchlib.translate.provenance import AlignmentError
+
+    english = english_article(conn, settings)
+    conn.commit()
+    translations = []
+    scores = []
+
+    def reject(**kwargs):
+        translations.append("reject")
+        raise AlignmentError("slot-0-numbers")
+
+    def score(_settings, messages, **kwargs):
+        scores.append(messages[-1]["content"])
+        return '{"scores":[{"id":1,"score":2}]}', "local-test"
+
+    monkeypatch.setattr(fresh.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr("researchlib.llm.ensure_oauth", lambda _settings: None)
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "local-test")
+    monkeypatch.setattr(service, "chat_json", reject)
+    monkeypatch.setattr(digest, "run_batch", lambda *args, **kwargs: _report())
+    monkeypatch.setattr(mechanism, "chat", score)
+    args = ["--source", "stratechery", "--after-id", str(english - 1)]
+
+    assert fresh.main(args) == 1
+    assert translations
+    assert conn.execute("SELECT status FROM translation_attempts WHERE article_id=%s", (english,)).fetchone() == {
+        "status": "rejected"
+    }
+    assert list_pending_english(conn, article_ids=[english]) == []
+    assert scores == []
+
+    def translate(**kwargs):
+        translations.append("translated")
+        return translation_model(**kwargs)
+
+    monkeypatch.setattr(service, "chat_json", translate)
+    assert fresh.main(args) == 0
+    assert "translated" not in translations
+    assert scores == []
+
+    conn.execute(
+        "UPDATE translation_attempts SET created_at = now() - interval '13 hours' WHERE article_id=%s", (english,)
+    )
+    conn.commit()
+    assert fresh.main(args) == 0
+    assert "translated" in translations
+    assert len(scores) == 1 and "第一段10美元" in scores[0]
+    rows = conn.execute(
+        "SELECT c.lang FROM article_chunks c JOIN chunk_mechanism m USING (article_id, ord) WHERE c.article_id = %s",
+        (english,),
+    )
+    assert {row["lang"] for row in rows} == {"zh"}
+    attempts = len(translations)
+    assert fresh.main(args) == 0
+    assert len(translations) == attempts and len(scores) == 1
+
+
 def test_untranslated_english_waits_for_its_translation_before_scoring(conn, settings, monkeypatch):
     _seed(conn, settings)
     mark = max(_ids(conn, "fangwei-mp") + _ids(conn, "fangwei-zsxq") + _ids(conn, "chengfengpolang"))

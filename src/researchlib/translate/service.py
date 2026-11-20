@@ -1260,13 +1260,15 @@ SITE_VISIBLE = f"({not_guest_sql('a')} AND coalesce({not_comment_shell_sql('a')}
 
 
 def list_pending_english(
-    conn, *, limit: int = 20, source_id: str | None = None, article_ids: list[int] | None = None
+    conn, *, limit: int = 20, source_id: str | None = None, article_ids: list[int] | None = None,
+    include_deferred: bool = False,
 ) -> list[int]:
     """尚无译文、或原文 hash 已变、或没译完的英文文章。同一篇的重复只译主版本；隐藏的（短帖、每周汇总）不译。
 
     网站不显示的网友帖、「图片」评论壳也不译：和摘要、观点、识图一样，译了也没人看得到。
     已经译完（``complete`` 且 ``content_hash`` 对得上）的不进队列。换 LLM 提供方不会把这些篇重译；
     没译完的下次接着补，复用回执里没变的段。
+    include_deferred 把因失败冷却、拒绝停译的也列为未译完，供段落打分判断；只有图没有待译文字的照旧排除。
     """
     params: list[object] = [HAN_OUTSIDE]
     where = [
@@ -1295,8 +1297,7 @@ def list_pending_english(
         fail_case.append(f"WHEN fail.n = {index} THEN %s")
     fail_case.append("ELSE %s")
     fail_case.append("END")
-    where.append(
-        """NOT EXISTS (
+    rejection_allows_retry = """NOT EXISTS (
         SELECT 1 FROM (
           SELECT count(*)::int AS n, max(created_at) AS latest
           FROM translation_attempts
@@ -1307,7 +1308,6 @@ def list_pending_english(
         ) rej
         WHERE rej.n >= %s OR rej.latest > now() - %s::interval
         )"""
-    )
     # 只有图、没有要译的字（译制渲染过、记了 no-text）的不再排进来。原文改了、检查版本变了再看一次。
     where.append(
         """NOT EXISTS (
@@ -1318,8 +1318,7 @@ def list_pending_english(
           AND status = 'no-text'
         )"""
     )
-    where.append(
-        f"""NOT EXISTS (
+    failure_allows_retry = f"""NOT EXISTS (
         SELECT 1 FROM (
           SELECT count(*)::int AS n, max(created_at) AS latest
           FROM translation_attempts
@@ -1332,15 +1331,16 @@ def list_pending_english(
           {" ".join(fail_case)}
         )::interval
         )"""
-    )
-    params.extend([
-        ALIGNMENT_VERSION,
-        REJECT_RETRY_BUDGET,
-        _sql_interval(REJECT_RETRY_COOLDOWN),
-        ALIGNMENT_VERSION,
-        ALIGNMENT_VERSION,
-        *[_sql_interval(item) for item in FAIL_RETRY_COOLDOWNS],
-    ])
+    params.append(ALIGNMENT_VERSION)  # no-text
+    if not include_deferred:
+        where.extend([rejection_allows_retry, failure_allows_retry])
+        params.extend([
+            ALIGNMENT_VERSION,
+            REJECT_RETRY_BUDGET,
+            _sql_interval(REJECT_RETRY_COOLDOWN),
+            ALIGNMENT_VERSION,
+            *[_sql_interval(item) for item in FAIL_RETRY_COOLDOWNS],
+        ])
     # 和 language.is_chinese 同一条规则（标了语言听标的；否则正文前 400 字有汉字、且汉字数的两倍
     # 不少于拉丁字母数就算中文），在 SQL 里先筛再 LIMIT。以前先按时间取最新的 limit 篇再挑英文，
     # 不带 --source 时最新的几乎全是中文，永远取不到英文。改规则时两边一起改，集成测试对拍。
