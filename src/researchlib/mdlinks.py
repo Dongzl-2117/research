@@ -202,6 +202,49 @@ _MD_INLINE_LINK = re.compile(r"""(?<!!)\[([^\[\]]*)\]\(\s*(?:<([^<>\n]+)>|([^)\s
 _MD_FENCED = re.compile(r"(```.*?```|~~~.*?~~~)", re.S)
 
 
+# 飞书导出把附件写成带回形针的文件名；本站目前只导入文章和图片。
+_FEISHU_PDF_REF = re.compile(r"(?:\.\./assets/[A-Za-z0-9]+\.pdf|feishu-asset://[A-Za-z0-9]+)", re.I)
+_PDF_NOTE = "（本站未提供附件）"
+_MD_CODE_OR_LINK = re.compile(
+    r"^(?P<fence>`{3,}|~{3,})[^\n]*\n[\s\S]*?^(?P=fence)[ \t]*(?=\n|$)"
+    r"|(?<!`)(?P<ticks>`+)(?!`)[^\n]*?(?<!`)(?P=ticks)(?!`)"
+    r"|(?<![!\\])\[(?P<label>📎[^\]\n]+?\.pdf)\]\((?P<ref>[^()\s]+)\)",
+    re.I | re.M,
+)
+
+
+def mark_feishu_pdf_markdown(md: str) -> str:
+    """把指向飞书导出目录的 PDF 附件标为不可用，保留文件名和代码中的原样示例。"""
+    if "📎" not in md:
+        return md
+
+    def replace(match: re.Match[str]) -> str:
+        ref = match["ref"]
+        return match["label"] + _PDF_NOTE if ref and _FEISHU_PDF_REF.fullmatch(ref) else match[0]
+
+    return _MD_CODE_OR_LINK.sub(replace, md)
+
+
+def mark_feishu_pdf_html(document: str) -> str:
+    """在阅读页最终排版后处理，不改变译文映射使用的原文或引用定位。"""
+    if "📎" not in document:
+        return document
+
+    def replace(match: re.Match[str]) -> str:
+        attrs, inner = match.groups()
+        label = _TAG.sub("", inner).strip()
+        if not (label.startswith("📎") and label.lower().endswith(".pdf")):
+            return match[0]
+        href = _HREF_ATTR.search(attrs)
+        # sanitize_html 会去掉 feishu-asset:// 的 href，只剩没有目标的 <a>。
+        if href and not _FEISHU_PDF_REF.fullmatch(href.group(2)):
+            return match[0]
+        kept_attrs = _HREF_ATTR.sub("", attrs, count=1).rstrip()
+        return f'<span{kept_attrs}>{inner}</span><span class="doc-missing">{_PDF_NOTE}</span>'
+
+    return _A_TAG.sub(replace, document)
+
+
 def link_markdown_articles(md: str, index: MdIndex, parent: str, base: str) -> str:
     """接口给的 markdown：相对 .md 链接换成站内文章的完整地址，库里没有的去掉链接、留下文字。
 
