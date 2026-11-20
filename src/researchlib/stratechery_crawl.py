@@ -280,7 +280,7 @@ def crawl(
             report.failed.append(f"{label}：这次已写满 {max_new} 篇，下次再取")
             continue
         try:
-            body, _images = html_to_markdown(item.html)
+            body, _images = html_to_markdown(item.html, keep_fragment_links=True)
         except Exception as exc:  # noqa: BLE001 一篇坏了记下来接着做下一篇
             report.failed.append(f"{label}：正文转换出错（{type(exc).__name__}: {exc}）")
             continue
