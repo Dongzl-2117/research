@@ -183,7 +183,7 @@ docker compose exec app research-place-wechat-images --source fangwei-mp --limit
 
 Zhilin 11-19：「以后新抓取的翻译、操作、打标签不需要等便宜时段，直接来，只有大面积操作之前的才需要等」。以前公众号、星球的定时抓取导入以后只补摘要，判断、段落打分、识图都等当晚 00:37 的夜间任务，还要和积压一起按每晚上限排队；Stratechery 的译制走待译队列，碰上 DeepSeek 高峰价时段不开新篇。
 
-现在每个抓取脚本（`crawl-fangwei-mp.sh`、`crawl-gudujinhuati.sh`、`crawl-latepost.sh`、`crawl-fangwei-zsxq.sh`，和夜间任务里的 Stratechery 抓取）导入前先记下库里最大的文章 id（`research-process-new --last-id`），导入、下图以后对这一来源 id 比它大的几篇跑 `research-process-new`（`src/researchlib/fresh.py`，脚本里是 `scripts/status.sh` 的 `process_new`），按顺序：
+方伟公众号、方伟星球、孤独进化体、晚点和 Stratechery 的定时抓取各用一份临时回执。导入器只记本次成功写入的新编号，以及从短预览变成可读全文的原编号。同时从其他目录手动导入的历史稿留给夜间任务。抓取脚本按回执和来源运行 `research-process-new`，依次处理以下工作。
 
 1. 识图：只认这几篇里没认过的图。跟着夜间任务的开关（`NIGHTLY_OCR`，没设就读 `data/launchd.env` 和装好的夜间任务），夜间不识图的话这里也不识。
 2. 译制：其中的英文文章点名译，不避开高峰价；被断线、限流打断的隔 2、10 分钟各自动再补一轮。
