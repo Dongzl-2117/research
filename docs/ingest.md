@@ -337,7 +337,7 @@ docker compose exec app research-crawl-stratechery --dry-run
 docker compose exec app research-crawl-stratechery
 ```
 
-RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。新文章抓进来紧接着由「Stratechery 新文章」一步当场译制、整理判断、写摘要、给段落打分（`research-process-new`，见「新抓进来的当场处理」）；以前没译完、冷却到期的由后面「Stratechery 译制」一步按待译队列补 `STRATECHERY_TRANSLATE_LIMIT` 篇（Zhilin 11-18 定了抓进来的都译，`scripts/nightly.sh` 里默认 50 只防意外；0 是不译）。
+RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。白天 21:15 另有一次定时抓取（`scripts/crawl-stratechery.sh`，11-20 起，Zhilin：「白天再加一次」）：Thompson 北京时间傍晚发文，以前要等 00:37 才进库，现在当晚就有中英对照、判断和摘要；夜间开头那次补这之后发的。两次都一样：新文章抓进来紧接着由「Stratechery 新文章」一步当场译制、整理判断、写摘要、给段落打分（`research-process-new`，见「新抓进来的当场处理」）；以前没译完、冷却到期的由后面「Stratechery 译制」一步按待译队列补 `STRATECHERY_TRANSLATE_LIMIT` 篇（Zhilin 11-18 定了抓进来的都译，`scripts/nightly.sh` 里默认 50 只防意外；0 是不译）。
 
 ## Stratechery 的发布时刻
 

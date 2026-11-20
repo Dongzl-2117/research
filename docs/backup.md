@@ -13,6 +13,7 @@
 | `scripts/crawl-fangwei-mp.sh` | 方伟公众号抓取：和孤独进化体同一条路，容器里的 `research-crawl-wechat` 查最新文章，正文从公众号原文页取，写进 `data/inbox/fangwei-mp` 并导入（`--origin crawl`）；再把以前入库的老文章按原文页摆图一批（`research-place-wechat-images`，`PLACE_LIMIT` 默认 50 篇，不花钱），下载外链图片，新文章当场识图、整理判断、写摘要、给段落打分（`research-process-new`，见 [ingest.md](ingest.md)「新抓进来的当场处理」）。11 月 7 日以前用仓库外的 `dl.py`（极致了按段估图位置的正文），它写下的归档照旧每次重新导入 |
 | `scripts/crawl-fangwei-zsxq.sh` | 方伟知识星球增量抓取（仓库里的 `scripts/zsxq/dl.py`，11-14 以前放在 `data/inbox/fangwei-zsxq/dl.py`、不在仓库里；数据写进 `data/inbox/fangwei-zsxq`；令牌 `ZSXQ_ACCESS_TOKEN` 和星球 ID `ZSXQ_GROUP_ID` 在 `~/zsxq/zsxq.env`），导入（`--origin crawl`），新帖当场识图、整理判断、写摘要、给段落打分（`research-process-new`），再补标题 |
 | `scripts/crawl-gudujinhuati.sh` | 孤独进化体公众号抓取：容器里的 `research-crawl-wechat` 向极致了查最新文章（每次约 0.14 元，仓库根 `.env` 的 `DAJIALA_KEY`），正文从公众号原文页取，写进 `data/inbox/gudujinhuati` 并导入（`--origin crawl`）；再下载外链图片，新文章当场处理（`research-process-new`）。见 [ingest.md](ingest.md)「公众号定时抓取」「新抓进来的当场处理」 |
+| `scripts/crawl-stratechery.sh` | Stratechery 白天那次抓取（11-20 起，Zhilin：「白天再加一次」）：读 `.env` 的 `STRATECHERY_RSS_URL`（不花钱，没设就跳过、记成功），导入、下图，新文章当场译制、整理判断、写摘要、打分（`research-process-new`）。夜间任务开头照旧再抓一次 |
 | `scripts/crawl-latepost.sh` | 晚点LatePost 抓取：同一条路，每天两次，只查最新一页（`MAX_NEW` 默认 10），写进 `data/inbox/latepost` 并导入；再下载外链图片，这次新进来的当场处理（`research-process-new`，`PROCESS_NEW=0` 就跳过）。历史回填不在这个脚本里，见 [ingest.md](ingest.md)「晚点LatePost」 |
 | `scripts/nightly.sh` | 夜间补齐，见下面 |
 
@@ -86,7 +87,7 @@ docker compose exec app research-status   # 没问题打「没有要处理的」
 ```bash
 cd ~/research
 BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；云盘目录另定
-# 默认装方伟公众号、方伟星球、孤独进化体、晚点LatePost 的定时抓取；不要：INSTALL_CRAWL=0
+# 默认装方伟公众号、方伟星球、孤独进化体、晚点LatePost、Stratechery 的定时抓取；不要：INSTALL_CRAWL=0
 # 以前装过的每小时 AIHOT 增量导入（ingest-aihot，已删）会顺手卸掉
 # 不要夜间补齐：INSTALL_NIGHTLY=0；夜间也识别图片里的字（站内 vision，不走 ocr profile）：NIGHTLY_OCR=1
 # 不要自动上线：INSTALL_DEPLOY=0
@@ -105,6 +106,7 @@ BACKUP_DIR=~/research-backups scripts/install-launchd.sh   # 同盘先顶用；�
 | `com.zldong.research.crawl-latepost` | 每天 08:30、20:30（香港时间） |
 | `com.zldong.research.crawl-fangwei-zsxq` | 每天 08:40、20:40 |
 | `com.zldong.research.crawl-gudujinhuati` | 每天 09:20 |
+| `com.zldong.research.crawl-stratechery` | 每天 21:15（香港时间） |
 | `com.zldong.research.deploy` | 每 10 分钟，装好时先跑一次（见 [deploy.md](deploy.md)「更新」） |
 
 日志在 `~/Library/Logs/research/`。Mac mini 睡着时错过的那一次，醒来后 launchd 会补跑。卸载：

@@ -38,7 +38,7 @@ MIGRATIONS="src/researchlib/migrations"
 # Dockerfile 给镜像打的标签。上线后只清理带这个标签的旧镜像，Mac mini 上别的项目的不碰。
 IMAGE_LABEL="com.zldong.research"
 # 重建时会被打断的定时任务（scripts/ 下的脚本名）。
-JOBS="nightly crawl-fangwei-mp crawl-fangwei-zsxq crawl-gudujinhuati crawl-latepost backup restore-check"
+JOBS="nightly crawl-fangwei-mp crawl-fangwei-zsxq crawl-gudujinhuati crawl-latepost crawl-stratechery backup restore-check"
 # launchd 里没有终端：git 要密码时直接失败，不要卡住等输入。
 export GIT_TERMINAL_PROMPT=0
 . "$REPO/scripts/status.sh"

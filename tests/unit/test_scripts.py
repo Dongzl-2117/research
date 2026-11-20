@@ -159,6 +159,7 @@ def test_crawls_process_new_articles_right_after_import():
         "crawl-gudujinhuati.sh": ("research-crawl-wechat", '"$SOURCE"'),
         "crawl-latepost.sh": ("research-crawl-wechat", '"$SOURCE"'),
         "crawl-fangwei-zsxq.sh": ("research-ingest-zsxq", "fangwei-zsxq"),
+        "crawl-stratechery.sh": ("research-crawl-stratechery", '"$SOURCE"'),
     }
     for name, (importer, source) in scripts.items():
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
@@ -178,6 +179,19 @@ def test_crawls_process_new_articles_right_after_import():
     assert "research-process-new --last-id" in status and "--after-id" in status
     # 不带 --off-peak：新文章不等便宜时段。
     assert "--off-peak" not in status
+
+
+def test_stratechery_is_also_crawled_in_the_evening():
+    """Zhilin 11-20：Stratechery 白天再抓一次。21:15 跑，没设 RSS 地址时跳过记成功，自动上线等它跑完。"""
+    text = (ROOT / "scripts" / "crawl-stratechery.sh").read_text(encoding="utf-8")
+    assert "SOURCE=stratechery" in text and "TASK=crawl-stratechery" in text
+    assert "STRATECHERY_RSS_URL" in text and 'status_ok "跳过' in text
+    plist = (ROOT / "deploy" / "launchd" / "com.zldong.research.crawl-stratechery.plist").read_text(encoding="utf-8")
+    assert "<integer>21</integer>" in plist and "<integer>15</integer>" in plist
+    assert "crawl-stratechery.sh" in plist and "crawl-stratechery.log" in plist
+    assert "crawl-stratechery" in (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    install = (ROOT / "scripts" / "install-launchd.sh").read_text(encoding="utf-8")
+    assert install.count("crawl-stratechery") >= 4
 
 
 def test_nightly_theses_disabled_by_default():
