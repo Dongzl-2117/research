@@ -16,13 +16,14 @@ def _sample(conn, settings):
     load_sample(conn, settings)
 
 
-def _answer(conn, settings, monkeypatch, reply):
+def _answer(conn, settings, monkeypatch, reply, **filters):
     monkeypatch.setattr(ask_module, "chat", lambda _s, messages, **_k: (reply, "grok-test"))
     monkeypatch.setattr(ask_module, "llm_configured", lambda _settings: True)
     company = conn.execute("SELECT id FROM companies WHERE name_zh = '宁德时代'").fetchone()["id"]
     client = TestClient(create_app(settings))
     client.__enter__()
-    posted = client.post("/ask", data={"q": "宁德时代的库存和产能", "company": str(company)}, follow_redirects=False)
+    form = {"q": "宁德时代的库存和产能", "company": str(company), **filters}
+    posted = client.post("/ask", data=form, follow_redirects=False)
     assert posted.status_code == 303
     return client, int(posted.headers["location"].rsplit("/", 1)[1])
 
@@ -78,6 +79,33 @@ def test_marks_toggle_and_missing_articles_feed_the_replay(conn, settings, monke
     # 漏的那篇（拼多多短帖）和宁德时代无关，回放时照样找不回来，报告里会写出来。
     assert results[0]["missing_still"] == [other["id"]]
     assert timing(conn)["answers"] >= 1
+
+
+def test_feedback_replay_uses_sources_still_enabled(conn, settings, monkeypatch):
+    _sample(conn, settings)
+    sources = enabled_sources(load_sources(settings.sources_path))
+    other_sources = [s for s in sources if s.id != "fangwei-mp"]
+    for filters in ({}, {"source": "fangwei-mp"}):
+        client, answer_id = _answer(conn, settings, monkeypatch, "库存还没写完[1]。", **filters)
+        try:
+            answer = client.get(f"/api/v1/answers/{answer_id}").json()
+            citation = answer["citations"][0]
+            assert citation["source_id"] == "fangwei-mp"
+            form = {
+                "label": "irrelevant", "article": citation["article_id"], "chunk": citation["ord"], "n": citation["n"]
+            }
+            assert client.post(f"/ask/{answer_id}/feedback", data=form, follow_redirects=False).status_code == 303
+        finally:
+            client.__exit__(None, None, None)
+
+    assert [r["irrelevant_still"] for r in replay(conn, settings, sources)] == [1, 1]
+    expanded = []
+    monkeypatch.setattr(ask_module, "expand_terms", lambda *args: expanded.append(True) or {})
+    partial, closed = replay(conn, settings, other_sources, expand=True)
+    assert partial["irrelevant_still"] == closed["irrelevant_still"] == 0
+    assert closed["passages"] == 0
+    assert not partial["scope_unavailable"] and closed["scope_unavailable"]
+    assert len(expanded) == 1
 
 
 def test_article_refs():
