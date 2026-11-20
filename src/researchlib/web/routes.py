@@ -31,7 +31,7 @@ from researchlib.db import connect, ensure_search_session
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
 from researchlib.duplicates import separate as separate_duplicate
 from researchlib.duplicates import similarity as duplicate_similarity
-from researchlib.feedback import add_missing, toggle_irrelevant
+from researchlib.feedback import add_missing, citation_hash, toggle_irrelevant
 from researchlib.feedback import marks as feedback_marks
 from researchlib.housekeeping import strip_housekeeping
 from researchlib.image_size import size_images
@@ -120,6 +120,7 @@ logger = logging.getLogger("researchlib.web.routes")
 SEARCH_PAGE_SIZE = 20
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 TEMPLATES.env.filters["answer_html"] = answer_html
+TEMPLATES.env.filters["citation_hash"] = citation_hash
 TEMPLATES.env.globals["asset"] = asset_url
 TEMPLATES.env.filters["highlight_full"] = highlight_full
 # 英文标题和英文原文标 lang="en"，读屏和浏览器的断字、翻译提示按英文处理（审核 F11）。
@@ -2193,7 +2194,7 @@ def ask_answer(request: Request, answer_id: int):
         "terms": row["terms"] or [],
         "created": format_date(row["created_at"], zone),
         "checks": [] if withheld else _safe_checks(row, citations, sources),
-        "irrelevant": [f"{article_id}:{chunk}" for article_id, chunk in labels["irrelevant"]],
+        "irrelevant": [f"{article_id}:{chunk}:{digest}" for article_id, chunk, digest in labels["irrelevant"]],
         "missing": missing,
         "feedback_error": FEEDBACK_ERRORS.get(request.query_params.get("feedback_error") or "", ""),
         "failed_batches": list(((row.get("stats") or {}).get("failed_batches")) or []),
@@ -2215,7 +2216,11 @@ def ask_answer(request: Request, answer_id: int):
     )
 
 
-FEEDBACK_ERRORS = {"ref": "贴文章链接或编号，例如 /articles/123", "absent": "库里没有这篇文章"}
+FEEDBACK_ERRORS = {
+    "ref": "贴文章链接或编号，例如 /articles/123",
+    "absent": "库里没有这篇文章",
+    "changed": "回答的出处已更新，请重新核对这一段",
+}
 
 
 @router.post("/ask/{answer_id}/feedback")
@@ -2236,7 +2241,10 @@ async def ask_feedback(request: Request, answer_id: int):
                 chunk = parse_int(str(form.get("chunk") or ""))
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="缺少文章") from exc
-            toggle_irrelevant(conn, answer_id, article_id, chunk)
+            try:
+                toggle_irrelevant(conn, answer_id, article_id, chunk, str(form.get("passage_hash") or ""))
+            except ValueError:
+                return RedirectResponse(f"/ask/{answer_id}?feedback_error=changed#feedback-error", status_code=303)
             anchor = str(form.get("n") or "")
             return RedirectResponse(f"/ask/{answer_id}" + (f"#c-{anchor}" if anchor.isdigit() else ""), status_code=303)
         if label == "missing":

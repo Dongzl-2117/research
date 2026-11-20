@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import statistics
@@ -38,7 +39,7 @@ def parse_article_ref(ref: str) -> tuple[int | None, int | None]:
 def marks(conn, answer_id: int) -> dict:
     rows = conn.execute(
         """
-        SELECT f.article_id, f.chunk_ord, f.label, f.note, a.title
+        SELECT f.article_id, f.chunk_ord, f.label, f.note, f.passage_hash, a.title
         FROM answer_feedback f JOIN articles a ON a.id = f.article_id
         WHERE f.answer_id = %s
         ORDER BY f.created_at
@@ -46,7 +47,9 @@ def marks(conn, answer_id: int) -> dict:
         (answer_id,),
     ).fetchall()
     return {
-        "irrelevant": {(row["article_id"], row["chunk_ord"]) for row in rows if row["label"] == "irrelevant"},
+        "irrelevant": {
+            (row["article_id"], row["chunk_ord"], row["passage_hash"]) for row in rows if row["label"] == "irrelevant"
+        },
         "missing": [
             {"article_id": row["article_id"], "chunk": row["chunk_ord"], "title": row["title"], "note": row["note"]}
             for row in rows
@@ -55,34 +58,52 @@ def marks(conn, answer_id: int) -> dict:
     }
 
 
+def _passage_hash(lang: str, heading: str, body: str) -> str:
+    if not body:
+        return ""
+    return hashlib.md5("\n".join([lang or "", heading or "", body]).encode()).hexdigest()
+
+
+def citation_hash(citation: dict) -> str:
+    return _passage_hash(citation.get("lang", ""), citation.get("heading", ""), citation.get("text", ""))
+
+
 def _answer(conn, answer_id: int):
     return conn.execute("SELECT id, question, scope FROM llm_answers WHERE id = %s", (answer_id,)).fetchone()
 
 
-def toggle_irrelevant(conn, answer_id: int, article_id: int, chunk_ord: int | None) -> bool:
+def toggle_irrelevant(conn, answer_id: int, article_id: int, chunk_ord: int | None, shown_hash: str = "") -> bool:
     """标或取消「不相关」。返回标完之后是不是不相关。"""
-    answer = _answer(conn, answer_id)
+    answer = conn.execute(
+        "SELECT question, scope, citations FROM llm_answers WHERE id = %s FOR UPDATE", (answer_id,)
+    ).fetchone()
     if answer is None:
         raise LookupError("没有这条回答")
+    matched = next(
+        (c for c in answer["citations"] if c.get("article_id") == article_id and c.get("ord") == chunk_ord), {}
+    )
+    digest = citation_hash(matched)
+    if not digest or (shown_hash and shown_hash != digest):
+        raise ValueError("回答的出处已更新，请重新核对这一段")
     removed = conn.execute(
         """
         DELETE FROM answer_feedback
         WHERE answer_id = %s AND article_id = %s AND coalesce(chunk_ord, -1) = coalesce(%s, -1)
-          AND label = 'irrelevant'
+          AND label = 'irrelevant' AND passage_hash = %s
         RETURNING id
         """,
-        (answer_id, article_id, chunk_ord),
+        (answer_id, article_id, chunk_ord, digest),
     ).fetchall()
     if removed:
         conn.commit()
         return False
     conn.execute(
         """
-        INSERT INTO answer_feedback (answer_id, question, scope, article_id, chunk_ord, label)
-        VALUES (%s, %s, %s, %s, %s, 'irrelevant')
+        INSERT INTO answer_feedback (answer_id, question, scope, article_id, chunk_ord, label, passage_hash)
+        VALUES (%s, %s, %s, %s, %s, 'irrelevant', %s)
         ON CONFLICT DO NOTHING
         """,
-        (answer_id, answer["question"], Jsonb(answer["scope"] or {}), article_id, chunk_ord),
+        (answer_id, answer["question"], Jsonb(answer["scope"] or {}), article_id, chunk_ord, digest),
     )
     conn.commit()
     return True
@@ -128,7 +149,12 @@ def labelled_questions(conn) -> list[dict]:
     """有标注的问题，按问题和范围合并。同一个问题问过几次，标注都算上。"""
     rows = conn.execute(
         """
-        SELECT f.question, f.scope, f.article_id, f.chunk_ord, f.label, f.answer_id
+        SELECT f.id, f.question, f.scope, f.article_id, f.label, f.answer_id, f.passage_hash,
+               EXISTS (
+                   SELECT 1 FROM article_chunks c
+                   WHERE c.article_id = f.article_id
+                     AND f.passage_hash = md5(concat_ws(E'\\n', c.lang, c.heading, c.body))
+               ) AS available
         FROM answer_feedback f
         ORDER BY f.created_at
         """
@@ -142,6 +168,7 @@ def labelled_questions(conn) -> list[dict]:
                 "question": row["question"],
                 "scope": row["scope"] or {},
                 "irrelevant": set(),
+                "irrelevant_unavailable": set(),
                 "missing": set(),
                 "answers": set(),
             },
@@ -149,7 +176,10 @@ def labelled_questions(conn) -> list[dict]:
         if row["answer_id"] is not None:
             item["answers"].add(row["answer_id"])
         if row["label"] == "irrelevant":
-            item["irrelevant"].add((row["article_id"], row["chunk_ord"]))
+            if row["available"]:
+                item["irrelevant"].add((row["article_id"], row["passage_hash"]))
+            else:
+                item["irrelevant_unavailable"].add((row["article_id"], row["passage_hash"] or row["id"]))
         else:
             item["missing"].add(row["article_id"])
     return list(grouped.values())
@@ -183,7 +213,7 @@ def replay(conn, settings, sources, *, expand: bool = False) -> list[dict]:
                 conn, item["question"], scope, sources, purpose="deep", preset=preset, expansions=expansions
             ).passages
         articles = {p.article_id for p in passages}
-        keys = {(p.article_id, p.ord) for p in passages}
+        keys = {(p.article_id, _passage_hash(p.lang, p.heading, p.body)) for p in passages}
         results.append(
             {
                 "question": item["question"],
@@ -193,7 +223,8 @@ def replay(conn, settings, sources, *, expand: bool = False) -> list[dict]:
                 "missing_found": len([a for a in item["missing"] if a in articles]),
                 "missing_still": sorted(a for a in item["missing"] if a not in articles),
                 "irrelevant": len(item["irrelevant"]),
-                "irrelevant_still": len([k for k in item["irrelevant"] if k in keys]),
+                "irrelevant_still": len(item["irrelevant"] & keys),
+                "irrelevant_unavailable": len(item["irrelevant_unavailable"]),
             }
         )
     return results
@@ -257,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
                 line += "（还漏 " + "、".join(str(a) for a in item["missing_still"][:8]) + "）"
         if item["irrelevant"]:
             line += f"；标过不相关的 {item['irrelevant']} 段还剩 {item['irrelevant_still']} 段"
+        if item["irrelevant_unavailable"]:
+            line += f"；另有 {item['irrelevant_unavailable']} 段无法核对原文"
         print(line)
     replayed = [item for item in results if not item["scope_unavailable"]]
     if replayed:
