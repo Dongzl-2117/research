@@ -98,12 +98,13 @@ def test_turning_nightly_and_crawl_off_uninstalls_them(tmp_path: Path):
     for name in ("nightly", "crawl-fangwei-mp", "crawl-gudujinhuati", "crawl-latepost", "backup"):
         (status / f"{name}.json").write_text("{}", encoding="utf-8")
     assert mac.agent("nightly").exists() and mac.agent("crawl-fangwei-zsxq").exists()
-    assert mac.agent("crawl-latepost").exists()
+    assert mac.agent("crawl-latepost").exists() and mac.agent("crawl-stratechery").exists()
     assert mac.install(INSTALL_NIGHTLY="0", INSTALL_CRAWL="0").returncode == 0
     calls = mac.called()
     assert "launchctl bootout com.zldong.research.nightly.plist" in calls
     assert "launchctl bootout com.zldong.research.crawl-fangwei-zsxq.plist" in calls
     assert "launchctl bootout com.zldong.research.crawl-latepost.plist" in calls
+    assert "launchctl bootout com.zldong.research.crawl-stratechery.plist" in calls
     for name in ("nightly", "crawl-fangwei-mp", "crawl-fangwei-zsxq", "crawl-gudujinhuati", "crawl-latepost"):
         assert not mac.agent(name).exists()
     assert not (status / "nightly.json").exists() and not (status / "crawl-gudujinhuati.json").exists()
