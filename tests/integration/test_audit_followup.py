@@ -480,3 +480,28 @@ def test_standalone_article_reference_still_allows_metadata_comparison(conn, set
     settings, sources = setup_sources(conn, settings, tmp_path)
     query = analyze(conn, question, sources)
     assert query.overview and not query.content_terms and query.authors == ["李四"]
+
+
+def test_search_treats_registered_multiword_names_as_entities(conn, settings):
+    from researchlib.sources import load_sources
+
+    with TestClient(create_app(settings)) as client:
+        owned = article(conn, "stratechery", title="本周的订阅业务")
+        article(conn, "fangwei-mp", title="别人谈 Ben Thompson 的订阅业务")
+        result = client.get("/api/v1/search", params={"q": "Ben Thompson"}).json()
+        assert [row["id"] for row in result["items"]] == [owned]
+        page = client.get("/search", params={"q": "Ben Thompson"}).text
+        assert "本周的订阅业务" in page
+        assert "别人谈" not in page
+
+    sources = load_sources(settings.sources_path)
+    query = analyze(conn, 'Ben Thompson Ping An Bank OR Bank of China 利润', sources)
+    assert query.authors == ["Ben Thompson"]
+    companies = [(term.text, term.group) for term in query.terms if term.kind == "company"]
+    assert companies == [("平安银行", 0), ("中国银行", 0)]
+    assert [(term.text, term.group) for term in query.content_terms] == [("利润", 1)]
+
+    quoted = analyze(conn, '"Ping An Bank" -"Bank of China" Ben Thompsonson jd', sources)
+    assert not quoted.companies and not quoted.authors
+    assert quoted.terms[0].kind == "phrase" and quoted.terms[0].text == "Ping An Bank"
+    assert quoted.excludes == ["Bank of China"]
