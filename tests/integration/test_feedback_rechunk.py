@@ -33,12 +33,13 @@ def test_replay_follows_marked_passage_across_rechunk(conn, settings, monkeypatc
 
     update(f"## 库存\n\n{evidence}")
     with TestClient(create_app(settings)) as client:
-        posted = client.post("/ask", data={"q": "宁德时代的库存", "article": article_id}, follow_redirects=False)
+        posted = client.post("/ask", data={"q": "库存", "source": "fangwei-mp"}, follow_redirects=False)
         page = posted.headers["location"]
         answer_page = client.get(page).text
         assert page.startswith("/ask/") and "正在下降。" in answer_page
-        digest = re.search(r'name="passage_hash" value="([0-9a-f]+)"', answer_page).group(1)
-        form = {"label": "irrelevant", "article": article_id, "chunk": 0, "n": 1, "passage_hash": digest}
+        forms = re.findall(r'<form class="mark-form"[^>]*>(.*?)</form>', answer_page, flags=re.S)
+        fields = [dict(re.findall(r'name="([^"]+)" value="([^"]*)"', block)) for block in forms]
+        form = next(values for values in fields if values["article"] == str(article_id))
         assert "已标不相关" in client.post(f"{page}/feedback", data=form).text
         stale = client.post(f"{page}/feedback", data={**form, "passage_hash": "0" * 32})
         assert "回答的出处已更新" in stale.text and "已标不相关" in stale.text
