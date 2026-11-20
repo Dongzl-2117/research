@@ -10,7 +10,8 @@
   <p class="item-meta"><span class="source-number">{{ item.n }}</span> <span class="quiet">{{ item.title }}</span></p>
 </li>
 {% else %}
-{% set flagged = (item.article_id ~ ":" ~ item.ord) in (result.irrelevant or []) %}
+{% set digest = item | citation_hash %}
+{% set flagged = (item.article_id ~ ":" ~ item.ord ~ ":" ~ digest) in (result.irrelevant or []) %}
 <li id="c-{{ item.n }}" tabindex="-1" class="{% if item.cited %}cited{% endif %}{% if flagged %} flagged{% endif %}">
   <p class="item-meta"><span class="source-number">{{ item.n }}</span> <a href="{{ item.url }}">{{ item.title }}</a></p>
   <p class="source-byline">{{ item.author }} · {{ item.date }}{% if item.heading %} · {{ item.heading | truncate(40, true, "…", 0) }}{% endif %}</p>
@@ -22,6 +23,7 @@
     </details>
     {% if result.id %}
     <form class="mark-form" action="/ask/{{ result.id }}/feedback" method="post">
+      <input type="hidden" name="passage_hash" value="{{ digest }}">
       <input type="hidden" name="label" value="irrelevant"><input type="hidden" name="article" value="{{ item.article_id }}"><input type="hidden" name="chunk" value="{{ item.ord }}"><input type="hidden" name="n" value="{{ item.n }}">
       <button type="submit" class="mark{% if flagged %} is-on{% endif %}" aria-pressed="{{ 'true' if flagged else 'false' }}">{% if flagged %}已标不相关{% else %}不相关{% endif %}</button>
     </form>
@@ -96,7 +98,7 @@
           <form id="missing" class="missing-form" action="/ask/{{ result.id }}/feedback" method="post">
             <input type="hidden" name="label" value="missing"><label class="sr" for="missing-ref">漏了哪篇</label><input id="missing-ref" name="ref" type="text" inputmode="url" placeholder="文章链接或编号" autocomplete="off" required><button type="submit">补上</button>
           </form>
-          {% if result.feedback_error %}<p class="chat-error" role="alert">{{ result.feedback_error }}</p>{% endif %}
+          {% if result.feedback_error %}<p id="feedback-error" class="chat-error" role="alert">{{ result.feedback_error }}</p>{% endif %}
           {% if result.missing %}<ul class="missing-list" aria-label="补上的文章">{% for item in result.missing %}<li><a href="/articles/{{ item.article_id }}{% if item.chunk is not none %}?chunk={{ item.chunk }}{% endif %}">{{ item.title }}</a></li>{% endfor %}</ul>{% endif %}
         </details>
         {% endif %}
