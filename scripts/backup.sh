@@ -1,5 +1,5 @@
 #!/bin/bash
-# 每晚备份投资研究库：数据库导出一份，图片增量同步。数据库导出保留 KEEP_DAYS 天（默认 30）。
+# 每晚备份投资研究库：数据库导出一份，图片增量同步。数据库导出保留 KEEP_DAYS 天（默认 7）。
 #
 #   BACKUP_DIR=/Volumes/备份盘/research scripts/backup.sh
 #
@@ -9,7 +9,7 @@ set -Eeuo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 BACKUP_DIR="${BACKUP_DIR:-}"
-KEEP_DAYS="${KEEP_DAYS:-30}"
+KEEP_DAYS="${KEEP_DAYS:-7}"
 TASK=backup
 . "$REPO/scripts/status.sh"
 staging=""
