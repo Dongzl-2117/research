@@ -1327,7 +1327,7 @@ def rejoin_stored(conn, *, dry_run: bool = False) -> dict:
     return {"matched": len(rows), "changed": len(changed), "articles": len(articles), "dry_run": dry_run}
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, limit_followups_to_named: bool = False) -> int:
     """退出码：0 跑完了，2 识图起不来（Grok 没登录，或 DeepSeek 没配 key）。"""
     parser = argparse.ArgumentParser(description="识别图片里的字，切成段落块进检索")
     parser.add_argument("--fail-empty", action="store_true", help="有缺图或识别失败且这一批没有成功时返回 4")
@@ -1461,6 +1461,13 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 from researchlib.followups import drain_ocr_followups
 
+                if limit_followups_to_named:
+                    # 抓取时同图旧稿也更新图片文字、排进后续队列；当场调模型只处理本次选中的稿。
+                    named = set(args.article)
+                    follow = {
+                        kind: [article_id for article_id in ids if article_id in named]
+                        for kind, ids in follow.items()
+                    }
                 drained = drain_ocr_followups(conn, settings, follow)
                 print(f"已重写摘要 {drained['digest']} 篇，标题 {drained['titles']} 篇")
         if (args.redo or args.tall) and not args.article and report["ocr_changed"]:

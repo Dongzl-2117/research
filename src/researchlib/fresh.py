@@ -76,7 +76,7 @@ def step_ocr(ids: list[int]) -> int:
     argv = ["--limit", "200"]
     for article_id in ids:
         argv += ["--article", str(article_id)]
-    return ocr.main(argv)
+    return ocr.main(argv, limit_followups_to_named=True)
 
 
 def step_translate(settings: Settings, ids: list[int], workers: int) -> int:
