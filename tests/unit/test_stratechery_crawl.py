@@ -176,3 +176,28 @@ def test_resolve_by_title_accepts_weekly_number_prefix():
     ]
     found, problems = resolve_by_title([item], get=_wp(posts))
     assert problems == [] and found[0].external_id == "2026/the-end-of-jensen"
+
+
+def test_archived_rss_keeps_only_unambiguous_in_page_links(tmp_path: Path):
+    from dataclasses import replace
+
+    from researchlib.mdlinks import prepare_body_html
+
+    item = replace(_item(None), html=(
+        '<p>Growth was 1%.<sup id="rf1-1768"><a href="#fn1-1768" rel="footnote">1</a></sup></p>'
+        '<p><a href="#ai-impact">AI impact</a> · <a href="#generalist">Generalist</a></p>'
+        '<a id="ai-impact"></a><h4>AI impact</h4><a name="generalist"></a><h4>Generalist</h4>'
+        '<ol><li id="fn1-1768"><p>An actual note. <a href="#rf1-1768">↩</a></p></li></ol>'
+        '<p>Plain 2, bare superscript <sup>3</sup>, <a href="#missing">missing</a>, '
+        '<a href="#dup">ambiguous</a>, <a href="#hidden">hidden</a>.</p>'
+        '<a id="dup"></a><a name="dup"></a><div style="display:none" id="hidden">ignored</div>'
+    ))
+    _, paths = crawl([item], set(), inbox=tmp_path, author="Ben Thompson")
+    md = paths[0].read_text()
+    html = prepare_body_html(md, item.title, {}, None, None)
+    for anchor in ("rf1-1768", "fn1-1768", "ai-impact", "generalist"):
+        assert html.count(f'id="archive-{anchor}"') == 1
+        assert html.count(f'href="#archive-{anchor}"') == 1
+    assert '<li><span id="archive-fn1-1768"></span>An actual note.' in html
+    assert "Plain 2, bare superscript 3, missing, ambiguous, hidden." in html
+    assert "#missing" not in md and "#dup" not in md and "#hidden" not in md
