@@ -83,13 +83,12 @@ if [ "$ARCHIVE" != "$INBOX" ]; then
 fi
 
 echo "$(date '+%F %T') 导入 research 库"
-mark="$(new_mark)"
-run_step "导入" compose_exec app research-ingest-zsxq --source fangwei-zsxq --input /data/inbox/fangwei-zsxq --origin crawl
+run_step "导入" crawl_with_receipt research-ingest-zsxq --source fangwei-zsxq --input /data/inbox/fangwei-zsxq --origin crawl
 
 # 这次新进来的帖子当场识图、整理判断、写摘要、给段落打分（research-process-new，不等夜间、不避开高峰价）。
 # 网友帖、评论壳不显示，也不处理。
 echo "$(date '+%F %T') 处理新帖"
-run_step "处理新帖" process_new fangwei-zsxq "$mark"
+run_step "处理新帖" process_new fangwei-zsxq
 
 echo "$(date '+%F %T') 补标题（空/壳/省略号，站内 flash 起题）"
 run_step "标题" compose_exec app research-repair-zsxq --source fangwei-zsxq --titles-only --ai-titles --limit 30

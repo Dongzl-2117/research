@@ -18,13 +18,12 @@ compose() {
 }
 
 echo "$(date '+%F %T') 开始孤独进化体抓取"
-mark="$(new_mark)"
-run_step "抓取并导入" compose_exec app research-crawl-wechat --source "$SOURCE"
+run_step "抓取并导入" crawl_with_receipt research-crawl-wechat --source "$SOURCE"
 
 echo "$(date '+%F %T') 下载外链图片"
 run_step "下载外链图片" compose_exec app research-fetch-images --limit 200
 
 echo "$(date '+%F %T') 处理新文章"
-run_step "处理新文章" process_new "$SOURCE" "$mark"
+run_step "处理新文章" process_new "$SOURCE"
 
 status_ok "孤独进化体抓取完成"

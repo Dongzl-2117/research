@@ -103,8 +103,8 @@ def test_short_text_is_not_digested_and_schedule_caps_match_the_scripts():
     assert f"VIEWS_LIMIT:-{llm_cost.NIGHTLY_VIEWS_LIMIT}" in nightly
     assert 'THESES_ENABLED="${THESES_ENABLED:-0}"' in nightly
     assert 'NIGHTLY_OCR="${NIGHTLY_OCR:-0}"' in nightly
-    # 晚点的定时抓取只当场处理这次抓进来的（抓取前记下最大 id），不按来源补积压。
-    assert 'mark="$(new_mark)"' in late and 'process_new "$SOURCE" "$mark"' in late
+    # 晚点的定时抓取只当场处理这次抓进来的（按本次导入回执），不按来源补积压。
+    assert "crawl_with_receipt research-crawl-wechat" in late and 'process_new "$SOURCE"' in late
     assert "research-digest" not in late
 
 

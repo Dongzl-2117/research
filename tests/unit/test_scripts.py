@@ -90,10 +90,10 @@ def test_nightly_starts_app_before_ocr():
     assert "compose up -d" in status
     assert "is not running" in status
     commands = {
-        "crawl-fangwei-mp.sh": "compose_exec app research-crawl-wechat",
-        "crawl-gudujinhuati.sh": "compose_exec app research-crawl-wechat",
-        "crawl-latepost.sh": "compose_exec app research-crawl-wechat",
-        "crawl-fangwei-zsxq.sh": "compose_exec app research-ingest",
+        "crawl-fangwei-mp.sh": "crawl_with_receipt research-crawl-wechat",
+        "crawl-gudujinhuati.sh": "crawl_with_receipt research-crawl-wechat",
+        "crawl-latepost.sh": "crawl_with_receipt research-crawl-wechat",
+        "crawl-fangwei-zsxq.sh": "crawl_with_receipt research-ingest",
     }
     for name, command in commands.items():
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
@@ -106,9 +106,10 @@ def test_fangwei_mp_crawl_takes_bodies_from_the_original_page():
     text = (ROOT / "scripts" / "crawl-fangwei-mp.sh").read_text(encoding="utf-8")
     assert 'research-crawl-wechat --source "$SOURCE"' in text and "SOURCE=fangwei-mp" in text
     assert "python3" not in text and 'dl.py"' not in text
-    steps = ("research-crawl-wechat", "research-place-wechat-images", "research-fetch-images")
-    order = [text.index(f"compose_exec app {name}") for name in steps]
-    order.append(text.index('process_new "$SOURCE" "$mark"'))
+    steps = ("crawl_with_receipt research-crawl-wechat", "compose_exec app research-place-wechat-images",
+             "compose_exec app research-fetch-images")
+    order = [text.index(step) for step in steps]
+    order.append(text.index('process_new "$SOURCE"'))
     assert order == sorted(order)
     # 老文章的图每次按原文页摆一批，导入之后跑（导入整目录时库里摆好的留着）。
     assert 'research-place-wechat-images --source "$SOURCE" --limit "$PLACE_LIMIT"' in text
@@ -142,7 +143,7 @@ def test_latepost_crawl_is_incremental_and_does_not_backfill():
     commands = "\n".join(line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
     assert "--backfill" not in commands and "--list-only" not in commands
     # 只当场处理这次抓进来的，不按来源补积压（回填导入的几千篇由夜间按上限补）。
-    assert "research-digest" not in commands and 'process_new "$SOURCE" "$mark"' in commands
+    assert "research-digest" not in commands and 'process_new "$SOURCE"' in commands
     plist = (ROOT / "deploy" / "launchd" / "com.zldong.research.crawl-latepost.plist").read_text(encoding="utf-8")
     assert plist.count("<integer>30</integer>") == 2
     assert "<integer>8</integer>" in plist and "<integer>20</integer>" in plist
@@ -152,7 +153,7 @@ def test_latepost_crawl_is_incremental_and_does_not_backfill():
 
 
 def test_crawls_process_new_articles_right_after_import():
-    """Zhilin 11-19：新抓的译制、判断、摘要、打分不等夜间、不等便宜时段。每个抓取脚本导入前记下最大的文章 id，
+    """Zhilin 11-19：新抓的译制、判断、摘要、打分不等夜间、不等便宜时段。每个抓取脚本用自己的回执，
     导入、下图以后对这次新进来的跑 research-process-new；只处理新的，不按来源补积压。"""
     scripts = {
         "crawl-fangwei-mp.sh": ("research-crawl-wechat", '"$SOURCE"'),
@@ -164,19 +165,18 @@ def test_crawls_process_new_articles_right_after_import():
     for name, (importer, source) in scripts.items():
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         commands = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-        mark = commands.index('mark="$(new_mark)"')
-        imported = commands.index(f"compose_exec app {importer}")
-        processed = commands.index(f"process_new {source} \"$mark\"")
-        assert mark < imported < processed, name
+        imported = commands.index(f"crawl_with_receipt {importer}")
+        processed = commands.index(f"process_new {source}")
+        assert imported < processed, name
         assert "research-digest" not in commands, name
         if "research-fetch-images" in commands:
             assert commands.index("research-fetch-images") < processed, name
     nightly = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
-    crawl = nightly.index("compose_exec app research-crawl-stratechery")
-    fresh = nightly.index('process_new stratechery "$mark"')
-    assert nightly.index('mark="$(new_mark') < crawl < fresh < nightly.index("research-translate --source stratechery")
+    crawl = nightly.index("crawl_with_receipt research-crawl-stratechery")
+    fresh = nightly.index('process_new stratechery')
+    assert crawl < fresh < nightly.index("research-translate --source stratechery")
     status = (ROOT / "scripts" / "status.sh").read_text(encoding="utf-8")
-    assert "research-process-new --last-id" in status and "--after-id" in status
+    assert "RESEARCH_CRAWL_RECEIPT=" in status and "--receipt" in status
     # 不带 --off-peak：新文章不等便宜时段。
     assert "--off-peak" not in status
 
@@ -238,3 +238,45 @@ def test_nightly_scores_new_passages_after_digests():
     nightly = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
     assert 'step "段落打分" compose_exec app research-mechanism --limit "$MECHANISM_LIMIT"' in nightly
     assert nightly.index("app research-digest") < nightly.index("app research-mechanism")
+
+
+def test_crawl_and_process_share_only_this_runs_receipt(tmp_path):
+    script = r"""
+    set -euo pipefail
+    TASK=test
+    REPO="$1"
+    . "$2"
+    new_ocr_enabled() { return 1; }
+    compose_exec() {
+      shift # app
+      case "$1" in
+        env)
+          test "$2" = "RESEARCH_CRAWL_RECEIPT=/data/${CRAWL_RECEIPT##*/}"
+          test "$3" = "research-crawl-wechat"
+          printf '42\n' > "$CRAWL_RECEIPT"
+          ;;
+        research-process-new)
+          test "$2" = "--source" && test "$3" = "latepost"
+          test "$4" = "--receipt" && test "$5" = "/data/${CRAWL_RECEIPT##*/}"
+          test "$(cat "$CRAWL_RECEIPT")" = "42"
+          ;;
+        research-crawl-wechat) test "$PROCESS_NEW" = "0" ;;
+        *) return 1 ;;
+      esac
+    }
+    run_step "导入" crawl_with_receipt research-crawl-wechat
+    first="$CRAWL_RECEIPT"
+    run_step "处理" process_new latepost
+    (
+      run_step "导入" crawl_with_receipt research-crawl-wechat
+      test "$CRAWL_RECEIPT" != "$first"
+      status_finish 0
+    )
+    test -f "$first"
+    status_finish 0
+    test ! -e "$first"
+    PROCESS_NEW=0
+    run_step "只导入" crawl_with_receipt research-crawl-wechat
+    run_step "跳过" process_new latepost
+    """
+    subprocess.run(["bash", "-c", script, "test", str(tmp_path), str(ROOT / "scripts/status.sh")], check=True)
