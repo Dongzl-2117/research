@@ -36,7 +36,9 @@
 {% if answer %}
 <section class="day-lead" aria-label="这一天的总结">
   <h2>{{ answer.question }}</h2>
-  <div class="prose answer-body">{{ answer.answer | answer_html }}</div>
+  {% if answer.failed_batches %}<p>资料分 {{ answer.batches }} 批读，第 {{ answer.failed_batches | join("、") }} 批未读到，回答可能不全。</p>{% endif %}
+  <div class="prose answer-body">{{ answer.answer | answer_html(answer.citations) }}</div>
+  {% if answer.checks %}<p><a href="/ask/{{ answer.id }}#answer-checks">{{ answer.checks | length }} 处需要回原文核对</a></p>{% endif %}
   <p class="quiet">{% if answer.model %}{{ answer.model }} · {% endif %}<a href="/ask/{{ answer.id }}">查看这条汇总的出处</a></p>
   {% if answer.citations %}
   <ol class="citations">

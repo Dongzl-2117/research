@@ -94,3 +94,38 @@ def test_day_answer_matches_the_report_kind_and_scope_before_limiting(conn):
     marked = save("另一版日报提示词", preset_key="day")
     save(PRESETS["day"], preset_key="author")
     assert lookup()["id"] == marked
+
+
+def test_daily_report_keeps_partial_coverage_and_unknown_citation_visible(conn, settings):
+    _store(conn, settings, "fangwei-mp", "report", "广告收入", "广告收入增长了 12%。")
+    article_id = conn.execute("SELECT id FROM articles WHERE external_id = 'report'").fetchone()["id"]
+    scope = {"date_from": DAY, "date_to": DAY, "source_ids": ["fangwei-mp"], "preset_key": "day"}
+    citation = {
+        "n": 1, "article_id": article_id, "cited": True, "title": "广告收入", "text": "广告收入增长了 12%。",
+        "url": f"/articles/{article_id}", "author": "方伟", "date": DAY,
+    }
+    answer_id = conn.execute(
+        "INSERT INTO llm_answers (question, scope, answer, citations, stats, status)"
+        " VALUES (%s, %s, %s, %s, %s, 'done') RETURNING id",
+        (PRESETS["day"], Jsonb(scope), "广告收入增长了 12%[1]。另一业务增长了 89%[99]。",
+         Jsonb([citation]), Jsonb({"batches": 3, "failed_batches": [2]})),
+    ).fetchone()["id"]
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        day = client.get(f"/days/{DAY}", params={"source": "fangwei-mp"}).text
+        detail = client.get(f"/ask/{answer_id}").text
+        for page in (day, detail):
+            assert "第 2 批未读到" in page
+            assert "需要回原文核对" in page
+            assert 'href="#c-1"' in page and 'id="c-1"' in page
+            assert "[99]" in page and 'href="#c-99"' not in page
+        assert f'href="/ask/{answer_id}#answer-checks"' in day
+        assert 'id="answer-checks"' in detail
+
+        conn.execute(
+            "UPDATE llm_answers SET answer = %s, stats = '{}' WHERE id = %s", ("广告收入增长了 12%[1]。", answer_id)
+        )
+        conn.commit()
+        day = client.get(f"/days/{DAY}", params={"source": "fangwei-mp"}).text
+        assert 'href="#c-1"' in day
+        assert "批未读到" not in day and "#answer-checks" not in day
