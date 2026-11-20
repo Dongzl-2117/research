@@ -77,9 +77,12 @@
         {% if result.failed_batches %}<p class="chat-warning chat-partial">资料分 {{ result.batches }} 批读，第 {{ result.failed_batches | join("、") }} 批未读到，回答可能不全。</p>{% endif %}
         {% if result.answer %}<div class="prose answer-body chat-markdown">{{ result.answer | answer_html(result.citations) }}</div>{% endif %}
         {% if result.checks %}
-        <section class="checks chat-warnings" aria-label="没核对上的句子">
+        <section id="answer-checks" class="checks chat-warnings" aria-label="没核对上的句子">
           <h3>需要回原文核对 <span class="num">{{ result.checks | length }}</span></h3>
-          <ul>{% for flag in result.checks %}<li><p class="check-sentence">{{ flag.sentence }}{% for n in flag.refs %} <a class="cite" href="#c-{{ n }}"><span class="cite-mark">[</span>{{ n }}<span class="cite-mark">]</span></a>{% endfor %}</p><p class="check-problems">{{ flag.problems | join("；") }}</p></li>{% endfor %}</ul>
+          {% set known = result.citations | map(attribute="n") | map("string") | list %}
+          <ul>{% for flag in result.checks %}<li><p class="check-sentence">{{ flag.sentence }}{% for n in flag.refs %}
+            {% if n | string in known %}<a class="cite" href="#c-{{ n }}"><span class="cite-mark">[</span>{{ n }}<span class="cite-mark">]</span></a>{% else %}[{{ n }}]{% endif %}
+          {% endfor %}</p><p class="check-problems">{{ flag.problems | join("；") }}</p></li>{% endfor %}</ul>
         </section>
         {% endif %}
         {% set cited = result.citations | selectattr("cited") | list %}

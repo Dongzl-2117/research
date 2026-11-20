@@ -1993,7 +1993,7 @@ def day_page(request: Request, day: str):
         elsewhere = tuple(source.id for source in sources if not source.timeline)
         saved = queries.day_answer(conn, found, scope.source_ids, scope.company_id, elsewhere, question=PRESETS["day"])
         # 后来被隐藏或来源停用的原文不再展示；这天的汇总引用了它们就整条不放（R6）。
-        withheld = withhold_citations(conn, saved["citations"] or [], sources)[1] if saved else 0
+        citations, withheld = withhold_citations(conn, saved["citations"] or [], sources) if saved else ([], 0)
         company = queries.get_company(conn, info["company"]) if info["company"] else None
         banner = queries.sample_state(conn, [source.id for source in sources])
     brief = compose_day_brief(cards)
@@ -2010,11 +2010,15 @@ def day_page(request: Request, day: str):
     answer = None
     if saved and not withheld:
         # 按钮问的是一段给模型的指令，标题换成它问的事；出处只列回答里引了的。
+        stats = saved["stats"] or {}
         answer = {
             "id": saved["id"],
             "question": "这一天的主要判断" if saved["question"] == PRESETS["day"] else saved["question"],
             "answer": saved["answer"],
-            "citations": [item for item in saved["citations"] or [] if item.get("cited")],
+            "citations": [item for item in citations if item.get("cited")],
+            "checks": _safe_checks(saved, citations, sources),
+            "failed_batches": stats.get("failed_batches") or [],
+            "batches": stats.get("batches") or 0,
             "model": saved["model"],
         }
     if company:
