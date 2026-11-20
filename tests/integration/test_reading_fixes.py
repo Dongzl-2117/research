@@ -663,3 +663,45 @@ def test_reimport_turns_literal_backslash_n_into_paragraphs(conn, settings, tmp_
         page = client.get(f"/articles/{before['id']}").text
     assert "\\n" not in page
     assert re.search(r'<p id="p-\d+">熊市里股价跌八成也不等于便宜。</p><p id="p-\d+">能做的就是耐心等。</p>', page)
+
+
+def test_feishu_pdf_attachments_in_reader_tree_and_exports(conn, settings):
+    from researchlib.doctree import ROOT_TITLE, build_doc_tree
+
+    feishu = "linwenfeng-feishu"
+    body = (
+        "## 参考附件\n\n"
+        "[📎 沃尔玛 2025 财年报告.pdf](../assets/CBqOb39aPoOCXfxG8yecEfoUnCd.pdf) 与 "
+        "[📎 BIM（土耳其版）年报.pdf](feishu-asset://NXU8bY9bDo1QIaxM7bucLhNOn4d)\n\n"
+        "[📎 公开版.pdf](https://example.org/filings/report.pdf) "
+        "[已收录文章](公司研究.md)\n\n"
+        "示例：`[📎 示例.pdf](../assets/Demo.pdf)`\n"
+    )
+    _store(conn, settings, feishu, [
+        ParsedDoc(f"docs/{ROOT_TITLE}__Root.md", ROOT_TITLE, None, body, {"parent": "docs"}, []),
+        ParsedDoc("docs/公司研究.md", "公司研究", None, "零售正文。", {"parent": "docs"}, []),
+    ])
+    build_doc_tree(conn, feishu)
+    ids = {r["title"]: r["id"] for r in conn.execute("SELECT id, title FROM articles")}
+    article_id = ids[ROOT_TITLE]
+    with TestClient(create_app(settings)) as client:
+        for url in (f"/articles/{article_id}", f"/sources/{feishu}/tree/{article_id}"):
+            response = client.get(url)
+            assert response.status_code == 200
+            html = response.text
+            assert html.count("本站未提供附件") == 2
+            assert "沃尔玛 2025 财年报告.pdf" in html and "BIM（土耳其版）年报.pdf" in html
+            assert 'href="../assets/' not in html
+            assert 'href="https://example.org/filings/report.pdf"' in html
+            assert f'href="/articles/{ids["公司研究"]}"' in html
+            assert "<code>[📎 示例.pdf](../assets/Demo.pdf)</code>" in html
+        for md in (client.get(f"/api/v1/articles/{article_id}.md").text,
+                   client.get(f"/api/v1/articles/{article_id}").json()["body_markdown"]):
+            assert "📎 沃尔玛 2025 财年报告.pdf（本站未提供附件）" in md
+            assert "📎 BIM（土耳其版）年报.pdf（本站未提供附件）" in md
+            assert "CBqOb39aPoOCXfxG8yecEfoUnCd" not in md and "feishu-asset://" not in md
+            assert "[📎 公开版.pdf](https://example.org/filings/report.pdf)" in md
+            assert f"https://investment.zldong.com/articles/{ids['公司研究']}" in md
+            assert "`[📎 示例.pdf](../assets/Demo.pdf)`" in md
+    stored = conn.execute("SELECT body_md FROM articles WHERE id=%s", (article_id,)).fetchone()
+    assert "feishu-asset://" in stored["body_md"] and "../assets/CBqOb39a" in stored["body_md"]

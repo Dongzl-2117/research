@@ -24,7 +24,7 @@ from researchlib.ask import DAILY_LIMIT, RUNNING_LIMIT, WAIT_SECONDS, ask, clean
 from researchlib.ask_model import parse_choice, recorded_choice
 from researchlib.citecheck import check_answer
 from researchlib.housekeeping import strip_housekeeping
-from researchlib.mdlinks import link_markdown_articles, load_md_index
+from researchlib.mdlinks import link_markdown_articles, load_md_index, mark_feishu_pdf_markdown
 from researchlib.mentions import DEPTH_LABELS, CompanyMatcher
 from researchlib.nested_copies import fold_nested_copies
 from researchlib.output_safety import redact_output, redact_subscription_links
@@ -315,6 +315,8 @@ def article_payload(conn, request: Request, sources, article_id: int) -> dict | 
     # 2026 网页导出一个文本节点一行：和单看原文一样拼回段落。
     if is_web_export(row["body_md"] or ""):
         body_md = join_web_export_lines(body_md)
+    if source.kind == "feishu":
+        body_md = mark_feishu_pdf_markdown(body_md)
     # 归档里的图是相对路径（星球是「../../images/…」），接口拿到打不开：本地存了的换成站内 /media 的完整地址。
     images = queries.article_images(conn, article_id)
     if images:
