@@ -1,4 +1,5 @@
 import os
+import re
 from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -119,6 +120,22 @@ def test_search_ranks_title_above_body_and_matches_author(conn, settings):
         missing = client.get("/search", params={"q": "绝无此词xyz"})
         assert "没有找到" in missing.text
         assert "换个词" not in missing.text
+
+
+def test_search_links_cross_listed_aliases_in_both_views(conn, settings):
+    with TestClient(create_app(settings)) as client:
+        def targets(query, view):
+            page = client.get("/search", params={"q": query, "view": view, "author": "方伟"})
+            assert page.status_code == 200
+            return re.findall(r'<a class="tag" href="/companies/\d+">([^ <]+)', page.text)
+
+        for view in ("passage", "article"):
+            assert targets("baba", view) == targets("BABA", view) == ["阿里巴巴"]
+            assert targets("02318.hk", view) == targets("601318.sh", view) == ["中国平安"]
+            assert targets("JD", view) == ["京东"]
+            assert targets("jd", view) == []
+            assert targets("b站", view) == []
+            assert targets("baba收益", view) == []
 
 
 def test_search_says_how_many_matches_paging_reaches(conn, settings, monkeypatch):

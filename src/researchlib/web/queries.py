@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from researchlib.author_voice import hide_from_site, not_comment_shell_sql, site_visible_sql
+from researchlib.mentions import CASE_SENSITIVE_LATIN, is_cjk_alias, latin_casefold
 from researchlib.visibility import visible_sql
 
 
@@ -560,12 +561,22 @@ def matching_companies(conn, query: str, limit: int = 6):
         WHERE name_zh = %(q)s
            OR lower(name_en) = lower(%(q)s)
            OR lower(coalesce(ticker, '')) = lower(%(q)s)
-           OR %(q)s = ANY(aliases)
+           OR EXISTS (
+               SELECT 1 FROM unnest(aliases) AS alias
+               WHERE alias = %(q)s
+                  OR (lower(alias) = lower(%(foldable)s::text) AND alias <> ALL(%(case_sensitive)s))
+           )
            OR (char_length(%(q)s) >= 2 AND position(%(q)s in name_zh) > 0)
         ORDER BY (name_zh = %(q)s) DESC, name_zh
         LIMIT %(limit)s
         """,
-        {"q": raw, "limit": limit},
+        {
+            "q": raw,
+            # 只补检索也会认的小写别名。JD、LI 和中英混写的 B站 等仍按登记写法匹配。
+            "foldable": raw if not is_cjk_alias(raw) and latin_casefold(raw) else None,
+            "case_sensitive": list(CASE_SENSITIVE_LATIN),
+            "limit": limit,
+        },
     ).fetchall()
 
 
