@@ -166,24 +166,29 @@ def _stored_expansions(conn, answer_ids: set[int]) -> dict:
 
 
 def replay(conn, settings, sources, *, expand: bool = False) -> list[dict]:
-    from researchlib.ask import expand_terms, scope_from_json
+    from researchlib.ask import expand_terms, live_scope, scope_from_json
     from researchlib.retrieval import analyze, retrieve
 
     results = []
     for item in labelled_questions(conn):
-        scope = scope_from_json(item["scope"])
-        preset = bool(item["scope"].get("preset"))
-        expansions = {} if preset else _stored_expansions(conn, item["answers"])
-        if expand and not preset:
-            originals = [t.text for t in analyze(conn, item["question"], sources).terms if t.kind == "word"]
-            expansions = expand_terms(settings, item["question"], originals)
-        found = retrieve(conn, item["question"], scope, sources, purpose="deep", preset=preset, expansions=expansions)
-        articles = {p.article_id for p in found.passages}
-        keys = {(p.article_id, p.ord) for p in found.passages}
+        scope = live_scope(scope_from_json(item["scope"]), sources)
+        passages = []
+        if scope.source_ids:
+            preset = bool(item["scope"].get("preset"))
+            expansions = {} if preset else _stored_expansions(conn, item["answers"])
+            if expand and not preset:
+                originals = [t.text for t in analyze(conn, item["question"], sources).terms if t.kind == "word"]
+                expansions = expand_terms(settings, item["question"], originals)
+            passages = retrieve(
+                conn, item["question"], scope, sources, purpose="deep", preset=preset, expansions=expansions
+            ).passages
+        articles = {p.article_id for p in passages}
+        keys = {(p.article_id, p.ord) for p in passages}
         results.append(
             {
                 "question": item["question"],
-                "passages": len(found.passages),
+                "passages": len(passages),
+                "scope_unavailable": not scope.source_ids,
                 "missing": len(item["missing"]),
                 "missing_found": len([a for a in item["missing"] if a in articles]),
                 "missing_still": sorted(a for a in item["missing"] if a not in articles),
@@ -242,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
     if not results:
         print("还没有标注。回答页上标「不相关」或补「漏了」的文章之后再跑。")
     for item in results:
+        if item["scope_unavailable"]:
+            print(f"{item['question'][:40]}：原范围没有仍启用的来源，未回放")
+            continue
         line = f"{item['question'][:40]}：{item['passages']} 段"
         if item["missing"]:
             line += f"；漏的 {item['missing']} 篇现在找回 {item['missing_found']} 篇"
@@ -250,11 +258,12 @@ def main(argv: list[str] | None = None) -> int:
         if item["irrelevant"]:
             line += f"；标过不相关的 {item['irrelevant']} 段还剩 {item['irrelevant_still']} 段"
         print(line)
-    if results:
-        missing = sum(item["missing"] for item in results)
-        found = sum(item["missing_found"] for item in results)
-        noise = sum(item["irrelevant"] for item in results)
-        still = sum(item["irrelevant_still"] for item in results)
+    replayed = [item for item in results if not item["scope_unavailable"]]
+    if replayed:
+        missing = sum(item["missing"] for item in replayed)
+        found = sum(item["missing_found"] for item in replayed)
+        noise = sum(item["irrelevant"] for item in replayed)
+        still = sum(item["irrelevant_still"] for item in replayed)
         print(f"合计：漏召回 {found}/{missing} 找回，不相关 {still}/{noise} 还在")
     if times:
         print(

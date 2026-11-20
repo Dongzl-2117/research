@@ -71,13 +71,13 @@ def test_live_scope_drops_revoked_sources_and_keeps_other_bounds():
         date_from=date(2026, 1, 1), date_to=date(2026, 1, 1),
     )
     live = [Source("b", "札记乙", "李四", "markdown", True)]
-    kept = ask._live_scope(scope, live)
+    kept = ask.live_scope(scope, live)
     assert kept.source_ids == ["b"]
     assert (kept.article_id, kept.company_id, kept.tree_id, kept.date_from, kept.date_to) == (
         7, 3, 9, date(2026, 1, 1), date(2026, 1, 1),
     )
-    assert ask._live_scope(scope, []).source_ids == []
-    assert ask._live_scope(scope, [
+    assert ask.live_scope(scope, []).source_ids == []
+    assert ask.live_scope(scope, [
         Source("a", "札记甲", "王小明", "markdown", True),
         Source("b", "札记乙", "李四", "markdown", True),
     ]) == scope
