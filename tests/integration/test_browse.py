@@ -323,3 +323,27 @@ def test_nul_and_out_of_range_numbers_are_not_500(conn, settings, monkeypatch):
         assert posted.status_code == 303
     stored = conn.execute("SELECT question FROM llm_answers ORDER BY id").fetchall()
     assert [row["question"] for row in stored] == ["宁德时代 的库存和产能", "宁德时代 的产能"]
+
+
+def test_named_author_respects_selected_source_and_author(conn, settings):
+    load_sample(conn, settings)
+    with TestClient(create_app(settings)) as client:
+        def results(**params):
+            response = client.get("/api/v1/search", params=params)
+            assert response.status_code == 200
+            return response.json()
+
+        for selected in ({"source": "chengfengpolang"}, {"author": "乘风破浪"}):
+            for query in ("方伟", "方伟 微软"):
+                found = results(q=query, **selected)
+                assert found["total"] == 0 and found["items"] == []
+                page = client.get("/search", params={"q": query, **selected})
+                assert f"没有找到「{query}」" in page.text
+
+        assert results(q="方伟", source="fangwei-mp")["total"] > 0
+        topical = results(q="微软", source="chengfengpolang")["items"]
+        assert topical
+        article_id = topical[0]["id"]
+        assert results(q="方伟", article=article_id)["items"][0]["id"] == article_id
+        for level in ("passage", "chunk"):
+            assert results(q="方伟 微软", source="chengfengpolang", level=level)["passages"] == []

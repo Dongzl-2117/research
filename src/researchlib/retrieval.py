@@ -2097,7 +2097,7 @@ def _scope_for_question(scope: Scope, query: Query, sources) -> Scope:
     if scope.article_id is not None or not query.authors or not scope.source_ids:
         return scope
     narrowed = [source.id for source in sources if source.author in query.authors and source.id in scope.source_ids]
-    return replace(scope, source_ids=narrowed) if narrowed else scope
+    return replace(scope, source_ids=narrowed)
 
 
 def retrieve(
