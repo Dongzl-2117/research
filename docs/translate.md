@@ -48,7 +48,7 @@ docker compose exec app research-translate --from-inventory unmapped --workers 4
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--source` | 空 | 只译该来源 id；空表示所有来源，中文文章不进队列 |
+| `--source` | 空 | 只译该来源 id；空表示所有启用的来源，中文文章不进队列 |
 | `--limit` | 5 | 每轮从待译队列取几篇；`--from-inventory` 时默认整类 |
 | `--loop` | 关 | 队列空后休眠再扫，直到 Ctrl-C |
 | `--sleep` | 60 | `--loop` 空闲时休眠秒数，最少 5 |
@@ -58,6 +58,8 @@ docker compose exec app research-translate --from-inventory unmapped --workers 4
 | `--from-inventory` | 空 | 译盘点清单里这一类的篇（`unmapped`、`stopped`、`legacy`、`old-prompt`……），见「全库盘点」 |
 | `--recheck`、`--dry-run` | 关 | 见下面重译旧分段的那一节 |
 | `--anytime` | 关 | 走 DeepSeek 时高峰价时段也开新的一篇。默认按队列、按清单译时避开高峰，见下面「避开 DeepSeek 高峰价时段」 |
+
+来源停用后，待译队列、旧分段重检、以前保存的盘点清单和点名译制都会跳过该来源。重新启用后可以继续处理原来的文章。
 
 同一轮里失败过、没有可译正文或者没译全的篇先跳过；`--loop` 时拿过的篇过 15 分钟（`RETAKE_AFTER_S`）才再拿，库里的冷却另外挡着，不会一直重试同一篇。以前（审核 T5）`--loop` 里拿过就再也不拿，充值、断线恢复以后要重启进程才补。只有图、没有要译的字的篇译制会记一笔 `no-text`（迁移 038），待译队列不再把它排在前面占名额（审核 T7），原文改了再看一次。没配 LLM 凭证时直接退出（退出码 2），不连库。
 

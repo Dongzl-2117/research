@@ -34,7 +34,7 @@ class Rows:
 
 class MemoryConn:
     def __init__(self, body):
-        self.article = {"id": 990001, "source_id": "stratechery", "title": "Synthetic audit",
+        self.article = {"id": 990001, "source_id": "stratechery", "source_enabled": True, "title": "Synthetic audit",
                         "body_md": body, "body_text": "English synthetic article.", "published_at": None,
                         "raw_meta": {"format": "markdown"}, "content_hash": "synthetic"}
         self.writes = []
@@ -50,7 +50,7 @@ class MemoryConn:
             self.attempts.append((params[1], params[2]))
         elif "FROM article_translations WHERE article_id" in sql:
             return Rows(self.previous)
-        elif "FROM articles WHERE id" in sql:
+        elif "FROM articles WHERE id" in sql or "FROM articles a JOIN sources s" in sql:
             return Rows(self.article)
         elif "FROM sources" in sql:
             return Rows({"kind": "markdown"})

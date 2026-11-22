@@ -938,13 +938,16 @@ def translate_article(
     """
     article = conn.execute(
         """
-        SELECT id, source_id, title, published_at, body_md, body_text, raw_meta, content_hash
-        FROM articles WHERE id = %s
+        SELECT a.id, a.source_id, a.title, a.published_at, a.body_md, a.body_text, a.raw_meta, a.content_hash,
+               s.enabled AS source_enabled
+        FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = %s
         """,
         (article_id,),
     ).fetchone()
     if article is None:
         return TranslateResult(article_id, "skipped", reason="not found")
+    if not article["source_enabled"]:
+        return TranslateResult(article_id, "skipped", reason="source disabled")
 
     sample = article.get("body_text") or article.get("body_md") or ""
     language = (article.get("raw_meta") or {}).get("language")
@@ -1221,6 +1224,7 @@ def list_coarse_translations(
         SELECT a.id, a.source_id, a.title, a.body_md, a.body_text, a.raw_meta,
                t.segments, t.body_html
         FROM articles a
+        JOIN sources s ON s.id = a.source_id AND s.enabled
         JOIN article_translations t ON t.article_id = a.id
         WHERE {" AND ".join(where)}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
@@ -1340,6 +1344,7 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
     sql = f"""
         SELECT a.id
         FROM articles a
+        JOIN sources s ON s.id = a.source_id AND s.enabled
         CROSS JOIN LATERAL (
             SELECT length(regexp_replace(head, %s, '', 'g')) AS han,
                    regexp_count(head, '[A-Za-z]') AS latin

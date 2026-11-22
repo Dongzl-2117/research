@@ -3,6 +3,8 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 
+import pytest
+
 from researchlib.ingest.model import ParsedDoc
 from researchlib.ingest.store import store_documents
 from researchlib.sources import load_sources
@@ -276,7 +278,6 @@ def test_posts_the_site_hides_and_image_only_posts_are_counted_apart(conn, setti
 
     import json
 
-    import pytest
 
     path = inventory.inventory_path(settings.data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -458,3 +459,58 @@ def test_misplaced_segments_are_listed_and_only_their_stretch_is_retranslated(
     assert "  串段（一段的中文写进了别的段）0 篇：交回英文的段 0 段，中文和相近一段重了（英文对不上）的 0 段" in (
         inventory.summary(after)
     )
+
+
+@pytest.mark.parametrize("mode", ["queue", "inventory", "named", "coarse"])
+def test_translation_respects_source_disabled_after_inventory(conn, settings, monkeypatch, tmp_path, mode):
+    import json
+
+    import yaml
+
+    from researchlib.translate import cli
+
+    article_id = _article(conn, settings, "source-switch", title="合成文章")
+    if mode == "coarse":
+        _old_translation(conn, article_id)
+        conn.execute("UPDATE article_translations SET body_html=%s, segments=1 WHERE article_id=%s",
+                     ("<p>旧分段。</p>" * 27, article_id))
+        conn.commit()
+    report = inventory.collect(conn, settings)
+    manifest = inventory.inventory_path(settings.data_dir)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps(report), encoding="utf-8")
+    initial = _counts(conn)
+    previous = conn.execute("SELECT body_html FROM article_translations WHERE article_id=%s", (article_id,)).fetchone()
+
+    copied = tmp_path / "source-switch.yaml"
+    config = yaml.safe_load(settings.sources_path.read_text(encoding="utf-8"))
+    next(s for s in config["sources"] if s["id"] == "stratechery")["enabled"] = False
+    copied.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+    chosen = replace(settings, sources_path=copied)
+    monkeypatch.setattr(cli.Settings, "from_env", staticmethod(lambda: chosen))
+    monkeypatch.setattr(cli, "llm_provider", lambda: "deepseek")
+    monkeypatch.setattr(cli, "deepseek_api_key", lambda: "sk-test")
+    calls = []
+
+    def model(**kwargs):
+        calls.append(len(kwargs["user"]["segments"]))
+        return _model(**kwargs)
+
+    monkeypatch.setattr(service, "chat_json", model)
+    args = {"queue": ["--source", "stratechery"], "inventory": ["--from-inventory", "none"],
+            "named": ["--article-id", str(article_id)], "coarse": ["--recheck"]}[mode]
+    assert cli.main(args) == 0
+    assert calls == []
+    assert _counts(conn) == initial
+    stored = conn.execute("SELECT body_html FROM article_translations WHERE article_id=%s", (article_id,)).fetchone()
+    assert stored == previous
+    assert inventory.collect(conn, chosen)["ids"]["disabled-source"] == [article_id]
+    assert service.list_pending_english(conn) == []
+    assert service.list_coarse_translations(conn) == []
+    assert inventory.unfinished(conn, [article_id], chosen) == []
+
+    chosen = settings
+    assert cli.main(args) == 0
+    assert calls
+    stored = conn.execute("SELECT complete FROM article_translations WHERE article_id=%s", (article_id,)).fetchone()
+    assert stored["complete"]
