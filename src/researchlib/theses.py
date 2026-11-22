@@ -33,6 +33,7 @@ from researchlib.claims import (
     looks_like_list,
     quote_ok,
     repost_key,
+    reversed_trend_title,
     same_key,
 )
 from researchlib.config import Settings
@@ -272,7 +273,14 @@ def _merge_overlapping(items: list[dict]) -> list[dict]:
             prev_cites = _cite_ids(prev)
             if not cites or not prev_cites:
                 continue
-            if len(cites & prev_cites) / min(len(cites), len(prev_cites)) < 0.75:
+            shared = cites & prev_cites
+            if len(shared) / min(len(cites), len(prev_cites)) < 0.75:
+                continue
+            # 同样的文章可能拿来讨论两个反向命题。换了边的证据不能沿用另一标题下的分类。
+            if any(
+                shared.intersection(item[side]) != shared.intersection(prev[side])
+                for side in ("for", "against", "mixed")
+            ):
                 continue
             for side in ("for", "against", "mixed"):
                 for ref in item[side]:
@@ -422,6 +430,9 @@ def validate_theses(raw: list, views: list[dict], company: str = "") -> list[dic
         judgment = str(item.get("judgment") or "").strip()[:300] or title
         if not title:
             continue
+        # 旧地图可能把反向论点的判断拼到这个标题下面。只在同一指标明确反向时撤下该句。
+        if judgment != title and reversed_trend_title(title, judgment):
+            judgment = title
         thesis_text = f"{title} {judgment} {mechanism}"
         buckets: dict[str, list[int]] = {"for": [], "against": [], "mixed": []}
         scores: dict[int, int] = {}

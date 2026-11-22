@@ -1,4 +1,4 @@
-from researchlib.claims import claim_side, source_quote
+from researchlib.claims import claim_side, reversed_trend_title, source_quote
 from researchlib.company_candidates import candidates
 from researchlib.company_seed import SEEDS
 from researchlib.mentions import CompanyMatcher, mentions_for_document
@@ -72,3 +72,31 @@ def test_literal_version_identifier_in_original_quote_is_not_replaced_with_a_ref
 
     line, = evidence_lines(["v1：本季度 v12 版本的销售额。"], {1: {"article_id": 1, "author": "甲"}})
     assert line["text"] == "本季度 v12 版本的销售额。"
+
+
+def test_overlapping_opposite_theses_keep_each_authors_actual_side():
+    up = "公司毛利率将上升"
+    down = "公司毛利率将下降"
+    views = [
+        dict(article_id=1, author="甲", judgment="预计" + up, quote="产品升级带来溢价，" + up, stance="positive"),
+        dict(article_id=2, author="乙", judgment=down, quote="单位采购成本抬高，公司毛利率将下降。", stance="negative"),
+        dict(article_id=3, author="丙", judgment="明细显示" + down, quote="新渠道佣金较高，" + down, stance="negative"),
+    ]
+    candidates = [
+        {"title": up, "for": [1], "against": [2]},
+        {"title": down, "judgment": "供应商的议价能力上升，" + down, "for": [2, 3], "against": [1]},
+    ]
+    for order in (candidates, list(reversed(candidates))):
+        accepted = validate_theses(order, views)
+        assert accepted
+        assert {ref for item in accepted for ref in item["sources"]} == {1, 2, 3}
+        for item in accepted:
+            assert claim_side(item["title"], item["judgment"]) == "support"
+            for side, expected in (("for", "support"), ("against", "oppose")):
+                assert all(claim_side(item["title"], views[ref - 1]["judgment"]) == expected for ref in item[side])
+
+
+def test_contrasting_scope_and_conditional_risk_are_kept_in_the_thesis_detail():
+    assert not reversed_trend_title("上半年毛利率上升", "下半年毛利率下降")
+    assert not reversed_trend_title("毛利率上升", "如果材料涨价，毛利率下降")
+    assert not reversed_trend_title("毛利率上升", "海外毛利率下降")
