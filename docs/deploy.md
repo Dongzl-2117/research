@@ -87,6 +87,8 @@ curl -s -o /dev/null -D - -w 'total %{time_total}s\n' 'https://investment.zldong
 
 合并进 main 的改动自己上线。Mac mini 上的定时任务 `com.zldong.research.deploy` 每 10 分钟看一次 main：有新提交，而且这个提交在 GitHub 上的 CI（Tests）通过了，就拉代码、`docker compose up -d --build`（镜像带上这次的提交号），等 `/health` 报出这个提交算上线（`scripts/deploy.sh`）。一般合并后 10 到 20 分钟上线。迁移和后台重算在应用启动时自己做；定时任务的模板改了，按上次安装的设置重装。上线成功后删掉换下来的旧镜像，只删 Dockerfile 打了 `com.zldong.research` 标签的，Mac mini 上别的项目的不碰。
 
+部署脚本通过 Mac mini 的回环地址核对源站。值班时运行 `docker compose exec app research-status`，它同时从应用容器请求已配置的公网入口 `/health`（5 秒超时），报告 HTTP 错误、异常响应或公网与本机镜像提交不一致。公网请求仅在命令运行时执行，结果反映容器经该域名看到的状态。重建和回退仍以源站就绪为准。
+
 线上在跑哪个提交：打开 <https://investment.zldong.com/health>，`commit` 就是。手动 `docker compose up -d --build` 建出来的是 `unknown`，要带上提交号：`GIT_SHA=$(git rev-parse HEAD) docker compose up -d --build`。
 
 带新迁移的提交（`src/researchlib/migrations/` 有变化）上线前先跑一次 `scripts/backup.sh`，备份目录用 `install-launchd.sh` 记在 `data/launchd.env` 里的 `BACKUP_DIR`。找不到备份目录或者备份失败，都不上线。迁移在应用启动时跑，跑过了就退不回去，要退数据只能用这份备份，见 [backup.md](backup.md)「真要恢复时」。

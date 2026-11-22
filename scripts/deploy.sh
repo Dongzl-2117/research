@@ -241,7 +241,11 @@ deploy_main() {
       rm -f "$WAITING"
       # 线上就是 main 上最新的提交，以前提示的「取不到 main」之类已经过去了。
       if grep -q '"ok":false' "$STATUS_DIR/${TASK}.json" 2> /dev/null; then
-        status_ok "线上已经是 main 上最新的 ${short}"
+        if serving "$target"; then
+          status_ok "源站已报出 main 上最新的 ${short}"
+        else
+          status_fail "已取到 main 上的 ${short}，源站 /health 还未报出该提交"
+        fi
       fi
       exit 0
     fi
