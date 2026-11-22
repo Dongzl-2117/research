@@ -126,6 +126,7 @@ class BatchTexts(list):
 
 
 # 和质量拒绝、请求失败的冷却是同一套数。改这里时把 list_pending_english 的 SQL 一起改。
+SOURCE_CHANGE_REASONS = ("source-changed-during-request", "canonical-source-changed-during-request")
 REJECT_RETRY_BUDGET = 2
 REJECT_RETRY_COOLDOWN = timedelta(hours=12)
 FAIL_RETRY_COOLDOWNS = (
@@ -214,8 +215,15 @@ def _record_no_text(conn, article_id: int, content_hash: str | None) -> None:
     conn.commit()
 
 
+def source_changed_during_request(error: BaseException) -> bool:
+    return isinstance(error, AlignmentError) and error.code in SOURCE_CHANGE_REASONS
+
+
 def record_translation_failure(conn, article_id: int, error: Exception) -> None:
     """由 CLI 在回滚后记录失败，不改译文或检索块；不保存正文或响应。"""
+    # 过时的模型输入不能评价现在的原文。命令会记录这次中断，下一轮可以选新版。
+    if source_changed_during_request(error):
+        return
     status, reason = _failure_kind(error)
     content_hash = None
     row = conn.execute("SELECT content_hash FROM articles WHERE id = %s", (article_id,))
@@ -1294,7 +1302,7 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
           WHERE article_id = a.id
             AND content_hash = a.content_hash
             AND alignment_version = %s
-            AND status = 'rejected'
+            AND status = 'rejected' AND reason <> ALL(%s)
         ) rej
         WHERE rej.n >= %s OR rej.latest > now() - %s::interval
         )"""
@@ -1326,6 +1334,7 @@ def list_pending_english(conn, *, limit: int = 20, source_id: str | None = None)
     )
     params.extend([
         ALIGNMENT_VERSION,
+        list(SOURCE_CHANGE_REASONS),
         REJECT_RETRY_BUDGET,
         _sql_interval(REJECT_RETRY_COOLDOWN),
         ALIGNMENT_VERSION,

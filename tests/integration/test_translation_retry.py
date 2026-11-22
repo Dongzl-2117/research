@@ -64,3 +64,50 @@ def test_a_fresh_alignment_reject_leaves_the_pending_queue(conn, settings, monke
     conn.execute("UPDATE articles SET content_hash = %s WHERE id = %s", ("hash-after-edit", article_id))
     conn.commit()
     assert article_id in list_pending_english(conn, source_id="stratechery", limit=50)
+
+
+def test_queue_can_translate_new_revision_after_source_changes_during_request(conn, settings, monkeypatch, capsys):
+    from test_bilingual_provenance_db import BODY, model
+
+    from researchlib.db import connect
+    from researchlib.translate import cli, inventory
+
+    article_id = article(conn, settings)
+    edited = BODY + "<p>First paragraph 30 dollars.</p>"
+    calls = []
+
+    def model_during_edit(**kwargs):
+        if not calls:
+            with connect(settings) as importer:
+                assert article(importer, settings, body=edited) == article_id
+        calls.append(kwargs["user"]["segments"])
+        return model(**kwargs)
+
+    monkeypatch.setattr(cli.Settings, "from_env", staticmethod(lambda: settings))
+    monkeypatch.setattr(cli, "llm_provider", lambda: "deepseek")
+    monkeypatch.setattr(cli, "deepseek_api_key", lambda: "sk-test")
+    monkeypatch.setattr(service, "chat_json", model_during_edit)
+    args = ["--source", "stratechery", "--limit", "1", "--anytime"]
+    assert cli.main(args) == 1
+    assert "source-changed-during-request" in capsys.readouterr().err
+    current = conn.execute("SELECT content_hash, body_md FROM articles WHERE id=%s", (article_id,)).fetchone()
+    assert "30 dollars" in current["body_md"]
+    assert conn.execute("SELECT count(*) AS n FROM article_translations").fetchone()["n"] == 0
+    assert list_pending_english(conn, source_id="stratechery") == [article_id]
+    assert conn.execute("SELECT count(*) AS n FROM translation_attempts").fetchone()["n"] == 0
+
+    # 老版本可能已将两次失效回执绑定在当前正文上；重启之后，队列与盘点都应把它交回。
+    for reason in ("source-changed-during-request", "canonical-source-changed-during-request"):
+        conn.execute(
+            "INSERT INTO translation_attempts (article_id, status, reason, content_hash, alignment_version)"
+            " VALUES (%s, 'rejected', %s, %s, %s)",
+            (article_id, reason, current["content_hash"], ALIGNMENT_VERSION),
+        )
+    conn.commit()
+    assert list_pending_english(conn, source_id="stratechery") == [article_id]
+    report = inventory.collect(conn, settings)["ids"]
+    assert report["pending-now"] == [article_id] and not report["stopped"] and not report["cooldown"]
+    assert cli.main(args) == 0
+    translated = conn.execute("SELECT content_hash, body_html, complete FROM article_translations").fetchone()
+    assert translated["content_hash"] == current["content_hash"] and translated["complete"]
+    assert "30美元" in translated["body_html"]
