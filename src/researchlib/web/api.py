@@ -32,7 +32,7 @@ from researchlib.present_text import plain_qa_markdown, polish_display_text
 from researchlib.render import link_local_images
 from researchlib.retrieval import cited_numbers, retrieve, search_articles, search_fragments
 from researchlib.snippets import answer_html, mention_sentence, mention_spans
-from researchlib.textutil import opening_excerpt, strip_duplicate_title
+from researchlib.textutil import opening_excerpt, split_frontmatter, strip_duplicate_title
 from researchlib.views import FILTERS as VIEW_FILTERS
 from researchlib.views import filter_timeline
 from researchlib.views import timeline as view_timeline
@@ -380,10 +380,8 @@ def _markdown(payload: dict) -> str:
     lines = ["---"] + [f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in front.items()] + ["---", ""]
     body = payload["body_markdown"]
     if body.startswith("---"):
-        # 原文自带 frontmatter 时去掉，免得出现两段。
-        end = body.find("\n---", 3)
-        if end != -1:
-            body = body[end + 4 :].lstrip("\n")
+        # 和导入、阅读页一样，只去掉有效的 YAML 头；原稿可能只含元数据，归档时已去掉末尾换行。
+        _frontmatter, body = split_frontmatter(body + "\n")
     # 归档里那行「有两...」和补全后的标题是同一句，阅读用的 markdown 不再重复。
     body = strip_duplicate_title(body, payload.get("title") or "")
     # 截图里识别出的字（和检索用的同一份整理）附在最后：只有一句话、字都在图里的帖，光看正文什么都没有。
