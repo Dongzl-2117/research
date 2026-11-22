@@ -127,6 +127,26 @@ def test_stale_translation_body_and_title_are_not_search_evidence(conn, settings
                         (article_id,)).fetchone()['n'] == 2
 
 
+
+def test_exact_quote_in_an_old_translation_does_not_raise_the_article_count(conn, settings):
+    article_id = _english(conn, settings)
+    conn.execute(
+        "UPDATE article_translations SET body_html = %s, body_text = %s WHERE article_id = %s",
+        ("<p>iPhone: 旧译文的小标题。</p>", "iPhone: 旧译文的小标题。", article_id),
+    )
+    replace_translation_chunks(conn, article_id)
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        def search():
+            return client.get("/api/v1/search", params={"q": '"iPhone:"'}).json()
+
+        assert search()["total"] == 1
+        conn.execute("UPDATE articles SET content_hash='revised-iphone-source' WHERE id=%s", (article_id,))
+        conn.commit()
+        result = search()
+        assert result["total"] == 0 and result["items"] == []
+
+
 def test_unquoted_original_and_ocr_hits_survive_same_article_translation(conn, settings, monkeypatch):
     article_id = _english(conn, settings)
     conn.execute("INSERT INTO article_chunks(article_id,ord,heading,body,lang,anchor)"

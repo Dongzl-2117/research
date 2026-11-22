@@ -306,6 +306,28 @@ def test_quoted_phrase_is_counted_the_way_it_is_listed(conn, settings):
 
 
 
+def test_exact_search_counts_only_articles_with_a_qualifying_passage(conn, settings):
+    padding = "这段记录供核对当期披露的口径。" * 40
+    forecast = "预测毛利率将达到 12%。ROE: 8%。" + padding + "\n\n" + "ROE 和毛利率的定义参见第 12 条。" + padding
+    _store(conn, settings, [
+        ("confirmed", "年报记录", 1, "毛利率达到 12%，ROE: 8%，订单从上季度开始回升。"),
+        ("forecast", "预算说明：毛利率 12%", 2, forecast),
+        ("only-title", "毛利率", 3, "这篇的所有数据都是预测值。"),
+    ])
+    with TestClient(create_app(settings)) as client:
+        for question, ids in [
+            ('"12%"', [1, 2]),
+            ('"12%" -预测', [1]),
+            ('"ROE:" -预测', [1]),
+            ('毛利率 -预测', [1, 2]),
+        ]:
+            result = client.get("/api/v1/search", params={"q": question}).json()
+            assert sorted(item["id"] for item in result["items"]) == ids
+            assert result["total"] == result["listed"] == len(ids), question
+            page = client.get("/search", params={"q": question, "view": "article"}).text
+            assert f"{len(ids)} 篇全部命中" in page
+
+
 def test_excluded_word_is_counted_the_way_it_is_listed(conn, settings):
     """排除词篇数和列表同一条：写到小程序的每一块都写着广告的那篇不数，有一块干净的照数。
     以前篇数不看排除词：页面写「3 篇全部命中，按相关度能翻到前 2 篇，其余的加来源或时间范围再搜」。"""
