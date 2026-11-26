@@ -55,6 +55,7 @@ from researchlib.translate.service import (
     HAN_OUTSIDE,
     REJECT_RETRY_BUDGET,
     SITE_VISIBLE,
+    SOURCE_CHANGE_REASONS,
     _render_original,
     list_coarse_translations,
     list_pending_english,
@@ -102,6 +103,7 @@ ATTEMPTS_SQL = """
     FROM translation_attempts ta
     JOIN articles a ON a.id = ta.article_id
     WHERE ta.alignment_version = %s AND ta.content_hash = a.content_hash
+      AND NOT (ta.status = 'rejected' AND ta.reason = ANY(%s))
     ORDER BY ta.article_id, ta.created_at, ta.id
 """
 
@@ -209,7 +211,7 @@ def collect(conn, settings, *, pages: bool = True, progress: Callable[[str], Non
         conn.execute("SET TRANSACTION READ ONLY")
         rows = conn.execute(ENGLISH_SQL, (HAN_OUTSIDE,)).fetchall()
         attempts: dict[int, list[tuple[str, str]]] = {}
-        for item in conn.execute(ATTEMPTS_SQL, (ALIGNMENT_VERSION,)).fetchall():
+        for item in conn.execute(ATTEMPTS_SQL, (ALIGNMENT_VERSION, list(SOURCE_CHANGE_REASONS))).fetchall():
             attempts.setdefault(int(item["article_id"]), []).append((item["status"], item["reason"]))
         pending_now = set(list_pending_english(conn, limit=1_000_000))
         coarse = list_coarse_translations(conn, limit=1_000_000)

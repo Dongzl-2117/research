@@ -47,7 +47,7 @@ from researchlib.llm_provider import PROVIDER_DEEPSEEK, PROVIDER_GROK, deepseek_
 from researchlib.textutil import SHANGHAI
 from researchlib.translate import inventory
 from researchlib.translate.llm import Usage, account_failure, metered, transient_failure
-from researchlib.translate.provenance import PROMPT_VERSION, AlignmentError
+from researchlib.translate.provenance import PROMPT_VERSION
 from researchlib.translate.service import (
     TRANSLATE_BATCH_MAX_CHARS,
     TRANSLATE_BATCH_MAX_SEGMENTS,
@@ -55,6 +55,7 @@ from researchlib.translate.service import (
     list_coarse_translations,
     list_pending_english,
     record_translation_failure,
+    source_changed_during_request,
     translate_article,
 )
 from researchlib.translate.xai_oauth import XaiLoginRequiredError, xai_oauth_status
@@ -143,7 +144,7 @@ def _retry_later(error: BaseException) -> bool:
     """隔几分钟再跑同一篇多半能补上：服务那头断线、超时、限流、5xx，或者译到一半原文被别的任务改了（夜间补钟点）。"""
     if transient_failure(error):
         return True
-    return isinstance(error, AlignmentError) and error.code.endswith("source-changed-during-request")
+    return source_changed_during_request(error)
 
 
 def _command(ids: list[int], fresh: bool, batch_segments: int | None = None) -> str:
