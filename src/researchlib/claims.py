@@ -191,6 +191,19 @@ def _trend_facts(text: str) -> set[tuple]:
     return facts
 
 
+def reversed_trend_title(title: str, judgment: str) -> bool:
+    """只认结论句与标题除最后的趋势词以外逐字相同的反向断言，避免擦掉不同期间、分部或条件下的判断。"""
+    if re.search(r"如果|假如|假设|若|除非|即使|一旦|未必|不确定|风险", judgment):
+        return False
+    headline = title.rstrip("。！？.!? ").strip()
+    conclusion = re.split(r"[，,。；;！!?？]", judgment.rstrip("。！？.!? "))[-1].strip()
+    left, right = _TREND.search(headline), _TREND.search(conclusion)
+    if not left or not right or left.end() != len(headline) or right.end() != len(conclusion):
+        return False
+    return (headline[:left.start("trend")] == conclusion[:right.start("trend")]
+            and claim_side(headline, conclusion) == "oppose")
+
+
 def claim_side(thesis_text: str, view_text: str) -> str:
     """这条观点相对论点的判断：support、oppose 或 unclear。
 

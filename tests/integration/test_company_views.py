@@ -298,3 +298,41 @@ def test_peer_author_survives_more_than_sixty_closer_same_author_articles(conn, 
         """, (base["published_at"], company))
     peers = views_mod.same_period(conn, base["id"], None, sources, settings, limit=1)
     assert len(peers) == 1 and peers[0]["author"] == sources["gudujinhuati"].author
+
+
+def test_old_overlapping_thesis_keeps_support_and_opposition_with_the_title(conn, settings):
+    company_id = _tencent(conn)["id"]
+    up = "公司毛利率将上升"
+    down = "公司毛利率将下降"
+    details = [
+        ("fangwei-mp", "产品升级带来溢价，", up, "positive"),
+        ("chengfengpolang", "单位采购成本抬高，", down, "negative"),
+        ("linwenfeng-feishu", "新渠道佣金较高，", down, "negative"),
+    ]
+    refs = []
+    for source, reason, judgment, stance in details:
+        text = reason + judgment
+        article_id = conn.execute(
+            "INSERT INTO articles (source_id, external_id, content_hash, title, body_md, body_text)"
+            " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id", (source, source, source, reason, text, text),
+        ).fetchone()["id"]
+        refs.append(article_id)
+        conn.execute(
+            "INSERT INTO company_views (article_id, company_id, content_hash, prompt_version, judgment, stance, quote)"
+            " VALUES (%s, %s, %s, 2, %s, %s, %s)", (article_id, company_id, source, judgment, stance, text),
+        )
+    # 旧版把「下降」论点的较长判断和第三位作者的支持移到「上升」标题下。
+    wrong = "供应商的议价能力上升，" + down
+    legacy = [{"title": up, "judgment": wrong, "for": [refs[0], refs[2]], "against": [refs[1]]}]
+    conn.execute(
+        "INSERT INTO company_theses (company_id, views_hash, prompt_version, theses) VALUES (%s, 'old', 3, %s)",
+        (company_id, json.dumps(legacy, ensure_ascii=False)),
+    )
+    conn.commit()
+    with TestClient(create_app(settings)) as client:
+        item = client.get(f"/api/v1/companies/{company_id}/views").json()["theses"][0]
+        assert item["judgment"] == item["title"] == up
+        assert item["for"]["authors"] == {"方伟": 1}
+        assert item["against"]["authors"] == {"乘风破浪": 1, "林文丰": 1}
+        page = client.get(f"/companies/{company_id}").text.split('id="theses"', 1)[1]
+        assert up in page and wrong not in page
