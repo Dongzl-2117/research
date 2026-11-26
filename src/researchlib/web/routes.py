@@ -38,7 +38,7 @@ from researchlib.housekeeping import strip_housekeeping
 from researchlib.image_size import size_images
 from researchlib.ingest.archive import DOCUMENT_TREE_KINDS
 from researchlib.llm import active_model_id, llm_configured
-from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, prepare_body_html
+from researchlib.mdlinks import canonical_body_html, finish_html, load_md_index, mark_feishu_pdf_html, prepare_body_html
 from researchlib.mentions import DEPTH_LABELS, DEPTHS, CompanyMatcher, company_on_card, load_company_rows
 from researchlib.nested_copies import fold_nested_copies
 from researchlib.ocr import refresh_article_ocr
@@ -998,8 +998,8 @@ def _article_view(request: Request, article_id: int, mode: str):
             ]
         pairs = [
             {
-                "en": _reading_html(request, p.en),
-                "zh": _reading_html(request, p.zh) if p.zh else None,
+                "en": _reading_html(request, source.kind, p.en),
+                "zh": _reading_html(request, source.kind, p.zh) if p.zh else None,
                 "anchor": p.anchor,
                 "repeat_of": p.repeat_of,
             }
@@ -1024,9 +1024,9 @@ def _article_view(request: Request, article_id: int, mode: str):
     if body_language == "pairs":
         body_html = None
     elif body_language == "zh":
-        body_html = _reading_html(request, zh_html) if zh_html else None
+        body_html = _reading_html(request, source.kind, zh_html) if zh_html else None
     else:
-        body_html = _reading_html(request, original_html)
+        body_html = _reading_html(request, source.kind, original_html)
     # 高亮的段落这一页上看得见才算：只看中文时，原文里标的那段不显示。
     if quoted_marked and body_language != "pairs":
         quoted_marked = (body_language == "zh") == (quoted_lang == "zh")
@@ -1122,8 +1122,10 @@ def _chat_suggestions(asked: list[str]) -> list[dict]:
     return picked
 
 
-def _reading_html(request: Request, html: str) -> Markup:
+def _reading_html(request: Request, source_kind: str, html: str) -> Markup:
     """阅读页正文交给模板前的最后一步：图滚到附近才下，补上宽高，竖长截图按手机屏宽显示。"""
+    if source_kind == "feishu":
+        html = mark_feishu_pdf_html(html)
     return Markup(size_images(lazy_images(html), request.app.state.settings.data_dir / "images"))
 
 
@@ -1138,8 +1140,8 @@ def _tree_body(request: Request, conn, article, source):
     html = prepare_body_html(shown_md, polish_display_text(article["title"] or ""), mapping, fmt, link_index, parent)
     # 目录右侧也是阅读：留原图，不把识图文字换进去。飞书的图本来就在原文位置，不挪。
     if not images_placed_by_estimate(source.kind, article["raw_meta"]):
-        return _reading_html(request, html)
-    return _reading_html(request, inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
+        return _reading_html(request, source.kind, html)
+    return _reading_html(request, source.kind, inline_image_ocr(html, queries.image_ocr_texts(conn, article["id"])))
 
 
 def _source_tree(request: Request, source_id: str, article_id: int | None):
