@@ -662,7 +662,7 @@ def day_answer(
     """
     return conn.execute(
         """
-        SELECT id, question, answer, citations, model, scope, created_at
+        SELECT id, question, answer, citations, model, scope, created_at, status, stats
         FROM llm_answers
         WHERE status = 'done'
           AND scope->>'date_from' = %(day)s AND scope->>'date_to' = %(day)s
