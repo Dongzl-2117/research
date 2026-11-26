@@ -748,7 +748,9 @@ def answer_payload(conn, request: Request, sources, answer_id: int) -> dict | No
     checks = []
     if row["status"] == "done" and answer:
         try:
-            checks = check_answer(answer, stored, {source.author for source in sources})
+            checks = check_answer(
+                answer, stored, {source.author for source in sources}, question=row.get("question") or ""
+            )
         except Exception:
             # 核对规则炸了也不能让整条 GET 500；回答正文照常返回。
             logger.exception("问库引用核对失败 answer_id=%s", answer_id)

@@ -2165,7 +2165,9 @@ def _safe_checks(row, citations, sources) -> list:
     if row["status"] != "done" or not row["answer"]:
         return []
     try:
-        return check_answer(row["answer"], citations, {source.author for source in sources})
+        return check_answer(
+            row["answer"], citations, {source.author for source in sources}, question=row.get("question") or ""
+        )
     except Exception:
         logger.exception("问库引用核对失败 answer_id=%s", row.get("id"))
         return []

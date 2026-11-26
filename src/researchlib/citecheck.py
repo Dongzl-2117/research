@@ -10,6 +10,9 @@
 - 和所引段落几乎没有一样的说法（引错了段）。
 
 没有出处的陈述句也会提示。查出来的是「需要回原文核对」，不一定是错。
+出处写在整句末尾时，前面用分号隔开的分句、行首加粗的小结都算这个出处的，照样核数字和引语；
+小标题和「资料只覆盖了谁、哪几年」这类交代资料范围的话不要出处。以前这三种都报「这句没有标注出处」，
+一篇回答 20 条提示里常有十七八条是它们，数字、引语对不上的真问题被挤到上限以外（11-27）。
 
 所引段落是没译的英文原文时，中文句子和它字对字比不了：不查「几乎没有一样的说法」，中文引语也不按原文找；
 数字照查，英文拼出来的数（forty-seven、two hundred）也算；换了单位的按数值比（4700 万 = 47 million，
@@ -29,7 +32,15 @@ _QUOTE_STOPS = "。！？!?；;"
 _QUOTED_PUNCTUATION = str.maketrans(dict.fromkeys(_QUOTE_STOPS, " "))
 _AFTER_QUOTE_REF = re.compile(r"[ \t]*\[\d{1,3}\]")
 _REF = re.compile(r"\[(\d{1,3})\]")
-_FULL_DATE = re.compile(r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?")
+# 月要在 1 到 12、日要在 1 到 31，两个分隔符要一样（或「年…月」）：以前「2024年34.0亿元」被读成 2024-34-00，
+# 报「日期和所引段落对不上」，34.0 亿这个数反而没核。
+_MONTH = r"(?:0?[1-9]|1[0-2])"
+_DAY = r"(?:0?[1-9]|[12]\d|3[01])"
+_YMD = (
+    r"(?<!\d)(?P<year>\d{4})\s*(?:(?P<sep>[-/.])\s*(?P<month>M)\s*(?P=sep)|年\s*(?P<month_cn>M)\s*月)"
+    r"\s*(?P<day>D)(?![\d.])\s*日?"
+).replace("M", _MONTH).replace("D", _DAY)
+_FULL_DATE = re.compile(_YMD)
 # 「2026-03-18/09-01」「2025-07-30、10-27」：同一年里的几个日期，后面的省了年份。补全了再核对，
 # 否则省掉年份的月和日被当成数字（「数字 09 不在所引段落里」）。后面跟着量级、单位的是数的范围，不算日期。
 _DATE_LIST = re.compile(
@@ -38,7 +49,9 @@ _DATE_LIST = re.compile(
 )
 _SHORT_DAY = re.compile(r"(?<![\d.-])(\d{1,2})([-.])(\d{1,2})(?![\d.])")
 _DATE_LIKE = re.compile(
-    r"(?<!\d)\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?"
+    re.sub(r"\?P<\w+>", "?:", _YMD.replace("(?P=sep)", "[-/.]"))
+    # 只写到月（「2025-04 至 2026-10」）：月份补零的才算，「2025-4」可能是数的范围。
+    + r"|(?<![\d.])(?:19|20)\d{2}\s*[-/]\s*(?:0[1-9]|1[0-2])(?![\d.])"
     r"|(?<!\d)\d{4}\s*年(?:\s*\d{1,2}\s*月)?(?:\s*\d{1,2}\s*日)?"
     r"|(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日"
     # 只写月份（「12月」）、两位年份（「24年」）：和所引段落的发布日期一起看，不当数字核。「24年代」不算。
@@ -137,6 +150,11 @@ def _bigrams(text: str) -> set[str]:
 
 def split_claims(answer: str, *, include_uncited: bool = False) -> list[tuple[str, list[int]]]:
     """回答切成带出处的句子：[(句子, [n...])]。[n] 写在句号后面的也算这一句的。"""
+    return [(text, refs) for text, refs, _start, _end in _claim_spans(answer, include_uncited=include_uncited)]
+
+
+def _claim_spans(answer: str, *, include_uncited: bool = False) -> list[tuple[str, list[int], int, int]]:
+    """split_claims 再带上每句在回答里的起止位置：[(句子, [n...], 起, 止)]。"""
     def mask_quote(match: re.Match) -> str:
         quote = match.group()
         masked = quote.translate(_QUOTED_PUNCTUATION)
@@ -147,7 +165,7 @@ def split_claims(answer: str, *, include_uncited: bool = False) -> list[tuple[st
 
     # 只在等长副本上找分界，核对和分批摘录始终取回答原字。未闭合的引号不跨行吞掉后文。
     masked = _INLINE_QUOTE.sub(mask_quote, answer or "")
-    claims: list[tuple[str, list[int]]] = []
+    claims: list[tuple[str, list[int], int, int]] = []
     for match in _CLAIM.finditer(masked):
         text = answer[match.start():match.end()].strip()
         refs = [int(item) for item in _REF.findall(text)]
@@ -159,12 +177,77 @@ def split_claims(answer: str, *, include_uncited: bool = False) -> list[tuple[st
             and statement.strip("。！! ") not in {"资料不足", "库里没有相关内容", "没有相关内容", "资料里没看到"}
         )
         if refs or uncited:
-            claims.append((text, list(dict.fromkeys(refs))))
+            claims.append((text, list(dict.fromkeys(refs)), match.start(), match.end()))
     return claims
 
 
+_LIST_ITEM = re.compile(r"\s*(?:[-*+]\s+|\d{1,3}[.、)）]\s*|[(（]\d{1,3}[)）]\s*)")
+_SENTENCE_END = "。！？!?"
+_CLAUSE_END = "；;"
+# 交代资料范围的话（提示词要求回答说明资料只覆盖了谁、哪几年、缺什么）：不带要核的数时不要出处。
+_ABOUT_SOURCES = ("资料", "库里", "覆盖说明")
+
+
+def _bold_lead(answer: str, text: str, end: int) -> bool:
+    """行首加粗的小结（「**口径：……。** 方伟在……[6]」里加粗的那句）：整句在一对 ** 里，后面接着正文。"""
+    body = _LIST_ITEM.sub("", text, count=1)
+    if not body.startswith("**"):
+        return False
+    inner = body[2:]
+    return inner.endswith("**") and "**" not in inner[:-2] or ("**" not in inner and answer[end:end + 2] == "**")
+
+
+def _later_refs(answer: str, spans: list, index: int) -> list[int]:
+    """没带出处的分句往后借：同一行里这句话说完以前（分号隔开的后半句，或加粗小结后面的正文）写的出处。"""
+    text, _refs, _start, end = spans[index]
+    if not (text.rstrip("* ").endswith(tuple(_CLAUSE_END)) or _bold_lead(answer, text, end)):
+        return []
+    for later, refs, start, later_end in spans[index + 1:]:
+        if "\n" in answer[end:start]:
+            break
+        if refs:
+            return refs
+        if not later.rstrip("* ").endswith(tuple(_CLAUSE_END)):
+            break
+        end = later_end
+    return []
+
+
+def _about_sources(text: str) -> bool:
+    """交代资料范围的话：以「资料」「库里」「覆盖说明」开头、不带要核的数字。"""
+    statement = _LIST_ITEM.sub("", text, count=1).lstrip("* ")
+    return statement.startswith(_ABOUT_SOURCES) and not any(True for _ in _claim_numbers(text))
+
+
+def _needs_no_source(answer: str, text: str, start: int, end: int) -> bool:
+    """没带出处也不用提示的：小标题（独占一行、不是列表项、没有句末标点）、加粗的小结。
+    带着要核的数字的不算，照旧提示。"""
+    if _bold_lead(answer, text, end):
+        return True
+    if any(True for _ in _claim_numbers(text)):
+        return False
+    statement = text.rstrip("* ").strip()
+    line_start = answer.rfind("\n", 0, start) + 1
+    line_end = answer.find("\n", end)
+    line = answer[line_start: len(answer) if line_end < 0 else line_end].strip()
+    whole_line = line == text
+    return whole_line and not _LIST_ITEM.match(line) and not statement.endswith(tuple(_SENTENCE_END + _CLAUSE_END))
+
+
+# 「13-14%」「13%-14%」「13%～14%」是同一个范围：前一个数补上百分号，中间的连接号不当负号。
+# 回答和出处两边都这样读，否则一边写「13-14%」一边写「13%-14%」就报两个数都不在所引段落里。
+_RANGE_LEFT = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*[-–—~～至到]\s*(?=\d+(?:\.\d+)?\s*[%％])")
+_RANGE_DASH = re.compile(r"(?<=[%％‰])\s*[-–—~～]\s*(?=\d)")
+_KUAI = re.compile(r"(?<=\d)\s*块钱?")
+
+
+def _same_reading(text: str) -> str:
+    text = _RANGE_DASH.sub(" 到 ", _RANGE_LEFT.sub(r"\1% 到 ", text))
+    return _KUAI.sub("元", text)
+
+
 def _claim_numbers(text: str):
-    body = _DATE_LIKE.sub(" ", _LIST_MARK.sub(" ", _REF.sub(" ", text)))
+    body = _same_reading(_DATE_LIKE.sub(" ", _LIST_MARK.sub(" ", _REF.sub(" ", text))))
     for number in numbers(body):
         if number.label.isdigit():
             if len(number.label) < 2 or 1990 <= number.value <= 2039:
@@ -181,22 +264,32 @@ def _evidence_numbers(text: str) -> set[tuple]:
             return token
         return _english_numbers(token)[0]
 
-    return {(n.value, n.unit) for n in numbers(_EN_NUMBER.sub(expand, text))}
+    spelled = _EN_NUMBER.sub(expand, text)
+    # 日期先原样读一遍（「2025-06-27」里的 27 照旧算出处里的数），再按范围的读法补一遍。
+    return {(n.value, n.unit) for body in (spelled, _same_reading(spelled)) for n in numbers(body)}
+
+
+# 上万的金额，中文里常省掉「元」（原文「稳定赚 100 亿」，回答写「100亿元」）：数值一样就算对上。
+_BARE_AMOUNT_FROM = 10**4
 
 
 def _supported(number: Number, evidence: set[tuple]) -> bool:
     if (number.value, number.unit) in evidence:
         return True
     # 仅允许常用的人民币/元两种写法，不把美元或港元当人民币。
-    if number.unit == "元":
-        return (number.value, "CNY") in evidence
-    if number.unit == "CNY":
-        return (number.value, "元") in evidence
+    yuan = ("元", "CNY")
+    if number.unit in yuan:
+        if any((number.value, unit) in evidence for unit in yuan):
+            return True
+        return abs(number.value) >= _BARE_AMOUNT_FROM and (number.value, "") in evidence
+    if not number.unit and abs(number.value) >= _BARE_AMOUNT_FROM:
+        return any((number.value, unit) in evidence for unit in yuan)
     return False
 
 
-def _iso(year: str, month: str, day: str) -> str:
-    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+def _iso(match: re.Match) -> str:
+    month = match["month"] or match["month_cn"]
+    return f"{int(match['year']):04d}-{int(month):02d}-{int(match['day']):02d}"
 
 
 def _expand_dates(text: str) -> str:
@@ -210,8 +303,12 @@ def _expand_dates(text: str) -> str:
     return _DATE_LIST.sub(full, text)
 
 
-def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iterable[str]) -> list[str]:
+def check_claim(
+    text: str, refs: list[int], citations: list[dict], authors: Iterable[str], *, question: str = ""
+) -> list[str]:
+    """question：读者问的话。回答把问题里的说法加上引号（「方伟说的“底线利润”」）是在指这个词，不是引原文。"""
     text = _expand_dates(text)
+    asked = _plain(question)
     if not refs:
         return ["这句没有标注出处"]
     problems: list[str] = []
@@ -246,7 +343,7 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
                 problems.append(f"数字 {number.label} 不在所引段落里")
     for match in _QUOTED.finditer(text):
         quoted = next(group for group in match.groups() if group)
-        if not _plain(quoted) or _plain(quoted) in plain or _loose(quoted) in loose:
+        if not _plain(quoted) or _plain(quoted) in plain or _loose(quoted) in loose or _plain(quoted) in asked:
             continue
         if foreign and not _foreign(quoted):
             # 英文原话译成了中文再加引号：字对字比不了，不算对不上。
@@ -255,11 +352,12 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     cited_authors = {item.get("author") or "" for item in cited}
     named = [name for name in authors if name and name in text]
     for name in named:
-        if name not in cited_authors and not any(name in (item.get("text") or "") for item in cited):
+        # 飞书笔记一篇里常有几个人的话，「某某：」可能落在这段的前后文里。
+        if name not in cited_authors and name not in raw:
             problems.append(f"所引段落不是{name}写的")
     cited_dates = {item.get("date") or "" for item in cited}
     for match in _FULL_DATE.finditer(text):
-        wanted = _iso(*match.groups())
+        wanted = _iso(match)
         if wanted in cited_dates:
             continue
         compact = wanted.replace("-", "")
@@ -275,12 +373,31 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     return problems
 
 
-def check_answer(answer: str, citations: list[dict], authors: Iterable[str]) -> list[dict]:
+def check_answer(
+    answer: str, citations: list[dict], authors: Iterable[str], *, question: str = ""
+) -> list[dict]:
     """返回没核对上的句子：[{"sentence", "refs", "problems"}]。都对得上时是空列表。"""
     names = sorted({name for name in authors if name}, key=len, reverse=True)
     flags: list[dict] = []
-    for text, refs in split_claims(answer, include_uncited=True):
-        problems = check_claim(text, refs, citations or [], names)
+    answer = answer or ""
+    spans = _claim_spans(answer, include_uncited=True)
+    # 交代资料范围的话用分号接着写的后半句（「资料只覆盖方伟；没有其他作者的看法。」）也不要出处：记着它在哪儿结束。
+    about_sources_end = -1
+    for index, (text, refs, start, end) in enumerate(spans):
+        if not refs:
+            # 出处写在整句末尾的，前面的分句按它核；小标题、交代资料范围的话不提示。
+            refs = _later_refs(answer, spans, index)
+            if not refs:
+                continued = (
+                    about_sources_end >= 0 and "\n" not in answer[about_sources_end:start]
+                    and not any(True for _ in _claim_numbers(text))
+                )
+                about = continued or _about_sources(text)
+                if about or _needs_no_source(answer, text, start, end):
+                    about_sources_end = end if about and text.rstrip("* ").endswith(tuple(_CLAUSE_END)) else -1
+                    continue
+        about_sources_end = -1
+        problems = check_claim(text, refs, citations or [], names, question=question)
         if problems:
             sentence = re.sub(r"^\s*(?:[-*+]|\d+[.、)])\s*", "", _REF.sub("", text)).strip(" #*")
             flags.append({"sentence": sentence, "refs": refs, "problems": problems})
