@@ -216,3 +216,22 @@ def test_signed_amounts_and_single_digit_foreign_currency_are_evidence():
     assert not check_answer("上次披露的现金流为7港元[1]。", cited, [])
     for wrong in ("$3", "€7", "7日元", "£7"):
         assert check_answer(f"现金流为{wrong}[1]。", cited, [])
+
+
+def test_punctuation_inside_a_cited_quote_does_not_detach_its_numbers():
+    citation = [{"n": 7, "text": "上半年营收同比下降3.7%；净利润下降13.7%。"}]
+    for opening, closing in [("「", "」"), ("“", "”"), ('"', '"')]:
+        statement = f"他引用{opening}上半年营收同比下降3.7%；净利润下降13.7%。{closing}说明业绩走势。[7]"
+        assert split_claims(statement) == [(statement, [7])]
+        assert check_answer(statement, citation, []) == []
+        flags = check_answer(statement.replace("13.7%", "13.7"), citation, [])
+        assert len(flags) == 1 and flags[0]["refs"] == [7]
+        assert flags[0]["problems"] == ["回答写作 13.7，出处中相同数值带百分号，请核对单位"]
+
+
+def test_final_punctuation_inside_a_quote_keeps_the_following_sentence_separate():
+    one = "原文写「先看收入。再看利润！」[1]"
+    two = "另一篇持不同意见。[2]"
+    assert split_claims(one + " " + two) == [(one, [1]), (two, [2])]
+    broken = "原文写「没有闭引号。"
+    assert split_claims(broken + two, include_uncited=True) == [(broken, []), (two, [2])]

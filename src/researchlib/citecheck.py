@@ -24,6 +24,10 @@ from collections.abc import Iterable
 from researchlib.financial_evidence import Number, numbers
 
 _CLAIM = re.compile(r"[^。！？!?；;\n]+(?:[。！？!?；;]+)?(?:\s*\[\d{1,3}\])*")
+_INLINE_QUOTE = re.compile(r'「[^「」\n]*」|“[^“”\n]*”|"[^"\n]*"')
+_QUOTE_STOPS = "。！？!?；;"
+_QUOTED_PUNCTUATION = str.maketrans(dict.fromkeys(_QUOTE_STOPS, " "))
+_AFTER_QUOTE_REF = re.compile(r"[ \t]*\[\d{1,3}\]")
 _REF = re.compile(r"\[(\d{1,3})\]")
 _FULL_DATE = re.compile(r"(?<!\d)(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?")
 # 「2026-03-18/09-01」「2025-07-30、10-27」：同一年里的几个日期，后面的省了年份。补全了再核对，
@@ -133,9 +137,19 @@ def _bigrams(text: str) -> set[str]:
 
 def split_claims(answer: str, *, include_uncited: bool = False) -> list[tuple[str, list[int]]]:
     """回答切成带出处的句子：[(句子, [n...])]。[n] 写在句号后面的也算这一句的。"""
+    def mask_quote(match: re.Match) -> str:
+        quote = match.group()
+        masked = quote.translate(_QUOTED_PUNCTUATION)
+        # 引语自己结束一句并紧跟 [n] 时，把分界放在闭引号后；「……。」说明……[n] 则是同一句。
+        if quote[-2] in _QUOTE_STOPS and _AFTER_QUOTE_REF.match(match.string, match.end()):
+            return masked[:-1] + "。"
+        return masked
+
+    # 只在等长副本上找分界，核对和分批摘录始终取回答原字。未闭合的引号不跨行吞掉后文。
+    masked = _INLINE_QUOTE.sub(mask_quote, answer or "")
     claims: list[tuple[str, list[int]]] = []
-    for match in _CLAIM.finditer(answer or ""):
-        text = match.group(0).strip()
+    for match in _CLAIM.finditer(masked):
+        text = answer[match.start():match.end()].strip()
         refs = [int(item) for item in _REF.findall(text)]
         statement = text.rstrip("* ").strip()
         uncited = (
@@ -226,7 +240,10 @@ def check_claim(text: str, refs: list[int], citations: list[dict], authors: Iter
     loose = _loose(raw)
     for number in _claim_numbers(text):
         if not _supported(number, evidence):
-            problems.append(f"数字 {number.label} 不在所引段落里")
+            if not number.unit and (number.value, "%") in evidence:
+                problems.append(f"回答写作 {number.label}，出处中相同数值带百分号，请核对单位")
+            else:
+                problems.append(f"数字 {number.label} 不在所引段落里")
     for match in _QUOTED.finditer(text):
         quoted = next(group for group in match.groups() if group)
         if not _plain(quoted) or _plain(quoted) in plain or _loose(quoted) in loose:
