@@ -51,6 +51,7 @@ def store_documents(
     errors: list[str],
     rejected: int = 0,
     origin: str = "archive",
+    fresh_ids: list[int] | None = None,
 ) -> IngestReport:
     """origin：archive（手动导入的归档）或 crawl（定时抓取脚本导入）。以前从 AIHOT 导入的记作 aihot。
 
@@ -83,12 +84,14 @@ def store_documents(
             report.duplicates += 1
         if status == "inserted":
             report.inserted += 1
-        elif status == "updated":
+        elif status in ("updated", "promoted"):
             report.updated += 1
         elif status == "held":
             report.held += 1
         else:
             report.unchanged += 1
+        if fresh_ids is not None and status in ("inserted", "promoted"):
+            fresh_ids.append(article_id)
         report.images_stored += stored
         report.images_linked += linked
         report.images_missing += missing
@@ -412,6 +415,8 @@ def _store_one(conn, source: Source, doc: ParsedDoc, data_dir: Path, matcher: Co
                 duplicate = article_id
     if is_guest(meta):
         conn.execute("DELETE FROM company_views WHERE article_id = %s", (article_id,))
+    if status == "updated" and previous_meta.get(HIDDEN) == SHORT_POST and not meta.get(HIDDEN):
+        status = "promoted"
     return status, article_id, stored, linked, missing, duplicate
 
 

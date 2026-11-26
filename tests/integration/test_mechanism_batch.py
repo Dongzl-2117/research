@@ -169,3 +169,38 @@ def test_failed_article_keeps_scored_batches_and_is_reported_while_cooling(conn,
     cooled = mechanism.pending_articles(conn, sources, None, cooling=True)
     assert [int(r["id"]) for r in cooled] == [int(row["id"])]
     assert int(cooled[0]["chunks"]) == int(row["chunks"]) - 1
+
+
+def test_nightly_failure_keeps_cooling_work_in_cost_estimate(conn, settings, monkeypatch, capsys):
+    article_id = conn.execute(
+        "INSERT INTO articles (source_id, external_id, content_hash, title, body_md, body_text)"
+        " VALUES ('fangwei-mp', 'test', 'test', '长文', '正文', '正文') RETURNING id"
+    ).fetchone()["id"]
+    for ord_, body in enumerate(["已打完", "文" * (mechanism.CHUNK_LIMIT + 100), "两个"]):
+        conn.execute(
+            "INSERT INTO article_chunks (article_id, ord, heading, body) VALUES (%s, %s, '', %s)",
+            (article_id, ord_, body),
+        )
+    mechanism.save_scores(conn, article_id, mechanism.stale_chunks(conn, article_id)[:1], [2], "test")
+    conn.commit()
+    monkeypatch.setattr(mechanism.Settings, "from_env", lambda: settings)
+    monkeypatch.setattr(mechanism, "ensure_oauth", lambda _settings: None)
+    monkeypatch.setattr(mechanism, "chat", lambda *args, **kwargs: ('{"scores":[]}', "test"))
+    args = ["--source", "fangwei-mp"]
+    inventory = [*args, "--limit", "0"]
+    total = f"合计待打 1 篇、2 块，送模型的正文约 {mechanism.CHUNK_LIMIT + 2:,} 字"
+    assert mechanism.main(inventory) == 0
+    assert total in capsys.readouterr().out
+
+    assert mechanism.main([*args, "--limit", "1", "--fail-empty"]) == 4
+    assert "夜间统计 写入 0 篇，失败 1 篇，跳过 0 篇" in capsys.readouterr().err
+    assert mechanism.main(inventory) == 0
+    report = capsys.readouterr().out
+    assert "还要打分 0 篇、0 块" in report
+    assert "另有 1 篇、2 块失败后在冷却里" in report
+    assert total in report
+    assert f"当前可打 0 字，冷却中 {mechanism.CHUNK_LIMIT + 2:,} 字" in report
+
+    # 没有能开工的文章，与全部尝试失败是两种不同的夜间结果。
+    assert mechanism.main([*args, "--limit", "1", "--fail-empty"]) == 0
+    assert "夜间统计 写入 0 篇，失败 0 篇，跳过 0 篇" in capsys.readouterr().err

@@ -161,7 +161,7 @@ docker compose exec app research-ingest-wechat --source latepost --input /data/b
 docker compose exec app research-llm-estimate --source latepost
 ```
 
-导入之后才会进夜间任务，而且有上限，不会一次跑完：摘要每晚最多 80 篇（`DIGEST_LIMIT`），判断每晚最多 60 篇（`VIEWS_LIMIT`，只抽深入提到公司的）。晚点的定时抓取每天两次再各写最多 10 篇摘要（`DIGEST_LIMIT=0` 就跳过），同一篇有锁，不会和夜间写两遍。论点夜间默认关，译制只做英文，段落机制分不在夜间任务里，识图要 `NIGHTLY_OCR=1` 才跑（默认关）。打开网页也不会排队。这些定时点都不在 DeepSeek 高峰价时段（北京时间工作日 9–12 点、14–18 点）。单价和算法见 [llm.md](llm.md)「回填要花多少模型钱」。
+导入之后才会进夜间任务，而且有上限，不会一次跑完：摘要每晚最多 80 篇（`DIGEST_LIMIT`），判断每晚最多 60 篇（`VIEWS_LIMIT`，深入提及和短正文有图片文字的待整理判断都计入），段落打分每晚最多 200 篇（`MECHANISM_LIMIT`）。晚点的定时抓取只当场处理它自己那次抓进来的新文章（见下面「新抓进来的当场处理」），回填导入的不碰；同一篇有锁，不会和夜间写两遍。论点夜间默认关，译制只做英文，识图要 `NIGHTLY_OCR=1` 才跑（默认关）。打开网页也不会排队。回填这种大面积的，手动跑时加 `--off-peak` 避开 DeepSeek 高峰价时段（北京时间工作日 9–12 点、14–18 点）。单价和算法见 [llm.md](llm.md)「回填要花多少模型钱」。
 
 外链图片仍是定时抓取每次最多 200 张、夜间最多 300 张，不在导入时一次下完。
 
@@ -179,6 +179,27 @@ docker compose exec app research-place-wechat-images --source fangwei-mp --limit
 - 挪好的和新抓的一样记 `raw_meta.images = "page"`。作者写的字没变，导入认作「只是图挪了位置」：不记旧版，观点、摘要的哈希跟过来，不重抽；检索块和提及按新正文重算（块里的字和原来一样）。归档文件不改：整目录重新导入时，库里按原文页摆好的留着，归档里同样的字、同样的图只是位置不同就不覆盖；作者改了字照常替换，替换后又等着重新摆。
 - 原文已删除、因违规不能看的记下不再取。微信要验证就这次先停；连着 3 篇取不到原文页（连不上、页面认不出）也先停，这几篇不记，下次再看。只有写库出错时退出码非 0。
 - 还剩多少：`--dry-run --limit 0` 打出「等着按原文页摆图的」篇数。
+
+## 新抓进来的当场处理
+
+Zhilin 11-19：「以后新抓取的翻译、操作、打标签不需要等便宜时段，直接来，只有大面积操作之前的才需要等」。以前公众号、星球的定时抓取导入以后只补摘要，判断、段落打分、识图都等当晚 00:37 的夜间任务，还要和积压一起按每晚上限排队；Stratechery 的译制走待译队列，碰上 DeepSeek 高峰价时段不开新篇。
+
+方伟公众号、方伟星球、孤独进化体、晚点和 Stratechery 的定时抓取各用一份临时回执。导入器只记本次成功写入的新编号，以及从短预览变成可读全文的原编号。同时从其他目录手动导入的历史稿留给夜间任务。抓取脚本按回执和来源运行 `research-process-new`，依次处理以下工作。
+
+1. 识图：只认这几篇里没认过的图。跟着夜间任务的开关（`NIGHTLY_OCR`，没设就读 `data/launchd.env` 和装好的夜间任务），夜间不识图的话这里也不识。
+2. 译制：其中的英文文章点名译，不避开高峰价；被断线、限流打断的隔 2、10 分钟各自动再补一轮。
+3. 判断：深入谈到公司的抽观点。
+4. 摘要。
+5. 段落打分（`--effort low`，和夜间一样）。还没译完的英文文章这一步先不打，留给夜间：译完以后只打中文块，现在打就白打一遍英文块。
+
+每一步只挑这几篇里还该做的（网站上显示、主版本、不在失败冷却里、没做过或过期了），条件和各自的命令一样，只是限在这几篇里。一次最多 30 篇（`--limit`），多的留给夜间。凭证、鉴权、余额出问题退出码 2，某一步代码出错退出码 1，抓取脚本记成失败、`research-status` 会报；接口暂时不通（限流、5xx）不算失败，没做完的由夜间补。新文章一天几篇到十几篇，在高峰价时段做多花的是几分钱。只想抓取导入、新文章留给夜间：`PROCESS_NEW=0 scripts/crawl-latepost.sh`。
+
+积压（回填导入的几千篇、提示词加版本以后全库重做）不走这里：夜间任务按每晚上限补，一次补完照旧先报篇数和费用、等 Zhilin 同意，带 `--off-peak`。
+
+```bash
+docker compose exec app research-process-new --last-id
+docker compose exec app research-process-new --source latepost --after-id 24100
+```
 
 ## 外链图片
 
@@ -266,7 +287,7 @@ docker compose exec app research-repair-zsxq --dry-run
 docker compose exec app research-repair-zsxq
 ```
 
-缺标题、壳标题、省略号/占位标题、切不掉的评论列表残屑，以及空壳导读（「没有可读文字」「本文正文为空」「无法提炼」），还可以加 `--ai-titles`，用站内当前模型（默认 Grok，跟 `RESEARCH_LLM_PROVIDER` 走）根据正文 + 图片文字 + 导读起题（失败退回上面的确定性规则）。半句截断和只是错字的不打。短正文的图片文字一旦写上，会把这篇排进标题队列，回写时排在全表扫描前面。增量抓取脚本在补摘要之后会跑：
+缺标题、壳标题、省略号/占位标题、切不掉的评论列表残屑，以及空壳导读（「没有可读文字」「本文正文为空」「无法提炼」），还可以加 `--ai-titles`，用站内当前模型（默认 Grok，跟 `RESEARCH_LLM_PROVIDER` 走）根据正文 + 图片文字 + 导读起题（失败退回上面的确定性规则）。半句截断和只是错字的不打。短正文的图片文字一旦写上，会把这篇排进标题队列，回写时排在全表扫描前面。增量抓取脚本在处理新帖（识图、判断、摘要、打分）之后会跑：
 
 ```bash
 docker compose exec app research-repair-zsxq --source fangwei-zsxq --titles-only --ai-titles --limit 30
@@ -307,8 +328,8 @@ docker compose exec app research-views --articles 203,227,473,537,606
 11-18 以前 Stratechery 没有定时抓取，在另一台机器「盒子」上手动读会员 RSS、写成归档再导入（文章头里的 `- source: member-rss`），10-18 以后没人跑，线上停在 10-15。现在夜间任务（`scripts/nightly.sh`）第一步跑 `research-crawl-stratechery`：
 
 - 读 Mac mini 仓库根 `.env` 里的 `STRATECHERY_RSS_URL`（Stratechery Plus 账户页上的个人 RSS 地址，docker compose 透传进容器）。这是订阅凭证，命令不打印、报错里也不带。没设时夜间这一步跳过。
-- 只收 `https://stratechery.com/<年>/<slug>/` 的正文条目。11-18 实测个人 RSS 50 条里有 20 条正文齐全、`link` 却只写了首页 `https://stratechery.com/`（Daily Update、访谈、每周汇总都有），第一版把它们当成不是文章跳过了，漏了 11 篇；现在先看 `guid`，再按官网 WordPress 接口用标题和发布时刻（差不到一天、唯一一篇；每周汇总官网标题前面多「2026.46: 」也认）认回原文地址，认不出的这一晚记成失败。`id` 写 `<年>/<slug>`，和盒子导入的那批 `external_id` 一致；库里已有的不再写。播客、站外链接跳过。
-- 新的写进 `data/inbox/stratechery/<年>/<slug>.md`，只把这次新写的几篇放进临时目录导入（`--origin crawl`），不重扫整个归档。`published`、`date` 写 RSS 给的 UTC 时刻，带钟点；跨年（上海已是下一年）时只写美东日历日，由下面的 `research-stratechery-times` 补钟点。
+- 只收 `https://stratechery.com/<年>/<slug>/` 的正文条目。11-18 实测个人 RSS 50 条里有 20 条正文齐全、`link` 却只写了首页 `https://stratechery.com/`（Daily Update、访谈、每周汇总都有），第一版把它们当成不是文章跳过了，漏了 11 篇；现在先看 `guid`，再按官网 WordPress 接口用标题和发布时刻（差不到一天、唯一一篇；每周汇总官网标题前面多「2026.46: 」也认）认回原文地址，认不出的这一晚记成失败。`id` 写 `<年>/<slug>`，和盒子导入的那批 `external_id` 一致；库内已有全文时跳过，已归为 `short_post` 的游客预览取得达到门槛的正文时，更新同一篇并进入待译队列。只有首页或空链接可按标题回查，站内节目页、站外链接跳过。
+- 新的写进 `data/inbox/stratechery/<年>/<slug>.md`，导入这一批，同时可补交至多 `--max-new` 篇以前写盘但尚未入库的 RSS 归档。补交只看该来源目录、文章编号、规范原文链接及会员源标记，即使条目已滚出 RSS 也能找回。新归档的 `published`、`date` 保留 RSS 原始 UTC 时刻；上海已经跨年时，用官网所在地的年份核对原链接。
 - 正文是 RSS 的 `content:encoded`，按公众号那套 HTML 转换转成 Markdown（链接、加粗、标题、引用、列表、图片地址）。短于 5500 字符的（游客半截、每周汇总）照旧标 `short_post` 不显示。
 - 手动补抓、看哪些是新的：
 
@@ -317,7 +338,7 @@ docker compose exec app research-crawl-stratechery --dry-run
 docker compose exec app research-crawl-stratechery
 ```
 
-RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。新文章的中英对照：夜间「Stratechery 译制」一步按待译队列译 `STRATECHERY_TRANSLATE_LIMIT` 篇（Zhilin 11-18 定了抓进来的都译，`scripts/nightly.sh` 里默认 50 只防意外；0 是不译）。
+RSS 回 401、403、404 或给的是登录页时退出码 1，夜间记成失败，`research-status` 会报：到账户页重新复制地址换进 `.env`，再 `docker compose up -d`。白天 21:15 另有一次定时抓取（`scripts/crawl-stratechery.sh`，11-20 起，Zhilin：「白天再加一次」）：Thompson 北京时间傍晚发文，以前要等 00:37 才进库，现在当晚就有中英对照、判断和摘要；夜间开头那次补这之后发的。两次都一样：新文章抓进来紧接着由「Stratechery 新文章」一步当场译制、整理判断、写摘要、给段落打分（`research-process-new`，见「新抓进来的当场处理」）；以前没译完、冷却到期的由后面「Stratechery 译制」一步按待译队列补 `STRATECHERY_TRANSLATE_LIMIT` 篇（Zhilin 11-18 定了抓进来的都译，`scripts/nightly.sh` 里默认 50 只防意外；0 是不译）。夜间译制传 `--fail-partial`，在部分段落只存下进度时记录本步骤失败，下一晚仍可续译。另一个进程正在译的篇不会占用本次篇数名额。
 
 ## Stratechery 的发布时刻
 
