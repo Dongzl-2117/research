@@ -1,6 +1,8 @@
 """research-process-new：抓取导入以后只处理这次新进来的几篇，按识图、译制、判断、摘要、打分的顺序，不等高峰过去。"""
 
+import json
 import os
+import re
 
 from test_bilingual_provenance_db import article as english_article
 
@@ -60,7 +62,7 @@ def test_only_articles_after_the_mark_are_processed_in_order(conn, settings, mon
     monkeypatch.setattr(fresh.Settings, "from_env", classmethod(lambda cls, *a, **k: settings))
     monkeypatch.setattr("researchlib.llm.ensure_oauth", lambda _settings: None)
 
-    def fake_ocr(argv):
+    def fake_ocr(argv, **kwargs):
         calls.append(("识图", {int(argv[i + 1]) for i, item in enumerate(argv) if item == "--article"}))
         return 0
 
@@ -120,3 +122,70 @@ def test_untranslated_english_waits_for_its_translation_before_scoring(conn, set
     assert asked and asked[0][-2:] == ["--article-id", str(english)]
     assert "--anytime" not in asked[0] and "--source" not in asked[0]
     assert scored == []
+
+
+def test_shared_image_only_rewrites_digests_and_titles_for_this_crawl(conn, settings, tmp_path, monkeypatch):
+    from test_ocr_reading import _png, _store
+
+    from researchlib import ocr, zsxq_repair
+
+    image = tmp_path / "shared.png"
+    _png(image, b"shared financial chart")
+    articles = []
+    for source, name in [
+        ("fangwei-zsxq", "旧星球"),
+        ("latepost", "旧公众号"),
+        ("latepost", "超过篇数上限"),
+        ("latepost", "本次新稿"),
+    ]:
+        row = _store(conn, settings, source, name, name, f"{name}讨论财务数据。\n\n![](shared.png)", [image])
+        articles.append(row["id"])
+    old_topic, mark, overflow, selected = articles
+    conn.execute("UPDATE articles SET title = '下图' WHERE id = %s", (old_topic,))
+    conn.commit()
+
+    recognized = []
+    digested = []
+    titled = []
+    scored = []
+
+    def recognize(path):
+        recognized.append(path)
+        return "图中列出了三个季度的收入和成本，销售增长来自销量上升，管理费用随收入增加。"
+
+    def write_digest(_settings, messages, **kwargs):
+        digested.append(messages[-1]["content"])
+        return '{"summary":"销售数量增加。","points":[],"tags":[]}', "local-test"
+
+    def write_title(_settings, **kwargs):
+        titled.append(kwargs["old_title"])
+        return "图表显示销量上升"
+
+    def score(_settings, messages, **kwargs):
+        prompt = messages[-1]["content"]
+        scored.append(prompt)
+        ids = re.findall(r"^【(\d+)】", prompt, re.MULTILINE)
+        return json.dumps({"scores": [{"id": int(item), "score": 1} for item in ids]}), "local-test"
+
+    monkeypatch.setattr(fresh.Settings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr("researchlib.llm.ensure_oauth", lambda _settings: None)
+    monkeypatch.setattr("researchlib.llm.llm_configured", lambda _settings: True)
+    monkeypatch.setattr(ocr, "resolve_engine", lambda _settings: ("local-test", recognize))
+    monkeypatch.setattr(digest, "chat", write_digest)
+    monkeypatch.setattr(zsxq_repair, "generate_ai_title", write_title)
+    monkeypatch.setattr(mechanism, "chat", score)
+
+    args = ["--source", "latepost", "--after-id", str(mark), "--limit", "1", "--ocr"]
+    assert fresh.main(args) == 0
+    assert len(recognized) == 1
+    saved = conn.execute("SELECT article_id FROM article_digests ORDER BY article_id").fetchall()
+    assert [row["article_id"] for row in saved] == [selected]
+    assert len(digested) == 1 and "本次新稿" in digested[0]
+    assert titled == []
+    assert {row["id"] for row in conn.execute("SELECT id FROM articles WHERE ocr_hash <> ''")} == set(articles)
+    queued = conn.execute("SELECT article_id, kind FROM article_followups").fetchall()
+    assert {(row["article_id"], row["kind"]) for row in queued} == {
+        (old_topic, "digest"), (old_topic, "zsxq_title"), (mark, "digest"), (overflow, "digest")
+    }
+    assert fresh.main(args) == 0
+    assert len(recognized) == len(digested) == len(scored) == 1 and titled == []
