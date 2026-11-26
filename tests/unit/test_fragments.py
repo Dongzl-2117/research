@@ -63,3 +63,17 @@ def test_neighbours_outside_the_seeds_never_stand_alone():
     assert len(fragments) == 2
     kept = seeded_only(fragments, {(1, 10)})
     assert [(f.first, f.last) for f in kept] == [(10, 11)]
+
+
+def test_one_section_cut_into_pieces_is_listed_once():
+    """一节比 6 块长，被切成首尾相接的几截：只列分最高的一截，别的记进「这篇还有 N 处」，不占这篇的名额。"""
+    section = [_p(1, ord_, 1.0 - ord_ / 100) for ord_ in range(14)]  # 0–5、6–11、12–13 三截
+    elsewhere = [_p(1, 40, 0.5, heading="第二章"), _p(1, 60, 0.4, heading="第三章"), _p(1, 80, 0.3, heading="第四章")]
+    listed = cap_per_article(build_fragments(section + elsewhere))
+    assert [(f.first, f.last) for f in listed] == [(0, 5), (40, 40), (60, 60)]
+    assert listed[-1].more == 3  # 同一节的另外两截和第四章
+    # 不相接（中间隔着没召回的块）、换了章节的照旧各列各的；图片文字一张图一块，挨着也各列各的。
+    apart = cap_per_article(build_fragments([_p(2, 0, 1.0), _p(2, 3, 0.9), _p(2, 4, 0.8, heading="第二章")]))
+    assert [(f.first, f.last) for f in apart] == [(0, 0), (3, 3), (4, 4)]
+    images = cap_per_article(build_fragments([_p(3, 20000, 1.0), _p(3, 20001, 0.9)]))
+    assert len(images) == 2

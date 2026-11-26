@@ -2798,15 +2798,43 @@ def seeded_only(fragments: list[Fragment], seed_keys: set[tuple[int, int]]) -> l
     return [f for f in fragments if (f.article_id, f.peak.ord) in seed_keys]
 
 
+def _section_runs(fragments: list[Fragment]) -> dict[int, int]:
+    """同一篇、同一章节、块号首尾相接的片段算同一段话：返回 id(片段) → 这段话的编号。
+
+    一节比 6 块长时被切成几个片段（FRAGMENT_MAX_BLOCKS），以前各占一条：搜「Costco商业模式」，
+    同一篇笔记的同一节（块 272 到 293）在前 11 条里出了三张标题一样的卡片。图片文字块一张图一块，不算相接。
+    """
+    runs: dict[int, int] = {}
+    by_article: dict[int, list[Fragment]] = defaultdict(list)
+    for fragment in fragments:
+        by_article[fragment.article_id].append(fragment)
+    for group in by_article.values():
+        previous: Fragment | None = None
+        for fragment in sorted(group, key=lambda f: f.first):
+            joined = (
+                previous is not None and fragment.first <= previous.last + 1
+                and fragment.heading == previous.heading
+                and _lang_group(fragment.first) == _lang_group(previous.last) != OCR_ORD_BASE
+            )
+            runs[id(fragment)] = runs[id(previous)] if joined else len(runs)
+            previous = fragment
+    return runs
+
+
 def cap_per_article(fragments: list[Fragment], per_article: int = FRAGMENT_PER_ARTICLE) -> list[Fragment]:
-    """每篇最多 per_article 个片段，各自按分数排位；多出来的数记在它在列表里的最后一个片段上。"""
+    """每篇最多 per_article 个片段，各自按分数排位；多出来的数记在它在列表里的最后一个片段上。
+    同一段话被切开的几截只列分最高的一截，其余也记进「这篇还有 N 处」。"""
     listed: list[Fragment] = []
     shown: dict[int, list[Fragment]] = defaultdict(list)
     extra: dict[int, int] = defaultdict(int)
+    runs = _section_runs(fragments)
+    listed_runs: set[int] = set()
     for fragment in fragments:
-        if len(shown[fragment.article_id]) < per_article:
+        run = runs[id(fragment)]
+        if run not in listed_runs and len(shown[fragment.article_id]) < per_article:
             shown[fragment.article_id].append(fragment)
             listed.append(fragment)
+            listed_runs.add(run)
         else:
             extra[fragment.article_id] += 1
     for article_id, more in extra.items():

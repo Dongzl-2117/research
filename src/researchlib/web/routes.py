@@ -26,6 +26,7 @@ from researchlib.ask_model import menu as ask_model_menu
 from researchlib.author_voice import hide_from_site
 from researchlib.boilerplate import EMPTY as EMPTY_PROFILE
 from researchlib.boilerplate import LIBRARY_KINDS, clean_article, clean_markdown, image_hashes
+from researchlib.chunks import OCR_HEADING
 from researchlib.citecheck import check_answer
 from researchlib.db import connect, ensure_search_session
 from researchlib.doctree import arrange_tree, filter_library_tree, load_tree_rows, mark_open
@@ -1544,6 +1545,7 @@ def search_page(request: Request):
 
 
 FRAGMENT_SNIPPET = 220  # 片段摘录的字数（3 到 4 行），上线后看手机上一屏几条再调
+HEADING_TITLE_MAX = 80  # 章节名比这长就不当卡片标题（手机上 80 字约 5 行）
 
 
 def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_id, banner, company, has_filter,
@@ -1588,11 +1590,18 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
         )
         heading = polish_display_text(fragment.heading or "")
         article_title = shown[fragment.article_id]
+        # 章节名当标题；章节名其实是一整段话（飞书笔记把一段正文标成标题，上限 200 字）或者只是「图片里的字」时，
+        # 标题用文章名，章节名放到下面一行（单行，放不下省略）。
+        heading_as_title = bool(heading) and len(heading) <= HEADING_TITLE_MAX and heading != OCR_HEADING
         row = {"id": fragment.article_id, "title": article_title, "published_at": fragment.published_at}
-        card = _card(row, source, settings, title=highlight_title(heading or article_title, query, terms=terms))
+        card = _card(
+            row, source, settings,
+            title=highlight_title(heading if heading_as_title else article_title, query, terms=terms),
+        )
         card.update({
             "url": fragment.url,
-            "article_title": article_title if heading else "",
+            "article_title": article_title if heading_as_title else "",
+            "section": "" if heading_as_title else heading,
             "snippet": snippet,
             "paragraphs": [highlight_full(line, terms) for line in text.split("\n")],
             "chars": fragment.chars,
