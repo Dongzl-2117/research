@@ -63,15 +63,18 @@ step() {
 # 新文章当晚就有图、向量、观点和摘要。Thompson 北京时间傍晚发文，这一步凌晨跑，当天的都赶得上。
 # 没设地址时这一步跳过、不算失败（未配置）；设了却读不到（地址失效、订阅过期）记成失败，research-status 会报。
 if compose_exec app sh -c 'test -n "${STRATECHERY_RSS_URL:-}"' 2>/dev/null; then
-  step "Stratechery 抓取" compose_exec app research-crawl-stratechery
+  step "Stratechery 抓取" crawl_with_receipt research-crawl-stratechery
+  # 这次新抓的当场译制、识图、整理判断、写摘要、给段落打分（research-process-new，见 status.sh 的 process_new）：
+  # 不占后面观点、摘要、打分每晚的篇数上限，也不和积压一起排队。
+  step "Stratechery 新文章" process_new stratechery
 else
   echo "$(date '+%F %T') 跳过：Stratechery 抓取（.env 没设 STRATECHERY_RSS_URL）"
 fi
-# 新抓的 Stratechery 译成中英对照：按待译队列最多译 STRATECHERY_TRANSLATE_LIMIT 篇（调模型、花钱；Zhilin 11-18：抓进来的都译，
-# 上限只防意外，和抓取每次最多 50 篇一样；设 0 不译）。凌晨不在 DeepSeek 高峰价时段；4 篇同时译，补抓那种一晚二十几篇也不拖住后面几步。
+# Stratechery 的待译队列：上一步已经点名译了今晚新抓的，这里补以前没译完、冷却到期的，最多 STRATECHERY_TRANSLATE_LIMIT 篇
+# （调模型、花钱；Zhilin 11-18：抓进来的都译，上限只防意外；设 0 不译）。凌晨不在 DeepSeek 高峰价时段；4 篇同时译。
 STRATECHERY_TRANSLATE_LIMIT="${STRATECHERY_TRANSLATE_LIMIT:-50}"
 if [ "$STRATECHERY_TRANSLATE_LIMIT" -gt 0 ] 2>/dev/null; then
-  step "Stratechery 译制" compose_exec app research-translate --source stratechery --limit "$STRATECHERY_TRANSLATE_LIMIT" --workers 4
+  step "Stratechery 译制" compose_exec app research-translate --source stratechery --limit "$STRATECHERY_TRANSLATE_LIMIT" --workers 4 --fail-partial
 fi
 # 归档只记了日期的 Stratechery 按官网接口补上钟点（不调模型；都有了就不连官网），新导入的第二天就有。
 step "Stratechery 发布时刻" compose_exec app research-stratechery-times

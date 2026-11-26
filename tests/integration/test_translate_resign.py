@@ -118,6 +118,7 @@ def test_image_only_posts_stop_taking_queue_slots(conn, settings, monkeypatch):
     assert result.status == "skipped" and result.reason == "no translatable text"
     pending = service.list_pending_english(conn, limit=10)
     assert only_images not in pending and text in pending
+    assert service.list_pending_english(conn, limit=10, include_deferred=True) == pending
     # 再跑一次不重复记。
     service.translate_article(conn, only_images, data_dir=settings.data_dir)
     n = conn.execute("SELECT count(*) AS n FROM translation_attempts WHERE article_id = %s AND status = 'no-text'",

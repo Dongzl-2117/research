@@ -4,8 +4,10 @@ import inspect
 import json
 from pathlib import Path
 
+import pytest
+
 from researchlib import llm_cost
-from researchlib.excerpt import DIGEST_LIMIT, VIEW_WINDOW
+from researchlib.excerpt import DIGEST_LIMIT, VIEW_WINDOW, VIEWS_LIMIT, view_windows
 from researchlib.llm_cost import (
     ASSUMED_BODY_CHARS,
     HEADER_CHARS,
@@ -41,7 +43,7 @@ def test_digest_cost_uses_documented_prices_and_a_planning_band():
     text = render_estimate(estimate, provider_text="当前提供方: DeepSeek（deepseek-flash，reasoning_effort=max）")
     assert f"{low:.2f}" in text and f"{high:.2f}" in text
     assert "非高峰" in text and "高峰" in text
-    assert "每晚最多 80" in text and "各最多 10" in text
+    assert "每晚最多 80" in text and "research-process-new" in text
     assert "不调模型" in text
     assert estimate.views is not None and estimate.views.calls == 0
     assert estimate.views_are_upper is False
@@ -101,9 +103,16 @@ def test_short_text_is_not_digested_and_schedule_caps_match_the_scripts():
     late = (root / "scripts" / "crawl-latepost.sh").read_text(encoding="utf-8")
     assert f"DIGEST_LIMIT:-{llm_cost.NIGHTLY_DIGEST_LIMIT}" in nightly
     assert f"VIEWS_LIMIT:-{llm_cost.NIGHTLY_VIEWS_LIMIT}" in nightly
+    assert f"MECHANISM_LIMIT:-{llm_cost.NIGHTLY_MECHANISM_LIMIT}" in nightly
+    assert 'research-mechanism --limit "$MECHANISM_LIMIT"' in nightly
+    text = render_estimate(estimate, provider_text="DeepSeek")
+    assert f"段落机制分: 夜间默认每晚最多 {llm_cost.NIGHTLY_MECHANISM_LIMIT} 篇" in text
+    assert "--limit 0" in text
     assert 'THESES_ENABLED="${THESES_ENABLED:-0}"' in nightly
     assert 'NIGHTLY_OCR="${NIGHTLY_OCR:-0}"' in nightly
-    assert f"DIGEST_LIMIT:-{llm_cost.CRAWL_DIGEST_LIMIT}" in late
+    # 晚点的定时抓取只当场处理这次抓进来的（按本次导入回执），不按来源补积压。
+    assert "crawl_with_receipt research-crawl-wechat" in late and 'process_new "$SOURCE"' in late
+    assert "research-digest" not in late
 
 
 def test_estimate_command_reads_a_listing_and_does_not_need_the_database(monkeypatch, tmp_path, capsys):
@@ -120,3 +129,22 @@ def test_estimate_command_reads_a_listing_and_does_not_need_the_database(monkeyp
     assert "2,000" in out or "2000" in out
     assert "DeepSeek" in out
     assert "不调用模型" in out or "没有调用模型" in out
+
+
+def test_views_estimate_keeps_long_inputs_and_uses_article_slots_for_nights():
+    chars = 41 * VIEWS_LIMIT
+    assert len(view_windows("甲" * chars, [], [])) == 41
+    specs = [ArticleSpec(chars=chars, deep_mentions=1)] * 2
+    estimate = build_estimate(specs, digest_prompt_chars=10, views_prompt_chars=50)
+    assert estimate.views.articles == 2
+    assert estimate.views.calls == 82
+    assert estimate.views.input_tokens == 2 * chars + 82 * 50
+    text = render_estimate(estimate, provider_text="DeepSeek")
+    assert "2 篇、每晚用满篇数额度约 1 晚" in text
+
+
+@pytest.mark.parametrize("chars", [1, VIEW_WINDOW + 1, 6 * VIEW_WINDOW, 6 * VIEW_WINDOW + 1, 6 * VIEWS_LIMIT + 1])
+def test_estimate_long_text_matches_reader_without_line_breaks_or_chunk_filter(chars):
+    calls, body = llm_cost._view_slices(chars)
+    assert calls == len(view_windows("字" * chars, [], []))
+    assert body == chars

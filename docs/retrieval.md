@@ -485,13 +485,13 @@ Zhilin 要的好结果：问「Costco商业模式」，排前面的段落要讲 
 
 命令（`researchlib/mechanism.py`，走 `llm_batch`，和 views、digest 一样有锁、`--workers`、`--off-peak`、`--max-minutes`、每篇和合计用量）：
 
-- `research-mechanism --limit 0`：只报还要打的篇数、块数、字数，不调模型。
+- `research-mechanism --limit 0` 盘点当前可打和失败冷却中的块。估算全部剩余用量时，将校准所得的每万字 token 数，乘以「合计待打」中送模型的正文字数，再除以一万。合计按每块最多 3000 字计算，盘点不调用模型。
 - `docker compose exec -T app research-mechanism --calibrate - --effort low < /私有目录/review.json`（镜像里没有 `tools/`，样本从宿主机用 `<` 喂进去）：给正文指纹一致、已有人工标签的段落打分。下方「机制校准」说明如何从 Zhilin 11-17 亲手判的 28 段导出待评正文（`mechanism.json` 是 AI 按早先更严的线判的 338 段，只作参考：和 Zhilin 同判的 28 段只有 15 段一致，不一样的 13 段里 9 段他判得更高，讲商业模式结构、竞争格局、对比表的段落他都算排前面），不写库，打印和人判的一致率（完全一致、判 2 的准确率和召回、加权 kappa、混淆表）和每万字用量，用来挑思考强度、估全库费用。
 - `research-mechanism --limit N`：按发布时间从新往旧，每篇只打没打过、改过的块，按 1.2 万字一批问（一块最多算 3000 字）。
 
 现在的状态（11-18）：提示词第 2 版（Zhilin 判的 28 段调参、另 20 段留出，留出上 10/20 一致、kappa 0.46，分得清讲没讲生意、分不清深浅），Zhilin 选了打全库。Mac mini 上 `--workers 16 --off-peak --effort low` 从 05:51 到 14:31（UTC）跑完一轮，逐篇求和进 3,543 万、出 2,105 万 token，按非高峰价约 18 美元（报价 30 到 35）。
 
-那一轮报「还要打分 0 篇」，其实约 150 篇在失败冷却里没算进去（`pending_articles` 跳过冷却中的），其中林文丰飞书 24 篇长文（2 万多块）全在里面：一篇几千块要问上百次，以前任何一批回答缺一段整篇作废（#376 起每批当场存、缺段先重问一次）。现在 `--limit 0` 另起一行报冷却里的篇数和块数；这些和以后的新文章由夜间「段落打分」一步补（`scripts/nightly.sh` 的 `MECHANISM_LIMIT`，默认 200 篇，`--workers 4 --effort low`），冷却按失败次数一天到七天。DeepSeek 对少数段落回 400「Content Exists Risk」，这几篇会一直失败、冷却到七天，不影响别的。
+那一轮报「还要打分 0 篇」，其实约 150 篇在失败冷却里没算进去（`pending_articles` 跳过冷却中的），其中林文丰飞书 24 篇长文（2 万多块）全在里面：一篇几千块要问上百次，以前任何一批回答缺一段整篇作废（#376 起每批当场存、缺段先重问一次）。现在 `--limit 0` 另起一行报冷却里的篇数和块数；这些由夜间「段落打分」一步补（`scripts/nightly.sh` 的 `MECHANISM_LIMIT`，默认 200 篇，`--workers 4 --effort low`），冷却按失败次数一天到七天。11-19 起新抓进来的文章由抓取脚本当场打分（`research-process-new`，见 [ingest.md](ingest.md)「新抓进来的当场处理」），夜间这一步补的是那边没打完的和冷却到期的。DeepSeek 对少数段落回 400「Content Exists Risk」，这几篇会一直失败、冷却到七天，不影响别的。
 
 检索读分（11-18）：`retrieval.mechanism_scores` 每次按候选块取 `chunk_mechanism`，指纹在 Python 里按候选正文算（不在 SQL 里对几万块算 md5），对不上或提示词版本旧的当没打过；分数挂在 `Passage.mechanism`，接口 `level=chunk`、`level=passage` 都多一个 `mechanism` 字段（0、1、2 或 null）。乘到排序上的系数 `MECHANISM_FACTOR` 先全是 1，只记录不改排序：全库打完分以后按线上候选模拟、出 A/B 给 Zhilin 选，再改。有中文译文的英文原文块不打分，在检索里按没打过算。
 

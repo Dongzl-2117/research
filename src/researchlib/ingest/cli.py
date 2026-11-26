@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -54,6 +55,9 @@ def run_markdown_ingest(
                 owners=owners,
                 skip_notes=kind not in DOCUMENT_TREE_KINDS,
             )
+            # 定时抓取独占的回执，手动导入和并发任务各自独立。
+            receipt = os.environ.get("RESEARCH_CRAWL_RECEIPT")
+            fresh_ids: list[int] | None = [] if receipt else None
             report = store_documents(
                 conn,
                 source=source,
@@ -63,7 +67,13 @@ def run_markdown_ingest(
                 images_in_archive=image_count,
                 errors=errors,
                 origin=args.origin,
+                fresh_ids=fresh_ids,
             )
+            if receipt and fresh_ids is not None:
+                # 写完再替换。导入意外中断时，即使夜间继续，也不会把半个编号认成别的文章。
+                partial = Path(f"{receipt}.part")
+                partial.write_text("".join(f"{article_id}\n" for article_id in fresh_ids), encoding="ascii")
+                partial.replace(receipt)
             print(report.render())
             if after_store is not None and not report.errors:
                 after_store(conn, source)

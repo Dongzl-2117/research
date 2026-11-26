@@ -223,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         help="待译队列最多取几篇，默认 5（--loop 时是每次查队列取几篇；--from-inventory 默认整类）",
     )
     parser.add_argument("--loop", action="store_true", help="worker 模式：空闲时休眠后继续扫")
+    parser.add_argument("--fail-partial", action="store_true", help="仍有已保存但未译全的篇时返回非零，供夜间状态使用")
     parser.add_argument("--sleep", type=int, default=60, help="--loop 时空队列休眠秒数")
     parser.add_argument(
         "--workers",
@@ -351,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     failed: set[int] = set()
     # 按队列译时查出来、还没分出去的篇。
     queued: list[int] = []
+    locked_elsewhere: set[int] = set()
     flags = {"queried": False, "idle": False}
     tally: Counter[str] = Counter()
     total = Usage()
@@ -455,13 +457,18 @@ def main(argv: list[str] | None = None) -> int:
         with guard:
             total.merge(usage)
             tally[result.status if result is not None else "failed"] += 1
-            if result is None:
+            if result is None or (args.fail_partial and result.status == "partial"):
                 failed.add(article_id)
             else:
                 failed.discard(article_id)
         if result is None:
             _say(f"#{article_id} failed: {error}{spent}", err=True)
             return _retry_later(error)
+        if args.fail_partial and result.status == "partial":
+            _say(
+                f"#{article_id} 尚未译全，已保存进度（待译 {result.untranslated} 段，沿用旧译 {result.stale} 段）",
+                err=True,
+            )
         _say(
             f"#{result.article_id} {result.status}"
             + (f" segments={result.segments}" if result.segments else "")
@@ -526,13 +533,19 @@ def main(argv: list[str] | None = None) -> int:
         while True:
             while queued:
                 article_id = queued.pop(0)
-                if fresh(article_id) and _try_lock(conn, article_id):
+                if not fresh(article_id):
+                    continue
+                if _try_lock(conn, article_id):
                     tried[article_id] = time.monotonic()
                     return article_id
-            if refilled or (flags["queried"] and not args.loop):
+                if not args.loop:
+                    # 别处正译的篇不占本轮名额。扩大一次查询窗口，继续找后面的待译文章。
+                    locked_elsewhere.add(article_id)
+                    flags["queried"] = False
+            if (refilled and args.loop) or (flags["queried"] and not args.loop):
                 return None
             # 这一轮拿过、还不能再拿的篇会占住查出来的名额，多查这么多篇。
-            skip = sum(1 for article_id in tried if not fresh(article_id))
+            skip = len(locked_elsewhere) + sum(1 for article_id in tried if not fresh(article_id))
             if args.recheck:
                 rows = list_coarse_translations(conn, limit=limit + skip, source_id=args.source or None)
                 ids = [int(row["id"]) for row in rows]
@@ -543,7 +556,8 @@ def main(argv: list[str] | None = None) -> int:
             # 只读的查询，别让事务在空队列睡觉时一直开着。
             conn.commit()
             flags["queried"] = refilled = True
-            queued.extend([article_id for article_id in ids if fresh(article_id)][:limit])
+            available = [article_id for article_id in ids if fresh(article_id) and article_id not in locked_elsewhere]
+            queued.extend(available[:limit])
 
     def take_queued(conn) -> int | None:
         while not stop.is_set():

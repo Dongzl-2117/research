@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from researchlib.excerpt import DIGEST_LIMIT, VIEW_WINDOW
+from researchlib.excerpt import DIGEST_LIMIT, window_size
 
 # docs/llm.md「一次补完积压」：非高峰每百万 token 进 0.15、出 0.60 美元，高峰翻倍。
 DEEPSEEK_INPUT_PER_MILLION = 0.15
@@ -34,11 +34,10 @@ ASSUMED_BODY_CHARS = 6700
 HEADER_CHARS = 80
 # 和 digest.MIN_DIGEST_CHARS 一样：再短就不写摘要。
 MIN_DIGEST_CHARS = 20
-# scripts/nightly.sh、scripts/crawl-latepost.sh 的默认上限。改了脚本要一起改。
+# scripts/nightly.sh 的默认上限。改了脚本要一起改。
 NIGHTLY_DIGEST_LIMIT = 80
 NIGHTLY_VIEWS_LIMIT = 60
-CRAWL_DIGEST_LIMIT = 10
-CRAWL_RUNS_PER_DAY = 2
+NIGHTLY_MECHANISM_LIMIT = 200
 # docs/ocr.md：一张图输出大约 10,764 token。图片本身的输入 token 这里不算。
 OCR_OUTPUT_TOKENS = 10_764
 
@@ -48,7 +47,7 @@ class ArticleSpec:
     chars: int
     assumed: bool = False
     need_digest: bool = True
-    # None：还没导入，不知道有没有深入提及。0：没有。正数：深入提到的公司家数。
+    # None：还没导入，判断数量未知。入库后只数需要新写或重抽判断的公司。
     deep_mentions: int | None = None
     images: int | None = None
 
@@ -88,15 +87,9 @@ def dollars(input_tokens: int, output_tokens: int, *, peak: bool = False) -> flo
 
 def _view_slices(chars: int) -> tuple[int, int]:
     """按整篇长度粗算判断要问几次、正文送多少字。实际只送提到公司的段落，通常更少。"""
-    remaining = max(chars, 0)
-    calls = 0
-    body = 0
-    while remaining > 0 and calls < 40:
-        take = min(remaining, VIEW_WINDOW)
-        body += take
-        remaining -= take
-        calls += 1
-    return calls, body
+    body = max(chars, 0)
+    size = window_size(body)
+    return (body + size - 1) // size, body
 
 
 def _digest_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate, int]:
@@ -104,10 +97,10 @@ def _digest_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimat
     input_tokens = 0
     short = 0
     for spec in specs:
-        if not spec.need_digest:
-            continue
         if spec.chars < MIN_DIGEST_CHARS and not spec.assumed:
             short += 1
+            continue
+        if not spec.need_digest:
             continue
         calls += 1
         input_tokens += min(spec.chars, DIGEST_LIMIT) + prompt_chars + HEADER_CHARS
@@ -127,15 +120,7 @@ def _views_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate
     articles = 0
     input_tokens = 0
     for spec in specs:
-        if spec.deep_mentions is None:
-            if not unknown:
-                continue
-            include = True
-        else:
-            include = spec.deep_mentions > 0
-            if unknown and not include:
-                continue
-        if not include:
+        if spec.deep_mentions == 0:
             continue
         n_calls, body = _view_slices(spec.chars)
         if n_calls == 0:
@@ -144,18 +129,10 @@ def _views_job(specs: list[ArticleSpec], prompt_chars: int) -> tuple[JobEstimate
         calls += n_calls
         input_tokens += body + n_calls * prompt_chars
     if unknown:
-        note = (
-            "上沿：导入并算出公司提及之前，不知道有多少篇会抽。"
-            "这里按列出的每一篇都深入提到公司。实际只抽深入提及，一带而过不抽；"
-            f"长文只送提到公司的段落（一块约 {VIEW_WINDOW} 字），通常少于此数。"
-        )
+        note = "导入前按篇数上沿，假设每篇都有待抽判断。实际会整理深入提及，以及正文很短而图片有字的提及。"
     else:
-        note = (
-            f"只算库里已经有深入提及的篇。按整篇长度每 {VIEW_WINDOW} 字 1 次，是上沿；"
-            "实际只送提到公司的段落。"
-        )
-    if not unknown and calls == 0:
-        return JobEstimate("判断", 0, 0, 0, 0, 0, note), False
+        note = "只算还有判断待新写或重抽的篇（含短文图片里的提及）。"
+    note += "按整篇字数和实际读法的窗口大小估次数。按换行切分、筛选并拼接命中段落时，次数会变。"
     return (
         JobEstimate(
             "判断",
@@ -241,7 +218,7 @@ def render_estimate(estimate: Estimate, *, provider_text: str) -> str:
         lines.append(f"另有 {estimate.short_skipped} 篇不足 {MIN_DIGEST_CHARS} 字，不写摘要")
     lines.append(_job_line(estimate.digest))
     if estimate.views is not None:
-        label = "判断（上沿）" if estimate.views_are_upper else "判断"
+        label = "判断（篇数上沿）" if estimate.views_are_upper else "判断"
         lines.append(_job_line(estimate.views).replace("判断:", f"{label}:", 1))
     if estimate.views is not None and not estimate.views_are_upper:
         both_low = dollars(
@@ -254,10 +231,10 @@ def render_estimate(estimate: Estimate, *, provider_text: str) -> str:
         )
         lines.append(
             f"摘要加判断（DeepSeek 非高峰）: {both_low:.2f} 到 {both_high:.2f} 美元。"
-            "判断按整篇切块，实际通常更少。"
+            "判断按整篇字数估算，实际取段会影响调用数和金额。"
         )
     else:
-        lines.append("合计只加了摘要。判断还是上沿，不要和摘要加在一起当成已经要付的钱。")
+        lines.append("合计只加了摘要。判断按篇数上沿粗估，不要和摘要加在一起当成已经要付的钱。")
     if estimate.images is None:
         lines.append("识图: 张数还不知道（要等正文抓下来并导入）。夜间默认关（NIGHTLY_OCR=0），打开才按张花钱。")
     else:
@@ -269,28 +246,30 @@ def render_estimate(estimate: Estimate, *, provider_text: str) -> str:
         )
     lines.append("译制: 0 篇算进这次。只译英文（Stratechery）。中文公众号不进待译队列。")
     lines.append("论点: 按公司，不按篇。夜间默认关（THESES_ENABLED=0），导入不会跑 research-theses。")
-    lines.append("段落机制分: 不在夜间任务里，这次不算。要跑得另报费用。")
+    lines.append(
+        f"段落机制分: 夜间默认每晚最多 {NIGHTLY_MECHANISM_LIMIT} 篇（MECHANISM_LIMIT=0 跳过），"
+        "只打新增或已过期的段落，费用另计。导入后可用 research-mechanism --source 来源ID --limit 0"
+        " 免费清点，再结合相同模型的校准用量估费。"
+    )
     lines.append("问库: 只有读者提问才调，导入不会触发。")
     digest_nights = _nights(estimate.digest.calls, NIGHTLY_DIGEST_LIMIT)
-    view_calls = estimate.views.calls if estimate.views is not None else 0
-    view_nights = _nights(view_calls, NIGHTLY_VIEWS_LIMIT)
+    view_articles = estimate.views.articles if estimate.views is not None else 0
+    view_nights = _nights(view_articles, NIGHTLY_VIEWS_LIMIT)
     lines.append(
         "导入之后谁会接着花钱（导入这一步本身不调模型，网页打开也不会排队）："
     )
     lines.append(
-        f"- 摘要：夜间 research-digest 每晚最多 {NIGHTLY_DIGEST_LIMIT} 篇；"
-        f"晚点定时抓取每天 {CRAWL_RUNS_PER_DAY} 次、各最多 {CRAWL_DIGEST_LIMIT} 篇"
-        f"（DIGEST_LIMIT，设 0 就跳过）。同一篇有锁，不会写两遍。"
-        f"只算夜间的话，上面这些摘要大约 {digest_nights} 晚；定时抓取每天最多再写 "
-        f"{CRAWL_DIGEST_LIMIT * CRAWL_RUNS_PER_DAY} 篇，和夜间抢的是同一批最新的。"
+        f"- 摘要：夜间 research-digest 每晚最多 {NIGHTLY_DIGEST_LIMIT} 篇，"
+        f"上面这些摘要大约 {digest_nights} 晚。定时抓取只当场处理它自己那次抓进来的新文章"
+        "（research-process-new），回填导入的不碰。同一篇有锁，不会写两遍。"
     )
     lines.append(
-        f"- 判断：夜间 research-views 每晚最多 {NIGHTLY_VIEWS_LIMIT} 篇，只抽深入提到公司的。"
-        f"按上面的次数大约 {view_nights} 晚（上沿会更久，因为实际篇数通常更少）。"
+        f"- 判断：夜间 research-views 每晚最多 {NIGHTLY_VIEWS_LIMIT} 篇。"
+        f"按估算中的 {view_articles} 篇、每晚用满篇数额度约 {view_nights} 晚。耗时上限与其他来源的积压另计。"
     )
     lines.append(
-        "- 这些定时点（夜间 00:37、抓取 08:30 和 20:30）都不在 DeepSeek 高峰价时段。"
-        "高峰是北京时间工作日 9–12 点、14–18 点。手动在高峰跑，金额按上面的高峰一档。"
+        "- 夜间任务 00:37 开始，不在 DeepSeek 高峰价时段（北京时间工作日 9–12 点、14–18 点）。"
+        "回填这种大面积的手动跑要加 --off-peak，在高峰跑金额按上面的高峰一档。"
     )
     lines.append(
         "- 外链图片由定时抓取每次最多 200 张、夜间最多 300 张接着下，不调用上面的模型。"
@@ -390,12 +369,12 @@ def specs_from_rows(rows) -> list[ArticleSpec]:
 
 
 def load_db_rows(conn, *, source_id: str = "", article_ids: list[int] | None = None):
+    from researchlib import digest, views
     from researchlib.author_voice import site_visible_sql
-    from researchlib.digest import PROMPT_VERSION
     from researchlib.visibility import visible_sql
 
     where = ["a.duplicate_of IS NULL", visible_sql("a"), site_visible_sql("a")]
-    params: list = [PROMPT_VERSION]
+    params: list = [digest.PROMPT_VERSION, views.PROMPT_VERSION]
     if source_id:
         where.append("a.source_id = %s")
         params.append(source_id)
@@ -404,19 +383,14 @@ def load_db_rows(conn, *, source_id: str = "", article_ids: list[int] | None = N
         params.append(article_ids)
     return conn.execute(
         f"""
-        SELECT length(coalesce(a.body_text, '')) AS chars,
-               (d.article_id IS NULL OR d.content_hash IS DISTINCT FROM a.content_hash
-                    OR d.prompt_version < %s) AS need_digest,
-               coalesce(v.deep_n, 0) AS deep_n,
+        SELECT length(coalesce(a.body_text, '')) + length(coalesce(a.ocr_text, '')) AS chars,
+               {digest.DIGEST_DUE_SQL} AS need_digest,
+               (SELECT count(*) FROM article_mentions m
+                LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
+                WHERE m.article_id = a.id AND {views.PENDING_VIEW_SQL}) AS deep_n,
                coalesce(img.n, 0) AS images
         FROM articles a
         LEFT JOIN article_digests d ON d.article_id = a.id
-        LEFT JOIN (
-            SELECT article_id, count(*) AS deep_n
-            FROM article_mentions
-            WHERE depth <> 'passing'
-            GROUP BY article_id
-        ) v ON v.article_id = a.id
         LEFT JOIN (
             SELECT article_id, count(*) AS n
             FROM article_images

@@ -3,7 +3,7 @@
 # 抓取脚本是仓库里的 scripts/zsxq/dl.py（11-14 以前只放在存档目录里，审核 O3）。数据写进 ZSXQ_ARCHIVE
 # 指的存档目录，默认就是 data/inbox/fangwei-zsxq；ARCHIVE 指向别处时再把结果同步回 inbox。
 # 令牌（ZSXQ_ACCESS_TOKEN）和星球 ID（ZSXQ_GROUP_ID）在 ~/zsxq/zsxq.env，不写入仓库。
-#   scripts/crawl-fangwei-zsxq.sh           # 抓取 + 入库 + 补摘要
+#   scripts/crawl-fangwei-zsxq.sh           # 抓取 + 入库 + 新帖当场识图、判断、摘要、段落打分 + 补标题
 #   scripts/crawl-fangwei-zsxq.sh --check   # 只打印路径、确认找得到 dl.py 和星球 ID，不抓取
 set -Eeuo pipefail
 
@@ -83,10 +83,12 @@ if [ "$ARCHIVE" != "$INBOX" ]; then
 fi
 
 echo "$(date '+%F %T') 导入 research 库"
-run_step "导入" compose_exec app research-ingest-zsxq --source fangwei-zsxq --input /data/inbox/fangwei-zsxq --origin crawl
+run_step "导入" crawl_with_receipt research-ingest-zsxq --source fangwei-zsxq --input /data/inbox/fangwei-zsxq --origin crawl
 
-echo "$(date '+%F %T') 补摘要（方伟星球最近缺摘要的）"
-run_step "摘要" compose_exec app research-digest --source fangwei-zsxq --limit 30 --max-minutes 40
+# 这次新进来的帖子当场识图、整理判断、写摘要、给段落打分（research-process-new，不等夜间、不避开高峰价）。
+# 网友帖、评论壳不显示，也不处理。
+echo "$(date '+%F %T') 处理新帖"
+run_step "处理新帖" process_new fangwei-zsxq
 
 echo "$(date '+%F %T') 补标题（空/壳/省略号，站内 flash 起题）"
 run_step "标题" compose_exec app research-repair-zsxq --source fangwei-zsxq --titles-only --ai-titles --limit 30

@@ -18,6 +18,7 @@
 STATUS_DIR="${STATUS_DIR:-$REPO/data/status}"
 STATUS_FAILED_LINE=""
 STATUS_FAILED_CMD=""
+CRAWL_RECEIPT=""
 
 status_json_escape() {
   local s="$1"
@@ -100,6 +101,9 @@ run_step() {
 status_finish() {
   # 脚本退出时：这次已经写过结果的不再写；没写过又是非零退出，补一条失败记录。
   local rc="$1" marker="$STATUS_DIR/.${TASK}.$$.done"
+  if [ -n "$CRAWL_RECEIPT" ]; then
+    rm -f "$CRAWL_RECEIPT" "$CRAWL_RECEIPT.part"
+  fi
   if [ -f "$marker" ]; then
     rm -f "$marker"
     return 0
@@ -107,5 +111,48 @@ status_finish() {
   if [ "$rc" -ne 0 ]; then
     status_write false "退出码 ${rc}，第 ${STATUS_FAILED_LINE:-?} 行：${STATUS_FAILED_CMD:-}"
     rm -f "$marker"
+  fi
+}
+
+# 本次导入的编号写进独立回执；宿主的 ./data 挂在 app 的 /data，EXIT 时删除。
+crawl_with_receipt() {
+  if [ "${PROCESS_NEW:-1}" = "0" ]; then
+    compose_exec app "$@"
+    return $?
+  fi
+  mkdir -p "$REPO/data" || return 1
+  CRAWL_RECEIPT="$(mktemp "$REPO/data/.fresh-articles.XXXXXX")" || return 1
+  compose_exec app env "RESEARCH_CRAWL_RECEIPT=/data/${CRAWL_RECEIPT##*/}" "$@"
+}
+
+new_ocr_enabled() {
+  # 识图跟着夜间任务的开关：环境变量 NIGHTLY_OCR，没设就读 install-launchd.sh 记下的 data/launchd.env，
+  # 再没有就看装好的夜间任务。夜间不识图的话抓取时也不识。
+  local value="${NIGHTLY_OCR:-}"
+  if [ -z "$value" ] && [ -f "$REPO/data/launchd.env" ]; then
+    value="$(sed -n "s/^SAVED_NIGHTLY_OCR=//p" "$REPO/data/launchd.env" | tail -n 1)"
+  fi
+  local plist="$HOME/Library/LaunchAgents/com.zldong.research.nightly.plist"
+  if [ -z "$value" ] && [ -f "$plist" ] && [ -x /usr/libexec/PlistBuddy ]; then
+    value="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:NIGHTLY_OCR" "$plist" 2>/dev/null || true)"
+  fi
+  [ "$value" = "1" ]
+}
+
+process_new() {
+  # process_new 来源：PROCESS_NEW=0 时跳过（只抓取导入，留给夜间）。
+  local source="$1"
+  if [ "${PROCESS_NEW:-1}" = "0" ]; then
+    echo "$(date '+%F %T') 跳过处理新文章（PROCESS_NEW=0），留给夜间"
+    return 0
+  fi
+  if [ -z "$CRAWL_RECEIPT" ]; then
+    echo "没有这次抓取的文章编号清单" >&2
+    return 1
+  fi
+  if new_ocr_enabled; then
+    compose_exec app research-process-new --source "$source" --receipt "/data/${CRAWL_RECEIPT##*/}" --ocr
+  else
+    compose_exec app research-process-new --source "$source" --receipt "/data/${CRAWL_RECEIPT##*/}"
   fi
 }

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from html import unescape
 from html.parser import HTMLParser
 
@@ -59,6 +60,7 @@ _CJK = r"[　-〿一-鿿＀-￯]"
 _CJK_GAP = re.compile(rf"(?<={_CJK}) (?={_CJK})")
 # <br> 记成这个字符，和源码里的换行（当空格）分开。
 _BREAK = "\x00"
+_FRAGMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*")
 _HIDDEN = re.compile(r"display\s*:\s*none", re.I)
 # 原文页上正文后面的区块。万一正文里有标签没闭合、层数对不上，读到这些也停下，不把二维码、推荐读进来。
 _AFTER_CONTENT = frozenset(
@@ -77,7 +79,7 @@ _UNAVAILABLE = (
 
 
 class _Converter(HTMLParser):
-    def __init__(self, root_id: str | None) -> None:
+    def __init__(self, root_id: str | None, *, index_fragments: bool = False) -> None:
         super().__init__(convert_charrefs=True)
         self.root_id = root_id
         self.active = root_id is None
@@ -93,6 +95,10 @@ class _Converter(HTMLParser):
         self.links: list[tuple[int, str]] = []
         self.images: list[str] = []
         self.cells = 0
+        self.index_fragments = index_fragments
+        self.targets: Counter[str] = Counter()
+        self.references: set[str] = set()
+        self.anchors: dict[str, str] = {}
 
     # 标签 ------------------------------------------------------------------
 
@@ -143,6 +149,19 @@ class _Converter(HTMLParser):
             self.parts.append("**")
         elif tag == "a":
             self.links.append((len(self.parts), values.get("href", "")))
+
+        if self.index_fragments or self.anchors:
+            names = {values.get("id", "")}
+            if tag == "a":
+                names.add(values.get("name", ""))
+                href = values.get("href", "").strip()
+                if self.index_fragments and href.startswith("#"):
+                    self.references.add(href[1:])
+            for name in sorted(names):
+                if self.index_fragments and _FRAGMENT_NAME.fullmatch(name):
+                    self.targets[name] += 1
+                if name in self.anchors:
+                    self.parts.append(self.anchors[name])
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         # <br/>、<img …/>：没有结束标签，不算进层数。
@@ -208,17 +227,23 @@ class _Converter(HTMLParser):
         start, href = self.links.pop()
         text = _clean_line("".join(self.parts[start:]))
         href = href.strip()
+        if href.startswith("#") and href[1:] in self.anchors:
+            href = "#archive-" + href[1:]
+        elif not href.startswith(("http://", "https://")):
+            return
         if (
             text
-            and href.startswith(("http://", "https://"))
             and _BREAK not in "".join(self.parts[start:])
             and "](" not in text
             and text != href
         ):
             self.parts[start:] = [f"[{text.replace('[', '［').replace(']', '］')}]({href})"]
 
-    def _flush(self) -> None:
+    def _flush(self, *, final: bool = False) -> None:
         if not self.parts:
+            return
+        # <li id="…"><p>、<a name="…"></a><h4>：锚点跟到第一段正文，不产生空的列表项或标题。
+        if self.anchors and not final and all(not part.strip() or part in self.anchors.values() for part in self.parts):
             return
         text = "".join(self.parts)
         self.parts = []
@@ -238,7 +263,7 @@ class _Converter(HTMLParser):
 
     def finish(self) -> tuple[str, list[str]]:
         self.close()
-        self._flush()
+        self._flush(final=True)
         blocks: list[str] = []
         for block in self.blocks:
             if blocks and blocks[-1] == block and block.startswith("!["):
@@ -263,7 +288,9 @@ def _clean_line(text: str) -> str:
     return text
 
 
-def html_to_markdown(html: str, *, root_id: str | None = None) -> tuple[str, list[str]]:
+def html_to_markdown(
+    html: str, *, root_id: str | None = None, keep_fragment_links: bool = False,
+) -> tuple[str, list[str]]:
     """HTML → (Markdown, 按顺序的图片地址)。给了 root_id 时只转那个元素里面的部分。
 
     转完按阅读页同一套规则接上被切到下一段开头的句读、拼回拆开的年份。
@@ -271,9 +298,17 @@ def html_to_markdown(html: str, *, root_id: str | None = None) -> tuple[str, lis
     """
     from researchlib.present_text import rejoin_broken_paragraphs
 
-    parser = _Converter(root_id)
+    parser = _Converter(root_id, index_fragments=keep_fragment_links and "#" in (html or ""))
     parser.feed(html or "")
     markdown, images = parser.finish()
+    if parser.index_fragments:
+        # 先按同样的正文/可见性规则找目标，避免同名、隐藏、缺失目标产生可点击的空跳转。
+        unique = {name for name in parser.references if parser.targets[name] == 1}
+        if unique:
+            parser = _Converter(root_id)
+            parser.anchors = {name: f'<span id="archive-{name}"></span>' for name in unique}
+            parser.feed(html or "")
+            markdown, images = parser.finish()
     if root_id and not parser.found:
         return "", []
     return rejoin_broken_paragraphs(markdown), images

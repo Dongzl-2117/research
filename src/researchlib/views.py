@@ -333,18 +333,30 @@ _STALE = (
     "(v.article_id IS NULL OR v.content_hash <> a.content_hash OR v.prompt_version < %s"
     f" OR v.head_only OR {_OCR_STALE})"
 )
+PENDING_VIEW_SQL = f"{_VIEW_DEPTH} AND {_STALE}"
 
 
-def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit: int, *, ocr_changed: bool = False):
+def pending_articles(
+    conn,
+    company_ids: list[int],
+    source_ids: list[str],
+    limit: int,
+    *,
+    ocr_changed: bool = False,
+    article_ids: list[int] | None = None,
+):
     """还没整理过（或正文、提示词、图片文字变了，或当时只读了开头）的文章。
 
     深入提及在前。正文很短且图片里有字的，一带而过也算：判断可能在截图里。
     ocr_changed：只要已经抽过观点、抽的时候的图片文字和现在的不一样的（``_OCR_STALE``）。识图重认以后点名一次补完，
     不跟着夜间按发布时间排几个月。挑中的文章照常一次问完这篇里该整理的公司（``pending_companies``）。
+    article_ids：只在这几篇里挑（research-process-new：刚抓进来的几篇），别的条件照旧。
     """
     if not company_ids or not source_ids:
         return []
     only = f" AND v.article_id IS NOT NULL AND {_OCR_STALE}" if ocr_changed else ""
+    if article_ids is not None:
+        only += " AND a.id = ANY(%s)"
     return conn.execute(
         f"""
         SELECT a.id, a.title, a.body_text, a.content_hash, a.published_at, a.source_id,
@@ -352,14 +364,14 @@ def pending_articles(conn, company_ids: list[int], source_ids: list[str], limit:
         FROM article_mentions m
         JOIN articles a ON a.id = m.article_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
-        WHERE m.company_id = ANY(%s) AND {_VIEW_DEPTH}
+        WHERE m.company_id = ANY(%s)
           AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL AND {_SHOWN}
-          AND {_STALE} AND {cooling_sql('views', 'a.id')}{only}
+          AND {PENDING_VIEW_SQL} AND {cooling_sql('views', 'a.id')}{only}
         GROUP BY a.id
         ORDER BY bool_or(m.depth <> 'passing') DESC, a.published_at DESC NULLS LAST, a.id DESC
         LIMIT %s
         """,
-        (company_ids, source_ids, PROMPT_VERSION, limit),
+        (company_ids, source_ids, PROMPT_VERSION, *([list(article_ids)] if article_ids is not None else []), limit),
     ).fetchall()
 
 
@@ -379,8 +391,7 @@ def pending_companies(conn, article_id: int, only_ids: list[int] | None = None) 
         JOIN articles a ON a.id = m.article_id
         JOIN companies c ON c.id = m.company_id
         LEFT JOIN company_views v ON v.article_id = m.article_id AND v.company_id = m.company_id
-        WHERE m.article_id = %s {clause} AND {_VIEW_DEPTH}
-          AND {_STALE}
+        WHERE m.article_id = %s {clause} AND {PENDING_VIEW_SQL}
         ORDER BY c.id
         """,
         tuple(params),
