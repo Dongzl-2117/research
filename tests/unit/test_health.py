@@ -34,6 +34,45 @@ def test_failures_and_overdue_tasks_are_reported(tmp_path):
     assert any(text.startswith("夜间补齐已经 2 天没成功了") for text in found)
 
 
+def test_summary_gives_states_and_times_without_messages(tmp_path):
+    """给外面看的那一份（/api/v1/status）：任务名、状态、时间；报错原文不带，条数和 notices 一致。"""
+    assert health.summary(tmp_path, "Asia/Shanghai", now=NOW)["problems"] == 0
+    secret = "https://example.invalid/feed?key=不能露出去"
+    _write(tmp_path, "backup", ok=True, at="2026-10-20T03:17:00Z", message="7.5M", warning="目的盘只剩 3 GB")
+    _write(tmp_path, "crawl-stratechery", ok=False, at="2026-10-20T01:00:00Z", last_ok_at="2026-10-18T13:15:00Z",
+           message=f"抓取失败（退出码 1）：{secret}")
+    _write(tmp_path, "nightly", ok=True, at="2026-10-17T16:37:00Z")
+    _write(tmp_path, "deploy", ok=True, at="2026-10-20T02:00:00Z", message="上线 abc1234")
+    (tmp_path / "status" / "upkeep.json").write_text("{坏的", encoding="utf-8")
+    _write(tmp_path, "llm", ok=False, at="2026-10-20T04:00:00Z", since="2026-10-20T03:00:00Z", failures=5,
+           provider="DeepSeek", message=f"接口返回 503：{secret}")
+    found = health.summary(tmp_path, "Asia/Shanghai", now=NOW)
+    by_task = {item["task"]: item for item in found["tasks"]}
+    assert [item["task"] for item in found["tasks"]] == [*health.TASKS, "llm"]
+    assert by_task["backup"] == {
+        "task": "backup", "label": "备份", "state": "ok", "at": "2026-10-20T03:17:00Z",
+        "last_ok_at": "2026-10-20T03:17:00Z", "expected_within_hours": 36, "warning": True,
+    }
+    assert by_task["crawl-stratechery"]["state"] == "failed"
+    assert by_task["crawl-stratechery"]["last_ok_at"] == "2026-10-18T13:15:00Z"
+    assert by_task["nightly"]["state"] == "stale" and by_task["nightly"]["expected_within_hours"] == 50
+    assert by_task["deploy"]["state"] == "ok" and "expected_within_hours" not in by_task["deploy"]
+    assert by_task["upkeep"] == {"task": "upkeep", "label": "后台重算", "state": "unreadable"}
+    assert by_task["crawl-latepost"] == {"task": "crawl-latepost", "label": "晚点LatePost抓取", "state": "unknown"}
+    assert by_task["llm"] == {
+        "task": "llm", "label": "DeepSeek 调用", "state": "failed", "at": "2026-10-20T04:00:00Z",
+        "failures": 5, "since": "2026-10-20T03:00:00Z", "unavailable": False,
+    }
+    assert found["checked_at"] == "2026-10-20T12:00:00Z" and found["deploy_waiting"] is False
+    # 条数和 research-status 一样：备份的提醒、Stratechery 失败、夜间太久没成、后台重算读不出来、模型连续失败。
+    assert found["problems"] == len(health.notices(tmp_path, "Asia/Shanghai", now=NOW)) == 5
+    dumped = json.dumps(found, ensure_ascii=False)
+    assert "message" not in dumped and "example.invalid" not in dumped and "不能露出去" not in dumped
+    # 模型偶尔失败一两次不算问题。
+    _write(tmp_path, "llm", ok=False, at="2026-10-20T04:00:00Z", failures=2, provider="DeepSeek")
+    assert health.summary(tmp_path, "Asia/Shanghai", now=NOW)["tasks"][-1]["state"] == "ok"
+
+
 def test_status_file_with_broken_bytes_still_counts(tmp_path):
     path = tmp_path / "status" / "backup.json"
     path.parent.mkdir(parents=True)

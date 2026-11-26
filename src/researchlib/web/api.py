@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.concurrency import run_in_threadpool
 
+from researchlib import health
 from researchlib import theses as thesis_map
 from researchlib.ask import DAILY_LIMIT, RUNNING_LIMIT, WAIT_SECONDS, ask, clean_request_id, registered, start
 from researchlib.ask_model import parse_choice, recorded_choice
@@ -46,6 +47,7 @@ from researchlib.web.routes import (
     active_sources,
     cited_titles,
     database,
+    deployed_commit,
     display_titles,
     retitle_views,
     withhold_citations,
@@ -806,6 +808,17 @@ def api_answer(request: Request, answer_id: int, brief: int = 0):
     return _json({**payload, "_trust": TRUST})
 
 
+@api.get("/api/v1/status")
+def api_status(request: Request):
+    """定时任务的现状：备份、试恢复、各来源抓取、夜间补齐、自动上线、模型调用最近一次成没成功、什么时候。
+
+    和 Mac mini 上 research-status 读的是同一批状态文件（``health.summary``）。云端的 AI 连不上那台机器，
+    开工前、每天巡检时读这里；problems 不是 0 再请人看详情。只给任务名、状态、时间，不带报错原文。
+    """
+    settings = request.app.state.settings
+    return _json({"commit": deployed_commit(), **health.summary(settings.data_dir, settings.display_timezone)})
+
+
 def _ask_limits() -> str:
     day = f"最近 24 小时最多 {DAILY_LIMIT} 次" if DAILY_LIMIT else "每天不限次数"
     running = f"同时整合的最多 {RUNNING_LIMIT} 个" if RUNNING_LIMIT else "同时整合的不限个数"
@@ -871,6 +884,8 @@ def llms_txt(request: Request):
         "风险、推翻条件、验证指标只在原文谈到时才有。theses 是把这些观点按机制归成的几条论点，"
         "支持、反对、两面按观点自己的态度从库里数，判断对不上这条论点的引用不收；"
         "views=risk 只看风险与反方，views=change 只看态度变化，views=t1 只看第一条论点引用的观点",
+        f"- [任务状态]({base}/api/v1/status): 备份、各来源抓取、夜间补齐、自动上线、模型调用最近一次成没成功、"
+        "什么时候（state：ok、failed、stale、unknown）；problems 是要处理的条数，commit 是线上在跑的提交",
         "",
         "## 字段约定",
         "",
