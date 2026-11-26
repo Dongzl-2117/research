@@ -830,6 +830,7 @@ def ask(
     *,
     wait_s: float | None = None,
     choice: AskModel | None = None,
+    request_id: str = "",
 ) -> dict:
     """给 JSON 接口的 wait=true 用：登记后在后台整合，这里最多等 wait_s 秒（默认 WAIT_SECONDS）。
 
@@ -837,8 +838,8 @@ def ask(
     /api/v1/answers/{id}。以前在请求里跑完整个整合（6 到 9 分钟），隔着 Cloudflare 一定断开，回答编号也丢了。
     测试进程里整合直接跑完（见 _inline），这里读一次就是结果。
     """
-    result = start(conn, settings, question, scope, sources, choice=choice)
-    if result["id"] is None:
+    result = start(conn, settings, question, scope, sources, choice=choice, request_id=request_id)
+    if result["id"] is None or result.get("duplicate"):
         return result
     deadline = time.monotonic() + (WAIT_SECONDS if wait_s is None else wait_s)
     while True:

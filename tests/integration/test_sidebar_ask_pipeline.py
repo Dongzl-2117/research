@@ -1,5 +1,8 @@
 """侧栏只作为问库入口：真实数据库、合成资料和模型替身。"""
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -363,17 +366,21 @@ def test_queued_answer_is_not_expired_and_an_expired_one_does_not_run(conn, sett
     assert row['answer'] == '' and 'progress' not in row['stats']
 
 
-def test_resubmitted_question_with_the_same_request_id_is_not_synthesized_twice(conn, settings, monkeypatch, model):
+@pytest.mark.parametrize(('first_wait', 'retry_wait'), [(False, False), (True, True), (False, True), (True, False)])
+def test_resubmitted_question_with_the_same_request_id_is_not_synthesized_twice(
+    conn, settings, monkeypatch, model, first_wait, retry_wait,
+):
     """页面没等到回应、带着同一个 request_id 重发：认出已经登记的那一条，不再登记、不再整合（审核 F2）。"""
     _article(conn, 'resend')
     submitted = []
+    monkeypatch.setattr(ask_module, 'WAIT_SECONDS', 0)
     monkeypatch.setattr(ask_module, '_inline', lambda: False)
     monkeypatch.setattr(ask_module._executor, 'submit', lambda *args, **kwargs: submitted.append(args))
     monkeypatch.setattr(ask_module, '_active', set())
     body = {'question': '渠道优势', 'source': 'fangwei-mp', 'request_id': 'a1b2c3d4-e5f6-7788'}
     with TestClient(create_app(settings)) as client:
-        first = client.post('/api/v1/ask', json=body).json()
-        again = client.post('/api/v1/ask', json=body).json()
+        first = client.post('/api/v1/ask', json={**body, 'wait': first_wait}).json()
+        again = client.post('/api/v1/ask', json={**body, 'wait': retry_wait}).json()
         other = client.post('/api/v1/ask', json={**body, 'request_id': 'ffffeeee-0000-1111'}).json()
         bad = client.post('/api/v1/ask', json={**body, 'request_id': 'x'}).json()
     assert again['id'] == first['id'] and again['status'] == 'running'
@@ -387,6 +394,33 @@ def test_resubmitted_question_with_the_same_request_id_is_not_synthesized_twice(
     ask_module._active.discard(first['id'])
     ask_module._run_tracked(settings, first['id'])
     conn.commit()
+    calls = len(model)
     with TestClient(create_app(settings)) as client:
-        late = client.post('/api/v1/ask', json=body).json()
+        late = client.post('/api/v1/ask', json={**body, 'wait': retry_wait}).json()
     assert late['id'] == first['id'] and late['status'] == 'done'
+    assert late['answer'] and late['checks'] and len(model) == calls and len(submitted) == 3
+
+
+def test_waiting_retries_arriving_together_register_one_job(conn, settings, monkeypatch, model):
+    _article(conn, 'concurrent-resend')
+    gate = Barrier(2)
+    over_quota = ask_module.over_quota
+
+    def enter_together(db):
+        # 两个请求都已查过该编号，都还没拿到登记用的事务锁。
+        gate.wait(timeout=10)
+        return over_quota(db)
+
+    submitted = []
+    monkeypatch.setattr(ask_module, 'over_quota', enter_together)
+    monkeypatch.setattr(ask_module, 'WAIT_SECONDS', 0)
+    monkeypatch.setattr(ask_module, '_inline', lambda: False)
+    monkeypatch.setattr(ask_module, '_active', set())
+    monkeypatch.setattr(ask_module._executor, 'submit', lambda *args, **kwargs: submitted.append(args))
+    body = {'question': '渠道优势', 'source': 'fangwei-mp', 'request_id': 'same-waiting-call', 'wait': True}
+    with TestClient(create_app(settings)) as client, ThreadPoolExecutor(max_workers=2) as workers:
+        pending = [workers.submit(client.post, '/api/v1/ask', json=body) for _ in range(2)]
+        answers = [request.result(timeout=20).json() for request in pending]
+    assert answers[0]['id'] == answers[1]['id']
+    assert all(answer['status'] == 'running' and answer['question'] == body['question'] for answer in answers)
+    assert len(submitted) == 1 and not model

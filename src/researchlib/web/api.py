@@ -694,18 +694,16 @@ async def api_ask(request: Request):
     def _run():
         with database(request) as conn:
             sources = active_sources(request, conn)
-            if request_id and not wait:
+            if request_id:
                 # 重发的先认，连检索都不用再做一遍。
                 existing = registered(conn, request_id)
                 conn.commit()
                 if existing is not None:
                     return {"duplicate": answer_payload(conn, request, sources, existing)}
             scope, _info = resolve_ask_scope(params, sources)
-            if wait:
-                return ask(conn, settings, question, scope, sources, choice=choice)
-            # 不等整合：先拿到相关原文和回答 id，之后轮询 /api/v1/answers/{id}。
+            submit = ask if wait else start
             extra = {"request_id": request_id} if request_id else {}
-            found = start(conn, settings, question, scope, sources, choice=choice, **extra)
+            found = submit(conn, settings, question, scope, sources, choice=choice, **extra)
             if found.get("duplicate"):
                 return {"duplicate": answer_payload(conn, request, sources, int(found["id"]))}
             return found
