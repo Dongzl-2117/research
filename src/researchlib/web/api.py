@@ -674,7 +674,7 @@ async def api_ask(request: Request):
     if not question:
         raise HTTPException(status_code=400, detail="缺少 question")
     keys = ("author", "source", "saved_sources", "company", "from", "to", "article", "tree")
-    params = {key: str(body.get(key) or "") for key in keys}
+    params = {key: str(body[key]) for key in keys if body.get(key) is not None}
     # 默认不等：检索后立刻返回 id，后台整合。wait=true 在线程池里最多等 ask.WAIT_SECONDS 秒，没写完就返回 running，
     # 绝不能在 async 协程里同步干等，否则整站事件循环被堵死（health/其他页一起挂）。
     wait = body.get("wait", False) is True

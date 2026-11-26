@@ -45,6 +45,8 @@ _SCOPE_PROPS = {
     "author": {"type": "string", "description": "作者名，见 list_authors"},
     "source": {"type": "string", "description": "来源 id"},
     "company": {"type": "integer", "description": "公司 id，见 list_companies"},
+    "article": {"type": "integer", "minimum": 1, "description": "只查这一篇文章"},
+    "tree": {"type": "integer", "minimum": 1, "description": "只查这篇及其目录树下的子篇"},
     "from": {"type": "string", "description": "起始日期 YYYY-MM-DD（上海日历）"},
     "to": {"type": "string", "description": "结束日期 YYYY-MM-DD"},
 }
@@ -181,7 +183,7 @@ def _id(args: dict) -> int:
 
 
 def _scope_params(args: dict) -> dict:
-    return {key: str(args.get(key) or "") for key in ("author", "source", "company", "from", "to", "article")}
+    return {key: str(args[key]) for key in _SCOPE_PROPS if args.get(key) is not None}
 
 
 def run_tool(request: Request, name: str, args: dict):

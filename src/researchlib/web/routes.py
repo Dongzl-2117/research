@@ -1480,7 +1480,8 @@ def search_page(request: Request):
         "company": info["company"] or "",
         "from": info["from"],
         "to": info["to"],
-        "article": request.query_params.get("article") or "",
+        "article": scope.article_id,
+        "tree": scope.tree_id,
         "view": "article",
         "sort": "score" if scope.article_id and not by_position else "",
     }
@@ -1556,7 +1557,7 @@ def _fragment_page(request, conn, query, scope, facet_scope, info, sources, by_i
     article_scope = scope.article_id
     base = {
         "q": query, "author": info["author"], "company": info["company"] or "",
-        "from": info["from"], "to": info["to"], "article": str(article_scope) if article_scope else "",
+        "from": info["from"], "to": info["to"], "article": article_scope, "tree": scope.tree_id,
         "sort": "score" if article_scope and not by_position else "",
     }
     results = []

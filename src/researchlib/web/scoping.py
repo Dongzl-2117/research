@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import HTTPException
 
@@ -37,6 +37,29 @@ def parse_int(value: str | None) -> int | None:
     return number if -BIGINT_MAX <= number <= BIGINT_MAX else None
 
 
+def _scope_day(params, field: str) -> date | None:
+    text = (params.get(field) or "").strip()
+    if not text:
+        return None
+    try:
+        # 带时刻的旧链接沿用写在地址里的日历日，同时校验完整输入。
+        if len(text) > 10 and text[10] not in "Tt ":
+            raise ValueError
+        return datetime.fromisoformat(text).date()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field} 需要有效的日期，例如 2026-11-18") from exc
+
+
+def _scope_id(params, field: str) -> int | None:
+    text = (params.get(field) or "").strip()
+    if not text:
+        return None
+    number = parse_int(text)
+    if number is None or number <= 0:
+        raise HTTPException(status_code=400, detail=f"{field} 需要有效的正整数编号")
+    return number
+
+
 def resolve_scope(
     params, sources, *, ignore_source: bool = False, empty_intersection: bool = False,
 ) -> tuple[Scope, dict]:
@@ -58,12 +81,12 @@ def resolve_scope(
     company_id = parse_int(raw_company)
     if raw_company and company_id is None:
         raise HTTPException(status_code=404)
-    date_from = parse_day(params.get("from"))
-    date_to = parse_day(params.get("to"))
+    date_from = _scope_day(params, "from")
+    date_to = _scope_day(params, "to")
     if date_from and date_to and date_from > date_to:
         date_from, date_to = date_to, date_from
-    article_id = parse_int(params.get("article"))
-    tree_id = parse_int(params.get("tree"))
+    article_id = _scope_id(params, "article")
+    tree_id = _scope_id(params, "tree")
     scope = Scope(
         source_ids=ids,
         company_id=company_id,
