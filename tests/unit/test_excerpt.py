@@ -36,6 +36,20 @@ def test_locate_finds_the_section_of_a_chunk():
     assert locate(outline, "页面上没有的一段话，这里一个字都对不上。") is None
 
 
+def test_locate_only_counts_occurrences_when_sections_remain_tied():
+    target = "投资者可以在原文中核对每个假设及对应的风险。"
+    outline = build_outline(f"## 前言\n\n{target}\n\n## 附录\n\n{target}")
+
+    def unexpected():
+        raise AssertionError("章节标题已能区分，仍在统计整篇出现次数")
+
+    assert locate(outline, target, "附录", unexpected) == 1
+    assert locate(outline, target, occurrence=0) == 0
+    assert locate(outline, target, occurrence=1) == 1
+    assert locate(outline, target, occurrence=2) is None
+    assert locate(outline, target) is None
+
+
 def test_window_pads_short_sections_and_trims_huge_ones():
     md = "## 短\n\n一句话。\n\n## 次\n\n" + "第二节的内容。" * 300 + "\n\n## 再次\n\n第三节。"
     outline = build_outline(md)
