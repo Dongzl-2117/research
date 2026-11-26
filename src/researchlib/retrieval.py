@@ -572,11 +572,18 @@ def _content_tokens(conn, text: str) -> list[str]:
     return [t for t in tokens if not any(t != other and t in other for other in tokens)]
 
 
-def _whitespace_pieces(text: str) -> list[tuple[str, bool]]:
-    """按空格切开。返回 (片段, 是否和前一段是「或」的关系)。"""
+def _whitespace_pieces(text: str, name_spans=()) -> list[tuple[str, bool]]:
+    """按空白切开，跳过登记全名内部的空白。返回 (片段, 是否和前一段是「或」的关系)。"""
     pieces: list[tuple[str, bool]] = []
     join_next = False
-    for piece in text.split():
+    start = 0
+    for separator in re.finditer(r"\s+|$", text):
+        if any(left < separator.start() < right for left, right in name_spans):
+            continue
+        piece = text[start:separator.start()]
+        start = separator.end()
+        if not piece:
+            continue
         if piece in ("or", "OR", "|", "或"):
             join_next = bool(pieces)
             continue
@@ -632,7 +639,14 @@ def analyze(
     next_group = len(phrases)
     piece_group = -1
     piece_cursor = 0
-    for piece, joined in _whitespace_pieces(text):
+    # 先在整句标出跨空格的名字，避免把 Ping An Bank 拆成普通词或错认成 Ping An。
+    name_spans = [
+        match.span() for name in author_names if " " in name
+        for match in re.finditer(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])", text)
+    ]
+    if matcher and " " in text:
+        name_spans.extend((start, end) for start, end, _ in matcher.spans(text) if " " in text[start:end])
+    for piece, joined in _whitespace_pieces(text, name_spans):
         piece_start = text.index(piece, piece_cursor)
         piece_cursor = piece_start + len(piece)
         shared = piece_group if joined and piece_group >= 0 else None
