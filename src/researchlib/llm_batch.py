@@ -197,6 +197,7 @@ def run(
     *,
     kind: str,
     lock_name: str,
+    record_failures: bool = True,
     verb: str = "处理",
     workers: int = 1,
     deadline: float | None = None,
@@ -211,7 +212,7 @@ def run(
     deadline：``time.monotonic()`` 到了这个数就不再开新的一篇。
     交回 {"done", "failed", "skipped", "usage", "fatal", "paused", "timed_out", "seconds"}；
     fatal 不为空是整批停下的原因（命令退出码 2），paused 不为空是连着几篇接口不通、整批暂停（退出码 3）。
-    failed 只算记进 llm_failures 的；接口不通、还没轮到记的几篇不算，下次照常排队。
+    record_failures 为 False 时只计入报告，不写文章的失败冷却。接口不通、还没轮到记的几篇不计入 failed。
     """
     from researchlib.db import connect, ensure_search_session
 
@@ -244,6 +245,11 @@ def run(
         with guard:
             report[name] += 1
 
+    def fail(conn, item_id: int, error: object) -> None:
+        if record_failures:
+            note_failure(conn, kind, item_id, error)
+        bump("failed")
+
     def settle(conn) -> None:
         """接口是通的（这一篇有了结果）：前面接口不通的那几篇是它们自己的事，照常记失败。"""
         with guard:
@@ -251,8 +257,7 @@ def run(
                 return
             pending, held[:] = list(held), []
         for item_id, exc in pending:
-            note_failure(conn, kind, item_id, exc)
-            bump("failed")
+            fail(conn, item_id, exc)
 
     def hold(item_id: int, exc: Exception) -> None:
         """接口不通：先不记。连着 PAUSE_AFTER 篇都这样就整批暂停，这几篇一篇都不记。"""
@@ -308,8 +313,7 @@ def run(
                     hold(item_id, exc)
                     return
                 settle(conn)
-                note_failure(conn, kind, item_id, exc)
-                bump("failed")
+                fail(conn, item_id, exc)
                 return
             except Exception as exc:  # noqa: BLE001 - 一篇的坏数据不能让整批退出（审核 V9）
                 if _connection_lost(conn, exc):
@@ -320,8 +324,7 @@ def run(
                 logger.warning("%s %s 处理出错", kind, item_id, exc_info=True)
                 say(f"{item_id} {title}: 处理出错 {type(exc).__name__}: {exc}{_paid(usage)}", err=True)
                 settle(conn)
-                note_failure(conn, kind, item_id, f"{type(exc).__name__}: {exc}")
-                bump("failed")
+                fail(conn, item_id, f"{type(exc).__name__}: {exc}")
                 return
             if line is None:
                 bump("skipped")
