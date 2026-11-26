@@ -417,7 +417,7 @@ def scope_from_json(data: dict) -> Scope:
     return Scope(**values)
 
 
-def _live_scope(scope: Scope, sources) -> Scope:
+def live_scope(scope: Scope, sources) -> Scope:
     """执行时把保存的来源和当时仍启用的来源求交。公司、日期、目录和文章条件不动。"""
     active = {source.id for source in sources}
     kept = [source_id for source_id in scope.source_ids if source_id in active]
@@ -680,7 +680,7 @@ def run_job(settings: Settings, answer_id: int, *, conn=None) -> None:
         stored = row["scope"] or {}
         preset = bool(stored.get("preset"))
         sources = enabled_sources(load_sources(settings.sources_path))
-        scope = _live_scope(scope_from_json(stored), sources)
+        scope = live_scope(scope_from_json(stored), sources)
         expansions: dict[str, list[str]] = {}
         started = time.monotonic()
         if not scope.source_ids:
