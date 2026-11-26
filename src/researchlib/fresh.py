@@ -154,7 +154,7 @@ def step_mechanism(settings: Settings, ids: list[int], source_ids: list[str], wo
     conn = prepare(settings)
     try:
         # 还没译完的英文文章先不打：译完以后英文块不打、只打中文块，现在打就白打一遍英文。
-        english = set(list_pending_english(conn, limit=len(ids), article_ids=ids))
+        english = set(list_pending_english(conn, limit=len(ids), article_ids=ids, include_deferred=True))
         keep = [article_id for article_id in ids if article_id not in english]
         rows = mechanism.pending_articles(conn, source_ids, None, article_ids=keep) if keep else []
         jobs = [{"id": int(row["id"]), "title": row["title"]} for row in rows]
