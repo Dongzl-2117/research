@@ -4,8 +4,11 @@ import json
 import re
 from datetime import datetime
 
+import pytest
+
 from researchlib import ask as ask_module
 from researchlib.ask import parse_expansions, synthesize
+from researchlib.llm import LLMError
 from researchlib.retrieval import (
     ASPECTS_KEY,
     BUDGETS,
@@ -454,7 +457,8 @@ def test_synthesize_extracts_in_batches_then_merges(monkeypatch):
 
     monkeypatch.setattr(ask_module, "chat", fake_chat)
     items = _items(120, 700)
-    answer, _model = synthesize(None, "问题", items)
+    report = {}
+    answer, _model = synthesize(None, "问题", items, report)
     maps = [c for c in calls if ask_module.MAP_PROMPT in c[0][0]["content"]]
     reduce = [c for c in calls if c[0][0]["content"] == ask_module.SYSTEM_PROMPT]
     assert len(maps) >= 2 and len(reduce) == 1
@@ -462,8 +466,25 @@ def test_synthesize_extracts_in_batches_then_merges(monkeypatch):
     merged = reduce[0][0][1]["content"]
     # 「无」的那批不进汇总；目录保留全部编号，回答沿用原编号。
     assert "要点 [" in merged and "第 1 批摘录：\n无" not in merged
+    assert report["failed_batches"] == [] and "[1] 《第1篇》" in merged
     assert "[120] 《第120篇》" in merged
     assert answer == "汇总 [41]"
+
+
+def test_synthesize_skips_final_call_when_no_excerpt_has_a_source(monkeypatch):
+    monkeypatch.setattr(ask_module, "SINGLE_CALL_CHARS", 1)
+    monkeypatch.setattr(ask_module, "BATCH_CHARS", 1)
+
+    def fake_chat(_settings, messages, **_kwargs):
+        assert ask_module.MAP_PROMPT in messages[0]["content"]
+        return "订阅收入翻倍 [3]。", "synthetic"
+
+    monkeypatch.setattr(ask_module, "chat", fake_chat)
+    report = {}
+    with pytest.raises(LLMError, match="每一批都失败"):
+        synthesize(None, "订阅收入怎样", _items(2, 80), report)
+    assert report["failed_batches"] == [1, 2]
+    assert report["unread_citations"] == [1, 2]
 
 
 def test_synthesize_reads_all_batches_at_once_and_reports_progress(monkeypatch):

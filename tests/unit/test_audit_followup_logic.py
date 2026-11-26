@@ -97,7 +97,10 @@ def test_article_identity_and_constraints_survive_all_synthesis_steps(monkeypatc
 
     def chat(settings, messages, **kwargs):
         calls.append(messages)
-        return "摘录故意省略身份 [1][2]", "synthetic"
+        if ask.MAP_PROMPT in messages[0]["content"]:
+            first = messages[1]["content"].split("资料：\n", 1)[1].split("]", 1)[0].lstrip("[")
+            return f"摘录故意省略身份 [{first}]", "synthetic"
+        return "汇总 [1][2]", "synthetic"
 
     monkeypatch.setattr(ask, "chat", chat)
     note = "资料只覆盖了列出的章节。"

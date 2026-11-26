@@ -228,12 +228,16 @@ def test_form_post_without_script_and_old_answers(conn, settings, model):
     assert meta.startswith('grok-4.7 · ') and '思考' not in meta
 
 
-def test_sidebar_long_summary_uses_original_deep_budget_and_batch_failure_report(conn, settings, monkeypatch):
+@pytest.mark.parametrize('failed_map', ['exception', 'cross_batch', 'uncited'])
+def test_sidebar_long_summary_uses_original_deep_budget_and_batch_failure_report(
+    conn, settings, monkeypatch, failed_map,
+):
     chunks = [(f'合成章节{index}：' + '订阅渠道优势与分发机制。' * 90) for index in range(80)]
     chunks[-1] += '合成文末唯一证据。'
     identity = _article(conn, 'long', chunks=chunks)
     assert sum(map(len, chunks)) > 60000
     seen_tail = []
+    prompts = []
 
     def fake_chat(_settings, messages, **_kwargs):
         body = messages[-1]['content']
@@ -241,8 +245,14 @@ def test_sidebar_long_summary_uses_original_deep_budget_and_batch_failure_report
             if '合成文末唯一证据' in body:
                 seen_tail.append(True)
             if '合成章节0：' in body:
-                raise LLMError('合成单批失败')
-            return '订阅渠道优势[1]。', 'synthetic'
+                if failed_map == 'exception':
+                    raise LLMError('合成单批失败')
+                if failed_map == 'cross_batch':
+                    return '订阅收入翻倍[80]。', 'synthetic'
+                return '订阅收入翻倍。', 'synthetic'
+            first = body.split('资料：\n', 1)[1].split(']', 1)[0].lstrip('[')
+            return f'订阅渠道优势[{first}]。', 'synthetic'
+        prompts.append(body)
         return '订阅渠道优势[1]。', 'synthetic'
 
     monkeypatch.setattr(ask_module, 'llm_configured', lambda s: True)
@@ -252,8 +262,11 @@ def test_sidebar_long_summary_uses_original_deep_budget_and_batch_failure_report
             'question': ask_module.PRESETS['article'], 'article': identity,
         }).json()
         saved = client.get(f"/api/v1/answers/{first['id']}").json()
+        page = client.get(f"/ask/{first['id']}").text
     assert saved['status'] == 'done' and len(saved['citations']) == 80
-    assert saved['stats']['batches'] >= 2 and saved['stats']['failed_batches']
+    assert saved['stats']['batches'] >= 2 and saved['stats']['failed_batches'] == [1]
+    assert saved['citations'][0]['read_failed'] and '第 1 批未读到' in page
+    assert len(prompts) == 1 and '[1] 《' not in prompts[0] and '订阅收入翻倍' not in prompts[0]
     assert any('未读到' in issue for flag in saved['checks'] for issue in flag['problems'])
     assert seen_tail
 

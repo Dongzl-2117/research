@@ -289,14 +289,18 @@ def synthesize(
         except LLMError as exc:
             logger.warning("分批摘录失败：%s", exc)
             return None, spent
-        if not text.strip():
-            return None, spent
-        # 摘录有时重新从 [1] 编号。跨批编号指向本批没有读到的原文，整句都不能交给汇总。
+        text = text.strip()
+        if text.strip("「」 。\n") == "无":
+            return "无", spent
+        # 全部摘错号或完全没有出处，这批没有可交给汇总的证据。仅明确答「无」表示已读但无相关内容。
         allowed = {item["n"] for item in batch}
         claims = split_claims(text)
-        if any(not allowed.issuperset(refs) for _, refs in claims):
-            text = "\n".join(sentence for sentence, refs in claims if allowed.issuperset(refs))
-        return text.strip(), spent
+        valid = [sentence for sentence, refs in claims if allowed.issuperset(refs)]
+        if not valid:
+            return None, spent
+        if len(valid) != len(claims):
+            text = "\n".join(valid)
+        return text, spent
 
     reading = time.monotonic()
     notes: list[str | None] = [None] * len(batches)
@@ -318,7 +322,7 @@ def synthesize(
     if len(failed) == len(batches):
         raise LLMError(f"分 {len(batches)} 批读资料，每一批都失败了")
     kept = [f"第 {index} 批摘录：\n{excerpt}" for index, excerpt in enumerate(notes, start=1)
-            if excerpt and excerpt.strip("「」 \n") != "无"]
+            if excerpt and excerpt != "无"]
     catalog = "\n".join(_material_head(item) for batch, excerpt in zip(batches, notes, strict=True)
                         if excerpt is not None for item in batch)
     joined = "\n\n".join(kept) or "（读完的批次没有可用摘录）"
