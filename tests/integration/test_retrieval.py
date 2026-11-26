@@ -282,6 +282,39 @@ def _store(conn, settings, docs):
     )
 
 
+def test_search_and_ask_keep_both_signs_in_table_cells(conn, settings):
+    from researchlib.retrieval import retrieve
+    from researchlib.sources import enabled_sources, load_sources
+    from researchlib.web.queries import Scope
+
+    table = "以下整理供应商应收款调节项目，估计和列报沿用相同口径，其他变动详见资产负债表。\n调节余额 | {} | 期末"
+    docs = [
+        ("positive", "期初调整", 1, table.format("5,867")),
+        ("negative", "期末调整", 2, table.format("(5,867)")),
+        ("copy", "季度资料", 3, table.format("(5,867)")),
+    ]
+    _store(conn, settings, docs)
+    terms = "调节余额"
+    sources = enabled_sources(load_sources(settings.sources_path))
+    found = retrieve(conn, terms, Scope(source_ids=[s.id for s in sources]), sources, purpose="llm")
+    with TestClient(create_app(settings)) as client:
+        chunks = client.get("/api/v1/search", params={"q": terms, "level": "chunk"}).json()["passages"]
+        fragments = client.get("/api/v1/search", params={"q": terms, "level": "passage"}).json()["passages"]
+    for texts in ([p.body for p in found.passages], [c["text"] for c in chunks], [f["text"] for f in fragments]):
+        assert len(texts) == 2
+        assert sum("| (5,867) |" in text for text in texts) == 1
+        assert sum("| 5,867 |" in text for text in texts) == 1
+
+
+def test_article_card_does_not_drop_the_other_sign(conn, settings):
+    row = "调节余额的口径沿用上期披露，结转的预收金额已单独列示。项目期末调整为 | {}\n其他项目 | 无"
+    body = "## 年报\n" + row.format("5,867") + "\n\n## 一季报\n" + row.format("(5,867)")
+    _store(conn, settings, [("changes", "余额分析", 1, body)])
+    with TestClient(create_app(settings)) as client:
+        page = client.get("/search", params={"q": "调节余额", "view": "article"}).text
+    assert "| 5,867 其他项目" in page and "| (5,867) 其他项目" in page
+
+
 def test_search_matches_words_not_one_long_phrase(conn, settings):
     _store(
         conn,
