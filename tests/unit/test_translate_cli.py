@@ -812,3 +812,29 @@ def test_a_run_with_nothing_left_to_take_does_not_wait_for_the_peak(conn, monkey
     monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: [93])
     assert cli.main(["--limit", "5"]) == 0
     assert seen == [91, 93]
+
+
+def test_nightly_translation_reports_remaining_english_and_still_finishes_next_article(conn, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, **kwargs: [21, 22])
+    processed = []
+
+    def mixed(conn, article_id, **kwargs):
+        processed.append(article_id)
+        if article_id == 21:
+            return TranslateResult(article_id, "partial", segments=300, untranslated=17, reason="request-failed")
+        return TranslateResult(article_id, "translated", segments=2)
+
+    monkeypatch.setattr(cli, "translate_article", mixed)
+    assert cli.main(["--source", "stratechery", "--limit", "2", "--fail-partial"]) == 1
+    assert processed == [21, 22]
+    assert "#21" in capsys.readouterr().err
+
+
+def test_single_nightly_pass_uses_next_unlocked_article_without_translating_more_than_limit(pool, monkeypatch):
+    pool[0].held[11] = "other"
+    seen = []
+    queue = [11, 12, 13]
+    monkeypatch.setattr(cli, "list_pending_english", lambda conn, *, limit, source_id=None: queue[:limit])
+    monkeypatch.setattr(cli, "translate_article", _translate(seen))
+    assert cli.main(["--source", "stratechery", "--limit", "2"]) == 0
+    assert seen == [12, 13]

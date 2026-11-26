@@ -74,7 +74,7 @@ fi
 # （调模型、花钱；Zhilin 11-18：抓进来的都译，上限只防意外；设 0 不译）。凌晨不在 DeepSeek 高峰价时段；4 篇同时译。
 STRATECHERY_TRANSLATE_LIMIT="${STRATECHERY_TRANSLATE_LIMIT:-50}"
 if [ "$STRATECHERY_TRANSLATE_LIMIT" -gt 0 ] 2>/dev/null; then
-  step "Stratechery 译制" compose_exec app research-translate --source stratechery --limit "$STRATECHERY_TRANSLATE_LIMIT" --workers 4
+  step "Stratechery 译制" compose_exec app research-translate --source stratechery --limit "$STRATECHERY_TRANSLATE_LIMIT" --workers 4 --fail-partial
 fi
 # 归档只记了日期的 Stratechery 按官网接口补上钟点（不调模型；都有了就不连官网），新导入的第二天就有。
 step "Stratechery 发布时刻" compose_exec app research-stratechery-times
