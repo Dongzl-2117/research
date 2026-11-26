@@ -143,12 +143,16 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
     scope, info = resolve_scope(params, sources)
     settings = request.app.state.settings
     if level == "chunk":
+        if offset:
+            raise HTTPException(status_code=400, detail="level=chunk 按 limit 选段。要逐页读取，请用 level=passage")
         found = retrieve(conn, query, scope, sources, purpose="api", limit=limit)
+        # 单篇短文召回按原文顺序返回整篇，接口仍遵守调用方的数量上限。
+        picked = found.passages[:limit]
         titles = display_titles(
             conn,
             [
                 {"id": p.article_id, "source_id": p.source_id, "title": p.title, "published_at": p.published_at}
-                for p in found.passages
+                for p in picked
             ],
             by_id,
             settings.display_timezone,
@@ -171,7 +175,7 @@ def search_payload(conn, request: Request, params, sources, query: str, level: s
                 "published_at": format_iso(p.published_at, settings.display_timezone) or None,
                 "links": _article_links(_base(request), p.article_id, p.ord, p.anchor),
             }
-            for p in found.passages
+            for p in picked
         ]
         return {
             "query": query,
@@ -832,9 +836,11 @@ def llms_txt(request: Request):
         "or 表示任一、-词 排除、引号里的必须原样出现。"
         "范围参数 author、source、company（公司 id）、from、to（YYYY-MM-DD，上海日历）；limit≤50、offset 翻页",
         f"- [检索段落]({base}/api/v1/search?q=腾讯游戏怎么看&level=chunk): 自然语言问题也能用。"
-        "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms",
+        "会从问题里认出公司和作者，返回可直接引用的段落（article_id + chunk），带 score、matched 和 terms。"
+        "limit 最多 50，要翻页请用 level=passage",
         f"- [检索片段]({base}/api/v1/search?q=腾讯游戏怎么看&level=passage): 检索页的结果，一篇里相邻相关的段落"
-        "拼成一段，带起止块号（from、to）和直达链接 url；加 article=文章id 只在这一篇里找，sort=position 按原文顺序",
+        "拼成一段，带起止块号（from、to）和直达链接 url；加 article=文章id 只在这一篇里找，sort=position 按原文顺序。"
+        "把 next_offset 作为下一页的 offset",
         f"- [问答]({base}/api/v1/ask): POST JSON "
         "{question, author?, source?, company?, from?, to?, article?, model?, effort?, wait?}，"
         "model 是 grok 或 deepseek，effort 是那一家的思考档"

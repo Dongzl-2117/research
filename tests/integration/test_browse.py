@@ -312,7 +312,10 @@ def test_nul_and_out_of_range_numbers_are_not_500(conn, settings, monkeypatch):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "search_library", "arguments": {"q": "宁德\x00时代", "offset": 10**30}},
+                "params": {
+                    "name": "search_library",
+                    "arguments": {"q": "宁德\x00时代", "level": "article", "offset": 10**30},
+                },
             },
         )
         assert mcp.status_code == 200 and mcp.json()["result"].get("isError") is not True

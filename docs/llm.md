@@ -375,7 +375,8 @@ JSON 和 MCP 的观点接口里都带 `theses`。
 问库每问一次模型都要跑几分钟（用 DeepSeek 最深思考时 11-09 实测一次 0.14～0.29 美元；默认的 Grok OAuth 走订阅，不另收钱，但额度没公布），网站又不用登录，所以按全站限次数（#293）：最近 24 小时最多登记 `ASK_DAILY_LIMIT` 次（默认 30），同时在整合的（含排队）最多 `ASK_RUNNING_LIMIT` 个（默认 4：后台两路在跑、两个在等），0 是不限。满了不登记、不调模型，召回的原文照样给，`error` 里写着多久后能再问：网页上照常显示，JSON 接口回 429，MCP 回工具错误。出错后点「重新整合」也算在里面，满了就把原因写进那次的 `error`。10-21 到 11-09 问得最多的一天是 21 次（多半是调试时的重试），平时一天几次。按 IP 分开限要靠 Cloudflare 的限流规则，应用里没做。
 
 - `GET /api/v1/search?q=…`：文章级检索，和检索页同一套排序（全部词都命中的在前），带范围参数、`limit`（≤50）、`offset`，每条带最相关的一段和公司标签。`total` 是全部词都命中的篇数（标题、正文、译文、图片里的字都算；引号里的词要在某一段里原样出现，和结果列表同一条），`listed` 是其中按相关度翻得到的篇数，`semantic` 是词没写全、按意思排进前面的篇数，不算进 `total`。
-- `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，返回可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。
+- `GET /api/v1/search?q=…&level=chunk`：段落级召回，和问库同一套，按 `limit` 选取最多 50 个可直接引用的段落，带 `score`、命中的词（`matched`）和这次用到的检索词（`terms`）。要逐页读片段，用下面的 `level=passage`。
+- `GET /api/v1/search?q=…&level=passage` 把同一篇内相邻的相关段落拼成片段。把返回的 `next_offset` 作为下次请求的 `offset`，直到它为 `null`。MCP 的 `search_library` 同样支持这三种检索。
 - `GET /api/v1/articles`、`/api/v1/articles/{id}`、`/api/v1/articles/{id}.md`：原文里本地存了的图换成站内 `/media/…` 的完整地址（JSON 的 `body_markdown`、MCP 的 `get_article` 也一样），还没下载的外链图照原样留着；`.md` 最后附「图片里的字」一节，就是检索用的那份图片文字块。正文仍是归档原文，归档头照旧在，只有 Stratechery 网页导出归档头里的 `- rss_link:` 不给：那是导出脚本拉取用的个人订阅地址，文章页和检索文字从 #157 起就不要。
 - `GET /api/v1/authors`、`/api/v1/companies`、`/api/v1/companies/{id}`
 - `GET /api/v1/days/{YYYY-MM-DD}` 和 MCP `get_day` 按上海日历日返回可见文章。

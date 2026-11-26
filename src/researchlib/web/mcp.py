@@ -54,15 +54,18 @@ TOOLS = [
     {
         "name": "search_library",
         "description": (
-            "检索库里的文章。level=chunk 返回可直接引用的段落，适合自然语言问题；level=article 返回文章列表。"
+            "检索库里的文章。level=chunk 返回可直接引用的段落，适合自然语言问题。"
+            "level=passage 按片段翻页，level=article 按文章翻页。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "q": {"type": "string", "description": "检索词或问题"},
-                "level": {"type": "string", "enum": ["chunk", "article"], "default": "chunk"},
+                "level": {"type": "string", "enum": ["chunk", "passage", "article"], "default": "chunk"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "article": {"type": "integer", "description": "只在这篇文章里找"},
+                "offset": {"type": "integer", "minimum": 0, "default": 0,
+                           "description": "passage 或 article 的翻页起点，用上一页的 next_offset。chunk 只接受 0"},
                 **_SCOPE_PROPS,
             },
             "required": ["q"],
@@ -194,8 +197,8 @@ def run_tool(request: Request, name: str, args: dict):
             if not query:
                 raise ToolError("缺少 q")
             level = args.get("level") or "chunk"
-            if level not in {"chunk", "article"}:
-                raise ToolError("level 只能是 chunk 或 article")
+            if level not in {"chunk", "article", "passage"}:
+                raise ToolError("level 只能是 chunk、article 或 passage")
             limit, offset = _limits(args)
             return search_payload(conn, request, _scope_params(args), sources, query, level, limit, offset)
         if name == "get_article":

@@ -180,6 +180,41 @@ def _rpc(client, msg_id, method, params=None, **kwargs):
     return client.post("/api/mcp", json=message, **kwargs)
 
 
+def test_chunk_limit_and_passage_paging_in_rest_and_mcp(conn, settings):
+    _sample(conn, settings)
+    article_id = _article_id(conn, "sample:battery-note")
+    with TestClient(create_app(settings)) as client:
+        def search(args):
+            return client.get("/api/v1/search", params={"q": "宁德时代", **args})
+
+        def tool(args):
+            return _rpc(client, 1, "tools/call", {
+                "name": "search_library", "arguments": {"q": "宁德时代", **args},
+            }).json()["result"]
+
+        args = {"article": article_id, "limit": 1}
+        chunks = search({"level": "chunk", "article": article_id}).json()["passages"]
+        assert len(chunks) > 1
+        assert search({"level": "chunk", **args}).json()["passages"] == chunks[:1]
+        assert tool(args)["structuredContent"]["passages"] == chunks[:1]
+
+        invalid = search({"level": "chunk", "offset": 1})
+        assert invalid.status_code == 400
+        assert "level=passage" in invalid.json()["error"]["message"]
+        invalid_tool = tool({"offset": 1})
+        assert invalid_tool["isError"] and "level=passage" in invalid_tool["content"][0]["text"]
+
+        # 一次取齐的结果逐条翻页，REST 和 MCP 都能接着 next_offset 读到末尾。
+        whole = search({"level": "passage"}).json()["passages"]
+        assert len(whole) > 1
+        for offset in range(len(whole) + 1):
+            page_args = {"level": "passage", "limit": 1, "offset": offset}
+            page = search(page_args).json()
+            assert page["passages"] == whole[offset:offset + 1]
+            assert page["next_offset"] == (offset + 1 if offset + 1 < len(whole) else None)
+            assert tool(page_args)["structuredContent"] == page
+
+
 def test_mcp_round_trip(conn, settings):
     _sample(conn, settings)
     article_id = _article_id(conn, "sample:battery-note")
