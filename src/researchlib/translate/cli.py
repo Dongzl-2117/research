@@ -648,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
         drain(take_queued, run)
         if not tried and not made_way.is_set():
             if args.from_inventory:
-                _say(f"{args.from_inventory} 这一类都{finished}了。")
+                _say(f"当前启用的来源中，{args.from_inventory} 这一类都{finished}了。")
             else:
                 _say("没有需要重译的文章。" if args.recheck else "没有待译英文文章。")
         return 1 if failed else 0

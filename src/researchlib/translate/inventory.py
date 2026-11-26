@@ -500,6 +500,7 @@ def unfinished(conn, ids: list[int], where, *, prompt: bool = False, misplaced: 
                t.provenance->'pipeline' AS pipeline,
                t.provenance->'prompt_versions' AS prompt_versions
         FROM articles a
+        JOIN sources s ON s.id = a.source_id AND s.enabled
         LEFT JOIN article_translations t ON t.article_id = a.id
         WHERE a.id = ANY(%s)
         """,
