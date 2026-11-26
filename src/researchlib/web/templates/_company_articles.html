@@ -1,6 +1,7 @@
 {# 公司页「文章」：哪些文章谈到它。按月篇数、各位作者写了多少、按提及深度筛，再按年列出来。 #}
 {% from "_feed.html" import card_list, pager %}
 {% set here = "/companies/" ~ company.id ~ "?tab=articles" %}
+{% set author_q = "&author=" ~ (active_author | urlencode) if active_author else "" %}
 {% if views_pending and not tabs %}<p class="quiet views-pending">还有 <span class="num">{{ views_pending }}</span> 篇谈到{{ company.name_zh }}的文章没整理出判断，夜间任务每晚补一批。</p>{% endif %}
 {% if chart %}
 <figure class="chart-wrap">
@@ -44,7 +45,6 @@
 <section class="company-articles" aria-label="文章">
   <div class="list-tools">
     <nav class="pills" aria-label="提及深度">
-      {% set author_q = "&author=" ~ (active_author | urlencode) if active_author else "" %}
       <a href="{{ here }}{{ author_q }}" {% if active_depth == "deep" %}aria-current="page"{% endif %}><span>深入</span><span class="num">{{ deep_count }}</span></a>
       <a href="{{ here }}{{ author_q }}&amp;depth=all" {% if active_depth == "all" %}aria-current="page"{% endif %}><span>全部</span><span class="num">{{ all_count }}</span></a>
     </nav>
@@ -62,7 +62,7 @@
   {{ card_list(group["items"], true) }}
   {% endfor %}
   {% elif active_depth == "deep" and all_count %}
-  <p class="empty">没有深入谈它的文章，只有一带而过的提及。<a href="{{ here }}&amp;depth=all">看全部提及</a></p>
+  <p class="empty">没有深入谈它的文章，只有一带而过的提及。<a href="{{ here }}{{ author_q }}&amp;depth=all">看全部提及</a></p>
   {% else %}
   <p class="empty">没有文章提到这家公司。</p>
   {% endif %}

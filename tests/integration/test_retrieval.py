@@ -1,4 +1,6 @@
 import os
+import re
+from html import unescape
 
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
@@ -96,6 +98,31 @@ def test_authors_page_shows_span_and_companies(conn, settings):
         author = client.get("/authors/方伟")
         assert "只搜方伟的文章" in author.text
         assert "常深入谈的公司" in author.text
+
+
+def test_following_author_and_company_actions_preserves_evidence_filters(conn, settings):
+    _sample(conn, settings)
+    amazon = _company_id(conn, "亚马逊")
+
+    def destination(page, label):
+        return unescape(re.search(r'href="([^"]+)">' + re.escape(label) + '</a>', page.text)[1])
+
+    with TestClient(create_app(settings)) as client:
+        author = client.get("/authors/方伟", params={"source": "fangwei-mp"})
+        question = client.get(destination(author, "问 AI：他近期的核心判断"))
+        assert 'name="source" value="fangwei-mp"' in question.text
+        unfiltered = client.get("/authors/方伟")
+        assert "source=" not in destination(unfiltered, "问 AI：他近期的核心判断")
+
+        # 这一位只顺带谈过亚马逊；另一个作者有专门讲亚马逊的文章。
+        company = client.get(f"/companies/{amazon}", params={"author": "方伟", "tab": "articles"})
+        everything = client.get(destination(company, "看全部提及"))
+        assert "苹果链的冷暖" in everything.text and "亚马逊云和广告" not in everything.text
+        results = client.get(destination(company, "在提到它的文章里检索"))
+        assert 'value="方伟" selected' in results.text
+        assert "亚马逊云和广告" not in results.text
+        all_authors = client.get(f"/companies/{amazon}")
+        assert "author=" not in destination(all_authors, "在提到它的文章里检索")
 
 
 def test_json_api_and_markdown(conn, settings):
