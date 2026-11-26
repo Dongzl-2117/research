@@ -5,8 +5,7 @@
 输出按同页「一次补完积压」的规划区间，每次 4,000 到 10,000 token，不是这次实测。
 输入按 1 个字 1 个 token 估，是上沿。Grok OAuth 走订阅，token 照样算，不换算成美元。
 
-    docker compose exec app research-llm-estimate --listing /data/inbox/latepost/raw/post-history.jsonl
-    docker compose exec app research-llm-estimate --inbox /data/inbox/latepost
+    research-llm-estimate --listing /data/inbox/latepost/raw/post-history.jsonl --inbox /data/backfill/latepost
     docker compose exec app research-llm-estimate --source latepost
     docker compose exec app research-llm-estimate --articles 1,2,3
 

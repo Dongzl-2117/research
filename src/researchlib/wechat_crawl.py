@@ -20,7 +20,8 @@
 - 一次最多取 --max-new 篇新文章（日常默认 5；``--backfill`` 不写这个参数就不限）。
   原文已删除、因违规不能看的，记一份原始数据就不再取。
 - 列表里有比库里最新一篇还早的文章，却一篇都对不上库里的：多半是 ghid 写成了别的号，这次一篇都不取。
-- 归档写在 DATA_DIR/inbox/<来源>/：md/<年>/<日期>-<sn>.md、raw/articles/<sn>.json，格式和以前导入的公众号归档一样
+- 日常正文写在 DATA_DIR/inbox/<来源>/，历史正文写在 DATA_DIR/backfill/<来源>/。
+  文件均为 md/<年>/<日期>-<sn>.md、raw/articles/<sn>.json，沿用既有公众号归档格式
   （正文开头「- 作者：」「- 时间：」「- sn：」「- 原链接：」，正文从原文页取的再加一行「- 图片位置：原文页」）。
   图片留图床地址，入库后由 research-fetch-images 下载。导入本身不调模型。
 """
@@ -985,6 +986,7 @@ def crawl(
     ghid: str,
     inbox: Path,
     client: Dajiala,
+    history_inbox: Path | None = None,
     fetch=fetch_page,
     max_new: int | None = 5,
     dry_run: bool = False,
@@ -1020,7 +1022,7 @@ def crawl(
             rows,
             conn=conn,
             source=source,
-            inbox=inbox,
+            inbox=history_inbox if history_inbox is not None else inbox,
             client=client,
             fetch=fetch,
             max_new=max_new,
@@ -1052,7 +1054,8 @@ def crawl(
         if not _HEX32.match(post.sn):
             report.failed.append(f"{_label(post)}：列表里没有 sn，认不出是哪篇")
             continue
-        if _already_kept(sns, titles, inbox, post):
+        if (_already_kept(sns, titles, inbox, post)
+                or (history_inbox is not None and archived_post(history_inbox, post))):
             report.known += 1
             continue
         fresh.append(post)
@@ -1192,10 +1195,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     client = Dajiala(key, os.environ.get("DAJIALA_BASE_URL", "").strip() or DAJIALA_BASE)
     inbox = settings.data_dir / "inbox" / source.id
+    # 日常任务会重扫日常目录，补导上次写完正文后中断的稿件。待确认的历史正文要放在它扫不到的目录。
+    history_inbox = settings.data_dir / "backfill" / source.id
+    import_inbox = history_inbox if paging else inbox
     if paging:
         print(
             f"回填列表：每查一页约 {LIST_CALL_CNY:.2f} 元（--list-only 和 --dry-run 也查）。"
-            "进度写在归档目录的 raw/post-history-state.json，中断再跑不会重查已记下的页。"
+            f"进度写在 {inbox}/raw/post-history-state.json，中断再跑不会重查已记下的页。"
             "不带 --backfill / --list-only 的定时抓取仍只查最新一页。",
             flush=True,
         )
@@ -1206,6 +1212,7 @@ def main(argv: list[str] | None = None) -> int:
             source,
             ghid=source.ghid,
             inbox=inbox,
+            history_inbox=history_inbox,
             client=client,
             fetch=fetch_page,
             max_new=max_new,
@@ -1237,10 +1244,10 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
     print(report.render())
-    if args.dry_run or args.no_import or not inbox.is_dir():
+    if args.dry_run or args.no_import or not import_inbox.is_dir():
         if paging and args.no_import and not report.failed:
             print(
-                f"没有导入。归档在 {inbox}。同意 LLM 费用之前保持这样："
+                f"没有导入。归档在 {import_inbox}。同意 LLM 费用之前保持这样："
                 "导入之后，夜间任务才会按每晚的上限开始写摘要和判断。费用用 research-llm-estimate 看。",
                 flush=True,
             )
@@ -1255,7 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
     imported = run_markdown_ingest(
         kind,
         "导入抓下来的公众号归档",
-        ["--source", source.id, "--input", str(inbox), "--origin", "crawl"],
+        ["--source", source.id, "--input", str(import_inbox), "--origin", "crawl"],
         id_mode="path",
     )
     return 1 if report.failed or imported else 0

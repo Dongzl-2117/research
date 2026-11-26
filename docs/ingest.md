@@ -150,13 +150,14 @@ docker compose exec app research-crawl-wechat --source latepost --list-only
 
 # (b) 按清单取正文，先不导入。列表已经翻完时不会再向极致了查列表。
 # 正文优先原文页（不花钱）；原文页取不到才用极致了正文，约 0.03 元/篇。
-# 归档在 data/inbox/latepost。这一步不调用模型，夜间任务也还看不见这些篇。
+# 历史正文在 data/backfill/latepost，日常抓取只导入 data/inbox/latepost；夜间任务还看不见暂存稿。
 docker compose exec app research-crawl-wechat --source latepost --backfill --no-import
-# 同意模型费用之后再导入。导入本身不调用模型；导入之后夜间任务才按上限开始写摘要、抽判断。
-docker compose exec app research-ingest-wechat --source latepost --input /data/inbox/latepost --origin crawl
+# (c) 先按暂存正文的字数估算模型费用。这一步也不调用模型。
+docker compose exec app research-llm-estimate --listing /data/inbox/latepost/raw/post-history.jsonl --inbox /data/backfill/latepost
 
-# (c) 模型费用。不调用模型。有正文之后用 --inbox 按文件字数；导入之后用 --source。
-docker compose exec app research-llm-estimate --listing /data/inbox/latepost/raw/post-history.jsonl --inbox /data/inbox/latepost
+# 同意费用后用历史归档目录显式导入。导入之后夜间任务才按上限开始写摘要、抽判断。
+docker compose exec app research-ingest-wechat --source latepost --input /data/backfill/latepost --origin crawl
+# 导入后的积压也可按来源重新估算。
 docker compose exec app research-llm-estimate --source latepost
 ```
 
