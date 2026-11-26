@@ -34,6 +34,7 @@ compose() {
 
 stamp="$(date +%Y%m%d-%H%M%S)"
 run_step "建备份目录" mkdir -p "$BACKUP_DIR/db" "$BACKUP_DIR/images"
+run_step "核对备份盘可用空间" python3 "$REPO/scripts/backup_space.py" "$BACKUP_DIR/db" "${BACKUP_EXPECTED_MIB:-}"
 staging="$(mktemp -d "$BACKUP_DIR/db/.research-${stamp}-v2-XXXXXX")"
 name="$(basename "$staging")"
 final="$BACKUP_DIR/db/${name#.}.dump"
@@ -71,4 +72,9 @@ mv "$staging/archive" "$final"
 find "$BACKUP_DIR/db" -name 'research-*.dump*' -type f -mtime +"$KEEP_DAYS" -delete
 size="$(du -h "$final" | cut -f1)"
 echo "$(date '+%F %T') 备份完成：${final}，${size}，${articles} 篇" | tee -a "$BACKUP_DIR/backup.log"
-status_ok "${size}，${articles} 篇"
+# 清理过期文件后再看目的盘。已成功的快照照常公布，余量不足以再写一份时另报提醒。
+warning=""
+if ! warning="$(python3 "$REPO/scripts/backup_space.py" "$BACKUP_DIR/db" 2>&1)"; then
+  echo "备份完成时：${warning}" >&2
+fi
+status_ok "${size}，${articles} 篇" "$warning"

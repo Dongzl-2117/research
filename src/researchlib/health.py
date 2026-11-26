@@ -140,6 +140,8 @@ def notices(data_dir: Path, zone_name: str, now: datetime | None = None) -> list
             found.append(text + (f"：{message}" if message else ""))
         elif max_age is not None and at is not None and moment - at > max_age:
             found.append(f"{label}已经 {_span(moment - at)}没成功了（最近一次 {_when(at, zone_name)}）")
+        if task == "backup" and data.get("ok") and data.get("warning"):
+            found.append(f"备份完成时（{_when(at, zone_name)}）：{data['warning']}")
     llm = read_status(data_dir, "llm")
     if llm and not llm.get("ok"):
         since = parse_time(llm.get("since")) or parse_time(llm.get("at"))

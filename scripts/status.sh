@@ -32,19 +32,22 @@ status_json_escape() {
 
 status_write() {
   # status_write true|false 消息。写完留一个标记，子 shell 里写的父进程也认得（$$ 在子 shell 里不变）。
-  local now tmp
+  local now tmp warning_json=""
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$STATUS_DIR" 2>/dev/null || return 0
   tmp="$STATUS_DIR/.${TASK}.json.$$"
-  if printf '{"task":"%s","ok":%s,"at":"%s","message":"%s"}\n' \
-    "$TASK" "$1" "$now" "$(status_json_escape "$2")" > "$tmp"; then
+  if [ -n "${3:-}" ]; then
+    warning_json="$(printf ',"warning":"%s"' "$(status_json_escape "$3")")"
+  fi
+  if printf '{"task":"%s","ok":%s,"at":"%s","message":"%s"%s}\n' \
+    "$TASK" "$1" "$now" "$(status_json_escape "$2")" "$warning_json" > "$tmp"; then
     mv -f "$tmp" "$STATUS_DIR/${TASK}.json"
   fi
   : > "$STATUS_DIR/.${TASK}.$$.done" 2>/dev/null || true
 }
 
 status_ok() {
-  status_write true "$1"
+  status_write true "$1" "${2:-}"
 }
 
 status_fail() {
