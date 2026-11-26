@@ -305,7 +305,7 @@ def crawl(
         problem = "RSS 里的正文是空的"
         for item in copies:
             try:
-                body, _images = html_to_markdown(item.html)
+                body, _images = html_to_markdown(item.html, keep_fragment_links=True)
             except Exception as exc:  # noqa: BLE001 一份转坏不连累另一份
                 problem = f"正文转换出错（{type(exc).__name__}）"
                 continue
