@@ -290,6 +290,33 @@ def _view(article_id, author, stance, days_ago, judgment="判断", quote=""):
     }
 
 
+def test_theses_mark_shift_only_when_opposing_statements_can_be_ordered():
+    yes = "公司毛利率将上升"
+    no = "公司毛利率将下降"
+    views = [
+        _view(1, "作者甲", "positive", 0, judgment=yes, quote=yes + "，海外成本回落。"),
+        _view(2, "作者甲", "negative", 0, judgment=no, quote=no + "，原料价格还在涨。"),
+    ]
+    row = {"theses": [{"title": yes, "for": ["v1"], "against": ["v2"]}]}
+
+    def shifted():
+        result, = theses.present(row, views)
+        assert result["for"]["count"] == result["against"]["count"] == 1
+        return result["shifted"]
+
+    views[0]["published_at"] = None
+    views[0]["date"] = "日期不详"
+    assert shifted() == []
+    views[0]["date"] = views[1]["date"]
+    views[0]["published_at"] = views[1]["published_at"]
+    views[0]["time_known"] = views[1]["time_known"] = True
+    assert shifted() == []
+    views[1]["published_at"] += timedelta(hours=1)
+    assert shifted() == ["作者甲"]
+    views[0]["time_known"] = False
+    assert shifted() == []
+
+
 def test_theses_bucket_by_stance_and_drop_unrelated_or_neutral():
     # views_for 给的是新的在前。空白判断不进输入。
     views = [

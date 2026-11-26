@@ -606,18 +606,25 @@ def present(row: dict | None, items: list[dict], company: str = "") -> list[dict
             if str(by_article[ref].get("quote") or "").strip()
             and match_score(thesis_text, str(by_article[ref].get("quote") or ""), company) < MIN_MATCH_SCORE
         ]
-        # 同一位作者先支持后反对（或反过来）：态度变了。
+        # 支持和反对都计入各边；只有日期或钟点能排出先后才说作者前后说法不一。
         shifted = []
-        support_dates: dict[str, list] = {}
-        for ref in thesis.get("for") or []:
-            if ref in by_article:
-                view = by_article[ref]
-                support_dates.setdefault(view["author"], []).append(view["date"])
-        for ref in thesis.get("against") or []:
-            if ref in by_article:
-                view = by_article[ref]
-                if view["author"] in support_dates and view["author"] not in shifted:
-                    shifted.append(view["author"])
+        support_days: dict[str, set] = {}
+        support_times: dict[str, set] = {}
+        for ref in thesis["for"]:
+            view = by_article[ref]
+            if view.get("published_at") is not None:
+                support_days.setdefault(view["author"], set()).add(view["date"])
+                if view.get("time_known"):
+                    support_times.setdefault(view["author"], set()).add(view["published_at"])
+        for ref in thesis["against"]:
+            view = by_article[ref]
+            author = view["author"]
+            if view.get("published_at") is None or author in shifted:
+                continue
+            days = support_days.get(author, set())
+            times = support_times.get(author, set())
+            if days - {view["date"]} or (view.get("time_known") and times - {view["published_at"]}):
+                shifted.append(author)
         sources = [
             {
                 "article_id": ref,

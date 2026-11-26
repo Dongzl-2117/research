@@ -46,7 +46,7 @@ from researchlib.llm import LLMError, LLMUnavailable, chat, ensure_oauth
 from researchlib.ocr import SHORT_BODY_CHARS, append_ocr, article_ocr, ocr_speaker_note
 from researchlib.textutil import drop_nul
 from researchlib.visibility import is_hidden, visible_sql
-from researchlib.web.present import format_date
+from researchlib.web.present import format_date, resolve_feed_instant
 from researchlib.wechat_dialogue import relabel_host
 from researchlib.zsxq_comments import source_owners
 from researchlib.zsxq_title import repairs_source, shorten_long_title, title_needs_repair, zsxq_display_title
@@ -744,40 +744,74 @@ def verify_stored_quotes(conn, rows: list[dict], *, deep: bool = True) -> None:
                 verify(part["article_id"], part["body"])
 
 
+def _mark_stance_changes(items: list[dict]) -> None:
+    """只在能确认先后的看好、看淡之间标变化。没有日期的判断仍在时间线上。"""
+    days: dict[tuple[str, str], list[dict]] = {}
+    for item in items:
+        if item["published_at"] is not None and item["stance"] in _CHANGE_SIGNALS:
+            days.setdefault((item["author"], item["date"]), []).append(item)
+
+    def mark(group, previous):
+        # 当时同时发了几条或此前的方向不唯一，无法指出具体哪篇改变了态度。
+        if len(group) == 1 and len(previous) == 1:
+            prior = next(iter(previous))
+            if prior and prior != group[0]["stance"]:
+                group[0]["changed"] = True
+                group[0]["previous_label"] = STANCE_LABELS[prior]
+
+    last: dict[str, set] = {}
+    for (author, _day), group in sorted(days.items()):
+        previous = last.get(author, {None})
+        by_time = {}
+        day_only = []
+        for item in group:
+            if item["time_known"]:
+                by_time.setdefault(item["published_at"], []).append(item)
+            else:
+                day_only.append(item)
+        floating = {item["stance"] for item in day_only}
+        if not by_time:
+            mark(day_only, previous)
+            last[author] = floating
+            continue
+        for moment in sorted(by_time):
+            batch = by_time[moment]
+            # 只有日期的判断可能发生在今天任何时刻，包括两个有钟点的判断之间。
+            mark(batch, previous | floating)
+            previous = {item["stance"] for item in batch}
+        last[author] = previous | floating
+
+
 def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> list[dict]:
     """这家公司全部下了判断的观点，按时间从旧到新标出态度变化，再按新到旧返回。"""
     rows = conn.execute(
         f"""
         SELECT v.article_id, v.judgment, v.mechanism, v.stance, v.risks, v.falsifiers, v.metrics,
                v.quote, v.angles, v.chunk_ord, c.anchor AS chunk_anchor, c.body AS chunk_body,
-               a.title, a.published_at, a.source_id,
+               a.title, a.published_at, a.source_id, a.raw_meta->>'create_time' AS clock_hint,
+               a.raw_meta->>'date_source' AS date_source, a.raw_meta->>'time_known' AS time_known,
                left(a.body_text, 2000) AS body_text
         FROM company_views v
         JOIN articles a ON a.id = v.article_id
         LEFT JOIN article_chunks c ON c.article_id = v.article_id AND c.ord = v.chunk_ord AND c.lang IN ('', 'ocr')
         WHERE v.company_id = %s AND {REAL_VIEW_SQL} AND a.source_id = ANY(%s) AND a.duplicate_of IS NULL
           AND {_SHOWN}
-        ORDER BY a.published_at ASC NULLS FIRST, a.id ASC
         """,
         (company_id, list(sources_by_id)),
     ).fetchall()
     verify_stored_quotes(conn, rows, deep=False)
-    last: dict[str, str] = {}
     items: list[dict] = []
     for row in rows:
         source = sources_by_id.get(row["source_id"])
         author = source.author if source else row["source_id"]
         stance = row["stance"] or ""
-        previous = last.get(author)
-        # 只有看好和看淡互换才算态度变化。中性、两面不算信号：看好 → 两面 → 看好、看好 → 中性 → 看好
-        # 都不算变了；看好 → 两面 → 看淡 算一次（从看好变成看淡）。两面常常只是这篇多写了几句风险。
-        signal = stance in _CHANGE_SIGNALS
-        changed = bool(signal and previous and previous != stance)
-        if signal:
-            last[author] = stance
+        moment, time_known = resolve_feed_instant(
+            row["published_at"], clock_hint=row["clock_hint"], date_source=row["date_source"],
+            time_known=row["time_known"], zone=settings.display_timezone,
+        )
         risks = list(row["risks"] or [])
         falsifiers = list(row["falsifiers"] or [])
-        shown_date = format_date(row["published_at"], settings.display_timezone)
+        shown_date = format_date(moment, settings.display_timezone)
         title = shorten_long_title(row["title"] or "", row.get("body_text") or "")
         if repairs_source(row["source_id"], source.kind if source else "") and title_needs_repair(
             title or "", row.get("body_text") or ""
@@ -791,13 +825,14 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
                 "title": title,
                 "author": author,
                 "date": shown_date,
-                "published_at": row["published_at"],
+                "published_at": moment,
+                "time_known": time_known,
                 "judgment": row["judgment"],
                 "mechanism": row["mechanism"],
                 "stance": stance,
                 "stance_label": STANCE_LABELS.get(stance, "") if stance != "neutral" else "",
-                "changed": changed,
-                "previous_label": STANCE_LABELS.get(previous or "", "") if changed else "",
+                "changed": False,
+                "previous_label": "",
                 "risks": risks,
                 "falsifiers": falsifiers,
                 "metrics": list(row["metrics"] or []),
@@ -808,7 +843,10 @@ def timeline(conn, company_id: int, sources_by_id: dict, settings: Settings) -> 
                 "risky": bool(risks or falsifiers or stance in ("negative", "mixed")),
             }
         )
-    items.reverse()
+    _mark_stance_changes(items)
+    items.sort(
+        key=lambda item: (item["published_at"] is not None, item["published_at"], item["article_id"]), reverse=True,
+    )
     return items
 
 
