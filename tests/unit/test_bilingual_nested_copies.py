@@ -8,6 +8,8 @@ Stratechery 的归档导出先把整条引文、整个列表项、每条脚注�
 
 import re
 
+import pytest
+
 from researchlib.render import render_body
 from researchlib.translate import provenance as pr
 from researchlib.translate.display import (
@@ -64,6 +66,56 @@ def _render(md: str = _MD, zh: dict[int, str] = _ZH, images: dict[str, str] | No
 
 def _ids(value: str) -> set[str]:
     return set(re.findall(r'\bid="(p-\d+)"', value))
+
+
+@pytest.mark.parametrize(("outer", "next_value"), [
+    ("+12.5%", "−12.5%"), ("12.5%", "125%"), ("$125", "€125"), ("5%", "5"),
+    ("($125)", "$125"), ("1 23", "12 3"), ("12,5", "125"),
+    ("USD 125", "HKD 125"), ("12 million", "12 billion"),
+    ("12 million USD", "12 million"), ("12 million", "12 million USD"),
+])
+def test_financially_different_quote_and_following_paragraph_stay_in_each_reading_mode(outer, next_value):
+    from researchlib.nested_copies import fold_nested_copies
+
+    # 超过 80 字也会走长段近似匹配。两层规则都要留住引文和作者接着写的数字。
+    en = "The comparison in the unaudited quarterly accounts shows the operating margin for this business was "
+    md = f"> {en}{outer}.\n\n{en}{next_value}."
+    zh = {0: f"<p>经营数据给出的数值为{outer}。</p>", 1: f"<p>经营数据给出的数值为{next_value}。</p>"}
+    source, translated, view = _render(md, zh)
+    assert fold_nested_copies(md) == md
+    assert view.correspondence == "mapped" and len(view.pairs) == 2
+    assert en + outer in view.pairs[0].en and en + next_value in view.pairs[1].en
+    assert f"为{outer}。" in view.pairs[0].zh and f"为{next_value}。" in view.pairs[1].zh
+    folded = fold_translated_copies(source, translated)
+    assert f"为{outer}。" in folded and f"为{next_value}。" in folded
+
+
+def test_repeated_financial_quote_keeps_formatting_and_conflicting_translation():
+    from researchlib.nested_copies import fold_nested_copies
+
+    assert fold_nested_copies("> Total revenue was $1,250.75.\n\nTotal revenue was **$1250.75**.") == (
+        "> Total revenue was **$1250.75**."
+    )
+    md = "> The reported margin was -12.5%.\n\nThe reported margin was **-12.5%**."
+    zh = {0: "<p>原文披露的利润率为+12.5%。</p>", 1: "<p>原文披露的利润率为−12.5%。</p>"}
+    source, translated, view = _render(md, zh)
+    assert fold_nested_copies(md) == "> The reported margin was **-12.5%**."
+    assert len(view.pairs) == 1 and "<strong>-12.5%</strong>" in view.pairs[0].en
+    for shown in (view.pairs[0].zh, fold_translated_copies(source, translated)):
+        assert "为+12.5%。" in shown and "为−12.5%。" in shown
+
+
+@pytest.mark.parametrize(("first", "later"), [
+    ("3.2 亿美元", "3.2 亿港元"), ("12 万", "12 亿"), ("12 万", "12 万亿"), ("USD 125", "HKD 125"),
+])
+def test_conflicting_translated_units_remain_visible_even_when_english_is_the_same(first, later):
+    line = "Management discussed revised revenue guidance over the course of this quarterly investor call."
+    md = f"> {line}\n\n{line}"
+    prefix = "参考本次电话会中的经营情况，管理层给出的收入指引为"
+    source, translated, view = _render(md, {0: f"<p>{prefix}{first}。</p>", 1: f"<p>{prefix}{later}。</p>"})
+    assert len(view.pairs) == 1
+    for shown in (view.pairs[0].zh, fold_translated_copies(source, translated)):
+        assert first in shown and later in shown
 
 
 def test_short_quote_items_and_footnotes_show_once_with_their_formatting():

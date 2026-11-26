@@ -342,3 +342,28 @@ def test_quoted_english_phrase_keeps_the_original_passage(conn, settings, monkey
     assert "real moat" in quoted["items"][0]["snippet"]
     # 词挨着、句子却不是这样写的，不算命中，也不数。
     assert missing["total"] == 0 and missing["items"] == []
+
+
+def test_signed_quote_and_authors_own_figure_are_not_merged_in_exports_or_reader(conn, settings):
+    line = "The reported margin was "
+    doc = ParsedDoc("signed-quote", "Quarterly margins", None,
+                    f"> {line}+12.5%.\n\n{line}-12.5%.", {"language": "en"}, [])
+    _store(conn, settings, "gudujinhuati", [doc])
+    row = conn.execute("SELECT id, content_hash FROM articles WHERE external_id='signed-quote'").fetchone()
+    translated = "<blockquote><p>披露利润率为+12.5%。</p></blockquote><p>披露利润率为-12.5%。</p>"
+    conn.execute(
+        "INSERT INTO article_translations (article_id, content_hash, body_html, body_text, complete, segments)"
+        " VALUES (%s,%s,%s,%s,true,2)", (row["id"], row["content_hash"], translated, translated),
+    )
+    conn.commit()
+    article = row["id"]
+    with TestClient(create_app(settings)) as client:
+        exported = client.get(f"/api/v1/articles/{article}").json()["body_markdown"]
+        md = client.get(f"/api/v1/articles/{article}.md").text
+        original = client.get(f"/articles/{article}/original").text
+        pairs = client.get(f"/articles/{article}").text
+        zh = client.get(f"/articles/{article}/zh").text
+    for result in (exported, md, original, pairs):
+        assert line + "+12.5%." in result and line + "-12.5%." in result
+    for result in (pairs, zh):
+        assert "披露利润率为+12.5%。" in result and "披露利润率为-12.5%。" in result

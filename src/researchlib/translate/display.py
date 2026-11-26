@@ -19,8 +19,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from researchlib.financial_evidence import numeric_signature
 from researchlib.htmlentities import entity_ref
-from researchlib.nested_copies import CopyRun, copy_runs, plain_ends
+from researchlib.nested_copies import CopyRun, copy_number_literals, copy_runs, plain_ends
 from researchlib.translate.pair import (
     BilingualPair,
     _leaf_key,
@@ -279,7 +280,12 @@ _IMG_SRC = re.compile(r"""<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']""", re.I)
 
 def _plain_words(value: str) -> set[str]:
     text = html.unescape(re.sub(r"<[^>]+>", " ", value or ""))
-    return set(re.findall(r"\w+", text))
+    words = set(re.findall(r"\w+", text))
+    literals = copy_number_literals(text)
+    if literals:
+        words.update(f"n:{value}" for value in literals)
+        words.update(f"v:{amount}:{unit}" for amount, unit in numeric_signature(text))
+    return words
 
 
 def _content_words(value: str) -> set[str]:
@@ -288,7 +294,6 @@ def _content_words(value: str) -> set[str]:
 
 
 _ZH_SENTENCE = re.compile(r"(?<=[。！？])")
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 _LATIN_WORD = re.compile(r"[a-z][a-z0-9]+")
 _TAG = re.compile(r"<(/?)([a-z][a-z0-9]*)\b[^>]*>", re.I)
 _VOID = frozenset({"br", "img", "wbr"})
@@ -325,7 +330,8 @@ class _Said:
     def __init__(self, shown: str):
         visible = html.unescape(re.sub(r"<[^>]+>", " ", shown or "")).casefold()
         self.core = _sentence_core(shown)
-        self.numbers = set(_NUMBER.findall(visible))
+        self.numbers = set(copy_number_literals(visible))
+        self.amounts = set(numeric_signature(visible)) if self.numbers else set()
         self.words = set(_LATIN_WORD.findall(visible))
         cores = [_sentence_core(part) for part in _ZH_SENTENCE.split(shown or "")]
         cores = [core for core in cores if core]
@@ -337,11 +343,12 @@ class _Said:
         core = _sentence_core(sentence)
         if not core:
             return True
+        visible = html.unescape(re.sub(r"<[^>]+>", " ", sentence)).casefold()
+        literals = copy_number_literals(visible)
+        if literals and (set(literals) - self.numbers or set(numeric_signature(visible)) - self.amounts):
+            return False
         if core in self.core:
             return True
-        visible = html.unescape(re.sub(r"<[^>]+>", " ", sentence)).casefold()
-        if set(_NUMBER.findall(visible)) - self.numbers:
-            return False
         for word in _LATIN_WORD.findall(visible):
             if word not in self.words and (len(word) < 4 or word not in self.core):
                 return False
@@ -399,7 +406,7 @@ def _novel_zh(extra: str, host: str, context: str = "") -> str:
     和留下的译的是同一段英文，两份各自成句：同一句只差标签、标点或几个字时不再挂第二遍，
     带着别处没有的数字、英文词，或者字对不上的句子才挂。
     """
-    if not extra or _plain_words(extra) <= _plain_words(host):
+    if not extra or extra == host or _plain_words(extra) <= _plain_words(host):
         return ""
     parts = [part for part in _ZH_SENTENCE.split(extra) if _sentence_core(part)]
     said = _Said((host or "") + (context or ""))
@@ -503,7 +510,7 @@ def _absorb_contained(
         for other, key in enumerate(keys):
             if other == index or other in blocked or other in drop or len(key) <= len(keys[index]):
                 continue
-            contained = texts[index] in texts[other] and len(texts[other]) > len(texts[index])
+            contained = keys[index] in key and texts[index] in texts[other] and len(texts[other]) > len(texts[index])
             if not (key.startswith(keys[index]) or contained):
                 continue
             if not _plain_words(updated[index].en) <= _plain_words(updated[other].en):
