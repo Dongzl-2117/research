@@ -4,11 +4,13 @@ import io
 import json
 import urllib.request
 from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from researchlib import wechat_crawl
-from researchlib.sources import Source
+from researchlib.sources import Source, load_sources, require_source
 from researchlib.wechat_crawl import (
     Dajiala,
     DajialaError,
@@ -405,6 +407,42 @@ def test_daily_crawl_does_not_page_or_write_backfill_state(tmp_path):
     assert not (tmp_path / "raw" / "post-history.jsonl").exists()
 
 
+def test_daily_main_rejects_an_explicitly_different_account_before_fetch_or_import(tmp_path, monkeypatch, capsys):
+    post = _post(SN_NEW, "另一公众号的文章", datetime(2026, 11, 18, tzinfo=UTC))
+    client = PagingClient([([post], "", 1)], nickname="中国新闻网")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOURCES_FILE", str(Path(__file__).resolve().parents[2] / "config/sources.yaml"))
+    monkeypatch.setenv("DAJIALA_KEY", "test-key")
+    monkeypatch.setattr(wechat_crawl, "Dajiala", lambda *args: client)
+    monkeypatch.setattr(wechat_crawl, "fetch_page", _boom_fetch)
+    monkeypatch.setattr("researchlib.db.prepare", lambda settings: Mock(spec=["close"]))
+    import_archive = Mock()
+    monkeypatch.setattr("researchlib.ingest.cli.run_markdown_ingest", import_archive)
+    inbox = tmp_path / "inbox" / "latepost"
+    inbox.mkdir(parents=True)
+    existing = inbox / "already-here.md"
+    existing.write_text("已有归档")
+
+    assert wechat_crawl.main(["--source", "latepost"]) == 1
+    err = capsys.readouterr().err
+    assert "中国新闻网" in err and "晚点LatePost" in err and "0.14 元" in err
+    assert client.calls == [""] and client.article_calls == []
+    assert list(inbox.rglob("*")) == [existing] and existing.read_text() == "已有归档"
+    import_archive.assert_not_called()
+
+
+@pytest.mark.parametrize(("source_id", "nickname"), [
+    ("latepost", "晚点LatePost"), ("latepost", ""), ("fangwei-mp", "方伟看十年"), ("gudujinhuati", "孤独 进化体"),
+])
+def test_daily_matching_or_unreported_nickname_allows_body(tmp_path, source_id, nickname):
+    sources = load_sources(Path(__file__).resolve().parents[2] / "config/sources.yaml")
+    source = require_source(sources, source_id)
+    post = _post(SN_NEW, "新的一篇", datetime(2026, 11, 18, tzinfo=UTC))
+    client = PagingClient([([post], "", 1)], nickname=nickname)
+    report = crawl(FakeConn([]), source, ghid=source.ghid, inbox=tmp_path, client=client, fetch=lambda url: PAGE)
+    assert len(report.written) == 1 and not report.failed
+
+
 def test_backfill_pages_by_offset_resumes_and_stops_at_is_end(tmp_path):
     sn_mid = "d" * 32
     pages = [
@@ -566,6 +604,18 @@ def test_backfill_stops_at_since_and_can_continue_later(tmp_path):
     )
     assert client.calls == ["", "cursor-1", "cursor-2"]
     assert rest.complete and rest.listed == 5
+
+
+@pytest.mark.parametrize(("nickname", "accept"), [("方伟看十年", True), ("", True), ("中国新闻网", False)])
+def test_history_uses_the_configured_wechat_name_for_fangwei(tmp_path, nickname, accept):
+    sources = load_sources(Path(__file__).resolve().parents[2] / "config/sources.yaml")
+    source = require_source(sources, "fangwei-mp")
+    post = _post(SN_NEW, "方伟的一篇", datetime(2026, 11, 18, tzinfo=UTC))
+    client = PagingClient([([post], "", 1)], nickname=nickname)
+    report = crawl(BoomConn(), source, ghid=source.ghid, inbox=tmp_path, client=client,
+                   fetch=_boom_fetch, backfill=True, list_only=True)
+    assert report.listed == int(accept) and bool(report.failed) is not accept
+    assert (tmp_path / "raw" / "post-history.jsonl").exists() is accept
 
 
 def test_backfill_rejects_another_accounts_name_before_page_two(tmp_path):

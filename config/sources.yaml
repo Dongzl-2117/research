@@ -14,6 +14,7 @@ sources:
     timeline: true
     # 公众号「方伟看十年」的原始 ID。scripts/crawl-fangwei-mp.sh 每天两次用它向极致了查新文章（research-crawl-wechat）。
     ghid: gh_00a6a367d877
+    wechat_nickname: 方伟看十年
     # 方伟在星球的昵称。公众号里贴的星球截图，显示名是它的算方伟（识图排版只认一字不差的名字）。
     poster_names: [方伟Rey]
     description: 方伟微信公众号历史归档（Markdown + 图片）。11 月 7 日起和孤独进化体一样定时抓取，正文从公众号原文页取（research-crawl-wechat）。
@@ -50,6 +51,7 @@ sources:
     timeline: true
     # 公众号原始 ID。scripts/crawl-gudujinhuati.sh 每天用它向极致了查新文章（research-crawl-wechat）。
     ghid: gh_1f869b9dc034
+    wechat_nickname: 孤独进化体
     description: 微信公众号「孤独进化体」全文归档。以前的文章是 Markdown 归档导入的；10 月 30 日起每天定时抓取（research-crawl-wechat）。
 
   - id: latepost
@@ -62,6 +64,7 @@ sources:
     # scripts/crawl-latepost.sh 每天 08:30、20:30 只查最新一页。历史回填要另加 --backfill / --list-only，
     # 定时任务和部署都不带，不会自动翻页。
     ghid: gh_44e9b2141610
+    wechat_nickname: 晚点LatePost
     description: 微信公众号「晚点LatePost」。每天两次增量抓取（research-crawl-wechat，只查最新一页）；历史文章用同一条命令的 --backfill 翻页，不随部署、不随定时任务跑。
 
   - id: linwenfeng-mp
