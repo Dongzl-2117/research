@@ -20,6 +20,17 @@ def test_source_quote_preserves_financial_values_and_returns_source_spelling():
     assert source_quote(source, "净利率为-1.5%，库存增加。") == source[3:]
 
 
+def test_quote_can_start_with_a_number_after_clause_punctuation():
+    quote = "12.5%的增长来自海外。"
+    assert source_quote("公司披露，" + quote, quote) == quote
+    english = "12.5% came from overseas."
+    assert source_quote("Margins rose. " + english, english) == english
+    assert source_quote("Margins rose.\n" + english, english) == english
+
+    for prefix in ("1", "1,", "1，", "1.", ".", ".\u200b", "−", "$", "≤"):
+        assert source_quote(prefix + "125万元来自海外。", "125万元来自海外。") == ""
+
+
 def test_opposed_views_and_fabricated_evidence_do_not_change_into_consensus():
     yes = "公司毛利率将上升"
     no = "公司毛利率将下降"
