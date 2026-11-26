@@ -66,6 +66,8 @@ BACKUP_DIR/
 docker compose exec app research-status   # 没问题打「没有要处理的」、退出码 0；有问题逐条打出来、退出码 1
 ```
 
+从外面看同一份状态：`GET /api/v1/status`（11-27）。每个任务一条：`state` 是 `ok`、`failed`（最近一次失败）、`stale`（成功过，但超过了该有的间隔 `expected_within_hours`）、`unreadable`（状态文件读不出来）、`unknown`（这台机器上没跑过，不算问题），`at` 是最近一次的时间，`last_ok_at` 是最近一次成功；`llm` 一条是模型调用（连续失败几次、从什么时候起）；`problems` 是 `research-status` 会打出来的条数，`commit` 是线上在跑的提交。云端的 AI 连不上 Mac mini，巡检和开工前读它。只给任务名、状态、时间，不带报错原文：`message` 是脚本错误输出的最后一行、模型接口的报错，里面可能有地址、路径、订阅凭证，网站又是公开的；原话仍在 Mac mini 上看。网站整个连不上（隧道断了）时这个接口也读不到，那种情况看 `/health` 是不是 530。
+
 什么时候算有问题：
 
 | 任务 | 什么时候提示 |

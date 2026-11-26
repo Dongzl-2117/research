@@ -90,6 +90,28 @@ def test_fragments_link_to_the_passage_and_expand(conn, settings, tmp_path):
         assert api["articles"] == 2
 
 
+def test_one_long_section_takes_one_card_and_a_paragraph_long_heading_is_not_the_title(conn, settings, tmp_path):
+    settings, source = _setup(conn, settings, tmp_path)
+    # 飞书笔记常把一整段话标成标题（库里最长 200 字）：不拿它当卡片标题。
+    sentence = "资本配置的要点" + "，先看回购再看分红最后看并购的回报" * 6
+    body = "\n\n".join([
+        _section("资本配置的三种做法", True, 16), _section("门店", False), _section(sentence, True, 1),
+    ])
+    article = _store(conn, settings, source, "sections", "投资札记汇编", body)
+    with TestClient(create_app(settings)) as client:
+        inside = client.get("/search", params={"q": "资本配置", "article": article}).text
+        pieces = inside.count("的三种做法</a></h3>")
+        assert pieces >= 2  # 这一节比 6 块长，被切成了几截
+        page = client.get("/search", params={"q": "资本配置"}).text
+        # 同一节只列一张卡片，别的几截记进「这篇还有 N 处」。
+        assert page.count("的三种做法</a></h3>") == 1
+        assert f"这篇还有 {pieces - 1} 处" in page
+        # 一整段话的章节名：标题用文章名，章节名放在下面一行。
+        assert ">投资札记汇编</a></h3>" in page
+        assert f'<p class="item-heading" title="{sentence}">' in page
+        assert "最后看并购的回报</a></h3>" not in page
+
+
 def test_search_drilldown_keeps_date_source_author_and_selected_sort(conn, settings, tmp_path):
     settings, source = _setup(conn, settings, tmp_path)
     body = "\n\n".join(_section(f"章节{i}", i % 2 == 0) for i in range(8))

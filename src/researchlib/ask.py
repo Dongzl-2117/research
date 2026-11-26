@@ -860,7 +860,9 @@ def ask(
         return result
     checks = []
     if row["status"] == "done" and row["answer"]:
-        checks = check_answer(row["answer"], row["citations"] or [], {source.author for source in sources})
+        checks = check_answer(
+            row["answer"], row["citations"] or [], {source.author for source in sources}, question=question
+        )
     result.update(
         {
             "answer": row["answer"],

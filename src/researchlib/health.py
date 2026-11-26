@@ -6,6 +6,9 @@
 
 文件格式：{"task": "backup", "ok": true, "at": "2026-10-20T03:17:42Z", "message": "…"}，
 失败时另记上一次成功的时间 last_ok_at。
+
+summary() 是给外面看的同一份状态（``GET /api/v1/status``）：云端的 AI 连不上 Mac mini，以前只能请人去跑
+research-status。只给任务名、成没成功、时间，不带 message。
 """
 
 from __future__ import annotations
@@ -171,6 +174,66 @@ def notices(data_dir: Path, zone_name: str, now: datetime | None = None) -> list
                 + (f"：{message}" if message else "")
             )
     return found
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return _now_iso(moment) if moment is not None else None
+
+
+def summary(data_dir: Path, zone_name: str, now: datetime | None = None) -> dict:
+    """给外面看的任务状态（``GET /api/v1/status``）：每个任务最近一次成没成功、什么时候、是不是太久没成功。
+
+    state：ok、failed（最近一次失败）、stale（成功过，但超过了该有的间隔）、unreadable（状态文件读不出来）、
+    unknown（这台机器上没跑过，不算问题）。problems 是 notices() 的条数，和 research-status 报的一致。
+    不带 message：那是脚本错误输出的最后一行、模型接口的报错，里面可能有地址、路径、订阅凭证，网站是公开的。
+    详情仍由 Mac mini 上的 research-status 和日志看。
+    """
+    moment = now or datetime.now(UTC)
+    tasks: list[dict] = []
+    for task, (label, max_age) in TASKS.items():
+        entry: dict = {"task": task, "label": label}
+        data = read_status(data_dir, task)
+        if data is None:
+            entry["state"] = "unreadable" if status_path(data_dir, task).exists() else "unknown"
+            tasks.append(entry)
+            continue
+        at = parse_time(data.get("at"))
+        if not data.get("ok"):
+            entry["state"] = "failed"
+        elif max_age is not None and at is not None and moment - at > max_age:
+            entry["state"] = "stale"
+        else:
+            entry["state"] = "ok"
+        entry["at"] = _iso(at)
+        entry["last_ok_at"] = _iso(at if data.get("ok") else parse_time(data.get("last_ok_at")))
+        if max_age is not None:
+            entry["expected_within_hours"] = int(max_age.total_seconds() // 3600)
+        if task == "backup" and data.get("ok") and data.get("warning"):
+            # 备份成了，但完成时有要看的（目的盘快满了这类）；原话在 research-status 里。
+            entry["warning"] = True
+        tasks.append(entry)
+    llm = read_status(data_dir, "llm")
+    if llm is not None:
+        failures = int(llm.get("failures") or 0)
+        unavailable = bool(llm.get("unavailable"))
+        bad = not llm.get("ok") and (unavailable or failures >= LLM_FAILURES_TO_WARN)
+        entry = {
+            "task": "llm",
+            "label": f"{str(llm.get('provider') or '').strip() or 'Grok'} 调用",
+            "state": "failed" if bad else "ok",
+            "at": _iso(parse_time(llm.get("at"))),
+            "failures": 0 if llm.get("ok") else failures,
+        }
+        if not llm.get("ok"):
+            entry["since"] = _iso(parse_time(llm.get("since")) or parse_time(llm.get("at")))
+            entry["unavailable"] = unavailable
+        tasks.append(entry)
+    return {
+        "checked_at": _now_iso(moment),
+        "problems": len(notices(data_dir, zone_name, now=moment)),
+        "deploy_waiting": bool(deploy_waiting(data_dir)),
+        "tasks": tasks,
+    }
 
 
 # —— LLM 调用的健康状况：连续失败计数 ——

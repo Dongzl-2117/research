@@ -262,6 +262,39 @@ class _AnswerCitations(HTMLParser):
         self.out.append(f"&#{name};")
 
 
+_FENCE = re.compile(r"\s{0,3}(`{3,}|~{3,})")
+# 一个列表的第一项：无序的，或者从 1 数起的有序的（「2015. 那年…」这种句子开头不算）。
+_LIST_START = re.compile(r"\s{0,3}(?:[-*+]|1[.)])\s+\S")
+_LIST_LINE = re.compile(r"\s*(?:[-*+]|\d{1,3}[.)])\s+\S")
+
+
+def _separate_lists(text: str) -> str:
+    """列表紧跟在一段话后面、中间没空行时，在第一项前补一个空行。
+
+    模型常写「**一、利润来源**」下一行直接「- 甲」「- 乙」。Markdown 把没隔空行的列表当成上一段的续行，
+    整节排成一段，中间夹着「 - 」，十几条依据挤成一坨。只补第一项前面那一行：已经在列表里的不补
+    （否则紧凑的列表变成一项一段），代码块里的不动。
+    """
+    lines: list[str] = []
+    fence = ""
+    in_list = False
+    previous = ""
+    for line in text.split("\n"):
+        marker = _FENCE.match(line)
+        if marker and (not fence or marker[1].startswith(fence)):
+            fence = "" if fence else marker[1][:3]
+        elif not fence:
+            if not line.strip():
+                in_list = False
+            elif _LIST_LINE.match(line):
+                if not in_list and previous.strip() and _LIST_START.match(line):
+                    lines.append("")
+                in_list = True
+        lines.append(line)
+        previous = line
+    return "\n".join(lines)
+
+
 def answer_html(text: str, citations: list[dict] | None = None) -> Markup:
     """问库共用 Markdown 排版；禁用原始 HTML，再清理链接，引用仅指向已知原文。"""
     import markdown
@@ -271,7 +304,7 @@ def answer_html(text: str, citations: list[dict] | None = None) -> Markup:
     renderer = markdown.Markdown(extensions=["sane_lists", "fenced_code", "tables"])
     renderer.preprocessors.deregister("html_block")
     renderer.inlinePatterns.deregister("html")
-    html = sanitize_html(renderer.convert(escape_times(text or "")))
+    html = sanitize_html(renderer.convert(_separate_lists(escape_times(text or ""))))
     parser = _AnswerCitations(citations)
     parser.feed(html)
     parser.close()

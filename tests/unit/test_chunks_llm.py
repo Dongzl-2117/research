@@ -135,3 +135,16 @@ def test_startup_does_not_run_digest():
     assert "backfill_missing_chunks" in db
     assert "research-digest" not in (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "research-digest" not in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+
+def test_answer_html_starts_a_list_right_after_a_paragraph():
+    # 模型常在小标题下一行直接写列表、不隔空行；以前整节排成一段，中间夹着「 - 」。
+    answer = "**一、利润来源**\n- 会员费是主利润 [1]\n- 商品端接近成本价\n\n**二、低价**\n1. 低毛利\n2. 低费用"
+    html = str(answer_html(answer))
+    assert html.count("<ul>") == 1 and html.count("<ol>") == 1 and html.count("<li>") == 4
+    assert "<p><strong>一、利润来源</strong></p>" in html and " - " not in html
+    # 紧凑的列表不因此变成一项一段；有续行的列表、代码块、不从 1 数起的行照旧。
+    assert "<li><p>" not in html
+    assert str(answer_html("- 甲\n  续行\n- 乙")).count("<li>") == 2
+    assert "<li>" not in str(answer_html("```\n标题\n- 代码里的\n```"))
+    assert "<li>" not in str(answer_html("2015 年的事\n2015. 那年开了第一家店"))

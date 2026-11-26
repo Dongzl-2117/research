@@ -235,3 +235,66 @@ def test_final_punctuation_inside_a_quote_keeps_the_following_sentence_separate(
     assert split_claims(one + " " + two) == [(one, [1]), (two, [2])]
     broken = "原文写「没有闭引号。"
     assert split_claims(broken + two, include_uncited=True) == [(broken, []), (two, [2])]
+
+
+SHARED = [
+    {
+        "n": 1,
+        "title": "硬折扣",
+        "heading": "",
+        "before": "王小明：硬折扣的核心目标是高周转。",
+        "text": (
+            "商品毛利率限制在13-14%以内，未来能不能稳定赚 100 亿，轻乳茶大约3块钱左右每杯，"
+            "2024 年净利润 34.0 亿元。"
+        ),
+        "author": "李四",
+        "date": "2026-04-07",
+    }
+]
+
+
+def test_clauses_before_a_trailing_ref_are_checked_against_it():
+    # 出处写在整句末尾：分号前面的分句、行首加粗的小结都按这个出处核，不报「没有标注出处」。
+    answer = "- **口径：毛利率压得很低。** 商品毛利率限制在 13%-14% 以内；一年能不能稳定赚 100 亿元是底线[1]。"
+    assert check_answer(answer, SHARED, ["李四"]) == []
+    wrong = "商品毛利率限制在 20% 以内；一年能不能稳定赚 100 亿元是底线[1]。"
+    assert [flag["problems"] for flag in check_answer(wrong, SHARED, ["李四"])] == [["数字 20% 不在所引段落里"]]
+
+
+def test_headings_and_notes_about_coverage_need_no_source():
+    answer = (
+        "**一、会员费才是利润来源**\n"
+        "- 商品毛利率限制在 13%-14% 以内[1]。\n"
+        "**覆盖说明**：资料只覆盖李四本人，时间从 2025-04 到 2026-10；没有其他作者的独立评论。\n"
+        "这说明低价靠的是周转。"
+    )
+    flags = check_answer(answer, SHARED, ["李四"])
+    assert [flag["sentence"] for flag in flags] == ["这说明低价靠的是周转。"]
+    # 交代资料范围的话带着要核的数，照旧提示。
+    assert check_answer("资料里它一年赚 350 亿元。", SHARED, ["李四"])[0]["problems"] == ["这句没有标注出处"]
+
+
+def test_ranges_spoken_units_and_omitted_yuan_read_the_same_on_both_sides():
+    answer = "毛利率在 13%～14% 之间，轻乳茶原料约 3 元一杯，稳定利润看 100亿元[1]。"
+    assert check_answer(answer, SHARED, ["李四"]) == []
+    # 出处写的是别的币种、或者小数目碰巧同值，不算对上。
+    dollars = [dict(SHARED[0], text="未来能不能稳定赚 100 亿美元，库存 5 个月。")]
+    assert check_answer("稳定利润看 100亿元[1]。", dollars, ["李四"])[0]["problems"] == ["数字 100亿元 不在所引段落里"]
+    assert check_answer("一杯卖 5元[1]。", dollars, ["李四"])[0]["problems"] == ["数字 5元 不在所引段落里"]
+
+
+def test_an_amount_after_a_year_is_not_read_as_a_date():
+    # 以前「2024年34.0亿元」被读成日期 2024-34-00，34.0 亿这个数反而没核。
+    assert check_answer("李四说 2025年净利润130.8亿元[1]。", SHARED, ["李四"])[0]["problems"] == [
+        "数字 130.8亿元 不在所引段落里"
+    ]
+    assert check_answer("李四说 2024年34.0亿元[1]。", SHARED, ["李四"]) == []
+    assert check_answer("李四在 2026.4.7 说过，2024年34.0亿元[1]。", SHARED, ["李四"]) == []
+
+
+def test_words_from_the_question_and_names_in_context_are_not_flagged():
+    # 「王小明：」在这段的前文里，不报「所引段落不是王小明写的」；问题里的说法加引号不算引原文。
+    answer = "王小明认为硬折扣的“第一原则”是高周转[1]。"
+    problems = check_answer(answer, SHARED, ["李四", "王小明"])[0]["problems"]
+    assert problems == ["引号里的「第一原则」在所引段落里找不到"]
+    assert check_answer(answer, SHARED, ["李四", "王小明"], question="硬折扣的第一原则是什么？") == []
