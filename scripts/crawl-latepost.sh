@@ -24,15 +24,14 @@ compose() {
 }
 
 echo "$(date '+%F %T') 开始晚点LatePost抓取（这次最多 ${MAX_NEW} 篇新文章）"
-mark="$(new_mark)"
-run_step "抓取并导入" compose_exec app research-crawl-wechat --source "$SOURCE" --max-new "$MAX_NEW"
+run_step "抓取并导入" crawl_with_receipt research-crawl-wechat --source "$SOURCE" --max-new "$MAX_NEW"
 
 echo "$(date '+%F %T') 下载外链图片"
 run_step "下载外链图片" compose_exec app research-fetch-images --limit 200
 
-# 只处理这次抓进来的（id 比抓取前大的）。历史回填另由 research-ingest-wechat 导入，不经过这里，
+# 只处理这次抓进来的（按导入回执）。历史回填另由 research-ingest-wechat 导入，不经过这里，
 # 导入的几千篇由夜间任务按每晚上限补，不会在这里一次做完。
 echo "$(date '+%F %T') 处理新文章"
-run_step "处理新文章" process_new "$SOURCE" "$mark"
+run_step "处理新文章" process_new "$SOURCE"
 
 status_ok "晚点LatePost抓取完成"

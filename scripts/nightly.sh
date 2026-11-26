@@ -63,13 +63,10 @@ step() {
 # 新文章当晚就有图、向量、观点和摘要。Thompson 北京时间傍晚发文，这一步凌晨跑，当天的都赶得上。
 # 没设地址时这一步跳过、不算失败（未配置）；设了却读不到（地址失效、订阅过期）记成失败，research-status 会报。
 if compose_exec app sh -c 'test -n "${STRATECHERY_RSS_URL:-}"' 2>/dev/null; then
-  mark="$(new_mark 2>/dev/null || true)"
-  step "Stratechery 抓取" compose_exec app research-crawl-stratechery
+  step "Stratechery 抓取" crawl_with_receipt research-crawl-stratechery
   # 这次新抓的当场译制、识图、整理判断、写摘要、给段落打分（research-process-new，见 status.sh 的 process_new）：
   # 不占后面观点、摘要、打分每晚的篇数上限，也不和积压一起排队。
-  if [ -n "$mark" ]; then
-    step "Stratechery 新文章" process_new stratechery "$mark"
-  fi
+  step "Stratechery 新文章" process_new stratechery
 else
   echo "$(date '+%F %T') 跳过：Stratechery 抓取（.env 没设 STRATECHERY_RSS_URL）"
 fi

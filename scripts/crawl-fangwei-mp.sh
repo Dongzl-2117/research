@@ -27,8 +27,7 @@ compose() {
 }
 
 echo "$(date '+%F %T') 开始方伟公众号抓取（这次最多 ${MAX_NEW} 篇新文章）"
-mark="$(new_mark)"
-run_step "抓取并导入" compose_exec app research-crawl-wechat --source "$SOURCE" --max-new "$MAX_NEW"
+run_step "抓取并导入" crawl_with_receipt research-crawl-wechat --source "$SOURCE" --max-new "$MAX_NEW"
 
 echo "$(date '+%F %T') 老文章的图按原文页摆（这次最多 ${PLACE_LIMIT} 篇）"
 run_step "老文章摆图" compose_exec app research-place-wechat-images --source "$SOURCE" --limit "$PLACE_LIMIT"
@@ -37,6 +36,6 @@ echo "$(date '+%F %T') 下载外链图片"
 run_step "下载外链图片" compose_exec app research-fetch-images --limit 200
 
 echo "$(date '+%F %T') 处理新文章"
-run_step "处理新文章" process_new "$SOURCE" "$mark"
+run_step "处理新文章" process_new "$SOURCE"
 
 status_ok "方伟公众号抓取完成"

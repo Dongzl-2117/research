@@ -18,6 +18,7 @@
 STATUS_DIR="${STATUS_DIR:-$REPO/data/status}"
 STATUS_FAILED_LINE=""
 STATUS_FAILED_CMD=""
+CRAWL_RECEIPT=""
 
 status_json_escape() {
   local s="$1"
@@ -100,6 +101,9 @@ run_step() {
 status_finish() {
   # 脚本退出时：这次已经写过结果的不再写；没写过又是非零退出，补一条失败记录。
   local rc="$1" marker="$STATUS_DIR/.${TASK}.$$.done"
+  if [ -n "$CRAWL_RECEIPT" ]; then
+    rm -f "$CRAWL_RECEIPT" "$CRAWL_RECEIPT.part"
+  fi
   if [ -f "$marker" ]; then
     rm -f "$marker"
     return 0
@@ -110,12 +114,15 @@ status_finish() {
   fi
 }
 
-# 新抓进来的文章当场处理完（识图、译制、判断、摘要、段落打分），不等夜间、不避开 DeepSeek 高峰价
-# （Zhilin 11-19：新抓的直接来，只有大面积的才等）。抓取前 new_mark 记下库里最大的文章 id，导入以后
-#   run_step "处理新文章" process_new 来源 "$mark"
-# 只处理这一来源 id 比它大的几篇，见 src/researchlib/fresh.py。调用方要先定义 compose。
-new_mark() {
-  compose_exec app research-process-new --last-id
+# 本次导入的编号写进独立回执；宿主的 ./data 挂在 app 的 /data，EXIT 时删除。
+crawl_with_receipt() {
+  if [ "${PROCESS_NEW:-1}" = "0" ]; then
+    compose_exec app "$@"
+    return $?
+  fi
+  mkdir -p "$REPO/data" || return 1
+  CRAWL_RECEIPT="$(mktemp "$REPO/data/.fresh-articles.XXXXXX")" || return 1
+  compose_exec app env "RESEARCH_CRAWL_RECEIPT=/data/${CRAWL_RECEIPT##*/}" "$@"
 }
 
 new_ocr_enabled() {
@@ -133,15 +140,19 @@ new_ocr_enabled() {
 }
 
 process_new() {
-  # process_new 来源 起点id：PROCESS_NEW=0 时跳过（只抓取导入，留给夜间）。
-  local source="$1" mark="$2"
+  # process_new 来源：PROCESS_NEW=0 时跳过（只抓取导入，留给夜间）。
+  local source="$1"
   if [ "${PROCESS_NEW:-1}" = "0" ]; then
     echo "$(date '+%F %T') 跳过处理新文章（PROCESS_NEW=0），留给夜间"
     return 0
   fi
+  if [ -z "$CRAWL_RECEIPT" ]; then
+    echo "没有这次抓取的文章编号清单" >&2
+    return 1
+  fi
   if new_ocr_enabled; then
-    compose_exec app research-process-new --source "$source" --after-id "$mark" --ocr
+    compose_exec app research-process-new --source "$source" --receipt "/data/${CRAWL_RECEIPT##*/}" --ocr
   else
-    compose_exec app research-process-new --source "$source" --after-id "$mark"
+    compose_exec app research-process-new --source "$source" --receipt "/data/${CRAWL_RECEIPT##*/}"
   fi
 }

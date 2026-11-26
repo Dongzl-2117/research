@@ -5,7 +5,7 @@
 按每晚的上限排队；DeepSeek 高峰价时段（北京时间工作日 9 到 12 点、14 到 18 点）按队列译的不开新篇。
 新文章一天几篇到十几篇，高峰价多花的是几分钱，不值得让读者等半天。
 
-现在抓取脚本导入前记下库里最大的文章 id（``--last-id``），导入以后对这一来源新进来的几篇按顺序做：
+抓取脚本把本次导入的文章编号写进独立回执（``--receipt``），导入以后对这一来源新进来的几篇按顺序做：
 
 1. 识图（``--ocr``，跟着夜间任务的 NIGHTLY_OCR 开关）：只认这几篇里没认过的图，摘要和判断第一遍就读得到图里的字。
 2. 译制：其中的英文文章点名译（不避开高峰价）。
@@ -31,6 +31,7 @@ import argparse
 import sys
 import traceback
 from dataclasses import replace
+from pathlib import Path
 
 from researchlib import llm_batch
 from researchlib.author_voice import site_visible_sql
@@ -49,17 +50,20 @@ def last_article_id(conn) -> int:
     return int(row["id"])
 
 
-def new_article_ids(conn, source_ids: list[str], after_id: int, limit: int) -> tuple[list[int], int]:
-    """这些来源里 id 比 after_id 大、网站上显示的主版本，新的在前最多 limit 篇。交回 (id 列表, 一共几篇)。"""
+def new_article_ids(
+    conn, source_ids: list[str], after_id: int | None, limit: int, *, article_ids: list[int] | None = None
+) -> tuple[list[int], int]:
+    """定时按本次回执、手动按起点筛网站上显示的主版本，交回最新的 limit 篇和总数。"""
+    condition = "a.id = ANY(%s)" if article_ids is not None else "a.id > %s"
     rows = conn.execute(
         f"""
         SELECT a.id
         FROM articles a
-        WHERE a.source_id = ANY(%s) AND a.id > %s AND a.duplicate_of IS NULL
+        WHERE a.source_id = ANY(%s) AND {condition} AND a.duplicate_of IS NULL
           AND {visible_sql("a")} AND {site_visible_sql("a")}
         ORDER BY a.published_at DESC NULLS LAST, a.id DESC
         """,
-        (source_ids, after_id),
+        (source_ids, article_ids if article_ids is not None else after_id),
     ).fetchall()
     ids = [int(row["id"]) for row in rows]
     return ids[:limit], len(ids)
@@ -170,11 +174,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="刚抓进来的文章当场识图、译制、整理判断、写摘要、给段落打分（花模型钱）"
     )
-    parser.add_argument(
-        "--last-id", action="store_true", help="只印出库里最大的文章 id（抓取前记下，导入后传给 --after-id）"
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--receipt", type=Path, help="本次导入写出的文章编号清单，每行一个")
+    selection.add_argument(
+        "--last-id", action="store_true", help="只印出库里最大的文章 id，供手动按范围处理"
     )
     parser.add_argument("--source", action="append", default=[], help="来源 id，可重复")
-    parser.add_argument("--after-id", type=int, default=None, help="只处理 id 比它大的文章")
+    selection.add_argument("--after-id", type=int, default=None, help="只处理 id 比它大的文章")
     parser.add_argument("--ocr", action="store_true", help="先认这几篇里没认过的图（跟着夜间任务的 NIGHTLY_OCR）")
     parser.add_argument(
         "--limit", type=int, default=DEFAULT_LIMIT, help=f"最多处理几篇（默认 {DEFAULT_LIMIT}），多的留给夜间"
@@ -193,8 +199,14 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             conn.close()
         return 0
-    if not args.source or args.after_id is None:
-        parser.error("要写 --source 和 --after-id（或者只用 --last-id）")
+    if not args.source:
+        parser.error("请指定 --source")
+    article_ids = None
+    if args.receipt is not None:
+        try:
+            article_ids = [int(line) for line in args.receipt.read_text(encoding="ascii").splitlines()]
+        except (OSError, ValueError) as exc:
+            parser.error(f"读不到抓取的文章编号清单：{exc}")
     sources = {source.id: source.author for source in enabled_sources(load_sources(settings.sources_path))}
     unknown = [item for item in args.source if item not in sources]
     if unknown:
@@ -202,7 +214,9 @@ def main(argv: list[str] | None = None) -> int:
     authors = {item: sources[item] for item in args.source}
     conn = prepare(settings)
     try:
-        ids, total = new_article_ids(conn, list(authors), args.after_id, max(1, args.limit))
+        ids, total = new_article_ids(
+            conn, list(authors), args.after_id, max(1, args.limit), article_ids=article_ids
+        )
     finally:
         conn.close()
     if not ids:
