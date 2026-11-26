@@ -5,6 +5,8 @@ import json
 import threading
 from dataclasses import replace
 from datetime import datetime
+from html import escape
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -110,6 +112,16 @@ def test_theses_views_home_and_same_period(conn, settings, monkeypatch):
         section = only.split('id="views"', 1)[1]
         assert "mp/t1 的判断" in section and "cf/t2 的判断" in section and "zx/t4 的判断" not in section
         assert "只看论点「视频号广告库存」下的判断" in section
+        query = urlencode({"tab": "views", "thesis": "t1", "author": "方伟"})
+        author_link = f"/companies/{company['id']}?{query}"
+        assert f'href="{escape(author_link)}"' in section
+        author_section = client.get(author_link).text.split('id="views"', 1)[1]
+        assert "只看论点「视频号广告库存」下的判断" in author_section
+        assert JUDGMENTS["mp/t1"] in author_section and JUDGMENTS["zx/t4"] not in author_section
+        clear_url = f"/companies/{company['id']}?{urlencode({'tab': 'views', 'author': '方伟'})}"
+        assert f'href="{escape(clear_url)}">看全部</a>' in author_section
+        restored = client.get(clear_url).text.split('id="views"', 1)[1]
+        assert JUDGMENTS["zx/t4"] in restored and JUDGMENTS["cf/t2"] not in restored
         # 改版前论点的链接是 ?views=t1，照样能开。
         legacy = client.get(f"/companies/{company['id']}", params={"views": "t1"}).text
         assert "只看论点「视频号广告库存」下的判断" in legacy and "zx/t4 的判断" not in legacy.split('id="views"', 1)[1]
@@ -135,6 +147,36 @@ def test_theses_views_home_and_same_period(conn, settings, monkeypatch):
                   "params": {"name": "get_company_views", "arguments": {"id": company["id"]}}},
         ).json()
         assert call["result"]["structuredContent"]["theses"][0]["title"] == "视频号广告库存"
+
+
+def test_missing_thesis_does_not_silently_return_other_judgments(conn, settings, monkeypatch):
+    _store_all(conn, settings)
+    company = _views(conn, settings, monkeypatch)
+    page_url = f"/companies/{company['id']}"
+    api_url = f"/api/v1{page_url}/views"
+    with TestClient(create_app(settings)) as client:
+        available = client.get(api_url, params={"author": "方伟"}).json()
+        assert available["theses"] == [] and available["total"] == 2
+        for key in ("t99", "t0", "x"):
+            response = client.get(api_url, params={"views": key, "author": "方伟", "limit": 1})
+            assert response.status_code == 400
+            result = client.post("/api/mcp", json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "get_company_views", "arguments": {
+                    "id": company["id"], "views": key, "author": "方伟", "limit": 1,
+                }},
+            }).json()["result"]
+            assert result["isError"] and response.json()["error"]["message"] in result["content"][0]["text"]
+        filters = {"author": "方伟", "stance": "positive"}
+        clear_url = f"{page_url}?{urlencode({'tab': 'views', **filters})}"
+        for key_name in ("thesis", "views"):
+            page = client.get(page_url, params={key_name: "t99", **filters}).text
+            section = page.split('id="views"', 1)[1]
+            assert "这个论点当前不可用" in section
+            assert JUDGMENTS["mp/t1"] in section and JUDGMENTS["zx/t4"] not in section
+            assert f'href="{escape(clear_url)}">清除论点筛选</a>' in section
+        clear = client.get(clear_url).text
+        assert JUDGMENTS["mp/t1"] in clear and "这个论点当前不可用" not in clear
 
 
 def test_blank_views_skip_theses_and_refresh_blank_requeues(conn, settings):

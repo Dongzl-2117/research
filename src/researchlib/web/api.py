@@ -540,6 +540,8 @@ def views_payload(
     conn, request: Request, sources, company_id: int, kind: str, author: str, limit: int, offset: int
 ) -> dict | None:
     """观点时间线和论点地图。kind：risk、change，或论点的 key（t1、t2…，只看这条论点引用的观点）。"""
+    if not isinstance(kind, str) or (kind and kind not in VIEW_FILTERS and not re.fullmatch(r"t[1-9][0-9]*", kind)):
+        raise HTTPException(status_code=400, detail="views 只能是 risk、change 或论点的 key（t1、t2…）")
     settings = request.app.state.settings
     company = queries.get_company(conn, company_id)
     if company is None:
@@ -548,6 +550,8 @@ def views_payload(
     items = retitle_views(conn, view_timeline(conn, company_id, by_id, settings), by_id, settings.display_timezone)
     theses = thesis_map.present(thesis_map.stored(conn, company_id), items, company["name_zh"])
     thesis = next((item for item in theses if item["key"] == kind), None)
+    if kind.startswith("t") and thesis is None:
+        raise HTTPException(status_code=400, detail="这个论点当前不可用，请去掉 views 查询这家公司的论点列表")
     chosen = thesis_map.mask_unrelated_quotes(
         filter_timeline(items, kind if thesis is None else "", author, thesis["articles"] if thesis else None),
         thesis,
@@ -600,8 +604,6 @@ def api_company_views(request: Request, company_id: int):
     views=risk 只看风险与反方，views=change 只看态度变化，views=t1 只看第一条论点引用的观点。
     """
     kind = request.query_params.get("views") or ""
-    if kind and kind not in VIEW_FILTERS and not (kind[:1] == "t" and kind[1:].isdigit()):
-        raise HTTPException(status_code=400, detail="views 只能是 risk、change 或论点的 key（t1、t2…）")
     author = (request.query_params.get("author") or "").strip()
     limit, offset = _limit(request)
     with database(request) as conn:
