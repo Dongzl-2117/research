@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 每天 21:15（香港时间，launchd 用本机时区）Stratechery 读个人 RSS 抓取并入库，新文章当场处理。
+     Thompson 北京时间傍晚发文；夜间任务 00:37 再抓一次。由 scripts/install-launchd.sh 安装。 -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zldong.research.crawl-stratechery</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/crawl-stratechery.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+    <key>REPO</key>
+    <string>__REPO__</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>21</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__LOGS__/crawl-stratechery.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGS__/crawl-stratechery.err.log</string>
+</dict>
+</plist>

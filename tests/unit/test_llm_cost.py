@@ -41,7 +41,7 @@ def test_digest_cost_uses_documented_prices_and_a_planning_band():
     text = render_estimate(estimate, provider_text="当前提供方: DeepSeek（deepseek-flash，reasoning_effort=max）")
     assert f"{low:.2f}" in text and f"{high:.2f}" in text
     assert "非高峰" in text and "高峰" in text
-    assert "每晚最多 80" in text and "各最多 10" in text
+    assert "每晚最多 80" in text and "research-process-new" in text
     assert "不调模型" in text
     assert estimate.views is not None and estimate.views.calls == 0
     assert estimate.views_are_upper is False
@@ -103,7 +103,9 @@ def test_short_text_is_not_digested_and_schedule_caps_match_the_scripts():
     assert f"VIEWS_LIMIT:-{llm_cost.NIGHTLY_VIEWS_LIMIT}" in nightly
     assert 'THESES_ENABLED="${THESES_ENABLED:-0}"' in nightly
     assert 'NIGHTLY_OCR="${NIGHTLY_OCR:-0}"' in nightly
-    assert f"DIGEST_LIMIT:-{llm_cost.CRAWL_DIGEST_LIMIT}" in late
+    # 晚点的定时抓取只当场处理这次抓进来的（抓取前记下最大 id），不按来源补积压。
+    assert 'mark="$(new_mark)"' in late and 'process_new "$SOURCE" "$mark"' in late
+    assert "research-digest" not in late
 
 
 def test_estimate_command_reads_a_listing_and_does_not_need_the_database(monkeypatch, tmp_path, capsys):
