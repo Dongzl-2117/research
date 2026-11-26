@@ -227,9 +227,15 @@ def main(argv: list[str] | None = None) -> int:
     if argv:
         raise SystemExit("research-status 不接受参数")
     from researchlib.config import Settings
+    from researchlib.public_health import public_health_notice
 
     settings = Settings.from_env()
     found = notices(settings.data_dir, settings.display_timezone)
+    # deploy.sh 写过发布记录的安装才检查其配置的站点；单独跑网页或读状态文件不会发网络请求。
+    if os.environ.get("PUBLIC_BASE_URL") and (settings.data_dir / STATUS_DIR / ".deploy-last").is_file():
+        public = public_health_notice(settings.public_base_url, os.environ.get("GIT_SHA", ""))
+        if public:
+            found.append(public)
     for text in found:
         print(text)
     if not found:

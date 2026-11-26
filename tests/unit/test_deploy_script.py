@@ -428,10 +428,13 @@ def test_long_outage_is_reported_and_cleared_once_main_is_back(world: World):
     assert world.deploy().returncode == 0
     status = world.status()
     assert status["ok"] is False and "取不到 origin/main" in status["message"]
-    # 连上了，main 上没有新提交：不重建，提示消失。
+    # GitHub 恢复不代表源站也恢复。无新提交时保持现场，不能凭上一次发布记录清掉告警。
     away.rename(world.origin)
+    assert world.deploy(BROKEN=world.head()).returncode == 0
+    assert world.status()["ok"] is False and "源站" in world.status()["message"]
+    assert world.called() == ["curl app"]
     assert world.deploy().returncode == 0
-    assert world.status()["ok"] is True and world.called() == []
+    assert world.status()["ok"] is True and world.called() == ["curl app"]
 
 
 def test_checkout_on_another_branch_is_not_touched(world: World):
